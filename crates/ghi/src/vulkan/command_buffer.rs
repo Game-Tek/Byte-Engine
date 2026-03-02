@@ -6,13 +6,12 @@ use crate::{device::Device as _, graphics_hardware_interface, vulkan::HandleLike
 
 use super::{
 	utils::{
-		texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value,
-		to_load_operation, to_pipeline_stage_flags, to_store_operation,
+		texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation,
+		to_pipeline_stage_flags, to_store_operation,
 	},
-	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle,
-	CommandBufferInternal, Consumption, Descriptor, DescriptorSet, DescriptorSetHandle, Device,
-	Handle, Image, ImageHandle, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle,
-	TransitionState, VulkanConsumption,
+	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption,
+	Descriptor, DescriptorSet, DescriptorSetHandle, Device, Handle, Image, ImageHandle, Swapchain, Synchronizer,
+	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -61,15 +60,12 @@ impl CommandBufferRecording<'_> {
 		unsafe {
 			self.device
 				.device
-				.reset_command_pool(
-					command_buffer.command_pool,
-					vk::CommandPoolResetFlags::empty(),
-				)
+				.reset_command_pool(command_buffer.command_pool, vk::CommandPoolResetFlags::empty())
 				.expect("No command pool reset")
 		};
 
-		let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
-			.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+		let command_buffer_begin_info =
+			vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
 		unsafe {
 			self.device
@@ -87,19 +83,12 @@ impl CommandBufferRecording<'_> {
 		&self.device.images[image_handle.0 as usize]
 	}
 
-	fn get_synchronizer(
-		&self,
-		syncronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-	) -> &Synchronizer {
-		&self.device.synchronizers[self.device.get_syncronizer_handles(syncronizer_handle)
-			[self.sequence_index as usize]
-			.0 as usize]
+	fn get_synchronizer(&self, syncronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> &Synchronizer {
+		&self.device.synchronizers
+			[self.device.get_syncronizer_handles(syncronizer_handle)[self.sequence_index as usize].0 as usize]
 	}
 
-	fn get_swapchain(
-		&self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> &Swapchain {
+	fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {
 		&self.device.swapchains[swapchain_handle.0 as usize]
 	}
 
@@ -144,16 +133,14 @@ impl CommandBufferRecording<'_> {
 	}
 
 	fn get_command_buffer(&self) -> &CommandBufferInternal {
-		&self.device.command_buffers[self.command_buffer.0 as usize].frames
-			[self.sequence_index as usize]
+		&self.device.command_buffers[self.command_buffer.0 as usize].frames[self.sequence_index as usize]
 	}
 
 	fn get_internal_descriptor_set_handle(
 		&self,
 		descriptor_set_handle: graphics_hardware_interface::DescriptorSetHandle,
 	) -> DescriptorSetHandle {
-		let handles =
-			DescriptorSetHandle(descriptor_set_handle.0).get_all(&self.device.descriptor_sets);
+		let handles = DescriptorSetHandle(descriptor_set_handle.0).get_all(&self.device.descriptor_sets);
 		handles[self.sequence_index as usize]
 	}
 
@@ -173,19 +160,13 @@ impl CommandBufferRecording<'_> {
 		let pipeline = &self.device.pipelines[bound_pipeline_handle.0 as usize];
 
 		for &((set_index, binding_index), (stages, access)) in &pipeline.resource_access {
-			let set_handle =
-				if let Some(&h) = self.bound_descriptor_set_handles.get(set_index as usize) {
-					h.1
-				} else {
-					continue;
-				};
+			let set_handle = if let Some(&h) = self.bound_descriptor_set_handles.get(set_index as usize) {
+				h.1
+			} else {
+				continue;
+			};
 
-			let resources = match self
-				.device
-				.descriptors
-				.get(&set_handle)
-				.map(|d| d.get(&binding_index))
-			{
+			let resources = match self.device.descriptors.get(&set_handle).map(|d| d.get(&binding_index)) {
 				Some(Some(b)) => b.values(),
 				_ => {
 					continue;
@@ -194,14 +175,11 @@ impl CommandBufferRecording<'_> {
 
 			for idk in resources {
 				let (layout, handle) = match idk {
-					Descriptor::Buffer { buffer, .. } => (
-						graphics_hardware_interface::Layouts::General,
-						Handle::Buffer(*buffer),
-					),
-					Descriptor::Image { layout, image } => (*layout, Handle::Image(*image)),
-					Descriptor::CombinedImageSampler { image, layout, .. } => {
-						(*layout, Handle::Image(*image))
+					Descriptor::Buffer { buffer, .. } => {
+						(graphics_hardware_interface::Layouts::General, Handle::Buffer(*buffer))
 					}
+					Descriptor::Image { layout, image } => (*layout, Handle::Image(*image)),
+					Descriptor::CombinedImageSampler { image, layout, .. } => (*layout, Handle::Image(*image)),
 				};
 
 				consumptions.push(Consumption {
@@ -239,23 +217,13 @@ impl CommandBufferRecording<'_> {
 				_ => None,
 			};
 
-			let stages =
-				to_pipeline_stage_flags(consumption.stages, Some(consumption.layout), format);
-			let access = to_access_flags(
-				consumption.access,
-				consumption.stages,
-				consumption.layout,
-				format,
-			);
+			let stages = to_pipeline_stage_flags(consumption.stages, Some(consumption.layout), format);
+			let access = to_access_flags(consumption.access, consumption.stages, consumption.layout, format);
 
 			let layout = match consumption.handle {
 				Handle::Image(image_handle) => {
 					let image = self.get_image(image_handle);
-					texture_format_and_resource_use_to_image_layout(
-						image.format_,
-						consumption.layout,
-						Some(consumption.access),
-					)
+					texture_format_and_resource_use_to_image_layout(image.format_, consumption.layout, Some(consumption.access))
 				}
 				_ => vk::ImageLayout::UNDEFINED,
 			};
@@ -308,35 +276,34 @@ impl CommandBufferRecording<'_> {
 
 					let new_layout = consumption.layout;
 
-					let image_memory_barrier =
-						if let Some(barrier_source) = self.states.get(&consumption.handle) {
-							vk::ImageMemoryBarrier2::default()
-								.old_layout(barrier_source.layout)
-								.src_stage_mask(barrier_source.stage)
-								.src_access_mask(barrier_source.access)
+					let image_memory_barrier = if let Some(barrier_source) = self.states.get(&consumption.handle) {
+						vk::ImageMemoryBarrier2::default()
+							.old_layout(barrier_source.layout)
+							.src_stage_mask(barrier_source.stage)
+							.src_access_mask(barrier_source.access)
+					} else {
+						vk::ImageMemoryBarrier2::default()
+							.old_layout(vk::ImageLayout::UNDEFINED)
+							.src_stage_mask(vk::PipelineStageFlags2::empty())
+							.src_access_mask(vk::AccessFlags2KHR::empty())
+					}
+					.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					.new_layout(new_layout)
+					.dst_stage_mask(new_stage_mask)
+					.dst_access_mask(new_access_mask)
+					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					.image(image.image)
+					.subresource_range(vk::ImageSubresourceRange {
+						aspect_mask: if image.format != vk::Format::D32_SFLOAT {
+							vk::ImageAspectFlags::COLOR
 						} else {
-							vk::ImageMemoryBarrier2::default()
-								.old_layout(vk::ImageLayout::UNDEFINED)
-								.src_stage_mask(vk::PipelineStageFlags2::empty())
-								.src_access_mask(vk::AccessFlags2KHR::empty())
-						}
-						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.new_layout(new_layout)
-						.dst_stage_mask(new_stage_mask)
-						.dst_access_mask(new_access_mask)
-						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.image(image.image)
-						.subresource_range(vk::ImageSubresourceRange {
-							aspect_mask: if image.format != vk::Format::D32_SFLOAT {
-								vk::ImageAspectFlags::COLOR
-							} else {
-								vk::ImageAspectFlags::DEPTH
-							},
-							base_mip_level: 0,
-							level_count: vk::REMAINING_MIP_LEVELS,
-							base_array_layer: 0,
-							layer_count: vk::REMAINING_ARRAY_LAYERS,
-						});
+							vk::ImageAspectFlags::DEPTH
+						},
+						base_mip_level: 0,
+						level_count: vk::REMAINING_MIP_LEVELS,
+						base_array_layer: 0,
+						layer_count: vk::REMAINING_ARRAY_LAYERS,
+					});
 
 					image_memory_barriers.push(image_memory_barrier);
 				}
@@ -347,55 +314,51 @@ impl CommandBufferRecording<'_> {
 						continue;
 					}
 
-					let buffer_memory_barrier =
-						if let Some(source) = self.states.get(&consumption.handle) {
-							vk::BufferMemoryBarrier2::default()
-								.src_stage_mask(source.stage)
-								.src_access_mask(source.access)
-								.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						} else {
-							vk::BufferMemoryBarrier2::default()
-								.src_stage_mask(vk::PipelineStageFlags2::empty())
-								.src_access_mask(vk::AccessFlags2KHR::empty())
-								.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						}
-						.dst_stage_mask(new_stage_mask)
-						.dst_access_mask(new_access_mask)
-						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.buffer(buffer.buffer)
-						.offset(0)
-						.size(vk::WHOLE_SIZE);
+					let buffer_memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
+						vk::BufferMemoryBarrier2::default()
+							.src_stage_mask(source.stage)
+							.src_access_mask(source.access)
+							.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					} else {
+						vk::BufferMemoryBarrier2::default()
+							.src_stage_mask(vk::PipelineStageFlags2::empty())
+							.src_access_mask(vk::AccessFlags2KHR::empty())
+							.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					}
+					.dst_stage_mask(new_stage_mask)
+					.dst_access_mask(new_access_mask)
+					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					.buffer(buffer.buffer)
+					.offset(0)
+					.size(vk::WHOLE_SIZE);
 
 					// self.stages = self.stages & !new_stage_mask; // Remove now synced stages from final await
 
 					buffer_memory_barriers.push(buffer_memory_barrier);
 				}
 				Handle::VkBuffer(handle) => {
-					let buffer_memory_barrier =
-						if let Some(source) = self.states.get(&consumption.handle) {
-							vk::BufferMemoryBarrier2::default()
-								.src_stage_mask(source.stage)
-								.src_access_mask(source.access)
-								.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						} else {
-							vk::BufferMemoryBarrier2::default()
-								.src_stage_mask(vk::PipelineStageFlags2::empty())
-								.src_access_mask(vk::AccessFlags2KHR::empty())
-								.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						}
-						.dst_stage_mask(new_stage_mask)
-						.dst_access_mask(new_access_mask)
-						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.buffer(handle)
-						.offset(0)
-						.size(vk::WHOLE_SIZE);
+					let buffer_memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
+						vk::BufferMemoryBarrier2::default()
+							.src_stage_mask(source.stage)
+							.src_access_mask(source.access)
+							.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					} else {
+						vk::BufferMemoryBarrier2::default()
+							.src_stage_mask(vk::PipelineStageFlags2::empty())
+							.src_access_mask(vk::AccessFlags2KHR::empty())
+							.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					}
+					.dst_stage_mask(new_stage_mask)
+					.dst_access_mask(new_access_mask)
+					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					.buffer(handle)
+					.offset(0)
+					.size(vk::WHOLE_SIZE);
 
 					buffer_memory_barriers.push(buffer_memory_barrier);
 				}
-				Handle::TopLevelAccelerationStructure(_)
-				| Handle::BottomLevelAccelerationStructure(_) => {
-					let memory_barrier = if let Some(source) = self.states.get(&consumption.handle)
-					{
+				Handle::TopLevelAccelerationStructure(_) | Handle::BottomLevelAccelerationStructure(_) => {
+					let memory_barrier = if let Some(source) = self.states.get(&consumption.handle) {
 						vk::MemoryBarrier2::default()
 							.src_stage_mask(source.stage)
 							.src_access_mask(source.access)
@@ -421,10 +384,7 @@ impl CommandBufferRecording<'_> {
 			}
 		};
 
-		if image_memory_barriers.is_empty()
-			&& buffer_memory_barriers.is_empty()
-			&& memory_barriers.is_empty()
-		{
+		if image_memory_barriers.is_empty() && buffer_memory_barriers.is_empty() && memory_barriers.is_empty() {
 			return Box::new(ret);
 		} // Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
 
@@ -445,57 +405,36 @@ impl CommandBufferRecording<'_> {
 		Box::new(ret)
 	}
 
-	fn get_internal_buffer_handle(
-		&self,
-		handle: graphics_hardware_interface::BaseBufferHandle,
-	) -> BufferHandle {
+	fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
 		let handles = BufferHandle(handle.0).get_all(&self.device.buffers);
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
 	}
 
-	fn get_internal_image_handle(
-		&self,
-		handle: graphics_hardware_interface::ImageHandle,
-	) -> ImageHandle {
+	fn get_internal_image_handle(&self, handle: graphics_hardware_interface::ImageHandle) -> ImageHandle {
 		let handles = ImageHandle(handle.0).get_all(&self.device.images);
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
 	}
 
 	fn get_internal_handle(&self, handle: graphics_hardware_interface::Handle) -> Handle {
 		match handle {
-			graphics_hardware_interface::Handle::Image(handle) => {
-				Handle::Image(self.get_internal_image_handle(handle))
-			}
-			graphics_hardware_interface::Handle::Buffer(handle) => {
-				Handle::Buffer(self.get_internal_buffer_handle(handle))
-			}
+			graphics_hardware_interface::Handle::Image(handle) => Handle::Image(self.get_internal_image_handle(handle)),
+			graphics_hardware_interface::Handle::Buffer(handle) => Handle::Buffer(self.get_internal_buffer_handle(handle)),
 			graphics_hardware_interface::Handle::TopLevelAccelerationStructure(handle) => {
-				Handle::TopLevelAccelerationStructure(
-					self.get_internal_top_level_acceleration_structure_handle(handle),
-				)
+				Handle::TopLevelAccelerationStructure(self.get_internal_top_level_acceleration_structure_handle(handle))
 			}
 			graphics_hardware_interface::Handle::BottomLevelAccelerationStructure(handle) => {
-				Handle::BottomLevelAccelerationStructure(
-					self.get_internal_bottom_level_acceleration_structure_handle(handle),
-				)
+				Handle::BottomLevelAccelerationStructure(self.get_internal_bottom_level_acceleration_structure_handle(handle))
 			}
 			_ => unimplemented!(),
 		}
 	}
 
-	fn get_presentable_swapchain_image_handle(
-		&self,
-		present_key: graphics_hardware_interface::PresentKey,
-	) -> ImageHandle {
+	fn get_presentable_swapchain_image_handle(&self, present_key: graphics_hardware_interface::PresentKey) -> ImageHandle {
 		let swapchain = self.get_swapchain(present_key.swapchain);
 		swapchain.native_images[present_key.image_index as usize]
 	}
 
-	fn blit_image_to_image(
-		&mut self,
-		source_image_handle: ImageHandle,
-		destination_image_handle: ImageHandle,
-	) {
+	fn blit_image_to_image(&mut self, source_image_handle: ImageHandle, destination_image_handle: ImageHandle) {
 		// Performs a transfer-domain blit from source image to destination image,
 		// including the required layout transitions tracked through `self.states`.
 		let (source_extent, source_vk_image) = {
@@ -594,9 +533,7 @@ impl CommandBufferRecording<'_> {
 			.regions(&image_blits);
 
 		unsafe {
-			self.device
-				.device
-				.cmd_blit_image2(vk_command_buffer, &copy_image_info);
+			self.device.device.cmd_blit_image2(vk_command_buffer, &copy_image_info);
 		}
 	}
 
@@ -610,18 +547,15 @@ impl CommandBufferRecording<'_> {
 		// Transition all resources which where written to but not consumed by any previous command
 		// If this is skipped validation layers (correctly) complain about missing sync even though no "read" operation was performed, except for the following commands
 		{
-			let consumptions = self
-				.states
-				.iter()
-				.filter_map(|(handle, ts)| match ts.access {
-					vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption {
-						access: graphics_hardware_interface::AccessPolicies::NONE,
-						layout: graphics_hardware_interface::Layouts::General,
-						stages: graphics_hardware_interface::Stages::TRANSFER,
-						handle: *handle,
-					}),
-					_ => None,
-				});
+			let consumptions = self.states.iter().filter_map(|(handle, ts)| match ts.access {
+				vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption {
+					access: graphics_hardware_interface::AccessPolicies::NONE,
+					layout: graphics_hardware_interface::Layouts::General,
+					stages: graphics_hardware_interface::Stages::TRANSFER,
+					handle: *handle,
+				}),
+				_ => None,
+			});
 
 			unsafe {
 				self.consume_resources(consumptions)(self);
@@ -660,8 +594,7 @@ impl CommandBufferRecording<'_> {
 			}
 
 			let present_transitions = presentation_keys.iter().map(|present_key| {
-				let swapchain_image_handle =
-					self.get_presentable_swapchain_image_handle(*present_key);
+				let swapchain_image_handle = self.get_presentable_swapchain_image_handle(*present_key);
 
 				Consumption {
 					handle: Handle::Image(swapchain_image_handle),
@@ -687,30 +620,24 @@ impl CommandBufferRecording<'_> {
 
 		let command_buffers = [command_buffer.command_buffer];
 
-		let command_buffer_infos =
-			[vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])];
+		let command_buffer_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])];
 
 		let wait_semaphores = wait_for_synchronizer_handles
 			.iter()
 			.map(|synchronizer| {
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(self.get_synchronizer(*synchronizer).semaphore)
-					.stage_mask(
-						vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER,
-					)
+					.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER)
 			})
 			.chain(presentation_keys.iter().map(|present_key| {
 				let swapchain = self.get_swapchain(present_key.swapchain);
-				let semaphore = swapchain.acquire_synchronizers
-					[present_key.sequence_index as usize]
+				let semaphore = swapchain.acquire_synchronizers[present_key.sequence_index as usize]
 					.access(&self.device.synchronizers)
 					.semaphore;
 
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(semaphore)
-					.stage_mask(
-						vk::PipelineStageFlags2::ALL_COMMANDS,
-					)
+					.stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
 			}))
 			.collect::<Vec<_>>();
 
@@ -723,15 +650,12 @@ impl CommandBufferRecording<'_> {
 			})
 			.chain(presentation_keys.iter().map(|present_key| {
 				let swapchain = self.get_swapchain(present_key.swapchain);
-				let presentable_image_handle =
-					self.get_presentable_swapchain_image_handle(*present_key);
+				let presentable_image_handle = self.get_presentable_swapchain_image_handle(*present_key);
 				let wait_stage = self
 					.states
 					.get(&Handle::Image(presentable_image_handle))
 					.map(|state| state.stage)
-					.unwrap_or(
-						vk::PipelineStageFlags2::ALL_COMMANDS,
-					);
+					.unwrap_or(vk::PipelineStageFlags2::ALL_COMMANDS);
 
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(
@@ -748,19 +672,14 @@ impl CommandBufferRecording<'_> {
 			.wait_semaphore_infos(&wait_semaphores)
 			.signal_semaphore_infos(&signal_semaphores);
 
-		let execution_completion_synchronizer =
-			&self.get_synchronizer(execution_synchronizer_handle);
+		let execution_completion_synchronizer = &self.get_synchronizer(execution_synchronizer_handle);
 
 		let vk_queue = command_buffer.vk_queue;
 
 		unsafe {
 			self.device
 				.device
-				.queue_submit2(
-					vk_queue,
-					&[submit_info],
-					execution_completion_synchronizer.fence,
-				)
+				.queue_submit2(vk_queue, &[submit_info], execution_completion_synchronizer.fence)
 				.expect("Failed to submit command buffer.");
 		}
 
@@ -771,8 +690,7 @@ impl CommandBufferRecording<'_> {
 				.iter()
 				.map(|synchronizer| self.get_synchronizer(*synchronizer).semaphore)
 				.chain(presentation_keys.iter().map(|present_key| {
-					self.get_swapchain(present_key.swapchain)
-						.submit_synchronizers[present_key.image_index as usize]
+					self.get_swapchain(present_key.swapchain).submit_synchronizers[present_key.image_index as usize]
 						.access(&self.device.synchronizers)
 						.semaphore
 				}))
@@ -905,10 +823,9 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				layout: graphics_hardware_interface::Layouts::Transfer,
 			}))(self);
 
-			let buffer_handles = image_handles.iter().filter_map(|image_handle| {
-				self.get_image(self.get_internal_image_handle(*image_handle))
-					.staging_buffer
-			});
+			let buffer_handles = image_handles
+				.iter()
+				.filter_map(|image_handle| self.get_image(self.get_internal_image_handle(*image_handle)).staging_buffer);
 
 			self.vulkan_consume_resources(buffer_handles.map(|buffer_handle| VulkanConsumption {
 				handle: Handle::VkBuffer(buffer_handle),
@@ -964,9 +881,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			let internal_image_handle = self.get_internal_image_handle(*image_handle);
 			let image = self.get_image(internal_image_handle);
 			if let Some(_) = image.staging_buffer {
-				texture_copies.push(graphics_hardware_interface::TextureCopyHandle(
-					internal_image_handle.0,
-				));
+				texture_copies.push(graphics_hardware_interface::TextureCopyHandle(internal_image_handle.0));
 			}
 		}
 
@@ -993,27 +908,27 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 		let render_area = vk::Rect2D::default()
 			.offset(vk::Offset2D::default().x(0).y(0))
-			.extent(
-				vk::Extent2D::default()
-					.width(extent.width())
-					.height(extent.height()),
-			);
+			.extent(vk::Extent2D::default().width(extent.width()).height(extent.height()));
 
-		let color_attchments = attachments.iter().filter(|a| a.format != graphics_hardware_interface::Formats::Depth32).map(|attachment| {
-			let image = self.get_image(self.get_internal_image_handle(attachment.image));
-			let image_view = image.image_views[attachment.layer.unwrap_or(0) as usize];
+		let color_attchments = attachments
+			.iter()
+			.filter(|a| a.format != graphics_hardware_interface::Formats::Depth32)
+			.map(|attachment| {
+				let image = self.get_image(self.get_internal_image_handle(attachment.image));
+				let image_view = image.image_views[attachment.layer.unwrap_or(0) as usize];
 
-			if image_view.is_null() && image.extent.width() == 0 && image.extent.height() == 0 && image.extent.depth() == 0 {
-				eprintln!("Creating a render pass with a color attachment from an image that has no image view and no extent. Image was likely created with extent 0 and resize was not called prior to rendering.");
-			}
+				if image_view.is_null() && image.extent.width() == 0 && image.extent.height() == 0 && image.extent.depth() == 0 {
+					eprintln!("Creating a render pass with a color attachment from an image that has no image view and no extent. Image was likely created with extent 0 and resize was not called prior to rendering.");
+				}
 
-			vk::RenderingAttachmentInfo::default()
-				.image_view(image_view)
-				.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
-				.load_op(to_load_operation(attachment.load))
-				.store_op(to_store_operation(attachment.store))
-				.clear_value(to_clear_value(attachment.clear))
-		}).collect::<Vec<_>>();
+				vk::RenderingAttachmentInfo::default()
+					.image_view(image_view)
+					.image_layout(texture_format_and_resource_use_to_image_layout(attachment.format, attachment.layout, None))
+					.load_op(to_load_operation(attachment.load))
+					.store_op(to_store_operation(attachment.store))
+					.clear_value(to_clear_value(attachment.clear))
+			})
+			.collect::<Vec<_>>();
 
 		let depth_attachment = attachments
 			.iter()
@@ -1076,38 +991,38 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		&mut self,
 		acceleration_structure_build: &graphics_hardware_interface::TopLevelAccelerationStructureBuild,
 	) {
-		let (acceleration_structure_handle, acceleration_structure) = self
-			.get_top_level_acceleration_structure(
-				acceleration_structure_build.acceleration_structure,
-			);
+		let (acceleration_structure_handle, acceleration_structure) =
+			self.get_top_level_acceleration_structure(acceleration_structure_build.acceleration_structure);
 
 		let (as_geometries, offsets) = match acceleration_structure_build.description {
-			graphics_hardware_interface::TopLevelAccelerationStructureBuildDescriptions::Instance { instances_buffer, instance_count } => {
-				(vec![
-					vk::AccelerationStructureGeometryKHR::default()
-						.geometry_type(vk::GeometryTypeKHR::INSTANCES)
-						.geometry(vk::AccelerationStructureGeometryDataKHR{ instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+			graphics_hardware_interface::TopLevelAccelerationStructureBuildDescriptions::Instance {
+				instances_buffer,
+				instance_count,
+			} => (
+				vec![vk::AccelerationStructureGeometryKHR::default()
+					.geometry_type(vk::GeometryTypeKHR::INSTANCES)
+					.geometry(vk::AccelerationStructureGeometryDataKHR {
+						instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
 							.array_of_pointers(false)
-							.data(vk::DeviceOrHostAddressConstKHR { device_address: self.device.get_buffer_address(instances_buffer), })
-						})
-						.flags(vk::GeometryFlagsKHR::OPAQUE)
-				], vec![
-					vk::AccelerationStructureBuildRangeInfoKHR::default()
-						.primitive_count(instance_count)
-						.primitive_offset(0)
-						.first_vertex(0)
-						.transform_offset(0)
-				])
-			}
+							.data(vk::DeviceOrHostAddressConstKHR {
+								device_address: self.device.get_buffer_address(instances_buffer),
+							}),
+					})
+					.flags(vk::GeometryFlagsKHR::OPAQUE)],
+				vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
+					.primitive_count(instance_count)
+					.primitive_offset(0)
+					.first_vertex(0)
+					.transform_offset(0)],
+			),
 		};
 
 		let scratch_buffer_address = unsafe {
-			let buffer = self.get_buffer(
-				self.get_internal_buffer_handle(acceleration_structure_build.scratch_buffer.buffer),
-			);
-			self.device.device.get_buffer_device_address(
-				&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer),
-			) + acceleration_structure_build.scratch_buffer.offset as u64
+			let buffer = self.get_buffer(self.get_internal_buffer_handle(acceleration_structure_build.scratch_buffer.buffer));
+			self.device
+				.device
+				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer))
+				+ acceleration_structure_build.scratch_buffer.offset as u64
 		};
 
 		let build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
@@ -1121,9 +1036,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 		self.states.insert(
 			Handle::TopLevelAccelerationStructure(
-				self.get_internal_top_level_acceleration_structure_handle(
-					acceleration_structure_handle,
-				),
+				self.get_internal_top_level_acceleration_structure_handle(acceleration_structure_handle),
 			),
 			TransitionState {
 				stage: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
@@ -1179,20 +1092,37 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 					graphics_hardware_interface::BottomLevelAccelerationStructureBuildDescriptions::AABB { .. } => {
 						(vec![], vec![])
 					}
-					graphics_hardware_interface::BottomLevelAccelerationStructureBuildDescriptions::Mesh { vertex_buffer, index_buffer, vertex_position_encoding, index_format, triangle_count, vertex_count } => {
+					graphics_hardware_interface::BottomLevelAccelerationStructureBuildDescriptions::Mesh {
+						vertex_buffer,
+						index_buffer,
+						vertex_position_encoding,
+						index_format,
+						triangle_count,
+						vertex_count,
+					} => {
 						let vertex_data_address = unsafe {
 							let buffer = this.get_buffer(this.get_internal_buffer_handle(vertex_buffer.buffer_offset.buffer));
-							this.device.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer)) + vertex_buffer.buffer_offset.offset as u64
+							this.device
+								.device
+								.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer))
+								+ vertex_buffer.buffer_offset.offset as u64
 						};
 
 						let index_data_address = unsafe {
 							let buffer = this.get_buffer(this.get_internal_buffer_handle(index_buffer.buffer_offset.buffer));
-							this.device.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer)) + index_buffer.buffer_offset.offset as u64
+							this.device
+								.device
+								.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer))
+								+ index_buffer.buffer_offset.offset as u64
 						};
 
 						let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
-							.vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: vertex_data_address, })
-							.index_data(vk::DeviceOrHostAddressConstKHR { device_address: index_data_address, })
+							.vertex_data(vk::DeviceOrHostAddressConstKHR {
+								device_address: vertex_data_address,
+							})
+							.index_data(vk::DeviceOrHostAddressConstKHR {
+								device_address: index_data_address,
+							})
 							.max_vertex(vertex_count - 1)
 							.vertex_format(match vertex_position_encoding {
 								graphics_hardware_interface::Encodings::FloatingPoint => vk::Format::R32G32B32_SFLOAT,
@@ -1210,23 +1140,24 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 							.primitive_count(*triangle_count)
 							.primitive_offset(0)
 							.first_vertex(0)
-							.transform_offset(0)
-						];
+							.transform_offset(0)];
 
-						(vec![vk::AccelerationStructureGeometryKHR::default()
-							.flags(vk::GeometryFlagsKHR::OPAQUE)
-							.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-							.geometry(vk::AccelerationStructureGeometryDataKHR{ triangles })],
-						build_range_info)
+						(
+							vec![vk::AccelerationStructureGeometryKHR::default()
+								.flags(vk::GeometryFlagsKHR::OPAQUE)
+								.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+								.geometry(vk::AccelerationStructureGeometryDataKHR { triangles })],
+							build_range_info,
+						)
 					}
 				};
 
 				let scratch_buffer_address = unsafe {
-					let buffer = this
-						.get_buffer(this.get_internal_buffer_handle(build.scratch_buffer.buffer));
-					this.device.device.get_buffer_device_address(
-						&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer),
-					) + build.scratch_buffer.offset as u64
+					let buffer = this.get_buffer(this.get_internal_buffer_handle(build.scratch_buffer.buffer));
+					this.device
+						.device
+						.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer))
+						+ build.scratch_buffer.offset as u64
 				};
 
 				let build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
@@ -1240,9 +1171,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 				this.states.insert(
 					Handle::BottomLevelAccelerationStructure(
-						this.get_internal_bottom_level_acceleration_structure_handle(
-							acceleration_structure_handle,
-						),
+						this.get_internal_bottom_level_acceleration_structure_handle(acceleration_structure_handle),
 					),
 					TransitionState {
 						stage: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
@@ -1277,40 +1206,25 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 					.collect::<Vec<_>>();
 
 				unsafe {
-					this.device
-						.acceleration_structure
-						.cmd_build_acceleration_structures(
-							command_buffer.command_buffer,
-							&infos,
-							&build_range_infos,
-						)
+					this.device.acceleration_structure.cmd_build_acceleration_structures(
+						command_buffer.command_buffer,
+						&infos,
+						&build_range_infos,
+					)
 				}
 			}
 		}
 
-		visit(
-			self,
-			acceleration_structure_builds,
-			Vec::new(),
-			Vec::new(),
-			Vec::new(),
-		);
+		visit(self, acceleration_structure_builds, Vec::new(), Vec::new(), Vec::new());
 	}
 
-	fn bind_vertex_buffers(
-		&mut self,
-		buffer_descriptors: &[graphics_hardware_interface::BufferDescriptor],
-	) {
-		let consumptions = buffer_descriptors
-			.iter()
-			.map(|buffer_descriptor| VulkanConsumption {
-				handle: Handle::Buffer(
-					self.get_internal_buffer_handle(buffer_descriptor.buffer.into()),
-				),
-				stages: vk::PipelineStageFlags2::VERTEX_INPUT,
-				access: vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
-				layout: vk::ImageLayout::UNDEFINED,
-			});
+	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[graphics_hardware_interface::BufferDescriptor]) {
+		let consumptions = buffer_descriptors.iter().map(|buffer_descriptor| VulkanConsumption {
+			handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
+			stages: vk::PipelineStageFlags2::VERTEX_INPUT,
+			access: vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
+			layout: vk::ImageLayout::UNDEFINED,
+		});
 
 		unsafe {
 			self.vulkan_consume_resources(consumptions)(self);
@@ -1341,15 +1255,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		}
 	}
 
-	fn bind_index_buffer(
-		&mut self,
-		buffer_descriptor: &graphics_hardware_interface::BufferDescriptor,
-	) {
+	fn bind_index_buffer(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
 		unsafe {
 			self.vulkan_consume_resources([VulkanConsumption {
-				handle: Handle::Buffer(
-					self.get_internal_buffer_handle(buffer_descriptor.buffer.into()),
-				),
+				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
 				stages: vk::PipelineStageFlags2::INDEX_INPUT,
 				access: vk::AccessFlags2::INDEX_READ,
 				layout: vk::ImageLayout::UNDEFINED,
@@ -1445,9 +1354,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				))
 				.regions(&blits)
 				.filter(vk::Filter::LINEAR);
-			self.device
-				.device
-				.cmd_blit_image2(command_buffer.command_buffer, &blit_info);
+			self.device.device.cmd_blit_image2(command_buffer.command_buffer, &blit_info);
 		}
 	}
 
@@ -1485,11 +1392,9 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 					graphics_hardware_interface::ClearValue::Depth(depth) => vk::ClearColorValue {
 						float32: [*depth, 0.0, 0.0, 0.0],
 					},
-					graphics_hardware_interface::ClearValue::Integer(r, g, b, a) => {
-						vk::ClearColorValue {
-							uint32: [*r, *g, *b, *a],
-						}
-					}
+					graphics_hardware_interface::ClearValue::Integer(r, g, b, a) => vk::ClearColorValue {
+						uint32: [*r, *g, *b, *a],
+					},
 				};
 
 				unsafe {
@@ -1509,19 +1414,14 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				}
 			} else {
 				let clear_value = match clear_value {
-					graphics_hardware_interface::ClearValue::None => vk::ClearDepthStencilValue {
-						depth: 0.0,
-						stencil: 0,
-					},
+					graphics_hardware_interface::ClearValue::None => vk::ClearDepthStencilValue { depth: 0.0, stencil: 0 },
 					graphics_hardware_interface::ClearValue::Color(_) => {
 						panic!("Color clear value for depth texture")
 					}
-					graphics_hardware_interface::ClearValue::Depth(depth) => {
-						vk::ClearDepthStencilValue {
-							depth: *depth,
-							stencil: 0,
-						}
-					}
+					graphics_hardware_interface::ClearValue::Depth(depth) => vk::ClearDepthStencilValue {
+						depth: *depth,
+						stencil: 0,
+					},
 					graphics_hardware_interface::ClearValue::Integer(..) => {
 						panic!("Integer clear value for depth texture")
 					}
@@ -1609,10 +1509,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		let subresource_layout = self.device.get_image_subresource_layout(&image_handle, 0);
 
 		if pointer.is_null() {
-			for i in data.len()
-				..texture.extent.width() as usize
-					* texture.extent.height() as usize
-					* texture.extent.depth() as usize
+			for i in
+				data.len()..texture.extent.width() as usize * texture.extent.height() as usize * texture.extent.depth() as usize
 			{
 				unsafe {
 					std::ptr::write(pointer.offset(i as isize), if i % 4 == 0 { 255 } else { 0 });
@@ -1622,15 +1520,11 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			let pointer = unsafe { pointer.offset(subresource_layout.offset as isize) };
 
 			for i in 0..texture.extent.height() {
-				let pointer =
-					unsafe { pointer.offset(subresource_layout.row_pitch as isize * i as isize) };
+				let pointer = unsafe { pointer.offset(subresource_layout.row_pitch as isize * i as isize) };
 
 				unsafe {
 					std::ptr::copy_nonoverlapping(
-						(data
-							.as_ptr()
-							.add(i as usize * texture.extent.width() as usize))
-							as *mut u8,
+						(data.as_ptr().add(i as usize * texture.extent.width() as usize)) as *mut u8,
 						pointer,
 						texture.extent.width() as usize * 4,
 					);
@@ -1720,8 +1614,7 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 		#[cfg(debug_assertions)]
 		unsafe {
 			if let Some(debug_utils) = &self.device.debug_utils {
-				debug_utils
-					.cmd_begin_debug_utils_label(command_buffer.command_buffer, &marker_info);
+				debug_utils.cmd_begin_debug_utils_label(command_buffer.command_buffer, &marker_info);
 			}
 		}
 	}
@@ -1749,9 +1642,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 	fn end_render_pass(&mut self) {
 		let command_buffer = self.get_command_buffer();
 		unsafe {
-			self.device
-				.device
-				.cmd_end_rendering(command_buffer.command_buffer);
+			self.device.device.cmd_end_rendering(command_buffer.command_buffer);
 		}
 	}
 }
@@ -1764,11 +1655,9 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.device.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe {
-			self.device.device.cmd_bind_pipeline(
-				command_buffer.command_buffer,
-				vk::PipelineBindPoint::GRAPHICS,
-				pipeline,
-			);
+			self.device
+				.device
+				.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 		}
 
 		self.pipeline_bind_point = vk::PipelineBindPoint::GRAPHICS;
@@ -1784,11 +1673,9 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		let command_buffer = self.get_command_buffer();
 		let pipeline = self.device.pipelines[pipeline_handle.0 as usize].pipeline;
 		unsafe {
-			self.device.device.cmd_bind_pipeline(
-				command_buffer.command_buffer,
-				vk::PipelineBindPoint::COMPUTE,
-				pipeline,
-			);
+			self.device
+				.device
+				.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline);
 		}
 
 		self.pipeline_bind_point = vk::PipelineBindPoint::COMPUTE;
@@ -1819,16 +1706,13 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 
 	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
 	where
-		[(); std::mem::size_of::<T>()]: Sized,
-	{
+		[(); std::mem::size_of::<T>()]: Sized, {
 		let pipeline_layout_handle = self.bound_pipeline_layout.unwrap();
 		let command_buffer = self.get_command_buffer();
-		let pipeline_layout =
-			self.device.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
+		let pipeline_layout = self.device.pipeline_layouts[pipeline_layout_handle.0 as usize].pipeline_layout;
 
-		let push_constant_stages = vk::ShaderStageFlags::VERTEX
-			| vk::ShaderStageFlags::FRAGMENT
-			| vk::ShaderStageFlags::COMPUTE;
+		let push_constant_stages =
+			vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE;
 
 		let push_constant_stages = push_constant_stages
 			| if self.device.settings.mesh_shading {
@@ -1843,18 +1727,12 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 				pipeline_layout,
 				push_constant_stages,
 				offset,
-				std::slice::from_raw_parts(
-					&data as *const T as *const u8,
-					std::mem::size_of::<T>(),
-				),
+				std::slice::from_raw_parts(&data as *const T as *const u8, std::mem::size_of::<T>()),
 			);
 		}
 	}
 
-	fn bind_descriptor_sets(
-		&mut self,
-		sets: &[graphics_hardware_interface::DescriptorSetHandle],
-	) -> &mut Self {
+	fn bind_descriptor_sets(&mut self, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut Self {
 		if sets.is_empty() {
 			return self;
 		}
@@ -1866,8 +1744,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		let s = sets
 			.iter()
 			.map(|descriptor_set_handle| {
-				let internal_descriptor_set_handle =
-					self.get_internal_descriptor_set_handle(*descriptor_set_handle);
+				let internal_descriptor_set_handle = self.get_internal_descriptor_set_handle(*descriptor_set_handle);
 				let descriptor_set = self.get_descriptor_set(&internal_descriptor_set_handle);
 				let index_in_layout = pipeline_layout
 					.descriptor_set_template_indices
@@ -1887,13 +1764,9 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 			if (descriptor_set_index as usize) < self.bound_descriptor_set_handles.len() {
 				self.bound_descriptor_set_handles[descriptor_set_index as usize] =
 					(descriptor_set_index, descriptor_set_handle);
-				self.bound_descriptor_set_handles
-					.truncate(descriptor_set_index as usize + 1);
+				self.bound_descriptor_set_handles.truncate(descriptor_set_index as usize + 1);
 			} else {
-				assert_eq!(
-					descriptor_set_index as usize,
-					self.bound_descriptor_set_handles.len()
-				);
+				assert_eq!(descriptor_set_index as usize, self.bound_descriptor_set_handles.len());
 				self.bound_descriptor_set_handles
 					.push((descriptor_set_index, descriptor_set_handle));
 			}
@@ -1913,10 +1786,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 				.collect::<Vec<_>>();
 
 			unsafe {
-				for bp in [
-					vk::PipelineBindPoint::GRAPHICS,
-					vk::PipelineBindPoint::COMPUTE,
-				] {
+				for bp in [vk::PipelineBindPoint::GRAPHICS, vk::PipelineBindPoint::COMPUTE] {
 					// TODO: do this for all needed bind points
 					self.device.device.cmd_bind_descriptor_sets(
 						command_buffer.command_buffer,
@@ -1955,8 +1825,7 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		let buffers = [mesh.buffer];
 		let offsets = [0];
 
-		let index_data_offset =
-			(mesh.vertex_count * mesh.vertex_size as u32).next_multiple_of(16) as u64;
+		let index_data_offset = (mesh.vertex_count * mesh.vertex_size as u32).next_multiple_of(16) as u64;
 		let command_buffer_handle = command_buffer.command_buffer;
 
 		unsafe {
@@ -1985,9 +1854,7 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		let command_buffer_handle = command_buffer.command_buffer;
 
 		unsafe {
-			self.device
-				.mesh_shading
-				.cmd_draw_mesh_tasks(command_buffer_handle, x, y, z);
+			self.device.mesh_shading.cmd_draw_mesh_tasks(command_buffer_handle, x, y, z);
 		}
 	}
 
@@ -2047,29 +1914,24 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		}])(self);
 
 		unsafe {
-			self.device.device.cmd_dispatch_indirect(
-				command_buffer_handle,
-				buffer.buffer,
-				entry_index as u64 * (3 * 4),
-			);
+			self.device
+				.device
+				.cmd_dispatch_indirect(command_buffer_handle, buffer.buffer, entry_index as u64 * (3 * 4));
 		}
 	}
 }
 
 impl crate::command_buffer::BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
-	fn trace_rays(
-		&mut self,
-		binding_tables: graphics_hardware_interface::BindingTables,
-		x: u32,
-		y: u32,
-		z: u32,
-	) {
+	fn trace_rays(&mut self, binding_tables: graphics_hardware_interface::BindingTables, x: u32, y: u32, z: u32) {
 		let command_buffer = self.get_command_buffer();
 		let comamand_buffer_handle = command_buffer.command_buffer;
 
 		let make_strided_range = |range: graphics_hardware_interface::BufferStridedRange| -> vk::StridedDeviceAddressRegionKHR {
 			vk::StridedDeviceAddressRegionKHR::default()
-				.device_address(self.device.get_buffer_address(range.buffer_offset.buffer) as vk::DeviceSize + range.buffer_offset.offset as vk::DeviceSize)
+				.device_address(
+					self.device.get_buffer_address(range.buffer_offset.buffer) as vk::DeviceSize
+						+ range.buffer_offset.offset as vk::DeviceSize,
+				)
 				.stride(range.stride as vk::DeviceSize)
 				.size(range.size as vk::DeviceSize)
 		};

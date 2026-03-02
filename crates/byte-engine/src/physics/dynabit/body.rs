@@ -1,6 +1,22 @@
-use math::{collision::{cube_vs_cube, sphere_vs_cube, sphere_vs_sphere, Intersection}, cross, cube::Cube, dot, length, magnitude, magnitude_squared, mat::{MatInverse as _, MatTranspose as _, MatScale as _}, normalize, sphere::Sphere, Base, Magnitude as _, Matrix3, Quaternion, Vector3};
-use crate::{application::Time, core::{Entity, EntityHandle, factory::Handle, listener::Listener}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}}};
+use crate::{
+	application::Time,
+	core::{factory::Handle, listener::Listener, Entity, EntityHandle},
+	physics::{
+		body::{Body, BodyTypes},
+		collider::{Collider, Shapes},
+	},
+};
 use core::ops::Mul as _;
+use math::{
+	collision::{cube_vs_cube, sphere_vs_cube, sphere_vs_sphere, Intersection},
+	cross,
+	cube::Cube,
+	dot, length, magnitude, magnitude_squared,
+	mat::{MatInverse as _, MatScale as _, MatTranspose as _},
+	normalize,
+	sphere::Sphere,
+	Base, Magnitude as _, Matrix3, Quaternion, Vector3,
+};
 
 pub struct PhysicsBody {
 	pub(crate) body_type: BodyTypes,
@@ -21,7 +37,9 @@ pub struct PhysicsBody {
 
 impl PhysicsBody {
 	pub fn apply_impulse(&mut self, point: Vector3, impulse: Vector3) {
-		if self.inv_mass == 0f32 { return; }
+		if self.inv_mass == 0f32 {
+			return;
+		}
 		self.apply_linear_impulse(impulse);
 		let world_space_center_of_mass = self.world_space_center_of_mass();
 		let r = point - world_space_center_of_mass;
@@ -30,12 +48,16 @@ impl PhysicsBody {
 	}
 
 	pub fn apply_linear_impulse(&mut self, impulse: Vector3) {
-		if self.inv_mass == 0f32 { return; }
+		if self.inv_mass == 0f32 {
+			return;
+		}
 		self.linear_velocity += impulse * self.inv_mass;
 	}
 
 	pub fn apply_angular_impulse(&mut self, impulse: Vector3) {
-		if self.inv_mass == 0f32 { return; }
+		if self.inv_mass == 0f32 {
+			return;
+		}
 		self.angular_velocity += self.inverse_world_space_inertia_tensor() * impulse;
 	}
 
@@ -46,7 +68,8 @@ impl PhysicsBody {
 	pub fn inverse_world_space_inertia_tensor(&self) -> Matrix3 {
 		let inertia_tensor = self.inertia_tensor;
 		let inv_mass = self.inv_mass;
-		let inverse = inertia_tensor.inverse() * Matrix3::from((inv_mass, 0f32, 0f32, 0f32, inv_mass, 0f32, 0f32, 0f32, inv_mass));
+		let inverse =
+			inertia_tensor.inverse() * Matrix3::from((inv_mass, 0f32, 0f32, 0f32, inv_mass, 0f32, 0f32, 0f32, inv_mass));
 		let orientation = self.orientation.get_matrix();
 		orientation * inverse * orientation.transpose()
 	}
@@ -78,17 +101,24 @@ impl PhysicsBody {
 
 pub fn intersect(a: &PhysicsBody, b: &PhysicsBody) -> Option<Intersection> {
 	match (a.collision_shape, b.collision_shape) {
-		(Shapes::Sphere { radius: ra }, Shapes::Sphere { radius: rb }) => {
-			sphere_vs_sphere(&Sphere{ center: a.position, radius: ra }, &Sphere{ center: b.position, radius: rb })
-		},
+		(Shapes::Sphere { radius: ra }, Shapes::Sphere { radius: rb }) => sphere_vs_sphere(
+			&Sphere {
+				center: a.position,
+				radius: ra,
+			},
+			&Sphere {
+				center: b.position,
+				radius: rb,
+			},
+		),
 		(Shapes::Cube { size: sa }, Shapes::Cube { size: sb }) => {
 			cube_vs_cube(&Cube::new(a.position, sa), &Cube::new(b.position, sb))
-		},
+		}
 		(Shapes::Sphere { radius: ra }, Shapes::Cube { size: sb }) => {
 			sphere_vs_cube(&Sphere::new(a.position, ra), &Cube::new(b.position, sb))
-		},
+		}
 		(Shapes::Cube { size: sa }, Shapes::Sphere { radius: rb }) => {
 			sphere_vs_cube(&Sphere::new(b.position, rb), &Cube::new(a.position, sa)).map(|intersection| intersection.swap())
-		},
+		}
 	}
 }

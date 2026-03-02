@@ -1,6 +1,9 @@
 use ash::vk;
 
-use crate::{graphics_hardware_interface, vulkan::{HandleLike, Next}};
+use crate::{
+	graphics_hardware_interface,
+	vulkan::{HandleLike, Next},
+};
 
 #[derive(Clone)]
 pub(crate) struct DescriptorSet {

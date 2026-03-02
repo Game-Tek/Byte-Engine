@@ -5,12 +5,26 @@ use math::Matrix4;
 use math::Vector3;
 use utils::BoxedFuture;
 
-use crate::{core::{Entity, EntityHandle}, physics::{self, body::{Body, BodyTypes}, collider::{Collider, Shapes}}, rendering::{mesh::generator::{MeshGenerator, SphereMeshGenerator}, RenderableMesh}};
+use crate::{
+	core::{Entity, EntityHandle},
+	physics::{
+		self,
+		body::{Body, BodyTypes},
+		collider::{Collider, Shapes},
+	},
+	rendering::{
+		mesh::generator::{MeshGenerator, SphereMeshGenerator},
+		RenderableMesh,
+	},
+};
 
 #[cfg(feature = "headed")]
-use crate::rendering::{mesh::{self}, renderable::mesh::MeshSource};
+use crate::rendering::{
+	mesh::{self},
+	renderable::mesh::MeshSource,
+};
 
-use super::{Positionable, transform::Transform, Transformable};
+use super::{transform::Transform, Positionable, Transformable};
 
 /// An object represents a physical entity in the game world.
 /// It has physics and is rendered as a mesh.
@@ -88,8 +102,12 @@ impl Object {
 }
 
 impl Transformable for Object {
-	fn transform(&self) -> &Transform { &self.transform }
-	fn transform_mut(&mut self) -> &mut Transform { &mut self.transform }
+	fn transform(&self) -> &Transform {
+		&self.transform
+	}
+	fn transform_mut(&mut self) -> &mut Transform {
+		&mut self.transform
+	}
 }
 
 impl Collider for Object {
@@ -99,8 +117,12 @@ impl Collider for Object {
 }
 
 impl Body for Object {
-	fn velocity(&self) -> Vector3 { self.velocity }
-	fn body_type(&self) -> BodyTypes { self.body_type }
+	fn velocity(&self) -> Vector3 {
+		self.velocity
+	}
+	fn body_type(&self) -> BodyTypes {
+		self.body_type
+	}
 }
 
 #[cfg(feature = "headed")]

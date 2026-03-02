@@ -1,4 +1,9 @@
-use std::{collections::{hash_map::{Entry, Values}}, hash::Hash, marker::PhantomData, usize};
+use std::{
+	collections::hash_map::{Entry, Values},
+	hash::Hash,
+	marker::PhantomData,
+	usize,
+};
 
 use utils::hash::{HashMap, HashMapExt as _};
 
@@ -85,7 +90,7 @@ impl InstanceBatch {
 	}
 }
 
-impl <I> MeshBuffersStats<I> {
+impl<I> MeshBuffersStats<I> {
 	pub fn does_mesh_exist(&self, hash: u64) -> Option<usize> {
 		if self.meshes.contains_key(&(hash as usize)) {
 			Some(hash as usize)
@@ -96,8 +101,14 @@ impl <I> MeshBuffersStats<I> {
 
 	pub fn add_mesh(&mut self, mesh: MeshStats, hash: u64) -> AddMeshResponse {
 		if let Some(existing_mesh) = self.meshes.get(&(hash as usize)) {
-			assert_eq!(existing_mesh.vertex_count, mesh.vertex_count, "Tried to add a mesh with a hash which already exists but their vertex counts don't match.");
-			assert_eq!(existing_mesh.index_count, mesh.index_count, "Tried to add a mesh with a hash which already exists but their index counts don't match.");
+			assert_eq!(
+				existing_mesh.vertex_count, mesh.vertex_count,
+				"Tried to add a mesh with a hash which already exists but their vertex counts don't match."
+			);
+			assert_eq!(
+				existing_mesh.index_count, mesh.index_count,
+				"Tried to add a mesh with a hash which already exists but their index counts don't match."
+			);
 
 			return AddMeshResponse {
 				id: hash as _,
@@ -114,12 +125,15 @@ impl <I> MeshBuffersStats<I> {
 
 		let mesh_id = hash as usize;
 
-		self.meshes.insert(hash as usize, Mesh {
-			base_vertex: vertex_offset,
-			base_index: index_offset,
-			vertex_count: mesh.vertex_count,
-			index_count: mesh.index_count,
-		});
+		self.meshes.insert(
+			hash as usize,
+			Mesh {
+				base_vertex: vertex_offset,
+				base_index: index_offset,
+				vertex_count: mesh.vertex_count,
+				index_count: mesh.index_count,
+			},
+		);
 
 		AddMeshResponse {
 			id: mesh_id,
@@ -129,7 +143,10 @@ impl <I> MeshBuffersStats<I> {
 	}
 
 	pub fn add_instance(&mut self, mesh_id: usize, instance_data: I) -> usize {
-		assert!(self.meshes.contains_key(&mesh_id), "Provided mesh_id for instance does not exist!");
+		assert!(
+			self.meshes.contains_key(&mesh_id),
+			"Provided mesh_id for instance does not exist!"
+		);
 		let instance_id = self.instances.len();
 		self.instances.push((mesh_id, instance_data));
 		instance_id
@@ -171,12 +188,14 @@ impl <I> MeshBuffersStats<I> {
 		self.index_count
 	}
 
-	pub fn get_instance_id(&self, handle: I) -> usize where I: Eq {
-        self.instances.iter().position(|(_, h)| *h == handle).unwrap()
-    }
+	pub fn get_instance_id(&self, handle: I) -> usize
+	where
+		I: Eq, {
+		self.instances.iter().position(|(_, h)| *h == handle).unwrap()
+	}
 }
 
-impl <I> Default for MeshBuffersStats<I> {
+impl<I> Default for MeshBuffersStats<I> {
 	fn default() -> Self {
 		Self {
 			vertex_count: 0,
@@ -192,7 +211,7 @@ pub struct InstanceBatches<'a, I> {
 	instances: &'a [(usize, I)],
 }
 
-impl <'a, I> InstanceBatches<'a, I> {
+impl<'a, I> InstanceBatches<'a, I> {
 	pub fn iter(&self) -> InstanceBatchesIterator<'_, I> {
 		InstanceBatchesIterator {
 			map: self.map.values(),
@@ -207,22 +226,20 @@ pub struct InstanceBatchesIterator<'a, I> {
 	instances: &'a [(usize, I)],
 }
 
-impl <'a, I> InstanceBatchesIterator<'a, I> {
+impl<'a, I> InstanceBatchesIterator<'a, I> {
 	pub fn into_vec(self) -> Vec<InstanceBatch> {
 		self.map.map(|e| *e).collect()
 	}
 }
 
-impl <'a, I> Iterator for InstanceBatchesIterator<'a, I> {
+impl<'a, I> Iterator for InstanceBatchesIterator<'a, I> {
 	type Item = BatchInstancesIterator<'a, I>;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		self.map.next().map(|b| {
-			BatchInstancesIterator {
-				batch: *b,
-				instances: self.instances,
-				index: 0,
-			}
+		self.map.next().map(|b| BatchInstancesIterator {
+			batch: *b,
+			instances: self.instances,
+			index: 0,
 		})
 	}
 }
@@ -233,7 +250,7 @@ pub struct BatchInstancesIterator<'a, I> {
 	index: usize,
 }
 
-impl <'a, I> BatchInstancesIterator<'a, I> {
+impl<'a, I> BatchInstancesIterator<'a, I> {
 	pub fn index_count(&self) -> usize {
 		self.batch.index_count()
 	}
@@ -255,7 +272,7 @@ impl <'a, I> BatchInstancesIterator<'a, I> {
 	}
 }
 
-impl <'a, I> Iterator for BatchInstancesIterator<'a, I> {
+impl<'a, I> Iterator for BatchInstancesIterator<'a, I> {
 	type Item = (usize, &'a I);
 
 	fn next(&mut self) -> Option<Self::Item> {
@@ -272,7 +289,7 @@ impl <'a, I> Iterator for BatchInstancesIterator<'a, I> {
 
 #[cfg(test)]
 mod tests {
-    use crate::rendering::utils::{MeshBuffersStats, MeshStats};
+	use crate::rendering::utils::{MeshBuffersStats, MeshStats};
 
 	#[test]
 	fn test_one_mesh_and_instance() {

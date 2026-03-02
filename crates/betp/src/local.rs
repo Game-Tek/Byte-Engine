@@ -35,7 +35,9 @@ impl Local {
 	pub fn get_packet_data(&self, sequence: u16) -> Option<PacketInfo> {
 		let index = (sequence % PACKET_HISTORY as u16) as usize;
 		if self.sequence_buffer[index] == sequence {
-			Some(PacketInfo { acked: self.packet_data.get(index) })
+			Some(PacketInfo {
+				acked: self.packet_data.get(index),
+			})
 		} else {
 			None
 		}
@@ -60,7 +62,12 @@ impl Local {
 
 	/// Returns the unacknowledged packets of this [`Local`]. These are the packets that have been sent but have not been acknowledged by the remote.
 	pub fn unacknowledged_packets(&self) -> Vec<u16> {
-		self.sequence_buffer.iter().enumerate().filter(|(i, &sequence)| sequence != u16::MAX && !self.packet_data.get(*i)).map(|(_, &e)| e).collect()
+		self.sequence_buffer
+			.iter()
+			.enumerate()
+			.filter(|(i, &sequence)| sequence != u16::MAX && !self.packet_data.get(*i))
+			.map(|(_, &e)| e)
+			.collect()
 	}
 }
 
@@ -171,15 +178,24 @@ mod tests {
 
 		local.acknowledge_packet(2);
 
-		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>());
+		assert_eq!(
+			local.unacknowledged_packets(),
+			(1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>()
+		);
 
 		local.acknowledge_packet(4);
 
-		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).filter(|&i| i != 2 && i != 4).collect::<Vec<_>>());
+		assert_eq!(
+			local.unacknowledged_packets(),
+			(1u16..32u16).filter(|&i| i != 2 && i != 4).collect::<Vec<_>>()
+		);
 
 		local.acknowledge_packet(1);
 
-		assert_eq!(local.unacknowledged_packets(), (3u16..32u16).filter(|&i| i != 4).collect::<Vec<_>>());
+		assert_eq!(
+			local.unacknowledged_packets(),
+			(3u16..32u16).filter(|&i| i != 4).collect::<Vec<_>>()
+		);
 
 		local.acknowledge_packet(3);
 
@@ -204,7 +220,10 @@ mod tests {
 
 		local.acknowledge_packets(2, 0b101);
 
-		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>());
+		assert_eq!(
+			local.unacknowledged_packets(),
+			(1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>()
+		);
 	}
 
 	#[test]

@@ -2,13 +2,17 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::core::{channel::{Channel as _, DefaultChannel}, listener::{DefaultListener, Listener}, message::Message};
+use crate::core::{
+	channel::{Channel as _, DefaultChannel},
+	listener::{DefaultListener, Listener},
+	message::Message,
+};
 
 pub struct Factory<T: Clone + ?Sized>(DefaultChannel<CreateMessage<T>>);
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-impl <T: Clone> Factory<T> {
+impl<T: Clone> Factory<T> {
 	pub fn new() -> Self {
 		let sender = DefaultChannel::new();
 		Factory(sender)
@@ -39,7 +43,7 @@ pub struct CreateMessage<T: Clone> {
 	data: T,
 }
 
-impl <T: Clone> CreateMessage<T> {
+impl<T: Clone> CreateMessage<T> {
 	fn new(handle: Handle, data: T) -> Self {
 		CreateMessage { handle, data }
 	}
@@ -57,7 +61,7 @@ impl <T: Clone> CreateMessage<T> {
 	}
 }
 
-impl <T: Clone> Message for CreateMessage<T> {}
+impl<T: Clone> Message for CreateMessage<T> {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Handle(u32);

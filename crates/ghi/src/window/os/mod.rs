@@ -1,23 +1,23 @@
 #[cfg(target_os = "linux")]
 pub mod wayland;
 #[cfg(target_os = "linux")]
-pub use wayland::Window;
-#[cfg(target_os = "linux")]
 pub use wayland::Handles;
+#[cfg(target_os = "linux")]
+pub use wayland::Window;
 
 #[cfg(target_os = "windows")]
 pub mod win32;
 #[cfg(target_os = "windows")]
-pub use win32::Window;
-#[cfg(target_os = "windows")]
 pub use win32::Handles;
+#[cfg(target_os = "windows")]
+pub use win32::Window;
 
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::Window;
-#[cfg(target_os = "macos")]
 pub use macos::Handles;
+#[cfg(target_os = "macos")]
+pub use macos::Window;
 
 use crate::Events;
 

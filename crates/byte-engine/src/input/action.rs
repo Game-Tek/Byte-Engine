@@ -23,8 +23,12 @@ pub struct Action {
 }
 
 impl ActionLike for Action {
-	fn get_bindings(&self) -> &[ActionBindingDescription] { &self.bindings }
-	fn get_inputs(&self) -> &[TriggerMapping] { &self.inputs }
+	fn get_bindings(&self) -> &[ActionBindingDescription] {
+		&self.bindings
+	}
+	fn get_inputs(&self) -> &[TriggerMapping] {
+		&self.inputs
+	}
 }
 
 /// This trait allows us to extract the `Types` from a generic type as a convenience to clients and also allows us to constrain generic types to only those that are valid for input values.
@@ -33,35 +37,51 @@ pub trait InputValue: Default + Clone + Copy + 'static {
 }
 
 impl InputValue for bool {
-	fn get_type() -> Types { Types::Boolean }
+	fn get_type() -> Types {
+		Types::Boolean
+	}
 }
 
 impl InputValue for i32 {
-	fn get_type() -> Types { Types::Int }
+	fn get_type() -> Types {
+		Types::Int
+	}
 }
 
 impl InputValue for char {
-	fn get_type() -> Types { Types::Unicode }
+	fn get_type() -> Types {
+		Types::Unicode
+	}
 }
 
 impl InputValue for f32 {
-	fn get_type() -> Types { Types::Float }
+	fn get_type() -> Types {
+		Types::Float
+	}
 }
 
 impl InputValue for Vector2 {
-	fn get_type() -> Types { Types::Vector2 }
+	fn get_type() -> Types {
+		Types::Vector2
+	}
 }
 
 impl InputValue for Vector3 {
-	fn get_type() -> Types { Types::Vector3 }
+	fn get_type() -> Types {
+		Types::Vector3
+	}
 }
 
 impl InputValue for Quaternion {
-	fn get_type() -> Types { Types::Quaternion }
+	fn get_type() -> Types {
+		Types::Quaternion
+	}
 }
 
 impl InputValue for RGBA {
-	fn get_type() -> Types { Types::Rgba }
+	fn get_type() -> Types {
+		Types::Rgba
+	}
 }
 
 impl Action {

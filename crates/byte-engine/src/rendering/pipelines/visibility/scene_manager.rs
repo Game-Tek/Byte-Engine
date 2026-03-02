@@ -7,45 +7,63 @@ use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::OnceLock;
 
-use ghi::device::Device as _;
-use ghi::frame::Frame as _;
-use ghi::{graphics_hardware_interface, raster_pipeline, command_buffer::{BoundPipelineLayoutMode as _, CommonCommandBufferMode as _, CommandBufferRecording as _, BoundComputePipelineMode as _, RasterizationRenderPassMode as _, BoundRasterizationPipelineMode as _}, ImageHandle};
-use math::{Matrix4, Vector3};
-use resource_management::glsl_shader_generator::GLSLShaderGenerator;
-use resource_management::spirv_shader_generator::SPIRVShaderGenerator;
-use utils::hash::{HashMap, HashMapExt};
-use utils::json::{self, object};
-use log::error;
-use resource_management::asset::material_asset_handler::ProgramGenerator;
-use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
-use resource_management::{glsl, Reference};
-use resource_management::resource::resource_manager::ResourceManager;
-use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
-use resource_management::resources::image::Image as ResourceImage;
-use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
-use resource_management::resources::material::{Material as ResourceMaterial, Parameter, Shader, Value, VariantVariable};
-use resource_management::resources::material::Variant as ResourceVariant;
-use utils::sync::{Rc, Arc, RwLock};
-use utils::{Extent, RGBA, Box};
-use crate::core::listener::{Listener};
+use crate::core::listener::Listener;
 use crate::core::{Entity, EntityHandle};
 use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonShaderScope};
 use crate::rendering::lights::{DirectionalLight, Light, PointLight};
 use crate::rendering::mesh::generator::MeshGenerator;
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
-use crate::rendering::pipelines::visibility::{INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING, PRIMITIVE_INDICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING};
+use crate::rendering::pipelines::visibility::{
+	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
+	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS,
+	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
+	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+};
 use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassFunction, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;
-use crate::rendering::scene_manager::{SceneManager};
+use crate::rendering::scene_manager::SceneManager;
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
+use ghi::device::Device as _;
+use ghi::frame::Frame as _;
+use ghi::{
+	command_buffer::{
+		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
+		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+	},
+	graphics_hardware_interface, raster_pipeline, ImageHandle,
+};
+use log::error;
+use math::{Matrix4, Vector3};
+use resource_management::asset::material_asset_handler::ProgramGenerator;
+use resource_management::glsl_shader_generator::GLSLShaderGenerator;
+use resource_management::resource::resource_manager::ResourceManager;
+use resource_management::resources::image::Image as ResourceImage;
+use resource_management::resources::material::Variant as ResourceVariant;
+use resource_management::resources::material::{Material as ResourceMaterial, Parameter, Shader, Value, VariantVariable};
+use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
+use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
+use resource_management::spirv_shader_generator::SPIRVShaderGenerator;
+use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
+use resource_management::{glsl, Reference};
+use utils::hash::{HashMap, HashMapExt};
+use utils::json::{self, object};
+use utils::sync::{Arc, Rc, RwLock};
+use utils::{Box, Extent, RGBA};
 
+use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
 use crate::gameplay::transform::TransformationUpdate;
 use crate::gameplay::Transformable as _;
-use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
-use crate::rendering::{RenderableMesh, Viewport, csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain};
-use crate::{resource_management::{self, }, camera::{self}};
+use crate::rendering::{
+	csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain,
+	RenderableMesh, Viewport,
+};
+use crate::{
+	camera::{self},
+	resource_management::{self},
+};
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -115,16 +133,48 @@ impl VisibilityWorldRenderDomain {
 		// Initialize the extent to 0 to allocate memory lazily.
 		let extent = Extent::square(0);
 
-		let vertex_positions_buffer_handle = device.create_buffer(Some("Visibility Vertex Positions Buffer"), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
-		let vertex_normals_buffer_handle = device.create_buffer(Some("Visibility Vertex Normals Buffer"), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
-		let vertex_uv_buffer_handle = device.create_buffer(Some("Visibility Vertex UV Buffer"), ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
-		let vertex_indices_buffer_handle = device.create_buffer(Some("Visibility Index Buffer"), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
-		let primitive_indices_buffer_handle = device.create_buffer(Some("Visibility Primitive Indices Buffer"), ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
-		let meshlets_data_buffer = device.create_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(Some("Visibility Meshlets Data"), ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
+		let vertex_positions_buffer_handle = device.create_buffer(
+			Some("Visibility Vertex Positions Buffer"),
+			ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage,
+			ghi::DeviceAccesses::HostToDevice,
+		);
+		let vertex_normals_buffer_handle = device.create_buffer(
+			Some("Visibility Vertex Normals Buffer"),
+			ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage,
+			ghi::DeviceAccesses::HostToDevice,
+		);
+		let vertex_uv_buffer_handle = device.create_buffer(
+			Some("Visibility Vertex UV Buffer"),
+			ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage,
+			ghi::DeviceAccesses::HostToDevice,
+		);
+		let vertex_indices_buffer_handle = device.create_buffer(
+			Some("Visibility Index Buffer"),
+			ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage,
+			ghi::DeviceAccesses::HostToDevice,
+		);
+		let primitive_indices_buffer_handle = device.create_buffer(
+			Some("Visibility Primitive Indices Buffer"),
+			ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage,
+			ghi::DeviceAccesses::HostToDevice,
+		);
+		let meshlets_data_buffer = device.create_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(
+			Some("Visibility Meshlets Data"),
+			ghi::Uses::Storage,
+			ghi::DeviceAccesses::HostToDevice,
+		);
 
-		let views_data_buffer_handle = device.create_dynamic_buffer::<[ShaderViewData; 8]>(Some("Visibility Views Data"), ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
+		let views_data_buffer_handle = device.create_dynamic_buffer::<[ShaderViewData; 8]>(
+			Some("Visibility Views Data"),
+			ghi::Uses::Storage,
+			ghi::DeviceAccesses::HostToDevice,
+		);
 
-		let meshes_data_buffer = device.create_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(Some("Visibility Meshes Data"), ghi::Uses::Storage, ghi::DeviceAccesses::HostToDevice);
+		let meshes_data_buffer = device.create_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(
+			Some("Visibility Meshes Data"),
+			ghi::Uses::Storage,
+			ghi::DeviceAccesses::HostToDevice,
+		);
 
 		let bindings = [
 			VIEWS_DATA_BINDING,
@@ -143,19 +193,47 @@ impl VisibilityWorldRenderDomain {
 		// Push constant:
 		// 4 bytes for the view index
 		// 4 bytes for the mesh index
-		let pipeline_layout_handle = device.create_pipeline_layout(&[descriptor_set_layout], &[ghi::PushConstantRange::new(0, 4 + 4)]);
+		let pipeline_layout_handle =
+			device.create_pipeline_layout(&[descriptor_set_layout], &[ghi::PushConstantRange::new(0, 4 + 4)]);
 
 		let descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
 
-		let views_data_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()));
-		let meshes_data_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, meshes_data_buffer.into()));
-		let vertex_positions_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_POSITIONS_BINDING, vertex_positions_buffer_handle.into()));
-		let vertex_normals_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_NORMALS_BINDING, vertex_normals_buffer_handle.into()));
-		let vertex_uv_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, vertex_uv_buffer_handle.into()));
-		let vertex_indices_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&VERTEX_INDICES_BINDING, vertex_indices_buffer_handle.into()));
-		let primitive_indices_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&PRIMITIVE_INDICES_BINDING, primitive_indices_buffer_handle.into()));
-		let meshlets_data_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, meshlets_data_buffer.into()));
-		let textures_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::combined_image_sampler_array(&TEXTURES_BINDING,));
+		let views_data_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
+		);
+		let meshes_data_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, meshes_data_buffer.into()),
+		);
+		let vertex_positions_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&VERTEX_POSITIONS_BINDING, vertex_positions_buffer_handle.into()),
+		);
+		let vertex_normals_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&VERTEX_NORMALS_BINDING, vertex_normals_buffer_handle.into()),
+		);
+		let vertex_uv_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, vertex_uv_buffer_handle.into()),
+		);
+		let vertex_indices_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&VERTEX_INDICES_BINDING, vertex_indices_buffer_handle.into()),
+		);
+		let primitive_indices_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&PRIMITIVE_INDICES_BINDING, primitive_indices_buffer_handle.into()),
+		);
+		let meshlets_data_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, meshlets_data_buffer.into()),
+		);
+		let textures_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::combined_image_sampler_array(&TEXTURES_BINDING),
+		);
 
 		let bindings = [
 			MATERIAL_COUNT_BINDING,
@@ -168,16 +246,26 @@ impl VisibilityWorldRenderDomain {
 		];
 
 		let visibility_descriptor_set_layout = device.create_descriptor_set_template(Some("Visibility Set Layout"), &bindings);
-		let visibility_pass_pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout], &[]);
-		let visibility_passes_descriptor_set = device.create_descriptor_set(Some("Visibility Descriptor Set"), &visibility_descriptor_set_layout);
+		let visibility_pass_pipeline_layout =
+			device.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout], &[]);
+		let visibility_passes_descriptor_set =
+			device.create_descriptor_set(Some("Visibility Descriptor Set"), &visibility_descriptor_set_layout);
 
-		let light_data_buffer = device.create_buffer::<LightingData>(Some("Light Data"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::HostToDevice);
+		let light_data_buffer = device.create_buffer::<LightingData>(
+			Some("Light Data"),
+			ghi::Uses::Storage | ghi::Uses::TransferDestination,
+			ghi::DeviceAccesses::HostToDevice,
+		);
 
 		let lighting_data = device.get_mut_buffer_slice(light_data_buffer);
 
 		lighting_data.count = 0; // Initially, no lights
 
-		let materials_data_buffer_handle = device.create_buffer::<[MaterialData; MAX_MATERIALS]>(Some("Materials Data"), ghi::Uses::Storage | ghi::Uses::TransferDestination, ghi::DeviceAccesses::HostToDevice);
+		let materials_data_buffer_handle = device.create_buffer::<[MaterialData; MAX_MATERIALS]>(
+			Some("Materials Data"),
+			ghi::Uses::Storage | ghi::Uses::TransferDestination,
+			ghi::DeviceAccesses::HostToDevice,
+		);
 
 		let bindings = [
 			ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
@@ -187,21 +275,53 @@ impl VisibilityWorldRenderDomain {
 			ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
 			ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
 			ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
-			ghi::DescriptorSetBindingTemplate::new_array(11, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 1),
+			ghi::DescriptorSetBindingTemplate::new_array(
+				11,
+				ghi::DescriptorType::CombinedImageSampler,
+				ghi::Stages::COMPUTE,
+				1,
+			),
 		];
 
-		let sampler = device.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Clamp, None, 0f32, 0f32);
-		let depth_sampler = device.create_sampler(ghi::FilteringModes::Linear, ghi::SamplingReductionModes::WeightedAverage, ghi::FilteringModes::Linear, ghi::SamplerAddressingModes::Border {}, None, 0f32, 0f32);
+		let sampler = device.create_sampler(
+			ghi::FilteringModes::Linear,
+			ghi::SamplingReductionModes::WeightedAverage,
+			ghi::FilteringModes::Linear,
+			ghi::SamplerAddressingModes::Clamp,
+			None,
+			0f32,
+			0f32,
+		);
+		let depth_sampler = device.create_sampler(
+			ghi::FilteringModes::Linear,
+			ghi::SamplingReductionModes::WeightedAverage,
+			ghi::FilteringModes::Linear,
+			ghi::SamplerAddressingModes::Border {},
+			None,
+			0f32,
+			0f32,
+		);
 
-		let material_evaluation_descriptor_set_layout = device.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
-		let material_evaluation_descriptor_set = device.create_descriptor_set(Some("Material Evaluation Descriptor Set"), &material_evaluation_descriptor_set_layout);
+		let material_evaluation_descriptor_set_layout =
+			device.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
+		let material_evaluation_descriptor_set = device.create_descriptor_set(
+			Some("Material Evaluation Descriptor Set"),
+			&material_evaluation_descriptor_set_layout,
+		);
 
-		let material_evaluation_pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout, material_evaluation_descriptor_set_layout], &[ghi::PushConstantRange::new(0, 4 + 4)]);
+		let material_evaluation_pipeline_layout = device.create_pipeline_layout(
+			&[
+				descriptor_set_layout,
+				visibility_descriptor_set_layout,
+				material_evaluation_descriptor_set_layout,
+			],
+			&[ghi::PushConstantRange::new(0, 4 + 4)],
+		);
 
 		Self {
 			render_entities: Vec::with_capacity(512),
 
-			visibility_info:  VisibilityInfo::default(),
+			visibility_info: VisibilityInfo::default(),
 
 			meshes: Vec::with_capacity(1024),
 			meshes_by_resource: HashMap::with_capacity(1024),
@@ -216,7 +336,6 @@ impl VisibilityWorldRenderDomain {
 			material_evaluation_materials: RwLock::new(HashMap::new()),
 
 			// Visibility
-
 			base_pipeline_layout: pipeline_layout_handle,
 
 			vertex_positions_buffer: vertex_positions_buffer_handle,
@@ -248,7 +367,9 @@ impl VisibilityWorldRenderDomain {
 
 			lights: Vec::new(),
 
-			render_info: RenderInfo { instances: Vec::with_capacity(4096) },
+			render_info: RenderInfo {
+				instances: Vec::with_capacity(4096),
+			},
 
 			pending_render_entities: VecDeque::with_capacity(64),
 
@@ -325,11 +446,26 @@ impl VisibilityWorldRenderDomain {
 		let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
 
 		let streams = vec![
-			resource_management::stream::StreamMut::new("Vertex.Position", &mut vertex_positions_buffer[self.visibility_info.vertex_count as usize..positions_stream.count()]),
-			resource_management::stream::StreamMut::new("Vertex.Normal", &mut vertex_normals_buffer[self.visibility_info.vertex_count as usize..normals_stream.count()]),
-			resource_management::stream::StreamMut::new("Vertex.UV", &mut vertex_uv_buffer[self.visibility_info.vertex_count as usize..uvs_stream.count()]),
-			resource_management::stream::StreamMut::new("VertexIndices", &mut vertex_indices_buffer[self.visibility_info.primitives_count as usize..vertex_indices_stream.count()]),
-			resource_management::stream::StreamMut::new("MeshletIndices", &mut primitive_indices_buffer[self.visibility_info.triangle_count as usize..meshlet_indices_stream.count()]), // TODO: this might be wrong
+			resource_management::stream::StreamMut::new(
+				"Vertex.Position",
+				&mut vertex_positions_buffer[self.visibility_info.vertex_count as usize..positions_stream.count()],
+			),
+			resource_management::stream::StreamMut::new(
+				"Vertex.Normal",
+				&mut vertex_normals_buffer[self.visibility_info.vertex_count as usize..normals_stream.count()],
+			),
+			resource_management::stream::StreamMut::new(
+				"Vertex.UV",
+				&mut vertex_uv_buffer[self.visibility_info.vertex_count as usize..uvs_stream.count()],
+			),
+			resource_management::stream::StreamMut::new(
+				"VertexIndices",
+				&mut vertex_indices_buffer[self.visibility_info.primitives_count as usize..vertex_indices_stream.count()],
+			),
+			resource_management::stream::StreamMut::new(
+				"MeshletIndices",
+				&mut primitive_indices_buffer[self.visibility_info.triangle_count as usize..meshlet_indices_stream.count()],
+			), // TODO: this might be wrong
 			resource_management::stream::StreamMut::new("Meshlets", buffer_allocator.take(meshlets_stream.size)),
 		];
 
@@ -338,15 +474,26 @@ impl VisibilityWorldRenderDomain {
 			return Err(());
 		};
 
-		let Reference { resource: ResourceMesh { vertex_components, streams, primitives }, .. } = resource_request;
+		let Reference {
+			resource: ResourceMesh {
+				vertex_components,
+				streams,
+				primitives,
+			},
+			..
+		} = resource_request;
 
-		let vcps = primitives.iter().scan(0, |state, p| {
-			let offset = *state;
-			*state += p.vertex_count;
-			offset.into()
-		}).collect::<Vec<_>>();
+		let vcps = primitives
+			.iter()
+			.scan(0, |state, p| {
+				let offset = *state;
+				*state += p.vertex_count;
+				offset.into()
+			})
+			.collect::<Vec<_>>();
 
-		self.mesh_resources.insert(id.to_string(), self.visibility_info.triangle_count);
+		self.mesh_resources
+			.insert(id.to_string(), self.visibility_info.triangle_count);
 
 		let total_meshlet_count = meshlets_stream.count();
 
@@ -355,73 +502,98 @@ impl VisibilityWorldRenderDomain {
 			triangle_count: u8,
 		}
 
-		let meshlets_per_primitive = primitives.into_iter().zip(vcps.iter()).scan((0, 0, 0), |(mesh_primitive_counter, mesh_triangle_counter, mesh_meshlet_counter), (primitive, vcps)| {
-			let vertex_offset = *vcps;
-			let primitive_offset = *mesh_primitive_counter;
-			let triangle_offset = *mesh_triangle_counter;
-			let meshlet_offset = *mesh_meshlet_counter;
+		let meshlets_per_primitive = primitives
+			.into_iter()
+			.zip(vcps.iter())
+			.scan(
+				(0, 0, 0),
+				|(mesh_primitive_counter, mesh_triangle_counter, mesh_meshlet_counter), (primitive, vcps)| {
+					let vertex_offset = *vcps;
+					let primitive_offset = *mesh_primitive_counter;
+					let triangle_offset = *mesh_triangle_counter;
+					let meshlet_offset = *mesh_meshlet_counter;
 
-			let meshlets = if let Some(stream) = primitive.meshlet_stream() {
-				let m = load_target.stream("Meshlets").unwrap();
+					let meshlets = if let Some(stream) = primitive.meshlet_stream() {
+						let m = load_target.stream("Meshlets").unwrap();
 
-				let meshlet_stream = unsafe {
-					std::slice::from_raw_parts(m.buffer().as_ptr().byte_add(stream.offset) as *const Meshlet, stream.count())
-				};
+						let meshlet_stream = unsafe {
+							std::slice::from_raw_parts(
+								m.buffer().as_ptr().byte_add(stream.offset) as *const Meshlet,
+								stream.count(),
+							)
+						};
 
-				meshlet_stream.iter().scan((0, 0), |(primitive_primitive_counter, primitive_triangle_counter), meshlet| {
-					let meshlet_primitive_count = meshlet.primitive_count;
-					let meshlet_triangle_count = meshlet.triangle_count;
+						meshlet_stream
+							.iter()
+							.scan(
+								(0, 0),
+								|(primitive_primitive_counter, primitive_triangle_counter), meshlet| {
+									let meshlet_primitive_count = meshlet.primitive_count;
+									let meshlet_triangle_count = meshlet.triangle_count;
 
-					let primitive_offset = *primitive_primitive_counter as u16;
-					let triangle_offset = *primitive_triangle_counter as u16;
+									let primitive_offset = *primitive_primitive_counter as u16;
+									let triangle_offset = *primitive_triangle_counter as u16;
 
-					// Update vertex and triangle offsets per meshlet, relative to the primitive
-					*primitive_primitive_counter += meshlet_primitive_count as u32;
-					*primitive_triangle_counter += meshlet_triangle_count as u32;
+									// Update vertex and triangle offsets per meshlet, relative to the primitive
+									*primitive_primitive_counter += meshlet_primitive_count as u32;
+									*primitive_triangle_counter += meshlet_triangle_count as u32;
 
-					// Update vertex, triangle and meshlet offsets per meshlet, relative to the mesh
-					*mesh_primitive_counter += meshlet_primitive_count as u32;
-					*mesh_triangle_counter += meshlet_triangle_count as u32;
-					*mesh_meshlet_counter += 1;
+									// Update vertex, triangle and meshlet offsets per meshlet, relative to the mesh
+									*mesh_primitive_counter += meshlet_primitive_count as u32;
+									*mesh_triangle_counter += meshlet_triangle_count as u32;
+									*mesh_meshlet_counter += 1;
 
-					ShaderMeshletData {
-						primitive_offset,
-						triangle_offset,
-						primitive_count: meshlet_primitive_count,
-						triangle_count: meshlet_triangle_count,
-					}.into()
-				}).collect::<Vec<_>>()
-			} else {
-				panic!();
-			};
+									ShaderMeshletData {
+										primitive_offset,
+										triangle_offset,
+										primitive_count: meshlet_primitive_count,
+										triangle_count: meshlet_triangle_count,
+									}
+									.into()
+								},
+							)
+							.collect::<Vec<_>>()
+					} else {
+						panic!();
+					};
 
-			(MeshPrimitive {
-				material_index: 0,
-				meshlet_count: meshlets.len() as u32,
-				meshlet_offset,
-				vertex_offset,
-				primitive_offset,
-				triangle_offset,
-			},
-			meshlets, primitive).into()
-		}).collect::<Vec<_>>();
-
-		let meshlets_per_primitive = meshlets_per_primitive.into_iter().map(|(mp, meshlets, primitive)| {
-			let variant = self.create_variant_resources(primitive.material, device).unwrap();
-			(
-				MeshPrimitive {
-					material_index: variant,
-					..mp
+					(
+						MeshPrimitive {
+							material_index: 0,
+							meshlet_count: meshlets.len() as u32,
+							meshlet_offset,
+							vertex_offset,
+							primitive_offset,
+							triangle_offset,
+						},
+						meshlets,
+						primitive,
+					)
+						.into()
 				},
-				meshlets,
 			)
-		}).collect::<Vec<_>>();
+			.collect::<Vec<_>>();
+
+		let meshlets_per_primitive = meshlets_per_primitive
+			.into_iter()
+			.map(|(mp, meshlets, primitive)| {
+				let variant = self.create_variant_resources(primitive.material, device).unwrap();
+				(
+					MeshPrimitive {
+						material_index: variant,
+						..mp
+					},
+					meshlets,
+				)
+			})
+			.collect::<Vec<_>>();
 
 		let meshlets_data_slice = device.get_mut_buffer_slice(self.meshlets_data_buffer);
 
 		for (i, (primitive, meshlets)) in meshlets_per_primitive.iter().enumerate() {
 			for (j, meshlet) in meshlets.iter().enumerate() {
-				meshlets_data_slice[self.visibility_info.meshlet_count as usize + primitive.meshlet_offset as usize + j] = *meshlet;
+				meshlets_data_slice[self.visibility_info.meshlet_count as usize + primitive.meshlet_offset as usize + j] =
+					*meshlet;
 			}
 		}
 
@@ -436,14 +608,15 @@ impl VisibilityWorldRenderDomain {
 				_ => panic!("Unsupported index format"),
 			};
 
-			let bottom_level_acceleration_structure = device.create_bottom_level_acceleration_structure(&ghi::BottomLevelAccelerationStructure{
-				description: ghi::BottomLevelAccelerationStructureDescriptions::Mesh {
-					vertex_count: positions_stream.count() as u32,
-					vertex_position_encoding: ghi::Encodings::FloatingPoint,
-					triangle_count: triangle_indices_stream.count() as u32 / 3,
-					index_format,
-				}
-			});
+			let bottom_level_acceleration_structure =
+				device.create_bottom_level_acceleration_structure(&ghi::BottomLevelAccelerationStructure {
+					description: ghi::BottomLevelAccelerationStructureDescriptions::Mesh {
+						vertex_count: positions_stream.count() as u32,
+						vertex_position_encoding: ghi::Encodings::FloatingPoint,
+						triangle_count: triangle_indices_stream.count() as u32 / 3,
+						index_format,
+					},
+				});
 
 			// ray_tracing.pending_meshes.push(MeshState::Build { mesh_handle: mesh.resource_id.to_string() });
 
@@ -477,7 +650,11 @@ impl VisibilityWorldRenderDomain {
 		Ok(mesh_id)
 	}
 
-	fn create_mesh_from_generator<'a>(&'a mut self, generator: &dyn MeshGenerator, device: &mut ghi::Device) -> Result<usize, ()> {
+	fn create_mesh_from_generator<'a>(
+		&'a mut self,
+		generator: &dyn MeshGenerator,
+		device: &mut ghi::Device,
+	) -> Result<usize, ()> {
 		let positions = generator.positions();
 		let normals = generator.normals();
 		let uvs = generator.uvs();
@@ -492,7 +669,10 @@ impl VisibilityWorldRenderDomain {
 			return Err(());
 		}
 
-		let meshlet_indices = meshlet_indices.iter().map_windows(|&[a, b, c]| [*a, *b, *c]).collect::<Vec<_>>();
+		let meshlet_indices = meshlet_indices
+			.iter()
+			.map_windows(|&[a, b, c]| [*a, *b, *c])
+			.collect::<Vec<_>>();
 
 		let vertex_positions_buffer = device.get_mut_buffer_slice(self.vertex_positions_buffer);
 		let vertex_normals_buffer = device.get_mut_buffer_slice(self.vertex_normals_buffer);
@@ -505,16 +685,15 @@ impl VisibilityWorldRenderDomain {
 		vertex_normals_buffer[self.visibility_info.vertex_count as usize..normals.len()].copy_from_slice(&normals);
 		vertex_uv_buffer[self.visibility_info.vertex_count as usize..uvs.len()].copy_from_slice(&uvs);
 		indices_buffer[self.visibility_info.vertex_count as usize..indices.len()].copy_from_slice(&indices);
-		primitive_indices_buffer[self.visibility_info.primitives_count as usize..meshlet_indices.len()].copy_from_slice(&meshlet_indices);
+		primitive_indices_buffer[self.visibility_info.primitives_count as usize..meshlet_indices.len()]
+			.copy_from_slice(&meshlet_indices);
 
-		let meshlets = [
-			ShaderMeshletData {
-				primitive_offset: 0,
-				triangle_offset: 0,
-				primitive_count: indices.len() as u8,
-				triangle_count: (indices.len() / 3) as u8,
-			}
-		];
+		let meshlets = [ShaderMeshletData {
+			primitive_offset: 0,
+			triangle_offset: 0,
+			primitive_count: indices.len() as u8,
+			triangle_count: (indices.len() / 3) as u8,
+		}];
 
 		meshlets_data_slice[self.visibility_info.meshlet_count as usize + 0] = meshlets[0];
 
@@ -522,7 +701,13 @@ impl VisibilityWorldRenderDomain {
 			let (index, v) = {
 				let mut material_evaluation_materials = self.material_evaluation_materials.write();
 				let i = material_evaluation_materials.len() as u32;
-				(i, material_evaluation_materials.entry("heyyy".to_string()).or_insert_with(|| Arc::new(OnceLock::new())).clone())
+				(
+					i,
+					material_evaluation_materials
+						.entry("heyyy".to_string())
+						.or_insert_with(|| Arc::new(OnceLock::new()))
+						.clone(),
+				)
 			};
 
 			let material = v.get_or_try_init(|| {
@@ -530,9 +715,12 @@ impl VisibilityWorldRenderDomain {
 
 				let material_data = materials_buffer_slice[index as usize];
 
-				let root = besl::parse(&"main: fn () -> void {
+				let root = besl::parse(
+					&"main: fn () -> void {
 	albedo = vec4f(1.0, 1.0, 1.0, 1.0);
-}").unwrap();
+}",
+				)
+				.unwrap();
 
 				let shader_generator = VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 
@@ -544,18 +732,28 @@ impl VisibilityWorldRenderDomain {
 
 				let main_node = root.get_main().ok_or(())?;
 
-				let shader = SPIRVShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::line(128)), &main_node).map_err(|e| { log::error!("{}", e); () })?;
+				let shader = SPIRVShaderGenerator::new()
+					.generate(&ShaderGenerationSettings::compute(Extent::line(128)), &main_node)
+					.map_err(|e| {
+						log::error!("{}", e);
+						()
+					})?;
 
 				let bindings = shader.bindings().iter().map(map_shader_binding_to_shader_binding_descriptor);
 
-				let fshader = device.create_shader(
-					None,
-					ghi::ShaderSource::SPIRV(&shader.binary()),
-					ghi::ShaderTypes::Compute,
-					bindings,
-				).unwrap();
+				let fshader = device
+					.create_shader(
+						None,
+						ghi::ShaderSource::SPIRV(&shader.binary()),
+						ghi::ShaderTypes::Compute,
+						bindings,
+					)
+					.unwrap();
 
-				let pipeline = device.create_compute_pipeline(self.material_evaluation_pipeline_layout, ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Compute));
+				let pipeline = device.create_compute_pipeline(
+					self.material_evaluation_pipeline_layout,
+					ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Compute),
+				);
 
 				Ok(RenderDescription {
 					name: "heyyy".to_string(),
@@ -575,16 +773,14 @@ impl VisibilityWorldRenderDomain {
 			triangle_offset: self.visibility_info.triangle_count,
 			meshlet_offset: self.visibility_info.meshlet_count,
 			acceleration_structure: None,
-			primitives: vec![
-				MeshPrimitive {
-					material_index: 0,
-					meshlet_count: 1,
-					meshlet_offset: self.visibility_info.meshlet_count,
-					vertex_offset: self.visibility_info.vertex_count,
-					primitive_offset: self.visibility_info.primitives_count,
-					triangle_offset: self.visibility_info.triangle_count,
-				}
-			]
+			primitives: vec![MeshPrimitive {
+				material_index: 0,
+				meshlet_count: 1,
+				meshlet_offset: self.visibility_info.meshlet_count,
+				vertex_offset: self.visibility_info.vertex_count,
+				primitive_offset: self.visibility_info.primitives_count,
+				triangle_offset: self.visibility_info.triangle_count,
+			}],
 		});
 
 		let vertex_count = positions.len();
@@ -600,85 +796,109 @@ impl VisibilityWorldRenderDomain {
 		Ok(mesh_id)
 	}
 
-	fn create_material_resources<'a>(&'a self, resource: &mut resource_management::Reference<ResourceMaterial>, device: &mut ghi::Device) -> Result<u32, ()> {
+	fn create_material_resources<'a>(
+		&'a self,
+		resource: &mut resource_management::Reference<ResourceMaterial>,
+		device: &mut ghi::Device,
+	) -> Result<u32, ()> {
 		let (index, v) = {
 			let mut material_evaluation_materials = self.material_evaluation_materials.write();
 			let i = material_evaluation_materials.len() as u32;
-			(i, material_evaluation_materials.entry(resource.id().to_string()).or_insert_with(|| Arc::new(OnceLock::new())).clone())
+			(
+				i,
+				material_evaluation_materials
+					.entry(resource.id().to_string())
+					.or_insert_with(|| Arc::new(OnceLock::new()))
+					.clone(),
+			)
 		};
 
 		let material = v.get_or_try_init(|| {
 			let material_id = resource.id().to_string();
 
-			let shader_names = resource.resource().shaders().iter().map(|shader| shader.id().to_string()).collect::<Vec<_>>();
+			let shader_names = resource
+				.resource()
+				.shaders()
+				.iter()
+				.map(|shader| shader.id().to_string())
+				.collect::<Vec<_>>();
 
 			let parameters = &mut resource.resource_mut().parameters;
 
-			let textures_indices = parameters.iter_mut().map(|parameter| {
-				match parameter.value {
+			let textures_indices = parameters
+				.iter_mut()
+				.map(|parameter| match parameter.value {
 					Value::Image(ref mut image) => {
 						let texture_manager = self.texture_manager.clone();
 						let mut texture_manager = texture_manager.write();
 						texture_manager.load(image, device)
 					}
-					_ => { None }
-				}
-			}).collect::<Vec<_>>();
+					_ => None,
+				})
+				.collect::<Vec<_>>();
 
-			let textures_indices = textures_indices.into_iter().map(|v| {
-				if let Some((name, image, sampler)) = v {
-					let texture_index = {
-						let mut images = self.images.write();
-						let index = images.len() as u32;
-						match images.entry(name) {
-							std::collections::hash_map::Entry::Occupied(v) => {
-								v.get().index
+			let textures_indices = textures_indices
+				.into_iter()
+				.map(|v| {
+					if let Some((name, image, sampler)) = v {
+						let texture_index = {
+							let mut images = self.images.write();
+							let index = images.len() as u32;
+							match images.entry(name) {
+								std::collections::hash_map::Entry::Occupied(v) => v.get().index,
+								std::collections::hash_map::Entry::Vacant(v) => {
+									v.insert(Image { index });
+									index
+								}
 							}
-							std::collections::hash_map::Entry::Vacant(v) => {
-								v.insert(Image { index });
-								index
-							}
-						}
-					};
+						};
 
-					device.write(&[ghi::DescriptorWrite::combined_image_sampler_array(self.textures_binding, image, sampler, ghi::Layouts::Read, texture_index),]);
+						device.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+							self.textures_binding,
+							image,
+							sampler,
+							ghi::Layouts::Read,
+							texture_index,
+						)]);
 
-					Some(texture_index)
-				} else {
-					None
-				}
-			}).collect::<Vec<_>>();
+						Some(texture_index)
+					} else {
+						None
+					}
+				})
+				.collect::<Vec<_>>();
 
 			match resource.resource().model.name.as_str() {
-				"Visibility" => {
-					match resource.resource().model.pass.as_str() {
-						"MaterialEvaluation" => {
-							let pipeline_handle = self.pipeline_manager.load_material(self.material_evaluation_pipeline_layout, resource, device).unwrap();
+				"Visibility" => match resource.resource().model.pass.as_str() {
+					"MaterialEvaluation" => {
+						let pipeline_handle = self
+							.pipeline_manager
+							.load_material(self.material_evaluation_pipeline_layout, resource, device)
+							.unwrap();
 
-							let materials_buffer_slice = device.get_mut_buffer_slice(self.materials_data_buffer_handle);
+						let materials_buffer_slice = device.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
-							let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+						let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
 
-							let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
+						let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
 
-							for (i, e) in textures_indices.iter().enumerate() {
-								material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
-							}
-
-							Ok(RenderDescription {
-								name: material_id,
-								index,
-								pipeline: pipeline_handle,
-								alpha: false,
-								variant: RenderDescriptionVariants::Material { shaders: shader_names },
-							})
+						for (i, e) in textures_indices.iter().enumerate() {
+							material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
 						}
-						_ => {
-							error!("Unknown material pass: {}", resource.resource().model.pass);
-							Err(())
-						}
+
+						Ok(RenderDescription {
+							name: material_id,
+							index,
+							pipeline: pipeline_handle,
+							alpha: false,
+							variant: RenderDescriptionVariants::Material { shaders: shader_names },
+						})
 					}
-				}
+					_ => {
+						error!("Unknown material pass: {}", resource.resource().model.pass);
+						Err(())
+					}
+				},
 				_ => {
 					error!("Unknown material model");
 					Err(())
@@ -691,32 +911,45 @@ impl VisibilityWorldRenderDomain {
 
 	/// Creates the needed GHI resource for the given material.
 	/// Does nothing if the material has already been loaded.
-	fn create_variant_resources<'s, 'a>(&'s self, mut resource: resource_management::Reference<ResourceVariant>, device: &mut ghi::Device) -> Result<u32, ()> {
+	fn create_variant_resources<'s, 'a>(
+		&'s self,
+		mut resource: resource_management::Reference<ResourceVariant>,
+		device: &mut ghi::Device,
+	) -> Result<u32, ()> {
 		let (index, v) = {
 			let mut material_evaluation_materials = self.material_evaluation_materials.write();
 			let i = material_evaluation_materials.len() as u32;
-			(i, material_evaluation_materials.entry(resource.id().to_string()).or_insert_with(|| Arc::new(OnceLock::new())).clone())
+			(
+				i,
+				material_evaluation_materials
+					.entry(resource.id().to_string())
+					.or_insert_with(|| Arc::new(OnceLock::new()))
+					.clone(),
+			)
 		};
 
 		let material = v.get_or_try_init(|| {
 			let variant_id = resource.id().to_string();
 
-			let specialization_constants: Vec<ghi::SpecializationMapEntry> = resource.resource_mut().variables.iter().enumerate().filter_map(|(i, variable)| {
-				match &variable.value {
-					Value::Scalar(scalar) => {
-						ghi::SpecializationMapEntry::new(i as u32, "f32".to_string(), *scalar).into()
-					}
-					Value::Vector3(value) => {
-						ghi::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value).into()
-					}
-					Value::Vector4(value) => {
-						ghi::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value).into()
-					}
-					_ => { None }
-				}
-			}).collect();
+			let specialization_constants: Vec<ghi::SpecializationMapEntry> = resource
+				.resource_mut()
+				.variables
+				.iter()
+				.enumerate()
+				.filter_map(|(i, variable)| match &variable.value {
+					Value::Scalar(scalar) => ghi::SpecializationMapEntry::new(i as u32, "f32".to_string(), *scalar).into(),
+					Value::Vector3(value) => ghi::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value).into(),
+					Value::Vector4(value) => ghi::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value).into(),
+					_ => None,
+				})
+				.collect();
 
-			let pipeline = self.pipeline_manager.load_variant(self.material_evaluation_pipeline_layout, &specialization_constants, &mut resource, device);
+			let pipeline = self.pipeline_manager.load_variant(
+				self.material_evaluation_pipeline_layout,
+				&specialization_constants,
+				&mut resource,
+				device,
+			);
 
 			let pipeline = pipeline.unwrap();
 
@@ -728,40 +961,49 @@ impl VisibilityWorldRenderDomain {
 
 			let textures_indices = {
 				let texture_manager = self.texture_manager.clone();
-				variant.variables.iter_mut().map(|parameter| {
-					match parameter.value {
+				variant
+					.variables
+					.iter_mut()
+					.map(|parameter| match parameter.value {
 						Value::Image(ref mut image) => {
 							let mut texture_manager = texture_manager.write();
 							texture_manager.load(image, device)
 						}
-						_ => { None }
-					}
-				}).collect::<Vec<_>>()
+						_ => None,
+					})
+					.collect::<Vec<_>>()
 			};
 
-			let textures_indices = textures_indices.into_iter().map(|v| {
-				if let Some((name, image, sampler)) = v {
-					let texture_index = {
-						let mut images = self.images.write();
-						let index = images.len() as u32;
-						match images.entry(name) {
-							std::collections::hash_map::Entry::Occupied(v) => {
-								v.get().index
+			let textures_indices = textures_indices
+				.into_iter()
+				.map(|v| {
+					if let Some((name, image, sampler)) = v {
+						let texture_index = {
+							let mut images = self.images.write();
+							let index = images.len() as u32;
+							match images.entry(name) {
+								std::collections::hash_map::Entry::Occupied(v) => v.get().index,
+								std::collections::hash_map::Entry::Vacant(v) => {
+									v.insert(Image { index });
+									index
+								}
 							}
-							std::collections::hash_map::Entry::Vacant(v) => {
-								v.insert(Image { index });
-								index
-							}
-						}
-					};
+						};
 
-					device.write(&[ghi::DescriptorWrite::combined_image_sampler_array(self.textures_binding, image, sampler, ghi::Layouts::Read, texture_index),]);
+						device.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+							self.textures_binding,
+							image,
+							sampler,
+							ghi::Layouts::Read,
+							texture_index,
+						)]);
 
-					Some(texture_index)
-				} else {
-					None
-				}
-			}).collect::<Vec<_>>();
+						Some(texture_index)
+					} else {
+						None
+					}
+				})
+				.collect::<Vec<_>>();
 
 			let alpha = variant.alpha_mode == resource_management::types::AlphaMode::Blend;
 
@@ -780,7 +1022,7 @@ impl VisibilityWorldRenderDomain {
 				index,
 				pipeline,
 				alpha,
-				variant: RenderDescriptionVariants::Variant {  },
+				variant: RenderDescriptionVariants::Variant {},
 			})
 		})?;
 
@@ -789,27 +1031,64 @@ impl VisibilityWorldRenderDomain {
 }
 
 impl SceneManager for VisibilityWorldRenderDomain {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport], _transforms_listener: &mut dyn Listener<TransformationUpdate>) -> Option<Vec<Box<dyn RenderPassFunction>>> {
-		let opaque_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == false).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
-		let transparent_materials = self.material_evaluation_materials.read().values().filter_map(|v| v.get()).filter(|v| v.alpha == true).map(|v| (v.name.clone(), v.index, v.pipeline)).collect::<Vec<_>>();
+	fn prepare(
+		&mut self,
+		frame: &mut ghi::Frame,
+		viewports: &[Viewport],
+		_transforms_listener: &mut dyn Listener<TransformationUpdate>,
+	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+		let opaque_materials = self
+			.material_evaluation_materials
+			.read()
+			.values()
+			.filter_map(|v| v.get())
+			.filter(|v| v.alpha == false)
+			.map(|v| (v.name.clone(), v.index, v.pipeline))
+			.collect::<Vec<_>>();
+		let transparent_materials = self
+			.material_evaluation_materials
+			.read()
+			.values()
+			.filter_map(|v| v.get())
+			.filter(|v| v.alpha == true)
+			.map(|v| (v.name.clone(), v.index, v.pipeline))
+			.collect::<Vec<_>>();
 
-		let viewport_x_rp = viewports.iter().map(|v| {
-			(v, &self.views[v.index()].1)
-		});
+		let viewport_x_rp = viewports.iter().map(|v| (v, &self.views[v.index()].1));
 
-		let commands: Vec<Box<dyn RenderPassFunction>> = viewport_x_rp.map(|(v, r)| Box::new(r.prepare(frame, v, &[])) as Box<dyn RenderPassFunction>).collect::<Vec<_>>();
+		let commands: Vec<Box<dyn RenderPassFunction>> = viewport_x_rp
+			.map(|(v, r)| Box::new(r.prepare(frame, v, &[])) as Box<dyn RenderPassFunction>)
+			.collect::<Vec<_>>();
 
 		Some(commands)
 	}
 
 	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder) {
-		let diffuse_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::RGBA16UNORM, ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination).name("Diffuse"));
-		let specular_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::RGBA16UNORM, ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination).name("Specular"));
-		let depth_target = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image).name("Depth"));
-		let primitive_index = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("primitive index"));
-		let instance_id = render_pass_builder.create_render_target(ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("instance_id"));
+		let diffuse_target = render_pass_builder.create_render_target(
+			ghi::image::Builder::new(
+				ghi::Formats::RGBA16UNORM,
+				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
+			)
+			.name("Diffuse"),
+		);
+		let specular_target = render_pass_builder.create_render_target(
+			ghi::image::Builder::new(
+				ghi::Formats::RGBA16UNORM,
+				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
+			)
+			.name("Specular"),
+		);
+		let depth_target = render_pass_builder.create_render_target(
+			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image).name("Depth"),
+		);
+		let primitive_index = render_pass_builder.create_render_target(
+			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("primitive index"),
+		);
+		let instance_id = render_pass_builder.create_render_target(
+			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("instance_id"),
+		);
 
-        let render_pass = VisibilityPipelineRenderPass::new(
+		let render_pass = VisibilityPipelineRenderPass::new(
 			render_pass_builder.device(),
 			self.base_pipeline_layout,
 			self.visibility_pass_pipeline_layout,
@@ -825,7 +1104,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		);
 
 		self.views.push((id, render_pass));
-    }
+	}
 }
 
 #[derive(Copy, Clone)]
@@ -950,9 +1229,7 @@ pub struct MeshData {
 }
 
 enum MeshState {
-	Build {
-		mesh_handle: String,
-	},
+	Build { mesh_handle: String },
 	Update {},
 }
 
@@ -977,9 +1254,7 @@ struct RayTracing {
 }
 
 enum RenderDescriptionVariants {
-	Material {
-		shaders: Vec<String>,
-	},
+	Material { shaders: Vec<String> },
 	Variant {},
 }
 

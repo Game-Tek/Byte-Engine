@@ -41,6 +41,11 @@ impl<'a> Builder<'a> {
 		self
 	}
 
+	pub fn extent(mut self, extent: Extent) -> Self {
+		self.extent = extent;
+		self
+	}
+
 	pub fn device_accesses(mut self, device_accesses: DeviceAccesses) -> Self {
 		self.device_accesses = device_accesses;
 		self

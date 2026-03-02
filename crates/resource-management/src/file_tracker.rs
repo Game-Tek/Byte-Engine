@@ -3,151 +3,145 @@
 
 use std::path::Path;
 
-use notify_debouncer_full::{
-    new_debouncer, notify::*, DebounceEventResult, DebouncedEvent,
-};
+use notify_debouncer_full::{new_debouncer, notify::*, DebounceEventResult, DebouncedEvent};
 
 #[cfg(target_os = "linux")]
-use notify_debouncer_full::{
-	NoCache,
-};
+use notify_debouncer_full::NoCache;
 
 #[cfg(target_os = "macos")]
-use notify_debouncer_full::{
-	FileIdMap,
-};
+use notify_debouncer_full::FileIdMap;
 
 pub struct FileTracker {
-    #[cfg(target_os = "linux")]
-    debouncer: notify_debouncer_full::Debouncer<INotifyWatcher, NoCache>,
-    #[cfg(windows)]
-    debouncer: notify_debouncer_full::Debouncer<ReadDirectoryChangesWatcher, FileIdMap>,
-    #[cfg(target_os = "macos")]
-    debouncer: notify_debouncer_full::Debouncer<FsEventWatcher, FileIdMap>,
-    rx: std::sync::mpsc::Receiver<notify_debouncer_full::DebouncedEvent>,
+	#[cfg(target_os = "linux")]
+	debouncer: notify_debouncer_full::Debouncer<INotifyWatcher, NoCache>,
+	#[cfg(windows)]
+	debouncer: notify_debouncer_full::Debouncer<ReadDirectoryChangesWatcher, FileIdMap>,
+	#[cfg(target_os = "macos")]
+	debouncer: notify_debouncer_full::Debouncer<FsEventWatcher, FileIdMap>,
+	rx: std::sync::mpsc::Receiver<notify_debouncer_full::DebouncedEvent>,
 }
 
 impl FileTracker {
-    pub fn new() -> FileTracker {
-        std::fs::create_dir_all(".byte-editor").unwrap();
+	pub fn new() -> FileTracker {
+		std::fs::create_dir_all(".byte-editor").unwrap();
 
-        let _db = redb::Database::create(".byte-editor/files.db").unwrap();
+		let _db = redb::Database::create(".byte-editor/files.db").unwrap();
 
-        let (tx, rx) = std::sync::mpsc::channel();
+		let (tx, rx) = std::sync::mpsc::channel();
 
-        let debouncer = new_debouncer(
-            std::time::Duration::from_secs(1),
-            None,
-            move |event: DebounceEventResult| match event {
-                Ok(events) => {
-                    for event in events {
-                        tx.send(event).unwrap();
-                    }
-                }
-                Err(errors) => {
-                    for err in errors {
-                        log::error!("{:?}", err);
-                    }
-                }
-            },
-        )
-        .unwrap();
+		let debouncer = new_debouncer(
+			std::time::Duration::from_secs(1),
+			None,
+			move |event: DebounceEventResult| match event {
+				Ok(events) => {
+					for event in events {
+						tx.send(event).unwrap();
+					}
+				}
+				Err(errors) => {
+					for err in errors {
+						log::error!("{:?}", err);
+					}
+				}
+			},
+		)
+		.unwrap();
 
-        // let watcher = debouncer.watcher();
+		// let watcher = debouncer.watcher();
 
-        // let col = db.begin_read().unwrap();
+		// let col = db.begin_read().unwrap();
 
-        // let table = redb::TableDefinition::new("files");
+		// let table = redb::TableDefinition::new("files");
 
-        // for doc in col.open_table(table).unwrap().iter() {
-        // 	let d = doc.unwrap();
-        // 	let path = d.get_str("path").unwrap();
-        // 	let path = Path::new(path);
+		// for doc in col.open_table(table).unwrap().iter() {
+		// 	let d = doc.unwrap();
+		// 	let path = d.get_str("path").unwrap();
+		// 	let path = Path::new(path);
 
-        // 	if !path.exists() {
-        // 		// TODO: emit delete event
-        // 		// TODO: Delete document
-        // 		continue;
-        // 	}
+		// 	if !path.exists() {
+		// 		// TODO: emit delete event
+		// 		// TODO: Delete document
+		// 		continue;
+		// 	}
 
-        // 	let metadata = std::fs::metadata(path).unwrap();
-        // 	let time = metadata.modified().unwrap();
-        // 	let _m = time.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+		// 	let metadata = std::fs::metadata(path).unwrap();
+		// 	let time = metadata.modified().unwrap();
+		// 	let _m = time.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
 
-        // 	dbg!(&d);
-        // 	dbg!(_m as u64);
+		// 	dbg!(&d);
+		// 	dbg!(_m as u64);
 
-        // 	if d.get_i64("last_modified").unwrap() as u64 != _m as u64 {
-        // 		log::trace!("File changed: {:?}", path);
+		// 	if d.get_i64("last_modified").unwrap() as u64 != _m as u64 {
+		// 		log::trace!("File changed: {:?}", path);
 
-        // 		db.collection::<polodb_core::bson::Document>("files").update_one(polodb_core::bson::doc! {
-        // 			"path": path.to_str().unwrap(),
-        // 		}, polodb_core::bson::doc! {
-        // 			"$set": {
-        // 				"last_modified": _m as i64,
-        // 			}
-        // 		}).unwrap();
-        // 	}
+		// 		db.collection::<polodb_core::bson::Document>("files").update_one(polodb_core::bson::doc! {
+		// 			"path": path.to_str().unwrap(),
+		// 		}, polodb_core::bson::doc! {
+		// 			"$set": {
+		// 				"last_modified": _m as i64,
+		// 			}
+		// 		}).unwrap();
+		// 	}
 
-        // 	watcher.watch(path, RecursiveMode::Recursive).expect("Failed to watch path");
-        // }
+		// 	watcher.watch(path, RecursiveMode::Recursive).expect("Failed to watch path");
+		// }
 
-        FileTracker { debouncer, rx }
-    }
+		FileTracker { debouncer, rx }
+	}
 
-    pub fn watch(&mut self, path: &Path) -> bool {
-        let result = self.debouncer.watch(path, RecursiveMode::Recursive);
+	pub fn watch(&mut self, path: &Path) -> bool {
+		let result = self.debouncer.watch(path, RecursiveMode::Recursive);
 
-        if result.is_err() {
-            log::warn!("Failed to watch path: {:?}", path);
-            return false;
-        }
+		if result.is_err() {
+			log::warn!("Failed to watch path: {:?}", path);
+			return false;
+		}
 
-        // if !path.ends_with("*") { // TODO. when watching a directory, the directory itself is not added to the database, the files inside are.
-        // 	let metadata = std::fs::metadata(path).unwrap();
-        // 	let time = metadata.modified().unwrap();
-        // 	let _m = time.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+		// if !path.ends_with("*") { // TODO. when watching a directory, the directory itself is not added to the database, the files inside are.
+		// 	let metadata = std::fs::metadata(path).unwrap();
+		// 	let time = metadata.modified().unwrap();
+		// 	let _m = time.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
 
-        // 	let res = self.db.collection::<polodb_core::bson::Document>("files").find_one(polodb_core::bson::doc! { "path": path.to_str().unwrap(),}).unwrap();
+		// 	let res = self.db.collection::<polodb_core::bson::Document>("files").find_one(polodb_core::bson::doc! { "path": path.to_str().unwrap(),}).unwrap();
 
-        // 	if res.is_none() {
-        // 		self.db.collection("files").insert_one(polodb_core::bson::doc! {
-        // 			"path": path.to_str().unwrap(),
-        // 			"last_modified": _m as i64,
-        // 		}).unwrap();
-        // 	}
-        // }
+		// 	if res.is_none() {
+		// 		self.db.collection("files").insert_one(polodb_core::bson::doc! {
+		// 			"path": path.to_str().unwrap(),
+		// 			"last_modified": _m as i64,
+		// 		}).unwrap();
+		// 	}
+		// }
 
-        true
-    }
+		true
+	}
 
-    pub fn unwatch(&mut self, path: &Path) -> bool {
-        let result = self.debouncer.unwatch(path);
+	pub fn unwatch(&mut self, path: &Path) -> bool {
+		let result = self.debouncer.unwatch(path);
 
-        if result.is_err() {
-            return false;
-        }
+		if result.is_err() {
+			return false;
+		}
 
-        // self.db.collection("files").delete_one(polodb_core::bson::doc! {
-        // 	"path": path.to_str().unwrap(),
-        // }).unwrap();
+		// self.db.collection("files").delete_one(polodb_core::bson::doc! {
+		// 	"path": path.to_str().unwrap(),
+		// }).unwrap();
 
-        true
-    }
+		true
+	}
 
-    pub fn poll(&self) -> Vec<DebouncedEvent> {
-        let mut events = Vec::new();
+	pub fn poll(&self) -> Vec<DebouncedEvent> {
+		let mut events = Vec::new();
 
-        loop {
-            match self.rx.try_recv() {
-                Ok(event) => {
-                    dbg!(&event);
-                    events.push(event);
-                }
-                Err(_) => break,
-            }
-        }
+		loop {
+			match self.rx.try_recv() {
+				Ok(event) => {
+					dbg!(&event);
+					events.push(event);
+				}
+				Err(_) => break,
+			}
+		}
 
-        events
-    }
+		events
+	}
 }

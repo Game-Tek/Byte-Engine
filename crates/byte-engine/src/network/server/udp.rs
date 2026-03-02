@@ -2,7 +2,14 @@
 
 use std::net::ToSocketAddrs;
 
-use betp::{packets::Packets, server::{Events, server::{ConnectionResults, Settings}, session::Session}};
+use betp::{
+	packets::Packets,
+	server::{
+		server::{ConnectionResults, Settings},
+		session::Session,
+		Events,
+	},
+};
 
 /// A BETP authoritative server implementation over UDP.
 pub struct Server {
@@ -42,21 +49,18 @@ impl betp::Server for Server {
 
 		for packet in &packets {
 			match packet {
-				Packets::ConnectionRequest(packet) => {
-				}
-				Packets::Challenge(packet) => {
-				}
-				Packets::ChallengeResponse(packet) => {
-				}
-				Packets::Data(packet) => {
-				}
-				Packets::Disconnect(packet) => {
-				}
+				Packets::ConnectionRequest(packet) => {}
+				Packets::Challenge(packet) => {}
+				Packets::ChallengeResponse(packet) => {}
+				Packets::Data(packet) => {}
+				Packets::Disconnect(packet) => {}
 			}
 		}
 
 		for client in self.clients.iter_mut().filter_map(Option::as_mut) {
-			client.update(&packets, current_time).map_err(|_| ConnectionResults::ServerFull)?;
+			client
+				.update(&packets, current_time)
+				.map_err(|_| ConnectionResults::ServerFull)?;
 		}
 
 		Ok(events)
@@ -69,19 +73,29 @@ impl betp::Server for Server {
 	}
 
 	fn disconnect_client(&mut self, connection_id: u64) {
-		if let Some(client) = self.clients.iter_mut().filter_map(Option::as_mut).find(|c| c.connection_id() == Some(connection_id)) {
+		if let Some(client) = self
+			.clients
+			.iter_mut()
+			.filter_map(Option::as_mut)
+			.find(|c| c.connection_id() == Some(connection_id))
+		{
 			client.disconnect();
 		}
 	}
 
 	fn send(&mut self, reliable: bool, data: [u8; 1024]) {
-		for client in  self.clients.iter_mut().filter_map(Option::as_mut) {
+		for client in self.clients.iter_mut().filter_map(Option::as_mut) {
 			client.send(reliable, data);
 		}
 	}
 
 	fn send_to_client(&mut self, connection_id: u64, reliable: bool, data: [u8; 1024]) {
-		if let Some(client) = self.clients.iter_mut().filter_map(Option::as_mut).find(|c| c.connection_id() == Some(connection_id)) {
+		if let Some(client) = self
+			.clients
+			.iter_mut()
+			.filter_map(Option::as_mut)
+			.find(|c| c.connection_id() == Some(connection_id))
+		{
 			client.send(reliable, data);
 		}
 	}

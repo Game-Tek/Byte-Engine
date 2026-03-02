@@ -2,7 +2,7 @@ use math::Vector3;
 
 use crate::core::Entity;
 
-use super::{Positionable, transform::Transform};
+use super::{transform::Transform, Positionable};
 
 // [`Transformable`] represents an object that can be transformed in the game world.
 pub trait Transformable: Positionable {
@@ -11,7 +11,7 @@ pub trait Transformable: Positionable {
 }
 
 // Automatically implement [`Positionable`] for any type that implements [`Transformable`].
-impl <T: Transformable> Positionable for T {
+impl<T: Transformable> Positionable for T {
 	fn position(&self) -> Vector3 {
 		self.transform().get_position()
 	}

@@ -18,10 +18,7 @@ impl Client {
 
 		let session = Session::new()?;
 
-		Ok(Self {
-			socket,
-			session,
-		})
+		Ok(Self { socket, session })
 	}
 }
 

@@ -13,33 +13,39 @@ pub fn make_csm_views(camera_view: View, light_direction: Vector3, num_cascades:
 	let range = far - near;
 	let ratio = far / near;
 
-    (0..num_cascades).map(|i| {
-		let p = (i + 1) as f32 / (num_cascades as f32);
-		let log = camera_view.near() * ratio.powf(p);
-		let uniform = near + range * p;
-		let d = 0.95f32 * (log - uniform) + uniform;
-		let factor = (d - near) / range;
+	(0..num_cascades)
+		.map(|i| {
+			let p = (i + 1) as f32 / (num_cascades as f32);
+			let log = camera_view.near() * ratio.powf(p);
+			let uniform = near + range * p;
+			let d = 0.95f32 * (log - uniform) + uniform;
+			let factor = (d - near) / range;
 
-		let camera_view = camera_view.from_from_z_planes(near, d);
+			let camera_view = camera_view.from_from_z_planes(near, d);
 
-		let light_view = {
-			let camera_frustum_corners = camera_view.get_frustum_corners();
-			let center = camera_frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
+			let light_view = {
+				let camera_frustum_corners = camera_view.get_frustum_corners();
+				let center = camera_frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
 
-			let radius = camera_frustum_corners.iter().map(|x| length(x - center)).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+				let radius = camera_frustum_corners
+					.iter()
+					.map(|x| length(x - center))
+					.max_by(|a, b| a.partial_cmp(b).unwrap())
+					.unwrap();
 
-			let radius = (radius * 16.0).ceil() / 16.0;
+				let radius = (radius * 16.0).ceil() / 16.0;
 
-			let min = Vector3::new(-radius, -radius, -radius);
-			let max = Vector3::new(radius, radius, radius);
+				let min = Vector3::new(-radius, -radius, -radius);
+				let max = Vector3::new(radius, radius, radius);
 
-			let center: Vector3 = center.into();
+				let center: Vector3 = center.into();
 
-			let from = center - light_direction * min.z;
+				let from = center - light_direction * min.z;
 
-			View::new_orthographic(min[0], max[0], min[1], max[1], 0f32, max[2] - min[2], from, light_direction)
-		};
+				View::new_orthographic(min[0], max[0], min[1], max[1], 0f32, max[2] - min[2], from, light_direction)
+			};
 
-		light_view
-	}).collect()
+			light_view
+		})
+		.collect()
 }

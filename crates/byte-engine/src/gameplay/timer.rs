@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::core::{listener::{Listener}, Entity, EntityHandle};
+use crate::core::{listener::Listener, Entity, EntityHandle};
 
 struct Timer {
 	period: Duration,
@@ -20,14 +20,10 @@ struct TimerService {
 
 impl TimerService {
 	pub fn new() -> Self {
-		Self {
-			timers: Vec::new(),
-		}
+		Self { timers: Vec::new() }
 	}
 
 	pub fn update(&mut self, time: Duration) {
-		for timer in &self.timers {
-
-		}
+		for timer in &self.timers {}
 	}
 }

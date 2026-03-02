@@ -203,7 +203,7 @@ pub struct DataPacket<const S: usize> {
 	pub data: [u8; S],
 }
 
-impl <const S: usize> DataPacket<S> {
+impl<const S: usize> DataPacket<S> {
 	pub fn new(connection_id: u64, connection_status: ConnectionStatus, data: [u8; S]) -> Self {
 		Self {
 			header: PacketHeader::new(PacketType::Data),
@@ -222,7 +222,7 @@ impl <const S: usize> DataPacket<S> {
 	}
 }
 
-impl <const S: usize> Packet for DataPacket<S> {
+impl<const S: usize> Packet for DataPacket<S> {
 	fn packet_type(&self) -> PacketType {
 		self.header.r#type
 	}
@@ -232,7 +232,7 @@ impl <const S: usize> Packet for DataPacket<S> {
 	}
 }
 
-impl <const S: usize> Default for DataPacket<S> {
+impl<const S: usize> Default for DataPacket<S> {
 	fn default() -> Self {
 		Self {
 			header: PacketHeader::default(),

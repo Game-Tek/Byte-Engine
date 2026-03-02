@@ -54,15 +54,17 @@ fn into_saturated_u8(float: f64) -> u8 {
 	}
 }
 
-
 #[cfg(test)]
 mod tests {
 	use math::Vector3;
 
-	use super::{rgb_from_temperature,};
+	use super::rgb_from_temperature;
 
 	fn assert_temperature<F: Into<f64>>(temperature: F, r: u8, g: u8, b: u8) {
-		assert_eq!(rgb_from_temperature(temperature), Vector3::new(r as f32 / 255f32, g as f32 / 255f32, b as f32 / 255f32));
+		assert_eq!(
+			rgb_from_temperature(temperature),
+			Vector3::new(r as f32 / 255f32, g as f32 / 255f32, b as f32 / 255f32)
+		);
 	}
 
 	#[test]

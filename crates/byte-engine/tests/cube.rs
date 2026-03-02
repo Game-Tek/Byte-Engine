@@ -7,10 +7,13 @@ use byte_engine::application::{Application, Parameter};
 
 #[test]
 fn cube() {
-    let mut app = byte_engine::application::GraphicsApplication::new("Cube Smoke Test", &[
-		Parameter::new("kill-after", "60"),
-		Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
-	]);
+	let mut app = byte_engine::application::GraphicsApplication::new(
+		"Cube Smoke Test",
+		&[
+			Parameter::new("kill-after", "60"),
+			Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
+		],
+	);
 
 	// space_handle.spawn(Camera::new().builder());
 	// space_handle.spawn(PointLight::new(Vector3::new(0f32, 0f32, -2f32), 4500f32).builder());

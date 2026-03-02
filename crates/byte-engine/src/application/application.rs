@@ -28,7 +28,7 @@ use super::Parameter;
 /// Parameters < Environment variables < Command line arguments
 pub trait Application {
 	/// Creates a new application with the given name.
-	fn new(name: &str, parameters: &[Parameter],) -> Self;
+	fn new(name: &str, parameters: &[Parameter]) -> Self;
 
 	/// Returns the name of the application.
 	fn get_name<'a>(&'a self) -> &'a str;
@@ -46,22 +46,37 @@ pub struct BaseApplication {
 }
 
 impl Application for BaseApplication {
-	fn new(name: &str, parameters: &[Parameter],) -> BaseApplication {
+	fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
 		let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).finish();
 
 		let _ = simple_logger::SimpleLogger::new().env().init();
 
 		let parameters = parameters.to_vec();
 
-		let environment_variables = std::env::vars().filter(|(k, v)| k.as_str().starts_with("BE_")).map(|(k, v)| Parameter::new_string(k.trim_start_matches("BE_").to_string().replace('_', "-").to_lowercase(), v.into())).collect::<Vec<Parameter>>();
+		let environment_variables = std::env::vars()
+			.filter(|(k, v)| k.as_str().starts_with("BE_"))
+			.map(|(k, v)| {
+				Parameter::new_string(
+					k.trim_start_matches("BE_").to_string().replace('_', "-").to_lowercase(),
+					v.into(),
+				)
+			})
+			.collect::<Vec<Parameter>>();
 		// Take all arguments that have the form `--name=value` and convert them to parameters.
-		let arguments = std::env::args().filter(|a| a.starts_with("--")).map(|a| parse_argument(&a)).try_collect::<Vec<Parameter>>().unwrap();
+		let arguments = std::env::args()
+			.filter(|a| a.starts_with("--"))
+			.map(|a| parse_argument(&a))
+			.try_collect::<Vec<Parameter>>()
+			.unwrap();
 
 		let mut parameter_set: HashSet<Parameter> = parameters.into_iter().collect();
 		parameter_set.extend(environment_variables);
 		parameter_set.extend(arguments);
 
-		let application = BaseApplication { name: String::from(name), parameters: parameter_set };
+		let application = BaseApplication {
+			name: String::from(name),
+			parameters: parameter_set,
+		};
 
 		if let Some(e) = application.get_parameter("log.level") {
 			let level = match e.value.as_str() {
@@ -82,16 +97,29 @@ impl Application for BaseApplication {
 		}
 
 		info!("Byte-Engine");
-		info!("Initializing \x1b[4m{}\x1b[24m application with parameters: {}.", name, application.parameters.iter().map(|p| format!("{}={}", p.name, p.value)).collect::<Vec<String>>().join(", "));
+		info!(
+			"Initializing \x1b[4m{}\x1b[24m application with parameters: {}.",
+			name,
+			application
+				.parameters
+				.iter()
+				.map(|p| format!("{}={}", p.name, p.value))
+				.collect::<Vec<String>>()
+				.join(", ")
+		);
 
 		trace!("Initialized base Byte-Engine application!");
 
 		application
 	}
 
-	fn tick(&mut self) -> bool { true }
+	fn tick(&mut self) -> bool {
+		true
+	}
 
-	fn get_name(&self) -> &str { &self.name }
+	fn get_name(&self) -> &str {
+		&self.name
+	}
 }
 
 impl Parameters for BaseApplication {

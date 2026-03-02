@@ -6,18 +6,18 @@ mod utils;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// The full path to the assets directory.
+	/// The full path to the assets directory.
 	/// Example: `beld --source assets`
-    #[arg(short, long, default_value = "assets")]
-    source: String,
+	#[arg(short, long, default_value = "assets")]
+	source: String,
 
 	/// The full path to the resources directory.
 	/// Example: `beld --destination resources`
 	#[arg(short, long, default_value = "resources")]
 	destination: String,
 
-    #[command(subcommand)]
-    command: Commands,
+	#[command(subcommand)]
+	command: Commands,
 }
 
 #[derive(Subcommand)]
@@ -35,19 +35,19 @@ enum Commands {
 		#[clap(value_delimiter = ' ', num_args = 1..)]
 		ids: Vec<String>,
 	},
-    /// Delete resources
-    Delete {
-        /// The IDs of the resources to delete.
+	/// Delete resources
+	Delete {
+		/// The IDs of the resources to delete.
 		/// Example: `beld delete audio.wav mesh.gltf mesh.gltf#image`
 		#[clap(value_delimiter = ' ', num_args = 1..)]
-        ids: Vec<String>,
-    },
+		ids: Vec<String>,
+	},
 }
 
 fn main() -> Result<(), i32> {
 	let _ = simple_logger::SimpleLogger::new().env().init();
 
-    let cli = Cli::parse();
+	let cli = Cli::parse();
 
 	let command = cli.command;
 

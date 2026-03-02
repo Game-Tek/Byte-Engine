@@ -2,9 +2,13 @@
 
 use std::{collections::hash_map::Entry, num::NonZeroU8, sync::Arc};
 
-use resource_management::{resources::image::Image, Reference};
-use utils::{hash::{HashMap, HashMapExt}, sync::{Rc, RwLock}, Extent};
 use ghi::device::Device as _;
+use resource_management::{resources::image::Image, Reference};
+use utils::{
+	hash::{HashMap, HashMapExt},
+	sync::{Rc, RwLock},
+	Extent,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct SamplerState {
@@ -20,7 +24,7 @@ struct SamplerState {
 /// The `TextureManager` struct is responsible for loading and managing textures.
 pub struct TextureManager {
 	samplers: HashMap<SamplerState, ghi::SamplerHandle>,
-    textures: HashMap<String, (ghi::ImageHandle, ghi::SamplerHandle)>,
+	textures: HashMap<String, (ghi::ImageHandle, ghi::SamplerHandle)>,
 }
 
 impl TextureManager {
@@ -31,7 +35,11 @@ impl TextureManager {
 		}
 	}
 
-	pub fn load(&mut self, reference: &mut Reference<Image>, device: &mut ghi::Device) -> Option<(String, ghi::ImageHandle, ghi::SamplerHandle)> {
+	pub fn load(
+		&mut self,
+		reference: &mut Reference<Image>,
+		device: &mut ghi::Device,
+	) -> Option<(String, ghi::ImageHandle, ghi::SamplerHandle)> {
 		if let Some(r) = self.textures.get(reference.id()) {
 			return Some((reference.id().to_string(), r.0, r.1));
 		}
@@ -50,7 +58,13 @@ impl TextureManager {
 
 		let extent = Extent::from(texture.extent);
 
-		let image = device.create_image(Some(&reference.id()), extent, format, ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::HostToDevice, ghi::UseCases::STATIC, None);
+		let image = device.build_image(
+			ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
+				.name(reference.id())
+				.extent(extent)
+				.device_accesses(ghi::DeviceAccesses::HostToDevice)
+				.use_case(ghi::UseCases::STATIC),
+		);
 		let target_buffer = device.get_texture_slice_mut(image);
 
 		let load_target = reference.load(target_buffer.into()).unwrap();
@@ -59,7 +73,7 @@ impl TextureManager {
 		// 	ghi.get_texture_slice_mut(new_texture).copy_from_slice(b);
 		// 	new_texture
 		// } else {
-		// 	let new_texture = ghi.create_image(Some(&resource.id()), extent, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::TransferDestination, ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead, ghi::UseCases::STATIC);
+		// 	let new_texture = ghi.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Image | ghi::Uses::TransferDestination).name(&resource.id()).extent(extent).device_accesses(ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuRead).use_case(ghi::UseCases::STATIC));
 		// 	log::warn!("The image '{}' won't be available because the resource did not provide a buffer.", resource.id());
 		// 	let slice = ghi.get_texture_slice_mut(new_texture);
 
@@ -108,7 +122,15 @@ impl TextureManager {
 		match self.samplers.entry(sampler_state) {
 			Entry::Occupied(v) => v.get().clone(),
 			Entry::Vacant(v) => {
-				let sampler_handler = device.create_sampler(sampler_state.filtering_mode, sampler_state.reduction_mode, sampler_state.mip_map_mode, sampler_state.addressing_mode, sampler_state.anisotropy.map(|v| v.get() as f32), sampler_state.min_lod as f32, sampler_state.max_lod as f32);
+				let sampler_handler = device.create_sampler(
+					sampler_state.filtering_mode,
+					sampler_state.reduction_mode,
+					sampler_state.mip_map_mode,
+					sampler_state.addressing_mode,
+					sampler_state.anisotropy.map(|v| v.get() as f32),
+					sampler_state.min_lod as f32,
+					sampler_state.max_lod as f32,
+				);
 				v.insert(sampler_handler);
 				sampler_handler
 			}

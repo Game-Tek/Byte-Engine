@@ -3,63 +3,57 @@ use std::io::{Read, Seek};
 use utils::sync::File;
 
 use crate::{
-    resource::{ReadTargets, ReadTargetsMut},
-    StreamDescription,
+	resource::{ReadTargets, ReadTargetsMut},
+	StreamDescription,
 };
 
 use super::ResourceReader;
 
 #[derive(Debug)]
 pub struct FileResourceReader {
-    file: File,
+	file: File,
 }
 
 impl FileResourceReader {
-    pub fn new(file: File) -> Self {
-        Self { file }
-    }
+	pub fn new(file: File) -> Self {
+		Self { file }
+	}
 }
 
 impl ResourceReader for FileResourceReader {
-    fn read_into<'b, 'c: 'b, 'a: 'b>(
-        &'b mut self,
-        stream_descriptions: Option<&'c [StreamDescription]>,
-        read_target: ReadTargetsMut<'a>,
-    ) -> Result<ReadTargets<'a>, ()> {
-        match read_target {
-            ReadTargetsMut::Buffer(buffer) => {
-                self.file
-                    .seek(std::io::SeekFrom::Start(0 as u64))
-                    .or(Err(()))?;
-                self.file.read_exact(buffer).or(Err(()))?;
-                Ok(ReadTargets::Buffer(buffer))
-            }
-            ReadTargetsMut::Box(mut buffer) => {
-                self.file
-                    .seek(std::io::SeekFrom::Start(0 as u64))
-                    .or(Err(()))?;
-                self.file.read_exact(&mut buffer[..]).or(Err(()))?;
-                Ok(ReadTargets::Box(buffer))
-            }
-            ReadTargetsMut::Streams(mut streams) => {
-                if let Some(stream_descriptions) = stream_descriptions {
-                    for sd in stream_descriptions {
-                        let offset = sd.offset;
-                        if let Some(s) = streams.iter_mut().find(|s| s.name() == sd.name) {
-                            self.file
-                                .seek(std::io::SeekFrom::Start(offset as u64))
-                                .or(Err(()))?;
-                            self.file.read_exact(s.buffer_mut()).or(Err(()))?;
-                        }
-                    }
+	fn read_into<'b, 'c: 'b, 'a: 'b>(
+		&'b mut self,
+		stream_descriptions: Option<&'c [StreamDescription]>,
+		read_target: ReadTargetsMut<'a>,
+	) -> Result<ReadTargets<'a>, ()> {
+		match read_target {
+			ReadTargetsMut::Buffer(buffer) => {
+				self.file.seek(std::io::SeekFrom::Start(0 as u64)).or(Err(()))?;
+				self.file.read_exact(buffer).or(Err(()))?;
+				Ok(ReadTargets::Buffer(buffer))
+			}
+			ReadTargetsMut::Box(mut buffer) => {
+				self.file.seek(std::io::SeekFrom::Start(0 as u64)).or(Err(()))?;
+				self.file.read_exact(&mut buffer[..]).or(Err(()))?;
+				Ok(ReadTargets::Box(buffer))
+			}
+			ReadTargetsMut::Streams(mut streams) => {
+				if let Some(stream_descriptions) = stream_descriptions {
+					for sd in stream_descriptions {
+						let offset = sd.offset;
+						if let Some(s) = streams.iter_mut().find(|s| s.name() == sd.name) {
+							self.file.seek(std::io::SeekFrom::Start(offset as u64)).or(Err(()))?;
+							self.file.read_exact(s.buffer_mut()).or(Err(()))?;
+						}
+					}
 
-                    Ok(ReadTargets::Streams(
-                        streams.into_iter().map(|stream| stream.into()).collect(),
-                    ))
-                } else {
-                    Err(())
-                }
-            }
-        }
-    }
+					Ok(ReadTargets::Streams(
+						streams.into_iter().map(|stream| stream.into()).collect(),
+					))
+				} else {
+					Err(())
+				}
+			}
+		}
+	}
 }

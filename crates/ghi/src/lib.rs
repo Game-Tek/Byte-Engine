@@ -10,33 +10,33 @@ pub mod window;
 pub mod graphics_hardware_interface;
 pub mod render_debugger;
 
-pub mod vulkan;
 pub mod debug;
 #[cfg(target_os = "windows")]
 pub mod dx12;
 #[cfg(all(target_os = "macos", feature = "metal"))]
 pub mod metal;
+pub mod vulkan;
 
 pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-pub use vulkan::Instance as Instance;
+pub use vulkan::Instance;
 
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-pub use vulkan::Device as Device;
+pub use vulkan::Device;
 
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-pub use vulkan::Frame as Frame;
+pub use vulkan::Frame;
 
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-pub use vulkan::CommandBufferRecording as CommandBufferRecording;
+pub use vulkan::CommandBufferRecording;
 
+pub mod command_buffer;
 pub mod device;
 pub mod frame;
-pub mod command_buffer;
 pub mod image;
-pub mod sampler;
 pub mod raster_pipeline;
+pub mod sampler;
 
 mod utils;

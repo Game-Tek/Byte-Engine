@@ -1,6 +1,10 @@
 use math::Vector3;
 
-use crate::{core::{Entity, EntityHandle}, inspector::Inspectable, rendering::lights::{Light, LightClasses}};
+use crate::{
+	core::{Entity, EntityHandle},
+	inspector::Inspectable,
+	rendering::lights::{Light, LightClasses},
+};
 
 use super::super::cct;
 

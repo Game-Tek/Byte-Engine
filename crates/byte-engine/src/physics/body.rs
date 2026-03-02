@@ -1,6 +1,10 @@
-use math::{Base, Matrix3, Vector3, magnitude, magnitude_squared, mat::MatNew3 as _};
+use math::{magnitude, magnitude_squared, mat::MatNew3 as _, Base, Matrix3, Vector3};
 
-use crate::{core::Entity, gameplay::{Positionable, Transformable}, physics::{collider::Collider}};
+use crate::{
+	core::Entity,
+	gameplay::{Positionable, Transformable},
+	physics::collider::Collider,
+};
 
 /// The `Body` trait represents a physical body in the world.
 pub trait Body: Collider + Transformable {
@@ -11,11 +15,7 @@ pub trait Body: Collider + Transformable {
 		match self.shape() {
 			super::collider::Shapes::Sphere { radius } => {
 				let inertia = (2.0 / 5.0) * radius * radius;
-				Matrix3::new(
-					inertia, 0.0, 0.0,
-					0.0, inertia, 0.0,
-					0.0, 0.0, inertia
-				)
+				Matrix3::new(inertia, 0.0, 0.0, 0.0, inertia, 0.0, 0.0, 0.0, inertia)
 			}
 			super::collider::Shapes::Cube { size: half_size } => {
 				let max = half_size;
@@ -30,9 +30,15 @@ pub trait Body: Collider + Transformable {
 				let dz2 = dz * dz;
 
 				let tensor = Matrix3::new(
-					(dy2 + dz2) / 12f32, 0.0, 0.0,
-					0.0, (dx2 + dz2) / 12f32, 0.0,
-					0.0, 0.0, (dx2 + dy2) / 12f32
+					(dy2 + dz2) / 12f32,
+					0.0,
+					0.0,
+					0.0,
+					(dx2 + dz2) / 12f32,
+					0.0,
+					0.0,
+					0.0,
+					(dx2 + dy2) / 12f32,
 				);
 
 				let cm = Vector3::new((max.x + min.x) * 0.5, (max.y + min.y) * 0.5, (max.z + min.z) * 0.5);
@@ -45,15 +51,27 @@ pub trait Body: Collider + Transformable {
 				let rz2 = r.z * r.z;
 
 				let pat_tensor = Matrix3::new(
-					r2 - rx2, r.x * r.y, r.x * r.x,
-					r.y * r.x, r2 - r.y * r.y, r.y * r.z,
-					r.z * r.x, r.z * r.y, r2 - rz2
+					r2 - rx2,
+					r.x * r.y,
+					r.x * r.x,
+					r.y * r.x,
+					r2 - r.y * r.y,
+					r.y * r.z,
+					r.z * r.x,
+					r.z * r.y,
+					r2 - rz2,
 				);
 
 				let inertia = Matrix3::new(
-					tensor[0] + pat_tensor[0], tensor[1] + pat_tensor[1], tensor[2] + pat_tensor[2],
-					pat_tensor[3], tensor[4] + pat_tensor[4], pat_tensor[5],
-					pat_tensor[6], pat_tensor[7], tensor[8] + pat_tensor[8]
+					tensor[0] + pat_tensor[0],
+					tensor[1] + pat_tensor[1],
+					tensor[2] + pat_tensor[2],
+					pat_tensor[3],
+					tensor[4] + pat_tensor[4],
+					pat_tensor[5],
+					pat_tensor[6],
+					pat_tensor[7],
+					tensor[8] + pat_tensor[8],
 				);
 
 				inertia

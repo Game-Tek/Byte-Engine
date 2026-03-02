@@ -1,2 +1,2 @@
-pub mod visibility;
 pub mod simple;
+pub mod visibility;

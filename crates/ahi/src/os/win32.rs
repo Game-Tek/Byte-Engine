@@ -1,11 +1,17 @@
 use windows::Win32::{
 	Foundation::S_OK,
 	Media::{
-		KernelStreaming::{WAVE_FORMAT_EXTENSIBLE, KSDATAFORMAT_SUBTYPE_PCM, SPEAKER_ALL, SPEAKER_FRONT_LEFT, SPEAKER_FRONT_RIGHT},
+		Audio::{
+			eConsole, eRender, IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+			AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+			WAVEFORMATEX, WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t,
+		},
+		KernelStreaming::{
+			KSDATAFORMAT_SUBTYPE_PCM, SPEAKER_ALL, SPEAKER_FRONT_LEFT, SPEAKER_FRONT_RIGHT, WAVE_FORMAT_EXTENSIBLE,
+		},
 		Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
-		Audio::{WAVEFORMATEXTENSIBLE as WAVEFORMATEXTENSIBLE_t, eConsole, eRender, IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, WAVEFORMATEX, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY},
 	},
-	System::Com::{CoCreateInstance, CoTaskMemFree, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,},
+	System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED},
 };
 
 use crate::audio_hardware_interface::{HardwareParameters, Streams, WritePlayFunction};
@@ -24,20 +30,23 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		}
 
 		let enumerator: IMMDeviceEnumerator = unsafe {
-			CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-				.map_err(|_| "Failed to create device enumerator. The COM class for MMDeviceEnumerator could not be instantiated.".to_string())?
+			CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|_| {
+				"Failed to create device enumerator. The COM class for MMDeviceEnumerator could not be instantiated."
+					.to_string()
+			})?
 		};
 
 		let device: IMMDevice = unsafe {
-			enumerator
-				.GetDefaultAudioEndpoint(eRender, eConsole)
-				.map_err(|_| "Failed to get default audio endpoint. The system has no default render device or it is unavailable.".to_string())?
+			enumerator.GetDefaultAudioEndpoint(eRender, eConsole).map_err(|_| {
+				"Failed to get default audio endpoint. The system has no default render device or it is unavailable."
+					.to_string()
+			})?
 		};
 
 		let (client, params) = unsafe {
-			let client: IAudioClient = device
-				.Activate(CLSCTX_ALL, None)
-				.map_err(|_| "Failed to activate audio client. The audio endpoint could not provide an IAudioClient interface.".to_string())?;
+			let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|_| {
+				"Failed to activate audio client. The audio endpoint could not provide an IAudioClient interface.".to_string()
+			})?;
 
 			let bits_per_sample = params.bit_depth;
 			let samples_per_second = params.sample_rate;
@@ -59,21 +68,33 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 					wFormatTag: WAVE_FORMAT_EXTENSIBLE as _,
 					cbSize: 22,
 				},
-				Samples: windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE_0 { wValidBitsPerSample: bits_per_sample as _ },
+				Samples: windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE_0 {
+					wValidBitsPerSample: bits_per_sample as _,
+				},
 				dwChannelMask: dw_channel_mask,
 				SubFormat: KSDATAFORMAT_SUBTYPE_PCM,
 			};
 
 			let mut m_closest_format: *const WAVEFORMATEXTENSIBLE_t = std::ptr::null();
 
-			if client.IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, std::mem::transmute(&m_format), Some(std::mem::transmute(&mut m_closest_format))).is_err() {
+			if client
+				.IsFormatSupported(
+					AUDCLNT_SHAREMODE_SHARED,
+					std::mem::transmute(&m_format),
+					Some(std::mem::transmute(&mut m_closest_format)),
+				)
+				.is_err()
+			{
 				if !m_closest_format.is_null() {
 					let m_closest_format: &WAVEFORMATEXTENSIBLE_t = std::mem::transmute(m_closest_format);
 					let closest_channels = m_closest_format.Format.nChannels;
 					let closest_samples_per_second = m_closest_format.Format.nSamplesPerSec;
 					let closest_bits_per_sample = m_closest_format.Format.wBitsPerSample;
 					let closest_sub_format = m_closest_format.SubFormat;
-					panic!("Demanded audio format and/or parameters are not supported by the target audio device. Closest match available is :\n\t- Channels: {}\n\t- Samples per second: {}\n\t- Bits per Sample: {}\n\t- SubFormat: {:#?}", closest_channels, closest_samples_per_second, closest_bits_per_sample, closest_sub_format);
+					panic!(
+						"Demanded audio format and/or parameters are not supported by the target audio device. Closest match available is :\n\t- Channels: {}\n\t- Samples per second: {}\n\t- Bits per Sample: {}\n\t- SubFormat: {:#?}",
+						closest_channels, closest_samples_per_second, closest_bits_per_sample, closest_sub_format
+					);
 				}
 
 				panic!("Demanded audio format and/or parameters are not supported by the target audio device.");
@@ -85,7 +106,10 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 				let closest_samples_per_second = m_closest_format.Format.nSamplesPerSec;
 				let closest_bits_per_sample = m_closest_format.Format.wBitsPerSample;
 				let closest_sub_format = m_closest_format.SubFormat;
-				println!("Closest match available is :\n\t- Channels: {}\n\t- Samples per second: {}\n\t- Bits per Sample: {}\n\t- SubFormat: {:#?}", closest_channels, closest_samples_per_second, closest_bits_per_sample, closest_sub_format);
+				println!(
+					"Closest match available is :\n\t- Channels: {}\n\t- Samples per second: {}\n\t- Bits per Sample: {}\n\t- SubFormat: {:#?}",
+					closest_channels, closest_samples_per_second, closest_bits_per_sample, closest_sub_format
+				);
 
 				m_closest_format
 			} else {
@@ -94,7 +118,10 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 
 			client
 				.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, std::mem::transmute(m_format), None)
-				.map_err(|_| "Failed to initialize audio client. The device rejected the requested stream format or parameters.".to_string())?;
+				.map_err(|_| {
+					"Failed to initialize audio client. The device rejected the requested stream format or parameters."
+						.to_string()
+				})?;
 
 			let bit_depth = m_format.Format.wBitsPerSample as u32;
 			let sample_rate = m_format.Format.nSamplesPerSec as u32;
@@ -114,15 +141,15 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		};
 
 		let render_client: IAudioRenderClient = unsafe {
-			client
-				.GetService()
-				.map_err(|_| "Failed to get render client service. The audio client did not expose IAudioRenderClient.".to_string())?
+			client.GetService().map_err(|_| {
+				"Failed to get render client service. The audio client did not expose IAudioRenderClient.".to_string()
+			})?
 		};
 
 		unsafe {
-			client
-				.Start()
-				.map_err(|_| "Failed to start audio stream. The audio client could not transition to the running state.".to_string())?;
+			client.Start().map_err(|_| {
+				"Failed to start audio stream. The audio client could not transition to the running state.".to_string()
+			})?;
 		}
 
 		Ok(Device {
@@ -134,9 +161,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 	}
 
 	fn get_period_size(&self) -> usize {
-		let period_size = unsafe {
-			self.client.GetBufferSize().unwrap()
-		};
+		let period_size = unsafe { self.client.GetBufferSize().unwrap() };
 
 		period_size as usize
 	}
@@ -152,45 +177,53 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		}
 
 		match self.parameters.bit_depth {
-			16 => {
-				match self.parameters.channels {
-					1 => {
-						let buffer = unsafe {
-							std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap() as *mut i16, available_space as usize)
-						};
+			16 => match self.parameters.channels {
+				1 => {
+					let buffer = unsafe {
+						std::slice::from_raw_parts_mut(
+							self.render_client.GetBuffer(available_space).unwrap() as *mut i16,
+							available_space as usize,
+						)
+					};
 
-						wpf(Streams::Mono16Bit(buffer))
-					}
-					2 => {
-						let buffer = unsafe {
-							std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap() as *mut (i16, i16), available_space as usize)
-						};
-
-						wpf(Streams::Stereo16Bit(buffer))
-					}
-					_ => panic!()
+					wpf(Streams::Mono16Bit(buffer))
 				}
-			}
-			32 => {
-				match self.parameters.channels {
-					1 => {
-						let buffer = unsafe {
-							std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap() as *mut f32, available_space as usize)
-						};
+				2 => {
+					let buffer = unsafe {
+						std::slice::from_raw_parts_mut(
+							self.render_client.GetBuffer(available_space).unwrap() as *mut (i16, i16),
+							available_space as usize,
+						)
+					};
 
-						wpf(Streams::MonoFloat32(buffer))
-					}
-					2 => {
-						let buffer = unsafe {
-							std::slice::from_raw_parts_mut(self.render_client.GetBuffer(available_space).unwrap() as *mut (f32, f32), available_space as usize)
-						};
-
-						wpf(Streams::StereoFloat32(buffer))
-					}
-					_ => panic!()
+					wpf(Streams::Stereo16Bit(buffer))
 				}
-			}
-			_ => panic!()
+				_ => panic!(),
+			},
+			32 => match self.parameters.channels {
+				1 => {
+					let buffer = unsafe {
+						std::slice::from_raw_parts_mut(
+							self.render_client.GetBuffer(available_space).unwrap() as *mut f32,
+							available_space as usize,
+						)
+					};
+
+					wpf(Streams::MonoFloat32(buffer))
+				}
+				2 => {
+					let buffer = unsafe {
+						std::slice::from_raw_parts_mut(
+							self.render_client.GetBuffer(available_space).unwrap() as *mut (f32, f32),
+							available_space as usize,
+						)
+					};
+
+					wpf(Streams::StereoFloat32(buffer))
+				}
+				_ => panic!(),
+			},
+			_ => panic!(),
 		}
 
 		unsafe {
@@ -200,8 +233,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		Ok(available_space as usize)
 	}
 
-	fn pause(&self) {
-	}
+	fn pause(&self) {}
 }
 
 impl Drop for Device {

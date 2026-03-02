@@ -1,4 +1,4 @@
-use crate::rendering::{RenderPass, Viewport, render_pass::RenderPassReturn};
+use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
 use utils::Box;
 
 pub struct SerialRenderPass {

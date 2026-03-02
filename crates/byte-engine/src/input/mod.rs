@@ -2,22 +2,22 @@ use crate::core::factory::Handle;
 
 use super::utils::RGBA;
 
-pub mod input_manager;
 mod gamepad;
+pub mod input_manager;
 
-pub mod device_class;
-pub mod device;
-pub mod input_trigger;
 pub mod action;
+pub mod device;
+pub mod device_class;
+pub mod input_trigger;
 pub mod utils;
 
 pub use action::Action;
 pub use action::ActionBindingDescription;
 
+pub use action::ActionHandle;
+pub use device::DeviceHandle;
 pub use input_manager::InputManager;
 pub use input_trigger::TriggerHandle;
-pub use device::DeviceHandle;
-pub use action::ActionHandle;
 use math::Quaternion;
 use math::Vector2;
 use math::Vector3;
@@ -197,7 +197,7 @@ impl Extract<bool> for Value {
 	fn extract(&self) -> bool {
 		match self {
 			Value::Bool(value) => *value,
-			_ => panic!("Wrong type")
+			_ => panic!("Wrong type"),
 		}
 	}
 }
@@ -206,7 +206,7 @@ impl Extract<Vector2> for Value {
 	fn extract(&self) -> Vector2 {
 		match self {
 			Value::Vector2(value) => *value,
-			_ => panic!("Wrong type")
+			_ => panic!("Wrong type"),
 		}
 	}
 }
@@ -215,7 +215,7 @@ impl Extract<Vector3> for Value {
 	fn extract(&self) -> Vector3 {
 		match self {
 			Value::Vector3(value) => *value,
-			_ => panic!("Wrong type")
+			_ => panic!("Wrong type"),
 		}
 	}
 }
@@ -232,7 +232,10 @@ pub struct ValueMapping {
 
 impl ValueMapping {
 	pub fn new<V: Into<Value>>(function: Function, value: V) -> Self {
-		Self { function, value: value.into() }
+		Self {
+			function,
+			value: value.into(),
+		}
 	}
 
 	pub fn function(mut self, function: Function) -> Self {

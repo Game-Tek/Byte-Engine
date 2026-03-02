@@ -2,7 +2,10 @@ use core::task;
 use std::{ops::Deref, sync::Arc};
 
 use downcast_rs::Downcast;
-use utils::{hash::{HashMap, HashMapExt as _}, sync::Mutex};
+use utils::{
+	hash::{HashMap, HashMapExt as _},
+	sync::Mutex,
+};
 
 use super::{Entity, EntityHandle};
 
@@ -56,15 +59,30 @@ impl Task {
 	}
 
 	pub fn every(interval: impl Into<Interval>, f: impl Fn() + 'static) -> Self {
-		Self { f: Box::new(f), every: Some(interval.into()), lifetime: None, delay: None }
+		Self {
+			f: Box::new(f),
+			every: Some(interval.into()),
+			lifetime: None,
+			delay: None,
+		}
 	}
 
 	pub fn once(f: impl Fn() + 'static) -> Self {
-		Self { f: Box::new(f), every: None, lifetime: Some(Interval::Frames(1)), delay: None }
+		Self {
+			f: Box::new(f),
+			every: None,
+			lifetime: Some(Interval::Frames(1)),
+			delay: None,
+		}
 	}
 
 	pub fn r#in(interval: impl Into<Interval>, f: impl Fn() + 'static) -> Self {
-		Self { f: Box::new(f), every: None, lifetime: None, delay: Some(interval.into()) }
+		Self {
+			f: Box::new(f),
+			every: None,
+			lifetime: None,
+			delay: Some(interval.into()),
+		}
 	}
 
 	pub fn method<T: 'static>(handle: EntityHandle<T>, method: impl Fn(&mut T) + 'static) -> Self {
@@ -136,12 +154,8 @@ impl TaskExecutor {
 
 				let delay = if let Some(delay) = &task.delay {
 					match delay {
-						Interval::Time(duration) => {
-							duration.as_secs_f64() <= dt.as_secs_f64()
-						}
-						Interval::Frames(frames) => {
-							*frames as u64 == 0
-						}
+						Interval::Time(duration) => duration.as_secs_f64() <= dt.as_secs_f64(),
+						Interval::Frames(frames) => *frames as u64 == 0,
 					}
 				} else {
 					true
@@ -198,12 +212,8 @@ impl TaskExecutor {
 
 			let lifetime = if let Some(lifetime) = &task.lifetime {
 				match lifetime {
-					Interval::Time(duration) => {
-						*duration > std::time::Duration::ZERO
-					}
-					Interval::Frames(frames) => {
-						*frames > 0
-					}
+					Interval::Time(duration) => *duration > std::time::Duration::ZERO,
+					Interval::Frames(frames) => *frames > 0,
 				}
 			} else {
 				true
@@ -211,12 +221,8 @@ impl TaskExecutor {
 
 			let delay = if let Some(delay) = &task.delay {
 				match delay {
-					Interval::Time(duration) => {
-						*duration > std::time::Duration::ZERO
-					}
-					Interval::Frames(frames) => {
-						*frames > 0
-					}
+					Interval::Time(duration) => *duration > std::time::Duration::ZERO,
+					Interval::Frames(frames) => *frames > 0,
 				}
 			} else {
 				true

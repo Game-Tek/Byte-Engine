@@ -15,9 +15,8 @@ use std::future::Future;
 
 pub fn future<'a, T, F>(f: F) -> BoxedFuture<'a, T>
 where
-    F: Future<Output = T> + 'a,
-{
-    Box::pin(f)
+	F: Future<Output = T> + 'a, {
+	Box::pin(f)
 }
 
 pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;

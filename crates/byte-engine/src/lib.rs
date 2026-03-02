@@ -1,7 +1,23 @@
 //! # Byte-Engine
 //! Byte-Engine is a Rust powered game engine. It is designed to be efficient, fast and easy to use; with simple, composable patterns
 
-#![feature(const_trait_impl, future_join, coerce_unsized, unsize, once_cell_try, iter_map_windows, slice_pattern, trait_alias, associated_type_defaults, downcast_unchecked, mpmc_channel, assert_matches, iter_collect_into, impl_trait_in_assoc_type, iterator_try_collect)]
+#![feature(
+	const_trait_impl,
+	future_join,
+	coerce_unsized,
+	unsize,
+	once_cell_try,
+	iter_map_windows,
+	slice_pattern,
+	trait_alias,
+	associated_type_defaults,
+	downcast_unchecked,
+	mpmc_channel,
+	assert_matches,
+	iter_collect_into,
+	impl_trait_in_assoc_type,
+	iterator_try_collect
+)]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(dead_code)]
 #![allow(unused_imports)]
@@ -13,19 +29,19 @@
 
 #[cfg(feature = "headed")]
 extern crate ahi;
+extern crate besl;
 #[cfg(feature = "headed")]
 extern crate ghi;
-extern crate besl;
 extern crate resource_management;
 extern crate utils;
 
 pub use math;
 
-pub mod core;
 pub mod application;
 #[cfg(feature = "headed")]
 pub mod audio;
 pub mod camera;
+pub mod core;
 pub mod input;
 #[cfg(feature = "headed")]
 pub mod ui;
@@ -33,10 +49,10 @@ pub mod ui;
 pub mod constants;
 
 pub mod gameplay;
+pub mod network;
 pub mod physics;
 #[cfg(feature = "headed")]
 pub mod rendering;
-pub mod network;
 
 pub mod inspector;
 

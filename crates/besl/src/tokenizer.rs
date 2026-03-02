@@ -5,9 +5,7 @@ pub struct Tokens<'a> {
 
 /// Tokenize consumes a string and returns a stream of tokens.
 pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
-	let interrupt = |c: char| -> bool {
-		c.is_whitespace()
-	};
+	let interrupt = |c: char| -> bool { c.is_whitespace() };
 
 	let can_sequence_continue = |last: Option<char>, c: char| -> bool {
 		let Some(last) = last else {
@@ -79,21 +77,79 @@ mod tests {
 	fn test_function() {
 		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }";
 		let tokens = tokenize(source).unwrap();
-		assert_eq!(tokens.tokens, vec!["fn", "main", "(", ")", "->", "void", "{", "gl_Position", "=", "vec4", "(", "0.0", ",", "0.0", ",", "0.0", ",", "1.0", ")", ";", "}"]);
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"fn",
+				"main",
+				"(",
+				")",
+				"->",
+				"void",
+				"{",
+				"gl_Position",
+				"=",
+				"vec4",
+				"(",
+				"0.0",
+				",",
+				"0.0",
+				",",
+				"0.0",
+				",",
+				"1.0",
+				")",
+				";",
+				"}"
+			]
+		);
 	}
 
 	#[test]
 	fn test_operators() {
 		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0) * 2.0; }";
 		let tokens = tokenize(source).unwrap();
-		assert_eq!(tokens.tokens, vec!["fn", "main", "(", ")", "->", "void", "{", "gl_Position", "=", "vec4", "(", "0.0", ",", "0.0", ",", "0.0", ",", "1.0", ")", "*", "2.0", ";", "}"]);
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"fn",
+				"main",
+				"(",
+				")",
+				"->",
+				"void",
+				"{",
+				"gl_Position",
+				"=",
+				"vec4",
+				"(",
+				"0.0",
+				",",
+				"0.0",
+				",",
+				"0.0",
+				",",
+				"1.0",
+				")",
+				"*",
+				"2.0",
+				";",
+				"}"
+			]
+		);
 	}
 
 	#[test]
 	fn test_struct() {
 		let source = "struct Light { position: vec3f, color: vec3f, data: Data<int>, array: [u8; 4] };";
 		let tokens = tokenize(source).unwrap();
-		assert_eq!(tokens.tokens, vec!["struct", "Light", "{", "position", ":", "vec3f", ",", "color", ":", "vec3f", ",", "data", ":", "Data", "<", "int", ">", ",", "array", ":", "[", "u8", ";", "4", "]", "}", ";"]);
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"struct", "Light", "{", "position", ":", "vec3f", ",", "color", ":", "vec3f", ",", "data", ":", "Data", "<",
+				"int", ">", ",", "array", ":", "[", "u8", ";", "4", "]", "}", ";"
+			]
+		);
 	}
 
 	#[test]

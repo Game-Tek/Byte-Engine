@@ -3,15 +3,18 @@
 //! It does not check if the triangle is rendered correctly, or if the application
 //! is working correctly.
 
-use byte_engine::{application::{Application, Parameter}};
+use byte_engine::application::{Application, Parameter};
 
 #[test]
 #[ignore]
 fn triangle() {
-    let mut app = byte_engine::application::GraphicsApplication::new("Triangle Smoke Test", &[
-		Parameter::new("kill-after", "60"),
-		Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
-	]);
+	let mut app = byte_engine::application::GraphicsApplication::new(
+		"Triangle Smoke Test",
+		&[
+			Parameter::new("kill-after", "60"),
+			Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
+		],
+	);
 
 	byte_engine::application::graphics_application::default_setup(&mut app);
 

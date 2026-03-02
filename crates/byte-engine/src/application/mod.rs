@@ -1,12 +1,12 @@
 use std::time::Duration;
 
-pub mod parameters;
 pub mod application;
+pub mod parameters;
 pub mod thread;
 pub use application::{Application, BaseApplication};
 
 pub use trotcast::Channel as Sender;
-pub use trotcast::Receiver as Receiver;
+pub use trotcast::Receiver;
 
 #[cfg(feature = "headed")]
 pub mod graphics_application;
@@ -35,12 +35,16 @@ impl Time {
 /// A parameter for applications.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Parameter {
-	name: String, value: String,
+	name: String,
+	value: String,
 }
 
 impl Parameter {
 	pub fn new(name: &str, value: &str) -> Self {
-		Parameter { name: name.into(), value: value.into() }
+		Parameter {
+			name: name.into(),
+			value: value.into(),
+		}
 	}
 
 	pub fn new_string(name: String, value: String) -> Self {

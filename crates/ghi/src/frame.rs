@@ -1,10 +1,15 @@
 use utils::Extent;
 
-use crate::{CommandBufferHandle, Device, DynamicBufferHandle, ImageHandle, PresentKey, SwapchainHandle, command_buffer::CommandBufferRecording, graphics_hardware_interface};
+use crate::{
+	command_buffer::CommandBufferRecording, graphics_hardware_interface, CommandBufferHandle, Device, DynamicBufferHandle,
+	ImageHandle, PresentKey, SwapchainHandle,
+};
 
 /// The `Frame` trait contains methods for performing per frame operations.
 /// This trait is used to safely access and manage resources within a frame. This is achieved with Rust's lifetime system by mutably borrowing the `Device` while performing per frame operations.
-pub trait Frame where Self: Sized {
+pub trait Frame
+where
+	Self: Sized, {
 	type CBR<'f>: CommandBufferRecording
 	where
 		Self: 'f;
@@ -34,5 +39,10 @@ pub trait Frame where Self: Sized {
 	fn device(&mut self) -> &mut Device; // TODO: can lead to nasty stuff, analyze how to remove
 
 	/// Executes the provided command buffer recording.
-	fn execute<'f>(&'f mut self, command_buffer_recording: Self::CBR<'f>, present_keys: &[graphics_hardware_interface::PresentKey], synchronizer: graphics_hardware_interface::SynchronizerHandle);
+	fn execute<'f>(
+		&'f mut self,
+		command_buffer_recording: Self::CBR<'f>,
+		present_keys: &[graphics_hardware_interface::PresentKey],
+		synchronizer: graphics_hardware_interface::SynchronizerHandle,
+	);
 }

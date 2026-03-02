@@ -13,9 +13,7 @@ pub struct Viewport {
 
 impl Viewport {
 	pub fn new(view: View, extent: Extent, index: usize) -> Self {
-		Self {
-			view, extent, index,
-		}
+		Self { view, extent, index }
 	}
 
 	pub fn extent(&self) -> Extent {

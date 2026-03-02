@@ -8,8 +8,8 @@ use std::{
 
 use ghi::{
 	command_buffer::{
-		BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _,
-		CommandBufferRecording, RasterizationRenderPassMode as _,
+		BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording,
+		RasterizationRenderPassMode as _,
 	},
 	device::Device as _,
 	frame::Frame as _,
@@ -119,12 +119,11 @@ impl Renderer {
 			settings
 		};
 
-		let settings =
-			if let Some(param) = parameters.get_parameter("render.ghi.features.mesh-shading") {
-				settings.mesh_shading(param.as_bool_simple())
-			} else {
-				settings
-			};
+		let settings = if let Some(param) = parameters.get_parameter("render.ghi.features.mesh-shading") {
+			settings.mesh_shading(param.as_bool_simple())
+		} else {
+			settings
+		};
 
 		let features = ghi::Features::new()
 			.validation(settings.validation)
@@ -162,18 +161,14 @@ impl Renderer {
 		let mut device = instance
 			.create_device(
 				features.clone(),
-				&mut [(
-					ghi::QueueSelection::new(ghi::CommandBufferType::GRAPHICS),
-					&mut queue_handle,
-				)],
+				&mut [(ghi::QueueSelection::new(ghi::CommandBufferType::GRAPHICS), &mut queue_handle)],
 			)
 			.unwrap();
 
 		let queue_handle = queue_handle.unwrap();
 
 		let render_command_buffer = device.create_command_buffer(Some("Render"), queue_handle);
-		let render_finished_synchronizer =
-			device.create_synchronizer(Some("Render Finisished"), true);
+		let render_finished_synchronizer = device.create_synchronizer(Some("Render Finisished"), true);
 
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
 
@@ -207,8 +202,7 @@ impl Renderer {
 			let mut scene_manager = handle.write();
 
 			for (view_id, _) in self.windows.iter().enumerate() {
-				let mut rpb =
-					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
+				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
 
 				scene_manager.create_view(view_id, &mut rpb);
 
@@ -230,24 +224,20 @@ impl Renderer {
 	/// Registers a render pass factory that will be instantiated for every current and future view.
 	pub fn add_post_scene_render_pass_for_all_views<F>(&mut self, render_pass_factory: F)
 	where
-		F: for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass> + 'static,
-	{
+		F: for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass> + 'static, {
 		let render_pass_factory: Box<RenderPassFactory> = Box::new(render_pass_factory);
-		let view_ids: SmallVec<[usize; 16]> =
-			self.views.iter().map(|(view_id, _)| *view_id).collect();
+		let view_ids: SmallVec<[usize; 16]> = self.views.iter().map(|(view_id, _)| *view_id).collect();
 
 		for view_id in view_ids {
 			let render_pass = {
-				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
+				let mut render_pass_builder = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
 			self.add_render_pass(render_pass, view_id);
 		}
 
-		self.post_scene_render_pass_factories
-			.push(render_pass_factory);
+		self.post_scene_render_pass_factories.push(render_pass_factory);
 	}
 
 	/// Instantiates all registered post-scene render pass factories for a given view.
@@ -256,8 +246,7 @@ impl Renderer {
 
 		for render_pass_factory in &self.post_scene_render_pass_factories {
 			let render_pass = {
-				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id);
+				let mut render_pass_builder = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -269,9 +258,7 @@ impl Renderer {
 		}
 	}
 
-	pub fn update_windows<'a>(
-		&'a mut self,
-	) -> impl Iterator<Item = impl Iterator<Item = ghi::Events> + 'a> + 'a {
+	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::Events> + 'a> + 'a {
 		self.windows.iter_mut().map(|(window, _)| window.poll())
 	}
 
@@ -293,16 +280,10 @@ impl Renderer {
 		transforms_listener.retain(|message| {
 			let handle = message.handle().clone();
 
-			if let Some(camera) =
-				self.cameras.iter_mut().find_map(
-					|(h, camera)| {
-						if handle == *h {
-							Some(camera)
-						} else {
-							None
-						}
-					},
-				)
+			if let Some(camera) = self
+				.cameras
+				.iter_mut()
+				.find_map(|(h, camera)| if handle == *h { Some(camera) } else { None })
 			{
 				camera.set_position(message.transform().get_position());
 				camera.set_orientation(message.transform().get_orientation());
@@ -312,28 +293,32 @@ impl Renderer {
 			}
 		});
 
-		let mut frame = device.start_frame(
-			self.started_frame_count as u32,
-			self.render_finished_synchronizer,
-		);
+		let mut frame = device.start_frame(self.started_frame_count as u32, self.render_finished_synchronizer);
 
 		self.started_frame_count += 1;
 
-		let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = self.windows.iter().map(|(window, swapchain)| {
-			let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
+		let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = self
+			.windows
+			.iter()
+			.map(|(window, swapchain)| {
+				let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
 
-			if extent.width() == 0 || extent.height() == 0 {
-				log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
-				return None;
-			}
+				if extent.width() == 0 || extent.height() == 0 {
+					log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
+					return None;
+				}
 
-			if extent.width() >= 65535 || extent.height() >= 65535 {
-				log::warn!("The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.", extent);
-				return None;
-			}
+				if extent.width() >= 65535 || extent.height() >= 65535 {
+					log::warn!(
+						"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
+						extent
+					);
+					return None;
+				}
 
-			Some((present_key, extent, *swapchain))
-		}).collect();
+				Some((present_key, extent, *swapchain))
+			})
+			.collect();
 
 		let views = self.views.iter();
 
@@ -341,13 +326,10 @@ impl Renderer {
 			.filter_map(|(index, view)| {
 				let (present_key, extent, swapchain) = swapchains[*index]?;
 
-				let camera = self.cameras.iter().find_map(|(handle, camera)| {
-					if handle == view {
-						Some(camera)
-					} else {
-						None
-					}
-				})?;
+				let camera = self
+					.cameras
+					.iter()
+					.find_map(|(handle, camera)| if handle == view { Some(camera) } else { None })?;
 
 				let view = make_perspective_view_from_camera(&camera, extent);
 
@@ -369,13 +351,12 @@ impl Renderer {
 
 		let scene_managers = self.scene_managers.iter_mut();
 
-		let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
-			scene_managers
-				.filter_map(|sm| {
-					let mut sm = sm.write();
-					sm.prepare(&mut frame, &viewports, &mut transforms_listener)
-				})
-				.collect();
+		let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> = scene_managers
+			.filter_map(|sm| {
+				let mut sm = sm.write();
+				sm.prepare(&mut frame, &viewports, &mut transforms_listener)
+			})
+			.collect();
 
 		// A list of render pass commands and their corresponding viewport index
 		let render_pass_commands: SmallVec<[(RenderPassReturn, ViewportId); 64]> = self
@@ -393,15 +374,13 @@ impl Renderer {
 			})
 			.collect();
 
-		let swapchain_targets: SmallVec<[(ViewportId, ghi::PresentKey, ghi::SwapchainHandle); 16]> =
-			viewports
-				.iter()
-				.filter_map(|viewport| {
-					let (present_key, _, swapchain_handle) =
-						swapchains.get(viewport.index())?.as_ref()?;
-					Some((viewport.index(), *present_key, *swapchain_handle))
-				})
-				.collect();
+		let swapchain_targets: SmallVec<[(ViewportId, ghi::PresentKey, ghi::SwapchainHandle); 16]> = viewports
+			.iter()
+			.filter_map(|viewport| {
+				let (present_key, _, swapchain_handle) = swapchains.get(viewport.index())?.as_ref()?;
+				Some((viewport.index(), *present_key, *swapchain_handle))
+			})
+			.collect();
 
 		let present_keys = swapchains
 			.iter()
@@ -416,8 +395,7 @@ impl Renderer {
 			move |e: &mut ghi::CommandBufferRecording| {
 				for commands in scene_manager_commands.into_iter() {
 					for (mut command, viewport) in commands.iter().zip(viewports.iter()) {
-						let attachment_infos =
-							render_targets.get_attachment_infos(viewport.index());
+						let attachment_infos = render_targets.get_attachment_infos(viewport.index());
 
 						(command.borrow_mut())(e, &attachment_infos);
 					}
@@ -462,12 +440,8 @@ impl Renderer {
 
 				let device = &mut self.device;
 
-				let swapchain_handle = device.bind_to_window(
-					&os_handles,
-					ghi::PresentationModes::FIFO,
-					extent,
-					ghi::Uses::BlitDestination,
-				);
+				let swapchain_handle =
+					device.bind_to_window(&os_handles, ghi::PresentationModes::FIFO, extent, ghi::Uses::BlitDestination);
 
 				let viewport_id = self.windows.len();
 
@@ -493,54 +467,32 @@ impl Renderer {
 				);
 
 				let result = device.build_image(
-					ghi::image::Builder::new(
-						ghi::Formats::RGBA8UNORM,
-						ghi::Uses::Storage | ghi::Uses::BlitSource,
-					)
-					.name("result")
-					.use_case(ghi::UseCases::DYNAMIC),
+					ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::BlitSource)
+						.name("result")
+						.use_case(ghi::UseCases::DYNAMIC),
 				);
 
-				self.render_targets.insert(
-					"main".to_string(),
-					viewport_id,
-					main,
-					ghi::Formats::RGBA16F,
-				);
+				self.render_targets
+					.insert("main".to_string(), viewport_id, main, ghi::Formats::RGBA16F);
 
-				self.render_targets.insert(
-					"result".to_string(),
-					viewport_id,
-					result,
-					ghi::Formats::RGBA8UNORM,
-				);
+				self.render_targets
+					.insert("result".to_string(), viewport_id, result, ghi::Formats::RGBA8UNORM);
 
 				if let Some(view_id) = view_id {
 					let depth = device.build_image(
-						ghi::image::Builder::new(
-							ghi::Formats::Depth32,
-							ghi::Uses::RenderTarget | ghi::Uses::Image,
-						)
-						.name("depth")
-						.use_case(ghi::UseCases::DYNAMIC),
+						ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image)
+							.name("depth")
+							.use_case(ghi::UseCases::DYNAMIC),
 					);
 
-					self.render_targets.insert(
-						"depth".to_string(),
-						viewport_id,
-						depth,
-						ghi::Formats::Depth32,
-					);
+					self.render_targets
+						.insert("depth".to_string(), viewport_id, depth, ghi::Formats::Depth32);
 
 					{
 						let scene_managers = self.scene_managers.iter();
 
 						for sm in scene_managers {
-							let mut rpb = RenderPassBuilder::new(
-								&mut self.device,
-								&mut self.render_targets,
-								viewport_id,
-							);
+							let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id);
 
 							sm.write().create_view(view_id, &mut rpb);
 
@@ -549,7 +501,6 @@ impl Renderer {
 							}
 						}
 					}
-
 				}
 
 				self.add_post_scene_render_passes_for_viewport(viewport_id);
@@ -633,11 +584,9 @@ impl RenderPass for CopyToSwapchainRenderPass {
 		let present_key = self.present_key;
 		let swapchain_handle = self.swapchain_handle;
 
-		let command = Box::new(
-			move |e: &mut ghi::CommandBufferRecording, a: &[ghi::AttachmentInformation]| {
-				e.copy_to_swapchain(source_texture_handle, present_key, swapchain_handle);
-			},
-		);
+		let command = Box::new(move |e: &mut ghi::CommandBufferRecording, a: &[ghi::AttachmentInformation]| {
+			e.copy_to_swapchain(source_texture_handle, present_key, swapchain_handle);
+		});
 
 		Some(command)
 	}
@@ -662,13 +611,7 @@ impl RenderTargets {
 
 	/// Inserts a new render target image, associated to a view index.
 	/// Returns the index of the image in the internal storage.
-	pub fn insert(
-		&mut self,
-		name: String,
-		view: usize,
-		image: ghi::ImageHandle,
-		format: ghi::Formats,
-	) -> usize {
+	pub fn insert(&mut self, name: String, view: usize, image: ghi::ImageHandle, format: ghi::Formats) -> usize {
 		if let Some(_) = self.get_image_index(&name) {
 			log::debug!("An image by that name already exists");
 			panic!("An image by that name already exists");
@@ -682,8 +625,7 @@ impl RenderTargets {
 		let index = self.images.len();
 		self.images.push((image, format));
 		self.by_name.push((name, index));
-		self.by_view_index
-			.push((view, (index, ghi::AccessPolicies::WRITE)));
+		self.by_view_index.push((view, (index, ghi::AccessPolicies::WRITE)));
 
 		index
 	}
@@ -699,8 +641,7 @@ impl RenderTargets {
 			return;
 		};
 
-		self.by_view_index
-			.push((view_id, (index, ghi::AccessPolicies::READ)));
+		self.by_view_index.push((view_id, (index, ghi::AccessPolicies::READ)));
 	}
 
 	pub fn write_to(&mut self, name: &str, view_id: usize) {
@@ -714,8 +655,7 @@ impl RenderTargets {
 			return;
 		};
 
-		self.by_view_index
-			.push((view_id, (index, ghi::AccessPolicies::WRITE)));
+		self.by_view_index.push((view_id, (index, ghi::AccessPolicies::WRITE)));
 	}
 
 	pub fn get(&self, name: &str) -> Option<&(ghi::ImageHandle, ghi::Formats)> {
@@ -755,14 +695,7 @@ impl RenderTargets {
 					ghi::ClearValue::Color(RGBA::black())
 				};
 
-				ghi::AttachmentInformation::new(
-					*image,
-					*format,
-					ghi::Layouts::RenderTarget,
-					clear_value,
-					load,
-					store,
-				)
+				ghi::AttachmentInformation::new(*image, *format, ghi::Layouts::RenderTarget, clear_value, load, store)
 			});
 
 		attachments.collect()
@@ -774,28 +707,18 @@ impl RenderTargets {
 	}
 
 	fn get_image_index(&self, name: &str) -> Option<usize> {
-		self.by_name
-			.iter()
-			.find(|(n, _)| n == name)
-			.map(|(_, i)| *i)
+		self.by_name.iter().find(|(n, _)| n == name).map(|(_, i)| *i)
 	}
 
 	fn get_attachment_index(&self, name: &str, view_id: usize) -> Option<usize> {
 		let image_index = self.get_image_index(name)?;
 
-		self.by_view_index.iter().find_map(|(v, (i, _))| {
-			if *v == view_id && *i == image_index {
-				Some(*i)
-			} else {
-				None
-			}
-		})
+		self.by_view_index
+			.iter()
+			.find_map(|(v, (i, _))| if *v == view_id && *i == image_index { Some(*i) } else { None })
 	}
 
-	fn get_images_for_view<'a>(
-		&'a self,
-		index: usize,
-	) -> impl Iterator<Item = &'a ghi::ImageHandle> {
+	fn get_images_for_view<'a>(&'a self, index: usize) -> impl Iterator<Item = &'a ghi::ImageHandle> {
 		self.by_view_index.iter().filter_map(move |(v, (i, _))| {
 			if *v != index {
 				return None;

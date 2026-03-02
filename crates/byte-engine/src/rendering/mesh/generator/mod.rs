@@ -1,8 +1,8 @@
-pub mod sphere;
 pub mod r#box;
+pub mod sphere;
 
-pub use sphere::SphereMeshGenerator;
 pub use r#box::BoxMeshGenerator;
+pub use sphere::SphereMeshGenerator;
 
 use std::borrow::Cow;
 
@@ -29,10 +29,14 @@ pub trait MeshGenerator {
 	fn bitangents(&self) -> Cow<'_, [Vector3]>;
 
 	/// Returns the colors of the vertices.
-	fn colors(&self) -> Option<Cow<'_, [Vector4]>> { None }
+	fn colors(&self) -> Option<Cow<'_, [Vector4]>> {
+		None
+	}
 
 	/// Returns the meshlet indices of the vertices.
-	fn meshlet_indices(&self) -> Option<Cow<'_, [u8]>> { None }
+	fn meshlet_indices(&self) -> Option<Cow<'_, [u8]>> {
+		None
+	}
 
 	/// Returns a hash that uniquely identifies the mesh. If the consumer of this generator already has a mesh whose id matches this it can safely reuse the existing mesh.
 	fn hash(&self) -> u64;

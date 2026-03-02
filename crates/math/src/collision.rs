@@ -3,7 +3,7 @@ use maths_rs::dot;
 use crate::{cube::Cube, magnitude_squared, normalize, plane::Plane, ray::Ray, sphere::Sphere, Vector3};
 
 /// Calculates the intersection point of a ray and an axis-aligned bounding box (AABB).
-pub fn ray_aabb_intersection(start: Vector3, direction: Vector3, min: Vector3, max: Vector3,) -> Option<f32> {
+pub fn ray_aabb_intersection(start: Vector3, direction: Vector3, min: Vector3, max: Vector3) -> Option<f32> {
 	let r = 1.0 / direction;
 
 	let mis = min - start;
@@ -39,10 +39,7 @@ pub fn ray_aabb_intersection(start: Vector3, direction: Vector3, min: Vector3, m
 /// # Returns
 /// `true` if the sphere is (at least partially) inside or intersecting the frustum,
 /// `false` if the sphere is completely outside any of the frustum planes.
-pub fn sphere_in_frustum(
-	sphere: &Sphere,
-	frustum_planes: &[Plane; 6],
-) -> bool {
+pub fn sphere_in_frustum(sphere: &Sphere, frustum_planes: &[Plane; 6]) -> bool {
 	// For a sphere to be visible, it must be on the "inside" or "positive" side
 	// of all frustum planes (or intersecting them).
 	// The "inside" is the half-space in the direction of the plane's normal.
@@ -87,10 +84,7 @@ pub struct DynamicIntersection {
 	pub point_on_b: Vector3,
 }
 
-pub fn sphere_vs_sphere(
-	sphere_a: &Sphere,
-	sphere_b: &Sphere,
-) -> Option<Intersection> {
+pub fn sphere_vs_sphere(sphere_a: &Sphere, sphere_b: &Sphere) -> Option<Intersection> {
 	let ab = sphere_b.center - sphere_a.center;
 	let m2 = magnitude_squared(ab);
 
@@ -103,16 +97,18 @@ pub fn sphere_vs_sphere(
 		let point_on_a = sphere_a.center + normal * sphere_a.radius;
 		let point_on_b = sphere_b.center - normal * sphere_b.radius;
 
-		Some(Intersection{ normal, depth, point_on_a, point_on_b })
+		Some(Intersection {
+			normal,
+			depth,
+			point_on_a,
+			point_on_b,
+		})
 	} else {
 		None
 	}
 }
 
-pub fn cube_vs_cube(
-	a: &Cube,
-	b: &Cube,
-) -> Option<Intersection> {
+pub fn cube_vs_cube(a: &Cube, b: &Cube) -> Option<Intersection> {
 	let sa = a.half_size;
 	let sb = b.half_size;
 
@@ -129,7 +125,7 @@ pub fn cube_vs_cube(
 	let axis = if overlap.y < min_depth {
 		min_depth = overlap.y;
 		1
-	} else  if overlap.z < min_depth {
+	} else if overlap.z < min_depth {
 		min_depth = overlap.z;
 		2
 	} else {
@@ -142,7 +138,7 @@ pub fn cube_vs_cube(
 		0 => ab.x.signum(),
 		1 => ab.y.signum(),
 		2 => ab.z.signum(),
-		_ => unreachable!()
+		_ => unreachable!(),
 	};
 
 	let a_min = a.center - sa;
@@ -150,16 +146,8 @@ pub fn cube_vs_cube(
 	let b_min = b.center - sb;
 	let b_max = b.center + sb;
 
-	let overlap_min = Vector3::new(
-		a_min.x.max(b_min.x),
-		a_min.y.max(b_min.y),
-		a_min.z.max(b_min.z),
-	);
-	let overlap_max = Vector3::new(
-		a_max.x.min(b_max.x),
-		a_max.y.min(b_max.y),
-		a_max.z.min(b_max.z),
-	);
+	let overlap_min = Vector3::new(a_min.x.max(b_min.x), a_min.y.max(b_min.y), a_min.z.max(b_min.z));
+	let overlap_max = Vector3::new(a_max.x.min(b_max.x), a_max.y.min(b_max.y), a_max.z.min(b_max.z));
 
 	let ox = (overlap_min.x + overlap_max.x) / 2f32;
 	let oy = (overlap_min.y + overlap_max.y) / 2f32;
@@ -184,13 +172,15 @@ pub fn cube_vs_cube(
 		_ => unreachable!(),
 	};
 
-	Some(Intersection{ normal: normalize(ab), depth, point_on_a: contact_a, point_on_b: contact_b })
+	Some(Intersection {
+		normal: normalize(ab),
+		depth,
+		point_on_a: contact_a,
+		point_on_b: contact_b,
+	})
 }
 
-pub fn sphere_vs_cube(
-	sphere_a: &Sphere,
-	cube_b: &Cube,
-) -> Option<Intersection> {
+pub fn sphere_vs_cube(sphere_a: &Sphere, cube_b: &Cube) -> Option<Intersection> {
 	let delta = sphere_a.center - cube_b.center;
 
 	let clamped_delta = Vector3::new(
@@ -225,7 +215,12 @@ pub fn sphere_vs_cube(
 	let point_on_a = sphere_a.center - normal * sphere_a.radius;
 	let point_on_b = cube_b.center + normal * depth;
 
-	Some(Intersection{ normal, depth, point_on_a, point_on_b })
+	Some(Intersection {
+		normal,
+		depth,
+		point_on_a,
+		point_on_b,
+	})
 }
 
 pub fn ray_vs_sphere(ray_a: &Ray, sphere_b: &Sphere) -> bool {
@@ -249,7 +244,13 @@ pub fn ray_vs_sphere(ray_a: &Ray, sphere_b: &Sphere) -> bool {
 	true
 }
 
-pub fn sphere_vs_sphere_dynamic(sphere_a: &Sphere, sphere_b: &Sphere, a_velocity: Vector3, b_velocity: Vector3, dt: f32) -> Option<DynamicIntersection> {
+pub fn sphere_vs_sphere_dynamic(
+	sphere_a: &Sphere,
+	sphere_b: &Sphere,
+	a_velocity: Vector3,
+	b_velocity: Vector3,
+	dt: f32,
+) -> Option<DynamicIntersection> {
 	let relative_velocity = b_velocity - a_velocity;
 
 	let start = sphere_a.center;
@@ -268,7 +269,10 @@ pub fn sphere_vs_sphere_dynamic(sphere_a: &Sphere, sphere_b: &Sphere, a_velocity
 	let t0 = 0.0;
 	let t1 = 0.0;
 
-	if !ray_vs_sphere(&Ray::new(start, ray_dir), &Sphere::new(sphere_b.center, sphere_a.radius + sphere_b.radius)) {
+	if !ray_vs_sphere(
+		&Ray::new(start, ray_dir),
+		&Sphere::new(sphere_b.center, sphere_a.radius + sphere_b.radius),
+	) {
 		return None;
 	}
 
@@ -300,8 +304,8 @@ pub fn sphere_vs_sphere_dynamic(sphere_a: &Sphere, sphere_b: &Sphere, a_velocity
 mod tests {
 	use maths_rs::num::Base;
 
-use crate::{normalize, Vector3};
 	use super::*;
+	use crate::{normalize, Vector3};
 
 	#[test]
 	fn test_ray_aabb_intersection() {

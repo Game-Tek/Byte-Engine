@@ -3,10 +3,13 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use utils::sync::Mutex;
 use crate::application::{Receiver, Sender};
+use utils::sync::Mutex;
 
-use crate::{application::Events, core::{listener::{Listener}, Entity, EntityHandle}};
+use crate::{
+	application::Events,
+	core::{listener::Listener, Entity, EntityHandle},
+};
 
 pub mod http;
 
@@ -32,10 +35,7 @@ impl Inspector {
 	pub fn new(tx: Sender<Events>) -> Self {
 		let entities = Mutex::new(Vec::<EntityHandle<dyn Inspectable>>::with_capacity(32768));
 
-		Self {
-			entities,
-			events: tx,
-		}
+		Self { entities, events: tx }
 	}
 
 	pub fn get_entities(&self, class: Option<&str>) -> Vec<EntityHandle<dyn Inspectable>> {

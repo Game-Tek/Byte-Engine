@@ -1,7 +1,7 @@
 pub mod client;
-pub mod server;
 pub mod replicable;
+pub mod server;
 
 pub use client::Client;
-pub use server::Server;
 pub use replicable::Replicable;
+pub use server::Server;

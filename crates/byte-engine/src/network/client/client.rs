@@ -2,7 +2,10 @@ use std::net::SocketAddr;
 
 use betp::{self, Client as _};
 
-use crate::{core::{Entity}, network::{Replicable, replicable::Importance, client::udp}};
+use crate::{
+	core::Entity,
+	network::{client::udp, replicable::Importance, Replicable},
+};
 
 /// The `Client` entity represents a client connection for a replicated application setup.
 /// This class handles replication of application entities.

@@ -1,14 +1,28 @@
 use utils::Extent;
 
-use crate::{AttachmentInformation, BaseBufferHandle, BindingTables, BottomLevelAccelerationStructureBuild, BufferDescriptor, BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureBuild};
+use crate::{
+	AttachmentInformation, BaseBufferHandle, BindingTables, BottomLevelAccelerationStructureBuild, BufferDescriptor,
+	BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle,
+	PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	TopLevelAccelerationStructureBuild,
+};
 
-pub trait CommandBufferRecording where Self: Sized {
+pub trait CommandBufferRecording
+where
+	Self: Sized, {
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);
-	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild]);
+	fn build_bottom_level_acceleration_structures(
+		&mut self,
+		acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild],
+	);
 
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
-	fn start_render_pass(&mut self, extent: Extent, attachments: &[AttachmentInformation]) -> &mut impl RasterizationRenderPassMode;
+	fn start_render_pass(
+		&mut self,
+		extent: Extent,
+		attachments: &[AttachmentInformation],
+	) -> &mut impl RasterizationRenderPassMode;
 
 	fn clear_images(&mut self, textures: &[(ImageHandle, ClearValue)]);
 	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]);
@@ -18,9 +32,20 @@ pub trait CommandBufferRecording where Self: Sized {
 	/// Copies image data from a CPU accessible buffer to a GPU accessible image.
 	fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]);
 
-	fn blit_image(&mut self, source_image: ImageHandle, source_layout: Layouts, destination_image: ImageHandle, destination_layout: Layouts);
+	fn blit_image(
+		&mut self,
+		source_image: ImageHandle,
+		source_layout: Layouts,
+		destination_image: ImageHandle,
+		destination_layout: Layouts,
+	);
 
-	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_key: PresentKey ,swapchain_handle: SwapchainHandle);
+	fn copy_to_swapchain(
+		&mut self,
+		source_texture_handle: ImageHandle,
+		present_key: PresentKey,
+		swapchain_handle: SwapchainHandle,
+	);
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]);
 
@@ -55,14 +80,23 @@ pub trait BoundPipelineLayoutMode: CommonCommandBufferMode {
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self;
 
 	/// Write data to the push constant register
-	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T) where [(); std::mem::size_of::<T>()]: Sized;
+	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
+	where
+		[(); std::mem::size_of::<T>()]: Sized;
 }
 
 pub trait BoundRasterizationPipelineMode: BoundPipelineLayoutMode + RasterizationRenderPassMode {
 	/// Draws a render system mesh.
 	fn draw_mesh(&mut self, mesh_handle: &MeshHandle);
 
-	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32);
+	fn draw_indexed(
+		&mut self,
+		index_count: u32,
+		instance_count: u32,
+		first_index: u32,
+		vertex_offset: i32,
+		first_instance: u32,
+	);
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
 }

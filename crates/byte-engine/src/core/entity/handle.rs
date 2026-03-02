@@ -13,15 +13,15 @@ pub struct WeakHandle<T: ?Sized> {
 	pub(super) container: std::sync::Weak<RwLock<T>>,
 }
 
-impl <T: ?Sized> WeakHandle<T> {
-	pub fn upgrade(&self) -> Option<Handle<T>> where T: Sized {
-		self.container.upgrade().map(|c| Handle {
-			container: c,
-		})
+impl<T: ?Sized> WeakHandle<T> {
+	pub fn upgrade(&self) -> Option<Handle<T>>
+	where
+		T: Sized, {
+		self.container.upgrade().map(|c| Handle { container: c })
 	}
 }
 
-impl <T: ?Sized> From<Handle<T>> for WeakHandle<T> {
+impl<T: ?Sized> From<Handle<T>> for WeakHandle<T> {
 	fn from(handle: Handle<T>) -> Self {
 		Self {
 			container: std::sync::Arc::downgrade(&handle.container),
@@ -29,18 +29,16 @@ impl <T: ?Sized> From<Handle<T>> for WeakHandle<T> {
 	}
 }
 
-impl <T: ?Sized> Handle<T> {
-	pub fn new(object: EntityWrapper<T>,) -> Self {
-		Self {
-			container: object,
-		}
+impl<T: ?Sized> Handle<T> {
+	pub fn new(object: EntityWrapper<T>) -> Self {
+		Self { container: object }
 	}
 
-	pub fn downcast<U>(&self) -> Option<Handle<U>> where T: std::any::Any {
+	pub fn downcast<U>(&self) -> Option<Handle<U>>
+	where
+		T: std::any::Any, {
 		let down = downcast_inner::<T, U>(&self.container);
-		Some(Handle {
-			container: down?,
-		})
+		Some(Handle { container: down? })
 	}
 
 	pub fn weak(&self) -> WeakHandle<T> {
@@ -50,15 +48,15 @@ impl <T: ?Sized> Handle<T> {
 	}
 }
 
-impl <T: Sized> From<T> for Handle<T> {
+impl<T: Sized> From<T> for Handle<T> {
 	fn from(value: T) -> Self {
 		Self {
-			container: EntityWrapper::new(RwLock::new(value))
+			container: EntityWrapper::new(RwLock::new(value)),
 		}
 	}
 }
 
-impl <T: ?Sized> PartialEq for Handle<T> {
+impl<T: ?Sized> PartialEq for Handle<T> {
 	fn eq(&self, other: &Self) -> bool {
 		panic!()
 	}
@@ -74,7 +72,7 @@ fn downcast_inner<F: ?Sized, T>(decoder: &EntityWrapper<F>) -> Option<EntityWrap
 	Some(unsafe { std::sync::Arc::from_raw(raw) })
 }
 
-impl <T: ?Sized> Clone for Handle<T> {
+impl<T: ?Sized> Clone for Handle<T> {
 	fn clone(&self) -> Self {
 		Self {
 			container: self.container.clone(),
@@ -85,9 +83,11 @@ impl <T: ?Sized> Clone for Handle<T> {
 impl<T, U> CoerceUnsized<Handle<U>> for Handle<T>
 where
 	T: Unsize<U> + ?Sized,
-	U: ?Sized {}
+	U: ?Sized,
+{
+}
 
-impl <T: ?Sized> Handle<T> {
+impl<T: ?Sized> Handle<T> {
 	pub fn get_mut<R>(&self, function: impl FnOnce(&mut T) -> R) -> R {
 		let mut lock = self.container.write();
 		function(std::ops::DerefMut::deref_mut(&mut lock))

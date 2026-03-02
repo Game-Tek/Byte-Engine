@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{vulkan::{ImageHandle, MAX_FRAMES_IN_FLIGHT, MAX_SWAPCHAIN_IMAGES, SynchronizerHandle}};
+use crate::vulkan::{ImageHandle, SynchronizerHandle, MAX_FRAMES_IN_FLIGHT, MAX_SWAPCHAIN_IMAGES};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {

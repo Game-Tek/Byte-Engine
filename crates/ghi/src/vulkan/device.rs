@@ -1,9 +1,15 @@
 use std::{borrow::Cow, collections::VecDeque, num::NonZeroU32, u64};
 
 use crate::{
-	CommandBufferRecording, FrameKey, Instance, Size, graphics_hardware_interface, image, raster_pipeline, render_debugger::RenderDebugger, sampler, utils::StableVec, vulkan::{
-		BufferCopy, BuildBuffer, Descriptor, DescriptorSetBindingHandle, DescriptorWrite, Descriptors, Frame, Handle, HandleLike, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task, Tasks, queue::Queue, sampler::SamplerHandle
-	}, window
+	graphics_hardware_interface, image, raster_pipeline,
+	render_debugger::RenderDebugger,
+	sampler,
+	utils::StableVec,
+	vulkan::{
+		queue::Queue, sampler::SamplerHandle, BufferCopy, BuildBuffer, Descriptor, DescriptorSetBindingHandle, DescriptorWrite,
+		Descriptors, Frame, Handle, HandleLike, ImageCopy, ImageHandle, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
+	},
+	window, CommandBufferRecording, FrameKey, Instance, Size,
 };
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
@@ -18,14 +24,12 @@ use utils::{
 
 use super::{
 	utils::{
-		image_type_from_extent, into_vk_image_usage_flags,
-		texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags,
-		uses_to_vk_usage_flags,
+		image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format,
+		to_shader_stage_flags, uses_to_vk_usage_flags,
 	},
-	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer,
-	CommandBufferInternal, DebugCallbackData, DescriptorSet, DescriptorSetHandle,
-	DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
-	Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT,
+	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
+	DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline,
+	PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT,
 };
 
 pub struct Device {
@@ -127,8 +131,7 @@ impl Device {
 		#[cfg(target_os = "macos")]
 		let macos_surface = ash::ext::metal_surface::Instance::new(vk_entry, vk_instance);
 
-		let surface_capabilities =
-			ash::khr::get_surface_capabilities2::Instance::new(vk_entry, vk_instance);
+		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::new(vk_entry, vk_instance);
 
 		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
 			if required {
@@ -139,41 +142,37 @@ impl Device {
 		};
 
 		let mut barycentric_required_features =
-			vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default()
-				.fragment_shader_barycentric(false);
+			vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default().fragment_shader_barycentric(false);
 
-		let mut physical_device_vulkan_11_required_features =
-			vk::PhysicalDeviceVulkan11Features::default()
-				.uniform_and_storage_buffer16_bit_access(true)
-				.storage_buffer16_bit_access(true);
+		let mut physical_device_vulkan_11_required_features = vk::PhysicalDeviceVulkan11Features::default()
+			.uniform_and_storage_buffer16_bit_access(true)
+			.storage_buffer16_bit_access(true);
 
-		let mut physical_device_vulkan_12_required_features =
-			vk::PhysicalDeviceVulkan12Features::default()
-				.descriptor_indexing(true)
-				.descriptor_binding_partially_bound(true)
-				.runtime_descriptor_array(true)
-				.descriptor_binding_variable_descriptor_count(true)
-				.shader_sampled_image_array_non_uniform_indexing(true)
-				.shader_storage_image_array_non_uniform_indexing(true)
-				.scalar_block_layout(true)
-				.buffer_device_address(true)
-				.separate_depth_stencil_layouts(true)
-				.shader_float16(true)
-				.shader_int8(true)
-				.storage_buffer8_bit_access(true)
-				.uniform_and_storage_buffer8_bit_access(true)
-				.vulkan_memory_model(true)
-				.vulkan_memory_model_device_scope(true)
-				.timeline_semaphore(true);
+		let mut physical_device_vulkan_12_required_features = vk::PhysicalDeviceVulkan12Features::default()
+			.descriptor_indexing(true)
+			.descriptor_binding_partially_bound(true)
+			.runtime_descriptor_array(true)
+			.descriptor_binding_variable_descriptor_count(true)
+			.shader_sampled_image_array_non_uniform_indexing(true)
+			.shader_storage_image_array_non_uniform_indexing(true)
+			.scalar_block_layout(true)
+			.buffer_device_address(true)
+			.separate_depth_stencil_layouts(true)
+			.shader_float16(true)
+			.shader_int8(true)
+			.storage_buffer8_bit_access(true)
+			.uniform_and_storage_buffer8_bit_access(true)
+			.vulkan_memory_model(true)
+			.vulkan_memory_model_device_scope(true)
+			.timeline_semaphore(true);
 
-		let mut physical_device_vulkan_13_required_features =
-			vk::PhysicalDeviceVulkan13Features::default()
-				.pipeline_creation_cache_control(true)
-				.subgroup_size_control(true)
-				.compute_full_subgroups(true)
-				.synchronization2(true)
-				.dynamic_rendering(true)
-				.maintenance4(true);
+		let mut physical_device_vulkan_13_required_features = vk::PhysicalDeviceVulkan13Features::default()
+			.pipeline_creation_cache_control(true)
+			.subgroup_size_control(true)
+			.compute_full_subgroups(true)
+			.synchronization2(true)
+			.dynamic_rendering(true)
+			.maintenance4(true);
 
 		let enabled_physical_device_required_features = vk::PhysicalDeviceFeatures::default()
 			.shader_int16(true)
@@ -187,13 +186,11 @@ impl Device {
 			.shader_storage_image_write_without_format(true);
 
 		let mut shader_atomic_float_required_features =
-			vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
-				.shader_buffer_float32_atomics(true);
+			vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default().shader_buffer_float32_atomics(true);
 
-		let mut physical_device_mesh_shading_required_features =
-			vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
-				.task_shader(settings.mesh_shading)
-				.mesh_shader(settings.mesh_shading);
+		let mut physical_device_mesh_shading_required_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
+			.task_shader(settings.mesh_shading)
+			.mesh_shader(settings.mesh_shading);
 
 		let physical_devices = unsafe {
 			vk_instance
@@ -205,8 +202,7 @@ impl Device {
 			let physical_device = physical_devices
 				.into_iter()
 				.find(|physical_device| {
-					let properties =
-						unsafe { vk_instance.get_physical_device_properties(*physical_device) };
+					let properties = unsafe { vk_instance.get_physical_device_properties(*physical_device) };
 
 					let name = properties.device_name_as_c_str();
 
@@ -226,23 +222,15 @@ impl Device {
 				.filter(|&physical_device| {
 					let mut tools = [vk::PhysicalDeviceToolProperties::default(); 8];
 
-					let tool_count = unsafe {
-						vk_instance
-							.get_physical_device_tool_properties_len(physical_device)
-							.unwrap()
-					};
+					let tool_count = unsafe { vk_instance.get_physical_device_tool_properties_len(physical_device).unwrap() };
 
 					unsafe {
 						vk_instance
-							.get_physical_device_tool_properties(
-								physical_device,
-								&mut tools[0..tool_count],
-							)
+							.get_physical_device_tool_properties(physical_device, &mut tools[0..tool_count])
 							.unwrap();
 					};
 
-					let mut vk_physical_device_memory_properties2 =
-						vk::PhysicalDeviceMemoryProperties2::default();
+					let mut vk_physical_device_memory_properties2 = vk::PhysicalDeviceMemoryProperties2::default();
 
 					unsafe {
 						vk_instance.get_physical_device_memory_properties2(
@@ -251,27 +239,21 @@ impl Device {
 						);
 					}
 
-					for heap in &vk_physical_device_memory_properties2
-						.memory_properties
-						.memory_heaps[..vk_physical_device_memory_properties2
-						.memory_properties
-						.memory_heap_count as usize]
+					for heap in &vk_physical_device_memory_properties2.memory_properties.memory_heaps
+						[..vk_physical_device_memory_properties2.memory_properties.memory_heap_count as usize]
 					{
 						if heap.size == 0 {
 							return false;
 						}
 					}
 
-					let buffer_device_address_capture_replay =
-						tools.iter().take(tool_count as usize).any(|tool| {
-							let name = unsafe { std::ffi::CStr::from_ptr(tool.name.as_ptr()) };
-							name.to_str().unwrap() == "RenderDoc"
-						});
+					let buffer_device_address_capture_replay = tools.iter().take(tool_count as usize).any(|tool| {
+						let name = unsafe { std::ffi::CStr::from_ptr(tool.name.as_ptr()) };
+						name.to_str().unwrap() == "RenderDoc"
+					});
 
-					let mut physical_device_mesh_shading_features =
-						vk::PhysicalDeviceMeshShaderFeaturesEXT::default();
-					let mut physical_device_vulkan_12_features =
-						vk::PhysicalDeviceVulkan12Features::default();
+					let mut physical_device_mesh_shading_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default();
+					let mut physical_device_vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default();
 					let mut physical_device_barycentric_features =
 						vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default();
 					let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
@@ -279,24 +261,15 @@ impl Device {
 						.push_next(&mut physical_device_barycentric_features)
 						.push_next(&mut physical_device_mesh_shading_features);
 
-					unsafe {
-						vk_instance.get_physical_device_features2(
-							physical_device,
-							&mut physical_device_features,
-						)
-					};
+					unsafe { vk_instance.get_physical_device_features2(physical_device, &mut physical_device_features) };
 
 					let features = physical_device_features.features;
 
 					let feature_validation = [
-						(
-							features.sample_rate_shading != vk::FALSE,
-							"Sample Rate Shading",
-						),
+						(features.sample_rate_shading != vk::FALSE, "Sample Rate Shading"),
 						(
 							flag_required_or_available(
-								physical_device_vulkan_12_features
-									.buffer_device_address_capture_replay,
+								physical_device_vulkan_12_features.buffer_device_address_capture_replay,
 								buffer_device_address_capture_replay,
 							),
 							"Buffer Device Address Capture Replay",
@@ -329,10 +302,7 @@ impl Device {
 							"Shader Storage Image Write Without Format",
 						),
 						(
-							flag_required_or_available(
-								features.geometry_shader,
-								settings.geometry_shader,
-							),
+							flag_required_or_available(features.geometry_shader, settings.geometry_shader),
 							"Geometry Shader",
 						),
 						(
@@ -351,14 +321,12 @@ impl Device {
 						),
 					];
 
-					let all_features_available =
-						feature_validation.iter().all(|(available, _)| *available);
+					let all_features_available = feature_validation.iter().all(|(available, _)| *available);
 
 					all_features_available
 				})
 				.max_by_key(|physical_device| {
-					let properties =
-						unsafe { vk_instance.get_physical_device_properties(*physical_device) };
+					let properties = unsafe { vk_instance.get_physical_device_properties(*physical_device) };
 
 					let mut device_score = 0u64;
 
@@ -382,8 +350,7 @@ impl Device {
 			physical_device
 		};
 
-		let queue_family_properties =
-			unsafe { vk_instance.get_physical_device_queue_family_properties(physical_device) };
+		let queue_family_properties = unsafe { vk_instance.get_physical_device_queue_family_properties(physical_device) };
 
 		let queue_create_infos = queues
 			.iter()
@@ -393,15 +360,9 @@ impl Device {
 					.enumerate()
 					.filter_map(|(index, info)| {
 						let mask = match d.r#type {
-							graphics_hardware_interface::CommandBufferType::COMPUTE => {
-								vk::QueueFlags::COMPUTE
-							}
-							graphics_hardware_interface::CommandBufferType::GRAPHICS => {
-								vk::QueueFlags::GRAPHICS
-							}
-							graphics_hardware_interface::CommandBufferType::TRANSFER => {
-								vk::QueueFlags::TRANSFER
-							}
+							graphics_hardware_interface::CommandBufferType::COMPUTE => vk::QueueFlags::COMPUTE,
+							graphics_hardware_interface::CommandBufferType::GRAPHICS => vk::QueueFlags::GRAPHICS,
+							graphics_hardware_interface::CommandBufferType::TRANSFER => vk::QueueFlags::TRANSFER,
 						};
 
 						if info.queue_flags.contains(mask) {
@@ -412,8 +373,7 @@ impl Device {
 					})
 					.collect::<Vec<_>>();
 
-				queue_family_index
-					.sort_by(|(_, a_bit_count), (_, b_bit_count)| a_bit_count.cmp(b_bit_count));
+				queue_family_index.sort_by(|(_, a_bit_count), (_, b_bit_count)| a_bit_count.cmp(b_bit_count));
 
 				let least_bits_queue_family_index = queue_family_index.first().unwrap().0;
 
@@ -423,19 +383,14 @@ impl Device {
 			})
 			.collect::<Vec<_>>();
 
-		let memory_properties =
-			unsafe { vk_instance.get_physical_device_memory_properties(physical_device) };
+		let memory_properties = unsafe { vk_instance.get_physical_device_memory_properties(physical_device) };
 
-		let available_device_extensions =
-			unsafe { vk_instance.enumerate_device_extension_properties(physical_device) }
-				.expect("Could not get supported device extensions");
+		let available_device_extensions = unsafe { vk_instance.enumerate_device_extension_properties(physical_device) }
+			.expect("Could not get supported device extensions");
 
 		let is_device_extension_available = |name: &str| {
 			available_device_extensions.iter().any(|extension| unsafe {
-				std::ffi::CStr::from_ptr(extension.extension_name.as_ptr())
-					.to_str()
-					.unwrap()
-					== name
+				std::ffi::CStr::from_ptr(extension.extension_name.as_ptr()).to_str().unwrap() == name
 			})
 		};
 
@@ -455,37 +410,32 @@ impl Device {
 			device_extension_names.push(ash::khr::portability_subset::NAME.as_ptr());
 		}
 
-		let (
-			mut physical_device_acceleration_structure_features,
-			mut physical_device_ray_tracing_pipeline_features,
-		) = if settings.ray_tracing {
-			let physical_device_acceleration_structure_features =
-				vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
-					.acceleration_structure(true);
+		let (mut physical_device_acceleration_structure_features, mut physical_device_ray_tracing_pipeline_features) =
+			if settings.ray_tracing {
+				let physical_device_acceleration_structure_features =
+					vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
 
-			let physical_device_ray_tracing_pipeline_features =
-				vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
+				let physical_device_ray_tracing_pipeline_features = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
 					.ray_tracing_pipeline(true)
 					.ray_traversal_primitive_culling(true);
 
-			(
-				physical_device_acceleration_structure_features,
-				physical_device_ray_tracing_pipeline_features,
-			)
-		} else {
-			(
-				vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default(),
-				vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default(),
-			)
-		};
+				(
+					physical_device_acceleration_structure_features,
+					physical_device_ray_tracing_pipeline_features,
+				)
+			} else {
+				(
+					vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default(),
+					vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default(),
+				)
+			};
 
 		device_extension_names.push(ash::ext::shader_atomic_float::NAME.as_ptr());
 
 		let device_create_info = vk::DeviceCreateInfo::default();
 
 		let device_create_info = if settings.mesh_shading {
-			if is_device_extension_available(ash::ext::mesh_shader::NAME.to_str().unwrap().as_str())
-			{
+			if is_device_extension_available(ash::ext::mesh_shader::NAME.to_str().unwrap().as_str()) {
 				device_extension_names.push(ash::ext::mesh_shader::NAME.as_ptr());
 				device_create_info.push_next(&mut physical_device_mesh_shading_required_features)
 			} else {
@@ -496,8 +446,7 @@ impl Device {
 		};
 
 		let mut swapchain_maintenance_features =
-			vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default()
-				.swapchain_maintenance1(true);
+			vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default().swapchain_maintenance1(true);
 
 		device_extension_names.push(ash::ext::swapchain_maintenance1::NAME.as_ptr());
 
@@ -540,8 +489,7 @@ impl Device {
 			.zip(queue_create_infos.iter())
 			.enumerate()
 			.map(|(index, ((_, queue_handle), create_info))| {
-				let vk_queue =
-					unsafe { device.get_device_queue(create_info.queue_family_index, 0) };
+				let vk_queue = unsafe { device.get_device_queue(create_info.queue_family_index, 0) };
 
 				**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
 
@@ -553,10 +501,8 @@ impl Device {
 			})
 			.collect::<Vec<_>>();
 
-		let acceleration_structure =
-			ash::khr::acceleration_structure::Device::new(&vk_instance, &device);
-		let ray_tracing_pipeline =
-			ash::khr::ray_tracing_pipeline::Device::new(&vk_instance, &device);
+		let acceleration_structure = ash::khr::acceleration_structure::Device::new(&vk_instance, &device);
+		let ray_tracing_pipeline = ash::khr::ray_tracing_pipeline::Device::new(&vk_instance, &device);
 
 		let swapchain = ash::khr::swapchain::Device::new(&vk_instance, &device);
 		let surface = ash::khr::surface::Instance::new(&vk_entry, &vk_instance);
@@ -641,9 +587,7 @@ impl Device {
 	#[cfg(debug_assertions)]
 	fn get_log_count(&self) -> u64 {
 		use std::sync::atomic::Ordering;
-		unsafe { &(*self.debug_data) }
-			.error_count
-			.load(Ordering::SeqCst)
+		unsafe { &(*self.debug_data) }.error_count.load(Ordering::SeqCst)
 	}
 
 	pub(super) fn get_syncronizer_handles(
@@ -656,11 +600,7 @@ impl Device {
 	fn create_vulkan_graphics_pipeline_create_info<'a, R>(
 		&'a mut self,
 		builder: raster_pipeline::Builder,
-		after_build: impl FnOnce(
-			&'a mut Self,
-			raster_pipeline::Builder,
-			vk::GraphicsPipelineCreateInfo,
-		) -> R,
+		after_build: impl FnOnce(&'a mut Self, raster_pipeline::Builder, vk::GraphicsPipelineCreateInfo) -> R,
 	) -> R {
 		let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
 			.render_pass(vk::RenderPass::null()) // We use a null render pass because of VK_KHR_dynamic_rendering
@@ -683,29 +623,27 @@ impl Device {
 
 			vertex_input_attribute_descriptions.push(ve);
 
-			offset_per_binding[vertex_element.binding as usize] +=
-				vertex_element.format.size() as u32;
+			offset_per_binding[vertex_element.binding as usize] += vertex_element.format.size() as u32;
 		}
 
-		let vertex_binding_descriptions =
-			if let Some(max_binding) = builder.vertex_elements.iter().map(|ve| ve.binding).max() {
-				let max_binding = max_binding as usize + 1;
+		let vertex_binding_descriptions = if let Some(max_binding) = builder.vertex_elements.iter().map(|ve| ve.binding).max() {
+			let max_binding = max_binding as usize + 1;
 
-				let mut vertex_binding_descriptions = Vec::with_capacity(max_binding);
+			let mut vertex_binding_descriptions = Vec::with_capacity(max_binding);
 
-				for i in 0..max_binding {
-					vertex_binding_descriptions.push(
-						vk::VertexInputBindingDescription::default()
-							.binding(i as u32)
-							.stride(offset_per_binding[i as usize])
-							.input_rate(vk::VertexInputRate::VERTEX),
-					)
-				}
+			for i in 0..max_binding {
+				vertex_binding_descriptions.push(
+					vk::VertexInputBindingDescription::default()
+						.binding(i as u32)
+						.stride(offset_per_binding[i as usize])
+						.input_rate(vk::VertexInputRate::VERTEX),
+				)
+			}
 
-				vertex_binding_descriptions
-			} else {
-				Vec::new()
-			};
+			vertex_binding_descriptions
+		} else {
+			Vec::new()
+		};
 
 		let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
 			.vertex_attribute_descriptions(&vertex_input_attribute_descriptions)
@@ -798,8 +736,7 @@ impl Device {
 		{
 			rendering_info = rendering_info.depth_attachment_format(vk::Format::D32_SFLOAT);
 			let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
-			let pipeline_create_info =
-				pipeline_create_info.depth_stencil_state(&depth_stencil_state);
+			let pipeline_create_info = pipeline_create_info.depth_stencil_state(&depth_stencil_state);
 			pipeline_create_info
 		} else {
 			let pipeline_create_info = pipeline_create_info.push_next(&mut rendering_info);
@@ -822,10 +759,7 @@ impl Device {
 
 		let scissors = [vk::Rect2D::default()
 			.offset(vk::Offset2D { x: 0, y: 0 })
-			.extent(vk::Extent2D {
-				width: 16,
-				height: 9,
-			})];
+			.extent(vk::Extent2D { width: 16, height: 9 })];
 
 		let viewport_state = vk::PipelineViewportStateCreateInfo::default()
 			.viewports(&viewports)
@@ -867,63 +801,49 @@ impl Device {
 		after_build(self, builder, pipeline_create_info)
 	}
 
-	fn create_vulkan_pipeline(
-		&mut self,
-		builder: raster_pipeline::Builder,
-	) -> graphics_hardware_interface::PipelineHandle {
-		self.create_vulkan_graphics_pipeline_create_info(
-			builder,
-			|this, builder, pipeline_create_info| {
-				let pipeline_create_infos = [pipeline_create_info];
+	fn create_vulkan_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {
+		self.create_vulkan_graphics_pipeline_create_info(builder, |this, builder, pipeline_create_info| {
+			let pipeline_create_infos = [pipeline_create_info];
 
-				let pipelines = unsafe {
-					this.device
-						.create_graphics_pipelines(
-							vk::PipelineCache::null(),
-							&pipeline_create_infos,
-							None,
+			let pipelines = unsafe {
+				this.device
+					.create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_create_infos, None)
+					.expect("No pipeline")
+			};
+
+			let pipeline = pipelines[0];
+
+			let handle = graphics_hardware_interface::PipelineHandle(this.pipelines.len() as u64);
+
+			let resource_access: Vec<(
+				(u32, u32),
+				(
+					graphics_hardware_interface::Stages,
+					graphics_hardware_interface::AccessPolicies,
+				),
+			)> = builder
+				.shaders
+				.iter()
+				.map(|s| {
+					let shader = &this.shaders[s.handle.0 as usize];
+					shader.shader_binding_descriptors.iter().map(|sbd| {
+						(
+							(sbd.set, sbd.binding),
+							(Into::<graphics_hardware_interface::Stages>::into(s.stage), sbd.access),
 						)
-						.expect("No pipeline")
-				};
-
-				let pipeline = pipelines[0];
-
-				let handle =
-					graphics_hardware_interface::PipelineHandle(this.pipelines.len() as u64);
-
-				let resource_access: Vec<(
-					(u32, u32),
-					(
-						graphics_hardware_interface::Stages,
-						graphics_hardware_interface::AccessPolicies,
-					),
-				)> = builder
-					.shaders
-					.iter()
-					.map(|s| {
-						let shader = &this.shaders[s.handle.0 as usize];
-						shader.shader_binding_descriptors.iter().map(|sbd| {
-							(
-								(sbd.set, sbd.binding),
-								(
-									Into::<graphics_hardware_interface::Stages>::into(s.stage),
-									sbd.access,
-								),
-							)
-						})
 					})
-					.flatten()
-					.collect::<Vec<_>>();
+				})
+				.flatten()
+				.collect::<Vec<_>>();
 
-				this.pipelines.push(Pipeline {
-					pipeline,
-					shader_handles: HashMap::new(),
-					resource_access,
-				});
+			this.pipelines.push(Pipeline {
+				pipeline,
+				shader_handles: HashMap::new(),
+				resource_access,
+			});
 
-				handle
-			},
-		)
+			handle
+		})
 	}
 
 	fn create_vulkan_buffer(
@@ -937,11 +857,7 @@ impl Device {
 			.sharing_mode(vk::SharingMode::EXCLUSIVE)
 			.usage(usage);
 
-		let buffer = unsafe {
-			self.device
-				.create_buffer(&buffer_create_info, None)
-				.expect("No buffer")
-		};
+		let buffer = unsafe { self.device.create_buffer(&buffer_create_info, None).expect("No buffer") };
 
 		self.set_name(buffer, name);
 
@@ -964,9 +880,7 @@ impl Device {
 		array_layers: Option<NonZeroU32>,
 	) -> MemoryBackedResourceCreationResult<vk::Image> {
 		let image_create_info = vk::ImageCreateInfo::default()
-			.image_type(
-				image_type_from_extent(extent).expect("Failed to get VkImageType from extent"),
-			)
+			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
 			.format(to_format(format))
 			.extent(extent)
 			.mip_levels(mip_levels)
@@ -977,11 +891,7 @@ impl Device {
 			.sharing_mode(vk::SharingMode::EXCLUSIVE)
 			.initial_layout(vk::ImageLayout::UNDEFINED);
 
-		let image = unsafe {
-			self.device
-				.create_image(&image_create_info, None)
-				.expect("No image")
-		};
+		let image = unsafe { self.device.create_image(&image_create_info, None).expect("No image") };
 
 		let memory_requirements = unsafe { self.device.get_image_memory_requirements(image) };
 
@@ -1025,11 +935,7 @@ impl Device {
 			.mip_lod_bias(0.0)
 			.unnormalized_coordinates(false);
 
-		let sampler = unsafe {
-			self.device
-				.create_sampler(&sampler_create_info, None)
-				.expect("No sampler")
-		};
+		let sampler = unsafe { self.device.create_sampler(&sampler_create_info, None).expect("No sampler") };
 
 		sampler
 	}
@@ -1045,10 +951,7 @@ impl Device {
 			array_layer: 0,
 		};
 
-		let texture = self
-			.images
-			.get(texture.0 as usize)
-			.expect("No texture with that handle.");
+		let texture = self.images.get(texture.0 as usize).expect("No texture with that handle.");
 
 		if true
 		/* TILING_OPTIMAL */
@@ -1057,19 +960,15 @@ impl Device {
 				offset: 0,
 				size: texture.size,
 				row_pitch: texture.extent.width() as usize * texture.format_.size(),
-				array_pitch: texture.extent.width() as usize
-					* texture.extent.height() as usize
-					* texture.format_.size(),
+				array_pitch: texture.extent.width() as usize * texture.extent.height() as usize * texture.format_.size(),
 				depth_pitch: texture.extent.width() as usize
 					* texture.extent.height() as usize
 					* texture.extent.depth() as usize
 					* texture.format_.size(),
 			}
 		} else {
-			let image_subresource_layout = unsafe {
-				self.device
-					.get_image_subresource_layout(texture.image, image_subresource)
-			};
+			let image_subresource_layout =
+				unsafe { self.device.get_image_subresource_layout(texture.image, image_subresource) };
 			graphics_hardware_interface::ImageSubresourceLayout {
 				offset: image_subresource_layout.offset as usize,
 				size: image_subresource_layout.size as usize,
@@ -1098,9 +997,8 @@ impl Device {
 		};
 		unsafe {
 			(
-				self.device.get_buffer_device_address(
-					&vk::BufferDeviceAddressInfo::default().buffer(buffer),
-				),
+				self.device
+					.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)),
 				allocation.pointer.add(offset),
 			)
 		}
@@ -1153,11 +1051,7 @@ impl Device {
 					vk::FenceCreateFlags::empty()
 				},
 		);
-		unsafe {
-			self.device
-				.create_fence(&fence_create_info, None)
-				.expect("No fence")
-		}
+		unsafe { self.device.create_fence(&fence_create_info, None).expect("No fence") }
 	}
 
 	fn set_name<T: vk::Handle>(&self, handle: T, name: Option<&str>) {
@@ -1173,7 +1067,8 @@ impl Device {
 								.object_handle(handle)
 								.object_name(name),
 						)
-						.ok(); // Ignore errors, if the name can't be set, it's not a big deal.
+						.ok();
+					// Ignore errors, if the name can't be set, it's not a big deal.
 				}
 			}
 		}
@@ -1314,8 +1209,8 @@ impl Device {
 				view.setWantsLayer(true);
 				view.setLayer(Some(&metal_layer));
 
-				let macos_surface_create_info = vk::MetalSurfaceCreateInfoEXT::default()
-					.layer(objc2::rc::Retained::as_ptr(&metal_layer) as _);
+				let macos_surface_create_info =
+					vk::MetalSurfaceCreateInfoEXT::default().layer(objc2::rc::Retained::as_ptr(&metal_layer) as _);
 
 				unsafe {
 					self.macos_surface
@@ -1340,8 +1235,7 @@ impl Device {
 		let _: vk::SurfaceFormatKHR = surface_format
 			.iter()
 			.find(|format| {
-				format.format == vk::Format::B8G8R8A8_SRGB
-					&& format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+				format.format == vk::Format::B8G8R8A8_SRGB && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
 			})
 			.expect("No surface format")
 			.to_owned();
@@ -1369,35 +1263,26 @@ impl Device {
 		size: usize,
 		memory_bits: Option<u32>,
 		device_accesses: graphics_hardware_interface::DeviceAccesses,
-	) -> (
-		graphics_hardware_interface::AllocationHandle,
-		Option<*mut u8>,
-	) {
+	) -> (graphics_hardware_interface::AllocationHandle, Option<*mut u8>) {
 		let memory_property_flags = {
 			let mut memory_property_flags = vk::MemoryPropertyFlags::empty();
 
-			memory_property_flags |=
-				if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
-					vk::MemoryPropertyFlags::HOST_VISIBLE
-				} else {
-					vk::MemoryPropertyFlags::empty()
-				};
-			memory_property_flags |= if device_accesses
-				.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite)
-			{
+			memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+				vk::MemoryPropertyFlags::HOST_VISIBLE
+			} else {
+				vk::MemoryPropertyFlags::empty()
+			};
+			memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
 				vk::MemoryPropertyFlags::HOST_COHERENT
 			} else {
 				vk::MemoryPropertyFlags::empty()
 			};
-			memory_property_flags |=
-				if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::GpuRead) {
-					vk::MemoryPropertyFlags::DEVICE_LOCAL
-				} else {
-					vk::MemoryPropertyFlags::empty()
-				};
-			memory_property_flags |= if device_accesses
-				.contains(graphics_hardware_interface::DeviceAccesses::GpuWrite)
-			{
+			memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::GpuRead) {
+				vk::MemoryPropertyFlags::DEVICE_LOCAL
+			} else {
+				vk::MemoryPropertyFlags::empty()
+			};
+			memory_property_flags |= if device_accesses.contains(graphics_hardware_interface::DeviceAccesses::GpuWrite) {
 				vk::MemoryPropertyFlags::DEVICE_LOCAL
 			} else {
 				vk::MemoryPropertyFlags::empty()
@@ -1431,17 +1316,12 @@ impl Device {
 			.memory_type_index(memory_type_index)
 			.push_next(&mut memory_allocate_flags_info);
 
-		let memory = unsafe {
-			self.device
-				.allocate_memory(&memory_allocate_info, None)
-				.expect("No memory")
-		};
+		let memory = unsafe { self.device.allocate_memory(&memory_allocate_info, None).expect("No memory") };
 
 		let mut mapped_memory = None;
 
 		if device_accesses.intersects(
-			graphics_hardware_interface::DeviceAccesses::CpuRead
-				| graphics_hardware_interface::DeviceAccesses::CpuWrite,
+			graphics_hardware_interface::DeviceAccesses::CpuRead | graphics_hardware_interface::DeviceAccesses::CpuWrite,
 		) {
 			mapped_memory = Some(unsafe {
 				self.device
@@ -1450,8 +1330,7 @@ impl Device {
 			});
 		}
 
-		let allocation_handle =
-			graphics_hardware_interface::AllocationHandle(self.allocations.len() as u64);
+		let allocation_handle = graphics_hardware_interface::AllocationHandle(self.allocations.len() as u64);
 
 		self.allocations.push(Allocation {
 			memory,
@@ -1501,12 +1380,11 @@ impl Device {
 				vk::BufferUsageFlags::TRANSFER_DST
 			} else {
 				vk::BufferUsageFlags::empty()
-			}
-			| if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
-				vk::BufferUsageFlags::TRANSFER_SRC
-			} else {
-				vk::BufferUsageFlags::empty()
-			};
+			} | if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+			vk::BufferUsageFlags::TRANSFER_SRC
+		} else {
+			vk::BufferUsageFlags::empty()
+		};
 
 		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
 		let (allocation_handle, _) = self.create_allocation_internal(
@@ -1516,41 +1394,29 @@ impl Device {
 				& !(graphics_hardware_interface::DeviceAccesses::CpuRead
 					| graphics_hardware_interface::DeviceAccesses::CpuWrite),
 		);
-		let (device_address, pointer) =
-			self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
 		let staging = if device_accesses.intersects(
-			graphics_hardware_interface::DeviceAccesses::CpuRead
-				| graphics_hardware_interface::DeviceAccesses::CpuWrite,
+			graphics_hardware_interface::DeviceAccesses::CpuRead | graphics_hardware_interface::DeviceAccesses::CpuWrite,
 		) {
 			let buffer_handle = BufferHandle(self.buffers.len() as u64);
 
-			let vk_usage_flags = if device_accesses
-				.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead)
-			{
+			let vk_usage_flags = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
 				vk::BufferUsageFlags::TRANSFER_DST
 			} else {
 				vk::BufferUsageFlags::empty()
-			} | if device_accesses
-				.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite)
-			{
+			} | if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
 				vk::BufferUsageFlags::TRANSFER_SRC
 			} else {
 				vk::BufferUsageFlags::empty()
 			} | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
 
-			let device_access = if device_accesses
-				.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead)
-			{
-				graphics_hardware_interface::DeviceAccesses::GpuWrite
-					| graphics_hardware_interface::DeviceAccesses::CpuRead
+			let device_access = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+				graphics_hardware_interface::DeviceAccesses::GpuWrite | graphics_hardware_interface::DeviceAccesses::CpuRead
 			} else {
 				graphics_hardware_interface::DeviceAccesses::empty()
-			} | if device_accesses
-				.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite)
-			{
-				graphics_hardware_interface::DeviceAccesses::GpuRead
-					| graphics_hardware_interface::DeviceAccesses::CpuWrite
+			} | if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+				graphics_hardware_interface::DeviceAccesses::GpuRead | graphics_hardware_interface::DeviceAccesses::CpuWrite
 			} else {
 				graphics_hardware_interface::DeviceAccesses::empty()
 			};
@@ -1561,8 +1427,7 @@ impl Device {
 				buffer_creation_result.memory_flags.into(),
 				device_access,
 			);
-			let (device_address, pointer) =
-				self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+			let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
 			let staging_buffer = Buffer {
 				next,
@@ -1622,10 +1487,9 @@ impl Device {
 	/// Creates a CPU-visible staging buffer (TRANSFER_SRC) for use as a per-frame
 	/// staging buffer in the persistent write mode. Returns its handle.
 	fn create_staging_buffer(&mut self, name: Option<&str>, size: usize) -> BufferHandle {
-		let vk_usage_flags =
-			vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
-		let device_access = graphics_hardware_interface::DeviceAccesses::GpuRead
-			| graphics_hardware_interface::DeviceAccesses::CpuWrite;
+		let vk_usage_flags = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+		let device_access =
+			graphics_hardware_interface::DeviceAccesses::GpuRead | graphics_hardware_interface::DeviceAccesses::CpuWrite;
 
 		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
 		let (allocation_handle, _) = self.create_allocation_internal(
@@ -1633,8 +1497,7 @@ impl Device {
 			buffer_creation_result.memory_flags.into(),
 			device_access,
 		);
-		let (device_address, pointer) =
-			self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
 		let handle = BufferHandle(self.buffers.len() as u64);
 
@@ -1663,10 +1526,7 @@ impl Device {
 		extent: Extent,
 		resource_uses: crate::Uses,
 	) -> Image {
-		let size = extent.width() as usize
-			* extent.height() as usize
-			* extent.depth() as usize
-			* format.size();
+		let size = extent.width() as usize * extent.height() as usize * extent.depth() as usize * format.size();
 
 		if size == 0 {
 			return Image {
@@ -1692,34 +1552,24 @@ impl Device {
 			depth: extent.depth(),
 		};
 
-		let transfer_uses =
-			(if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
-				graphics_hardware_interface::Uses::TransferSource
-			} else {
-				graphics_hardware_interface::Uses::empty()
-			}) | (if device_accesses
-				.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite)
-			{
-				graphics_hardware_interface::Uses::TransferDestination
-			} else {
-				graphics_hardware_interface::Uses::empty()
-			});
+		let transfer_uses = (if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
+			graphics_hardware_interface::Uses::TransferSource
+		} else {
+			graphics_hardware_interface::Uses::empty()
+		}) | (if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
+			graphics_hardware_interface::Uses::TransferDestination
+		} else {
+			graphics_hardware_interface::Uses::empty()
+		});
 
-		let texture_creation_result = self.create_vulkan_texture(
-			name,
-			vk_extent,
-			format,
-			resource_uses | transfer_uses,
-			1,
-			array_layers,
-		);
+		let texture_creation_result =
+			self.create_vulkan_texture(name, vk_extent, format, resource_uses | transfer_uses, 1, array_layers);
 
-		let m_device_accesses =
-			if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::HostOnly) {
-				graphics_hardware_interface::DeviceAccesses::DeviceOnly
-			} else {
-				device_accesses
-			};
+		let m_device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::HostOnly) {
+			graphics_hardware_interface::DeviceAccesses::DeviceOnly
+		} else {
+			device_accesses
+		};
 
 		let (allocation_handle, _) = self.create_allocation_internal(
 			texture_creation_result.size,
@@ -1729,34 +1579,26 @@ impl Device {
 
 		let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
 
-		let (staging_buffer, pointer) = if device_accesses
-			.intersects(graphics_hardware_interface::DeviceAccesses::HostOnly)
-		{
-			let vk_buffer_usage_flags = if device_accesses
-				.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead)
-			{
+		let (staging_buffer, pointer) = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::HostOnly) {
+			let vk_buffer_usage_flags = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
 				vk::BufferUsageFlags::TRANSFER_DST
 			} else {
 				vk::BufferUsageFlags::TRANSFER_SRC
 			};
 
-			let device_accesses = if device_accesses
-				.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead)
-			{
+			let device_accesses = if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
 				graphics_hardware_interface::DeviceAccesses::DeviceToHost
 			} else {
 				graphics_hardware_interface::DeviceAccesses::HostToDevice
 			};
 
-			let buffer_creation_result =
-				self.create_vulkan_buffer(name, size, vk_buffer_usage_flags);
+			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_buffer_usage_flags);
 			let (allocation_handle, _) = self.create_allocation_internal(
 				buffer_creation_result.size,
 				buffer_creation_result.memory_flags.into(),
 				device_accesses,
 			);
-			let pointer =
-				self.bind_host_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+			let pointer = self.bind_host_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
 			(Some(buffer_creation_result.resource), Some(pointer))
 		} else {
@@ -1778,14 +1620,7 @@ impl Device {
 					);
 				}
 			} else {
-				image_views[0] = self.create_vulkan_image_view(
-					name,
-					&texture_creation_result.resource,
-					format,
-					0,
-					0,
-					None,
-				);
+				image_views[0] = self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, 0, None);
 			}
 
 			image_views
@@ -1821,15 +1656,7 @@ impl Device {
 	) -> ImageHandle {
 		let texture_handle = ImageHandle(self.images.len() as u64);
 
-		let image = self.build_image_internal(
-			next,
-			name,
-			format,
-			device_accesses,
-			array_layers,
-			extent,
-			resource_uses,
-		);
+		let image = self.build_image_internal(next, name, format, device_accesses, array_layers, extent, resource_uses);
 
 		if let Some(previous) = previous {
 			self.images[previous.0 as usize].next = Some(texture_handle);
@@ -1840,11 +1667,7 @@ impl Device {
 		texture_handle
 	}
 
-	fn create_synchronizer_internal(
-		&mut self,
-		name: Option<&str>,
-		signaled: bool,
-	) -> SynchronizerHandle {
+	fn create_synchronizer_internal(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
 		let synchronizer_handle = SynchronizerHandle(self.synchronizers.len() as u64);
 
 		self.synchronizers.push(Synchronizer {
@@ -1864,18 +1687,13 @@ impl Device {
 			return;
 		}
 
-		assert!(
-			current_buffer.staging.is_none(),
-			"Cannot resize buffers with staging buffers"
-		);
+		assert!(current_buffer.staging.is_none(), "Cannot resize buffers with staging buffers");
 
 		if current_buffer.size != 0 {
 			let current_vk_buffer = current_buffer.buffer;
 
-			self.tasks
-				.push(Task::delete_vulkan_buffer(current_vk_buffer, None));
-			self.tasks
-				.push(Task::update_buffer_descriptor(buffer_handle, None));
+			self.tasks.push(Task::delete_vulkan_buffer(current_vk_buffer, None));
+			self.tasks.push(Task::update_buffer_descriptor(buffer_handle, None));
 
 			// todo!("copy data from old buffer to new buffer");
 		}
@@ -1885,19 +1703,13 @@ impl Device {
 			None,
 			current_buffer.uses,
 			size,
-			graphics_hardware_interface::DeviceAccesses::CpuWrite
-				| graphics_hardware_interface::DeviceAccesses::GpuRead,
+			graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead,
 		);
 
 		self.buffers[buffer_handle.0 as usize] = new_buffer;
 	}
 
-	pub(crate) fn resize_image_internal(
-		&mut self,
-		image_handle: ImageHandle,
-		extent: Extent,
-		sequence_index: u8,
-	) {
+	pub(crate) fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
 		let image = image_handle.access(&self.images);
 
 		if !image.owns_image {
@@ -1910,30 +1722,24 @@ impl Device {
 		}
 
 		if let Some(staging_buffer_handle) = image.staging_buffer {
-			self.tasks.push(Task::delete_vulkan_buffer(
-				staging_buffer_handle,
-				Some(sequence_index),
-			));
+			self.tasks
+				.push(Task::delete_vulkan_buffer(staging_buffer_handle, Some(sequence_index)));
 		}
 
 		for image_view in image.image_views {
 			if !image_view.is_null() {
-				self.tasks
-					.push(Task::delete_vulkan_image_view(image_view, sequence_index));
+				self.tasks.push(Task::delete_vulkan_image_view(image_view, sequence_index));
 			}
 		}
 
-		self.tasks
-			.push(Task::delete_vulkan_image(image.image, sequence_index));
+		self.tasks.push(Task::delete_vulkan_image(image.image, sequence_index));
 
 		// TODO: release memory/allocation
 
 		#[cfg(debug_assertions)]
 		let name = self
 			.names
-			.get(
-				&graphics_hardware_interface::ImageHandle(image_handle.root(&self.images).0).into(),
-			)
+			.get(&graphics_hardware_interface::ImageHandle(image_handle.root(&self.images).0).into())
 			.map(|s| s.clone());
 
 		#[cfg(not(debug_assertions))]
@@ -1976,10 +1782,7 @@ impl Device {
 	}
 
 	#[must_use]
-	fn produce_writes(
-		&self,
-		writes: impl IntoIterator<Item = DescriptorWrite>,
-	) -> SmallVec<[WriteResult; 128]> {
+	fn produce_writes(&self, writes: impl IntoIterator<Item = DescriptorWrite>) -> SmallVec<[WriteResult; 128]> {
 		let mut buffers: StableVec<vk::DescriptorBufferInfo, 1024> = StableVec::new();
 		let mut images: StableVec<vk::DescriptorImageInfo, 1024> = StableVec::new();
 
@@ -2036,8 +1839,7 @@ impl Device {
 						res
 					}
 					Descriptors::Image { handle, layout } => {
-						let descriptor_set =
-							&self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
 
 						let image_handle = handle;
 
@@ -2048,9 +1850,7 @@ impl Device {
 
 						let res = if !image.is_null() && !image_view.is_null() {
 							let e = images.append([vk::DescriptorImageInfo::default()
-								.image_layout(texture_format_and_resource_use_to_image_layout(
-									format, layout, None,
-								))
+								.image_layout(texture_format_and_resource_use_to_image_layout(format, layout, None))
 								.image_view(image_view)]);
 
 							let write_info = vk::WriteDescriptorSet::default()
@@ -2084,8 +1884,7 @@ impl Device {
 						layout,
 						layer,
 					} => {
-						let descriptor_set =
-							&self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
 
 						let image = &self.images[image_handle.0 as usize];
 
@@ -2098,11 +1897,7 @@ impl Device {
 							};
 
 							let e = images.append([vk::DescriptorImageInfo::default()
-								.image_layout(texture_format_and_resource_use_to_image_layout(
-									image.format_,
-									layout,
-									None,
-								))
+								.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
 								.image_view(image_view)
 								.sampler(vk::Sampler::from_raw(sampler_handle.0))]);
 
@@ -2133,11 +1928,10 @@ impl Device {
 						res
 					}
 					Descriptors::Sampler { handle } => {
-						let descriptor_set =
-							&self.descriptor_sets[descriptor_set_handle.0 as usize];
+						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
 						let sampler_handle = handle;
-						let e = images.append([vk::DescriptorImageInfo::default()
-							.sampler(vk::Sampler::from_raw(sampler_handle.0))]);
+						let e = images
+							.append([vk::DescriptorImageInfo::default().sampler(vk::Sampler::from_raw(sampler_handle.0))]);
 
 						let write_info = vk::WriteDescriptorSet::default()
 							.dst_set(descriptor_set.descriptor_set)
@@ -2200,24 +1994,13 @@ impl Device {
 						.or_insert_with(HashSet::new)
 						.insert((binding_handle, array_element));
 				}
-				Descriptor::CombinedImageSampler {
-					image,
-					sampler,
-					layout,
-				} => {
+				Descriptor::CombinedImageSampler { image, sampler, layout } => {
 					self.descriptors
 						.entry(descriptor_set_handle)
 						.or_insert_with(HashMap::new)
 						.entry(binding_index)
 						.or_insert_with(HashMap::new)
-						.insert(
-							array_element,
-							Descriptor::CombinedImageSampler {
-								image,
-								sampler,
-								layout,
-							},
-						);
+						.insert(array_element, Descriptor::CombinedImageSampler { image, sampler, layout });
 					self.descriptor_set_to_resource
 						.entry((descriptor_set_handle, binding_index))
 						.or_insert_with(HashSet::new)
@@ -2254,14 +2037,8 @@ impl Device {
 					match descriptor {
 						Descriptor::Buffer { size, .. } => {
 							descriptor_writes.extend_one(
-								DescriptorWrite::new(
-									Descriptors::Buffer {
-										handle,
-										size: *size,
-									},
-									*binding_handle,
-								)
-								.index(*index),
+								DescriptorWrite::new(Descriptors::Buffer { handle, size: *size }, *binding_handle)
+									.index(*index),
 							);
 						}
 						_ => {
@@ -2291,19 +2068,11 @@ impl Device {
 					match descriptor {
 						Descriptor::Image { layout, .. } => {
 							descriptor_writes.extend_one(
-								DescriptorWrite::new(
-									Descriptors::Image {
-										handle,
-										layout: *layout,
-									},
-									*binding_handle,
-								)
-								.index(*index),
+								DescriptorWrite::new(Descriptors::Image { handle, layout: *layout }, *binding_handle)
+									.index(*index),
 							);
 						}
-						Descriptor::CombinedImageSampler {
-							sampler, layout, ..
-						} => {
+						Descriptor::CombinedImageSampler { sampler, layout, .. } => {
 							descriptor_writes.extend_one(
 								DescriptorWrite::new(
 									Descriptors::CombinedImageSampler {
@@ -2375,46 +2144,30 @@ impl Device {
 					}
 				}
 				Tasks::UpdateBufferDescriptors { handle } => {
-					self.add_descriptor_writes_for_update_buffer_descriptors(
-						*handle,
-						&mut descriptor_writes,
-					);
+					self.add_descriptor_writes_for_update_buffer_descriptors(*handle, &mut descriptor_writes);
 				}
 				Tasks::UpdateDescriptor { descriptor_write } => {
-					let binding_handles =
-						DescriptorSetBindingHandle(descriptor_write.binding_handle.0)
-							.get_all(&self.bindings);
+					let binding_handles = DescriptorSetBindingHandle(descriptor_write.binding_handle.0).get_all(&self.bindings);
 
 					if binding_handles.is_empty() {
 						return false;
 					}
 
-					let binding = binding_handles
-						[(sequence_index as usize).rem_euclid(binding_handles.len())];
+					let binding = binding_handles[(sequence_index as usize).rem_euclid(binding_handles.len())];
 					let frame_offset = descriptor_write.frame_offset.unwrap_or(0);
 
 					let new_descriptor_write = match descriptor_write.descriptor {
 						graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
 							let handles = BufferHandle(handle.0).get_all(&self.buffers);
-							let index = (sequence_index as i32 - frame_offset)
-								.rem_euclid(handles.len() as i32)
-								as usize;
+							let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
 							let handle = handles[index];
-							Some(DescriptorWrite::new(
-								Descriptors::Buffer { handle, size },
-								binding,
-							))
+							Some(DescriptorWrite::new(Descriptors::Buffer { handle, size }, binding))
 						}
 						graphics_hardware_interface::Descriptor::Image { handle, layout } => {
 							let handles = ImageHandle(handle.0).get_all(&self.images);
-							let index = (sequence_index as i32 - frame_offset)
-								.rem_euclid(handles.len() as i32)
-								as usize;
+							let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
 							let handle = handles[index];
-							Some(DescriptorWrite::new(
-								Descriptors::Image { handle, layout },
-								binding,
-							))
+							Some(DescriptorWrite::new(Descriptors::Image { handle, layout }, binding))
 						}
 						graphics_hardware_interface::Descriptor::CombinedImageSampler {
 							image_handle,
@@ -2423,9 +2176,7 @@ impl Device {
 							layer,
 						} => {
 							let image_handles = ImageHandle(image_handle.0).get_all(&self.images);
-							let index = (sequence_index as i32 - frame_offset)
-								.rem_euclid(image_handles.len() as i32)
-								as usize;
+							let index = (sequence_index as i32 - frame_offset).rem_euclid(image_handles.len() as i32) as usize;
 							let image_handle = image_handles[index];
 							Some(DescriptorWrite::new(
 								Descriptors::CombinedImageSampler {
@@ -2437,14 +2188,12 @@ impl Device {
 								binding,
 							))
 						}
-						graphics_hardware_interface::Descriptor::Sampler(sampler_handle) => {
-							Some(DescriptorWrite::new(
-								Descriptors::Sampler {
-									handle: SamplerHandle(sampler_handle.0),
-								},
-								binding,
-							))
-						}
+						graphics_hardware_interface::Descriptor::Sampler(sampler_handle) => Some(DescriptorWrite::new(
+							Descriptors::Sampler {
+								handle: SamplerHandle(sampler_handle.0),
+							},
+							binding,
+						)),
 						graphics_hardware_interface::Descriptor::StaticSamplers => None,
 						_ => panic!("Unhandled descriptor update type"),
 					};
@@ -2502,10 +2251,8 @@ impl Device {
 					// staging and source fields accordingly.
 					if let Some(source_handle) = builder.source {
 						let size = self.buffers[new_buffer_handle.0 as usize].size;
-						let per_frame_staging =
-							self.create_staging_buffer(name.as_ref().map(|e| e.as_str()), size);
-						self.buffers[new_buffer_handle.0 as usize].staging =
-							Some(per_frame_staging);
+						let per_frame_staging = self.create_staging_buffer(name.as_ref().map(|e| e.as_str()), size);
+						self.buffers[new_buffer_handle.0 as usize].staging = Some(per_frame_staging);
 						self.buffers[new_buffer_handle.0 as usize].source = Some(source_handle);
 					}
 				}
@@ -2529,14 +2276,11 @@ impl Device {
 impl Drop for Device {
 	fn drop(&mut self) {
 		unsafe {
-			self.device
-				.device_wait_idle()
-				.expect("Failed to wait for device idle");
+			self.device.device_wait_idle().expect("Failed to wait for device idle");
 
 			self.command_buffers.iter().for_each(|command_buffer| {
 				command_buffer.frames.iter().for_each(|command_buffer| {
-					self.device
-						.destroy_command_pool(command_buffer.command_pool, None);
+					self.device.destroy_command_pool(command_buffer.command_pool, None);
 				});
 			});
 
@@ -2545,14 +2289,10 @@ impl Drop for Device {
 				self.device.destroy_fence(synchronizer.fence, None);
 			});
 
-			self.descriptor_sets_layouts
-				.iter()
-				.for_each(|descriptor_set_layout| {
-					self.device.destroy_descriptor_set_layout(
-						descriptor_set_layout.descriptor_set_layout,
-						None,
-					);
-				});
+			self.descriptor_sets_layouts.iter().for_each(|descriptor_set_layout| {
+				self.device
+					.destroy_descriptor_set_layout(descriptor_set_layout.descriptor_set_layout, None);
+			});
 
 			self.descriptor_pools.iter().for_each(|descriptor_pool| {
 				self.device.destroy_descriptor_pool(*descriptor_pool, None);
@@ -2592,8 +2332,7 @@ impl Drop for Device {
 			});
 
 			self.pipeline_layouts.iter().for_each(|pipeline_layout| {
-				self.device
-					.destroy_pipeline_layout(pipeline_layout.pipeline_layout, None);
+				self.device.destroy_pipeline_layout(pipeline_layout.pipeline_layout, None);
 			});
 
 			self.allocations.iter().for_each(|allocation| {
@@ -2617,10 +2356,7 @@ impl crate::device::Device for Device {
 		}
 
 		if frames > MAX_FRAMES_IN_FLIGHT as u8 {
-			panic!(
-				"Cannot set frames in flight to more than {}",
-				MAX_FRAMES_IN_FLIGHT
-			);
+			panic!("Cannot set frames in flight to more than {}", MAX_FRAMES_IN_FLIGHT);
 		}
 
 		let current_frames = self.frames;
@@ -2660,16 +2396,8 @@ impl crate::device::Device for Device {
 				let extent = current_image.extent;
 				let resource_uses = current_image.uses;
 
-				let new_image = self.create_image_internal(
-					next,
-					None,
-					name,
-					format,
-					access,
-					array_layers,
-					extent,
-					resource_uses,
-				);
+				let new_image =
+					self.create_image_internal(next, None, name, format, access, array_layers, extent, resource_uses);
 
 				let current_image = &mut self.images[image_handle.0 as usize];
 				current_image.next = Some(new_image);
@@ -2698,10 +2426,8 @@ impl crate::device::Device for Device {
 				let name_owned = self
 					.names
 					.get(
-						&graphics_hardware_interface::SynchronizerHandle(
-							synchronizer_handle.root(&self.synchronizers).0,
-						)
-						.into(),
+						&graphics_hardware_interface::SynchronizerHandle(synchronizer_handle.root(&self.synchronizers).0)
+							.into(),
 					)
 					.cloned();
 
@@ -2719,8 +2445,8 @@ impl crate::device::Device for Device {
 
 			for command_buffer in &mut self.command_buffers {
 				let queue = &self.queues[command_buffer.queue_handle.0 as usize];
-				let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-					.queue_family_index(queue.queue_family_index);
+				let command_pool_create_info =
+					vk::CommandPoolCreateInfo::default().queue_family_index(queue.queue_family_index);
 
 				let command_pool = unsafe {
 					self.device
@@ -2763,8 +2489,7 @@ impl crate::device::Device for Device {
 		_resource_uses: graphics_hardware_interface::Uses,
 		resource_device_accesses: graphics_hardware_interface::DeviceAccesses,
 	) -> graphics_hardware_interface::AllocationHandle {
-		self.create_allocation_internal(size, None, resource_device_accesses)
-			.0
+		self.create_allocation_internal(size, None, resource_device_accesses).0
 	}
 
 	fn add_mesh_from_vertices_and_indices(
@@ -2791,26 +2516,16 @@ impl crate::device::Device for Device {
 		let (allocation_handle, pointer) = self.create_allocation_internal(
 			buffer_creation_result.size,
 			buffer_creation_result.memory_flags.into(),
-			graphics_hardware_interface::DeviceAccesses::CpuWrite
-				| graphics_hardware_interface::DeviceAccesses::GpuRead,
+			graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead,
 		);
 
 		self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
 		unsafe {
 			let vertex_buffer_pointer = pointer.expect("No pointer");
-			std::ptr::copy_nonoverlapping(
-				vertices.as_ptr(),
-				vertex_buffer_pointer,
-				vertex_buffer_size,
-			);
-			let index_buffer_pointer =
-				vertex_buffer_pointer.add(vertex_buffer_size.next_multiple_of(16));
-			std::ptr::copy_nonoverlapping(
-				indices.as_ptr(),
-				index_buffer_pointer,
-				index_buffer_size,
-			);
+			std::ptr::copy_nonoverlapping(vertices.as_ptr(), vertex_buffer_pointer, vertex_buffer_size);
+			let index_buffer_pointer = vertex_buffer_pointer.add(vertex_buffer_size.next_multiple_of(16));
+			std::ptr::copy_nonoverlapping(indices.as_ptr(), index_buffer_pointer, index_buffer_size);
 		}
 
 		let mesh_handle = graphics_hardware_interface::MeshHandle(self.meshes.len() as u64);
@@ -2831,9 +2546,7 @@ impl crate::device::Device for Device {
 		name: Option<&str>,
 		shader_source_type: graphics_hardware_interface::ShaderSource,
 		stage: graphics_hardware_interface::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<
-			Item = graphics_hardware_interface::ShaderBindingDescriptor,
-		>,
+		shader_binding_descriptors: impl IntoIterator<Item = graphics_hardware_interface::ShaderBindingDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let shader = match shader_source_type {
 			graphics_hardware_interface::ShaderSource::SPIRV(spirv) => {
@@ -2842,19 +2555,13 @@ impl crate::device::Device for Device {
 				}
 
 				// SAFETY: shader was checked to be aligned to 4 bytes.
-				Cow::Borrowed(unsafe {
-					std::slice::from_raw_parts(spirv.as_ptr() as *const u32, spirv.len() / 4)
-				})
+				Cow::Borrowed(unsafe { std::slice::from_raw_parts(spirv.as_ptr() as *const u32, spirv.len() / 4) })
 			}
 		};
 
 		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&shader);
 
-		let shader_module = unsafe {
-			self.device
-				.create_shader_module(&shader_module_create_info, None)
-				.unwrap()
-		};
+		let shader_module = unsafe { self.device.create_shader_module(&shader_module_create_info, None).unwrap() };
 
 		let handle = graphics_hardware_interface::ShaderHandle(self.shaders.len() as u64);
 
@@ -2880,27 +2587,15 @@ impl crate::device::Device for Device {
 				let b = vk::DescriptorSetLayoutBinding::default()
 					.binding(binding.binding)
 					.descriptor_type(match binding.descriptor_type {
-						graphics_hardware_interface::DescriptorType::UniformBuffer => {
-							vk::DescriptorType::UNIFORM_BUFFER
-						}
-						graphics_hardware_interface::DescriptorType::StorageBuffer => {
-							vk::DescriptorType::STORAGE_BUFFER
-						}
-						graphics_hardware_interface::DescriptorType::SampledImage => {
-							vk::DescriptorType::SAMPLED_IMAGE
-						}
+						graphics_hardware_interface::DescriptorType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
+						graphics_hardware_interface::DescriptorType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
+						graphics_hardware_interface::DescriptorType::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
 						graphics_hardware_interface::DescriptorType::CombinedImageSampler => {
 							vk::DescriptorType::COMBINED_IMAGE_SAMPLER
 						}
-						graphics_hardware_interface::DescriptorType::StorageImage => {
-							vk::DescriptorType::STORAGE_IMAGE
-						}
-						graphics_hardware_interface::DescriptorType::InputAttachment => {
-							vk::DescriptorType::INPUT_ATTACHMENT
-						}
-						graphics_hardware_interface::DescriptorType::Sampler => {
-							vk::DescriptorType::SAMPLER
-						}
+						graphics_hardware_interface::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
+						graphics_hardware_interface::DescriptorType::InputAttachment => vk::DescriptorType::INPUT_ATTACHMENT,
+						graphics_hardware_interface::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
 						graphics_hardware_interface::DescriptorType::AccelerationStructure => {
 							vk::DescriptorType::ACCELERATION_STRUCTURE_KHR
 						}
@@ -2908,10 +2603,7 @@ impl crate::device::Device for Device {
 					.descriptor_count(binding.descriptor_count)
 					.stage_flags(binding.stages.into());
 
-				assert_ne!(
-					binding.descriptor_count, 0,
-					"Descriptor count must be greater than 0."
-				);
+				assert_ne!(binding.descriptor_count, 0, "Descriptor count must be greater than 0.");
 
 				let _ = if let Some(inmutable_samplers) = &binding.immutable_samplers {
 					inmutable_samplers
@@ -2937,8 +2629,7 @@ impl crate::device::Device for Device {
 			})
 			.collect::<Vec<_>>();
 
-		let mut dslbfci =
-			vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
+		let mut dslbfci = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
 
 		let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
 			.push_next(&mut dslbfci)
@@ -2952,9 +2643,7 @@ impl crate::device::Device for Device {
 
 		self.set_name(descriptor_set_layout, name);
 
-		let handle = graphics_hardware_interface::DescriptorSetTemplateHandle(
-			self.descriptor_sets_layouts.len() as u64,
-		);
+		let handle = graphics_hardware_interface::DescriptorSetTemplateHandle(self.descriptor_sets_layouts.len() as u64);
 
 		self.descriptor_sets_layouts.push(DescriptorSetLayout {
 			bindings: bindings
@@ -2978,32 +2667,19 @@ impl crate::device::Device for Device {
 		let array_element = constructor.array_element();
 
 		let descriptor_type = match binding.descriptor_type {
-			graphics_hardware_interface::DescriptorType::UniformBuffer => {
-				vk::DescriptorType::UNIFORM_BUFFER
-			}
-			graphics_hardware_interface::DescriptorType::StorageBuffer => {
-				vk::DescriptorType::STORAGE_BUFFER
-			}
-			graphics_hardware_interface::DescriptorType::SampledImage => {
-				vk::DescriptorType::SAMPLED_IMAGE
-			}
-			graphics_hardware_interface::DescriptorType::CombinedImageSampler => {
-				vk::DescriptorType::COMBINED_IMAGE_SAMPLER
-			}
-			graphics_hardware_interface::DescriptorType::StorageImage => {
-				vk::DescriptorType::STORAGE_IMAGE
-			}
-			graphics_hardware_interface::DescriptorType::InputAttachment => {
-				vk::DescriptorType::INPUT_ATTACHMENT
-			}
+			graphics_hardware_interface::DescriptorType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
+			graphics_hardware_interface::DescriptorType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
+			graphics_hardware_interface::DescriptorType::SampledImage => vk::DescriptorType::SAMPLED_IMAGE,
+			graphics_hardware_interface::DescriptorType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+			graphics_hardware_interface::DescriptorType::StorageImage => vk::DescriptorType::STORAGE_IMAGE,
+			graphics_hardware_interface::DescriptorType::InputAttachment => vk::DescriptorType::INPUT_ATTACHMENT,
 			graphics_hardware_interface::DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
 			graphics_hardware_interface::DescriptorType::AccelerationStructure => {
 				vk::DescriptorType::ACCELERATION_STRUCTURE_KHR
 			}
 		};
 
-		let descriptor_set_handles =
-			DescriptorSetHandle(descriptor_set.0).get_all(&self.descriptor_sets);
+		let descriptor_set_handles = DescriptorSetHandle(descriptor_set.0).get_all(&self.descriptor_sets);
 
 		let mut next = None;
 
@@ -3023,12 +2699,9 @@ impl crate::device::Device for Device {
 			next = Some(binding_handle);
 		}
 
-		let handle = graphics_hardware_interface::DescriptorSetBindingHandle(
-			next.expect("No next binding").0,
-		);
+		let handle = graphics_hardware_interface::DescriptorSetBindingHandle(next.expect("No next binding").0);
 
-		let mut descriptor_write =
-			graphics_hardware_interface::DescriptorWrite::new(handle, descriptor);
+		let mut descriptor_write = graphics_hardware_interface::DescriptorWrite::new(handle, descriptor);
 		descriptor_write.array_element = array_element;
 		descriptor_write.frame_offset = frame_offset;
 
@@ -3063,9 +2736,7 @@ impl crate::device::Device for Device {
 		};
 		self.descriptor_pools.push(descriptor_pool);
 
-		let descriptor_set_layout = self.descriptor_sets_layouts
-			[descriptor_set_layout_handle.0 as usize]
-			.descriptor_set_layout;
+		let descriptor_set_layout = self.descriptor_sets_layouts[descriptor_set_layout_handle.0 as usize].descriptor_set_layout;
 
 		let descriptor_set_layouts = vec![descriptor_set_layout; self.frames as usize];
 
@@ -3079,8 +2750,7 @@ impl crate::device::Device for Device {
 				.expect("No descriptor set")
 		};
 
-		let handle =
-			graphics_hardware_interface::DescriptorSetHandle(self.descriptor_sets.len() as u64);
+		let handle = graphics_hardware_interface::DescriptorSetHandle(self.descriptor_sets.len() as u64);
 		let mut previous_handle: Option<DescriptorSetHandle> = None;
 
 		for descriptor_set in descriptor_sets {
@@ -3108,9 +2778,7 @@ impl crate::device::Device for Device {
 		let writes = descriptor_set_writes
 			.iter()
 			.filter_map(|descriptor_set_write| {
-				let binding_handles =
-					DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0)
-						.get_all(&self.bindings);
+				let binding_handles = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0).get_all(&self.bindings);
 
 				// assert!(descriptor_set_write.array_element < binding.count, "Binding index out of range.");
 
@@ -3123,15 +2791,14 @@ impl crate::device::Device for Device {
 						for (i, &binding_handle) in binding_handles.iter().enumerate() {
 							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
 
-							let buffer_handle = buffer_handles[(i as i32 - offset)
-								.rem_euclid(buffer_handles.len() as i32)
-								as usize];
+							let buffer_handle =
+								buffer_handles[(i as i32 - offset).rem_euclid(buffer_handles.len() as i32) as usize];
 
 							writes.push(
 								DescriptorWrite::new(
 									Descriptors::Buffer {
 										handle: buffer_handle,
-										size: size,
+										size,
 									},
 									binding_handle,
 								)
@@ -3148,9 +2815,8 @@ impl crate::device::Device for Device {
 						for (i, &binding_handle) in binding_handles.iter().enumerate() {
 							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
 
-							let image_handle = image_handles[(i as i32 - offset)
-								.rem_euclid(image_handles.len() as i32)
-								as usize];
+							let image_handle =
+								image_handles[(i as i32 - offset).rem_euclid(image_handles.len() as i32) as usize];
 
 							writes.push(
 								DescriptorWrite::new(
@@ -3180,9 +2846,8 @@ impl crate::device::Device for Device {
 						for (i, &binding_handle) in binding_handles.iter().enumerate() {
 							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
 
-							let image_handle = image_handles[(i as i32 - offset)
-								.rem_euclid(image_handles.len() as i32)
-								as usize];
+							let image_handle =
+								image_handles[(i as i32 - offset).rem_euclid(image_handles.len() as i32) as usize];
 
 							writes.push(
 								DescriptorWrite::new(
@@ -3207,13 +2872,8 @@ impl crate::device::Device for Device {
 
 						for (_, &binding_handle) in binding_handles.iter().enumerate() {
 							writes.push(
-								DescriptorWrite::new(
-									Descriptors::Sampler {
-										handle: sampler_handle,
-									},
-									binding_handle,
-								)
-								.index(descriptor_set_write.array_element),
+								DescriptorWrite::new(Descriptors::Sampler { handle: sampler_handle }, binding_handle)
+									.index(descriptor_set_write.array_element),
 							);
 						}
 
@@ -3233,9 +2893,8 @@ impl crate::device::Device for Device {
 		descriptor_set_layout_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
 		push_constant_ranges: &[graphics_hardware_interface::PushConstantRange],
 	) -> graphics_hardware_interface::PipelineLayoutHandle {
-		let push_constant_stages = vk::ShaderStageFlags::VERTEX
-			| vk::ShaderStageFlags::FRAGMENT
-			| vk::ShaderStageFlags::COMPUTE;
+		let push_constant_stages =
+			vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE;
 
 		let push_constant_stages = push_constant_stages
 			| if self.settings.mesh_shading {
@@ -3255,9 +2914,7 @@ impl crate::device::Device for Device {
 			.collect::<Vec<_>>();
 		let set_layouts = descriptor_set_layout_handles
 			.iter()
-			.map(|set_layout| {
-				self.descriptor_sets_layouts[set_layout.0 as usize].descriptor_set_layout
-			})
+			.map(|set_layout| self.descriptor_sets_layouts[set_layout.0 as usize].descriptor_set_layout)
 			.collect::<Vec<_>>();
 
 		let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
@@ -3270,8 +2927,7 @@ impl crate::device::Device for Device {
 				.expect("No pipeline layout")
 		};
 
-		let handle =
-			graphics_hardware_interface::PipelineLayoutHandle(self.pipeline_layouts.len() as u64);
+		let handle = graphics_hardware_interface::PipelineLayoutHandle(self.pipeline_layouts.len() as u64);
 
 		self.pipeline_layouts.push(PipelineLayout {
 			pipeline_layout,
@@ -3285,10 +2941,7 @@ impl crate::device::Device for Device {
 		handle
 	}
 
-	fn create_raster_pipeline(
-		&mut self,
-		builder: raster_pipeline::Builder,
-	) -> graphics_hardware_interface::PipelineHandle {
+	fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {
 		self.create_vulkan_pipeline(builder)
 	}
 
@@ -3314,8 +2967,7 @@ impl crate::device::Device for Device {
 						);
 					}
 
-					specialization_entries_buffer
-						.extend_from_slice(specialization_map_entry.get_data());
+					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
 				}
 				"vec3f" => {
 					for i in 0..3 {
@@ -3327,8 +2979,7 @@ impl crate::device::Device for Device {
 						);
 					}
 
-					specialization_entries_buffer
-						.extend_from_slice(specialization_map_entry.get_data());
+					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
 				}
 				"vec4f" => {
 					for i in 0..4 {
@@ -3342,8 +2993,7 @@ impl crate::device::Device for Device {
 
 					assert_eq!(specialization_map_entry.get_size(), 16);
 
-					specialization_entries_buffer
-						.extend_from_slice(specialization_map_entry.get_data());
+					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
 				}
 				_ => {
 					panic!("Unknown specialization map entry type");
@@ -3383,10 +3033,7 @@ impl crate::device::Device for Device {
 			.map(|descriptor| {
 				(
 					(descriptor.set, descriptor.binding),
-					(
-						graphics_hardware_interface::Stages::COMPUTE,
-						descriptor.access,
-					),
+					(graphics_hardware_interface::Stages::COMPUTE, descriptor.access),
 				)
 			})
 			.collect::<Vec<_>>();
@@ -3477,8 +3124,7 @@ impl crate::device::Device for Device {
 			.groups(&groups)
 			.max_pipeline_ray_recursion_depth(1);
 
-		let mut handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]> =
-			HashMap::with_capacity(shaders.len());
+		let mut handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]> = HashMap::with_capacity(shaders.len());
 
 		let pipeline_handle = unsafe {
 			let pipeline = self
@@ -3492,12 +3138,7 @@ impl crate::device::Device for Device {
 				.expect("No ray tracing pipeline")[0];
 			let handle_buffer = self
 				.ray_tracing_pipeline
-				.get_ray_tracing_shader_group_handles(
-					pipeline,
-					0,
-					groups.len() as u32,
-					32 * groups.len(),
-				)
+				.get_ray_tracing_shader_group_handles(pipeline, 0, groups.len() as u32, 32 * groups.len())
 				.expect("Could not get ray tracing shader group handles");
 
 			for (i, shader) in shaders.iter().enumerate() {
@@ -3520,12 +3161,7 @@ impl crate::device::Device for Device {
 				shader
 					.shader_binding_descriptors
 					.iter()
-					.map(|descriptor| {
-						(
-							(descriptor.set, descriptor.binding),
-							(shader.stage, descriptor.access),
-						)
-					})
+					.map(|descriptor| ((descriptor.set, descriptor.binding), (shader.stage, descriptor.access)))
 					.collect::<Vec<_>>()
 			})
 			.flatten()
@@ -3545,19 +3181,16 @@ impl crate::device::Device for Device {
 		name: Option<&str>,
 		queue_handle: graphics_hardware_interface::QueueHandle,
 	) -> graphics_hardware_interface::CommandBufferHandle {
-		let command_buffer_handle =
-			graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
+		let command_buffer_handle = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
 
 		let queue = &self.queues[queue_handle.0 as usize];
 
 		let command_buffers = (0..self.frames)
 			.map(|_| {
-				let _ = graphics_hardware_interface::CommandBufferHandle(
-					self.command_buffers.len() as u64,
-				);
+				let _ = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
 
-				let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-					.queue_family_index(queue.queue_family_index);
+				let command_pool_create_info =
+					vk::CommandPoolCreateInfo::default().queue_family_index(queue.queue_family_index);
 
 				let command_pool = unsafe {
 					self.device
@@ -3632,11 +3265,7 @@ impl crate::device::Device for Device {
 
 		drop(pending_images);
 
-		let mut recording = CommandBufferRecording::new(
-			self,
-			command_buffer_handle,
-			None,
-		);
+		let mut recording = CommandBufferRecording::new(self, command_buffer_handle, None);
 
 		recording.sync_buffers(buffer_copies.iter().copied());
 		recording.sync_textures(image_copies.iter().copied());
@@ -3652,12 +3281,8 @@ impl crate::device::Device for Device {
 	) -> graphics_hardware_interface::BufferHandle<T> {
 		let size = std::mem::size_of::<T>();
 
-		let buffer_handle =
-			self.create_buffer_internal(None, None, name, resource_uses, size, device_accesses);
-		let handle = graphics_hardware_interface::BufferHandle::<T>(
-			buffer_handle.0,
-			std::marker::PhantomData::<T> {},
-		);
+		let buffer_handle = self.create_buffer_internal(None, None, name, resource_uses, size, device_accesses);
+		let handle = graphics_hardware_interface::BufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
 
 		return handle;
 	}
@@ -3670,15 +3295,10 @@ impl crate::device::Device for Device {
 	) -> crate::DynamicBufferHandle<T> {
 		let size = std::mem::size_of::<T>();
 
-		let buffer_handle =
-			self.create_buffer_internal(None, None, name, resource_uses, size, device_accesses);
-		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(
-			buffer_handle.0,
-			std::marker::PhantomData::<T> {},
-		);
+		let buffer_handle = self.create_buffer_internal(None, None, name, resource_uses, size, device_accesses);
+		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
 
-		if super::buffer::PERSISTENT_WRITE
-			&& device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite)
+		if super::buffer::PERSISTENT_WRITE && device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite)
 		{
 			// The master buffer's existing staging buffer becomes the shared, persistent
 			// CPU-writable source buffer. We create a new per-frame staging buffer for
@@ -3700,10 +3320,7 @@ impl crate::device::Device for Device {
 			self.persistent_write_dynamic_buffers.push(handle.into());
 
 			for i in 1..self.frames {
-				assert!(
-					i < 2,
-					"This does not support more than one deferred buffer!"
-				);
+				assert!(i < 2, "This does not support more than one deferred buffer!");
 				self.tasks.push(Task::new(
 					Tasks::BuildBuffer(BuildBuffer {
 						previous: buffer_handle,
@@ -3715,10 +3332,7 @@ impl crate::device::Device for Device {
 			}
 		} else {
 			for i in 1..self.frames {
-				assert!(
-					i < 2,
-					"This does not support more than one deferred buffer!"
-				);
+				assert!(i < 2, "This does not support more than one deferred buffer!");
 				self.tasks.push(Task::new(
 					Tasks::BuildBuffer(BuildBuffer {
 						previous: buffer_handle,
@@ -3733,26 +3347,17 @@ impl crate::device::Device for Device {
 		handle
 	}
 
-	fn get_buffer_address(
-		&self,
-		buffer_handle: graphics_hardware_interface::BaseBufferHandle,
-	) -> u64 {
+	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
 		self.buffers[buffer_handle.0 as usize].device_address
 	}
 
-	fn get_buffer_slice<T: Copy>(
-		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &T {
+	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
 		let buffer = self.buffers[buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 
-	fn get_mut_buffer_slice<'a, T: Copy>(
-		&'a self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &'a mut T {
+	fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'a mut T {
 		let handle = BufferHandle(buffer_handle.0);
 
 		let buffer = self.buffers[handle.0 as usize];
@@ -3763,10 +3368,7 @@ impl crate::device::Device for Device {
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 
-	fn get_texture_slice_mut(
-		&mut self,
-		texture_handle: graphics_hardware_interface::ImageHandle,
-	) -> &'static mut [u8] {
+	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
 		let texture = &self.images[texture_handle.0 as usize];
 		let size = texture.size;
 		let pointer = texture.pointer.unwrap();
@@ -3774,11 +3376,7 @@ impl crate::device::Device for Device {
 		unsafe { std::slice::from_raw_parts_mut(pointer, size) }
 	}
 
-	fn write_texture(
-		&mut self,
-		image_handle: graphics_hardware_interface::ImageHandle,
-		f: impl FnOnce(&mut [u8]),
-	) {
+	fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
 		let handles = ImageHandle(image_handle.0).get_all(&self.images);
 
 		let handle = handles[0];
@@ -3795,29 +3393,20 @@ impl crate::device::Device for Device {
 		self.pending_image_syncs.lock().push_back(handle);
 	}
 
-	fn create_image(
-		&mut self,
-		name: Option<&str>,
-		extent: Extent,
-		format: graphics_hardware_interface::Formats,
-		resource_uses: graphics_hardware_interface::Uses,
-		device_accesses: graphics_hardware_interface::DeviceAccesses,
-		use_case: graphics_hardware_interface::UseCases,
-		array_layers: Option<NonZeroU32>,
-	) -> graphics_hardware_interface::ImageHandle {
+	fn build_image(&mut self, builder: image::Builder) -> graphics_hardware_interface::ImageHandle {
 		let root_image_handle = self.create_image_internal(
 			None,
 			None,
-			name,
-			format,
-			device_accesses,
-			array_layers,
-			extent,
-			resource_uses,
+			builder.name,
+			builder.format,
+			builder.device_accesses,
+			builder.array_layers,
+			builder.extent,
+			builder.resource_uses,
 		);
 		let handle = graphics_hardware_interface::ImageHandle(root_image_handle.0);
 
-		let instances = match use_case {
+		let instances = match builder.use_case {
 			graphics_hardware_interface::UseCases::DYNAMIC => self.frames,
 			graphics_hardware_interface::UseCases::STATIC => 1,
 		};
@@ -3827,38 +3416,24 @@ impl crate::device::Device for Device {
 			previous = self.create_image_internal(
 				None,
 				Some(previous),
-				name,
-				format,
-				device_accesses,
-				array_layers,
-				extent,
-				resource_uses,
+				builder.name,
+				builder.format,
+				builder.device_accesses,
+				builder.array_layers,
+				builder.extent,
+				builder.resource_uses,
 			);
 		}
 
 		#[cfg(debug_assertions)]
 		{
-			if let Some(name) = name {
-				self.names.insert(
-					graphics_hardware_interface::Handle::Image(handle),
-					name.to_string(),
-				);
+			if let Some(name) = builder.name {
+				self.names
+					.insert(graphics_hardware_interface::Handle::Image(handle), name.to_string());
 			}
 		}
 
 		handle
-	}
-
-	fn build_image(&mut self, builder: image::Builder) -> graphics_hardware_interface::ImageHandle {
-		self.create_image(
-			builder.name,
-			builder.extent,
-			builder.format,
-			builder.resource_uses,
-			builder.device_accesses,
-			builder.use_case,
-			builder.array_layers,
-		)
 	}
 
 	fn create_sampler(
@@ -3882,30 +3457,16 @@ impl crate::device::Device for Device {
 		};
 
 		let address_mode = match address_mode {
-			graphics_hardware_interface::SamplerAddressingModes::Repeat => {
-				vk::SamplerAddressMode::REPEAT
-			}
-			graphics_hardware_interface::SamplerAddressingModes::Mirror => {
-				vk::SamplerAddressMode::MIRRORED_REPEAT
-			}
-			graphics_hardware_interface::SamplerAddressingModes::Clamp => {
-				vk::SamplerAddressMode::CLAMP_TO_EDGE
-			}
-			graphics_hardware_interface::SamplerAddressingModes::Border { .. } => {
-				vk::SamplerAddressMode::CLAMP_TO_BORDER
-			}
+			graphics_hardware_interface::SamplerAddressingModes::Repeat => vk::SamplerAddressMode::REPEAT,
+			graphics_hardware_interface::SamplerAddressingModes::Mirror => vk::SamplerAddressMode::MIRRORED_REPEAT,
+			graphics_hardware_interface::SamplerAddressingModes::Clamp => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+			graphics_hardware_interface::SamplerAddressingModes::Border { .. } => vk::SamplerAddressMode::CLAMP_TO_BORDER,
 		};
 
 		let reduction_mode = match reduction_mode {
-			graphics_hardware_interface::SamplingReductionModes::WeightedAverage => {
-				vk::SamplerReductionMode::WEIGHTED_AVERAGE
-			}
-			graphics_hardware_interface::SamplingReductionModes::Min => {
-				vk::SamplerReductionMode::MIN
-			}
-			graphics_hardware_interface::SamplingReductionModes::Max => {
-				vk::SamplerReductionMode::MAX
-			}
+			graphics_hardware_interface::SamplingReductionModes::WeightedAverage => vk::SamplerReductionMode::WEIGHTED_AVERAGE,
+			graphics_hardware_interface::SamplingReductionModes::Min => vk::SamplerReductionMode::MIN,
+			graphics_hardware_interface::SamplingReductionModes::Max => vk::SamplerReductionMode::MAX,
 		};
 
 		graphics_hardware_interface::SamplerHandle(
@@ -3939,8 +3500,7 @@ impl crate::device::Device for Device {
 		name: Option<&str>,
 		max_instance_count: u32,
 	) -> graphics_hardware_interface::BaseBufferHandle {
-		let size = max_instance_count as usize
-			* std::mem::size_of::<vk::AccelerationStructureInstanceKHR>();
+		let size = max_instance_count as usize * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>();
 
 		let buffer_creation_result = self.create_vulkan_buffer(
 			name,
@@ -3952,15 +3512,12 @@ impl crate::device::Device for Device {
 		let (allocation_handle, _) = self.create_allocation_internal(
 			buffer_creation_result.size,
 			buffer_creation_result.memory_flags.into(),
-			graphics_hardware_interface::DeviceAccesses::CpuWrite
-				| graphics_hardware_interface::DeviceAccesses::GpuRead,
+			graphics_hardware_interface::DeviceAccesses::CpuWrite | graphics_hardware_interface::DeviceAccesses::GpuRead,
 		);
 
-		let (address, pointer) =
-			self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
-		let buffer_handle =
-			graphics_hardware_interface::BaseBufferHandle(self.buffers.len() as u64);
+		let buffer_handle = graphics_hardware_interface::BaseBufferHandle(self.buffers.len() as u64);
 
 		self.buffers.push(Buffer {
 			next: None,
@@ -3998,13 +3555,12 @@ impl crate::device::Device for Device {
 		let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
 
 		unsafe {
-			self.acceleration_structure
-				.get_acceleration_structure_build_sizes(
-					vk::AccelerationStructureBuildTypeKHR::DEVICE,
-					&build_info,
-					&[max_instance_count],
-					&mut size_info,
-				);
+			self.acceleration_structure.get_acceleration_structure_build_sizes(
+				vk::AccelerationStructureBuildTypeKHR::DEVICE,
+				&build_info,
+				&[max_instance_count],
+				&mut size_info,
+			);
 		}
 
 		let acceleration_structure_size = size_info.acceleration_structure_size as usize;
@@ -4013,8 +3569,7 @@ impl crate::device::Device for Device {
 		let buffer = self.create_vulkan_buffer(
 			None,
 			acceleration_structure_size,
-			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-				| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
 		);
 
 		let (allocation_handle, _) = self.create_allocation_internal(
@@ -4031,9 +3586,8 @@ impl crate::device::Device for Device {
 			.offset(0)
 			.ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
 
-		let handle = graphics_hardware_interface::TopLevelAccelerationStructureHandle(
-			self.acceleration_structures.len() as u64,
-		);
+		let handle =
+			graphics_hardware_interface::TopLevelAccelerationStructureHandle(self.acceleration_structures.len() as u64);
 
 		{
 			let handle = unsafe {
@@ -4070,30 +3624,20 @@ impl crate::device::Device for Device {
 					.geometry(vk::AccelerationStructureGeometryDataKHR {
 						triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
 							.vertex_format(match vertex_position_encoding {
-								graphics_hardware_interface::Encodings::FloatingPoint => {
-									vk::Format::R32G32B32_SFLOAT
-								}
+								graphics_hardware_interface::Encodings::FloatingPoint => vk::Format::R32G32B32_SFLOAT,
 								_ => panic!("Invalid vertex position format"),
 							})
 							.max_vertex(*vertex_count - 1)
 							.index_type(match index_format {
-								graphics_hardware_interface::DataTypes::U8 => {
-									vk::IndexType::UINT8_EXT
-								}
-								graphics_hardware_interface::DataTypes::U16 => {
-									vk::IndexType::UINT16
-								}
-								graphics_hardware_interface::DataTypes::U32 => {
-									vk::IndexType::UINT32
-								}
+								graphics_hardware_interface::DataTypes::U8 => vk::IndexType::UINT8_EXT,
+								graphics_hardware_interface::DataTypes::U16 => vk::IndexType::UINT16,
+								graphics_hardware_interface::DataTypes::U32 => vk::IndexType::UINT32,
 								_ => panic!("Invalid index format"),
 							}),
 					}),
 				*triangle_count,
 			),
-			graphics_hardware_interface::BottomLevelAccelerationStructureDescriptions::AABB {
-				transform_count,
-			} => (
+			graphics_hardware_interface::BottomLevelAccelerationStructureDescriptions::AABB { transform_count } => (
 				vk::AccelerationStructureGeometryKHR::default()
 					.flags(vk::GeometryFlagsKHR::OPAQUE)
 					.geometry_type(vk::GeometryTypeKHR::AABBS)
@@ -4114,13 +3658,12 @@ impl crate::device::Device for Device {
 		let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
 
 		unsafe {
-			self.acceleration_structure
-				.get_acceleration_structure_build_sizes(
-					vk::AccelerationStructureBuildTypeKHR::DEVICE,
-					&build_info,
-					&[primitive_count],
-					&mut size_info,
-				);
+			self.acceleration_structure.get_acceleration_structure_build_sizes(
+				vk::AccelerationStructureBuildTypeKHR::DEVICE,
+				&build_info,
+				&[primitive_count],
+				&mut size_info,
+			);
 		}
 
 		let acceleration_structure_size = size_info.acceleration_structure_size as usize;
@@ -4129,8 +3672,7 @@ impl crate::device::Device for Device {
 		let buffer_descriptor = self.create_vulkan_buffer(
 			None,
 			acceleration_structure_size,
-			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-				| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
 		);
 
 		let (allocation_handle, _) = self.create_allocation_internal(
@@ -4147,9 +3689,8 @@ impl crate::device::Device for Device {
 			.offset(0)
 			.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
 
-		let handle = graphics_hardware_interface::BottomLevelAccelerationStructureHandle(
-			self.acceleration_structures.len() as u64,
-		);
+		let handle =
+			graphics_hardware_interface::BottomLevelAccelerationStructureHandle(self.acceleration_structures.len() as u64);
 
 		{
 			let handle = unsafe {
@@ -4206,9 +3747,7 @@ impl crate::device::Device for Device {
 				sbt_record_offset as u32,
 				vk::GeometryInstanceFlagsKHR::FORCE_OPAQUE.as_raw() as u8,
 			),
-			acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-				device_handle: address,
-			},
+			acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: address },
 		};
 
 		let instance_buffer = &mut self.buffers[instances_buffer.0 as usize];
@@ -4236,16 +3775,11 @@ impl crate::device::Device for Device {
 		let buffer = self.buffers[sbt_buffer_handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 
-		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer, buffer.size) })
-			[sbt_record_offset..sbt_record_offset + 32]
+		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer, buffer.size) })[sbt_record_offset..sbt_record_offset + 32]
 			.copy_from_slice(shader_handles.get(&shader_handle).unwrap());
 	}
 
-	fn resize_buffer(
-		&mut self,
-		buffer_handle: graphics_hardware_interface::BaseBufferHandle,
-		size: usize,
-	) {
+	fn resize_buffer(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, size: usize) {
 		let buffer_handle = BufferHandle(buffer_handle.0);
 
 		self.resize_buffer_internal(buffer_handle, size);
@@ -4262,14 +3796,11 @@ impl crate::device::Device for Device {
 
 		let vk_present_mode = match presentation_mode {
 			graphics_hardware_interface::PresentationModes::FIFO => vk::PresentModeKHR::FIFO,
-			graphics_hardware_interface::PresentationModes::Inmediate => {
-				vk::PresentModeKHR::IMMEDIATE
-			}
+			graphics_hardware_interface::PresentationModes::Inmediate => vk::PresentModeKHR::IMMEDIATE,
 			graphics_hardware_interface::PresentationModes::Mailbox => vk::PresentModeKHR::MAILBOX,
 		};
 
-		let mut vk_surface_present_mode =
-			vk::SurfacePresentModeEXT::default().present_mode(vk_present_mode);
+		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(vk_present_mode);
 
 		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
 			.push_next(&mut vk_surface_present_mode)
@@ -4278,19 +3809,14 @@ impl crate::device::Device for Device {
 		let mut vk_presentation_modes = [vk::PresentModeKHR::default(); 8];
 
 		let mut vk_surface_present_mode_compatibility =
-			vk::SurfacePresentModeCompatibilityEXT::default()
-				.present_modes(&mut vk_presentation_modes);
+			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_presentation_modes);
 
-		let mut vk_surface_capabilities = vk::SurfaceCapabilities2KHR::default()
-			.push_next(&mut vk_surface_present_mode_compatibility);
+		let mut vk_surface_capabilities =
+			vk::SurfaceCapabilities2KHR::default().push_next(&mut vk_surface_present_mode_compatibility);
 
 		unsafe {
 			self.surface_capabilities
-				.get_physical_device_surface_capabilities2(
-					self.physical_device,
-					&vk_surface_info,
-					&mut vk_surface_capabilities,
-				)
+				.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities)
 				.expect("No surface capabilities")
 		};
 
@@ -4330,9 +3856,7 @@ impl crate::device::Device for Device {
 			let fallback_usage = vk::ImageUsageFlags::TRANSFER_DST;
 
 			if !supported_image_usage.contains(fallback_usage) {
-				panic!(
-					"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
-				);
+				panic!("Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images.");
 			}
 
 			fallback_usage
@@ -4362,14 +3886,12 @@ impl crate::device::Device for Device {
 				.expect("No swapchain")
 		};
 
-		let swapchain_handle =
-			graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
+		let swapchain_handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
 
 		let mut acquire_synchronizers = [SynchronizerHandle(!0u64); MAX_FRAMES_IN_FLIGHT];
 
 		for i in 0..self.frames {
-			let synchronizer =
-				self.create_synchronizer_internal(Some("Swapchain Acquire Sync"), true);
+			let synchronizer = self.create_synchronizer_internal(Some("Swapchain Acquire Sync"), true);
 			acquire_synchronizers[i as usize] = synchronizer;
 		}
 
@@ -4383,8 +3905,7 @@ impl crate::device::Device for Device {
 		let mut submit_synchronizers = [SynchronizerHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
 
 		for i in 0..image_count {
-			let synchronizer =
-				self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
+			let synchronizer = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
 			submit_synchronizers[i as usize] = synchronizer;
 		}
 
@@ -4397,11 +3918,7 @@ impl crate::device::Device for Device {
 			};
 
 		for (i, vk_image) in vk_images.iter().enumerate() {
-			let previous = if i > 0 {
-				Some(native_images[i - 1])
-			} else {
-				None
-			};
+			let previous = if i > 0 { Some(native_images[i - 1]) } else { None };
 			native_images[i] = self.create_swapchain_image(
 				*vk_image,
 				graphics_hardware_interface::Formats::BGRAsRGB,
@@ -4458,10 +3975,7 @@ impl crate::device::Device for Device {
 		graphics_hardware_interface::ImageHandle(swapchain.images[0].0)
 	}
 
-	fn get_image_data<'a>(
-		&'a self,
-		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,
-	) -> &'a [u8] {
+	fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {
 		let image = &self.images[texture_copy_handle.0 as usize];
 
 		let pointer = image.pointer.unwrap();
@@ -4476,13 +3990,8 @@ impl crate::device::Device for Device {
 		slice
 	}
 
-	fn create_synchronizer(
-		&mut self,
-		name: Option<&str>,
-		signaled: bool,
-	) -> graphics_hardware_interface::SynchronizerHandle {
-		let synchronizer_handle =
-			graphics_hardware_interface::SynchronizerHandle(self.synchronizers.len() as u64);
+	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {
+		let synchronizer_handle = graphics_hardware_interface::SynchronizerHandle(self.synchronizers.len() as u64);
 
 		{
 			let mut previous: Option<SynchronizerHandle> = None;
@@ -4510,8 +4019,7 @@ impl crate::device::Device for Device {
 		let sequence_index = (index % self.frames as u32) as u8;
 
 		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
-		let synchronizer =
-			&self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
+		let synchronizer = &self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
 
 		let per_cycle_wait_ms = 1;
 		let wait_warning_time_threshold = 8;
@@ -4519,18 +4027,16 @@ impl crate::device::Device for Device {
 
 		loop {
 			match unsafe {
-				self.device.wait_for_fences(
-					&[synchronizer.fence],
-					true,
-					per_cycle_wait_ms * 1000000,
-				)
+				self.device
+					.wait_for_fences(&[synchronizer.fence], true, per_cycle_wait_ms * 1000000)
 			} {
 				Ok(_) => break,
 				Err(vk::Result::TIMEOUT) => {
-					if timeout_count * per_cycle_wait_ms >= wait_warning_time_threshold
-						&& timeout_count % 500 == 0
-					{
-						println!("Stuck waiting for fences for {} ms at frame {index}. There is a potential issue with synchronization.", per_cycle_wait_ms * timeout_count);
+					if timeout_count * per_cycle_wait_ms >= wait_warning_time_threshold && timeout_count % 500 == 0 {
+						println!(
+							"Stuck waiting for fences for {} ms at frame {index}. There is a potential issue with synchronization.",
+							per_cycle_wait_ms * timeout_count
+						);
 					}
 					timeout_count += 1;
 					continue;
@@ -4540,9 +4046,7 @@ impl crate::device::Device for Device {
 		}
 
 		unsafe {
-			self.device
-				.reset_fences(&[synchronizer.fence])
-				.expect("No fence reset");
+			self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset");
 		}
 
 		let frame_key = FrameKey {

@@ -1,8 +1,8 @@
-pub mod entity;
-pub mod listener;
-pub mod factory;
-pub mod message;
 pub mod channel;
+pub mod entity;
+pub mod factory;
+pub mod listener;
+pub mod message;
 
 pub mod task;
 

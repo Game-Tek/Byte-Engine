@@ -2,19 +2,17 @@
 
 use math::Vector3;
 
-use crate::core::listener::{Listener};
+use crate::core::listener::Listener;
 use crate::core::{Entity, EntityHandle};
 
-use super::{object::Object, Positionable, transform::Transform};
+use super::{object::Object, transform::Transform, Positionable};
 
 #[derive(Debug, Clone)]
 pub enum Anchorage {
 	/// The object is attached to the anchor.
 	Default,
 	/// The anchorage is offset from the anchor.
-	Offset {
-		offset: Transform,
-	},
+	Offset { offset: Transform },
 }
 
 impl Default for Anchorage {
@@ -57,7 +55,12 @@ impl Anchor {
 
 	/// Attaches a child to the anchor.
 	pub fn attach_with_offset(&mut self, child: EntityHandle<dyn Positionable>, offset: Vector3) {
-		self.children.push((child, Anchorage::Offset { offset: Transform::from_position(offset) }));
+		self.children.push((
+			child,
+			Anchorage::Offset {
+				offset: Transform::from_position(offset),
+			},
+		));
 	}
 
 	/// Attaches a child to the anchor.
@@ -88,10 +91,12 @@ pub struct AnchorSystem {
 
 impl AnchorSystem {
 	pub fn new() -> AnchorSystem {
-		AnchorSystem { anchors: Vec::with_capacity(1024) }
+		AnchorSystem {
+			anchors: Vec::with_capacity(1024),
+		}
 	}
 
-	pub fn update(&self,) {
+	pub fn update(&self) {
 		for anchor in &self.anchors {
 			let anchor = anchor.read();
 
@@ -103,10 +108,10 @@ impl AnchorSystem {
 				match anchorage {
 					Anchorage::Default => {
 						child.set_position(anchor.position());
-					},
+					}
 					Anchorage::Offset { offset } => {
 						child.set_position(anchor.position() + offset.get_position());
-					},
+					}
 				}
 			}
 		}

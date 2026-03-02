@@ -2,7 +2,11 @@ use std::sync::Arc;
 
 use math::{normalize, Vector3};
 
-use crate::{core::{Entity, EntityHandle}, gameplay::{transform::Transform, Transformable}, rendering::mesh::generator::{BoxMeshGenerator, MeshGenerator, SphereMeshGenerator}};
+use crate::{
+	core::{Entity, EntityHandle},
+	gameplay::{transform::Transform, Transformable},
+	rendering::mesh::generator::{BoxMeshGenerator, MeshGenerator, SphereMeshGenerator},
+};
 
 pub trait RenderableMesh: Transformable {
 	fn get_mesh(&self) -> &MeshSource;

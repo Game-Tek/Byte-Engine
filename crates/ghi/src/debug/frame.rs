@@ -1,5 +1,5 @@
-use utils::Extent;
 use crate::{CommandBufferHandle, DynamicBufferHandle, FrameKey, ImageHandle, PresentKey, SwapchainHandle};
+use utils::Extent;
 
 pub struct Frame<'a> {
 	device: &'a mut super::Device,
@@ -15,19 +15,30 @@ impl<'a> Frame<'a> {
 		todo!("Handle true allocations");
 	}
 
-	pub fn resize_image(&mut self, _image_handle: ImageHandle, _extent: Extent) {
-	}
+	pub fn resize_image(&mut self, _image_handle: ImageHandle, _extent: Extent) {}
 
-	pub fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) -> super::CommandBufferRecording<'_> {
-		super::CommandBufferRecording::new(self.device, command_buffer_handle, Vec::new(), Vec::new(), Some(self.frame_key))
+	pub fn create_command_buffer_recording(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> super::CommandBufferRecording<'_> {
+		super::CommandBufferRecording::new(
+			self.device,
+			command_buffer_handle,
+			Vec::new(),
+			Vec::new(),
+			Some(self.frame_key),
+		)
 	}
 
 	pub fn acquire_swapchain_image(&mut self, _swapchain_handle: SwapchainHandle) -> (PresentKey, Extent) {
-		(PresentKey {
-			image_index: 0,
-			sequence_index: 0,
-			swapchain: SwapchainHandle(0),
-		}, Extent::rectangle(0, 0))
+		(
+			PresentKey {
+				image_index: 0,
+				sequence_index: 0,
+				swapchain: SwapchainHandle(0),
+			},
+			Extent::rectangle(0, 0),
+		)
 	}
 
 	pub fn device(&mut self) -> &mut super::Device {

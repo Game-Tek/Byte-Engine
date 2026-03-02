@@ -3,7 +3,10 @@ use std::num::NonZeroU32;
 use ash::vk;
 use utils::Extent;
 
-use crate::{vulkan::{Handle, HandleLike, Next}, DeviceAccesses, Formats, Uses};
+use crate::{
+	vulkan::{Handle, HandleLike, Next},
+	DeviceAccesses, Formats, Uses,
+};
 
 /// The `Image` struct stores Vulkan image resources and views for the GHI backend, including swapchain-backed images.
 /// Swapchain-backed images keep the swapchain Vulkan handles and image views, chain across frames via `next`, and do not store extents or own the images.

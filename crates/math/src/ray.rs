@@ -1,4 +1,3 @@
-
 use crate::Vector3;
 
 pub struct Ray {
@@ -8,9 +7,6 @@ pub struct Ray {
 
 impl Ray {
 	pub fn new(origin: Vector3, direction: Vector3) -> Self {
-		Self {
-			origin,
-			direction,
-		}
+		Self { origin, direction }
 	}
 }

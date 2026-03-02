@@ -1,14 +1,20 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::NonNull;
-use std::sync::{Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 
 use objc2_audio_toolbox::{
-	AudioComponent, AudioComponentDescription, AudioComponentFindNext, AudioComponentInstanceDispose, AudioComponentInstanceNew, AudioOutputUnitStart, AudioOutputUnitStop, AudioUnit, AudioUnitGetProperty, AudioUnitInitialize, AudioUnitRenderActionFlags, AudioUnitSetProperty, AudioUnitUninitialize, AURenderCallbackStruct, kAudioOutputUnitProperty_EnableIO, kAudioUnitManufacturer_Apple, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitProperty_SetRenderCallback, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, kAudioUnitScope_Output, kAudioUnitSubType_DefaultOutput, kAudioUnitSubType_HALOutput, kAudioUnitType_Output,
+	kAudioOutputUnitProperty_EnableIO, kAudioUnitManufacturer_Apple, kAudioUnitProperty_MaximumFramesPerSlice,
+	kAudioUnitProperty_SetRenderCallback, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, kAudioUnitScope_Output,
+	kAudioUnitSubType_DefaultOutput, kAudioUnitSubType_HALOutput, kAudioUnitType_Output, AURenderCallbackStruct,
+	AudioComponent, AudioComponentDescription, AudioComponentFindNext, AudioComponentInstanceDispose,
+	AudioComponentInstanceNew, AudioOutputUnitStart, AudioOutputUnitStop, AudioUnit, AudioUnitGetProperty, AudioUnitInitialize,
+	AudioUnitRenderActionFlags, AudioUnitSetProperty, AudioUnitUninitialize,
 };
 use objc2_core_audio_types::{
-	AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, kAudioFormatLinearPCM, kLinearPCMFormatFlagIsFloat, kLinearPCMFormatFlagIsPacked, kLinearPCMFormatFlagIsSignedInteger,
+	kAudioFormatLinearPCM, kLinearPCMFormatFlagIsFloat, kLinearPCMFormatFlagIsPacked, kLinearPCMFormatFlagIsSignedInteger,
+	AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp,
 };
 
 use crate::audio_hardware_interface::{HardwareParameters, Streams, WritePlayFunction};
@@ -29,8 +35,7 @@ pub struct Device {
 impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 	fn new(params: HardwareParameters) -> Result<Self, String>
 	where
-		Self: Sized,
-	{
+		Self: Sized, {
 		if !matches!(params.channels, 1 | 2) {
 			return Err("Unsupported number of channels. The most likely cause is that this backend only supports mono and stereo streams.".into());
 		}
@@ -45,27 +50,23 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 
 		let period_size = DEFAULT_PERIOD_SIZE;
 		let bytes_per_frame = bytes_per_sample * params.channels as usize;
-		let bytes_per_period = period_size.checked_mul(bytes_per_frame).ok_or_else(|| {
-			"Failed to calculate period buffer size. The most likely cause is integer overflow when deriving bytes per period.".to_string()
-		})?;
-		let ring_capacity = bytes_per_period.checked_mul(RING_PERIOD_COUNT).ok_or_else(|| {
-			"Failed to calculate ring buffer size. The most likely cause is integer overflow when deriving total ring capacity.".to_string()
-		})?;
+		let bytes_per_period = period_size
+			.checked_mul(bytes_per_frame)
+			.ok_or_else(|| "Failed to calculate period buffer size. The most likely cause is integer overflow when deriving bytes per period.".to_string())?;
+		let ring_capacity = bytes_per_period
+			.checked_mul(RING_PERIOD_COUNT)
+			.ok_or_else(|| "Failed to calculate ring buffer size. The most likely cause is integer overflow when deriving total ring capacity.".to_string())?;
 
 		let callback_state = Box::new(CallbackState {
 			ring: SpscByteRing::new(ring_capacity)?,
 			underrun_count: AtomicUsize::new(0),
 		});
-		let callback_state_ptr = (&*callback_state as *const CallbackState)
-			.cast_mut()
-			.cast::<c_void>();
+		let callback_state_ptr = (&*callback_state as *const CallbackState).cast_mut().cast::<c_void>();
 
 		let (component, subtype) = find_output_component()?;
 		let mut audio_unit: AudioUnit = std::ptr::null_mut();
 
-		let create_status = unsafe {
-			AudioComponentInstanceNew(component, NonNull::from(&mut audio_unit))
-		};
+		let create_status = unsafe { AudioComponentInstanceNew(component, NonNull::from(&mut audio_unit)) };
 		if create_status != 0 || audio_unit.is_null() {
 			return Err(os_status_error(
 				"Failed to create audio unit instance",
@@ -190,7 +191,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		self.callback_state.ring.wait_for_available_write(required_bytes);
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction,) -> Result<usize, ()> {
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
 		let max_bytes = self.period_size * self.bytes_per_frame;
 		let bytes_per_frame = self.bytes_per_frame;
 		let params = self.parameters;
@@ -203,30 +204,24 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 
 			match (params.bit_depth, params.channels) {
 				(16, 1) => {
-					let buffer = unsafe {
-						std::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<i16>(), available_frames)
-					};
+					let buffer = unsafe { std::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<i16>(), available_frames) };
 					wpf(Streams::Mono16Bit(buffer));
 					available_frames * size_of::<i16>()
 				}
 				(16, 2) => {
-					let buffer = unsafe {
-						std::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<(i16, i16)>(), available_frames)
-					};
+					let buffer =
+						unsafe { std::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<(i16, i16)>(), available_frames) };
 					wpf(Streams::Stereo16Bit(buffer));
 					available_frames * size_of::<(i16, i16)>()
 				}
 				(32, 1) => {
-					let buffer = unsafe {
-						std::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<f32>(), available_frames)
-					};
+					let buffer = unsafe { std::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<f32>(), available_frames) };
 					wpf(Streams::MonoFloat32(buffer));
 					available_frames * size_of::<f32>()
 				}
 				(32, 2) => {
-					let buffer = unsafe {
-						std::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<(f32, f32)>(), available_frames)
-					};
+					let buffer =
+						unsafe { std::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<(f32, f32)>(), available_frames) };
 					wpf(Streams::StereoFloat32(buffer));
 					available_frames * size_of::<(f32, f32)>()
 				}
@@ -310,9 +305,7 @@ unsafe extern "C-unwind" fn output_render_callback(
 			continue;
 		}
 
-		let destination = unsafe {
-			std::slice::from_raw_parts_mut(buffer.mData as *mut u8, byte_count)
-		};
+		let destination = unsafe { std::slice::from_raw_parts_mut(buffer.mData as *mut u8, byte_count) };
 
 		let pulled = callback_state.ring.pop_into_slice(destination);
 		if pulled > 0 {
@@ -369,7 +362,11 @@ fn set_audio_unit_property<T>(
 	}
 }
 
-fn get_audio_unit_stream_format(audio_unit: AudioUnit, scope: u32, element: u32) -> Result<AudioStreamBasicDescription, String> {
+fn get_audio_unit_stream_format(
+	audio_unit: AudioUnit,
+	scope: u32,
+	element: u32,
+) -> Result<AudioStreamBasicDescription, String> {
 	let mut stream_format = AudioStreamBasicDescription {
 		mSampleRate: 0.0,
 		mFormatID: 0,
@@ -403,9 +400,7 @@ fn get_audio_unit_stream_format(audio_unit: AudioUnit, scope: u32, element: u32)
 	}
 
 	if data_size as usize != size_of::<AudioStreamBasicDescription>() {
-		return Err(
-			"Invalid output stream format payload size. The most likely cause is that the audio unit returned an unexpected stream format structure size.".into()
-		);
+		return Err("Invalid output stream format payload size. The most likely cause is that the audio unit returned an unexpected stream format structure size.".into());
 	}
 
 	Ok(stream_format)
@@ -433,7 +428,11 @@ fn validate_stream_format(requested: &AudioStreamBasicDescription, actual: &Audi
 }
 
 fn find_output_component() -> Result<(AudioComponent, u32), String> {
-	for subtype in [AUDIO_UNIT_SUBTYPE_REMOTE_IO, kAudioUnitSubType_HALOutput, kAudioUnitSubType_DefaultOutput] {
+	for subtype in [
+		AUDIO_UNIT_SUBTYPE_REMOTE_IO,
+		kAudioUnitSubType_HALOutput,
+		kAudioUnitSubType_DefaultOutput,
+	] {
 		let mut description = AudioComponentDescription {
 			componentType: kAudioUnitType_Output,
 			componentSubType: subtype,
@@ -442,9 +441,7 @@ fn find_output_component() -> Result<(AudioComponent, u32), String> {
 			componentFlagsMask: 0,
 		};
 
-		let component = unsafe {
-			AudioComponentFindNext(std::ptr::null_mut(), NonNull::from(&mut description))
-		};
+		let component = unsafe { AudioComponentFindNext(std::ptr::null_mut(), NonNull::from(&mut description)) };
 
 		if !component.is_null() {
 			return Ok((component, subtype));
@@ -467,7 +464,9 @@ impl SpscByteRing {
 	// Creates a fixed-size lock-free SPSC ring buffer used by play() and the Core Audio callback.
 	fn new(capacity: usize) -> Result<Self, String> {
 		if capacity == 0 {
-			return Err("Failed to create ring buffer. The most likely cause is that the computed buffer capacity was zero.".into());
+			return Err(
+				"Failed to create ring buffer. The most likely cause is that the computed buffer capacity was zero.".into(),
+			);
 		}
 
 		Ok(Self {
@@ -500,10 +499,7 @@ impl SpscByteRing {
 		let contiguous = available.min(self.capacity - start).min(max_bytes);
 
 		let written = unsafe {
-			let destination = std::slice::from_raw_parts_mut(
-				self.storage.as_ptr().cast_mut().add(start),
-				contiguous,
-			);
+			let destination = std::slice::from_raw_parts_mut(self.storage.as_ptr().cast_mut().add(start), contiguous);
 			writer(destination).min(contiguous)
 		};
 
@@ -521,7 +517,10 @@ impl SpscByteRing {
 		let mut lock = self.space_available_mutex.lock().unwrap();
 
 		while self.available_write() < required_bytes {
-			let waited = self.space_available_condvar.wait_timeout(lock, std::time::Duration::from_millis(2)).unwrap();
+			let waited = self
+				.space_available_condvar
+				.wait_timeout(lock, std::time::Duration::from_millis(2))
+				.unwrap();
 			lock = waited.0;
 		}
 	}
@@ -640,26 +639,35 @@ mod tests {
 	fn ring_preserves_fifo_order_across_wraparound() {
 		let ring = SpscByteRing::new(8).unwrap();
 
-		assert_eq!(ring.with_write_chunk(6, |chunk| {
-			chunk.copy_from_slice(&[1, 2, 3, 4, 5, 6]);
+		assert_eq!(
+			ring.with_write_chunk(6, |chunk| {
+				chunk.copy_from_slice(&[1, 2, 3, 4, 5, 6]);
+				6
+			}),
 			6
-		}), 6);
+		);
 
 		let mut first_pop = [0u8; 5];
 		assert_eq!(ring.pop_into_slice(&mut first_pop), 5);
 		assert_eq!(first_pop, [1, 2, 3, 4, 5]);
 
-		assert_eq!(ring.with_write_chunk(7, |chunk| {
-			assert_eq!(chunk.len(), 2);
-			chunk.copy_from_slice(&[7, 8]);
-			chunk.len()
-		}), 2);
+		assert_eq!(
+			ring.with_write_chunk(7, |chunk| {
+				assert_eq!(chunk.len(), 2);
+				chunk.copy_from_slice(&[7, 8]);
+				chunk.len()
+			}),
+			2
+		);
 
-		assert_eq!(ring.with_write_chunk(7, |chunk| {
-			assert_eq!(chunk.len(), 5);
-			chunk.copy_from_slice(&[9, 10, 11, 12, 13]);
-			chunk.len()
-		}), 5);
+		assert_eq!(
+			ring.with_write_chunk(7, |chunk| {
+				assert_eq!(chunk.len(), 5);
+				chunk.copy_from_slice(&[9, 10, 11, 12, 13]);
+				chunk.len()
+			}),
+			5
+		);
 
 		let mut second_pop = [0u8; 8];
 		assert_eq!(ring.pop_into_slice(&mut second_pop), 8);
@@ -669,10 +677,13 @@ mod tests {
 	#[test]
 	fn wait_for_available_write_blocks_until_space_is_freed() {
 		let ring = std::sync::Arc::new(SpscByteRing::new(4).unwrap());
-		assert_eq!(ring.with_write_chunk(4, |chunk| {
-			chunk.copy_from_slice(&[1, 2, 3, 4]);
+		assert_eq!(
+			ring.with_write_chunk(4, |chunk| {
+				chunk.copy_from_slice(&[1, 2, 3, 4]);
+				4
+			}),
 			4
-		}), 4);
+		);
 
 		let (sender, receiver) = mpsc::channel();
 		let waiting_ring = ring.clone();

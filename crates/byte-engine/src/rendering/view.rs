@@ -1,4 +1,10 @@
-use math::{look_down, mat::{MatInverse as _, MatTranslate as _}, orthographic_matrix, plane::Plane, projection_matrix, Base as _, Matrix4, Vector3, Vector4};
+use math::{
+	look_down,
+	mat::{MatInverse as _, MatTranslate as _},
+	orthographic_matrix,
+	plane::Plane,
+	projection_matrix, Base as _, Matrix4, Vector3, Vector4,
+};
 
 use crate::gameplay::transform::Transform;
 
@@ -28,7 +34,16 @@ impl View {
 		}
 	}
 
-	pub fn new_orthographic(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32, position: Vector3, rotation: Vector3) -> Self {
+	pub fn new_orthographic(
+		left: f32,
+		right: f32,
+		bottom: f32,
+		top: f32,
+		near: f32,
+		far: f32,
+		position: Vector3,
+		rotation: Vector3,
+	) -> Self {
 		Self {
 			projection: orthographic_matrix(left, right, bottom, top, near, far),
 			view: look_down(rotation) * Matrix4::from_translation(-position),

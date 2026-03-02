@@ -1,11 +1,31 @@
-use std::{collections::HashMap, sync::Arc};
-use resource_management::{resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut}, resources::audio::Audio, types::BitDepths, Reference};
+use resource_management::{
+	resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut},
+	resources::audio::Audio,
+	types::BitDepths,
+	Reference,
+};
 use smallvec::SmallVec;
+use std::{collections::HashMap, sync::Arc};
 
-use crate::{audio::{emitter::Emitter, generator::{Generator, PlaybackSettings, PlaybackState}, round_robin::RoundRobin}, core::{Entity, EntityHandle, listener::Listener}, gameplay::Positionable};
-use ahi::{self, Device, audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams}};
+use crate::{
+	audio::{
+		emitter::Emitter,
+		generator::{Generator, PlaybackSettings, PlaybackState},
+		round_robin::RoundRobin,
+	},
+	core::{listener::Listener, Entity, EntityHandle},
+	gameplay::Positionable,
+};
+use ahi::{
+	self,
+	audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams},
+	Device,
+};
 
-use super::{sound::{self, Sound}, synthesizer::Synthesizer};
+use super::{
+	sound::{self, Sound},
+	synthesizer::Synthesizer,
+};
 
 use utils::Box as Boxy;
 
@@ -44,7 +64,13 @@ impl DefaultAudioSystem {
 			"Failed to create audio device. Audio parameters may be invalid or device may not exist or be available."
 		})?;
 
-		channels.insert("master".to_string(), Channel { samples: vec![0; device.get_period_size() * 2].into_boxed_slice(), gain: 1f32 });
+		channels.insert(
+			"master".to_string(),
+			Channel {
+				samples: vec![0; device.get_period_size() * 2].into_boxed_slice(),
+				gain: 1f32,
+			},
+		);
 
 		Ok(Self {
 			device,
@@ -106,9 +132,7 @@ impl DefaultAudioSystem {
 
 		let mut to_destroy: SmallVec<[usize; 16]> = SmallVec::with_capacity(16);
 
-		let settings = PlaybackSettings {
-			sample_rate,
-		};
+		let settings = PlaybackSettings { sample_rate };
 
 		for (idx, playing_sound) in self.sources.iter().enumerate() {
 			let current_sample = playing_sound.current_sample;
@@ -117,7 +141,9 @@ impl DefaultAudioSystem {
 			let play_sound = |url: &str| {
 				let (audio, audio_data) = self.audio_resources.get(url).unwrap();
 
-				if current_sample >= audio.sample_count { return; }
+				if current_sample >= audio.sample_count {
+					return;
+				}
 
 				let current_sample = current_sample.min(audio.sample_count);
 
@@ -128,9 +154,7 @@ impl DefaultAudioSystem {
 				}
 			};
 
-			let state = PlaybackState {
-				current_sample,
-			};
+			let state = PlaybackState { current_sample };
 
 			if let None = playing_sound.generator.render(settings, state, buffer) {
 				to_destroy.push(idx);
@@ -157,7 +181,11 @@ impl DefaultAudioSystem {
 
 	pub fn create_generator(&mut self, generator: Arc<dyn Generator>) {
 		let idx = self.sources.len();
-		self.sources.push(Source { generator, current_sample: 0, gain: 1f32 });
+		self.sources.push(Source {
+			generator,
+			current_sample: 0,
+			gain: 1f32,
+		});
 	}
 }
 
@@ -173,40 +201,43 @@ impl AudioSystem for DefaultAudioSystem {
 	fn render_available(&mut self) -> bool {
 		let device = &self.device;
 
-		let frames = device.play(|streams| {
-			match streams {
-				Streams::MonoFloat32(buffer) => { // Hardware is the same format as what we use for rendering
-					self.render_sources(buffer);
-				}
-				Streams::Mono16Bit(buffer) => {
-					let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
-					self.render_sources(&mut mix_buffer);
+		let frames = device
+			.play(|streams| {
+				match streams {
+					Streams::MonoFloat32(buffer) => {
+						// Hardware is the same format as what we use for rendering
+						self.render_sources(buffer);
+					}
+					Streams::Mono16Bit(buffer) => {
+						let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
+						self.render_sources(&mut mix_buffer);
 
-					for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
-						*destination = f32_to_i16(*sample);
+						for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
+							*destination = f32_to_i16(*sample);
+						}
+					}
+					Streams::Stereo16Bit(buffer) => {
+						let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
+						self.render_sources(&mut mix_buffer);
+
+						for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
+							let sample = f32_to_i16(*sample);
+							*left = sample;
+							*right = sample;
+						}
+					}
+					Streams::StereoFloat32(buffer) => {
+						let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
+						self.render_sources(&mut mix_buffer);
+
+						for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
+							*left = *sample;
+							*right = *sample;
+						}
 					}
 				}
-				Streams::Stereo16Bit(buffer) => {
-					let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
-					self.render_sources(&mut mix_buffer);
-
-					for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
-						let sample = f32_to_i16(*sample);
-						*left = sample;
-						*right = sample;
-					}
-				}
-				Streams::StereoFloat32(buffer) => {
-					let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
-					self.render_sources(&mut mix_buffer);
-
-					for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
-						*left = *sample;
-						*right = *sample;
-					}
-				}
-			}
-		}).unwrap();
+			})
+			.unwrap();
 
 		self.report_new_underruns();
 

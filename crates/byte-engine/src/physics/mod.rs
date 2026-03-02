@@ -1,13 +1,11 @@
-
-
-pub mod collider;
 pub mod body;
+pub mod collider;
 pub mod intersection;
 
-pub mod world;
 pub mod dynabit;
+pub mod world;
 
-pub use world::World;
+pub use body::Body;
 pub use body::BodyTypes;
 pub use collider::Collider;
-pub use body::Body;
+pub use world::World;

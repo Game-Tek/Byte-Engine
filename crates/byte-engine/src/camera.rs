@@ -28,21 +28,35 @@ impl Camera {
 	}
 
 	/// Returns the field of view of the camera
-	pub fn get_fov(&self) -> f32 { self.fov }
+	pub fn get_fov(&self) -> f32 {
+		self.fov
+	}
 
 	/// Returns the aspect ratio of the camera
-	fn get_aspect_ratio(&self) -> f32 { self.aspect_ratio }
+	fn get_aspect_ratio(&self) -> f32 {
+		self.aspect_ratio
+	}
 
 	/// Returns the aperture of the camera
-	fn get_aperture(&self) -> f32 { self.aperture }
+	fn get_aperture(&self) -> f32 {
+		self.aperture
+	}
 
 	/// Returns the focus distance of the camera
-	fn get_focus_distance(&self) -> f32 { self.focus_distance }
+	fn get_focus_distance(&self) -> f32 {
+		self.focus_distance
+	}
 
-	pub fn orientation(&self) -> Quaternion { self.orientation }
-	pub fn set_direction(&mut self, direction: Vector3) { self.orientation = Quaternion::from_axis_angle(direction, 0.0); }
+	pub fn orientation(&self) -> Quaternion {
+		self.orientation
+	}
+	pub fn set_direction(&mut self, direction: Vector3) {
+		self.orientation = Quaternion::from_axis_angle(direction, 0.0);
+	}
 
-	pub fn set_orientation(&mut self, orientation: Quaternion) { self.orientation = orientation; }
+	pub fn set_orientation(&mut self, orientation: Quaternion) {
+		self.orientation = orientation;
+	}
 
 	pub fn set_fov(&mut self, fov: f32) {
 		self.fov = fov;
@@ -50,26 +64,30 @@ impl Camera {
 
 	pub fn get_direction(&self) -> Vector3 {
 		self.orientation * FORWARD
-    }
+	}
 }
 
 impl Positionable for Camera {
-	fn position(&self) -> Vector3 { self.position }
-	fn set_position(&mut self, position: Vector3) { self.position = position; }
+	fn position(&self) -> Vector3 {
+		self.position
+	}
+	fn set_position(&mut self, position: Vector3) {
+		self.position = position;
+	}
 }
 
 impl Inspectable for Camera {
 	fn as_string(&self) -> String {
-    	format!("{:?}", self)
+		format!("{:?}", self)
 	}
 
 	fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
-    	match key {
-        	"fov" => {
-        		self.set_fov(value.parse().map_err(|e| format!("Invalid value: {}", e))?);
-          		Ok(())
-        	},
-        	_ => Err(format!("Unknown key: {}", key))
-    	}
+		match key {
+			"fov" => {
+				self.set_fov(value.parse().map_err(|e| format!("Invalid value: {}", e))?);
+				Ok(())
+			}
+			_ => Err(format!("Unknown key: {}", key)),
+		}
 	}
 }

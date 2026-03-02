@@ -25,8 +25,7 @@ pub trait Listener<M> {
 /// The `ListenerIterator` struct exists to provide iterator semantics for any listener implementation.
 pub struct ListenerIterator<'a, L: ?Sized, M>
 where
-	L: Listener<M>,
-{
+	L: Listener<M>, {
 	listener: &'a mut L,
 	_marker: PhantomData<M>,
 }
@@ -78,8 +77,7 @@ impl<M: Clone> DefaultListener<M> {
 
 	pub fn filtered<F>(&self, filter: F) -> FilteredListener<DefaultListener<M>, M, F>
 	where
-		F: Fn(&M) -> bool,
-	{
+		F: Fn(&M) -> bool, {
 		FilteredListener(DefaultListener(self.0.clone()), filter, PhantomData)
 	}
 }
@@ -120,19 +118,19 @@ where
 	}
 }
 
-impl <M: Clone> Listener<M> for Vec<M> {
+impl<M: Clone> Listener<M> for Vec<M> {
 	fn read(&mut self) -> Option<M> {
 		self.pop()
 	}
 }
 
-impl <M: Clone> Listener<M> for VecDeque<M> {
+impl<M: Clone> Listener<M> for VecDeque<M> {
 	fn read(&mut self) -> Option<M> {
 		self.pop_front()
 	}
 }
 
-impl <L, M: Clone, F> Iterator for FilteredListener<L, M, F>
+impl<L, M: Clone, F> Iterator for FilteredListener<L, M, F>
 where
 	L: Listener<M>,
 	F: Fn(&M) -> bool,

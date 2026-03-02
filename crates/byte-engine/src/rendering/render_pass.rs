@@ -1,11 +1,23 @@
-
 use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
-use crate::{core::{EntityHandle}, rendering::{Viewport, renderer::RenderTargets}};
+use crate::{
+	core::EntityHandle,
+	rendering::{renderer::RenderTargets, Viewport},
+};
 
-use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _}, device::Device as _, Device as _};
+use ghi::{
+	command_buffer::{
+		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
+	},
+	device::Device as _,
+	Device as _,
+};
 use resource_management::glsl;
-use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Box, Extent};
+use utils::{
+	hash::{HashMap, HashMapExt},
+	sync::RwLock,
+	Box, Extent,
+};
 
 pub trait RenderPassFunction = Fn(&mut ghi::CommandBufferRecording, &[ghi::AttachmentInformation]);
 
@@ -26,7 +38,7 @@ pub struct RenderPassBuilder<'a> {
 	pub(crate) images: &'a mut RenderTargets,
 }
 
-impl <'a> RenderPassBuilder<'a> {
+impl<'a> RenderPassBuilder<'a> {
 	pub fn new(device: &'a mut ghi::Device, images: &'a mut RenderTargets, view_id: usize) -> Self {
 		RenderPassBuilder {
 			device,
@@ -48,7 +60,8 @@ impl <'a> RenderPassBuilder<'a> {
 
 	/// Use `create_render_target` to create a new image and get a reference to it.
 	pub fn create_render_target(&mut self, builder: ghi::image::Builder<'a>) -> RenderToResult {
-		self.consumed_resources.push((builder.get_name().unwrap(), ghi::AccessPolicies::WRITE));
+		self.consumed_resources
+			.push((builder.get_name().unwrap(), ghi::AccessPolicies::WRITE));
 
 		let name = builder.get_name().unwrap().to_string();
 		let format = builder.get_format();
@@ -66,7 +79,7 @@ impl <'a> RenderPassBuilder<'a> {
 
 		let (image, _) = self.images.get(name).expect("Image not found").clone();
 
-		ReadFromResult { image, }
+		ReadFromResult { image }
 	}
 
 	pub fn device(&mut self) -> &'_ mut ghi::Device {
@@ -108,15 +121,11 @@ impl Into<ghi::PipelineAttachmentInformation> for RenderToResult {
 }
 
 #[derive(Hash)]
-pub struct FramePrepare {
-
-}
+pub struct FramePrepare {}
 
 impl FramePrepare {
 	pub fn new() -> Self {
-		FramePrepare {
-
-		}
+		FramePrepare {}
 	}
 
 	pub fn viewports(&self) -> &[Viewport] {

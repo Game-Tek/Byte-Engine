@@ -1,2 +1,7 @@
+edition = "2024"
 indent_style = "Block"
 condense_wildcard_suffixes = true
+brace_style = "PreferSameLine"
+use_field_init_shorthand = true
+max_width = 128
+hard_tabs = true

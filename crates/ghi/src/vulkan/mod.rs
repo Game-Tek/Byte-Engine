@@ -1,38 +1,38 @@
 use std::sync::atomic::AtomicU64;
 
-use ash::vk;
-use smallvec::SmallVec;
 use ::utils::hash::HashMap;
 use ::utils::Extent;
+use ash::vk;
+use smallvec::SmallVec;
 
 use crate::graphics_hardware_interface;
 use crate::vulkan::sampler::SamplerHandle;
 
-pub mod queue;
+pub mod binding;
+pub mod buffer;
 pub mod command_buffer;
-pub mod instance;
+pub mod descriptor_set;
 pub mod device;
 pub mod frame;
-pub mod buffer;
 pub mod image;
+pub mod instance;
+pub mod queue;
 pub mod sampler;
-pub mod descriptor_set;
 pub mod swapchain;
 pub mod synchronizer;
-pub mod binding;
 
 mod utils;
 
-pub use self::instance::*;
-pub use self::device::*;
-pub use self::command_buffer::*;
-pub use self::frame::*;
+pub use self::binding::*;
 pub(crate) use self::buffer::*;
-pub(crate) use self::image::*;
+pub use self::command_buffer::*;
 pub use self::descriptor_set::*;
+pub use self::device::*;
+pub use self::frame::*;
+pub(crate) use self::image::*;
+pub use self::instance::*;
 pub(crate) use self::swapchain::*;
 pub(crate) use self::synchronizer::*;
-pub use self::binding::*;
 
 pub(super) enum Descriptor {
 	Image {
@@ -66,7 +66,7 @@ pub(super) enum Handle {
 	Synchronizer(SynchronizerHandle),
 }
 
-#[derive(Clone, PartialEq,)]
+#[derive(Clone, PartialEq)]
 pub(super) struct Consumption {
 	pub(super) handle: Handle,
 	pub(super) stages: graphics_hardware_interface::Stages,
@@ -74,7 +74,7 @@ pub(super) struct Consumption {
 	pub(super) layout: graphics_hardware_interface::Layouts,
 }
 
-#[derive(Clone, PartialEq,)]
+#[derive(Clone, PartialEq)]
 pub(super) struct VulkanConsumption {
 	pub(super) handle: Handle,
 	pub(super) stages: vk::PipelineStageFlags2,
@@ -108,7 +108,13 @@ pub(crate) struct Shader {
 pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	resource_access: Vec<((u32, u32), (graphics_hardware_interface::Stages, graphics_hardware_interface::AccessPolicies))>,
+	resource_access: Vec<(
+		(u32, u32),
+		(
+			graphics_hardware_interface::Stages,
+			graphics_hardware_interface::AccessPolicies,
+		),
+	)>,
 }
 
 #[derive(Clone, Copy)]
@@ -222,10 +228,7 @@ pub(crate) struct Task {
 
 impl Task {
 	pub(crate) fn new(task: Tasks, frame: Option<u8>) -> Self {
-		Self {
-			task,
-			frame,
-		}
+		Self { task, frame }
 	}
 
 	pub(crate) fn delete_vulkan_image(handle: vk::Image, frame: u8) -> Self {
@@ -267,10 +270,23 @@ impl Task {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub(crate) enum Descriptors {
-	Buffer{ handle: BufferHandle, size: graphics_hardware_interface::Ranges },
-	Image{ handle: ImageHandle, layout: graphics_hardware_interface::Layouts },
-	CombinedImageSampler{ image_handle: ImageHandle, layout: graphics_hardware_interface::Layouts, sampler_handle: SamplerHandle, layer: Option<u32> },
-	Sampler{ handle: SamplerHandle },
+	Buffer {
+		handle: BufferHandle,
+		size: graphics_hardware_interface::Ranges,
+	},
+	Image {
+		handle: ImageHandle,
+		layout: graphics_hardware_interface::Layouts,
+	},
+	CombinedImageSampler {
+		image_handle: ImageHandle,
+		layout: graphics_hardware_interface::Layouts,
+		sampler_handle: SamplerHandle,
+		layer: Option<u32>,
+	},
+	Sampler {
+		handle: SamplerHandle,
+	},
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -282,7 +298,11 @@ pub(crate) struct DescriptorWrite {
 
 impl DescriptorWrite {
 	pub(crate) fn new(write: Descriptors, binding: DescriptorSetBindingHandle) -> Self {
-		Self { write, binding, array_element: 0 }
+		Self {
+			write,
+			binding,
+			array_element: 0,
+		}
 	}
 
 	pub(crate) fn index(mut self, index: u32) -> Self {
@@ -291,7 +311,12 @@ impl DescriptorWrite {
 	}
 }
 
-pub(crate) trait HandleLike where Self: Sized, Self: PartialEq<Self>, Self: Clone, Self: Copy {
+pub(crate) trait HandleLike
+where
+	Self: Sized,
+	Self: PartialEq<Self>,
+	Self: Clone,
+	Self: Copy, {
 	type Item: Next<Handle = Self>;
 
 	fn build(value: u64) -> Self;
@@ -301,11 +326,16 @@ pub(crate) trait HandleLike where Self: Sized, Self: PartialEq<Self>, Self: Clon
 	fn root(&self, collection: &[Self::Item]) -> Self {
 		let handle_option = Some(*self);
 
-		return if let Some(e) = collection.iter().enumerate().find(|(_, e)| e.next() == handle_option).map(|(i, _)| Self::build(i as u64)) {
+		return if let Some(e) = collection
+			.iter()
+			.enumerate()
+			.find(|(_, e)| e.next() == handle_option)
+			.map(|(i, _)| Self::build(i as u64))
+		{
 			e.root(collection)
 		} else {
 			handle_option.unwrap()
-		}
+		};
 	}
 
 	fn get_all(&self, collection: &[Self::Item]) -> SmallVec<[Self; MAX_FRAMES_IN_FLIGHT]> {
@@ -322,10 +352,12 @@ pub(crate) trait HandleLike where Self: Sized, Self: PartialEq<Self>, Self: Clon
 	}
 }
 
-pub(crate) trait Next where Self: Sized {
+pub(crate) trait Next
+where
+	Self: Sized, {
 	type Handle: HandleLike<Item = Self>;
 
-    fn next(&self) -> Option<Self::Handle>;
+	fn next(&self) -> Option<Self::Handle>;
 }
 
 #[cfg(test)]
@@ -337,10 +369,20 @@ mod tests {
 		create_default_device_setup_with_features(features)
 	}
 
-	fn create_default_device_setup_with_features(features: graphics_hardware_interface::Features) -> (Instance, Device, graphics_hardware_interface::QueueHandle) {
+	fn create_default_device_setup_with_features(
+		features: graphics_hardware_interface::Features,
+	) -> (Instance, Device, graphics_hardware_interface::QueueHandle) {
 		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
 		let mut queue_handle = None;
-		let device = instance.create_device(features.clone(), &mut [(graphics_hardware_interface::QueueSelection::new(graphics_hardware_interface::CommandBufferType::GRAPHICS), &mut queue_handle)]).expect("Failed to create VulkanGHI.");
+		let device = instance
+			.create_device(
+				features.clone(),
+				&mut [(
+					graphics_hardware_interface::QueueSelection::new(graphics_hardware_interface::CommandBufferType::GRAPHICS),
+					&mut queue_handle,
+				)],
+			)
+			.expect("Failed to create VulkanGHI.");
 		(instance, device, queue_handle.unwrap())
 	}
 
@@ -403,7 +445,11 @@ mod tests {
 	#[test]
 	#[ignore = "not working on supporting rt right now"]
 	fn render_with_ray_tracing() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup_with_features(graphics_hardware_interface::Features::new().validation(true).ray_tracing(true));
+		let (_instance, mut device, queue_handle) = create_default_device_setup_with_features(
+			graphics_hardware_interface::Features::new()
+				.validation(true)
+				.ray_tracing(true),
+		);
 		graphics_hardware_interface::tests::ray_tracing(&mut device, queue_handle);
 	}
 }

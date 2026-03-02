@@ -65,17 +65,23 @@ mod tests {
 		// A simple choice for P is -D * N (if N is unit vector)
 		let point_on_plane = normal * (-distance_d);
 		assert_float_eq!(
-			plane.signed_distance_to_point(point_on_plane), 0.0, "Point on plane should have zero distance"
+			plane.signed_distance_to_point(point_on_plane),
+			0.0,
+			"Point on plane should have zero distance"
 		);
 
 		let point_positive_side = point_on_plane + normal * 3.0; // 3 units along normal
 		assert_float_eq!(
-			plane.signed_distance_to_point(point_positive_side), 3.0, "Point on positive side distance check"
+			plane.signed_distance_to_point(point_positive_side),
+			3.0,
+			"Point on positive side distance check"
 		);
 
 		let point_negative_side = point_on_plane - normal * 4.0; // 4 units against normal
 		assert_float_eq!(
-			plane.signed_distance_to_point(point_negative_side), -4.0, "Point on negative side distance check"
+			plane.signed_distance_to_point(point_negative_side),
+			-4.0,
+			"Point on negative side distance check"
 		);
 	}
 
@@ -101,17 +107,20 @@ mod tests {
 
 		let test_point_on_plane = Vec3f::new(5.0, -5.0, 0.0);
 		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_on_plane), 0.0,
+			plane.signed_distance_to_point(test_point_on_plane),
+			0.0,
 			"Another point on XY plane"
 		);
 		let test_point_off_plane_pos = Vec3f::new(0.0, 0.0, 1.0);
 		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_off_plane_pos), 1.0,
+			plane.signed_distance_to_point(test_point_off_plane_pos),
+			1.0,
 			"Point on positive side of XY plane"
 		);
 		let test_point_off_plane_neg = Vec3f::new(0.0, 0.0, -2.0);
 		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_off_plane_neg), -2.0,
+			plane.signed_distance_to_point(test_point_off_plane_neg),
+			-2.0,
 			"Point on negative side of XY plane"
 		);
 	}
@@ -138,17 +147,23 @@ mod tests {
 
 		let test_point_on_plane = Vec3f::new(-2.0, 5.0, 5.0);
 		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_on_plane), 0.0, "Another point on x=-2 plane"
+			plane.signed_distance_to_point(test_point_on_plane),
+			0.0,
+			"Another point on x=-2 plane"
 		);
 		// N.P + D = (1,0,0).(-1,0,0) + 2 = -1 + 2 = 1
 		let test_point_off_plane_pos = Vec3f::new(-1.0, 0.0, 0.0);
 		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_off_plane_pos), 1.0, "Point on positive side of x=-2 plane (x=-1)"
+			plane.signed_distance_to_point(test_point_off_plane_pos),
+			1.0,
+			"Point on positive side of x=-2 plane (x=-1)"
 		);
 		// N.P + D = (1,0,0).(-3,0,0) + 2 = -3 + 2 = -1
 		let test_point_off_plane_neg = Vec3f::new(-3.0, 0.0, 0.0);
 		assert_float_eq!(
-			plane.signed_distance_to_point(test_point_off_plane_neg), -1.0, "Point on negative side of x=-2 plane (x=-3)"
+			plane.signed_distance_to_point(test_point_off_plane_neg),
+			-1.0,
+			"Point on negative side of x=-2 plane (x=-3)"
 		);
 	}
 
@@ -160,20 +175,12 @@ mod tests {
 		let plane = Plane::from_points(p1, p2, p3);
 
 		// Check if the normal is a unit vector
-		assert_float_eq!(
-			dot(plane.normal, plane.normal), 1.0, "Normal vector should be unit length"
-		);
+		assert_float_eq!(dot(plane.normal, plane.normal), 1.0, "Normal vector should be unit length");
 
 		// Check if all three defining points lie on the generated plane
-		assert_float_eq!(
-			plane.signed_distance_to_point(p1), 0.0, "p1 should be on the generated plane"
-		);
-		assert_float_eq!(
-			plane.signed_distance_to_point(p2), 0.0, "p2 should be on the generated plane"
-		);
-		assert_float_eq!(
-			plane.signed_distance_to_point(p3), 0.0, "p3 should be on the generated plane"
-		);
+		assert_float_eq!(plane.signed_distance_to_point(p1), 0.0, "p1 should be on the generated plane");
+		assert_float_eq!(plane.signed_distance_to_point(p2), 0.0, "p2 should be on the generated plane");
+		assert_float_eq!(plane.signed_distance_to_point(p3), 0.0, "p3 should be on the generated plane");
 	}
 
 	#[test]
@@ -193,12 +200,16 @@ mod tests {
 		// Both planes must still contain all three points (distance = 0)
 		for p_idx in [p1, p2, p3].iter().enumerate() {
 			assert_float_eq!(
-				plane1.signed_distance_to_point(*p_idx.1), 0.0,
-				"Point p{} on plane1", p_idx.0 + 1
+				plane1.signed_distance_to_point(*p_idx.1),
+				0.0,
+				"Point p{} on plane1",
+				p_idx.0 + 1
 			);
 			assert_float_eq!(
-				plane2.signed_distance_to_point(*p_idx.1), 0.0,
-				"Point p{} on plane2", p_idx.0 + 1
+				plane2.signed_distance_to_point(*p_idx.1),
+				0.0,
+				"Point p{} on plane2",
+				p_idx.0 + 1
 			);
 		}
 
@@ -207,7 +218,8 @@ mod tests {
 		let dist1 = plane1.signed_distance_to_point(test_point);
 		let dist2 = plane2.signed_distance_to_point(test_point);
 		assert_float_eq!(
-			dist1, -dist2,
+			dist1,
+			-dist2,
 			"Signed distances to a test point should be opposite for reversed winding"
 		);
 	}

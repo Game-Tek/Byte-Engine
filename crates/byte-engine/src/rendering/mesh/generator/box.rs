@@ -1,4 +1,8 @@
-use std::{borrow::Cow, hash::{Hash as _, Hasher}, sync::Arc};
+use std::{
+	borrow::Cow,
+	hash::{Hash as _, Hasher},
+	sync::Arc,
+};
 
 use math::{Vector3, Vector4};
 
@@ -17,9 +21,7 @@ impl BoxMeshGenerator {
 	}
 
 	pub fn from_size(size: Vector3) -> Self {
-		Self {
-			size,
-		}
+		Self { size }
 	}
 }
 
@@ -94,18 +96,7 @@ impl MeshGenerator for BoxMeshGenerator {
 
 	fn indices(&self) -> std::borrow::Cow<'_, [u32]> {
 		std::borrow::Cow::Borrowed(&[
-			0, 2, 1,
-			0, 3, 2,
-			4, 5, 6,
-			4, 6, 7,
-			0, 1, 5,
-			0, 5, 4,
-			1, 2, 6,
-			1, 6, 5,
-			2, 3, 7,
-			2, 7, 6,
-			3, 0, 4,
-			3, 4, 7,
+			0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7,
 		])
 	}
 

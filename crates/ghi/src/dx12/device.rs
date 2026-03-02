@@ -1,35 +1,39 @@
-use std::{alloc::{self, Layout}, num::NonZeroU32};
+use std::{
+	alloc::{self, Layout},
+	num::NonZeroU32,
+};
 
 use ::utils::hash::{HashMap, HashSet};
 use ::utils::Extent;
-use windows::{Win32::Graphics::{Direct3D12::{D3D12_COMMAND_LIST_TYPE_COMPUTE, D3D12_COMMAND_LIST_TYPE_COPY, D3D12_COMMAND_LIST_TYPE_DIRECT}, Dxgi::{DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG}}, core::{Interface, IUnknown}};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_12_0};
 use windows::Win32::Graphics::Direct3D12::{
-	D3D12CreateDevice, D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_QUEUE_DESC,
-	D3D12_COMMAND_QUEUE_FLAGS, D3D12_FENCE_FLAGS,
-	ID3D12CommandAllocator, ID3D12CommandQueue, ID3D12Device, ID3D12Fence,
-	ID3D12GraphicsCommandList,
-};
-use windows::Win32::Graphics::Dxgi::{
-	CreateDXGIFactory2, IDXGIFactory4, IDXGISwapChain3, DXGI_CREATE_FACTORY_FLAGS, DXGI_MWA_NO_ALT_ENTER,
-	DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_DISCARD,
-	DXGI_USAGE_RENDER_TARGET_OUTPUT,
+	D3D12CreateDevice, ID3D12CommandAllocator, ID3D12CommandQueue, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList,
+	D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAGS, D3D12_FENCE_FLAGS,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::{
+	CreateDXGIFactory2, IDXGIFactory4, IDXGISwapChain3, DXGI_CREATE_FACTORY_FLAGS, DXGI_MWA_NO_ALT_ENTER, DXGI_SCALING_STRETCH,
+	DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+};
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+use windows::{
+	core::{IUnknown, Interface},
+	Win32::Graphics::{
+		Direct3D12::{D3D12_COMMAND_LIST_TYPE_COMPUTE, D3D12_COMMAND_LIST_TYPE_COPY, D3D12_COMMAND_LIST_TYPE_DIRECT},
+		Dxgi::{DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG},
+	},
+};
 
 use crate::{
-	graphics_hardware_interface, image, raster_pipeline, sampler, window,
-	AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
-	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
-	DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
-	DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses, DynamicBufferHandle,
-	FilteringModes, Formats, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle,
-	PresentationModes, PresentKey, PushConstantRange, QueueHandle, SamplerAddressingModes, SamplerHandle,
-	SamplingReductionModes, ShaderBindingDescriptor, ShaderHandle, ShaderParameter, ShaderSource,
-	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
-	TopLevelAccelerationStructureHandle, UseCases, Uses, VertexElement,
+	graphics_hardware_interface, image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle,
+	BindingConstructor, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
+	CommandBufferHandle, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
+	DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses, DynamicBufferHandle, FilteringModes, Formats, ImageHandle,
+	MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, PresentationModes, PushConstantRange, QueueHandle,
+	SamplerAddressingModes, SamplerHandle, SamplingReductionModes, ShaderBindingDescriptor, ShaderHandle, ShaderParameter,
+	ShaderSource, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle,
+	UseCases, Uses, VertexElement,
 };
 
 use super::utils;
@@ -88,7 +92,9 @@ impl Drop for Buffer {
 			return;
 		}
 		if !self.data.is_null() {
-			unsafe { alloc::dealloc(self.data, self.layout); }
+			unsafe {
+				alloc::dealloc(self.data, self.layout);
+			}
 		}
 	}
 }
@@ -182,18 +188,17 @@ impl Device {
 	/// Creates a DX12 device and initializes command queues for the requested queue types.
 	pub fn new(
 		settings: graphics_hardware_interface::Features,
-		queues: &mut [(graphics_hardware_interface::QueueSelection, &mut Option<graphics_hardware_interface::QueueHandle>)],
+		queues: &mut [(
+			graphics_hardware_interface::QueueSelection,
+			&mut Option<graphics_hardware_interface::QueueHandle>,
+		)],
 	) -> Result<Self, &'static str> {
 		let adapter: Option<&IUnknown> = None;
 		let mut device: Option<ID3D12Device> = None;
 		unsafe { D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, &mut device) }
 			.or_else(|_| unsafe { D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, &mut device) })
-			.map_err(|_| {
-				"Failed to create a D3D12 device. The most likely cause is that the GPU or driver does not support the required feature level."
-			})?;
-		let device = device.ok_or(
-			"Failed to acquire a D3D12 device. The most likely cause is that the D3D12CreateDevice call returned no device instance.",
-		)?;
+			.map_err(|_| "Failed to create a D3D12 device. The most likely cause is that the GPU or driver does not support the required feature level.")?;
+		let device = device.ok_or("Failed to acquire a D3D12 device. The most likely cause is that the D3D12CreateDevice call returned no device instance.")?;
 
 		let mut queue_storage = Vec::with_capacity(queues.len());
 
@@ -211,9 +216,8 @@ impl Device {
 				NodeMask: 0,
 			};
 
-			let queue = unsafe { device.CreateCommandQueue(&desc) }.map_err(|_| {
-				"Failed to create a D3D12 command queue. The most likely cause is that the device does not support the requested queue type."
-			})?;
+			let queue = unsafe { device.CreateCommandQueue(&desc) }
+				.map_err(|_| "Failed to create a D3D12 command queue. The most likely cause is that the device does not support the requested queue type.")?;
 
 			let index = queue_storage.len() as u64;
 			queue_storage.push(Queue { queue, queue_type });
@@ -281,7 +285,12 @@ impl Device {
 		}
 	}
 
-	pub fn create_allocation(&mut self, size: usize, _resource_uses: Uses, _resource_device_accesses: DeviceAccesses) -> AllocationHandle {
+	pub fn create_allocation(
+		&mut self,
+		size: usize,
+		_resource_uses: Uses,
+		_resource_device_accesses: DeviceAccesses,
+	) -> AllocationHandle {
 		self.allocations.push(Allocation { data: vec![0u8; size] });
 		AllocationHandle((self.allocations.len() - 1) as u64)
 	}
@@ -482,17 +491,31 @@ impl Device {
 		CommandBufferHandle((self.command_buffers.len() - 1) as u64)
 	}
 
-	pub fn create_command_buffer_recording<'a>(&'a mut self, command_buffer_handle: CommandBufferHandle) -> super::CommandBufferRecording<'a> {
+	pub fn create_command_buffer_recording<'a>(
+		&'a mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> super::CommandBufferRecording<'a> {
 		super::CommandBufferRecording::new(self, command_buffer_handle, None)
 	}
 
-	pub fn create_buffer<T: Copy>(&mut self, _name: Option<&str>, resource_uses: Uses, device_accesses: DeviceAccesses) -> BufferHandle<T> {
+	pub fn create_buffer<T: Copy>(
+		&mut self,
+		_name: Option<&str>,
+		resource_uses: Uses,
+		device_accesses: DeviceAccesses,
+	) -> BufferHandle<T> {
 		let handle = Self::create_buffer_with_layout(Layout::new::<T>(), resource_uses, device_accesses, &mut self.buffers);
 		BufferHandle(handle, std::marker::PhantomData)
 	}
 
-	pub fn create_dynamic_buffer<T: Copy>(&mut self, _name: Option<&str>, resource_uses: Uses, device_accesses: DeviceAccesses) -> DynamicBufferHandle<T> {
-		let handle = Self::create_buffer_with_layout(Layout::new::<T>(), resource_uses, device_accesses, &mut self.dynamic_buffers);
+	pub fn create_dynamic_buffer<T: Copy>(
+		&mut self,
+		_name: Option<&str>,
+		resource_uses: Uses,
+		device_accesses: DeviceAccesses,
+	) -> DynamicBufferHandle<T> {
+		let handle =
+			Self::create_buffer_with_layout(Layout::new::<T>(), resource_uses, device_accesses, &mut self.dynamic_buffers);
 		DynamicBufferHandle(handle, std::marker::PhantomData)
 	}
 
@@ -531,42 +554,42 @@ impl Device {
 	}
 
 	/// Creates an image and allocates CPU-side staging storage when the format is supported.
+	#[deprecated(note = "Use build_image instead.")]
 	pub fn create_image(
 		&mut self,
-		_name: Option<&str>,
+		name: Option<&str>,
 		extent: Extent,
 		format: Formats,
 		resource_uses: Uses,
 		device_accesses: DeviceAccesses,
-		_use_case: UseCases,
+		use_case: UseCases,
 		array_layers: Option<NonZeroU32>,
 	) -> ImageHandle {
-		let size = utils::bytes_per_pixel(format).map(|bpp| {
-			bpp * extent.width() as usize * extent.height() as usize * extent.depth() as usize
+		let builder = image::Builder::new(format, resource_uses)
+			.extent(extent)
+			.device_accesses(device_accesses)
+			.use_case(use_case)
+			.array_layers(array_layers);
+		let builder = if let Some(name) = name { builder.name(name) } else { builder };
+
+		self.build_image(builder)
+	}
+
+	pub fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
+		let size = utils::bytes_per_pixel(builder.format).map(|bpp| {
+			bpp * builder.extent.width() as usize * builder.extent.height() as usize * builder.extent.depth() as usize
 		});
 
 		self.images.push(Image {
-			extent,
-			format,
-			uses: resource_uses,
-			access: device_accesses,
-			array_layers: array_layers.map(|v| v.get()).unwrap_or(1),
+			extent: builder.extent,
+			format: builder.format,
+			uses: builder.resource_uses,
+			access: builder.device_accesses,
+			array_layers: builder.array_layers.map(|v| v.get()).unwrap_or(1),
 			data: size.map(|bytes| vec![0u8; bytes]),
 		});
 
 		ImageHandle((self.images.len() - 1) as u64)
-	}
-
-	pub fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
-		self.create_image(
-			builder.get_name(),
-			builder.extent,
-			builder.format,
-			builder.resource_uses,
-			builder.device_accesses,
-			builder.use_case,
-			builder.array_layers,
-		)
 	}
 
 	pub fn create_sampler(
@@ -604,20 +627,36 @@ impl Device {
 		)
 	}
 
-	pub fn create_acceleration_structure_instance_buffer(&mut self, _name: Option<&str>, max_instance_count: u32) -> BaseBufferHandle {
+	pub fn create_acceleration_structure_instance_buffer(
+		&mut self,
+		_name: Option<&str>,
+		max_instance_count: u32,
+	) -> BaseBufferHandle {
 		// Allocates a CPU-side buffer sized for instance descriptors.
 		let size = max_instance_count as usize * 64;
-		let handle = Self::create_buffer_with_layout(Layout::from_size_align(size, 16).unwrap(), Uses::Storage, DeviceAccesses::DeviceOnly, &mut self.buffers);
+		let handle = Self::create_buffer_with_layout(
+			Layout::from_size_align(size, 16).unwrap(),
+			Uses::Storage,
+			DeviceAccesses::DeviceOnly,
+			&mut self.buffers,
+		);
 		BaseBufferHandle(handle)
 	}
 
-	pub fn create_top_level_acceleration_structure(&mut self, _name: Option<&str>, _max_instance_count: u32) -> TopLevelAccelerationStructureHandle {
+	pub fn create_top_level_acceleration_structure(
+		&mut self,
+		_name: Option<&str>,
+		_max_instance_count: u32,
+	) -> TopLevelAccelerationStructureHandle {
 		// TODO: DXR top-level acceleration structure creation is not implemented yet.
 		self.top_level_acceleration_structures.push(());
 		TopLevelAccelerationStructureHandle((self.top_level_acceleration_structures.len() - 1) as u64)
 	}
 
-	pub fn create_bottom_level_acceleration_structure(&mut self, _description: &BottomLevelAccelerationStructure) -> BottomLevelAccelerationStructureHandle {
+	pub fn create_bottom_level_acceleration_structure(
+		&mut self,
+		_description: &BottomLevelAccelerationStructure,
+	) -> BottomLevelAccelerationStructureHandle {
 		// TODO: DXR bottom-level acceleration structure creation is not implemented yet.
 		self.bottom_level_acceleration_structures.push(());
 		BottomLevelAccelerationStructureHandle((self.bottom_level_acceleration_structures.len() - 1) as u64)
@@ -659,11 +698,19 @@ impl Device {
 		// TODO: DXR shader binding table packing is not implemented yet.
 	}
 
-	pub fn bind_to_window(&mut self, window_os_handles: &window::Handles, presentation_mode: PresentationModes, fallback_extent: Extent) -> SwapchainHandle {
+	pub fn bind_to_window(
+		&mut self,
+		window_os_handles: &window::Handles,
+		presentation_mode: PresentationModes,
+		fallback_extent: Extent,
+	) -> SwapchainHandle {
 		let extent = Self::query_window_extent(window_os_handles, fallback_extent);
 		let image_count = self.frames.max(2);
 
-		let queue = self.queues.iter().find(|queue| queue.queue_type == D3D12_COMMAND_LIST_TYPE_DIRECT)
+		let queue = self
+			.queues
+			.iter()
+			.find(|queue| queue.queue_type == D3D12_COMMAND_LIST_TYPE_DIRECT)
 			.or_else(|| self.queues.first())
 			.expect("Failed to create a DXGI swapchain. The most likely cause is that no graphics queue was created.");
 
@@ -685,9 +732,7 @@ impl Device {
 			Flags: 0,
 		};
 
-		let swapchain = unsafe {
-			factory.CreateSwapChainForHwnd(&queue.queue, window_os_handles.hwnd, &swapchain_desc, None, None)
-		}.unwrap_or_else(|_| {
+		let swapchain = unsafe { factory.CreateSwapChainForHwnd(&queue.queue, window_os_handles.hwnd, &swapchain_desc, None, None) }.unwrap_or_else(|_| {
 			panic!("Failed to create a DXGI swapchain. The most likely cause is that the window handle is invalid or the device does not support the swapchain format.");
 		});
 
@@ -698,7 +743,10 @@ impl Device {
 		let _ = unsafe { factory.MakeWindowAssociation(window_os_handles.hwnd, DXGI_MWA_NO_ALT_ENTER) };
 
 		self.swapchains.push(Swapchain {
-			handles: window::Handles { hinstance: window_os_handles.hinstance, hwnd: window_os_handles.hwnd },
+			handles: window::Handles {
+				hinstance: window_os_handles.hinstance,
+				hwnd: window_os_handles.hwnd,
+			},
 			swapchain,
 			extent,
 			image_count,
@@ -710,18 +758,28 @@ impl Device {
 	}
 
 	pub fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8] {
-		self.texture_copies.get(texture_copy_handle.0 as usize).map(|v| v.as_slice()).unwrap_or(&[])
+		self.texture_copies
+			.get(texture_copy_handle.0 as usize)
+			.map(|v| v.as_slice())
+			.unwrap_or(&[])
 	}
 
 	pub fn create_synchronizer(&mut self, _name: Option<&str>, signaled: bool) -> SynchronizerHandle {
 		let initial_value = if signaled { 1 } else { 0 };
-		let fence = unsafe { self.device.CreateFence(initial_value, D3D12_FENCE_FLAGS(0)) }.expect("Failed to create a D3D12 fence. The most likely cause is that the device does not support fences.");
-		self.synchronizers.push(Synchronizer { fence, value: initial_value });
+		let fence = unsafe { self.device.CreateFence(initial_value, D3D12_FENCE_FLAGS(0)) }
+			.expect("Failed to create a D3D12 fence. The most likely cause is that the device does not support fences.");
+		self.synchronizers.push(Synchronizer {
+			fence,
+			value: initial_value,
+		});
 		SynchronizerHandle((self.synchronizers.len() - 1) as u64)
 	}
 
 	pub fn start_frame<'a>(&'a mut self, index: u32, _synchronizer_handle: SynchronizerHandle) -> super::Frame<'a> {
-		let frame_key = crate::FrameKey { frame_index: index, sequence_index: (index % self.frames as u32) as u8 };
+		let frame_key = crate::FrameKey {
+			frame_index: index,
+			sequence_index: (index % self.frames as u32) as u8,
+		};
 		super::Frame::new(self, frame_key)
 	}
 
@@ -743,7 +801,9 @@ impl Device {
 		}
 
 		if buffer.layout.size() != 0 && !buffer.data.is_null() {
-			unsafe { alloc::dealloc(buffer.data, buffer.layout); }
+			unsafe {
+				alloc::dealloc(buffer.data, buffer.layout);
+			}
 		}
 
 		buffer.data = data;
@@ -774,10 +834,15 @@ impl Device {
 	pub(crate) fn write_image_data(&mut self, image_handle: ImageHandle, data: &[graphics_hardware_interface::RGBAu8]) {
 		// Writes CPU-side image data for formats with staging storage.
 		let image = &mut self.images[image_handle.0 as usize];
-		let Some(staging) = image.data.as_mut() else { return; };
+		let Some(staging) = image.data.as_mut() else {
+			return;
+		};
 
 		let bytes = unsafe {
-			std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * std::mem::size_of::<graphics_hardware_interface::RGBAu8>())
+			std::slice::from_raw_parts(
+				data.as_ptr() as *const u8,
+				data.len() * std::mem::size_of::<graphics_hardware_interface::RGBAu8>(),
+			)
 		};
 		let length = staging.len().min(bytes.len());
 		staging[..length].copy_from_slice(&bytes[..length]);
@@ -928,9 +993,17 @@ impl Device {
 			graphics_hardware_interface::Descriptor::Image { handle, layout } => {
 				graphics_hardware_interface::Descriptor::Image { handle, layout }
 			}
-			graphics_hardware_interface::Descriptor::CombinedImageSampler { image_handle, sampler_handle, layout, layer } => {
-				graphics_hardware_interface::Descriptor::CombinedImageSampler { image_handle, sampler_handle, layout, layer }
-			}
+			graphics_hardware_interface::Descriptor::CombinedImageSampler {
+				image_handle,
+				sampler_handle,
+				layout,
+				layer,
+			} => graphics_hardware_interface::Descriptor::CombinedImageSampler {
+				image_handle,
+				sampler_handle,
+				layout,
+				layer,
+			},
 			_ => descriptor,
 		}
 	}
@@ -954,8 +1027,14 @@ impl Device {
 		arrays.insert(array_element, descriptor);
 
 		let mut record_resource = |resource: graphics_hardware_interface::Handle| {
-			self.descriptor_set_to_resource.entry((descriptor_set_handle, binding_index)).or_default().insert(resource);
-			self.resource_to_descriptor.entry(resource).or_default().insert((binding_handle, array_element));
+			self.descriptor_set_to_resource
+				.entry((descriptor_set_handle, binding_index))
+				.or_default()
+				.insert(resource);
+			self.resource_to_descriptor
+				.entry(resource)
+				.or_default()
+				.insert((binding_handle, array_element));
 		};
 
 		match descriptor {
@@ -972,7 +1051,12 @@ impl Device {
 		}
 	}
 
-	fn create_buffer_with_layout(layout: Layout, resource_uses: Uses, device_accesses: DeviceAccesses, storage: &mut Vec<Buffer>) -> u64 {
+	fn create_buffer_with_layout(
+		layout: Layout,
+		resource_uses: Uses,
+		device_accesses: DeviceAccesses,
+		storage: &mut Vec<Buffer>,
+	) -> u64 {
 		// Allocates CPU storage for a buffer with the requested layout.
 		let data = if layout.size() == 0 {
 			std::ptr::NonNull::<u8>::dangling().as_ptr()

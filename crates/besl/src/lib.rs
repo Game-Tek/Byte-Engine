@@ -1,16 +1,16 @@
 //! This module contains all code related to the parsing of the BESL language and the generation of the JSPD.
 
-mod tokenizer;
-pub mod parser;
 pub mod lexer;
+pub mod parser;
+mod tokenizer;
 
 pub use lexer::Expressions;
-pub use lexer::Operators;
 pub use lexer::Node;
 pub use lexer::Nodes;
+pub use lexer::Operators;
 
-pub use crate::lexer::NodeReference;
 pub use crate::lexer::BindingTypes;
+pub use crate::lexer::NodeReference;
 
 /// Useful type alias for the parser's node type.
 pub type ParserNode<'a> = parser::Node<'a>;
@@ -52,7 +52,7 @@ pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReferen
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;
 	let parser_root_node = parser::parse(&tokens).map_err(|_e| CompilationError::Undefined)?;
 
-	let besl = if let Some(parent)  = parent {
+	let besl = if let Some(parent) = parent {
 		lexer::lex_with_root(parent, parser_root_node).map_err(|_e| CompilationError::Undefined)?
 	} else {
 		lexer::lex(parser_root_node).map_err(|_e| CompilationError::Undefined)?

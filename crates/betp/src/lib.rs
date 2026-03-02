@@ -56,7 +56,7 @@ use crate::packets::{ConnectionStatus, Packet, PacketHeader, Packets};
 /// [`PacketInfo`] contains information about a packet.
 /// - `acked`: A boolean that indicates if the packet has been acknowledged.
 pub struct PacketInfo {
-    pub acked: bool,
+	pub acked: bool,
 }
 
 /// Compares two sequence numbers and returns true if the first sequence number is greater than the second.
@@ -93,15 +93,9 @@ pub(crate) fn write_connection_status(buffer: &mut [u8], connection_status: Conn
 	let ack = connection_status.ack.to_le_bytes();
 	let ack_bifield = connection_status.ack_bitfield.to_le_bytes();
 
-	cursor
-		.write(&sequence)
-		.ok()
-		.and_then(has_written_anything)?;
+	cursor.write(&sequence).ok().and_then(has_written_anything)?;
 	cursor.write(&ack).ok().and_then(has_written_anything)?;
-	cursor
-		.write(&ack_bifield)
-		.ok()
-		.and_then(has_written_anything)?;
+	cursor.write(&ack_bifield).ok().and_then(has_written_anything)?;
 
 	Some(())
 }
@@ -142,7 +136,5 @@ pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, ()> {
 
 	let r#type = unsafe { std::mem::transmute(r#type[0]) };
 
-	Ok(PacketHeader {
-		protocol_id, r#type,
-	})
+	Ok(PacketHeader { protocol_id, r#type })
 }

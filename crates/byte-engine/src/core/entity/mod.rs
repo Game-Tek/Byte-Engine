@@ -1,23 +1,22 @@
-pub mod handle;
 pub mod container;
+pub mod handle;
 
-pub use handle::Handle as EntityHandle;
 pub use container::Container as EntityContainer;
+pub use handle::Handle as EntityHandle;
 
-use utils::{sync::{RwLock, Arc, RwLockReadGuard, RwLockWriteGuard}};
+use utils::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// The Entity trait is the base trait for all entities in the engine.
 ///
 /// An entity is a type that can be spawned and managed by the engine.
 /// The trait provides some convenience methods to interact with the entity.
-pub trait Entity {
-}
+pub trait Entity {}
 
-use std::{marker::Unsize, ops::Deref};
 use std::ops::CoerceUnsized;
+use std::{marker::Unsize, ops::Deref};
 
-use super::{Task};
-use super::{listener::Listener};
+use super::listener::Listener;
+use super::Task;
 
 pub trait MapAndCollectAsAvailable<T: ?Sized, U> {
 	/// Maps the entities in the vector and collects them into a new vector but skips taken locks until they are available.
@@ -26,7 +25,7 @@ pub trait MapAndCollectAsAvailable<T: ?Sized, U> {
 	fn map_and_collect_as_available(&self, function: impl FnMut(&T) -> U) -> Vec<U>;
 }
 
-impl <T: ?Sized, U> MapAndCollectAsAvailable<T, U> for Vec<EntityHandle<T>> {
+impl<T: ?Sized, U> MapAndCollectAsAvailable<T, U> for Vec<EntityHandle<T>> {
 	fn map_and_collect_as_available(&self, mut function: impl FnMut(&T) -> U) -> Vec<U> {
 		let mut source = (0..self.len()).collect::<Vec<_>>();
 		let mut res = Vec::with_capacity(self.len());

@@ -31,17 +31,12 @@ pub type NodeReference<'a> = &'a Node<'a>;
 pub(super) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Node<'a>, ParsingFailReasons> {
 	let mut iterator = tokens.tokens.iter();
 
-	let parsers = [
-		parse_struct,
-		parse_function,
-		parse_macro,
-		parse_member,
-	];
+	let parsers = [parse_struct, parse_function, parse_macro, parse_member];
 
 	let mut children: Vec<Node<'a>> = Vec::with_capacity(64);
 
 	loop {
-		let (expression, iter) = execute_parsers(parsers.as_slice(), iterator,)?;
+		let (expression, iter) = execute_parsers(parsers.as_slice(), iterator)?;
 
 		children.push(expression);
 
@@ -52,7 +47,7 @@ pub(super) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Nod
 		}
 	}
 
-	Ok(make_scope("root", children),)
+	Ok(make_scope("root", children))
 }
 
 use std::borrow::Cow;
@@ -63,7 +58,7 @@ pub struct Node<'a> {
 	pub(crate) node: Nodes<'a>,
 }
 
-impl <'a> Node<'a> {
+impl<'a> Node<'a> {
 	pub fn root() -> Node<'a> {
 		make_scope("root", Vec::new())
 	}
@@ -112,7 +107,15 @@ impl <'a> Node<'a> {
 		}
 	}
 
-	pub fn binding_array(name: &'a str, r#type: Node<'a>, set: u32, descriptor: u32, read: bool, write: bool, count: u32) -> Node<'a> {
+	pub fn binding_array(
+		name: &'a str,
+		r#type: Node<'a>,
+		set: u32,
+		descriptor: u32,
+		read: bool,
+		write: bool,
+		count: u32,
+	) -> Node<'a> {
 		Node {
 			node: Nodes::Binding {
 				name,
@@ -128,43 +131,31 @@ impl <'a> Node<'a> {
 
 	pub fn specialization(name: &'a str, r#type: &'a str) -> Node<'a> {
 		Node {
-			node: Nodes::Specialization {
-				name,
-				r#type,
-			},
+			node: Nodes::Specialization { name, r#type },
 		}
 	}
 
 	pub fn buffer(name: &'a str, members: Vec<Node<'a>>) -> Node<'a> {
 		Node {
-			node: Nodes::Type {
-				name,
-				members,
-			},
+			node: Nodes::Type { name, members },
 		}
 	}
 
 	pub fn image(format: &'a str) -> Node<'a> {
 		Node {
-			node: Nodes::Image {
-				format,
-			},
+			node: Nodes::Image { format },
 		}
 	}
 
 	pub fn push_constant(members: Vec<Node<'a>>) -> Node<'a> {
 		Node {
-			node: Nodes::PushConstant {
-				members,
-			},
+			node: Nodes::PushConstant { members },
 		}
 	}
 
 	pub fn combined_image_sampler() -> Node<'a> {
 		Node {
-			node: Nodes::CombinedImageSampler {
-				format: "",
-			},
+			node: Nodes::CombinedImageSampler { format: "" },
 		}
 	}
 
@@ -199,7 +190,12 @@ impl <'a> Node<'a> {
 		make_raw_code(None, Some(code.into()), input, output)
 	}
 
-	pub fn raw_code(glsl: Option<Cow<'a, str>>, hlsl: Option<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
+	pub fn raw_code(
+		glsl: Option<Cow<'a, str>>,
+		hlsl: Option<Cow<'a, str>>,
+		input: &'a [&'a str],
+		output: &'a [&'a str],
+	) -> Node<'a> {
 		make_raw_code(glsl, hlsl, input, output)
 	}
 
@@ -214,21 +210,13 @@ impl <'a> Node<'a> {
 
 	pub fn input(name: &'a str, format: &'a str, location: u8) -> Node<'a> {
 		Node {
-			node: Nodes::Input {
-				name,
-				format,
-				location,
-			},
+			node: Nodes::Input { name, format, location },
 		}
 	}
 
 	pub fn output(name: &'a str, format: &'a str, location: u8) -> Node<'a> {
 		Node {
-			node: Nodes::Output {
-				name,
-				format,
-				location,
-			},
+			node: Nodes::Output { name, format, location },
 		}
 	}
 
@@ -248,10 +236,7 @@ impl <'a> Node<'a> {
 
 	pub fn parameter(name: &'a str, r#type: &'a str) -> Node<'a> {
 		Node {
-			node: Nodes::Parameter {
-				name,
-				r#type,
-			},
+			node: Nodes::Parameter { name, r#type },
 		}
 	}
 
@@ -284,9 +269,7 @@ impl <'a> Node<'a> {
 
 	pub fn get_mut(&mut self, name: &str) -> Option<&mut Node<'a>> {
 		match &mut self.node {
-			Nodes::Scope { children, .. } => {
-				children.iter_mut().find(|n| n.name() == Some(name))
-			},
+			Nodes::Scope { children, .. } => children.iter_mut().find(|n| n.name() == Some(name)),
 			_ => None,
 		}
 	}
@@ -296,8 +279,10 @@ impl <'a> Node<'a> {
 			Nodes::Scope { children: c, .. } => {
 				// Extend from the beginning of the vector
 				c.extend(children);
-			},
-			_ => { println!("Tried to add children to a non-scope node."); },
+			}
+			_ => {
+				println!("Tried to add children to a non-scope node.");
+			}
 		}
 	}
 
@@ -305,7 +290,8 @@ impl <'a> Node<'a> {
 		// Place main function node at the end
 
 		match &mut self.node {
-			Nodes::Scope { children, .. } => { // Only sort scopes
+			Nodes::Scope { children, .. } => {
+				// Only sort scopes
 				// Place main function node at the end
 				children.sort_by(|a, b| {
 					if a.name() == Some("main") {
@@ -317,8 +303,8 @@ impl <'a> Node<'a> {
 					}
 				});
 				children.iter_mut().for_each(|n| n.sort()); // Recursively sort children
-			},
-			_ => {},
+			}
+			_ => {}
 		}
 	}
 }
@@ -415,14 +401,39 @@ pub enum Nodes<'a> {
 #[derive(Clone, Debug)]
 pub enum Expressions<'a> {
 	Expression(Vec<Node<'a>>),
-	Accessor{ left: Box<Node<'a>>, right: Box<Node<'a>>, },
-	Member{ name: &'a str },
-	Literal{ value: &'a str, },
-	Call{ name: &'a str, parameters: Vec<Node<'a>> },
-	Operator{ name: &'a str, left: Box<Node<'a>>, right: Box<Node<'a>>, },
-	VariableDeclaration{ name: &'a str, r#type: &'a str, },
-	RawCode{ glsl: Option<&'a str>, hlsl: Option<&'a str>, input: &'a [&'a str], output: &'a [&'a str], },
-	Macro{ name: &'a str, body: Box<Node<'a>>, },
+	Accessor {
+		left: Box<Node<'a>>,
+		right: Box<Node<'a>>,
+	},
+	Member {
+		name: &'a str,
+	},
+	Literal {
+		value: &'a str,
+	},
+	Call {
+		name: &'a str,
+		parameters: Vec<Node<'a>>,
+	},
+	Operator {
+		name: &'a str,
+		left: Box<Node<'a>>,
+		right: Box<Node<'a>>,
+	},
+	VariableDeclaration {
+		name: &'a str,
+		r#type: &'a str,
+	},
+	RawCode {
+		glsl: Option<&'a str>,
+		hlsl: Option<&'a str>,
+		input: &'a [&'a str],
+		output: &'a [&'a str],
+	},
+	Macro {
+		name: &'a str,
+		body: Box<Node<'a>>,
+	},
 	Return,
 }
 
@@ -430,11 +441,11 @@ pub enum Expressions<'a> {
 pub(super) enum Atoms<'a> {
 	Keyword,
 	Accessor,
-	Member{ name: &'a str },
-	Literal{ value: &'a str, },
-	FunctionCall{ name: &'a str, parameters: Vec<Vec<Atoms<'a>>> },
-	Operator{ name: &'a str, },
-	VariableDeclaration{ name: &'a str, r#type: &'a str, },
+	Member { name: &'a str },
+	Literal { value: &'a str },
+	FunctionCall { name: &'a str, parameters: Vec<Vec<Atoms<'a>>> },
+	Operator { name: &'a str },
+	VariableDeclaration { name: &'a str, r#type: &'a str },
 }
 
 #[derive(Debug)]
@@ -442,7 +453,9 @@ pub(super) enum ParsingFailReasons {
 	/// The parser does not handle this type of syntax.
 	NotMine,
 	/// The parser started handling a sequence of tokens, but it encountered a syntax error.
-	BadSyntax{ message: String, },
+	BadSyntax {
+		message: String,
+	},
 	StreamEndedPrematurely,
 }
 
@@ -451,17 +464,16 @@ impl std::fmt::Display for ParsingFailReasons {
 		match self {
 			ParsingFailReasons::NotMine => write!(f, "Parser cannot handle this syntax."),
 			ParsingFailReasons::BadSyntax { message } => write!(f, "Bad syntax: {}", message),
-			ParsingFailReasons::StreamEndedPrematurely => write!(f, "Token stream ended prematurely."),
+			ParsingFailReasons::StreamEndedPrematurely => {
+				write!(f, "Token stream ended prematurely.")
+			}
 		}
 	}
 }
 
 fn make_scope<'a>(name: &'a str, children: Vec<Node<'a>>) -> Node<'a> {
 	Node {
-		node: Nodes::Scope {
-			name,
-			children,
-		},
+		node: Nodes::Scope { name, children },
 	}
 }
 
@@ -476,10 +488,7 @@ fn make_member<'a>(name: &'a str, r#type: &'_ str) -> Node<'a> {
 
 fn make_struct<'a>(name: &'a str, children: Vec<Node<'a>>) -> Node<'a> {
 	Node {
-		node: Nodes::Struct {
-			name,
-			fields: children,
-		},
+		node: Nodes::Struct { name, fields: children },
 	}
 }
 
@@ -494,7 +503,12 @@ fn make_function<'a>(name: &'a str, params: Vec<Node<'a>>, return_type: &'a str,
 	}
 }
 
-fn make_raw_code<'a>(glsl: Option<Cow<'a, str>>, hlsl: Option<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
+fn make_raw_code<'a>(
+	glsl: Option<Cow<'a, str>>,
+	hlsl: Option<Cow<'a, str>>,
+	input: &'a [&'a str],
+	output: &'a [&'a str],
+) -> Node<'a> {
 	Node {
 		node: Nodes::RawCode {
 			glsl,
@@ -514,20 +528,18 @@ impl Precedence for Atoms<'_> {
 		match self {
 			Atoms::Keyword => 0,
 			Atoms::Accessor => 4,
-			Atoms::Member{ .. } => 0,
-			Atoms::Literal{ .. } => 0,
-			Atoms::FunctionCall{ .. } => 0,
-			Atoms::Operator{ name } => {
-				match *name {
-					"=" => 5,
-					"+" => 3,
-					"-" => 3,
-					"*" => 2,
-					"/" => 2,
-					_ => 0,
-				}
+			Atoms::Member { .. } => 0,
+			Atoms::Literal { .. } => 0,
+			Atoms::FunctionCall { .. } => 0,
+			Atoms::Operator { name } => match *name {
+				"=" => 5,
+				"+" => 3,
+				"-" => 3,
+				"*" => 2,
+				"/" => 2,
+				_ => 0,
 			},
-			Atoms::VariableDeclaration{ .. } => 0,
+			Atoms::VariableDeclaration { .. } => 0,
 		}
 	}
 }
@@ -542,20 +554,31 @@ type ExpressionParserResult<'i, 'a> = Result<(Vec<Atoms<'a>>, std::slice::Iter<'
 type ExpressionParser<'i, 'a> = fn(std::slice::Iter<'i, &'a str>, Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a>;
 
 /// Execute a list of parsers on a stream of tokens.
-fn execute_parsers<'i, 'a: 'i>(parsers: &[FeatureParser<'i, 'a>], mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+fn execute_parsers<'i, 'a: 'i>(
+	parsers: &[FeatureParser<'i, 'a>],
+	mut iterator: std::slice::Iter<'i, &'a str>,
+) -> FeatureParserResult<'i, 'a> {
 	for parser in parsers {
-		if let Ok(r) = parser(iterator.clone(),) {
+		if let Ok(r) = parser(iterator.clone()) {
 			return Ok(r);
 		}
 	}
 
-	Err(ParsingFailReasons::BadSyntax{ message: format!("Tried several parsers none could handle the syntax for statement: {}", iterator.next().unwrap()) }) // No parser could handle this syntax.
+	Err(ParsingFailReasons::BadSyntax {
+		message: format!(
+			"Tried several parsers none could handle the syntax for statement: {}",
+			iterator.next().unwrap()
+		),
+	}) // No parser could handle this syntax.
 }
 
 /// Tries to execute a list of parsers on a stream of tokens. But it's ok if none of them can handle the syntax.
-fn try_execute_parsers<'i, 'a: 'i>(parsers: &[FeatureParser<'i, 'a>], iterator: std::slice::Iter<'i, &'a str>,) -> Option<FeatureParserResult<'i, 'a>> {
+fn try_execute_parsers<'i, 'a: 'i>(
+	parsers: &[FeatureParser<'i, 'a>],
+	iterator: std::slice::Iter<'i, &'a str>,
+) -> Option<FeatureParserResult<'i, 'a>> {
 	for parser in parsers {
-		if let Ok(r) = parser(iterator.clone(),) {
+		if let Ok(r) = parser(iterator.clone()) {
 			return Some(Ok(r));
 		}
 	}
@@ -564,18 +587,31 @@ fn try_execute_parsers<'i, 'a: 'i>(parsers: &[FeatureParser<'i, 'a>], iterator: 
 }
 
 /// Execute a list of parsers on a stream of tokens.
-fn execute_expression_parsers<'i, 'a: 'i>(parsers: &[ExpressionParser<'i, 'a>], mut iterator: std::slice::Iter<'i, &'a str>, expressions: Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a> {
+fn execute_expression_parsers<'i, 'a: 'i>(
+	parsers: &[ExpressionParser<'i, 'a>],
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
 	for parser in parsers {
 		if let Ok(r) = parser(iterator.clone(), expressions.clone()) {
 			return Ok(r);
 		}
 	}
 
-	Err(ParsingFailReasons::BadSyntax{ message: format!("Tried several parsers none could handle the syntax for statement: {}", iterator.next().unwrap()) }) // No parser could handle this syntax.
+	Err(ParsingFailReasons::BadSyntax {
+		message: format!(
+			"Tried several parsers none could handle the syntax for statement: {}",
+			iterator.next().unwrap()
+		),
+	}) // No parser could handle this syntax.
 }
 
 /// Tries to execute a list of parsers on a stream of tokens. But it's ok if none of them can handle the syntax.
-fn try_execute_expression_parsers<'i, 'a: 'i>(parsers: &[ExpressionParser<'i, 'a>], iterator: std::slice::Iter<'i, &'a str>, expressions: Vec<Atoms<'a>>,) -> Option<ExpressionParserResult<'i, 'a>> {
+fn try_execute_expression_parsers<'i, 'a: 'i>(
+	parsers: &[ExpressionParser<'i, 'a>],
+	iterator: std::slice::Iter<'i, &'a str>,
+	expressions: Vec<Atoms<'a>>,
+) -> Option<ExpressionParserResult<'i, 'a>> {
 	for parser in parsers {
 		if let Ok(r) = parser(iterator.clone(), expressions.clone()) {
 			return Some(Ok(r));
@@ -585,32 +621,39 @@ fn try_execute_expression_parsers<'i, 'a: 'i>(parsers: &[ExpressionParser<'i, 'a
 	None
 }
 
-fn is_identifier_char(c: char) -> bool { // TODO: validate number at end of identifier
+fn is_identifier_char(c: char) -> bool {
+	// TODO: validate number at end of identifier
 	c.is_alphanumeric() || c == '_'
 }
 
 fn is_identifier(s: &str) -> bool {
-	if s == "struct" || s == "fn" || s == "let" || s == "return" { // should not be a keyword
+	if s == "struct" || s == "fn" || s == "let" || s == "return" {
+		// should not be a keyword
 		return false;
 	}
 	s.chars().all(is_identifier_char)
 }
 
-fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> FeatureParserResult<'i, 'a> {
+fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
-	let mut r#type = iterator.next_identifier().map_err(|e| {
-		match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find type while parsing member {}.", name) },
+	let mut r#type = iterator
+		.next_identifier()
+		.map_err(|e| match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+				message: format!("Expected to find type while parsing member {}.", name),
+			},
 			_ => e,
-		}
-	})?.to_string();
+		})?
+		.to_string();
 
 	if let Some(&&n) = iterator.clone().peekable().peek() {
-		if n == "<"	{
+		if n == "<" {
 			iterator.next();
 			r#type.push_str("<");
-			let next = iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find type while parsing generic argument for member {}", name) })?;
+			let next = iterator.next().ok_or(ParsingFailReasons::BadSyntax {
+				message: format!("Expected to find type while parsing generic argument for member {}", name),
+			})?;
 			r#type.push_str(next.as_ref());
 			iterator.next();
 			r#type.push_str(">");
@@ -619,42 +662,44 @@ fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> Fea
 
 	let node = Node::member(name, &r#type);
 
-	iterator.next().ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected semicolon") })?; // Skip semicolon
+	iterator.next().ok_or(ParsingFailReasons::BadSyntax {
+		message: format!("Expected semicolon"),
+	})?; // Skip semicolon
 
 	Ok(((node), iterator))
 }
 
-fn parse_macro<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>,) -> FeatureParserResult<'i, 'a> {
+fn parse_macro<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let mut iter = iterator;
 
 	iter.next_str("#")?;
 	iter.next_str("[")?;
-	iter.next_identifier().map_err(|e|
-		match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find macro name after #[.") },
-			_ => e,
-		}
-	)?;
-	iter.next_str("]").map_err(|e|
-		match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find ] after macro name.") },
-			_ => e,
-		}
-	)?;
+	iter.next_identifier().map_err(|e| match e {
+		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+			message: format!("Expected to find macro name after #[."),
+		},
+		_ => e,
+	})?;
+	iter.next_str("]").map_err(|e| match e {
+		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+			message: format!("Expected to find ] after macro name."),
+		},
+		_ => e,
+	})?;
 
 	Ok((make_scope("MACRO", vec![]).into(), iter))
 }
 
-fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> FeatureParserResult<'i, 'a> {
+fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
 	iterator.next_str("struct")?;
-	iterator.next_str("{").map_err(|e|
-		match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find {{ after struct {} declaration.", name) },
-			_ => e,
-		}
-	)?;
+	iterator.next_str("{").map_err(|e| match e {
+		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+			message: format!("Expected to find {{ after struct {} declaration.", name),
+		},
+		_ => e,
+	})?;
 
 	let mut fields = vec![];
 
@@ -665,24 +710,29 @@ fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> Fea
 			continue;
 		}
 
-		iterator.next_str(":").map_err(|e|
-			match e {
-				ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find : after name for member {} in struct {}", v, name) },
-				_ => e,
-			}
-		)?;
+		iterator.next_str(":").map_err(|e| match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+				message: format!("Expected to find : after name for member {} in struct {}", v, name),
+			},
+			_ => e,
+		})?;
 
-		let type_name = iterator.next_identifier().map_err(|e|
-			match e {
-				ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type name after : for member {} in struct {}", v, name) },
-				_ => e,
-			}
-		)?;
+		let type_name = iterator.next_identifier().map_err(|e| match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+				message: format!("Expected to find a type name after : for member {} in struct {}", v, name),
+			},
+			_ => e,
+		})?;
 
 		// See if is array type
 		let type_name = if iterator.clone().peekable().peek().map(|v| v.as_ref()) == Some("[") {
 			iterator.next();
-			let count = iterator.next().and_then(|v| v.parse::<u32>().ok()).ok_or(ParsingFailReasons::BadSyntax{ message: format!("Expected to find a number after [ for member {} in struct {}", v, name) })?;
+			let count = iterator
+				.next()
+				.and_then(|v| v.parse::<u32>().ok())
+				.ok_or(ParsingFailReasons::BadSyntax {
+					message: format!("Expected to find a number after [ for member {} in struct {}", v, name),
+				})?;
 			iterator.next().unwrap();
 			format!("{}[{}]", type_name, count)
 		} else {
@@ -697,29 +747,36 @@ fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> Fea
 	Ok((node, iterator))
 }
 
-fn parse_var_decl<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>,) -> ExpressionParserResult<'i, 'a> {
+fn parse_var_decl<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
 	iterator.next_str("let")?;
 	let variable_name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
-	let variable_type = iterator.next_identifier().map_err(|e|
-		match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected to find a type for variable {}", variable_name) },
-			_ => e,
-		}
-	)?;
+	let variable_type = iterator.next_identifier().map_err(|e| match e {
+		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+			message: format!("Expected to find a type for variable {}", variable_name),
+		},
+		_ => e,
+	})?;
 
-	expressions.push(Atoms::VariableDeclaration{ name: variable_name, r#type: variable_type });
+	expressions.push(Atoms::VariableDeclaration {
+		name: variable_name,
+		r#type: variable_type,
+	});
 
-	let possible_following_expressions: Vec<ExpressionParser<'i, 'a>> = vec![
-		parse_operator,
-	];
+	let possible_following_expressions: Vec<ExpressionParser<'i, 'a>> = vec![parse_operator];
 
 	let expressions = execute_expression_parsers(&possible_following_expressions, iterator, expressions)?;
 
 	Ok(expressions)
 }
 
-fn parse_keywords<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a> {
+fn parse_keywords<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
 	iterator.next_str("return")?;
 
 	expressions.push(Atoms::Keyword);
@@ -734,27 +791,28 @@ fn parse_keywords<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut e
 	Ok((expressions, iterator))
 }
 
-fn parse_variable<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a> {
+fn parse_variable<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 
-	expressions.push(Atoms::Member{ name });
+	expressions.push(Atoms::Member { name });
 
-	let lexers = vec![
-		parse_operator,
-		parse_accessor,
-	];
+	let lexers = vec![parse_operator, parse_accessor];
 
 	try_execute_expression_parsers(&lexers, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)))
 }
 
-fn parse_accessor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>,) -> ExpressionParserResult<'i, 'a> {
+fn parse_accessor<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
 	let _ = iterator.next_str(".")?;
 
 	expressions.push(Atoms::Accessor);
 
-	let lexers: Vec<ExpressionParser<'i, 'a>> = vec![
-		parse_variable,
-	];
+	let lexers: Vec<ExpressionParser<'i, 'a>> = vec![parse_variable];
 
 	execute_expression_parsers(&lexers, iterator, expressions)
 }
@@ -763,37 +821,43 @@ fn is_number_literal(s: &str) -> bool {
 	s.chars().all(|c| c.is_digit(10) || c == '.')
 }
 
-fn parse_literal<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>,) -> ExpressionParserResult<'i, 'a> {
+fn parse_literal<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
 	let value = iterator.next_is(is_number_literal)?;
 
-	expressions.push(Atoms::Literal{ value });
+	expressions.push(Atoms::Literal { value });
 
 	Ok((expressions, iterator))
 }
 
-fn parse_rvalue<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>, expressions: Vec<Atoms<'a>>,) -> ExpressionParserResult<'i, 'a> {
-	let parsers = vec![
-		parse_function_call,
-		parse_literal,
-		parse_variable,
-	];
+fn parse_rvalue<'i, 'a: 'i>(
+	iterator: std::slice::Iter<'i, &'a str>,
+	expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	let parsers = vec![parse_function_call, parse_literal, parse_variable];
 
 	execute_expression_parsers(&parsers, iterator.clone(), expressions)
 }
 
-fn parse_operator<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>,) -> ExpressionParserResult<'i, 'a> {
+fn parse_operator<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
 	let operator = iterator.next_is(|v| v == "*" || v == "+" || v == "-" || v == "/" || v == "=")?;
 
-	expressions.push(Atoms::Operator{ name: operator });
+	expressions.push(Atoms::Operator { name: operator });
 
-	let possible_following_expressions: Vec<ExpressionParser<'i, 'a>> = vec![
-		parse_rvalue,
-	];
+	let possible_following_expressions: Vec<ExpressionParser<'i, 'a>> = vec![parse_rvalue];
 
 	execute_expression_parsers(&possible_following_expressions, iterator, expressions)
 }
 
-fn parse_function_call<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, mut expressions: Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a> {
+fn parse_function_call<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
 	let function_name = iterator.next_identifier()?;
 	iterator.next_str("(")?;
 
@@ -807,29 +871,42 @@ fn parse_function_call<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>, 
 		}
 
 		// Check if iter is comma
-		if **iterator.clone().peekable().peek().ok_or(ParsingFailReasons::StreamEndedPrematurely)? == "," { iterator.next(); }
+		if **iterator
+			.clone()
+			.peekable()
+			.peek()
+			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
+			== ","
+		{
+			iterator.next();
+		}
 
 		// check if iter is close brace
-		if **iterator.clone().peekable().peek().ok_or(ParsingFailReasons::StreamEndedPrematurely)? == ")" { iterator.next(); break; }
+		if **iterator
+			.clone()
+			.peekable()
+			.peek()
+			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
+			== ")"
+		{
+			iterator.next();
+			break;
+		}
 	}
 
-	expressions.push(Atoms::FunctionCall{ name: function_name, parameters });
+	expressions.push(Atoms::FunctionCall {
+		name: function_name,
+		parameters,
+	});
 
-	let possible_following_expressions = vec![
-		parse_operator,
-		parse_accessor,
-	];
+	let possible_following_expressions = vec![parse_operator, parse_accessor];
 
-	try_execute_expression_parsers(&possible_following_expressions, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)))
+	try_execute_expression_parsers(&possible_following_expressions, iterator.clone(), expressions.clone())
+		.unwrap_or(Ok((expressions, iterator)))
 }
 
-fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>,) -> FeatureParserResult<'i, 'a> {
-	let parsers = vec![
-		parse_keywords,
-		parse_var_decl,
-		parse_function_call,
-		parse_variable,
-	];
+fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	let parsers = vec![parse_keywords, parse_var_decl, parse_function_call, parse_variable];
 
 	let (expressions, mut iterator) = execute_expression_parsers(&parsers, iterator, Vec::new())?;
 
@@ -840,7 +917,9 @@ fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>,) -> Feat
 
 		if let Some((i, e)) = max_precedence_item {
 			match e {
-				Atoms::Keyword => { Node { node: Nodes::Expression(Expressions::Return) } }
+				Atoms::Keyword => Node {
+					node: Nodes::Expression(Expressions::Return),
+				},
 				Atoms::Operator { name } => {
 					let left = dandc(&atoms[..i]);
 					let right = dandc(&atoms[i + 1..]);
@@ -849,7 +928,11 @@ fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>,) -> Feat
 					let right = Box::new(right);
 
 					Node {
-						node: Nodes::Expression(Expressions::Operator{ name: *name, left, right }),
+						node: Nodes::Expression(Expressions::Operator {
+							name: *name,
+							left,
+							right,
+						}),
 					}
 				}
 				Atoms::Accessor => {
@@ -860,18 +943,30 @@ fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>,) -> Feat
 					let right = Box::new(right);
 
 					Node {
-						node: Nodes::Expression(Expressions::Accessor{ left, right }),
+						node: Nodes::Expression(Expressions::Accessor { left, right }),
 					}
 				}
 				Atoms::FunctionCall { name, parameters } => {
 					let parameters = parameters.iter().map(|v| dandc(v)).collect::<Vec<_>>();
 
-					Node { node: Nodes::Expression(Expressions::Call { name: *name, parameters }), }
+					Node {
+						node: Nodes::Expression(Expressions::Call { name: *name, parameters }),
+					}
 				}
-				Atoms::Literal { value } => { Node { node: Nodes::Expression(Expressions::Literal { value: *value },) } }
-				Atoms::Member { name } => { Node { node: Nodes::Expression(Expressions::Member { name: *name },) } }
-				Atoms::VariableDeclaration { name, r#type } => { Node { node: Nodes::Expression(Expressions::VariableDeclaration { name: *name, r#type: *r#type },) } }
-			}.into()
+				Atoms::Literal { value } => Node {
+					node: Nodes::Expression(Expressions::Literal { value: *value }),
+				},
+				Atoms::Member { name } => Node {
+					node: Nodes::Expression(Expressions::Member { name: *name }),
+				},
+				Atoms::VariableDeclaration { name, r#type } => Node {
+					node: Nodes::Expression(Expressions::VariableDeclaration {
+						name: *name,
+						r#type: *r#type,
+					}),
+				},
+			}
+			.into()
 		} else {
 			panic!("No max precedence item");
 		}
@@ -880,7 +975,7 @@ fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>,) -> Feat
 	Ok((dandc(&expressions), iterator))
 }
 
-fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> FeatureParserResult<'i, 'a> {
+fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 
 	iterator.next_str(":")?;
@@ -889,24 +984,24 @@ fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> F
 	iterator.next_str(")")?;
 	iterator.next_str("->")?;
 
-	let return_type = iterator.next_identifier().map_err(|e| {
-		match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected a return type for function {} declaration.", name) },
-			_ => e,
-		}
+	let return_type = iterator.next_identifier().map_err(|e| match e {
+		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+			message: format!("Expected a return type for function {} declaration.", name),
+		},
+		_ => e,
 	})?;
 
-	iterator.next_str("{").map_err(|e| {
-		match e {
-			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax{ message: format!("Expected a {{ after function {} declaration.", name) },
-			_ => e,
-		}
+	iterator.next_str("{").map_err(|e| match e {
+		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+			message: format!("Expected a {{ after function {} declaration.", name),
+		},
+		_ => e,
 	})?;
 
 	let mut statements = vec![];
 
 	loop {
-		if let Some(Ok((expression, new_iterator))) = try_execute_parsers(&[parse_statement], iterator.clone(),) {
+		if let Some(Ok((expression, new_iterator))) = try_execute_parsers(&[parse_statement], iterator.clone()) {
 			iterator = new_iterator;
 
 			statements.push(expression);
@@ -915,12 +1010,17 @@ fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> F
 				iterator.next();
 				break;
 			} else {
-				return Err(ParsingFailReasons::BadSyntax{ message: format!("Expected a }} after function {} declaration.", name) });
+				return Err(ParsingFailReasons::BadSyntax {
+					message: format!("Expected a }} after function {} declaration.", name),
+				});
 			}
 		}
 
 		// check if iter is close brace
-		if **iterator.clone().peekable().peek().ok_or(ParsingFailReasons::BadSyntax { message: "Expected a '}' after function body".to_string() })? == "}" {
+		if **iterator.clone().peekable().peek().ok_or(ParsingFailReasons::BadSyntax {
+			message: "Expected a '}' after function body".to_string(),
+		})? == "}"
+		{
 			iterator.next();
 			break;
 		}
@@ -931,20 +1031,45 @@ fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>,) -> F
 	Ok((node, iterator))
 }
 
-use std::ops::{Index};
+use std::ops::Index;
 
-impl <'a> Index<&str> for Node<'a> {
-    type Output = Node<'a>;
+impl<'a> Index<&str> for Node<'a> {
+	type Output = Node<'a>;
 
-    fn index(&self, index: &str) -> &Self::Output {
+	fn index(&self, index: &str) -> &Self::Output {
 		match &self.node {
 			Nodes::Scope { children, .. } => {
 				for child in children {
 					match child.node {
-						Nodes::Scope { name: child_name, children: _ } => { if child_name == index { return child; } }
-						Nodes::Struct { name: child_name, fields: _ } => { if child_name == index { return child; } }
-						Nodes::Member { name: child_name, r#type: _ } => { if child_name == index { return child; } }
-						Nodes::Function { name: child_name, .. } => { if child_name == index { return child; } }
+						Nodes::Scope {
+							name: child_name,
+							children: _,
+						} => {
+							if child_name == index {
+								return child;
+							}
+						}
+						Nodes::Struct {
+							name: child_name,
+							fields: _,
+						} => {
+							if child_name == index {
+								return child;
+							}
+						}
+						Nodes::Member {
+							name: child_name,
+							r#type: _,
+						} => {
+							if child_name == index {
+								return child;
+							}
+						}
+						Nodes::Function { name: child_name, .. } => {
+							if child_name == index {
+								return child;
+							}
+						}
 						_ => {}
 					}
 				}
@@ -958,11 +1083,13 @@ impl <'a> Index<&str> for Node<'a> {
 					}
 				}
 			}
-			_ => { panic!("Cannot search  in these"); }
+			_ => {
+				panic!("Cannot search  in these");
+			}
 		}
 
 		panic!("Not found");
-    }
+	}
 }
 
 trait ParserIterator<'a> {
@@ -971,7 +1098,7 @@ trait ParserIterator<'a> {
 	fn next_identifier(&mut self) -> Result<&'a str, ParsingFailReasons>;
 }
 
-impl <'i, 'a> ParserIterator<'a> for std::slice::Iter<'i, &'a str> {
+impl<'i, 'a> ParserIterator<'a> for std::slice::Iter<'i, &'a str> {
 	fn next_is(&mut self, f: impl Fn(&'a str) -> bool) -> Result<&'a str, ParsingFailReasons> {
 		let token = self.next().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
 		if f(token) {
@@ -1029,15 +1156,21 @@ mod tests {
 			if let Nodes::Member { name, r#type } = &position.node {
 				assert_eq!(*name, "position");
 				assert_eq!(r#type, "vec3f");
-			} else { panic!("Not a member"); }
+			} else {
+				panic!("Not a member");
+			}
 
 			let color = &fields[1];
 
 			if let Nodes::Member { name, r#type } = &color.node {
 				assert_eq!(*name, "color");
 				assert_eq!(r#type, "vec3f");
-			} else { panic!("Not a member"); }
-		} else { panic!("Not a struct"); }
+			} else {
+				panic!("Not a member");
+			}
+		} else {
+			panic!("Not a struct");
+		}
 	}
 
 	#[test]
@@ -1061,7 +1194,14 @@ Light: struct {
 	}
 
 	fn assert_function(node: &Node) {
-		if let Nodes::Function { name, params, return_type, statements, .. } = &node.node {
+		if let Nodes::Function {
+			name,
+			params,
+			return_type,
+			statements,
+			..
+		} = &node.node
+		{
 			assert_eq!(*name, "main");
 			assert_eq!(params.len(), 0);
 			assert_eq!(*return_type, "void");
@@ -1069,15 +1209,22 @@ Light: struct {
 
 			let statement = &statements[0];
 
-			if let Nodes::Expression(Expressions::Operator { name, left: var_decl, right: function_call }) = &statement.node {
+			if let Nodes::Expression(Expressions::Operator {
+				name,
+				left: var_decl,
+				right: function_call,
+			}) = &statement.node
+			{
 				assert_eq!(*name, "=");
 
 				if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) = var_decl.node {
 					assert_eq!(name, "position");
 					assert_eq!(r#type, "vec4f");
-				} else { panic!("Not an variable declaration"); }
+				} else {
+					panic!("Not an variable declaration");
+				}
 
-				if let Nodes::Expression(Expressions::Call { name, parameters, }) = &function_call.node {
+				if let Nodes::Expression(Expressions::Call { name, parameters }) = &function_call.node {
 					assert_eq!(*name, "vec4");
 					assert_eq!(parameters.len(), 4);
 
@@ -1085,10 +1232,18 @@ Light: struct {
 
 					if let Nodes::Expression(Expressions::Literal { value }) = x_param.node {
 						assert_eq!(value, "0.0");
-					} else { panic!("Not a literal"); }
-				} else { panic!("Not a function call"); }
-			} else { panic!("Not an assignment");}
-		} else { panic!("Not a function"); }
+					} else {
+						panic!("Not a literal");
+					}
+				} else {
+					panic!("Not a function call");
+				}
+			} else {
+				panic!("Not an assignment");
+			}
+		} else {
+			panic!("Not a function");
+		}
 	}
 
 	#[test]
@@ -1102,12 +1257,13 @@ main: fn () -> void {
 		let tokens = tokenize(source).unwrap();
 		let node = parse(&tokens).expect("Failed to parse");
 
-		if let Nodes::Scope{ name, .. } = node.node {
+		if let Nodes::Scope { name, .. } = node.node {
 			assert_eq!(name, "root");
 			assert_function(&node["main"]);
-		} else { panic!("Not root node") }
+		} else {
+			panic!("Not root node")
+		}
 	}
-
 
 	#[test]
 	fn parse_operators() {
@@ -1122,7 +1278,14 @@ main: fn () -> void {
 
 		let main_node = &node["main"];
 
-		if let Nodes::Function { name, statements, return_type, params, .. } = &main_node.node {
+		if let Nodes::Function {
+			name,
+			statements,
+			return_type,
+			params,
+			..
+		} = &main_node.node
+		{
 			assert_eq!(*name, "main");
 			assert_eq!(statements.len(), 2);
 			assert_eq!(*return_type, "void");
@@ -1132,25 +1295,47 @@ main: fn () -> void {
 
 			let statement0 = &statements[0];
 
-			if let Nodes::Expression(Expressions::Operator { name, left: var_decl, right: multiply }) = &statement0.node {
+			if let Nodes::Expression(Expressions::Operator {
+				name,
+				left: var_decl,
+				right: multiply,
+			}) = &statement0.node
+			{
 				assert_eq!(*name, "=");
 
 				if let Nodes::Expression(Expressions::VariableDeclaration { .. }) = var_decl.node {
-				} else { panic!("Not a variable declaration"); }
+				} else {
+					panic!("Not a variable declaration");
+				}
 
-				if let Nodes::Expression(Expressions::Operator { name, left: vec4, right: literal }) = &multiply.node {
+				if let Nodes::Expression(Expressions::Operator {
+					name,
+					left: vec4,
+					right: literal,
+				}) = &multiply.node
+				{
 					assert_eq!(*name, "*");
 
 					if let Nodes::Expression(Expressions::Call { name, .. }) = vec4.node {
 						assert_eq!(name, "vec4");
-					} else { panic!("Not a function call"); }
+					} else {
+						panic!("Not a function call");
+					}
 
-					if let Nodes::Expression(Expressions::Literal { value, }) = literal.node {
+					if let Nodes::Expression(Expressions::Literal { value }) = literal.node {
 						assert_eq!(value, "2.0");
-					} else { panic!("Not a literal"); }
-				} else { panic!("Not an operator"); }
-			} else { panic!("Not an expression"); }
-		} else { panic!("Not a feature"); }
+					} else {
+						panic!("Not a literal");
+					}
+				} else {
+					panic!("Not an operator");
+				}
+			} else {
+				panic!("Not an expression");
+			}
+		} else {
+			panic!("Not a feature");
+		}
 	}
 
 	#[test]
@@ -1167,7 +1352,7 @@ main: fn () -> void {
 
 		print_tree(&node);
 
-		if let Nodes::Scope{ children, .. } = &node.node {
+		if let Nodes::Scope { children, .. } = &node.node {
 			assert_eq!(children.len(), 1);
 
 			let main_node = &node["main"];
@@ -1178,25 +1363,48 @@ main: fn () -> void {
 
 				let statement1 = &statements[1];
 
-				if let Nodes::Expression(Expressions::Operator { name, left: accessor, right: literal }) = &statement1.node {
+				if let Nodes::Expression(Expressions::Operator {
+					name,
+					left: accessor,
+					right: literal,
+				}) = &statement1.node
+				{
 					assert_eq!(*name, "=");
 
-					if let Nodes::Expression(Expressions::Accessor{ left: position, right: y }) = &accessor.node {
+					if let Nodes::Expression(Expressions::Accessor {
+						left: position,
+						right: y,
+					}) = &accessor.node
+					{
 						if let Nodes::Expression(Expressions::Member { name }) = position.node {
 							assert_eq!(name, "position");
-						} else { panic!("Not a member"); }
+						} else {
+							panic!("Not a member");
+						}
 
 						if let Nodes::Expression(Expressions::Member { name }) = y.node {
 							assert_eq!(name, "y");
-						} else { panic!("Not a member"); }
-					} else { panic!("Not an accessor"); }
+						} else {
+							panic!("Not a member");
+						}
+					} else {
+						panic!("Not an accessor");
+					}
 
-					if let Nodes::Expression(Expressions::Literal { value, }) = literal.node {
+					if let Nodes::Expression(Expressions::Literal { value }) = literal.node {
 						assert_eq!(value, "2.0");
-					} else { panic!("Not a literal"); }
-				} else { panic!("Not an operator"); }
-			} else { panic!("Not a function"); }
-		} else { panic!("Not root node") }
+					} else {
+						panic!("Not a literal");
+					}
+				} else {
+					panic!("Not an operator");
+				}
+			} else {
+				panic!("Not a function");
+			}
+		} else {
+			panic!("Not root node")
+		}
 	}
 
 	#[test]
@@ -1219,7 +1427,9 @@ main: fn () -> void {
 		if let Nodes::Scope { .. } = &node.node {
 			assert_struct(&node["Light"]);
 			assert_function(&node["main"]);
-		} else { panic!("Not root node") }
+		} else {
+			panic!("Not root node")
+		}
 	}
 
 	#[test]
@@ -1232,10 +1442,12 @@ main: fn () -> void {
 		if let Nodes::Scope { .. } = &node.node {
 			let member_node = &node["color"];
 
-			if let Nodes::Member{ name, r#type } = &member_node.node {
+			if let Nodes::Member { name, r#type } = &member_node.node {
 				assert_eq!(*name, "color");
 				assert_eq!(r#type, "In<vec4f>");
-			} else { panic!("Not a feature"); }
+			} else {
+				panic!("Not a feature");
+			}
 		}
 	}
 
@@ -1300,7 +1512,9 @@ main: fn () -> void {
 					if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) = left.node {
 						assert_eq!(name, "n");
 						assert_eq!(r#type, "f32");
-					} else { panic!("Not a variable declaration"); }
+					} else {
+						panic!("Not a variable declaration");
+					}
 
 					if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
 						if let Nodes::Expression(Expressions::Call { name, parameters }) = &left.node {
@@ -1309,15 +1523,29 @@ main: fn () -> void {
 
 							if let Nodes::Expression(Expressions::Literal { value }) = parameters[0].node {
 								assert_eq!(value, "0");
-							} else { panic!("Not a literal"); }
-						} else { panic!("Not a function call"); }
+							} else {
+								panic!("Not a literal");
+							}
+						} else {
+							panic!("Not a function call");
+						}
 
 						if let Nodes::Expression(Expressions::Member { name }) = right.node {
 							assert_eq!(name, "y");
-						} else { panic!("Not a member"); }
-					} else { panic!("Not an accessor"); }
-				} else { panic!("Not an operator"); }
-			} else { panic!("Not a function"); }
-		} else { panic!("Not root node") }
+						} else {
+							panic!("Not a member");
+						}
+					} else {
+						panic!("Not an accessor");
+					}
+				} else {
+					panic!("Not an operator");
+				}
+			} else {
+				panic!("Not a function");
+			}
+		} else {
+			panic!("Not root node")
+		}
 	}
 }

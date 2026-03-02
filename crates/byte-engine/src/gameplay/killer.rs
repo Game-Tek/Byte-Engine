@@ -16,8 +16,6 @@ impl Killer {
 	}
 
 	pub fn add_entity(&mut self, entity: EntityHandle<dyn Entity>) {
-		self.entities.push(Data {
-			entity,
-		});
+		self.entities.push(Data { entity });
 	}
 }

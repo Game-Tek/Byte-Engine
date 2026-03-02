@@ -1,8 +1,20 @@
 use std::borrow::Borrow;
 
-use crate::{core::EntityHandle, rendering::{render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn}, view::View, Viewport}};
+use crate::{
+	core::EntityHandle,
+	rendering::{
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+		view::View,
+		Viewport,
+	},
+};
 
-use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _}, device::Device as _};
+use ghi::{
+	command_buffer::{
+		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
+	},
+	device::Device as _,
+};
 use resource_management::glsl;
 use utils::{Box, Extent};
 
@@ -16,8 +28,10 @@ pub struct BaseAgxToneMapPass {
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 }
 
-const SOURCE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+const SOURCE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 impl Entity for BaseAgxToneMapPass {}
 
@@ -29,18 +43,31 @@ impl BaseAgxToneMapPass {
 
 		let device = render_pass_builder.device();
 
-		let descriptor_set_layout = device.create_descriptor_set_template(Some("AGX Tonemap Pass Set Layout"), &[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE]);
+		let descriptor_set_layout = device.create_descriptor_set_template(
+			Some("AGX Tonemap Pass Set Layout"),
+			&[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE],
+		);
 
 		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout], &[]);
 
 		let tonemapping_shader_artifact = glsl::compile(TONE_MAPPING_SHADER, "AGX Tonemapping").unwrap();
 
-		let tone_mapping_shader = device.create_shader(Some("AGX Tone Mapping Compute Shader"), ghi::ShaderSource::SPIRV(tonemapping_shader_artifact.borrow().into()), ghi::ShaderTypes::Compute, [
-			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-		]).expect("Failed to create AGX tone mapping shader");
+		let tone_mapping_shader = device
+			.create_shader(
+				Some("AGX Tone Mapping Compute Shader"),
+				ghi::ShaderSource::SPIRV(tonemapping_shader_artifact.borrow().into()),
+				ghi::ShaderTypes::Compute,
+				[
+					SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+				],
+			)
+			.expect("Failed to create AGX tone mapping shader");
 
-		let tone_mapping_pipeline = device.create_compute_pipeline(pipeline_layout, ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute,));
+		let tone_mapping_pipeline = device.create_compute_pipeline(
+			pipeline_layout,
+			ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute),
+		);
 
 		Self {
 			descriptor_set_layout,
@@ -66,10 +93,17 @@ impl AgxToneMapPass {
 
 		let device = render_pass_builder.device();
 
-		let descriptor_set = device.create_descriptor_set(Some("AGX Tonemap Pass Descriptor Set"), &render_pass.descriptor_set_layout);
+		let descriptor_set =
+			device.create_descriptor_set(Some("AGX Tonemap Pass Descriptor Set"), &render_pass.descriptor_set_layout);
 
-		let source_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General));
-		let destination_binding = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General));
+		let source_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General),
+		);
+		let destination_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General),
+		);
 
 		AgxToneMapPass {
 			render_pass,

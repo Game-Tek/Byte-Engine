@@ -7,8 +7,8 @@ pub type SendBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Outp
 pub mod sync;
 
 pub mod r#async;
-pub mod stale_map;
 pub mod bit_array;
+pub mod stale_map;
 
 use std::ops::Div;
 
@@ -24,10 +24,7 @@ pub struct BufferAllocator<'a> {
 
 impl<'a> BufferAllocator<'a> {
 	pub fn new(buffer: &'a mut [u8]) -> Self {
-		Self {
-			buffer,
-			offset: 0,
-		}
+		Self { buffer, offset: 0 }
 	}
 
 	pub fn take(&mut self, size: usize) -> &'a mut [u8] {
@@ -65,11 +62,7 @@ pub struct Extent {
 
 impl Extent {
 	pub fn new(width: u32, height: u32, depth: u32) -> Self {
-		Self {
-			width,
-			height,
-			depth,
-		}
+		Self { width, height, depth }
 	}
 
 	pub fn line(width: u32) -> Self {
@@ -89,19 +82,11 @@ impl Extent {
 	}
 
 	pub fn rectangle(width: u32, height: u32) -> Self {
-		Self {
-			width,
-			height,
-			depth: 1,
-		}
+		Self { width, height, depth: 1 }
 	}
 
 	pub fn cube(width: u32, height: u32, depth: u32) -> Self {
-		Self {
-			width,
-			height,
-			depth,
-		}
+		Self { width, height, depth }
 	}
 
 	pub fn as_tuple(&self) -> (u32, u32, u32) {
@@ -113,11 +98,17 @@ impl Extent {
 	}
 
 	#[inline]
-	pub fn width(&self) -> u32 { self.width }
+	pub fn width(&self) -> u32 {
+		self.width
+	}
 	#[inline]
-	pub fn height(&self) -> u32 { self.height }
+	pub fn height(&self) -> u32 {
+		self.height
+	}
 	#[inline]
-	pub fn depth(&self) -> u32 { self.depth }
+	pub fn depth(&self) -> u32 {
+		self.depth
+	}
 
 	pub fn aspect_ratio(&self) -> f32 {
 		(self.width as f32) / (self.height as f32)
@@ -167,8 +158,22 @@ impl RGBA {
 	pub fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
 		Self { r, g, b, a }
 	}
-	pub fn black() -> Self { Self { r: 0.0, g: 0.0, b: 0.0, a: 1.0, } }
-	pub fn white() -> Self { Self { r: 1.0, g: 1.0, b: 1.0, a: 1.0, } }
+	pub fn black() -> Self {
+		Self {
+			r: 0.0,
+			g: 0.0,
+			b: 0.0,
+			a: 1.0,
+		}
+	}
+	pub fn white() -> Self {
+		Self {
+			r: 1.0,
+			g: 1.0,
+			b: 1.0,
+			a: 1.0,
+		}
+	}
 }
 
 impl Default for RGBA {
@@ -189,22 +194,22 @@ mod tests {
 	fn test_partition() {
 		let input = [];
 		let expected: Vec<(usize, &[usize])> = vec![];
-		assert_eq!(super::partition(&input,|x| *x,), expected);
+		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [0];
 		let expected: Vec<(usize, &[usize])> = vec![(0, &[0])];
-		assert_eq!(super::partition(&input,|x| *x,), expected);
+		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [0, 1];
 		let expected: Vec<(usize, &[usize])> = vec![(0, &[0, 1])];
-		assert_eq!(super::partition(&input,|x| *x,), expected);
+		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [0, 2];
 		let expected: Vec<(usize, &[usize])> = vec![(0, &[0]), (2, &[2])];
-		assert_eq!(super::partition(&input,|x| *x,), expected);
+		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [1, 2, 3, 5, 6, 7, 9, 10, 11];
 		let expected: Vec<(usize, &[usize])> = vec![(1, &[1, 2, 3]), (5, &[5, 6, 7]), (9, &[9, 10, 11])];
-		assert_eq!(super::partition(&input,|x| *x,), expected);
+		assert_eq!(super::partition(&input, |x| *x,), expected);
 	}
 }

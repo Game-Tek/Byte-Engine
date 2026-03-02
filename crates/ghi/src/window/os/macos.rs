@@ -5,8 +5,13 @@ use crate::{os::WindowLike, Events};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message as _};
-use objc2_app_kit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask};
-use objc2_foundation::{NSAutoreleasePool, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_app_kit::{
+	NSApp, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSEventModifierFlags, NSEventType,
+	NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+};
+use objc2_foundation::{
+	NSAutoreleasePool, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+};
 
 pub struct Window {
 	mtm: MainThreadMarker,
@@ -97,22 +102,23 @@ impl WindowLike for Window {
 	fn try_new(name: &str, extent: utils::Extent, _: &str) -> Result<Self, String> {
 		let _pool = unsafe { NSAutoreleasePool::new() };
 
-		let mtm = MainThreadMarker::new().ok_or_else(|| "Failed to create MainThreadMarker. Window is probably being created on a non-main thread.")?;
+		let mtm = MainThreadMarker::new()
+			.ok_or_else(|| "Failed to create MainThreadMarker. Window is probably being created on a non-main thread.")?;
 
 		let app = NSApp(mtm);
 
-		let frame = NSRect::new(NSPoint::new(100.0, 100.0), NSSize::new(extent.width() as _, extent.height() as _));
-		let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable | NSWindowStyleMask::Miniaturizable;
+		let frame = NSRect::new(
+			NSPoint::new(100.0, 100.0),
+			NSSize::new(extent.width() as _, extent.height() as _),
+		);
+		let style = NSWindowStyleMask::Titled
+			| NSWindowStyleMask::Closable
+			| NSWindowStyleMask::Resizable
+			| NSWindowStyleMask::Miniaturizable;
 
 		let window = unsafe {
 			let window = NSWindow::alloc(mtm);
-			NSWindow::initWithContentRect_styleMask_backing_defer(
-				window,
-				frame,
-				style,
-				NSBackingStoreType::Buffered,
-				false,
-			)
+			NSWindow::initWithContentRect_styleMask_backing_defer(window, frame, style, NSBackingStoreType::Buffered, false)
 		};
 
 		let delegate = WindowDelegate::new(mtm);
@@ -148,7 +154,12 @@ impl WindowLike for Window {
 			events.push(Events::Maximize);
 		}
 
-		while let Some(event) = self.app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, None, unsafe { NSDefaultRunLoopMode }, true) {
+		while let Some(event) = self.app.nextEventMatchingMask_untilDate_inMode_dequeue(
+			NSEventMask::Any,
+			None,
+			unsafe { NSDefaultRunLoopMode },
+			true,
+		) {
 			let time = (event.timestamp() * 1000.0) as u64;
 
 			match event.r#type() {
@@ -173,12 +184,18 @@ impl WindowLike for Window {
 				NSEventType::LeftMouseDown | NSEventType::LeftMouseUp => {
 					let pressed = event.r#type() == NSEventType::LeftMouseDown;
 
-					events.push(Events::Button { pressed, button: MouseKeys::Left });
+					events.push(Events::Button {
+						pressed,
+						button: MouseKeys::Left,
+					});
 				}
 				NSEventType::RightMouseDown | NSEventType::RightMouseUp => {
 					let pressed = event.r#type() == NSEventType::RightMouseDown;
 
-					events.push(Events::Button { pressed, button: MouseKeys::Right });
+					events.push(Events::Button {
+						pressed,
+						button: MouseKeys::Right,
+					});
 				}
 				NSEventType::KeyDown | NSEventType::KeyUp => {
 					let pressed = event.r#type() == NSEventType::KeyDown;
@@ -194,8 +211,7 @@ impl WindowLike for Window {
 						}
 					}
 				}
-				NSEventType::AppKitDefined => {
-				}
+				NSEventType::AppKitDefined => {}
 				_ => {}
 			}
 		}
@@ -224,12 +240,36 @@ struct ModifierState {
 impl ModifierState {
 	fn update(&mut self, key: Keys, flags: NSEventModifierFlags) -> Option<bool> {
 		match key {
-			Keys::ShiftLeft => update_modifier_side(&mut self.shift_left, &mut self.shift_right, flags.contains(NSEventModifierFlags::Shift)),
-			Keys::ShiftRight => update_modifier_side(&mut self.shift_right, &mut self.shift_left, flags.contains(NSEventModifierFlags::Shift)),
-			Keys::ControlLeft => update_modifier_side(&mut self.control_left, &mut self.control_right, flags.contains(NSEventModifierFlags::Control)),
-			Keys::ControlRight => update_modifier_side(&mut self.control_right, &mut self.control_left, flags.contains(NSEventModifierFlags::Control)),
-			Keys::AltLeft => update_modifier_side(&mut self.alt_left, &mut self.alt_right, flags.contains(NSEventModifierFlags::Option)),
-			Keys::AltRight => update_modifier_side(&mut self.alt_right, &mut self.alt_left, flags.contains(NSEventModifierFlags::Option)),
+			Keys::ShiftLeft => update_modifier_side(
+				&mut self.shift_left,
+				&mut self.shift_right,
+				flags.contains(NSEventModifierFlags::Shift),
+			),
+			Keys::ShiftRight => update_modifier_side(
+				&mut self.shift_right,
+				&mut self.shift_left,
+				flags.contains(NSEventModifierFlags::Shift),
+			),
+			Keys::ControlLeft => update_modifier_side(
+				&mut self.control_left,
+				&mut self.control_right,
+				flags.contains(NSEventModifierFlags::Control),
+			),
+			Keys::ControlRight => update_modifier_side(
+				&mut self.control_right,
+				&mut self.control_left,
+				flags.contains(NSEventModifierFlags::Control),
+			),
+			Keys::AltLeft => update_modifier_side(
+				&mut self.alt_left,
+				&mut self.alt_right,
+				flags.contains(NSEventModifierFlags::Option),
+			),
+			Keys::AltRight => update_modifier_side(
+				&mut self.alt_right,
+				&mut self.alt_left,
+				flags.contains(NSEventModifierFlags::Option),
+			),
 			Keys::CapsLock => {
 				let pressed = flags.contains(NSEventModifierFlags::CapsLock);
 

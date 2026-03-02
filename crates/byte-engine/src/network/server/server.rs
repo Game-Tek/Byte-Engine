@@ -39,7 +39,6 @@ impl Server {
 
 impl Entity for Server {}
 
-struct Client {
-}
+struct Client {}
 
 impl Entity for Client {}

@@ -22,7 +22,10 @@ impl Frame<'_> {
 		self.device.resize_image_internal(image_handle, extent);
 	}
 
-	pub fn create_command_buffer_recording<'a>(&'a mut self, command_buffer_handle: CommandBufferHandle) -> super::CommandBufferRecording<'a> {
+	pub fn create_command_buffer_recording<'a>(
+		&'a mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> super::CommandBufferRecording<'a> {
 		self.device.create_command_buffer_recording(command_buffer_handle)
 	}
 

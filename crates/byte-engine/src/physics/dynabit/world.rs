@@ -162,11 +162,7 @@ impl World {
 	}
 
 	/// Updates bodies' positions and orientation based on their velocities.
-	pub fn update_bodies(
-		&mut self,
-		time: Time,
-		transforms_tx: &mut impl Channel<TransformationUpdate>,
-	) {
+	pub fn update_bodies(&mut self, time: Time, transforms_tx: &mut impl Channel<TransformationUpdate>) {
 		let dt = time.delta();
 		let dt = dt.as_secs_f32();
 
@@ -371,10 +367,8 @@ mod tests {
 
 	#[test]
 	fn resolves_sphere_ground_penetration_for_both_body_orders() {
-		let depth_when_ground_first =
-			resolve_penetration_depth(vec![make_ground_body(), make_sphere_body()]);
-		let depth_when_sphere_first =
-			resolve_penetration_depth(vec![make_sphere_body(), make_ground_body()]);
+		let depth_when_ground_first = resolve_penetration_depth(vec![make_ground_body(), make_sphere_body()]);
+		let depth_when_sphere_first = resolve_penetration_depth(vec![make_sphere_body(), make_ground_body()]);
 
 		assert!(depth_when_ground_first <= 1e-4);
 		assert!(depth_when_sphere_first <= 1e-4);

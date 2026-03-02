@@ -1,3 +1,3 @@
-use crate::core::{channel::{DefaultChannel}, factory::Handle, listener::FilteredListener};
+use crate::core::{channel::DefaultChannel, factory::Handle, listener::FilteredListener};
 
 pub trait Message {}

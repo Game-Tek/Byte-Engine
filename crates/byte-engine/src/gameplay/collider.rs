@@ -1,6 +1,13 @@
 use math::Vector3;
 
-use crate::{core::{Entity, EntityHandle}, gameplay::{Positionable, Transformable}, physics::{body::{Body, BodyTypes}, collider::{Collider, Shapes}}};
+use crate::{
+	core::{Entity, EntityHandle},
+	gameplay::{Positionable, Transformable},
+	physics::{
+		body::{Body, BodyTypes},
+		collider::{Collider, Shapes},
+	},
+};
 
 use crate::physics;
 
@@ -15,17 +22,13 @@ pub struct Cube {
 
 impl Sphere {
 	pub fn new(radius: f32) -> Self {
-		Self {
-			radius,
-		}
+		Self { radius }
 	}
 }
 
 impl Cube {
 	pub fn new(size: Vector3) -> Self {
-		Self {
-			size,
-		}
+		Self { size }
 	}
 }
 
@@ -42,14 +45,17 @@ impl Positionable for Sphere {
 }
 
 impl Collider for Sphere {
-	fn shape(&self) -> Shapes { Shapes::Sphere { radius: self.radius } }
+	fn shape(&self) -> Shapes {
+		Shapes::Sphere { radius: self.radius }
+	}
 }
 
-impl Entity for Cube {
-}
+impl Entity for Cube {}
 
 impl Collider for Cube {
-	fn shape(&self) -> Shapes { Shapes::Cube { size: self.size } }
+	fn shape(&self) -> Shapes {
+		Shapes::Cube { size: self.size }
+	}
 }
 
 impl Positionable for Cube {

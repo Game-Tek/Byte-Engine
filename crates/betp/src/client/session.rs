@@ -1,7 +1,13 @@
 //! Client module for the Byte-Engine networking library.
 //! The client is the entity that connects to a server and participates in the game.
 
-use crate::{client::Errors, local::Local, packet_buffer::PacketBuffer, packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets}, remote::Remote};
+use crate::{
+	client::Errors,
+	local::Local,
+	packet_buffer::PacketBuffer,
+	packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets},
+	remote::Remote,
+};
 
 /// The client is the entity that connects to a server and participates in the game.
 pub struct Session {
@@ -24,18 +30,14 @@ impl Session {
 
 	pub fn connect(&mut self, salt: u64) {
 		match self.state {
-			State::Initial => {
-				self.state = State::InitiatingConnection { salt }
-			}
+			State::Initial => self.state = State::InitiatingConnection { salt },
 			_ => {}
 		}
 	}
 
 	pub fn update(&mut self, packets: &[Packets]) -> Result<Vec<Packets>, Errors> {
 		match &mut self.state {
-			State::Initial => {
-				Ok(Vec::new())
-			}
+			State::Initial => Ok(Vec::new()),
 			State::InitiatingConnection { salt } => {
 				let salt = *salt;
 
@@ -47,11 +49,9 @@ impl Session {
 
 								let id = connection_id;
 
-								self.state = State::Connecting { id  };
+								self.state = State::Connecting { id };
 
-								return Ok(vec![
-									ChallengeResponsePacket::new(id).into()
-								]);
+								return Ok(vec![ChallengeResponsePacket::new(id).into()]);
 							} else {
 								return Err(Errors::BadSalt);
 							}
@@ -60,14 +60,15 @@ impl Session {
 					}
 				}
 
-				Ok(vec![
-					ConnectionRequestPacket::new(salt).into()
-				])
+				Ok(vec![ConnectionRequestPacket::new(salt).into()])
 			}
 			State::Connecting { id } => {
 				let id = *id;
 
-				self.state = State::Connected { id, packet_buffer: PacketBuffer::new() };
+				self.state = State::Connected {
+					id,
+					packet_buffer: PacketBuffer::new(),
+				};
 
 				Ok(Vec::new())
 			}
@@ -77,7 +78,8 @@ impl Session {
 				for packet in packets {
 					match packet {
 						Packets::Data(data_packet) => {
-							if id == data_packet.get_connection_id() { // Validate connection ID
+							if id == data_packet.get_connection_id() {
+								// Validate connection ID
 								self.remote.acknowledge_packet(data_packet.get_connection_status().sequence);
 								packet_buffer.remove(data_packet.get_connection_status().sequence);
 							} else {
@@ -85,25 +87,28 @@ impl Session {
 							}
 						}
 						Packets::Disconnect(disconnect_packet) => {
-							if id == disconnect_packet.get_connection_id() { // Validate connection ID
+							if id == disconnect_packet.get_connection_id() {
+								// Validate connection ID
 								self.state = State::Disconnecting { id };
 								return Ok(Vec::new());
 							} else {
 								return Err(Errors::BadConnectionId);
 							}
 						}
-						_ => {},
+						_ => {}
 					}
 				}
 
-				Ok(packet_buffer.gather_unsent_packets_for_retry().into_iter().map(|p| Packets::Data(p)).collect())
+				Ok(packet_buffer
+					.gather_unsent_packets_for_retry()
+					.into_iter()
+					.map(|p| Packets::Data(p))
+					.collect())
 			}
 			State::Disconnecting { id } => {
 				let id = *id;
 
-				Ok(vec![
-					DisconnectPacket::new(id).into()
-				])
+				Ok(vec![DisconnectPacket::new(id).into()])
 			}
 		}
 	}
@@ -131,9 +136,7 @@ impl Session {
 	/// The client will need to reconnect to the server to continue.
 	pub fn disconnect(&mut self) {
 		match self.state {
-			State::Connected { id, .. } => {
-				self.state = State::Disconnecting { id }
-			}
+			State::Connected { id, .. } => self.state = State::Disconnecting { id },
 			_ => {}
 		}
 	}
@@ -153,7 +156,7 @@ pub enum State {
 	/// The state where the client has initiated a connection request to the server and is awaiting a challenge response.
 	InitiatingConnection {
 		/// A generated salt value used for the connection request.
-		salt: u64
+		salt: u64,
 	},
 	/// The state where the client has sent a challenge response and is waiting for the server to confirm the connection.
 	Connecting {
@@ -178,7 +181,7 @@ pub enum State {
 mod tests {
 	use crate::packets::ChallengePacket;
 
-use super::*;
+	use super::*;
 
 	#[test]
 	fn test_session_start() {

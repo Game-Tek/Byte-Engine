@@ -1,4 +1,8 @@
-use std::{borrow::Cow, hash::{Hash, Hasher as _}, sync::Arc};
+use std::{
+	borrow::Cow,
+	hash::{Hash, Hasher as _},
+	sync::Arc,
+};
 
 use math::{normalize, Vector3, Vector4};
 
@@ -89,7 +93,11 @@ impl MeshGenerator for SphereMeshGenerator {
 				let i = ring * (segments + 1) + segment;
 				let j = (ring + 1) * (segments + 1) + segment;
 
-				let normal = normalize(Vector3::new(vertices[j].0 - vertices[i].0, vertices[j].1 - vertices[i].1, vertices[j].2 - vertices[i].2));
+				let normal = normalize(Vector3::new(
+					vertices[j].0 - vertices[i].0,
+					vertices[j].1 - vertices[i].1,
+					vertices[j].2 - vertices[i].2,
+				));
 				normals.push((normal.x, normal.y, normal.z));
 			}
 		}
@@ -118,7 +126,7 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 
 	fn bitangents(&self) -> Cow<'_, [Vector3]> {
-    	let segments = self.segments;
+		let segments = self.segments;
 		let rings = self.rings;
 		let mut bitangents = Vec::new();
 
@@ -138,11 +146,11 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 
 	fn colors(&self) -> Option<Cow<'_, [Vector4]>> {
-    	None
+		None
 	}
 
 	fn meshlet_indices(&self) -> Option<Cow<'_, [u8]>> {
-    	let segments = self.segments;
+		let segments = self.segments;
 		let rings = self.rings;
 		let mut indices = Vec::new();
 

@@ -11,11 +11,7 @@ pub use session::Session;
 #[derive(Debug, Clone, Copy)]
 pub enum Events {
 	/// A client has connected to the server. Contains the client's ID.
-	ClientConnected {
-		id: u64,
-	},
+	ClientConnected { id: u64 },
 	/// A client has disconnected from the server. Contains the client's ID.
-	ClientDisconnected {
-		id: u64,
-	},
+	ClientDisconnected { id: u64 },
 }

@@ -1,6 +1,9 @@
 use ash::vk;
 
-use crate::{vulkan::{Handle, HandleLike, Next}, Uses};
+use crate::{
+	vulkan::{Handle, HandleLike, Next},
+	Uses,
+};
 
 /// When `true`, dynamic buffers use a persistent CPU-writable source buffer
 /// plus per-frame staging buffers. The source buffer is copied (CPU memcpy)

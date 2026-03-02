@@ -1,8 +1,14 @@
 use utils::Extent;
 
 use crate::{
-	command_buffer::{BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode, CommandBufferRecordable, CommonCommandBufferMode, RasterizationRenderPassMode},
-	AttachmentInformation, BaseBufferHandle, BindingTables, BufferDescriptor, BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuild,
+	command_buffer::{
+		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
+		CommandBufferRecordable, CommonCommandBufferMode, RasterizationRenderPassMode,
+	},
+	AttachmentInformation, BaseBufferHandle, BindingTables, BottomLevelAccelerationStructureBuild, BufferDescriptor,
+	BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle,
+	PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	TopLevelAccelerationStructureBuild,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -14,7 +20,11 @@ pub struct CommandBufferRecording<'a> {
 }
 
 impl<'a> CommandBufferRecording<'a> {
-	pub fn new(device: &'a mut super::Device, command_buffer: crate::CommandBufferHandle, _frame_key: Option<crate::FrameKey>) -> Self {
+	pub fn new(
+		device: &'a mut super::Device,
+		command_buffer: crate::CommandBufferHandle,
+		_frame_key: Option<crate::FrameKey>,
+	) -> Self {
 		Self {
 			device,
 			command_buffer,
@@ -38,11 +48,18 @@ impl CommandBufferRecordable for CommandBufferRecording<'_> {
 		// TODO: DXR acceleration structure builds are not implemented yet.
 	}
 
-	fn build_bottom_level_acceleration_structures(&mut self, _acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild]) {
+	fn build_bottom_level_acceleration_structures(
+		&mut self,
+		_acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild],
+	) {
 		// TODO: DXR acceleration structure builds are not implemented yet.
 	}
 
-	fn start_render_pass(&mut self, _extent: Extent, _attachments: &[AttachmentInformation]) -> &mut impl RasterizationRenderPassMode {
+	fn start_render_pass(
+		&mut self,
+		_extent: Extent,
+		_attachments: &[AttachmentInformation],
+	) -> &mut impl RasterizationRenderPassMode {
 		// TODO: Render pass setup requires render target binding and resource barriers.
 		self
 	}
@@ -56,18 +73,32 @@ impl CommandBufferRecordable for CommandBufferRecording<'_> {
 	}
 
 	fn transfer_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle> {
-		texture_handles.iter().map(|handle| self.device.copy_image_to_cpu(*handle)).collect()
+		texture_handles
+			.iter()
+			.map(|handle| self.device.copy_image_to_cpu(*handle))
+			.collect()
 	}
 
 	fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]) {
 		self.device.write_image_data(image_handle, data);
 	}
 
-	fn blit_image(&mut self, _source_image: ImageHandle, _source_layout: Layouts, _destination_image: ImageHandle, _destination_layout: Layouts) {
+	fn blit_image(
+		&mut self,
+		_source_image: ImageHandle,
+		_source_layout: Layouts,
+		_destination_image: ImageHandle,
+		_destination_layout: Layouts,
+	) {
 		// TODO: DX12 blit operations need copy command lists and resource transitions.
 	}
 
-	fn copy_to_swapchain(&mut self, _source_texture_handle: ImageHandle, _present_key: PresentKey, _swapchain_handle: SwapchainHandle) {
+	fn copy_to_swapchain(
+		&mut self,
+		_source_texture_handle: ImageHandle,
+		_present_key: PresentKey,
+		_swapchain_handle: SwapchainHandle,
+	) {
 		// TODO: DX12 swapchain copy requires DXGI back buffer access and resource barriers.
 	}
 
@@ -83,7 +114,13 @@ impl CommandBufferRecordable for CommandBufferRecording<'_> {
 		self.present_keys.push(present_key);
 	}
 
-	fn execute(self, _wait_for_synchronizer_handles: &[SynchronizerHandle], _signal_synchronizer_handles: &[SynchronizerHandle], _presentations: &[PresentKey], _execution_synchronizer_handle: SynchronizerHandle) {
+	fn execute(
+		self,
+		_wait_for_synchronizer_handles: &[SynchronizerHandle],
+		_signal_synchronizer_handles: &[SynchronizerHandle],
+		_presentations: &[PresentKey],
+		_execution_synchronizer_handle: SynchronizerHandle,
+	) {
 		for presentation in _presentations {
 			self.device.present_swapchain(*presentation);
 		}
@@ -140,8 +177,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 
 	fn write_push_constant<T: Copy + 'static>(&mut self, _offset: u32, _data: T)
 	where
-		[(); std::mem::size_of::<T>()]: Sized,
-	{
+		[(); std::mem::size_of::<T>()]: Sized, {
 		// TODO: DX12 uses root constants or inline constant buffers.
 	}
 }
@@ -151,7 +187,14 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		// TODO: DX12 draw calls require command list encoding.
 	}
 
-	fn draw_indexed(&mut self, _index_count: u32, _instance_count: u32, _first_index: u32, _vertex_offset: i32, _first_instance: u32) {
+	fn draw_indexed(
+		&mut self,
+		_index_count: u32,
+		_instance_count: u32,
+		_first_index: u32,
+		_vertex_offset: i32,
+		_first_instance: u32,
+	) {
 		// TODO: DX12 draw calls require command list encoding.
 	}
 

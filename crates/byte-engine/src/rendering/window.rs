@@ -1,6 +1,9 @@
 use utils::Extent;
 
-use crate::{camera::Camera, core::{Entity, EntityHandle, factory::Handle}};
+use crate::{
+	camera::Camera,
+	core::{factory::Handle, Entity, EntityHandle},
+};
 
 #[derive(Clone)]
 pub struct Window {

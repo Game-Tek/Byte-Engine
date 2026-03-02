@@ -40,11 +40,17 @@ impl ProgramEvaluation {
 			match node_ref {
 				besl::Nodes::Function { name, .. } => {
 					if name != "main" {
-						return Err("Main node is not `main`. The program description likely passed a non-main function node.".to_string());
+						return Err(
+							"Main node is not `main`. The program description likely passed a non-main function node."
+								.to_string(),
+						);
 					}
 				}
 				_ => {
-					return Err("Invalid main node. The program description likely contains a `main` symbol that is not a function.".to_string());
+					return Err(
+						"Invalid main node. The program description likely contains a `main` symbol that is not a function."
+							.to_string(),
+					);
 				}
 			}
 		}
@@ -102,8 +108,7 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference) 
 					build_bindings(bindings, argument);
 				}
 			}
-			besl::Expressions::Accessor { left, right }
-			| besl::Expressions::Operator { left, right, .. } => {
+			besl::Expressions::Accessor { left, right } | besl::Expressions::Operator { left, right, .. } => {
 				build_bindings(bindings, left);
 				build_bindings(bindings, right);
 			}
@@ -130,11 +135,7 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference) 
 			write,
 			..
 		} => {
-			if bindings
-				.iter()
-				.find(|b| b.binding == *binding && b.set == *set)
-				.is_none()
-			{
+			if bindings.iter().find(|b| b.binding == *binding && b.set == *set).is_none() {
 				bindings.push(BindingUsage {
 					binding: *binding,
 					set: *set,
@@ -148,9 +149,7 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference) 
 				build_bindings(bindings, reference);
 			}
 		}
-		besl::Nodes::Intrinsic {
-			elements, r#return, ..
-		} => {
+		besl::Nodes::Intrinsic { elements, r#return, .. } => {
 			for element in elements {
 				build_bindings(bindings, element);
 			}
@@ -167,9 +166,7 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference) 
 		}
 		besl::Nodes::Struct { fields: nested, .. }
 		| besl::Nodes::PushConstant { members: nested }
-		| besl::Nodes::Scope {
-			children: nested, ..
-		} => {
+		| besl::Nodes::Scope { children: nested, .. } => {
 			for child in nested {
 				build_bindings(bindings, child);
 			}
@@ -186,15 +183,11 @@ fn evaluate_opacity(main_function_node: &besl::NodeReference) -> OpacityEvaluati
 		let node_borrow = RefCell::borrow(main_function_node);
 		let node_ref = node_borrow.node();
 
-		if let besl::Nodes::Function {
-			statements, params, ..
-		} = node_ref
-		{
+		if let besl::Nodes::Function { statements, params, .. } = node_ref {
 			for param in params {
 				let param_borrow = RefCell::borrow(param);
 				if let besl::Nodes::Parameter {
-					name: parameter_name,
-					..
+					name: parameter_name, ..
 				} = param_borrow.node()
 				{
 					if parameter_name == "output" {
@@ -230,17 +223,12 @@ fn evaluate_opacity(main_function_node: &besl::NodeReference) -> OpacityEvaluati
 	}
 }
 
-fn collect_local_output_symbols(
-	node: &besl::NodeReference,
-	local_output_symbols: &mut HashSet<besl::NodeReference>,
-) {
+fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols: &mut HashSet<besl::NodeReference>) {
 	let node_borrow = RefCell::borrow(node);
 	let node_ref = node_borrow.node();
 
 	match node_ref {
-		besl::Nodes::Function {
-			statements, params, ..
-		} => {
+		besl::Nodes::Function { statements, params, .. } => {
 			for param in params {
 				collect_local_output_symbols(param, local_output_symbols);
 			}
@@ -267,8 +255,7 @@ fn collect_local_output_symbols(
 					collect_local_output_symbols(argument, local_output_symbols);
 				}
 			}
-			besl::Expressions::Accessor { left, right }
-			| besl::Expressions::Operator { left, right, .. } => {
+			besl::Expressions::Accessor { left, right } | besl::Expressions::Operator { left, right, .. } => {
 				collect_local_output_symbols(left, local_output_symbols);
 				collect_local_output_symbols(right, local_output_symbols);
 			}
@@ -290,9 +277,7 @@ fn collect_local_output_symbols(
 				collect_local_output_symbols(value, local_output_symbols);
 			}
 		}
-		besl::Nodes::Intrinsic {
-			elements, r#return, ..
-		} => {
+		besl::Nodes::Intrinsic { elements, r#return, .. } => {
 			for element in elements {
 				collect_local_output_symbols(element, local_output_symbols);
 			}
@@ -316,9 +301,7 @@ fn collect_local_output_symbols(
 		}
 		besl::Nodes::Struct { fields: nested, .. }
 		| besl::Nodes::PushConstant { members: nested }
-		| besl::Nodes::Scope {
-			children: nested, ..
-		} => {
+		| besl::Nodes::Scope { children: nested, .. } => {
 			for child in nested {
 				collect_local_output_symbols(child, local_output_symbols);
 			}
@@ -327,10 +310,7 @@ fn collect_local_output_symbols(
 	}
 }
 
-fn references_non_local_output(
-	node: &besl::NodeReference,
-	local_output_symbols: &HashSet<besl::NodeReference>,
-) -> bool {
+fn references_non_local_output(node: &besl::NodeReference, local_output_symbols: &HashSet<besl::NodeReference>) -> bool {
 	let node_borrow = RefCell::borrow(node);
 	let node_ref = node_borrow.node();
 
@@ -362,13 +342,11 @@ fn references_non_local_output(
 						.iter()
 						.any(|argument| references_non_local_output(argument, local_output_symbols))
 			}
-			besl::Expressions::Accessor { left, right }
-			| besl::Expressions::Operator { left, right, .. } => {
+			besl::Expressions::Accessor { left, right } | besl::Expressions::Operator { left, right, .. } => {
 				references_non_local_output(left, local_output_symbols)
 					|| references_non_local_output(right, local_output_symbols)
 			}
-			besl::Expressions::VariableDeclaration { r#type: nested, .. }
-			| besl::Expressions::Macro { body: nested, .. } => {
+			besl::Expressions::VariableDeclaration { r#type: nested, .. } | besl::Expressions::Macro { body: nested, .. } => {
 				references_non_local_output(nested, local_output_symbols)
 			}
 			besl::Expressions::Return | besl::Expressions::Literal { .. } => false,
@@ -377,9 +355,7 @@ fn references_non_local_output(
 			.iter()
 			.chain(output.iter())
 			.any(|reference| references_non_local_output(reference, local_output_symbols)),
-		besl::Nodes::Intrinsic {
-			elements, r#return, ..
-		} => {
+		besl::Nodes::Intrinsic { elements, r#return, .. } => {
 			elements
 				.iter()
 				.any(|element| references_non_local_output(element, local_output_symbols))
@@ -390,14 +366,10 @@ fn references_non_local_output(
 		| besl::Nodes::Input { format: nested, .. }
 		| besl::Nodes::Output { format: nested, .. }
 		| besl::Nodes::Parameter { r#type: nested, .. }
-		| besl::Nodes::Specialization { r#type: nested, .. } => {
-			references_non_local_output(nested, local_output_symbols)
-		}
+		| besl::Nodes::Specialization { r#type: nested, .. } => references_non_local_output(nested, local_output_symbols),
 		besl::Nodes::Struct { fields: nested, .. }
 		| besl::Nodes::PushConstant { members: nested }
-		| besl::Nodes::Scope {
-			children: nested, ..
-		} => nested
+		| besl::Nodes::Scope { children: nested, .. } => nested
 			.iter()
 			.any(|child| references_non_local_output(child, local_output_symbols)),
 		besl::Nodes::Binding { .. } | besl::Nodes::Null => false,
@@ -412,15 +384,11 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 	let node_ref = node_borrow.node();
 
 	match node_ref {
-		besl::Nodes::Function { statements, .. } => statements.iter().any(|statement| {
-			writes_non_opaque_vec4f_to_non_local_output(statement, local_output_symbols)
-		}),
+		besl::Nodes::Function { statements, .. } => statements
+			.iter()
+			.any(|statement| writes_non_opaque_vec4f_to_non_local_output(statement, local_output_symbols)),
 		besl::Nodes::Expression(expression) => match expression {
-			besl::Expressions::Operator {
-				operator,
-				left,
-				right,
-			} => {
+			besl::Expressions::Operator { operator, left, right } => {
 				if operator == &besl::Operators::Assignment
 					&& is_non_local_output_target(left, local_output_symbols)
 					&& is_non_opaque_vec4f_constructor(right)
@@ -431,9 +399,9 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 				writes_non_opaque_vec4f_to_non_local_output(left, local_output_symbols)
 					|| writes_non_opaque_vec4f_to_non_local_output(right, local_output_symbols)
 			}
-			besl::Expressions::Expression { elements } => elements.iter().any(|element| {
-				writes_non_opaque_vec4f_to_non_local_output(element, local_output_symbols)
-			}),
+			besl::Expressions::Expression { elements } => elements
+				.iter()
+				.any(|element| writes_non_opaque_vec4f_to_non_local_output(element, local_output_symbols)),
 			besl::Expressions::FunctionCall {
 				function: callable,
 				parameters: arguments,
@@ -443,9 +411,9 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 				elements: arguments,
 			} => {
 				writes_non_opaque_vec4f_to_non_local_output(callable, local_output_symbols)
-					|| arguments.iter().any(|argument| {
-						writes_non_opaque_vec4f_to_non_local_output(argument, local_output_symbols)
-					})
+					|| arguments
+						.iter()
+						.any(|argument| writes_non_opaque_vec4f_to_non_local_output(argument, local_output_symbols))
 			}
 			besl::Expressions::Accessor { left, right } => {
 				writes_non_opaque_vec4f_to_non_local_output(left, local_output_symbols)
@@ -454,23 +422,20 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 			besl::Expressions::Member { source, .. } => {
 				writes_non_opaque_vec4f_to_non_local_output(source, local_output_symbols)
 			}
-			besl::Expressions::VariableDeclaration { r#type: nested, .. }
-			| besl::Expressions::Macro { body: nested, .. } => {
+			besl::Expressions::VariableDeclaration { r#type: nested, .. } | besl::Expressions::Macro { body: nested, .. } => {
 				writes_non_opaque_vec4f_to_non_local_output(nested, local_output_symbols)
 			}
 			besl::Expressions::Return | besl::Expressions::Literal { .. } => false,
 		},
-		besl::Nodes::Raw { input, output, .. } => {
-			input.iter().chain(output.iter()).any(|reference| {
-				writes_non_opaque_vec4f_to_non_local_output(reference, local_output_symbols)
-			})
-		}
-		besl::Nodes::Intrinsic {
-			elements, r#return, ..
-		} => {
-			elements.iter().any(|element| {
-				writes_non_opaque_vec4f_to_non_local_output(element, local_output_symbols)
-			}) || writes_non_opaque_vec4f_to_non_local_output(r#return, local_output_symbols)
+		besl::Nodes::Raw { input, output, .. } => input
+			.iter()
+			.chain(output.iter())
+			.any(|reference| writes_non_opaque_vec4f_to_non_local_output(reference, local_output_symbols)),
+		besl::Nodes::Intrinsic { elements, r#return, .. } => {
+			elements
+				.iter()
+				.any(|element| writes_non_opaque_vec4f_to_non_local_output(element, local_output_symbols))
+				|| writes_non_opaque_vec4f_to_non_local_output(r#return, local_output_symbols)
 		}
 		besl::Nodes::Literal { value: nested, .. }
 		| besl::Nodes::Member { r#type: nested, .. }
@@ -482,19 +447,14 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 		}
 		besl::Nodes::Struct { fields: nested, .. }
 		| besl::Nodes::PushConstant { members: nested }
-		| besl::Nodes::Scope {
-			children: nested, ..
-		} => nested
+		| besl::Nodes::Scope { children: nested, .. } => nested
 			.iter()
 			.any(|child| writes_non_opaque_vec4f_to_non_local_output(child, local_output_symbols)),
 		besl::Nodes::Binding { .. } | besl::Nodes::Null => false,
 	}
 }
 
-fn is_non_local_output_target(
-	node: &besl::NodeReference,
-	local_output_symbols: &HashSet<besl::NodeReference>,
-) -> bool {
+fn is_non_local_output_target(node: &besl::NodeReference, local_output_symbols: &HashSet<besl::NodeReference>) -> bool {
 	let node_borrow = RefCell::borrow(node);
 	let node_ref = node_borrow.node();
 
@@ -515,10 +475,7 @@ fn is_non_opaque_vec4f_constructor(node: &besl::NodeReference) -> bool {
 	let node_ref = node_borrow.node();
 
 	match node_ref {
-		besl::Nodes::Expression(besl::Expressions::FunctionCall {
-			function,
-			parameters,
-		}) => {
+		besl::Nodes::Expression(besl::Expressions::FunctionCall { function, parameters }) => {
 			let function_borrow = RefCell::borrow(function);
 			if function_borrow.get_name() != Some("vec4f") {
 				return false;
@@ -548,10 +505,7 @@ fn is_vec3f_constructor(node: &besl::NodeReference) -> bool {
 	let node_ref = node_borrow.node();
 
 	match node_ref {
-		besl::Nodes::Expression(besl::Expressions::FunctionCall {
-			function,
-			parameters,
-		}) => {
+		besl::Nodes::Expression(besl::Expressions::FunctionCall { function, parameters }) => {
 			let function_borrow = RefCell::borrow(function);
 			function_borrow.get_name() == Some("vec3f") && parameters.len() == 3
 		}
@@ -642,9 +596,7 @@ mod tests {
 			.into(),
 			besl::Node::binding(
 				"texture",
-				besl::BindingTypes::CombinedImageSampler {
-					format: "".to_string(),
-				},
+				besl::BindingTypes::CombinedImageSampler { format: "".to_string() },
 				1,
 				0,
 				true,
@@ -654,8 +606,7 @@ mod tests {
 		]);
 
 		let program_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
-		let evaluation =
-			ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
 		let bindings = evaluation.bindings();
 
 		assert_eq!(bindings.len(), 3);
@@ -674,8 +625,7 @@ mod tests {
 		root_node.add_child(besl::Node::output("output", vec3f_type, 0).into());
 
 		let program_node = besl::compile_to_besl(script, Some(root_node)).unwrap();
-		let evaluation =
-			ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
 
 		assert_eq!(evaluation.opacity(), OpacityEvaluation::Opaque);
 	}
@@ -694,8 +644,7 @@ mod tests {
 		root_node.add_child(besl::Node::output("output", vec3f_type, 0).into());
 
 		let program_node = besl::compile_to_besl(script, Some(root_node)).unwrap();
-		let evaluation =
-			ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
 
 		assert_eq!(evaluation.opacity(), OpacityEvaluation::Unknown);
 	}
@@ -708,18 +657,12 @@ mod tests {
 			"main",
 			Vec::new(),
 			return_type,
-			vec![besl::Node::glsl(
-				"output = vec3f(1.0, 0.0, 0.0);".to_string(),
-				Vec::new(),
-				Vec::new(),
-			)
-			.into()],
+			vec![besl::Node::glsl("output = vec3f(1.0, 0.0, 0.0);".to_string(), Vec::new(), Vec::new()).into()],
 		);
 		root_node.add_child(main.into());
 
 		let program_node: besl::NodeReference = root_node.into();
-		let evaluation =
-			ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
 
 		assert_eq!(evaluation.opacity(), OpacityEvaluation::Unknown);
 	}
@@ -737,8 +680,7 @@ mod tests {
 		root_node.add_child(besl::Node::output("output", vec4f_type, 0).into());
 
 		let program_node = besl::compile_to_besl(script, Some(root_node)).unwrap();
-		let evaluation =
-			ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
 
 		assert_eq!(evaluation.opacity(), OpacityEvaluation::NonOpaque);
 	}
@@ -756,8 +698,7 @@ mod tests {
 		root_node.add_child(besl::Node::output("output", vec4f_type, 0).into());
 
 		let program_node = besl::compile_to_besl(script, Some(root_node)).unwrap();
-		let evaluation =
-			ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
 
 		assert_eq!(evaluation.opacity(), OpacityEvaluation::Opaque);
 	}
@@ -770,8 +711,7 @@ mod tests {
 			let vec3f_type = root_node.get_child("vec3f").unwrap();
 			let vec4f_type = root_node.get_child("vec4f").unwrap();
 
-			let output_node: besl::NodeReference =
-				besl::Node::output("output", vec4f_type.clone(), 0).into();
+			let output_node: besl::NodeReference = besl::Node::output("output", vec4f_type.clone(), 0).into();
 
 			let vec3f_call = besl::Node::expression(besl::Expressions::FunctionCall {
 				function: vec3f_type,
@@ -796,10 +736,7 @@ mod tests {
 				function: vec4f_type,
 				parameters: vec![
 					vec3f_call,
-					besl::Node::expression(besl::Expressions::Literal {
-						value: w.to_string(),
-					})
-					.into(),
+					besl::Node::expression(besl::Expressions::Literal { value: w.to_string() }).into(),
 				],
 			})
 			.into();
@@ -822,8 +759,7 @@ mod tests {
 			root_node.add_children(vec![output_node, main]);
 
 			let program_node: besl::NodeReference = root_node.into();
-			let evaluation =
-				ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
+			let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
 			evaluation.opacity()
 		}
 

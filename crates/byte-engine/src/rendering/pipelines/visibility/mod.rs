@@ -1,42 +1,94 @@
-pub mod scene_manager;
 pub mod render_pass;
+pub mod scene_manager;
 pub mod shader_generator;
 
 use resource_management::{glsl_shader_generator::GLSLShaderGenerator, shader_generator::ShaderGenerationSettings};
 pub use scene_manager::VisibilityWorldRenderDomain;
 use utils::Extent;
 
-use crate::rendering::{common_shader_generator::CommonShaderScope, pipelines::visibility::shader_generator::VisibilityShaderScope};
+use crate::rendering::{
+	common_shader_generator::CommonShaderScope, pipelines::visibility::shader_generator::VisibilityShaderScope,
+};
 
 /* BASE */
 /// Binding to access the views which may be used to render the scene.
-pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::RAYGEN).union(ghi::Stages::COMPUTE));
-pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::COMPUTE));
-pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(8, ghi::DescriptorType::StorageBuffer, ghi::Stages::MESH.union(ghi::Stages::COMPUTE));
-pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(9, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 16);
+pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	0,
+	ghi::DescriptorType::StorageBuffer,
+	ghi::Stages::MESH
+		.union(ghi::Stages::FRAGMENT)
+		.union(ghi::Stages::RAYGEN)
+		.union(ghi::Stages::COMPUTE),
+);
+pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	1,
+	ghi::DescriptorType::StorageBuffer,
+	ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::COMPUTE),
+);
+pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	2,
+	ghi::DescriptorType::StorageBuffer,
+	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+);
+pub const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	3,
+	ghi::DescriptorType::StorageBuffer,
+	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+);
+pub const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	5,
+	ghi::DescriptorType::StorageBuffer,
+	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+);
+pub const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	6,
+	ghi::DescriptorType::StorageBuffer,
+	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+);
+pub const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	7,
+	ghi::DescriptorType::StorageBuffer,
+	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+);
+pub const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	8,
+	ghi::DescriptorType::StorageBuffer,
+	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+);
+pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new_array(9, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 16);
 
 /* Visibility */
-pub const MATERIAL_COUNT_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_OFFSET_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_XY_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const TRIANGLE_INDEX_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const MATERIAL_COUNT_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+pub const MATERIAL_OFFSET_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+pub const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+pub const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+pub const MATERIAL_XY_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+pub const TRIANGLE_INDEX_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 /* Material Evaluation */
-pub const OUT_DIFFUSE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const CAMERA: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const OUT_SPECULAR: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const LIGHTING_DATA: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const MATERIALS: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const AO: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const OUT_DIFFUSE: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const CAMERA: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const OUT_SPECULAR: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const LIGHTING_DATA: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const MATERIALS: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const AO: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 const VERTEX_COUNT: u32 = 64;
 const TRIANGLE_COUNT: u32 = 126;
@@ -55,7 +107,16 @@ pub fn get_visibility_pass_mesh_source() -> String {
 	process_meshlet(push_constant.instance_index, view.view_projection);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["View", "views", "push_constant", "process_meshlet"], &[])]);
+	let main = besl::parser::Node::function(
+		"main",
+		Vec::new(),
+		"void",
+		vec![besl::parser::Node::glsl(
+			main_code,
+			&["View", "views", "push_constant", "process_meshlet"],
+			&[],
+		)],
+	);
 
 	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
 
@@ -63,13 +124,19 @@ pub fn get_visibility_pass_mesh_source() -> String {
 
 	let mut root = besl::parser::Node::root();
 
-	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
+	root.add(vec![
+		CommonShaderScope::new(),
+		VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false),
+		shader,
+	]);
 
 	let root_node = besl::lex(root).unwrap();
 
 	let main_node = root_node.get_main().unwrap();
 
-	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node).unwrap();
+	let glsl = GLSLShaderGenerator::new()
+		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
+		.unwrap();
 
 	glsl
 }
@@ -111,19 +178,34 @@ pub fn get_material_count_source() -> String {
 	atomicAdd(material_count.material_count[material_index], 1);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_count", "instance_index_render_target"], &[])]);
+	let main = besl::parser::Node::function(
+		"main",
+		Vec::new(),
+		"void",
+		vec![besl::parser::Node::glsl(
+			main_code,
+			&["meshes", "material_count", "instance_index_render_target"],
+			&[],
+		)],
+	);
 
 	let shader = besl::parser::Node::scope("Shader", vec![main]);
 
 	let mut root = besl::parser::Node::root();
 
-	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
+	root.add(vec![
+		CommonShaderScope::new(),
+		VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false),
+		shader,
+	]);
 
 	let root_node = besl::lex(root).unwrap();
 
 	let main_node = root_node.get_main().unwrap();
 
-	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node).unwrap();
+	let glsl = GLSLShaderGenerator::new()
+		.generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node)
+		.unwrap();
 
 	glsl
 }
@@ -140,19 +222,39 @@ pub fn get_material_offset_source() -> String {
 	}
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["material_offset", "material_offset_scratch", "material_count", "material_evaluation_dispatches",], &[])]);
+	let main = besl::parser::Node::function(
+		"main",
+		Vec::new(),
+		"void",
+		vec![besl::parser::Node::glsl(
+			main_code,
+			&[
+				"material_offset",
+				"material_offset_scratch",
+				"material_count",
+				"material_evaluation_dispatches",
+			],
+			&[],
+		)],
+	);
 
 	let shader = besl::parser::Node::scope("Shader", vec![main]);
 
 	let mut root = besl::parser::Node::root();
 
-	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
+	root.add(vec![
+		CommonShaderScope::new(),
+		VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false),
+		shader,
+	]);
 
 	let root_node = besl::lex(root).unwrap();
 
 	let main_node = root_node.get_main().unwrap();
 
-	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(1)), &main_node).unwrap();
+	let glsl = GLSLShaderGenerator::new()
+		.generate(&ShaderGenerationSettings::compute(Extent::square(1)), &main_node)
+		.unwrap();
 
 	glsl
 }
@@ -174,19 +276,39 @@ pub fn get_pixel_mapping_source() -> String {
 	pixel_mapping.pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
 	"#;
 
-	let main = besl::parser::Node::function("main", Vec::new(), "void", vec![besl::parser::Node::glsl(main_code, &["meshes", "material_offset_scratch", "pixel_mapping", "instance_index_render_target",], &[])]);
+	let main = besl::parser::Node::function(
+		"main",
+		Vec::new(),
+		"void",
+		vec![besl::parser::Node::glsl(
+			main_code,
+			&[
+				"meshes",
+				"material_offset_scratch",
+				"pixel_mapping",
+				"instance_index_render_target",
+			],
+			&[],
+		)],
+	);
 
 	let mut root = besl::parser::Node::root();
 
 	let shader = besl::parser::Node::scope("Shader", vec![main]);
 
-	root.add(vec![CommonShaderScope::new(), VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false), shader]);
+	root.add(vec![
+		CommonShaderScope::new(),
+		VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false),
+		shader,
+	]);
 
 	let root_node = besl::lex(root).unwrap();
 
 	let main_node = root_node.get_main().unwrap();
 
-	let glsl = GLSLShaderGenerator::new().generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node).unwrap();
+	let glsl = GLSLShaderGenerator::new()
+		.generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node)
+		.unwrap();
 
 	glsl
 }

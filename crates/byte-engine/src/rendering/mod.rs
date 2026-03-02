@@ -4,8 +4,8 @@ use crate::{camera::Camera, gameplay::Positionable as _};
 
 pub mod common_shader_generator;
 
-pub mod window;
 pub mod lights;
+pub mod window;
 
 pub mod mesh;
 
@@ -19,9 +19,9 @@ pub mod world_render_domain;
 pub mod renderer;
 pub mod texture_manager;
 
+pub mod framebuffer;
 pub mod render_pass;
 pub mod render_passes;
-pub mod framebuffer;
 
 pub mod pipeline_manager;
 
@@ -34,14 +34,28 @@ pub mod csm;
 
 pub mod utils;
 
+pub use render_pass::RenderPass;
 pub use renderable::mesh::RenderableMesh;
 pub use view::View;
 pub use viewport::Viewport;
-pub use render_pass::RenderPass;
 
 /// Maps a shader resource binding to a GHI shader binding descriptor.
-pub fn map_shader_binding_to_shader_binding_descriptor(b: &resource_management::spirv_shader_generator::Binding) -> ghi::ShaderBindingDescriptor {
-	ghi::ShaderBindingDescriptor::new(b.set, b.binding, if b.read { ghi::AccessPolicies::READ } else { ghi::AccessPolicies::empty() } | if b.write { ghi::AccessPolicies::WRITE } else { ghi::AccessPolicies::empty() })
+pub fn map_shader_binding_to_shader_binding_descriptor(
+	b: &resource_management::spirv_shader_generator::Binding,
+) -> ghi::ShaderBindingDescriptor {
+	ghi::ShaderBindingDescriptor::new(
+		b.set,
+		b.binding,
+		if b.read {
+			ghi::AccessPolicies::READ
+		} else {
+			ghi::AccessPolicies::empty()
+		} | if b.write {
+			ghi::AccessPolicies::WRITE
+		} else {
+			ghi::AccessPolicies::empty()
+		},
+	)
 }
 
 pub fn make_perspective_view_from_camera(camera: &Camera, extent: Extent) -> View {

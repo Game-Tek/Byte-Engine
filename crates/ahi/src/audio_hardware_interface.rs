@@ -60,7 +60,9 @@ pub trait WritePlayFunction = FnOnce(Streams);
 
 /// The `AudioHardwareInterface` trait provides a common interface for audio hardware.
 pub trait AudioHardwareInterface {
-	fn new(params: HardwareParameters) -> Result<Self, String> where Self: Sized;
+	fn new(params: HardwareParameters) -> Result<Self, String>
+	where
+		Self: Sized;
 
 	fn get_period_size(&self) -> usize;
 

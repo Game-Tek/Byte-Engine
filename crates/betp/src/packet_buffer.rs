@@ -15,7 +15,7 @@ struct BufferedPacket<const S: usize> {
 	reliable: bool,
 }
 
-impl <const S: usize> BufferedPacket<S> {
+impl<const S: usize> BufferedPacket<S> {
 	/// Creates a new buffered packet.
 	fn new(packet: DataPacket<S>, connection_id: u64, reliable: bool) -> Self {
 		Self {
@@ -35,12 +35,10 @@ pub struct PacketBuffer<const N: usize, const S: usize> {
 	buffer: [Option<BufferedPacket<S>>; N],
 }
 
-impl <const N: usize, const S: usize> PacketBuffer<N, S> {
+impl<const N: usize, const S: usize> PacketBuffer<N, S> {
 	/// Creates a new packet buffer.
 	pub fn new() -> Self {
-		Self {
-			buffer: [None; N],
-		}
+		Self { buffer: [None; N] }
 	}
 
 	/// Adds a packet to the buffer.
@@ -67,12 +65,21 @@ impl <const N: usize, const S: usize> PacketBuffer<N, S> {
 
 		// If the buffer is full and the packet is reliable, replace the oldest packet with the most retries.
 		if reliable {
-			if let Some(p) = self.buffer.iter_mut().max_by_key(|packet| packet.as_ref().map_or((std::cmp::Reverse(0), 0), |p| (std::cmp::Reverse(p.packet.connection_status.sequence), p.try_count))) {
+			if let Some(p) = self.buffer.iter_mut().max_by_key(|packet| {
+				packet.as_ref().map_or((std::cmp::Reverse(0), 0), |p| {
+					(std::cmp::Reverse(p.packet.connection_status.sequence), p.try_count)
+				})
+			}) {
 				*p = Some(BufferedPacket::new(packet, connection_id, reliable));
 			}
 		} else {
 			// If the buffer is full and the packet is unreliable, replace the first non-reliable packet with the most retries.
-			if let Some(p) = self.buffer.iter_mut().filter(|packet| packet.as_ref().map_or(false, |p| !p.reliable)).max_by_key(|packet| packet.as_ref().map_or(0, |p| p.try_count)) {
+			if let Some(p) = self
+				.buffer
+				.iter_mut()
+				.filter(|packet| packet.as_ref().map_or(false, |p| !p.reliable))
+				.max_by_key(|packet| packet.as_ref().map_or(0, |p| p.try_count))
+			{
 				*p = Some(BufferedPacket::new(packet, connection_id, reliable));
 			}
 		}
@@ -94,12 +101,16 @@ impl <const N: usize, const S: usize> PacketBuffer<N, S> {
 	/// Gets the unsent packets in the buffer.
 	/// This is not an idempotent operation as the retry count will be incremented.
 	pub fn gather_unsent_packets_for_retry(&mut self) -> ArrayVec<[DataPacket<S>; N]> {
-        self.buffer.iter_mut().filter_map(|packet| packet.as_mut()).map(|packet| {
-			let _ = packet.connection_id;
-			packet.try_count += 1;
-			packet.packet
-		}).collect()
-    }
+		self.buffer
+			.iter_mut()
+			.filter_map(|packet| packet.as_mut())
+			.map(|packet| {
+				let _ = packet.connection_id;
+				packet.try_count += 1;
+				packet.packet
+			})
+			.collect()
+	}
 }
 
 #[cfg(test)]

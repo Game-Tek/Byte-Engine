@@ -37,13 +37,9 @@ pub struct VertexElement<'a> {
 	pub(crate) binding: u32,
 }
 
-impl <'a> VertexElement<'a> {
+impl<'a> VertexElement<'a> {
 	pub const fn new(name: &'a str, format: DataTypes, binding: u32) -> Self {
-		Self {
-			name,
-			format,
-			binding,
-		}
+		Self { name, format, binding }
 	}
 }
 
@@ -130,18 +126,17 @@ pub struct AllocationHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TextureCopyHandle(pub(crate) u64);
 
-impl <T: Copy> Into<BaseBufferHandle> for BufferHandle<T> {
+impl<T: Copy> Into<BaseBufferHandle> for BufferHandle<T> {
 	fn into(self) -> BaseBufferHandle {
 		BaseBufferHandle(self.0)
 	}
 }
 
-impl <T: Copy> Into<BaseBufferHandle> for DynamicBufferHandle<T> {
+impl<T: Copy> Into<BaseBufferHandle> for DynamicBufferHandle<T> {
 	fn into(self) -> BaseBufferHandle {
 		BaseBufferHandle(self.0)
 	}
 }
-
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Handle {
@@ -234,10 +229,7 @@ pub struct BufferOffset {
 
 impl BufferOffset {
 	pub fn new(buffer: BaseBufferHandle, offset: usize) -> Self {
-		Self {
-			buffer,
-			offset,
-		}
+		Self { buffer, offset }
 	}
 }
 
@@ -286,7 +278,11 @@ impl DispatchExtent {
 	/// # Returns
 	/// The extent for a dispatch operation, which is the result of dividing the dispatch extent by the workgroup extent, rounded up.
 	pub fn get_extent(&self) -> Extent {
-		Extent::new(self.dispatch_extent.width().div_ceil(self.workgroup_extent.width()), self.dispatch_extent.height().div_ceil(self.workgroup_extent.height()), self.dispatch_extent.depth().div_ceil(self.workgroup_extent.depth()),)
+		Extent::new(
+			self.dispatch_extent.width().div_ceil(self.workgroup_extent.width()),
+			self.dispatch_extent.height().div_ceil(self.workgroup_extent.height()),
+			self.dispatch_extent.depth().div_ceil(self.workgroup_extent.depth()),
+		)
 	}
 }
 
@@ -340,10 +336,10 @@ pub enum Descriptor {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum UseCases {
 	STATIC,
-	DYNAMIC
+	DYNAMIC,
 }
 
-#[derive(Clone,Copy)]
+#[derive(Clone, Copy)]
 pub struct ShaderBindingDescriptor {
 	pub(crate) set: u32,
 	pub(crate) binding: u32,
@@ -352,11 +348,7 @@ pub struct ShaderBindingDescriptor {
 
 impl ShaderBindingDescriptor {
 	pub fn new(set: u32, binding: u32, access: AccessPolicies) -> Self {
-		Self {
-			set,
-			binding,
-			access,
-		}
+		Self { set, binding, access }
 	}
 }
 
@@ -454,10 +446,7 @@ pub struct BufferSplitter<'a, T: Copy> {
 
 impl<'a, T: Copy> BufferSplitter<'a, T> {
 	pub fn new(buffer: &'a mut [T], offset: usize) -> Self {
-		Self {
-			buffer,
-			offset,
-		}
+		Self { buffer, offset }
 	}
 
 	pub fn take(&mut self, size: usize) -> &'a mut [T] {
@@ -500,7 +489,7 @@ pub enum CommandBufferType {
 	/// A command buffer that can perform compute operations. Dispatches, etc.
 	COMPUTE,
 	/// A command buffer that is optimized for transfer operations. Copies, etc.
-	TRANSFER
+	TRANSFER,
 }
 
 /// Enumerates the types of buffers that can be created.
@@ -514,7 +503,7 @@ pub enum BufferType {
 	/// A buffer that can be used as a storage buffer.
 	STORAGE,
 	/// A buffer that can be used as an indirect buffer.
-	INDIRECT
+	INDIRECT,
 }
 
 /// Enumerates the types of shaders that can be created.
@@ -685,27 +674,49 @@ impl Formats {
 	/// Returns the encoding of the format.
 	pub fn encoding(&self) -> Option<Encodings> {
 		match self {
-			Formats::R8F | Formats::R16F | Formats::R32F |
-			Formats::RG8F | Formats::RG16F |
-			Formats::RGB8F | Formats::RGB16F |
-			Formats::RGBA8F | Formats::RGBA16F |
-			Formats::Depth32 => Some(Encodings::FloatingPoint),
+			Formats::R8F
+			| Formats::R16F
+			| Formats::R32F
+			| Formats::RG8F
+			| Formats::RG16F
+			| Formats::RGB8F
+			| Formats::RGB16F
+			| Formats::RGBA8F
+			| Formats::RGBA16F
+			| Formats::Depth32 => Some(Encodings::FloatingPoint),
 
-			Formats::R8UNORM | Formats::R16UNORM | Formats::R32UNORM |
-			Formats::RG8UNORM | Formats::RG16UNORM |
-			Formats::RGB8UNORM | Formats::RGB16UNORM |
-			Formats::RGBA8UNORM | Formats::RGBA16UNORM |
-			Formats::RGBu11u11u10 | Formats::BGRAu8 => Some(Encodings::UnsignedNormalized),
+			Formats::R8UNORM
+			| Formats::R16UNORM
+			| Formats::R32UNORM
+			| Formats::RG8UNORM
+			| Formats::RG16UNORM
+			| Formats::RGB8UNORM
+			| Formats::RGB16UNORM
+			| Formats::RGBA8UNORM
+			| Formats::RGBA16UNORM
+			| Formats::RGBu11u11u10
+			| Formats::BGRAu8 => Some(Encodings::UnsignedNormalized),
 
-			Formats::R8SNORM | Formats::R16SNORM | Formats::R32SNORM |
-			Formats::RG8SNORM | Formats::RG16SNORM |
-			Formats::RGB8SNORM | Formats::RGB16SNORM |
-			Formats::RGBA8SNORM | Formats::RGBA16SNORM => Some(Encodings::SignedNormalized),
+			Formats::R8SNORM
+			| Formats::R16SNORM
+			| Formats::R32SNORM
+			| Formats::RG8SNORM
+			| Formats::RG16SNORM
+			| Formats::RGB8SNORM
+			| Formats::RGB16SNORM
+			| Formats::RGBA8SNORM
+			| Formats::RGBA16SNORM => Some(Encodings::SignedNormalized),
 
-			Formats::R8sRGB | Formats::R16sRGB | Formats::R32sRGB |
-			Formats::RG8sRGB | Formats::RG16sRGB |
-			Formats::RGB8sRGB | Formats::RGB16sRGB |
-			Formats::RGBA8sRGB | Formats::RGBA16sRGB | Formats::BGRAsRGB => Some(Encodings::sRGB),
+			Formats::R8sRGB
+			| Formats::R16sRGB
+			| Formats::R32sRGB
+			| Formats::RG8sRGB
+			| Formats::RG16sRGB
+			| Formats::RGB8sRGB
+			| Formats::RGB16sRGB
+			| Formats::RGBA8sRGB
+			| Formats::RGBA16sRGB
+			| Formats::BGRAsRGB => Some(Encodings::sRGB),
 
 			Formats::U32 | Formats::BC5 | Formats::BC7 => None,
 		}
@@ -714,19 +725,45 @@ impl Formats {
 	/// Returns the channel bit size of the format.
 	pub fn channel_bit_size(&self) -> ChannelBitSize {
 		match self {
-			Formats::R8F | Formats::R8UNORM | Formats::R8SNORM | Formats::R8sRGB |
-			Formats::RG8F | Formats::RG8UNORM | Formats::RG8SNORM | Formats::RG8sRGB |
-			Formats::RGB8F | Formats::RGB8UNORM | Formats::RGB8SNORM | Formats::RGB8sRGB |
-			Formats::RGBA8F | Formats::RGBA8UNORM | Formats::RGBA8SNORM | Formats::RGBA8sRGB |
-			Formats::BGRAu8 | Formats::BGRAsRGB => ChannelBitSize::Bits8,
+			Formats::R8F
+			| Formats::R8UNORM
+			| Formats::R8SNORM
+			| Formats::R8sRGB
+			| Formats::RG8F
+			| Formats::RG8UNORM
+			| Formats::RG8SNORM
+			| Formats::RG8sRGB
+			| Formats::RGB8F
+			| Formats::RGB8UNORM
+			| Formats::RGB8SNORM
+			| Formats::RGB8sRGB
+			| Formats::RGBA8F
+			| Formats::RGBA8UNORM
+			| Formats::RGBA8SNORM
+			| Formats::RGBA8sRGB
+			| Formats::BGRAu8
+			| Formats::BGRAsRGB => ChannelBitSize::Bits8,
 
-			Formats::R16F | Formats::R16UNORM | Formats::R16SNORM | Formats::R16sRGB |
-			Formats::RG16F | Formats::RG16UNORM | Formats::RG16SNORM | Formats::RG16sRGB |
-			Formats::RGB16F | Formats::RGB16UNORM | Formats::RGB16SNORM | Formats::RGB16sRGB |
-			Formats::RGBA16F | Formats::RGBA16UNORM | Formats::RGBA16SNORM | Formats::RGBA16sRGB => ChannelBitSize::Bits16,
+			Formats::R16F
+			| Formats::R16UNORM
+			| Formats::R16SNORM
+			| Formats::R16sRGB
+			| Formats::RG16F
+			| Formats::RG16UNORM
+			| Formats::RG16SNORM
+			| Formats::RG16sRGB
+			| Formats::RGB16F
+			| Formats::RGB16UNORM
+			| Formats::RGB16SNORM
+			| Formats::RGB16sRGB
+			| Formats::RGBA16F
+			| Formats::RGBA16UNORM
+			| Formats::RGBA16SNORM
+			| Formats::RGBA16sRGB => ChannelBitSize::Bits16,
 
-			Formats::R32F | Formats::R32UNORM | Formats::R32SNORM | Formats::R32sRGB |
-			Formats::Depth32 | Formats::U32 => ChannelBitSize::Bits32,
+			Formats::R32F | Formats::R32UNORM | Formats::R32SNORM | Formats::R32sRGB | Formats::Depth32 | Formats::U32 => {
+				ChannelBitSize::Bits32
+			}
 
 			Formats::RGBu11u11u10 => ChannelBitSize::Bits11_11_10,
 
@@ -737,19 +774,46 @@ impl Formats {
 	/// Returns the channel layout of the format.
 	pub fn channel_layout(&self) -> ChannelLayout {
 		match self {
-			Formats::R8F | Formats::R8UNORM | Formats::R8SNORM | Formats::R8sRGB |
-			Formats::R16F | Formats::R16UNORM | Formats::R16SNORM | Formats::R16sRGB |
-			Formats::R32F | Formats::R32UNORM | Formats::R32SNORM | Formats::R32sRGB => ChannelLayout::R,
+			Formats::R8F
+			| Formats::R8UNORM
+			| Formats::R8SNORM
+			| Formats::R8sRGB
+			| Formats::R16F
+			| Formats::R16UNORM
+			| Formats::R16SNORM
+			| Formats::R16sRGB
+			| Formats::R32F
+			| Formats::R32UNORM
+			| Formats::R32SNORM
+			| Formats::R32sRGB => ChannelLayout::R,
 
-			Formats::RG8F | Formats::RG8UNORM | Formats::RG8SNORM | Formats::RG8sRGB |
-			Formats::RG16F | Formats::RG16UNORM | Formats::RG16SNORM | Formats::RG16sRGB => ChannelLayout::RG,
+			Formats::RG8F
+			| Formats::RG8UNORM
+			| Formats::RG8SNORM
+			| Formats::RG8sRGB
+			| Formats::RG16F
+			| Formats::RG16UNORM
+			| Formats::RG16SNORM
+			| Formats::RG16sRGB => ChannelLayout::RG,
 
-			Formats::RGB8F | Formats::RGB8UNORM | Formats::RGB8SNORM | Formats::RGB8sRGB |
-			Formats::RGB16F | Formats::RGB16UNORM | Formats::RGB16SNORM | Formats::RGB16sRGB |
-			Formats::RGBu11u11u10 => ChannelLayout::RGB,
+			Formats::RGB8F
+			| Formats::RGB8UNORM
+			| Formats::RGB8SNORM
+			| Formats::RGB8sRGB
+			| Formats::RGB16F
+			| Formats::RGB16UNORM
+			| Formats::RGB16SNORM
+			| Formats::RGB16sRGB
+			| Formats::RGBu11u11u10 => ChannelLayout::RGB,
 
-			Formats::RGBA8F | Formats::RGBA8UNORM | Formats::RGBA8SNORM | Formats::RGBA8sRGB |
-			Formats::RGBA16F | Formats::RGBA16UNORM | Formats::RGBA16SNORM | Formats::RGBA16sRGB => ChannelLayout::RGBA,
+			Formats::RGBA8F
+			| Formats::RGBA8UNORM
+			| Formats::RGBA8SNORM
+			| Formats::RGBA8sRGB
+			| Formats::RGBA16F
+			| Formats::RGBA16UNORM
+			| Formats::RGBA16SNORM
+			| Formats::RGBA16sRGB => ChannelLayout::RGBA,
 
 			Formats::BGRAu8 | Formats::BGRAsRGB => ChannelLayout::BGRA,
 
@@ -863,11 +927,8 @@ pub struct PipelineAttachmentInformation {
 }
 
 impl PipelineAttachmentInformation {
-	pub fn new(format: Formats,) -> Self {
-		Self {
-			format,
-			layer: None,
-		}
+	pub fn new(format: Formats) -> Self {
+		Self { format, layer: None }
 	}
 
 	pub fn layer(mut self, layer: u32) -> Self {
@@ -1109,7 +1170,7 @@ pub struct DescriptorSetBindingTemplate {
 }
 
 impl DescriptorSetBindingTemplate {
-	pub const fn new(binding: u32, descriptor_type: DescriptorType, stages: Stages,) -> Self {
+	pub const fn new(binding: u32, descriptor_type: DescriptorType, stages: Stages) -> Self {
 		Self {
 			binding,
 			descriptor_type,
@@ -1158,7 +1219,7 @@ pub struct BindingConstructor<'a> {
 	pub(super) frame_offset: Option<i8>,
 }
 
-impl <'a> BindingConstructor<'a> {
+impl<'a> BindingConstructor<'a> {
 	pub fn buffer(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, buffer_handle: BaseBufferHandle) -> Self {
 		Self {
 			descriptor_set_binding_template,
@@ -1171,7 +1232,11 @@ impl <'a> BindingConstructor<'a> {
 		}
 	}
 
-	pub fn image(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle, layout: Layouts) -> Self {
+	pub fn image(
+		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
+		image_handle: ImageHandle,
+		layout: Layouts,
+	) -> Self {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
@@ -1192,7 +1257,12 @@ impl <'a> BindingConstructor<'a> {
 		}
 	}
 
-	pub fn combined_image_sampler(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle, sampler_handle: SamplerHandle, layout: Layouts) -> Self {
+	pub fn combined_image_sampler(
+		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
+		image_handle: ImageHandle,
+		sampler_handle: SamplerHandle,
+		layout: Layouts,
+	) -> Self {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
@@ -1206,7 +1276,7 @@ impl <'a> BindingConstructor<'a> {
 		}
 	}
 
-	pub fn combined_image_sampler_array(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,) -> Self {
+	pub fn combined_image_sampler_array(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate) -> Self {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
@@ -1215,7 +1285,13 @@ impl <'a> BindingConstructor<'a> {
 		}
 	}
 
-	pub fn combined_image_sampler_layer(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle, sampler_handle: SamplerHandle, layout: Layouts, layer_index: u32) -> Self {
+	pub fn combined_image_sampler_layer(
+		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
+		image_handle: ImageHandle,
+		sampler_handle: SamplerHandle,
+		layout: Layouts,
+		layer_index: u32,
+	) -> Self {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
@@ -1238,7 +1314,10 @@ impl <'a> BindingConstructor<'a> {
 		}
 	}
 
-	pub fn acceleration_structure(bindings: &'a DescriptorSetBindingTemplate, top_level_acceleration_structure: TopLevelAccelerationStructureHandle) -> Self {
+	pub fn acceleration_structure(
+		bindings: &'a DescriptorSetBindingTemplate,
+		top_level_acceleration_structure: TopLevelAccelerationStructureHandle,
+	) -> Self {
 		BindingConstructor {
 			descriptor_set_binding_template: bindings,
 			array_element: 0,
@@ -1283,7 +1362,7 @@ pub enum DescriptorInfo {
 	Sampler {
 		/// The sampler of the descriptor.
 		sampler: u32,
-	}
+	},
 }
 
 /// Stores the information of a descriptor set write.
@@ -1331,7 +1410,12 @@ impl DescriptorWrite {
 		}
 	}
 
-	pub fn image_with_frame(binding_handle: DescriptorSetBindingHandle, image_handle: ImageHandle, layout: Layouts, frame_offset: i32) -> DescriptorWrite {
+	pub fn image_with_frame(
+		binding_handle: DescriptorSetBindingHandle,
+		image_handle: ImageHandle,
+		layout: Layouts,
+		frame_offset: i32,
+	) -> DescriptorWrite {
 		DescriptorWrite {
 			binding_handle,
 			array_element: 0,
@@ -1352,12 +1436,17 @@ impl DescriptorWrite {
 		}
 	}
 
-	pub fn combined_image_sampler(binding_handle: DescriptorSetBindingHandle, image_handle: ImageHandle, sampler_handle: SamplerHandle, layout: Layouts) -> DescriptorWrite {
+	pub fn combined_image_sampler(
+		binding_handle: DescriptorSetBindingHandle,
+		image_handle: ImageHandle,
+		sampler_handle: SamplerHandle,
+		layout: Layouts,
+	) -> DescriptorWrite {
 		DescriptorWrite {
 			binding_handle,
 			array_element: 0,
 			descriptor: Descriptor::CombinedImageSampler {
-				image_handle: image_handle,
+				image_handle,
 				sampler_handle,
 				layout,
 				layer: None,
@@ -1366,12 +1455,18 @@ impl DescriptorWrite {
 		}
 	}
 
-	pub fn combined_image_sampler_array(binding_handle: DescriptorSetBindingHandle, image_handle: ImageHandle, sampler_handle: SamplerHandle, layout: Layouts, index: u32) -> DescriptorWrite {
+	pub fn combined_image_sampler_array(
+		binding_handle: DescriptorSetBindingHandle,
+		image_handle: ImageHandle,
+		sampler_handle: SamplerHandle,
+		layout: Layouts,
+		index: u32,
+	) -> DescriptorWrite {
 		DescriptorWrite {
 			binding_handle,
 			array_element: index,
 			descriptor: Descriptor::CombinedImageSampler {
-				image_handle: image_handle,
+				image_handle,
 				sampler_handle,
 				layout,
 				layer: None,
@@ -1380,7 +1475,10 @@ impl DescriptorWrite {
 		}
 	}
 
-	pub fn acceleration_structure(binding_handle: DescriptorSetBindingHandle, acceleration_structure_handle: TopLevelAccelerationStructureHandle) -> DescriptorWrite {
+	pub fn acceleration_structure(
+		binding_handle: DescriptorSetBindingHandle,
+		acceleration_structure_handle: TopLevelAccelerationStructureHandle,
+	) -> DescriptorWrite {
 		DescriptorWrite {
 			binding_handle,
 			array_element: 0,
@@ -1431,7 +1529,7 @@ impl BufferDescriptor {
 	}
 }
 
-impl <T: Copy> Into<BufferDescriptor> for BufferHandle<T> {
+impl<T: Copy> Into<BufferDescriptor> for BufferHandle<T> {
 	fn into(self) -> BufferDescriptor {
 		BufferDescriptor {
 			buffer: self.into(),
@@ -1447,7 +1545,9 @@ pub struct SpecializationMapEntry {
 }
 
 impl SpecializationMapEntry {
-	pub fn new<T: Copy + 'static>(constant_id: u32, r#type: String, value: T) -> Self where [(); std::mem::size_of::<T>()]: {
+	pub fn new<T: Copy + 'static>(constant_id: u32, r#type: String, value: T) -> Self
+	where
+		[(); std::mem::size_of::<T>()]:, {
 		if r#type == "vec4f".to_owned() {
 			assert_eq!(std::mem::size_of::<T>(), 16);
 		}
@@ -1455,7 +1555,9 @@ impl SpecializationMapEntry {
 		let mut data = [0 as u8; std::mem::size_of::<T>()];
 
 		// SAFETY: We know that the data is valid for the lifetime of the specialization map entry.
-		unsafe { std::ptr::copy_nonoverlapping((&value) as *const T as *const u8, data.as_mut_ptr(), std::mem::size_of::<T>()) };
+		unsafe {
+			std::ptr::copy_nonoverlapping((&value) as *const T as *const u8, data.as_mut_ptr(), std::mem::size_of::<T>())
+		};
 
 		Self {
 			r#type,
@@ -1489,8 +1591,8 @@ pub struct ShaderParameter<'a> {
 	pub(crate) specialization_map: &'a [SpecializationMapEntry],
 }
 
-impl <'a> ShaderParameter<'a> {
-	pub fn new(handle: &'a ShaderHandle, stage: ShaderTypes,) -> Self {
+impl<'a> ShaderParameter<'a> {
+	pub fn new(handle: &'a ShaderHandle, stage: ShaderTypes) -> Self {
 		Self {
 			handle,
 			stage,
@@ -1512,10 +1614,7 @@ pub struct PushConstantRange {
 
 impl PushConstantRange {
 	pub fn new(offset: u32, size: u32) -> Self {
-		Self {
-			offset,
-			size,
-		}
+		Self { offset, size }
 	}
 }
 
@@ -1537,9 +1636,7 @@ pub struct QueueSelection {
 
 impl QueueSelection {
 	pub fn new(r#type: CommandBufferType) -> Self {
-		Self {
-			r#type,
-		}
+		Self { r#type }
 	}
 }
 
@@ -1547,7 +1644,17 @@ impl QueueSelection {
 pub(super) mod tests {
 	use std::borrow::Borrow as _;
 
-use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, BoundRayTracingPipelineMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _}, device::Device, frame::Frame as _, raster_pipeline, window::Window};
+	use crate::{
+		command_buffer::{
+			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
+			BoundRayTracingPipelineMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
+			RasterizationRenderPassMode as _,
+		},
+		device::Device,
+		frame::Frame as _,
+		raster_pipeline,
+		window::Window,
+	};
 
 	use resource_management::glsl;
 
@@ -1865,33 +1972,85 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
 		let pixel = pixels[0]; // top left
-		assert_eq!(pixel, RGBAu8 { r: 0, g: 0, b: 0, a: 255 });
+		assert_eq!(
+			pixel,
+			RGBAu8 {
+				r: 0,
+				g: 0,
+				b: 0,
+				a: 255
+			}
+		);
 
 		if extent.width() % 2 != 0 {
 			let pixel = pixels[(extent.width() / 2) as usize]; // middle top center
-			assert_eq!(pixel, RGBAu8 { r: 255, g: 0, b: 0, a: 255 });
+			assert_eq!(
+				pixel,
+				RGBAu8 {
+					r: 255,
+					g: 0,
+					b: 0,
+					a: 255
+				}
+			);
 		}
 
 		let pixel = pixels[(extent.width() - 1) as usize]; // top right
-		assert_eq!(pixel, RGBAu8 { r: 0, g: 0, b: 0, a: 255 });
+		assert_eq!(
+			pixel,
+			RGBAu8 {
+				r: 0,
+				g: 0,
+				b: 0,
+				a: 255
+			}
+		);
 
-		let pixel = pixels[(extent.width()  * (extent.height() - 1)) as usize]; // bottom left
-		assert_eq!(pixel, RGBAu8 { r: 0, g: 0, b: 255, a: 255 });
+		let pixel = pixels[(extent.width() * (extent.height() - 1)) as usize]; // bottom left
+		assert_eq!(
+			pixel,
+			RGBAu8 {
+				r: 0,
+				g: 0,
+				b: 255,
+				a: 255
+			}
+		);
 
 		let pixel = pixels[(extent.width() * extent.height() - (extent.width() / 2)) as usize]; // middle bottom center
-		assert!(pixel == RGBAu8 { r: 0, g: 127, b: 127, a: 255 } || pixel == RGBAu8 { r: 0, g: 128, b: 127, a: 255 }); // different implementations render slightly differently
+		assert!(
+			pixel
+				== RGBAu8 {
+					r: 0,
+					g: 127,
+					b: 127,
+					a: 255
+				} || pixel
+				== RGBAu8 {
+					r: 0,
+					g: 128,
+					b: 127,
+					a: 255
+				}
+		); // different implementations render slightly differently
 
 		let pixel = pixels[(extent.width() * extent.height() - 1) as usize]; // bottom right
-		assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 });
+		assert_eq!(
+			pixel,
+			RGBAu8 {
+				r: 0,
+				g: 255,
+				b: 0,
+				a: 255
+			}
+		);
 	}
 
 	pub(crate) fn render_triangle(device: &mut impl Device, queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, false);
 
-		let floats: [f32;21] = [
-			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
-			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+		let floats: [f32; 21] = [
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 		];
 
 		let vertex_layout = [
@@ -1899,29 +2058,58 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout
-		) };
+		let mesh = unsafe {
+			device.add_mesh_from_vertices_and_indices(
+				3,
+				3,
+				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+				&vertex_layout,
+			)
+		};
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
+		let vertex_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				ShaderTypes::Vertex,
+				[],
+			)
+			.expect("Failed to create vertex shader");
+		let fragment_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				ShaderTypes::Fragment,
+				[],
+			)
+			.expect("Failed to create fragment shader");
 
 		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1921, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::STATIC, None);
+		let render_target = device.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceToHost)
+				.use_case(UseCases::STATIC),
+		);
 
-		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
-		];
+		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+			pipeline_layout,
+			&vertex_layout,
+			&[
+				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
+				ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
+			],
+			&attachments,
+		));
 
 		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
@@ -1929,9 +2117,14 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle);
 
-		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8UNORM,Layouts::RenderTarget,ClearValue::Color(RGBA::black()), false, true,)
-		];
+		let attachments = [AttachmentInformation::new(
+			render_target,
+			Formats::RGBA8UNORM,
+			Layouts::RenderTarget,
+			ClearValue::Color(RGBA::black()),
+			false,
+			true,
+		)];
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
@@ -1954,7 +2147,12 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		assert!(!device.has_errors());
 
 		// Get image data and cast u8 slice to rgbau8
-		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+		let pixels = unsafe {
+			std::slice::from_raw_parts(
+				device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8,
+				(extent.width() * extent.height()) as usize,
+			)
+		};
 
 		check_triangle(pixels, extent);
 	}
@@ -1969,10 +2167,8 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let swapchain = renderer.bind_to_window(&os_handles, Default::default(), extent, Uses::RenderTarget);
 
-		let floats: [f32;21] = [
-			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
-			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+		let floats: [f32; 21] = [
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 		];
 
 		let vertex_layout = [
@@ -1980,26 +2176,55 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout
-		) };
+		let mesh = unsafe {
+			renderer.add_mesh_from_vertices_and_indices(
+				3,
+				3,
+				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+				&vertex_layout,
+			)
+		};
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
+		let vertex_shader = renderer
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				ShaderTypes::Vertex,
+				[],
+			)
+			.expect("Failed to create vertex shader");
+		let fragment_shader = renderer
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				ShaderTypes::Fragment,
+				[],
+			)
+			.expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceOnly, UseCases::STATIC, None);
+		let render_target = renderer.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceOnly)
+				.use_case(UseCases::STATIC),
+		);
 
-		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
-		];
+		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
 
-		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(
+			pipeline_layout,
+			&vertex_layout,
+			&[
+				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
+				ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
+			],
+			&attachments,
+		));
 
 		let command_buffer_handle = renderer.create_command_buffer(None, queue_handle);
 
@@ -2015,9 +2240,14 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
-		let attachments = [
-			AttachmentInformation::new(render_target, Formats::RGBA8UNORM, Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
-		];
+		let attachments = [AttachmentInformation::new(
+			render_target,
+			Formats::RGBA8UNORM,
+			Layouts::RenderTarget,
+			ClearValue::Color(RGBA::black()),
+			false,
+			true,
+		)];
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
@@ -2031,7 +2261,12 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		command_buffer_recording.copy_to_swapchain(render_target, present_key, swapchain);
 
-		command_buffer_recording.execute(&[], &[render_finished_synchronizer], &[present_key], render_finished_synchronizer);
+		command_buffer_recording.execute(
+			&[],
+			&[render_finished_synchronizer],
+			&[present_key],
+			render_finished_synchronizer,
+		);
 
 		renderer.end_frame_capture();
 
@@ -2052,10 +2287,8 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let swapchain = renderer.bind_to_window(&os_handles, Default::default(), extent, Uses::RenderTarget);
 
-		let floats: [f32;21] = [
-			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
-			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+		let floats: [f32; 21] = [
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 		];
 
 		let vertex_layout = [
@@ -2063,43 +2296,82 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { renderer.add_mesh_from_vertices_and_indices(3, 3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout
-		) };
+		let mesh = unsafe {
+			renderer.add_mesh_from_vertices_and_indices(
+				3,
+				3,
+				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+				&vertex_layout,
+			)
+		};
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = renderer.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
-		let fragment_shader = renderer.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
+		let vertex_shader = renderer
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				ShaderTypes::Vertex,
+				[],
+			)
+			.expect("Failed to create vertex shader");
+		let fragment_shader = renderer
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				ShaderTypes::Fragment,
+				[],
+			)
+			.expect("Failed to create fragment shader");
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = renderer.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceToHost)
+				.use_case(UseCases::DYNAMIC),
+		);
 
-		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
-		];
+		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
 
-		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(
+			pipeline_layout,
+			&vertex_layout,
+			&[
+				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
+				ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
+			],
+			&attachments,
+		));
 
 		let command_buffer_handle = renderer.create_command_buffer(None, queue_handle);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
-		for i in 0..2*64 {
+		for i in 0..2 * 64 {
 			renderer.start_frame_capture();
 
 			let mut frame = renderer.start_frame(i, render_finished_synchronizer);
 
-			let (present_key, _) = frame.acquire_swapchain_image(swapchain,);
+			let (present_key, _) = frame.acquire_swapchain_image(swapchain);
 
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
-			let attachments = [
-				AttachmentInformation::new(render_target,Formats::RGBA8UNORM,Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
-			];
+			let attachments = [AttachmentInformation::new(
+				render_target,
+				Formats::RGBA8UNORM,
+				Layouts::RenderTarget,
+				ClearValue::Color(RGBA {
+					r: 0.0,
+					g: 0.0,
+					b: 0.0,
+					a: 1.0,
+				}),
+				false,
+				true,
+			)];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
@@ -2113,7 +2385,12 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			command_buffer_recording.copy_to_swapchain(render_target, present_key, swapchain);
 
-			command_buffer_recording.execute(&[], &[render_finished_synchronizer], &[present_key], render_finished_synchronizer);
+			command_buffer_recording.execute(
+				&[],
+				&[render_finished_synchronizer],
+				&[present_key],
+				render_finished_synchronizer,
+			);
 
 			renderer.end_frame_capture();
 
@@ -2130,10 +2407,8 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		// Use and odd width to make sure there is a middle/center pixel
 		let _extent = Extent::rectangle(1920, 1080);
 
-		let floats: [f32;21] = [
-			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
-			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+		let floats: [f32; 21] = [
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 		];
 
 		let vertex_layout = [
@@ -2141,29 +2416,58 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout
-		) };
+		let mesh = unsafe {
+			device.add_mesh_from_vertices_and_indices(
+				3,
+				3,
+				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+				&vertex_layout,
+			)
+		};
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
+		let vertex_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				ShaderTypes::Vertex,
+				[],
+			)
+			.expect("Failed to create vertex shader");
+		let fragment_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				ShaderTypes::Fragment,
+				[],
+			)
+			.expect("Failed to create fragment shader");
 
 		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = device.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceToHost)
+				.use_case(UseCases::DYNAMIC),
+		);
 
-		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
-		];
+		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+			pipeline_layout,
+			&vertex_layout,
+			&[
+				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
+				ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
+			],
+			&attachments,
+		));
 
 		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
@@ -2176,9 +2480,14 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
-			let attachments = [
-				AttachmentInformation::new(render_target, Formats::RGBA8UNORM, Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
-			];
+			let attachments = [AttachmentInformation::new(
+				render_target,
+				Formats::RGBA8UNORM,
+				Layouts::RenderTarget,
+				ClearValue::Color(RGBA::black()),
+				false,
+				true,
+			)];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
@@ -2200,7 +2509,12 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			assert!(!device.has_errors());
 
-			let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+			let pixels = unsafe {
+				std::slice::from_raw_parts(
+					device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8,
+					(extent.width() * extent.height()) as usize,
+				)
+			};
 
 			check_triangle(pixels, extent);
 		}
@@ -2213,9 +2527,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		const FRAMES_IN_FLIGHT: usize = 3;
 
 		let floats: [f32; 21] = [
-			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
-			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 		];
 
 		let vertex_layout = [
@@ -2223,28 +2535,57 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout
-		) };
+		let mesh = unsafe {
+			device.add_mesh_from_vertices_and_indices(
+				3,
+				3,
+				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+				&vertex_layout,
+			)
+		};
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
+		let vertex_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				ShaderTypes::Vertex,
+				[],
+			)
+			.expect("Failed to create vertex shader");
+		let fragment_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				ShaderTypes::Fragment,
+				[],
+			)
+			.expect("Failed to create fragment shader");
 
 		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = device.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceToHost)
+				.use_case(UseCases::DYNAMIC),
+		);
 
-		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
-		];
+		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+			pipeline_layout,
+			&vertex_layout,
+			&[
+				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
+				ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
+			],
+			&attachments,
+		));
 
 		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
@@ -2261,9 +2602,14 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
-			let attachments = [
-				AttachmentInformation::new(render_target, Formats::RGBA8UNORM, Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
-			];
+			let attachments = [AttachmentInformation::new(
+				render_target,
+				Formats::RGBA8UNORM,
+				Layouts::RenderTarget,
+				ClearValue::Color(RGBA::black()),
+				false,
+				true,
+			)];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
@@ -2285,7 +2631,12 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			assert!(!device.has_errors());
 
-			let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+			let pixels = unsafe {
+				std::slice::from_raw_parts(
+					device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8,
+					(extent.width() * extent.height()) as usize,
+				)
+			};
 
 			check_triangle(pixels, extent);
 		}
@@ -2297,9 +2648,7 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		const FRAMES_IN_FLIGHT: usize = 3;
 
 		let floats: [f32; 21] = [
-			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
-			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 		];
 
 		let vertex_layout = [
@@ -2307,28 +2656,57 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout
-		) };
+		let mesh = unsafe {
+			device.add_mesh_from_vertices_and_indices(
+				3,
+				3,
+				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+				&vertex_layout,
+			)
+		};
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
+		let vertex_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				ShaderTypes::Vertex,
+				[],
+			)
+			.expect("Failed to create vertex shader");
+		let fragment_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				ShaderTypes::Fragment,
+				[],
+			)
+			.expect("Failed to create fragment shader");
 
 		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
 
 		let mut extent = Extent::rectangle(1280, 720);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = device.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceToHost)
+				.use_case(UseCases::DYNAMIC),
+		);
 
-		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
-		];
+		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+			pipeline_layout,
+			&vertex_layout,
+			&[
+				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
+				ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
+			],
+			&attachments,
+		));
 
 		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
@@ -2346,9 +2724,14 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
-			let attachments = [
-				AttachmentInformation::new(render_target, Formats::RGBA8UNORM, Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
-			];
+			let attachments = [AttachmentInformation::new(
+				render_target,
+				Formats::RGBA8UNORM,
+				Layouts::RenderTarget,
+				ClearValue::Color(RGBA::black()),
+				false,
+				true,
+			)];
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
@@ -2370,7 +2753,12 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			assert!(!device.has_errors());
 
-			let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+			let pixels = unsafe {
+				std::slice::from_raw_parts(
+					device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8,
+					(extent.width() * extent.height()) as usize,
+				)
+			};
 
 			assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
@@ -2384,10 +2772,8 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		const FRAMES_IN_FLIGHT: usize = 2;
 
-		let floats: [f32;21] = [
-			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
-			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+		let floats: [f32; 21] = [
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 		];
 
 		let vertex_layout = [
@@ -2395,29 +2781,58 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
-			std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
-			std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-			&vertex_layout
-		) };
+		let mesh = unsafe {
+			device.add_mesh_from_vertices_and_indices(
+				3,
+				3,
+				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
+				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
+				&vertex_layout,
+			)
+		};
 
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders_with_model_matrix();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, []).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, []).expect("Failed to create fragment shader");
+		let vertex_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				ShaderTypes::Vertex,
+				[],
+			)
+			.expect("Failed to create vertex shader");
+		let fragment_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				ShaderTypes::Fragment,
+				[],
+			)
+			.expect("Failed to create fragment shader");
 
-		let pipeline_layout = device.create_pipeline_layout(&[], &[PushConstantRange{ offset: 0, size: 16 * 4 }]);
+		let pipeline_layout = device.create_pipeline_layout(&[], &[PushConstantRange { offset: 0, size: 16 * 4 }]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = device.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceToHost)
+				.use_case(UseCases::DYNAMIC),
+		);
 
-		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
-		];
+		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+			pipeline_layout,
+			&vertex_layout,
+			&[
+				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
+				ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
+			],
+			&attachments,
+		));
 
 		let _buffer = device.create_buffer::<u8>(None, Uses::Storage, DeviceAccesses::HostToDevice);
 
@@ -2432,9 +2847,14 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			let mut cb = frame.create_command_buffer_recording(command_buffer_handle);
 
-			let attachments = [
-				AttachmentInformation::new(render_target, Formats::RGBA8UNORM, Layouts::RenderTarget, ClearValue::Color(RGBA::black()), false, true,)
-			];
+			let attachments = [AttachmentInformation::new(
+				render_target,
+				Formats::RGBA8UNORM,
+				Layouts::RenderTarget,
+				ClearValue::Color(RGBA::black()),
+				false,
+				true,
+			)];
 
 			let c = cb.start_render_pass(extent, &attachments);
 
@@ -2442,13 +2862,24 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
 
-			let matrix: [f32; 16] =
-				[
-					angle.cos(), -angle.sin(), 0f32, 0f32,
-					angle.sin(), angle.cos(), 0f32, 0f32,
-					0f32, 0f32, 1f32, 0f32,
-					0f32, 0f32, 0f32, 1f32,
-				];
+			let matrix: [f32; 16] = [
+				angle.cos(),
+				-angle.sin(),
+				0f32,
+				0f32,
+				angle.sin(),
+				angle.cos(),
+				0f32,
+				0f32,
+				0f32,
+				0f32,
+				1f32,
+				0f32,
+				0f32,
+				0f32,
+				0f32,
+				1f32,
+			];
 
 			c.write_push_constant(0, matrix);
 
@@ -2468,7 +2899,12 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			assert!(!device.has_errors());
 
-			let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_texture_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+			let pixels = unsafe {
+				std::slice::from_raw_parts(
+					device.get_image_data(copy_texture_handles[0]).as_ptr() as *const RGBAu8,
+					(extent.width() * extent.height()) as usize,
+				)
+			};
 
 			assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
@@ -2476,23 +2912,60 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 			if i % 4 == 0 {
 				let pixel = pixels[(extent.width() * extent.height() - 1) as usize]; // bottom right
-				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 }, "Pixel at bottom right corner did not match expected green color in frame: {i}");
+				assert_eq!(
+					pixel,
+					RGBAu8 {
+						r: 0,
+						g: 255,
+						b: 0,
+						a: 255
+					},
+					"Pixel at bottom right corner did not match expected green color in frame: {i}"
+				);
 			} else if i % 4 == 1 {
-				let pixel = pixels[(extent.width()  * (extent.height() - 1)) as usize]; // bottom left
-				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 }, "Pixel at bottom left corner did not match expected green color in frame: {i}");
+				let pixel = pixels[(extent.width() * (extent.height() - 1)) as usize]; // bottom left
+				assert_eq!(
+					pixel,
+					RGBAu8 {
+						r: 0,
+						g: 255,
+						b: 0,
+						a: 255
+					},
+					"Pixel at bottom left corner did not match expected green color in frame: {i}"
+				);
 			} else if i % 4 == 2 {
 				let pixel = pixels[0]; // top left
-				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 }, "Pixel at top left corner did not match expected green color in frame: {i}");
+				assert_eq!(
+					pixel,
+					RGBAu8 {
+						r: 0,
+						g: 255,
+						b: 0,
+						a: 255
+					},
+					"Pixel at top left corner did not match expected green color in frame: {i}"
+				);
 			} else if i % 4 == 3 {
 				let pixel = pixels[(extent.width() - 1) as usize]; // top right
-				assert_eq!(pixel, RGBAu8 { r: 0, g: 255, b: 0, a: 255 }, "Pixel at top right corner did not match expected green color in frame: {i}");
+				assert_eq!(
+					pixel,
+					RGBAu8 {
+						r: 0,
+						g: 255,
+						b: 0,
+						a: 255
+					},
+					"Pixel at top right corner did not match expected green color in frame: {i}"
+				);
 			}
 		}
 
 		assert!(!device.has_errors())
 	}
 
-	pub(crate) fn multiframe_resources(device: &mut impl Device, queue_handle: QueueHandle) { // TODO: test multiframe resources for combined image samplers
+	pub(crate) fn multiframe_resources(device: &mut impl Device, queue_handle: QueueHandle) {
+		// TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
 			#version 450
 			#pragma shader_stage(compute)
@@ -2513,23 +2986,51 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let compute_shader_artifact = glsl::compile(compute_shader_string, "compute").unwrap();
 
-		let compute_shader = device.create_shader(None, ShaderSource::SPIRV(compute_shader_artifact.borrow().into()), ShaderTypes::Compute, [ShaderBindingDescriptor::new(0, 0, AccessPolicies::WRITE), ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create compute shader");
+		let compute_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(compute_shader_artifact.borrow().into()),
+				ShaderTypes::Compute,
+				[
+					ShaderBindingDescriptor::new(0, 0, AccessPolicies::WRITE),
+					ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ),
+				],
+			)
+			.expect("Failed to create compute shader");
 
 		let image_binding_template = DescriptorSetBindingTemplate::new(0, DescriptorType::StorageImage, Stages::COMPUTE);
-		let last_frame_image_binding_template = DescriptorSetBindingTemplate::new(1, DescriptorType::StorageImage, Stages::COMPUTE);
+		let last_frame_image_binding_template =
+			DescriptorSetBindingTemplate::new(1, DescriptorType::StorageImage, Stages::COMPUTE);
 
-		let descriptor_set_template = device.create_descriptor_set_template(None, &[image_binding_template.clone(),last_frame_image_binding_template.clone()]);
+		let descriptor_set_template = device.create_descriptor_set_template(
+			None,
+			&[image_binding_template.clone(), last_frame_image_binding_template.clone()],
+		);
 
-		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_template], &[PushConstantRange{ offset: 0, size: 4 }]);
+		let pipeline_layout =
+			device.create_pipeline_layout(&[descriptor_set_template], &[PushConstantRange { offset: 0, size: 4 }]);
 
-		let pipeline = device.create_compute_pipeline(pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute,));
+		let pipeline =
+			device.create_compute_pipeline(pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute));
 
-		let image = device.create_image(Some("Image"), Extent::square(2), Formats::RGBA8UNORM, Uses::Storage, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let image = device.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage)
+				.name("Image")
+				.extent(Extent::square(2))
+				.device_accesses(DeviceAccesses::DeviceToHost)
+				.use_case(UseCases::DYNAMIC),
+		);
 
 		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_template);
 
-		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image, Layouts::General));
-		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&last_frame_image_binding_template, image, Layouts::General).frame(-1));
+		let _ = device.create_descriptor_binding(
+			descriptor_set,
+			BindingConstructor::image(&image_binding_template, image, Layouts::General),
+		);
+		let _ = device.create_descriptor_binding(
+			descriptor_set,
+			BindingConstructor::image(&last_frame_image_binding_template, image, Layouts::General).frame(-1),
+		);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 
@@ -2544,7 +3045,10 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(pipeline_layout);
 
 		pipeline_layout_command.write_push_constant(0, data);
-		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]).bind_compute_pipeline(pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
+		pipeline_layout_command
+			.bind_descriptor_sets(&[descriptor_set])
+			.bind_compute_pipeline(pipeline)
+			.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
@@ -2554,7 +3058,21 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
-		assert!(pixels[0] == RGBAu8 { r: 127, g: 127, b: 127, a: 255 } || pixels[0] == RGBAu8 { r: 128, g: 128, b: 128, a: 255 }); // Current frame image
+		assert!(
+			pixels[0]
+				== RGBAu8 {
+					r: 127,
+					g: 127,
+					b: 127,
+					a: 255
+				} || pixels[0]
+				== RGBAu8 {
+					r: 128,
+					g: 128,
+					b: 128,
+					a: 255
+				}
+		); // Current frame image
 		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 }); // Current frame sample from last frame image
 
 		assert!(!device.has_errors());
@@ -2568,7 +3086,10 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(pipeline_layout);
 
 		pipeline_layout_command.write_push_constant(0, data);
-		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]).bind_compute_pipeline(pipeline).dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
+		pipeline_layout_command
+			.bind_descriptor_sets(&[descriptor_set])
+			.bind_compute_pipeline(pipeline)
+			.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
 
@@ -2578,8 +3099,30 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
-		assert_eq!(pixels[0], RGBAu8 { r: 255, g: 255, b: 255, a: 255 });
-		assert!(pixels[1] == RGBAu8 { r: 127, g: 127, b: 127, a: 255 } || pixels[1] == RGBAu8 { r: 128, g: 128, b: 128, a: 255 }); // Current frame sample from last frame image
+		assert_eq!(
+			pixels[0],
+			RGBAu8 {
+				r: 255,
+				g: 255,
+				b: 255,
+				a: 255
+			}
+		);
+		assert!(
+			pixels[1]
+				== RGBAu8 {
+					r: 127,
+					g: 127,
+					b: 127,
+					a: 255
+				} || pixels[1]
+				== RGBAu8 {
+					r: 128,
+					g: 128,
+					b: 128,
+					a: 255
+				}
+		); // Current frame sample from last frame image
 
 		assert!(!device.has_errors());
 
@@ -2595,7 +3138,21 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
-		assert!(pixels[0] == RGBAu8 { r: 127, g: 127, b: 127, a: 255 } || pixels[0] == RGBAu8 { r: 128, g: 128, b: 128, a: 255 });
+		assert!(
+			pixels[0]
+				== RGBAu8 {
+					r: 127,
+					g: 127,
+					b: 127,
+					a: 255
+				} || pixels[0]
+				== RGBAu8 {
+					r: 128,
+					g: 128,
+					b: 128,
+					a: 255
+				}
+		);
 		assert_eq!(pixels[1], RGBAu8 { r: 0, g: 0, b: 0, a: 0 });
 
 		assert!(!device.has_errors());
@@ -2612,8 +3169,30 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		let pixels = unsafe { std::slice::from_raw_parts(device.get_image_data(copy_handles[0]).as_ptr() as *const RGBAu8, 4) };
 
-		assert_eq!(pixels[0], RGBAu8 { r: 255, g: 255, b: 255, a: 255 });
-		assert!(pixels[1] == RGBAu8 { r: 127, g: 127, b: 127, a: 255 } || pixels[1] == RGBAu8 { r: 128, g: 128, b: 128, a: 255 });
+		assert_eq!(
+			pixels[0],
+			RGBAu8 {
+				r: 255,
+				g: 255,
+				b: 255,
+				a: 255
+			}
+		);
+		assert!(
+			pixels[1]
+				== RGBAu8 {
+					r: 127,
+					g: 127,
+					b: 127,
+					a: 255
+				} || pixels[1]
+				== RGBAu8 {
+					r: 128,
+					g: 128,
+					b: 128,
+					a: 255
+				}
+		);
 
 		assert!(!device.has_errors());
 	}
@@ -2621,10 +3200,8 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 	pub(crate) fn descriptor_sets(device: &mut impl Device, queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, true);
 
-		let floats: [f32;21] = [
-			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-			1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
-			-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0
+		let floats: [f32; 21] = [
+			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
 		];
 
 		let vertex_layout = [
@@ -2632,11 +3209,15 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 			VertexElement::new("COLOR", DataTypes::Float4, 0),
 		];
 
-		let mesh = unsafe { device.add_mesh_from_vertices_and_indices(3, 3,
-				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3*4 + 4*4) * 3),
+		let mesh = unsafe {
+			device.add_mesh_from_vertices_and_indices(
+				3,
+				3,
+				std::slice::from_raw_parts(floats.as_ptr() as *const u8, (3 * 4 + 4 * 4) * 3),
 				std::slice::from_raw_parts([0u16, 1u16, 2u16].as_ptr() as *const u8, 3 * 2),
-				&vertex_layout
-			) };
+				&vertex_layout,
+			)
+		};
 
 		let vertex_shader_code = "
 			#version 450 core
@@ -2676,33 +3257,107 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
 		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
 
-		let vertex_shader = device.create_shader(None, ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()), ShaderTypes::Vertex, [ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)]).expect("Failed to create vertex shader");
-		let fragment_shader = device.create_shader(None, ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()), ShaderTypes::Fragment, [ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ)]).expect("Failed to create fragment shader");
+		let vertex_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				ShaderTypes::Vertex,
+				[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)],
+			)
+			.expect("Failed to create vertex shader");
+		let fragment_shader = device
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				ShaderTypes::Fragment,
+				[
+					ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ),
+					ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ),
+				],
+			)
+			.expect("Failed to create fragment shader");
 
-		let buffer = device.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::HostToDevice);
+		let buffer =
+			device.create_dynamic_buffer::<[u8; 64]>(None, Uses::Uniform | Uses::Storage, DeviceAccesses::HostToDevice);
 
-		let sampled_texture = device.create_image(Some("sampled texture"), Extent::square(2,), Formats::RGBA8UNORM, Uses::Image, DeviceAccesses::HostToDevice, UseCases::STATIC, None);
+		let sampled_texture = device.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Image)
+				.name("sampled texture")
+				.extent(Extent::square(2))
+				.device_accesses(DeviceAccesses::HostToDevice)
+				.use_case(UseCases::STATIC),
+		);
 
 		let pixels = vec![
-			RGBAu8 { r: 255, g: 0, b: 0, a: 255 },
-			RGBAu8 { r: 0, g: 255, b: 0, a: 255 },
-			RGBAu8 { r: 0, g: 0, b: 255, a: 255 },
-			RGBAu8 { r: 255, g: 255, b: 0, a: 255 },
+			RGBAu8 {
+				r: 255,
+				g: 0,
+				b: 0,
+				a: 255,
+			},
+			RGBAu8 {
+				r: 0,
+				g: 255,
+				b: 0,
+				a: 255,
+			},
+			RGBAu8 {
+				r: 0,
+				g: 0,
+				b: 255,
+				a: 255,
+			},
+			RGBAu8 {
+				r: 255,
+				g: 255,
+				b: 0,
+				a: 255,
+			},
 		];
 
-		let sampler =  device.create_sampler(FilteringModes::Closest, SamplingReductionModes::WeightedAverage, FilteringModes::Closest, SamplerAddressingModes::Repeat, None, 0.0f32, 0.0f32);
+		let sampler = device.create_sampler(
+			FilteringModes::Closest,
+			SamplingReductionModes::WeightedAverage,
+			FilteringModes::Closest,
+			SamplerAddressingModes::Repeat,
+			None,
+			0.0f32,
+			0.0f32,
+		);
 
-		let descriptor_set_layout_handle = device.create_descriptor_set_template(None, &[
-			DescriptorSetBindingTemplate::new_with_immutable_samplers(0, Stages::FRAGMENT, Some(vec![sampler])),
-			DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX),
-			DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT),
-		]);
+		let descriptor_set_layout_handle = device.create_descriptor_set_template(
+			None,
+			&[
+				DescriptorSetBindingTemplate::new_with_immutable_samplers(0, Stages::FRAGMENT, Some(vec![sampler])),
+				DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer, Stages::VERTEX),
+				DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT),
+			],
+		);
 
-		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_layout_handle,);
+		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_layout_handle);
 
-		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::sampler(&DescriptorSetBindingTemplate::new(0, DescriptorType::Sampler, Stages::FRAGMENT,), sampler));
-		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer,Stages::VERTEX), buffer.into()));
-		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT), sampled_texture, Layouts::Read));
+		let _ = device.create_descriptor_binding(
+			descriptor_set,
+			BindingConstructor::sampler(
+				&DescriptorSetBindingTemplate::new(0, DescriptorType::Sampler, Stages::FRAGMENT),
+				sampler,
+			),
+		);
+		let _ = device.create_descriptor_binding(
+			descriptor_set,
+			BindingConstructor::buffer(
+				&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer, Stages::VERTEX),
+				buffer.into(),
+			),
+		);
+		let _ = device.create_descriptor_binding(
+			descriptor_set,
+			BindingConstructor::image(
+				&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT),
+				sampled_texture,
+				Layouts::Read,
+			),
+		);
 
 		assert!(!device.has_errors());
 
@@ -2711,13 +3366,24 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
-		let render_target = device.create_image(None, extent, Formats::RGBA8UNORM, Uses::RenderTarget, DeviceAccesses::DeviceToHost, UseCases::STATIC, None);
+		let render_target = device.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceToHost)
+				.use_case(UseCases::STATIC),
+		);
 
-		let attachments = [
-			PipelineAttachmentInformation::new(Formats::RGBA8UNORM,)
-		];
+		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(pipeline_layout, &vertex_layout, &[ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex,), ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment,)], &attachments));
+		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+			pipeline_layout,
+			&vertex_layout,
+			&[
+				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
+				ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
+			],
+			&attachments,
+		));
 
 		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
 
@@ -2729,9 +3395,19 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 
 		command_buffer_recording.write_image_data(sampled_texture, &pixels);
 
-		let attachments = [
-			AttachmentInformation::new(render_target,Formats::RGBA8UNORM,Layouts::RenderTarget,ClearValue::Color(RGBA { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),false,true,)
-		];
+		let attachments = [AttachmentInformation::new(
+			render_target,
+			Formats::RGBA8UNORM,
+			Layouts::RenderTarget,
+			ClearValue::Color(RGBA {
+				r: 0.0,
+				g: 0.0,
+				b: 0.0,
+				a: 1.0,
+			}),
+			false,
+			true,
+		)];
 
 		let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
@@ -2775,25 +3451,33 @@ use crate::{command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutM
 		// let window_handle = window_system.create_window("Renderer Test", extent, "test");
 		// let swapchain = renderer.bind_to_window(&window_system.get_os_handles_2(&window_handle));
 
-		let positions: [f32; 3 * 3] = [
-			0.0, 1.0, 0.0,
-			1.0, -1.0, 0.0,
-			-1.0, -1.0, 0.0,
-		];
+		let positions: [f32; 3 * 3] = [0.0, 1.0, 0.0, 1.0, -1.0, 0.0, -1.0, -1.0, 0.0];
 
-		let colors: [f32; 4 * 3] = [
-			1.0, 0.0, 0.0, 1.0,
-			0.0, 1.0, 0.0, 1.0,
-			0.0, 0.0, 1.0, 1.0,
-		];
+		let colors: [f32; 4 * 3] = [1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0];
 
-		let vertex_positions_buffer = renderer.create_buffer::<[f32; 3 * 3]>(None, Uses::Storage | Uses::AccelerationStructureBuild, DeviceAccesses::HostToDevice,);
-		let vertex_colors_buffer = renderer.create_buffer::<[f32; 4 * 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::HostToDevice,);
-		let index_buffer = renderer.create_buffer::<[u16; 3]>(None, Uses::Storage  | Uses::AccelerationStructureBuild, DeviceAccesses::HostToDevice,);
+		let vertex_positions_buffer = renderer.create_buffer::<[f32; 3 * 3]>(
+			None,
+			Uses::Storage | Uses::AccelerationStructureBuild,
+			DeviceAccesses::HostToDevice,
+		);
+		let vertex_colors_buffer = renderer.create_buffer::<[f32; 4 * 3]>(
+			None,
+			Uses::Storage | Uses::AccelerationStructureBuild,
+			DeviceAccesses::HostToDevice,
+		);
+		let index_buffer = renderer.create_buffer::<[u16; 3]>(
+			None,
+			Uses::Storage | Uses::AccelerationStructureBuild,
+			DeviceAccesses::HostToDevice,
+		);
 
-		renderer.get_mut_buffer_slice(vertex_positions_buffer).copy_from_slice(&positions);
+		renderer
+			.get_mut_buffer_slice(vertex_positions_buffer)
+			.copy_from_slice(&positions);
 		renderer.get_mut_buffer_slice(vertex_colors_buffer).copy_from_slice(&colors);
-		renderer.get_mut_buffer_slice(index_buffer).copy_from_slice(&[0u16, 1u16, 2u16]);
+		renderer
+			.get_mut_buffer_slice(index_buffer)
+			.copy_from_slice(&[0u16, 1u16, 2u16]);
 
 		let raygen_shader_code = "
 #version 460 core
@@ -2882,19 +3566,48 @@ void main() {
 		let closest_hit_shader_artifact = glsl::compile(closest_hit_shader_code, "closest_hit").unwrap();
 		let miss_shader_artifact = glsl::compile(miss_shader_code, "miss").unwrap();
 
-		let raygen_shader = renderer.create_shader(None, ShaderSource::SPIRV(raygen_shader_artifact.borrow().into()), ShaderTypes::RayGen, [ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE)]).expect("Failed to create raygen shader");
-		let closest_hit_shader = renderer.create_shader(None, ShaderSource::SPIRV(closest_hit_shader_artifact.borrow().into()), ShaderTypes::ClosestHit, [ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ), ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ)]).expect("Failed to create closest hit shader");
-		let miss_shader = renderer.create_shader(None, ShaderSource::SPIRV(miss_shader_artifact.borrow().into()), ShaderTypes::Miss, []).expect("Failed to create miss shader");
+		let raygen_shader = renderer
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(raygen_shader_artifact.borrow().into()),
+				ShaderTypes::RayGen,
+				[
+					ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ),
+					ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE),
+				],
+			)
+			.expect("Failed to create raygen shader");
+		let closest_hit_shader = renderer
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(closest_hit_shader_artifact.borrow().into()),
+				ShaderTypes::ClosestHit,
+				[
+					ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ),
+					ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ),
+					ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ),
+				],
+			)
+			.expect("Failed to create closest hit shader");
+		let miss_shader = renderer
+			.create_shader(
+				None,
+				ShaderSource::SPIRV(miss_shader_artifact.borrow().into()),
+				ShaderTypes::Miss,
+				[],
+			)
+			.expect("Failed to create miss shader");
 
 		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"), 1);
-		let bottom_level_acceleration_structure = renderer.create_bottom_level_acceleration_structure(&BottomLevelAccelerationStructure{
-			description: BottomLevelAccelerationStructureDescriptions::Mesh {
-				vertex_count: 3,
-				vertex_position_encoding: Encodings::FloatingPoint,
-				triangle_count: 1,
-				index_format: DataTypes::U16,
-			}
-		});
+		let bottom_level_acceleration_structure =
+			renderer.create_bottom_level_acceleration_structure(&BottomLevelAccelerationStructure {
+				description: BottomLevelAccelerationStructureDescriptions::Mesh {
+					vertex_count: 3,
+					vertex_position_encoding: Encodings::FloatingPoint,
+					triangle_count: 1,
+					index_format: DataTypes::U16,
+				},
+			});
 
 		let bindings = [
 			DescriptorSetBindingTemplate::new(0, DescriptorType::AccelerationStructure, Stages::RAYGEN),
@@ -2908,19 +3621,41 @@ void main() {
 
 		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle);
 
-		let render_target = renderer.create_image(None, extent, Formats::RGBA8UNORM, Uses::Storage, DeviceAccesses::DeviceToHost, UseCases::DYNAMIC, None);
+		let render_target = renderer.build_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceToHost)
+				.use_case(UseCases::DYNAMIC),
+		);
 
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure));
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target, Layouts::General));
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[2], vertex_positions_buffer.into()));
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[3], vertex_colors_buffer.into()));
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[4], index_buffer.into()));
+		let _ = renderer.create_descriptor_binding(
+			descriptor_set,
+			BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure),
+		);
+		let _ = renderer.create_descriptor_binding(
+			descriptor_set,
+			BindingConstructor::image(&bindings[1], render_target, Layouts::General),
+		);
+		let _ = renderer.create_descriptor_binding(
+			descriptor_set,
+			BindingConstructor::buffer(&bindings[2], vertex_positions_buffer.into()),
+		);
+		let _ = renderer.create_descriptor_binding(
+			descriptor_set,
+			BindingConstructor::buffer(&bindings[3], vertex_colors_buffer.into()),
+		);
+		let _ =
+			renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[4], index_buffer.into()));
 
 		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
 
 		let pipeline = renderer.create_ray_tracing_pipeline(
 			pipeline_layout,
-			&[ShaderParameter::new(&raygen_shader, ShaderTypes::RayGen,), ShaderParameter::new(&closest_hit_shader, ShaderTypes::ClosestHit,), ShaderParameter::new(&miss_shader, ShaderTypes::Miss,)],
+			&[
+				ShaderParameter::new(&raygen_shader, ShaderTypes::RayGen),
+				ShaderParameter::new(&closest_hit_shader, ShaderTypes::ClosestHit),
+				ShaderParameter::new(&miss_shader, ShaderTypes::Miss),
+			],
 		);
 
 		let rendering_command_buffer_handle = renderer.create_command_buffer(None, queue_handle);
@@ -2929,11 +3664,24 @@ void main() {
 
 		let instances_buffer = renderer.create_acceleration_structure_instance_buffer(None, 1);
 
-		renderer.write_instance(instances_buffer, 0, [[1f32, 0f32,  0f32, 0f32], [0f32, 1f32,  0f32, 0f32], [0f32, 0f32,  1f32, 0f32]], 0, 0xFF, 0, bottom_level_acceleration_structure);
+		renderer.write_instance(
+			instances_buffer,
+			0,
+			[[1f32, 0f32, 0f32, 0f32], [0f32, 1f32, 0f32, 0f32], [0f32, 0f32, 1f32, 0f32]],
+			0,
+			0xFF,
+			0,
+			bottom_level_acceleration_structure,
+		);
 
-		let scratch_buffer = renderer.create_buffer::<[u8; 1024 * 1024]>(None, Uses::AccelerationStructureBuildScratch, DeviceAccesses::DeviceOnly,);
+		let scratch_buffer = renderer.create_buffer::<[u8; 1024 * 1024]>(
+			None,
+			Uses::AccelerationStructureBuildScratch,
+			DeviceAccesses::DeviceOnly,
+		);
 
-		let raygen_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::HostToDevice);
+		let raygen_sbt_buffer =
+			renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::HostToDevice);
 		let miss_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::HostToDevice);
 		let hit_sbt_buffer = renderer.create_buffer::<[u8; 64]>(None, Uses::ShaderBindingTable, DeviceAccesses::HostToDevice);
 
@@ -2978,12 +3726,17 @@ void main() {
 
 			ray_tracing_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
 
-			ray_tracing_pipeline_command.trace_rays(BindingTables {
-				raygen: BufferStridedRange::new(raygen_sbt_buffer.into(), 0, 64, 64),
-				hit: BufferStridedRange::new(hit_sbt_buffer.into(), 0, 64, 64),
-				miss: BufferStridedRange::new(miss_sbt_buffer.into(), 0, 64, 64),
-				callable: None,
-			}, 1920, 1080, 1);
+			ray_tracing_pipeline_command.trace_rays(
+				BindingTables {
+					raygen: BufferStridedRange::new(raygen_sbt_buffer.into(), 0, 64, 64),
+					hit: BufferStridedRange::new(hit_sbt_buffer.into(), 0, 64, 64),
+					miss: BufferStridedRange::new(miss_sbt_buffer.into(), 0, 64, 64),
+					callable: None,
+				},
+				1920,
+				1080,
+				1,
+			);
 
 			let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
 
@@ -2993,7 +3746,12 @@ void main() {
 
 			assert!(!renderer.has_errors());
 
-			let pixels = unsafe { std::slice::from_raw_parts(renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8, (extent.width() * extent.height()) as usize) };
+			let pixels = unsafe {
+				std::slice::from_raw_parts(
+					renderer.get_image_data(texure_copy_handles[0]).as_ptr() as *const RGBAu8,
+					(extent.width() * extent.height()) as usize,
+				)
+			};
 
 			check_triangle(pixels, extent);
 		}

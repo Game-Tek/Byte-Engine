@@ -9,9 +9,9 @@ use super::{ReadTargets, ReadTargetsMut};
 /// The resource reader trait provides methods to read a single resource's binary data.
 /// An instance of a resource reader will usually be paired with a resource `Reference` to perform the loading of the resource.
 pub trait ResourceReader: Send + Sync + Debug {
-    fn read_into<'b, 'c: 'b, 'a: 'b>(
-        &'b mut self,
-        stream_descriptions: Option<&'c [StreamDescription]>,
-        read_target: ReadTargetsMut<'a>,
-    ) -> Result<ReadTargets<'a>, ()>;
+	fn read_into<'b, 'c: 'b, 'a: 'b>(
+		&'b mut self,
+		stream_descriptions: Option<&'c [StreamDescription]>,
+		read_target: ReadTargetsMut<'a>,
+	) -> Result<ReadTargets<'a>, ()>;
 }

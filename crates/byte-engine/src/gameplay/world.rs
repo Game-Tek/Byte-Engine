@@ -1,4 +1,15 @@
-use crate::{application::Time, camera::Camera, core::{EntityHandle, channel::{Channel, DefaultChannel}, factory::{CreateMessage, Factory}, listener::{DefaultListener, Listener}}, gameplay::{anchor::AnchorSystem, transform::TransformationUpdate}, physics::{self, dynabit}};
+use crate::{
+	application::Time,
+	camera::Camera,
+	core::{
+		channel::{Channel, DefaultChannel},
+		factory::{CreateMessage, Factory},
+		listener::{DefaultListener, Listener},
+		EntityHandle,
+	},
+	gameplay::{anchor::AnchorSystem, transform::TransformationUpdate},
+	physics::{self, dynabit},
+};
 
 pub struct DefaultWorld {
 	body_factory: Factory<EntityHandle<dyn physics::Body>>,

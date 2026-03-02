@@ -2,23 +2,32 @@ use crate::{
 	application::{parameters::Parameters, thread::Thread},
 	audio::generator::Generator,
 	core::{
-		Entity, EntityHandle, channel::{Channel, DefaultChannel}, factory::{CreateMessage, Factory}, listener::{DefaultListener, Listener}, task
+		channel::{Channel, DefaultChannel},
+		factory::{CreateMessage, Factory},
+		listener::{DefaultListener, Listener},
+		task, Entity, EntityHandle,
 	},
-	gameplay::{Transformable, transform::TransformationUpdate, world::DefaultWorld},
+	gameplay::{transform::TransformationUpdate, world::DefaultWorld, Transformable},
 	input::{
-		Action, input_trigger, utils::{
-			register_gamepad_device_class, register_keyboard_device_class,
-			register_mouse_device_class,
-		}
+		input_trigger,
+		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
+		Action,
 	},
-	inspector::{Inspector, http::HttpInspectorServer},
+	inspector::{http::HttpInspectorServer, Inspector},
 	physics::dynabit::{self, body::PhysicsBody},
 	rendering::{
-		RenderableMesh, lights::Lights, pipelines::{
+		lights::Lights,
+		pipelines::{
 			simple::{SimpleRenderPass, SimpleSceneManager},
 			visibility::VisibilityWorldRenderDomain,
-		}, render_pass::RenderPass, render_passes::{aces::AcesToneMapPass, agx::AgxToneMapPass}, renderable, renderer, texture_manager::TextureManager
-	}, ui::render_pass::{UiRenderData, UiRenderPass},
+		},
+		render_pass::RenderPass,
+		render_passes::{aces::AcesToneMapPass, agx::AgxToneMapPass},
+		renderable, renderer,
+		texture_manager::TextureManager,
+		RenderableMesh,
+	},
+	ui::render_pass::{UiRenderData, UiRenderPass},
 };
 use std::{
 	net::{Ipv4Addr, Ipv6Addr},
@@ -49,8 +58,7 @@ use crate::{
 	input, physics,
 	rendering::{
 		self, common_shader_generator::CommonShaderGenerator,
-		pipelines::visibility::shader_generator::VisibilityShaderGenerator, renderer::Renderer,
-		window::Window,
+		pipelines::visibility::shader_generator::VisibilityShaderGenerator, renderer::Renderer, window::Window,
 	},
 };
 
@@ -230,14 +238,9 @@ impl GraphicsApplication {
 						close = true;
 					}
 
-					if let Some((device_handle, input_source_action, value)) =
-						process_default_window_input(input_system, event)
+					if let Some((device_handle, input_source_action, value)) = process_default_window_input(input_system, event)
 					{
-						input_system.record_trigger_value_for_device(
-							device_handle,
-							input_source_action,
-							value,
-						);
+						input_system.record_trigger_value_for_device(device_handle, input_source_action, value);
 					}
 				}
 			}
@@ -280,8 +283,7 @@ impl GraphicsApplication {
 			}
 
 			while let Some(message) = cameras_listener.read() {
-				self.renderer
-					.create_camera(message.handle().clone(), message.into_data());
+				self.renderer.create_camera(message.handle().clone(), message.into_data());
 			}
 
 			self.renderer.prepare(&mut renderer_transforms_listener);
@@ -315,7 +317,14 @@ impl GraphicsApplication {
 		self.close = true;
 
 		#[cfg(debug_assertions)]
-		log::debug!("Run stats:\n\tElapsed time: {:#?}\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}", self.start_time.elapsed(), self.start_time.elapsed().div_f32(self.tick_count as f32), self.min_frame_time, self.max_frame_time, self.ttff);
+		log::debug!(
+			"Run stats:\n\tElapsed time: {:#?}\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}",
+			self.start_time.elapsed(),
+			self.start_time.elapsed().div_f32(self.tick_count as f32),
+			self.min_frame_time,
+			self.max_frame_time,
+			self.ttff
+		);
 	}
 
 	pub fn input_system(&self) -> &input::InputManager {
@@ -400,9 +409,8 @@ impl Parameters for GraphicsApplication {
 pub fn default_setup(application: &mut GraphicsApplication) {
 	{
 		let generator = {
-			let visibility_shader_generation = VisibilityShaderGenerator::new(
-				false, false, false, false, false, false, true, false,
-			);
+			let visibility_shader_generation =
+				VisibilityShaderGenerator::new(false, false, false, false, false, false, true, false);
 			visibility_shader_generation
 		};
 
@@ -420,10 +428,10 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 
 /// Creates a new window under the root space with the application name and an extent of 1920x1080.
 pub fn setup_default_window(application: &mut GraphicsApplication) {
-	application.window_factory.0.create(Window::new(
-		application.get_name(),
-		Extent::rectangle(1920, 1080),
-	));
+	application
+		.window_factory
+		.0
+		.create(Window::new(application.get_name(), Extent::rectangle(1920, 1080)));
 }
 
 /// Sets up the default resource and asset management for the application.
@@ -498,10 +506,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 
 	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		EntityHandle::from(VisibilityWorldRenderDomain::new(
-			renderer.device_mut(),
-			texture_manager,
-		))
+		EntityHandle::from(VisibilityWorldRenderDomain::new(renderer.device_mut(), texture_manager))
 	};
 
 	renderer.add_scene_manager(sm);
@@ -524,9 +529,7 @@ pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 
 	let renderer = &mut application.renderer;
 
-	renderer.add_post_scene_render_pass_for_all_views(|render_pass_builder| {
-		Box::new(AgxToneMapPass::new(render_pass_builder))
-	});
+	renderer.add_post_scene_render_pass_for_all_views(|render_pass_builder| Box::new(AgxToneMapPass::new(render_pass_builder)));
 }
 
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
@@ -538,12 +541,7 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 
 			move |mut rx| {
 				let Ok(mut audio_system) = DefaultAudioSystem::try_new()
-					.map_err(|e| {
-						format!(
-							"Failed to spawn audio system. No audio will play. Reason: {}",
-							e
-						)
-					})
+					.map_err(|e| format!("Failed to spawn audio system. No audio will play. Reason: {}", e))
 					.warn()
 				else {
 					return;
@@ -578,11 +576,7 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 pub fn process_default_window_input(
 	input_system: &mut input::InputManager,
 	event: ghi::Events,
-) -> Option<(
-	input::DeviceHandle,
-	input::input_manager::TriggerReference,
-	input::Value,
-)> {
+) -> Option<(input::DeviceHandle, input::input_manager::TriggerReference, input::Value)> {
 	let mouse_device_handle = input_system
 		.get_devices_by_class_name("Mouse")
 		.unwrap()

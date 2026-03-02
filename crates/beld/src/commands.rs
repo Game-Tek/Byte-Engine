@@ -1,7 +1,5 @@
 use resource_management::{
-	asset::{
-		FileStorageBackend, ResourceId
-	},
+	asset::{FileStorageBackend, ResourceId},
 	resource::{ReadStorageBackend, RedbStorageBackend, WriteStorageBackend},
 };
 use utils::{r#async::StreamExt, sync::Arc};

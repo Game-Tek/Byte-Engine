@@ -32,11 +32,15 @@ pub use vulkan::Frame;
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub use vulkan::CommandBufferRecording;
 
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+pub use vulkan::queue::Queue;
+
 pub mod buffer;
 pub mod command_buffer;
 pub mod device;
 pub mod frame;
 pub mod image;
+pub mod queue;
 pub mod raster_pipeline;
 pub mod sampler;
 

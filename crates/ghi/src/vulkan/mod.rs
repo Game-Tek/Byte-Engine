@@ -57,7 +57,7 @@ pub(super) struct TopLevelAccelerationStructureHandle(pub(super) u64);
 pub(super) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum Handle {
+pub enum Handle {
 	Image(ImageHandle),
 	Buffer(BufferHandle),
 	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
@@ -142,10 +142,10 @@ pub(crate) struct DebugCallbackData {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
-struct TransitionState {
-	stage: vk::PipelineStageFlags2,
-	access: vk::AccessFlags2,
-	layout: vk::ImageLayout,
+pub struct TransitionState {
+	pub stage: vk::PipelineStageFlags2,
+	pub access: vk::AccessFlags2,
+	pub layout: vk::ImageLayout,
 }
 
 struct Mesh {

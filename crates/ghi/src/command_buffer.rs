@@ -1,15 +1,17 @@
 use utils::Extent;
 
 use crate::{
-	AttachmentInformation, BaseBufferHandle, BindingTables, BottomLevelAccelerationStructureBuild, BufferDescriptor,
-	BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle,
-	PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
-	TopLevelAccelerationStructureBuild,
+	graphics_hardware_interface, AttachmentInformation, BaseBufferHandle, BindingTables, BottomLevelAccelerationStructureBuild,
+	BufferDescriptor, BufferHandle, ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts,
+	MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle,
+	TextureCopyHandle, TopLevelAccelerationStructureBuild,
 };
 
 pub trait CommandBufferRecording
 where
 	Self: Sized, {
+	type Result<'a>;
+
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);
 	fn build_bottom_level_acceleration_structures(
 		&mut self,
@@ -51,7 +53,9 @@ where
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
 
-	fn present(&mut self, present_key: PresentKey);
+	fn execute(self, synchronizer: SynchronizerHandle);
+
+	fn end<'a>(self, present_keys: &'a [PresentKey]) -> Self::Result<'a>;
 }
 
 pub trait CommonCommandBufferMode {

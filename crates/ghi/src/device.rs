@@ -122,7 +122,7 @@ where
 	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
 
 	// Return a mutable slice to the buffer data.
-	fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: BufferHandle<T>) -> &'a mut T;
+	fn get_mut_buffer_slice<'a, T: Copy>(&'a mut self, buffer_handle: BufferHandle<T>) -> &'a mut T;
 
 	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
 

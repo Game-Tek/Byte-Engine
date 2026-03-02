@@ -2,8 +2,9 @@ use ash::vk::{self};
 use utils::Extent;
 
 use crate::{
+	device::Device as _,
 	graphics_hardware_interface,
-	vulkan::{BufferCopy, BufferHandle, HandleLike as _, ImageCopy, ImageHandle, Tasks},
+	vulkan::{BufferCopy, BufferHandle, Handle, HandleLike as _, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
 	CommandBufferRecording, Device, FrameKey,
 };
 
@@ -23,11 +24,12 @@ impl<'a> Frame<'a> {
 	}
 }
 
-impl<'a> crate::frame::Frame for Frame<'a> {
-	type CBR<'f>
-		= CommandBufferRecording<'f>
-	where
-		Self: 'f;
+impl<'a> crate::frame::Frame<'a> for Frame<'a> {
+	type CBR = CommandBufferRecording<'a>;
+
+	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
+		self.device.get_mut_buffer_slice(buffer_handle)
+	}
 
 	fn acquire_swapchain_image(&mut self, swapchain_handle: crate::SwapchainHandle) -> (crate::PresentKey, utils::Extent) {
 		let swapchains = &self.device.swapchains;
@@ -154,7 +156,7 @@ impl<'a> crate::frame::Frame for Frame<'a> {
 			.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
 	}
 
-	fn create_command_buffer_recording<'f>(&'f mut self, command_buffer_handle: crate::CommandBufferHandle) -> Self::CBR<'f> {
+	fn create_command_buffer_recording(&'a mut self, command_buffer_handle: crate::CommandBufferHandle) -> Self::CBR {
 		let frame_key = self.frame_key;
 
 		// Update descriptors before creating command buffer
@@ -189,17 +191,15 @@ impl<'a> crate::frame::Frame for Frame<'a> {
 				}
 
 				// Enqueue staging → GPU copy
-				self.device.pending_buffer_syncs.lock().push_back(frame_buffer_handle);
+				self.device.pending_buffer_syncs.insert(frame_buffer_handle);
 			}
 		}
 
-		let pending_buffer_syncs = &self.device.pending_buffer_syncs;
+		let pending_buffers = &mut self.device.pending_buffer_syncs;
 		let buffers = &self.device.buffers;
 
-		let mut pending_buffers = pending_buffer_syncs.lock();
-
 		let buffer_copies: Vec<_> = pending_buffers
-			.drain(..)
+			.drain()
 			.map(|e| {
 				let dst_buffer_handle = e;
 
@@ -210,15 +210,11 @@ impl<'a> crate::frame::Frame for Frame<'a> {
 			})
 			.collect();
 
-		drop(pending_buffers);
-
-		let pending_image_syncs = &self.device.pending_image_syncs;
+		let pending_images = &mut self.device.pending_image_syncs;
 		let images = &self.device.images;
 
-		let mut pending_images = pending_image_syncs.lock();
-
 		let image_copies: Vec<_> = pending_images
-			.drain(..)
+			.drain()
 			.map(|e| {
 				let dst_image_handle = e;
 
@@ -228,8 +224,6 @@ impl<'a> crate::frame::Frame for Frame<'a> {
 			})
 			.collect();
 
-		drop(pending_images);
-
 		let mut recording = CommandBufferRecording::new(self.device, command_buffer_handle, frame_key.into());
 
 		recording.sync_buffers(buffer_copies.iter().copied());
@@ -238,7 +232,7 @@ impl<'a> crate::frame::Frame for Frame<'a> {
 		recording
 	}
 
-	fn get_mut_dynamic_buffer_slice<T: Copy>(&self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
+	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
 		let buffers = &self.device.buffers;
 		let frame_key = self.frame_key;
 
@@ -257,27 +251,153 @@ impl<'a> crate::frame::Frame for Frame<'a> {
 		}
 
 		// Fallback: original behavior for non-persistent-write buffers
-		self.device.pending_buffer_syncs.lock().push_back(handle);
+		self.device.pending_buffer_syncs.insert(handle);
 
 		let staging_buffer = buffer.staging.unwrap().access(buffers);
 
 		unsafe { std::mem::transmute(staging_buffer.pointer) }
 	}
 
-	fn device(&mut self) -> &mut Device {
-		self.device
-	}
-
-	fn execute<'f>(
-		&'f mut self,
-		mut command_buffer_recording: Self::CBR<'f>,
+	fn execute<'s>(
+		&mut self,
+		cbr: <Self::CBR as crate::command_buffer::CommandBufferRecording>::Result<'s>,
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	) {
-		command_buffer_recording.execute(&[], &[], present_keys, synchronizer);
+		let (command_buffer_handle, states, _) = cbr;
 
-		for (&k, v) in &command_buffer_recording.states {
-			self.device.states.insert(k, *v);
+		let command_buffer = self.device.command_buffers[0].frames[0];
+
+		let command_buffers = [command_buffer.command_buffer];
+
+		let command_buffer_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])];
+
+		let wait_for_synchronizer_handles: [graphics_hardware_interface::SynchronizerHandle; 0] = [];
+
+		let wait_semaphores = wait_for_synchronizer_handles
+			.iter()
+			.map(|&synchronizer| {
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(self.get_synchronizer(synchronizer).semaphore)
+					.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER)
+			})
+			.chain(present_keys.iter().map(|present_key| {
+				let swapchain = self.get_swapchain(present_key.swapchain);
+				let semaphore = swapchain.acquire_synchronizers[present_key.sequence_index as usize]
+					.access(&self.device.synchronizers)
+					.semaphore;
+
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(semaphore)
+					.stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+			}))
+			.collect::<Vec<_>>();
+
+		let signal_synchronizer_handles: [graphics_hardware_interface::SynchronizerHandle; 0] = [];
+
+		let signal_semaphores = signal_synchronizer_handles
+			.iter()
+			.map(|&synchronizer| {
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(self.get_synchronizer(synchronizer).semaphore)
+					.stage_mask(vk::PipelineStageFlags2::empty())
+			})
+			.chain(present_keys.iter().map(|present_key| {
+				let swapchain = self.get_swapchain(present_key.swapchain);
+				let presentable_image_handle = self.get_presentable_swapchain_image_handle(*present_key);
+				let wait_stage = states
+					.get(&Handle::Image(presentable_image_handle))
+					.map(|state| state.stage)
+					.unwrap_or(vk::PipelineStageFlags2::ALL_COMMANDS);
+
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(
+						swapchain.submit_synchronizers[present_key.image_index as usize]
+							.access(&self.device.synchronizers)
+							.semaphore,
+					)
+					.stage_mask(wait_stage)
+			}))
+			.collect::<Vec<_>>();
+
+		let submit_info = vk::SubmitInfo2::default()
+			.command_buffer_infos(&command_buffer_infos)
+			.wait_semaphore_infos(&wait_semaphores)
+			.signal_semaphore_infos(&signal_semaphores);
+
+		let execution_completion_synchronizer = &self.get_synchronizer(synchronizer);
+
+		let vk_queue = command_buffer.vk_queue;
+
+		unsafe {
+			self.device
+				.device
+				.queue_submit2(vk_queue, &[submit_info], execution_completion_synchronizer.fence)
+				.expect("Failed to submit command buffer.");
 		}
+
+		for presentation in present_keys {
+			let swapchain = self.get_swapchain(presentation.swapchain);
+
+			let wait_semaphores = signal_synchronizer_handles
+				.iter()
+				.map(|synchronizer| self.get_synchronizer(*synchronizer).semaphore)
+				.chain(present_keys.iter().map(|present_key| {
+					self.get_swapchain(present_key.swapchain).submit_synchronizers[present_key.image_index as usize]
+						.access(&self.device.synchronizers)
+						.semaphore
+				}))
+				.collect::<Vec<_>>();
+
+			let swapchains = [swapchain.swapchain];
+			let image_indices = [presentation.image_index as u32];
+
+			let mut results = [vk::Result::default()];
+
+			let present_info = vk::PresentInfoKHR::default()
+				.results(&mut results)
+				.swapchains(&swapchains)
+				.wait_semaphores(&wait_semaphores)
+				.image_indices(&image_indices);
+
+			let _ = unsafe {
+				self.device
+					.swapchain
+					.queue_present(vk_queue, &present_info)
+					.expect("No present")
+			};
+
+			if !results.iter().all(|result| *result == vk::Result::SUCCESS) {
+				dbg!("Some error occurred during presentation");
+			}
+		}
+
+		// let states = t.states;
+
+		// for (k, v) in states {
+		// 	self.device.states.insert(k, v);
+		// }
+	}
+}
+
+impl<'a> Frame<'a> {
+	pub(crate) fn get_synchronizer(
+		&self,
+		syncronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+	) -> &Synchronizer {
+		&self.device.synchronizers
+			[self.device.get_syncronizer_handles(syncronizer_handle)[self.frame_key.sequence_index as usize].0 as usize]
+	}
+
+	pub(crate) fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {
+		&self.device.swapchains[swapchain_handle.0 as usize]
+	}
+
+	pub(crate) fn get_presentable_swapchain_image_handle(
+		&self,
+		present_key: graphics_hardware_interface::PresentKey,
+	) -> ImageHandle {
+		let swapchain = self.get_swapchain(present_key.swapchain);
+		swapchain.native_images[present_key.image_index as usize]
 	}
 }

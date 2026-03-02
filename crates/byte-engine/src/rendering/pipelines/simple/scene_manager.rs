@@ -296,7 +296,7 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 					let vertex_count = positions.len();
 					let index_count = indices.len();
 
-					let vertex_buffer = frame.device().get_mut_buffer_slice(self.vertex_positions_buffer);
+					let vertex_buffer = frame.get_mut_buffer_slice(self.vertex_positions_buffer);
 
 					let mesh_ref = self
 						.mesh_buffers_stats
@@ -307,7 +307,7 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 
 					vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(&positions);
 
-					let index_buffer = frame.device().get_mut_buffer_slice(self.indeces_buffer);
+					let index_buffer = frame.get_mut_buffer_slice(self.indeces_buffer);
 
 					index_buffer[index_buffer_offset..][..index_count]
 						.iter_mut()

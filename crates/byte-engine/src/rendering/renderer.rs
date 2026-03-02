@@ -13,6 +13,7 @@ use ghi::{
 	},
 	device::Device as _,
 	frame::Frame as _,
+	queue::Queue as _,
 	raster_pipeline,
 	vulkan::command_buffer,
 };
@@ -417,10 +418,9 @@ impl Renderer {
 		let synchronizer = self.render_finished_synchronizer;
 
 		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
-
 		execute(&mut command_buffer_recording);
 
-		command_buffer_recording.execute(&[], &[], &present_keys, synchronizer);
+		frame.execute(command_buffer_recording.end(&present_keys), &present_keys, synchronizer);
 	}
 
 	pub fn device_mut(&mut self) -> &mut ghi::Device {

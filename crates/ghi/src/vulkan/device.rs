@@ -13,13 +13,10 @@ use crate::{
 };
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
+use utils::hash::{HashSet, HashSetExt};
 use utils::{
 	hash::{HashMap, HashMapExt},
 	Extent,
-};
-use utils::{
-	hash::{HashSet, HashSetExt},
-	sync::Mutex,
 };
 
 use super::{
@@ -90,9 +87,9 @@ pub struct Device {
 	pub(super) states: HashMap<Handle, TransitionState>,
 
 	/// Tracks pending buffer host to device, or device to host synchronization operations.
-	pub(super) pending_buffer_syncs: Mutex<VecDeque<BufferHandle>>,
+	pub(super) pending_buffer_syncs: HashSet<BufferHandle>,
 	/// Tracks pending image host to device, or device to host synchronization operations.
-	pub(super) pending_image_syncs: Mutex<VecDeque<ImageHandle>>,
+	pub(super) pending_image_syncs: HashSet<ImageHandle>,
 
 	/// Tracks all dynamic buffer master handles that use the persistent write mode.
 	/// These buffers have their source buffer memcpy'd into the per-frame staging
@@ -572,8 +569,8 @@ impl Device {
 
 			states: HashMap::with_capacity(4096),
 
-			pending_buffer_syncs: Mutex::new(VecDeque::with_capacity(128)),
-			pending_image_syncs: Mutex::new(VecDeque::with_capacity(128)),
+			pending_buffer_syncs: HashSet::with_capacity(128),
+			pending_image_syncs: HashSet::with_capacity(128),
 
 			persistent_write_dynamic_buffers: Vec::with_capacity(64),
 
@@ -3233,10 +3230,10 @@ impl crate::device::Device for Device {
 		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> crate::CommandBufferRecording<'_> {
-		let mut pending_buffers = self.pending_buffer_syncs.lock();
+		let pending_buffers = &mut self.pending_buffer_syncs;
 
 		let buffer_copies: Vec<BufferCopy> = pending_buffers
-			.drain(..)
+			.drain()
 			.map(|e| {
 				let dst_buffer_handle = e;
 
@@ -3248,12 +3245,10 @@ impl crate::device::Device for Device {
 			})
 			.collect();
 
-		drop(pending_buffers);
-
-		let mut pending_images = self.pending_image_syncs.lock();
+		let pending_images = &mut self.pending_image_syncs;
 
 		let image_copies: Vec<ImageCopy> = pending_images
-			.drain(..)
+			.drain()
 			.map(|e| {
 				let dst_image_handle = e;
 
@@ -3262,8 +3257,6 @@ impl crate::device::Device for Device {
 				ImageCopy::new(dst_image_handle, 0, dst_image_handle, 0, dst_image.size)
 			})
 			.collect();
-
-		drop(pending_images);
 
 		let mut recording = CommandBufferRecording::new(self, command_buffer_handle, None);
 
@@ -3352,13 +3345,16 @@ impl crate::device::Device for Device {
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 
-	fn get_mut_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'a mut T {
+	fn get_mut_buffer_slice<'a, T: Copy>(
+		&'a mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> &'a mut T {
 		let handle = BufferHandle(buffer_handle.0);
 
 		let buffer = self.buffers[handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 
-		self.pending_buffer_syncs.lock().push_back(handle);
+		self.pending_buffer_syncs.insert(handle);
 
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
@@ -3385,7 +3381,7 @@ impl crate::device::Device for Device {
 
 		f(slice);
 
-		self.pending_image_syncs.lock().push_back(handle);
+		self.pending_image_syncs.insert(handle);
 	}
 
 	fn build_image(&mut self, builder: image::Builder) -> graphics_hardware_interface::ImageHandle {

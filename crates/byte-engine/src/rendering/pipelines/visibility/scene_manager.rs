@@ -675,18 +675,22 @@ impl VisibilityWorldRenderDomain {
 			.collect::<Vec<_>>();
 
 		let vertex_positions_buffer = device.get_mut_buffer_slice(self.vertex_positions_buffer);
-		let vertex_normals_buffer = device.get_mut_buffer_slice(self.vertex_normals_buffer);
-		let vertex_uv_buffer = device.get_mut_buffer_slice(self.vertex_uvs_buffer);
-		let indices_buffer = device.get_mut_buffer_slice(self.vertex_indices_buffer);
-		let primitive_indices_buffer = device.get_mut_buffer_slice(self.primitive_indices_buffer);
-		let meshlets_data_slice = device.get_mut_buffer_slice(self.meshlets_data_buffer);
-
 		vertex_positions_buffer[self.visibility_info.vertex_count as usize..positions.len()].copy_from_slice(&positions);
+
+		let vertex_normals_buffer = device.get_mut_buffer_slice(self.vertex_normals_buffer);
 		vertex_normals_buffer[self.visibility_info.vertex_count as usize..normals.len()].copy_from_slice(&normals);
+
+		let vertex_uv_buffer = device.get_mut_buffer_slice(self.vertex_uvs_buffer);
 		vertex_uv_buffer[self.visibility_info.vertex_count as usize..uvs.len()].copy_from_slice(&uvs);
+
+		let indices_buffer = device.get_mut_buffer_slice(self.vertex_indices_buffer);
 		indices_buffer[self.visibility_info.vertex_count as usize..indices.len()].copy_from_slice(&indices);
+
+		let primitive_indices_buffer = device.get_mut_buffer_slice(self.primitive_indices_buffer);
 		primitive_indices_buffer[self.visibility_info.primitives_count as usize..meshlet_indices.len()]
 			.copy_from_slice(&meshlet_indices);
+
+		let meshlets_data_slice = device.get_mut_buffer_slice(self.meshlets_data_buffer);
 
 		let meshlets = [ShaderMeshletData {
 			primitive_offset: 0,

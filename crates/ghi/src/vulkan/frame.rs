@@ -269,7 +269,8 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		Self: 'f, {
 		let (command_buffer_handle, states, present_keys) = cbr;
 
-		let command_buffer = self.device.command_buffers[command_buffer_handle.0 as usize].frames[self.frame_key.sequence_index as usize];
+		let command_buffer =
+			self.device.command_buffers[command_buffer_handle.0 as usize].frames[self.frame_key.sequence_index as usize];
 
 		let command_buffers = [command_buffer.command_buffer];
 

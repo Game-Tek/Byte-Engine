@@ -4,10 +4,10 @@ use crate::{
 	image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle, BindingConstructor,
 	BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
 	CommandBufferRecording, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
-	DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses, DynamicBufferHandle, Frame, ImageHandle,
-	MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentationModes, PushConstantRange, QueueHandle,
-	SamplerHandle, ShaderBindingDescriptor, ShaderHandle, ShaderParameter, ShaderSource, ShaderTypes, SwapchainHandle,
-	SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, VertexElement,
+	DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses, DynamicBufferHandle, Frame, ImageHandle, MeshHandle,
+	PipelineHandle, PipelineLayoutHandle, PresentationModes, PushConstantRange, QueueHandle, SamplerHandle,
+	ShaderBindingDescriptor, ShaderHandle, ShaderParameter, ShaderSource, ShaderTypes, SwapchainHandle, SynchronizerHandle,
+	TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, VertexElement,
 };
 
 /// The `Device` trait represents a graphics device that can be used to create and manage resources such as buffers, images, pipelines, and descriptor sets.

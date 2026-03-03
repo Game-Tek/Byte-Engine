@@ -2191,8 +2191,7 @@ impl Device {
 							},
 							binding,
 						)),
-						graphics_hardware_interface::Descriptor::StaticSamplers => None,
-						_ => panic!("Unhandled descriptor update type"),
+						_ => None,
 					};
 
 					if let Some(write) = new_descriptor_write {
@@ -3186,8 +3185,9 @@ impl crate::device::Device for Device {
 			.map(|_| {
 				let _ = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
 
-				let command_pool_create_info =
-					vk::CommandPoolCreateInfo::default().queue_family_index(queue.queue_family_index);
+				let command_pool_create_info = vk::CommandPoolCreateInfo::default()
+					.flags(vk::CommandPoolCreateFlags::TRANSIENT)
+					.queue_family_index(queue.queue_family_index);
 
 				let command_pool = unsafe {
 					self.device

@@ -1668,7 +1668,7 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 				let index_in_layout = pipeline_layout
 					.descriptor_set_template_indices
 					.get(&descriptor_set.descriptor_set_layout)
-					.unwrap();
+					.expect("Descriptor set layout not found in pipeline layout. You're likely trying to bind a descriptor set that is not compatible with the currently bound pipeline layout, which means you forgot to add this set to the layout or you bound the wrong layout");
 				(
 					*index_in_layout,
 					internal_descriptor_set_handle,

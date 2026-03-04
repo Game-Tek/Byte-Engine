@@ -128,7 +128,7 @@ impl BilateralBlurPass {
 		);
 		device.create_descriptor_binding(
 			descriptor_set_x,
-			ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, x_blur_map, ghi::Layouts::General),
+			ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, x_blur_map),
 		);
 
 		device.create_descriptor_binding(
@@ -151,7 +151,7 @@ impl BilateralBlurPass {
 		);
 		device.create_descriptor_binding(
 			descriptor_set_y,
-			ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, y_blur_map, ghi::Layouts::General),
+			ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, y_blur_map),
 		);
 
 		BilateralBlurPass {

@@ -66,7 +66,7 @@ impl<'a> RenderPassBuilder<'a> {
 		let name = builder.get_name().unwrap().to_string();
 		let format = builder.get_format();
 
-		let image = self.device.build_image(builder);
+		let image = self.device.build_image(builder.use_case(ghi::UseCases::DYNAMIC));
 
 		self.images.insert(name, self.view_id, image.clone(), format);
 
@@ -103,6 +103,7 @@ impl Into<ghi::ImageHandle> for &ReadFromResult {
 	}
 }
 
+#[derive(Clone, Copy)]
 pub struct RenderToResult {
 	image: ghi::ImageHandle,
 	format: ghi::Formats,

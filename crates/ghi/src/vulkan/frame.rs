@@ -151,7 +151,9 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 		let current_frame = self.frame_key.sequence_index;
 
-		let handle = image_handles[current_frame as usize];
+		let Some(&handle) = image_handles.get(current_frame as usize) else {
+			panic!("Could not get an image handle for the current frame. This likely means the image is not double or triple buffered, which is required for resizing.");
+		};
 
 		self.device.resize_image_internal(handle, extent, current_frame);
 

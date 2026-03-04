@@ -94,6 +94,7 @@ pub(crate) struct DescriptorSetLayout {
 #[derive(Clone)]
 pub(crate) struct PipelineLayout {
 	pipeline_layout: vk::PipelineLayout,
+	/// Maps set handles to their index in the pipeline layout. This is needed to know which set index to use when writing descriptors.
 	descriptor_set_template_indices: HashMap<graphics_hardware_interface::DescriptorSetTemplateHandle, u32>,
 }
 

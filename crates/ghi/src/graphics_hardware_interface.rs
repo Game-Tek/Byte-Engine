@@ -1154,6 +1154,75 @@ pub enum SamplerAddressingModes {
 	Border {},
 }
 
+/// The `DescriptorSetBindingType` trait brands descriptor set binding templates with a compile-time descriptor type.
+pub trait DescriptorSetBindingType {
+	const DESCRIPTOR_TYPE: DescriptorType;
+}
+
+/// The `UniformBufferDescriptorBinding` struct brands a descriptor set binding template as a uniform-buffer binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UniformBufferDescriptorBinding;
+
+impl DescriptorSetBindingType for UniformBufferDescriptorBinding {
+	const DESCRIPTOR_TYPE: DescriptorType = DescriptorType::UniformBuffer;
+}
+
+/// The `StorageBufferDescriptorBinding` struct brands a descriptor set binding template as a storage-buffer binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StorageBufferDescriptorBinding;
+
+impl DescriptorSetBindingType for StorageBufferDescriptorBinding {
+	const DESCRIPTOR_TYPE: DescriptorType = DescriptorType::StorageBuffer;
+}
+
+/// The `SampledImageDescriptorBinding` struct brands a descriptor set binding template as a sampled-image binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SampledImageDescriptorBinding;
+
+impl DescriptorSetBindingType for SampledImageDescriptorBinding {
+	const DESCRIPTOR_TYPE: DescriptorType = DescriptorType::SampledImage;
+}
+
+/// The `CombinedImageSamplerDescriptorBinding` struct brands a descriptor set binding template as a combined-image-sampler binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CombinedImageSamplerDescriptorBinding;
+
+impl DescriptorSetBindingType for CombinedImageSamplerDescriptorBinding {
+	const DESCRIPTOR_TYPE: DescriptorType = DescriptorType::CombinedImageSampler;
+}
+
+/// The `StorageImageDescriptorBinding` struct brands a descriptor set binding template as a storage-image binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StorageImageDescriptorBinding;
+
+impl DescriptorSetBindingType for StorageImageDescriptorBinding {
+	const DESCRIPTOR_TYPE: DescriptorType = DescriptorType::StorageImage;
+}
+
+/// The `InputAttachmentDescriptorBinding` struct brands a descriptor set binding template as an input-attachment binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InputAttachmentDescriptorBinding;
+
+impl DescriptorSetBindingType for InputAttachmentDescriptorBinding {
+	const DESCRIPTOR_TYPE: DescriptorType = DescriptorType::InputAttachment;
+}
+
+/// The `SamplerDescriptorBinding` struct brands a descriptor set binding template as a sampler binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SamplerDescriptorBinding;
+
+impl DescriptorSetBindingType for SamplerDescriptorBinding {
+	const DESCRIPTOR_TYPE: DescriptorType = DescriptorType::Sampler;
+}
+
+/// The `AccelerationStructureDescriptorBinding` struct brands a descriptor set binding template as an acceleration-structure binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AccelerationStructureDescriptorBinding;
+
+impl DescriptorSetBindingType for AccelerationStructureDescriptorBinding {
+	const DESCRIPTOR_TYPE: DescriptorType = DescriptorType::AccelerationStructure;
+}
+
 /// Stores the information of a descriptor set layout binding.
 #[derive(Clone)]
 pub struct DescriptorSetBindingTemplate {
@@ -1168,6 +1237,73 @@ pub struct DescriptorSetBindingTemplate {
 	/// The immutable samplers of the descriptor set layout binding.
 	pub(crate) immutable_samplers: Option<Vec<SamplerHandle>>,
 }
+
+/// The `TypedDescriptorSetBindingTemplate` struct provides branded descriptor-set binding templates for compile-time descriptor-type safety.
+#[derive(Clone)]
+pub struct TypedDescriptorSetBindingTemplate<T: DescriptorSetBindingType> {
+	template: DescriptorSetBindingTemplate,
+	type_brand: std::marker::PhantomData<T>,
+}
+
+impl<T: DescriptorSetBindingType> TypedDescriptorSetBindingTemplate<T> {
+	pub const fn new(binding: u32, stages: Stages) -> Self {
+		Self {
+			template: DescriptorSetBindingTemplate::new(binding, T::DESCRIPTOR_TYPE, stages),
+			type_brand: std::marker::PhantomData,
+		}
+	}
+
+	pub const fn new_array(binding: u32, stages: Stages, count: u32) -> Self {
+		Self {
+			template: DescriptorSetBindingTemplate::new_array(binding, T::DESCRIPTOR_TYPE, stages, count),
+			type_brand: std::marker::PhantomData,
+		}
+	}
+
+	pub fn as_raw(&self) -> &DescriptorSetBindingTemplate {
+		&self.template
+	}
+
+	pub fn into_raw(self) -> DescriptorSetBindingTemplate {
+		self.template
+	}
+
+	pub fn binding(&self) -> u32 {
+		self.template.binding()
+	}
+}
+
+impl TypedDescriptorSetBindingTemplate<SamplerDescriptorBinding> {
+	pub fn new_with_immutable_samplers(binding: u32, stages: Stages, samplers: Option<Vec<SamplerHandle>>) -> Self {
+		Self {
+			template: DescriptorSetBindingTemplate::new_with_immutable_samplers(binding, stages, samplers),
+			type_brand: std::marker::PhantomData,
+		}
+	}
+}
+
+impl<T: DescriptorSetBindingType> AsRef<DescriptorSetBindingTemplate> for TypedDescriptorSetBindingTemplate<T> {
+	fn as_ref(&self) -> &DescriptorSetBindingTemplate {
+		self.as_raw()
+	}
+}
+
+impl<T: DescriptorSetBindingType> From<TypedDescriptorSetBindingTemplate<T>> for DescriptorSetBindingTemplate {
+	fn from(value: TypedDescriptorSetBindingTemplate<T>) -> Self {
+		value.into_raw()
+	}
+}
+
+pub type UniformBufferDescriptorSetBindingTemplate = TypedDescriptorSetBindingTemplate<UniformBufferDescriptorBinding>;
+pub type StorageBufferDescriptorSetBindingTemplate = TypedDescriptorSetBindingTemplate<StorageBufferDescriptorBinding>;
+pub type SampledImageDescriptorSetBindingTemplate = TypedDescriptorSetBindingTemplate<SampledImageDescriptorBinding>;
+pub type CombinedImageSamplerDescriptorSetBindingTemplate =
+	TypedDescriptorSetBindingTemplate<CombinedImageSamplerDescriptorBinding>;
+pub type StorageImageDescriptorSetBindingTemplate = TypedDescriptorSetBindingTemplate<StorageImageDescriptorBinding>;
+pub type InputAttachmentDescriptorSetBindingTemplate = TypedDescriptorSetBindingTemplate<InputAttachmentDescriptorBinding>;
+pub type SamplerDescriptorSetBindingTemplate = TypedDescriptorSetBindingTemplate<SamplerDescriptorBinding>;
+pub type AccelerationStructureDescriptorSetBindingTemplate =
+	TypedDescriptorSetBindingTemplate<AccelerationStructureDescriptorBinding>;
 
 impl DescriptorSetBindingTemplate {
 	pub const fn new(binding: u32, descriptor_type: DescriptorType, stages: Stages) -> Self {
@@ -1188,6 +1324,70 @@ impl DescriptorSetBindingTemplate {
 			stages,
 			immutable_samplers: None,
 		}
+	}
+
+	pub const fn uniform_buffer(binding: u32, stages: Stages) -> Self {
+		Self::new(binding, DescriptorType::UniformBuffer, stages)
+	}
+
+	pub const fn uniform_buffer_array(binding: u32, stages: Stages, count: u32) -> Self {
+		Self::new_array(binding, DescriptorType::UniformBuffer, stages, count)
+	}
+
+	pub const fn storage_buffer(binding: u32, stages: Stages) -> Self {
+		Self::new(binding, DescriptorType::StorageBuffer, stages)
+	}
+
+	pub const fn storage_buffer_array(binding: u32, stages: Stages, count: u32) -> Self {
+		Self::new_array(binding, DescriptorType::StorageBuffer, stages, count)
+	}
+
+	pub const fn sampled_image(binding: u32, stages: Stages) -> Self {
+		Self::new(binding, DescriptorType::SampledImage, stages)
+	}
+
+	pub const fn sampled_image_array(binding: u32, stages: Stages, count: u32) -> Self {
+		Self::new_array(binding, DescriptorType::SampledImage, stages, count)
+	}
+
+	pub const fn combined_image_sampler(binding: u32, stages: Stages) -> Self {
+		Self::new(binding, DescriptorType::CombinedImageSampler, stages)
+	}
+
+	pub const fn combined_image_sampler_array(binding: u32, stages: Stages, count: u32) -> Self {
+		Self::new_array(binding, DescriptorType::CombinedImageSampler, stages, count)
+	}
+
+	pub const fn storage_image(binding: u32, stages: Stages) -> Self {
+		Self::new(binding, DescriptorType::StorageImage, stages)
+	}
+
+	pub const fn storage_image_array(binding: u32, stages: Stages, count: u32) -> Self {
+		Self::new_array(binding, DescriptorType::StorageImage, stages, count)
+	}
+
+	pub const fn input_attachment(binding: u32, stages: Stages) -> Self {
+		Self::new(binding, DescriptorType::InputAttachment, stages)
+	}
+
+	pub const fn input_attachment_array(binding: u32, stages: Stages, count: u32) -> Self {
+		Self::new_array(binding, DescriptorType::InputAttachment, stages, count)
+	}
+
+	pub const fn sampler(binding: u32, stages: Stages) -> Self {
+		Self::new(binding, DescriptorType::Sampler, stages)
+	}
+
+	pub const fn sampler_array(binding: u32, stages: Stages, count: u32) -> Self {
+		Self::new_array(binding, DescriptorType::Sampler, stages, count)
+	}
+
+	pub const fn acceleration_structure(binding: u32, stages: Stages) -> Self {
+		Self::new(binding, DescriptorType::AccelerationStructure, stages)
+	}
+
+	pub const fn acceleration_structure_array(binding: u32, stages: Stages, count: u32) -> Self {
+		Self::new_array(binding, DescriptorType::AccelerationStructure, stages, count)
 	}
 
 	pub fn new_with_immutable_samplers(binding: u32, stages: Stages, samplers: Option<Vec<SamplerHandle>>) -> Self {
@@ -1232,17 +1432,13 @@ impl<'a> BindingConstructor<'a> {
 		}
 	}
 
-	pub fn image(
-		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
-		image_handle: ImageHandle,
-		layout: Layouts,
-	) -> Self {
+	pub fn image(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle) -> Self {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
 			descriptor: Descriptor::Image {
 				handle: image_handle,
-				layout,
+				layout: crate::Layouts::General,
 			},
 			frame_offset: None,
 		}
@@ -1330,6 +1526,17 @@ impl<'a> BindingConstructor<'a> {
 
 	pub fn frame(mut self, frame_offset: i8) -> Self {
 		self.frame_offset = Some(frame_offset);
+		self
+	}
+
+	pub fn layout(mut self, layout: crate::Layouts) -> Self {
+		match &mut self.descriptor {
+			Descriptor::Image { layout: old_layout, .. } => {
+				*old_layout = layout;
+			}
+			_ => (),
+		}
+
 		self
 	}
 
@@ -1715,6 +1922,76 @@ pub(super) mod tests {
 		assert_eq!(Formats::U32.encoding(), None);
 		assert_eq!(Formats::BC5.encoding(), None);
 		assert_eq!(Formats::BC7.encoding(), None);
+	}
+
+	#[test]
+	fn descriptor_set_binding_template_type_specific_variants() {
+		let stages = Stages::COMPUTE;
+
+		let templates = [
+			DescriptorSetBindingTemplate::uniform_buffer(0, stages),
+			DescriptorSetBindingTemplate::storage_buffer(1, stages),
+			DescriptorSetBindingTemplate::sampled_image(2, stages),
+			DescriptorSetBindingTemplate::combined_image_sampler(3, stages),
+			DescriptorSetBindingTemplate::storage_image(4, stages),
+			DescriptorSetBindingTemplate::input_attachment(5, stages),
+			DescriptorSetBindingTemplate::sampler(6, stages),
+			DescriptorSetBindingTemplate::acceleration_structure(7, stages),
+		];
+
+		assert!(matches!(templates[0].descriptor_type, DescriptorType::UniformBuffer));
+		assert!(matches!(templates[1].descriptor_type, DescriptorType::StorageBuffer));
+		assert!(matches!(templates[2].descriptor_type, DescriptorType::SampledImage));
+		assert!(matches!(templates[3].descriptor_type, DescriptorType::CombinedImageSampler));
+		assert!(matches!(templates[4].descriptor_type, DescriptorType::StorageImage));
+		assert!(matches!(templates[5].descriptor_type, DescriptorType::InputAttachment));
+		assert!(matches!(templates[6].descriptor_type, DescriptorType::Sampler));
+		assert!(matches!(templates[7].descriptor_type, DescriptorType::AccelerationStructure));
+
+		for template in templates {
+			assert_eq!(template.descriptor_count, 1);
+		}
+
+		let array_templates = [
+			DescriptorSetBindingTemplate::uniform_buffer_array(8, stages, 2),
+			DescriptorSetBindingTemplate::storage_buffer_array(9, stages, 3),
+			DescriptorSetBindingTemplate::sampled_image_array(10, stages, 4),
+			DescriptorSetBindingTemplate::combined_image_sampler_array(11, stages, 5),
+			DescriptorSetBindingTemplate::storage_image_array(12, stages, 6),
+			DescriptorSetBindingTemplate::input_attachment_array(13, stages, 7),
+			DescriptorSetBindingTemplate::sampler_array(14, stages, 8),
+			DescriptorSetBindingTemplate::acceleration_structure_array(15, stages, 9),
+		];
+
+		assert_eq!(array_templates[0].descriptor_count, 2);
+		assert_eq!(array_templates[1].descriptor_count, 3);
+		assert_eq!(array_templates[2].descriptor_count, 4);
+		assert_eq!(array_templates[3].descriptor_count, 5);
+		assert_eq!(array_templates[4].descriptor_count, 6);
+		assert_eq!(array_templates[5].descriptor_count, 7);
+		assert_eq!(array_templates[6].descriptor_count, 8);
+		assert_eq!(array_templates[7].descriptor_count, 9);
+	}
+
+	#[test]
+	fn typed_descriptor_set_binding_templates() {
+		let stages = Stages::COMPUTE;
+
+		let storage_buffer = StorageBufferDescriptorSetBindingTemplate::new(0, stages);
+		let storage_image = StorageImageDescriptorSetBindingTemplate::new(1, stages);
+		let storage_buffer_array = StorageBufferDescriptorSetBindingTemplate::new_array(2, stages, 8);
+		let sampler = SamplerDescriptorSetBindingTemplate::new_with_immutable_samplers(3, stages, None);
+
+		assert!(matches!(
+			storage_buffer.as_raw().descriptor_type,
+			DescriptorType::StorageBuffer
+		));
+		assert!(matches!(storage_image.as_raw().descriptor_type, DescriptorType::StorageImage));
+		assert_eq!(storage_buffer_array.as_raw().descriptor_count, 8);
+		assert!(matches!(sampler.as_raw().descriptor_type, DescriptorType::Sampler));
+
+		let raw_template: DescriptorSetBindingTemplate = storage_buffer.into();
+		assert!(matches!(raw_template.descriptor_type, DescriptorType::StorageBuffer));
 	}
 
 	#[test]
@@ -3023,13 +3300,10 @@ pub(super) mod tests {
 
 		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_template);
 
+		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image));
 		let _ = device.create_descriptor_binding(
 			descriptor_set,
-			BindingConstructor::image(&image_binding_template, image, Layouts::General),
-		);
-		let _ = device.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::image(&last_frame_image_binding_template, image, Layouts::General).frame(-1),
+			BindingConstructor::image(&last_frame_image_binding_template, image).frame(-1),
 		);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
@@ -3360,8 +3634,8 @@ pub(super) mod tests {
 			BindingConstructor::image(
 				&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT),
 				sampled_texture,
-				Layouts::Read,
-			),
+			)
+			.layout(Layouts::Read),
 		);
 
 		assert!(!device.has_errors());
@@ -3635,10 +3909,7 @@ void main() {
 			descriptor_set,
 			BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure),
 		);
-		let _ = renderer.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::image(&bindings[1], render_target, Layouts::General),
-		);
+		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target));
 		let _ = renderer.create_descriptor_binding(
 			descriptor_set,
 			BindingConstructor::buffer(&bindings[2], vertex_positions_buffer.into()),

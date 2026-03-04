@@ -65,6 +65,19 @@ use crate::{
 	resource_management::{self},
 };
 
+const diffuse_binding_template: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+const specular_binding_template: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+const lighting_data_binding_template: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+const materials_data_binding_template: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+const ao_map_binding_template: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
+const shadow_map_binding_template: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new_array(11, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 1);
+
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
 	/// Tracks buffer offsets and counts for various resources.
@@ -76,15 +89,15 @@ pub struct VisibilityWorldRenderDomain {
 	/// Mapping from resource ID to mesh index.
 	meshes_by_resource: HashMap<String, usize>,
 	/// Loaded images.
-	images: RwLock<HashMap<String, Image>>,
+	images: HashMap<String, Image>,
 	/// Texture manager.
-	texture_manager: Arc<RwLock<TextureManager>>,
+	texture_manager: TextureManager,
 	/// Pipeline manager.
 	pipeline_manager: PipelineManager,
 	/// Mapping from mesh resource ID to mesh index.
 	mesh_resources: HashMap<String, u32>,
 	/// Material evaluation materials.
-	material_evaluation_materials: RwLock<HashMap<String, Arc<OnceLock<RenderDescription>>>>,
+	material_evaluation_materials: HashMap<String, Arc<OnceLock<RenderDescription>>>,
 	/// Base pipeline layout handle.
 	base_pipeline_layout: ghi::PipelineLayoutHandle,
 	/// Vertex positions buffer for rendered meshes.
@@ -111,8 +124,6 @@ pub struct VisibilityWorldRenderDomain {
 	meshlets_data_buffer: ghi::BufferHandle<[ShaderMeshletData; MAX_MESHLETS]>,
 	/// Pipeline layout for the visibility pass.
 	visibility_pass_pipeline_layout: ghi::PipelineLayoutHandle,
-	/// Descriptor set for the visibility pass.
-	visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
 	material_evaluation_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 	material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 	material_evaluation_pipeline_layout: ghi::PipelineLayoutHandle,
@@ -126,10 +137,11 @@ pub struct VisibilityWorldRenderDomain {
 	pending_render_entities: VecDeque<EntityHandle<dyn RenderableMesh>>,
 	/// Views
 	views: Vec<(usize, VisibilityPipelineRenderPass)>,
+	visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 }
 
 impl VisibilityWorldRenderDomain {
-	pub fn new(device: &mut ghi::Device, texture_manager: Arc<RwLock<TextureManager>>) -> Self {
+	pub fn new(device: &mut ghi::Device, texture_manager: TextureManager) -> Self {
 		// Initialize the extent to 0 to allocate memory lazily.
 		let extent = Extent::square(0);
 
@@ -248,8 +260,6 @@ impl VisibilityWorldRenderDomain {
 		let visibility_descriptor_set_layout = device.create_descriptor_set_template(Some("Visibility Set Layout"), &bindings);
 		let visibility_pass_pipeline_layout =
 			device.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout], &[]);
-		let visibility_passes_descriptor_set =
-			device.create_descriptor_set(Some("Visibility Descriptor Set"), &visibility_descriptor_set_layout);
 
 		let light_data_buffer = device.build_buffer::<LightingData>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
@@ -268,19 +278,14 @@ impl VisibilityWorldRenderDomain {
 		);
 
 		let bindings = [
-			ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
+			diffuse_binding_template,
 			ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-			ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
+			specular_binding_template,
 			ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
-			ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-			ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-			ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE),
-			ghi::DescriptorSetBindingTemplate::new_array(
-				11,
-				ghi::DescriptorType::CombinedImageSampler,
-				ghi::Stages::COMPUTE,
-				1,
-			),
+			lighting_data_binding_template,
+			materials_data_binding_template,
+			ao_map_binding_template,
+			shadow_map_binding_template,
 		];
 
 		let sampler = device.build_sampler(
@@ -326,14 +331,14 @@ impl VisibilityWorldRenderDomain {
 			meshes: Vec::with_capacity(1024),
 			meshes_by_resource: HashMap::with_capacity(1024),
 
-			images: RwLock::new(HashMap::with_capacity(1024)),
+			images: HashMap::with_capacity(1024),
 
 			texture_manager,
 			pipeline_manager: PipelineManager::new(),
 
 			mesh_resources: HashMap::new(),
 
-			material_evaluation_materials: RwLock::new(HashMap::new()),
+			material_evaluation_materials: HashMap::new(),
 
 			// Visibility
 			base_pipeline_layout: pipeline_layout_handle,
@@ -348,6 +353,8 @@ impl VisibilityWorldRenderDomain {
 			descriptor_set_layout,
 			descriptor_set,
 
+			visibility_descriptor_set_layout,
+
 			textures_binding,
 
 			views_data_buffer_handle,
@@ -356,7 +363,6 @@ impl VisibilityWorldRenderDomain {
 			meshlets_data_buffer,
 
 			visibility_pass_pipeline_layout,
-			visibility_passes_descriptor_set,
 
 			material_evaluation_descriptor_set_layout,
 			material_evaluation_descriptor_set,
@@ -703,7 +709,7 @@ impl VisibilityWorldRenderDomain {
 
 		{
 			let (index, v) = {
-				let mut material_evaluation_materials = self.material_evaluation_materials.write();
+				let material_evaluation_materials = &mut self.material_evaluation_materials;
 				let i = material_evaluation_materials.len() as u32;
 				(
 					i,
@@ -801,12 +807,12 @@ impl VisibilityWorldRenderDomain {
 	}
 
 	fn create_material_resources<'a>(
-		&'a self,
+		&'a mut self,
 		resource: &mut resource_management::Reference<ResourceMaterial>,
 		device: &mut ghi::Device,
 	) -> Result<u32, ()> {
 		let (index, v) = {
-			let mut material_evaluation_materials = self.material_evaluation_materials.write();
+			let material_evaluation_materials = &mut self.material_evaluation_materials;
 			let i = material_evaluation_materials.len() as u32;
 			(
 				i,
@@ -833,8 +839,7 @@ impl VisibilityWorldRenderDomain {
 				.iter_mut()
 				.map(|parameter| match parameter.value {
 					Value::Image(ref mut image) => {
-						let texture_manager = self.texture_manager.clone();
-						let mut texture_manager = texture_manager.write();
+						let texture_manager = &mut self.texture_manager;
 						texture_manager.load(image, device)
 					}
 					_ => None,
@@ -846,7 +851,7 @@ impl VisibilityWorldRenderDomain {
 				.map(|v| {
 					if let Some((name, image, sampler)) = v {
 						let texture_index = {
-							let mut images = self.images.write();
+							let images = &mut self.images;
 							let index = images.len() as u32;
 							match images.entry(name) {
 								std::collections::hash_map::Entry::Occupied(v) => v.get().index,
@@ -916,12 +921,12 @@ impl VisibilityWorldRenderDomain {
 	/// Creates the needed GHI resource for the given material.
 	/// Does nothing if the material has already been loaded.
 	fn create_variant_resources<'s, 'a>(
-		&'s self,
+		&'s mut self,
 		mut resource: resource_management::Reference<ResourceVariant>,
 		device: &mut ghi::Device,
 	) -> Result<u32, ()> {
 		let (index, v) = {
-			let mut material_evaluation_materials = self.material_evaluation_materials.write();
+			let material_evaluation_materials = &mut self.material_evaluation_materials;
 			let i = material_evaluation_materials.len() as u32;
 			(
 				i,
@@ -964,15 +969,12 @@ impl VisibilityWorldRenderDomain {
 			self.create_material_resources(&mut variant.material, device)?;
 
 			let textures_indices = {
-				let texture_manager = self.texture_manager.clone();
+				let texture_manager = &mut self.texture_manager;
 				variant
 					.variables
 					.iter_mut()
 					.map(|parameter| match parameter.value {
-						Value::Image(ref mut image) => {
-							let mut texture_manager = texture_manager.write();
-							texture_manager.load(image, device)
-						}
+						Value::Image(ref mut image) => texture_manager.load(image, device),
 						_ => None,
 					})
 					.collect::<Vec<_>>()
@@ -983,7 +985,7 @@ impl VisibilityWorldRenderDomain {
 				.map(|v| {
 					if let Some((name, image, sampler)) = v {
 						let texture_index = {
-							let mut images = self.images.write();
+							let images = &mut self.images;
 							let index = images.len() as u32;
 							match images.entry(name) {
 								std::collections::hash_map::Entry::Occupied(v) => v.get().index,
@@ -1043,7 +1045,6 @@ impl SceneManager for VisibilityWorldRenderDomain {
 	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let opaque_materials = self
 			.material_evaluation_materials
-			.read()
 			.values()
 			.filter_map(|v| v.get())
 			.filter(|v| v.alpha == false)
@@ -1051,7 +1052,6 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			.collect::<Vec<_>>();
 		let transparent_materials = self
 			.material_evaluation_materials
-			.read()
 			.values()
 			.filter_map(|v| v.get())
 			.filter(|v| v.alpha == true)
@@ -1092,19 +1092,93 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("instance_id"),
 		);
 
+		let device = render_pass_builder.device();
+
+		let visibility_passes_descriptor_set =
+			device.create_descriptor_set(Some("Visibility Descriptor Set"), &self.visibility_descriptor_set_layout);
+
+		let material_count_buffer = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.name("Material Count")
+				.device_accesses(ghi::DeviceAccesses::HostOnly),
+		);
+
+		let material_xy = device.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination));
+
+		let material_evaluation_dispatches = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::Indirect)
+				.name("Material Evaluation Dipatches")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+		);
+
+		let material_offset_buffer = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.name("Material Offset")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+		);
+
+		let material_offset_scratch_buffer = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.name("Material Offset Scratch")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+		);
+
+		let _ = device.create_descriptor_binding(
+			self.material_evaluation_descriptor_set,
+			ghi::BindingConstructor::image(&diffuse_binding_template, diffuse_target.clone().into()),
+		);
+		let _ = device.create_descriptor_binding(
+			self.material_evaluation_descriptor_set,
+			ghi::BindingConstructor::image(&specular_binding_template, specular_target.clone().into()),
+		);
+
+		let _ = device.create_descriptor_binding(
+			visibility_passes_descriptor_set,
+			ghi::BindingConstructor::buffer(&MATERIAL_COUNT_BINDING, material_count_buffer.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			visibility_passes_descriptor_set,
+			ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_BINDING, material_offset_buffer.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			visibility_passes_descriptor_set,
+			ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_SCRATCH_BINDING, material_offset_scratch_buffer.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			visibility_passes_descriptor_set,
+			ghi::BindingConstructor::buffer(&MATERIAL_EVALUATION_DISPATCHES_BINDING, material_evaluation_dispatches.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			visibility_passes_descriptor_set,
+			ghi::BindingConstructor::buffer(&MATERIAL_XY_BINDING, material_xy.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			visibility_passes_descriptor_set,
+			ghi::BindingConstructor::image(&TRIANGLE_INDEX_BINDING, primitive_index.clone().into()),
+		);
+		let _ = device.create_descriptor_binding(
+			visibility_passes_descriptor_set,
+			ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, instance_id.clone().into()),
+		);
+
 		let render_pass = VisibilityPipelineRenderPass::new(
 			render_pass_builder.device(),
 			self.base_pipeline_layout,
 			self.visibility_pass_pipeline_layout,
 			self.material_evaluation_pipeline_layout,
 			self.descriptor_set,
-			self.visibility_passes_descriptor_set,
+			visibility_passes_descriptor_set,
 			self.material_evaluation_descriptor_set,
+			material_count_buffer,
 			diffuse_target.into(),
 			specular_target.into(),
 			depth_target.into(),
 			primitive_index.into(),
 			instance_id.into(),
+			material_xy,
+			material_offset_buffer,
+			material_offset_scratch_buffer,
+			material_evaluation_dispatches,
 		);
 
 		self.views.push((id, render_pass));

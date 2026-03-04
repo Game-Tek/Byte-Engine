@@ -95,11 +95,11 @@ impl AcesToneMapPass {
 
 		let source_binding = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into(), ghi::Layouts::General),
+			ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main.into()),
 		);
 		let destination_binding = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into(), ghi::Layouts::General),
+			ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main.into()),
 		);
 
 		AcesToneMapPass {

@@ -72,6 +72,12 @@ where
 		descriptor_set_template_handle: &DescriptorSetTemplateHandle,
 	) -> DescriptorSetHandle;
 
+	/// ```rust
+	///	let views_data_binding = device.create_descriptor_binding(
+	///		descriptor_set,
+	///		ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
+	/// );
+	/// ```
 	fn create_descriptor_binding(
 		&mut self,
 		descriptor_set: DescriptorSetHandle,

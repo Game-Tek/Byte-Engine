@@ -505,7 +505,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	let renderer = &mut application.renderer;
 
 	let sm = {
-		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
+		let texture_manager = TextureManager::new();
 		EntityHandle::from(VisibilityWorldRenderDomain::new(renderer.device_mut(), texture_manager))
 	};
 

@@ -61,17 +61,12 @@ pub struct SceneManager {
 	pub(super) pipeline_layout: ghi::PipelineLayoutHandle,
 	pub(super) pipeline: ghi::PipelineHandle,
 	views: Vec<RenderPass>,
-
-	renderable_meshes_channel: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 }
 
 const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
 impl SceneManager {
-	pub fn new(
-		device: &mut ghi::Device,
-		renderable_meshes_channel: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
-	) -> Self {
+	pub fn new(device: &mut ghi::Device) -> Self {
 		let vertex_positions_buffer = device.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
 				.name("Vertex Positions")
@@ -262,93 +257,81 @@ impl SceneManager {
 			pipeline,
 
 			views: Vec::with_capacity(4),
-
-			renderable_meshes_channel,
 		}
 	}
-}
 
-impl crate::rendering::scene_manager::SceneManager for SceneManager {
-	fn prepare(
-		&mut self,
-		frame: &mut ghi::Frame,
-		viewports: &[Viewport],
-		transforms_listener: &mut dyn Listener<TransformationUpdate>,
-	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
-		while let Some(message) = self.renderable_meshes_channel.read() {
-			let handle = message.handle().clone();
-			let entity = message.data().read();
+	pub fn create_mesh(&mut self, frame: &mut ghi::Frame, handle: Handle, cntr: EntityHandle<dyn RenderableMesh>) {
+		let entity = cntr.read();
+		let mesh = entity.get_mesh();
 
-			let mesh = entity.get_mesh();
+		let mesh_id = match mesh {
+			MeshSource::Generated(generator) => 'a: {
+				let mesh_hash = generator.hash();
 
-			let mesh_id = match mesh {
-				MeshSource::Generated(generator) => 'a: {
-					let mesh_hash = generator.hash();
-
-					if let Some(mesh_id) = self.mesh_buffers_stats.does_mesh_exist(mesh_hash) {
-						break 'a mesh_id;
-					}
-
-					let positions = generator.positions();
-					let indices = generator.indices();
-					let indices = indices.iter().map(|&index| index as u16);
-
-					let vertex_count = positions.len();
-					let index_count = indices.len();
-
-					let vertex_buffer = frame.get_mut_buffer_slice(self.vertex_positions_buffer);
-
-					let mesh_ref = self
-						.mesh_buffers_stats
-						.add_mesh(MeshStats::new(vertex_count, index_count), mesh_hash);
-
-					let vertex_buffer_offset = mesh_ref.vertex_offset();
-					let index_buffer_offset = mesh_ref.index_offset();
-
-					vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(&positions);
-
-					let index_buffer = frame.get_mut_buffer_slice(self.indeces_buffer);
-
-					index_buffer[index_buffer_offset..][..index_count]
-						.iter_mut()
-						.zip(indices)
-						.for_each(|(dst, src)| {
-							*dst = src;
-						});
-
-					mesh_ref.id()
+				if let Some(mesh_id) = self.mesh_buffers_stats.does_mesh_exist(mesh_hash) {
+					break 'a mesh_id;
 				}
-				_ => {
-					log::warn!("SimpleRenderModel does not support non-generated meshes");
-					continue;
-				}
-			};
 
-			let instace_id = self.mesh_buffers_stats.add_instance(mesh_id, handle);
+				let positions = generator.positions();
+				let indices = generator.indices();
+				let indices = indices.iter().map(|&index| index as u16);
 
-			let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
+				let vertex_count = positions.len();
+				let index_count = indices.len();
 
-			let instance_batches = self.mesh_buffers_stats.get_instance_batches();
+				let vertex_buffer = frame.get_mut_buffer_slice(self.vertex_positions_buffer);
 
-			instance_data_buffer[instace_id] = InstanceShaderData {
-				instance_transform: entity.transform().get_matrix(),
-			};
-		}
+				let mesh_ref = self
+					.mesh_buffers_stats
+					.add_mesh(MeshStats::new(vertex_count, index_count), mesh_hash);
+
+				let vertex_buffer_offset = mesh_ref.vertex_offset();
+				let index_buffer_offset = mesh_ref.index_offset();
+
+				vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(&positions);
+
+				let index_buffer = frame.get_mut_buffer_slice(self.indeces_buffer);
+
+				index_buffer[index_buffer_offset..][..index_count]
+					.iter_mut()
+					.zip(indices)
+					.for_each(|(dst, src)| {
+						*dst = src;
+					});
+
+				mesh_ref.id()
+			}
+			_ => {
+				log::warn!("SimpleRenderModel does not support non-generated meshes");
+				return;
+			}
+		};
+
+		let instace_id = self.mesh_buffers_stats.add_instance(mesh_id, handle);
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
-		while let Some(message) = transforms_listener.read() {
-			let handle = message.handle().clone();
-			let transform = message.transform();
+		instance_data_buffer[instace_id] = InstanceShaderData {
+			instance_transform: entity.transform().get_matrix(),
+		};
+	}
 
-			let idx = self.mesh_buffers_stats.get_instance_id(handle);
+	pub fn update_transform(&mut self, frame: &mut ghi::Frame, handle: Handle, transform: Matrix4) {
+		let idx = self.mesh_buffers_stats.get_instance_id(handle);
 
-			instance_data_buffer[idx] = InstanceShaderData {
-				instance_transform: transform.get_matrix(),
-			};
-		}
+		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
+
+		instance_data_buffer[idx] = InstanceShaderData {
+			instance_transform: transform,
+		};
+	}
+}
+
+impl crate::rendering::scene_manager::SceneManager for SceneManager {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
 		let instance_batches = instance_batches.iter().into_vec();
 

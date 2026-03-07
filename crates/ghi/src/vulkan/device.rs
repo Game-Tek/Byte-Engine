@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::VecDeque, num::NonZeroU32, u64};
+use std::{borrow::Cow, num::NonZeroU32, u64};
 
 use crate::{
 	graphics_hardware_interface, image, raster_pipeline,

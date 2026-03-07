@@ -356,7 +356,7 @@ impl Renderer {
 		let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> = scene_managers
 			.filter_map(|sm| {
 				let mut sm = sm.write();
-				sm.prepare(&mut frame, &viewports, &mut transforms_listener)
+				sm.prepare(&mut frame, &viewports)
 			})
 			.collect();
 

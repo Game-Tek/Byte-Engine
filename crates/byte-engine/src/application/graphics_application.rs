@@ -16,7 +16,7 @@ use crate::{
 	inspector::{http::HttpInspectorServer, Inspector},
 	physics::dynabit::{self, body::PhysicsBody},
 	rendering::{
-		lights::Lights,
+		lights::{Light, Lights},
 		pipelines::{
 			simple::{SimpleRenderPass, SimpleSceneManager},
 			visibility::VisibilityWorldRenderDomain,
@@ -24,6 +24,7 @@ use crate::{
 		render_pass::RenderPass,
 		render_passes::{aces::AcesToneMapPass, agx::AgxToneMapPass},
 		renderable, renderer,
+		scene_manager::SceneManager,
 		texture_manager::TextureManager,
 		RenderableMesh,
 	},
@@ -94,6 +95,7 @@ pub struct GraphicsApplication {
 	action_factory: Factory<Action>,
 
 	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
+	light_factory: Factory<Lights>,
 	generator_factory: Factory<Arc<dyn Generator>>,
 
 	world: DefaultWorld,
@@ -176,6 +178,7 @@ impl Application for GraphicsApplication {
 			window_factory: (window_factory, window_factory_listener),
 			action_factory,
 			renderable_factory,
+			light_factory: Factory::new(),
 
 			generator_factory: Factory::new(),
 
@@ -270,6 +273,7 @@ impl GraphicsApplication {
 		let mut cameras_listener = self.world.camera_factory().listener();
 		let mut renderer_transforms_listener = self.world.transforms_channel().listener();
 		let mut physics_transforms_listener = self.world.transforms_channel().listener();
+		let mut light_listener = self.light_factory.listener();
 
 		let result = f(self, time);
 
@@ -365,6 +369,10 @@ impl GraphicsApplication {
 
 	pub fn renderable_factory_mut(&mut self) -> &mut Factory<EntityHandle<dyn RenderableMesh>> {
 		&mut self.renderable_factory
+	}
+
+	pub fn light_factory_mut(&mut self) -> &mut Factory<Lights> {
+		&mut self.light_factory
 	}
 
 	pub fn generator_factory(&self) -> &Factory<Arc<dyn Generator>> {
@@ -488,14 +496,49 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 }
 
 pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
-	let renderable_mesh_factory = application.renderable_factory_mut();
-	let listener = renderable_mesh_factory.listener();
+	let listener = application.renderable_factory().listener();
+	let transforms_listener = application.world().transforms_channel().listener();
 
 	let renderer = &mut application.renderer;
 
+	struct CustomSceneManager {
+		scene_manager: SimpleSceneManager,
+		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		transforms_listener: DefaultListener<TransformationUpdate>,
+	}
+
+	impl SceneManager for CustomSceneManager {
+		fn prepare(
+			&mut self,
+			frame: &mut ghi::Frame,
+			viewports: &[rendering::Viewport],
+		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
+			while let Some(message) = self.mesh_receiver.read() {
+				let handle = message.handle().clone();
+
+				self.scene_manager.create_mesh(frame, handle, message.into_data());
+			}
+
+			while let Some(message) = self.transforms_listener.read() {
+				self.scene_manager
+					.update_transform(frame, *message.handle(), message.transform().get_matrix());
+			}
+
+			self.scene_manager.prepare(frame, viewports)
+		}
+
+		fn create_view(&mut self, id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
+			self.scene_manager.create_view(id, render_pass_builder);
+		}
+	}
+
 	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		EntityHandle::from(SimpleSceneManager::new(renderer.device_mut(), listener))
+		EntityHandle::from(CustomSceneManager {
+			scene_manager: SimpleSceneManager::new(renderer.device_mut()),
+			mesh_receiver: listener,
+			transforms_listener,
+		})
 	};
 
 	renderer.add_scene_manager(sm);
@@ -504,9 +547,42 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
 	let renderer = &mut application.renderer;
 
+	struct CustomSceneManager {
+		light_receiver: DefaultListener<CreateMessage<Lights>>,
+		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		visibility_world_render_domain: VisibilityWorldRenderDomain,
+	}
+
+	impl SceneManager for CustomSceneManager {
+		fn prepare(
+			&mut self,
+			frame: &mut ghi::Frame,
+			viewports: &[rendering::Viewport],
+		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
+			while let Some(message) = self.light_receiver.read() {
+				self.visibility_world_render_domain.create_light(message.into_data());
+			}
+
+			while let Some(message) = self.mesh_receiver.read() {
+				self.visibility_world_render_domain
+					.create_renderable_mesh(message.into_data());
+			}
+
+			self.visibility_world_render_domain.prepare(frame, viewports)
+		}
+
+		fn create_view(&mut self, id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
+			self.visibility_world_render_domain.create_view(id, render_pass_builder);
+		}
+	}
+
 	let sm = {
 		let texture_manager = TextureManager::new();
-		EntityHandle::from(VisibilityWorldRenderDomain::new(renderer.device_mut(), texture_manager))
+		EntityHandle::from(CustomSceneManager {
+			visibility_world_render_domain: VisibilityWorldRenderDomain::new(renderer.device_mut(), texture_manager),
+			light_receiver: application.light_factory.listener(),
+			mesh_receiver: application.renderable_factory.listener(),
+		})
 	};
 
 	renderer.add_scene_manager(sm);

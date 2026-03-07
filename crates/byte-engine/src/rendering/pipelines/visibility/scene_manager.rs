@@ -7,10 +7,9 @@ use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::OnceLock;
 
-use crate::core::listener::Listener;
 use crate::core::{Entity, EntityHandle};
 use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonShaderScope};
-use crate::rendering::lights::{DirectionalLight, Light, PointLight};
+use crate::rendering::lights::{DirectionalLight, Light, Lights, PointLight};
 use crate::rendering::mesh::generator::MeshGenerator;
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
@@ -54,7 +53,6 @@ use utils::sync::{Arc, Rc, RwLock};
 use utils::{Box, Extent, RGBA};
 
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
-use crate::gameplay::transform::TransformationUpdate;
 use crate::gameplay::Transformable as _;
 use crate::rendering::{
 	csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain,
@@ -130,7 +128,7 @@ pub struct VisibilityWorldRenderDomain {
 	/// Buffer containing lighting data.
 	light_data_buffer: ghi::BufferHandle<LightingData>,
 	/// Lights in the scene.
-	lights: Vec<EntityHandle<dyn Light>>,
+	lights: Vec<Lights>,
 	/// Information about the current render.
 	render_info: RenderInfo,
 	/// Queue of render entities pending to be processed.
@@ -381,6 +379,10 @@ impl VisibilityWorldRenderDomain {
 
 			views: Vec::with_capacity(4),
 		}
+	}
+
+	pub fn create_renderable_mesh(&mut self, mesh_source: EntityHandle<dyn RenderableMesh>) {
+		self.pending_render_entities.push_back(mesh_source);
 	}
 
 	/// Creates the needed GHI resource for the given mesh.
@@ -1034,15 +1036,14 @@ impl VisibilityWorldRenderDomain {
 
 		return Ok(material.index);
 	}
+
+	pub fn create_light(&mut self, light: Lights) {
+		self.lights.push(light);
+	}
 }
 
 impl SceneManager for VisibilityWorldRenderDomain {
-	fn prepare(
-		&mut self,
-		frame: &mut ghi::Frame,
-		viewports: &[Viewport],
-		_transforms_listener: &mut dyn Listener<TransformationUpdate>,
-	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let opaque_materials = self
 			.material_evaluation_materials
 			.values()

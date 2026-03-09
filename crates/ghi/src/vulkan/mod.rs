@@ -37,12 +37,12 @@ pub(crate) use self::synchronizer::*;
 pub(super) enum Descriptor {
 	Image {
 		image: ImageHandle,
-		layout: graphics_hardware_interface::Layouts,
+		layout: crate::Layouts,
 	},
 	CombinedImageSampler {
 		image: ImageHandle,
 		sampler: vk::Sampler,
-		layout: graphics_hardware_interface::Layouts,
+		layout: crate::Layouts,
 	},
 	Buffer {
 		buffer: BufferHandle,
@@ -71,7 +71,7 @@ pub(super) struct Consumption {
 	pub(super) handle: Handle,
 	pub(super) stages: graphics_hardware_interface::Stages,
 	pub(super) access: graphics_hardware_interface::AccessPolicies,
-	pub(super) layout: graphics_hardware_interface::Layouts,
+	pub(super) layout: crate::Layouts,
 }
 
 #[derive(Clone, PartialEq)]
@@ -277,11 +277,11 @@ pub(crate) enum Descriptors {
 	},
 	Image {
 		handle: ImageHandle,
-		layout: graphics_hardware_interface::Layouts,
+		layout: crate::Layouts,
 	},
 	CombinedImageSampler {
 		image_handle: ImageHandle,
-		layout: graphics_hardware_interface::Layouts,
+		layout: crate::Layouts,
 		sampler_handle: SamplerHandle,
 		layer: Option<u32>,
 	},
@@ -368,12 +368,12 @@ mod tests {
 	use super::*;
 
 	fn create_default_device_setup() -> (Instance, Device, graphics_hardware_interface::QueueHandle) {
-		let features = graphics_hardware_interface::Features::new().validation(true);
+		let features = crate::device::Features::new().validation(true);
 		create_default_device_setup_with_features(features)
 	}
 
 	fn create_default_device_setup_with_features(
-		features: graphics_hardware_interface::Features,
+		features: crate::device::Features,
 	) -> (Instance, Device, graphics_hardware_interface::QueueHandle) {
 		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
 		let mut queue_handle = None;
@@ -448,11 +448,8 @@ mod tests {
 	#[test]
 	#[ignore = "not working on supporting rt right now"]
 	fn render_with_ray_tracing() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup_with_features(
-			graphics_hardware_interface::Features::new()
-				.validation(true)
-				.ray_tracing(true),
-		);
+		let (_instance, mut device, queue_handle) =
+			create_default_device_setup_with_features(crate::device::Features::new().validation(true).ray_tracing(true));
 		graphics_hardware_interface::tests::ray_tracing(&mut device, queue_handle);
 	}
 }

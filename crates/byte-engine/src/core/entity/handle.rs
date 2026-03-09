@@ -1,8 +1,10 @@
-use std::{marker::Unsize, ops::CoerceUnsized, sync::Arc};
+use std::{
+	marker::Unsize,
+	ops::{CoerceUnsized, Deref},
+	sync::Arc,
+};
 
-use utils::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-
-pub type EntityWrapper<T> = Arc<RwLock<T>>;
+pub type EntityWrapper<T> = Arc<T>;
 
 #[derive(Debug)]
 pub struct Handle<T: ?Sized> {
@@ -10,7 +12,7 @@ pub struct Handle<T: ?Sized> {
 }
 
 pub struct WeakHandle<T: ?Sized> {
-	pub(super) container: std::sync::Weak<RwLock<T>>,
+	pub(super) container: std::sync::Weak<T>,
 }
 
 impl<T: ?Sized> WeakHandle<T> {
@@ -53,7 +55,7 @@ impl<T: ?Sized> Handle<T> {
 impl<T: Sized> From<T> for Handle<T> {
 	fn from(value: T) -> Self {
 		Self {
-			container: EntityWrapper::new(RwLock::new(value)),
+			container: EntityWrapper::new(value),
 		}
 	}
 }
@@ -65,8 +67,8 @@ impl<T: ?Sized> PartialEq for Handle<T> {
 }
 
 fn downcast_inner<F: ?Sized, T>(decoder: &EntityWrapper<F>) -> Option<EntityWrapper<T>> {
-	let raw: *const RwLock<F> = std::sync::Arc::into_raw(decoder.clone());
-	let raw: *const RwLock<T> = raw.cast();
+	let raw: *const F = std::sync::Arc::into_raw(decoder.clone());
+	let raw: *const T = raw.cast();
 
 	// SAFETY: This is safe because the pointer orignally came from an Arc
 	// with the same size and alignment since we've checked (via Any) that
@@ -90,28 +92,19 @@ where
 }
 
 impl<T: ?Sized> Handle<T> {
-	pub fn get_mut<R>(&self, function: impl FnOnce(&mut T) -> R) -> R {
-		let mut lock = self.container.write();
-		function(std::ops::DerefMut::deref_mut(&mut lock))
-	}
-
 	pub fn get_lock<'a>(&self) -> EntityWrapper<T> {
 		self.container.clone()
 	}
 
-	pub fn read(&self) -> RwLockReadGuard<'_, T> {
-		self.container.read()
-	}
-
-	pub fn write(&self) -> RwLockWriteGuard<'_, T> {
-		self.container.write()
-	}
-
-	pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
-		self.container.try_read()
-	}
-
 	pub fn map<'a, R>(&self, function: impl FnOnce(&Self) -> R) -> R {
 		function(self)
+	}
+}
+
+impl<T: ?Sized> Deref for Handle<T> {
+	type Target = T;
+
+	fn deref(&self) -> &Self::Target {
+		&*self.container
 	}
 }

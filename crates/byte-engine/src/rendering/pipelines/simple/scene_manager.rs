@@ -11,9 +11,9 @@ use ghi::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
 		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
-	device::Device as _,
+	device::{Device as _, DeviceCreate as _},
 	frame::Frame,
-	Device,
+	implementation::Device,
 };
 use math::Matrix4;
 use resource_management::{
@@ -66,7 +66,7 @@ pub struct SceneManager {
 const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
 impl SceneManager {
-	pub fn new(device: &mut ghi::Device) -> Self {
+	pub fn new(device: &mut ghi::implementation::Device) -> Self {
 		let vertex_positions_buffer = device.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
 				.name("Vertex Positions")
@@ -260,8 +260,12 @@ impl SceneManager {
 		}
 	}
 
-	pub fn create_mesh(&mut self, frame: &mut ghi::Frame, handle: Handle, cntr: EntityHandle<dyn RenderableMesh>) {
-		let entity = cntr.read();
+	pub fn create_mesh(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		handle: Handle,
+		entity: EntityHandle<dyn RenderableMesh>,
+	) {
 		let mesh = entity.get_mesh();
 
 		let mesh_id = match mesh {
@@ -318,7 +322,7 @@ impl SceneManager {
 		};
 	}
 
-	pub fn update_transform(&mut self, frame: &mut ghi::Frame, handle: Handle, transform: Matrix4) {
+	pub fn update_transform(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, transform: Matrix4) {
 		let idx = self.mesh_buffers_stats.get_instance_id(handle);
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
@@ -330,7 +334,11 @@ impl SceneManager {
 }
 
 impl crate::rendering::scene_manager::SceneManager for SceneManager {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+	fn prepare(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		viewports: &[Viewport],
+	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
 		let instance_batches = instance_batches.iter().into_vec();

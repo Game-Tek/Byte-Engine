@@ -1,19 +1,20 @@
 use utils::Extent;
 
 use crate::{
-	buffer, image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle, BindingConstructor,
-	BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
-	CommandBufferRecording, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
-	DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses, DynamicBufferHandle, Frame, ImageHandle, MeshHandle,
-	PipelineHandle, PipelineLayoutHandle, PresentationModes, PushConstantRange, QueueHandle, SamplerHandle,
-	ShaderBindingDescriptor, ShaderHandle, ShaderParameter, ShaderSource, ShaderTypes, SwapchainHandle, SynchronizerHandle,
-	TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, VertexElement,
+	buffer, image, raster_pipeline, sampler,
+	vulkan::{CommandBufferRecording, Frame},
+	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
+	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
+	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses,
+	DynamicBufferHandle, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentationModes, PushConstantRange,
+	QueueHandle, SamplerHandle, ShaderBindingDescriptor, ShaderHandle, ShaderParameter, ShaderSource, ShaderTypes,
+	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, VertexElement,
 };
 
 /// The `Device` trait represents a graphics device that can be used to create and manage resources such as buffers, images, pipelines, and descriptor sets.
 pub trait Device
 where
-	Self: Sized,
+	Self: Sized + DeviceCreate,
 {
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	#[cfg(debug_assertions)]
@@ -24,6 +25,84 @@ where
 	/// > THIS IS AN EXPENSIVE OPERATION
 	fn set_frames_in_flight(&mut self, frames: u8);
 
+	fn create_command_buffer_recording<'a>(
+		&'a mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> CommandBufferRecording<'a>;
+
+	/// Returns a device accessible address for the provided buffer handle.
+	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;
+
+	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
+
+	// Return a mutable slice to the buffer data.
+	fn get_mut_buffer_slice<'a, T: Copy>(&'a mut self, buffer_handle: BufferHandle<T>) -> &'a mut T;
+
+	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
+
+	/// Enables writing to a texture and queues a copy operation for it.
+	/// Texture must still be synchronized by calling `sync` on a command buffer.
+	fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8]));
+
+	/// Writes descriptor set updates.
+	fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]);
+
+	fn write_instance(
+		&mut self,
+		instances_buffer_handle: BaseBufferHandle,
+		instance_index: usize,
+		transform: [[f32; 4]; 3],
+		custom_index: u16,
+		mask: u8,
+		sbt_record_offset: usize,
+		acceleration_structure: BottomLevelAccelerationStructureHandle,
+	);
+
+	fn write_sbt_entry(
+		&mut self,
+		sbt_buffer_handle: BaseBufferHandle,
+		sbt_record_offset: usize,
+		pipeline_handle: PipelineHandle,
+		shader_handle: ShaderHandle,
+	);
+
+	/// Associates a swapchain with a window.
+	fn bind_to_window(
+		&mut self,
+		window_os_handles: &window::Handles,
+		presentation_mode: PresentationModes,
+		fallback_extent: Extent,
+		uses: Uses,
+	) -> SwapchainHandle;
+
+	/// Returns the swapchain image handle for rendering.
+	fn get_swapchain_image(&self, swapchain_handle: SwapchainHandle) -> ImageHandle;
+
+	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8];
+
+	/// Starts a new frame by waiting for these sequence frame's synchronizers.
+	/// The returned frame allows safe access to the frame's resources and it's operations.
+	fn start_frame<'a>(&'a mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> Frame<'a>;
+
+	/// Resizes a buffer to the specified size.
+	/// Does nothing if the buffer is already the specified size.
+	/// May not reallocate if a smaller size is requested.
+	fn resize_buffer(&mut self, buffer_handle: BaseBufferHandle, size: usize);
+
+	/// Starts capturing the underlying's API calls if the application is attached to a graphics debugger.
+	fn start_frame_capture(&mut self);
+
+	/// Ends capturing the underlying's API calls if the application is attached to a graphics debugger.
+	/// Must only be called after start_frame_capture.
+	fn end_frame_capture(&mut self);
+
+	/// Waits for all pending operations to complete.
+	/// Usually called before destroying the device or before doing a complex operation.
+	/// Should be rarely called.
+	fn wait(&self);
+}
+
+pub trait DeviceCreate {
 	/// Creates a new allocation from a managed allocator for the underlying GPU allocations.
 	fn create_allocation(
 		&mut self,
@@ -112,30 +191,11 @@ where
 	/// Commands can be recorded onto it by starting a recording from a `Frame` or by calling `Device::create_command_buffer_recording` if the command buffer is not for performing per frame workloads.
 	fn create_command_buffer(&mut self, name: Option<&str>, queue_handle: QueueHandle) -> CommandBufferHandle;
 
-	fn create_command_buffer_recording<'a>(
-		&'a mut self,
-		command_buffer_handle: CommandBufferHandle,
-	) -> CommandBufferRecording<'a>;
-
 	/// Creates a static buffer from a builder.
 	fn build_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> BufferHandle<T>;
 
 	/// Creates a dynamic buffer from a builder.
 	fn build_dynamic_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
-
-	/// Returns a device accessible address for the provided buffer handle.
-	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;
-
-	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
-
-	// Return a mutable slice to the buffer data.
-	fn get_mut_buffer_slice<'a, T: Copy>(&'a mut self, buffer_handle: BufferHandle<T>) -> &'a mut T;
-
-	fn get_texture_slice_mut(&mut self, texture_handle: ImageHandle) -> &'static mut [u8];
-
-	/// Enables writing to a texture and queues a copy operation for it.
-	/// Texture must still be synchronized by calling `sync` on a command buffer.
-	fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8]));
 
 	/// Creates an image from a builder.
 	fn build_image(&mut self, builder: image::Builder) -> ImageHandle;
@@ -161,64 +221,94 @@ where
 		description: &BottomLevelAccelerationStructure,
 	) -> BottomLevelAccelerationStructureHandle;
 
-	/// Writes descriptor set updates.
-	fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]);
-
-	fn write_instance(
-		&mut self,
-		instances_buffer_handle: BaseBufferHandle,
-		instance_index: usize,
-		transform: [[f32; 4]; 3],
-		custom_index: u16,
-		mask: u8,
-		sbt_record_offset: usize,
-		acceleration_structure: BottomLevelAccelerationStructureHandle,
-	);
-
-	fn write_sbt_entry(
-		&mut self,
-		sbt_buffer_handle: BaseBufferHandle,
-		sbt_record_offset: usize,
-		pipeline_handle: PipelineHandle,
-		shader_handle: ShaderHandle,
-	);
-
-	/// Associates a swapchain with a window.
-	fn bind_to_window(
-		&mut self,
-		window_os_handles: &window::Handles,
-		presentation_mode: PresentationModes,
-		fallback_extent: Extent,
-		uses: Uses,
-	) -> SwapchainHandle;
-
-	/// Returns the swapchain image handle for rendering.
-	fn get_swapchain_image(&self, swapchain_handle: SwapchainHandle) -> ImageHandle;
-
-	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8];
-
 	/// Creates a synchronization primitive (implemented as a semaphore/fence/event).\
 	/// Multiple underlying synchronization primitives are created, one for each frame
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle;
+}
 
-	/// Starts a new frame by waiting for these sequence frame's synchronizers.
-	/// The returned frame allows safe access to the frame's resources and it's operations.
-	fn start_frame<'a>(&'a mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> Frame<'a>;
+/// Configuration for which features to request from the underlying API when creating a device/instance.
+/// This uses a builder pattern to allow for easy configuration of the features.
+///
+/// # Features
+/// - `validation`: Whether to enable validation layers for API use. This can provide insight into potential issues with the API usage at the expense of performance. Default is `false`.
+/// - `gpu_validation`: Whether to enable on GPU validation. This can provide more extensive validation at the expense of performance. Default is `false`.
+/// - `api_dump`: Whether to enable API dump. This will print all API calls to the console. Default is `false`.
+/// - `ray_tracing`: Whether to enable ray tracing. This will enable ray tracing features in the API. Default is `false`.
+/// - `debug_log_function`: A function to log debug messages. If none is provided, `println!` will be used. Default is `None`.
+/// - `gpu`: The GPU to use. If `None`, the most appropriate(as defined during device creation) available GPU will be used. Default is `None`.
+/// - `sparse`: Whether to enable sparse resources. This can provide more efficient memory usage. Default is `false`.
+/// - `geometry_shader`: Whether to enable geometry shaders. This can provide more advanced rendering techniques. Default is `false`.
+/// - `mesh_shading`: Whether to enable mesh shaders. This can provide more advanced rendering techniques. Default is `true`.
+#[derive(Debug, Clone, Copy)]
+pub struct Features {
+	pub(crate) validation: bool,
+	pub(crate) gpu_validation: bool,
+	pub(crate) api_dump: bool,
+	pub(crate) ray_tracing: bool,
+	pub(crate) debug_log_function: Option<fn(&str)>,
+	pub(crate) gpu: Option<&'static str>,
+	pub(crate) sparse: bool,
+	pub(crate) geometry_shader: bool,
+	pub(crate) mesh_shading: bool,
+}
 
-	/// Resizes a buffer to the specified size.
-	/// Does nothing if the buffer is already the specified size.
-	/// May not reallocate if a smaller size is requested.
-	fn resize_buffer(&mut self, buffer_handle: BaseBufferHandle, size: usize);
+impl Features {
+	pub fn new() -> Self {
+		Self {
+			validation: false,
+			gpu_validation: false,
+			api_dump: false,
+			ray_tracing: false,
+			debug_log_function: None,
+			gpu: None,
+			sparse: false,
+			geometry_shader: false,
+			mesh_shading: true,
+		}
+	}
 
-	/// Starts capturing the underlying's API calls if the application is attached to a graphics debugger.
-	fn start_frame_capture(&mut self);
+	pub fn validation(mut self, value: bool) -> Self {
+		self.validation = value;
+		self
+	}
 
-	/// Ends capturing the underlying's API calls if the application is attached to a graphics debugger.
-	/// Must only be called after start_frame_capture.
-	fn end_frame_capture(&mut self);
+	pub fn gpu_validation(mut self, value: bool) -> Self {
+		self.gpu_validation = value;
+		self
+	}
 
-	/// Waits for all pending operations to complete.
-	/// Usually called before destroying the device or before doing a complex operation.
-	/// Should be rarely called.
-	fn wait(&self);
+	pub fn api_dump(mut self, value: bool) -> Self {
+		self.api_dump = value;
+		self
+	}
+
+	pub fn ray_tracing(mut self, value: bool) -> Self {
+		self.ray_tracing = value;
+		self
+	}
+
+	pub fn debug_log_function(mut self, value: fn(&str)) -> Self {
+		self.debug_log_function = Some(value);
+		self
+	}
+
+	pub fn gpu(mut self, value: &'static str) -> Self {
+		self.gpu = Some(value);
+		self
+	}
+
+	pub fn sparse(mut self, value: bool) -> Self {
+		self.sparse = value;
+		self
+	}
+
+	pub fn geometry_shader(mut self, value: bool) -> Self {
+		self.geometry_shader = value;
+		self
+	}
+
+	pub fn mesh_shading(mut self, value: bool) -> Self {
+		self.mesh_shading = value;
+		self
+	}
 }

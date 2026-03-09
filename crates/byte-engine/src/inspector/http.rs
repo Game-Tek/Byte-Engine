@@ -54,11 +54,11 @@ impl HttpInspectorServer {
 					None
 				};
 
-				let entities = i.read().get_entities(class_name);
+				let entities = i.get_entities(class_name);
 
 				if !entities.is_empty() {
 					for (index, entity) in entities.iter().enumerate() {
-						body.push_str(&format!("[{}] {}\n", index, entity.read().as_string()));
+						body.push_str(&format!("[{}] {}\n", index, entity.as_string()));
 					}
 				} else {
 					body.push_str("No entities found");
@@ -83,7 +83,7 @@ impl HttpInspectorServer {
 						let _ = value_qp.next().unwrap();
 						let value = value_qp.next().unwrap();
 
-						match i.read().call_set(index.parse().unwrap_or(0), key, value) {
+						match i.call_set(index.parse().unwrap_or(0), key, value) {
 							Ok(_) => Response::builder().status(StatusCode::OK).body(Body::empty()).unwrap(),
 							Err(e) => Response::builder()
 								.status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -104,7 +104,7 @@ impl HttpInspectorServer {
 				}
 			}
 			(&Method::DELETE, "/") => {
-				i.read().close_application();
+				i.close_application();
 				Response::builder().status(StatusCode::OK).body(Body::empty()).unwrap()
 			}
 			_ => Response::builder().status(StatusCode::NOT_FOUND).body(Body::empty()).unwrap(),

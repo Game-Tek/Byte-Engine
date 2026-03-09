@@ -510,7 +510,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	impl SceneManager for CustomSceneManager {
 		fn prepare(
 			&mut self,
-			frame: &mut ghi::Frame,
+			frame: &mut ghi::implementation::Frame,
 			viewports: &[rendering::Viewport],
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
 			while let Some(message) = self.mesh_receiver.read() {
@@ -556,7 +556,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	impl SceneManager for CustomSceneManager {
 		fn prepare(
 			&mut self,
-			frame: &mut ghi::Frame,
+			frame: &mut ghi::implementation::Frame,
 			viewports: &[rendering::Viewport],
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
 			while let Some(message) = self.light_receiver.read() {
@@ -565,7 +565,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 
 			while let Some(message) = self.mesh_receiver.read() {
 				self.visibility_world_render_domain
-					.create_renderable_mesh(message.into_data());
+					.create_renderable_mesh(frame, message.into_data());
 			}
 
 			self.visibility_world_render_domain.prepare(frame, viewports)

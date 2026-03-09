@@ -9,7 +9,8 @@ use crate::{
 		queue::Queue, sampler::SamplerHandle, BufferCopy, BuildBuffer, Descriptor, DescriptorSetBindingHandle, DescriptorWrite,
 		Descriptors, Frame, Handle, HandleLike, ImageCopy, ImageHandle, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
 	},
-	window, CommandBufferRecording, FrameKey, Instance, Size,
+	vulkan::{CommandBufferRecording, Instance},
+	window, FrameKey, Size,
 };
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
@@ -82,7 +83,7 @@ pub struct Device {
 	/// Maps a descriptor set and binding to N resources that it references.
 	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<Handle>>,
 
-	pub settings: graphics_hardware_interface::Features,
+	pub settings: crate::device::Features,
 
 	pub(super) states: HashMap<Handle, TransitionState>,
 
@@ -109,7 +110,7 @@ pub struct Device {
 
 impl Device {
 	pub fn new(
-		settings: graphics_hardware_interface::Features,
+		settings: crate::device::Features,
 		instance: &Instance,
 		queues: &mut [(
 			graphics_hardware_interface::QueueSelection,
@@ -872,7 +873,7 @@ impl Device {
 		name: Option<&str>,
 		extent: vk::Extent3D,
 		format: graphics_hardware_interface::Formats,
-		resource_uses: graphics_hardware_interface::Uses,
+		resource_uses: crate::Uses,
 		mip_levels: u32,
 		array_layers: Option<NonZeroU32>,
 	) -> MemoryBackedResourceCreationResult<vk::Image> {
@@ -1135,7 +1136,7 @@ impl Device {
 		&mut self,
 		vk_image: vk::Image,
 		format: graphics_hardware_interface::Formats,
-		uses: graphics_hardware_interface::Uses,
+		uses: crate::Uses,
 		previous: Option<ImageHandle>,
 	) -> ImageHandle {
 		let root_handle = ImageHandle(self.images.len() as u64);
@@ -1550,13 +1551,13 @@ impl Device {
 		};
 
 		let transfer_uses = (if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuRead) {
-			graphics_hardware_interface::Uses::TransferSource
+			crate::Uses::TransferSource
 		} else {
-			graphics_hardware_interface::Uses::empty()
+			crate::Uses::empty()
 		}) | (if device_accesses.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite) {
-			graphics_hardware_interface::Uses::TransferDestination
+			crate::Uses::TransferDestination
 		} else {
-			graphics_hardware_interface::Uses::empty()
+			crate::Uses::empty()
 		});
 
 		let texture_creation_result =
@@ -2478,11 +2479,564 @@ impl crate::device::Device for Device {
 		self.frames = target_frames;
 	}
 
+	fn write(&mut self, descriptor_set_writes: &[graphics_hardware_interface::DescriptorWrite]) {
+		let writes = descriptor_set_writes
+			.iter()
+			.filter_map(|descriptor_set_write| {
+				let binding_handles = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0).get_all(&self.bindings);
+
+				// assert!(descriptor_set_write.array_element < binding.count, "Binding index out of range.");
+
+				match descriptor_set_write.descriptor {
+					graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
+						let buffer_handles = BufferHandle(handle.0).get_all(&self.buffers);
+
+						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+						for (i, &binding_handle) in binding_handles.iter().enumerate() {
+							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
+
+							let buffer_handle =
+								buffer_handles[(i as i32 - offset).rem_euclid(buffer_handles.len() as i32) as usize];
+
+							writes.push(
+								DescriptorWrite::new(
+									Descriptors::Buffer {
+										handle: buffer_handle,
+										size,
+									},
+									binding_handle,
+								)
+								.index(descriptor_set_write.array_element),
+							);
+						}
+
+						Some(writes)
+					}
+					graphics_hardware_interface::Descriptor::Image { handle, layout } => {
+						let image_handles = ImageHandle(handle.0).get_all(&self.images);
+						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+						for (i, &binding_handle) in binding_handles.iter().enumerate() {
+							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
+
+							let image_handle =
+								image_handles[(i as i32 - offset).rem_euclid(image_handles.len() as i32) as usize];
+
+							writes.push(
+								DescriptorWrite::new(
+									Descriptors::Image {
+										handle: image_handle,
+										layout,
+									},
+									binding_handle,
+								)
+								.index(descriptor_set_write.array_element),
+							);
+						}
+
+						Some(writes)
+					}
+					graphics_hardware_interface::Descriptor::CombinedImageSampler {
+						image_handle,
+						sampler_handle,
+						layout,
+						layer,
+					} => {
+						let image_handles = ImageHandle(image_handle.0).get_all(&self.images);
+						let sampler_handle = SamplerHandle(sampler_handle.0);
+
+						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+						for (i, &binding_handle) in binding_handles.iter().enumerate() {
+							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
+
+							let image_handle =
+								image_handles[(i as i32 - offset).rem_euclid(image_handles.len() as i32) as usize];
+
+							writes.push(
+								DescriptorWrite::new(
+									Descriptors::CombinedImageSampler {
+										image_handle,
+										layout,
+										sampler_handle,
+										layer,
+									},
+									binding_handle,
+								)
+								.index(descriptor_set_write.array_element),
+							);
+						}
+
+						Some(writes)
+					}
+					graphics_hardware_interface::Descriptor::Sampler(handle) => {
+						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+						let sampler_handle = SamplerHandle(handle.0);
+
+						for (_, &binding_handle) in binding_handles.iter().enumerate() {
+							writes.push(
+								DescriptorWrite::new(Descriptors::Sampler { handle: sampler_handle }, binding_handle)
+									.index(descriptor_set_write.array_element),
+							);
+						}
+
+						Some(writes)
+					}
+					_ => unimplemented!(),
+				}
+			})
+			.flatten();
+
+		let writes = self.produce_writes(writes);
+		self.process_write_results(writes);
+	}
+
+	fn create_command_buffer_recording(
+		&mut self,
+		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+	) -> crate::vulkan::CommandBufferRecording<'_> {
+		let pending_buffers = &mut self.pending_buffer_syncs;
+
+		let buffer_copies: Vec<BufferCopy> = pending_buffers
+			.drain()
+			.map(|e| {
+				let dst_buffer_handle = e;
+
+				let dst_buffer = &self.buffers[dst_buffer_handle.0 as usize];
+
+				let src_buffer_handle = dst_buffer.staging.unwrap();
+
+				BufferCopy::new(src_buffer_handle, 0, dst_buffer_handle, 0, dst_buffer.size)
+			})
+			.collect();
+
+		let pending_images = &mut self.pending_image_syncs;
+
+		let image_copies: Vec<ImageCopy> = pending_images
+			.drain()
+			.map(|e| {
+				let dst_image_handle = e;
+
+				let dst_image = &self.images[dst_image_handle.0 as usize];
+
+				ImageCopy::new(dst_image_handle, 0, dst_image_handle, 0, dst_image.size)
+			})
+			.collect();
+
+		let mut recording = CommandBufferRecording::new(self, command_buffer_handle, None);
+
+		recording.sync_buffers(buffer_copies.iter().copied());
+		recording.sync_textures(image_copies.iter().copied());
+
+		recording
+	}
+
+	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
+		self.buffers[buffer_handle.0 as usize].device_address
+	}
+
+	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
+		let buffer = self.buffers[buffer_handle.0 as usize];
+		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
+		unsafe { std::mem::transmute(buffer.pointer) }
+	}
+
+	fn get_mut_buffer_slice<'a, T: Copy>(
+		&'a mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> &'a mut T {
+		let handle = BufferHandle(buffer_handle.0);
+
+		let buffer = self.buffers[handle.0 as usize];
+		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
+
+		self.pending_buffer_syncs.insert(handle);
+
+		unsafe { std::mem::transmute(buffer.pointer) }
+	}
+
+	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
+		let texture = &self.images[texture_handle.0 as usize];
+		let size = texture.size;
+		let pointer = texture.pointer.unwrap();
+
+		unsafe { std::slice::from_raw_parts_mut(pointer, size) }
+	}
+
+	fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
+		let handles = ImageHandle(image_handle.0).get_all(&self.images);
+
+		let handle = handles[0];
+
+		let texture = handle.access(&self.images);
+
+		let pointer = texture.pointer.unwrap();
+		let size = texture.size;
+
+		let slice = unsafe { std::slice::from_raw_parts_mut(pointer, size) };
+
+		f(slice);
+
+		self.pending_image_syncs.insert(handle);
+	}
+
+	fn write_instance(
+		&mut self,
+		instances_buffer: graphics_hardware_interface::BaseBufferHandle,
+		instance_index: usize,
+		transform: [[f32; 4]; 3],
+		custom_index: u16,
+		mask: u8,
+		sbt_record_offset: usize,
+		acceleration_structure: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
+	) {
+		let buffer = self.acceleration_structures[acceleration_structure.0 as usize].buffer;
+
+		let address = unsafe {
+			self.device
+				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
+		};
+
+		let instance = vk::AccelerationStructureInstanceKHR {
+			transform: vk::TransformMatrixKHR {
+				matrix: [
+					transform[0][0],
+					transform[0][1],
+					transform[0][2],
+					transform[0][3],
+					transform[1][0],
+					transform[1][1],
+					transform[1][2],
+					transform[1][3],
+					transform[2][0],
+					transform[2][1],
+					transform[2][2],
+					transform[2][3],
+				],
+			},
+			instance_custom_index_and_mask: vk::Packed24_8::new(custom_index as u32, mask),
+			instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+				sbt_record_offset as u32,
+				vk::GeometryInstanceFlagsKHR::FORCE_OPAQUE.as_raw() as u8,
+			),
+			acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: address },
+		};
+
+		let instance_buffer = &mut self.buffers[instances_buffer.0 as usize];
+
+		let instance_buffer_slice = unsafe {
+			std::slice::from_raw_parts_mut(
+				instance_buffer.pointer as *mut vk::AccelerationStructureInstanceKHR,
+				instance_buffer.size / std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
+			)
+		};
+
+		instance_buffer_slice[instance_index] = instance;
+	}
+
+	fn write_sbt_entry(
+		&mut self,
+		sbt_buffer_handle: graphics_hardware_interface::BaseBufferHandle,
+		sbt_record_offset: usize,
+		pipeline_handle: graphics_hardware_interface::PipelineHandle,
+		shader_handle: graphics_hardware_interface::ShaderHandle,
+	) {
+		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
+		let shader_handles = pipeline.shader_handles.clone();
+
+		let buffer = self.buffers[sbt_buffer_handle.0 as usize];
+		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
+
+		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer, buffer.size) })[sbt_record_offset..sbt_record_offset + 32]
+			.copy_from_slice(shader_handles.get(&shader_handle).unwrap());
+	}
+
+	fn resize_buffer(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, size: usize) {
+		let buffer_handle = BufferHandle(buffer_handle.0);
+
+		self.resize_buffer_internal(buffer_handle, size);
+	}
+
+	fn bind_to_window(
+		&mut self,
+		window_os_handles: &window::Handles,
+		presentation_mode: graphics_hardware_interface::PresentationModes,
+		fallback_extent: Extent,
+		uses: crate::Uses,
+	) -> graphics_hardware_interface::SwapchainHandle {
+		let vk_surface = self.create_vulkan_surface(window_os_handles);
+
+		let vk_present_mode = match presentation_mode {
+			graphics_hardware_interface::PresentationModes::FIFO => vk::PresentModeKHR::FIFO,
+			graphics_hardware_interface::PresentationModes::Inmediate => vk::PresentModeKHR::IMMEDIATE,
+			graphics_hardware_interface::PresentationModes::Mailbox => vk::PresentModeKHR::MAILBOX,
+		};
+
+		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(vk_present_mode);
+
+		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
+			.push_next(&mut vk_surface_present_mode)
+			.surface(vk_surface);
+
+		let mut vk_presentation_modes = [vk::PresentModeKHR::default(); 8];
+
+		let mut vk_surface_present_mode_compatibility =
+			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_presentation_modes);
+
+		let mut vk_surface_capabilities =
+			vk::SurfaceCapabilities2KHR::default().push_next(&mut vk_surface_present_mode_compatibility);
+
+		unsafe {
+			self.surface_capabilities
+				.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities)
+				.expect("No surface capabilities")
+		};
+
+		let vk_surface_capabilities = vk_surface_capabilities.surface_capabilities;
+
+		let min_image_count = vk_surface_capabilities.min_image_count;
+		let max_image_count = vk_surface_capabilities.max_image_count;
+
+		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX
+			&& vk_surface_capabilities.current_extent.height != u32::MAX
+		{
+			vk_surface_capabilities.current_extent
+		} else {
+			vk::Extent2D::default()
+				.width(fallback_extent.width())
+				.height(fallback_extent.height())
+		};
+
+		let presentation_modes = [vk_present_mode];
+
+		let mut present_modes_create_info =
+			vk::SwapchainPresentModesCreateInfoEXT::default().present_modes(&presentation_modes);
+
+		let requested_image_count = if max_image_count != 0 {
+			max_image_count.max(min_image_count)
+		} else {
+			(min_image_count * 2).min(MAX_SWAPCHAIN_IMAGES as u32)
+		};
+
+		let format = graphics_hardware_interface::Formats::BGRAsRGB;
+
+		let requested_image_usage = into_vk_image_usage_flags(uses, format);
+		let supported_image_usage = vk_surface_capabilities.supported_usage_flags;
+		let uses_proxy_images = !supported_image_usage.contains(requested_image_usage);
+
+		let native_image_usage = if uses_proxy_images {
+			let fallback_usage = vk::ImageUsageFlags::TRANSFER_DST;
+
+			if !supported_image_usage.contains(fallback_usage) {
+				panic!("Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images.");
+			}
+
+			fallback_usage
+		} else {
+			requested_image_usage
+		};
+
+		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+			.push_next(&mut present_modes_create_info)
+			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
+			.surface(vk_surface)
+			.min_image_count(requested_image_count)
+			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
+			.image_format(vk::Format::B8G8R8A8_SRGB)
+			.image_extent(extent)
+			.image_usage(native_image_usage)
+			.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.pre_transform(vk_surface_capabilities.current_transform)
+			.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+			.present_mode(vk_present_mode)
+			.image_array_layers(1)
+			.clipped(true);
+
+		let vk_swapchain = unsafe {
+			self.swapchain
+				.create_swapchain(&swapchain_create_info, None)
+				.expect("No swapchain")
+		};
+
+		let swapchain_handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
+
+		let mut acquire_synchronizers = [SynchronizerHandle(!0u64); MAX_FRAMES_IN_FLIGHT];
+
+		for i in 0..self.frames {
+			let synchronizer = self.create_synchronizer_internal(Some("Swapchain Acquire Sync"), true);
+			acquire_synchronizers[i as usize] = synchronizer;
+		}
+
+		let vk_images = unsafe {
+			self.swapchain
+				.get_swapchain_images(vk_swapchain)
+				.expect("No swapchain images found.")
+		};
+		let image_count = vk_images.len() as u32;
+
+		let mut submit_synchronizers = [SynchronizerHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
+
+		for i in 0..image_count {
+			let synchronizer = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
+			submit_synchronizers[i as usize] = synchronizer;
+		}
+
+		let mut native_images = [ImageHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
+		let native_resource_uses = uses
+			| if native_image_usage.contains(vk::ImageUsageFlags::TRANSFER_DST) {
+				crate::Uses::TransferDestination
+			} else {
+				crate::Uses::empty()
+			};
+
+		for (i, vk_image) in vk_images.iter().enumerate() {
+			let previous = if i > 0 { Some(native_images[i - 1]) } else { None };
+			native_images[i] = self.create_swapchain_image(
+				*vk_image,
+				graphics_hardware_interface::Formats::BGRAsRGB,
+				native_resource_uses,
+				previous,
+			);
+		}
+
+		let mut images = native_images;
+
+		if uses_proxy_images {
+			let proxy_extent = Extent::rectangle(extent.width, extent.height);
+			let proxy_uses = uses | crate::Uses::TransferSource | crate::Uses::TransferDestination;
+
+			for i in 0..image_count as usize {
+				let previous = if i > 0 { Some(images[i - 1]) } else { None };
+				images[i] = self.create_image_internal(
+					None,
+					previous,
+					Some("Swapchain Proxy Image"),
+					graphics_hardware_interface::Formats::BGRAu8,
+					graphics_hardware_interface::DeviceAccesses::DeviceOnly,
+					None,
+					proxy_extent,
+					proxy_uses,
+				);
+			}
+		}
+
+		self.swapchains.push(Swapchain {
+			surface: vk_surface,
+			swapchain: vk_swapchain,
+			acquire_synchronizers,
+			submit_synchronizers,
+			extent,
+			images,
+			native_images,
+			uses_proxy_images,
+			min_image_count,
+			max_image_count: image_count,
+			vk_present_mode,
+		});
+
+		swapchain_handle
+	}
+
+	fn get_swapchain_image(
+		&self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	) -> graphics_hardware_interface::ImageHandle {
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		graphics_hardware_interface::ImageHandle(swapchain.images[0].0)
+	}
+
+	fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {
+		let image = &self.images[texture_copy_handle.0 as usize];
+
+		let pointer = image.pointer.unwrap();
+		let size = image.size;
+
+		if pointer.is_null() {
+			panic!("Texture data was requested but texture has no memory associated.");
+		}
+
+		let slice = unsafe { std::slice::from_raw_parts::<'a, u8>(pointer, size) };
+
+		slice
+	}
+
+	fn start_frame<'a>(
+		&'a mut self,
+		index: u32,
+		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+	) -> Frame<'a> {
+		let frame_index = index;
+		let sequence_index = (index % self.frames as u32) as u8;
+
+		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
+		let synchronizer = &self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
+
+		let per_cycle_wait_ms = 1;
+		let wait_warning_time_threshold = 8;
+		let mut timeout_count = 0;
+
+		loop {
+			match unsafe {
+				self.device
+					.wait_for_fences(&[synchronizer.fence], true, per_cycle_wait_ms * 1000000)
+			} {
+				Ok(_) => break,
+				Err(vk::Result::TIMEOUT) => {
+					if timeout_count * per_cycle_wait_ms >= wait_warning_time_threshold && timeout_count % 500 == 0 {
+						println!(
+							"Stuck waiting for fences for {} ms at frame {index}. There is a potential issue with synchronization.",
+							per_cycle_wait_ms * timeout_count
+						);
+					}
+					timeout_count += 1;
+					continue;
+				}
+				Err(_) => panic!("Failed to wait for fence"),
+			}
+		}
+
+		unsafe {
+			self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset");
+		}
+
+		let frame_key = FrameKey {
+			frame_index,
+			sequence_index,
+		};
+
+		// Build lazy resources before the frame may need them
+		self.process_tasks(frame_key.sequence_index);
+
+		Frame::new(self, frame_key)
+	}
+
+	#[inline]
+	fn start_frame_capture(&mut self) {
+		#[cfg(debug_assertions)]
+		self.debugger.start_frame_capture();
+	}
+
+	#[inline]
+	fn end_frame_capture(&mut self) {
+		#[cfg(debug_assertions)]
+		self.debugger.end_frame_capture();
+	}
+
+	fn wait(&self) {
+		unsafe {
+			self.device.device_wait_idle().unwrap();
+		}
+	}
+}
+
+impl crate::device::DeviceCreate for Device {
 	/// Creates a new allocation from a managed allocator for the underlying GPU allocations.
 	fn create_allocation(
 		&mut self,
 		size: usize,
-		_resource_uses: graphics_hardware_interface::Uses,
+		_resource_uses: crate::Uses,
 		resource_device_accesses: graphics_hardware_interface::DeviceAccesses,
 	) -> graphics_hardware_interface::AllocationHandle {
 		self.create_allocation_internal(size, None, resource_device_accesses).0
@@ -2768,120 +3322,6 @@ impl crate::device::Device for Device {
 		}
 
 		handle
-	}
-
-	fn write(&mut self, descriptor_set_writes: &[graphics_hardware_interface::DescriptorWrite]) {
-		let writes = descriptor_set_writes
-			.iter()
-			.filter_map(|descriptor_set_write| {
-				let binding_handles = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0).get_all(&self.bindings);
-
-				// assert!(descriptor_set_write.array_element < binding.count, "Binding index out of range.");
-
-				match descriptor_set_write.descriptor {
-					graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
-						let buffer_handles = BufferHandle(handle.0).get_all(&self.buffers);
-
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						for (i, &binding_handle) in binding_handles.iter().enumerate() {
-							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-							let buffer_handle =
-								buffer_handles[(i as i32 - offset).rem_euclid(buffer_handles.len() as i32) as usize];
-
-							writes.push(
-								DescriptorWrite::new(
-									Descriptors::Buffer {
-										handle: buffer_handle,
-										size,
-									},
-									binding_handle,
-								)
-								.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					graphics_hardware_interface::Descriptor::Image { handle, layout } => {
-						let image_handles = ImageHandle(handle.0).get_all(&self.images);
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						for (i, &binding_handle) in binding_handles.iter().enumerate() {
-							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-							let image_handle =
-								image_handles[(i as i32 - offset).rem_euclid(image_handles.len() as i32) as usize];
-
-							writes.push(
-								DescriptorWrite::new(
-									Descriptors::Image {
-										handle: image_handle,
-										layout,
-									},
-									binding_handle,
-								)
-								.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					graphics_hardware_interface::Descriptor::CombinedImageSampler {
-						image_handle,
-						sampler_handle,
-						layout,
-						layer,
-					} => {
-						let image_handles = ImageHandle(image_handle.0).get_all(&self.images);
-						let sampler_handle = SamplerHandle(sampler_handle.0);
-
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						for (i, &binding_handle) in binding_handles.iter().enumerate() {
-							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-							let image_handle =
-								image_handles[(i as i32 - offset).rem_euclid(image_handles.len() as i32) as usize];
-
-							writes.push(
-								DescriptorWrite::new(
-									Descriptors::CombinedImageSampler {
-										image_handle,
-										layout,
-										sampler_handle,
-										layer,
-									},
-									binding_handle,
-								)
-								.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					graphics_hardware_interface::Descriptor::Sampler(handle) => {
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						let sampler_handle = SamplerHandle(handle.0);
-
-						for (_, &binding_handle) in binding_handles.iter().enumerate() {
-							writes.push(
-								DescriptorWrite::new(Descriptors::Sampler { handle: sampler_handle }, binding_handle)
-									.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					_ => unimplemented!(),
-				}
-			})
-			.flatten();
-
-		let writes = self.produce_writes(writes);
-		self.process_write_results(writes);
 	}
 
 	fn create_pipeline_layout(
@@ -3226,164 +3666,6 @@ impl crate::device::Device for Device {
 		command_buffer_handle
 	}
 
-	fn create_command_buffer_recording(
-		&mut self,
-		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	) -> crate::CommandBufferRecording<'_> {
-		let pending_buffers = &mut self.pending_buffer_syncs;
-
-		let buffer_copies: Vec<BufferCopy> = pending_buffers
-			.drain()
-			.map(|e| {
-				let dst_buffer_handle = e;
-
-				let dst_buffer = &self.buffers[dst_buffer_handle.0 as usize];
-
-				let src_buffer_handle = dst_buffer.staging.unwrap();
-
-				BufferCopy::new(src_buffer_handle, 0, dst_buffer_handle, 0, dst_buffer.size)
-			})
-			.collect();
-
-		let pending_images = &mut self.pending_image_syncs;
-
-		let image_copies: Vec<ImageCopy> = pending_images
-			.drain()
-			.map(|e| {
-				let dst_image_handle = e;
-
-				let dst_image = &self.images[dst_image_handle.0 as usize];
-
-				ImageCopy::new(dst_image_handle, 0, dst_image_handle, 0, dst_image.size)
-			})
-			.collect();
-
-		let mut recording = CommandBufferRecording::new(self, command_buffer_handle, None);
-
-		recording.sync_buffers(buffer_copies.iter().copied());
-		recording.sync_textures(image_copies.iter().copied());
-
-		recording
-	}
-
-	fn build_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> graphics_hardware_interface::BufferHandle<T> {
-		let size = std::mem::size_of::<T>();
-
-		let buffer_handle =
-			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
-		let handle = graphics_hardware_interface::BufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
-
-		return handle;
-	}
-
-	fn build_dynamic_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
-		let size = std::mem::size_of::<T>();
-
-		let buffer_handle =
-			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
-		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
-
-		if super::buffer::PERSISTENT_WRITE
-			&& builder
-				.device_accesses
-				.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite)
-		{
-			// The master buffer's existing staging buffer becomes the shared, persistent
-			// CPU-writable source buffer. We create a new per-frame staging buffer for
-			// frame 0 and store the source handle on the master buffer.
-
-			let source_handle = self.buffers[buffer_handle.0 as usize]
-				.staging
-				.expect("CpuWrite dynamic buffer must have a staging buffer");
-
-			// Create a new per-frame staging buffer for frame 0
-			let frame0_staging = self.create_staging_buffer(builder.name, size);
-
-			// Reassign: the master's staging now points to the new per-frame staging,
-			// and source points to the original (persistent) CPU-writable buffer.
-			self.buffers[buffer_handle.0 as usize].staging = Some(frame0_staging);
-			self.buffers[buffer_handle.0 as usize].source = Some(source_handle);
-
-			// Track this dynamic buffer for automatic per-frame memcpy
-			self.persistent_write_dynamic_buffers.push(handle.into());
-
-			for i in 1..self.frames {
-				assert!(i < 2, "This does not support more than one deferred buffer!");
-				self.tasks.push(Task::new(
-					Tasks::BuildBuffer(BuildBuffer {
-						previous: buffer_handle,
-						master: handle.into(),
-						source: Some(source_handle),
-					}),
-					Some(i),
-				));
-			}
-		} else {
-			for i in 1..self.frames {
-				assert!(i < 2, "This does not support more than one deferred buffer!");
-				self.tasks.push(Task::new(
-					Tasks::BuildBuffer(BuildBuffer {
-						previous: buffer_handle,
-						master: handle.into(),
-						source: None,
-					}),
-					Some(i),
-				));
-			}
-		}
-
-		handle
-	}
-
-	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
-		self.buffers[buffer_handle.0 as usize].device_address
-	}
-
-	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
-		let buffer = self.buffers[buffer_handle.0 as usize];
-		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
-		unsafe { std::mem::transmute(buffer.pointer) }
-	}
-
-	fn get_mut_buffer_slice<'a, T: Copy>(
-		&'a mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &'a mut T {
-		let handle = BufferHandle(buffer_handle.0);
-
-		let buffer = self.buffers[handle.0 as usize];
-		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
-
-		self.pending_buffer_syncs.insert(handle);
-
-		unsafe { std::mem::transmute(buffer.pointer) }
-	}
-
-	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-		let texture = &self.images[texture_handle.0 as usize];
-		let size = texture.size;
-		let pointer = texture.pointer.unwrap();
-
-		unsafe { std::slice::from_raw_parts_mut(pointer, size) }
-	}
-
-	fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let handles = ImageHandle(image_handle.0).get_all(&self.images);
-
-		let handle = handles[0];
-
-		let texture = handle.access(&self.images);
-
-		let pointer = texture.pointer.unwrap();
-		let size = texture.size;
-
-		let slice = unsafe { std::slice::from_raw_parts_mut(pointer, size) };
-
-		f(slice);
-
-		self.pending_image_syncs.insert(handle);
-	}
-
 	fn build_image(&mut self, builder: image::Builder) -> graphics_hardware_interface::ImageHandle {
 		let root_image_handle = self.create_image_internal(
 			None,
@@ -3398,8 +3680,8 @@ impl crate::device::Device for Device {
 		let handle = graphics_hardware_interface::ImageHandle(root_image_handle.0);
 
 		let instances = match builder.use_case {
-			graphics_hardware_interface::UseCases::DYNAMIC => self.frames,
-			graphics_hardware_interface::UseCases::STATIC => 1,
+			crate::UseCases::DYNAMIC => self.frames,
+			crate::UseCases::STATIC => 1,
 		};
 
 		let mut previous = root_image_handle;
@@ -3429,26 +3711,26 @@ impl crate::device::Device for Device {
 
 	fn build_sampler(&mut self, builder: sampler::Builder) -> crate::SamplerHandle {
 		let filtering_mode = match builder.filtering_mode {
-			graphics_hardware_interface::FilteringModes::Closest => vk::Filter::NEAREST,
-			graphics_hardware_interface::FilteringModes::Linear => vk::Filter::LINEAR,
+			crate::FilteringModes::Closest => vk::Filter::NEAREST,
+			crate::FilteringModes::Linear => vk::Filter::LINEAR,
 		};
 
 		let mip_map_filter = match builder.mip_map_mode {
-			graphics_hardware_interface::FilteringModes::Closest => vk::SamplerMipmapMode::NEAREST,
-			graphics_hardware_interface::FilteringModes::Linear => vk::SamplerMipmapMode::LINEAR,
+			crate::FilteringModes::Closest => vk::SamplerMipmapMode::NEAREST,
+			crate::FilteringModes::Linear => vk::SamplerMipmapMode::LINEAR,
 		};
 
 		let address_mode = match builder.addressing_mode {
-			graphics_hardware_interface::SamplerAddressingModes::Repeat => vk::SamplerAddressMode::REPEAT,
-			graphics_hardware_interface::SamplerAddressingModes::Mirror => vk::SamplerAddressMode::MIRRORED_REPEAT,
-			graphics_hardware_interface::SamplerAddressingModes::Clamp => vk::SamplerAddressMode::CLAMP_TO_EDGE,
-			graphics_hardware_interface::SamplerAddressingModes::Border { .. } => vk::SamplerAddressMode::CLAMP_TO_BORDER,
+			crate::SamplerAddressingModes::Repeat => vk::SamplerAddressMode::REPEAT,
+			crate::SamplerAddressingModes::Mirror => vk::SamplerAddressMode::MIRRORED_REPEAT,
+			crate::SamplerAddressingModes::Clamp => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+			crate::SamplerAddressingModes::Border { .. } => vk::SamplerAddressMode::CLAMP_TO_BORDER,
 		};
 
 		let reduction_mode = match builder.reduction_mode {
-			graphics_hardware_interface::SamplingReductionModes::WeightedAverage => vk::SamplerReductionMode::WEIGHTED_AVERAGE,
-			graphics_hardware_interface::SamplingReductionModes::Min => vk::SamplerReductionMode::MIN,
-			graphics_hardware_interface::SamplingReductionModes::Max => vk::SamplerReductionMode::MAX,
+			crate::SamplingReductionModes::WeightedAverage => vk::SamplerReductionMode::WEIGHTED_AVERAGE,
+			crate::SamplingReductionModes::Min => vk::SamplerReductionMode::MIN,
+			crate::SamplingReductionModes::Max => vk::SamplerReductionMode::MAX,
 		};
 
 		graphics_hardware_interface::SamplerHandle(
@@ -3497,7 +3779,7 @@ impl crate::device::Device for Device {
 			size: buffer_creation_result.size,
 			device_address: address,
 			pointer,
-			uses: graphics_hardware_interface::Uses::empty(),
+			uses: crate::Uses::empty(),
 			access: graphics_hardware_interface::DeviceAccesses::CpuWrite
 				| graphics_hardware_interface::DeviceAccesses::GpuRead,
 		});
@@ -3678,286 +3960,73 @@ impl crate::device::Device for Device {
 		handle
 	}
 
-	fn write_instance(
-		&mut self,
-		instances_buffer: graphics_hardware_interface::BaseBufferHandle,
-		instance_index: usize,
-		transform: [[f32; 4]; 3],
-		custom_index: u16,
-		mask: u8,
-		sbt_record_offset: usize,
-		acceleration_structure: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
-	) {
-		let buffer = self.acceleration_structures[acceleration_structure.0 as usize].buffer;
+	fn build_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> graphics_hardware_interface::BufferHandle<T> {
+		let size = std::mem::size_of::<T>();
 
-		let address = unsafe {
-			self.device
-				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
-		};
+		let buffer_handle =
+			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
+		let handle = graphics_hardware_interface::BufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
 
-		let instance = vk::AccelerationStructureInstanceKHR {
-			transform: vk::TransformMatrixKHR {
-				matrix: [
-					transform[0][0],
-					transform[0][1],
-					transform[0][2],
-					transform[0][3],
-					transform[1][0],
-					transform[1][1],
-					transform[1][2],
-					transform[1][3],
-					transform[2][0],
-					transform[2][1],
-					transform[2][2],
-					transform[2][3],
-				],
-			},
-			instance_custom_index_and_mask: vk::Packed24_8::new(custom_index as u32, mask),
-			instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-				sbt_record_offset as u32,
-				vk::GeometryInstanceFlagsKHR::FORCE_OPAQUE.as_raw() as u8,
-			),
-			acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: address },
-		};
-
-		let instance_buffer = &mut self.buffers[instances_buffer.0 as usize];
-
-		let instance_buffer_slice = unsafe {
-			std::slice::from_raw_parts_mut(
-				instance_buffer.pointer as *mut vk::AccelerationStructureInstanceKHR,
-				instance_buffer.size / std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
-			)
-		};
-
-		instance_buffer_slice[instance_index] = instance;
+		return handle;
 	}
 
-	fn write_sbt_entry(
-		&mut self,
-		sbt_buffer_handle: graphics_hardware_interface::BaseBufferHandle,
-		sbt_record_offset: usize,
-		pipeline_handle: graphics_hardware_interface::PipelineHandle,
-		shader_handle: graphics_hardware_interface::ShaderHandle,
-	) {
-		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
-		let shader_handles = pipeline.shader_handles.clone();
+	fn build_dynamic_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
+		let size = std::mem::size_of::<T>();
 
-		let buffer = self.buffers[sbt_buffer_handle.0 as usize];
-		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
+		let buffer_handle =
+			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
+		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
 
-		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer, buffer.size) })[sbt_record_offset..sbt_record_offset + 32]
-			.copy_from_slice(shader_handles.get(&shader_handle).unwrap());
-	}
-
-	fn resize_buffer(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, size: usize) {
-		let buffer_handle = BufferHandle(buffer_handle.0);
-
-		self.resize_buffer_internal(buffer_handle, size);
-	}
-
-	fn bind_to_window(
-		&mut self,
-		window_os_handles: &window::Handles,
-		presentation_mode: graphics_hardware_interface::PresentationModes,
-		fallback_extent: Extent,
-		uses: graphics_hardware_interface::Uses,
-	) -> graphics_hardware_interface::SwapchainHandle {
-		let vk_surface = self.create_vulkan_surface(window_os_handles);
-
-		let vk_present_mode = match presentation_mode {
-			graphics_hardware_interface::PresentationModes::FIFO => vk::PresentModeKHR::FIFO,
-			graphics_hardware_interface::PresentationModes::Inmediate => vk::PresentModeKHR::IMMEDIATE,
-			graphics_hardware_interface::PresentationModes::Mailbox => vk::PresentModeKHR::MAILBOX,
-		};
-
-		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(vk_present_mode);
-
-		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
-			.push_next(&mut vk_surface_present_mode)
-			.surface(vk_surface);
-
-		let mut vk_presentation_modes = [vk::PresentModeKHR::default(); 8];
-
-		let mut vk_surface_present_mode_compatibility =
-			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_presentation_modes);
-
-		let mut vk_surface_capabilities =
-			vk::SurfaceCapabilities2KHR::default().push_next(&mut vk_surface_present_mode_compatibility);
-
-		unsafe {
-			self.surface_capabilities
-				.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities)
-				.expect("No surface capabilities")
-		};
-
-		let vk_surface_capabilities = vk_surface_capabilities.surface_capabilities;
-
-		let min_image_count = vk_surface_capabilities.min_image_count;
-		let max_image_count = vk_surface_capabilities.max_image_count;
-
-		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX
-			&& vk_surface_capabilities.current_extent.height != u32::MAX
+		if super::buffer::PERSISTENT_WRITE
+			&& builder
+				.device_accesses
+				.intersects(graphics_hardware_interface::DeviceAccesses::CpuWrite)
 		{
-			vk_surface_capabilities.current_extent
-		} else {
-			vk::Extent2D::default()
-				.width(fallback_extent.width())
-				.height(fallback_extent.height())
-		};
+			// The master buffer's existing staging buffer becomes the shared, persistent
+			// CPU-writable source buffer. We create a new per-frame staging buffer for
+			// frame 0 and store the source handle on the master buffer.
 
-		let presentation_modes = [vk_present_mode];
+			let source_handle = self.buffers[buffer_handle.0 as usize]
+				.staging
+				.expect("CpuWrite dynamic buffer must have a staging buffer");
 
-		let mut present_modes_create_info =
-			vk::SwapchainPresentModesCreateInfoEXT::default().present_modes(&presentation_modes);
+			// Create a new per-frame staging buffer for frame 0
+			let frame0_staging = self.create_staging_buffer(builder.name, size);
 
-		let requested_image_count = if max_image_count != 0 {
-			max_image_count.max(min_image_count)
-		} else {
-			(min_image_count * 2).min(MAX_SWAPCHAIN_IMAGES as u32)
-		};
+			// Reassign: the master's staging now points to the new per-frame staging,
+			// and source points to the original (persistent) CPU-writable buffer.
+			self.buffers[buffer_handle.0 as usize].staging = Some(frame0_staging);
+			self.buffers[buffer_handle.0 as usize].source = Some(source_handle);
 
-		let format = graphics_hardware_interface::Formats::BGRAsRGB;
+			// Track this dynamic buffer for automatic per-frame memcpy
+			self.persistent_write_dynamic_buffers.push(handle.into());
 
-		let requested_image_usage = into_vk_image_usage_flags(uses, format);
-		let supported_image_usage = vk_surface_capabilities.supported_usage_flags;
-		let uses_proxy_images = !supported_image_usage.contains(requested_image_usage);
-
-		let native_image_usage = if uses_proxy_images {
-			let fallback_usage = vk::ImageUsageFlags::TRANSFER_DST;
-
-			if !supported_image_usage.contains(fallback_usage) {
-				panic!("Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images.");
+			for i in 1..self.frames {
+				assert!(i < 2, "This does not support more than one deferred buffer!");
+				self.tasks.push(Task::new(
+					Tasks::BuildBuffer(BuildBuffer {
+						previous: buffer_handle,
+						master: handle.into(),
+						source: Some(source_handle),
+					}),
+					Some(i),
+				));
 			}
-
-			fallback_usage
 		} else {
-			requested_image_usage
-		};
-
-		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-			.push_next(&mut present_modes_create_info)
-			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
-			.surface(vk_surface)
-			.min_image_count(requested_image_count)
-			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
-			.image_format(vk::Format::B8G8R8A8_SRGB)
-			.image_extent(extent)
-			.image_usage(native_image_usage)
-			.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-			.pre_transform(vk_surface_capabilities.current_transform)
-			.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-			.present_mode(vk_present_mode)
-			.image_array_layers(1)
-			.clipped(true);
-
-		let vk_swapchain = unsafe {
-			self.swapchain
-				.create_swapchain(&swapchain_create_info, None)
-				.expect("No swapchain")
-		};
-
-		let swapchain_handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
-
-		let mut acquire_synchronizers = [SynchronizerHandle(!0u64); MAX_FRAMES_IN_FLIGHT];
-
-		for i in 0..self.frames {
-			let synchronizer = self.create_synchronizer_internal(Some("Swapchain Acquire Sync"), true);
-			acquire_synchronizers[i as usize] = synchronizer;
-		}
-
-		let vk_images = unsafe {
-			self.swapchain
-				.get_swapchain_images(vk_swapchain)
-				.expect("No swapchain images found.")
-		};
-		let image_count = vk_images.len() as u32;
-
-		let mut submit_synchronizers = [SynchronizerHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
-
-		for i in 0..image_count {
-			let synchronizer = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
-			submit_synchronizers[i as usize] = synchronizer;
-		}
-
-		let mut native_images = [ImageHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
-		let native_resource_uses = uses
-			| if native_image_usage.contains(vk::ImageUsageFlags::TRANSFER_DST) {
-				graphics_hardware_interface::Uses::TransferDestination
-			} else {
-				graphics_hardware_interface::Uses::empty()
-			};
-
-		for (i, vk_image) in vk_images.iter().enumerate() {
-			let previous = if i > 0 { Some(native_images[i - 1]) } else { None };
-			native_images[i] = self.create_swapchain_image(
-				*vk_image,
-				graphics_hardware_interface::Formats::BGRAsRGB,
-				native_resource_uses,
-				previous,
-			);
-		}
-
-		let mut images = native_images;
-
-		if uses_proxy_images {
-			let proxy_extent = Extent::rectangle(extent.width, extent.height);
-			let proxy_uses = uses
-				| graphics_hardware_interface::Uses::TransferSource
-				| graphics_hardware_interface::Uses::TransferDestination;
-
-			for i in 0..image_count as usize {
-				let previous = if i > 0 { Some(images[i - 1]) } else { None };
-				images[i] = self.create_image_internal(
-					None,
-					previous,
-					Some("Swapchain Proxy Image"),
-					graphics_hardware_interface::Formats::BGRAu8,
-					graphics_hardware_interface::DeviceAccesses::DeviceOnly,
-					None,
-					proxy_extent,
-					proxy_uses,
-				);
+			for i in 1..self.frames {
+				assert!(i < 2, "This does not support more than one deferred buffer!");
+				self.tasks.push(Task::new(
+					Tasks::BuildBuffer(BuildBuffer {
+						previous: buffer_handle,
+						master: handle.into(),
+						source: None,
+					}),
+					Some(i),
+				));
 			}
 		}
 
-		self.swapchains.push(Swapchain {
-			surface: vk_surface,
-			swapchain: vk_swapchain,
-			acquire_synchronizers,
-			submit_synchronizers,
-			extent,
-			images,
-			native_images,
-			uses_proxy_images,
-			min_image_count,
-			max_image_count: image_count,
-			vk_present_mode,
-		});
-
-		swapchain_handle
-	}
-
-	fn get_swapchain_image(
-		&self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> graphics_hardware_interface::ImageHandle {
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-		graphics_hardware_interface::ImageHandle(swapchain.images[0].0)
-	}
-
-	fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {
-		let image = &self.images[texture_copy_handle.0 as usize];
-
-		let pointer = image.pointer.unwrap();
-		let size = image.size;
-
-		if pointer.is_null() {
-			panic!("Texture data was requested but texture has no memory associated.");
-		}
-
-		let slice = unsafe { std::slice::from_raw_parts::<'a, u8>(pointer, size) };
-
-		slice
+		handle
 	}
 
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {
@@ -3978,74 +4047,6 @@ impl crate::device::Device for Device {
 		}
 
 		synchronizer_handle
-	}
-
-	fn start_frame<'a>(
-		&'a mut self,
-		index: u32,
-		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-	) -> Frame<'a> {
-		let frame_index = index;
-		let sequence_index = (index % self.frames as u32) as u8;
-
-		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
-		let synchronizer = &self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
-
-		let per_cycle_wait_ms = 1;
-		let wait_warning_time_threshold = 8;
-		let mut timeout_count = 0;
-
-		loop {
-			match unsafe {
-				self.device
-					.wait_for_fences(&[synchronizer.fence], true, per_cycle_wait_ms * 1000000)
-			} {
-				Ok(_) => break,
-				Err(vk::Result::TIMEOUT) => {
-					if timeout_count * per_cycle_wait_ms >= wait_warning_time_threshold && timeout_count % 500 == 0 {
-						println!(
-							"Stuck waiting for fences for {} ms at frame {index}. There is a potential issue with synchronization.",
-							per_cycle_wait_ms * timeout_count
-						);
-					}
-					timeout_count += 1;
-					continue;
-				}
-				Err(_) => panic!("Failed to wait for fence"),
-			}
-		}
-
-		unsafe {
-			self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset");
-		}
-
-		let frame_key = FrameKey {
-			frame_index,
-			sequence_index,
-		};
-
-		// Build lazy resources before the frame may need them
-		self.process_tasks(frame_key.sequence_index);
-
-		Frame::new(self, frame_key)
-	}
-
-	#[inline]
-	fn start_frame_capture(&mut self) {
-		#[cfg(debug_assertions)]
-		self.debugger.start_frame_capture();
-	}
-
-	#[inline]
-	fn end_frame_capture(&mut self) {
-		#[cfg(debug_assertions)]
-		self.debugger.end_frame_capture();
-	}
-
-	fn wait(&self) {
-		unsafe {
-			self.device.device_wait_idle().unwrap();
-		}
 	}
 }
 

@@ -174,9 +174,7 @@ impl CommandBufferRecording<'_> {
 
 			for idk in resources {
 				let (layout, handle) = match idk {
-					Descriptor::Buffer { buffer, .. } => {
-						(graphics_hardware_interface::Layouts::General, Handle::Buffer(*buffer))
-					}
+					Descriptor::Buffer { buffer, .. } => (crate::Layouts::General, Handle::Buffer(*buffer)),
 					Descriptor::Image { layout, image } => (*layout, Handle::Image(*image)),
 					Descriptor::CombinedImageSampler { image, layout, .. } => (*layout, Handle::Image(*image)),
 				};
@@ -526,13 +524,13 @@ impl CommandBufferRecording<'_> {
 				handle: Handle::Image(source_image_handle),
 				stages: graphics_hardware_interface::Stages::TRANSFER,
 				access: graphics_hardware_interface::AccessPolicies::READ,
-				layout: graphics_hardware_interface::Layouts::Transfer,
+				layout: crate::Layouts::Transfer,
 			},
 			Consumption {
 				handle: Handle::Image(destination_image_handle),
 				stages: graphics_hardware_interface::Stages::TRANSFER,
 				access: graphics_hardware_interface::AccessPolicies::WRITE,
-				layout: graphics_hardware_interface::Layouts::Transfer,
+				layout: crate::Layouts::Transfer,
 			},
 		])(self);
 
@@ -609,7 +607,7 @@ impl CommandBufferRecording<'_> {
 				handle: Handle::Image(swapchain_image_handle),
 				stages: graphics_hardware_interface::Stages::PRESENTATION,
 				access: graphics_hardware_interface::AccessPolicies::READ,
-				layout: graphics_hardware_interface::Layouts::Present,
+				layout: crate::Layouts::Present,
 			}
 		});
 
@@ -622,7 +620,7 @@ impl CommandBufferRecording<'_> {
 		let consumptions = self.states.iter().filter_map(|(handle, ts)| match ts.access {
 			vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption {
 				access: graphics_hardware_interface::AccessPolicies::NONE,
-				layout: graphics_hardware_interface::Layouts::General,
+				layout: crate::Layouts::General,
 				stages: graphics_hardware_interface::Stages::TRANSFER,
 				handle: *handle,
 			}),
@@ -744,7 +742,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
 			stages: graphics_hardware_interface::Stages::TRANSFER,
 			access: graphics_hardware_interface::AccessPolicies::READ,
-			layout: graphics_hardware_interface::Layouts::Transfer,
+			layout: crate::Layouts::Transfer,
 		}))(self);
 
 		let buffer_handles = image_handles
@@ -1284,7 +1282,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
 			stages: graphics_hardware_interface::Stages::TRANSFER,
 			access: graphics_hardware_interface::AccessPolicies::WRITE,
-			layout: graphics_hardware_interface::Layouts::Transfer,
+			layout: crate::Layouts::Transfer,
 		}))(self);
 
 		for (image_handle, clear_value) in textures {
@@ -1364,7 +1362,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			handle: Handle::Buffer(self.get_internal_buffer_handle(*buffer_handle)),
 			stages: graphics_hardware_interface::Stages::TRANSFER,
 			access: graphics_hardware_interface::AccessPolicies::WRITE,
-			layout: graphics_hardware_interface::Layouts::Transfer,
+			layout: crate::Layouts::Transfer,
 		}))(self);
 
 		for buffer_handle in buffer_handles {
@@ -1407,7 +1405,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			handle: Handle::Image(self.get_internal_image_handle(image_handle)),
 			stages: graphics_hardware_interface::Stages::TRANSFER,
 			access: graphics_hardware_interface::AccessPolicies::WRITE,
-			layout: graphics_hardware_interface::Layouts::Transfer,
+			layout: crate::Layouts::Transfer,
 		}])(self);
 
 		let texture = self.get_image(internal_image_handle);
@@ -1479,7 +1477,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			handle: Handle::Image(internal_image_handle),
 			stages: graphics_hardware_interface::Stages::FRAGMENT,
 			access: graphics_hardware_interface::AccessPolicies::READ,
-			layout: graphics_hardware_interface::Layouts::Read,
+			layout: crate::Layouts::Read,
 		}])(self);
 	}
 
@@ -1829,7 +1827,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 			handle: graphics_hardware_interface::Handle::Buffer(buffer_handle.clone().into()),
 			stages: graphics_hardware_interface::Stages::COMPUTE,
 			access: graphics_hardware_interface::AccessPolicies::READ,
-			layout: graphics_hardware_interface::Layouts::Indirect,
+			layout: crate::Layouts::Indirect,
 		}])(self);
 
 		unsafe {

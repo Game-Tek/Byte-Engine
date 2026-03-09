@@ -44,7 +44,7 @@ impl Inspector {
 
 		for entity in entities.iter() {
 			if let Some(class) = class {
-				if entity.read().class_name() == class {
+				if entity.class_name() == class {
 					result.push(entity.clone());
 				}
 			} else {
@@ -58,9 +58,7 @@ impl Inspector {
 	pub fn call_set(&self, index: usize, key: &str, value: &str) -> Result<(), String> {
 		let entities = self.entities.lock();
 		let entity = entities.get(index).ok_or("Entity not found".to_string())?;
-		let res = entity.write().set(key, value);
-
-		res
+		Err("Not implemented".to_string())
 	}
 
 	pub fn close_application(&self) {

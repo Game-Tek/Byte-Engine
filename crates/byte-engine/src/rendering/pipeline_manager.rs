@@ -5,7 +5,7 @@ use std::{
 	sync::{Arc, OnceLock},
 };
 
-use ghi::device::Device as _;
+use ghi::device::{Device as _, DeviceCreate as _};
 use resource_management::{
 	resources::material::{Material, Shader, Variant, VariantVariable},
 	types::ShaderTypes,
@@ -34,7 +34,7 @@ impl PipelineManager {
 		&self,
 		pipeline_layout_handle: ghi::PipelineLayoutHandle,
 		reference: &mut Reference<Material>,
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Device,
 	) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
@@ -136,7 +136,7 @@ impl PipelineManager {
 		pipeline_layout_handle: ghi::PipelineLayoutHandle,
 		specilization_map_entries: &[ghi::SpecializationMapEntry],
 		reference: &mut Reference<Variant>,
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Device,
 	) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();

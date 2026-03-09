@@ -2,7 +2,7 @@ use std::borrow::Borrow as _;
 
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-	device::Device as _,
+	device::{Device as _, DeviceCreate as _},
 };
 use math::Vector2;
 use utils::{Box, Extent};
@@ -163,8 +163,8 @@ impl BilateralBlurPass {
 }
 
 impl RenderPass for BilateralBlurPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
-		let execute_in_axis = |command_buffer: &mut ghi::CommandBufferRecording,
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+		let execute_in_axis = |command_buffer: &mut ghi::implementation::CommandBufferRecording,
 		                       pipeline_layout: ghi::PipelineLayoutHandle,
 		                       pipeline: ghi::PipelineHandle,
 		                       descriptor_set: ghi::DescriptorSetHandle,

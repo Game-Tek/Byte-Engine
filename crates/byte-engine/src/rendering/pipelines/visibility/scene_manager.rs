@@ -25,7 +25,7 @@ use crate::rendering::renderable::mesh::MeshSource;
 use crate::rendering::scene_manager::SceneManager;
 use crate::rendering::texture_manager::TextureManager;
 use crate::rendering::view::View;
-use ghi::device::Device as _;
+use ghi::device::{Device as _, DeviceCreate as _};
 use ghi::frame::Frame as _;
 use ghi::{
 	command_buffer::{
@@ -131,15 +131,13 @@ pub struct VisibilityWorldRenderDomain {
 	lights: Vec<Lights>,
 	/// Information about the current render.
 	render_info: RenderInfo,
-	/// Queue of render entities pending to be processed.
-	pending_render_entities: VecDeque<EntityHandle<dyn RenderableMesh>>,
 	/// Views
 	views: Vec<(usize, VisibilityPipelineRenderPass)>,
 	visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 }
 
 impl VisibilityWorldRenderDomain {
-	pub fn new(device: &mut ghi::Device, texture_manager: TextureManager) -> Self {
+	pub fn new(device: &mut ghi::implementation::Device, texture_manager: TextureManager) -> Self {
 		// Initialize the extent to 0 to allocate memory lazily.
 		let extent = Extent::square(0);
 
@@ -375,19 +373,34 @@ impl VisibilityWorldRenderDomain {
 				instances: Vec::with_capacity(4096),
 			},
 
-			pending_render_entities: VecDeque::with_capacity(64),
-
 			views: Vec::with_capacity(4),
 		}
 	}
 
-	pub fn create_renderable_mesh(&mut self, mesh_source: EntityHandle<dyn RenderableMesh>) {
-		self.pending_render_entities.push_back(mesh_source);
+	pub fn create_renderable_mesh(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		mesh_source: EntityHandle<dyn RenderableMesh>,
+	) {
+		let mesh_source = mesh_source.get_mesh();
+
+		match mesh_source {
+			MeshSource::Resource(urid) => {
+				self.create_mesh_resources(urid, frame);
+			}
+			_ => {
+				log::error!("Unsupported mesh source");
+			}
+		}
 	}
 
 	/// Creates the needed GHI resource for the given mesh.
 	/// Does nothing if the mesh has already been loaded.
-	fn create_mesh_resources<'a, 's: 'a>(&'s mut self, id: &'a str, device: &mut ghi::Device) -> Result<usize, ()> {
+	fn create_mesh_resources<'a, 's: 'a>(
+		&'s mut self,
+		id: &'a str,
+		device: &mut ghi::implementation::Frame,
+	) -> Result<usize, ()> {
 		if let Some(entry) = self.meshes_by_resource.get(id) {
 			return Ok(*entry);
 		}
@@ -395,13 +408,12 @@ impl VisibilityWorldRenderDomain {
 		let meshlet_stream_buffer = vec![0u8; 1024 * 8];
 
 		let mut resource_request: Reference<ResourceMesh> = {
-			return Err(());
-			// let resource_manager = self.resource_manager.read();
-			// let Ok(resource_request) = resource_manager.request(id) else {
-			// 	log::error!("Failed to load mesh resource {}", id);
-			// 	return Err(());
-			// };
-			// resource_request
+			let resource_manager = self.resource_manager.read();
+			let Ok(resource_request) = resource_manager.request(id) else {
+				log::error!("Failed to load mesh resource {}", id);
+				return Err(());
+			};
+			resource_request
 		};
 
 		let mesh_resource = resource_request.resource();
@@ -661,7 +673,7 @@ impl VisibilityWorldRenderDomain {
 	fn create_mesh_from_generator<'a>(
 		&'a mut self,
 		generator: &dyn MeshGenerator,
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Frame,
 	) -> Result<usize, ()> {
 		let positions = generator.positions();
 		let normals = generator.normals();
@@ -811,7 +823,7 @@ impl VisibilityWorldRenderDomain {
 	fn create_material_resources<'a>(
 		&'a mut self,
 		resource: &mut resource_management::Reference<ResourceMaterial>,
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Device,
 	) -> Result<u32, ()> {
 		let (index, v) = {
 			let material_evaluation_materials = &mut self.material_evaluation_materials;
@@ -925,7 +937,7 @@ impl VisibilityWorldRenderDomain {
 	fn create_variant_resources<'s, 'a>(
 		&'s mut self,
 		mut resource: resource_management::Reference<ResourceVariant>,
-		device: &mut ghi::Device,
+		frame: &mut ghi::implementation::Frame,
 	) -> Result<u32, ()> {
 		let (index, v) = {
 			let material_evaluation_materials = &mut self.material_evaluation_materials;
@@ -959,7 +971,7 @@ impl VisibilityWorldRenderDomain {
 				self.material_evaluation_pipeline_layout,
 				&specialization_constants,
 				&mut resource,
-				device,
+				frame,
 			);
 
 			let pipeline = pipeline.unwrap();
@@ -968,7 +980,7 @@ impl VisibilityWorldRenderDomain {
 
 			let material_id = variant.material.id().to_string();
 
-			self.create_material_resources(&mut variant.material, device)?;
+			self.create_material_resources(&mut variant.material, frame)?;
 
 			let textures_indices = {
 				let texture_manager = &mut self.texture_manager;
@@ -976,7 +988,7 @@ impl VisibilityWorldRenderDomain {
 					.variables
 					.iter_mut()
 					.map(|parameter| match parameter.value {
-						Value::Image(ref mut image) => texture_manager.load(image, device),
+						Value::Image(ref mut image) => texture_manager.load(image, frame),
 						_ => None,
 					})
 					.collect::<Vec<_>>()
@@ -998,7 +1010,7 @@ impl VisibilityWorldRenderDomain {
 							}
 						};
 
-						device.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+						frame.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
 							self.textures_binding,
 							image,
 							sampler,
@@ -1015,7 +1027,7 @@ impl VisibilityWorldRenderDomain {
 
 			let alpha = variant.alpha_mode == resource_management::types::AlphaMode::Blend;
 
-			let materials_buffer_slice = device.get_mut_buffer_slice(self.materials_data_buffer_handle);
+			let materials_buffer_slice = frame.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
 			let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
 
@@ -1043,7 +1055,11 @@ impl VisibilityWorldRenderDomain {
 }
 
 impl SceneManager for VisibilityWorldRenderDomain {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewports: &[Viewport]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+	fn prepare(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		viewports: &[Viewport],
+	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let opaque_materials = self
 			.material_evaluation_materials
 			.values()

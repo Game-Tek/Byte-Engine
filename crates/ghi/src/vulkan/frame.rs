@@ -4,8 +4,9 @@ use utils::Extent;
 use crate::{
 	device::Device as _,
 	graphics_hardware_interface,
+	implementation::{CommandBufferRecording, Device},
 	vulkan::{BufferCopy, BufferHandle, Handle, HandleLike as _, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
-	CommandBufferRecording, Device, FrameKey,
+	FrameKey,
 };
 
 pub struct Frame<'a> {
@@ -382,6 +383,141 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		for (k, v) in states {
 			self.device.states.insert(k, v);
 		}
+	}
+}
+
+impl<'a> crate::device::DeviceCreate for Frame<'a> {
+	fn add_mesh_from_vertices_and_indices(
+		&mut self,
+		vertex_count: u32,
+		index_count: u32,
+		vertices: &[u8],
+		indices: &[u8],
+		vertex_layout: &[crate::VertexElement],
+	) -> crate::MeshHandle {
+		self.device
+			.add_mesh_from_vertices_and_indices(vertex_count, index_count, vertices, indices, vertex_layout)
+	}
+
+	fn build_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::BufferHandle<T> {
+		self.device.build_buffer(builder)
+	}
+
+	fn build_dynamic_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
+		self.device.build_dynamic_buffer(builder)
+	}
+
+	fn build_image(&mut self, builder: crate::image::Builder) -> crate::ImageHandle {
+		self.device.build_image(builder)
+	}
+
+	fn build_sampler(&mut self, builder: crate::sampler::Builder) -> crate::SamplerHandle {
+		self.device.build_sampler(builder)
+	}
+
+	fn create_allocation(
+		&mut self,
+		size: usize,
+		_resource_uses: crate::Uses,
+		resource_device_accesses: crate::DeviceAccesses,
+	) -> crate::AllocationHandle {
+		self.device.create_allocation(size, _resource_uses, resource_device_accesses)
+	}
+
+	fn create_acceleration_structure_instance_buffer(
+		&mut self,
+		name: Option<&str>,
+		max_instance_count: u32,
+	) -> crate::BaseBufferHandle {
+		self.device
+			.create_acceleration_structure_instance_buffer(name, max_instance_count)
+	}
+
+	fn create_bottom_level_acceleration_structure(
+		&mut self,
+		description: &crate::BottomLevelAccelerationStructure,
+	) -> crate::BottomLevelAccelerationStructureHandle {
+		self.device.create_bottom_level_acceleration_structure(description)
+	}
+
+	fn create_top_level_acceleration_structure(
+		&mut self,
+		name: Option<&str>,
+		max_instance_count: u32,
+	) -> crate::TopLevelAccelerationStructureHandle {
+		self.device.create_top_level_acceleration_structure(name, max_instance_count)
+	}
+
+	fn create_pipeline_layout(
+		&mut self,
+		descriptor_set_template_handles: &[crate::DescriptorSetTemplateHandle],
+		push_constant_ranges: &[crate::PushConstantRange],
+	) -> crate::PipelineLayoutHandle {
+		self.device
+			.create_pipeline_layout(descriptor_set_template_handles, push_constant_ranges)
+	}
+
+	fn create_compute_pipeline(
+		&mut self,
+		pipeline_layout_handle: crate::PipelineLayoutHandle,
+		shader_parameter: crate::ShaderParameter,
+	) -> crate::PipelineHandle {
+		self.device.create_compute_pipeline(pipeline_layout_handle, shader_parameter)
+	}
+
+	fn create_raster_pipeline(&mut self, builder: crate::raster_pipeline::Builder) -> crate::PipelineHandle {
+		self.device.create_raster_pipeline(builder)
+	}
+
+	fn create_ray_tracing_pipeline(
+		&mut self,
+		pipeline_layout_handle: crate::PipelineLayoutHandle,
+		shaders: &[crate::ShaderParameter],
+	) -> crate::PipelineHandle {
+		self.device.create_ray_tracing_pipeline(pipeline_layout_handle, shaders)
+	}
+
+	fn create_command_buffer(&mut self, name: Option<&str>, queue_handle: crate::QueueHandle) -> crate::CommandBufferHandle {
+		self.device.create_command_buffer(name, queue_handle)
+	}
+
+	fn create_descriptor_binding(
+		&mut self,
+		descriptor_set: crate::DescriptorSetHandle,
+		binding_constructor: crate::BindingConstructor,
+	) -> crate::DescriptorSetBindingHandle {
+		self.device.create_descriptor_binding(descriptor_set, binding_constructor)
+	}
+
+	fn create_descriptor_set(
+		&mut self,
+		name: Option<&str>,
+		descriptor_set_template_handle: &crate::DescriptorSetTemplateHandle,
+	) -> crate::DescriptorSetHandle {
+		self.device.create_descriptor_set(name, descriptor_set_template_handle)
+	}
+
+	fn create_descriptor_set_template(
+		&mut self,
+		name: Option<&str>,
+		binding_templates: &[crate::DescriptorSetBindingTemplate],
+	) -> crate::DescriptorSetTemplateHandle {
+		self.device.create_descriptor_set_template(name, binding_templates)
+	}
+
+	fn create_shader(
+		&mut self,
+		name: Option<&str>,
+		shader_source_type: crate::ShaderSource,
+		stage: crate::ShaderTypes,
+		shader_binding_descriptors: impl IntoIterator<Item = crate::ShaderBindingDescriptor>,
+	) -> Result<crate::ShaderHandle, ()> {
+		self.device
+			.create_shader(name, shader_source_type, stage, shader_binding_descriptors)
+	}
+
+	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> crate::SynchronizerHandle {
+		self.device.create_synchronizer(name, signaled)
 	}
 }
 

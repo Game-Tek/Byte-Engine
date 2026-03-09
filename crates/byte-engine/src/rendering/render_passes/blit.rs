@@ -20,7 +20,7 @@ impl BlitPass {
 }
 
 impl RenderPass for BlitPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
 		let source = self.source;
 		let destination = self.destination;
 

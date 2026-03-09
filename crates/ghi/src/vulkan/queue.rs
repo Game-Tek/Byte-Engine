@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{CommandBufferRecording, Frame};
+use crate::vulkan::{CommandBufferRecording, Frame};
 
 pub struct Queue {
 	pub(crate) vk_queue: vk::Queue,

@@ -6,7 +6,7 @@ use ghi::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
 		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
-	device::Device as _,
+	device::{Device as _, DeviceCreate as _},
 };
 use resource_management::{
 	asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings,
@@ -152,7 +152,7 @@ impl UiRenderPass {
 }
 
 impl RenderPass for UiRenderPass {
-	fn prepare(&mut self, _frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+	fn prepare(&mut self, _frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
 		let draw_list = self.data.snapshot();
 
 		if draw_list.elements.is_empty() {
@@ -227,7 +227,7 @@ impl UiPushConstants {
 }
 
 /// Creates a reusable quad mesh in local [0, 1] space for UI rectangle rendering.
-fn create_quad_mesh(device: &mut ghi::Device) -> ghi::MeshHandle {
+fn create_quad_mesh(device: &mut ghi::implementation::Device) -> ghi::MeshHandle {
 	let vertices: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
 	let indices: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
@@ -243,7 +243,7 @@ fn create_quad_mesh(device: &mut ghi::Device) -> ghi::MeshHandle {
 }
 
 /// Builds the UI vertex shader using BESL and compiles it to SPIR-V.
-fn create_vertex_shader(device: &mut ghi::Device) -> ghi::ShaderHandle {
+fn create_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
 	let mut shader_generator = SPIRVShaderGenerator::new();
 	let mut root = ParserNode::root();
 
@@ -296,7 +296,7 @@ fn create_vertex_shader(device: &mut ghi::Device) -> ghi::ShaderHandle {
 }
 
 /// Builds the UI fragment shader using BESL and compiles it to SPIR-V.
-fn create_fragment_shader(device: &mut ghi::Device) -> ghi::ShaderHandle {
+fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
 	let mut shader_generator = SPIRVShaderGenerator::new();
 	let mut root = ParserNode::root();
 

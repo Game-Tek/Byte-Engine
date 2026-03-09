@@ -2,7 +2,7 @@
 
 use std::{collections::hash_map::Entry, num::NonZeroU8, sync::Arc};
 
-use ghi::device::Device as _;
+use ghi::device::{Device as _, DeviceCreate as _};
 use resource_management::{resources::image::Image, Reference};
 use utils::{
 	hash::{HashMap, HashMapExt},
@@ -38,7 +38,7 @@ impl TextureManager {
 	pub fn load(
 		&mut self,
 		reference: &mut Reference<Image>,
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Device,
 	) -> Option<(String, ghi::ImageHandle, ghi::SamplerHandle)> {
 		if let Some(r) = self.textures.get(reference.id()) {
 			return Some((reference.id().to_string(), r.0, r.1));
@@ -108,7 +108,7 @@ impl TextureManager {
 		Some((reference.id().to_string(), v.0, v.1))
 	}
 
-	fn build_sampler(&mut self, device: &mut ghi::Device) -> ghi::SamplerHandle {
+	fn build_sampler(&mut self, device: &mut ghi::implementation::Device) -> ghi::SamplerHandle {
 		let sampler_state = SamplerState {
 			filtering_mode: ghi::FilteringModes::Linear,
 			reduction_mode: ghi::SamplingReductionModes::WeightedAverage,

@@ -105,7 +105,7 @@ impl World {
 		while let Some(message) = self.body_listener.read() {
 			let handle = message.handle().clone();
 			let body_handle = message.into_data();
-			let body = body_handle.read();
+			let body = body_handle;
 
 			self.create_body(handle, body.deref());
 		}

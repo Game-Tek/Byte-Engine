@@ -98,19 +98,15 @@ impl AnchorSystem {
 
 	pub fn update(&self) {
 		for anchor in &self.anchors {
-			let anchor = anchor.read();
-
 			let children = anchor.children();
 
 			for (child, anchorage) in children {
-				let mut child = child.write();
-
 				match anchorage {
 					Anchorage::Default => {
-						child.set_position(anchor.position());
+						// child.set_position(anchor.position());
 					}
 					Anchorage::Offset { offset } => {
-						child.set_position(anchor.position() + offset.get_position());
+						// child.set_position(anchor.position() + offset.get_position());
 					}
 				}
 			}

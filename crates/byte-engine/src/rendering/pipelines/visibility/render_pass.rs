@@ -15,8 +15,8 @@ use ghi::command_buffer::{
 	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 };
-use ghi::device::Device as _;
-use ghi::frame::Frame;
+use ghi::device::{Device as _, DeviceCreate as _};
+use ghi::implementation::Frame;
 use ghi::raster_pipeline;
 use resource_management::glsl;
 use resource_management::resources::material;
@@ -31,7 +31,7 @@ pub struct VisibilityPass {
 
 impl VisibilityPass {
 	pub fn new(
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Device,
 		pipeline_layout: ghi::PipelineLayoutHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		primitive_index: ghi::ImageHandle,
@@ -102,7 +102,7 @@ impl VisibilityPass {
 
 	pub(super) fn prepare(
 		&self,
-		frame: &mut ghi::Frame,
+		frame: &mut ghi::implementation::Frame,
 		viewport: &Viewport,
 		instances: &[Instance],
 	) -> impl RenderPassFunction {
@@ -144,7 +144,7 @@ pub struct MaterialCountPass {
 
 impl MaterialCountPass {
 	fn new(
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Device,
 		pipeline_layout: ghi::PipelineLayoutHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
@@ -181,7 +181,7 @@ impl MaterialCountPass {
 		}
 	}
 
-	fn prepare(&self, frame: &ghi::Frame, viewport: &Viewport) -> impl RenderPassFunction {
+	fn prepare(&self, frame: &ghi::implementation::Frame, viewport: &Viewport) -> impl RenderPassFunction {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
@@ -221,7 +221,7 @@ pub struct MaterialOffsetPass {
 
 impl MaterialOffsetPass {
 	fn new(
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Device,
 		pipeline_layout: ghi::PipelineLayoutHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
@@ -306,7 +306,7 @@ pub struct PixelMappingPass {
 
 impl PixelMappingPass {
 	fn new(
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Device,
 		pipeline_layout: ghi::PipelineLayoutHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
@@ -344,7 +344,7 @@ impl PixelMappingPass {
 		}
 	}
 
-	pub(super) fn prepare(&self, frame: &mut ghi::Frame, viewport: &Viewport) -> impl RenderPassFunction {
+	pub(super) fn prepare(&self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> impl RenderPassFunction {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.pixel_mapping_pipeline;
@@ -407,7 +407,7 @@ impl MaterialEvaluationPass {
 
 	fn prepare(
 		&self,
-		frame: &mut ghi::Frame,
+		frame: &mut ghi::implementation::Frame,
 		viewport: &Viewport,
 		opaque_materials: &[(&str, usize, ghi::PipelineHandle)],
 		transparent_materials: &[(&str, usize, ghi::PipelineHandle)],
@@ -493,7 +493,7 @@ pub struct VisibilityPipelineRenderPass {
 
 impl VisibilityPipelineRenderPass {
 	pub fn new(
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Device,
 		base_pipeline_layout: ghi::PipelineLayoutHandle,
 		visibility_pipeline_layout: ghi::PipelineLayoutHandle,
 		material_evaluation_pipeline_layout: ghi::PipelineLayoutHandle,
@@ -567,7 +567,7 @@ impl VisibilityPipelineRenderPass {
 
 	pub(super) fn prepare(
 		&self,
-		frame: &mut ghi::Frame,
+		frame: &mut ghi::implementation::Frame,
 		viewport: &Viewport,
 		instances: &[Instance],
 	) -> impl RenderPassFunction {

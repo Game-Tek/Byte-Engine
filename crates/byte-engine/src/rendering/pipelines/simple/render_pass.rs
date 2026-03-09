@@ -12,9 +12,9 @@ use ghi::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
 		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
-	device::Device as _,
+	device::{Device as _, DeviceCreate as _},
 	frame::Frame,
-	Device,
+	implementation::Device,
 };
 use math::Matrix4;
 use resource_management::{
@@ -57,7 +57,7 @@ const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [ghi::VertexElement::new("POSITIO
 
 impl RenderPass {
 	pub fn new(
-		device: &mut ghi::Device,
+		device: &mut ghi::implementation::Device,
 		descriptor_set_layout: &ghi::DescriptorSetTemplateHandle,
 		camera_data_buffer: ghi::BaseBufferHandle,
 		instance_data_buffer: ghi::BaseBufferHandle,
@@ -88,7 +88,7 @@ impl Entity for RenderPass {}
 impl RenderPass {
 	pub(super) fn prepare(
 		&self,
-		frame: &mut ghi::Frame,
+		frame: &mut ghi::implementation::Frame,
 		viewport: &Viewport,
 		sm: &SceneManager,
 		instance_batches: &[InstanceBatch],

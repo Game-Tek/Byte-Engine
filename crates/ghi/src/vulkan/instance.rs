@@ -16,7 +16,7 @@ pub struct Instance {
 unsafe impl Send for Instance {}
 
 impl Instance {
-	pub fn new(settings: graphics_hardware_interface::Features) -> Result<Instance, &'static str> {
+	pub fn new(settings: crate::device::Features) -> Result<Instance, &'static str> {
 		let entry = ash::Entry::linked();
 
 		let available_instance_layers = unsafe { entry.enumerate_instance_layer_properties().unwrap() };
@@ -221,7 +221,7 @@ impl Instance {
 
 	pub fn create_device(
 		&mut self,
-		settings: graphics_hardware_interface::Features,
+		settings: crate::device::Features,
 		queues: &mut [(
 			graphics_hardware_interface::QueueSelection,
 			&mut Option<graphics_hardware_interface::QueueHandle>,

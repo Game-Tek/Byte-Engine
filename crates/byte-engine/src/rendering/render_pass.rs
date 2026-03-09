@@ -9,8 +9,7 @@ use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
-	device::Device as _,
-	Device as _,
+	device::{Device as _, DeviceCreate as _},
 };
 use resource_management::glsl;
 use utils::{
@@ -19,7 +18,7 @@ use utils::{
 	Box, Extent,
 };
 
-pub trait RenderPassFunction = Fn(&mut ghi::CommandBufferRecording, &[ghi::AttachmentInformation]);
+pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording, &[ghi::AttachmentInformation]);
 
 /// The type of a boxed function object that writes a render pass to a command buffer
 pub type RenderPassReturn = Box<dyn RenderPassFunction + Send + Sync>;
@@ -28,18 +27,18 @@ pub type RenderPassReturn = Box<dyn RenderPassFunction + Send + Sync>;
 /// It might own resources that are used during the rendering process.
 pub trait RenderPass {
 	/// Evaluates rendering condition and potentially prepares the render pass.
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn>;
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn>;
 }
 
 pub struct RenderPassBuilder<'a> {
-	device: &'a mut ghi::Device,
+	device: &'a mut ghi::implementation::Device,
 	view_id: usize,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	pub(crate) images: &'a mut RenderTargets,
 }
 
 impl<'a> RenderPassBuilder<'a> {
-	pub fn new(device: &'a mut ghi::Device, images: &'a mut RenderTargets, view_id: usize) -> Self {
+	pub fn new(device: &'a mut ghi::implementation::Device, images: &'a mut RenderTargets, view_id: usize) -> Self {
 		RenderPassBuilder {
 			device,
 			view_id,
@@ -82,7 +81,7 @@ impl<'a> RenderPassBuilder<'a> {
 		ReadFromResult { image }
 	}
 
-	pub fn device(&mut self) -> &'_ mut ghi::Device {
+	pub fn device(&mut self) -> &'_ mut ghi::implementation::Device {
 		self.device
 	}
 }

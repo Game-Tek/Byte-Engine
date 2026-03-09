@@ -1,4 +1,7 @@
-use crate::{device::Device, FilteringModes, SamplerAddressingModes, SamplerHandle, SamplingReductionModes};
+use crate::{
+	device::{Device, DeviceCreate as _},
+	FilteringModes, SamplerAddressingModes, SamplerHandle, SamplingReductionModes,
+};
 
 pub struct Builder {
 	pub(crate) filtering_mode: FilteringModes,
@@ -68,7 +71,7 @@ impl Builder {
 		self
 	}
 
-	pub fn build(self, device: &mut crate::Device) -> SamplerHandle {
+	pub fn build(self, device: &mut crate::implementation::Device) -> SamplerHandle {
 		device.build_sampler(self)
 	}
 }

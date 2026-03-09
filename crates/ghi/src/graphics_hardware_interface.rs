@@ -4,6 +4,8 @@
 
 use utils::{Extent, RGBA};
 
+use crate::Layouts;
+
 /// Possible types of a shader source
 pub enum ShaderSource<'a> {
 	/// SPIR-V binary
@@ -333,12 +335,6 @@ pub enum Descriptor {
 	CombinedImageSamplerArray,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum UseCases {
-	STATIC,
-	DYNAMIC,
-}
-
 #[derive(Clone, Copy)]
 pub struct ShaderBindingDescriptor {
 	pub(crate) set: u32,
@@ -349,93 +345,6 @@ pub struct ShaderBindingDescriptor {
 impl ShaderBindingDescriptor {
 	pub fn new(set: u32, binding: u32, access: AccessPolicies) -> Self {
 		Self { set, binding, access }
-	}
-}
-
-/// Configuration for which features to request from the underlying API when creating a device/instance.
-/// This uses a builder pattern to allow for easy configuration of the features.
-///
-/// # Features
-/// - `validation`: Whether to enable validation layers for API use. This can provide insight into potential issues with the API usage at the expense of performance. Default is `false`.
-/// - `gpu_validation`: Whether to enable on GPU validation. This can provide more extensive validation at the expense of performance. Default is `false`.
-/// - `api_dump`: Whether to enable API dump. This will print all API calls to the console. Default is `false`.
-/// - `ray_tracing`: Whether to enable ray tracing. This will enable ray tracing features in the API. Default is `false`.
-/// - `debug_log_function`: A function to log debug messages. If none is provided, `println!` will be used. Default is `None`.
-/// - `gpu`: The GPU to use. If `None`, the most appropriate(as defined during device creation) available GPU will be used. Default is `None`.
-/// - `sparse`: Whether to enable sparse resources. This can provide more efficient memory usage. Default is `false`.
-/// - `geometry_shader`: Whether to enable geometry shaders. This can provide more advanced rendering techniques. Default is `false`.
-/// - `mesh_shading`: Whether to enable mesh shaders. This can provide more advanced rendering techniques. Default is `true`.
-#[derive(Debug, Clone, Copy)]
-pub struct Features {
-	pub(crate) validation: bool,
-	pub(crate) gpu_validation: bool,
-	pub(crate) api_dump: bool,
-	pub(crate) ray_tracing: bool,
-	pub(crate) debug_log_function: Option<fn(&str)>,
-	pub(crate) gpu: Option<&'static str>,
-	pub(crate) sparse: bool,
-	pub(crate) geometry_shader: bool,
-	pub(crate) mesh_shading: bool,
-}
-
-impl Features {
-	pub fn new() -> Self {
-		Self {
-			validation: false,
-			gpu_validation: false,
-			api_dump: false,
-			ray_tracing: false,
-			debug_log_function: None,
-			gpu: None,
-			sparse: false,
-			geometry_shader: false,
-			mesh_shading: true,
-		}
-	}
-
-	pub fn validation(mut self, value: bool) -> Self {
-		self.validation = value;
-		self
-	}
-
-	pub fn gpu_validation(mut self, value: bool) -> Self {
-		self.gpu_validation = value;
-		self
-	}
-
-	pub fn api_dump(mut self, value: bool) -> Self {
-		self.api_dump = value;
-		self
-	}
-
-	pub fn ray_tracing(mut self, value: bool) -> Self {
-		self.ray_tracing = value;
-		self
-	}
-
-	pub fn debug_log_function(mut self, value: fn(&str)) -> Self {
-		self.debug_log_function = Some(value);
-		self
-	}
-
-	pub fn gpu(mut self, value: &'static str) -> Self {
-		self.gpu = Some(value);
-		self
-	}
-
-	pub fn sparse(mut self, value: bool) -> Self {
-		self.sparse = value;
-		self
-	}
-
-	pub fn geometry_shader(mut self, value: bool) -> Self {
-		self.geometry_shader = value;
-		self
-	}
-
-	pub fn mesh_shading(mut self, value: bool) -> Self {
-		self.mesh_shading = value;
-		self
 	}
 }
 
@@ -1034,71 +943,6 @@ pub struct BarrierDescriptor {
 	pub destination: TransitionState,
 }
 
-bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-	/// Bit flags for the available resource uses.
-	pub struct Uses : u32 {
-		/// Resource will be used as a vertex buffer.
-		const Vertex = 1 << 0;
-		/// Resource will be used as an index buffer.
-		const Index = 1 << 1;
-		/// Resource will be used as a uniform buffer.
-		const Uniform = 1 << 2;
-		/// Resource will be used as a storage buffer.
-		const Storage = 1 << 3;
-		/// Resource will be used as an indirect buffer.
-		const Indirect = 1 << 4;
-		/// Resource will be used as an image.
-		const Image = 1 << 5;
-		/// Resource will be used as a render target.
-		const RenderTarget = 1 << 6;
-		/// Resource will be used as an input attachment.
-		const InputAttachment = 1 << 15;
-		/// Resource will be used as a depth stencil.
-		const DepthStencil = 1 << 7;
-		/// Resource will be used as an acceleration structure.
-		const AccelerationStructure = 1 << 8;
-		/// Resource will be used as a transfer source.
-		const TransferSource = 1 << 9;
-		/// Resource will be used as a transfer destination.
-		const TransferDestination = 1 << 10;
-		/// Resource will be used as a shader binding table.
-		const ShaderBindingTable = 1 << 11;
-		/// Resource will be used as a acceleration structure build scratch buffer.
-		const AccelerationStructureBuildScratch = 1 << 12;
-
-		const AccelerationStructureBuild = 1 << 13;
-
-		const Clear = 1 << 14;
-
-		/// Resource will be used as a source for a blit operation.
-		const BlitSource = 1 << 9;
-		/// Resource will be used as a destination for a blit operation.
-		const BlitDestination = 1 << 10;
-	}
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-/// Enumerates the available layouts.
-pub enum Layouts {
-	/// The layout is undefined. We don't mind what the layout is.
-	Undefined,
-	/// The image will be used as render target.
-	RenderTarget,
-	/// The resource will be used in a transfer operation.
-	Transfer,
-	/// The resource will be used as a presentation source.
-	Present,
-	/// The resource will be used as a read only sample source.
-	Read,
-	/// The resource will be used as a read/write storage.
-	General,
-	/// The resource will be used as a shader binding table.
-	ShaderBindingTable,
-	/// Indirect.
-	Indirect,
-}
-
 #[derive(Clone, Copy)]
 /// Enumerates the available descriptor types.
 pub enum DescriptorType {
@@ -1118,40 +962,6 @@ pub enum DescriptorType {
 	Sampler,
 	/// An acceleration structure.
 	AccelerationStructure,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// Enumerates the available filtering modes, primarily used in samplers.
-pub enum FilteringModes {
-	/// Closest mode filtering. Rounds floating point coordinates to the nearest pixel.
-	Closest,
-	/// Linear mode filtering. Blends samples linearly across neighbouring pixels.
-	Linear,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// Enumerates the available sampling reduction modes.
-/// The sampling reduction mode is used to determine how to reduce/combine the samples of neighbouring texels when sampling an image.
-pub enum SamplingReductionModes {
-	/// The average of the samples. Weighted by the proximity of the sample to the sample point.
-	WeightedAverage,
-	/// The minimum of the samples is taken.
-	Min,
-	/// The maximum of the samples is taken.
-	Max,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// Enumerates the available sampler addressing modes.
-pub enum SamplerAddressingModes {
-	/// Repeat mode addressing.
-	Repeat,
-	/// Mirror mode addressing.
-	Mirror,
-	/// Clamp mode addressing.
-	Clamp,
-	/// Border mode addressing.
-	Border {},
 }
 
 /// The `DescriptorSetBindingType` trait brands descriptor set binding templates with a compile-time descriptor type.
@@ -1862,6 +1672,7 @@ pub(super) mod tests {
 		frame::Frame as _,
 		raster_pipeline,
 		window::Window,
+		FilteringModes, SamplerAddressingModes, SamplingReductionModes, UseCases, Uses,
 	};
 
 	use resource_management::glsl;

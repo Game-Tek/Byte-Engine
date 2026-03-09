@@ -11,7 +11,7 @@ use ghi::{
 		BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording,
 		RasterizationRenderPassMode as _,
 	},
-	device::Device as _,
+	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
 	queue::Queue as _,
 	raster_pipeline,
@@ -65,8 +65,8 @@ type RenderPassId = usize;
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
-	device: ghi::Device, // Place device before instance to ensure proper drop order
-	instance: ghi::Instance,
+	device: ghi::implementation::Device, // Place device before instance to ensure proper drop order
+	instance: ghi::implementation::Instance,
 
 	started_frame_count: usize,
 
@@ -126,7 +126,7 @@ impl Renderer {
 			settings
 		};
 
-		let features = ghi::Features::new()
+		let features = ghi::device::Features::new()
 			.validation(settings.validation)
 			.api_dump(settings.api_dump)
 			.gpu_validation(settings.extended_validation)
@@ -155,7 +155,7 @@ impl Renderer {
 			.geometry_shader(false)
 			.mesh_shading(settings.mesh_shading);
 
-		let mut instance = ghi::Instance::new(features.clone()).unwrap();
+		let mut instance = ghi::implementation::Instance::new(features.clone()).unwrap();
 
 		let mut queue_handle = None;
 
@@ -200,8 +200,6 @@ impl Renderer {
 
 	pub fn add_scene_manager(&mut self, handle: EntityHandle<dyn SceneManager>) {
 		{
-			let mut scene_manager = handle.write();
-
 			for (view_id, _) in self.windows.iter().enumerate() {
 				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
 
@@ -394,7 +392,7 @@ impl Renderer {
 			let render_targets = &self.render_targets;
 			let swapchain_targets = &swapchain_targets;
 
-			move |e: &mut ghi::CommandBufferRecording| {
+			move |e| {
 				for commands in scene_manager_commands.into_iter() {
 					for (mut command, viewport) in commands.iter().zip(viewports.iter()) {
 						let attachment_infos = render_targets.get_attachment_infos(viewport.index());
@@ -425,7 +423,7 @@ impl Renderer {
 		frame.execute(command_buffer, synchronizer);
 	}
 
-	pub fn device_mut(&mut self) -> &mut ghi::Device {
+	pub fn device_mut(&mut self) -> &mut ghi::implementation::Device {
 		&mut self.device
 	}
 
@@ -579,16 +577,18 @@ struct CopyToSwapchainRenderPass {
 }
 
 impl RenderPass for CopyToSwapchainRenderPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
 		let view_id = viewport.index();
 
 		let source_texture_handle = self.source_texture_handle;
 		let present_key = self.present_key;
 		let swapchain_handle = self.swapchain_handle;
 
-		let command = Box::new(move |e: &mut ghi::CommandBufferRecording, a: &[ghi::AttachmentInformation]| {
-			e.copy_to_swapchain(source_texture_handle, present_key, swapchain_handle);
-		});
+		let command = Box::new(
+			move |e: &mut ghi::implementation::CommandBufferRecording, a: &[ghi::AttachmentInformation]| {
+				e.copy_to_swapchain(source_texture_handle, present_key, swapchain_handle);
+			},
+		);
 
 		Some(command)
 	}

@@ -13,7 +13,7 @@ use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
-	device::Device as _,
+	device::{Device as _, DeviceCreate as _},
 };
 use resource_management::glsl;
 use utils::{Box, Extent};
@@ -115,7 +115,7 @@ impl AgxToneMapPass {
 impl Entity for AgxToneMapPass {}
 
 impl RenderPass for AgxToneMapPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
 		let pipeline_layout = self.render_pass.pipeline_layout;
 		let pipeline = self.render_pass.pipeline;
 		let descriptor_set = self.descriptor_set;

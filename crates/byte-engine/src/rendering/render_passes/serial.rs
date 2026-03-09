@@ -18,7 +18,7 @@ impl SerialRenderPass {
 }
 
 impl RenderPass for SerialRenderPass {
-	fn prepare(&mut self, frame: &mut ghi::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
 		let mut commands: Vec<RenderPassReturn> = Vec::new();
 
 		for render_pass in &mut self.render_passes {

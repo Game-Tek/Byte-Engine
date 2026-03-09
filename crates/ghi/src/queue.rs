@@ -1,5 +1,3 @@
-use crate::{command_buffer::CommandBufferRecording, Frame};
-
 pub trait Queue {
 	type Frame<'a>: crate::frame::Frame<'a>;
 	type CBR<'a>: crate::command_buffer::CommandBufferRecording;

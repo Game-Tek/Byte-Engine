@@ -1,5 +1,4 @@
 use std::{
-	borrow::BorrowMut,
 	io::Write,
 	ops::{Deref, DerefMut},
 	rc::Rc,
@@ -84,7 +83,7 @@ pub struct Renderer {
 	render_passes_by_viewport: SmallVec<[(RenderPassId, ViewportId); 32]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 
-	scene_managers: SmallVec<[EntityHandle<dyn SceneManager>; 16]>,
+	scene_managers: SmallVec<[Box<dyn SceneManager>; 16]>,
 
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
@@ -200,7 +199,7 @@ impl Renderer {
 		}
 	}
 
-	pub fn add_scene_manager(&mut self, handle: EntityHandle<dyn SceneManager>) {
+	pub fn add_scene_manager(&mut self, mut scene_manager: impl SceneManager + 'static) {
 		{
 			for (view_id, _) in self.windows.iter().enumerate() {
 				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
@@ -213,7 +212,7 @@ impl Renderer {
 			}
 		}
 
-		self.scene_managers.push(handle);
+		self.scene_managers.push(Box::new(scene_manager));
 	}
 
 	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, viewport_id: ViewportId) {
@@ -273,9 +272,7 @@ impl Renderer {
 			return;
 		};
 
-		let device = &mut self.device;
-
-		device.start_frame_capture();
+		self.device.start_frame_capture();
 
 		let mut transforms_listener = transforms_listener.to_vec();
 
@@ -295,7 +292,9 @@ impl Renderer {
 			}
 		});
 
-		let mut frame = device.start_frame(self.started_frame_count as u32, self.render_finished_synchronizer);
+		let mut frame = self
+			.device
+			.start_frame(self.started_frame_count as u32, self.render_finished_synchronizer);
 
 		self.started_frame_count += 1;
 
@@ -353,17 +352,13 @@ impl Renderer {
 
 		let scene_managers = self.scene_managers.iter_mut();
 
-		let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> = scene_managers
-			.filter_map(|sm| {
-				let mut sm = sm.write();
-				sm.prepare(&mut frame, &viewports)
-			})
-			.collect();
+		let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
+			scene_managers.filter_map(|sm| sm.prepare(&mut frame, &viewports)).collect();
 
 		// A list of render pass commands and their corresponding viewport index
 		let render_pass_commands: SmallVec<[(RenderPassReturn, ViewportId); 64]> = self
 			.render_passes_by_viewport
-			.iter_mut()
+			.iter()
 			.filter_map(|(render_pass_id, viewport_id)| {
 				if let Some(render_pass) = self.render_passes.get_mut(*render_pass_id) {
 					if let Some(viewport) = viewports.iter().find(|vp| vp.index() == *viewport_id) {
@@ -394,18 +389,18 @@ impl Renderer {
 			let render_targets = &self.render_targets;
 			let swapchain_targets = &swapchain_targets;
 
-			move |e| {
+			move |e: &mut ghi::implementation::CommandBufferRecording| {
 				for commands in scene_manager_commands.into_iter() {
-					for (mut command, viewport) in commands.iter().zip(viewports.iter()) {
+					for (command, viewport) in commands.into_iter().zip(viewports.iter()) {
 						let attachment_infos = render_targets.get_attachment_infos(viewport.index());
 
-						(command.borrow_mut())(e, &attachment_infos);
+						(&command)(&mut *e, &attachment_infos);
 					}
 				}
 
-				for (mut command, viewport) in render_pass_commands.into_iter() {
+				for (command, viewport) in render_pass_commands.into_iter() {
 					let attachment_infos = render_targets.get_attachment_infos(viewport);
-					(command.borrow_mut())(e, &attachment_infos);
+					(&command)(e, &attachment_infos);
 				}
 
 				for (view_id, present_key, swapchain_handle) in swapchain_targets.iter().copied() {
@@ -440,10 +435,9 @@ impl Renderer {
 			Ok(window) => {
 				let os_handles = window.os_handles();
 
-				let device = &mut self.device;
-
 				let swapchain_handle =
-					device.bind_to_window(&os_handles, ghi::PresentationModes::FIFO, extent, ghi::Uses::BlitDestination);
+					self.device
+						.bind_to_window(&os_handles, ghi::PresentationModes::FIFO, extent, ghi::Uses::BlitDestination);
 
 				let viewport_id = self.windows.len();
 
@@ -455,7 +449,7 @@ impl Renderer {
 					None
 				};
 
-				let main = device.build_image(
+				let main = self.device.build_image(
 					ghi::image::Builder::new(
 						ghi::Formats::RGBA16F,
 						ghi::Uses::Storage
@@ -468,7 +462,7 @@ impl Renderer {
 					.use_case(ghi::UseCases::DYNAMIC),
 				);
 
-				let result = device.build_image(
+				let result = self.device.build_image(
 					ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::BlitSource)
 						.name("result")
 						.use_case(ghi::UseCases::DYNAMIC),
@@ -481,7 +475,7 @@ impl Renderer {
 					.insert("result".to_string(), viewport_id, result, ghi::Formats::RGBA8UNORM);
 
 				if let Some(view_id) = view_id {
-					let depth = device.build_image(
+					let depth = self.device.build_image(
 						ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image)
 							.name("depth")
 							.use_case(ghi::UseCases::DYNAMIC),
@@ -491,12 +485,12 @@ impl Renderer {
 						.insert("depth".to_string(), viewport_id, depth, ghi::Formats::Depth32);
 
 					{
-						let scene_managers = self.scene_managers.iter();
+						let scene_managers = self.scene_managers.iter_mut();
 
 						for sm in scene_managers {
 							let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id);
 
-							sm.write().create_view(view_id, &mut rpb);
+							sm.create_view(view_id, &mut rpb);
 
 							if rpb.consumed_resources.len() == 0 {
 								log::debug!("No resources consumed by scene manager");

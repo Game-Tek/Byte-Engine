@@ -2647,6 +2647,9 @@ pub(super) mod tests {
 			.get_mut_buffer_slice(index_buffer)
 			.copy_from_slice(&[0u16, 1u16, 2u16]);
 
+		renderer.sync_buffer(vertex_positions_buffer);
+		renderer.sync_buffer(index_buffer);
+
 		let raygen_shader_code = "
 #version 460 core
 #pragma shader_stage(raygen)

@@ -1,8 +1,8 @@
 use utils::Extent;
 
 use crate::{
-	command_buffer::CommandBufferRecording, graphics_hardware_interface, BufferHandle, CommandBufferHandle,
-	DynamicBufferHandle, ImageHandle, PresentKey, SwapchainHandle,
+	command_buffer::CommandBufferRecording, descriptors, graphics_hardware_interface, BaseBufferHandle, BufferHandle,
+	CommandBufferHandle, DynamicBufferHandle, ImageHandle, PresentKey, SwapchainHandle,
 };
 
 /// The `Frame` trait contains methods for performing per frame operations.
@@ -16,7 +16,15 @@ where
 		Self: 'f;
 
 	// Return a mutable slice to the buffer data.
-	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
+	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: BufferHandle<T>) -> &'static mut T;
+
+	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
+
+	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &'static mut [u8];
+
+	fn sync_texture(&mut self, image_handle: ImageHandle);
+
+	fn write(&mut self, descriptor_set_writes: &[descriptors::Write]);
 
 	/// Returns a mutable reference to the dynamic buffer's contents.
 	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T;

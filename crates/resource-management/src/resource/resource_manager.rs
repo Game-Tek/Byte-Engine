@@ -53,9 +53,12 @@ impl ResourceManager {
 		let reference_model: ReferenceModel<T::Model> = if let Some(result) = storage_backend.read(ResourceId::new(id)) {
 			let (resource, _) = result;
 			resource.into()
-		} else if let Some(_asset_manager) = &self.asset_manager {
-			todo!("Figure out how to run async code from here!");
-			// asset_manager.load(id, storage_backend).map_err(|_| "Failed to load asset. The asset manager could not bake the resource.")?
+		} else if let Some(asset_manager) = &self.asset_manager {
+			let runtime = compio::runtime::Runtime::new().unwrap();
+
+			runtime
+				.block_on(asset_manager.load(id, storage_backend))
+				.map_err(|_| "Failed to load asset. The asset manager could not bake the resource.")?
 		} else {
 			return Err("Resource does not exists and an asset manager is not available");
 		};

@@ -34,7 +34,7 @@ impl PipelineManager {
 		&self,
 		pipeline_layout_handle: ghi::PipelineLayoutHandle,
 		reference: &mut Reference<Material>,
-		device: &mut ghi::implementation::Device,
+		device: &mut ghi::implementation::Frame,
 	) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();
@@ -136,7 +136,7 @@ impl PipelineManager {
 		pipeline_layout_handle: ghi::PipelineLayoutHandle,
 		specilization_map_entries: &[ghi::pipelines::SpecializationMapEntry],
 		reference: &mut Reference<Variant>,
-		device: &mut ghi::implementation::Device,
+		device: &mut ghi::implementation::Frame,
 	) -> Option<ghi::PipelineHandle> {
 		let v = {
 			let mut pipelines = self.pipelines.write();

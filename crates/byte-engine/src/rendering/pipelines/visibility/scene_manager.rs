@@ -141,10 +141,15 @@ pub struct VisibilityWorldRenderDomain {
 	/// Views
 	views: Vec<(usize, VisibilityPipelineRenderPass)>,
 	visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+	resource_manager: EntityHandle<ResourceManager>,
 }
 
 impl VisibilityWorldRenderDomain {
-	pub fn new(device: &mut ghi::implementation::Device, texture_manager: TextureManager) -> Self {
+	pub fn new(
+		device: &mut ghi::implementation::Device,
+		texture_manager: TextureManager,
+		resource_manager: EntityHandle<ResourceManager>,
+	) -> Self {
 		// Initialize the extent to 0 to allocate memory lazily.
 		let extent = Extent::square(0);
 
@@ -381,6 +386,8 @@ impl VisibilityWorldRenderDomain {
 			},
 
 			views: Vec::with_capacity(4),
+
+			resource_manager,
 		}
 	}
 
@@ -393,7 +400,7 @@ impl VisibilityWorldRenderDomain {
 
 		match mesh_source {
 			MeshSource::Resource(urid) => {
-				self.create_mesh_resources(urid, frame);
+				let _ = self.create_mesh_resources(urid, frame);
 			}
 			_ => {
 				log::error!("Unsupported mesh source");
@@ -412,10 +419,10 @@ impl VisibilityWorldRenderDomain {
 			return Ok(*entry);
 		}
 
-		let meshlet_stream_buffer = vec![0u8; 1024 * 8];
+		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
 
 		let mut resource_request: Reference<ResourceMesh> = {
-			let resource_manager = self.resource_manager.read();
+			let resource_manager = &self.resource_manager;
 			let Ok(resource_request) = resource_manager.request(id) else {
 				log::error!("Failed to load mesh resource {}", id);
 				return Err(());
@@ -652,6 +659,14 @@ impl VisibilityWorldRenderDomain {
 			None
 		};
 
+		device.sync_buffer(self.vertex_positions_buffer);
+		device.sync_buffer(self.vertex_normals_buffer);
+		device.sync_buffer(self.vertex_uvs_buffer);
+		device.sync_buffer(self.vertex_indices_buffer);
+		device.sync_buffer(self.primitive_indices_buffer);
+		device.sync_buffer(self.meshlets_data_buffer);
+		device.sync_buffer(self.meshes_data_buffer);
+
 		let mesh_id = self.meshes.len();
 
 		self.meshes.push(MeshData {
@@ -830,7 +845,7 @@ impl VisibilityWorldRenderDomain {
 	fn create_material_resources<'a>(
 		&'a mut self,
 		resource: &mut resource_management::Reference<ResourceMaterial>,
-		device: &mut ghi::implementation::Device,
+		device: &mut ghi::implementation::Frame,
 	) -> Result<u32, ()> {
 		let (index, v) = {
 			let material_evaluation_materials = &mut self.material_evaluation_materials;
@@ -1041,6 +1056,8 @@ impl VisibilityWorldRenderDomain {
 			let alpha = variant.alpha_mode == resource_management::types::AlphaMode::Blend;
 
 			let materials_buffer_slice = frame.get_mut_buffer_slice(self.materials_data_buffer_handle);
+
+			frame.sync_buffer(self.materials_data_buffer_handle);
 
 			let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
 

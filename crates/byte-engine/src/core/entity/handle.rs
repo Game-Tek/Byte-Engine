@@ -96,8 +96,12 @@ impl<T: ?Sized> Handle<T> {
 		self.container.clone()
 	}
 
-	pub fn map<'a, R>(&self, function: impl FnOnce(&Self) -> R) -> R {
-		function(self)
+	pub fn try_map_mut<'a, R>(&mut self, function: impl FnOnce(&mut T) -> R) -> Option<R> {
+		if let Some(e) = Arc::get_mut(&mut self.container) {
+			Some(function(e))
+		} else {
+			None
+		}
 	}
 }
 

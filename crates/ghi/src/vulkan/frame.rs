@@ -31,8 +31,24 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	where
 		Self: 'f;
 
-	fn get_mut_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
+	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: crate::BufferHandle<T>) -> &'static mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
+	}
+
+	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
+		self.device.sync_buffer(buffer_handle);
+	}
+
+	fn get_texture_slice_mut(&self, texture_handle: crate::ImageHandle) -> &'static mut [u8] {
+		self.device.get_texture_slice_mut(texture_handle)
+	}
+
+	fn sync_texture(&mut self, image_handle: crate::ImageHandle) {
+		self.device.sync_texture(image_handle);
+	}
+
+	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+		self.device.write(descriptor_set_writes);
 	}
 
 	fn acquire_swapchain_image(&mut self, swapchain_handle: crate::SwapchainHandle) -> (crate::PresentKey, utils::Extent) {

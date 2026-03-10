@@ -2628,26 +2628,34 @@ impl crate::device::Device for Device {
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 
-	fn get_mut_buffer_slice<'a, T: Copy>(
-		&'a mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &'a mut T {
+	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
 		let handle = BufferHandle(buffer_handle.0);
 
 		let buffer = self.buffers[handle.0 as usize];
 		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
 
-		self.pending_buffer_syncs.insert(handle);
-
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 
-	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
+	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
+		let buffer_handle = buffer_handle.into();
+		let handle = BufferHandle(buffer_handle.0);
+
+		self.pending_buffer_syncs.insert(handle);
+	}
+
+	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
 		let texture = &self.images[texture_handle.0 as usize];
 		let size = texture.size;
 		let pointer = texture.pointer.unwrap();
 
 		unsafe { std::slice::from_raw_parts_mut(pointer, size) }
+	}
+
+	fn sync_texture(&mut self, image_handle: crate::ImageHandle) {
+		let image_handle = ImageHandle(image_handle.0);
+
+		self.pending_image_syncs.insert(image_handle);
 	}
 
 	fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {

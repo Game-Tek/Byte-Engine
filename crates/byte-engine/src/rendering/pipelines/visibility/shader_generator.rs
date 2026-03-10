@@ -600,39 +600,40 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		match m.node_mut() {
 			besl::parser::Nodes::Function { statements, .. } => {
-				let mut new_statements = Vec::with_capacity(statements.len() + 2);
-				new_statements.push(besl::parser::Node::glsl(
-					a,
-					&[
-						"vertex_uvs",
-						"ao",
-						"depth_shadow_map",
-						"push_constant",
-						"material_offset",
-						"pixel_mapping",
-						"material_count",
-						"meshes",
-						"meshlets",
-						"materials",
-						"primitive_indices",
-						"vertex_indices",
-						"vertex_positions",
-						"vertex_normals",
-						"triangle_index",
-						"instance_index_render_target",
-						"views",
-						"calculate_full_bary",
-						"interpolate_vec3f_with_deriv",
-						"interpolate_vec2f_with_deriv",
-						"fresnel_schlick",
-						"distribution_ggx",
-						"geometry_smith",
-						"compute_vertex_index",
-					],
-					&["material", "albedo", "normal", "roughness", "metalness"],
-				));
-				new_statements.extend(statements.iter().cloned());
-				new_statements.push(besl::parser::Node::glsl(
+				statements.insert(
+					0,
+					besl::parser::Node::glsl(
+						a,
+						&[
+							"vertex_uvs",
+							"ao",
+							"depth_shadow_map",
+							"push_constant",
+							"material_offset",
+							"pixel_mapping",
+							"material_count",
+							"meshes",
+							"meshlets",
+							"materials",
+							"primitive_indices",
+							"vertex_indices",
+							"vertex_positions",
+							"vertex_normals",
+							"triangle_index",
+							"instance_index_render_target",
+							"views",
+							"calculate_full_bary",
+							"interpolate_vec3f_with_deriv",
+							"interpolate_vec2f_with_deriv",
+							"fresnel_schlick",
+							"distribution_ggx",
+							"geometry_smith",
+							"compute_vertex_index",
+						],
+						&["material", "albedo", "normal", "roughness", "metalness"],
+					),
+				);
+				statements.push(besl::parser::Node::glsl(
 					b,
 					&["lighting_data", "diffuse_map", "specular_map", "sample_shadow"],
 					&[],
@@ -651,30 +652,35 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 #[cfg(test)]
 mod tests {
+	use resource_management::asset::material_asset_handler::ProgramGenerator;
+	use utils::json;
+
 	use crate::besl;
 
-	// #[test]
-	// fn vec4f_variable() {
-	// 	let material = json::object! {
-	// 		"variables": [
-	// 			{
-	// 				"name": "albedo",
-	// 				"data_type": "vec4f",
-	// 				"value": "Purple"
-	// 			}
-	// 		]
-	// 	};
+	#[test]
+	fn vec4f_variable() {
+		let material = json::object! {
+			"variables": [
+				{
+					"name": "albedo",
+					"data_type": "vec4f",
+					"value": "Purple"
+				}
+			]
+		};
 
-	// 	let shader_source = "main: fn () -> void { out_color = albedo; }";
+		let shader_source = "main: fn () -> void { out_color = albedo; }";
 
-	// 	let shader_node = besl::compile_to_besl(shader_source, None).unwrap();
+		let shader_node = besl::parse(shader_source).unwrap();
 
-	// 	let shader_generator = super::VisibilityShaderGenerator::new();
+		let shader_generator = super::VisibilityShaderGenerator::new(true, true, true, true, true, true, true, true);
 
-	// 	let shader = shader_generator.transform(&material, &shader_node, "Fragment").expect("Failed to generate shader");
+		let shader = shader_generator.transform(shader_node, &material);
 
-	// 	// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
-	// }
+		println!("{:#?}", shader);
+
+		// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
+	}
 
 	// #[test]
 	// fn multiple_textures() {

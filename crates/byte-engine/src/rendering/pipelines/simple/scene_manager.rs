@@ -287,6 +287,8 @@ impl SceneManager {
 
 				let vertex_buffer = frame.get_mut_buffer_slice(self.vertex_positions_buffer);
 
+				frame.sync_buffer(self.vertex_positions_buffer);
+
 				let mesh_ref = self
 					.mesh_buffers_stats
 					.add_mesh(MeshStats::new(vertex_count, index_count), mesh_hash);
@@ -304,6 +306,8 @@ impl SceneManager {
 					.for_each(|(dst, src)| {
 						*dst = src;
 					});
+
+				frame.sync_buffer(self.indeces_buffer);
 
 				mesh_ref.id()
 			}

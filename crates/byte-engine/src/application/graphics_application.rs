@@ -101,7 +101,7 @@ pub struct GraphicsApplication {
 	world: DefaultWorld,
 
 	input_system: input::InputManager,
-	resource_manager: ResourceManager,
+	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
 
 	threads: SmallVec<[Thread; 64]>,
@@ -186,7 +186,7 @@ impl Application for GraphicsApplication {
 
 			input_system,
 			renderer,
-			resource_manager,
+			resource_manager: EntityHandle::from(resource_manager),
 
 			threads: SmallVec::new(),
 
@@ -478,7 +478,11 @@ pub fn setup_default_resource_and_asset_management(
 	asset_manager.add_asset_handler(ImageAssetHandler::new());
 	asset_manager.add_asset_handler(AudioAssetHandler::new());
 
-	resource_manager.set_asset_manager(asset_manager);
+	resource_manager
+		.try_map_mut(|resource_manager| {
+			resource_manager.set_asset_manager(asset_manager);
+		})
+		.expect("Failed to set up resource manager. Application cannot run without a resource manager.");
 }
 
 /// Sets up a default input system for the application.
@@ -534,11 +538,11 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 
 	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		EntityHandle::from(CustomSceneManager {
+		CustomSceneManager {
 			scene_manager: SimpleSceneManager::new(renderer.device_mut()),
 			mesh_receiver: listener,
 			transforms_listener,
-		})
+		}
 	};
 
 	renderer.add_scene_manager(sm);
@@ -578,11 +582,15 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 
 	let sm = {
 		let texture_manager = TextureManager::new();
-		EntityHandle::from(CustomSceneManager {
-			visibility_world_render_domain: VisibilityWorldRenderDomain::new(renderer.device_mut(), texture_manager),
+		CustomSceneManager {
+			visibility_world_render_domain: VisibilityWorldRenderDomain::new(
+				renderer.device_mut(),
+				texture_manager,
+				application.resource_manager.clone(),
+			),
 			light_receiver: application.light_factory.listener(),
 			mesh_receiver: application.renderable_factory.listener(),
-		})
+		}
 	};
 
 	renderer.add_scene_manager(sm);

@@ -69,8 +69,8 @@ pub enum Handle {
 #[derive(Clone, PartialEq)]
 pub(super) struct Consumption {
 	pub(super) handle: Handle,
-	pub(super) stages: graphics_hardware_interface::Stages,
-	pub(super) access: graphics_hardware_interface::AccessPolicies,
+	pub(super) stages: crate::Stages,
+	pub(super) access: crate::AccessPolicies,
 	pub(super) layout: crate::Layouts,
 }
 
@@ -101,21 +101,15 @@ pub(crate) struct PipelineLayout {
 #[derive(Clone)]
 pub(crate) struct Shader {
 	shader: vk::ShaderModule,
-	stage: graphics_hardware_interface::Stages,
-	shader_binding_descriptors: Vec<graphics_hardware_interface::ShaderBindingDescriptor>,
+	stage: crate::Stages,
+	shader_binding_descriptors: Vec<crate::shader::BindingDescriptor>,
 }
 
 #[derive(Clone)]
 pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	resource_access: Vec<(
-		(u32, u32),
-		(
-			graphics_hardware_interface::Stages,
-			graphics_hardware_interface::AccessPolicies,
-		),
-	)>,
+	resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
 }
 
 #[derive(Clone, Copy)]
@@ -213,7 +207,7 @@ pub(crate) enum Tasks {
 	},
 	/// Update the frame-specific (specified in `Task`) descriptor with the given write information for the master resource and descriptor.
 	UpdateDescriptor {
-		descriptor_write: graphics_hardware_interface::DescriptorWrite,
+		descriptor_write: crate::descriptors::Write,
 	},
 	BuildImage(BuildImage),
 	BuildBuffer(BuildBuffer),
@@ -381,7 +375,7 @@ mod tests {
 			.create_device(
 				features.clone(),
 				&mut [(
-					graphics_hardware_interface::QueueSelection::new(graphics_hardware_interface::CommandBufferType::GRAPHICS),
+					crate::QueueSelection::new(crate::command_buffer::CommandBufferType::GRAPHICS),
 					&mut queue_handle,
 				)],
 			)

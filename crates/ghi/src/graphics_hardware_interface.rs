@@ -4,61 +4,12 @@
 
 use utils::{Extent, RGBA};
 
-use crate::Layouts;
-
-/// Possible types of a shader source
-pub enum ShaderSource<'a> {
-	/// SPIR-V binary
-	SPIRV(&'a [u8]),
-}
-
-/// Primitive GPU/shader data types.
-#[derive(Hash, Clone, Copy)]
-pub enum DataTypes {
-	Float,
-	Float2,
-	Float3,
-	Float4,
-	U8,
-	U16,
-	U32,
-	Int,
-	Int2,
-	Int3,
-	Int4,
-	UInt,
-	UInt2,
-	UInt3,
-	UInt4,
-}
-
-#[derive(Clone, Hash)]
-pub struct VertexElement<'a> {
-	pub(crate) name: &'a str,
-	pub(crate) format: DataTypes,
-	pub(crate) binding: u32,
-}
-
-impl<'a> VertexElement<'a> {
-	pub const fn new(name: &'a str, format: DataTypes, binding: u32) -> Self {
-		Self { name, format, binding }
-	}
-}
-
-bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-	pub struct DeviceAccesses: u16 {
-		const CpuRead = 1 << 0;
-		const CpuWrite = 1 << 1;
-		const GpuRead = 1 << 2;
-		const GpuWrite = 1 << 3;
-
-		const DeviceOnly = 1 << 2 | 1 << 3;
-		const HostOnly = 1 << 0 | 1 << 1;
-		const HostToDevice = 1 << 1 | 1 << 2;
-		const DeviceToHost = 1 << 0 | 1 << 3;
-	}
-}
+use crate::{
+	command_buffer::CommandBufferType,
+	descriptors::{self, DescriptorType},
+	shader::BindingDescriptor,
+	AccessPolicies, DataTypes, Encodings, Formats, Layouts, Stages,
+};
 
 // HANDLES
 
@@ -182,80 +133,11 @@ impl Into<Handle> for SynchronizerHandle {
 // HANDLES
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Consumption {
+pub(crate) struct Consumption {
 	pub handle: Handle,
 	pub stages: Stages,
 	pub access: AccessPolicies,
 	pub layout: Layouts,
-}
-
-pub enum BottomLevelAccelerationStructureBuildDescriptions {
-	Mesh {
-		vertex_buffer: BufferStridedRange,
-		vertex_count: u32,
-		vertex_position_encoding: Encodings,
-		index_buffer: BufferStridedRange,
-		triangle_count: u32,
-		index_format: DataTypes,
-	},
-	AABB {
-		aabb_buffer: BaseBufferHandle,
-		transform_buffer: BaseBufferHandle,
-		transform_count: u32,
-	},
-}
-
-pub enum TopLevelAccelerationStructureBuildDescriptions {
-	Instance {
-		instances_buffer: BaseBufferHandle,
-		instance_count: u32,
-	},
-}
-
-pub struct BottomLevelAccelerationStructureBuild {
-	pub acceleration_structure: BottomLevelAccelerationStructureHandle,
-	pub scratch_buffer: BufferDescriptor,
-	pub description: BottomLevelAccelerationStructureBuildDescriptions,
-}
-
-pub struct TopLevelAccelerationStructureBuild {
-	pub acceleration_structure: TopLevelAccelerationStructureHandle,
-	pub scratch_buffer: BufferDescriptor,
-	pub description: TopLevelAccelerationStructureBuildDescriptions,
-}
-
-pub struct BufferOffset {
-	pub(super) buffer: BaseBufferHandle,
-	pub(super) offset: usize,
-}
-
-impl BufferOffset {
-	pub fn new(buffer: BaseBufferHandle, offset: usize) -> Self {
-		Self { buffer, offset }
-	}
-}
-
-pub struct BufferStridedRange {
-	pub(super) buffer_offset: BufferOffset,
-	pub(super) stride: usize,
-	pub(super) size: usize,
-}
-
-impl BufferStridedRange {
-	pub fn new(buffer: BaseBufferHandle, offset: usize, stride: usize, size: usize) -> Self {
-		Self {
-			buffer_offset: BufferOffset::new(buffer, offset),
-			stride,
-			size,
-		}
-	}
-}
-
-pub struct BindingTables {
-	pub raygen: BufferStridedRange,
-	pub hit: BufferStridedRange,
-	pub miss: BufferStridedRange,
-	pub callable: Option<BufferStridedRange>,
 }
 
 /// Describes the dimesions of a dispatch operation.
@@ -310,44 +192,6 @@ pub enum Ranges {
 	Whole,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Descriptor {
-	Buffer {
-		handle: BaseBufferHandle,
-		size: Ranges,
-	},
-	Image {
-		handle: ImageHandle,
-		layout: Layouts,
-	},
-	CombinedImageSampler {
-		image_handle: ImageHandle,
-		sampler_handle: SamplerHandle,
-		layout: Layouts,
-		layer: Option<u32>,
-	},
-	AccelerationStructure {
-		handle: TopLevelAccelerationStructureHandle,
-	},
-	Swapchain(SwapchainHandle),
-	Sampler(SamplerHandle),
-	StaticSamplers,
-	CombinedImageSamplerArray,
-}
-
-#[derive(Clone, Copy)]
-pub struct ShaderBindingDescriptor {
-	pub(crate) set: u32,
-	pub(crate) binding: u32,
-	pub(crate) access: AccessPolicies,
-}
-
-impl ShaderBindingDescriptor {
-	pub fn new(set: u32, binding: u32, access: AccessPolicies) -> Self {
-		Self { set, binding, access }
-	}
-}
-
 pub struct BufferSplitter<'a, T: Copy> {
 	buffer: &'a mut [T],
 	offset: usize,
@@ -389,382 +233,6 @@ pub struct RGBAu8 {
 	g: u8,
 	b: u8,
 	a: u8,
-}
-
-/// Enumerates the types of command buffers that can be created.
-pub enum CommandBufferType {
-	/// A command buffer that can perform graphics operations. Draws, blits, presentations, etc.
-	GRAPHICS,
-	/// A command buffer that can perform compute operations. Dispatches, etc.
-	COMPUTE,
-	/// A command buffer that is optimized for transfer operations. Copies, etc.
-	TRANSFER,
-}
-
-/// Enumerates the types of buffers that can be created.
-pub enum BufferType {
-	/// A buffer that can be used as a vertex buffer.
-	VERTEX,
-	/// A buffer that can be used as an index buffer.
-	INDEX,
-	/// A buffer that can be used as a uniform buffer.
-	UNIFORM,
-	/// A buffer that can be used as a storage buffer.
-	STORAGE,
-	/// A buffer that can be used as an indirect buffer.
-	INDIRECT,
-}
-
-/// Enumerates the types of shaders that can be created.
-#[derive(Clone, Copy, Debug)]
-pub enum ShaderTypes {
-	/// A vertex shader.
-	Vertex,
-	/// A fragment shader.
-	Fragment,
-	/// A compute shader.
-	Compute,
-	Task,
-	Mesh,
-	RayGen,
-	ClosestHit,
-	AnyHit,
-	Intersection,
-	Miss,
-	Callable,
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub enum Encodings {
-	FloatingPoint,
-	UnsignedNormalized,
-	SignedNormalized,
-	#[allow(non_camel_case_types)]
-	sRGB,
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-/// Describes the bit layout of a format's channels.
-pub enum ChannelLayout {
-	/// Single channel (R).
-	R,
-	/// Two channels (RG).
-	RG,
-	/// Three channels (RGB).
-	RGB,
-	/// Four channels (RGBA).
-	RGBA,
-	/// Four channels in BGRA order.
-	BGRA,
-	/// Special packed format.
-	Packed,
-	/// Depth channel.
-	Depth,
-	/// Block compressed format.
-	BC,
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-/// Describes the bit size per channel.
-pub enum ChannelBitSize {
-	/// 8 bits per channel.
-	Bits8,
-	/// 16 bits per channel.
-	Bits16,
-	/// 32 bits per channel.
-	Bits32,
-	/// Special case: 11 bits for R and G, 10 bits for B.
-	Bits11_11_10,
-	/// Block compressed format (variable bit size).
-	Compressed,
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-/// Enumerates the formats that textures can have.
-pub enum Formats {
-	/// 8 bit unsigned per component floating point R.
-	R8F,
-	/// 8 bit unsigned normalized R.
-	R8UNORM,
-	/// 8 bit signed normalized R.
-	R8SNORM,
-	/// 8 bit sRGB R.
-	R8sRGB,
-
-	/// 16 bit unsigned per component floating point R.
-	R16F,
-	/// 16 bit unsigned normalized R.
-	R16UNORM,
-	/// 16 bit signed normalized R.
-	R16SNORM,
-	/// 16 bit sRGB R.
-	R16sRGB,
-
-	/// 32 bit unsigned per component floating point R.
-	R32F,
-	/// 32 bit unsigned normalized R.
-	R32UNORM,
-	/// 32 bit signed normalized R.
-	R32SNORM,
-	/// 32 bit sRGB R.
-	R32sRGB,
-
-	/// 8 bit unsigned per component floating point RG.
-	RG8F,
-	/// 8 bit unsigned normalized RG.
-	RG8UNORM,
-	/// 8 bit signed normalized RG.
-	RG8SNORM,
-	/// 8 bit sRGB RG.
-	RG8sRGB,
-
-	/// 16 bit unsigned per component floating point RG.
-	RG16F,
-	/// 16 bit unsigned normalized RG.
-	RG16UNORM,
-	/// 16 bit signed normalized RG.
-	RG16SNORM,
-	/// 16 bit sRGB RG.
-	RG16sRGB,
-
-	/// 8 bit unsigned per component floating point RGB.
-	RGB8F,
-	/// 8 bit unsigned normalized RGB.
-	RGB8UNORM,
-	/// 8 bit signed normalized RGB.
-	RGB8SNORM,
-	/// 8 bit sRGB RGB.
-	RGB8sRGB,
-
-	/// 16 bit unsigned per component floating point RGB.
-	RGB16F,
-	/// 16 bit unsigned normalized RGB.
-	RGB16UNORM,
-	/// 16 bit signed normalized RGB.
-	RGB16SNORM,
-	/// 16 bit sRGB RGB.
-	RGB16sRGB,
-
-	/// 8 bit unsigned per component floating point RGBA.
-	RGBA8F,
-	/// 8 bit unsigned normalized RGBA.
-	RGBA8UNORM,
-	/// 8 bit signed normalized RGBA.
-	RGBA8SNORM,
-	/// 8 bit sRGB RGBA.
-	RGBA8sRGB,
-
-	/// 16 bit unsigned per component floating point RGBA.
-	RGBA16F,
-	/// 16 bit unsigned normalized RGBA.
-	RGBA16UNORM,
-	/// 16 bit signed normalized RGBA.
-	RGBA16SNORM,
-	/// 16 bit sRGB RGBA.
-	RGBA16sRGB,
-
-	/// 11 bit unsigned for R, G and 10 bit unsigned for B normalized RGB.
-	RGBu11u11u10,
-	/// 8 bit unsigned per component normalized BGRA.
-	BGRAu8,
-	/// 8 bit sRGB RGBA.
-	BGRAsRGB,
-	/// 32 bit float depth.
-	Depth32,
-	/// 32 bit unsigned integer.
-	U32,
-	/// BC5 block compressed format.
-	BC5,
-	/// BC7 block compressed format.
-	BC7,
-}
-
-impl Formats {
-	/// Returns the encoding of the format.
-	pub fn encoding(&self) -> Option<Encodings> {
-		match self {
-			Formats::R8F
-			| Formats::R16F
-			| Formats::R32F
-			| Formats::RG8F
-			| Formats::RG16F
-			| Formats::RGB8F
-			| Formats::RGB16F
-			| Formats::RGBA8F
-			| Formats::RGBA16F
-			| Formats::Depth32 => Some(Encodings::FloatingPoint),
-
-			Formats::R8UNORM
-			| Formats::R16UNORM
-			| Formats::R32UNORM
-			| Formats::RG8UNORM
-			| Formats::RG16UNORM
-			| Formats::RGB8UNORM
-			| Formats::RGB16UNORM
-			| Formats::RGBA8UNORM
-			| Formats::RGBA16UNORM
-			| Formats::RGBu11u11u10
-			| Formats::BGRAu8 => Some(Encodings::UnsignedNormalized),
-
-			Formats::R8SNORM
-			| Formats::R16SNORM
-			| Formats::R32SNORM
-			| Formats::RG8SNORM
-			| Formats::RG16SNORM
-			| Formats::RGB8SNORM
-			| Formats::RGB16SNORM
-			| Formats::RGBA8SNORM
-			| Formats::RGBA16SNORM => Some(Encodings::SignedNormalized),
-
-			Formats::R8sRGB
-			| Formats::R16sRGB
-			| Formats::R32sRGB
-			| Formats::RG8sRGB
-			| Formats::RG16sRGB
-			| Formats::RGB8sRGB
-			| Formats::RGB16sRGB
-			| Formats::RGBA8sRGB
-			| Formats::RGBA16sRGB
-			| Formats::BGRAsRGB => Some(Encodings::sRGB),
-
-			Formats::U32 | Formats::BC5 | Formats::BC7 => None,
-		}
-	}
-
-	/// Returns the channel bit size of the format.
-	pub fn channel_bit_size(&self) -> ChannelBitSize {
-		match self {
-			Formats::R8F
-			| Formats::R8UNORM
-			| Formats::R8SNORM
-			| Formats::R8sRGB
-			| Formats::RG8F
-			| Formats::RG8UNORM
-			| Formats::RG8SNORM
-			| Formats::RG8sRGB
-			| Formats::RGB8F
-			| Formats::RGB8UNORM
-			| Formats::RGB8SNORM
-			| Formats::RGB8sRGB
-			| Formats::RGBA8F
-			| Formats::RGBA8UNORM
-			| Formats::RGBA8SNORM
-			| Formats::RGBA8sRGB
-			| Formats::BGRAu8
-			| Formats::BGRAsRGB => ChannelBitSize::Bits8,
-
-			Formats::R16F
-			| Formats::R16UNORM
-			| Formats::R16SNORM
-			| Formats::R16sRGB
-			| Formats::RG16F
-			| Formats::RG16UNORM
-			| Formats::RG16SNORM
-			| Formats::RG16sRGB
-			| Formats::RGB16F
-			| Formats::RGB16UNORM
-			| Formats::RGB16SNORM
-			| Formats::RGB16sRGB
-			| Formats::RGBA16F
-			| Formats::RGBA16UNORM
-			| Formats::RGBA16SNORM
-			| Formats::RGBA16sRGB => ChannelBitSize::Bits16,
-
-			Formats::R32F | Formats::R32UNORM | Formats::R32SNORM | Formats::R32sRGB | Formats::Depth32 | Formats::U32 => {
-				ChannelBitSize::Bits32
-			}
-
-			Formats::RGBu11u11u10 => ChannelBitSize::Bits11_11_10,
-
-			Formats::BC5 | Formats::BC7 => ChannelBitSize::Compressed,
-		}
-	}
-
-	/// Returns the channel layout of the format.
-	pub fn channel_layout(&self) -> ChannelLayout {
-		match self {
-			Formats::R8F
-			| Formats::R8UNORM
-			| Formats::R8SNORM
-			| Formats::R8sRGB
-			| Formats::R16F
-			| Formats::R16UNORM
-			| Formats::R16SNORM
-			| Formats::R16sRGB
-			| Formats::R32F
-			| Formats::R32UNORM
-			| Formats::R32SNORM
-			| Formats::R32sRGB => ChannelLayout::R,
-
-			Formats::RG8F
-			| Formats::RG8UNORM
-			| Formats::RG8SNORM
-			| Formats::RG8sRGB
-			| Formats::RG16F
-			| Formats::RG16UNORM
-			| Formats::RG16SNORM
-			| Formats::RG16sRGB => ChannelLayout::RG,
-
-			Formats::RGB8F
-			| Formats::RGB8UNORM
-			| Formats::RGB8SNORM
-			| Formats::RGB8sRGB
-			| Formats::RGB16F
-			| Formats::RGB16UNORM
-			| Formats::RGB16SNORM
-			| Formats::RGB16sRGB
-			| Formats::RGBu11u11u10 => ChannelLayout::RGB,
-
-			Formats::RGBA8F
-			| Formats::RGBA8UNORM
-			| Formats::RGBA8SNORM
-			| Formats::RGBA8sRGB
-			| Formats::RGBA16F
-			| Formats::RGBA16UNORM
-			| Formats::RGBA16SNORM
-			| Formats::RGBA16sRGB => ChannelLayout::RGBA,
-
-			Formats::BGRAu8 | Formats::BGRAsRGB => ChannelLayout::BGRA,
-
-			Formats::Depth32 => ChannelLayout::Depth,
-
-			Formats::U32 => ChannelLayout::Packed,
-
-			Formats::BC5 | Formats::BC7 => ChannelLayout::BC,
-		}
-	}
-}
-
-pub trait Size {
-	fn size(&self) -> usize;
-}
-
-impl Size for Formats {
-	fn size(&self) -> usize {
-		match self {
-			Formats::R8F | Formats::R8UNORM | Formats::R8SNORM | Formats::R8sRGB => 1,
-			Formats::R16F | Formats::R16UNORM | Formats::R16SNORM | Formats::R16sRGB => 2,
-			Formats::R32F | Formats::R32UNORM | Formats::R32SNORM | Formats::R32sRGB => 4,
-			Formats::RG8F | Formats::RG8UNORM | Formats::RG8SNORM | Formats::RG8sRGB => 2,
-			Formats::RG16F | Formats::RG16UNORM | Formats::RG16SNORM | Formats::RG16sRGB => 4,
-			Formats::RGB8F | Formats::RGB8UNORM | Formats::RGB8SNORM | Formats::RGB8sRGB => 3,
-			Formats::RGB16F | Formats::RGB16UNORM | Formats::RGB16SNORM | Formats::RGB16sRGB => 6,
-			Formats::RGBA8F | Formats::RGBA8UNORM | Formats::RGBA8SNORM | Formats::RGBA8sRGB => 4,
-			Formats::RGBA16F | Formats::RGBA16UNORM | Formats::RGBA16SNORM | Formats::RGBA16sRGB => 8,
-			Formats::RGBu11u11u10 => 4,
-			Formats::BGRAu8 | Formats::BGRAsRGB => 4,
-			Formats::Depth32 => 4,
-			Formats::U32 => 4,
-			Formats::BC5 => 1,
-			Formats::BC7 => 1,
-		}
-	}
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum CompressionSchemes {
-	BC5,
-	BC7,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -824,144 +292,6 @@ impl AttachmentInformation {
 		self.layer = Some(layer);
 		self
 	}
-}
-
-#[derive(Clone, Copy)]
-/// Stores the information of an attachment.
-pub struct PipelineAttachmentInformation {
-	/// The format of the attachment.
-	pub(crate) format: Formats,
-	/// The image layer index for the attachment.
-	pub(crate) layer: Option<u32>,
-}
-
-impl PipelineAttachmentInformation {
-	pub fn new(format: Formats) -> Self {
-		Self { format, layer: None }
-	}
-
-	pub fn layer(mut self, layer: u32) -> Self {
-		self.layer = Some(layer);
-		self
-	}
-}
-
-bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-	/// Bit flags for the available access policies.
-	pub struct AccessPolicies : u8 {
-		/// Will perform no access.
-		const NONE = 0b00000000;
-		/// Will perform read access.
-		const READ = 0b00000001;
-		/// Will perform write access.
-		const WRITE = 0b00000010;
-		/// Will perform read and write access.
-		const READ_WRITE = Self::READ.bits() | Self::WRITE.bits();
-	}
-}
-
-#[derive(Clone, Copy)]
-pub struct TextureState {
-	/// The layout of the resource.
-	pub layout: Layouts,
-}
-
-#[derive(Clone, Copy)]
-/// Stores the information of a barrier.
-pub enum Barrier {
-	/// An image barrier.
-	Image(ImageHandle),
-	/// A buffer barrier.
-	Buffer(BaseBufferHandle),
-	/// A memory barrier.
-	Memory,
-}
-
-bitflags::bitflags! {
-	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-	/// Bit flags for the available pipeline stages.
-	pub struct Stages : u64 {
-		/// No stage.
-		const NONE = 0b0;
-		/// The vertex stage.
-		const VERTEX = 1 << 1;
-		const INDEX = 1 << 2;
-		/// The task stage.
-		const TASK = 1 << 3;
-		/// The mesh shader execution stage.
-		const MESH = 1 << 4;
-		/// The fragment stage.
-		const FRAGMENT = 1 << 5;
-		/// The compute stage.
-		const COMPUTE = 1 << 6;
-		/// The transfer stage.
-		const TRANSFER = 1 << 7;
-		/// The presentation stage.
-		const PRESENTATION = 1 << 8;
-		/// The host stage.
-		const HOST = 1 << 9;
-		/// The shader write stage.
-		const SHADER_WRITE = 1 << 10;
-		/// The ray generation stage.
-		const RAYGEN = 1 << 11;
-		/// The closest hit stage.
-		const CLOSEST_HIT = 1 << 12;
-		/// The any hit stage.
-		const ANY_HIT = 1 << 13;
-		/// The intersection stage.
-		const INTERSECTION = 1 << 14;
-		/// The miss stage.
-		const MISS = 1 << 15;
-		/// The callable stage.
-		const CALLABLE = 1 << 16;
-		/// The acceleration structure build stage.
-		const ACCELERATION_STRUCTURE_BUILD = 1 << 17;
-		/// The last or bottom stage.
-		const LAST = 1 << 63;
-	}
-}
-
-#[derive(Clone, Copy)]
-/// Stores the information of a transition state.
-pub struct TransitionState {
-	/// The stages this transition will either wait or block on.
-	pub stage: Stages,
-	/// The type of access that will be done on the resource by the process the operation that requires this transition.
-	pub access: AccessPolicies,
-	pub layout: Layouts,
-}
-
-/// Stores the information of a barrier descriptor.
-#[derive(Clone, Copy)]
-pub struct BarrierDescriptor {
-	/// The barrier.
-	pub barrier: Barrier,
-	/// The state of the resource previous to the barrier. If None, the resource state will be discarded.
-	pub source: Option<TransitionState>,
-	/// The state of the resource after the barrier.
-	pub destination: TransitionState,
-}
-
-#[derive(Clone, Copy)]
-/// Enumerates the available descriptor types.
-pub enum DescriptorType {
-	/// A uniform buffer.
-	UniformBuffer,
-	/// A storage buffer.
-	StorageBuffer,
-	/// An image.
-	SampledImage,
-	/// A combined image sampler.
-	CombinedImageSampler,
-	/// A storage image.
-	StorageImage,
-	/// An input attachment.
-	InputAttachment,
-	/// A sampler.
-	Sampler,
-	/// An acceleration structure.
-	AccelerationStructure,
 }
 
 /// The `DescriptorSetBindingType` trait brands descriptor set binding templates with a compile-time descriptor type.
@@ -1210,8 +540,8 @@ impl DescriptorSetBindingTemplate {
 		}
 	}
 
-	pub fn into_shader_binding_descriptor(&self, set: u32, access_policies: AccessPolicies) -> ShaderBindingDescriptor {
-		ShaderBindingDescriptor::new(set, self.binding, access_policies)
+	pub fn into_shader_binding_descriptor(&self, set: u32, access_policies: AccessPolicies) -> BindingDescriptor {
+		BindingDescriptor::new(set, self.binding, access_policies)
 	}
 
 	/// Returns the binding index of the descriptor set layout binding.
@@ -1225,7 +555,7 @@ pub struct BindingConstructor<'a> {
 	/// The index of the array element to write to in the binding(if the binding is an array).
 	pub(super) array_element: u32,
 	/// Information describing the descriptor.
-	pub(super) descriptor: Descriptor,
+	pub(super) descriptor: descriptors::WriteData,
 	pub(super) frame_offset: Option<i8>,
 }
 
@@ -1234,7 +564,7 @@ impl<'a> BindingConstructor<'a> {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
-			descriptor: Descriptor::Buffer {
+			descriptor: descriptors::WriteData::Buffer {
 				handle: buffer_handle,
 				size: Ranges::Whole,
 			},
@@ -1246,7 +576,7 @@ impl<'a> BindingConstructor<'a> {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
-			descriptor: Descriptor::Image {
+			descriptor: descriptors::WriteData::Image {
 				handle: image_handle,
 				layout: crate::Layouts::General,
 			},
@@ -1258,7 +588,7 @@ impl<'a> BindingConstructor<'a> {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
-			descriptor: Descriptor::Sampler(sampler_handle),
+			descriptor: descriptors::WriteData::Sampler(sampler_handle),
 			frame_offset: None,
 		}
 	}
@@ -1272,7 +602,7 @@ impl<'a> BindingConstructor<'a> {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
-			descriptor: Descriptor::CombinedImageSampler {
+			descriptor: descriptors::WriteData::CombinedImageSampler {
 				image_handle,
 				sampler_handle,
 				layout,
@@ -1286,7 +616,7 @@ impl<'a> BindingConstructor<'a> {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
-			descriptor: Descriptor::CombinedImageSamplerArray,
+			descriptor: descriptors::WriteData::CombinedImageSamplerArray,
 			frame_offset: None,
 		}
 	}
@@ -1301,7 +631,7 @@ impl<'a> BindingConstructor<'a> {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
-			descriptor: Descriptor::CombinedImageSampler {
+			descriptor: descriptors::WriteData::CombinedImageSampler {
 				image_handle,
 				sampler_handle,
 				layout,
@@ -1315,7 +645,7 @@ impl<'a> BindingConstructor<'a> {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
-			descriptor: Descriptor::StaticSamplers,
+			descriptor: descriptors::WriteData::StaticSamplers,
 			frame_offset: None,
 		}
 	}
@@ -1327,7 +657,7 @@ impl<'a> BindingConstructor<'a> {
 		BindingConstructor {
 			descriptor_set_binding_template: bindings,
 			array_element: 0,
-			descriptor: Descriptor::AccelerationStructure {
+			descriptor: descriptors::WriteData::AccelerationStructure {
 				handle: top_level_acceleration_structure,
 			},
 			frame_offset: None,
@@ -1341,7 +671,7 @@ impl<'a> BindingConstructor<'a> {
 
 	pub fn layout(mut self, layout: crate::Layouts) -> Self {
 		match &mut self.descriptor {
-			Descriptor::Image { layout: old_layout, .. } => {
+			descriptors::WriteData::Image { layout: old_layout, .. } => {
 				*old_layout = layout;
 			}
 			_ => (),
@@ -1352,158 +682,6 @@ impl<'a> BindingConstructor<'a> {
 
 	pub fn array_element(&self) -> u32 {
 		self.array_element
-	}
-}
-
-/// Stores the information of a descriptor.
-pub enum DescriptorInfo {
-	/// A buffer descriptor.
-	Buffer {
-		/// The buffer of the descriptor.
-		buffer: BaseBufferHandle,
-		/// The offset to start reading from inside the buffer.
-		offset: usize,
-		/// How much to read from the buffer after `offset`.
-		range: usize,
-	},
-	/// An image descriptor.
-	Image {
-		/// The image of the descriptor.
-		image: ImageHandle,
-		/// The format of the texture.
-		format: Formats,
-		/// The layout of the texture.
-		layout: Layouts,
-	},
-	/// A sampler descriptor.
-	Sampler {
-		/// The sampler of the descriptor.
-		sampler: u32,
-	},
-}
-
-/// Stores the information of a descriptor set write.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct DescriptorWrite {
-	pub(super) binding_handle: DescriptorSetBindingHandle,
-	/// The index of the array element to write to in the binding(if the binding is an array).
-	pub(super) array_element: u32,
-	/// Information describing the descriptor.
-	pub(super) descriptor: Descriptor,
-	pub(super) frame_offset: Option<i32>,
-}
-
-impl DescriptorWrite {
-	pub fn new(binding_handle: DescriptorSetBindingHandle, descriptor: Descriptor) -> DescriptorWrite {
-		DescriptorWrite {
-			binding_handle,
-			array_element: 0,
-			descriptor,
-			frame_offset: None,
-		}
-	}
-
-	pub fn buffer(binding_handle: DescriptorSetBindingHandle, buffer_handle: BaseBufferHandle) -> DescriptorWrite {
-		DescriptorWrite {
-			binding_handle,
-			array_element: 0,
-			descriptor: Descriptor::Buffer {
-				handle: buffer_handle,
-				size: Ranges::Whole,
-			},
-			frame_offset: None,
-		}
-	}
-
-	pub fn image(binding_handle: DescriptorSetBindingHandle, image_handle: ImageHandle, layout: Layouts) -> DescriptorWrite {
-		DescriptorWrite {
-			binding_handle,
-			array_element: 0,
-			descriptor: Descriptor::Image {
-				handle: image_handle,
-				layout,
-			},
-			frame_offset: None,
-		}
-	}
-
-	pub fn image_with_frame(
-		binding_handle: DescriptorSetBindingHandle,
-		image_handle: ImageHandle,
-		layout: Layouts,
-		frame_offset: i32,
-	) -> DescriptorWrite {
-		DescriptorWrite {
-			binding_handle,
-			array_element: 0,
-			descriptor: Descriptor::Image {
-				handle: image_handle,
-				layout,
-			},
-			frame_offset: Some(frame_offset),
-		}
-	}
-
-	pub fn sampler(binding_handle: DescriptorSetBindingHandle, sampler_handle: SamplerHandle) -> DescriptorWrite {
-		DescriptorWrite {
-			binding_handle,
-			array_element: 0,
-			descriptor: Descriptor::Sampler(sampler_handle),
-			frame_offset: None,
-		}
-	}
-
-	pub fn combined_image_sampler(
-		binding_handle: DescriptorSetBindingHandle,
-		image_handle: ImageHandle,
-		sampler_handle: SamplerHandle,
-		layout: Layouts,
-	) -> DescriptorWrite {
-		DescriptorWrite {
-			binding_handle,
-			array_element: 0,
-			descriptor: Descriptor::CombinedImageSampler {
-				image_handle,
-				sampler_handle,
-				layout,
-				layer: None,
-			},
-			frame_offset: None,
-		}
-	}
-
-	pub fn combined_image_sampler_array(
-		binding_handle: DescriptorSetBindingHandle,
-		image_handle: ImageHandle,
-		sampler_handle: SamplerHandle,
-		layout: Layouts,
-		index: u32,
-	) -> DescriptorWrite {
-		DescriptorWrite {
-			binding_handle,
-			array_element: index,
-			descriptor: Descriptor::CombinedImageSampler {
-				image_handle,
-				sampler_handle,
-				layout,
-				layer: None,
-			},
-			frame_offset: None,
-		}
-	}
-
-	pub fn acceleration_structure(
-		binding_handle: DescriptorSetBindingHandle,
-		acceleration_structure_handle: TopLevelAccelerationStructureHandle,
-	) -> DescriptorWrite {
-		DescriptorWrite {
-			binding_handle,
-			array_element: 0,
-			descriptor: Descriptor::AccelerationStructure {
-				handle: acceleration_structure_handle,
-			},
-			frame_offset: None,
-		}
 	}
 }
 
@@ -1530,110 +708,6 @@ pub enum SwapchainStates {
 	Suboptimal,
 	/// The swapchain can't be used for presentation.
 	Invalid,
-}
-
-pub struct BufferDescriptor {
-	pub(super) buffer: BaseBufferHandle,
-	pub(super) offset: usize,
-}
-
-impl BufferDescriptor {
-	pub fn new<T: Copy, const N: usize>(buffer: BufferHandle<[T; N]>) -> Self {
-		Self {
-			buffer: buffer.into(),
-			offset: 0,
-		}
-	}
-}
-
-impl<T: Copy> Into<BufferDescriptor> for BufferHandle<T> {
-	fn into(self) -> BufferDescriptor {
-		BufferDescriptor {
-			buffer: self.into(),
-			offset: 0,
-		}
-	}
-}
-
-pub struct SpecializationMapEntry {
-	pub(super) r#type: String,
-	pub(super) constant_id: u32,
-	pub(super) value: Box<[u8]>,
-}
-
-impl SpecializationMapEntry {
-	pub fn new<T: Copy + 'static>(constant_id: u32, r#type: String, value: T) -> Self
-	where
-		[(); std::mem::size_of::<T>()]:,
-	{
-		if r#type == "vec4f".to_owned() {
-			assert_eq!(std::mem::size_of::<T>(), 16);
-		}
-
-		let mut data = [0 as u8; std::mem::size_of::<T>()];
-
-		// SAFETY: We know that the data is valid for the lifetime of the specialization map entry.
-		unsafe {
-			std::ptr::copy_nonoverlapping((&value) as *const T as *const u8, data.as_mut_ptr(), std::mem::size_of::<T>())
-		};
-
-		Self {
-			r#type,
-			constant_id,
-			value: Box::new(data),
-		}
-	}
-
-	pub fn get_constant_id(&self) -> u32 {
-		self.constant_id
-	}
-
-	pub fn get_type(&self) -> String {
-		self.r#type.clone()
-	}
-
-	pub fn get_size(&self) -> usize {
-		std::mem::size_of_val(&self.value)
-	}
-
-	pub fn get_data(&self) -> &[u8] {
-		// SAFETY: We know that the data is valid for the lifetime of the specialization map entry.
-		self.value.as_ref()
-	}
-}
-
-#[derive(Clone, Copy)]
-pub struct ShaderParameter<'a> {
-	pub(crate) handle: &'a ShaderHandle,
-	pub(crate) stage: ShaderTypes,
-	pub(crate) specialization_map: &'a [SpecializationMapEntry],
-}
-
-impl<'a> ShaderParameter<'a> {
-	pub fn new(handle: &'a ShaderHandle, stage: ShaderTypes) -> Self {
-		Self {
-			handle,
-			stage,
-			specialization_map: &[],
-		}
-	}
-
-	pub fn with_specialization_map(mut self, specialization_map: &'a [SpecializationMapEntry]) -> Self {
-		self.specialization_map = specialization_map;
-		self
-	}
-}
-
-#[derive(Clone, Copy)]
-pub struct PushConstantRange {
-	pub(crate) offset: u32,
-	pub(crate) size: u32,
-}
-
-impl PushConstantRange {
-	pub fn new(offset: u32, size: u32) -> Self {
-		Self { offset, size }
-	}
 }
 
 pub enum AccelerationStructureTypes {
@@ -1670,9 +744,15 @@ pub(super) mod tests {
 		},
 		device::Device,
 		frame::Frame as _,
-		raster_pipeline,
+		pipelines::{self, raster::AttachmentDescriptor, PushConstantRange, ShaderParameter, VertexElement},
+		rt::{
+			BindingTables, BottomLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuildDescriptions,
+			TopLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuildDescriptions,
+		},
+		shader::Sources,
 		window::Window,
-		FilteringModes, SamplerAddressingModes, SamplingReductionModes, UseCases, Uses,
+		BufferDescriptor, BufferStridedRange, ChannelBitSize, ChannelLayout, DeviceAccesses, FilteringModes,
+		SamplerAddressingModes, SamplingReductionModes, ShaderTypes, Size as _, UseCases, Uses,
 	};
 
 	use resource_management::glsl;
@@ -2162,7 +1242,7 @@ pub(super) mod tests {
 		let vertex_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
 				ShaderTypes::Vertex,
 				[],
 			)
@@ -2170,7 +1250,7 @@ pub(super) mod tests {
 		let fragment_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
 				ShaderTypes::Fragment,
 				[],
 			)
@@ -2188,9 +1268,9 @@ pub(super) mod tests {
 				.use_case(UseCases::STATIC),
 		);
 
-		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
+		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
 			pipeline_layout,
 			&vertex_layout,
 			&[
@@ -2280,7 +1360,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
 				ShaderTypes::Vertex,
 				[],
 			)
@@ -2288,7 +1368,7 @@ pub(super) mod tests {
 		let fragment_shader = renderer
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
 				ShaderTypes::Fragment,
 				[],
 			)
@@ -2303,9 +1383,9 @@ pub(super) mod tests {
 				.use_case(UseCases::STATIC),
 		);
 
-		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
+		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
-		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(
+		let pipeline = renderer.create_raster_pipeline(pipelines::raster::Builder::new(
 			pipeline_layout,
 			&vertex_layout,
 			&[
@@ -2397,7 +1477,7 @@ pub(super) mod tests {
 		let vertex_shader = renderer
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
 				ShaderTypes::Vertex,
 				[],
 			)
@@ -2405,7 +1485,7 @@ pub(super) mod tests {
 		let fragment_shader = renderer
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
 				ShaderTypes::Fragment,
 				[],
 			)
@@ -2420,9 +1500,9 @@ pub(super) mod tests {
 				.use_case(UseCases::DYNAMIC),
 		);
 
-		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
+		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
-		let pipeline = renderer.create_raster_pipeline(raster_pipeline::Builder::new(
+		let pipeline = renderer.create_raster_pipeline(pipelines::raster::Builder::new(
 			pipeline_layout,
 			&vertex_layout,
 			&[
@@ -2514,7 +1594,7 @@ pub(super) mod tests {
 		let vertex_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
 				ShaderTypes::Vertex,
 				[],
 			)
@@ -2522,7 +1602,7 @@ pub(super) mod tests {
 		let fragment_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
 				ShaderTypes::Fragment,
 				[],
 			)
@@ -2540,9 +1620,9 @@ pub(super) mod tests {
 				.use_case(UseCases::DYNAMIC),
 		);
 
-		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
+		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
 			pipeline_layout,
 			&vertex_layout,
 			&[
@@ -2634,7 +1714,7 @@ pub(super) mod tests {
 		let vertex_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
 				ShaderTypes::Vertex,
 				[],
 			)
@@ -2642,7 +1722,7 @@ pub(super) mod tests {
 		let fragment_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
 				ShaderTypes::Fragment,
 				[],
 			)
@@ -2659,9 +1739,9 @@ pub(super) mod tests {
 				.use_case(UseCases::DYNAMIC),
 		);
 
-		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
+		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
 			pipeline_layout,
 			&vertex_layout,
 			&[
@@ -2756,7 +1836,7 @@ pub(super) mod tests {
 		let vertex_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
 				ShaderTypes::Vertex,
 				[],
 			)
@@ -2764,7 +1844,7 @@ pub(super) mod tests {
 		let fragment_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
 				ShaderTypes::Fragment,
 				[],
 			)
@@ -2781,9 +1861,9 @@ pub(super) mod tests {
 				.use_case(UseCases::DYNAMIC),
 		);
 
-		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
+		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
 			pipeline_layout,
 			&vertex_layout,
 			&[
@@ -2882,7 +1962,7 @@ pub(super) mod tests {
 		let vertex_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
 				ShaderTypes::Vertex,
 				[],
 			)
@@ -2890,13 +1970,13 @@ pub(super) mod tests {
 		let fragment_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
 				ShaderTypes::Fragment,
 				[],
 			)
 			.expect("Failed to create fragment shader");
 
-		let pipeline_layout = device.create_pipeline_layout(&[], &[PushConstantRange { offset: 0, size: 16 * 4 }]);
+		let pipeline_layout = device.create_pipeline_layout(&[], &[PushConstantRange::new(0, 16 * 4)]);
 
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
@@ -2908,9 +1988,9 @@ pub(super) mod tests {
 				.use_case(UseCases::DYNAMIC),
 		);
 
-		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
+		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
 			pipeline_layout,
 			&vertex_layout,
 			&[
@@ -3077,11 +2157,11 @@ pub(super) mod tests {
 		let compute_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(compute_shader_artifact.borrow().into()),
+				Sources::SPIRV(compute_shader_artifact.borrow().into()),
 				ShaderTypes::Compute,
 				[
-					ShaderBindingDescriptor::new(0, 0, AccessPolicies::WRITE),
-					ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ),
+					BindingDescriptor::new(0, 0, AccessPolicies::WRITE),
+					BindingDescriptor::new(0, 1, AccessPolicies::READ),
 				],
 			)
 			.expect("Failed to create compute shader");
@@ -3349,19 +2429,19 @@ pub(super) mod tests {
 		let vertex_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(vertex_shader_artifact.borrow().into()),
+				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
 				ShaderTypes::Vertex,
-				[ShaderBindingDescriptor::new(0, 1, AccessPolicies::READ)],
+				[BindingDescriptor::new(0, 1, AccessPolicies::READ)],
 			)
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(fragment_shader_artifact.borrow().into()),
+				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
 				ShaderTypes::Fragment,
 				[
-					ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ),
-					ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ),
+					BindingDescriptor::new(0, 0, AccessPolicies::READ),
+					BindingDescriptor::new(0, 2, AccessPolicies::READ),
 				],
 			)
 			.expect("Failed to create fragment shader");
@@ -3463,9 +2543,9 @@ pub(super) mod tests {
 				.use_case(UseCases::STATIC),
 		);
 
-		let attachments = [PipelineAttachmentInformation::new(Formats::RGBA8UNORM)];
+		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
-		let pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
 			pipeline_layout,
 			&vertex_layout,
 			&[
@@ -3657,30 +2737,30 @@ void main() {
 		let raygen_shader = renderer
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(raygen_shader_artifact.borrow().into()),
+				Sources::SPIRV(raygen_shader_artifact.borrow().into()),
 				ShaderTypes::RayGen,
 				[
-					ShaderBindingDescriptor::new(0, 0, AccessPolicies::READ),
-					ShaderBindingDescriptor::new(0, 1, AccessPolicies::WRITE),
+					BindingDescriptor::new(0, 0, AccessPolicies::READ),
+					BindingDescriptor::new(0, 1, AccessPolicies::WRITE),
 				],
 			)
 			.expect("Failed to create raygen shader");
 		let closest_hit_shader = renderer
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(closest_hit_shader_artifact.borrow().into()),
+				Sources::SPIRV(closest_hit_shader_artifact.borrow().into()),
 				ShaderTypes::ClosestHit,
 				[
-					ShaderBindingDescriptor::new(0, 2, AccessPolicies::READ),
-					ShaderBindingDescriptor::new(0, 3, AccessPolicies::READ),
-					ShaderBindingDescriptor::new(0, 4, AccessPolicies::READ),
+					BindingDescriptor::new(0, 2, AccessPolicies::READ),
+					BindingDescriptor::new(0, 3, AccessPolicies::READ),
+					BindingDescriptor::new(0, 4, AccessPolicies::READ),
 				],
 			)
 			.expect("Failed to create closest hit shader");
 		let miss_shader = renderer
 			.create_shader(
 				None,
-				ShaderSource::SPIRV(miss_shader_artifact.borrow().into()),
+				Sources::SPIRV(miss_shader_artifact.borrow().into()),
 				ShaderTypes::Miss,
 				[],
 			)

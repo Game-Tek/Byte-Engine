@@ -64,7 +64,7 @@ impl PipelineManager {
 						.bindings
 						.iter()
 						.map(|binding| {
-							ghi::ShaderBindingDescriptor::new(
+							ghi::shader::BindingDescriptor::new(
 								binding.set,
 								binding.binding,
 								if binding.read {
@@ -106,7 +106,7 @@ impl PipelineManager {
 					let new_shader = device
 						.create_shader(
 							Some(shader.id()),
-							ghi::ShaderSource::SPIRV(buffer),
+							ghi::shader::Sources::SPIRV(buffer),
 							stage,
 							shader_binding_descriptors,
 						)
@@ -134,7 +134,7 @@ impl PipelineManager {
 	pub fn load_variant(
 		&self,
 		pipeline_layout_handle: ghi::PipelineLayoutHandle,
-		specilization_map_entries: &[ghi::SpecializationMapEntry],
+		specilization_map_entries: &[ghi::pipelines::SpecializationMapEntry],
 		reference: &mut Reference<Variant>,
 		device: &mut ghi::implementation::Device,
 	) -> Option<ghi::PipelineHandle> {

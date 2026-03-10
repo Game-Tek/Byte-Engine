@@ -12,12 +12,18 @@ use crate::rendering::{
 	RenderPass, Viewport,
 };
 
-const BLUR_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
-const BLUR_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
+const BLUR_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	0,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+);
+const BLUR_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	1,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+);
 const BLUR_RESULT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 #[derive(Clone)]
 pub struct BaseBilateralBlurPass {
@@ -44,7 +50,7 @@ impl BaseBilateralBlurPass {
 		let shader = device
 			.create_shader(
 				Some("SSGI Blur"),
-				ghi::ShaderSource::SPIRV(shader.as_binary_u8()),
+				ghi::shader::Sources::SPIRV(shader.as_binary_u8()),
 				ghi::ShaderTypes::Compute,
 				[
 					BLUR_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -56,13 +62,13 @@ impl BaseBilateralBlurPass {
 		let pipeline_x = device.create_compute_pipeline(
 			pipeline_layout,
 			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
-				ghi::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(1f32, 0f32)),
+				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(1f32, 0f32)),
 			]),
 		);
 		let pipeline_y = device.create_compute_pipeline(
 			pipeline_layout,
 			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
-				ghi::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(0f32, 1f32)),
+				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(0f32, 1f32)),
 			]),
 		);
 

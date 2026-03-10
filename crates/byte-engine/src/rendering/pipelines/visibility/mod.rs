@@ -14,7 +14,7 @@ use crate::rendering::{
 /// Binding to access the views which may be used to render the scene.
 pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	0,
-	ghi::DescriptorType::StorageBuffer,
+	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH
 		.union(ghi::Stages::FRAGMENT)
 		.union(ghi::Stages::RAYGEN)
@@ -22,73 +22,77 @@ pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descripto
 );
 pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	1,
-	ghi::DescriptorType::StorageBuffer,
+	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::COMPUTE),
 );
 pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	2,
-	ghi::DescriptorType::StorageBuffer,
+	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
 pub const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	3,
-	ghi::DescriptorType::StorageBuffer,
+	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
 pub const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	5,
-	ghi::DescriptorType::StorageBuffer,
+	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
 pub const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	6,
-	ghi::DescriptorType::StorageBuffer,
+	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
 pub const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	7,
-	ghi::DescriptorType::StorageBuffer,
+	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
 pub const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	8,
-	ghi::DescriptorType::StorageBuffer,
+	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
-pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new_array(9, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 16);
+pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
+	9,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+	16,
+);
 
 /* Visibility */
 pub const MATERIAL_COUNT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 pub const MATERIAL_OFFSET_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 pub const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 pub const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 pub const MATERIAL_XY_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 pub const TRIANGLE_INDEX_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(6, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(6, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(7, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(7, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 /* Material Evaluation */
 pub const OUT_DIFFUSE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const CAMERA: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const OUT_SPECULAR: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const LIGHTING_DATA: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const MATERIALS: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(5, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const AO: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(10, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(11, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(11, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 const VERTEX_COUNT: u32 = 64;
 const TRIANGLE_COUNT: u32 = 126;

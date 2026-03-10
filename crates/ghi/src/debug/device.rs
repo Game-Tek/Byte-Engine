@@ -1,11 +1,13 @@
 use crate::{
-	buffer, image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle, BindingConstructor,
-	BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
-	DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle,
-	DescriptorWrite, DeviceAccesses, DynamicBufferHandle, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle,
-	PresentationModes, PushConstantRange, QueueHandle, SamplerHandle, ShaderBindingDescriptor, ShaderHandle, ShaderParameter,
-	ShaderSource, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle,
-	Uses, VertexElement,
+	buffer, image,
+	pipelines::{ShaderParameter, VertexElement},
+	sampler,
+	shader::Sources,
+	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
+	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
+	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
+	ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle,
+	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
 };
 use utils::Extent;
 
@@ -46,9 +48,9 @@ impl Device {
 	pub fn create_shader(
 		&mut self,
 		_name: Option<&str>,
-		_shader_source_type: ShaderSource,
+		_shader_source_type: Sources,
 		_stage: ShaderTypes,
-		_shader_binding_descriptors: impl IntoIterator<Item = ShaderBindingDescriptor>,
+		_shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
 	) -> Result<ShaderHandle, ()> {
 		Ok(ShaderHandle(0))
 	}
@@ -80,12 +82,12 @@ impl Device {
 	pub fn create_pipeline_layout(
 		&mut self,
 		_descriptor_set_template_handles: &[DescriptorSetTemplateHandle],
-		_push_constant_ranges: &[PushConstantRange],
+		_push_constant_ranges: &[crate::pipelines::PushConstantRange],
 	) -> PipelineLayoutHandle {
 		PipelineLayoutHandle(0)
 	}
 
-	pub fn create_raster_pipeline(&mut self, _builder: raster_pipeline::Builder) -> PipelineHandle {
+	pub fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> PipelineHandle {
 		PipelineHandle(0)
 	}
 
@@ -173,7 +175,7 @@ impl Device {
 		BottomLevelAccelerationStructureHandle(0)
 	}
 
-	pub fn write(&mut self, _descriptor_set_writes: &[DescriptorWrite]) {}
+	pub fn write(&mut self, _descriptor_set_writes: &[crate::descriptors::Write]) {}
 
 	pub fn write_instance(
 		&mut self,

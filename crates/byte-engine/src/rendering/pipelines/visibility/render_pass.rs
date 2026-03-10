@@ -17,7 +17,6 @@ use ghi::command_buffer::{
 };
 use ghi::device::{Device as _, DeviceCreate as _};
 use ghi::implementation::Frame;
-use ghi::raster_pipeline;
 use resource_management::glsl;
 use resource_management::resources::material;
 use utils::{Box, Extent, RGBA};
@@ -45,7 +44,7 @@ impl VisibilityPass {
 		let visibility_pass_mesh_shader = device
 			.create_shader(
 				Some("Visibility Pass Mesh Shader"),
-				ghi::ShaderSource::SPIRV(visibility_mesh_shader_artifact.borrow().into()),
+				ghi::shader::Sources::SPIRV(visibility_mesh_shader_artifact.borrow().into()),
 				ghi::ShaderTypes::Mesh,
 				[
 					VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -64,7 +63,7 @@ impl VisibilityPass {
 		let visibility_pass_fragment_shader = device
 			.create_shader(
 				Some("Visibility Pass Fragment Shader"),
-				ghi::ShaderSource::SPIRV(visibility_fragment_shader_artifact.borrow().into()),
+				ghi::shader::Sources::SPIRV(visibility_fragment_shader_artifact.borrow().into()),
 				ghi::ShaderTypes::Fragment,
 				[],
 			)
@@ -76,17 +75,17 @@ impl VisibilityPass {
 		];
 
 		let attachments = [
-			ghi::PipelineAttachmentInformation::new(ghi::Formats::U32),
-			ghi::PipelineAttachmentInformation::new(ghi::Formats::U32),
-			ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32),
+			ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::U32),
+			ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::U32),
+			ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32),
 		];
 
 		let vertex_layout = [
-			ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
-			ghi::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
+			ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
+			ghi::pipelines::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
 		];
 
-		let visibility_pass_pipeline = device.create_raster_pipeline(raster_pipeline::Builder::new(
+		let visibility_pass_pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			pipeline_layout,
 			&[],
 			&visibility_pass_shaders,
@@ -156,7 +155,7 @@ impl MaterialCountPass {
 		let material_count_shader = device
 			.create_shader(
 				Some("Material Count Pass Compute Shader"),
-				ghi::ShaderSource::SPIRV(material_count_shader_artifact.borrow().into()),
+				ghi::shader::Sources::SPIRV(material_count_shader_artifact.borrow().into()),
 				ghi::ShaderTypes::Compute,
 				[
 					MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -235,7 +234,7 @@ impl MaterialOffsetPass {
 		let material_offset_shader = device
 			.create_shader(
 				Some("Material Offset Pass Compute Shader"),
-				ghi::ShaderSource::SPIRV(material_offset_shader_artifact.borrow().into()),
+				ghi::shader::Sources::SPIRV(material_offset_shader_artifact.borrow().into()),
 				ghi::ShaderTypes::Compute,
 				[
 					MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
@@ -318,7 +317,7 @@ impl PixelMappingPass {
 		let pixel_mapping_shader = device
 			.create_shader(
 				Some("Pixel Mapping Pass Compute Shader"),
-				ghi::ShaderSource::SPIRV(pixel_mapping_shader_artifact.borrow().into()),
+				ghi::shader::Sources::SPIRV(pixel_mapping_shader_artifact.borrow().into()),
 				ghi::ShaderTypes::Compute,
 				[
 					MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),

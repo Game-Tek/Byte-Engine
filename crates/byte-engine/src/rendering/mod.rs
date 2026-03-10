@@ -42,8 +42,8 @@ pub use viewport::Viewport;
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(
 	b: &resource_management::spirv_shader_generator::Binding,
-) -> ghi::ShaderBindingDescriptor {
-	ghi::ShaderBindingDescriptor::new(
+) -> ghi::shader::BindingDescriptor {
+	ghi::shader::BindingDescriptor::new(
 		b.set,
 		b.binding,
 		if b.read {

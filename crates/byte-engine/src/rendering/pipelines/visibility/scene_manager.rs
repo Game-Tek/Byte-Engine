@@ -32,7 +32,7 @@ use ghi::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
-	graphics_hardware_interface, raster_pipeline, ImageHandle,
+	graphics_hardware_interface, ImageHandle,
 };
 use log::error;
 use math::{Matrix4, Vector3};
@@ -64,17 +64,24 @@ use crate::{
 };
 
 const diffuse_binding_template: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 const specular_binding_template: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 const lighting_data_binding_template: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(4, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 const materials_data_binding_template: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(5, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-const ao_map_binding_template: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(10, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE);
-const shadow_map_binding_template: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new_array(11, ghi::DescriptorType::CombinedImageSampler, ghi::Stages::COMPUTE, 1);
+	ghi::DescriptorSetBindingTemplate::new(5, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+const ao_map_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	10,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+);
+const shadow_map_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
+	11,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+	1,
+);
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -202,7 +209,7 @@ impl VisibilityWorldRenderDomain {
 		// 4 bytes for the view index
 		// 4 bytes for the mesh index
 		let pipeline_layout_handle =
-			device.create_pipeline_layout(&[descriptor_set_layout], &[ghi::PushConstantRange::new(0, 4 + 4)]);
+			device.create_pipeline_layout(&[descriptor_set_layout], &[ghi::pipelines::PushConstantRange::new(0, 4 + 4)]);
 
 		let descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
 
@@ -275,9 +282,9 @@ impl VisibilityWorldRenderDomain {
 
 		let bindings = [
 			diffuse_binding_template,
-			ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
+			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
 			specular_binding_template,
-			ghi::DescriptorSetBindingTemplate::new(3, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
+			ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
 			lighting_data_binding_template,
 			materials_data_binding_template,
 			ao_map_binding_template,
@@ -316,7 +323,7 @@ impl VisibilityWorldRenderDomain {
 				visibility_descriptor_set_layout,
 				material_evaluation_descriptor_set_layout,
 			],
-			&[ghi::PushConstantRange::new(0, 4 + 4)],
+			&[ghi::pipelines::PushConstantRange::new(0, 4 + 4)],
 		);
 
 		Self {
@@ -768,7 +775,7 @@ impl VisibilityWorldRenderDomain {
 				let fshader = device
 					.create_shader(
 						None,
-						ghi::ShaderSource::SPIRV(&shader.binary()),
+						ghi::shader::Sources::SPIRV(&shader.binary()),
 						ghi::ShaderTypes::Compute,
 						bindings,
 					)
@@ -876,7 +883,7 @@ impl VisibilityWorldRenderDomain {
 							}
 						};
 
-						device.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+						device.write(&[ghi::descriptors::Write::combined_image_sampler_array(
 							self.textures_binding,
 							image,
 							sampler,
@@ -954,15 +961,21 @@ impl VisibilityWorldRenderDomain {
 		let material = v.get_or_try_init(|| {
 			let variant_id = resource.id().to_string();
 
-			let specialization_constants: Vec<ghi::SpecializationMapEntry> = resource
+			let specialization_constants: Vec<ghi::pipelines::SpecializationMapEntry> = resource
 				.resource_mut()
 				.variables
 				.iter()
 				.enumerate()
 				.filter_map(|(i, variable)| match &variable.value {
-					Value::Scalar(scalar) => ghi::SpecializationMapEntry::new(i as u32, "f32".to_string(), *scalar).into(),
-					Value::Vector3(value) => ghi::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value).into(),
-					Value::Vector4(value) => ghi::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value).into(),
+					Value::Scalar(scalar) => {
+						ghi::pipelines::SpecializationMapEntry::new(i as u32, "f32".to_string(), *scalar).into()
+					}
+					Value::Vector3(value) => {
+						ghi::pipelines::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value).into()
+					}
+					Value::Vector4(value) => {
+						ghi::pipelines::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value).into()
+					}
 					_ => None,
 				})
 				.collect();
@@ -1010,7 +1023,7 @@ impl VisibilityWorldRenderDomain {
 							}
 						};
 
-						frame.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+						frame.write(&[ghi::descriptors::Write::combined_image_sampler_array(
 							self.textures_binding,
 							image,
 							sampler,

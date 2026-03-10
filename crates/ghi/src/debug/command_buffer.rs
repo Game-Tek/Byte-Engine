@@ -1,8 +1,7 @@
 use crate::{
-	AttachmentInformation, BaseBufferHandle, BindingTables, BottomLevelAccelerationStructureBuild, BufferDescriptor,
-	BufferHandle, ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, ImageHandle, Layouts,
-	MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle,
-	TextureCopyHandle, TopLevelAccelerationStructureBuild,
+	AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue, CommandBufferHandle,
+	DescriptorSetHandle, DispatchExtent, FrameKey, ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle,
+	PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
 };
 use utils::Extent;
 
@@ -33,13 +32,13 @@ impl<'a> CommandBufferRecording<'a> {
 
 	pub fn build_top_level_acceleration_structure(
 		&mut self,
-		_acceleration_structure_build: &TopLevelAccelerationStructureBuild,
+		_acceleration_structure_build: &crate::rt::TopLevelAccelerationStructureBuild,
 	) {
 	}
 
 	pub fn build_bottom_level_acceleration_structures(
 		&mut self,
-		_acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild],
+		_acceleration_structure_builds: &[crate::rt::BottomLevelAccelerationStructureBuild],
 	) {
 	}
 
@@ -141,5 +140,5 @@ impl<'a> CommandBufferRecording<'a> {
 
 	pub fn indirect_dispatch<const N: usize>(&mut self, _buffer: BufferHandle<[(u32, u32, u32); N]>, _entry_index: usize) {}
 
-	pub fn trace_rays(&mut self, _binding_tables: BindingTables, _x: u32, _y: u32, _z: u32) {}
+	pub fn trace_rays(&mut self, _binding_tables: crate::rt::BindingTables, _x: u32, _y: u32, _z: u32) {}
 }

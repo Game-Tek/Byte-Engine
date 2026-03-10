@@ -63,7 +63,8 @@ pub struct SceneManager {
 	views: Vec<RenderPass>,
 }
 
-const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
+const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
+	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
 impl SceneManager {
 	pub fn new(device: &mut ghi::implementation::Device) -> Self {
@@ -90,16 +91,17 @@ impl SceneManager {
 		);
 
 		let camera_data_binding_template =
-			ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
+			ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
 		let instance_data_binding_template =
-			ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
+			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
 
 		let descriptor_set_template = device.create_descriptor_set_template(
 			None,
 			&[camera_data_binding_template.clone(), instance_data_binding_template.clone()],
 		);
 
-		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_template], &[ghi::PushConstantRange::new(0, 4)]);
+		let pipeline_layout =
+			device.create_pipeline_layout(&[descriptor_set_template], &[ghi::pipelines::PushConstantRange::new(0, 4)]);
 
 		let mut shader_generator = SPIRVShaderGenerator::new();
 
@@ -210,7 +212,7 @@ impl SceneManager {
 		let vertex_shader = device
 			.create_shader(
 				Some("Vertex Shader"),
-				ghi::ShaderSource::SPIRV(generated_vertex_shader.binary()),
+				ghi::shader::Sources::SPIRV(generated_vertex_shader.binary()),
 				ghi::ShaderTypes::Vertex,
 				generated_vertex_shader
 					.bindings()
@@ -221,7 +223,7 @@ impl SceneManager {
 		let fragment_shader = device
 			.create_shader(
 				Some("Fragment Shader"),
-				ghi::ShaderSource::SPIRV(generated_fragment_shader.binary()),
+				ghi::shader::Sources::SPIRV(generated_fragment_shader.binary()),
 				ghi::ShaderTypes::Fragment,
 				generated_fragment_shader
 					.bindings()
@@ -230,7 +232,7 @@ impl SceneManager {
 			)
 			.unwrap();
 
-		let pipeline = device.create_raster_pipeline(ghi::raster_pipeline::Builder::new(
+		let pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			pipeline_layout,
 			&VERTEX_LAYOUT,
 			&[
@@ -238,8 +240,8 @@ impl SceneManager {
 				ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment),
 			],
 			&[
-				ghi::PipelineAttachmentInformation::new(ghi::Formats::RGBA16F),
-				ghi::PipelineAttachmentInformation::new(ghi::Formats::Depth32),
+				ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::RGBA16F),
+				ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32),
 			],
 		));
 

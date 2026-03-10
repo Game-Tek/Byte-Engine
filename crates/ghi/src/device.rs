@@ -1,14 +1,16 @@
 use utils::Extent;
 
 use crate::{
-	buffer, image, raster_pipeline, sampler,
+	buffer, descriptors, image,
+	pipelines::{self, VertexElement},
+	sampler,
+	shader::{self, Sources},
 	vulkan::{CommandBufferRecording, Frame},
 	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
 	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
-	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses,
-	DynamicBufferHandle, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentationModes, PushConstantRange,
-	QueueHandle, SamplerHandle, ShaderBindingDescriptor, ShaderHandle, ShaderParameter, ShaderSource, ShaderTypes,
-	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, VertexElement,
+	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
+	ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle,
+	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
 };
 
 /// The `Device` trait represents a graphics device that can be used to create and manage resources such as buffers, images, pipelines, and descriptor sets.
@@ -45,7 +47,7 @@ where
 	fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8]));
 
 	/// Writes descriptor set updates.
-	fn write(&mut self, descriptor_set_writes: &[DescriptorWrite]);
+	fn write(&mut self, descriptor_set_writes: &[descriptors::Write]);
 
 	fn write_instance(
 		&mut self,
@@ -134,9 +136,9 @@ pub trait DeviceCreate {
 	fn create_shader(
 		&mut self,
 		name: Option<&str>,
-		shader_source_type: ShaderSource,
+		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = ShaderBindingDescriptor>,
+		shader_binding_descriptors: impl IntoIterator<Item = shader::BindingDescriptor>,
 	) -> Result<ShaderHandle, ()>;
 
 	fn create_descriptor_set_template(
@@ -166,24 +168,24 @@ pub trait DeviceCreate {
 	fn create_pipeline_layout(
 		&mut self,
 		descriptor_set_template_handles: &[DescriptorSetTemplateHandle],
-		push_constant_ranges: &[PushConstantRange],
+		push_constant_ranges: &[pipelines::PushConstantRange],
 	) -> PipelineLayoutHandle;
 
 	/// Creates a graphics/rasterization pipeline from a builder.
-	fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> PipelineHandle;
+	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> PipelineHandle;
 
 	/// Creates a compute pipeline.
 	fn create_compute_pipeline(
 		&mut self,
 		pipeline_layout_handle: PipelineLayoutHandle,
-		shader_parameter: ShaderParameter,
+		shader_parameter: pipelines::ShaderParameter,
 	) -> PipelineHandle;
 
 	/// Creates a ray-tracing pipeline.
 	fn create_ray_tracing_pipeline(
 		&mut self,
 		pipeline_layout_handle: PipelineLayoutHandle,
-		shaders: &[ShaderParameter],
+		shaders: &[pipelines::ShaderParameter],
 	) -> PipelineHandle;
 
 	/// Creates a command buffer which will execute commands on the provided queue.

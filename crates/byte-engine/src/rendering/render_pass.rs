@@ -114,9 +114,9 @@ impl Into<ghi::ImageHandle> for RenderToResult {
 	}
 }
 
-impl Into<ghi::PipelineAttachmentInformation> for RenderToResult {
-	fn into(self) -> ghi::PipelineAttachmentInformation {
-		ghi::PipelineAttachmentInformation::new(self.format)
+impl Into<ghi::pipelines::raster::AttachmentDescriptor> for RenderToResult {
+	fn into(self) -> ghi::pipelines::raster::AttachmentDescriptor {
+		ghi::pipelines::raster::AttachmentDescriptor::new(self.format)
 	}
 }
 

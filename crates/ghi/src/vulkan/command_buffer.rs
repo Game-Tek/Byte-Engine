@@ -522,14 +522,14 @@ impl CommandBufferRecording<'_> {
 		self.consume_resources([
 			Consumption {
 				handle: Handle::Image(source_image_handle),
-				stages: graphics_hardware_interface::Stages::TRANSFER,
-				access: graphics_hardware_interface::AccessPolicies::READ,
+				stages: crate::Stages::TRANSFER,
+				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Transfer,
 			},
 			Consumption {
 				handle: Handle::Image(destination_image_handle),
-				stages: graphics_hardware_interface::Stages::TRANSFER,
-				access: graphics_hardware_interface::AccessPolicies::WRITE,
+				stages: crate::Stages::TRANSFER,
+				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
 			},
 		])(self);
@@ -605,8 +605,8 @@ impl CommandBufferRecording<'_> {
 
 			Consumption {
 				handle: Handle::Image(swapchain_image_handle),
-				stages: graphics_hardware_interface::Stages::PRESENTATION,
-				access: graphics_hardware_interface::AccessPolicies::READ,
+				stages: crate::Stages::PRESENTATION,
+				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Present,
 			}
 		});
@@ -619,9 +619,9 @@ impl CommandBufferRecording<'_> {
 	pub(crate) fn consume_last_resources(&mut self) {
 		let consumptions = self.states.iter().filter_map(|(handle, ts)| match ts.access {
 			vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption {
-				access: graphics_hardware_interface::AccessPolicies::NONE,
+				access: crate::AccessPolicies::NONE,
 				layout: crate::Layouts::General,
-				stages: graphics_hardware_interface::Stages::TRANSFER,
+				stages: crate::Stages::TRANSFER,
 				handle: *handle,
 			}),
 			_ => None,
@@ -740,8 +740,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
 		self.consume_resources(image_handles.iter().map(|image_handle| Consumption {
 			handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
-			stages: graphics_hardware_interface::Stages::TRANSFER,
-			access: graphics_hardware_interface::AccessPolicies::READ,
+			stages: crate::Stages::TRANSFER,
+			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Transfer,
 		}))(self);
 
@@ -816,11 +816,11 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	) -> &mut impl crate::command_buffer::RasterizationRenderPassMode {
 		self.consume_resources(attachments.iter().map(|attachment| Consumption {
 			handle: Handle::Image(self.get_internal_image_handle(attachment.image)),
-			stages: graphics_hardware_interface::Stages::FRAGMENT,
+			stages: crate::Stages::FRAGMENT,
 			access: if attachment.load {
-				graphics_hardware_interface::AccessPolicies::READ_WRITE
+				crate::AccessPolicies::READ_WRITE
 			} else {
-				graphics_hardware_interface::AccessPolicies::WRITE
+				crate::AccessPolicies::WRITE
 			},
 			layout: attachment.layout,
 		}))(self);
@@ -831,7 +831,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 		let color_attchments = attachments
 			.iter()
-			.filter(|a| a.format != graphics_hardware_interface::Formats::Depth32)
+			.filter(|a| a.format != crate::Formats::Depth32)
 			.map(|attachment| {
 				let image = self.get_image(self.get_internal_image_handle(attachment.image));
 				let image_view = image.image_views[attachment.layer.unwrap_or(0) as usize];
@@ -851,7 +851,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 		let depth_attachment = attachments
 			.iter()
-			.find(|attachment| attachment.format == graphics_hardware_interface::Formats::Depth32)
+			.find(|attachment| attachment.format == crate::Formats::Depth32)
 			.map(|attachment| {
 				let image = self.get_image(self.get_internal_image_handle(attachment.image));
 				let image_view = image.image_views[attachment.layer.unwrap_or(0) as usize];
@@ -908,13 +908,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn build_top_level_acceleration_structure(
 		&mut self,
-		acceleration_structure_build: &graphics_hardware_interface::TopLevelAccelerationStructureBuild,
+		acceleration_structure_build: &crate::rt::TopLevelAccelerationStructureBuild,
 	) {
 		let (acceleration_structure_handle, acceleration_structure) =
 			self.get_top_level_acceleration_structure(acceleration_structure_build.acceleration_structure);
 
 		let (as_geometries, offsets) = match acceleration_structure_build.description {
-			graphics_hardware_interface::TopLevelAccelerationStructureBuildDescriptions::Instance {
+			crate::rt::TopLevelAccelerationStructureBuildDescriptions::Instance {
 				instances_buffer,
 				instance_count,
 			} => (
@@ -990,7 +990,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn build_bottom_level_acceleration_structures(
 		&mut self,
-		acceleration_structure_builds: &[graphics_hardware_interface::BottomLevelAccelerationStructureBuild],
+		acceleration_structure_builds: &[crate::rt::BottomLevelAccelerationStructureBuild],
 	) {
 		if acceleration_structure_builds.is_empty() {
 			return;
@@ -998,7 +998,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 		fn visit(
 			this: &mut CommandBufferRecording,
-			acceleration_structure_builds: &[graphics_hardware_interface::BottomLevelAccelerationStructureBuild],
+			acceleration_structure_builds: &[crate::rt::BottomLevelAccelerationStructureBuild],
 			mut infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR>,
 			mut geometries: Vec<Vec<vk::AccelerationStructureGeometryKHR>>,
 			mut build_range_infos: Vec<Vec<vk::AccelerationStructureBuildRangeInfoKHR>>,
@@ -1008,10 +1008,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 					this.get_bottom_level_acceleration_structure(build.acceleration_structure);
 
 				let (as_geometries, offsets) = match &build.description {
-					graphics_hardware_interface::BottomLevelAccelerationStructureBuildDescriptions::AABB { .. } => {
-						(vec![], vec![])
-					}
-					graphics_hardware_interface::BottomLevelAccelerationStructureBuildDescriptions::Mesh {
+					crate::rt::BottomLevelAccelerationStructureBuildDescriptions::AABB { .. } => (vec![], vec![]),
+					crate::rt::BottomLevelAccelerationStructureBuildDescriptions::Mesh {
 						vertex_buffer,
 						index_buffer,
 						vertex_position_encoding,
@@ -1044,13 +1042,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 							})
 							.max_vertex(vertex_count - 1)
 							.vertex_format(match vertex_position_encoding {
-								graphics_hardware_interface::Encodings::FloatingPoint => vk::Format::R32G32B32_SFLOAT,
+								crate::Encodings::FloatingPoint => vk::Format::R32G32B32_SFLOAT,
 								_ => panic!("Invalid vertex position encoding"),
 							})
 							.index_type(match index_format {
-								graphics_hardware_interface::DataTypes::U8 => vk::IndexType::UINT8_EXT,
-								graphics_hardware_interface::DataTypes::U16 => vk::IndexType::UINT16,
-								graphics_hardware_interface::DataTypes::U32 => vk::IndexType::UINT32,
+								crate::DataTypes::U8 => vk::IndexType::UINT8_EXT,
+								crate::DataTypes::U16 => vk::IndexType::UINT16,
+								crate::DataTypes::U32 => vk::IndexType::UINT32,
 								_ => panic!("Invalid index format"),
 							})
 							.vertex_stride(vertex_buffer.stride as vk::DeviceSize);
@@ -1137,7 +1135,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		visit(self, acceleration_structure_builds, Vec::new(), Vec::new(), Vec::new());
 	}
 
-	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[graphics_hardware_interface::BufferDescriptor]) {
+	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[crate::BufferDescriptor]) {
 		let consumptions = buffer_descriptors.iter().map(|buffer_descriptor| VulkanConsumption {
 			handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
 			stages: vk::PipelineStageFlags2::VERTEX_INPUT,
@@ -1172,7 +1170,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		}
 	}
 
-	fn bind_index_buffer(&mut self, buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
+	fn bind_index_buffer(&mut self, buffer_descriptor: &crate::BufferDescriptor) {
 		self.vulkan_consume_resources([VulkanConsumption {
 			handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
 			stages: vk::PipelineStageFlags2::INDEX_INPUT,
@@ -1204,14 +1202,14 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self.consume_resources([
 			Consumption {
 				handle: Handle::Image(self.get_internal_image_handle(source_image)),
-				stages: graphics_hardware_interface::Stages::TRANSFER,
-				access: graphics_hardware_interface::AccessPolicies::READ,
+				stages: crate::Stages::TRANSFER,
+				access: crate::AccessPolicies::READ,
 				layout: source_layout,
 			},
 			Consumption {
 				handle: Handle::Image(self.get_internal_image_handle(destination_image)),
-				stages: graphics_hardware_interface::Stages::TRANSFER,
-				access: graphics_hardware_interface::AccessPolicies::WRITE,
+				stages: crate::Stages::TRANSFER,
+				access: crate::AccessPolicies::WRITE,
 				layout: destination_layout,
 			},
 		])(self);
@@ -1280,8 +1278,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	) {
 		self.consume_resources(textures.iter().map(|(image_handle, _)| Consumption {
 			handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
-			stages: graphics_hardware_interface::Stages::TRANSFER,
-			access: graphics_hardware_interface::AccessPolicies::WRITE,
+			stages: crate::Stages::TRANSFER,
+			access: crate::AccessPolicies::WRITE,
 			layout: crate::Layouts::Transfer,
 		}))(self);
 
@@ -1292,7 +1290,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				continue;
 			} // Skip unset textures
 
-			if image.format_ != graphics_hardware_interface::Formats::Depth32 {
+			if image.format_ != crate::Formats::Depth32 {
 				let clear_value = match clear_value {
 					graphics_hardware_interface::ClearValue::None => vk::ClearColorValue {
 						float32: [0.0, 0.0, 0.0, 0.0],
@@ -1360,8 +1358,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	fn clear_buffers(&mut self, buffer_handles: &[graphics_hardware_interface::BaseBufferHandle]) {
 		self.consume_resources(buffer_handles.iter().map(|buffer_handle| Consumption {
 			handle: Handle::Buffer(self.get_internal_buffer_handle(*buffer_handle)),
-			stages: graphics_hardware_interface::Stages::TRANSFER,
-			access: graphics_hardware_interface::AccessPolicies::WRITE,
+			stages: crate::Stages::TRANSFER,
+			access: crate::AccessPolicies::WRITE,
 			layout: crate::Layouts::Transfer,
 		}))(self);
 
@@ -1403,8 +1401,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 		self.consume_resources([Consumption {
 			handle: Handle::Image(self.get_internal_image_handle(image_handle)),
-			stages: graphics_hardware_interface::Stages::TRANSFER,
-			access: graphics_hardware_interface::AccessPolicies::WRITE,
+			stages: crate::Stages::TRANSFER,
+			access: crate::AccessPolicies::WRITE,
 			layout: crate::Layouts::Transfer,
 		}])(self);
 
@@ -1475,8 +1473,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 		self.consume_resources([Consumption {
 			handle: Handle::Image(internal_image_handle),
-			stages: graphics_hardware_interface::Stages::FRAGMENT,
-			access: graphics_hardware_interface::AccessPolicies::READ,
+			stages: crate::Stages::FRAGMENT,
+			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Read,
 		}])(self);
 	}
@@ -1825,8 +1823,8 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 
 		self.consume_resources_current([graphics_hardware_interface::Consumption {
 			handle: graphics_hardware_interface::Handle::Buffer(buffer_handle.clone().into()),
-			stages: graphics_hardware_interface::Stages::COMPUTE,
-			access: graphics_hardware_interface::AccessPolicies::READ,
+			stages: crate::Stages::COMPUTE,
+			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Indirect,
 		}])(self);
 
@@ -1839,11 +1837,11 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 }
 
 impl crate::command_buffer::BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
-	fn trace_rays(&mut self, binding_tables: graphics_hardware_interface::BindingTables, x: u32, y: u32, z: u32) {
+	fn trace_rays(&mut self, binding_tables: crate::rt::BindingTables, x: u32, y: u32, z: u32) {
 		let command_buffer = self.get_command_buffer();
 		let comamand_buffer_handle = command_buffer.command_buffer;
 
-		let make_strided_range = |range: graphics_hardware_interface::BufferStridedRange| -> vk::StridedDeviceAddressRegionKHR {
+		let make_strided_range = |range: crate::BufferStridedRange| -> vk::StridedDeviceAddressRegionKHR {
 			vk::StridedDeviceAddressRegionKHR::default()
 				.device_address(
 					self.device.get_buffer_address(range.buffer_offset.buffer) as vk::DeviceSize

@@ -53,7 +53,8 @@ pub struct RenderPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 }
 
-const VERTEX_LAYOUT: [ghi::VertexElement; 1] = [ghi::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
+const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
+	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
 impl RenderPass {
 	pub fn new(
@@ -64,9 +65,9 @@ impl RenderPass {
 		index: usize,
 	) -> Self {
 		let camera_data_binding_template =
-			ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
+			ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
 		let instance_data_binding_template =
-			ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
+			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
 
 		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_layout);
 

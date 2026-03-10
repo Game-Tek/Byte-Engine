@@ -28,7 +28,8 @@ use super::{element::ElementHandle as _, layout::engine};
 
 const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
 
-const UI_VERTEX_LAYOUT: [ghi::VertexElement; 1] = [ghi::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0)];
+const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
+	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0)];
 
 #[derive(Debug, Clone, Copy)]
 struct UiDrawElement {
@@ -124,15 +125,16 @@ impl UiRenderPass {
 		let fragment_shader = create_fragment_shader(device);
 
 		let push_constant_size = std::mem::size_of::<UiPushConstants>() as u32;
-		let pipeline_layout = device.create_pipeline_layout(&[], &[ghi::PushConstantRange::new(0, push_constant_size)]);
+		let pipeline_layout =
+			device.create_pipeline_layout(&[], &[ghi::pipelines::PushConstantRange::new(0, push_constant_size)]);
 
 		let shaders = [
 			ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
 			ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment),
 		];
-		let attachments = [ghi::PipelineAttachmentInformation::new(MAIN_ATTACHMENT_FORMAT)];
+		let attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(MAIN_ATTACHMENT_FORMAT)];
 
-		let pipeline = device.create_raster_pipeline(ghi::raster_pipeline::Builder::new(
+		let pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			pipeline_layout,
 			&UI_VERTEX_LAYOUT,
 			&shaders,
@@ -285,7 +287,7 @@ fn create_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::Shader
 	device
 		.create_shader(
 			Some("UI Vertex Shader"),
-			ghi::ShaderSource::SPIRV(generated.binary()),
+			ghi::shader::Sources::SPIRV(generated.binary()),
 			ghi::ShaderTypes::Vertex,
 			generated
 				.bindings()
@@ -320,7 +322,7 @@ fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::Shad
 	device
 		.create_shader(
 			Some("UI Fragment Shader"),
-			ghi::ShaderSource::SPIRV(generated.binary()),
+			ghi::shader::Sources::SPIRV(generated.binary()),
 			ghi::ShaderTypes::Fragment,
 			generated
 				.bindings()

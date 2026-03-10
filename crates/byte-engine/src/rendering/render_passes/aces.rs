@@ -29,9 +29,9 @@ pub struct BaseAcesToneMapPass {
 }
 
 const SOURCE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(0, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 impl Entity for BaseAcesToneMapPass {}
 
@@ -54,7 +54,7 @@ impl BaseAcesToneMapPass {
 		let tone_mapping_shader = device
 			.create_shader(
 				Some("ACES Tone Mapping Compute Shader"),
-				ghi::ShaderSource::SPIRV(tonemapping_shader_artifact.borrow().into()),
+				ghi::shader::Sources::SPIRV(tonemapping_shader_artifact.borrow().into()),
 				ghi::ShaderTypes::Compute,
 				[
 					SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),

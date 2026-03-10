@@ -1,10 +1,9 @@
 use utils::Extent;
 
 use crate::{
-	graphics_hardware_interface, AttachmentInformation, BaseBufferHandle, BindingTables, BottomLevelAccelerationStructureBuild,
-	BufferDescriptor, BufferHandle, ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts,
-	MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle,
-	TextureCopyHandle, TopLevelAccelerationStructureBuild,
+	rt, AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue, DescriptorSetHandle,
+	DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, RGBAu8,
+	SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
 };
 
 pub trait CommandBufferRecording
@@ -13,10 +12,10 @@ where
 {
 	type Result<'a>;
 
-	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);
+	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &rt::TopLevelAccelerationStructureBuild);
 	fn build_bottom_level_acceleration_structures(
 		&mut self,
-		acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild],
+		acceleration_structure_builds: &[rt::BottomLevelAccelerationStructureBuild],
 	);
 
 	/// Starts a render pass on the GPU.
@@ -113,5 +112,15 @@ pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecor
 }
 
 pub trait BoundRayTracingPipelineMode: BoundPipelineLayoutMode + CommandBufferRecording {
-	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32);
+	fn trace_rays(&mut self, binding_tables: rt::BindingTables, x: u32, y: u32, z: u32);
+}
+
+/// Enumerates the types of command buffers that can be created.
+pub enum CommandBufferType {
+	/// A command buffer that can perform graphics operations. Draws, blits, presentations, etc.
+	GRAPHICS,
+	/// A command buffer that can perform compute operations. Dispatches, etc.
+	COMPUTE,
+	/// A command buffer that is optimized for transfer operations. Copies, etc.
+	TRANSFER,
 }

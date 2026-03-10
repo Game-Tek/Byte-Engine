@@ -43,13 +43,15 @@ pub mod implementation {
 
 pub mod buffer;
 pub mod command_buffer;
+pub mod descriptors;
 pub mod device;
 pub mod frame;
 pub mod image;
 pub mod pipelines;
 pub mod queue;
-pub mod raster_pipeline;
+pub mod rt;
 pub mod sampler;
+pub mod shader;
 
 pub mod types;
 mod utils;
@@ -57,5 +59,7 @@ mod utils;
 pub use device::Device;
 pub use frame::Frame;
 pub use queue::Queue;
+
+pub use pipelines::ShaderParameter;
 
 pub use types::*;

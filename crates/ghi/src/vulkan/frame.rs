@@ -393,7 +393,7 @@ impl<'a> crate::device::DeviceCreate for Frame<'a> {
 		index_count: u32,
 		vertices: &[u8],
 		indices: &[u8],
-		vertex_layout: &[crate::VertexElement],
+		vertex_layout: &[crate::pipelines::VertexElement],
 	) -> crate::MeshHandle {
 		self.device
 			.add_mesh_from_vertices_and_indices(vertex_count, index_count, vertices, indices, vertex_layout)
@@ -451,7 +451,7 @@ impl<'a> crate::device::DeviceCreate for Frame<'a> {
 	fn create_pipeline_layout(
 		&mut self,
 		descriptor_set_template_handles: &[crate::DescriptorSetTemplateHandle],
-		push_constant_ranges: &[crate::PushConstantRange],
+		push_constant_ranges: &[crate::pipelines::PushConstantRange],
 	) -> crate::PipelineLayoutHandle {
 		self.device
 			.create_pipeline_layout(descriptor_set_template_handles, push_constant_ranges)
@@ -460,19 +460,19 @@ impl<'a> crate::device::DeviceCreate for Frame<'a> {
 	fn create_compute_pipeline(
 		&mut self,
 		pipeline_layout_handle: crate::PipelineLayoutHandle,
-		shader_parameter: crate::ShaderParameter,
+		shader_parameter: crate::pipelines::ShaderParameter,
 	) -> crate::PipelineHandle {
 		self.device.create_compute_pipeline(pipeline_layout_handle, shader_parameter)
 	}
 
-	fn create_raster_pipeline(&mut self, builder: crate::raster_pipeline::Builder) -> crate::PipelineHandle {
+	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> crate::PipelineHandle {
 		self.device.create_raster_pipeline(builder)
 	}
 
 	fn create_ray_tracing_pipeline(
 		&mut self,
 		pipeline_layout_handle: crate::PipelineLayoutHandle,
-		shaders: &[crate::ShaderParameter],
+		shaders: &[crate::pipelines::ShaderParameter],
 	) -> crate::PipelineHandle {
 		self.device.create_ray_tracing_pipeline(pipeline_layout_handle, shaders)
 	}
@@ -508,9 +508,9 @@ impl<'a> crate::device::DeviceCreate for Frame<'a> {
 	fn create_shader(
 		&mut self,
 		name: Option<&str>,
-		shader_source_type: crate::ShaderSource,
+		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::ShaderBindingDescriptor>,
+		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
 	) -> Result<crate::ShaderHandle, ()> {
 		self.device
 			.create_shader(name, shader_source_type, stage, shader_binding_descriptors)

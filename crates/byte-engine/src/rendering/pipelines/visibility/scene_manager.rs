@@ -36,7 +36,7 @@ use ghi::{
 };
 use log::error;
 use math::{Matrix4, Vector3};
-use resource_management::asset::material_asset_handler::ProgramGenerator;
+use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;

@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use resource_management::asset::material_asset_handler::ProgramGenerator;
+use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use utils::json;
 
 use crate::besl::lexer;

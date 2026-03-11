@@ -223,13 +223,13 @@ impl Asset for MaterialAsset {
 	}
 }
 
-pub struct MaterialAssetHandler {
+pub struct BEMAAssetHandler {
 	generator: Option<Arc<dyn ProgramGenerator>>,
 }
 
-impl MaterialAssetHandler {
-	pub fn new() -> MaterialAssetHandler {
-		MaterialAssetHandler { generator: None }
+impl BEMAAssetHandler {
+	pub fn new() -> BEMAAssetHandler {
+		BEMAAssetHandler { generator: None }
 	}
 
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
@@ -237,7 +237,7 @@ impl MaterialAssetHandler {
 	}
 }
 
-impl AssetHandler for MaterialAssetHandler {
+impl AssetHandler for BEMAAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		r#type == "bema"
 	}
@@ -452,7 +452,7 @@ pub mod tests {
 
 	use crate::{
 		asset::{
-			asset_handler::AssetHandler, asset_manager::AssetManager, material_asset_handler::MaterialAssetHandler,
+			asset_handler::AssetHandler, asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler,
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ResourceId,
 		},
 		glsl_shader_generator::GLSLShaderGenerator,
@@ -598,7 +598,7 @@ pub mod tests {
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
 		let asset_manager = AssetManager::new(asset_storage_backend);
-		let mut asset_handler = MaterialAssetHandler::new();
+		let mut asset_handler = BEMAAssetHandler::new();
 
 		let shader_generator = RootTestShaderGenerator::new();
 
@@ -693,7 +693,7 @@ pub mod tests {
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend);
-		let mut asset_handler = MaterialAssetHandler::new();
+		let mut asset_handler = BEMAAssetHandler::new();
 
 		let shader_generator = RootTestShaderGenerator::new();
 

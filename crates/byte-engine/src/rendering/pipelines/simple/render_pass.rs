@@ -18,7 +18,7 @@ use ghi::{
 };
 use math::Matrix4;
 use resource_management::{
-	asset::material_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings,
+	asset::bema_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings,
 	spirv_shader_generator::SPIRVShaderGenerator,
 };
 use utils::{

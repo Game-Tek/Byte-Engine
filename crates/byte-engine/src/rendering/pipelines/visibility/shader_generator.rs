@@ -1,7 +1,7 @@
 use std::{cell::RefCell, ops::Deref, rc::Rc};
 
 use besl::{parser::Node, NodeReference};
-use resource_management::asset::material_asset_handler::ProgramGenerator;
+use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use std::sync::Arc;
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
@@ -653,7 +653,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 #[cfg(test)]
 mod tests {
-	use resource_management::asset::material_asset_handler::ProgramGenerator;
+	use resource_management::asset::bema_asset_handler::ProgramGenerator;
 	use utils::json;
 
 	use crate::besl;

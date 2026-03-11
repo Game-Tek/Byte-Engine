@@ -10,7 +10,7 @@ use utils::{
 use crate::{
 	asset::{
 		self,
-		image_asset_handler::{guess_semantic_from_name, Semantic},
+		png_asset_handler::{guess_semantic_from_name, Semantic},
 	},
 	r#async::{spawn_cpu_task, BoxedFuture},
 	resource,
@@ -29,15 +29,15 @@ use super::{
 };
 
 /// The `MeshAssetHandler` struct loads mesh assets from glTF sources.
-pub struct MeshAssetHandler {}
+pub struct GLTFAssetHandler {}
 
-impl MeshAssetHandler {
-	pub fn new() -> MeshAssetHandler {
-		MeshAssetHandler {}
+impl GLTFAssetHandler {
+	pub fn new() -> GLTFAssetHandler {
+		GLTFAssetHandler {}
 	}
 }
 
-impl AssetHandler for MeshAssetHandler {
+impl AssetHandler for GLTFAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		r#type == "gltf" || r#type == "glb"
 	}
@@ -51,7 +51,7 @@ impl AssetHandler for MeshAssetHandler {
 	) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
-				if dt != "gltf" && dt != "glb" {
+				if !self.can_handle(dt) {
 					return Err(LoadErrors::UnsupportedType);
 				}
 			}
@@ -166,7 +166,7 @@ impl Asset for MeshAsset {
 
 				let semantic = guess_semantic_from_name(url.get_base());
 
-				let image_description = crate::asset::image_asset_handler::ImageDescription {
+				let image_description = crate::asset::png_asset_handler::ImageDescription {
 					format,
 					extent,
 					semantic,
@@ -782,14 +782,14 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 
 #[cfg(test)]
 mod tests {
-	use super::MeshAssetHandler;
+	use super::GLTFAssetHandler;
 	use crate::r#async;
 	use crate::{
 		asset::{
 			asset_handler::AssetHandler,
 			asset_manager::AssetManager,
-			image_asset_handler::ImageAssetHandler,
-			material_asset_handler::{tests::RootTestShaderGenerator, MaterialAssetHandler},
+			bema_asset_handler::{tests::RootTestShaderGenerator, BEMAAssetHandler},
+			png_asset_handler::PNGAssetHandler,
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 			ResourceId,
 		},
@@ -833,9 +833,9 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend);
 
-		let asset_handler = MeshAssetHandler::new();
+		let asset_handler = GLTFAssetHandler::new();
 		asset_manager.add_asset_handler({
-			let mut material_asset_handler = MaterialAssetHandler::new();
+			let mut material_asset_handler = BEMAAssetHandler::new();
 			let shader_generator = RootTestShaderGenerator::new();
 			material_asset_handler.set_shader_generator(shader_generator);
 			material_asset_handler
@@ -896,13 +896,13 @@ mod tests {
 		let mut asset_manager = AssetManager::new(asset_storage_backend);
 
 		asset_manager.add_asset_handler({
-			let mut material_asset_handler = MaterialAssetHandler::new();
+			let mut material_asset_handler = BEMAAssetHandler::new();
 			let shader_generator = RootTestShaderGenerator::new();
 			material_asset_handler.set_shader_generator(shader_generator);
 			material_asset_handler
 		});
 
-		let asset_handler = MeshAssetHandler::new();
+		let asset_handler = GLTFAssetHandler::new();
 
 		asset_manager.add_asset_handler(asset_handler);
 
@@ -1103,14 +1103,14 @@ mod tests {
 		// }"#.as_bytes());
 
 		asset_manager.add_asset_handler({
-			let mut material_asset_handler = MaterialAssetHandler::new();
+			let mut material_asset_handler = BEMAAssetHandler::new();
 			let shader_generator = RootTestShaderGenerator::new();
 			material_asset_handler.set_shader_generator(shader_generator);
 			material_asset_handler
 		});
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
-		asset_manager.add_asset_handler(MeshAssetHandler::new());
-		let _asset_handler = MeshAssetHandler::new();
+		asset_manager.add_asset_handler(PNGAssetHandler::new());
+		asset_manager.add_asset_handler(GLTFAssetHandler::new());
+		let _asset_handler = GLTFAssetHandler::new();
 
 		let url = "Revolver.glb";
 
@@ -1146,9 +1146,9 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend);
 
-		let asset_handler = MeshAssetHandler::new();
+		let asset_handler = GLTFAssetHandler::new();
 
-		let image_asset_handler = ImageAssetHandler::new();
+		let image_asset_handler = PNGAssetHandler::new();
 
 		asset_manager.add_asset_handler(image_asset_handler);
 

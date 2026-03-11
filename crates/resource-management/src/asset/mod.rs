@@ -1,5 +1,6 @@
 //! This module contains the asset management system.
 //! This system is responsible for loading assets from different sources (network, local, etc.) and generating the resources from them.
+//! Each assert is a file in a specific format, and the asset handlers are responsible for parsing the file and generating the resources from it.
 
 use std::io::ErrorKind;
 
@@ -8,10 +9,11 @@ use utils::json;
 pub mod asset_handler;
 pub mod asset_manager;
 
-pub mod audio_asset_handler;
-pub mod image_asset_handler;
-pub mod material_asset_handler;
-pub mod mesh_asset_handler;
+pub mod bema_asset_handler;
+pub mod gltf_asset_handler;
+pub mod ogg_asset_handler;
+pub mod png_asset_handler;
+pub mod wav_asset_handler;
 
 pub type BEADType = json::Value;
 

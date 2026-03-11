@@ -37,13 +37,6 @@ impl Asset for AudioAsset {
 
 			let (audio_resource, data) = match extension {
 				"wav" => Self::decode_wav(&self.data)?,
-				"ogg" => {
-					let data = self.data.clone();
-					let decoded = spawn_cpu_task(move || Self::decode_ogg(&data))
-						.await
-						.or_else(|_| Err("Task panicked".to_string()))?;
-					decoded?
-				}
 				_ => {
 					return Err(
 						"Unsupported audio format. The asset extension is not handled by the audio loader.".to_string(),
@@ -138,60 +131,19 @@ impl AudioAsset {
 		};
 		Ok((audio_resource, data.to_vec()))
 	}
+}
 
-	/// Decodes an OGG Vorbis buffer into audio metadata and PCM data.
-	fn decode_ogg(data: &[u8]) -> Result<(Audio, Vec<u8>), String> {
-		use std::io::Cursor;
+pub struct WAVAssetHandler {}
 
-		let mut decoder = vorbis_rs::VorbisDecoder::new(Cursor::new(data))
-			.map_err(|_| "Failed to decode OGG data. The file is likely corrupt or not Vorbis encoded.".to_string())?;
-
-		let sample_rate = decoder.sampling_frequency().get();
-		let channel_count = decoder.channels().get();
-
-		let mut data = Vec::with_capacity(channel_count as usize * sample_rate as usize * 4);
-
-		// Force bit depth to 8-bit, TODO: support other bit depths
-		let bit_depth = BitDepths::Eight;
-
-		while let Some(block) = decoder
-			.decode_audio_block()
-			.map_err(|_| "Failed to decode OGG data. The stream is likely corrupt.".to_string())?
-		{
-			let samples = block.samples();
-			for &x in samples {
-				for y in x {
-					let sample = (y.clamp(-1.0, 1.0) * 127.0).round() as i8;
-					data.push(sample.cast_unsigned());
-				}
-			}
-		}
-
-		let sample_count = (data.len() / (channel_count as usize)) as u32;
-		let channel_count = channel_count as u16;
-
-		let audio_resource = Audio {
-			bit_depth,
-			channel_count,
-			sample_rate,
-			sample_count,
-		};
-
-		Ok((audio_resource, data))
+impl WAVAssetHandler {
+	pub fn new() -> WAVAssetHandler {
+		WAVAssetHandler {}
 	}
 }
 
-pub struct AudioAssetHandler {}
-
-impl AudioAssetHandler {
-	pub fn new() -> AudioAssetHandler {
-		AudioAssetHandler {}
-	}
-}
-
-impl AssetHandler for AudioAssetHandler {
+impl AssetHandler for WAVAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
-		r#type == "wav" || r#type == "ogg"
+		r#type == "wav"
 	}
 
 	fn load<'a>(
@@ -228,7 +180,7 @@ impl AssetHandler for AudioAssetHandler {
 #[cfg(test)]
 mod tests {
 	use crate::{
-		asset::{self, asset_manager::AssetManager, audio_asset_handler::AudioAssetHandler, ResourceId},
+		asset::{self, asset_manager::AssetManager, wav_asset_handler::WAVAssetHandler, ResourceId},
 		r#async, resource,
 		resources::audio::Audio,
 		types::BitDepths,
@@ -238,7 +190,7 @@ mod tests {
 	#[r#async::test]
 	#[ignore = "Test uses data not pushed to the repository"]
 	async fn test_audio_asset_handler() {
-		let audio_asset_handler = AudioAssetHandler::new();
+		let audio_asset_handler = WAVAssetHandler::new();
 
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();

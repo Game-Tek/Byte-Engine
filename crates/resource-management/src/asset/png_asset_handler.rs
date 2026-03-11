@@ -52,7 +52,7 @@ impl Asset for ImageAsset {
 				gamma,
 			};
 
-			let (image, data) = spawn_cpu_task(move || ImageAssetHandler::produce(&description, buffer))
+			let (image, data) = spawn_cpu_task(move || PNGAssetHandler::produce(&description, buffer))
 				.await
 				.or_else(|_| Err("Task panicked"))?;
 
@@ -67,15 +67,15 @@ impl Asset for ImageAsset {
 	}
 }
 
-pub struct ImageAssetHandler {}
+pub struct PNGAssetHandler {}
 
-impl ImageAssetHandler {
-	pub fn new() -> ImageAssetHandler {
-		ImageAssetHandler {}
+impl PNGAssetHandler {
+	pub fn new() -> PNGAssetHandler {
+		PNGAssetHandler {}
 	}
 }
 
-impl AssetHandler for ImageAssetHandler {
+impl AssetHandler for PNGAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		r#type == "png" || r#type == "Image" || r#type == "image/png"
 	}
@@ -244,7 +244,7 @@ pub fn gamma_from_semantic(semantic: Semantic) -> Gamma {
 	}
 }
 
-impl ImageAssetHandler {
+impl PNGAssetHandler {
 	fn produce(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, Box<[u8]>) {
 		let ImageDescription {
 			format,
@@ -429,7 +429,7 @@ impl Description for ImageDescription {
 mod tests {
 	use crate::{
 		asset::{
-			self, asset_handler::AssetHandler, asset_manager::AssetManager, image_asset_handler::ImageAssetHandler, ResourceId,
+			self, asset_handler::AssetHandler, asset_manager::AssetManager, png_asset_handler::PNGAssetHandler, ResourceId,
 		},
 		r#async, resource,
 	};
@@ -437,7 +437,7 @@ mod tests {
 	#[r#async::test]
 	#[ignore = "Test uses data not pushed to the repository"]
 	async fn load_image() {
-		let asset_handler = ImageAssetHandler::new();
+		let asset_handler = PNGAssetHandler::new();
 
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();

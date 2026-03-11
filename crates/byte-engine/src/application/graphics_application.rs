@@ -40,10 +40,10 @@ use math::Vector2;
 use resource_management::{
 	asset::{
 		asset_manager::AssetManager,
-		audio_asset_handler::AudioAssetHandler,
-		image_asset_handler::ImageAssetHandler,
-		material_asset_handler::{MaterialAssetHandler, ProgramGenerator},
-		mesh_asset_handler::MeshAssetHandler,
+		bema_asset_handler::{BEMAAssetHandler, ProgramGenerator},
+		gltf_asset_handler::GLTFAssetHandler,
+		png_asset_handler::PNGAssetHandler,
+		wav_asset_handler::WAVAssetHandler,
 		FileStorageBackend,
 	},
 	resource::{resource_manager::ResourceManager, RedbStorageBackend},
@@ -470,13 +470,13 @@ pub fn setup_default_resource_and_asset_management(
 
 	let mut asset_manager = AssetManager::new(storage_backend);
 
-	let mut material_asset_handler = MaterialAssetHandler::new();
+	let mut material_asset_handler = BEMAAssetHandler::new();
 	material_asset_handler.set_shader_generator(generator);
 	asset_manager.add_asset_handler(material_asset_handler);
 
-	asset_manager.add_asset_handler(MeshAssetHandler::new());
-	asset_manager.add_asset_handler(ImageAssetHandler::new());
-	asset_manager.add_asset_handler(AudioAssetHandler::new());
+	asset_manager.add_asset_handler(GLTFAssetHandler::new());
+	asset_manager.add_asset_handler(PNGAssetHandler::new());
+	asset_manager.add_asset_handler(WAVAssetHandler::new());
 
 	resource_manager
 		.try_map_mut(|resource_manager| {

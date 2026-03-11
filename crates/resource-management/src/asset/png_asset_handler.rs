@@ -1,5 +1,3 @@
-use std::any::Any;
-
 use utils::Extent;
 
 use crate::{
@@ -12,59 +10,15 @@ use crate::{
 };
 
 use super::{
-	asset_handler::{Asset, AssetHandler, LoadErrors},
+	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
 	resource_id::ResourceIdBase,
 	ResourceId,
 };
 
-pub struct ImageAsset {
+struct DecodedImage {
 	data: Box<[u8]>,
-	extent: Extent,
-	format: Formats,
-	gamma: Gamma,
-}
-
-impl Asset for ImageAsset {
-	fn requested_assets(&self) -> Vec<String> {
-		vec![]
-	}
-
-	fn load<'a>(
-		&'a self,
-		_: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		_: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-	) -> BoxedFuture<'a, Result<(), String>> {
-		Box::pin(async move {
-			let semantic = guess_semantic_from_name(url.get_base());
-
-			let format = self.format;
-			let extent = self.extent;
-			let gamma = self.gamma;
-
-			let buffer = self.data.clone();
-			let description = ImageDescription {
-				format,
-				extent,
-				semantic,
-				gamma,
-			};
-
-			let (image, data) = spawn_cpu_task(move || PNGAssetHandler::produce(&description, buffer))
-				.await
-				.or_else(|_| Err("Task panicked"))?;
-
-			let resource_document = ProcessedAsset::new(url, image);
-
-			storage_backend
-				.store(&resource_document, &data)
-				.map_err(|_| "Failed to store image resource. The storage backend likely rejected the write.".to_string())?;
-
-			Ok(())
-		})
-	}
+	description: ImageDescription,
 }
 
 pub struct PNGAssetHandler {}
@@ -80,16 +34,16 @@ impl AssetHandler for PNGAssetHandler {
 		r#type == "png" || r#type == "Image" || r#type == "image/png"
 	}
 
-	fn load<'a>(
+	fn bake<'a>(
 		&'a self,
 		_: &'a AssetManager,
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
-	) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
+	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
-				if dt != "png" {
+				if !self.can_handle(dt) {
 					return Err(LoadErrors::UnsupportedType);
 				}
 			}
@@ -101,7 +55,7 @@ impl AssetHandler for PNGAssetHandler {
 
 			let semantic = guess_semantic_from_name(url.get_base());
 
-			let decoded = spawn_cpu_task(move || -> Result<ImageAsset, LoadErrors> {
+			let decoded = spawn_cpu_task(move || -> Result<DecodedImage, LoadErrors> {
 				let mut buffer;
 				let extent;
 				let gamma: Gamma;
@@ -175,33 +129,29 @@ impl AssetHandler for PNGAssetHandler {
 					}
 				}
 
-				Ok(ImageAsset {
-					data: buffer.into(),
-					gamma,
+				let description = ImageDescription {
 					format,
 					extent,
+					semantic,
+					gamma,
+				};
+
+				Ok(DecodedImage {
+					data: buffer.into(),
+					description,
 				})
 			})
 			.await
 			.map_err(|_| LoadErrors::FailedToProcess)??;
 
-			Ok(Box::new(decoded) as Box<dyn Asset>)
-		})
-	}
+			let DecodedImage { data, description } = decoded;
 
-	fn produce<'a>(
-		&'a self,
-		id: ResourceId<'a>,
-		description: &'a dyn Description,
-		data: Box<[u8]>,
-	) -> Result<(ProcessedAsset, Box<[u8]>), String> {
-		if let Some(description) = (description as &dyn Any).downcast_ref::<ImageDescription>() {
-			let description = description.clone();
-			let (resource, buffer) = Self::produce(&description, data);
-			Ok((ProcessedAsset::new(id, resource), buffer))
-		} else {
-			Err("Invalid description".to_string())
-		}
+			let (image, data) = spawn_cpu_task(move || PNGAssetHandler::produce(&description, data))
+				.await
+				.map_err(|_| LoadErrors::FailedToProcess)?;
+
+			Ok((ProcessedAsset::new(url, image), data))
+		})
 	}
 }
 
@@ -245,6 +195,15 @@ pub fn gamma_from_semantic(semantic: Semantic) -> Gamma {
 }
 
 impl PNGAssetHandler {
+	pub(crate) fn bake_from_image_data<'a>(
+		id: ResourceId<'a>,
+		description: ImageDescription,
+		buffer: Box<[u8]>,
+	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
+		let (resource, buffer) = Self::produce(&description, buffer);
+		Ok((ProcessedAsset::new(id, resource), buffer))
+	}
+
 	fn produce(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, Box<[u8]>) {
 		let ImageDescription {
 			format,
@@ -445,15 +404,13 @@ mod tests {
 
 		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
 
-		let asset = asset_handler
-			.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)
+		let (resource, data) = asset_handler
+			.bake(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)
 			.await
 			.expect("Image asset handler did not handle asset");
 
-		let _ = asset
-			.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)
-			.await
-			.expect("Image asset did not load");
+		crate::resource::WriteStorageBackend::store(&resource_storage_backend, &resource, &data)
+			.expect("Image asset did not store");
 
 		let generated_resources = resource_storage_backend.get_resources();
 

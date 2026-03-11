@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use crate::{
 	asset,
 	r#async::{spawn_cpu_task, BoxedFuture},
@@ -10,56 +8,12 @@ use crate::{
 };
 
 use super::{
-	asset_handler::{Asset, AssetHandler, LoadErrors},
+	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
 	ResourceId,
 };
 
-pub struct AudioAsset {
-	id: String,
-	data: Arc<[u8]>,
-}
-
-impl Asset for AudioAsset {
-	fn requested_assets(&self) -> Vec<String> {
-		vec![]
-	}
-
-	fn load<'a>(
-		&'a self,
-		_: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		_: &'a dyn asset::StorageBackend,
-		id: ResourceId<'a>,
-	) -> BoxedFuture<'a, Result<(), String>> {
-		Box::pin(async move {
-			let extension = id.get_extension();
-
-			let (audio_resource, data) = match extension {
-				"ogg" => {
-					let data = self.data.clone();
-					let decoded = spawn_cpu_task(move || Self::decode_ogg(&data))
-						.await
-						.or_else(|_| Err("Task panicked".to_string()))?;
-					decoded?
-				}
-				_ => {
-					return Err(
-						"Unsupported audio format. The asset extension is not handled by the audio loader.".to_string(),
-					);
-				}
-			};
-
-			let resource = ProcessedAsset::new(ResourceId::new(&self.id), audio_resource);
-			storage_backend
-				.store(&resource, &data)
-				.map_err(|_| "Failed to store audio resource. The storage backend likely rejected the write.".to_string())?;
-			Ok(())
-		})
-	}
-}
-
-impl AudioAsset {
+impl OGGAssetHandler {
 	/// Decodes an OGG Vorbis buffer into audio metadata and PCM data.
 	fn decode_ogg(data: &[u8]) -> Result<(Audio, Vec<u8>), String> {
 		use std::io::Cursor;
@@ -100,31 +54,29 @@ impl AudioAsset {
 
 		Ok((audio_resource, data))
 	}
-}
 
-pub struct OGGAssetHandler {}
-
-impl OGGAssetHandler {
 	pub fn new() -> OGGAssetHandler {
 		OGGAssetHandler {}
 	}
 }
+
+pub struct OGGAssetHandler {}
 
 impl AssetHandler for OGGAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		r#type == "ogg"
 	}
 
-	fn load<'a>(
+	fn bake<'a>(
 		&'a self,
 		_: &'a AssetManager,
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
-	) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
+	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
-				if dt != "wav" && dt != "ogg" {
+				if !self.can_handle(dt) {
 					return Err(LoadErrors::UnsupportedType);
 				}
 			}
@@ -134,14 +86,16 @@ impl AssetHandler for OGGAssetHandler {
 				.await
 				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
-			if dt != "wav" && dt != "ogg" {
+			if !self.can_handle(&dt) {
 				return Err(LoadErrors::UnsupportedType);
 			}
 
-			Ok(Box::new(AudioAsset {
-				id: url.to_string(),
-				data: Arc::from(data),
-			}) as Box<dyn Asset>)
+			let (audio_resource, data) = spawn_cpu_task(move || Self::decode_ogg(&data))
+				.await
+				.map_err(|_| LoadErrors::FailedToProcess)?
+				.map_err(|_| LoadErrors::FailedToProcess)?;
+
+			Ok((ProcessedAsset::new(url, audio_resource), data.into_boxed_slice()))
 		})
 	}
 }
@@ -167,15 +121,13 @@ mod tests {
 
 		let url = ResourceId::new("gun.wav");
 
-		let asset = audio_asset_handler
-			.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)
+		let (resource, data) = audio_asset_handler
+			.bake(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)
 			.await
 			.expect("Audio asset handler failed to load asset");
 
-		let _ = asset
-			.load(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)
-			.await
-			.expect("Audio asset failed to load");
+		crate::resource::WriteStorageBackend::store(&resource_storage_backend, &resource, &data)
+			.expect("Audio asset failed to store");
 
 		let generated_resources = resource_storage_backend.get_resources();
 

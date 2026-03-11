@@ -2,10 +2,7 @@ use maths_rs::{
 	mat::{MatNew4, MatScale},
 	vec::Vec3,
 };
-use utils::{
-	json::{self, JsonContainerTrait, JsonValueTrait},
-	Extent,
-};
+use utils::{json::JsonValueTrait, Extent};
 
 use crate::{
 	asset::{
@@ -23,8 +20,9 @@ use crate::{
 };
 
 use super::{
-	asset_handler::{Asset, AssetHandler, LoadErrors},
+	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
+	png_asset_handler::PNGAssetHandler,
 	ResourceId,
 };
 
@@ -42,13 +40,13 @@ impl AssetHandler for GLTFAssetHandler {
 		r#type == "gltf" || r#type == "glb"
 	}
 
-	fn load<'a>(
+	fn bake<'a>(
 		&'a self,
-		_asset_manager: &'a AssetManager,
+		asset_manager: &'a AssetManager,
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
-	) -> BoxedFuture<'a, Result<Box<dyn Asset>, LoadErrors>> {
+	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
 				if !self.can_handle(dt) {
@@ -104,63 +102,19 @@ impl AssetHandler for GLTFAssetHandler {
 				(gltf, buffers)
 			};
 
-			Ok(Box::new(MeshAsset { spec, gltf, buffers }) as Box<dyn Asset>)
-		})
-	}
-}
-
-struct MeshAsset {
-	spec: Option<json::Value>,
-	gltf: gltf::Gltf,
-	buffers: Vec<gltf::buffer::Data>,
-}
-
-impl Asset for MeshAsset {
-	fn requested_assets(&self) -> Vec<String> {
-		if let Some(spec) = &self.spec {
-			let asset_key = match spec["asset"].as_object() {
-				Some(asset_key) => asset_key,
-				None => return vec![],
-			};
-
-			asset_key
-				.iter()
-				.filter_map(|(_, v)| {
-					// Get all material asset ids
-					match v["asset"].as_str() {
-						Some(s) => Some(s.to_string()),
-						None => None,
-					}
-				})
-				.collect()
-		} else {
-			vec![]
-		}
-	}
-
-	fn load<'a>(
-		&'a self,
-		asset_manager: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		_asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-	) -> BoxedFuture<'a, Result<(), String>> {
-		Box::pin(async move {
-			let gltf = &self.gltf;
-			let buffers = &self.buffers;
-
 			if let Some(fragment) = url.get_fragment() {
 				let image = gltf
 					.images()
 					.find(|i| i.name() == Some(fragment.as_ref()))
-					.ok_or("Image not found")?;
-				let image = gltf::image::Data::from_source(image.source(), None, &buffers).map_err(|e| e.to_string())?;
+					.ok_or(LoadErrors::FailedToProcess)?;
+				let image =
+					gltf::image::Data::from_source(image.source(), None, &buffers).map_err(|_| LoadErrors::FailedToProcess)?;
 				let format = match image.format {
 					gltf::image::Format::R8G8B8 => Formats::RGB8,
 					gltf::image::Format::R8G8B8A8 => Formats::RGBA8,
 					gltf::image::Format::R16G16B16 => Formats::RGB16,
 					gltf::image::Format::R16G16B16A16 => Formats::RGBA16,
-					_ => return Err("Unsupported image format".to_string()),
+					_ => return Err(LoadErrors::UnsupportedType),
 				};
 				let extent = Extent::rectangle(image.width, image.height);
 
@@ -177,22 +131,14 @@ impl Asset for MeshAsset {
 					},
 				};
 
-				let _resource = asset_manager.produce(
-					url,
-					"image/png",
-					&image_description,
-					image.pixels.into_boxed_slice(),
-					storage_backend,
-				);
-
-				return Ok(());
+				return PNGAssetHandler::bake_from_image_data(url, image_description, image.pixels.into_boxed_slice());
 			}
 
-			let spec = if let Some(spec) = &self.spec {
+			let spec = if let Some(spec) = &spec {
 				spec
 			} else {
 				log::error!("No spec found for {:#?}", url);
-				return Err("Need .bead file".to_string());
+				return Err(LoadErrors::FailedToProcess);
 			};
 
 			// Gather vertex components and check that they are all equal
@@ -340,7 +286,7 @@ impl Asset for MeshAsset {
 				let material = asset_manager
 					.load::<VariantModel>(&name, storage_backend)
 					.await
-					.map_err(|_| "Failed to load materials. The referenced material assets could not be loaded.".to_string())?;
+					.map_err(|_| LoadErrors::FailedToProcess)?;
 				materials_per_primitive.push(material);
 			}
 
@@ -761,12 +707,10 @@ impl Asset for MeshAsset {
 				}
 			};
 
-			let resource_document = ProcessedAsset::new(url, mesh).with_streams(streams);
-			storage_backend
-				.store(&resource_document, &buffer)
-				.map_err(|_| "Failed to store mesh resource. The storage backend likely rejected the write.".to_string())?;
-
-			Ok(())
+			Ok((
+				ProcessedAsset::new(url, mesh).with_streams(streams),
+				buffer.into_boxed_slice(),
+			))
 		})
 	}
 }
@@ -1154,8 +1098,8 @@ mod tests {
 
 		let url = ResourceId::new("Revolver.glb#Revolver_Metallic-Revolver_Roughness");
 
-		let asset_loader = asset_handler
-			.load(
+		let (resource, data) = asset_handler
+			.bake(
 				&asset_manager,
 				&resource_storage_backend,
 				asset_manager.get_storage_backend(),
@@ -1164,15 +1108,8 @@ mod tests {
 			.await
 			.expect("Image asset handler did not handle asset");
 
-		asset_loader
-			.load(
-				&asset_manager,
-				&resource_storage_backend,
-				asset_manager.get_storage_backend(),
-				url,
-			)
-			.await
-			.expect("Image asset handler did not handle asset");
+		crate::resource::WriteStorageBackend::store(&resource_storage_backend, &resource, &data)
+			.expect("Image asset handler did not store asset");
 
 		let _ = resource_storage_backend.get_resource_data_by_name(url).unwrap();
 

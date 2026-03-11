@@ -16,6 +16,7 @@ use crate::{
 		mesh::generator::{MeshGenerator, SphereMeshGenerator},
 		RenderableMesh,
 	},
+	space::Transformable,
 };
 
 #[cfg(feature = "headed")]
@@ -24,7 +25,7 @@ use crate::rendering::{
 	renderable::mesh::MeshSource,
 };
 
-use super::{transform::Transform, Positionable, Transformable};
+use super::transform::Transform;
 
 /// An object represents a physical entity in the game world.
 /// It has physics and is rendered as a mesh.

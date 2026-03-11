@@ -40,7 +40,6 @@ pub use math;
 pub mod application;
 #[cfg(feature = "headed")]
 pub mod audio;
-pub mod camera;
 pub mod core;
 pub mod input;
 #[cfg(feature = "headed")]
@@ -53,6 +52,7 @@ pub mod network;
 pub mod physics;
 #[cfg(feature = "headed")]
 pub mod rendering;
+pub mod space;
 
 pub mod inspector;
 

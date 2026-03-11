@@ -26,22 +26,22 @@ use utils::{
 
 use crate::{
 	application::parameters::Parameters,
-	camera::Camera,
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::Handle,
 		listener::Listener,
 		Entity, EntityHandle,
 	},
-	gameplay::{transform::TransformationUpdate, Positionable},
+	gameplay::transform::TransformationUpdate,
 	rendering::{
 		make_perspective_view_from_camera,
 		render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn},
 		scene_manager::SceneManager,
 		viewport,
 		window::Window,
-		View, Viewport,
+		Camera, View, Viewport,
 	},
+	space::{Orientable as _, Positionable as _},
 };
 
 use super::{

@@ -12,9 +12,9 @@ use utils::sync::Mutex;
 
 use crate::{
 	application::Events,
-	camera::Camera,
 	core::{listener::Listener, Entity, EntityHandle},
 	inspector::{Inspectable, Inspector},
+	rendering::Camera,
 };
 
 /// This is the HTTP based implementation of the Byte Engine Inspection Protocol.

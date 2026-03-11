@@ -1,6 +1,5 @@
 use crate::{
 	application::Time,
-	camera::Camera,
 	core::{
 		channel::{Channel, DefaultChannel},
 		factory::{CreateMessage, Factory},
@@ -9,6 +8,7 @@ use crate::{
 	},
 	gameplay::{anchor::AnchorSystem, transform::TransformationUpdate},
 	physics::{self, dynabit},
+	rendering::Camera,
 };
 
 pub struct DefaultWorld {

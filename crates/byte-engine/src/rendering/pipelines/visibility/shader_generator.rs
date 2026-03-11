@@ -407,6 +407,8 @@ impl VisibilityShaderScope {
 
 impl ProgramGenerator for VisibilityShaderGenerator {
 	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
+		dbg!(material);
+
 		let a = "if (gl_GlobalInvocationID.x >= material_count.material_count[push_constant.material_id]) { return; }
 
 		uint offset = material_offset.material_offset[push_constant.material_id];
@@ -492,8 +494,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		vec4 albedo = vec4(1, 0, 0, 1);
 		vec3 normal = vec3(0, 0, 1);
-		float metalness = 0;
-		float roughness = float(0.5);"
+		float metalness = 0.0;
+		float roughness = float(0.5)"
 			.trim();
 
 		let mut extra: Vec<Node<'a>> = Vec::new();
@@ -592,7 +594,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		diffuse *= ao_factor;
 
 		imageStore(diffuse_map, pixel_coordinates, vec4(diffuse, albedo.a));
-		imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0));
+		imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0))
 		"
 		.trim();
 
@@ -642,9 +644,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			_ => {}
 		}
 
-		root.add(vec![CommonShaderScope::new(), self.scope.clone()]);
-
 		root.add(extra);
+		root.add(vec![CommonShaderScope::new(), self.scope.clone()]);
 
 		root
 	}
@@ -656,6 +657,23 @@ mod tests {
 	use utils::json;
 
 	use crate::besl;
+
+	#[test]
+	fn write_to_albedo() {
+		let material = json::object! {
+			"variables": []
+		};
+
+		let shader_source = "main: fn () -> void { albedo = vec4f(1, 2, 3, 4); }";
+
+		let shader_node = besl::parse(shader_source).unwrap();
+
+		let shader_generator = super::VisibilityShaderGenerator::new(true, true, true, true, true, true, true, true);
+
+		let shader = shader_generator.transform(shader_node, &material);
+
+		let _node = besl::lex(shader).unwrap();
+	}
 
 	#[test]
 	fn vec4f_variable() {

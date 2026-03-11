@@ -1,6 +1,6 @@
 use math::Vector3;
 
-use crate::gameplay::Positionable;
+use crate::space::Positionable;
 
 /// The `Collider` trait allows an entity to present itself as a collision shape.
 pub trait Collider: Positionable {

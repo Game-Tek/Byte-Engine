@@ -2,8 +2,9 @@ use math::{Quaternion, Vector3};
 
 use crate::constants::FORWARD;
 use crate::core::{Entity, EntityHandle};
-use crate::gameplay::{Positionable, Transformable};
 use crate::inspector::Inspectable;
+use crate::space::orientable::Orientable;
+use crate::space::{Positionable, Transformable};
 
 #[derive(Clone, Debug)]
 pub struct Camera {
@@ -47,15 +48,8 @@ impl Camera {
 		self.focus_distance
 	}
 
-	pub fn orientation(&self) -> Quaternion {
-		self.orientation
-	}
 	pub fn set_direction(&mut self, direction: Vector3) {
 		self.orientation = Quaternion::from_axis_angle(direction, 0.0);
-	}
-
-	pub fn set_orientation(&mut self, orientation: Quaternion) {
-		self.orientation = orientation;
 	}
 
 	pub fn set_fov(&mut self, fov: f32) {
@@ -71,8 +65,19 @@ impl Positionable for Camera {
 	fn position(&self) -> Vector3 {
 		self.position
 	}
+
 	fn set_position(&mut self, position: Vector3) {
 		self.position = position;
+	}
+}
+
+impl Orientable for Camera {
+	fn orientation(&self) -> Quaternion {
+		self.orientation
+	}
+
+	fn set_orientation(&mut self, orientation: Quaternion) {
+		self.orientation = orientation;
 	}
 }
 

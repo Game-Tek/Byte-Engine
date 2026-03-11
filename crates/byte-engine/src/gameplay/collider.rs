@@ -2,11 +2,11 @@ use math::Vector3;
 
 use crate::{
 	core::{Entity, EntityHandle},
-	gameplay::{Positionable, Transformable},
 	physics::{
 		body::{Body, BodyTypes},
 		collider::{Collider, Shapes},
 	},
+	space::{Positionable, Transformable},
 };
 
 use crate::physics;

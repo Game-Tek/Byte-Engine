@@ -29,13 +29,12 @@ use utils::{
 };
 
 use crate::{
-	camera::Camera,
 	core::{
 		entity::{self},
 		listener::Listener,
 		Entity, EntityHandle,
 	},
-	gameplay::Transformable,
+	rendering::Camera,
 	rendering::{
 		common_shader_generator::CommonShaderScope,
 		make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
@@ -46,6 +45,7 @@ use crate::{
 		view::View,
 		RenderableMesh, Viewport,
 	},
+	space::Transformable,
 };
 
 pub struct RenderPass {

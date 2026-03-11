@@ -2,8 +2,8 @@ use math::{magnitude, magnitude_squared, mat::MatNew3 as _, Base, Matrix3, Vecto
 
 use crate::{
 	core::Entity,
-	gameplay::{Positionable, Transformable},
 	physics::collider::Collider,
+	space::{Positionable, Transformable},
 };
 
 /// The `Body` trait represents a physical body in the world.

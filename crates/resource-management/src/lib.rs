@@ -32,6 +32,8 @@ pub mod file_tracker;
 pub mod shader_generator;
 pub mod shader_graph;
 
+pub mod pbr;
+
 pub mod glsl_shader_generator;
 pub mod hlsl_shader_generator;
 pub mod msl_shader_compiler;

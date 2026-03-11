@@ -378,9 +378,8 @@ impl Asset for MeshAsset {
 						Streams::Vertices(VertexSemantics::Position),
 						Streams::Vertices(VertexSemantics::Normal),
 						Streams::Vertices(VertexSemantics::UV),
-						Streams::Vertices(VertexSemantics::Joints),
-						Streams::Vertices(VertexSemantics::Weights),
 						Streams::Indices(IndexStreamTypes::Vertices),
+						Streams::Indices(IndexStreamTypes::Triangles),
 						Streams::Indices(IndexStreamTypes::Meshlets),
 						Streams::Meshlets,
 					];

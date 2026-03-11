@@ -47,10 +47,6 @@ impl Transform {
 		Self { position, ..self }
 	}
 
-	pub fn scale(self, scale: Vector3) -> Self {
-		Self { scale, ..self }
-	}
-
 	pub fn rotation(self, rotation: Quaternion) -> Self {
 		Self { rotation, ..self }
 	}
@@ -100,6 +96,7 @@ impl Transform {
 	pub fn set_position(&mut self, position: Vector3) {
 		self.position = position;
 	}
+
 	pub fn get_position(&self) -> Vector3 {
 		self.position
 	}
@@ -107,13 +104,15 @@ impl Transform {
 	pub fn set_scale(&mut self, scale: Vector3) {
 		self.scale = scale;
 	}
-	pub fn get_scale(&self) -> Vector3 {
+
+	pub fn scale(&self) -> Vector3 {
 		self.scale
 	}
 
 	pub fn set_orientation(&mut self, orientation: Quaternion) {
 		self.rotation = orientation;
 	}
+
 	pub fn get_orientation(&self) -> Quaternion {
 		self.rotation
 	}

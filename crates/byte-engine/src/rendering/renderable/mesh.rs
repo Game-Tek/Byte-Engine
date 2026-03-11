@@ -4,8 +4,9 @@ use math::{normalize, Vector3};
 
 use crate::{
 	core::{Entity, EntityHandle},
-	gameplay::{transform::Transform, Transformable},
+	gameplay::transform::Transform,
 	rendering::mesh::generator::{BoxMeshGenerator, MeshGenerator, SphereMeshGenerator},
+	space::Transformable,
 };
 
 pub trait RenderableMesh: Transformable {

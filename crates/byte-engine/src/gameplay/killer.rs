@@ -1,21 +1,17 @@
-use crate::core::{Entity, EntityHandle};
+use crate::core::{factory::Handle, message::Message, Entity, EntityHandle};
 
-struct Killer {
-	entities: Vec<Data>,
+pub struct KillMessage {
+	handle: Handle,
 }
 
-struct Data {
-	entity: EntityHandle<dyn Entity>,
-}
-
-impl Killer {
-	pub fn new() -> Self {
-		Self {
-			entities: Vec::with_capacity(256),
-		}
+impl KillMessage {
+	pub fn new(handle: Handle) -> Self {
+		Self { handle }
 	}
 
-	pub fn add_entity(&mut self, entity: EntityHandle<dyn Entity>) {
-		self.entities.push(Data { entity });
+	pub fn handle(&self) -> Handle {
+		self.handle
 	}
 }
+
+impl Message for KillMessage {}

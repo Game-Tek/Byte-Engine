@@ -28,7 +28,6 @@ use utils::{
 };
 
 use crate::{
-	camera::Camera,
 	core::{
 		channel::DefaultChannel,
 		entity::{self},
@@ -36,7 +35,8 @@ use crate::{
 		listener::{DefaultListener, Listener},
 		Entity, EntityHandle,
 	},
-	gameplay::{transform::TransformationUpdate, Transformable},
+	gameplay::transform::TransformationUpdate,
+	rendering::Camera,
 	rendering::{
 		common_shader_generator::CommonShaderScope,
 		lights::{Light, Lights},

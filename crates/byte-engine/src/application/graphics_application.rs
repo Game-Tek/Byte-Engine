@@ -7,7 +7,7 @@ use crate::{
 		listener::{DefaultListener, Listener},
 		task, Entity, EntityHandle,
 	},
-	gameplay::{transform::TransformationUpdate, world::DefaultWorld, Transformable},
+	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
 	input::{
 		input_trigger,
 		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},

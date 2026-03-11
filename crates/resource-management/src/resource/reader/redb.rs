@@ -43,7 +43,17 @@ impl ResourceReader for FileResourceReader {
 						let offset = sd.offset;
 						if let Some(s) = streams.iter_mut().find(|s| s.name() == sd.name) {
 							self.file.seek(std::io::SeekFrom::Start(offset as u64)).or(Err(()))?;
-							self.file.read_exact(s.buffer_mut()).or(Err(()))?;
+							self.file
+								.read_exact(s.buffer_mut())
+								.inspect_err(|e| {
+									log::error!(
+										"Failed to read stream '{}' from file resource. Expected to read: {}. Error: {}",
+										s.name(),
+										s.buffer().len(),
+										e,
+									)
+								})
+								.or(Err(()))?;
 						}
 					}
 
@@ -51,6 +61,7 @@ impl ResourceReader for FileResourceReader {
 						streams.into_iter().map(|stream| stream.into()).collect(),
 					))
 				} else {
+					log::error!("Stream descriptions are required for reading into streams");
 					Err(())
 				}
 			}

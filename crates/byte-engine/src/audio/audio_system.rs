@@ -14,7 +14,7 @@ use crate::{
 		round_robin::RoundRobin,
 	},
 	core::{listener::Listener, Entity, EntityHandle},
-	gameplay::Positionable,
+	space::Positionable,
 };
 use ahi::{
 	self,

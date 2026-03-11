@@ -1,12 +1,13 @@
 use ::utils::Extent;
 
-use crate::{camera::Camera, gameplay::Positionable as _};
+use crate::space::Positionable as _;
 
 pub mod common_shader_generator;
 
 pub mod lights;
 pub mod window;
 
+pub mod camera;
 pub mod mesh;
 
 pub mod renderable;
@@ -34,6 +35,7 @@ pub mod csm;
 
 pub mod utils;
 
+pub use camera::Camera;
 pub use render_pass::RenderPass;
 pub use renderable::mesh::RenderableMesh;
 pub use view::View;

@@ -53,15 +53,12 @@ use utils::sync::{Arc, Rc, RwLock};
 use utils::{Box, Extent, RGBA};
 
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
-use crate::gameplay::Transformable as _;
 use crate::rendering::{
 	csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain,
 	RenderableMesh, Viewport,
 };
-use crate::{
-	camera::{self},
-	resource_management::{self},
-};
+use crate::resource_management::{self};
+use crate::space::Transformable as _;
 
 const diffuse_binding_template: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
@@ -457,6 +454,8 @@ impl VisibilityWorldRenderDomain {
 			return Err(());
 		};
 
+		// let triangle_indices_stream: Option<resource_management::types::Stream> = None;
+
 		let Some(meshlet_indices_stream) = mesh_resource.meshlet_indices_stream() else {
 			log::error!("Mesh resource does not contain meshlet index stream");
 			return Err(());
@@ -498,13 +497,14 @@ impl VisibilityWorldRenderDomain {
 			),
 			resource_management::stream::StreamMut::new(
 				"MeshletIndices",
-				&mut primitive_indices_buffer[self.visibility_info.triangle_count as usize..meshlet_indices_stream.count()],
-			), // TODO: this might be wrong
+				&mut primitive_indices_buffer
+					[self.visibility_info.primitives_count as usize..(meshlet_indices_stream.count() / 3)],
+			),
 			resource_management::stream::StreamMut::new("Meshlets", buffer_allocator.take(meshlets_stream.size)),
 		];
 
 		let Ok(load_target) = resource_request.load(streams.into()) else {
-			log::warn!("Failed to load mesh resources");
+			log::warn!("Failed to load mesh data");
 			return Err(());
 		};
 
@@ -635,7 +635,7 @@ impl VisibilityWorldRenderDomain {
 
 		let meshlet_offset = self.visibility_info.meshlet_count;
 
-		let acceleration_structure = if false {
+		let acceleration_structure = if let Some(triangle_indices_stream) = None as Option<resource_management::types::Stream> {
 			let index_format = match triangle_indices_stream.stride {
 				2 => ghi::DataTypes::U16,
 				4 => ghi::DataTypes::U32,
@@ -682,7 +682,7 @@ impl VisibilityWorldRenderDomain {
 
 		let vertex_count = positions_stream.count();
 		let primitive_count = vertex_indices_stream.count();
-		let triangle_count = triangle_indices_stream.count() / 3;
+		let triangle_count = triangle_indices_stream.count();
 
 		self.visibility_info.vertex_count += vertex_count as u32;
 		self.visibility_info.primitives_count += primitive_count as u32;

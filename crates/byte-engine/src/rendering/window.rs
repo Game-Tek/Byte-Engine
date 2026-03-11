@@ -1,8 +1,8 @@
 use utils::Extent;
 
 use crate::{
-	camera::Camera,
 	core::{factory::Handle, Entity, EntityHandle},
+	rendering::Camera,
 };
 
 #[derive(Clone)]

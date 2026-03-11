@@ -3,7 +3,7 @@ use math::Vector3;
 use crate::{
 	audio::source::Source,
 	core::{Entity, EntityHandle},
-	gameplay::Positionable,
+	space::Positionable,
 };
 
 /// The `Emitter` struct represents an audio source in a three-dimensional space.

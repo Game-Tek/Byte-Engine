@@ -79,7 +79,6 @@ fn layout_elements(
 	elements: &[ConcreteElement],
 	relation_map: &[(Id, Id)],
 	available_space: Size,
-	mouse_pos: Vector2,
 ) -> Vec<LayoutElement> {
 	let mut lelements = Vec::with_capacity(elements.len());
 
@@ -87,13 +86,13 @@ fn layout_elements(
 	struct TraversalState {
 		available_space: Size,
 		offset: Offset,
+		depth: u32,
 	}
 
 	#[derive(Clone, Copy)]
 	struct Context<'a> {
 		fetcher: &'a Fetcher<'a, ConcreteElement>,
 		root_size: Size,
-		mouse_pos: Vector2,
 	}
 
 	fn calculate_element(element: ElementResult<'_, ConcreteElement>, ctx: Context, ts: TraversalState) -> LayoutElement {
@@ -102,23 +101,13 @@ fn layout_elements(
 
 		let size = shape.bbox(ts.available_space);
 
-		let position = Location3::from((ts.offset.into(), 0));
-
-		let mouse_in_element = ctx.mouse_pos.x >= position.x() as f32
-			&& ctx.mouse_pos.x < (position.x() + size.x()) as f32
-			&& ctx.mouse_pos.y >= position.y() as f32
-			&& ctx.mouse_pos.y < (position.y() + size.y()) as f32;
+		let position = Location3::from((ts.offset.into(), ts.depth));
 
 		LayoutElement {
 			id: element.id().into(),
 			position,
 			size,
-			color: random_color_from_id(element.id().into())
-				* if !mouse_in_element {
-					RGBA::new(1.0, 1.0, 1.0, 1.0)
-				} else {
-					RGBA::new(0.5, 0.5, 0.5, 1.0)
-				},
+			color: random_color_from_id(element.id().into()),
 		}
 	}
 
@@ -136,7 +125,16 @@ fn layout_elements(
 		elements.push(l);
 
 		for child in element.children().elements() {
-			let l = layout_element(elements, child, ctx, TraversalState { available_space, offset });
+			let l = layout_element(
+				elements,
+				child,
+				ctx,
+				TraversalState {
+					available_space,
+					offset,
+					depth: ts.depth + 1,
+				},
+			);
 			offset = element.element().flow()(offset, l.size);
 		}
 
@@ -163,11 +161,11 @@ fn layout_elements(
 		Context {
 			fetcher: &fetcher,
 			root_size: available_space,
-			mouse_pos,
 		},
 		TraversalState {
 			available_space,
 			offset: Offset::new(0, 0),
+			depth: 0,
 		},
 	);
 
@@ -248,7 +246,7 @@ mod tests {
 
 		let elements = make_elements(&[&root as &dyn Element]);
 
-		let elements = layout_elements(&elements, &[], Size::new(1024, 1024), Vector2::zero());
+		let elements = layout_elements(&elements, &[], Size::new(1024, 10));
 
 		assert_eq!(elements.len(), 1);
 
@@ -263,7 +261,7 @@ mod tests {
 
 		let elements = make_elements(&[&root as &dyn Element]);
 
-		let elements = layout_elements(&elements, &[], Size::new(1024, 1024), Vector2::zero());
+		let elements = layout_elements(&elements, &[], Size::new(1024, 10));
 
 		assert_eq!(elements.len(), 1);
 
@@ -298,25 +296,29 @@ mod tests {
 			&elements,
 			&[(root.id(), a.id()), (a.id(), b.id()), (b.id(), c.id()), (c.id(), d.id())],
 			Size::new(1024, 1024),
-			Vector2::zero(),
 		);
 
 		assert_eq!(elements.len(), 5);
 
 		let element = &elements[0];
 		assert_eq!(element.size, Size::new(1024, 1024));
+		assert_eq!(element.position, Location3::new(0, 0, 0));
 
 		let element = &elements[1];
 		assert_eq!(element.size, Size::new(512, 512));
+		assert_eq!(element.position, Location3::new(0, 0, 1));
 
 		let element = &elements[2];
 		assert_eq!(element.size, Size::new(256, 256));
+		assert_eq!(element.position, Location3::new(0, 0, 2));
 
 		let element = &elements[3];
 		assert_eq!(element.size, Size::new(128, 128));
+		assert_eq!(element.position, Location3::new(0, 0, 3));
 
 		let element = &elements[4];
 		assert_eq!(element.size, Size::new(64, 64));
+		assert_eq!(element.position, Location3::new(0, 0, 4));
 	}
 
 	#[test]
@@ -350,7 +352,6 @@ mod tests {
 				(root.id(), d.id()),
 			],
 			Size::new(1024, 1024),
-			Vector2::zero(),
 		);
 
 		assert_eq!(elements.len(), 5);
@@ -361,18 +362,18 @@ mod tests {
 
 		let element = &elements[1];
 		assert_eq!(element.size, Size::new(64, 64));
-		assert_eq!(element.position, Location3::new(0, 0, 0));
+		assert_eq!(element.position, Location3::new(0, 0, 1));
 
 		let element = &elements[2];
 		assert_eq!(element.size, Size::new(64, 64));
-		assert_eq!(element.position, Location3::new(0, 64, 0));
+		assert_eq!(element.position, Location3::new(0, 64, 1));
 
 		let element = &elements[3];
 		assert_eq!(element.size, Size::new(64, 64));
-		assert_eq!(element.position, Location3::new(0, 128, 0));
+		assert_eq!(element.position, Location3::new(0, 128, 1));
 
 		let element = &elements[4];
 		assert_eq!(element.size, Size::new(64, 64));
-		assert_eq!(element.position, Location3::new(0, 192, 0));
+		assert_eq!(element.position, Location3::new(0, 192, 1));
 	}
 }

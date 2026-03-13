@@ -86,15 +86,26 @@ impl MouseClickAcceleration {
 
 		let bucket_index = row * self.columns + col;
 		let candidates = &self.buckets[bucket_index];
+		let mut top_most: Option<(usize, LayoutElement)> = None;
 
-		for &candidate_index in candidates.iter().rev() {
+		for &candidate_index in candidates {
 			let candidate = self.elements[candidate_index];
-			if point_in_layout_element(candidate, mouse_position) {
-				return Some(candidate.id);
+			if !point_in_layout_element(candidate, mouse_position) {
+				continue;
 			}
+
+			top_most = match top_most {
+				Some((top_index, top_element))
+					if top_element.position.z() > candidate.position.z()
+						|| (top_element.position.z() == candidate.position.z() && top_index > candidate_index) =>
+				{
+					Some((top_index, top_element))
+				}
+				_ => Some((candidate_index, candidate)),
+			};
 		}
 
-		None
+		top_most.map(|(_, element)| element.id)
 	}
 }
 
@@ -176,5 +187,27 @@ mod tests {
 
 		assert_eq!(acceleration.query(Location::new(125, 125)), None);
 		assert_eq!(acceleration.query(Location::new(300, 300)), None);
+	}
+
+	#[test]
+	fn mouse_click_acceleration_prefers_deeper_elements_over_layout_order() {
+		let layout = vec![
+			LayoutElement {
+				id: 20,
+				position: Location3::new(0, 0, 3),
+				size: Size::new(100, 100),
+				color: RGBA::black(),
+			},
+			LayoutElement {
+				id: 21,
+				position: Location3::new(0, 0, 1),
+				size: Size::new(100, 100),
+				color: RGBA::black(),
+			},
+		];
+
+		let acceleration = build_mouse_click_acceleration(&layout);
+
+		assert_eq!(acceleration.query(Location::new(50, 50)), Some(20));
 	}
 }

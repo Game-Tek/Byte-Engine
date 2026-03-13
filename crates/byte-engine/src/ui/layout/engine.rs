@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 
 use math::Vector2;
+use utils::RGBA;
+
+use crate::ui::{flow::Location, intersection::build_mouse_click_acceleration};
 
 use super::{
 	element::{ElementHandle, Id},
@@ -81,7 +84,15 @@ impl Engine {
 		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
 		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
 
-		let elements = layout_elements(&elements, &relations, Size::new(1024, 1024), mouse_pos);
+		let mut elements = layout_elements(&elements, &relations, size);
+
+		let acc = build_mouse_click_acceleration(&elements);
+
+		if let Some(id) = acc.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32)) {
+			if let Some(e) = elements.iter_mut().find(|e| e.id == id) {
+				e.color = e.color * RGBA::new(0.5f32, 0.5f32, 0.5f32, 1.0f32);
+			}
+		}
 
 		Render { elements, relations }
 	}

@@ -1,7 +1,4 @@
-use std::{
-	alloc::{self, Layout},
-	num::NonZeroU32,
-};
+use std::alloc::{self, Layout};
 
 use ::utils::hash::{HashMap, HashSet};
 use ::utils::Extent;
@@ -26,21 +23,28 @@ use windows::{
 };
 
 use crate::{
-	buffer, graphics_hardware_interface, image, raster_pipeline, sampler, window, AllocationHandle, BaseBufferHandle,
-	BindingConstructor, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
-	CommandBufferHandle, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
-	DescriptorSetTemplateHandle, DescriptorWrite, DeviceAccesses, DynamicBufferHandle, FilteringModes, Formats, ImageHandle,
-	MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, PresentationModes, PushConstantRange, QueueHandle,
-	SamplerAddressingModes, SamplerHandle, SamplingReductionModes, ShaderBindingDescriptor, ShaderHandle, ShaderParameter,
-	ShaderSource, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle,
-	UseCases, Uses, VertexElement,
+	buffer,
+	command_buffer::CommandBufferType,
+	descriptors::{DescriptorType, Write as DescriptorWrite, WriteData},
+	device::Features,
+	image,
+	pipelines::{self, PushConstantRange, ShaderParameter, VertexElement},
+	rt, sampler,
+	shader::{BindingDescriptor, Sources},
+	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
+	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
+	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
+	FilteringModes, Formats, Handle, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey,
+	PresentationModes, QueueHandle, QueueSelection, RGBAu8, SamplerAddressingModes, SamplerHandle, SamplingReductionModes,
+	ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle,
+	Uses,
 };
 
 use super::utils;
 
 pub struct Device {
 	device: ID3D12Device,
-	settings: graphics_hardware_interface::Features,
+	settings: Features,
 	frames: u8,
 
 	queues: Vec<Queue>,
@@ -52,9 +56,9 @@ pub struct Device {
 	descriptor_set_templates: Vec<DescriptorSetTemplate>,
 	descriptor_sets: Vec<DescriptorSet>,
 	descriptor_bindings: Vec<DescriptorSetBinding>,
-	descriptors: HashMap<DescriptorSetHandle, HashMap<u32, HashMap<u32, graphics_hardware_interface::Descriptor>>>,
-	resource_to_descriptor: HashMap<graphics_hardware_interface::Handle, HashSet<(DescriptorSetBindingHandle, u32)>>,
-	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<graphics_hardware_interface::Handle>>,
+	descriptors: HashMap<DescriptorSetHandle, HashMap<u32, HashMap<u32, WriteData>>>,
+	resource_to_descriptor: HashMap<Handle, HashSet<(DescriptorSetBindingHandle, u32)>>,
+	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<Handle>>,
 	pipeline_layouts: Vec<PipelineLayout>,
 	pipelines: Vec<Pipeline>,
 	shaders: Vec<Shader>,
@@ -131,7 +135,7 @@ struct DescriptorSet {
 struct DescriptorSetBinding {
 	next: Option<DescriptorSetBindingHandle>,
 	descriptor_set: DescriptorSetHandle,
-	descriptor_type: graphics_hardware_interface::DescriptorType,
+	descriptor_type: DescriptorType,
 	binding_index: u32,
 	count: u32,
 }
@@ -156,7 +160,7 @@ enum PipelineKind {
 struct Shader {
 	stage: ShaderTypes,
 	spirv: Option<Vec<u8>>,
-	bindings: Vec<ShaderBindingDescriptor>,
+	bindings: Vec<BindingDescriptor>,
 }
 
 struct Mesh {
@@ -186,13 +190,7 @@ struct Allocation {
 
 impl Device {
 	/// Creates a DX12 device and initializes command queues for the requested queue types.
-	pub fn new(
-		settings: graphics_hardware_interface::Features,
-		queues: &mut [(
-			graphics_hardware_interface::QueueSelection,
-			&mut Option<graphics_hardware_interface::QueueHandle>,
-		)],
-	) -> Result<Self, &'static str> {
+	pub fn new(settings: Features, queues: &mut [(QueueSelection, &mut Option<QueueHandle>)]) -> Result<Self, &'static str> {
 		let adapter: Option<&IUnknown> = None;
 		let mut device: Option<ID3D12Device> = None;
 		unsafe { D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, &mut device) }
@@ -204,9 +202,9 @@ impl Device {
 
 		for (selection, handle) in queues.iter_mut() {
 			let queue_type = match selection.r#type {
-				graphics_hardware_interface::CommandBufferType::GRAPHICS => D3D12_COMMAND_LIST_TYPE_DIRECT,
-				graphics_hardware_interface::CommandBufferType::COMPUTE => D3D12_COMMAND_LIST_TYPE_COMPUTE,
-				graphics_hardware_interface::CommandBufferType::TRANSFER => D3D12_COMMAND_LIST_TYPE_COPY,
+				CommandBufferType::GRAPHICS => D3D12_COMMAND_LIST_TYPE_DIRECT,
+				CommandBufferType::COMPUTE => D3D12_COMMAND_LIST_TYPE_COMPUTE,
+				CommandBufferType::TRANSFER => D3D12_COMMAND_LIST_TYPE_COPY,
 			};
 
 			let desc = D3D12_COMMAND_QUEUE_DESC {
@@ -316,13 +314,13 @@ impl Device {
 	pub fn create_shader(
 		&mut self,
 		_name: Option<&str>,
-		shader_source_type: ShaderSource,
+		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = ShaderBindingDescriptor>,
+		shader_binding_descriptors: impl IntoIterator<Item = BindingDescriptor>,
 	) -> Result<ShaderHandle, ()> {
 		// Stores shader metadata and bytecode without compiling to DXIL.
 		let spirv = match shader_source_type {
-			ShaderSource::SPIRV(bytes) => Some(bytes.to_vec()),
+			Sources::SPIRV(bytes) => Some(bytes.to_vec()),
 		};
 
 		self.shaders.push(Shader {
@@ -429,7 +427,7 @@ impl Device {
 		PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64)
 	}
 
-	pub fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> PipelineHandle {
+	pub fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> PipelineHandle {
 		// Records raster pipeline metadata without constructing a DX12 pipeline state.
 		let shaders = builder.shaders.iter().map(|s| *s.handle).collect();
 		self.pipelines.push(Pipeline {
@@ -787,19 +785,15 @@ impl Device {
 		TextureCopyHandle((self.texture_copies.len() - 1) as u64)
 	}
 
-	pub(crate) fn write_image_data(&mut self, image_handle: ImageHandle, data: &[graphics_hardware_interface::RGBAu8]) {
+	pub(crate) fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]) {
 		// Writes CPU-side image data for formats with staging storage.
 		let image = &mut self.images[image_handle.0 as usize];
 		let Some(staging) = image.data.as_mut() else {
 			return;
 		};
 
-		let bytes = unsafe {
-			std::slice::from_raw_parts(
-				data.as_ptr() as *const u8,
-				data.len() * std::mem::size_of::<graphics_hardware_interface::RGBAu8>(),
-			)
-		};
+		let bytes =
+			unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * std::mem::size_of::<RGBAu8>()) };
 		let length = staging.len().min(bytes.len());
 		staging[..length].copy_from_slice(&bytes[..length]);
 	}
@@ -934,27 +928,18 @@ impl Device {
 	}
 
 	/// Resolves per-frame descriptor resources, falling back to single-resource handles for DX12.
-	fn resolve_descriptor_for_frame(
-		&self,
-		descriptor: graphics_hardware_interface::Descriptor,
-		frame_index: usize,
-		frame_offset: Option<i32>,
-	) -> graphics_hardware_interface::Descriptor {
+	fn resolve_descriptor_for_frame(&self, descriptor: WriteData, frame_index: usize, frame_offset: Option<i32>) -> WriteData {
 		let _sequence_index = self.frame_index_with_offset(frame_index, frame_offset, self.frames as usize);
 
 		match descriptor {
-			graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
-				graphics_hardware_interface::Descriptor::Buffer { handle, size }
-			}
-			graphics_hardware_interface::Descriptor::Image { handle, layout } => {
-				graphics_hardware_interface::Descriptor::Image { handle, layout }
-			}
-			graphics_hardware_interface::Descriptor::CombinedImageSampler {
+			WriteData::Buffer { handle, size } => WriteData::Buffer { handle, size },
+			WriteData::Image { handle, layout } => WriteData::Image { handle, layout },
+			WriteData::CombinedImageSampler {
 				image_handle,
 				sampler_handle,
 				layout,
 				layer,
-			} => graphics_hardware_interface::Descriptor::CombinedImageSampler {
+			} => WriteData::CombinedImageSampler {
 				image_handle,
 				sampler_handle,
 				layout,
@@ -968,7 +953,7 @@ impl Device {
 	fn update_descriptor_for_binding(
 		&mut self,
 		binding_handle: DescriptorSetBindingHandle,
-		descriptor: graphics_hardware_interface::Descriptor,
+		descriptor: WriteData,
 		array_element: u32,
 	) {
 		let Some(binding) = self.descriptor_bindings.get(binding_handle.0 as usize) else {
@@ -982,7 +967,7 @@ impl Device {
 		let arrays = bindings.entry(binding_index).or_default();
 		arrays.insert(array_element, descriptor);
 
-		let mut record_resource = |resource: graphics_hardware_interface::Handle| {
+		let mut record_resource = |resource: Handle| {
 			self.descriptor_set_to_resource
 				.entry((descriptor_set_handle, binding_index))
 				.or_default()
@@ -994,13 +979,13 @@ impl Device {
 		};
 
 		match descriptor {
-			graphics_hardware_interface::Descriptor::Buffer { handle, .. } => {
+			WriteData::Buffer { handle, .. } => {
 				record_resource(handle.into());
 			}
-			graphics_hardware_interface::Descriptor::Image { handle, .. } => {
+			WriteData::Image { handle, .. } => {
 				record_resource(handle.into());
 			}
-			graphics_hardware_interface::Descriptor::CombinedImageSampler { image_handle, .. } => {
+			WriteData::CombinedImageSampler { image_handle, .. } => {
 				record_resource(image_handle.into());
 			}
 			_ => {}

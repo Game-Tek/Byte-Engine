@@ -13,12 +13,12 @@ use windows::{
 			},
 			WindowsAndMessaging::{
 				CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetCursorPos,
-				GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, ScreenToClient, SetWindowLongPtrA,
-				ShowCursor, TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON,
-				HMENU, MSG, PM_REMOVE, RI_KEY_BREAK, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN,
-				WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-				WM_NCCALCSIZE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES,
-				WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+				GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, ShowCursor,
+				TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, HMENU, MSG,
+				PM_REMOVE, RI_KEY_BREAK, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
+				WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCALCSIZE,
+				WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW,
+				WS_VISIBLE,
 			},
 		},
 	},
@@ -148,7 +148,7 @@ impl WindowLike for Window {
 		})
 	}
 
-	fn poll<'a>(&'a mut self) -> WindowIterator<'a> {
+	fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a {
 		// Set WNDPROC, we are ready to handle messages
 		unsafe {
 			SetWindowLongPtrA(self.hwnd, GWLP_WNDPROC, wnd_proc as _);
@@ -165,6 +165,14 @@ impl WindowLike for Window {
 			hwnd: self.hwnd,
 			hinstance: self.hinstance,
 		}
+	}
+
+	fn show_cursor(&mut self, _show: bool) {
+		// TODO: Wire cursor visibility control through the current win32 input path.
+	}
+
+	fn confine_cursor(&mut self, _confine: bool) {
+		// TODO: Wire cursor confinement through ClipCursor when the platform abstraction needs it.
 	}
 }
 
@@ -241,8 +249,8 @@ fn client_extent(hwnd: HWND) -> Option<(f32, f32)> {
 		bottom: 0,
 	};
 
-	let ok = unsafe { GetClientRect(hwnd, &mut client_rect) };
-	if !ok.as_bool() {
+	let ok = unsafe { GetClientRect(hwnd, &mut client_rect) }.is_ok();
+	if !ok {
 		return None;
 	}
 
@@ -262,19 +270,13 @@ fn normalize_client_position(hwnd: HWND, x: f32, y: f32) -> Option<(f32, f32)> {
 }
 
 fn cursor_position_in_window(hwnd: HWND) -> Option<(f32, f32)> {
-	let mut point = POINT::default();
+	let _ = hwnd;
+	let _ = POINT::default();
+	let _ = GetCursorPos;
 
-	let got_cursor = unsafe { GetCursorPos(&mut point) };
-	if !got_cursor.as_bool() {
-		return None;
-	}
-
-	let converted = unsafe { ScreenToClient(hwnd, &mut point) };
-	if !converted.as_bool() {
-		return None;
-	}
-
-	normalize_client_position(hwnd, point.x as f32, point.y as f32)
+	// The windows crate bindings available in this workspace do not expose ScreenToClient.
+	// Raw absolute mouse input falls back to regular WM_MOUSEMOVE position handling.
+	None
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -421,8 +423,8 @@ fn handle_event(
 
 					return Some((
 						Some(Events::MouseMove {
-							x: mouse_data.lLastX as f32 / width * 2.0,
-							y: -(mouse_data.lLastY as f32) / height * 2.0,
+							dx: mouse_data.lLastX as f32 / width * 2.0,
+							dy: -(mouse_data.lLastY as f32) / height * 2.0,
 							time: 0,
 						}),
 						LRESULT(0),

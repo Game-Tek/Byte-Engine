@@ -8,6 +8,9 @@ use notify_debouncer_full::{new_debouncer, notify::*, DebounceEventResult, Debou
 #[cfg(target_os = "linux")]
 use notify_debouncer_full::NoCache;
 
+#[cfg(windows)]
+use notify_debouncer_full::FileIdMap;
+
 #[cfg(target_os = "macos")]
 use notify_debouncer_full::FileIdMap;
 

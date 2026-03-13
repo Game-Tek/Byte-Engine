@@ -1,6 +1,6 @@
 use windows::Win32::Graphics::Direct3D12::{D3D12GetDebugInterface, ID3D12Debug};
 
-use crate::graphics_hardware_interface;
+use crate::{device::Features, QueueHandle, QueueSelection};
 
 pub struct Instance {
 	debug: Option<ID3D12Debug>,
@@ -8,7 +8,7 @@ pub struct Instance {
 
 impl Instance {
 	/// Creates a DX12 instance and optionally enables the debug layer.
-	pub fn new(settings: graphics_hardware_interface::Features) -> Result<Self, &'static str> {
+	pub fn new(settings: Features) -> Result<Self, &'static str> {
 		let debug = if settings.validation {
 			let mut debug: Option<ID3D12Debug> = None;
 			unsafe { D3D12GetDebugInterface(&mut debug) }
@@ -28,11 +28,8 @@ impl Instance {
 	/// Creates a DX12 device and the requested queues.
 	pub fn create_device(
 		&mut self,
-		settings: graphics_hardware_interface::Features,
-		queues: &mut [(
-			graphics_hardware_interface::QueueSelection,
-			&mut Option<graphics_hardware_interface::QueueHandle>,
-		)],
+		settings: Features,
+		queues: &mut [(QueueSelection, &mut Option<QueueHandle>)],
 	) -> Result<crate::dx12::Device, &'static str> {
 		crate::dx12::Device::new(settings, queues)
 	}

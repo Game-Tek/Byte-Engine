@@ -3,12 +3,12 @@ use utils::Extent;
 use crate::{
 	command_buffer::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
-		CommandBufferRecordable, CommonCommandBufferMode, RasterizationRenderPassMode,
+		CommandBufferRecording as _, CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
-	AttachmentInformation, BaseBufferHandle, BindingTables, BottomLevelAccelerationStructureBuild, BufferDescriptor,
-	BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle,
-	PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
-	TopLevelAccelerationStructureBuild,
+	rt::{BindingTables, BottomLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuild},
+	AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent,
+	ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle,
+	SynchronizerHandle, TextureCopyHandle,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -35,14 +35,8 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 }
 
-impl CommandBufferRecordable for CommandBufferRecording<'_> {
-	fn sync_buffers(&mut self) {
-		// TODO: DX12 uploads require staging resources and copy command lists.
-	}
-
-	fn sync_textures(&mut self) {
-		// TODO: DX12 texture uploads require staging resources and copy command lists.
-	}
+impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_> {
+	type Result<'a> = (crate::CommandBufferHandle, &'a [PresentKey]);
 
 	fn build_top_level_acceleration_structure(&mut self, _acceleration_structure_build: &TopLevelAccelerationStructureBuild) {
 		// TODO: DXR acceleration structure builds are not implemented yet.
@@ -110,20 +104,12 @@ impl CommandBufferRecordable for CommandBufferRecording<'_> {
 		// TODO: DX12 index buffer binding requires command list setup.
 	}
 
-	fn present(&mut self, present_key: PresentKey) {
-		self.present_keys.push(present_key);
+	fn execute(self, _synchronizer: SynchronizerHandle) {
+		// TODO: Submit DX12 command lists and signal the provided synchronizer.
 	}
 
-	fn execute(
-		self,
-		_wait_for_synchronizer_handles: &[SynchronizerHandle],
-		_signal_synchronizer_handles: &[SynchronizerHandle],
-		_presentations: &[PresentKey],
-		_execution_synchronizer_handle: SynchronizerHandle,
-	) {
-		for presentation in _presentations {
-			self.device.present_swapchain(*presentation);
-		}
+	fn end<'a>(self, present_keys: &'a [PresentKey]) -> Self::Result<'a> {
+		(self.command_buffer, present_keys)
 	}
 }
 

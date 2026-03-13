@@ -16,6 +16,10 @@ impl Viewport {
 		Self { view, extent, index }
 	}
 
+	pub fn view(&self) -> View {
+		self.view
+	}
+
 	pub fn extent(&self) -> Extent {
 		self.extent
 	}

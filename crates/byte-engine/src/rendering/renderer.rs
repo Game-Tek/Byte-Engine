@@ -449,19 +449,6 @@ impl Renderer {
 					None
 				};
 
-				let main = self.device.build_image(
-					ghi::image::Builder::new(
-						ghi::Formats::RGBA16F,
-						ghi::Uses::Storage
-							| ghi::Uses::TransferSource
-							| ghi::Uses::BlitDestination
-							| ghi::Uses::RenderTarget
-							| ghi::Uses::InputAttachment,
-					)
-					.name("main")
-					.use_case(ghi::UseCases::DYNAMIC),
-				);
-
 				let result = self.device.build_image(
 					ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::BlitSource)
 						.name("result")
@@ -469,32 +456,18 @@ impl Renderer {
 				);
 
 				self.render_targets
-					.insert("main".to_string(), viewport_id, main, ghi::Formats::RGBA16F);
-
-				self.render_targets
 					.insert("result".to_string(), viewport_id, result, ghi::Formats::RGBA8UNORM);
 
 				if let Some(view_id) = view_id {
-					let depth = self.device.build_image(
-						ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image)
-							.name("depth")
-							.use_case(ghi::UseCases::DYNAMIC),
-					);
+					let scene_managers = self.scene_managers.iter_mut();
 
-					self.render_targets
-						.insert("depth".to_string(), viewport_id, depth, ghi::Formats::Depth32);
+					for sm in scene_managers {
+						let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id);
 
-					{
-						let scene_managers = self.scene_managers.iter_mut();
+						sm.create_view(view_id, &mut rpb);
 
-						for sm in scene_managers {
-							let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id);
-
-							sm.create_view(view_id, &mut rpb);
-
-							if rpb.consumed_resources.len() == 0 {
-								log::debug!("No resources consumed by scene manager");
-							}
+						if rpb.consumed_resources.len() == 0 {
+							log::debug!("No resources consumed by scene manager");
 						}
 					}
 				}
@@ -604,6 +577,12 @@ impl RenderTargets {
 			images: Vec::with_capacity(32),
 			by_name: Vec::with_capacity(32),
 			by_view_index: Vec::with_capacity(32),
+		}
+	}
+
+	pub fn alias(&mut self, orig: &str, alias: &str) {
+		if let Some(index) = self.get_image_index(orig) {
+			self.by_name.push((alias.to_string(), index));
 		}
 	}
 

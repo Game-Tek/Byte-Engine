@@ -34,8 +34,8 @@ use ghi::{
 	},
 	graphics_hardware_interface, ImageHandle,
 };
-use log::error;
-use math::{Matrix4, Vector3};
+use log::{error, warn};
+use math::{mat::MatInverse as _, Matrix4, Vector3};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
@@ -211,7 +211,7 @@ impl VisibilityWorldRenderDomain {
 		// 4 bytes for the view index
 		// 4 bytes for the mesh index
 		let pipeline_layout_handle =
-			device.create_pipeline_layout(&[descriptor_set_layout], &[ghi::pipelines::PushConstantRange::new(0, 4 + 4)]);
+			device.create_pipeline_layout(&[descriptor_set_layout], &[ghi::pipelines::PushConstantRange::new(0, 4)]);
 
 		let descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
 
@@ -325,7 +325,7 @@ impl VisibilityWorldRenderDomain {
 				visibility_descriptor_set_layout,
 				material_evaluation_descriptor_set_layout,
 			],
-			&[ghi::pipelines::PushConstantRange::new(0, 4 + 4)],
+			&[ghi::pipelines::PushConstantRange::new(0, 4)],
 		);
 
 		Self {
@@ -393,11 +393,32 @@ impl VisibilityWorldRenderDomain {
 		frame: &mut ghi::implementation::Frame,
 		mesh_source: EntityHandle<dyn RenderableMesh>,
 	) {
+		let renderable = mesh_source.clone();
 		let mesh_source = mesh_source.get_mesh();
 
 		match mesh_source {
 			MeshSource::Resource(urid) => {
-				let _ = self.create_mesh_resources(urid, frame);
+				if let Ok(idx) = self.create_mesh_resources(urid, frame) {
+					let model = renderable.transform().get_matrix();
+					let mesh = &self.meshes[idx];
+
+					for primitive in &mesh.primitives {
+						self.render_entities.push((
+							renderable.clone(),
+							ShaderMesh {
+								model,
+								material_index: primitive.material_index,
+								base_vertex_index: mesh.vertex_offset + primitive.vertex_offset,
+								base_primitive_index: mesh.primitive_offset + primitive.primitive_offset,
+								base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
+								base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
+							},
+						));
+						self.render_info.instances.push(Instance {
+							meshlet_count: primitive.meshlet_count,
+						});
+					}
+				}
 			}
 			_ => {
 				log::error!("Unsupported mesh source");
@@ -1082,6 +1103,43 @@ impl VisibilityWorldRenderDomain {
 	pub fn create_light(&mut self, light: Lights) {
 		self.lights.push(light);
 	}
+
+	/// Uploads the current scene lights to the GPU buffer used by material evaluation.
+	fn write_light_data(&self, frame: &mut ghi::implementation::Frame) {
+		let lighting_data = frame.get_mut_buffer_slice(self.light_data_buffer);
+		let light_count = self.lights.len().min(MAX_LIGHTS);
+
+		if self.lights.len() > MAX_LIGHTS {
+			warn!(
+				"Too many lights for the visibility pipeline. The most likely cause is that the scene contains more lights than the GPU buffer can hold."
+			);
+		}
+
+		lighting_data.count = light_count as u32;
+
+		for (index, light) in self.lights.iter().take(light_count).enumerate() {
+			lighting_data.lights[index] = Self::make_light_data(light);
+		}
+
+		frame.sync_buffer(self.light_data_buffer);
+	}
+
+	fn make_light_data(light: &Lights) -> LightData {
+		match light {
+			Lights::Direction(light) => LightData {
+				position: light.direction,
+				color: light.color,
+				light_type: 68,
+				cascades: [0; 8],
+			},
+			Lights::Point(light) => LightData {
+				position: light.position,
+				color: light.color,
+				light_type: 0,
+				cascades: [0; 8],
+			},
+		}
+	}
 }
 
 impl SceneManager for VisibilityWorldRenderDomain {
@@ -1090,6 +1148,36 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		frame: &mut ghi::implementation::Frame,
 		viewports: &[Viewport],
 	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+		let views_data_buffer = frame.get_mut_dynamic_buffer_slice(self.views_data_buffer_handle);
+
+		for viewport in viewports {
+			let view = viewport.view();
+			let view_projection = view.view_projection();
+
+			views_data_buffer[viewport.index()] = ShaderViewData {
+				view: view.view(),
+				projection: view.projection(),
+				view_projection,
+				inverse_view: view.view().inverse(),
+				inverse_projection: view.projection().inverse(),
+				inverse_view_projection: view_projection.inverse(),
+				fov: view.fov(),
+				near: view.near(),
+				far: view.far(),
+			};
+		}
+
+		let meshes_data_buffer = frame.get_mut_dynamic_buffer_slice(self.meshes_data_buffer);
+
+		for (index, (entity, shader_mesh)) in self.render_entities.iter().enumerate() {
+			meshes_data_buffer[index] = ShaderMesh {
+				model: entity.transform().get_matrix(),
+				..*shader_mesh
+			};
+		}
+
+		self.write_light_data(frame);
+
 		let opaque_materials = self
 			.material_evaluation_materials
 			.values()
@@ -1108,7 +1196,15 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		let viewport_x_rp = viewports.iter().map(|v| (v, &self.views[v.index()].1));
 
 		let commands: Vec<Box<dyn RenderPassFunction>> = viewport_x_rp
-			.map(|(v, r)| Box::new(r.prepare(frame, v, &[])) as Box<dyn RenderPassFunction>)
+			.map(|(v, r)| {
+				Box::new(r.prepare(
+					frame,
+					v,
+					&self.render_info.instances,
+					&opaque_materials,
+					&transparent_materials,
+				)) as Box<dyn RenderPassFunction>
+			})
 			.collect::<Vec<_>>();
 
 		Some(commands)
@@ -1170,6 +1266,44 @@ impl SceneManager for VisibilityWorldRenderDomain {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
+		let ao_map = device.build_image(
+			ghi::image::Builder::new(
+				ghi::Formats::RGBA8UNORM,
+				ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination,
+			)
+			.name("Occlusion Map")
+			.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+			.use_case(ghi::UseCases::DYNAMIC),
+		);
+		let shadow_map = device.build_image(
+			ghi::image::Builder::new(
+				ghi::Formats::RGBA8UNORM,
+				ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination,
+			)
+			.name("Shadow Map")
+			.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+			.use_case(ghi::UseCases::DYNAMIC)
+			.array_layers(NonZeroU32::new(1)),
+		);
+		let sampler = device.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+				.mip_map_mode(ghi::FilteringModes::Linear)
+				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
+				.min_lod(0f32)
+				.max_lod(0f32),
+		);
+		let depth_sampler = device.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+				.mip_map_mode(ghi::FilteringModes::Linear)
+				.addressing_mode(ghi::SamplerAddressingModes::Border {})
+				.min_lod(0f32)
+				.max_lod(0f32),
+		);
+
 		let _ = device.create_descriptor_binding(
 			self.material_evaluation_descriptor_set,
 			ghi::BindingConstructor::image(&diffuse_binding_template, diffuse_target.clone().into()),
@@ -1177,6 +1311,32 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		let _ = device.create_descriptor_binding(
 			self.material_evaluation_descriptor_set,
 			ghi::BindingConstructor::image(&specular_binding_template, specular_target.clone().into()),
+		);
+		let _ = device.create_descriptor_binding(
+			self.material_evaluation_descriptor_set,
+			ghi::BindingConstructor::buffer(&lighting_data_binding_template, self.light_data_buffer.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			self.material_evaluation_descriptor_set,
+			ghi::BindingConstructor::buffer(&materials_data_binding_template, self.materials_data_buffer_handle.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			self.material_evaluation_descriptor_set,
+			ghi::BindingConstructor::combined_image_sampler(
+				&ao_map_binding_template,
+				ao_map,
+				sampler.clone(),
+				ghi::Layouts::Read,
+			),
+		);
+		let _ = device.create_descriptor_binding(
+			self.material_evaluation_descriptor_set,
+			ghi::BindingConstructor::combined_image_sampler(
+				&shadow_map_binding_template,
+				shadow_map,
+				depth_sampler,
+				ghi::Layouts::Read,
+			),
 		);
 
 		let _ = device.create_descriptor_binding(
@@ -1208,6 +1368,8 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, instance_id.clone().into()),
 		);
 
+		render_pass_builder.alias("Diffuse", "main");
+
 		let render_pass = VisibilityPipelineRenderPass::new(
 			render_pass_builder.device(),
 			self.base_pipeline_layout,
@@ -1219,6 +1381,8 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			material_count_buffer,
 			diffuse_target.into(),
 			specular_target.into(),
+			ao_map,
+			shadow_map,
 			depth_target.into(),
 			primitive_index.into(),
 			instance_id.into(),

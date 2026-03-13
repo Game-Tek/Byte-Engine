@@ -26,12 +26,42 @@ use super::{
 	ResourceId,
 };
 
-/// The `MeshAssetHandler` struct loads mesh assets from glTF sources.
-pub struct GLTFAssetHandler {}
+/// The `TriangleFrontFaceWinding` enum describes which triangle winding should be treated as the mesh front face after import.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TriangleFrontFaceWinding {
+	Clockwise,
+	CounterClockwise,
+}
+
+impl Default for TriangleFrontFaceWinding {
+	fn default() -> Self {
+		Self::Clockwise
+	}
+}
+
+/// The `GLTFAssetHandler` struct stores glTF import settings for meshes and images.
+pub struct GLTFAssetHandler {
+	triangle_front_face_winding: TriangleFrontFaceWinding,
+}
 
 impl GLTFAssetHandler {
 	pub fn new() -> GLTFAssetHandler {
-		GLTFAssetHandler {}
+		GLTFAssetHandler {
+			triangle_front_face_winding: TriangleFrontFaceWinding::Clockwise,
+		}
+	}
+
+	pub fn triangle_front_face_winding(&self) -> TriangleFrontFaceWinding {
+		self.triangle_front_face_winding
+	}
+
+	pub fn set_triangle_front_face_winding(&mut self, winding: TriangleFrontFaceWinding) {
+		self.triangle_front_face_winding = winding;
+	}
+
+	pub fn with_triangle_front_face_winding(mut self, winding: TriangleFrontFaceWinding) -> GLTFAssetHandler {
+		self.set_triangle_front_face_winding(winding);
+		self
 	}
 }
 
@@ -320,6 +350,7 @@ impl AssetHandler for GLTFAssetHandler {
 
 			let (mesh, streams, buffer) = match MeshBuilds::Primitive {
 				MeshBuilds::Primitive => {
+					let triangle_front_face_winding = self.triangle_front_face_winding;
 					let buffer_blocks = [
 						Streams::Vertices(VertexSemantics::Position),
 						Streams::Vertices(VertexSemantics::Normal),
@@ -334,7 +365,10 @@ impl AssetHandler for GLTFAssetHandler {
 						.clone()
 						.map(|(_, reader, _)| {
 							let vertex_count = reader.read_positions().unwrap().len();
-							let indices = reader.read_indices().unwrap().into_u32().collect::<Vec<u32>>();
+							let indices = orient_triangle_indices_for_front_face(
+								reader.read_indices().unwrap().into_u32().collect::<Vec<u32>>(),
+								triangle_front_face_winding,
+							);
 							meshopt::optimize_vertex_cache(&indices, vertex_count)
 						})
 						.collect::<Vec<Vec<u32>>>();
@@ -724,9 +758,26 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 	]
 }
 
+/// Rewrites triangle indices so the imported mesh matches the configured front-face winding.
+fn orient_triangle_indices_for_front_face(mut indices: Vec<u32>, winding: TriangleFrontFaceWinding) -> Vec<u32> {
+	debug_assert_eq!(
+		indices.len() % 3,
+		0,
+		"Triangle index streams must be emitted in groups of three"
+	);
+
+	if winding == TriangleFrontFaceWinding::Clockwise {
+		for triangle in indices.chunks_exact_mut(3) {
+			triangle.swap(1, 2);
+		}
+	}
+
+	indices
+}
+
 #[cfg(test)]
 mod tests {
-	use super::GLTFAssetHandler;
+	use super::{orient_triangle_indices_for_front_face, GLTFAssetHandler, TriangleFrontFaceWinding};
 	use crate::r#async;
 	use crate::{
 		asset::{
@@ -741,6 +792,34 @@ mod tests {
 		resources::mesh::MeshModel,
 		ReferenceModel,
 	};
+
+	#[test]
+	fn defaults_to_clockwise_front_faces() {
+		let asset_handler = GLTFAssetHandler::new();
+
+		assert_eq!(
+			asset_handler.triangle_front_face_winding(),
+			TriangleFrontFaceWinding::Clockwise
+		);
+	}
+
+	#[test]
+	fn preserves_triangle_order_for_counter_clockwise_front_faces() {
+		let indices = vec![0, 1, 2, 3, 4, 5];
+
+		let oriented = orient_triangle_indices_for_front_face(indices, TriangleFrontFaceWinding::CounterClockwise);
+
+		assert_eq!(oriented, vec![0, 1, 2, 3, 4, 5]);
+	}
+
+	#[test]
+	fn rewinds_triangle_order_for_clockwise_front_faces() {
+		let indices = vec![0, 1, 2, 3, 4, 5];
+
+		let oriented = orient_triangle_indices_for_front_face(indices, TriangleFrontFaceWinding::Clockwise);
+
+		assert_eq!(oriented, vec![0, 2, 1, 3, 5, 4]);
+	}
 
 	#[r#async::test]
 	#[ignore = "Test uses data not pushed to the repository"]

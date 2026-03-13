@@ -593,7 +593,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		diffuse *= ao_factor;
 
-		imageStore(diffuse_map, pixel_coordinates, vec4(diffuse, albedo.a));
+		imageStore(diffuse_map, pixel_coordinates, vec4(diffuse + specular, albedo.a));
 		imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0))
 		"
 		.trim();

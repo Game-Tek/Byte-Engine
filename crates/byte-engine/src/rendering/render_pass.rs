@@ -47,6 +47,10 @@ impl<'a> RenderPassBuilder<'a> {
 		}
 	}
 
+	pub fn alias(&mut self, orig: &'a str, alias: &'a str) {
+		self.images.alias(orig, alias);
+	}
+
 	/// Use `render_to` to get a reference to an image you expect to exist.
 	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));

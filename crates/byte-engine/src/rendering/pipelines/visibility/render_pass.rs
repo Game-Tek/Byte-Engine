@@ -16,6 +16,7 @@ use ghi::command_buffer::{
 	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 };
 use ghi::device::{Device as _, DeviceCreate as _};
+use ghi::frame::Frame as _;
 use ghi::implementation::Frame;
 use resource_management::glsl;
 use resource_management::resources::material;
@@ -26,6 +27,7 @@ pub struct VisibilityPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
 	visibility_pass_pipeline: ghi::PipelineHandle,
+	attachments: [ghi::AttachmentInformation; 3],
 }
 
 impl VisibilityPass {
@@ -96,6 +98,32 @@ impl VisibilityPass {
 			pipeline_layout,
 			descriptor_set,
 			visibility_pass_pipeline,
+			attachments: [
+				ghi::AttachmentInformation::new(
+					primitive_index,
+					ghi::Formats::U32,
+					ghi::Layouts::RenderTarget,
+					ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
+					false,
+					true,
+				),
+				ghi::AttachmentInformation::new(
+					instance_id,
+					ghi::Formats::U32,
+					ghi::Layouts::RenderTarget,
+					ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
+					false,
+					true,
+				),
+				ghi::AttachmentInformation::new(
+					depth_target,
+					ghi::Formats::Depth32,
+					ghi::Layouts::RenderTarget,
+					ghi::ClearValue::Depth(0.0),
+					false,
+					true,
+				),
+			],
 		}
 	}
 
@@ -108,14 +136,15 @@ impl VisibilityPass {
 		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.visibility_pass_pipeline;
+		let attachments = self.attachments;
 
 		let extent = viewport.extent();
 		let instances = instances.iter().copied().collect::<Vec<_>>();
 
-		move |c, t| {
+		move |c, _| {
 			c.start_region("Visibility Buffer");
 
-			let c = c.start_render_pass(extent, t);
+			let c = c.start_render_pass(extent, &attachments);
 
 			let c = c.bind_pipeline_layout(pipeline_layout);
 			c.bind_descriptor_sets(&[descriptor_set]);
@@ -372,6 +401,8 @@ pub struct MaterialEvaluationPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	diffuse: ghi::ImageHandle,
 	specular: ghi::ImageHandle,
+	ao_map: ghi::ImageHandle,
+	shadow_map: ghi::ImageHandle,
 	/// Base layout descriptor set
 	base_descriptor_set: ghi::DescriptorSetHandle,
 	/// Visibility passes descriptor set
@@ -387,6 +418,8 @@ impl MaterialEvaluationPass {
 		pipeline_layout: ghi::PipelineLayoutHandle,
 		diffuse: ghi::ImageHandle,
 		specular: ghi::ImageHandle,
+		ao_map: ghi::ImageHandle,
+		shadow_map: ghi::ImageHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
@@ -397,6 +430,8 @@ impl MaterialEvaluationPass {
 			pipeline_layout,
 			diffuse,
 			specular,
+			ao_map,
+			shadow_map,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			descriptor_set,
@@ -408,30 +443,30 @@ impl MaterialEvaluationPass {
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		viewport: &Viewport,
-		opaque_materials: &[(&str, usize, ghi::PipelineHandle)],
-		transparent_materials: &[(&str, usize, ghi::PipelineHandle)],
+		opaque_materials: &[(String, u32, ghi::PipelineHandle)],
+		transparent_materials: &[(String, u32, ghi::PipelineHandle)],
 	) -> impl RenderPassFunction {
 		let diffuse = self.diffuse;
 		let specular = self.specular;
+		let ao_map = self.ao_map;
+		let shadow_map = self.shadow_map;
 		let base_descriptor_set = self.base_descriptor_set;
 		let material_evaluation_dispatches = self.material_evaluation_dispatches;
 		let visibility_pipeline_layout = self.visibility_pipeline_layout;
 		let material_evaluation_pipeline_layout = self.pipeline_layout;
 		let visibility_descriptor_set = self.visibility_descriptor_set;
 		let material_evaluation_descriptor_set = self.descriptor_set;
-		let opaque_materials = opaque_materials
-			.iter()
-			.map(|e| (e.0.to_string(), e.1, e.2))
-			.collect::<Vec<_>>();
-		let transparent_materials = transparent_materials
-			.iter()
-			.map(|e| (e.0.to_string(), e.1, e.2))
-			.collect::<Vec<_>>();
+		let opaque_materials = opaque_materials.to_vec();
+		let transparent_materials = transparent_materials.to_vec();
+		frame.resize_image(ao_map, viewport.extent());
+		frame.resize_image(shadow_map, viewport.extent());
 
 		move |c, t| {
 			c.clear_images(&[
 				(diffuse, ghi::ClearValue::Color(RGBA::black())),
 				(specular, ghi::ClearValue::Color(RGBA::black())),
+				(ao_map, ghi::ClearValue::Color(RGBA::white())),
+				(shadow_map, ghi::ClearValue::Depth(0.0)),
 			]);
 
 			let c = c.bind_pipeline_layout(visibility_pipeline_layout);
@@ -442,8 +477,6 @@ impl MaterialEvaluationPass {
 
 			let c = c.bind_pipeline_layout(material_evaluation_pipeline_layout);
 
-			c.write_push_constant(0, 0); // Set view index to 0 (camera)
-
 			for (name, index, pipeline) in &opaque_materials {
 				c.start_region(&format!("Material: {}", name));
 				c.bind_descriptor_sets(&[
@@ -451,8 +484,8 @@ impl MaterialEvaluationPass {
 					visibility_descriptor_set,
 					material_evaluation_descriptor_set,
 				]);
-				c.write_push_constant(4, *index); // Set material index
 				let c = c.bind_compute_pipeline(*pipeline);
+				c.write_push_constant(0, *index);
 				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
 				c.end_region();
 			}
@@ -469,8 +502,8 @@ impl MaterialEvaluationPass {
 					visibility_descriptor_set,
 					material_evaluation_descriptor_set,
 				]);
-				c.write_push_constant(4, *index); // Set material index
 				let c = c.bind_compute_pipeline(*pipeline);
+				c.write_push_constant(0, *index);
 				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
 				c.end_region();
 			}
@@ -502,6 +535,8 @@ impl VisibilityPipelineRenderPass {
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		diffuse: ghi::ImageHandle,
 		specular: ghi::ImageHandle,
+		ao_map: ghi::ImageHandle,
+		shadow_map: ghi::ImageHandle,
 		depth: ghi::ImageHandle,
 		primitive_index: ghi::ImageHandle,
 		instance_id: ghi::ImageHandle,
@@ -549,6 +584,8 @@ impl VisibilityPipelineRenderPass {
 			material_evaluation_pipeline_layout,
 			diffuse,
 			specular,
+			ao_map,
+			shadow_map,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_evaluation_descriptor_set,
@@ -569,12 +606,16 @@ impl VisibilityPipelineRenderPass {
 		frame: &mut ghi::implementation::Frame,
 		viewport: &Viewport,
 		instances: &[Instance],
+		opaque_materials: &[(String, u32, ghi::PipelineHandle)],
+		transparent_materials: &[(String, u32, ghi::PipelineHandle)],
 	) -> impl RenderPassFunction {
 		let visibility_pass = self.visibility_pass.prepare(frame, viewport, instances);
 		let material_count_pass = self.material_count_pass.prepare(frame, viewport);
 		let material_offset_pass = self.material_offset_pass.prepare();
 		let pixel_mapping_pass = self.pixel_mapping_pass.prepare(frame, viewport);
-		let material_evaluation_pass = self.material_evaluation_pass.prepare(frame, viewport, &[], &[]);
+		let material_evaluation_pass =
+			self.material_evaluation_pass
+				.prepare(frame, viewport, opaque_materials, transparent_materials);
 
 		move |c, t| {
 			c.start_region("Visibility Render Model");
@@ -589,25 +630,3 @@ impl VisibilityPipelineRenderPass {
 		}
 	}
 }
-
-// let diffuse_target: ghi::ImageHandle = diffuse_target.into();
-// 		let specular_target: ghi::ImageHandle = specular_target.into();
-// 		let depth_target: ghi::ImageHandle = depth_target.into();
-// 		let primitive_index: ghi::ImageHandle = primitive_index.into();
-// 		let instance_id: ghi::ImageHandle = instance_id.into();
-// let material_count_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_COUNT_BINDING, material_count_pass.get_material_count_buffer()));
-// 		let material_offset_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_BINDING, material_offset_pass.get_material_offset_buffer()));
-// 		let material_offset_scratch_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_SCRATCH_BINDING, material_offset_pass.get_material_offset_scratch_buffer()));
-// 		let material_evaluation_dispatches_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_EVALUATION_DISPATCHES_BINDING, material_offset_pass.material_evaluation_dispatches.into()));
-// 		let material_xy_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::buffer(&MATERIAL_XY_BINDING, pixel_mapping_pass.material_xy.into()));
-// 		let vertex_id_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::image(&TRIANGLE_INDEX_BINDING, primitive_index, ghi::Layouts::General));
-// 		let instance_id_binding = device.create_descriptor_binding(visibility_passes_descriptor_set, ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, instance_id, ghi::Layouts::General));
-// let occlusion_map = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination).name("Occlusion Map").extent(extent).device_accesses(ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead).use_case(ghi::UseCases::DYNAMIC));
-// 		let shadow_map = device.build_image(ghi::image::Builder::new(ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination).name("Shadow Map").extent(extent).device_accesses(ghi::DeviceAccesses::GpuWrite | ghi::DeviceAccesses::GpuRead).use_case(ghi::UseCases::DYNAMIC).array_layers(NonZeroU32::new(1)));
-// let diffuse_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::image(&bindings[0], diffuse_target, ghi::Layouts::General));
-// 		let camera_data_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[1], views_data_buffer_handle.into()));
-// 		let specular_target_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::image(&bindings[2], specular_target, ghi::Layouts::General));
-// 		let light_data_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[4], light_data_buffer.into()));
-// 		let materials_data_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::buffer(&bindings[5], materials_data_buffer_handle.into()));
-// 		let occlussion_texture_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[6], occlusion_map, sampler, ghi::Layouts::Read));
-// 		let shadow_map_binding = device.create_descriptor_binding(material_evaluation_descriptor_set, ghi::BindingConstructor::combined_image_sampler(&bindings[7], shadow_map, depth_sampler, ghi::Layouts::Read));

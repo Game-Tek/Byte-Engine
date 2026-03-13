@@ -454,11 +454,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			vertex_uvs.uvs[vertex_indices[2]]
 		);
 
-		vec2 image_extent = imageSize(triangle_index);
-
-		vec2 normalized_xy = pixel_coordinates / image_extent;
-
-		vec2 nc = normalized_xy * 2 - 1;
+		ivec2 image_extent = imageSize(triangle_index);
+		vec2 normalized_xy = (vec2(pixel_coordinates) + vec2(0.5)) / vec2(image_extent);
+		vec2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 
 		View view = views.views[0];
 
@@ -467,7 +465,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		vec4 world_space_vertex_normals[3] = vec4[3](normalize(mesh.model * vertex_normals[0]), normalize(mesh.model * vertex_normals[1]), normalize(mesh.model * vertex_normals[2]));
 
-		BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, image_extent);
+		BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, vec2(image_extent));
 		vec3 barycenter = barycentric_deriv.lambda;
 		vec3 ddx = barycentric_deriv.ddx;
 		vec3 ddy = barycentric_deriv.ddy;
@@ -593,7 +591,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		diffuse *= ao_factor;
 
-		imageStore(diffuse_map, pixel_coordinates, vec4(diffuse + specular, albedo.a));
+		imageStore(diffuse_map, pixel_coordinates, vec4(diffuse, albedo.a));
 		imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0))
 		"
 		.trim();
@@ -624,6 +622,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 							"triangle_index",
 							"instance_index_render_target",
 							"views",
+							"make_raster_ndc_from_pixel_coordinates",
 							"calculate_full_bary",
 							"interpolate_vec3f_with_deriv",
 							"interpolate_vec2f_with_deriv",

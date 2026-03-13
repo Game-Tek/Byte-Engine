@@ -315,6 +315,21 @@ impl CommonShaderScope {
 		);
 
 		let calculate_full_bary = Node::function("calculate_full_bary", vec![Node::member("pt0", "vec4f"), Node::member("pt1", "vec4f"), Node::member("pt2", "vec4f"), Node::member("pixelNdc", "vec2f"), Node::member("winSize", "vec2f")], "BarycentricDeriv", vec![Node::glsl("BarycentricDeriv ret = BarycentricDeriv(vec3(0), vec3(0), vec3(0)); vec3 invW = 1.0 / vec3(pt0.w, pt1.w, pt2.w); vec2 ndc0 = pt0.xy * invW.x; vec2 ndc1 = pt1.xy * invW.y; vec2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(mat2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = vec3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = vec3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, vec3(1)); float ddySum = dot(ret.ddy, vec3(1)); vec2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0    + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0    + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum  *= (2.0 / winSize.x); ddySum  *= (2.0 / winSize.y);  float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum);  ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;", &[], &[])]);
+
+		let make_raster_ndc_from_pixel_coordinates = Node::function(
+			"make_raster_ndc_from_pixel_coordinates",
+			vec![
+				Node::member("pixel_coordinates", "vec2i"),
+				Node::member("image_extent", "vec2i"),
+			],
+			"vec2f",
+			vec![Node::glsl(
+				"vec2 normalized_xy = (vec2(pixel_coordinates) + vec2(0.5)) / vec2(image_extent);
+				return vec2(normalized_xy.x * 2.0 - 1.0, 1.0 - normalized_xy.y * 2.0);",
+				&[],
+				&[],
+			)],
+		);
 		let interpolate_vec3f_with_deriv = Node::function(
 			"interpolate_vec3f_with_deriv",
 			vec![
@@ -396,6 +411,7 @@ impl CommonShaderScope {
 				fresnel_schlick,
 				barycentric_deriv,
 				calculate_full_bary,
+				make_raster_ndc_from_pixel_coordinates,
 				interpolate_vec3f_with_deriv,
 				interpolate_vec2f_with_deriv,
 				unit_vector_from_xy,

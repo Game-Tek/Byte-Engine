@@ -53,54 +53,25 @@ impl Default for UiDrawList {
 	}
 }
 
-/// The `UiRenderData` struct stores the layout data that the UI pass consumes for rendering.
-#[derive(Clone)]
-pub struct UiRenderData {
-	data: Arc<RwLock<UiDrawList>>,
-}
+fn update_from_render(render: &engine::Render) -> UiDrawList {
+	let root_size = render.root().size;
+	let elements = render
+		.elements()
+		.map(|element| {
+			let position = element.position;
+			let size = element.size;
 
-impl UiRenderData {
-	pub fn new() -> Self {
-		Self {
-			data: Arc::new(RwLock::new(UiDrawList::default())),
-		}
-	}
+			UiDrawElement {
+				position: [position.x() as f32, position.y() as f32],
+				size: [size.x() as f32, size.y() as f32],
+				color: element.color.into(),
+			}
+		})
+		.collect();
 
-	pub fn clear(&self) {
-		*self.data.write() = UiDrawList::default();
-	}
-
-	/// Converts a layout render tree into an internal draw list for the UI pass.
-	pub fn update_from_render(&self, render: &engine::Render<'_>) {
-		let root_size = render.root().size;
-		let elements = render
-			.elements()
-			.map(|element| {
-				let position = element.position;
-				let size = element.size;
-
-				UiDrawElement {
-					position: [position.x() as f32, position.y() as f32],
-					size: [size.x() as f32, size.y() as f32],
-					color: random_color_from_id(element.id),
-				}
-			})
-			.collect();
-
-		*self.data.write() = UiDrawList {
-			layout_size: [root_size.x() as f32, root_size.y() as f32],
-			elements,
-		};
-	}
-
-	fn snapshot(&self) -> UiDrawList {
-		self.data.read().clone()
-	}
-}
-
-impl Default for UiRenderData {
-	fn default() -> Self {
-		Self::new()
+	UiDrawList {
+		layout_size: [root_size.x() as f32, root_size.y() as f32],
+		elements,
 	}
 }
 
@@ -110,14 +81,14 @@ pub struct UiRenderPass {
 	pipeline: ghi::PipelineHandle,
 	quad_mesh: ghi::MeshHandle,
 	main_attachment: ghi::ImageHandle,
-	data: UiRenderData,
+	data: UiDrawList,
 }
 
 impl Entity for UiRenderPass {}
 
 impl UiRenderPass {
 	/// Creates a UI pass and all GPU resources used to draw layout rectangles.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder, data: UiRenderData) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let main_attachment: ghi::ImageHandle = render_pass_builder.render_to("main").into();
 		let device = render_pass_builder.device();
 
@@ -148,14 +119,18 @@ impl UiRenderPass {
 			pipeline,
 			quad_mesh,
 			main_attachment,
-			data,
+			data: UiDrawList::default(),
 		}
+	}
+
+	pub fn update(&mut self, render: engine::Render) {
+		self.data = update_from_render(&render);
 	}
 }
 
 impl RenderPass for UiRenderPass {
 	fn prepare(&mut self, _frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
-		let draw_list = self.data.snapshot();
+		let draw_list = &self.data;
 
 		if draw_list.elements.is_empty() {
 			return None;
@@ -168,7 +143,7 @@ impl RenderPass for UiRenderPass {
 
 		let extent = viewport.extent();
 		let layout_size = draw_list.layout_size;
-		let elements = draw_list.elements;
+		let elements = draw_list.elements.clone();
 
 		Some(Box::new(move |command_buffer, _| {
 			command_buffer.region("UI", |command_buffer| {
@@ -332,22 +307,8 @@ fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::Shad
 		.expect("Failed to create the UI fragment shader. The most likely cause is an incompatible shader interface.")
 }
 
-fn random_color_from_id(id: u32) -> [f32; 4] {
-	let mut state = id.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-	state ^= state >> 16;
-	state = state.wrapping_mul(2_246_822_519);
-	state ^= state >> 13;
-
-	let r = ((state & 0xFF) as f32) / 255.0;
-	let g = (((state >> 8) & 0xFF) as f32) / 255.0;
-	let b = (((state >> 16) & 0xFF) as f32) / 255.0;
-
-	[0.25 + r * 0.75, 0.25 + g * 0.75, 0.25 + b * 0.75, 1.0]
-}
-
 #[cfg(test)]
 mod tests {
-	use super::UiRenderData;
 	use crate::ui::{
 		components::container::{BaseContainer, ContainerSettings},
 		layout::engine::{Component, Context, Engine},
@@ -360,20 +321,5 @@ mod tests {
 			let mut ctx = ctx.element(&BaseContainer::new(ContainerSettings::default()));
 			ctx.element(&BaseContainer::new(ContainerSettings::default().size(64.into())));
 		}
-	}
-
-	#[test]
-	fn update_from_render_collects_layout_elements() {
-		let mut engine = Engine::new();
-		let component = TestComponent;
-		let render = engine.render(&component);
-
-		let data = UiRenderData::new();
-		data.update_from_render(&render);
-
-		let snapshot = data.snapshot();
-
-		assert_eq!(snapshot.elements.len(), render.size());
-		assert_eq!(snapshot.layout_size, [1024.0, 1024.0]);
 	}
 }

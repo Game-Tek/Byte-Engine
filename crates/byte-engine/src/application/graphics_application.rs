@@ -28,7 +28,7 @@ use crate::{
 		texture_manager::TextureManager,
 		RenderableMesh,
 	},
-	ui::render_pass::{UiRenderData, UiRenderPass},
+	ui::{layout::engine::Render, render_pass::UiRenderPass},
 };
 use std::{
 	net::{Ipv4Addr, Ipv6Addr},
@@ -596,14 +596,37 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	renderer.add_scene_manager(sm);
 }
 
-pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: UiRenderData) {
-	let renderable_mesh_factory = application.renderable_factory_mut();
-	let listener = renderable_mesh_factory.listener();
-
+pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultListener<CreateMessage<Render>>) {
 	let renderer = &mut application.renderer;
+	let ui_channel = ui.clone_channel();
 
 	renderer.add_post_scene_render_pass_for_all_views(move |render_pass_builder| {
-		Box::new(UiRenderPass::new(render_pass_builder, ui.clone()))
+		struct CustomRenderPass {
+			listener: DefaultListener<CreateMessage<Render>>,
+			render_pass: UiRenderPass,
+		}
+
+		impl rendering::RenderPass for CustomRenderPass {
+			fn prepare(
+				&mut self,
+				frame: &mut ghi::implementation::Frame,
+				viewport: &rendering::Viewport,
+			) -> Option<rendering::render_pass::RenderPassReturn> {
+				while let Some(render) = self.listener.read() {
+					self.render_pass.update(render.into_data());
+				}
+
+				self.render_pass.prepare(frame, viewport)
+			}
+		}
+
+		println!("Adding UI render pass");
+
+		Box::new(CustomRenderPass {
+			// Spawn only the listeners that are actively consumed by render passes.
+			listener: ui_channel.listener(),
+			render_pass: UiRenderPass::new(render_pass_builder),
+		})
 	});
 }
 
@@ -702,7 +725,7 @@ pub fn process_default_window_input(
 				input::Value::Bool(pressed),
 			),
 		},
-		ghi::window::Events::MouseMove { x, y, time: _ } => {
+		ghi::window::Events::MousePosition { x, y, time: _ } => {
 			let vec = Vector2::new(x, y);
 			(
 				mouse_device_handle,

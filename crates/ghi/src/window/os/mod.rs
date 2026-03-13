@@ -28,4 +28,7 @@ pub trait WindowLike: Sized {
 	fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a;
 
 	fn handles(&self) -> Handles;
+
+	fn show_cursor(&mut self, show: bool);
+	fn confine_cursor(&mut self, confine: bool);
 }

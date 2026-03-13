@@ -1,6 +1,9 @@
 pub mod engine;
 pub mod query;
 
+use math::{Base as _, Vector2};
+use utils::RGBA;
+
 use super::{
 	element::{self, Element, ElementHandle, Id},
 	flow::{self, Location, Location3, Offset, Size},
@@ -48,6 +51,7 @@ pub(crate) struct LayoutElement {
 	pub(crate) id: u32,
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
+	pub(crate) color: RGBA,
 }
 
 impl ElementHandle for LayoutElement {
@@ -56,9 +60,27 @@ impl ElementHandle for LayoutElement {
 	}
 }
 
+fn random_color_from_id(id: u32) -> RGBA {
+	let mut state = id.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+	state ^= state >> 16;
+	state = state.wrapping_mul(2_246_822_519);
+	state ^= state >> 13;
+
+	let r = ((state & 0xFF) as f32) / 255.0;
+	let g = (((state >> 8) & 0xFF) as f32) / 255.0;
+	let b = (((state >> 16) & 0xFF) as f32) / 255.0;
+
+	RGBA::new(0.25 + r * 0.75, 0.25 + g * 0.75, 0.25 + b * 0.75, 1.0)
+}
+
 /// Lays out the given elements and returns a vector of layout elements with their calculated positions and sizes for a given viewport.
 /// The relation map describes embedded elements.
-fn layout_elements(elements: &[ConcreteElement], relation_map: &[(Id, Id)], available_space: Size) -> Vec<LayoutElement> {
+fn layout_elements(
+	elements: &[ConcreteElement],
+	relation_map: &[(Id, Id)],
+	available_space: Size,
+	mouse_pos: Vector2,
+) -> Vec<LayoutElement> {
 	let mut lelements = Vec::with_capacity(elements.len());
 
 	#[derive(Clone, Copy)]
@@ -71,18 +93,32 @@ fn layout_elements(elements: &[ConcreteElement], relation_map: &[(Id, Id)], avai
 	struct Context<'a> {
 		fetcher: &'a Fetcher<'a, ConcreteElement>,
 		root_size: Size,
+		mouse_pos: Vector2,
 	}
 
-	fn calculate_element(element: ElementResult<'_, ConcreteElement>, _: Context, ts: TraversalState) -> LayoutElement {
+	fn calculate_element(element: ElementResult<'_, ConcreteElement>, ctx: Context, ts: TraversalState) -> LayoutElement {
 		let primitive = element.element().primitive();
 		let shape = primitive.shape();
 
 		let size = shape.bbox(ts.available_space);
 
+		let position = Location3::from((ts.offset.into(), 0));
+
+		let mouse_in_element = ctx.mouse_pos.x >= position.x() as f32
+			&& ctx.mouse_pos.x < (position.x() + size.x()) as f32
+			&& ctx.mouse_pos.y >= position.y() as f32
+			&& ctx.mouse_pos.y < (position.y() + size.y()) as f32;
+
 		LayoutElement {
 			id: element.id().into(),
-			position: Location3::from((ts.offset.into(), 0)),
+			position,
 			size,
+			color: random_color_from_id(element.id().into())
+				* if !mouse_in_element {
+					RGBA::new(1.0, 1.0, 1.0, 1.0)
+				} else {
+					RGBA::new(0.5, 0.5, 0.5, 1.0)
+				},
 		}
 	}
 
@@ -127,6 +163,7 @@ fn layout_elements(elements: &[ConcreteElement], relation_map: &[(Id, Id)], avai
 		Context {
 			fetcher: &fetcher,
 			root_size: available_space,
+			mouse_pos,
 		},
 		TraversalState {
 			available_space,
@@ -174,6 +211,8 @@ impl Into<Sizing> for u32 {
 
 #[cfg(test)]
 mod tests {
+	use math::{Base as _, Vector2};
+
 	use super::super::{
 		components::container::{BaseContainer, ContainerSettings},
 		element::{ElementHandle, Id},
@@ -209,7 +248,7 @@ mod tests {
 
 		let elements = make_elements(&[&root as &dyn Element]);
 
-		let elements = layout_elements(&elements, &[], Size::new(1024, 1024));
+		let elements = layout_elements(&elements, &[], Size::new(1024, 1024), Vector2::zero());
 
 		assert_eq!(elements.len(), 1);
 
@@ -224,7 +263,7 @@ mod tests {
 
 		let elements = make_elements(&[&root as &dyn Element]);
 
-		let elements = layout_elements(&elements, &[], Size::new(1024, 1024));
+		let elements = layout_elements(&elements, &[], Size::new(1024, 1024), Vector2::zero());
 
 		assert_eq!(elements.len(), 1);
 
@@ -259,6 +298,7 @@ mod tests {
 			&elements,
 			&[(root.id(), a.id()), (a.id(), b.id()), (b.id(), c.id()), (c.id(), d.id())],
 			Size::new(1024, 1024),
+			Vector2::zero(),
 		);
 
 		assert_eq!(elements.len(), 5);
@@ -310,6 +350,7 @@ mod tests {
 				(root.id(), d.id()),
 			],
 			Size::new(1024, 1024),
+			Vector2::zero(),
 		);
 
 		assert_eq!(elements.len(), 5);

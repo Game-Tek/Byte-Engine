@@ -223,7 +223,7 @@ impl Iterator for WindowIterator<'_> {
 							let x = (x - half_width) / half_width;
 							let y = (y - half_height) / half_height;
 
-							Some(Events::MouseMove { x, y, time: ev.time() as u64 })
+							Some(Events::MousePosition { x, y, time: ev.time() as u64 })
 						},
 						x::Event::ConfigureNotify(ev) => {
 							if ev.width() == 0 || ev.height() == 0 {

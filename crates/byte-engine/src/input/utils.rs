@@ -6,7 +6,7 @@ use super::{device_class::DeviceClassHandle, input_trigger::TriggerDescription, 
 /// This is the standard Byte-Engine mouse device definition.
 ///
 /// # Triggers
-/// - `Position`: The position of the mouse. This is a 2D vector. In the range of -1 to 1, relative to the window.
+/// - `Position`: The absolute position of the mouse. This is a 2D vector. In the range of -1 to 1, relative to the window.
 /// - `LeftButton`: The state of the left mouse button. This is a boolean.
 /// - `RightButton`: The state of the right mouse button. This is a boolean.
 /// - `Scroll`: The scroll wheel of the mouse. This is a float. The value is the amount of scroll in the Y direction. The range is -1 to 1.

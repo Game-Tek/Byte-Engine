@@ -8,6 +8,7 @@ use crate::core::{
 	message::Message,
 };
 
+#[derive(Clone)]
 pub struct Factory<T: Clone + ?Sized>(DefaultChannel<CreateMessage<T>>);
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);

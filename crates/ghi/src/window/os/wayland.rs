@@ -143,15 +143,11 @@ impl WindowLike for Window {
 			app_data.state
 		};
 
-		// if let Some(pointer) = &wl_pointer {
-		// 	zwp_relative_pointer_manager.get_relative_pointer(pointer, &app_event_qh, ());
-		// }
-
 		let mut requests = VecDeque::with_capacity(16);
 
 		requests.push_back(Requests::ConstrainPointer);
 		// requests.push_back(Requests::LockPointer);
-		requests.push_back(Requests::HidePointer);
+		// requests.push_back(Requests::HidePointer);
 
 		Ok(Self {
 			connection: conn,
@@ -173,6 +169,16 @@ impl WindowLike for Window {
 			display: self.display().id().as_ptr() as _,
 			surface: self.surface().id().as_ptr() as _,
 		}
+	}
+
+	fn show_cursor(&mut self, show: bool) {
+		self.state.should_hide_pointer = !show;
+		self.requests.push_back(Requests::HidePointer);
+	}
+
+	fn confine_cursor(&mut self, confine: bool) {
+		self.state.should_confine_pointer = confine;
+		self.requests.push_back(Requests::ConstrainPointer);
 	}
 
 	fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a {
@@ -287,10 +293,6 @@ struct AppData {
 struct WindowState {
 	/// The scale factor of the window.
 	scale: u32,
-	/// The location of the pointer.
-	/// This gets calculated by accumulating the pointer motion events.
-	/// This is relative to no reference point.
-	pointer_location: (f32, f32),
 	/// The extent of the window.
 	extent: Option<Extent>,
 	/// The extent of the monitor.
@@ -323,14 +325,13 @@ impl Default for WindowState {
 	fn default() -> Self {
 		Self {
 			scale: 1,
-			pointer_location: (0.0, 0.0),
 			extent: None,
 			monitor_extent: None,
 			focused_pointer: None,
 			focused_keyboard: None,
-			should_confine_pointer: true,
+			should_confine_pointer: false,
 			pointer_is_confined: false,
-			should_hide_pointer: true,
+			should_hide_pointer: false,
 			pointer_is_hidden: false,
 			should_lock_pointer: false,
 			pointer_is_locked: false,
@@ -860,21 +861,21 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 				surface_x,
 				surface_y,
 			} => {
-				// if let Some(extent) = this.state.extent {
-				// 	let x = surface_x as f32 * this.state.scale as f32;
-				// 	let y = surface_y as f32 * this.state.scale as f32;
+				if let Some(extent) = this.state.extent {
+					let x = surface_x as f32 * this.state.scale as f32;
+					let y = surface_y as f32 * this.state.scale as f32;
 
-				// 	let width = extent.width() as f32;
-				// 	let height = extent.height() as f32;
+					let width = extent.width() as f32;
+					let height = extent.height() as f32;
 
-				// 	let half_width = width / 2.0;
-				// 	let half_height = height / 2.0;
+					let half_width = width / 2.0;
+					let half_height = height / 2.0;
 
-				// 	let x = (x - half_width) / half_width;
-				// 	let y = (half_height - y) / half_height;
+					let x = (x - half_width) / half_width;
+					let y = (half_height - y) / half_height;
 
-				// 	this.events.push_back(WindowEvents::MouseMove { x, y, time: time as u64 });
-				// }
+					this.events.push_back(Events::MousePosition { x, y, time: time as u64 });
+				}
 			}
 			_ => {}
 		}
@@ -1032,24 +1033,11 @@ impl wayland_client::Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()>
 				dy_unaccel,
 				..
 			} => {
-				let location = &mut this.state.pointer_location;
-
-				location.0 += dx_unaccel as f32;
-				location.1 += -dy_unaccel as f32;
-
-				if let Some(extent) = this.state.extent {
-					let width = extent.width() as f32;
-					let height = extent.height() as f32;
-
-					let x = location.0 / width;
-					let y = location.1 / height;
-
-					this.events.push_back(Events::MouseMove {
-						x,
-						y,
-						time: (utime_hi as u64) << 32 | utime_lo as u64,
-					});
-				}
+				this.events.push_back(Events::MouseMove {
+					dx: dx_unaccel as f32,
+					dy: dy_unaccel as f32,
+					time: (utime_hi as u64) << 32 | utime_lo as u64,
+				});
 			}
 			_ => {}
 		}

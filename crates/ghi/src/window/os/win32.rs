@@ -2,7 +2,7 @@ use windows::{
 	core::PCSTR,
 	Win32::{
 		Devices::HumanInterfaceDevice::{HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC},
-		Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+		Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
 		Graphics::Gdi::{GetMonitorInfoA, MonitorFromWindow, HBRUSH, MONITORINFO, MONITOR_DEFAULTTONEAREST},
 		System::LibraryLoader::GetModuleHandleA,
 		UI::{
@@ -12,12 +12,13 @@ use windows::{
 				RAWINPUTDEVICE, RAWINPUTDEVICE_FLAGS, RAWINPUTHEADER, RID_INPUT, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
 			},
 			WindowsAndMessaging::{
-				CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetWindowLongPtrA,
-				PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, ShowCursor, TranslateMessage,
-				UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, HMENU, MSG, PM_REMOVE,
-				RI_KEY_BREAK, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-				WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCCREATE,
-				WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+				CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetCursorPos,
+				GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, ScreenToClient, SetWindowLongPtrA,
+				ShowCursor, TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON,
+				HMENU, MSG, PM_REMOVE, RI_KEY_BREAK, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN,
+				WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+				WM_NCCALCSIZE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES,
+				WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 			},
 		},
 	},
@@ -228,9 +229,52 @@ impl Drop for WindowIterator<'_> {
 /// Represents the state of the window, can be used to store additional data if needed.
 #[derive(Debug, Clone, Default)]
 struct State {
-	cursor_position: (f32, f32),
 	use_raw_mouse: bool,
 	use_raw_keyboard: bool,
+}
+
+fn client_extent(hwnd: HWND) -> Option<(f32, f32)> {
+	let mut client_rect = RECT {
+		left: 0,
+		top: 0,
+		right: 0,
+		bottom: 0,
+	};
+
+	let ok = unsafe { GetClientRect(hwnd, &mut client_rect) };
+	if !ok.as_bool() {
+		return None;
+	}
+
+	let width = (client_rect.right - client_rect.left).max(1) as f32;
+	let height = (client_rect.bottom - client_rect.top).max(1) as f32;
+
+	Some((width, height))
+}
+
+fn normalize_client_position(hwnd: HWND, x: f32, y: f32) -> Option<(f32, f32)> {
+	let (width, height) = client_extent(hwnd)?;
+
+	let x = x / width * 2.0 - 1.0;
+	let y = 1.0 - y / height * 2.0;
+
+	Some((x, y))
+}
+
+fn cursor_position_in_window(hwnd: HWND) -> Option<(f32, f32)> {
+	let mut point = POINT::default();
+
+	let got_cursor = unsafe { GetCursorPos(&mut point) };
+	if !got_cursor.as_bool() {
+		return None;
+	}
+
+	let converted = unsafe { ScreenToClient(hwnd, &mut point) };
+	if !converted.as_bool() {
+		return None;
+	}
+
+	normalize_client_position(hwnd, point.x as f32, point.y as f32)
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -337,35 +381,14 @@ fn handle_event(
 			));
 		}
 		WM_MOUSEMOVE => {
-			if window_data.state.use_raw_mouse {
+			let x = (lparam.0 & 0xFFFF) as i16 as f32;
+			let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+
+			let Some((x, y)) = normalize_client_position(hwnd, x, y) else {
 				return None;
-			}
-
-			let x = (lparam.0 & 0xFFFF) as u32;
-			let y = (lparam.0 >> 16) as u32;
-
-			let (width, height) = unsafe {
-				let mut lprect = RECT {
-					left: 0,
-					top: 0,
-					right: 0,
-					bottom: 0,
-				};
-
-				let _ = GetClientRect(hwnd, &mut lprect);
-
-				((lprect.right - lprect.left) as u32, (lprect.bottom - lprect.top) as u32)
 			};
 
-			let y = height - y;
-
-			let x = x as f32 / width as f32;
-			let y = y as f32 / height as f32;
-
-			let x = x * 2f32 - 1f32;
-			let y = y * 2f32 - 1f32;
-
-			return Some((Some(Events::MouseMove { x, y, time: 0 }), LRESULT(0)));
+			return Some((Some(Events::MousePosition { x, y, time: 0 }), LRESULT(0)));
 		}
 		WM_INPUT => {
 			let mut raw_input = [0u64; 1024 / 8]; // Buffer needs to be aligned to 8 bytes
@@ -391,35 +414,25 @@ fn handle_event(
 			if raw_input.header.dwType == RIM_TYPEMOUSE.0 && window_data.state.use_raw_mouse {
 				let mouse_data = unsafe { &raw_input.data.mouse };
 
-				let width = 3840;
-				let height = 2160;
-
 				if mouse_data.usFlags == MOUSE_MOVE_RELATIVE {
-					window_data.state.cursor_position.0 += mouse_data.lLastX as f32 / width as f32;
-					window_data.state.cursor_position.1 += mouse_data.lLastY as f32 / height as f32;
+					let Some((width, height)) = client_extent(hwnd) else {
+						return None;
+					};
 
 					return Some((
 						Some(Events::MouseMove {
-							x: window_data.state.cursor_position.0,
-							y: window_data.state.cursor_position.1,
+							x: mouse_data.lLastX as f32 / width * 2.0,
+							y: -(mouse_data.lLastY as f32) / height * 2.0,
 							time: 0,
 						}),
 						LRESULT(0),
 					));
 				} else if (mouse_data.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0) == MOUSE_MOVE_ABSOLUTE.0 {
-					window_data.state.cursor_position = (
-						mouse_data.lLastX as f32 / width as f32,
-						mouse_data.lLastY as f32 / height as f32,
-					);
+					let Some((x, y)) = cursor_position_in_window(hwnd) else {
+						return None;
+					};
 
-					return Some((
-						Some(Events::MouseMove {
-							x: window_data.state.cursor_position.0,
-							y: window_data.state.cursor_position.1,
-							time: 0,
-						}),
-						LRESULT(0),
-					));
+					return Some((Some(Events::MousePosition { x, y, time: 0 }), LRESULT(0)));
 				}
 			} else if raw_input.header.dwType == RIM_TYPEKEYBOARD.0 && window_data.state.use_raw_keyboard {
 				let keyboard_data = unsafe { &raw_input.data.keyboard };

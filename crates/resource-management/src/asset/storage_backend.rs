@@ -24,7 +24,7 @@ impl FileStorageBackend {
 
 impl StorageBackend for FileStorageBackend {
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
-		future(async move { read_asset_from_source(url, Some(&self.base_path)).await })
+		future(read_asset_from_source(url, Some(&self.base_path)))
 	}
 }
 

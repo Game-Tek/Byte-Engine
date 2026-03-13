@@ -1,5 +1,7 @@
 use std::marker::PhantomData;
 
+use math::Vector2;
+
 use super::{
 	element::{ElementHandle, Id},
 	flow::Size,
@@ -21,7 +23,7 @@ impl Engine {
 		self.viewports.push(viewport);
 	}
 
-	pub fn render<'a>(&'a mut self, root: &impl Component) -> Render<'a> {
+	pub fn render<'a>(&'a mut self, root: &impl Component, mouse_pos: Vector2) -> Render {
 		struct State<'a> {
 			id: Id,
 			counter: &'a mut u32,
@@ -73,23 +75,25 @@ impl Engine {
 
 		root.render(&mut state);
 
-		let elements = layout_elements(&elements, &relations, Size::new(1024, 1024));
+		let size = Size::new(1024, 1024);
 
-		Render {
-			elements,
-			relations,
-			_phantom: PhantomData,
-		}
+		let mouse_pos = (mouse_pos + 1f32) * 0.5;
+		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
+		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
+
+		let elements = layout_elements(&elements, &relations, Size::new(1024, 1024), mouse_pos);
+
+		Render { elements, relations }
 	}
 }
 
-pub struct Render<'a> {
+#[derive(Clone)]
+pub struct Render {
 	elements: Vec<LayoutElement>,
 	relations: Vec<(Id, Id)>,
-	_phantom: PhantomData<&'a ()>,
 }
 
-impl<'a> Render<'a> {
+impl Render {
 	pub fn root(&self) -> &LayoutElement {
 		self.elements.iter().find(|e| e.id == 1).unwrap()
 	}
@@ -133,6 +137,8 @@ pub trait Component {
 
 #[cfg(test)]
 mod tests {
+	use math::{Base, Vector2};
+
 	use super::super::super::{
 		components::container::{BaseContainer, ContainerSettings},
 		element::Id,
@@ -226,7 +232,7 @@ mod tests {
 
 		let application = Application::new();
 
-		let render = engine.render(&application);
+		let render = engine.render(&application, Vector2::zero());
 
 		assert_eq!(render.size(), 5);
 

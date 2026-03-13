@@ -10,7 +10,8 @@ pub trait Channel<M> {
 	fn send(&self, message: M);
 }
 
-pub struct DefaultChannel<M>(Sender<M>);
+#[derive(Clone)]
+pub struct DefaultChannel<M>(pub(super) Sender<M>);
 
 impl<M: Clone> DefaultChannel<M> {
 	pub fn new() -> Self {

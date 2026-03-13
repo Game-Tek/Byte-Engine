@@ -177,7 +177,7 @@ impl WindowLike for Window {
 							let half_height = height / 2.0;
 							let (x, y) = (point.x as f32 - half_width, point.y as f32 - half_height);
 							let (x, y) = (x / half_width, y / half_height);
-							events.push(Events::MouseMove { x, y, time });
+							events.push(Events::MousePosition { x, y, time });
 						}
 					}
 				}

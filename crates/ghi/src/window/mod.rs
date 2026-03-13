@@ -22,10 +22,17 @@ pub enum Events {
 	Key { pressed: bool, key: input::Keys },
 	/// A mouse button has been pressed or released.
 	Button { pressed: bool, button: input::MouseKeys },
-	/// The mouse has moved.
-	/// Coordinates have no particular frame of reference but are normalized by the monitor size.
-	/// Coordinates may get wrapped to preserve precision.
+	/// The mouse has moved relative to its previous position.
+	/// Coordinates are normalized by the current window size.
 	MouseMove {
+		dx: f32,
+		dy: f32,
+		/// The time at which the event occurred.
+		time: u64,
+	},
+	/// The mouse position has changed.
+	/// Coordinates are normalized to the window in the range `-1.0..=1.0`.
+	MousePosition {
 		x: f32,
 		y: f32,
 		/// The time at which the event occurred.

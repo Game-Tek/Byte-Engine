@@ -114,6 +114,8 @@ pub(crate) fn build_mouse_click_acceleration(layout: &[LayoutElement]) -> MouseC
 
 #[cfg(test)]
 mod tests {
+	use utils::RGBA;
+
 	use super::{
 		super::{
 			element::Id,
@@ -130,16 +132,19 @@ mod tests {
 				id: 1,
 				position: Location3::new(0, 0, 0),
 				size: Size::new(200, 200),
+				color: RGBA::black(),
 			},
 			LayoutElement {
 				id: 2,
 				position: Location3::new(20, 20, 0),
 				size: Size::new(120, 120),
+				color: RGBA::black(),
 			},
 			LayoutElement {
 				id: 3,
 				position: Location3::new(40, 40, 0),
 				size: Size::new(60, 60),
+				color: RGBA::black(),
 			},
 		];
 
@@ -157,11 +162,13 @@ mod tests {
 				id: 10,
 				position: Location3::new(0, 0, 0),
 				size: Size::new(100, 100),
+				color: RGBA::black(),
 			},
 			LayoutElement {
 				id: 11,
 				position: Location3::new(150, 150, 0),
 				size: Size::new(50, 50),
+				color: RGBA::black(),
 			},
 		];
 

@@ -145,6 +145,19 @@ pub struct RGBA {
 	pub a: f32,
 }
 
+impl std::ops::Mul for RGBA {
+	type Output = Self;
+
+	fn mul(self, rhs: Self) -> Self::Output {
+		Self {
+			r: self.r * rhs.r,
+			g: self.g * rhs.g,
+			b: self.b * rhs.b,
+			a: self.a * rhs.a,
+		}
+	}
+}
+
 impl std::hash::Hash for RGBA {
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
 		self.r.to_bits().hash(state);
@@ -179,6 +192,12 @@ impl RGBA {
 impl Default for RGBA {
 	fn default() -> Self {
 		Self::black()
+	}
+}
+
+impl Into<[f32; 4]> for RGBA {
+	fn into(self) -> [f32; 4] {
+		[self.r, self.g, self.b, self.a]
 	}
 }
 

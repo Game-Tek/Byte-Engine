@@ -2,6 +2,8 @@ use std::{collections::VecDeque, marker::PhantomData};
 
 use trotcast::Receiver;
 
+use crate::core::channel::DefaultChannel;
+
 /// The `Listener` trait exists to decouple message consumption from transport details.
 pub trait Listener<M> {
 	fn read(&mut self) -> Option<M>;
@@ -66,7 +68,8 @@ impl<'a, M> IntoIterator for &'a mut (dyn Listener<M> + 'a) {
 /// The `DefaultListener` struct exists to read messages from a `trotcast` receiver.
 /// We do not allow cloning (directly) since it is easy to forget cloning the receiver does not carry over existing messages.
 /// We provide an explicit method `new_listener` to create a new listener.
-pub struct DefaultListener<M>(pub(crate) Receiver<M>);
+#[derive(Clone)]
+pub struct DefaultListener<M>(pub(super) Receiver<M>);
 
 impl<M: Clone> DefaultListener<M> {
 	/// Create a new listener from a receiver.
@@ -81,6 +84,10 @@ impl<M: Clone> DefaultListener<M> {
 		F: Fn(&M) -> bool,
 	{
 		FilteredListener(DefaultListener(self.0.clone()), filter, PhantomData)
+	}
+
+	pub fn clone_channel(&self) -> DefaultChannel<M> {
+		DefaultChannel(self.0.clone_channel())
 	}
 }
 

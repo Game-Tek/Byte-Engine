@@ -75,11 +75,7 @@ fn random_color_from_id(id: u32) -> RGBA {
 
 /// Lays out the given elements and returns a vector of layout elements with their calculated positions and sizes for a given viewport.
 /// The relation map describes embedded elements.
-fn layout_elements(
-	elements: &[ConcreteElement],
-	relation_map: &[(Id, Id)],
-	available_space: Size,
-) -> Vec<LayoutElement> {
+fn layout_elements(elements: &[ConcreteElement], relation_map: &[(Id, Id)], available_space: Size) -> Vec<LayoutElement> {
 	let mut lelements = Vec::with_capacity(elements.len());
 
 	#[derive(Clone, Copy)]

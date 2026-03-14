@@ -733,6 +733,14 @@ pub fn process_default_window_input(
 				input::Value::Vector2(vec),
 			)
 		}
+		ghi::window::Events::MouseMove { dx, dy, time: _ } => {
+			let vec = Vector2::new(dx, dy);
+			(
+				mouse_device_handle,
+				input::input_manager::TriggerReference::Name("Mouse.Movement"),
+				input::Value::Vector2(vec),
+			)
+		}
 		ghi::window::Events::Key { pressed, key } => match key {
 			ghi::window::input::Keys::W => (
 				keyboard_device_handle,
@@ -809,6 +817,45 @@ impl<T> LogResult for Result<T, String> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	fn build_default_input_manager() -> input::InputManager {
+		let action_channel = DefaultChannel::new();
+		let action_listener = action_channel.listener();
+		let event_channel = DefaultChannel::new();
+
+		let mut input_manager = input::InputManager::new(action_listener, event_channel);
+
+		let mouse_device_class_handle = register_mouse_device_class(&mut input_manager);
+		let keyboard_device_class_handle = register_keyboard_device_class(&mut input_manager);
+
+		input_manager.create_device(&mouse_device_class_handle);
+		input_manager.create_device(&keyboard_device_class_handle);
+
+		input_manager
+	}
+
+	#[test]
+	fn maps_mouse_move_to_mouse_movement_trigger() {
+		let mut input_manager = build_default_input_manager();
+		let expected_mouse_device_handle = input_manager.get_devices_by_class_name("Mouse").unwrap()[0];
+
+		let result = process_default_window_input(
+			&mut input_manager,
+			ghi::window::Events::MouseMove {
+				dx: 0.25,
+				dy: -0.5,
+				time: 1,
+			},
+		)
+		.unwrap();
+
+		assert_eq!(result.0, expected_mouse_device_handle);
+		assert!(matches!(
+			result.1,
+			input::input_manager::TriggerReference::Name("Mouse.Movement")
+		));
+		assert_eq!(result.2, input::Value::Vector2(Vector2::new(0.25, -0.5)));
+	}
 
 	#[test]
 	#[ignore] // Renderer broken.

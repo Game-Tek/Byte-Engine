@@ -7,6 +7,7 @@ use super::{device_class::DeviceClassHandle, input_trigger::TriggerDescription, 
 ///
 /// # Triggers
 /// - `Position`: The absolute position of the mouse. This is a 2D vector. In the range of -1 to 1, relative to the window.
+/// - `Movement`: The relative movement of the mouse. This is a 2D vector. The value is normalized by the window size.
 /// - `LeftButton`: The state of the left mouse button. This is a boolean.
 /// - `RightButton`: The state of the right mouse button. This is a boolean.
 /// - `Scroll`: The scroll wheel of the mouse. This is a float. The value is the amount of scroll in the Y direction. The range is -1 to 1.
@@ -16,6 +17,11 @@ pub fn register_mouse_device_class(input_manager: &mut InputManager) -> DeviceCl
 	input_manager.register_trigger(
 		&mouse_device_class_handle,
 		"Position",
+		TriggerDescription::<Vector2>::default(),
+	);
+	input_manager.register_trigger(
+		&mouse_device_class_handle,
+		"Movement",
 		TriggerDescription::<Vector2>::default(),
 	);
 	input_manager.register_trigger(

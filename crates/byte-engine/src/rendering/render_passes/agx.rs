@@ -137,12 +137,13 @@ const TONE_MAPPING_SHADER: &'static str = r#"
 #version 450
 #pragma shader_stage(compute)
 
-#extension GL_EXT_scalar_block_layout: enable
 #extension GL_EXT_buffer_reference2: enable
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_shader_image_load_formatted:enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
 
-layout(set=0, binding=0, rgba16f) uniform readonly image2D source;
-layout(set=0, binding=1, rgba8) uniform writeonly image2D result;
+layout(set=0, binding=0) uniform readonly image2D source;
+layout(set=0, binding=1) uniform writeonly image2D result;
 
 const mat3 LINEAR_REC2020_TO_LINEAR_SRGB = mat3(
 	1.6605, -0.1246, -0.0182,

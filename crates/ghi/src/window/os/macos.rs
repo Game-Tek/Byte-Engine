@@ -111,10 +111,7 @@ impl WindowLike for Window {
 			NSPoint::new(100.0, 100.0),
 			NSSize::new(extent.width() as _, extent.height() as _),
 		);
-		let style = NSWindowStyleMask::Titled
-			| NSWindowStyleMask::Closable
-			| NSWindowStyleMask::Resizable
-			| NSWindowStyleMask::Miniaturizable;
+		let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::Resizable;
 
 		let window = unsafe {
 			let window = NSWindow::alloc(mtm);
@@ -125,6 +122,7 @@ impl WindowLike for Window {
 		window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
 		window.setTitle(&NSString::from_str(name));
+		window.setAcceptsMouseMovedEvents(true);
 		window.makeKeyAndOrderFront(None);
 
 		app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -137,6 +135,14 @@ impl WindowLike for Window {
 			delegate,
 			modifier_state: ModifierState::default(),
 		})
+	}
+
+	fn show_cursor(&mut self, show: bool) {
+		todo!()
+	}
+
+	fn confine_cursor(&mut self, confine: bool) {
+		todo!()
 	}
 
 	fn poll(&mut self) -> impl Iterator<Item = Events> {
@@ -163,13 +169,16 @@ impl WindowLike for Window {
 			let time = (event.timestamp() * 1000.0) as u64;
 
 			match event.r#type() {
-				NSEventType::MouseMoved => {
+				NSEventType::MouseMoved | NSEventType::LeftMouseDragged | NSEventType::RightMouseDragged => {
+					let dx = event.deltaX() as f32;
+					let dy = event.deltaY() as f32;
+
+					events.push(Events::MouseMove { dx, dy, time });
+
 					let point = event.locationInWindow();
 
 					if let Some(window) = event.window(self.mtm) {
 						if window == self.window {
-							let screen = window.screen().unwrap();
-							let _monitor_extent = screen.frame().size;
 							let window_extent = window.frame().size;
 							let width = window_extent.width as f32;
 							let height = window_extent.height as f32;

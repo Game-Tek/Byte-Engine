@@ -38,6 +38,7 @@ impl Engine {
 		self.viewports.push(viewport);
 	}
 
+	/// Evaluates the layout of the given root component and returns a snapshot of the resulting layout.
 	pub fn evaluate<'a>(&'a mut self, root: &impl Component) -> Snapshot {
 		struct State<'a> {
 			id: Id,
@@ -118,6 +119,7 @@ impl Engine {
 		snapshot
 	}
 
+	/// Renders the given snapshot into a [`Render`] object.
 	pub fn render<'a>(&'a mut self, snapshot: Snapshot) -> Render {
 		let size = Size::new(1024, 1024);
 
@@ -151,6 +153,9 @@ impl Engine {
 	}
 }
 
+/// A `Snapshot` represents a layout snapshot at a given point in time, including elements and their relationships.
+///
+/// User interactions, such as mouse clicks or hovers, can be realized against this snapshot.
 pub struct Snapshot {
 	elements: Vec<IdedElement>,
 	relations: Vec<(Id, Id)>,
@@ -175,6 +180,7 @@ impl Snapshot {
 	}
 }
 
+/// A `Render` represents the result of rendering a [`Snapshot`] into a representation suitable for rendering.
 #[derive(Clone)]
 pub struct Render {
 	elements: Vec<LayoutElement>,

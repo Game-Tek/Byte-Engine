@@ -4,6 +4,8 @@ pub mod query;
 use math::{Base as _, Vector2};
 use utils::RGBA;
 
+use crate::ui::primitive::Shapes;
+
 use super::{
 	element::{self, Element, ElementHandle, Id},
 	flow::{self, Location, Location3, Offset, Size},
@@ -12,36 +14,24 @@ use super::{
 	Primitive,
 };
 
-#[derive(Clone)]
-struct ConcreteElement {
-	id: Id,
+pub struct ConcreteElement {
 	flow: flow::FlowFunction,
-	primitive: BasePrimitive,
+	shape: Shapes,
+	on_click: Option<Box<dyn Fn()>>,
 }
 
 impl ConcreteElement {
-	pub fn new(id: Id, element: &dyn Element) -> Self {
+	pub fn new(flow: flow::FlowFunction, shape: Shapes) -> Self {
 		Self {
-			id,
-			flow: element.flow(),
-			primitive: element.primitive(),
+			flow,
+			shape,
+			on_click: None,
 		}
 	}
-}
 
-impl Element for ConcreteElement {
-	fn flow(&self) -> flow::FlowFunction {
-		self.flow
-	}
-
-	fn primitive(&self) -> BasePrimitive {
-		self.primitive.clone()
-	}
-}
-
-impl ElementHandle for ConcreteElement {
-	fn id(&self) -> Id {
-		self.id
+	pub fn on_click(mut self, on_click: Option<Box<dyn Fn()>>) -> Self {
+		self.on_click = on_click;
+		self
 	}
 }
 
@@ -73,9 +63,20 @@ fn random_color_from_id(id: u32) -> RGBA {
 	RGBA::new(0.25 + r * 0.75, 0.25 + g * 0.75, 0.25 + b * 0.75, 1.0)
 }
 
+struct IdedElement {
+	id: Id,
+	element: ConcreteElement,
+}
+
+impl ElementHandle for IdedElement {
+	fn id(&self) -> Id {
+		self.id
+	}
+}
+
 /// Lays out the given elements and returns a vector of layout elements with their calculated positions and sizes for a given viewport.
 /// The relation map describes embedded elements.
-fn layout_elements(elements: &[ConcreteElement], relation_map: &[(Id, Id)], available_space: Size) -> Vec<LayoutElement> {
+fn layout_elements(elements: &[IdedElement], relation_map: &[(Id, Id)], available_space: Size) -> Vec<LayoutElement> {
 	let mut lelements = Vec::with_capacity(elements.len());
 
 	#[derive(Clone, Copy)]
@@ -87,13 +88,12 @@ fn layout_elements(elements: &[ConcreteElement], relation_map: &[(Id, Id)], avai
 
 	#[derive(Clone, Copy)]
 	struct Context<'a> {
-		fetcher: &'a Fetcher<'a, ConcreteElement>,
+		fetcher: &'a Fetcher<'a, IdedElement>,
 		root_size: Size,
 	}
 
-	fn calculate_element(element: ElementResult<'_, ConcreteElement>, ctx: Context, ts: TraversalState) -> LayoutElement {
-		let primitive = element.element().primitive();
-		let shape = primitive.shape();
+	fn calculate_element(element: ElementResult<'_, IdedElement>, ctx: Context, ts: TraversalState) -> LayoutElement {
+		let shape = &element.element().element.shape;
 
 		let size = shape.bbox(ts.available_space);
 
@@ -109,11 +109,11 @@ fn layout_elements(elements: &[ConcreteElement], relation_map: &[(Id, Id)], avai
 
 	fn layout_element(
 		elements: &mut Vec<LayoutElement>,
-		element: ElementResult<'_, ConcreteElement>,
+		element: ElementResult<'_, IdedElement>,
 		ctx: Context,
 		ts: TraversalState,
 	) -> LayoutElement {
-		let l = calculate_element(element.clone(), ctx, ts);
+		let l = calculate_element(element, ctx, ts);
 
 		let available_space = l.size;
 		let mut offset: Offset = Into::<Location>::into(l.position).into();
@@ -131,7 +131,8 @@ fn layout_elements(elements: &[ConcreteElement], relation_map: &[(Id, Id)], avai
 					depth: ts.depth + 1,
 				},
 			);
-			offset = element.element().flow()(offset, l.size);
+
+			offset = (element.element().element.flow)(offset, l.size);
 		}
 
 		l
@@ -207,6 +208,8 @@ impl Into<Sizing> for u32 {
 mod tests {
 	use math::{Base as _, Vector2};
 
+	use crate::ui::layout::IdedElement;
+
 	use super::super::{
 		components::container::{BaseContainer, ContainerSettings},
 		element::{ElementHandle, Id},
@@ -217,7 +220,7 @@ mod tests {
 
 	use super::layout_elements;
 
-	fn make_elements(elements: &[&dyn Element]) -> Vec<ConcreteElement> {
+	fn make_elements(elements: &[&dyn Element]) -> Vec<IdedElement> {
 		let mut counter = Id::MIN;
 
 		elements
@@ -227,10 +230,13 @@ mod tests {
 
 				counter = counter.checked_add(1).unwrap();
 
-				ConcreteElement {
+				IdedElement {
 					id,
-					flow: e.flow(),
-					primitive: e.primitive(),
+					element: ConcreteElement {
+						flow: e.flow(),
+						shape: e.primitive().shape,
+						on_click: None,
+					},
 				}
 			})
 			.collect()

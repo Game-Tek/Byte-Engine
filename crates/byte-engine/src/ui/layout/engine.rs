@@ -1,9 +1,13 @@
 use std::marker::PhantomData;
 
-use math::Vector2;
+use math::{Base as _, Vector2};
 use utils::RGBA;
 
-use crate::ui::{flow::Location, intersection::build_mouse_click_acceleration};
+use crate::ui::{
+	flow::Location,
+	intersection::{build_mouse_click_acceleration, MouseClickAcceleration},
+	layout::IdedElement,
+};
 
 use super::{
 	element::{ElementHandle, Id},
@@ -15,22 +19,30 @@ use super::{
 
 pub struct Engine {
 	viewports: Vec<VirtualViewport>,
+	cursor_position: Vector2,
+	is_clicking: bool,
+	clicks: Vec<bool>,
 }
 
 impl Engine {
 	pub fn new() -> Self {
-		Self { viewports: Vec::new() }
+		Self {
+			viewports: Vec::new(),
+			cursor_position: Vector2::zero(),
+			is_clicking: false,
+			clicks: Vec::new(),
+		}
 	}
 
 	pub fn add_viewport(&mut self, viewport: VirtualViewport) {
 		self.viewports.push(viewport);
 	}
 
-	pub fn render<'a>(&'a mut self, root: &impl Component, mouse_pos: Vector2) -> Render {
+	pub fn evaluate<'a>(&'a mut self, root: &impl Component) -> Snapshot {
 		struct State<'a> {
 			id: Id,
 			counter: &'a mut u32,
-			elements: &'a mut Vec<ConcreteElement>,
+			elements: &'a mut Vec<IdedElement>,
 			relations: &'a mut Vec<(Id, Id)>,
 		}
 
@@ -40,12 +52,15 @@ impl Engine {
 			where
 				Self: 'a;
 
-			fn element<'a>(&'a mut self, element: &dyn Element) -> Self::Child<'a> {
+			fn element<'a>(&'a mut self, element: impl Into<ConcreteElement>) -> Self::Child<'a> {
 				let id = Id::new(*self.counter).unwrap();
 
 				*self.counter += 1;
 
-				self.elements.push(ConcreteElement::new(id, element));
+				self.elements.push(IdedElement {
+					id,
+					element: element.into(),
+				});
 
 				if id != self.id {
 					self.relations.push((self.id, id));
@@ -80,21 +95,83 @@ impl Engine {
 
 		let size = Size::new(1024, 1024);
 
-		let mouse_pos = (mouse_pos + 1f32) * 0.5;
+		let mouse_pos = (self.cursor_position + 1f32) * 0.5;
 		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
 		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
 
-		let mut elements = layout_elements(&elements, &relations, size);
+		let lelements = layout_elements(&elements, &relations, size);
 
-		let acc = build_mouse_click_acceleration(&elements);
+		let acc = build_mouse_click_acceleration(&lelements);
+
+		let snapshot = Snapshot {
+			elements,
+			relations,
+			acceleration: acc,
+		};
+
+		while let Some(click) = self.clicks.pop() {
+			if click {
+				snapshot.click(self.cursor_position);
+			}
+		}
+
+		snapshot
+	}
+
+	pub fn render<'a>(&'a mut self, snapshot: Snapshot) -> Render {
+		let size = Size::new(1024, 1024);
+
+		let mouse_pos = (self.cursor_position + 1f32) * 0.5;
+		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
+		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
+
+		let mut lelements = layout_elements(&snapshot.elements, &snapshot.relations, size);
+
+		let acc = build_mouse_click_acceleration(&lelements);
 
 		if let Some(id) = acc.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32)) {
-			if let Some(e) = elements.iter_mut().find(|e| e.id == id) {
+			if let Some(e) = lelements.iter_mut().find(|e| e.id == id) {
 				e.color = e.color * RGBA::new(0.5f32, 0.5f32, 0.5f32, 1.0f32);
 			}
 		}
 
-		Render { elements, relations }
+		Render {
+			elements: lelements,
+			relations: snapshot.relations,
+		}
+	}
+
+	pub fn set_cursor_position(&mut self, v: Vector2) {
+		self.cursor_position = v;
+	}
+
+	pub fn update_click_state(&mut self, v: bool) {
+		self.is_clicking = v;
+		self.clicks.push(v);
+	}
+}
+
+pub struct Snapshot {
+	elements: Vec<IdedElement>,
+	relations: Vec<(Id, Id)>,
+	acceleration: MouseClickAcceleration,
+}
+
+impl Snapshot {
+	pub fn click(&self, mouse_pos: Vector2) {
+		let size = Size::new(1024, 1024);
+
+		let mouse_pos = (mouse_pos + 1f32) * 0.5;
+		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
+		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
+
+		if let Some(id) = self.acceleration.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32)) {
+			if let Some(e) = self.elements.iter().find(|e| e.id == Id::new(id).unwrap()) {
+				if let Some(on_click) = &e.element.on_click {
+					on_click();
+				}
+			}
+		}
 	}
 }
 
@@ -130,7 +207,7 @@ pub trait Context: Sized {
 	where
 		Self: 'a;
 
-	fn element<'a>(&'a mut self, element: &dyn Element) -> Self::Child<'a>;
+	fn element<'a>(&'a mut self, element: impl Into<ConcreteElement>) -> Self::Child<'a>;
 	fn component(&mut self, component: &impl Component);
 }
 
@@ -170,7 +247,7 @@ mod tests {
 
 	impl Component for Bar {
 		fn render(&self, ctx: &mut impl Context) {
-			let mut ctx = ctx.element(&BaseContainer::new(ContainerSettings::default().height(32.into())));
+			let mut ctx = ctx.element(BaseContainer::new(ContainerSettings::default().height(32.into())));
 
 			for option in &self.options {
 				option.render(&mut ctx);
@@ -190,7 +267,7 @@ mod tests {
 
 	impl Component for BarOption {
 		fn render(&self, ctx: &mut impl Context) {
-			ctx.element(&BaseContainer::new(ContainerSettings::default()));
+			ctx.element(BaseContainer::new(ContainerSettings::default()));
 		}
 	}
 
@@ -228,7 +305,7 @@ mod tests {
 
 	impl Component for Application {
 		fn render(&self, ctx: &mut impl Context) {
-			let mut ctx = ctx.element(&BaseContainer::new(ContainerSettings::default()));
+			let mut ctx = ctx.element(BaseContainer::new(ContainerSettings::default()));
 			self.bar.render(&mut ctx);
 		}
 	}
@@ -243,7 +320,8 @@ mod tests {
 
 		let application = Application::new();
 
-		let render = engine.render(&application, Vector2::zero());
+		let snapshot = engine.evaluate(&application);
+		let render = engine.render(snapshot);
 
 		assert_eq!(render.size(), 5);
 

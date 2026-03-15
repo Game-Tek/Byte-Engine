@@ -1,6 +1,7 @@
 use super::{element::Id, flow::Location, layout::LayoutElement};
 
 /// A uniform-grid spatial index for fast mouse click hit-testing.
+#[derive(Clone)]
 pub(crate) struct MouseClickAcceleration {
 	cell_size: u32,
 	columns: usize,

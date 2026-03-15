@@ -22,9 +22,9 @@ pub trait Primitive {
 	fn style(&self) -> &dyn Style;
 }
 
-#[derive(Clone)]
+// #[derive(Clone)]
 pub struct BasePrimitive {
-	shape: Shapes,
+	pub(crate) shape: Shapes,
 }
 
 impl BasePrimitive {

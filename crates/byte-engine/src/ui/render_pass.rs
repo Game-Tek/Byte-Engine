@@ -89,7 +89,18 @@ impl Entity for UiRenderPass {}
 impl UiRenderPass {
 	/// Creates a UI pass and all GPU resources used to draw layout rectangles.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let main_attachment: ghi::ImageHandle = render_pass_builder.render_to("main").into();
+		let main_attachment: ghi::ImageHandle = render_pass_builder
+			.create_render_target(
+				ghi::image::Builder::new(
+					MAIN_ATTACHMENT_FORMAT,
+					ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
+				)
+				.name("UI"),
+			)
+			.into();
+
+		render_pass_builder.alias("UI", "main");
+
 		let device = render_pass_builder.device();
 
 		let vertex_shader = create_vertex_shader(device);
@@ -318,8 +329,8 @@ mod tests {
 
 	impl Component for TestComponent {
 		fn render(&self, ctx: &mut impl Context) {
-			let mut ctx = ctx.element(&BaseContainer::new(ContainerSettings::default()));
-			ctx.element(&BaseContainer::new(ContainerSettings::default().size(64.into())));
+			let mut ctx = ctx.element(BaseContainer::new(ContainerSettings::default()));
+			ctx.element(BaseContainer::new(ContainerSettings::default().size(64.into())));
 		}
 	}
 }

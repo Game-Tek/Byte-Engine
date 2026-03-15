@@ -5,11 +5,18 @@ pub struct Fetcher<'a, T> {
 	pub relation_map: &'a [(Id, Id)],
 }
 
-#[derive(Clone, Copy)]
 pub struct ElementResult<'a, T> {
 	element: &'a T,
 	fetcher: &'a Fetcher<'a, T>,
 }
+
+impl<T> Clone for ElementResult<'_, T> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<T> Copy for ElementResult<'_, T> {}
 
 impl<'a, T: ElementHandle> ElementResult<'a, T> {
 	pub fn element(&'a self) -> &'a T {

@@ -1,3 +1,5 @@
+use crate::ui::layout::ConcreteElement;
+
 use super::super::{
 	element::{Element, ElementHandle, Id},
 	flow::{self, FlowFunction},
@@ -8,18 +10,18 @@ use super::super::{
 
 pub struct BaseContainer {
 	settings: ContainerSettings,
-	on_click: Box<dyn Fn(&dyn ElementHandle)>,
+	on_click: Box<dyn Fn()>,
 }
 
 impl BaseContainer {
 	pub fn new(settings: ContainerSettings) -> Self {
 		Self {
 			settings,
-			on_click: Box::new(|_| {}),
+			on_click: Box::new(|| {}),
 		}
 	}
 
-	pub fn on_click(self, callback: impl Fn(&dyn ElementHandle) + 'static) -> Self {
+	pub fn on_click(self, callback: impl Fn() + 'static) -> Self {
 		Self {
 			on_click: Box::new(callback),
 			..self
@@ -41,6 +43,12 @@ impl Element for BaseContainer {
 
 	fn flow(&self) -> FlowFunction {
 		self.settings.flow
+	}
+}
+
+impl Into<ConcreteElement> for BaseContainer {
+	fn into(self) -> ConcreteElement {
+		ConcreteElement::new(self.settings.flow, self.primitive().shape).on_click(Some(self.on_click))
 	}
 }
 

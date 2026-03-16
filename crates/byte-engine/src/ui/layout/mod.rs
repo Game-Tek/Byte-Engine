@@ -45,19 +45,20 @@ impl ConcreteElement {
 	}
 }
 
-#[derive(Clone, Copy)]
-/// Describes an element layed out for an screen an ready to be rendered,
+/// Describes an element layed out for an screen.
 pub(crate) struct LayoutElement {
+	pub(crate) position: Location3,
+	pub(crate) size: Size,
+	pub(crate) element: IdedElement,
+}
+
+/// Describes an element ready for rendering.
+#[derive(Clone)]
+pub(crate) struct RenderElement {
 	pub(crate) id: u32,
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) color: RGBA,
-}
-
-impl ElementHandle for LayoutElement {
-	fn id(&self) -> Id {
-		Id::new(self.id).unwrap()
-	}
 }
 
 fn random_color_from_id(id: u32) -> RGBA {
@@ -86,7 +87,7 @@ impl ElementHandle for IdedElement {
 
 /// Lays out the given elements and returns a vector of layout elements with their calculated positions and sizes for a given viewport.
 /// The relation map describes embedded elements.
-fn layout_elements(elements: &[IdedElement], relation_map: &[(Id, Id)], available_space: Size) -> Vec<LayoutElement> {
+fn layout_elements<'a>(elements: Vec<IdedElement>, relation_map: &'a [(Id, Id)], available_space: Size) -> Vec<LayoutElement> {
 	let mut lelements = Vec::with_capacity(elements.len());
 
 	#[derive(Clone, Copy)]
@@ -102,48 +103,29 @@ fn layout_elements(elements: &[IdedElement], relation_map: &[(Id, Id)], availabl
 		root_size: Size,
 	}
 
-	fn calculate_element(element: ElementResult<'_, IdedElement>, ctx: Context, ts: TraversalState) -> LayoutElement {
-		let element = &element.element();
+	fn calculate_element<'a>(element: IdedElement, ctx: Context<'a>, ts: TraversalState) -> LayoutElement {
 		let shape = &element.element.shape;
-		let style = if let Some(styler) = &element.element.styler {
-			styler()
-		} else {
-			ConcreteStyle::default()
-		};
-
 		let size = shape.bbox(ts.available_space);
 
 		let position = Location3::from((ts.offset.into(), ts.depth));
 
-		let layer = &style.layers[0];
-
-		let color = match layer.color {
-			Color::Value(rgba) => rgba,
-			Color::Sample(_) => todo!(),
-		};
-
-		LayoutElement {
-			id: element.id().into(),
-			position,
-			size,
-			color,
-		}
+		LayoutElement { position, size, element }
 	}
 
-	fn layout_element(
+	fn layout_element<'a>(
 		elements: &mut Vec<LayoutElement>,
-		element: ElementResult<'_, IdedElement>,
-		ctx: Context,
+		element: ElementResult<'a, IdedElement>,
+		ctx: Context<'a>,
 		ts: TraversalState,
 	) -> LayoutElement {
-		let l = calculate_element(element, ctx, ts);
+		let children = element.children();
 
-		let available_space = l.size;
-		let mut offset: Offset = Into::<Location>::into(l.position).into();
+		let p = calculate_element(element.into_element(), ctx, ts);
 
-		elements.push(l);
+		let available_space = p.size;
+		let mut offset: Offset = Into::<Location>::into(p.position).into();
 
-		for child in element.children().elements() {
+		for child in children.elements() {
 			let l = layout_element(
 				elements,
 				child,
@@ -155,27 +137,17 @@ fn layout_elements(elements: &[IdedElement], relation_map: &[(Id, Id)], availabl
 				},
 			);
 
-			offset = (element.element().element.flow)(offset, l.size);
+			offset = (p.element.element.flow)(offset, l.size);
 		}
 
-		l
+		p
 	}
 
-	let fetcher = Fetcher { elements, relation_map };
+	let mut fetcher = Fetcher { elements, relation_map };
 
-	let root = elements
-		.iter()
-		.find_map(|container| {
-			let res = fetcher.get(container.id())?;
-			if res.parent().is_none() {
-				Some(res)
-			} else {
-				None
-			}
-		})
-		.expect("Root container not found");
+	let root = fetcher.get(Id::new(1).unwrap()).unwrap(); // TODO: this is not true
 
-	layout_element(
+	let e = layout_element(
 		&mut lelements,
 		root,
 		Context {
@@ -188,6 +160,8 @@ fn layout_elements(elements: &[IdedElement], relation_map: &[(Id, Id)], availabl
 			depth: 0,
 		},
 	);
+
+	lelements.push(e);
 
 	lelements
 }
@@ -272,7 +246,7 @@ mod tests {
 
 		let elements = make_elements(&[&root as &dyn Element]);
 
-		let elements = layout_elements(&elements, &[], Size::new(1024, 10));
+		let elements = layout_elements(elements, &[], Size::new(1024, 10));
 
 		assert_eq!(elements.len(), 1);
 
@@ -287,7 +261,7 @@ mod tests {
 
 		let elements = make_elements(&[&root as &dyn Element]);
 
-		let elements = layout_elements(&elements, &[], Size::new(1024, 10));
+		let elements = layout_elements(elements, &[], Size::new(1024, 10));
 
 		assert_eq!(elements.len(), 1);
 
@@ -318,11 +292,9 @@ mod tests {
 		let c = &elements[3];
 		let d = &elements[4];
 
-		let elements = layout_elements(
-			&elements,
-			&[(root.id(), a.id()), (a.id(), b.id()), (b.id(), c.id()), (c.id(), d.id())],
-			Size::new(1024, 1024),
-		);
+		let relations = [(root.id(), a.id()), (a.id(), b.id()), (b.id(), c.id()), (c.id(), d.id())];
+
+		let elements = layout_elements(elements, &relations, Size::new(1024, 1024));
 
 		assert_eq!(elements.len(), 5);
 
@@ -369,16 +341,14 @@ mod tests {
 		let c = &elements[3];
 		let d = &elements[4];
 
-		let elements = layout_elements(
-			&elements,
-			&[
-				(root.id(), a.id()),
-				(root.id(), b.id()),
-				(root.id(), c.id()),
-				(root.id(), d.id()),
-			],
-			Size::new(1024, 1024),
-		);
+		let relations = [
+			(root.id(), a.id()),
+			(root.id(), b.id()),
+			(root.id(), c.id()),
+			(root.id(), d.id()),
+		];
+
+		let elements = layout_elements(elements, &relations, Size::new(1024, 1024));
 
 		assert_eq!(elements.len(), 5);
 

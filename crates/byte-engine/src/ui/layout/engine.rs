@@ -6,7 +6,8 @@ use utils::RGBA;
 use crate::ui::{
 	flow::Location,
 	intersection::{build_mouse_click_acceleration, MouseClickAcceleration},
-	layout::IdedElement,
+	layout::{IdedElement, RenderElement},
+	style::{Color, ConcreteStyle},
 };
 
 use super::{
@@ -100,14 +101,13 @@ impl Engine {
 		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
 		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
 
-		let lelements = layout_elements(&elements, &relations, size);
+		let elements = layout_elements(elements, &relations, size);
 
-		let acc = build_mouse_click_acceleration(&lelements);
+		let acc = build_mouse_click_acceleration(&elements);
 
 		let snapshot = Snapshot {
 			elements,
 			relations,
-			lelements,
 			acceleration: acc,
 		};
 
@@ -121,24 +121,41 @@ impl Engine {
 	}
 
 	/// Renders the given snapshot into a [`Render`] object.
-	pub fn render<'a>(&'a mut self, mut snapshot: Snapshot) -> Render {
+	pub fn render<'a>(&'a mut self, snapshot: Snapshot) -> Render {
 		let size = Size::new(1024, 1024);
 
 		let mouse_pos = (self.cursor_position + 1f32) * 0.5;
 		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
 		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
 
-		if let Some(id) = snapshot
-			.acceleration
-			.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32))
-		{
-			if let Some(e) = snapshot.lelements.iter_mut().find(|e| e.id == id) {
-				e.color = e.color * RGBA::new(0.5f32, 0.5f32, 0.5f32, 1.0f32);
-			}
-		}
+		let elements = snapshot
+			.elements
+			.iter()
+			.map(|e| {
+				let style = if let Some(styler) = e.element.element.styler.as_ref() {
+					styler()
+				} else {
+					ConcreteStyle::default()
+				};
+
+				let layer = &style.layers[0];
+
+				let color = match layer.color {
+					Color::Value(rgba) => rgba,
+					Color::Sample(_) => todo!(),
+				};
+
+				RenderElement {
+					id: e.element.id.get(),
+					position: e.position,
+					size: e.size,
+					color,
+				}
+			})
+			.collect::<Vec<_>>();
 
 		Render {
-			elements: snapshot.lelements,
+			elements,
 			relations: snapshot.relations,
 		}
 	}
@@ -157,8 +174,7 @@ impl Engine {
 ///
 /// User interactions, such as mouse clicks or hovers, can be realized against this snapshot.
 pub struct Snapshot {
-	elements: Vec<IdedElement>,
-	lelements: Vec<LayoutElement>, // TODO: remove
+	elements: Vec<LayoutElement>,
 	relations: Vec<(Id, Id)>,
 	acceleration: MouseClickAcceleration,
 }
@@ -172,8 +188,8 @@ impl Snapshot {
 		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
 
 		if let Some(id) = self.acceleration.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32)) {
-			if let Some(e) = self.elements.iter().find(|e| e.id == Id::new(id).unwrap()) {
-				if let Some(on_click) = &e.element.on_click {
+			if let Some(e) = self.elements.iter().find(|e| e.element.id == Id::new(id).unwrap()) {
+				if let Some(on_click) = &e.element.element.on_click {
 					on_click();
 				}
 			}
@@ -184,27 +200,20 @@ impl Snapshot {
 /// A `Render` represents the result of rendering a [`Snapshot`] into a representation suitable for rendering.
 #[derive(Clone)]
 pub struct Render {
-	elements: Vec<LayoutElement>,
+	elements: Vec<RenderElement>,
 	relations: Vec<(Id, Id)>,
 }
 
 impl Render {
-	pub fn root(&self) -> &LayoutElement {
+	pub fn root(&self) -> &RenderElement {
 		self.elements.iter().find(|e| e.id == 1).unwrap()
-	}
-
-	pub fn query(&self) -> Fetcher<'_, LayoutElement> {
-		Fetcher {
-			elements: &self.elements,
-			relation_map: &self.relations,
-		}
 	}
 
 	pub fn size(&self) -> usize {
 		self.elements.len()
 	}
 
-	pub fn elements(&self) -> impl Iterator<Item = &LayoutElement> {
+	pub fn elements(&self) -> impl Iterator<Item = &RenderElement> {
 		self.elements.iter()
 	}
 }
@@ -314,40 +323,6 @@ mod tests {
 		fn render(&self, ctx: &mut impl Context) {
 			let mut ctx = ctx.element(BaseContainer::new(ContainerSettings::default()));
 			self.bar.render(&mut ctx);
-		}
-	}
-
-	#[test]
-	fn it_works() {
-		let viewport = VirtualViewport;
-
-		let mut engine = Engine::new();
-
-		engine.add_viewport(viewport);
-
-		let application = Application::new();
-
-		let snapshot = engine.evaluate(&application);
-		let render = engine.render(snapshot);
-
-		assert_eq!(render.size(), 5);
-
-		let query = render.query();
-
-		let root = query.get(Id::new(1).unwrap()).unwrap();
-
-		{
-			let root = root.element();
-
-			assert_eq!(root.size, Size::new(1024, 1024));
-		}
-
-		let children = root.children();
-
-		{
-			let children = children.elements();
-
-			assert_eq!(children.size_hint().1.unwrap(), 1);
 		}
 	}
 }

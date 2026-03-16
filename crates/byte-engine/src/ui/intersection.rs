@@ -1,18 +1,29 @@
+use crate::ui::{
+	element::ElementHandle,
+	flow::{Location3, Size},
+};
+
 use super::{element::Id, flow::Location, layout::LayoutElement};
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct QueryElement {
+	id: u32,
+	position: Location3,
+	size: Size,
+}
+
 /// A uniform-grid spatial index for fast mouse click hit-testing.
-#[derive(Clone)]
 pub(crate) struct MouseClickAcceleration {
 	cell_size: u32,
 	columns: usize,
 	rows: usize,
 	bounds: (u32, u32),
-	elements: Vec<LayoutElement>,
+	elements: Vec<QueryElement>,
 	buckets: Vec<Vec<usize>>,
 }
 
 impl MouseClickAcceleration {
-	fn from_layout(layout: &[LayoutElement]) -> Self {
+	fn new(layout: Vec<QueryElement>) -> Self {
 		if layout.is_empty() {
 			return Self {
 				cell_size: 1,
@@ -27,7 +38,7 @@ impl MouseClickAcceleration {
 		let mut max_x = 0;
 		let mut max_y = 0;
 
-		for element in layout {
+		for element in layout.iter() {
 			max_x = max_x.max(element.position.x().saturating_add(element.size.x()));
 			max_y = max_y.max(element.position.y().saturating_add(element.size.y()));
 		}
@@ -67,7 +78,7 @@ impl MouseClickAcceleration {
 			columns,
 			rows,
 			bounds,
-			elements: layout.to_vec(),
+			elements: layout,
 			buckets,
 		}
 	}
@@ -87,10 +98,10 @@ impl MouseClickAcceleration {
 
 		let bucket_index = row * self.columns + col;
 		let candidates = &self.buckets[bucket_index];
-		let mut top_most: Option<(usize, LayoutElement)> = None;
+		let mut top_most: Option<(usize, &QueryElement)> = None;
 
 		for &candidate_index in candidates {
-			let candidate = self.elements[candidate_index];
+			let candidate = &self.elements[candidate_index];
 			if !point_in_layout_element(candidate, mouse_position) {
 				continue;
 			}
@@ -110,7 +121,7 @@ impl MouseClickAcceleration {
 	}
 }
 
-fn point_in_layout_element(element: LayoutElement, point: Location) -> bool {
+fn point_in_layout_element(element: &QueryElement, point: Location) -> bool {
 	let (x, y) = point.into();
 	let (left, top) = Into::<Location>::into(element.position).into();
 	let right = left.saturating_add(element.size.x());
@@ -121,12 +132,23 @@ fn point_in_layout_element(element: LayoutElement, point: Location) -> bool {
 
 /// Builds an acceleration structure from `layout_containers` output for mouse click hit-testing.
 pub(crate) fn build_mouse_click_acceleration(layout: &[LayoutElement]) -> MouseClickAcceleration {
-	MouseClickAcceleration::from_layout(layout)
+	MouseClickAcceleration::new(
+		layout
+			.iter()
+			.map(|e| QueryElement {
+				id: e.element.id().get(),
+				position: e.position,
+				size: e.size,
+			})
+			.collect(),
+	)
 }
 
 #[cfg(test)]
 mod tests {
 	use utils::RGBA;
+
+	use crate::ui::intersection::{MouseClickAcceleration, QueryElement};
 
 	use super::{
 		super::{
@@ -140,27 +162,24 @@ mod tests {
 	#[test]
 	fn mouse_click_acceleration_hits_topmost_overlapping_element() {
 		let layout = vec![
-			LayoutElement {
+			QueryElement {
 				id: 1,
 				position: Location3::new(0, 0, 0),
 				size: Size::new(200, 200),
-				color: RGBA::black(),
 			},
-			LayoutElement {
+			QueryElement {
 				id: 2,
 				position: Location3::new(20, 20, 0),
 				size: Size::new(120, 120),
-				color: RGBA::black(),
 			},
-			LayoutElement {
+			QueryElement {
 				id: 3,
 				position: Location3::new(40, 40, 0),
 				size: Size::new(60, 60),
-				color: RGBA::black(),
 			},
 		];
 
-		let acceleration = build_mouse_click_acceleration(&layout);
+		let acceleration = MouseClickAcceleration::new(layout);
 
 		assert_eq!(acceleration.query(Location::new(50, 50)), Some(3));
 		assert_eq!(acceleration.query(Location::new(30, 30)), Some(2));
@@ -170,21 +189,19 @@ mod tests {
 	#[test]
 	fn mouse_click_acceleration_returns_none_when_no_hit() {
 		let layout = vec![
-			LayoutElement {
+			QueryElement {
 				id: 10,
 				position: Location3::new(0, 0, 0),
 				size: Size::new(100, 100),
-				color: RGBA::black(),
 			},
-			LayoutElement {
+			QueryElement {
 				id: 11,
 				position: Location3::new(150, 150, 0),
 				size: Size::new(50, 50),
-				color: RGBA::black(),
 			},
 		];
 
-		let acceleration = build_mouse_click_acceleration(&layout);
+		let acceleration = MouseClickAcceleration::new(layout);
 
 		assert_eq!(acceleration.query(Location::new(125, 125)), None);
 		assert_eq!(acceleration.query(Location::new(300, 300)), None);
@@ -193,21 +210,19 @@ mod tests {
 	#[test]
 	fn mouse_click_acceleration_prefers_deeper_elements_over_layout_order() {
 		let layout = vec![
-			LayoutElement {
+			QueryElement {
 				id: 20,
 				position: Location3::new(0, 0, 3),
 				size: Size::new(100, 100),
-				color: RGBA::black(),
 			},
-			LayoutElement {
+			QueryElement {
 				id: 21,
 				position: Location3::new(0, 0, 1),
 				size: Size::new(100, 100),
-				color: RGBA::black(),
 			},
 		];
 
-		let acceleration = build_mouse_click_acceleration(&layout);
+		let acceleration = MouseClickAcceleration::new(layout);
 
 		assert_eq!(acceleration.query(Location::new(50, 50)), Some(20));
 	}

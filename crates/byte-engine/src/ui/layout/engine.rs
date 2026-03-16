@@ -7,7 +7,7 @@ use crate::ui::{
 	flow::Location,
 	intersection::{build_mouse_click_acceleration, MouseClickAcceleration},
 	layout::{IdedElement, RenderElement},
-	style::{Color, ConcreteStyle},
+	style::{self, Color, ConcreteStyle},
 };
 
 use super::{
@@ -128,12 +128,21 @@ impl Engine {
 		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
 		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
 
+		let hovered_element_id = snapshot
+			.acceleration
+			.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32));
+		let hovered_element = hovered_element_id.map(|id| Id::new(id).unwrap());
+
 		let elements = snapshot
 			.elements
 			.iter()
 			.map(|e| {
 				let style = if let Some(styler) = e.element.element.styler.as_ref() {
-					styler()
+					let state = style::StyleState {
+						is_hovered: hovered_element == Some(e.element.id),
+					};
+
+					styler(&state)
 				} else {
 					ConcreteStyle::default()
 				};

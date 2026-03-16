@@ -6,13 +6,12 @@ use utils::RGBA;
 
 use crate::ui::{
 	primitive::Shapes,
-	style::{Color, ConcreteStyle},
+	style::{Color, ConcreteStyle, Styler},
 };
 
 use super::{
 	element::{self, Element, ElementHandle, Id},
 	flow::{self, Location, Location3, Offset, Size},
-	layout::query::{ElementResult, Fetcher},
 	primitive::BasePrimitive,
 	Primitive,
 };
@@ -21,7 +20,7 @@ pub struct ConcreteElement {
 	flow: flow::FlowFunction,
 	shape: Shapes,
 	on_click: Option<Box<dyn Fn()>>,
-	styler: Option<Box<dyn Fn() -> ConcreteStyle>>,
+	styler: Option<Box<dyn Styler>>,
 }
 
 impl ConcreteElement {
@@ -39,7 +38,7 @@ impl ConcreteElement {
 		self
 	}
 
-	pub fn styler(mut self, styler: Option<Box<dyn Fn() -> ConcreteStyle>>) -> Self {
+	pub fn styler(mut self, styler: Option<Box<dyn Styler>>) -> Self {
 		self.styler = styler;
 		self
 	}
@@ -74,7 +73,7 @@ fn random_color_from_id(id: u32) -> RGBA {
 	RGBA::new(0.25 + r * 0.75, 0.25 + g * 0.75, 0.25 + b * 0.75, 1.0)
 }
 
-struct IdedElement {
+pub struct IdedElement {
 	id: Id,
 	element: ConcreteElement,
 }
@@ -87,7 +86,11 @@ impl ElementHandle for IdedElement {
 
 /// Lays out the given elements and returns a vector of layout elements with their calculated positions and sizes for a given viewport.
 /// The relation map describes embedded elements.
-fn layout_elements<'a>(elements: Vec<IdedElement>, relation_map: &'a [(Id, Id)], available_space: Size) -> Vec<LayoutElement> {
+fn layout_elements<'a>(
+	mut elements: Vec<IdedElement>,
+	relation_map: &'a [(Id, Id)],
+	available_space: Size,
+) -> Vec<LayoutElement> {
 	let mut lelements = Vec::with_capacity(elements.len());
 
 	#[derive(Clone, Copy)]
@@ -99,13 +102,14 @@ fn layout_elements<'a>(elements: Vec<IdedElement>, relation_map: &'a [(Id, Id)],
 
 	#[derive(Clone, Copy)]
 	struct Context<'a> {
-		fetcher: &'a Fetcher<'a, IdedElement>,
+		relation_map: &'a [(Id, Id)],
 		root_size: Size,
 	}
 
 	fn calculate_element<'a>(element: IdedElement, ctx: Context<'a>, ts: TraversalState) -> LayoutElement {
 		let shape = &element.element.shape;
-		let size = shape.bbox(ts.available_space);
+		let available_space = if ts.depth == 0 { ctx.root_size } else { ts.available_space };
+		let size = shape.bbox(available_space);
 
 		let position = Location3::from((ts.offset.into(), ts.depth));
 
@@ -113,46 +117,79 @@ fn layout_elements<'a>(elements: Vec<IdedElement>, relation_map: &'a [(Id, Id)],
 	}
 
 	fn layout_element<'a>(
-		elements: &mut Vec<LayoutElement>,
-		element: ElementResult<'a, IdedElement>,
+		elements: &mut Vec<IdedElement>,
+		lelements: &mut Vec<LayoutElement>,
+		element: IdedElement,
 		ctx: Context<'a>,
 		ts: TraversalState,
-	) -> LayoutElement {
-		let children = element.children();
+	) -> Size {
+		let p = calculate_element(element, ctx, ts);
 
-		let p = calculate_element(element.into_element(), ctx, ts);
-
-		let available_space = p.size;
+		let size = p.size;
 		let mut offset: Offset = Into::<Location>::into(p.position).into();
+		let flow = p.element.element.flow;
+		let element_id = p.element.id;
 
-		for child in children.elements() {
-			let l = layout_element(
+		lelements.push(p);
+
+		let child_ids = ctx
+			.relation_map
+			.iter()
+			.filter_map(
+				|&(parent_id, child_id)| {
+					if parent_id == element_id {
+						Some(child_id)
+					} else {
+						None
+					}
+				},
+			)
+			.collect::<Vec<_>>();
+
+		for child_id in child_ids {
+			let Some(child_index) = elements.iter().position(|element| element.id == child_id) else {
+				continue;
+			};
+			let child = elements.swap_remove(child_index);
+			let child_size = layout_element(
 				elements,
+				lelements,
 				child,
 				ctx,
 				TraversalState {
-					available_space,
+					available_space: size,
 					offset,
 					depth: ts.depth + 1,
 				},
 			);
 
-			offset = (p.element.element.flow)(offset, l.size);
+			offset = flow(offset, child_size);
 		}
 
-		p
+		size
 	}
 
-	let mut fetcher = Fetcher { elements, relation_map };
+	let root_id = elements
+		.iter()
+		.find_map(|element| {
+			let has_parent = relation_map.iter().any(|(_, child_id)| *child_id == element.id);
+			if has_parent {
+				None
+			} else {
+				Some(element.id)
+			}
+		})
+		.expect("Root container not found");
+	let root_index = elements.iter().position(|element| element.id == root_id).unwrap();
+	let root = elements.swap_remove(root_index);
 
-	let root = fetcher.get(Id::new(1).unwrap()).unwrap(); // TODO: this is not true
-
-	let e = layout_element(
+	layout_element(
+		&mut elements,
 		&mut lelements,
 		root,
 		Context {
-			fetcher: &fetcher,
-			root_size: available_space,
+			relation_map,
+			root_size: Size::new(available_space.x(), available_space.x()),
 		},
 		TraversalState {
 			available_space,
@@ -160,8 +197,6 @@ fn layout_elements<'a>(elements: Vec<IdedElement>, relation_map: &'a [(Id, Id)],
 			depth: 0,
 		},
 	);
-
-	lelements.push(e);
 
 	lelements
 }

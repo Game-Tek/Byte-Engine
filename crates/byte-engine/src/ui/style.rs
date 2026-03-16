@@ -5,6 +5,12 @@ pub enum Color {
 	Sample(String),
 }
 
+impl Into<Color> for RGBA {
+	fn into(self) -> Color {
+		Color::Value(self)
+	}
+}
+
 pub trait Style {
 	fn layers(&self) -> &[&dyn Layer];
 }
@@ -76,3 +82,9 @@ impl Into<ConcreteStyle> for ConcreteLayer {
 		ConcreteStyle { layers: vec![self] }
 	}
 }
+
+pub struct StyleState {
+	pub is_hovered: bool,
+}
+
+pub trait Styler = Fn(&StyleState) -> ConcreteStyle;

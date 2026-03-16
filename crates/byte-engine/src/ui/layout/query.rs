@@ -1,17 +1,17 @@
 use super::element::{ElementHandle, Id};
 
 pub struct Fetcher<'a, T> {
-	pub elements: Vec<T>,
+	pub elements: &'a [T],
 	pub relation_map: &'a [(Id, Id)],
 }
 
 pub struct ElementResult<'a, T> {
-	element: T,
+	element: &'a T,
 	fetcher: &'a Fetcher<'a, T>,
 }
 
 impl<'a, T: ElementHandle> ElementResult<'a, T> {
-	pub fn into_element(self) -> T {
+	pub fn element(self) -> &'a T {
 		self.element
 	}
 
@@ -77,9 +77,10 @@ impl<'a, T: ElementHandle> ChildrenResult<'a, T> {
 }
 
 impl<'a, T: ElementHandle> Fetcher<'a, T> {
-	pub fn get(&mut self, id: Id) -> Option<ElementResult<'a, T>> {
+	pub fn get(&'a self, id: Id) -> Option<ElementResult<'a, T>> {
 		self.elements
-			.pop_if(|e| e.id() == id)
+			.iter()
+			.find(|e| e.id() == id)
 			.map(|element| ElementResult { element, fetcher: self })
 	}
 }

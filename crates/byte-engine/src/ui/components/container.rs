@@ -1,4 +1,4 @@
-use crate::ui::layout::ConcreteElement;
+use crate::ui::{layout::ConcreteElement, style::ConcreteStyle};
 
 use super::super::{
 	element::{Element, ElementHandle, Id},
@@ -11,6 +11,7 @@ use super::super::{
 pub struct BaseContainer {
 	settings: ContainerSettings,
 	on_click: Box<dyn Fn()>,
+	styler: Box<dyn Fn() -> ConcreteStyle>,
 }
 
 impl BaseContainer {
@@ -18,12 +19,20 @@ impl BaseContainer {
 		Self {
 			settings,
 			on_click: Box::new(|| {}),
+			styler: Box::new(|| ConcreteStyle::default()),
 		}
 	}
 
 	pub fn on_click(self, callback: impl Fn() + 'static) -> Self {
 		Self {
 			on_click: Box::new(callback),
+			..self
+		}
+	}
+
+	pub fn styler(self, callback: impl Fn() -> ConcreteStyle + 'static) -> Self {
+		Self {
+			styler: Box::new(callback),
 			..self
 		}
 	}
@@ -48,7 +57,9 @@ impl Element for BaseContainer {
 
 impl Into<ConcreteElement> for BaseContainer {
 	fn into(self) -> ConcreteElement {
-		ConcreteElement::new(self.settings.flow, self.primitive().shape).on_click(Some(self.on_click))
+		ConcreteElement::new(self.settings.flow, self.primitive().shape)
+			.on_click(Some(self.on_click))
+			.styler(Some(self.styler))
 	}
 }
 

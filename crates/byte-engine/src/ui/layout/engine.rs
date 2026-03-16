@@ -107,6 +107,7 @@ impl Engine {
 		let snapshot = Snapshot {
 			elements,
 			relations,
+			lelements,
 			acceleration: acc,
 		};
 
@@ -120,25 +121,24 @@ impl Engine {
 	}
 
 	/// Renders the given snapshot into a [`Render`] object.
-	pub fn render<'a>(&'a mut self, snapshot: Snapshot) -> Render {
+	pub fn render<'a>(&'a mut self, mut snapshot: Snapshot) -> Render {
 		let size = Size::new(1024, 1024);
 
 		let mouse_pos = (self.cursor_position + 1f32) * 0.5;
 		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
 		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
 
-		let mut lelements = layout_elements(&snapshot.elements, &snapshot.relations, size);
-
-		let acc = build_mouse_click_acceleration(&lelements);
-
-		if let Some(id) = acc.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32)) {
-			if let Some(e) = lelements.iter_mut().find(|e| e.id == id) {
+		if let Some(id) = snapshot
+			.acceleration
+			.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32))
+		{
+			if let Some(e) = snapshot.lelements.iter_mut().find(|e| e.id == id) {
 				e.color = e.color * RGBA::new(0.5f32, 0.5f32, 0.5f32, 1.0f32);
 			}
 		}
 
 		Render {
-			elements: lelements,
+			elements: snapshot.lelements,
 			relations: snapshot.relations,
 		}
 	}
@@ -158,6 +158,7 @@ impl Engine {
 /// User interactions, such as mouse clicks or hovers, can be realized against this snapshot.
 pub struct Snapshot {
 	elements: Vec<IdedElement>,
+	lelements: Vec<LayoutElement>, // TODO: remove
 	relations: Vec<(Id, Id)>,
 	acceleration: MouseClickAcceleration,
 }

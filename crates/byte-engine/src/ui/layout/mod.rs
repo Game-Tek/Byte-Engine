@@ -4,7 +4,10 @@ pub mod query;
 use math::{Base as _, Vector2};
 use utils::RGBA;
 
-use crate::ui::primitive::Shapes;
+use crate::ui::{
+	primitive::Shapes,
+	style::{Color, ConcreteStyle},
+};
 
 use super::{
 	element::{self, Element, ElementHandle, Id},
@@ -18,6 +21,7 @@ pub struct ConcreteElement {
 	flow: flow::FlowFunction,
 	shape: Shapes,
 	on_click: Option<Box<dyn Fn()>>,
+	styler: Option<Box<dyn Fn() -> ConcreteStyle>>,
 }
 
 impl ConcreteElement {
@@ -26,11 +30,17 @@ impl ConcreteElement {
 			flow,
 			shape,
 			on_click: None,
+			styler: None,
 		}
 	}
 
 	pub fn on_click(mut self, on_click: Option<Box<dyn Fn()>>) -> Self {
 		self.on_click = on_click;
+		self
+	}
+
+	pub fn styler(mut self, styler: Option<Box<dyn Fn() -> ConcreteStyle>>) -> Self {
+		self.styler = styler;
 		self
 	}
 }
@@ -93,17 +103,30 @@ fn layout_elements(elements: &[IdedElement], relation_map: &[(Id, Id)], availabl
 	}
 
 	fn calculate_element(element: ElementResult<'_, IdedElement>, ctx: Context, ts: TraversalState) -> LayoutElement {
-		let shape = &element.element().element.shape;
+		let element = &element.element();
+		let shape = &element.element.shape;
+		let style = if let Some(styler) = &element.element.styler {
+			styler()
+		} else {
+			ConcreteStyle::default()
+		};
 
 		let size = shape.bbox(ts.available_space);
 
 		let position = Location3::from((ts.offset.into(), ts.depth));
 
+		let layer = &style.layers[0];
+
+		let color = match layer.color {
+			Color::Value(rgba) => rgba,
+			Color::Sample(_) => todo!(),
+		};
+
 		LayoutElement {
 			id: element.id().into(),
 			position,
 			size,
-			color: random_color_from_id(element.id().into()),
+			color,
 		}
 	}
 
@@ -236,6 +259,7 @@ mod tests {
 						flow: e.flow(),
 						shape: e.primitive().shape,
 						on_click: None,
+						styler: None,
 					},
 				}
 			})

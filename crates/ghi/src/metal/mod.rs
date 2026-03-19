@@ -2140,6 +2140,10 @@ pub mod command_buffer {
 			// TODO: Issue draw call using mesh buffers.
 		}
 
+		fn draw(&mut self, _vertex_count: u32, _instance_count: u32, _first_vertex: u32, _first_instance: u32) {
+			// TODO: Issue non-indexed draw call.
+		}
+
 		fn draw_indexed(
 			&mut self,
 			_index_count: u32,

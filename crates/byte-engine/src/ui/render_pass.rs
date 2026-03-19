@@ -47,11 +47,6 @@ const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 5] = [
 	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
 	ghi::pipelines::VertexElement::new("CORNER_RADIUS", ghi::DataTypes::Float, 0),
 ];
-const TEXT_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 2] = [
-	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("UV", ghi::DataTypes::Float2, 0),
-];
-
 #[derive(Debug, Clone, Copy)]
 struct UiDrawElement {
 	position: [f32; 2],
@@ -94,13 +89,6 @@ struct UiVertex {
 	rect_size: [f32; 2],
 	color: [f32; 4],
 	corner_radius: f32,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-struct TextOverlayVertex {
-	position: [f32; 2],
-	uv: [f32; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,8 +303,6 @@ pub struct UiRenderPass {
 	index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
 	text_pipeline_layout: ghi::PipelineLayoutHandle,
 	text_pipeline: ghi::PipelineHandle,
-	text_vertex_buffer: ghi::BufferHandle<[TextOverlayVertex; 4]>,
-	text_index_buffer: ghi::BufferHandle<[u16; 6]>,
 	text_descriptor_set: ghi::DescriptorSetHandle,
 	text_overlay: ghi::DynamicImageHandle,
 	main_attachment: ghi::ImageHandle,
@@ -383,20 +369,10 @@ impl UiRenderPass {
 		];
 		let text_pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			text_pipeline_layout,
-			&TEXT_VERTEX_LAYOUT,
+			&[],
 			&text_shaders,
 			&attachments,
 		));
-		let text_vertex_buffer: ghi::BufferHandle<[TextOverlayVertex; 4]> = device.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Vertex)
-				.name("UI Text Vertices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let text_index_buffer: ghi::BufferHandle<[u16; 6]> = device.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Index)
-				.name("UI Text Indices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
 		let text_overlay = device.build_dynamic_image(
 			ghi::image::Builder::new(TEXT_OVERLAY_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("UI Text Overlay")
@@ -419,29 +395,6 @@ impl UiRenderPass {
 			),
 		);
 
-		let text_vertices = [
-			TextOverlayVertex {
-				position: [-1.0, 1.0],
-				uv: [0.0, 0.0],
-			},
-			TextOverlayVertex {
-				position: [1.0, 1.0],
-				uv: [1.0, 0.0],
-			},
-			TextOverlayVertex {
-				position: [1.0, -1.0],
-				uv: [1.0, 1.0],
-			},
-			TextOverlayVertex {
-				position: [-1.0, -1.0],
-				uv: [0.0, 1.0],
-			},
-		];
-		*device.get_mut_buffer_slice(text_vertex_buffer) = text_vertices;
-		device.sync_buffer(text_vertex_buffer);
-		*device.get_mut_buffer_slice(text_index_buffer) = [0, 1, 2, 2, 3, 0];
-		device.sync_buffer(text_index_buffer);
-
 		Self {
 			pipeline_layout,
 			pipeline,
@@ -449,8 +402,6 @@ impl UiRenderPass {
 			index_buffer,
 			text_pipeline_layout,
 			text_pipeline,
-			text_vertex_buffer,
-			text_index_buffer,
 			text_descriptor_set,
 			text_overlay,
 			main_attachment,
@@ -519,8 +470,6 @@ impl RenderPass for UiRenderPass {
 		let index_buffer = self.index_buffer;
 		let text_pipeline_layout = self.text_pipeline_layout;
 		let text_pipeline = self.text_pipeline;
-		let text_vertex_buffer = self.text_vertex_buffer;
-		let text_index_buffer = self.text_index_buffer;
 		let text_descriptor_set = self.text_descriptor_set;
 		let main_attachment = self.main_attachment;
 		let batches = geometry.batches;
@@ -557,14 +506,11 @@ impl RenderPass for UiRenderPass {
 				}
 
 				if draw_text_overlay {
-					command_buffer.bind_vertex_buffers(&[text_vertex_buffer.into()]);
-					command_buffer.bind_index_buffer(&text_index_buffer.into());
-
 					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
 					let command_buffer = command_buffer.bind_pipeline_layout(text_pipeline_layout);
 					command_buffer.bind_descriptor_sets(&[text_descriptor_set]);
 					let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
-					command_buffer.draw_indexed(6, 1, 0, 0, 0);
+					command_buffer.draw(3, 1, 0, 0);
 					command_buffer.end_render_pass();
 				}
 			});
@@ -724,14 +670,17 @@ fn create_text_overlay_vertex_shader(device: &mut ghi::implementation::Device) -
 		#version 460
 		#pragma shader_stage(vertex)
 
-		layout(location = 0) in vec2 in_position;
-		layout(location = 1) in vec2 in_uv;
-
 		layout(location = 0) out vec2 out_uv;
 
 		void main() {
-			gl_Position = vec4(in_position, 0.0, 1.0);
-			out_uv = in_uv;
+			vec2 positions[3] = vec2[](
+				vec2(-1.0, -1.0),
+				vec2(-1.0, 3.0),
+				vec2(3.0, -1.0)
+			);
+			vec2 position = positions[gl_VertexIndex];
+			gl_Position = vec4(position, 0.0, 1.0);
+			out_uv = vec2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
 		}
 		"#,
 		"ui_text_overlay.vert",

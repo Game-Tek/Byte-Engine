@@ -1784,6 +1784,21 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		}
 	}
 
+	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
+		let command_buffer = self.get_command_buffer();
+		let command_buffer_handle = command_buffer.command_buffer;
+
+		unsafe {
+			self.device.device.cmd_draw(
+				command_buffer_handle,
+				vertex_count,
+				instance_count,
+				first_vertex,
+				first_instance,
+			);
+		}
+	}
+
 	fn draw_indexed(
 		&mut self,
 		index_count: u32,

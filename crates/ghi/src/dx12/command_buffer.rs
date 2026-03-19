@@ -177,6 +177,10 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		// TODO: DX12 draw calls require command list encoding.
 	}
 
+	fn draw(&mut self, _vertex_count: u32, _instance_count: u32, _first_vertex: u32, _first_instance: u32) {
+		// TODO: DX12 draw calls require command list encoding.
+	}
+
 	fn draw_indexed(
 		&mut self,
 		_index_count: u32,

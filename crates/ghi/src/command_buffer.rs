@@ -2,8 +2,8 @@ use utils::Extent;
 
 use crate::{
 	graphics_hardware_interface::ImageHandleLike, rt, AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle,
-	ClearValue, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle,
-	PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	ClearValue, DescriptorSetHandle, DispatchExtent, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey,
+	RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
 };
 
 pub trait CommandBufferRecording
@@ -92,6 +92,8 @@ pub trait BoundPipelineLayoutMode: CommonCommandBufferMode {
 pub trait BoundRasterizationPipelineMode: BoundPipelineLayoutMode + RasterizationRenderPassMode {
 	/// Draws a render system mesh.
 	fn draw_mesh(&mut self, mesh_handle: &MeshHandle);
+
+	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32);
 
 	fn draw_indexed(
 		&mut self,

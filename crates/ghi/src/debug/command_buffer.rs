@@ -1,7 +1,7 @@
 use crate::{
 	AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue, CommandBufferHandle,
-	DescriptorSetHandle, DispatchExtent, FrameKey, ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle,
-	PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey,
+	RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
 };
 use utils::Extent;
 
@@ -131,6 +131,8 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 
 	pub fn draw_mesh(&mut self, _mesh_handle: &MeshHandle) {}
+
+	pub fn draw(&mut self, _vertex_count: u32, _instance_count: u32, _first_vertex: u32, _first_instance: u32) {}
 
 	pub fn draw_indexed(
 		&mut self,

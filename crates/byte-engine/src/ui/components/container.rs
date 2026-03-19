@@ -2,7 +2,7 @@ use utils::{Box, RGBA};
 
 use crate::ui::{
 	element::ConcreteElement,
-	flow::{Offset, Size},
+	flow::{FlowInput, FlowOutput},
 	primitive::Events,
 	style::{ConcreteLayer, ConcreteStyle, Styler, StylerFn},
 };
@@ -57,7 +57,7 @@ pub struct ContainerSettings {
 	max_width: Option<Sizing>,
 	max_height: Option<Sizing>,
 	depth: i16,
-	pub flow: utils::InlineCopyFn<fn(Offset, Size) -> Offset>,
+	pub flow: utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>,
 }
 
 impl ContainerSettings {
@@ -115,7 +115,7 @@ impl ContainerSettings {
 
 	pub fn flow(self, flow: impl FlowFunction + Copy + 'static) -> Self {
 		Self {
-			flow: utils::InlineCopyFn::<fn(Offset, Size) -> Offset>::new(flow),
+			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow),
 			..self
 		}
 	}
@@ -132,7 +132,7 @@ impl Default for ContainerSettings {
 			max_width: None,
 			max_height: None,
 			depth: 0,
-			flow: utils::InlineCopyFn::<fn(Offset, Size) -> Offset>::new(flow::grid),
+			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow::grid),
 		}
 	}
 }

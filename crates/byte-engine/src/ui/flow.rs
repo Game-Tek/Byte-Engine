@@ -9,9 +9,34 @@ pub struct Location3(u32, u32, u32);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Size(u32, u32);
 
+/// The `FlowInput` struct carries the parent space and cursor needed to place children.
+#[derive(Clone, Copy)]
+pub struct FlowInput {
+	parent_size: Size,
+	cursor: Offset,
+	child_size: Size,
+}
+
+/// The `FlowOutput` struct carries the positioned child offset and the next cursor.
+#[derive(Clone, Copy)]
+pub struct FlowOutput {
+	child_offset: Offset,
+	next_cursor: Offset,
+}
+
 impl Offset {
 	pub fn new(x: i32, y: i32) -> Self {
 		Self(x, y)
+	}
+
+	#[inline]
+	pub fn x(&self) -> i32 {
+		self.0
+	}
+
+	#[inline]
+	pub fn y(&self) -> i32 {
+		self.1
 	}
 }
 
@@ -89,27 +114,108 @@ impl Add for Size {
 	}
 }
 
-pub fn row(offset: Offset, size: Size) -> Offset {
-	Offset(offset.0 + size.0 as i32, offset.1)
+impl FlowInput {
+	pub fn new(parent_size: Size, cursor: Offset, child_size: Size) -> Self {
+		Self {
+			parent_size,
+			cursor,
+			child_size,
+		}
+	}
+
+	#[inline]
+	pub fn parent_size(&self) -> Size {
+		self.parent_size
+	}
+
+	#[inline]
+	pub fn cursor(&self) -> Offset {
+		self.cursor
+	}
+
+	#[inline]
+	pub fn child_size(&self) -> Size {
+		self.child_size
+	}
 }
 
-pub fn column(offset: Offset, size: Size) -> Offset {
-	Offset(offset.0, offset.1 + size.1 as i32)
+impl FlowOutput {
+	pub fn new(child_offset: Offset, next_cursor: Offset) -> Self {
+		Self {
+			child_offset,
+			next_cursor,
+		}
+	}
+
+	#[inline]
+	pub fn child_offset(&self) -> Offset {
+		self.child_offset
+	}
+
+	#[inline]
+	pub fn next_cursor(&self) -> Offset {
+		self.next_cursor
+	}
+
+	#[inline]
+	pub fn anchored(offset: Offset, size: Size) -> Self {
+		Self::new(offset, Offset(offset.0 + size.0 as i32, offset.1))
+	}
 }
 
-pub fn grid(offset: Offset, size: Size) -> Offset {
-	Offset(offset.0 + size.0 as i32, offset.1 + size.1 as i32)
+pub fn row(input: FlowInput) -> FlowOutput {
+	let offset = input.cursor;
+	let size = input.child_size;
+	FlowOutput::new(offset, Offset(offset.0 + size.0 as i32, offset.1))
+}
+
+pub fn column(input: FlowInput) -> FlowOutput {
+	let offset = input.cursor;
+	let size = input.child_size;
+	FlowOutput::new(offset, Offset(offset.0, offset.1 + size.1 as i32))
+}
+
+pub fn grid(input: FlowInput) -> FlowOutput {
+	let offset = input.cursor;
+	let size = input.child_size;
+	FlowOutput::new(offset, Offset(offset.0 + size.0 as i32, offset.1 + size.1 as i32))
 }
 
 pub fn row_with_gap(gap: u32) -> impl FlowFunction {
-	move |offset, size| Offset(offset.0 + size.0 as i32 + gap as i32, offset.1)
+	move |input| {
+		let offset = input.cursor;
+		let size = input.child_size;
+		FlowOutput::new(offset, Offset(offset.0 + size.0 as i32 + gap as i32, offset.1))
+	}
 }
 
 pub fn column_with_gap(gap: u32) -> impl FlowFunction {
-	move |offset, size| Offset(offset.0, offset.1 + size.1 as i32 + gap as i32)
+	move |input| {
+		let offset = input.cursor;
+		let size = input.child_size;
+		FlowOutput::new(offset, Offset(offset.0, offset.1 + size.1 as i32 + gap as i32))
+	}
 }
 
-pub trait FlowFunction = Fn(Offset, Size) -> Offset + Copy;
+pub fn centered_column(input: FlowInput) -> FlowOutput {
+	let offset = Offset(
+		input.cursor.0 + ((input.parent_size.0 as i32 - input.child_size.0 as i32) / 2).max(0),
+		input.cursor.1,
+	);
+
+	FlowOutput::new(offset, Offset(input.cursor.0, input.cursor.1 + input.child_size.1 as i32))
+}
+
+pub fn center(input: FlowInput) -> FlowOutput {
+	let offset = Offset(
+		input.cursor.0 + ((input.parent_size.0 as i32 - input.child_size.0 as i32) / 2).max(0),
+		input.cursor.1 + ((input.parent_size.1 as i32 - input.child_size.1 as i32) / 2).max(0),
+	);
+
+	FlowOutput::new(offset, input.cursor)
+}
+
+pub trait FlowFunction = Fn(FlowInput) -> FlowOutput + Copy;
 
 impl Location3 {
 	pub fn new(x: u32, y: u32, z: u32) -> Self {

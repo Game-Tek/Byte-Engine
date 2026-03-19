@@ -15,7 +15,7 @@ use crate::ui::{
 
 use super::{
 	element::{self, Element, ElementHandle, Id},
-	flow::{self, Location, Location3, Offset, Size},
+	flow::{self, FlowInput, Location, Location3, Offset, Size},
 	primitive::BasePrimitive,
 	Primitive,
 };
@@ -101,7 +101,15 @@ fn layout_elements<'a>(
 		text_system: &mut TextSystem,
 	) -> LayoutElement {
 		let available_space = if ts.depth == 0 { ctx.root_size } else { ts.available_space };
-		let size = match &element.element.primitive {
+		let size = calculate_element_size(&element, available_space, text_system);
+
+		let position = Location3::from((ts.offset.into(), ts.depth));
+
+		LayoutElement { position, size, element }
+	}
+
+	fn calculate_element_size(element: &IdedElement, available_space: Size, text_system: &mut TextSystem) -> Size {
+		match &element.element.primitive {
 			Primitives::Container(container) => Shapes::Box {
 				half: (container.settings.width, container.settings.height),
 				radius: container.settings.corner_radius,
@@ -109,11 +117,7 @@ fn layout_elements<'a>(
 			.bbox(available_space),
 			Primitives::Shape(shape) => shape.shape.bbox(available_space),
 			Primitives::Text(text) => text_system.measure(text.content(), text.settings().font_size),
-		};
-
-		let position = Location3::from((ts.offset.into(), ts.depth));
-
-		LayoutElement { position, size, element }
+		}
 	}
 
 	fn layout_element<'a>(
@@ -127,7 +131,7 @@ fn layout_elements<'a>(
 		let p = calculate_element(element, ctx, ts, text_system);
 
 		let size = p.size;
-		let mut offset: Offset = Into::<Location>::into(p.position).into();
+		let mut cursor: Offset = Into::<Location>::into(p.position).into();
 		let element_id = p.element.id;
 
 		match &p.element.element.primitive {
@@ -155,6 +159,8 @@ fn layout_elements<'a>(
 						continue;
 					};
 					let child = elements.swap_remove(child_index);
+					let expected_child_size = calculate_element_size(&child, size, text_system);
+					let flow_output = flow.call(FlowInput::new(size, cursor, expected_child_size));
 					let child_size = layout_element(
 						elements,
 						lelements,
@@ -162,20 +168,21 @@ fn layout_elements<'a>(
 						ctx,
 						TraversalState {
 							available_space: size,
-							offset,
+							offset: flow_output.child_offset(),
 							depth: ts.depth + 1,
 						},
 						text_system,
 					);
 
-					offset = flow.call(offset, child_size);
+					cursor = flow_output.next_cursor();
+					debug_assert_eq!(expected_child_size, child_size);
 				}
 
 				size
 			}
 			Primitives::Shape(shape) => {
 				lelements.push(p);
-				Size::new(0, 0) // Shape elements have no size
+				size
 			}
 			Primitives::Text(_) => {
 				lelements.push(p);
@@ -411,5 +418,75 @@ mod tests {
 		let element = &elements[4];
 		assert_eq!(element.size, Size::new(64, 64));
 		assert_eq!(element.position, Location3::new(0, 192, 1));
+	}
+
+	#[test]
+	fn layout_centered_column() {
+		let root = Container::new(ContainerSettings::default().flow(flow::centered_column));
+		let a = Container::new(
+			ContainerSettings::default()
+				.width(Sizing::Absolute(64))
+				.height(Sizing::Absolute(32)),
+		);
+		let b = Container::new(
+			ContainerSettings::default()
+				.width(Sizing::Absolute(20))
+				.height(Sizing::Absolute(16)),
+		);
+
+		let elements = make_elements([root, a, b]);
+
+		let root = &elements[0];
+		let a = &elements[1];
+		let b = &elements[2];
+
+		let relations = [(root.id(), a.id()), (root.id(), b.id())];
+
+		let elements = layout_elements(elements, &relations, Size::new(100, 100), &mut TextSystem::new());
+
+		assert_eq!(elements.len(), 3);
+
+		let element = &elements[1];
+		assert_eq!(element.position, Location3::new(18, 0, 1));
+		assert_eq!(element.size, Size::new(64, 32));
+
+		let element = &elements[2];
+		assert_eq!(element.position, Location3::new(40, 32, 1));
+		assert_eq!(element.size, Size::new(20, 16));
+	}
+
+	#[test]
+	fn layout_center() {
+		let root = Container::new(ContainerSettings::default().flow(flow::center));
+		let a = Container::new(
+			ContainerSettings::default()
+				.width(Sizing::Absolute(20))
+				.height(Sizing::Absolute(10)),
+		);
+		let b = Container::new(
+			ContainerSettings::default()
+				.width(Sizing::Absolute(40))
+				.height(Sizing::Absolute(20)),
+		);
+
+		let elements = make_elements([root, a, b]);
+
+		let root = &elements[0];
+		let a = &elements[1];
+		let b = &elements[2];
+
+		let relations = [(root.id(), a.id()), (root.id(), b.id())];
+
+		let elements = layout_elements(elements, &relations, Size::new(100, 80), &mut TextSystem::new());
+
+		assert_eq!(elements.len(), 3);
+
+		let element = &elements[1];
+		assert_eq!(element.position, Location3::new(40, 35, 1));
+		assert_eq!(element.size, Size::new(20, 10));
+
+		let element = &elements[2];
+		assert_eq!(element.position, Location3::new(30, 30, 1));
+		assert_eq!(element.size, Size::new(40, 20));
 	}
 }

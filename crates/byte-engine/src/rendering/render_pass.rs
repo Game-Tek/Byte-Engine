@@ -70,7 +70,7 @@ impl<'a> RenderPassBuilder<'a> {
 		let name = builder.get_name().unwrap().to_string();
 		let format = builder.get_format();
 
-		let image = self.device.build_dynamic_image(builder);
+		let image = self.device.build_image(builder);
 
 		self.images.insert(name, self.view_id, image, format);
 
@@ -93,7 +93,7 @@ impl<'a> RenderPassBuilder<'a> {
 
 #[derive(Clone, Copy)]
 pub struct ReadFromResult {
-	image: ghi::DynamicImageHandle,
+	image: ghi::ImageHandle,
 }
 
 impl ghi::graphics_hardware_interface::ImageHandleLike for ReadFromResult {
@@ -102,7 +102,7 @@ impl ghi::graphics_hardware_interface::ImageHandleLike for ReadFromResult {
 	}
 }
 
-impl From<ReadFromResult> for ghi::DynamicImageHandle {
+impl From<ReadFromResult> for ghi::ImageHandle {
 	fn from(value: ReadFromResult) -> Self {
 		value.image
 	}
@@ -116,7 +116,7 @@ impl ghi::graphics_hardware_interface::ImageHandleLike for &ReadFromResult {
 
 #[derive(Clone, Copy)]
 pub struct RenderToResult {
-	image: ghi::DynamicImageHandle,
+	image: ghi::ImageHandle,
 	format: ghi::Formats,
 }
 
@@ -126,7 +126,7 @@ impl ghi::graphics_hardware_interface::ImageHandleLike for RenderToResult {
 	}
 }
 
-impl From<RenderToResult> for ghi::DynamicImageHandle {
+impl From<RenderToResult> for ghi::ImageHandle {
 	fn from(value: RenderToResult) -> Self {
 		value.image
 	}

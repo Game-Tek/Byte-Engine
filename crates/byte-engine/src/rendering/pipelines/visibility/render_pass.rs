@@ -17,6 +17,7 @@ use ghi::command_buffer::{
 };
 use ghi::device::{Device as _, DeviceCreate as _};
 use ghi::frame::Frame as _;
+use ghi::graphics_hardware_interface::ImageHandleLike as _;
 use ghi::implementation::Frame;
 use resource_management::glsl;
 use resource_management::resources::material;
@@ -35,9 +36,9 @@ impl VisibilityPass {
 		device: &mut ghi::implementation::Device,
 		pipeline_layout: ghi::PipelineLayoutHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
-		primitive_index: ghi::DynamicImageHandle,
-		instance_id: ghi::DynamicImageHandle,
-		depth_target: ghi::DynamicImageHandle,
+		primitive_index: ghi::ImageHandle,
+		instance_id: ghi::ImageHandle,
+		depth_target: ghi::ImageHandle,
 	) -> Self {
 		let visibility_shader = get_visibility_pass_mesh_source();
 
@@ -399,8 +400,8 @@ pub struct MaterialEvaluationPass {
 	visibility_pipeline_layout: ghi::PipelineLayoutHandle,
 	/// Material evaluation pipeline layout
 	pipeline_layout: ghi::PipelineLayoutHandle,
-	diffuse: ghi::DynamicImageHandle,
-	specular: ghi::DynamicImageHandle,
+	diffuse: ghi::ImageHandle,
+	specular: ghi::ImageHandle,
 	ao_map: ghi::DynamicImageHandle,
 	shadow_map: ghi::DynamicImageHandle,
 	/// Base layout descriptor set
@@ -416,8 +417,8 @@ impl MaterialEvaluationPass {
 	fn new(
 		visibility_pipeline_layout: ghi::PipelineLayoutHandle,
 		pipeline_layout: ghi::PipelineLayoutHandle,
-		diffuse: ghi::DynamicImageHandle,
-		specular: ghi::DynamicImageHandle,
+		diffuse: ghi::ImageHandle,
+		specular: ghi::ImageHandle,
 		ao_map: ghi::DynamicImageHandle,
 		shadow_map: ghi::DynamicImageHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
@@ -465,8 +466,8 @@ impl MaterialEvaluationPass {
 			c.clear_images(&[
 				(diffuse, ghi::ClearValue::Color(RGBA::black())),
 				(specular, ghi::ClearValue::Color(RGBA::black())),
-				(ao_map, ghi::ClearValue::Color(RGBA::white())),
-				(shadow_map, ghi::ClearValue::Depth(0.0)),
+				(ao_map.into_image_handle(), ghi::ClearValue::Color(RGBA::white())),
+				(shadow_map.into_image_handle(), ghi::ClearValue::Depth(0.0)),
 			]);
 
 			let c = c.bind_pipeline_layout(visibility_pipeline_layout);
@@ -533,13 +534,13 @@ impl VisibilityPipelineRenderPass {
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
-		diffuse: ghi::DynamicImageHandle,
-		specular: ghi::DynamicImageHandle,
+		diffuse: ghi::ImageHandle,
+		specular: ghi::ImageHandle,
 		ao_map: ghi::DynamicImageHandle,
 		shadow_map: ghi::DynamicImageHandle,
-		depth: ghi::DynamicImageHandle,
-		primitive_index: ghi::DynamicImageHandle,
-		instance_id: ghi::DynamicImageHandle,
+		depth: ghi::ImageHandle,
+		primitive_index: ghi::ImageHandle,
+		instance_id: ghi::ImageHandle,
 		material_xy: ghi::BufferHandle<[(u16, u16); 2073600]>,
 		material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,

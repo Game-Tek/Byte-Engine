@@ -678,6 +678,8 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub(crate) fn sync_textures(&mut self, copy_textures: impl Iterator<Item = ImageCopy> + Clone) {
+		let copied_textures = copy_textures.clone();
+
 		self.vulkan_consume_resources(copy_textures.clone().map(|e| VulkanConsumption {
 			handle: Handle::Image(e.dst_texture),
 			stages: vk::PipelineStageFlags2::TRANSFER,
@@ -687,7 +689,7 @@ impl CommandBufferRecording<'_> {
 
 		let command_buffer = self.get_command_buffer();
 
-		for copy_texture in copy_textures {
+		for copy_texture in copied_textures {
 			let image = self.get_image(copy_texture.dst_texture);
 
 			let regions = [vk::BufferImageCopy2::default()
@@ -724,6 +726,13 @@ impl CommandBufferRecording<'_> {
 					.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
 			}
 		}
+
+		self.consume_resources(copy_textures.map(|e| Consumption {
+			handle: Handle::Image(e.dst_texture),
+			stages: crate::Stages::FRAGMENT,
+			access: crate::AccessPolicies::READ,
+			layout: crate::Layouts::Read,
+		}))(self);
 	}
 }
 

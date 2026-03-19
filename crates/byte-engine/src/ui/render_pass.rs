@@ -6,6 +6,8 @@ use ghi::{
 	},
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
+	graphics_hardware_interface::ImageHandleLike as _,
+	types::Size as _,
 };
 use resource_management::{glsl, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{Box, Extent, RGBA};
@@ -317,7 +319,7 @@ pub struct UiRenderPass {
 	text_index_buffer: ghi::BufferHandle<[u16; 6]>,
 	text_descriptor_set: ghi::DescriptorSetHandle,
 	text_overlay: ghi::DynamicImageHandle,
-	main_attachment: ghi::DynamicImageHandle,
+	main_attachment: ghi::ImageHandle,
 	data: UiDrawList,
 	reported_capacity_limit: bool,
 	text_system: TextSystem,
@@ -328,7 +330,7 @@ impl Entity for UiRenderPass {}
 impl UiRenderPass {
 	/// Creates a UI pass and all GPU resources used to draw layout primitives.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let main_attachment: ghi::DynamicImageHandle = render_pass_builder
+		let main_attachment = render_pass_builder
 			.create_render_target(
 				ghi::image::Builder::new(
 					MAIN_ATTACHMENT_FORMAT,
@@ -336,7 +338,7 @@ impl UiRenderPass {
 				)
 				.name("UI"),
 			)
-			.into();
+			.into_image_handle();
 
 		render_pass_builder.alias("UI", "main");
 
@@ -491,9 +493,15 @@ impl RenderPass for UiRenderPass {
 		let mut draw_text_overlay = false;
 
 		if !self.data.texts.is_empty() {
+			assert!(
+				extent.width() > 0 && extent.height() > 0,
+				"UI text overlay resize requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
+			);
+
 			frame.resize_image(self.text_overlay, Extent::rectangle(extent.width(), extent.height()));
 
 			let overlay = frame.get_texture_slice_mut(self.text_overlay);
+			let expected_overlay_size = extent.width() as usize * extent.height() as usize * TEXT_OVERLAY_FORMAT.size();
 			draw_text_overlay = rasterize_text_overlay(&self.data, extent, &mut self.text_system, overlay);
 
 			if draw_text_overlay {
@@ -519,6 +527,11 @@ impl RenderPass for UiRenderPass {
 
 		Some(Box::new(move |command_buffer, _| {
 			command_buffer.region("UI", |command_buffer| {
+				assert!(
+					!draw_text_overlay || extent.width() > 0 && extent.height() > 0,
+					"UI text overlay render pass requires a non-zero attachment extent. The most likely cause is that a stale prepared UI pass survived a viewport resize or minimization."
+				);
+
 				let attachments = [ghi::AttachmentInformation::new(
 					main_attachment,
 					MAIN_ATTACHMENT_FORMAT,

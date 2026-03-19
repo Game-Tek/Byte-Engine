@@ -1634,7 +1634,7 @@ impl Device {
 
 		Image {
 			next,
-			size: texture_creation_result.size,
+			size,
 			staging_buffer,
 			pointer,
 			image: texture_creation_result.resource,
@@ -2670,13 +2670,28 @@ impl crate::device::Device for Device {
 	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
 		let texture = &self.images[texture_handle.0 as usize];
 		let size = texture.size;
-		let pointer = texture.pointer.unwrap();
+		assert!(
+			texture.staging_buffer.is_some(),
+			"Attempted to map an image without a staging buffer. The most likely cause is that the image was created without CPU-visible access but is being written from the CPU."
+		);
+		let pointer = texture.pointer.expect(
+			"Attempted to map an image without a CPU-visible pointer. The most likely cause is that image resize or creation did not rebuild the host-visible staging allocation."
+		);
+		assert!(
+			size > 0,
+			"Attempted to map a zero-sized image. The most likely cause is that the image was used before receiving a valid extent."
+		);
 
 		unsafe { std::slice::from_raw_parts_mut(pointer, size) }
 	}
 
 	fn sync_texture(&mut self, image_handle: crate::ImageHandle) {
 		let image_handle = ImageHandle(image_handle.0);
+		let image = &self.images[image_handle.0 as usize];
+		assert!(
+			image.staging_buffer.is_some(),
+			"Attempted to sync an image without a staging buffer. The most likely cause is that CPU-side image uploads are being requested for a GPU-only image."
+		);
 
 		self.pending_image_syncs.insert(image_handle);
 	}

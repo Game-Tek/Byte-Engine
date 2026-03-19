@@ -46,28 +46,36 @@ impl<'a> CommandBufferRecording<'a> {
 		self
 	}
 
-	pub fn clear_images(&mut self, _textures: &[(ImageHandle, ClearValue)]) {}
+	pub fn clear_images<I: crate::graphics_hardware_interface::ImageHandleLike>(&mut self, _textures: &[(I, ClearValue)]) {}
 
 	pub fn clear_buffers(&mut self, _buffer_handles: &[BaseBufferHandle]) {}
 
-	pub fn transfer_textures(&mut self, _texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle> {
+	pub fn transfer_textures(
+		&mut self,
+		_texture_handles: &[impl crate::graphics_hardware_interface::ImageHandleLike],
+	) -> Vec<TextureCopyHandle> {
 		Vec::new()
 	}
 
-	pub fn write_image_data(&mut self, _image_handle: ImageHandle, _data: &[RGBAu8]) {}
+	pub fn write_image_data(
+		&mut self,
+		_image_handle: impl crate::graphics_hardware_interface::ImageHandleLike,
+		_data: &[RGBAu8],
+	) {
+	}
 
 	pub fn blit_image(
 		&mut self,
-		_source_image: ImageHandle,
+		_source_image: impl crate::graphics_hardware_interface::ImageHandleLike,
 		_source_layout: Layouts,
-		_destination_image: ImageHandle,
+		_destination_image: impl crate::graphics_hardware_interface::ImageHandleLike,
 		_destination_layout: Layouts,
 	) {
 	}
 
 	pub fn copy_to_swapchain(
 		&mut self,
-		_source_texture_handle: ImageHandle,
+		_source_texture_handle: impl crate::graphics_hardware_interface::ImageHandleLike,
 		_present_image_index: PresentKey,
 		_swapchain_handle: SwapchainHandle,
 	) {

@@ -1,6 +1,6 @@
 use crate::{
-	BaseBufferHandle, DescriptorSetBindingHandle, ImageHandle, Layouts, Ranges, SamplerHandle, SwapchainHandle,
-	TopLevelAccelerationStructureHandle,
+	graphics_hardware_interface::ImageHandleLike, BaseBufferHandle, DescriptorSetBindingHandle, ImageHandle, Layouts, Ranges,
+	SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -61,12 +61,12 @@ impl Write {
 		}
 	}
 
-	pub fn image(binding_handle: DescriptorSetBindingHandle, image_handle: ImageHandle, layout: Layouts) -> Write {
+	pub fn image(binding_handle: DescriptorSetBindingHandle, image_handle: impl ImageHandleLike, layout: Layouts) -> Write {
 		Write {
 			binding_handle,
 			array_element: 0,
 			descriptor: WriteData::Image {
-				handle: image_handle,
+				handle: image_handle.into_image_handle(),
 				layout,
 			},
 			frame_offset: None,
@@ -75,7 +75,7 @@ impl Write {
 
 	pub fn image_with_frame(
 		binding_handle: DescriptorSetBindingHandle,
-		image_handle: ImageHandle,
+		image_handle: impl ImageHandleLike,
 		layout: Layouts,
 		frame_offset: i32,
 	) -> Write {
@@ -83,7 +83,7 @@ impl Write {
 			binding_handle,
 			array_element: 0,
 			descriptor: WriteData::Image {
-				handle: image_handle,
+				handle: image_handle.into_image_handle(),
 				layout,
 			},
 			frame_offset: Some(frame_offset),
@@ -101,7 +101,7 @@ impl Write {
 
 	pub fn combined_image_sampler(
 		binding_handle: DescriptorSetBindingHandle,
-		image_handle: ImageHandle,
+		image_handle: impl ImageHandleLike,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 	) -> Write {
@@ -109,7 +109,7 @@ impl Write {
 			binding_handle,
 			array_element: 0,
 			descriptor: WriteData::CombinedImageSampler {
-				image_handle,
+				image_handle: image_handle.into_image_handle(),
 				sampler_handle,
 				layout,
 				layer: None,

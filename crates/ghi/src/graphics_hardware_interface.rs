@@ -28,6 +28,15 @@ pub struct BufferHandle<T>(pub(super) u64, pub(super) std::marker::PhantomData<T
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct DynamicBufferHandle<T>(pub(super) u64, pub(super) std::marker::PhantomData<T>);
 
+/// The `DynamicImageHandle` struct addresses a frame-local image that can be written independently for each frame in flight.
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+pub struct DynamicImageHandle(pub(super) u64);
+
+pub trait ImageHandleLike: Copy {
+	#[doc(hidden)]
+	fn into_image_handle(self) -> ImageHandle;
+}
+
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct TopLevelAccelerationStructureHandle(pub(super) u64);
 
@@ -88,6 +97,24 @@ impl<T: Copy> Into<BaseBufferHandle> for BufferHandle<T> {
 impl<T: Copy> Into<BaseBufferHandle> for DynamicBufferHandle<T> {
 	fn into(self) -> BaseBufferHandle {
 		BaseBufferHandle(self.0)
+	}
+}
+
+impl ImageHandleLike for ImageHandle {
+	fn into_image_handle(self) -> ImageHandle {
+		self
+	}
+}
+
+impl ImageHandleLike for DynamicImageHandle {
+	fn into_image_handle(self) -> ImageHandle {
+		ImageHandle(self.0)
+	}
+}
+
+impl Into<Handle> for DynamicImageHandle {
+	fn into(self) -> Handle {
+		self.into_image_handle().into()
 	}
 }
 
@@ -276,9 +303,16 @@ pub struct AttachmentInformation {
 }
 
 impl AttachmentInformation {
-	pub fn new(image: ImageHandle, format: Formats, layout: Layouts, clear: ClearValue, load: bool, store: bool) -> Self {
+	pub fn new(
+		image: impl ImageHandleLike,
+		format: Formats,
+		layout: Layouts,
+		clear: ClearValue,
+		load: bool,
+		store: bool,
+	) -> Self {
 		Self {
-			image,
+			image: image.into_image_handle(),
 			format,
 			layout,
 			clear,
@@ -572,12 +606,15 @@ impl<'a> BindingConstructor<'a> {
 		}
 	}
 
-	pub fn image(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, image_handle: ImageHandle) -> Self {
+	pub fn image(
+		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
+		image_handle: impl ImageHandleLike,
+	) -> Self {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
 			descriptor: descriptors::WriteData::Image {
-				handle: image_handle,
+				handle: image_handle.into_image_handle(),
 				layout: crate::Layouts::General,
 			},
 			frame_offset: None,
@@ -595,7 +632,7 @@ impl<'a> BindingConstructor<'a> {
 
 	pub fn combined_image_sampler(
 		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
-		image_handle: ImageHandle,
+		image_handle: impl ImageHandleLike,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 	) -> Self {
@@ -603,7 +640,7 @@ impl<'a> BindingConstructor<'a> {
 			descriptor_set_binding_template,
 			array_element: 0,
 			descriptor: descriptors::WriteData::CombinedImageSampler {
-				image_handle,
+				image_handle: image_handle.into_image_handle(),
 				sampler_handle,
 				layout,
 				layer: None,
@@ -2130,6 +2167,70 @@ pub(super) mod tests {
 		}
 
 		assert!(!device.has_errors())
+	}
+
+	pub(crate) fn dynamic_textures(device: &mut impl Device, queue_handle: QueueHandle) {
+		//! Tests that dynamic textures write to the current frame image instead of always writing to the root image.
+
+		let extent = Extent::square(2);
+		let pixel_count = (extent.width() * extent.height()) as usize;
+
+		let upload_image = device.build_dynamic_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferSource)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::HostToDevice),
+		);
+
+		let readback_image = device.build_dynamic_image(
+			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferDestination)
+				.extent(extent)
+				.device_accesses(DeviceAccesses::DeviceToHost),
+		);
+
+		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
+		let render_finished_synchronizer = device.create_synchronizer(None, true);
+
+		let expected_colors = [
+			RGBAu8 {
+				r: 255,
+				g: 0,
+				b: 0,
+				a: 255,
+			},
+			RGBAu8 {
+				r: 0,
+				g: 255,
+				b: 0,
+				a: 255,
+			},
+		];
+
+		for (frame_index, expected_color) in expected_colors.into_iter().enumerate() {
+			let mut frame = device.start_frame(frame_index as u32, render_finished_synchronizer);
+
+			let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image);
+			let pixels = unsafe { std::slice::from_raw_parts_mut(texture_slice.as_mut_ptr() as *mut RGBAu8, pixel_count) };
+			pixels.fill(expected_color);
+			frame.sync_texture(upload_image);
+
+			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
+			command_buffer_recording.blit_image(upload_image, Layouts::Transfer, readback_image, Layouts::Transfer);
+			let texture_copy_handles = command_buffer_recording.transfer_textures(&[readback_image]);
+			let terminated_command_buffer = command_buffer_recording.end(&[]);
+			frame.execute(terminated_command_buffer, render_finished_synchronizer);
+
+			device.wait();
+
+			let pixels = unsafe {
+				std::slice::from_raw_parts(
+					device.get_image_data(texture_copy_handles[0]).as_ptr() as *const RGBAu8,
+					pixel_count,
+				)
+			};
+
+			assert!(pixels.iter().all(|pixel| *pixel == expected_color));
+			assert!(!device.has_errors());
+		}
 	}
 
 	pub(crate) fn multiframe_resources(device: &mut impl Device, queue_handle: QueueHandle) {

@@ -449,10 +449,9 @@ impl Renderer {
 					None
 				};
 
-				let result = self.device.build_image(
+				let result = self.device.build_dynamic_image(
 					ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::BlitSource)
-						.name("result")
-						.use_case(ghi::UseCases::DYNAMIC),
+						.name("result"),
 				);
 
 				self.render_targets
@@ -489,7 +488,7 @@ impl Renderer {
 
 struct Attachment {
 	name: String,
-	image: ghi::ImageHandle,
+	image: ghi::DynamicImageHandle,
 }
 
 /// This struct holds the settings to configure a `Renderer` during it's creation.
@@ -540,7 +539,7 @@ impl Settings {
 }
 
 struct CopyToSwapchainRenderPass {
-	source_texture_handle: ghi::ImageHandle,
+	source_texture_handle: ghi::DynamicImageHandle,
 	present_key: ghi::PresentKey,
 	swapchain_handle: ghi::SwapchainHandle,
 }
@@ -564,7 +563,7 @@ impl RenderPass for CopyToSwapchainRenderPass {
 }
 
 pub struct RenderTargets {
-	images: Vec<(ghi::ImageHandle, ghi::Formats)>,
+	images: Vec<(ghi::DynamicImageHandle, ghi::Formats)>,
 	/// Maps names to image indices.
 	by_name: Vec<(String, usize)>,
 	/// Maps view indices to image indices and access policies, making attachments.
@@ -588,7 +587,7 @@ impl RenderTargets {
 
 	/// Inserts a new render target image, associated to a view index.
 	/// Returns the index of the image in the internal storage.
-	pub fn insert(&mut self, name: String, view: usize, image: ghi::ImageHandle, format: ghi::Formats) -> usize {
+	pub fn insert(&mut self, name: String, view: usize, image: ghi::DynamicImageHandle, format: ghi::Formats) -> usize {
 		if let Some(_) = self.get_image_index(&name) {
 			log::debug!("An image by that name already exists");
 			panic!("An image by that name already exists");
@@ -635,7 +634,7 @@ impl RenderTargets {
 		self.by_view_index.push((view_id, (index, ghi::AccessPolicies::WRITE)));
 	}
 
-	pub fn get(&self, name: &str) -> Option<&(ghi::ImageHandle, ghi::Formats)> {
+	pub fn get(&self, name: &str) -> Option<&(ghi::DynamicImageHandle, ghi::Formats)> {
 		if let Some((_, index)) = self.by_name.iter().find(|(n, _)| n == name) {
 			self.images.get(*index)
 		} else {
@@ -678,7 +677,7 @@ impl RenderTargets {
 		attachments.collect()
 	}
 
-	fn get_image(&self, name: &str, view_id: usize) -> &ghi::ImageHandle {
+	fn get_image(&self, name: &str, view_id: usize) -> &ghi::DynamicImageHandle {
 		let index = self.get_attachment_index(name, view_id).unwrap();
 		&self.images.get(index).unwrap().0
 	}
@@ -695,7 +694,7 @@ impl RenderTargets {
 			.find_map(|(v, (i, _))| if *v == view_id && *i == image_index { Some(*i) } else { None })
 	}
 
-	fn get_images_for_view<'a>(&'a self, index: usize) -> impl Iterator<Item = &'a ghi::ImageHandle> {
+	fn get_images_for_view<'a>(&'a self, index: usize) -> impl Iterator<Item = &'a ghi::DynamicImageHandle> {
 		self.by_view_index.iter().filter_map(move |(v, (i, _))| {
 			if *v != index {
 				return None;
@@ -721,7 +720,7 @@ mod tests {
 	#[test]
 	fn test_insert_and_get() {
 		let mut rt = RenderTargets::new();
-		let image = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
+		let image = unsafe { std::mem::transmute::<u64, ghi::DynamicImageHandle>(1) };
 		let format = ghi::Formats::RGBA8UNORM;
 		let index = rt.insert("test".to_string(), 0, image, format);
 		assert_eq!(index, 0);
@@ -733,9 +732,9 @@ mod tests {
 	#[test]
 	fn test_insert_multiple() {
 		let mut rt = RenderTargets::new();
-		let image1 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
+		let image1 = unsafe { std::mem::transmute::<u64, ghi::DynamicImageHandle>(1) };
 		let format1 = ghi::Formats::RGBA8UNORM;
-		let image2 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(2) };
+		let image2 = unsafe { std::mem::transmute::<u64, ghi::DynamicImageHandle>(2) };
 		let format2 = ghi::Formats::Depth32;
 
 		rt.insert("color".to_string(), 0, image1, format1);
@@ -748,9 +747,9 @@ mod tests {
 	#[test]
 	fn test_get_attachment_infos() {
 		let mut rt = RenderTargets::new();
-		let image1 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
+		let image1 = unsafe { std::mem::transmute::<u64, ghi::DynamicImageHandle>(1) };
 		let format1 = ghi::Formats::RGBA8UNORM;
-		let image2 = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(2) };
+		let image2 = unsafe { std::mem::transmute::<u64, ghi::DynamicImageHandle>(2) };
 		let format2 = ghi::Formats::Depth32;
 
 		rt.insert("color".to_string(), 0, image1, format1);
@@ -758,7 +757,7 @@ mod tests {
 		rt.insert(
 			"other".to_string(),
 			1,
-			unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(3) },
+			unsafe { std::mem::transmute::<u64, ghi::DynamicImageHandle>(3) },
 			ghi::Formats::RGBA16UNORM,
 		);
 

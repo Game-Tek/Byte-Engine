@@ -10,6 +10,7 @@ use ghi::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
 	device::{Device as _, DeviceCreate as _},
+	graphics_hardware_interface::ImageHandleLike,
 };
 use resource_management::glsl;
 use utils::{
@@ -69,9 +70,9 @@ impl<'a> RenderPassBuilder<'a> {
 		let name = builder.get_name().unwrap().to_string();
 		let format = builder.get_format();
 
-		let image = self.device.build_image(builder.use_case(ghi::UseCases::DYNAMIC));
+		let image = self.device.build_dynamic_image(builder);
 
-		self.images.insert(name, self.view_id, image.clone(), format);
+		self.images.insert(name, self.view_id, image, format);
 
 		RenderToResult { image, format }
 	}
@@ -90,31 +91,50 @@ impl<'a> RenderPassBuilder<'a> {
 	}
 }
 
+#[derive(Clone, Copy)]
 pub struct ReadFromResult {
-	image: ghi::ImageHandle,
+	image: ghi::DynamicImageHandle,
 }
 
-impl Into<ghi::ImageHandle> for ReadFromResult {
-	fn into(self) -> ghi::ImageHandle {
-		self.image
+impl ghi::graphics_hardware_interface::ImageHandleLike for ReadFromResult {
+	fn into_image_handle(self) -> ghi::ImageHandle {
+		self.image.into_image_handle()
 	}
 }
 
-impl Into<ghi::ImageHandle> for &ReadFromResult {
-	fn into(self) -> ghi::ImageHandle {
-		self.image
+impl From<ReadFromResult> for ghi::DynamicImageHandle {
+	fn from(value: ReadFromResult) -> Self {
+		value.image
+	}
+}
+
+impl ghi::graphics_hardware_interface::ImageHandleLike for &ReadFromResult {
+	fn into_image_handle(self) -> ghi::ImageHandle {
+		self.image.into_image_handle()
 	}
 }
 
 #[derive(Clone, Copy)]
 pub struct RenderToResult {
-	image: ghi::ImageHandle,
+	image: ghi::DynamicImageHandle,
 	format: ghi::Formats,
 }
 
-impl Into<ghi::ImageHandle> for RenderToResult {
-	fn into(self) -> ghi::ImageHandle {
-		self.image
+impl ghi::graphics_hardware_interface::ImageHandleLike for RenderToResult {
+	fn into_image_handle(self) -> ghi::ImageHandle {
+		self.image.into_image_handle()
+	}
+}
+
+impl From<RenderToResult> for ghi::DynamicImageHandle {
+	fn from(value: RenderToResult) -> Self {
+		value.image
+	}
+}
+
+impl ghi::graphics_hardware_interface::ImageHandleLike for &RenderToResult {
+	fn into_image_handle(self) -> ghi::ImageHandle {
+		self.image.into_image_handle()
 	}
 }
 

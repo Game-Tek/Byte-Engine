@@ -316,8 +316,8 @@ pub struct UiRenderPass {
 	text_vertex_buffer: ghi::BufferHandle<[TextOverlayVertex; 4]>,
 	text_index_buffer: ghi::BufferHandle<[u16; 6]>,
 	text_descriptor_set: ghi::DescriptorSetHandle,
-	text_overlay: ghi::ImageHandle,
-	main_attachment: ghi::ImageHandle,
+	text_overlay: ghi::DynamicImageHandle,
+	main_attachment: ghi::DynamicImageHandle,
 	data: UiDrawList,
 	reported_capacity_limit: bool,
 	text_system: TextSystem,
@@ -328,7 +328,7 @@ impl Entity for UiRenderPass {}
 impl UiRenderPass {
 	/// Creates a UI pass and all GPU resources used to draw layout primitives.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let main_attachment: ghi::ImageHandle = render_pass_builder
+		let main_attachment: ghi::DynamicImageHandle = render_pass_builder
 			.create_render_target(
 				ghi::image::Builder::new(
 					MAIN_ATTACHMENT_FORMAT,
@@ -395,11 +395,10 @@ impl UiRenderPass {
 				.name("UI Text Indices")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let text_overlay = device.build_image(
+		let text_overlay = device.build_dynamic_image(
 			ghi::image::Builder::new(TEXT_OVERLAY_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("UI Text Overlay")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
-				.use_case(ghi::UseCases::DYNAMIC),
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let text_sampler = device.build_sampler(
 			ghi::sampler::Builder::new()

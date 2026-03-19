@@ -3,6 +3,7 @@ use std::borrow::Borrow as _;
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	device::{Device as _, DeviceCreate as _},
+	graphics_hardware_interface::ImageHandleLike,
 };
 use math::Vector2;
 use utils::{Box, Extent};
@@ -94,7 +95,7 @@ impl BilateralBlurPass {
 		source: ghi::ImageHandle,
 	) -> Self {
 		let read_depth = render_pass_builder.read_from("depth");
-		let depth_image: ghi::ImageHandle = read_depth.borrow().into();
+		let depth_image = read_depth.borrow().into_image_handle();
 
 		let device = render_pass_builder.device();
 

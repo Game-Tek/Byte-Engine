@@ -2846,7 +2846,9 @@ impl crate::device::Device for Device {
 			let fallback_usage = vk::ImageUsageFlags::TRANSFER_DST;
 
 			if !supported_image_usage.contains(fallback_usage) {
-				panic!("Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images.");
+				panic!(
+					"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
+				);
 			}
 
 			fallback_usage
@@ -4027,6 +4029,12 @@ impl crate::device::DeviceCreate for Device {
 		}
 
 		handle
+	}
+
+	fn build_dynamic_image(&mut self, builder: crate::image::Builder) -> crate::DynamicImageHandle {
+		let handle = self.build_image(builder.use_case(crate::UseCases::DYNAMIC));
+
+		crate::DynamicImageHandle(handle.0)
 	}
 
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {

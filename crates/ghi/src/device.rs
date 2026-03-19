@@ -9,8 +9,9 @@ use crate::{
 	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
 	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
 	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
-	ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle,
-	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
+	DynamicImageHandle, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentationModes, QueueHandle,
+	SamplerHandle, ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	TopLevelAccelerationStructureHandle, Uses,
 };
 
 /// The `Device` trait represents a graphics device that can be used to create and manage resources such as buffers, images, pipelines, and descriptor sets.
@@ -202,6 +203,9 @@ pub trait DeviceCreate {
 
 	/// Creates a dynamic buffer from a builder.
 	fn build_dynamic_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
+
+	/// Creates a dynamic image from a builder.
+	fn build_dynamic_image(&mut self, builder: image::Builder) -> DynamicImageHandle;
 
 	/// Creates an image from a builder.
 	fn build_image(&mut self, builder: image::Builder) -> ImageHandle;

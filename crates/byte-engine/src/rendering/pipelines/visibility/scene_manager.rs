@@ -1266,23 +1266,21 @@ impl SceneManager for VisibilityWorldRenderDomain {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
-		let ao_map = device.build_image(
+		let ao_map = device.build_dynamic_image(
 			ghi::image::Builder::new(
 				ghi::Formats::RGBA8UNORM,
 				ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination,
 			)
 			.name("Occlusion Map")
-			.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-			.use_case(ghi::UseCases::DYNAMIC),
+			.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let shadow_map = device.build_image(
+		let shadow_map = device.build_dynamic_image(
 			ghi::image::Builder::new(
 				ghi::Formats::RGBA8UNORM,
 				ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination,
 			)
 			.name("Shadow Map")
 			.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-			.use_case(ghi::UseCases::DYNAMIC)
 			.array_layers(NonZeroU32::new(1)),
 		);
 		let sampler = device.build_sampler(
@@ -1306,11 +1304,11 @@ impl SceneManager for VisibilityWorldRenderDomain {
 
 		let _ = device.create_descriptor_binding(
 			self.material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&diffuse_binding_template, diffuse_target.clone().into()),
+			ghi::BindingConstructor::image(&diffuse_binding_template, diffuse_target),
 		);
 		let _ = device.create_descriptor_binding(
 			self.material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&specular_binding_template, specular_target.clone().into()),
+			ghi::BindingConstructor::image(&specular_binding_template, specular_target),
 		);
 		let _ = device.create_descriptor_binding(
 			self.material_evaluation_descriptor_set,
@@ -1361,11 +1359,11 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		);
 		let _ = device.create_descriptor_binding(
 			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::image(&TRIANGLE_INDEX_BINDING, primitive_index.clone().into()),
+			ghi::BindingConstructor::image(&TRIANGLE_INDEX_BINDING, primitive_index),
 		);
 		let _ = device.create_descriptor_binding(
 			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, instance_id.clone().into()),
+			ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, instance_id),
 		);
 
 		render_pass_builder.alias("Diffuse", "main");

@@ -196,7 +196,9 @@ impl Device {
 		unsafe { D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, &mut device) }
 			.or_else(|_| unsafe { D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, &mut device) })
 			.map_err(|_| "Failed to create a D3D12 device. The most likely cause is that the GPU or driver does not support the required feature level.")?;
-		let device = device.ok_or("Failed to acquire a D3D12 device. The most likely cause is that the D3D12CreateDevice call returned no device instance.")?;
+		let device = device.ok_or(
+			"Failed to acquire a D3D12 device. The most likely cause is that the D3D12CreateDevice call returned no device instance.",
+		)?;
 
 		let mut queue_storage = Vec::with_capacity(queues.len());
 
@@ -274,7 +276,9 @@ impl Device {
 				};
 
 				if result.is_err() {
-					panic!("Failed to resize the DXGI swapchain buffers. The most likely cause is that the swapchain is still in use or the device was removed.");
+					panic!(
+						"Failed to resize the DXGI swapchain buffers. The most likely cause is that the swapchain is still in use or the device was removed."
+					);
 				}
 			}
 
@@ -516,6 +520,11 @@ impl Device {
 		DynamicBufferHandle(handle, std::marker::PhantomData)
 	}
 
+	pub fn build_dynamic_image(&mut self, builder: image::Builder) -> crate::DynamicImageHandle {
+		let handle = self.build_image(builder.use_case(crate::UseCases::DYNAMIC));
+		crate::DynamicImageHandle(handle.0)
+	}
+
 	pub fn get_buffer_address(&self, _buffer_handle: BaseBufferHandle) -> u64 {
 		// TODO: Map buffers to ID3D12Resource instances and return GPU virtual addresses.
 		0
@@ -691,7 +700,9 @@ impl Device {
 		});
 
 		let swapchain: IDXGISwapChain3 = swapchain.cast().unwrap_or_else(|_| {
-			panic!("Failed to upgrade the DXGI swapchain. The most likely cause is that the DXGI runtime does not support IDXGISwapChain3.");
+			panic!(
+				"Failed to upgrade the DXGI swapchain. The most likely cause is that the DXGI runtime does not support IDXGISwapChain3."
+			);
 		});
 
 		let _ = unsafe { factory.MakeWindowAssociation(window_os_handles.hwnd, DXGI_MWA_NO_ALT_ENTER) };
@@ -835,7 +846,9 @@ impl Device {
 			};
 
 			if result.is_err() {
-				panic!("Failed to resize the DXGI swapchain buffers. The most likely cause is that the swapchain is still in use or the device was removed.");
+				panic!(
+					"Failed to resize the DXGI swapchain buffers. The most likely cause is that the swapchain is still in use or the device was removed."
+				);
 			}
 
 			swapchain.extent = extent;
@@ -866,7 +879,9 @@ impl Device {
 
 		let result = unsafe { swapchain.swapchain.Present(sync_interval, DXGI_PRESENT(0)) };
 		if result.is_err() {
-			panic!("Failed to present the DXGI swapchain. The most likely cause is that the device was removed or the swapchain became invalid.");
+			panic!(
+				"Failed to present the DXGI swapchain. The most likely cause is that the device was removed or the swapchain became invalid."
+			);
 		}
 	}
 

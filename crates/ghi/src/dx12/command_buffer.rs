@@ -58,7 +58,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self
 	}
 
-	fn clear_images(&mut self, _textures: &[(ImageHandle, ClearValue)]) {
+	fn clear_images<I: crate::graphics_hardware_interface::ImageHandleLike>(&mut self, _textures: &[(I, ClearValue)]) {
 		// TODO: DX12 image clears require command list encoding.
 	}
 
@@ -66,22 +66,25 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		// TODO: DX12 buffer clears require command list encoding.
 	}
 
-	fn transfer_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle> {
+	fn transfer_textures(
+		&mut self,
+		texture_handles: &[impl crate::graphics_hardware_interface::ImageHandleLike],
+	) -> Vec<TextureCopyHandle> {
 		texture_handles
 			.iter()
-			.map(|handle| self.device.copy_image_to_cpu(*handle))
+			.map(|handle| self.device.copy_image_to_cpu((*handle).into_image_handle()))
 			.collect()
 	}
 
-	fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]) {
-		self.device.write_image_data(image_handle, data);
+	fn write_image_data(&mut self, image_handle: impl crate::graphics_hardware_interface::ImageHandleLike, data: &[RGBAu8]) {
+		self.device.write_image_data(image_handle.into_image_handle(), data);
 	}
 
 	fn blit_image(
 		&mut self,
-		_source_image: ImageHandle,
+		_source_image: impl crate::graphics_hardware_interface::ImageHandleLike,
 		_source_layout: Layouts,
-		_destination_image: ImageHandle,
+		_destination_image: impl crate::graphics_hardware_interface::ImageHandleLike,
 		_destination_layout: Layouts,
 	) {
 		// TODO: DX12 blit operations need copy command lists and resource transitions.
@@ -89,7 +92,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn copy_to_swapchain(
 		&mut self,
-		_source_texture_handle: ImageHandle,
+		_source_texture_handle: impl crate::graphics_hardware_interface::ImageHandleLike,
 		_present_key: PresentKey,
 		_swapchain_handle: SwapchainHandle,
 	) {

@@ -882,7 +882,11 @@ pub mod instance {
 
 				match selected {
 					Some(device) => device.clone(),
-					None => return Err("Requested Metal device not found. The most likely cause is that the device name does not match any available GPU."),
+					None => {
+						return Err(
+							"Requested Metal device not found. The most likely cause is that the device name does not match any available GPU.",
+						);
+					}
 				}
 			} else {
 				mtl::MTLCreateSystemDefaultDevice()
@@ -969,9 +973,9 @@ pub mod device {
 			let mut created_queues = Vec::with_capacity(queues.len());
 
 			for (_selection, output_handle) in queues.iter_mut() {
-				let queue = device
-					.newCommandQueue()
-					.ok_or("Metal command queue creation failed. The most likely cause is that the device ran out of command queue resources.")?;
+				let queue = device.newCommandQueue().ok_or(
+					"Metal command queue creation failed. The most likely cause is that the device ran out of command queue resources.",
+				)?;
 				let handle = graphics_hardware_interface::QueueHandle(created_queues.len() as u64);
 
 				created_queues.push(queue::Queue { queue });
@@ -1437,10 +1441,9 @@ pub mod device {
 		) -> super::CommandBufferRecording<'a> {
 			let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
 			let queue = &self.queues[command_buffer.queue_handle.0 as usize];
-			let mtl_command_buffer = queue
-				.queue
-				.commandBuffer()
-				.expect("Metal command buffer creation failed. The most likely cause is that the command queue did not provide a command buffer.");
+			let mtl_command_buffer = queue.queue.commandBuffer().expect(
+				"Metal command buffer creation failed. The most likely cause is that the command queue did not provide a command buffer.",
+			);
 
 			super::CommandBufferRecording::new(self, command_buffer_handle, mtl_command_buffer, None)
 		}
@@ -1477,6 +1480,14 @@ pub mod device {
 			let master =
 				first_handle.expect("Dynamic buffer creation failed. The most likely cause is that no buffers were allocated.");
 			graphics_hardware_interface::DynamicBufferHandle::<T>(master.0, std::marker::PhantomData)
+		}
+
+		pub fn build_dynamic_image(
+			&mut self,
+			builder: image_builder::Builder,
+		) -> graphics_hardware_interface::DynamicImageHandle {
+			let handle = self.build_image(builder.use_case(crate::UseCases::DYNAMIC));
+			graphics_hardware_interface::DynamicImageHandle(handle.0)
 		}
 
 		pub fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
@@ -1939,12 +1950,9 @@ pub mod command_buffer {
 			self
 		}
 
-		fn clear_images(
+		fn clear_images<I: graphics_hardware_interface::ImageHandleLike>(
 			&mut self,
-			_textures: &[(
-				graphics_hardware_interface::ImageHandle,
-				graphics_hardware_interface::ClearValue,
-			)],
+			_textures: &[(I, graphics_hardware_interface::ClearValue)],
 		) {
 			// TODO: Encode blit clears for textures.
 		}
@@ -1955,19 +1963,23 @@ pub mod command_buffer {
 
 		fn transfer_textures(
 			&mut self,
-			texture_handles: &[graphics_hardware_interface::ImageHandle],
+			texture_handles: &[impl graphics_hardware_interface::ImageHandleLike],
 		) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
 			texture_handles
 				.iter()
-				.map(|handle| self.device.copy_texture_to_cpu(image::ImageHandle(handle.0)))
+				.map(|handle| {
+					self.device
+						.copy_texture_to_cpu(image::ImageHandle(handle.into_image_handle().0))
+				})
 				.collect()
 		}
 
 		fn write_image_data(
 			&mut self,
-			image_handle: graphics_hardware_interface::ImageHandle,
+			image_handle: impl graphics_hardware_interface::ImageHandleLike,
 			data: &[graphics_hardware_interface::RGBAu8],
 		) {
+			let image_handle = image_handle.into_image_handle();
 			let image = &mut self.device.images[image_handle.0 as usize];
 			let Some(staging) = image.staging.as_mut() else {
 				return;
@@ -2007,9 +2019,9 @@ pub mod command_buffer {
 
 		fn blit_image(
 			&mut self,
-			_source_image: graphics_hardware_interface::ImageHandle,
+			_source_image: impl graphics_hardware_interface::ImageHandleLike,
 			_source_layout: graphics_hardware_interface::Layouts,
-			_destination_image: graphics_hardware_interface::ImageHandle,
+			_destination_image: impl graphics_hardware_interface::ImageHandleLike,
 			_destination_layout: graphics_hardware_interface::Layouts,
 		) {
 			// TODO: Encode MTLBlitCommandEncoder copyFromTexture.
@@ -2017,7 +2029,7 @@ pub mod command_buffer {
 
 		fn copy_to_swapchain(
 			&mut self,
-			_source_texture_handle: graphics_hardware_interface::ImageHandle,
+			_source_texture_handle: impl graphics_hardware_interface::ImageHandleLike,
 			_present_key: graphics_hardware_interface::PresentKey,
 			_swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		) {

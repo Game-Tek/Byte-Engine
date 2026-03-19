@@ -126,6 +126,10 @@ impl Device {
 		DynamicBufferHandle(0, std::marker::PhantomData)
 	}
 
+	pub fn build_dynamic_image(&mut self, _builder: image::Builder) -> crate::DynamicImageHandle {
+		crate::DynamicImageHandle(0)
+	}
+
 	pub fn get_buffer_address(&self, _buffer_handle: BaseBufferHandle) -> u64 {
 		0
 	}

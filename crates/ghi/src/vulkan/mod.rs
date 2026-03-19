@@ -428,6 +428,12 @@ mod tests {
 	}
 
 	#[test]
+	fn render_dynamic_textures() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		graphics_hardware_interface::tests::dynamic_textures(&mut device, queue_handle);
+	}
+
+	#[test]
 	fn render_with_descriptor_sets() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		graphics_hardware_interface::tests::descriptor_sets(&mut device, queue_handle);

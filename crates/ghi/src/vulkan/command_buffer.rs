@@ -736,18 +736,19 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn transfer_textures(
 		&mut self,
-		image_handles: &[graphics_hardware_interface::ImageHandle],
+		image_handles: &[impl graphics_hardware_interface::ImageHandleLike],
 	) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
 		self.consume_resources(image_handles.iter().map(|image_handle| Consumption {
-			handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
+			handle: Handle::Image(self.get_internal_image_handle((*image_handle).into_image_handle())),
 			stages: crate::Stages::TRANSFER,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Transfer,
 		}))(self);
 
-		let buffer_handles = image_handles
-			.iter()
-			.filter_map(|image_handle| self.get_image(self.get_internal_image_handle(*image_handle)).staging_buffer);
+		let buffer_handles = image_handles.iter().filter_map(|image_handle| {
+			self.get_image(self.get_internal_image_handle((*image_handle).into_image_handle()))
+				.staging_buffer
+		});
 
 		self.vulkan_consume_resources(buffer_handles.map(|buffer_handle| VulkanConsumption {
 			handle: Handle::VkBuffer(buffer_handle),
@@ -760,7 +761,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		let command_buffer = command_buffer.command_buffer;
 
 		for image_handle in image_handles {
-			let image = self.get_image(self.get_internal_image_handle(*image_handle));
+			let image = self.get_image(self.get_internal_image_handle((*image_handle).into_image_handle()));
 			// If texture has an associated staging_buffer_handle, copy texture data to staging buffer
 			if let Some(staging_buffer_handle) = image.staging_buffer {
 				let regions = [vk::BufferImageCopy2KHR::default()
@@ -799,7 +800,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		let mut texture_copies = Vec::new();
 
 		for image_handle in image_handles {
-			let internal_image_handle = self.get_internal_image_handle(*image_handle);
+			let internal_image_handle = self.get_internal_image_handle((*image_handle).into_image_handle());
 			let image = self.get_image(internal_image_handle);
 			if let Some(_) = image.staging_buffer {
 				texture_copies.push(graphics_hardware_interface::TextureCopyHandle(internal_image_handle.0));
@@ -1194,11 +1195,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn blit_image(
 		&mut self,
-		source_image: crate::ImageHandle,
+		source_image: impl graphics_hardware_interface::ImageHandleLike,
 		source_layout: crate::Layouts,
-		destination_image: crate::ImageHandle,
+		destination_image: impl graphics_hardware_interface::ImageHandleLike,
 		destination_layout: crate::Layouts,
 	) {
+		let source_image = source_image.into_image_handle();
+		let destination_image = destination_image.into_image_handle();
 		self.consume_resources([
 			Consumption {
 				handle: Handle::Image(self.get_internal_image_handle(source_image)),
@@ -1269,22 +1272,19 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		}
 	}
 
-	fn clear_images(
+	fn clear_images<I: graphics_hardware_interface::ImageHandleLike>(
 		&mut self,
-		textures: &[(
-			graphics_hardware_interface::ImageHandle,
-			graphics_hardware_interface::ClearValue,
-		)],
+		textures: &[(I, graphics_hardware_interface::ClearValue)],
 	) {
 		self.consume_resources(textures.iter().map(|(image_handle, _)| Consumption {
-			handle: Handle::Image(self.get_internal_image_handle(*image_handle)),
+			handle: Handle::Image(self.get_internal_image_handle((*image_handle).into_image_handle())),
 			stages: crate::Stages::TRANSFER,
 			access: crate::AccessPolicies::WRITE,
 			layout: crate::Layouts::Transfer,
 		}))(self);
 
 		for (image_handle, clear_value) in textures {
-			let image = self.get_image(self.get_internal_image_handle(*image_handle));
+			let image = self.get_image(self.get_internal_image_handle((*image_handle).into_image_handle()));
 
 			if image.image.is_null() {
 				continue;
@@ -1394,9 +1394,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn write_image_data(
 		&mut self,
-		image_handle: graphics_hardware_interface::ImageHandle,
+		image_handle: impl graphics_hardware_interface::ImageHandleLike,
 		data: &[graphics_hardware_interface::RGBAu8],
 	) {
+		let image_handle = image_handle.into_image_handle();
 		let internal_image_handle = self.get_internal_image_handle(image_handle);
 
 		self.consume_resources([Consumption {
@@ -1481,10 +1482,11 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn copy_to_swapchain(
 		&mut self,
-		source_image_handle: graphics_hardware_interface::ImageHandle,
+		source_image_handle: impl graphics_hardware_interface::ImageHandleLike,
 		present_key: graphics_hardware_interface::PresentKey,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) {
+		let source_image_handle = source_image_handle.into_image_handle();
 		let source_image_internal_handle = self.get_internal_image_handle(source_image_handle);
 
 		let swapchain = &self.device.swapchains[swapchain_handle.0 as usize];

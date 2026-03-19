@@ -1,5 +1,7 @@
 use utils::RGBA;
 
+use crate::ui::element::Id;
+
 pub enum Color {
 	Value(RGBA),
 	Sample(String),
@@ -83,10 +85,12 @@ impl Into<ConcreteStyle> for ConcreteLayer {
 	}
 }
 
-#[derive(Clone, Copy)]
-pub struct StyleState {
-	pub is_hovered: bool,
+pub type StyleState<'a> = &'a dyn ContextStyle;
+
+pub trait ContextStyle {
+	fn id(&self) -> Id;
+	fn is_hovered(&self, id: Id) -> bool;
 }
 
-pub trait Styler = Fn(StyleState) -> ConcreteStyle + Copy + 'static;
-pub type StylerFn = fn(StyleState) -> ConcreteStyle;
+pub trait Styler = Fn(&dyn ContextStyle) -> ConcreteStyle + 'static;
+pub type StylerFn = fn(&dyn ContextStyle) -> ConcreteStyle;

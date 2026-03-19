@@ -143,11 +143,17 @@ fn layout_elements<'a>(
 
 					offset = flow.call(offset, child_size);
 				}
-			}
-			Primitives::Text => {}
-		}
 
-		size
+				size
+			}
+			Primitives::Shape(shape) => {
+				lelements.push(p);
+				Size::new(0, 0) // Shape elements have no size
+			}
+			Primitives::Text => {
+				Size::new(0, 0) // Text elements have no size
+			}
+		}
 	}
 
 	let root_id = elements

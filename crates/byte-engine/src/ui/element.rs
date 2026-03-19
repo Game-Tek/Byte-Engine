@@ -1,5 +1,8 @@
 use crate::ui::{
-	components::container::{ContainerSettings, OnEventFunction},
+	components::{
+		container::{ContainerSettings, OnEventFunction},
+		shape::Shape,
+	},
 	flow::{Offset, Size},
 	primitive::{Primitives, Shapes},
 	style::Styler,
@@ -30,6 +33,12 @@ pub struct ConcreteElement {
 impl ConcreteElement {
 	pub fn container(container: Container) -> Self {
 		let primitive = Primitives::Container(container);
+
+		Self { primitive }
+	}
+
+	pub fn shape(shape: Shape) -> Self {
+		let primitive = Primitives::Shape(shape);
 
 		Self { primitive }
 	}

@@ -1,4 +1,4 @@
-use crate::ui::Container;
+use crate::ui::{components::shape::Shape, Container};
 
 use super::{
 	flow::{Location, Size},
@@ -70,6 +70,7 @@ pub enum Events {
 
 pub enum Primitives {
 	Container(Container),
+	Shape(Shape),
 	Text,
 }
 
@@ -87,6 +88,7 @@ impl Primitive for Primitives {
 				radius: 0f32,
 			},
 			Primitives::Text => todo!(),
+			Primitives::Shape(shape) => shape.shape.clone(),
 		}
 	}
 

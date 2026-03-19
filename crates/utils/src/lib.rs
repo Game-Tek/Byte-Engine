@@ -14,7 +14,7 @@ pub mod stale_map;
 use std::ops::Div;
 
 pub type Box<T> = smallbox::SmallBox<T, [u8; 32]>;
-pub use copy_fn::{InlineCopyFn, InlineCopyFnError};
+pub use copy_fn::{InlineCopyFn, InlineCopyFnError, RefCall1, RefCall2, RefCall3};
 
 pub use sonic_rs as json;
 

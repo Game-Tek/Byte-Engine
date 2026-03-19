@@ -180,6 +180,75 @@ impl_inline_copy_fn!(call1, (A0), (arg0));
 impl_inline_copy_fn!(call2, (A0, A1), (arg0, arg1));
 impl_inline_copy_fn!(call3, (A0, A1, A2), (arg0, arg1, arg2));
 
+/// The `RefCall1` trait exposes a shared call interface for inline callables that borrow one argument.
+pub trait RefCall1<A0: ?Sized> {
+	type Output;
+
+	fn call(&self, arg0: &A0) -> Self::Output;
+}
+
+/// The `RefCall2` trait exposes a shared call interface for inline callables that borrow two arguments.
+pub trait RefCall2<A0: ?Sized, A1: ?Sized> {
+	type Output;
+
+	fn call(&self, arg0: &A0, arg1: &A1) -> Self::Output;
+}
+
+/// The `RefCall3` trait exposes a shared call interface for inline callables that borrow three arguments.
+pub trait RefCall3<A0: ?Sized, A1: ?Sized, A2: ?Sized> {
+	type Output;
+
+	fn call(&self, arg0: &A0, arg1: &A1, arg2: &A2) -> Self::Output;
+}
+
+macro_rules! impl_inline_copy_fn_ref {
+	($call_impl:ident, $trait_name:ident, ($(($lt:lifetime, $arg:ident, $value:ident)),+)) => {
+		fn $call_impl<F, $($arg: ?Sized,)+ Output, const STORAGE_SIZE: usize>(
+			storage: &InlineStorage<STORAGE_SIZE>,
+			$($value: &$arg),+
+		) -> Output
+		where
+			F: for<$($lt),+> Fn($(&$lt $arg),+) -> Output + Copy + 'static,
+		{
+			let function = storage.read::<F>();
+			function($($value),+)
+		}
+
+		impl<$($arg: ?Sized,)+ Output, const STORAGE_SIZE: usize> InlineCopyFn<for<$($lt),+> fn($(&$lt $arg),+) -> Output, STORAGE_SIZE> {
+			pub fn new_ref<F>(value: F) -> Self
+			where
+				F: for<$($lt),+> Fn($(&$lt $arg),+) -> Output + Copy + 'static,
+			{
+				Self::try_new_ref(value).unwrap_or_else(|error| panic!("{error}"))
+			}
+
+			pub fn try_new_ref<F>(value: F) -> Result<Self, InlineCopyFnError>
+			where
+				F: for<$($lt),+> Fn($(&$lt $arg),+) -> Output + Copy + 'static,
+			{
+				Self::store(value, $call_impl::<F, $($arg,)+ Output, STORAGE_SIZE> as *const ())
+			}
+		}
+
+		impl<$($arg: ?Sized,)+ Output, const STORAGE_SIZE: usize> $trait_name<$($arg),+>
+			for InlineCopyFn<for<$($lt),+> fn($(&$lt $arg),+) -> Output, STORAGE_SIZE>
+		{
+			type Output = Output;
+
+			fn call(&self, $($value: &$arg),+) -> Output {
+				let call = unsafe {
+					std::mem::transmute::<*const (), fn(&InlineStorage<STORAGE_SIZE>, $(&$arg),+) -> Output>(self.call)
+				};
+				call(&self.storage, $($value),+)
+			}
+		}
+	};
+}
+
+impl_inline_copy_fn_ref!(call_ref1, RefCall1, (('a, A0, arg0)));
+impl_inline_copy_fn_ref!(call_ref2, RefCall2, (('a, A0, arg0), ('b, A1, arg1)));
+impl_inline_copy_fn_ref!(call_ref3, RefCall3, (('a, A0, arg0), ('b, A1, arg1), ('c, A2, arg2)));
+
 #[cfg(test)]
 mod tests {
 	use super::{InlineCopyFn, InlineCopyFnError};
@@ -205,6 +274,14 @@ mod tests {
 
 		assert_eq!(copied.call(1), 11);
 		assert_eq!(cloned.call(5), 15);
+	}
+
+	#[test]
+	fn stores_callables_with_shared_reference_parameters() {
+		let function = InlineCopyFn::<for<'a> fn(&'a u32) -> u32>::new_ref(|value| *value + 1);
+		let value = 41;
+
+		assert_eq!(function.call(&value), 42);
 	}
 
 	#[test]

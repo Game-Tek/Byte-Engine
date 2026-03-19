@@ -21,7 +21,7 @@ pub type OnEventFunction = fn(Events);
 pub struct Container {
 	pub(crate) settings: ContainerSettings,
 	pub(crate) on_event: Option<utils::InlineCopyFn<OnEventFunction>>,
-	pub(crate) styler: Option<utils::InlineCopyFn<StylerFn>>,
+	pub(crate) styler: Option<utils::Box<dyn Styler>>,
 }
 
 impl Container {
@@ -39,7 +39,7 @@ impl Container {
 	}
 
 	pub fn styler<F: Styler + 'static>(mut self, styler: F) -> Self {
-		self.styler = Some(utils::InlineCopyFn::<StylerFn>::new(styler));
+		self.styler = Some(utils::Box::new(styler));
 		self
 	}
 

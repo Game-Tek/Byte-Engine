@@ -1,13 +1,14 @@
 use std::marker::PhantomData;
 
 use math::{Base as _, Vector2};
-use utils::RGBA;
+use utils::{RefCall1, RGBA};
 
 use crate::ui::{
+	components::shape::Shape,
 	flow::Location,
 	intersection::{build_mouse_click_acceleration, MouseClickAcceleration},
 	layout::{IdedElement, RenderElement},
-	primitive::{Events, Primitives},
+	primitive::{Events, Primitives, Shapes},
 	style::{self, Color, ConcreteStyle},
 	Container,
 };
@@ -78,8 +79,34 @@ impl Engine {
 				}
 			}
 
+			fn shape<'a>(&'a mut self, shape: Shape) -> Self::Child<'a> {
+				let id = Id::new(*self.counter).unwrap();
+
+				*self.counter += 1;
+
+				self.elements.push(IdedElement {
+					id,
+					element: ConcreteElement::shape(shape),
+				});
+
+				if id != self.id {
+					self.relations.push((self.id, id));
+				}
+
+				State {
+					id,
+					counter: &mut *self.counter,
+					elements: &mut *self.elements,
+					relations: &mut *self.relations,
+				}
+			}
+
 			fn component(&mut self, component: &impl Component) {
 				component.render(self);
+			}
+
+			fn id(&self) -> Id {
+				self.id
 			}
 		}
 
@@ -126,10 +153,24 @@ impl Engine {
 		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
 		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
 
-		let hovered_element_id = snapshot
-			.acceleration
-			.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32));
-		let hovered_element = hovered_element_id.map(|id| Id::new(id).unwrap());
+		struct StyleContextImpl<'a> {
+			acceleration: &'a MouseClickAcceleration,
+			self_id: Id,
+			mouse_pos: Location,
+		}
+
+		impl style::ContextStyle for StyleContextImpl<'_> {
+			fn id(&self) -> Id {
+				self.self_id
+			}
+
+			fn is_hovered(&self, id: Id) -> bool {
+				self.acceleration
+					.query(self.mouse_pos)
+					.map(|e| e == id.get())
+					.unwrap_or(false)
+			}
+		}
 
 		let elements = snapshot
 			.elements
@@ -138,11 +179,26 @@ impl Engine {
 				let style = match &e.element.element.primitive {
 					Primitives::Container(c) => {
 						if let Some(styler) = c.styler.as_ref() {
-							let state = style::StyleState {
-								is_hovered: hovered_element == Some(e.element.id),
+							let state = StyleContextImpl {
+								acceleration: &snapshot.acceleration,
+								self_id: e.element.id,
+								mouse_pos: Location::new(mouse_pos.x as u32, mouse_pos.y as u32),
 							};
 
-							styler.call(state)
+							styler(&state)
+						} else {
+							ConcreteStyle::default()
+						}
+					}
+					Primitives::Shape(s) => {
+						if let Some(styler) = s.styler.as_ref() {
+							let state = StyleContextImpl {
+								acceleration: &snapshot.acceleration,
+								self_id: e.element.id,
+								mouse_pos: Location::new(mouse_pos.x as u32, mouse_pos.y as u32),
+							};
+
+							styler(&state)
 						} else {
 							ConcreteStyle::default()
 						}
@@ -547,7 +603,9 @@ pub trait Context: Sized {
 	where
 		Self: 'a;
 
+	fn id(&self) -> Id;
 	fn container<'a>(&'a mut self, element: Container) -> Self::Child<'a>;
+	fn shape<'a>(&'a mut self, shape: Shape) -> Self::Child<'a>;
 	fn component(&mut self, component: &impl Component);
 }
 
@@ -759,7 +817,7 @@ mod tests {
 		impl Component for StyledColumn {
 			fn render(&self, ctx: &mut impl Context) {
 				let styler = |state: StyleState| {
-					if state.is_hovered {
+					if state.is_hovered(state.id()) {
 						ConcreteLayer::new().color(RGBA::new(1.0, 0.0, 0.0, 1.0).into()).into()
 					} else {
 						ConcreteLayer::new().color(RGBA::new(0.0, 1.0, 0.0, 1.0).into()).into()

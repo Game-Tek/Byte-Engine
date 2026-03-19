@@ -9,7 +9,7 @@ pub mod primitive;
 pub mod render_pass;
 pub mod style;
 
-pub use components::container::BaseContainer;
+pub use components::container::Container;
 pub use element::Element;
 pub use layout::engine::Component;
 pub use primitive::Primitive;

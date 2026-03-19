@@ -114,7 +114,8 @@ impl UiRenderPass {
 			ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
 			ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment),
 		];
-		let attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(MAIN_ATTACHMENT_FORMAT)];
+		let attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(MAIN_ATTACHMENT_FORMAT)
+			.blend(ghi::pipelines::raster::BlendMode::Alpha)];
 
 		let pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			pipeline_layout,
@@ -321,7 +322,7 @@ fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::Shad
 #[cfg(test)]
 mod tests {
 	use crate::ui::{
-		components::container::{BaseContainer, ContainerSettings},
+		components::container::{Container, ContainerSettings},
 		layout::engine::{Component, Context, Engine},
 	};
 
@@ -329,8 +330,8 @@ mod tests {
 
 	impl Component for TestComponent {
 		fn render(&self, ctx: &mut impl Context) {
-			let mut ctx = ctx.element(BaseContainer::new(ContainerSettings::default()));
-			ctx.element(BaseContainer::new(ContainerSettings::default().size(64.into())));
+			let mut ctx = ctx.container(Container::new(ContainerSettings::default()));
+			ctx.container(Container::new(ContainerSettings::default().size(64.into())));
 		}
 	}
 }

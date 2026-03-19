@@ -83,8 +83,10 @@ impl Into<ConcreteStyle> for ConcreteLayer {
 	}
 }
 
+#[derive(Clone, Copy)]
 pub struct StyleState {
 	pub is_hovered: bool,
 }
 
-pub trait Styler = Fn(&StyleState) -> ConcreteStyle;
+pub trait Styler = Fn(StyleState) -> ConcreteStyle + Copy + 'static;
+pub type StylerFn = fn(StyleState) -> ConcreteStyle;

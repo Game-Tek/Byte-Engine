@@ -98,6 +98,28 @@ impl WindowDelegate {
 	}
 }
 
+/// Normalizes a mouse position inside the content view so the window center is `0`
+/// and the window edges stay within `-1..=1`.
+fn normalize_mouse_position(point: NSPoint, content_frame: NSRect) -> Option<(f32, f32)> {
+	let width = content_frame.size.width as f32;
+	let height = content_frame.size.height as f32;
+
+	if width <= 0.0 || height <= 0.0 {
+		return None;
+	}
+
+	let x = point.x as f32 - content_frame.origin.x as f32;
+	let y = point.y as f32 - content_frame.origin.y as f32;
+
+	let half_width = width / 2.0;
+	let half_height = height / 2.0;
+
+	let x = ((x - half_width) / half_width).clamp(-1.0, 1.0);
+	let y = ((y - half_height) / half_height).clamp(-1.0, 1.0);
+
+	Some((x, y))
+}
+
 impl WindowLike for Window {
 	fn try_new(name: &str, extent: utils::Extent, _: &str) -> Result<Self, String> {
 		let _pool = unsafe { NSAutoreleasePool::new() };
@@ -179,14 +201,11 @@ impl WindowLike for Window {
 
 					if let Some(window) = event.window(self.mtm) {
 						if window == self.window {
-							let window_extent = window.frame().size;
-							let width = window_extent.width as f32;
-							let height = window_extent.height as f32;
-							let half_width = width / 2.0;
-							let half_height = height / 2.0;
-							let (x, y) = (point.x as f32 - half_width, point.y as f32 - half_height);
-							let (x, y) = (x / half_width, y / half_height);
-							events.push(Events::MousePosition { x, y, time });
+							if let Some(content_view) = window.contentView() {
+								if let Some((x, y)) = normalize_mouse_position(point, content_view.frame()) {
+									events.push(Events::MousePosition { x, y, time });
+								}
+							}
 						}
 					}
 				}
@@ -408,5 +427,31 @@ fn keycode_to_key(code: u16) -> Option<Keys> {
 		111 => Some(Keys::F12),
 		71 => Some(Keys::NumLock),
 		_ => None,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::normalize_mouse_position;
+	use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+	#[test]
+	fn normalize_mouse_position_centers_the_origin() {
+		let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(200.0, 100.0));
+
+		let (x, y) = normalize_mouse_position(NSPoint::new(100.0, 50.0), frame).unwrap();
+
+		assert_eq!((x, y), (0.0, 0.0));
+	}
+
+	#[test]
+	fn normalize_mouse_position_uses_the_content_frame_edges() {
+		let frame = NSRect::new(NSPoint::new(10.0, 20.0), NSSize::new(200.0, 100.0));
+
+		let top_left = normalize_mouse_position(NSPoint::new(10.0, 120.0), frame).unwrap();
+		let bottom_right = normalize_mouse_position(NSPoint::new(210.0, 20.0), frame).unwrap();
+
+		assert_eq!(top_left, (-1.0, 1.0));
+		assert_eq!(bottom_right, (1.0, -1.0));
 	}
 }

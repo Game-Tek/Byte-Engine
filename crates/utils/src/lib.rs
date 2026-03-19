@@ -8,11 +8,13 @@ pub mod sync;
 
 pub mod r#async;
 pub mod bit_array;
+pub mod copy_fn;
 pub mod stale_map;
 
 use std::ops::Div;
 
 pub type Box<T> = smallbox::SmallBox<T, [u8; 32]>;
+pub use copy_fn::{InlineCopyFn, InlineCopyFnError};
 
 pub use sonic_rs as json;
 

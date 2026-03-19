@@ -1,3 +1,5 @@
+use crate::ui::Container;
+
 use super::{
 	flow::{Location, Size},
 	layout::Sizing,
@@ -9,8 +11,6 @@ pub enum Shapes {
 	Triangle { vertices: [Location; 3] },
 	Circle { radius: f32 },
 	Box { half: Scale, radius: f32 },
-	Text { content: String, font: String, size: u32 },
-	// Custom(Box<dyn CustomShape>),
 }
 
 pub trait CustomShape {
@@ -58,4 +58,39 @@ impl Shapes {
 
 	/// Returns the coordinates for the geometrical center of the shape.
 	fn geo_center(&self) {}
+}
+
+pub enum Events {
+	HoverBegin {},
+	HoverEnd {},
+	FocusBegin {},
+	FocusEnd {},
+	Actuate {},
+}
+
+pub enum Primitives {
+	Container(Container),
+	Text,
+}
+
+impl From<Container> for Primitives {
+	fn from(container: Container) -> Self {
+		Primitives::Container(container)
+	}
+}
+
+impl Primitive for Primitives {
+	fn shape(&self) -> Shapes {
+		match self {
+			Primitives::Container(container) => Shapes::Box {
+				half: (container.settings.width, container.settings.height),
+				radius: 0f32,
+			},
+			Primitives::Text => todo!(),
+		}
+	}
+
+	fn style(&self) -> &dyn Style {
+		unimplemented!()
+	}
 }

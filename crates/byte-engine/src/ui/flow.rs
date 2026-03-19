@@ -101,7 +101,15 @@ pub fn grid(offset: Offset, size: Size) -> Offset {
 	Offset(offset.0 + size.0 as i32, offset.1 + size.1 as i32)
 }
 
-pub type FlowFunction = fn(Offset, Size) -> Offset;
+pub fn row_with_gap(gap: u32) -> impl FlowFunction {
+	move |offset, size| Offset(offset.0 + size.0 as i32 + gap as i32, offset.1)
+}
+
+pub fn column_with_gap(gap: u32) -> impl FlowFunction {
+	move |offset, size| Offset(offset.0, offset.1 + size.1 as i32 + gap as i32)
+}
+
+pub trait FlowFunction = Fn(Offset, Size) -> Offset + Copy;
 
 impl Location3 {
 	pub fn new(x: u32, y: u32, z: u32) -> Self {

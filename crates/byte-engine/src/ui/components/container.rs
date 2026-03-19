@@ -1,6 +1,10 @@
+use utils::{Box, RGBA};
+
 use crate::ui::{
-	layout::ConcreteElement,
-	style::{ConcreteStyle, Styler},
+	element::ConcreteElement,
+	flow::{Offset, Size},
+	primitive::Events,
+	style::{ConcreteLayer, ConcreteStyle, Styler, StylerFn},
 };
 
 use super::super::{
@@ -11,58 +15,36 @@ use super::super::{
 	Component,
 };
 
-pub struct BaseContainer {
-	settings: ContainerSettings,
-	on_click: Box<dyn Fn()>,
-	styler: Box<dyn Styler>,
+pub trait OnEvent = Fn(Events) + Copy;
+pub type OnEventFunction = fn(Events);
+
+pub struct Container {
+	pub(crate) settings: ContainerSettings,
+	pub(crate) on_event: Option<utils::InlineCopyFn<OnEventFunction>>,
+	pub(crate) styler: Option<utils::InlineCopyFn<StylerFn>>,
 }
 
-impl BaseContainer {
+impl Container {
 	pub fn new(settings: ContainerSettings) -> Self {
 		Self {
 			settings,
-			on_click: Box::new(|| {}),
-			styler: Box::new(|_| ConcreteStyle::default()),
+			on_event: None,
+			styler: None,
 		}
 	}
 
-	pub fn on_click(self, callback: impl Fn() + 'static) -> Self {
-		Self {
-			on_click: Box::new(callback),
-			..self
-		}
+	pub fn on_event<F: OnEvent + 'static>(mut self, on_event: F) -> Self {
+		self.on_event = Some(utils::InlineCopyFn::<OnEventFunction>::new(on_event));
+		self
 	}
 
-	pub fn styler(self, callback: impl Styler + 'static) -> Self {
-		Self {
-			styler: Box::new(callback),
-			..self
-		}
+	pub fn styler<F: Styler + 'static>(mut self, styler: F) -> Self {
+		self.styler = Some(utils::InlineCopyFn::<StylerFn>::new(styler));
+		self
 	}
 
 	pub fn settings(&self) -> &ContainerSettings {
 		&self.settings
-	}
-}
-
-impl Element for BaseContainer {
-	fn primitive(&self) -> BasePrimitive {
-		BasePrimitive::new(Shapes::Box {
-			half: (self.settings.width, self.settings.height),
-			radius: 0f32,
-		})
-	}
-
-	fn flow(&self) -> FlowFunction {
-		self.settings.flow
-	}
-}
-
-impl Into<ConcreteElement> for BaseContainer {
-	fn into(self) -> ConcreteElement {
-		ConcreteElement::new(self.settings.flow, self.primitive().shape)
-			.on_click(Some(self.on_click))
-			.styler(Some(self.styler))
 	}
 }
 
@@ -74,7 +56,7 @@ pub struct ContainerSettings {
 	max_width: Option<Sizing>,
 	max_height: Option<Sizing>,
 	depth: i16,
-	flow: FlowFunction,
+	pub flow: utils::InlineCopyFn<fn(Offset, Size) -> Offset>,
 }
 
 impl ContainerSettings {
@@ -126,8 +108,11 @@ impl ContainerSettings {
 		Self { depth, ..self }
 	}
 
-	pub fn flow(self, flow: FlowFunction) -> Self {
-		Self { flow, ..self }
+	pub fn flow(self, flow: impl FlowFunction + Copy + 'static) -> Self {
+		Self {
+			flow: utils::InlineCopyFn::<fn(Offset, Size) -> Offset>::new(flow),
+			..self
+		}
 	}
 }
 
@@ -141,7 +126,7 @@ impl Default for ContainerSettings {
 			max_width: None,
 			max_height: None,
 			depth: 0,
-			flow: flow::grid,
+			flow: utils::InlineCopyFn::<fn(Offset, Size) -> Offset>::new(flow::grid),
 		}
 	}
 }

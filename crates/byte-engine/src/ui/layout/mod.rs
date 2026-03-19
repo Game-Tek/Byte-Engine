@@ -2,10 +2,13 @@ pub mod engine;
 pub mod query;
 
 use math::{Base as _, Vector2};
-use utils::RGBA;
+use utils::{Box, RGBA};
 
 use crate::ui::{
-	primitive::Shapes,
+	components::container::OnEventFunction,
+	element::ConcreteElement,
+	flow::FlowFunction,
+	primitive::{Primitives, Shapes},
 	style::{Color, ConcreteStyle, Styler},
 };
 
@@ -15,34 +18,6 @@ use super::{
 	primitive::BasePrimitive,
 	Primitive,
 };
-
-pub struct ConcreteElement {
-	flow: flow::FlowFunction,
-	shape: Shapes,
-	on_click: Option<Box<dyn Fn()>>,
-	styler: Option<Box<dyn Styler>>,
-}
-
-impl ConcreteElement {
-	pub fn new(flow: flow::FlowFunction, shape: Shapes) -> Self {
-		Self {
-			flow,
-			shape,
-			on_click: None,
-			styler: None,
-		}
-	}
-
-	pub fn on_click(mut self, on_click: Option<Box<dyn Fn()>>) -> Self {
-		self.on_click = on_click;
-		self
-	}
-
-	pub fn styler(mut self, styler: Option<Box<dyn Styler>>) -> Self {
-		self.styler = styler;
-		self
-	}
-}
 
 /// Describes an element layed out for an screen.
 pub(crate) struct LayoutElement {
@@ -107,7 +82,7 @@ fn layout_elements<'a>(
 	}
 
 	fn calculate_element<'a>(element: IdedElement, ctx: Context<'a>, ts: TraversalState) -> LayoutElement {
-		let shape = &element.element.shape;
+		let shape = element.element.primitive.shape();
 		let available_space = if ts.depth == 0 { ctx.root_size } else { ts.available_space };
 		let size = shape.bbox(available_space);
 
@@ -127,43 +102,49 @@ fn layout_elements<'a>(
 
 		let size = p.size;
 		let mut offset: Offset = Into::<Location>::into(p.position).into();
-		let flow = p.element.element.flow;
 		let element_id = p.element.id;
 
-		lelements.push(p);
+		match &p.element.element.primitive {
+			Primitives::Container(container) => {
+				let flow = container.settings.flow;
 
-		let child_ids = ctx
-			.relation_map
-			.iter()
-			.filter_map(
-				|&(parent_id, child_id)| {
-					if parent_id == element_id {
-						Some(child_id)
-					} else {
-						None
-					}
-				},
-			)
-			.collect::<Vec<_>>();
+				let child_ids = ctx
+					.relation_map
+					.iter()
+					.filter_map(
+						|&(parent_id, child_id)| {
+							if parent_id == element_id {
+								Some(child_id)
+							} else {
+								None
+							}
+						},
+					)
+					.collect::<Vec<_>>();
 
-		for child_id in child_ids {
-			let Some(child_index) = elements.iter().position(|element| element.id == child_id) else {
-				continue;
-			};
-			let child = elements.swap_remove(child_index);
-			let child_size = layout_element(
-				elements,
-				lelements,
-				child,
-				ctx,
-				TraversalState {
-					available_space: size,
-					offset,
-					depth: ts.depth + 1,
-				},
-			);
+				lelements.push(p);
 
-			offset = flow(offset, child_size);
+				for child_id in child_ids {
+					let Some(child_index) = elements.iter().position(|element| element.id == child_id) else {
+						continue;
+					};
+					let child = elements.swap_remove(child_index);
+					let child_size = layout_element(
+						elements,
+						lelements,
+						child,
+						ctx,
+						TraversalState {
+							available_space: size,
+							offset,
+							depth: ts.depth + 1,
+						},
+					);
+
+					offset = flow.call(offset, child_size);
+				}
+			}
+			Primitives::Text => {}
 		}
 
 		size
@@ -189,7 +170,7 @@ fn layout_elements<'a>(
 		root,
 		Context {
 			relation_map,
-			root_size: Size::new(available_space.x(), available_space.x()),
+			root_size: Size::new(available_space.x(), available_space.y()),
 		},
 		TraversalState {
 			available_space,
@@ -240,10 +221,13 @@ impl Into<Sizing> for u32 {
 mod tests {
 	use math::{Base as _, Vector2};
 
-	use crate::ui::layout::IdedElement;
+	use crate::ui::{
+		layout::IdedElement,
+		primitive::{Primitives, Shapes},
+	};
 
 	use super::super::{
-		components::container::{BaseContainer, ContainerSettings},
+		components::container::{Container, ContainerSettings},
 		element::{ElementHandle, Id},
 		flow::{self, Location, Location3, Size},
 		layout::{ConcreteElement, Sizing},
@@ -252,11 +236,11 @@ mod tests {
 
 	use super::layout_elements;
 
-	fn make_elements(elements: &[&dyn Element]) -> Vec<IdedElement> {
+	fn make_elements(elements: impl IntoIterator<Item = Container>) -> Vec<IdedElement> {
 		let mut counter = Id::MIN;
 
 		elements
-			.iter()
+			.into_iter()
 			.map(|e| {
 				let id = counter;
 
@@ -265,10 +249,7 @@ mod tests {
 				IdedElement {
 					id,
 					element: ConcreteElement {
-						flow: e.flow(),
-						shape: e.primitive().shape,
-						on_click: None,
-						styler: None,
+						primitive: Primitives::Container(e),
 					},
 				}
 			})
@@ -277,9 +258,9 @@ mod tests {
 
 	#[test]
 	fn layout_root() {
-		let root = BaseContainer::new(Default::default());
+		let root = Container::new(Default::default());
 
-		let elements = make_elements(&[&root as &dyn Element]);
+		let elements = make_elements([root]);
 
 		let elements = layout_elements(elements, &[], Size::new(1024, 10));
 
@@ -287,14 +268,14 @@ mod tests {
 
 		let element = &elements[0];
 
-		assert_eq!(element.size, Size::new(1024, 1024));
+		assert_eq!(element.size, Size::new(1024, 10));
 	}
 
 	#[test]
 	fn layout_root_half_size() {
-		let root = BaseContainer::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
+		let root = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
 
-		let elements = make_elements(&[&root as &dyn Element]);
+		let elements = make_elements([root]);
 
 		let elements = layout_elements(elements, &[], Size::new(1024, 10));
 
@@ -302,24 +283,18 @@ mod tests {
 
 		let element = &elements[0];
 
-		assert_eq!(element.size, Size::new(512, 512));
+		assert_eq!(element.size, Size::new(512, 5));
 	}
 
 	#[test]
 	fn layout_half_children() {
-		let root = BaseContainer::new(Default::default());
-		let a = BaseContainer::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
-		let b = BaseContainer::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
-		let c = BaseContainer::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
-		let d = BaseContainer::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
+		let root = Container::new(Default::default());
+		let a = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
+		let b = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
+		let c = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
+		let d = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
 
-		let elements = make_elements(&[
-			&root as &dyn Element,
-			&a as &dyn Element,
-			&b as &dyn Element,
-			&c as &dyn Element,
-			&d as &dyn Element,
-		]);
+		let elements = make_elements([root, a, b, c, d]);
 
 		let root = &elements[0];
 		let a = &elements[1];
@@ -356,19 +331,13 @@ mod tests {
 
 	#[test]
 	fn layout_column() {
-		let root = BaseContainer::new(ContainerSettings::default().flow(flow::column));
-		let a = BaseContainer::new(ContainerSettings::default().size(Sizing::Absolute(64)));
-		let b = BaseContainer::new(ContainerSettings::default().size(Sizing::Absolute(64)));
-		let c = BaseContainer::new(ContainerSettings::default().size(Sizing::Absolute(64)));
-		let d = BaseContainer::new(ContainerSettings::default().size(Sizing::Absolute(64)));
+		let root = Container::new(ContainerSettings::default().flow(flow::column));
+		let a = Container::new(ContainerSettings::default().size(Sizing::Absolute(64)));
+		let b = Container::new(ContainerSettings::default().size(Sizing::Absolute(64)));
+		let c = Container::new(ContainerSettings::default().size(Sizing::Absolute(64)));
+		let d = Container::new(ContainerSettings::default().size(Sizing::Absolute(64)));
 
-		let elements = make_elements(&[
-			&root as &dyn Element,
-			&a as &dyn Element,
-			&b as &dyn Element,
-			&c as &dyn Element,
-			&d as &dyn Element,
-		]);
+		let elements = make_elements([root, a, b, c, d]);
 
 		let root = &elements[0];
 		let a = &elements[1];

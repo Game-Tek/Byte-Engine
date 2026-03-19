@@ -15,7 +15,7 @@ impl Shape {
 		Self {
 			shape: Shapes::Box {
 				half: (settings.width, settings.height),
-				radius: 0f32,
+				radius: settings.corner_radius,
 			},
 			settings,
 			styler: None,

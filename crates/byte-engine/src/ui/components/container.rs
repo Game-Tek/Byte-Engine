@@ -53,6 +53,7 @@ pub struct ContainerSettings {
 	min_height: Option<Sizing>,
 	pub width: Sizing,
 	pub height: Sizing,
+	pub corner_radius: f32,
 	max_width: Option<Sizing>,
 	max_height: Option<Sizing>,
 	depth: i16,
@@ -74,6 +75,10 @@ impl ContainerSettings {
 
 	pub fn height(self, height: Sizing) -> Self {
 		Self { height, ..self }
+	}
+
+	pub fn corner_radius(self, corner_radius: f32) -> Self {
+		Self { corner_radius, ..self }
 	}
 
 	pub fn min_width(self, min_width: Sizing) -> Self {
@@ -121,6 +126,7 @@ impl Default for ContainerSettings {
 		Self {
 			width: Sizing::full(),
 			height: Sizing::full(),
+			corner_radius: 0.0,
 			min_width: None,
 			min_height: None,
 			max_width: None,

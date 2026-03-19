@@ -36,6 +36,7 @@ struct UiDrawElement {
 	position: [f32; 2],
 	size: [f32; 2],
 	color: [f32; 4],
+	corner_radius: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +66,7 @@ fn update_from_render(render: &engine::Render) -> UiDrawList {
 				position: [position.x() as f32, position.y() as f32],
 				size: [size.x() as f32, size.y() as f32],
 				color: element.color.into(),
+				corner_radius: element.corner_radius,
 			}
 		})
 		.collect();
@@ -190,6 +192,7 @@ struct UiPushConstants {
 	rect: [f32; 4],
 	color: [f32; 4],
 	viewport: [f32; 4],
+	shape: [f32; 4],
 }
 
 impl UiPushConstants {
@@ -211,6 +214,7 @@ impl UiPushConstants {
 			rect,
 			color: element.color,
 			viewport: [viewport_width, viewport_height, 0.0, 0.0],
+			shape: [element.corner_radius * sx.min(sy), 0.0, 0.0, 0.0],
 		}
 	}
 }
@@ -244,23 +248,48 @@ fn create_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::Shader
 
 		gl_Position = vec4(x, y, 0.0, 1.0);
 		out_color = push_constant.color;
+		out_local_position = in_position * push_constant.rect.zw;
+		out_rect_size = push_constant.rect.zw;
+		out_corner_radius = push_constant.shape.x;
 	"#
 	.trim();
 
 	let main = ParserNode::main_function(vec![ParserNode::glsl(
 		main_code,
-		&["push_constant", "in_position", "out_color"],
+		&[
+			"push_constant",
+			"in_position",
+			"out_color",
+			"out_local_position",
+			"out_rect_size",
+			"out_corner_radius",
+		],
 		&[],
 	)]);
 	let push_constant = ParserNode::push_constant(vec![
 		ParserNode::member("rect", "vec4f"),
 		ParserNode::member("color", "vec4f"),
 		ParserNode::member("viewport", "vec4f"),
+		ParserNode::member("shape", "vec4f"),
 	]);
 	let position_input = ParserNode::input("in_position", "vec2f", 0);
 	let color_output = ParserNode::output("out_color", "vec4f", 0);
+	let local_position_output = ParserNode::output("out_local_position", "vec2f", 1);
+	let rect_size_output = ParserNode::output("out_rect_size", "vec2f", 2);
+	let corner_radius_output = ParserNode::output("out_corner_radius", "f32", 3);
 
-	let shader_scope = ParserNode::scope("Shader", vec![push_constant, position_input, color_output, main]);
+	let shader_scope = ParserNode::scope(
+		"Shader",
+		vec![
+			push_constant,
+			position_input,
+			color_output,
+			local_position_output,
+			rect_size_output,
+			corner_radius_output,
+			main,
+		],
+	);
 	root.add(vec![CommonShaderScope::new(), shader_scope]);
 
 	let root_node = besl::lex(root).expect("Failed to lex the UI vertex shader. The most likely cause is invalid BESL syntax.");
@@ -289,12 +318,46 @@ fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::Shad
 	let mut shader_generator = SPIRVShaderGenerator::new();
 	let mut root = ParserNode::root();
 
-	let main_code = "out_color_attachment = in_color;";
-	let main = ParserNode::main_function(vec![ParserNode::glsl(main_code, &["in_color", "out_color_attachment"], &[])]);
+	let main_code = r#"
+		vec2 half_size = in_rect_size * 0.5;
+		float corner_radius = min(in_corner_radius, min(half_size.x, half_size.y));
+		vec2 centered_position = in_local_position - half_size;
+		vec2 corner_delta = abs(centered_position) - (half_size - vec2(corner_radius));
+		float signed_distance = length(max(corner_delta, vec2(0.0))) + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+		float edge_width = max(fwidth(signed_distance), 0.5);
+		float alpha = 1.0 - smoothstep(0.0, edge_width, signed_distance);
+
+		out_color_attachment = vec4(in_color.rgb, in_color.a * alpha);
+	"#
+	.trim();
+	let main = ParserNode::main_function(vec![ParserNode::glsl(
+		main_code,
+		&[
+			"in_color",
+			"in_local_position",
+			"in_rect_size",
+			"in_corner_radius",
+			"out_color_attachment",
+		],
+		&[],
+	)]);
 	let input_color = ParserNode::input("in_color", "vec4f", 0);
+	let input_local_position = ParserNode::input("in_local_position", "vec2f", 1);
+	let input_rect_size = ParserNode::input("in_rect_size", "vec2f", 2);
+	let input_corner_radius = ParserNode::input("in_corner_radius", "f32", 3);
 	let output_color = ParserNode::output("out_color_attachment", "vec4f", 0);
 
-	let shader_scope = ParserNode::scope("Shader", vec![input_color, output_color, main]);
+	let shader_scope = ParserNode::scope(
+		"Shader",
+		vec![
+			input_color,
+			input_local_position,
+			input_rect_size,
+			input_corner_radius,
+			output_color,
+			main,
+		],
+	);
 	root.add(vec![CommonShaderScope::new(), shader_scope]);
 
 	let root_node =

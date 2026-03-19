@@ -8,7 +8,7 @@ use crate::ui::{
 	flow::Location,
 	intersection::{build_mouse_click_acceleration, MouseClickAcceleration},
 	layout::{IdedElement, RenderElement},
-	primitive::{Events, Primitives, Shapes},
+	primitive::{Events, Primitive, Primitives, Shapes},
 	style::{self, Color, ConcreteStyle},
 	Container,
 };
@@ -176,6 +176,7 @@ impl Engine {
 			.elements
 			.iter()
 			.map(|e| {
+				let shape = e.element.element.primitive.shape();
 				let style = match &e.element.element.primitive {
 					Primitives::Container(c) => {
 						if let Some(styler) = c.styler.as_ref() {
@@ -212,12 +213,17 @@ impl Engine {
 					Color::Value(rgba) => rgba,
 					Color::Sample(_) => todo!(),
 				};
+				let corner_radius = match shape {
+					Shapes::Box { radius, .. } => radius,
+					_ => 0.0,
+				};
 
 				RenderElement {
 					id: e.element.id.get(),
 					position: e.position,
 					size: e.size,
 					color,
+					corner_radius,
 				}
 			})
 			.collect::<Vec<_>>();
@@ -640,7 +646,10 @@ mod tests {
 	};
 
 	use super::super::super::{
-		components::container::{Container, ContainerSettings},
+		components::{
+			container::{Container, ContainerSettings},
+			shape::Shape,
+		},
 		element::Id,
 		flow::{self, Location3, Size},
 		layout::engine::{Context, Engine, VirtualViewport},
@@ -843,16 +852,46 @@ mod tests {
 		assert_eq!(root.position, Location3::new(0, 0, 0));
 		assert_eq!(root.size, Size::new(100, 100));
 		assert_eq!(root.color, RGBA::white());
+		assert_eq!(root.corner_radius, 0.0);
 
 		let first_child = render.elements().find(|element| element.id == 2).unwrap();
 		assert_eq!(first_child.position, Location3::new(0, 0, 1));
 		assert_eq!(first_child.size, Size::new(20, 20));
 		assert_eq!(first_child.color, RGBA::new(1.0, 0.0, 0.0, 1.0));
+		assert_eq!(first_child.corner_radius, 0.0);
 
 		let second_child = render.elements().find(|element| element.id == 3).unwrap();
 		assert_eq!(second_child.position, Location3::new(0, 20, 1));
 		assert_eq!(second_child.size, Size::new(20, 20));
 		assert_eq!(second_child.color, RGBA::new(0.0, 1.0, 0.0, 1.0));
+		assert_eq!(second_child.corner_radius, 0.0);
+	}
+
+	#[test]
+	fn render_preserves_corner_radius_for_boxes() {
+		struct RoundedBoxes;
+
+		impl Component for RoundedBoxes {
+			fn render(&self, ctx: &mut impl Context) {
+				let mut ctx = ctx.container(Container::new(ContainerSettings::default()));
+				ctx.container(Container::new(
+					ContainerSettings::default().size(Sizing::Absolute(32)).corner_radius(12.0),
+				));
+				ctx.shape(Shape::new(
+					ContainerSettings::default().size(Sizing::Absolute(24)).corner_radius(6.0),
+				));
+			}
+		}
+
+		let mut engine = Engine::new();
+		let snapshot = engine.evaluate(&RoundedBoxes, Size::new(100, 100));
+		let render = engine.render(snapshot);
+
+		let container = render.elements().find(|element| element.id == 2).unwrap();
+		assert_eq!(container.corner_radius, 12.0);
+
+		let shape = render.elements().find(|element| element.id == 3).unwrap();
+		assert_eq!(shape.corner_radius, 6.0);
 	}
 
 	// 	#[test]

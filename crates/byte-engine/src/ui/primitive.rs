@@ -85,7 +85,7 @@ impl Primitive for Primitives {
 		match self {
 			Primitives::Container(container) => Shapes::Box {
 				half: (container.settings.width, container.settings.height),
-				radius: 0f32,
+				radius: container.settings.corner_radius,
 			},
 			Primitives::Text => todo!(),
 			Primitives::Shape(shape) => shape.shape.clone(),

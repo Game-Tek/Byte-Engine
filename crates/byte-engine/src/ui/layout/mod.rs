@@ -33,6 +33,7 @@ pub(crate) struct RenderElement {
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) color: RGBA,
+	pub(crate) corner_radius: f32,
 }
 
 fn random_color_from_id(id: u32) -> RGBA {

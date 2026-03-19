@@ -197,6 +197,15 @@ pub fn column_with_gap(gap: u32) -> impl FlowFunction {
 	}
 }
 
+pub fn centered_row(input: FlowInput) -> FlowOutput {
+	let offset = Offset(
+		input.cursor.0,
+		input.cursor.1 + ((input.parent_size.1 as i32 - input.child_size.1 as i32) / 2).max(0),
+	);
+
+	FlowOutput::new(offset, Offset(offset.0 + input.child_size.0 as i32, offset.1))
+}
+
 pub fn centered_column(input: FlowInput) -> FlowOutput {
 	let offset = Offset(
 		input.cursor.0 + ((input.parent_size.0 as i32 - input.child_size.0 as i32) / 2).max(0),

@@ -7,7 +7,7 @@ use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message as _};
 use objc2_app_kit::{
 	NSApp, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSEventModifierFlags, NSEventType,
-	NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+	NSScreen, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
 	NSAutoreleasePool, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -120,6 +120,15 @@ fn normalize_mouse_position(point: NSPoint, content_frame: NSRect) -> Option<(f3
 	Some((x, y))
 }
 
+fn pixel_extent_to_window_points(extent: utils::Extent, scale_factor: f64) -> NSSize {
+	let scale_factor = scale_factor.max(1.0);
+
+	NSSize::new(
+		(extent.width() as f64 / scale_factor) as _,
+		(extent.height() as f64 / scale_factor) as _,
+	)
+}
+
 impl WindowLike for Window {
 	fn try_new(name: &str, extent: utils::Extent, _: &str) -> Result<Self, String> {
 		let _pool = unsafe { NSAutoreleasePool::new() };
@@ -128,11 +137,12 @@ impl WindowLike for Window {
 			.ok_or_else(|| "Failed to create MainThreadMarker. Window is probably being created on a non-main thread.")?;
 
 		let app = NSApp(mtm);
+		let scale_factor = NSScreen::mainScreen(mtm)
+			.map(|screen| screen.backingScaleFactor() as f64)
+			.unwrap_or(1.0);
+		let window_size = pixel_extent_to_window_points(extent, scale_factor);
 
-		let frame = NSRect::new(
-			NSPoint::new(100.0, 100.0),
-			NSSize::new(extent.width() as _, extent.height() as _),
-		);
+		let frame = NSRect::new(NSPoint::new(100.0, 100.0), window_size);
 		let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::Resizable;
 
 		let window = unsafe {

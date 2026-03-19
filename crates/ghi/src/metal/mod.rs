@@ -7,6 +7,8 @@ use ::utils::hash::HashMap;
 use ::utils::Extent;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
+use objc2_app_kit::NSView;
+use objc2_foundation::NSSize;
 use objc2_metal as mtl;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use smallvec::SmallVec;
@@ -70,6 +72,26 @@ pub(super) struct MetalConsumption {
 
 const MAX_FRAMES_IN_FLIGHT: usize = 3;
 const MAX_SWAPCHAIN_IMAGES: usize = 8;
+
+fn update_layer_extent(layer: &CAMetalLayer, view: &NSView) -> Extent {
+	let logical_size = view.frame().size;
+	let drawable_size = view.convertSizeToBacking(logical_size);
+	let scale_factor = if logical_size.width > 0.0 {
+		(drawable_size.width / logical_size.width).max(1.0)
+	} else if logical_size.height > 0.0 {
+		(drawable_size.height / logical_size.height).max(1.0)
+	} else {
+		1.0
+	};
+
+	layer.setContentsScale(scale_factor);
+	layer.setDrawableSize(NSSize::new(drawable_size.width, drawable_size.height));
+
+	Extent::rectangle(
+		drawable_size.width.round().max(0.0) as u32,
+		drawable_size.height.round().max(0.0) as u32,
+	)
+}
 
 #[derive(Clone)]
 pub(crate) struct DescriptorSetLayout {
@@ -790,15 +812,22 @@ pub mod swapchain {
 	#[derive(Clone)]
 	pub(crate) struct Swapchain {
 		pub layer: Retained<CAMetalLayer>,
+		pub view: Retained<NSView>,
 		pub drawables: [Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>; MAX_SWAPCHAIN_IMAGES],
 		pub extent: Extent,
 		pub pixel_format: mtl::MTLPixelFormat,
 	}
 
 	impl Swapchain {
-		pub(crate) fn new(layer: Retained<CAMetalLayer>, extent: Extent, pixel_format: mtl::MTLPixelFormat) -> Self {
+		pub(crate) fn new(
+			layer: Retained<CAMetalLayer>,
+			view: Retained<NSView>,
+			extent: Extent,
+			pixel_format: mtl::MTLPixelFormat,
+		) -> Self {
 			Self {
 				layer,
+				view,
 				drawables: std::array::from_fn(|_| None),
 				extent,
 				pixel_format,
@@ -1683,10 +1712,16 @@ pub mod device {
 
 			window_os_handles.view.setWantsLayer(true);
 			window_os_handles.view.setLayer(Some(layer.as_super()));
+			let extent = update_layer_extent(&layer, &window_os_handles.view);
 
 			self.swapchains.push(swapchain::Swapchain::new(
 				layer,
-				fallback_extent,
+				window_os_handles.view.clone(),
+				if extent.width() == 0 || extent.height() == 0 {
+					fallback_extent
+				} else {
+					extent
+				},
 				mtl::MTLPixelFormat::BGRA8Unorm,
 			));
 			graphics_hardware_interface::SwapchainHandle((self.swapchains.len() - 1) as u64)
@@ -1807,6 +1842,7 @@ pub mod frame {
 			swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		) -> (graphics_hardware_interface::PresentKey, Extent) {
 			let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
+			swapchain.extent = update_layer_extent(&swapchain.layer, &swapchain.view);
 			let drawable = swapchain.layer.nextDrawable().expect(
 				"Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.",
 			);

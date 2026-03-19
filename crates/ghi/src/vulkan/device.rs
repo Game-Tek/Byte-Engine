@@ -1207,9 +1207,20 @@ impl Device {
 				let metal_layer = objc2_quartz_core::CAMetalLayer::new();
 
 				let view = &window_os_handles.view;
+				let logical_size = view.frame().size;
+				let drawable_size = view.convertSizeToBacking(logical_size);
+				let scale_factor = if logical_size.width > 0.0 {
+					(drawable_size.width / logical_size.width).max(1.0)
+				} else if logical_size.height > 0.0 {
+					(drawable_size.height / logical_size.height).max(1.0)
+				} else {
+					1.0
+				};
 
 				view.setWantsLayer(true);
 				view.setLayer(Some(&metal_layer));
+				metal_layer.setContentsScale(scale_factor);
+				metal_layer.setDrawableSize(drawable_size);
 
 				let macos_surface_create_info =
 					vk::MetalSurfaceCreateInfoEXT::default().layer(objc2::rc::Retained::as_ptr(&metal_layer) as _);

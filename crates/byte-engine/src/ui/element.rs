@@ -2,6 +2,7 @@ use crate::ui::{
 	components::{
 		container::{ContainerSettings, OnEventFunction},
 		shape::Shape,
+		text::Text,
 	},
 	flow::{Offset, Size},
 	primitive::{Primitives, Shapes},
@@ -39,6 +40,12 @@ impl ConcreteElement {
 
 	pub fn shape(shape: Shape) -> Self {
 		let primitive = Primitives::Shape(shape);
+
+		Self { primitive }
+	}
+
+	pub fn text(text: Text) -> Self {
+		let primitive = Primitives::Text(text);
 
 		Self { primitive }
 	}

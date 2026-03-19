@@ -1,4 +1,7 @@
-use crate::ui::{components::shape::Shape, Container};
+use crate::ui::{
+	components::{shape::Shape, text::Text},
+	Container,
+};
 
 use super::{
 	flow::{Location, Size},
@@ -71,12 +74,18 @@ pub enum Events {
 pub enum Primitives {
 	Container(Container),
 	Shape(Shape),
-	Text,
+	Text(Text),
 }
 
 impl From<Container> for Primitives {
 	fn from(container: Container) -> Self {
 		Primitives::Container(container)
+	}
+}
+
+impl From<Text> for Primitives {
+	fn from(text: Text) -> Self {
+		Primitives::Text(text)
 	}
 }
 
@@ -87,7 +96,10 @@ impl Primitive for Primitives {
 				half: (container.settings.width, container.settings.height),
 				radius: container.settings.corner_radius,
 			},
-			Primitives::Text => todo!(),
+			Primitives::Text(_) => Shapes::Box {
+				half: (Sizing::Absolute(0), Sizing::Absolute(0)),
+				radius: 0.0,
+			},
 			Primitives::Shape(shape) => shape.shape.clone(),
 		}
 	}

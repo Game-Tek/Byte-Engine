@@ -4,10 +4,11 @@ use math::{Base as _, Vector2};
 use utils::{RefCall1, RGBA};
 
 use crate::ui::{
-	components::shape::Shape,
+	components::{shape::Shape, text::Text},
 	flow::Location,
+	font::TextSystem,
 	intersection::{build_mouse_click_acceleration, MouseClickAcceleration},
-	layout::{IdedElement, RenderElement},
+	layout::{IdedElement, RenderElement, RenderTextElement},
 	primitive::{Events, Primitive, Primitives, Shapes},
 	style::{self, Color, ConcreteStyle},
 	Container,
@@ -26,6 +27,7 @@ pub struct Engine {
 	cursor_position: Vector2,
 	is_clicking: bool,
 	clicks: Vec<bool>,
+	text_system: TextSystem,
 }
 
 impl Engine {
@@ -35,10 +37,11 @@ impl Engine {
 			cursor_position: Vector2::zero(),
 			is_clicking: false,
 			clicks: Vec::new(),
+			text_system: TextSystem::new(),
 		}
 	}
 
-	pub fn add_viewport(&mut self, viewport: VirtualViewport) {
+	pub(crate) fn add_viewport(&mut self, viewport: VirtualViewport) {
 		self.viewports.push(viewport);
 	}
 
@@ -101,6 +104,28 @@ impl Engine {
 				}
 			}
 
+			fn text<'a>(&'a mut self, text: Text) -> Self::Child<'a> {
+				let id = Id::new(*self.counter).unwrap();
+
+				*self.counter += 1;
+
+				self.elements.push(IdedElement {
+					id,
+					element: ConcreteElement::text(text),
+				});
+
+				if id != self.id {
+					self.relations.push((self.id, id));
+				}
+
+				State {
+					id,
+					counter: &mut *self.counter,
+					elements: &mut *self.elements,
+					relations: &mut *self.relations,
+				}
+			}
+
 			fn component(&mut self, component: &impl Component) {
 				component.render(self);
 			}
@@ -124,7 +149,7 @@ impl Engine {
 
 		root.render(&mut state);
 
-		let elements = layout_elements(elements, &relations, size);
+		let elements = layout_elements(elements, &relations, size, &mut self.text_system);
 
 		let acc = build_mouse_click_acceleration(&elements);
 
@@ -172,64 +197,64 @@ impl Engine {
 			}
 		}
 
-		let elements = snapshot
-			.elements
-			.iter()
-			.map(|e| {
-				let shape = e.element.element.primitive.shape();
-				let style = match &e.element.element.primitive {
-					Primitives::Container(c) => {
-						if let Some(styler) = c.styler.as_ref() {
-							let state = StyleContextImpl {
-								acceleration: &snapshot.acceleration,
-								self_id: e.element.id,
-								mouse_pos: Location::new(mouse_pos.x as u32, mouse_pos.y as u32),
-							};
+		let mut elements = Vec::new();
+		let mut text_elements = Vec::new();
 
-							styler(&state)
-						} else {
-							ConcreteStyle::default()
-						}
-					}
-					Primitives::Shape(s) => {
-						if let Some(styler) = s.styler.as_ref() {
-							let state = StyleContextImpl {
-								acceleration: &snapshot.acceleration,
-								self_id: e.element.id,
-								mouse_pos: Location::new(mouse_pos.x as u32, mouse_pos.y as u32),
-							};
+		for element in &snapshot.elements {
+			let state = StyleContextImpl {
+				acceleration: &snapshot.acceleration,
+				self_id: element.element.id,
+				mouse_pos: Location::new(mouse_pos.x as u32, mouse_pos.y as u32),
+			};
 
-							styler(&state)
-						} else {
-							ConcreteStyle::default()
-						}
-					}
-					_ => ConcreteStyle::default(),
-				};
+			let style = match &element.element.element.primitive {
+				Primitives::Container(container) => container.styler.as_ref().map(|styler| styler(&state)).unwrap_or_default(),
+				Primitives::Shape(shape) => shape.styler.as_ref().map(|styler| styler(&state)).unwrap_or_default(),
+				Primitives::Text(text) => text.styler.as_ref().map(|styler| styler(&state)).unwrap_or_default(),
+			};
 
-				let layer = &style.layers[0];
+			let layer = &style.layers[0];
+			let color = match layer.color {
+				Color::Value(rgba) => rgba,
+				Color::Sample(_) => todo!(),
+			};
 
-				let color = match layer.color {
-					Color::Value(rgba) => rgba,
-					Color::Sample(_) => todo!(),
-				};
-				let corner_radius = match shape {
-					Shapes::Box { radius, .. } => radius,
-					_ => 0.0,
-				};
-
-				RenderElement {
-					id: e.element.id.get(),
-					position: e.position,
-					size: e.size,
+			match &element.element.element.primitive {
+				Primitives::Container(container) => elements.push(RenderElement {
+					id: element.element.id.get(),
+					position: element.position,
+					size: element.size,
 					color,
-					corner_radius,
+					corner_radius: container.settings.corner_radius,
+				}),
+				Primitives::Shape(shape) => {
+					let corner_radius = match shape.shape {
+						Shapes::Box { radius, .. } => radius,
+						_ => 0.0,
+					};
+
+					elements.push(RenderElement {
+						id: element.element.id.get(),
+						position: element.position,
+						size: element.size,
+						color,
+						corner_radius,
+					});
 				}
-			})
-			.collect::<Vec<_>>();
+				Primitives::Text(text) => text_elements.push(RenderTextElement {
+					id: element.element.id.get(),
+					position: element.position,
+					size: element.size,
+					color,
+					font_size: text.settings().font_size,
+					content: text.content().to_string(),
+				}),
+			}
+		}
 
 		Render {
 			elements,
+			text_elements,
 			relations: snapshot.relations.clone(),
 		}
 	}
@@ -583,24 +608,29 @@ fn interval_gap(start_a: f32, end_a: f32, start_b: f32, end_b: f32) -> (u8, f32)
 	}
 }
 
-/// The `Render` struct preserves the visual data derived from a snapshot so UI rectangles can be submitted to the renderer.
+/// The `Render` struct preserves the visual data derived from a snapshot so UI primitives can be submitted to the renderer.
 #[derive(Clone)]
 pub struct Render {
 	elements: Vec<RenderElement>,
+	text_elements: Vec<RenderTextElement>,
 	relations: Vec<(Id, Id)>,
 }
 
 impl Render {
-	pub fn root(&self) -> &RenderElement {
+	pub(crate) fn root(&self) -> &RenderElement {
 		self.elements.iter().find(|e| e.id == 1).unwrap()
 	}
 
-	pub fn size(&self) -> usize {
-		self.elements.len()
+	pub(crate) fn size(&self) -> usize {
+		self.elements.len() + self.text_elements.len()
 	}
 
-	pub fn elements(&self) -> impl Iterator<Item = &RenderElement> {
+	pub(crate) fn elements(&self) -> impl Iterator<Item = &RenderElement> {
 		self.elements.iter()
+	}
+
+	pub(crate) fn texts(&self) -> impl Iterator<Item = &RenderTextElement> {
+		self.text_elements.iter()
 	}
 }
 
@@ -612,10 +642,11 @@ pub trait Context: Sized {
 	fn id(&self) -> Id;
 	fn container<'a>(&'a mut self, element: Container) -> Self::Child<'a>;
 	fn shape<'a>(&'a mut self, shape: Shape) -> Self::Child<'a>;
+	fn text<'a>(&'a mut self, text: Text) -> Self::Child<'a>;
 	fn component(&mut self, component: &impl Component);
 }
 
-struct VirtualViewport;
+pub(crate) struct VirtualViewport;
 
 impl ElementHandle for VirtualViewport {
 	fn id(&self) -> Id {
@@ -649,6 +680,7 @@ mod tests {
 		components::{
 			container::{Container, ContainerSettings},
 			shape::Shape,
+			text::Text,
 		},
 		element::Id,
 		flow::{self, Location3, Size},
@@ -892,6 +924,31 @@ mod tests {
 
 		let shape = render.elements().find(|element| element.id == 3).unwrap();
 		assert_eq!(shape.corner_radius, 6.0);
+	}
+
+	#[test]
+	fn text_elements_participate_in_flow_layout() {
+		struct LabelStack;
+
+		impl Component for LabelStack {
+			fn render(&self, ctx: &mut impl Context) {
+				let mut ctx = ctx.container(Container::new(ContainerSettings::default().flow(flow::column)));
+				ctx.text(Text::new("Hello Byte").font_size(18.0));
+				ctx.container(Container::new(ContainerSettings::default().size(Sizing::Absolute(12))));
+			}
+		}
+
+		let mut engine = Engine::new();
+		let snapshot = engine.evaluate(&LabelStack, Size::new(200, 100));
+		let render = engine.render(snapshot);
+
+		let text = render.texts().next().expect("Expected a text render element");
+		assert_eq!(text.position, Location3::new(0, 0, 1));
+		assert!(text.size.x() > 0);
+		assert!(text.size.y() > 0);
+
+		let container = render.elements().find(|element| element.id == 3).unwrap();
+		assert_eq!(container.position, Location3::new(0, text.size.y(), 1));
 	}
 
 	// 	#[test]

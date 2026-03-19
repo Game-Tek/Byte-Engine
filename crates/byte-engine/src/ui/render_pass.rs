@@ -7,8 +7,8 @@ use ghi::{
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
 };
-use resource_management::{shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
-use utils::{Box, Extent};
+use resource_management::{glsl, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
+use utils::{Box, Extent, RGBA};
 
 use crate::{
 	core::Entity,
@@ -18,11 +18,18 @@ use crate::{
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 		Viewport,
 	},
+	ui::font::TextSystem,
 };
 
 use super::{element::ElementHandle as _, layout::engine};
 
 const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
+const TEXT_OVERLAY_FORMAT: ghi::Formats = ghi::Formats::RGBA8UNORM;
+const TEXT_OVERLAY_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	0,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::FRAGMENT,
+);
 
 const UI_VERTICES_PER_ELEMENT: usize = 4;
 const UI_INDICES_PER_ELEMENT: usize = 6;
@@ -38,6 +45,10 @@ const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 5] = [
 	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
 	ghi::pipelines::VertexElement::new("CORNER_RADIUS", ghi::DataTypes::Float, 0),
 ];
+const TEXT_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 2] = [
+	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("UV", ghi::DataTypes::Float2, 0),
+];
 
 #[derive(Debug, Clone, Copy)]
 struct UiDrawElement {
@@ -48,9 +59,19 @@ struct UiDrawElement {
 }
 
 #[derive(Debug, Clone)]
+struct UiTextDrawElement {
+	position: [f32; 2],
+	size: [f32; 2],
+	color: RGBA,
+	font_size: f32,
+	text: String,
+}
+
+#[derive(Debug, Clone)]
 struct UiDrawList {
 	layout_size: [f32; 2],
 	elements: Vec<UiDrawElement>,
+	texts: Vec<UiTextDrawElement>,
 }
 
 impl Default for UiDrawList {
@@ -58,6 +79,7 @@ impl Default for UiDrawList {
 		Self {
 			layout_size: [1.0, 1.0],
 			elements: Vec::new(),
+			texts: Vec::new(),
 		}
 	}
 }
@@ -70,6 +92,13 @@ struct UiVertex {
 	rect_size: [f32; 2],
 	color: [f32; 4],
 	corner_radius: f32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct TextOverlayVertex {
+	position: [f32; 2],
+	uv: [f32; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,11 +132,63 @@ fn update_from_render(render: &engine::Render) -> UiDrawList {
 			}
 		})
 		.collect();
+	let texts = render
+		.texts()
+		.map(|text| UiTextDrawElement {
+			position: [text.position.x() as f32, text.position.y() as f32],
+			size: [text.size.x() as f32, text.size.y() as f32],
+			color: text.color,
+			font_size: text.font_size,
+			text: text.content.clone(),
+		})
+		.collect();
 
 	UiDrawList {
 		layout_size: [root_size.x() as f32, root_size.y() as f32],
 		elements,
+		texts,
 	}
+}
+
+/// Rasterizes all visible text elements into the UI overlay texture for the current viewport.
+fn rasterize_text_overlay(draw_list: &UiDrawList, viewport: Extent, text_system: &mut TextSystem, target: &mut [u8]) -> bool {
+	let viewport_width = viewport.width().max(1);
+	let viewport_height = viewport.height().max(1);
+
+	target.fill(0);
+
+	if draw_list.texts.is_empty() {
+		return false;
+	}
+
+	let sx = viewport_width as f32 / draw_list.layout_size[0].max(1.0);
+	let sy = viewport_height as f32 / draw_list.layout_size[1].max(1.0);
+	let font_scale = sx.min(sy);
+	let mut drew_text = false;
+
+	for text in &draw_list.texts {
+		if text.text.is_empty() || text.color.a <= 0.0 || text.size[0] <= 0.0 || text.size[1] <= 0.0 {
+			continue;
+		}
+
+		let position = (
+			(text.position[0] * sx).round().max(0.0) as u32,
+			(text.position[1] * sy).round().max(0.0) as u32,
+		);
+		let font_size = (text.font_size * font_scale).max(1.0);
+
+		drew_text |= text_system.rasterize(
+			target,
+			viewport_width,
+			viewport_height,
+			position,
+			&text.text,
+			font_size,
+			text.color,
+		);
+	}
+
+	drew_text
 }
 
 /// Builds the packed UI geometry for the current viewport and splits it into `u16`-safe draw ranges.
@@ -224,21 +305,28 @@ fn build_ui_geometry(draw_list: &UiDrawList, viewport: Extent) -> UiGeometry {
 	geometry
 }
 
-/// The `UiRenderPass` struct centralizes batched UI rectangle rendering for the main render target.
+/// The `UiRenderPass` struct centralizes batched UI rectangle rendering and text overlay compositing for the main render target.
 pub struct UiRenderPass {
 	pipeline_layout: ghi::PipelineLayoutHandle,
 	pipeline: ghi::PipelineHandle,
 	vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
 	index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
+	text_pipeline_layout: ghi::PipelineLayoutHandle,
+	text_pipeline: ghi::PipelineHandle,
+	text_vertex_buffer: ghi::BufferHandle<[TextOverlayVertex; 4]>,
+	text_index_buffer: ghi::BufferHandle<[u16; 6]>,
+	text_descriptor_set: ghi::DescriptorSetHandle,
+	text_overlay: ghi::ImageHandle,
 	main_attachment: ghi::ImageHandle,
 	data: UiDrawList,
 	reported_capacity_limit: bool,
+	text_system: TextSystem,
 }
 
 impl Entity for UiRenderPass {}
 
 impl UiRenderPass {
-	/// Creates a UI pass and all GPU resources used to draw layout rectangles.
+	/// Creates a UI pass and all GPU resources used to draw layout primitives.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let main_attachment: ghi::ImageHandle = render_pass_builder
 			.create_render_target(
@@ -283,15 +371,91 @@ impl UiRenderPass {
 				.name("UI Indices")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
+		let text_descriptor_set_template = device.create_descriptor_set_template(Some("UI Text"), &[TEXT_OVERLAY_BINDING]);
+		let text_pipeline_layout = device.create_pipeline_layout(&[text_descriptor_set_template], &[]);
+		let text_vertex_shader = create_text_overlay_vertex_shader(device);
+		let text_fragment_shader = create_text_overlay_fragment_shader(device);
+		let text_shaders = [
+			ghi::ShaderParameter::new(&text_vertex_shader, ghi::ShaderTypes::Vertex),
+			ghi::ShaderParameter::new(&text_fragment_shader, ghi::ShaderTypes::Fragment),
+		];
+		let text_pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+			text_pipeline_layout,
+			&TEXT_VERTEX_LAYOUT,
+			&text_shaders,
+			&attachments,
+		));
+		let text_vertex_buffer: ghi::BufferHandle<[TextOverlayVertex; 4]> = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Vertex)
+				.name("UI Text Vertices")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let text_index_buffer: ghi::BufferHandle<[u16; 6]> = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Index)
+				.name("UI Text Indices")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let text_overlay = device.build_image(
+			ghi::image::Builder::new(TEXT_OVERLAY_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
+				.name("UI Text Overlay")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice)
+				.use_case(ghi::UseCases::DYNAMIC),
+		);
+		let text_sampler = device.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.mip_map_mode(ghi::FilteringModes::Linear)
+				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
+		);
+		let text_descriptor_set = device.create_descriptor_set(Some("UI Text"), &text_descriptor_set_template);
+		device.create_descriptor_binding(
+			text_descriptor_set,
+			ghi::BindingConstructor::combined_image_sampler(
+				&TEXT_OVERLAY_BINDING,
+				text_overlay,
+				text_sampler,
+				ghi::Layouts::Read,
+			),
+		);
+
+		let text_vertices = [
+			TextOverlayVertex {
+				position: [-1.0, 1.0],
+				uv: [0.0, 0.0],
+			},
+			TextOverlayVertex {
+				position: [1.0, 1.0],
+				uv: [1.0, 0.0],
+			},
+			TextOverlayVertex {
+				position: [1.0, -1.0],
+				uv: [1.0, 1.0],
+			},
+			TextOverlayVertex {
+				position: [-1.0, -1.0],
+				uv: [0.0, 1.0],
+			},
+		];
+		*device.get_mut_buffer_slice(text_vertex_buffer) = text_vertices;
+		device.sync_buffer(text_vertex_buffer);
+		*device.get_mut_buffer_slice(text_index_buffer) = [0, 1, 2, 2, 3, 0];
+		device.sync_buffer(text_index_buffer);
 
 		Self {
 			pipeline_layout,
 			pipeline,
 			vertex_buffer,
 			index_buffer,
+			text_pipeline_layout,
+			text_pipeline,
+			text_vertex_buffer,
+			text_index_buffer,
+			text_descriptor_set,
+			text_overlay,
 			main_attachment,
 			data: UiDrawList::default(),
 			reported_capacity_limit: false,
+			text_system: TextSystem::new(),
 		}
 	}
 
@@ -302,16 +466,9 @@ impl UiRenderPass {
 
 impl RenderPass for UiRenderPass {
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
-		// Upload the current UI geometry and schedule the smallest indexed draw set we can express with `u16` indices.
-		if self.data.elements.is_empty() {
-			return None;
-		}
-
-		let geometry = build_ui_geometry(&self.data, viewport.extent());
-
-		if geometry.batches.is_empty() {
-			return None;
-		}
+		let extent = viewport.extent();
+		let geometry = build_ui_geometry(&self.data, extent);
+		let has_rectangle_batches = !geometry.batches.is_empty();
 
 		if geometry.truncated && !self.reported_capacity_limit {
 			log::warn!(
@@ -322,21 +479,43 @@ impl RenderPass for UiRenderPass {
 			self.reported_capacity_limit = false;
 		}
 
-		let vertex_buffer_slice = frame.get_mut_buffer_slice(self.vertex_buffer);
-		vertex_buffer_slice[..geometry.vertices.len()].copy_from_slice(&geometry.vertices);
-		frame.sync_buffer(self.vertex_buffer);
+		if has_rectangle_batches {
+			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.vertex_buffer);
+			vertex_buffer_slice[..geometry.vertices.len()].copy_from_slice(&geometry.vertices);
+			frame.sync_buffer(self.vertex_buffer);
 
-		let index_buffer_slice = frame.get_mut_buffer_slice(self.index_buffer);
-		index_buffer_slice[..geometry.indices.len()].copy_from_slice(&geometry.indices);
-		frame.sync_buffer(self.index_buffer);
+			let index_buffer_slice = frame.get_mut_buffer_slice(self.index_buffer);
+			index_buffer_slice[..geometry.indices.len()].copy_from_slice(&geometry.indices);
+			frame.sync_buffer(self.index_buffer);
+		}
+
+		let mut draw_text_overlay = false;
+
+		if !self.data.texts.is_empty() {
+			frame.resize_image(self.text_overlay, Extent::rectangle(extent.width(), extent.height()));
+
+			let overlay = frame.get_texture_slice_mut(self.text_overlay);
+			draw_text_overlay = rasterize_text_overlay(&self.data, extent, &mut self.text_system, overlay);
+
+			if draw_text_overlay {
+				frame.sync_texture(self.text_overlay);
+			}
+		}
+
+		if !has_rectangle_batches && !draw_text_overlay {
+			return None;
+		}
 
 		let pipeline_layout = self.pipeline_layout;
 		let pipeline = self.pipeline;
 		let vertex_buffer = self.vertex_buffer;
 		let index_buffer = self.index_buffer;
+		let text_pipeline_layout = self.text_pipeline_layout;
+		let text_pipeline = self.text_pipeline;
+		let text_vertex_buffer = self.text_vertex_buffer;
+		let text_index_buffer = self.text_index_buffer;
+		let text_descriptor_set = self.text_descriptor_set;
 		let main_attachment = self.main_attachment;
-
-		let extent = viewport.extent();
 		let batches = geometry.batches;
 
 		Some(Box::new(move |command_buffer, _| {
@@ -350,18 +529,32 @@ impl RenderPass for UiRenderPass {
 					true,
 				)];
 
-				command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
-				command_buffer.bind_index_buffer(&index_buffer.into());
+				if !batches.is_empty() {
+					command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
+					command_buffer.bind_index_buffer(&index_buffer.into());
 
-				let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-				let command_buffer = command_buffer.bind_pipeline_layout(pipeline_layout);
-				let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
+					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
+					let command_buffer = command_buffer.bind_pipeline_layout(pipeline_layout);
+					let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
 
-				for batch in &batches {
-					command_buffer.draw_indexed(batch.index_count, 1, batch.first_index, batch.vertex_offset, 0);
+					for batch in &batches {
+						command_buffer.draw_indexed(batch.index_count, 1, batch.first_index, batch.vertex_offset, 0);
+					}
+
+					command_buffer.end_render_pass();
 				}
 
-				command_buffer.end_render_pass();
+				if draw_text_overlay {
+					command_buffer.bind_vertex_buffers(&[text_vertex_buffer.into()]);
+					command_buffer.bind_index_buffer(&text_index_buffer.into());
+
+					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
+					let command_buffer = command_buffer.bind_pipeline_layout(text_pipeline_layout);
+					command_buffer.bind_descriptor_sets(&[text_descriptor_set]);
+					let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
+					command_buffer.draw_indexed(6, 1, 0, 0, 0);
+					command_buffer.end_render_pass();
+				}
 			});
 		}))
 	}
@@ -513,6 +706,69 @@ fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::Shad
 		.expect("Failed to create the UI fragment shader. The most likely cause is an incompatible shader interface.")
 }
 
+fn create_text_overlay_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+	let shader_source = glsl::compile(
+		r#"
+		#version 460
+		#pragma shader_stage(vertex)
+
+		layout(location = 0) in vec2 in_position;
+		layout(location = 1) in vec2 in_uv;
+
+		layout(location = 0) out vec2 out_uv;
+
+		void main() {
+			gl_Position = vec4(in_position, 0.0, 1.0);
+			out_uv = in_uv;
+		}
+		"#,
+		"ui_text_overlay.vert",
+	)
+	.expect("Failed to compile the UI text overlay vertex shader. The most likely cause is invalid GLSL syntax.");
+
+	device
+		.create_shader(
+			Some("UI Text Overlay Vertex Shader"),
+			ghi::shader::Sources::SPIRV(shader_source.as_binary_u8()),
+			ghi::ShaderTypes::Vertex,
+			[],
+		)
+		.expect(
+			"Failed to create the UI text overlay vertex shader. The most likely cause is an incompatible shader interface.",
+		)
+}
+
+fn create_text_overlay_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+	let shader_source = glsl::compile(
+		r#"
+		#version 460
+		#pragma shader_stage(fragment)
+
+		layout(set = 0, binding = 0) uniform sampler2D text_overlay;
+
+		layout(location = 0) in vec2 in_uv;
+		layout(location = 0) out vec4 out_color_attachment;
+
+		void main() {
+			out_color_attachment = texture(text_overlay, in_uv);
+		}
+		"#,
+		"ui_text_overlay.frag",
+	)
+	.expect("Failed to compile the UI text overlay fragment shader. The most likely cause is invalid GLSL syntax.");
+
+	device
+		.create_shader(
+			Some("UI Text Overlay Fragment Shader"),
+			ghi::shader::Sources::SPIRV(shader_source.as_binary_u8()),
+			ghi::ShaderTypes::Fragment,
+			[TEXT_OVERLAY_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ)],
+		)
+		.expect(
+			"Failed to create the UI text overlay fragment shader. The most likely cause is an incompatible shader interface.",
+		)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{
@@ -537,6 +793,7 @@ mod tests {
 					color: [0.25, 0.5, 0.75, 1.0],
 					corner_radius: 8.0,
 				}],
+				texts: vec![],
 			},
 			Extent::rectangle(200, 100),
 		);
@@ -574,6 +831,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [1.0, 1.0],
 				elements,
+				texts: vec![],
 			},
 			Extent::square(1),
 		);

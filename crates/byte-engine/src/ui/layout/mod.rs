@@ -8,6 +8,7 @@ use crate::ui::{
 	components::container::OnEventFunction,
 	element::ConcreteElement,
 	flow::FlowFunction,
+	font::TextSystem,
 	primitive::{Primitives, Shapes},
 	style::{Color, ConcreteStyle, Styler},
 };
@@ -34,6 +35,16 @@ pub(crate) struct RenderElement {
 	pub(crate) size: Size,
 	pub(crate) color: RGBA,
 	pub(crate) corner_radius: f32,
+}
+
+#[derive(Clone)]
+pub(crate) struct RenderTextElement {
+	pub(crate) id: u32,
+	pub(crate) position: Location3,
+	pub(crate) size: Size,
+	pub(crate) color: RGBA,
+	pub(crate) font_size: f32,
+	pub(crate) content: String,
 }
 
 fn random_color_from_id(id: u32) -> RGBA {
@@ -66,6 +77,7 @@ fn layout_elements<'a>(
 	mut elements: Vec<IdedElement>,
 	relation_map: &'a [(Id, Id)],
 	available_space: Size,
+	text_system: &mut TextSystem,
 ) -> Vec<LayoutElement> {
 	let mut lelements = Vec::with_capacity(elements.len());
 
@@ -82,10 +94,22 @@ fn layout_elements<'a>(
 		root_size: Size,
 	}
 
-	fn calculate_element<'a>(element: IdedElement, ctx: Context<'a>, ts: TraversalState) -> LayoutElement {
-		let shape = element.element.primitive.shape();
+	fn calculate_element<'a>(
+		element: IdedElement,
+		ctx: Context<'a>,
+		ts: TraversalState,
+		text_system: &mut TextSystem,
+	) -> LayoutElement {
 		let available_space = if ts.depth == 0 { ctx.root_size } else { ts.available_space };
-		let size = shape.bbox(available_space);
+		let size = match &element.element.primitive {
+			Primitives::Container(container) => Shapes::Box {
+				half: (container.settings.width, container.settings.height),
+				radius: container.settings.corner_radius,
+			}
+			.bbox(available_space),
+			Primitives::Shape(shape) => shape.shape.bbox(available_space),
+			Primitives::Text(text) => text_system.measure(text.content(), text.settings().font_size),
+		};
 
 		let position = Location3::from((ts.offset.into(), ts.depth));
 
@@ -98,8 +122,9 @@ fn layout_elements<'a>(
 		element: IdedElement,
 		ctx: Context<'a>,
 		ts: TraversalState,
+		text_system: &mut TextSystem,
 	) -> Size {
-		let p = calculate_element(element, ctx, ts);
+		let p = calculate_element(element, ctx, ts, text_system);
 
 		let size = p.size;
 		let mut offset: Offset = Into::<Location>::into(p.position).into();
@@ -140,6 +165,7 @@ fn layout_elements<'a>(
 							offset,
 							depth: ts.depth + 1,
 						},
+						text_system,
 					);
 
 					offset = flow.call(offset, child_size);
@@ -151,8 +177,9 @@ fn layout_elements<'a>(
 				lelements.push(p);
 				Size::new(0, 0) // Shape elements have no size
 			}
-			Primitives::Text => {
-				Size::new(0, 0) // Text elements have no size
+			Primitives::Text(_) => {
+				lelements.push(p);
+				size
 			}
 		}
 	}
@@ -184,6 +211,7 @@ fn layout_elements<'a>(
 			offset: Offset::new(0, 0),
 			depth: 0,
 		},
+		text_system,
 	);
 
 	lelements
@@ -229,6 +257,7 @@ mod tests {
 	use math::{Base as _, Vector2};
 
 	use crate::ui::{
+		font::TextSystem,
 		layout::IdedElement,
 		primitive::{Primitives, Shapes},
 	};
@@ -269,7 +298,7 @@ mod tests {
 
 		let elements = make_elements([root]);
 
-		let elements = layout_elements(elements, &[], Size::new(1024, 10));
+		let elements = layout_elements(elements, &[], Size::new(1024, 10), &mut TextSystem::new());
 
 		assert_eq!(elements.len(), 1);
 
@@ -284,7 +313,7 @@ mod tests {
 
 		let elements = make_elements([root]);
 
-		let elements = layout_elements(elements, &[], Size::new(1024, 10));
+		let elements = layout_elements(elements, &[], Size::new(1024, 10), &mut TextSystem::new());
 
 		assert_eq!(elements.len(), 1);
 
@@ -311,7 +340,7 @@ mod tests {
 
 		let relations = [(root.id(), a.id()), (a.id(), b.id()), (b.id(), c.id()), (c.id(), d.id())];
 
-		let elements = layout_elements(elements, &relations, Size::new(1024, 1024));
+		let elements = layout_elements(elements, &relations, Size::new(1024, 1024), &mut TextSystem::new());
 
 		assert_eq!(elements.len(), 5);
 
@@ -359,7 +388,7 @@ mod tests {
 			(root.id(), d.id()),
 		];
 
-		let elements = layout_elements(elements, &relations, Size::new(1024, 1024));
+		let elements = layout_elements(elements, &relations, Size::new(1024, 1024), &mut TextSystem::new());
 
 		assert_eq!(elements.len(), 5);
 

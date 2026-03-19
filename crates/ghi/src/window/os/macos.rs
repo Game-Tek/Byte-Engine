@@ -6,8 +6,8 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message as _};
 use objc2_app_kit::{
-	NSApp, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSEventModifierFlags, NSEventType,
-	NSScreen, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSEventMask,
+	NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
 	NSAutoreleasePool, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -17,6 +17,7 @@ pub struct Window {
 	mtm: MainThreadMarker,
 	app: Retained<NSApplication>,
 	window: Retained<NSWindow>,
+	_app_delegate: Retained<ApplicationDelegate>,
 	delegate: Retained<WindowDelegate>,
 	modifier_state: ModifierState,
 }
@@ -31,6 +32,10 @@ struct WindowDelegateIvars {
 	minimize_requested: Cell<bool>,
 	maximize_requested: Cell<bool>,
 	zoomed: Cell<bool>,
+}
+
+struct ApplicationDelegateIvars {
+	window: Retained<NSWindow>,
 }
 
 define_class!(
@@ -70,6 +75,31 @@ define_class!(
 	}
 );
 
+define_class!(
+	#[unsafe(super = NSObject)]
+	#[thread_kind = MainThreadOnly]
+	#[ivars = ApplicationDelegateIvars]
+	struct ApplicationDelegate;
+
+	unsafe impl NSObjectProtocol for ApplicationDelegate {}
+
+	unsafe impl NSApplicationDelegate for ApplicationDelegate {
+		#[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+		fn application_should_handle_reopen(&self, _sender: &NSApplication, has_visible_windows: bool) -> bool {
+			if !has_visible_windows || self.ivars().window.isMiniaturized() {
+				self.restore_window();
+			}
+
+			true
+		}
+
+		#[unsafe(method(applicationDidBecomeActive:))]
+		fn application_did_become_active(&self, _notification: &NSNotification) {
+			self.restore_window();
+		}
+	}
+);
+
 impl WindowDelegate {
 	fn new(mtm: MainThreadMarker) -> Retained<Self> {
 		let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars::default());
@@ -94,6 +124,25 @@ impl WindowDelegate {
 			if is_zoomed {
 				self.ivars().maximize_requested.set(true);
 			}
+		}
+	}
+}
+
+impl ApplicationDelegate {
+	fn new(mtm: MainThreadMarker, window: Retained<NSWindow>) -> Retained<Self> {
+		let this = Self::alloc(mtm).set_ivars(ApplicationDelegateIvars { window });
+		unsafe { msg_send![super(this), init] }
+	}
+
+	fn restore_window(&self) {
+		let window = &self.ivars().window;
+
+		if window.isMiniaturized() {
+			window.deminiaturize(None);
+		}
+
+		if !window.isVisible() || !window.isKeyWindow() {
+			window.makeKeyAndOrderFront(None);
 		}
 	}
 }
@@ -145,15 +194,24 @@ impl WindowLike for Window {
 		let frame = NSRect::new(NSPoint::new(100.0, 100.0), window_size);
 		let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::Resizable;
 
+		// let style = NSWindowStyleMask::Titled
+		// 	| NSWindowStyleMask::Closable
+		// 	| NSWindowStyleMask::Miniaturizable
+		// 	| NSWindowStyleMask::Resizable;
+
 		let window = unsafe {
 			let window = NSWindow::alloc(mtm);
 			NSWindow::initWithContentRect_styleMask_backing_defer(window, frame, style, NSBackingStoreType::Buffered, false)
 		};
 
+		let app_delegate = ApplicationDelegate::new(mtm, window.clone());
 		let delegate = WindowDelegate::new(mtm);
+		app.setDelegate(Some(ProtocolObject::from_ref(&*app_delegate)));
 		window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
 		window.setTitle(&NSString::from_str(name));
+		window.setCanHide(false);
+		window.setHidesOnDeactivate(false);
 		window.setAcceptsMouseMovedEvents(true);
 		window.makeKeyAndOrderFront(None);
 
@@ -164,6 +222,7 @@ impl WindowLike for Window {
 			mtm,
 			window,
 			app,
+			_app_delegate: app_delegate,
 			delegate,
 			modifier_state: ModifierState::default(),
 		})

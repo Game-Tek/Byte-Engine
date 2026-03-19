@@ -1,5 +1,6 @@
 use crate::core::Entity;
 
+pub mod animation;
 pub mod components;
 pub mod element;
 pub mod flow;

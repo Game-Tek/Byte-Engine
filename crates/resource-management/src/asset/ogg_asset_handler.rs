@@ -1,5 +1,6 @@
 use crate::{
 	asset,
+	processors::audio_processor::process_audio,
 	r#async::{spawn_cpu_task, BoxedFuture},
 	resource,
 	resources::audio::Audio,
@@ -95,7 +96,7 @@ impl AssetHandler for OGGAssetHandler {
 				.map_err(|_| LoadErrors::FailedToProcess)?
 				.map_err(|_| LoadErrors::FailedToProcess)?;
 
-			Ok((ProcessedAsset::new(url, audio_resource), data.into_boxed_slice()))
+			process_audio(url, audio_resource, data)
 		})
 	}
 }

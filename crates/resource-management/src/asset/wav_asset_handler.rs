@@ -1,4 +1,7 @@
-use crate::{asset, r#async::BoxedFuture, resource, resources::audio::Audio, types::BitDepths, ProcessedAsset};
+use crate::{
+	asset, processors::audio_processor::process_audio, r#async::BoxedFuture, resource, resources::audio::Audio,
+	types::BitDepths, ProcessedAsset,
+};
 
 use super::{
 	asset_handler::{AssetHandler, LoadErrors},
@@ -122,7 +125,7 @@ impl AssetHandler for WAVAssetHandler {
 
 			let (audio_resource, data) = Self::decode_wav(&data).map_err(|_| LoadErrors::FailedToProcess)?;
 
-			Ok((ProcessedAsset::new(url, audio_resource), data.into_boxed_slice()))
+			process_audio(url, audio_resource, data)
 		})
 	}
 }

@@ -5,24 +5,21 @@ use maths_rs::{
 use utils::{json::JsonValueTrait, Extent};
 
 use crate::{
-	asset::{
-		self,
-		png_asset_handler::{guess_semantic_from_name, Semantic},
-	},
+	asset::{self},
+	processors::image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image, ImageDescription},
 	r#async::{spawn_cpu_task, BoxedFuture},
 	resource,
 	resources::{
 		material::VariantModel,
 		mesh::{MeshModel, PrimitiveModel},
 	},
-	types::{Formats, Gamma, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics},
+	types::{Formats, IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics},
 	ProcessedAsset, StreamDescription,
 };
 
 use super::{
 	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
-	png_asset_handler::PNGAssetHandler,
 	ResourceId,
 };
 
@@ -150,18 +147,14 @@ impl AssetHandler for GLTFAssetHandler {
 
 				let semantic = guess_semantic_from_name(url.get_base());
 
-				let image_description = crate::asset::png_asset_handler::ImageDescription {
+				let image_description = ImageDescription {
 					format,
 					extent,
 					semantic,
-					gamma: if semantic == Semantic::Albedo {
-						Gamma::SRGB
-					} else {
-						Gamma::Linear
-					},
+					gamma: gamma_from_semantic(semantic),
 				};
 
-				return PNGAssetHandler::bake_from_image_data(url, image_description, image.pixels.into_boxed_slice());
+				return process_image(url, image_description, image.pixels.into_boxed_slice());
 			}
 
 			let spec = if let Some(spec) = &spec {

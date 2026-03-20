@@ -30,12 +30,15 @@ use crate::{
 	},
 	ui::{layout::engine::Render, render_pass::UiRenderPass},
 };
+use core::time;
 use std::{
 	net::{Ipv4Addr, Ipv6Addr},
 	sync::Arc,
+	thread,
 	time::Duration,
 };
 
+use dmx::DmxTransmitter as _;
 use math::Vector2;
 use resource_management::{
 	asset::{
@@ -676,6 +679,23 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 				}
 
 				log::debug!("Exiting audio thread");
+			}
+		}));
+}
+
+pub fn setup_default_dmx(application: &mut GraphicsApplication) {
+	application
+		.threads
+		.push(Thread::new(application.application_events.0.spawn_rx(), {
+			let mut dmx_port = dmx::open_serial("/dev/ttyS1").unwrap();
+
+			move |_| {
+				let data = &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
+
+				loop {
+					dmx_port.send_dmx_packet(data).unwrap();
+					thread::sleep(time::Duration::new(0, 50_000_000));
+				}
 			}
 		}));
 }

@@ -4,6 +4,7 @@ pub mod lexer;
 pub mod parser;
 mod tokenizer;
 
+pub use besl_derive::BeslStruct;
 pub use lexer::Expressions;
 pub use lexer::Node;
 pub use lexer::Nodes;
@@ -14,6 +15,47 @@ pub use crate::lexer::NodeReference;
 
 /// Useful type alias for the parser's node type.
 pub type ParserNode<'a> = parser::Node<'a>;
+
+/// The `BeslStructDefinition` trait exposes a Rust struct as a BESL parser struct definition.
+pub trait BeslStructDefinition {
+	fn besl_struct_node() -> ParserNode<'static>;
+
+	fn besl_definition(&self) -> ParserNode<'static> {
+		Self::besl_struct_node()
+	}
+}
+
+/// Builds a BESL parser struct node from Rust-style struct syntax.
+#[macro_export]
+macro_rules! besl_struct_node {
+	(struct $name:ident { $($body:tt)* }) => {{
+		let mut fields = Vec::new();
+		$crate::besl_struct_node!(@fields fields [] $($body)*);
+
+		$crate::ParserNode::r#struct(
+			stringify!($name),
+			fields,
+		)
+	}};
+	(@fields $fields:ident [] ) => {};
+	(@fields $fields:ident [$($field:tt)+] ) => {
+		$crate::besl_struct_node!(@emit $fields [$($field)+]);
+	};
+	(@fields $fields:ident [$($field:tt)*] , $($rest:tt)*) => {
+		$crate::besl_struct_node!(@emit $fields [$($field)*]);
+		$crate::besl_struct_node!(@fields $fields [] $($rest)*);
+	};
+	(@fields $fields:ident [$($field:tt)*] $next:tt $($rest:tt)*) => {
+		$crate::besl_struct_node!(@fields $fields [$($field)* $next] $($rest)*);
+	};
+	(@emit $fields:ident []) => {};
+	(@emit $fields:ident [$field:ident : $($field_type:tt)+]) => {
+		{
+			let field_type = stringify!($($field_type)+).replace(' ', "");
+			$fields.push($crate::ParserNode::member(stringify!($field), &field_type));
+		}
+	};
+}
 
 /// Parses BESL source code.
 /// It first tokenizes the input then feeds it to the parser to build a syntax tree.
@@ -67,4 +109,42 @@ pub enum CompilationError {
 	Tokenization,
 	Parsing,
 	Lex(lexer::LexError),
+}
+
+#[cfg(test)]
+mod tests {
+	use crate::parser::Nodes;
+
+	#[test]
+	fn besl_struct_node_macro_builds_a_struct_node() {
+		let mut node = crate::besl_struct_node!(struct Light {
+			position: vec3f,
+			color: vec3f,
+			indices: u32[3],
+		});
+
+		match node.node_mut() {
+			Nodes::Struct { name, fields } => {
+				assert_eq!(*name, "Light");
+				assert_eq!(fields.len(), 3);
+
+				match fields[0].node_mut() {
+					Nodes::Member { name, r#type } => {
+						assert_eq!(*name, "position");
+						assert_eq!(r#type, "vec3f");
+					}
+					_ => panic!("Expected member node."),
+				}
+
+				match fields[2].node_mut() {
+					Nodes::Member { name, r#type } => {
+						assert_eq!(*name, "indices");
+						assert_eq!(r#type, "u32[3]");
+					}
+					_ => panic!("Expected member node."),
+				}
+			}
+			_ => panic!("Expected struct node."),
+		}
+	}
 }

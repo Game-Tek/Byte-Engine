@@ -6,4 +6,5 @@ license = "MIT"
 rust-version = "1.73.0"
 
 [dependencies]
+besl-derive = { path = "../besl-derive" }
 colored = "3.0.0"

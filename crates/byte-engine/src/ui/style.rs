@@ -92,5 +92,5 @@ pub trait ContextStyle {
 	fn is_hovered(&self, id: Id) -> bool;
 }
 
-pub trait Styler = Fn(&dyn ContextStyle) -> ConcreteStyle + 'static;
+pub trait Styler = FnMut(&dyn ContextStyle) -> ConcreteStyle + 'static;
 pub type StylerFn = fn(&dyn ContextStyle) -> ConcreteStyle;

@@ -171,7 +171,7 @@ impl Engine {
 	}
 
 	/// Renders the given snapshot into a [`Render`] object.
-	pub fn render<'a>(&'a mut self, snapshot: Snapshot) -> Render {
+	pub fn render<'a>(&'a mut self, snapshot: &mut Snapshot) -> Render {
 		let size = snapshot.size;
 
 		let mouse_pos = (self.cursor_position + 1.0) * 0.5;
@@ -200,17 +200,17 @@ impl Engine {
 		let mut elements = Vec::new();
 		let mut text_elements = Vec::new();
 
-		for element in &snapshot.elements {
+		for element in &mut snapshot.elements {
 			let state = StyleContextImpl {
 				acceleration: &snapshot.acceleration,
 				self_id: element.element.id,
 				mouse_pos: Location::new(mouse_pos.x as u32, mouse_pos.y as u32),
 			};
 
-			let style = match &element.element.element.primitive {
-				Primitives::Container(container) => container.styler.as_ref().map(|styler| styler(&state)).unwrap_or_default(),
-				Primitives::Shape(shape) => shape.styler.as_ref().map(|styler| styler(&state)).unwrap_or_default(),
-				Primitives::Text(text) => text.styler.as_ref().map(|styler| styler(&state)).unwrap_or_default(),
+			let style = match &mut element.element.element.primitive {
+				Primitives::Container(container) => container.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
+				Primitives::Shape(shape) => shape.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
+				Primitives::Text(text) => text.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
 			};
 
 			let layer = &style.layers[0];
@@ -875,8 +875,8 @@ mod tests {
 		let mut engine = Engine::new();
 		engine.set_cursor_position(Vector2::new(-0.8, 0.8));
 
-		let snapshot = engine.evaluate(&StyledColumn, Size::new(100, 100));
-		let render = engine.render(snapshot);
+		let mut snapshot = engine.evaluate(&StyledColumn, Size::new(100, 100));
+		let render = engine.render(&mut snapshot);
 
 		assert_eq!(render.size(), 3);
 
@@ -916,8 +916,8 @@ mod tests {
 		}
 
 		let mut engine = Engine::new();
-		let snapshot = engine.evaluate(&RoundedBoxes, Size::new(100, 100));
-		let render = engine.render(snapshot);
+		let mut snapshot = engine.evaluate(&RoundedBoxes, Size::new(100, 100));
+		let render = engine.render(&mut snapshot);
 
 		let container = render.elements().find(|element| element.id == 2).unwrap();
 		assert_eq!(container.corner_radius, 12.0);
@@ -939,8 +939,8 @@ mod tests {
 		}
 
 		let mut engine = Engine::new();
-		let snapshot = engine.evaluate(&LabelStack, Size::new(200, 100));
-		let render = engine.render(snapshot);
+		let mut snapshot = engine.evaluate(&LabelStack, Size::new(200, 100));
+		let render = engine.render(&mut snapshot);
 
 		let text = render.texts().next().expect("Expected a text render element");
 		assert_eq!(text.position, Location3::new(0, 0, 1));

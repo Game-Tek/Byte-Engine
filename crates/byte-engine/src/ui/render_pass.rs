@@ -106,6 +106,11 @@ struct UiGeometry {
 	truncated: bool,
 }
 
+// Whether text rasterization should be ommitted if text is empty, 0 sized in any dimension or if fully transparent
+fn should_rasterize_text(text: &UiTextDrawElement) -> bool {
+	!text.text.is_empty() && text.color.a > 0.0 && text.size[0] > 0.0 && text.size[1] > 0.0
+}
+
 fn update_from_render(render: &engine::Render) -> UiDrawList {
 	let root_size = render.root().size;
 	let elements = render
@@ -124,12 +129,16 @@ fn update_from_render(render: &engine::Render) -> UiDrawList {
 		.collect();
 	let texts = render
 		.texts()
-		.map(|text| UiTextDrawElement {
-			position: [text.position.x() as f32, text.position.y() as f32],
-			size: [text.size.x() as f32, text.size.y() as f32],
-			color: text.color,
-			font_size: text.font_size,
-			text: text.content.clone(),
+		.filter_map(|text| {
+			let text = UiTextDrawElement {
+				position: [text.position.x() as f32, text.position.y() as f32],
+				size: [text.size.x() as f32, text.size.y() as f32],
+				color: text.color,
+				font_size: text.font_size,
+				text: text.content.clone(),
+			};
+
+			should_rasterize_text(&text).then_some(text)
 		})
 		.collect();
 
@@ -157,7 +166,7 @@ fn rasterize_text_overlay(draw_list: &UiDrawList, viewport: Extent, text_system:
 	let mut drew_text = false;
 
 	for text in &draw_list.texts {
-		if text.text.is_empty() || text.color.a <= 0.0 || text.size[0] <= 0.0 || text.size[1] <= 0.0 {
+		if !should_rasterize_text(text) {
 			continue;
 		}
 
@@ -202,18 +211,19 @@ fn build_ui_geometry(draw_list: &UiDrawList, viewport: Extent) -> UiGeometry {
 	let mut batch_index_count = 0usize;
 
 	for element in &draw_list.elements {
+		let rect_width = (element.size[0] * sx).max(0.0);
+		let rect_height = (element.size[1] * sy).max(0.0);
+
+		if rect_width <= 0.0 || rect_height <= 0.0 || element.color[3] <= 0.0 {
+			// Omit element if 0 sized in any dimension or if fully transparent
+			continue;
+		}
+
 		if geometry.vertices.len() + UI_VERTICES_PER_ELEMENT > MAX_UI_VERTICES
 			|| geometry.indices.len() + UI_INDICES_PER_ELEMENT > MAX_UI_INDICES
 		{
 			geometry.truncated = true;
 			break;
-		}
-
-		let rect_width = (element.size[0] * sx).max(0.0);
-		let rect_height = (element.size[1] * sy).max(0.0);
-
-		if rect_width <= 0.0 || rect_height <= 0.0 || element.color[3] <= 0.0 {
-			continue;
 		}
 
 		if batch_vertex_count + UI_VERTICES_PER_ELEMENT > MAX_UI_VERTICES_PER_DRAW {
@@ -733,10 +743,10 @@ fn create_text_overlay_fragment_shader(device: &mut ghi::implementation::Device)
 #[cfg(test)]
 mod tests {
 	use super::{
-		build_ui_geometry, UiDrawBatch, UiDrawElement, UiDrawList, MAX_UI_VERTICES_PER_DRAW, UI_INDICES_PER_ELEMENT,
-		UI_VERTICES_PER_ELEMENT,
+		build_ui_geometry, should_rasterize_text, UiDrawBatch, UiDrawElement, UiDrawList, UiTextDrawElement, MAX_UI_ELEMENTS,
+		MAX_UI_VERTICES_PER_DRAW, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_ELEMENT,
 	};
-	use utils::Extent;
+	use utils::{Extent, RGBA};
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
@@ -810,5 +820,56 @@ mod tests {
 			MAX_UI_VERTICES_PER_DRAW / UI_VERTICES_PER_ELEMENT * UI_INDICES_PER_ELEMENT
 		);
 		assert_eq!(geometry.batches[1].vertex_offset as usize, MAX_UI_VERTICES_PER_DRAW);
+	}
+
+	#[test]
+	fn skips_zero_alpha_elements_before_capacity_checks() {
+		let mut elements = Vec::with_capacity(MAX_UI_ELEMENTS + 1);
+
+		elements.extend((0..MAX_UI_ELEMENTS).map(|_| UiDrawElement {
+			position: [0.0, 0.0],
+			size: [1.0, 1.0],
+			color: [1.0, 1.0, 1.0, 0.0],
+			corner_radius: 0.0,
+		}));
+		elements.push(UiDrawElement {
+			position: [0.0, 0.0],
+			size: [1.0, 1.0],
+			color: [1.0, 1.0, 1.0, 1.0],
+			corner_radius: 0.0,
+		});
+
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [1.0, 1.0],
+				elements,
+				texts: vec![],
+			},
+			Extent::square(1),
+		);
+
+		assert!(!geometry.truncated);
+		assert_eq!(geometry.vertices.len(), UI_VERTICES_PER_ELEMENT);
+		assert_eq!(geometry.indices.len(), UI_INDICES_PER_ELEMENT);
+		assert_eq!(geometry.batches.len(), 1);
+	}
+
+	#[test]
+	fn skips_zero_alpha_text_before_rasterization() {
+		assert!(!should_rasterize_text(&UiTextDrawElement {
+			position: [0.0, 0.0],
+			size: [32.0, 16.0],
+			color: RGBA::new(1.0, 1.0, 1.0, 0.0),
+			font_size: 16.0,
+			text: "Hidden".to_string(),
+		}));
+
+		assert!(should_rasterize_text(&UiTextDrawElement {
+			position: [0.0, 0.0],
+			size: [32.0, 16.0],
+			color: RGBA::new(1.0, 1.0, 1.0, 1.0),
+			font_size: 16.0,
+			text: "Visible".to_string(),
+		}));
 	}
 }

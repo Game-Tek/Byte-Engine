@@ -329,7 +329,9 @@ impl SceneManager {
 	}
 
 	pub fn update_transform(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, transform: Matrix4) {
-		let idx = self.mesh_buffers_stats.get_instance_id(handle);
+		let Some(idx) = self.mesh_buffers_stats.get_instance_id(handle) else {
+			return;
+		};
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
@@ -359,8 +361,10 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 	}
 
 	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder) {
-		let main = render_pass_builder.render_to("main");
-		let depth = render_pass_builder.render_to("depth");
+		let main = render_pass_builder
+			.create_render_target(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::RenderTarget).name("main"));
+		let depth = render_pass_builder
+			.create_render_target(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget).name("depth"));
 		self.views.push(RenderPass::new(
 			render_pass_builder.device(),
 			&self.descriptor_set_template,

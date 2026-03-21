@@ -188,11 +188,11 @@ impl<I> MeshBuffersStats<I> {
 		self.index_count
 	}
 
-	pub fn get_instance_id(&self, handle: I) -> usize
+	pub fn get_instance_id(&self, handle: I) -> Option<usize>
 	where
 		I: Eq,
 	{
-		self.instances.iter().position(|(_, h)| *h == handle).unwrap()
+		self.instances.iter().position(|(_, h)| *h == handle)
 	}
 }
 

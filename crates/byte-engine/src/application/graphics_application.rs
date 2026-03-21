@@ -32,13 +32,13 @@ use crate::{
 };
 use core::time;
 use std::{
-	net::{Ipv4Addr, Ipv6Addr},
+	net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, UdpSocket},
 	sync::Arc,
 	thread,
 	time::Duration,
 };
 
-use dmx::DmxTransmitter as _;
+use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll, PollReply, PortAddress};
 use math::Vector2;
 use resource_management::{
 	asset::{
@@ -54,7 +54,7 @@ use resource_management::{
 };
 use smallvec::SmallVec;
 use tracing::{debug_span, instrument, span, Level};
-use utils::{sync::RwLock, Box, Extent};
+use utils::{sync::RwLock, Box, Extent, RGBA};
 
 use crate::{
 	audio::audio_system::{AudioSystem, DefaultAudioSystem},
@@ -683,21 +683,170 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 		}));
 }
 
-pub fn setup_default_dmx(application: &mut GraphicsApplication) {
+pub fn setup_default_dmx(application: &mut GraphicsApplication, mut rx: DefaultListener<RGBA>) {
+	let bind_address = parse_artnet_ipv4_parameter(application.get_parameter("artnet.bind-address"), Ipv4Addr::UNSPECIFIED);
+	let poll_target = parse_artnet_ipv4_parameter(application.get_parameter("artnet.poll-target"), Ipv4Addr::BROADCAST);
+
 	application
 		.threads
-		.push(Thread::new(application.application_events.0.spawn_rx(), {
-			let mut dmx_port = dmx::open_serial("/dev/ttyS1").unwrap();
+		.push(Thread::new(application.application_events.0.spawn_rx(), move |mut arx| {
+			const ARTNET_PORT: u16 = 6454;
 
-			move |_| {
-				let data = &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
+			let socket = UdpSocket::bind((bind_address, ARTNET_PORT)).unwrap();
+			let target = (poll_target, ARTNET_PORT);
+			socket.set_broadcast(true).unwrap();
 
-				loop {
-					dmx_port.send_dmx_packet(data).unwrap();
-					thread::sleep(time::Duration::new(0, 50_000_000));
+			log::debug!(
+				"Created Art-Net socket on {}:{} and polling {}:{}.",
+				bind_address,
+				ARTNET_PORT,
+				poll_target,
+				ARTNET_PORT
+			);
+
+			loop {
+				while let Ok(m) = arx.try_recv() {
+					match m {
+						Events::Close => return,
+					}
 				}
+
+				let buff = ArtCommand::Poll(Poll {
+					talk_to_me: ArtTalkToMe::EMIT_CHANGES,
+					diagnostics_priority: 0,
+					..Poll::default()
+				})
+				.write_to_buffer()
+				.unwrap();
+				socket.send_to(&buff, &target).unwrap();
+				log::debug!("Sent poll packet!");
+
+				socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+
+				// let mut buffer = [0u8; 1024];
+				// let (length, addr) = match socket.recv_from(&mut buffer) {
+				// 	Ok(message) => message,
+				// 	Err(error) => {
+				// 		log::warn!(
+				// 			"Failed to receive an Art-Net packet. The most likely cause is that the network socket is no longer readable: {error}"
+				// 		);
+				// 		continue;
+				// 	}
+				// };
+				// let command = match ArtCommand::from_buffer(&buffer[..length]) {
+				// 	Ok(command) => command,
+				// 	Err(error) => {
+				// 		log::warn!(
+				// 			"Failed to decode an Art-Net packet. The most likely cause is that the network device sent a malformed or unsupported payload: {error}"
+				// 		);
+				// 		continue;
+				// 	}
+				// };
+
+				// log::debug!("Received {:?}", command);
+
+				while let Some(c) = rx.read() {
+					let f_to_u8 = |v: f32| {
+						(v * 255f32).clamp(0f32, 255f32) as u8
+					};
+
+					let data: [u8; 7] = [f_to_u8(c.r), f_to_u8(c.g), f_to_u8(c.b), 0x00, 0x00, 0x00, 0x00];
+
+					let command = ArtCommand::Output(Output {
+						data: data.to_vec().into(),
+						port_address: 0.into(), // If not a reply to a poll use 0 for basic devices
+						..Output::default()
+					});
+					let bytes = match command.write_to_buffer() {
+						Ok(bytes) => bytes,
+						Err(error) => {
+							log::warn!(
+								"Failed to serialize an Art-Net output packet. The most likely cause is that the DMX payload or universe is invalid: {error}"
+							);
+							continue;
+						}
+					};
+
+					if let Err(error) = socket.send_to(&bytes, target) {
+						log::warn!(
+							"Failed to send an Art-Net output packet. The most likely cause is that the node address is unreachable from this host: {error}"
+						);
+					}
+				}
+
+
+				// match command {
+				// 	ArtCommand::Poll(_) => {
+				// 		// Ignore our own discovery broadcast and any other controller polls.
+				// 	}
+				// 	ArtCommand::PollReply(reply) => {
+				// 		let target = resolve_artnet_node_address(addr, &reply);
+				// 		let port_address = resolve_artnet_port_address(&reply);
+				// 		let command = ArtCommand::Output(Output {
+				// 			// port_address,
+				// 			data: DMX_DATA.to_vec().into(),
+				// 			..Output::default()
+				// 		});
+				// 		let bytes = match command.write_to_buffer() {
+				// 			Ok(bytes) => bytes,
+				// 			Err(error) => {
+				// 				log::warn!(
+				// 					"Failed to serialize an Art-Net output packet. The most likely cause is that the DMX payload or universe is invalid: {error}"
+				// 				);
+				// 				continue;
+				// 			}
+				// 		};
+
+				// 		if let Err(error) = socket.send_to(&bytes, target) {
+				// 			log::warn!(
+				// 				"Failed to send an Art-Net output packet. The most likely cause is that the node address is unreachable from this host: {error}"
+				// 			);
+				// 		}
+				// 	}
+				// 	_ => {}
+				// }
 			}
 		}));
+}
+
+// Parses an optional Art-Net IPv4 parameter and falls back to the provided default value.
+fn parse_artnet_ipv4_parameter(parameter: Option<&Parameter>, default: Ipv4Addr) -> Ipv4Addr {
+	let Some(parameter) = parameter else {
+		return default;
+	};
+
+	match parameter.value().parse::<Ipv4Addr>() {
+		Ok(address) => address,
+		Err(error) => {
+			log::warn!(
+				"Invalid Art-Net IPv4 address parameter `{}`. The most likely cause is that the configured value is not a valid IPv4 address: {}",
+				parameter.name(),
+				error
+			);
+			default
+		}
+	}
+}
+
+// Resolves the node address advertised by the ArtPollReply and falls back to the packet source.
+fn resolve_artnet_node_address(source: SocketAddr, reply: &PollReply) -> SocketAddrV4 {
+	if !reply.address.is_unspecified() {
+		return SocketAddrV4::new(reply.address, reply.port);
+	}
+
+	match source {
+		SocketAddr::V4(address) => SocketAddrV4::new(*address.ip(), reply.port),
+		SocketAddr::V6(_) => SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, reply.port),
+	}
+}
+
+// Resolves the first advertised Art-Net output universe from the node discovery reply.
+fn resolve_artnet_port_address(reply: &PollReply) -> PortAddress {
+	let value = (u16::from(reply.port_address[0] & 0x7F) << 8)
+		| (u16::from(reply.port_address[1] & 0x0F) << 4)
+		| u16::from(reply.swout[0] & 0x0F);
+
+	PortAddress::try_from(value).unwrap_or_else(|_| Output::default().port_address)
 }
 
 pub fn process_default_window_input(
@@ -875,6 +1024,46 @@ mod tests {
 			input::input_manager::TriggerReference::Name("Mouse.Movement")
 		));
 		assert_eq!(result.2, input::Value::Vector2(Vector2::new(0.25, -0.5)));
+	}
+
+	#[test]
+	fn resolve_artnet_node_address_prefers_the_reply_address() {
+		let mut reply = PollReply::default();
+		reply.address = Ipv4Addr::new(2, 0, 0, 10);
+		reply.port = 6454;
+
+		let resolved = resolve_artnet_node_address(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(2, 0, 0, 20), 6454)), &reply);
+
+		assert_eq!(resolved, SocketAddrV4::new(Ipv4Addr::new(2, 0, 0, 10), 6454));
+	}
+
+	#[test]
+	fn parse_artnet_ipv4_parameter_uses_the_parameter_value() {
+		let parameter = Parameter::new("artnet.bind-address", "2.0.0.15");
+
+		let address = parse_artnet_ipv4_parameter(Some(&parameter), Ipv4Addr::UNSPECIFIED);
+
+		assert_eq!(address, Ipv4Addr::new(2, 0, 0, 15));
+	}
+
+	#[test]
+	fn parse_artnet_ipv4_parameter_falls_back_to_the_default_value() {
+		let parameter = Parameter::new("artnet.bind-address", "not-an-ip");
+
+		let address = parse_artnet_ipv4_parameter(Some(&parameter), Ipv4Addr::BROADCAST);
+
+		assert_eq!(address, Ipv4Addr::BROADCAST);
+	}
+
+	#[test]
+	fn resolve_artnet_port_address_uses_the_reply_universe() {
+		let mut reply = PollReply::default();
+		reply.port_address = [0x02, 0x03];
+		reply.swout[0] = 0x04;
+
+		let port_address = resolve_artnet_port_address(&reply);
+
+		assert_eq!(u16::from(port_address), 0x0234);
 	}
 
 	#[test]

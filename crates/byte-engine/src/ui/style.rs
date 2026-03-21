@@ -90,6 +90,7 @@ pub type StyleState<'a> = &'a dyn ContextStyle;
 pub trait ContextStyle {
 	fn id(&self) -> Id;
 	fn is_hovered(&self, id: Id) -> bool;
+	fn is_focused(&self, id: Id) -> bool;
 }
 
 pub trait Styler = FnMut(&dyn ContextStyle) -> ConcreteStyle + 'static;

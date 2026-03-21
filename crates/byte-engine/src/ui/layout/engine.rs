@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{cell::RefCell, collections::HashSet, marker::PhantomData, rc::Rc};
 
 use math::{Base as _, Vector2};
 use utils::{RefCall1, RGBA};
@@ -24,16 +24,47 @@ use super::{
 
 pub struct Engine {
 	viewports: Vec<VirtualViewport>,
+	state: Rc<RefCell<EngineState>>,
 	cursor_position: Vector2,
 	is_clicking: bool,
 	clicks: Vec<bool>,
 	text_system: TextSystem,
 }
 
+struct EngineState {
+	element_ids: HashSet<Id>,
+	cursor: Option<Id>,
+}
+
+impl EngineState {
+	fn new() -> Self {
+		Self {
+			element_ids: HashSet::new(),
+			cursor: None,
+		}
+	}
+
+	fn set_element_ids(&mut self, element_ids: impl IntoIterator<Item = Id>) {
+		self.element_ids.clear();
+		self.element_ids.extend(element_ids);
+		self.cursor = self.cursor.filter(|id| self.element_ids.contains(id));
+	}
+
+	fn set_cursor(&mut self, cursor: Option<Id>) -> Option<Id> {
+		self.cursor = cursor.filter(|id| self.element_ids.contains(id));
+		self.cursor
+	}
+
+	fn cursor(&self) -> Option<Id> {
+		self.cursor
+	}
+}
+
 impl Engine {
 	pub fn new() -> Self {
 		Self {
 			viewports: Vec::new(),
+			state: Rc::new(RefCell::new(EngineState::new())),
 			cursor_position: Vector2::zero(),
 			is_clicking: false,
 			clicks: Vec::new(),
@@ -60,10 +91,12 @@ impl Engine {
 			where
 				Self: 'a;
 
-			fn container<'a>(&'a mut self, element: Container) -> Self::Child<'a> {
+			fn container<'a>(&'a mut self, element: impl FnOnce() -> Container) -> Self::Child<'a> {
 				let id = Id::new(*self.counter).unwrap();
 
 				*self.counter += 1;
+
+				let element = element();
 
 				self.elements.push(IdedElement {
 					id,
@@ -82,10 +115,12 @@ impl Engine {
 				}
 			}
 
-			fn shape<'a>(&'a mut self, shape: Shape) -> Self::Child<'a> {
+			fn shape<'a>(&'a mut self, shape: impl FnOnce() -> Shape) -> Self::Child<'a> {
 				let id = Id::new(*self.counter).unwrap();
 
 				*self.counter += 1;
+
+				let shape = shape();
 
 				self.elements.push(IdedElement {
 					id,
@@ -104,10 +139,12 @@ impl Engine {
 				}
 			}
 
-			fn text<'a>(&'a mut self, text: Text) -> Self::Child<'a> {
+			fn text<'a>(&'a mut self, text: impl FnOnce() -> Text) -> Self::Child<'a> {
 				let id = Id::new(*self.counter).unwrap();
 
 				*self.counter += 1;
+
+				let text = text();
 
 				self.elements.push(IdedElement {
 					id,
@@ -126,8 +163,9 @@ impl Engine {
 				}
 			}
 
-			fn component(&mut self, component: &impl Component) {
-				component.render(self);
+			fn component<C: Component>(&mut self, component: impl FnOnce(&C)) {
+				// component()
+				// component.render(self);
 			}
 
 			fn id(&self) -> Id {
@@ -151,13 +189,19 @@ impl Engine {
 
 		let elements = layout_elements(elements, &relations, size, &mut self.text_system);
 
+		{
+			let mut state = self.state.borrow_mut();
+			state.set_element_ids(elements.iter().map(|element| element.element.id));
+		}
+
 		let acc = build_mouse_click_acceleration(&elements);
 
 		let mut snapshot = Snapshot {
 			elements,
 			relations,
 			acceleration: acc,
-			cursor: None,
+			cursor: self.state.borrow().cursor(),
+			engine_state: Rc::clone(&self.state),
 			size,
 		};
 
@@ -180,6 +224,7 @@ impl Engine {
 
 		struct StyleContextImpl<'a> {
 			acceleration: &'a MouseClickAcceleration,
+			cursor: Option<Id>,
 			self_id: Id,
 			mouse_pos: Location,
 		}
@@ -195,6 +240,10 @@ impl Engine {
 					.map(|e| e == id.get())
 					.unwrap_or(false)
 			}
+
+			fn is_focused(&self, id: Id) -> bool {
+				self.cursor.map(|e| e == id).unwrap_or(false)
+			}
 		}
 
 		let mut elements = Vec::new();
@@ -203,6 +252,7 @@ impl Engine {
 		for element in &mut snapshot.elements {
 			let state = StyleContextImpl {
 				acceleration: &snapshot.acceleration,
+				cursor: snapshot.cursor,
 				self_id: element.element.id,
 				mouse_pos: Location::new(mouse_pos.x as u32, mouse_pos.y as u32),
 			};
@@ -263,6 +313,18 @@ impl Engine {
 		self.cursor_position = v;
 	}
 
+	pub fn cursor(&self) -> Option<Id> {
+		self.state.borrow().cursor()
+	}
+
+	pub fn set_cursor(&mut self, cursor: Option<Id>) -> Option<Id> {
+		self.state.borrow_mut().set_cursor(cursor)
+	}
+
+	pub fn clear_cursor(&mut self) {
+		self.state.borrow_mut().set_cursor(None);
+	}
+
 	pub fn update_click_state(&mut self, v: bool) {
 		self.is_clicking = v;
 		self.clicks.push(v);
@@ -275,6 +337,7 @@ pub struct Snapshot {
 	relations: Vec<(Id, Id)>,
 	acceleration: MouseClickAcceleration,
 	cursor: Option<Id>,
+	engine_state: Rc<RefCell<EngineState>>,
 	size: Size,
 }
 
@@ -285,12 +348,15 @@ impl Snapshot {
 
 	/// Updates the snapshot cursor to a specific element when that element still exists in the snapshot.
 	pub fn set_cursor(&mut self, cursor: Option<Id>) -> Option<Id> {
-		self.cursor = cursor.filter(|id| self.element(*id).is_some());
+		self.cursor = self
+			.engine_state
+			.borrow_mut()
+			.set_cursor(cursor.filter(|id| self.element(*id).is_some()));
 		self.cursor
 	}
 
 	pub fn clear_cursor(&mut self) {
-		self.cursor = None;
+		let _ = self.set_cursor(None);
 	}
 
 	/// Moves the snapshot cursor from a joystick-like axis by following the dominant axis.
@@ -349,7 +415,7 @@ impl Snapshot {
 			.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32))
 			.and_then(Id::new)
 		{
-			self.cursor = Some(id);
+			let _ = self.set_cursor(Some(id));
 			return self.actuate_element(id);
 		}
 
@@ -398,7 +464,7 @@ impl Snapshot {
 		}
 
 		if let Some((candidate_id, _)) = best_candidate {
-			self.cursor = Some(candidate_id);
+			let _ = self.set_cursor(Some(candidate_id));
 		}
 
 		self.cursor
@@ -634,16 +700,17 @@ impl Render {
 	}
 }
 
+/// The `Context` is the API offered to UI layouting code to create it's elements.
 pub trait Context: Sized {
 	type Child<'a>: Context
 	where
 		Self: 'a;
 
 	fn id(&self) -> Id;
-	fn container<'a>(&'a mut self, element: Container) -> Self::Child<'a>;
-	fn shape<'a>(&'a mut self, shape: Shape) -> Self::Child<'a>;
-	fn text<'a>(&'a mut self, text: Text) -> Self::Child<'a>;
-	fn component(&mut self, component: &impl Component);
+	fn container<'a>(&'a mut self, element: impl FnOnce() -> Container) -> Self::Child<'a>;
+	fn shape<'a>(&'a mut self, shape: impl FnOnce() -> Shape) -> Self::Child<'a>;
+	fn text<'a>(&'a mut self, text: impl FnOnce() -> Text) -> Self::Child<'a>;
+	fn component<C: Component>(&mut self, component: impl FnOnce(&C));
 }
 
 pub(crate) struct VirtualViewport;
@@ -664,6 +731,7 @@ mod tests {
 		atomic::{AtomicUsize, Ordering},
 		Arc,
 	};
+	use std::{cell::RefCell, rc::Rc};
 
 	use math::{Base, Vector2};
 	use utils::{Box, RGBA};
@@ -690,7 +758,7 @@ mod tests {
 		Component,
 	};
 
-	use super::Snapshot;
+	use super::{EngineState, Snapshot};
 
 	struct Bar {
 		options: Vec<BarOption>,
@@ -704,7 +772,7 @@ mod tests {
 
 	impl Component for Bar {
 		fn render(&self, ctx: &mut impl Context) {
-			let mut ctx = ctx.container(Container::new(ContainerSettings::default().height(32.into())));
+			let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().height(32.into())));
 
 			for option in &self.options {
 				option.render(&mut ctx);
@@ -724,7 +792,7 @@ mod tests {
 
 	impl Component for BarOption {
 		fn render(&self, ctx: &mut impl Context) {
-			ctx.container(Container::new(ContainerSettings::default()));
+			ctx.container(|| Container::new(ContainerSettings::default()));
 		}
 	}
 
@@ -762,7 +830,7 @@ mod tests {
 
 	impl Component for Application {
 		fn render(&self, ctx: &mut impl Context) {
-			let mut ctx = ctx.container(Container::new(ContainerSettings::default()));
+			let mut ctx = ctx.container(|| Container::new(ContainerSettings::default()));
 			self.bar.render(&mut ctx);
 		}
 	}
@@ -771,6 +839,8 @@ mod tests {
 		elements: Vec<(u32, Location3, Size, Option<utils::InlineCopyFn<OnEventFunction>>)>,
 		relations: &[(u32, u32)],
 	) -> Snapshot {
+		let mut engine_state = EngineState::new();
+
 		let elements = elements
 			.into_iter()
 			.map(|(id, position, size, on_event)| LayoutElement {
@@ -790,6 +860,8 @@ mod tests {
 			})
 			.collect::<Vec<_>>();
 
+		engine_state.set_element_ids(elements.iter().map(|element| element.element.id));
+
 		Snapshot {
 			acceleration: build_mouse_click_acceleration(&elements),
 			elements,
@@ -798,6 +870,7 @@ mod tests {
 				.map(|&(parent, child)| (Id::new(parent).unwrap(), Id::new(child).unwrap()))
 				.collect(),
 			cursor: None,
+			engine_state: Rc::new(RefCell::new(engine_state)),
 			size: Size::new(1024, 1024),
 		}
 	}
@@ -865,10 +938,10 @@ mod tests {
 					}
 				};
 
-				let mut ctx = ctx.container(Container::new(ContainerSettings::default().flow(flow::column)));
+				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().flow(flow::column)));
 
-				ctx.container(Container::new(ContainerSettings::default().size(Sizing::Absolute(20))).styler(styler));
-				ctx.container(Container::new(ContainerSettings::default().size(Sizing::Absolute(20))).styler(styler));
+				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))).styler(styler));
+				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))).styler(styler));
 			}
 		}
 
@@ -905,13 +978,9 @@ mod tests {
 
 		impl Component for RoundedBoxes {
 			fn render(&self, ctx: &mut impl Context) {
-				let mut ctx = ctx.container(Container::new(ContainerSettings::default()));
-				ctx.container(Container::new(
-					ContainerSettings::default().size(Sizing::Absolute(32)).corner_radius(12.0),
-				));
-				ctx.shape(Shape::new(
-					ContainerSettings::default().size(Sizing::Absolute(24)).corner_radius(6.0),
-				));
+				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default()));
+				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(32)).corner_radius(12.0)));
+				ctx.shape(|| Shape::new(ContainerSettings::default().size(Sizing::Absolute(24)).corner_radius(6.0)));
 			}
 		}
 
@@ -932,9 +1001,9 @@ mod tests {
 
 		impl Component for LabelStack {
 			fn render(&self, ctx: &mut impl Context) {
-				let mut ctx = ctx.container(Container::new(ContainerSettings::default().flow(flow::column)));
-				ctx.text(Text::new("Hello Byte").font_size(18.0));
-				ctx.container(Container::new(ContainerSettings::default().size(Sizing::Absolute(12))));
+				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().flow(flow::column)));
+				ctx.text(|| Text::new("Hello Byte").font_size(18.0));
+				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(12))));
 			}
 		}
 
@@ -949,6 +1018,59 @@ mod tests {
 
 		let container = render.elements().find(|element| element.id == 3).unwrap();
 		assert_eq!(container.position, Location3::new(0, text.size.y(), 1));
+	}
+
+	#[test]
+	fn engine_propagates_cursor_from_previous_snapshot_to_the_next_one() {
+		struct TwoOptions;
+
+		impl Component for TwoOptions {
+			fn render(&self, ctx: &mut impl Context) {
+				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().flow(flow::column)));
+				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))));
+				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))));
+			}
+		}
+
+		let mut engine = Engine::new();
+
+		let mut snapshot = engine.evaluate(&TwoOptions, Size::new(100, 100));
+		assert_eq!(snapshot.set_cursor(Some(Id::new(3).unwrap())), Id::new(3));
+		assert_eq!(engine.cursor(), Id::new(3));
+
+		let snapshot = engine.evaluate(&TwoOptions, Size::new(100, 100));
+		assert_eq!(snapshot.cursor(), Id::new(3));
+	}
+
+	#[test]
+	fn engine_clears_cursor_when_the_focused_element_no_longer_exists() {
+		struct TwoOptions;
+		struct OneOption;
+
+		impl Component for TwoOptions {
+			fn render(&self, ctx: &mut impl Context) {
+				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().flow(flow::column)));
+				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))));
+				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))));
+			}
+		}
+
+		impl Component for OneOption {
+			fn render(&self, ctx: &mut impl Context) {
+				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().flow(flow::column)));
+				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))));
+			}
+		}
+
+		let mut engine = Engine::new();
+
+		let mut snapshot = engine.evaluate(&TwoOptions, Size::new(100, 100));
+		assert_eq!(snapshot.set_cursor(Some(Id::new(3).unwrap())), Id::new(3));
+		assert_eq!(engine.cursor(), Id::new(3));
+
+		let snapshot = engine.evaluate(&OneOption, Size::new(100, 100));
+		assert_eq!(engine.cursor(), None);
+		assert_eq!(snapshot.cursor(), None);
 	}
 
 	// 	#[test]

@@ -1,7 +1,7 @@
 use crate::{
 	AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue, CommandBufferHandle,
-	DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey,
-	RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, PresentKey, RGBAu8, SwapchainHandle,
+	SynchronizerHandle, TextureCopyHandle,
 };
 use utils::Extent;
 
@@ -94,10 +94,6 @@ impl<'a> CommandBufferRecording<'a> {
 		_presentations: &[PresentKey],
 		_execution_synchronizer_handle: SynchronizerHandle,
 	) {
-	}
-
-	pub fn bind_pipeline_layout(&mut self, _pipeline_layout: PipelineLayoutHandle) -> &mut Self {
-		self
 	}
 
 	pub fn start_region(&self, _name: &str) {}

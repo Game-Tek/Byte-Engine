@@ -98,9 +98,15 @@ pub(crate) struct DescriptorSetLayout {
 	bindings: Vec<(graphics_hardware_interface::DescriptorType, u32)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PipelineLayout {
 	descriptor_set_template_indices: HashMap<graphics_hardware_interface::DescriptorSetTemplateHandle, u32>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PipelineLayoutKey {
+	descriptor_set_templates: Vec<graphics_hardware_interface::DescriptorSetTemplateHandle>,
+	push_constant_ranges: Vec<graphics_hardware_interface::PushConstantRange>,
 }
 
 #[derive(Clone)]
@@ -114,6 +120,7 @@ pub(crate) struct Shader {
 #[derive(Clone)]
 pub(crate) struct Pipeline {
 	pipeline: PipelineState,
+	layout: graphics_hardware_interface::PipelineLayoutHandle,
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 	resource_access: Vec<(
 		(u32, u32),
@@ -936,6 +943,7 @@ pub mod device {
 		pub(crate) allocations: Vec<Allocation>,
 		pub(crate) descriptor_sets_layouts: Vec<DescriptorSetLayout>,
 		pub(crate) pipeline_layouts: Vec<PipelineLayout>,
+		pipeline_layout_indices: HashMap<PipelineLayoutKey, graphics_hardware_interface::PipelineLayoutHandle>,
 		pub(crate) bindings: Vec<binding::Binding>,
 		pub(crate) descriptor_sets: Vec<descriptor_set::DescriptorSet>,
 		pub(crate) meshes: Vec<Mesh>,
@@ -993,6 +1001,7 @@ pub mod device {
 				allocations: Vec::new(),
 				descriptor_sets_layouts: Vec::new(),
 				pipeline_layouts: Vec::new(),
+				pipeline_layout_indices: HashMap::default(),
 				bindings: Vec::new(),
 				descriptor_sets: Vec::new(),
 				meshes: Vec::new(),
@@ -1369,11 +1378,20 @@ pub mod device {
 			graphics_hardware_interface::DescriptorSetBindingHandle(binding_handle.0)
 		}
 
-		pub fn create_pipeline_layout(
+		fn get_or_create_pipeline_layout(
 			&mut self,
 			descriptor_set_template_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
-			_push_constant_ranges: &[graphics_hardware_interface::PushConstantRange],
+			push_constant_ranges: &[graphics_hardware_interface::PushConstantRange],
 		) -> graphics_hardware_interface::PipelineLayoutHandle {
+			let key = PipelineLayoutKey {
+				descriptor_set_templates: descriptor_set_template_handles.to_vec(),
+				push_constant_ranges: push_constant_ranges.to_vec(),
+			};
+
+			if let Some(handle) = self.pipeline_layout_indices.get(&key) {
+				return *handle;
+			}
+
 			let descriptor_set_template_indices = descriptor_set_template_handles
 				.iter()
 				.enumerate()
@@ -1382,15 +1400,22 @@ pub mod device {
 			self.pipeline_layouts.push(PipelineLayout {
 				descriptor_set_template_indices,
 			});
-			graphics_hardware_interface::PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64)
+			let handle = graphics_hardware_interface::PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64);
+			self.pipeline_layout_indices.insert(key, handle);
+			handle
 		}
 
 		pub fn create_raster_pipeline(
 			&mut self,
-			_builder: raster_pipeline::Builder,
+			builder: raster_pipeline::Builder,
 		) -> graphics_hardware_interface::PipelineHandle {
+			let layout = self.get_or_create_pipeline_layout(
+				builder.descriptor_set_templates.as_ref(),
+				builder.push_constant_ranges.as_ref(),
+			);
 			self.pipelines.push(Pipeline {
 				pipeline: PipelineState::Raster(None),
+				layout,
 				shader_handles: HashMap::default(),
 				resource_access: Vec::new(),
 			});
@@ -1400,11 +1425,12 @@ pub mod device {
 
 		pub fn create_compute_pipeline(
 			&mut self,
-			_pipeline_layout_handle: graphics_hardware_interface::PipelineLayoutHandle,
-			_shader_parameter: graphics_hardware_interface::ShaderParameter,
+			builder: graphics_hardware_interface::pipelines::compute::Builder,
 		) -> graphics_hardware_interface::PipelineHandle {
+			let layout = self.get_or_create_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
 			self.pipelines.push(Pipeline {
 				pipeline: PipelineState::Compute(None),
+				layout,
 				shader_handles: HashMap::default(),
 				resource_access: Vec::new(),
 			});
@@ -1414,11 +1440,15 @@ pub mod device {
 
 		pub fn create_ray_tracing_pipeline(
 			&mut self,
-			_pipeline_layout_handle: graphics_hardware_interface::PipelineLayoutHandle,
-			_shaders: &[graphics_hardware_interface::ShaderParameter],
+			builder: graphics_hardware_interface::pipelines::ray_tracing::Builder,
 		) -> graphics_hardware_interface::PipelineHandle {
+			let layout = self.get_or_create_pipeline_layout(
+				builder.descriptor_set_templates.as_ref(),
+				builder.push_constant_ranges.as_ref(),
+			);
 			self.pipelines.push(Pipeline {
 				pipeline: PipelineState::RayTracing,
+				layout,
 				shader_handles: HashMap::default(),
 				resource_access: Vec::new(),
 			});
@@ -2068,11 +2098,21 @@ pub mod command_buffer {
 	}
 
 	impl CommonCommandBufferMode for CommandBufferRecording<'_> {
-		fn bind_pipeline_layout(
+		fn bind_compute_pipeline(
 			&mut self,
-			pipeline_layout: graphics_hardware_interface::PipelineLayoutHandle,
-		) -> &mut impl BoundPipelineLayoutMode {
-			self.bound_pipeline_layout = Some(pipeline_layout);
+			pipeline_handle: graphics_hardware_interface::PipelineHandle,
+		) -> &mut impl BoundComputePipelineMode {
+			self.bound_pipeline = Some(pipeline_handle);
+			self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+			self
+		}
+
+		fn bind_ray_tracing_pipeline(
+			&mut self,
+			pipeline_handle: graphics_hardware_interface::PipelineHandle,
+		) -> &mut impl BoundRayTracingPipelineMode {
+			self.bound_pipeline = Some(pipeline_handle);
+			self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
 			self
 		}
 
@@ -2092,36 +2132,21 @@ pub mod command_buffer {
 	}
 
 	impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
+		fn bind_raster_pipeline(
+			&mut self,
+			pipeline_handle: graphics_hardware_interface::PipelineHandle,
+		) -> &mut impl BoundRasterizationPipelineMode {
+			self.bound_pipeline = Some(pipeline_handle);
+			self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+			self
+		}
+
 		fn end_render_pass(&mut self) {
 			// TODO: End current render command encoder.
 		}
 	}
 
 	impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
-		fn bind_raster_pipeline(
-			&mut self,
-			pipeline_handle: graphics_hardware_interface::PipelineHandle,
-		) -> &mut impl BoundRasterizationPipelineMode {
-			self.bound_pipeline = Some(pipeline_handle);
-			self
-		}
-
-		fn bind_compute_pipeline(
-			&mut self,
-			pipeline_handle: graphics_hardware_interface::PipelineHandle,
-		) -> &mut impl BoundComputePipelineMode {
-			self.bound_pipeline = Some(pipeline_handle);
-			self
-		}
-
-		fn bind_ray_tracing_pipeline(
-			&mut self,
-			pipeline_handle: graphics_hardware_interface::PipelineHandle,
-		) -> &mut impl BoundRayTracingPipelineMode {
-			self.bound_pipeline = Some(pipeline_handle);
-			self
-		}
-
 		fn bind_descriptor_sets(&mut self, _sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut Self {
 			// TODO: Map descriptor sets to Metal argument buffers and encoder bindings.
 			self

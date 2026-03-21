@@ -60,6 +60,7 @@ pub struct Device {
 	resource_to_descriptor: HashMap<Handle, HashSet<(DescriptorSetBindingHandle, u32)>>,
 	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<Handle>>,
 	pipeline_layouts: Vec<PipelineLayout>,
+	pipeline_layout_indices: HashMap<PipelineLayout, PipelineLayoutHandle>,
 	pipelines: Vec<Pipeline>,
 	shaders: Vec<Shader>,
 	meshes: Vec<Mesh>,
@@ -140,6 +141,7 @@ struct DescriptorSetBinding {
 	count: u32,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct PipelineLayout {
 	descriptor_set_templates: Vec<DescriptorSetTemplateHandle>,
 	push_constant_ranges: Vec<PushConstantRange>,
@@ -242,6 +244,7 @@ impl Device {
 			resource_to_descriptor: HashMap::default(),
 			descriptor_set_to_resource: HashMap::default(),
 			pipeline_layouts: Vec::new(),
+			pipeline_layout_indices: HashMap::default(),
 			pipelines: Vec::new(),
 			shaders: Vec::new(),
 			meshes: Vec::new(),
@@ -418,24 +421,35 @@ impl Device {
 		DescriptorSetBindingHandle(next.expect("No next binding").0)
 	}
 
-	pub fn create_pipeline_layout(
+	fn get_or_create_pipeline_layout(
 		&mut self,
 		descriptor_set_template_handles: &[DescriptorSetTemplateHandle],
 		push_constant_ranges: &[PushConstantRange],
 	) -> PipelineLayoutHandle {
-		// Stores pipeline layout metadata for later root signature creation.
-		self.pipeline_layouts.push(PipelineLayout {
+		let layout = PipelineLayout {
 			descriptor_set_templates: descriptor_set_template_handles.to_vec(),
 			push_constant_ranges: push_constant_ranges.to_vec(),
-		});
-		PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64)
+		};
+
+		if let Some(handle) = self.pipeline_layout_indices.get(&layout) {
+			return *handle;
+		}
+
+		self.pipeline_layouts.push(layout.clone());
+		let handle = PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64);
+		self.pipeline_layout_indices.insert(layout, handle);
+		handle
 	}
 
 	pub fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> PipelineHandle {
+		let layout = self.get_or_create_pipeline_layout(
+			builder.descriptor_set_templates.as_ref(),
+			builder.push_constant_ranges.as_ref(),
+		);
 		// Records raster pipeline metadata without constructing a DX12 pipeline state.
 		let shaders = builder.shaders.iter().map(|s| *s.handle).collect();
 		self.pipelines.push(Pipeline {
-			layout: builder.layout,
+			layout,
 			shaders,
 			kind: PipelineKind::Raster,
 		});
@@ -444,28 +458,27 @@ impl Device {
 		PipelineHandle((self.pipelines.len() - 1) as u64)
 	}
 
-	pub fn create_compute_pipeline(
-		&mut self,
-		pipeline_layout_handle: PipelineLayoutHandle,
-		shader_parameter: ShaderParameter,
-	) -> PipelineHandle {
+	pub fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> PipelineHandle {
+		let layout = self.get_or_create_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
+		let shader_parameter = builder.shader;
 		// Records compute pipeline metadata without constructing a DX12 pipeline state.
 		self.pipelines.push(Pipeline {
-			layout: pipeline_layout_handle,
+			layout,
 			shaders: vec![*shader_parameter.handle],
 			kind: PipelineKind::Compute,
 		});
 		PipelineHandle((self.pipelines.len() - 1) as u64)
 	}
 
-	pub fn create_ray_tracing_pipeline(
-		&mut self,
-		pipeline_layout_handle: PipelineLayoutHandle,
-		shaders: &[ShaderParameter],
-	) -> PipelineHandle {
+	pub fn create_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> PipelineHandle {
+		let layout = self.get_or_create_pipeline_layout(
+			builder.descriptor_set_templates.as_ref(),
+			builder.push_constant_ranges.as_ref(),
+		);
+		let shaders = builder.shaders;
 		// Records ray tracing pipeline metadata without constructing a DX12 state object.
 		self.pipelines.push(Pipeline {
-			layout: pipeline_layout_handle,
+			layout,
 			shaders: shaders.iter().map(|s| *s.handle).collect(),
 			kind: PipelineKind::RayTracing,
 		});

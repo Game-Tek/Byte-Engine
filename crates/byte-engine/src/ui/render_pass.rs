@@ -307,11 +307,9 @@ fn build_ui_geometry(draw_list: &UiDrawList, viewport: Extent) -> UiGeometry {
 
 /// The `UiRenderPass` struct centralizes batched UI rectangle rendering and text overlay compositing for the main render target.
 pub struct UiRenderPass {
-	pipeline_layout: ghi::PipelineLayoutHandle,
 	pipeline: ghi::PipelineHandle,
 	vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
 	index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
-	text_pipeline_layout: ghi::PipelineLayoutHandle,
 	text_pipeline: ghi::PipelineHandle,
 	text_descriptor_set: ghi::DescriptorSetHandle,
 	text_overlay: ghi::DynamicImageHandle,
@@ -343,8 +341,6 @@ impl UiRenderPass {
 		let vertex_shader = create_vertex_shader(device);
 		let fragment_shader = create_fragment_shader(device);
 
-		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
-
 		let shaders = [
 			ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
 			ghi::ShaderParameter::new(&fragment_shader, ghi::ShaderTypes::Fragment),
@@ -353,7 +349,8 @@ impl UiRenderPass {
 			.blend(ghi::pipelines::raster::BlendMode::Alpha)];
 
 		let pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			pipeline_layout,
+			&[],
+			&[],
 			&UI_VERTEX_LAYOUT,
 			&shaders,
 			&attachments,
@@ -370,7 +367,6 @@ impl UiRenderPass {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let text_descriptor_set_template = device.create_descriptor_set_template(Some("UI Text"), &[TEXT_OVERLAY_BINDING]);
-		let text_pipeline_layout = device.create_pipeline_layout(&[text_descriptor_set_template], &[]);
 		let text_vertex_shader = create_text_overlay_vertex_shader(device);
 		let text_fragment_shader = create_text_overlay_fragment_shader(device);
 		let text_shaders = [
@@ -378,7 +374,8 @@ impl UiRenderPass {
 			ghi::ShaderParameter::new(&text_fragment_shader, ghi::ShaderTypes::Fragment),
 		];
 		let text_pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			text_pipeline_layout,
+			&[text_descriptor_set_template],
+			&[],
 			&[],
 			&text_shaders,
 			&attachments,
@@ -406,11 +403,9 @@ impl UiRenderPass {
 		);
 
 		Self {
-			pipeline_layout,
 			pipeline,
 			vertex_buffer,
 			index_buffer,
-			text_pipeline_layout,
 			text_pipeline,
 			text_descriptor_set,
 			text_overlay,
@@ -474,11 +469,9 @@ impl RenderPass for UiRenderPass {
 			return None;
 		}
 
-		let pipeline_layout = self.pipeline_layout;
 		let pipeline = self.pipeline;
 		let vertex_buffer = self.vertex_buffer;
 		let index_buffer = self.index_buffer;
-		let text_pipeline_layout = self.text_pipeline_layout;
 		let text_pipeline = self.text_pipeline;
 		let text_descriptor_set = self.text_descriptor_set;
 		let main_attachment = self.main_attachment;
@@ -505,7 +498,6 @@ impl RenderPass for UiRenderPass {
 					command_buffer.bind_index_buffer(&index_buffer.into());
 
 					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-					let command_buffer = command_buffer.bind_pipeline_layout(pipeline_layout);
 					let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
 
 					for batch in &batches {
@@ -517,9 +509,8 @@ impl RenderPass for UiRenderPass {
 
 				if draw_text_overlay {
 					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-					let command_buffer = command_buffer.bind_pipeline_layout(text_pipeline_layout);
-					command_buffer.bind_descriptor_sets(&[text_descriptor_set]);
 					let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
+					command_buffer.bind_descriptor_sets(&[text_descriptor_set]);
 					command_buffer.draw(3, 1, 0, 0);
 					command_buffer.end_render_pass();
 				}

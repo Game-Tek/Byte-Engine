@@ -27,7 +27,8 @@ use super::{
 	},
 	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
 	DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline,
-	PipelineLayout, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState, MAX_FRAMES_IN_FLIGHT,
+	PipelineLayout, PipelineLayoutKey, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState,
+	MAX_FRAMES_IN_FLIGHT,
 };
 
 pub struct Device {
@@ -64,6 +65,7 @@ pub struct Device {
 	pub(super) allocations: Vec<Allocation>,
 	pub(super) descriptor_sets_layouts: Vec<DescriptorSetLayout>,
 	pub(super) pipeline_layouts: Vec<PipelineLayout>,
+	pipeline_layout_indices: HashMap<PipelineLayoutKey, graphics_hardware_interface::PipelineLayoutHandle>,
 	pub(super) bindings: Vec<Binding>,
 	pub(super) descriptor_pools: Vec<vk::DescriptorPool>,
 	pub(super) descriptor_sets: Vec<DescriptorSet>,
@@ -551,6 +553,7 @@ impl Device {
 			images: Vec::with_capacity(512),
 			descriptor_sets_layouts: Vec::with_capacity(128),
 			pipeline_layouts: Vec::with_capacity(64),
+			pipeline_layout_indices: HashMap::with_capacity(64),
 			bindings: Vec::with_capacity(1024),
 			descriptor_pools: Vec::with_capacity(512),
 			descriptor_sets: Vec::with_capacity(512),
@@ -604,7 +607,11 @@ impl Device {
 			.render_pass(vk::RenderPass::null()) // We use a null render pass because of VK_KHR_dynamic_rendering
 		;
 
-		let pipeline_layout = &self.pipeline_layouts[builder.layout.0 as usize];
+		let pipeline_layout_handle = self.get_or_create_pipeline_layout(
+			builder.descriptor_set_templates.as_ref(),
+			builder.push_constant_ranges.as_ref(),
+		);
+		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
 		let pipeline_create_info = pipeline_create_info.layout(pipeline_layout.pipeline_layout);
 
@@ -808,11 +815,78 @@ impl Device {
 		after_build(self, builder, pipeline_create_info)
 	}
 
+	fn get_or_create_pipeline_layout(
+		&mut self,
+		descriptor_set_layout_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
+		push_constant_ranges: &[crate::pipelines::PushConstantRange],
+	) -> graphics_hardware_interface::PipelineLayoutHandle {
+		let key = PipelineLayoutKey {
+			descriptor_set_templates: descriptor_set_layout_handles.to_vec(),
+			push_constant_ranges: push_constant_ranges.to_vec(),
+		};
+
+		if let Some(handle) = self.pipeline_layout_indices.get(&key) {
+			return *handle;
+		}
+
+		let push_constant_stages =
+			vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE;
+
+		let push_constant_stages = push_constant_stages
+			| if self.settings.mesh_shading {
+				vk::ShaderStageFlags::MESH_EXT
+			} else {
+				vk::ShaderStageFlags::empty()
+			};
+
+		let push_constant_ranges = push_constant_ranges
+			.iter()
+			.map(|push_constant_range| {
+				vk::PushConstantRange::default()
+					.size(push_constant_range.size)
+					.offset(push_constant_range.offset)
+					.stage_flags(push_constant_stages)
+			})
+			.collect::<Vec<_>>();
+		let set_layouts = descriptor_set_layout_handles
+			.iter()
+			.map(|set_layout| self.descriptor_sets_layouts[set_layout.0 as usize].descriptor_set_layout)
+			.collect::<Vec<_>>();
+
+		let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
+			.set_layouts(&set_layouts)
+			.push_constant_ranges(&push_constant_ranges);
+
+		let pipeline_layout = unsafe {
+			self.device
+				.create_pipeline_layout(&pipeline_layout_create_info, None)
+				.expect("No pipeline layout")
+		};
+
+		let handle = graphics_hardware_interface::PipelineLayoutHandle(self.pipeline_layouts.len() as u64);
+
+		self.pipeline_layouts.push(PipelineLayout {
+			pipeline_layout,
+			descriptor_set_template_indices: descriptor_set_layout_handles
+				.iter()
+				.enumerate()
+				.map(|(i, handle)| (*handle, i as u32))
+				.collect(),
+		});
+		self.pipeline_layout_indices.insert(key, handle);
+
+		handle
+	}
+
 	fn create_vulkan_pipeline(
 		&mut self,
 		builder: crate::pipelines::raster::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
 		self.create_vulkan_graphics_pipeline_create_info(builder, |this, builder, pipeline_create_info| {
+			let pipeline_layout_handle = this.get_or_create_pipeline_layout(
+				builder.descriptor_set_templates.as_ref(),
+				builder.push_constant_ranges.as_ref(),
+			);
 			let pipeline_create_infos = [pipeline_create_info];
 
 			let pipelines = unsafe {
@@ -840,6 +914,7 @@ impl Device {
 
 			this.pipelines.push(Pipeline {
 				pipeline,
+				layout: pipeline_layout_handle,
 				shader_handles: HashMap::new(),
 				resource_access,
 			});
@@ -3348,59 +3423,6 @@ impl crate::device::DeviceCreate for Device {
 		handle
 	}
 
-	fn create_pipeline_layout(
-		&mut self,
-		descriptor_set_layout_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
-		push_constant_ranges: &[crate::pipelines::PushConstantRange],
-	) -> graphics_hardware_interface::PipelineLayoutHandle {
-		let push_constant_stages =
-			vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE;
-
-		let push_constant_stages = push_constant_stages
-			| if self.settings.mesh_shading {
-				vk::ShaderStageFlags::MESH_EXT
-			} else {
-				vk::ShaderStageFlags::empty()
-			};
-
-		let push_constant_ranges = push_constant_ranges
-			.iter()
-			.map(|push_constant_range| {
-				vk::PushConstantRange::default()
-					.size(push_constant_range.size)
-					.offset(push_constant_range.offset)
-					.stage_flags(push_constant_stages)
-			})
-			.collect::<Vec<_>>();
-		let set_layouts = descriptor_set_layout_handles
-			.iter()
-			.map(|set_layout| self.descriptor_sets_layouts[set_layout.0 as usize].descriptor_set_layout)
-			.collect::<Vec<_>>();
-
-		let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
-			.set_layouts(&set_layouts)
-			.push_constant_ranges(&push_constant_ranges);
-
-		let pipeline_layout = unsafe {
-			self.device
-				.create_pipeline_layout(&pipeline_layout_create_info, None)
-				.expect("No pipeline layout")
-		};
-
-		let handle = graphics_hardware_interface::PipelineLayoutHandle(self.pipeline_layouts.len() as u64);
-
-		self.pipeline_layouts.push(PipelineLayout {
-			pipeline_layout,
-			descriptor_set_template_indices: descriptor_set_layout_handles
-				.iter()
-				.enumerate()
-				.map(|(i, handle)| (handle.clone(), i as u32))
-				.collect(),
-		});
-
-		handle
-	}
-
 	fn create_raster_pipeline(
 		&mut self,
 		builder: crate::pipelines::raster::Builder,
@@ -3410,9 +3432,11 @@ impl crate::device::DeviceCreate for Device {
 
 	fn create_compute_pipeline(
 		&mut self,
-		pipeline_layout_handle: graphics_hardware_interface::PipelineLayoutHandle,
-		shader_parameter: crate::pipelines::ShaderParameter,
+		builder: crate::pipelines::compute::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
+		let pipeline_layout_handle =
+			self.get_or_create_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
+		let shader_parameter = builder.shader;
 		let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
 
 		let mut specialization_map_entries = Vec::with_capacity(48);
@@ -3503,6 +3527,7 @@ impl crate::device::DeviceCreate for Device {
 
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
+			layout: pipeline_layout_handle,
 			shader_handles: HashMap::new(),
 			resource_access,
 		});
@@ -3512,9 +3537,13 @@ impl crate::device::DeviceCreate for Device {
 
 	fn create_ray_tracing_pipeline(
 		&mut self,
-		pipeline_layout_handle: graphics_hardware_interface::PipelineLayoutHandle,
-		shaders: &[crate::pipelines::ShaderParameter],
+		builder: crate::pipelines::ray_tracing::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
+		let pipeline_layout_handle = self.get_or_create_pipeline_layout(
+			builder.descriptor_set_templates.as_ref(),
+			builder.push_constant_ranges.as_ref(),
+		);
+		let shaders = builder.shaders;
 		let mut groups = Vec::with_capacity(1024);
 
 		let stages = shaders
@@ -3630,6 +3659,7 @@ impl crate::device::DeviceCreate for Device {
 
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
+			layout: pipeline_layout_handle,
 			shader_handles: handles,
 			resource_access,
 		});

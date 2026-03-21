@@ -1,8 +1,10 @@
 use crate::{DataTypes, ShaderHandle, ShaderTypes};
 
+pub mod compute;
 pub mod factory;
 
 pub mod raster;
+pub mod ray_tracing;
 
 #[derive(Clone, Hash)]
 pub struct VertexElement<'a> {
@@ -39,7 +41,7 @@ impl<'a> ShaderParameter<'a> {
 	}
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PushConstantRange {
 	pub(crate) offset: u32,
 	pub(crate) size: u32,

@@ -100,8 +100,6 @@ pub struct VisibilityWorldRenderDomain {
 	mesh_resources: HashMap<String, u32>,
 	/// Material evaluation materials.
 	material_evaluation_materials: HashMap<String, Arc<OnceLock<RenderDescription>>>,
-	/// Base pipeline layout handle.
-	base_pipeline_layout: ghi::PipelineLayoutHandle,
 	/// Vertex positions buffer for rendered meshes.
 	vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); MAX_VERTICES]>,
 	/// Vertex normals buffer for rendered meshes.
@@ -124,11 +122,8 @@ pub struct VisibilityWorldRenderDomain {
 	meshes_data_buffer: ghi::DynamicBufferHandle<[ShaderMesh; MAX_INSTANCES]>,
 	/// Handle to the buffer where each meshlet's data is stored.
 	meshlets_data_buffer: ghi::BufferHandle<[ShaderMeshletData; MAX_MESHLETS]>,
-	/// Pipeline layout for the visibility pass.
-	visibility_pass_pipeline_layout: ghi::PipelineLayoutHandle,
 	material_evaluation_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 	material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
-	material_evaluation_pipeline_layout: ghi::PipelineLayoutHandle,
 	/// Buffer containing lighting data.
 	light_data_buffer: ghi::BufferHandle<LightingData>,
 	/// Lights in the scene.
@@ -207,12 +202,6 @@ impl VisibilityWorldRenderDomain {
 
 		let descriptor_set_layout = device.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
 
-		// Push constant:
-		// 4 bytes for the view index
-		// 4 bytes for the mesh index
-		let pipeline_layout_handle =
-			device.create_pipeline_layout(&[descriptor_set_layout], &[ghi::pipelines::PushConstantRange::new(0, 4)]);
-
 		let descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
 
 		let views_data_binding = device.create_descriptor_binding(
@@ -263,8 +252,6 @@ impl VisibilityWorldRenderDomain {
 		];
 
 		let visibility_descriptor_set_layout = device.create_descriptor_set_template(Some("Visibility Set Layout"), &bindings);
-		let visibility_pass_pipeline_layout =
-			device.create_pipeline_layout(&[descriptor_set_layout, visibility_descriptor_set_layout], &[]);
 
 		let light_data_buffer = device.build_buffer::<LightingData>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
@@ -319,15 +306,6 @@ impl VisibilityWorldRenderDomain {
 			&material_evaluation_descriptor_set_layout,
 		);
 
-		let material_evaluation_pipeline_layout = device.create_pipeline_layout(
-			&[
-				descriptor_set_layout,
-				visibility_descriptor_set_layout,
-				material_evaluation_descriptor_set_layout,
-			],
-			&[ghi::pipelines::PushConstantRange::new(0, 4)],
-		);
-
 		Self {
 			render_entities: Vec::with_capacity(512),
 
@@ -344,9 +322,6 @@ impl VisibilityWorldRenderDomain {
 			mesh_resources: HashMap::new(),
 
 			material_evaluation_materials: HashMap::new(),
-
-			// Visibility
-			base_pipeline_layout: pipeline_layout_handle,
 
 			vertex_positions_buffer: vertex_positions_buffer_handle,
 			vertex_normals_buffer: vertex_normals_buffer_handle,
@@ -367,11 +342,8 @@ impl VisibilityWorldRenderDomain {
 			meshes_data_buffer,
 			meshlets_data_buffer,
 
-			visibility_pass_pipeline_layout,
-
 			material_evaluation_descriptor_set_layout,
 			material_evaluation_descriptor_set,
-			material_evaluation_pipeline_layout,
 
 			light_data_buffer,
 			materials_data_buffer_handle,
@@ -817,10 +789,15 @@ impl VisibilityWorldRenderDomain {
 					)
 					.unwrap();
 
-				let pipeline = device.create_compute_pipeline(
-					self.material_evaluation_pipeline_layout,
+				let pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+					&[
+						self.descriptor_set_layout,
+						self.visibility_descriptor_set_layout,
+						self.material_evaluation_descriptor_set_layout,
+					],
+					&[ghi::pipelines::PushConstantRange::new(0, 4)],
 					ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Compute),
-				);
+				));
 
 				Ok(RenderDescription {
 					name: "heyyy".to_string(),
@@ -939,7 +916,16 @@ impl VisibilityWorldRenderDomain {
 					"MaterialEvaluation" => {
 						let pipeline_handle = self
 							.pipeline_manager
-							.load_material(self.material_evaluation_pipeline_layout, resource, device)
+							.load_material(
+								&[
+									self.descriptor_set_layout,
+									self.visibility_descriptor_set_layout,
+									self.material_evaluation_descriptor_set_layout,
+								],
+								&[ghi::pipelines::PushConstantRange::new(0, 4)],
+								resource,
+								device,
+							)
 							.unwrap();
 
 						let materials_buffer_slice = device.get_mut_buffer_slice(self.materials_data_buffer_handle);
@@ -1017,7 +1003,12 @@ impl VisibilityWorldRenderDomain {
 				.collect();
 
 			let pipeline = self.pipeline_manager.load_variant(
-				self.material_evaluation_pipeline_layout,
+				&[
+					self.descriptor_set_layout,
+					self.visibility_descriptor_set_layout,
+					self.material_evaluation_descriptor_set_layout,
+				],
+				&[ghi::pipelines::PushConstantRange::new(0, 4)],
 				&specialization_constants,
 				&mut resource,
 				frame,
@@ -1370,9 +1361,8 @@ impl SceneManager for VisibilityWorldRenderDomain {
 
 		let render_pass = VisibilityPipelineRenderPass::new(
 			render_pass_builder.device(),
-			self.base_pipeline_layout,
-			self.visibility_pass_pipeline_layout,
-			self.material_evaluation_pipeline_layout,
+			self.descriptor_set_layout,
+			self.visibility_descriptor_set_layout,
 			self.descriptor_set,
 			visibility_passes_descriptor_set,
 			self.material_evaluation_descriptor_set,
@@ -1524,7 +1514,6 @@ struct RayTracing {
 	top_level_acceleration_structure: ghi::TopLevelAccelerationStructureHandle,
 	descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
-	pipeline_layout: ghi::PipelineLayoutHandle,
 	pipeline: ghi::PipelineHandle,
 
 	ray_gen_sbt_buffer: ghi::BaseBufferHandle,

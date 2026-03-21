@@ -2,11 +2,12 @@ use std::borrow::Cow;
 
 use crate::{
 	pipelines::{ShaderParameter, VertexElement},
-	Formats, PipelineLayoutHandle,
+	DescriptorSetTemplateHandle, Formats,
 };
 
 pub struct Builder<'a> {
-	pub(crate) layout: PipelineLayoutHandle,
+	pub(crate) descriptor_set_templates: Cow<'a, [DescriptorSetTemplateHandle]>,
+	pub(crate) push_constant_ranges: Cow<'a, [crate::pipelines::PushConstantRange]>,
 	pub(crate) vertex_elements: Cow<'a, [VertexElement<'a>]>,
 	pub(crate) render_targets: Cow<'a, [AttachmentDescriptor]>,
 	pub(crate) shaders: Cow<'a, [ShaderParameter<'a>]>,
@@ -14,13 +15,15 @@ pub struct Builder<'a> {
 
 impl<'a> Builder<'a> {
 	pub fn new(
-		layout: PipelineLayoutHandle,
+		descriptor_set_templates: &'a [DescriptorSetTemplateHandle],
+		push_constant_ranges: &'a [crate::pipelines::PushConstantRange],
 		vertex_elements: &'a [VertexElement],
 		shaders: &'a [ShaderParameter],
 		render_targets: &'a [AttachmentDescriptor],
 	) -> Self {
 		Self {
-			layout,
+			descriptor_set_templates: Cow::Borrowed(descriptor_set_templates),
+			push_constant_ranges: Cow::Borrowed(push_constant_ranges),
 			vertex_elements: Cow::Borrowed(vertex_elements),
 			shaders: Cow::Borrowed(shaders),
 			render_targets: Cow::Borrowed(render_targets),

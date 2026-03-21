@@ -474,33 +474,16 @@ impl<'a> crate::device::DeviceCreate for Frame<'a> {
 		self.device.create_top_level_acceleration_structure(name, max_instance_count)
 	}
 
-	fn create_pipeline_layout(
-		&mut self,
-		descriptor_set_template_handles: &[crate::DescriptorSetTemplateHandle],
-		push_constant_ranges: &[crate::pipelines::PushConstantRange],
-	) -> crate::PipelineLayoutHandle {
-		self.device
-			.create_pipeline_layout(descriptor_set_template_handles, push_constant_ranges)
-	}
-
-	fn create_compute_pipeline(
-		&mut self,
-		pipeline_layout_handle: crate::PipelineLayoutHandle,
-		shader_parameter: crate::pipelines::ShaderParameter,
-	) -> crate::PipelineHandle {
-		self.device.create_compute_pipeline(pipeline_layout_handle, shader_parameter)
+	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> crate::PipelineHandle {
+		self.device.create_compute_pipeline(builder)
 	}
 
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> crate::PipelineHandle {
 		self.device.create_raster_pipeline(builder)
 	}
 
-	fn create_ray_tracing_pipeline(
-		&mut self,
-		pipeline_layout_handle: crate::PipelineLayoutHandle,
-		shaders: &[crate::pipelines::ShaderParameter],
-	) -> crate::PipelineHandle {
-		self.device.create_ray_tracing_pipeline(pipeline_layout_handle, shaders)
+	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> crate::PipelineHandle {
+		self.device.create_ray_tracing_pipeline(builder)
 	}
 
 	fn create_command_buffer(&mut self, name: Option<&str>, queue_handle: crate::QueueHandle) -> crate::CommandBufferHandle {

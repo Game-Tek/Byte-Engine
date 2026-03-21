@@ -30,7 +30,6 @@ const BLUR_RESULT_BINDING: ghi::DescriptorSetBindingTemplate =
 pub struct BaseBilateralBlurPass {
 	pipeline_x: ghi::PipelineHandle,
 	pipeline_y: ghi::PipelineHandle,
-	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 }
 
@@ -42,8 +41,6 @@ impl BaseBilateralBlurPass {
 			Some("SSGI Blur"),
 			&[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING],
 		);
-
-		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_template], &[]);
 
 		let shader =
 			resource_management::glsl::compile(BLUR_SHADER, "blur_shader").expect("Failed to compile the SSGI blur shader.");
@@ -60,23 +57,24 @@ impl BaseBilateralBlurPass {
 				],
 			)
 			.expect("Failed to create the ray march shader.");
-		let pipeline_x = device.create_compute_pipeline(
-			pipeline_layout,
+		let pipeline_x = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[descriptor_set_template],
+			&[],
 			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
 				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(1f32, 0f32)),
 			]),
-		);
-		let pipeline_y = device.create_compute_pipeline(
-			pipeline_layout,
+		));
+		let pipeline_y = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[descriptor_set_template],
+			&[],
 			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
 				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(0f32, 1f32)),
 			]),
-		);
+		));
 
 		Self {
 			pipeline_x,
 			pipeline_y,
-			pipeline_layout,
 			descriptor_set_template,
 		}
 	}
@@ -172,17 +170,14 @@ impl BilateralBlurPass {
 impl RenderPass for BilateralBlurPass {
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
 		let execute_in_axis = |command_buffer: &mut ghi::implementation::CommandBufferRecording,
-		                       pipeline_layout: ghi::PipelineLayoutHandle,
 		                       pipeline: ghi::PipelineHandle,
 		                       descriptor_set: ghi::DescriptorSetHandle,
 		                       extent: Extent| {
-			let c = command_buffer.bind_pipeline_layout(pipeline_layout);
+			let c = command_buffer.bind_compute_pipeline(pipeline);
 			c.bind_descriptor_sets(&[descriptor_set]);
-			let c = c.bind_compute_pipeline(pipeline);
 			c.dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
 		};
 
-		let pipeline_layout = self.render_pass.pipeline_layout;
 		let pipeline_x = self.render_pass.pipeline_x;
 		let pipeline_y = self.render_pass.pipeline_y;
 		let descriptor_set_x = self.descriptor_set_x;
@@ -192,8 +187,8 @@ impl RenderPass for BilateralBlurPass {
 
 		Some(Box::new(move |command_buffer, _| {
 			command_buffer.region("Bilateral Blur", |command_buffer| {
-				execute_in_axis(command_buffer, pipeline_layout, pipeline_x, descriptor_set_x, extent);
-				execute_in_axis(command_buffer, pipeline_layout, pipeline_y, descriptor_set_y, extent);
+				execute_in_axis(command_buffer, pipeline_x, descriptor_set_x, extent);
+				execute_in_axis(command_buffer, pipeline_y, descriptor_set_y, extent);
 			});
 		}))
 	}

@@ -1521,11 +1521,45 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 }
 
 impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'_> {
-	fn bind_pipeline_layout(
+	fn bind_compute_pipeline(
 		&mut self,
-		pipeline_layout: crate::PipelineLayoutHandle,
-	) -> &mut impl crate::command_buffer::BoundPipelineLayoutMode {
-		self.bound_pipeline_layout = Some(pipeline_layout);
+		pipeline_handle: graphics_hardware_interface::PipelineHandle,
+	) -> &mut impl crate::command_buffer::BoundComputePipelineMode {
+		let command_buffer = self.get_command_buffer();
+		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
+		unsafe {
+			self.device.device.cmd_bind_pipeline(
+				command_buffer.command_buffer,
+				vk::PipelineBindPoint::COMPUTE,
+				pipeline.pipeline,
+			);
+		}
+
+		self.pipeline_bind_point = vk::PipelineBindPoint::COMPUTE;
+		self.bound_pipeline = Some(pipeline_handle);
+		self.bound_pipeline_layout = Some(pipeline.layout);
+
+		self
+	}
+
+	fn bind_ray_tracing_pipeline(
+		&mut self,
+		pipeline_handle: graphics_hardware_interface::PipelineHandle,
+	) -> &mut impl crate::command_buffer::BoundRayTracingPipelineMode {
+		let command_buffer = self.get_command_buffer();
+		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
+		unsafe {
+			self.device.device.cmd_bind_pipeline(
+				command_buffer.command_buffer,
+				vk::PipelineBindPoint::RAY_TRACING_KHR,
+				pipeline.pipeline,
+			);
+		}
+
+		self.pipeline_bind_point = vk::PipelineBindPoint::RAY_TRACING_KHR;
+		self.bound_pipeline = Some(pipeline_handle);
+		self.bound_pipeline_layout = Some(pipeline.layout);
+
 		self
 	}
 
@@ -1563,6 +1597,27 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 }
 
 impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecording<'_> {
+	fn bind_raster_pipeline(
+		&mut self,
+		pipeline_handle: graphics_hardware_interface::PipelineHandle,
+	) -> &mut impl crate::command_buffer::BoundRasterizationPipelineMode {
+		let command_buffer = self.get_command_buffer();
+		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
+		unsafe {
+			self.device.device.cmd_bind_pipeline(
+				command_buffer.command_buffer,
+				vk::PipelineBindPoint::GRAPHICS,
+				pipeline.pipeline,
+			);
+		}
+
+		self.pipeline_bind_point = vk::PipelineBindPoint::GRAPHICS;
+		self.bound_pipeline = Some(pipeline_handle);
+		self.bound_pipeline_layout = Some(pipeline.layout);
+
+		self
+	}
+
 	/// Ends a render pass on the GPU.
 	fn end_render_pass(&mut self) {
 		let command_buffer = self.get_command_buffer();
@@ -1573,62 +1628,6 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 }
 
 impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'_> {
-	fn bind_raster_pipeline(
-		&mut self,
-		pipeline_handle: graphics_hardware_interface::PipelineHandle,
-	) -> &mut impl crate::command_buffer::BoundRasterizationPipelineMode {
-		let command_buffer = self.get_command_buffer();
-		let pipeline = self.device.pipelines[pipeline_handle.0 as usize].pipeline;
-		unsafe {
-			self.device
-				.device
-				.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-		}
-
-		self.pipeline_bind_point = vk::PipelineBindPoint::GRAPHICS;
-		self.bound_pipeline = Some(pipeline_handle);
-
-		self
-	}
-
-	fn bind_compute_pipeline(
-		&mut self,
-		pipeline_handle: graphics_hardware_interface::PipelineHandle,
-	) -> &mut impl crate::command_buffer::BoundComputePipelineMode {
-		let command_buffer = self.get_command_buffer();
-		let pipeline = self.device.pipelines[pipeline_handle.0 as usize].pipeline;
-		unsafe {
-			self.device
-				.device
-				.cmd_bind_pipeline(command_buffer.command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline);
-		}
-
-		self.pipeline_bind_point = vk::PipelineBindPoint::COMPUTE;
-		self.bound_pipeline = Some(pipeline_handle);
-
-		self
-	}
-
-	fn bind_ray_tracing_pipeline(
-		&mut self,
-		pipeline_handle: graphics_hardware_interface::PipelineHandle,
-	) -> &mut impl crate::command_buffer::BoundRayTracingPipelineMode {
-		let command_buffer = self.get_command_buffer();
-		let pipeline = self.device.pipelines[pipeline_handle.0 as usize].pipeline;
-		unsafe {
-			self.device.device.cmd_bind_pipeline(
-				command_buffer.command_buffer,
-				vk::PipelineBindPoint::RAY_TRACING_KHR,
-				pipeline,
-			);
-		}
-
-		self.pipeline_bind_point = vk::PipelineBindPoint::RAY_TRACING_KHR;
-		self.bound_pipeline = Some(pipeline_handle);
-
-		self
-	}
-
 	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
 	where
 		[(); std::mem::size_of::<T>()]: Sized,

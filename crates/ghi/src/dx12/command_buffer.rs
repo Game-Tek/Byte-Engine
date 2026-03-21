@@ -117,8 +117,15 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 }
 
 impl CommonCommandBufferMode for CommandBufferRecording<'_> {
-	fn bind_pipeline_layout(&mut self, pipeline_layout: PipelineLayoutHandle) -> &mut impl BoundPipelineLayoutMode {
-		self.bound_pipeline_layout = Some(pipeline_layout);
+	fn bind_compute_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundComputePipelineMode {
+		self.bound_pipeline = Some(pipeline_handle);
+		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+		self
+	}
+
+	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode {
+		self.bound_pipeline = Some(pipeline_handle);
+		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
 		self
 	}
 
@@ -138,27 +145,18 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 }
 
 impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
+	fn bind_raster_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRasterizationPipelineMode {
+		self.bound_pipeline = Some(pipeline_handle);
+		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+		self
+	}
+
 	fn end_render_pass(&mut self) {
 		// TODO: End render pass by closing render target bindings.
 	}
 }
 
 impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
-	fn bind_raster_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRasterizationPipelineMode {
-		self.bound_pipeline = Some(pipeline_handle);
-		self
-	}
-
-	fn bind_compute_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundComputePipelineMode {
-		self.bound_pipeline = Some(pipeline_handle);
-		self
-	}
-
-	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode {
-		self.bound_pipeline = Some(pipeline_handle);
-		self
-	}
-
 	fn bind_descriptor_sets(&mut self, _sets: &[DescriptorSetHandle]) -> &mut Self {
 		// TODO: DX12 root signatures and descriptor heaps are not wired yet.
 		self

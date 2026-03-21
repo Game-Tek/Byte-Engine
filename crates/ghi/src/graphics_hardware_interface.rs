@@ -1293,8 +1293,6 @@ pub(super) mod tests {
 			)
 			.expect("Failed to create fragment shader");
 
-		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
-
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1921, 1080);
 
@@ -1308,7 +1306,8 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			pipeline_layout,
+			&[],
+			&[],
 			&vertex_layout,
 			&[
 				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
@@ -1334,9 +1333,7 @@ pub(super) mod tests {
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
-
-		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
+		let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
 		raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1411,8 +1408,6 @@ pub(super) mod tests {
 			)
 			.expect("Failed to create fragment shader");
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
-
 		let render_target = renderer.build_image(
 			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
 				.extent(extent)
@@ -1423,7 +1418,8 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = renderer.create_raster_pipeline(pipelines::raster::Builder::new(
-			pipeline_layout,
+			&[],
+			&[],
 			&vertex_layout,
 			&[
 				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
@@ -1457,9 +1453,7 @@ pub(super) mod tests {
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
-
-		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
+		let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
 		raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1528,8 +1522,6 @@ pub(super) mod tests {
 			)
 			.expect("Failed to create fragment shader");
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[], &[]);
-
 		let render_target = renderer.build_image(
 			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
 				.extent(extent)
@@ -1540,7 +1532,8 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = renderer.create_raster_pipeline(pipelines::raster::Builder::new(
-			pipeline_layout,
+			&[],
+			&[],
 			&vertex_layout,
 			&[
 				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
@@ -1578,9 +1571,7 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
-
-			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
+			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1645,8 +1636,6 @@ pub(super) mod tests {
 			)
 			.expect("Failed to create fragment shader");
 
-		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
-
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
@@ -1660,7 +1649,8 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			pipeline_layout,
+			&[],
+			&[PushConstantRange::new(0, 16 * 4)],
 			&vertex_layout,
 			&[
 				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
@@ -1691,9 +1681,7 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
-
-			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
+			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1765,8 +1753,6 @@ pub(super) mod tests {
 			)
 			.expect("Failed to create fragment shader");
 
-		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
-
 		let extent = Extent::rectangle(1920, 1080);
 
 		let render_target = device.build_image(
@@ -1779,7 +1765,8 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			pipeline_layout,
+			&[],
+			&[],
 			&vertex_layout,
 			&[
 				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
@@ -1814,9 +1801,7 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
-
-			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
+			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -1887,8 +1872,6 @@ pub(super) mod tests {
 			)
 			.expect("Failed to create fragment shader");
 
-		let pipeline_layout = device.create_pipeline_layout(&[], &[]);
-
 		let mut extent = Extent::rectangle(1280, 720);
 
 		let render_target = device.build_image(
@@ -1901,7 +1884,8 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			pipeline_layout,
+			&[],
+			&[],
 			&vertex_layout,
 			&[
 				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
@@ -1937,9 +1921,7 @@ pub(super) mod tests {
 
 			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let pipeline_layout_command = render_pass_command.bind_pipeline_layout(pipeline_layout);
-
-			let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
+			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
 			raster_pipeline_command.draw_mesh(&mesh);
 
@@ -2013,8 +1995,6 @@ pub(super) mod tests {
 			)
 			.expect("Failed to create fragment shader");
 
-		let pipeline_layout = device.create_pipeline_layout(&[], &[PushConstantRange::new(0, 16 * 4)]);
-
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
@@ -2028,7 +2008,8 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			pipeline_layout,
+			&[],
+			&[],
 			&vertex_layout,
 			&[
 				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
@@ -2062,8 +2043,6 @@ pub(super) mod tests {
 
 			let c = cb.start_render_pass(extent, &attachments);
 
-			let c = c.bind_pipeline_layout(pipeline_layout);
-
 			let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
 
 			let matrix: [f32; 16] = [
@@ -2085,10 +2064,9 @@ pub(super) mod tests {
 				1f32,
 			];
 
-			c.write_push_constant(0, matrix);
-
 			let c = c.bind_raster_pipeline(pipeline);
 
+			c.write_push_constant(0, matrix);
 			c.draw_mesh(&mesh);
 
 			c.end_render_pass();
@@ -2276,11 +2254,11 @@ pub(super) mod tests {
 			&[image_binding_template.clone(), last_frame_image_binding_template.clone()],
 		);
 
-		let pipeline_layout =
-			device.create_pipeline_layout(&[descriptor_set_template], &[PushConstantRange { offset: 0, size: 4 }]);
-
-		let pipeline =
-			device.create_compute_pipeline(pipeline_layout, ShaderParameter::new(&compute_shader, ShaderTypes::Compute));
+		let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
+			&[descriptor_set_template],
+			&[PushConstantRange { offset: 0, size: 4 }],
+			ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
+		));
 
 		let image = device.build_image(
 			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage)
@@ -2308,12 +2286,11 @@ pub(super) mod tests {
 
 		let data = [0.5f32];
 
-		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(pipeline_layout);
+		let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 
-		pipeline_layout_command.write_push_constant(0, data);
-		pipeline_layout_command
+		pipeline_command.write_push_constant(0, data);
+		pipeline_command
 			.bind_descriptor_sets(&[descriptor_set])
-			.bind_compute_pipeline(pipeline)
 			.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
@@ -2350,12 +2327,11 @@ pub(super) mod tests {
 
 		let data = [1.0f32];
 
-		let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(pipeline_layout);
+		let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 
-		pipeline_layout_command.write_push_constant(0, data);
-		pipeline_layout_command
+		pipeline_command.write_push_constant(0, data);
+		pipeline_command
 			.bind_descriptor_sets(&[descriptor_set])
-			.bind_compute_pipeline(pipeline)
 			.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
 		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
@@ -2632,8 +2608,6 @@ pub(super) mod tests {
 
 		assert!(!device.has_errors());
 
-		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
-
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
@@ -2647,7 +2621,8 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			pipeline_layout,
+			&[descriptor_set_layout_handle],
+			&[],
 			&vertex_layout,
 			&[
 				ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
@@ -2682,11 +2657,9 @@ pub(super) mod tests {
 
 		let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let pipeline_layout_command = raster_render_pass_command.bind_pipeline_layout(pipeline_layout);
+		let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(pipeline);
 
-		pipeline_layout_command.bind_descriptor_sets(&[descriptor_set]);
-
-		let raster_pipeline_command = pipeline_layout_command.bind_raster_pipeline(pipeline);
+		raster_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
 
 		raster_pipeline_command.draw_mesh(&mesh);
 
@@ -2916,16 +2889,15 @@ void main() {
 		let _ =
 			renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[4], index_buffer.into()));
 
-		let pipeline_layout = renderer.create_pipeline_layout(&[descriptor_set_layout_handle], &[]);
-
-		let pipeline = renderer.create_ray_tracing_pipeline(
-			pipeline_layout,
+		let pipeline = renderer.create_ray_tracing_pipeline(pipelines::ray_tracing::Builder::new(
+			&[descriptor_set_layout_handle],
+			&[],
 			&[
 				ShaderParameter::new(&raygen_shader, ShaderTypes::RayGen),
 				ShaderParameter::new(&closest_hit_shader, ShaderTypes::ClosestHit),
 				ShaderParameter::new(&miss_shader, ShaderTypes::Miss),
 			],
-		);
+		));
 
 		let rendering_command_buffer_handle = renderer.create_command_buffer(None, queue_handle);
 
@@ -2992,9 +2964,7 @@ void main() {
 				});
 			}
 
-			let pipeline_layout_command = command_buffer_recording.bind_pipeline_layout(pipeline_layout);
-
-			let ray_tracing_pipeline_command = pipeline_layout_command.bind_ray_tracing_pipeline(pipeline);
+			let ray_tracing_pipeline_command = command_buffer_recording.bind_ray_tracing_pipeline(pipeline);
 
 			ray_tracing_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
 

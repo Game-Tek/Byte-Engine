@@ -23,7 +23,6 @@ use crate::core::Entity;
 /// The `BaseAgxToneMapPass` struct defines the shared GPU state required for AGX tonemapping.
 #[derive(Clone)]
 pub struct BaseAgxToneMapPass {
-	pipeline_layout: ghi::PipelineLayoutHandle,
 	pipeline: ghi::PipelineHandle,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 }
@@ -48,8 +47,6 @@ impl BaseAgxToneMapPass {
 			&[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE],
 		);
 
-		let pipeline_layout = device.create_pipeline_layout(&[descriptor_set_layout], &[]);
-
 		let tonemapping_shader_artifact = glsl::compile(TONE_MAPPING_SHADER, "AGX Tonemapping").unwrap();
 
 		let tone_mapping_shader = device
@@ -64,14 +61,14 @@ impl BaseAgxToneMapPass {
 			)
 			.expect("Failed to create AGX tone mapping shader");
 
-		let tone_mapping_pipeline = device.create_compute_pipeline(
-			pipeline_layout,
+		let tone_mapping_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[descriptor_set_layout],
+			&[],
 			ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute),
-		);
+		));
 
 		Self {
 			descriptor_set_layout,
-			pipeline_layout,
 			pipeline: tone_mapping_pipeline,
 		}
 	}
@@ -116,7 +113,6 @@ impl Entity for AgxToneMapPass {}
 
 impl RenderPass for AgxToneMapPass {
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
-		let pipeline_layout = self.render_pass.pipeline_layout;
 		let pipeline = self.render_pass.pipeline;
 		let descriptor_set = self.descriptor_set;
 
@@ -124,9 +120,8 @@ impl RenderPass for AgxToneMapPass {
 
 		Some(Box::new(move |c, _| {
 			c.region("Tonemap", |c| {
-				let c = c.bind_pipeline_layout(pipeline_layout);
-				c.bind_descriptor_sets(&[descriptor_set]);
 				let r = c.bind_compute_pipeline(pipeline);
+				r.bind_descriptor_sets(&[descriptor_set]);
 				r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 			});
 		}))

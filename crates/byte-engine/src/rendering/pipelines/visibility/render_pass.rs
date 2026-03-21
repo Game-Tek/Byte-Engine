@@ -25,7 +25,6 @@ use utils::{Box, Extent, RGBA};
 
 #[derive(Clone)]
 pub struct VisibilityPass {
-	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
 	visibility_pass_pipeline: ghi::PipelineHandle,
 	attachments: [ghi::AttachmentInformation; 3],
@@ -34,7 +33,7 @@ pub struct VisibilityPass {
 impl VisibilityPass {
 	pub fn new(
 		device: &mut ghi::implementation::Device,
-		pipeline_layout: ghi::PipelineLayoutHandle,
+		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		primitive_index: ghi::ImageHandle,
 		instance_id: ghi::ImageHandle,
@@ -89,14 +88,14 @@ impl VisibilityPass {
 		];
 
 		let visibility_pass_pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			pipeline_layout,
-			&[],
+			&[base_descriptor_set_layout],
+			&[ghi::pipelines::PushConstantRange::new(0, 4)],
+			&vertex_layout,
 			&visibility_pass_shaders,
 			&attachments,
 		));
 
 		VisibilityPass {
-			pipeline_layout,
 			descriptor_set,
 			visibility_pass_pipeline,
 			attachments: [
@@ -134,7 +133,6 @@ impl VisibilityPass {
 		viewport: &Viewport,
 		instances: &[Instance],
 	) -> impl RenderPassFunction {
-		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.visibility_pass_pipeline;
 		let attachments = self.attachments;
@@ -147,9 +145,8 @@ impl VisibilityPass {
 
 			let c = c.start_render_pass(extent, &attachments);
 
-			let c = c.bind_pipeline_layout(pipeline_layout);
-			c.bind_descriptor_sets(&[descriptor_set]);
 			let c = c.bind_raster_pipeline(pipeline);
+			c.bind_descriptor_sets(&[descriptor_set]);
 
 			for (i, instance) in instances.iter().enumerate() {
 				c.write_push_constant(0, i as u32); // TODO: use actual instance indeces, not loaded meshes indices
@@ -164,7 +161,6 @@ impl VisibilityPass {
 }
 
 pub struct MaterialCountPass {
-	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
 	visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 	material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
@@ -174,7 +170,8 @@ pub struct MaterialCountPass {
 impl MaterialCountPass {
 	fn new(
 		device: &mut ghi::implementation::Device,
-		pipeline_layout: ghi::PipelineLayoutHandle,
+		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
@@ -196,13 +193,13 @@ impl MaterialCountPass {
 			)
 			.expect("Failed to create shader");
 
-		let material_count_pipeline = device.create_compute_pipeline(
-			pipeline_layout,
+		let material_count_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[base_descriptor_set_layout, visibility_descriptor_set_layout],
+			&[],
 			ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute),
-		);
+		));
 
 		MaterialCountPass {
-			pipeline_layout,
 			descriptor_set,
 			material_count_buffer,
 			visibility_pass_descriptor_set,
@@ -211,7 +208,6 @@ impl MaterialCountPass {
 	}
 
 	fn prepare(&self, frame: &ghi::implementation::Frame, viewport: &Viewport) -> impl RenderPassFunction {
-		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
 		let pipeline = self.pipeline;
@@ -224,9 +220,8 @@ impl MaterialCountPass {
 
 			c.clear_buffers(&[material_count_buffer.into()]);
 
-			let c = c.bind_pipeline_layout(pipeline_layout);
-			c.bind_descriptor_sets(&[descriptor_set, visibility_pass_descriptor_set]);
 			let compute_pipeline_command = c.bind_compute_pipeline(pipeline);
+			compute_pipeline_command.bind_descriptor_sets(&[descriptor_set, visibility_pass_descriptor_set]);
 			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 
 			c.end_region();
@@ -239,7 +234,6 @@ impl MaterialCountPass {
 }
 
 pub struct MaterialOffsetPass {
-	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
 	visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 	material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
@@ -251,7 +245,8 @@ pub struct MaterialOffsetPass {
 impl MaterialOffsetPass {
 	fn new(
 		device: &mut ghi::implementation::Device,
-		pipeline_layout: ghi::PipelineLayoutHandle,
+		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
@@ -275,16 +270,16 @@ impl MaterialOffsetPass {
 			)
 			.expect("Failed to create shader");
 
-		let material_offset_pipeline = device.create_compute_pipeline(
-			pipeline_layout,
+		let material_offset_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[base_descriptor_set_layout, visibility_descriptor_set_layout],
+			&[],
 			ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute),
-		);
+		));
 
 		MaterialOffsetPass {
 			material_offset_buffer,
 			material_offset_scratch_buffer,
 			material_evaluation_dispatches,
-			pipeline_layout,
 			descriptor_set,
 			visibility_pass_descriptor_set,
 			material_offset_pipeline,
@@ -292,7 +287,6 @@ impl MaterialOffsetPass {
 	}
 
 	fn prepare(&self) -> impl RenderPassFunction {
-		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let visibility_passes_descriptor_set = self.visibility_pass_descriptor_set;
 		let pipeline = self.material_offset_pipeline;
@@ -309,8 +303,8 @@ impl MaterialOffsetPass {
 				material_evaluation_dispatches.into(),
 			]);
 
-			c.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set]);
 			let compute_pipeline_command = c.bind_compute_pipeline(pipeline);
+			compute_pipeline_command.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set]);
 			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(Extent::line(1), Extent::line(1)));
 			c.end_region();
 		}
@@ -327,7 +321,6 @@ impl MaterialOffsetPass {
 
 pub struct PixelMappingPass {
 	material_xy: ghi::BufferHandle<[(u16, u16); 2073600]>,
-	pipeline_layout: ghi::PipelineLayoutHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
 	visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
 	pixel_mapping_pipeline: ghi::PipelineHandle,
@@ -336,7 +329,8 @@ pub struct PixelMappingPass {
 impl PixelMappingPass {
 	fn new(
 		device: &mut ghi::implementation::Device,
-		pipeline_layout: ghi::PipelineLayoutHandle,
+		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
 		material_xy: ghi::BufferHandle<[(u16, u16); 2073600]>,
@@ -359,14 +353,14 @@ impl PixelMappingPass {
 			)
 			.expect("Failed to create shader");
 
-		let pixel_mapping_pipeline = device.create_compute_pipeline(
-			pipeline_layout,
+		let pixel_mapping_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[base_descriptor_set_layout, visibility_descriptor_set_layout],
+			&[],
 			ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute),
-		);
+		));
 
 		PixelMappingPass {
 			material_xy,
-			pipeline_layout,
 			descriptor_set,
 			visibility_passes_descriptor_set,
 			pixel_mapping_pipeline,
@@ -374,7 +368,6 @@ impl PixelMappingPass {
 	}
 
 	pub(super) fn prepare(&self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> impl RenderPassFunction {
-		let pipeline_layout = self.pipeline_layout;
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.pixel_mapping_pipeline;
 		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
@@ -387,8 +380,8 @@ impl PixelMappingPass {
 
 			c.clear_buffers(&[material_xy.into()]);
 
-			c.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set]);
 			let compute_pipeline_command = c.bind_compute_pipeline(pipeline);
+			compute_pipeline_command.bind_descriptor_sets(&[descriptor_set, visibility_passes_descriptor_set]);
 			compute_pipeline_command.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
 
 			c.end_region();
@@ -397,9 +390,6 @@ impl PixelMappingPass {
 }
 
 pub struct MaterialEvaluationPass {
-	visibility_pipeline_layout: ghi::PipelineLayoutHandle,
-	/// Material evaluation pipeline layout
-	pipeline_layout: ghi::PipelineLayoutHandle,
 	diffuse: ghi::ImageHandle,
 	specular: ghi::ImageHandle,
 	ao_map: ghi::DynamicImageHandle,
@@ -415,8 +405,6 @@ pub struct MaterialEvaluationPass {
 
 impl MaterialEvaluationPass {
 	fn new(
-		visibility_pipeline_layout: ghi::PipelineLayoutHandle,
-		pipeline_layout: ghi::PipelineLayoutHandle,
 		diffuse: ghi::ImageHandle,
 		specular: ghi::ImageHandle,
 		ao_map: ghi::DynamicImageHandle,
@@ -427,8 +415,6 @@ impl MaterialEvaluationPass {
 		material_evaluation_dispatches: ghi::BufferHandle<[(u32, u32, u32); MAX_MATERIALS]>,
 	) -> Self {
 		MaterialEvaluationPass {
-			visibility_pipeline_layout,
-			pipeline_layout,
 			diffuse,
 			specular,
 			ao_map,
@@ -453,8 +439,6 @@ impl MaterialEvaluationPass {
 		let shadow_map = self.shadow_map;
 		let base_descriptor_set = self.base_descriptor_set;
 		let material_evaluation_dispatches = self.material_evaluation_dispatches;
-		let visibility_pipeline_layout = self.visibility_pipeline_layout;
-		let material_evaluation_pipeline_layout = self.pipeline_layout;
 		let visibility_descriptor_set = self.visibility_descriptor_set;
 		let material_evaluation_descriptor_set = self.descriptor_set;
 		let opaque_materials = opaque_materials.to_vec();
@@ -470,22 +454,18 @@ impl MaterialEvaluationPass {
 				(shadow_map.into_image_handle(), ghi::ClearValue::Depth(0.0)),
 			]);
 
-			let c = c.bind_pipeline_layout(visibility_pipeline_layout);
-
 			c.start_region("Material Evaluation");
 
 			c.start_region("Opaque");
 
-			let c = c.bind_pipeline_layout(material_evaluation_pipeline_layout);
-
 			for (name, index, pipeline) in &opaque_materials {
 				c.start_region(&format!("Material: {}", name));
+				let c = c.bind_compute_pipeline(*pipeline);
 				c.bind_descriptor_sets(&[
 					base_descriptor_set,
 					visibility_descriptor_set,
 					material_evaluation_descriptor_set,
 				]);
-				let c = c.bind_compute_pipeline(*pipeline);
 				c.write_push_constant(0, *index);
 				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
 				c.end_region();
@@ -498,12 +478,12 @@ impl MaterialEvaluationPass {
 			for (name, index, pipeline) in &transparent_materials {
 				// TODO: sort by distance to camera
 				c.start_region(&format!("Material: {}", name));
+				let c = c.bind_compute_pipeline(*pipeline);
 				c.bind_descriptor_sets(&[
 					base_descriptor_set,
 					visibility_descriptor_set,
 					material_evaluation_descriptor_set,
 				]);
-				let c = c.bind_compute_pipeline(*pipeline);
 				c.write_push_constant(0, *index);
 				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
 				c.end_region();
@@ -527,9 +507,8 @@ pub struct VisibilityPipelineRenderPass {
 impl VisibilityPipelineRenderPass {
 	pub fn new(
 		device: &mut ghi::implementation::Device,
-		base_pipeline_layout: ghi::PipelineLayoutHandle,
-		visibility_pipeline_layout: ghi::PipelineLayoutHandle,
-		material_evaluation_pipeline_layout: ghi::PipelineLayoutHandle,
+		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
@@ -548,7 +527,7 @@ impl VisibilityPipelineRenderPass {
 	) -> Self {
 		let visibility_pass = VisibilityPass::new(
 			device,
-			base_pipeline_layout,
+			base_descriptor_set_layout,
 			base_descriptor_set,
 			primitive_index,
 			instance_id,
@@ -556,14 +535,16 @@ impl VisibilityPipelineRenderPass {
 		);
 		let material_count_pass = MaterialCountPass::new(
 			device,
-			visibility_pipeline_layout,
+			base_descriptor_set_layout,
+			visibility_descriptor_set_layout,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_count_buffer,
 		);
 		let material_offset_pass = MaterialOffsetPass::new(
 			device,
-			visibility_pipeline_layout,
+			base_descriptor_set_layout,
+			visibility_descriptor_set_layout,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_offset_buffer,
@@ -572,7 +553,8 @@ impl VisibilityPipelineRenderPass {
 		);
 		let pixel_mapping_pass = PixelMappingPass::new(
 			device,
-			visibility_pipeline_layout,
+			base_descriptor_set_layout,
+			visibility_descriptor_set_layout,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_xy,
@@ -581,8 +563,6 @@ impl VisibilityPipelineRenderPass {
 		let material_evaluation_dispatches = material_offset_pass.material_evaluation_dispatches.clone();
 
 		let material_evaluation_pass = MaterialEvaluationPass::new(
-			visibility_pipeline_layout,
-			material_evaluation_pipeline_layout,
 			diffuse,
 			specular,
 			ao_map,

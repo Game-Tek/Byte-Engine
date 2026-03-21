@@ -2,8 +2,8 @@ use utils::Extent;
 
 use crate::{
 	graphics_hardware_interface::ImageHandleLike, rt, AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle,
-	ClearValue, DescriptorSetHandle, DispatchExtent, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey,
-	RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	ClearValue, DescriptorSetHandle, DispatchExtent, Layouts, MeshHandle, PipelineHandle, PresentKey, RGBAu8, SwapchainHandle,
+	SynchronizerHandle, TextureCopyHandle,
 };
 
 pub trait CommandBufferRecording
@@ -59,7 +59,8 @@ where
 }
 
 pub trait CommonCommandBufferMode {
-	fn bind_pipeline_layout(&mut self, pipeline_layout: PipelineLayoutHandle) -> &mut impl BoundPipelineLayoutMode;
+	fn bind_compute_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundComputePipelineMode;
+	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode;
 
 	fn start_region(&self, name: &str);
 
@@ -70,16 +71,13 @@ pub trait CommonCommandBufferMode {
 }
 
 pub trait RasterizationRenderPassMode: CommonCommandBufferMode {
+	fn bind_raster_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRasterizationPipelineMode;
+
 	/// Ends a render pass on the GPU.
 	fn end_render_pass(&mut self);
 }
 
 pub trait BoundPipelineLayoutMode: CommonCommandBufferMode {
-	/// Binds a raster pipeline to the GPU.
-	fn bind_raster_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRasterizationPipelineMode;
-	fn bind_compute_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundComputePipelineMode;
-	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode;
-
 	/// Binds a decriptor set on the GPU.
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self;
 

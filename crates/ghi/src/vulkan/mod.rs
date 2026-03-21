@@ -108,8 +108,15 @@ pub(crate) struct Shader {
 #[derive(Clone)]
 pub(crate) struct Pipeline {
 	pipeline: vk::Pipeline,
+	layout: graphics_hardware_interface::PipelineLayoutHandle,
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 	resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PipelineLayoutKey {
+	descriptor_set_templates: Vec<graphics_hardware_interface::DescriptorSetTemplateHandle>,
+	push_constant_ranges: Vec<crate::pipelines::PushConstantRange>,
 }
 
 #[derive(Clone, Copy)]

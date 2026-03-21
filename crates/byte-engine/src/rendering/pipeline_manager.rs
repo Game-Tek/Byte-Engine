@@ -32,7 +32,8 @@ impl PipelineManager {
 
 	pub fn load_material(
 		&self,
-		pipeline_layout_handle: ghi::PipelineLayoutHandle,
+		descriptor_set_template_handles: &[ghi::DescriptorSetTemplateHandle],
+		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
 		reference: &mut Reference<Material>,
 		device: &mut ghi::implementation::Frame,
 	) -> Option<ghi::PipelineHandle> {
@@ -120,10 +121,11 @@ impl PipelineManager {
 				})
 				.collect::<Result<Vec<_>, ()>>()?;
 
-			let pipeline_handle = device.create_compute_pipeline(
-				pipeline_layout_handle,
+			let pipeline_handle = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+				descriptor_set_template_handles,
+				push_constant_ranges,
 				ghi::ShaderParameter::new(&shaders[0].0, ghi::ShaderTypes::Compute),
-			);
+			));
 
 			Ok(pipeline_handle)
 		});
@@ -133,7 +135,8 @@ impl PipelineManager {
 
 	pub fn load_variant(
 		&self,
-		pipeline_layout_handle: ghi::PipelineLayoutHandle,
+		descriptor_set_template_handles: &[ghi::DescriptorSetTemplateHandle],
+		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
 		specilization_map_entries: &[ghi::pipelines::SpecializationMapEntry],
 		reference: &mut Reference<Variant>,
 		device: &mut ghi::implementation::Frame,
@@ -146,8 +149,13 @@ impl PipelineManager {
 		};
 
 		let r: Result<&ghi::PipelineHandle, ()> = v.get_or_try_init(|| {
-			self.load_material(pipeline_layout_handle, &mut reference.resource_mut().material, device)
-				.unwrap();
+			self.load_material(
+				descriptor_set_template_handles,
+				push_constant_ranges,
+				&mut reference.resource_mut().material,
+				device,
+			)
+			.unwrap();
 
 			let variant = reference.resource_mut();
 
@@ -158,11 +166,12 @@ impl PipelineManager {
 
 			let shader_handle = shader_handle.unwrap().unwrap();
 
-			let pipeline_handle = device.create_compute_pipeline(
-				pipeline_layout_handle,
+			let pipeline_handle = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+				descriptor_set_template_handles,
+				push_constant_ranges,
 				ghi::ShaderParameter::new(&shader_handle, ghi::ShaderTypes::Compute)
 					.with_specialization_map(specilization_map_entries),
-			);
+			));
 
 			Ok(pipeline_handle)
 		});

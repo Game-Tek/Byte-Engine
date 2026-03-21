@@ -1,13 +1,10 @@
 use crate::{
-	buffer, image,
-	pipelines::{ShaderParameter, VertexElement},
-	sampler,
-	shader::Sources,
-	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
-	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
-	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
-	ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle,
-	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
+	buffer, image, pipelines::VertexElement, sampler, shader::Sources, window, AllocationHandle, BaseBufferHandle,
+	BindingConstructor, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
+	CommandBufferHandle, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
+	DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle, ImageHandle, MeshHandle, PipelineHandle,
+	PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle,
+	TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
 };
 use utils::Extent;
 
@@ -79,31 +76,15 @@ impl Device {
 		DescriptorSetBindingHandle(0)
 	}
 
-	pub fn create_pipeline_layout(
-		&mut self,
-		_descriptor_set_template_handles: &[DescriptorSetTemplateHandle],
-		_push_constant_ranges: &[crate::pipelines::PushConstantRange],
-	) -> PipelineLayoutHandle {
-		PipelineLayoutHandle(0)
-	}
-
 	pub fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> PipelineHandle {
 		PipelineHandle(0)
 	}
 
-	pub fn create_compute_pipeline(
-		&mut self,
-		_pipeline_layout_handle: PipelineLayoutHandle,
-		_shader_parameter: ShaderParameter,
-	) -> PipelineHandle {
+	pub fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> PipelineHandle {
 		PipelineHandle(0)
 	}
 
-	pub fn create_ray_tracing_pipeline(
-		&mut self,
-		_pipeline_layout_handle: PipelineLayoutHandle,
-		_shaders: &[ShaderParameter],
-	) -> PipelineHandle {
+	pub fn create_ray_tracing_pipeline(&mut self, _builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle {
 		PipelineHandle(0)
 	}
 

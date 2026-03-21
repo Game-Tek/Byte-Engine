@@ -58,7 +58,6 @@ pub struct SceneManager {
 	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
 	pub(super) mesh_buffers_stats: MeshBuffersStats<Handle>,
 	pub(super) descriptor_set_template: ghi::DescriptorSetTemplateHandle,
-	pub(super) pipeline_layout: ghi::PipelineLayoutHandle,
 	pub(super) pipeline: ghi::PipelineHandle,
 	views: Vec<RenderPass>,
 }
@@ -99,9 +98,6 @@ impl SceneManager {
 			None,
 			&[camera_data_binding_template.clone(), instance_data_binding_template.clone()],
 		);
-
-		let pipeline_layout =
-			device.create_pipeline_layout(&[descriptor_set_template], &[ghi::pipelines::PushConstantRange::new(0, 4)]);
 
 		let mut shader_generator = SPIRVShaderGenerator::new();
 
@@ -233,7 +229,8 @@ impl SceneManager {
 			.unwrap();
 
 		let pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			pipeline_layout,
+			&[descriptor_set_template],
+			&[ghi::pipelines::PushConstantRange::new(0, 4)],
 			&VERTEX_LAYOUT,
 			&[
 				ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
@@ -255,7 +252,6 @@ impl SceneManager {
 			camera_data_buffer,
 
 			descriptor_set_template,
-			pipeline_layout,
 			pipeline,
 
 			views: Vec::with_capacity(4),

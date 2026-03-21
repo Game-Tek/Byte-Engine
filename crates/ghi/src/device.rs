@@ -2,16 +2,15 @@ use utils::Extent;
 
 use crate::{
 	buffer, descriptors, image,
-	pipelines::{self, VertexElement},
+	pipelines::VertexElement,
 	sampler,
 	shader::{self, Sources},
 	vulkan::{CommandBufferRecording, Frame},
 	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
 	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
 	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
-	DynamicImageHandle, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentationModes, QueueHandle,
-	SamplerHandle, ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
-	TopLevelAccelerationStructureHandle, Uses,
+	DynamicImageHandle, ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle,
+	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
 };
 
 /// The `Device` trait represents a graphics device that can be used to create and manage resources such as buffers, images, pipelines, and descriptor sets.
@@ -170,28 +169,14 @@ pub trait DeviceCreate {
 		binding_constructor: BindingConstructor,
 	) -> DescriptorSetBindingHandle;
 
-	fn create_pipeline_layout(
-		&mut self,
-		descriptor_set_template_handles: &[DescriptorSetTemplateHandle],
-		push_constant_ranges: &[pipelines::PushConstantRange],
-	) -> PipelineLayoutHandle;
-
 	/// Creates a graphics/rasterization pipeline from a builder.
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> PipelineHandle;
 
 	/// Creates a compute pipeline.
-	fn create_compute_pipeline(
-		&mut self,
-		pipeline_layout_handle: PipelineLayoutHandle,
-		shader_parameter: pipelines::ShaderParameter,
-	) -> PipelineHandle;
+	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> PipelineHandle;
 
 	/// Creates a ray-tracing pipeline.
-	fn create_ray_tracing_pipeline(
-		&mut self,
-		pipeline_layout_handle: PipelineLayoutHandle,
-		shaders: &[pipelines::ShaderParameter],
-	) -> PipelineHandle;
+	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle;
 
 	/// Creates a command buffer which will execute commands on the provided queue.
 	///

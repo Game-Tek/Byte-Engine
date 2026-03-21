@@ -104,7 +104,6 @@ impl RenderPass {
 
 		let vertex_buffer = sm.vertex_positions_buffer;
 		let index_buffer = sm.indeces_buffer;
-		let pipeline_layout = sm.pipeline_layout;
 		let pipeline = sm.pipeline.clone();
 		let descriptor_set = self.descriptor_set;
 
@@ -117,9 +116,8 @@ impl RenderPass {
 
 			let c = c.start_render_pass(extent, t);
 
-			let c = c.bind_pipeline_layout(pipeline_layout);
-			c.bind_descriptor_sets(&[descriptor_set]);
 			let c = c.bind_raster_pipeline(pipeline);
+			c.bind_descriptor_sets(&[descriptor_set]);
 
 			for batch in &instance_batches {
 				c.write_push_constant(0, batch.base_instance() as u32);

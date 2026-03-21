@@ -61,8 +61,8 @@ fn random_color_from_id(id: u32) -> RGBA {
 }
 
 pub struct IdedElement {
-	id: Id,
-	element: ConcreteElement,
+	pub(crate) id: Id,
+	pub(crate) element: ConcreteElement,
 }
 
 impl ElementHandle for IdedElement {

@@ -1,6 +1,7 @@
 use crate::ui::{
 	element::ElementHandle,
 	flow::{Location3, Size},
+	primitive::Primitives,
 };
 
 use super::{element::Id, flow::Location, layout::LayoutElement};
@@ -135,6 +136,11 @@ pub(crate) fn build_mouse_click_acceleration(layout: &[LayoutElement]) -> MouseC
 	MouseClickAcceleration::new(
 		layout
 			.iter()
+			.filter(|e| {
+				// Do not intersect with text elements
+				!matches!(e.element.element.primitive, Primitives::Text(_))
+					&& !matches!(e.element.element.primitive, Primitives::Shape(_))
+			})
 			.map(|e| QueryElement {
 				id: e.element.id().get(),
 				position: e.position,

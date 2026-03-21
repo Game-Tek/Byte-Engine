@@ -87,6 +87,9 @@ pub struct Renderer {
 
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
+
+	transfer_command_buffer: ghi::CommandBufferHandle,
+	transfer_finished_synchronizer: ghi::SynchronizerHandle,
 }
 
 impl Renderer {
@@ -155,22 +158,33 @@ impl Renderer {
 
 		let mut instance = ghi::implementation::Instance::new(features.clone()).unwrap();
 
-		let mut queue_handle = None;
+		let mut graphics_queue_handle = None;
+		let mut transfer_queue_handle = None;
 
 		let mut device = instance
 			.create_device(
 				features.clone(),
-				&mut [(
-					ghi::QueueSelection::new(ghi::command_buffer::CommandBufferType::GRAPHICS),
-					&mut queue_handle,
-				)],
+				&mut [
+					(
+						ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER),
+						&mut graphics_queue_handle,
+					),
+					(
+						ghi::QueueSelection::new(ghi::types::WorkloadTypes::TRANSFER),
+						&mut transfer_queue_handle,
+					),
+				],
 			)
 			.unwrap();
 
-		let queue_handle = queue_handle.unwrap();
+		let graphics_queue_handle = graphics_queue_handle.unwrap();
+		let transfer_queue_handle = transfer_queue_handle.unwrap();
 
-		let render_command_buffer = device.create_command_buffer(Some("Render"), queue_handle);
+		let render_command_buffer = device.create_command_buffer(Some("Render"), graphics_queue_handle);
 		let render_finished_synchronizer = device.create_synchronizer(Some("Render Finisished"), true);
+
+		let transfer_command_buffer = device.create_command_buffer(Some("Transfer"), transfer_queue_handle);
+		let transfer_finished_synchronizer = device.create_synchronizer(Some("Transfer Finished"), true);
 
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
 
@@ -196,6 +210,9 @@ impl Renderer {
 
 			render_command_buffer,
 			render_finished_synchronizer,
+
+			transfer_command_buffer,
+			transfer_finished_synchronizer,
 		}
 	}
 

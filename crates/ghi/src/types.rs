@@ -589,3 +589,14 @@ impl BufferStridedRange {
 		}
 	}
 }
+
+bitflags::bitflags! {
+	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+	pub struct WorkloadTypes: u16 {
+		const RASTER = 1 << 0;
+		const RAY_TRACING = 1 << 1;
+		const COMPUTE = 1 << 2;
+		const TRANSFER = 1 << 3;
+		const VIDEO = 1 << 4;
+	}
+}

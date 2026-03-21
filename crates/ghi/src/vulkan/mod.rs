@@ -382,7 +382,7 @@ mod tests {
 			.create_device(
 				features.clone(),
 				&mut [(
-					crate::QueueSelection::new(crate::command_buffer::CommandBufferType::GRAPHICS),
+					crate::QueueSelection::new(crate::types::WorkloadTypes::RASTER),
 					&mut queue_handle,
 				)],
 			)

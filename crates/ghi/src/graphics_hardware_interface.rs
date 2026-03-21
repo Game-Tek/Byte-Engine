@@ -8,7 +8,7 @@ use crate::{
 	command_buffer::CommandBufferType,
 	descriptors::{self, DescriptorType},
 	shader::BindingDescriptor,
-	AccessPolicies, DataTypes, Encodings, Formats, Layouts, Stages,
+	AccessPolicies, DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,
 };
 
 // HANDLES
@@ -760,11 +760,11 @@ pub enum AccelerationStructureTypes {
 }
 
 pub struct QueueSelection {
-	pub(crate) r#type: CommandBufferType,
+	pub(crate) r#type: WorkloadTypes,
 }
 
 impl QueueSelection {
-	pub fn new(r#type: CommandBufferType) -> Self {
+	pub fn new(r#type: WorkloadTypes) -> Self {
 		Self { r#type }
 	}
 }

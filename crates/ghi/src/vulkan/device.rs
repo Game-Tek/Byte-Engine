@@ -62,6 +62,7 @@ pub struct Device {
 	pub(super) queues: Vec<Queue>,
 	pub(super) buffers: Vec<Buffer>,
 	pub(super) images: Vec<Image>,
+	pub(super) samplers: Vec<vk::Sampler>,
 	pub(super) allocations: Vec<Allocation>,
 	pub(super) descriptor_sets_layouts: Vec<DescriptorSetLayout>,
 	pub(super) pipeline_layouts: Vec<PipelineLayout>,
@@ -352,36 +353,57 @@ impl Device {
 
 		let queue_family_properties = unsafe { vk_instance.get_physical_device_queue_family_properties(physical_device) };
 
-		let queue_create_infos = queues
+		// Build all requested queue family indices
+		let queue_family_indices = queues
 			.iter()
 			.map(|(d, _)| {
-				let mut queue_family_index = queue_family_properties
+				let required_queue_flags = if d.r#type.intersects(crate::types::WorkloadTypes::RASTER) {
+					vk::QueueFlags::GRAPHICS
+				} else {
+					vk::QueueFlags::empty()
+				} | if d.r#type.intersects(crate::types::WorkloadTypes::COMPUTE) {
+					vk::QueueFlags::COMPUTE
+				} else {
+					vk::QueueFlags::empty()
+				} | if d.r#type.intersects(crate::types::WorkloadTypes::TRANSFER) {
+					vk::QueueFlags::TRANSFER
+				} else {
+					vk::QueueFlags::empty()
+				};
+
+				let queue_family_index = queue_family_properties
 					.iter()
 					.enumerate()
-					.filter_map(|(index, info)| {
-						let mask = match d.r#type {
-							crate::command_buffer::CommandBufferType::COMPUTE => vk::QueueFlags::COMPUTE,
-							crate::command_buffer::CommandBufferType::GRAPHICS => vk::QueueFlags::GRAPHICS,
-							crate::command_buffer::CommandBufferType::TRANSFER => vk::QueueFlags::TRANSFER,
-						};
+					.filter(|(_, info)| info.queue_flags.contains(required_queue_flags))
+					.min_by_key(|(_, info)| info.queue_flags.as_raw().count_ones())
+					.map(|(index, _)| index as u32)
+					.ok_or(
+						"Failed to find a compatible queue family. The requested workload requires queue flags that no queue family exposes.",
+					)?;
 
-						if info.queue_flags.contains(mask) {
-							Some((index as u32, info.queue_flags.as_raw().count_ones()))
-						} else {
-							None
-						}
-					})
-					.collect::<Vec<_>>();
-
-				queue_family_index.sort_by(|(_, a_bit_count), (_, b_bit_count)| a_bit_count.cmp(b_bit_count));
-
-				let least_bits_queue_family_index = queue_family_index.first().unwrap().0;
-
-				vk::DeviceQueueCreateInfo::default()
-					.queue_family_index(least_bits_queue_family_index)
-					.queue_priorities(&[1.0])
+				Ok(queue_family_index)
 			})
-			.collect::<Vec<_>>();
+			.collect::<Result<Vec<_>, _>>()?;
+
+		// Fold duplicate queue family indices into a single queue create info per family
+		let queue_create_infos =
+			queue_family_indices
+				.iter()
+				.copied()
+				.fold(Vec::new(), |mut queue_create_infos, queue_family_index| {
+					if !queue_create_infos
+						.iter()
+						.any(|create_info: &vk::DeviceQueueCreateInfo<'_>| create_info.queue_family_index == queue_family_index)
+					{
+						queue_create_infos.push(
+							vk::DeviceQueueCreateInfo::default()
+								.queue_family_index(queue_family_index)
+								.queue_priorities(&[1.0]),
+						);
+					}
+
+					queue_create_infos
+				});
 
 		let memory_properties = unsafe { vk_instance.get_physical_device_memory_properties(physical_device) };
 
@@ -486,15 +508,15 @@ impl Device {
 
 		let queues = queues
 			.iter_mut()
-			.zip(queue_create_infos.iter())
+			.zip(queue_family_indices.iter().copied())
 			.enumerate()
-			.map(|(index, ((_, queue_handle), create_info))| {
-				let vk_queue = unsafe { device.get_device_queue(create_info.queue_family_index, 0) };
+			.map(|(index, ((_, queue_handle), queue_family_index))| {
+				let vk_queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
 				**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
 
 				Queue {
-					queue_family_index: create_info.queue_family_index,
+					queue_family_index,
 					_queue_index: 0,
 					vk_queue,
 				}
@@ -551,6 +573,7 @@ impl Device {
 			allocations: Vec::new(),
 			buffers: Vec::with_capacity(1024),
 			images: Vec::with_capacity(512),
+			samplers: Vec::with_capacity(128),
 			descriptor_sets_layouts: Vec::with_capacity(128),
 			pipeline_layouts: Vec::with_capacity(64),
 			pipeline_layout_indices: HashMap::with_capacity(64),
@@ -2391,6 +2414,10 @@ impl Drop for Device {
 			});
 
 			self.images.iter().for_each(|image| {
+				if let Some(staging_buffer) = image.staging_buffer {
+					self.device.destroy_buffer(staging_buffer, None);
+				}
+
 				for vk_image_view in image.image_views {
 					self.device.destroy_image_view(vk_image_view, None);
 				}
@@ -2409,6 +2436,10 @@ impl Drop for Device {
 
 			self.shaders.iter().for_each(|shader| {
 				self.device.destroy_shader_module(shader.shader, None);
+			});
+
+			self.samplers.iter().for_each(|sampler| {
+				self.device.destroy_sampler(*sampler, None);
 			});
 
 			self.pipeline_layouts.iter().for_each(|pipeline_layout| {
@@ -3788,18 +3819,19 @@ impl crate::device::DeviceCreate for Device {
 			crate::SamplingReductionModes::Max => vk::SamplerReductionMode::MAX,
 		};
 
-		graphics_hardware_interface::SamplerHandle(
-			self.create_vulkan_sampler(
-				filtering_mode,
-				reduction_mode,
-				mip_map_filter,
-				address_mode,
-				builder.anisotropy,
-				builder.min_lod,
-				builder.max_lod,
-			)
-			.as_raw(),
-		)
+		let sampler = self.create_vulkan_sampler(
+			filtering_mode,
+			reduction_mode,
+			mip_map_filter,
+			address_mode,
+			builder.anisotropy,
+			builder.min_lod,
+			builder.max_lod,
+		);
+
+		self.samplers.push(sampler);
+
+		graphics_hardware_interface::SamplerHandle(sampler.as_raw())
 	}
 
 	fn create_acceleration_structure_instance_buffer(

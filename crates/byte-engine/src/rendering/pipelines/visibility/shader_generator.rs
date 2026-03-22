@@ -218,7 +218,11 @@ impl VisibilityShaderScope {
 
 		let compute_vertex_index = Node::function(
 			"compute_vertex_index",
-			vec![Node::parameter("mesh", "Mesh"), Node::parameter("meshlet", "Meshlet"), Node::parameter("primitive_index", "u32")],
+			vec![
+				Node::parameter("mesh", "Mesh"),
+				Node::parameter("meshlet", "Meshlet"),
+				Node::parameter("primitive_index", "u32"),
+			],
 			"u32",
 			vec![Node::glsl(
 				"return mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */",
@@ -336,11 +340,11 @@ impl VisibilityShaderScope {
 				"
 			float depth_value = abs(view_space_position.z);
 
-			uint cascade_index = -1;
+			uint cascade_index = 3;
 
 			for (uint i = 0; i < 4; ++i) {
 				if (depth_value < views.views[light.cascades[i]].far) {
-					cascade_index = light.cascades[i];
+					cascade_index = i;
 					break;
 				}
 			}
@@ -407,8 +411,6 @@ impl VisibilityShaderScope {
 
 impl ProgramGenerator for VisibilityShaderGenerator {
 	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
-		dbg!(material);
-
 		let a = "if (gl_GlobalInvocationID.x >= material_count.material_count[push_constant.material_id]) { return; }
 
 		uint offset = material_offset.material_offset[push_constant.material_id];

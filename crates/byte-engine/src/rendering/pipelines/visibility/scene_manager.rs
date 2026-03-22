@@ -17,8 +17,8 @@ use crate::rendering::pipelines::visibility::{
 	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
 	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS,
 	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
-	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
-	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	SHADOW_CASCADE_COUNT, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassFunction, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;
@@ -1236,7 +1236,7 @@ impl VisibilityWorldRenderDomain {
 	}
 
 	/// Uploads the current scene lights to the GPU buffer used by material evaluation.
-	fn write_light_data(&self, frame: &mut ghi::implementation::Frame) {
+	fn write_light_data(&self, frame: &mut ghi::implementation::Frame, shadow_light_index: Option<usize>) {
 		let lighting_data = frame.get_mut_buffer_slice(self.light_data_buffer);
 		let light_count = self.lights.len().min(MAX_LIGHTS);
 
@@ -1249,19 +1249,27 @@ impl VisibilityWorldRenderDomain {
 		lighting_data.count = light_count as u32;
 
 		for (index, light) in self.lights.iter().take(light_count).enumerate() {
-			lighting_data.lights[index] = Self::make_light_data(light);
+			lighting_data.lights[index] = Self::make_light_data(light, shadow_light_index == Some(index));
 		}
 
 		frame.sync_buffer(self.light_data_buffer);
 	}
 
-	fn make_light_data(light: &Lights) -> LightData {
+	fn make_light_data(light: &Lights, casts_shadow: bool) -> LightData {
+		let mut cascades = [0; 8];
+
+		if casts_shadow {
+			for (index, cascade) in cascades.iter_mut().take(SHADOW_CASCADE_COUNT).enumerate() {
+				*cascade = (index + 1) as u32;
+			}
+		}
+
 		match light {
 			Lights::Direction(light) => LightData {
 				position: light.direction,
 				color: light.color,
 				light_type: 68,
-				cascades: [0; 8],
+				cascades,
 			},
 			Lights::Point(light) => LightData {
 				position: light.position,
@@ -1269,6 +1277,22 @@ impl VisibilityWorldRenderDomain {
 				light_type: 0,
 				cascades: [0; 8],
 			},
+		}
+	}
+
+	fn make_shader_view_data(view: View) -> ShaderViewData {
+		let view_projection = view.view_projection();
+
+		ShaderViewData {
+			view: view.view(),
+			projection: view.projection(),
+			view_projection,
+			inverse_view: view.view().inverse(),
+			inverse_projection: view.projection().inverse(),
+			inverse_view_projection: view_projection.inverse(),
+			fov: view.fov(),
+			near: view.near(),
+			far: view.far(),
 		}
 	}
 }
@@ -1280,22 +1304,28 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		viewports: &[Viewport],
 	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let views_data_buffer = frame.get_mut_dynamic_buffer_slice(self.views_data_buffer_handle);
+		let shadow_light = self.lights.iter().enumerate().find_map(|(index, light)| match light {
+			Lights::Direction(light) => Some((index, light.direction)),
+			Lights::Point(_) => None,
+		});
 
 		for viewport in viewports {
 			let view = viewport.view();
-			let view_projection = view.view_projection();
 
-			views_data_buffer[viewport.index()] = ShaderViewData {
-				view: view.view(),
-				projection: view.projection(),
-				view_projection,
-				inverse_view: view.view().inverse(),
-				inverse_projection: view.projection().inverse(),
-				inverse_view_projection: view_projection.inverse(),
-				fov: view.fov(),
-				near: view.near(),
-				far: view.far(),
-			};
+			views_data_buffer[viewport.index()] = Self::make_shader_view_data(view);
+
+			if viewport.index() == 0 {
+				views_data_buffer[0] = Self::make_shader_view_data(view);
+
+				if let Some((_, light_direction)) = shadow_light {
+					for (cascade_index, cascade_view) in csm::make_csm_views(view, light_direction, SHADOW_CASCADE_COUNT)
+						.into_iter()
+						.enumerate()
+					{
+						views_data_buffer[cascade_index + 1] = Self::make_shader_view_data(cascade_view);
+					}
+				}
+			}
 		}
 
 		let meshes_data_buffer = frame.get_mut_dynamic_buffer_slice(self.meshes_data_buffer);
@@ -1307,7 +1337,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			};
 		}
 
-		self.write_light_data(frame);
+		self.write_light_data(frame, shadow_light.map(|(index, _)| index));
 
 		let opaque_materials = self
 			.material_evaluation_materials
@@ -1406,13 +1436,10 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 		let shadow_map = device.build_dynamic_image(
-			ghi::image::Builder::new(
-				ghi::Formats::RGBA8UNORM,
-				ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination,
-			)
-			.name("Shadow Map")
-			.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-			.array_layers(NonZeroU32::new(1)),
+			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image)
+				.name("Shadow Map")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32)),
 		);
 		let sampler = device.build_sampler(
 			ghi::sampler::Builder::new()

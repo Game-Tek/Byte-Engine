@@ -153,64 +153,19 @@ impl AssetHandler for GLTFAssetHandler {
 				return Err(LoadErrors::FailedToProcess);
 			};
 
-			// Gather vertex components and check that they are all equal
-			let all = gltf
+			let vertex_layouts = gltf
 				.meshes()
 				.map(|mesh| {
 					mesh.primitives().map(|primitive| {
 						primitive
 							.attributes()
-							.scan(0, |state, (semantic, _)| {
-								let channel = *state;
-
-								*state += 1;
-
-								match semantic {
-									gltf::Semantic::Positions => VertexComponent {
-										semantic: VertexSemantics::Position,
-										format: "vec3f".to_string(),
-										channel,
-									},
-									gltf::Semantic::Normals => VertexComponent {
-										semantic: VertexSemantics::Normal,
-										format: "vec3f".to_string(),
-										channel,
-									},
-									gltf::Semantic::Tangents => VertexComponent {
-										semantic: VertexSemantics::Tangent,
-										format: "vec4f".to_string(),
-										channel,
-									},
-									gltf::Semantic::Colors(_) => VertexComponent {
-										semantic: VertexSemantics::Color,
-										format: "vec4f".to_string(),
-										channel,
-									},
-									gltf::Semantic::TexCoords(_count) => VertexComponent {
-										semantic: VertexSemantics::UV,
-										format: "vec2f".to_string(),
-										channel,
-									},
-									gltf::Semantic::Joints(_) => VertexComponent {
-										semantic: VertexSemantics::Joints,
-										format: "vec4u".to_string(),
-										channel,
-									},
-									gltf::Semantic::Weights(_) => VertexComponent {
-										semantic: VertexSemantics::Weights,
-										format: "vec4f".to_string(),
-										channel,
-									},
-								}
-								.into()
-							})
+							.filter_map(|(semantic, _)| gltf_vertex_component(semantic))
 							.collect::<Vec<VertexComponent>>()
 					})
 				})
-				.flatten();
-
-			let vertex_layouts = all.collect::<Vec<Vec<VertexComponent>>>();
-			let vertex_layout = vertex_layouts.first().unwrap().clone();
+				.flatten()
+				.collect::<Vec<Vec<VertexComponent>>>();
+			let vertex_layout = normalize_vertex_layouts(&vertex_layouts);
 
 			fn flatten_tree(base: maths_rs::Mat4f, node: gltf::Node) -> Vec<(gltf::Node, maths_rs::Mat4f)> {
 				let transform = node.transform().matrix();
@@ -332,7 +287,8 @@ impl AssetHandler for GLTFAssetHandler {
 						),
 					));
 
-					if let Some(normals) = reader.read_normals() {
+					if has_vertex_component(&vertex_layout, VertexSemantics::Normal, 0) {
+						let normals = reader.read_normals().ok_or(LoadErrors::FailedToProcess)?;
 						primitive.add_attribute(OwnedMeshAttribute::new(
 							VertexSemantics::Normal,
 							0,
@@ -348,7 +304,8 @@ impl AssetHandler for GLTFAssetHandler {
 						));
 					}
 
-					if let Some(tangents) = reader.read_tangents() {
+					if has_vertex_component(&vertex_layout, VertexSemantics::Tangent, 0) {
+						let tangents = reader.read_tangents().ok_or(LoadErrors::FailedToProcess)?;
 						primitive.add_attribute(OwnedMeshAttribute::new(
 							VertexSemantics::Tangent,
 							0,
@@ -364,7 +321,8 @@ impl AssetHandler for GLTFAssetHandler {
 						));
 					}
 
-					if let Some(colors) = reader.read_colors(0) {
+					if has_vertex_component(&vertex_layout, VertexSemantics::Color, 0) {
+						let colors = reader.read_colors(0).ok_or(LoadErrors::FailedToProcess)?;
 						primitive.add_attribute(OwnedMeshAttribute::new(
 							VertexSemantics::Color,
 							0,
@@ -372,7 +330,8 @@ impl AssetHandler for GLTFAssetHandler {
 						));
 					}
 
-					if let Some(uvs) = reader.read_tex_coords(0) {
+					if has_vertex_component(&vertex_layout, VertexSemantics::UV, 0) {
+						let uvs = reader.read_tex_coords(0).ok_or(LoadErrors::FailedToProcess)?;
 						primitive.add_attribute(OwnedMeshAttribute::new(
 							VertexSemantics::UV,
 							0,
@@ -380,7 +339,8 @@ impl AssetHandler for GLTFAssetHandler {
 						));
 					}
 
-					if let Some(joints) = reader.read_joints(0) {
+					if has_vertex_component(&vertex_layout, VertexSemantics::Joints, 0) {
+						let joints = reader.read_joints(0).ok_or(LoadErrors::FailedToProcess)?;
 						primitive.add_attribute(OwnedMeshAttribute::new(
 							VertexSemantics::Joints,
 							0,
@@ -388,7 +348,8 @@ impl AssetHandler for GLTFAssetHandler {
 						));
 					}
 
-					if let Some(weights) = reader.read_weights(0) {
+					if has_vertex_component(&vertex_layout, VertexSemantics::Weights, 0) {
+						let weights = reader.read_weights(0).ok_or(LoadErrors::FailedToProcess)?;
 						primitive.add_attribute(OwnedMeshAttribute::new(
 							VertexSemantics::Weights,
 							0,
@@ -414,6 +375,70 @@ impl AssetHandler for GLTFAssetHandler {
 	}
 }
 
+fn gltf_vertex_component(semantic: gltf::Semantic) -> Option<VertexComponent> {
+	match semantic {
+		gltf::Semantic::Positions => Some(VertexComponent {
+			semantic: VertexSemantics::Position,
+			format: "vec3f".to_string(),
+			channel: 0,
+		}),
+		gltf::Semantic::Normals => Some(VertexComponent {
+			semantic: VertexSemantics::Normal,
+			format: "vec3f".to_string(),
+			channel: 0,
+		}),
+		gltf::Semantic::Tangents => Some(VertexComponent {
+			semantic: VertexSemantics::Tangent,
+			format: "vec4f".to_string(),
+			channel: 0,
+		}),
+		gltf::Semantic::Colors(0) => Some(VertexComponent {
+			semantic: VertexSemantics::Color,
+			format: "vec4f".to_string(),
+			channel: 0,
+		}),
+		gltf::Semantic::TexCoords(0) => Some(VertexComponent {
+			semantic: VertexSemantics::UV,
+			format: "vec2f".to_string(),
+			channel: 0,
+		}),
+		gltf::Semantic::Joints(0) => Some(VertexComponent {
+			semantic: VertexSemantics::Joints,
+			format: "vec4u".to_string(),
+			channel: 0,
+		}),
+		gltf::Semantic::Weights(0) => Some(VertexComponent {
+			semantic: VertexSemantics::Weights,
+			format: "vec4f".to_string(),
+			channel: 0,
+		}),
+		_ => None,
+	}
+}
+
+fn normalize_vertex_layouts(vertex_layouts: &[Vec<VertexComponent>]) -> Vec<VertexComponent> {
+	let Some(first_layout) = vertex_layouts.first() else {
+		return Vec::new();
+	};
+
+	first_layout
+		.iter()
+		.filter(|component| component.semantic != VertexSemantics::BiTangent)
+		.filter(|component| {
+			vertex_layouts
+				.iter()
+				.all(|layout| layout.iter().any(|candidate| candidate == *component))
+		})
+		.cloned()
+		.collect()
+}
+
+fn has_vertex_component(vertex_layout: &[VertexComponent], semantic: VertexSemantics, channel: u32) -> bool {
+	vertex_layout
+		.iter()
+		.any(|component| component.semantic == semantic && component.channel == channel)
+}
+
 fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 	let bounds = mesh.bounding_box();
 
@@ -425,7 +450,9 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 
 #[cfg(test)]
 mod tests {
-	use super::{GLTFAssetHandler, TriangleFrontFaceWinding};
+	use super::{
+		gltf_vertex_component, has_vertex_component, normalize_vertex_layouts, GLTFAssetHandler, TriangleFrontFaceWinding,
+	};
 	use crate::r#async;
 	use crate::{
 		asset::{
@@ -439,8 +466,56 @@ mod tests {
 		processors::mesh_processor::orient_triangle_indices_for_front_face,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::mesh::MeshModel,
+		types::{VertexComponent, VertexSemantics},
 		ReferenceModel,
 	};
+
+	#[test]
+	fn normalizes_gltf_layouts_to_shared_supported_streams() {
+		let normalized = normalize_vertex_layouts(&[
+			vec![
+				VertexComponent {
+					semantic: VertexSemantics::Position,
+					format: "vec3f".to_string(),
+					channel: 0,
+				},
+				VertexComponent {
+					semantic: VertexSemantics::Normal,
+					format: "vec3f".to_string(),
+					channel: 0,
+				},
+				VertexComponent {
+					semantic: VertexSemantics::BiTangent,
+					format: "vec3f".to_string(),
+					channel: 0,
+				},
+			],
+			vec![
+				VertexComponent {
+					semantic: VertexSemantics::Position,
+					format: "vec3f".to_string(),
+					channel: 0,
+				},
+				VertexComponent {
+					semantic: VertexSemantics::Normal,
+					format: "vec3f".to_string(),
+					channel: 0,
+				},
+			],
+		]);
+
+		assert_eq!(normalized.len(), 2);
+		assert!(has_vertex_component(&normalized, VertexSemantics::Position, 0));
+		assert!(has_vertex_component(&normalized, VertexSemantics::Normal, 0));
+		assert!(!has_vertex_component(&normalized, VertexSemantics::BiTangent, 0));
+	}
+
+	#[test]
+	fn maps_gltf_semantics_to_normalized_channels() {
+		assert_eq!(gltf_vertex_component(gltf::Semantic::Normals).unwrap().channel, 0);
+		assert_eq!(gltf_vertex_component(gltf::Semantic::TexCoords(0)).unwrap().channel, 0);
+		assert!(gltf_vertex_component(gltf::Semantic::TexCoords(1)).is_none());
+	}
 
 	#[test]
 	fn defaults_to_clockwise_front_faces() {

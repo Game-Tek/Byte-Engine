@@ -286,7 +286,8 @@ impl MeshProcessor {
 	pub fn process<T: MeshSource>(&self, source: &T) -> Result<ProcessedMesh, MeshProcessingError> {
 		validate_vertex_layout(source.vertex_layout())?;
 
-		let vertex_streams = ordered_vertex_streams(source.vertex_layout());
+		let active_vertex_layout = active_vertex_layout(source);
+		let vertex_streams = ordered_vertex_streams(&active_vertex_layout);
 		let stream_order = make_stream_order(&vertex_streams);
 		let mut packed_blocks = stream_order
 			.iter()
@@ -319,7 +320,7 @@ impl MeshProcessor {
 
 		Ok(ProcessedMesh {
 			mesh: MeshModel {
-				vertex_components: source.vertex_layout().to_vec(),
+				vertex_components: active_vertex_layout,
 				streams: mesh_streams,
 				primitives,
 			},
@@ -378,9 +379,9 @@ impl MeshProcessor {
 		let mut primitive_streams = Vec::with_capacity(vertex_streams.len() + 4);
 
 		for &(semantic, channel) in vertex_streams {
-			let data = primitive
-				.attribute(semantic, channel)
-				.ok_or(MeshProcessingError::MissingAttribute(semantic, channel))?;
+			let Some(data) = primitive.attribute(semantic, channel) else {
+				continue;
+			};
 
 			if data.len() != position_count {
 				return Err(MeshProcessingError::AttributeLengthMismatch(semantic, channel));
@@ -574,10 +575,6 @@ fn validate_vertex_layout(vertex_layout: &[VertexComponent]) -> Result<(), MeshP
 	let mut seen = Vec::with_capacity(vertex_layout.len());
 
 	for component in vertex_layout {
-		if component.channel != 0 {
-			return Err(MeshProcessingError::DuplicateVertexSemantic(component.semantic));
-		}
-
 		if seen.contains(&component.semantic) {
 			return Err(MeshProcessingError::DuplicateVertexSemantic(component.semantic));
 		}
@@ -586,6 +583,20 @@ fn validate_vertex_layout(vertex_layout: &[VertexComponent]) -> Result<(), MeshP
 	}
 
 	Ok(())
+}
+
+/// Returns the subset of the declared vertex layout that is backed by primitive data.
+fn active_vertex_layout<T: MeshSource>(source: &T) -> Vec<VertexComponent> {
+	source
+		.vertex_layout()
+		.iter()
+		.filter(|component| {
+			source
+				.primitives()
+				.any(|primitive| primitive.attribute(component.semantic, component.channel).is_some())
+		})
+		.cloned()
+		.collect()
 }
 
 fn ordered_vertex_streams(vertex_layout: &[VertexComponent]) -> Vec<(VertexSemantics, u32)> {
@@ -830,6 +841,43 @@ mod tests {
 			.expect_err("Mesh processing should reject duplicate semantics");
 
 		assert_eq!(error, MeshProcessingError::DuplicateVertexSemantic(VertexSemantics::UV));
+	}
+
+	#[test]
+	fn skips_disabled_vertex_streams_from_the_layout() {
+		let source = OwnedMeshSource::new(
+			vec![
+				VertexComponent {
+					semantic: VertexSemantics::Position,
+					format: "vec3f".to_string(),
+					channel: 0,
+				},
+				VertexComponent {
+					semantic: VertexSemantics::BiTangent,
+					format: "vec3f".to_string(),
+					channel: 0,
+				},
+			],
+			vec![
+				OwnedMeshPrimitive::new(test_material(), [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]], vec![0, 1, 2]).with_attribute(
+					OwnedMeshAttribute::new(
+						VertexSemantics::Position,
+						0,
+						OwnedMeshAttributeData::F32x3(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+					),
+				),
+			],
+		);
+
+		let processed = MeshProcessor::new().process(&source).expect("Mesh processing should succeed");
+
+		assert_eq!(processed.mesh.vertex_components.len(), 1);
+		assert_eq!(processed.mesh.vertex_components[0].semantic, VertexSemantics::Position);
+		assert!(processed
+			.mesh
+			.streams
+			.iter()
+			.all(|stream| stream.stream_type != crate::types::Streams::Vertices(VertexSemantics::BiTangent)));
 	}
 
 	fn test_material() -> ReferenceModel<VariantModel> {

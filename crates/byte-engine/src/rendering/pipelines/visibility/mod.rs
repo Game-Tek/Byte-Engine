@@ -104,6 +104,7 @@ const MAX_LIGHTS: usize = 16;
 const MAX_TRIANGLES: usize = 65536 * 4;
 const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
 const MAX_VERTICES: usize = 65536 * 4;
+pub const SHADOW_CASCADE_COUNT: usize = 4;
 
 pub fn get_visibility_pass_mesh_source() -> String {
 	let main_code = r#"
@@ -143,6 +144,46 @@ pub fn get_visibility_pass_mesh_source() -> String {
 		.unwrap();
 
 	glsl
+}
+
+pub fn get_shadow_pass_mesh_source() -> String {
+	let main_code = r#"
+	View view = views.views[push_constant.view_index];
+	process_meshlet(push_constant.instance_index, view.view_projection);
+	"#;
+
+	let main = besl::parser::Node::function(
+		"main",
+		Vec::new(),
+		"void",
+		vec![besl::parser::Node::glsl(
+			main_code,
+			&["View", "views", "push_constant", "process_meshlet"],
+			&[],
+		)],
+	);
+
+	let push_constant = besl::parser::Node::push_constant(vec![
+		besl::parser::Node::member("instance_index", "u32"),
+		besl::parser::Node::member("view_index", "u32"),
+	]);
+
+	let shader = besl::parser::Node::scope("Shader", vec![push_constant, main]);
+
+	let mut root = besl::parser::Node::root();
+
+	root.add(vec![
+		CommonShaderScope::new(),
+		VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false),
+		shader,
+	]);
+
+	let root_node = besl::lex(root).unwrap();
+	let main_node = root_node.get_main().unwrap();
+
+	GLSLShaderGenerator::new()
+		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
+		.unwrap()
 }
 
 const VISIBILITY_PASS_FRAGMENT_SOURCE: &'static str = r#"

@@ -2,12 +2,12 @@ use std::borrow::Borrow as _;
 
 use crate::rendering::pipelines::visibility::scene_manager::Instance;
 use crate::rendering::pipelines::visibility::{
-	get_material_count_source, get_material_offset_source, get_pixel_mapping_source, get_visibility_pass_mesh_source,
-	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
-	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS,
-	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
-	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
-	VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
+	get_material_count_source, get_material_offset_source, get_pixel_mapping_source, get_shadow_pass_mesh_source,
+	get_visibility_pass_mesh_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
+	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS,
+	MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
+	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
+	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
@@ -154,6 +154,108 @@ impl VisibilityPass {
 			}
 
 			c.end_render_pass();
+
+			c.end_region();
+		}
+	}
+}
+
+pub struct ShadowPass {
+	descriptor_set: ghi::DescriptorSetHandle,
+	shadow_pass_pipeline: ghi::PipelineHandle,
+	shadow_map: ghi::DynamicImageHandle,
+}
+
+impl ShadowPass {
+	fn new(
+		device: &mut ghi::implementation::Device,
+		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+		descriptor_set: ghi::DescriptorSetHandle,
+		shadow_map: ghi::DynamicImageHandle,
+	) -> Self {
+		let shadow_shader = get_shadow_pass_mesh_source();
+		let shadow_mesh_shader_artifact = glsl::compile(&shadow_shader, "Shadow Mesh Shader").unwrap();
+
+		let shadow_pass_mesh_shader = device
+			.create_shader(
+				Some("Shadow Pass Mesh Shader"),
+				ghi::shader::Sources::SPIRV(shadow_mesh_shader_artifact.borrow().into()),
+				ghi::ShaderTypes::Mesh,
+				[
+					VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				],
+			)
+			.expect("Failed to create shader");
+
+		let attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32)];
+		let vertex_layout = [
+			ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0),
+			ghi::pipelines::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
+		];
+
+		let shadow_pass_pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+			&[base_descriptor_set_layout],
+			&[ghi::pipelines::PushConstantRange::new(0, 8)],
+			&vertex_layout,
+			&[ghi::ShaderParameter::new(&shadow_pass_mesh_shader, ghi::ShaderTypes::Mesh)],
+			&attachments,
+		));
+
+		Self {
+			descriptor_set,
+			shadow_pass_pipeline,
+			shadow_map,
+		}
+	}
+
+	fn prepare(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		viewport: &Viewport,
+		instances: &[Instance],
+	) -> impl RenderPassFunction {
+		let descriptor_set = self.descriptor_set;
+		let pipeline = self.shadow_pass_pipeline;
+		let shadow_map = self.shadow_map;
+		let extent = viewport.extent();
+		let instances = instances.iter().copied().collect::<Vec<_>>();
+
+		frame.resize_image(shadow_map, extent);
+
+		move |c, _| {
+			c.start_region("Shadow Map");
+
+			for cascade in 0..SHADOW_CASCADE_COUNT {
+				c.start_region(&format!("Cascade {}", cascade));
+
+				let attachments = [ghi::AttachmentInformation::new(
+					shadow_map,
+					ghi::Formats::Depth32,
+					ghi::Layouts::RenderTarget,
+					ghi::ClearValue::Depth(0.0),
+					false,
+					true,
+				)
+				.layer(cascade as u32)];
+
+				let c = c.start_render_pass(extent, &attachments);
+				let c = c.bind_raster_pipeline(pipeline);
+				c.bind_descriptor_sets(&[descriptor_set]);
+
+				for (i, instance) in instances.iter().enumerate() {
+					c.write_push_constant(0, i as u32);
+					c.write_push_constant(4, (cascade + 1) as u32);
+					c.dispatch_meshes(instance.meshlet_count, 1, 1);
+				}
+
+				c.end_render_pass();
+				c.end_region();
+			}
 
 			c.end_region();
 		}
@@ -393,7 +495,6 @@ pub struct MaterialEvaluationPass {
 	diffuse: ghi::ImageHandle,
 	specular: ghi::ImageHandle,
 	ao_map: ghi::DynamicImageHandle,
-	shadow_map: ghi::DynamicImageHandle,
 	/// Base layout descriptor set
 	base_descriptor_set: ghi::DescriptorSetHandle,
 	/// Visibility passes descriptor set
@@ -408,7 +509,7 @@ impl MaterialEvaluationPass {
 		diffuse: ghi::ImageHandle,
 		specular: ghi::ImageHandle,
 		ao_map: ghi::DynamicImageHandle,
-		shadow_map: ghi::DynamicImageHandle,
+		_shadow_map: ghi::DynamicImageHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
@@ -418,7 +519,6 @@ impl MaterialEvaluationPass {
 			diffuse,
 			specular,
 			ao_map,
-			shadow_map,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			descriptor_set,
@@ -436,7 +536,6 @@ impl MaterialEvaluationPass {
 		let diffuse = self.diffuse;
 		let specular = self.specular;
 		let ao_map = self.ao_map;
-		let shadow_map = self.shadow_map;
 		let base_descriptor_set = self.base_descriptor_set;
 		let material_evaluation_dispatches = self.material_evaluation_dispatches;
 		let visibility_descriptor_set = self.visibility_descriptor_set;
@@ -444,14 +543,12 @@ impl MaterialEvaluationPass {
 		let opaque_materials = opaque_materials.to_vec();
 		let transparent_materials = transparent_materials.to_vec();
 		frame.resize_image(ao_map, viewport.extent());
-		frame.resize_image(shadow_map, viewport.extent());
 
 		move |c, t| {
 			c.clear_images(&[
 				(diffuse, ghi::ClearValue::Color(RGBA::black())),
 				(specular, ghi::ClearValue::Color(RGBA::black())),
 				(ao_map.into_image_handle(), ghi::ClearValue::Color(RGBA::white())),
-				(shadow_map.into_image_handle(), ghi::ClearValue::Depth(0.0)),
 			]);
 
 			c.start_region("Material Evaluation");
@@ -497,6 +594,7 @@ impl MaterialEvaluationPass {
 }
 
 pub struct VisibilityPipelineRenderPass {
+	shadow_pass: ShadowPass,
 	visibility_pass: VisibilityPass,
 	material_count_pass: MaterialCountPass,
 	material_offset_pass: MaterialOffsetPass,
@@ -525,6 +623,7 @@ impl VisibilityPipelineRenderPass {
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_evaluation_dispatches: ghi::BufferHandle<[(u32, u32, u32); MAX_MATERIALS]>,
 	) -> Self {
+		let shadow_pass = ShadowPass::new(device, base_descriptor_set_layout, base_descriptor_set, shadow_map);
 		let visibility_pass = VisibilityPass::new(
 			device,
 			base_descriptor_set_layout,
@@ -574,6 +673,7 @@ impl VisibilityPipelineRenderPass {
 		);
 
 		Self {
+			shadow_pass,
 			visibility_pass,
 			material_count_pass,
 			material_offset_pass,
@@ -590,6 +690,7 @@ impl VisibilityPipelineRenderPass {
 		opaque_materials: &[(String, u32, ghi::PipelineHandle)],
 		transparent_materials: &[(String, u32, ghi::PipelineHandle)],
 	) -> impl RenderPassFunction {
+		let shadow_pass = self.shadow_pass.prepare(frame, viewport, instances);
 		let visibility_pass = self.visibility_pass.prepare(frame, viewport, instances);
 		let material_count_pass = self.material_count_pass.prepare(frame, viewport);
 		let material_offset_pass = self.material_offset_pass.prepare();
@@ -601,6 +702,7 @@ impl VisibilityPipelineRenderPass {
 		move |c, t| {
 			c.start_region("Visibility Render Model");
 
+			shadow_pass(c, t);
 			visibility_pass(c, t);
 			material_count_pass(c, t);
 			material_offset_pass(c, t);

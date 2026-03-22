@@ -82,27 +82,15 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 
 	fn normals(&self) -> Cow<'_, [(f32, f32, f32)]> {
-		let segments = self.segments as usize;
-		let rings = self.rings as usize;
-		let mut normals = Vec::new();
-
-		let vertices = &self.vertex_positions;
-
-		for ring in 0..rings {
-			for segment in 0..segments {
-				let i = ring * (segments + 1) + segment;
-				let j = (ring + 1) * (segments + 1) + segment;
-
-				let normal = normalize(Vector3::new(
-					vertices[j].0 - vertices[i].0,
-					vertices[j].1 - vertices[i].1,
-					vertices[j].2 - vertices[i].2,
-				));
-				normals.push((normal.x, normal.y, normal.z));
-			}
-		}
-
-		Cow::Owned(normals)
+		Cow::Owned(
+			self.vertex_positions
+				.iter()
+				.map(|&(x, y, z)| {
+					let normal = normalize(Vector3::new(x, y, z));
+					(normal.x, normal.y, normal.z)
+				})
+				.collect(),
+		)
 	}
 
 	fn tangents(&self) -> Cow<'_, [Vector3]> {

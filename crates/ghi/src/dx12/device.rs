@@ -22,6 +22,7 @@ use windows::{
 	},
 };
 
+use crate::WorkloadTypes;
 use crate::{
 	buffer,
 	command_buffer::CommandBufferType,
@@ -41,7 +42,6 @@ use crate::{
 };
 
 use super::utils;
-
 pub struct Device {
 	device: ID3D12Device,
 	settings: Features,
@@ -61,7 +61,7 @@ pub struct Device {
 	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<Handle>>,
 	pipeline_layouts: Vec<PipelineLayout>,
 	pipeline_layout_indices: HashMap<PipelineLayout, PipelineLayoutHandle>,
-	pipelines: Vec<Pipeline>,
+	pub(crate) pipelines: Vec<Pipeline>,
 	shaders: Vec<Shader>,
 	meshes: Vec<Mesh>,
 	swapchains: Vec<Swapchain>,
@@ -147,8 +147,8 @@ struct PipelineLayout {
 	push_constant_ranges: Vec<PushConstantRange>,
 }
 
-struct Pipeline {
-	layout: PipelineLayoutHandle,
+pub(crate) struct Pipeline {
+	pub(crate) layout: PipelineLayoutHandle,
 	shaders: Vec<ShaderHandle>,
 	kind: PipelineKind,
 }
@@ -206,9 +206,10 @@ impl Device {
 
 		for (selection, handle) in queues.iter_mut() {
 			let queue_type = match selection.r#type {
-				CommandBufferType::GRAPHICS => D3D12_COMMAND_LIST_TYPE_DIRECT,
-				CommandBufferType::COMPUTE => D3D12_COMMAND_LIST_TYPE_COMPUTE,
-				CommandBufferType::TRANSFER => D3D12_COMMAND_LIST_TYPE_COPY,
+				WorkloadTypes::RASTER => D3D12_COMMAND_LIST_TYPE_DIRECT,
+				WorkloadTypes::COMPUTE => D3D12_COMMAND_LIST_TYPE_COMPUTE,
+				WorkloadTypes::TRANSFER => D3D12_COMMAND_LIST_TYPE_COPY,
+				_ => return Err("Invalid workload type"),
 			};
 
 			let desc = D3D12_COMMAND_QUEUE_DESC {

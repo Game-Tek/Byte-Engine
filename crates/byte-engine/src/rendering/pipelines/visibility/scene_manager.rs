@@ -90,6 +90,8 @@ pub struct VisibilityWorldRenderDomain {
 	meshes: Vec<MeshData>,
 	/// Mapping from resource ID to mesh index.
 	meshes_by_resource: HashMap<String, usize>,
+	/// Mapping from generated mesh hash to mesh index.
+	meshes_by_generated_hash: HashMap<u64, usize>,
 	/// Loaded images.
 	images: HashMap<String, Image>,
 	/// Texture manager.
@@ -313,6 +315,7 @@ impl VisibilityWorldRenderDomain {
 
 			meshes: Vec::with_capacity(1024),
 			meshes_by_resource: HashMap::with_capacity(1024),
+			meshes_by_generated_hash: HashMap::with_capacity(128),
 
 			images: HashMap::with_capacity(1024),
 
@@ -392,8 +395,28 @@ impl VisibilityWorldRenderDomain {
 					}
 				}
 			}
-			_ => {
-				log::error!("Unsupported mesh source");
+			MeshSource::Generated(generator) => {
+				if let Ok(idx) = self.create_mesh_from_generator(generator.as_ref(), frame) {
+					let model = renderable.transform().get_matrix();
+					let mesh = &self.meshes[idx];
+
+					for primitive in &mesh.primitives {
+						self.render_entities.push((
+							renderable.clone(),
+							ShaderMesh {
+								model,
+								material_index: primitive.material_index,
+								base_vertex_index: mesh.vertex_offset + primitive.vertex_offset,
+								base_primitive_index: mesh.primitive_offset + primitive.primitive_offset,
+								base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
+								base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
+							},
+						));
+						self.render_info.instances.push(Instance {
+							meshlet_count: primitive.meshlet_count,
+						});
+					}
+				}
 			}
 		}
 	}
@@ -690,51 +713,51 @@ impl VisibilityWorldRenderDomain {
 		generator: &dyn MeshGenerator,
 		device: &mut ghi::implementation::Frame,
 	) -> Result<usize, ()> {
+		let mesh_hash = generator.hash();
+
+		if let Some(mesh_id) = self.meshes_by_generated_hash.get(&mesh_hash) {
+			return Ok(*mesh_id);
+		}
+
 		let positions = generator.positions();
 		let normals = generator.normals();
 		let uvs = generator.uvs();
-		let indices = generator.indices().iter().map(|&i| i as u16).collect::<Vec<_>>();
-		let Some(meshlet_indices) = generator.meshlet_indices() else {
-			log::warn!("Need mesh to contain meshlet indices to be used with this render domain");
-			return Err(());
-		};
+		let indices = generator.indices().iter().map(|&index| index as u16).collect::<Vec<_>>();
 
-		if meshlet_indices.len() > 192 {
-			log::warn!("Meshlet indices exceed maximum limit");
+		if positions.len() != normals.len() || positions.len() != uvs.len() {
+			log::error!(
+				"Generated mesh attributes are inconsistent. The most likely cause is that the mesh generator returned mismatched vertex attribute counts."
+			);
 			return Err(());
 		}
 
-		let meshlet_indices = meshlet_indices
-			.iter()
-			.map_windows(|&[a, b, c]| [*a, *b, *c])
-			.collect::<Vec<_>>();
+		let (vertex_indices, primitive_indices, meshlets) = Self::build_generated_meshlets(&indices)?;
+
+		let vertex_offset = self.visibility_info.vertex_count as usize;
+		let primitive_offset = self.visibility_info.primitives_count as usize;
+		let triangle_offset = self.visibility_info.triangle_count as usize;
+		let meshlet_offset = self.visibility_info.meshlet_count as usize;
 
 		let vertex_positions_buffer = device.get_mut_buffer_slice(self.vertex_positions_buffer);
-		vertex_positions_buffer[self.visibility_info.vertex_count as usize..positions.len()].copy_from_slice(&positions);
+		vertex_positions_buffer[vertex_offset..][..positions.len()].copy_from_slice(&positions);
 
 		let vertex_normals_buffer = device.get_mut_buffer_slice(self.vertex_normals_buffer);
-		vertex_normals_buffer[self.visibility_info.vertex_count as usize..normals.len()].copy_from_slice(&normals);
+		vertex_normals_buffer[vertex_offset..][..normals.len()].copy_from_slice(&normals);
 
 		let vertex_uv_buffer = device.get_mut_buffer_slice(self.vertex_uvs_buffer);
-		vertex_uv_buffer[self.visibility_info.vertex_count as usize..uvs.len()].copy_from_slice(&uvs);
+		vertex_uv_buffer[vertex_offset..][..uvs.len()].copy_from_slice(&uvs);
 
 		let indices_buffer = device.get_mut_buffer_slice(self.vertex_indices_buffer);
-		indices_buffer[self.visibility_info.vertex_count as usize..indices.len()].copy_from_slice(&indices);
+		indices_buffer[primitive_offset..][..vertex_indices.len()].copy_from_slice(&vertex_indices);
 
 		let primitive_indices_buffer = device.get_mut_buffer_slice(self.primitive_indices_buffer);
-		primitive_indices_buffer[self.visibility_info.primitives_count as usize..meshlet_indices.len()]
-			.copy_from_slice(&meshlet_indices);
+		primitive_indices_buffer[triangle_offset..][..primitive_indices.len()].copy_from_slice(&primitive_indices);
 
 		let meshlets_data_slice = device.get_mut_buffer_slice(self.meshlets_data_buffer);
 
-		let meshlets = [ShaderMeshletData {
-			primitive_offset: 0,
-			triangle_offset: 0,
-			primitive_count: indices.len() as u8,
-			triangle_count: (indices.len() / 3) as u8,
-		}];
-
-		meshlets_data_slice[self.visibility_info.meshlet_count as usize + 0] = meshlets[0];
+		for (index, meshlet) in meshlets.iter().enumerate() {
+			meshlets_data_slice[meshlet_offset + index] = *meshlet;
+		}
 
 		{
 			let (index, v) = {
@@ -819,7 +842,7 @@ impl VisibilityWorldRenderDomain {
 			acceleration_structure: None,
 			primitives: vec![MeshPrimitive {
 				material_index: 0,
-				meshlet_count: 1,
+				meshlet_count: meshlets.len() as u32,
 				meshlet_offset: self.visibility_info.meshlet_count,
 				vertex_offset: self.visibility_info.vertex_count,
 				primitive_offset: self.visibility_info.primitives_count,
@@ -827,17 +850,134 @@ impl VisibilityWorldRenderDomain {
 			}],
 		});
 
+		self.meshes_by_generated_hash.insert(mesh_hash, mesh_id);
+
 		let vertex_count = positions.len();
-		let primitive_count = indices.len();
-		let triangle_count = primitive_count / 3;
-		let total_meshlet_count = 1;
+		let primitive_count = vertex_indices.len();
+		let triangle_count = primitive_indices.len();
+		let total_meshlet_count = meshlets.len();
 
 		self.visibility_info.vertex_count += vertex_count as u32;
 		self.visibility_info.primitives_count += primitive_count as u32;
 		self.visibility_info.triangle_count += triangle_count as u32;
 		self.visibility_info.meshlet_count += total_meshlet_count as u32;
 
+		device.sync_buffer(self.vertex_positions_buffer);
+		device.sync_buffer(self.vertex_normals_buffer);
+		device.sync_buffer(self.vertex_uvs_buffer);
+		device.sync_buffer(self.vertex_indices_buffer);
+		device.sync_buffer(self.primitive_indices_buffer);
+		device.sync_buffer(self.meshlets_data_buffer);
+
 		Ok(mesh_id)
+	}
+
+	fn build_generated_meshlets(indices: &[u16]) -> Result<(Vec<u16>, Vec<[u8; 3]>, Vec<ShaderMeshletData>), ()> {
+		if indices.len() % 3 != 0 {
+			log::error!(
+				"Generated mesh indices are invalid. The most likely cause is that the mesh generator returned a triangle list whose index count is not divisible by three."
+			);
+			return Err(());
+		}
+
+		let mut vertex_indices = Vec::new();
+		let mut primitive_indices = Vec::new();
+		let mut meshlets = Vec::new();
+
+		let mut meshlet_vertex_indices = Vec::<u16>::new();
+		let mut meshlet_triangles = Vec::<[u8; 3]>::new();
+
+		for triangle in indices.chunks_exact(3) {
+			let unique_vertices = triangle
+				.iter()
+				.filter(|index| !meshlet_vertex_indices.contains(index))
+				.count();
+
+			if !meshlet_triangles.is_empty()
+				&& (meshlet_vertex_indices.len() + unique_vertices > u8::MAX as usize
+					|| meshlet_triangles.len() >= u8::MAX as usize)
+			{
+				Self::push_generated_meshlet(
+					&mut vertex_indices,
+					&mut primitive_indices,
+					&mut meshlets,
+					&mut meshlet_vertex_indices,
+					&mut meshlet_triangles,
+				)?;
+			}
+
+			let mut local_triangle = [0u8; 3];
+
+			for (slot, index) in triangle.iter().enumerate() {
+				let local_index = if let Some(existing) = meshlet_vertex_indices.iter().position(|value| value == index) {
+					existing
+				} else {
+					meshlet_vertex_indices.push(*index);
+					meshlet_vertex_indices.len() - 1
+				};
+
+				local_triangle[slot] = local_index as u8;
+			}
+
+			meshlet_triangles.push(local_triangle);
+		}
+
+		Self::push_generated_meshlet(
+			&mut vertex_indices,
+			&mut primitive_indices,
+			&mut meshlets,
+			&mut meshlet_vertex_indices,
+			&mut meshlet_triangles,
+		)?;
+
+		Ok((vertex_indices, primitive_indices, meshlets))
+	}
+
+	fn push_generated_meshlet(
+		vertex_indices: &mut Vec<u16>,
+		primitive_indices: &mut Vec<[u8; 3]>,
+		meshlets: &mut Vec<ShaderMeshletData>,
+		meshlet_vertex_indices: &mut Vec<u16>,
+		meshlet_triangles: &mut Vec<[u8; 3]>,
+	) -> Result<(), ()> {
+		if meshlet_triangles.is_empty() {
+			return Ok(());
+		}
+
+		let primitive_offset = u16::try_from(vertex_indices.len()).map_err(|_| {
+			log::error!(
+				"Generated mesh exceeds primitive index limits. The most likely cause is that the visibility pipeline buffers are too small for the generated mesh data."
+			);
+		})?;
+		let triangle_offset = u16::try_from(primitive_indices.len()).map_err(|_| {
+			log::error!(
+				"Generated mesh exceeds triangle index limits. The most likely cause is that the visibility pipeline buffers are too small for the generated mesh data."
+			);
+		})?;
+		let primitive_count = u8::try_from(meshlet_vertex_indices.len()).map_err(|_| {
+			log::error!(
+				"Generated meshlet exceeds vertex limits. The most likely cause is that too many unique vertices were packed into a single meshlet."
+			);
+		})?;
+		let triangle_count = u8::try_from(meshlet_triangles.len()).map_err(|_| {
+			log::error!(
+				"Generated meshlet exceeds triangle limits. The most likely cause is that too many triangles were packed into a single meshlet."
+			);
+		})?;
+
+		vertex_indices.extend(meshlet_vertex_indices.iter().copied());
+		primitive_indices.extend(meshlet_triangles.iter().copied());
+		meshlets.push(ShaderMeshletData {
+			primitive_offset,
+			triangle_offset,
+			primitive_count,
+			triangle_count,
+		});
+
+		meshlet_vertex_indices.clear();
+		meshlet_triangles.clear();
+
+		Ok(())
 	}
 
 	fn create_material_resources<'a>(

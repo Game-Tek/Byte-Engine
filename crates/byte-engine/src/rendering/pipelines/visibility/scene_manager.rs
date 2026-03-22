@@ -79,6 +79,11 @@ const shadow_map_binding_template: ghi::DescriptorSetBindingTemplate = ghi::Desc
 	ghi::Stages::COMPUTE,
 	1,
 );
+const visibility_depth_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	12,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+);
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -280,6 +285,7 @@ impl VisibilityWorldRenderDomain {
 			materials_data_binding_template,
 			ao_map_binding_template,
 			shadow_map_binding_template,
+			visibility_depth_binding_template,
 		];
 
 		let sampler = device.build_sampler(
@@ -1295,6 +1301,23 @@ impl VisibilityWorldRenderDomain {
 			far: view.far(),
 		}
 	}
+
+	/// Computes the camera-space far plane for each shadow cascade split.
+	fn make_cascade_split_fars(camera_view: View, num_cascades: usize) -> Vec<f32> {
+		let near = camera_view.near();
+		let far = camera_view.far();
+		let range = far - near;
+		let ratio = far / near;
+
+		(0..num_cascades)
+			.map(|index| {
+				let p = (index + 1) as f32 / num_cascades as f32;
+				let log = near * ratio.powf(p);
+				let uniform = near + range * p;
+				0.95f32 * (log - uniform) + uniform
+			})
+			.collect()
+	}
 }
 
 impl SceneManager for VisibilityWorldRenderDomain {
@@ -1303,27 +1326,40 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		frame: &mut ghi::implementation::Frame,
 		viewports: &[Viewport],
 	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
-		let views_data_buffer = frame.get_mut_dynamic_buffer_slice(self.views_data_buffer_handle);
+		let main_viewport = viewports
+			.iter()
+			.find(|viewport| viewport.index() == 0)
+			.copied()
+			.or_else(|| viewports.first().copied());
 		let shadow_light = self.lights.iter().enumerate().find_map(|(index, light)| match light {
 			Lights::Direction(light) => Some((index, light.direction)),
 			Lights::Point(_) => None,
 		});
+		let shadow_light_index = if main_viewport.is_some() {
+			shadow_light.map(|(index, _)| index)
+		} else {
+			None
+		};
 
-		for viewport in viewports {
-			let view = viewport.view();
+		if let Some(main_viewport) = main_viewport {
+			let main_view = main_viewport.view();
+			let main_view_data = Self::make_shader_view_data(main_view);
+			let views_data_buffer = frame.get_mut_dynamic_buffer_slice(self.views_data_buffer_handle);
 
-			views_data_buffer[viewport.index()] = Self::make_shader_view_data(view);
+			for view_data in views_data_buffer.iter_mut() {
+				*view_data = main_view_data;
+			}
 
-			if viewport.index() == 0 {
-				views_data_buffer[0] = Self::make_shader_view_data(view);
-
-				if let Some((_, light_direction)) = shadow_light {
-					for (cascade_index, cascade_view) in csm::make_csm_views(view, light_direction, SHADOW_CASCADE_COUNT)
+			if let Some((_, light_direction)) = shadow_light {
+				for (cascade_index, (cascade_view, cascade_far)) in
+					csm::make_csm_views(main_view, light_direction, SHADOW_CASCADE_COUNT)
 						.into_iter()
+						.zip(Self::make_cascade_split_fars(main_view, SHADOW_CASCADE_COUNT))
 						.enumerate()
-					{
-						views_data_buffer[cascade_index + 1] = Self::make_shader_view_data(cascade_view);
-					}
+				{
+					let mut cascade_view_data = Self::make_shader_view_data(cascade_view);
+					cascade_view_data.far = cascade_far;
+					views_data_buffer[cascade_index + 1] = cascade_view_data;
 				}
 			}
 		}
@@ -1337,7 +1373,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			};
 		}
 
-		self.write_light_data(frame, shadow_light.map(|(index, _)| index));
+		self.write_light_data(frame, shadow_light_index);
 
 		let opaque_materials = self
 			.material_evaluation_materials
@@ -1364,6 +1400,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 					&self.render_info.instances,
 					&opaque_materials,
 					&transparent_materials,
+					shadow_light_index.is_some(),
 				)) as Box<dyn RenderPassFunction>
 			})
 			.collect::<Vec<_>>();
@@ -1490,7 +1527,16 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			ghi::BindingConstructor::combined_image_sampler(
 				&shadow_map_binding_template,
 				shadow_map,
-				depth_sampler,
+				depth_sampler.clone(),
+				ghi::Layouts::Read,
+			),
+		);
+		let _ = device.create_descriptor_binding(
+			self.material_evaluation_descriptor_set,
+			ghi::BindingConstructor::combined_image_sampler(
+				&visibility_depth_binding_template,
+				depth_target,
+				depth_sampler.clone(),
 				ghi::Layouts::Read,
 			),
 		);

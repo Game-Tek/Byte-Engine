@@ -105,6 +105,7 @@ const MAX_TRIANGLES: usize = 65536 * 4;
 const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
 const MAX_VERTICES: usize = 65536 * 4;
 pub const SHADOW_CASCADE_COUNT: usize = 4;
+pub const SHADOW_MAP_RESOLUTION: u32 = 2048;
 
 pub fn get_visibility_pass_mesh_source() -> String {
 	let main_code = r#"

@@ -6,8 +6,9 @@ use crate::rendering::pipelines::visibility::{
 	get_visibility_pass_mesh_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
 	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS,
 	MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
-	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
-	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
+	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING,
+	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	VISIBILITY_PASS_FRAGMENT_SOURCE,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
@@ -216,18 +217,24 @@ impl ShadowPass {
 	fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
-		viewport: &Viewport,
 		instances: &[Instance],
+		shadow_enabled: bool,
 	) -> impl RenderPassFunction {
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.shadow_pass_pipeline;
 		let shadow_map = self.shadow_map;
-		let extent = viewport.extent();
+		let extent = Extent::square(SHADOW_MAP_RESOLUTION);
 		let instances = instances.iter().copied().collect::<Vec<_>>();
 
-		frame.resize_image(shadow_map, extent);
+		if shadow_enabled {
+			frame.resize_image(shadow_map, extent);
+		}
 
 		move |c, _| {
+			if !shadow_enabled {
+				return;
+			}
+
 			c.start_region("Shadow Map");
 
 			for cascade in 0..SHADOW_CASCADE_COUNT {
@@ -247,9 +254,10 @@ impl ShadowPass {
 				let c = c.bind_raster_pipeline(pipeline);
 				c.bind_descriptor_sets(&[descriptor_set]);
 
+				c.write_push_constant(4, (cascade + 1) as u32);
+
 				for (i, instance) in instances.iter().enumerate() {
 					c.write_push_constant(0, i as u32);
-					c.write_push_constant(4, (cascade + 1) as u32);
 					c.dispatch_meshes(instance.meshlet_count, 1, 1);
 				}
 
@@ -689,8 +697,9 @@ impl VisibilityPipelineRenderPass {
 		instances: &[Instance],
 		opaque_materials: &[(String, u32, ghi::PipelineHandle)],
 		transparent_materials: &[(String, u32, ghi::PipelineHandle)],
+		shadow_enabled: bool,
 	) -> impl RenderPassFunction {
-		let shadow_pass = self.shadow_pass.prepare(frame, viewport, instances);
+		let shadow_pass = self.shadow_pass.prepare(frame, instances, shadow_enabled);
 		let visibility_pass = self.visibility_pass.prepare(frame, viewport, instances);
 		let material_count_pass = self.material_count_pass.prepare(frame, viewport);
 		let material_offset_pass = self.material_offset_pass.prepare();

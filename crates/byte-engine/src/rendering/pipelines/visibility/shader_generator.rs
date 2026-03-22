@@ -286,6 +286,7 @@ impl VisibilityShaderScope {
 		);
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 2, 10, true, false);
 		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 2, 11, true, false);
+		let set2_binding12 = Node::binding("visibility_depth", Node::combined_image_sampler(), 2, 12, true, false);
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 
@@ -340,6 +341,8 @@ impl VisibilityShaderScope {
 				"
 			float depth_value = abs(view_space_position.z);
 
+			if (light.cascades[0] == 0u) { return 1.0; }
+
 			uint cascade_index = 3;
 
 			for (uint i = 0; i < 4; ++i) {
@@ -354,13 +357,21 @@ impl VisibilityShaderScope {
 			vec4 surface_light_clip_position = view.view_projection * vec4(world_space_position + surface_normal * 0.001, 1.0);
 			vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
 
-			vec2 shadow_uv = surface_light_ndc_position.xy * 0.5f + 0.5f;
+			vec2 shadow_uv = vec2(
+				surface_light_ndc_position.x * 0.5f + 0.5f,
+				0.5f - surface_light_ndc_position.y * 0.5f
+			) + offset;
 
-			float surface_depth = surface_light_ndc_position.z;
+			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position)), 0.0);
+			float surface_depth_bias = max(0.0005f * (1.0f - normal_alignment), 0.00005f);
+			float surface_depth = surface_light_ndc_position.z + surface_depth_bias;
 
+			if (shadow_uv.x < 0.0 || shadow_uv.x > 1.0 || shadow_uv.y < 0.0 || shadow_uv.y > 1.0) { return 1.0; }
 			if (surface_depth < 0 || surface_depth > 1.0f) { return 1.0; }
 
-			float closest_depth = texture(shadow_map, vec3(shadow_uv, float(cascade_index))).r;
+			ivec2 shadow_map_extent = textureSize(shadow_map, 0).xy;
+			ivec2 shadow_texel = ivec2(clamp(shadow_uv * vec2(shadow_map_extent), vec2(0.0), vec2(shadow_map_extent - 1)));
+			float closest_depth = texelFetch(shadow_map, ivec3(shadow_texel, int(cascade_index)), 0).r;
 
 			return surface_depth < closest_depth ? 0.0 : 1.0",
 				&["views"],
@@ -400,6 +411,7 @@ impl VisibilityShaderScope {
 				set2_binding5,
 				set2_binding10,
 				set2_binding11,
+				set2_binding12,
 				push_constant,
 				sample_function,
 				sample_normal_function,
@@ -461,6 +473,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		vec2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 
 		View view = views.views[0];
+		float surface_depth = texelFetch(visibility_depth, pixel_coordinates, 0).r;
+		vec4 surface_clip_position = vec4(nc, surface_depth, 1.0);
+		vec4 surface_view_position = view.inverse_projection * surface_clip_position;
+		surface_view_position /= surface_view_position.w;
+		vec3 world_space_surface_position = (view.inverse_view * surface_view_position).xyz;
 
 		vec4 world_space_vertex_positions[3] = vec4[3](mesh.model * model_space_vertex_positions[0], mesh.model * model_space_vertex_positions[1], mesh.model * model_space_vertex_positions[2]);
 		vec4 clip_space_vertex_positions[3] = vec4[3](view.view_projection * world_space_vertex_positions[0], view.view_projection * world_space_vertex_positions[1], view.view_projection * world_space_vertex_positions[2]);
@@ -554,8 +571,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float attenuation = 1.0;
 
 			if (light.type == 68) { // Infinite
-				vec4 view_space_vertex_position = view.view * vec4(world_space_vertex_position, 1.0);
-				float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_vertex_position.xyz, normal, vec2( 0.00,  0.00));
+				vec4 view_space_surface_position = view.view * vec4(world_space_surface_position, 1.0);
+				float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal, vec2( 0.00,  0.00));
 
 				occlusion_factor = c_occlusion_factor;
 
@@ -610,6 +627,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 							"vertex_uvs",
 							"ao",
 							"depth_shadow_map",
+							"visibility_depth",
 							"push_constant",
 							"material_offset",
 							"pixel_mapping",

@@ -4,10 +4,11 @@ use utils::Extent;
 use crate::{
 	device::Device as _,
 	graphics_hardware_interface,
-	implementation::{CommandBufferRecording, Device},
 	vulkan::{BufferCopy, BufferHandle, Handle, HandleLike as _, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
 	FrameKey,
 };
+
+use super::{command_buffer::CommandBufferRecording, device::Device};
 
 pub struct Frame<'a> {
 	frame_key: FrameKey,

@@ -22,22 +22,64 @@ pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
 pub mod implementation {
-	#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+	#[cfg(all(target_os = "macos", feature = "metal"))]
+	pub use metal::Instance;
+
+	#[cfg(all(target_os = "macos", feature = "metal"))]
+	pub use metal::Device;
+
+	#[cfg(all(target_os = "macos", feature = "metal"))]
+	pub use metal::Frame;
+
+	#[cfg(all(target_os = "macos", feature = "metal"))]
+	pub use metal::CommandBufferRecording;
+
+	#[cfg(all(target_os = "macos", feature = "metal"))]
+	pub use metal::queue::Queue;
+
+	#[cfg(all(target_os = "macos", feature = "metal"))]
+	use crate::metal;
+
+	#[cfg(any(
+		target_os = "linux",
+		target_os = "windows",
+		all(target_os = "macos", not(feature = "metal"))
+	))]
 	pub use vulkan::Instance;
 
-	#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+	#[cfg(any(
+		target_os = "linux",
+		target_os = "windows",
+		all(target_os = "macos", not(feature = "metal"))
+	))]
 	pub use vulkan::Device;
 
-	#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+	#[cfg(any(
+		target_os = "linux",
+		target_os = "windows",
+		all(target_os = "macos", not(feature = "metal"))
+	))]
 	pub use vulkan::Frame;
 
-	#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+	#[cfg(any(
+		target_os = "linux",
+		target_os = "windows",
+		all(target_os = "macos", not(feature = "metal"))
+	))]
 	pub use vulkan::CommandBufferRecording;
 
-	#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+	#[cfg(any(
+		target_os = "linux",
+		target_os = "windows",
+		all(target_os = "macos", not(feature = "metal"))
+	))]
 	pub use vulkan::queue::Queue;
 
-	#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+	#[cfg(any(
+		target_os = "linux",
+		target_os = "windows",
+		all(target_os = "macos", not(feature = "metal"))
+	))]
 	use crate::vulkan;
 }
 

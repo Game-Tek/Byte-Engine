@@ -23,12 +23,12 @@ use crate::graphics_hardware_interface;
 pub(super) enum Descriptor {
 	Image {
 		image: ImageHandle,
-		layout: graphics_hardware_interface::Layouts,
+		layout: crate::Layouts,
 	},
 	CombinedImageSampler {
 		image: ImageHandle,
 		sampler: SamplerHandle,
-		layout: graphics_hardware_interface::Layouts,
+		layout: crate::Layouts,
 	},
 	Buffer {
 		buffer: BufferHandle,
@@ -57,17 +57,17 @@ pub(super) enum Handle {
 #[derive(Clone, PartialEq)]
 pub(super) struct Consumption {
 	pub(super) handle: Handle,
-	pub(super) stages: graphics_hardware_interface::Stages,
-	pub(super) access: graphics_hardware_interface::AccessPolicies,
-	pub(super) layout: graphics_hardware_interface::Layouts,
+	pub(super) stages: crate::Stages,
+	pub(super) access: crate::AccessPolicies,
+	pub(super) layout: crate::Layouts,
 }
 
 #[derive(Clone, PartialEq)]
 pub(super) struct MetalConsumption {
 	pub(super) handle: Handle,
-	pub(super) stages: graphics_hardware_interface::Stages,
-	pub(super) access: graphics_hardware_interface::AccessPolicies,
-	pub(super) layout: graphics_hardware_interface::Layouts,
+	pub(super) stages: crate::Stages,
+	pub(super) access: crate::AccessPolicies,
+	pub(super) layout: crate::Layouts,
 }
 
 const MAX_FRAMES_IN_FLIGHT: usize = 3;
@@ -95,7 +95,7 @@ fn update_layer_extent(layer: &CAMetalLayer, view: &NSView) -> Extent {
 
 #[derive(Clone)]
 pub(crate) struct DescriptorSetLayout {
-	bindings: Vec<(graphics_hardware_interface::DescriptorType, u32)>,
+	bindings: Vec<(crate::descriptors::DescriptorType, u32)>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -106,13 +106,13 @@ pub(crate) struct PipelineLayout {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PipelineLayoutKey {
 	descriptor_set_templates: Vec<graphics_hardware_interface::DescriptorSetTemplateHandle>,
-	push_constant_ranges: Vec<graphics_hardware_interface::PushConstantRange>,
+	push_constant_ranges: Vec<crate::pipelines::PushConstantRange>,
 }
 
 #[derive(Clone)]
 pub(crate) struct Shader {
-	stage: graphics_hardware_interface::Stages,
-	shader_binding_descriptors: Vec<graphics_hardware_interface::ShaderBindingDescriptor>,
+	stage: crate::Stages,
+	shader_binding_descriptors: Vec<crate::shader::BindingDescriptor>,
 	metal_function: Option<Retained<ProtocolObject<dyn mtl::MTLFunction>>>,
 	spirv: Option<Vec<u8>>,
 }
@@ -122,13 +122,7 @@ pub(crate) struct Pipeline {
 	pipeline: PipelineState,
 	layout: graphics_hardware_interface::PipelineLayoutHandle,
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	resource_access: Vec<(
-		(u32, u32),
-		(
-			graphics_hardware_interface::Stages,
-			graphics_hardware_interface::AccessPolicies,
-		),
-	)>,
+	resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
 }
 
 #[derive(Clone)]
@@ -163,7 +157,7 @@ pub(crate) struct DebugCallbackData {
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) struct TransitionState {
-	layout: graphics_hardware_interface::Layouts,
+	layout: crate::Layouts,
 }
 
 pub(crate) struct Mesh {
@@ -229,7 +223,7 @@ pub(crate) enum Tasks {
 	},
 	/// Update the frame-specific (specified in `Task`) descriptor with the given write information for the master resource and descriptor.
 	UpdateDescriptor {
-		descriptor_write: graphics_hardware_interface::DescriptorWrite,
+		descriptor_write: crate::descriptors::Write,
 	},
 	/// Update a particular descriptor.
 	/// This task will most likely be enqueued for performance reasons. Since it is cheaper to update multiple descriptors at once instead of sporadically.
@@ -282,10 +276,7 @@ impl Task {
 		}
 	}
 
-	pub(crate) fn update_resource_descriptor(
-		descriptor_write: graphics_hardware_interface::DescriptorWrite,
-		frame: Option<u8>,
-	) -> Self {
+	pub(crate) fn update_resource_descriptor(descriptor_write: crate::descriptors::Write, frame: Option<u8>) -> Self {
 		Self {
 			task: Tasks::UpdateDescriptor { descriptor_write },
 			frame,
@@ -327,11 +318,11 @@ enum Descriptors {
 	},
 	Image {
 		handle: ImageHandle,
-		layout: graphics_hardware_interface::Layouts,
+		layout: crate::Layouts,
 	},
 	CombinedImageSampler {
 		image_handle: ImageHandle,
-		layout: graphics_hardware_interface::Layouts,
+		layout: crate::Layouts,
 		sampler_handle: SamplerHandle,
 		layer: Option<u32>,
 	},
@@ -548,27 +539,27 @@ mod utils {
 		Some(channel_bytes * channels)
 	}
 
-	pub(crate) fn data_type_size(format: crate::graphics_hardware_interface::DataTypes) -> usize {
+	pub(crate) fn data_type_size(format: crate::DataTypes) -> usize {
 		match format {
-			crate::graphics_hardware_interface::DataTypes::Float => std::mem::size_of::<f32>(),
-			crate::graphics_hardware_interface::DataTypes::Float2 => std::mem::size_of::<f32>() * 2,
-			crate::graphics_hardware_interface::DataTypes::Float3 => std::mem::size_of::<f32>() * 3,
-			crate::graphics_hardware_interface::DataTypes::Float4 => std::mem::size_of::<f32>() * 4,
-			crate::graphics_hardware_interface::DataTypes::U8 => std::mem::size_of::<u8>(),
-			crate::graphics_hardware_interface::DataTypes::U16 => std::mem::size_of::<u16>(),
-			crate::graphics_hardware_interface::DataTypes::U32 => std::mem::size_of::<u32>(),
-			crate::graphics_hardware_interface::DataTypes::Int => std::mem::size_of::<i32>(),
-			crate::graphics_hardware_interface::DataTypes::Int2 => std::mem::size_of::<i32>() * 2,
-			crate::graphics_hardware_interface::DataTypes::Int3 => std::mem::size_of::<i32>() * 3,
-			crate::graphics_hardware_interface::DataTypes::Int4 => std::mem::size_of::<i32>() * 4,
-			crate::graphics_hardware_interface::DataTypes::UInt => std::mem::size_of::<u32>(),
-			crate::graphics_hardware_interface::DataTypes::UInt2 => std::mem::size_of::<u32>() * 2,
-			crate::graphics_hardware_interface::DataTypes::UInt3 => std::mem::size_of::<u32>() * 3,
-			crate::graphics_hardware_interface::DataTypes::UInt4 => std::mem::size_of::<u32>() * 4,
+			crate::DataTypes::Float => std::mem::size_of::<f32>(),
+			crate::DataTypes::Float2 => std::mem::size_of::<f32>() * 2,
+			crate::DataTypes::Float3 => std::mem::size_of::<f32>() * 3,
+			crate::DataTypes::Float4 => std::mem::size_of::<f32>() * 4,
+			crate::DataTypes::U8 => std::mem::size_of::<u8>(),
+			crate::DataTypes::U16 => std::mem::size_of::<u16>(),
+			crate::DataTypes::U32 => std::mem::size_of::<u32>(),
+			crate::DataTypes::Int => std::mem::size_of::<i32>(),
+			crate::DataTypes::Int2 => std::mem::size_of::<i32>() * 2,
+			crate::DataTypes::Int3 => std::mem::size_of::<i32>() * 3,
+			crate::DataTypes::Int4 => std::mem::size_of::<i32>() * 4,
+			crate::DataTypes::UInt => std::mem::size_of::<u32>(),
+			crate::DataTypes::UInt2 => std::mem::size_of::<u32>() * 2,
+			crate::DataTypes::UInt3 => std::mem::size_of::<u32>() * 3,
+			crate::DataTypes::UInt4 => std::mem::size_of::<u32>() * 4,
 		}
 	}
 
-	pub(crate) fn vertex_layout_size(layout: &[crate::graphics_hardware_interface::VertexElement<'_>]) -> usize {
+	pub(crate) fn vertex_layout_size(layout: &[crate::pipelines::VertexElement<'_>]) -> usize {
 		layout.iter().map(|element| data_type_size(element.format)).sum()
 	}
 }
@@ -576,7 +567,7 @@ mod utils {
 pub mod queue {
 	use super::*;
 
-	pub(crate) struct Queue {
+	pub struct Queue {
 		pub(crate) queue: Retained<ProtocolObject<dyn mtl::MTLCommandQueue>>,
 	}
 }
@@ -745,7 +736,7 @@ pub mod binding {
 	pub(crate) struct Binding {
 		pub next: Option<DescriptorSetBindingHandle>,
 		pub descriptor_set_handle: DescriptorSetHandle,
-		pub descriptor_type: graphics_hardware_interface::DescriptorType,
+		pub descriptor_type: crate::descriptors::DescriptorType,
 		pub index: u32,
 		pub count: u32,
 	}
@@ -860,13 +851,13 @@ pub mod instance {
 
 	pub struct Instance {
 		devices: Vec<Retained<ProtocolObject<dyn mtl::MTLDevice>>>,
-		settings: graphics_hardware_interface::Features,
+		settings: crate::device::Features,
 	}
 
 	unsafe impl Send for Instance {}
 
 	impl Instance {
-		pub fn new(settings: graphics_hardware_interface::Features) -> Result<Instance, &'static str> {
+		pub fn new(settings: crate::device::Features) -> Result<Instance, &'static str> {
 			let devices = mtl::MTLCopyAllDevices().to_vec();
 
 			if devices.is_empty() {
@@ -878,7 +869,7 @@ pub mod instance {
 
 		pub fn create_device(
 			&mut self,
-			settings: graphics_hardware_interface::Features,
+			settings: crate::device::Features,
 			queues: &mut [(
 				graphics_hardware_interface::QueueSelection,
 				&mut Option<graphics_hardware_interface::QueueHandle>,
@@ -903,7 +894,7 @@ pub mod instance {
 					)?
 			};
 
-			let merged_settings = graphics_hardware_interface::Features {
+			let merged_settings = crate::device::Features {
 				validation: settings.validation || self.settings.validation,
 				gpu_validation: settings.gpu_validation || self.settings.gpu_validation,
 				api_dump: settings.api_dump || self.settings.api_dump,
@@ -931,7 +922,10 @@ pub mod device {
 	use objc2_metal::{MTLBuffer, MTLCommandQueue, MTLDevice, MTLResource, MTLTexture};
 
 	use super::*;
-	use crate::{buffer as buffer_builder, image as image_builder, raster_pipeline, sampler as sampler_builder, window};
+	use crate::{
+		buffer as buffer_builder, image as image_builder, pipelines::raster as raster_pipeline, sampler as sampler_builder,
+		window,
+	};
 
 	pub struct Device {
 		pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
@@ -958,7 +952,7 @@ pub mod device {
 		pub(crate) resource_to_descriptor: HashMap<Handle, HashSet<(binding::DescriptorSetBindingHandle, u32)>>,
 		pub(crate) descriptor_set_to_resource: HashMap<(descriptor_set::DescriptorSetHandle, u32), HashSet<Handle>>,
 
-		pub settings: graphics_hardware_interface::Features,
+		pub settings: crate::device::Features,
 		pub(crate) states: HashMap<Handle, TransitionState>,
 		pub(crate) pending_buffer_syncs: VecDeque<buffer::BufferHandle>,
 		pub(crate) pending_image_syncs: VecDeque<image::ImageHandle>,
@@ -971,7 +965,7 @@ pub mod device {
 
 	impl Device {
 		pub fn new(
-			settings: graphics_hardware_interface::Features,
+			settings: crate::device::Features,
 			device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 			queues: &mut [(
 				graphics_hardware_interface::QueueSelection,
@@ -1031,8 +1025,8 @@ pub mod device {
 			next: Option<buffer::BufferHandle>,
 			name: Option<&str>,
 			size: usize,
-			resource_uses: graphics_hardware_interface::Uses,
-			device_accesses: graphics_hardware_interface::DeviceAccesses,
+			resource_uses: crate::Uses,
+			device_accesses: crate::DeviceAccesses,
 		) -> buffer::BufferHandle {
 			let options = utils::resource_options_from_access(device_accesses);
 			let buffer = self
@@ -1067,9 +1061,9 @@ pub mod device {
 			next: Option<image::ImageHandle>,
 			name: Option<&str>,
 			extent: Extent,
-			format: graphics_hardware_interface::Formats,
-			resource_uses: graphics_hardware_interface::Uses,
-			device_accesses: graphics_hardware_interface::DeviceAccesses,
+			format: crate::Formats,
+			resource_uses: crate::Uses,
+			device_accesses: crate::DeviceAccesses,
 			array_layers: u32,
 		) -> image::ImageHandle {
 			let pixel_format = utils::to_pixel_format(format);
@@ -1194,8 +1188,8 @@ pub mod device {
 		pub fn create_allocation(
 			&mut self,
 			size: usize,
-			_resource_uses: graphics_hardware_interface::Uses,
-			device_accesses: graphics_hardware_interface::DeviceAccesses,
+			_resource_uses: crate::Uses,
+			device_accesses: crate::DeviceAccesses,
 		) -> graphics_hardware_interface::AllocationHandle {
 			let options = utils::resource_options_from_access(device_accesses);
 			let buffer = self
@@ -1214,7 +1208,7 @@ pub mod device {
 			index_count: u32,
 			vertices: &[u8],
 			indices: &[u8],
-			vertex_layout: &[graphics_hardware_interface::VertexElement],
+			vertex_layout: &[crate::pipelines::VertexElement],
 		) -> graphics_hardware_interface::MeshHandle {
 			let options = mtl::MTLResourceOptions::StorageModeShared;
 			let vertex_ptr = NonNull::new(vertices.as_ptr() as *mut std::ffi::c_void)
@@ -1247,26 +1241,26 @@ pub mod device {
 		pub fn create_shader(
 			&mut self,
 			_name: Option<&str>,
-			shader_source_type: graphics_hardware_interface::ShaderSource,
-			stage: graphics_hardware_interface::ShaderTypes,
-			shader_binding_descriptors: impl IntoIterator<Item = graphics_hardware_interface::ShaderBindingDescriptor>,
+			shader_source_type: crate::shader::Sources,
+			stage: crate::ShaderTypes,
+			shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
 		) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 			let spirv = match shader_source_type {
-				graphics_hardware_interface::ShaderSource::SPIRV(data) => Some(data.to_vec()),
+				crate::shader::Sources::SPIRV(data) => Some(data.to_vec()),
 			};
 
 			let stages = match stage {
-				graphics_hardware_interface::ShaderTypes::Vertex => graphics_hardware_interface::Stages::VERTEX,
-				graphics_hardware_interface::ShaderTypes::Fragment => graphics_hardware_interface::Stages::FRAGMENT,
-				graphics_hardware_interface::ShaderTypes::Compute => graphics_hardware_interface::Stages::COMPUTE,
-				graphics_hardware_interface::ShaderTypes::RayGen => graphics_hardware_interface::Stages::RAYGEN,
-				graphics_hardware_interface::ShaderTypes::Intersection => graphics_hardware_interface::Stages::INTERSECTION,
-				graphics_hardware_interface::ShaderTypes::AnyHit => graphics_hardware_interface::Stages::ANY_HIT,
-				graphics_hardware_interface::ShaderTypes::ClosestHit => graphics_hardware_interface::Stages::CLOSEST_HIT,
-				graphics_hardware_interface::ShaderTypes::Miss => graphics_hardware_interface::Stages::MISS,
-				graphics_hardware_interface::ShaderTypes::Callable => graphics_hardware_interface::Stages::CALLABLE,
-				graphics_hardware_interface::ShaderTypes::Task => graphics_hardware_interface::Stages::TASK,
-				graphics_hardware_interface::ShaderTypes::Mesh => graphics_hardware_interface::Stages::MESH,
+				crate::ShaderTypes::Vertex => crate::Stages::VERTEX,
+				crate::ShaderTypes::Fragment => crate::Stages::FRAGMENT,
+				crate::ShaderTypes::Compute => crate::Stages::COMPUTE,
+				crate::ShaderTypes::RayGen => crate::Stages::RAYGEN,
+				crate::ShaderTypes::Intersection => crate::Stages::INTERSECTION,
+				crate::ShaderTypes::AnyHit => crate::Stages::ANY_HIT,
+				crate::ShaderTypes::ClosestHit => crate::Stages::CLOSEST_HIT,
+				crate::ShaderTypes::Miss => crate::Stages::MISS,
+				crate::ShaderTypes::Callable => crate::Stages::CALLABLE,
+				crate::ShaderTypes::Task => crate::Stages::TASK,
+				crate::ShaderTypes::Mesh => crate::Stages::MESH,
 			};
 
 			self.shaders.push(Shader {
@@ -1325,7 +1319,7 @@ pub mod device {
 			let binding_handle = binding::DescriptorSetBindingHandle((self.bindings.len() - 1) as u64);
 
 			match binding_constructor.descriptor {
-				graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
+				crate::descriptors::WriteData::Buffer { handle, size } => {
 					self.update_descriptor_for_binding(
 						binding_handle,
 						Descriptor::Buffer {
@@ -1335,7 +1329,7 @@ pub mod device {
 						binding_constructor.array_element,
 					);
 				}
-				graphics_hardware_interface::Descriptor::Image { handle, layout } => {
+				crate::descriptors::WriteData::Image { handle, layout } => {
 					self.update_descriptor_for_binding(
 						binding_handle,
 						Descriptor::Image {
@@ -1345,7 +1339,7 @@ pub mod device {
 						binding_constructor.array_element,
 					);
 				}
-				graphics_hardware_interface::Descriptor::CombinedImageSampler {
+				crate::descriptors::WriteData::CombinedImageSampler {
 					image_handle,
 					sampler_handle,
 					layout,
@@ -1361,7 +1355,7 @@ pub mod device {
 						binding_constructor.array_element,
 					);
 				}
-				graphics_hardware_interface::Descriptor::Sampler(handle) => {
+				crate::descriptors::WriteData::Sampler(handle) => {
 					self.update_descriptor_for_binding(
 						binding_handle,
 						Descriptor::Sampler {
@@ -1381,7 +1375,7 @@ pub mod device {
 		fn get_or_create_pipeline_layout(
 			&mut self,
 			descriptor_set_template_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
-			push_constant_ranges: &[graphics_hardware_interface::PushConstantRange],
+			push_constant_ranges: &[crate::pipelines::PushConstantRange],
 		) -> graphics_hardware_interface::PipelineLayoutHandle {
 			let key = PipelineLayoutKey {
 				descriptor_set_templates: descriptor_set_template_handles.to_vec(),
@@ -1425,7 +1419,7 @@ pub mod device {
 
 		pub fn create_compute_pipeline(
 			&mut self,
-			builder: graphics_hardware_interface::pipelines::compute::Builder,
+			builder: crate::pipelines::compute::Builder,
 		) -> graphics_hardware_interface::PipelineHandle {
 			let layout = self.get_or_create_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
 			self.pipelines.push(Pipeline {
@@ -1440,7 +1434,7 @@ pub mod device {
 
 		pub fn create_ray_tracing_pipeline(
 			&mut self,
-			builder: graphics_hardware_interface::pipelines::ray_tracing::Builder,
+			builder: crate::pipelines::ray_tracing::Builder,
 		) -> graphics_hardware_interface::PipelineHandle {
 			let layout = self.get_or_create_pipeline_layout(
 				builder.descriptor_set_templates.as_ref(),
@@ -1529,21 +1523,26 @@ pub mod device {
 			unsafe { &*(buffer.pointer as *const T) }
 		}
 
-		pub fn get_mut_buffer_slice<'a, T: Copy>(
-			&'a self,
+		pub fn get_mut_buffer_slice<T: Copy>(
+			&self,
 			buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-		) -> &'a mut T {
+		) -> &'static mut T {
 			let buffer = &self.buffers[buffer_handle.0 as usize];
-			unsafe { &mut *(buffer.pointer as *mut T) }
+			unsafe { std::mem::transmute(buffer.pointer) }
 		}
 
-		pub fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-			let image = &mut self.images[texture_handle.0 as usize];
-			let Some(staging) = image.staging.as_mut() else {
+		pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
+			let handle = buffer::BufferHandle(buffer_handle.into().0);
+			self.pending_buffer_syncs.push_back(handle);
+		}
+
+		pub fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
+			let image = &self.images[texture_handle.0 as usize];
+			let Some(staging) = image.staging.as_ref() else {
 				return &mut [];
 			};
 
-			unsafe { std::mem::transmute::<&mut [u8], &'static mut [u8]>(staging.as_mut_slice()) }
+			unsafe { std::slice::from_raw_parts_mut(staging.as_ptr() as *mut u8, staging.len()) }
 		}
 
 		pub fn write_texture(&mut self, texture_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
@@ -1579,6 +1578,11 @@ pub mod device {
 					.texture
 					.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, staging_ptr, bytes_per_row as _);
 			}
+		}
+
+		pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {
+			let handle = image::ImageHandle(image_handle.0);
+			self.pending_image_syncs.push_back(handle);
 		}
 
 		pub fn build_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::ImageHandle {
@@ -1628,8 +1632,8 @@ pub mod device {
 				None,
 				name,
 				size,
-				graphics_hardware_interface::Uses::AccelerationStructure,
-				graphics_hardware_interface::DeviceAccesses::DeviceOnly,
+				crate::Uses::AccelerationStructure,
+				crate::DeviceAccesses::DeviceOnly,
 			);
 			graphics_hardware_interface::BaseBufferHandle(handle.0)
 		}
@@ -1659,13 +1663,13 @@ pub mod device {
 			graphics_hardware_interface::BottomLevelAccelerationStructureHandle((self.acceleration_structures.len() - 1) as u64)
 		}
 
-		pub fn write(&mut self, descriptor_set_writes: &[graphics_hardware_interface::DescriptorWrite]) {
+		pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
 			for write in descriptor_set_writes {
 				let binding_handle = binding::DescriptorSetBindingHandle(write.binding_handle.0);
 				let array_element = write.array_element;
 
 				match write.descriptor {
-					graphics_hardware_interface::Descriptor::Buffer { handle, size } => {
+					crate::descriptors::WriteData::Buffer { handle, size } => {
 						self.update_descriptor_for_binding(
 							binding_handle,
 							Descriptor::Buffer {
@@ -1675,7 +1679,7 @@ pub mod device {
 							array_element,
 						);
 					}
-					graphics_hardware_interface::Descriptor::Image { handle, layout } => {
+					crate::descriptors::WriteData::Image { handle, layout } => {
 						self.update_descriptor_for_binding(
 							binding_handle,
 							Descriptor::Image {
@@ -1685,7 +1689,7 @@ pub mod device {
 							array_element,
 						);
 					}
-					graphics_hardware_interface::Descriptor::CombinedImageSampler {
+					crate::descriptors::WriteData::CombinedImageSampler {
 						image_handle,
 						sampler_handle,
 						layout,
@@ -1701,7 +1705,7 @@ pub mod device {
 							array_element,
 						);
 					}
-					graphics_hardware_interface::Descriptor::Sampler(handle) => {
+					crate::descriptors::WriteData::Sampler(handle) => {
 						self.update_descriptor_for_binding(
 							binding_handle,
 							Descriptor::Sampler {
@@ -1745,6 +1749,7 @@ pub mod device {
 			window_os_handles: &window::Handles,
 			_presentation_mode: graphics_hardware_interface::PresentationModes,
 			fallback_extent: Extent,
+			_uses: crate::Uses,
 		) -> graphics_hardware_interface::SwapchainHandle {
 			let layer = CAMetalLayer::new();
 			layer.setDevice(Some(&self.device));
@@ -1838,6 +1843,17 @@ pub mod frame {
 	}
 
 	impl Frame<'_> {
+		pub fn get_mut_buffer_slice<T: Copy>(
+			&self,
+			buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+		) -> &'static mut T {
+			self.device.get_mut_buffer_slice(buffer_handle)
+		}
+
+		pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
+			self.device.sync_buffer(buffer_handle);
+		}
+
 		pub fn get_mut_dynamic_buffer_slice<'a, T: Copy>(
 			&'a self,
 			buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
@@ -1849,7 +1865,23 @@ pub mod frame {
 			unsafe { &mut *(buffer.pointer as *mut T) }
 		}
 
-		pub fn resize_image(&mut self, image_handle: graphics_hardware_interface::ImageHandle, extent: Extent) {
+		pub fn get_texture_slice_mut(
+			&mut self,
+			texture_handle: impl graphics_hardware_interface::ImageHandleLike,
+		) -> &'static mut [u8] {
+			self.device.get_texture_slice_mut(texture_handle.into_image_handle())
+		}
+
+		pub fn sync_texture(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike) {
+			self.device.sync_texture(image_handle.into_image_handle());
+		}
+
+		pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+			self.device.write(descriptor_set_writes);
+		}
+
+		pub fn resize_image(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike, extent: Extent) {
+			let image_handle = image_handle.into_image_handle();
 			let handles = image::ImageHandle(image_handle.0).get_all(&self.device.images);
 			let handle = handles[self.frame_key.sequence_index as usize];
 			let image = &self.device.images[handle.0 as usize];
@@ -1900,6 +1932,208 @@ pub mod frame {
 		pub fn device(&mut self) -> &mut device::Device {
 			self.device
 		}
+
+		pub fn execute(
+			&mut self,
+			_present_keys: &[graphics_hardware_interface::PresentKey],
+			_synchronizer: graphics_hardware_interface::SynchronizerHandle,
+		) {
+		}
+	}
+
+	impl<'a> crate::frame::Frame<'a> for Frame<'a> {
+		type CBR<'f>
+			= super::CommandBufferRecording<'f>
+		where
+			Self: 'f;
+
+		fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: crate::BufferHandle<T>) -> &'static mut T {
+			self.device.get_mut_buffer_slice(buffer_handle)
+		}
+
+		fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
+			self.device.sync_buffer(buffer_handle);
+		}
+
+		fn get_texture_slice_mut(
+			&self,
+			texture_handle: impl graphics_hardware_interface::ImageHandleLike,
+		) -> &'static mut [u8] {
+			self.device.get_texture_slice_mut(texture_handle.into_image_handle())
+		}
+
+		fn sync_texture(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike) {
+			self.device.sync_texture(image_handle.into_image_handle());
+		}
+
+		fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+			self.device.write(descriptor_set_writes);
+		}
+
+		fn get_mut_dynamic_buffer_slice<T: Copy>(
+			&mut self,
+			buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
+		) -> &mut T {
+			let handles = buffer::BufferHandle(buffer_handle.0).get_all(&self.device.buffers);
+			let handle = handles[self.frame_key.sequence_index as usize];
+			let buffer = &self.device.buffers[handle.0 as usize];
+
+			unsafe { &mut *(buffer.pointer as *mut T) }
+		}
+
+		fn resize_image(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike, extent: Extent) {
+			Frame::resize_image(self, image_handle, extent);
+		}
+
+		fn create_command_buffer_recording(
+			&mut self,
+			command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+		) -> Self::CBR<'_> {
+			self.device.create_command_buffer_recording(command_buffer_handle)
+		}
+
+		fn acquire_swapchain_image(
+			&mut self,
+			swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		) -> (graphics_hardware_interface::PresentKey, Extent) {
+			Frame::acquire_swapchain_image(self, swapchain_handle)
+		}
+
+		fn execute<'s, 'f>(
+			&mut self,
+			cbr: <Self::CBR<'f> as crate::command_buffer::CommandBufferRecording>::Result<'s>,
+			synchronizer: graphics_hardware_interface::SynchronizerHandle,
+		) where
+			Self: 'f,
+		{
+			Frame::execute(self, cbr, synchronizer);
+		}
+	}
+
+	impl<'a> crate::device::DeviceCreate for Frame<'a> {
+		fn create_allocation(
+			&mut self,
+			size: usize,
+			resource_uses: crate::Uses,
+			resource_device_accesses: crate::DeviceAccesses,
+		) -> crate::AllocationHandle {
+			self.device.create_allocation(size, resource_uses, resource_device_accesses)
+		}
+
+		fn add_mesh_from_vertices_and_indices(
+			&mut self,
+			vertex_count: u32,
+			index_count: u32,
+			vertices: &[u8],
+			indices: &[u8],
+			vertex_layout: &[crate::pipelines::VertexElement],
+		) -> crate::MeshHandle {
+			self.device
+				.add_mesh_from_vertices_and_indices(vertex_count, index_count, vertices, indices, vertex_layout)
+		}
+
+		fn create_shader(
+			&mut self,
+			name: Option<&str>,
+			shader_source_type: crate::shader::Sources,
+			stage: crate::ShaderTypes,
+			shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		) -> Result<crate::ShaderHandle, ()> {
+			self.device
+				.create_shader(name, shader_source_type, stage, shader_binding_descriptors)
+		}
+
+		fn create_descriptor_set_template(
+			&mut self,
+			name: Option<&str>,
+			binding_templates: &[crate::DescriptorSetBindingTemplate],
+		) -> crate::DescriptorSetTemplateHandle {
+			self.device.create_descriptor_set_template(name, binding_templates)
+		}
+
+		fn create_descriptor_set(
+			&mut self,
+			name: Option<&str>,
+			descriptor_set_template_handle: &crate::DescriptorSetTemplateHandle,
+		) -> crate::DescriptorSetHandle {
+			self.device.create_descriptor_set(name, descriptor_set_template_handle)
+		}
+
+		fn create_descriptor_binding(
+			&mut self,
+			descriptor_set: crate::DescriptorSetHandle,
+			binding_constructor: crate::BindingConstructor,
+		) -> crate::DescriptorSetBindingHandle {
+			self.device.create_descriptor_binding(descriptor_set, binding_constructor)
+		}
+
+		fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> crate::PipelineHandle {
+			self.device.create_raster_pipeline(builder)
+		}
+
+		fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> crate::PipelineHandle {
+			self.device.create_compute_pipeline(builder)
+		}
+
+		fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> crate::PipelineHandle {
+			self.device.create_ray_tracing_pipeline(builder)
+		}
+
+		fn create_command_buffer(
+			&mut self,
+			name: Option<&str>,
+			queue_handle: crate::QueueHandle,
+		) -> crate::CommandBufferHandle {
+			self.device.create_command_buffer(name, queue_handle)
+		}
+
+		fn build_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::BufferHandle<T> {
+			self.device.build_buffer(builder)
+		}
+
+		fn build_dynamic_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
+			self.device.build_dynamic_buffer(builder)
+		}
+
+		fn build_dynamic_image(&mut self, builder: crate::image::Builder) -> crate::DynamicImageHandle {
+			self.device.build_dynamic_image(builder)
+		}
+
+		fn build_image(&mut self, builder: crate::image::Builder) -> crate::ImageHandle {
+			self.device.build_image(builder)
+		}
+
+		fn build_sampler(&mut self, builder: crate::sampler::Builder) -> crate::SamplerHandle {
+			self.device.build_sampler(builder)
+		}
+
+		fn create_acceleration_structure_instance_buffer(
+			&mut self,
+			name: Option<&str>,
+			max_instance_count: u32,
+		) -> crate::BaseBufferHandle {
+			self.device
+				.create_acceleration_structure_instance_buffer(name, max_instance_count)
+		}
+
+		fn create_top_level_acceleration_structure(
+			&mut self,
+			name: Option<&str>,
+			max_instance_count: u32,
+		) -> crate::TopLevelAccelerationStructureHandle {
+			self.device.create_top_level_acceleration_structure(name, max_instance_count)
+		}
+
+		fn create_bottom_level_acceleration_structure(
+			&mut self,
+			description: &crate::BottomLevelAccelerationStructure,
+		) -> crate::BottomLevelAccelerationStructureHandle {
+			self.device.create_bottom_level_acceleration_structure(description)
+		}
+
+		fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> crate::SynchronizerHandle {
+			self.device.create_synchronizer(name, signaled)
+		}
 	}
 }
 
@@ -1912,7 +2146,7 @@ pub mod command_buffer {
 	use super::*;
 	use crate::command_buffer::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
-		CommandBufferRecordable, CommonCommandBufferMode, RasterizationRenderPassMode,
+		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
 	};
 
 	pub struct CommandBufferRecording<'a> {
@@ -1946,27 +2180,29 @@ pub mod command_buffer {
 			let swapchain = &mut self.device.swapchains[present_key.swapchain.0 as usize];
 			swapchain.take_drawable(present_key.image_index)
 		}
+
+		fn collect_present_drawables(&mut self, present_keys: &[graphics_hardware_interface::PresentKey]) {
+			for &present_key in present_keys {
+				if let Some(drawable) = self.take_drawable(present_key) {
+					self.present_drawables.push(drawable);
+				}
+			}
+		}
 	}
 
-	impl CommandBufferRecordable for CommandBufferRecording<'_> {
-		fn sync_buffers(&mut self) {
-			// TODO: Track pending buffer uploads and encode blit operations.
-		}
-
-		fn sync_textures(&mut self) {
-			// TODO: Track pending texture uploads and encode blit operations.
-		}
+	impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
+		type Result<'a> = &'a [graphics_hardware_interface::PresentKey];
 
 		fn build_top_level_acceleration_structure(
 			&mut self,
-			_acceleration_structure_build: &graphics_hardware_interface::TopLevelAccelerationStructureBuild,
+			_acceleration_structure_build: &crate::rt::TopLevelAccelerationStructureBuild,
 		) {
 			// TODO: Map acceleration structure build to MTLAccelerationStructureCommandEncoder.
 		}
 
 		fn build_bottom_level_acceleration_structures(
 			&mut self,
-			_acceleration_structure_builds: &[graphics_hardware_interface::BottomLevelAccelerationStructureBuild],
+			_acceleration_structure_builds: &[crate::rt::BottomLevelAccelerationStructureBuild],
 		) {
 			// TODO: Map acceleration structure build to MTLAccelerationStructureCommandEncoder.
 		}
@@ -2050,9 +2286,9 @@ pub mod command_buffer {
 		fn blit_image(
 			&mut self,
 			_source_image: impl graphics_hardware_interface::ImageHandleLike,
-			_source_layout: graphics_hardware_interface::Layouts,
+			_source_layout: crate::Layouts,
 			_destination_image: impl graphics_hardware_interface::ImageHandleLike,
-			_destination_layout: graphics_hardware_interface::Layouts,
+			_destination_layout: crate::Layouts,
 		) {
 			// TODO: Encode MTLBlitCommandEncoder copyFromTexture.
 		}
@@ -2066,27 +2302,15 @@ pub mod command_buffer {
 			// TODO: Render/copy source texture into swapchain drawable.
 		}
 
-		fn bind_vertex_buffers(&mut self, _buffer_descriptors: &[graphics_hardware_interface::BufferDescriptor]) {
+		fn bind_vertex_buffers(&mut self, _buffer_descriptors: &[crate::BufferDescriptor]) {
 			// TODO: Bind vertex buffers on MTLRenderCommandEncoder.
 		}
 
-		fn bind_index_buffer(&mut self, _buffer_descriptor: &graphics_hardware_interface::BufferDescriptor) {
+		fn bind_index_buffer(&mut self, _buffer_descriptor: &crate::BufferDescriptor) {
 			// TODO: Bind index buffer on MTLRenderCommandEncoder.
 		}
 
-		fn present(&mut self, present_key: graphics_hardware_interface::PresentKey) {
-			if let Some(drawable) = self.take_drawable(present_key) {
-				self.present_drawables.push(drawable);
-			}
-		}
-
-		fn execute(
-			self,
-			_wait_for_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle],
-			_signal_synchronizer_handles: &[graphics_hardware_interface::SynchronizerHandle],
-			_presentations: &[graphics_hardware_interface::PresentKey],
-			_execution_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-		) {
+		fn execute(self, _synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 			for drawable in &self.present_drawables {
 				let drawable_ref: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
 				self.command_buffer.presentDrawable(drawable_ref);
@@ -2094,6 +2318,11 @@ pub mod command_buffer {
 
 			self.command_buffer.commit();
 			self.command_buffer.waitUntilCompleted();
+		}
+
+		fn end<'a>(mut self, present_keys: &'a [graphics_hardware_interface::PresentKey]) -> Self::Result<'a> {
+			self.collect_present_drawables(present_keys);
+			present_keys
 		}
 	}
 
@@ -2200,7 +2429,7 @@ pub mod command_buffer {
 	}
 
 	impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
-		fn trace_rays(&mut self, _binding_tables: graphics_hardware_interface::BindingTables, _x: u32, _y: u32, _z: u32) {
+		fn trace_rays(&mut self, _binding_tables: crate::rt::BindingTables, _x: u32, _y: u32, _z: u32) {
 			// TODO: Encode Metal ray tracing dispatch.
 		}
 	}

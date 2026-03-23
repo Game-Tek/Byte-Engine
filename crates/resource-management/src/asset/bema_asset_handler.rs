@@ -14,10 +14,15 @@ use crate::{
 		VariantVariableModel,
 	},
 	shader_generator::ShaderGenerationSettings,
-	spirv_shader_generator::SPIRVShaderGenerator,
 	types::{AlphaMode, ShaderTypes},
 	ProcessedAsset, ReferenceModel,
 };
+
+#[cfg(target_vendor = "apple")]
+use crate::msl_shader_compiler::MSLShaderCompiler;
+
+#[cfg(not(target_vendor = "apple"))]
+use crate::spirv_shader_generator::SPIRVShaderGenerator;
 
 use super::{
 	asset_handler::{AssetHandler, LoadErrors},
@@ -272,6 +277,12 @@ fn compile_shader(
 		}
 	};
 
+	#[cfg(target_vendor = "apple")]
+	let shader_program = MSLShaderCompiler::new().generate(&settings, &main_node).map_err(|e| {
+		log::error!("Error compiling shader: {:#?}", e);
+	})?;
+
+	#[cfg(not(target_vendor = "apple"))]
 	let shader_program = SPIRVShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {
 		log::error!("Error compiling shader: {:#?}", e);
 	})?;

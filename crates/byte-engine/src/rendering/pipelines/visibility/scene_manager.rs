@@ -491,6 +491,18 @@ impl VisibilityWorldRenderDomain {
 		assert_eq!(meshlet_indices_stream.stride, 1, "Meshlet index stream is not u8");
 		assert_eq!(vertex_indices_stream.stride, 2, "Vertex index stream is not u16");
 		assert_eq!(meshlets_stream.stride, 2, "Meshlet stream stride is not of size 2");
+		assert_eq!(
+			meshlet_indices_stream.count() % 3,
+			0,
+			"Meshlet index stream does not contain complete triangles"
+		);
+
+		let vertex_offset = self.visibility_info.vertex_count as usize;
+		let primitive_offset = self.visibility_info.primitives_count as usize;
+		let triangle_offset = self.visibility_info.triangle_count as usize;
+		let vertex_count = positions_stream.count();
+		let primitive_count = vertex_indices_stream.count();
+		let triangle_count = meshlet_indices_stream.count() / 3;
 
 		let vertex_positions_buffer = device.get_mut_buffer_slice(self.vertex_positions_buffer);
 		let vertex_normals_buffer = device.get_mut_buffer_slice(self.vertex_normals_buffer);
@@ -503,24 +515,23 @@ impl VisibilityWorldRenderDomain {
 		let streams = vec![
 			resource_management::stream::StreamMut::new(
 				"Vertex.Position",
-				&mut vertex_positions_buffer[self.visibility_info.vertex_count as usize..positions_stream.count()],
+				&mut vertex_positions_buffer[vertex_offset..][..vertex_count],
 			),
 			resource_management::stream::StreamMut::new(
 				"Vertex.Normal",
-				&mut vertex_normals_buffer[self.visibility_info.vertex_count as usize..normals_stream.count()],
+				&mut vertex_normals_buffer[vertex_offset..][..normals_stream.count()],
 			),
 			resource_management::stream::StreamMut::new(
 				"Vertex.UV",
-				&mut vertex_uv_buffer[self.visibility_info.vertex_count as usize..uvs_stream.count()],
+				&mut vertex_uv_buffer[vertex_offset..][..uvs_stream.count()],
 			),
 			resource_management::stream::StreamMut::new(
 				"VertexIndices",
-				&mut vertex_indices_buffer[self.visibility_info.primitives_count as usize..vertex_indices_stream.count()],
+				&mut vertex_indices_buffer[primitive_offset..][..primitive_count],
 			),
 			resource_management::stream::StreamMut::new(
 				"MeshletIndices",
-				&mut primitive_indices_buffer
-					[self.visibility_info.primitives_count as usize..(meshlet_indices_stream.count() / 3)],
+				&mut primitive_indices_buffer[triangle_offset..][..triangle_count],
 			),
 			resource_management::stream::StreamMut::new("Meshlets", buffer_allocator.take(meshlets_stream.size)),
 		];
@@ -701,10 +712,6 @@ impl VisibilityWorldRenderDomain {
 		});
 
 		self.meshes_by_resource.insert(id.to_string(), mesh_id);
-
-		let vertex_count = positions_stream.count();
-		let primitive_count = vertex_indices_stream.count();
-		let triangle_count = triangle_indices_stream.count();
 
 		self.visibility_info.vertex_count += vertex_count as u32;
 		self.visibility_info.primitives_count += primitive_count as u32;

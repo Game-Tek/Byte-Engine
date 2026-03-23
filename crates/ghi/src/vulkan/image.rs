@@ -16,6 +16,7 @@ pub(crate) struct Image {
 	pub(crate) staging_buffer: Option<vk::Buffer>,
 	pub(crate) pointer: Option<*mut u8>,
 	pub(crate) image: vk::Image,
+	pub(crate) full_image_view: vk::ImageView,
 	pub(crate) image_views: [vk::ImageView; 8],
 	pub(crate) extent: Extent,
 	pub(crate) format: vk::Format,

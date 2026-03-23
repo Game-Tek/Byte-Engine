@@ -1254,6 +1254,7 @@ impl Device {
 				staging_buffer: None,
 				pointer: None,
 				image: vk_image,
+				full_image_view: vk::ImageView::null(),
 				image_views,
 				extent: Extent::cube(0, 0, 0),
 				access: crate::DeviceAccesses::DeviceOnly,
@@ -1639,6 +1640,7 @@ impl Device {
 				staging_buffer: None,
 				pointer: None,
 				image: vk::Image::null(),
+				full_image_view: vk::ImageView::null(),
 				image_views: [vk::ImageView::null(); 8],
 				extent,
 				access: device_accesses,
@@ -1709,6 +1711,9 @@ impl Device {
 			(None, None)
 		};
 
+		let full_image_view = array_layers
+			.map(|layers| self.create_vulkan_image_view(name, &texture_creation_result.resource, format, 0, 0, Some(layers)));
+
 		let image_views = {
 			let mut image_views = [vk::ImageView::null(); 8];
 
@@ -1736,6 +1741,7 @@ impl Device {
 			staging_buffer,
 			pointer,
 			image: texture_creation_result.resource,
+			full_image_view: full_image_view.unwrap_or(vk::ImageView::null()),
 			image_views,
 			extent,
 			access: device_accesses,
@@ -1834,6 +1840,11 @@ impl Device {
 			if !image_view.is_null() {
 				self.tasks.push(Task::delete_vulkan_image_view(image_view, sequence_index));
 			}
+		}
+
+		if !image.full_image_view.is_null() {
+			self.tasks
+				.push(Task::delete_vulkan_image_view(image.full_image_view, sequence_index));
 		}
 
 		self.tasks.push(Task::delete_vulkan_image(image.image, sequence_index));
@@ -1948,7 +1959,11 @@ impl Device {
 						let image_handle = handle;
 
 						let image = &self.images[image_handle.0 as usize];
-						let image_view = image.image_views[0];
+						let image_view = if !image.full_image_view.is_null() {
+							image.full_image_view
+						} else {
+							image.image_views[0]
+						};
 						let format = image.format_;
 						let image = image.image;
 
@@ -1996,6 +2011,8 @@ impl Device {
 							let image_view = if let Some(layer) = layer {
 								// If the descriptor asks for a subresource, we need to create a new image view
 								image.image_views[layer as usize]
+							} else if !image.full_image_view.is_null() {
+								image.full_image_view
 							} else {
 								image.image_views[0]
 							};
@@ -2416,6 +2433,10 @@ impl Drop for Device {
 			self.images.iter().for_each(|image| {
 				if let Some(staging_buffer) = image.staging_buffer {
 					self.device.destroy_buffer(staging_buffer, None);
+				}
+
+				if !image.full_image_view.is_null() {
+					self.device.destroy_image_view(image.full_image_view, None);
 				}
 
 				for vk_image_view in image.image_views {

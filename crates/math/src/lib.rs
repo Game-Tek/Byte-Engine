@@ -115,21 +115,21 @@ pub fn projection_matrix(fov: f32, aspect_ratio: f32, near_plane: f32, far_plane
 }
 
 pub fn orthographic_matrix_centered(width: f32, height: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
-	let near_minus_far = near_plane - far_plane;
+	let far_minus_near = far_plane - near_plane;
 	maths_rs::Mat4f::from((
 		maths_rs::Vec4f::from((2f32 / width, 0f32, 0f32, 0f32)),
 		maths_rs::Vec4f::from((0f32, 2f32 / height, 0f32, 0f32)),
-		maths_rs::Vec4f::from((0f32, 0f32, 1f32 / near_minus_far, near_plane / near_minus_far)),
+		maths_rs::Vec4f::from((0f32, 0f32, -1f32 / far_minus_near, far_plane / far_minus_near)),
 		maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
 	))
 }
 
 pub fn orthographic_matrix(left: f32, right: f32, bottom: f32, top: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
-	let near_minus_far = near_plane - far_plane;
+	let far_minus_near = far_plane - near_plane;
 	maths_rs::Mat4f::from((
 		maths_rs::Vec4f::from((2f32 / (right - left), 0f32, 0f32, -(right + left) / (right - left))),
 		maths_rs::Vec4f::from((0f32, 2f32 / (top - bottom), 0f32, -(top + bottom) / (top - bottom))),
-		maths_rs::Vec4f::from((0f32, 0f32, 1f32 / near_minus_far, near_plane / near_minus_far)),
+		maths_rs::Vec4f::from((0f32, 0f32, -1f32 / far_minus_near, far_plane / far_minus_near)),
 		maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
 	))
 }
@@ -148,7 +148,7 @@ pub fn from_normal(normal: Vector3) -> maths_rs::Mat4f {
 			maths_rs::normalize(normal),
 			crate::Vector3::new(0f32, 0f32, 1f32),
 		));
-		y_basis = maths_rs::normalize(maths_rs::cross(x_basis, maths_rs::normalize(normal)));
+		y_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), x_basis));
 	} else {
 		x_basis = maths_rs::normalize(maths_rs::cross(Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(normal)));
 		y_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), x_basis));
@@ -349,6 +349,18 @@ mod tests {
 				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
 			))
 		);
+	}
+
+	#[test]
+	fn test_from_normal_preserves_handedness_for_vertical_vectors() {
+		for normal in [crate::Vector3::new(0.0, 1.0, 0.0), crate::Vector3::new(0.0, -1.0, 0.0)] {
+			let basis = super::from_normal(normal);
+			let x = crate::Vector3::new(basis[0], basis[1], basis[2]);
+			let y = crate::Vector3::new(basis[4], basis[5], basis[6]);
+			let z = crate::Vector3::new(basis[8], basis[9], basis[10]);
+
+			assert!(maths_rs::dot(maths_rs::cross(x, y), z) > 0.0);
+		}
 	}
 
 	#[test]

@@ -1308,23 +1308,6 @@ impl VisibilityWorldRenderDomain {
 			far: view.far(),
 		}
 	}
-
-	/// Computes the camera-space far plane for each shadow cascade split.
-	fn make_cascade_split_fars(camera_view: View, num_cascades: usize) -> Vec<f32> {
-		let near = camera_view.near();
-		let far = camera_view.far();
-		let range = far - near;
-		let ratio = far / near;
-
-		(0..num_cascades)
-			.map(|index| {
-				let p = (index + 1) as f32 / num_cascades as f32;
-				let log = near * ratio.powf(p);
-				let uniform = near + range * p;
-				0.95f32 * (log - uniform) + uniform
-			})
-			.collect()
-	}
 }
 
 impl SceneManager for VisibilityWorldRenderDomain {
@@ -1361,7 +1344,11 @@ impl SceneManager for VisibilityWorldRenderDomain {
 				for (cascade_index, (cascade_view, cascade_far)) in
 					csm::make_csm_views(main_view, light_direction, SHADOW_CASCADE_COUNT)
 						.into_iter()
-						.zip(Self::make_cascade_split_fars(main_view, SHADOW_CASCADE_COUNT))
+						.zip(
+							csm::make_cascade_split_ranges(main_view, SHADOW_CASCADE_COUNT)
+								.into_iter()
+								.map(|(_, far)| far),
+						)
 						.enumerate()
 				{
 					let mut cascade_view_data = Self::make_shader_view_data(cascade_view);

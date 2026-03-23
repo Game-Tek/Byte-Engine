@@ -182,6 +182,29 @@ mod tests {
 	}
 
 	#[test]
+	fn test_orthographic_view_frustum_corners() {
+		let view = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
+
+		let corners = view.get_frustum_corners();
+
+		for (corner, expected) in corners.into_iter().zip([
+			Vector4::new(-1.0, -1.0, 100.0, 1.0),
+			Vector4::new(1.0, -1.0, 100.0, 1.0),
+			Vector4::new(-1.0, 1.0, 100.0, 1.0),
+			Vector4::new(1.0, 1.0, 100.0, 1.0),
+			Vector4::new(-1.0, -1.0, 0.1, 1.0),
+			Vector4::new(1.0, -1.0, 0.1, 1.0),
+			Vector4::new(-1.0, 1.0, 0.1, 1.0),
+			Vector4::new(1.0, 1.0, 0.1, 1.0),
+		]) {
+			assert_float_eq!(corner.x, expected.x, "Orthographic corner x");
+			assert_float_eq!(corner.y, expected.y, "Orthographic corner y");
+			assert_float_eq!(corner.z, expected.z, "Orthographic corner z");
+			assert_float_eq!(corner.w, expected.w, "Orthographic corner w");
+		}
+	}
+
+	#[test]
 	fn test_orthographic_view_frustum_planes() {
 		let view = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
 

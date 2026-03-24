@@ -1,6 +1,6 @@
 //! This module contains logic for rendering cascaded shadow maps.
 
-use math::{length, normalize, Base as _, Vector3, Vector4};
+use math::{length, mat::MatTranslate as _, normalize, Base as _, Matrix4, Vector3, Vector4};
 
 use super::view::View;
 
@@ -26,7 +26,12 @@ pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) 
 }
 
 /// Returns the views for cascaded shadow mapping.
-pub fn make_csm_views(camera_view: View, light_direction: Vector3, num_cascades: usize) -> Vec<View> {
+pub fn make_csm_views(
+	camera_view: View,
+	light_direction: Vector3,
+	num_cascades: usize,
+	shadow_map_resolution: u32,
+) -> Vec<View> {
 	let light_direction = normalize(light_direction);
 	let camera_far = camera_view.far();
 
@@ -34,21 +39,17 @@ pub fn make_csm_views(camera_view: View, light_direction: Vector3, num_cascades:
 		.into_iter()
 		.map(|(cascade_near, cascade_far)| {
 			let camera_view = camera_view.from_from_z_planes(cascade_near, cascade_far);
+			let camera_frustum_corners = camera_view.get_frustum_corners();
+			let center = camera_frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
+			let radius = camera_frustum_corners
+				.iter()
+				.map(|x| length(x - center))
+				.max_by(|a, b| a.partial_cmp(b).unwrap())
+				.unwrap();
+			let radius = (radius * 16.0).ceil() / 16.0;
+			let center: Vector3 = center.into();
 
 			let light_view = {
-				let camera_frustum_corners = camera_view.get_frustum_corners();
-				let center = camera_frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
-
-				let radius = camera_frustum_corners
-					.iter()
-					.map(|x| length(x - center))
-					.max_by(|a, b| a.partial_cmp(b).unwrap())
-					.unwrap();
-
-				let radius = (radius * 16.0).ceil() / 16.0;
-
-				let center: Vector3 = center.into();
-
 				// Extend the depth range behind the bounding sphere to capture
 				// shadow casters between the light source and the camera frustum.
 				// Without this, nearby cascades may miss tall/distant casters,
@@ -61,14 +62,40 @@ pub fn make_csm_views(camera_view: View, light_direction: Vector3, num_cascades:
 				View::new_orthographic(-radius, radius, -radius, radius, 0f32, depth, from, light_direction)
 			};
 
-			light_view
+			snap_shadow_view_to_texels(light_view, center, radius, shadow_map_resolution)
 		})
 		.collect()
 }
 
+/// Aligns the orthographic shadow view to the shadow map texel grid.
+fn snap_shadow_view_to_texels(light_view: View, center: Vector3, radius: f32, shadow_map_resolution: u32) -> View {
+	if shadow_map_resolution == 0 {
+		return light_view;
+	}
+
+	let texel_size = (2.0 * radius) / shadow_map_resolution as f32;
+	if texel_size <= 0.0 {
+		return light_view;
+	}
+
+	let light_space_center = light_view.view() * Vector4::new(center.x, center.y, center.z, 1.0);
+	let snapped_center = Vector3::new(
+		(light_space_center.x / texel_size).round() * texel_size,
+		(light_space_center.y / texel_size).round() * texel_size,
+		light_space_center.z,
+	);
+	let snap_offset = Vector3::new(
+		snapped_center.x - light_space_center.x,
+		snapped_center.y - light_space_center.y,
+		0.0,
+	);
+
+	light_view.from_view(Matrix4::from_translation(snap_offset) * light_view.view())
+}
+
 #[cfg(test)]
 mod tests {
-	use math::{assert_float_eq, Base as _, VecN as _, Vector3};
+	use math::{assert_float_eq, length, Base as _, VecN as _, Vector3, Vector4};
 
 	use crate::rendering::view::View;
 
@@ -102,7 +129,7 @@ mod tests {
 	#[test]
 	fn shadow_view_keeps_cascade_center_in_front_of_the_light() {
 		let camera_view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
-		let shadow_view = super::make_csm_views(camera_view, Vector3::unit_z(), 1)
+		let shadow_view = super::make_csm_views(camera_view, Vector3::unit_z(), 1, 2048)
 			.into_iter()
 			.next()
 			.expect("A shadow cascade view should be generated");
@@ -134,7 +161,7 @@ mod tests {
 		let light_direction = math::normalize(Vector3::new(0.5, -1.0, 0.3));
 		let num_cascades = 4;
 
-		let cascade_views = super::make_csm_views(camera_view, light_direction, num_cascades);
+		let cascade_views = super::make_csm_views(camera_view, light_direction, num_cascades, 2048);
 		let cascade_ranges = super::make_cascade_split_ranges(camera_view, num_cascades);
 
 		// Test surface points at various depths inside each cascade.
@@ -188,7 +215,7 @@ mod tests {
 		];
 
 		for light_dir in &light_directions {
-			let cascade_views = super::make_csm_views(camera_view, *light_dir, 4);
+			let cascade_views = super::make_csm_views(camera_view, *light_dir, 4, 2048);
 
 			for (i, view) in cascade_views.iter().enumerate() {
 				let m = view.view();
@@ -235,5 +262,36 @@ mod tests {
 				assert!(d12.abs() < 1e-5, "Light {:?}, cascade {}: dot(r1,r2) = {}", light_dir, i, d12);
 			}
 		}
+	}
+
+	#[test]
+	fn shadow_view_snaps_cascade_center_to_texel_grid() {
+		let camera_view = View::new_perspective(
+			75.0,
+			16.0 / 9.0,
+			0.1,
+			100.0,
+			Vector3::new(0.37, -1.12, 2.83),
+			Vector3::unit_z(),
+		);
+		let light_direction = math::normalize(Vector3::new(0.5, -1.0, 0.3));
+		let resolution = 1024;
+		let shadow_view = super::make_csm_views(camera_view, light_direction, 1, resolution)
+			.into_iter()
+			.next()
+			.expect("A shadow cascade view should be generated");
+		let frustum_corners = camera_view.get_frustum_corners();
+		let center = frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
+		let radius = frustum_corners
+			.iter()
+			.map(|x| length(x - center))
+			.max_by(|a, b| a.partial_cmp(b).unwrap())
+			.unwrap();
+		let radius = (radius * 16.0).ceil() / 16.0;
+		let texel_size = (2.0 * radius) / resolution as f32;
+		let light_space_center = shadow_view.view() * center;
+
+		assert!((light_space_center.x / texel_size).fract().abs() < 1e-4);
+		assert!((light_space_center.y / texel_size).fract().abs() < 1e-4);
 	}
 }

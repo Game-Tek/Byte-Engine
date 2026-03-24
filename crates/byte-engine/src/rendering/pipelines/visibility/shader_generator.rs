@@ -400,21 +400,36 @@ impl VisibilityShaderScope {
 			vec2 texel_size = 1.0f / vec2(shadow_map_extent);
 			float occlusion = 0.0f;
 
-			for (int y = -1; y <= 1; ++y) {
-				for (int x = -1; x <= 1; ++x) {
-					vec2 pcf_offset = vec2(x, y) * texel_size;
-					occlusion += sample_shadow_tap(
-						shadow_map,
-						light,
-						world_space_position,
-						view_space_position,
-						surface_normal,
-						pcf_offset
-					);
-				}
+			const vec2 poisson_disk[8] = vec2[8](
+				vec2(-0.613392f,  0.617481f),
+				vec2( 0.170019f, -0.040254f),
+				vec2(-0.299417f,  0.791925f),
+				vec2( 0.645680f,  0.493210f),
+				vec2(-0.651784f,  0.717887f),
+				vec2( 0.421003f,  0.027070f),
+				vec2(-0.817194f, -0.271096f),
+				vec2(-0.705374f, -0.668203f)
+			);
+			float rotation_noise = fract(sin(dot(world_space_position.xz + world_space_position.y, vec2(12.9898f, 78.233f))) * 43758.5453f);
+			float rotation_angle = rotation_noise * 6.2831853f;
+			mat2 poisson_rotation = mat2(
+				cos(rotation_angle), -sin(rotation_angle),
+				sin(rotation_angle),  cos(rotation_angle)
+			);
+
+			for (int i = 0; i < 8; ++i) {
+				vec2 pcf_offset = (poisson_rotation * poisson_disk[i]) * texel_size * 1.5f;
+				occlusion += sample_shadow_tap(
+					shadow_map,
+					light,
+					world_space_position,
+					view_space_position,
+					surface_normal,
+					pcf_offset
+				);
 			}
 
-			return occlusion / 9.0f;",
+			return occlusion / 8.0f;",
 				&["sample_shadow_tap"],
 				&[],
 			)],

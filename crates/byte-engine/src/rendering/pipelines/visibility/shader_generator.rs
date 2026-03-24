@@ -363,7 +363,13 @@ impl VisibilityShaderScope {
 			) + offset;
 
 			float normal_alignment = max(dot(normalize(surface_normal), normalize(-light.position)), 0.0);
-			float surface_depth_bias = max(0.0005f * (1.0f - normal_alignment), 0.00005f);
+			// Slope-scaled depth bias tuning per cascade.
+			float cascade_bias_scale = float(cascade_index + 1u);
+			float cascade_depth_range = max(view.far - view.near, 0.0001f);
+			float slope_scaled_bias = 0.0002f * cascade_bias_scale * (1.0f - normal_alignment);
+			float constant_bias = 0.00002f * cascade_bias_scale;
+			float cascade_range_bias = cascade_depth_range * 0.0000025f;
+			float surface_depth_bias = max(slope_scaled_bias + cascade_range_bias, constant_bias);
 			float surface_depth = surface_light_ndc_position.z + surface_depth_bias;
 
 			if (shadow_uv.x < 0.0 || shadow_uv.x > 1.0 || shadow_uv.y < 0.0 || shadow_uv.y > 1.0) { return 1.0; }

@@ -41,12 +41,7 @@ pub fn make_csm_views(
 			let camera_view = camera_view.from_from_z_planes(cascade_near, cascade_far);
 			let camera_frustum_corners = camera_view.get_frustum_corners();
 			let center = camera_frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
-			let radius = camera_frustum_corners
-				.iter()
-				.map(|x| length(x - center))
-				.max_by(|a, b| a.partial_cmp(b).unwrap())
-				.unwrap();
-			let radius = (radius * 16.0).ceil() / 16.0;
+			let radius = stabilize_cascade_radius(center, &camera_frustum_corners, shadow_map_resolution);
 			let center: Vector3 = center.into();
 
 			let light_view = {
@@ -65,6 +60,24 @@ pub fn make_csm_views(
 			snap_shadow_view_to_texels(light_view, center, radius, shadow_map_resolution)
 		})
 		.collect()
+}
+
+/// Expands the cascade sphere to a stable size that changes only in texel-sized steps.
+fn stabilize_cascade_radius(center: Vector4, camera_frustum_corners: &[Vector4; 8], shadow_map_resolution: u32) -> f32 {
+	let base_radius = camera_frustum_corners
+		.iter()
+		.map(|x| length(x - center))
+		.max_by(|a, b| a.partial_cmp(b).unwrap())
+		.unwrap();
+
+	if shadow_map_resolution == 0 {
+		return (base_radius * 16.0).ceil() / 16.0;
+	}
+
+	let minimum_radius = (base_radius * 16.0).ceil() / 16.0;
+	let texel_scale = shadow_map_resolution as f32 / 2.0;
+
+	(minimum_radius * texel_scale).ceil() / texel_scale
 }
 
 /// Aligns the orthographic shadow view to the shadow map texel grid.
@@ -282,16 +295,29 @@ mod tests {
 			.expect("A shadow cascade view should be generated");
 		let frustum_corners = camera_view.get_frustum_corners();
 		let center = frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
-		let radius = frustum_corners
-			.iter()
-			.map(|x| length(x - center))
-			.max_by(|a, b| a.partial_cmp(b).unwrap())
-			.unwrap();
-		let radius = (radius * 16.0).ceil() / 16.0;
+		let radius = super::stabilize_cascade_radius(center, &frustum_corners, resolution);
 		let texel_size = (2.0 * radius) / resolution as f32;
 		let light_space_center = shadow_view.view() * center;
 
 		assert!((light_space_center.x / texel_size).fract().abs() < 1e-4);
 		assert!((light_space_center.y / texel_size).fract().abs() < 1e-4);
+	}
+
+	#[test]
+	fn cascade_radius_is_quantized_to_stable_texel_steps() {
+		let camera_view = View::new_perspective(
+			75.0,
+			16.0 / 9.0,
+			0.1,
+			100.0,
+			Vector3::new(0.37, -1.12, 2.83),
+			Vector3::unit_z(),
+		);
+		let frustum_corners = camera_view.get_frustum_corners();
+		let center = frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
+		let resolution = 1024;
+		let radius = super::stabilize_cascade_radius(center, &frustum_corners, resolution);
+
+		assert!(((radius * resolution as f32) / 2.0).fract().abs() < 1e-4);
 	}
 }

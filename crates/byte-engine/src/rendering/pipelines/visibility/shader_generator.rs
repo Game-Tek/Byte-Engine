@@ -354,7 +354,7 @@ impl VisibilityShaderScope {
 
 			View view = views.views[light.cascades[cascade_index]];
 
-			vec4 surface_light_clip_position = view.view_projection * vec4(world_space_position + surface_normal * 0.001, 1.0);
+			vec4 surface_light_clip_position = view.view_projection * vec4(world_space_position, 1.0);
 			vec3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
 
 			vec2 shadow_uv = vec2(

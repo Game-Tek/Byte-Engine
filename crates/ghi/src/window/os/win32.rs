@@ -3,7 +3,7 @@ use windows::{
 	Win32::{
 		Devices::HumanInterfaceDevice::{HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC},
 		Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-		Graphics::Gdi::{GetMonitorInfoA, MonitorFromWindow, HBRUSH, MONITORINFO, MONITOR_DEFAULTTONEAREST},
+		Graphics::Gdi::HBRUSH,
 		System::LibraryLoader::GetModuleHandleA,
 		UI::{
 			HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2},
@@ -13,12 +13,11 @@ use windows::{
 			},
 			WindowsAndMessaging::{
 				CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GetClientRect, GetCursorPos,
-				GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, ShowCursor,
-				TranslateMessage, UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, HMENU, MSG,
-				PM_REMOVE, RI_KEY_BREAK, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
-				WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCALCSIZE,
-				WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSA, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW,
-				WS_VISIBLE,
+				GetWindowLongPtrA, PeekMessageA, PostQuitMessage, RegisterClassA, SetWindowLongPtrA, TranslateMessage,
+				UnregisterClassA, CW_USEDEFAULT, GWLP_USERDATA, GWLP_WNDPROC, HCURSOR, HICON, MSG, PM_REMOVE, RI_KEY_BREAK,
+				WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+				WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE,
+				WNDCLASSA, WNDCLASS_STYLES, WS_POPUP, WS_VISIBLE,
 			},
 		},
 	},
@@ -58,7 +57,7 @@ impl WindowLike for Window {
 			"Failed to build the window title. The most likely cause is that the window name contains an interior null byte."
 		})?;
 
-		let window_style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+		let window_style = WS_POPUP | WS_VISIBLE;
 
 		let (width, height) = (extent.width() as i32, extent.height() as i32);
 
@@ -108,10 +107,6 @@ impl WindowLike for Window {
 		// Remove set WNDPROC, we don't want Windows to call this unless we are ready to handle messages
 		unsafe {
 			SetWindowLongPtrA(hwnd, GWLP_WNDPROC, 0);
-		}
-
-		unsafe {
-			// ShowCursor(false);
 		}
 
 		let use_raw_mouse = unsafe {
@@ -317,13 +312,6 @@ fn handle_event(
 ) -> Option<(Option<Events>, LRESULT)> {
 	let result = match msg {
 		WM_NCCREATE => LRESULT(true as _),
-		WM_NCCALCSIZE => {
-			if wparam.0 == 0 {
-				LRESULT(0)
-			} else {
-				LRESULT(1)
-			}
-		}
 		WM_CREATE => LRESULT(0),
 		WM_CLOSE => {
 			return Some((Some(Events::Close), LRESULT(0)));

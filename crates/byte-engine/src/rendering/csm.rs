@@ -28,6 +28,7 @@ pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) 
 /// Returns the views for cascaded shadow mapping.
 pub fn make_csm_views(camera_view: View, light_direction: Vector3, num_cascades: usize) -> Vec<View> {
 	let light_direction = normalize(light_direction);
+	let camera_far = camera_view.far();
 
 	make_cascade_split_ranges(camera_view, num_cascades)
 		.into_iter()
@@ -46,14 +47,18 @@ pub fn make_csm_views(camera_view: View, light_direction: Vector3, num_cascades:
 
 				let radius = (radius * 16.0).ceil() / 16.0;
 
-				let min = Vector3::new(-radius, -radius, -radius);
-				let max = Vector3::new(radius, radius, radius);
-
 				let center: Vector3 = center.into();
 
-				let from = center - light_direction * max.z;
+				// Extend the depth range behind the bounding sphere to capture
+				// shadow casters between the light source and the camera frustum.
+				// Without this, nearby cascades may miss tall/distant casters,
+				// causing shadows to phase in and out as objects cross cascade boundaries.
+				let back_extension = camera_far;
+				let depth = 2.0 * radius + back_extension;
 
-				View::new_orthographic(min[0], max[0], min[1], max[1], 0f32, max[2] - min[2], from, light_direction)
+				let from = center - light_direction * (radius + back_extension);
+
+				View::new_orthographic(-radius, radius, -radius, radius, 0f32, depth, from, light_direction)
 			};
 
 			light_view
@@ -118,5 +123,117 @@ mod tests {
 			light_space_center.z <= shadow_view.far(),
 			"Cascade center should lie inside the shadow depth range"
 		);
+	}
+
+	/// Verifies that a surface point inside a cascade's camera frustum projects into valid NDC
+	/// range [0,1] for depth and [-1,1] for x/y when transformed by the cascade's light view-projection.
+	/// This simulates the full shadow rendering + sampling pipeline on the CPU to catch projection mismatches.
+	#[test]
+	fn surface_point_projects_into_valid_shadow_ndc() {
+		let camera_view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
+		let light_direction = math::normalize(Vector3::new(0.5, -1.0, 0.3));
+		let num_cascades = 4;
+
+		let cascade_views = super::make_csm_views(camera_view, light_direction, num_cascades);
+		let cascade_ranges = super::make_cascade_split_ranges(camera_view, num_cascades);
+
+		// Test surface points at various depths inside each cascade.
+		for (cascade_idx, ((cascade_near, cascade_far), cascade_view)) in
+			cascade_ranges.iter().zip(cascade_views.iter()).enumerate()
+		{
+			// Pick a surface point at the midpoint depth of this cascade, on the camera's z-axis.
+			let mid_depth = (cascade_near + cascade_far) / 2.0;
+			let surface_point = math::Vector4::new(0.0, 0.0, mid_depth, 1.0);
+
+			// Project through the cascade's view-projection (simulates the mesh shader).
+			let clip = cascade_view.view_projection() * surface_point;
+			let ndc = Vector3::new(clip.x / clip.w, clip.y / clip.w, clip.z / clip.w);
+
+			assert!(
+				ndc.x >= -1.0 && ndc.x <= 1.0,
+				"Cascade {}: NDC x ({}) out of range for surface at depth {}",
+				cascade_idx,
+				ndc.x,
+				mid_depth
+			);
+			assert!(
+				ndc.y >= -1.0 && ndc.y <= 1.0,
+				"Cascade {}: NDC y ({}) out of range for surface at depth {}",
+				cascade_idx,
+				ndc.y,
+				mid_depth
+			);
+			assert!(
+				ndc.z >= 0.0 && ndc.z <= 1.0,
+				"Cascade {}: NDC z ({}) out of [0,1] for surface at depth {}",
+				cascade_idx,
+				ndc.z,
+				mid_depth
+			);
+		}
+	}
+
+	/// Verifies that shadow views for various light directions produce valid orthonormal view matrices.
+	#[test]
+	fn shadow_view_matrices_are_valid_for_various_light_directions() {
+		let camera_view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
+
+		let light_directions = [
+			Vector3::new(0.0, -1.0, 0.0),  // Straight down
+			Vector3::new(0.0, 1.0, 0.0),   // Straight up
+			Vector3::new(1.0, 0.0, 0.0),   // Right
+			Vector3::new(0.0, 0.0, 1.0),   // Forward
+			Vector3::new(0.5, -1.0, 0.3),  // Diagonal
+			Vector3::new(-0.2, -0.8, 0.5), // Another diagonal
+		];
+
+		for light_dir in &light_directions {
+			let cascade_views = super::make_csm_views(camera_view, *light_dir, 4);
+
+			for (i, view) in cascade_views.iter().enumerate() {
+				let m = view.view();
+
+				// Check that the 3x3 rotation part is orthonormal.
+				// Row vectors should be unit length.
+				let r0 = Vector3::new(m[0], m[1], m[2]);
+				let r1 = Vector3::new(m[4], m[5], m[6]);
+				let r2 = Vector3::new(m[8], m[9], m[10]);
+
+				let len0 = math::length(r0);
+				let len1 = math::length(r1);
+				let len2 = math::length(r2);
+
+				assert!(
+					(len0 - 1.0).abs() < 1e-5,
+					"Light {:?}, cascade {}: row 0 length = {}",
+					light_dir,
+					i,
+					len0
+				);
+				assert!(
+					(len1 - 1.0).abs() < 1e-5,
+					"Light {:?}, cascade {}: row 1 length = {}",
+					light_dir,
+					i,
+					len1
+				);
+				assert!(
+					(len2 - 1.0).abs() < 1e-5,
+					"Light {:?}, cascade {}: row 2 length = {}",
+					light_dir,
+					i,
+					len2
+				);
+
+				// Rows should be mutually orthogonal.
+				let d01 = math::dot(r0, r1);
+				let d02 = math::dot(r0, r2);
+				let d12 = math::dot(r1, r2);
+
+				assert!(d01.abs() < 1e-5, "Light {:?}, cascade {}: dot(r0,r1) = {}", light_dir, i, d01);
+				assert!(d02.abs() < 1e-5, "Light {:?}, cascade {}: dot(r0,r2) = {}", light_dir, i, d02);
+				assert!(d12.abs() < 1e-5, "Light {:?}, cascade {}: dot(r1,r2) = {}", light_dir, i, d12);
+			}
+		}
 	}
 }

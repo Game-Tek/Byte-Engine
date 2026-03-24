@@ -326,8 +326,8 @@ impl VisibilityShaderScope {
 		};
 
 		// Depth comparison is "inverted" because the depth buffer is stored in a reversed manner
-		let sample_shadow = Node::function(
-			"sample_shadow",
+		let sample_shadow_tap = Node::function(
+			"sample_shadow_tap",
 			vec![
 				Node::parameter("shadow_map", "ArrayTexture2D"),
 				Node::parameter("light", "Light"),
@@ -385,6 +385,41 @@ impl VisibilityShaderScope {
 			)],
 		);
 
+		let sample_shadow = Node::function(
+			"sample_shadow",
+			vec![
+				Node::parameter("shadow_map", "ArrayTexture2D"),
+				Node::parameter("light", "Light"),
+				Node::parameter("world_space_position", "vec3f"),
+				Node::parameter("view_space_position", "vec3f"),
+				Node::parameter("surface_normal", "vec3f"),
+			],
+			"f32",
+			vec![Node::glsl(
+				"ivec2 shadow_map_extent = textureSize(shadow_map, 0).xy;
+			vec2 texel_size = 1.0f / vec2(shadow_map_extent);
+			float occlusion = 0.0f;
+
+			for (int y = -1; y <= 1; ++y) {
+				for (int x = -1; x <= 1; ++x) {
+					vec2 pcf_offset = vec2(x, y) * texel_size;
+					occlusion += sample_shadow_tap(
+						shadow_map,
+						light,
+						world_space_position,
+						view_space_position,
+						surface_normal,
+						pcf_offset
+					);
+				}
+			}
+
+			return occlusion / 9.0f;",
+				&["sample_shadow_tap"],
+				&[],
+			)],
+		);
+
 		Node::scope(
 			"Visibility",
 			vec![
@@ -394,6 +429,8 @@ impl VisibilityShaderScope {
 				meshlet_struct,
 				light_struct,
 				material_struct,
+				sample_shadow_tap,
+				sample_shadow,
 				meshes,
 				positions,
 				normals,
@@ -421,7 +458,6 @@ impl VisibilityShaderScope {
 				push_constant,
 				sample_function,
 				sample_normal_function,
-				sample_shadow,
 			],
 		)
 	}
@@ -578,7 +614,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 			if (light.type == 68) { // Infinite
 				vec4 view_space_surface_position = view.view * vec4(world_space_surface_position, 1.0);
-				float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal, vec2( 0.00,  0.00));
+				float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal);
 
 				occlusion_factor = c_occlusion_factor;
 

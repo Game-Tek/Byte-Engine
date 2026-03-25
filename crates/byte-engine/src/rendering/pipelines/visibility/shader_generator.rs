@@ -611,7 +611,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
 		vec3 N = world_space_vertex_normal;
-		vec3 camera_position = vec3(view.inverse_view[0].w, view.inverse_view[1].w, view.inverse_view[2].w);
+		vec3 camera_position = view.inverse_view[3].xyz;
 		vec3 V = normalize(camera_position - world_space_vertex_position);
 
 		vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_positions[0].xyz, world_space_vertex_positions[1].xyz, world_space_vertex_positions[2].xyz);
@@ -724,29 +724,27 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			specular += local_specular * radiance * NdotL * occlusion_factor;
 		}
 
-		vec3 ibl_diffuse = sample_ibl_cubemap(ibl_cubemap, normal);
-		vec3 R = reflect(-V, normal);
-		vec3 ibl_specular = sample_ibl_cubemap(ibl_cubemap, R);
+		vec3 irradiance = sample_ibl_cubemap(ibl_cubemap, normal);
 
-		vec3 ibl_F = fresnel_schlick_roughness(NdotV, F0, roughness);
-		vec3 ibl_kS = ibl_F;
-		vec3 ibl_kD = (vec3(1.0) - ibl_kS) * (1.0 - metalness);
+		vec3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
+		vec3 kD_ibl = (vec3(1.0) - F_ibl) * (1.0 - metalness);
 
-		vec3 ambient_diffuse = ibl_kD * albedo.xyz * ibl_diffuse;
+		vec3 ibl_diffuse = kD_ibl * albedo.xyz * irradiance;
 
-		// Analytic env BRDF approximation (Lazarov 2013) accounting for both NdotV and roughness.
-		// Returns (scale, bias) for the split-sum: specular = env * (F0 * scale + bias).
-		// At grazing angles (NdotV->0), scale approaches 0 and bias rises, preserving energy
-		// that the Fresnel term removes from the diffuse component.
-		float one_minus_ndotv = 1.0 - NdotV;
-		float one_minus_ndotv2 = one_minus_ndotv * one_minus_ndotv;
-		float one_minus_ndotv4 = one_minus_ndotv2 * one_minus_ndotv2;
-		float env_brdf_scale = 1.0 - max(roughness, one_minus_ndotv4);
-		float env_brdf_bias = one_minus_ndotv4 * clamp(4.0 * roughness + 0.1, 0.0, 1.0);
-		vec3 ambient_specular = ibl_specular * (F0 * env_brdf_scale + env_brdf_bias);
+		vec2 env_brdf = vec2(1.0, 0.0);
+		{
+			vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+			vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+			vec4 r = roughness * c0 + c1;
+			float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+			env_brdf = vec2(-1.04, 1.04) * a004 + r.zw;
+		}
+		vec3 ibl_specular = (F_ibl * env_brdf.x + env_brdf.y) * irradiance;
 
-		diffuse = diffuse * ao_factor + ambient_diffuse * ao_factor * 0.3;
-		specular = specular * ao_factor + ambient_specular * ao_factor * 0.3;
+		vec3 ambient = ibl_diffuse + ibl_specular;
+
+		diffuse = diffuse * ao_factor + ambient * ao_factor;
+		specular = specular * ao_factor;
 
 		imageStore(diffuse_map, pixel_coordinates, vec4(diffuse, albedo.a));
 		imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0))

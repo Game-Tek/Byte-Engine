@@ -31,6 +31,10 @@ pub enum ValueType {
 	U32,
 	I32,
 	F32,
+	Vec2F,
+	Vec3F,
+	Vec4F,
+	Mat4F,
 }
 
 impl ValueType {
@@ -39,6 +43,10 @@ impl ValueType {
 			ValueType::U8 => 1,
 			ValueType::U16 => 2,
 			ValueType::U32 | ValueType::I32 | ValueType::F32 => 4,
+			ValueType::Vec2F => 8,
+			ValueType::Vec3F => 12,
+			ValueType::Vec4F => 16,
+			ValueType::Mat4F => 64,
 		}
 	}
 
@@ -49,6 +57,10 @@ impl ValueType {
 			ValueType::U32 => "u32",
 			ValueType::I32 => "i32",
 			ValueType::F32 => "f32",
+			ValueType::Vec2F => "vec2f",
+			ValueType::Vec3F => "vec3f",
+			ValueType::Vec4F => "vec4f",
+			ValueType::Mat4F => "mat4f",
 		}
 	}
 }
@@ -143,7 +155,7 @@ impl Buffer {
 		Ok(f32::from_ne_bytes(bytes.try_into().expect("Invalid f32 byte count")))
 	}
 
-	fn read_scalar(&self, offset: usize, value_type: &ValueType) -> Result<ScalarValue, VmError> {
+	fn read_value(&self, offset: usize, value_type: &ValueType) -> Result<ScalarValue, VmError> {
 		let bytes = self.read_bytes(offset, value_type.size())?;
 
 		let value = match value_type {
@@ -152,12 +164,16 @@ impl Buffer {
 			ValueType::U32 => ScalarValue::U32(u32::from_ne_bytes(bytes.try_into().expect("Invalid u32 byte count"))),
 			ValueType::I32 => ScalarValue::I32(i32::from_ne_bytes(bytes.try_into().expect("Invalid i32 byte count"))),
 			ValueType::F32 => ScalarValue::F32(f32::from_ne_bytes(bytes.try_into().expect("Invalid f32 byte count"))),
+			ValueType::Vec2F => ScalarValue::Vec2F(read_f32_array::<2>(bytes)?),
+			ValueType::Vec3F => ScalarValue::Vec3F(read_f32_array::<3>(bytes)?),
+			ValueType::Vec4F => ScalarValue::Vec4F(read_f32_array::<4>(bytes)?),
+			ValueType::Mat4F => ScalarValue::Mat4F(read_f32_array::<16>(bytes)?),
 		};
 
 		Ok(value)
 	}
 
-	fn write_scalar(&mut self, offset: usize, value_type: &ValueType, value: &ScalarValue) -> Result<(), VmError> {
+	fn write_value(&mut self, offset: usize, value_type: &ValueType, value: &ScalarValue) -> Result<(), VmError> {
 		if value_type != &value.value_type() {
 			return Err(VmError::TypeMismatch {
 				expected: value_type.name().to_string(),
@@ -171,6 +187,10 @@ impl Buffer {
 			ScalarValue::U32(value) => value.to_ne_bytes().to_vec(),
 			ScalarValue::I32(value) => value.to_ne_bytes().to_vec(),
 			ScalarValue::F32(value) => value.to_ne_bytes().to_vec(),
+			ScalarValue::Vec2F(value) => write_f32_slice(value),
+			ScalarValue::Vec3F(value) => write_f32_slice(value),
+			ScalarValue::Vec4F(value) => write_f32_slice(value),
+			ScalarValue::Mat4F(value) => write_f32_slice(value),
 		};
 
 		self.write_bytes(offset, &bytes)
@@ -319,6 +339,27 @@ impl ExecutableProgram {
 				Instruction::LoadLiteral { register, value } => {
 					registers[*register] = Some(value.clone());
 				}
+				Instruction::Construct {
+					register,
+					value_type,
+					components,
+				} => {
+					let values = components
+						.iter()
+						.map(|component| read_register(&registers, *component))
+						.collect::<Result<Vec<_>, _>>()?;
+					registers[*register] = Some(construct_value(value_type, &values)?);
+				}
+				Instruction::Arithmetic {
+					register,
+					operator,
+					left,
+					right,
+				} => {
+					let left = read_register(&registers, *left)?;
+					let right = read_register(&registers, *right)?;
+					registers[*register] = Some(apply_arithmetic(*operator, &left, &right)?);
+				}
 				Instruction::LoadLocal { register, local } => {
 					let value = locals
 						.get(*local)
@@ -336,7 +377,7 @@ impl ExecutableProgram {
 					offset,
 					value_type,
 				} => {
-					let value = descriptors.buffer_mut(*slot)?.read_scalar(*offset, value_type)?;
+					let value = descriptors.buffer_mut(*slot)?.read_value(*offset, value_type)?;
 					registers[*register] = Some(value);
 				}
 				Instruction::StoreBuffer {
@@ -346,7 +387,7 @@ impl ExecutableProgram {
 					register,
 				} => {
 					let value = read_register(&registers, *register)?;
-					descriptors.buffer_mut(*slot)?.write_scalar(*offset, value_type, &value)?;
+					descriptors.buffer_mut(*slot)?.write_value(*offset, value_type, &value)?;
 				}
 				Instruction::Return => {
 					break;
@@ -365,6 +406,10 @@ enum ScalarValue {
 	U32(u32),
 	I32(i32),
 	F32(f32),
+	Vec2F([f32; 2]),
+	Vec3F([f32; 3]),
+	Vec4F([f32; 4]),
+	Mat4F([f32; 16]),
 }
 
 impl ScalarValue {
@@ -375,6 +420,10 @@ impl ScalarValue {
 			ScalarValue::U32(_) => ValueType::U32,
 			ScalarValue::I32(_) => ValueType::I32,
 			ScalarValue::F32(_) => ValueType::F32,
+			ScalarValue::Vec2F(_) => ValueType::Vec2F,
+			ScalarValue::Vec3F(_) => ValueType::Vec3F,
+			ScalarValue::Vec4F(_) => ValueType::Vec4F,
+			ScalarValue::Mat4F(_) => ValueType::Mat4F,
 		}
 	}
 }
@@ -384,6 +433,17 @@ enum Instruction {
 	LoadLiteral {
 		register: usize,
 		value: ScalarValue,
+	},
+	Construct {
+		register: usize,
+		value_type: ValueType,
+		components: Vec<usize>,
+	},
+	Arithmetic {
+		register: usize,
+		operator: ArithmeticOperator,
+		left: usize,
+		right: usize,
 	},
 	LoadLocal {
 		register: usize,
@@ -406,6 +466,15 @@ enum Instruction {
 		register: usize,
 	},
 	Return,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArithmeticOperator {
+	Add,
+	Subtract,
+	Multiply,
+	Divide,
+	Modulo,
 }
 
 #[derive(Default)]
@@ -491,6 +560,52 @@ impl Compiler {
 	fn compile_value_expression(&mut self, expression: &NodeReference, expected_type: &ValueType) -> Result<usize, VmError> {
 		let borrowed = expression.borrow();
 		match borrowed.node() {
+			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
+				let function = function.clone();
+				let parameters = parameters.clone();
+				drop(borrowed);
+				self.compile_constructor_expression(&function, &parameters, expected_type)
+			}
+			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
+				let operator = arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
+					message: format!("Unsupported value operator: {:?}", operator),
+				})?;
+				let left = left.clone();
+				let right = right.clone();
+				drop(borrowed);
+
+				let left_type = self.infer_expression_type(&left, expected_type)?;
+				let right_type = self.infer_expression_type(&right, expected_type)?;
+				let (left_expected_type, right_expected_type) = if left_type == *expected_type && right_type == *expected_type {
+					(expected_type.clone(), expected_type.clone())
+				} else if supports_scalar_broadcast(expected_type)
+					&& left_type == ValueType::F32
+					&& right_type == *expected_type
+				{
+					(ValueType::F32, expected_type.clone())
+				} else if supports_scalar_broadcast(expected_type)
+					&& left_type == *expected_type
+					&& right_type == ValueType::F32
+				{
+					(expected_type.clone(), ValueType::F32)
+				} else {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: format!("{} and {}", left_type.name(), right_type.name()),
+					});
+				};
+
+				let left = self.compile_value_expression(&left, &left_expected_type)?;
+				let right = self.compile_value_expression(&right, &right_expected_type)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::Arithmetic {
+					register,
+					operator,
+					left,
+					right,
+				});
+				Ok(register)
+			}
 			Nodes::Expression(Expressions::Literal { value }) => {
 				let value = value.clone();
 				drop(borrowed);
@@ -544,6 +659,105 @@ impl Compiler {
 				});
 				Ok(register)
 			}
+			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
+				message: format!("Unsupported value expression: {:?}", other),
+			}),
+			node => Err(VmError::UnsupportedExpression {
+				message: format!("Unsupported value node: {}", describe_node(node)),
+			}),
+		}
+	}
+
+	fn compile_constructor_expression(
+		&mut self,
+		function: &NodeReference,
+		parameters: &[NodeReference],
+		expected_type: &ValueType,
+	) -> Result<usize, VmError> {
+		let function_ref = function.borrow();
+		let (constructor_type, fields) = match function_ref.node() {
+			Nodes::Struct { fields, .. } => (resolve_value_type(function)?, fields.clone()),
+			node => {
+				return Err(VmError::UnsupportedExpression {
+					message: format!("Expected a value constructor, but found {}", describe_node(node)),
+				});
+			}
+		};
+		drop(function_ref);
+
+		if &constructor_type != expected_type {
+			return Err(VmError::TypeMismatch {
+				expected: expected_type.name().to_string(),
+				found: constructor_type.name().to_string(),
+			});
+		}
+
+		if fields.len() != parameters.len() {
+			return Err(VmError::UnsupportedExpression {
+				message: format!(
+					"Constructor for `{}` expected {} parameters, but found {}",
+					expected_type.name(),
+					fields.len(),
+					parameters.len()
+				),
+			});
+		}
+
+		let mut components = Vec::with_capacity(parameters.len());
+		for (field, parameter) in fields.iter().zip(parameters) {
+			let field_type = match field.borrow().node() {
+				Nodes::Member { r#type, .. } => resolve_value_type(r#type)?,
+				node => {
+					return Err(VmError::UnsupportedExpression {
+						message: format!("Expected a constructor field, but found {}", describe_node(node)),
+					});
+				}
+			};
+			components.push(self.compile_value_expression(parameter, &field_type)?);
+		}
+
+		let register = self.allocate_register();
+		self.instructions.push(Instruction::Construct {
+			register,
+			value_type: constructor_type,
+			components,
+		});
+		Ok(register)
+	}
+
+	fn infer_expression_type(&mut self, expression: &NodeReference, expected_type: &ValueType) -> Result<ValueType, VmError> {
+		let borrowed = expression.borrow();
+		match borrowed.node() {
+			Nodes::Expression(Expressions::Literal { .. }) => {
+				if supports_scalar_broadcast(expected_type) {
+					Ok(ValueType::F32)
+				} else {
+					Ok(expected_type.clone())
+				}
+			}
+			Nodes::Expression(Expressions::Member { source, .. }) => {
+				let source = source.clone();
+				drop(borrowed);
+
+				let local = self
+					.locals_by_reference
+					.get(&source)
+					.copied()
+					.ok_or_else(|| VmError::UnsupportedExpression {
+						message: "Only local variable reads are supported as bare member expressions".to_string(),
+					})?;
+
+				self.local_types
+					.get(local)
+					.cloned()
+					.ok_or(VmError::UninitializedLocal { local })
+			}
+			Nodes::Expression(Expressions::Accessor { .. }) => {
+				drop(borrowed);
+				Ok(self.resolve_buffer_access(expression, RequiredAccess::Read)?.value_type)
+			}
+			Nodes::Expression(Expressions::FunctionCall { function, .. }) => Ok(resolve_value_type(function)?),
+			Nodes::Expression(Expressions::Operator { .. }) => Ok(expected_type.clone()),
 			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported value expression: {:?}", other),
 			}),
@@ -694,6 +908,10 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"u32" => Ok(ValueType::U32),
 		"i32" => Ok(ValueType::I32),
 		"f32" => Ok(ValueType::F32),
+		"vec2f" => Ok(ValueType::Vec2F),
+		"vec3f" => Ok(ValueType::Vec3F),
+		"vec4f" => Ok(ValueType::Vec4F),
+		"mat4f" => Ok(ValueType::Mat4F),
 		_ => Err(VmError::UnsupportedType { type_name }),
 	}
 }
@@ -837,9 +1055,248 @@ fn parse_literal(value: &str, value_type: &ValueType) -> Result<ScalarValue, VmE
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
 			})?,
+		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::Mat4F => {
+			return Err(VmError::InvalidLiteral {
+				value: value.to_string(),
+				value_type: value_type.name().to_string(),
+			});
+		}
 	};
 
 	Ok(parsed)
+}
+
+fn construct_value(value_type: &ValueType, components: &[ScalarValue]) -> Result<ScalarValue, VmError> {
+	match value_type {
+		ValueType::Vec2F => Ok(ScalarValue::Vec2F(extract_f32_components::<2>(components)?)),
+		ValueType::Vec3F => Ok(ScalarValue::Vec3F(extract_f32_components::<3>(components)?)),
+		ValueType::Vec4F => Ok(ScalarValue::Vec4F(extract_f32_components::<4>(components)?)),
+		ValueType::Mat4F => {
+			if components.len() != 4 {
+				return Err(VmError::UnsupportedExpression {
+					message: format!("Constructor for `{}` expected 4 vec4f parameters", value_type.name()),
+				});
+			}
+
+			let mut values = [0.0; 16];
+			for (index, component) in components.iter().enumerate() {
+				let ScalarValue::Vec4F(component) = component else {
+					return Err(VmError::TypeMismatch {
+						expected: ValueType::Vec4F.name().to_string(),
+						found: component.value_type().name().to_string(),
+					});
+				};
+				values[index * 4..(index + 1) * 4].copy_from_slice(component);
+			}
+
+			Ok(ScalarValue::Mat4F(values))
+		}
+		_ => Err(VmError::UnsupportedExpression {
+			message: format!("`{}` is not a constructor-backed VM value type", value_type.name()),
+		}),
+	}
+}
+
+fn extract_f32_components<const N: usize>(components: &[ScalarValue]) -> Result<[f32; N], VmError> {
+	if components.len() != N {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Expected {} constructor parameters, but found {}", N, components.len()),
+		});
+	}
+
+	let mut values = [0.0; N];
+	for (index, component) in components.iter().enumerate() {
+		let ScalarValue::F32(component) = component else {
+			return Err(VmError::TypeMismatch {
+				expected: ValueType::F32.name().to_string(),
+				found: component.value_type().name().to_string(),
+			});
+		};
+		values[index] = *component;
+	}
+
+	Ok(values)
+}
+
+fn read_f32_array<const N: usize>(bytes: &[u8]) -> Result<[f32; N], VmError> {
+	if bytes.len() != N * 4 {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Expected {} bytes for {} f32 values, but found {}", N * 4, N, bytes.len()),
+		});
+	}
+
+	let mut values = [0.0; N];
+	for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+		values[index] = f32::from_ne_bytes(chunk.try_into().expect("Invalid f32 byte count"));
+	}
+	Ok(values)
+}
+
+fn write_f32_slice(values: &[f32]) -> Vec<u8> {
+	let mut bytes = Vec::with_capacity(values.len() * 4);
+	for value in values {
+		bytes.extend_from_slice(&value.to_ne_bytes());
+	}
+	bytes
+}
+
+fn arithmetic_operator(operator: &Operators) -> Option<ArithmeticOperator> {
+	match operator {
+		Operators::Plus => Some(ArithmeticOperator::Add),
+		Operators::Minus => Some(ArithmeticOperator::Subtract),
+		Operators::Multiply => Some(ArithmeticOperator::Multiply),
+		Operators::Divide => Some(ArithmeticOperator::Divide),
+		Operators::Modulo => Some(ArithmeticOperator::Modulo),
+		Operators::Assignment | Operators::Equality => None,
+	}
+}
+
+fn supports_scalar_broadcast(value_type: &ValueType) -> bool {
+	matches!(
+		value_type,
+		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::Mat4F
+	)
+}
+
+fn apply_arithmetic(operator: ArithmeticOperator, left: &ScalarValue, right: &ScalarValue) -> Result<ScalarValue, VmError> {
+	match (left, right) {
+		(ScalarValue::U8(left), ScalarValue::U8(right)) => {
+			apply_integer_arithmetic(*left, *right, operator).map(ScalarValue::U8)
+		}
+		(ScalarValue::U16(left), ScalarValue::U16(right)) => {
+			apply_integer_arithmetic(*left, *right, operator).map(ScalarValue::U16)
+		}
+		(ScalarValue::U32(left), ScalarValue::U32(right)) => {
+			apply_integer_arithmetic(*left, *right, operator).map(ScalarValue::U32)
+		}
+		(ScalarValue::I32(left), ScalarValue::I32(right)) => {
+			apply_integer_arithmetic(*left, *right, operator).map(ScalarValue::I32)
+		}
+		(ScalarValue::F32(left), ScalarValue::F32(right)) => {
+			apply_float_arithmetic(*left, *right, operator).map(ScalarValue::F32)
+		}
+		(ScalarValue::Vec2F(left), ScalarValue::Vec2F(right)) => {
+			apply_float_array_arithmetic::<2>(*left, *right, operator).map(ScalarValue::Vec2F)
+		}
+		(ScalarValue::Vec3F(left), ScalarValue::Vec3F(right)) => {
+			apply_float_array_arithmetic::<3>(*left, *right, operator).map(ScalarValue::Vec3F)
+		}
+		(ScalarValue::Vec4F(left), ScalarValue::Vec4F(right)) => {
+			apply_float_array_arithmetic::<4>(*left, *right, operator).map(ScalarValue::Vec4F)
+		}
+		(ScalarValue::Mat4F(left), ScalarValue::Mat4F(right)) => {
+			apply_float_array_arithmetic::<16>(*left, *right, operator).map(ScalarValue::Mat4F)
+		}
+		(ScalarValue::Vec2F(left), ScalarValue::F32(right)) => {
+			apply_float_scalar_broadcast::<2>(*left, *right, operator).map(ScalarValue::Vec2F)
+		}
+		(ScalarValue::Vec3F(left), ScalarValue::F32(right)) => {
+			apply_float_scalar_broadcast::<3>(*left, *right, operator).map(ScalarValue::Vec3F)
+		}
+		(ScalarValue::Vec4F(left), ScalarValue::F32(right)) => {
+			apply_float_scalar_broadcast::<4>(*left, *right, operator).map(ScalarValue::Vec4F)
+		}
+		(ScalarValue::Mat4F(left), ScalarValue::F32(right)) => {
+			apply_float_scalar_broadcast::<16>(*left, *right, operator).map(ScalarValue::Mat4F)
+		}
+		(ScalarValue::F32(left), ScalarValue::Vec2F(right)) => {
+			apply_scalar_float_broadcast::<2>(*left, *right, operator).map(ScalarValue::Vec2F)
+		}
+		(ScalarValue::F32(left), ScalarValue::Vec3F(right)) => {
+			apply_scalar_float_broadcast::<3>(*left, *right, operator).map(ScalarValue::Vec3F)
+		}
+		(ScalarValue::F32(left), ScalarValue::Vec4F(right)) => {
+			apply_scalar_float_broadcast::<4>(*left, *right, operator).map(ScalarValue::Vec4F)
+		}
+		(ScalarValue::F32(left), ScalarValue::Mat4F(right)) => {
+			apply_scalar_float_broadcast::<16>(*left, *right, operator).map(ScalarValue::Mat4F)
+		}
+		(left, right) => Err(VmError::TypeMismatch {
+			expected: left.value_type().name().to_string(),
+			found: right.value_type().name().to_string(),
+		}),
+	}
+}
+
+fn apply_integer_arithmetic<T>(left: T, right: T, operator: ArithmeticOperator) -> Result<T, VmError>
+where
+	T: Copy
+		+ std::ops::Add<Output = T>
+		+ std::ops::Sub<Output = T>
+		+ std::ops::Mul<Output = T>
+		+ std::ops::Div<Output = T>
+		+ std::ops::Rem<Output = T>
+		+ PartialEq
+		+ Default,
+{
+	let zero = T::default();
+	match operator {
+		ArithmeticOperator::Add => Ok(left + right),
+		ArithmeticOperator::Subtract => Ok(left - right),
+		ArithmeticOperator::Multiply => Ok(left * right),
+		ArithmeticOperator::Divide => {
+			if right == zero {
+				return Err(VmError::ArithmeticError {
+					message: "Division by zero".to_string(),
+				});
+			}
+			Ok(left / right)
+		}
+		ArithmeticOperator::Modulo => {
+			if right == zero {
+				return Err(VmError::ArithmeticError {
+					message: "Modulo by zero".to_string(),
+				});
+			}
+			Ok(left % right)
+		}
+	}
+}
+
+fn apply_float_arithmetic(left: f32, right: f32, operator: ArithmeticOperator) -> Result<f32, VmError> {
+	match operator {
+		ArithmeticOperator::Add => Ok(left + right),
+		ArithmeticOperator::Subtract => Ok(left - right),
+		ArithmeticOperator::Multiply => Ok(left * right),
+		ArithmeticOperator::Divide => Ok(left / right),
+		ArithmeticOperator::Modulo => Ok(left % right),
+	}
+}
+
+fn apply_float_array_arithmetic<const N: usize>(
+	left: [f32; N],
+	right: [f32; N],
+	operator: ArithmeticOperator,
+) -> Result<[f32; N], VmError> {
+	let mut values = [0.0; N];
+	for index in 0..N {
+		values[index] = apply_float_arithmetic(left[index], right[index], operator)?;
+	}
+	Ok(values)
+}
+
+fn apply_float_scalar_broadcast<const N: usize>(
+	left: [f32; N],
+	right: f32,
+	operator: ArithmeticOperator,
+) -> Result<[f32; N], VmError> {
+	let mut values = [0.0; N];
+	for index in 0..N {
+		values[index] = apply_float_arithmetic(left[index], right, operator)?;
+	}
+	Ok(values)
+}
+
+fn apply_scalar_float_broadcast<const N: usize>(
+	left: f32,
+	right: [f32; N],
+	operator: ArithmeticOperator,
+) -> Result<[f32; N], VmError> {
+	let mut values = [0.0; N];
+	for index in 0..N {
+		values[index] = apply_float_arithmetic(left, right[index], operator)?;
+	}
+	Ok(values)
 }
 
 fn read_register(registers: &[Option<ScalarValue>], register: usize) -> Result<ScalarValue, VmError> {
@@ -864,6 +1321,7 @@ pub enum VmError {
 	UnboundDescriptor { slot: DescriptorSlot },
 	BufferAccessOutOfBounds { offset: usize, size: usize, buffer_size: usize },
 	InvalidLiteral { value: String, value_type: String },
+	ArithmeticError { message: String },
 	TypeMismatch { expected: String, found: String },
 	UninitializedRegister { register: usize },
 	UninitializedLocal { local: usize },
@@ -873,7 +1331,10 @@ impl std::fmt::Display for VmError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			VmError::MissingMainFunction => {
-				write!(f, "Missing main function. The most likely cause is that the lexed BESL program does not define `main`.")
+				write!(
+					f,
+					"Missing main function. The most likely cause is that the lexed BESL program does not define `main`."
+				)
 			}
 			VmError::UnsupportedMainSignature { message } => write!(
 				f,
@@ -937,21 +1398,22 @@ impl std::fmt::Display for VmError {
 			} => write!(
 				f,
 				"Buffer access out of bounds at byte {} for {} bytes in a {} byte buffer. The most likely cause is that the bound buffer does not match the compiled BESL buffer layout.",
-				offset,
-				size,
-				buffer_size
+				offset, size, buffer_size
 			),
 			VmError::InvalidLiteral { value, value_type } => write!(
 				f,
 				"Invalid literal `{}` for `{}`. The most likely cause is that the literal cannot be parsed as the target BESL scalar type.",
-				value,
-				value_type
+				value, value_type
+			),
+			VmError::ArithmeticError { message } => write!(
+				f,
+				"Invalid arithmetic operation. {}. The most likely cause is that the BESL program evaluated an unsupported numeric operation such as division or modulo by zero.",
+				message
 			),
 			VmError::TypeMismatch { expected, found } => write!(
 				f,
 				"Type mismatch: expected `{}` but found `{}`. The most likely cause is that the BESL assignment mixes incompatible scalar types.",
-				expected,
-				found
+				expected, found
 			),
 			VmError::UninitializedRegister { register } => write!(
 				f,
@@ -974,6 +1436,15 @@ mod tests {
 	use crate::{compile_to_besl, BindingTypes, Node};
 
 	use super::{Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram};
+
+	fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
+		buffer
+			.bytes()
+			.chunks_exact(4)
+			.take(count)
+			.map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("Expected four bytes")))
+			.collect()
+	}
 
 	#[test]
 	fn executable_program_runs_main_and_writes_a_bound_buffer_member() {
@@ -1054,5 +1525,260 @@ mod tests {
 		}
 
 		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 7.5);
+	}
+
+	#[test]
+	fn executable_program_evaluates_addition_before_writing_to_a_bound_buffer_member() {
+		let script = r#"
+		main: fn () -> void {
+			let value: f32 = 7.5;
+			buff.value = value + 4.5;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let float_type = root.get_child("f32").expect("Expected f32");
+
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", float_type).into()],
+				},
+				0,
+				1,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 1);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 12.0);
+	}
+
+	#[test]
+	fn apply_arithmetic_supports_all_basic_scalar_operations() {
+		assert_eq!(
+			super::apply_arithmetic(
+				super::ArithmeticOperator::Add,
+				&super::ScalarValue::U32(2),
+				&super::ScalarValue::U32(3)
+			)
+			.expect("Expected addition to succeed"),
+			super::ScalarValue::U32(5)
+		);
+		assert_eq!(
+			super::apply_arithmetic(
+				super::ArithmeticOperator::Subtract,
+				&super::ScalarValue::I32(9),
+				&super::ScalarValue::I32(4)
+			)
+			.expect("Expected subtraction to succeed"),
+			super::ScalarValue::I32(5)
+		);
+		assert_eq!(
+			super::apply_arithmetic(
+				super::ArithmeticOperator::Multiply,
+				&super::ScalarValue::U16(6),
+				&super::ScalarValue::U16(7)
+			)
+			.expect("Expected multiplication to succeed"),
+			super::ScalarValue::U16(42)
+		);
+		assert_eq!(
+			super::apply_arithmetic(
+				super::ArithmeticOperator::Divide,
+				&super::ScalarValue::F32(9.0),
+				&super::ScalarValue::F32(2.0)
+			)
+			.expect("Expected division to succeed"),
+			super::ScalarValue::F32(4.5)
+		);
+		assert_eq!(
+			super::apply_arithmetic(
+				super::ArithmeticOperator::Modulo,
+				&super::ScalarValue::U8(20),
+				&super::ScalarValue::U8(6)
+			)
+			.expect("Expected modulo to succeed"),
+			super::ScalarValue::U8(2)
+		);
+		assert_eq!(
+			super::apply_arithmetic(
+				super::ArithmeticOperator::Add,
+				&super::ScalarValue::Vec3F([1.0, 2.0, 3.0]),
+				&super::ScalarValue::Vec3F([4.0, 5.0, 6.0])
+			)
+			.expect("Expected vec3f addition to succeed"),
+			super::ScalarValue::Vec3F([5.0, 7.0, 9.0])
+		);
+		assert_eq!(
+			super::apply_arithmetic(
+				super::ArithmeticOperator::Multiply,
+				&super::ScalarValue::Vec4F([1.0, 2.0, 3.0, 4.0]),
+				&super::ScalarValue::F32(2.0)
+			)
+			.expect("Expected vec4f scalar broadcast to succeed"),
+			super::ScalarValue::Vec4F([2.0, 4.0, 6.0, 8.0])
+		);
+		assert_eq!(
+			super::apply_arithmetic(
+				super::ArithmeticOperator::Add,
+				&super::ScalarValue::Mat4F([1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,]),
+				&super::ScalarValue::F32(1.0)
+			)
+			.expect("Expected mat4f scalar broadcast to succeed"),
+			super::ScalarValue::Mat4F([2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0,])
+		);
+	}
+
+	#[test]
+	fn executable_program_evaluates_vec3f_arithmetic_before_writing_to_a_bound_buffer_member() {
+		let script = r#"
+		main: fn () -> void {
+			let lhs: vec3f = vec3f(1.0, 2.0, 3.0);
+			let rhs: vec3f = vec3f(4.0, 5.0, 6.0);
+			buff.value = lhs + rhs;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let vec3f_type = root.get_child("vec3f").expect("Expected vec3f");
+
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", vec3f_type).into()],
+				},
+				0,
+				2,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 2);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(read_f32s(&buffer, 3), vec![5.0, 7.0, 9.0]);
+	}
+
+	#[test]
+	fn executable_program_evaluates_vec4f_scalar_broadcast_arithmetic() {
+		let script = r#"
+		main: fn () -> void {
+			let value: vec4f = vec4f(1.0, 2.0, 3.0, 4.0);
+			buff.value = value * 2.0;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
+
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", vec4f_type).into()],
+				},
+				0,
+				3,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 3);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(read_f32s(&buffer, 4), vec![2.0, 4.0, 6.0, 8.0]);
+	}
+
+	#[test]
+	fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffer_member() {
+		let script = r#"
+		main: fn () -> void {
+			let lhs: mat4f = mat4f(
+				vec4f(1.0, 0.0, 0.0, 0.0),
+				vec4f(0.0, 1.0, 0.0, 0.0),
+				vec4f(0.0, 0.0, 1.0, 0.0),
+				vec4f(0.0, 0.0, 0.0, 1.0)
+			);
+			let rhs: mat4f = mat4f(
+				vec4f(1.0, 1.0, 1.0, 1.0),
+				vec4f(1.0, 1.0, 1.0, 1.0),
+				vec4f(1.0, 1.0, 1.0, 1.0),
+				vec4f(1.0, 1.0, 1.0, 1.0)
+			);
+			buff.value = lhs + rhs;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let mat4f_type = root.get_child("mat4f").expect("Expected mat4f");
+
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", mat4f_type).into()],
+				},
+				0,
+				4,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 4);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(
+			read_f32s(&buffer, 16),
+			vec![2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0,]
+		);
 	}
 }

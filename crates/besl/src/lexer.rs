@@ -362,6 +362,7 @@ impl Node {
 			u8_t,
 			u16_t,
 			u32_t,
+			i32_t,
 			f32_t,
 			vec2u16,
 			vec2u32,

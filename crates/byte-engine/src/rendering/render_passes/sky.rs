@@ -63,7 +63,7 @@ impl Default for SkyRenderPassSettings {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SkyShaderData {
-	far_plane_corners: [[f32; 4]; 4],
+	inverse_view_projection: [[f32; 4]; 4],
 	camera_position: [f32; 4],
 	sun_direction: [f32; 4],
 	planet_center: [f32; 4],
@@ -159,8 +159,8 @@ impl SkyRenderPass {
 	/// Updates per-view sky constants from the active camera before dispatch.
 	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) {
 		let view = viewport.view();
+		let inverse_view_projection = view.view_projection().inverse();
 		let inverse_view = view.view().inverse();
-		let frustum_corners = view.get_frustum_corners();
 		let camera_position = inverse_view * Vector4::new(0.0, 0.0, 0.0, 1.0);
 		let planet_center = [
 			camera_position.x + self.settings.planet_center.x,
@@ -171,31 +171,12 @@ impl SkyRenderPass {
 		let parameters = frame.get_mut_dynamic_buffer_slice(self.parameters);
 		let settings = self.settings;
 
-		parameters.far_plane_corners = [
-			[
-				frustum_corners[0].x,
-				frustum_corners[0].y,
-				frustum_corners[0].z,
-				frustum_corners[0].w,
-			],
-			[
-				frustum_corners[1].x,
-				frustum_corners[1].y,
-				frustum_corners[1].z,
-				frustum_corners[1].w,
-			],
-			[
-				frustum_corners[2].x,
-				frustum_corners[2].y,
-				frustum_corners[2].z,
-				frustum_corners[2].w,
-			],
-			[
-				frustum_corners[3].x,
-				frustum_corners[3].y,
-				frustum_corners[3].z,
-				frustum_corners[3].w,
-			],
+		let m = inverse_view_projection;
+		parameters.inverse_view_projection = [
+			[m[0], m[1], m[2], m[3]],
+			[m[4], m[5], m[6], m[7]],
+			[m[8], m[9], m[10], m[11]],
+			[m[12], m[13], m[14], m[15]],
 		];
 		parameters.camera_position = [
 			camera_position.x,
@@ -252,7 +233,7 @@ layout(set=0, binding=0) uniform sampler2D depth_texture;
 layout(set=0, binding=1) uniform image2D main_texture;
 
 struct SkyParameters {
-	vec4 far_plane_corners[4];
+	mat4 inverse_view_projection;
 	vec4 camera_position;
 	vec4 sun_direction;
 	vec4 planet_center;
@@ -452,13 +433,11 @@ vec3 integrate_atmosphere(vec3 origin, vec3 direction) {
 
 vec3 reconstruct_view_direction(ivec2 pixel, ivec2 extent) {
 	vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(extent);
-	// corners[2,3] have clip y=+1 (screen top due to negative viewport height)
-	// corners[0,1] have clip y=-1 (screen bottom)
-	// uv.y=0 is pixel row 0 (screen top), uv.y=1 is the last row (screen bottom)
-	vec3 far_top = mix(parameters.far_plane_corners[2].xyz, parameters.far_plane_corners[3].xyz, uv.x);
-	vec3 far_bottom = mix(parameters.far_plane_corners[0].xyz, parameters.far_plane_corners[1].xyz, uv.x);
-	vec3 far_position = mix(far_top, far_bottom, uv.y);
-	return normalize(far_position - get_camera_position());
+	// Match make_raster_ndc_from_pixel_coordinates: Y-flip for negative viewport height
+	vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+	// Unproject a point on the far plane (z=0 in reversed-Z)
+	vec4 world = parameters.inverse_view_projection * vec4(ndc, 0.0, 1.0);
+	return normalize(world.xyz / world.w - get_camera_position());
 }
 
 void main() {

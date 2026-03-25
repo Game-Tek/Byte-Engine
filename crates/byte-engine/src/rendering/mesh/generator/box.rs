@@ -4,7 +4,7 @@ use std::{
 	sync::Arc,
 };
 
-use math::{Vector3, Vector4};
+use math::Vector3;
 
 use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSource};
 
@@ -30,33 +30,73 @@ impl MeshGenerator for BoxMeshGenerator {
 		let x = self.size.x;
 		let y = self.size.y;
 		let z = self.size.z;
-		std::borrow::Cow::Owned(vec![
-			(-x, -y, -z),
-			(x, -y, -z),
-			(x, y, -z),
-			(-x, y, -z),
+		Cow::Owned(vec![
 			(-x, -y, z),
 			(x, -y, z),
 			(x, y, z),
 			(-x, y, z),
+			(x, -y, -z),
+			(-x, -y, -z),
+			(-x, y, -z),
+			(x, y, -z),
+			(-x, -y, z),
+			(x, -y, z),
+			(x, -y, -z),
+			(-x, -y, -z),
+			(-x, y, z),
+			(x, y, z),
+			(x, y, -z),
+			(-x, y, -z),
+			(x, -y, z),
+			(x, -y, -z),
+			(x, y, -z),
+			(x, y, z),
+			(-x, -y, -z),
+			(-x, -y, z),
+			(-x, y, z),
+			(-x, y, -z),
 		])
 	}
 
 	fn normals(&self) -> Cow<'_, [(f32, f32, f32)]> {
-		std::borrow::Cow::Owned(vec![
-			(0.0, 0.0, -1.0),
-			(0.0, 0.0, -1.0),
-			(0.0, 0.0, -1.0),
-			(0.0, 0.0, -1.0),
+		Cow::Owned(vec![
 			(0.0, 0.0, 1.0),
 			(0.0, 0.0, 1.0),
 			(0.0, 0.0, 1.0),
 			(0.0, 0.0, 1.0),
+			(0.0, 0.0, -1.0),
+			(0.0, 0.0, -1.0),
+			(0.0, 0.0, -1.0),
+			(0.0, 0.0, -1.0),
+			(0.0, -1.0, 0.0),
+			(0.0, -1.0, 0.0),
+			(0.0, -1.0, 0.0),
+			(0.0, -1.0, 0.0),
+			(0.0, 1.0, 0.0),
+			(0.0, 1.0, 0.0),
+			(0.0, 1.0, 0.0),
+			(0.0, 1.0, 0.0),
+			(1.0, 0.0, 0.0),
+			(1.0, 0.0, 0.0),
+			(1.0, 0.0, 0.0),
+			(1.0, 0.0, 0.0),
+			(-1.0, 0.0, 0.0),
+			(-1.0, 0.0, 0.0),
+			(-1.0, 0.0, 0.0),
+			(-1.0, 0.0, 0.0),
 		])
 	}
 
 	fn tangents(&self) -> Cow<'_, [Vector3]> {
-		std::borrow::Cow::Owned(vec![
+		Cow::Owned(vec![
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(-1.0, 0.0, 0.0),
+			Vector3::new(-1.0, 0.0, 0.0),
+			Vector3::new(-1.0, 0.0, 0.0),
+			Vector3::new(-1.0, 0.0, 0.0),
 			Vector3::new(1.0, 0.0, 0.0),
 			Vector3::new(1.0, 0.0, 0.0),
 			Vector3::new(1.0, 0.0, 0.0),
@@ -65,11 +105,35 @@ impl MeshGenerator for BoxMeshGenerator {
 			Vector3::new(1.0, 0.0, 0.0),
 			Vector3::new(1.0, 0.0, 0.0),
 			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(0.0, 0.0, -1.0),
+			Vector3::new(0.0, 0.0, -1.0),
+			Vector3::new(0.0, 0.0, -1.0),
+			Vector3::new(0.0, 0.0, -1.0),
+			Vector3::new(0.0, 0.0, 1.0),
+			Vector3::new(0.0, 0.0, 1.0),
+			Vector3::new(0.0, 0.0, 1.0),
+			Vector3::new(0.0, 0.0, 1.0),
 		])
 	}
 
 	fn bitangents(&self) -> std::borrow::Cow<'_, [Vector3]> {
-		std::borrow::Cow::Owned(vec![
+		Cow::Owned(vec![
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 0.0, 1.0),
+			Vector3::new(0.0, 0.0, 1.0),
+			Vector3::new(0.0, 0.0, 1.0),
+			Vector3::new(0.0, 0.0, 1.0),
+			Vector3::new(0.0, 0.0, -1.0),
+			Vector3::new(0.0, 0.0, -1.0),
+			Vector3::new(0.0, 0.0, -1.0),
+			Vector3::new(0.0, 0.0, -1.0),
 			Vector3::new(0.0, 1.0, 0.0),
 			Vector3::new(0.0, 1.0, 0.0),
 			Vector3::new(0.0, 1.0, 0.0),
@@ -82,7 +146,23 @@ impl MeshGenerator for BoxMeshGenerator {
 	}
 
 	fn uvs(&self) -> Cow<'_, [(f32, f32)]> {
-		std::borrow::Cow::Borrowed(&[
+		Cow::Borrowed(&[
+			(0.0, 0.0),
+			(1.0, 0.0),
+			(1.0, 1.0),
+			(0.0, 1.0),
+			(0.0, 0.0),
+			(1.0, 0.0),
+			(1.0, 1.0),
+			(0.0, 1.0),
+			(0.0, 0.0),
+			(1.0, 0.0),
+			(1.0, 1.0),
+			(0.0, 1.0),
+			(0.0, 0.0),
+			(1.0, 0.0),
+			(1.0, 1.0),
+			(0.0, 1.0),
 			(0.0, 0.0),
 			(1.0, 0.0),
 			(1.0, 1.0),
@@ -95,8 +175,9 @@ impl MeshGenerator for BoxMeshGenerator {
 	}
 
 	fn indices(&self) -> std::borrow::Cow<'_, [u32]> {
-		std::borrow::Cow::Borrowed(&[
-			0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7,
+		Cow::Borrowed(&[
+			0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14, 15, 16, 17, 18, 16, 18, 19, 20, 21,
+			22, 20, 22, 23,
 		])
 	}
 

@@ -58,6 +58,11 @@ impl NodeReference {
 					}
 				}
 			}
+			Nodes::Member { r#type, .. } | Nodes::Parameter { r#type, .. } => {
+				if let Some(c) = r#type.get_descendant(child_name) {
+					return Some(c);
+				}
+			}
 			Nodes::Function { statements, .. } => {
 				for statement in statements {
 					match RefCell::borrow(&statement).node() {
@@ -73,6 +78,14 @@ impl NodeReference {
 							Expressions::VariableDeclaration { name, .. } => {
 								if child_name == name {
 									return Some(statement.clone());
+								}
+							}
+							Expressions::Accessor { left, right } => {
+								if let Some(c) = left.get_descendant(child_name) {
+									return Some(c);
+								}
+								if let Some(c) = right.get_descendant(child_name) {
+									return Some(c);
 								}
 							}
 							_ => {}
@@ -97,11 +110,29 @@ impl NodeReference {
 						return Some(c);
 					}
 				}
+				Expressions::Member { source, .. } => {
+					if let Some(c) = source.get_descendant(child_name) {
+						return Some(c);
+					}
+				}
 				Expressions::Expression { elements } => {
 					for e in elements {
 						if let Some(c) = e.get_descendant(child_name) {
 							return Some(c);
 						}
+					}
+				}
+				Expressions::VariableDeclaration { r#type, .. } => {
+					if let Some(c) = r#type.get_descendant(child_name) {
+						return Some(c);
+					}
+				}
+				Expressions::Accessor { left, right } => {
+					if let Some(c) = right.get_descendant(child_name) {
+						return Some(c);
+					}
+					if let Some(c) = left.get_descendant(child_name) {
+						return Some(c);
 					}
 				}
 				Expressions::IntrinsicCall { intrinsic, .. } => {
@@ -122,6 +153,20 @@ impl NodeReference {
 					if let Some(c) = o.get_descendant(child_name) {
 						return Some(c);
 					}
+				}
+			}
+			Nodes::Binding { r#type, .. } => {
+				if let BindingTypes::Buffer { members } = r#type {
+					for member in members {
+						if let Some(c) = member.get_descendant(child_name) {
+							return Some(c);
+						}
+					}
+				}
+			}
+			Nodes::Input { format, .. } | Nodes::Output { format, .. } => {
+				if let Some(c) = format.get_descendant(child_name) {
+					return Some(c);
 				}
 			}
 			_ => {}

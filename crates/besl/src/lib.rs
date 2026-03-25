@@ -3,6 +3,7 @@
 pub mod lexer;
 pub mod parser;
 mod tokenizer;
+pub mod vm;
 
 pub use besl_derive::BeslStruct;
 pub use lexer::Expressions;

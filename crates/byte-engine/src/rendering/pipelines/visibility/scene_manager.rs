@@ -84,6 +84,11 @@ const visibility_depth_binding_template: ghi::DescriptorSetBindingTemplate = ghi
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
 );
+const ibl_cubemap_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	13,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+);
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -286,6 +291,7 @@ impl VisibilityWorldRenderDomain {
 			ao_map_binding_template,
 			shadow_map_binding_template,
 			visibility_depth_binding_template,
+			ibl_cubemap_binding_template,
 		];
 
 		let sampler = device.build_sampler(
@@ -1472,6 +1478,13 @@ impl SceneManager for VisibilityWorldRenderDomain {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32)),
 		);
+		let ibl_cubemap = device.build_image(
+			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
+				.name("IBL Cubemap")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.extent(Extent::square(1))
+				.array_layers(NonZeroU32::new(6)),
+		);
 		let sampler = device.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
@@ -1534,6 +1547,15 @@ impl SceneManager for VisibilityWorldRenderDomain {
 				ghi::Layouts::Read,
 			),
 		);
+		let _ = device.create_descriptor_binding(
+			self.material_evaluation_descriptor_set,
+			ghi::BindingConstructor::combined_image_sampler(
+				&ibl_cubemap_binding_template,
+				ibl_cubemap,
+				sampler.clone(),
+				ghi::Layouts::Read,
+			),
+		);
 
 		let _ = device.create_descriptor_binding(
 			visibility_passes_descriptor_set,
@@ -1579,6 +1601,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			specular_target.into(),
 			ao_map,
 			shadow_map,
+			ibl_cubemap,
 			depth_target.into(),
 			primitive_index.into(),
 			instance_id.into(),

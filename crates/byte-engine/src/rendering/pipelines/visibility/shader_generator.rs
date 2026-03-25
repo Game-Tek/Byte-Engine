@@ -287,6 +287,7 @@ impl VisibilityShaderScope {
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 2, 10, true, false);
 		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 2, 11, true, false);
 		let set2_binding12 = Node::binding("visibility_depth", Node::combined_image_sampler(), 2, 12, true, false);
+		let set2_binding13 = Node::binding("ibl_cubemap", Node::combined_array_image_sampler(), 2, 13, true, false);
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 
@@ -435,6 +436,62 @@ impl VisibilityShaderScope {
 			)],
 		);
 
+		let sample_ibl_cubemap = Node::function(
+			"sample_ibl_cubemap",
+			vec![
+				Node::parameter("cubemap", "ArrayTexture2D"),
+				Node::parameter("direction", "vec3f"),
+			],
+			"vec3f",
+			vec![Node::glsl(
+				"
+			float direction_length = length(direction);
+			if (direction_length <= 0.0) { return vec3(1.0); }
+
+			vec3 dir = direction / direction_length;
+			vec3 abs_dir = abs(dir);
+
+			if (max(max(abs_dir.x, abs_dir.y), abs_dir.z) <= 0.0) { return vec3(1.0); }
+
+			vec2 uv = vec2(0.5);
+			float face = 0.0;
+
+			if (abs_dir.x >= abs_dir.y && abs_dir.x >= abs_dir.z) {
+				float inv_axis = 0.5 / abs_dir.x;
+				if (dir.x > 0.0) {
+					uv = vec2(-dir.z, -dir.y) * inv_axis + 0.5;
+					face = 0.0;
+				} else {
+					uv = vec2(dir.z, -dir.y) * inv_axis + 0.5;
+					face = 1.0;
+				}
+			} else if (abs_dir.y >= abs_dir.z) {
+				float inv_axis = 0.5 / abs_dir.y;
+				if (dir.y > 0.0) {
+					uv = vec2(dir.x, dir.z) * inv_axis + 0.5;
+					face = 2.0;
+				} else {
+					uv = vec2(dir.x, -dir.z) * inv_axis + 0.5;
+					face = 3.0;
+				}
+			} else {
+				float inv_axis = 0.5 / abs_dir.z;
+				if (dir.z > 0.0) {
+					uv = vec2(dir.x, -dir.y) * inv_axis + 0.5;
+					face = 4.0;
+				} else {
+					uv = vec2(-dir.x, -dir.y) * inv_axis + 0.5;
+					face = 5.0;
+				}
+			}
+
+			uv = clamp(uv, vec2(0.0), vec2(1.0));
+			return textureLod(cubemap, vec3(uv, face), 0.0).rgb;",
+				&[],
+				&[],
+			)],
+		);
+
 		Node::scope(
 			"Visibility",
 			vec![
@@ -470,9 +527,11 @@ impl VisibilityShaderScope {
 				set2_binding10,
 				set2_binding11,
 				set2_binding12,
+				set2_binding13,
 				push_constant,
 				sample_function,
 				sample_normal_function,
+				sample_ibl_cubemap,
 			],
 		)
 	}
@@ -608,6 +667,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float ao_factor = texture(ao, normalized_xy).r;
 
 		normal = normalize(TBN * normal);
+		vec3 F0 = mix(vec3(0.04), albedo.xyz, metalness);
+		float NdotV = max(dot(normal, V), 0.0);
 
 		for (uint i = 0; i < lighting_data.light_count; ++i) {
 			Light light = lighting_data.lights[i];
@@ -646,8 +707,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 			vec3 radiance = light.color * attenuation;
 
-			vec3 F0 = vec3(0.04);
-			F0 = mix(F0, albedo.xyz, metalness);
 			vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
 
 			float NDF = distribution_ggx(normal, H, roughness);
@@ -665,7 +724,24 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			specular += local_specular * radiance * NdotL * occlusion_factor;
 		}
 
-		diffuse *= ao_factor;
+		vec3 ibl_diffuse = sample_ibl_cubemap(ibl_cubemap, normal);
+		vec3 R = reflect(-V, normal);
+		vec3 ibl_specular = sample_ibl_cubemap(ibl_cubemap, R);
+
+		vec3 ibl_F = fresnel_schlick_roughness(NdotV, F0, roughness);
+		vec3 ibl_kS = ibl_F;
+		vec3 ibl_kD = (vec3(1.0) - ibl_kS) * (1.0 - metalness);
+
+		vec3 ambient_diffuse = ibl_kD * albedo.xyz * ibl_diffuse;
+
+		float a = roughness * roughness;
+		vec2 env_brdf = vec2(max(0.0, 1.0 - a) * (1.0 / (1.0 + 0.5 * a)), a * (1.0 / (1.0 + 0.5 * a)));
+		vec3 ambient_specular = ibl_specular * (ibl_F * env_brdf.x + env_brdf.y);
+
+		vec3 ambient = (ambient_diffuse + ambient_specular) * 0.3;
+
+		diffuse = diffuse * ao_factor + ambient_diffuse * ao_factor * 0.3;
+		specular = specular * ao_factor + ambient_specular * ao_factor * 0.3;
 
 		imageStore(diffuse_map, pixel_coordinates, vec4(diffuse, albedo.a));
 		imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0))
@@ -713,7 +789,15 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 				);
 				statements.push(besl::parser::Node::glsl(
 					b,
-					&["lighting_data", "diffuse_map", "specular_map", "sample_shadow"],
+					&[
+						"lighting_data",
+						"diffuse_map",
+						"specular_map",
+						"sample_shadow",
+						"ibl_cubemap",
+						"sample_ibl_cubemap",
+						"fresnel_schlick_roughness",
+					],
 					&[],
 				));
 			}

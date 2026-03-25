@@ -503,6 +503,7 @@ pub struct MaterialEvaluationPass {
 	diffuse: ghi::ImageHandle,
 	specular: ghi::ImageHandle,
 	ao_map: ghi::DynamicImageHandle,
+	ibl_cubemap: ghi::ImageHandle,
 	/// Base layout descriptor set
 	base_descriptor_set: ghi::DescriptorSetHandle,
 	/// Visibility passes descriptor set
@@ -518,6 +519,7 @@ impl MaterialEvaluationPass {
 		specular: ghi::ImageHandle,
 		ao_map: ghi::DynamicImageHandle,
 		_shadow_map: ghi::DynamicImageHandle,
+		ibl_cubemap: ghi::ImageHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
@@ -527,6 +529,7 @@ impl MaterialEvaluationPass {
 			diffuse,
 			specular,
 			ao_map,
+			ibl_cubemap,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			descriptor_set,
@@ -544,6 +547,7 @@ impl MaterialEvaluationPass {
 		let diffuse = self.diffuse;
 		let specular = self.specular;
 		let ao_map = self.ao_map;
+		let ibl_cubemap = self.ibl_cubemap;
 		let base_descriptor_set = self.base_descriptor_set;
 		let material_evaluation_dispatches = self.material_evaluation_dispatches;
 		let visibility_descriptor_set = self.visibility_descriptor_set;
@@ -557,6 +561,7 @@ impl MaterialEvaluationPass {
 				(diffuse, ghi::ClearValue::Color(RGBA::black())),
 				(specular, ghi::ClearValue::Color(RGBA::black())),
 				(ao_map.into_image_handle(), ghi::ClearValue::Color(RGBA::white())),
+				(ibl_cubemap, ghi::ClearValue::Color(RGBA::white())),
 			]);
 
 			c.start_region("Material Evaluation");
@@ -623,6 +628,7 @@ impl VisibilityPipelineRenderPass {
 		specular: ghi::ImageHandle,
 		ao_map: ghi::DynamicImageHandle,
 		shadow_map: ghi::DynamicImageHandle,
+		ibl_cubemap: ghi::ImageHandle,
 		depth: ghi::ImageHandle,
 		primitive_index: ghi::ImageHandle,
 		instance_id: ghi::ImageHandle,
@@ -674,6 +680,7 @@ impl VisibilityPipelineRenderPass {
 			specular,
 			ao_map,
 			shadow_map,
+			ibl_cubemap,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_evaluation_descriptor_set,

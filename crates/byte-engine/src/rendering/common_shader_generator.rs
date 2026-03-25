@@ -321,6 +321,20 @@ impl CommonShaderScope {
 				&[],
 			)],
 		);
+		let fresnel_schlick_roughness = Node::function(
+			"fresnel_schlick_roughness",
+			vec![
+				Node::member("cos_theta", "f32"),
+				Node::member("f0", "vec3f"),
+				Node::member("roughness", "f32"),
+			],
+			"vec3f",
+			vec![Node::glsl(
+				"return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);",
+				&[],
+				&[],
+			)],
+		);
 
 		let barycentric_deriv = Node::r#struct(
 			"BarycentricDeriv",
@@ -441,6 +455,7 @@ impl CommonShaderScope {
 				geometry_schlick_ggx,
 				geometry_smith,
 				fresnel_schlick,
+				fresnel_schlick_roughness,
 				barycentric_deriv,
 				calculate_full_bary,
 				make_raster_ndc_from_pixel_coordinates,

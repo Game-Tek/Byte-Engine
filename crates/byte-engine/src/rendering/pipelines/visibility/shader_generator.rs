@@ -734,9 +734,16 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		vec3 ambient_diffuse = ibl_kD * albedo.xyz * ibl_diffuse;
 
-		float a = roughness * roughness;
-		vec2 env_brdf = vec2(max(0.0, 1.0 - a) * (1.0 / (1.0 + 0.5 * a)), a * (1.0 / (1.0 + 0.5 * a)));
-		vec3 ambient_specular = ibl_specular * (ibl_F * env_brdf.x + env_brdf.y);
+		// Analytic env BRDF approximation (Lazarov 2013) accounting for both NdotV and roughness.
+		// Returns (scale, bias) for the split-sum: specular = env * (F0 * scale + bias).
+		// At grazing angles (NdotV->0), scale approaches 0 and bias rises, preserving energy
+		// that the Fresnel term removes from the diffuse component.
+		float one_minus_ndotv = 1.0 - NdotV;
+		float one_minus_ndotv2 = one_minus_ndotv * one_minus_ndotv;
+		float one_minus_ndotv4 = one_minus_ndotv2 * one_minus_ndotv2;
+		float env_brdf_scale = 1.0 - max(roughness, one_minus_ndotv4);
+		float env_brdf_bias = one_minus_ndotv4 * clamp(4.0 * roughness + 0.1, 0.0, 1.0);
+		vec3 ambient_specular = ibl_specular * (F0 * env_brdf_scale + env_brdf_bias);
 
 		diffuse = diffuse * ao_factor + ambient_diffuse * ao_factor * 0.3;
 		specular = specular * ao_factor + ambient_specular * ao_factor * 0.3;

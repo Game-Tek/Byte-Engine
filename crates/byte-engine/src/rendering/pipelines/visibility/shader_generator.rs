@@ -611,11 +611,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
 		vec3 N = world_space_vertex_normal;
-		// vec3 V = normalize(view.view[3].xyz - world_space_vertex_position); /* Grey spots sometimes appear in renders, might be due to this line */
-		vec3 V = normalize(-(view.view[3].xyz - world_space_vertex_position));
+		vec3 camera_position = vec3(view.inverse_view[0].w, view.inverse_view[1].w, view.inverse_view[2].w);
+		vec3 V = normalize(camera_position - world_space_vertex_position);
 
-		vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
-		vec3 pos_dy = interpolate_vec3f_with_deriv(ddy, model_space_vertex_positions[0].xyz, model_space_vertex_positions[1].xyz, model_space_vertex_positions[2].xyz);
+		vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_positions[0].xyz, world_space_vertex_positions[1].xyz, world_space_vertex_positions[2].xyz);
+		vec3 pos_dy = interpolate_vec3f_with_deriv(ddy, world_space_vertex_positions[0].xyz, world_space_vertex_positions[1].xyz, world_space_vertex_positions[2].xyz);
 
 		vec2 uv_dx = interpolate_vec2f_with_deriv(ddx, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 		vec2 uv_dy = interpolate_vec2f_with_deriv(ddy, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
@@ -737,8 +737,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float a = roughness * roughness;
 		vec2 env_brdf = vec2(max(0.0, 1.0 - a) * (1.0 / (1.0 + 0.5 * a)), a * (1.0 / (1.0 + 0.5 * a)));
 		vec3 ambient_specular = ibl_specular * (ibl_F * env_brdf.x + env_brdf.y);
-
-		vec3 ambient = (ambient_diffuse + ambient_specular) * 0.3;
 
 		diffuse = diffuse * ao_factor + ambient_diffuse * ao_factor * 0.3;
 		specular = specular * ao_factor + ambient_specular * ao_factor * 0.3;

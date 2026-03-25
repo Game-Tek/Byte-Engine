@@ -434,7 +434,9 @@ pub enum Expressions<'a> {
 		name: &'a str,
 		body: Box<Node<'a>>,
 	},
-	Return,
+	Return {
+		value: Option<Box<Node<'a>>>,
+	},
 }
 
 #[derive(Clone, Debug)]
@@ -781,14 +783,18 @@ fn parse_keywords<'i, 'a: 'i>(
 
 	expressions.push(Atoms::Keyword);
 
-	// let lexers = vec![
-	// 	parse_operator,
-	// 	parse_accessor,
-	// ];
+	if **iterator
+		.clone()
+		.peekable()
+		.peek()
+		.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
+		== ";"
+	{
+		return Ok((expressions, iterator));
+	}
 
-	// try_execute_expression_parsers(&lexers, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)));
-
-	Ok((expressions, iterator))
+	try_execute_expression_parsers(&[parse_rvalue], iterator.clone(), expressions.clone())
+		.unwrap_or(Ok((expressions, iterator)))
 }
 
 fn parse_variable<'i, 'a: 'i>(
@@ -845,7 +851,7 @@ fn parse_operator<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	mut expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let operator = iterator.next_is(|v| v == "*" || v == "+" || v == "-" || v == "/" || v == "=")?;
+	let operator = iterator.next_is(|v| v == "*" || v == "+" || v == "-" || v == "/" || v == "%" || v == "=")?;
 
 	expressions.push(Atoms::Operator { name: operator });
 
@@ -913,12 +919,24 @@ fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> Featu
 	iterator.next_str(";")?; // Skip semicolon
 
 	fn dandc<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
+		if matches!(atoms.first(), Some(Atoms::Keyword)) {
+			return Node {
+				node: Nodes::Expression(Expressions::Return {
+					value: atoms
+						.get(1..)
+						.filter(|remaining| !remaining.is_empty())
+						.map(|remaining| Box::new(dandc(remaining))),
+				}),
+			}
+			.into();
+		}
+
 		let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
 
 		if let Some((i, e)) = max_precedence_item {
 			match e {
 				Atoms::Keyword => Node {
-					node: Nodes::Expression(Expressions::Return),
+					node: Nodes::Expression(Expressions::Return { value: None }),
 				},
 				Atoms::Operator { name } => {
 					let left = dandc(&atoms[..i]);
@@ -981,7 +999,45 @@ fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Fe
 	iterator.next_str(":")?;
 	iterator.next_str("fn")?;
 	iterator.next_str("(")?;
-	iterator.next_str(")")?;
+
+	let mut params = Vec::new();
+	loop {
+		if **iterator
+			.clone()
+			.peekable()
+			.peek()
+			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
+			== ")"
+		{
+			iterator.next();
+			break;
+		}
+
+		let param_name = iterator.next_identifier().map_err(|e| match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+				message: format!("Expected a parameter name for function {}.", name),
+			},
+			_ => e,
+		})?;
+		iterator.next_str(":")?;
+		let param_type = iterator.next_identifier().map_err(|e| match e {
+			ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+				message: format!("Expected a parameter type for function {}.", name),
+			},
+			_ => e,
+		})?;
+		params.push(Node::parameter(param_name, param_type));
+
+		if **iterator
+			.clone()
+			.peekable()
+			.peek()
+			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
+			== ","
+		{
+			iterator.next();
+		}
+	}
 	iterator.next_str("->")?;
 
 	let return_type = iterator.next_identifier().map_err(|e| match e {
@@ -1026,7 +1082,7 @@ fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Fe
 		}
 	}
 
-	let node = Node::function(name, vec![], return_type, statements);
+	let node = Node::function(name, params, return_type, statements);
 
 	Ok((node, iterator))
 }
@@ -1262,6 +1318,52 @@ main: fn () -> void {
 			assert_function(&node["main"]);
 		} else {
 			panic!("Not root node")
+		}
+	}
+
+	#[test]
+	fn test_parse_function_with_parameters_and_return_value() {
+		let source = "
+		add: fn (lhs: f32, rhs: f32) -> f32 {
+			return lhs + rhs;
+		}";
+
+		let tokens = tokenize(source).unwrap();
+		let node = parse(&tokens).expect("Failed to parse");
+
+		let function = &node["add"];
+		if let Nodes::Function {
+			name,
+			params,
+			return_type,
+			statements,
+			..
+		} = &function.node
+		{
+			assert_eq!(*name, "add");
+			assert_eq!(params.len(), 2);
+			assert_eq!(*return_type, "f32");
+			assert_eq!(statements.len(), 1);
+
+			if let Nodes::Parameter { name, r#type } = &params[0].node {
+				assert_eq!(*name, "lhs");
+				assert_eq!(*r#type, "f32");
+			} else {
+				panic!("Expected parameter");
+			}
+
+			if let Nodes::Expression(Expressions::Return { value }) = &statements[0].node {
+				let value = value.as_ref().expect("Expected return value");
+				if let Nodes::Expression(Expressions::Operator { name, .. }) = &value.node {
+					assert_eq!(*name, "+");
+				} else {
+					panic!("Expected return operator");
+				}
+			} else {
+				panic!("Expected return statement");
+			}
+		} else {
+			panic!("Expected function");
 		}
 	}
 

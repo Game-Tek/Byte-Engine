@@ -63,7 +63,13 @@ impl NodeReference {
 					return Some(c);
 				}
 			}
-			Nodes::Function { statements, .. } => {
+			Nodes::Function { params, statements, .. } => {
+				for param in params {
+					if param.borrow().get_name() == Some(child_name) {
+						return Some(param.clone());
+					}
+				}
+
 				for statement in statements {
 					match RefCell::borrow(&statement).node() {
 						Nodes::Expression(expression) => match expression {
@@ -86,6 +92,13 @@ impl NodeReference {
 								}
 								if let Some(c) = right.get_descendant(child_name) {
 									return Some(c);
+								}
+							}
+							Expressions::Return { value } => {
+								if let Some(value) = value {
+									if let Some(c) = value.get_descendant(child_name) {
+										return Some(c);
+									}
 								}
 							}
 							_ => {}
@@ -144,6 +157,13 @@ impl NodeReference {
 							}
 						}
 						_ => {}
+					}
+				}
+				Expressions::Return { value } => {
+					if let Some(value) = value {
+						if let Some(c) = value.get_descendant(child_name) {
+							return Some(c);
+						}
 					}
 				}
 				_ => {}
@@ -932,7 +952,9 @@ pub enum Operators {
 
 #[derive(Clone, Debug)]
 pub enum Expressions {
-	Return,
+	Return {
+		value: Option<NodeReference>,
+	},
 	Member {
 		name: String,
 		source: NodeReference,
@@ -1334,7 +1356,12 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 		.into(),
 		parser::Nodes::Expression(expression) => {
 			let this = match expression {
-				parser::Expressions::Return => Node::expression(Expressions::Return),
+				parser::Expressions::Return { value } => Node::expression(Expressions::Return {
+					value: match value {
+						Some(value) => Some(lex_parsed_node(chain.clone(), value)?),
+						None => None,
+					},
+				}),
 				parser::Expressions::Accessor { left, right } => {
 					let left = lex_parsed_node(chain.clone(), left)?;
 

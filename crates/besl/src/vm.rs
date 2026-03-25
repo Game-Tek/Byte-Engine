@@ -259,62 +259,53 @@ impl<'a> DescriptorBindings<'a> {
 /// The `ExecutableProgram` struct stores the runnable VM form of a lexed BESL program.
 pub struct ExecutableProgram {
 	descriptor_layouts: HashMap<DescriptorSlot, DescriptorLayout>,
+	functions: Vec<ExecutableFunction>,
+	main_function: usize,
+}
+
+struct ExecutableFunction {
 	instructions: Vec<Instruction>,
 	local_types: Vec<ValueType>,
 	register_count: usize,
+	parameter_count: usize,
+	return_type: Option<ValueType>,
 }
 
 impl ExecutableProgram {
 	/// Compiles a lexed BESL program into a runnable VM program.
 	pub fn compile(program: NodeReference) -> Result<Self, VmError> {
 		let main = resolve_main_function(&program)?;
-
-		let function = main.borrow();
-		let (params, return_type, statements) = match function.node() {
-			Nodes::Function {
-				params,
-				return_type,
-				statements,
-				..
-			} => (params.clone(), return_type.clone(), statements.clone()),
-			_ => {
-				return Err(VmError::MissingMainFunction);
-			}
-		};
-		drop(function);
-
-		if !params.is_empty() {
+		let main_signature = extract_function_signature(&main)?;
+		if !main_signature.params.is_empty() {
 			return Err(VmError::UnsupportedMainSignature {
 				message: "Main functions with parameters are not supported".to_string(),
 			});
 		}
-
-		let return_type_name = return_type
-			.borrow()
-			.get_name()
-			.map(str::to_string)
-			.unwrap_or_else(|| "unknown".to_string());
-
-		if return_type_name != "void" {
+		if main_signature.return_type.is_some() {
 			return Err(VmError::UnsupportedMainSignature {
-				message: format!("Main functions must return void, but found `{}`", return_type_name),
+				message: format!(
+					"Main functions must return void, but found `{}`",
+					main_signature.return_type.as_ref().map(ValueType::name).unwrap_or("void")
+				),
 			});
 		}
 
-		let mut compiler = Compiler::default();
-
-		// Build the bytecode for the main function in statement order.
-		for statement in &statements {
-			compiler.compile_statement(statement)?;
+		let function_nodes = collect_functions(&program, &main);
+		let mut function_ids = HashMap::new();
+		for (index, function) in function_nodes.iter().enumerate() {
+			function_ids.insert(function.clone(), index);
 		}
 
-		compiler.instructions.push(Instruction::Return);
+		let mut descriptor_layouts = HashMap::new();
+		let mut functions = Vec::with_capacity(function_nodes.len());
+		for function in &function_nodes {
+			functions.push(Compiler::compile_function(function, &function_ids, &mut descriptor_layouts)?);
+		}
 
 		Ok(Self {
-			descriptor_layouts: compiler.descriptor_layouts,
-			instructions: compiler.instructions,
-			local_types: compiler.local_types,
-			register_count: compiler.register_count,
+			descriptor_layouts,
+			functions,
+			main_function: function_ids[&main],
 		})
 	}
 
@@ -331,10 +322,41 @@ impl ExecutableProgram {
 
 	/// Executes the compiled `main` function using the currently bound descriptor resources.
 	pub fn run_main(&self, descriptors: &mut DescriptorBindings<'_>) -> Result<(), VmError> {
-		let mut registers = vec![None; self.register_count];
-		let mut locals = vec![None; self.local_types.len()];
+		let return_value = self.execute_function(self.main_function, &[], descriptors)?;
+		if return_value.is_some() {
+			return Err(VmError::UnsupportedMainSignature {
+				message: "Main functions must not return a value".to_string(),
+			});
+		}
+		Ok(())
+	}
 
-		for instruction in &self.instructions {
+	fn execute_function(
+		&self,
+		function_index: usize,
+		arguments: &[ScalarValue],
+		descriptors: &mut DescriptorBindings<'_>,
+	) -> Result<Option<ScalarValue>, VmError> {
+		let function = self
+			.functions
+			.get(function_index)
+			.ok_or_else(|| VmError::UnsupportedExpression {
+				message: format!("Unknown function index {}", function_index),
+			})?;
+
+		let mut registers = vec![None; function.register_count];
+		let mut locals = vec![None; function.local_types.len()];
+		if arguments.len() != function.parameter_count {
+			return Err(VmError::CallArgumentMismatch {
+				expected: function.parameter_count,
+				found: arguments.len(),
+			});
+		}
+		for (index, argument) in arguments.iter().enumerate() {
+			locals[index] = Some(argument.clone());
+		}
+
+		for instruction in &function.instructions {
 			match instruction {
 				Instruction::LoadLiteral { register, value } => {
 					registers[*register] = Some(value.clone());
@@ -389,13 +411,36 @@ impl ExecutableProgram {
 					let value = read_register(&registers, *register)?;
 					descriptors.buffer_mut(*slot)?.write_value(*offset, value_type, &value)?;
 				}
-				Instruction::Return => {
-					break;
+				Instruction::Call {
+					register,
+					function,
+					arguments,
+				} => {
+					let arguments = arguments
+						.iter()
+						.map(|argument| read_register(&registers, *argument))
+						.collect::<Result<Vec<_>, _>>()?;
+					let value = self.execute_function(*function, &arguments, descriptors)?;
+					registers[*register] = value;
+				}
+				Instruction::Return { register } => {
+					return match register {
+						Some(register) => Ok(Some(read_register(&registers, *register)?)),
+						None => Ok(None),
+					};
 				}
 			}
 		}
 
-		Ok(())
+		match &function.return_type {
+			Some(return_type) => Err(VmError::UnsupportedStatement {
+				message: format!(
+					"Function with return type `{}` ended without returning a value",
+					return_type.name()
+				),
+			}),
+			None => Ok(None),
+		}
 	}
 }
 
@@ -465,7 +510,14 @@ enum Instruction {
 		value_type: ValueType,
 		register: usize,
 	},
-	Return,
+	Call {
+		register: usize,
+		function: usize,
+		arguments: Vec<usize>,
+	},
+	Return {
+		register: Option<usize>,
+	},
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -477,18 +529,61 @@ enum ArithmeticOperator {
 	Modulo,
 }
 
-#[derive(Default)]
 struct Compiler {
-	descriptor_layouts: HashMap<DescriptorSlot, DescriptorLayout>,
+	function_ids: HashMap<NodeReference, usize>,
 	instructions: Vec<Instruction>,
 	local_types: Vec<ValueType>,
 	locals_by_reference: HashMap<NodeReference, usize>,
 	register_count: usize,
+	return_type: Option<ValueType>,
+	parameter_count: usize,
 }
 
 impl Compiler {
+	fn compile_function(
+		function: &NodeReference,
+		function_ids: &HashMap<NodeReference, usize>,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<ExecutableFunction, VmError> {
+		let signature = extract_function_signature(function)?;
+		let mut compiler = Self {
+			function_ids: function_ids.clone(),
+			instructions: Vec::new(),
+			local_types: Vec::new(),
+			locals_by_reference: HashMap::new(),
+			register_count: 0,
+			return_type: signature.return_type.clone(),
+			parameter_count: signature.params.len(),
+		};
+
+		for (index, param) in signature.params.iter().enumerate() {
+			compiler.local_types.push(param.value_type.clone());
+			compiler.locals_by_reference.insert(param.node.clone(), index);
+		}
+
+		for statement in &signature.statements {
+			compiler.compile_statement(statement, descriptor_layouts)?;
+		}
+
+		if !matches!(compiler.instructions.last(), Some(Instruction::Return { .. })) {
+			compiler.instructions.push(Instruction::Return { register: None });
+		}
+
+		Ok(ExecutableFunction {
+			instructions: compiler.instructions,
+			local_types: compiler.local_types,
+			register_count: compiler.register_count,
+			parameter_count: compiler.parameter_count,
+			return_type: compiler.return_type,
+		})
+	}
+
 	/// Compiles one BESL statement into bytecode while tracking locals and descriptors.
-	fn compile_statement(&mut self, statement: &NodeReference) -> Result<(), VmError> {
+	fn compile_statement(
+		&mut self,
+		statement: &NodeReference,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<(), VmError> {
 		let borrowed = statement.borrow();
 		let result = match borrowed.node() {
 			Nodes::Expression(Expressions::Operator {
@@ -499,12 +594,18 @@ impl Compiler {
 				let left = left.clone();
 				let right = right.clone();
 				drop(borrowed);
-				self.compile_assignment(statement, left, right)
+				self.compile_assignment(statement, left, right, descriptor_layouts)
 			}
-			Nodes::Expression(Expressions::Return) => {
+			Nodes::Expression(Expressions::Return { value }) => {
+				let value = value.clone();
 				drop(borrowed);
-				self.instructions.push(Instruction::Return);
-				Ok(())
+				self.compile_return_statement(value.as_ref(), descriptor_layouts)
+			}
+			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
+				let function = function.clone();
+				let parameters = parameters.clone();
+				drop(borrowed);
+				self.compile_call_statement(&function, &parameters, descriptor_layouts)
 			}
 			Nodes::Expression(Expressions::Member { .. }) | Nodes::Expression(Expressions::Accessor { .. }) => Ok(()),
 			Nodes::Expression(other) => Err(VmError::UnsupportedStatement {
@@ -523,6 +624,7 @@ impl Compiler {
 		statement: &NodeReference,
 		left: NodeReference,
 		right: NodeReference,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let left_expression = left.borrow();
 
@@ -533,15 +635,15 @@ impl Compiler {
 				drop(left_expression);
 
 				let local = self.define_local(statement.clone(), left, &name, value_type.clone());
-				let register = self.compile_value_expression(&right, &value_type)?;
+				let register = self.compile_value_expression(&right, &value_type, descriptor_layouts)?;
 				self.instructions.push(Instruction::StoreLocal { local, register });
 				Ok(())
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
 
-				let target = self.resolve_buffer_access(&left, RequiredAccess::Write)?;
-				let register = self.compile_value_expression(&right, &target.value_type)?;
+				let target = self.resolve_buffer_access(&left, RequiredAccess::Write, descriptor_layouts)?;
+				let register = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
 				self.instructions.push(Instruction::StoreBuffer {
 					slot: target.slot,
 					offset: target.offset,
@@ -557,14 +659,19 @@ impl Compiler {
 	}
 
 	/// Compiles a scalar BESL expression into one register-producing VM instruction sequence.
-	fn compile_value_expression(&mut self, expression: &NodeReference, expected_type: &ValueType) -> Result<usize, VmError> {
+	fn compile_value_expression(
+		&mut self,
+		expression: &NodeReference,
+		expected_type: &ValueType,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<usize, VmError> {
 		let borrowed = expression.borrow();
 		match borrowed.node() {
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
 				let function = function.clone();
 				let parameters = parameters.clone();
 				drop(borrowed);
-				self.compile_constructor_expression(&function, &parameters, expected_type)
+				self.compile_function_call_expression(&function, &parameters, expected_type, descriptor_layouts)
 			}
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 				let operator = arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
@@ -574,8 +681,8 @@ impl Compiler {
 				let right = right.clone();
 				drop(borrowed);
 
-				let left_type = self.infer_expression_type(&left, expected_type)?;
-				let right_type = self.infer_expression_type(&right, expected_type)?;
+				let left_type = self.infer_expression_type(&left, expected_type, descriptor_layouts)?;
+				let right_type = self.infer_expression_type(&right, expected_type, descriptor_layouts)?;
 				let (left_expected_type, right_expected_type) = if left_type == *expected_type && right_type == *expected_type {
 					(expected_type.clone(), expected_type.clone())
 				} else if supports_scalar_broadcast(expected_type)
@@ -595,8 +702,8 @@ impl Compiler {
 					});
 				};
 
-				let left = self.compile_value_expression(&left, &left_expected_type)?;
-				let right = self.compile_value_expression(&right, &right_expected_type)?;
+				let left = self.compile_value_expression(&left, &left_expected_type, descriptor_layouts)?;
+				let right = self.compile_value_expression(&right, &right_expected_type, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::Arithmetic {
 					register,
@@ -642,7 +749,7 @@ impl Compiler {
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(borrowed);
 
-				let target = self.resolve_buffer_access(expression, RequiredAccess::Read)?;
+				let target = self.resolve_buffer_access(expression, RequiredAccess::Read, descriptor_layouts)?;
 				if &target.value_type != expected_type {
 					return Err(VmError::TypeMismatch {
 						expected: expected_type.name().to_string(),
@@ -668,23 +775,84 @@ impl Compiler {
 		}
 	}
 
-	fn compile_constructor_expression(
+	fn compile_function_call_expression(
 		&mut self,
 		function: &NodeReference,
 		parameters: &[NodeReference],
 		expected_type: &ValueType,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		let function_ref = function.borrow();
-		let (constructor_type, fields) = match function_ref.node() {
-			Nodes::Struct { fields, .. } => (resolve_value_type(function)?, fields.clone()),
-			node => {
-				return Err(VmError::UnsupportedExpression {
-					message: format!("Expected a value constructor, but found {}", describe_node(node)),
-				});
+		match function_ref.node() {
+			Nodes::Struct { fields, .. } => {
+				let constructor_type = resolve_value_type(function)?;
+				let fields = fields.clone();
+				drop(function_ref);
+				self.compile_constructor_expression(
+					function,
+					parameters,
+					expected_type,
+					constructor_type,
+					&fields,
+					descriptor_layouts,
+				)
 			}
-		};
-		drop(function_ref);
+			Nodes::Function { .. } => {
+				let signature = extract_function_signature(function)?;
+				drop(function_ref);
+				let return_type = signature.return_type.ok_or_else(|| VmError::UnsupportedExpression {
+					message: "Void functions cannot be used as value expressions".to_string(),
+				})?;
+				if &return_type != expected_type {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: return_type.name().to_string(),
+					});
+				}
 
+				let mut arguments = Vec::with_capacity(parameters.len());
+				for (parameter, signature_parameter) in parameters.iter().zip(&signature.params) {
+					arguments.push(self.compile_value_expression(
+						parameter,
+						&signature_parameter.value_type,
+						descriptor_layouts,
+					)?);
+				}
+				if parameters.len() != signature.params.len() {
+					return Err(VmError::CallArgumentMismatch {
+						expected: signature.params.len(),
+						found: parameters.len(),
+					});
+				}
+
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::Call {
+					register,
+					function: *self
+						.function_ids
+						.get(function)
+						.ok_or_else(|| VmError::UnsupportedExpression {
+							message: "Unknown function reference".to_string(),
+						})?,
+					arguments,
+				});
+				Ok(register)
+			}
+			node => Err(VmError::UnsupportedExpression {
+				message: format!("Expected a callable value, but found {}", describe_node(node)),
+			}),
+		}
+	}
+
+	fn compile_constructor_expression(
+		&mut self,
+		_function: &NodeReference,
+		parameters: &[NodeReference],
+		expected_type: &ValueType,
+		constructor_type: ValueType,
+		fields: &[NodeReference],
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<usize, VmError> {
 		if &constructor_type != expected_type {
 			return Err(VmError::TypeMismatch {
 				expected: expected_type.name().to_string(),
@@ -713,7 +881,7 @@ impl Compiler {
 					});
 				}
 			};
-			components.push(self.compile_value_expression(parameter, &field_type)?);
+			components.push(self.compile_value_expression(parameter, &field_type, descriptor_layouts)?);
 		}
 
 		let register = self.allocate_register();
@@ -725,7 +893,12 @@ impl Compiler {
 		Ok(register)
 	}
 
-	fn infer_expression_type(&mut self, expression: &NodeReference, expected_type: &ValueType) -> Result<ValueType, VmError> {
+	fn infer_expression_type(
+		&mut self,
+		expression: &NodeReference,
+		expected_type: &ValueType,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<ValueType, VmError> {
 		let borrowed = expression.borrow();
 		match borrowed.node() {
 			Nodes::Expression(Expressions::Literal { .. }) => {
@@ -754,9 +927,11 @@ impl Compiler {
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(borrowed);
-				Ok(self.resolve_buffer_access(expression, RequiredAccess::Read)?.value_type)
+				Ok(self
+					.resolve_buffer_access(expression, RequiredAccess::Read, descriptor_layouts)?
+					.value_type)
 			}
-			Nodes::Expression(Expressions::FunctionCall { function, .. }) => Ok(resolve_value_type(function)?),
+			Nodes::Expression(Expressions::FunctionCall { function, .. }) => resolve_callable_return_type(function),
 			Nodes::Expression(Expressions::Operator { .. }) => Ok(expected_type.clone()),
 			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported value expression: {:?}", other),
@@ -792,6 +967,7 @@ impl Compiler {
 		&mut self,
 		expression: &NodeReference,
 		access: RequiredAccess,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
 	) -> Result<ResolvedBufferAccess, VmError> {
 		let (binding, member_name) = extract_buffer_member_access(expression)?;
 
@@ -842,7 +1018,7 @@ impl Compiler {
 		};
 		drop(binding_ref);
 
-		match self.descriptor_layouts.get(&slot) {
+		match descriptor_layouts.get(&slot) {
 			Some(existing) if existing != &DescriptorLayout::Buffer(layout.clone()) => {
 				return Err(VmError::UnsupportedDescriptor {
 					slot,
@@ -851,7 +1027,7 @@ impl Compiler {
 			}
 			Some(_) => {}
 			None => {
-				self.descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
+				descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
 			}
 		}
 
@@ -865,12 +1041,94 @@ impl Compiler {
 			value_type: member.value_type.clone(),
 		})
 	}
+
+	fn compile_call_statement(
+		&mut self,
+		function: &NodeReference,
+		parameters: &[NodeReference],
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<(), VmError> {
+		let function_ref = function.borrow();
+		match function_ref.node() {
+			Nodes::Function { .. } => {
+				let signature = extract_function_signature(function)?;
+				drop(function_ref);
+				let mut arguments = Vec::with_capacity(parameters.len());
+				for (parameter, signature_parameter) in parameters.iter().zip(&signature.params) {
+					arguments.push(self.compile_value_expression(
+						parameter,
+						&signature_parameter.value_type,
+						descriptor_layouts,
+					)?);
+				}
+				if parameters.len() != signature.params.len() {
+					return Err(VmError::CallArgumentMismatch {
+						expected: signature.params.len(),
+						found: parameters.len(),
+					});
+				}
+
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::Call {
+					register,
+					function: *self
+						.function_ids
+						.get(function)
+						.ok_or_else(|| VmError::UnsupportedExpression {
+							message: "Unknown function reference".to_string(),
+						})?,
+					arguments,
+				});
+				Ok(())
+			}
+			node => Err(VmError::UnsupportedStatement {
+				message: format!("Expected a function call statement, but found {}", describe_node(node)),
+			}),
+		}
+	}
+
+	fn compile_return_statement(
+		&mut self,
+		value: Option<&NodeReference>,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<(), VmError> {
+		match (self.return_type.clone(), value) {
+			(None, None) => {
+				self.instructions.push(Instruction::Return { register: None });
+				Ok(())
+			}
+			(None, Some(_)) => Err(VmError::UnsupportedStatement {
+				message: "Void functions cannot return a value".to_string(),
+			}),
+			(Some(return_type), Some(value)) => {
+				let register = self.compile_value_expression(value, &return_type, descriptor_layouts)?;
+				self.instructions.push(Instruction::Return {
+					register: Some(register),
+				});
+				Ok(())
+			}
+			(Some(return_type), None) => Err(VmError::UnsupportedStatement {
+				message: format!("Function with return type `{}` must return a value", return_type.name()),
+			}),
+		}
+	}
 }
 
 struct ResolvedBufferAccess {
 	slot: DescriptorSlot,
 	offset: usize,
 	value_type: ValueType,
+}
+
+struct FunctionParameter {
+	node: NodeReference,
+	value_type: ValueType,
+}
+
+struct FunctionSignature {
+	params: Vec<FunctionParameter>,
+	return_type: Option<ValueType>,
+	statements: Vec<NodeReference>,
 }
 
 #[derive(Clone, Copy)]
@@ -893,6 +1151,88 @@ fn resolve_main_function(program: &NodeReference) -> Result<NodeReference, VmErr
 	}
 
 	program.get_main().ok_or(VmError::MissingMainFunction)
+}
+
+fn collect_functions(program: &NodeReference, main: &NodeReference) -> Vec<NodeReference> {
+	let mut functions = Vec::new();
+	if let Some(children) = program.get_children() {
+		for child in children {
+			if matches!(child.borrow().node(), Nodes::Function { .. }) {
+				functions.push(child);
+			}
+		}
+	}
+
+	if functions.is_empty() {
+		functions.push(main.clone());
+	}
+
+	functions
+}
+
+fn extract_function_signature(function: &NodeReference) -> Result<FunctionSignature, VmError> {
+	let function_ref = function.borrow();
+	let (params, return_type, statements) = match function_ref.node() {
+		Nodes::Function {
+			params,
+			return_type,
+			statements,
+			..
+		} => (params.clone(), return_type.clone(), statements.clone()),
+		node => {
+			return Err(VmError::UnsupportedExpression {
+				message: format!("Expected a function, but found {}", describe_node(node)),
+			});
+		}
+	};
+	drop(function_ref);
+
+	let mut compiled_params = Vec::with_capacity(params.len());
+	for param in params {
+		let param_ref = param.borrow();
+		let value_type = match param_ref.node() {
+			Nodes::Parameter { r#type, .. } => resolve_value_type(r#type)?,
+			node => {
+				return Err(VmError::UnsupportedExpression {
+					message: format!("Expected a parameter, but found {}", describe_node(node)),
+				});
+			}
+		};
+		drop(param_ref);
+		compiled_params.push(FunctionParameter { node: param, value_type });
+	}
+
+	let return_type = resolve_function_return_type(&return_type)?;
+	Ok(FunctionSignature {
+		params: compiled_params,
+		return_type,
+		statements,
+	})
+}
+
+fn resolve_function_return_type(return_type: &NodeReference) -> Result<Option<ValueType>, VmError> {
+	if return_type.borrow().get_name() == Some("void") {
+		Ok(None)
+	} else {
+		Ok(Some(resolve_value_type(return_type)?))
+	}
+}
+
+fn resolve_callable_return_type(callable: &NodeReference) -> Result<ValueType, VmError> {
+	let callable_ref = callable.borrow();
+	match callable_ref.node() {
+		Nodes::Struct { .. } => resolve_value_type(callable),
+		Nodes::Function { return_type, .. } => {
+			let return_type = return_type.clone();
+			drop(callable_ref);
+			resolve_function_return_type(&return_type)?.ok_or_else(|| VmError::UnsupportedExpression {
+				message: "Void functions cannot be used as value expressions".to_string(),
+			})
+		}
+		node => Err(VmError::UnsupportedExpression {
+			message: format!("Expected a callable value, but found {}", describe_node(node)),
+		}),
+	}
 }
 
 fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
@@ -1319,6 +1659,7 @@ pub enum VmError {
 	DescriptorAccessDenied { slot: DescriptorSlot, access: &'static str },
 	UnknownBufferMember { member: String },
 	UnboundDescriptor { slot: DescriptorSlot },
+	CallArgumentMismatch { expected: usize, found: usize },
 	BufferAccessOutOfBounds { offset: usize, size: usize, buffer_size: usize },
 	InvalidLiteral { value: String, value_type: String },
 	ArithmeticError { message: String },
@@ -1390,6 +1731,11 @@ impl std::fmt::Display for VmError {
 				"Unbound descriptor at set {} binding {}. The most likely cause is that no buffer was bound into the descriptor slot before execution.",
 				slot.set(),
 				slot.binding()
+			),
+			VmError::CallArgumentMismatch { expected, found } => write!(
+				f,
+				"Function call argument mismatch: expected {} arguments but found {}. The most likely cause is that the BESL function call does not match the declared parameter list.",
+				expected, found
 			),
 			VmError::BufferAccessOutOfBounds {
 				offset,
@@ -1780,5 +2126,93 @@ mod tests {
 			read_f32s(&buffer, 16),
 			vec![2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0,]
 		);
+	}
+
+	#[test]
+	fn executable_program_calls_function_with_parameters_and_return_value() {
+		let script = r#"
+		add: fn (lhs: f32, rhs: f32) -> f32 {
+			return lhs + rhs;
+		}
+
+		main: fn () -> void {
+			buff.value = add(3.0, 4.5);
+		}
+		"#;
+
+		let mut root = Node::root();
+		let float_type = root.get_child("f32").expect("Expected f32");
+
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", float_type).into()],
+				},
+				0,
+				5,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 5);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 7.5);
+	}
+
+	#[test]
+	fn executable_program_calls_function_and_returns_vec3f() {
+		let script = r#"
+		double: fn (value: vec3f) -> vec3f {
+			return value * 2.0;
+		}
+
+		main: fn () -> void {
+			buff.value = double(vec3f(1.0, 2.0, 3.0));
+		}
+		"#;
+
+		let mut root = Node::root();
+		let vec3f_type = root.get_child("vec3f").expect("Expected vec3f");
+
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", vec3f_type).into()],
+				},
+				0,
+				6,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 6);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(read_f32s(&buffer, 3), vec![2.0, 4.0, 6.0]);
 	}
 }

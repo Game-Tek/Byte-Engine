@@ -1564,6 +1564,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, instance_id),
 		);
 
+		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Diffuse", "main");
 
 		let render_pass = VisibilityPipelineRenderPass::new(

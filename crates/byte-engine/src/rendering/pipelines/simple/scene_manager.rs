@@ -357,8 +357,13 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 	}
 
 	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder) {
-		let main = render_pass_builder
-			.create_render_target(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::RenderTarget).name("main"));
+		let main = render_pass_builder.create_render_target(
+			ghi::image::Builder::new(
+				ghi::Formats::RGBA16F,
+				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage,
+			)
+			.name("main"),
+		);
 		let depth = render_pass_builder
 			.create_render_target(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget).name("depth"));
 		self.views.push(RenderPass::new(

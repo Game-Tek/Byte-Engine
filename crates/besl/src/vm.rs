@@ -3845,4 +3845,54 @@ mod tests {
 			Value::Vec4F([0.65, 0.2, 0.1, 0.5])
 		);
 	}
+
+	#[test]
+	fn executable_program_supports_fragment_style_input_attachments() {
+		let script = r#"
+		main: fn () -> void {
+			out_color = fetch(input_attachment, vec2u(1, 0));
+		}
+		"#;
+
+		let mut root = Node::root();
+		let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
+		root.add_child(
+			Node::binding(
+				"input_attachment",
+				BindingTypes::CombinedImageSampler { format: String::new() },
+				0,
+				16,
+				true,
+				false,
+			)
+			.into(),
+		);
+		root.add_child(Node::output("out_color", vec4f_type, 0).into());
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let input_attachment_slot = DescriptorSlot::new(0, 16);
+		let output_layout = executable.output_layout(0).expect("Expected output layout").clone();
+		let mut input_attachment = Texture::new(2, 1).expect("Expected attachment allocation");
+		let mut output = Buffer::new(output_layout);
+		write_texture(
+			&mut input_attachment,
+			&[([0, 0], [0.1, 0.2, 0.3, 1.0]), ([1, 0], [0.9, 0.4, 0.2, 1.0])],
+		);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(input_attachment_slot, &mut input_attachment);
+			descriptors.bind_buffer(output_slot(0), &mut output);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Expected fragment-style execution to succeed");
+		}
+
+		assert_eq!(
+			output.read("out_color").expect("Expected output value"),
+			Value::Vec4F([0.9, 0.4, 0.2, 1.0])
+		);
+	}
 }

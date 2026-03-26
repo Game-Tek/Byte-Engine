@@ -396,6 +396,11 @@ impl Node {
 		);
 		let length_intrinsic = builtin_intrinsic("length", vec![("value", vec4f32.clone())], f32_t.clone());
 		let normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone());
+		let reflect_intrinsic = builtin_intrinsic(
+			"reflect",
+			vec![("incident", vec4f32.clone()), ("normal", vec4f32.clone())],
+			vec4f32.clone(),
+		);
 		let write_intrinsic = builtin_intrinsic(
 			"write",
 			vec![
@@ -431,6 +436,7 @@ impl Node {
 			cross_intrinsic,
 			length_intrinsic,
 			normalize_intrinsic,
+			reflect_intrinsic,
 			write_intrinsic,
 		]);
 
@@ -2578,5 +2584,24 @@ main: fn () -> void {
 			},
 			_ => panic!("Expected assignment"),
 		}
+	}
+
+	#[test]
+	fn lex_builtin_reflect_intrinsic() {
+		let root = Node::root();
+		let reflect = root.get_child("reflect").expect("Expected reflect builtin");
+		let result = match reflect.borrow().node() {
+			Nodes::Intrinsic {
+				name,
+				elements,
+				r#return,
+			} => {
+				assert_eq!(name, "reflect");
+				assert_eq!(elements.len(), 2);
+				assert_type(&r#return.borrow(), "vec4f");
+			}
+			_ => panic!("Expected intrinsic"),
+		};
+		result
 	}
 }

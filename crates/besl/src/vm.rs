@@ -609,6 +609,15 @@ impl ExecutableProgram {
 					let value = read_register(&registers, *value)?;
 					registers[*register] = Some(apply_normalize(&value)?);
 				}
+				Instruction::Reflect {
+					register,
+					incident,
+					normal,
+				} => {
+					let incident = read_register(&registers, *incident)?;
+					let normal = read_register(&registers, *normal)?;
+					registers[*register] = Some(apply_reflect(&incident, &normal)?);
+				}
 				Instruction::LoadLocal { register, local } => {
 					let value = locals
 						.get(*local)
@@ -820,6 +829,11 @@ enum Instruction {
 	Normalize {
 		register: usize,
 		value: usize,
+	},
+	Reflect {
+		register: usize,
+		incident: usize,
+		normal: usize,
 	},
 	LoadLocal {
 		register: usize,
@@ -1221,7 +1235,7 @@ impl Compiler {
 		};
 		drop(intrinsic_ref);
 
-		if name != "normalize" && &return_type != expected_type {
+		if name != "normalize" && name != "reflect" && &return_type != expected_type {
 			return Err(VmError::TypeMismatch {
 				expected: expected_type.name().to_string(),
 				found: return_type.name().to_string(),
@@ -1344,6 +1358,41 @@ impl Compiler {
 				let value = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::Normalize { register, value });
+				Ok(register)
+			}
+			"reflect" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+
+				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
+					.into_iter()
+					.find(|candidate| {
+						self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
+							&& self.infer_expression_type(&arguments[1], candidate, descriptor_layouts).ok()
+								== Some(candidate.clone())
+					})
+					.ok_or_else(|| VmError::UnsupportedExpression {
+						message: "`reflect` expects two float vectors of matching size".to_string(),
+					})?;
+				if &supported_type != expected_type {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: supported_type.name().to_string(),
+					});
+				}
+
+				let incident = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
+				let normal = self.compile_value_expression(&arguments[1], &supported_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::Reflect {
+					register,
+					incident,
+					normal,
+				});
 				Ok(register)
 			}
 			_ => Err(VmError::UnsupportedExpression {
@@ -2727,6 +2776,24 @@ fn apply_normalize(value: &ScalarValue) -> Result<ScalarValue, VmError> {
 	}
 }
 
+fn apply_reflect(incident: &ScalarValue, normal: &ScalarValue) -> Result<ScalarValue, VmError> {
+	match (incident, normal) {
+		(ScalarValue::Vec2F(incident), ScalarValue::Vec2F(normal)) => {
+			reflect_vector(*incident, *normal).map(ScalarValue::Vec2F)
+		}
+		(ScalarValue::Vec3F(incident), ScalarValue::Vec3F(normal)) => {
+			reflect_vector(*incident, *normal).map(ScalarValue::Vec3F)
+		}
+		(ScalarValue::Vec4F(incident), ScalarValue::Vec4F(normal)) => {
+			reflect_vector(*incident, *normal).map(ScalarValue::Vec4F)
+		}
+		(incident, normal) => Err(VmError::TypeMismatch {
+			expected: incident.value_type().name().to_string(),
+			found: normal.value_type().name().to_string(),
+		}),
+	}
+}
+
 fn dot_product<const N: usize>(left: [f32; N], right: [f32; N]) -> f32 {
 	let mut value = 0.0;
 	for index in 0..N {
@@ -2756,6 +2823,27 @@ fn normalize_vector<const N: usize>(value: [f32; N]) -> Result<[f32; N], VmError
 		normalized[index] = value[index] / length;
 	}
 	Ok(normalized)
+}
+
+fn reflect_vector<const N: usize>(incident: [f32; N], normal: [f32; N]) -> Result<[f32; N], VmError> {
+	let normal_length = dot_product(normal, normal).sqrt();
+	if normal_length == 0.0 {
+		return Err(VmError::ArithmeticError {
+			message: "Cannot reflect around a zero-length normal".to_string(),
+		});
+	}
+
+	let mut normalized_normal = [0.0; N];
+	for index in 0..N {
+		normalized_normal[index] = normal[index] / normal_length;
+	}
+
+	let scale = 2.0 * dot_product(incident, normalized_normal);
+	let mut reflected = [0.0; N];
+	for index in 0..N {
+		reflected[index] = incident[index] - scale * normalized_normal[index];
+	}
+	Ok(reflected)
 }
 
 fn read_register(registers: &[Option<ScalarValue>], register: usize) -> Result<ScalarValue, VmError> {
@@ -3007,7 +3095,7 @@ impl std::error::Error for VmError {}
 
 #[cfg(test)]
 mod tests {
-	use crate::{compile_to_besl, BindingTypes, Node};
+	use crate::{compile_to_besl, BindingTypes, Expressions, Node, NodeReference, Operators};
 
 	use super::{
 		input_slot, output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value, VmError,
@@ -3312,7 +3400,7 @@ mod tests {
 			Node::binding(
 				"buff",
 				BindingTypes::Buffer {
-					members: vec![Node::member("value", vec3f_type).into()],
+					members: vec![Node::member("value", vec3f_type.clone()).into()],
 				},
 				0,
 				2,
@@ -3496,7 +3584,7 @@ mod tests {
 			Node::binding(
 				"buff",
 				BindingTypes::Buffer {
-					members: vec![Node::member("value", vec3f_type).into()],
+					members: vec![Node::member("value", vec3f_type.clone()).into()],
 				},
 				0,
 				6,
@@ -4152,7 +4240,7 @@ mod tests {
 			Node::binding(
 				"buff",
 				BindingTypes::Buffer {
-					members: vec![Node::member("value", vec3f_type).into()],
+					members: vec![Node::member("value", vec3f_type.clone()).into()],
 				},
 				0,
 				18,
@@ -4232,7 +4320,7 @@ mod tests {
 			Node::binding(
 				"buff",
 				BindingTypes::Buffer {
-					members: vec![Node::member("value", vec3f_type).into()],
+					members: vec![Node::member("value", vec3f_type.clone()).into()],
 				},
 				0,
 				20,
@@ -4256,5 +4344,109 @@ mod tests {
 		}
 
 		assert_eq!(read_f32s(&buffer, 3), vec![0.6, 0.8, 0.0]);
+	}
+
+	#[test]
+	fn executable_program_evaluates_reflect_intrinsics() {
+		let mut root = Node::root();
+		let void_type = root.get_child("void").expect("Expected void");
+		let vec3f_type = root.get_child("vec3f").expect("Expected vec3f");
+		let reflect = root.get_child("reflect").expect("Expected reflect intrinsic");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", vec3f_type.clone()).into()],
+				},
+				0,
+				21,
+				true,
+				true,
+			)
+			.into(),
+		);
+		root.add_child(
+			Node::function(
+				"main",
+				Vec::new(),
+				void_type,
+				vec![Node::expression(Expressions::Operator {
+					operator: Operators::Assignment,
+					left: Node::expression(Expressions::Accessor {
+						left: Node::expression(Expressions::Member {
+							name: "buff".to_string(),
+							source: root.get_child("buff").expect("Expected buff binding"),
+						})
+						.into(),
+						right: Node::expression(Expressions::Member {
+							name: "value".to_string(),
+							source: root.get_child("buff").expect("Expected buff binding"),
+						})
+						.into(),
+					})
+					.into(),
+					right: Node::expression(Expressions::IntrinsicCall {
+						intrinsic: reflect,
+						arguments: vec![
+							Node::expression(Expressions::FunctionCall {
+								function: vec3f_type.clone(),
+								parameters: vec![
+									Node::expression(Expressions::Literal {
+										value: "1.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "-1.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "0.0".to_string(),
+									})
+									.into(),
+								],
+							})
+							.into(),
+							Node::expression(Expressions::FunctionCall {
+								function: vec3f_type.clone(),
+								parameters: vec![
+									Node::expression(Expressions::Literal {
+										value: "0.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "1.0".to_string(),
+									})
+									.into(),
+									Node::expression(Expressions::Literal {
+										value: "0.0".to_string(),
+									})
+									.into(),
+								],
+							})
+							.into(),
+						],
+						elements: vec![],
+					})
+					.into(),
+				})
+				.into()],
+			)
+			.into(),
+		);
+
+		let program: NodeReference = root.into();
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 21);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(read_f32s(&buffer, 3), vec![1.0, 1.0, 0.0]);
 	}
 }

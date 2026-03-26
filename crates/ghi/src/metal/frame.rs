@@ -69,14 +69,15 @@ impl Frame<'_> {
 			self.device
 				.create_image_internal(None, None, extent, image.format, image.uses, image.access, image.array_layers);
 		self.device.images[handle.0 as usize] = self.device.images[new_handle.0 as usize].clone();
-		// TODO: Update descriptor references for resized image.
+		self.device.rewrite_descriptors_for_handle(Handle::Image(handle));
 	}
 
 	pub fn create_command_buffer_recording<'a>(
 		&'a mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> super::CommandBufferRecording<'a> {
-		self.device.create_command_buffer_recording(command_buffer_handle)
+		self.device
+			.create_command_buffer_recording_with_frame_key(command_buffer_handle, Some(self.frame_key))
 	}
 
 	pub fn acquire_swapchain_image(
@@ -181,7 +182,8 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> Self::CBR<'_> {
-		self.device.create_command_buffer_recording(command_buffer_handle)
+		self.device
+			.create_command_buffer_recording_with_frame_key(command_buffer_handle, Some(self.frame_key))
 	}
 
 	fn acquire_swapchain_image(

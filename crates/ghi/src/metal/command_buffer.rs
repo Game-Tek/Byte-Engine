@@ -10,6 +10,8 @@ use crate::command_buffer::{
 	CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
 };
 
+const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
+
 pub struct CommandBufferRecording<'a> {
 	device: &'a mut device::Device,
 	command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
@@ -20,6 +22,7 @@ pub struct CommandBufferRecording<'a> {
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
+	bound_descriptor_set_handles: Vec<(u32, descriptor_set::DescriptorSetHandle)>,
 	bound_vertex_layout: Option<VertexLayoutHandle>,
 	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
 	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>>>,
@@ -54,6 +57,7 @@ impl<'a> CommandBufferRecording<'a> {
 			active_pipeline_layout: None,
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
+			bound_descriptor_set_handles: Vec::new(),
 			bound_vertex_layout: None,
 			bound_index_buffer: None,
 			active_compute_encoder: None,
@@ -94,6 +98,46 @@ impl<'a> CommandBufferRecording<'a> {
 				},
 			);
 		}
+	}
+
+	fn consume_bound_descriptor_resources(&mut self) {
+		let Some(bound_pipeline_handle) = self.bound_pipeline else {
+			return;
+		};
+
+		let pipeline = &self.device.pipelines[bound_pipeline_handle.0 as usize];
+		let mut consumptions = Vec::with_capacity(pipeline.resource_access.len());
+
+		for &((set_index, binding_index), (stages, access)) in &pipeline.resource_access {
+			let Some(&(_, descriptor_set_handle)) = self.bound_descriptor_set_handles.get(set_index as usize) else {
+				continue;
+			};
+			let frame_state =
+				&self.device.descriptor_sets[descriptor_set_handle.0 as usize].frames[self.sequence_index as usize];
+			let Some(descriptors) = frame_state.descriptors.get(&binding_index) else {
+				continue;
+			};
+
+			for descriptor in descriptors.values().copied() {
+				let Some(handle) = descriptor.tracked_resource() else {
+					continue;
+				};
+				let layout = match descriptor {
+					Descriptor::Buffer { .. } => crate::Layouts::General,
+					Descriptor::Image { layout, .. } | Descriptor::CombinedImageSampler { layout, .. } => layout,
+					Descriptor::Sampler { .. } => continue,
+				};
+
+				consumptions.push(Consumption {
+					handle,
+					stages,
+					access,
+					layout,
+				});
+			}
+		}
+
+		self.consume_resources(consumptions);
 	}
 
 	fn finish(mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
@@ -513,8 +557,100 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 }
 
 impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
-	fn bind_descriptor_sets(&mut self, _sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut Self {
-		// TODO: Map descriptor sets to Metal argument buffers and encoder bindings.
+	fn bind_descriptor_sets(&mut self, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut Self {
+		if sets.is_empty() {
+			return self;
+		}
+
+		let pipeline_layout_handle = self.active_pipeline_layout.expect(
+			"No pipeline layout is active. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
+		);
+		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
+
+		for descriptor_set_handle in sets {
+			let descriptor_set_handle = descriptor_set::DescriptorSetHandle(descriptor_set_handle.0);
+			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
+			let set_index = *pipeline_layout
+				.descriptor_set_template_indices
+				.get(&descriptor_set.descriptor_set_layout)
+				.expect(
+					"Descriptor set layout not found in the active Metal pipeline layout. The most likely cause is that a descriptor set incompatible with the currently bound pipeline was bound.",
+				);
+
+			if (set_index as usize) < self.bound_descriptor_set_handles.len() {
+				self.bound_descriptor_set_handles[set_index as usize] = (set_index, descriptor_set_handle);
+				self.bound_descriptor_set_handles.truncate(set_index as usize + 1);
+			} else {
+				assert_eq!(set_index as usize, self.bound_descriptor_set_handles.len());
+				self.bound_descriptor_set_handles.push((set_index, descriptor_set_handle));
+			}
+		}
+
+		let bound_pipeline = self.bound_pipeline.expect(
+			"No pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
+		);
+		let pipeline = self.device.pipelines[bound_pipeline.0 as usize].clone();
+
+		for &(set_index, descriptor_set_handle) in &self.bound_descriptor_set_handles {
+			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
+			let descriptor_set_layout = &self.device.descriptor_sets_layouts[descriptor_set.descriptor_set_layout.0 as usize];
+			let frame_state = &descriptor_set.frames[self.sequence_index as usize];
+			let binding_index = ARGUMENT_BUFFER_BINDING_BASE + set_index;
+
+			match &pipeline.pipeline {
+				PipelineState::Raster(_) => {
+					if let Some(encoder) = self.active_render_encoder.as_ref() {
+						if descriptor_set_layout
+							.bindings
+							.iter()
+							.any(|binding| binding.stages.intersects(crate::Stages::VERTEX))
+						{
+							unsafe {
+								encoder.setVertexBuffer_offset_atIndex(
+									Some(frame_state.argument_buffer.as_ref()),
+									0,
+									binding_index as _,
+								);
+							}
+						}
+
+						if descriptor_set_layout
+							.bindings
+							.iter()
+							.any(|binding| binding.stages.intersects(crate::Stages::FRAGMENT))
+						{
+							unsafe {
+								encoder.setFragmentBuffer_offset_atIndex(
+									Some(frame_state.argument_buffer.as_ref()),
+									0,
+									binding_index as _,
+								);
+							}
+						}
+					}
+				}
+				PipelineState::Compute(_) => {
+					if let Some(encoder) = self.active_compute_encoder.as_ref() {
+						if descriptor_set_layout
+							.bindings
+							.iter()
+							.any(|binding| binding.stages.intersects(crate::Stages::COMPUTE))
+						{
+							unsafe {
+								encoder.setBuffer_offset_atIndex(
+									Some(frame_state.argument_buffer.as_ref()),
+									0,
+									binding_index as _,
+								);
+							}
+						}
+					}
+				}
+				PipelineState::RayTracing => {}
+			}
+		}
+
+		self.consume_bound_descriptor_resources();
 		self.bound_pipeline_layout = self.active_pipeline_layout;
 		self
 	}

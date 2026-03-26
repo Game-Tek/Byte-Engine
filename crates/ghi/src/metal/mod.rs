@@ -20,6 +20,7 @@ use self::sampler::SamplerHandle;
 use self::synchronizer::SynchronizerHandle;
 use crate::graphics_hardware_interface;
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum Descriptor {
 	Image {
 		image: ImageHandle,
@@ -37,6 +38,17 @@ pub(super) enum Descriptor {
 	Sampler {
 		sampler: SamplerHandle,
 	},
+}
+
+impl Descriptor {
+	pub(super) fn tracked_resource(self) -> Option<Handle> {
+		match self {
+			Descriptor::Buffer { buffer, .. } => Some(Handle::Buffer(buffer)),
+			Descriptor::Image { image, .. } => Some(Handle::Image(image)),
+			Descriptor::CombinedImageSampler { image, .. } => Some(Handle::Image(image)),
+			Descriptor::Sampler { .. } => None,
+		}
+	}
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -95,7 +107,57 @@ fn update_layer_extent(layer: &CAMetalLayer, view: &NSView) -> Extent {
 
 #[derive(Clone)]
 pub(crate) struct DescriptorSetLayout {
-	bindings: Vec<(crate::descriptors::DescriptorType, u32)>,
+	bindings: Vec<DescriptorSetLayoutBinding>,
+	argument_encoder: Retained<ProtocolObject<dyn mtl::MTLArgumentEncoder>>,
+	encoded_length: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct DescriptorSetLayoutBinding {
+	binding: u32,
+	descriptor_type: crate::descriptors::DescriptorType,
+	descriptor_count: u32,
+	stages: crate::Stages,
+	immutable_samplers: Option<Vec<graphics_hardware_interface::SamplerHandle>>,
+	argument_slots: ArgumentBindingSlots,
+}
+
+#[derive(Clone)]
+pub(crate) enum ArgumentBindingSlots {
+	Buffer(Vec<u32>),
+	Texture(Vec<u32>),
+	Sampler(Vec<u32>),
+	CombinedImageSampler { textures: Vec<u32>, samplers: Vec<u32> },
+}
+
+impl DescriptorSetLayout {
+	pub(crate) fn binding(&self, binding: u32) -> Option<&DescriptorSetLayoutBinding> {
+		self.bindings.iter().find(|layout_binding| layout_binding.binding == binding)
+	}
+}
+
+impl DescriptorSetLayoutBinding {
+	pub(crate) fn slot_for_array_element(&self, array_element: u32) -> DescriptorBindingSlot {
+		let index = array_element as usize;
+
+		match &self.argument_slots {
+			ArgumentBindingSlots::Buffer(indices) => DescriptorBindingSlot::Buffer(indices[index]),
+			ArgumentBindingSlots::Texture(indices) => DescriptorBindingSlot::Texture(indices[index]),
+			ArgumentBindingSlots::Sampler(indices) => DescriptorBindingSlot::Sampler(indices[index]),
+			ArgumentBindingSlots::CombinedImageSampler { textures, samplers } => DescriptorBindingSlot::CombinedImageSampler {
+				texture: textures[index],
+				sampler: samplers[index],
+			},
+		}
+	}
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum DescriptorBindingSlot {
+	Buffer(u32),
+	Texture(u32),
+	Sampler(u32),
+	CombinedImageSampler { texture: u32, sampler: u32 },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -182,6 +244,12 @@ pub(crate) struct DebugCallbackData {
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) struct TransitionState {
 	layout: crate::Layouts,
+}
+
+#[derive(Clone)]
+pub(crate) struct DescriptorSetFrameState {
+	argument_buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+	descriptors: HashMap<u32, HashMap<u32, Descriptor>>,
 }
 
 pub(crate) struct Mesh {
@@ -799,6 +867,7 @@ pub mod descriptor_set {
 	pub(crate) struct DescriptorSet {
 		pub next: Option<DescriptorSetHandle>,
 		pub descriptor_set_layout: graphics_hardware_interface::DescriptorSetTemplateHandle,
+		pub frames: Vec<DescriptorSetFrameState>,
 	}
 
 	impl Next for DescriptorSet {

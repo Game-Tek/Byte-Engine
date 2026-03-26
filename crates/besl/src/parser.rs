@@ -805,7 +805,7 @@ fn parse_variable<'i, 'a: 'i>(
 
 	expressions.push(Atoms::Member { name });
 
-	let lexers = vec![parse_operator, parse_accessor];
+	let lexers = vec![parse_operator, parse_accessor, parse_index_accessor];
 
 	try_execute_expression_parsers(&lexers, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)))
 }
@@ -821,6 +821,19 @@ fn parse_accessor<'i, 'a: 'i>(
 	let lexers: Vec<ExpressionParser<'i, 'a>> = vec![parse_variable];
 
 	execute_expression_parsers(&lexers, iterator, expressions)
+}
+
+fn parse_index_accessor<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	let _ = iterator.next_str("[")?;
+	expressions.push(Atoms::Accessor);
+	let (expressions, mut iterator) = execute_expression_parsers(&[parse_rvalue], iterator, expressions)?;
+	iterator.next_str("]")?;
+
+	let lexers = vec![parse_operator, parse_accessor, parse_index_accessor];
+	try_execute_expression_parsers(&lexers, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)))
 }
 
 fn is_number_literal(s: &str) -> bool {
@@ -905,7 +918,7 @@ fn parse_function_call<'i, 'a: 'i>(
 		parameters,
 	});
 
-	let possible_following_expressions = vec![parse_operator, parse_accessor];
+	let possible_following_expressions = vec![parse_operator, parse_accessor, parse_index_accessor];
 
 	try_execute_expression_parsers(&possible_following_expressions, iterator.clone(), expressions.clone())
 		.unwrap_or(Ok((expressions, iterator)))
@@ -1648,6 +1661,34 @@ main: fn () -> void {
 			}
 		} else {
 			panic!("Not root node")
+		}
+	}
+
+	#[test]
+	fn parse_array_index_accessor() {
+		let source = "
+main: fn () -> void {
+	let n: u32 = values[1];
+}";
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+
+		let main_node = &node["main"];
+		if let Nodes::Function { statements, .. } = &main_node.node {
+			let statement = &statements[0];
+			if let Nodes::Expression(Expressions::Operator { right, .. }) = &statement.node {
+				if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
+					assert!(matches!(left.node, Nodes::Expression(Expressions::Member { name }) if name == "values"));
+					assert!(matches!(right.node, Nodes::Expression(Expressions::Literal { value }) if value == "1"));
+				} else {
+					panic!("Not an accessor");
+				}
+			} else {
+				panic!("Not an operator");
+			}
+		} else {
+			panic!("Not a function");
 		}
 	}
 }

@@ -2025,6 +2025,53 @@ color: In<vec4f>;
 		}
 	}
 
+	#[test]
+	fn lex_array_index_accessor() {
+		let script = r#"
+		main: fn () -> void {
+			let value: f32 = buff.values[1];
+		}
+		"#;
+
+		let mut root = Node::root();
+		let float_type = root.get_child("f32").expect("Expected f32");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::array("values", float_type, 3)],
+				},
+				0,
+				0,
+				true,
+				false,
+			)
+			.into(),
+		);
+
+		let node = crate::compile_to_besl(script, Some(root)).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let statement = statements[0].borrow();
+		let Nodes::Expression(Expressions::Operator { right, .. }) = statement.node() else {
+			panic!("Expected assignment");
+		};
+		let right = right.borrow();
+		let Nodes::Expression(Expressions::Accessor { left, right }) = right.node() else {
+			panic!("Expected outer accessor");
+		};
+		assert!(matches!(right.borrow().node(), Nodes::Expression(Expressions::Literal { value }) if value == "1"));
+		assert!(matches!(
+			left.borrow().node(),
+			Nodes::Expression(Expressions::Accessor { .. })
+		));
+	}
+
 	// #[test]
 	// fn push_constant() {
 	// }

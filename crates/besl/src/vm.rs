@@ -73,6 +73,7 @@ pub struct BufferMemberLayout {
 	name: String,
 	offset: usize,
 	value_type: ValueType,
+	count: usize,
 }
 
 impl BufferMemberLayout {
@@ -86,6 +87,10 @@ impl BufferMemberLayout {
 
 	pub fn value_type(&self) -> &ValueType {
 		&self.value_type
+	}
+
+	pub const fn count(&self) -> usize {
+		self.count
 	}
 }
 
@@ -144,6 +149,11 @@ impl Buffer {
 	/// Reads a VM value from the buffer layout by member name.
 	pub fn read(&self, member_name: &str) -> Result<Value, VmError> {
 		let member = self.member_layout(member_name)?;
+		if member.count() != 1 {
+			return Err(VmError::UnsupportedBufferLayout {
+				message: format!("Array member `{}` requires an element index", member_name),
+			});
+		}
 
 		self.read_value(member.offset, &member.value_type)
 	}
@@ -152,6 +162,11 @@ impl Buffer {
 	pub fn write(&mut self, member_name: &str, value: Value) -> Result<(), VmError> {
 		let (offset, value_type) = {
 			let member = self.member_layout(member_name)?;
+			if member.count() != 1 {
+				return Err(VmError::UnsupportedBufferLayout {
+					message: format!("Array member `{}` requires an element index", member_name),
+				});
+			}
 			(member.offset, member.value_type.clone())
 		};
 
@@ -555,6 +570,21 @@ impl ExecutableProgram {
 					let value = descriptors.buffer_mut(*slot)?.read_value(*offset, value_type)?;
 					registers[*register] = Some(value);
 				}
+				Instruction::LoadBufferIndexed {
+					register,
+					slot,
+					offset,
+					stride,
+					count,
+					index,
+					value_type,
+				} => {
+					let index = read_buffer_array_index(&registers, *index, *count)?;
+					let value = descriptors
+						.buffer_mut(*slot)?
+						.read_value(*offset + *stride * index, value_type)?;
+					registers[*register] = Some(value);
+				}
 				Instruction::FetchTexture { register, slot, coord } => {
 					let coord = read_register(&registers, *coord)?;
 					let Value::Vec2U(coord) = coord else {
@@ -604,6 +634,21 @@ impl ExecutableProgram {
 				} => {
 					let value = read_register(&registers, *register)?;
 					descriptors.buffer_mut(*slot)?.write_value(*offset, value_type, &value)?;
+				}
+				Instruction::StoreBufferIndexed {
+					slot,
+					offset,
+					stride,
+					count,
+					index,
+					value_type,
+					register,
+				} => {
+					let index = read_buffer_array_index(&registers, *index, *count)?;
+					let value = read_register(&registers, *register)?;
+					descriptors
+						.buffer_mut(*slot)?
+						.write_value(*offset + *stride * index, value_type, &value)?;
 				}
 				Instruction::Call {
 					register,
@@ -703,6 +748,15 @@ enum Instruction {
 		offset: usize,
 		value_type: ValueType,
 	},
+	LoadBufferIndexed {
+		register: usize,
+		slot: DescriptorSlot,
+		offset: usize,
+		stride: usize,
+		count: usize,
+		index: usize,
+		value_type: ValueType,
+	},
 	FetchTexture {
 		register: usize,
 		slot: DescriptorSlot,
@@ -721,6 +775,15 @@ enum Instruction {
 	StoreBuffer {
 		slot: DescriptorSlot,
 		offset: usize,
+		value_type: ValueType,
+		register: usize,
+	},
+	StoreBufferIndexed {
+		slot: DescriptorSlot,
+		offset: usize,
+		stride: usize,
+		count: usize,
+		index: usize,
 		value_type: ValueType,
 		register: usize,
 	},
@@ -866,12 +929,24 @@ impl Compiler {
 
 				let target = self.resolve_buffer_access(&left, RequiredAccess::Write, descriptor_layouts)?;
 				let register = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
-				self.instructions.push(Instruction::StoreBuffer {
-					slot: target.slot,
-					offset: target.offset,
-					value_type: target.value_type,
-					register,
-				});
+				if let Some(index) = target.index {
+					self.instructions.push(Instruction::StoreBufferIndexed {
+						slot: target.slot,
+						offset: target.offset,
+						stride: target.stride,
+						count: target.count,
+						index,
+						value_type: target.value_type,
+						register,
+					});
+				} else {
+					self.instructions.push(Instruction::StoreBuffer {
+						slot: target.slot,
+						offset: target.offset,
+						value_type: target.value_type,
+						register,
+					});
+				}
 				Ok(())
 			}
 			node => Err(VmError::UnsupportedAssignmentTarget {
@@ -988,12 +1063,24 @@ impl Compiler {
 				}
 
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::LoadBuffer {
-					register,
-					slot: target.slot,
-					offset: target.offset,
-					value_type: target.value_type,
-				});
+				if let Some(index) = target.index {
+					self.instructions.push(Instruction::LoadBufferIndexed {
+						register,
+						slot: target.slot,
+						offset: target.offset,
+						stride: target.stride,
+						count: target.count,
+						index,
+						value_type: target.value_type,
+					});
+				} else {
+					self.instructions.push(Instruction::LoadBuffer {
+						register,
+						slot: target.slot,
+						offset: target.offset,
+						value_type: target.value_type,
+					});
+				}
 				Ok(register)
 			}
 			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
@@ -1264,7 +1351,7 @@ impl Compiler {
 		access: RequiredAccess,
 		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
 	) -> Result<ResolvedBufferAccess, VmError> {
-		let (binding, member_name) = extract_buffer_member_access(expression)?;
+		let (binding, member_name, index_expression) = extract_buffer_member_access(expression)?;
 
 		let binding_ref = binding.borrow();
 		let (slot, layout) = match binding_ref.node() {
@@ -1329,10 +1416,29 @@ impl Compiler {
 		let member = layout.member(&member_name).ok_or_else(|| VmError::UnknownBufferMember {
 			member: member_name.clone(),
 		})?;
+		if member.count() == 1 && index_expression.is_some() {
+			return Err(VmError::UnsupportedExpression {
+				message: format!("Buffer member `{}` is not an array and cannot be indexed", member_name),
+			});
+		}
+		if member.count() > 1 && index_expression.is_none() {
+			return Err(VmError::UnsupportedExpression {
+				message: format!("Buffer member `{}` is an array and requires an element index", member_name),
+			});
+		}
+		let index = match index_expression {
+			Some(index_expression) => {
+				Some(self.compile_value_expression(&index_expression, &ValueType::U32, descriptor_layouts)?)
+			}
+			None => None,
+		};
 
 		Ok(ResolvedBufferAccess {
 			slot,
 			offset: member.offset,
+			stride: member.value_type.size(),
+			count: member.count(),
+			index,
 			value_type: member.value_type.clone(),
 		})
 	}
@@ -1582,6 +1688,9 @@ impl Compiler {
 struct ResolvedBufferAccess {
 	slot: DescriptorSlot,
 	offset: usize,
+	stride: usize,
+	count: usize,
+	index: Option<usize>,
 	value_type: ValueType,
 }
 
@@ -1736,19 +1845,15 @@ fn compile_buffer_layout(members: &[NodeReference]) -> Result<BufferLayout, VmEr
 		let member = member.borrow();
 		match member.node() {
 			Nodes::Member { name, r#type, count } => {
-				if count.is_some() {
-					return Err(VmError::UnsupportedBufferLayout {
-						message: format!("Array members are not supported for `{}`", name),
-					});
-				}
-
 				let value_type = resolve_value_type(r#type)?;
+				let count = count.map(std::num::NonZeroUsize::get).unwrap_or(1);
 				compiled_members.push(BufferMemberLayout {
 					name: name.clone(),
 					offset,
 					value_type: value_type.clone(),
+					count,
 				});
-				offset += value_type.size();
+				offset += value_type.size() * count;
 			}
 			node => {
 				return Err(VmError::UnsupportedBufferLayout {
@@ -1764,13 +1869,23 @@ fn compile_buffer_layout(members: &[NodeReference]) -> Result<BufferLayout, VmEr
 	})
 }
 
-fn extract_buffer_member_access(expression: &NodeReference) -> Result<(NodeReference, String), VmError> {
+fn extract_buffer_member_access(expression: &NodeReference) -> Result<(NodeReference, String, Option<NodeReference>), VmError> {
 	let borrowed = expression.borrow();
 	match borrowed.node() {
 		Nodes::Expression(Expressions::Accessor { left, right }) => {
-			let binding = extract_binding_reference(left)?;
-			let member_name = extract_member_name(right)?;
-			Ok((binding, member_name))
+			if is_buffer_member_selector(right) {
+				let binding = extract_binding_reference(left)?;
+				let member_name = extract_member_name(right)?;
+				Ok((binding, member_name, None))
+			} else {
+				let (binding, member_name, index) = extract_buffer_member_access(left)?;
+				if index.is_some() {
+					return Err(VmError::UnsupportedExpression {
+						message: "Nested array indexing is not supported".to_string(),
+					});
+				}
+				Ok((binding, member_name, Some(right.clone())))
+			}
 		}
 		node => Err(VmError::UnsupportedExpression {
 			message: format!("Expected a buffer member accessor, but found {}", describe_node(node)),
@@ -1813,6 +1928,22 @@ fn extract_member_name(expression: &NodeReference) -> Result<String, VmError> {
 			message: format!("Expected a buffer member name, but found {}", describe_node(node)),
 		}),
 	}
+}
+
+fn is_buffer_member_selector(expression: &NodeReference) -> bool {
+	let borrowed = expression.borrow();
+	let source = match borrowed.node() {
+		Nodes::Expression(Expressions::Member { source, .. }) => source.clone(),
+		_ => return false,
+	};
+	drop(borrowed);
+
+	let is_selector = matches!(
+		source.borrow().node(),
+		Nodes::Binding { .. } | Nodes::Member { .. } | Nodes::Expression(Expressions::Accessor { .. })
+	);
+
+	is_selector
 }
 
 fn describe_node(node: &Nodes) -> &'static str {
@@ -2181,6 +2312,22 @@ fn read_register(registers: &[Option<ScalarValue>], register: usize) -> Result<S
 		.ok_or(VmError::UninitializedRegister { register })
 }
 
+fn read_buffer_array_index(registers: &[Option<ScalarValue>], register: usize, count: usize) -> Result<usize, VmError> {
+	let index = read_register(registers, register)?;
+	let ScalarValue::U32(index) = index else {
+		return Err(VmError::TypeMismatch {
+			expected: ValueType::U32.name().to_string(),
+			found: index.value_type().name().to_string(),
+		});
+	};
+	let index = index as usize;
+	if index >= count {
+		return Err(VmError::BufferArrayIndexOutOfBounds { index, count });
+	}
+
+	Ok(index)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum VmError {
 	MissingMainFunction,
@@ -2229,6 +2376,10 @@ pub enum VmError {
 		offset: usize,
 		size: usize,
 		buffer_size: usize,
+	},
+	BufferArrayIndexOutOfBounds {
+		index: usize,
+		count: usize,
 	},
 	TextureAccessOutOfBounds {
 		x: u32,
@@ -2344,6 +2495,11 @@ impl std::fmt::Display for VmError {
 				f,
 				"Buffer access out of bounds at byte {} for {} bytes in a {} byte buffer. The most likely cause is that the bound buffer does not match the compiled BESL buffer layout.",
 				offset, size, buffer_size
+			),
+			VmError::BufferArrayIndexOutOfBounds { index, count } => write!(
+				f,
+				"Buffer array index {} is out of bounds for {} elements. The most likely cause is that the BESL program indexed a buffer array member outside its declared length.",
+				index, count
 			),
 			VmError::TextureAccessOutOfBounds { x, y, width, height } => write!(
 				f,
@@ -3069,5 +3225,59 @@ mod tests {
 			image.fetch([1, 0]).expect("Expected image fetch"),
 			Value::Vec4F([0.25, 0.5, 0.75, 1.0])
 		);
+	}
+
+	#[test]
+	fn executable_program_reads_and_writes_buffer_array_elements() {
+		let script = r#"
+		main: fn () -> void {
+			let index: u32 = 1;
+			buff.values[index] = 7.5;
+			buff.value = buff.values[index];
+		}
+		"#;
+
+		let mut root = Node::root();
+		let float_type = root.get_child("f32").expect("Expected f32");
+
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![
+						Node::array("values", float_type.clone(), 3),
+						Node::member("value", float_type).into(),
+					],
+				},
+				0,
+				12,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 12);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout.clone());
+		let values_member = layout.member("values").expect("Expected values member");
+		buffer
+			.write_value(
+				values_member.offset() + values_member.value_type().size(),
+				values_member.value_type(),
+				&Value::F32(2.5),
+			)
+			.expect("Expected array element write to succeed");
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(read_f32s(&buffer, 4), vec![0.0, 7.5, 0.0, 7.5]);
 	}
 }

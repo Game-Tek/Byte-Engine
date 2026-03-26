@@ -601,6 +601,14 @@ impl ExecutableProgram {
 					let right = read_register(&registers, *right)?;
 					registers[*register] = Some(apply_cross_product(&left, &right)?);
 				}
+				Instruction::Length { register, value } => {
+					let value = read_register(&registers, *value)?;
+					registers[*register] = Some(apply_length(&value)?);
+				}
+				Instruction::Normalize { register, value } => {
+					let value = read_register(&registers, *value)?;
+					registers[*register] = Some(apply_normalize(&value)?);
+				}
 				Instruction::LoadLocal { register, local } => {
 					let value = locals
 						.get(*local)
@@ -804,6 +812,14 @@ enum Instruction {
 		register: usize,
 		left: usize,
 		right: usize,
+	},
+	Length {
+		register: usize,
+		value: usize,
+	},
+	Normalize {
+		register: usize,
+		value: usize,
 	},
 	LoadLocal {
 		register: usize,
@@ -1205,7 +1221,7 @@ impl Compiler {
 		};
 		drop(intrinsic_ref);
 
-		if &return_type != expected_type {
+		if name != "normalize" && &return_type != expected_type {
 			return Err(VmError::TypeMismatch {
 				expected: expected_type.name().to_string(),
 				found: return_type.name().to_string(),
@@ -1278,6 +1294,56 @@ impl Compiler {
 				let right = self.compile_value_expression(&arguments[1], &ValueType::Vec3F, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::CrossProduct { register, left, right });
+				Ok(register)
+			}
+			"length" => {
+				if arguments.len() != 1 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 1,
+						found: arguments.len(),
+					});
+				}
+
+				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
+					.into_iter()
+					.find(|candidate| {
+						self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
+					})
+					.ok_or_else(|| VmError::UnsupportedExpression {
+						message: "`length` expects one float vector argument".to_string(),
+					})?;
+
+				let value = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::Length { register, value });
+				Ok(register)
+			}
+			"normalize" => {
+				if arguments.len() != 1 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 1,
+						found: arguments.len(),
+					});
+				}
+
+				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
+					.into_iter()
+					.find(|candidate| {
+						self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
+					})
+					.ok_or_else(|| VmError::UnsupportedExpression {
+						message: "`normalize` expects one float vector argument".to_string(),
+					})?;
+				if &supported_type != expected_type {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: supported_type.name().to_string(),
+					});
+				}
+
+				let value = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::Normalize { register, value });
 				Ok(register)
 			}
 			_ => Err(VmError::UnsupportedExpression {
@@ -2637,6 +2703,30 @@ fn apply_cross_product(left: &ScalarValue, right: &ScalarValue) -> Result<Scalar
 	}
 }
 
+fn apply_length(value: &ScalarValue) -> Result<ScalarValue, VmError> {
+	match value {
+		ScalarValue::Vec2F(value) => Ok(ScalarValue::F32(dot_product(*value, *value).sqrt())),
+		ScalarValue::Vec3F(value) => Ok(ScalarValue::F32(dot_product(*value, *value).sqrt())),
+		ScalarValue::Vec4F(value) => Ok(ScalarValue::F32(dot_product(*value, *value).sqrt())),
+		value => Err(VmError::TypeMismatch {
+			expected: "float vector".to_string(),
+			found: value.value_type().name().to_string(),
+		}),
+	}
+}
+
+fn apply_normalize(value: &ScalarValue) -> Result<ScalarValue, VmError> {
+	match value {
+		ScalarValue::Vec2F(value) => normalize_vector(*value).map(ScalarValue::Vec2F),
+		ScalarValue::Vec3F(value) => normalize_vector(*value).map(ScalarValue::Vec3F),
+		ScalarValue::Vec4F(value) => normalize_vector(*value).map(ScalarValue::Vec4F),
+		value => Err(VmError::TypeMismatch {
+			expected: "float vector".to_string(),
+			found: value.value_type().name().to_string(),
+		}),
+	}
+}
+
 fn dot_product<const N: usize>(left: [f32; N], right: [f32; N]) -> f32 {
 	let mut value = 0.0;
 	for index in 0..N {
@@ -2651,6 +2741,21 @@ fn cross_product(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
 		left[2] * right[0] - left[0] * right[2],
 		left[0] * right[1] - left[1] * right[0],
 	]
+}
+
+fn normalize_vector<const N: usize>(value: [f32; N]) -> Result<[f32; N], VmError> {
+	let length = dot_product(value, value).sqrt();
+	if length == 0.0 {
+		return Err(VmError::ArithmeticError {
+			message: "Cannot normalize a zero-length vector".to_string(),
+		});
+	}
+
+	let mut normalized = [0.0; N];
+	for index in 0..N {
+		normalized[index] = value[index] / length;
+	}
+	Ok(normalized)
 }
 
 fn read_register(registers: &[Option<ScalarValue>], register: usize) -> Result<ScalarValue, VmError> {
@@ -4071,5 +4176,85 @@ mod tests {
 		}
 
 		assert_eq!(read_f32s(&buffer, 3), vec![0.0, 0.0, 1.0]);
+	}
+
+	#[test]
+	fn executable_program_evaluates_length_intrinsics() {
+		let script = r#"
+		main: fn () -> void {
+			buff.value = length(vec3f(3.0, 4.0, 0.0));
+		}
+		"#;
+
+		let mut root = Node::root();
+		let float_type = root.get_child("f32").expect("Expected f32");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", float_type).into()],
+				},
+				0,
+				19,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 19);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 5.0);
+	}
+
+	#[test]
+	fn executable_program_evaluates_normalize_intrinsics() {
+		let script = r#"
+		main: fn () -> void {
+			buff.value = normalize(vec3f(3.0, 4.0, 0.0));
+		}
+		"#;
+
+		let mut root = Node::root();
+		let vec3f_type = root.get_child("vec3f").expect("Expected vec3f");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", vec3f_type).into()],
+				},
+				0,
+				20,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 20);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(read_f32s(&buffer, 3), vec![0.6, 0.8, 0.0]);
 	}
 }

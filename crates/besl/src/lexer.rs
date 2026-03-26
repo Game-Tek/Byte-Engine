@@ -394,6 +394,8 @@ impl Node {
 			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
 			vec3f32.clone(),
 		);
+		let length_intrinsic = builtin_intrinsic("length", vec![("value", vec4f32.clone())], f32_t.clone());
+		let normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone());
 		let write_intrinsic = builtin_intrinsic(
 			"write",
 			vec![
@@ -427,6 +429,8 @@ impl Node {
 			fetch_intrinsic,
 			dot_intrinsic,
 			cross_intrinsic,
+			length_intrinsic,
+			normalize_intrinsic,
 			write_intrinsic,
 		]);
 
@@ -2521,6 +2525,55 @@ main: fn () -> void {
 						_ => panic!("Expected intrinsic"),
 					}
 				}
+				_ => panic!("Expected intrinsic call"),
+			},
+			_ => panic!("Expected assignment"),
+		}
+	}
+
+	#[test]
+	fn lex_builtin_length_and_normalize_intrinsics() {
+		let script = r#"
+		main: fn () -> void {
+			let magnitude: f32 = length(vec3f(3.0, 4.0, 0.0));
+			let direction: vec3f = normalize(vec3f(3.0, 4.0, 0.0));
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let magnitude = statements[0].borrow();
+		let direction = statements[1].borrow();
+
+		match magnitude.node() {
+			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
+				Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
+					Nodes::Intrinsic { name, r#return, .. } => {
+						assert_eq!(name, "length");
+						assert_type(&r#return.borrow(), "f32");
+					}
+					_ => panic!("Expected intrinsic"),
+				},
+				_ => panic!("Expected intrinsic call"),
+			},
+			_ => panic!("Expected assignment"),
+		}
+
+		match direction.node() {
+			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
+				Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
+					Nodes::Intrinsic { name, r#return, .. } => {
+						assert_eq!(name, "normalize");
+						assert_type(&r#return.borrow(), "vec4f");
+					}
+					_ => panic!("Expected intrinsic"),
+				},
 				_ => panic!("Expected intrinsic call"),
 			},
 			_ => panic!("Expected assignment"),

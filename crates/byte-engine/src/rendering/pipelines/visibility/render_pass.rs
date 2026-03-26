@@ -2,16 +2,16 @@ use std::borrow::Borrow as _;
 
 use crate::rendering::pipelines::visibility::scene_manager::Instance;
 use crate::rendering::pipelines::visibility::{
+	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
+	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS,
+	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+	SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
+	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
 	get_material_count_source, get_material_offset_source, get_pixel_mapping_source, get_shadow_pass_mesh_source,
-	get_visibility_pass_mesh_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
-	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS,
-	MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
-	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING,
-	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
-	VISIBILITY_PASS_FRAGMENT_SOURCE,
+	get_visibility_pass_mesh_source,
 };
 use crate::rendering::render_pass::RenderPassFunction;
-use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
+use crate::rendering::{RenderPass, Viewport, render_pass::RenderPassReturn};
 use ghi::command_buffer::{
 	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
@@ -139,6 +139,7 @@ void compute_radii(vec3 view_position, ivec2 extent, out float screen_radius, ou
 float sample_direction(vec3 center_position, vec3 normal, vec2 direction, float screen_radius, float world_radius, ivec2 extent, float noise) {
 	float max_occlusion = 0.0;
 	float radius_sq = world_radius * world_radius;
+	bool hit_far_foreground = false;
 
 	for (int step = 1; step <= GTAO_STEPS; ++step) {
 		// Jitter step position using noise rotated per step to break stripe patterns
@@ -162,7 +163,12 @@ float sample_direction(vec3 center_position, vec3 normal, vec2 direction, float 
 		vec3 sample_vector = sample_position - center_position;
 		float distance_sq = dot(sample_vector, sample_vector);
 
-		if (distance_sq <= 1e-5 || distance_sq > radius_sq) {
+		if (distance_sq <= 1e-5) {
+			continue;
+		}
+
+		if (distance_sq > radius_sq) {
+			if (sample_position.z > center_position.z) hit_far_foreground = true;
 			continue;
 		}
 
@@ -170,6 +176,13 @@ float sample_direction(vec3 center_position, vec3 normal, vec2 direction, float 
 		float alignment = max(dot(normal, sample_direction_vector) - GTAO_BIAS, 0.0);
 		float falloff = 1.0 - distance_sq / radius_sq;
 		max_occlusion = max(max_occlusion, alignment * falloff * falloff);
+	}
+
+	// If the direction is blocked by a far foreground object, the true background is hidden.
+	// Falling back to 0.0 causes a bright "white halo" band because the hidden background's self-occlusion is lost.
+	// Returning a baseline self-occlusion prevents the halo without artificially amplifying local shadows.
+	if (hit_far_foreground) {
+		return max(max_occlusion, 0.3); // Baseline occlusion for blocked rays
 	}
 
 	return max_occlusion;
@@ -1065,7 +1078,7 @@ mod tests {
 
 	#[test]
 	fn gtao_view_space_reconstruction_z_is_positive() {
-		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
+		use math::{Matrix4, Vector3, Vector4, mat::MatInverse as _};
 
 		let near = 0.1f32;
 		let far = 100.0f32;
@@ -1171,7 +1184,7 @@ mod tests {
 	/// where depth varies per pixel, and checks for normal sign flips at different distances.
 	#[test]
 	fn gtao_normal_on_floor_plane() {
-		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
+		use math::{Matrix4, Vector3, Vector4, mat::MatInverse as _};
 
 		let near = 0.1f32;
 		let far = 100.0f32;
@@ -1228,7 +1241,7 @@ mod tests {
 			if hit_z < near || hit_z > far {
 				return None;
 			} // outside clip range
-	 // Project hit point to get depth
+			// Project hit point to get depth
 			let hit_x = p.x * t;
 			let clip = proj * Vector4::new(hit_x, floor_y, hit_z, 1.0);
 			Some((hit_z, clip.z / clip.w))
@@ -1237,11 +1250,7 @@ mod tests {
 		let min_diff = |p: Vector3, a: Vector3, b: Vector3| -> Vector3 {
 			let ap = Vector3::new(a.x - p.x, a.y - p.y, a.z - p.z);
 			let bp = Vector3::new(p.x - b.x, p.y - b.y, p.z - b.z);
-			if math::dot(ap, ap) < math::dot(bp, bp) {
-				ap
-			} else {
-				bp
-			}
+			if math::dot(ap, ap) < math::dot(bp, bp) { ap } else { bp }
 		};
 
 		eprintln!("\n--- Floor plane normal reconstruction ---");

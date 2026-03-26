@@ -163,6 +163,8 @@ pub(crate) enum DescriptorBindingSlot {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PipelineLayout {
 	descriptor_set_template_indices: HashMap<graphics_hardware_interface::DescriptorSetTemplateHandle, u32>,
+	push_constant_ranges: Vec<crate::pipelines::PushConstantRange>,
+	push_constant_size: usize,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -175,6 +177,7 @@ struct PipelineLayoutKey {
 pub(crate) struct VertexLayout {
 	elements: Vec<VertexElementDescriptor>,
 	strides: Vec<u32>,
+	vertex_descriptor: Retained<mtl::MTLVertexDescriptor>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -653,6 +656,25 @@ mod utils {
 			crate::DataTypes::UInt2 => std::mem::size_of::<u32>() * 2,
 			crate::DataTypes::UInt3 => std::mem::size_of::<u32>() * 3,
 			crate::DataTypes::UInt4 => std::mem::size_of::<u32>() * 4,
+		}
+	}
+
+	pub(crate) fn vertex_format(format: crate::DataTypes) -> mtl::MTLVertexFormat {
+		match format {
+			crate::DataTypes::Float => mtl::MTLVertexFormat::Float,
+			crate::DataTypes::Float2 => mtl::MTLVertexFormat::Float2,
+			crate::DataTypes::Float3 => mtl::MTLVertexFormat::Float3,
+			crate::DataTypes::Float4 => mtl::MTLVertexFormat::Float4,
+			crate::DataTypes::U8 => mtl::MTLVertexFormat::UChar,
+			crate::DataTypes::U16 => mtl::MTLVertexFormat::UShort,
+			crate::DataTypes::U32 | crate::DataTypes::UInt => mtl::MTLVertexFormat::UInt,
+			crate::DataTypes::Int => mtl::MTLVertexFormat::Int,
+			crate::DataTypes::Int2 => mtl::MTLVertexFormat::Int2,
+			crate::DataTypes::Int3 => mtl::MTLVertexFormat::Int3,
+			crate::DataTypes::Int4 => mtl::MTLVertexFormat::Int4,
+			crate::DataTypes::UInt2 => mtl::MTLVertexFormat::UInt2,
+			crate::DataTypes::UInt3 => mtl::MTLVertexFormat::UInt3,
+			crate::DataTypes::UInt4 => mtl::MTLVertexFormat::UInt4,
 		}
 	}
 

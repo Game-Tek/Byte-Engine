@@ -22,6 +22,8 @@ pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
 pub mod implementation {
+	pub const USES_METAL: bool = cfg!(all(target_os = "macos", feature = "metal"));
+
 	#[cfg(all(target_os = "macos", feature = "metal"))]
 	pub use metal::Instance;
 

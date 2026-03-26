@@ -885,8 +885,15 @@ impl Device {
 			.enumerate()
 			.map(|(i, handle)| (*handle, i as u32))
 			.collect();
+		let push_constant_size = push_constant_ranges
+			.iter()
+			.map(|range| range.offset as usize + range.size as usize)
+			.max()
+			.unwrap_or(0);
 		self.pipeline_layouts.push(PipelineLayout {
 			descriptor_set_template_indices,
+			push_constant_ranges: push_constant_ranges.to_vec(),
+			push_constant_size,
 		});
 		let handle = graphics_hardware_interface::PipelineLayoutHandle((self.pipeline_layouts.len() - 1) as u64);
 		self.pipeline_layout_indices.insert(key, handle);
@@ -917,12 +924,37 @@ impl Device {
 			.map(|binding| binding as usize + 1)
 			.unwrap_or(0);
 		let mut strides = vec![0; max_binding];
+		let vertex_descriptor = mtl::MTLVertexDescriptor::vertexDescriptor();
+		let mut binding_offsets = vec![0usize; max_binding];
 
-		for element in &elements {
+		for (attribute_index, element) in elements.iter().enumerate() {
 			strides[element.binding as usize] += element.format.size() as u32;
+
+			let offset = binding_offsets[element.binding as usize];
+			let attribute = unsafe { vertex_descriptor.attributes().objectAtIndexedSubscript(attribute_index as _) };
+			attribute.setFormat(utils::vertex_format(element.format));
+			unsafe {
+				attribute.setOffset(offset as _);
+				attribute.setBufferIndex(element.binding as _);
+			}
+
+			binding_offsets[element.binding as usize] += utils::data_type_size(element.format);
 		}
 
-		self.vertex_layouts.push(VertexLayout { elements, strides });
+		for (binding, stride) in strides.iter().copied().enumerate() {
+			let layout = unsafe { vertex_descriptor.layouts().objectAtIndexedSubscript(binding as _) };
+			unsafe {
+				layout.setStride(stride as _);
+				layout.setStepRate(1);
+			}
+			layout.setStepFunction(mtl::MTLVertexStepFunction::PerVertex);
+		}
+
+		self.vertex_layouts.push(VertexLayout {
+			elements,
+			strides,
+			vertex_descriptor,
+		});
 		let handle = VertexLayoutHandle((self.vertex_layouts.len() - 1) as u64);
 		self.vertex_layout_indices.insert(key, handle);
 		handle
@@ -966,6 +998,7 @@ impl Device {
 			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
+			descriptor.setVertexDescriptor(Some(&self.vertex_layouts[vertex_layout.0 as usize].vertex_descriptor));
 
 			for (index, attachment) in builder.render_targets.iter().enumerate() {
 				if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
@@ -973,6 +1006,18 @@ impl Device {
 				} else {
 					let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
 					color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
+					match attachment.blend {
+						crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingEnabled(false),
+						crate::pipelines::raster::BlendMode::Alpha => {
+							color_attachment.setBlendingEnabled(true);
+							color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
+							color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
+							color_attachment.setSourceRGBBlendFactor(mtl::MTLBlendFactor::SourceAlpha);
+							color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
+							color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
+							color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
+						}
+					}
 				}
 			}
 

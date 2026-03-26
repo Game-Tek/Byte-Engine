@@ -2,7 +2,9 @@ use std::ptr::NonNull;
 
 use ::utils::hash::HashMap;
 use objc2_foundation::NSString;
-use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture};
+use objc2_metal::{
+	MTLBlitCommandEncoder, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture,
+};
 
 use super::*;
 use crate::command_buffer::{
@@ -11,6 +13,7 @@ use crate::command_buffer::{
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
+const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
 
 pub struct CommandBufferRecording<'a> {
 	device: &'a mut device::Device,
@@ -23,8 +26,10 @@ pub struct CommandBufferRecording<'a> {
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_handles: Vec<(u32, descriptor_set::DescriptorSetHandle)>,
+	bound_vertex_buffers: Vec<(graphics_hardware_interface::BaseBufferHandle, usize)>,
 	bound_vertex_layout: Option<VertexLayoutHandle>,
 	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
+	push_constant_data: Vec<u8>,
 	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>>>,
 	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLRenderCommandEncoder>>>,
 }
@@ -58,8 +63,10 @@ impl<'a> CommandBufferRecording<'a> {
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
 			bound_descriptor_set_handles: Vec::new(),
+			bound_vertex_buffers: Vec::new(),
 			bound_vertex_layout: None,
 			bound_index_buffer: None,
+			push_constant_data: Vec::new(),
 			active_compute_encoder: None,
 			active_render_encoder: None,
 		}
@@ -140,6 +147,55 @@ impl<'a> CommandBufferRecording<'a> {
 		self.consume_resources(consumptions);
 	}
 
+	fn resize_push_constants_for_layout(&mut self, pipeline_layout: graphics_hardware_interface::PipelineLayoutHandle) {
+		let push_constant_size = self.device.pipeline_layouts[pipeline_layout.0 as usize].push_constant_size;
+		self.push_constant_data.clear();
+		self.push_constant_data.resize(push_constant_size, 0);
+	}
+
+	fn apply_bound_vertex_buffers(&self) {
+		let Some(encoder) = self.active_render_encoder.as_ref() else {
+			return;
+		};
+
+		for (binding, (buffer_handle, offset)) in self.bound_vertex_buffers.iter().copied().enumerate() {
+			let buffer = &self.device.buffers[self.get_internal_buffer_handle(buffer_handle).0 as usize];
+			unsafe {
+				encoder.setVertexBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), offset as _, binding as _);
+			}
+		}
+	}
+
+	fn apply_push_constants(&self) {
+		if self.push_constant_data.is_empty() {
+			return;
+		}
+
+		let pointer = NonNull::new(self.push_constant_data.as_ptr() as *mut std::ffi::c_void)
+			.expect("Push constant data pointer was null. The most likely cause is an empty push constant buffer upload.");
+
+		if let Some(encoder) = self.active_render_encoder.as_ref() {
+			unsafe {
+				encoder.setVertexBytes_length_atIndex(
+					pointer,
+					self.push_constant_data.len() as _,
+					PUSH_CONSTANT_BINDING_INDEX as _,
+				);
+				encoder.setFragmentBytes_length_atIndex(
+					pointer,
+					self.push_constant_data.len() as _,
+					PUSH_CONSTANT_BINDING_INDEX as _,
+				);
+			}
+		}
+
+		if let Some(encoder) = self.active_compute_encoder.as_ref() {
+			unsafe {
+				encoder.setBytes_length_atIndex(pointer, self.push_constant_data.len() as _, PUSH_CONSTANT_BINDING_INDEX as _);
+			}
+		}
+	}
+
 	fn finish(mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 		if let Some(encoder) = self.active_compute_encoder.take() {
 			encoder.endEncoding();
@@ -200,7 +256,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 	fn start_render_pass(
 		&mut self,
-		_extent: Extent,
+		extent: Extent,
 		attachments: &[graphics_hardware_interface::AttachmentInformation],
 	) -> &mut impl RasterizationRenderPassMode {
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -253,7 +309,24 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		let rce = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).unwrap();
 
+		rce.setViewport(mtl::MTLViewport {
+			originX: 0.0,
+			originY: 0.0,
+			width: extent.width() as f64,
+			height: extent.height() as f64,
+			znear: 0.0,
+			zfar: 1.0,
+		});
+		rce.setScissorRect(mtl::MTLScissorRect {
+			x: 0,
+			y: 0,
+			width: extent.width() as _,
+			height: extent.height() as _,
+		});
+
 		self.active_render_encoder = Some(rce);
+		self.apply_bound_vertex_buffers();
+		self.apply_push_constants();
 
 		self
 	}
@@ -399,11 +472,40 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 	fn copy_to_swapchain(
 		&mut self,
-		_source_texture_handle: impl graphics_hardware_interface::ImageHandleLike,
-		_present_key: graphics_hardware_interface::PresentKey,
+		source_texture_handle: impl graphics_hardware_interface::ImageHandleLike,
+		present_key: graphics_hardware_interface::PresentKey,
 		_swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) {
-		// TODO: Render/copy source texture into swapchain drawable.
+		let source_texture_handle = self.get_internal_image_handle(source_texture_handle.into_image_handle());
+		self.consume_resources([Consumption {
+			handle: Handle::Image(source_texture_handle),
+			stages: crate::Stages::TRANSFER,
+			access: crate::AccessPolicies::READ,
+			layout: crate::Layouts::Transfer,
+		}]);
+
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		let source_texture = self.device.images[source_texture_handle.0 as usize].texture.clone();
+		let Some(drawable) = self.take_drawable(present_key) else {
+			return;
+		};
+		let destination_texture = drawable.texture();
+		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer could not start a blit pass.",
+		);
+
+		unsafe {
+			blit_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
+		}
+		blit_encoder.endEncoding();
+		self.present_drawables.push(drawable);
 	}
 
 	fn execute(self, _synchronizer: graphics_hardware_interface::SynchronizerHandle) {
@@ -443,10 +545,12 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		let pipeline_state = pipeline.pipeline.clone();
 		self.active_pipeline_layout = Some(pipeline_layout);
 		self.bound_pipeline_layout = None;
+		self.resize_push_constants_for_layout(pipeline_layout);
 
 		if let PipelineState::Compute(Some(compute_pipeline_state)) = &pipeline_state {
 			self.ensure_compute_encoder().setComputePipelineState(compute_pipeline_state);
 		}
+		self.apply_push_constants();
 
 		self
 	}
@@ -492,6 +596,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 
 		self.active_pipeline_layout = Some(pipeline_layout);
 		self.bound_pipeline_layout = None;
+		self.resize_push_constants_for_layout(pipeline_layout);
 
 		if let Some(encoder) = self.active_render_encoder.as_ref() {
 			encoder.setFrontFacingWinding(utils::winding(face_winding));
@@ -504,11 +609,18 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 				self.bound_vertex_layout = pipeline_vertex_layout;
 			}
 		}
+		self.apply_bound_vertex_buffers();
+		self.apply_push_constants();
 
 		self
 	}
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[crate::BufferDescriptor]) {
+		self.bound_vertex_buffers = buffer_descriptors
+			.iter()
+			.map(|buffer_descriptor| (buffer_descriptor.buffer, buffer_descriptor.offset))
+			.collect();
+
 		let consumptions = buffer_descriptors
 			.iter()
 			.map(|buffer_descriptor| Consumption {
@@ -520,18 +632,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 			.collect::<Vec<_>>();
 		self.consume_resources(consumptions);
 
-		if let Some(encoder) = self.active_render_encoder.as_ref() {
-			for (binding, buffer_descriptor) in buffer_descriptors.iter().enumerate() {
-				let buffer = &self.device.buffers[self.get_internal_buffer_handle(buffer_descriptor.buffer).0 as usize];
-				unsafe {
-					encoder.setVertexBuffer_offset_atIndex(
-						Some(buffer.buffer.as_ref()),
-						buffer_descriptor.offset as _,
-						binding as _,
-					);
-				}
-			}
-		}
+		self.apply_bound_vertex_buffers();
 	}
 
 	fn bind_index_buffer(&mut self, _buffer_descriptor: &crate::BufferDescriptor) {
@@ -655,14 +756,34 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		self
 	}
 
-	fn write_push_constant<T: Copy + 'static>(&mut self, _offset: u32, _data: T)
+	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
 	where
 		[(); std::mem::size_of::<T>()]: Sized,
 	{
-		let _pipeline_layout_handle = self.active_pipeline_layout.expect(
+		let pipeline_layout_handle = self.active_pipeline_layout.expect(
 			"No pipeline bound. The most likely cause is that write_push_constant was called before binding a pipeline.",
 		);
-		// TODO: Map push constants to MTLBuffer/bytes per stage.
+		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
+		let end = offset as usize + std::mem::size_of::<T>();
+
+		assert!(
+			end <= pipeline_layout.push_constant_size,
+			"Push constant write exceeds the Metal pipeline layout push constant storage. The most likely cause is that the write offset or type size does not match the pipeline's declared push constant ranges.",
+		);
+
+		if self.push_constant_data.len() < pipeline_layout.push_constant_size {
+			self.resize_push_constants_for_layout(pipeline_layout_handle);
+		}
+
+		unsafe {
+			std::ptr::copy_nonoverlapping(
+				&data as *const T as *const u8,
+				self.push_constant_data[offset as usize..end].as_mut_ptr(),
+				std::mem::size_of::<T>(),
+			);
+		}
+
+		self.apply_push_constants();
 	}
 }
 

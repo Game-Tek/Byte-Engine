@@ -521,6 +521,51 @@ impl RenderPass for UiRenderPass {
 
 /// Builds the UI vertex shader using BESL and compiles it to SPIR-V.
 fn create_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+	if ghi::implementation::USES_METAL {
+		let shader_source = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+
+			struct UiVertexIn {
+				float2 position [[attribute(0)]];
+				float2 local_position [[attribute(1)]];
+				float2 rect_size [[attribute(2)]];
+				float4 color [[attribute(3)]];
+				float corner_radius [[attribute(4)]];
+			};
+
+			struct UiVertexOut {
+				float4 position [[position]];
+				float4 color;
+				float2 local_position;
+				float2 rect_size;
+				float corner_radius;
+			};
+
+			vertex UiVertexOut ui_vertex_main(UiVertexIn in [[stage_in]]) {
+				UiVertexOut out;
+				out.position = float4(in.position, 0.0, 1.0);
+				out.color = in.color;
+				out.local_position = in.local_position;
+				out.rect_size = in.rect_size;
+				out.corner_radius = in.corner_radius;
+				return out;
+			}
+		"#;
+
+		return device
+			.create_shader(
+				Some("UI Vertex Shader"),
+				ghi::shader::Sources::MTL {
+					source: shader_source,
+					entry_point: "ui_vertex_main",
+				},
+				ghi::ShaderTypes::Vertex,
+				[],
+			)
+			.expect("Failed to create the UI vertex shader. The most likely cause is an incompatible shader interface.");
+	}
+
 	let mut shader_generator = SPIRVShaderGenerator::new();
 	let mut root = ParserNode::root();
 
@@ -598,6 +643,45 @@ fn create_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::Shader
 
 /// Builds the UI fragment shader using BESL and compiles it to SPIR-V.
 fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+	if ghi::implementation::USES_METAL {
+		let shader_source = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+
+			struct UiVertexOut {
+				float4 position [[position]];
+				float4 color;
+				float2 local_position;
+				float2 rect_size;
+				float corner_radius;
+			};
+
+			fragment float4 ui_fragment_main(UiVertexOut in [[stage_in]]) {
+				float2 half_size = in.rect_size * 0.5;
+				float corner_radius = min(in.corner_radius, min(half_size.x, half_size.y));
+				float2 centered_position = in.local_position - half_size;
+				float2 corner_delta = abs(centered_position) - (half_size - float2(corner_radius));
+				float signed_distance = length(max(corner_delta, float2(0.0)))
+					+ min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+				float edge_width = max(fwidth(signed_distance), 0.5);
+				float alpha = 1.0 - smoothstep(0.0, edge_width, signed_distance);
+				return float4(in.color.rgb, in.color.a * alpha);
+			}
+		"#;
+
+		return device
+			.create_shader(
+				Some("UI Fragment Shader"),
+				ghi::shader::Sources::MTL {
+					source: shader_source,
+					entry_point: "ui_fragment_main",
+				},
+				ghi::ShaderTypes::Fragment,
+				[],
+			)
+			.expect("Failed to create the UI fragment shader. The most likely cause is an incompatible shader interface.");
+	}
+
 	let mut shader_generator = SPIRVShaderGenerator::new();
 	let mut root = ParserNode::root();
 
@@ -666,6 +750,45 @@ fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::Shad
 }
 
 fn create_text_overlay_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+	if ghi::implementation::USES_METAL {
+		let shader_source = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+
+			struct TextOverlayVertexOut {
+				float4 position [[position]];
+				float2 uv;
+			};
+
+			vertex TextOverlayVertexOut ui_text_overlay_vertex(uint vertex_id [[vertex_id]]) {
+				float2 positions[3] = {
+					float2(-1.0, -1.0),
+					float2(-1.0, 3.0),
+					float2(3.0, -1.0)
+				};
+				float2 position = positions[vertex_id];
+				TextOverlayVertexOut out;
+				out.position = float4(position, 0.0, 1.0);
+				out.uv = float2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
+				return out;
+			}
+		"#;
+
+		return device
+			.create_shader(
+				Some("UI Text Overlay Vertex Shader"),
+				ghi::shader::Sources::MTL {
+					source: shader_source,
+					entry_point: "ui_text_overlay_vertex",
+				},
+				ghi::ShaderTypes::Vertex,
+				[],
+			)
+			.expect(
+				"Failed to create the UI text overlay vertex shader. The most likely cause is an incompatible shader interface.",
+			);
+	}
+
 	let shader_source = glsl::compile(
 		r#"
 		#version 460
@@ -701,6 +824,44 @@ fn create_text_overlay_vertex_shader(device: &mut ghi::implementation::Device) -
 }
 
 fn create_text_overlay_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+	if ghi::implementation::USES_METAL {
+		let shader_source = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+
+			struct TextOverlayVertexOut {
+				float4 position [[position]];
+				float2 uv;
+			};
+
+			struct TextOverlaySet0 {
+				texture2d<float> text_overlay [[id(0)]];
+				sampler text_overlay_sampler [[id(1)]];
+			};
+
+			fragment float4 ui_text_overlay_fragment(
+				TextOverlayVertexOut in [[stage_in]],
+				constant TextOverlaySet0& set0 [[buffer(16)]]
+			) {
+				return set0.text_overlay.sample(set0.text_overlay_sampler, in.uv);
+			}
+		"#;
+
+		return device
+			.create_shader(
+				Some("UI Text Overlay Fragment Shader"),
+				ghi::shader::Sources::MTL {
+					source: shader_source,
+					entry_point: "ui_text_overlay_fragment",
+				},
+				ghi::ShaderTypes::Fragment,
+				[TEXT_OVERLAY_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ)],
+			)
+			.expect(
+				"Failed to create the UI text overlay fragment shader. The most likely cause is an incompatible shader interface.",
+			);
+	}
+
 	let shader_source = glsl::compile(
 		r#"
 		#version 460

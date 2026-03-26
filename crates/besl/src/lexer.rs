@@ -374,6 +374,16 @@ impl Node {
 
 		let texture_2d: NodeReference = Node::r#struct("Texture2D", vec![]).into();
 		let array_texture_2d: NodeReference = Node::r#struct("ArrayTexture2D", vec![]).into();
+		let sample_intrinsic = builtin_intrinsic(
+			"sample",
+			vec![("texture_sampler", texture_2d.clone()), ("uv", vec2f32.clone())],
+			vec4f32.clone(),
+		);
+		let fetch_intrinsic = builtin_intrinsic(
+			"fetch",
+			vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
+			vec4f32.clone(),
+		);
 
 		let mut root = Node::scope("root".to_string());
 
@@ -394,6 +404,8 @@ impl Node {
 			mat4f32,
 			texture_2d,
 			array_texture_2d,
+			sample_intrinsic,
+			fetch_intrinsic,
 		]);
 
 		root
@@ -971,6 +983,7 @@ pub enum Expressions {
 	},
 	IntrinsicCall {
 		intrinsic: NodeReference,
+		arguments: Vec<NodeReference>,
 		elements: Vec<NodeReference>,
 	},
 	Operator {
@@ -1003,9 +1016,162 @@ pub enum LexError {
 /// Tries to resolve a reference to a node by visiting the chain of nodes which are the context of the element of the program being lexed.
 fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
 	for node in chain.iter().rev() {
-		if let Some(c) = node.get_descendant(name) {
+		let reference = match node.borrow().node() {
+			Nodes::Intrinsic { .. } => node.get_descendant(name),
+			_ => get_non_intrinsic_descendant(node, name),
+		};
+
+		if let Some(c) = reference {
 			return Some(c);
 		}
+	}
+
+	None
+}
+
+fn get_non_intrinsic_descendant(node: &NodeReference, child_name: &str) -> Option<NodeReference> {
+	if node.borrow().get_name() == Some(child_name) {
+		return Some(node.clone());
+	}
+
+	match &node.borrow().node {
+		Nodes::Scope { children: members, .. } | Nodes::Struct { fields: members, .. } | Nodes::PushConstant { members } => {
+			for member in members {
+				if let Some(c) = get_non_intrinsic_descendant(member, child_name) {
+					return Some(c);
+				}
+			}
+		}
+		Nodes::Intrinsic { .. } => {}
+		Nodes::Member { r#type, .. } | Nodes::Parameter { r#type, .. } => {
+			if let Some(c) = get_non_intrinsic_descendant(r#type, child_name) {
+				return Some(c);
+			}
+		}
+		Nodes::Function { params, statements, .. } => {
+			for param in params {
+				if param.borrow().get_name() == Some(child_name) {
+					return Some(param.clone());
+				}
+			}
+
+			for statement in statements {
+				match RefCell::borrow(statement).node() {
+					Nodes::Expression(expression) => match expression {
+						Expressions::Operator { left, right, .. } => {
+							if let Some(c) = get_non_intrinsic_descendant(left, child_name) {
+								return Some(c);
+							}
+							if let Some(c) = get_non_intrinsic_descendant(right, child_name) {
+								return Some(c);
+							}
+						}
+						Expressions::VariableDeclaration { name, .. } => {
+							if child_name == name {
+								return Some(statement.clone());
+							}
+						}
+						Expressions::Accessor { left, right } => {
+							if let Some(c) = get_non_intrinsic_descendant(left, child_name) {
+								return Some(c);
+							}
+							if let Some(c) = get_non_intrinsic_descendant(right, child_name) {
+								return Some(c);
+							}
+						}
+						Expressions::Return { value } => {
+							if let Some(value) = value {
+								if let Some(c) = get_non_intrinsic_descendant(value, child_name) {
+									return Some(c);
+								}
+							}
+						}
+						_ => {}
+					},
+					Nodes::Raw { output, .. } => {
+						for output in output {
+							if let Some(c) = get_non_intrinsic_descendant(output, child_name) {
+								return Some(c);
+							}
+						}
+					}
+					_ => {}
+				}
+			}
+		}
+		Nodes::Expression(expression) => match expression {
+			Expressions::Operator { left, right, .. } => {
+				if let Some(c) = get_non_intrinsic_descendant(left, child_name) {
+					return Some(c);
+				}
+				if let Some(c) = get_non_intrinsic_descendant(right, child_name) {
+					return Some(c);
+				}
+			}
+			Expressions::Member { source, .. } => {
+				if let Some(c) = get_non_intrinsic_descendant(source, child_name) {
+					return Some(c);
+				}
+			}
+			Expressions::Expression { elements } => {
+				for element in elements {
+					if let Some(c) = get_non_intrinsic_descendant(element, child_name) {
+						return Some(c);
+					}
+				}
+			}
+			Expressions::VariableDeclaration { r#type, .. } => {
+				if let Some(c) = get_non_intrinsic_descendant(r#type, child_name) {
+					return Some(c);
+				}
+			}
+			Expressions::Accessor { left, right } => {
+				if let Some(c) = get_non_intrinsic_descendant(right, child_name) {
+					return Some(c);
+				}
+				if let Some(c) = get_non_intrinsic_descendant(left, child_name) {
+					return Some(c);
+				}
+			}
+			Expressions::IntrinsicCall { intrinsic, .. } => {
+				let intrinsic = intrinsic.borrow();
+				if let Nodes::Intrinsic { r#return, .. } = intrinsic.node() {
+					if let Some(c) = get_non_intrinsic_descendant(r#return, child_name) {
+						return Some(c);
+					}
+				}
+			}
+			Expressions::Return { value } => {
+				if let Some(value) = value {
+					if let Some(c) = get_non_intrinsic_descendant(value, child_name) {
+						return Some(c);
+					}
+				}
+			}
+			_ => {}
+		},
+		Nodes::Raw { output, .. } => {
+			for output in output {
+				if let Some(c) = get_non_intrinsic_descendant(output, child_name) {
+					return Some(c);
+				}
+			}
+		}
+		Nodes::Binding { r#type, .. } => {
+			if let BindingTypes::Buffer { members } = r#type {
+				for member in members {
+					if let Some(c) = get_non_intrinsic_descendant(member, child_name) {
+						return Some(c);
+					}
+				}
+			}
+		}
+		Nodes::Input { format, .. } | Nodes::Output { format, .. } => {
+			if let Some(c) = get_non_intrinsic_descendant(format, child_name) {
+				return Some(c);
+			}
+		}
+		_ => {}
 	}
 
 	None
@@ -1414,7 +1580,8 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 							}
 							Nodes::Intrinsic { elements, .. } => Node::expression(Expressions::IntrinsicCall {
 								intrinsic: r,
-								elements: build_intrinsic(elements, &mut parameters.iter())?,
+								arguments: parameters.clone(),
+								elements: build_intrinsic(elements, &parameters)?,
 							}),
 							_ => {
 								return Err(LexError::Undefined {
@@ -1516,7 +1683,28 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 	Ok(node)
 }
 
-fn build_intrinsic<'a>(
+fn build_intrinsic(elements: &[NodeReference], parameters: &[NodeReference]) -> Result<Vec<NodeReference>, LexError> {
+	let expected_parameter_count = elements
+		.iter()
+		.filter(|element| matches!(element.borrow().node(), Nodes::Parameter { .. }))
+		.count();
+
+	if expected_parameter_count != parameters.len() {
+		return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters);
+	}
+
+	let has_body = elements
+		.iter()
+		.any(|element| !matches!(element.borrow().node(), Nodes::Parameter { .. }));
+
+	if !has_body {
+		return Ok(parameters.to_vec());
+	}
+
+	build_intrinsic_elements(elements, &mut parameters.iter())
+}
+
+fn build_intrinsic_elements<'a>(
 	elements: &[NodeReference],
 	parameters: &mut impl Iterator<Item = &'a NodeReference>,
 ) -> Result<Vec<NodeReference>, LexError> {
@@ -1539,7 +1727,7 @@ fn build_intrinsic<'a>(
 					_ => e.clone(),
 				},
 				Expressions::Expression { elements } => NodeReference::from(Node::expression(Expressions::Expression {
-					elements: build_intrinsic(elements, parameters)?,
+					elements: build_intrinsic_elements(elements, parameters)?,
 				})),
 				_ => e.clone(),
 			},
@@ -1550,6 +1738,22 @@ fn build_intrinsic<'a>(
 	}
 
 	Ok(ret)
+}
+
+fn builtin_intrinsic(name: &str, parameters: Vec<(&str, NodeReference)>, r#return: NodeReference) -> NodeReference {
+	let intrinsic: NodeReference = Node::intrinsic(name, Vec::new(), r#return).into();
+
+	for (parameter_name, parameter_type) in parameters {
+		intrinsic.borrow_mut().add_child(
+			Node::new(Nodes::Parameter {
+				name: parameter_name.to_string(),
+				r#type: parameter_type,
+			})
+			.into(),
+		);
+	}
+
+	intrinsic
 }
 
 #[cfg(test)]
@@ -2012,5 +2216,117 @@ main: fn () -> void {
 				panic!("Expected scope");
 			}
 		}
+	}
+
+	#[test]
+	fn lex_builtin_texture_intrinsics() {
+		let script = r#"
+		main: fn () -> void {
+			let uv: vec2f = vec2f(0.5, 0.5);
+			let coord: vec2u = vec2u(1, 2);
+			let color: vec4f = sample(texture_sampler, uv);
+			let texel: vec4f = fetch(texture, coord);
+		}
+		"#;
+
+		let mut root = Node::root();
+		root.add_child(
+			Node::binding(
+				"texture_sampler",
+				BindingTypes::CombinedImageSampler { format: String::new() },
+				0,
+				0,
+				true,
+				false,
+			)
+			.into(),
+		);
+		root.add_child(
+			Node::binding(
+				"texture",
+				BindingTypes::CombinedImageSampler { format: String::new() },
+				0,
+				1,
+				true,
+				false,
+			)
+			.into(),
+		);
+
+		let node = crate::compile_to_besl(script, Some(root)).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let sample_statement = statements[2].borrow();
+		let fetch_statement = statements[3].borrow();
+
+		let assert_intrinsic_call = |statement: &Node, expected_name: &str| match statement.node() {
+			Nodes::Expression(Expressions::Operator { right, .. }) => {
+				let right = right.borrow();
+				match right.node() {
+					Nodes::Expression(Expressions::IntrinsicCall {
+						intrinsic,
+						arguments,
+						elements,
+					}) => {
+						assert_eq!(arguments.len(), 2);
+						assert_eq!(elements.len(), 2);
+
+						let intrinsic = intrinsic.borrow();
+						match intrinsic.node() {
+							Nodes::Intrinsic {
+								name,
+								r#return,
+								elements,
+							} => {
+								assert_eq!(name, expected_name);
+								assert_type(&r#return.borrow(), "vec4f");
+								assert_eq!(elements.len(), 2);
+							}
+							_ => panic!("Expected intrinsic"),
+						}
+					}
+					_ => panic!("Expected intrinsic call"),
+				}
+			}
+			_ => panic!("Expected assignment"),
+		};
+
+		assert_intrinsic_call(&sample_statement, "sample");
+		assert_intrinsic_call(&fetch_statement, "fetch");
+	}
+
+	#[test]
+	fn lex_builtin_texture_intrinsics_validate_parameter_count() {
+		let source = r#"
+		main: fn () -> void {
+			let color: vec4f = sample(texture_sampler);
+		}
+		"#;
+
+		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+		let parsed = parser::parse(&tokens).expect("Failed to parse");
+
+		let mut root = Node::root();
+		root.add_child(
+			Node::binding(
+				"texture_sampler",
+				BindingTypes::CombinedImageSampler { format: String::new() },
+				0,
+				0,
+				true,
+				false,
+			)
+			.into(),
+		);
+
+		lex_with_root(root, parsed)
+			.err()
+			.filter(|error| error == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
+			.expect("Expected parameter count validation error");
 	}
 }

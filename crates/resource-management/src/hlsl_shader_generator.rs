@@ -408,7 +408,7 @@ impl HLSLShaderGenerator {
 				besl::Expressions::Literal { value } => {
 					string.push_str(&value);
 				}
-				besl::Expressions::Return => {
+				besl::Expressions::Return { .. } => {
 					string.push_str("return");
 				}
 				besl::Expressions::Accessor { left, right } => {

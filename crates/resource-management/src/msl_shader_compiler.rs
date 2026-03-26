@@ -136,13 +136,13 @@ impl MSLShaderCompiler {
 							self.build_graph(bindings, element);
 						}
 					}
-					besl::Expressions::IntrinsicCall { intrinsic, elements } => {
+					besl::Expressions::IntrinsicCall { intrinsic, elements, .. } => {
 						for element in elements {
 							self.build_graph(bindings, element);
 						}
 						self.build_graph(bindings, intrinsic);
 					}
-					besl::Expressions::Return | besl::Expressions::Literal { .. } => {
+					besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } => {
 						// Do nothing
 					}
 					besl::Expressions::Macro { body, .. } => {

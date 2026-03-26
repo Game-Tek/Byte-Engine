@@ -32,3 +32,11 @@ mod_by_16: fn (x: i32) -> i32 {
 ```rust
 x: i32 = 5
 ```
+
+### Texture intrinsics
+```rust
+main: fn () -> void {
+	let color: vec4f = sample(texture_sampler, uv);
+	let texel: vec4f = fetch(texture, coord);
+}
+```

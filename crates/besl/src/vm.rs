@@ -43,6 +43,7 @@ pub enum ValueType {
 	U32,
 	I32,
 	F32,
+	Vec3U,
 	Vec2U,
 	Vec2F,
 	Vec3F,
@@ -57,6 +58,7 @@ impl ValueType {
 			ValueType::U16 => 2,
 			ValueType::U32 | ValueType::I32 | ValueType::F32 => 4,
 			ValueType::Vec2U | ValueType::Vec2F => 8,
+			ValueType::Vec3U => 12,
 			ValueType::Vec3F => 12,
 			ValueType::Vec4F => 16,
 			ValueType::Mat4F => 64,
@@ -70,6 +72,7 @@ impl ValueType {
 			ValueType::U32 => "u32",
 			ValueType::I32 => "i32",
 			ValueType::F32 => "f32",
+			ValueType::Vec3U => "vec3u",
 			ValueType::Vec2U => "vec2u",
 			ValueType::Vec2F => "vec2f",
 			ValueType::Vec3F => "vec3f",
@@ -207,6 +210,7 @@ impl Buffer {
 			ValueType::I32 => ScalarValue::I32(i32::from_ne_bytes(bytes.try_into().expect("Invalid i32 byte count"))),
 			ValueType::F32 => ScalarValue::F32(f32::from_ne_bytes(bytes.try_into().expect("Invalid f32 byte count"))),
 			ValueType::Vec2U => ScalarValue::Vec2U(read_u32_array::<2>(bytes)?),
+			ValueType::Vec3U => ScalarValue::Vec3U(read_u32_array::<3>(bytes)?),
 			ValueType::Vec2F => ScalarValue::Vec2F(read_f32_array::<2>(bytes)?),
 			ValueType::Vec3F => ScalarValue::Vec3F(read_f32_array::<3>(bytes)?),
 			ValueType::Vec4F => ScalarValue::Vec4F(read_f32_array::<4>(bytes)?),
@@ -231,6 +235,7 @@ impl Buffer {
 			ScalarValue::I32(value) => value.to_ne_bytes().to_vec(),
 			ScalarValue::F32(value) => value.to_ne_bytes().to_vec(),
 			ScalarValue::Vec2U(value) => write_u32_slice(value),
+			ScalarValue::Vec3U(value) => write_u32_slice(value),
 			ScalarValue::Vec2F(value) => write_f32_slice(value),
 			ScalarValue::Vec3F(value) => write_f32_slice(value),
 			ScalarValue::Vec4F(value) => write_f32_slice(value),
@@ -443,6 +448,10 @@ impl<'a> DescriptorBindings<'a> {
 	fn push_constant_mut(&mut self) -> Result<&mut Buffer, VmError> {
 		self.push_constant.as_deref_mut().ok_or(VmError::MissingPushConstant)
 	}
+
+	fn thread_idx(&self) -> u32 {
+		0
+	}
 }
 
 /// The `ExecutableProgram` struct stores the runnable VM form of a lexed BESL program.
@@ -618,6 +627,9 @@ impl ExecutableProgram {
 					let normal = read_register(&registers, *normal)?;
 					registers[*register] = Some(apply_reflect(&incident, &normal)?);
 				}
+				Instruction::ThreadIdx { register } => {
+					registers[*register] = Some(ScalarValue::U32(descriptors.thread_idx()));
+				}
 				Instruction::LoadLocal { register, local } => {
 					let value = locals
 						.get(*local)
@@ -770,6 +782,7 @@ pub enum Value {
 	I32(i32),
 	F32(f32),
 	Vec2U([u32; 2]),
+	Vec3U([u32; 3]),
 	Vec2F([f32; 2]),
 	Vec3F([f32; 3]),
 	Vec4F([f32; 4]),
@@ -785,6 +798,7 @@ impl Value {
 			Value::I32(_) => ValueType::I32,
 			Value::F32(_) => ValueType::F32,
 			Value::Vec2U(_) => ValueType::Vec2U,
+			Value::Vec3U(_) => ValueType::Vec3U,
 			Value::Vec2F(_) => ValueType::Vec2F,
 			Value::Vec3F(_) => ValueType::Vec3F,
 			Value::Vec4F(_) => ValueType::Vec4F,
@@ -834,6 +848,9 @@ enum Instruction {
 		register: usize,
 		incident: usize,
 		normal: usize,
+	},
+	ThreadIdx {
+		register: usize,
 	},
 	LoadLocal {
 		register: usize,
@@ -1393,6 +1410,18 @@ impl Compiler {
 					incident,
 					normal,
 				});
+				Ok(register)
+			}
+			"thread_idx" => {
+				if !arguments.is_empty() {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 0,
+						found: arguments.len(),
+					});
+				}
+
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::ThreadIdx { register });
 				Ok(register)
 			}
 			_ => Err(VmError::UnsupportedExpression {
@@ -2247,6 +2276,7 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"i32" => Ok(ValueType::I32),
 		"f32" => Ok(ValueType::F32),
 		"vec2u" => Ok(ValueType::Vec2U),
+		"vec3u" => Ok(ValueType::Vec3U),
 		"vec2f" => Ok(ValueType::Vec2F),
 		"vec3f" => Ok(ValueType::Vec3F),
 		"vec4f" => Ok(ValueType::Vec4F),
@@ -2421,7 +2451,7 @@ fn parse_literal(value: &str, value_type: &ValueType) -> Result<ScalarValue, VmE
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
 			})?,
-		ValueType::Vec2U => {
+		ValueType::Vec2U | ValueType::Vec3U => {
 			return Err(VmError::InvalidLiteral {
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
@@ -2448,6 +2478,7 @@ fn parse_literal(value: &str, value_type: &ValueType) -> Result<ScalarValue, VmE
 fn construct_value(value_type: &ValueType, components: &[ScalarValue]) -> Result<ScalarValue, VmError> {
 	match value_type {
 		ValueType::Vec2U => Ok(ScalarValue::Vec2U(extract_u32_components::<2>(components)?)),
+		ValueType::Vec3U => Ok(ScalarValue::Vec3U(extract_u32_components::<3>(components)?)),
 		ValueType::Vec2F => Ok(ScalarValue::Vec2F(extract_f32_components::<2>(components)?)),
 		ValueType::Vec3F => Ok(ScalarValue::Vec3F(extract_f32_components::<3>(components)?)),
 		ValueType::Vec4F => Ok(ScalarValue::Vec4F(extract_f32_components::<4>(components)?)),
@@ -4349,5 +4380,81 @@ mod tests {
 		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(read_f32s(&buffer, 3), vec![1.0, 1.0, 0.0]);
+	}
+
+	#[test]
+	fn executable_program_reads_thread_idx_for_compute_style_workflows() {
+		let script = r#"
+		main: fn () -> void {
+			buff.thread = thread_idx();
+		}
+		"#;
+
+		let mut root = Node::root();
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("thread", u32_type).into()],
+				},
+				0,
+				22,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let executable = compile_test_program(script, Some(root));
+
+		let slot = DescriptorSlot::new(0, 22);
+		let mut buffer = buffer_for_slot(&executable, slot);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(buffer.read("thread").expect("Expected thread value"), Value::U32(0));
+	}
+
+	#[test]
+	fn executable_program_reads_thread_idx_for_mesh_style_workflows() {
+		let script = r#"
+		main: fn () -> void {
+			payload.thread = thread_idx();
+		}
+		"#;
+
+		let mut root = Node::root();
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		root.add_child(
+			Node::binding(
+				"payload",
+				BindingTypes::Buffer {
+					members: vec![Node::member("thread", u32_type).into()],
+				},
+				0,
+				23,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let executable = compile_test_program(script, Some(root));
+
+		let slot = DescriptorSlot::new(0, 23);
+		let mut buffer = buffer_for_slot(&executable, slot);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(buffer.read("thread").expect("Expected thread value"), Value::U32(0));
 	}
 }

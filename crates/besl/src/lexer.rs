@@ -401,6 +401,7 @@ impl Node {
 			vec![("incident", vec4f32.clone()), ("normal", vec4f32.clone())],
 			vec4f32.clone(),
 		);
+		let thread_idx_intrinsic = builtin_intrinsic("thread_idx", vec![], u32_t.clone());
 		let write_intrinsic = builtin_intrinsic(
 			"write",
 			vec![
@@ -437,6 +438,7 @@ impl Node {
 			length_intrinsic,
 			normalize_intrinsic,
 			reflect_intrinsic,
+			thread_idx_intrinsic,
 			write_intrinsic,
 		]);
 
@@ -2603,5 +2605,42 @@ main: fn () -> void {
 			_ => panic!("Expected intrinsic"),
 		};
 		result
+	}
+
+	#[test]
+	fn lex_builtin_thread_idx_intrinsic() {
+		let script = r#"
+		main: fn () -> void {
+			let index: u32 = thread_idx();
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let statement = statements[0].borrow();
+		match statement.node() {
+			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
+				Nodes::Expression(Expressions::IntrinsicCall {
+					intrinsic, arguments, ..
+				}) => {
+					assert!(arguments.is_empty());
+					match intrinsic.borrow().node() {
+						Nodes::Intrinsic { name, r#return, .. } => {
+							assert_eq!(name, "thread_idx");
+							assert_type(&r#return.borrow(), "u32");
+						}
+						_ => panic!("Expected intrinsic"),
+					}
+				}
+				_ => panic!("Expected intrinsic call"),
+			},
+			_ => panic!("Expected assignment"),
+		}
 	}
 }

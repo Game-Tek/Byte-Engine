@@ -591,6 +591,11 @@ impl ExecutableProgram {
 					let right = read_register(&registers, *right)?;
 					registers[*register] = Some(apply_arithmetic(*operator, &left, &right)?);
 				}
+				Instruction::DotProduct { register, left, right } => {
+					let left = read_register(&registers, *left)?;
+					let right = read_register(&registers, *right)?;
+					registers[*register] = Some(apply_dot_product(&left, &right)?);
+				}
 				Instruction::LoadLocal { register, local } => {
 					let value = locals
 						.get(*local)
@@ -782,6 +787,11 @@ enum Instruction {
 	Arithmetic {
 		register: usize,
 		operator: ArithmeticOperator,
+		left: usize,
+		right: usize,
+	},
+	DotProduct {
+		register: usize,
 		left: usize,
 		right: usize,
 	},
@@ -1219,6 +1229,31 @@ impl Compiler {
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::FetchTexture { register, slot, coord });
+				Ok(register)
+			}
+			"dot" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+
+				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
+					.into_iter()
+					.find(|candidate| {
+						self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
+							&& self.infer_expression_type(&arguments[1], candidate, descriptor_layouts).ok()
+								== Some(candidate.clone())
+					})
+					.ok_or_else(|| VmError::UnsupportedExpression {
+						message: "`dot` expects two float vectors of matching size".to_string(),
+					})?;
+
+				let left = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
+				let right = self.compile_value_expression(&arguments[1], &supported_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::DotProduct { register, left, right });
 				Ok(register)
 			}
 			_ => Err(VmError::UnsupportedExpression {
@@ -2554,6 +2589,26 @@ fn apply_scalar_float_broadcast<const N: usize>(
 		values[index] = apply_float_arithmetic(left, right[index], operator)?;
 	}
 	Ok(values)
+}
+
+fn apply_dot_product(left: &ScalarValue, right: &ScalarValue) -> Result<ScalarValue, VmError> {
+	match (left, right) {
+		(ScalarValue::Vec2F(left), ScalarValue::Vec2F(right)) => Ok(ScalarValue::F32(dot_product(*left, *right))),
+		(ScalarValue::Vec3F(left), ScalarValue::Vec3F(right)) => Ok(ScalarValue::F32(dot_product(*left, *right))),
+		(ScalarValue::Vec4F(left), ScalarValue::Vec4F(right)) => Ok(ScalarValue::F32(dot_product(*left, *right))),
+		(left, right) => Err(VmError::TypeMismatch {
+			expected: left.value_type().name().to_string(),
+			found: right.value_type().name().to_string(),
+		}),
+	}
+}
+
+fn dot_product<const N: usize>(left: [f32; N], right: [f32; N]) -> f32 {
+	let mut value = 0.0;
+	for index in 0..N {
+		value += left[index] * right[index];
+	}
+	value
 }
 
 fn read_register(registers: &[Option<ScalarValue>], register: usize) -> Result<ScalarValue, VmError> {
@@ -3894,5 +3949,45 @@ mod tests {
 			output.read("out_color").expect("Expected output value"),
 			Value::Vec4F([0.9, 0.4, 0.2, 1.0])
 		);
+	}
+
+	#[test]
+	fn executable_program_evaluates_dot_intrinsics() {
+		let script = r#"
+		main: fn () -> void {
+			buff.value = dot(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0));
+		}
+		"#;
+
+		let mut root = Node::root();
+		let float_type = root.get_child("f32").expect("Expected f32");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", float_type).into()],
+				},
+				0,
+				17,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 17);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 32.0);
 	}
 }

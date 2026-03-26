@@ -384,6 +384,11 @@ impl Node {
 			vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
 			vec4f32.clone(),
 		);
+		let dot_intrinsic = builtin_intrinsic(
+			"dot",
+			vec![("left", vec4f32.clone()), ("right", vec4f32.clone())],
+			f32_t.clone(),
+		);
 		let write_intrinsic = builtin_intrinsic(
 			"write",
 			vec![
@@ -415,6 +420,7 @@ impl Node {
 			array_texture_2d,
 			sample_intrinsic,
 			fetch_intrinsic,
+			dot_intrinsic,
 			write_intrinsic,
 		]);
 
@@ -2438,6 +2444,43 @@ main: fn () -> void {
 				}
 			}
 			_ => panic!("Expected intrinsic call"),
+		}
+	}
+
+	#[test]
+	fn lex_builtin_dot_intrinsic() {
+		let script = r#"
+		main: fn () -> void {
+			let strength: f32 = dot(vec3f(1.0, 0.0, 0.0), vec3f(0.5, 0.5, 0.0));
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let statement = statements[0].borrow();
+		match statement.node() {
+			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
+				Nodes::Expression(Expressions::IntrinsicCall {
+					intrinsic, arguments, ..
+				}) => {
+					assert_eq!(arguments.len(), 2);
+					match intrinsic.borrow().node() {
+						Nodes::Intrinsic { name, r#return, .. } => {
+							assert_eq!(name, "dot");
+							assert_type(&r#return.borrow(), "f32");
+						}
+						_ => panic!("Expected intrinsic"),
+					}
+				}
+				_ => panic!("Expected intrinsic call"),
+			},
+			_ => panic!("Expected assignment"),
 		}
 	}
 }

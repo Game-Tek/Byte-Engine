@@ -24,7 +24,12 @@ impl DescriptorSlot {
 }
 
 const PUSH_CONSTANT_SLOT: DescriptorSlot = DescriptorSlot::new(u32::MAX, u32::MAX);
+const INPUT_INTERFACE_SET: u32 = u32::MAX - 2;
 const OUTPUT_INTERFACE_SET: u32 = u32::MAX - 1;
+
+pub const fn input_slot(location: u8) -> DescriptorSlot {
+	DescriptorSlot::new(INPUT_INTERFACE_SET, location as u32)
+}
 
 pub const fn output_slot(location: u8) -> DescriptorSlot {
 	DescriptorSlot::new(OUTPUT_INTERFACE_SET, location as u32)
@@ -514,6 +519,10 @@ impl ExecutableProgram {
 			DescriptorLayout::PushConstant(layout) => Some(layout),
 			_ => None,
 		})
+	}
+
+	pub fn input_layout(&self, location: u8) -> Option<&BufferLayout> {
+		self.buffer_layout(input_slot(location))
 	}
 
 	pub fn output_layout(&self, location: u8) -> Option<&BufferLayout> {
@@ -1099,7 +1108,9 @@ impl Compiler {
 					self.instructions.push(Instruction::LoadLocal { register, local });
 					Ok(register)
 				} else {
-					let target = self.resolve_output_access(expression, descriptor_layouts)?;
+					let target = self
+						.resolve_input_access(expression, descriptor_layouts)
+						.or_else(|_| self.resolve_output_access(expression, descriptor_layouts))?;
 					if &target.value_type != expected_type {
 						return Err(VmError::TypeMismatch {
 							expected: expected_type.name().to_string(),
@@ -1361,7 +1372,10 @@ impl Compiler {
 						.cloned()
 						.ok_or(VmError::UninitializedLocal { local })
 				} else {
-					Ok(self.resolve_output_access(expression, descriptor_layouts)?.value_type)
+					Ok(self
+						.resolve_input_access(expression, descriptor_layouts)
+						.or_else(|_| self.resolve_output_access(expression, descriptor_layouts))?
+						.value_type)
 				}
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
@@ -1694,6 +1708,76 @@ impl Compiler {
 			node => {
 				return Err(VmError::UnsupportedExpression {
 					message: format!("Expected an output interface, but found {}", describe_node(node)),
+				});
+			}
+		};
+		drop(source_ref);
+
+		match descriptor_layouts.get(&slot) {
+			Some(existing) if existing != &DescriptorLayout::Buffer(layout.clone()) => {
+				return Err(VmError::UnsupportedDescriptor {
+					slot,
+					message: "Descriptor slot was reused with a different layout".to_string(),
+				});
+			}
+			Some(_) => {}
+			None => {
+				descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
+			}
+		}
+
+		Ok(ResolvedBufferAccess {
+			slot,
+			offset: 0,
+			stride: layout.size(),
+			count: 1,
+			index: None,
+			value_type: layout.members()[0].value_type().clone(),
+		})
+	}
+
+	fn resolve_input_access(
+		&mut self,
+		expression: &NodeReference,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<ResolvedBufferAccess, VmError> {
+		let borrowed = expression.borrow();
+		let (source, input_name) = match borrowed.node() {
+			Nodes::Expression(Expressions::Member { source, name }) => (source.clone(), name.clone()),
+			node => {
+				return Err(VmError::UnsupportedExpression {
+					message: format!("Expected an input member access, but found {}", describe_node(node)),
+				});
+			}
+		};
+		drop(borrowed);
+
+		let source_ref = source.borrow();
+		let (slot, layout) = match source_ref.node() {
+			Nodes::Input { name, format, location } => {
+				if name != &input_name {
+					return Err(VmError::UnsupportedExpression {
+						message: format!("Only direct input reads are supported for `{}`", input_name),
+					});
+				}
+
+				let value_type = resolve_value_type(format)?;
+				(
+					input_slot(*location),
+					BufferLayout {
+						members: vec![BufferMemberLayout {
+							name: input_name.clone(),
+							offset: 0,
+							value_type: value_type.clone(),
+							count: 1,
+						}],
+						size: value_type.size(),
+					},
+				)
+			}
+			node => {
+				return Err(VmError::UnsupportedExpression {
+					message: format!("Expected an input interface, but found {}", describe_node(node)),
 				});
 			}
 		};
@@ -2726,9 +2810,11 @@ impl std::error::Error for VmError {}
 
 #[cfg(test)]
 mod tests {
-	use crate::{compile_to_besl, BindingTypes, Node};
+	use crate::{BindingTypes, Node, compile_to_besl};
 
-	use super::{output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value, VmError};
+	use super::{
+		Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value, VmError, input_slot, output_slot,
+	};
 
 	fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
 		buffer
@@ -3608,5 +3694,81 @@ mod tests {
 			instance.read("out_instance_index").expect("Expected output value"),
 			Value::U32(7)
 		);
+	}
+
+	#[test]
+	fn executable_program_reads_vertex_shader_input_interfaces() {
+		let script = r#"
+		main: fn () -> void {
+			out_color = in_color;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
+		root.add_child(Node::input("in_color", vec4f_type.clone(), 0).into());
+		root.add_child(Node::output("out_color", vec4f_type, 0).into());
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let input_layout = executable.input_layout(0).expect("Expected input layout").clone();
+		let output_layout = executable.output_layout(0).expect("Expected output layout").clone();
+		let mut input = Buffer::new(input_layout);
+		let mut output = Buffer::new(output_layout);
+		input
+			.write("in_color", Value::Vec4F([0.1, 0.2, 0.3, 1.0]))
+			.expect("Expected input write to succeed");
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(input_slot(0), &mut input);
+			descriptors.bind_buffer(output_slot(0), &mut output);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(
+			output.read("out_color").expect("Expected output value"),
+			Value::Vec4F([0.1, 0.2, 0.3, 1.0])
+		);
+	}
+
+	#[test]
+	fn executable_program_rejects_writing_to_input_interfaces() {
+		let script = r#"
+		main: fn () -> void {
+			in_color = vec4f(1.0, 0.0, 0.0, 1.0);
+		}
+		"#;
+
+		let mut root = Node::root();
+		let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
+		root.add_child(Node::input("in_color", vec4f_type, 0).into());
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let error = ExecutableProgram::compile(program).expect_err("Expected input write rejection");
+
+		assert!(matches!(
+			error,
+			VmError::UnsupportedAssignmentTarget { .. } | VmError::UnsupportedExpression { .. }
+		));
+	}
+
+	#[test]
+	fn executable_program_rejects_reading_from_output_interfaces() {
+		let script = r#"
+		main: fn () -> void {
+			let color: vec4f = out_color;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
+		root.add_child(Node::output("out_color", vec4f_type, 0).into());
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let error = ExecutableProgram::compile(program).expect_err("Expected output read rejection");
+
+		assert!(matches!(error, VmError::UnsupportedExpression { .. }));
 	}
 }

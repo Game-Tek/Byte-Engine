@@ -2,7 +2,7 @@ use std::ptr::NonNull;
 
 use ::utils::hash::HashMap;
 use objc2_foundation::NSString;
-use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLRenderCommandEncoder, MTLTexture};
+use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture};
 
 use super::*;
 use crate::command_buffer::{
@@ -22,6 +22,7 @@ pub struct CommandBufferRecording<'a> {
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_vertex_layout: Option<VertexLayoutHandle>,
 	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
+	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>>>,
 	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLRenderCommandEncoder>>>,
 }
 
@@ -55,8 +56,23 @@ impl<'a> CommandBufferRecording<'a> {
 			bound_pipeline: None,
 			bound_vertex_layout: None,
 			bound_index_buffer: None,
+			active_compute_encoder: None,
 			active_render_encoder: None,
 		}
+	}
+
+	fn ensure_compute_encoder(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>> {
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if self.active_compute_encoder.is_none() {
+			self.active_compute_encoder = Some(self.command_buffer.computeCommandEncoder().expect(
+				"Metal compute command encoder creation failed. The most likely cause is that the command buffer could not start a compute pass.",
+			));
+		}
+
+		self.active_compute_encoder.as_ref().unwrap()
 	}
 
 	fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> buffer::BufferHandle {
@@ -81,6 +97,10 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 
 	fn finish(mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
 		if let Some(encoder) = self.active_render_encoder.take() {
 			encoder.endEncoding();
 		}
@@ -139,6 +159,10 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		_extent: Extent,
 		attachments: &[graphics_hardware_interface::AttachmentInformation],
 	) -> &mut impl RasterizationRenderPassMode {
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
 		let consumptions = attachments
 			.iter()
 			.map(|attachment| Consumption {
@@ -349,6 +373,10 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			encoder.endEncoding();
 		}
 
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
 		FinishedCommandBuffer {
 			command_buffer_handle: self.command_buffer_handle,
 			command_buffer: self.command_buffer,
@@ -365,8 +393,17 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut impl BoundComputePipelineMode {
 		self.bound_pipeline = Some(pipeline_handle);
-		self.active_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+
+		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
+		let pipeline_layout = pipeline.layout;
+		let pipeline_state = pipeline.pipeline.clone();
+		self.active_pipeline_layout = Some(pipeline_layout);
 		self.bound_pipeline_layout = None;
+
+		if let PipelineState::Compute(Some(compute_pipeline_state)) = &pipeline_state {
+			self.ensure_compute_encoder().setComputePipelineState(compute_pipeline_state);
+		}
+
 		self
 	}
 
@@ -546,8 +583,22 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 }
 
 impl BoundComputePipelineMode for CommandBufferRecording<'_> {
-	fn dispatch(&mut self, _dispatch: graphics_hardware_interface::DispatchExtent) {
-		// TODO: Encode dispatch on MTLComputeCommandEncoder.
+	fn dispatch(&mut self, dispatch: graphics_hardware_interface::DispatchExtent) {
+		let threadgroups = dispatch.get_extent();
+		let threads_per_threadgroup = dispatch.get_workgroup_extent();
+
+		self.ensure_compute_encoder().dispatchThreadgroups_threadsPerThreadgroup(
+			mtl::MTLSize {
+				width: threadgroups.width() as _,
+				height: threadgroups.height() as _,
+				depth: threadgroups.depth() as _,
+			},
+			mtl::MTLSize {
+				width: threads_per_threadgroup.width() as _,
+				height: threads_per_threadgroup.height() as _,
+				depth: threads_per_threadgroup.depth() as _,
+			},
+		);
 	}
 
 	fn indirect_dispatch<const N: usize>(

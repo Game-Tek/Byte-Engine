@@ -3,8 +3,8 @@ extern "C" {}
 
 use std::sync::atomic::AtomicU64;
 
-use ::utils::Extent;
 use ::utils::hash::HashMap;
+use ::utils::Extent;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;

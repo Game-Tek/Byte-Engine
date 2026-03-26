@@ -1,17 +1,17 @@
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
-use utils::{Extent, hash::HashMap, partition};
+use utils::{hash::HashMap, partition, Extent};
 
-use crate::{FrameKey, device::Device as _, graphics_hardware_interface, vulkan::HandleLike as _};
+use crate::{device::Device as _, graphics_hardware_interface, vulkan::HandleLike as _, FrameKey};
 
 use super::{
-	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption,
-	Descriptor, DescriptorSet, DescriptorSetHandle, Device, Handle, Image, ImageHandle, Swapchain, Synchronizer,
-	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 	utils::{
 		texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation,
 		to_pipeline_stage_flags, to_store_operation,
 	},
+	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption,
+	Descriptor, DescriptorSet, DescriptorSetHandle, Device, Handle, Image, ImageHandle, Swapchain, Synchronizer,
+	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -928,25 +928,21 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				instances_buffer,
 				instance_count,
 			} => (
-				vec![
-					vk::AccelerationStructureGeometryKHR::default()
-						.geometry_type(vk::GeometryTypeKHR::INSTANCES)
-						.geometry(vk::AccelerationStructureGeometryDataKHR {
-							instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
-								.array_of_pointers(false)
-								.data(vk::DeviceOrHostAddressConstKHR {
-									device_address: self.device.get_buffer_address(instances_buffer),
-								}),
-						})
-						.flags(vk::GeometryFlagsKHR::OPAQUE),
-				],
-				vec![
-					vk::AccelerationStructureBuildRangeInfoKHR::default()
-						.primitive_count(instance_count)
-						.primitive_offset(0)
-						.first_vertex(0)
-						.transform_offset(0),
-				],
+				vec![vk::AccelerationStructureGeometryKHR::default()
+					.geometry_type(vk::GeometryTypeKHR::INSTANCES)
+					.geometry(vk::AccelerationStructureGeometryDataKHR {
+						instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+							.array_of_pointers(false)
+							.data(vk::DeviceOrHostAddressConstKHR {
+								device_address: self.device.get_buffer_address(instances_buffer),
+							}),
+					})
+					.flags(vk::GeometryFlagsKHR::OPAQUE)],
+				vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
+					.primitive_count(instance_count)
+					.primitive_offset(0)
+					.first_vertex(0)
+					.transform_offset(0)],
 			),
 		};
 
@@ -1067,21 +1063,17 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 							})
 							.vertex_stride(vertex_buffer.stride as vk::DeviceSize);
 
-						let build_range_info = vec![
-							vk::AccelerationStructureBuildRangeInfoKHR::default()
-								.primitive_count(*triangle_count)
-								.primitive_offset(0)
-								.first_vertex(0)
-								.transform_offset(0),
-						];
+						let build_range_info = vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
+							.primitive_count(*triangle_count)
+							.primitive_offset(0)
+							.first_vertex(0)
+							.transform_offset(0)];
 
 						(
-							vec![
-								vk::AccelerationStructureGeometryKHR::default()
-									.flags(vk::GeometryFlagsKHR::OPAQUE)
-									.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-									.geometry(vk::AccelerationStructureGeometryDataKHR { triangles }),
-							],
+							vec![vk::AccelerationStructureGeometryKHR::default()
+								.flags(vk::GeometryFlagsKHR::OPAQUE)
+								.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+								.geometry(vk::AccelerationStructureGeometryDataKHR { triangles })],
 							build_range_info,
 						)
 					}

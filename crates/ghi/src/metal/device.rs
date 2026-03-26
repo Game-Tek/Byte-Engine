@@ -9,8 +9,8 @@ use objc2_metal::{MTLBuffer, MTLCommandQueue, MTLDevice, MTLResource, MTLTexture
 
 use super::*;
 use crate::{
-	Size, buffer as buffer_builder, image as image_builder, pipelines::raster as raster_pipeline, sampler as sampler_builder,
-	window,
+	buffer as buffer_builder, image as image_builder, pipelines::raster as raster_pipeline, sampler as sampler_builder, window,
+	Size,
 };
 
 pub struct Device {
@@ -557,16 +557,33 @@ impl Device {
 		builder: crate::pipelines::compute::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
 		let layout = self.get_or_create_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
+		let shader_handle = *builder.shader.handle;
+		let compute_pipeline_state = {
+			let shader = &self.shaders[shader_handle.0 as usize];
+			assert!(
+				shader.stage == crate::Stages::COMPUTE,
+				"Metal compute pipeline creation requires a compute shader. The most likely cause is that a non-compute shader was passed to compute::Builder.",
+			);
+
+			shader.metal_function.as_ref().map(|function| {
+				self.device
+					.newComputePipelineStateWithFunction_error(function)
+					.expect("Metal compute pipeline creation failed. The most likely cause is that the shader function was invalid for compute pipeline creation.")
+			})
+		};
+
+		let mut shader_handles = HashMap::default();
+		shader_handles.insert(shader_handle, [0; 32]);
+
 		self.pipelines.push(Pipeline {
-			pipeline: PipelineState::Compute(None),
+			pipeline: PipelineState::Compute(compute_pipeline_state),
 			layout,
 			vertex_layout: None,
-			shader_handles: HashMap::default(),
+			shader_handles,
 			resource_access: Vec::new(),
 			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
 			cull_mode: crate::pipelines::raster::CullMode::Back,
 		});
-		// TODO: Create MTLComputePipelineState from shader function.
 		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)
 	}
 

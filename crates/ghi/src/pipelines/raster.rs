@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use crate::{
-	DescriptorSetTemplateHandle, Formats,
 	pipelines::{ShaderParameter, VertexElement},
+	DescriptorSetTemplateHandle, Formats,
 };
 
 pub struct Builder<'a> {

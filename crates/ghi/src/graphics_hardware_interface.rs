@@ -195,6 +195,10 @@ impl DispatchExtent {
 			self.dispatch_extent.depth().div_ceil(self.workgroup_extent.depth()),
 		)
 	}
+
+	pub fn get_workgroup_extent(&self) -> Extent {
+		self.workgroup_extent
+	}
 }
 
 pub enum BottomLevelAccelerationStructureDescriptions {

@@ -3772,4 +3772,77 @@ mod tests {
 
 		assert!(matches!(error, VmError::UnsupportedExpression { .. }));
 	}
+
+	#[test]
+	fn executable_program_supports_vertex_to_fragment_interface_workflows() {
+		let vertex_script = r#"
+		main: fn () -> void {
+			out_color = in_color * 0.5;
+		}
+		"#;
+		let fragment_script = r#"
+		main: fn () -> void {
+			out_color = in_color + vec4f(0.25, 0.0, 0.0, 0.0);
+		}
+		"#;
+
+		let mut vertex_root = Node::root();
+		let vertex_vec4f = vertex_root.get_child("vec4f").expect("Expected vec4f");
+		vertex_root.add_child(Node::input("in_color", vertex_vec4f.clone(), 0).into());
+		vertex_root.add_child(Node::output("out_color", vertex_vec4f, 0).into());
+
+		let mut fragment_root = Node::root();
+		let fragment_vec4f = fragment_root.get_child("vec4f").expect("Expected vec4f");
+		fragment_root.add_child(Node::input("in_color", fragment_vec4f.clone(), 0).into());
+		fragment_root.add_child(Node::output("out_color", fragment_vec4f, 0).into());
+
+		let vertex_program = compile_to_besl(vertex_script, Some(vertex_root)).expect("Expected vertex program");
+		let fragment_program = compile_to_besl(fragment_script, Some(fragment_root)).expect("Expected fragment program");
+		let vertex_executable = ExecutableProgram::compile(vertex_program).expect("Expected runnable vertex program");
+		let fragment_executable = ExecutableProgram::compile(fragment_program).expect("Expected runnable fragment program");
+
+		let vertex_input_layout = vertex_executable
+			.input_layout(0)
+			.expect("Expected vertex input layout")
+			.clone();
+		let vertex_output_layout = vertex_executable
+			.output_layout(0)
+			.expect("Expected vertex output layout")
+			.clone();
+		let fragment_output_layout = fragment_executable
+			.output_layout(0)
+			.expect("Expected fragment output layout")
+			.clone();
+
+		let mut vertex_input = Buffer::new(vertex_input_layout);
+		let mut vertex_output = Buffer::new(vertex_output_layout);
+		let mut fragment_output = Buffer::new(fragment_output_layout);
+
+		vertex_input
+			.write("in_color", Value::Vec4F([0.8, 0.4, 0.2, 1.0]))
+			.expect("Expected vertex input write");
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(input_slot(0), &mut vertex_input);
+			descriptors.bind_buffer(output_slot(0), &mut vertex_output);
+			vertex_executable
+				.run_main(&mut descriptors)
+				.expect("Expected vertex execution to succeed");
+		}
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(input_slot(0), &mut vertex_output);
+			descriptors.bind_buffer(output_slot(0), &mut fragment_output);
+			fragment_executable
+				.run_main(&mut descriptors)
+				.expect("Expected fragment execution to succeed");
+		}
+
+		assert_eq!(
+			fragment_output.read("out_color").expect("Expected fragment output"),
+			Value::Vec4F([0.65, 0.2, 0.1, 0.5])
+		);
+	}
 }

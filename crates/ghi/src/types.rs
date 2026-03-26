@@ -453,7 +453,7 @@ bitflags::bitflags! {
 }
 
 /// Primitive GPU/shader data types.
-#[derive(Hash, Clone, Copy)]
+#[derive(Hash, Clone, Copy, PartialEq, Eq)]
 pub enum DataTypes {
 	Float,
 	Float2,
@@ -554,6 +554,7 @@ pub enum ChannelBitSize {
 pub struct BufferDescriptor {
 	pub(super) buffer: BaseBufferHandle,
 	pub(super) offset: usize,
+	pub(super) index_type: Option<DataTypes>,
 }
 
 impl BufferDescriptor {
@@ -561,7 +562,18 @@ impl BufferDescriptor {
 		Self {
 			buffer: buffer.into(),
 			offset: 0,
+			index_type: None,
 		}
+	}
+
+	pub fn offset(mut self, offset: usize) -> Self {
+		self.offset = offset;
+		self
+	}
+
+	pub fn index_type(mut self, index_type: DataTypes) -> Self {
+		self.index_type = Some(index_type);
+		self
 	}
 }
 
@@ -570,6 +582,7 @@ impl<T: Copy> Into<BufferDescriptor> for BufferHandle<T> {
 		BufferDescriptor {
 			buffer: self.into(),
 			offset: 0,
+			index_type: None,
 		}
 	}
 }
@@ -583,7 +596,11 @@ pub struct BufferStridedRange {
 impl BufferStridedRange {
 	pub fn new(buffer: BaseBufferHandle, offset: usize, stride: usize, size: usize) -> Self {
 		Self {
-			buffer_offset: BufferDescriptor { buffer, offset },
+			buffer_offset: BufferDescriptor {
+				buffer,
+				offset,
+				index_type: None,
+			},
 			stride,
 			size,
 		}

@@ -9,7 +9,8 @@ use objc2_metal::{MTLBuffer, MTLCommandQueue, MTLDevice, MTLResource, MTLTexture
 
 use super::*;
 use crate::{
-	buffer as buffer_builder, image as image_builder, pipelines::raster as raster_pipeline, sampler as sampler_builder, window,
+	Size, buffer as buffer_builder, image as image_builder, pipelines::raster as raster_pipeline, sampler as sampler_builder,
+	window,
 };
 
 pub struct Device {
@@ -23,6 +24,8 @@ pub struct Device {
 	pub(crate) descriptor_sets_layouts: Vec<DescriptorSetLayout>,
 	pub(crate) pipeline_layouts: Vec<PipelineLayout>,
 	pipeline_layout_indices: HashMap<PipelineLayoutKey, graphics_hardware_interface::PipelineLayoutHandle>,
+	pub(crate) vertex_layouts: Vec<VertexLayout>,
+	vertex_layout_indices: HashMap<VertexLayoutKey, VertexLayoutHandle>,
 	pub(crate) bindings: Vec<binding::Binding>,
 	pub(crate) descriptor_sets: Vec<descriptor_set::DescriptorSet>,
 	pub(crate) meshes: Vec<Mesh>,
@@ -81,6 +84,8 @@ impl Device {
 			descriptor_sets_layouts: Vec::new(),
 			pipeline_layouts: Vec::new(),
 			pipeline_layout_indices: HashMap::default(),
+			vertex_layouts: Vec::new(),
+			vertex_layout_indices: HashMap::default(),
 			bindings: Vec::new(),
 			descriptor_sets: Vec::new(),
 			meshes: Vec::new(),
@@ -484,17 +489,56 @@ impl Device {
 		handle
 	}
 
+	fn get_or_create_vertex_layout(&mut self, vertex_elements: &[crate::pipelines::VertexElement]) -> VertexLayoutHandle {
+		let elements = vertex_elements
+			.iter()
+			.map(|element| VertexElementDescriptor {
+				name: element.name.to_owned(),
+				format: element.format,
+				binding: element.binding,
+			})
+			.collect::<Vec<_>>();
+		let key = VertexLayoutKey {
+			elements: elements.clone(),
+		};
+
+		if let Some(handle) = self.vertex_layout_indices.get(&key) {
+			return *handle;
+		}
+
+		let max_binding = elements
+			.iter()
+			.map(|element| element.binding)
+			.max()
+			.map(|binding| binding as usize + 1)
+			.unwrap_or(0);
+		let mut strides = vec![0; max_binding];
+
+		for element in &elements {
+			strides[element.binding as usize] += element.format.size() as u32;
+		}
+
+		self.vertex_layouts.push(VertexLayout { elements, strides });
+		let handle = VertexLayoutHandle((self.vertex_layouts.len() - 1) as u64);
+		self.vertex_layout_indices.insert(key, handle);
+		handle
+	}
+
 	pub fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {
 		let layout = self.get_or_create_pipeline_layout(
 			builder.descriptor_set_templates.as_ref(),
 			builder.push_constant_ranges.as_ref(),
 		);
+		let vertex_layout = self.get_or_create_vertex_layout(builder.vertex_elements.as_ref());
 
 		self.pipelines.push(Pipeline {
 			pipeline: PipelineState::Raster(None),
 			layout,
+			vertex_layout: Some(vertex_layout),
 			shader_handles: HashMap::default(),
 			resource_access: Vec::new(),
+			face_winding: builder.face_winding,
+			cull_mode: builder.cull_mode,
 		});
 
 		let rpd = mtl::MTL4RenderPipelineDescriptor::new();
@@ -516,8 +560,11 @@ impl Device {
 		self.pipelines.push(Pipeline {
 			pipeline: PipelineState::Compute(None),
 			layout,
+			vertex_layout: None,
 			shader_handles: HashMap::default(),
 			resource_access: Vec::new(),
+			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
+			cull_mode: crate::pipelines::raster::CullMode::Back,
 		});
 		// TODO: Create MTLComputePipelineState from shader function.
 		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)
@@ -534,8 +581,11 @@ impl Device {
 		self.pipelines.push(Pipeline {
 			pipeline: PipelineState::RayTracing,
 			layout,
+			vertex_layout: None,
 			shader_handles: HashMap::default(),
 			resource_access: Vec::new(),
+			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
+			cull_mode: crate::pipelines::raster::CullMode::Back,
 		});
 		// TODO: Metal ray tracing pipeline mapping.
 		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)

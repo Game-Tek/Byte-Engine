@@ -3,8 +3,8 @@ extern "C" {}
 
 use std::sync::atomic::AtomicU64;
 
-use ::utils::hash::HashMap;
 use ::utils::Extent;
+use ::utils::hash::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;
@@ -110,6 +110,27 @@ struct PipelineLayoutKey {
 }
 
 #[derive(Clone)]
+pub(crate) struct VertexLayout {
+	elements: Vec<VertexElementDescriptor>,
+	strides: Vec<u32>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct VertexLayoutKey {
+	elements: Vec<VertexElementDescriptor>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct VertexElementDescriptor {
+	name: String,
+	format: crate::DataTypes,
+	binding: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct VertexLayoutHandle(pub(crate) u64);
+
+#[derive(Clone)]
 pub(crate) struct Shader {
 	stage: crate::Stages,
 	shader_binding_descriptors: Vec<crate::shader::BindingDescriptor>,
@@ -121,8 +142,11 @@ pub(crate) struct Shader {
 pub(crate) struct Pipeline {
 	pipeline: PipelineState,
 	layout: graphics_hardware_interface::PipelineLayoutHandle,
+	vertex_layout: Option<VertexLayoutHandle>,
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 	resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
+	face_winding: crate::pipelines::raster::FaceWinding,
+	cull_mode: crate::pipelines::raster::CullMode,
 }
 
 #[derive(Clone)]
@@ -617,6 +641,21 @@ mod utils {
 		match clear {
 			crate::ClearValue::Depth(depth) => depth as _,
 			_ => 0.0,
+		}
+	}
+
+	pub(crate) fn winding(winding: crate::pipelines::raster::FaceWinding) -> mtl::MTLWinding {
+		match winding {
+			crate::pipelines::raster::FaceWinding::Clockwise => mtl::MTLWinding::Clockwise,
+			crate::pipelines::raster::FaceWinding::CounterClockwise => mtl::MTLWinding::CounterClockwise,
+		}
+	}
+
+	pub(crate) fn cull_mode(cull_mode: crate::pipelines::raster::CullMode) -> mtl::MTLCullMode {
+		match cull_mode {
+			crate::pipelines::raster::CullMode::None => mtl::MTLCullMode::None,
+			crate::pipelines::raster::CullMode::Front => mtl::MTLCullMode::Front,
+			crate::pipelines::raster::CullMode::Back => mtl::MTLCullMode::Back,
 		}
 	}
 }

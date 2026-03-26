@@ -1,17 +1,17 @@
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
-use utils::{hash::HashMap, partition, Extent};
+use utils::{Extent, hash::HashMap, partition};
 
-use crate::{device::Device as _, graphics_hardware_interface, vulkan::HandleLike as _, FrameKey};
+use crate::{FrameKey, device::Device as _, graphics_hardware_interface, vulkan::HandleLike as _};
 
 use super::{
+	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption,
+	Descriptor, DescriptorSet, DescriptorSetHandle, Device, Handle, Image, ImageHandle, Swapchain, Synchronizer,
+	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 	utils::{
 		texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation,
 		to_pipeline_stage_flags, to_store_operation,
 	},
-	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption,
-	Descriptor, DescriptorSet, DescriptorSetHandle, Device, Handle, Image, ImageHandle, Swapchain, Synchronizer,
-	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -928,21 +928,25 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				instances_buffer,
 				instance_count,
 			} => (
-				vec![vk::AccelerationStructureGeometryKHR::default()
-					.geometry_type(vk::GeometryTypeKHR::INSTANCES)
-					.geometry(vk::AccelerationStructureGeometryDataKHR {
-						instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
-							.array_of_pointers(false)
-							.data(vk::DeviceOrHostAddressConstKHR {
-								device_address: self.device.get_buffer_address(instances_buffer),
-							}),
-					})
-					.flags(vk::GeometryFlagsKHR::OPAQUE)],
-				vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
-					.primitive_count(instance_count)
-					.primitive_offset(0)
-					.first_vertex(0)
-					.transform_offset(0)],
+				vec![
+					vk::AccelerationStructureGeometryKHR::default()
+						.geometry_type(vk::GeometryTypeKHR::INSTANCES)
+						.geometry(vk::AccelerationStructureGeometryDataKHR {
+							instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+								.array_of_pointers(false)
+								.data(vk::DeviceOrHostAddressConstKHR {
+									device_address: self.device.get_buffer_address(instances_buffer),
+								}),
+						})
+						.flags(vk::GeometryFlagsKHR::OPAQUE),
+				],
+				vec![
+					vk::AccelerationStructureBuildRangeInfoKHR::default()
+						.primitive_count(instance_count)
+						.primitive_offset(0)
+						.first_vertex(0)
+						.transform_offset(0),
+				],
 			),
 		};
 
@@ -1063,17 +1067,21 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 							})
 							.vertex_stride(vertex_buffer.stride as vk::DeviceSize);
 
-						let build_range_info = vec![vk::AccelerationStructureBuildRangeInfoKHR::default()
-							.primitive_count(*triangle_count)
-							.primitive_offset(0)
-							.first_vertex(0)
-							.transform_offset(0)];
+						let build_range_info = vec![
+							vk::AccelerationStructureBuildRangeInfoKHR::default()
+								.primitive_count(*triangle_count)
+								.primitive_offset(0)
+								.first_vertex(0)
+								.transform_offset(0),
+						];
 
 						(
-							vec![vk::AccelerationStructureGeometryKHR::default()
-								.flags(vk::GeometryFlagsKHR::OPAQUE)
-								.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-								.geometry(vk::AccelerationStructureGeometryDataKHR { triangles })],
+							vec![
+								vk::AccelerationStructureGeometryKHR::default()
+									.flags(vk::GeometryFlagsKHR::OPAQUE)
+									.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+									.geometry(vk::AccelerationStructureGeometryDataKHR { triangles }),
+							],
 							build_range_info,
 						)
 					}
@@ -1607,13 +1615,23 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 		let command_buffer = self.get_command_buffer();
 
 		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer));
+		let index_type = match buffer_descriptor.index_type {
+			Some(crate::DataTypes::U16) => vk::IndexType::UINT16,
+			Some(crate::DataTypes::U32) => vk::IndexType::UINT32,
+			Some(_) => panic!(
+				"Unsupported index buffer type. The most likely cause is that bind_index_buffer was given a DataTypes value other than U16 or U32."
+			),
+			None => panic!(
+				"Missing index buffer type. The most likely cause is that bind_index_buffer was called with a BufferDescriptor that did not specify index_type(DataTypes::U16) or index_type(DataTypes::U32)."
+			),
+		};
 
 		unsafe {
 			self.device.device.cmd_bind_index_buffer(
 				command_buffer.command_buffer,
 				buffer.buffer,
 				buffer_descriptor.offset as _,
-				vk::IndexType::UINT16,
+				index_type,
 			);
 		}
 	}

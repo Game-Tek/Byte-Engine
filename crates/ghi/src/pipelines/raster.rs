@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use crate::{
-	pipelines::{ShaderParameter, VertexElement},
 	DescriptorSetTemplateHandle, Formats,
+	pipelines::{ShaderParameter, VertexElement},
 };
 
 pub struct Builder<'a> {
@@ -11,6 +11,8 @@ pub struct Builder<'a> {
 	pub(crate) vertex_elements: Cow<'a, [VertexElement<'a>]>,
 	pub(crate) render_targets: Cow<'a, [AttachmentDescriptor]>,
 	pub(crate) shaders: Cow<'a, [ShaderParameter<'a>]>,
+	pub(crate) face_winding: FaceWinding,
+	pub(crate) cull_mode: CullMode,
 }
 
 impl<'a> Builder<'a> {
@@ -27,8 +29,35 @@ impl<'a> Builder<'a> {
 			vertex_elements: Cow::Borrowed(vertex_elements),
 			shaders: Cow::Borrowed(shaders),
 			render_targets: Cow::Borrowed(render_targets),
+			face_winding: FaceWinding::Clockwise,
+			cull_mode: CullMode::Back,
 		}
 	}
+
+	pub fn face_winding(mut self, face_winding: FaceWinding) -> Self {
+		self.face_winding = face_winding;
+		self
+	}
+
+	pub fn cull_mode(mut self, cull_mode: CullMode) -> Self {
+		self.cull_mode = cull_mode;
+		self
+	}
+}
+
+#[derive(Clone, Copy, Default)]
+pub enum FaceWinding {
+	#[default]
+	Clockwise,
+	CounterClockwise,
+}
+
+#[derive(Clone, Copy, Default)]
+pub enum CullMode {
+	None,
+	Front,
+	#[default]
+	Back,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -71,7 +100,7 @@ impl AttachmentDescriptor {
 
 #[cfg(test)]
 mod tests {
-	use super::{AttachmentDescriptor, BlendMode};
+	use super::{AttachmentDescriptor, BlendMode, Builder, CullMode, FaceWinding};
 
 	#[test]
 	fn attachment_descriptor_defaults_to_no_blending() {
@@ -85,5 +114,13 @@ mod tests {
 		let descriptor = AttachmentDescriptor::new(crate::Formats::RGBA8UNORM).blend(BlendMode::Alpha);
 
 		assert!(matches!(descriptor.blend, BlendMode::Alpha));
+	}
+
+	#[test]
+	fn builder_defaults_to_clockwise_backface_culling() {
+		let builder = Builder::new(&[], &[], &[], &[], &[]);
+
+		assert!(matches!(builder.face_winding, FaceWinding::Clockwise));
+		assert!(matches!(builder.cull_mode, CullMode::Back));
 	}
 }

@@ -2,7 +2,7 @@ use std::ptr::NonNull;
 
 use ::utils::hash::HashMap;
 use objc2_foundation::NSString;
-use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLTexture};
+use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLRenderCommandEncoder, MTLTexture};
 
 use super::*;
 use crate::command_buffer::{
@@ -17,8 +17,11 @@ pub struct CommandBufferRecording<'a> {
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	present_drawables: Vec<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
 	states: HashMap<Handle, TransitionState>,
+	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
+	bound_vertex_layout: Option<VertexLayoutHandle>,
+	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
 	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLRenderCommandEncoder>>>,
 }
 
@@ -47,8 +50,11 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer,
 			present_drawables: Vec::new(),
 			states,
+			active_pipeline_layout: None,
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
+			bound_vertex_layout: None,
+			bound_index_buffer: None,
 			active_render_encoder: None,
 		}
 	}
@@ -359,7 +365,8 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut impl BoundComputePipelineMode {
 		self.bound_pipeline = Some(pipeline_handle);
-		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+		self.active_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+		self.bound_pipeline_layout = None;
 		self
 	}
 
@@ -368,7 +375,8 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut impl BoundRayTracingPipelineMode {
 		self.bound_pipeline = Some(pipeline_handle);
-		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+		self.active_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+		self.bound_pipeline_layout = None;
 		self
 	}
 
@@ -395,20 +403,69 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 		self.bound_pipeline = Some(pipeline_handle);
 
 		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
+		let pipeline_layout = pipeline.layout;
+		let pipeline_vertex_layout = pipeline.vertex_layout;
+		let pipeline_state = pipeline.pipeline.clone();
+		let face_winding = pipeline.face_winding;
+		let cull_mode = pipeline.cull_mode;
 
-		self.bound_pipeline_layout = Some(pipeline.layout);
+		self.active_pipeline_layout = Some(pipeline_layout);
+		self.bound_pipeline_layout = None;
 
-		// self.active_render_encoder.unwrap().setRenderPipelineState(pipeline.pipeline);
+		if let Some(encoder) = self.active_render_encoder.as_ref() {
+			encoder.setFrontFacingWinding(utils::winding(face_winding));
+			encoder.setCullMode(utils::cull_mode(cull_mode));
+
+			if self.bound_vertex_layout != pipeline_vertex_layout {
+				if let PipelineState::Raster(Some(render_pipeline_state)) = &pipeline_state {
+					encoder.setRenderPipelineState(render_pipeline_state);
+				}
+				self.bound_vertex_layout = pipeline_vertex_layout;
+			}
+		}
 
 		self
 	}
 
-	fn bind_vertex_buffers(&mut self, _buffer_descriptors: &[crate::BufferDescriptor]) {
-		// self.active_render_encoder.unwrap().setVertexBuffer_offset_atIndex();
+	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[crate::BufferDescriptor]) {
+		let consumptions = buffer_descriptors
+			.iter()
+			.map(|buffer_descriptor| Consumption {
+				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer)),
+				stages: crate::Stages::VERTEX,
+				access: crate::AccessPolicies::READ,
+				layout: crate::Layouts::General,
+			})
+			.collect::<Vec<_>>();
+		self.consume_resources(consumptions);
+
+		if let Some(encoder) = self.active_render_encoder.as_ref() {
+			for (binding, buffer_descriptor) in buffer_descriptors.iter().enumerate() {
+				let buffer = &self.device.buffers[self.get_internal_buffer_handle(buffer_descriptor.buffer).0 as usize];
+				unsafe {
+					encoder.setVertexBuffer_offset_atIndex(
+						Some(buffer.buffer.as_ref()),
+						buffer_descriptor.offset as _,
+						binding as _,
+					);
+				}
+			}
+		}
 	}
 
 	fn bind_index_buffer(&mut self, _buffer_descriptor: &crate::BufferDescriptor) {
-		//
+		self.consume_resources([Consumption {
+			handle: Handle::Buffer(self.get_internal_buffer_handle(_buffer_descriptor.buffer)),
+			stages: crate::Stages::INDEX,
+			access: crate::AccessPolicies::READ,
+			layout: crate::Layouts::General,
+		}]);
+
+		let index_type = _buffer_descriptor.index_type.expect(
+			"Missing index buffer type. The most likely cause is that bind_index_buffer was called with a BufferDescriptor that did not specify index_type(DataTypes::U16) or index_type(DataTypes::U32).",
+		);
+
+		self.bound_index_buffer = Some((_buffer_descriptor.buffer, _buffer_descriptor.offset, index_type));
 	}
 
 	fn end_render_pass(&mut self) {
@@ -421,6 +478,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	fn bind_descriptor_sets(&mut self, _sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut Self {
 		// TODO: Map descriptor sets to Metal argument buffers and encoder bindings.
+		self.bound_pipeline_layout = self.active_pipeline_layout;
 		self
 	}
 
@@ -428,6 +486,9 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	where
 		[(); std::mem::size_of::<T>()]: Sized,
 	{
+		let _pipeline_layout_handle = self.active_pipeline_layout.expect(
+			"No pipeline bound. The most likely cause is that write_push_constant was called before binding a pipeline.",
+		);
 		// TODO: Map push constants to MTLBuffer/bytes per stage.
 	}
 }
@@ -443,13 +504,40 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 
 	fn draw_indexed(
 		&mut self,
-		_index_count: u32,
-		_instance_count: u32,
-		_first_index: u32,
-		_vertex_offset: i32,
-		_first_instance: u32,
+		index_count: u32,
+		instance_count: u32,
+		first_index: u32,
+		vertex_offset: i32,
+		first_instance: u32,
 	) {
-		// TODO: Issue indexed draw call.
+		let (buffer_handle, offset, index_type) = self
+			.bound_index_buffer
+			.expect("No index buffer bound. The most likely cause is that draw_indexed was called before bind_index_buffer.");
+		let buffer = &self.device.buffers[self.get_internal_buffer_handle(buffer_handle).0 as usize];
+		let (metal_index_type, index_size) = match index_type {
+			crate::DataTypes::U16 => (mtl::MTLIndexType::UInt16, std::mem::size_of::<u16>()),
+			crate::DataTypes::U32 => (mtl::MTLIndexType::UInt32, std::mem::size_of::<u32>()),
+			_ => panic!(
+				"Unsupported index buffer type. The most likely cause is that bind_index_buffer was given a DataTypes value other than U16 or U32."
+			),
+		};
+		let index_buffer_offset = offset + first_index as usize * index_size;
+
+		unsafe {
+			self.active_render_encoder
+				.as_ref()
+				.unwrap()
+				.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset_instanceCount_baseVertex_baseInstance(
+					mtl::MTLPrimitiveType::Triangle,
+					index_count as _,
+					metal_index_type,
+					buffer.buffer.as_ref(),
+					index_buffer_offset as _,
+					instance_count as _,
+					vertex_offset as _,
+					first_instance as _,
+				);
+		}
 	}
 
 	fn dispatch_meshes(&mut self, _x: u32, _y: u32, _z: u32) {

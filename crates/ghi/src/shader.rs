@@ -4,6 +4,8 @@ use crate::AccessPolicies;
 pub enum Sources<'a> {
 	/// SPIR-V binary
 	SPIRV(&'a [u8]),
+	/// Metal shading language source and entry-point name
+	MTL { source: &'a str, entry_point: &'a str },
 }
 
 #[derive(Clone, Copy)]

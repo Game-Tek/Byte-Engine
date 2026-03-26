@@ -5,7 +5,7 @@ use std::ptr::NonNull;
 use ::utils::hash::{HashMap, HashSet};
 use objc2::ClassType;
 use objc2_foundation::{NSArray, NSString};
-use objc2_metal::{MTLArgumentEncoder, MTLBuffer, MTLCommandQueue, MTLDevice, MTLResource, MTLTexture};
+use objc2_metal::{MTLArgumentEncoder, MTLBuffer, MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource, MTLTexture};
 
 use super::*;
 use crate::{
@@ -672,8 +672,20 @@ impl Device {
 		stage: crate::ShaderTypes,
 		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let spirv = match shader_source_type {
-			crate::shader::Sources::SPIRV(data) => Some(data.to_vec()),
+		let (spirv, metal_function) = match shader_source_type {
+			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None),
+			crate::shader::Sources::MTL { source, entry_point } => {
+				let compile_options = mtl::MTLCompileOptions::new();
+				let source = NSString::from_str(source);
+				let library = self
+					.device
+					.newLibraryWithSource_options_error(&source, Some(&compile_options))
+					.map_err(|_| ())?;
+				let entry_point = NSString::from_str(entry_point);
+				let function = library.newFunctionWithName(&entry_point).ok_or(())?;
+
+				(None, Some(function))
+			}
 		};
 
 		let stages = match stage {
@@ -693,11 +705,10 @@ impl Device {
 		self.shaders.push(Shader {
 			stage: stages,
 			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
-			metal_function: None,
+			metal_function,
 			spirv,
 		});
 
-		// TODO: Compile SPIR-V to MSL and create MTLLibrary/MTLFunction.
 		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
 	}
 
@@ -923,11 +934,20 @@ impl Device {
 			builder.push_constant_ranges.as_ref(),
 		);
 		let vertex_layout = self.get_or_create_vertex_layout(builder.vertex_elements.as_ref());
+		let mut shader_handles = HashMap::default();
+		let mut vertex_function = None;
+		let mut fragment_function = None;
 		let resource_access = builder
 			.shaders
 			.iter()
 			.flat_map(|shader_parameter| {
 				let shader = &self.shaders[shader_parameter.handle.0 as usize];
+				shader_handles.insert(*shader_parameter.handle, [0; 32]);
+				match shader_parameter.stage {
+					crate::ShaderTypes::Vertex => vertex_function = shader.metal_function.clone(),
+					crate::ShaderTypes::Fragment => fragment_function = shader.metal_function.clone(),
+					_ => {}
+				}
 				shader
 					.shader_binding_descriptors
 					.iter()
@@ -941,23 +961,35 @@ impl Device {
 			})
 			.collect::<Vec<_>>();
 
+		let raster_pipeline_state = if let Some(vertex_function) = vertex_function.as_ref() {
+			let descriptor = mtl::MTLRenderPipelineDescriptor::new();
+			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
+			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
+
+			for (index, attachment) in builder.render_targets.iter().enumerate() {
+				if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
+					descriptor.setDepthAttachmentPixelFormat(utils::to_pixel_format(attachment.format));
+				} else {
+					let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
+					color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
+				}
+			}
+
+			self.device.newRenderPipelineStateWithDescriptor_error(&descriptor).ok()
+		} else {
+			None
+		};
+
 		self.pipelines.push(Pipeline {
-			pipeline: PipelineState::Raster(None),
+			pipeline: PipelineState::Raster(raster_pipeline_state),
 			layout,
 			vertex_layout: Some(vertex_layout),
-			shader_handles: HashMap::default(),
+			shader_handles,
 			resource_access,
 			face_winding: builder.face_winding,
 			cull_mode: builder.cull_mode,
 		});
-
-		let rpd = mtl::MTL4RenderPipelineDescriptor::new();
-		rpd.setLabel(Some(&NSString::from_str("raster_pipeline")));
-		// rpd.setVertexFunctionDescriptor(vertex_function_descriptor);
-		// rpd.setFragmentFunctionDescriptor(fragment_function_descriptor);
-		// rpd.colorAttachments().object
-		//
-		// self.device.newRenderPipelineStateWithDescriptor_error(&rpd);
 
 		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)
 	}

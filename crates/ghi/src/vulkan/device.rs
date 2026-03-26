@@ -3262,6 +3262,7 @@ impl crate::device::DeviceCreate for Device {
 				// SAFETY: shader was checked to be aligned to 4 bytes.
 				Cow::Borrowed(unsafe { std::slice::from_raw_parts(spirv.as_ptr() as *const u32, spirv.len() / 4) })
 			}
+			crate::shader::Sources::MTL { .. } => return Err(()),
 		};
 
 		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&shader);

@@ -329,6 +329,7 @@ impl Device {
 		// Stores shader metadata and bytecode without compiling to DXIL.
 		let spirv = match shader_source_type {
 			Sources::SPIRV(bytes) => Some(bytes.to_vec()),
+			Sources::MTL { .. } => return Err(()),
 		};
 
 		self.shaders.push(Shader {

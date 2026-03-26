@@ -671,8 +671,13 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		// TODO: Issue draw call using mesh buffers.
 	}
 
-	fn draw(&mut self, _vertex_count: u32, _instance_count: u32, _first_vertex: u32, _first_instance: u32) {
-		// TODO: Issue non-indexed draw call.
+	fn draw(&mut self, vertex_count: u32, _instance_count: u32, first_vertex: u32, _first_instance: u32) {
+		unsafe {
+			self.active_render_encoder
+				.as_ref()
+				.unwrap()
+				.drawPrimitives_vertexStart_vertexCount(mtl::MTLPrimitiveType::Triangle, first_vertex as _, vertex_count as _);
+		}
 	}
 
 	fn draw_indexed(

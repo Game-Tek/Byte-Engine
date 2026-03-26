@@ -714,7 +714,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			vec3 local_specular = (NDF * G * F) / (4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.000001);
 
 			vec3 kS = F;
-			vec3 kD = vec3(1.0) - kS;
+			vec3 kD = (vec3(1.0) - fresnel_schlick(NdotL, F0)) * (vec3(1.0) - fresnel_schlick(NdotV, F0));
 
 			kD *= 1.0 - metalness;
 

@@ -3110,6 +3110,36 @@ mod tests {
 			.collect()
 	}
 
+	fn compile_test_program(script: &str, root: Option<Node>) -> ExecutableProgram {
+		let program = compile_to_besl(script, root).expect("Expected lexed program");
+		ExecutableProgram::compile(program).expect("Expected runnable program")
+	}
+
+	fn compile_test_root_program(root: NodeReference) -> ExecutableProgram {
+		ExecutableProgram::compile(root).expect("Expected runnable program")
+	}
+
+	fn buffer_for_slot(executable: &ExecutableProgram, slot: DescriptorSlot) -> Buffer {
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		Buffer::new(layout)
+	}
+
+	fn interface_buffer_for_input(executable: &ExecutableProgram, location: u8) -> Buffer {
+		let layout = executable.input_layout(location).expect("Expected input layout").clone();
+		Buffer::new(layout)
+	}
+
+	fn interface_buffer_for_output(executable: &ExecutableProgram, location: u8) -> Buffer {
+		let layout = executable.output_layout(location).expect("Expected output layout").clone();
+		Buffer::new(layout)
+	}
+
+	fn run_with_buffer(executable: &ExecutableProgram, slot: DescriptorSlot, buffer: &mut Buffer) {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(slot, buffer);
+		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+	}
+
 	fn write_texture(texture: &mut Texture, texels: &[([u32; 2], [f32; 4])]) {
 		for (coord, value) in texels {
 			texture.write(*coord, *value).expect("Expected texture write to succeed");
@@ -3141,17 +3171,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 0);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 42.0);
 	}
@@ -3182,17 +3206,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(1, 3);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 7.5);
 	}
@@ -3237,21 +3255,12 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let input_slot = DescriptorSlot::new(0, 7);
 		let output_slot = DescriptorSlot::new(0, 8);
-		let input_layout = executable
-			.buffer_layout(input_slot)
-			.expect("Expected input buffer layout")
-			.clone();
-		let output_layout = executable
-			.buffer_layout(output_slot)
-			.expect("Expected output buffer layout")
-			.clone();
-		let mut input = Buffer::new(input_layout);
-		let mut output = Buffer::new(output_layout);
+		let mut input = buffer_for_slot(&executable, input_slot);
+		let mut output = buffer_for_slot(&executable, output_slot);
 		input
 			.write("value", Value::F32(9.25))
 			.expect("Expected host buffer write to succeed");
@@ -3292,17 +3301,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 1);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 12.0);
 	}
@@ -3410,17 +3413,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 2);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(read_f32s(&buffer, 3), vec![5.0, 7.0, 9.0]);
 	}
@@ -3451,17 +3448,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 3);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(read_f32s(&buffer, 4), vec![2.0, 4.0, 6.0, 8.0]);
 	}
@@ -3503,17 +3494,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 4);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(
 			read_f32s(&buffer, 16),
@@ -3550,17 +3535,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 5);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 7.5);
 	}
@@ -3594,17 +3573,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 6);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(read_f32s(&buffer, 3), vec![2.0, 4.0, 6.0]);
 	}
@@ -3646,14 +3619,12 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let texture_slot = DescriptorSlot::new(0, 7);
 		let buffer_slot = DescriptorSlot::new(0, 8);
-		let layout = executable.buffer_layout(buffer_slot).expect("Expected buffer layout").clone();
 		let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-		let mut buffer = Buffer::new(layout);
+		let mut buffer = buffer_for_slot(&executable, buffer_slot);
 		write_texture(
 			&mut texture,
 			&[
@@ -3711,14 +3682,12 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let texture_slot = DescriptorSlot::new(0, 9);
 		let buffer_slot = DescriptorSlot::new(0, 10);
-		let layout = executable.buffer_layout(buffer_slot).expect("Expected buffer layout").clone();
 		let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
-		let mut buffer = Buffer::new(layout);
+		let mut buffer = buffer_for_slot(&executable, buffer_slot);
 		write_texture(
 			&mut texture,
 			&[
@@ -3762,8 +3731,7 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let image_slot = DescriptorSlot::new(0, 11);
 		let mut image = Texture::new(2, 2).expect("Expected texture allocation");
@@ -3810,8 +3778,7 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 12);
 		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
@@ -3825,11 +3792,7 @@ mod tests {
 			)
 			.expect("Expected array element write to succeed");
 
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(read_f32s(&buffer, 4), vec![0.0, 7.5, 0.0, 7.5]);
 	}
@@ -3876,16 +3839,14 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 14);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
 		let push_constant_layout = executable
 			.push_constant_layout()
 			.expect("Expected push constant layout")
 			.clone();
-		let mut buffer = Buffer::new(layout);
+		let mut buffer = buffer_for_slot(&executable, slot);
 		let mut push_constant = Buffer::new(push_constant_layout);
 		push_constant
 			.write("material_id", Value::F32(3.5))
@@ -3926,12 +3887,10 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 15);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
+		let mut buffer = buffer_for_slot(&executable, slot);
 
 		let error = {
 			let mut descriptors = DescriptorBindings::new();
@@ -3959,13 +3918,10 @@ mod tests {
 		root.add_child(Node::output("out_position", vec4f_type, 0).into());
 		root.add_child(Node::output("out_instance_index", u32_type, 1).into());
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
-		let position_layout = executable.output_layout(0).expect("Expected output layout").clone();
-		let instance_layout = executable.output_layout(1).expect("Expected output layout").clone();
-		let mut position = Buffer::new(position_layout);
-		let mut instance = Buffer::new(instance_layout);
+		let mut position = interface_buffer_for_output(&executable, 0);
+		let mut instance = interface_buffer_for_output(&executable, 1);
 
 		{
 			let mut descriptors = DescriptorBindings::new();
@@ -3994,13 +3950,10 @@ mod tests {
 		root.add_child(Node::input("in_color", vec4f_type.clone(), 0).into());
 		root.add_child(Node::output("out_color", vec4f_type, 0).into());
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
-		let input_layout = executable.input_layout(0).expect("Expected input layout").clone();
-		let output_layout = executable.output_layout(0).expect("Expected output layout").clone();
-		let mut input = Buffer::new(input_layout);
-		let mut output = Buffer::new(output_layout);
+		let mut input = interface_buffer_for_input(&executable, 0);
+		let mut output = interface_buffer_for_output(&executable, 0);
 		input
 			.write("in_color", Value::Vec4F([0.1, 0.2, 0.3, 1.0]))
 			.expect("Expected input write to succeed");
@@ -4086,27 +4039,12 @@ mod tests {
 		fragment_root.add_child(Node::input("in_color", fragment_vec4f.clone(), 0).into());
 		fragment_root.add_child(Node::output("out_color", fragment_vec4f, 0).into());
 
-		let vertex_program = compile_to_besl(vertex_script, Some(vertex_root)).expect("Expected vertex program");
-		let fragment_program = compile_to_besl(fragment_script, Some(fragment_root)).expect("Expected fragment program");
-		let vertex_executable = ExecutableProgram::compile(vertex_program).expect("Expected runnable vertex program");
-		let fragment_executable = ExecutableProgram::compile(fragment_program).expect("Expected runnable fragment program");
+		let vertex_executable = compile_test_program(vertex_script, Some(vertex_root));
+		let fragment_executable = compile_test_program(fragment_script, Some(fragment_root));
 
-		let vertex_input_layout = vertex_executable
-			.input_layout(0)
-			.expect("Expected vertex input layout")
-			.clone();
-		let vertex_output_layout = vertex_executable
-			.output_layout(0)
-			.expect("Expected vertex output layout")
-			.clone();
-		let fragment_output_layout = fragment_executable
-			.output_layout(0)
-			.expect("Expected fragment output layout")
-			.clone();
-
-		let mut vertex_input = Buffer::new(vertex_input_layout);
-		let mut vertex_output = Buffer::new(vertex_output_layout);
-		let mut fragment_output = Buffer::new(fragment_output_layout);
+		let mut vertex_input = interface_buffer_for_input(&vertex_executable, 0);
+		let mut vertex_output = interface_buffer_for_output(&vertex_executable, 0);
+		let mut fragment_output = interface_buffer_for_output(&fragment_executable, 0);
 
 		vertex_input
 			.write("in_color", Value::Vec4F([0.8, 0.4, 0.2, 1.0]))
@@ -4159,13 +4097,11 @@ mod tests {
 		);
 		root.add_child(Node::output("out_color", vec4f_type, 0).into());
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let input_attachment_slot = DescriptorSlot::new(0, 16);
-		let output_layout = executable.output_layout(0).expect("Expected output layout").clone();
 		let mut input_attachment = Texture::new(2, 1).expect("Expected attachment allocation");
-		let mut output = Buffer::new(output_layout);
+		let mut output = interface_buffer_for_output(&executable, 0);
 		write_texture(
 			&mut input_attachment,
 			&[([0, 0], [0.1, 0.2, 0.3, 1.0]), ([1, 0], [0.9, 0.4, 0.2, 1.0])],
@@ -4210,18 +4146,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 17);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 32.0);
 	}
@@ -4250,18 +4179,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 18);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(read_f32s(&buffer, 3), vec![0.0, 0.0, 1.0]);
 	}
@@ -4290,18 +4212,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 19);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 5.0);
 	}
@@ -4330,18 +4245,11 @@ mod tests {
 			.into(),
 		);
 
-		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_program(script, Some(root));
 
 		let slot = DescriptorSlot::new(0, 20);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(read_f32s(&buffer, 3), vec![0.6, 0.8, 0.0]);
 	}
@@ -4434,18 +4342,11 @@ mod tests {
 			.into(),
 		);
 
-		let program: NodeReference = root.into();
-		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+		let executable = compile_test_root_program(root.into());
 
 		let slot = DescriptorSlot::new(0, 21);
-		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
-		let mut buffer = Buffer::new(layout);
-
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(slot, &mut buffer);
-			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-		}
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(read_f32s(&buffer, 3), vec![1.0, 1.0, 0.0]);
 	}

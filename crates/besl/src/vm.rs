@@ -596,6 +596,11 @@ impl ExecutableProgram {
 					let right = read_register(&registers, *right)?;
 					registers[*register] = Some(apply_dot_product(&left, &right)?);
 				}
+				Instruction::CrossProduct { register, left, right } => {
+					let left = read_register(&registers, *left)?;
+					let right = read_register(&registers, *right)?;
+					registers[*register] = Some(apply_cross_product(&left, &right)?);
+				}
 				Instruction::LoadLocal { register, local } => {
 					let value = locals
 						.get(*local)
@@ -791,6 +796,11 @@ enum Instruction {
 		right: usize,
 	},
 	DotProduct {
+		register: usize,
+		left: usize,
+		right: usize,
+	},
+	CrossProduct {
 		register: usize,
 		left: usize,
 		right: usize,
@@ -1254,6 +1264,20 @@ impl Compiler {
 				let right = self.compile_value_expression(&arguments[1], &supported_type, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::DotProduct { register, left, right });
+				Ok(register)
+			}
+			"cross" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+
+				let left = self.compile_value_expression(&arguments[0], &ValueType::Vec3F, descriptor_layouts)?;
+				let right = self.compile_value_expression(&arguments[1], &ValueType::Vec3F, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::CrossProduct { register, left, right });
 				Ok(register)
 			}
 			_ => Err(VmError::UnsupportedExpression {
@@ -2603,12 +2627,30 @@ fn apply_dot_product(left: &ScalarValue, right: &ScalarValue) -> Result<ScalarVa
 	}
 }
 
+fn apply_cross_product(left: &ScalarValue, right: &ScalarValue) -> Result<ScalarValue, VmError> {
+	match (left, right) {
+		(ScalarValue::Vec3F(left), ScalarValue::Vec3F(right)) => Ok(ScalarValue::Vec3F(cross_product(*left, *right))),
+		(left, right) => Err(VmError::TypeMismatch {
+			expected: left.value_type().name().to_string(),
+			found: right.value_type().name().to_string(),
+		}),
+	}
+}
+
 fn dot_product<const N: usize>(left: [f32; N], right: [f32; N]) -> f32 {
 	let mut value = 0.0;
 	for index in 0..N {
 		value += left[index] * right[index];
 	}
 	value
+}
+
+fn cross_product(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+	[
+		left[1] * right[2] - left[2] * right[1],
+		left[2] * right[0] - left[0] * right[2],
+		left[0] * right[1] - left[1] * right[0],
+	]
 }
 
 fn read_register(registers: &[Option<ScalarValue>], register: usize) -> Result<ScalarValue, VmError> {
@@ -3989,5 +4031,45 @@ mod tests {
 		}
 
 		assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 32.0);
+	}
+
+	#[test]
+	fn executable_program_evaluates_cross_intrinsics() {
+		let script = r#"
+		main: fn () -> void {
+			buff.value = cross(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0));
+		}
+		"#;
+
+		let mut root = Node::root();
+		let vec3f_type = root.get_child("vec3f").expect("Expected vec3f");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", vec3f_type).into()],
+				},
+				0,
+				18,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 18);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(read_f32s(&buffer, 3), vec![0.0, 0.0, 1.0]);
 	}
 }

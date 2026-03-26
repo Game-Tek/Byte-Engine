@@ -24,6 +24,11 @@ impl DescriptorSlot {
 }
 
 const PUSH_CONSTANT_SLOT: DescriptorSlot = DescriptorSlot::new(u32::MAX, u32::MAX);
+const OUTPUT_INTERFACE_SET: u32 = u32::MAX - 1;
+
+pub const fn output_slot(location: u8) -> DescriptorSlot {
+	DescriptorSlot::new(OUTPUT_INTERFACE_SET, location as u32)
+}
 
 /// The `ValueType` enum stores the scalar BESL value kinds that the first VM pass can execute.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -511,6 +516,10 @@ impl ExecutableProgram {
 		})
 	}
 
+	pub fn output_layout(&self, location: u8) -> Option<&BufferLayout> {
+		self.buffer_layout(output_slot(location))
+	}
+
 	/// Executes the compiled `main` function using the currently bound descriptor resources.
 	pub fn run_main(&self, descriptors: &mut DescriptorBindings<'_>) -> Result<(), VmError> {
 		let return_value = self.execute_function(self.main_function, &[], descriptors)?;
@@ -957,6 +966,19 @@ impl Compiler {
 				self.instructions.push(Instruction::StoreLocal { local, register });
 				Ok(())
 			}
+			Nodes::Expression(Expressions::Member { .. }) => {
+				drop(left_expression);
+
+				let target = self.resolve_output_access(&left, descriptor_layouts)?;
+				let register = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
+				self.instructions.push(Instruction::StoreBuffer {
+					slot: target.slot,
+					offset: target.offset,
+					value_type: target.value_type,
+					register,
+				});
+				Ok(())
+			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
 
@@ -1064,25 +1086,36 @@ impl Compiler {
 				let source = source.clone();
 				drop(borrowed);
 
-				let local = self
-					.locals_by_reference
-					.get(&source)
-					.copied()
-					.ok_or_else(|| VmError::UnsupportedExpression {
-						message: "Only local variable reads are supported as bare member expressions".to_string(),
-					})?;
+				if let Some(local) = self.locals_by_reference.get(&source).copied() {
+					let actual_type = self.local_types.get(local).ok_or(VmError::UninitializedLocal { local })?;
+					if actual_type != expected_type {
+						return Err(VmError::TypeMismatch {
+							expected: expected_type.name().to_string(),
+							found: actual_type.name().to_string(),
+						});
+					}
 
-				let actual_type = self.local_types.get(local).ok_or(VmError::UninitializedLocal { local })?;
-				if actual_type != expected_type {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: actual_type.name().to_string(),
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::LoadLocal { register, local });
+					Ok(register)
+				} else {
+					let target = self.resolve_output_access(expression, descriptor_layouts)?;
+					if &target.value_type != expected_type {
+						return Err(VmError::TypeMismatch {
+							expected: expected_type.name().to_string(),
+							found: target.value_type.name().to_string(),
+						});
+					}
+
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::LoadBuffer {
+						register,
+						slot: target.slot,
+						offset: target.offset,
+						value_type: target.value_type,
 					});
+					Ok(register)
 				}
-
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::LoadLocal { register, local });
-				Ok(register)
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(borrowed);
@@ -1322,18 +1355,14 @@ impl Compiler {
 				let source = source.clone();
 				drop(borrowed);
 
-				let local = self
-					.locals_by_reference
-					.get(&source)
-					.copied()
-					.ok_or_else(|| VmError::UnsupportedExpression {
-						message: "Only local variable reads are supported as bare member expressions".to_string(),
-					})?;
-
-				self.local_types
-					.get(local)
-					.cloned()
-					.ok_or(VmError::UninitializedLocal { local })
+				if let Some(local) = self.locals_by_reference.get(&source).copied() {
+					self.local_types
+						.get(local)
+						.cloned()
+						.ok_or(VmError::UninitializedLocal { local })
+				} else {
+					Ok(self.resolve_output_access(expression, descriptor_layouts)?.value_type)
+				}
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(borrowed);
@@ -1621,6 +1650,76 @@ impl Compiler {
 				Ok(slot)
 			}
 		}
+	}
+
+	fn resolve_output_access(
+		&mut self,
+		expression: &NodeReference,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<ResolvedBufferAccess, VmError> {
+		let borrowed = expression.borrow();
+		let (source, output_name) = match borrowed.node() {
+			Nodes::Expression(Expressions::Member { source, name }) => (source.clone(), name.clone()),
+			node => {
+				return Err(VmError::UnsupportedExpression {
+					message: format!("Expected an output member access, but found {}", describe_node(node)),
+				});
+			}
+		};
+		drop(borrowed);
+
+		let source_ref = source.borrow();
+		let (slot, layout) = match source_ref.node() {
+			Nodes::Output { name, format, location } => {
+				if name != &output_name {
+					return Err(VmError::UnsupportedExpression {
+						message: format!("Only direct output assignment is supported for `{}`", output_name),
+					});
+				}
+
+				let value_type = resolve_value_type(format)?;
+				(
+					output_slot(*location),
+					BufferLayout {
+						members: vec![BufferMemberLayout {
+							name: output_name.clone(),
+							offset: 0,
+							value_type: value_type.clone(),
+							count: 1,
+						}],
+						size: value_type.size(),
+					},
+				)
+			}
+			node => {
+				return Err(VmError::UnsupportedExpression {
+					message: format!("Expected an output interface, but found {}", describe_node(node)),
+				});
+			}
+		};
+		drop(source_ref);
+
+		match descriptor_layouts.get(&slot) {
+			Some(existing) if existing != &DescriptorLayout::Buffer(layout.clone()) => {
+				return Err(VmError::UnsupportedDescriptor {
+					slot,
+					message: "Descriptor slot was reused with a different layout".to_string(),
+				});
+			}
+			Some(_) => {}
+			None => {
+				descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
+			}
+		}
+
+		Ok(ResolvedBufferAccess {
+			slot,
+			offset: 0,
+			stride: layout.size(),
+			count: 1,
+			index: None,
+			value_type: layout.members()[0].value_type().clone(),
+		})
 	}
 
 	fn compile_call_statement(
@@ -2629,7 +2728,7 @@ impl std::error::Error for VmError {}
 mod tests {
 	use crate::{compile_to_besl, BindingTypes, Node};
 
-	use super::{Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value, VmError};
+	use super::{output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value, VmError};
 
 	fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
 		buffer
@@ -3472,5 +3571,42 @@ mod tests {
 		};
 
 		assert_eq!(error, VmError::MissingPushConstant);
+	}
+
+	#[test]
+	fn executable_program_writes_vertex_shader_output_interfaces() {
+		let script = r#"
+		main: fn () -> void {
+			out_position = vec4f(1.0, 2.0, 3.0, 1.0);
+			out_instance_index = 7;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		root.add_child(Node::output("out_position", vec4f_type, 0).into());
+		root.add_child(Node::output("out_instance_index", u32_type, 1).into());
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let position_layout = executable.output_layout(0).expect("Expected output layout").clone();
+		let instance_layout = executable.output_layout(1).expect("Expected output layout").clone();
+		let mut position = Buffer::new(position_layout);
+		let mut instance = Buffer::new(instance_layout);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(output_slot(0), &mut position);
+			descriptors.bind_buffer(output_slot(1), &mut instance);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(read_f32s(&position, 4), vec![1.0, 2.0, 3.0, 1.0]);
+		assert_eq!(
+			instance.read("out_instance_index").expect("Expected output value"),
+			Value::U32(7)
+		);
 	}
 }

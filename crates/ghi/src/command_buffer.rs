@@ -49,10 +49,6 @@ where
 		swapchain_handle: SwapchainHandle,
 	);
 
-	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]);
-
-	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
-
 	fn execute(self, synchronizer: SynchronizerHandle);
 
 	fn end<'a>(self, present_keys: &'a [PresentKey]) -> Self::Result<'a>;
@@ -72,6 +68,10 @@ pub trait CommonCommandBufferMode {
 
 pub trait RasterizationRenderPassMode: CommonCommandBufferMode {
 	fn bind_raster_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRasterizationPipelineMode;
+
+	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]);
+
+	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
 
 	/// Ends a render pass on the GPU.
 	fn end_render_pass(&mut self);

@@ -1145,63 +1145,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		visit(self, acceleration_structure_builds, Vec::new(), Vec::new(), Vec::new());
 	}
 
-	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[crate::BufferDescriptor]) {
-		let consumptions = buffer_descriptors.iter().map(|buffer_descriptor| VulkanConsumption {
-			handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
-			stages: vk::PipelineStageFlags2::VERTEX_INPUT,
-			access: vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
-			layout: vk::ImageLayout::UNDEFINED,
-		});
-
-		self.vulkan_consume_resources(consumptions)(self);
-
-		let command_buffer = self.get_command_buffer();
-
-		let buffers = buffer_descriptors
-			.iter()
-			.map(|buffer_descriptor| {
-				self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer))
-					.buffer
-			})
-			.collect::<Vec<_>>();
-		let offsets = buffer_descriptors
-			.iter()
-			.map(|buffer_descriptor| buffer_descriptor.offset)
-			.collect::<Vec<_>>();
-
-		// TODO: implent slot splitting
-		unsafe {
-			self.device.device.cmd_bind_vertex_buffers(
-				command_buffer.command_buffer,
-				0,
-				&buffers,
-				&offsets.iter().map(|&e| e as _).collect::<Vec<_>>(),
-			);
-		}
-	}
-
-	fn bind_index_buffer(&mut self, buffer_descriptor: &crate::BufferDescriptor) {
-		self.vulkan_consume_resources([VulkanConsumption {
-			handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
-			stages: vk::PipelineStageFlags2::INDEX_INPUT,
-			access: vk::AccessFlags2::INDEX_READ,
-			layout: vk::ImageLayout::UNDEFINED,
-		}])(self);
-
-		let command_buffer = self.get_command_buffer();
-
-		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer));
-
-		unsafe {
-			self.device.device.cmd_bind_index_buffer(
-				command_buffer.command_buffer,
-				buffer.buffer,
-				buffer_descriptor.offset as _,
-				vk::IndexType::UINT16,
-			);
-		}
-	}
-
 	fn blit_image(
 		&mut self,
 		source_image: impl graphics_hardware_interface::ImageHandleLike,
@@ -1616,6 +1559,63 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 		self.bound_pipeline_layout = Some(pipeline.layout);
 
 		self
+	}
+
+	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[crate::BufferDescriptor]) {
+		let consumptions = buffer_descriptors.iter().map(|buffer_descriptor| VulkanConsumption {
+			handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
+			stages: vk::PipelineStageFlags2::VERTEX_INPUT,
+			access: vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
+			layout: vk::ImageLayout::UNDEFINED,
+		});
+
+		self.vulkan_consume_resources(consumptions)(self);
+
+		let command_buffer = self.get_command_buffer();
+
+		let buffers = buffer_descriptors
+			.iter()
+			.map(|buffer_descriptor| {
+				self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer))
+					.buffer
+			})
+			.collect::<Vec<_>>();
+		let offsets = buffer_descriptors
+			.iter()
+			.map(|buffer_descriptor| buffer_descriptor.offset)
+			.collect::<Vec<_>>();
+
+		// TODO: implent slot splitting
+		unsafe {
+			self.device.device.cmd_bind_vertex_buffers(
+				command_buffer.command_buffer,
+				0,
+				&buffers,
+				&offsets.iter().map(|&e| e as _).collect::<Vec<_>>(),
+			);
+		}
+	}
+
+	fn bind_index_buffer(&mut self, buffer_descriptor: &crate::BufferDescriptor) {
+		self.vulkan_consume_resources([VulkanConsumption {
+			handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
+			stages: vk::PipelineStageFlags2::INDEX_INPUT,
+			access: vk::AccessFlags2::INDEX_READ,
+			layout: vk::ImageLayout::UNDEFINED,
+		}])(self);
+
+		let command_buffer = self.get_command_buffer();
+
+		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer));
+
+		unsafe {
+			self.device.device.cmd_bind_index_buffer(
+				command_buffer.command_buffer,
+				buffer.buffer,
+				buffer_descriptor.offset as _,
+				vk::IndexType::UINT16,
+			);
+		}
 	}
 
 	/// Ends a render pass on the GPU.

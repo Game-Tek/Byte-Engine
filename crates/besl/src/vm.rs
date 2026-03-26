@@ -440,6 +440,8 @@ struct ExecutableFunction {
 impl ExecutableProgram {
 	/// Compiles a lexed BESL program into a runnable VM program.
 	pub fn compile(program: NodeReference) -> Result<Self, VmError> {
+		reject_raw_code_nodes(&program)?;
+
 		let main = resolve_main_function(&program)?;
 		let main_signature = extract_function_signature(&main)?;
 		if !main_signature.params.is_empty() {
@@ -1744,6 +1746,25 @@ fn collect_functions(program: &NodeReference, main: &NodeReference) -> Vec<NodeR
 	functions
 }
 
+fn reject_raw_code_nodes(node: &NodeReference) -> Result<(), VmError> {
+	let children = {
+		let borrowed = node.borrow();
+		if matches!(borrowed.node(), Nodes::Raw { .. }) {
+			return Err(VmError::UnsupportedRawCode);
+		}
+
+		borrowed.get_children()
+	};
+
+	if let Some(children) = children {
+		for child in children {
+			reject_raw_code_nodes(&child)?;
+		}
+	}
+
+	Ok(())
+}
+
 fn extract_function_signature(function: &NodeReference) -> Result<FunctionSignature, VmError> {
 	let function_ref = function.borrow();
 	let (params, return_type, statements) = match function_ref.node() {
@@ -2331,6 +2352,7 @@ fn read_buffer_array_index(registers: &[Option<ScalarValue>], register: usize, c
 #[derive(Debug, PartialEq, Eq)]
 pub enum VmError {
 	MissingMainFunction,
+	UnsupportedRawCode,
 	UnsupportedMainSignature {
 		message: String,
 	},
@@ -2419,6 +2441,10 @@ impl std::fmt::Display for VmError {
 					"Missing main function. The most likely cause is that the lexed BESL program does not define `main`."
 				)
 			}
+			VmError::UnsupportedRawCode => write!(
+				f,
+				"Raw code blocks are not supported. The most likely cause is that the BESL AST contains GLSL or HLSL raw code that the VM cannot execute."
+			),
 			VmError::UnsupportedMainSignature { message } => write!(
 				f,
 				"Unsupported main signature: {}. The most likely cause is that the VM only accepts `main: fn () -> void` right now.",
@@ -3279,5 +3305,22 @@ mod tests {
 		}
 
 		assert_eq!(read_f32s(&buffer, 4), vec![0.0, 7.5, 0.0, 7.5]);
+	}
+
+	#[test]
+	fn executable_program_compile_rejects_raw_code_blocks() {
+		let script = r#"
+		main: fn () -> void {}
+		"#;
+
+		let program = compile_to_besl(script, None).expect("Expected lexed program");
+		let main = program.get_descendant("main").expect("Expected main function");
+		main.borrow_mut()
+			.add_child(Node::raw(Some("gl_Position = vec4(0);".to_string()), None, vec![], vec![]).into());
+
+		match ExecutableProgram::compile(program) {
+			Err(error) => assert_eq!(error, super::VmError::UnsupportedRawCode),
+			Ok(_) => panic!("Expected raw code rejection"),
+		}
 	}
 }

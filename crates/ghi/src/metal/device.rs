@@ -1051,12 +1051,15 @@ impl Device {
 				shader.stage == crate::Stages::COMPUTE,
 				"Metal compute pipeline creation requires a compute shader. The most likely cause is that a non-compute shader was passed to compute::Builder.",
 			);
+			let function = shader.metal_function.as_ref().expect(
+				"Metal compute pipeline creation requires a Metal shader function. The most likely cause is that this compute shader was created from SPIR-V, which this backend does not translate to MSL.",
+			);
 
-			shader.metal_function.as_ref().map(|function| {
+			Some(
 				self.device
 					.newComputePipelineStateWithFunction_error(function)
-					.expect("Metal compute pipeline creation failed. The most likely cause is that the shader function was invalid for compute pipeline creation.")
-			})
+					.expect("Metal compute pipeline creation failed. The most likely cause is that the shader function was invalid for compute pipeline creation."),
+			)
 		};
 
 		let mut shader_handles = HashMap::default();
@@ -1299,6 +1302,7 @@ impl Device {
 		descriptor.setRAddressMode(utils::sampler_address_mode(builder.addressing_mode));
 		descriptor.setLodMinClamp(builder.min_lod);
 		descriptor.setLodMaxClamp(builder.max_lod);
+		descriptor.setSupportArgumentBuffers(true);
 
 		if let Some(anisotropy) = builder.anisotropy {
 			descriptor.setMaxAnisotropy(anisotropy as _);

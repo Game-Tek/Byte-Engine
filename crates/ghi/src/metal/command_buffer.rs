@@ -550,6 +550,7 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		if let PipelineState::Compute(Some(compute_pipeline_state)) = &pipeline_state {
 			self.ensure_compute_encoder().setComputePipelineState(compute_pipeline_state);
 		}
+
 		self.apply_push_constants();
 
 		self
@@ -635,19 +636,19 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 		self.apply_bound_vertex_buffers();
 	}
 
-	fn bind_index_buffer(&mut self, _buffer_descriptor: &crate::BufferDescriptor) {
+	fn bind_index_buffer(&mut self, buffer_descriptor: &crate::BufferDescriptor) {
 		self.consume_resources([Consumption {
-			handle: Handle::Buffer(self.get_internal_buffer_handle(_buffer_descriptor.buffer)),
+			handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer)),
 			stages: crate::Stages::INDEX,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::General,
 		}]);
 
-		let index_type = _buffer_descriptor.index_type.expect(
+		let index_type = buffer_descriptor.index_type.expect(
 			"Missing index buffer type. The most likely cause is that bind_index_buffer was called with a BufferDescriptor that did not specify index_type(DataTypes::U16) or index_type(DataTypes::U32).",
 		);
 
-		self.bound_index_buffer = Some((_buffer_descriptor.buffer, _buffer_descriptor.offset, index_type));
+		self.bound_index_buffer = Some((buffer_descriptor.buffer, buffer_descriptor.offset, index_type));
 	}
 
 	fn end_render_pass(&mut self) {

@@ -495,7 +495,7 @@ impl RenderPass for UiRenderPass {
 
 				if !batches.is_empty() {
 					command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
-					command_buffer.bind_index_buffer(&index_buffer.into());
+					command_buffer.bind_index_buffer(&(Into::<ghi::BufferDescriptor>::into(index_buffer).index_type(ghi::DataTypes::U16)));
 
 					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
 					let command_buffer = command_buffer.bind_raster_pipeline(pipeline);

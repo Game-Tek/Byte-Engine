@@ -1108,9 +1108,7 @@ impl Compiler {
 					self.instructions.push(Instruction::LoadLocal { register, local });
 					Ok(register)
 				} else {
-					let target = self
-						.resolve_input_access(expression, descriptor_layouts)
-						.or_else(|_| self.resolve_output_access(expression, descriptor_layouts))?;
+					let target = self.resolve_input_access(expression, descriptor_layouts)?;
 					if &target.value_type != expected_type {
 						return Err(VmError::TypeMismatch {
 							expected: expected_type.name().to_string(),
@@ -1372,10 +1370,7 @@ impl Compiler {
 						.cloned()
 						.ok_or(VmError::UninitializedLocal { local })
 				} else {
-					Ok(self
-						.resolve_input_access(expression, descriptor_layouts)
-						.or_else(|_| self.resolve_output_access(expression, descriptor_layouts))?
-						.value_type)
+					Ok(self.resolve_input_access(expression, descriptor_layouts)?.value_type)
 				}
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
@@ -2810,10 +2805,10 @@ impl std::error::Error for VmError {}
 
 #[cfg(test)]
 mod tests {
-	use crate::{BindingTypes, Node, compile_to_besl};
+	use crate::{compile_to_besl, BindingTypes, Node};
 
 	use super::{
-		Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value, VmError, input_slot, output_slot,
+		input_slot, output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value, VmError,
 	};
 
 	fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
@@ -3746,7 +3741,10 @@ mod tests {
 		root.add_child(Node::input("in_color", vec4f_type, 0).into());
 
 		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let error = ExecutableProgram::compile(program).expect_err("Expected input write rejection");
+		let error = match ExecutableProgram::compile(program) {
+			Err(error) => error,
+			Ok(_) => panic!("Expected input write rejection"),
+		};
 
 		assert!(matches!(
 			error,
@@ -3767,7 +3765,10 @@ mod tests {
 		root.add_child(Node::output("out_color", vec4f_type, 0).into());
 
 		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
-		let error = ExecutableProgram::compile(program).expect_err("Expected output read rejection");
+		let error = match ExecutableProgram::compile(program) {
+			Err(error) => error,
+			Ok(_) => panic!("Expected output read rejection"),
+		};
 
 		assert!(matches!(error, VmError::UnsupportedExpression { .. }));
 	}

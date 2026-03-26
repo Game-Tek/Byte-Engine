@@ -66,11 +66,11 @@ layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
 const float PI = 3.14159265359;
 const float GTAO_RADIUS = 1.0;
 const float GTAO_BIAS = 0.05;
-const float GTAO_STRENGTH = 1.2;
+const float GTAO_STRENGTH = 1.0;
 const float GTAO_MIN_RADIUS_PIXELS = 4.0;
-const float GTAO_MAX_RADIUS_PIXELS = 48.0;
-const int GTAO_DIRECTIONS = 6;
-const int GTAO_STEPS = 4;
+const float GTAO_MAX_RADIUS_PIXELS = 64.0;
+const int GTAO_DIRECTIONS = 8;
+const int GTAO_STEPS = 6;
 
 // Debug visualization mode:
 // 0 = normal AO output
@@ -79,6 +79,7 @@ const int GTAO_STEPS = 4;
 // 3 = linearized view-space Z (grayscale, near=black, far=white)
 // 4 = view_space.w before perspective divide (green=positive, red=negative)
 // 5 = screen radius (grayscale, 0-GTAO_MAX_RADIUS_PIXELS mapped to 0-1)
+// 6 = full normal color (RGB = (normal * 0.5 + 0.5))
 const int GTAO_DEBUG_MODE = 0;
 
 float interleaved_gradient_noise(ivec2 pixel) {
@@ -107,62 +108,42 @@ vec4 reconstruct_view_space_position_debug(vec2 uv, float depth) {
 	return vec4(view_space.xyz, w);
 }
 
-float load_depth(ivec2 pixel, ivec2 extent, float fallback_depth) {
-	pixel = clamp(pixel, ivec2(0), extent - ivec2(1));
-	float depth = texelFetch(visibility_depth, pixel, 0).r;
-	return depth == 0.0 ? fallback_depth : depth;
-}
-
-vec3 min_diff(vec3 p, vec3 a, vec3 b) {
-	vec3 ap = a - p;
-	vec3 bp = p - b;
-	return dot(ap, ap) < dot(bp, bp) ? ap : bp;
-}
-
+// Approximates the surface normal as the direction from the surface toward the
+// camera. This avoids depth-based normal reconstruction which produces
+// distance-dependent faceting artifacts (hard boundary where pixel density
+// matches triangle density). When a blur/denoise pass is added, this can be
+// replaced with proper depth-reconstructed or geometry normals.
 vec3 reconstruct_normal(ivec2 pixel, ivec2 extent, float center_depth, vec3 center_position) {
-	ivec2 left_pixel = clamp(pixel + ivec2(-1, 0), ivec2(0), extent - ivec2(1));
-	ivec2 right_pixel = clamp(pixel + ivec2(1, 0), ivec2(0), extent - ivec2(1));
-	ivec2 top_pixel = clamp(pixel + ivec2(0, -1), ivec2(0), extent - ivec2(1));
-	ivec2 bottom_pixel = clamp(pixel + ivec2(0, 1), ivec2(0), extent - ivec2(1));
-
-	float left_depth = load_depth(left_pixel, extent, center_depth);
-	float right_depth = load_depth(right_pixel, extent, center_depth);
-	float top_depth = load_depth(top_pixel, extent, center_depth);
-	float bottom_depth = load_depth(bottom_pixel, extent, center_depth);
-
-	vec3 left_position = reconstruct_view_space_position(make_uv(left_pixel, extent), left_depth);
-	vec3 right_position = reconstruct_view_space_position(make_uv(right_pixel, extent), right_depth);
-	vec3 top_position = reconstruct_view_space_position(make_uv(top_pixel, extent), top_depth);
-	vec3 bottom_position = reconstruct_view_space_position(make_uv(bottom_pixel, extent), bottom_depth);
-
-	vec3 normal = cross(min_diff(center_position, right_position, left_position), min_diff(center_position, top_position, bottom_position));
-	float normal_length_sq = dot(normal, normal);
-	if (normal_length_sq <= 1e-8 || normal_length_sq != normal_length_sq) {
-		return vec3(0.0, 0.0, -1.0);
-	}
-	normal = normal * inversesqrt(normal_length_sq);
-
-	// In view space the camera is at the origin.
-	// The normal must face the camera, i.e. dot(normal, -center_position) > 0
-	// which simplifies to dot(normal, center_position) < 0.
-	if (dot(normal, center_position) > 0.0) {
-		normal = -normal;
-	}
-	return normal;
+	return -normalize(center_position);
 }
 
-float compute_screen_radius(vec3 view_position, ivec2 extent) {
+// Computes both screen-space radius (pixels) and effective world-space radius.
+// When the screen radius is clamped to MAX_RADIUS_PIXELS, the world radius is
+// scaled down proportionally so the falloff and distance checks match the
+// actual sampling area. This prevents close objects from getting unnaturally
+// strong AO due to all samples being packed into a tiny world-space area but
+// compared against the full unclamped world radius.
+void compute_radii(vec3 view_position, ivec2 extent, out float screen_radius, out float world_radius) {
 	float tan_half_fov_y = tan(radians(views_buffer.views[0].fov.y) * 0.5);
 	float pixels_per_unit = float(extent.y) / max(2.0 * tan_half_fov_y * abs(view_position.z), 1e-3);
-	return clamp(GTAO_RADIUS * pixels_per_unit, GTAO_MIN_RADIUS_PIXELS, GTAO_MAX_RADIUS_PIXELS);
+	float ideal = GTAO_RADIUS * pixels_per_unit;
+	if (ideal < GTAO_MIN_RADIUS_PIXELS) {
+		screen_radius = 0.0;
+		world_radius = 0.0;
+		return;
+	}
+	screen_radius = min(ideal, GTAO_MAX_RADIUS_PIXELS);
+	world_radius = screen_radius / pixels_per_unit;
 }
 
-float sample_direction(vec3 center_position, vec3 normal, vec2 uv, vec2 direction, float screen_radius, ivec2 extent) {
+float sample_direction(vec3 center_position, vec3 normal, vec2 direction, float screen_radius, float world_radius, ivec2 extent, float noise) {
 	float max_occlusion = 0.0;
-	float radius_sq = GTAO_RADIUS * GTAO_RADIUS;
+	float radius_sq = world_radius * world_radius;
 
 	for (int step = 1; step <= GTAO_STEPS; ++step) {
-		float step_ratio = (float(step) - 0.35) / float(GTAO_STEPS);
+		// Jitter step position using noise rotated per step to break stripe patterns
+		float step_noise = fract(noise + float(step) * 0.618033988749);
+		float step_ratio = (float(step) - 0.5 + step_noise * 0.5) / float(GTAO_STEPS);
 		vec2 sample_offset = direction * screen_radius * step_ratio;
 		ivec2 sample_pixel = ivec2(gl_GlobalInvocationID.xy) + ivec2(round(sample_offset));
 
@@ -251,7 +232,20 @@ void main() {
 		return;
 	}
 
-	float screen_radius = compute_screen_radius(center_position, extent);
+	// Debug mode: full normal color
+	if (GTAO_DEBUG_MODE == 6) {
+		imageStore(ao_output, pixel, vec4(normal * 0.5 + 0.5, 1.0));
+		return;
+	}
+
+	float screen_radius;
+	float world_radius;
+	compute_radii(center_position, extent, screen_radius, world_radius);
+
+	if (screen_radius == 0.0) {
+		imageStore(ao_output, pixel, vec4(1.0));
+		return;
+	}
 
 	// Debug mode: screen radius
 	if (GTAO_DEBUG_MODE == 5) {
@@ -266,7 +260,7 @@ void main() {
 	for (int direction_index = 0; direction_index < GTAO_DIRECTIONS; ++direction_index) {
 		float angle = rotation + (2.0 * PI * float(direction_index)) / float(GTAO_DIRECTIONS);
 		vec2 direction = vec2(cos(angle), sin(angle));
-		occlusion += sample_direction(center_position, normal, uv, direction, screen_radius, extent);
+		occlusion += sample_direction(center_position, normal, direction, screen_radius, world_radius, extent, interleaved_gradient_noise(pixel + ivec2(direction_index * 7, direction_index * 13)));
 	}
 
 	occlusion = clamp(occlusion / float(GTAO_DIRECTIONS) * GTAO_STRENGTH, 0.0, 1.0);

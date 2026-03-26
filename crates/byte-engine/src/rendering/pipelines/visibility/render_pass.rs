@@ -24,6 +24,257 @@ use resource_management::glsl;
 use resource_management::resources::material;
 use utils::{Box, Extent, RGBA};
 
+const GTAO_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	0,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+);
+const GTAO_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+
+const GTAO_PASS_SOURCE: &str = r#"
+#version 460 core
+#pragma shader_stage(compute)
+
+#extension GL_EXT_shader_image_load_formatted: enable
+#extension GL_EXT_scalar_block_layout: enable
+
+layout(row_major) uniform;
+layout(row_major) buffer;
+
+struct View {
+	mat4 view;
+	mat4 projection;
+	mat4 view_projection;
+	mat4 inverse_view;
+	mat4 inverse_projection;
+	mat4 inverse_view_projection;
+	vec2 fov;
+	float near;
+	float far;
+};
+
+layout(set=0, binding=0, scalar) readonly buffer ViewsBuffer {
+	View views[8];
+} views_buffer;
+
+layout(set=1, binding=0) uniform sampler2D visibility_depth;
+layout(set=1, binding=1, rgba8) uniform writeonly image2D ao_output;
+
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+
+const float PI = 3.14159265359;
+const float GTAO_RADIUS = 1.0;
+const float GTAO_BIAS = 0.05;
+const float GTAO_STRENGTH = 1.2;
+const float GTAO_MIN_RADIUS_PIXELS = 4.0;
+const float GTAO_MAX_RADIUS_PIXELS = 48.0;
+const int GTAO_DIRECTIONS = 6;
+const int GTAO_STEPS = 4;
+
+// Debug visualization mode:
+// 0 = normal AO output
+// 1 = normal.z (green=toward camera (-Z), red=into screen (+Z))
+// 2 = raw depth (grayscale)
+// 3 = linearized view-space Z (grayscale, near=black, far=white)
+// 4 = view_space.w before perspective divide (green=positive, red=negative)
+// 5 = screen radius (grayscale, 0-GTAO_MAX_RADIUS_PIXELS mapped to 0-1)
+const int GTAO_DEBUG_MODE = 0;
+
+float interleaved_gradient_noise(ivec2 pixel) {
+	return fract(52.9829189 * fract(0.06711056 * float(pixel.x) + 0.00583715 * float(pixel.y)));
+}
+
+vec2 make_uv(ivec2 pixel, ivec2 extent) {
+	return (vec2(pixel) + vec2(0.5)) / vec2(extent);
+}
+
+vec3 reconstruct_view_space_position(vec2 uv, float depth) {
+	vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+	vec4 clip_space = vec4(ndc, depth, 1.0);
+	vec4 view_space = views_buffer.views[0].inverse_projection * clip_space;
+	view_space /= view_space.w;
+	return view_space.xyz;
+}
+
+// Same as above but also returns the raw w before perspective divide
+vec4 reconstruct_view_space_position_debug(vec2 uv, float depth) {
+	vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+	vec4 clip_space = vec4(ndc, depth, 1.0);
+	vec4 view_space = views_buffer.views[0].inverse_projection * clip_space;
+	float w = view_space.w;
+	view_space /= view_space.w;
+	return vec4(view_space.xyz, w);
+}
+
+float load_depth(ivec2 pixel, ivec2 extent, float fallback_depth) {
+	pixel = clamp(pixel, ivec2(0), extent - ivec2(1));
+	float depth = texelFetch(visibility_depth, pixel, 0).r;
+	return depth == 0.0 ? fallback_depth : depth;
+}
+
+vec3 min_diff(vec3 p, vec3 a, vec3 b) {
+	vec3 ap = a - p;
+	vec3 bp = p - b;
+	return dot(ap, ap) < dot(bp, bp) ? ap : bp;
+}
+
+vec3 reconstruct_normal(ivec2 pixel, ivec2 extent, float center_depth, vec3 center_position) {
+	ivec2 left_pixel = clamp(pixel + ivec2(-1, 0), ivec2(0), extent - ivec2(1));
+	ivec2 right_pixel = clamp(pixel + ivec2(1, 0), ivec2(0), extent - ivec2(1));
+	ivec2 top_pixel = clamp(pixel + ivec2(0, -1), ivec2(0), extent - ivec2(1));
+	ivec2 bottom_pixel = clamp(pixel + ivec2(0, 1), ivec2(0), extent - ivec2(1));
+
+	float left_depth = load_depth(left_pixel, extent, center_depth);
+	float right_depth = load_depth(right_pixel, extent, center_depth);
+	float top_depth = load_depth(top_pixel, extent, center_depth);
+	float bottom_depth = load_depth(bottom_pixel, extent, center_depth);
+
+	vec3 left_position = reconstruct_view_space_position(make_uv(left_pixel, extent), left_depth);
+	vec3 right_position = reconstruct_view_space_position(make_uv(right_pixel, extent), right_depth);
+	vec3 top_position = reconstruct_view_space_position(make_uv(top_pixel, extent), top_depth);
+	vec3 bottom_position = reconstruct_view_space_position(make_uv(bottom_pixel, extent), bottom_depth);
+
+	vec3 normal = cross(min_diff(center_position, right_position, left_position), min_diff(center_position, top_position, bottom_position));
+	float normal_length_sq = dot(normal, normal);
+	if (normal_length_sq <= 1e-8 || normal_length_sq != normal_length_sq) {
+		return vec3(0.0, 0.0, -1.0);
+	}
+	normal = normal * inversesqrt(normal_length_sq);
+
+	// In view space the camera is at the origin.
+	// The normal must face the camera, i.e. dot(normal, -center_position) > 0
+	// which simplifies to dot(normal, center_position) < 0.
+	if (dot(normal, center_position) > 0.0) {
+		normal = -normal;
+	}
+	return normal;
+}
+
+float compute_screen_radius(vec3 view_position, ivec2 extent) {
+	float tan_half_fov_y = tan(radians(views_buffer.views[0].fov.y) * 0.5);
+	float pixels_per_unit = float(extent.y) / max(2.0 * tan_half_fov_y * abs(view_position.z), 1e-3);
+	return clamp(GTAO_RADIUS * pixels_per_unit, GTAO_MIN_RADIUS_PIXELS, GTAO_MAX_RADIUS_PIXELS);
+}
+
+float sample_direction(vec3 center_position, vec3 normal, vec2 uv, vec2 direction, float screen_radius, ivec2 extent) {
+	float max_occlusion = 0.0;
+	float radius_sq = GTAO_RADIUS * GTAO_RADIUS;
+
+	for (int step = 1; step <= GTAO_STEPS; ++step) {
+		float step_ratio = (float(step) - 0.35) / float(GTAO_STEPS);
+		vec2 sample_offset = direction * screen_radius * step_ratio;
+		ivec2 sample_pixel = ivec2(gl_GlobalInvocationID.xy) + ivec2(round(sample_offset));
+
+		if (sample_pixel.x < 0 || sample_pixel.x >= extent.x || sample_pixel.y < 0 || sample_pixel.y >= extent.y) {
+			continue;
+		}
+
+		float sample_depth = texelFetch(visibility_depth, sample_pixel, 0).r;
+
+		if (sample_depth == 0.0) {
+			continue;
+		}
+
+		vec2 sample_uv = make_uv(sample_pixel, extent);
+		vec3 sample_position = reconstruct_view_space_position(sample_uv, sample_depth);
+		vec3 sample_vector = sample_position - center_position;
+		float distance_sq = dot(sample_vector, sample_vector);
+
+		if (distance_sq <= 1e-5 || distance_sq > radius_sq) {
+			continue;
+		}
+
+		vec3 sample_direction_vector = sample_vector * inversesqrt(distance_sq);
+		float alignment = max(dot(normal, sample_direction_vector) - GTAO_BIAS, 0.0);
+		float falloff = 1.0 - distance_sq / radius_sq;
+		max_occlusion = max(max_occlusion, alignment * falloff * falloff);
+	}
+
+	return max_occlusion;
+}
+
+void main() {
+	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 extent = imageSize(ao_output);
+
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+
+	float center_depth = texelFetch(visibility_depth, pixel, 0).r;
+
+	if (center_depth == 0.0) {
+		return;
+	}
+
+	vec2 uv = make_uv(pixel, extent);
+
+	// Debug mode: raw depth
+	if (GTAO_DEBUG_MODE == 2) {
+		imageStore(ao_output, pixel, vec4(vec3(center_depth), 1.0));
+		return;
+	}
+
+	vec4 center_pos_debug = reconstruct_view_space_position_debug(uv, center_depth);
+	vec3 center_position = center_pos_debug.xyz;
+	float raw_w = center_pos_debug.w;
+
+	// Debug mode: linearized view-space Z
+	if (GTAO_DEBUG_MODE == 3) {
+		float linear_z = center_position.z;
+		float mapped = clamp(linear_z / views_buffer.views[0].far, 0.0, 1.0);
+		imageStore(ao_output, pixel, vec4(vec3(mapped), 1.0));
+		return;
+	}
+
+	// Debug mode: view_space.w sign
+	if (GTAO_DEBUG_MODE == 4) {
+		if (raw_w >= 0.0) {
+			imageStore(ao_output, pixel, vec4(0.0, clamp(raw_w * 10.0, 0.0, 1.0), 0.0, 1.0));
+		} else {
+			imageStore(ao_output, pixel, vec4(clamp(-raw_w * 10.0, 0.0, 1.0), 0.0, 0.0, 1.0));
+		}
+		return;
+	}
+
+	vec3 normal = reconstruct_normal(pixel, extent, center_depth, center_position);
+
+	// Debug mode: normal.z visualization
+	if (GTAO_DEBUG_MODE == 1) {
+		// Green = toward camera (negative Z), Red = into screen (positive Z)
+		if (normal.z < 0.0) {
+			imageStore(ao_output, pixel, vec4(0.0, -normal.z, 0.0, 1.0));
+		} else {
+			imageStore(ao_output, pixel, vec4(normal.z, 0.0, 0.0, 1.0));
+		}
+		return;
+	}
+
+	float screen_radius = compute_screen_radius(center_position, extent);
+
+	// Debug mode: screen radius
+	if (GTAO_DEBUG_MODE == 5) {
+		float mapped = screen_radius / GTAO_MAX_RADIUS_PIXELS;
+		imageStore(ao_output, pixel, vec4(vec3(mapped), 1.0));
+		return;
+	}
+
+	float rotation = interleaved_gradient_noise(pixel) * PI;
+	float occlusion = 0.0;
+
+	for (int direction_index = 0; direction_index < GTAO_DIRECTIONS; ++direction_index) {
+		float angle = rotation + (2.0 * PI * float(direction_index)) / float(GTAO_DIRECTIONS);
+		vec2 direction = vec2(cos(angle), sin(angle));
+		occlusion += sample_direction(center_position, normal, uv, direction, screen_radius, extent);
+	}
+
+	occlusion = clamp(occlusion / float(GTAO_DIRECTIONS) * GTAO_STRENGTH, 0.0, 1.0);
+	float ao = 1.0 - occlusion;
+	imageStore(ao_output, pixel, vec4(vec3(ao), 1.0));
+}
+"#;
+
 #[derive(Clone)]
 pub struct VisibilityPass {
 	descriptor_set: ghi::DescriptorSetHandle,
@@ -130,7 +381,7 @@ impl VisibilityPass {
 
 	pub(super) fn prepare(
 		&self,
-		frame: &mut ghi::implementation::Frame,
+		_frame: &mut ghi::implementation::Frame,
 		viewport: &Viewport,
 		instances: &[Instance],
 	) -> impl RenderPassFunction {
@@ -499,10 +750,94 @@ impl PixelMappingPass {
 	}
 }
 
+/// The `GtaoPass` struct builds a depth-based ambient occlusion term before material evaluation shades the frame.
+pub struct GtaoPass {
+	base_descriptor_set: ghi::DescriptorSetHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
+	pipeline: ghi::PipelineHandle,
+	ao_map: ghi::DynamicImageHandle,
+}
+
+impl GtaoPass {
+	fn new(
+		device: &mut ghi::implementation::Device,
+		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+		base_descriptor_set: ghi::DescriptorSetHandle,
+		depth: ghi::ImageHandle,
+		ao_map: ghi::DynamicImageHandle,
+	) -> Self {
+		let descriptor_set_layout =
+			device.create_descriptor_set_template(Some("GTAO Descriptor Set"), &[GTAO_DEPTH_BINDING, GTAO_OUTPUT_BINDING]);
+		let descriptor_set = device.create_descriptor_set(Some("GTAO Descriptor Set"), &descriptor_set_layout);
+		let depth_sampler = device.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Closest)
+				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+				.mip_map_mode(ghi::FilteringModes::Closest)
+				.addressing_mode(ghi::SamplerAddressingModes::Border {})
+				.min_lod(0f32)
+				.max_lod(0f32),
+		);
+
+		let _ = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::combined_image_sampler(&GTAO_DEPTH_BINDING, depth, depth_sampler, ghi::Layouts::Read),
+		);
+		let _ = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&GTAO_OUTPUT_BINDING, ao_map));
+
+		let shader_artifact = glsl::compile(GTAO_PASS_SOURCE, "GTAO Pass Compute Shader").unwrap();
+		let shader = device
+			.create_shader(
+				Some("GTAO Pass Compute Shader"),
+				ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
+				ghi::ShaderTypes::Compute,
+				[
+					VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					GTAO_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+					GTAO_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+				],
+			)
+			.expect("Failed to create shader");
+
+		let pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[base_descriptor_set_layout, descriptor_set_layout],
+			&[],
+			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
+		));
+
+		Self {
+			base_descriptor_set,
+			descriptor_set,
+			pipeline,
+			ao_map,
+		}
+	}
+
+	fn prepare(&self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> impl RenderPassFunction {
+		let base_descriptor_set = self.base_descriptor_set;
+		let descriptor_set = self.descriptor_set;
+		let pipeline = self.pipeline;
+		let ao_map = self.ao_map;
+		let extent = viewport.extent();
+
+		frame.resize_image(ao_map, extent);
+
+		move |c, _| {
+			c.start_region("GTAO");
+			c.clear_images(&[(ao_map.into_image_handle(), ghi::ClearValue::Color(RGBA::white()))]);
+
+			let c = c.bind_compute_pipeline(pipeline);
+			c.bind_descriptor_sets(&[base_descriptor_set, descriptor_set]);
+			c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
+
+			c.end_region();
+		}
+	}
+}
+
 pub struct MaterialEvaluationPass {
 	diffuse: ghi::ImageHandle,
 	specular: ghi::ImageHandle,
-	ao_map: ghi::DynamicImageHandle,
 	ibl_cubemap: ghi::ImageHandle,
 	/// Base layout descriptor set
 	base_descriptor_set: ghi::DescriptorSetHandle,
@@ -517,8 +852,6 @@ impl MaterialEvaluationPass {
 	fn new(
 		diffuse: ghi::ImageHandle,
 		specular: ghi::ImageHandle,
-		ao_map: ghi::DynamicImageHandle,
-		_shadow_map: ghi::DynamicImageHandle,
 		ibl_cubemap: ghi::ImageHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
@@ -528,7 +861,6 @@ impl MaterialEvaluationPass {
 		MaterialEvaluationPass {
 			diffuse,
 			specular,
-			ao_map,
 			ibl_cubemap,
 			base_descriptor_set,
 			visibility_descriptor_set,
@@ -546,7 +878,6 @@ impl MaterialEvaluationPass {
 	) -> impl RenderPassFunction {
 		let diffuse = self.diffuse;
 		let specular = self.specular;
-		let ao_map = self.ao_map;
 		let ibl_cubemap = self.ibl_cubemap;
 		let base_descriptor_set = self.base_descriptor_set;
 		let material_evaluation_dispatches = self.material_evaluation_dispatches;
@@ -554,13 +885,11 @@ impl MaterialEvaluationPass {
 		let material_evaluation_descriptor_set = self.descriptor_set;
 		let opaque_materials = opaque_materials.to_vec();
 		let transparent_materials = transparent_materials.to_vec();
-		frame.resize_image(ao_map, viewport.extent());
 
 		move |c, t| {
 			c.clear_images(&[
 				(diffuse, ghi::ClearValue::Color(RGBA::black())),
 				(specular, ghi::ClearValue::Color(RGBA::black())),
-				(ao_map.into_image_handle(), ghi::ClearValue::Color(RGBA::white())),
 				(ibl_cubemap, ghi::ClearValue::Color(RGBA::white())),
 			]);
 
@@ -612,6 +941,7 @@ pub struct VisibilityPipelineRenderPass {
 	material_count_pass: MaterialCountPass,
 	material_offset_pass: MaterialOffsetPass,
 	pixel_mapping_pass: PixelMappingPass,
+	gtao_pass: GtaoPass,
 	material_evaluation_pass: MaterialEvaluationPass,
 }
 
@@ -672,14 +1002,13 @@ impl VisibilityPipelineRenderPass {
 			visibility_descriptor_set,
 			material_xy,
 		);
+		let gtao_pass = GtaoPass::new(device, base_descriptor_set_layout, base_descriptor_set, depth, ao_map);
 
 		let material_evaluation_dispatches = material_offset_pass.material_evaluation_dispatches.clone();
 
 		let material_evaluation_pass = MaterialEvaluationPass::new(
 			diffuse,
 			specular,
-			ao_map,
-			shadow_map,
 			ibl_cubemap,
 			base_descriptor_set,
 			visibility_descriptor_set,
@@ -693,6 +1022,7 @@ impl VisibilityPipelineRenderPass {
 			material_count_pass,
 			material_offset_pass,
 			pixel_mapping_pass,
+			gtao_pass,
 			material_evaluation_pass,
 		}
 	}
@@ -711,6 +1041,7 @@ impl VisibilityPipelineRenderPass {
 		let material_count_pass = self.material_count_pass.prepare(frame, viewport);
 		let material_offset_pass = self.material_offset_pass.prepare();
 		let pixel_mapping_pass = self.pixel_mapping_pass.prepare(frame, viewport);
+		let gtao_pass = self.gtao_pass.prepare(frame, viewport);
 		let material_evaluation_pass =
 			self.material_evaluation_pass
 				.prepare(frame, viewport, opaque_materials, transparent_materials);
@@ -723,9 +1054,268 @@ impl VisibilityPipelineRenderPass {
 			material_count_pass(c, t);
 			material_offset_pass(c, t);
 			pixel_mapping_pass(c, t);
+			gtao_pass(c, t);
 			material_evaluation_pass(c, t);
 
 			c.end_region();
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn gtao_shader_compiles() {
+		resource_management::glsl::compile(super::GTAO_PASS_SOURCE, "GTAO Pass Compute Shader").unwrap();
+	}
+
+	#[test]
+	fn gtao_view_space_reconstruction_z_is_positive() {
+		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
+
+		let near = 0.1f32;
+		let far = 100.0f32;
+		let fov = 45.0f32;
+		let aspect = 16.0 / 9.0;
+		let extent_x = 1920i32;
+		let extent_y = 1080i32;
+
+		let proj = math::projection_matrix(fov, aspect, near, far);
+		let inv_proj = proj.inverse();
+
+		// Simulate what the GTAO shader does: reconstruct positions for center + neighbors
+		// at various depths, compute the normal, and check its direction
+
+		let reconstruct = |px: i32, py: i32, depth: f32| -> Vector3 {
+			let uv_x = (px as f32 + 0.5) / extent_x as f32;
+			let uv_y = (py as f32 + 0.5) / extent_y as f32;
+			let ndc_x = uv_x * 2.0 - 1.0;
+			let ndc_y = 1.0 - uv_y * 2.0;
+			let clip = Vector4::new(ndc_x, ndc_y, depth, 1.0);
+			let view = inv_proj * clip;
+			let w = view.w;
+			Vector3::new(view.x / w, view.y / w, view.z / w)
+		};
+
+		// Project a known view-space point to get its depth
+		let project_to_depth = |vx: f32, vy: f32, vz: f32| -> f32 {
+			let clip = proj * Vector4::new(vx, vy, vz, 1.0);
+			clip.z / clip.w // ndc depth
+		};
+
+		// Test at different distances
+		for vz in [0.5f32, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0] {
+			let depth = project_to_depth(0.0, 0.0, vz);
+			let center_px = extent_x / 2;
+			let center_py = extent_y / 2;
+
+			let center = reconstruct(center_px, center_py, depth);
+			let right = reconstruct(center_px + 1, center_py, depth);
+			let left = reconstruct(center_px - 1, center_py, depth);
+			let top = reconstruct(center_px, center_py - 1, depth);
+			let bottom = reconstruct(center_px, center_py + 1, depth);
+
+			// min_diff for horizontal: pick shorter of (right - center) or (center - left)
+			let ap_h = Vector3::new(right.x - center.x, right.y - center.y, right.z - center.z);
+			let bp_h = Vector3::new(center.x - left.x, center.y - left.y, center.z - left.z);
+			let h_diff = if math::dot(ap_h, ap_h) < math::dot(bp_h, bp_h) {
+				ap_h
+			} else {
+				bp_h
+			};
+
+			// min_diff for vertical: pick shorter of (top - center) or (center - bottom)
+			let ap_v = Vector3::new(top.x - center.x, top.y - center.y, top.z - center.z);
+			let bp_v = Vector3::new(center.x - bottom.x, center.y - bottom.y, center.z - bottom.z);
+			let v_diff = if math::dot(ap_v, ap_v) < math::dot(bp_v, bp_v) {
+				ap_v
+			} else {
+				bp_v
+			};
+
+			let normal = math::cross(h_diff, v_diff);
+			let normal_len = math::length(normal);
+			let normal = if normal_len > 1e-8 {
+				Vector3::new(normal.x / normal_len, normal.y / normal_len, normal.z / normal_len)
+			} else {
+				Vector3::new(0.0, 0.0, 1.0)
+			};
+
+			// The shader enforces camera-facing: if dot(normal, center_position) > 0, flip.
+			// In view space the camera is at origin, so center_position IS the view direction to the point.
+			let dot_n_p = normal.x * center.x + normal.y * center.y + normal.z * center.z;
+			let normal = if dot_n_p > 0.0 {
+				Vector3::new(-normal.x, -normal.y, -normal.z)
+			} else {
+				normal
+			};
+
+			eprintln!(
+				"vz={:.1}: center=({:.4},{:.4},{:.4}), normal=({:.4},{:.4},{:.4}), depth={:.6}",
+				vz, center.x, center.y, center.z, normal.x, normal.y, normal.z, depth
+			);
+
+			// The normal must face toward the camera, i.e. dot(normal, center_position) <= 0.
+			// For a flat surface perpendicular to Z: normal.z should be dominant and negative.
+			let dot_check = normal.x * center.x + normal.y * center.y + normal.z * center.z;
+			assert!(
+				dot_check <= 0.0,
+				"Normal should face camera (dot(normal, center_position) <= 0) at vz={}, got dot={}",
+				vz,
+				dot_check
+			);
+			assert!(
+				normal.z.abs() > 0.99,
+				"Normal Z should be dominant for flat surface perpendicular to Z at vz={}, got normal.z={}",
+				vz,
+				normal.z
+			);
+		}
+	}
+
+	/// Simulates the GTAO normal reconstruction on a floor plane (Y=constant)
+	/// where depth varies per pixel, and checks for normal sign flips at different distances.
+	#[test]
+	fn gtao_normal_on_floor_plane() {
+		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
+
+		let near = 0.1f32;
+		let far = 100.0f32;
+		let fov = 45.0f32;
+		let aspect = 16.0 / 9.0;
+		let extent_x = 1920i32;
+		let extent_y = 1080i32;
+
+		let proj = math::projection_matrix(fov, aspect, near, far);
+		let inv_proj = proj.inverse();
+
+		let reconstruct = |px: i32, py: i32, depth: f32| -> Vector3 {
+			let uv_x = (px as f32 + 0.5) / extent_x as f32;
+			let uv_y = (py as f32 + 0.5) / extent_y as f32;
+			let ndc_x = uv_x * 2.0 - 1.0;
+			let ndc_y = 1.0 - uv_y * 2.0;
+			let clip = Vector4::new(ndc_x, ndc_y, depth, 1.0);
+			let view = inv_proj * clip;
+			Vector3::new(view.x / view.w, view.y / view.w, view.z / view.w)
+		};
+
+		let project = |vx: f32, vy: f32, vz: f32| -> (f32, f32, f32) {
+			let clip = proj * Vector4::new(vx, vy, vz, 1.0);
+			let ndc_x = clip.x / clip.w;
+			let ndc_y = clip.y / clip.w;
+			let depth = clip.z / clip.w;
+			// Inverse of: ndc_x = uv_x * 2 - 1, ndc_y = 1 - uv_y * 2
+			let uv_x = (ndc_x + 1.0) / 2.0;
+			let uv_y = (1.0 - ndc_y) / 2.0;
+			let px = uv_x * extent_x as f32 - 0.5;
+			let py = uv_y * extent_y as f32 - 0.5;
+			(px, py, depth)
+		};
+
+		// Floor plane at Y = -1 (camera looks along +Z, floor is below camera)
+		// For a given pixel, we need to find where the ray through that pixel hits Y=-1
+		let floor_y = -1.0f32;
+
+		// For a pixel (px, py), reconstruct a ray direction in view space:
+		// The ray goes from origin through the point at depth=1 (arbitrary)
+		let ray_hit_floor = |px: i32, py: i32| -> Option<(f32, f32)> {
+			// Reconstruct view-space direction using depth=0.5 (arbitrary non-zero)
+			let p = reconstruct(px, py, 0.5);
+			// Ray: origin=(0,0,0), direction=p (normalized doesn't matter, just need ratio)
+			// Hit Y=floor_y: t = floor_y / p.y
+			if p.y.abs() < 1e-8 {
+				return None;
+			} // ray parallel to floor
+			let t = floor_y / p.y;
+			if t <= 0.0 {
+				return None;
+			} // floor behind camera
+			let hit_z = p.z * t;
+			if hit_z < near || hit_z > far {
+				return None;
+			} // outside clip range
+	 // Project hit point to get depth
+			let hit_x = p.x * t;
+			let clip = proj * Vector4::new(hit_x, floor_y, hit_z, 1.0);
+			Some((hit_z, clip.z / clip.w))
+		};
+
+		let min_diff = |p: Vector3, a: Vector3, b: Vector3| -> Vector3 {
+			let ap = Vector3::new(a.x - p.x, a.y - p.y, a.z - p.z);
+			let bp = Vector3::new(p.x - b.x, p.y - b.y, p.z - b.z);
+			if math::dot(ap, ap) < math::dot(bp, bp) {
+				ap
+			} else {
+				bp
+			}
+		};
+
+		eprintln!("\n--- Floor plane normal reconstruction ---");
+		eprintln!("Testing at various screen Y positions (floor at Y={}):", floor_y);
+
+		let mut found_flip = false;
+
+		// Test across different screen rows (different distances to floor)
+		for py in (extent_y / 2 + 50..extent_y - 10).step_by(50) {
+			let px = extent_x / 2; // screen center X
+
+			let Some((center_vz, center_depth)) = ray_hit_floor(px, py) else {
+				continue;
+			};
+			let Some((_, left_depth)) = ray_hit_floor(px - 1, py) else {
+				continue;
+			};
+			let Some((_, right_depth)) = ray_hit_floor(px + 1, py) else {
+				continue;
+			};
+			let Some((_, top_depth)) = ray_hit_floor(px, py - 1) else {
+				continue;
+			};
+			let Some((_, bottom_depth)) = ray_hit_floor(px, py + 1) else {
+				continue;
+			};
+
+			let center = reconstruct(px, py, center_depth);
+			let left = reconstruct(px - 1, py, left_depth);
+			let right = reconstruct(px + 1, py, right_depth);
+			let top = reconstruct(px, py - 1, top_depth);
+			let bottom = reconstruct(px, py + 1, bottom_depth);
+
+			let h_diff = min_diff(center, right, left);
+			let v_diff = min_diff(center, top, bottom);
+
+			let normal = math::cross(h_diff, v_diff);
+			let normal_len = math::length(normal);
+			let normal = if normal_len > 1e-8 {
+				Vector3::new(normal.x / normal_len, normal.y / normal_len, normal.z / normal_len)
+			} else {
+				Vector3::new(0.0, 0.0, 1.0)
+			};
+
+			// Apply camera-facing check (same as shader)
+			let dot_n_p = normal.x * center.x + normal.y * center.y + normal.z * center.z;
+			let normal = if dot_n_p > 0.0 {
+				Vector3::new(-normal.x, -normal.y, -normal.z)
+			} else {
+				normal
+			};
+
+			eprintln!(
+				"py={:4}, vz={:6.2}: h_diff=({:+.6},{:+.6},{:+.6}), v_diff=({:+.6},{:+.6},{:+.6}), normal=({:+.4},{:+.4},{:+.4})",
+				py, center_vz, h_diff.x, h_diff.y, h_diff.z, v_diff.x, v_diff.y, v_diff.z, normal.x, normal.y, normal.z,
+			);
+
+			// For a floor plane at Y=-1, the normal should point +Y (up, toward camera if cam is above floor)
+			if normal.y < 0.0 {
+				found_flip = true;
+				eprintln!("  ^^^ FLIPPED! Normal Y is negative (pointing into floor)");
+			}
+		}
+
+		if found_flip {
+			eprintln!("\nWARNING: Normal flipped at some distances! This explains the hard boundary.");
+		} else {
+			eprintln!("\nAll normals consistent (no flip detected in tested range).");
 		}
 	}
 }

@@ -23,6 +23,8 @@ impl DescriptorSlot {
 	}
 }
 
+const PUSH_CONSTANT_SLOT: DescriptorSlot = DescriptorSlot::new(u32::MAX, u32::MAX);
+
 /// The `ValueType` enum stores the scalar BESL value kinds that the first VM pass can execute.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ValueType {
@@ -121,6 +123,7 @@ pub enum DescriptorLayout {
 	Buffer(BufferLayout),
 	Texture,
 	Image,
+	PushConstant(BufferLayout),
 }
 
 /// The `Buffer` struct stores mutable bytes together with the VM layout that gives those bytes meaning.
@@ -340,6 +343,7 @@ enum DescriptorBinding<'a> {
 /// The `DescriptorBindings` struct stores the mutable resources that a compiled BESL VM program can access.
 pub struct DescriptorBindings<'a> {
 	bindings: HashMap<DescriptorSlot, DescriptorBinding<'a>>,
+	push_constant: Option<&'a mut Buffer>,
 }
 
 impl<'a> Default for DescriptorBindings<'a> {
@@ -352,6 +356,7 @@ impl<'a> DescriptorBindings<'a> {
 	pub fn new() -> Self {
 		Self {
 			bindings: HashMap::new(),
+			push_constant: None,
 		}
 	}
 
@@ -365,6 +370,10 @@ impl<'a> DescriptorBindings<'a> {
 
 	pub fn bind_image(&mut self, slot: DescriptorSlot, image: &'a mut Texture) {
 		self.bindings.insert(slot, DescriptorBinding::Image(image));
+	}
+
+	pub fn bind_push_constant(&mut self, push_constant: &'a mut Buffer) {
+		self.push_constant = Some(push_constant);
 	}
 
 	fn buffer_mut(&mut self, slot: DescriptorSlot) -> Result<&mut Buffer, VmError> {
@@ -419,6 +428,10 @@ impl<'a> DescriptorBindings<'a> {
 				found: "texture",
 			}),
 		}
+	}
+
+	fn push_constant_mut(&mut self) -> Result<&mut Buffer, VmError> {
+		self.push_constant.as_deref_mut().ok_or(VmError::MissingPushConstant)
 	}
 }
 
@@ -486,8 +499,16 @@ impl ExecutableProgram {
 			Some(DescriptorLayout::Buffer(layout)) => Some(layout),
 			Some(DescriptorLayout::Texture) => None,
 			Some(DescriptorLayout::Image) => None,
+			Some(DescriptorLayout::PushConstant(_)) => None,
 			None => None,
 		}
+	}
+
+	pub fn push_constant_layout(&self) -> Option<&BufferLayout> {
+		self.descriptor_layouts.values().find_map(|layout| match layout {
+			DescriptorLayout::PushConstant(layout) => Some(layout),
+			_ => None,
+		})
 	}
 
 	/// Executes the compiled `main` function using the currently bound descriptor resources.
@@ -569,7 +590,11 @@ impl ExecutableProgram {
 					offset,
 					value_type,
 				} => {
-					let value = descriptors.buffer_mut(*slot)?.read_value(*offset, value_type)?;
+					let value = if *slot == PUSH_CONSTANT_SLOT {
+						descriptors.push_constant_mut()?.read_value(*offset, value_type)?
+					} else {
+						descriptors.buffer_mut(*slot)?.read_value(*offset, value_type)?
+					};
 					registers[*register] = Some(value);
 				}
 				Instruction::LoadBufferIndexed {
@@ -582,9 +607,15 @@ impl ExecutableProgram {
 					value_type,
 				} => {
 					let index = read_buffer_array_index(&registers, *index, *count)?;
-					let value = descriptors
-						.buffer_mut(*slot)?
-						.read_value(*offset + *stride * index, value_type)?;
+					let value = if *slot == PUSH_CONSTANT_SLOT {
+						descriptors
+							.push_constant_mut()?
+							.read_value(*offset + *stride * index, value_type)?
+					} else {
+						descriptors
+							.buffer_mut(*slot)?
+							.read_value(*offset + *stride * index, value_type)?
+					};
 					registers[*register] = Some(value);
 				}
 				Instruction::FetchTexture { register, slot, coord } => {
@@ -929,7 +960,7 @@ impl Compiler {
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
 
-				let target = self.resolve_buffer_access(&left, RequiredAccess::Write, descriptor_layouts)?;
+				let target = self.resolve_memory_access(&left, RequiredAccess::Write, descriptor_layouts)?;
 				let register = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
 				if let Some(index) = target.index {
 					self.instructions.push(Instruction::StoreBufferIndexed {
@@ -1056,7 +1087,7 @@ impl Compiler {
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(borrowed);
 
-				let target = self.resolve_buffer_access(expression, RequiredAccess::Read, descriptor_layouts)?;
+				let target = self.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?;
 				if &target.value_type != expected_type {
 					return Err(VmError::TypeMismatch {
 						expected: expected_type.name().to_string(),
@@ -1307,7 +1338,7 @@ impl Compiler {
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(borrowed);
 				Ok(self
-					.resolve_buffer_access(expression, RequiredAccess::Read, descriptor_layouts)?
+					.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?
 					.value_type)
 			}
 			Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => {
@@ -1347,7 +1378,7 @@ impl Compiler {
 	}
 
 	/// Resolves a BESL accessor into the descriptor slot and packed byte offset that the VM should access.
-	fn resolve_buffer_access(
+	fn resolve_memory_access(
 		&mut self,
 		expression: &NodeReference,
 		access: RequiredAccess,
@@ -1394,6 +1425,15 @@ impl Compiler {
 
 				(slot, layout)
 			}
+			Nodes::PushConstant { members } => {
+				if matches!(access, RequiredAccess::Write) {
+					return Err(VmError::UnsupportedAssignmentTarget {
+						message: "Push constant members are read-only".to_string(),
+					});
+				}
+
+				(PUSH_CONSTANT_SLOT, compile_buffer_layout(members)?)
+			}
 			node => {
 				return Err(VmError::UnsupportedExpression {
 					message: format!("Expected a binding access, but found {}", describe_node(node)),
@@ -1402,8 +1442,14 @@ impl Compiler {
 		};
 		drop(binding_ref);
 
+		let descriptor_layout = if slot == PUSH_CONSTANT_SLOT {
+			DescriptorLayout::PushConstant(layout.clone())
+		} else {
+			DescriptorLayout::Buffer(layout.clone())
+		};
+
 		match descriptor_layouts.get(&slot) {
-			Some(existing) if existing != &DescriptorLayout::Buffer(layout.clone()) => {
+			Some(existing) if existing != &descriptor_layout => {
 				return Err(VmError::UnsupportedDescriptor {
 					slot,
 					message: "Descriptor slot was reused with a different layout".to_string(),
@@ -1411,7 +1457,7 @@ impl Compiler {
 			}
 			Some(_) => {}
 			None => {
-				descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
+				descriptor_layouts.insert(slot, descriptor_layout);
 			}
 		}
 
@@ -1917,17 +1963,17 @@ fn extract_buffer_member_access(expression: &NodeReference) -> Result<(NodeRefer
 fn extract_binding_reference(expression: &NodeReference) -> Result<NodeReference, VmError> {
 	let borrowed = expression.borrow();
 	match borrowed.node() {
-		Nodes::Binding { .. } => Ok(expression.clone()),
+		Nodes::Binding { .. } | Nodes::PushConstant { .. } => Ok(expression.clone()),
 		Nodes::Expression(Expressions::Member { source, .. }) => {
 			let source = source.clone();
 			drop(borrowed);
 
 			let result = match source.borrow().node() {
-				Nodes::Binding { .. } => Ok(source.clone()),
+				Nodes::Binding { .. } | Nodes::PushConstant { .. } => Ok(source.clone()),
 				Nodes::Expression(Expressions::Member { .. }) => extract_binding_reference(&source),
 				_ => Err(VmError::UnsupportedExpression {
 					message: format!(
-						"Only direct binding member access is supported, but found {}",
+						"Only direct binding or push constant member access is supported, but found {}",
 						describe_node(source.borrow().node())
 					),
 				}),
@@ -1936,7 +1982,10 @@ fn extract_binding_reference(expression: &NodeReference) -> Result<NodeReference
 			result
 		}
 		node => Err(VmError::UnsupportedExpression {
-			message: format!("Expected a binding reference, but found {}", describe_node(node)),
+			message: format!(
+				"Expected a binding or push constant reference, but found {}",
+				describe_node(node)
+			),
 		}),
 	}
 }
@@ -1961,7 +2010,10 @@ fn is_buffer_member_selector(expression: &NodeReference) -> bool {
 
 	let is_selector = matches!(
 		source.borrow().node(),
-		Nodes::Binding { .. } | Nodes::Member { .. } | Nodes::Expression(Expressions::Accessor { .. })
+		Nodes::Binding { .. }
+			| Nodes::PushConstant { .. }
+			| Nodes::Member { .. }
+			| Nodes::Expression(Expressions::Accessor { .. })
 	);
 
 	is_selector
@@ -2390,6 +2442,7 @@ pub enum VmError {
 	UnboundDescriptor {
 		slot: DescriptorSlot,
 	},
+	MissingPushConstant,
 	CallArgumentMismatch {
 		expected: usize,
 		found: usize,
@@ -2508,6 +2561,10 @@ impl std::fmt::Display for VmError {
 				slot.set(),
 				slot.binding()
 			),
+			VmError::MissingPushConstant => write!(
+				f,
+				"Missing push constant binding. The most likely cause is that the BESL program reads `push_constant` but the host did not bind any push constant data before execution."
+			),
 			VmError::CallArgumentMismatch { expected, found } => write!(
 				f,
 				"Function call argument mismatch: expected {} arguments but found {}. The most likely cause is that the BESL function call does not match the declared parameter list.",
@@ -2572,7 +2629,7 @@ impl std::error::Error for VmError {}
 mod tests {
 	use crate::{compile_to_besl, BindingTypes, Node};
 
-	use super::{Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value};
+	use super::{Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value, VmError};
 
 	fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
 		buffer
@@ -3322,5 +3379,98 @@ mod tests {
 			Err(error) => assert_eq!(error, super::VmError::UnsupportedRawCode),
 			Ok(_) => panic!("Expected raw code rejection"),
 		}
+	}
+
+	#[test]
+	fn executable_program_reads_push_constant_members() {
+		let script = r#"
+		main: fn () -> void {
+			buff.value = push_constant.material_id;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let float_type = root.get_child("f32").expect("Expected f32");
+		root.add_child(Node::push_constant(vec![Node::member("material_id", float_type.clone()).into()]).into());
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", float_type).into()],
+				},
+				0,
+				14,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 14);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let push_constant_layout = executable
+			.push_constant_layout()
+			.expect("Expected push constant layout")
+			.clone();
+		let mut buffer = Buffer::new(layout);
+		let mut push_constant = Buffer::new(push_constant_layout);
+		push_constant
+			.write("material_id", Value::F32(3.5))
+			.expect("Expected push constant write");
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			descriptors.bind_push_constant(&mut push_constant);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(buffer.read_f32("value").expect("Expected f32"), 3.5);
+	}
+
+	#[test]
+	fn executable_program_requires_bound_push_constant() {
+		let script = r#"
+		main: fn () -> void {
+			buff.value = push_constant.material_id;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let float_type = root.get_child("f32").expect("Expected f32");
+		root.add_child(Node::push_constant(vec![Node::member("material_id", float_type.clone()).into()]).into());
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", float_type).into()],
+				},
+				0,
+				15,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let slot = DescriptorSlot::new(0, 15);
+		let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
+		let mut buffer = Buffer::new(layout);
+
+		let error = {
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable
+				.run_main(&mut descriptors)
+				.expect_err("Expected missing push constant error")
+		};
+
+		assert_eq!(error, VmError::MissingPushConstant);
 	}
 }

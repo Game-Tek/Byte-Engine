@@ -115,6 +115,7 @@ impl BufferLayout {
 pub enum DescriptorLayout {
 	Buffer(BufferLayout),
 	Texture,
+	Image,
 }
 
 /// The `Buffer` struct stores mutable bytes together with the VM layout that gives those bytes meaning.
@@ -318,6 +319,7 @@ impl Texture {
 enum DescriptorBinding<'a> {
 	Buffer(&'a mut Buffer),
 	Texture(&'a mut Texture),
+	Image(&'a mut Texture),
 }
 
 /// The `DescriptorBindings` struct stores the mutable resources that a compiled BESL VM program can access.
@@ -346,6 +348,10 @@ impl<'a> DescriptorBindings<'a> {
 		self.bindings.insert(slot, DescriptorBinding::Texture(texture));
 	}
 
+	pub fn bind_image(&mut self, slot: DescriptorSlot, image: &'a mut Texture) {
+		self.bindings.insert(slot, DescriptorBinding::Image(image));
+	}
+
 	fn buffer_mut(&mut self, slot: DescriptorSlot) -> Result<&mut Buffer, VmError> {
 		let descriptor = self.bindings.get_mut(&slot).ok_or(VmError::UnboundDescriptor { slot })?;
 
@@ -355,6 +361,11 @@ impl<'a> DescriptorBindings<'a> {
 				slot,
 				expected: "buffer",
 				found: "texture",
+			}),
+			DescriptorBinding::Image(_) => Err(VmError::DescriptorTypeMismatch {
+				slot,
+				expected: "buffer",
+				found: "image",
 			}),
 		}
 	}
@@ -368,6 +379,29 @@ impl<'a> DescriptorBindings<'a> {
 				slot,
 				expected: "texture",
 				found: "buffer",
+			}),
+			DescriptorBinding::Image(_) => Err(VmError::DescriptorTypeMismatch {
+				slot,
+				expected: "texture",
+				found: "image",
+			}),
+		}
+	}
+
+	fn image_mut(&mut self, slot: DescriptorSlot) -> Result<&mut Texture, VmError> {
+		let descriptor = self.bindings.get_mut(&slot).ok_or(VmError::UnboundDescriptor { slot })?;
+
+		match descriptor {
+			DescriptorBinding::Image(image) => Ok(&mut **image),
+			DescriptorBinding::Buffer(_) => Err(VmError::DescriptorTypeMismatch {
+				slot,
+				expected: "image",
+				found: "buffer",
+			}),
+			DescriptorBinding::Texture(_) => Err(VmError::DescriptorTypeMismatch {
+				slot,
+				expected: "image",
+				found: "texture",
 			}),
 		}
 	}
@@ -434,6 +468,7 @@ impl ExecutableProgram {
 		match self.descriptor_layouts.get(&slot) {
 			Some(DescriptorLayout::Buffer(layout)) => Some(layout),
 			Some(DescriptorLayout::Texture) => None,
+			Some(DescriptorLayout::Image) => None,
 			None => None,
 		}
 	}
@@ -541,6 +576,25 @@ impl ExecutableProgram {
 					};
 
 					registers[*register] = Some(descriptors.texture_mut(*slot)?.sample(uv)?);
+				}
+				Instruction::WriteImage { slot, coord, value } => {
+					let coord = read_register(&registers, *coord)?;
+					let Value::Vec2U(coord) = coord else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::Vec2U.name().to_string(),
+							found: coord.value_type().name().to_string(),
+						});
+					};
+
+					let value = read_register(&registers, *value)?;
+					let Value::Vec4F(value) = value else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::Vec4F.name().to_string(),
+							found: value.value_type().name().to_string(),
+						});
+					};
+
+					descriptors.image_mut(*slot)?.write(coord, value)?;
 				}
 				Instruction::StoreBuffer {
 					slot,
@@ -659,6 +713,11 @@ enum Instruction {
 		slot: DescriptorSlot,
 		uv: usize,
 	},
+	WriteImage {
+		slot: DescriptorSlot,
+		coord: usize,
+		value: usize,
+	},
 	StoreBuffer {
 		slot: DescriptorSlot,
 		offset: usize,
@@ -761,6 +820,14 @@ impl Compiler {
 				let parameters = parameters.clone();
 				drop(borrowed);
 				self.compile_call_statement(&function, &parameters, descriptor_layouts)
+			}
+			Nodes::Expression(Expressions::IntrinsicCall {
+				intrinsic, arguments, ..
+			}) => {
+				let intrinsic = intrinsic.clone();
+				let arguments = arguments.clone();
+				drop(borrowed);
+				self.compile_intrinsic_call_statement(&intrinsic, &arguments, descriptor_layouts)
 			}
 			Nodes::Expression(Expressions::Member { .. }) | Nodes::Expression(Expressions::Accessor { .. }) => Ok(()),
 			Nodes::Expression(other) => Err(VmError::UnsupportedStatement {
@@ -1336,6 +1403,72 @@ impl Compiler {
 		}
 	}
 
+	fn resolve_image_slot(
+		&mut self,
+		expression: &NodeReference,
+		access: RequiredAccess,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<DescriptorSlot, VmError> {
+		let binding = extract_binding_reference(expression)?;
+
+		let binding_ref = binding.borrow();
+		let slot = match binding_ref.node() {
+			Nodes::Binding {
+				set,
+				binding,
+				read,
+				write,
+				r#type,
+				..
+			} => {
+				match access {
+					RequiredAccess::Read if !read => {
+						return Err(VmError::DescriptorAccessDenied {
+							slot: DescriptorSlot::new(*set, *binding),
+							access: "read",
+						});
+					}
+					RequiredAccess::Write if !write => {
+						return Err(VmError::DescriptorAccessDenied {
+							slot: DescriptorSlot::new(*set, *binding),
+							access: "write",
+						});
+					}
+					_ => {}
+				}
+
+				let slot = DescriptorSlot::new(*set, *binding);
+				match r#type {
+					BindingTypes::Image { .. } => slot,
+					_ => {
+						return Err(VmError::UnsupportedDescriptor {
+							slot,
+							message: "Only image descriptors can be written through `write`".to_string(),
+						});
+					}
+				}
+			}
+			node => {
+				return Err(VmError::UnsupportedExpression {
+					message: format!("Expected a binding access, but found {}", describe_node(node)),
+				});
+			}
+		};
+		drop(binding_ref);
+
+		match descriptor_layouts.get(&slot) {
+			Some(existing) if existing != &DescriptorLayout::Image => Err(VmError::UnsupportedDescriptor {
+				slot,
+				message: "Descriptor slot was reused with a different layout".to_string(),
+			}),
+			Some(_) => Ok(slot),
+			None => {
+				descriptor_layouts.insert(slot, DescriptorLayout::Image);
+				Ok(slot)
+			}
+		}
+	}
+
 	fn compile_call_statement(
 		&mut self,
 		function: &NodeReference,
@@ -1403,6 +1536,44 @@ impl Compiler {
 			}
 			(Some(return_type), None) => Err(VmError::UnsupportedStatement {
 				message: format!("Function with return type `{}` must return a value", return_type.name()),
+			}),
+		}
+	}
+
+	fn compile_intrinsic_call_statement(
+		&mut self,
+		intrinsic: &NodeReference,
+		arguments: &[NodeReference],
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<(), VmError> {
+		let intrinsic_ref = intrinsic.borrow();
+		let name = match intrinsic_ref.node() {
+			Nodes::Intrinsic { name, .. } => name.clone(),
+			node => {
+				return Err(VmError::UnsupportedStatement {
+					message: format!("Expected an intrinsic, but found {}", describe_node(node)),
+				});
+			}
+		};
+		drop(intrinsic_ref);
+
+		match name.as_str() {
+			"write" => {
+				if arguments.len() != 3 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 3,
+						found: arguments.len(),
+					});
+				}
+
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[2], &ValueType::Vec4F, descriptor_layouts)?;
+				self.instructions.push(Instruction::WriteImage { slot, coord, value });
+				Ok(())
+			}
+			_ => Err(VmError::UnsupportedStatement {
+				message: format!("Unsupported intrinsic statement `{}`", name),
 			}),
 		}
 	}
@@ -2857,5 +3028,46 @@ mod tests {
 		}
 
 		assert_eq!(read_f32s(&buffer, 4), vec![1.0, 1.0, 0.0, 2.0]);
+	}
+
+	#[test]
+	fn executable_program_writes_a_pixel_to_a_bound_image() {
+		let script = r#"
+		main: fn () -> void {
+			write(image, vec2u(1, 0), vec4f(0.25, 0.5, 0.75, 1.0));
+		}
+		"#;
+
+		let mut root = Node::root();
+		root.add_child(
+			Node::binding(
+				"image",
+				BindingTypes::Image {
+					format: "rgba8".to_string(),
+				},
+				0,
+				11,
+				false,
+				true,
+			)
+			.into(),
+		);
+
+		let program = compile_to_besl(script, Some(root)).expect("Expected lexed program");
+		let executable = ExecutableProgram::compile(program).expect("Expected runnable program");
+
+		let image_slot = DescriptorSlot::new(0, 11);
+		let mut image = Texture::new(2, 2).expect("Expected texture allocation");
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_image(image_slot, &mut image);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(
+			image.fetch([1, 0]).expect("Expected image fetch"),
+			Value::Vec4F([0.25, 0.5, 0.75, 1.0])
+		);
 	}
 }

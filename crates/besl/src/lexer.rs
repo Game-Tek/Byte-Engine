@@ -384,6 +384,15 @@ impl Node {
 			vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
 			vec4f32.clone(),
 		);
+		let write_intrinsic = builtin_intrinsic(
+			"write",
+			vec![
+				("image", texture_2d.clone()),
+				("coord", vec2u32.clone()),
+				("value", vec4f32.clone()),
+			],
+			void.clone(),
+		);
 
 		let mut root = Node::scope("root".to_string());
 
@@ -406,6 +415,7 @@ impl Node {
 			array_texture_2d,
 			sample_intrinsic,
 			fetch_intrinsic,
+			write_intrinsic,
 		]);
 
 		root
@@ -2328,5 +2338,59 @@ main: fn () -> void {
 			.err()
 			.filter(|error| error == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
 			.expect("Expected parameter count validation error");
+	}
+
+	#[test]
+	fn lex_builtin_image_write_intrinsic() {
+		let script = r#"
+		main: fn () -> void {
+			write(image, vec2u(1, 2), vec4f(1.0, 0.0, 0.0, 1.0));
+		}
+		"#;
+
+		let mut root = Node::root();
+		root.add_child(
+			Node::binding(
+				"image",
+				BindingTypes::Image {
+					format: "rgba8".to_string(),
+				},
+				0,
+				0,
+				false,
+				true,
+			)
+			.into(),
+		);
+
+		let node = crate::compile_to_besl(script, Some(root)).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let write_statement = statements[0].borrow();
+		match write_statement.node() {
+			Nodes::Expression(Expressions::IntrinsicCall {
+				intrinsic,
+				arguments,
+				elements,
+			}) => {
+				assert_eq!(arguments.len(), 3);
+				assert_eq!(elements.len(), 3);
+
+				let intrinsic = intrinsic.borrow();
+				match intrinsic.node() {
+					Nodes::Intrinsic { name, r#return, .. } => {
+						assert_eq!(name, "write");
+						assert_type(&r#return.borrow(), "void");
+					}
+					_ => panic!("Expected intrinsic"),
+				}
+			}
+			_ => panic!("Expected intrinsic call"),
+		}
 	}
 }

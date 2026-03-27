@@ -1466,7 +1466,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 
 		let ao_map = device.build_dynamic_image(
 			ghi::image::Builder::new(
-				ghi::Formats::RGBA8UNORM,
+				ghi::Formats::R8UNORM,
 				ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination,
 			)
 			.name("Occlusion Map")

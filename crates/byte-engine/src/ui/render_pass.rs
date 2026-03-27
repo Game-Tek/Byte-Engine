@@ -325,13 +325,7 @@ impl UiRenderPass {
 	/// Creates a UI pass and all GPU resources used to draw layout primitives.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let main_attachment = render_pass_builder
-			.create_render_target(
-				ghi::image::Builder::new(
-					MAIN_ATTACHMENT_FORMAT,
-					ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
-				)
-				.name("UI"),
-			)
+			.create_render_target(ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget).name("UI"))
 			.into_image_handle();
 
 		render_pass_builder.alias("UI", "main");

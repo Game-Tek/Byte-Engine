@@ -563,26 +563,32 @@ mod utils {
 		}
 	}
 
-	pub(crate) fn resource_options_from_access(access: DeviceAccesses) -> mtl::MTLResourceOptions {
+	pub(crate) fn storage_mode_from_access(access: DeviceAccesses) -> mtl::MTLStorageMode {
 		if access == DeviceAccesses::DeviceOnly {
-			mtl::MTLResourceOptions::StorageModePrivate
+			mtl::MTLStorageMode::Private
 		} else if access.contains(DeviceAccesses::CpuRead) {
-			mtl::MTLResourceOptions::StorageModeManaged
+			mtl::MTLStorageMode::Managed
 		} else {
-			mtl::MTLResourceOptions::StorageModeShared
+			mtl::MTLStorageMode::Shared
+		}
+	}
+
+	pub(crate) fn resource_options_from_access(access: DeviceAccesses) -> mtl::MTLResourceOptions {
+		match storage_mode_from_access(access) {
+			mtl::MTLStorageMode::Private => mtl::MTLResourceOptions::StorageModePrivate,
+			mtl::MTLStorageMode::Managed => mtl::MTLResourceOptions::StorageModeManaged,
+			_ => mtl::MTLResourceOptions::StorageModeShared,
 		}
 	}
 
 	pub(crate) fn texture_usage_from_uses(uses: Uses) -> mtl::MTLTextureUsage {
 		let mut usage = mtl::MTLTextureUsage::empty();
 
-		if uses.intersects(
-			Uses::Image | Uses::Storage | Uses::TransferSource | Uses::TransferDestination | Uses::ShaderBindingTable,
-		) {
+		if uses.intersects(Uses::Image | Uses::Storage | Uses::ShaderBindingTable) {
 			usage |= mtl::MTLTextureUsage::ShaderRead;
 		}
 
-		if uses.intersects(Uses::Storage | Uses::TransferDestination) {
+		if uses.contains(Uses::Storage) {
 			usage |= mtl::MTLTextureUsage::ShaderWrite;
 		}
 

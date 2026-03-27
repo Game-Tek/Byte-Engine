@@ -174,7 +174,7 @@ impl Device {
 			descriptor.setTextureType(mtl::MTLTextureType::Type2DArray);
 		}
 		descriptor.setUsage(utils::texture_usage_from_uses(resource_uses));
-		descriptor.setStorageMode(mtl::MTLStorageMode::Shared);
+		descriptor.setStorageMode(utils::storage_mode_from_access(device_accesses));
 		unsafe {
 			descriptor.setArrayLength(array_layers as _);
 		}

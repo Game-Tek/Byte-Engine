@@ -451,6 +451,15 @@ impl CommandBufferRecording<'_> {
 	}
 
 	fn get_internal_image_handle(&self, handle: graphics_hardware_interface::ImageHandle) -> ImageHandle {
+		if let Some(swapchain) = self
+			.device
+			.swapchains
+			.iter()
+			.find(|swapchain| swapchain.images[0].0 == handle.0 || swapchain.native_images[0].0 == handle.0)
+		{
+			return swapchain.images[swapchain.acquired_image_indices[self.sequence_index as usize] as usize];
+		}
+
 		let handles = ImageHandle(handle.0).get_all(&self.device.images);
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
 	}

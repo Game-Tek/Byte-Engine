@@ -2,7 +2,7 @@ use crate::{
 	buffer, image, pipelines::VertexElement, sampler, shader::Sources, window, AllocationHandle, BaseBufferHandle,
 	BindingConstructor, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
 	CommandBufferHandle, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
-	DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle, ImageHandle, MeshHandle, PipelineHandle,
+	DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle, Formats, ImageHandle, MeshHandle, PipelineHandle,
 	PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle,
 	TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
 };
@@ -190,6 +190,10 @@ impl Device {
 		_fallback_extent: Extent,
 	) -> SwapchainHandle {
 		SwapchainHandle(0)
+	}
+
+	pub fn get_swapchain_image(&mut self, _swapchain_handle: SwapchainHandle, _uses: Uses) -> (ImageHandle, Formats) {
+		(ImageHandle(0), Formats::BGRAu8)
 	}
 
 	pub fn get_image_data<'a>(&'a self, _texture_copy_handle: TextureCopyHandle) -> &'a [u8] {

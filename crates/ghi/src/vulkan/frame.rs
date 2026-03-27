@@ -25,6 +25,10 @@ impl<'a> Frame<'a> {
 		}
 	}
 
+	pub fn device(&mut self) -> &mut Device {
+		self.device
+	}
+
 	fn get_current_image_handle(&self, image_handle: impl graphics_hardware_interface::ImageHandleLike) -> ImageHandle {
 		let image_handle = image_handle.into_image_handle();
 		let handles = ImageHandle(image_handle.0).get_all(&self.device.images);
@@ -60,17 +64,11 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.write(descriptor_set_writes);
 	}
 
-	fn acquire_swapchain_image(
-		&mut self,
-		swapchain_handle: crate::SwapchainHandle,
-		_uses: crate::Uses,
-	) -> (crate::PresentKey, crate::ImageHandle, crate::Formats, utils::Extent) {
+	fn acquire_swapchain_image(&mut self, swapchain_handle: crate::SwapchainHandle) -> (crate::PresentKey, utils::Extent) {
 		let swapchains = &self.device.swapchains;
 		let synchronizers = &self.device.synchronizers;
 
 		let swapchain = &swapchains[swapchain_handle.0 as usize];
-		let format = swapchain.format;
-		let supported_usage_flags = swapchain.supported_usage_flags;
 		let fallback_extent = swapchain.extent;
 
 		let s = swapchain.max_image_count as u64;
@@ -165,6 +163,9 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			self.acquired_swapchains.push(present_key);
 		}
 
+		self.device.swapchains[swapchain_handle.0 as usize].acquired_image_indices[self.frame_key.sequence_index as usize] =
+			index as u8;
+
 		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX
 			&& vk_surface_capabilities.current_extent.height != u32::MAX
 		{
@@ -176,58 +177,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			Extent::rectangle(fallback_extent.width, fallback_extent.height)
 		};
 
-		let requested_usage = super::utils::into_vk_image_usage_flags(_uses, format);
-		let use_proxy = !supported_usage_flags.contains(requested_usage);
-
-		let image = if use_proxy {
-			let proxy_uses = _uses | crate::Uses::TransferSource | crate::Uses::TransferDestination;
-			let (needs_rebuild, native_images, max_image_count) = {
-				let swapchain = &self.device.swapchains[swapchain_handle.0 as usize];
-				(
-					!swapchain.uses_proxy_images || !swapchain.proxy_uses.contains(_uses),
-					swapchain.native_images,
-					swapchain.max_image_count,
-				)
-			};
-
-			if needs_rebuild {
-				let mut proxies = native_images;
-
-				for image_index in 0..max_image_count as usize {
-					let previous = if image_index > 0 {
-						Some(proxies[image_index - 1])
-					} else {
-						None
-					};
-					proxies[image_index] = self.device.create_image_internal(
-						None,
-						previous,
-						Some("Swapchain Proxy Image"),
-						format,
-						crate::DeviceAccesses::DeviceOnly,
-						None,
-						extent,
-						proxy_uses,
-					);
-				}
-
-				let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
-				swapchain.images = proxies;
-				swapchain.uses_proxy_images = true;
-				swapchain.proxy_uses = _uses;
-			}
-
-			let swapchain = &self.device.swapchains[swapchain_handle.0 as usize];
-			crate::ImageHandle(swapchain.images[index as usize].0)
-		} else {
-			let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
-			swapchain.images = swapchain.native_images;
-			swapchain.uses_proxy_images = false;
-			swapchain.proxy_uses = crate::Uses::empty();
-			crate::ImageHandle(swapchain.native_images[index as usize].0)
-		};
-
-		(present_key, image, format, extent)
+		(present_key, extent)
 	}
 
 	fn resize_image(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike, extent: Extent) {

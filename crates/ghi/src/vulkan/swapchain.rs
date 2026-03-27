@@ -20,6 +20,7 @@ pub(crate) struct Swapchain {
 	pub proxy_uses: Uses,
 	pub format: Formats,
 	pub supported_usage_flags: vk::ImageUsageFlags,
+	pub acquired_image_indices: [u8; MAX_FRAMES_IN_FLIGHT],
 	pub extent: vk::Extent2D,
 	pub vk_present_mode: vk::PresentModeKHR,
 	pub min_image_count: u32,

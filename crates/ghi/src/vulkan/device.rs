@@ -3089,12 +3089,78 @@ impl crate::device::Device for Device {
 			proxy_uses: if uses_proxy_images { uses } else { crate::Uses::empty() },
 			format,
 			supported_usage_flags: supported_image_usage,
+			acquired_image_indices: [0; MAX_FRAMES_IN_FLIGHT],
 			min_image_count,
 			max_image_count: image_count,
 			vk_present_mode,
 		});
 
 		swapchain_handle
+	}
+
+	fn get_swapchain_image(
+		&mut self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		uses: crate::Uses,
+	) -> (graphics_hardware_interface::ImageHandle, crate::Formats) {
+		let (format, supported_usage_flags, fallback_extent) = {
+			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+			(swapchain.format, swapchain.supported_usage_flags, swapchain.extent)
+		};
+
+		let requested_usage = into_vk_image_usage_flags(uses, format);
+		let use_proxy = !supported_usage_flags.contains(requested_usage);
+
+		let image = if use_proxy {
+			let proxy_uses = uses | crate::Uses::TransferSource | crate::Uses::TransferDestination;
+			let (needs_rebuild, native_images, max_image_count) = {
+				let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+				(
+					!swapchain.uses_proxy_images || !swapchain.proxy_uses.contains(uses),
+					swapchain.native_images,
+					swapchain.max_image_count,
+				)
+			};
+
+			if needs_rebuild {
+				let extent = Extent::rectangle(fallback_extent.width, fallback_extent.height);
+				let mut proxies = native_images;
+
+				for image_index in 0..max_image_count as usize {
+					let previous = if image_index > 0 {
+						Some(proxies[image_index - 1])
+					} else {
+						None
+					};
+					proxies[image_index] = self.create_image_internal(
+						None,
+						previous,
+						Some("Swapchain Proxy Image"),
+						format,
+						crate::DeviceAccesses::DeviceOnly,
+						None,
+						extent,
+						proxy_uses,
+					);
+				}
+
+				let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+				swapchain.images = proxies;
+				swapchain.uses_proxy_images = true;
+				swapchain.proxy_uses = uses;
+			}
+
+			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+			graphics_hardware_interface::ImageHandle(swapchain.images[0].0)
+		} else {
+			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			swapchain.images = swapchain.native_images;
+			swapchain.uses_proxy_images = false;
+			swapchain.proxy_uses = crate::Uses::empty();
+			graphics_hardware_interface::ImageHandle(swapchain.native_images[0].0)
+		};
+
+		(image, format)
 	}
 
 	fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {

@@ -92,6 +92,17 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 
 	fn get_internal_image_handle(&self, handle: graphics_hardware_interface::ImageHandle) -> image::ImageHandle {
+		if let Some(swapchain) = self
+			.device
+			.swapchains
+			.iter()
+			.find(|swapchain| swapchain.images[0].map(|image| image.0 == handle.0).unwrap_or(false))
+		{
+			return swapchain.images[swapchain.acquired_image_indices[self.sequence_index as usize] as usize].expect(
+				"Missing Metal swapchain proxy image for the acquired drawable. The most likely cause is that get_swapchain_image was not called before using the swapchain image.",
+			);
+		}
+
 		let handles = image::ImageHandle(handle.0).get_all(&self.device.images);
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
 	}

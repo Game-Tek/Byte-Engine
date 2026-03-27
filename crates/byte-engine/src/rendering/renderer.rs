@@ -315,14 +315,11 @@ impl Renderer {
 
 		self.started_frame_count += 1;
 
-		let swapchains: SmallVec<
-			[Option<(ghi::PresentKey, ghi::ImageHandle, ghi::Formats, Extent, ghi::SwapchainHandle)>; 16],
-		> = self
+		let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = self
 			.windows
 			.iter()
 			.map(|(window, swapchain)| {
-				let (present_key, image, format, extent) =
-					frame.acquire_swapchain_image(*swapchain, ghi::Uses::RenderTarget | ghi::Uses::Storage);
+				let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
 
 				if extent.width() == 0 || extent.height() == 0 {
 					log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
@@ -337,29 +334,32 @@ impl Renderer {
 					return None;
 				}
 
-				Some((present_key, image, format, extent, *swapchain))
+				Some((present_key, extent, *swapchain))
 			})
 			.collect();
 
-		let views = self.views.iter();
+		let mut viewports: SmallVec<[Viewport; 16]> = SmallVec::new();
 
-		let viewports: SmallVec<[Viewport; 16]> = views
-			.filter_map(|(index, view)| {
-				let (present_key, image, format, extent, swapchain) = swapchains[*index]?;
-				self.render_targets.replace("result", image, format);
+		for (index, view_handle) in self.views.iter() {
+			let Some((_present_key, extent, swapchain)) = swapchains[*index] else {
+				continue;
+			};
+			let (image, format) = frame
+				.device()
+				.get_swapchain_image(swapchain, ghi::Uses::RenderTarget | ghi::Uses::Storage);
+			self.render_targets.replace("result", image, format);
 
-				let camera = self
-					.cameras
-					.iter()
-					.find_map(|(handle, camera)| if handle == view { Some(camera) } else { None })?;
+			let Some(camera) = self
+				.cameras
+				.iter()
+				.find_map(|(handle, camera)| if handle == view_handle { Some(camera) } else { None })
+			else {
+				continue;
+			};
 
-				let view = make_perspective_view_from_camera(&camera, extent);
-
-				let viewport = Viewport::new(view, extent, *index);
-
-				Some(viewport)
-			})
-			.collect();
+			let view = make_perspective_view_from_camera(&camera, extent);
+			viewports.push(Viewport::new(view, extent, *index));
+		}
 
 		for viewport in &viewports {
 			// Get images for the current view and render pass and resize them to window extent
@@ -459,13 +459,11 @@ impl Renderer {
 					None
 				};
 
-				let result = self.device.build_image(
-					ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Storage | ghi::Uses::BlitSource)
-						.name("result"),
-				);
+				let (result, format) = self
+					.device
+					.get_swapchain_image(swapchain_handle, ghi::Uses::RenderTarget | ghi::Uses::Storage);
 
-				self.render_targets
-					.insert("result".to_string(), viewport_id, result, ghi::Formats::RGBA8UNORM);
+				self.render_targets.insert("result".to_string(), viewport_id, result, format);
 
 				if let Some(view_id) = view_id {
 					let scene_managers = self.scene_managers.iter_mut();

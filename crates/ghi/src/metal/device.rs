@@ -1420,6 +1420,55 @@ impl Device {
 		graphics_hardware_interface::SwapchainHandle((self.swapchains.len() - 1) as u64)
 	}
 
+	pub fn get_swapchain_image(
+		&mut self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		uses: crate::Uses,
+	) -> (graphics_hardware_interface::ImageHandle, crate::Formats) {
+		let (extent, format) = {
+			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+			let format = match swapchain.pixel_format {
+				mtl::MTLPixelFormat::BGRA8Unorm => crate::Formats::BGRAu8,
+				mtl::MTLPixelFormat::BGRA8Unorm_sRGB => crate::Formats::BGRAsRGB,
+				_ => panic!(
+					"Unsupported Metal swapchain pixel format. The most likely cause is that the layer pixel format does not have a matching GHI format."
+				),
+			};
+			(swapchain.extent, format)
+		};
+
+		let needs_new_proxy = {
+			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+			swapchain.images[0].is_none() || !swapchain.proxy_uses[0].contains(uses)
+		};
+
+		if needs_new_proxy {
+			let mut proxies = [None; super::MAX_SWAPCHAIN_IMAGES];
+			for image_index in 0..super::MAX_SWAPCHAIN_IMAGES {
+				let previous = if image_index > 0 { proxies[image_index - 1] } else { None };
+				let proxy = self.create_image_internal(
+					previous,
+					Some("Swapchain Proxy Image"),
+					extent,
+					format,
+					uses | crate::Uses::BlitSource,
+					crate::DeviceAccesses::DeviceOnly,
+					1,
+				);
+				proxies[image_index] = Some(proxy);
+			}
+			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			swapchain.images = proxies;
+			swapchain.proxy_uses = [uses; super::MAX_SWAPCHAIN_IMAGES];
+		}
+
+		let image = self.swapchains[swapchain_handle.0 as usize].images[0].expect(
+			"Missing Metal swapchain proxy image. The most likely cause is that swapchain image access did not create the proxy image.",
+		);
+
+		(graphics_hardware_interface::ImageHandle(image.0), format)
+	}
+
 	pub fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {
 		self.texture_copies
 			.get(texture_copy_handle.0 as usize)

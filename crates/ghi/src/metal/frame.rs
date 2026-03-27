@@ -1,6 +1,6 @@
 use super::*;
-use objc2_metal::MTLCommandBuffer;
 use objc2_metal::MTLBlitCommandEncoder;
+use objc2_metal::MTLCommandBuffer;
 use objc2_metal::MTLCommandEncoder;
 
 pub struct Frame<'a> {
@@ -85,27 +85,16 @@ impl Frame<'_> {
 	pub fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-		uses: crate::Uses,
-	) -> (
-		graphics_hardware_interface::PresentKey,
-		graphics_hardware_interface::ImageHandle,
-		crate::Formats,
-		Extent,
-	) {
+	) -> (graphics_hardware_interface::PresentKey, Extent) {
 		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
+
 		swapchain.extent = update_layer_extent(&swapchain.layer, &swapchain.view);
-		let extent = swapchain.extent;
-		let format = match swapchain.pixel_format {
-			mtl::MTLPixelFormat::BGRA8Unorm => crate::Formats::BGRAu8,
-			mtl::MTLPixelFormat::BGRA8Unorm_sRGB => crate::Formats::BGRAsRGB,
-			_ => panic!(
-				"Unsupported Metal swapchain pixel format. The most likely cause is that the layer pixel format does not have a matching GHI format."
-			),
-		};
+
 		let drawable = swapchain
 			.layer
 			.nextDrawable()
 			.expect("Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.");
+
 		let index = swapchain.store_drawable(drawable);
 
 		let present_key = graphics_hardware_interface::PresentKey {
@@ -114,28 +103,9 @@ impl Frame<'_> {
 			swapchain: swapchain_handle,
 		};
 
-		let needs_new_proxy =
-			swapchain.images[index as usize].is_none() || !swapchain.proxy_uses[index as usize].contains(uses);
+		swapchain.acquired_image_indices[self.frame_key.sequence_index as usize] = index;
 
-		if needs_new_proxy {
-			let proxy = self.device.create_image_internal(
-				None,
-				Some("Swapchain Proxy Image"),
-				extent,
-				format,
-				uses | crate::Uses::BlitSource,
-				crate::DeviceAccesses::DeviceOnly,
-				1,
-			);
-			let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
-			swapchain.images[index as usize] = Some(proxy);
-			swapchain.proxy_uses[index as usize] = uses;
-		}
-
-		let image = self.device.swapchains[swapchain_handle.0 as usize].images[index as usize].expect(
-			"Missing Metal swapchain proxy image. The most likely cause is that swapchain image acquisition did not create the proxy image.",
-		);
-		(present_key, graphics_hardware_interface::ImageHandle(image.0), format, extent)
+		(present_key, swapchain.extent)
 	}
 
 	pub fn device(&mut self) -> &mut device::Device {
@@ -248,14 +218,8 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-		uses: crate::Uses,
-	) -> (
-		graphics_hardware_interface::PresentKey,
-		graphics_hardware_interface::ImageHandle,
-		crate::Formats,
-		Extent,
-	) {
-		Frame::acquire_swapchain_image(self, swapchain_handle, uses)
+	) -> (graphics_hardware_interface::PresentKey, Extent) {
+		Frame::acquire_swapchain_image(self, swapchain_handle)
 	}
 
 	fn execute<'s, 'f>(

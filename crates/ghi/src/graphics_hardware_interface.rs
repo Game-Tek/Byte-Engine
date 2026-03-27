@@ -1433,10 +1433,11 @@ pub(super) mod tests {
 
 		renderer.start_frame_capture();
 
+		let (render_target, render_target_format) = renderer.get_swapchain_image(swapchain, Uses::RenderTarget);
+
 		let mut frame = renderer.start_frame(0, render_finished_synchronizer);
 
-		let (present_key, render_target, render_target_format, _) =
-			frame.acquire_swapchain_image(swapchain, Uses::RenderTarget);
+		let (present_key, _) = frame.acquire_swapchain_image(swapchain);
 
 		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
@@ -1535,13 +1536,14 @@ pub(super) mod tests {
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
+		let (render_target, render_target_format) = renderer.get_swapchain_image(swapchain, Uses::RenderTarget);
+
 		for i in 0..2 * 64 {
 			renderer.start_frame_capture();
 
 			let mut frame = renderer.start_frame(i, render_finished_synchronizer);
 
-			let (present_key, render_target, render_target_format, _) =
-				frame.acquire_swapchain_image(swapchain, Uses::RenderTarget);
+			let (present_key, _) = frame.acquire_swapchain_image(swapchain);
 
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 

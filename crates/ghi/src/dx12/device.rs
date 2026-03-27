@@ -181,6 +181,7 @@ struct Swapchain {
 	present_mode: PresentationModes,
 	images: [Option<ImageHandle>; 8],
 	proxy_uses: [Uses; 8],
+	acquired_image_indices: [u8; 8],
 }
 
 struct Synchronizer {
@@ -736,9 +737,41 @@ impl Device {
 			present_mode: presentation_mode,
 			images: std::array::from_fn(|_| None),
 			proxy_uses: std::array::from_fn(|_| Uses::empty()),
+			acquired_image_indices: [0; 8],
 		});
 
 		SwapchainHandle((self.swapchains.len() - 1) as u64)
+	}
+
+	pub fn get_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, uses: Uses) -> (ImageHandle, Formats) {
+		let needs_new_proxy = {
+			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+			swapchain.images[0].is_none() || !swapchain.proxy_uses[0].contains(uses)
+		};
+
+		if needs_new_proxy {
+			let extent = self.swapchains[swapchain_handle.0 as usize].extent;
+			let mut images = [None; 8];
+			for image_index in 0..8 {
+				let image = self.build_image(
+					crate::image::Builder::new(Formats::BGRAu8, uses | Uses::BlitSource)
+						.extent(extent)
+						.device_accesses(DeviceAccesses::DeviceOnly)
+						.use_case(crate::UseCases::DYNAMIC),
+				);
+				images[image_index] = Some(image);
+			}
+			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			swapchain.images = images;
+			swapchain.proxy_uses = [uses; 8];
+		}
+
+		(
+			self.swapchains[swapchain_handle.0 as usize].images[0].expect(
+				"Missing DX12 swapchain proxy image. The most likely cause is that swapchain image access did not create the proxy image.",
+			),
+			Formats::BGRAu8,
+		)
 	}
 
 	pub fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8] {

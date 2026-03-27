@@ -67,10 +67,16 @@ impl Frame<'_> {
 			return;
 		}
 
-		let new_handle =
-			self.device
-				.create_image_internal(None, None, extent, image.format, image.uses, image.access, image.array_layers);
-		self.device.images[handle.0 as usize] = self.device.images[new_handle.0 as usize].clone();
+		let replacement = self.device.create_image_resource(
+			image.next,
+			None,
+			extent,
+			image.format,
+			image.uses,
+			image.access,
+			image.array_layers,
+		);
+		self.device.images[handle.0 as usize] = replacement;
 		self.device.rewrite_descriptors_for_handle(Handle::Image(handle));
 	}
 

@@ -116,6 +116,23 @@ impl Device {
 		resource_uses: crate::Uses,
 		device_accesses: crate::DeviceAccesses,
 	) -> buffer::BufferHandle {
+		let handle = buffer::BufferHandle(self.buffers.len() as u64);
+		let buffer = self.create_buffer_resource(next, name, size, resource_uses, device_accesses, handle);
+
+		self.buffers.push(buffer);
+
+		handle
+	}
+
+	fn create_buffer_resource(
+		&self,
+		next: Option<buffer::BufferHandle>,
+		name: Option<&str>,
+		size: usize,
+		resource_uses: crate::Uses,
+		device_accesses: crate::DeviceAccesses,
+		handle: buffer::BufferHandle,
+	) -> buffer::Buffer {
 		let options = utils::resource_options_from_access(device_accesses);
 		let buffer = self
 			.device
@@ -129,8 +146,7 @@ impl Device {
 		let pointer = buffer.contents().as_ptr() as *mut u8;
 		let gpu_address = buffer.gpuAddress() as u64;
 
-		let handle = buffer::BufferHandle(self.buffers.len() as u64);
-		self.buffers.push(buffer::Buffer {
+		buffer::Buffer {
 			next,
 			staging: Some(handle),
 			buffer,
@@ -139,9 +155,7 @@ impl Device {
 			pointer,
 			uses: resource_uses,
 			access: device_accesses,
-		});
-
-		handle
+		}
 	}
 
 	pub(super) fn create_image_internal(
@@ -154,6 +168,24 @@ impl Device {
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
 	) -> image::ImageHandle {
+		let handle = image::ImageHandle(self.images.len() as u64);
+		let image = self.create_image_resource(next, name, extent, format, resource_uses, device_accesses, array_layers);
+
+		self.images.push(image);
+
+		handle
+	}
+
+	pub(super) fn create_image_resource(
+		&self,
+		next: Option<image::ImageHandle>,
+		name: Option<&str>,
+		extent: Extent,
+		format: crate::Formats,
+		resource_uses: crate::Uses,
+		device_accesses: crate::DeviceAccesses,
+		array_layers: u32,
+	) -> image::Image {
 		let pixel_format = utils::to_pixel_format(format);
 
 		let width = extent.width().max(1);
@@ -194,8 +226,7 @@ impl Device {
 			vec![0u8; size]
 		});
 
-		let handle = image::ImageHandle(self.images.len() as u64);
-		self.images.push(image::Image {
+		image::Image {
 			next,
 			texture,
 			extent,
@@ -204,9 +235,7 @@ impl Device {
 			access: device_accesses,
 			array_layers,
 			staging,
-		});
-
-		handle
+		}
 	}
 
 	fn update_descriptor_for_binding(
@@ -1439,15 +1468,19 @@ impl Device {
 
 		let needs_new_proxy = {
 			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-			swapchain.images[0].is_none() || !swapchain.proxy_uses[0].contains(uses)
+			let proxy_matches_extent = swapchain.images[0]
+				.map(|image_handle| self.images[image_handle.0 as usize].extent == extent)
+				.unwrap_or(false);
+
+			!proxy_matches_extent || !swapchain.proxy_uses[0].contains(uses)
 		};
 
 		if needs_new_proxy {
-			let mut proxies = [None; super::MAX_SWAPCHAIN_IMAGES];
+			let existing_proxies = self.swapchains[swapchain_handle.0 as usize].images;
+			let mut proxies = existing_proxies;
 			for image_index in 0..super::MAX_SWAPCHAIN_IMAGES {
-				let previous = if image_index > 0 { proxies[image_index - 1] } else { None };
-				let proxy = self.create_image_internal(
-					previous,
+				let proxy = self.create_image_resource(
+					None,
 					Some("Swapchain Proxy Image"),
 					extent,
 					format,
@@ -1455,7 +1488,15 @@ impl Device {
 					crate::DeviceAccesses::DeviceOnly,
 					1,
 				);
-				proxies[image_index] = Some(proxy);
+
+				if let Some(handle) = existing_proxies[image_index] {
+					self.images[handle.0 as usize] = proxy;
+					proxies[image_index] = Some(handle);
+				} else {
+					let handle = image::ImageHandle(self.images.len() as u64);
+					self.images.push(proxy);
+					proxies[image_index] = Some(handle);
+				}
 			}
 			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
 			swapchain.images = proxies;
@@ -1506,9 +1547,12 @@ impl Device {
 			return;
 		}
 
+		let next = buffer.next;
+		let uses = buffer.uses;
+		let access = buffer.access;
 		let name = buffer.buffer.label().map(|l| l.to_string());
-		let new_handle = self.create_buffer_internal(None, name.as_deref(), size, buffer.uses, buffer.access);
-		self.buffers[handle.0 as usize] = self.buffers[new_handle.0 as usize].clone();
+		let replacement = self.create_buffer_resource(next, name.as_deref(), size, uses, access, handle);
+		self.buffers[handle.0 as usize] = replacement;
 		self.rewrite_descriptors_for_handle(Handle::Buffer(handle));
 	}
 

@@ -1,5 +1,7 @@
 use super::*;
 use objc2_metal::MTLCommandBuffer;
+use objc2_metal::MTLBlitCommandEncoder;
+use objc2_metal::MTLCommandEncoder;
 
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
@@ -83,9 +85,23 @@ impl Frame<'_> {
 	pub fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> (graphics_hardware_interface::PresentKey, Extent) {
+		uses: crate::Uses,
+	) -> (
+		graphics_hardware_interface::PresentKey,
+		graphics_hardware_interface::ImageHandle,
+		crate::Formats,
+		Extent,
+	) {
 		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
 		swapchain.extent = update_layer_extent(&swapchain.layer, &swapchain.view);
+		let extent = swapchain.extent;
+		let format = match swapchain.pixel_format {
+			mtl::MTLPixelFormat::BGRA8Unorm => crate::Formats::BGRAu8,
+			mtl::MTLPixelFormat::BGRA8Unorm_sRGB => crate::Formats::BGRAsRGB,
+			_ => panic!(
+				"Unsupported Metal swapchain pixel format. The most likely cause is that the layer pixel format does not have a matching GHI format."
+			),
+		};
 		let drawable = swapchain
 			.layer
 			.nextDrawable()
@@ -97,7 +113,29 @@ impl Frame<'_> {
 			sequence_index: self.frame_key.sequence_index,
 			swapchain: swapchain_handle,
 		};
-		(present_key, swapchain.extent)
+
+		let needs_new_proxy =
+			swapchain.images[index as usize].is_none() || !swapchain.proxy_uses[index as usize].contains(uses);
+
+		if needs_new_proxy {
+			let proxy = self.device.create_image_internal(
+				None,
+				Some("Swapchain Proxy Image"),
+				extent,
+				format,
+				uses | crate::Uses::BlitSource,
+				crate::DeviceAccesses::DeviceOnly,
+				1,
+			);
+			let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
+			swapchain.images[index as usize] = Some(proxy);
+			swapchain.proxy_uses[index as usize] = uses;
+		}
+
+		let image = self.device.swapchains[swapchain_handle.0 as usize].images[index as usize].expect(
+			"Missing Metal swapchain proxy image. The most likely cause is that swapchain image acquisition did not create the proxy image.",
+		);
+		(present_key, graphics_hardware_interface::ImageHandle(image.0), format, extent)
 	}
 
 	pub fn device(&mut self) -> &mut device::Device {
@@ -114,8 +152,29 @@ impl Frame<'_> {
 			command_buffer,
 			present_drawables,
 			states,
-			present_keys: _present_keys,
+			present_keys,
 		} = cbr;
+
+		if !present_keys.is_empty() {
+			let blit_encoder = command_buffer.blitCommandEncoder().expect(
+				"Metal blit command encoder creation failed. The most likely cause is that the command buffer could not start the swapchain resolve pass.",
+			);
+
+			for (present_key, drawable) in present_keys.iter().zip(present_drawables.iter()) {
+				let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
+				let Some(proxy_image) = swapchain.images[present_key.image_index as usize] else {
+					continue;
+				};
+				let source_texture = self.device.images[proxy_image.0 as usize].texture.clone();
+				let destination_texture = drawable.texture();
+
+				unsafe {
+					blit_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
+				}
+			}
+
+			blit_encoder.endEncoding();
+		}
 
 		for drawable in &present_drawables {
 			let drawable_ref: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
@@ -189,8 +248,14 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> (graphics_hardware_interface::PresentKey, Extent) {
-		Frame::acquire_swapchain_image(self, swapchain_handle)
+		uses: crate::Uses,
+	) -> (
+		graphics_hardware_interface::PresentKey,
+		graphics_hardware_interface::ImageHandle,
+		crate::Formats,
+		Extent,
+	) {
+		Frame::acquire_swapchain_image(self, swapchain_handle, uses)
 	}
 
 	fn execute<'s, 'f>(

@@ -470,44 +470,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		// TODO: Encode MTLBlitCommandEncoder copyFromTexture.
 	}
 
-	fn copy_to_swapchain(
-		&mut self,
-		source_texture_handle: impl graphics_hardware_interface::ImageHandleLike,
-		present_key: graphics_hardware_interface::PresentKey,
-		_swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) {
-		let source_texture_handle = self.get_internal_image_handle(source_texture_handle.into_image_handle());
-		self.consume_resources([Consumption {
-			handle: Handle::Image(source_texture_handle),
-			stages: crate::Stages::TRANSFER,
-			access: crate::AccessPolicies::READ,
-			layout: crate::Layouts::Transfer,
-		}]);
-
-		if let Some(encoder) = self.active_render_encoder.take() {
-			encoder.endEncoding();
-		}
-
-		if let Some(encoder) = self.active_compute_encoder.take() {
-			encoder.endEncoding();
-		}
-
-		let source_texture = self.device.images[source_texture_handle.0 as usize].texture.clone();
-		let Some(drawable) = self.take_drawable(present_key) else {
-			return;
-		};
-		let destination_texture = drawable.texture();
-		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
-			"Metal blit command encoder creation failed. The most likely cause is that the command buffer could not start a blit pass.",
-		);
-
-		unsafe {
-			blit_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
-		}
-		blit_encoder.endEncoding();
-		self.present_drawables.push(drawable);
-	}
-
 	fn execute(self, _synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 		self.finish(_synchronizer);
 	}

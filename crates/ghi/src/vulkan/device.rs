@@ -1753,7 +1753,7 @@ impl Device {
 		}
 	}
 
-	fn create_image_internal(
+	pub(crate) fn create_image_internal(
 		&mut self,
 		next: Option<ImageHandle>,
 		previous: Option<ImageHandle>,
@@ -3086,20 +3086,15 @@ impl crate::device::Device for Device {
 			images,
 			native_images,
 			uses_proxy_images,
+			proxy_uses: if uses_proxy_images { uses } else { crate::Uses::empty() },
+			format,
+			supported_usage_flags: supported_image_usage,
 			min_image_count,
 			max_image_count: image_count,
 			vk_present_mode,
 		});
 
 		swapchain_handle
-	}
-
-	fn get_swapchain_image(
-		&self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> graphics_hardware_interface::ImageHandle {
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-		graphics_hardware_interface::ImageHandle(swapchain.images[0].0)
 	}
 
 	fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {

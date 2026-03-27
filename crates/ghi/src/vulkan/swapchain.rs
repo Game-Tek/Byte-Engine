@@ -1,6 +1,7 @@
 use ash::vk;
 
 use crate::vulkan::{ImageHandle, SynchronizerHandle, MAX_FRAMES_IN_FLIGHT, MAX_SWAPCHAIN_IMAGES};
+use crate::{Formats, Uses};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -16,6 +17,9 @@ pub(crate) struct Swapchain {
 	pub native_images: [ImageHandle; MAX_SWAPCHAIN_IMAGES],
 	/// Indicates whether `images` are proxy images.
 	pub uses_proxy_images: bool,
+	pub proxy_uses: Uses,
+	pub format: Formats,
+	pub supported_usage_flags: vk::ImageUsageFlags,
 	pub extent: vk::Extent2D,
 	pub vk_present_mode: vk::PresentModeKHR,
 	pub min_image_count: u32,

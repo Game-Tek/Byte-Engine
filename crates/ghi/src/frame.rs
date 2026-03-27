@@ -3,7 +3,7 @@ use utils::Extent;
 use crate::{
 	command_buffer::CommandBufferRecording, descriptors, graphics_hardware_interface,
 	graphics_hardware_interface::ImageHandleLike, BaseBufferHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle,
-	DynamicImageHandle, PresentKey, SwapchainHandle,
+	DynamicImageHandle, Formats, PresentKey, SwapchainHandle, Uses,
 };
 
 /// The `Frame` trait contains methods for performing per frame operations.
@@ -50,9 +50,13 @@ where
 	/// * `frame_handle` - The frame to acquire the image for. If `None` is passed, the image will be acquired for the next frame.
 	///
 	/// # Returns
-	/// A present key for future presentation and, if defined, the extent of the image.
+	/// A present key for future presentation, the acquired image handle, the image format and the extent of the image.
 	/// # Errors
-	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent);
+	fn acquire_swapchain_image(
+		&mut self,
+		swapchain_handle: SwapchainHandle,
+		uses: Uses,
+	) -> (PresentKey, crate::ImageHandle, Formats, Extent);
 
 	/// Executes the provided command buffer recording.
 	fn execute<'s, 'f>(

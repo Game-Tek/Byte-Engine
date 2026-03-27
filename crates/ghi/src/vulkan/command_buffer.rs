@@ -583,14 +583,14 @@ impl CommandBufferRecording<'_> {
 			.iter()
 			.filter_map(|present_key| {
 				let swapchain = self.get_swapchain(present_key.swapchain);
-				if !swapchain.uses_proxy_images {
+				let proxy_image = swapchain.images[present_key.image_index as usize];
+				let native_image = swapchain.native_images[present_key.image_index as usize];
+
+				if proxy_image == native_image {
 					return None;
 				}
 
-				Some((
-					swapchain.images[present_key.image_index as usize],
-					swapchain.native_images[present_key.image_index as usize],
-				))
+				Some((proxy_image, native_image))
 			})
 			.collect::<SmallVec<[(ImageHandle, ImageHandle); 8]>>();
 
@@ -1430,21 +1430,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Read,
 		}])(self);
-	}
-
-	fn copy_to_swapchain(
-		&mut self,
-		source_image_handle: impl graphics_hardware_interface::ImageHandleLike,
-		present_key: graphics_hardware_interface::PresentKey,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) {
-		let source_image_handle = source_image_handle.into_image_handle();
-		let source_image_internal_handle = self.get_internal_image_handle(source_image_handle);
-
-		let swapchain = &self.device.swapchains[swapchain_handle.0 as usize];
-		let swapchain_image_handle = swapchain.images[present_key.image_index as usize];
-
-		self.blit_image_to_image(source_image_internal_handle, swapchain_image_handle);
 	}
 
 	fn execute(self, synchronizer: crate::SynchronizerHandle) {

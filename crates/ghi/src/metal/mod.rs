@@ -999,6 +999,8 @@ pub mod swapchain {
 		pub layer: Retained<CAMetalLayer>,
 		pub view: Retained<NSView>,
 		pub drawables: [Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>; MAX_SWAPCHAIN_IMAGES],
+		pub images: [Option<image::ImageHandle>; MAX_SWAPCHAIN_IMAGES],
+		pub proxy_uses: [crate::Uses; MAX_SWAPCHAIN_IMAGES],
 		pub extent: Extent,
 		pub pixel_format: mtl::MTLPixelFormat,
 	}
@@ -1014,6 +1016,8 @@ pub mod swapchain {
 				layer,
 				view,
 				drawables: std::array::from_fn(|_| None),
+				images: std::array::from_fn(|_| None),
+				proxy_uses: std::array::from_fn(|_| crate::Uses::empty()),
 				extent,
 				pixel_format,
 			}

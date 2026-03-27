@@ -179,6 +179,8 @@ struct Swapchain {
 	image_count: u8,
 	next_image_index: u8,
 	present_mode: PresentationModes,
+	images: [Option<ImageHandle>; 8],
+	proxy_uses: [Uses; 8],
 }
 
 struct Synchronizer {
@@ -732,6 +734,8 @@ impl Device {
 			image_count,
 			next_image_index: 0,
 			present_mode: presentation_mode,
+			images: std::array::from_fn(|_| None),
+			proxy_uses: std::array::from_fn(|_| Uses::empty()),
 		});
 
 		SwapchainHandle((self.swapchains.len() - 1) as u64)

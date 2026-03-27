@@ -1412,14 +1412,7 @@ pub(super) mod tests {
 			)
 			.expect("Failed to create fragment shader");
 
-		let render_target = renderer.build_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
-				.extent(extent)
-				.device_accesses(DeviceAccesses::DeviceOnly)
-				.use_case(UseCases::STATIC),
-		);
-
-		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
+		let attachments = [AttachmentDescriptor::new(Formats::BGRAsRGB)];
 
 		let pipeline = renderer.create_raster_pipeline(pipelines::raster::Builder::new(
 			&[],
@@ -1442,13 +1435,14 @@ pub(super) mod tests {
 
 		let mut frame = renderer.start_frame(0, render_finished_synchronizer);
 
-		let (present_key, _) = frame.acquire_swapchain_image(swapchain);
+		let (present_key, render_target, render_target_format, _) =
+			frame.acquire_swapchain_image(swapchain, Uses::RenderTarget);
 
 		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 		let attachments = [AttachmentInformation::new(
 			render_target,
-			Formats::RGBA8UNORM,
+			render_target_format,
 			Layouts::RenderTarget,
 			ClearValue::Color(RGBA::black()),
 			false,
@@ -1462,8 +1456,6 @@ pub(super) mod tests {
 		raster_pipeline_command.draw_mesh(&mesh);
 
 		render_pass_command.end_render_pass();
-
-		command_buffer_recording.copy_to_swapchain(render_target, present_key, swapchain);
 
 		let present_keys = [present_key];
 		let terminated_command_buffer = command_buffer_recording.end(&present_keys);
@@ -1526,14 +1518,7 @@ pub(super) mod tests {
 			)
 			.expect("Failed to create fragment shader");
 
-		let render_target = renderer.build_image(
-			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
-				.extent(extent)
-				.device_accesses(DeviceAccesses::DeviceToHost)
-				.use_case(UseCases::DYNAMIC),
-		);
-
-		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
+		let attachments = [AttachmentDescriptor::new(Formats::BGRAsRGB)];
 
 		let pipeline = renderer.create_raster_pipeline(pipelines::raster::Builder::new(
 			&[],
@@ -1555,13 +1540,14 @@ pub(super) mod tests {
 
 			let mut frame = renderer.start_frame(i, render_finished_synchronizer);
 
-			let (present_key, _) = frame.acquire_swapchain_image(swapchain);
+			let (present_key, render_target, render_target_format, _) =
+				frame.acquire_swapchain_image(swapchain, Uses::RenderTarget);
 
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [AttachmentInformation::new(
 				render_target,
-				Formats::RGBA8UNORM,
+				render_target_format,
 				Layouts::RenderTarget,
 				ClearValue::Color(RGBA {
 					r: 0.0,
@@ -1580,8 +1566,6 @@ pub(super) mod tests {
 			raster_pipeline_command.draw_mesh(&mesh);
 
 			raster_pipeline_command.end_render_pass();
-
-			command_buffer_recording.copy_to_swapchain(render_target, present_key, swapchain);
 
 			let present_keys = [present_key];
 			let terminated_command_buffer = command_buffer_recording.end(&present_keys);

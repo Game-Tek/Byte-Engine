@@ -2,7 +2,7 @@ use utils::Extent;
 
 use crate::{
 	graphics_hardware_interface::ImageHandleLike, rt, AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle,
-	ClearValue, DescriptorSetHandle, DispatchExtent, Layouts, MeshHandle, PipelineHandle, PresentKey, RGBAu8, SwapchainHandle,
+	ClearValue, DescriptorSetHandle, DispatchExtent, Layouts, MeshHandle, PipelineHandle, PresentKey, RGBAu8,
 	SynchronizerHandle, TextureCopyHandle,
 };
 
@@ -40,13 +40,6 @@ where
 		source_layout: Layouts,
 		destination_image: impl ImageHandleLike,
 		destination_layout: Layouts,
-	);
-
-	fn copy_to_swapchain(
-		&mut self,
-		source_texture_handle: impl ImageHandleLike,
-		present_key: PresentKey,
-		swapchain_handle: SwapchainHandle,
 	);
 
 	fn execute(self, synchronizer: SynchronizerHandle);

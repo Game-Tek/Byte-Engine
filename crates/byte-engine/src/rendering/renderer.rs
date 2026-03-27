@@ -315,11 +315,14 @@ impl Renderer {
 
 		self.started_frame_count += 1;
 
-		let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = self
+		let swapchains: SmallVec<
+			[Option<(ghi::PresentKey, ghi::ImageHandle, ghi::Formats, Extent, ghi::SwapchainHandle)>; 16],
+		> = self
 			.windows
 			.iter()
 			.map(|(window, swapchain)| {
-				let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
+				let (present_key, image, format, extent) =
+					frame.acquire_swapchain_image(*swapchain, ghi::Uses::RenderTarget | ghi::Uses::Storage);
 
 				if extent.width() == 0 || extent.height() == 0 {
 					log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
@@ -334,7 +337,7 @@ impl Renderer {
 					return None;
 				}
 
-				Some((present_key, extent, *swapchain))
+				Some((present_key, image, format, extent, *swapchain))
 			})
 			.collect();
 
@@ -342,7 +345,8 @@ impl Renderer {
 
 		let viewports: SmallVec<[Viewport; 16]> = views
 			.filter_map(|(index, view)| {
-				let (present_key, extent, swapchain) = swapchains[*index]?;
+				let (present_key, image, format, extent, swapchain) = swapchains[*index]?;
+				self.render_targets.replace("result", image, format);
 
 				let camera = self
 					.cameras
@@ -388,14 +392,6 @@ impl Renderer {
 			})
 			.collect();
 
-		let swapchain_targets: SmallVec<[(ViewportId, ghi::PresentKey, ghi::SwapchainHandle); 16]> = viewports
-			.iter()
-			.filter_map(|viewport| {
-				let (present_key, _, swapchain_handle) = swapchains.get(viewport.index())?.as_ref()?;
-				Some((viewport.index(), *present_key, *swapchain_handle))
-			})
-			.collect();
-
 		let present_keys = swapchains
 			.iter()
 			.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
@@ -404,7 +400,6 @@ impl Renderer {
 		let execute = {
 			let viewports = &viewports;
 			let render_targets = &self.render_targets;
-			let swapchain_targets = &swapchain_targets;
 
 			move |e: &mut ghi::implementation::CommandBufferRecording| {
 				for commands in scene_manager_commands.into_iter() {
@@ -418,11 +413,6 @@ impl Renderer {
 				for (command, viewport) in render_pass_commands.into_iter() {
 					let attachment_infos = render_targets.get_attachment_infos(viewport);
 					(&command)(e, &attachment_infos);
-				}
-
-				for (view_id, present_key, swapchain_handle) in swapchain_targets.iter().copied() {
-					let source = render_targets.get_image("result", view_id);
-					e.copy_to_swapchain(*source, present_key, swapchain_handle);
 				}
 			}
 		};
@@ -452,9 +442,12 @@ impl Renderer {
 			Ok(window) => {
 				let os_handles = window.os_handles();
 
-				let swapchain_handle =
-					self.device
-						.bind_to_window(&os_handles, ghi::PresentationModes::FIFO, extent, ghi::Uses::BlitDestination);
+				let swapchain_handle = self.device.bind_to_window(
+					&os_handles,
+					ghi::PresentationModes::FIFO,
+					extent,
+					ghi::Uses::RenderTarget | ghi::Uses::Storage,
+				);
 
 				let viewport_id = self.windows.len();
 
@@ -555,30 +548,6 @@ impl Settings {
 	}
 }
 
-struct CopyToSwapchainRenderPass {
-	source_texture_handle: ghi::DynamicImageHandle,
-	present_key: ghi::PresentKey,
-	swapchain_handle: ghi::SwapchainHandle,
-}
-
-impl RenderPass for CopyToSwapchainRenderPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
-		let view_id = viewport.index();
-
-		let source_texture_handle = self.source_texture_handle;
-		let present_key = self.present_key;
-		let swapchain_handle = self.swapchain_handle;
-
-		let command = Box::new(
-			move |e: &mut ghi::implementation::CommandBufferRecording, a: &[ghi::AttachmentInformation]| {
-				e.copy_to_swapchain(source_texture_handle, present_key, swapchain_handle);
-			},
-		);
-
-		Some(command)
-	}
-}
-
 pub struct RenderTargets {
 	images: Vec<(ghi::ImageHandle, ghi::Formats)>,
 	/// Maps names to image indices.
@@ -659,6 +628,11 @@ impl RenderTargets {
 		}
 	}
 
+	pub fn replace(&mut self, name: &str, image: ghi::ImageHandle, format: ghi::Formats) {
+		let index = self.get_image_index(name).expect("Image not found");
+		self.images[index] = (image, format);
+	}
+
 	pub fn get_attachment_infos(&self, view: usize) -> Vec<ghi::AttachmentInformation> {
 		let result_index = self
 			.by_name
@@ -714,6 +688,14 @@ impl RenderTargets {
 	fn get_images_for_view<'a>(&'a self, index: usize) -> impl Iterator<Item = &'a ghi::ImageHandle> {
 		self.by_view_index.iter().filter_map(move |(v, (i, _))| {
 			if *v != index {
+				return None;
+			}
+
+			if self
+				.by_name
+				.iter()
+				.any(|(name, image_index)| name == "result" && *image_index == *i)
+			{
 				return None;
 			}
 

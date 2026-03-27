@@ -73,14 +73,6 @@ impl<'a> CommandBufferRecording<'a> {
 	) {
 	}
 
-	pub fn copy_to_swapchain(
-		&mut self,
-		_source_texture_handle: impl crate::graphics_hardware_interface::ImageHandleLike,
-		_present_image_index: PresentKey,
-		_swapchain_handle: SwapchainHandle,
-	) {
-	}
-
 	pub fn bind_vertex_buffers(&mut self, _buffer_descriptors: &[BufferDescriptor]) {}
 
 	pub fn bind_index_buffer(&mut self, _buffer_descriptor: &BufferDescriptor) {}

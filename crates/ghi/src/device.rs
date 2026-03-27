@@ -81,9 +81,6 @@ where
 		uses: Uses,
 	) -> SwapchainHandle;
 
-	/// Returns the swapchain image handle for rendering.
-	fn get_swapchain_image(&self, swapchain_handle: SwapchainHandle) -> ImageHandle;
-
 	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8];
 
 	/// Starts a new frame by waiting for these sequence frame's synchronizers.

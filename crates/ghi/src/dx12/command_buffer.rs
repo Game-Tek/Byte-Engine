@@ -90,15 +90,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		// TODO: DX12 blit operations need copy command lists and resource transitions.
 	}
 
-	fn copy_to_swapchain(
-		&mut self,
-		_source_texture_handle: impl crate::graphics_hardware_interface::ImageHandleLike,
-		_present_key: PresentKey,
-		_swapchain_handle: SwapchainHandle,
-	) {
-		// TODO: DX12 swapchain copy requires DXGI back buffer access and resource barriers.
-	}
-
 	fn bind_vertex_buffers(&mut self, _buffer_descriptors: &[BufferDescriptor]) {
 		// TODO: DX12 vertex buffer binding requires command list setup.
 	}

@@ -100,6 +100,9 @@ pub struct Device {
 	/// buffer every frame before GPU copies are issued.
 	pub(super) persistent_write_dynamic_buffers: Vec<graphics_hardware_interface::BaseBufferHandle>,
 
+	swapchain_native_supports_formatless_storage_write: bool,
+	swapchain_proxy_supports_formatless_storage_write: bool,
+
 	memory_properties: vk::PhysicalDeviceMemoryProperties,
 
 	/// Stores the debug names for resources.
@@ -112,6 +115,92 @@ pub struct Device {
 }
 
 impl Device {
+	fn format_supports_formatless_storage_write(
+		vk_instance: &ash::Instance,
+		physical_device: vk::PhysicalDevice,
+		format: vk::Format,
+	) -> bool {
+		let mut format_properties_3 = vk::FormatProperties3::default();
+		let mut format_properties_2 = vk::FormatProperties2::default().push_next(&mut format_properties_3);
+
+		unsafe {
+			vk_instance.get_physical_device_format_properties2(physical_device, format, &mut format_properties_2);
+		}
+
+		format_properties_3
+			.optimal_tiling_features
+			.contains(vk::FormatFeatureFlags2::STORAGE_IMAGE | vk::FormatFeatureFlags2::STORAGE_WRITE_WITHOUT_FORMAT)
+	}
+
+	fn swapchain_needs_proxy(
+		&self,
+		supported_usage_flags: vk::ImageUsageFlags,
+		requested_usage: vk::ImageUsageFlags,
+		uses: crate::Uses,
+	) -> bool {
+		!supported_usage_flags.contains(requested_usage)
+			|| (uses.contains(crate::Uses::Storage) && !self.swapchain_native_supports_formatless_storage_write)
+	}
+
+	fn validate_swapchain_proxy_format(&self, uses: crate::Uses) {
+		if uses.contains(crate::Uses::Storage) && !self.swapchain_proxy_supports_formatless_storage_write {
+			panic!(
+				"Failed to create a Vulkan swapchain proxy image. The most likely cause is that VK_FORMAT_B8G8R8A8_UNORM does not support storage image writes without format."
+			);
+		}
+	}
+
+	fn is_swapchain_image_root(&self, handle: graphics_hardware_interface::ImageHandle) -> bool {
+		self.swapchains
+			.iter()
+			.any(|swapchain| swapchain.images[0].0 == handle.0 || swapchain.native_images[0].0 == handle.0)
+	}
+
+	fn get_swapchain_image_for_sequence(
+		&self,
+		handle: graphics_hardware_interface::ImageHandle,
+		sequence_index: usize,
+	) -> Option<ImageHandle> {
+		self.swapchains.iter().find_map(|swapchain| {
+			let acquired_image_index = swapchain.acquired_image_indices[sequence_index] as usize;
+
+			if swapchain.images[0].0 == handle.0 {
+				Some(swapchain.images[acquired_image_index])
+			} else if swapchain.native_images[0].0 == handle.0 {
+				Some(swapchain.native_images[acquired_image_index])
+			} else {
+				None
+			}
+		})
+	}
+
+	fn resolve_descriptor_image_handle(
+		&self,
+		handle: graphics_hardware_interface::ImageHandle,
+		sequence_index: usize,
+		frame_offset: i32,
+	) -> ImageHandle {
+		let frame_index = (sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize;
+
+		if let Some(handle) = self.get_swapchain_image_for_sequence(handle, frame_index) {
+			return handle;
+		}
+
+		let handles = ImageHandle(handle.0).get_all(&self.images);
+		let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
+		handles[index]
+	}
+
+	fn descriptor_targets_swapchain_image(&self, descriptor: &crate::descriptors::WriteData) -> bool {
+		match descriptor {
+			crate::descriptors::WriteData::Image { handle, .. } => self.is_swapchain_image_root(*handle),
+			crate::descriptors::WriteData::CombinedImageSampler { image_handle, .. } => {
+				self.is_swapchain_image_root(*image_handle)
+			}
+			_ => false,
+		}
+	}
+
 	pub fn new(
 		settings: crate::device::Features,
 		instance: &Instance,
@@ -537,6 +626,11 @@ impl Device {
 			None
 		};
 
+		let swapchain_native_supports_formatless_storage_write =
+			Self::format_supports_formatless_storage_write(&vk_instance, physical_device, vk::Format::B8G8R8A8_SRGB);
+		let swapchain_proxy_supports_formatless_storage_write =
+			Self::format_supports_formatless_storage_write(&vk_instance, physical_device, vk::Format::B8G8R8A8_UNORM);
+
 		let frames = 2u8;
 
 		Ok(Device {
@@ -600,6 +694,8 @@ impl Device {
 			pending_image_syncs: HashSet::with_capacity(128),
 
 			persistent_write_dynamic_buffers: Vec::with_capacity(64),
+			swapchain_native_supports_formatless_storage_write,
+			swapchain_proxy_supports_formatless_storage_write,
 
 			tasks: Vec::with_capacity(1024),
 
@@ -2224,6 +2320,7 @@ impl Device {
 
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
 		let mut descriptor_writes = Vec::with_capacity(32);
+		let mut recurring_tasks = Vec::new();
 
 		let mut tasks = self.tasks.split_off(0);
 
@@ -2276,6 +2373,7 @@ impl Device {
 
 					let binding = binding_handles[(sequence_index as usize).rem_euclid(binding_handles.len())];
 					let frame_offset = descriptor_write.frame_offset.unwrap_or(0);
+					let targets_swapchain = self.descriptor_targets_swapchain_image(&descriptor_write.descriptor);
 
 					let new_descriptor_write = match descriptor_write.descriptor {
 						crate::descriptors::WriteData::Buffer { handle, size } => {
@@ -2285,9 +2383,7 @@ impl Device {
 							Some(DescriptorWrite::new(Descriptors::Buffer { handle, size }, binding))
 						}
 						crate::descriptors::WriteData::Image { handle, layout } => {
-							let handles = ImageHandle(handle.0).get_all(&self.images);
-							let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
-							let handle = handles[index];
+							let handle = self.resolve_descriptor_image_handle(handle, sequence_index as usize, frame_offset);
 							Some(DescriptorWrite::new(Descriptors::Image { handle, layout }, binding))
 						}
 						crate::descriptors::WriteData::CombinedImageSampler {
@@ -2296,9 +2392,8 @@ impl Device {
 							layout,
 							layer,
 						} => {
-							let image_handles = ImageHandle(image_handle.0).get_all(&self.images);
-							let index = (sequence_index as i32 - frame_offset).rem_euclid(image_handles.len() as i32) as usize;
-							let image_handle = image_handles[index];
+							let image_handle =
+								self.resolve_descriptor_image_handle(image_handle, sequence_index as usize, frame_offset);
 							Some(DescriptorWrite::new(
 								Descriptors::CombinedImageSampler {
 									image_handle,
@@ -2320,6 +2415,15 @@ impl Device {
 
 					if let Some(write) = new_descriptor_write {
 						descriptor_writes.push(write.index(descriptor_write.array_element));
+					}
+
+					if targets_swapchain {
+						recurring_tasks.push(Task::new(
+							Tasks::UpdateDescriptor {
+								descriptor_write: *descriptor_write,
+							},
+							Some(sequence_index),
+						));
 					}
 				}
 				Tasks::BuildImage(builder) => {
@@ -2389,6 +2493,7 @@ impl Device {
 
 		self.write_internal(descriptor_writes);
 
+		tasks.extend(recurring_tasks);
 		self.tasks = tasks;
 	}
 }
@@ -2649,14 +2754,11 @@ impl crate::device::Device for Device {
 						Some(writes)
 					}
 					crate::descriptors::WriteData::Image { handle, layout } => {
-						let image_handles = ImageHandle(handle.0).get_all(&self.images);
 						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
 						for (i, &binding_handle) in binding_handles.iter().enumerate() {
 							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-							let image_handle =
-								image_handles[(i as i32 - offset).rem_euclid(image_handles.len() as i32) as usize];
+							let image_handle = self.resolve_descriptor_image_handle(handle, i, offset);
 
 							writes.push(
 								DescriptorWrite::new(
@@ -2678,16 +2780,13 @@ impl crate::device::Device for Device {
 						layout,
 						layer,
 					} => {
-						let image_handles = ImageHandle(image_handle.0).get_all(&self.images);
 						let sampler_handle = SamplerHandle(sampler_handle.0);
 
 						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
 						for (i, &binding_handle) in binding_handles.iter().enumerate() {
 							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-							let image_handle =
-								image_handles[(i as i32 - offset).rem_euclid(image_handles.len() as i32) as usize];
+							let image_handle = self.resolve_descriptor_image_handle(image_handle, i, offset);
 
 							writes.push(
 								DescriptorWrite::new(
@@ -2979,12 +3078,15 @@ impl crate::device::Device for Device {
 		};
 
 		let format = crate::Formats::BGRAsRGB;
+		let proxy_format = crate::Formats::BGRAu8;
 
 		let requested_image_usage = into_vk_image_usage_flags(uses, format);
 		let supported_image_usage = vk_surface_capabilities.supported_usage_flags;
-		let uses_proxy_images = !supported_image_usage.contains(requested_image_usage);
+		let uses_proxy_images = self.swapchain_needs_proxy(supported_image_usage, requested_image_usage, uses);
 
 		let native_image_usage = if uses_proxy_images {
+			self.validate_swapchain_proxy_format(uses);
+
 			let fallback_usage = vk::ImageUsageFlags::TRANSFER_DST;
 
 			if !supported_image_usage.contains(fallback_usage) {
@@ -3068,7 +3170,7 @@ impl crate::device::Device for Device {
 					None,
 					previous,
 					Some("Swapchain Proxy Image"),
-					crate::Formats::BGRAu8,
+					proxy_format,
 					crate::DeviceAccesses::DeviceOnly,
 					None,
 					proxy_extent,
@@ -3107,11 +3209,14 @@ impl crate::device::Device for Device {
 			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
 			(swapchain.format, swapchain.supported_usage_flags, swapchain.extent)
 		};
+		let proxy_format = crate::Formats::BGRAu8;
 
 		let requested_usage = into_vk_image_usage_flags(uses, format);
-		let use_proxy = !supported_usage_flags.contains(requested_usage);
+		let use_proxy = self.swapchain_needs_proxy(supported_usage_flags, requested_usage, uses);
 
-		let image = if use_proxy {
+		let (image, format) = if use_proxy {
+			self.validate_swapchain_proxy_format(uses);
+
 			let proxy_uses = uses | crate::Uses::TransferSource | crate::Uses::TransferDestination;
 			let (needs_rebuild, native_images, max_image_count) = {
 				let swapchain = &self.swapchains[swapchain_handle.0 as usize];
@@ -3136,7 +3241,7 @@ impl crate::device::Device for Device {
 						None,
 						previous,
 						Some("Swapchain Proxy Image"),
-						format,
+						proxy_format,
 						crate::DeviceAccesses::DeviceOnly,
 						None,
 						extent,
@@ -3151,13 +3256,13 @@ impl crate::device::Device for Device {
 			}
 
 			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-			graphics_hardware_interface::ImageHandle(swapchain.images[0].0)
+			(graphics_hardware_interface::ImageHandle(swapchain.images[0].0), proxy_format)
 		} else {
 			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
 			swapchain.images = swapchain.native_images;
 			swapchain.uses_proxy_images = false;
 			swapchain.proxy_uses = crate::Uses::empty();
-			graphics_hardware_interface::ImageHandle(swapchain.native_images[0].0)
+			(graphics_hardware_interface::ImageHandle(swapchain.native_images[0].0), format)
 		};
 
 		(image, format)

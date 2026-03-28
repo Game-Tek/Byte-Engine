@@ -20,6 +20,7 @@ use ghi::device::{Device as _, DeviceCreate as _};
 use ghi::frame::Frame as _;
 use ghi::graphics_hardware_interface::ImageHandleLike as _;
 use ghi::implementation::Frame;
+use math::Vector2;
 use resource_management::glsl;
 use resource_management::resources::material;
 use utils::{Box, Extent, RGBA};
@@ -31,6 +32,18 @@ const GTAO_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSet
 );
 const GTAO_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+const GTAO_BLUR_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	0,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+);
+const GTAO_BLUR_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	1,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+);
+const GTAO_BLUR_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 const GTAO_PASS_SOURCE: &str = r#"
 #version 460 core
@@ -58,7 +71,7 @@ layout(set=0, binding=0, scalar) readonly buffer ViewsBuffer {
 } views_buffer;
 
 layout(set=1, binding=0) uniform sampler2D visibility_depth;
-layout(set=1, binding=1, rgba8) uniform writeonly image2D ao_output;
+layout(set=1, binding=1, r8) uniform writeonly image2D ao_output;
 
 layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
 
@@ -250,6 +263,150 @@ void main() {
 
     float ao = 1.0 - occlusion;
     imageStore(ao_output, pixel, vec4(vec3(ao), 1.0));
+}
+"#;
+
+const GTAO_BLUR_PASS_SOURCE: &str = r#"
+#version 460 core
+#pragma shader_stage(compute)
+#extension GL_EXT_scalar_block_layout: enable
+#extension GL_EXT_shader_image_load_formatted: enable
+
+layout(row_major) uniform;
+layout(row_major) buffer;
+
+struct View {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view;
+    mat4 inverse_projection;
+    mat4 inverse_view_projection;
+    vec2 fov;
+    float near;
+    float far;
+};
+
+layout(set=0, binding=0, scalar) readonly buffer ViewsBuffer {
+    View views[8];
+} views_buffer;
+
+layout(set=1, binding=0) uniform sampler2D visibility_depth;
+layout(set=1, binding=1) uniform sampler2D ao_source;
+layout(set=1, binding=2, r8) uniform writeonly image2D ao_output;
+
+layout(constant_id=0) const float BLUR_DIRECTION_X = 1.0;
+layout(constant_id=1) const float BLUR_DIRECTION_Y = 0.0;
+const vec2 BLUR_DIRECTION = vec2(BLUR_DIRECTION_X, BLUR_DIRECTION_Y);
+
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+
+const int GTAO_BLUR_RADIUS = 4;
+const float GTAO_BLUR_SPATIAL_WEIGHTS[5] = float[5](
+    0.2270270270,
+    0.1945945946,
+    0.1216216216,
+    0.0540540541,
+    0.0162162162
+);
+const float GTAO_BLUR_BASE_RELATIVE_SIGMA = 0.03;
+const float GTAO_BLUR_MIN_RELATIVE_SIGMA = 0.004;
+const float GTAO_BLUR_SIGMA_VARIANCE_SCALE = 32.0;
+const float GTAO_BLUR_VARIANCE_BLEND_SCALE = 96.0;
+
+float linear_view_depth(float depth) {
+    vec4 clip_space = vec4(0.0, 0.0, depth, 1.0);
+    vec4 view_space = views_buffer.views[0].inverse_projection * clip_space;
+    return max(view_space.z / view_space.w, 1e-4);
+}
+
+float relative_depth_delta(float center_linear_depth, float sample_depth) {
+    float sample_linear_depth = linear_view_depth(sample_depth);
+    return (sample_linear_depth - center_linear_depth) / max(center_linear_depth, 1e-4);
+}
+
+float compute_local_depth_variance(ivec2 pixel, ivec2 extent, float center_linear_depth) {
+    float mean = 0.0;
+    float mean_sq = 0.0;
+    float sample_count = 0.0;
+
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            ivec2 sample_pixel = clamp(pixel + ivec2(x, y), ivec2(0), extent - ivec2(1));
+            float sample_depth = texelFetch(visibility_depth, sample_pixel, 0).r;
+            if (sample_depth == 0.0) {
+                continue;
+            }
+
+            float delta = relative_depth_delta(center_linear_depth, sample_depth);
+            mean += delta;
+            mean_sq += delta * delta;
+            sample_count += 1.0;
+        }
+    }
+
+    if (sample_count <= 1.0) {
+        return 0.0;
+    }
+
+    mean /= sample_count;
+    mean_sq /= sample_count;
+    return max(mean_sq - mean * mean, 0.0);
+}
+
+float compute_bilateral_weight(float relative_depth_difference, float local_depth_variance) {
+    float local_depth_stddev = sqrt(local_depth_variance);
+    float sigma = max(
+        GTAO_BLUR_MIN_RELATIVE_SIGMA,
+        GTAO_BLUR_BASE_RELATIVE_SIGMA / (1.0 + local_depth_stddev * GTAO_BLUR_SIGMA_VARIANCE_SCALE)
+    );
+    return exp(-(relative_depth_difference * relative_depth_difference) / max(2.0 * sigma * sigma, 1e-6));
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 extent = imageSize(ao_output);
+
+    if (pixel.x >= extent.x || pixel.y >= extent.y) {
+        return;
+    }
+
+    float center_depth = texelFetch(visibility_depth, pixel, 0).r;
+    if (center_depth == 0.0) {
+        imageStore(ao_output, pixel, vec4(1.0));
+        return;
+    }
+
+    float center_ao = texelFetch(ao_source, pixel, 0).r;
+    float center_linear_depth = linear_view_depth(center_depth);
+    float local_depth_variance = compute_local_depth_variance(pixel, extent, center_linear_depth);
+    float local_depth_stddev = sqrt(local_depth_variance);
+    float blur_mix = 1.0 / (1.0 + local_depth_stddev * GTAO_BLUR_VARIANCE_BLEND_SCALE);
+
+    float filtered_ao = center_ao * GTAO_BLUR_SPATIAL_WEIGHTS[0];
+    float total_weight = GTAO_BLUR_SPATIAL_WEIGHTS[0];
+
+    for (int offset = 1; offset <= GTAO_BLUR_RADIUS; ++offset) {
+        float spatial_weight = GTAO_BLUR_SPATIAL_WEIGHTS[offset];
+
+        for (int sign = -1; sign <= 1; sign += 2) {
+            ivec2 sample_offset = ivec2(BLUR_DIRECTION * float(offset * sign));
+            ivec2 sample_pixel = clamp(pixel + sample_offset, ivec2(0), extent - ivec2(1));
+            float sample_depth = texelFetch(visibility_depth, sample_pixel, 0).r;
+            if (sample_depth == 0.0) {
+                continue;
+            }
+
+            float relative_depth_difference = abs(relative_depth_delta(center_linear_depth, sample_depth));
+            float weight = spatial_weight * compute_bilateral_weight(relative_depth_difference, local_depth_variance);
+            filtered_ao += texelFetch(ao_source, sample_pixel, 0).r * weight;
+            total_weight += weight;
+        }
+    }
+
+    float blurred_ao = filtered_ao / max(total_weight, 1e-5);
+    float final_ao = mix(center_ao, blurred_ao, blur_mix);
+    imageStore(ao_output, pixel, vec4(final_ao, 0.0, 0.0, 1.0));
 }
 "#;
 
@@ -731,9 +888,14 @@ impl PixelMappingPass {
 /// The `GtaoPass` struct builds a depth-based ambient occlusion term before material evaluation shades the frame.
 pub struct GtaoPass {
 	base_descriptor_set: ghi::DescriptorSetHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
-	pipeline: ghi::PipelineHandle,
+	gtao_descriptor_set: ghi::DescriptorSetHandle,
+	blur_descriptor_set_x: ghi::DescriptorSetHandle,
+	blur_descriptor_set_y: ghi::DescriptorSetHandle,
+	gtao_pipeline: ghi::PipelineHandle,
+	blur_pipeline_x: ghi::PipelineHandle,
+	blur_pipeline_y: ghi::PipelineHandle,
 	ao_map: ghi::DynamicImageHandle,
+	temp_ao_map: ghi::DynamicImageHandle,
 }
 
 impl GtaoPass {
@@ -746,7 +908,15 @@ impl GtaoPass {
 	) -> Self {
 		let descriptor_set_layout =
 			device.create_descriptor_set_template(Some("GTAO Descriptor Set"), &[GTAO_DEPTH_BINDING, GTAO_OUTPUT_BINDING]);
-		let descriptor_set = device.create_descriptor_set(Some("GTAO Descriptor Set"), &descriptor_set_layout);
+		let gtao_descriptor_set = device.create_descriptor_set(Some("GTAO Descriptor Set"), &descriptor_set_layout);
+		let blur_descriptor_set_layout = device.create_descriptor_set_template(
+			Some("GTAO Blur Descriptor Set"),
+			&[GTAO_BLUR_DEPTH_BINDING, GTAO_BLUR_SOURCE_BINDING, GTAO_BLUR_OUTPUT_BINDING],
+		);
+		let blur_descriptor_set_x =
+			device.create_descriptor_set(Some("GTAO Blur X Descriptor Set"), &blur_descriptor_set_layout);
+		let blur_descriptor_set_y =
+			device.create_descriptor_set(Some("GTAO Blur Y Descriptor Set"), &blur_descriptor_set_layout);
 		let depth_sampler = device.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
@@ -756,15 +926,75 @@ impl GtaoPass {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
+		let ao_sampler = device.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Closest)
+				.mip_map_mode(ghi::FilteringModes::Closest)
+				.addressing_mode(ghi::SamplerAddressingModes::Border {})
+				.min_lod(0f32)
+				.max_lod(0f32),
+		);
+		let temp_ao_map = device.build_dynamic_image(
+			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
+				.name("GTAO Blur Intermediate")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+		);
 
 		let _ = device.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(&GTAO_DEPTH_BINDING, depth, depth_sampler, ghi::Layouts::Read),
+			gtao_descriptor_set,
+			ghi::BindingConstructor::combined_image_sampler(
+				&GTAO_DEPTH_BINDING,
+				depth,
+				depth_sampler.clone(),
+				ghi::Layouts::Read,
+			),
 		);
-		let _ = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&GTAO_OUTPUT_BINDING, ao_map));
+		let _ = device.create_descriptor_binding(
+			gtao_descriptor_set,
+			ghi::BindingConstructor::image(&GTAO_OUTPUT_BINDING, ao_map),
+		);
+		let _ = device.create_descriptor_binding(
+			blur_descriptor_set_x,
+			ghi::BindingConstructor::combined_image_sampler(
+				&GTAO_BLUR_DEPTH_BINDING,
+				depth,
+				depth_sampler.clone(),
+				ghi::Layouts::Read,
+			),
+		);
+		let _ = device.create_descriptor_binding(
+			blur_descriptor_set_x,
+			ghi::BindingConstructor::combined_image_sampler(
+				&GTAO_BLUR_SOURCE_BINDING,
+				ao_map,
+				ao_sampler.clone(),
+				ghi::Layouts::Read,
+			),
+		);
+		let _ = device.create_descriptor_binding(
+			blur_descriptor_set_x,
+			ghi::BindingConstructor::image(&GTAO_BLUR_OUTPUT_BINDING, temp_ao_map),
+		);
+		let _ = device.create_descriptor_binding(
+			blur_descriptor_set_y,
+			ghi::BindingConstructor::combined_image_sampler(&GTAO_BLUR_DEPTH_BINDING, depth, depth_sampler, ghi::Layouts::Read),
+		);
+		let _ = device.create_descriptor_binding(
+			blur_descriptor_set_y,
+			ghi::BindingConstructor::combined_image_sampler(
+				&GTAO_BLUR_SOURCE_BINDING,
+				temp_ao_map,
+				ao_sampler,
+				ghi::Layouts::Read,
+			),
+		);
+		let _ = device.create_descriptor_binding(
+			blur_descriptor_set_y,
+			ghi::BindingConstructor::image(&GTAO_BLUR_OUTPUT_BINDING, ao_map),
+		);
 
 		let shader_artifact = glsl::compile(GTAO_PASS_SOURCE, "GTAO Pass Compute Shader").unwrap();
-		let shader = device
+		let gtao_shader = device
 			.create_shader(
 				Some("GTAO Pass Compute Shader"),
 				ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
@@ -777,36 +1007,91 @@ impl GtaoPass {
 			)
 			.expect("Failed to create shader");
 
-		let pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let gtao_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, descriptor_set_layout],
 			&[],
-			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
+			ghi::ShaderParameter::new(&gtao_shader, ghi::ShaderTypes::Compute),
+		));
+
+		let blur_shader_artifact = glsl::compile(GTAO_BLUR_PASS_SOURCE, "GTAO Blur Compute Shader").unwrap();
+		let blur_shader = device
+			.create_shader(
+				Some("GTAO Blur Compute Shader"),
+				ghi::shader::Sources::SPIRV(blur_shader_artifact.borrow().into()),
+				ghi::ShaderTypes::Compute,
+				[
+					VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					GTAO_BLUR_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+					GTAO_BLUR_SOURCE_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+					GTAO_BLUR_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+				],
+			)
+			.expect("Failed to create shader");
+
+		let blur_pipeline_x = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[base_descriptor_set_layout, blur_descriptor_set_layout],
+			&[],
+			ghi::ShaderParameter::new(&blur_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
+				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(1.0f32, 0.0f32)),
+			]),
+		));
+		let blur_pipeline_y = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[base_descriptor_set_layout, blur_descriptor_set_layout],
+			&[],
+			ghi::ShaderParameter::new(&blur_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
+				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(0.0f32, 1.0f32)),
+			]),
 		));
 
 		Self {
 			base_descriptor_set,
-			descriptor_set,
-			pipeline,
+			gtao_descriptor_set,
+			blur_descriptor_set_x,
+			blur_descriptor_set_y,
+			gtao_pipeline,
+			blur_pipeline_x,
+			blur_pipeline_y,
 			ao_map,
+			temp_ao_map,
 		}
 	}
 
 	fn prepare(&self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> impl RenderPassFunction {
 		let base_descriptor_set = self.base_descriptor_set;
-		let descriptor_set = self.descriptor_set;
-		let pipeline = self.pipeline;
+		let gtao_descriptor_set = self.gtao_descriptor_set;
+		let blur_descriptor_set_x = self.blur_descriptor_set_x;
+		let blur_descriptor_set_y = self.blur_descriptor_set_y;
+		let gtao_pipeline = self.gtao_pipeline;
+		let blur_pipeline_x = self.blur_pipeline_x;
+		let blur_pipeline_y = self.blur_pipeline_y;
 		let ao_map = self.ao_map;
+		let temp_ao_map = self.temp_ao_map;
 		let extent = viewport.extent();
 
 		frame.resize_image(ao_map, extent);
+		frame.resize_image(temp_ao_map, extent);
 
 		move |c, _| {
 			c.start_region("GTAO");
 			c.clear_images(&[(ao_map.into_image_handle(), ghi::ClearValue::Color(RGBA::white()))]);
 
-			let c = c.bind_compute_pipeline(pipeline);
-			c.bind_descriptor_sets(&[base_descriptor_set, descriptor_set]);
-			c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
+			{
+				let c = c.bind_compute_pipeline(gtao_pipeline);
+				c.bind_descriptor_sets(&[base_descriptor_set, gtao_descriptor_set]);
+				c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
+			}
+
+			{
+				let c = c.bind_compute_pipeline(blur_pipeline_x);
+				c.bind_descriptor_sets(&[base_descriptor_set, blur_descriptor_set_x]);
+				c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
+			}
+
+			{
+				let c = c.bind_compute_pipeline(blur_pipeline_y);
+				c.bind_descriptor_sets(&[base_descriptor_set, blur_descriptor_set_y]);
+				c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
+			}
 
 			c.end_region();
 		}
@@ -1045,6 +1330,11 @@ mod tests {
 	#[test]
 	fn gtao_shader_compiles() {
 		resource_management::glsl::compile(super::GTAO_PASS_SOURCE, "GTAO Pass Compute Shader").unwrap();
+	}
+
+	#[test]
+	fn gtao_blur_shader_compiles() {
+		resource_management::glsl::compile(super::GTAO_BLUR_PASS_SOURCE, "GTAO Blur Compute Shader").unwrap();
 	}
 
 	#[test]

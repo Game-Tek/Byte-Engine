@@ -90,14 +90,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		// TODO: DX12 blit operations need copy command lists and resource transitions.
 	}
 
-	fn bind_vertex_buffers(&mut self, _buffer_descriptors: &[BufferDescriptor]) {
-		// TODO: DX12 vertex buffer binding requires command list setup.
-	}
-
-	fn bind_index_buffer(&mut self, _buffer_descriptor: &BufferDescriptor) {
-		// TODO: DX12 index buffer binding requires command list setup.
-	}
-
 	fn execute(self, _synchronizer: SynchronizerHandle) {
 		// TODO: Submit DX12 command lists and signal the provided synchronizer.
 	}
@@ -140,6 +132,14 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 		self.bound_pipeline = Some(pipeline_handle);
 		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
 		self
+	}
+
+	fn bind_vertex_buffers(&mut self, _buffer_descriptors: &[BufferDescriptor]) {
+		// TODO: DX12 vertex buffer binding requires command list setup.
+	}
+
+	fn bind_index_buffer(&mut self, _buffer_descriptor: &BufferDescriptor) {
+		// TODO: DX12 index buffer binding requires command list setup.
 	}
 
 	fn end_render_pass(&mut self) {

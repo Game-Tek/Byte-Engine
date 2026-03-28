@@ -64,7 +64,7 @@ pub struct Device {
 	pub(crate) pipelines: Vec<Pipeline>,
 	shaders: Vec<Shader>,
 	meshes: Vec<Mesh>,
-	swapchains: Vec<Swapchain>,
+	pub(crate) swapchains: Vec<Swapchain>,
 	synchronizers: Vec<Synchronizer>,
 	top_level_acceleration_structures: Vec<()>,
 	bottom_level_acceleration_structures: Vec<()>,
@@ -172,7 +172,7 @@ struct Mesh {
 	indices: Vec<u8>,
 }
 
-struct Swapchain {
+pub(crate) struct Swapchain {
 	handles: window::Handles,
 	swapchain: IDXGISwapChain3,
 	extent: Extent,
@@ -181,7 +181,7 @@ struct Swapchain {
 	present_mode: PresentationModes,
 	images: [Option<ImageHandle>; 8],
 	proxy_uses: [Uses; 8],
-	acquired_image_indices: [u8; 8],
+	pub(crate) acquired_image_indices: [u8; 8],
 }
 
 struct Synchronizer {

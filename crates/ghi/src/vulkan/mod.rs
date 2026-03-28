@@ -3,10 +3,14 @@ use std::sync::atomic::AtomicU64;
 use ::utils::hash::HashMap;
 use ::utils::Extent;
 use ash::vk;
-use smallvec::SmallVec;
 
+use crate::binding::DescriptorSetBindingHandle;
+use crate::buffer::BufferHandle;
+use crate::descriptors::DescriptorSetHandle;
 use crate::graphics_hardware_interface;
-use crate::vulkan::sampler::SamplerHandle;
+use crate::image::ImageHandle;
+use crate::sampler::SamplerHandle;
+use crate::PrivateHandles;
 
 pub mod binding;
 pub mod buffer;
@@ -56,19 +60,9 @@ pub(super) struct TopLevelAccelerationStructureHandle(pub(super) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Handle {
-	Image(ImageHandle),
-	Buffer(BufferHandle),
-	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
-	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
-	VkBuffer(vk::Buffer),
-	Synchronizer(SynchronizerHandle),
-}
-
 #[derive(Clone, PartialEq)]
 pub(super) struct Consumption {
-	pub(super) handle: Handle,
+	pub(super) handle: PrivateHandles,
 	pub(super) stages: crate::Stages,
 	pub(super) access: crate::AccessPolicies,
 	pub(super) layout: crate::Layouts,
@@ -76,7 +70,7 @@ pub(super) struct Consumption {
 
 #[derive(Clone, PartialEq)]
 pub(super) struct VulkanConsumption {
-	pub(super) handle: Handle,
+	pub(super) handle: PrivateHandles,
 	pub(super) stages: vk::PipelineStageFlags2,
 	pub(super) access: vk::AccessFlags2,
 	pub(super) layout: vk::ImageLayout,
@@ -311,57 +305,6 @@ impl DescriptorWrite {
 		self.array_element = index;
 		self
 	}
-}
-
-pub(crate) trait HandleLike
-where
-	Self: Sized,
-	Self: PartialEq<Self>,
-	Self: Clone,
-	Self: Copy,
-{
-	type Item: Next<Handle = Self>;
-
-	fn build(value: u64) -> Self;
-
-	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Self::Item;
-
-	fn root(&self, collection: &[Self::Item]) -> Self {
-		let handle_option = Some(*self);
-
-		return if let Some(e) = collection
-			.iter()
-			.enumerate()
-			.find(|(_, e)| e.next() == handle_option)
-			.map(|(i, _)| Self::build(i as u64))
-		{
-			e.root(collection)
-		} else {
-			handle_option.unwrap()
-		};
-	}
-
-	fn get_all(&self, collection: &[Self::Item]) -> SmallVec<[Self; MAX_FRAMES_IN_FLIGHT]> {
-		let mut handles = SmallVec::new();
-		let mut handle_option = Some(*self);
-
-		while let Some(handle) = handle_option {
-			let binding = handle.access(collection);
-			handles.push(handle);
-			handle_option = binding.next();
-		}
-
-		handles
-	}
-}
-
-pub(crate) trait Next
-where
-	Self: Sized,
-{
-	type Handle: HandleLike<Item = Self>;
-
-	fn next(&self) -> Option<Self::Handle>;
 }
 
 #[cfg(test)]

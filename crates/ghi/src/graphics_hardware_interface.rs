@@ -20,13 +20,23 @@ pub struct QueueHandle(pub(crate) u64);
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord)]
 pub struct BaseBufferHandle(pub(super) u64);
 
+impl MasterHandle for BaseBufferHandle {
+	fn new(i: u64) -> Self {
+		BaseBufferHandle(i)
+	}
+
+	fn index(&self) -> u64 {
+		self.0
+	}
+}
+
 /// The `BufferHandle` allows addressing a buffer static buffer with a specific underlying type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
-pub struct BufferHandle<T>(pub(super) u64, pub(super) std::marker::PhantomData<T>);
+pub struct BufferHandle<T>(pub(super) BaseBufferHandle, pub(super) std::marker::PhantomData<T>);
 
 /// The `DynamicBufferHandle` allows addressing a dynamic buffer with a specific underlying type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
-pub struct DynamicBufferHandle<T>(pub(super) u64, pub(super) std::marker::PhantomData<T>);
+pub struct DynamicBufferHandle<T>(pub(super) BaseBufferHandle, pub(super) std::marker::PhantomData<T>);
 
 /// The `DynamicImageHandle` struct addresses a frame-local image that can be written independently for each frame in flight.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
@@ -90,13 +100,13 @@ pub struct TextureCopyHandle(pub(crate) u64);
 
 impl<T: Copy> Into<BaseBufferHandle> for BufferHandle<T> {
 	fn into(self) -> BaseBufferHandle {
-		BaseBufferHandle(self.0)
+		self.0
 	}
 }
 
 impl<T: Copy> Into<BaseBufferHandle> for DynamicBufferHandle<T> {
 	fn into(self) -> BaseBufferHandle {
-		BaseBufferHandle(self.0)
+		self.0
 	}
 }
 
@@ -112,16 +122,15 @@ impl ImageHandleLike for DynamicImageHandle {
 	}
 }
 
-impl Into<Handle> for DynamicImageHandle {
-	fn into(self) -> Handle {
+impl Into<Handles> for DynamicImageHandle {
+	fn into(self) -> Handles {
 		self.into_image_handle().into()
 	}
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Handle {
+pub enum Handles {
 	Buffer(BaseBufferHandle),
-	// AccelerationStructure(AccelerationStructureHandle),
 	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
 	CommandBuffer(CommandBufferHandle),
 	Shader(ShaderHandle),
@@ -139,29 +148,49 @@ pub enum Handle {
 	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
-impl Into<Handle> for BaseBufferHandle {
-	fn into(self) -> Handle {
-		Handle::Buffer(self)
+impl Into<Handles> for BaseBufferHandle {
+	fn into(self) -> Handles {
+		Handles::Buffer(self)
 	}
 }
 
-impl Into<Handle> for ImageHandle {
-	fn into(self) -> Handle {
-		Handle::Image(self)
+impl Into<Handles> for ImageHandle {
+	fn into(self) -> Handles {
+		Handles::Image(self)
 	}
 }
 
-impl Into<Handle> for SynchronizerHandle {
-	fn into(self) -> Handle {
-		Handle::Synchronizer(self)
+impl Into<Handles> for SynchronizerHandle {
+	fn into(self) -> Handles {
+		Handles::Synchronizer(self)
 	}
+}
+
+pub(crate) trait MasterHandle: Sized + Copy {
+	fn new(i: u64) -> Self;
+	fn index(&self) -> u64;
+}
+
+impl<T: Copy> MasterHandle for BufferHandle<T> {
+	fn new(i: u64) -> Self {
+		Self(BaseBufferHandle(i), std::marker::PhantomData)
+	}
+
+	fn index(&self) -> u64 {
+		self.0 .0
+	}
+}
+
+pub(crate) trait PrivateHandle: Copy {
+	fn new(i: u64) -> Self;
+	fn index(&self) -> u64;
 }
 
 // HANDLES
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Consumption {
-	pub handle: Handle,
+	pub handle: Handles,
 	pub stages: Stages,
 	pub access: AccessPolicies,
 	pub layout: Layouts,

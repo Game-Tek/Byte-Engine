@@ -13,7 +13,6 @@ use ghi::{
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
 	queue::Queue as _,
-	vulkan::command_buffer,
 };
 use math::direction_from_orientation;
 use resource_management::resource::resource_manager::ResourceManager;

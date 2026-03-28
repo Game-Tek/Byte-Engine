@@ -11,14 +11,13 @@ use objc2_app_kit::NSView;
 use objc2_foundation::NSSize;
 use objc2_metal as mtl;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
-use smallvec::SmallVec;
 
-use self::binding::DescriptorSetBindingHandle;
-use self::buffer::BufferHandle;
-use self::image::ImageHandle;
-use self::sampler::SamplerHandle;
-use self::synchronizer::SynchronizerHandle;
+use crate::binding::DescriptorSetBindingHandle;
+use crate::buffer::BufferHandle;
 use crate::graphics_hardware_interface;
+use crate::image::ImageHandle;
+use crate::sampler::SamplerHandle;
+use crate::PrivateHandles;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum Descriptor {
@@ -41,11 +40,11 @@ pub(super) enum Descriptor {
 }
 
 impl Descriptor {
-	pub(super) fn tracked_resource(self) -> Option<Handle> {
+	pub(super) fn tracked_resource(self) -> Option<PrivateHandles> {
 		match self {
-			Descriptor::Buffer { buffer, .. } => Some(Handle::Buffer(buffer)),
-			Descriptor::Image { image, .. } => Some(Handle::Image(image)),
-			Descriptor::CombinedImageSampler { image, .. } => Some(Handle::Image(image)),
+			Descriptor::Buffer { buffer, .. } => Some(PrivateHandles::Buffer(buffer)),
+			Descriptor::Image { image, .. } => Some(PrivateHandles::Image(image)),
+			Descriptor::CombinedImageSampler { image, .. } => Some(PrivateHandles::Image(image)),
 			Descriptor::Sampler { .. } => None,
 		}
 	}
@@ -57,18 +56,9 @@ pub(super) struct TopLevelAccelerationStructureHandle(pub(super) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum Handle {
-	Image(ImageHandle),
-	Buffer(BufferHandle),
-	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
-	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
-	Synchronizer(SynchronizerHandle),
-}
-
 #[derive(Clone, PartialEq)]
 pub(super) struct Consumption {
-	pub(super) handle: Handle,
+	pub(super) handle: PrivateHandles,
 	pub(super) stages: crate::Stages,
 	pub(super) access: crate::AccessPolicies,
 	pub(super) layout: crate::Layouts,
@@ -76,7 +66,7 @@ pub(super) struct Consumption {
 
 #[derive(Clone, PartialEq)]
 pub(super) struct MetalConsumption {
-	pub(super) handle: Handle,
+	pub(super) handle: PrivateHandles,
 	pub(super) stages: crate::Stages,
 	pub(super) access: crate::AccessPolicies,
 	pub(super) layout: crate::Layouts,
@@ -449,57 +439,6 @@ impl DescriptorWrite {
 	}
 }
 
-pub(crate) trait HandleLike
-where
-	Self: Sized,
-	Self: PartialEq<Self>,
-	Self: Clone,
-	Self: Copy,
-{
-	type Item: Next<Handle = Self>;
-
-	fn build(value: u64) -> Self;
-
-	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Self::Item;
-
-	fn root(&self, collection: &[Self::Item]) -> Self {
-		let handle_option = Some(*self);
-
-		if let Some(e) = collection
-			.iter()
-			.enumerate()
-			.find(|(_, e)| e.next() == handle_option)
-			.map(|(i, _)| Self::build(i as u64))
-		{
-			e.root(collection)
-		} else {
-			handle_option.unwrap()
-		}
-	}
-
-	fn get_all(&self, collection: &[Self::Item]) -> SmallVec<[Self; MAX_FRAMES_IN_FLIGHT]> {
-		let mut handles = SmallVec::new();
-		let mut handle_option = Some(*self);
-
-		while let Some(handle) = handle_option {
-			let binding = handle.access(collection);
-			handles.push(handle);
-			handle_option = binding.next();
-		}
-
-		handles
-	}
-}
-
-pub(crate) trait Next
-where
-	Self: Sized,
-{
-	type Handle: HandleLike<Item = Self>;
-
-	fn next(&self) -> Option<Self::Handle>;
-}
-
 mod utils {
 	use objc2_metal as mtl;
 
@@ -770,7 +709,6 @@ pub mod buffer {
 
 	#[derive(Clone)]
 	pub(crate) struct Buffer {
-		pub(crate) next: Option<BufferHandle>,
 		pub(crate) staging: Option<BufferHandle>,
 		pub(crate) buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
 		pub(crate) size: usize,
@@ -778,35 +716,6 @@ pub mod buffer {
 		pub(crate) pointer: *mut u8,
 		pub(crate) uses: Uses,
 		pub(crate) access: DeviceAccesses,
-	}
-
-	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-	pub(crate) struct BufferHandle(pub(crate) u64);
-
-	impl Into<Handle> for BufferHandle {
-		fn into(self) -> Handle {
-			Handle::Buffer(self)
-		}
-	}
-
-	impl HandleLike for BufferHandle {
-		type Item = Buffer;
-
-		fn build(value: u64) -> Self {
-			BufferHandle(value)
-		}
-
-		fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Buffer {
-			&collection[self.0 as usize]
-		}
-	}
-
-	impl Next for Buffer {
-		type Handle = BufferHandle;
-
-		fn next(&self) -> Option<Self::Handle> {
-			self.next
-		}
 	}
 }
 
@@ -825,35 +734,6 @@ pub mod image {
 		pub(crate) array_layers: u32,
 		pub(crate) staging: Option<Vec<u8>>,
 	}
-
-	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-	pub(crate) struct ImageHandle(pub(crate) u64);
-
-	impl Into<Handle> for ImageHandle {
-		fn into(self) -> Handle {
-			Handle::Image(self)
-		}
-	}
-
-	impl HandleLike for ImageHandle {
-		type Item = Image;
-
-		fn build(value: u64) -> Self {
-			ImageHandle(value)
-		}
-
-		fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Image {
-			&collection[self.0 as usize]
-		}
-	}
-
-	impl Next for Image {
-		type Handle = ImageHandle;
-
-		fn next(&self) -> Option<Self::Handle> {
-			self.next
-		}
-	}
 }
 
 pub mod sampler {
@@ -863,32 +743,11 @@ pub mod sampler {
 	pub(crate) struct Sampler {
 		pub(crate) sampler: Retained<ProtocolObject<dyn mtl::MTLSamplerState>>,
 	}
-
-	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-	pub(crate) struct SamplerHandle(pub(crate) u64);
-
-	impl HandleLike for SamplerHandle {
-		type Item = Sampler;
-
-		fn build(value: u64) -> Self {
-			SamplerHandle(value)
-		}
-
-		fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Sampler {
-			&collection[self.0 as usize]
-		}
-	}
-
-	impl Next for Sampler {
-		type Handle = SamplerHandle;
-
-		fn next(&self) -> Option<Self::Handle> {
-			None
-		}
-	}
 }
 
 pub mod descriptor_set {
+	use crate::descriptors::DescriptorSetHandle;
+
 	use super::*;
 
 	#[derive(Clone)]
@@ -897,32 +756,11 @@ pub mod descriptor_set {
 		pub descriptor_set_layout: graphics_hardware_interface::DescriptorSetTemplateHandle,
 		pub frames: Vec<DescriptorSetFrameState>,
 	}
-
-	impl Next for DescriptorSet {
-		type Handle = DescriptorSetHandle;
-
-		fn next(&self) -> Option<DescriptorSetHandle> {
-			self.next
-		}
-	}
-
-	#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-	pub(crate) struct DescriptorSetHandle(pub u64);
-
-	impl HandleLike for DescriptorSetHandle {
-		type Item = DescriptorSet;
-
-		fn build(value: u64) -> Self {
-			DescriptorSetHandle(value)
-		}
-
-		fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a DescriptorSet {
-			&collection[self.0 as usize]
-		}
-	}
 }
 
 pub mod binding {
+	use crate::descriptors::DescriptorSetHandle;
+
 	use super::*;
 
 	#[derive(Clone)]
@@ -933,71 +771,21 @@ pub mod binding {
 		pub index: u32,
 		pub count: u32,
 	}
-
-	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-	pub struct DescriptorSetBindingHandle(pub u64);
-
-	impl HandleLike for DescriptorSetBindingHandle {
-		type Item = Binding;
-
-		fn build(value: u64) -> Self {
-			DescriptorSetBindingHandle(value)
-		}
-
-		fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Binding {
-			&collection[self.0 as usize]
-		}
-	}
-
-	impl Next for Binding {
-		type Handle = DescriptorSetBindingHandle;
-
-		fn next(&self) -> Option<Self::Handle> {
-			self.next
-		}
-	}
 }
 
 pub mod synchronizer {
-	use super::*;
+	use crate::synchronizer::SynchronizerHandle;
 
 	#[derive(Clone)]
 	pub(crate) struct Synchronizer {
 		pub next: Option<SynchronizerHandle>,
 		pub signaled: bool,
 	}
-
-	#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-	pub(crate) struct SynchronizerHandle(pub(crate) u64);
-
-	impl Into<Handle> for SynchronizerHandle {
-		fn into(self) -> Handle {
-			Handle::Synchronizer(self)
-		}
-	}
-
-	impl HandleLike for SynchronizerHandle {
-		type Item = Synchronizer;
-
-		fn build(value: u64) -> Self {
-			SynchronizerHandle(value)
-		}
-
-		fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Synchronizer {
-			&collection[self.0 as usize]
-		}
-	}
-
-	impl Next for Synchronizer {
-		type Handle = SynchronizerHandle;
-
-		fn next(&self) -> Option<SynchronizerHandle> {
-			self.next
-		}
-	}
 }
 
 pub mod swapchain {
+	use crate::image::ImageHandle;
+
 	use super::*;
 
 	#[derive(Clone)]
@@ -1005,7 +793,7 @@ pub mod swapchain {
 		pub layer: Retained<CAMetalLayer>,
 		pub view: Retained<NSView>,
 		pub drawables: [Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>; MAX_SWAPCHAIN_IMAGES],
-		pub images: [Option<image::ImageHandle>; MAX_SWAPCHAIN_IMAGES],
+		pub images: [Option<ImageHandle>; MAX_SWAPCHAIN_IMAGES],
 		pub proxy_uses: [crate::Uses; MAX_SWAPCHAIN_IMAGES],
 		pub acquired_image_indices: [u8; MAX_FRAMES_IN_FLIGHT],
 		pub extent: Extent,
@@ -1048,8 +836,10 @@ pub mod device;
 pub mod frame;
 pub mod instance;
 
+pub use self::binding::*;
 pub use self::command_buffer::*;
 pub(crate) use self::descriptor_set::*;
 pub use self::device::*;
 pub use self::frame::*;
 pub use self::instance::*;
+pub use self::synchronizer::*;

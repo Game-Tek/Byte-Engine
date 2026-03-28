@@ -1,3 +1,5 @@
+use crate::buffer::BufferHandle;
+
 pub struct StableVec<T: Default, const N: usize> {
 	data: [T; N],
 	pos: usize,

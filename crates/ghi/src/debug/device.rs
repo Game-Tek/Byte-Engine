@@ -100,11 +100,11 @@ impl Device {
 	}
 
 	pub fn build_buffer<T: Copy>(&mut self, _builder: buffer::Builder) -> BufferHandle<T> {
-		BufferHandle(0, std::marker::PhantomData)
+		todo!()
 	}
 
 	pub fn build_dynamic_buffer<T: Copy>(&mut self, _builder: buffer::Builder) -> DynamicBufferHandle<T> {
-		DynamicBufferHandle(0, std::marker::PhantomData)
+		todo!()
 	}
 
 	pub fn build_dynamic_image(&mut self, _builder: image::Builder) -> crate::DynamicImageHandle {

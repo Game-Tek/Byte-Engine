@@ -7,9 +7,13 @@ use objc2_metal::{
 };
 
 use super::*;
-use crate::command_buffer::{
-	BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
-	CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
+use crate::{
+	command_buffer::{
+		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
+		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
+	},
+	descriptors::DescriptorSetHandle,
+	HandleLike as _, PrivateHandles,
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
@@ -21,11 +25,11 @@ pub struct CommandBufferRecording<'a> {
 	sequence_index: u8,
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	present_drawables: Vec<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
-	states: HashMap<Handle, TransitionState>,
+	states: HashMap<PrivateHandles, TransitionState>,
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	bound_descriptor_set_handles: Vec<(u32, descriptor_set::DescriptorSetHandle)>,
+	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
 	bound_vertex_buffers: Vec<(graphics_hardware_interface::BaseBufferHandle, usize)>,
 	bound_vertex_layout: Option<VertexLayoutHandle>,
 	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
@@ -38,7 +42,7 @@ pub struct FinishedCommandBuffer<'a> {
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	pub(crate) command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	pub(crate) present_drawables: Vec<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
-	pub(crate) states: HashMap<Handle, TransitionState>,
+	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
 	pub(crate) present_keys: &'a [graphics_hardware_interface::PresentKey],
 }
 
@@ -86,12 +90,11 @@ impl<'a> CommandBufferRecording<'a> {
 		self.active_compute_encoder.as_ref().unwrap()
 	}
 
-	fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> buffer::BufferHandle {
-		let handles = buffer::BufferHandle(handle.0).get_all(&self.device.buffers);
-		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
+	fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
+		self.device.buffers.nth_handle(handle, self.sequence_index as _).unwrap()
 	}
 
-	fn get_internal_image_handle(&self, handle: graphics_hardware_interface::ImageHandle) -> image::ImageHandle {
+	fn get_internal_image_handle(&self, handle: graphics_hardware_interface::ImageHandle) -> ImageHandle {
 		if let Some(swapchain) = self
 			.device
 			.swapchains
@@ -103,7 +106,7 @@ impl<'a> CommandBufferRecording<'a> {
 			);
 		}
 
-		let handles = image::ImageHandle(handle.0).get_all(&self.device.images);
+		let handles = ImageHandle(handle.0).get_all(&self.device.images);
 		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
 	}
 
@@ -170,7 +173,7 @@ impl<'a> CommandBufferRecording<'a> {
 		};
 
 		for (binding, (buffer_handle, offset)) in self.bound_vertex_buffers.iter().copied().enumerate() {
-			let buffer = &self.device.buffers[self.get_internal_buffer_handle(buffer_handle).0 as usize];
+			let buffer = &self.device.buffers.resource(self.get_internal_buffer_handle(buffer_handle));
 			unsafe {
 				encoder.setVertexBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), offset as _, binding as _);
 			}
@@ -277,7 +280,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let consumptions = attachments
 			.iter()
 			.map(|attachment| Consumption {
-				handle: Handle::Image(self.get_internal_image_handle(attachment.image)),
+				handle: PrivateHandles::Image(self.get_internal_image_handle(attachment.image)),
 				stages: crate::Stages::FRAGMENT,
 				access: if attachment.load {
 					crate::AccessPolicies::READ_WRITE
@@ -349,7 +352,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let consumptions = textures
 			.iter()
 			.map(|(handle, _)| Consumption {
-				handle: Handle::Image(self.get_internal_image_handle((*handle).into_image_handle())),
+				handle: PrivateHandles::Image(self.get_internal_image_handle((*handle).into_image_handle())),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
@@ -364,7 +367,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let consumptions = buffer_handles
 			.iter()
 			.map(|buffer_handle| Consumption {
-				handle: Handle::Buffer(self.get_internal_buffer_handle(*buffer_handle)),
+				handle: PrivateHandles::Buffer(self.get_internal_buffer_handle(*buffer_handle)),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
@@ -382,7 +385,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let consumptions = texture_handles
 			.iter()
 			.map(|handle| Consumption {
-				handle: Handle::Image(self.get_internal_image_handle((*handle).into_image_handle())),
+				handle: PrivateHandles::Image(self.get_internal_image_handle((*handle).into_image_handle())),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Transfer,
@@ -406,7 +409,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	) {
 		let image_handle = self.get_internal_image_handle(image_handle.into_image_handle());
 		self.consume_resources([Consumption {
-			handle: Handle::Image(image_handle),
+			handle: PrivateHandles::Image(image_handle),
 			stages: crate::Stages::TRANSFER,
 			access: crate::AccessPolicies::WRITE,
 			layout: crate::Layouts::Transfer,
@@ -449,7 +452,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		self.consume_resources([Consumption {
-			handle: Handle::Image(image_handle),
+			handle: PrivateHandles::Image(image_handle),
 			stages: crate::Stages::FRAGMENT,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Read,
@@ -465,13 +468,13 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	) {
 		self.consume_resources([
 			Consumption {
-				handle: Handle::Image(self.get_internal_image_handle(source_image.into_image_handle())),
+				handle: PrivateHandles::Image(self.get_internal_image_handle(source_image.into_image_handle())),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Transfer,
 			},
 			Consumption {
-				handle: Handle::Image(self.get_internal_image_handle(destination_image.into_image_handle())),
+				handle: PrivateHandles::Image(self.get_internal_image_handle(destination_image.into_image_handle())),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
@@ -598,7 +601,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 		let consumptions = buffer_descriptors
 			.iter()
 			.map(|buffer_descriptor| Consumption {
-				handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer)),
+				handle: PrivateHandles::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer)),
 				stages: crate::Stages::VERTEX,
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::General,
@@ -611,7 +614,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &crate::BufferDescriptor) {
 		self.consume_resources([Consumption {
-			handle: Handle::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer)),
+			handle: PrivateHandles::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer)),
 			stages: crate::Stages::INDEX,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::General,
@@ -643,7 +646,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
 		for descriptor_set_handle in sets {
-			let descriptor_set_handle = descriptor_set::DescriptorSetHandle(descriptor_set_handle.0);
+			let descriptor_set_handle = DescriptorSetHandle(descriptor_set_handle.0);
 			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
 			let set_index = *pipeline_layout
 				.descriptor_set_template_indices
@@ -786,7 +789,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		let (buffer_handle, offset, index_type) = self
 			.bound_index_buffer
 			.expect("No index buffer bound. The most likely cause is that draw_indexed was called before bind_index_buffer.");
-		let buffer = &self.device.buffers[self.get_internal_buffer_handle(buffer_handle).0 as usize];
+		let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(buffer_handle));
 		let (metal_index_type, index_size) = match index_type {
 			crate::DataTypes::U16 => (mtl::MTLIndexType::UInt16, std::mem::size_of::<u16>()),
 			crate::DataTypes::U32 => (mtl::MTLIndexType::UInt32, std::mem::size_of::<u32>()),

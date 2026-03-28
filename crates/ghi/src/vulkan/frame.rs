@@ -4,8 +4,8 @@ use utils::Extent;
 use crate::{
 	device::Device as _,
 	graphics_hardware_interface,
-	vulkan::{BufferCopy, BufferHandle, Handle, HandleLike as _, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
-	FrameKey,
+	vulkan::{BufferCopy, BufferHandle, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
+	FrameKey, HandleLike as _,
 };
 
 use super::{command_buffer::CommandBufferRecording, device::Device};
@@ -25,7 +25,11 @@ impl<'a> Frame<'a> {
 		}
 	}
 
-	pub fn device(&mut self) -> &mut Device {
+	pub fn device(&self) -> &Device {
+		self.device
+	}
+
+	pub fn device_mut(&mut self) -> &mut Device {
 		self.device
 	}
 
@@ -207,9 +211,12 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			let buffers = &self.device.buffers;
 
 			for master_handle in &self.device.persistent_write_dynamic_buffers {
-				let all_handles = BufferHandle(master_handle.0).get_all(buffers);
-				let frame_buffer_handle = all_handles[frame_key.sequence_index as usize];
-				let frame_buffer = frame_buffer_handle.access(buffers);
+				let frame_buffer_handle = self
+					.device()
+					.buffers
+					.nth_handle(*master_handle, frame_key.sequence_index as _)
+					.unwrap();
+				let frame_buffer = self.device().buffers.resource(frame_buffer_handle);
 
 				let source_handle = frame_buffer
 					.source
@@ -218,8 +225,8 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 					.staging
 					.expect("Persistent write dynamic buffer must have per-frame staging");
 
-				let source_buffer = source_handle.access(buffers);
-				let staging_buffer = staging_handle.access(buffers);
+				let source_buffer = self.device().buffers.resource(source_handle);
+				let staging_buffer = self.device().buffers.resource(staging_handle);
 				let size = frame_buffer.size;
 
 				// CPU-side memcpy: source → per-frame staging
@@ -240,7 +247,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			.map(|e| {
 				let dst_buffer_handle = e;
 
-				let dst_buffer = &buffers[dst_buffer_handle.0 as usize];
+				let dst_buffer = buffers.resource(dst_buffer_handle);
 				let src_buffer_handle = dst_buffer.staging.unwrap();
 
 				BufferCopy::new(src_buffer_handle, 0, dst_buffer_handle, 0, dst_buffer.size)
@@ -273,16 +280,17 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		let buffers = &self.device.buffers;
 		let frame_key = self.frame_key;
 
-		let handles = BufferHandle(buffer_handle.0).get_all(buffers);
-		let handle = handles[frame_key.sequence_index as usize];
-		let buffer = handle.access(buffers);
+		let handle = buffers
+			.nth_handle(buffer_handle.into(), frame_key.sequence_index as _)
+			.unwrap();
+		let buffer = buffers.resource(handle);
 
 		if super::buffer::PERSISTENT_WRITE {
 			if let Some(source_handle) = buffer.source {
 				// Return the persistent source buffer's pointer. The user writes
 				// here and every frame the data is automatically memcpy'd to per-frame
 				// staging and then GPU-copied. No need to push to pending_buffer_syncs.
-				let source_buffer = source_handle.access(buffers);
+				let source_buffer = buffers.resource(source_handle);
 				return unsafe { std::mem::transmute(source_buffer.pointer) };
 			}
 		}
@@ -290,7 +298,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		// Fallback: original behavior for non-persistent-write buffers
 		self.device.pending_buffer_syncs.insert(handle);
 
-		let staging_buffer = buffer.staging.unwrap().access(buffers);
+		let staging_buffer = buffers.resource(buffer.staging.unwrap());
 
 		unsafe { std::mem::transmute(staging_buffer.pointer) }
 	}
@@ -345,7 +353,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 				let swapchain = self.get_swapchain(present_key.swapchain);
 				let presentable_image_handle = self.get_presentable_swapchain_image_handle(*present_key);
 				let wait_stage = states
-					.get(&Handle::Image(presentable_image_handle))
+					.get(&Handles::Image(presentable_image_handle))
 					.map(|state| state.stage)
 					.unwrap_or(vk::PipelineStageFlags2::ALL_COMMANDS);
 

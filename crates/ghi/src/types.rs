@@ -472,6 +472,28 @@ pub enum DataTypes {
 	UInt4,
 }
 
+impl DataTypes {
+	pub fn size(self) -> usize {
+		match self {
+			DataTypes::Float => std::mem::size_of::<f32>(),
+			DataTypes::Float2 => std::mem::size_of::<f32>() * 2,
+			DataTypes::Float3 => std::mem::size_of::<f32>() * 3,
+			DataTypes::Float4 => std::mem::size_of::<f32>() * 4,
+			DataTypes::U8 => std::mem::size_of::<u8>(),
+			DataTypes::U16 => std::mem::size_of::<u16>(),
+			DataTypes::U32 => std::mem::size_of::<u32>(),
+			DataTypes::Int => std::mem::size_of::<i32>(),
+			DataTypes::Int2 => std::mem::size_of::<i32>() * 2,
+			DataTypes::Int3 => std::mem::size_of::<i32>() * 3,
+			DataTypes::Int4 => std::mem::size_of::<i32>() * 4,
+			DataTypes::UInt => std::mem::size_of::<u32>(),
+			DataTypes::UInt2 => std::mem::size_of::<u32>() * 2,
+			DataTypes::UInt3 => std::mem::size_of::<u32>() * 3,
+			DataTypes::UInt4 => std::mem::size_of::<u32>() * 4,
+		}
+	}
+}
+
 bitflags::bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 	pub struct DeviceAccesses: u16 {
@@ -504,6 +526,24 @@ pub enum ShaderTypes {
 	Intersection,
 	Miss,
 	Callable,
+}
+
+impl From<ShaderTypes> for Stages {
+	fn from(ty: ShaderTypes) -> Self {
+		match ty {
+			ShaderTypes::Vertex => Self::VERTEX,
+			ShaderTypes::Fragment => Self::FRAGMENT,
+			ShaderTypes::Compute => Self::COMPUTE,
+			ShaderTypes::Task => Self::TASK,
+			ShaderTypes::Mesh => Self::MESH,
+			ShaderTypes::RayGen => Self::RAYGEN,
+			ShaderTypes::ClosestHit => Self::CLOSEST_HIT,
+			ShaderTypes::AnyHit => Self::ANY_HIT,
+			ShaderTypes::Intersection => Self::INTERSECTION,
+			ShaderTypes::Miss => Self::MISS,
+			ShaderTypes::Callable => Self::CALLABLE,
+		}
+	}
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]

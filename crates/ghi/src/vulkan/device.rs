@@ -1,16 +1,18 @@
 use std::{borrow::Cow, num::NonZeroU32, u64};
 
 use crate::{
+	binding::DescriptorSetBindingHandle,
+	descriptors::DescriptorSetHandle,
 	graphics_hardware_interface, image,
 	render_debugger::RenderDebugger,
-	sampler,
+	sampler::{self, SamplerHandle},
+	synchronizer::SynchronizerHandle,
 	utils::StableVec,
 	vulkan::{
-		queue::Queue, sampler::SamplerHandle, BufferCopy, BuildBuffer, Descriptor, DescriptorSetBindingHandle, DescriptorWrite,
-		Descriptors, Frame, Handle, HandleLike, ImageCopy, ImageHandle, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
+		queue::Queue, BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, DescriptorWrite, Descriptors, Frame,
+		ImageCopy, ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
 	},
-	vulkan::{CommandBufferRecording, Instance},
-	window, FrameKey, Size,
+	window, FrameKey, HandleLike, PrivateHandles, ResourceCollection, Size,
 };
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
@@ -26,9 +28,8 @@ use super::{
 		to_shader_stage_flags, uses_to_vk_usage_flags,
 	},
 	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
-	DescriptorSet, DescriptorSetHandle, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline,
-	PipelineLayout, PipelineLayoutKey, Shader, Swapchain, Synchronizer, SynchronizerHandle, TransitionState,
-	MAX_FRAMES_IN_FLIGHT,
+	DescriptorSet, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
+	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
 };
 
 pub struct Device {
@@ -60,7 +61,7 @@ pub struct Device {
 	pub(super) frames: u8,
 
 	pub(super) queues: Vec<Queue>,
-	pub(super) buffers: Vec<Buffer>,
+	pub(super) buffers: ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: Vec<Image>,
 	pub(super) samplers: Vec<vk::Sampler>,
 	pub(super) allocations: Vec<Allocation>,
@@ -79,16 +80,16 @@ pub struct Device {
 	pub(super) swapchains: Vec<Swapchain>,
 
 	/// Maps a resource to N descriptors that reference it.
-	resource_to_descriptor: HashMap<Handle, HashSet<(DescriptorSetBindingHandle, u32)>>,
+	resource_to_descriptor: HashMap<PrivateHandles, HashSet<(DescriptorSetBindingHandle, u32)>>,
 
 	pub(super) descriptors: HashMap<DescriptorSetHandle, HashMap<u32, HashMap<u32, Descriptor>>>,
 
 	/// Maps a descriptor set and binding to N resources that it references.
-	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<Handle>>,
+	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<PrivateHandles>>,
 
 	pub settings: crate::device::Features,
 
-	pub(super) states: HashMap<Handle, TransitionState>,
+	pub(super) states: HashMap<PrivateHandles, TransitionState>,
 
 	/// Tracks pending buffer host to device, or device to host synchronization operations.
 	pub(super) pending_buffer_syncs: HashSet<BufferHandle>,
@@ -108,7 +109,7 @@ pub struct Device {
 	/// Stores the debug names for resources.
 	/// Used when inspecting resources from a rendering debugger such as RenderDoc.
 	#[cfg(debug_assertions)]
-	pub names: HashMap<graphics_hardware_interface::Handle, String>,
+	pub names: HashMap<graphics_hardware_interface::Handles, String>,
 
 	/// A queue of deferred tasks. Usually object deletions and resource updates.
 	pub(crate) tasks: Vec<Task>,
@@ -665,7 +666,7 @@ impl Device {
 
 			queues,
 			allocations: Vec::new(),
-			buffers: Vec::with_capacity(1024),
+			buffers: ResourceCollection::with_capacity(1024),
 			images: Vec::with_capacity(512),
 			samplers: Vec::with_capacity(128),
 			descriptor_sets_layouts: Vec::with_capacity(128),
@@ -1557,7 +1558,6 @@ impl Device {
 	) -> Buffer {
 		if size == 0 {
 			return Buffer {
-				next,
 				staging: None,
 				source: None,
 				buffer: vk::Buffer::null(),
@@ -1601,8 +1601,6 @@ impl Device {
 		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
 		let staging = if device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite) {
-			let buffer_handle = BufferHandle(self.buffers.len() as u64);
-
 			let vk_usage_flags = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
 				vk::BufferUsageFlags::TRANSFER_DST
 			} else {
@@ -1632,7 +1630,6 @@ impl Device {
 			let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
 			let staging_buffer = Buffer {
-				next,
 				staging: None,
 				source: None,
 				buffer: buffer_creation_result.resource,
@@ -1643,15 +1640,14 @@ impl Device {
 				access: device_accesses,
 			};
 
-			self.buffers.push(staging_buffer);
+			let (_, handle) = self.buffers.add(staging_buffer);
 
-			Some(buffer_handle)
+			Some(handle)
 		} else {
 			None
 		};
 
 		Buffer {
-			next,
 			staging,
 			source: None,
 			buffer: buffer_creation_result.resource,
@@ -1675,15 +1671,15 @@ impl Device {
 	) -> BufferHandle {
 		let buffer = self.build_buffer_internal(next, name, resource_uses, size, device_accesses);
 
-		let buffer_handle = BufferHandle(self.buffers.len() as u64);
+		let (_, handle) = self.buffers.add(buffer);
 
 		if let Some(previous) = previous {
-			self.buffers[previous.0 as usize].next = Some(buffer_handle);
+			self.buffers.set_next(previous, Some(handle));
 		}
 
-		self.buffers.push(buffer);
+		self.buffers.set_next(handle, next);
 
-		buffer_handle
+		handle
 	}
 
 	/// Creates a CPU-visible staging buffer (TRANSFER_SRC) for use as a per-frame
@@ -1700,10 +1696,7 @@ impl Device {
 		);
 		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
-		let handle = BufferHandle(self.buffers.len() as u64);
-
-		self.buffers.push(Buffer {
-			next: None,
+		let (_, handle) = self.buffers.add(Buffer {
 			staging: None,
 			source: None,
 			buffer: buffer_creation_result.resource,
@@ -1887,7 +1880,7 @@ impl Device {
 	}
 
 	fn resize_buffer_internal(&mut self, buffer_handle: BufferHandle, size: usize) {
-		let current_buffer = &self.buffers[buffer_handle.0 as usize];
+		let current_buffer = self.buffers.resource(buffer_handle);
 
 		if current_buffer.size >= size {
 			return;
@@ -1912,7 +1905,7 @@ impl Device {
 			crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead,
 		);
 
-		self.buffers[buffer_handle.0 as usize] = new_buffer;
+		*self.buffers.resource_mut(buffer_handle) = new_buffer;
 	}
 
 	pub(crate) fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
@@ -2013,7 +2006,7 @@ impl Device {
 				match descriptor_set_write.write {
 					Descriptors::Buffer { handle, size } => {
 						let buffer_handle = handle;
-						let buffer = &self.buffers[buffer_handle.0 as usize];
+						let buffer = self.buffers.resource(buffer_handle);
 
 						let res = if !buffer.buffer.is_null() {
 							let e = buffers.append([vk::DescriptorBufferInfo::default()
@@ -2189,9 +2182,9 @@ impl Device {
 					self.descriptor_set_to_resource
 						.entry((descriptor_set_handle, binding_index))
 						.or_insert_with(HashSet::new)
-						.insert(Handle::Buffer(buffer));
+						.insert(Handles::Buffer(buffer));
 					self.resource_to_descriptor
-						.entry(Handle::Buffer(buffer))
+						.entry(Handles::Buffer(buffer))
 						.or_insert_with(HashSet::new)
 						.insert((binding_handle, array_element));
 				}
@@ -2205,9 +2198,9 @@ impl Device {
 					self.descriptor_set_to_resource
 						.entry((descriptor_set_handle, binding_index))
 						.or_insert_with(HashSet::new)
-						.insert(Handle::Image(image));
+						.insert(Handles::Image(image));
 					self.resource_to_descriptor
-						.entry(Handle::Image(image))
+						.entry(Handles::Image(image))
 						.or_insert_with(HashSet::new)
 						.insert((binding_handle, array_element));
 				}
@@ -2221,9 +2214,9 @@ impl Device {
 					self.descriptor_set_to_resource
 						.entry((descriptor_set_handle, binding_index))
 						.or_insert_with(HashSet::new)
-						.insert(Handle::Image(image));
+						.insert(Handles::Image(image));
 					self.resource_to_descriptor
-						.entry(Handle::Image(image))
+						.entry(Handles::Image(image))
 						.or_insert_with(HashSet::new)
 						.insert((binding_handle, array_element));
 				}
@@ -2377,9 +2370,10 @@ impl Device {
 
 					let new_descriptor_write = match descriptor_write.descriptor {
 						crate::descriptors::WriteData::Buffer { handle, size } => {
-							let handles = BufferHandle(handle.0).get_all(&self.buffers);
-							let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
-							let handle = handles[index];
+							let handle = self
+								.buffers
+								.nth_handle(handle, sequence_index as i64 - frame_offset as i64)
+								.unwrap();
 							Some(DescriptorWrite::new(Descriptors::Buffer { handle, size }, binding))
 						}
 						crate::descriptors::WriteData::Image { handle, layout } => {
@@ -2430,7 +2424,7 @@ impl Device {
 					#[cfg(debug_assertions)]
 					let name = self
 						.names
-						.get(&graphics_hardware_interface::Handle::Image(builder.master))
+						.get(&graphics_hardware_interface::Handles::Image(builder.master))
 						.map(|e| e.clone());
 
 					#[cfg(not(debug_assertions))]
@@ -2453,13 +2447,13 @@ impl Device {
 					#[cfg(debug_assertions)]
 					let name = self
 						.names
-						.get(&graphics_hardware_interface::Handle::Buffer(builder.master))
+						.get(&graphics_hardware_interface::Handles::Buffer(builder.master))
 						.map(|e| e.clone());
 
 					#[cfg(not(debug_assertions))]
 					let name: Option<String> = None;
 
-					let previous_buffer = builder.previous.access(&self.buffers);
+					let previous_buffer = self.buffers.resource(builder.previous);
 
 					let new_buffer_handle = self.create_buffer_internal(
 						None,
@@ -2474,10 +2468,11 @@ impl Device {
 					// create a per-frame staging buffer and point the new buffer's
 					// staging and source fields accordingly.
 					if let Some(source_handle) = builder.source {
-						let size = self.buffers[new_buffer_handle.0 as usize].size;
+						let size = self.buffers.resource(new_buffer_handle).size;
 						let per_frame_staging = self.create_staging_buffer(name.as_ref().map(|e| e.as_str()), size);
-						self.buffers[new_buffer_handle.0 as usize].staging = Some(per_frame_staging);
-						self.buffers[new_buffer_handle.0 as usize].source = Some(source_handle);
+						let buffer = self.buffers.resource_mut(new_buffer_handle);
+						buffer.staging = Some(per_frame_staging);
+						buffer.source = Some(source_handle);
 					}
 				}
 				Tasks::ResizeImage { handle, extent } => {
@@ -2729,15 +2724,12 @@ impl crate::device::Device for Device {
 
 				match descriptor_set_write.descriptor {
 					crate::descriptors::WriteData::Buffer { handle, size } => {
-						let buffer_handles = BufferHandle(handle.0).get_all(&self.buffers);
-
 						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
 						for (i, &binding_handle) in binding_handles.iter().enumerate() {
 							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
 
-							let buffer_handle =
-								buffer_handles[(i as i32 - offset).rem_euclid(buffer_handles.len() as i32) as usize];
+							let buffer_handle = self.buffers.nth_handle(handle, i as i64 - offset as i64).unwrap();
 
 							writes.push(
 								DescriptorWrite::new(
@@ -2838,7 +2830,7 @@ impl crate::device::Device for Device {
 			.map(|e| {
 				let dst_buffer_handle = e;
 
-				let dst_buffer = &self.buffers[dst_buffer_handle.0 as usize];
+				let dst_buffer = self.buffers.resource(dst_buffer_handle);
 
 				let src_buffer_handle = dst_buffer.staging.unwrap();
 
@@ -2868,20 +2860,18 @@ impl crate::device::Device for Device {
 	}
 
 	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
-		self.buffers[buffer_handle.0 as usize].device_address
+		self.buffers.get_single(buffer_handle).unwrap().device_address
 	}
 
 	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
-		let buffer = self.buffers[buffer_handle.0 as usize];
-		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
+		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
+		let buffer = self.buffers.resource(buffer.staging.unwrap());
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
-		let handle = BufferHandle(buffer_handle.0);
-
-		let buffer = self.buffers[handle.0 as usize];
-		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
+		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
+		let buffer = self.buffers.resource(buffer.staging.unwrap());
 
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
@@ -2981,7 +2971,7 @@ impl crate::device::Device for Device {
 			acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: address },
 		};
 
-		let instance_buffer = &mut self.buffers[instances_buffer.0 as usize];
+		let instance_buffer = self.buffers.get_single(instances_buffer).unwrap();
 
 		let instance_buffer_slice = unsafe {
 			std::slice::from_raw_parts_mut(
@@ -3003,8 +2993,8 @@ impl crate::device::Device for Device {
 		let pipeline = &self.pipelines[pipeline_handle.0 as usize];
 		let shader_handles = pipeline.shader_handles.clone();
 
-		let buffer = self.buffers[sbt_buffer_handle.0 as usize];
-		let buffer = self.buffers[buffer.staging.unwrap().0 as usize];
+		let buffer = self.buffers.get_single(sbt_buffer_handle).unwrap();
+		let buffer = self.buffers.resource(buffer.staging.unwrap());
 
 		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer, buffer.size) })[sbt_record_offset..sbt_record_offset + 32]
 			.copy_from_slice(shader_handles.get(&shader_handle).unwrap());
@@ -3976,7 +3966,7 @@ impl crate::device::DeviceCreate for Device {
 		{
 			if let Some(name) = builder.name {
 				self.names
-					.insert(graphics_hardware_interface::Handle::Image(handle), name.to_string());
+					.insert(graphics_hardware_interface::Handles::Image(handle), name.to_string());
 			}
 		}
 
@@ -4044,10 +4034,7 @@ impl crate::device::DeviceCreate for Device {
 
 		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
-		let buffer_handle = graphics_hardware_interface::BaseBufferHandle(self.buffers.len() as u64);
-
-		self.buffers.push(Buffer {
-			next: None,
+		let (buffer_handle, _) = self.buffers.add(Buffer {
 			staging: None,
 			source: None,
 			buffer: buffer_creation_result.resource,
@@ -4253,7 +4240,9 @@ impl crate::device::DeviceCreate for Device {
 			// CPU-writable source buffer. We create a new per-frame staging buffer for
 			// frame 0 and store the source handle on the master buffer.
 
-			let source_handle = self.buffers[buffer_handle.0 as usize]
+			let source_handle = self
+				.buffers
+				.resource(buffer_handle)
 				.staging
 				.expect("CpuWrite dynamic buffer must have a staging buffer");
 
@@ -4262,8 +4251,9 @@ impl crate::device::DeviceCreate for Device {
 
 			// Reassign: the master's staging now points to the new per-frame staging,
 			// and source points to the original (persistent) CPU-writable buffer.
-			self.buffers[buffer_handle.0 as usize].staging = Some(frame0_staging);
-			self.buffers[buffer_handle.0 as usize].source = Some(source_handle);
+			let buffer = self.buffers.resource_mut(buffer_handle);
+			buffer.staging = Some(frame0_staging);
+			buffer.source = Some(source_handle);
 
 			// Track this dynamic buffer for automatic per-frame memcpy
 			self.persistent_write_dynamic_buffers.push(handle.into());

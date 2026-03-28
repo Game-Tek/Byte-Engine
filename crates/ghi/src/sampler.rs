@@ -1,6 +1,6 @@
 use crate::{
 	device::{Device, DeviceCreate as _},
-	FilteringModes, SamplerAddressingModes, SamplerHandle, SamplingReductionModes,
+	FilteringModes, SamplerAddressingModes, SamplingReductionModes,
 };
 
 pub struct Builder {
@@ -70,8 +70,7 @@ impl Builder {
 		self.max_lod = max_lod;
 		self
 	}
-
-	pub fn build(self, device: &mut crate::implementation::Device) -> SamplerHandle {
-		device.build_sampler(self)
-	}
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct SamplerHandle(pub(crate) u64);

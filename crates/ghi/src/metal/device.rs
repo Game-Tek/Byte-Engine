@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::num::NonZeroU32;
 use std::ptr::NonNull;
 
 use ::utils::hash::{HashMap, HashSet};
@@ -9,15 +8,20 @@ use objc2_metal::{MTLArgumentEncoder, MTLBuffer, MTLCommandQueue, MTLDevice, MTL
 
 use super::*;
 use crate::{
-	buffer as buffer_builder, image as image_builder, pipelines::raster as raster_pipeline, sampler as sampler_builder, window,
-	Size,
+	binding::DescriptorSetBindingHandle,
+	buffer::{self as buffer_builder, BufferHandle},
+	descriptors::DescriptorSetHandle,
+	image::{self as image_builder, ImageHandle},
+	pipelines::raster as raster_pipeline,
+	sampler::{self as sampler_builder, SamplerHandle},
+	window, HandleLike as _, ResourceCollection, Size,
 };
 
 pub struct Device {
 	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 	pub(crate) frames: u8,
 	pub(crate) queues: Vec<queue::Queue>,
-	pub(crate) buffers: Vec<buffer::Buffer>,
+	pub(crate) buffers: ResourceCollection<buffer::Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(crate) images: Vec<image::Image>,
 	pub(crate) samplers: Vec<sampler::Sampler>,
 	pub(crate) allocations: Vec<Allocation>,
@@ -36,18 +40,18 @@ pub struct Device {
 	pub(crate) synchronizers: Vec<synchronizer::Synchronizer>,
 	pub(crate) swapchains: Vec<swapchain::Swapchain>,
 
-	pub(crate) resource_to_descriptor: HashMap<Handle, HashSet<(binding::DescriptorSetBindingHandle, u32, u8)>>,
-	pub(crate) descriptor_set_to_resource: HashMap<(descriptor_set::DescriptorSetHandle, u32, u32, u8), HashSet<Handle>>,
+	pub(crate) resource_to_descriptor: HashMap<PrivateHandles, HashSet<(DescriptorSetBindingHandle, u32, u8)>>,
+	pub(crate) descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32, u32, u8), HashSet<PrivateHandles>>,
 
 	pub settings: crate::device::Features,
-	pub(crate) states: HashMap<Handle, TransitionState>,
-	pub(crate) pending_buffer_syncs: VecDeque<buffer::BufferHandle>,
-	pub(crate) pending_image_syncs: VecDeque<image::ImageHandle>,
+	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
+	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
+	pub(crate) pending_image_syncs: VecDeque<ImageHandle>,
 	pub(crate) tasks: Vec<Task>,
 	pub(crate) texture_copies: Vec<Vec<u8>>,
 
 	#[cfg(debug_assertions)]
-	pub names: HashMap<graphics_hardware_interface::Handle, String>,
+	pub names: HashMap<graphics_hardware_interface::Handles, String>,
 }
 
 impl Device {
@@ -76,7 +80,7 @@ impl Device {
 			device,
 			frames: MAX_FRAMES_IN_FLIGHT as u8,
 			queues: created_queues,
-			buffers: Vec::new(),
+			buffers: ResourceCollection::with_capacity(1024),
 			images: Vec::new(),
 			samplers: Vec::new(),
 			allocations: Vec::new(),
@@ -108,30 +112,12 @@ impl Device {
 		})
 	}
 
-	fn create_buffer_internal(
-		&mut self,
-		next: Option<buffer::BufferHandle>,
-		name: Option<&str>,
-		size: usize,
-		resource_uses: crate::Uses,
-		device_accesses: crate::DeviceAccesses,
-	) -> buffer::BufferHandle {
-		let handle = buffer::BufferHandle(self.buffers.len() as u64);
-		let buffer = self.create_buffer_resource(next, name, size, resource_uses, device_accesses, handle);
-
-		self.buffers.push(buffer);
-
-		handle
-	}
-
 	fn create_buffer_resource(
 		&self,
-		next: Option<buffer::BufferHandle>,
 		name: Option<&str>,
 		size: usize,
 		resource_uses: crate::Uses,
 		device_accesses: crate::DeviceAccesses,
-		handle: buffer::BufferHandle,
 	) -> buffer::Buffer {
 		let options = utils::resource_options_from_access(device_accesses);
 		let buffer = self
@@ -147,9 +133,8 @@ impl Device {
 		let gpu_address = buffer.gpuAddress() as u64;
 
 		buffer::Buffer {
-			next,
-			staging: Some(handle),
 			buffer,
+			staging: None,
 			size,
 			gpu_address,
 			pointer,
@@ -160,15 +145,15 @@ impl Device {
 
 	pub(super) fn create_image_internal(
 		&mut self,
-		next: Option<image::ImageHandle>,
+		next: Option<ImageHandle>,
 		name: Option<&str>,
 		extent: Extent,
 		format: crate::Formats,
 		resource_uses: crate::Uses,
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
-	) -> image::ImageHandle {
-		let handle = image::ImageHandle(self.images.len() as u64);
+	) -> ImageHandle {
+		let handle = ImageHandle(self.images.len() as u64);
 		let image = self.create_image_resource(next, name, extent, format, resource_uses, device_accesses, array_layers);
 
 		self.images.push(image);
@@ -178,7 +163,7 @@ impl Device {
 
 	pub(super) fn create_image_resource(
 		&self,
-		next: Option<image::ImageHandle>,
+		next: Option<ImageHandle>,
 		name: Option<&str>,
 		extent: Extent,
 		format: crate::Formats,
@@ -240,7 +225,7 @@ impl Device {
 
 	fn update_descriptor_for_binding(
 		&mut self,
-		binding_handle: binding::DescriptorSetBindingHandle,
+		binding_handle: DescriptorSetBindingHandle,
 		descriptor: Descriptor,
 		frame_index: u8,
 		array_element: u32,
@@ -270,8 +255,8 @@ impl Device {
 
 	fn clear_descriptor_tracking(
 		&mut self,
-		set_handle: descriptor_set::DescriptorSetHandle,
-		binding_handle: binding::DescriptorSetBindingHandle,
+		set_handle: DescriptorSetHandle,
+		binding_handle: DescriptorSetBindingHandle,
 		binding_index: u32,
 		array_element: u32,
 		frame_index: u8,
@@ -297,8 +282,8 @@ impl Device {
 
 	fn register_descriptor_tracking(
 		&mut self,
-		set_handle: descriptor_set::DescriptorSetHandle,
-		binding_handle: binding::DescriptorSetBindingHandle,
+		set_handle: DescriptorSetHandle,
+		binding_handle: DescriptorSetBindingHandle,
 		binding_index: u32,
 		descriptor: Descriptor,
 		array_element: u32,
@@ -320,7 +305,7 @@ impl Device {
 
 	fn encode_descriptor_binding(
 		&mut self,
-		set_handle: descriptor_set::DescriptorSetHandle,
+		set_handle: DescriptorSetHandle,
 		binding_index: u32,
 		descriptor: Descriptor,
 		frame_index: u8,
@@ -344,7 +329,7 @@ impl Device {
 
 		match (layout_binding.slot_for_array_element(array_element), descriptor) {
 			(DescriptorBindingSlot::Buffer(slot), Descriptor::Buffer { buffer, .. }) => unsafe {
-				let buffer = &self.buffers[buffer.0 as usize];
+				let buffer = self.buffers.resource(buffer);
 				argument_encoder.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
 			},
 			(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, .. }) => unsafe {
@@ -378,7 +363,7 @@ impl Device {
 		}
 	}
 
-	fn encode_immutable_samplers(&mut self, set_handle: descriptor_set::DescriptorSetHandle) {
+	fn encode_immutable_samplers(&mut self, set_handle: DescriptorSetHandle) {
 		let descriptor_set_layout_handle = self.descriptor_sets[set_handle.0 as usize].descriptor_set_layout;
 		let (argument_encoder, bindings) = {
 			let layout = &self.descriptor_sets_layouts[descriptor_set_layout_handle.0 as usize];
@@ -397,7 +382,7 @@ impl Device {
 
 				for (array_element, sampler_handle) in immutable_samplers.iter().enumerate() {
 					let slot = binding.slot_for_array_element(array_element as u32);
-					let sampler = &self.samplers[sampler::SamplerHandle(sampler_handle.0).0 as usize];
+					let sampler = &self.samplers[SamplerHandle(sampler_handle.0).0 as usize];
 
 					match slot {
 						DescriptorBindingSlot::Sampler(slot) => unsafe {
@@ -423,15 +408,12 @@ impl Device {
 	) -> Option<Descriptor> {
 		match descriptor {
 			crate::descriptors::WriteData::Buffer { handle, size } => {
-				let handles = buffer::BufferHandle(handle.0).get_all(&self.buffers);
-				let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
-				Some(Descriptor::Buffer {
-					buffer: handles[index],
-					size,
-				})
+				let index = (sequence_index as i32 - frame_offset) as i64;
+				let handle = self.buffers.nth_handle(handle, index)?;
+				Some(Descriptor::Buffer { buffer: handle, size })
 			}
 			crate::descriptors::WriteData::Image { handle, layout } => {
-				let handles = image::ImageHandle(handle.0).get_all(&self.images);
+				let handles = ImageHandle(handle.0).get_all(&self.images);
 				let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
 				Some(Descriptor::Image {
 					image: handles[index],
@@ -444,16 +426,16 @@ impl Device {
 				layout,
 				..
 			} => {
-				let handles = image::ImageHandle(image_handle.0).get_all(&self.images);
+				let handles = ImageHandle(image_handle.0).get_all(&self.images);
 				let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
 				Some(Descriptor::CombinedImageSampler {
 					image: handles[index],
-					sampler: sampler::SamplerHandle(sampler_handle.0),
+					sampler: SamplerHandle(sampler_handle.0),
 					layout,
 				})
 			}
 			crate::descriptors::WriteData::Sampler(handle) => Some(Descriptor::Sampler {
-				sampler: sampler::SamplerHandle(handle.0),
+				sampler: SamplerHandle(handle.0),
 			}),
 			crate::descriptors::WriteData::StaticSamplers => None,
 			crate::descriptors::WriteData::CombinedImageSamplerArray => None,
@@ -464,7 +446,7 @@ impl Device {
 
 	fn apply_descriptor_write_for_frame(
 		&mut self,
-		binding_handle: binding::DescriptorSetBindingHandle,
+		binding_handle: DescriptorSetBindingHandle,
 		descriptor: crate::descriptors::WriteData,
 		array_element: u32,
 		frame_offset: i32,
@@ -477,7 +459,7 @@ impl Device {
 
 	fn apply_descriptor_write_to_all_frames(
 		&mut self,
-		binding_handle: binding::DescriptorSetBindingHandle,
+		binding_handle: DescriptorSetBindingHandle,
 		descriptor: crate::descriptors::WriteData,
 		array_element: u32,
 		frame_offset: i32,
@@ -487,7 +469,7 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn rewrite_descriptors_for_handle(&mut self, handle: Handle) {
+	pub(crate) fn rewrite_descriptors_for_handle(&mut self, handle: PrivateHandles) {
 		let Some(descriptor_bindings) = self.resource_to_descriptor.get(&handle).cloned() else {
 			return;
 		};
@@ -519,14 +501,14 @@ impl Device {
 
 			match task.task() {
 				Tasks::UpdateBufferDescriptors { handle } => {
-					self.rewrite_descriptors_for_handle(Handle::Buffer(*handle));
+					self.rewrite_descriptors_for_handle(PrivateHandles::Buffer(*handle));
 				}
 				Tasks::UpdateImageDescriptors { handle } => {
-					self.rewrite_descriptors_for_handle(Handle::Image(*handle));
+					self.rewrite_descriptors_for_handle(PrivateHandles::Image(*handle));
 				}
 				Tasks::UpdateDescriptor { descriptor_write } => {
 					self.apply_descriptor_write_for_frame(
-						binding::DescriptorSetBindingHandle(descriptor_write.binding_handle.0),
+						DescriptorSetBindingHandle(descriptor_write.binding_handle.0),
 						descriptor_write.descriptor,
 						descriptor_write.array_element,
 						descriptor_write.frame_offset.unwrap_or(0),
@@ -591,10 +573,7 @@ impl Device {
 		self.tasks = tasks;
 	}
 
-	pub(super) fn copy_texture_to_cpu(
-		&mut self,
-		image_handle: image::ImageHandle,
-	) -> graphics_hardware_interface::TextureCopyHandle {
+	pub(super) fn copy_texture_to_cpu(&mut self, image_handle: ImageHandle) -> graphics_hardware_interface::TextureCopyHandle {
 		let image = &self.images[image_handle.0 as usize];
 		let Some(bytes_per_pixel) = utils::bytes_per_pixel(image.format) else {
 			self.texture_copies.push(Vec::new());
@@ -862,7 +841,7 @@ impl Device {
 			descriptor_set_layout: *descriptor_set_template_handle,
 			frames,
 		});
-		let handle = descriptor_set::DescriptorSetHandle((self.descriptor_sets.len() - 1) as u64);
+		let handle = DescriptorSetHandle((self.descriptor_sets.len() - 1) as u64);
 		self.encode_immutable_samplers(handle);
 		graphics_hardware_interface::DescriptorSetHandle(handle.0)
 	}
@@ -878,13 +857,13 @@ impl Device {
 
 		self.bindings.push(binding::Binding {
 			next: None,
-			descriptor_set_handle: descriptor_set::DescriptorSetHandle(descriptor_set.0),
+			descriptor_set_handle: DescriptorSetHandle(descriptor_set.0),
 			descriptor_type,
 			index: binding_index,
 			count,
 		});
 
-		let binding_handle = binding::DescriptorSetBindingHandle((self.bindings.len() - 1) as u64);
+		let binding_handle = DescriptorSetBindingHandle((self.bindings.len() - 1) as u64);
 		self.apply_descriptor_write_to_all_frames(
 			binding_handle,
 			binding_constructor.descriptor,
@@ -1181,9 +1160,12 @@ impl Device {
 
 	pub fn build_buffer<T: Copy>(&mut self, builder: buffer_builder::Builder) -> graphics_hardware_interface::BufferHandle<T> {
 		let size = std::mem::size_of::<T>();
-		let buffer_handle =
-			self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
-		graphics_hardware_interface::BufferHandle::<T>(buffer_handle.0, std::marker::PhantomData)
+		let buffer = self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.device_accesses);
+
+		let mut creator = self.buffers.creator();
+		creator.add(buffer);
+
+		graphics_hardware_interface::BufferHandle::<T>(creator.into(), std::marker::PhantomData)
 	}
 
 	pub fn build_dynamic_buffer<T: Copy>(
@@ -1191,28 +1173,21 @@ impl Device {
 		builder: buffer_builder::Builder,
 	) -> graphics_hardware_interface::DynamicBufferHandle<T> {
 		let size = std::mem::size_of::<T>();
-		let mut first_handle: Option<buffer::BufferHandle> = None;
-		let mut previous_handle: Option<buffer::BufferHandle> = None;
+
+		let master = self.buffers.master();
 
 		for _ in 0..self.frames {
-			let handle = self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
-			if let Some(previous) = previous_handle {
-				self.buffers[previous.0 as usize].next = Some(handle);
-			} else {
-				first_handle = Some(handle);
-			}
-			previous_handle = Some(handle);
+			let buffer = self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.device_accesses);
+			self.buffers.add_with_master(buffer, master);
 		}
 
-		let master =
-			first_handle.expect("Dynamic buffer creation failed. The most likely cause is that no buffers were allocated.");
-		graphics_hardware_interface::DynamicBufferHandle::<T>(master.0, std::marker::PhantomData)
+		graphics_hardware_interface::DynamicBufferHandle::<T>(master.into(), std::marker::PhantomData)
 	}
 
 	pub fn build_dynamic_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::DynamicImageHandle {
 		let layers = builder.array_layers.map(|l| l.get()).unwrap_or(1);
-		let mut first_handle: Option<image::ImageHandle> = None;
-		let mut previous_handle: Option<image::ImageHandle> = None;
+		let mut first_handle: Option<ImageHandle> = None;
+		let mut previous_handle: Option<ImageHandle> = None;
 
 		for _ in 0..self.frames {
 			let handle = self.create_image_internal(
@@ -1240,21 +1215,21 @@ impl Device {
 	}
 
 	pub fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
-		self.buffers[buffer_handle.0 as usize].gpu_address
+		self.buffers.get_single(buffer_handle).unwrap().gpu_address
 	}
 
 	pub fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
-		let buffer = &self.buffers[buffer_handle.0 as usize];
+		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		unsafe { &*(buffer.pointer as *const T) }
 	}
 
 	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
-		let buffer = &self.buffers[buffer_handle.0 as usize];
+		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 
 	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		let handle = buffer::BufferHandle(buffer_handle.into().0);
+		let handle = self.buffers.nth_handle(buffer_handle.into(), 0).unwrap();
 		self.pending_buffer_syncs.push_back(handle);
 	}
 
@@ -1303,7 +1278,7 @@ impl Device {
 	}
 
 	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {
-		let handle = image::ImageHandle(image_handle.0);
+		let handle = ImageHandle(image_handle.0);
 		self.pending_image_syncs.push_back(handle);
 	}
 
@@ -1351,14 +1326,17 @@ impl Device {
 		max_instance_count: u32,
 	) -> graphics_hardware_interface::BaseBufferHandle {
 		let size = max_instance_count as usize * std::mem::size_of::<mtl::MTLAccelerationStructureInstanceDescriptor>();
-		let handle = self.create_buffer_internal(
-			None,
+		let buffer = self.create_buffer_resource(
 			name,
 			size,
 			crate::Uses::AccelerationStructure,
 			crate::DeviceAccesses::DeviceOnly,
 		);
-		graphics_hardware_interface::BaseBufferHandle(handle.0)
+		let mut creator = self.buffers.creator();
+
+		creator.add(buffer);
+
+		creator.into()
 	}
 
 	pub fn create_top_level_acceleration_structure(
@@ -1389,7 +1367,7 @@ impl Device {
 	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
 		for write in descriptor_set_writes {
 			self.apply_descriptor_write_to_all_frames(
-				binding::DescriptorSetBindingHandle(write.binding_handle.0),
+				DescriptorSetBindingHandle(write.binding_handle.0),
 				write.descriptor,
 				write.array_element,
 				write.frame_offset.unwrap_or(0),
@@ -1493,7 +1471,7 @@ impl Device {
 					self.images[handle.0 as usize] = proxy;
 					proxies[image_index] = Some(handle);
 				} else {
-					let handle = image::ImageHandle(self.images.len() as u64);
+					let handle = ImageHandle(self.images.len() as u64);
 					self.images.push(proxy);
 					proxies[image_index] = Some(handle);
 				}
@@ -1540,20 +1518,23 @@ impl Device {
 	}
 
 	pub fn resize_buffer(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, size: usize) {
-		let handle = buffer::BufferHandle(buffer_handle.0);
-		let buffer = &self.buffers[handle.0 as usize];
+		let buffer = self.buffers.get_single(buffer_handle).unwrap();
 
 		if buffer.size >= size {
 			return;
 		}
 
-		let next = buffer.next;
 		let uses = buffer.uses;
 		let access = buffer.access;
 		let name = buffer.buffer.label().map(|l| l.to_string());
-		let replacement = self.create_buffer_resource(next, name.as_deref(), size, uses, access, handle);
-		self.buffers[handle.0 as usize] = replacement;
-		self.rewrite_descriptors_for_handle(Handle::Buffer(handle));
+
+		let replacement = self.create_buffer_resource(name.as_deref(), size, uses, access);
+
+		let handle = self.buffers.nth_handle(buffer_handle, 0).unwrap();
+
+		*self.buffers.resource_mut(handle) = replacement;
+
+		self.rewrite_descriptors_for_handle(PrivateHandles::Buffer(handle));
 	}
 
 	pub fn start_frame_capture(&self) {

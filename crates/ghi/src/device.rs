@@ -2,10 +2,10 @@ use utils::Extent;
 
 use crate::{
 	buffer, descriptors, image,
+	implementation::{CommandBufferRecording, Frame},
 	pipelines::VertexElement,
 	sampler,
 	shader::{self, Sources},
-	vulkan::{CommandBufferRecording, Frame},
 	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
 	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
 	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,

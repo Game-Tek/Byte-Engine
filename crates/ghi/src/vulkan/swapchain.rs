@@ -1,6 +1,7 @@
 use ash::vk;
 
-use crate::vulkan::{ImageHandle, SynchronizerHandle, MAX_FRAMES_IN_FLIGHT, MAX_SWAPCHAIN_IMAGES};
+use crate::synchronizer::SynchronizerHandle;
+use crate::vulkan::{ImageHandle, MAX_FRAMES_IN_FLIGHT, MAX_SWAPCHAIN_IMAGES};
 use crate::{Formats, Uses};
 
 #[derive(Clone)]

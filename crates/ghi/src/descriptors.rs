@@ -1,6 +1,6 @@
 use crate::{
-	graphics_hardware_interface::ImageHandleLike, BaseBufferHandle, DescriptorSetBindingHandle, ImageHandle, Layouts, Ranges,
-	SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
+	graphics_hardware_interface::ImageHandleLike, BaseBufferHandle, DescriptorSet, DescriptorSetBindingHandle, HandleLike,
+	ImageHandle, Layouts, Next, Ranges, SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -172,4 +172,27 @@ pub enum DescriptorType {
 	Sampler,
 	/// An acceleration structure.
 	AccelerationStructure,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct DescriptorSetHandle(pub(crate) u64);
+
+impl Next for DescriptorSet {
+	type Handle = DescriptorSetHandle;
+
+	fn next(&self) -> Option<DescriptorSetHandle> {
+		self.next
+	}
+}
+
+impl HandleLike for DescriptorSetHandle {
+	type Item = DescriptorSet;
+
+	fn build(value: u64) -> Self {
+		DescriptorSetHandle(value)
+	}
+
+	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a DescriptorSet {
+		&collection[self.0 as usize]
+	}
 }

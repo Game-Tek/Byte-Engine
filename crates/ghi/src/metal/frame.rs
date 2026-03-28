@@ -1,3 +1,6 @@
+use crate::image::ImageHandle;
+use crate::HandleLike as _;
+
 use super::*;
 use objc2_metal::MTLBlitCommandEncoder;
 use objc2_metal::MTLCommandBuffer;
@@ -13,9 +16,9 @@ impl<'a> Frame<'a> {
 		Self { frame_key, device }
 	}
 
-	fn get_current_image_handle(&self, image_handle: impl graphics_hardware_interface::ImageHandleLike) -> image::ImageHandle {
+	fn get_current_image_handle(&self, image_handle: impl graphics_hardware_interface::ImageHandleLike) -> ImageHandle {
 		let image_handle = image_handle.into_image_handle();
-		let handles = image::ImageHandle(image_handle.0).get_all(&self.device.images);
+		let handles = ImageHandle(image_handle.0).get_all(&self.device.images);
 		handles[(self.frame_key.sequence_index as usize).rem_euclid(handles.len())]
 	}
 }
@@ -33,9 +36,11 @@ impl Frame<'_> {
 		&'a self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 	) -> &'a mut T {
-		let handles = buffer::BufferHandle(buffer_handle.0).get_all(&self.device.buffers);
-		let handle = handles[self.frame_key.sequence_index as usize];
-		let buffer = &self.device.buffers[handle.0 as usize];
+		let buffer = self
+			.device
+			.buffers
+			.get_nth(buffer_handle.into(), self.frame_key.sequence_index as _)
+			.expect("Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.");
 
 		unsafe { &mut *(buffer.pointer as *mut T) }
 	}
@@ -77,7 +82,7 @@ impl Frame<'_> {
 			image.array_layers,
 		);
 		self.device.images[handle.0 as usize] = replacement;
-		self.device.rewrite_descriptors_for_handle(Handle::Image(handle));
+		self.device.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
 	}
 
 	pub fn create_command_buffer_recording<'a>(
@@ -202,9 +207,11 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 	) -> &mut T {
-		let handles = buffer::BufferHandle(buffer_handle.0).get_all(&self.device.buffers);
-		let handle = handles[self.frame_key.sequence_index as usize];
-		let buffer = &self.device.buffers[handle.0 as usize];
+		let buffer = self
+			.device
+			.buffers
+			.get_nth(buffer_handle.into(), self.frame_key.sequence_index as _)
+			.expect("Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.");
 
 		unsafe { &mut *(buffer.pointer as *mut T) }
 	}

@@ -1,9 +1,9 @@
 use utils::Extent;
 
 use crate::{
-	graphics_hardware_interface::ImageHandleLike, rt, AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle,
-	ClearValue, DescriptorSetHandle, DispatchExtent, Layouts, MeshHandle, PipelineHandle, PresentKey, RGBAu8,
-	SynchronizerHandle, TextureCopyHandle,
+	rt, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferDescriptor, BufferHandle, ClearValue,
+	DescriptorSetHandle, DispatchExtent, Layouts, MeshHandle, PipelineHandle, PresentKey, RGBAu8, SynchronizerHandle,
+	TextureCopyHandle,
 };
 
 pub trait CommandBufferRecording
@@ -26,19 +26,19 @@ where
 		attachments: &[AttachmentInformation],
 	) -> &mut impl RasterizationRenderPassMode;
 
-	fn clear_images<I: ImageHandleLike>(&mut self, textures: &[(I, ClearValue)]);
+	fn clear_images(&mut self, textures: &[(BaseImageHandle, ClearValue)]);
 	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]);
 
-	fn transfer_textures(&mut self, texture_handles: &[impl ImageHandleLike]) -> Vec<TextureCopyHandle>;
+	fn transfer_textures(&mut self, texture_handles: &[BaseImageHandle]) -> Vec<TextureCopyHandle>;
 
 	/// Copies image data from a CPU accessible buffer to a GPU accessible image.
-	fn write_image_data(&mut self, image_handle: impl ImageHandleLike, data: &[RGBAu8]);
+	fn write_image_data(&mut self, image_handle: BaseImageHandle, data: &[RGBAu8]);
 
 	fn blit_image(
 		&mut self,
-		source_image: impl ImageHandleLike,
+		source_image: BaseImageHandle,
 		source_layout: Layouts,
-		destination_image: impl ImageHandleLike,
+		destination_image: BaseImageHandle,
 		destination_layout: Layouts,
 	);
 

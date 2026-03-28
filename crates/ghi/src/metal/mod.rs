@@ -725,7 +725,6 @@ pub mod image {
 
 	#[derive(Clone)]
 	pub(crate) struct Image {
-		pub(crate) next: Option<ImageHandle>,
 		pub(crate) texture: Retained<ProtocolObject<dyn mtl::MTLTexture>>,
 		pub(crate) extent: Extent,
 		pub(crate) format: Formats,
@@ -792,10 +791,8 @@ pub mod swapchain {
 	pub(crate) struct Swapchain {
 		pub layer: Retained<CAMetalLayer>,
 		pub view: Retained<NSView>,
-		pub drawables: [Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>; MAX_SWAPCHAIN_IMAGES],
 		pub images: [Option<ImageHandle>; MAX_SWAPCHAIN_IMAGES],
 		pub proxy_uses: [crate::Uses; MAX_SWAPCHAIN_IMAGES],
-		pub acquired_image_indices: [u8; MAX_FRAMES_IN_FLIGHT],
 		pub extent: Extent,
 		pub pixel_format: mtl::MTLPixelFormat,
 	}
@@ -810,23 +807,11 @@ pub mod swapchain {
 			Self {
 				layer,
 				view,
-				drawables: std::array::from_fn(|_| None),
 				images: std::array::from_fn(|_| None),
 				proxy_uses: std::array::from_fn(|_| crate::Uses::empty()),
-				acquired_image_indices: [0; MAX_FRAMES_IN_FLIGHT],
 				extent,
 				pixel_format,
 			}
-		}
-
-		pub(crate) fn store_drawable(&mut self, drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>) -> u8 {
-			let slot = self.drawables.iter().position(|d| d.is_none()).unwrap_or(0);
-			self.drawables[slot] = Some(drawable);
-			slot as u8
-		}
-
-		pub(crate) fn take_drawable(&mut self, index: u8) -> Option<Retained<ProtocolObject<dyn CAMetalDrawable>>> {
-			self.drawables.get_mut(index as usize).and_then(|drawable| drawable.take())
 		}
 	}
 }

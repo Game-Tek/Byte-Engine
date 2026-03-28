@@ -1,9 +1,8 @@
 use utils::Extent;
 
 use crate::{
-	command_buffer::CommandBufferRecording, descriptors, graphics_hardware_interface,
-	graphics_hardware_interface::ImageHandleLike, BaseBufferHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle,
-	DynamicImageHandle, PresentKey, SwapchainHandle,
+	command_buffer::CommandBufferRecording, descriptors, graphics_hardware_interface, BaseBufferHandle, BaseImageHandle,
+	BufferHandle, CommandBufferHandle, DynamicBufferHandle, DynamicImageHandle, PresentKey, SwapchainHandle,
 };
 
 /// The `Frame` trait contains methods for performing per frame operations.
@@ -21,9 +20,9 @@ where
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
 
-	fn get_texture_slice_mut(&self, texture_handle: impl ImageHandleLike) -> &'static mut [u8];
+	fn get_texture_slice_mut(&self, texture_handle: DynamicImageHandle) -> &'static mut [u8];
 
-	fn sync_texture(&mut self, image_handle: impl ImageHandleLike);
+	fn sync_texture(&mut self, image_handle: DynamicImageHandle);
 
 	fn write(&mut self, descriptor_set_writes: &[descriptors::Write]);
 
@@ -38,7 +37,7 @@ where
 	/// Resizes an image to the specified extent.
 	/// Does nothing if the image is already the specified extent.
 	/// May not reallocate if a smaller size is requested.
-	fn resize_image(&mut self, image_handle: impl ImageHandleLike, extent: Extent);
+	fn resize_image(&mut self, image_handle: DynamicImageHandle, extent: Extent);
 
 	/// Creates a new command buffer recording.
 	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) -> Self::CBR<'_>;

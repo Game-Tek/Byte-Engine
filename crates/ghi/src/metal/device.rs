@@ -22,7 +22,7 @@ pub struct Device {
 	pub(crate) frames: u8,
 	pub(crate) queues: Vec<queue::Queue>,
 	pub(crate) buffers: ResourceCollection<buffer::Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
-	pub(crate) images: Vec<image::Image>,
+	pub(crate) images: ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(crate) samplers: Vec<sampler::Sampler>,
 	pub(crate) allocations: Vec<Allocation>,
 	pub(crate) descriptor_sets_layouts: Vec<DescriptorSetLayout>,
@@ -81,7 +81,7 @@ impl Device {
 			frames: MAX_FRAMES_IN_FLIGHT as u8,
 			queues: created_queues,
 			buffers: ResourceCollection::with_capacity(1024),
-			images: Vec::new(),
+			images: ResourceCollection::with_capacity(1024),
 			samplers: Vec::new(),
 			allocations: Vec::new(),
 			descriptor_sets_layouts: Vec::new(),
@@ -143,27 +143,8 @@ impl Device {
 		}
 	}
 
-	pub(super) fn create_image_internal(
-		&mut self,
-		next: Option<ImageHandle>,
-		name: Option<&str>,
-		extent: Extent,
-		format: crate::Formats,
-		resource_uses: crate::Uses,
-		device_accesses: crate::DeviceAccesses,
-		array_layers: u32,
-	) -> ImageHandle {
-		let handle = ImageHandle(self.images.len() as u64);
-		let image = self.create_image_resource(next, name, extent, format, resource_uses, device_accesses, array_layers);
-
-		self.images.push(image);
-
-		handle
-	}
-
 	pub(super) fn create_image_resource(
 		&self,
-		next: Option<ImageHandle>,
 		name: Option<&str>,
 		extent: Extent,
 		format: crate::Formats,
@@ -212,7 +193,6 @@ impl Device {
 		});
 
 		image::Image {
-			next,
 			texture,
 			extent,
 			format,
@@ -413,12 +393,8 @@ impl Device {
 				Some(Descriptor::Buffer { buffer: handle, size })
 			}
 			crate::descriptors::WriteData::Image { handle, layout } => {
-				let handles = ImageHandle(handle.0).get_all(&self.images);
-				let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
-				Some(Descriptor::Image {
-					image: handles[index],
-					layout,
-				})
+				let handle = self.images.nth_handle(handle, sequence_index as i64 - frame_offset as i64)?;
+				Some(Descriptor::Image { image: handle, layout })
 			}
 			crate::descriptors::WriteData::CombinedImageSampler {
 				image_handle,
@@ -426,10 +402,11 @@ impl Device {
 				layout,
 				..
 			} => {
-				let handles = ImageHandle(image_handle.0).get_all(&self.images);
-				let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
+				let handle = self
+					.images
+					.nth_handle(image_handle, sequence_index as i64 - frame_offset as i64)?;
 				Some(Descriptor::CombinedImageSampler {
-					image: handles[index],
+					image: handle,
 					sampler: SamplerHandle(sampler_handle.0),
 					layout,
 				})
@@ -1189,9 +1166,10 @@ impl Device {
 		let mut first_handle: Option<ImageHandle> = None;
 		let mut previous_handle: Option<ImageHandle> = None;
 
+		let master = self.images.master();
+
 		for _ in 0..self.frames {
-			let handle = self.create_image_internal(
-				None,
+			let image = self.create_image_resource(
 				builder.get_name(),
 				builder.extent,
 				builder.format,
@@ -1200,18 +1178,10 @@ impl Device {
 				layers,
 			);
 
-			if let Some(previous) = previous_handle {
-				self.images[previous.0 as usize].next = Some(handle);
-			} else {
-				first_handle = Some(handle);
-			}
-
-			previous_handle = Some(handle);
+			self.images.add_with_master(image, master);
 		}
 
-		let master =
-			first_handle.expect("Dynamic image creation failed. The most likely cause is that no images were allocated.");
-		graphics_hardware_interface::DynamicImageHandle(master.0)
+		graphics_hardware_interface::DynamicImageHandle(master)
 	}
 
 	pub fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
@@ -1234,7 +1204,8 @@ impl Device {
 	}
 
 	pub fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-		let image = &self.images[texture_handle.0 as usize];
+		let image = self.images.get_single(texture_handle.0);
+
 		let Some(staging) = image.staging.as_ref() else {
 			return &mut [];
 		};
@@ -1243,7 +1214,8 @@ impl Device {
 	}
 
 	pub fn write_texture(&mut self, texture_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let image = &mut self.images[texture_handle.0 as usize];
+		let image = self.images.resource_mut(self.images.nth_handle(texture_handle.0, 0).unwrap());
+
 		let Some(staging) = image.staging.as_mut() else {
 			return;
 		};
@@ -1278,7 +1250,7 @@ impl Device {
 	}
 
 	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {
-		let handle = ImageHandle(image_handle.0);
+		let handle = self.images.nth_handle(image_handle.0, 0).unwrap();
 		self.pending_image_syncs.push_back(handle);
 	}
 
@@ -1458,7 +1430,6 @@ impl Device {
 			let mut proxies = existing_proxies;
 			for image_index in 0..super::MAX_SWAPCHAIN_IMAGES {
 				let proxy = self.create_image_resource(
-					None,
 					Some("Swapchain Proxy Image"),
 					extent,
 					format,

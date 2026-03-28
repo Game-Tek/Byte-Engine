@@ -16,7 +16,7 @@ impl<'a> Frame<'a> {
 		Self { frame_key, device }
 	}
 
-	fn get_current_image_handle(&self, image_handle: impl graphics_hardware_interface::ImageHandleLike) -> ImageHandle {
+	fn get_current_image_handle(&self, image_handle: graphics_hardware_interface::DynamicImageHandle) -> ImageHandle {
 		let image_handle = image_handle.into_image_handle();
 		let handles = ImageHandle(image_handle.0).get_all(&self.device.images);
 		handles[(self.frame_key.sequence_index as usize).rem_euclid(handles.len())]
@@ -40,21 +40,23 @@ impl Frame<'_> {
 			.device
 			.buffers
 			.get_nth(buffer_handle.into(), self.frame_key.sequence_index as _)
-			.expect("Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.");
+			.expect(
+				"Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.",
+			);
 
 		unsafe { &mut *(buffer.pointer as *mut T) }
 	}
 
 	pub fn get_texture_slice_mut(
 		&mut self,
-		texture_handle: impl graphics_hardware_interface::ImageHandleLike,
+		texture_handle: graphics_hardware_interface::DynamicImageHandle,
 	) -> &'static mut [u8] {
 		self.device.get_texture_slice_mut(graphics_hardware_interface::ImageHandle(
 			self.get_current_image_handle(texture_handle).0,
 		))
 	}
 
-	pub fn sync_texture(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike) {
+	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::DynamicImageHandle) {
 		self.device.sync_texture(graphics_hardware_interface::ImageHandle(
 			self.get_current_image_handle(image_handle).0,
 		));
@@ -64,7 +66,7 @@ impl Frame<'_> {
 		self.device.write(descriptor_set_writes);
 	}
 
-	pub fn resize_image(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike, extent: Extent) {
+	pub fn resize_image(&mut self, image_handle: graphics_hardware_interface::DynamicImageHandle, extent: Extent) {
 		let handle = self.get_current_image_handle(image_handle);
 		let image = &self.device.images[handle.0 as usize];
 
@@ -72,15 +74,9 @@ impl Frame<'_> {
 			return;
 		}
 
-		let replacement = self.device.create_image_resource(
-			image.next,
-			None,
-			extent,
-			image.format,
-			image.uses,
-			image.access,
-			image.array_layers,
-		);
+		let replacement =
+			self.device
+				.create_image_resource(None, extent, image.format, image.uses, image.access, image.array_layers);
 		self.device.images[handle.0 as usize] = replacement;
 		self.device.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
 	}
@@ -98,23 +94,15 @@ impl Frame<'_> {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> (graphics_hardware_interface::PresentKey, Extent) {
 		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
+		let index = self.frame_key.sequence_index % 1 as u8; // TODO: get real number of images
 
 		swapchain.extent = update_layer_extent(&swapchain.layer, &swapchain.view);
-
-		let drawable = swapchain
-			.layer
-			.nextDrawable()
-			.expect("Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.");
-
-		let index = swapchain.store_drawable(drawable);
 
 		let present_key = graphics_hardware_interface::PresentKey {
 			image_index: index,
 			sequence_index: self.frame_key.sequence_index,
 			swapchain: swapchain_handle,
 		};
-
-		swapchain.acquired_image_indices[self.frame_key.sequence_index as usize] = index;
 
 		(present_key, swapchain.extent)
 	}
@@ -187,13 +175,13 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.sync_buffer(buffer_handle);
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: impl graphics_hardware_interface::ImageHandleLike) -> &'static mut [u8] {
+	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::DynamicImageHandle) -> &'static mut [u8] {
 		self.device.get_texture_slice_mut(graphics_hardware_interface::ImageHandle(
 			self.get_current_image_handle(texture_handle).0,
 		))
 	}
 
-	fn sync_texture(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike) {
+	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::DynamicImageHandle) {
 		self.device.sync_texture(graphics_hardware_interface::ImageHandle(
 			self.get_current_image_handle(image_handle).0,
 		));
@@ -211,12 +199,14 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			.device
 			.buffers
 			.get_nth(buffer_handle.into(), self.frame_key.sequence_index as _)
-			.expect("Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.");
+			.expect(
+				"Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.",
+			);
 
 		unsafe { &mut *(buffer.pointer as *mut T) }
 	}
 
-	fn resize_image(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike, extent: Extent) {
+	fn resize_image(&mut self, image_handle: graphics_hardware_interface::DynamicImageHandle, extent: Extent) {
 		Frame::resize_image(self, image_handle, extent);
 	}
 

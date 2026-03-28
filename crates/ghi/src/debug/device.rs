@@ -108,7 +108,7 @@ impl Device {
 	}
 
 	pub fn build_dynamic_image(&mut self, _builder: image::Builder) -> crate::DynamicImageHandle {
-		crate::DynamicImageHandle(0)
+		crate::DynamicImageHandle(crate::BaseImageHandle(0))
 	}
 
 	pub fn get_buffer_address(&self, _buffer_handle: BaseBufferHandle) -> u64 {
@@ -130,7 +130,7 @@ impl Device {
 	pub fn write_texture(&mut self, _texture_handle: ImageHandle, _f: impl FnOnce(&mut [u8])) {}
 
 	pub fn build_image(&mut self, _builder: image::Builder) -> ImageHandle {
-		ImageHandle(0)
+		ImageHandle(crate::BaseImageHandle(0))
 	}
 
 	pub fn build_sampler(&mut self, _builder: sampler::Builder) -> SamplerHandle {
@@ -193,7 +193,7 @@ impl Device {
 	}
 
 	pub fn get_swapchain_image(&mut self, _swapchain_handle: SwapchainHandle, _uses: Uses) -> (ImageHandle, Formats) {
-		(ImageHandle(0), Formats::BGRAu8)
+		(ImageHandle(crate::BaseImageHandle(0)), Formats::BGRAu8)
 	}
 
 	pub fn get_image_data<'a>(&'a self, _texture_copy_handle: TextureCopyHandle) -> &'a [u8] {

@@ -38,13 +38,42 @@ pub struct BufferHandle<T>(pub(super) BaseBufferHandle, pub(super) std::marker::
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct DynamicBufferHandle<T>(pub(super) BaseBufferHandle, pub(super) std::marker::PhantomData<T>);
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BaseImageHandle(pub(super) u64);
+
+impl MasterHandle for BaseImageHandle {
+	fn new(i: u64) -> Self {
+		BaseImageHandle(i)
+	}
+
+	fn index(&self) -> u64 {
+		self.0
+	}
+}
+
+impl From<BaseImageHandle> for Handles {
+	fn from(value: BaseImageHandle) -> Self {
+		Handles::Image(ImageHandle(value))
+	}
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ImageHandle(pub(super) BaseImageHandle);
+
+impl From<ImageHandle> for BaseImageHandle {
+	fn from(value: ImageHandle) -> Self {
+		value.0
+	}
+}
+
 /// The `DynamicImageHandle` struct addresses a frame-local image that can be written independently for each frame in flight.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
-pub struct DynamicImageHandle(pub(super) u64);
+pub struct DynamicImageHandle(pub(super) BaseImageHandle);
 
-pub trait ImageHandleLike: Copy {
-	#[doc(hidden)]
-	fn into_image_handle(self) -> ImageHandle;
+impl From<DynamicImageHandle> for BaseImageHandle {
+	fn from(value: DynamicImageHandle) -> Self {
+		value.0
+	}
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
@@ -61,9 +90,6 @@ pub struct ShaderHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PipelineHandle(pub(super) u64);
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct ImageHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MeshHandle(pub(super) u64);
@@ -110,21 +136,9 @@ impl<T: Copy> Into<BaseBufferHandle> for DynamicBufferHandle<T> {
 	}
 }
 
-impl ImageHandleLike for ImageHandle {
-	fn into_image_handle(self) -> ImageHandle {
-		self
-	}
-}
-
-impl ImageHandleLike for DynamicImageHandle {
-	fn into_image_handle(self) -> ImageHandle {
-		ImageHandle(self.0)
-	}
-}
-
 impl Into<Handles> for DynamicImageHandle {
 	fn into(self) -> Handles {
-		self.into_image_handle().into()
+		self.0.into()
 	}
 }
 
@@ -320,7 +334,7 @@ pub enum ClearValue {
 /// Stores the information of an attachment.
 pub struct AttachmentInformation {
 	/// The image view of the attachment.
-	pub(crate) image: ImageHandle,
+	pub(crate) image: BaseImageHandle,
 	/// The format of the attachment.
 	pub(crate) format: Formats,
 	/// The layout of the attachment.
@@ -337,7 +351,7 @@ pub struct AttachmentInformation {
 
 impl AttachmentInformation {
 	pub fn new(
-		image: impl ImageHandleLike,
+		image: impl Into<BaseImageHandle>,
 		format: Formats,
 		layout: Layouts,
 		clear: ClearValue,
@@ -345,7 +359,7 @@ impl AttachmentInformation {
 		store: bool,
 	) -> Self {
 		Self {
-			image: image.into_image_handle(),
+			image: image.into(),
 			format,
 			layout,
 			clear,
@@ -641,13 +655,13 @@ impl<'a> BindingConstructor<'a> {
 
 	pub fn image(
 		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
-		image_handle: impl ImageHandleLike,
+		image_handle: impl Into<BaseImageHandle>,
 	) -> Self {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
 			descriptor: descriptors::WriteData::Image {
-				handle: image_handle.into_image_handle(),
+				handle: image_handle.into(),
 				layout: crate::Layouts::General,
 			},
 			frame_offset: None,
@@ -665,7 +679,7 @@ impl<'a> BindingConstructor<'a> {
 
 	pub fn combined_image_sampler(
 		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
-		image_handle: impl ImageHandleLike,
+		image_handle: impl Into<BaseImageHandle>,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 	) -> Self {
@@ -673,7 +687,7 @@ impl<'a> BindingConstructor<'a> {
 			descriptor_set_binding_template,
 			array_element: 0,
 			descriptor: descriptors::WriteData::CombinedImageSampler {
-				image_handle: image_handle.into_image_handle(),
+				image_handle: image_handle.into(),
 				sampler_handle,
 				layout,
 				layer: None,
@@ -693,7 +707,7 @@ impl<'a> BindingConstructor<'a> {
 
 	pub fn combined_image_sampler_layer(
 		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
-		image_handle: ImageHandle,
+		image_handle: impl Into<BaseImageHandle>,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 		layer_index: u32,
@@ -702,7 +716,7 @@ impl<'a> BindingConstructor<'a> {
 			descriptor_set_binding_template,
 			array_element: 0,
 			descriptor: descriptors::WriteData::CombinedImageSampler {
-				image_handle,
+				image_handle: image_handle.into(),
 				sampler_handle,
 				layout,
 				layer: Some(layer_index),
@@ -1372,7 +1386,7 @@ pub(super) mod tests {
 
 		render_pass_command.end_render_pass();
 
-		let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
+		let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
 
 		command_buffer_recording.execute(signal);
 
@@ -1706,7 +1720,7 @@ pub(super) mod tests {
 
 			raster_pipeline_command.end_render_pass();
 
-			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
+			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
 
 			let terminated_command_buffer = command_buffer_recording.end(&[]);
 			frame.execute(terminated_command_buffer, render_finished_synchronizer);
@@ -1826,7 +1840,7 @@ pub(super) mod tests {
 
 			raster_pipeline_command.end_render_pass();
 
-			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
+			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
 
 			let terminated_command_buffer = command_buffer_recording.end(&[]);
 			frame.execute(terminated_command_buffer, render_finished_synchronizer);
@@ -1946,7 +1960,7 @@ pub(super) mod tests {
 
 			raster_pipeline_command.end_render_pass();
 
-			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
+			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
 
 			let terminated_command_buffer = command_buffer_recording.end(&[]);
 			frame.execute(terminated_command_buffer, render_finished_synchronizer);
@@ -2090,7 +2104,7 @@ pub(super) mod tests {
 
 			c.end_render_pass();
 
-			let copy_texture_handles = cb.transfer_textures(&[render_target]);
+			let copy_texture_handles = cb.transfer_textures(&[render_target.into()]);
 
 			let terminated_command_buffer = cb.end(&[]);
 			frame.execute(terminated_command_buffer, render_finished_synchronizer);
@@ -2211,8 +2225,13 @@ pub(super) mod tests {
 			frame.sync_texture(upload_image);
 
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
-			command_buffer_recording.blit_image(upload_image, Layouts::Transfer, readback_image, Layouts::Transfer);
-			let texture_copy_handles = command_buffer_recording.transfer_textures(&[readback_image]);
+			command_buffer_recording.blit_image(
+				upload_image.into(),
+				Layouts::Transfer,
+				readback_image.into(),
+				Layouts::Transfer,
+			);
+			let texture_copy_handles = command_buffer_recording.transfer_textures(&[readback_image.into()]);
 			let terminated_command_buffer = command_buffer_recording.end(&[]);
 			frame.execute(terminated_command_buffer, render_finished_synchronizer);
 
@@ -2312,7 +2331,7 @@ pub(super) mod tests {
 			.bind_descriptor_sets(&[descriptor_set])
 			.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
-		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
+		let copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
 
 		let terminated_command_buffer = command_buffer_recording.end(&[]);
 		frame.execute(terminated_command_buffer, signal);
@@ -2353,7 +2372,7 @@ pub(super) mod tests {
 			.bind_descriptor_sets(&[descriptor_set])
 			.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
-		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
+		let copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
 
 		let terminated_command_buffer = command_buffer_recording.end(&[]);
 		frame.execute(terminated_command_buffer, signal);
@@ -2393,7 +2412,7 @@ pub(super) mod tests {
 
 		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
 
-		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
+		let copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
 
 		let terminated_command_buffer = command_buffer_recording.end(&[]);
 		frame.execute(terminated_command_buffer, signal);
@@ -2425,7 +2444,7 @@ pub(super) mod tests {
 
 		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
 
-		let copy_handles = command_buffer_recording.transfer_textures(&[image]);
+		let copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
 
 		let terminated_command_buffer = command_buffer_recording.end(&[]);
 		frame.execute(terminated_command_buffer, signal);
@@ -2658,7 +2677,7 @@ pub(super) mod tests {
 
 		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
-		command_buffer_recording.write_image_data(sampled_texture, &pixels);
+		command_buffer_recording.write_image_data(sampled_texture.into(), &pixels);
 
 		let attachments = [AttachmentInformation::new(
 			render_target,
@@ -2684,7 +2703,7 @@ pub(super) mod tests {
 
 		raster_render_pass_command.end_render_pass();
 
-		let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
+		let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
 
 		let terminated_command_buffer = command_buffer_recording.end(&[]);
 		frame.execute(terminated_command_buffer, signal);
@@ -2999,7 +3018,7 @@ void main() {
 				1,
 			);
 
-			let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target]);
+			let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
 
 			let terminated_command_buffer = command_buffer_recording.end(&[]);
 			frame.execute(terminated_command_buffer, render_finished_synchronizer);

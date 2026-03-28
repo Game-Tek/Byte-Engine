@@ -1,6 +1,6 @@
 use crate::{
-	graphics_hardware_interface::ImageHandleLike, BaseBufferHandle, DescriptorSet, DescriptorSetBindingHandle, HandleLike,
-	ImageHandle, Layouts, Next, Ranges, SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
+	BaseBufferHandle, BaseImageHandle, DescriptorSet, DescriptorSetBindingHandle, HandleLike, Layouts, Next, Ranges,
+	SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -10,11 +10,11 @@ pub enum WriteData {
 		size: Ranges,
 	},
 	Image {
-		handle: ImageHandle,
+		handle: BaseImageHandle,
 		layout: Layouts,
 	},
 	CombinedImageSampler {
-		image_handle: ImageHandle,
+		image_handle: BaseImageHandle,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 		layer: Option<u32>,
@@ -61,12 +61,16 @@ impl Write {
 		}
 	}
 
-	pub fn image(binding_handle: DescriptorSetBindingHandle, image_handle: impl ImageHandleLike, layout: Layouts) -> Write {
+	pub fn image(
+		binding_handle: DescriptorSetBindingHandle,
+		image_handle: impl Into<BaseImageHandle>,
+		layout: Layouts,
+	) -> Write {
 		Write {
 			binding_handle,
 			array_element: 0,
 			descriptor: WriteData::Image {
-				handle: image_handle.into_image_handle(),
+				handle: image_handle.into(),
 				layout,
 			},
 			frame_offset: None,
@@ -75,7 +79,7 @@ impl Write {
 
 	pub fn image_with_frame(
 		binding_handle: DescriptorSetBindingHandle,
-		image_handle: impl ImageHandleLike,
+		image_handle: impl Into<BaseImageHandle>,
 		layout: Layouts,
 		frame_offset: i32,
 	) -> Write {
@@ -83,7 +87,7 @@ impl Write {
 			binding_handle,
 			array_element: 0,
 			descriptor: WriteData::Image {
-				handle: image_handle.into_image_handle(),
+				handle: image_handle.into(),
 				layout,
 			},
 			frame_offset: Some(frame_offset),
@@ -101,7 +105,7 @@ impl Write {
 
 	pub fn combined_image_sampler(
 		binding_handle: DescriptorSetBindingHandle,
-		image_handle: impl ImageHandleLike,
+		image_handle: impl Into<BaseImageHandle>,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 	) -> Write {
@@ -109,7 +113,7 @@ impl Write {
 			binding_handle,
 			array_element: 0,
 			descriptor: WriteData::CombinedImageSampler {
-				image_handle: image_handle.into_image_handle(),
+				image_handle: image_handle.into(),
 				sampler_handle,
 				layout,
 				layer: None,
@@ -120,7 +124,7 @@ impl Write {
 
 	pub fn combined_image_sampler_array(
 		binding_handle: DescriptorSetBindingHandle,
-		image_handle: ImageHandle,
+		image_handle: impl Into<BaseImageHandle>,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 		index: u32,
@@ -129,7 +133,7 @@ impl Write {
 			binding_handle,
 			array_element: index,
 			descriptor: WriteData::CombinedImageSampler {
-				image_handle,
+				image_handle: image_handle.into(),
 				sampler_handle,
 				layout,
 				layer: None,

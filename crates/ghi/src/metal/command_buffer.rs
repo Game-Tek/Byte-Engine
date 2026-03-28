@@ -94,14 +94,14 @@ impl<'a> CommandBufferRecording<'a> {
 		self.device.buffers.nth_handle(handle, self.sequence_index as _).unwrap()
 	}
 
-	fn get_internal_image_handle(&self, handle: graphics_hardware_interface::ImageHandle) -> ImageHandle {
+	fn get_internal_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
 		if let Some(swapchain) = self
 			.device
 			.swapchains
 			.iter()
 			.find(|swapchain| swapchain.images[0].map(|image| image.0 == handle.0).unwrap_or(false))
 		{
-			return swapchain.images[swapchain.acquired_image_indices[self.sequence_index as usize] as usize].expect(
+			return swapchain.images[handle.0 as usize].expect(
 				"Missing Metal swapchain proxy image for the acquired drawable. The most likely cause is that get_swapchain_image was not called before using the swapchain image.",
 			);
 		}
@@ -234,19 +234,13 @@ impl<'a> CommandBufferRecording<'a> {
 		self.device.states = self.states;
 	}
 
-	fn take_drawable(
-		&mut self,
-		present_key: graphics_hardware_interface::PresentKey,
-	) -> Option<Retained<ProtocolObject<dyn CAMetalDrawable>>> {
-		let swapchain = &mut self.device.swapchains[present_key.swapchain.0 as usize];
-		swapchain.take_drawable(present_key.image_index)
-	}
-
 	fn collect_present_drawables(&mut self, present_keys: &[graphics_hardware_interface::PresentKey]) {
 		for &present_key in present_keys {
-			if let Some(drawable) = self.take_drawable(present_key) {
-				self.present_drawables.push(drawable);
-			}
+			let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
+			let drawable = swapchain.layer.nextDrawable().expect(
+				"Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.",
+			);
+			self.present_drawables.push(drawable);
 		}
 	}
 }
@@ -345,14 +339,17 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		self
 	}
 
-	fn clear_images<I: graphics_hardware_interface::ImageHandleLike>(
+	fn clear_images(
 		&mut self,
-		textures: &[(I, graphics_hardware_interface::ClearValue)],
+		textures: &[(
+			graphics_hardware_interface::BaseImageHandle,
+			graphics_hardware_interface::ClearValue,
+		)],
 	) {
 		let consumptions = textures
 			.iter()
 			.map(|(handle, _)| Consumption {
-				handle: PrivateHandles::Image(self.get_internal_image_handle((*handle).into_image_handle())),
+				handle: PrivateHandles::Image(self.get_internal_image_handle(*handle)),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
@@ -380,7 +377,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 	fn transfer_textures(
 		&mut self,
-		texture_handles: &[impl graphics_hardware_interface::ImageHandleLike],
+		texture_handles: &[graphics_hardware_interface::BaseImageHandle],
 	) -> Vec<graphics_hardware_interface::TextureCopyHandle> {
 		let consumptions = texture_handles
 			.iter()
@@ -404,7 +401,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 	fn write_image_data(
 		&mut self,
-		image_handle: impl graphics_hardware_interface::ImageHandleLike,
+		image_handle: graphics_hardware_interface::BaseImageHandle,
 		data: &[graphics_hardware_interface::RGBAu8],
 	) {
 		let image_handle = self.get_internal_image_handle(image_handle.into_image_handle());
@@ -461,9 +458,9 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 	fn blit_image(
 		&mut self,
-		source_image: impl graphics_hardware_interface::ImageHandleLike,
+		source_image: graphics_hardware_interface::BaseImageHandle,
 		_source_layout: crate::Layouts,
-		destination_image: impl graphics_hardware_interface::ImageHandleLike,
+		destination_image: graphics_hardware_interface::BaseImageHandle,
 		_destination_layout: crate::Layouts,
 	) {
 		self.consume_resources([

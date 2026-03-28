@@ -1,7 +1,7 @@
 use crate::{
-	AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue, CommandBufferHandle,
-	DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, PresentKey, RGBAu8, SwapchainHandle,
-	SynchronizerHandle, TextureCopyHandle,
+	graphics_hardware_interface, AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue,
+	CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, PresentKey,
+	RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
 };
 use utils::Extent;
 
@@ -46,29 +46,24 @@ impl<'a> CommandBufferRecording<'a> {
 		self
 	}
 
-	pub fn clear_images<I: crate::graphics_hardware_interface::ImageHandleLike>(&mut self, _textures: &[(I, ClearValue)]) {}
+	pub fn clear_images(&mut self, _textures: &[(graphics_hardware_interface::BaseImageHandle, ClearValue)]) {}
 
 	pub fn clear_buffers(&mut self, _buffer_handles: &[BaseBufferHandle]) {}
 
 	pub fn transfer_textures(
 		&mut self,
-		_texture_handles: &[impl crate::graphics_hardware_interface::ImageHandleLike],
+		_texture_handles: &[graphics_hardware_interface::BaseImageHandle],
 	) -> Vec<TextureCopyHandle> {
 		Vec::new()
 	}
 
-	pub fn write_image_data(
-		&mut self,
-		_image_handle: impl crate::graphics_hardware_interface::ImageHandleLike,
-		_data: &[RGBAu8],
-	) {
-	}
+	pub fn write_image_data(&mut self, _image_handle: graphics_hardware_interface::BaseImageHandle, _data: &[RGBAu8]) {}
 
 	pub fn blit_image(
 		&mut self,
-		_source_image: impl crate::graphics_hardware_interface::ImageHandleLike,
+		_source_image: graphics_hardware_interface::BaseImageHandle,
 		_source_layout: Layouts,
-		_destination_image: impl crate::graphics_hardware_interface::ImageHandleLike,
+		_destination_image: graphics_hardware_interface::BaseImageHandle,
 		_destination_layout: Layouts,
 	) {
 	}

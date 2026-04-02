@@ -52,6 +52,10 @@ impl<'a> RenderPassBuilder<'a> {
 		self.images.alias(orig, alias);
 	}
 
+	pub fn format_of(&self, name: &str) -> ghi::Formats {
+		self.images.get(name).expect("Image not found").1
+	}
+
 	/// Use `render_to` to get a reference to an image you expect to exist.
 	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));

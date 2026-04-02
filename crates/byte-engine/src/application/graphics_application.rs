@@ -22,7 +22,12 @@ use crate::{
 			visibility::VisibilityWorldRenderDomain,
 		},
 		render_pass::RenderPass,
-		render_passes::{aces::AcesToneMapPass, agx::AgxToneMapPass, sky::SkyRenderPass},
+		render_passes::{
+			aces::AcesToneMapPass,
+			agx::AgxToneMapPass,
+			bloom::{BloomPass, BloomPassSettings},
+			sky::SkyRenderPass,
+		},
 		renderable, renderer,
 		scene_manager::SceneManager,
 		texture_manager::TextureManager,
@@ -640,6 +645,15 @@ pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 	let renderer = &mut application.renderer;
 
 	renderer.add_post_scene_render_pass_for_all_views(|render_pass_builder| Box::new(AgxToneMapPass::new(render_pass_builder)));
+}
+
+/// Registers a reusable bloom pass that should run before tonemapping.
+pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: BloomPassSettings) {
+	let renderer = &mut application.renderer;
+
+	renderer.add_post_scene_render_pass_for_all_views(move |render_pass_builder| {
+		Box::new(BloomPass::with_settings(render_pass_builder, settings))
+	});
 }
 
 pub fn setup_sky_render_pass(application: &mut GraphicsApplication) {

@@ -619,11 +619,7 @@ impl RenderTargets {
 	}
 
 	pub fn get(&self, name: &str) -> Option<&(ghi::ImageHandle, ghi::Formats)> {
-		if let Some((_, index)) = self.by_name.iter().find(|(n, _)| n == name) {
-			self.images.get(*index)
-		} else {
-			None
-		}
+		self.get_image_index(name).and_then(|index| self.images.get(index))
 	}
 
 	pub fn replace(&mut self, name: &str, image: ghi::ImageHandle, format: ghi::Formats) {
@@ -672,7 +668,7 @@ impl RenderTargets {
 	}
 
 	fn get_image_index(&self, name: &str) -> Option<usize> {
-		self.by_name.iter().find(|(n, _)| n == name).map(|(_, i)| *i)
+		self.by_name.iter().rev().find(|(n, _)| n == name).map(|(_, i)| *i)
 	}
 
 	fn get_attachment_index(&self, name: &str, view_id: usize) -> Option<usize> {
@@ -770,5 +766,20 @@ mod tests {
 		let rt = RenderTargets::new();
 		let attachments = rt.get_attachment_infos(0);
 		assert!(attachments.is_empty());
+	}
+
+	#[test]
+	fn test_alias_overrides_previous_mapping() {
+		let mut rt = RenderTargets::new();
+		let first_image = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
+		let second_image = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(2) };
+
+		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM);
+		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM);
+		rt.alias("first", "main");
+		rt.alias("second", "main");
+
+		let (image, _) = rt.get("main").expect("main alias should resolve");
+		assert_eq!(*image, second_image);
 	}
 }

@@ -2,9 +2,7 @@ use std::ptr::NonNull;
 
 use ::utils::hash::HashMap;
 use objc2_foundation::NSString;
-use objc2_metal::{
-	MTLBlitCommandEncoder, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture,
-};
+use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture};
 
 use super::*;
 use crate::{
@@ -13,7 +11,7 @@ use crate::{
 		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
 	descriptors::DescriptorSetHandle,
-	HandleLike as _, PrivateHandles,
+	ImageOrSwapchain, PrivateHandles,
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
@@ -24,7 +22,6 @@ pub struct CommandBufferRecording<'a> {
 	command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	sequence_index: u8,
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
-	present_drawables: Vec<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
 	states: HashMap<PrivateHandles, TransitionState>,
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
@@ -41,7 +38,6 @@ pub struct CommandBufferRecording<'a> {
 pub struct FinishedCommandBuffer<'a> {
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	pub(crate) command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
-	pub(crate) present_drawables: Vec<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
 	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
 	pub(crate) present_keys: &'a [graphics_hardware_interface::PresentKey],
 }
@@ -61,7 +57,6 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer_handle,
 			sequence_index,
 			command_buffer,
-			present_drawables: Vec::new(),
 			states,
 			active_pipeline_layout: None,
 			bound_pipeline_layout: None,
@@ -96,6 +91,17 @@ impl<'a> CommandBufferRecording<'a> {
 
 	fn get_internal_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
 		self.device.images.nth_handle(handle, self.sequence_index as _).unwrap()
+	}
+
+	fn get_current_swapchain_image_handle(
+		&self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	) -> ImageHandle {
+		self.device
+			.swapchain_image_handle_for_frame(swapchain_handle, self.sequence_index, 0)
+			.expect(
+				"Missing Metal swapchain proxy image. The most likely cause is that the swapchain did not create a proxy image for the acquired frame.",
+			)
 	}
 
 	fn consume_resources(&mut self, consumptions: impl IntoIterator<Item = Consumption>) {
@@ -207,11 +213,6 @@ impl<'a> CommandBufferRecording<'a> {
 			encoder.endEncoding();
 		}
 
-		for drawable in &self.present_drawables {
-			let drawable_ref: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
-			self.command_buffer.presentDrawable(drawable_ref);
-		}
-
 		self.command_buffer.commit();
 		self.command_buffer.waitUntilCompleted();
 
@@ -220,16 +221,6 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 
 		self.device.states = self.states;
-	}
-
-	fn collect_present_drawables(&mut self, present_keys: &[graphics_hardware_interface::PresentKey]) {
-		for &present_key in present_keys {
-			let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
-			let drawable = swapchain.layer.nextDrawable().expect(
-				"Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.",
-			);
-			self.present_drawables.push(drawable);
-		}
 	}
 }
 
@@ -259,45 +250,65 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			encoder.endEncoding();
 		}
 
-		let consumptions = attachments
-			.iter()
-			.map(|attachment| Consumption {
-				handle: PrivateHandles::Image(self.get_internal_image_handle(attachment.image)),
-				stages: crate::Stages::FRAGMENT,
-				access: if attachment.load {
-					crate::AccessPolicies::READ_WRITE
-				} else {
-					crate::AccessPolicies::WRITE
-				},
-				layout: attachment.layout,
-			})
-			.collect::<Vec<_>>();
-		self.consume_resources(consumptions);
+		let attachments = attachments.iter().map(|attachment| match attachment.target {
+			ImageOrSwapchain::Image(image) => {
+				let image = self.device.images.resource(self.get_internal_image_handle(image));
+
+				(attachment, image.texture.clone(), image.format)
+			}
+			ImageOrSwapchain::Swapchain(swapchain) => {
+				let image = self
+					.device
+					.images
+					.resource(self.get_current_swapchain_image_handle(swapchain));
+
+				(attachment, image.texture.clone(), image.format)
+			}
+		});
+
+		// let consumptions = attachments
+		// 	.filter_map(|(attachment, _, _)| Some(Consumption {
+		// 		handle: {
+		// 			match attachment.target {
+		// 				ImageOrSwapchain::Image(image) => {
+		// 					PrivateHandles::Image(self.get_internal_image_handle(image))
+		// 				}
+		// 				ImageOrSwapchain::Swapchain(_) => {
+		// 					return None;
+		// 				},
+		// 			}
+		// 		},
+		// 		stages: crate::Stages::FRAGMENT,
+		// 		access: if attachment.load {
+		// 			crate::AccessPolicies::READ_WRITE
+		// 		} else {
+		// 			crate::AccessPolicies::WRITE
+		// 		},
+		// 		layout: attachment.layout,
+		// 	}))
+		// 	.collect::<Vec<_>>();
+		// self.consume_resources(consumptions);
 
 		let rpd = mtl::MTLRenderPassDescriptor::new();
 
-		for (i, attachment) in attachments
-			.iter()
-			.filter(|attachment| attachment.format != crate::Formats::Depth32)
+		for (i, (attachment, image, format)) in attachments
+			.clone()
+			.filter(|(_, _, format)| *format != crate::Formats::Depth32)
 			.enumerate()
 		{
 			let att = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(i) };
-			let image = self.device.images.resource(self.get_internal_image_handle(attachment.image));
 
-			att.setTexture(Some(image.texture.as_ref()));
+			att.setTexture(Some(image.as_ref()));
 			att.setLoadAction(utils::load_action(attachment.load));
 			att.setStoreAction(utils::store_action(attachment.store));
 			att.setClearColor(utils::clear_color(attachment.clear));
 		}
 
-		if let Some(attachment) = attachments
-			.iter()
-			.find(|attachment| attachment.format == crate::Formats::Depth32)
+		if let Some((attachment, image, format)) = attachments.clone().find(|(_, _, format)| format == &crate::Formats::Depth32)
 		{
 			let att = unsafe { rpd.depthAttachment() };
-			let image = self.device.images.resource(self.get_internal_image_handle(attachment.image));
 
-			att.setTexture(Some(image.texture.as_ref()));
+			att.setTexture(Some(image.as_ref()));
 			att.setLoadAction(utils::load_action(attachment.load));
 			att.setStoreAction(utils::store_action(attachment.store));
 			att.setClearDepth(utils::clear_depth(attachment.clear));
@@ -474,8 +485,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	}
 
 	fn end<'a>(mut self, present_keys: &'a [graphics_hardware_interface::PresentKey]) -> Self::Result<'a> {
-		self.collect_present_drawables(present_keys);
-
 		if let Some(encoder) = self.active_render_encoder.take() {
 			encoder.endEncoding();
 		}
@@ -487,7 +496,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		FinishedCommandBuffer {
 			command_buffer_handle: self.command_buffer_handle,
 			command_buffer: self.command_buffer,
-			present_drawables: self.present_drawables,
 			states: self.states,
 			present_keys,
 		}

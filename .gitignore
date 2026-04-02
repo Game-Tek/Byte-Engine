@@ -8,6 +8,7 @@
 .byte-engine
 .byte-editor
 /assets
+.scs
 
 flamegraph.svg
 *.profraw

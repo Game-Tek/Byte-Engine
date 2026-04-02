@@ -331,12 +331,42 @@ pub enum ClearValue {
 }
 
 #[derive(Clone, Copy)]
+pub enum ImageOrSwapchain {
+	Image(BaseImageHandle),
+	Swapchain(SwapchainHandle),
+}
+
+impl From<BaseImageHandle> for ImageOrSwapchain {
+	fn from(value: BaseImageHandle) -> Self {
+		Self::Image(value)
+	}
+}
+
+impl From<ImageHandle> for ImageOrSwapchain {
+	fn from(value: ImageHandle) -> Self {
+		Self::Image(value.into())
+	}
+}
+
+impl From<DynamicImageHandle> for ImageOrSwapchain {
+	fn from(value: DynamicImageHandle) -> Self {
+		Self::Image(value.into())
+	}
+}
+
+impl From<SwapchainHandle> for ImageOrSwapchain {
+	fn from(value: SwapchainHandle) -> Self {
+		Self::Swapchain(value)
+	}
+}
+
+#[derive(Clone, Copy)]
 /// Stores the information of an attachment.
 pub struct AttachmentInformation {
 	/// The image view of the attachment.
-	pub(crate) image: BaseImageHandle,
-	/// The format of the attachment.
-	pub(crate) format: Formats,
+	pub(crate) target: ImageOrSwapchain,
+	/// The format of the attachment. If `None`, the format will be determined by the target image.
+	pub(crate) format: Option<Formats>,
 	/// The layout of the attachment.
 	pub(crate) layout: Layouts,
 	/// The clear color of the attachment.
@@ -350,17 +380,10 @@ pub struct AttachmentInformation {
 }
 
 impl AttachmentInformation {
-	pub fn new(
-		image: impl Into<BaseImageHandle>,
-		format: Formats,
-		layout: Layouts,
-		clear: ClearValue,
-		load: bool,
-		store: bool,
-	) -> Self {
+	pub fn new(target: impl Into<ImageOrSwapchain>, layout: Layouts, clear: ClearValue, load: bool, store: bool) -> Self {
 		Self {
-			image: image.into(),
-			format,
+			target: target.into(),
+			format: None,
 			layout,
 			clear,
 			load,
@@ -664,6 +687,18 @@ impl<'a> BindingConstructor<'a> {
 				handle: image_handle.into(),
 				layout: crate::Layouts::General,
 			},
+			frame_offset: None,
+		}
+	}
+
+	pub fn swapchain(
+		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
+		swapchain_handle: SwapchainHandle,
+	) -> Self {
+		Self {
+			descriptor_set_binding_template,
+			array_element: 0,
+			descriptor: descriptors::WriteData::Swapchain(swapchain_handle),
 			frame_offset: None,
 		}
 	}
@@ -1371,7 +1406,6 @@ pub(super) mod tests {
 
 		let attachments = [AttachmentInformation::new(
 			render_target,
-			Formats::RGBA8UNORM,
 			Layouts::RenderTarget,
 			ClearValue::Color(RGBA::black()),
 			false,
@@ -1476,8 +1510,6 @@ pub(super) mod tests {
 
 		renderer.start_frame_capture();
 
-		let (render_target, render_target_format) = renderer.get_swapchain_image(swapchain, Uses::RenderTarget);
-
 		let mut frame = renderer.start_frame(0, render_finished_synchronizer);
 
 		let (present_key, _) = frame.acquire_swapchain_image(swapchain);
@@ -1485,8 +1517,7 @@ pub(super) mod tests {
 		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 		let attachments = [AttachmentInformation::new(
-			render_target,
-			render_target_format,
+			swapchain,
 			Layouts::RenderTarget,
 			ClearValue::Color(RGBA::black()),
 			false,
@@ -1579,8 +1610,6 @@ pub(super) mod tests {
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
-		let (render_target, render_target_format) = renderer.get_swapchain_image(swapchain, Uses::RenderTarget);
-
 		for i in 0..2 * 64 {
 			renderer.start_frame_capture();
 
@@ -1591,8 +1620,7 @@ pub(super) mod tests {
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 
 			let attachments = [AttachmentInformation::new(
-				render_target,
-				render_target_format,
+				swapchain,
 				Layouts::RenderTarget,
 				ClearValue::Color(RGBA {
 					r: 0.0,
@@ -1705,7 +1733,6 @@ pub(super) mod tests {
 
 			let attachments = [AttachmentInformation::new(
 				render_target,
-				Formats::RGBA8UNORM,
 				Layouts::RenderTarget,
 				ClearValue::Color(RGBA::black()),
 				false,
@@ -1825,7 +1852,6 @@ pub(super) mod tests {
 
 			let attachments = [AttachmentInformation::new(
 				render_target,
-				Formats::RGBA8UNORM,
 				Layouts::RenderTarget,
 				ClearValue::Color(RGBA::black()),
 				false,
@@ -1945,7 +1971,6 @@ pub(super) mod tests {
 
 			let attachments = [AttachmentInformation::new(
 				render_target,
-				Formats::RGBA8UNORM,
 				Layouts::RenderTarget,
 				ClearValue::Color(RGBA::black()),
 				false,
@@ -2067,7 +2092,6 @@ pub(super) mod tests {
 
 			let attachments = [AttachmentInformation::new(
 				render_target,
-				Formats::RGBA8UNORM,
 				Layouts::RenderTarget,
 				ClearValue::Color(RGBA::black()),
 				false,
@@ -2681,7 +2705,6 @@ pub(super) mod tests {
 
 		let attachments = [AttachmentInformation::new(
 			render_target,
-			Formats::RGBA8UNORM,
 			Layouts::RenderTarget,
 			ClearValue::Color(RGBA {
 				r: 0.0,

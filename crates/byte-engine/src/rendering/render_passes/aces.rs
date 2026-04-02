@@ -134,7 +134,7 @@ impl AcesToneMapPass {
 		let render_pass = BaseAcesToneMapPass::new(render_pass_builder);
 
 		let read_from_main = render_pass_builder.read_from("main");
-		let render_to_main = render_pass_builder.render_to("result");
+		let render_to_main = render_pass_builder.render_to_swapchain();
 
 		let device = render_pass_builder.device();
 
@@ -147,7 +147,7 @@ impl AcesToneMapPass {
 		);
 		let destination_binding = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::image(&DESTINATION_BINDING_TEMPLATE, render_to_main),
+			ghi::BindingConstructor::swapchain(&DESTINATION_BINDING_TEMPLATE, render_to_main),
 		);
 
 		AcesToneMapPass {

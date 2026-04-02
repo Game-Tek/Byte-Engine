@@ -81,8 +81,6 @@ where
 		uses: Uses,
 	) -> SwapchainHandle;
 
-	fn get_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, uses: Uses) -> (ImageHandle, crate::Formats);
-
 	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8];
 
 	/// Starts a new frame by waiting for these sequence frame's synchronizers.

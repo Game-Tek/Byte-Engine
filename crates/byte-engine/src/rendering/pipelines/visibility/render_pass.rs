@@ -1002,7 +1002,6 @@ impl VisibilityPass {
 			attachments: [
 				ghi::AttachmentInformation::new(
 					primitive_index,
-					ghi::Formats::U32,
 					ghi::Layouts::RenderTarget,
 					ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
 					false,
@@ -1010,7 +1009,6 @@ impl VisibilityPass {
 				),
 				ghi::AttachmentInformation::new(
 					instance_id,
-					ghi::Formats::U32,
 					ghi::Layouts::RenderTarget,
 					ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
 					false,
@@ -1018,7 +1016,6 @@ impl VisibilityPass {
 				),
 				ghi::AttachmentInformation::new(
 					depth_target,
-					ghi::Formats::Depth32,
 					ghi::Layouts::RenderTarget,
 					ghi::ClearValue::Depth(0.0),
 					false,
@@ -1142,7 +1139,6 @@ impl ShadowPass {
 
 				let attachments = [ghi::AttachmentInformation::new(
 					shadow_map,
-					ghi::Formats::Depth32,
 					ghi::Layouts::RenderTarget,
 					ghi::ClearValue::Depth(0.0),
 					false,

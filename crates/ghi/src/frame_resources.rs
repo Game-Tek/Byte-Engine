@@ -106,16 +106,25 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 		self.resources.get(handle.index() as usize).map(|r| &r.resource)
 	}
 
-	pub(crate) fn get_nth(&self, handle: MH, frame_offset: i64) -> Option<&T> {
+	pub(crate) fn get_nth(&self, handle: MH, frame_offset: usize) -> Option<&T> {
 		self.nth_handle(handle, frame_offset).map(|handle| self.resource(handle))
 	}
 
-	pub(crate) fn nth_handle(&self, handle: MH, frame_offset: i64) -> Option<PH> {
-		let frame_offset = usize::try_from(frame_offset).ok()?;
+	pub(crate) fn nth_handle(&self, handle: MH, frame_offset: usize) -> Option<PH> {
 		let mut current = PH::new(handle.index());
 
-		for _ in 0..frame_offset {
-			current = self.entry(current).next?;
+		{
+			let mut i = 0;
+
+			while i <= frame_offset {
+				if let Some(next) = self.entry(current).next {
+					current = next;
+				} else {
+					break;
+				}
+
+				i += 1;
+			}
 		}
 
 		Some(current)

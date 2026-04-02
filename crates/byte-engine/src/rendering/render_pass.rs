@@ -98,6 +98,11 @@ impl<'a> RenderPassBuilder<'a> {
 	pub fn device(&mut self) -> &'_ mut ghi::implementation::Device {
 		self.device
 	}
+
+	pub(crate) fn render_to_swapchain(&self) -> ghi::SwapchainHandle {
+		// TODO: maybe track swapchain use
+		unsafe { std::mem::transmute(0u64) } // TODO: get actual handle
+	}
 }
 
 #[derive(Clone, Copy)]

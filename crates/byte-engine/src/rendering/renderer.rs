@@ -343,10 +343,6 @@ impl Renderer {
 			let Some((_present_key, extent, swapchain)) = swapchains[*index] else {
 				continue;
 			};
-			let (image, format) = frame
-				.device()
-				.get_swapchain_image(swapchain, ghi::Uses::RenderTarget | ghi::Uses::Storage);
-			self.render_targets.replace("result", image.into(), format);
 
 			let Some(camera) = self
 				.cameras
@@ -457,13 +453,6 @@ impl Renderer {
 				} else {
 					None
 				};
-
-				let (result, format) = self
-					.device
-					.get_swapchain_image(swapchain_handle, ghi::Uses::RenderTarget | ghi::Uses::Storage);
-
-				self.render_targets
-					.insert("result".to_string(), viewport_id, result.into(), format);
 
 				if let Some(view_id) = view_id {
 					let scene_managers = self.scene_managers.iter_mut();
@@ -622,25 +611,12 @@ impl RenderTargets {
 		self.get_image_index(name).and_then(|index| self.images.get(index))
 	}
 
-	pub fn replace(&mut self, name: &str, image: ghi::BaseImageHandle, format: ghi::Formats) {
-		let index = self.get_image_index(name).expect("Image not found");
-		self.images[index] = (image, format);
-	}
-
 	pub fn get_attachment_infos(&self, view: usize) -> Vec<ghi::AttachmentInformation> {
-		let result_index = self
-			.by_name
-			.iter()
-			.find(|(name, _)| name == "result")
-			.map(|(_, index)| *index);
-
 		let attachments = self
 			.by_view_index
 			.iter()
 			.filter_map(|(v, (i, ap))| {
-				let is_result_attachment = result_index == Some(*i);
-
-				if *v == view && !is_result_attachment {
+				if *v == view {
 					let (image, format) = self.images.get(*i)?;
 					Some((image, format, ap))
 				} else {
@@ -656,7 +632,8 @@ impl RenderTargets {
 					ghi::ClearValue::Color(RGBA::black())
 				};
 
-				ghi::AttachmentInformation::new(*image, *format, ghi::Layouts::RenderTarget, clear_value, load, store)
+				ghi::AttachmentInformation::new(*image, ghi::Layouts::RenderTarget, clear_value, load, store)
+				// TODO: contionally pass format
 			});
 
 		attachments.collect()
@@ -682,14 +659,6 @@ impl RenderTargets {
 	fn get_images_for_view<'a>(&'a self, index: usize) -> impl Iterator<Item = &'a ghi::BaseImageHandle> {
 		self.by_view_index.iter().filter_map(move |(v, (i, _))| {
 			if *v != index {
-				return None;
-			}
-
-			if self
-				.by_name
-				.iter()
-				.any(|(name, image_index)| name == "result" && *image_index == *i)
-			{
 				return None;
 			}
 

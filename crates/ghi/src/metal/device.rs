@@ -12,9 +12,10 @@ use crate::{
 	buffer::{self as buffer_builder, BufferHandle},
 	descriptors::DescriptorSetHandle,
 	image::{self as image_builder, ImageHandle},
+	metal::swapchain::Swapchain,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
-	window, HandleLike as _, ResourceCollection, Size,
+	window, DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
 };
 
 pub struct Device {
@@ -42,6 +43,9 @@ pub struct Device {
 
 	pub(crate) resource_to_descriptor: HashMap<PrivateHandles, HashSet<(DescriptorSetBindingHandle, u32, u8)>>,
 	pub(crate) descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32, u32, u8), HashSet<PrivateHandles>>,
+	pub(crate) swapchain_descriptor_sources: HashMap<SwapchainDescriptorBinding, SwapchainDescriptorSource>,
+	pub(crate) swapchain_to_descriptor_bindings:
+		HashMap<graphics_hardware_interface::SwapchainHandle, HashSet<SwapchainDescriptorBinding>>,
 
 	pub settings: crate::device::Features,
 	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
@@ -52,6 +56,18 @@ pub struct Device {
 
 	#[cfg(debug_assertions)]
 	pub names: HashMap<graphics_hardware_interface::Handles, String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct SwapchainDescriptorBinding {
+	pub(crate) binding_handle: DescriptorSetBindingHandle,
+	pub(crate) array_element: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SwapchainDescriptorSource {
+	pub(crate) swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	pub(crate) frame_offset: i32,
 }
 
 impl Device {
@@ -100,6 +116,8 @@ impl Device {
 			swapchains: Vec::new(),
 			resource_to_descriptor: HashMap::default(),
 			descriptor_set_to_resource: HashMap::default(),
+			swapchain_descriptor_sources: HashMap::default(),
+			swapchain_to_descriptor_bindings: HashMap::default(),
 			settings,
 			states: HashMap::default(),
 			pending_buffer_syncs: VecDeque::new(),
@@ -203,6 +221,7 @@ impl Device {
 		}
 	}
 
+	/// Stores a resolved descriptor for one binding slot, re-encodes the argument buffer, and refreshes resource tracking.
 	fn update_descriptor_for_binding(
 		&mut self,
 		binding_handle: DescriptorSetBindingHandle,
@@ -233,6 +252,7 @@ impl Device {
 		);
 	}
 
+	/// Removes reverse-tracking entries for the descriptor currently associated with one binding element in one frame.
 	fn clear_descriptor_tracking(
 		&mut self,
 		set_handle: DescriptorSetHandle,
@@ -260,6 +280,7 @@ impl Device {
 		}
 	}
 
+	/// Registers reverse-tracking for resource-backed descriptors so later resource changes can re-encode the affected bindings.
 	fn register_descriptor_tracking(
 		&mut self,
 		set_handle: DescriptorSetHandle,
@@ -283,6 +304,93 @@ impl Device {
 			.insert((binding_handle, array_element, frame_index));
 	}
 
+	/// Removes swapchain tracking for one descriptor binding element when it stops targeting a swapchain.
+	fn clear_swapchain_descriptor_registration(&mut self, binding_handle: DescriptorSetBindingHandle, array_element: u32) {
+		let key = SwapchainDescriptorBinding {
+			binding_handle,
+			array_element,
+		};
+		let Some(source) = self.swapchain_descriptor_sources.remove(&key) else {
+			return;
+		};
+
+		let should_remove = if let Some(bindings) = self.swapchain_to_descriptor_bindings.get_mut(&source.swapchain_handle) {
+			bindings.remove(&key);
+			bindings.is_empty()
+		} else {
+			false
+		};
+
+		if should_remove {
+			self.swapchain_to_descriptor_bindings.remove(&source.swapchain_handle);
+		}
+	}
+
+	/// Tracks descriptor bindings that resolve through a swapchain so the current frame can refresh them after image acquisition.
+	fn update_swapchain_descriptor_registration(
+		&mut self,
+		binding_handle: DescriptorSetBindingHandle,
+		descriptor: crate::descriptors::WriteData,
+		array_element: u32,
+		frame_offset: i32,
+	) {
+		self.clear_swapchain_descriptor_registration(binding_handle, array_element);
+
+		let crate::descriptors::WriteData::Swapchain(swapchain_handle) = descriptor else {
+			return;
+		};
+
+		let key = SwapchainDescriptorBinding {
+			binding_handle,
+			array_element,
+		};
+
+		self.swapchain_descriptor_sources.insert(
+			key,
+			SwapchainDescriptorSource {
+				swapchain_handle,
+				frame_offset,
+			},
+		);
+		self.swapchain_to_descriptor_bindings
+			.entry(swapchain_handle)
+			.or_default()
+			.insert(key);
+	}
+
+	fn swapchain_sequence_index(&self, sequence_index: u8, frame_offset: i32) -> usize {
+		let total_frames = self.frames.max(1) as i32;
+		(sequence_index as i32 - frame_offset).rem_euclid(total_frames) as usize
+	}
+
+	pub(crate) fn swapchain_image_handle_for_frame(
+		&self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		sequence_index: u8,
+		frame_offset: i32,
+	) -> Option<ImageHandle> {
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let source_sequence = self.swapchain_sequence_index(sequence_index, frame_offset);
+		let image_index = swapchain.acquired_image_indices.get(source_sequence).copied().unwrap_or(0) as usize;
+
+		swapchain.images.get(image_index).copied().flatten()
+	}
+
+	/// Resolves a swapchain-backed descriptor to the proxy image used by the requested frame.
+	fn resolve_swapchain_descriptor_for_frame(
+		&self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		sequence_index: u8,
+		frame_offset: i32,
+	) -> Option<Descriptor> {
+		self.swapchain_image_handle_for_frame(swapchain_handle, sequence_index, frame_offset)
+			.map(|image| Descriptor::Image {
+				image,
+				layout: crate::Layouts::General,
+			})
+	}
+
+	/// Writes a resolved descriptor into the Metal argument buffer for one frame and array element.
 	fn encode_descriptor_binding(
 		&mut self,
 		set_handle: DescriptorSetHandle,
@@ -343,6 +451,7 @@ impl Device {
 		}
 	}
 
+	/// Pre-encodes immutable samplers into every frame of a descriptor set.
 	fn encode_immutable_samplers(&mut self, set_handle: DescriptorSetHandle) {
 		let descriptor_set_layout_handle = self.descriptor_sets[set_handle.0 as usize].descriptor_set_layout;
 		let (argument_encoder, bindings) = {
@@ -380,6 +489,8 @@ impl Device {
 		}
 	}
 
+	/// Resolves a descriptor write into the concrete per-frame Metal resources referenced by the current sequence.
+	/// TODO: fix delta indexing in this function
 	fn resolve_descriptor_for_frame(
 		&self,
 		descriptor: crate::descriptors::WriteData,
@@ -388,12 +499,14 @@ impl Device {
 	) -> Option<Descriptor> {
 		match descriptor {
 			crate::descriptors::WriteData::Buffer { handle, size } => {
-				let index = (sequence_index as i32 - frame_offset) as i64;
+				let index = (sequence_index as i32 - frame_offset) as usize;
 				let handle = self.buffers.nth_handle(handle, index)?;
 				Some(Descriptor::Buffer { buffer: handle, size })
 			}
 			crate::descriptors::WriteData::Image { handle, layout } => {
-				let handle = self.images.nth_handle(handle, sequence_index as i64 - frame_offset as i64)?;
+				let handle = self
+					.images
+					.nth_handle(handle, (sequence_index as i64 - frame_offset as i64) as usize)?;
 				Some(Descriptor::Image { image: handle, layout })
 			}
 			crate::descriptors::WriteData::CombinedImageSampler {
@@ -404,7 +517,7 @@ impl Device {
 			} => {
 				let handle = self
 					.images
-					.nth_handle(image_handle, sequence_index as i64 - frame_offset as i64)?;
+					.nth_handle(image_handle, (sequence_index as i64 - frame_offset as i64) as usize)?;
 				Some(Descriptor::CombinedImageSampler {
 					image: handle,
 					sampler: SamplerHandle(sampler_handle.0),
@@ -417,10 +530,13 @@ impl Device {
 			crate::descriptors::WriteData::StaticSamplers => None,
 			crate::descriptors::WriteData::CombinedImageSamplerArray => None,
 			crate::descriptors::WriteData::AccelerationStructure { .. } => None,
-			crate::descriptors::WriteData::Swapchain(_) => None,
+			crate::descriptors::WriteData::Swapchain(swapchain_handle) => {
+				self.resolve_swapchain_descriptor_for_frame(swapchain_handle, sequence_index, frame_offset)
+			}
 		}
 	}
 
+	/// Resolves and applies a descriptor write for a single frame when the referenced resources are available.
 	fn apply_descriptor_write_for_frame(
 		&mut self,
 		binding_handle: DescriptorSetBindingHandle,
@@ -434,6 +550,7 @@ impl Device {
 		}
 	}
 
+	/// Applies the same descriptor write across every frame tracked by the Metal device.
 	fn apply_descriptor_write_to_all_frames(
 		&mut self,
 		binding_handle: DescriptorSetBindingHandle,
@@ -446,6 +563,7 @@ impl Device {
 		}
 	}
 
+	/// Re-encodes every tracked descriptor binding that references a resource after its Metal backing changes.
 	pub(crate) fn rewrite_descriptors_for_handle(&mut self, handle: PrivateHandles) {
 		let Some(descriptor_bindings) = self.resource_to_descriptor.get(&handle).cloned() else {
 			return;
@@ -464,6 +582,73 @@ impl Device {
 				self.encode_descriptor_binding(set_handle, binding.index, descriptor, frame_index, array_element);
 			}
 		}
+	}
+
+	/// Refreshes every descriptor binding that currently points at the acquired image for one swapchain frame.
+	pub(crate) fn update_swapchain_descriptors_for_frame(
+		&mut self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		sequence_index: u8,
+	) {
+		let Some(bindings) = self.swapchain_to_descriptor_bindings.get(&swapchain_handle).cloned() else {
+			return;
+		};
+
+		for binding in bindings {
+			let Some(source) = self.swapchain_descriptor_sources.get(&binding).copied() else {
+				continue;
+			};
+			let Some(descriptor) =
+				self.resolve_swapchain_descriptor_for_frame(source.swapchain_handle, sequence_index, source.frame_offset)
+			else {
+				continue;
+			};
+
+			self.update_descriptor_for_binding(binding.binding_handle, descriptor, sequence_index, binding.array_element);
+		}
+	}
+
+	/// Resizes every swapchain proxy image in place so existing descriptors can keep their image handles.
+	pub(crate) fn resize_swapchain_images(
+		&mut self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		extent: Extent,
+	) {
+		let image_handles = self.swapchains[swapchain_handle.0 as usize]
+			.images
+			.into_iter()
+			.flatten()
+			.collect::<Vec<_>>();
+
+		for image_handle in image_handles {
+			let (current_extent, format, uses, access, array_layers) = {
+				let image = self.images.resource(image_handle);
+				(image.extent, image.format, image.uses, image.access, image.array_layers)
+			};
+
+			if current_extent == extent {
+				continue;
+			}
+
+			let replacement = self.create_image_resource(None, extent, format, uses, access, array_layers);
+			*self.images.resource_mut(image_handle) = replacement;
+			self.rewrite_descriptors_for_handle(PrivateHandles::Image(image_handle));
+		}
+	}
+
+	/// Removes the drawable reserved for one presentation request and hands it to frame execution.
+	pub(crate) fn take_swapchain_drawable(
+		&mut self,
+		present_key: graphics_hardware_interface::PresentKey,
+	) -> Retained<ProtocolObject<dyn CAMetalDrawable>> {
+		let swapchain = &mut self.swapchains[present_key.swapchain.0 as usize];
+		swapchain
+			.drawables
+			.get_mut(present_key.sequence_index as usize)
+			.and_then(Option::take)
+			.expect(
+				"Missing Metal drawable for presentation. The most likely cause is that the frame did not acquire the swapchain image before execution.",
+			)
 	}
 
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
@@ -595,6 +780,10 @@ impl Device {
 
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
 		self.frames = frames.max(1);
+		for swapchain in &mut self.swapchains {
+			swapchain.acquired_image_indices.resize(self.frames as usize, 0);
+			swapchain.drawables.resize_with(self.frames as usize, || None);
+		}
 		// TODO: Rebuild dynamic resources for new frame count.
 	}
 
@@ -698,6 +887,7 @@ impl Device {
 		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
 	}
 
+	/// Builds the Metal argument-buffer layout that backs a descriptor set template.
 	pub fn create_descriptor_set_template(
 		&mut self,
 		_name: Option<&str>,
@@ -790,6 +980,7 @@ impl Device {
 		graphics_hardware_interface::DescriptorSetTemplateHandle((self.descriptor_sets_layouts.len() - 1) as u64)
 	}
 
+	/// Allocates the per-frame Metal argument buffers for a descriptor set and seeds its immutable samplers.
 	pub fn create_descriptor_set(
 		&mut self,
 		_name: Option<&str>,
@@ -824,6 +1015,7 @@ impl Device {
 		graphics_hardware_interface::DescriptorSetHandle(handle.0)
 	}
 
+	/// Creates a descriptor binding record and applies its initial contents across all frames.
 	pub fn create_descriptor_binding(
 		&mut self,
 		descriptor_set: graphics_hardware_interface::DescriptorSetHandle,
@@ -842,11 +1034,18 @@ impl Device {
 		});
 
 		let binding_handle = DescriptorSetBindingHandle((self.bindings.len() - 1) as u64);
+		let frame_offset = binding_constructor.frame_offset.map(i32::from).unwrap_or(0);
+		self.update_swapchain_descriptor_registration(
+			binding_handle,
+			binding_constructor.descriptor,
+			binding_constructor.array_element,
+			frame_offset,
+		);
 		self.apply_descriptor_write_to_all_frames(
 			binding_handle,
 			binding_constructor.descriptor,
 			binding_constructor.array_element,
-			binding_constructor.frame_offset.map(i32::from).unwrap_or(0),
+			frame_offset,
 		);
 
 		graphics_hardware_interface::DescriptorSetBindingHandle(binding_handle.0)
@@ -1340,8 +1539,15 @@ impl Device {
 		graphics_hardware_interface::BottomLevelAccelerationStructureHandle((self.acceleration_structures.len() - 1) as u64)
 	}
 
+	/// Applies descriptor writes to the Metal-backed bindings for every frame they target.
 	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
 		for write in descriptor_set_writes {
+			self.update_swapchain_descriptor_registration(
+				DescriptorSetBindingHandle(write.binding_handle.0),
+				write.descriptor,
+				write.array_element,
+				write.frame_offset.unwrap_or(0),
+			);
 			self.apply_descriptor_write_to_all_frames(
 				DescriptorSetBindingHandle(write.binding_handle.0),
 				write.descriptor,
@@ -1379,90 +1585,64 @@ impl Device {
 		window_os_handles: &window::Handles,
 		_presentation_mode: graphics_hardware_interface::PresentationModes,
 		fallback_extent: Extent,
-		_uses: crate::Uses,
+		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
 		let layer = CAMetalLayer::new();
 		layer.setDevice(Some(&self.device));
 		layer.setPixelFormat(mtl::MTLPixelFormat::BGRA8Unorm);
-		layer.setFramebufferOnly(false);
+		layer.setFramebufferOnly(false); // If true, higher perfomance but can only write to image from raster render pass
 
 		window_os_handles.view.setWantsLayer(true);
 		window_os_handles.view.setLayer(Some(layer.as_super()));
 		let extent = update_layer_extent(&layer, &window_os_handles.view);
 
-		self.swapchains.push(swapchain::Swapchain::new(
-			layer,
-			window_os_handles.view.clone(),
-			if extent.width() == 0 || extent.height() == 0 {
-				fallback_extent
-			} else {
-				extent
-			},
-			mtl::MTLPixelFormat::BGRA8Unorm,
-		));
-		graphics_hardware_interface::SwapchainHandle((self.swapchains.len() - 1) as u64)
-	}
+		let format = mtl::MTLPixelFormat::BGRA8Unorm;
 
-	pub fn get_swapchain_image(
-		&mut self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-		uses: crate::Uses,
-	) -> (graphics_hardware_interface::ImageHandle, crate::Formats) {
-		let (extent, format) = {
-			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-			let format = match swapchain.pixel_format {
-				mtl::MTLPixelFormat::BGRA8Unorm => crate::Formats::BGRAu8,
-				mtl::MTLPixelFormat::BGRA8Unorm_sRGB => crate::Formats::BGRAsRGB,
-				_ => panic!(
-					"Unsupported Metal swapchain pixel format. The most likely cause is that the layer pixel format does not have a matching GHI format."
-				),
-			};
-			(swapchain.extent, format)
+		let needs_proxies = {
+			true // Force proxy creation, easier to handle descriptors, for now at least
 		};
 
-		let needs_new_proxy = {
-			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-			let proxy_matches_extent = swapchain.images[0]
-				.map(|image_handle| self.images.resource(image_handle).extent == extent)
-				.unwrap_or(false);
-
-			!proxy_matches_extent || !swapchain.proxy_uses[0].contains(uses)
+		let format = match format {
+			mtl::MTLPixelFormat::BGRA8Unorm => crate::Formats::BGRAu8,
+			mtl::MTLPixelFormat::BGRA8Unorm_sRGB => crate::Formats::BGRAsRGB,
+			_ => panic!(
+				"Unsupported Metal swapchain pixel format. The most likely cause is that the layer pixel format does not have a matching GHI format."
+			),
 		};
 
-		if needs_new_proxy {
-			let existing_proxies = self.swapchains[swapchain_handle.0 as usize].images;
-			let mut proxies = existing_proxies;
+		let mut images = [None; super::MAX_SWAPCHAIN_IMAGES];
+
+		if needs_proxies {
+			// Create proxies for every swapchain image
+
 			for image_index in 0..super::MAX_SWAPCHAIN_IMAGES {
 				let proxy = self.create_image_resource(
 					Some("Swapchain Proxy Image"),
 					extent,
 					format,
-					uses | crate::Uses::BlitSource,
-					crate::DeviceAccesses::DeviceOnly,
+					uses | Uses::BlitSource,
+					DeviceAccesses::DeviceOnly,
 					1,
 				);
 
-				if let Some(handle) = existing_proxies[image_index] {
-					*self.images.resource_mut(handle) = proxy;
-					proxies[image_index] = Some(handle);
-				} else {
-					let handle = self.images.add(proxy);
-					proxies[image_index] = Some(handle.1);
-				}
+				let image_handle = self.images.add(proxy);
+
+				images[image_index] = Some(image_handle.1);
 			}
-			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
-			swapchain.images = proxies;
-			swapchain.proxy_uses = [uses; super::MAX_SWAPCHAIN_IMAGES];
 		}
 
-		let image = self.swapchains[swapchain_handle.0 as usize].images[0].expect(
-			"Missing Metal swapchain proxy image. The most likely cause is that swapchain image access did not create the proxy image.",
-		);
+		let handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
 
-		(
-			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle(image.0)),
-			format,
-		)
+		self.swapchains.push(Swapchain {
+			layer,
+			view: window_os_handles.view.clone(),
+			extent,
+			images,
+			acquired_image_indices: vec![0; self.frames as usize],
+			drawables: (0..self.frames as usize).map(|_| None).collect(),
+		});
+
+		handle
 	}
 
 	pub fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {

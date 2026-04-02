@@ -91,18 +91,33 @@ impl Frame<'_> {
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> (graphics_hardware_interface::PresentKey, Extent) {
-		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
-		let index = self.frame_key.sequence_index % 1 as u8; // TODO: get real number of images
+		let sequence_index = self.frame_key.sequence_index;
+		let index = 0; // TODO: get real number of images
+		let frame_count = self.device.frames as usize;
+		let extent = {
+			let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
+			swapchain.acquired_image_indices.resize(frame_count, 0);
+			swapchain.drawables.resize_with(frame_count, || None);
 
-		swapchain.extent = update_layer_extent(&swapchain.layer, &swapchain.view);
+			swapchain.extent = update_layer_extent(&swapchain.layer, &swapchain.view);
+			swapchain.acquired_image_indices[sequence_index as usize] = index;
+			swapchain.drawables[sequence_index as usize] = Some(swapchain.layer.nextDrawable().expect(
+				"Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.",
+			));
+			swapchain.extent
+		};
+
+		self.device.resize_swapchain_images(swapchain_handle, extent);
+		self.device
+			.update_swapchain_descriptors_for_frame(swapchain_handle, sequence_index);
 
 		let present_key = graphics_hardware_interface::PresentKey {
 			image_index: index,
-			sequence_index: self.frame_key.sequence_index,
+			sequence_index,
 			swapchain: swapchain_handle,
 		};
 
-		(present_key, swapchain.extent)
+		(present_key, extent)
 	}
 
 	pub fn device(&mut self) -> &mut device::Device {
@@ -117,10 +132,14 @@ impl Frame<'_> {
 		let super::FinishedCommandBuffer {
 			command_buffer_handle: _command_buffer_handle,
 			command_buffer,
-			present_drawables,
 			states,
 			present_keys,
 		} = cbr;
+		let mut present_drawables = Vec::with_capacity(present_keys.len());
+
+		for &present_key in present_keys {
+			present_drawables.push(self.device.take_swapchain_drawable(present_key));
+		}
 
 		if !present_keys.is_empty() {
 			let blit_encoder = command_buffer.blitCommandEncoder().expect(
@@ -132,7 +151,7 @@ impl Frame<'_> {
 				let Some(proxy_image) = swapchain.images[present_key.image_index as usize] else {
 					continue;
 				};
-				let source_texture = self.device.images.resource(proxy_image).texture.clone();
+				let source_texture = &self.device.images.resource(proxy_image).texture;
 				let destination_texture = drawable.texture();
 
 				unsafe {

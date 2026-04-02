@@ -478,7 +478,6 @@ impl RenderPass for UiRenderPass {
 
 				let attachments = [ghi::AttachmentInformation::new(
 					main_attachment,
-					MAIN_ATTACHMENT_FORMAT,
 					ghi::Layouts::RenderTarget,
 					ghi::ClearValue::None,
 					true,

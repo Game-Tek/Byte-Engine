@@ -250,6 +250,7 @@ dependencies = [
  "dual_quaternion",
  "fontdue",
  "ghi",
+ "half",
  "hidapi",
  "log",
  "math",

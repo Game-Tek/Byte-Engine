@@ -11,6 +11,7 @@ pub mod asset_manager;
 
 pub mod bema_asset_handler;
 pub mod gltf_asset_handler;
+pub mod lut_asset_handler;
 pub mod ogg_asset_handler;
 pub mod png_asset_handler;
 pub mod wav_asset_handler;

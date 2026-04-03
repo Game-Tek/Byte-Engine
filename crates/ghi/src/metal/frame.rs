@@ -102,6 +102,13 @@ impl Frame<'_> {
 		let sequence_index = self.frame_key.sequence_index;
 
 		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
+
+		// Update layer extent before acquiring the drawable so that if a resize occurred,
+		// the drawable is allocated at the correct size. update_layer_extent only calls
+		// setDrawableSize when the size actually changed, avoiding unnecessary drawable
+		// pool invalidation.
+		let extent = update_layer_extent(&swapchain.layer, &swapchain.view);
+
 		let drawable = swapchain
 			.layer
 			.nextDrawable()
@@ -112,8 +119,6 @@ impl Frame<'_> {
 			sequence_index,
 			swapchain: swapchain_handle,
 		};
-
-		let extent = update_layer_extent(&swapchain.layer, &swapchain.view);
 
 		self.drawables.push((swapchain_handle, drawable));
 

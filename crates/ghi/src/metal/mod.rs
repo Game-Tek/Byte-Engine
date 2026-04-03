@@ -79,7 +79,8 @@ pub(super) struct MetalConsumption {
 const MAX_FRAMES_IN_FLIGHT: usize = 3;
 const MAX_SWAPCHAIN_IMAGES: usize = 8;
 
-fn update_layer_extent(layer: &CAMetalLayer, view: &NSView) -> Extent {
+/// Returns the current/old drawable size, the new drawable size, and the scale factor.
+fn get_layer_sizes(layer: &CAMetalLayer, view: &NSView) -> (NSSize, NSSize, f64) {
 	let logical_size = view.frame().size;
 	let drawable_size = view.convertSizeToBacking(logical_size);
 	let scale_factor = if logical_size.width > 0.0 {
@@ -90,12 +91,35 @@ fn update_layer_extent(layer: &CAMetalLayer, view: &NSView) -> Extent {
 		1.0
 	};
 
-	layer.setContentsScale(scale_factor);
-	layer.setDrawableSize(NSSize::new(drawable_size.width, drawable_size.height));
+	let current_size = layer.drawableSize();
+	let new_size = NSSize::new(drawable_size.width, drawable_size.height);
+
+	(current_size, new_size, scale_factor)
+}
+
+fn get_layer_extent(layer: &CAMetalLayer, view: &NSView) -> Extent {
+	let (_, new_size, _) = get_layer_sizes(layer, view);
 
 	Extent::rectangle(
-		drawable_size.width.round().max(0.0) as u32,
-		drawable_size.height.round().max(0.0) as u32,
+		new_size.width.round().max(0.0) as u32,
+		new_size.height.round().max(0.0) as u32,
+	)
+}
+
+/// Updates the CAMetalLayer's drawable size to match the view's backing size, but only when
+/// the size has actually changed. Calling `setDrawableSize` unconditionally invalidates the
+/// layer's drawable pool, forcing Metal to allocate new drawables every frame.
+fn update_layer_extent(layer: &CAMetalLayer, view: &NSView) -> Extent {
+	let (current_size, new_size, scale_factor) = get_layer_sizes(layer, view);
+
+	if (current_size.width - new_size.width).abs() > 0.5 || (current_size.height - new_size.height).abs() > 0.5 {
+		layer.setContentsScale(scale_factor);
+		layer.setDrawableSize(new_size);
+	}
+
+	Extent::rectangle(
+		new_size.width.round().max(0.0) as u32,
+		new_size.height.round().max(0.0) as u32,
 	)
 }
 

@@ -1586,7 +1586,7 @@ impl Device {
 
 		window_os_handles.view.setWantsLayer(true);
 		window_os_handles.view.setLayer(Some(layer.as_super()));
-		let extent = update_layer_extent(&layer, &window_os_handles.view);
+		let extent = get_layer_extent(&layer, &window_os_handles.view);
 
 		let format = mtl::MTLPixelFormat::BGRA8Unorm;
 

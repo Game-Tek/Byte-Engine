@@ -10,7 +10,6 @@ use ghi::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
 	device::{Device as _, DeviceCreate as _},
-	graphics_hardware_interface::ImageHandleLike,
 };
 use resource_management::glsl;
 use utils::{
@@ -63,7 +62,10 @@ impl<'a> RenderPassBuilder<'a> {
 
 		let (image, format) = self.images.get(name).expect("Image not found").clone();
 
-		RenderToResult { image, format }
+		RenderToResult {
+			image: image.into(),
+			format,
+		}
 	}
 
 	/// Use `create_render_target` to create a new image and get a reference to it.
@@ -76,9 +78,12 @@ impl<'a> RenderPassBuilder<'a> {
 
 		let image = self.device.build_image(builder);
 
-		self.images.insert(name, self.view_id, image, format);
+		self.images.insert(name, self.view_id, image.into(), format);
 
-		RenderToResult { image, format }
+		RenderToResult {
+			image: image.into(),
+			format,
+		}
 	}
 
 	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
@@ -87,7 +92,7 @@ impl<'a> RenderPassBuilder<'a> {
 
 		let (image, _) = self.images.get(name).expect("Image not found").clone();
 
-		ReadFromResult { image }
+		ReadFromResult { image: image.into() }
 	}
 
 	pub fn device(&mut self) -> &'_ mut ghi::implementation::Device {
@@ -97,48 +102,24 @@ impl<'a> RenderPassBuilder<'a> {
 
 #[derive(Clone, Copy)]
 pub struct ReadFromResult {
-	image: ghi::ImageHandle,
+	image: ghi::BaseImageHandle,
 }
 
-impl ghi::graphics_hardware_interface::ImageHandleLike for ReadFromResult {
-	fn into_image_handle(self) -> ghi::ImageHandle {
-		self.image.into_image_handle()
-	}
-}
-
-impl From<ReadFromResult> for ghi::ImageHandle {
+impl From<ReadFromResult> for ghi::BaseImageHandle {
 	fn from(value: ReadFromResult) -> Self {
 		value.image
 	}
 }
 
-impl ghi::graphics_hardware_interface::ImageHandleLike for &ReadFromResult {
-	fn into_image_handle(self) -> ghi::ImageHandle {
-		self.image.into_image_handle()
-	}
-}
-
 #[derive(Clone, Copy)]
 pub struct RenderToResult {
-	image: ghi::ImageHandle,
+	image: ghi::BaseImageHandle,
 	format: ghi::Formats,
 }
 
-impl ghi::graphics_hardware_interface::ImageHandleLike for RenderToResult {
-	fn into_image_handle(self) -> ghi::ImageHandle {
-		self.image.into_image_handle()
-	}
-}
-
-impl From<RenderToResult> for ghi::ImageHandle {
+impl From<RenderToResult> for ghi::BaseImageHandle {
 	fn from(value: RenderToResult) -> Self {
 		value.image
-	}
-}
-
-impl ghi::graphics_hardware_interface::ImageHandleLike for &RenderToResult {
-	fn into_image_handle(self) -> ghi::ImageHandle {
-		self.image.into_image_handle()
 	}
 }
 

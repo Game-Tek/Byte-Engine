@@ -6,7 +6,6 @@ use ghi::{
 	},
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
-	graphics_hardware_interface::ImageHandleLike as _,
 	types::Size as _,
 };
 use resource_management::{glsl, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
@@ -312,8 +311,8 @@ pub struct UiRenderPass {
 	index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
 	text_pipeline: ghi::PipelineHandle,
 	text_descriptor_set: ghi::DescriptorSetHandle,
-	text_overlay: ghi::DynamicImageHandle,
-	main_attachment: ghi::ImageHandle,
+	text_overlay: ghi::BaseImageHandle,
+	main_attachment: ghi::BaseImageHandle,
 	data: UiDrawList,
 	reported_capacity_limit: bool,
 	text_system: TextSystem,
@@ -325,8 +324,7 @@ impl UiRenderPass {
 	/// Creates a UI pass and all GPU resources used to draw layout primitives.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let main_attachment = render_pass_builder
-			.create_render_target(ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget).name("UI"))
-			.into_image_handle();
+			.create_render_target(ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::RenderTarget).name("UI"));
 
 		render_pass_builder.alias("UI", "main");
 
@@ -402,8 +400,8 @@ impl UiRenderPass {
 			index_buffer,
 			text_pipeline,
 			text_descriptor_set,
-			text_overlay,
-			main_attachment,
+			text_overlay: text_overlay.into(),
+			main_attachment: main_attachment.into(),
 			data: UiDrawList::default(),
 			reported_capacity_limit: false,
 			text_system: TextSystem::new(),
@@ -448,14 +446,14 @@ impl RenderPass for UiRenderPass {
 				"UI text overlay resize requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
 			);
 
-			frame.resize_image(self.text_overlay, Extent::rectangle(extent.width(), extent.height()));
+			frame.resize_image(self.text_overlay.into(), Extent::rectangle(extent.width(), extent.height()));
 
-			let overlay = frame.get_texture_slice_mut(self.text_overlay);
+			let overlay = frame.get_texture_slice_mut(self.text_overlay.into());
 			let expected_overlay_size = extent.width() as usize * extent.height() as usize * TEXT_OVERLAY_FORMAT.size();
 			draw_text_overlay = rasterize_text_overlay(&self.data, extent, &mut self.text_system, overlay);
 
 			if draw_text_overlay {
-				frame.sync_texture(self.text_overlay);
+				frame.sync_texture(self.text_overlay.into());
 			}
 		}
 

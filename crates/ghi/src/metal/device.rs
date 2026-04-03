@@ -313,11 +313,11 @@ impl Device {
 				argument_encoder.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
 			},
 			(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, .. }) => unsafe {
-				let image = &self.images[image.0 as usize];
+				let image = self.images.resource(image);
 				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
 			},
 			(DescriptorBindingSlot::Texture(slot), Descriptor::CombinedImageSampler { image, .. }) => unsafe {
-				let image = &self.images[image.0 as usize];
+				let image = self.images.resource(image);
 				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
 			},
 			(DescriptorBindingSlot::Sampler(slot), Descriptor::Sampler { sampler }) => unsafe {
@@ -332,7 +332,7 @@ impl Device {
 					..
 				},
 			) => unsafe {
-				let image = &self.images[image.0 as usize];
+				let image = self.images.resource(image);
 				let sampler_state = &self.samplers[sampler_handle.0 as usize];
 				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
 				argument_encoder.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _);
@@ -551,7 +551,8 @@ impl Device {
 	}
 
 	pub(super) fn copy_texture_to_cpu(&mut self, image_handle: ImageHandle) -> graphics_hardware_interface::TextureCopyHandle {
-		let image = &self.images[image_handle.0 as usize];
+		let image = self.images.resource(image_handle);
+
 		let Some(bytes_per_pixel) = utils::bytes_per_pixel(image.format) else {
 			self.texture_copies.push(Vec::new());
 			return graphics_hardware_interface::TextureCopyHandle((self.texture_copies.len() - 1) as u64);
@@ -1204,7 +1205,7 @@ impl Device {
 	}
 
 	pub fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-		let image = self.images.get_single(texture_handle.0);
+		let image = self.images.get_single(texture_handle.0).unwrap();
 
 		let Some(staging) = image.staging.as_ref() else {
 			return &mut [];
@@ -1256,8 +1257,8 @@ impl Device {
 
 	pub fn build_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::ImageHandle {
 		let layers = builder.array_layers.map(|l| l.get()).unwrap_or(1);
-		let image_handle = self.create_image_internal(
-			None,
+
+		let image = self.create_image_resource(
 			builder.get_name(),
 			builder.extent,
 			builder.format,
@@ -1265,6 +1266,9 @@ impl Device {
 			builder.device_accesses,
 			layers,
 		);
+
+		let image_handle = self.images.add(image);
+
 		graphics_hardware_interface::ImageHandle(image_handle.0)
 	}
 
@@ -1419,7 +1423,7 @@ impl Device {
 		let needs_new_proxy = {
 			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
 			let proxy_matches_extent = swapchain.images[0]
-				.map(|image_handle| self.images[image_handle.0 as usize].extent == extent)
+				.map(|image_handle| self.images.resource(image_handle).extent == extent)
 				.unwrap_or(false);
 
 			!proxy_matches_extent || !swapchain.proxy_uses[0].contains(uses)
@@ -1439,12 +1443,11 @@ impl Device {
 				);
 
 				if let Some(handle) = existing_proxies[image_index] {
-					self.images[handle.0 as usize] = proxy;
+					*self.images.resource_mut(handle) = proxy;
 					proxies[image_index] = Some(handle);
 				} else {
-					let handle = ImageHandle(self.images.len() as u64);
-					self.images.push(proxy);
-					proxies[image_index] = Some(handle);
+					let handle = self.images.add(proxy);
+					proxies[image_index] = Some(handle.1);
 				}
 			}
 			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
@@ -1456,7 +1459,10 @@ impl Device {
 			"Missing Metal swapchain proxy image. The most likely cause is that swapchain image access did not create the proxy image.",
 		);
 
-		(graphics_hardware_interface::ImageHandle(image.0), format)
+		(
+			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle(image.0)),
+			format,
+		)
 	}
 
 	pub fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {

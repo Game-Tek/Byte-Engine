@@ -1,5 +1,4 @@
 use crate::image::ImageHandle;
-use crate::HandleLike as _;
 
 use super::*;
 use objc2_metal::MTLBlitCommandEncoder;
@@ -16,10 +15,11 @@ impl<'a> Frame<'a> {
 		Self { frame_key, device }
 	}
 
-	fn get_current_image_handle(&self, image_handle: graphics_hardware_interface::DynamicImageHandle) -> ImageHandle {
-		let image_handle = image_handle.into_image_handle();
-		let handles = ImageHandle(image_handle.0).get_all(&self.device.images);
-		handles[(self.frame_key.sequence_index as usize).rem_euclid(handles.len())]
+	fn get_current_image_handle(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
+		self.device
+			.images
+			.nth_handle(image_handle, self.frame_key.sequence_index as _)
+			.unwrap()
 	}
 }
 
@@ -47,28 +47,26 @@ impl Frame<'_> {
 		unsafe { &mut *(buffer.pointer as *mut T) }
 	}
 
-	pub fn get_texture_slice_mut(
-		&mut self,
-		texture_handle: graphics_hardware_interface::DynamicImageHandle,
-	) -> &'static mut [u8] {
-		self.device.get_texture_slice_mut(graphics_hardware_interface::ImageHandle(
-			self.get_current_image_handle(texture_handle).0,
-		))
+	pub fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &'static mut [u8] {
+		let image = self.device.images.resource(self.get_current_image_handle(texture_handle));
+
+		let staging = image.staging.as_ref().unwrap();
+
+		unsafe { std::slice::from_raw_parts_mut(staging.as_ptr() as *mut u8, staging.len()) }
 	}
 
-	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::DynamicImageHandle) {
-		self.device.sync_texture(graphics_hardware_interface::ImageHandle(
-			self.get_current_image_handle(image_handle).0,
-		));
+	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
+		let handle = self.get_current_image_handle(image_handle);
+		self.device.pending_image_syncs.push_back(handle);
 	}
 
 	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
 		self.device.write(descriptor_set_writes);
 	}
 
-	pub fn resize_image(&mut self, image_handle: graphics_hardware_interface::DynamicImageHandle, extent: Extent) {
+	pub fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
 		let handle = self.get_current_image_handle(image_handle);
-		let image = &self.device.images[handle.0 as usize];
+		let image = self.device.images.resource(handle);
 
 		if image.extent == extent {
 			return;
@@ -77,7 +75,7 @@ impl Frame<'_> {
 		let replacement =
 			self.device
 				.create_image_resource(None, extent, image.format, image.uses, image.access, image.array_layers);
-		self.device.images[handle.0 as usize] = replacement;
+		*self.device.images.resource_mut(handle) = replacement;
 		self.device.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
 	}
 
@@ -134,7 +132,7 @@ impl Frame<'_> {
 				let Some(proxy_image) = swapchain.images[present_key.image_index as usize] else {
 					continue;
 				};
-				let source_texture = self.device.images[proxy_image.0 as usize].texture.clone();
+				let source_texture = self.device.images.resource(proxy_image).texture.clone();
 				let destination_texture = drawable.texture();
 
 				unsafe {
@@ -175,16 +173,16 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.sync_buffer(buffer_handle);
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::DynamicImageHandle) -> &'static mut [u8] {
-		self.device.get_texture_slice_mut(graphics_hardware_interface::ImageHandle(
-			self.get_current_image_handle(texture_handle).0,
-		))
+	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &'static mut [u8] {
+		let handle = self.get_current_image_handle(texture_handle);
+		let image = self.device.images.resource(handle);
+		let staging = image.staging.as_ref().unwrap();
+		unsafe { std::slice::from_raw_parts_mut(staging.as_ptr() as *mut u8, staging.len()) }
 	}
 
-	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::DynamicImageHandle) {
-		self.device.sync_texture(graphics_hardware_interface::ImageHandle(
-			self.get_current_image_handle(image_handle).0,
-		));
+	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
+		let handle = self.get_current_image_handle(image_handle);
+		self.device.pending_image_syncs.push_back(handle);
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
@@ -206,7 +204,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		unsafe { &mut *(buffer.pointer as *mut T) }
 	}
 
-	fn resize_image(&mut self, image_handle: graphics_hardware_interface::DynamicImageHandle, extent: Extent) {
+	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
 		Frame::resize_image(self, image_handle, extent);
 	}
 

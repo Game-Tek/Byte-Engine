@@ -27,7 +27,7 @@ struct SamplerState {
 /// The `TextureManager` struct is responsible for loading and managing textures.
 pub struct TextureManager {
 	samplers: HashMap<SamplerState, ghi::SamplerHandle>,
-	textures: HashMap<String, (ghi::ImageHandle, ghi::SamplerHandle)>,
+	textures: HashMap<String, (ghi::BaseImageHandle, ghi::SamplerHandle)>,
 }
 
 impl TextureManager {
@@ -42,7 +42,7 @@ impl TextureManager {
 		&mut self,
 		reference: &mut Reference<Image>,
 		device: &mut ghi::implementation::Frame,
-	) -> Option<(String, ghi::ImageHandle, ghi::SamplerHandle)> {
+	) -> Option<(String, ghi::BaseImageHandle, ghi::SamplerHandle)> {
 		if let Some(r) = self.textures.get(reference.id()) {
 			return Some((reference.id().to_string(), r.0, r.1));
 		}
@@ -68,9 +68,9 @@ impl TextureManager {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice)
 				.use_case(ghi::UseCases::STATIC),
 		);
-		let target_buffer = device.get_texture_slice_mut(image);
+		let target_buffer = device.get_texture_slice_mut(image.into());
 
-		device.sync_texture(image);
+		device.sync_texture(image.into());
 
 		let load_target = reference.load(target_buffer.into()).unwrap();
 
@@ -104,7 +104,7 @@ impl TextureManager {
 
 		let sampler = self.build_sampler(device);
 
-		let v = (image, sampler);
+		let v = (image.into(), sampler);
 
 		self.textures.insert(reference.id().to_string(), v.clone());
 

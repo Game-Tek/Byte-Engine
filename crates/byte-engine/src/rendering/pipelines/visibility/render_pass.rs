@@ -18,7 +18,6 @@ use ghi::command_buffer::{
 };
 use ghi::device::{Device as _, DeviceCreate as _};
 use ghi::frame::Frame as _;
-use ghi::graphics_hardware_interface::ImageHandleLike as _;
 use ghi::implementation::Frame;
 use math::Vector2;
 use resource_management::glsl;
@@ -937,9 +936,9 @@ impl VisibilityPass {
 		device: &mut ghi::implementation::Device,
 		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
-		primitive_index: ghi::ImageHandle,
-		instance_id: ghi::ImageHandle,
-		depth_target: ghi::ImageHandle,
+		primitive_index: ghi::BaseImageHandle,
+		instance_id: ghi::BaseImageHandle,
+		depth_target: ghi::BaseImageHandle,
 	) -> Self {
 		let visibility_shader = get_visibility_pass_mesh_source();
 
@@ -1065,7 +1064,7 @@ impl VisibilityPass {
 pub struct ShadowPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	shadow_pass_pipeline: ghi::PipelineHandle,
-	shadow_map: ghi::DynamicImageHandle,
+	shadow_map: ghi::BaseImageHandle,
 }
 
 impl ShadowPass {
@@ -1073,7 +1072,7 @@ impl ShadowPass {
 		device: &mut ghi::implementation::Device,
 		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
-		shadow_map: ghi::DynamicImageHandle,
+		shadow_map: ghi::BaseImageHandle,
 	) -> Self {
 		let shadow_shader = get_shadow_pass_mesh_source();
 		let shadow_mesh_shader_artifact = glsl::compile(&shadow_shader, "Shadow Mesh Shader").unwrap();
@@ -1128,7 +1127,7 @@ impl ShadowPass {
 		let instances = instances.iter().copied().collect::<Vec<_>>();
 
 		if shadow_enabled {
-			frame.resize_image(shadow_map, extent);
+			frame.resize_image(shadow_map.into(), extent);
 		}
 
 		move |c, _| {
@@ -1669,6 +1668,10 @@ pub struct MaterialEvaluationPass {
 	diffuse: ghi::ImageHandle,
 	specular: ghi::ImageHandle,
 	ibl_cubemap: ghi::ImageHandle,
+	diffuse: ghi::BaseImageHandle,
+	specular: ghi::BaseImageHandle,
+	ao_map: ghi::BaseImageHandle,
+	ibl_cubemap: ghi::BaseImageHandle,
 	/// Base layout descriptor set
 	base_descriptor_set: ghi::DescriptorSetHandle,
 	/// Visibility passes descriptor set
@@ -1683,6 +1686,11 @@ impl MaterialEvaluationPass {
 		diffuse: ghi::ImageHandle,
 		specular: ghi::ImageHandle,
 		ibl_cubemap: ghi::ImageHandle,
+		diffuse: ghi::BaseImageHandle,
+		specular: ghi::BaseImageHandle,
+		ao_map: ghi::BaseImageHandle,
+		_shadow_map: ghi::BaseImageHandle,
+		ibl_cubemap: ghi::BaseImageHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
@@ -1715,12 +1723,14 @@ impl MaterialEvaluationPass {
 		let material_evaluation_descriptor_set = self.descriptor_set;
 		let opaque_materials = opaque_materials.to_vec();
 		let transparent_materials = transparent_materials.to_vec();
+		frame.resize_image(ao_map.into(), viewport.extent());
 
 		move |c, t| {
 			c.clear_images(&[
-				(diffuse, ghi::ClearValue::Color(RGBA::black())),
-				(specular, ghi::ClearValue::Color(RGBA::black())),
-				(ibl_cubemap, ghi::ClearValue::Color(RGBA::white())),
+				(diffuse.into(), ghi::ClearValue::Color(RGBA::black())),
+				(specular.into(), ghi::ClearValue::Color(RGBA::black())),
+				(ao_map.into(), ghi::ClearValue::Color(RGBA::white())),
+				(ibl_cubemap.into(), ghi::ClearValue::Color(RGBA::white())),
 			]);
 
 			c.start_region("Material Evaluation");
@@ -1784,14 +1794,14 @@ impl VisibilityPipelineRenderPass {
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
-		diffuse: ghi::ImageHandle,
-		specular: ghi::ImageHandle,
-		ao_map: ghi::DynamicImageHandle,
-		shadow_map: ghi::DynamicImageHandle,
-		ibl_cubemap: ghi::ImageHandle,
-		depth: ghi::ImageHandle,
-		primitive_index: ghi::ImageHandle,
-		instance_id: ghi::ImageHandle,
+		diffuse: ghi::BaseImageHandle,
+		specular: ghi::BaseImageHandle,
+		ao_map: ghi::BaseImageHandle,
+		shadow_map: ghi::BaseImageHandle,
+		ibl_cubemap: ghi::BaseImageHandle,
+		depth: ghi::BaseImageHandle,
+		primitive_index: ghi::BaseImageHandle,
+		instance_id: ghi::BaseImageHandle,
 		material_xy: ghi::BufferHandle<[(u16, u16); 2073600]>,
 		material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,

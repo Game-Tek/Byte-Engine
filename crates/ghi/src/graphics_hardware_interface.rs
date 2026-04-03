@@ -1907,7 +1907,7 @@ pub(super) mod tests {
 
 		let mut extent = Extent::rectangle(1280, 720);
 
-		let render_target = device.build_image(
+		let render_target = device.build_dynamic_image(
 			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
 				.extent(extent)
 				.device_accesses(DeviceAccesses::DeviceToHost)
@@ -1938,7 +1938,7 @@ pub(super) mod tests {
 
 			if i == 2 {
 				extent = Extent::rectangle(1920, 1080);
-				frame.resize_image(render_target, extent);
+				frame.resize_image(render_target.into(), extent);
 			}
 
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
@@ -2219,10 +2219,10 @@ pub(super) mod tests {
 		for (frame_index, expected_color) in expected_colors.into_iter().enumerate() {
 			let mut frame = device.start_frame(frame_index as u32, render_finished_synchronizer);
 
-			let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image);
+			let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image.into());
 			let pixels = unsafe { std::slice::from_raw_parts_mut(texture_slice.as_mut_ptr() as *mut RGBAu8, pixel_count) };
 			pixels.fill(expected_color);
-			frame.sync_texture(upload_image);
+			frame.sync_texture(upload_image.into());
 
 			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
 			command_buffer_recording.blit_image(

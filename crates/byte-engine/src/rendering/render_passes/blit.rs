@@ -6,12 +6,12 @@ use ghi::command_buffer::{CommandBufferRecording as _, CommonCommandBufferMode a
 use utils::Box;
 
 struct BlitPass {
-	source: ghi::ImageHandle,
-	destination: ghi::ImageHandle,
+	source: ghi::BaseImageHandle,
+	destination: ghi::BaseImageHandle,
 }
 
 impl BlitPass {
-	pub fn new(source_image: ghi::ImageHandle, destination_image: ghi::ImageHandle) -> Self {
+	pub fn new(source_image: ghi::BaseImageHandle, destination_image: ghi::BaseImageHandle) -> Self {
 		BlitPass {
 			source: source_image,
 			destination: destination_image,

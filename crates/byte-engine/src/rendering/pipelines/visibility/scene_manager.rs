@@ -32,7 +32,7 @@ use ghi::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
-	graphics_hardware_interface, ImageHandle,
+	graphics_hardware_interface,
 };
 use log::{error, warn};
 use math::{mat::MatInverse as _, Matrix4, Vector3};
@@ -1506,11 +1506,11 @@ impl SceneManager for VisibilityWorldRenderDomain {
 
 		let _ = device.create_descriptor_binding(
 			self.material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&diffuse_binding_template, diffuse_target),
+			ghi::BindingConstructor::image(&diffuse_binding_template, ghi::BaseImageHandle::from(diffuse_target)),
 		);
 		let _ = device.create_descriptor_binding(
 			self.material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&specular_binding_template, specular_target),
+			ghi::BindingConstructor::image(&specular_binding_template, ghi::BaseImageHandle::from(specular_target)),
 		);
 		let _ = device.create_descriptor_binding(
 			self.material_evaluation_descriptor_set,
@@ -1542,7 +1542,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			self.material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&visibility_depth_binding_template,
-				depth_target,
+				ghi::BaseImageHandle::from(depth_target),
 				depth_sampler.clone(),
 				ghi::Layouts::Read,
 			),
@@ -1579,11 +1579,11 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		);
 		let _ = device.create_descriptor_binding(
 			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::image(&TRIANGLE_INDEX_BINDING, primitive_index),
+			ghi::BindingConstructor::image(&TRIANGLE_INDEX_BINDING, ghi::BaseImageHandle::from(primitive_index)),
 		);
 		let _ = device.create_descriptor_binding(
 			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, instance_id),
+			ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, ghi::BaseImageHandle::from(instance_id)),
 		);
 
 		render_pass_builder.alias("Depth", "depth");
@@ -1597,14 +1597,14 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			visibility_passes_descriptor_set,
 			self.material_evaluation_descriptor_set,
 			material_count_buffer,
-			diffuse_target.into(),
-			specular_target.into(),
-			ao_map,
-			shadow_map,
-			ibl_cubemap,
-			depth_target.into(),
-			primitive_index.into(),
-			instance_id.into(),
+			ghi::BaseImageHandle::from(diffuse_target),
+			ghi::BaseImageHandle::from(specular_target),
+			ao_map.into(),
+			shadow_map.into(),
+			ibl_cubemap.into(),
+			ghi::BaseImageHandle::from(depth_target),
+			ghi::BaseImageHandle::from(primitive_index),
+			ghi::BaseImageHandle::from(instance_id),
 			material_xy,
 			material_offset_buffer,
 			material_offset_scratch_buffer,
@@ -1752,7 +1752,7 @@ struct RayTracing {
 	hit_sbt_buffer: ghi::BaseBufferHandle,
 
 	shadow_map_resolution: Extent,
-	shadow_map: ghi::ImageHandle,
+	shadow_map: ghi::BaseImageHandle,
 
 	instances_buffer: ghi::BaseBufferHandle,
 	scratch_buffer: ghi::BaseBufferHandle,

@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use utils::Extent;
 
-use crate::{DeviceAccesses, Formats, HandleLike, Image, Next, PrivateHandle, PrivateHandles, UseCases, Uses};
+use crate::{DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
 
 pub struct Builder<'a> {
 	pub(crate) name: Option<&'a str>,
@@ -81,26 +81,6 @@ pub(crate) struct ImageHandle(pub(crate) u64);
 impl Into<PrivateHandles> for ImageHandle {
 	fn into(self) -> PrivateHandles {
 		PrivateHandles::Image(self)
-	}
-}
-
-impl HandleLike for ImageHandle {
-	type Item = Image;
-
-	fn build(value: u64) -> Self {
-		ImageHandle(value)
-	}
-
-	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Image {
-		&collection[self.0 as usize]
-	}
-}
-
-impl Next for Image {
-	type Handle = ImageHandle;
-
-	fn next(&self) -> Option<Self::Handle> {
-		self.next
 	}
 }
 

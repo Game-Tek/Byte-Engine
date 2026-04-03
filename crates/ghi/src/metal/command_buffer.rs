@@ -95,19 +95,7 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 
 	fn get_internal_image_handle(&self, handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
-		if let Some(swapchain) = self
-			.device
-			.swapchains
-			.iter()
-			.find(|swapchain| swapchain.images[0].map(|image| image.0 == handle.0).unwrap_or(false))
-		{
-			return swapchain.images[handle.0 as usize].expect(
-				"Missing Metal swapchain proxy image for the acquired drawable. The most likely cause is that get_swapchain_image was not called before using the swapchain image.",
-			);
-		}
-
-		let handles = ImageHandle(handle.0).get_all(&self.device.images);
-		handles[(self.sequence_index as usize).rem_euclid(handles.len())]
+		self.device.images.nth_handle(handle, self.sequence_index as _).unwrap()
 	}
 
 	fn consume_resources(&mut self, consumptions: impl IntoIterator<Item = Consumption>) {
@@ -294,7 +282,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			.enumerate()
 		{
 			let att = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(i) };
-			let image = &self.device.images[self.get_internal_image_handle(attachment.image).0 as usize];
+			let image = self.device.images.resource(self.get_internal_image_handle(attachment.image));
 
 			att.setTexture(Some(image.texture.as_ref()));
 			att.setLoadAction(utils::load_action(attachment.load));
@@ -307,7 +295,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			.find(|attachment| attachment.format == crate::Formats::Depth32)
 		{
 			let att = unsafe { rpd.depthAttachment() };
-			let image = &self.device.images[self.get_internal_image_handle(attachment.image).0 as usize];
+			let image = self.device.images.resource(self.get_internal_image_handle(attachment.image));
 
 			att.setTexture(Some(image.texture.as_ref()));
 			att.setLoadAction(utils::load_action(attachment.load));
@@ -382,7 +370,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let consumptions = texture_handles
 			.iter()
 			.map(|handle| Consumption {
-				handle: PrivateHandles::Image(self.get_internal_image_handle((*handle).into_image_handle())),
+				handle: PrivateHandles::Image(self.get_internal_image_handle(*handle)),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Transfer,
@@ -392,10 +380,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		texture_handles
 			.iter()
-			.map(|handle| {
-				self.device
-					.copy_texture_to_cpu(self.get_internal_image_handle(handle.into_image_handle()))
-			})
+			.map(|handle| self.device.copy_texture_to_cpu(self.get_internal_image_handle(*handle)))
 			.collect()
 	}
 
@@ -404,7 +389,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		image_handle: graphics_hardware_interface::BaseImageHandle,
 		data: &[graphics_hardware_interface::RGBAu8],
 	) {
-		let image_handle = self.get_internal_image_handle(image_handle.into_image_handle());
+		let image_handle = self.get_internal_image_handle(image_handle);
+
 		self.consume_resources([Consumption {
 			handle: PrivateHandles::Image(image_handle),
 			stages: crate::Stages::TRANSFER,
@@ -412,10 +398,12 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			layout: crate::Layouts::Transfer,
 		}]);
 
-		let image = &mut self.device.images[image_handle.0 as usize];
+		let image = self.device.images.resource_mut(image_handle);
+
 		let Some(staging) = image.staging.as_mut() else {
 			return;
 		};
+
 		let bytes = unsafe {
 			std::slice::from_raw_parts(
 				data.as_ptr() as *const u8,
@@ -465,13 +453,13 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	) {
 		self.consume_resources([
 			Consumption {
-				handle: PrivateHandles::Image(self.get_internal_image_handle(source_image.into_image_handle())),
+				handle: PrivateHandles::Image(self.get_internal_image_handle(source_image)),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Transfer,
 			},
 			Consumption {
-				handle: PrivateHandles::Image(self.get_internal_image_handle(destination_image.into_image_handle())),
+				handle: PrivateHandles::Image(self.get_internal_image_handle(destination_image)),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,

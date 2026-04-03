@@ -20,9 +20,9 @@ where
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
 
-	fn get_texture_slice_mut(&self, texture_handle: DynamicImageHandle) -> &'static mut [u8];
+	fn get_texture_slice_mut(&self, texture_handle: BaseImageHandle) -> &'static mut [u8];
 
-	fn sync_texture(&mut self, image_handle: DynamicImageHandle);
+	fn sync_texture(&mut self, image_handle: BaseImageHandle);
 
 	fn write(&mut self, descriptor_set_writes: &[descriptors::Write]);
 
@@ -30,14 +30,14 @@ where
 	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T;
 
 	/// Returns a mutable reference to the dynamic image's contents for the current frame.
-	fn get_mut_dynamic_texture_slice(&mut self, image_handle: DynamicImageHandle) -> &'static mut [u8] {
+	fn get_mut_dynamic_texture_slice(&mut self, image_handle: BaseImageHandle) -> &'static mut [u8] {
 		self.get_texture_slice_mut(image_handle)
 	}
 
 	/// Resizes an image to the specified extent.
 	/// Does nothing if the image is already the specified extent.
 	/// May not reallocate if a smaller size is requested.
-	fn resize_image(&mut self, image_handle: DynamicImageHandle, extent: Extent);
+	fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent);
 
 	/// Creates a new command buffer recording.
 	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) -> Self::CBR<'_>;

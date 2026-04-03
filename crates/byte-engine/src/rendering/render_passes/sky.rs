@@ -4,7 +4,6 @@ use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
-	graphics_hardware_interface::ImageHandleLike,
 };
 use math::{mat::MatInverse as _, Vector3, Vector4};
 use resource_management::glsl;
@@ -135,12 +134,7 @@ impl SkyRenderPass {
 		let descriptor_set = device.create_descriptor_set(Some("Sky Render Pass Descriptor Set"), &descriptor_set_template);
 		let _ = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&SKY_DEPTH_BINDING,
-				depth.into_image_handle(),
-				sampler,
-				ghi::Layouts::Read,
-			),
+			ghi::BindingConstructor::combined_image_sampler(&SKY_DEPTH_BINDING, depth, sampler, ghi::Layouts::Read),
 		);
 		let _ = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SKY_MAIN_BINDING, main));
 		let _ = device.create_descriptor_binding(

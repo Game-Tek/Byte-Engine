@@ -607,7 +607,7 @@ impl RenderTargets {
 		self.by_view_index.push((view_id, (index, ghi::AccessPolicies::WRITE)));
 	}
 
-	pub fn get(&self, name: &str) -> Option<&(ghi::ImageHandle, ghi::Formats)> {
+	pub fn get(&self, name: &str) -> Option<&(ghi::BaseImageHandle, ghi::Formats)> {
 		self.get_image_index(name).and_then(|index| self.images.get(index))
 	}
 
@@ -740,8 +740,8 @@ mod tests {
 	#[test]
 	fn test_alias_overrides_previous_mapping() {
 		let mut rt = RenderTargets::new();
-		let first_image = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(1) };
-		let second_image = unsafe { std::mem::transmute::<u64, ghi::ImageHandle>(2) };
+		let first_image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
+		let second_image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
 
 		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM);
 		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM);

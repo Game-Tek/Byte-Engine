@@ -12,7 +12,6 @@ use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
-	graphics_hardware_interface::ImageHandleLike,
 };
 use resource_management::glsl;
 use utils::{Box, Extent};
@@ -209,7 +208,7 @@ impl BloomPass {
 			extract_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&EXTRACT_SOURCE_BINDING,
-				source.into_image_handle(),
+				source,
 				sampler.clone(),
 				ghi::Layouts::Read,
 			),
@@ -253,10 +252,10 @@ impl BloomPass {
 			.map(|level| {
 				let descriptor_set =
 					device.create_descriptor_set(Some("Bloom Upsample Descriptor Set"), &upsample_descriptor_set_layout);
-				let low_resolution_source = if level == level_count - 2 {
-					downsample_images[level + 1].into_image_handle()
+				let low_resolution_source: ghi::BaseImageHandle = if level == level_count - 2 {
+					downsample_images[level + 1].into()
 				} else {
-					upsample_images[level + 1].into_image_handle()
+					upsample_images[level + 1].into()
 				};
 				let _ = device.create_descriptor_binding(
 					descriptor_set,
@@ -288,10 +287,10 @@ impl BloomPass {
 			})
 			.collect::<Vec<_>>();
 
-		let bloom_source = if level_count == 1 {
-			downsample_images[0].into_image_handle()
+		let bloom_source: ghi::BaseImageHandle = if level_count == 1 {
+			downsample_images[0].into()
 		} else {
-			upsample_images[0].into_image_handle()
+			upsample_images[0].into()
 		};
 		let composite_descriptor_set =
 			device.create_descriptor_set(Some("Bloom Composite Descriptor Set"), &composite_descriptor_set_layout);
@@ -299,7 +298,7 @@ impl BloomPass {
 			composite_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&COMPOSITE_SCENE_BINDING,
-				source.into_image_handle(),
+				bloom_source,
 				sampler.clone(),
 				ghi::Layouts::Read,
 			),
@@ -354,11 +353,11 @@ impl BloomPass {
 	/// Resizes every bloom pyramid image to match the current viewport-dependent chain resolution.
 	fn resize_images(&self, frame: &mut ghi::implementation::Frame, extent: Extent) {
 		for (level, image) in self.downsample_images.iter().enumerate() {
-			frame.resize_image(*image, bloom_extent(extent, level));
+			frame.resize_image((*image).into(), bloom_extent(extent, level));
 		}
 
 		for (level, image) in self.upsample_images.iter().enumerate() {
-			frame.resize_image(*image, bloom_extent(extent, level));
+			frame.resize_image((*image).into(), bloom_extent(extent, level));
 		}
 	}
 }

@@ -1404,7 +1404,7 @@ pub struct GtaoPass {
 	gtao_pipeline: ghi::PipelineHandle,
 	blur_pipeline_x: ghi::PipelineHandle,
 	blur_pipeline_y: ghi::PipelineHandle,
-	ao_map: ghi::DynamicImageHandle,
+	ao_map: ghi::BaseImageHandle,
 	temp_ao_map: ghi::DynamicImageHandle,
 	packed_ao_map: Option<ghi::DynamicImageHandle>,
 }
@@ -1418,8 +1418,8 @@ impl GtaoPass {
 		device: &mut ghi::implementation::Device,
 		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
-		depth: ghi::ImageHandle,
-		ao_map: ghi::DynamicImageHandle,
+		depth: ghi::BaseImageHandle,
+		ao_map: ghi::BaseImageHandle,
 	) -> Self {
 		let descriptor_set_layout =
 			device.create_descriptor_set_template(Some("GTAO Descriptor Set"), &[GTAO_DEPTH_BINDING, GTAO_OUTPUT_BINDING]);
@@ -1461,8 +1461,8 @@ impl GtaoPass {
 					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 			)
 		});
-		let gtao_output = packed_ao_map.unwrap_or(ao_map);
-		let blur_source_x = packed_ao_map.unwrap_or(ao_map);
+		let gtao_output = packed_ao_map.map(|e| e.into()).unwrap_or(ao_map);
+		let blur_source_x = packed_ao_map.map(|e| e.into()).unwrap_or(ao_map);
 
 		let _ = device.create_descriptor_binding(
 			gtao_descriptor_set,
@@ -1623,18 +1623,19 @@ impl GtaoPass {
 		let packed_ao_map = self.packed_ao_map;
 		let extent = viewport.extent();
 
-		frame.resize_image(ao_map, extent);
-		frame.resize_image(temp_ao_map, extent);
+		frame.resize_image(ao_map.into(), extent);
+		frame.resize_image(temp_ao_map.into(), extent);
+
 		if let Some(packed_ao_map) = packed_ao_map {
-			frame.resize_image(packed_ao_map, Self::packed_extent(extent));
+			frame.resize_image(packed_ao_map.into(), Self::packed_extent(extent));
 		}
 
 		move |c, _| {
 			c.start_region("GTAO");
 			if let Some(packed_ao_map) = packed_ao_map {
-				c.clear_images(&[(packed_ao_map.into_image_handle(), ghi::ClearValue::Color(RGBA::black()))]);
+				c.clear_images(&[(packed_ao_map.into(), ghi::ClearValue::Color(RGBA::black()))]);
 			} else {
-				c.clear_images(&[(ao_map.into_image_handle(), ghi::ClearValue::Color(RGBA::white()))]);
+				c.clear_images(&[(ao_map.into(), ghi::ClearValue::Color(RGBA::white()))]);
 			}
 
 			{
@@ -1661,9 +1662,6 @@ impl GtaoPass {
 }
 
 pub struct MaterialEvaluationPass {
-	diffuse: ghi::ImageHandle,
-	specular: ghi::ImageHandle,
-	ibl_cubemap: ghi::ImageHandle,
 	diffuse: ghi::BaseImageHandle,
 	specular: ghi::BaseImageHandle,
 	ao_map: ghi::BaseImageHandle,
@@ -1679,9 +1677,6 @@ pub struct MaterialEvaluationPass {
 
 impl MaterialEvaluationPass {
 	fn new(
-		diffuse: ghi::ImageHandle,
-		specular: ghi::ImageHandle,
-		ibl_cubemap: ghi::ImageHandle,
 		diffuse: ghi::BaseImageHandle,
 		specular: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
@@ -1695,6 +1690,7 @@ impl MaterialEvaluationPass {
 		MaterialEvaluationPass {
 			diffuse,
 			specular,
+			ao_map,
 			ibl_cubemap,
 			base_descriptor_set,
 			visibility_descriptor_set,
@@ -1712,6 +1708,7 @@ impl MaterialEvaluationPass {
 	) -> impl RenderPassFunction {
 		let diffuse = self.diffuse;
 		let specular = self.specular;
+		let ao_map = self.ao_map;
 		let ibl_cubemap = self.ibl_cubemap;
 		let base_descriptor_set = self.base_descriptor_set;
 		let material_evaluation_dispatches = self.material_evaluation_dispatches;
@@ -1719,6 +1716,7 @@ impl MaterialEvaluationPass {
 		let material_evaluation_descriptor_set = self.descriptor_set;
 		let opaque_materials = opaque_materials.to_vec();
 		let transparent_materials = transparent_materials.to_vec();
+
 		frame.resize_image(ao_map.into(), viewport.extent());
 
 		move |c, t| {
@@ -1846,6 +1844,8 @@ impl VisibilityPipelineRenderPass {
 			diffuse,
 			specular,
 			ibl_cubemap,
+			ao_map,
+			shadow_map,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_evaluation_descriptor_set,

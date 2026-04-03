@@ -5,7 +5,6 @@ use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
-	graphics_hardware_interface::ImageHandleLike,
 	types::Size as _,
 };
 use half::f16;
@@ -116,12 +115,7 @@ impl LutRenderPass {
 		let descriptor_set = device.create_descriptor_set(Some("LUT Render Pass Descriptor Set"), &descriptor_set_layout);
 		let _ = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&LUT_SOURCE_BINDING,
-				source.into_image_handle(),
-				source_sampler,
-				ghi::Layouts::Read,
-			),
+			ghi::BindingConstructor::combined_image_sampler(&LUT_SOURCE_BINDING, source, source_sampler, ghi::Layouts::Read),
 		);
 		let _ = device.create_descriptor_binding(
 			descriptor_set,
@@ -150,7 +144,7 @@ impl LutRenderPass {
 		);
 		let lut_bytes = load_lut_bytes(lut_reference);
 		let upload_bytes = convert_lut_bytes_to_rgba16f_upload(&self.lut, &lut_bytes);
-		let target = frame.get_texture_slice_mut(self.lut_image);
+		let target = frame.get_texture_slice_mut(self.lut_image.into());
 
 		assert_eq!(
 			target.len(),
@@ -158,7 +152,7 @@ impl LutRenderPass {
 			"Unexpected LUT texture upload size. The most likely cause is that the GPU image extent or format does not match the LUT resource metadata."
 		);
 		target.copy_from_slice(&upload_bytes);
-		frame.sync_texture(self.lut_image);
+		frame.sync_texture(self.lut_image.into());
 
 		self.lut_uploaded = true;
 		self.lut_reference = None;

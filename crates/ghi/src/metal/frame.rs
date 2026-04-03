@@ -1,5 +1,5 @@
-use crate::SwapchainHandle;
 use crate::image::ImageHandle;
+use crate::SwapchainHandle;
 
 use super::*;
 use objc2_foundation::NSAutoreleasePool;

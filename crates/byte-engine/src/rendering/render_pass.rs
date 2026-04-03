@@ -33,15 +33,22 @@ pub trait RenderPass {
 pub struct RenderPassBuilder<'a> {
 	device: &'a mut ghi::implementation::Device,
 	view_id: usize,
+	swapchain: ghi::SwapchainHandle,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	pub(crate) images: &'a mut RenderTargets,
 }
 
 impl<'a> RenderPassBuilder<'a> {
-	pub fn new(device: &'a mut ghi::implementation::Device, images: &'a mut RenderTargets, view_id: usize) -> Self {
+	pub fn new(
+		device: &'a mut ghi::implementation::Device,
+		images: &'a mut RenderTargets,
+		view_id: usize,
+		swapchain: ghi::SwapchainHandle,
+	) -> Self {
 		RenderPassBuilder {
 			device,
 			view_id,
+			swapchain,
 			consumed_resources: Vec::new(),
 			images,
 		}
@@ -100,8 +107,7 @@ impl<'a> RenderPassBuilder<'a> {
 	}
 
 	pub(crate) fn render_to_swapchain(&self) -> ghi::SwapchainHandle {
-		// TODO: maybe track swapchain use
-		unsafe { std::mem::transmute(0u64) } // TODO: get actual handle
+		self.swapchain
 	}
 }
 

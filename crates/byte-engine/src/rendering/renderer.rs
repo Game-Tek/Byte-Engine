@@ -217,8 +217,9 @@ impl Renderer {
 
 	pub fn add_scene_manager(&mut self, mut scene_manager: impl SceneManager + 'static) {
 		{
-			for (view_id, _) in self.windows.iter().enumerate() {
-				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
+			let swapchain_handles: SmallVec<[ghi::SwapchainHandle; 16]> = self.windows.iter().map(|(_, sc)| *sc).collect();
+			for (view_id, swapchain) in swapchain_handles.iter().enumerate() {
+				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id, *swapchain);
 
 				scene_manager.create_view(view_id, &mut rpb);
 
@@ -247,7 +248,9 @@ impl Renderer {
 
 		for view_id in view_ids {
 			let render_pass = {
-				let mut render_pass_builder = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id);
+				let swapchain = self.windows[view_id].1;
+				let mut render_pass_builder =
+					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id, swapchain);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -261,9 +264,12 @@ impl Renderer {
 	fn add_post_scene_render_passes_for_viewport(&mut self, viewport_id: ViewportId) {
 		let mut render_passes_for_view: SmallVec<[Box<dyn RenderPass>; 16]> = SmallVec::new();
 
+		let swapchain = self.windows[viewport_id].1;
+
 		for render_pass_factory in &self.post_scene_render_pass_factories {
 			let render_pass = {
-				let mut render_pass_builder = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id);
+				let mut render_pass_builder =
+					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id, swapchain);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -458,7 +464,8 @@ impl Renderer {
 					let scene_managers = self.scene_managers.iter_mut();
 
 					for sm in scene_managers {
-						let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id);
+						let mut rpb =
+							RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id, swapchain_handle);
 
 						sm.create_view(view_id, &mut rpb);
 
@@ -468,9 +475,9 @@ impl Renderer {
 					}
 				}
 
-				self.add_post_scene_render_passes_for_viewport(viewport_id);
-
 				self.windows.push((window, swapchain_handle));
+
+				self.add_post_scene_render_passes_for_viewport(viewport_id);
 			}
 			Err(msg) => {
 				log::error!("Failed to create GHI window: {}", msg);

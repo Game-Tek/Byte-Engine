@@ -2,7 +2,9 @@ use std::ptr::NonNull;
 
 use ::utils::hash::HashMap;
 use objc2_foundation::NSString;
-use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture};
+use objc2_metal::{
+	MTLBlitCommandEncoder, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture,
+};
 
 use super::*;
 use crate::{
@@ -462,22 +464,44 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		destination_image: graphics_hardware_interface::BaseImageHandle,
 		_destination_layout: crate::Layouts,
 	) {
+		let source_internal = self.get_internal_image_handle(source_image);
+		let destination_internal = self.get_internal_image_handle(destination_image);
+
 		self.consume_resources([
 			Consumption {
-				handle: PrivateHandles::Image(self.get_internal_image_handle(source_image)),
+				handle: PrivateHandles::Image(source_internal),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Transfer,
 			},
 			Consumption {
-				handle: PrivateHandles::Image(self.get_internal_image_handle(destination_image)),
+				handle: PrivateHandles::Image(destination_internal),
 				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
 			},
 		]);
 
-		// TODO: Encode MTLBlitCommandEncoder copyFromTexture.
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		let source_texture = &self.device.images.resource(source_internal).texture;
+		let destination_texture = &self.device.images.resource(destination_internal).texture;
+
+		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+
+		unsafe {
+			blit_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
+		}
+
+		blit_encoder.endEncoding();
 	}
 
 	fn execute(self, _synchronizer: graphics_hardware_interface::SynchronizerHandle) {

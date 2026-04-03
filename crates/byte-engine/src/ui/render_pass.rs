@@ -476,15 +476,19 @@ impl RenderPass for UiRenderPass {
 					"UI text overlay render pass requires a non-zero attachment extent. The most likely cause is that a stale prepared UI pass survived a viewport resize or minimization."
 				);
 
-				let attachments = [ghi::AttachmentInformation::new(
-					main_attachment,
-					ghi::Layouts::RenderTarget,
-					ghi::ClearValue::None,
-					true,
-					true,
-				)];
+				let mut needs_clear = true;
 
 				if !batches.is_empty() {
+					let attachments = [ghi::AttachmentInformation::new(
+						main_attachment,
+						ghi::Layouts::RenderTarget,
+						ghi::ClearValue::None,
+						false,
+						true,
+					)];
+
+					needs_clear = false;
+
 					command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
 					command_buffer.bind_index_buffer(&(Into::<ghi::BufferDescriptor>::into(index_buffer).index_type(ghi::DataTypes::U16)));
 
@@ -499,6 +503,14 @@ impl RenderPass for UiRenderPass {
 				}
 
 				if draw_text_overlay {
+					let attachments = [ghi::AttachmentInformation::new(
+						main_attachment,
+						ghi::Layouts::RenderTarget,
+						ghi::ClearValue::None,
+						!needs_clear,
+						true,
+					)];
+
 					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
 					let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
 					command_buffer.bind_descriptor_sets(&[text_descriptor_set]);

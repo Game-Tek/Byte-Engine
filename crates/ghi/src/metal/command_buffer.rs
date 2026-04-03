@@ -11,7 +11,7 @@ use crate::{
 		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
 	descriptors::DescriptorSetHandle,
-	ImageOrSwapchain, PrivateHandles,
+	HandleLike as _, ImageOrSwapchain, PrivateHandles,
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
@@ -33,6 +33,10 @@ pub struct CommandBufferRecording<'a> {
 	push_constant_data: Vec<u8>,
 	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>>>,
 	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLRenderCommandEncoder>>>,
+	drawables: Vec<(
+		graphics_hardware_interface::SwapchainHandle,
+		Retained<ProtocolObject<dyn CAMetalDrawable>>,
+	)>,
 }
 
 pub struct FinishedCommandBuffer<'a> {
@@ -48,6 +52,10 @@ impl<'a> CommandBufferRecording<'a> {
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
+		drawables: Vec<(
+			graphics_hardware_interface::SwapchainHandle,
+			Retained<ProtocolObject<dyn CAMetalDrawable>>,
+		)>,
 	) -> Self {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
 		let states = device.states.clone();
@@ -58,6 +66,7 @@ impl<'a> CommandBufferRecording<'a> {
 			sequence_index,
 			command_buffer,
 			states,
+			drawables,
 			active_pipeline_layout: None,
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
@@ -93,17 +102,6 @@ impl<'a> CommandBufferRecording<'a> {
 		self.device.images.nth_handle(handle, self.sequence_index as _).unwrap()
 	}
 
-	fn get_current_swapchain_image_handle(
-		&self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> ImageHandle {
-		self.device
-			.swapchain_image_handle_for_frame(swapchain_handle, self.sequence_index, 0)
-			.expect(
-				"Missing Metal swapchain proxy image. The most likely cause is that the swapchain did not create a proxy image for the acquired frame.",
-			)
-	}
-
 	fn consume_resources(&mut self, consumptions: impl IntoIterator<Item = Consumption>) {
 		for consumption in consumptions {
 			self.states.insert(
@@ -127,9 +125,8 @@ impl<'a> CommandBufferRecording<'a> {
 			let Some(&(_, descriptor_set_handle)) = self.bound_descriptor_set_handles.get(set_index as usize) else {
 				continue;
 			};
-			let frame_state =
-				&self.device.descriptor_sets[descriptor_set_handle.0 as usize].frames[self.sequence_index as usize];
-			let Some(descriptors) = frame_state.descriptors.get(&binding_index) else {
+			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
+			let Some(descriptors) = descriptor_set.descriptors.get(&binding_index) else {
 				continue;
 			};
 
@@ -137,10 +134,12 @@ impl<'a> CommandBufferRecording<'a> {
 				let Some(handle) = descriptor.tracked_resource() else {
 					continue;
 				};
+
 				let layout = match descriptor {
 					Descriptor::Buffer { .. } => crate::Layouts::General,
 					Descriptor::Image { layout, .. } | Descriptor::CombinedImageSampler { layout, .. } => layout,
 					Descriptor::Sampler { .. } => continue,
+					Descriptor::Swapchain { .. } => continue,
 				};
 
 				consumptions.push(Consumption {
@@ -257,12 +256,13 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				(attachment, image.texture.clone(), image.format)
 			}
 			ImageOrSwapchain::Swapchain(swapchain) => {
-				let image = self
-					.device
-					.images
-					.resource(self.get_current_swapchain_image_handle(swapchain));
+				let drawable = self
+					.drawables
+					.iter()
+					.find(|(handle, _)| *handle == swapchain)
+					.expect("Swapchain image not found");
 
-				(attachment, image.texture.clone(), image.format)
+				(attachment, drawable.1.texture(), crate::Formats::BGRAu8) // TODO: get actual format
 			}
 		});
 
@@ -572,12 +572,11 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 			encoder.setFrontFacingWinding(utils::winding(face_winding));
 			encoder.setCullMode(utils::cull_mode(cull_mode));
 
-			if self.bound_vertex_layout != pipeline_vertex_layout {
-				if let PipelineState::Raster(Some(render_pipeline_state)) = &pipeline_state {
-					encoder.setRenderPipelineState(render_pipeline_state);
-				}
-				self.bound_vertex_layout = pipeline_vertex_layout;
+			if let PipelineState::Raster(Some(render_pipeline_state)) = &pipeline_state {
+				encoder.setRenderPipelineState(render_pipeline_state);
 			}
+
+			self.bound_vertex_layout = pipeline_vertex_layout;
 		}
 		self.apply_bound_vertex_buffers();
 		self.apply_push_constants();
@@ -639,7 +638,11 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
 		for descriptor_set_handle in sets {
-			let descriptor_set_handle = DescriptorSetHandle(descriptor_set_handle.0);
+			let descriptor_set_handles = DescriptorSetHandle(descriptor_set_handle.0)
+				.root(&self.device.descriptor_sets)
+				.get_all(&self.device.descriptor_sets);
+			let descriptor_set_handle =
+				descriptor_set_handles[(self.sequence_index as usize).rem_euclid(descriptor_set_handles.len())];
 			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
 			let set_index = *pipeline_layout
 				.descriptor_set_template_indices
@@ -665,7 +668,6 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		for &(set_index, descriptor_set_handle) in &self.bound_descriptor_set_handles {
 			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
 			let descriptor_set_layout = &self.device.descriptor_sets_layouts[descriptor_set.descriptor_set_layout.0 as usize];
-			let frame_state = &descriptor_set.frames[self.sequence_index as usize];
 			let binding_index = ARGUMENT_BUFFER_BINDING_BASE + set_index;
 
 			match &pipeline.pipeline {
@@ -678,7 +680,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 						{
 							unsafe {
 								encoder.setVertexBuffer_offset_atIndex(
-									Some(frame_state.argument_buffer.as_ref()),
+									Some(descriptor_set.argument_buffer.as_ref()),
 									0,
 									binding_index as _,
 								);
@@ -692,7 +694,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 						{
 							unsafe {
 								encoder.setFragmentBuffer_offset_atIndex(
-									Some(frame_state.argument_buffer.as_ref()),
+									Some(descriptor_set.argument_buffer.as_ref()),
 									0,
 									binding_index as _,
 								);
@@ -709,7 +711,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 						{
 							unsafe {
 								encoder.setBuffer_offset_atIndex(
-									Some(frame_state.argument_buffer.as_ref()),
+									Some(descriptor_set.argument_buffer.as_ref()),
 									0,
 									binding_index as _,
 								);

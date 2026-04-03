@@ -37,6 +37,9 @@ pub(super) enum Descriptor {
 	Sampler {
 		sampler: SamplerHandle,
 	},
+	Swapchain {
+		handle: crate::swapchain::SwapchainHandle,
+	},
 }
 
 impl Descriptor {
@@ -46,6 +49,7 @@ impl Descriptor {
 			Descriptor::Image { image, .. } => Some(PrivateHandles::Image(image)),
 			Descriptor::CombinedImageSampler { image, .. } => Some(PrivateHandles::Image(image)),
 			Descriptor::Sampler { .. } => None,
+			Descriptor::Swapchain { handle } => Some(PrivateHandles::Swapchain(handle)),
 		}
 	}
 }
@@ -237,12 +241,6 @@ pub(crate) struct DebugCallbackData {
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) struct TransitionState {
 	layout: crate::Layouts,
-}
-
-#[derive(Clone)]
-pub(crate) struct DescriptorSetFrameState {
-	argument_buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
-	descriptors: HashMap<u32, HashMap<u32, Descriptor>>,
 }
 
 pub(crate) struct Mesh {
@@ -749,11 +747,13 @@ pub mod descriptor_set {
 
 	use super::*;
 
+	/// The `DescriptorSet` struct stores the Metal descriptor state for one frame.
 	#[derive(Clone)]
 	pub(crate) struct DescriptorSet {
 		pub next: Option<DescriptorSetHandle>,
 		pub descriptor_set_layout: graphics_hardware_interface::DescriptorSetTemplateHandle,
-		pub frames: Vec<DescriptorSetFrameState>,
+		pub argument_buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+		pub descriptors: HashMap<u32, HashMap<u32, Descriptor>>,
 	}
 }
 
@@ -793,8 +793,6 @@ pub mod swapchain {
 		pub view: Retained<NSView>,
 		pub images: [Option<ImageHandle>; MAX_SWAPCHAIN_IMAGES],
 		pub extent: Extent,
-		pub acquired_image_indices: Vec<u8>,
-		pub drawables: Vec<Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>>,
 	}
 }
 

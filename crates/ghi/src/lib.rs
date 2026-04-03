@@ -143,6 +143,7 @@ pub mod queue;
 pub mod rt;
 pub mod sampler;
 pub mod shader;
+pub mod swapchain;
 pub mod synchronizer;
 
 pub mod types;
@@ -170,6 +171,7 @@ pub(crate) enum PrivateHandles {
 	Image(image::ImageHandle),
 	Buffer(buffer::BufferHandle),
 	Synchronizer(synchronizer::SynchronizerHandle),
+	Swapchain(swapchain::SwapchainHandle),
 }
 
 pub(crate) trait HandleLike

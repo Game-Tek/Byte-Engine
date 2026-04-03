@@ -43,9 +43,6 @@ pub struct Device {
 
 	pub(crate) resource_to_descriptor: HashMap<PrivateHandles, HashSet<(DescriptorSetBindingHandle, u32, u8)>>,
 	pub(crate) descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32, u32, u8), HashSet<PrivateHandles>>,
-	pub(crate) swapchain_descriptor_sources: HashMap<SwapchainDescriptorBinding, SwapchainDescriptorSource>,
-	pub(crate) swapchain_to_descriptor_bindings:
-		HashMap<graphics_hardware_interface::SwapchainHandle, HashSet<SwapchainDescriptorBinding>>,
 
 	pub settings: crate::device::Features,
 	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
@@ -116,8 +113,6 @@ impl Device {
 			swapchains: Vec::new(),
 			resource_to_descriptor: HashMap::default(),
 			descriptor_set_to_resource: HashMap::default(),
-			swapchain_descriptor_sources: HashMap::default(),
-			swapchain_to_descriptor_bindings: HashMap::default(),
 			settings,
 			states: HashMap::default(),
 			pending_buffer_syncs: VecDeque::new(),
@@ -222,7 +217,7 @@ impl Device {
 	}
 
 	/// Stores a resolved descriptor for one binding slot, re-encodes the argument buffer, and refreshes resource tracking.
-	fn update_descriptor_for_binding(
+	pub(crate) fn update_descriptor_for_binding(
 		&mut self,
 		binding_handle: DescriptorSetBindingHandle,
 		descriptor: Descriptor,
@@ -236,8 +231,8 @@ impl Device {
 		self.clear_descriptor_tracking(set_handle, binding_handle, binding_index, array_element, frame_index);
 
 		{
-			let frame_state = &mut self.descriptor_sets[set_handle.0 as usize].frames[frame_index as usize];
-			let bindings = frame_state.descriptors.entry(binding_index).or_default();
+			let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
+			let bindings = descriptor_set.descriptors.entry(binding_index).or_default();
 			bindings.insert(array_element, descriptor);
 		}
 
@@ -304,94 +299,9 @@ impl Device {
 			.insert((binding_handle, array_element, frame_index));
 	}
 
-	/// Removes swapchain tracking for one descriptor binding element when it stops targeting a swapchain.
-	fn clear_swapchain_descriptor_registration(&mut self, binding_handle: DescriptorSetBindingHandle, array_element: u32) {
-		let key = SwapchainDescriptorBinding {
-			binding_handle,
-			array_element,
-		};
-		let Some(source) = self.swapchain_descriptor_sources.remove(&key) else {
-			return;
-		};
-
-		let should_remove = if let Some(bindings) = self.swapchain_to_descriptor_bindings.get_mut(&source.swapchain_handle) {
-			bindings.remove(&key);
-			bindings.is_empty()
-		} else {
-			false
-		};
-
-		if should_remove {
-			self.swapchain_to_descriptor_bindings.remove(&source.swapchain_handle);
-		}
-	}
-
-	/// Tracks descriptor bindings that resolve through a swapchain so the current frame can refresh them after image acquisition.
-	fn update_swapchain_descriptor_registration(
-		&mut self,
-		binding_handle: DescriptorSetBindingHandle,
-		descriptor: crate::descriptors::WriteData,
-		array_element: u32,
-		frame_offset: i32,
-	) {
-		self.clear_swapchain_descriptor_registration(binding_handle, array_element);
-
-		let crate::descriptors::WriteData::Swapchain(swapchain_handle) = descriptor else {
-			return;
-		};
-
-		let key = SwapchainDescriptorBinding {
-			binding_handle,
-			array_element,
-		};
-
-		self.swapchain_descriptor_sources.insert(
-			key,
-			SwapchainDescriptorSource {
-				swapchain_handle,
-				frame_offset,
-			},
-		);
-		self.swapchain_to_descriptor_bindings
-			.entry(swapchain_handle)
-			.or_default()
-			.insert(key);
-	}
-
-	fn swapchain_sequence_index(&self, sequence_index: u8, frame_offset: i32) -> usize {
-		let total_frames = self.frames.max(1) as i32;
-		(sequence_index as i32 - frame_offset).rem_euclid(total_frames) as usize
-	}
-
-	pub(crate) fn swapchain_image_handle_for_frame(
-		&self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-		sequence_index: u8,
-		frame_offset: i32,
-	) -> Option<ImageHandle> {
-		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-		let source_sequence = self.swapchain_sequence_index(sequence_index, frame_offset);
-		let image_index = swapchain.acquired_image_indices.get(source_sequence).copied().unwrap_or(0) as usize;
-
-		swapchain.images.get(image_index).copied().flatten()
-	}
-
-	/// Resolves a swapchain-backed descriptor to the proxy image used by the requested frame.
-	fn resolve_swapchain_descriptor_for_frame(
-		&self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-		sequence_index: u8,
-		frame_offset: i32,
-	) -> Option<Descriptor> {
-		self.swapchain_image_handle_for_frame(swapchain_handle, sequence_index, frame_offset)
-			.map(|image| Descriptor::Image {
-				image,
-				layout: crate::Layouts::General,
-			})
-	}
-
 	/// Writes a resolved descriptor into the Metal argument buffer for one frame and array element.
-	fn encode_descriptor_binding(
+	/// Call this to write a descriptor binding into the argument buffer.
+	pub(crate) fn encode_descriptor_binding(
 		&mut self,
 		set_handle: DescriptorSetHandle,
 		binding_index: u32,
@@ -409,10 +319,11 @@ impl Device {
 				),
 			)
 		};
-		let frame_state = &mut self.descriptor_sets[set_handle.0 as usize].frames[frame_index as usize];
+
+		let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
 
 		unsafe {
-			argument_encoder.setArgumentBuffer_offset(Some(frame_state.argument_buffer.as_ref()), 0);
+			argument_encoder.setArgumentBuffer_offset(Some(descriptor_set.argument_buffer.as_ref()), 0);
 		}
 
 		match (layout_binding.slot_for_array_element(array_element), descriptor) {
@@ -451,7 +362,71 @@ impl Device {
 		}
 	}
 
-	/// Pre-encodes immutable samplers into every frame of a descriptor set.
+	pub(crate) fn encode_binding(
+		&self,
+		binding_handle: DescriptorSetBindingHandle,
+		descriptor: Descriptor,
+		frame_index: u8,
+		array_element: u32,
+	) {
+		let binding = &self.bindings[binding_handle.0 as usize];
+		let descriptor_set_handle = binding.descriptor_set_handle;
+		let index = binding.index;
+
+		let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+		let descriptor_set_template_handle = descriptor_set.descriptor_set_layout;
+
+		let (argument_encoder, layout_binding) = {
+			let layout = &self.descriptor_sets_layouts[descriptor_set_template_handle.0 as usize];
+			(
+				layout.argument_encoder.clone(),
+				layout.binding(index).cloned().expect(
+					"Descriptor set binding not found in Metal layout. The most likely cause is that a descriptor write targeted a binding that was not declared in the descriptor set template.",
+				),
+			)
+		};
+
+		unsafe {
+			argument_encoder.setArgumentBuffer_offset(Some(descriptor_set.argument_buffer.as_ref()), 0);
+		}
+
+		match (layout_binding.slot_for_array_element(array_element), descriptor) {
+			(DescriptorBindingSlot::Buffer(slot), Descriptor::Buffer { buffer, .. }) => unsafe {
+				let buffer = self.buffers.resource(buffer);
+				argument_encoder.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
+			},
+			(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, .. }) => unsafe {
+				let image = self.images.resource(image);
+				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+			},
+			(DescriptorBindingSlot::Texture(slot), Descriptor::CombinedImageSampler { image, .. }) => unsafe {
+				let image = self.images.resource(image);
+				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+			},
+			(DescriptorBindingSlot::Sampler(slot), Descriptor::Sampler { sampler }) => unsafe {
+				let sampler = &self.samplers[sampler.0 as usize];
+				argument_encoder.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), slot as _);
+			},
+			(
+				DescriptorBindingSlot::CombinedImageSampler { texture, sampler },
+				Descriptor::CombinedImageSampler {
+					image,
+					sampler: sampler_handle,
+					..
+				},
+			) => unsafe {
+				let image = self.images.resource(image);
+				let sampler_state = &self.samplers[sampler_handle.0 as usize];
+				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
+				argument_encoder.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _);
+			},
+			_ => panic!(
+				"Descriptor write does not match the Metal descriptor set layout. The most likely cause is that a descriptor type was written to a binding declared with a different descriptor type."
+			),
+		}
+	}
+
+	/// Pre-encodes immutable samplers into a descriptor set.
 	fn encode_immutable_samplers(&mut self, set_handle: DescriptorSetHandle) {
 		let descriptor_set_layout_handle = self.descriptor_sets[set_handle.0 as usize].descriptor_set_layout;
 		let (argument_encoder, bindings) = {
@@ -459,31 +434,30 @@ impl Device {
 			(layout.argument_encoder.clone(), layout.bindings.clone())
 		};
 
-		for frame_state in &mut self.descriptor_sets[set_handle.0 as usize].frames {
-			unsafe {
-				argument_encoder.setArgumentBuffer_offset(Some(frame_state.argument_buffer.as_ref()), 0);
-			}
+		unsafe {
+			argument_encoder
+				.setArgumentBuffer_offset(Some(self.descriptor_sets[set_handle.0 as usize].argument_buffer.as_ref()), 0);
+		}
 
-			for binding in &bindings {
-				let Some(immutable_samplers) = &binding.immutable_samplers else {
-					continue;
-				};
+		for binding in &bindings {
+			let Some(immutable_samplers) = &binding.immutable_samplers else {
+				continue;
+			};
 
-				for (array_element, sampler_handle) in immutable_samplers.iter().enumerate() {
-					let slot = binding.slot_for_array_element(array_element as u32);
-					let sampler = &self.samplers[SamplerHandle(sampler_handle.0).0 as usize];
+			for (array_element, sampler_handle) in immutable_samplers.iter().enumerate() {
+				let slot = binding.slot_for_array_element(array_element as u32);
+				let sampler = &self.samplers[SamplerHandle(sampler_handle.0).0 as usize];
 
-					match slot {
-						DescriptorBindingSlot::Sampler(slot) => unsafe {
-							argument_encoder.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), slot as _);
-						},
-						DescriptorBindingSlot::CombinedImageSampler {
-							sampler: sampler_slot, ..
-						} => unsafe {
-							argument_encoder.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), sampler_slot as _);
-						},
-						_ => {}
-					}
+				match slot {
+					DescriptorBindingSlot::Sampler(slot) => unsafe {
+						argument_encoder.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), slot as _);
+					},
+					DescriptorBindingSlot::CombinedImageSampler {
+						sampler: sampler_slot, ..
+					} => unsafe {
+						argument_encoder.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), sampler_slot as _);
+					},
+					_ => {}
 				}
 			}
 		}
@@ -530,9 +504,7 @@ impl Device {
 			crate::descriptors::WriteData::StaticSamplers => None,
 			crate::descriptors::WriteData::CombinedImageSamplerArray => None,
 			crate::descriptors::WriteData::AccelerationStructure { .. } => None,
-			crate::descriptors::WriteData::Swapchain(swapchain_handle) => {
-				self.resolve_swapchain_descriptor_for_frame(swapchain_handle, sequence_index, frame_offset)
-			}
+			crate::descriptors::WriteData::Swapchain(_) => None, // Swapchain descriptors are resolved in a Frame
 		}
 	}
 
@@ -551,6 +523,7 @@ impl Device {
 	}
 
 	/// Applies the same descriptor write across every frame tracked by the Metal device.
+	/// Call this to update a descriptor binding for all frames.
 	fn apply_descriptor_write_to_all_frames(
 		&mut self,
 		binding_handle: DescriptorSetBindingHandle,
@@ -558,8 +531,16 @@ impl Device {
 		array_element: u32,
 		frame_offset: i32,
 	) {
-		for sequence_index in 0..self.frames {
-			self.apply_descriptor_write_for_frame(binding_handle, descriptor, array_element, frame_offset, sequence_index);
+		let binding_handles = binding_handle.root(&self.bindings).get_all(&self.bindings);
+
+		for (sequence_index, &binding_handle) in binding_handles.iter().enumerate() {
+			self.apply_descriptor_write_for_frame(
+				binding_handle,
+				descriptor,
+				array_element,
+				frame_offset,
+				sequence_index as u8,
+			);
 		}
 	}
 
@@ -572,7 +553,7 @@ impl Device {
 		for (binding_handle, array_element, frame_index) in descriptor_bindings {
 			let binding = self.bindings[binding_handle.0 as usize].clone();
 			let set_handle = binding.descriptor_set_handle;
-			let descriptor = self.descriptor_sets[set_handle.0 as usize].frames[frame_index as usize]
+			let descriptor = self.descriptor_sets[set_handle.0 as usize]
 				.descriptors
 				.get(&binding.index)
 				.and_then(|descriptors| descriptors.get(&array_element))
@@ -581,30 +562,6 @@ impl Device {
 			if let Some(descriptor) = descriptor {
 				self.encode_descriptor_binding(set_handle, binding.index, descriptor, frame_index, array_element);
 			}
-		}
-	}
-
-	/// Refreshes every descriptor binding that currently points at the acquired image for one swapchain frame.
-	pub(crate) fn update_swapchain_descriptors_for_frame(
-		&mut self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-		sequence_index: u8,
-	) {
-		let Some(bindings) = self.swapchain_to_descriptor_bindings.get(&swapchain_handle).cloned() else {
-			return;
-		};
-
-		for binding in bindings {
-			let Some(source) = self.swapchain_descriptor_sources.get(&binding).copied() else {
-				continue;
-			};
-			let Some(descriptor) =
-				self.resolve_swapchain_descriptor_for_frame(source.swapchain_handle, sequence_index, source.frame_offset)
-			else {
-				continue;
-			};
-
-			self.update_descriptor_for_binding(binding.binding_handle, descriptor, sequence_index, binding.array_element);
 		}
 	}
 
@@ -636,21 +593,6 @@ impl Device {
 		}
 	}
 
-	/// Removes the drawable reserved for one presentation request and hands it to frame execution.
-	pub(crate) fn take_swapchain_drawable(
-		&mut self,
-		present_key: graphics_hardware_interface::PresentKey,
-	) -> Retained<ProtocolObject<dyn CAMetalDrawable>> {
-		let swapchain = &mut self.swapchains[present_key.swapchain.0 as usize];
-		swapchain
-			.drawables
-			.get_mut(present_key.sequence_index as usize)
-			.and_then(Option::take)
-			.expect(
-				"Missing Metal drawable for presentation. The most likely cause is that the frame did not acquire the swapchain image before execution.",
-			)
-	}
-
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
 		let mut tasks = self.tasks.split_off(0);
 
@@ -669,8 +611,17 @@ impl Device {
 					self.rewrite_descriptors_for_handle(PrivateHandles::Image(*handle));
 				}
 				Tasks::UpdateDescriptor { descriptor_write } => {
+					let binding_handles = DescriptorSetBindingHandle(descriptor_write.binding_handle.0)
+						.root(&self.bindings)
+						.get_all(&self.bindings);
+					let binding_index = (sequence_index as usize).rem_euclid(binding_handles.len());
+
+					let Some(&binding_handle) = binding_handles.get(binding_index) else {
+						return false;
+					};
+
 					self.apply_descriptor_write_for_frame(
-						DescriptorSetBindingHandle(descriptor_write.binding_handle.0),
+						binding_handle,
 						descriptor_write.descriptor,
 						descriptor_write.array_element,
 						descriptor_write.frame_offset.unwrap_or(0),
@@ -780,10 +731,7 @@ impl Device {
 
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
 		self.frames = frames.max(1);
-		for swapchain in &mut self.swapchains {
-			swapchain.acquired_image_indices.resize(self.frames as usize, 0);
-			swapchain.drawables.resize_with(self.frames as usize, || None);
-		}
+		for swapchain in &mut self.swapchains {}
 		// TODO: Rebuild dynamic resources for new frame count.
 	}
 
@@ -980,7 +928,7 @@ impl Device {
 		graphics_hardware_interface::DescriptorSetTemplateHandle((self.descriptor_sets_layouts.len() - 1) as u64)
 	}
 
-	/// Allocates the per-frame Metal argument buffers for a descriptor set and seeds its immutable samplers.
+	/// Allocates one Metal descriptor set per in-flight frame and seeds immutable samplers.
 	pub fn create_descriptor_set(
 		&mut self,
 		_name: Option<&str>,
@@ -989,33 +937,36 @@ impl Device {
 		let encoded_length = self.descriptor_sets_layouts[descriptor_set_template_handle.0 as usize]
 			.encoded_length
 			.max(1);
-		let frames = (0..self.frames)
-			.map(|_| {
-				let argument_buffer = self
-					.device
-					.newBufferWithLength_options(encoded_length as _, mtl::MTLResourceOptions::StorageModeShared)
-					.expect(
-						"Metal argument buffer allocation failed. The most likely cause is that the device is out of memory.",
-					);
 
-				DescriptorSetFrameState {
-					argument_buffer,
-					descriptors: HashMap::default(),
-				}
-			})
-			.collect::<Vec<_>>();
+		let handle = graphics_hardware_interface::DescriptorSetHandle(self.descriptor_sets.len() as u64);
+		let mut previous_handle: Option<DescriptorSetHandle> = None;
 
-		self.descriptor_sets.push(descriptor_set::DescriptorSet {
-			next: None,
-			descriptor_set_layout: *descriptor_set_template_handle,
-			frames,
-		});
-		let handle = DescriptorSetHandle((self.descriptor_sets.len() - 1) as u64);
-		self.encode_immutable_samplers(handle);
-		graphics_hardware_interface::DescriptorSetHandle(handle.0)
+		for _ in 0..self.frames {
+			let descriptor_set_handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
+			let argument_buffer = self
+				.device
+				.newBufferWithLength_options(encoded_length as _, mtl::MTLResourceOptions::StorageModeShared)
+				.expect("Metal argument buffer allocation failed. The most likely cause is that the device is out of memory.");
+
+			self.descriptor_sets.push(descriptor_set::DescriptorSet {
+				next: None,
+				descriptor_set_layout: *descriptor_set_template_handle,
+				argument_buffer,
+				descriptors: HashMap::default(),
+			});
+
+			if let Some(previous_handle) = previous_handle {
+				self.descriptor_sets[previous_handle.0 as usize].next = Some(descriptor_set_handle);
+			}
+
+			self.encode_immutable_samplers(descriptor_set_handle);
+			previous_handle = Some(descriptor_set_handle);
+		}
+
+		handle
 	}
 
-	/// Creates a descriptor binding record and applies its initial contents across all frames.
+	/// Creates one descriptor binding per frame-local descriptor set and applies the initial contents.
 	pub fn create_descriptor_binding(
 		&mut self,
 		descriptor_set: graphics_hardware_interface::DescriptorSetHandle,
@@ -1024,23 +975,26 @@ impl Device {
 		let descriptor_type = binding_constructor.descriptor_set_binding_template.descriptor_type;
 		let binding_index = binding_constructor.descriptor_set_binding_template.binding;
 		let count = binding_constructor.descriptor_set_binding_template.descriptor_count;
+		let descriptor_set_handles = DescriptorSetHandle(descriptor_set.0).get_all(&self.descriptor_sets);
+		let mut next = None;
 
-		self.bindings.push(binding::Binding {
-			next: None,
-			descriptor_set_handle: DescriptorSetHandle(descriptor_set.0),
-			descriptor_type,
-			index: binding_index,
-			count,
-		});
+		for descriptor_set_handle in descriptor_set_handles.iter().rev() {
+			let binding_handle = DescriptorSetBindingHandle(self.bindings.len() as u64);
 
-		let binding_handle = DescriptorSetBindingHandle((self.bindings.len() - 1) as u64);
+			self.bindings.push(binding::Binding {
+				next,
+				descriptor_set_handle: *descriptor_set_handle,
+				descriptor_type,
+				index: binding_index,
+				count,
+			});
+
+			next = Some(binding_handle);
+		}
+
+		let binding_handle = next.expect("Descriptor binding creation failed. The most likely cause is that no Metal descriptor sets were created for the requested template.");
 		let frame_offset = binding_constructor.frame_offset.map(i32::from).unwrap_or(0);
-		self.update_swapchain_descriptor_registration(
-			binding_handle,
-			binding_constructor.descriptor,
-			binding_constructor.array_element,
-			frame_offset,
-		);
+
 		self.apply_descriptor_write_to_all_frames(
 			binding_handle,
 			binding_constructor.descriptor,
@@ -1326,13 +1280,15 @@ impl Device {
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
 	) -> super::CommandBufferRecording<'a> {
+		self.flush_pending_uploads();
+
 		let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
 		let queue = &self.queues[command_buffer.queue_handle.0 as usize];
 		let mtl_command_buffer = queue.queue.commandBuffer().expect(
 			"Metal command buffer creation failed. The most likely cause is that the command queue did not provide a command buffer.",
 		);
 
-		super::CommandBufferRecording::new(self, command_buffer_handle, mtl_command_buffer, frame_key)
+		super::CommandBufferRecording::new(self, command_buffer_handle, mtl_command_buffer, frame_key, Vec::new())
 	}
 
 	pub fn build_buffer<T: Copy>(&mut self, builder: buffer_builder::Builder) -> graphics_hardware_interface::BufferHandle<T> {
@@ -1401,6 +1357,48 @@ impl Device {
 	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
 		let handle = self.buffers.nth_handle(buffer_handle.into(), 0).unwrap();
 		self.pending_buffer_syncs.push_back(handle);
+	}
+
+	fn upload_image_from_staging(&mut self, image_handle: ImageHandle) {
+		let image = self.images.resource_mut(image_handle);
+
+		let Some(staging) = image.staging.as_ref() else {
+			return;
+		};
+
+		let Some(bytes_per_pixel) = utils::bytes_per_pixel(image.format) else {
+			return;
+		};
+
+		let extent = image.extent;
+		let width = extent.width() as usize;
+		let height = extent.height() as usize;
+		let bytes_per_row = width * bytes_per_pixel;
+		let region = mtl::MTLRegion {
+			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
+			size: mtl::MTLSize {
+				width: width as _,
+				height: height as _,
+				depth: 1,
+			},
+		};
+		let staging_ptr = NonNull::new(staging.as_ptr() as *mut std::ffi::c_void)
+			.expect("Texture staging pointer was null. The most likely cause is a zero-sized texture.");
+
+		unsafe {
+			image
+				.texture
+				.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, staging_ptr, bytes_per_row as _);
+		}
+	}
+
+	fn flush_pending_uploads(&mut self) {
+		self.pending_buffer_syncs.clear();
+
+		let pending_images = self.pending_image_syncs.drain(..).collect::<Vec<_>>();
+		for image_handle in pending_images {
+			self.upload_image_from_staging(image_handle);
+		}
 	}
 
 	pub fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
@@ -1542,12 +1540,6 @@ impl Device {
 	/// Applies descriptor writes to the Metal-backed bindings for every frame they target.
 	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
 		for write in descriptor_set_writes {
-			self.update_swapchain_descriptor_registration(
-				DescriptorSetBindingHandle(write.binding_handle.0),
-				write.descriptor,
-				write.array_element,
-				write.frame_offset.unwrap_or(0),
-			);
 			self.apply_descriptor_write_to_all_frames(
 				DescriptorSetBindingHandle(write.binding_handle.0),
 				write.descriptor,
@@ -1638,8 +1630,6 @@ impl Device {
 			view: window_os_handles.view.clone(),
 			extent,
 			images,
-			acquired_image_indices: vec![0; self.frames as usize],
-			drawables: (0..self.frames as usize).map(|_| None).collect(),
 		});
 
 		handle

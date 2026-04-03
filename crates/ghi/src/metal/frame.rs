@@ -1,18 +1,25 @@
 use crate::image::ImageHandle;
+use crate::SwapchainHandle;
 
 use super::*;
+use objc2_foundation::NSAutoreleasePool;
 use objc2_metal::MTLBlitCommandEncoder;
 use objc2_metal::MTLCommandBuffer;
 use objc2_metal::MTLCommandEncoder;
 
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
+	drawables: Vec<(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>)>,
 	device: &'a mut device::Device,
 }
 
 impl<'a> Frame<'a> {
 	pub fn new(device: &'a mut device::Device, frame_key: graphics_hardware_interface::FrameKey) -> Self {
-		Self { frame_key, device }
+		Self {
+			frame_key,
+			drawables: Vec::with_capacity(4),
+			device,
+		}
 	}
 
 	fn get_current_image_handle(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
@@ -91,31 +98,39 @@ impl Frame<'_> {
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> (graphics_hardware_interface::PresentKey, Extent) {
+		let _pool = unsafe { NSAutoreleasePool::new() };
 		let sequence_index = self.frame_key.sequence_index;
-		let index = 0; // TODO: get real number of images
-		let frame_count = self.device.frames as usize;
-		let extent = {
-			let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
-			swapchain.acquired_image_indices.resize(frame_count, 0);
-			swapchain.drawables.resize_with(frame_count, || None);
 
-			swapchain.extent = update_layer_extent(&swapchain.layer, &swapchain.view);
-			swapchain.acquired_image_indices[sequence_index as usize] = index;
-			swapchain.drawables[sequence_index as usize] = Some(swapchain.layer.nextDrawable().expect(
-				"Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.",
-			));
-			swapchain.extent
-		};
-
-		self.device.resize_swapchain_images(swapchain_handle, extent);
-		self.device
-			.update_swapchain_descriptors_for_frame(swapchain_handle, sequence_index);
+		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
+		let drawable = swapchain
+			.layer
+			.nextDrawable()
+			.expect("Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.");
 
 		let present_key = graphics_hardware_interface::PresentKey {
-			image_index: index,
+			image_index: 0,
 			sequence_index,
 			swapchain: swapchain_handle,
 		};
+
+		let extent = update_layer_extent(&swapchain.layer, &swapchain.view);
+
+		self.drawables.push((swapchain_handle, drawable));
+
+		let swapchain_handle = crate::swapchain::SwapchainHandle(swapchain_handle.0);
+
+		if let Some(descriptors) = self.device.resource_to_descriptor.get(&swapchain_handle.into()) {
+			for (binding_handle, ..) in descriptors {
+				self.device.encode_binding(
+					*binding_handle,
+					Descriptor::Swapchain {
+						handle: swapchain_handle,
+					},
+					self.frame_key.sequence_index,
+					0,
+				);
+			}
+		}
 
 		(present_key, extent)
 	}
@@ -129,6 +144,7 @@ impl Frame<'_> {
 		cbr: super::FinishedCommandBuffer<'_>,
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	) {
+		let _pool = unsafe { NSAutoreleasePool::new() };
 		let super::FinishedCommandBuffer {
 			command_buffer_handle: _command_buffer_handle,
 			command_buffer,
@@ -138,7 +154,9 @@ impl Frame<'_> {
 		let mut present_drawables = Vec::with_capacity(present_keys.len());
 
 		for &present_key in present_keys {
-			present_drawables.push(self.device.take_swapchain_drawable(present_key));
+			if let Some(e) = self.drawables.pop_if(|e| e.0 == present_key.swapchain) {
+				present_drawables.push(e.1);
+			}
 		}
 
 		if !present_keys.is_empty() {

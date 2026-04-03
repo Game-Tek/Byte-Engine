@@ -1,5 +1,5 @@
-use crate::image::ImageHandle;
 use crate::SwapchainHandle;
+use crate::image::ImageHandle;
 
 use super::*;
 use objc2_foundation::NSAutoreleasePool;
@@ -7,18 +7,31 @@ use objc2_metal::MTLBlitCommandEncoder;
 use objc2_metal::MTLCommandBuffer;
 use objc2_metal::MTLCommandEncoder;
 
+/// The `Frame` struct represents a single frame's worth of Metal rendering state.
+///
+/// It owns an `NSAutoreleasePool` that covers the entire frame lifetime. This is
+/// critical because Metal API calls (command buffer creation, encoder creation, etc.)
+/// internally produce autoreleased Objective-C objects. Without a pool spanning the
+/// whole frame, those objects accumulate on non-main threads where no run-loop pool
+/// exists.
+///
+/// Field order matters: Rust drops fields in declaration order. The drawables must be
+/// released before the autorelease pool drains, so `_autorelease_pool` is declared last.
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
 	drawables: Vec<(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>)>,
 	device: &'a mut device::Device,
+	_autorelease_pool: Retained<NSAutoreleasePool>,
 }
 
 impl<'a> Frame<'a> {
 	pub fn new(device: &'a mut device::Device, frame_key: graphics_hardware_interface::FrameKey) -> Self {
+		let pool = unsafe { NSAutoreleasePool::new() };
 		Self {
 			frame_key,
 			drawables: Vec::with_capacity(4),
 			device,
+			_autorelease_pool: pool,
 		}
 	}
 
@@ -98,7 +111,6 @@ impl Frame<'_> {
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> (graphics_hardware_interface::PresentKey, Extent) {
-		let _pool = unsafe { NSAutoreleasePool::new() };
 		let sequence_index = self.frame_key.sequence_index;
 
 		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
@@ -149,7 +161,6 @@ impl Frame<'_> {
 		cbr: super::FinishedCommandBuffer<'_>,
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	) {
-		let _pool = unsafe { NSAutoreleasePool::new() };
 		let super::FinishedCommandBuffer {
 			command_buffer_handle: _command_buffer_handle,
 			command_buffer,

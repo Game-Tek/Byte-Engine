@@ -3,9 +3,9 @@ use std::borrow::Borrow;
 use crate::{
 	core::EntityHandle,
 	rendering::{
+		Viewport,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 		view::View,
-		Viewport,
 	},
 };
 
@@ -75,33 +75,33 @@ fn create_tone_mapping_shader(device: &mut ghi::implementation::Device) -> ghi::
 
 			float3 linear_srgb_to_linear_rec2020(float3 color) {
 				return float3(
-					0.6274 * color.x + 0.0691 * color.y + 0.0164 * color.z,
-					0.3293 * color.x + 0.9195 * color.y + 0.0880 * color.z,
-					0.0433 * color.x + 0.0113 * color.y + 0.8956 * color.z
+					0.6274 * color.x + 0.3293 * color.y + 0.0433 * color.z,
+					0.0691 * color.x + 0.9195 * color.y + 0.0113 * color.z,
+					0.0164 * color.x + 0.0880 * color.y + 0.8956 * color.z
 				);
 			}
 
 			float3 linear_rec2020_to_linear_srgb(float3 color) {
 				return float3(
-					1.6605 * color.x - 0.1246 * color.y - 0.0182 * color.z,
-					-0.5876 * color.x + 1.1329 * color.y - 0.1006 * color.z,
-					-0.0728 * color.x - 0.0083 * color.y + 1.1187 * color.z
+					1.6605 * color.x - 0.5876 * color.y - 0.0728 * color.z,
+					-0.1246 * color.x + 1.1329 * color.y - 0.0083 * color.z,
+					-0.0182 * color.x - 0.1006 * color.y + 1.1187 * color.z
 				);
 			}
 
 			float3 agx_inset(float3 color) {
 				return float3(
-					0.856627153315983 * color.x + 0.137318972929847 * color.y + 0.11189821299995 * color.z,
-					0.0951212405381588 * color.x + 0.761241990602591 * color.y + 0.0767994186031903 * color.z,
-					0.0482516061458583 * color.x + 0.101439036467562 * color.y + 0.811302368396859 * color.z
+					0.856627153315983 * color.x + 0.0951212405381588 * color.y + 0.0482516061458583 * color.z,
+					0.137318972929847 * color.x + 0.761241990602591 * color.y + 0.101439036467562 * color.z,
+					0.11189821299995 * color.x + 0.0767994186031903 * color.y + 0.811302368396859 * color.z
 				);
 			}
 
 			float3 agx_outset(float3 color) {
 				return float3(
-					1.1271005818144368 * color.x - 0.1413297634984383 * color.y - 0.14132976349843826 * color.z,
-					-0.11060664309660323 * color.x + 1.157823702216272 * color.y - 0.11060664309660294 * color.z,
-					-0.016493938717834573 * color.x - 0.016493938717834257 * color.y + 1.2519364065950405 * color.z
+					1.1271005818144368 * color.x - 0.11060664309660323 * color.y - 0.016493938717834573 * color.z,
+					-0.1413297634984383 * color.x + 1.157823702216272 * color.y - 0.016493938717834257 * color.z,
+					-0.14132976349843826 * color.x - 0.11060664309660294 * color.y + 1.2519364065950405 * color.z
 				);
 			}
 

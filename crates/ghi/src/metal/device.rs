@@ -55,6 +55,14 @@ pub struct Device {
 	pub names: HashMap<graphics_hardware_interface::Handles, String>,
 }
 
+fn parse_threadgroup_size_metadata(source: &str) -> Option<Extent> {
+	let metadata_prefix = "// besl-threadgroup-size:";
+	let metadata = source.lines().find_map(|line| line.trim().strip_prefix(metadata_prefix))?;
+	let mut extents = metadata.split(',').map(|value| value.trim().parse::<u32>().ok());
+
+	Some(Extent::new(extents.next()??, extents.next()??, extents.next()??))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SwapchainDescriptorBinding {
 	pub(crate) binding_handle: DescriptorSetBindingHandle,
@@ -813,9 +821,13 @@ impl Device {
 		stage: crate::ShaderTypes,
 		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let (spirv, metal_function) = match shader_source_type {
-			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None),
+		let (spirv, metal_function, threadgroup_size) = match shader_source_type {
+			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None, None),
 			crate::shader::Sources::MTL { source, entry_point } => {
+				let threadgroup_size = match stage {
+					crate::ShaderTypes::Task | crate::ShaderTypes::Mesh => parse_threadgroup_size_metadata(source),
+					_ => None,
+				};
 				let compile_options = mtl::MTLCompileOptions::new();
 				let source = NSString::from_str(source);
 				let library = self
@@ -825,7 +837,7 @@ impl Device {
 				let entry_point = NSString::from_str(entry_point);
 				let function = library.newFunctionWithName(&entry_point).ok_or(())?;
 
-				(None, Some(function))
+				(None, Some(function), threadgroup_size)
 			}
 		};
 
@@ -848,6 +860,7 @@ impl Device {
 			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
 			metal_function,
 			spirv,
+			threadgroup_size,
 		});
 
 		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
@@ -1124,8 +1137,12 @@ impl Device {
 		);
 		let vertex_layout = self.get_or_create_vertex_layout(builder.vertex_elements.as_ref());
 		let mut shader_handles = HashMap::default();
+		let mut object_function = None;
 		let mut vertex_function = None;
+		let mut mesh_function = None;
 		let mut fragment_function = None;
+		let mut object_threadgroup_size = None;
+		let mut mesh_threadgroup_size = None;
 		let resource_access = builder
 			.shaders
 			.iter()
@@ -1133,7 +1150,15 @@ impl Device {
 				let shader = &self.shaders[shader_parameter.handle.0 as usize];
 				shader_handles.insert(*shader_parameter.handle, [0; 32]);
 				match shader_parameter.stage {
+					crate::ShaderTypes::Task => {
+						object_function = shader.metal_function.clone();
+						object_threadgroup_size = shader.threadgroup_size;
+					}
 					crate::ShaderTypes::Vertex => vertex_function = shader.metal_function.clone(),
+					crate::ShaderTypes::Mesh => {
+						mesh_function = shader.metal_function.clone();
+						mesh_threadgroup_size = shader.threadgroup_size;
+					}
 					crate::ShaderTypes::Fragment => fragment_function = shader.metal_function.clone(),
 					_ => {}
 				}
@@ -1150,7 +1175,44 @@ impl Device {
 			})
 			.collect::<Vec<_>>();
 
-		let raster_pipeline_state = if let Some(vertex_function) = vertex_function.as_ref() {
+		let raster_pipeline_state = if let Some(mesh_function) = mesh_function.as_ref() {
+			let descriptor = mtl::MTLMeshRenderPipelineDescriptor::new();
+			descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+			unsafe {
+				descriptor.setObjectFunction(object_function.as_ref().map(|function| function.as_ref()));
+				descriptor.setMeshFunction(Some(mesh_function.as_ref()));
+				descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
+			}
+
+			for (index, attachment) in builder.render_targets.iter().enumerate() {
+				if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
+					descriptor.setDepthAttachmentPixelFormat(utils::to_pixel_format(attachment.format));
+				} else {
+					let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
+					color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
+					match attachment.blend {
+						crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingEnabled(false),
+						crate::pipelines::raster::BlendMode::Alpha => {
+							color_attachment.setBlendingEnabled(true);
+							color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
+							color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
+							color_attachment.setSourceRGBBlendFactor(mtl::MTLBlendFactor::SourceAlpha);
+							color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
+							color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
+							color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
+						}
+					}
+				}
+			}
+
+			self.device
+				.newRenderPipelineStateWithMeshDescriptor_options_reflection_error(
+					&descriptor,
+					mtl::MTLPipelineOption::None,
+					None,
+				)
+				.ok()
+		} else if let Some(vertex_function) = vertex_function.as_ref() {
 			let descriptor = mtl::MTLRenderPipelineDescriptor::new();
 			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
@@ -1189,6 +1251,8 @@ impl Device {
 			vertex_layout: Some(vertex_layout),
 			shader_handles,
 			resource_access,
+			object_threadgroup_size,
+			mesh_threadgroup_size,
 			face_winding: builder.face_winding,
 			cull_mode: builder.cull_mode,
 		});
@@ -1238,6 +1302,8 @@ impl Device {
 			vertex_layout: None,
 			shader_handles,
 			resource_access,
+			object_threadgroup_size: None,
+			mesh_threadgroup_size: None,
 			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
 			cull_mode: crate::pipelines::raster::CullMode::Back,
 		});
@@ -1270,6 +1336,8 @@ impl Device {
 			vertex_layout: None,
 			shader_handles: HashMap::default(),
 			resource_access,
+			object_threadgroup_size: None,
+			mesh_threadgroup_size: None,
 			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
 			cull_mode: crate::pipelines::raster::CullMode::Back,
 		});

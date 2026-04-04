@@ -2,7 +2,10 @@ pub mod render_pass;
 pub mod scene_manager;
 pub mod shader_generator;
 
-use resource_management::{glsl_shader_generator::GLSLShaderGenerator, shader_generator::ShaderGenerationSettings};
+use resource_management::{
+	glsl_shader_generator::GLSLShaderGenerator, msl_shader_generator::MSLShaderGenerator,
+	shader_generator::ShaderGenerationSettings,
+};
 pub use scene_manager::VisibilityWorldRenderDomain;
 use utils::Extent;
 
@@ -107,27 +110,8 @@ const MAX_VERTICES: usize = 65536 * 4;
 pub const SHADOW_CASCADE_COUNT: usize = 4;
 pub const SHADOW_MAP_RESOLUTION: u32 = 2048;
 
-pub fn get_visibility_pass_mesh_source() -> String {
-	let main_code = r#"
-	View view = views.views[0];
-	process_meshlet(push_constant.instance_index, view.view_projection);
-	"#;
-
-	let main = besl::parser::Node::function(
-		"main",
-		Vec::new(),
-		"void",
-		vec![besl::parser::Node::glsl(
-			main_code,
-			&["View", "views", "push_constant", "process_meshlet"],
-			&[],
-		)],
-	);
-
-	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
-
+fn build_mesh_program(main: besl::parser::Node<'static>, push_constant: besl::parser::Node<'static>) -> besl::NodeReference {
 	let shader = besl::parser::Node::scope("Shader", vec![push_constant, main]);
-
 	let mut root = besl::parser::Node::root();
 
 	root.add(vec![
@@ -136,58 +120,167 @@ pub fn get_visibility_pass_mesh_source() -> String {
 		shader,
 	]);
 
-	let root_node = besl::lex(root).unwrap();
-
-	let main_node = root_node.get_main().unwrap();
-
-	let glsl = GLSLShaderGenerator::new()
-		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
-		.unwrap();
-
-	glsl
+	besl::lex(root).unwrap().get_main().unwrap()
 }
 
-pub fn get_shadow_pass_mesh_source() -> String {
-	let main_code = r#"
-	View view = views.views[push_constant.view_index];
-	process_meshlet(push_constant.instance_index, view.view_projection);
-	"#;
-
+pub fn get_visibility_pass_mesh_source() -> String {
 	let main = besl::parser::Node::function(
 		"main",
 		Vec::new(),
 		"void",
 		vec![besl::parser::Node::glsl(
-			main_code,
+			r#"
+		View view = views.views[0];
+		process_meshlet(push_constant.instance_index, view.view_projection);
+		"#,
 			&["View", "views", "push_constant", "process_meshlet"],
 			&[],
 		)],
 	);
-
-	let push_constant = besl::parser::Node::push_constant(vec![
-		besl::parser::Node::member("instance_index", "u32"),
-		besl::parser::Node::member("view_index", "u32"),
-	]);
-
-	let shader = besl::parser::Node::scope("Shader", vec![push_constant, main]);
-
-	let mut root = besl::parser::Node::root();
-
-	root.add(vec![
-		CommonShaderScope::new(),
-		VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false),
-		shader,
-	]);
-
-	let root_node = besl::lex(root).unwrap();
-	let main_node = root_node.get_main().unwrap();
+	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
+	let main_node = build_mesh_program(main, push_constant);
 
 	GLSLShaderGenerator::new()
 		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
 		.unwrap()
 }
 
-const VISIBILITY_PASS_FRAGMENT_SOURCE: &'static str = r#"
+pub fn get_visibility_pass_mesh_msl_source() -> String {
+	let main = besl::parser::Node::function(
+		"main",
+		Vec::new(),
+		"void",
+		vec![besl::parser::Node::raw_code(
+			Some(
+				r#"
+		View view = views.views[0];
+		process_meshlet(push_constant.instance_index, view.view_projection);
+		"#
+				.into(),
+			),
+			Some(
+				r#"
+		process_meshlet(
+			push_constant.instance_index,
+			set0.views->views[0].view_projection,
+			set0,
+			threadgroup_position,
+			thread_index,
+			out_mesh
+		);
+		"#
+				.into(),
+			),
+			&["push_constant", "process_meshlet", "views"],
+			&[],
+		)],
+	);
+	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
+	let main_node = build_mesh_program(main, push_constant);
+
+	MSLShaderGenerator::new()
+		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
+		.unwrap()
+}
+
+pub fn get_shadow_pass_mesh_source() -> String {
+	let main = besl::parser::Node::function(
+		"main",
+		Vec::new(),
+		"void",
+		vec![besl::parser::Node::glsl(
+			r#"
+		View view = views.views[push_constant.view_index];
+		process_meshlet(push_constant.instance_index, view.view_projection);
+		"#,
+			&["View", "views", "push_constant", "process_meshlet"],
+			&[],
+		)],
+	);
+	let push_constant = besl::parser::Node::push_constant(vec![
+		besl::parser::Node::member("instance_index", "u32"),
+		besl::parser::Node::member("view_index", "u32"),
+	]);
+	let main_node = build_mesh_program(main, push_constant);
+
+	GLSLShaderGenerator::new()
+		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
+		.unwrap()
+}
+
+pub fn get_shadow_pass_mesh_msl_source() -> String {
+	let main = besl::parser::Node::function(
+		"main",
+		Vec::new(),
+		"void",
+		vec![besl::parser::Node::raw_code(
+			Some(
+				r#"
+		View view = views.views[push_constant.view_index];
+		process_meshlet(push_constant.instance_index, view.view_projection);
+		"#
+				.into(),
+			),
+			Some(
+				r#"
+		process_meshlet(
+			push_constant.instance_index,
+			set0.views->views[push_constant.view_index].view_projection,
+			set0,
+			threadgroup_position,
+			thread_index,
+			out_mesh
+		);
+		"#
+				.into(),
+			),
+			&["push_constant", "process_meshlet", "views"],
+			&[],
+		)],
+	);
+	let push_constant = besl::parser::Node::push_constant(vec![
+		besl::parser::Node::member("instance_index", "u32"),
+		besl::parser::Node::member("view_index", "u32"),
+	]);
+	let main_node = build_mesh_program(main, push_constant);
+
+	MSLShaderGenerator::new()
+		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
+		.unwrap()
+}
+
+pub const VISIBILITY_PASS_FRAGMENT_SOURCE_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexOutput {
+	float4 position [[position]];
+};
+
+struct PrimitiveOutput {
+	uint instance_index [[flat]] [[user(locn0)]];
+	uint primitive_index [[flat]] [[user(locn1)]];
+};
+
+struct FragmentIn {
+	VertexOutput vertex;
+	PrimitiveOutput primitive;
+};
+
+struct FragmentOutput {
+	uint primitive_index [[color(0)]];
+	uint instance_id [[color(1)]];
+};
+
+fragment FragmentOutput visibility_fragment_main(FragmentIn in [[stage_in]]) {
+	FragmentOutput out;
+	out.primitive_index = in.primitive.primitive_index;
+	out.instance_id = in.primitive.instance_index;
+	return out;
+}
+"#;
+
+pub const VISIBILITY_PASS_FRAGMENT_SOURCE: &'static str = r#"
 #version 450
 #pragma shader_stage(fragment)
 

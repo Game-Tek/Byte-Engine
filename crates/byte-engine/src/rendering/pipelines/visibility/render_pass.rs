@@ -2,13 +2,14 @@ use std::borrow::Borrow as _;
 
 use crate::rendering::pipelines::visibility::scene_manager::Instance;
 use crate::rendering::pipelines::visibility::{
-	get_material_count_source, get_material_offset_source, get_pixel_mapping_source, get_shadow_pass_mesh_source,
-	get_visibility_pass_mesh_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
-	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS,
-	MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
-	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING,
-	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
-	VISIBILITY_PASS_FRAGMENT_SOURCE,
+	get_material_count_source, get_material_offset_source, get_pixel_mapping_source, get_shadow_pass_mesh_msl_source,
+	get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source, INSTANCE_ID_BINDING,
+	MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING,
+	MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
+	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
+	VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
@@ -940,37 +941,75 @@ impl VisibilityPass {
 		instance_id: ghi::BaseImageHandle,
 		depth_target: ghi::BaseImageHandle,
 	) -> Self {
-		let visibility_shader = get_visibility_pass_mesh_source();
+		let visibility_pass_mesh_shader = if ghi::implementation::USES_METAL {
+			let visibility_shader = get_visibility_pass_mesh_msl_source();
 
-		let visibility_mesh_shader_artifact = glsl::compile(&visibility_shader, "Visibility Mesh Shader").unwrap();
+			device
+				.create_shader(
+					Some("Visibility Pass Mesh Shader"),
+					ghi::shader::Sources::MTL {
+						source: visibility_shader.as_str(),
+						entry_point: "besl_main",
+					},
+					ghi::ShaderTypes::Mesh,
+					[
+						VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					],
+				)
+				.expect("Failed to create shader")
+		} else {
+			let visibility_shader = get_visibility_pass_mesh_source();
+			let visibility_mesh_shader_artifact = glsl::compile(&visibility_shader, "Visibility Mesh Shader").unwrap();
 
-		let visibility_pass_mesh_shader = device
-			.create_shader(
-				Some("Visibility Pass Mesh Shader"),
-				ghi::shader::Sources::SPIRV(visibility_mesh_shader_artifact.borrow().into()),
-				ghi::ShaderTypes::Mesh,
-				[
-					VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				],
-			)
-			.expect("Failed to create shader");
+			device
+				.create_shader(
+					Some("Visibility Pass Mesh Shader"),
+					ghi::shader::Sources::SPIRV(visibility_mesh_shader_artifact.borrow().into()),
+					ghi::ShaderTypes::Mesh,
+					[
+						VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					],
+				)
+				.expect("Failed to create shader")
+		};
 
-		let visibility_fragment_shader_artifact =
-			glsl::compile(VISIBILITY_PASS_FRAGMENT_SOURCE, "Visibility Fragment Shader").unwrap();
+		let visibility_pass_fragment_shader = if ghi::implementation::USES_METAL {
+			device
+				.create_shader(
+					Some("Visibility Pass Fragment Shader"),
+					ghi::shader::Sources::MTL {
+						source: VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
+						entry_point: "visibility_fragment_main",
+					},
+					ghi::ShaderTypes::Fragment,
+					[],
+				)
+				.expect("Failed to create shader")
+		} else {
+			let visibility_fragment_shader_artifact =
+				glsl::compile(VISIBILITY_PASS_FRAGMENT_SOURCE, "Visibility Fragment Shader").unwrap();
 
-		let visibility_pass_fragment_shader = device
-			.create_shader(
-				Some("Visibility Pass Fragment Shader"),
-				ghi::shader::Sources::SPIRV(visibility_fragment_shader_artifact.borrow().into()),
-				ghi::ShaderTypes::Fragment,
-				[],
-			)
-			.expect("Failed to create shader");
+			device
+				.create_shader(
+					Some("Visibility Pass Fragment Shader"),
+					ghi::shader::Sources::SPIRV(visibility_fragment_shader_artifact.borrow().into()),
+					ghi::ShaderTypes::Fragment,
+					[],
+				)
+				.expect("Failed to create shader")
+		};
 
 		let visibility_pass_shaders = [
 			ghi::ShaderParameter::new(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh),
@@ -1071,24 +1110,49 @@ impl ShadowPass {
 		descriptor_set: ghi::DescriptorSetHandle,
 		shadow_map: ghi::BaseImageHandle,
 	) -> Self {
-		let shadow_shader = get_shadow_pass_mesh_source();
-		let shadow_mesh_shader_artifact = glsl::compile(&shadow_shader, "Shadow Mesh Shader").unwrap();
+		let shadow_pass_mesh_shader = if ghi::implementation::USES_METAL {
+			let shadow_shader = get_shadow_pass_mesh_msl_source();
 
-		let shadow_pass_mesh_shader = device
-			.create_shader(
-				Some("Shadow Pass Mesh Shader"),
-				ghi::shader::Sources::SPIRV(shadow_mesh_shader_artifact.borrow().into()),
-				ghi::ShaderTypes::Mesh,
-				[
-					VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				],
-			)
-			.expect("Failed to create shader");
+			device
+				.create_shader(
+					Some("Shadow Pass Mesh Shader"),
+					ghi::shader::Sources::MTL {
+						source: shadow_shader.as_str(),
+						entry_point: "besl_main",
+					},
+					ghi::ShaderTypes::Mesh,
+					[
+						VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					],
+				)
+				.expect("Failed to create shader")
+		} else {
+			let shadow_shader = get_shadow_pass_mesh_source();
+			let shadow_mesh_shader_artifact = glsl::compile(&shadow_shader, "Shadow Mesh Shader").unwrap();
+
+			device
+				.create_shader(
+					Some("Shadow Pass Mesh Shader"),
+					ghi::shader::Sources::SPIRV(shadow_mesh_shader_artifact.borrow().into()),
+					ghi::ShaderTypes::Mesh,
+					[
+						VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					],
+				)
+				.expect("Failed to create shader")
+		};
 
 		let attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32)];
 		let vertex_layout = [

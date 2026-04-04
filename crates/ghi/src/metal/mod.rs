@@ -219,6 +219,7 @@ pub(crate) struct Shader {
 	shader_binding_descriptors: Vec<crate::shader::BindingDescriptor>,
 	metal_function: Option<Retained<ProtocolObject<dyn mtl::MTLFunction>>>,
 	spirv: Option<Vec<u8>>,
+	threadgroup_size: Option<Extent>,
 }
 
 #[derive(Clone)]
@@ -228,6 +229,8 @@ pub(crate) struct Pipeline {
 	vertex_layout: Option<VertexLayoutHandle>,
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 	resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
+	object_threadgroup_size: Option<Extent>,
+	mesh_threadgroup_size: Option<Extent>,
 	face_winding: crate::pipelines::raster::FaceWinding,
 	cull_mode: crate::pipelines::raster::CullMode,
 }

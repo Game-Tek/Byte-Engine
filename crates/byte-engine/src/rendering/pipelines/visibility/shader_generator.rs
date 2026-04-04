@@ -231,36 +231,106 @@ impl VisibilityShaderScope {
 			)],
 		);
 
-		let process_meshlet = Node::function(
-			"process_meshlet",
-			vec![Node::parameter("instance_index", "u32"), Node::parameter("matrix", "mat4f")],
-			"void",
-			vec![Node::glsl(
-				"
-		Mesh mesh = meshes.meshes[instance_index];
+		let mesh_outputs = Node::raw_code(
+			Some("".into()),
+			Some(
+				r#"
+struct VertexOutput {
+	float4 position [[position]];
+};
 
-		uint meshlet_index = gl_WorkGroupID.x + mesh.base_meshlet_index;
-		Meshlet meshlet = meshlets.meshlets[meshlet_index];
+struct PrimitiveOutput {
+	uint instance_index [[flat]] [[user(locn0)]];
+	uint primitive_index [[flat]] [[user(locn1)]];
+};
+"#
+				.into(),
+			),
+			&[],
+			&["VertexOutput", "PrimitiveOutput"],
+		);
 
-		SetMeshOutputsEXT(meshlet.primitive_count, meshlet.triangle_count);
+		let process_meshlet = Node::raw_code(
+			Some(
+				r#"
+void process_meshlet(uint instance_index, mat4 matrix) {
+	Mesh mesh = meshes.meshes[instance_index];
 
-		uint primitive_index = gl_LocalInvocationID.x;
+	uint meshlet_index = gl_WorkGroupID.x + mesh.base_meshlet_index;
+	Meshlet meshlet = meshlets.meshlets[meshlet_index];
 
-		if (primitive_index < uint(meshlet.primitive_count)) {
-			uint vertex_index = compute_vertex_index(mesh, meshlet, primitive_index);
-			gl_MeshVerticesEXT[primitive_index].gl_Position = matrix * mesh.model * vec4(vertex_positions.positions[vertex_index], 1.0);
-		}
+	SetMeshOutputsEXT(meshlet.primitive_count, meshlet.triangle_count);
 
-		if (primitive_index < uint(meshlet.triangle_count)) {
-			uint triangle_index = (mesh.base_triangle_index + meshlet.triangle_offset + primitive_index) * 3;
-			uint triangle_indices[3] = uint[](primitive_indices.primitive_indices[triangle_index + 0], primitive_indices.primitive_indices[triangle_index + 1], primitive_indices.primitive_indices[triangle_index + 2]);
-			gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
-			out_instance_index[primitive_index] = instance_index;
-			out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 0xFF);
-		}",
-				&["meshes", "vertex_positions", "vertex_indices", "primitive_indices", "meshlets", "compute_vertex_index"],
-				&[],
-			)],
+	uint primitive_index = gl_LocalInvocationID.x;
+
+	if (primitive_index < uint(meshlet.primitive_count)) {
+		uint vertex_index = mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index];
+		gl_MeshVerticesEXT[primitive_index].gl_Position = matrix * mesh.model * vec4(vertex_positions.positions[vertex_index], 1.0);
+	}
+
+	if (primitive_index < uint(meshlet.triangle_count)) {
+		uint triangle_index = (mesh.base_triangle_index + meshlet.triangle_offset + primitive_index) * 3;
+		uint triangle_indices[3] = uint[](primitive_indices.primitive_indices[triangle_index + 0], primitive_indices.primitive_indices[triangle_index + 1], primitive_indices.primitive_indices[triangle_index + 2]);
+		gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
+		out_instance_index[primitive_index] = instance_index;
+		out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 0xFF);
+	}
+}
+"#
+				.into(),
+			),
+			Some(
+				r#"
+void process_meshlet(
+	uint instance_index,
+	float4x4 matrix,
+	constant _set0& set0,
+	uint threadgroup_position,
+	uint thread_index,
+	metal::mesh<VertexOutput, PrimitiveOutput, 64, 126, topology::triangle> out_mesh
+) {
+	Mesh mesh = set0.meshes->meshes[instance_index];
+
+	uint meshlet_index = threadgroup_position + mesh.base_meshlet_index;
+	Meshlet meshlet = set0.meshlets->meshlets[meshlet_index];
+
+	if (thread_index < uint(meshlet.primitive_count)) {
+		uint vertex_index = mesh.base_vertex_index + set0.vertex_indices->vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + thread_index];
+		out_mesh.set_vertex(thread_index, VertexOutput {
+			.position = matrix * mesh.model * float4(set0.vertex_positions->positions[vertex_index], 1.0)
+		});
+	}
+
+	if (thread_index < uint(meshlet.triangle_count)) {
+		uint triangle_index = (mesh.base_triangle_index + meshlet.triangle_offset + thread_index) * 3;
+		out_mesh.set_index(thread_index * 3 + 0, uint(set0.primitive_indices->primitive_indices[triangle_index + 0]));
+		out_mesh.set_index(thread_index * 3 + 1, uint(set0.primitive_indices->primitive_indices[triangle_index + 1]));
+		out_mesh.set_index(thread_index * 3 + 2, uint(set0.primitive_indices->primitive_indices[triangle_index + 2]));
+		out_mesh.set_primitive(thread_index, PrimitiveOutput {
+			.instance_index = instance_index,
+			.primitive_index = (meshlet_index << 8) | (thread_index & 0xFF)
+		});
+	}
+
+	if (thread_index == 0) {
+		out_mesh.set_primitive_count(meshlet.triangle_count);
+	}
+}
+"#
+				.into(),
+			),
+			&[
+				"Mesh",
+				"Meshlet",
+				"meshes",
+				"vertex_positions",
+				"vertex_indices",
+				"primitive_indices",
+				"meshlets",
+				"VertexOutput",
+				"PrimitiveOutput",
+			],
+			&["process_meshlet"],
 		);
 
 		let set2_binding0 = Node::binding("diffuse_map", Node::image("rgba16"), 2, 0, false, true);
@@ -499,6 +569,7 @@ impl VisibilityShaderScope {
 				views_binding,
 				mesh_struct,
 				meshlet_struct,
+				mesh_outputs,
 				light_struct,
 				material_struct,
 				sample_shadow_tap,

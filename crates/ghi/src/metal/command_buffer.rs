@@ -190,6 +190,16 @@ impl<'a> CommandBufferRecording<'a> {
 
 		if let Some(encoder) = self.active_render_encoder.as_ref() {
 			unsafe {
+				encoder.setObjectBytes_length_atIndex(
+					pointer,
+					self.push_constant_data.len() as _,
+					PUSH_CONSTANT_BINDING_INDEX as _,
+				);
+				encoder.setMeshBytes_length_atIndex(
+					pointer,
+					self.push_constant_data.len() as _,
+					PUSH_CONSTANT_BINDING_INDEX as _,
+				);
 				encoder.setVertexBytes_length_atIndex(
 					pointer,
 					self.push_constant_data.len() as _,
@@ -705,6 +715,34 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 						if descriptor_set_layout
 							.bindings
 							.iter()
+							.any(|binding| binding.stages.intersects(crate::Stages::TASK))
+						{
+							unsafe {
+								encoder.setObjectBuffer_offset_atIndex(
+									Some(descriptor_set.argument_buffer.as_ref()),
+									0,
+									binding_index as _,
+								);
+							}
+						}
+
+						if descriptor_set_layout
+							.bindings
+							.iter()
+							.any(|binding| binding.stages.intersects(crate::Stages::MESH))
+						{
+							unsafe {
+								encoder.setMeshBuffer_offset_atIndex(
+									Some(descriptor_set.argument_buffer.as_ref()),
+									0,
+									binding_index as _,
+								);
+							}
+						}
+
+						if descriptor_set_layout
+							.bindings
+							.iter()
 							.any(|binding| binding.stages.intersects(crate::Stages::VERTEX))
 						{
 							unsafe {
@@ -847,8 +885,25 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 }
 
 impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
-	fn draw_mesh(&mut self, _mesh_handle: &graphics_hardware_interface::MeshHandle) {
-		// TODO: Issue draw call using mesh buffers.
+	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
+		let mesh = &self.device.meshes[mesh_handle.0 as usize];
+
+		unsafe {
+			self.active_render_encoder
+				.as_ref()
+				.expect("No active render pass. The most likely cause is that draw_mesh was called outside start_render_pass.")
+				.setVertexBuffer_offset_atIndex(Some(mesh.vertex_buffer.as_ref()), 0, 0);
+			self.active_render_encoder
+				.as_ref()
+				.unwrap()
+				.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(
+					mtl::MTLPrimitiveType::Triangle,
+					mesh.index_count as _,
+					mtl::MTLIndexType::UInt16,
+					mesh.index_buffer.as_ref(),
+					0,
+				);
+		}
 	}
 
 	fn draw(&mut self, vertex_count: u32, _instance_count: u32, first_vertex: u32, _first_instance: u32) {
@@ -898,8 +953,38 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		}
 	}
 
-	fn dispatch_meshes(&mut self, _x: u32, _y: u32, _z: u32) {
-		// TODO: Map mesh shading to Metal mesh shaders when supported.
+	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
+		let bound_pipeline = self
+			.bound_pipeline
+			.expect("No pipeline bound. The most likely cause is that dispatch_meshes was called before bind_raster_pipeline.");
+		let pipeline = &self.device.pipelines[bound_pipeline.0 as usize];
+		let mesh_threadgroup_size = pipeline.mesh_threadgroup_size.expect(
+			"Metal mesh dispatch requires mesh threadgroup metadata. The most likely cause is that the mesh shader was not generated with Metal mesh threadgroup size metadata.",
+		);
+		let object_threadgroup_size = pipeline.object_threadgroup_size.unwrap_or(Extent::new(1, 1, 1));
+
+		self.active_render_encoder
+			.as_ref()
+			.expect(
+				"No active render pass. The most likely cause is that dispatch_meshes was called outside start_render_pass.",
+			)
+			.drawMeshThreadgroups_threadsPerObjectThreadgroup_threadsPerMeshThreadgroup(
+				mtl::MTLSize {
+					width: x as _,
+					height: y as _,
+					depth: z as _,
+				},
+				mtl::MTLSize {
+					width: object_threadgroup_size.width() as _,
+					height: object_threadgroup_size.height() as _,
+					depth: object_threadgroup_size.depth() as _,
+				},
+				mtl::MTLSize {
+					width: mesh_threadgroup_size.width() as _,
+					height: mesh_threadgroup_size.height() as _,
+					depth: mesh_threadgroup_size.depth() as _,
+				},
+			);
 	}
 }
 

@@ -113,15 +113,19 @@ impl Frame<'_> {
 	) -> (graphics_hardware_interface::PresentKey, Extent) {
 		let sequence_index = self.frame_key.sequence_index;
 
-		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
-
 		// Update layer extent before acquiring the drawable so that if a resize occurred,
 		// the drawable is allocated at the correct size. update_layer_extent only calls
 		// setDrawableSize when the size actually changed, avoiding unnecessary drawable
 		// pool invalidation.
-		let extent = update_layer_extent(&swapchain.layer, &swapchain.view);
+		let extent = {
+			let swapchain = &self.device.swapchains[swapchain_handle.0 as usize];
+			update_layer_extent(&swapchain.layer, &swapchain.view)
+		};
 
-		let drawable = swapchain
+		// Resize proxy images to match the new drawable size so the blit has matching dimensions.
+		self.device.resize_swapchain_images(swapchain_handle, extent);
+
+		let drawable = self.device.swapchains[swapchain_handle.0 as usize]
 			.layer
 			.nextDrawable()
 			.expect("Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.");

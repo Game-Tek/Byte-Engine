@@ -1,6 +1,7 @@
 use std::ptr::NonNull;
 
 use ::utils::hash::HashMap;
+use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
 use objc2_metal::{
 	MTLBlitCommandEncoder, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture,
@@ -728,6 +729,35 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 								);
 							}
 						}
+
+						// Make resources referenced through argument buffers resident so the GPU can access them.
+						let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
+						for descriptors_at_binding in descriptor_set.descriptors.values() {
+							for descriptor in descriptors_at_binding.values() {
+								match *descriptor {
+									Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
+										let tex: &ProtocolObject<dyn mtl::MTLTexture> =
+											&self.device.images.resource(image).texture;
+										encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
+									}
+									Descriptor::Buffer { buffer, .. } => {
+										let buf: &ProtocolObject<dyn mtl::MTLBuffer> =
+											&self.device.buffers.resource(buffer).buffer;
+										encoder.useResource_usage(ProtocolObject::from_ref(buf), usage);
+									}
+									Descriptor::Swapchain { handle } => {
+										if let Some(proxy_handle) =
+											self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize]
+										{
+											let tex: &ProtocolObject<dyn mtl::MTLTexture> =
+												&self.device.images.resource(proxy_handle).texture;
+											encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
+										}
+									}
+									Descriptor::Sampler { .. } => {}
+								}
+							}
+						}
 					}
 				}
 				PipelineState::Compute(_) => {
@@ -743,6 +773,35 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 									0,
 									binding_index as _,
 								);
+							}
+						}
+
+						// Make resources referenced through argument buffers resident so the GPU can access them.
+						let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
+						for descriptors_at_binding in descriptor_set.descriptors.values() {
+							for descriptor in descriptors_at_binding.values() {
+								match *descriptor {
+									Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
+										let tex: &ProtocolObject<dyn mtl::MTLTexture> =
+											&self.device.images.resource(image).texture;
+										encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
+									}
+									Descriptor::Buffer { buffer, .. } => {
+										let buf: &ProtocolObject<dyn mtl::MTLBuffer> =
+											&self.device.buffers.resource(buffer).buffer;
+										encoder.useResource_usage(ProtocolObject::from_ref(buf), usage);
+									}
+									Descriptor::Swapchain { handle } => {
+										if let Some(proxy_handle) =
+											self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize]
+										{
+											let tex: &ProtocolObject<dyn mtl::MTLTexture> =
+												&self.device.images.resource(proxy_handle).texture;
+											encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
+										}
+									}
+									Descriptor::Sampler { .. } => {}
+								}
 							}
 						}
 					}

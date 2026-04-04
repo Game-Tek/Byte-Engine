@@ -58,16 +58,225 @@ impl MSLShaderGenerator {
 
 		let graph = build_graph(main_function_node.clone());
 
-		let order = topological_sort(&graph);
-		let order = order.into_iter().filter(|n| !n.borrow().node().is_leaf());
+		let order = topological_sort(&graph)
+			.into_iter()
+			.filter(|node| !node.borrow().node().is_leaf())
+			.collect::<Vec<_>>();
 
 		self.generate_msl_header_block(&mut string, shader_compilation_settings);
 
-		for node in order {
-			self.emit_node_string(&mut string, &node);
+		match shader_compilation_settings.stage {
+			Stages::Compute { .. } => self.generate_compute_shader(&mut string, &order, main_function_node),
+			_ => {
+				for node in order {
+					self.emit_node_string(&mut string, &node);
+				}
+			}
 		}
 
 		Ok(string)
+	}
+
+	fn generate_compute_shader(
+		&mut self,
+		string: &mut String,
+		order: &[besl::NodeReference],
+		main_function_node: &besl::NodeReference,
+	) {
+		let mut bindings = Vec::new();
+		let mut push_constant = None;
+
+		for node in order {
+			match node.borrow().node() {
+				besl::Nodes::Binding { r#type, .. } => {
+					if let besl::BindingTypes::Buffer { members } = r#type {
+						self.emit_buffer_binding_struct(string, node, members.as_slice());
+					}
+					bindings.push(node.clone());
+				}
+				besl::Nodes::PushConstant { .. } => {
+					if push_constant.is_none() {
+						push_constant = Some(node.clone());
+					}
+				}
+				besl::Nodes::Function { name, .. } if name == "main" => {}
+				_ => self.emit_node_string(string, node),
+			}
+		}
+
+		self.emit_compute_entry_point(string, main_function_node, bindings.as_slice(), push_constant.as_ref());
+	}
+
+	fn emit_buffer_binding_struct(
+		&mut self,
+		string: &mut String,
+		binding_node: &besl::NodeReference,
+		members: &[besl::NodeReference],
+	) {
+		let binding = binding_node.borrow();
+		let besl::Nodes::Binding { name, .. } = binding.node() else {
+			return;
+		};
+
+		string.push_str("struct _");
+		string.push_str(name);
+		if self.minified {
+			string.push('{');
+		} else {
+			string.push_str(" {\n");
+		}
+
+		for member in members {
+			if !self.minified {
+				string.push('\t');
+			}
+			self.emit_node_string(string, member);
+			if self.minified {
+				string.push(';');
+			} else {
+				string.push_str(";\n");
+			}
+		}
+
+		string.push_str("};");
+		if !self.minified {
+			string.push('\n');
+		}
+	}
+
+	fn emit_compute_entry_point(
+		&mut self,
+		string: &mut String,
+		main_function_node: &besl::NodeReference,
+		bindings: &[besl::NodeReference],
+		push_constant: Option<&besl::NodeReference>,
+	) {
+		let break_char = if self.minified { "" } else { "\n" };
+		let node = RefCell::borrow(main_function_node);
+
+		let besl::Nodes::Function {
+			name,
+			statements,
+			params,
+			..
+		} = node.node()
+		else {
+			return;
+		};
+
+		string.push_str("kernel void ");
+		if *name == "main" {
+			string.push_str("besl_main");
+		} else {
+			string.push_str(name);
+		}
+		string.push('(');
+		string.push_str("uint2 gid [[thread_position_in_grid]]");
+
+		for param in params {
+			if self.minified {
+				string.push(',');
+			} else {
+				string.push_str(", ");
+			}
+			self.emit_node_string(string, param);
+		}
+
+		if let Some(push_constant) = push_constant {
+			if self.minified {
+				string.push(',');
+			} else {
+				string.push_str(", ");
+			}
+			self.emit_compute_push_constant_parameter(string, push_constant);
+		}
+
+		for binding in bindings {
+			self.emit_compute_binding_parameter(string, binding);
+		}
+
+		if self.minified {
+			string.push_str("){");
+		} else {
+			string.push_str(") {\n");
+		}
+
+		for statement in statements {
+			if !self.minified {
+				string.push('\t');
+			}
+			self.emit_node_string(string, statement);
+			string.push(';');
+			string.push_str(break_char);
+		}
+
+		string.push('}');
+		if !self.minified {
+			string.push('\n');
+		}
+	}
+
+	fn emit_compute_push_constant_parameter(&self, string: &mut String, _push_constant: &besl::NodeReference) {
+		string.push_str("constant PushConstant& push_constant [[buffer(0)]]");
+	}
+
+	fn emit_compute_binding_parameter(&self, string: &mut String, binding_node: &besl::NodeReference) {
+		let node = binding_node.borrow();
+		let besl::Nodes::Binding {
+			name,
+			set,
+			binding,
+			read,
+			write,
+			r#type,
+			..
+		} = node.node()
+		else {
+			return;
+		};
+
+		let index = set * 100 + binding;
+		let separator = if self.minified { "," } else { ", " };
+
+		match r#type {
+			besl::BindingTypes::Buffer { .. } => {
+				let address_space = if *write { "device" } else { "constant" };
+				string.push_str(separator);
+				string.push_str(address_space);
+				string.push(' ');
+				string.push_str(&format!("_{}* {} [[buffer({})]]", name, name, index));
+			}
+			besl::BindingTypes::Image { format } => {
+				let element_type = match format.as_str() {
+					"r8ui" | "r16ui" | "r32ui" => "uint",
+					_ => "float",
+				};
+				let access = if *read && *write {
+					"access::read_write"
+				} else if *write {
+					"access::write"
+				} else {
+					"access::read"
+				};
+
+				string.push_str(separator);
+				string.push_str(&format!(
+					"texture2d<{}, {}> {} [[texture({})]]",
+					element_type, access, name, index
+				));
+			}
+			besl::BindingTypes::CombinedImageSampler { format } => {
+				let texture_type = match format.as_str() {
+					"ArrayTexture2D" => "texture2d_array<float>",
+					_ => "texture2d<float>",
+				};
+
+				string.push_str(separator);
+				string.push_str(&format!("{} {} [[texture({})]]", texture_type, name, index));
+				string.push_str(separator);
+				string.push_str(&format!("sampler {}_sampler [[sampler({})]]", name, index));
+			}
+		}
 	}
 
 	/// Translates BESL intrinsic type names to MSL type names.
@@ -93,6 +302,97 @@ impl MSLShaderGenerator {
 			"Texture2D" => "texture2d<float>",
 			"ArrayTexture2D" => "texture2d_array<float>",
 			_ => source,
+		}
+	}
+
+	fn emit_call_arguments(&mut self, string: &mut String, arguments: &[besl::NodeReference]) {
+		for (i, argument) in arguments.iter().enumerate() {
+			if i > 0 {
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+			}
+			self.emit_node_string(string, argument);
+		}
+	}
+
+	fn emit_intrinsic_call(
+		&mut self,
+		string: &mut String,
+		intrinsic: &besl::NodeReference,
+		arguments: &[besl::NodeReference],
+		elements: &[besl::NodeReference],
+	) {
+		let intrinsic = intrinsic.borrow();
+		let besl::Nodes::Intrinsic {
+			name,
+			elements: definition,
+			..
+		} = intrinsic.node()
+		else {
+			for element in elements {
+				self.emit_node_string(string, element);
+			}
+			return;
+		};
+
+		let has_body = definition
+			.iter()
+			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
+		if has_body {
+			for element in elements {
+				self.emit_node_string(string, element);
+			}
+			return;
+		}
+
+		match name.as_str() {
+			"max" | "clamp" | "log2" | "pow" => {
+				string.push_str(name);
+				string.push('(');
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"thread_id" => {
+				string.push_str("gid");
+			}
+			"image_load" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".read(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+			}
+			"write" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".write(");
+				self.emit_node_string(string, &arguments[2]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+			}
+			"guard_image_bounds" => {
+				string.push_str("if(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(".x>=");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".get_width()||");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(".y>=");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".get_height()){return;}");
+			}
+			_ => {
+				string.push_str(name);
+				string.push('(');
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 		}
 	}
 
@@ -323,12 +623,21 @@ impl MSLShaderGenerator {
 			besl::Nodes::Expression(expression) => match expression {
 				besl::Expressions::Operator { operator, left, right } => {
 					self.emit_node_string(string, &left);
-					if operator == &besl::Operators::Assignment {
-						if self.minified {
-							string.push('=')
-						} else {
-							string.push_str(" = ");
-						}
+					let operator = match operator {
+						besl::Operators::Plus => "+",
+						besl::Operators::Minus => "-",
+						besl::Operators::Multiply => "*",
+						besl::Operators::Divide => "/",
+						besl::Operators::Modulo => "%",
+						besl::Operators::Assignment => "=",
+						besl::Operators::Equality => "==",
+					};
+					if self.minified {
+						string.push_str(operator);
+					} else {
+						string.push(' ');
+						string.push_str(operator);
+						string.push(' ');
 					}
 					self.emit_node_string(string, &right);
 				}
@@ -354,11 +663,11 @@ impl MSLShaderGenerator {
 					string.push_str(&format!(")"));
 				}
 				besl::Expressions::IntrinsicCall {
-					elements: parameters, ..
+					intrinsic,
+					arguments,
+					elements,
 				} => {
-					for e in parameters {
-						self.emit_node_string(string, &e);
-					}
+					self.emit_intrinsic_call(string, intrinsic, arguments, elements);
 				}
 				besl::Expressions::Expression { elements } => {
 					for element in elements {
@@ -384,8 +693,14 @@ impl MSLShaderGenerator {
 				besl::Expressions::Literal { value } => {
 					string.push_str(&value);
 				}
-				besl::Expressions::Return { .. } => {
+				besl::Expressions::Return { value } => {
 					string.push_str("return");
+					if let Some(value) = value {
+						if !self.minified {
+							string.push(' ');
+						}
+						self.emit_node_string(string, value);
+					}
 				}
 				besl::Expressions::Accessor { left, right } => {
 					self.emit_node_string(string, &left);

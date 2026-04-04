@@ -94,6 +94,110 @@ impl GLSLShaderGenerator {
 		}
 	}
 
+	fn emit_call_arguments(&mut self, string: &mut String, arguments: &[besl::NodeReference]) {
+		for (i, argument) in arguments.iter().enumerate() {
+			if i > 0 {
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+			}
+			self.emit_node_string(string, argument);
+		}
+	}
+
+	fn emit_intrinsic_call(
+		&mut self,
+		string: &mut String,
+		intrinsic: &besl::NodeReference,
+		arguments: &[besl::NodeReference],
+		elements: &[besl::NodeReference],
+	) {
+		let intrinsic = intrinsic.borrow();
+		let besl::Nodes::Intrinsic {
+			name,
+			elements: definition,
+			..
+		} = intrinsic.node()
+		else {
+			for element in elements {
+				self.emit_node_string(string, element);
+			}
+			return;
+		};
+
+		let has_body = definition
+			.iter()
+			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
+		if has_body {
+			for element in elements {
+				self.emit_node_string(string, element);
+			}
+			return;
+		}
+
+		match name.as_str() {
+			"max" | "clamp" | "log2" | "pow" => {
+				string.push_str(name);
+				string.push('(');
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"thread_id" => {
+				string.push_str("uvec2(gl_GlobalInvocationID.xy)");
+			}
+			"image_load" => {
+				string.push_str("imageLoad(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				string.push_str("ivec2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str("))");
+			}
+			"write" => {
+				string.push_str("imageStore(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				string.push_str("ivec2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(")");
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				self.emit_node_string(string, &arguments[2]);
+				string.push(')');
+			}
+			"guard_image_bounds" => {
+				string.push_str("if(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(".x>=uint(imageSize(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(").x)||");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(".y>=uint(imageSize(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(").y)){return;}");
+			}
+			_ => {
+				string.push_str(name);
+				string.push('(');
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+		}
+	}
+
 	// This function appends to the `string` parameter the string representation of the node.
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
@@ -340,12 +444,21 @@ impl GLSLShaderGenerator {
 			besl::Nodes::Expression(expression) => match expression {
 				besl::Expressions::Operator { operator, left, right } => {
 					self.emit_node_string(string, &left);
-					if operator == &besl::Operators::Assignment {
-						if self.minified {
-							string.push('=')
-						} else {
-							string.push_str(" = ");
-						}
+					let operator = match operator {
+						besl::Operators::Plus => "+",
+						besl::Operators::Minus => "-",
+						besl::Operators::Multiply => "*",
+						besl::Operators::Divide => "/",
+						besl::Operators::Modulo => "%",
+						besl::Operators::Assignment => "=",
+						besl::Operators::Equality => "==",
+					};
+					if self.minified {
+						string.push_str(operator);
+					} else {
+						string.push(' ');
+						string.push_str(operator);
+						string.push(' ');
 					}
 					self.emit_node_string(string, &right);
 				}
@@ -371,11 +484,11 @@ impl GLSLShaderGenerator {
 					string.push_str(&format!(")"));
 				}
 				besl::Expressions::IntrinsicCall {
-					elements: parameters, ..
+					intrinsic,
+					arguments,
+					elements,
 				} => {
-					for e in parameters {
-						self.emit_node_string(string, &e);
-					}
+					self.emit_intrinsic_call(string, intrinsic, arguments, elements);
 				}
 				besl::Expressions::Expression { elements } => {
 					for element in elements {
@@ -401,8 +514,14 @@ impl GLSLShaderGenerator {
 				besl::Expressions::Literal { value } => {
 					string.push_str(&value);
 				}
-				besl::Expressions::Return { .. } => {
+				besl::Expressions::Return { value } => {
 					string.push_str("return");
+					if let Some(value) = value {
+						if !self.minified {
+							string.push(' ');
+						}
+						self.emit_node_string(string, value);
+					}
 				}
 				besl::Expressions::Accessor { left, right } => {
 					self.emit_node_string(string, &left);

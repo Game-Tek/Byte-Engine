@@ -396,12 +396,43 @@ impl Node {
 		);
 		let length_intrinsic = builtin_intrinsic("length", vec![("value", vec4f32.clone())], f32_t.clone());
 		let normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone());
+		let max_intrinsic = builtin_intrinsic(
+			"max",
+			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
+			vec3f32.clone(),
+		);
+		let clamp_intrinsic = builtin_intrinsic(
+			"clamp",
+			vec![
+				("value", vec3f32.clone()),
+				("minimum", vec3f32.clone()),
+				("maximum", vec3f32.clone()),
+			],
+			vec3f32.clone(),
+		);
+		let log2_intrinsic = builtin_intrinsic("log2", vec![("value", vec3f32.clone())], vec3f32.clone());
+		let pow_intrinsic = builtin_intrinsic(
+			"pow",
+			vec![("value", vec3f32.clone()), ("exponent", vec3f32.clone())],
+			vec3f32.clone(),
+		);
 		let reflect_intrinsic = builtin_intrinsic(
 			"reflect",
 			vec![("incident", vec4f32.clone()), ("normal", vec4f32.clone())],
 			vec4f32.clone(),
 		);
 		let thread_idx_intrinsic = builtin_intrinsic("thread_idx", vec![], u32_t.clone());
+		let thread_id_intrinsic = builtin_intrinsic("thread_id", vec![], vec2u32.clone());
+		let image_load_intrinsic = builtin_intrinsic(
+			"image_load",
+			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
+			vec4f32.clone(),
+		);
+		let guard_image_bounds_intrinsic = builtin_intrinsic(
+			"guard_image_bounds",
+			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
+			void.clone(),
+		);
 		let write_intrinsic = builtin_intrinsic(
 			"write",
 			vec![
@@ -437,8 +468,15 @@ impl Node {
 			cross_intrinsic,
 			length_intrinsic,
 			normalize_intrinsic,
+			max_intrinsic,
+			clamp_intrinsic,
+			log2_intrinsic,
+			pow_intrinsic,
 			reflect_intrinsic,
 			thread_idx_intrinsic,
+			thread_id_intrinsic,
+			image_load_intrinsic,
+			guard_image_bounds_intrinsic,
 			write_intrinsic,
 		]);
 
@@ -1071,6 +1109,12 @@ fn get_non_intrinsic_descendant(node: &NodeReference, child_name: &str) -> Optio
 	match &node.borrow().node {
 		Nodes::Scope { children: members, .. } | Nodes::Struct { fields: members, .. } | Nodes::PushConstant { members } => {
 			for member in members {
+				if member.borrow().get_name() == Some(child_name) {
+					return Some(member.clone());
+				}
+			}
+
+			for member in members {
 				if let Some(c) = get_non_intrinsic_descendant(member, child_name) {
 					return Some(c);
 				}
@@ -1090,43 +1134,13 @@ fn get_non_intrinsic_descendant(node: &NodeReference, child_name: &str) -> Optio
 			}
 
 			for statement in statements {
-				match RefCell::borrow(statement).node() {
-					Nodes::Expression(expression) => match expression {
-						Expressions::Operator { left, right, .. } => {
-							if let Some(c) = get_non_intrinsic_descendant(left, child_name) {
-								return Some(c);
-							}
-							if let Some(c) = get_non_intrinsic_descendant(right, child_name) {
-								return Some(c);
-							}
-						}
-						Expressions::VariableDeclaration { name, .. } => {
-							if child_name == name {
-								return Some(statement.clone());
-							}
-						}
-						Expressions::Accessor { left, right } => {
-							if let Some(c) = get_non_intrinsic_descendant(left, child_name) {
-								return Some(c);
-							}
-							if let Some(c) = get_non_intrinsic_descendant(right, child_name) {
-								return Some(c);
-							}
-						}
-						Expressions::Return { value } => {
-							if let Some(value) = value {
-								if let Some(c) = get_non_intrinsic_descendant(value, child_name) {
-									return Some(c);
-								}
-							}
-						}
-						_ => {}
-					},
-					Nodes::Raw { output, .. } => {
-						for output in output {
-							if let Some(c) = get_non_intrinsic_descendant(output, child_name) {
-								return Some(c);
-							}
+				match statement.borrow().node() {
+					Nodes::Expression(Expressions::VariableDeclaration { name, .. }) if name == child_name => {
+						return Some(statement.clone());
+					}
+					Nodes::Expression(Expressions::Operator { left, .. }) => {
+						if let Some(local) = get_non_intrinsic_descendant(left, child_name) {
+							return Some(local);
 						}
 					}
 					_ => {}

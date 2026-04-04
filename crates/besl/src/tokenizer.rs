@@ -15,7 +15,7 @@ pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 		if last.is_alphabetic() {
 			c.is_alphanumeric() || c == '_'
 		} else if last.is_numeric() {
-			c.is_numeric() || c == '.' || c.is_alphabetic()
+			c.is_alphanumeric() || c == '.' || c == '_'
 		} else if last == '.' {
 			c.is_numeric()
 		} else if last == '_' {

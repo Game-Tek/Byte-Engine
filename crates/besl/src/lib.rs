@@ -65,7 +65,7 @@ macro_rules! besl_struct_node {
 /// The returned node is the root of the syntax tree.
 pub fn parse<'a>(source: &'a str) -> Result<parser::Node<'a>, CompilationError> {
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Tokenization)?;
-	let parser_root_node = parser::parse(&tokens).map_err(|_e| CompilationError::Parsing)?;
+	let parser_root_node = parser::parse(&tokens).map_err(CompilationError::Parsing)?;
 
 	Ok(parser_root_node)
 }
@@ -92,13 +92,13 @@ pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReferen
 		return Ok(lexer::Node::scope("".to_string()).into());
 	}
 
-	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;
-	let parser_root_node = parser::parse(&tokens).map_err(|_e| CompilationError::Undefined)?;
+	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Tokenization)?;
+	let parser_root_node = parser::parse(&tokens).map_err(CompilationError::Parsing)?;
 
 	let besl = if let Some(parent) = parent {
-		lexer::lex_with_root(parent, parser_root_node).map_err(|_e| CompilationError::Undefined)?
+		lexer::lex_with_root(parent, parser_root_node).map_err(CompilationError::Lex)?
 	} else {
-		lexer::lex(parser_root_node).map_err(|_e| CompilationError::Undefined)?
+		lexer::lex(parser_root_node).map_err(CompilationError::Lex)?
 	};
 
 	Ok(besl)
@@ -108,7 +108,7 @@ pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReferen
 pub enum CompilationError {
 	Undefined,
 	Tokenization,
-	Parsing,
+	Parsing(parser::ParsingFailReasons),
 	Lex(lexer::LexError),
 }
 

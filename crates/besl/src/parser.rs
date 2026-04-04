@@ -451,7 +451,7 @@ pub(super) enum Atoms<'a> {
 }
 
 #[derive(Debug)]
-pub(super) enum ParsingFailReasons {
+pub enum ParsingFailReasons {
 	/// The parser does not handle this type of syntax.
 	NotMine,
 	/// The parser started handling a sequence of tokens, but it encountered a syntax error.
@@ -560,10 +560,22 @@ fn execute_parsers<'i, 'a: 'i>(
 	parsers: &[FeatureParser<'i, 'a>],
 	mut iterator: std::slice::Iter<'i, &'a str>,
 ) -> FeatureParserResult<'i, 'a> {
+	let mut error = None;
+
 	for parser in parsers {
-		if let Ok(r) = parser(iterator.clone()) {
-			return Ok(r);
+		match parser(iterator.clone()) {
+			Ok(r) => return Ok(r),
+			Err(ParsingFailReasons::NotMine) => {}
+			Err(other) => {
+				if error.is_none() {
+					error = Some(other);
+				}
+			}
 		}
+	}
+
+	if let Some(error) = error {
+		return Err(error);
 	}
 
 	Err(ParsingFailReasons::BadSyntax {
@@ -594,10 +606,22 @@ fn execute_expression_parsers<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
+	let mut error = None;
+
 	for parser in parsers {
-		if let Ok(r) = parser(iterator.clone(), expressions.clone()) {
-			return Ok(r);
+		match parser(iterator.clone(), expressions.clone()) {
+			Ok(r) => return Ok(r),
+			Err(ParsingFailReasons::NotMine) => {}
+			Err(other) => {
+				if error.is_none() {
+					error = Some(other);
+				}
+			}
 		}
+	}
+
+	if let Some(error) = error {
+		return Err(error);
 	}
 
 	Err(ParsingFailReasons::BadSyntax {
@@ -848,7 +872,10 @@ fn parse_literal<'i, 'a: 'i>(
 
 	expressions.push(Atoms::Literal { value });
 
-	Ok((expressions, iterator))
+	let possible_following_expressions = vec![parse_operator, parse_accessor, parse_index_accessor];
+
+	try_execute_expression_parsers(&possible_following_expressions, iterator.clone(), expressions.clone())
+		.unwrap_or(Ok((expressions, iterator)))
 }
 
 fn parse_rvalue<'i, 'a: 'i>(
@@ -1079,8 +1106,9 @@ fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Fe
 				iterator.next();
 				break;
 			} else {
+				let token = iterator.clone().peekable().peek().copied().copied().unwrap_or("<eof>");
 				return Err(ParsingFailReasons::BadSyntax {
-					message: format!("Expected a }} after function {} declaration.", name),
+					message: format!("Expected a }} after function {} declaration, found `{}`.", name, token),
 				});
 			}
 		}

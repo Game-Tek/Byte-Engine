@@ -1,11 +1,9 @@
-use std::borrow::Borrow;
-
 use crate::{
 	core::EntityHandle,
 	rendering::{
-		Viewport,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 		view::View,
+		Viewport,
 	},
 };
 
@@ -15,7 +13,10 @@ use ghi::{
 	},
 	device::{Device as _, DeviceCreate as _},
 };
-use resource_management::glsl;
+use resource_management::{
+	msl_shader_generator::MSLShaderGenerator, shader_generator::ShaderGenerationSettings,
+	spirv_shader_generator::SPIRVShaderGenerator,
+};
 use utils::{Box, Extent};
 
 use crate::core::Entity;
@@ -60,95 +61,21 @@ impl BaseAgxToneMapPass {
 }
 
 fn create_tone_mapping_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+	let main_node = create_tone_mapping_program();
+	let settings = ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping".to_string());
+
 	if ghi::implementation::USES_METAL {
-		let shader_source = r#"
-			#include <metal_stdlib>
-			using namespace metal;
-
-			struct ToneMapSet0 {
-				texture2d<float, access::read> source [[id(0)]];
-				texture2d<float, access::write> result [[id(1)]];
-			};
-
-			constant float AGX_MIN_EV = -12.47393;
-			constant float AGX_MAX_EV = 4.026069;
-
-			float3 linear_srgb_to_linear_rec2020(float3 color) {
-				return float3(
-					0.6274 * color.x + 0.3293 * color.y + 0.0433 * color.z,
-					0.0691 * color.x + 0.9195 * color.y + 0.0113 * color.z,
-					0.0164 * color.x + 0.0880 * color.y + 0.8956 * color.z
-				);
-			}
-
-			float3 linear_rec2020_to_linear_srgb(float3 color) {
-				return float3(
-					1.6605 * color.x - 0.5876 * color.y - 0.0728 * color.z,
-					-0.1246 * color.x + 1.1329 * color.y - 0.0083 * color.z,
-					-0.0182 * color.x - 0.1006 * color.y + 1.1187 * color.z
-				);
-			}
-
-			float3 agx_inset(float3 color) {
-				return float3(
-					0.856627153315983 * color.x + 0.0951212405381588 * color.y + 0.0482516061458583 * color.z,
-					0.137318972929847 * color.x + 0.761241990602591 * color.y + 0.101439036467562 * color.z,
-					0.11189821299995 * color.x + 0.0767994186031903 * color.y + 0.811302368396859 * color.z
-				);
-			}
-
-			float3 agx_outset(float3 color) {
-				return float3(
-					1.1271005818144368 * color.x - 0.11060664309660323 * color.y - 0.016493938717834573 * color.z,
-					-0.1413297634984383 * color.x + 1.157823702216272 * color.y - 0.016493938717834257 * color.z,
-					-0.14132976349843826 * color.x - 0.11060664309660294 * color.y + 1.2519364065950405 * color.z
-				);
-			}
-
-			float3 agx(float3 color) {
-				color = linear_srgb_to_linear_rec2020(color);
-				color = agx_inset(color);
-				color = max(color, float3(1e-10));
-				color = clamp(log2(color), float3(AGX_MIN_EV), float3(AGX_MAX_EV));
-				color = (color - AGX_MIN_EV) / (AGX_MAX_EV - AGX_MIN_EV);
-				color = clamp(color, 0.0, 1.0);
-
-				float3 x2 = color * color;
-				float3 x4 = x2 * x2;
-				color = +15.5 * x4 * x2
-					- 40.14 * x4 * color
-					+ 31.96 * x4
-					- 6.868 * x2 * color
-					+ 0.4298 * x2
-					+ 0.1191 * color
-					- 0.00232;
-
-				color = agx_outset(color);
-				color = pow(max(float3(0.0), color), float3(2.2));
-				color = linear_rec2020_to_linear_srgb(color);
-				return clamp(color, 0.0, 1.0);
-			}
-
-			kernel void agx_tonemap(
-				uint2 gid [[thread_position_in_grid]],
-				constant ToneMapSet0& set0 [[buffer(16)]]
-			) {
-				if (gid.x >= set0.source.get_width() || gid.y >= set0.source.get_height()) {
-					return;
-				}
-
-				float4 source_color = set0.source.read(gid);
-				float3 result_color = agx(source_color.rgb);
-				set0.result.write(float4(result_color, 1.0), gid);
-			}
-		"#;
+		let mut shader_generator = MSLShaderGenerator::new();
+		let shader_source = shader_generator.generate(&settings, &main_node).expect(
+			"Failed to generate the AGX MSL shader. The most likely cause is an unsupported BESL construct in the Metal transpiler.",
+		);
 
 		return device
 			.create_shader(
 				Some("AGX Tone Mapping Compute Shader"),
 				ghi::shader::Sources::MTL {
-					source: shader_source,
-					entry_point: "agx_tonemap",
+					source: shader_source.as_str(),
+					entry_point: "besl_main",
 				},
 				ghi::ShaderTypes::Compute,
 				[
@@ -161,12 +88,14 @@ fn create_tone_mapping_shader(device: &mut ghi::implementation::Device) -> ghi::
 			);
 	}
 
-	let tonemapping_shader_artifact = glsl::compile(TONE_MAPPING_SHADER, "AGX Tonemapping").unwrap();
+	let shader_artifact = SPIRVShaderGenerator::new()
+		.generate(&settings, &main_node)
+		.expect("Failed to generate AGX tone mapping SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
 
 	device
 		.create_shader(
 			Some("AGX Tone Mapping Compute Shader"),
-			ghi::shader::Sources::SPIRV(tonemapping_shader_artifact.borrow().into()),
+			ghi::shader::Sources::SPIRV(shader_artifact.binary()),
 			ghi::ShaderTypes::Compute,
 			[
 				SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -175,6 +104,131 @@ fn create_tone_mapping_shader(device: &mut ghi::implementation::Device) -> ghi::
 		)
 		.expect("Failed to create AGX tone mapping shader")
 }
+
+fn create_tone_mapping_program() -> besl::NodeReference {
+	let mut root = besl::Node::root();
+	root.add_child(
+		besl::Node::binding(
+			"source",
+			besl::BindingTypes::Image {
+				format: "rgba16f".to_string(),
+			},
+			0,
+			0,
+			true,
+			false,
+		)
+		.into(),
+	);
+	root.add_child(
+		besl::Node::binding(
+			"result",
+			besl::BindingTypes::Image {
+				format: "rgba8".to_string(),
+			},
+			0,
+			1,
+			false,
+			true,
+		)
+		.into(),
+	);
+
+	let program = besl::compile_to_besl(TONE_MAPPING_SHADER, Some(root))
+		.expect("Failed to lex the AGX tone mapping shader. The most likely cause is invalid BESL syntax.");
+	program.get_main().expect(
+		"Failed to find the AGX tone mapping entry point. The most likely cause is that the BESL program did not define main.",
+	)
+}
+
+const TONE_MAPPING_SHADER: &str = r#"
+splat3: fn(value: f32) -> vec3f {
+	return vec3f(value, value, value);
+}
+
+linear_srgb_to_linear_rec2020: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.6274 * color.x + 0.3293 * color.y + 0.0433 * color.z;
+	let y: f32 = 0.0691 * color.x + 0.9195 * color.y + 0.0113 * color.z;
+	let z: f32 = 0.0164 * color.x + 0.0880 * color.y + 0.8956 * color.z;
+	return vec3f(x, y, z);
+}
+
+linear_rec2020_to_linear_srgb: fn(color: vec3f) -> vec3f {
+	let x: f32 = 1.6605 * color.x - 0.5876 * color.y - 0.0728 * color.z;
+	let y: f32 = 0.0 - 0.1246 * color.x + 1.1329 * color.y - 0.0083 * color.z;
+	let z: f32 = 0.0 - 0.0182 * color.x - 0.1006 * color.y + 1.1187 * color.z;
+	return vec3f(x, y, z);
+}
+
+agx_inset: fn(color: vec3f) -> vec3f {
+	let x: f32 = 0.856627153315983 * color.x + 0.0951212405381588 * color.y + 0.0482516061458583 * color.z;
+	let y: f32 = 0.137318972929847 * color.x + 0.761241990602591 * color.y + 0.101439036467562 * color.z;
+	let z: f32 = 0.11189821299995 * color.x + 0.0767994186031903 * color.y + 0.811302368396859 * color.z;
+	return vec3f(x, y, z);
+}
+
+agx_outset: fn(color: vec3f) -> vec3f {
+	let x: f32 = 1.1271005818144368 * color.x - 0.11060664309660323 * color.y - 0.016493938717834573 * color.z;
+	let y: f32 = 0.0 - 0.1413297634984383 * color.x + 1.157823702216272 * color.y - 0.016493938717834257 * color.z;
+	let z: f32 = 0.0 - 0.14132976349843826 * color.x - 0.11060664309660294 * color.y + 1.2519364065950405 * color.z;
+	return vec3f(x, y, z);
+}
+
+agx: fn(color: vec3f) -> vec3f {
+	let agx_min_ev: f32 = 0.0 - 12.47393;
+	let agx_max_ev: f32 = 4.026069;
+	let x2: vec3f = vec3f(0.0, 0.0, 0.0);
+	let x4: vec3f = vec3f(0.0, 0.0, 0.0);
+	let term1: vec3f = vec3f(0.0, 0.0, 0.0);
+	let term2: vec3f = vec3f(0.0, 0.0, 0.0);
+	let term3: vec3f = vec3f(0.0, 0.0, 0.0);
+	let term4: vec3f = vec3f(0.0, 0.0, 0.0);
+	let term5: vec3f = vec3f(0.0, 0.0, 0.0);
+	let term6: vec3f = vec3f(0.0, 0.0, 0.0);
+	let term7: vec3f = vec3f(0.0, 0.0, 0.0);
+
+	color = linear_srgb_to_linear_rec2020(color);
+	color = agx_inset(color);
+	color = max(color, splat3(0.0000000001));
+	color = clamp(log2(color), splat3(agx_min_ev), splat3(agx_max_ev));
+	color = color - splat3(agx_min_ev);
+	color = color / splat3(agx_max_ev - agx_min_ev);
+	color = clamp(color, splat3(0.0), splat3(1.0));
+
+	x2 = color * color;
+	x4 = x2 * x2;
+	term1 = 15.5 * x4 * x2;
+	term2 = 40.14 * x4 * color;
+	term3 = 31.96 * x4;
+	term4 = 6.868 * x2 * color;
+	term5 = 0.4298 * x2;
+	term6 = 0.1191 * color;
+	term7 = splat3(0.00232);
+	color = term1 - term2;
+	color = color + term3;
+	color = color - term4;
+	color = color + term5;
+	color = color + term6;
+	color = color - term7;
+
+	color = agx_outset(color);
+	color = pow(max(splat3(0.0), color), splat3(2.2));
+	color = linear_rec2020_to_linear_srgb(color);
+
+	return clamp(color, splat3(0.0), splat3(1.0));
+}
+
+main: fn() -> void {
+	let coord: vec2u = thread_id();
+	let source_color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let result_color: vec3f = vec3f(0.0, 0.0, 0.0);
+
+	guard_image_bounds(source, coord);
+	source_color = image_load(source, coord);
+	result_color = agx(vec3f(source_color.x, source_color.y, source_color.z));
+	write(result, coord, vec4f(result_color.x, result_color.y, result_color.z, 1.0));
+}
+"#;
 
 /// The `AgxToneMapPass` struct defines a per-view AGX tonemapping pass instance.
 pub struct AgxToneMapPass {
@@ -230,79 +284,79 @@ impl RenderPass for AgxToneMapPass {
 	}
 }
 
-const TONE_MAPPING_SHADER: &'static str = r#"
-#version 450
-#pragma shader_stage(compute)
+#[cfg(test)]
+mod tests {
+	use resource_management::{
+		glsl_shader_generator::GLSLShaderGenerator, msl_shader_compiler::MSLShaderCompiler,
+		msl_shader_generator::MSLShaderGenerator, shader_generator::ShaderGenerationSettings,
+		spirv_shader_generator::SPIRVShaderGenerator,
+	};
+	use utils::Extent;
 
-#extension GL_EXT_buffer_reference2: enable
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_shader_image_load_formatted:enable
-#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+	use super::{create_tone_mapping_program, TONE_MAPPING_SHADER};
 
-layout(set=0, binding=0) uniform readonly image2D source;
-layout(set=0, binding=1) uniform writeonly image2D result;
+	#[test]
+	fn agx_tonemap_besl_parses() {
+		besl::parse(TONE_MAPPING_SHADER)
+			.expect("Failed to parse the AGX BESL shader. The most likely cause is invalid BESL source syntax.");
+	}
 
-const mat3 LINEAR_REC2020_TO_LINEAR_SRGB = mat3(
-	1.6605, -0.1246, -0.0182,
-	-0.5876, 1.1329, -0.1006,
-	-0.0728, -0.0083, 1.1187
-);
+	#[test]
+	fn agx_tonemap_besl_generates_glsl() {
+		let main_node = create_tone_mapping_program();
 
-const mat3 LINEAR_SRGB_TO_LINEAR_REC2020 = mat3(
-	0.6274, 0.0691, 0.0164,
-	0.3293, 0.9195, 0.0880,
-	0.0433, 0.0113, 0.8956
-);
+		let shader = GLSLShaderGenerator::new()
+			.generate(
+				&ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping Test".to_string()),
+				&main_node,
+			)
+			.expect("Failed to generate the AGX BESL shader GLSL. The most likely cause is invalid BESL lowering.");
 
-const mat3 AGX_INSET_MATRIX = mat3(
-	0.856627153315983, 0.137318972929847, 0.11189821299995,
-	0.0951212405381588, 0.761241990602591, 0.0767994186031903,
-	0.0482516061458583, 0.101439036467562, 0.811302368396859
-);
+		assert!(shader.contains("clamp(log2(color)"));
+		assert!(shader.contains("uvec2(gl_GlobalInvocationID.xy)"));
+		assert!(shader.contains("imageLoad(source, ivec2(coord))"));
+	}
 
-const mat3 AGX_OUTSET_MATRIX = mat3(
-	1.1271005818144368, -0.1413297634984383, -0.14132976349843826,
-	-0.11060664309660323, 1.157823702216272, -0.11060664309660294,
-	-0.016493938717834573, -0.016493938717834257, 1.2519364065950405
-);
+	#[test]
+	fn agx_tonemap_besl_generates_msl() {
+		let main_node = create_tone_mapping_program();
 
-const float AGX_MIN_EV = -12.47393;
-const float AGX_MAX_EV = 4.026069;
+		let shader = MSLShaderGenerator::new()
+			.generate(
+				&ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping Test".to_string()),
+				&main_node,
+			)
+			.expect("Failed to generate the AGX BESL shader MSL. The most likely cause is invalid BESL lowering.");
 
-vec3 agx(vec3 color) {
-	color = LINEAR_SRGB_TO_LINEAR_REC2020 * color;
+		assert!(shader.contains("kernel void besl_main"));
+		assert!(shader.contains("source.read(gid)"));
+		assert!(shader.contains("result.write("));
+	}
 
-	color = AGX_INSET_MATRIX * color;
-	color = max(color, 1e-10);
+	#[test]
+	fn agx_tonemap_besl_compiles_to_spirv() {
+		let main_node = create_tone_mapping_program();
 
-	color = clamp(log2(color), AGX_MIN_EV, AGX_MAX_EV);
-	color = (color - AGX_MIN_EV) / (AGX_MAX_EV - AGX_MIN_EV);
-	color = clamp(color, 0.0, 1.0);
+		SPIRVShaderGenerator::new()
+			.generate(
+				&ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping Test".to_string()),
+				&main_node,
+			)
+			.expect(
+				"Failed to compile the AGX BESL shader to SPIR-V. The most likely cause is invalid GLSL emitted from BESL.",
+			);
+	}
 
-	vec3 x2 = color * color;
-	vec3 x4 = x2 * x2;
-	color = + 15.5 * x4 * x2
-		- 40.14 * x4 * color
-		+ 31.96 * x4
-		- 6.868 * x2 * color
-		+ 0.4298 * x2
-		+ 0.1191 * color
-		- 0.00232;
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn agx_tonemap_besl_compiles_to_metal() {
+		let main_node = create_tone_mapping_program();
 
-	color = AGX_OUTSET_MATRIX * color;
-	color = pow(max(vec3(0.0), color), vec3(2.2));
-	color = LINEAR_REC2020_TO_LINEAR_SRGB * color;
-
-	return clamp(color, 0.0, 1.0);
+		MSLShaderCompiler::new()
+			.generate(
+				&ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping Test".to_string()),
+				&main_node,
+			)
+			.expect("Failed to compile the AGX BESL shader to Metal. The most likely cause is invalid MSL emitted from BESL.");
+	}
 }
-
-layout(local_size_x=32, local_size_y=32) in;
-void main() {
-	if (gl_GlobalInvocationID.x >= imageSize(source).x || gl_GlobalInvocationID.y >= imageSize(source).y) { return; }
-
-	vec4 source_color = imageLoad(source, ivec2(gl_GlobalInvocationID.xy));
-	vec3 result_color = agx(source_color.rgb);
-
-	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(result_color, 1.0));
-}
-"#;

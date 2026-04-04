@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::BTreeMap};
 
 use crate::shader_generator::{MatrixLayouts, ShaderGenerationSettings, ShaderGenerator, Stages};
 use crate::shader_graph::{build_graph, topological_sort};
@@ -10,6 +10,14 @@ use crate::shader_graph::{build_graph, topological_sort};
 /// - *minified*: Controls whether the shader string output is minified. Is `true` by default in release builds.
 pub struct MSLShaderGenerator {
 	minified: bool,
+	compute_binding_mode: ComputeBindingMode,
+	in_compute_body: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComputeBindingMode {
+	ArgumentBuffers,
+	BareResources,
 }
 
 impl ShaderGenerator for MSLShaderGenerator {}
@@ -19,11 +27,18 @@ impl MSLShaderGenerator {
 	pub fn new() -> Self {
 		MSLShaderGenerator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
+			compute_binding_mode: ComputeBindingMode::ArgumentBuffers,
+			in_compute_body: false,
 		}
 	}
 
 	pub fn minified(mut self, minified: bool) -> Self {
 		self.minified = minified;
+		self
+	}
+
+	pub fn compute_binding_mode(mut self, compute_binding_mode: ComputeBindingMode) -> Self {
+		self.compute_binding_mode = compute_binding_mode;
 		self
 	}
 }
@@ -104,7 +119,156 @@ impl MSLShaderGenerator {
 			}
 		}
 
-		self.emit_compute_entry_point(string, main_function_node, bindings.as_slice(), push_constant.as_ref());
+		let previous_in_compute_body = self.in_compute_body;
+		self.in_compute_body = true;
+
+		match self.compute_binding_mode {
+			ComputeBindingMode::ArgumentBuffers => {
+				let binding_sets = self.group_compute_bindings(bindings.as_slice());
+				for (&set, bindings) in &binding_sets {
+					self.emit_compute_argument_buffer_struct(string, set, bindings);
+				}
+				self.emit_compute_entry_point_argument_buffers(
+					string,
+					main_function_node,
+					&binding_sets,
+					push_constant.as_ref(),
+				);
+			}
+			ComputeBindingMode::BareResources => {
+				self.emit_compute_entry_point_bare_resources(
+					string,
+					main_function_node,
+					bindings.as_slice(),
+					push_constant.as_ref(),
+				);
+			}
+		}
+
+		self.in_compute_body = previous_in_compute_body;
+	}
+
+	fn group_compute_bindings(&self, bindings: &[besl::NodeReference]) -> BTreeMap<u32, Vec<besl::NodeReference>> {
+		let mut binding_sets = BTreeMap::<u32, Vec<besl::NodeReference>>::new();
+
+		for binding in bindings {
+			let set = match binding.borrow().node() {
+				besl::Nodes::Binding { set, .. } => *set,
+				_ => continue,
+			};
+
+			binding_sets.entry(set).or_default().push(binding.clone());
+		}
+
+		for bindings in binding_sets.values_mut() {
+			bindings.sort_by_key(|binding| match binding.borrow().node() {
+				besl::Nodes::Binding { binding, .. } => *binding,
+				_ => u32::MAX,
+			});
+		}
+
+		binding_sets
+	}
+
+	fn emit_compute_argument_buffer_struct(&mut self, string: &mut String, set: u32, bindings: &[besl::NodeReference]) {
+		string.push_str("struct _set");
+		string.push_str(set.to_string().as_str());
+		if self.minified {
+			string.push('{');
+		} else {
+			string.push_str(" {\n");
+		}
+
+		let mut next_id = 0u32;
+		for binding in bindings {
+			self.emit_compute_argument_buffer_field(string, binding, &mut next_id);
+		}
+
+		string.push_str("};");
+		if !self.minified {
+			string.push('\n');
+		}
+	}
+
+	fn emit_compute_argument_buffer_field(
+		&mut self,
+		string: &mut String,
+		binding_node: &besl::NodeReference,
+		next_id: &mut u32,
+	) {
+		let node = binding_node.borrow();
+		let besl::Nodes::Binding {
+			name,
+			read,
+			write,
+			r#type,
+			count,
+			..
+		} = node.node()
+		else {
+			return;
+		};
+
+		let emit_suffix = |string: &mut String, next_id: &mut u32| {
+			if let Some(count) = count {
+				string.push('[');
+				string.push_str(count.to_string().as_str());
+				string.push(']');
+			}
+			string.push_str(" [[id(");
+			string.push_str(next_id.to_string().as_str());
+			string.push_str(")]];");
+			if !self.minified {
+				string.push('\n');
+			}
+			*next_id += 1;
+		};
+
+		if !self.minified {
+			string.push('\t');
+		}
+
+		match r#type {
+			besl::BindingTypes::Buffer { .. } => {
+				let address_space = if *write { "device" } else { "constant" };
+				string.push_str(address_space);
+				string.push(' ');
+				string.push_str(&format!("_{}* {}", name, name));
+				emit_suffix(string, next_id);
+			}
+			besl::BindingTypes::Image { format } => {
+				let element_type = match format.as_str() {
+					"r8ui" | "r16ui" | "r32ui" => "uint",
+					_ => "float",
+				};
+				let access = if *read && *write {
+					"access::read_write"
+				} else if *write {
+					"access::write"
+				} else {
+					"access::read"
+				};
+				string.push_str(&format!("texture2d<{}, {}> {}", element_type, access, name));
+				emit_suffix(string, next_id);
+			}
+			besl::BindingTypes::CombinedImageSampler { format } => {
+				let texture_type = match format.as_str() {
+					"ArrayTexture2D" => "texture2d_array<float>",
+					_ => "texture2d<float>",
+				};
+				string.push_str(texture_type);
+				string.push(' ');
+				string.push_str(name);
+				emit_suffix(string, next_id);
+
+				if !self.minified {
+					string.push('\t');
+				}
+				string.push_str("sampler ");
+				string.push_str(&format!("{}_sampler", name));
+				emit_suffix(string, next_id);
+			}
+		}
 	}
 
 	fn emit_buffer_binding_struct(
@@ -144,7 +308,7 @@ impl MSLShaderGenerator {
 		}
 	}
 
-	fn emit_compute_entry_point(
+	fn emit_compute_entry_point_bare_resources(
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
@@ -193,6 +357,89 @@ impl MSLShaderGenerator {
 
 		for binding in bindings {
 			self.emit_compute_binding_parameter(string, binding);
+		}
+
+		if self.minified {
+			string.push_str("){");
+		} else {
+			string.push_str(") {\n");
+		}
+
+		for statement in statements {
+			if !self.minified {
+				string.push('\t');
+			}
+			self.emit_node_string(string, statement);
+			string.push(';');
+			string.push_str(break_char);
+		}
+
+		string.push('}');
+		if !self.minified {
+			string.push('\n');
+		}
+	}
+
+	fn emit_compute_entry_point_argument_buffers(
+		&mut self,
+		string: &mut String,
+		main_function_node: &besl::NodeReference,
+		binding_sets: &BTreeMap<u32, Vec<besl::NodeReference>>,
+		push_constant: Option<&besl::NodeReference>,
+	) {
+		let break_char = if self.minified { "" } else { "\n" };
+		let node = RefCell::borrow(main_function_node);
+
+		let besl::Nodes::Function {
+			name,
+			statements,
+			params,
+			..
+		} = node.node()
+		else {
+			return;
+		};
+
+		string.push_str("kernel void ");
+		if *name == "main" {
+			string.push_str("besl_main");
+		} else {
+			string.push_str(name);
+		}
+		string.push('(');
+		string.push_str("uint2 gid [[thread_position_in_grid]]");
+
+		for param in params {
+			if self.minified {
+				string.push(',');
+			} else {
+				string.push_str(", ");
+			}
+			self.emit_node_string(string, param);
+		}
+
+		if let Some(push_constant) = push_constant {
+			if self.minified {
+				string.push(',');
+			} else {
+				string.push_str(", ");
+			}
+			self.emit_compute_push_constant_parameter(string, push_constant);
+		}
+
+		for &set in binding_sets.keys() {
+			if self.minified {
+				string.push(',');
+			} else {
+				string.push_str(", ");
+			}
+			string.push_str("constant _set");
+			string.push_str(set.to_string().as_str());
+			string.push_str("& set");
+			string.push_str(set.to_string().as_str());
+			string.push_str(" [[buffer(");
+			string.push_str((16 + set).to_string().as_str());
+			string.push_str(")]]");
 		}
 
 		if self.minified {
@@ -276,6 +523,18 @@ impl MSLShaderGenerator {
 				string.push_str(separator);
 				string.push_str(&format!("sampler {}_sampler [[sampler({})]]", name, index));
 			}
+		}
+	}
+
+	fn emit_compute_binding_reference(&self, string: &mut String, set: u32, name: &str) {
+		match self.compute_binding_mode {
+			ComputeBindingMode::ArgumentBuffers => {
+				string.push_str("set");
+				string.push_str(set.to_string().as_str());
+				string.push('.');
+				string.push_str(name);
+			}
+			ComputeBindingMode::BareResources => string.push_str(name),
 		}
 	}
 
@@ -679,6 +938,9 @@ impl MSLShaderGenerator {
 					besl::Nodes::Literal { value, .. } => {
 						self.emit_node_string(string, &value);
 					}
+					besl::Nodes::Binding { set, .. } if self.in_compute_body => {
+						self.emit_compute_binding_reference(string, *set, name);
+					}
 					_ => {
 						string.push_str(name);
 					}
@@ -718,6 +980,11 @@ impl MSLShaderGenerator {
 				count,
 				..
 			} => {
+				if self.in_compute_body {
+					self.emit_compute_binding_reference(string, *set, name);
+					return;
+				}
+
 				let index = set * 100 + binding;
 
 				match r#type {
@@ -901,6 +1168,48 @@ mod tests {
 		assert_string_contains!(shader, "texture2d<float> texture [[texture(100)]];");
 		assert_string_contains!(shader, "sampler texture_sampler [[sampler(100)]];");
 		assert_string_contains!(shader, "void main(){buff;image;texture;}");
+	}
+
+	#[test]
+	fn compute_bindings_use_argument_buffers_by_default() {
+		let main = shader_generator::tests::bindings();
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(
+			shader,
+			"struct _set0{device _buff* buff [[id(0)]];texture2d<float, access::write> image [[id(1)]];};"
+		);
+		assert_string_contains!(
+			shader,
+			"struct _set1{texture2d<float> texture [[id(0)]];sampler texture_sampler [[id(1)]];};"
+		);
+		assert_string_contains!(
+			shader,
+			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],constant _set0& set0 [[buffer(16)]],constant _set1& set1 [[buffer(17)]])"
+		);
+		assert_string_contains!(shader, "set0.buff;set0.image;set1.texture;");
+	}
+
+	#[test]
+	fn compute_bindings_can_use_bare_resources() {
+		let main = shader_generator::tests::bindings();
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.compute_binding_mode(ComputeBindingMode::BareResources)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "kernel void besl_main(uint2 gid [[thread_position_in_grid]],");
+		assert_string_contains!(shader, "device _buff* buff [[buffer(0)]]");
+		assert_string_contains!(shader, "texture2d<float, access::write> image [[texture(1)]]");
+		assert_string_contains!(shader, "texture2d<float> texture [[texture(100)]]");
+		assert_string_contains!(shader, "sampler texture_sampler [[sampler(100)]]");
+		assert_string_contains!(shader, "buff;image;texture;");
 	}
 
 	#[test]

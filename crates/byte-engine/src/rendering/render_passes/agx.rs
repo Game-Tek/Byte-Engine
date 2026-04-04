@@ -329,8 +329,9 @@ mod tests {
 			.expect("Failed to generate the AGX BESL shader MSL. The most likely cause is invalid BESL lowering.");
 
 		assert!(shader.contains("kernel void besl_main"));
-		assert!(shader.contains("source.read(gid)"));
-		assert!(shader.contains("result.write("));
+		assert!(shader.contains("constant _set0& set0 [[buffer(16)]]"));
+		assert!(shader.contains("set0.source.read(coord)"));
+		assert!(shader.contains("set0.result.write("));
 	}
 
 	#[test]

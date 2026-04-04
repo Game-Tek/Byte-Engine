@@ -356,6 +356,14 @@ impl Device {
 				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
 				argument_encoder.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _);
 			},
+			(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
+				let swapchain = &self.swapchains[handle.0 as usize];
+				let proxy_image_handle = swapchain.images[frame_index as usize].expect(
+					"Swapchain proxy image not found. The most likely cause is that the swapchain was not created with proxy images.",
+				);
+				let image = self.images.resource(proxy_image_handle);
+				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+			},
 			_ => panic!(
 				"Descriptor write does not match the Metal descriptor set layout. The most likely cause is that a descriptor type was written to a binding declared with a different descriptor type."
 			),
@@ -419,6 +427,14 @@ impl Device {
 				let sampler_state = &self.samplers[sampler_handle.0 as usize];
 				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
 				argument_encoder.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _);
+			},
+			(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
+				let swapchain = &self.swapchains[handle.0 as usize];
+				let proxy_image_handle = swapchain.images[frame_index as usize].expect(
+					"Swapchain proxy image not found. The most likely cause is that the swapchain was not created with proxy images.",
+				);
+				let image = self.images.resource(proxy_image_handle);
+				argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
 			},
 			_ => panic!(
 				"Descriptor write does not match the Metal descriptor set layout. The most likely cause is that a descriptor type was written to a binding declared with a different descriptor type."
@@ -504,7 +520,9 @@ impl Device {
 			crate::descriptors::WriteData::StaticSamplers => None,
 			crate::descriptors::WriteData::CombinedImageSamplerArray => None,
 			crate::descriptors::WriteData::AccelerationStructure { .. } => None,
-			crate::descriptors::WriteData::Swapchain(_) => None, // Swapchain descriptors are resolved in a Frame
+			crate::descriptors::WriteData::Swapchain(swapchain_handle) => Some(Descriptor::Swapchain {
+				handle: crate::swapchain::SwapchainHandle(swapchain_handle.0),
+			}),
 		}
 	}
 

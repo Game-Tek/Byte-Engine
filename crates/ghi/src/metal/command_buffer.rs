@@ -133,15 +133,19 @@ impl<'a> CommandBufferRecording<'a> {
 			};
 
 			for descriptor in descriptors.values().copied() {
-				let Some(handle) = descriptor.tracked_resource() else {
-					continue;
-				};
-
-				let layout = match descriptor {
-					Descriptor::Buffer { .. } => crate::Layouts::General,
-					Descriptor::Image { layout, .. } | Descriptor::CombinedImageSampler { layout, .. } => layout,
+				let (handle, layout) = match descriptor {
+					Descriptor::Buffer { buffer, .. } => (PrivateHandles::Buffer(buffer), crate::Layouts::General),
+					Descriptor::Image { image, layout, .. } => (PrivateHandles::Image(image), layout),
+					Descriptor::CombinedImageSampler { image, layout, .. } => (PrivateHandles::Image(image), layout),
 					Descriptor::Sampler { .. } => continue,
-					Descriptor::Swapchain { .. } => continue,
+					Descriptor::Swapchain { handle } => {
+						let swapchain = &self.device.swapchains[handle.0 as usize];
+						if let Some(proxy_image_handle) = swapchain.images[self.sequence_index as usize] {
+							(PrivateHandles::Image(proxy_image_handle), crate::Layouts::General)
+						} else {
+							continue;
+						}
+					}
 				};
 
 				consumptions.push(Consumption {

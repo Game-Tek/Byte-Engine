@@ -182,7 +182,7 @@ impl Frame<'_> {
 
 			for (present_key, drawable) in present_keys.iter().zip(present_drawables.iter()) {
 				let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
-				let Some(proxy_image) = swapchain.images[present_key.image_index as usize] else {
+				let Some(proxy_image) = swapchain.images[present_key.sequence_index as usize] else {
 					continue;
 				};
 				let source_texture = &self.device.images.resource(proxy_image).texture;

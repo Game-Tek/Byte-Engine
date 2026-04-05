@@ -623,6 +623,15 @@ impl GLSLShaderGenerator {
 			besl::Nodes::Literal { value, .. } => {
 				self.emit_node_string(string, &value);
 			}
+			besl::Nodes::Const { name, r#type, value } => {
+				string.push_str(&format!(
+					"const {} {} = ",
+					Self::translate_type(&r#type.borrow().get_name().unwrap()),
+					name,
+				));
+				self.emit_node_string(string, &value);
+				string.push_str(&format!(";{break_char}"));
+			}
 		}
 	}
 
@@ -934,5 +943,18 @@ mod tests {
 		assert_string_contains!(shader, "void main(){gl_Position = vec4(0);}");
 		// Should NOT contain HLSL code
 		assert!(!shader.contains("float4"), "GLSL shader should not contain HLSL code");
+	}
+
+	#[test]
+	fn test_const_variable() {
+		let main = shader_generator::tests::const_variable();
+
+		let shader = GLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "const float PI = 3.14;");
+		assert_string_contains!(shader, "void main(){PI;}");
 	}
 }

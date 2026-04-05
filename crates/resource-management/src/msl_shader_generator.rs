@@ -1300,6 +1300,15 @@ impl MSLShaderGenerator {
 			besl::Nodes::Literal { value, .. } => {
 				self.emit_node_string(string, &value);
 			}
+			besl::Nodes::Const { name, r#type, value } => {
+				string.push_str(&format!(
+					"constant {} {} = ",
+					Self::translate_type(&r#type.borrow().get_name().unwrap()),
+					name,
+				));
+				self.emit_node_string(string, &value);
+				string.push_str(&format!(";{break_char}"));
+			}
 		}
 	}
 
@@ -1667,5 +1676,18 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "void main(){output.position = float4(0, 0, 0, 1);}");
 		// Should NOT contain GLSL code
 		assert!(!shader.contains("gl_Position"), "MSL shader should not contain GLSL code");
+	}
+
+	#[test]
+	fn test_const_variable() {
+		let main = shader_generator::tests::const_variable();
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "constant float PI = 3.14;");
+		assert_string_contains!(shader, "void main(){PI;}");
 	}
 }

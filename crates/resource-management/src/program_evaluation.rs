@@ -173,6 +173,10 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference) 
 			}
 		}
 		besl::Nodes::Null => {}
+		besl::Nodes::Const { r#type, value, .. } => {
+			build_bindings(bindings, r#type);
+			build_bindings(bindings, value);
+		}
 	}
 }
 
@@ -309,6 +313,10 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 			}
 		}
 		besl::Nodes::Binding { .. } | besl::Nodes::Null => {}
+		besl::Nodes::Const { r#type, value, .. } => {
+			collect_local_output_symbols(r#type, local_output_symbols);
+			collect_local_output_symbols(value, local_output_symbols);
+		}
 	}
 }
 
@@ -376,6 +384,10 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 			.iter()
 			.any(|child| references_non_local_output(child, local_output_symbols)),
 		besl::Nodes::Binding { .. } | besl::Nodes::Null => false,
+		besl::Nodes::Const { r#type, value, .. } => {
+			references_non_local_output(r#type, local_output_symbols)
+				|| references_non_local_output(value, local_output_symbols)
+		}
 	}
 }
 
@@ -455,6 +467,10 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 			.iter()
 			.any(|child| writes_non_opaque_vec4f_to_non_local_output(child, local_output_symbols)),
 		besl::Nodes::Binding { .. } | besl::Nodes::Null => false,
+		besl::Nodes::Const { r#type, value, .. } => {
+			writes_non_opaque_vec4f_to_non_local_output(r#type, local_output_symbols)
+				|| writes_non_opaque_vec4f_to_non_local_output(value, local_output_symbols)
+		}
 	}
 }
 

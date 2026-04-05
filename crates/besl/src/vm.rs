@@ -2418,6 +2418,7 @@ fn describe_node(node: &Nodes) -> &'static str {
 		Nodes::Output { .. } => "output",
 		Nodes::Parameter { .. } => "parameter",
 		Nodes::Literal { .. } => "literal",
+		Nodes::Const { .. } => "const",
 	}
 }
 

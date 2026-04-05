@@ -304,4 +304,20 @@ pub mod tests {
 
 		main
 	}
+
+	pub fn const_variable() -> besl::NodeReference {
+		let script = r#"
+		PI: const f32 = 3.14;
+
+		main: fn () -> void {
+			PI;
+		}
+		"#;
+
+		let script_node = besl::compile_to_besl(&script, None).unwrap();
+
+		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
+
+		main
+	}
 }

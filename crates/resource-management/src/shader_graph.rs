@@ -212,6 +212,10 @@ pub fn build_graph(main_function_node: besl::NodeReference) -> Graph {
 			besl::Nodes::Literal { value, .. } => {
 				build_graph_impl(node.clone(), value.clone(), graph);
 			}
+			besl::Nodes::Const { r#type, value, .. } => {
+				build_graph_impl(node.clone(), r#type.clone(), graph);
+				build_graph_impl(node.clone(), value.clone(), graph);
+			}
 		}
 	}
 

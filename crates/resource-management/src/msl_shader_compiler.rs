@@ -223,6 +223,10 @@ impl MSLShaderCompiler {
 			besl::Nodes::Specialization { r#type, .. } => {
 				self.build_graph(bindings, r#type);
 			}
+			besl::Nodes::Const { r#type, value, .. } => {
+				self.build_graph(bindings, r#type);
+				self.build_graph(bindings, value);
+			}
 		}
 	}
 }

@@ -31,7 +31,7 @@ pub type NodeReference<'a> = &'a Node<'a>;
 pub(super) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Node<'a>, ParsingFailReasons> {
 	let mut iterator = tokens.tokens.iter();
 
-	let parsers = [parse_struct, parse_function, parse_macro, parse_member];
+	let parsers = [parse_struct, parse_function, parse_macro, parse_const, parse_member];
 
 	let mut children: Vec<Node<'a>> = Vec::with_capacity(64);
 
@@ -240,6 +240,16 @@ impl<'a> Node<'a> {
 		}
 	}
 
+	pub fn constant(name: &'a str, r#type: &'a str, value: Node<'a>) -> Node<'a> {
+		Node {
+			node: Nodes::Const {
+				name,
+				r#type,
+				value: Box::new(value),
+			},
+		}
+	}
+
 	pub fn name(&self) -> Option<&'a str> {
 		match &self.node {
 			Nodes::Scope { name, .. } => Some(name),
@@ -258,6 +268,7 @@ impl<'a> Node<'a> {
 			Nodes::Parameter { name, .. } => Some(name),
 			Nodes::PushConstant { .. } => None,
 			Nodes::Input { name, .. } | Nodes::Output { name, .. } => Some(name),
+			Nodes::Const { name, .. } => Some(name),
 			Nodes::Null => None,
 		}
 	}
@@ -395,6 +406,12 @@ pub enum Nodes<'a> {
 	Parameter {
 		name: &'a str,
 		r#type: &'a str,
+	},
+	/// A module-level constant variable declaration. Used to define compile-time constant values.
+	Const {
+		name: &'a str,
+		r#type: &'a str,
+		value: Box<Node<'a>>,
 	},
 }
 
@@ -653,11 +670,81 @@ fn is_identifier_char(c: char) -> bool {
 }
 
 fn is_identifier(s: &str) -> bool {
-	if s == "struct" || s == "fn" || s == "let" || s == "return" {
+	if s == "struct" || s == "fn" || s == "let" || s == "return" || s == "const" {
 		// should not be a keyword
 		return false;
 	}
 	s.chars().all(is_identifier_char)
+}
+
+fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	iterator.next_str("const")?;
+
+	let r#type = iterator.next_identifier().map_err(|e| match e {
+		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+			message: format!("Expected to find a type for const {}.", name),
+		},
+		_ => e,
+	})?;
+
+	iterator.next_str("=").map_err(|e| match e {
+		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+			message: format!("Expected to find = after type for const {}.", name),
+		},
+		_ => e,
+	})?;
+
+	let parsers = vec![parse_function_call, parse_literal, parse_variable];
+	let (expressions, new_iterator) = execute_expression_parsers(&parsers, iterator, Vec::new())?;
+	iterator = new_iterator;
+
+	iterator.next_str(";").map_err(|e| match e {
+		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
+			message: format!("Expected to find ; after const {} value.", name),
+		},
+		_ => e,
+	})?;
+
+	fn atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
+		let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
+
+		if let Some((i, e)) = max_precedence_item {
+			match e {
+				Atoms::Operator { name } => {
+					let left = atoms_to_node(&atoms[..i]);
+					let right = atoms_to_node(&atoms[i + 1..]);
+					Node {
+						node: Nodes::Expression(Expressions::Operator {
+							name: *name,
+							left: Box::new(left),
+							right: Box::new(right),
+						}),
+					}
+				}
+				Atoms::FunctionCall { name, parameters } => {
+					let parameters = parameters.iter().map(|v| atoms_to_node(v)).collect::<Vec<_>>();
+					Node {
+						node: Nodes::Expression(Expressions::Call { name: *name, parameters }),
+					}
+				}
+				Atoms::Literal { value } => Node {
+					node: Nodes::Expression(Expressions::Literal { value: *value }),
+				},
+				Atoms::Member { name } => Node {
+					node: Nodes::Expression(Expressions::Member { name: *name }),
+				},
+				_ => panic!("Unexpected atom in const expression"),
+			}
+		} else {
+			panic!("No atoms in const expression");
+		}
+	}
+
+	let value = atoms_to_node(&expressions);
+
+	Ok((Node::constant(name, r#type, value), iterator))
 }
 
 fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
@@ -1163,6 +1250,11 @@ impl<'a> Index<&str> for Node<'a> {
 							}
 						}
 						Nodes::Function { name: child_name, .. } => {
+							if child_name == index {
+								return child;
+							}
+						}
+						Nodes::Const { name: child_name, .. } => {
 							if child_name == index {
 								return child;
 							}
@@ -1717,6 +1809,62 @@ main: fn () -> void {
 			}
 		} else {
 			panic!("Not a function");
+		}
+	}
+
+	#[test]
+	fn test_parse_const() {
+		let source = "
+PI: const f32 = 3.14;
+";
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+
+		if let Nodes::Scope { children, .. } = &node.node {
+			assert_eq!(children.len(), 1);
+
+			let const_node = &node["PI"];
+
+			if let Nodes::Const { name, r#type, value } = &const_node.node {
+				assert_eq!(*name, "PI");
+				assert_eq!(*r#type, "f32");
+
+				if let Nodes::Expression(Expressions::Literal { value }) = &value.node {
+					assert_eq!(*value, "3.14");
+				} else {
+					panic!("Expected a literal value, got: {:?}", value.node);
+				}
+			} else {
+				panic!("Expected a const node, got: {:?}", const_node.node);
+			}
+		} else {
+			panic!("Not root node");
+		}
+	}
+
+	#[test]
+	fn test_parse_const_with_expression() {
+		let source = "
+TAU: const f32 = 3.14 * 2.0;
+";
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+
+		let const_node = &node["TAU"];
+
+		if let Nodes::Const { name, r#type, value } = &const_node.node {
+			assert_eq!(*name, "TAU");
+			assert_eq!(*r#type, "f32");
+
+			if let Nodes::Expression(Expressions::Operator { name, .. }) = &value.node {
+				assert_eq!(*name, "*");
+			} else {
+				panic!("Expected an operator expression, got: {:?}", value.node);
+			}
+		} else {
+			panic!("Expected a const node");
 		}
 	}
 }

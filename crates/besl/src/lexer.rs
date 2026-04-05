@@ -662,6 +662,16 @@ impl Node {
 		}
 	}
 
+	pub fn constant(name: &str, r#type: NodeReference, value: NodeReference) -> Node {
+		Node {
+			node: Nodes::Const {
+				name: name.to_string(),
+				r#type,
+				value,
+			},
+		}
+	}
+
 	pub fn input(name: &str, format: NodeReference, location: u8) -> Node {
 		Node {
 			node: Nodes::Input {
@@ -733,7 +743,8 @@ impl Node {
 			| Nodes::Binding { name, .. }
 			| Nodes::Parameter { name, .. }
 			| Nodes::Specialization { name, .. }
-			| Nodes::Literal { name, .. } => Some(name),
+			| Nodes::Literal { name, .. }
+			| Nodes::Const { name, .. } => Some(name),
 			Nodes::Input { name, .. } | Nodes::Output { name, .. } => Some(name),
 			Nodes::PushConstant { .. } => Some("push_constant"),
 			Nodes::Expression(expression) => match expression {
@@ -857,6 +868,12 @@ pub enum Nodes {
 		name: String,
 		value: NodeReference,
 	},
+	/// A module-level constant variable declaration. Stores a named, typed value that is known at compile time.
+	Const {
+		name: String,
+		r#type: NodeReference,
+		value: NodeReference,
+	},
 }
 
 impl Nodes {
@@ -868,6 +885,7 @@ impl Nodes {
 			Nodes::PushConstant { .. } => false,
 			Nodes::Input { .. } | Nodes::Output { .. } => false,
 			Nodes::Specialization { .. } => false,
+			Nodes::Const { .. } => false,
 			Nodes::Literal { .. } => true,
 			Nodes::Parameter { .. } => true,
 			Nodes::Null => true,
@@ -1017,6 +1035,15 @@ impl std::fmt::Debug for Node {
 					"Literal {{ name: {}, value: {:?} }}",
 					name,
 					value.0.borrow().get_name().map(|e| e.to_string())
+				)
+			}
+			Nodes::Const { name, r#type, value } => {
+				write!(
+					f,
+					"Const {{ name: {}, type: {:?}, value: {:?} }}",
+					name,
+					r#type.0.borrow().get_name().map(|e| e.to_string()),
+					value
 				)
 			}
 		}
@@ -1725,6 +1752,15 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			}
 
 			this
+		}
+		parser::Nodes::Const { name, r#type, value } => {
+			let t = get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType {
+				type_name: r#type.to_string(),
+			})?;
+
+			let v = lex_parsed_node(chain.clone(), value)?;
+
+			Node::constant(name, t, v).into()
 		}
 	};
 
@@ -2655,6 +2691,36 @@ main: fn () -> void {
 				_ => panic!("Expected intrinsic call"),
 			},
 			_ => panic!("Expected assignment"),
+		}
+	}
+
+	#[test]
+	fn lex_const_variable() {
+		let script = r#"
+		PI: const f32 = 3.14;
+
+		main: fn () -> void {
+			PI;
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+
+		let pi = node.get_descendant("PI").expect("Expected PI const");
+		let pi = pi.borrow();
+
+		match pi.node() {
+			Nodes::Const { name, r#type, value } => {
+				assert_eq!(name, "PI");
+				assert_eq!(r#type.borrow().get_name().unwrap(), "f32");
+				match value.borrow().node() {
+					Nodes::Expression(Expressions::Literal { value }) => {
+						assert_eq!(value, "3.14");
+					}
+					_ => panic!("Expected a literal expression value"),
+				}
+			}
+			_ => panic!("Expected Const node"),
 		}
 	}
 }

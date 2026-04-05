@@ -422,7 +422,32 @@ impl Node {
 			vec4f32.clone(),
 		);
 		let thread_idx_intrinsic = builtin_intrinsic("thread_idx", vec![], u32_t.clone());
+		let threadgroup_position_intrinsic = builtin_intrinsic("threadgroup_position", vec![], u32_t.clone());
 		let thread_id_intrinsic = builtin_intrinsic("thread_id", vec![], vec2u32.clone());
+		let set_mesh_output_counts_intrinsic = builtin_intrinsic(
+			"set_mesh_output_counts",
+			vec![("vertex_count", u32_t.clone()), ("primitive_count", u32_t.clone())],
+			void.clone(),
+		);
+		let set_mesh_vertex_position_intrinsic = builtin_intrinsic(
+			"set_mesh_vertex_position",
+			vec![("vertex_index", u32_t.clone()), ("position", vec4f32.clone())],
+			void.clone(),
+		);
+		let set_mesh_triangle_intrinsic = builtin_intrinsic(
+			"set_mesh_triangle",
+			vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32.clone())],
+			void.clone(),
+		);
+		let set_mesh_primitive_intrinsic = builtin_intrinsic(
+			"set_mesh_primitive",
+			vec![
+				("primitive_index", u32_t.clone()),
+				("instance_index", u32_t.clone()),
+				("meshlet_primitive_index", u32_t.clone()),
+			],
+			void.clone(),
+		);
 		let image_load_intrinsic = builtin_intrinsic(
 			"image_load",
 			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
@@ -474,7 +499,12 @@ impl Node {
 			pow_intrinsic,
 			reflect_intrinsic,
 			thread_idx_intrinsic,
+			threadgroup_position_intrinsic,
 			thread_id_intrinsic,
+			set_mesh_output_counts_intrinsic,
+			set_mesh_vertex_position_intrinsic,
+			set_mesh_triangle_intrinsic,
+			set_mesh_primitive_intrinsic,
 			image_load_intrinsic,
 			guard_image_bounds_intrinsic,
 			write_intrinsic,

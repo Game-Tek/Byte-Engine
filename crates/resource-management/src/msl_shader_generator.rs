@@ -12,6 +12,7 @@ pub struct MSLShaderGenerator {
 	minified: bool,
 	compute_binding_mode: ComputeBindingMode,
 	in_compute_body: bool,
+	in_mesh_body: bool,
 }
 
 const MESH_PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
@@ -31,6 +32,7 @@ impl MSLShaderGenerator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 			compute_binding_mode: ComputeBindingMode::ArgumentBuffers,
 			in_compute_body: false,
+			in_mesh_body: false,
 		}
 	}
 
@@ -443,6 +445,9 @@ impl MSLShaderGenerator {
 			string.push_str(") {\n");
 		}
 
+		let previous_in_mesh_body = self.in_mesh_body;
+		self.in_mesh_body = true;
+
 		for statement in statements {
 			if !self.minified {
 				string.push('\t');
@@ -451,6 +456,8 @@ impl MSLShaderGenerator {
 			string.push(';');
 			string.push_str(break_char);
 		}
+
+		self.in_mesh_body = previous_in_mesh_body;
 
 		string.push('}');
 		if !self.minified {
@@ -741,6 +748,26 @@ impl MSLShaderGenerator {
 		}
 	}
 
+	fn expression_is_indexable(node: &besl::NodeReference) -> bool {
+		match node.borrow().node() {
+			besl::Nodes::Member { count, .. } => count.is_some(),
+			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => Self::expression_is_indexable(source),
+			besl::Nodes::Expression(besl::Expressions::Accessor { right, .. }) => Self::expression_is_indexable(right),
+			_ => false,
+		}
+	}
+
+	fn expression_is_buffer_binding(node: &besl::NodeReference) -> bool {
+		match node.borrow().node() {
+			besl::Nodes::Binding {
+				r#type: besl::BindingTypes::Buffer { .. },
+				..
+			} => true,
+			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => Self::expression_is_buffer_binding(source),
+			_ => false,
+		}
+	}
+
 	/// Translates BESL intrinsic type names to MSL type names.
 	/// Example: `vec2f` -> `float2`
 	fn translate_type(source: &str) -> &str {
@@ -819,6 +846,48 @@ impl MSLShaderGenerator {
 			}
 			"thread_id" => {
 				string.push_str("gid");
+			}
+			"thread_idx" => {
+				string.push_str("thread_index");
+			}
+			"threadgroup_position" => {
+				string.push_str("threadgroup_position");
+			}
+			"set_mesh_output_counts" => {
+				string.push_str("if(thread_index==0){out_mesh.set_primitive_count(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(");}");
+			}
+			"set_mesh_vertex_position" => {
+				string.push_str("out_mesh.set_vertex(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(", VertexOutput{.position = ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str("})");
+			}
+			"set_mesh_triangle" => {
+				string.push_str("out_mesh.set_index(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(" * 3 + 0, ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(".x);out_mesh.set_index(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(" * 3 + 1, ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(".y);out_mesh.set_index(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(" * 3 + 2, ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(".z)");
+			}
+			"set_mesh_primitive" => {
+				string.push_str("out_mesh.set_primitive(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(", PrimitiveOutput{.instance_index = ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", .primitive_index = ");
+				self.emit_node_string(string, &arguments[2]);
+				string.push_str("})");
 			}
 			"image_load" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -1109,6 +1178,32 @@ impl MSLShaderGenerator {
 					let function = RefCell::borrow(&function);
 					let name = function.get_name().unwrap();
 
+					if self.in_mesh_body && name == "process_meshlet" {
+						string.push_str("process_meshlet(");
+						for (i, parameter) in parameters.iter().enumerate() {
+							if i > 0 {
+								if self.minified {
+									string.push(',')
+								} else {
+									string.push_str(", ");
+								}
+							}
+							self.emit_node_string(string, &parameter);
+						}
+						if !parameters.is_empty() {
+							if self.minified {
+								string.push(',');
+							} else {
+								string.push_str(", ");
+							}
+						}
+						string.push_str("set0, ");
+						string.push_str("threadgroup_position, ");
+						string.push_str("thread_index, ");
+						string.push_str("out_mesh)");
+						return;
+					}
+
 					let name = Self::translate_type(&name);
 
 					string.push_str(&format!("{}(", name));
@@ -1141,7 +1236,7 @@ impl MSLShaderGenerator {
 					besl::Nodes::Literal { value, .. } => {
 						self.emit_node_string(string, &value);
 					}
-					besl::Nodes::Binding { set, .. } if self.in_compute_body => {
+					besl::Nodes::Binding { set, .. } if self.in_compute_body || self.in_mesh_body => {
 						self.emit_compute_binding_reference(string, *set, name);
 					}
 					_ => {
@@ -1169,8 +1264,17 @@ impl MSLShaderGenerator {
 				}
 				besl::Expressions::Accessor { left, right } => {
 					self.emit_node_string(string, &left);
-					string.push('.');
-					self.emit_node_string(string, &right);
+					if Self::expression_is_indexable(left) {
+						string.push('[');
+						self.emit_node_string(string, &right);
+						string.push(']');
+					} else if Self::expression_is_buffer_binding(left) {
+						string.push_str("->");
+						self.emit_node_string(string, &right);
+					} else {
+						string.push('.');
+						self.emit_node_string(string, &right);
+					}
 				}
 			},
 			besl::Nodes::Binding {
@@ -1183,7 +1287,7 @@ impl MSLShaderGenerator {
 				count,
 				..
 			} => {
-				if self.in_compute_body {
+				if self.in_compute_body || self.in_mesh_body {
 					self.emit_compute_binding_reference(string, *set, name);
 					return;
 				}
@@ -1689,5 +1793,59 @@ struct PrimitiveOutput {
 
 		assert_string_contains!(shader, "constant float PI = 3.14;");
 		assert_string_contains!(shader, "void main(){PI;}");
+	}
+
+	#[test]
+	fn mesh_intrinsics_emit_msl_mesh_commands() {
+		let mesh_output_types = besl::parser::Node::raw_code(
+			Some("".into()),
+			Some(
+				r#"
+struct VertexOutput {
+	float4 position [[position]];
+};
+
+struct PrimitiveOutput {
+	uint instance_index [[flat]] [[user(locn0)]];
+	uint primitive_index [[flat]] [[user(locn1)]];
+};
+"#
+				.into(),
+			),
+			&[],
+			&["VertexOutput", "PrimitiveOutput"],
+		);
+		let script = r#"
+		main: fn () -> void {
+			set_mesh_output_counts(4, 2);
+			set_mesh_vertex_position(0, vec4f(1.0, 2.0, 3.0, 1.0));
+			set_mesh_triangle(0, vec3u(0, 1, 2));
+			set_mesh_primitive(0, 7, 9);
+		}
+		"#;
+
+		let mut root = besl::parse(script).expect("Expected mesh shader source to parse");
+		root.add(vec![mesh_output_types]);
+		let root = besl::lex(root).expect("Expected mesh shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "if(thread_index==0){out_mesh.set_primitive_count(2);}");
+		assert_string_contains!(
+			shader,
+			"out_mesh.set_vertex(0, VertexOutput{.position = float4(1.0,2.0,3.0,1.0)})"
+		);
+		assert_string_contains!(
+			shader,
+			"out_mesh.set_index(0 * 3 + 0, uint3(0,1,2).x);out_mesh.set_index(0 * 3 + 1, uint3(0,1,2).y);out_mesh.set_index(0 * 3 + 2, uint3(0,1,2).z)"
+		);
+		assert_string_contains!(
+			shader,
+			"out_mesh.set_primitive(0, PrimitiveOutput{.instance_index = 7, .primitive_index = 9})"
+		);
 	}
 }

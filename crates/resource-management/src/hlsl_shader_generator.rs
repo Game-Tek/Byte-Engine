@@ -94,6 +94,15 @@ impl HLSLShaderGenerator {
 		}
 	}
 
+	fn expression_is_indexable(node: &besl::NodeReference) -> bool {
+		match node.borrow().node() {
+			besl::Nodes::Member { count, .. } => count.is_some(),
+			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => Self::expression_is_indexable(source),
+			besl::Nodes::Expression(besl::Expressions::Accessor { right, .. }) => Self::expression_is_indexable(right),
+			_ => false,
+		}
+	}
+
 	// This function appends to the `string` parameter the string representation of the node.
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
@@ -413,8 +422,14 @@ impl HLSLShaderGenerator {
 				}
 				besl::Expressions::Accessor { left, right } => {
 					self.emit_node_string(string, &left);
-					string.push('.');
-					self.emit_node_string(string, &right);
+					if Self::expression_is_indexable(left) {
+						string.push('[');
+						self.emit_node_string(string, &right);
+						string.push(']');
+					} else {
+						string.push('.');
+						self.emit_node_string(string, &right);
+					}
 				}
 			},
 			besl::Nodes::Binding {

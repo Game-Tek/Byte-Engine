@@ -107,6 +107,15 @@ impl GLSLShaderGenerator {
 		}
 	}
 
+	fn expression_is_indexable(node: &besl::NodeReference) -> bool {
+		match node.borrow().node() {
+			besl::Nodes::Member { count, .. } => count.is_some(),
+			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => Self::expression_is_indexable(source),
+			besl::Nodes::Expression(besl::Expressions::Accessor { right, .. }) => Self::expression_is_indexable(right),
+			_ => false,
+		}
+	}
+
 	fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
@@ -146,6 +155,39 @@ impl GLSLShaderGenerator {
 			}
 			"thread_id" => {
 				string.push_str("uvec2(gl_GlobalInvocationID.xy)");
+			}
+			"thread_idx" => {
+				string.push_str("uint(gl_LocalInvocationID.x)");
+			}
+			"threadgroup_position" => {
+				string.push_str("uint(gl_WorkGroupID.x)");
+			}
+			"set_mesh_output_counts" => {
+				string.push_str("SetMeshOutputsEXT(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"set_mesh_vertex_position" => {
+				string.push_str("gl_MeshVerticesEXT[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("].gl_Position = ");
+				self.emit_node_string(string, &arguments[1]);
+			}
+			"set_mesh_triangle" => {
+				string.push_str("gl_PrimitiveTriangleIndicesEXT[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("] = ");
+				self.emit_node_string(string, &arguments[1]);
+			}
+			"set_mesh_primitive" => {
+				string.push_str("out_instance_index[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("] = ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(";out_primitive_index[");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("] = ");
+				self.emit_node_string(string, &arguments[2]);
 			}
 			"image_load" => {
 				string.push_str("imageLoad(");
@@ -525,8 +567,14 @@ impl GLSLShaderGenerator {
 				}
 				besl::Expressions::Accessor { left, right } => {
 					self.emit_node_string(string, &left);
-					string.push('.');
-					self.emit_node_string(string, &right);
+					if Self::expression_is_indexable(left) {
+						string.push('[');
+						self.emit_node_string(string, &right);
+						string.push(']');
+					} else {
+						string.push('.');
+						self.emit_node_string(string, &right);
+					}
 				}
 			},
 			besl::Nodes::Binding {
@@ -956,5 +1004,30 @@ mod tests {
 
 		assert_string_contains!(shader, "const float PI = 3.14;");
 		assert_string_contains!(shader, "void main(){PI;}");
+	}
+
+	#[test]
+	fn mesh_intrinsics_emit_glsl_mesh_commands() {
+		let script = r#"
+		main: fn () -> void {
+			set_mesh_output_counts(4, 2);
+			set_mesh_vertex_position(0, vec4f(1.0, 2.0, 3.0, 1.0));
+			set_mesh_triangle(0, vec3u(0, 1, 2));
+			set_mesh_primitive(0, 7, 9);
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected mesh shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = GLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "SetMeshOutputsEXT(4,2);");
+		assert_string_contains!(shader, "gl_MeshVerticesEXT[0].gl_Position = vec4(1.0,2.0,3.0,1.0);");
+		assert_string_contains!(shader, "gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0,1,2);");
+		assert_string_contains!(shader, "out_instance_index[0] = 7;out_primitive_index[0] = 9;");
 	}
 }

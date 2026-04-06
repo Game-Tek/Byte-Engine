@@ -249,89 +249,55 @@ struct PrimitiveOutput {
 			&[],
 			&["VertexOutput", "PrimitiveOutput"],
 		);
+		let out_instance_index = Node::output_array("out_instance_index", "u32", 0, 126);
+		let out_primitive_index = Node::output_array("out_primitive_index", "u32", 1, 126);
 
-		let process_meshlet = Node::raw_code(
-			Some(
+		let process_meshlet = {
+			let mut process_meshlet = besl::parse(
 				r#"
-void process_meshlet(uint instance_index, mat4 matrix) {
-	Mesh mesh = meshes.meshes[instance_index];
+				process_meshlet: fn (instance_index: u32, matrix: mat4f) -> void {
+					let mesh: Mesh = meshes.meshes[instance_index];
+					let meshlet_index: u32 = threadgroup_position() + mesh.base_meshlet_index;
+					let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
+					let primitive_index: u32 = thread_idx();
 
-	uint meshlet_index = gl_WorkGroupID.x + mesh.base_meshlet_index;
-	Meshlet meshlet = meshlets.meshlets[meshlet_index];
+					set_mesh_output_counts(u32(meshlet.primitive_count), u32(meshlet.triangle_count));
 
-	SetMeshOutputsEXT(meshlet.primitive_count, meshlet.triangle_count);
+					if (primitive_index < u32(meshlet.primitive_count)) {
+						let vertex_index: u32 = mesh.base_vertex_index
+							+ vertex_indices.vertex_indices[mesh.base_primitive_index + u32(meshlet.primitive_offset) + primitive_index];
+						set_mesh_vertex_position(
+							primitive_index,
+							matrix * mesh.model * vec4f(vertex_positions.positions[vertex_index], 1.0)
+						);
+					}
 
-	uint primitive_index = gl_LocalInvocationID.x;
+					if (primitive_index < u32(meshlet.triangle_count)) {
+						let triangle_base_index: u32 = mesh.base_triangle_index + u32(meshlet.triangle_offset) + primitive_index;
+						let triangle_index: u32 = triangle_base_index * 3;
+						set_mesh_triangle(
+							primitive_index,
+							vec3u(
+								primitive_indices.primitive_indices[triangle_index + 0],
+								primitive_indices.primitive_indices[triangle_index + 1],
+								primitive_indices.primitive_indices[triangle_index + 2]
+							)
+						);
+						out_instance_index[primitive_index] = instance_index;
+						out_primitive_index[primitive_index] = meshlet_index << 8 | primitive_index & 255;
+					}
+				}
+				"#,
+			)
+			.expect("Expected process_meshlet source to parse");
 
-	if (primitive_index < uint(meshlet.primitive_count)) {
-		uint vertex_index = mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index];
-		gl_MeshVerticesEXT[primitive_index].gl_Position = matrix * mesh.model * vec4(vertex_positions.positions[vertex_index], 1.0);
-	}
-
-	if (primitive_index < uint(meshlet.triangle_count)) {
-		uint triangle_index = (mesh.base_triangle_index + meshlet.triangle_offset + primitive_index) * 3;
-		uint triangle_indices[3] = uint[](primitive_indices.primitive_indices[triangle_index + 0], primitive_indices.primitive_indices[triangle_index + 1], primitive_indices.primitive_indices[triangle_index + 2]);
-		gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(triangle_indices[0], triangle_indices[1], triangle_indices[2]);
-		out_instance_index[primitive_index] = instance_index;
-		out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 0xFF);
-	}
-}
-"#
-				.into(),
-			),
-			Some(
-				r#"
-void process_meshlet(
-	uint instance_index,
-	float4x4 matrix,
-	constant _set0& set0,
-	uint threadgroup_position,
-	uint thread_index,
-	metal::mesh<VertexOutput, PrimitiveOutput, 64, 126, topology::triangle> out_mesh
-) {
-	Mesh mesh = set0.meshes->meshes[instance_index];
-
-	uint meshlet_index = threadgroup_position + mesh.base_meshlet_index;
-	Meshlet meshlet = set0.meshlets->meshlets[meshlet_index];
-
-	if (thread_index < uint(meshlet.primitive_count)) {
-		uint vertex_index = mesh.base_vertex_index + set0.vertex_indices->vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + thread_index];
-		out_mesh.set_vertex(thread_index, VertexOutput {
-			.position = matrix * mesh.model * float4(set0.vertex_positions->positions[vertex_index], 1.0)
-		});
-	}
-
-	if (thread_index < uint(meshlet.triangle_count)) {
-		uint triangle_index = (mesh.base_triangle_index + meshlet.triangle_offset + thread_index) * 3;
-		out_mesh.set_index(thread_index * 3 + 0, uint(set0.primitive_indices->primitive_indices[triangle_index + 0]));
-		out_mesh.set_index(thread_index * 3 + 1, uint(set0.primitive_indices->primitive_indices[triangle_index + 1]));
-		out_mesh.set_index(thread_index * 3 + 2, uint(set0.primitive_indices->primitive_indices[triangle_index + 2]));
-		out_mesh.set_primitive(thread_index, PrimitiveOutput {
-			.instance_index = instance_index,
-			.primitive_index = (meshlet_index << 8) | (thread_index & 0xFF)
-		});
-	}
-
-	if (thread_index == 0) {
-		out_mesh.set_primitive_count(meshlet.triangle_count);
-	}
-}
-"#
-				.into(),
-			),
-			&[
-				"Mesh",
-				"Meshlet",
-				"meshes",
-				"vertex_positions",
-				"vertex_indices",
-				"primitive_indices",
-				"meshlets",
-				"VertexOutput",
-				"PrimitiveOutput",
-			],
-			&["process_meshlet"],
-		);
+			match process_meshlet.node_mut() {
+				besl::parser::Nodes::Scope { children, .. } => children.remove(0),
+				_ => panic!(
+					"Expected process_meshlet source to parse into a scope. The most likely cause is invalid BESL syntax in the visibility shader module."
+				),
+			}
+		};
 
 		let set2_binding0 = Node::binding("diffuse_map", Node::image("rgba16"), 2, 0, false, true);
 		let set2_binding2 = Node::binding("specular_map", Node::image("rgba16"), 2, 2, false, true);
@@ -570,6 +536,8 @@ void process_meshlet(
 				mesh_struct,
 				meshlet_struct,
 				mesh_outputs,
+				out_instance_index,
+				out_primitive_index,
 				light_struct,
 				material_struct,
 				sample_shadow_tap,

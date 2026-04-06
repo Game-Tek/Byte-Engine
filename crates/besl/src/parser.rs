@@ -225,7 +225,23 @@ impl<'a> Node<'a> {
 
 	pub fn output(name: &'a str, format: &'a str, location: u8) -> Node<'a> {
 		Node {
-			node: Nodes::Output { name, format, location },
+			node: Nodes::Output {
+				name,
+				format,
+				location,
+				count: None,
+			},
+		}
+	}
+
+	pub fn output_array(name: &'a str, format: &'a str, location: u8, count: u32) -> Node<'a> {
+		Node {
+			node: Nodes::Output {
+				name,
+				format,
+				location,
+				count: NonZeroUsize::new(count as usize),
+			},
 		}
 	}
 
@@ -412,6 +428,7 @@ pub enum Nodes<'a> {
 		name: &'a str,
 		format: &'a str,
 		location: u8,
+		count: Option<NonZeroUsize>,
 	},
 	Literal {
 		name: &'a str,
@@ -565,8 +582,12 @@ impl Precedence for Atoms<'_> {
 			Atoms::Literal { .. } => 0,
 			Atoms::FunctionCall { .. } => 0,
 			Atoms::Operator { name } => match *name {
-				"=" => 5,
-				"<" => 4,
+				"=" => 8,
+				"|" => 7,
+				"&" => 6,
+				"<" => 5,
+				"<<" => 4,
+				">>" => 4,
 				"+" => 3,
 				"-" => 3,
 				"*" => 2,
@@ -994,7 +1015,15 @@ fn parse_operator<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	mut expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let operator = iterator.next_is(|v| v == "*" || v == "+" || v == "-" || v == "/" || v == "%" || v == "=" || v == "<")?;
+	let operator =
+		iterator.next_is(|v| {
+			v == "*"
+				|| v == "+" || v == "-"
+				|| v == "/" || v == "%"
+				|| v == "=" || v == "<"
+				|| v == "<<" || v == ">>"
+				|| v == "&" || v == "|"
+		})?;
 
 	expressions.push(Atoms::Operator { name: operator });
 
@@ -1952,5 +1981,40 @@ main: fn () -> void {
 		} else {
 			panic!("Expected main function");
 		}
+	}
+
+	#[test]
+	fn parse_bitwise_expression() {
+		let source = "
+main: fn () -> void {
+	let packed: u32 = 1 << 8 | 2 & 255;
+}";
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+
+		let main_node = &node["main"];
+		let Nodes::Function { statements, .. } = &main_node.node else {
+			panic!("Expected main function");
+		};
+
+		let Nodes::Expression(Expressions::Operator { name, right, .. }) = &statements[0].node else {
+			panic!("Expected assignment expression");
+		};
+		assert_eq!(*name, "=");
+
+		let Nodes::Expression(Expressions::Operator { name, left, right }) = &right.node else {
+			panic!("Expected bitwise or expression");
+		};
+		assert_eq!(*name, "|");
+
+		assert!(matches!(
+			left.node,
+			Nodes::Expression(Expressions::Operator { name, .. }) if name == "<<"
+		));
+		assert!(matches!(
+			right.node,
+			Nodes::Expression(Expressions::Operator { name, .. }) if name == "&"
+		));
 	}
 }

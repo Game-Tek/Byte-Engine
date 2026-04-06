@@ -3,7 +3,7 @@ pub mod scene_manager;
 pub mod shader_generator;
 
 use resource_management::{
-	glsl_shader_generator::GLSLShaderGenerator, msl_shader_generator::MSLShaderGenerator,
+	platform_shader_generator::{PlatformShaderGenerator, PlatformShaderLanguage},
 	shader_generator::ShaderGenerationSettings,
 };
 pub use scene_manager::VisibilityWorldRenderDomain;
@@ -110,8 +110,19 @@ const MAX_VERTICES: usize = 65536 * 4;
 pub const SHADOW_CASCADE_COUNT: usize = 4;
 pub const SHADOW_MAP_RESOLUTION: u32 = 2048;
 
-fn build_mesh_program(main: besl::parser::Node<'static>, push_constant: besl::parser::Node<'static>) -> besl::NodeReference {
-	let shader = besl::parser::Node::scope("Shader", vec![push_constant, main]);
+fn build_mesh_program_from_source(source: &'static str, push_constant: besl::parser::Node<'static>) -> besl::NodeReference {
+	let mut shader_source = besl::parse(source).unwrap();
+	let shader_children = match shader_source.node_mut() {
+		besl::parser::Nodes::Scope { children, .. } => std::mem::take(children),
+		_ => panic!(
+			"Mesh shader source must parse into a scope. The most likely cause is invalid BESL syntax in the mesh shader source."
+		),
+	};
+
+	let mut shader_nodes = vec![push_constant];
+	shader_nodes.extend(shader_children);
+
+	let shader = besl::parser::Node::scope("Shader", shader_nodes);
 	let mut root = besl::parser::Node::root();
 
 	root.add(vec![
@@ -123,130 +134,88 @@ fn build_mesh_program(main: besl::parser::Node<'static>, push_constant: besl::pa
 	besl::lex(root).unwrap().get_main().unwrap()
 }
 
-pub fn get_visibility_pass_mesh_source() -> String {
-	let main = besl::parser::Node::function(
-		"main",
-		Vec::new(),
-		"void",
-		vec![besl::parser::Node::glsl(
-			r#"
-		View view = views.views[0];
-		process_meshlet(push_constant.instance_index, view.view_projection);
-		"#,
-			&["View", "views", "push_constant", "process_meshlet"],
-			&[],
-		)],
-	);
-	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
-	let main_node = build_mesh_program(main, push_constant);
+fn generate_mesh_source_for_language(
+	source: &'static str,
+	push_constant: besl::parser::Node<'static>,
+	language: PlatformShaderLanguage,
+) -> String {
+	let main_node = build_mesh_program_from_source(source, push_constant);
+	let mut shader_generator = PlatformShaderGenerator::new();
 
-	GLSLShaderGenerator::new()
-		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
+	shader_generator
+		.generate_for_language(
+			language,
+			&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)),
+			&main_node,
+		)
 		.unwrap()
+		.into_source()
+}
+
+pub fn get_visibility_pass_mesh_source() -> String {
+	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
+
+	generate_mesh_source_for_language(
+		r#"
+		main: fn () -> void {
+			let view: View = views.views[0];
+			process_meshlet(push_constant.instance_index, view.view_projection);
+		}
+		"#,
+		push_constant,
+		PlatformShaderLanguage::Glsl,
+	)
 }
 
 pub fn get_visibility_pass_mesh_msl_source() -> String {
-	let main = besl::parser::Node::function(
-		"main",
-		Vec::new(),
-		"void",
-		vec![besl::parser::Node::raw_code(
-			Some(
-				r#"
-		View view = views.views[0];
-		process_meshlet(push_constant.instance_index, view.view_projection);
-		"#
-				.into(),
-			),
-			Some(
-				r#"
-		process_meshlet(
-			push_constant.instance_index,
-			set0.views->views[0].view_projection,
-			set0,
-			threadgroup_position,
-			thread_index,
-			out_mesh
-		);
-		"#
-				.into(),
-			),
-			&["push_constant", "process_meshlet", "views"],
-			&[],
-		)],
-	);
 	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
-	let main_node = build_mesh_program(main, push_constant);
 
-	MSLShaderGenerator::new()
-		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
-		.unwrap()
+	generate_mesh_source_for_language(
+		r#"
+		main: fn () -> void {
+			let view: View = views.views[0];
+			process_meshlet(push_constant.instance_index, view.view_projection);
+		}
+		"#,
+		push_constant,
+		PlatformShaderLanguage::Msl,
+	)
 }
 
 pub fn get_shadow_pass_mesh_source() -> String {
-	let main = besl::parser::Node::function(
-		"main",
-		Vec::new(),
-		"void",
-		vec![besl::parser::Node::glsl(
-			r#"
-		View view = views.views[push_constant.view_index];
-		process_meshlet(push_constant.instance_index, view.view_projection);
-		"#,
-			&["View", "views", "push_constant", "process_meshlet"],
-			&[],
-		)],
-	);
 	let push_constant = besl::parser::Node::push_constant(vec![
 		besl::parser::Node::member("instance_index", "u32"),
 		besl::parser::Node::member("view_index", "u32"),
 	]);
-	let main_node = build_mesh_program(main, push_constant);
 
-	GLSLShaderGenerator::new()
-		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
-		.unwrap()
+	generate_mesh_source_for_language(
+		r#"
+		main: fn () -> void {
+			let view: View = views.views[push_constant.view_index];
+			process_meshlet(push_constant.instance_index, view.view_projection);
+		}
+		"#,
+		push_constant,
+		PlatformShaderLanguage::Glsl,
+	)
 }
 
 pub fn get_shadow_pass_mesh_msl_source() -> String {
-	let main = besl::parser::Node::function(
-		"main",
-		Vec::new(),
-		"void",
-		vec![besl::parser::Node::raw_code(
-			Some(
-				r#"
-		View view = views.views[push_constant.view_index];
-		process_meshlet(push_constant.instance_index, view.view_projection);
-		"#
-				.into(),
-			),
-			Some(
-				r#"
-		process_meshlet(
-			push_constant.instance_index,
-			set0.views->views[push_constant.view_index].view_projection,
-			set0,
-			threadgroup_position,
-			thread_index,
-			out_mesh
-		);
-		"#
-				.into(),
-			),
-			&["push_constant", "process_meshlet", "views"],
-			&[],
-		)],
-	);
 	let push_constant = besl::parser::Node::push_constant(vec![
 		besl::parser::Node::member("instance_index", "u32"),
 		besl::parser::Node::member("view_index", "u32"),
 	]);
-	let main_node = build_mesh_program(main, push_constant);
 
-	MSLShaderGenerator::new()
-		.generate(&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)), &main_node)
-		.unwrap()
+	generate_mesh_source_for_language(
+		r#"
+		main: fn () -> void {
+			let view: View = views.views[push_constant.view_index];
+			process_meshlet(push_constant.instance_index, view.view_projection);
+		}
+		"#,
+		push_constant,
+		PlatformShaderLanguage::Msl,
+	)
 }
 
 pub const VISIBILITY_PASS_FRAGMENT_SOURCE_MSL: &str = r#"
@@ -450,4 +419,29 @@ pub fn get_pixel_mapping_source() -> String {
 		.unwrap();
 
 	glsl
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source};
+
+	#[test]
+	fn shadow_mesh_glsl_source_uses_besl_accessors() {
+		let shader = get_shadow_pass_mesh_source();
+
+		assert!(
+			shader.contains("View view = views.views[push_constant.view_index];"),
+			"Expected GLSL shadow mesh source to read the selected view through BESL accessors. Shader: {shader}"
+		);
+	}
+
+	#[test]
+	fn shadow_mesh_msl_source_uses_argument_buffer_accessors() {
+		let shader = get_shadow_pass_mesh_msl_source();
+
+		assert!(
+			shader.contains("View view = set0.views->views[push_constant.view_index];"),
+			"Expected MSL shadow mesh source to lower BESL accessors through the Metal argument buffer. Shader: {shader}"
+		);
+	}
 }

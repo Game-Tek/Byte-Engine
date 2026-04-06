@@ -1882,7 +1882,9 @@ impl Compiler {
 
 		let source_ref = source.borrow();
 		let (slot, layout) = match source_ref.node() {
-			Nodes::Output { name, format, location } => {
+			Nodes::Output {
+				name, format, location, ..
+			} => {
 				if name != &output_name {
 					return Err(VmError::UnsupportedExpression {
 						message: format!("Only direct output assignment is supported for `{}`", output_name),
@@ -2611,7 +2613,13 @@ fn arithmetic_operator(operator: &Operators) -> Option<ArithmeticOperator> {
 		Operators::Multiply => Some(ArithmeticOperator::Multiply),
 		Operators::Divide => Some(ArithmeticOperator::Divide),
 		Operators::Modulo => Some(ArithmeticOperator::Modulo),
-		Operators::Assignment | Operators::Equality | Operators::LessThan => None,
+		Operators::ShiftLeft
+		| Operators::ShiftRight
+		| Operators::BitwiseAnd
+		| Operators::BitwiseOr
+		| Operators::Assignment
+		| Operators::Equality
+		| Operators::LessThan => None,
 	}
 }
 

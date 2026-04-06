@@ -422,7 +422,23 @@ impl Node {
 			vec4f32.clone(),
 		);
 		let thread_idx_intrinsic = builtin_intrinsic("thread_idx", vec![], u32_t.clone());
+		let threadgroup_position_intrinsic = builtin_intrinsic("threadgroup_position", vec![], u32_t.clone());
 		let thread_id_intrinsic = builtin_intrinsic("thread_id", vec![], vec2u32.clone());
+		let set_mesh_output_counts_intrinsic = builtin_intrinsic(
+			"set_mesh_output_counts",
+			vec![("vertex_count", u32_t.clone()), ("primitive_count", u32_t.clone())],
+			void.clone(),
+		);
+		let set_mesh_vertex_position_intrinsic = builtin_intrinsic(
+			"set_mesh_vertex_position",
+			vec![("vertex_index", u32_t.clone()), ("position", vec4f32.clone())],
+			void.clone(),
+		);
+		let set_mesh_triangle_intrinsic = builtin_intrinsic(
+			"set_mesh_triangle",
+			vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32.clone())],
+			void.clone(),
+		);
 		let image_load_intrinsic = builtin_intrinsic(
 			"image_load",
 			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
@@ -474,7 +490,11 @@ impl Node {
 			pow_intrinsic,
 			reflect_intrinsic,
 			thread_idx_intrinsic,
+			threadgroup_position_intrinsic,
 			thread_id_intrinsic,
+			set_mesh_output_counts_intrinsic,
+			set_mesh_vertex_position_intrinsic,
+			set_mesh_triangle_intrinsic,
 			image_load_intrinsic,
 			guard_image_bounds_intrinsic,
 			write_intrinsic,
@@ -694,6 +714,18 @@ impl Node {
 				name: name.to_string(),
 				format,
 				location,
+				count: None,
+			},
+		}
+	}
+
+	pub fn output_array(name: &str, format: NodeReference, location: u8, count: u32) -> Node {
+		Node {
+			node: Nodes::Output {
+				name: name.to_string(),
+				format,
+				location,
+				count: NonZeroUsize::new(count as usize),
 			},
 		}
 	}
@@ -875,6 +907,7 @@ pub enum Nodes {
 		name: String,
 		format: NodeReference,
 		location: u8,
+		count: Option<NonZeroUsize>,
 	},
 	Parameter {
 		name: String,
@@ -917,6 +950,7 @@ impl Nodes {
 	pub fn is_indexable(&self) -> bool {
 		match self {
 			Nodes::Member { count, .. } => count.is_some(),
+			Nodes::Output { count, .. } => count.is_some(),
 			Nodes::Expression(Expressions::Member { source, .. }) => source.borrow().node().is_indexable(),
 			Nodes::Expression(Expressions::Accessor { right, .. }) => right.borrow().node().is_indexable(),
 			_ => false,
@@ -1064,13 +1098,19 @@ impl std::fmt::Debug for Node {
 					location
 				)
 			}
-			Nodes::Output { name, format, location } => {
+			Nodes::Output {
+				name,
+				format,
+				location,
+				count,
+			} => {
 				write!(
 					f,
-					"Output {{ name: {}, format: {:?}, location: {} }}",
+					"Output {{ name: {}, format: {:?}, location: {}, count: {:?} }}",
 					name,
 					format.0.borrow().get_name().map(|e| e.to_string()),
-					location
+					location,
+					count
 				)
 			}
 			Nodes::Literal { name, value } => {
@@ -1101,6 +1141,10 @@ pub enum Operators {
 	Multiply,
 	Divide,
 	Modulo,
+	ShiftLeft,
+	ShiftRight,
+	BitwiseAnd,
+	BitwiseOr,
 	Assignment,
 	Equality,
 	LessThan,
@@ -1468,7 +1512,12 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 
 			this.into()
 		}
-		parser::Nodes::Output { name, format, location } => {
+		parser::Nodes::Output {
+			name,
+			format,
+			location,
+			count,
+		} => {
 			let t = get_reference(&chain, format).ok_or(LexError::ReferenceToUndefinedType {
 				type_name: format.to_string(),
 			})?;
@@ -1477,6 +1526,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				name: name.to_string(),
 				format: t,
 				location: location.clone(),
+				count: *count,
 			});
 
 			this.into()
@@ -1739,6 +1789,10 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 						"*" => Operators::Multiply,
 						"/" => Operators::Divide,
 						"%" => Operators::Modulo,
+						"<<" => Operators::ShiftLeft,
+						">>" => Operators::ShiftRight,
+						"&" => Operators::BitwiseAnd,
+						"|" => Operators::BitwiseOr,
 						"=" => Operators::Assignment,
 						"==" => Operators::Equality,
 						"<" => Operators::LessThan,
@@ -2823,6 +2877,42 @@ main: fn () -> void {
 				}
 			}
 			_ => panic!("Expected conditional node"),
+		}
+	}
+
+	#[test]
+	fn lex_bitwise_expression() {
+		let script = r#"
+		main: fn () -> void {
+			let packed: u32 = 1 << 8 | 2 & 255;
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let statement = statements[0].borrow();
+		match statement.node() {
+			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
+				Nodes::Expression(Expressions::Operator { operator, left, right }) => {
+					assert_eq!(operator, &Operators::BitwiseOr);
+					assert!(matches!(
+						left.borrow().node(),
+						Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::ShiftLeft
+					));
+					assert!(matches!(
+						right.borrow().node(),
+						Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::BitwiseAnd
+					));
+				}
+				_ => panic!("Expected bitwise or expression"),
+			},
+			_ => panic!("Expected assignment"),
 		}
 	}
 }

@@ -335,7 +335,16 @@ impl HLSLShaderGenerator {
 					location
 				));
 			}
-			besl::Nodes::Output { name, location, format } => {
+			besl::Nodes::Output {
+				name,
+				location,
+				format,
+				count,
+			} => {
+				if count.is_some() {
+					return;
+				}
+
 				// HLSL uses SV_Target0, SV_Target1, etc. for render targets
 				string.push_str(&format!(
 					"{} {} : SV_Target{};{break_char}",
@@ -353,6 +362,10 @@ impl HLSLShaderGenerator {
 						besl::Operators::Multiply => "*",
 						besl::Operators::Divide => "/",
 						besl::Operators::Modulo => "%",
+						besl::Operators::ShiftLeft => "<<",
+						besl::Operators::ShiftRight => ">>",
+						besl::Operators::BitwiseAnd => "&",
+						besl::Operators::BitwiseOr => "|",
 						besl::Operators::Assignment => "=",
 						besl::Operators::Equality => "==",
 						besl::Operators::LessThan => "<",
@@ -964,5 +977,24 @@ mod tests {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "if(n<1){n=2;}");
+	}
+
+	#[test]
+	fn bitwise_operators_lower_to_hlsl() {
+		let script = r#"
+		main: fn () -> void {
+			let packed: u32 = 1 << 8 | 2 & 255;
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected bitwise shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = HLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "uint32_t packed=1<<8|2&255;");
 	}
 }

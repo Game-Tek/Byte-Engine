@@ -657,6 +657,26 @@ impl ExecutableProgram {
 					let normal = read_register(&registers, *normal)?;
 					registers[*register] = Some(apply_reflect(&incident, &normal)?);
 				}
+				Instruction::UnaryScalar {
+					register,
+					operator,
+					value,
+				} => {
+					let value = read_register(&registers, *value)?;
+					registers[*register] = Some(apply_scalar_unary(*operator, &value)?);
+				}
+				Instruction::TernaryScalar {
+					register,
+					operator,
+					first,
+					second,
+					third,
+				} => {
+					let first = read_register(&registers, *first)?;
+					let second = read_register(&registers, *second)?;
+					let third = read_register(&registers, *third)?;
+					registers[*register] = Some(apply_scalar_ternary(*operator, &first, &second, &third)?);
+				}
 				Instruction::ThreadIdx { register } => {
 					registers[*register] = Some(ScalarValue::U32(descriptors.thread_idx()));
 				}
@@ -726,6 +746,14 @@ impl ExecutableProgram {
 					};
 
 					registers[*register] = Some(descriptors.texture_mut(*slot)?.sample(uv)?);
+				}
+				Instruction::TextureSize { register, slot } => {
+					let texture = descriptors.texture_mut(*slot)?;
+					registers[*register] = Some(Value::Vec2U([texture.width, texture.height]));
+				}
+				Instruction::ImageSize { register, slot } => {
+					let image = descriptors.image_mut(*slot)?;
+					registers[*register] = Some(Value::Vec2U([image.width, image.height]));
 				}
 				Instruction::WriteImage { slot, coord, value } => {
 					let coord = read_register(&registers, *coord)?;
@@ -899,6 +927,18 @@ enum Instruction {
 		incident: usize,
 		normal: usize,
 	},
+	UnaryScalar {
+		register: usize,
+		operator: ScalarUnaryOperator,
+		value: usize,
+	},
+	TernaryScalar {
+		register: usize,
+		operator: ScalarTernaryOperator,
+		first: usize,
+		second: usize,
+		third: usize,
+	},
 	ThreadIdx {
 		register: usize,
 	},
@@ -934,6 +974,14 @@ enum Instruction {
 		register: usize,
 		slot: DescriptorSlot,
 		uv: usize,
+	},
+	TextureSize {
+		register: usize,
+		slot: DescriptorSlot,
+	},
+	ImageSize {
+		register: usize,
+		slot: DescriptorSlot,
 	},
 	WriteImage {
 		slot: DescriptorSlot,
@@ -982,6 +1030,28 @@ enum ComparisonOperator {
 	GreaterThan,
 	LessThanOrEqual,
 	GreaterThanOrEqual,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScalarUnaryOperator {
+	Abs,
+	Sqrt,
+	Exp,
+	Sin,
+	Cos,
+	Tan,
+	Round,
+	Fract,
+	Radians,
+	InverseSqrt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScalarTernaryOperator {
+	Smoothstep,
+	Mix,
+	Max,
+	Clamp,
 }
 
 struct Compiler {
@@ -1500,6 +1570,32 @@ impl Compiler {
 				self.instructions.push(Instruction::FetchTexture { register, slot, coord });
 				Ok(register)
 			}
+			"texture_size" => {
+				if arguments.len() != 1 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 1,
+						found: arguments.len(),
+					});
+				}
+
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::TextureSize { register, slot });
+				Ok(register)
+			}
+			"image_size" => {
+				if arguments.len() != 1 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 1,
+						found: arguments.len(),
+					});
+				}
+
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::ImageSize { register, slot });
+				Ok(register)
+			}
 			"dot" => {
 				if arguments.len() != 2 {
 					return Err(VmError::CallArgumentMismatch {
@@ -1623,6 +1719,89 @@ impl Compiler {
 					normal,
 				});
 				Ok(register)
+			}
+			"abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "fract" | "radians" | "inversesqrt" => {
+				if arguments.len() != 1 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 1,
+						found: arguments.len(),
+					});
+				}
+
+				let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::UnaryScalar {
+					register,
+					operator: match name.as_str() {
+						"abs" => ScalarUnaryOperator::Abs,
+						"sqrt" => ScalarUnaryOperator::Sqrt,
+						"exp" => ScalarUnaryOperator::Exp,
+						"sin" => ScalarUnaryOperator::Sin,
+						"cos" => ScalarUnaryOperator::Cos,
+						"tan" => ScalarUnaryOperator::Tan,
+						"fract" => ScalarUnaryOperator::Fract,
+						"radians" => ScalarUnaryOperator::Radians,
+						"inversesqrt" => ScalarUnaryOperator::InverseSqrt,
+						_ => unreachable!("Expected scalar unary intrinsic"),
+					},
+					value,
+				});
+				Ok(register)
+			}
+			"smoothstep" | "mix" | "max" | "clamp" => {
+				let expected_argument_count = if name == "max" { 2 } else { 3 };
+				if arguments.len() != expected_argument_count {
+					return Err(VmError::CallArgumentMismatch {
+						expected: expected_argument_count,
+						found: arguments.len(),
+					});
+				}
+
+				let first = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+				let second = self.compile_value_expression(&arguments[1], &ValueType::F32, descriptor_layouts)?;
+				let third = if name == "max" {
+					second
+				} else {
+					self.compile_value_expression(&arguments[2], &ValueType::F32, descriptor_layouts)?
+				};
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::TernaryScalar {
+					register,
+					operator: match name.as_str() {
+						"smoothstep" => ScalarTernaryOperator::Smoothstep,
+						"mix" => ScalarTernaryOperator::Mix,
+						"max" => ScalarTernaryOperator::Max,
+						"clamp" => ScalarTernaryOperator::Clamp,
+						_ => unreachable!("Expected scalar ternary intrinsic"),
+					},
+					first,
+					second,
+					third,
+				});
+				Ok(register)
+			}
+			"round" => {
+				if arguments.len() != 1 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 1,
+						found: arguments.len(),
+					});
+				}
+
+				if expected_type == &ValueType::F32 {
+					let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::UnaryScalar {
+						register,
+						operator: ScalarUnaryOperator::Round,
+						value,
+					});
+					Ok(register)
+				} else {
+					Err(VmError::UnsupportedExpression {
+						message: "`round` VM support is currently limited to scalar f32".to_string(),
+					})
+				}
 			}
 			"thread_idx" => {
 				if !arguments.is_empty() {
@@ -3130,6 +3309,61 @@ fn apply_reflect(incident: &ScalarValue, normal: &ScalarValue) -> Result<ScalarV
 			found: normal.value_type().name().to_string(),
 		}),
 	}
+}
+
+fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &ScalarValue) -> Result<ScalarValue, VmError> {
+	let ScalarValue::F32(value) = value else {
+		return Err(VmError::TypeMismatch {
+			expected: ValueType::F32.name().to_string(),
+			found: value.value_type().name().to_string(),
+		});
+	};
+
+	let result = match operator {
+		ScalarUnaryOperator::Abs => value.abs(),
+		ScalarUnaryOperator::Sqrt => value.sqrt(),
+		ScalarUnaryOperator::Exp => value.exp(),
+		ScalarUnaryOperator::Sin => value.sin(),
+		ScalarUnaryOperator::Cos => value.cos(),
+		ScalarUnaryOperator::Tan => value.tan(),
+		ScalarUnaryOperator::Round => value.round(),
+		ScalarUnaryOperator::Fract => value.fract(),
+		ScalarUnaryOperator::Radians => value.to_radians(),
+		ScalarUnaryOperator::InverseSqrt => 1.0 / value.sqrt(),
+	};
+
+	Ok(ScalarValue::F32(result))
+}
+
+fn apply_scalar_ternary(
+	operator: ScalarTernaryOperator,
+	first: &ScalarValue,
+	second: &ScalarValue,
+	third: &ScalarValue,
+) -> Result<ScalarValue, VmError> {
+	let (ScalarValue::F32(first), ScalarValue::F32(second), ScalarValue::F32(third)) = (first, second, third) else {
+		return Err(VmError::TypeMismatch {
+			expected: ValueType::F32.name().to_string(),
+			found: format!(
+				"{}, {}, {}",
+				first.value_type().name(),
+				second.value_type().name(),
+				third.value_type().name()
+			),
+		});
+	};
+
+	let result = match operator {
+		ScalarTernaryOperator::Mix => first + (second - first) * third,
+		ScalarTernaryOperator::Max => first.max(*second),
+		ScalarTernaryOperator::Clamp => first.clamp(*second, *third),
+		ScalarTernaryOperator::Smoothstep => {
+			let t = ((third - first) / (second - first)).clamp(0.0, 1.0);
+			t * t * (3.0 - 2.0 * t)
+		}
+	};
+
+	Ok(ScalarValue::F32(result))
 }
 
 fn dot_product<const N: usize>(left: [f32; N], right: [f32; N]) -> f32 {
@@ -4920,5 +5154,108 @@ mod tests {
 		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(1));
+	}
+
+	#[test]
+	fn executable_program_evaluates_scalar_math_intrinsics() {
+		let script = r#"
+		main: fn () -> void {
+			buff.abs_value = abs(0.0 - 2.5);
+			buff.sqrt_value = sqrt(9.0);
+			buff.exp_value = exp(1.0);
+			buff.sin_value = sin(0.0);
+			buff.cos_value = cos(0.0);
+			buff.tan_value = tan(0.0);
+			buff.fract_value = fract(1.25);
+			buff.radians_value = radians(180.0);
+			buff.inverse_sqrt_value = inversesqrt(4.0);
+			buff.smoothstep_value = smoothstep(0.0, 1.0, 0.5);
+			buff.mix_value = mix(2.0, 4.0, 0.25);
+		}
+		"#;
+
+		let mut root = Node::root();
+		let f32_type = root.get_child("f32").expect("Expected f32");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![
+						Node::member("abs_value", f32_type.clone()).into(),
+						Node::member("sqrt_value", f32_type.clone()).into(),
+						Node::member("exp_value", f32_type.clone()).into(),
+						Node::member("sin_value", f32_type.clone()).into(),
+						Node::member("cos_value", f32_type.clone()).into(),
+						Node::member("tan_value", f32_type.clone()).into(),
+						Node::member("fract_value", f32_type.clone()).into(),
+						Node::member("radians_value", f32_type.clone()).into(),
+						Node::member("inverse_sqrt_value", f32_type.clone()).into(),
+						Node::member("smoothstep_value", f32_type.clone()).into(),
+						Node::member("mix_value", f32_type).into(),
+					],
+				},
+				0,
+				26,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let executable = compile_test_program(script, Some(root));
+		let slot = DescriptorSlot::new(0, 26);
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
+
+		let values = read_f32s(&buffer, 11);
+		assert!((values[0] - 2.5).abs() < 1e-6);
+		assert!((values[1] - 3.0).abs() < 1e-6);
+		assert!((values[2] - std::f32::consts::E).abs() < 1e-5);
+		assert!(values[3].abs() < 1e-6);
+		assert!((values[4] - 1.0).abs() < 1e-6);
+		assert!(values[5].abs() < 1e-6);
+		assert!((values[6] - 0.25).abs() < 1e-6);
+		assert!((values[7] - std::f32::consts::PI).abs() < 1e-6);
+		assert!((values[8] - 0.5).abs() < 1e-6);
+		assert!((values[9] - 0.5).abs() < 1e-6);
+		assert!((values[10] - 2.5).abs() < 1e-6);
+	}
+
+	#[test]
+	fn executable_program_evaluates_scalar_max_and_clamp() {
+		let script = r#"
+		main: fn () -> void {
+			buff.max_value = max(1.5, 2.5);
+			buff.clamp_value = clamp(1.5, 0.0, 1.0);
+		}
+		"#;
+
+		let mut root = Node::root();
+		let f32_type = root.get_child("f32").expect("Expected f32");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![
+						Node::member("max_value", f32_type.clone()).into(),
+						Node::member("clamp_value", f32_type).into(),
+					],
+				},
+				0,
+				27,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let executable = compile_test_program(script, Some(root));
+		let slot = DescriptorSlot::new(0, 27);
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
+
+		let values = read_f32s(&buffer, 2);
+		assert!((values[0] - 2.5).abs() < 1e-6);
+		assert!((values[1] - 1.0).abs() < 1e-6);
 	}
 }

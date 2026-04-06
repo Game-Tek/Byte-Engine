@@ -1055,7 +1055,8 @@ impl MSLShaderGenerator {
 		}
 
 		match name.as_str() {
-			"max" | "clamp" | "log2" | "pow" => {
+			"max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
+			| "radians" | "inversesqrt" | "smoothstep" | "mix" => {
 				string.push_str(name);
 				string.push('(');
 				self.emit_call_arguments(string, arguments);
@@ -1119,6 +1120,13 @@ impl MSLShaderGenerator {
 				string.push_str(".read(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(").x");
+			}
+			"texture_size" | "image_size" => {
+				string.push_str("uint2(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".get_width(),");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".get_height())");
 			}
 			"write" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -2230,6 +2238,27 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "for(uint i=0;i<=4;i=i+1){if(i>=2){continue;};};");
+	}
+
+	#[test]
+	fn scalar_max_and_clamp_lower_to_msl() {
+		let script = r#"
+		main: fn () -> void {
+			let maximum: f32 = max(1.0, 2.0);
+			let clamped: f32 = clamp(1.5, 0.0, 1.0);
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "max(1.0,2.0)");
+		assert_string_contains!(shader, "clamp(1.5,0.0,1.0)");
 	}
 
 	#[test]

@@ -196,10 +196,21 @@ impl Node {
 		);
 		let length_intrinsic = builtin_intrinsic("length", vec![("value", vec4f32.clone())], f32_t.clone());
 		let normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone());
+		let scalar_max_intrinsic =
+			builtin_intrinsic("max", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone());
 		let max_intrinsic = builtin_intrinsic(
 			"max",
 			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
 			vec3f32.clone(),
+		);
+		let scalar_clamp_intrinsic = builtin_intrinsic(
+			"clamp",
+			vec![
+				("value", f32_t.clone()),
+				("minimum", f32_t.clone()),
+				("maximum", f32_t.clone()),
+			],
+			f32_t.clone(),
 		);
 		let clamp_intrinsic = builtin_intrinsic(
 			"clamp",
@@ -220,6 +231,26 @@ impl Node {
 			"reflect",
 			vec![("incident", vec4f32.clone()), ("normal", vec4f32.clone())],
 			vec4f32.clone(),
+		);
+		let abs_intrinsic = builtin_intrinsic("abs", vec![("value", f32_t.clone())], f32_t.clone());
+		let sqrt_intrinsic = builtin_intrinsic("sqrt", vec![("value", f32_t.clone())], f32_t.clone());
+		let exp_intrinsic = builtin_intrinsic("exp", vec![("value", f32_t.clone())], f32_t.clone());
+		let sin_intrinsic = builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone());
+		let cos_intrinsic = builtin_intrinsic("cos", vec![("value", f32_t.clone())], f32_t.clone());
+		let tan_intrinsic = builtin_intrinsic("tan", vec![("value", f32_t.clone())], f32_t.clone());
+		let round_intrinsic = builtin_intrinsic("round", vec![("value", vec2f32.clone())], vec2f32.clone());
+		let fract_intrinsic = builtin_intrinsic("fract", vec![("value", f32_t.clone())], f32_t.clone());
+		let radians_intrinsic = builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone());
+		let inversesqrt_intrinsic = builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone());
+		let smoothstep_intrinsic = builtin_intrinsic(
+			"smoothstep",
+			vec![("edge0", f32_t.clone()), ("edge1", f32_t.clone()), ("value", f32_t.clone())],
+			f32_t.clone(),
+		);
+		let mix_intrinsic = builtin_intrinsic(
+			"mix",
+			vec![("left", f32_t.clone()), ("right", f32_t.clone()), ("factor", f32_t.clone())],
+			f32_t.clone(),
 		);
 		let thread_idx_intrinsic = builtin_intrinsic("thread_idx", vec![], u32_t.clone());
 		let threadgroup_position_intrinsic = builtin_intrinsic("threadgroup_position", vec![], u32_t.clone());
@@ -244,6 +275,8 @@ impl Node {
 			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
 			vec4f32.clone(),
 		);
+		let texture_size_intrinsic = builtin_intrinsic("texture_size", vec![("texture", texture_2d.clone())], vec2u32.clone());
+		let image_size_intrinsic = builtin_intrinsic("image_size", vec![("image", texture_2d.clone())], vec2u32.clone());
 		let guard_image_bounds_intrinsic = builtin_intrinsic(
 			"guard_image_bounds",
 			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
@@ -282,11 +315,25 @@ impl Node {
 			cross_intrinsic,
 			length_intrinsic,
 			normalize_intrinsic,
+			scalar_max_intrinsic,
 			max_intrinsic,
+			scalar_clamp_intrinsic,
 			clamp_intrinsic,
 			log2_intrinsic,
 			pow_intrinsic,
 			reflect_intrinsic,
+			abs_intrinsic,
+			sqrt_intrinsic,
+			exp_intrinsic,
+			sin_intrinsic,
+			cos_intrinsic,
+			tan_intrinsic,
+			round_intrinsic,
+			fract_intrinsic,
+			radians_intrinsic,
+			inversesqrt_intrinsic,
+			smoothstep_intrinsic,
+			mix_intrinsic,
 			thread_idx_intrinsic,
 			threadgroup_position_intrinsic,
 			thread_id_intrinsic,
@@ -294,6 +341,8 @@ impl Node {
 			set_mesh_vertex_position_intrinsic,
 			set_mesh_triangle_intrinsic,
 			image_load_intrinsic,
+			texture_size_intrinsic,
+			image_size_intrinsic,
 			guard_image_bounds_intrinsic,
 			write_intrinsic,
 		];
@@ -1643,13 +1692,12 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 						.collect::<Result<Vec<NodeReference>, LexError>>()?,
 				),
 				parser::Expressions::Call { name, parameters } => {
-					// let r = function.clone(); // Clone to be able to borrow it in and return it
-					let function = resolve_type(&chain, name)?;
-					let r = function.clone(); // Clone to be able to borrow it in and return it
 					let parameters = parameters
 						.iter()
 						.map(|e| lex_parsed_node(chain.clone(), e))
 						.collect::<Result<Vec<NodeReference>, LexError>>()?;
+					let function = resolve_call_target(&chain, name, &parameters)?;
+					let r = function.clone(); // Clone to be able to borrow it in and return it
 
 					{
 						// Validate function call
@@ -1766,6 +1814,140 @@ fn build_intrinsic(elements: &[NodeReference], parameters: &[NodeReference]) -> 
 	}
 
 	build_intrinsic_elements(elements, &mut parameters.iter())
+}
+
+fn intrinsic_matches_parameters(intrinsic: &NodeReference, parameters: &[NodeReference]) -> bool {
+	let intrinsic = intrinsic.borrow();
+	let Nodes::Intrinsic { elements, .. } = intrinsic.node() else {
+		return false;
+	};
+
+	let expected_parameters = elements
+		.iter()
+		.filter_map(|element| match element.borrow().node() {
+			Nodes::Parameter { r#type, .. } => Some(r#type.clone()),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+
+	if expected_parameters.len() != parameters.len() {
+		return false;
+	}
+
+	expected_parameters
+		.iter()
+		.zip(parameters.iter())
+		.all(|(expected, parameter)| expression_matches_type(parameter, expected))
+}
+
+fn expression_matches_type(expression: &NodeReference, expected_type: &NodeReference) -> bool {
+	infer_expression_type(expression)
+		.map(|actual_type| actual_type.borrow().get_name() == expected_type.borrow().get_name())
+		.unwrap_or(false)
+}
+
+fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {
+	match expression.borrow().node() {
+		Nodes::Expression(Expressions::Literal { value }) => infer_literal_type(value),
+		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
+		Nodes::Expression(Expressions::Member { source, .. }) => infer_member_type(source),
+		Nodes::Expression(Expressions::Accessor { right, .. }) => infer_expression_type(right),
+		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(function),
+		Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => infer_callable_return_type(intrinsic),
+		Nodes::Expression(Expressions::Operator { operator, left, right }) => match operator {
+			Operators::Assignment => infer_expression_type(left),
+			Operators::Equality
+			| Operators::LessThan
+			| Operators::Inequality
+			| Operators::GreaterThan
+			| Operators::LessThanOrEqual
+			| Operators::GreaterThanOrEqual
+			| Operators::LogicalAnd
+			| Operators::LogicalOr => None,
+			_ => infer_expression_type(left).or_else(|| infer_expression_type(right)),
+		},
+		_ => None,
+	}
+}
+
+fn infer_literal_type(value: &str) -> Option<NodeReference> {
+	let root = Node::root();
+	if value.contains('.') {
+		root.get_child("f32")
+	} else {
+		root.get_child("u32")
+	}
+}
+
+fn infer_member_type(source: &NodeReference) -> Option<NodeReference> {
+	match source.borrow().node() {
+		Nodes::Member { r#type, .. }
+		| Nodes::Parameter { r#type, .. }
+		| Nodes::Input { format: r#type, .. }
+		| Nodes::Output { format: r#type, .. }
+		| Nodes::Specialization { r#type, .. }
+		| Nodes::Const { r#type, .. } => Some(r#type.clone()),
+		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
+		Nodes::Expression(Expressions::Member { source, name }) => {
+			let parent_type = infer_member_type(source)?;
+			find_named_member_type(&parent_type, name)
+		}
+		Nodes::Expression(Expressions::Accessor { right, .. }) => infer_expression_type(right),
+		_ => None,
+	}
+}
+
+fn find_named_member_type(parent_type: &NodeReference, member_name: &str) -> Option<NodeReference> {
+	match parent_type.borrow().node() {
+		Nodes::Struct { fields, .. } => fields.iter().find_map(|field| match field.borrow().node() {
+			Nodes::Member { name, r#type, .. } if name == member_name => Some(r#type.clone()),
+			_ => None,
+		}),
+		_ => None,
+	}
+}
+
+fn infer_callable_return_type(callable: &NodeReference) -> Option<NodeReference> {
+	match callable.borrow().node() {
+		Nodes::Function { return_type, .. } => Some(return_type.clone()),
+		Nodes::Struct { .. } => Some(callable.clone()),
+		Nodes::Intrinsic { r#return, .. } => Some(r#return.clone()),
+		_ => None,
+	}
+}
+
+fn resolve_call_target(chain: &[NodeReference], name: &str, parameters: &[NodeReference]) -> Result<NodeReference, LexError> {
+	for node in chain.iter().rev() {
+		if let Some(candidate) = resolve_call_target_in_node(node, name, parameters) {
+			return Ok(candidate);
+		}
+	}
+
+	Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters)
+}
+
+fn resolve_call_target_in_node(node: &NodeReference, name: &str, parameters: &[NodeReference]) -> Option<NodeReference> {
+	match node.borrow().node() {
+		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => {
+			children.iter().find_map(|child| match child.borrow().node() {
+				Nodes::Intrinsic {
+					name: candidate_name, ..
+				} if candidate_name == name && intrinsic_matches_parameters(child, parameters) => Some(child.clone()),
+				Nodes::Function {
+					name: candidate_name,
+					params,
+					..
+				} if candidate_name == name && params.len() == parameters.len() => Some(child.clone()),
+				Nodes::Struct {
+					name: candidate_name,
+					fields,
+					..
+				} if candidate_name == name && fields.len() == parameters.len() => Some(child.clone()),
+				_ => resolve_call_target_in_node(child, name, parameters),
+			})
+		}
+		_ => None,
+	}
 }
 
 fn build_intrinsic_elements<'a>(
@@ -2997,5 +3179,74 @@ main: fn () -> void {
 			statements[0].borrow().node(),
 			Nodes::Expression(Expressions::Continue)
 		));
+	}
+
+	#[test]
+	fn lex_scalar_intrinsic_overloads() {
+		let script = r#"
+		main: fn () -> void {
+			let maximum: f32 = max(1.0, 2.0);
+			let clamped: f32 = clamp(1.5, 0.0, 1.0);
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		for (statement, expected_name, expected_type) in [(&statements[0], "max", "f32"), (&statements[1], "clamp", "f32")] {
+			match statement.borrow().node() {
+				Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
+					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
+						Nodes::Intrinsic { name, r#return, .. } => {
+							assert_eq!(name, expected_name);
+							assert_type(&r#return.borrow(), expected_type);
+						}
+						_ => panic!("Expected intrinsic"),
+					},
+					_ => panic!("Expected intrinsic call"),
+				},
+				_ => panic!("Expected assignment"),
+			}
+		}
+	}
+
+	#[test]
+	fn lex_vector_intrinsic_overloads_still_resolve() {
+		let script = r#"
+		main: fn () -> void {
+			let maximum: vec3f = max(vec3f(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0));
+			let clamped: vec3f = clamp(vec3f(1.5, 0.5, 0.0), vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		for (statement, expected_name, expected_type) in [(&statements[0], "max", "vec3f"), (&statements[1], "clamp", "vec3f")]
+		{
+			match statement.borrow().node() {
+				Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
+					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
+						Nodes::Intrinsic { name, r#return, .. } => {
+							assert_eq!(name, expected_name);
+							assert_type(&r#return.borrow(), expected_type);
+						}
+						_ => panic!("Expected intrinsic"),
+					},
+					_ => panic!("Expected intrinsic call"),
+				},
+				_ => panic!("Expected assignment"),
+			}
+		}
 	}
 }

@@ -127,7 +127,8 @@ impl GLSLShaderGenerator {
 		}
 
 		match name.as_str() {
-			"max" | "clamp" | "log2" | "pow" => {
+			"max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
+			| "radians" | "inversesqrt" | "smoothstep" | "mix" => {
 				string.push_str(name);
 				string.push('(');
 				self.emit_call_arguments(string, arguments);
@@ -193,6 +194,16 @@ impl GLSLShaderGenerator {
 				string.push_str("ivec2(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(")).x");
+			}
+			"texture_size" => {
+				string.push_str("uvec2(textureSize(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(",0))");
+			}
+			"image_size" => {
+				string.push_str("uvec2(imageSize(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("))");
 			}
 			"write" => {
 				string.push_str("imageStore(");
@@ -1086,6 +1097,62 @@ mod tests {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=i+1){if(i>=2){continue;};};");
+	}
+
+	#[test]
+	fn scalar_math_intrinsics_lower_to_glsl() {
+		let script = r#"
+		main: fn () -> void {
+			let a: f32 = abs(0.0 - 2.5);
+			let b: f32 = sqrt(9.0);
+			let c: f32 = exp(1.0);
+			let d: f32 = fract(1.25);
+			let e: f32 = radians(180.0);
+			let f: f32 = inversesqrt(4.0);
+			let g: f32 = smoothstep(0.0, 1.0, 0.5);
+			let h: f32 = mix(2.0, 4.0, 0.25);
+			let i: vec2f = round(vec2f(1.2, 1.8));
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = GLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "abs(0.0-2.5)");
+		assert_string_contains!(shader, "sqrt(9.0)");
+		assert_string_contains!(shader, "exp(1.0)");
+		assert_string_contains!(shader, "fract(1.25)");
+		assert_string_contains!(shader, "radians(180.0)");
+		assert_string_contains!(shader, "inversesqrt(4.0)");
+		assert_string_contains!(shader, "smoothstep(0.0,1.0,0.5)");
+		assert_string_contains!(shader, "mix(2.0,4.0,0.25)");
+		assert_string_contains!(shader, "round(vec2(1.2,1.8))");
+	}
+
+	#[test]
+	fn scalar_max_and_clamp_lower_to_glsl() {
+		let script = r#"
+		main: fn () -> void {
+			let maximum: f32 = max(1.0, 2.0);
+			let clamped: f32 = clamp(1.5, 0.0, 1.0);
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = GLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "max(1.0,2.0)");
+		assert_string_contains!(shader, "clamp(1.5,0.0,1.0)");
 	}
 
 	#[test]

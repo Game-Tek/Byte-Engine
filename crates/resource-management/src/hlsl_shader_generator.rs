@@ -31,6 +31,61 @@ impl HLSLShaderGenerator {
 }
 
 impl HLSLShaderGenerator {
+	fn emit_intrinsic_call(
+		&mut self,
+		string: &mut String,
+		intrinsic: &besl::NodeReference,
+		arguments: &[besl::NodeReference],
+		elements: &[besl::NodeReference],
+	) {
+		let intrinsic = intrinsic.borrow();
+		let besl::Nodes::Intrinsic {
+			name,
+			elements: definition,
+			..
+		} = intrinsic.node()
+		else {
+			for element in elements {
+				self.emit_node_string(string, element);
+			}
+			return;
+		};
+
+		let has_body = definition
+			.iter()
+			.any(|element| !matches!(element.borrow().node(), besl::Nodes::Parameter { .. }));
+		if has_body {
+			for element in elements {
+				self.emit_node_string(string, element);
+			}
+			return;
+		}
+
+		match name.as_str() {
+			"max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
+			| "radians" | "smoothstep" | "mix" | "dot" | "cross" | "normalize" | "reflect" | "length" => {
+				string.push_str(name);
+				string.push('(');
+				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
+					self.emit_node_string(string, argument)
+				});
+				string.push(')');
+			}
+			"inversesqrt" => {
+				string.push_str("rsqrt(");
+				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
+					self.emit_node_string(string, argument)
+				});
+				string.push(')');
+			}
+			_ => {
+				for element in elements {
+					self.emit_node_string(string, element);
+				}
+			}
+		}
+	}
+
 	/// Generates an HLSL shader from a BESL AST.
 	///
 	/// # Arguments
@@ -327,11 +382,11 @@ impl HLSLShaderGenerator {
 					string.push_str(&format!(")"));
 				}
 				besl::Expressions::IntrinsicCall {
-					elements: parameters, ..
+					intrinsic,
+					arguments,
+					elements,
 				} => {
-					for e in parameters {
-						self.emit_node_string(string, &e);
-					}
+					self.emit_intrinsic_call(string, intrinsic, arguments, elements);
 				}
 				besl::Expressions::Expression { elements } => {
 					for element in elements {
@@ -971,6 +1026,27 @@ mod tests {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=i+1){if(i>=2){continue;};};");
+	}
+
+	#[test]
+	fn scalar_max_and_clamp_lower_to_hlsl() {
+		let script = r#"
+		main: fn () -> void {
+			let maximum: f32 = max(1.0, 2.0);
+			let clamped: f32 = clamp(1.5, 0.0, 1.0);
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = HLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "max(1.0,2.0)");
+		assert_string_contains!(shader, "clamp(1.5,0.0,1.0)");
 	}
 
 	#[test]

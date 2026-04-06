@@ -1003,6 +1003,12 @@ pub enum Operators {
 	Assignment,
 	Equality,
 	LessThan,
+	Inequality,
+	GreaterThan,
+	LessThanOrEqual,
+	GreaterThanOrEqual,
+	LogicalAnd,
+	LogicalOr,
 }
 
 #[derive(Clone, Debug)]
@@ -1010,6 +1016,7 @@ pub enum Expressions {
 	Return {
 		value: Option<NodeReference>,
 	},
+	Continue,
 	Member {
 		name: String,
 		source: NodeReference,
@@ -1607,6 +1614,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 						None => None,
 					},
 				}),
+				parser::Expressions::Continue => Node::expression(Expressions::Continue),
 				parser::Expressions::Accessor { left, right } => {
 					let left = lex_parsed_node(chain.clone(), left)?;
 
@@ -1680,6 +1688,12 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 						"=" => Operators::Assignment,
 						"==" => Operators::Equality,
 						"<" => Operators::LessThan,
+						"!=" => Operators::Inequality,
+						">" => Operators::GreaterThan,
+						"<=" => Operators::LessThanOrEqual,
+						">=" => Operators::GreaterThanOrEqual,
+						"&&" => Operators::LogicalAnd,
+						"||" => Operators::LogicalOr,
 						_ => {
 							panic!("Invalid operator")
 						}
@@ -2935,5 +2949,53 @@ main: fn () -> void {
 			},
 			_ => panic!("Expected assignment"),
 		}
+	}
+
+	#[test]
+	fn lex_comparison_and_continue() {
+		let script = r#"
+		main: fn () -> void {
+			for (let i: u32 = 0; i <= 4; i = i + 1) {
+				if (i >= 2) {
+					continue;
+				}
+			}
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let for_loop = statements[0].borrow();
+		let Nodes::ForLoop {
+			condition, statements, ..
+		} = for_loop.node()
+		else {
+			panic!("Expected for loop");
+		};
+
+		assert!(matches!(
+			condition.borrow().node(),
+			Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::LessThanOrEqual
+		));
+
+		let conditional = statements[0].borrow();
+		let Nodes::Conditional { condition, statements } = conditional.node() else {
+			panic!("Expected conditional");
+		};
+
+		assert!(matches!(
+			condition.borrow().node(),
+			Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::GreaterThanOrEqual
+		));
+		assert!(matches!(
+			statements[0].borrow().node(),
+			Nodes::Expression(Expressions::Continue)
+		));
 	}
 }

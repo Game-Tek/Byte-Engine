@@ -501,11 +501,13 @@ pub enum Expressions<'a> {
 	Return {
 		value: Option<Box<Node<'a>>>,
 	},
+	Continue,
 }
 
 #[derive(Clone, Debug)]
 pub(super) enum Atoms<'a> {
 	Keyword,
+	Continue,
 	Accessor,
 	Member { name: &'a str },
 	Literal { value: &'a str },
@@ -593,15 +595,23 @@ impl Precedence for Atoms<'_> {
 	fn precedence(&self) -> u8 {
 		match self {
 			Atoms::Keyword => 0,
+			Atoms::Continue => 0,
 			Atoms::Accessor => 4,
 			Atoms::Member { .. } => 0,
 			Atoms::Literal { .. } => 0,
 			Atoms::FunctionCall { .. } => 0,
 			Atoms::Operator { name } => match *name {
 				"=" => 8,
+				"||" => 7,
+				"&&" => 6,
 				"|" => 7,
 				"&" => 6,
+				"==" => 5,
+				"!=" => 5,
 				"<" => 5,
+				">" => 5,
+				"<=" => 5,
+				">=" => 5,
 				"<<" => 4,
 				">>" => 4,
 				"+" => 3,
@@ -961,6 +971,15 @@ fn parse_keywords<'i, 'a: 'i>(
 		.unwrap_or(Ok((expressions, iterator)))
 }
 
+fn parse_continue<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	iterator.next_str("continue")?;
+	expressions.push(Atoms::Continue);
+	Ok((expressions, iterator))
+}
+
 fn parse_variable<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	mut expressions: Vec<Atoms<'a>>,
@@ -1061,8 +1080,12 @@ fn parse_operator<'i, 'a: 'i>(
 				|| v == "+" || v == "-"
 				|| v == "/" || v == "%"
 				|| v == "=" || v == "<"
-				|| v == "<<" || v == ">>"
-				|| v == "&" || v == "|"
+				|| v == ">" || v == "=="
+				|| v == "!=" || v == "<="
+				|| v == ">=" || v == "&&"
+				|| v == "||" || v == "<<"
+				|| v == ">>" || v == "&"
+				|| v == "|"
 		})?;
 
 	expressions.push(Atoms::Operator { name: operator });
@@ -1085,12 +1108,22 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 		.into();
 	}
 
+	if matches!(atoms.first(), Some(Atoms::Continue)) {
+		return Node {
+			node: Nodes::Expression(Expressions::Continue),
+		}
+		.into();
+	}
+
 	let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
 
 	if let Some((i, e)) = max_precedence_item {
 		match e {
 			Atoms::Keyword => Node {
 				node: Nodes::Expression(Expressions::Return { value: None }),
+			},
+			Atoms::Continue => Node {
+				node: Nodes::Expression(Expressions::Continue),
 			},
 			Atoms::Operator { name } => {
 				let left = expression_atoms_to_node(&atoms[..i]);
@@ -1176,7 +1209,13 @@ fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Fe
 	iterator.next_str("for")?;
 	iterator.next_str("(")?;
 
-	let statement_parsers = vec![parse_keywords, parse_var_decl, parse_function_call, parse_variable];
+	let statement_parsers = vec![
+		parse_keywords,
+		parse_continue,
+		parse_var_decl,
+		parse_function_call,
+		parse_variable,
+	];
 	let (initializer_atoms, mut iterator) = execute_expression_parsers(&statement_parsers, iterator, Vec::new())?;
 	let initializer = expression_atoms_to_node(&initializer_atoms);
 
@@ -1284,7 +1323,13 @@ fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> Featu
 		return result;
 	}
 
-	let parsers = vec![parse_keywords, parse_var_decl, parse_function_call, parse_variable];
+	let parsers = vec![
+		parse_keywords,
+		parse_continue,
+		parse_var_decl,
+		parse_function_call,
+		parse_variable,
+	];
 
 	let (expressions, mut iterator) = execute_expression_parsers(&parsers, iterator, Vec::new())?;
 
@@ -1983,6 +2028,49 @@ main: fn () -> void {
 		} else {
 			panic!("Not a function");
 		}
+	}
+
+	#[test]
+	fn parse_comparison_and_continue() {
+		let source = r#"
+		main: fn () -> void {
+			for (let i: u32 = 0; i <= 4; i = i + 1) {
+				if (i >= 2) {
+					continue;
+				}
+			}
+		}
+		"#;
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+		let main_node = &node["main"];
+
+		let Nodes::Function { statements, .. } = &main_node.node else {
+			panic!("Expected function");
+		};
+
+		let Nodes::ForLoop {
+			condition, statements, ..
+		} = &statements[0].node
+		else {
+			panic!("Expected for loop");
+		};
+
+		assert!(matches!(
+			&condition.node,
+			Nodes::Expression(Expressions::Operator { name, .. }) if *name == "<="
+		));
+
+		let Nodes::Conditional { condition, statements } = &statements[0].node else {
+			panic!("Expected conditional");
+		};
+
+		assert!(matches!(
+			&condition.node,
+			Nodes::Expression(Expressions::Operator { name, .. }) if *name == ">="
+		));
+		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Continue)));
 	}
 
 	#[test]

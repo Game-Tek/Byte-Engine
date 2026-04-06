@@ -1413,6 +1413,9 @@ impl MSLShaderGenerator {
 						self.emit_node_string(string, value);
 					}
 				}
+				besl::Expressions::Continue => {
+					string.push_str("continue");
+				}
 				besl::Expressions::Accessor { left, right } => {
 					self.emit_node_string(string, &left);
 					if left.borrow().node().is_indexable() {
@@ -2204,6 +2207,29 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "uint packed=1<<8|2&255;");
+	}
+
+	#[test]
+	fn comparison_and_continue_lower_to_msl() {
+		let script = r#"
+		main: fn () -> void {
+			for (let i: u32 = 0; i <= 4; i = i + 1) {
+				if (i >= 2) {
+					continue;
+				}
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "for(uint i=0;i<=4;i=i+1){if(i>=2){continue;};};");
 	}
 
 	#[test]

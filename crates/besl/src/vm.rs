@@ -609,6 +609,16 @@ impl ExecutableProgram {
 					let right = read_register(&registers, *right)?;
 					registers[*register] = Some(apply_less_than(&left, &right)?);
 				}
+				Instruction::Compare {
+					register,
+					operator,
+					left,
+					right,
+				} => {
+					let left = read_register(&registers, *left)?;
+					let right = read_register(&registers, *right)?;
+					registers[*register] = Some(apply_comparison(*operator, &left, &right)?);
+				}
 				Instruction::JumpIfZero { register, target } => {
 					let value = read_register(&registers, *register)?;
 					if is_zero_value(&value)? {
@@ -848,6 +858,12 @@ enum Instruction {
 		left: usize,
 		right: usize,
 	},
+	Compare {
+		register: usize,
+		operator: ComparisonOperator,
+		left: usize,
+		right: usize,
+	},
 	CompareLessThan {
 		register: usize,
 		left: usize,
@@ -958,6 +974,16 @@ enum ArithmeticOperator {
 	Modulo,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComparisonOperator {
+	Equal,
+	NotEqual,
+	LessThan,
+	GreaterThan,
+	LessThanOrEqual,
+	GreaterThanOrEqual,
+}
+
 struct Compiler {
 	function_ids: HashMap<NodeReference, usize>,
 	instructions: Vec<Instruction>,
@@ -966,6 +992,8 @@ struct Compiler {
 	register_count: usize,
 	return_type: Option<ValueType>,
 	parameter_count: usize,
+	loop_continue_targets: Vec<usize>,
+	loop_continue_patches: Vec<Vec<usize>>,
 }
 
 impl Compiler {
@@ -983,6 +1011,8 @@ impl Compiler {
 			register_count: 0,
 			return_type: signature.return_type.clone(),
 			parameter_count: signature.params.len(),
+			loop_continue_targets: Vec::new(),
+			loop_continue_patches: Vec::new(),
 		};
 
 		for (index, param) in signature.params.iter().enumerate() {
@@ -1015,6 +1045,12 @@ impl Compiler {
 	) -> Result<(), VmError> {
 		let borrowed = statement.borrow();
 		let result = match borrowed.node() {
+			Nodes::Conditional { condition, statements } => {
+				let condition = condition.clone();
+				let statements = statements.clone();
+				drop(borrowed);
+				self.compile_conditional(&condition, &statements, descriptor_layouts)
+			}
 			Nodes::ForLoop {
 				initializer,
 				condition,
@@ -1043,6 +1079,26 @@ impl Compiler {
 				drop(borrowed);
 				self.compile_return_statement(value.as_ref(), descriptor_layouts)
 			}
+			Nodes::Expression(Expressions::Continue) => {
+				drop(borrowed);
+				if self.loop_continue_targets.is_empty() {
+					return Err(VmError::UnsupportedStatement {
+						message: "`continue` must be used inside a loop".to_string(),
+					});
+				}
+				let jump_index = self.instructions.len();
+				let target = self
+					.loop_continue_targets
+					.last()
+					.copied()
+					.expect("Expected loop continue target");
+				self.instructions.push(Instruction::Jump { target });
+				self.loop_continue_patches
+					.last_mut()
+					.expect("Expected continue patch stack")
+					.push(jump_index);
+				Ok(())
+			}
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
 				let function = function.clone();
 				let parameters = parameters.clone();
@@ -1069,6 +1125,32 @@ impl Compiler {
 		result
 	}
 
+	fn compile_conditional(
+		&mut self,
+		condition: &NodeReference,
+		statements: &[NodeReference],
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<(), VmError> {
+		let condition_register = self.compile_value_expression(condition, &ValueType::U32, descriptor_layouts)?;
+		let jump_if_zero_index = self.instructions.len();
+		self.instructions.push(Instruction::JumpIfZero {
+			register: condition_register,
+			target: usize::MAX,
+		});
+
+		for statement in statements {
+			self.compile_statement(statement, descriptor_layouts)?;
+		}
+
+		let conditional_end = self.instructions.len();
+		match &mut self.instructions[jump_if_zero_index] {
+			Instruction::JumpIfZero { target, .. } => *target = conditional_end,
+			_ => unreachable!("Expected JumpIfZero placeholder"),
+		}
+
+		Ok(())
+	}
+
 	fn compile_for_loop(
 		&mut self,
 		initializer: &NodeReference,
@@ -1086,16 +1168,28 @@ impl Compiler {
 			register: condition_register,
 			target: usize::MAX,
 		});
+		let loop_end_placeholder_index = jump_if_zero_index;
 
+		let continue_target = usize::MAX;
+		self.loop_continue_targets.push(continue_target);
+		self.loop_continue_patches.push(Vec::new());
 		for statement in statements {
 			self.compile_statement(statement, descriptor_layouts)?;
 		}
+		self.loop_continue_targets.pop();
 
+		let update_start = self.instructions.len();
 		self.compile_statement(update, descriptor_layouts)?;
+		for jump_index in self.loop_continue_patches.pop().expect("Expected continue patch list") {
+			match &mut self.instructions[jump_index] {
+				Instruction::Jump { target } => *target = update_start,
+				_ => unreachable!("Expected continue jump placeholder"),
+			}
+		}
 		self.instructions.push(Instruction::Jump { target: condition_start });
 
 		let loop_end = self.instructions.len();
-		match &mut self.instructions[jump_if_zero_index] {
+		match &mut self.instructions[loop_end_placeholder_index] {
 			Instruction::JumpIfZero { target, .. } => *target = loop_end,
 			_ => unreachable!("Expected JumpIfZero placeholder"),
 		}
@@ -1203,22 +1297,29 @@ impl Compiler {
 				self.compile_intrinsic_call_expression(&intrinsic, &arguments, expected_type, descriptor_layouts)
 			}
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-				let comparison = *operator == Operators::LessThan;
-				let operator = if comparison {
-					None
-				} else {
+				let comparison = comparison_operator(operator);
+				let operator = if comparison.is_none() {
 					Some(arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
 						message: format!("Unsupported value operator: {:?}", operator),
 					})?)
+				} else {
+					None
 				};
 				let left = left.clone();
 				let right = right.clone();
 				drop(borrowed);
 
-				let left_type = self.infer_expression_type(&left, expected_type, descriptor_layouts)?;
-				let right_type = self.infer_expression_type(&right, expected_type, descriptor_layouts)?;
+				let comparison_expected_type = if comparison.is_some() {
+					&ValueType::U32
+				} else {
+					expected_type
+				};
+				let left_type = self.infer_expression_type(&left, comparison_expected_type, descriptor_layouts)?;
+				let right_type = self.infer_expression_type(&right, comparison_expected_type, descriptor_layouts)?;
 				let (left_expected_type, right_expected_type) = if left_type == *expected_type && right_type == *expected_type {
 					(expected_type.clone(), expected_type.clone())
+				} else if comparison.is_some() && left_type == right_type {
+					(left_type.clone(), right_type.clone())
 				} else if supports_scalar_broadcast(expected_type)
 					&& left_type == ValueType::F32
 					&& right_type == *expected_type
@@ -1239,8 +1340,17 @@ impl Compiler {
 				let left = self.compile_value_expression(&left, &left_expected_type, descriptor_layouts)?;
 				let right = self.compile_value_expression(&right, &right_expected_type, descriptor_layouts)?;
 				let register = self.allocate_register();
-				if comparison {
-					self.instructions.push(Instruction::CompareLessThan { register, left, right });
+				if let Some(operator) = comparison {
+					if operator == ComparisonOperator::LessThan {
+						self.instructions.push(Instruction::CompareLessThan { register, left, right });
+					} else {
+						self.instructions.push(Instruction::Compare {
+							register,
+							operator,
+							left,
+							right,
+						});
+					}
 				} else {
 					self.instructions.push(Instruction::Arithmetic {
 						register,
@@ -1690,7 +1800,16 @@ impl Compiler {
 				resolve_callable_return_type(&intrinsic)
 			}
 			Nodes::Expression(Expressions::FunctionCall { function, .. }) => resolve_callable_return_type(function),
-			Nodes::Expression(Expressions::Operator { .. }) => Ok(expected_type.clone()),
+			Nodes::Expression(Expressions::Operator { operator, .. }) => {
+				if comparison_operator(operator).is_some() {
+					Ok(ValueType::U32)
+				} else {
+					Ok(expected_type.clone())
+				}
+			}
+			Nodes::Expression(Expressions::Continue) => Err(VmError::UnsupportedExpression {
+				message: "`continue` is only valid as a statement".to_string(),
+			}),
 			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported value expression: {:?}", other),
 			}),
@@ -2722,7 +2841,25 @@ fn arithmetic_operator(operator: &Operators) -> Option<ArithmeticOperator> {
 		| Operators::BitwiseOr
 		| Operators::Assignment
 		| Operators::Equality
-		| Operators::LessThan => None,
+		| Operators::LessThan
+		| Operators::Inequality
+		| Operators::GreaterThan
+		| Operators::LessThanOrEqual
+		| Operators::GreaterThanOrEqual
+		| Operators::LogicalAnd
+		| Operators::LogicalOr => None,
+	}
+}
+
+fn comparison_operator(operator: &Operators) -> Option<ComparisonOperator> {
+	match operator {
+		Operators::Equality => Some(ComparisonOperator::Equal),
+		Operators::Inequality => Some(ComparisonOperator::NotEqual),
+		Operators::LessThan => Some(ComparisonOperator::LessThan),
+		Operators::GreaterThan => Some(ComparisonOperator::GreaterThan),
+		Operators::LessThanOrEqual => Some(ComparisonOperator::LessThanOrEqual),
+		Operators::GreaterThanOrEqual => Some(ComparisonOperator::GreaterThanOrEqual),
+		_ => None,
 	}
 }
 
@@ -2798,6 +2935,39 @@ fn apply_less_than(left: &ScalarValue, right: &ScalarValue) -> Result<ScalarValu
 		(ScalarValue::U32(left), ScalarValue::U32(right)) => Ok(ScalarValue::U32(u32::from(left < right))),
 		(ScalarValue::I32(left), ScalarValue::I32(right)) => Ok(ScalarValue::U32(u32::from(left < right))),
 		(ScalarValue::F32(left), ScalarValue::F32(right)) => Ok(ScalarValue::U32(u32::from(left < right))),
+		(left, right) => Err(VmError::TypeMismatch {
+			expected: left.value_type().name().to_string(),
+			found: right.value_type().name().to_string(),
+		}),
+	}
+}
+
+fn apply_comparison(operator: ComparisonOperator, left: &ScalarValue, right: &ScalarValue) -> Result<ScalarValue, VmError> {
+	match (left, right) {
+		(ScalarValue::U32(left), ScalarValue::U32(right)) => Ok(ScalarValue::U32(u32::from(match operator {
+			ComparisonOperator::Equal => left == right,
+			ComparisonOperator::NotEqual => left != right,
+			ComparisonOperator::LessThan => left < right,
+			ComparisonOperator::GreaterThan => left > right,
+			ComparisonOperator::LessThanOrEqual => left <= right,
+			ComparisonOperator::GreaterThanOrEqual => left >= right,
+		}))),
+		(ScalarValue::I32(left), ScalarValue::I32(right)) => Ok(ScalarValue::U32(u32::from(match operator {
+			ComparisonOperator::Equal => left == right,
+			ComparisonOperator::NotEqual => left != right,
+			ComparisonOperator::LessThan => left < right,
+			ComparisonOperator::GreaterThan => left > right,
+			ComparisonOperator::LessThanOrEqual => left <= right,
+			ComparisonOperator::GreaterThanOrEqual => left >= right,
+		}))),
+		(ScalarValue::F32(left), ScalarValue::F32(right)) => Ok(ScalarValue::U32(u32::from(match operator {
+			ComparisonOperator::Equal => left == right,
+			ComparisonOperator::NotEqual => left != right,
+			ComparisonOperator::LessThan => left < right,
+			ComparisonOperator::GreaterThan => left > right,
+			ComparisonOperator::LessThanOrEqual => left <= right,
+			ComparisonOperator::GreaterThanOrEqual => left >= right,
+		}))),
 		(left, right) => Err(VmError::TypeMismatch {
 			expected: left.value_type().name().to_string(),
 			found: right.value_type().name().to_string(),
@@ -4710,5 +4880,45 @@ mod tests {
 		}
 
 		assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(6));
+	}
+
+	#[test]
+	fn executable_program_executes_continue_and_comparisons() {
+		let script = r#"
+		main: fn () -> void {
+			let sum: u32 = 0;
+			for (let i: u32 = 0; i <= 4; i = i + 1) {
+				if (i >= 2) {
+					continue;
+				}
+				sum = sum + i;
+			}
+			buff.sum = sum;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("sum", u32_type).into()],
+				},
+				0,
+				25,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let executable = compile_test_program(script, Some(root));
+
+		let slot = DescriptorSlot::new(0, 25);
+		let mut buffer = buffer_for_slot(&executable, slot);
+		run_with_buffer(&executable, slot, &mut buffer);
+
+		assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(1));
 	}
 }

@@ -26,9 +26,19 @@ pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 			true
 		} else if last == '=' && c == '=' {
 			true
+		} else if last == '!' && c == '=' {
+			true
+		} else if last == '<' && c == '=' {
+			true
+		} else if last == '>' && c == '=' {
+			true
 		} else if last == '<' && c == '<' {
 			true
 		} else if last == '>' && c == '>' {
+			true
+		} else if last == '&' && c == '&' {
+			true
+		} else if last == '|' && c == '|' {
 			true
 		} else {
 			false
@@ -186,6 +196,19 @@ mod tests {
 			vec![
 				"main", ":", "fn", "(", ")", "->", "void", "{", "for", "(", "let", "i", ":", "u32", "=", "0", ";", "i", "<",
 				"4", ";", "i", "=", "i", "+", "1", ")", "{", "value", "=", "value", "+", "i", ";", "}", "}"
+			]
+		);
+	}
+
+	#[test]
+	fn test_comparison_and_logical_operators() {
+		let source = "main: fn () -> void { if (a >= b || c != d && e <= f && g > h) { continue; } }";
+		let tokens = tokenize(source).unwrap();
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"main", ":", "fn", "(", ")", "->", "void", "{", "if", "(", "a", ">=", "b", "||", "c", "!=", "d", "&&", "e",
+				"<=", "f", "&&", "g", ">", "h", ")", "{", "continue", ";", "}", "}"
 			]
 		);
 	}

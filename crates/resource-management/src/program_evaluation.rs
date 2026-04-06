@@ -146,7 +146,7 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference) 
 			besl::Expressions::VariableDeclaration { r#type, .. } => {
 				build_bindings(bindings, r#type);
 			}
-			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } => {}
+			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => {}
 		},
 		besl::Nodes::Binding {
 			set,
@@ -314,7 +314,7 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 			besl::Expressions::Macro { body, .. } => {
 				collect_local_output_symbols(body, local_output_symbols);
 			}
-			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } => {}
+			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => {}
 		},
 		besl::Nodes::Raw { input, output, .. } => {
 			for value in input.iter().chain(output.iter()) {
@@ -417,7 +417,7 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 			besl::Expressions::VariableDeclaration { r#type: nested, .. } | besl::Expressions::Macro { body: nested, .. } => {
 				references_non_local_output(nested, local_output_symbols)
 			}
-			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } => false,
+			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => false,
 		},
 		besl::Nodes::Raw { input, output, .. } => input
 			.iter()
@@ -517,7 +517,7 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 			besl::Expressions::VariableDeclaration { r#type: nested, .. } | besl::Expressions::Macro { body: nested, .. } => {
 				writes_non_opaque_vec4f_to_non_local_output(nested, local_output_symbols)
 			}
-			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } => false,
+			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => false,
 		},
 		besl::Nodes::Raw { input, output, .. } => input
 			.iter()

@@ -114,7 +114,11 @@ pub(crate) fn ordered_shader_nodes(main_function_node: &besl::NodeReference, bac
 
 	topological_sort(&graph)
 		.into_iter()
-		.filter(|node| !node.borrow().node().is_leaf())
+		.filter(|node| {
+			let borrowed = node.borrow();
+			!borrowed.node().is_leaf()
+				&& !matches!(borrowed.node(), besl::Nodes::Conditional { .. } | besl::Nodes::ForLoop { .. })
+		})
 		.collect()
 }
 
@@ -165,6 +169,12 @@ pub(crate) fn operator_token(operator: &besl::Operators) -> &'static str {
 		besl::Operators::Assignment => "=",
 		besl::Operators::Equality => "==",
 		besl::Operators::LessThan => "<",
+		besl::Operators::Inequality => "!=",
+		besl::Operators::GreaterThan => ">",
+		besl::Operators::LessThanOrEqual => "<=",
+		besl::Operators::GreaterThanOrEqual => ">=",
+		besl::Operators::LogicalAnd => "&&",
+		besl::Operators::LogicalOr => "||",
 	}
 }
 

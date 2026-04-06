@@ -243,6 +243,7 @@ pub fn build_graph(main_function_node: besl::NodeReference) -> Graph {
 							build_graph_impl(node.clone(), value.clone(), graph, expanded, active);
 						}
 					}
+					besl::Expressions::Continue => {}
 					besl::Expressions::Accessor { left, right } => {
 						build_graph_impl(node.clone(), left.clone(), graph, expanded, active);
 						build_graph_impl(node.clone(), right.clone(), graph, expanded, active);

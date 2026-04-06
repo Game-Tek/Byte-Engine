@@ -161,7 +161,7 @@ impl MSLShaderCompiler {
 						}
 						self.build_graph(bindings, intrinsic);
 					}
-					besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } => {
+					besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => {
 						// Do nothing
 					}
 					besl::Expressions::Macro { body, .. } => {

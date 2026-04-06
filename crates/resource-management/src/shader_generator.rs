@@ -139,6 +139,48 @@ pub mod tests {
 		main
 	}
 
+	pub fn same_named_buffer_member_access() -> besl::NodeReference {
+		let script = r#"
+		main: fn () -> void {
+			pixel_mapping.pixel_mapping[0] = meshes.meshes[1];
+		}
+		"#;
+
+		let mut root_node = besl::Node::root();
+		let u32_type = root_node.get_child("u32").unwrap();
+
+		root_node.add_children(vec![
+			besl::Node::binding(
+				"meshes",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("meshes", u32_type.clone(), 2)],
+				},
+				0,
+				0,
+				true,
+				false,
+			)
+			.into(),
+			besl::Node::binding(
+				"pixel_mapping",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("pixel_mapping", u32_type, 2)],
+				},
+				0,
+				1,
+				false,
+				true,
+			)
+			.into(),
+		]);
+
+		let script_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
+
+		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
+
+		main
+	}
+
 	pub fn specializations() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {

@@ -845,6 +845,18 @@ mod tests {
 	}
 
 	#[test]
+	fn same_named_buffer_members_lower_to_glsl() {
+		let main = shader_generator::tests::same_named_buffer_member_access();
+
+		let shader = GLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "pixel_mapping.pixel_mapping[0]=meshes.meshes[1];");
+	}
+
+	#[test]
 	fn specializtions() {
 		let main = shader_generator::tests::specializations();
 

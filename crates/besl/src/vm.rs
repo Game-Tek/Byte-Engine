@@ -3151,6 +3151,15 @@ mod tests {
 			.collect()
 	}
 
+	fn read_u32s(buffer: &Buffer, count: usize) -> Vec<u32> {
+		buffer
+			.bytes()
+			.chunks_exact(4)
+			.take(count)
+			.map(|chunk| u32::from_ne_bytes(chunk.try_into().expect("Expected four bytes")))
+			.collect()
+	}
+
 	fn compile_test_program(script: &str, root: Option<Node>) -> ExecutableProgram {
 		let program = compile_to_besl(script, root).expect("Expected lexed program");
 		ExecutableProgram::compile(program).expect("Expected runnable program")
@@ -3836,6 +3845,72 @@ mod tests {
 		run_with_buffer(&executable, slot, &mut buffer);
 
 		assert_eq!(read_f32s(&buffer, 4), vec![0.0, 7.5, 0.0, 7.5]);
+	}
+
+	#[test]
+	fn executable_program_reads_and_writes_same_named_buffer_members() {
+		let script = r#"
+		main: fn () -> void {
+			pixel_mapping.pixel_mapping[0] = meshes.meshes[1];
+		}
+		"#;
+
+		let mut root = Node::root();
+		let u32_type = root.get_child("u32").expect("Expected u32");
+
+		root.add_children(vec![
+			Node::binding(
+				"meshes",
+				BindingTypes::Buffer {
+					members: vec![Node::array("meshes", u32_type.clone(), 2)],
+				},
+				0,
+				24,
+				true,
+				false,
+			)
+			.into(),
+			Node::binding(
+				"pixel_mapping",
+				BindingTypes::Buffer {
+					members: vec![Node::array("pixel_mapping", u32_type, 2)],
+				},
+				0,
+				25,
+				false,
+				true,
+			)
+			.into(),
+		]);
+
+		let executable = compile_test_program(script, Some(root));
+
+		let input_slot = DescriptorSlot::new(0, 24);
+		let output_slot = DescriptorSlot::new(0, 25);
+		let input_layout = executable
+			.buffer_layout(input_slot)
+			.expect("Expected input buffer layout")
+			.clone();
+		let mut input = Buffer::new(input_layout.clone());
+		let meshes_member = input_layout.member("meshes").expect("Expected meshes member");
+		input
+			.write_value(
+				meshes_member.offset() + meshes_member.value_type().size(),
+				meshes_member.value_type(),
+				&Value::U32(42),
+			)
+			.expect("Expected array element write to succeed");
+
+		let mut output = buffer_for_slot(&executable, output_slot);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(input_slot, &mut input);
+			descriptors.bind_buffer(output_slot, &mut output);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(read_u32s(&output, 2), vec![42, 0]);
 	}
 
 	#[test]

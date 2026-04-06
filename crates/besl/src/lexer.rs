@@ -1218,7 +1218,19 @@ fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
 }
 
 fn get_non_intrinsic_descendant(node: &NodeReference, child_name: &str) -> Option<NodeReference> {
-	if node.borrow().get_name() == Some(child_name) {
+	let prefer_descendants_before_self = matches!(
+		node.borrow().node(),
+		Nodes::Binding { .. }
+			| Nodes::PushConstant { .. }
+			| Nodes::Member { .. }
+			| Nodes::Parameter { .. }
+			| Nodes::Input { .. }
+			| Nodes::Output { .. }
+			| Nodes::Expression(Expressions::Member { .. } | Expressions::VariableDeclaration { .. })
+	);
+
+	// Accessor sources need to prefer their descendants so `binding.binding` resolves the member, not the qualifier itself.
+	if !prefer_descendants_before_self && node.borrow().get_name() == Some(child_name) {
 		return Some(node.clone());
 	}
 
@@ -1347,6 +1359,10 @@ fn get_non_intrinsic_descendant(node: &NodeReference, child_name: &str) -> Optio
 			}
 		}
 		_ => {}
+	}
+
+	if prefer_descendants_before_self && node.borrow().get_name() == Some(child_name) {
+		return Some(node.clone());
 	}
 
 	None
@@ -2265,6 +2281,122 @@ color: In<vec4f>;
 			left.borrow().node(),
 			Nodes::Expression(Expressions::Accessor { .. })
 		));
+	}
+
+	#[test]
+	fn lex_same_named_buffer_members_resolve_to_member_declarations() {
+		let script = r#"
+		main: fn () -> void {
+			let material_index: u32 = meshes.meshes[0].material_index;
+			let mapped: u32 = pixel_mapping.pixel_mapping[1];
+		}
+		"#;
+
+		let mut root = Node::root();
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		let mesh = root.add_child(Node::r#struct("Mesh", vec![Node::member("material_index", u32_type.clone()).into()]).into());
+
+		root.add_children(vec![
+			Node::binding(
+				"meshes",
+				BindingTypes::Buffer {
+					members: vec![Node::array("meshes", mesh, 4)],
+				},
+				0,
+				0,
+				true,
+				false,
+			)
+			.into(),
+			Node::binding(
+				"pixel_mapping",
+				BindingTypes::Buffer {
+					members: vec![Node::array("pixel_mapping", u32_type, 4)],
+				},
+				0,
+				1,
+				true,
+				true,
+			)
+			.into(),
+		]);
+
+		let node = crate::compile_to_besl(script, Some(root)).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let material_index_access = match statements[0].borrow().node() {
+			Nodes::Expression(Expressions::Operator { right, .. }) => right.clone(),
+			_ => panic!("Expected assignment"),
+		};
+		let (indexed_meshes, material_index_member) = match material_index_access.borrow().node() {
+			Nodes::Expression(Expressions::Accessor { left, right }) => (left.clone(), right.clone()),
+			_ => panic!("Expected struct member accessor"),
+		};
+		match material_index_member.borrow().node() {
+			Nodes::Expression(Expressions::Member { name, source }) => {
+				assert_eq!(name, "material_index");
+				assert!(matches!(
+					source.borrow().node(),
+					Nodes::Member { name, count, .. } if name == "material_index" && count.is_none()
+				));
+			}
+			_ => panic!("Expected material_index member expression"),
+		}
+
+		let meshes_member = match indexed_meshes.borrow().node() {
+			Nodes::Expression(Expressions::Accessor { left, .. }) => match left.borrow().node() {
+				Nodes::Expression(Expressions::Accessor { left, right }) => {
+					assert_eq!(left.borrow().get_name(), Some("meshes"));
+					assert!(
+						right.borrow().node().is_indexable(),
+						"Expected meshes.meshes to stay indexable"
+					);
+					right.clone()
+				}
+				_ => panic!("Expected meshes accessor"),
+			},
+			_ => panic!("Expected indexed meshes accessor"),
+		};
+		match meshes_member.borrow().node() {
+			Nodes::Expression(Expressions::Member { name, source }) => {
+				assert_eq!(name, "meshes");
+				assert!(matches!(
+					source.borrow().node(),
+					Nodes::Member { name, count, .. } if name == "meshes" && count == &Some(NonZeroUsize::new(4).expect("Expected valid count"))
+				));
+			}
+			_ => panic!("Expected meshes member expression"),
+		}
+
+		let pixel_mapping_access = match statements[1].borrow().node() {
+			Nodes::Expression(Expressions::Operator { right, .. }) => right.clone(),
+			_ => panic!("Expected assignment"),
+		};
+		let pixel_mapping_member = match pixel_mapping_access.borrow().node() {
+			Nodes::Expression(Expressions::Accessor { left, .. }) => {
+				assert!(left.borrow().node().is_indexable());
+				match left.borrow().node() {
+					Nodes::Expression(Expressions::Accessor { right, .. }) => right.clone(),
+					_ => panic!("Expected pixel_mapping accessor"),
+				}
+			}
+			_ => panic!("Expected indexed pixel_mapping accessor"),
+		};
+		match pixel_mapping_member.borrow().node() {
+			Nodes::Expression(Expressions::Member { name, source }) => {
+				assert_eq!(name, "pixel_mapping");
+				assert!(matches!(
+					source.borrow().node(),
+					Nodes::Member { name, count, .. } if name == "pixel_mapping" && count == &Some(NonZeroUsize::new(4).expect("Expected valid count"))
+				));
+			}
+			_ => panic!("Expected pixel_mapping member expression"),
+		};
 	}
 
 	// #[test]

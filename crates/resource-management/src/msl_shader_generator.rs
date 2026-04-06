@@ -1707,6 +1707,18 @@ mod tests {
 	}
 
 	#[test]
+	fn same_named_buffer_members_lower_to_msl() {
+		let main = shader_generator::tests::same_named_buffer_member_access();
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "set0.pixel_mapping->pixel_mapping[0]=set0.meshes->meshes[1];");
+	}
+
+	#[test]
 	fn mesh_stage_uses_mesh_entry_point_and_mesh_push_constants() {
 		let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
 		let mesh_output_types = besl::parser::Node::raw_code(

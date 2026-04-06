@@ -177,7 +177,7 @@ impl VisibilityShaderScope {
 		); // TODO: somehow set read/write properties per shader
 		let material_offset = Node::binding(
 			"material_offset",
-			Node::buffer("MaterialOffset", vec![Node::member("material_offset", "u32[2073600")]),
+			Node::buffer("MaterialOffset", vec![Node::member("material_offset", "u32[2073600]")]),
 			1,
 			1,
 			material_offset_read,

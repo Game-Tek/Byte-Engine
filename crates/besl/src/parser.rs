@@ -1001,11 +1001,35 @@ fn parse_literal<'i, 'a: 'i>(
 		.unwrap_or(Ok((expressions, iterator)))
 }
 
+/// Parses a parenthesized sub-expression like `(a + b)`.
+fn parse_grouped_expression<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	iterator.next_str("(")?;
+
+	// Parse the inner expression
+	let (inner_expressions, mut inner_iterator) = execute_expression_parsers(&[parse_rvalue], iterator, Vec::new())?;
+
+	inner_iterator.next_str(")").map_err(|_| ParsingFailReasons::BadSyntax {
+		message: "Expected closing ')' for grouped expression".to_string(),
+	})?;
+
+	// Append the inner expressions to the outer expression list
+	expressions.extend(inner_expressions);
+
+	// Check for following expressions (operators, accessors, etc.)
+	let possible_following_expressions = vec![parse_operator, parse_accessor, parse_index_accessor];
+
+	try_execute_expression_parsers(&possible_following_expressions, inner_iterator.clone(), expressions.clone())
+		.unwrap_or(Ok((expressions, inner_iterator)))
+}
+
 fn parse_rvalue<'i, 'a: 'i>(
 	iterator: std::slice::Iter<'i, &'a str>,
 	expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let parsers = vec![parse_function_call, parse_literal, parse_variable];
+	let parsers = vec![parse_function_call, parse_grouped_expression, parse_literal, parse_variable];
 
 	execute_expression_parsers(&parsers, iterator.clone(), expressions)
 }
@@ -1141,6 +1165,8 @@ fn parse_function_call<'i, 'a: 'i>(
 	let mut parameters = vec![];
 
 	loop {
+		let iter_before = iterator.clone();
+
 		if let Some(a) = try_execute_expression_parsers(&[parse_rvalue], iterator.clone(), Vec::new()) {
 			let (expressions, new_iterator) = a?;
 			parameters.push(expressions);
@@ -1168,6 +1194,14 @@ fn parse_function_call<'i, 'a: 'i>(
 		{
 			iterator.next();
 			break;
+		}
+
+		// Safety: if no progress was made, break to avoid infinite loop
+		if iterator.len() == iter_before.len() {
+			let token = iterator.clone().peekable().peek().copied().copied().unwrap_or("<eof>");
+			return Err(ParsingFailReasons::BadSyntax {
+				message: format!("Unexpected token '{}' in function call {}", token, function_name),
+			});
 		}
 	}
 
@@ -2015,5 +2049,88 @@ main: fn () -> void {
 			right.node,
 			Nodes::Expression(Expressions::Operator { name, .. }) if name == "&"
 		));
+	}
+
+	#[test]
+	fn parse_compute_vertex_position() {
+		let source = r#"
+compute_vertex_position: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec4f {
+	let vertex_index: u32 = compute_vertex_index(mesh, meshlet, primitive_index);
+	return vec4f(
+		vertex_positions.positions[vertex_index].x,
+		vertex_positions.positions[vertex_index].y,
+		vertex_positions.positions[vertex_index].z,
+		1.0
+	);
+}
+"#;
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+		let func = &node["compute_vertex_position"];
+		assert!(matches!(&func.node, Nodes::Function { .. }));
+	}
+
+	#[test]
+	fn parse_compute_triangle() {
+		let source = r#"
+compute_triangle: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec3u {
+	return vec3u(
+		primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 0],
+		primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 1],
+		primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 2]
+	);
+}
+"#;
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		println!("Tokens: {:?}", tokens.tokens);
+		let node = parse(&tokens).expect("Failed to parse");
+		let func = &node["compute_triangle"];
+		assert!(matches!(&func.node, Nodes::Function { .. }));
+	}
+
+	#[test]
+	fn parse_grouping_parentheses() {
+		// Minimal repro: grouping parentheses inside a function call
+		let source = r#"
+main: fn () -> void {
+	foo((a + b) * 3);
+}
+"#;
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		println!("Tokens: {:?}", tokens.tokens);
+		let node = parse(&tokens).expect("Failed to parse");
+		let func = &node["main"];
+		assert!(matches!(&func.node, Nodes::Function { .. }));
+	}
+
+	#[test]
+	fn parse_process_meshlet() {
+		let source = r#"
+process_meshlet: fn (instance_index: u32, matrix: mat4f) -> void {
+	let mesh: Mesh = meshes.meshes[instance_index];
+	let meshlet_index: u32 = threadgroup_position() + mesh.base_meshlet_index;
+	let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
+	let primitive_index: u32 = thread_idx();
+
+	set_mesh_output_counts(u8_to_u32(meshlet.primitive_count), u8_to_u32(meshlet.triangle_count));
+
+	if (primitive_index < u8_to_u32(meshlet.primitive_count)) {
+		set_mesh_vertex_position(
+			primitive_index,
+			matrix * mesh.model * compute_vertex_position(mesh, meshlet, primitive_index)
+		);
+	}
+
+	if (primitive_index < u8_to_u32(meshlet.triangle_count)) {
+		set_mesh_triangle(primitive_index, compute_triangle(mesh, meshlet, primitive_index));
+		out_instance_index[primitive_index] = instance_index;
+		out_primitive_index[primitive_index] = meshlet_index << 8 | primitive_index & 255;
+	}
+}
+"#;
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+		let func = &node["process_meshlet"];
+		assert!(matches!(&func.node, Nodes::Function { .. }));
 	}
 }

@@ -230,6 +230,50 @@ impl VisibilityShaderScope {
 				&[],
 			)],
 		);
+		let compute_vertex_position = {
+			let mut root = besl::parse(
+				r#"
+				compute_vertex_position: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec4f {
+					let vertex_index: u32 = compute_vertex_index(mesh, meshlet, primitive_index);
+					return vec4f(
+						vertex_positions.positions[vertex_index].x,
+						vertex_positions.positions[vertex_index].y,
+						vertex_positions.positions[vertex_index].z,
+						1.0
+					);
+				}
+				"#,
+			)
+			.expect("Expected compute_vertex_position source to parse");
+
+			match root.node_mut() {
+				besl::parser::Nodes::Scope { children, .. } => children.remove(0),
+				_ => panic!(
+					"Expected compute_vertex_position source to parse into a scope. The most likely cause is invalid BESL syntax in the visibility shader module."
+				),
+			}
+		};
+		let compute_triangle = {
+			let mut root = besl::parse(
+				r#"
+				compute_triangle: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec3u {
+					return vec3u(
+						primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 0],
+						primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 1],
+						primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 2]
+					);
+				}
+				"#,
+			)
+			.expect("Expected compute_triangle source to parse");
+
+			match root.node_mut() {
+				besl::parser::Nodes::Scope { children, .. } => children.remove(0),
+				_ => panic!(
+					"Expected compute_triangle source to parse into a scope. The most likely cause is invalid BESL syntax in the visibility shader module."
+				),
+			}
+		};
 
 		let mesh_outputs = Node::raw_code(
 			Some("".into()),
@@ -251,6 +295,28 @@ struct PrimitiveOutput {
 		);
 		let out_instance_index = Node::output_array("out_instance_index", "u32", 0, 126);
 		let out_primitive_index = Node::output_array("out_primitive_index", "u32", 1, 126);
+		let u8_to_u32 = Node::function(
+			"u8_to_u32",
+			vec![Node::parameter("value", "u8")],
+			"u32",
+			vec![Node::raw_code(
+				Some("return uint(value);".into()),
+				Some("return uint(value);".into()),
+				&[],
+				&[],
+			)],
+		);
+		let u16_to_u32 = Node::function(
+			"u16_to_u32",
+			vec![Node::parameter("value", "u16")],
+			"u32",
+			vec![Node::raw_code(
+				Some("return uint(value);".into()),
+				Some("return uint(value);".into()),
+				&[],
+				&[],
+			)],
+		);
 
 		let process_meshlet = {
 			let mut process_meshlet = besl::parse(
@@ -261,28 +327,17 @@ struct PrimitiveOutput {
 					let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
 					let primitive_index: u32 = thread_idx();
 
-					set_mesh_output_counts(u32(meshlet.primitive_count), u32(meshlet.triangle_count));
+					set_mesh_output_counts(u8_to_u32(meshlet.primitive_count), u8_to_u32(meshlet.triangle_count));
 
-					if (primitive_index < u32(meshlet.primitive_count)) {
-						let vertex_index: u32 = mesh.base_vertex_index
-							+ vertex_indices.vertex_indices[mesh.base_primitive_index + u32(meshlet.primitive_offset) + primitive_index];
+					if (primitive_index < u8_to_u32(meshlet.primitive_count)) {
 						set_mesh_vertex_position(
 							primitive_index,
-							matrix * mesh.model * vec4f(vertex_positions.positions[vertex_index], 1.0)
+							matrix * mesh.model * compute_vertex_position(mesh, meshlet, primitive_index)
 						);
 					}
 
-					if (primitive_index < u32(meshlet.triangle_count)) {
-						let triangle_base_index: u32 = mesh.base_triangle_index + u32(meshlet.triangle_offset) + primitive_index;
-						let triangle_index: u32 = triangle_base_index * 3;
-						set_mesh_triangle(
-							primitive_index,
-							vec3u(
-								primitive_indices.primitive_indices[triangle_index + 0],
-								primitive_indices.primitive_indices[triangle_index + 1],
-								primitive_indices.primitive_indices[triangle_index + 2]
-							)
-						);
+					if (primitive_index < u8_to_u32(meshlet.triangle_count)) {
+						set_mesh_triangle(primitive_index, compute_triangle(mesh, meshlet, primitive_index));
 						out_instance_index[primitive_index] = instance_index;
 						out_primitive_index[primitive_index] = meshlet_index << 8 | primitive_index & 255;
 					}
@@ -558,6 +613,10 @@ struct PrimitiveOutput {
 				triangle_index,
 				instance_index,
 				compute_vertex_index,
+				compute_vertex_position,
+				compute_triangle,
+				u8_to_u32,
+				u16_to_u32,
 				process_meshlet,
 				set2_binding0,
 				set2_binding2,

@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 
 use crate::shader_generator::{
-	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes, MatrixLayouts, ShaderFormatting,
-	ShaderGenerationSettings, ShaderGenerator, Stages,
+	emit_comma_separated_nodes, emit_statement_block, is_builtin_struct_type, operator_token, ordered_shader_nodes,
+	MatrixLayouts, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
 };
 
 /// Shader generator.
@@ -278,24 +278,7 @@ impl GLSLShaderGenerator {
 				}
 			}
 			besl::Nodes::Struct { name, fields, .. } => {
-				if name == "void"
-					|| name == "atomicu32"
-					|| name == "vec2u16"
-					|| name == "vec2u"
-					|| name == "vec2i"
-					|| name == "vec2f"
-					|| name == "vec3f"
-					|| name == "vec4f"
-					|| name == "mat2f"
-					|| name == "mat3f"
-					|| name == "mat4f"
-					|| name == "f32"
-					|| name == "u8" || name == "u16"
-					|| name == "u32"
-					|| name == "i32"
-					|| name == "Texture2D"
-					|| name == "ArrayTexture2D"
-				{
+				if is_builtin_struct_type(name, true) {
 					return;
 				}
 
@@ -463,20 +446,7 @@ impl GLSLShaderGenerator {
 			besl::Nodes::Expression(expression) => match expression {
 				besl::Expressions::Operator { operator, left, right } => {
 					self.emit_node_string(string, &left);
-					let operator = match operator {
-						besl::Operators::Plus => "+",
-						besl::Operators::Minus => "-",
-						besl::Operators::Multiply => "*",
-						besl::Operators::Divide => "/",
-						besl::Operators::Modulo => "%",
-						besl::Operators::ShiftLeft => "<<",
-						besl::Operators::ShiftRight => ">>",
-						besl::Operators::BitwiseAnd => "&",
-						besl::Operators::BitwiseOr => "|",
-						besl::Operators::Assignment => "=",
-						besl::Operators::Equality => "==",
-						besl::Operators::LessThan => "<",
-					};
+					let operator = operator_token(operator);
 					if self.minified {
 						string.push_str(operator);
 					} else {

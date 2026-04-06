@@ -151,6 +151,39 @@ pub(crate) fn emit_statement_block<F>(
 	}
 }
 
+pub(crate) fn operator_token(operator: &besl::Operators) -> &'static str {
+	match operator {
+		besl::Operators::Plus => "+",
+		besl::Operators::Minus => "-",
+		besl::Operators::Multiply => "*",
+		besl::Operators::Divide => "/",
+		besl::Operators::Modulo => "%",
+		besl::Operators::ShiftLeft => "<<",
+		besl::Operators::ShiftRight => ">>",
+		besl::Operators::BitwiseAnd => "&",
+		besl::Operators::BitwiseOr => "|",
+		besl::Operators::Assignment => "=",
+		besl::Operators::Equality => "==",
+		besl::Operators::LessThan => "<",
+	}
+}
+
+pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> bool {
+	matches!(
+		name,
+		"void"
+			| "vec2u16"
+			| "vec2u" | "vec2i"
+			| "vec2f" | "vec3f"
+			| "vec4f" | "mat2f"
+			| "mat3f" | "mat4f"
+			| "f32" | "u8"
+			| "u16" | "u32"
+			| "i32" | "Texture2D"
+			| "ArrayTexture2D"
+	) || supports_atomic_u32 && name == "atomicu32"
+}
+
 impl ShaderGenerationSettings {
 	pub fn compute(extent: Extent) -> ShaderGenerationSettings {
 		Self::from_stage(Stages::Compute { local_size: extent })

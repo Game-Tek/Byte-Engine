@@ -843,6 +843,7 @@ impl Nodes {
 		match self {
 			Nodes::Member { count, .. } => count.is_some(),
 			Nodes::Output { count, .. } => count.is_some(),
+			Nodes::Const { r#type, .. } => matches!(r#type.borrow().node(), Nodes::Struct { template: Some(_), .. }),
 			Nodes::Expression(Expressions::Member { source, .. }) => source.borrow().node().is_indexable(),
 			Nodes::Expression(Expressions::Accessor { right, .. }) => right.borrow().node().is_indexable(),
 			_ => false,
@@ -1135,6 +1136,39 @@ fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
 }
 
 fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReference, LexError> {
+	if let Some(existing) = get_reference(chain, type_name) {
+		return Ok(existing);
+	}
+
+	if type_name.contains('[') {
+		let mut parts = type_name.split(|c| c == '[' || c == ']');
+		let element_type_name = parts.next().ok_or(LexError::Undefined {
+			message: Some("No type name".to_string()),
+		})?;
+		let element_type = resolve_type(chain, element_type_name)?;
+		let count = parts
+			.next()
+			.ok_or(LexError::Undefined {
+				message: Some("No count".to_string()),
+			})?
+			.parse::<usize>()
+			.map_err(|_| LexError::Undefined {
+				message: Some("Invalid count".to_string()),
+			})?;
+
+		let array_type = Node::internal_new(Node {
+			node: Nodes::Struct {
+				name: type_name.to_string(),
+				template: Some(element_type.clone()),
+				fields: (0..count)
+					.map(|index| Node::member(&format!("value_{}", index), element_type.clone()).into())
+					.collect(),
+				types: Vec::new(),
+			},
+		});
+		return Ok(array_type);
+	}
+
 	get_reference(chain, type_name).ok_or(LexError::ReferenceToUndefinedType {
 		type_name: type_name.to_string(),
 	})
@@ -1921,6 +1955,10 @@ fn resolve_call_target(chain: &[NodeReference], name: &str, parameters: &[NodeRe
 		if let Some(candidate) = resolve_call_target_in_node(node, name, parameters) {
 			return Ok(candidate);
 		}
+	}
+
+	if let Ok(r#type) = resolve_type(chain, name) {
+		return Ok(r#type);
 	}
 
 	Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters)
@@ -3015,6 +3053,99 @@ main: fn () -> void {
 			}
 			_ => panic!("Expected Const node"),
 		}
+	}
+
+	#[test]
+	fn lex_const_array_variable() {
+		let script = r#"
+		WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
+
+		main: fn () -> void {
+			let value: f32 = WEIGHTS[1];
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+
+		let weights = node.get_descendant("WEIGHTS").expect("Expected WEIGHTS const");
+		let weights = weights.borrow();
+
+		match weights.node() {
+			Nodes::Const { name, r#type, value } => {
+				assert_eq!(name, "WEIGHTS");
+				assert_eq!(r#type.borrow().get_name().unwrap(), "f32[3]");
+				assert!(weights.node().is_indexable());
+				{
+					let value = value.borrow();
+					assert!(matches!(value.node(), Nodes::Expression(Expressions::FunctionCall { .. })));
+				}
+			}
+			_ => panic!("Expected Const node"),
+		}
+
+		let main = node.get_descendant("main").expect("Expected main");
+		let statements = {
+			let main = main.borrow();
+			let Nodes::Function { statements, .. } = main.node() else {
+				panic!("Expected function");
+			};
+			statements.clone()
+		};
+
+		let statement = statements[0].clone();
+		{
+			let statement = statement.borrow();
+			match statement.node() {
+				Nodes::Expression(Expressions::Operator { right, .. }) => {
+					let right = right.borrow();
+					assert!(matches!(right.node(), Nodes::Expression(Expressions::Accessor { .. })));
+				}
+				_ => panic!("Expected assignment"),
+			}
+		};
+	}
+
+	#[test]
+	fn lex_array_constructor_call() {
+		let script = r#"
+		main: fn () -> void {
+			let weights: f32[3] = f32[3](0.5, 0.25, 0.125);
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let statements = {
+			let main = main.borrow();
+			let Nodes::Function { statements, .. } = main.node() else {
+				panic!("Expected function");
+			};
+			statements.clone()
+		};
+
+		let statement = statements[0].clone();
+		{
+			let statement = statement.borrow();
+			match statement.node() {
+				Nodes::Expression(Expressions::Operator { left, right, .. }) => {
+					match left.borrow().node() {
+						Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => {
+							assert_eq!(r#type.borrow().get_name().unwrap(), "f32[3]");
+						}
+						_ => panic!("Expected variable declaration"),
+					}
+
+					match right.borrow().node() {
+						Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
+							assert_eq!(parameters.len(), 3);
+							assert_eq!(function.borrow().get_name().unwrap(), "f32[3]");
+						}
+						_ => panic!("Expected function call"),
+					}
+				}
+				_ => panic!("Expected assignment"),
+			}
+		};
 	}
 
 	#[test]

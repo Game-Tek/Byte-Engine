@@ -751,6 +751,7 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 		},
 		_ => e,
 	})?;
+	let (r#type, mut iterator) = parse_array_type_suffix(iterator, r#type)?;
 
 	iterator.next_str("=").map_err(|e| match e {
 		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
@@ -936,6 +937,7 @@ fn parse_var_decl<'i, 'a: 'i>(
 		},
 		_ => e,
 	})?;
+	let (variable_type, iterator) = parse_array_type_suffix(iterator, variable_type)?;
 
 	expressions.push(Atoms::VariableDeclaration {
 		name: variable_name,
@@ -947,6 +949,22 @@ fn parse_var_decl<'i, 'a: 'i>(
 	let expressions = execute_expression_parsers(&possible_following_expressions, iterator, expressions)?;
 
 	Ok(expressions)
+}
+
+fn parse_array_type_suffix<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	base_type: &'a str,
+) -> Result<(&'a str, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
+	if iterator.clone().peekable().peek().map(|token| token.as_ref()) != Some("[") {
+		return Ok((base_type, iterator));
+	}
+
+	iterator.next_str("[")?;
+	let count = iterator.next_is(|token| token.chars().all(|c| c.is_ascii_digit()))?;
+	iterator.next_str("]")?;
+
+	let leaked = format!("{}[{}]", base_type, count).leak();
+	Ok((leaked, iterator))
 }
 
 fn parse_keywords<'i, 'a: 'i>(
@@ -1258,6 +1276,7 @@ fn parse_function_call<'i, 'a: 'i>(
 	mut expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	let function_name = iterator.next_identifier()?;
+	let (function_name, mut iterator) = parse_array_type_suffix(iterator, function_name)?;
 	iterator.next_str("(")?;
 
 	let mut parameters = vec![];
@@ -2123,6 +2142,32 @@ TAU: const f32 = 3.14 * 2.0;
 				assert_eq!(*name, "*");
 			} else {
 				panic!("Expected an operator expression, got: {:?}", value.node);
+			}
+		} else {
+			panic!("Expected a const node");
+		}
+	}
+
+	#[test]
+	fn test_parse_const_array() {
+		let source = "
+WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
+";
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+
+		let const_node = &node["WEIGHTS"];
+
+		if let Nodes::Const { name, r#type, value } = &const_node.node {
+			assert_eq!(*name, "WEIGHTS");
+			assert_eq!(*r#type, "f32[3]");
+
+			if let Nodes::Expression(Expressions::Call { name, parameters }) = &value.node {
+				assert_eq!(*name, "f32[3]");
+				assert_eq!(parameters.len(), 3);
+			} else {
+				panic!("Expected an array constructor call, got: {:?}", value.node);
 			}
 		} else {
 			panic!("Expected a const node");

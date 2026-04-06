@@ -78,6 +78,12 @@ impl HLSLShaderGenerator {
 				});
 				string.push(')');
 			}
+			"fetch" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".Load(int3(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", 0))");
+			}
 			_ => {
 				for element in elements {
 					self.emit_node_string(string, element);
@@ -143,6 +149,17 @@ impl HLSLShaderGenerator {
 		}
 	}
 
+	fn emit_type_name(string: &mut String, source: &str) {
+		if let Some((element_type, count)) = source.split_once('[') {
+			string.push_str(Self::translate_type(element_type));
+			string.push('[');
+			string.push_str(count.trim_end_matches(']'));
+			string.push(']');
+		} else {
+			string.push_str(Self::translate_type(source));
+		}
+	}
+
 	// This function appends to the `string` parameter the string representation of the node.
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
@@ -164,7 +181,7 @@ impl HLSLShaderGenerator {
 				params,
 				..
 			} => {
-				string.push_str(Self::translate_type(&return_type.borrow().get_name().unwrap()));
+				Self::emit_type_name(string, &return_type.borrow().get_name().unwrap());
 
 				string.push(' ');
 
@@ -373,13 +390,12 @@ impl HLSLShaderGenerator {
 					let function = RefCell::borrow(&function);
 					let name = function.get_name().unwrap();
 
-					let name = Self::translate_type(&name);
-
-					string.push_str(&format!("{}(", name));
+					Self::emit_type_name(string, &name);
+					string.push('(');
 					emit_comma_separated_nodes(string, formatting, parameters, |string, parameter| {
 						self.emit_node_string(string, parameter)
 					});
-					string.push_str(&format!(")"));
+					string.push(')');
 				}
 				besl::Expressions::IntrinsicCall {
 					intrinsic,
@@ -403,11 +419,9 @@ impl HLSLShaderGenerator {
 					}
 				},
 				besl::Expressions::VariableDeclaration { name, r#type } => {
-					string.push_str(&format!(
-						"{} {}",
-						Self::translate_type(&r#type.borrow().get_name().unwrap()),
-						name
-					));
+					Self::emit_type_name(string, &r#type.borrow().get_name().unwrap());
+					string.push(' ');
+					string.push_str(name);
 				}
 				besl::Expressions::Literal { value } => {
 					string.push_str(&value);
@@ -637,11 +651,11 @@ impl HLSLShaderGenerator {
 				self.emit_node_string(string, &value);
 			}
 			besl::Nodes::Const { name, r#type, value } => {
-				string.push_str(&format!(
-					"static const {} {} = ",
-					Self::translate_type(&r#type.borrow().get_name().unwrap()),
-					name,
-				));
+				string.push_str("static const ");
+				Self::emit_type_name(string, &r#type.borrow().get_name().unwrap());
+				string.push(' ');
+				string.push_str(name);
+				string.push_str(" = ");
 				self.emit_node_string(string, &value);
 				string.push_str(&format!(";{break_char}"));
 			}
@@ -808,6 +822,39 @@ mod tests {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "void main(){float3 albedo=float3(1.0,0.0,0.0);}");
+	}
+
+	#[test]
+	fn fetch_intrinsic_lowers_to_hlsl() {
+		let script = r#"
+		main: fn () -> void {
+			let coord: vec2u = vec2u(1, 2);
+			let texel: vec4f = fetch(texture, coord);
+		}
+		"#;
+
+		let mut root = besl::Node::root();
+		root.add_child(
+			besl::Node::binding(
+				"texture",
+				besl::BindingTypes::CombinedImageSampler { format: String::new() },
+				0,
+				0,
+				true,
+				false,
+			)
+			.into(),
+		);
+
+		let root = besl::compile_to_besl(script, Some(root)).expect("Expected fetch shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = HLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "float4 texel=texture.Load(int3(coord, 0));");
 	}
 
 	#[test]
@@ -1047,6 +1094,28 @@ mod tests {
 
 		assert_string_contains!(shader, "max(1.0,2.0)");
 		assert_string_contains!(shader, "clamp(1.5,0.0,1.0)");
+	}
+
+	#[test]
+	fn const_array_variable_lowers_to_hlsl() {
+		let script = r#"
+		WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
+
+		main: fn () -> void {
+			let value: f32 = WEIGHTS[1];
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected const-array shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = HLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "static const float[3] WEIGHTS = float[3](0.5,0.25,0.125);");
+		assert_string_contains!(shader, "float value=WEIGHTS[1];");
 	}
 
 	#[test]

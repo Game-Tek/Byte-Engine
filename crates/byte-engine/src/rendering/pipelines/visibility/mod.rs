@@ -823,13 +823,307 @@ fn build_pixel_mapping_root() -> besl::Node {
 	root
 }
 
+pub fn get_gtao_blur_shader() -> GeneratedPlatformShader {
+	generate_gtao_blur_shader_for_language(PlatformShaderLanguage::current_platform())
+}
+
+pub(crate) fn generate_gtao_blur_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
+	let main_node = build_gtao_blur_program();
+	let mut shader_generator = PlatformShaderGenerator::new();
+
+	shader_generator
+		.generate_for_language(language, &ShaderGenerationSettings::compute(Extent::square(8)), &main_node)
+		.unwrap()
+}
+
+fn build_gtao_blur_program() -> besl::NodeReference {
+	let source = r#"
+	GTAO_BLUR_RADIUS: const u32 = 4;
+	GTAO_BLUR_SPATIAL_WEIGHTS: const f32[5] = f32[5](
+		0.2270270270,
+		0.1945945946,
+		0.1216216216,
+		0.0540540541,
+		0.0162162162
+	);
+	GTAO_BLUR_BASE_RELATIVE_SIGMA: const f32 = 0.03;
+	GTAO_BLUR_MIN_RELATIVE_SIGMA: const f32 = 0.004;
+	GTAO_BLUR_SIGMA_VARIANCE_SCALE: const f32 = 32.0;
+	GTAO_BLUR_VARIANCE_BLEND_SCALE: const f32 = 96.0;
+
+	clamp_subtract: fn (value: u32, offset: u32) -> u32 {
+		if (value < offset) {
+			return 0;
+		}
+
+		return value - offset;
+	}
+
+	clamp_add: fn (value: u32, offset: u32, extent: u32) -> u32 {
+		let maximum: u32 = extent - 1;
+		if (value + offset > maximum) {
+			return maximum;
+		}
+
+		return value + offset;
+	}
+
+	linear_view_depth: fn (depth: f32) -> f32 {
+		let clip_space: vec4f = vec4f(0.0, 0.0, depth, 1.0);
+		let view_space: vec4f = views.views[0].inverse_projection * clip_space;
+		return max(view_space.z / view_space.w, 0.0001);
+	}
+
+	relative_depth_delta: fn (center_linear_depth: f32, sample_depth: f32) -> f32 {
+		let sample_linear_depth: f32 = linear_view_depth(sample_depth);
+		return (sample_linear_depth - center_linear_depth) / max(center_linear_depth, 0.0001);
+	}
+
+	blur_sample_coordinate: fn (pixel: vec2u, extent: vec2u, offset: u32, negative: u32) -> vec2u {
+		if (blur_direction.x > 0.0) {
+			if (negative == 1) {
+				return vec2u(clamp_subtract(pixel.x, offset), pixel.y);
+			}
+
+			return vec2u(clamp_add(pixel.x, offset, extent.x), pixel.y);
+		}
+
+		if (negative == 1) {
+			return vec2u(pixel.x, clamp_subtract(pixel.y, offset));
+		}
+
+		return vec2u(pixel.x, clamp_add(pixel.y, offset, extent.y));
+	}
+
+	neighbor_depth: fn (
+		pixel: vec2u,
+		extent: vec2u,
+		offset_x: u32,
+		offset_y: u32,
+		negative_x: u32,
+		negative_y: u32
+	) -> f32 {
+		let sample_x: u32 = clamp_add(pixel.x, offset_x, extent.x);
+		let sample_y: u32 = clamp_add(pixel.y, offset_y, extent.y);
+		if (negative_x == 1) {
+			sample_x = clamp_subtract(pixel.x, offset_x);
+		}
+		if (negative_y == 1) {
+			sample_y = clamp_subtract(pixel.y, offset_y);
+		}
+		let sample_coord: vec2u = vec2u(sample_x, sample_y);
+		return fetch(visibility_depth, sample_coord).x;
+	}
+
+	neighbor_stats: fn (
+		pixel: vec2u,
+		extent: vec2u,
+		center_linear_depth: f32,
+		offset_x: u32,
+		offset_y: u32,
+		negative_x: u32,
+		negative_y: u32
+	) -> vec3f {
+		let sample_depth: f32 = neighbor_depth(pixel, extent, offset_x, offset_y, negative_x, negative_y);
+		if (sample_depth == 0.0) {
+			return vec3f(0.0, 0.0, 0.0);
+		}
+
+		let delta: f32 = relative_depth_delta(center_linear_depth, sample_depth);
+		return vec3f(delta, delta * delta, 1.0);
+	}
+
+	compute_local_depth_variance: fn (pixel: vec2u, extent: vec2u, center_linear_depth: f32) -> f32 {
+		let sample_00: vec3f = neighbor_stats(pixel, extent, center_linear_depth, 1, 1, 1, 1);
+		let sample_01: vec3f = neighbor_stats(pixel, extent, center_linear_depth, 0, 1, 0, 1);
+		let sample_02: vec3f = neighbor_stats(pixel, extent, center_linear_depth, 1, 1, 0, 1);
+		let sample_10: vec3f = neighbor_stats(pixel, extent, center_linear_depth, 1, 0, 1, 0);
+		let sample_11: vec3f = neighbor_stats(pixel, extent, center_linear_depth, 0, 0, 0, 0);
+		let sample_12: vec3f = neighbor_stats(pixel, extent, center_linear_depth, 1, 0, 0, 0);
+		let sample_20: vec3f = neighbor_stats(pixel, extent, center_linear_depth, 1, 1, 1, 0);
+		let sample_21: vec3f = neighbor_stats(pixel, extent, center_linear_depth, 0, 1, 0, 0);
+		let sample_22: vec3f = neighbor_stats(pixel, extent, center_linear_depth, 1, 1, 0, 0);
+
+		let mean: f32 = sample_00.x;
+		mean = mean + sample_01.x;
+		mean = mean + sample_02.x;
+		mean = mean + sample_10.x;
+		mean = mean + sample_11.x;
+		mean = mean + sample_12.x;
+		mean = mean + sample_20.x;
+		mean = mean + sample_21.x;
+		mean = mean + sample_22.x;
+
+		let mean_sq: f32 = sample_00.y;
+		mean_sq = mean_sq + sample_01.y;
+		mean_sq = mean_sq + sample_02.y;
+		mean_sq = mean_sq + sample_10.y;
+		mean_sq = mean_sq + sample_11.y;
+		mean_sq = mean_sq + sample_12.y;
+		mean_sq = mean_sq + sample_20.y;
+		mean_sq = mean_sq + sample_21.y;
+		mean_sq = mean_sq + sample_22.y;
+
+		let sample_count: f32 = sample_00.z;
+		sample_count = sample_count + sample_01.z;
+		sample_count = sample_count + sample_02.z;
+		sample_count = sample_count + sample_10.z;
+		sample_count = sample_count + sample_11.z;
+		sample_count = sample_count + sample_12.z;
+		sample_count = sample_count + sample_20.z;
+		sample_count = sample_count + sample_21.z;
+		sample_count = sample_count + sample_22.z;
+
+		if (sample_count <= 1.0) {
+			return 0.0;
+		}
+
+		let normalized_mean: f32 = mean / sample_count;
+		let normalized_mean_sq: f32 = mean_sq / sample_count;
+		return max(normalized_mean_sq - normalized_mean * normalized_mean, 0.0);
+	}
+
+	compute_bilateral_weight: fn (relative_depth_difference: f32, local_depth_variance: f32) -> f32 {
+		let local_depth_stddev: f32 = sqrt(local_depth_variance);
+		let sigma: f32 = max(
+			GTAO_BLUR_MIN_RELATIVE_SIGMA,
+			GTAO_BLUR_BASE_RELATIVE_SIGMA / (1.0 + local_depth_stddev * GTAO_BLUR_SIGMA_VARIANCE_SCALE)
+		);
+		return exp(-(relative_depth_difference * relative_depth_difference) / max(2.0 * sigma * sigma, 0.000001));
+	}
+
+	main: fn () -> void {
+		let coord: vec2u = thread_id();
+		guard_image_bounds(ao_output, coord);
+		let extent: vec2u = image_size(ao_output);
+
+		let center_depth: f32 = fetch(visibility_depth, coord).x;
+		if (center_depth == 0.0) {
+			write(ao_output, coord, vec4f(1.0, 1.0, 1.0, 1.0));
+			return;
+		}
+
+		let center_ao: f32 = fetch(ao_source, coord).x;
+		let center_linear_depth: f32 = linear_view_depth(center_depth);
+		let local_depth_variance: f32 = compute_local_depth_variance(coord, extent, center_linear_depth);
+		let local_depth_stddev: f32 = sqrt(local_depth_variance);
+		let blur_mix: f32 = 1.0 / (1.0 + local_depth_stddev * GTAO_BLUR_VARIANCE_BLEND_SCALE);
+
+		let filtered_ao: f32 = center_ao * GTAO_BLUR_SPATIAL_WEIGHTS[0];
+		let total_weight: f32 = GTAO_BLUR_SPATIAL_WEIGHTS[0];
+
+		for (let offset: u32 = 1; offset <= GTAO_BLUR_RADIUS; offset = offset + 1) {
+			let spatial_weight: f32 = GTAO_BLUR_SPATIAL_WEIGHTS[offset];
+
+			let positive_coord: vec2u = blur_sample_coordinate(coord, extent, offset, 0);
+			let positive_depth: f32 = fetch(visibility_depth, positive_coord).x;
+			if (positive_depth != 0.0) {
+				let positive_difference: f32 = abs(relative_depth_delta(center_linear_depth, positive_depth));
+				let positive_weight: f32 = spatial_weight * compute_bilateral_weight(positive_difference, local_depth_variance);
+				filtered_ao = filtered_ao + fetch(ao_source, positive_coord).x * positive_weight;
+				total_weight = total_weight + positive_weight;
+			}
+
+			let negative_coord: vec2u = blur_sample_coordinate(coord, extent, offset, 1);
+			let negative_depth: f32 = fetch(visibility_depth, negative_coord).x;
+			if (negative_depth != 0.0) {
+				let negative_difference: f32 = abs(relative_depth_delta(center_linear_depth, negative_depth));
+				let negative_weight: f32 = spatial_weight * compute_bilateral_weight(negative_difference, local_depth_variance);
+				filtered_ao = filtered_ao + fetch(ao_source, negative_coord).x * negative_weight;
+				total_weight = total_weight + negative_weight;
+			}
+		}
+
+		let blurred_ao: f32 = filtered_ao / max(total_weight, 0.00001);
+		let final_ao: f32 = mix(center_ao, blurred_ao, blur_mix);
+		write(ao_output, coord, vec4f(final_ao, 0.0, 0.0, 1.0));
+	}
+	"#;
+
+	besl::compile_to_besl(source, Some(build_gtao_blur_root()))
+		.unwrap()
+		.get_main()
+		.unwrap()
+}
+
+fn build_gtao_blur_root() -> besl::Node {
+	let mut root = besl::Node::root();
+	let mat4f_type = root.get_child("mat4f").unwrap();
+	let vec2f_type = root.get_child("vec2f").unwrap();
+	let f32_type = root.get_child("f32").unwrap();
+
+	let view_type = root.add_child(
+		besl::Node::r#struct(
+			"View",
+			vec![
+				besl::Node::member("view", mat4f_type.clone()).into(),
+				besl::Node::member("projection", mat4f_type.clone()).into(),
+				besl::Node::member("view_projection", mat4f_type.clone()).into(),
+				besl::Node::member("inverse_view", mat4f_type.clone()).into(),
+				besl::Node::member("inverse_projection", mat4f_type.clone()).into(),
+				besl::Node::member("inverse_view_projection", mat4f_type.clone()).into(),
+				besl::Node::member("fov", vec2f_type.clone()).into(),
+				besl::Node::member("near", f32_type.clone()).into(),
+				besl::Node::member("far", f32_type.clone()).into(),
+			],
+		)
+		.into(),
+	);
+
+	root.add_children(vec![
+		besl::Node::binding(
+			"views",
+			besl::BindingTypes::Buffer {
+				members: vec![besl::Node::array("views", view_type, 8)],
+			},
+			0,
+			0,
+			true,
+			false,
+		)
+		.into(),
+		besl::Node::binding(
+			"visibility_depth",
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			1,
+			0,
+			true,
+			false,
+		)
+		.into(),
+		besl::Node::binding(
+			"ao_source",
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			1,
+			1,
+			true,
+			false,
+		)
+		.into(),
+		besl::Node::binding(
+			"ao_output",
+			besl::BindingTypes::Image {
+				format: "r8".to_string(),
+			},
+			1,
+			2,
+			false,
+			true,
+		)
+		.into(),
+		besl::Node::specialization("blur_direction", vec2f_type).into(),
+	]);
+
+	root
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{
-		generate_pixel_mapping_shader_for_language, get_material_count_msl_source, get_material_offset_msl_source,
-		get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source,
-		MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+		generate_gtao_blur_shader_for_language, generate_pixel_mapping_shader_for_language, get_material_count_msl_source,
+		get_material_offset_msl_source, get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source,
+		get_visibility_pass_mesh_msl_source, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+		VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 	};
 	use resource_management::platform_shader_generator::PlatformShaderLanguage;
 
@@ -1009,5 +1303,22 @@ mod tests {
 			),
 			"Expected MSL pixel mapping source to lower the scratch offset increment through the Metal atomic API. Shader: {shader}"
 		);
+	}
+
+	#[test]
+	fn gtao_blur_glsl_source_compiles_and_uses_const_array_weights() {
+		let shader = generate_gtao_blur_shader_for_language(PlatformShaderLanguage::Glsl).into_source();
+
+		assert!(
+			shader.contains("const float[5] GTAO_BLUR_SPATIAL_WEIGHTS"),
+			"Expected generated GLSL blur shader to preserve the const array weights. Shader: {shader}"
+		);
+		assert!(
+			shader.contains("texelFetch(ao_source,ivec2(positive_coord),0).x"),
+			"Expected generated GLSL blur shader to lower BESL fetch calls to texelFetch. Shader: {shader}"
+		);
+
+		resource_management::glsl::compile(&shader, "GTAO Blur Compute Shader")
+			.expect("Expected generated GLSL blur shader to compile");
 	}
 }

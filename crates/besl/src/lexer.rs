@@ -422,32 +422,7 @@ impl Node {
 			vec4f32.clone(),
 		);
 		let thread_idx_intrinsic = builtin_intrinsic("thread_idx", vec![], u32_t.clone());
-		let threadgroup_position_intrinsic = builtin_intrinsic("threadgroup_position", vec![], u32_t.clone());
 		let thread_id_intrinsic = builtin_intrinsic("thread_id", vec![], vec2u32.clone());
-		let set_mesh_output_counts_intrinsic = builtin_intrinsic(
-			"set_mesh_output_counts",
-			vec![("vertex_count", u32_t.clone()), ("primitive_count", u32_t.clone())],
-			void.clone(),
-		);
-		let set_mesh_vertex_position_intrinsic = builtin_intrinsic(
-			"set_mesh_vertex_position",
-			vec![("vertex_index", u32_t.clone()), ("position", vec4f32.clone())],
-			void.clone(),
-		);
-		let set_mesh_triangle_intrinsic = builtin_intrinsic(
-			"set_mesh_triangle",
-			vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32.clone())],
-			void.clone(),
-		);
-		let set_mesh_primitive_intrinsic = builtin_intrinsic(
-			"set_mesh_primitive",
-			vec![
-				("primitive_index", u32_t.clone()),
-				("instance_index", u32_t.clone()),
-				("meshlet_primitive_index", u32_t.clone()),
-			],
-			void.clone(),
-		);
 		let image_load_intrinsic = builtin_intrinsic(
 			"image_load",
 			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
@@ -499,12 +474,7 @@ impl Node {
 			pow_intrinsic,
 			reflect_intrinsic,
 			thread_idx_intrinsic,
-			threadgroup_position_intrinsic,
 			thread_id_intrinsic,
-			set_mesh_output_counts_intrinsic,
-			set_mesh_vertex_position_intrinsic,
-			set_mesh_triangle_intrinsic,
-			set_mesh_primitive_intrinsic,
 			image_load_intrinsic,
 			guard_image_bounds_intrinsic,
 			write_intrinsic,
@@ -580,6 +550,12 @@ impl Node {
 				return_type,
 				statements,
 			},
+		}
+	}
+
+	pub fn conditional(condition: NodeReference, statements: Vec<NodeReference>) -> Node {
+		Node {
+			node: Nodes::Conditional { condition, statements },
 		}
 	}
 
@@ -791,6 +767,12 @@ impl Node {
 			| Nodes::Struct { fields: children, .. }
 			| Nodes::Intrinsic { elements: children, .. } => Some(children.clone()),
 			Nodes::Function { statements, .. } => Some(statements.clone()),
+			Nodes::Conditional { condition, statements } => {
+				let mut children = Vec::with_capacity(statements.len() + 1);
+				children.push(condition.clone());
+				children.extend(statements.iter().cloned());
+				Some(children)
+			}
 			Nodes::Expression(expression) => match expression {
 				Expressions::IntrinsicCall { elements: children, .. } => Some(children.clone()),
 				_ => None,
@@ -852,6 +834,10 @@ pub enum Nodes {
 		return_type: NodeReference,
 		statements: Vec<NodeReference>,
 	},
+	Conditional {
+		condition: NodeReference,
+		statements: Vec<NodeReference>,
+	},
 	Specialization {
 		name: String,
 		r#type: NodeReference,
@@ -910,6 +896,7 @@ impl Nodes {
 	pub fn is_leaf(&self) -> bool {
 		match self {
 			Nodes::Function { .. } => false,
+			Nodes::Conditional { .. } => false,
 			Nodes::Struct { .. } => false,
 			Nodes::Binding { .. } => false,
 			Nodes::PushConstant { .. } => false,
@@ -924,6 +911,26 @@ impl Nodes {
 			Nodes::Member { .. } => true,
 			Nodes::Expression { .. } => true,
 			Nodes::Raw { .. } => true,
+		}
+	}
+
+	pub fn is_indexable(&self) -> bool {
+		match self {
+			Nodes::Member { count, .. } => count.is_some(),
+			Nodes::Expression(Expressions::Member { source, .. }) => source.borrow().node().is_indexable(),
+			Nodes::Expression(Expressions::Accessor { right, .. }) => right.borrow().node().is_indexable(),
+			_ => false,
+		}
+	}
+
+	pub fn is_buffer_binding(&self) -> bool {
+		match self {
+			Nodes::Binding {
+				r#type: BindingTypes::Buffer { .. },
+				..
+			} => true,
+			Nodes::Expression(Expressions::Member { source, .. }) => source.borrow().node().is_buffer_binding(),
+			_ => false,
 		}
 	}
 }
@@ -970,6 +977,13 @@ impl std::fmt::Debug for Node {
 					name,
 					params.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())),
 					statements.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))
+				)
+			}
+			Nodes::Conditional { condition, statements } => {
+				write!(
+					f,
+					"Conditional {{ condition: {:?}, statements: {:?} }}",
+					condition, statements
 				)
 			}
 			Nodes::Specialization { name, r#type } => {
@@ -1089,6 +1103,7 @@ pub enum Operators {
 	Modulo,
 	Assignment,
 	Equality,
+	LessThan,
 }
 
 #[derive(Clone, Debug)]
@@ -1173,6 +1188,17 @@ fn get_non_intrinsic_descendant(node: &NodeReference, child_name: &str) -> Optio
 
 			for member in members {
 				if let Some(c) = get_non_intrinsic_descendant(member, child_name) {
+					return Some(c);
+				}
+			}
+		}
+		Nodes::Conditional { condition, statements } => {
+			if let Some(c) = get_non_intrinsic_descendant(condition, child_name) {
+				return Some(c);
+			}
+
+			for statement in statements {
+				if let Some(c) = get_non_intrinsic_descendant(statement, child_name) {
 					return Some(c);
 				}
 			}
@@ -1491,6 +1517,16 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 
 			this
 		}
+		parser::Nodes::Conditional { condition, statements } => {
+			let condition = lex_parsed_node(chain.clone(), condition)?;
+			let mut lexed_statements = Vec::with_capacity(statements.len());
+
+			for statement in statements {
+				lexed_statements.push(lex_parsed_node(chain.clone(), statement)?);
+			}
+
+			Node::conditional(condition, lexed_statements).into()
+		}
 		parser::Nodes::PushConstant { members } => {
 			let this: NodeReference = Node::push_constant(vec![]).into();
 
@@ -1705,6 +1741,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 						"%" => Operators::Modulo,
 						"=" => Operators::Assignment,
 						"==" => Operators::Equality,
+						"<" => Operators::LessThan,
 						_ => {
 							panic!("Invalid operator")
 						}
@@ -2751,6 +2788,41 @@ main: fn () -> void {
 				}
 			}
 			_ => panic!("Expected Const node"),
+		}
+	}
+
+	#[test]
+	fn lex_conditional_block() {
+		let script = r#"
+		main: fn () -> void {
+			let n: u32 = 0;
+			if (n < 1) {
+				n = 2;
+			}
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let conditional = statements[1].borrow();
+		match conditional.node() {
+			Nodes::Conditional { condition, statements } => {
+				assert_eq!(statements.len(), 1);
+
+				match condition.borrow().node() {
+					Nodes::Expression(Expressions::Operator { operator, .. }) => {
+						assert_eq!(operator, &Operators::LessThan);
+					}
+					_ => panic!("Expected less-than condition"),
+				}
+			}
+			_ => panic!("Expected conditional node"),
 		}
 	}
 }

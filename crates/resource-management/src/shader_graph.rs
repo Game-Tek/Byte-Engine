@@ -113,6 +113,13 @@ pub fn build_graph(main_function_node: besl::NodeReference) -> Graph {
 
 				build_graph_impl(node.clone(), return_type.clone(), graph);
 			}
+			besl::Nodes::Conditional { condition, statements } => {
+				build_graph_impl(node.clone(), condition.clone(), graph);
+
+				for statement in statements {
+					build_graph_impl(node.clone(), statement.clone(), graph);
+				}
+			}
 			besl::Nodes::Struct { fields, .. } => {
 				for field in fields {
 					build_graph_impl(node.clone(), field.clone(), graph);

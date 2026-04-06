@@ -276,7 +276,7 @@ pub mod tests {
 	pub fn intrinsic() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {
-			sample(number);
+			sample_user(number);
 		}
 		"#;
 
@@ -284,7 +284,7 @@ pub mod tests {
 
 		let number_literal = Node::literal("number", Node::glsl("1.0", &[], &[]));
 		let sample_function = Node::intrinsic(
-			"sample",
+			"sample_user",
 			Node::parameter("num", "f32"),
 			Node::sentence(vec![
 				Node::glsl("0 + ", &[], &[]),

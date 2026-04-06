@@ -94,15 +94,6 @@ impl HLSLShaderGenerator {
 		}
 	}
 
-	fn expression_is_indexable(node: &besl::NodeReference) -> bool {
-		match node.borrow().node() {
-			besl::Nodes::Member { count, .. } => count.is_some(),
-			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => Self::expression_is_indexable(source),
-			besl::Nodes::Expression(besl::Expressions::Accessor { right, .. }) => Self::expression_is_indexable(right),
-			_ => false,
-		}
-	}
-
 	// This function appends to the `string` parameter the string representation of the node.
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
@@ -356,12 +347,22 @@ impl HLSLShaderGenerator {
 			besl::Nodes::Expression(expression) => match expression {
 				besl::Expressions::Operator { operator, left, right } => {
 					self.emit_node_string(string, &left);
-					if operator == &besl::Operators::Assignment {
-						if self.minified {
-							string.push('=')
-						} else {
-							string.push_str(" = ");
-						}
+					let operator = match operator {
+						besl::Operators::Plus => "+",
+						besl::Operators::Minus => "-",
+						besl::Operators::Multiply => "*",
+						besl::Operators::Divide => "/",
+						besl::Operators::Modulo => "%",
+						besl::Operators::Assignment => "=",
+						besl::Operators::Equality => "==",
+						besl::Operators::LessThan => "<",
+					};
+					if self.minified {
+						string.push_str(operator)
+					} else {
+						string.push(' ');
+						string.push_str(operator);
+						string.push(' ');
 					}
 					self.emit_node_string(string, &right);
 				}
@@ -422,7 +423,7 @@ impl HLSLShaderGenerator {
 				}
 				besl::Expressions::Accessor { left, right } => {
 					self.emit_node_string(string, &left);
-					if Self::expression_is_indexable(left) {
+					if left.borrow().node().is_indexable() {
 						string.push('[');
 						self.emit_node_string(string, &right);
 						string.push(']');
@@ -432,6 +433,32 @@ impl HLSLShaderGenerator {
 					}
 				}
 			},
+			besl::Nodes::Conditional { condition, statements } => {
+				string.push_str("if(");
+				self.emit_node_string(string, condition);
+				if self.minified {
+					string.push_str("){");
+				} else {
+					string.push_str(") {\n");
+				}
+
+				for statement in statements {
+					if !self.minified {
+						string.push('\t');
+					}
+					self.emit_node_string(string, statement);
+					if self.minified {
+						string.push(';');
+					} else {
+						string.push_str(";\n");
+					}
+				}
+
+				string.push('}');
+				if !self.minified {
+					string.push('\n');
+				}
+			}
 			besl::Nodes::Binding {
 				name,
 				set,
@@ -915,5 +942,27 @@ mod tests {
 
 		assert_string_contains!(shader, "static const float PI = 3.14;");
 		assert_string_contains!(shader, "void main(){PI;}");
+	}
+
+	#[test]
+	fn conditional_blocks_lower_to_hlsl() {
+		let script = r#"
+		main: fn () -> void {
+			let n: u32 = 0;
+			if (n < 1) {
+				n = 2;
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected conditional shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = HLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "if(n<1){n=2;}");
 	}
 }

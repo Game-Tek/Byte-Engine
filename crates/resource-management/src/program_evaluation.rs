@@ -94,6 +94,12 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference) 
 				build_bindings(bindings, statement);
 			}
 		}
+		besl::Nodes::Conditional { condition, statements } => {
+			build_bindings(bindings, condition);
+			for statement in statements {
+				build_bindings(bindings, statement);
+			}
+		}
 		besl::Nodes::Expression(expression) => match expression {
 			besl::Expressions::FunctionCall {
 				function: callable,
@@ -241,6 +247,12 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 				collect_local_output_symbols(statement, local_output_symbols);
 			}
 		}
+		besl::Nodes::Conditional { condition, statements } => {
+			collect_local_output_symbols(condition, local_output_symbols);
+			for statement in statements {
+				collect_local_output_symbols(statement, local_output_symbols);
+			}
+		}
 		besl::Nodes::Expression(expression) => match expression {
 			besl::Expressions::VariableDeclaration { name, .. } => {
 				if name == "output" {
@@ -328,6 +340,12 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 		besl::Nodes::Function { statements, .. } => statements
 			.iter()
 			.any(|statement| references_non_local_output(statement, local_output_symbols)),
+		besl::Nodes::Conditional { condition, statements } => {
+			references_non_local_output(condition, local_output_symbols)
+				|| statements
+					.iter()
+					.any(|statement| references_non_local_output(statement, local_output_symbols))
+		}
 		besl::Nodes::Expression(expression) => match expression {
 			besl::Expressions::Member { name, source } => {
 				if name == "output" && !local_output_symbols.contains(source) {
@@ -402,6 +420,12 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 		besl::Nodes::Function { statements, .. } => statements
 			.iter()
 			.any(|statement| writes_non_opaque_vec4f_to_non_local_output(statement, local_output_symbols)),
+		besl::Nodes::Conditional { condition, statements } => {
+			writes_non_opaque_vec4f_to_non_local_output(condition, local_output_symbols)
+				|| statements
+					.iter()
+					.any(|statement| writes_non_opaque_vec4f_to_non_local_output(statement, local_output_symbols))
+		}
 		besl::Nodes::Expression(expression) => match expression {
 			besl::Expressions::Operator { operator, left, right } => {
 				if operator == &besl::Operators::Assignment

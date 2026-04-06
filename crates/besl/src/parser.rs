@@ -89,6 +89,15 @@ impl<'a> Node<'a> {
 		make_function(name, params, return_type, statements)
 	}
 
+	pub fn conditional(condition: Node<'a>, statements: Vec<Node<'a>>) -> Node<'a> {
+		Node {
+			node: Nodes::Conditional {
+				condition: Box::new(condition),
+				statements,
+			},
+		}
+	}
+
 	pub fn main_function(statements: Vec<Node<'a>>) -> Node<'a> {
 		make_function("main", Vec::new(), "void", statements)
 	}
@@ -256,6 +265,7 @@ impl<'a> Node<'a> {
 			Nodes::Struct { name, .. } => Some(name),
 			Nodes::Member { name, .. } => Some(name),
 			Nodes::Function { name, .. } => Some(name),
+			Nodes::Conditional { .. } => None,
 			Nodes::Binding { name, .. } => Some(name),
 			Nodes::Specialization { name, .. } => Some(name),
 			Nodes::Type { name, .. } => Some(name),
@@ -345,6 +355,10 @@ pub enum Nodes<'a> {
 		name: &'a str,
 		params: Vec<Node<'a>>,
 		return_type: &'a str,
+		statements: Vec<Node<'a>>,
+	},
+	Conditional {
+		condition: Box<Node<'a>>,
 		statements: Vec<Node<'a>>,
 	},
 	/// A binding declaration. A binding is a resource that can be used in the shader.
@@ -552,10 +566,12 @@ impl Precedence for Atoms<'_> {
 			Atoms::FunctionCall { .. } => 0,
 			Atoms::Operator { name } => match *name {
 				"=" => 5,
+				"<" => 4,
 				"+" => 3,
 				"-" => 3,
 				"*" => 2,
 				"/" => 2,
+				"%" => 2,
 				_ => 0,
 			},
 			Atoms::VariableDeclaration { .. } => 0,
@@ -978,13 +994,113 @@ fn parse_operator<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	mut expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let operator = iterator.next_is(|v| v == "*" || v == "+" || v == "-" || v == "/" || v == "%" || v == "=")?;
+	let operator = iterator.next_is(|v| v == "*" || v == "+" || v == "-" || v == "/" || v == "%" || v == "=" || v == "<")?;
 
 	expressions.push(Atoms::Operator { name: operator });
 
 	let possible_following_expressions: Vec<ExpressionParser<'i, 'a>> = vec![parse_rvalue];
 
 	execute_expression_parsers(&possible_following_expressions, iterator, expressions)
+}
+
+fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
+	if matches!(atoms.first(), Some(Atoms::Keyword)) {
+		return Node {
+			node: Nodes::Expression(Expressions::Return {
+				value: atoms
+					.get(1..)
+					.filter(|remaining| !remaining.is_empty())
+					.map(|remaining| Box::new(expression_atoms_to_node(remaining))),
+			}),
+		}
+		.into();
+	}
+
+	let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
+
+	if let Some((i, e)) = max_precedence_item {
+		match e {
+			Atoms::Keyword => Node {
+				node: Nodes::Expression(Expressions::Return { value: None }),
+			},
+			Atoms::Operator { name } => {
+				let left = expression_atoms_to_node(&atoms[..i]);
+				let right = expression_atoms_to_node(&atoms[i + 1..]);
+
+				Node {
+					node: Nodes::Expression(Expressions::Operator {
+						name: *name,
+						left: Box::new(left),
+						right: Box::new(right),
+					}),
+				}
+			}
+			Atoms::Accessor => {
+				let left = expression_atoms_to_node(&atoms[..i]);
+				let right = expression_atoms_to_node(&atoms[i + 1..]);
+
+				Node {
+					node: Nodes::Expression(Expressions::Accessor {
+						left: Box::new(left),
+						right: Box::new(right),
+					}),
+				}
+			}
+			Atoms::FunctionCall { name, parameters } => {
+				let parameters = parameters.iter().map(|v| expression_atoms_to_node(v)).collect::<Vec<_>>();
+
+				Node {
+					node: Nodes::Expression(Expressions::Call { name: *name, parameters }),
+				}
+			}
+			Atoms::Literal { value } => Node {
+				node: Nodes::Expression(Expressions::Literal { value: *value }),
+			},
+			Atoms::Member { name } => Node {
+				node: Nodes::Expression(Expressions::Member { name: *name }),
+			},
+			Atoms::VariableDeclaration { name, r#type } => Node {
+				node: Nodes::Expression(Expressions::VariableDeclaration {
+					name: *name,
+					r#type: *r#type,
+				}),
+			},
+		}
+		.into()
+	} else {
+		panic!("No max precedence item");
+	}
+}
+
+fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	iterator.next_str("if")?;
+	iterator.next_str("(")?;
+
+	let (condition_atoms, mut iterator) = execute_expression_parsers(&[parse_rvalue], iterator, Vec::new())?;
+	let condition = expression_atoms_to_node(&condition_atoms);
+
+	iterator.next_str(")")?;
+	iterator.next_str("{")?;
+
+	let mut statements = vec![];
+	loop {
+		if **iterator
+			.clone()
+			.peekable()
+			.peek()
+			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
+			== "}"
+		{
+			iterator.next();
+			break;
+		}
+
+		let (statement, new_iterator) = parse_statement(iterator)?;
+		statements.push(statement);
+		iterator = new_iterator;
+	}
+
+	Ok((Node::conditional(condition, statements), iterator))
 }
 
 fn parse_function_call<'i, 'a: 'i>(
@@ -1039,85 +1155,17 @@ fn parse_function_call<'i, 'a: 'i>(
 }
 
 fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	if let Some(result) = try_execute_parsers(&[parse_conditional], iterator.clone()) {
+		return result;
+	}
+
 	let parsers = vec![parse_keywords, parse_var_decl, parse_function_call, parse_variable];
 
 	let (expressions, mut iterator) = execute_expression_parsers(&parsers, iterator, Vec::new())?;
 
 	iterator.next_str(";")?; // Skip semicolon
 
-	fn dandc<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
-		if matches!(atoms.first(), Some(Atoms::Keyword)) {
-			return Node {
-				node: Nodes::Expression(Expressions::Return {
-					value: atoms
-						.get(1..)
-						.filter(|remaining| !remaining.is_empty())
-						.map(|remaining| Box::new(dandc(remaining))),
-				}),
-			}
-			.into();
-		}
-
-		let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
-
-		if let Some((i, e)) = max_precedence_item {
-			match e {
-				Atoms::Keyword => Node {
-					node: Nodes::Expression(Expressions::Return { value: None }),
-				},
-				Atoms::Operator { name } => {
-					let left = dandc(&atoms[..i]);
-					let right = dandc(&atoms[i + 1..]);
-
-					let left = Box::new(left);
-					let right = Box::new(right);
-
-					Node {
-						node: Nodes::Expression(Expressions::Operator {
-							name: *name,
-							left,
-							right,
-						}),
-					}
-				}
-				Atoms::Accessor => {
-					let left = dandc(&atoms[..i]);
-					let right = dandc(&atoms[i + 1..]);
-
-					let left = Box::new(left);
-					let right = Box::new(right);
-
-					Node {
-						node: Nodes::Expression(Expressions::Accessor { left, right }),
-					}
-				}
-				Atoms::FunctionCall { name, parameters } => {
-					let parameters = parameters.iter().map(|v| dandc(v)).collect::<Vec<_>>();
-
-					Node {
-						node: Nodes::Expression(Expressions::Call { name: *name, parameters }),
-					}
-				}
-				Atoms::Literal { value } => Node {
-					node: Nodes::Expression(Expressions::Literal { value: *value }),
-				},
-				Atoms::Member { name } => Node {
-					node: Nodes::Expression(Expressions::Member { name: *name }),
-				},
-				Atoms::VariableDeclaration { name, r#type } => Node {
-					node: Nodes::Expression(Expressions::VariableDeclaration {
-						name: *name,
-						r#type: *r#type,
-					}),
-				},
-			}
-			.into()
-		} else {
-			panic!("No max precedence item");
-		}
-	}
-
-	Ok((dandc(&expressions), iterator))
+	Ok((expression_atoms_to_node(&expressions), iterator))
 }
 
 fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
@@ -1865,6 +1913,44 @@ TAU: const f32 = 3.14 * 2.0;
 			}
 		} else {
 			panic!("Expected a const node");
+		}
+	}
+
+	#[test]
+	fn parse_conditional_block() {
+		let source = "
+main: fn () -> void {
+	let n: u32 = 0;
+	if (n < 1) {
+		n = 2;
+	}
+}";
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+
+		let main_node = &node["main"];
+		if let Nodes::Function { statements, .. } = &main_node.node {
+			assert_eq!(statements.len(), 2);
+
+			let conditional = &statements[1];
+			if let Nodes::Conditional { condition, statements } = &conditional.node {
+				assert_eq!(statements.len(), 1);
+
+				assert!(matches!(
+					condition.node,
+					Nodes::Expression(Expressions::Operator { name, .. }) if name == "<"
+				));
+
+				assert!(matches!(
+					statements[0].node,
+					Nodes::Expression(Expressions::Operator { name, .. }) if name == "="
+				));
+			} else {
+				panic!("Expected conditional block");
+			}
+		} else {
+			panic!("Expected main function");
 		}
 	}
 }

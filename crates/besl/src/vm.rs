@@ -2408,6 +2408,7 @@ fn describe_node(node: &Nodes) -> &'static str {
 		Nodes::Struct { .. } => "struct",
 		Nodes::Member { .. } => "member",
 		Nodes::Function { .. } => "function",
+		Nodes::Conditional { .. } => "conditional",
 		Nodes::Specialization { .. } => "specialization",
 		Nodes::Expression(_) => "expression",
 		Nodes::Raw { .. } => "raw",
@@ -2610,7 +2611,7 @@ fn arithmetic_operator(operator: &Operators) -> Option<ArithmeticOperator> {
 		Operators::Multiply => Some(ArithmeticOperator::Multiply),
 		Operators::Divide => Some(ArithmeticOperator::Divide),
 		Operators::Modulo => Some(ArithmeticOperator::Modulo),
-		Operators::Assignment | Operators::Equality => None,
+		Operators::Assignment | Operators::Equality | Operators::LessThan => None,
 	}
 }
 

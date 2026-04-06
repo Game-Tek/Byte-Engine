@@ -557,6 +557,52 @@ pub fn get_material_count_source() -> String {
 	glsl
 }
 
+pub fn get_material_count_msl_source() -> &'static str {
+	r#"#include <metal_stdlib>
+using namespace metal;
+// #pragma shader_stage(compute)
+// Note: Metal threadgroup sizes are set on the pipeline state.
+
+struct Mesh {
+	float4x4 model;
+	uint material_index;
+	uint base_vertex_index;
+	uint base_primitive_index;
+	uint base_triangle_index;
+	uint base_meshlet_index;
+};
+
+struct _meshes {
+	Mesh meshes[64];
+};
+
+struct _material_count {
+	atomic_uint material_count[1024];
+};
+
+struct _set0 {
+	constant _meshes* meshes [[id(1)]];
+};
+
+struct _set1 {
+	device _material_count* material_count [[id(0)]];
+	texture2d<uint, access::read> instance_index_render_target [[id(7)]];
+};
+
+kernel void besl_main(uint2 gid [[thread_position_in_grid]], constant _set0& set0 [[buffer(16)]], constant _set1& set1 [[buffer(17)]]) {
+	uint width = set1.instance_index_render_target.get_width();
+	uint height = set1.instance_index_render_target.get_height();
+	if (gid.x >= width || gid.y >= height) { return; }
+
+	uint pixel_instance_index = set1.instance_index_render_target.read(gid).x;
+	if (pixel_instance_index == 0xFFFFFFFFu) { return; }
+
+	uint material_index = set0.meshes->meshes[pixel_instance_index].material_index;
+	atomic_fetch_add_explicit(&set1.material_count->material_count[material_index], 1, memory_order_relaxed);
+}
+"#
+}
+
 pub fn get_material_offset_source() -> String {
 	let main_code = r#"
 	uint sum = 0;
@@ -604,6 +650,50 @@ pub fn get_material_offset_source() -> String {
 		.unwrap();
 
 	glsl
+}
+
+pub fn get_material_offset_msl_source() -> &'static str {
+	r#"#include <metal_stdlib>
+using namespace metal;
+// #pragma shader_stage(compute)
+// Note: Metal threadgroup sizes are set on the pipeline state.
+
+struct _material_count {
+	atomic_uint material_count[1024];
+};
+
+struct _material_offset {
+	uint material_offset[1024];
+};
+
+struct _material_offset_scratch {
+	uint material_offset_scratch[1024];
+};
+
+struct _material_evaluation_dispatches {
+	uint3 material_evaluation_dispatches[1024];
+};
+
+struct _set1 {
+	device _material_count* material_count [[id(0)]];
+	device _material_offset* material_offset [[id(1)]];
+	device _material_offset_scratch* material_offset_scratch [[id(2)]];
+	device _material_evaluation_dispatches* material_evaluation_dispatches [[id(3)]];
+};
+
+kernel void besl_main(uint2 gid [[thread_position_in_grid]], constant _set1& set1 [[buffer(17)]]) {
+	if (gid.x != 0 || gid.y != 0) { return; }
+
+	uint sum = 0;
+	for (uint i = 0; i < 1024; i++) {
+		uint count = atomic_load_explicit(&set1.material_count->material_count[i], memory_order_relaxed);
+		set1.material_offset->material_offset[i] = sum;
+		set1.material_offset_scratch->material_offset_scratch[i] = sum;
+		set1.material_evaluation_dispatches->material_evaluation_dispatches[i] = uint3((count + 127) / 128, 1, 1);
+		sum += count;
+	}
+}
+"#
 }
 
 pub fn get_pixel_mapping_source() -> String {
@@ -736,9 +826,10 @@ fn build_pixel_mapping_root() -> besl::Node {
 #[cfg(test)]
 mod tests {
 	use super::{
-		generate_pixel_mapping_shader_for_language, get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source,
-		get_visibility_pass_mesh_msl_source, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
-		VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+		generate_pixel_mapping_shader_for_language, get_material_count_msl_source, get_material_offset_msl_source,
+		get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source,
+		MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 	};
 	use resource_management::platform_shader_generator::PlatformShaderLanguage;
 
@@ -859,6 +950,34 @@ mod tests {
 		assert!(
 			shader_handle.is_ok(),
 			"Expected the visibility mesh MSL source to compile for Metal"
+		);
+	}
+
+	#[test]
+	fn material_count_msl_source_uses_argument_buffer_accessors() {
+		let shader = get_material_count_msl_source();
+
+		assert!(
+			shader.contains("set1.instance_index_render_target.read(gid).x")
+				&& shader.contains("set0.meshes->meshes[pixel_instance_index].material_index")
+				&& shader.contains(
+					"atomic_fetch_add_explicit(&set1.material_count->material_count[material_index], 1, memory_order_relaxed)"
+				),
+			"Expected MSL material count source to lower through Metal argument buffers. Shader: {shader}"
+		);
+	}
+
+	#[test]
+	fn material_offset_msl_source_uses_argument_buffer_accessors() {
+		let shader = get_material_offset_msl_source();
+
+		assert!(
+			shader.contains("atomic_load_explicit(&set1.material_count->material_count[i], memory_order_relaxed)")
+				&& shader.contains("set1.material_offset->material_offset[i] = sum;")
+				&& shader.contains(
+					"set1.material_evaluation_dispatches->material_evaluation_dispatches[i] = uint3((count + 127) / 128, 1, 1);"
+				),
+			"Expected MSL material offset source to lower through Metal argument buffers. Shader: {shader}"
 		);
 	}
 

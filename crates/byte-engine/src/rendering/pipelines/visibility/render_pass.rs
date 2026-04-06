@@ -2,14 +2,14 @@ use std::borrow::Borrow as _;
 
 use crate::rendering::pipelines::visibility::scene_manager::Instance;
 use crate::rendering::pipelines::visibility::{
-	get_material_count_source, get_material_offset_source, get_pixel_mapping_shader, get_shadow_pass_mesh_msl_source,
-	get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source, INSTANCE_ID_BINDING,
-	MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING,
-	MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
-	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
-	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
-	VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
+	get_material_count_msl_source, get_material_count_source, get_material_offset_msl_source, get_material_offset_source,
+	get_pixel_mapping_shader, get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source,
+	get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
+	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
+	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
+	MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
+	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
+	VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE, VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
@@ -1247,22 +1247,41 @@ impl MaterialCountPass {
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	) -> Self {
-		let material_count_shader_artifact =
-			glsl::compile(&get_material_count_source(), "Material Count Pass Compute Shader").unwrap();
+		let material_count_shader = if ghi::implementation::USES_METAL {
+			device
+				.create_shader(
+					Some("Material Count Pass Compute Shader"),
+					ghi::shader::Sources::MTL {
+						source: get_material_count_msl_source(),
+						entry_point: "besl_main",
+					},
+					ghi::ShaderTypes::Compute,
+					[
+						MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						MATERIAL_COUNT_BINDING
+							.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
+						INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+					],
+				)
+				.expect("Failed to create shader")
+		} else {
+			let material_count_shader_artifact =
+				glsl::compile(&get_material_count_source(), "Material Count Pass Compute Shader").unwrap();
 
-		let material_count_shader = device
-			.create_shader(
-				Some("Material Count Pass Compute Shader"),
-				ghi::shader::Sources::SPIRV(material_count_shader_artifact.borrow().into()),
-				ghi::ShaderTypes::Compute,
-				[
-					MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					MATERIAL_COUNT_BINDING
-						.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
-					INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				],
-			)
-			.expect("Failed to create shader");
+			device
+				.create_shader(
+					Some("Material Count Pass Compute Shader"),
+					ghi::shader::Sources::SPIRV(material_count_shader_artifact.borrow().into()),
+					ghi::ShaderTypes::Compute,
+					[
+						MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						MATERIAL_COUNT_BINDING
+							.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
+						INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+					],
+				)
+				.expect("Failed to create shader")
+		};
 
 		let material_count_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, visibility_descriptor_set_layout],
@@ -1324,22 +1343,41 @@ impl MaterialOffsetPass {
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_evaluation_dispatches: ghi::BufferHandle<[(u32, u32, u32); MAX_MATERIALS]>,
 	) -> Self {
-		let material_offset_shader_artifact =
-			glsl::compile(&get_material_offset_source(), "Material Offset Pass Compute Shader").unwrap();
+		let material_offset_shader = if ghi::implementation::USES_METAL {
+			device
+				.create_shader(
+					Some("Material Offset Pass Compute Shader"),
+					ghi::shader::Sources::MTL {
+						source: get_material_offset_msl_source(),
+						entry_point: "besl_main",
+					},
+					ghi::ShaderTypes::Compute,
+					[
+						MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+						MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+						MATERIAL_OFFSET_SCRATCH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+						MATERIAL_EVALUATION_DISPATCHES_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+					],
+				)
+				.expect("Failed to create shader")
+		} else {
+			let material_offset_shader_artifact =
+				glsl::compile(&get_material_offset_source(), "Material Offset Pass Compute Shader").unwrap();
 
-		let material_offset_shader = device
-			.create_shader(
-				Some("Material Offset Pass Compute Shader"),
-				ghi::shader::Sources::SPIRV(material_offset_shader_artifact.borrow().into()),
-				ghi::ShaderTypes::Compute,
-				[
-					MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-					MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-					MATERIAL_OFFSET_SCRATCH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-					MATERIAL_EVALUATION_DISPATCHES_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect("Failed to create shader");
+			device
+				.create_shader(
+					Some("Material Offset Pass Compute Shader"),
+					ghi::shader::Sources::SPIRV(material_offset_shader_artifact.borrow().into()),
+					ghi::ShaderTypes::Compute,
+					[
+						MATERIAL_COUNT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+						MATERIAL_OFFSET_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+						MATERIAL_OFFSET_SCRATCH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+						MATERIAL_EVALUATION_DISPATCHES_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+					],
+				)
+				.expect("Failed to create shader")
+		};
 
 		let material_offset_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, visibility_descriptor_set_layout],

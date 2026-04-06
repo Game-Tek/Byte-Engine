@@ -2,7 +2,7 @@ use std::borrow::Borrow as _;
 
 use crate::rendering::pipelines::visibility::scene_manager::Instance;
 use crate::rendering::pipelines::visibility::{
-	get_material_count_source, get_material_offset_source, get_pixel_mapping_source, get_shadow_pass_mesh_msl_source,
+	get_material_count_source, get_material_offset_source, get_pixel_mapping_shader, get_shadow_pass_mesh_msl_source,
 	get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source, INSTANCE_ID_BINDING,
 	MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING,
 	MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
@@ -22,6 +22,7 @@ use ghi::frame::Frame as _;
 use ghi::implementation::Frame;
 use math::Vector2;
 use resource_management::glsl;
+use resource_management::platform_shader_generator::PlatformShaderLanguage;
 use resource_management::resources::material;
 use utils::{Box, Extent, RGBA};
 
@@ -1405,23 +1406,45 @@ impl PixelMappingPass {
 		visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
 		material_xy: ghi::BufferHandle<[(u16, u16); 2073600]>,
 	) -> Self {
-		let pixel_mapping_shader_artifact =
-			glsl::compile(&get_pixel_mapping_source(), "Pixel Mapping Pass Compute Shader").unwrap();
+		let pixel_mapping_shader_source = get_pixel_mapping_shader();
+		let pixel_mapping_shader = match pixel_mapping_shader_source.language() {
+			PlatformShaderLanguage::Glsl => {
+				let pixel_mapping_shader_artifact =
+					glsl::compile(pixel_mapping_shader_source.source(), "Pixel Mapping Pass Compute Shader").unwrap();
 
-		let pixel_mapping_shader = device
-			.create_shader(
-				Some("Pixel Mapping Pass Compute Shader"),
-				ghi::shader::Sources::SPIRV(pixel_mapping_shader_artifact.borrow().into()),
-				ghi::ShaderTypes::Compute,
-				[
-					MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					MATERIAL_OFFSET_SCRATCH_BINDING
-						.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
-					INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-					MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect("Failed to create shader");
+				device
+					.create_shader(
+						Some("Pixel Mapping Pass Compute Shader"),
+						ghi::shader::Sources::SPIRV(pixel_mapping_shader_artifact.borrow().into()),
+						ghi::ShaderTypes::Compute,
+						[
+							MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							MATERIAL_OFFSET_SCRATCH_BINDING
+								.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
+							INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+							MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+						],
+					)
+					.expect("Failed to create shader")
+			}
+			PlatformShaderLanguage::Msl => device
+				.create_shader(
+					Some("Pixel Mapping Pass Compute Shader"),
+					ghi::shader::Sources::MTL {
+						source: pixel_mapping_shader_source.source(),
+						entry_point: pixel_mapping_shader_source.entry_point(),
+					},
+					ghi::ShaderTypes::Compute,
+					[
+						MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						MATERIAL_OFFSET_SCRATCH_BINDING
+							.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
+						INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+						MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+					],
+				)
+				.expect("Failed to create shader"),
+		};
 
 		let pixel_mapping_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, visibility_descriptor_set_layout],

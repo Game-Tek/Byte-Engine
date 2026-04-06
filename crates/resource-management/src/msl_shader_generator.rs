@@ -933,6 +933,7 @@ impl MSLShaderGenerator {
 	fn translate_type(source: &str) -> &str {
 		match source {
 			"void" => "void",
+			"atomicu32" => "atomic_uint",
 			"vec2f" => "float2",
 			"vec2u" => "uint2",
 			"vec2i" => "int2",
@@ -1004,6 +1005,17 @@ impl MSLShaderGenerator {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
+			"atomic_add" => {
+				string.push_str("atomic_fetch_add_explicit(&");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", memory_order_relaxed)");
+			}
 			"thread_id" => {
 				string.push_str("gid");
 			}
@@ -1045,6 +1057,12 @@ impl MSLShaderGenerator {
 				string.push_str(".read(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
+			}
+			"image_load_u32" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".read(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(").x");
 			}
 			"write" => {
 				self.emit_node_string(string, &arguments[0]);
@@ -1137,6 +1155,7 @@ impl MSLShaderGenerator {
 			}
 			besl::Nodes::Struct { name, fields, .. } => {
 				if name == "void"
+					|| name == "atomicu32"
 					|| name == "vec2u16"
 					|| name == "vec2u"
 					|| name == "vec2i"

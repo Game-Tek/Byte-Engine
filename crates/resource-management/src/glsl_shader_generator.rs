@@ -73,6 +73,7 @@ impl GLSLShaderGenerator {
 	fn translate_type(source: &str) -> &str {
 		match source {
 			"void" => "void",
+			"atomicu32" => "uint32_t",
 			"vec2f" => "vec2",
 			"vec2u" => "uvec2",
 			"vec2i" => "ivec2",
@@ -144,6 +145,17 @@ impl GLSLShaderGenerator {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
+			"atomic_add" => {
+				string.push_str("atomicAdd(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+			}
 			"thread_id" => {
 				string.push_str("uvec2(gl_GlobalInvocationID.xy)");
 			}
@@ -181,6 +193,18 @@ impl GLSLShaderGenerator {
 				string.push_str("ivec2(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str("))");
+			}
+			"image_load_u32" => {
+				string.push_str("imageLoad(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				string.push_str("ivec2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(")).x");
 			}
 			"write" => {
 				string.push_str("imageStore(");
@@ -287,6 +311,7 @@ impl GLSLShaderGenerator {
 			}
 			besl::Nodes::Struct { name, fields, .. } => {
 				if name == "void"
+					|| name == "atomicu32"
 					|| name == "vec2u16"
 					|| name == "vec2u"
 					|| name == "vec2i"

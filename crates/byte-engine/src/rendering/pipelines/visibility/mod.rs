@@ -3,6 +3,8 @@ pub mod scene_manager;
 pub mod shader_generator;
 
 use resource_management::{
+	glsl_shader_generator::GLSLShaderGenerator,
+	platform_shader_generator::GeneratedPlatformShader,
 	platform_shader_generator::{PlatformShaderGenerator, PlatformShaderLanguage},
 	shader_generator::ShaderGenerationSettings,
 };
@@ -368,62 +370,136 @@ pub fn get_material_offset_source() -> String {
 }
 
 pub fn get_pixel_mapping_source() -> String {
-	let main_code = r#"
-	ivec2 extent = imageSize(instance_index_render_target);
-	// If thread is out of bound respect to the material_id texture, return
-	if (gl_GlobalInvocationID.x >= extent.x || gl_GlobalInvocationID.y >= extent.y) { return; }
+	get_pixel_mapping_shader().into_source()
+}
 
-	uint pixel_instance_index = imageLoad(instance_index_render_target, ivec2(gl_GlobalInvocationID.xy)).r;
+pub fn get_pixel_mapping_shader() -> GeneratedPlatformShader {
+	generate_pixel_mapping_shader_for_language(PlatformShaderLanguage::current_platform())
+}
 
-	if (pixel_instance_index == 0xFFFFFFFF) { return; }
+fn generate_pixel_mapping_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
+	let main_node = build_pixel_mapping_program();
+	let mut shader_generator = PlatformShaderGenerator::new();
 
-	uint material_index = meshes.meshes[pixel_instance_index].material_index;
+	shader_generator
+		.generate_for_language(language, &ShaderGenerationSettings::compute(Extent::square(32)), &main_node)
+		.unwrap()
+}
 
-	uint offset = atomicAdd(material_offset_scratch.material_offset_scratch[material_index], 1);
+fn build_pixel_mapping_program() -> besl::NodeReference {
+	let source = r#"
+	main: fn () -> void {
+		let coord: vec2u = thread_id();
+		guard_image_bounds(instance_index_render_target, coord);
+		let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
 
-	pixel_mapping.pixel_mapping[offset] = u16vec2(gl_GlobalInvocationID.xy);
+		if (pixel_instance_index < 4294967295) {
+			let material_index: u32 = mesh_data.meshes[pixel_instance_index].material_index;
+			pixel_mapping_buffer.pixel_mapping[atomic_add(material_offset_scratch_buffer.material_offset_scratch[material_index], 1)] = vec2u16(coord.x, coord.y);
+		}
+	}
 	"#;
 
-	let main = besl::parser::Node::function(
-		"main",
-		Vec::new(),
-		"void",
-		vec![besl::parser::Node::glsl(
-			main_code,
-			&[
-				"meshes",
-				"material_offset_scratch",
-				"pixel_mapping",
-				"instance_index_render_target",
-			],
-			&[],
-		)],
-	);
+	besl::compile_to_besl(source, Some(build_pixel_mapping_root()))
+		.unwrap()
+		.get_main()
+		.unwrap()
+}
 
-	let mut root = besl::parser::Node::root();
+fn build_pixel_mapping_root() -> besl::Node {
+	let mut root = besl::Node::root();
+	let u32_t = root.get_child("u32").unwrap();
+	let texture_2d = root.get_child("Texture2D").unwrap();
+	let vec2u_t = root.get_child("vec2u").unwrap();
+	let vec2u16_t = root.get_child("vec2u16").unwrap();
+	let mesh_material_index = besl::Node::member("material_index", u32_t.clone()).into();
+	let mesh = root.add_child(besl::Node::r#struct("Mesh", vec![mesh_material_index]).into());
+	let atomic_u32 = root.add_child(besl::Node::r#struct("atomicu32", Vec::new()).into());
+	let meshes_member = besl::Node::array("meshes", mesh, 64);
+	let material_offset_scratch_member = besl::Node::array("material_offset_scratch", atomic_u32.clone(), 2073600);
+	let pixel_mapping_member = besl::Node::array("pixel_mapping", vec2u16_t, 2073600);
 
-	let shader = besl::parser::Node::scope("Shader", vec![main]);
-
-	root.add(vec![
-		CommonShaderScope::new(),
-		VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false),
-		shader,
+	root.add_children(vec![
+		besl::Node::binding(
+			"mesh_data",
+			besl::BindingTypes::Buffer {
+				members: vec![meshes_member.clone()],
+			},
+			0,
+			1,
+			true,
+			false,
+		)
+		.into(),
+		besl::Node::binding(
+			"material_offset_scratch_buffer",
+			besl::BindingTypes::Buffer {
+				members: vec![material_offset_scratch_member.clone()],
+			},
+			1,
+			2,
+			true,
+			true,
+		)
+		.into(),
+		besl::Node::binding(
+			"pixel_mapping_buffer",
+			besl::BindingTypes::Buffer {
+				members: vec![pixel_mapping_member.clone()],
+			},
+			1,
+			4,
+			false,
+			true,
+		)
+		.into(),
+		besl::Node::binding(
+			"instance_index_render_target",
+			besl::BindingTypes::Image {
+				format: "r32ui".to_string(),
+			},
+			1,
+			7,
+			true,
+			false,
+		)
+		.into(),
 	]);
 
-	let root_node = besl::lex(root).unwrap();
+	let image_load_u32 = root.add_child(besl::Node::intrinsic("image_load_u32", Vec::new(), u32_t.clone()).into());
+	image_load_u32.borrow_mut().add_children(vec![
+		besl::Node::new(besl::Nodes::Parameter {
+			name: "image".to_string(),
+			r#type: texture_2d.clone(),
+		})
+		.into(),
+		besl::Node::new(besl::Nodes::Parameter {
+			name: "coord".to_string(),
+			r#type: vec2u_t.clone(),
+		})
+		.into(),
+	]);
 
-	let main_node = root_node.get_main().unwrap();
-
-	let glsl = GLSLShaderGenerator::new()
-		.generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node)
-		.unwrap();
-
-	glsl
+	let atomic_add = root.add_child(besl::Node::intrinsic("atomic_add", Vec::new(), u32_t.clone()).into());
+	atomic_add.borrow_mut().add_children(vec![
+		besl::Node::new(besl::Nodes::Parameter {
+			name: "value".to_string(),
+			r#type: atomic_u32,
+		})
+		.into(),
+		besl::Node::new(besl::Nodes::Parameter {
+			name: "increment".to_string(),
+			r#type: u32_t.clone(),
+		})
+		.into(),
+	]);
+	root
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source};
+	use super::{generate_pixel_mapping_shader_for_language, get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source};
+	use resource_management::platform_shader_generator::PlatformShaderLanguage;
 
 	#[test]
 	fn shadow_mesh_glsl_source_uses_besl_accessors() {
@@ -442,6 +518,36 @@ mod tests {
 		assert!(
 			shader.contains("View view = set0.views->views[push_constant.view_index];"),
 			"Expected MSL shadow mesh source to lower BESL accessors through the Metal argument buffer. Shader: {shader}"
+		);
+	}
+
+	#[test]
+	fn pixel_mapping_glsl_source_uses_besl_intrinsics() {
+		let shader = generate_pixel_mapping_shader_for_language(PlatformShaderLanguage::Glsl).into_source();
+
+		assert!(
+			shader.contains("imageLoad(instance_index_render_target, ivec2(coord)).x"),
+			"Expected GLSL pixel mapping source to lower the integer image load through a BESL intrinsic. Shader: {shader}"
+		);
+		assert!(
+			shader.contains("atomicAdd(material_offset_scratch_buffer.material_offset_scratch[material_index], 1)"),
+			"Expected GLSL pixel mapping source to lower the scratch offset increment through a BESL intrinsic. Shader: {shader}"
+		);
+	}
+
+	#[test]
+	fn pixel_mapping_msl_source_uses_platform_argument_buffer_lowering() {
+		let shader = generate_pixel_mapping_shader_for_language(PlatformShaderLanguage::Msl).into_source();
+
+		assert!(
+			shader.contains("set1.instance_index_render_target.read(coord).x"),
+			"Expected MSL pixel mapping source to lower the integer image load through the Metal texture API. Shader: {shader}"
+		);
+		assert!(
+			shader.contains(
+				"atomic_fetch_add_explicit(&set1.material_offset_scratch_buffer->material_offset_scratch[material_index], 1, memory_order_relaxed)"
+			),
+			"Expected MSL pixel mapping source to lower the scratch offset increment through the Metal atomic API. Shader: {shader}"
 		);
 	}
 }

@@ -13,7 +13,7 @@ use crate::{
 	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
 };
 
-/// The `Device` trait represents a graphics device that can be used to create and manage resources such as buffers, images, pipelines, and descriptor sets.
+/// The `Device` trait centralizes ownership of GPU resources and backend state for the graphics hardware interface.
 pub trait Device
 where
 	Self: Sized + DeviceCreate,
@@ -27,6 +27,7 @@ where
 	/// > THIS IS AN EXPENSIVE OPERATION
 	fn set_frames_in_flight(&mut self, frames: u8);
 
+	/// Starts recording commands into an existing command buffer.
 	fn create_command_buffer_recording<'a>(
 		&'a mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -35,15 +36,19 @@ where
 	/// Returns a device accessible address for the provided buffer handle.
 	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;
 
+	/// Returns a shared view into a typed buffer's contents.
 	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
 
-	// Return a mutable slice to the buffer data.
+	/// Returns a mutable view into CPU-visible buffer contents.
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: BufferHandle<T>) -> &'static mut T;
 
+	/// Flushes or uploads pending writes for the provided buffer.
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
 
+	/// Returns mutable CPU access to an image's backing bytes.
 	fn get_texture_slice_mut(&self, texture_handle: ImageHandle) -> &'static mut [u8];
 
+	/// Flushes or uploads pending writes for the provided image.
 	fn sync_texture(&mut self, image_handle: ImageHandle);
 
 	/// Enables writing to a texture and queues a copy operation for it.
@@ -53,6 +58,7 @@ where
 	/// Writes descriptor set updates.
 	fn write(&mut self, descriptor_set_writes: &[descriptors::Write]);
 
+	/// Writes one top-level acceleration-structure instance into an instance buffer.
 	fn write_instance(
 		&mut self,
 		instances_buffer_handle: BaseBufferHandle,
@@ -64,6 +70,7 @@ where
 		acceleration_structure: BottomLevelAccelerationStructureHandle,
 	);
 
+	/// Writes one shader binding table entry for the provided pipeline shader.
 	fn write_sbt_entry(
 		&mut self,
 		sbt_buffer_handle: BaseBufferHandle,
@@ -81,6 +88,7 @@ where
 		uses: Uses,
 	) -> SwapchainHandle;
 
+	/// Returns CPU-visible bytes previously copied from an image.
 	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8];
 
 	/// Starts a new frame by waiting for these sequence frame's synchronizers.
@@ -114,6 +122,7 @@ pub trait DeviceCreate {
 		resource_device_accesses: DeviceAccesses,
 	) -> AllocationHandle;
 
+	/// Uploads indexed mesh data and returns a reusable mesh handle.
 	fn add_mesh_from_vertices_and_indices(
 		&mut self,
 		vertex_count: u32,
@@ -142,12 +151,14 @@ pub trait DeviceCreate {
 		shader_binding_descriptors: impl IntoIterator<Item = shader::BindingDescriptor>,
 	) -> Result<ShaderHandle, ()>;
 
+	/// Creates a reusable descriptor-set template from binding descriptions.
 	fn create_descriptor_set_template(
 		&mut self,
 		name: Option<&str>,
 		binding_templates: &[DescriptorSetBindingTemplate],
 	) -> DescriptorSetTemplateHandle;
 
+	/// Creates a descriptor set from a descriptor-set template.
 	fn create_descriptor_set(
 		&mut self,
 		name: Option<&str>,
@@ -197,17 +208,21 @@ pub trait DeviceCreate {
 	/// Sampler builders are limited on multiple devices so you are encouraged to reuse them.
 	fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle;
 
+	/// Creates a buffer that stores top-level acceleration-structure instances.
 	fn create_acceleration_structure_instance_buffer(
 		&mut self,
 		name: Option<&str>,
 		max_instance_count: u32,
 	) -> BaseBufferHandle;
 
+	/// Creates a top-level acceleration structure for ray tracing.
 	fn create_top_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
 		max_instance_count: u32,
 	) -> TopLevelAccelerationStructureHandle;
+
+	/// Creates a bottom-level acceleration structure from geometry descriptions.
 	fn create_bottom_level_acceleration_structure(
 		&mut self,
 		description: &BottomLevelAccelerationStructure,

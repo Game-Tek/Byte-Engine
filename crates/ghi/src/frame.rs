@@ -5,25 +5,30 @@ use crate::{
 	BufferHandle, CommandBufferHandle, DynamicBufferHandle, DynamicImageHandle, PresentKey, SwapchainHandle,
 };
 
-/// The `Frame` trait contains methods for performing per frame operations.
-/// This trait is used to safely access and manage resources within a frame. This is achieved with Rust's lifetime system by mutably borrowing the `Device` while performing per frame operations.
+/// The `Frame` trait scopes frame-local GPU work so per-frame resources stay tied to an active frame.
+/// It exists to use Rust's lifetime system to keep frame operations borrowed from the `Device` for only as long as the frame is active.
 pub trait Frame<'a>
 where
 	Self: Sized + crate::device::DeviceCreate,
 {
+	/// The command-buffer recording type used while the frame is active.
 	type CBR<'f>: CommandBufferRecording
 	where
 		Self: 'f;
 
-	// Return a mutable slice to the buffer data.
+	/// Returns a mutable view into CPU-visible buffer contents for the active frame.
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: BufferHandle<T>) -> &'static mut T;
 
+	/// Flushes or uploads pending writes for the provided buffer.
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
 
+	/// Returns mutable CPU access to an image's backing bytes for the active frame.
 	fn get_texture_slice_mut(&self, texture_handle: BaseImageHandle) -> &'static mut [u8];
 
+	/// Flushes or uploads pending writes for the provided image.
 	fn sync_texture(&mut self, image_handle: BaseImageHandle);
 
+	/// Writes descriptor set updates during the active frame.
 	fn write(&mut self, descriptor_set_writes: &[descriptors::Write]);
 
 	/// Returns a mutable reference to the dynamic buffer's contents.

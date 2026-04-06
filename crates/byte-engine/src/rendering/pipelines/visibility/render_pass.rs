@@ -2,14 +2,15 @@ use std::borrow::Borrow as _;
 
 use crate::rendering::pipelines::visibility::scene_manager::Instance;
 use crate::rendering::pipelines::visibility::{
-	get_material_count_msl_source, get_material_count_source, get_material_offset_msl_source, get_material_offset_source,
-	get_pixel_mapping_shader, get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source,
-	get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
-	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
-	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
-	MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
-	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
-	VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE, VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
+	get_gtao_blur_shader, get_gtao_shader, get_material_count_msl_source, get_material_count_source,
+	get_material_offset_msl_source, get_material_offset_source, get_pixel_mapping_shader, get_shadow_pass_mesh_msl_source,
+	get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source, INSTANCE_ID_BINDING,
+	MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING,
+	MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
+	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
+	VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
@@ -1642,24 +1643,47 @@ impl GtaoPass {
 			ghi::BindingConstructor::image(&GTAO_BLUR_OUTPUT_BINDING, ao_map),
 		);
 
-		let gtao_shader_source = if GTAO_USE_BITFIELD_BINARY_IMPL {
-			GTAO_BITFIELD_PASS_SOURCE
+		let gtao_shader_bindings = [
+			VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			GTAO_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+			GTAO_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+		];
+		let gtao_shader = if GTAO_USE_BITFIELD_BINARY_IMPL {
+			let shader_artifact = glsl::compile(GTAO_BITFIELD_PASS_SOURCE, "GTAO Pass Compute Shader").unwrap();
+			device
+				.create_shader(
+					Some("GTAO Pass Compute Shader"),
+					ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
+					ghi::ShaderTypes::Compute,
+					gtao_shader_bindings,
+				)
+				.expect("Failed to create shader")
 		} else {
-			GTAO_PASS_SOURCE
+			let gtao_shader = get_gtao_shader();
+			if gtao_shader.language().is_glsl() {
+				let artifact = glsl::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
+				device
+					.create_shader(
+						Some("GTAO Pass Compute Shader"),
+						ghi::shader::Sources::SPIRV(artifact.borrow().into()),
+						ghi::ShaderTypes::Compute,
+						gtao_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			} else {
+				device
+					.create_shader(
+						Some("GTAO Pass Compute Shader"),
+						ghi::shader::Sources::MTL {
+							source: gtao_shader.source(),
+							entry_point: gtao_shader.entry_point(),
+						},
+						ghi::ShaderTypes::Compute,
+						gtao_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			}
 		};
-		let shader_artifact = glsl::compile(gtao_shader_source, "GTAO Pass Compute Shader").unwrap();
-		let gtao_shader = device
-			.create_shader(
-				Some("GTAO Pass Compute Shader"),
-				ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-				ghi::ShaderTypes::Compute,
-				[
-					VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					GTAO_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-					GTAO_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect("Failed to create shader");
 
 		let gtao_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, descriptor_set_layout],
@@ -1667,44 +1691,84 @@ impl GtaoPass {
 			ghi::ShaderParameter::new(&gtao_shader, ghi::ShaderTypes::Compute),
 		));
 
-		let blur_x_shader_source = if GTAO_USE_BITFIELD_BINARY_IMPL {
-			GTAO_BLUR_BITFIELD_X_PASS_SOURCE
+		let blur_shader_bindings = [
+			VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			GTAO_BLUR_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+			GTAO_BLUR_SOURCE_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+			GTAO_BLUR_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+		];
+		let blur_x_shader = if GTAO_USE_BITFIELD_BINARY_IMPL {
+			let blur_x_shader_artifact = glsl::compile(GTAO_BLUR_BITFIELD_X_PASS_SOURCE, "GTAO Blur X Compute Shader").unwrap();
+			device
+				.create_shader(
+					Some("GTAO Blur X Compute Shader"),
+					ghi::shader::Sources::SPIRV(blur_x_shader_artifact.borrow().into()),
+					ghi::ShaderTypes::Compute,
+					blur_shader_bindings,
+				)
+				.expect("Failed to create shader")
 		} else {
-			GTAO_BLUR_PASS_SOURCE
+			let blur_shader = get_gtao_blur_shader();
+			if blur_shader.language().is_glsl() {
+				let artifact = glsl::compile(blur_shader.source(), "GTAO Blur X Compute Shader").unwrap();
+				device
+					.create_shader(
+						Some("GTAO Blur X Compute Shader"),
+						ghi::shader::Sources::SPIRV(artifact.borrow().into()),
+						ghi::ShaderTypes::Compute,
+						blur_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			} else {
+				device
+					.create_shader(
+						Some("GTAO Blur X Compute Shader"),
+						ghi::shader::Sources::MTL {
+							source: blur_shader.source(),
+							entry_point: blur_shader.entry_point(),
+						},
+						ghi::ShaderTypes::Compute,
+						blur_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			}
 		};
-		let blur_x_shader_artifact = glsl::compile(blur_x_shader_source, "GTAO Blur X Compute Shader").unwrap();
-		let blur_x_shader = device
-			.create_shader(
-				Some("GTAO Blur X Compute Shader"),
-				ghi::shader::Sources::SPIRV(blur_x_shader_artifact.borrow().into()),
-				ghi::ShaderTypes::Compute,
-				[
-					VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					GTAO_BLUR_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-					GTAO_BLUR_SOURCE_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-					GTAO_BLUR_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect("Failed to create shader");
-		let blur_y_shader_source = if GTAO_USE_BITFIELD_BINARY_IMPL {
-			GTAO_BLUR_BITFIELD_Y_PASS_SOURCE
+		let blur_y_shader = if GTAO_USE_BITFIELD_BINARY_IMPL {
+			let blur_y_shader_artifact = glsl::compile(GTAO_BLUR_BITFIELD_Y_PASS_SOURCE, "GTAO Blur Y Compute Shader").unwrap();
+			device
+				.create_shader(
+					Some("GTAO Blur Y Compute Shader"),
+					ghi::shader::Sources::SPIRV(blur_y_shader_artifact.borrow().into()),
+					ghi::ShaderTypes::Compute,
+					blur_shader_bindings,
+				)
+				.expect("Failed to create shader")
 		} else {
-			GTAO_BLUR_PASS_SOURCE
+			let blur_shader = get_gtao_blur_shader();
+			if blur_shader.language().is_glsl() {
+				let artifact = glsl::compile(blur_shader.source(), "GTAO Blur Y Compute Shader").unwrap();
+				device
+					.create_shader(
+						Some("GTAO Blur Y Compute Shader"),
+						ghi::shader::Sources::SPIRV(artifact.borrow().into()),
+						ghi::ShaderTypes::Compute,
+						blur_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			} else {
+				device
+					.create_shader(
+						Some("GTAO Blur Y Compute Shader"),
+						ghi::shader::Sources::MTL {
+							source: blur_shader.source(),
+							entry_point: blur_shader.entry_point(),
+						},
+						ghi::ShaderTypes::Compute,
+						blur_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			}
 		};
-		let blur_y_shader_artifact = glsl::compile(blur_y_shader_source, "GTAO Blur Y Compute Shader").unwrap();
-		let blur_y_shader = device
-			.create_shader(
-				Some("GTAO Blur Y Compute Shader"),
-				ghi::shader::Sources::SPIRV(blur_y_shader_artifact.borrow().into()),
-				ghi::ShaderTypes::Compute,
-				[
-					VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					GTAO_BLUR_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-					GTAO_BLUR_SOURCE_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-					GTAO_BLUR_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect("Failed to create shader");
 
 		let blur_pipeline_x = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, blur_descriptor_set_layout],
@@ -2027,28 +2091,102 @@ impl VisibilityPipelineRenderPass {
 mod tests {
 	#[test]
 	fn gtao_shader_compiles() {
-		let source = if super::GTAO_USE_BITFIELD_BINARY_IMPL {
-			super::GTAO_BITFIELD_PASS_SOURCE
-		} else {
-			super::GTAO_PASS_SOURCE
-		};
-		resource_management::glsl::compile(source, "GTAO Pass Compute Shader").unwrap();
+		if super::GTAO_USE_BITFIELD_BINARY_IMPL {
+			resource_management::glsl::compile(super::GTAO_BITFIELD_PASS_SOURCE, "GTAO Pass Compute Shader").unwrap();
+			return;
+		}
+
+		let gtao_shader = super::get_gtao_shader();
+		if gtao_shader.language().is_glsl() {
+			resource_management::glsl::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
+			return;
+		}
+
+		use ghi::device::DeviceCreate as _;
+
+		if !ghi::implementation::USES_METAL {
+			return;
+		}
+
+		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
+			.expect("Expected a Metal instance for the GTAO shader test");
+		let mut queue = None;
+		let mut device = instance
+			.create_device(
+				ghi::device::Features::new(),
+				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
+			)
+			.expect("Expected a Metal device for the GTAO shader test");
+
+		let shader_handle = device.create_shader(
+			Some("GTAO Compute Shader"),
+			ghi::shader::Sources::MTL {
+				source: gtao_shader.source(),
+				entry_point: gtao_shader.entry_point(),
+			},
+			ghi::ShaderTypes::Compute,
+			[
+				super::VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				super::GTAO_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+				super::GTAO_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+			],
+		);
+
+		assert!(
+			shader_handle.is_ok(),
+			"Expected generated GTAO source to compile for the active backend"
+		);
 	}
 
 	#[test]
 	fn gtao_blur_shader_compiles() {
-		let blur_x_source = if super::GTAO_USE_BITFIELD_BINARY_IMPL {
-			super::GTAO_BLUR_BITFIELD_X_PASS_SOURCE
-		} else {
-			super::GTAO_BLUR_PASS_SOURCE
-		};
-		let blur_y_source = if super::GTAO_USE_BITFIELD_BINARY_IMPL {
-			super::GTAO_BLUR_BITFIELD_Y_PASS_SOURCE
-		} else {
-			super::GTAO_BLUR_PASS_SOURCE
-		};
-		resource_management::glsl::compile(blur_x_source, "GTAO Blur X Compute Shader").unwrap();
-		resource_management::glsl::compile(blur_y_source, "GTAO Blur Y Compute Shader").unwrap();
+		if super::GTAO_USE_BITFIELD_BINARY_IMPL {
+			resource_management::glsl::compile(super::GTAO_BLUR_BITFIELD_X_PASS_SOURCE, "GTAO Blur X Compute Shader").unwrap();
+			resource_management::glsl::compile(super::GTAO_BLUR_BITFIELD_Y_PASS_SOURCE, "GTAO Blur Y Compute Shader").unwrap();
+			return;
+		}
+
+		let blur_shader = super::get_gtao_blur_shader();
+		if blur_shader.language().is_glsl() {
+			resource_management::glsl::compile(blur_shader.source(), "GTAO Blur Compute Shader").unwrap();
+			return;
+		}
+
+		use ghi::device::DeviceCreate as _;
+
+		if !ghi::implementation::USES_METAL {
+			return;
+		}
+
+		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
+			.expect("Expected a Metal instance for the GTAO blur shader test");
+		let mut queue = None;
+		let mut device = instance
+			.create_device(
+				ghi::device::Features::new(),
+				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
+			)
+			.expect("Expected a Metal device for the GTAO blur shader test");
+
+		let shader_handle = device.create_shader(
+			Some("GTAO Blur Compute Shader"),
+			ghi::shader::Sources::MTL {
+				source: blur_shader.source(),
+				entry_point: blur_shader.entry_point(),
+			},
+			ghi::ShaderTypes::Compute,
+			[
+				super::VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				super::GTAO_BLUR_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+				super::GTAO_BLUR_SOURCE_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+				super::GTAO_BLUR_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+			],
+		);
+
+		assert!(
+			shader_handle.is_ok(),
+			"Expected generated GTAO blur source to compile for the active backend"
+		);
 	}
 
 	#[test]

@@ -31,6 +31,19 @@ impl HLSLShaderGenerator {
 }
 
 impl HLSLShaderGenerator {
+	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
+		match node.borrow().node() {
+			besl::Nodes::Expression(
+				besl::Expressions::Operator { .. } | besl::Expressions::Accessor { .. } | besl::Expressions::Expression { .. },
+			) => {
+				string.push('(');
+				self.emit_node_string(string, node);
+				string.push(')');
+			}
+			_ => self.emit_node_string(string, node),
+		}
+	}
+
 	fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
@@ -63,7 +76,7 @@ impl HLSLShaderGenerator {
 
 		match name.as_str() {
 			"max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
-			| "radians" | "smoothstep" | "mix" | "dot" | "cross" | "normalize" | "reflect" | "length" => {
+			| "radians" | "smoothstep" | "mix" | "dot" | "cross" | "normalize" | "reflect" | "length" | "f32" | "u32" => {
 				string.push_str(name);
 				string.push('(');
 				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
@@ -204,7 +217,13 @@ impl HLSLShaderGenerator {
 					string.push_str("}\n");
 				}
 			}
-			besl::Nodes::Struct { name, fields, .. } => {
+			besl::Nodes::Struct {
+				name, fields, template, ..
+			} => {
+				if template.is_some() {
+					return;
+				}
+
 				if is_builtin_struct_type(name, false) {
 					return;
 				}
@@ -373,7 +392,7 @@ impl HLSLShaderGenerator {
 			}
 			besl::Nodes::Expression(expression) => match expression {
 				besl::Expressions::Operator { operator, left, right } => {
-					self.emit_node_string(string, &left);
+					self.emit_wrapped_expression(string, &left);
 					let operator = operator_token(operator);
 					if self.minified {
 						string.push_str(operator)
@@ -382,7 +401,7 @@ impl HLSLShaderGenerator {
 						string.push_str(operator);
 						string.push(' ');
 					}
-					self.emit_node_string(string, &right);
+					self.emit_wrapped_expression(string, &right);
 				}
 				besl::Expressions::FunctionCall {
 					parameters, function, ..
@@ -440,7 +459,7 @@ impl HLSLShaderGenerator {
 					self.emit_node_string(string, &left);
 					if left.borrow().node().is_indexable() {
 						string.push('[');
-						self.emit_node_string(string, &right);
+						self.emit_wrapped_expression(string, &right);
 						string.push(']');
 					} else {
 						string.push('.');

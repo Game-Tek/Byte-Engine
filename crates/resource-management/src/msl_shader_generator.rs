@@ -55,6 +55,19 @@ impl MSLShaderGenerator {
 		self.compute_binding_mode = compute_binding_mode;
 		self
 	}
+
+	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
+		match node.borrow().node() {
+			besl::Nodes::Expression(
+				besl::Expressions::Operator { .. } | besl::Expressions::Accessor { .. } | besl::Expressions::Expression { .. },
+			) => {
+				string.push('(');
+				self.emit_node_string(string, node);
+				string.push(')');
+			}
+			_ => self.emit_node_string(string, node),
+		}
+	}
 }
 
 impl MSLShaderGenerator {
@@ -135,6 +148,10 @@ impl MSLShaderGenerator {
 
 		for node in declaration_nodes {
 			self.emit_node_string(string, &node);
+		}
+
+		for node in function_nodes.iter().rev() {
+			self.emit_function_prototype(string, node);
 		}
 
 		for binding in &bindings {
@@ -1073,6 +1090,16 @@ impl MSLShaderGenerator {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
+			"f32" => {
+				string.push_str("float(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"u32" => {
+				string.push_str("uint(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			"atomic_add" => {
 				string.push_str("atomic_fetch_add_explicit(&");
 				self.emit_node_string(string, &arguments[0]);
@@ -1223,7 +1250,13 @@ impl MSLShaderGenerator {
 					string.push_str("}\n");
 				}
 			}
-			besl::Nodes::Struct { name, fields, .. } => {
+			besl::Nodes::Struct {
+				name, fields, template, ..
+			} => {
+				if template.is_some() {
+					return;
+				}
+
 				if is_builtin_struct_type(name, true) {
 					return;
 				}
@@ -1294,11 +1327,10 @@ impl MSLShaderGenerator {
 								} => {
 									let member_name = format!("{}_{}", name, { member_name });
 									string.push_str(&format!(
-										"constant {} {} [[function_constant({})]] = {};{}",
+										"constant {} {} [[function_constant({})]];{}",
 										Self::translate_type(&r#type.borrow().get_name().unwrap()),
 										&member_name,
 										i,
-										"1.0f",
 										if !self.minified { "\n" } else { "" }
 									));
 									members.push(member_name);
@@ -1367,7 +1399,7 @@ impl MSLShaderGenerator {
 			}
 			besl::Nodes::Expression(expression) => match expression {
 				besl::Expressions::Operator { operator, left, right } => {
-					self.emit_node_string(string, &left);
+					self.emit_wrapped_expression(string, &left);
 					let operator = operator_token(operator);
 					if self.minified {
 						string.push_str(operator);
@@ -1376,7 +1408,7 @@ impl MSLShaderGenerator {
 						string.push_str(operator);
 						string.push(' ');
 					}
-					self.emit_node_string(string, &right);
+					self.emit_wrapped_expression(string, &right);
 				}
 				besl::Expressions::FunctionCall {
 					parameters, function, ..
@@ -1442,7 +1474,7 @@ impl MSLShaderGenerator {
 					self.emit_node_string(string, &left);
 					if left.borrow().node().is_indexable() {
 						string.push('[');
-						self.emit_node_string(string, &right);
+						self.emit_wrapped_expression(string, &right);
 						string.push(']');
 					} else if left.borrow().node().is_buffer_binding() {
 						string.push_str("->");
@@ -1623,11 +1655,34 @@ impl MSLShaderGenerator {
 			}
 			besl::Nodes::Const { name, r#type, value } => {
 				string.push_str("constant ");
-				Self::emit_type_name(string, &r#type.borrow().get_name().unwrap());
-				string.push(' ');
-				string.push_str(name);
+				let type_name = r#type.borrow().get_name().unwrap().to_string();
+				if let Some((element_type, count)) = type_name.split_once('[') {
+					string.push_str(Self::translate_type(element_type));
+					string.push(' ');
+					string.push_str(name);
+					string.push('[');
+					string.push_str(count.trim_end_matches(']'));
+					string.push(']');
+				} else {
+					Self::emit_type_name(string, &type_name);
+					string.push(' ');
+					string.push_str(name);
+				}
 				string.push_str(" = ");
-				self.emit_node_string(string, &value);
+				if let besl::Nodes::Expression(besl::Expressions::FunctionCall {
+					parameters, function, ..
+				}) = value.borrow().node()
+				{
+					if function.borrow().get_name() == Some(type_name.as_str()) {
+						string.push('{');
+						self.emit_call_arguments(string, parameters);
+						string.push('}');
+					} else {
+						self.emit_node_string(string, &value);
+					}
+				} else {
+					self.emit_node_string(string, &value);
+				}
 				string.push_str(&format!(";{break_char}"));
 			}
 		}
@@ -1825,9 +1880,9 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "constant float color_x [[function_constant(0)]] = 1.0f;");
-		assert_string_contains!(shader, "constant float color_y [[function_constant(1)]] = 1.0f;");
-		assert_string_contains!(shader, "constant float color_z [[function_constant(2)]] = 1.0f;");
+		assert_string_contains!(shader, "constant float color_x [[function_constant(0)]];");
+		assert_string_contains!(shader, "constant float color_y [[function_constant(1)]];");
+		assert_string_contains!(shader, "constant float color_z [[function_constant(2)]];");
 		assert_string_contains!(shader, "constant float3 color=float3(color_x,color_y,color_z);");
 		assert_string_contains!(shader, "void main(){color;}");
 	}
@@ -2326,7 +2381,7 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "constant float[3] WEIGHTS = float[3](0.5,0.25,0.125);");
+		assert_string_contains!(shader, "constant float WEIGHTS[3]={0.5,0.25,0.125};");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
 	}
 

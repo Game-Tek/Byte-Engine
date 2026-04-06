@@ -1044,6 +1044,8 @@ enum ScalarUnaryOperator {
 	Fract,
 	Radians,
 	InverseSqrt,
+	FromU32ToF32,
+	FromF32ToU32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1744,6 +1746,52 @@ impl Compiler {
 						"inversesqrt" => ScalarUnaryOperator::InverseSqrt,
 						_ => unreachable!("Expected scalar unary intrinsic"),
 					},
+					value,
+				});
+				Ok(register)
+			}
+			"f32" => {
+				if arguments.len() != 1 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 1,
+						found: arguments.len(),
+					});
+				}
+				if expected_type != &ValueType::F32 {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: ValueType::F32.name().to_string(),
+					});
+				}
+
+				let value = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::UnaryScalar {
+					register,
+					operator: ScalarUnaryOperator::FromU32ToF32,
+					value,
+				});
+				Ok(register)
+			}
+			"u32" => {
+				if arguments.len() != 1 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 1,
+						found: arguments.len(),
+					});
+				}
+				if expected_type != &ValueType::U32 {
+					return Err(VmError::TypeMismatch {
+						expected: expected_type.name().to_string(),
+						found: ValueType::U32.name().to_string(),
+					});
+				}
+
+				let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::UnaryScalar {
+					register,
+					operator: ScalarUnaryOperator::FromF32ToU32,
 					value,
 				});
 				Ok(register)
@@ -3312,6 +3360,30 @@ fn apply_reflect(incident: &ScalarValue, normal: &ScalarValue) -> Result<ScalarV
 }
 
 fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &ScalarValue) -> Result<ScalarValue, VmError> {
+	match operator {
+		ScalarUnaryOperator::FromU32ToF32 => {
+			let ScalarValue::U32(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::U32.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+
+			return Ok(ScalarValue::F32(*value as f32));
+		}
+		ScalarUnaryOperator::FromF32ToU32 => {
+			let ScalarValue::F32(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::F32.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+
+			return Ok(ScalarValue::U32(*value as u32));
+		}
+		_ => {}
+	}
+
 	let ScalarValue::F32(value) = value else {
 		return Err(VmError::TypeMismatch {
 			expected: ValueType::F32.name().to_string(),
@@ -3330,6 +3402,9 @@ fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &ScalarValue) -> Res
 		ScalarUnaryOperator::Fract => value.fract(),
 		ScalarUnaryOperator::Radians => value.to_radians(),
 		ScalarUnaryOperator::InverseSqrt => 1.0 / value.sqrt(),
+		ScalarUnaryOperator::FromU32ToF32 | ScalarUnaryOperator::FromF32ToU32 => {
+			unreachable!("conversion operators return early")
+		}
 	};
 
 	Ok(ScalarValue::F32(result))

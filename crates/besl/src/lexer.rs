@@ -242,6 +242,8 @@ impl Node {
 		let fract_intrinsic = builtin_intrinsic("fract", vec![("value", f32_t.clone())], f32_t.clone());
 		let radians_intrinsic = builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone());
 		let inversesqrt_intrinsic = builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone());
+		let f32_from_u32_intrinsic = builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone());
+		let u32_from_f32_intrinsic = builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone());
 		let smoothstep_intrinsic = builtin_intrinsic(
 			"smoothstep",
 			vec![("edge0", f32_t.clone()), ("edge1", f32_t.clone()), ("value", f32_t.clone())],
@@ -332,6 +334,8 @@ impl Node {
 			fract_intrinsic,
 			radians_intrinsic,
 			inversesqrt_intrinsic,
+			f32_from_u32_intrinsic,
+			u32_from_f32_intrinsic,
 			smoothstep_intrinsic,
 			mix_intrinsic,
 			thread_idx_intrinsic,
@@ -1553,9 +1557,17 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				}
 			}
 
+			let mut scoped_chain = extend_chain(&chain, &this);
+
 			for statement in statements {
-				let statement = lex_child_with_parent(&chain, &this, statement)?;
+				let statement = lex_parsed_node(scoped_chain.clone(), statement)?;
 				this.borrow_mut().add_child(statement);
+				scoped_chain.push(
+					this.borrow()
+						.get_children()
+						.and_then(|children| children.last().cloned())
+						.unwrap(),
+				);
 			}
 
 			this
@@ -1563,9 +1575,12 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 		parser::Nodes::Conditional { condition, statements } => {
 			let condition = lex_parsed_node(chain.clone(), condition)?;
 			let mut lexed_statements = Vec::with_capacity(statements.len());
+			let mut scoped_chain = chain.clone();
 
 			for statement in statements {
-				lexed_statements.push(lex_parsed_node(chain.clone(), statement)?);
+				let statement = lex_parsed_node(scoped_chain.clone(), statement)?;
+				scoped_chain.push(statement.clone());
+				lexed_statements.push(statement);
 			}
 
 			Node::conditional(condition, lexed_statements).into()
@@ -1584,7 +1599,9 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			let mut lexed_statements = Vec::with_capacity(statements.len());
 
 			for statement in statements {
-				lexed_statements.push(lex_parsed_node(scoped_chain.clone(), statement)?);
+				let statement = lex_parsed_node(scoped_chain.clone(), statement)?;
+				scoped_chain.push(statement.clone());
+				lexed_statements.push(statement);
 			}
 
 			Node::for_loop(initializer, condition, update, lexed_statements).into()

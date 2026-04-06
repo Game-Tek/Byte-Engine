@@ -509,6 +509,7 @@ pub(super) enum Atoms<'a> {
 	Keyword,
 	Continue,
 	Accessor,
+	GroupedExpression(Vec<Atoms<'a>>),
 	Member { name: &'a str },
 	Literal { value: &'a str },
 	FunctionCall { name: &'a str, parameters: Vec<Vec<Atoms<'a>>> },
@@ -596,7 +597,8 @@ impl Precedence for Atoms<'_> {
 		match self {
 			Atoms::Keyword => 0,
 			Atoms::Continue => 0,
-			Atoms::Accessor => 4,
+			Atoms::Accessor => 1,
+			Atoms::GroupedExpression { .. } => 0,
 			Atoms::Member { .. } => 0,
 			Atoms::Literal { .. } => 0,
 			Atoms::FunctionCall { .. } => 0,
@@ -1069,8 +1071,8 @@ fn parse_grouped_expression<'i, 'a: 'i>(
 		message: "Expected closing ')' for grouped expression".to_string(),
 	})?;
 
-	// Append the inner expressions to the outer expression list
-	expressions.extend(inner_expressions);
+	// Keep grouped expressions intact so later lowering can preserve precedence.
+	expressions.push(Atoms::GroupedExpression(inner_expressions));
 
 	// Check for following expressions (operators, accessors, etc.)
 	let possible_following_expressions = vec![parse_operator, parse_accessor, parse_index_accessor];
@@ -1166,6 +1168,7 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 					}),
 				}
 			}
+			Atoms::GroupedExpression(inner) => Node::sentence(vec![expression_atoms_to_node(inner)]),
 			Atoms::FunctionCall { name, parameters } => {
 				let parameters = parameters.iter().map(|v| expression_atoms_to_node(v)).collect::<Vec<_>>();
 

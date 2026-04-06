@@ -139,7 +139,7 @@ impl GLSLShaderGenerator {
 
 		match name.as_str() {
 			"max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
-			| "radians" | "inversesqrt" | "smoothstep" | "mix" => {
+			| "radians" | "inversesqrt" | "smoothstep" | "mix" | "f32" | "u32" => {
 				string.push_str(name);
 				string.push('(');
 				self.emit_call_arguments(string, arguments);
@@ -267,6 +267,19 @@ impl GLSLShaderGenerator {
 		}
 	}
 
+	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
+		match node.borrow().node() {
+			besl::Nodes::Expression(
+				besl::Expressions::Operator { .. } | besl::Expressions::Accessor { .. } | besl::Expressions::Expression { .. },
+			) => {
+				string.push('(');
+				self.emit_node_string(string, node);
+				string.push(')');
+			}
+			_ => self.emit_node_string(string, node),
+		}
+	}
+
 	// This function appends to the `string` parameter the string representation of the node.
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
@@ -311,7 +324,13 @@ impl GLSLShaderGenerator {
 					string.push_str("}\n");
 				}
 			}
-			besl::Nodes::Struct { name, fields, .. } => {
+			besl::Nodes::Struct {
+				name, fields, template, ..
+			} => {
+				if template.is_some() {
+					return;
+				}
+
 				if is_builtin_struct_type(name, true) {
 					return;
 				}
@@ -479,7 +498,7 @@ impl GLSLShaderGenerator {
 			}
 			besl::Nodes::Expression(expression) => match expression {
 				besl::Expressions::Operator { operator, left, right } => {
-					self.emit_node_string(string, &left);
+					self.emit_wrapped_expression(string, &left);
 					let operator = operator_token(operator);
 					if self.minified {
 						string.push_str(operator);
@@ -488,7 +507,7 @@ impl GLSLShaderGenerator {
 						string.push_str(operator);
 						string.push(' ');
 					}
-					self.emit_node_string(string, &right);
+					self.emit_wrapped_expression(string, &right);
 				}
 				besl::Expressions::FunctionCall {
 					parameters, function, ..
@@ -546,7 +565,7 @@ impl GLSLShaderGenerator {
 					self.emit_node_string(string, &left);
 					if left.borrow().node().is_indexable() {
 						string.push('[');
-						self.emit_node_string(string, &right);
+						self.emit_wrapped_expression(string, &right);
 						string.push(']');
 					} else {
 						string.push('.');

@@ -257,10 +257,11 @@ impl VisibilityShaderScope {
 			let mut root = besl::parse(
 				r#"
 				compute_triangle: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec3u {
+					let triangle_base_index: u32 = mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index;
 					return vec3u(
-						primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 0],
-						primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 1],
-						primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 2]
+						primitive_indices.primitive_indices[triangle_base_index * 3 + 0],
+						primitive_indices.primitive_indices[triangle_base_index * 3 + 1],
+						primitive_indices.primitive_indices[triangle_base_index * 3 + 2]
 					);
 				}
 				"#,
@@ -347,7 +348,18 @@ struct PrimitiveOutput {
 			.expect("Expected process_meshlet source to parse");
 
 			match process_meshlet.node_mut() {
-				besl::parser::Nodes::Scope { children, .. } => children.remove(0),
+				besl::parser::Nodes::Scope { children, .. } => {
+					let mut function = children.remove(0);
+
+					if let besl::parser::Nodes::Function { statements, .. } = function.node_mut() {
+						statements.insert(
+							0,
+							Node::raw_code(Some("".into()), Some("".into()), &["VertexOutput", "PrimitiveOutput"], &[]),
+						);
+					}
+
+					function
+				}
 				_ => panic!(
 					"Expected process_meshlet source to parse into a scope. The most likely cause is invalid BESL syntax in the visibility shader module."
 				),

@@ -833,7 +833,13 @@ impl Device {
 				let library = self
 					.device
 					.newLibraryWithSource_options_error(&source, Some(&compile_options))
-					.map_err(|_| ())?;
+					.map_err(|error| {
+						eprintln!(
+							"Metal shader compilation failed: {}",
+							error.localizedDescription().to_string()
+						);
+						()
+					})?;
 				let entry_point = NSString::from_str(entry_point);
 				let function = library.newFunctionWithName(&entry_point).ok_or(())?;
 

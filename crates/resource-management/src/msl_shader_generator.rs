@@ -107,13 +107,12 @@ impl MSLShaderGenerator {
 	) {
 		let mut bindings = Vec::new();
 		let mut push_constant = None;
+		let mut declaration_nodes = Vec::new();
+		let mut function_nodes = Vec::new();
 
 		for node in order {
 			match node.borrow().node() {
 				besl::Nodes::Binding { r#type, .. } => {
-					if let besl::BindingTypes::Buffer { members } = r#type {
-						self.emit_buffer_binding_struct(string, node, members.as_slice());
-					}
 					bindings.push(node.clone());
 				}
 				besl::Nodes::PushConstant { .. } => {
@@ -122,8 +121,34 @@ impl MSLShaderGenerator {
 					}
 				}
 				besl::Nodes::Function { name, .. } if name == "main" => {}
-				_ => self.emit_node_string(string, node),
+				besl::Nodes::Function { .. } => function_nodes.push(node.clone()),
+				besl::Nodes::Struct { .. }
+				| besl::Nodes::Raw { .. }
+				| besl::Nodes::Output { .. }
+				| besl::Nodes::Input { .. }
+				| besl::Nodes::Intrinsic { .. }
+				| besl::Nodes::Const { .. }
+				| besl::Nodes::Specialization { .. } => declaration_nodes.push(node.clone()),
+				_ => {}
 			}
+		}
+
+		for node in declaration_nodes {
+			self.emit_node_string(string, &node);
+		}
+
+		for binding in &bindings {
+			if let besl::Nodes::Binding {
+				r#type: besl::BindingTypes::Buffer { members },
+				..
+			} = binding.borrow().node()
+			{
+				self.emit_buffer_binding_struct(string, binding, members.as_slice());
+			}
+		}
+
+		for node in function_nodes.into_iter().rev() {
+			self.emit_node_string(string, &node);
 		}
 
 		let previous_in_compute_body = self.in_compute_body;
@@ -165,14 +190,12 @@ impl MSLShaderGenerator {
 	) {
 		let mut bindings = Vec::new();
 		let mut push_constant = None;
-		let mut nodes_to_emit: Vec<besl::NodeReference> = Vec::new();
+		let mut declaration_nodes = Vec::new();
+		let mut function_nodes = Vec::new();
 
 		for node in order {
 			match node.borrow().node() {
 				besl::Nodes::Binding { r#type, .. } => {
-					if let besl::BindingTypes::Buffer { members } = r#type {
-						self.emit_buffer_binding_struct(string, node, members.as_slice());
-					}
 					bindings.push(node.clone());
 				}
 				besl::Nodes::PushConstant { .. } => {
@@ -182,7 +205,15 @@ impl MSLShaderGenerator {
 					}
 				}
 				besl::Nodes::Function { name, .. } if name == "main" => {}
-				_ => nodes_to_emit.push(node.clone()),
+				besl::Nodes::Function { .. } => function_nodes.push(node.clone()),
+				besl::Nodes::Struct { .. }
+				| besl::Nodes::Raw { .. }
+				| besl::Nodes::Output { .. }
+				| besl::Nodes::Input { .. }
+				| besl::Nodes::Intrinsic { .. }
+				| besl::Nodes::Const { .. }
+				| besl::Nodes::Specialization { .. } => declaration_nodes.push(node.clone()),
+				_ => {}
 			}
 		}
 
@@ -193,12 +224,30 @@ impl MSLShaderGenerator {
 			maximum_vertices,
 			maximum_primitives,
 		});
-		for node in nodes_to_emit {
+		for node in declaration_nodes {
 			self.emit_node_string(string, &node);
+		}
+
+		for binding in &bindings {
+			if let besl::Nodes::Binding {
+				r#type: besl::BindingTypes::Buffer { members },
+				..
+			} = binding.borrow().node()
+			{
+				self.emit_buffer_binding_struct(string, binding, members.as_slice());
+			}
 		}
 
 		for (&set, bindings) in &binding_sets {
 			self.emit_argument_buffer_struct(string, set, bindings);
+		}
+
+		for node in function_nodes.iter().rev() {
+			self.emit_function_prototype(string, node);
+		}
+
+		for node in function_nodes.into_iter().rev() {
+			self.emit_node_string(string, &node);
 		}
 
 		self.emit_mesh_entry_point_argument_buffers(
@@ -811,6 +860,39 @@ impl MSLShaderGenerator {
 		string.push_str("thread_index");
 		string.push_str(separator);
 		string.push_str("out_mesh");
+	}
+
+	fn emit_function_prototype(&mut self, string: &mut String, function_node: &besl::NodeReference) {
+		let node = RefCell::borrow(function_node);
+		let besl::Nodes::Function {
+			name,
+			return_type,
+			params,
+			..
+		} = node.node()
+		else {
+			return;
+		};
+
+		string.push_str(Self::translate_type(&return_type.borrow().get_name().unwrap()));
+		string.push(' ');
+		string.push_str(name);
+		string.push('(');
+
+		let formatting = ShaderFormatting::new(self.minified);
+		emit_comma_separated_nodes(string, formatting, params, |string, param| {
+			self.emit_node_string(string, param)
+		});
+
+		if self.mesh_stage_context.is_some() && name != "main" {
+			self.emit_mesh_hidden_parameters(string, !params.is_empty());
+		}
+
+		string.push(')');
+		string.push(';');
+		if !self.minified {
+			string.push('\n');
+		}
 	}
 
 	fn mesh_output_assignment_parts(

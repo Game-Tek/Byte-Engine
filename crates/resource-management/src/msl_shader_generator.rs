@@ -884,7 +884,7 @@ impl MSLShaderGenerator {
 			self.emit_node_string(string, param)
 		});
 
-		if self.mesh_stage_context.is_some() && name != "main" {
+		if self.mesh_stage_context.is_some() && name == "main" {
 			self.emit_mesh_hidden_parameters(string, !params.is_empty());
 		}
 
@@ -1184,7 +1184,7 @@ impl MSLShaderGenerator {
 					self.emit_node_string(string, param)
 				});
 
-				if self.mesh_stage_context.is_some() && name != "main" {
+				if self.mesh_stage_context.is_some() && name == "main" {
 					self.emit_mesh_hidden_parameters(string, !params.is_empty());
 				}
 
@@ -1359,7 +1359,7 @@ impl MSLShaderGenerator {
 					let function = RefCell::borrow(&function);
 					let name = function.get_name().unwrap();
 					let append_mesh_context = self.mesh_stage_context.is_some()
-						&& matches!(function.node(), besl::Nodes::Function { name, .. } if name != "main");
+						&& matches!(function.node(), besl::Nodes::Function { name, .. } if name == "main");
 
 					let name = Self::translate_type(&name);
 
@@ -2075,7 +2075,7 @@ struct PrimitiveOutput {
 	}
 
 	#[test]
-	fn mesh_stage_user_functions_receive_hidden_context_parameters() {
+	fn mesh_stage_user_functions_do_not_receive_hidden_context_parameters() {
 		let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
 		let meshlets = besl::parser::Node::binding(
 			"meshlets",
@@ -2134,12 +2134,10 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(
-			shader,
-			"void helper(constant _set0& set0,uint threadgroup_position,uint thread_index,metal::mesh<VertexOutput, PrimitiveOutput, 64, 126, topology::triangle> out_mesh)"
-		);
-		assert_string_contains!(shader, "set0.meshlets->count;");
-		assert_string_contains!(shader, "helper(set0,threadgroup_position,thread_index,out_mesh);");
+		assert_string_contains!(shader, "void helper()");
+		assert_string_contains!(shader, "helper();");
+		assert!(!shader.contains("void helper(constant _set0& set0"));
+		assert!(!shader.contains("helper(set0,threadgroup_position,thread_index,out_mesh);"));
 	}
 
 	#[test]

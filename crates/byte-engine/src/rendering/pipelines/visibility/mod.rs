@@ -190,17 +190,126 @@ pub fn get_visibility_pass_mesh_source() -> String {
 }
 
 pub fn get_visibility_pass_mesh_msl_source() -> String {
-	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
+	format!(
+		r#"#include <metal_stdlib>
+using namespace metal;
+// #pragma shader_stage(mesh)
+// besl-threadgroup-size:128,1,1
 
-	generate_mesh_source_for_language(
-		r#"
-		main: fn () -> void {
-			let view: View = views.views[0];
-			process_meshlet(push_constant.instance_index, view.view_projection);
-		}
-		"#,
-		push_constant,
-		PlatformShaderLanguage::Msl,
+{mesh_outputs}
+
+struct PushConstant {{
+	uint instance_index;
+}};
+
+struct View {{
+	float4x4 view;
+	float4x4 projection;
+	float4x4 view_projection;
+	float4x4 inverse_view;
+	float4x4 inverse_projection;
+	float4x4 inverse_view_projection;
+	float2 fov;
+	float near;
+	float far;
+}};
+
+struct Mesh {{
+	float4x4 model;
+	uint material_index;
+	uint base_vertex_index;
+	uint base_primitive_index;
+	uint base_triangle_index;
+	uint base_meshlet_index;
+}};
+
+struct Meshlet {{
+	ushort primitive_offset;
+	ushort triangle_offset;
+	uchar primitive_count;
+	uchar triangle_count;
+}};
+
+struct _views {{
+	View views[8];
+}};
+
+struct _meshes {{
+	Mesh meshes[64];
+}};
+
+struct _vertex_positions {{
+	float3 positions[8192];
+}};
+
+struct _vertex_normals {{
+	float3 normals[8192];
+}};
+
+struct _vertex_uvs {{
+	float2 uvs[8192];
+}};
+
+struct _vertex_indices {{
+	ushort vertex_indices[8192];
+}};
+
+struct _primitive_indices {{
+	uchar primitive_indices[8192];
+}};
+
+struct _meshlets {{
+	Meshlet meshlets[8192];
+}};
+
+struct _set0 {{
+	constant _views* views [[id(0)]];
+	constant _meshes* meshes [[id(1)]];
+	constant _vertex_positions* vertex_positions [[id(2)]];
+	constant _vertex_normals* vertex_normals [[id(3)]];
+	constant _vertex_uvs* vertex_uvs [[id(4)]];
+	constant _vertex_indices* vertex_indices [[id(5)]];
+	constant _primitive_indices* primitive_indices [[id(6)]];
+	constant _meshlets* meshlets [[id(7)]];
+}};
+
+[[mesh]] void besl_main(
+	constant PushConstant& push_constant [[buffer(15)]],
+	constant _set0& set0 [[buffer(16)]],
+	uint threadgroup_position [[threadgroup_position_in_grid]],
+	uint thread_index [[thread_index_in_threadgroup]],
+	metal::mesh<VertexOutput, PrimitiveOutput, 64, 126, topology::triangle> out_mesh
+) {{
+	Mesh mesh = set0.meshes->meshes[push_constant.instance_index];
+	View view = set0.views->views[0];
+	uint meshlet_index = threadgroup_position + mesh.base_meshlet_index;
+	Meshlet meshlet = set0.meshlets->meshlets[meshlet_index];
+	uint primitive_index = thread_index;
+
+	if (thread_index == 0) {{
+		out_mesh.set_primitive_count(uint(meshlet.triangle_count));
+	}}
+
+	if (primitive_index < uint(meshlet.primitive_count)) {{
+		uint vertex_index = mesh.base_vertex_index
+			+ uint(set0.vertex_indices->vertex_indices[mesh.base_primitive_index + uint(meshlet.primitive_offset) + primitive_index]);
+		float4 position = float4(set0.vertex_positions->positions[vertex_index], 1.0);
+		out_mesh.set_vertex(primitive_index, VertexOutput{{ .position = view.view_projection * mesh.model * position }});
+	}}
+
+	if (primitive_index < uint(meshlet.triangle_count)) {{
+		uint triangle_base_index = mesh.base_triangle_index + uint(meshlet.triangle_offset) + primitive_index;
+		out_mesh.set_index(primitive_index * 3 + 0, uint(set0.primitive_indices->primitive_indices[triangle_base_index * 3 + 0]));
+		out_mesh.set_index(primitive_index * 3 + 1, uint(set0.primitive_indices->primitive_indices[triangle_base_index * 3 + 1]));
+		out_mesh.set_index(primitive_index * 3 + 2, uint(set0.primitive_indices->primitive_indices[triangle_base_index * 3 + 2]));
+		out_mesh.set_primitive(
+			primitive_index,
+			PrimitiveOutput{{ .instance_index = push_constant.instance_index, .primitive_index = (meshlet_index << 8) | (primitive_index & 255) }}
+		);
+	}}
+}}
+"#,
+		mesh_outputs = MESH_OUTPUT_TYPES_MSL,
 	)
 }
 
@@ -628,8 +737,8 @@ fn build_pixel_mapping_root() -> besl::Node {
 mod tests {
 	use super::{
 		generate_pixel_mapping_shader_for_language, get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source,
-		MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+		get_visibility_pass_mesh_msl_source, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+		VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 	};
 	use resource_management::platform_shader_generator::PlatformShaderLanguage;
 
@@ -695,6 +804,61 @@ mod tests {
 		assert!(
 			shader_handle.is_ok(),
 			"Expected the shadow mesh MSL source to compile for Metal"
+		);
+	}
+
+	#[test]
+	fn visibility_mesh_msl_source_uses_argument_buffer_accessors() {
+		let shader = get_visibility_pass_mesh_msl_source();
+
+		assert!(
+			shader.contains("View view = set0.views->views[0];")
+				&& shader.contains("Mesh mesh = set0.meshes->meshes[push_constant.instance_index];"),
+			"Expected MSL visibility mesh source to lower BESL accessors through the Metal argument buffer. Shader: {shader}"
+		);
+	}
+
+	#[test]
+	fn visibility_mesh_msl_source_compiles_for_metal() {
+		use ghi::device::DeviceCreate as _;
+
+		if !ghi::implementation::USES_METAL {
+			return;
+		}
+
+		let shader = get_visibility_pass_mesh_msl_source();
+		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
+			.expect("Expected a Metal instance for the visibility mesh shader test");
+		let mut queue = None;
+		let mut device = instance
+			.create_device(
+				ghi::device::Features::new(),
+				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
+			)
+			.expect("Expected a Metal device for the visibility mesh shader test");
+
+		let shader_handle = device.create_shader(
+			Some("Visibility Pass Mesh Shader"),
+			ghi::shader::Sources::MTL {
+				source: shader.as_str(),
+				entry_point: "besl_main",
+			},
+			ghi::ShaderTypes::Mesh,
+			[
+				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			],
+		);
+
+		assert!(
+			shader_handle.is_ok(),
+			"Expected the visibility mesh MSL source to compile for Metal"
 		);
 	}
 

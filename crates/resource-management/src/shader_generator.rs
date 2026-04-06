@@ -1,3 +1,4 @@
+use crate::shader_graph::{build_graph, topological_sort};
 use utils::Extent;
 
 /// Generates a graphics API consumable shader from a BESL shader program definition.
@@ -39,6 +40,115 @@ pub struct ShaderGenerationSettings {
 	pub(crate) stage: Stages,
 	pub(crate) matrix_layout: MatrixLayouts,
 	pub(crate) name: String,
+}
+
+/// The `ShaderFormatting` struct stores shared string formatting rules for shader generators.
+#[derive(Clone, Copy)]
+pub(crate) struct ShaderFormatting {
+	minified: bool,
+}
+
+impl ShaderFormatting {
+	pub(crate) fn new(minified: bool) -> Self {
+		Self { minified }
+	}
+
+	pub(crate) fn break_str(&self) -> &'static str {
+		if self.minified {
+			""
+		} else {
+			"\n"
+		}
+	}
+
+	pub(crate) fn space_str(&self) -> &'static str {
+		if self.minified {
+			""
+		} else {
+			" "
+		}
+	}
+
+	pub(crate) fn comma_str(&self) -> &'static str {
+		if self.minified {
+			","
+		} else {
+			", "
+		}
+	}
+
+	pub(crate) fn push_indentation(&self, string: &mut String, indent: usize) {
+		if !self.minified {
+			for _ in 0..indent {
+				string.push('\t');
+			}
+		}
+	}
+
+	pub(crate) fn push_block_start(&self, string: &mut String) {
+		if self.minified {
+			string.push_str("){");
+		} else {
+			string.push_str(") {\n");
+		}
+	}
+
+	pub(crate) fn push_statement_end(&self, string: &mut String) {
+		if self.minified {
+			string.push(';');
+		} else {
+			string.push_str(";\n");
+		}
+	}
+}
+
+/// Returns the reachable non-leaf shader nodes in emission order.
+pub(crate) fn ordered_shader_nodes(main_function_node: &besl::NodeReference, backend_name: &str) -> Vec<besl::NodeReference> {
+	if !matches!(main_function_node.borrow().node(), besl::Nodes::Function { .. }) {
+		panic!(
+			"{backend_name} shader generation requires a function node as the main function. The provided node was not a function."
+		);
+	}
+
+	let graph = build_graph(main_function_node.clone());
+
+	topological_sort(&graph)
+		.into_iter()
+		.filter(|node| !node.borrow().node().is_leaf())
+		.collect()
+}
+
+pub(crate) fn emit_comma_separated_nodes<F>(
+	string: &mut String,
+	formatting: ShaderFormatting,
+	nodes: &[besl::NodeReference],
+	mut emit_node: F,
+) where
+	F: FnMut(&mut String, &besl::NodeReference),
+{
+	for (i, node) in nodes.iter().enumerate() {
+		if i > 0 {
+			string.push_str(formatting.comma_str());
+		}
+
+		emit_node(string, node);
+	}
+}
+
+pub(crate) fn emit_statement_block<F>(
+	string: &mut String,
+	formatting: ShaderFormatting,
+	statements: &[besl::NodeReference],
+	indent: usize,
+	mut emit_statement: F,
+) where
+	F: FnMut(&mut String, &besl::NodeReference),
+{
+	for statement in statements {
+		formatting.push_indentation(string, indent);
+		emit_statement(string, statement);
+		formatting.push_statement_end(string);
+	}
 }
 
 impl ShaderGenerationSettings {
@@ -358,6 +468,19 @@ pub mod tests {
 
 		let script_node = besl::compile_to_besl(&script, None).unwrap();
 
+		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
+
+		main
+	}
+
+	pub fn return_value() -> besl::NodeReference {
+		let script = r#"
+		main: fn () -> f32 {
+			return 1.0;
+		}
+		"#;
+
+		let script_node = besl::compile_to_besl(&script, None).unwrap();
 		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
 
 		main

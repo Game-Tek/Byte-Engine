@@ -1,7 +1,9 @@
 use std::cell::RefCell;
 
-use crate::shader_generator::{MatrixLayouts, ShaderGenerationSettings, ShaderGenerator, Stages};
-use crate::shader_graph::{build_graph, topological_sort};
+use crate::shader_generator::{
+	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes, MatrixLayouts, ShaderFormatting,
+	ShaderGenerationSettings, ShaderGenerator, Stages,
+};
 
 /// Shader generator.
 ///
@@ -49,15 +51,7 @@ impl GLSLShaderGenerator {
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
 		let mut string = String::with_capacity(2048);
-
-		if !matches!(main_function_node.borrow().node(), besl::Nodes::Function { .. }) {
-			panic!("GLSL shader generation requires a function node as the main function.");
-		}
-
-		let graph = build_graph(main_function_node.clone());
-
-		let order = topological_sort(&graph);
-		let order = order.into_iter().filter(|n| !n.borrow().node().is_leaf());
+		let order = ordered_shader_nodes(main_function_node, "GLSL");
 
 		self.generate_glsl_header_block(&mut string, shader_compilation_settings);
 
@@ -96,16 +90,10 @@ impl GLSLShaderGenerator {
 	}
 
 	fn emit_call_arguments(&mut self, string: &mut String, arguments: &[besl::NodeReference]) {
-		for (i, argument) in arguments.iter().enumerate() {
-			if i > 0 {
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-			}
-			self.emit_node_string(string, argument);
-		}
+		let formatting = ShaderFormatting::new(self.minified);
+		emit_comma_separated_nodes(string, formatting, arguments, |string, argument| {
+			self.emit_node_string(string, argument)
+		});
 	}
 
 	fn emit_intrinsic_call(
@@ -251,9 +239,10 @@ impl GLSLShaderGenerator {
 	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
 	fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
 		let node = RefCell::borrow(&this_node);
+		let formatting = ShaderFormatting::new(self.minified);
 
-		let break_char = if self.minified { "" } else { "\n" };
-		let space_char = if self.minified { "" } else { " " };
+		let break_char = formatting.break_str();
+		let space_char = formatting.space_str();
 
 		match node.node() {
 			besl::Nodes::Null => {}
@@ -273,35 +262,14 @@ impl GLSLShaderGenerator {
 
 				string.push('(');
 
-				for (i, param) in params.iter().enumerate() {
-					if i > 0 {
-						if !self.minified {
-							string.push_str(", ");
-						} else {
-							string.push(',');
-						}
-					}
+				emit_comma_separated_nodes(string, formatting, params, |string, param| {
+					self.emit_node_string(string, param)
+				});
 
-					self.emit_node_string(string, param);
-				}
-
-				if self.minified {
-					string.push_str("){");
-				} else {
-					string.push_str(") {\n");
-				}
-
-				for statement in statements {
-					if !self.minified {
-						string.push('\t');
-					}
-					self.emit_node_string(string, &statement);
-					if !self.minified {
-						string.push_str(";\n");
-					} else {
-						string.push(';');
-					}
-				}
+				formatting.push_block_start(string);
+				emit_statement_block(string, formatting, statements, 1, |string, statement| {
+					self.emit_node_string(string, statement)
+				});
 
 				if self.minified {
 					string.push('}')
@@ -341,15 +309,9 @@ impl GLSLShaderGenerator {
 				}
 
 				for field in fields {
-					if !self.minified {
-						string.push('\t');
-					}
+					formatting.push_indentation(string, 1);
 					self.emit_node_string(string, &field);
-					if self.minified {
-						string.push(';')
-					} else {
-						string.push_str(";\n");
-					}
+					formatting.push_statement_end(string);
 				}
 
 				string.push_str("};");
@@ -370,15 +332,9 @@ impl GLSLShaderGenerator {
 				}
 
 				for member in members {
-					if !self.minified {
-						string.push('\t');
-					}
+					formatting.push_indentation(string, 1);
 					self.emit_node_string(string, &member);
-					if self.minified {
-						string.push(';')
-					} else {
-						string.push_str(";\n");
-					}
+					formatting.push_statement_end(string);
 				}
 
 				if self.minified {
@@ -539,16 +495,9 @@ impl GLSLShaderGenerator {
 					let name = Self::translate_type(&name);
 
 					string.push_str(&format!("{}(", name));
-					for (i, parameter) in parameters.iter().enumerate() {
-						if i > 0 {
-							if self.minified {
-								string.push(',')
-							} else {
-								string.push_str(", ");
-							}
-						}
-						self.emit_node_string(string, &parameter);
-					}
+					emit_comma_separated_nodes(string, formatting, parameters, |string, parameter| {
+						self.emit_node_string(string, parameter)
+					});
 					string.push_str(&format!(")"));
 				}
 				besl::Expressions::IntrinsicCall {
@@ -585,9 +534,7 @@ impl GLSLShaderGenerator {
 				besl::Expressions::Return { value } => {
 					string.push_str("return");
 					if let Some(value) = value {
-						if !self.minified {
-							string.push(' ');
-						}
+						string.push(' ');
 						self.emit_node_string(string, value);
 					}
 				}
@@ -612,17 +559,9 @@ impl GLSLShaderGenerator {
 					string.push_str(") {\n");
 				}
 
-				for statement in statements {
-					if !self.minified {
-						string.push('\t');
-					}
-					self.emit_node_string(string, statement);
-					if self.minified {
-						string.push(';');
-					} else {
-						string.push_str(";\n");
-					}
-				}
+				emit_statement_block(string, formatting, statements, 1, |string, statement| {
+					self.emit_node_string(string, statement)
+				});
 
 				string.push('}');
 				if !self.minified {
@@ -1124,5 +1063,24 @@ mod tests {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "uint32_t packed=1<<8|2&255;");
+	}
+
+	#[test]
+	fn return_values_and_pretty_spacing_lower_to_glsl() {
+		let main = shader_generator::tests::return_value();
+
+		let minified_shader = GLSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(minified_shader, "float main(){return 1.0;}");
+
+		let pretty_shader = GLSLShaderGenerator::new()
+			.minified(false)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(pretty_shader, "float main() {\n\treturn 1.0;\n}\n");
 	}
 }

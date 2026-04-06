@@ -1,7 +1,9 @@
 use std::{cell::RefCell, collections::BTreeMap};
 
-use crate::shader_generator::{MatrixLayouts, ShaderGenerationSettings, ShaderGenerator, Stages};
-use crate::shader_graph::{build_graph, topological_sort};
+use crate::shader_generator::{
+	emit_comma_separated_nodes, emit_statement_block as emit_shared_statement_block, ordered_shader_nodes, MatrixLayouts,
+	ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
+};
 
 /// The `MSLShaderGenerator` struct generates Metal Shading Language shaders from BESL ASTs.
 ///
@@ -76,19 +78,7 @@ impl MSLShaderGenerator {
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
 		let mut string = String::with_capacity(2048);
-
-		if !matches!(main_function_node.borrow().node(), besl::Nodes::Function { .. }) {
-			panic!(
-				"MSL shader generation requires a function node as the main function. The provided node was not a function."
-			);
-		}
-
-		let graph = build_graph(main_function_node.clone());
-
-		let order = topological_sort(&graph)
-			.into_iter()
-			.filter(|node| !node.borrow().node().is_leaf())
-			.collect::<Vec<_>>();
+		let order = ordered_shader_nodes(main_function_node, "MSL");
 
 		self.generate_msl_header_block(&mut string, shader_compilation_settings);
 
@@ -868,7 +858,7 @@ impl MSLShaderGenerator {
 	}
 
 	fn emit_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
-		let break_char = if self.minified { "" } else { "\n" };
+		let formatting = ShaderFormatting::new(self.minified);
 		let mut i = 0;
 
 		while i < statements.len() {
@@ -895,11 +885,7 @@ impl MSLShaderGenerator {
 							(next_value, current_value)
 						};
 
-						if !self.minified {
-							for _ in 0..indent {
-								string.push('\t');
-							}
-						}
+						formatting.push_indentation(string, indent);
 
 						string.push_str("out_mesh.set_primitive(");
 						self.emit_node_string(string, &current_index);
@@ -908,22 +894,16 @@ impl MSLShaderGenerator {
 						string.push_str(", .primitive_index = ");
 						self.emit_node_string(string, &primitive_value);
 						string.push_str("})");
-						string.push(';');
-						string.push_str(break_char);
+						formatting.push_statement_end(string);
 						i += 2;
 						continue;
 					}
 				}
 			}
 
-			if !self.minified {
-				for _ in 0..indent {
-					string.push('\t');
-				}
-			}
-			self.emit_node_string(string, &statements[i]);
-			string.push(';');
-			string.push_str(break_char);
+			emit_shared_statement_block(string, formatting, &statements[i..i + 1], indent, |string, statement| {
+				self.emit_node_string(string, statement)
+			});
 			i += 1;
 		}
 	}
@@ -956,16 +936,10 @@ impl MSLShaderGenerator {
 	}
 
 	fn emit_call_arguments(&mut self, string: &mut String, arguments: &[besl::NodeReference]) {
-		for (i, argument) in arguments.iter().enumerate() {
-			if i > 0 {
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
-			}
-			self.emit_node_string(string, argument);
-		}
+		let formatting = ShaderFormatting::new(self.minified);
+		emit_comma_separated_nodes(string, formatting, arguments, |string, argument| {
+			self.emit_node_string(string, argument)
+		});
 	}
 
 	fn emit_intrinsic_call(
@@ -1102,8 +1076,9 @@ impl MSLShaderGenerator {
 	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
 	fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
 		let node = RefCell::borrow(&this_node);
+		let formatting = ShaderFormatting::new(self.minified);
 
-		let break_char = if self.minified { "" } else { "\n" };
+		let break_char = formatting.break_str();
 
 		match node.node() {
 			besl::Nodes::Null => {}
@@ -1123,27 +1098,15 @@ impl MSLShaderGenerator {
 
 				string.push('(');
 
-				for (i, param) in params.iter().enumerate() {
-					if i > 0 {
-						if !self.minified {
-							string.push_str(", ");
-						} else {
-							string.push(',');
-						}
-					}
-
-					self.emit_node_string(string, param);
-				}
+				emit_comma_separated_nodes(string, formatting, params, |string, param| {
+					self.emit_node_string(string, param)
+				});
 
 				if self.mesh_stage_context.is_some() && name != "main" {
 					self.emit_mesh_hidden_parameters(string, !params.is_empty());
 				}
 
-				if self.minified {
-					string.push_str("){");
-				} else {
-					string.push_str(") {\n");
-				}
+				formatting.push_block_start(string);
 
 				self.emit_statement_block(string, statements, 1);
 
@@ -1185,15 +1148,9 @@ impl MSLShaderGenerator {
 				}
 
 				for field in fields {
-					if !self.minified {
-						string.push('\t');
-					}
+					formatting.push_indentation(string, 1);
 					self.emit_node_string(string, &field);
-					if self.minified {
-						string.push(';')
-					} else {
-						string.push_str(";\n");
-					}
+					formatting.push_statement_end(string);
 				}
 
 				string.push_str("};");
@@ -1211,15 +1168,9 @@ impl MSLShaderGenerator {
 				}
 
 				for member in members {
-					if !self.minified {
-						string.push('\t');
-					}
+					formatting.push_indentation(string, 1);
 					self.emit_node_string(string, &member);
-					if self.minified {
-						string.push(';')
-					} else {
-						string.push_str(";\n");
-					}
+					formatting.push_statement_end(string);
 				}
 
 				string.push_str("};");
@@ -1361,16 +1312,9 @@ impl MSLShaderGenerator {
 					let name = Self::translate_type(&name);
 
 					string.push_str(&format!("{}(", name));
-					for (i, parameter) in parameters.iter().enumerate() {
-						if i > 0 {
-							if self.minified {
-								string.push(',')
-							} else {
-								string.push_str(", ");
-							}
-						}
-						self.emit_node_string(string, &parameter);
-					}
+					emit_comma_separated_nodes(string, formatting, parameters, |string, parameter| {
+						self.emit_node_string(string, parameter)
+					});
 					if append_mesh_context {
 						self.emit_mesh_hidden_call_arguments(string, !parameters.is_empty());
 					}
@@ -1413,9 +1357,7 @@ impl MSLShaderGenerator {
 				besl::Expressions::Return { value } => {
 					string.push_str("return");
 					if let Some(value) = value {
-						if !self.minified {
-							string.push(' ');
-						}
+						string.push(' ');
 						self.emit_node_string(string, value);
 					}
 				}
@@ -2187,5 +2129,24 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "uint packed=1<<8|2&255;");
+	}
+
+	#[test]
+	fn return_values_and_pretty_spacing_lower_to_msl() {
+		let main = shader_generator::tests::return_value();
+
+		let minified_shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(minified_shader, "float main(){return 1.0;}");
+
+		let pretty_shader = MSLShaderGenerator::new()
+			.minified(false)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(pretty_shader, "float main() {\n\treturn 1.0;\n}\n");
 	}
 }

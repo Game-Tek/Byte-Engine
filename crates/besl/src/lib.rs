@@ -1,4 +1,4 @@
-//! This module contains all code related to the parsing of the BESL language and the generation of the JSPD.
+//! The `besl` crate gathers the parsing, lexing, tokenization, and VM support that turn BESL source into executable program data.
 
 pub mod lexer;
 pub mod parser;
@@ -92,8 +92,7 @@ pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReferen
 		return Ok(lexer::Node::scope("".to_string()).into());
 	}
 
-	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Tokenization)?;
-	let parser_root_node = parser::parse(&tokens).map_err(CompilationError::Parsing)?;
+	let parser_root_node = parse(source)?;
 
 	let besl = if let Some(parent) = parent {
 		lexer::lex_with_root(parent, parser_root_node).map_err(CompilationError::Lex)?

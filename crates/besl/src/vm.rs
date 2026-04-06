@@ -1,3 +1,5 @@
+//! The `vm` module executes lexed BESL programs against CPU-side resources for testing and host-side evaluation.
+
 use std::collections::HashMap;
 
 use crate::lexer::{BindingTypes, Expressions, NodeReference, Nodes, Operators};

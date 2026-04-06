@@ -1,3 +1,5 @@
+//! The `lexer` module resolves parsed BESL syntax into a linked semantic tree that later compilation stages can execute.
+
 use std::hash::Hash;
 use std::{
 	cell::RefCell,
@@ -43,156 +45,7 @@ impl NodeReference {
 
 	/// Recursively searches for a child node with the given name.
 	pub fn get_descendant(&self, child_name: &str) -> Option<NodeReference> {
-		if self.borrow().get_name() == Some(child_name) {
-			return Some(self.clone());
-		}
-
-		match &self.borrow().node {
-			Nodes::Scope { children: members, .. }
-			| Nodes::Struct { fields: members, .. }
-			| Nodes::PushConstant { members }
-			| Nodes::Intrinsic { elements: members, .. } => {
-				for member in members {
-					if let Some(c) = member.get_descendant(child_name) {
-						return Some(c);
-					}
-				}
-			}
-			Nodes::Member { r#type, .. } | Nodes::Parameter { r#type, .. } => {
-				if let Some(c) = r#type.get_descendant(child_name) {
-					return Some(c);
-				}
-			}
-			Nodes::Function { params, statements, .. } => {
-				for param in params {
-					if param.borrow().get_name() == Some(child_name) {
-						return Some(param.clone());
-					}
-				}
-
-				for statement in statements {
-					match RefCell::borrow(&statement).node() {
-						Nodes::Expression(expression) => match expression {
-							Expressions::Operator { left, right, .. } => {
-								if let Some(c) = left.get_descendant(child_name) {
-									return Some(c);
-								}
-								if let Some(c) = right.get_descendant(child_name) {
-									return Some(c);
-								}
-							}
-							Expressions::VariableDeclaration { name, .. } => {
-								if child_name == name {
-									return Some(statement.clone());
-								}
-							}
-							Expressions::Accessor { left, right } => {
-								if let Some(c) = left.get_descendant(child_name) {
-									return Some(c);
-								}
-								if let Some(c) = right.get_descendant(child_name) {
-									return Some(c);
-								}
-							}
-							Expressions::Return { value } => {
-								if let Some(value) = value {
-									if let Some(c) = value.get_descendant(child_name) {
-										return Some(c);
-									}
-								}
-							}
-							_ => {}
-						},
-						Nodes::Raw { output, .. } => {
-							for o in output {
-								if let Some(c) = o.get_descendant(child_name) {
-									return Some(c);
-								}
-							}
-						}
-						_ => {}
-					}
-				}
-			}
-			Nodes::Expression(expression) => match expression {
-				Expressions::Operator { left, right, .. } => {
-					if let Some(c) = left.get_descendant(child_name) {
-						return Some(c);
-					}
-					if let Some(c) = right.get_descendant(child_name) {
-						return Some(c);
-					}
-				}
-				Expressions::Member { source, .. } => {
-					if let Some(c) = source.get_descendant(child_name) {
-						return Some(c);
-					}
-				}
-				Expressions::Expression { elements } => {
-					for e in elements {
-						if let Some(c) = e.get_descendant(child_name) {
-							return Some(c);
-						}
-					}
-				}
-				Expressions::VariableDeclaration { r#type, .. } => {
-					if let Some(c) = r#type.get_descendant(child_name) {
-						return Some(c);
-					}
-				}
-				Expressions::Accessor { left, right } => {
-					if let Some(c) = right.get_descendant(child_name) {
-						return Some(c);
-					}
-					if let Some(c) = left.get_descendant(child_name) {
-						return Some(c);
-					}
-				}
-				Expressions::IntrinsicCall { intrinsic, .. } => {
-					let intrinsic = intrinsic.borrow();
-					match intrinsic.node() {
-						Nodes::Intrinsic { r#return, .. } => {
-							if let Some(c) = r#return.get_descendant(child_name) {
-								return Some(c);
-							}
-						}
-						_ => {}
-					}
-				}
-				Expressions::Return { value } => {
-					if let Some(value) = value {
-						if let Some(c) = value.get_descendant(child_name) {
-							return Some(c);
-						}
-					}
-				}
-				_ => {}
-			},
-			Nodes::Raw { output, .. } => {
-				for o in output {
-					if let Some(c) = o.get_descendant(child_name) {
-						return Some(c);
-					}
-				}
-			}
-			Nodes::Binding { r#type, .. } => {
-				if let BindingTypes::Buffer { members } = r#type {
-					for member in members {
-						if let Some(c) = member.get_descendant(child_name) {
-							return Some(c);
-						}
-					}
-				}
-			}
-			Nodes::Input { format, .. } | Nodes::Output { format, .. } => {
-				if let Some(c) = format.get_descendant(child_name) {
-					return Some(c);
-				}
-			}
-			_ => {}
-		}
-
-		None
+		find_descendant(self, child_name, DescendantSearch::Any)
 	}
 
 	pub fn get_children(&self) -> Option<Vec<NodeReference>> {
@@ -287,93 +140,40 @@ impl Node {
 	/// Creates a root node which is the parent of all other nodes in a program.
 	/// Only one root node should exist in a program.
 	pub fn root() -> Node {
-		let void: NodeReference = Node::r#struct("void", Vec::new()).into();
-		let u8_t: NodeReference = Node::r#struct("u8", Vec::new()).into();
-		let u16_t: NodeReference = Node::r#struct("u16", Vec::new()).into();
-		let u32_t: NodeReference = Node::r#struct("u32", Vec::new()).into();
-		let i32_t: NodeReference = Node::r#struct("i32", Vec::new()).into();
-		let f32_t: NodeReference = Node::r#struct("f32", Vec::new()).into();
+		let void = primitive_type("void");
+		let u8_t = primitive_type("u8");
+		let u16_t = primitive_type("u16");
+		let u32_t = primitive_type("u32");
+		let i32_t = primitive_type("i32");
+		let f32_t = primitive_type("f32");
 
-		let vec2u16: NodeReference = Node::r#struct(
-			"vec2u16",
-			vec![
-				Node::member("x", u16_t.clone()).into(),
-				Node::member("y", u16_t.clone()).into(),
-			],
-		)
-		.into();
-
-		let vec2u32: NodeReference = Node::r#struct(
-			"vec2u",
-			vec![
-				Node::member("x", u32_t.clone()).into(),
-				Node::member("y", u32_t.clone()).into(),
-			],
-		)
-		.into();
-
-		let vec2i32: NodeReference = Node::r#struct(
-			"vec2i",
-			vec![
-				Node::member("x", i32_t.clone()).into(),
-				Node::member("y", i32_t.clone()).into(),
-			],
-		)
-		.into();
-
-		let vec2f32: NodeReference = Node::r#struct(
-			"vec2f",
-			vec![
-				Node::member("x", f32_t.clone()).into(),
-				Node::member("y", f32_t.clone()).into(),
-			],
-		)
-		.into();
-
-		let vec3f32: NodeReference = Node::r#struct(
-			"vec3f",
-			vec![
-				Node::member("x", f32_t.clone()).into(),
-				Node::member("y", f32_t.clone()).into(),
-				Node::member("z", f32_t.clone()).into(),
-			],
-		)
-		.into();
-
-		let vec3u32: NodeReference = Node::r#struct(
-			"vec3u",
-			vec![
-				Node::member("x", u32_t.clone()).into(),
-				Node::member("y", u32_t.clone()).into(),
-				Node::member("z", u32_t.clone()).into(),
-			],
-		)
-		.into();
-
-		let vec4f32: NodeReference = Node::r#struct(
+		let vec2u16 = record_type("vec2u16", [("x", u16_t.clone()), ("y", u16_t.clone())]);
+		let vec2u32 = record_type("vec2u", [("x", u32_t.clone()), ("y", u32_t.clone())]);
+		let vec2i32 = record_type("vec2i", [("x", i32_t.clone()), ("y", i32_t.clone())]);
+		let vec2f32 = record_type("vec2f", [("x", f32_t.clone()), ("y", f32_t.clone())]);
+		let vec3f32 = record_type("vec3f", [("x", f32_t.clone()), ("y", f32_t.clone()), ("z", f32_t.clone())]);
+		let vec3u32 = record_type("vec3u", [("x", u32_t.clone()), ("y", u32_t.clone()), ("z", u32_t.clone())]);
+		let vec4f32 = record_type(
 			"vec4f",
-			vec![
-				Node::member("x", f32_t.clone()).into(),
-				Node::member("y", f32_t.clone()).into(),
-				Node::member("z", f32_t.clone()).into(),
-				Node::member("w", f32_t.clone()).into(),
+			[
+				("x", f32_t.clone()),
+				("y", f32_t.clone()),
+				("z", f32_t.clone()),
+				("w", f32_t.clone()),
 			],
-		)
-		.into();
-
-		let mat4f32: NodeReference = Node::r#struct(
+		);
+		let mat4f32 = record_type(
 			"mat4f",
-			vec![
-				Node::member("x", vec4f32.clone()).into(),
-				Node::member("y", vec4f32.clone()).into(),
-				Node::member("z", vec4f32.clone()).into(),
-				Node::member("w", vec4f32.clone()).into(),
+			[
+				("x", vec4f32.clone()),
+				("y", vec4f32.clone()),
+				("z", vec4f32.clone()),
+				("w", vec4f32.clone()),
 			],
-		)
-		.into();
+		);
 
-		let texture_2d: NodeReference = Node::r#struct("Texture2D", vec![]).into();
-		let array_texture_2d: NodeReference = Node::r#struct("ArrayTexture2D", vec![]).into();
+		let texture_2d = primitive_type("Texture2D");
+		let array_texture_2d = primitive_type("ArrayTexture2D");
 		let sample_intrinsic = builtin_intrinsic(
 			"sample",
 			vec![("texture_sampler", texture_2d.clone()), ("uv", vec2f32.clone())],
@@ -459,9 +259,7 @@ impl Node {
 			void.clone(),
 		);
 
-		let mut root = Node::scope("root".to_string());
-
-		root.add_children(vec![
+		let builtins = vec![
 			void,
 			u8_t,
 			u16_t,
@@ -498,7 +296,10 @@ impl Node {
 			image_load_intrinsic,
 			guard_image_bounds_intrinsic,
 			write_intrinsic,
-		]);
+		];
+
+		let mut root = Node::scope("root".to_string());
+		root.add_children(builtins);
 
 		root
 	}
@@ -628,6 +429,18 @@ impl Node {
 	}
 
 	pub fn binding(name: &str, r#type: BindingTypes, set: u32, binding: u32, read: bool, write: bool) -> Node {
+		Self::binding_with_count(name, r#type, set, binding, read, write, None)
+	}
+
+	fn binding_with_count(
+		name: &str,
+		r#type: BindingTypes,
+		set: u32,
+		binding: u32,
+		read: bool,
+		write: bool,
+		count: Option<NonZeroUsize>,
+	) -> Node {
 		Node {
 			node: Nodes::Binding {
 				name: name.to_string(),
@@ -636,7 +449,7 @@ impl Node {
 				binding,
 				read,
 				write,
-				count: None,
+				count,
 			},
 		}
 	}
@@ -650,17 +463,15 @@ impl Node {
 		write: bool,
 		count: usize,
 	) -> Node {
-		Node {
-			node: Nodes::Binding {
-				name: name.to_string(),
-				r#type,
-				set,
-				binding,
-				read,
-				write,
-				count: Some(NonZeroUsize::new(count).expect("Invalid count")),
-			},
-		}
+		Self::binding_with_count(
+			name,
+			r#type,
+			set,
+			binding,
+			read,
+			write,
+			Some(NonZeroUsize::new(count).expect("Invalid count")),
+		)
 	}
 
 	pub fn push_constant(members: Vec<NodeReference>) -> Node {
@@ -709,23 +520,20 @@ impl Node {
 	}
 
 	pub fn output(name: &str, format: NodeReference, location: u8) -> Node {
-		Node {
-			node: Nodes::Output {
-				name: name.to_string(),
-				format,
-				location,
-				count: None,
-			},
-		}
+		Self::output_with_count(name, format, location, None)
 	}
 
 	pub fn output_array(name: &str, format: NodeReference, location: u8, count: u32) -> Node {
+		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize))
+	}
+
+	fn output_with_count(name: &str, format: NodeReference, location: u8, count: Option<NonZeroUsize>) -> Node {
 		Node {
 			node: Nodes::Output {
 				name: name.to_string(),
 				format,
 				location,
-				count: NonZeroUsize::new(count as usize),
+				count,
 			},
 		}
 	}
@@ -1201,12 +1009,18 @@ pub enum LexError {
 	ReferenceToUndefinedType { type_name: String },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DescendantSearch {
+	Any,
+	NonIntrinsic,
+}
+
 /// Tries to resolve a reference to a node by visiting the chain of nodes which are the context of the element of the program being lexed.
 fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
 	for node in chain.iter().rev() {
 		let reference = match node.borrow().node() {
-			Nodes::Intrinsic { .. } => node.get_descendant(name),
-			_ => get_non_intrinsic_descendant(node, name),
+			Nodes::Intrinsic { .. } => find_descendant(node, name, DescendantSearch::Any),
+			_ => find_descendant(node, name, DescendantSearch::NonIntrinsic),
 		};
 
 		if let Some(c) = reference {
@@ -1217,155 +1031,205 @@ fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
 	None
 }
 
-fn get_non_intrinsic_descendant(node: &NodeReference, child_name: &str) -> Option<NodeReference> {
-	let prefer_descendants_before_self = matches!(
-		node.borrow().node(),
-		Nodes::Binding { .. }
-			| Nodes::PushConstant { .. }
-			| Nodes::Member { .. }
-			| Nodes::Parameter { .. }
-			| Nodes::Input { .. }
-			| Nodes::Output { .. }
-			| Nodes::Expression(Expressions::Member { .. } | Expressions::VariableDeclaration { .. })
-	);
+fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReference, LexError> {
+	get_reference(chain, type_name).ok_or(LexError::ReferenceToUndefinedType {
+		type_name: type_name.to_string(),
+	})
+}
 
-	// Accessor sources need to prefer their descendants so `binding.binding` resolves the member, not the qualifier itself.
+fn resolve_member(chain: &[NodeReference], name: &str) -> Result<NodeReference, LexError> {
+	get_reference(chain, name).ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })
+}
+
+/// Clones the lexical scope chain and appends the current parent node.
+fn extend_chain(chain: &[NodeReference], parent: &NodeReference) -> Vec<NodeReference> {
+	let mut extended = chain.to_vec();
+	extended.push(parent.clone());
+	extended
+}
+
+/// Lexes one parser child in the scope of its parent node.
+fn lex_child_with_parent(
+	chain: &[NodeReference],
+	parent: &NodeReference,
+	parser_node: &parser::Node,
+) -> Result<NodeReference, LexError> {
+	lex_parsed_node(extend_chain(chain, parent), parser_node)
+}
+
+/// Resolves raw-code IO references and lowers them into a lexer node.
+fn lex_raw_code(
+	chain: &[NodeReference],
+	glsl: Option<&str>,
+	hlsl: Option<&str>,
+	input: &[&str],
+	output: &[&str],
+) -> Result<Node, LexError> {
+	let inputs = input
+		.iter()
+		.map(|name| resolve_member(chain, name))
+		.collect::<Result<Vec<_>, _>>()?;
+
+	let vec3f = resolve_member(chain, "vec3f")?;
+	let outputs = output
+		.iter()
+		.map(|name| {
+			Node::expression(Expressions::VariableDeclaration {
+				name: (*name).to_string(),
+				r#type: vec3f.clone(),
+			})
+			.into()
+		})
+		.collect();
+
+	Ok(Node::raw(glsl.map(str::to_string), hlsl.map(str::to_string), inputs, outputs))
+}
+
+fn find_descendant(node: &NodeReference, child_name: &str, mode: DescendantSearch) -> Option<NodeReference> {
+	let prefer_descendants_before_self = mode == DescendantSearch::NonIntrinsic
+		&& matches!(
+			node.borrow().node(),
+			Nodes::Binding { .. }
+				| Nodes::PushConstant { .. }
+				| Nodes::Member { .. }
+				| Nodes::Parameter { .. }
+				| Nodes::Input { .. }
+				| Nodes::Output { .. }
+				| Nodes::Expression(Expressions::Member { .. } | Expressions::VariableDeclaration { .. })
+		);
+
 	if !prefer_descendants_before_self && node.borrow().get_name() == Some(child_name) {
 		return Some(node.clone());
 	}
 
-	match &node.borrow().node {
-		Nodes::Scope { children: members, .. } | Nodes::Struct { fields: members, .. } | Nodes::PushConstant { members } => {
-			for member in members {
-				if member.borrow().get_name() == Some(child_name) {
-					return Some(member.clone());
-				}
-			}
-
-			for member in members {
-				if let Some(c) = get_non_intrinsic_descendant(member, child_name) {
-					return Some(c);
-				}
+	let result = match node.borrow().node() {
+		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => {
+			find_in_children(children, child_name, mode == DescendantSearch::NonIntrinsic, mode)
+		}
+		Nodes::Intrinsic { elements, .. } => {
+			if mode == DescendantSearch::Any {
+				find_in_children(elements, child_name, false, mode)
+			} else {
+				None
 			}
 		}
-		Nodes::Conditional { condition, statements } => {
-			if let Some(c) = get_non_intrinsic_descendant(condition, child_name) {
-				return Some(c);
-			}
-
-			for statement in statements {
-				if let Some(c) = get_non_intrinsic_descendant(statement, child_name) {
-					return Some(c);
-				}
-			}
+		Nodes::Member { r#type, .. } | Nodes::Parameter { r#type, .. } => find_descendant(r#type, child_name, mode),
+		Nodes::Function { params, statements, .. } => find_in_function(params, statements, child_name, mode),
+		Nodes::Conditional { condition, statements } if mode == DescendantSearch::NonIntrinsic => {
+			find_descendant(condition, child_name, mode).or_else(|| find_in_descendants(statements, child_name, mode))
 		}
-		Nodes::Intrinsic { .. } => {}
-		Nodes::Member { r#type, .. } | Nodes::Parameter { r#type, .. } => {
-			if let Some(c) = get_non_intrinsic_descendant(r#type, child_name) {
-				return Some(c);
-			}
-		}
-		Nodes::Function { params, statements, .. } => {
-			for param in params {
-				if param.borrow().get_name() == Some(child_name) {
-					return Some(param.clone());
-				}
-			}
-
-			for statement in statements {
-				match statement.borrow().node() {
-					Nodes::Expression(Expressions::VariableDeclaration { name, .. }) if name == child_name => {
-						return Some(statement.clone());
-					}
-					Nodes::Expression(Expressions::Operator { left, .. }) => {
-						if let Some(local) = get_non_intrinsic_descendant(left, child_name) {
-							return Some(local);
-						}
-					}
-					_ => {}
-				}
-			}
-		}
-		Nodes::Expression(expression) => match expression {
-			Expressions::Operator { left, right, .. } => {
-				if let Some(c) = get_non_intrinsic_descendant(left, child_name) {
-					return Some(c);
-				}
-				if let Some(c) = get_non_intrinsic_descendant(right, child_name) {
-					return Some(c);
-				}
-			}
-			Expressions::Member { source, .. } => {
-				if let Some(c) = get_non_intrinsic_descendant(source, child_name) {
-					return Some(c);
-				}
-			}
-			Expressions::Expression { elements } => {
-				for element in elements {
-					if let Some(c) = get_non_intrinsic_descendant(element, child_name) {
-						return Some(c);
-					}
-				}
-			}
-			Expressions::VariableDeclaration { r#type, .. } => {
-				if let Some(c) = get_non_intrinsic_descendant(r#type, child_name) {
-					return Some(c);
-				}
-			}
-			Expressions::Accessor { left, right } => {
-				if let Some(c) = get_non_intrinsic_descendant(right, child_name) {
-					return Some(c);
-				}
-				if let Some(c) = get_non_intrinsic_descendant(left, child_name) {
-					return Some(c);
-				}
-			}
-			Expressions::IntrinsicCall { intrinsic, .. } => {
-				let intrinsic = intrinsic.borrow();
-				if let Nodes::Intrinsic { r#return, .. } = intrinsic.node() {
-					if let Some(c) = get_non_intrinsic_descendant(r#return, child_name) {
-						return Some(c);
-					}
-				}
-			}
-			Expressions::Return { value } => {
-				if let Some(value) = value {
-					if let Some(c) = get_non_intrinsic_descendant(value, child_name) {
-						return Some(c);
-					}
-				}
-			}
-			_ => {}
+		Nodes::Expression(expression) => find_in_expression(expression, child_name, mode),
+		Nodes::Raw { output, .. } => find_in_descendants(output, child_name, mode),
+		Nodes::Binding { r#type, .. } => match r#type {
+			BindingTypes::Buffer { members } => find_in_descendants(members, child_name, mode),
+			_ => None,
 		},
-		Nodes::Raw { output, .. } => {
-			for output in output {
-				if let Some(c) = get_non_intrinsic_descendant(output, child_name) {
-					return Some(c);
-				}
-			}
-		}
-		Nodes::Binding { r#type, .. } => {
-			if let BindingTypes::Buffer { members } = r#type {
-				for member in members {
-					if let Some(c) = get_non_intrinsic_descendant(member, child_name) {
-						return Some(c);
-					}
-				}
-			}
-		}
-		Nodes::Input { format, .. } | Nodes::Output { format, .. } => {
-			if let Some(c) = get_non_intrinsic_descendant(format, child_name) {
-				return Some(c);
-			}
-		}
-		_ => {}
-	}
+		Nodes::Input { format, .. } | Nodes::Output { format, .. } => find_descendant(format, child_name, mode),
+		_ => None,
+	};
 
-	if prefer_descendants_before_self && node.borrow().get_name() == Some(child_name) {
-		return Some(node.clone());
-	}
+	result.or_else(|| {
+		if prefer_descendants_before_self && node.borrow().get_name() == Some(child_name) {
+			Some(node.clone())
+		} else {
+			None
+		}
+	})
+}
 
-	None
+fn find_in_children(
+	children: &[NodeReference],
+	child_name: &str,
+	prefer_direct_children: bool,
+	mode: DescendantSearch,
+) -> Option<NodeReference> {
+	if prefer_direct_children {
+		find_named_child(children, child_name).or_else(|| find_in_descendants(children, child_name, mode))
+	} else {
+		find_in_descendants(children, child_name, mode)
+	}
+}
+
+fn find_named_child(children: &[NodeReference], child_name: &str) -> Option<NodeReference> {
+	children
+		.iter()
+		.find(|child| child.borrow().get_name() == Some(child_name))
+		.cloned()
+}
+
+fn find_in_descendants(children: &[NodeReference], child_name: &str, mode: DescendantSearch) -> Option<NodeReference> {
+	children.iter().find_map(|child| find_descendant(child, child_name, mode))
+}
+
+fn find_in_function(
+	params: &[NodeReference],
+	statements: &[NodeReference],
+	child_name: &str,
+	mode: DescendantSearch,
+) -> Option<NodeReference> {
+	find_named_child(params, child_name).or_else(|| {
+		statements
+			.iter()
+			.find_map(|statement| find_in_function_statement(statement, child_name, mode))
+	})
+}
+
+fn find_in_function_statement(statement: &NodeReference, child_name: &str, mode: DescendantSearch) -> Option<NodeReference> {
+	match statement.borrow().node() {
+		Nodes::Expression(expression) => find_in_function_expression(statement, expression, child_name, mode),
+		Nodes::Raw { output, .. } if mode == DescendantSearch::Any => find_in_descendants(output, child_name, mode),
+		_ => None,
+	}
+}
+
+fn find_in_function_expression(
+	statement: &NodeReference,
+	expression: &Expressions,
+	child_name: &str,
+	mode: DescendantSearch,
+) -> Option<NodeReference> {
+	match mode {
+		DescendantSearch::Any => match expression {
+			Expressions::Operator { left, right, .. } => {
+				find_descendant(left, child_name, mode).or_else(|| find_descendant(right, child_name, mode))
+			}
+			Expressions::VariableDeclaration { name, .. } if child_name == name => Some(statement.clone()),
+			Expressions::Accessor { left, right } => {
+				find_descendant(left, child_name, mode).or_else(|| find_descendant(right, child_name, mode))
+			}
+			Expressions::Return { value } => value.as_ref().and_then(|value| find_descendant(value, child_name, mode)),
+			_ => None,
+		},
+		DescendantSearch::NonIntrinsic => match expression {
+			Expressions::VariableDeclaration { name, .. } if child_name == name => Some(statement.clone()),
+			Expressions::Operator { left, .. } => find_descendant(left, child_name, mode),
+			_ => None,
+		},
+	}
+}
+
+fn find_in_expression(expression: &Expressions, child_name: &str, mode: DescendantSearch) -> Option<NodeReference> {
+	match expression {
+		Expressions::Operator { left, right, .. } => {
+			find_descendant(left, child_name, mode).or_else(|| find_descendant(right, child_name, mode))
+		}
+		Expressions::Member { source, .. } => find_descendant(source, child_name, mode),
+		Expressions::Expression { elements } => find_in_descendants(elements, child_name, mode),
+		Expressions::VariableDeclaration { r#type, .. } => find_descendant(r#type, child_name, mode),
+		Expressions::Accessor { left, right } => {
+			find_descendant(right, child_name, mode).or_else(|| find_descendant(left, child_name, mode))
+		}
+		Expressions::IntrinsicCall { intrinsic, .. } => {
+			let intrinsic = intrinsic.borrow();
+			if let Nodes::Intrinsic { r#return, .. } = intrinsic.node() {
+				find_descendant(r#return, child_name, mode)
+			} else {
+				None
+			}
+		}
+		Expressions::Return { value } => value.as_ref().and_then(|value| find_descendant(value, child_name, mode)),
+		_ => None,
+	}
 }
 
 fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Result<NodeReference, LexError> {
@@ -1375,17 +1239,9 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			assert_ne!(*name, "root"); // The root scope node cannot be an inner part of the program.
 
 			let this: NodeReference = Node::scope(name.to_string()).into();
-
 			for child in children {
-				let c = lex_parsed_node(
-					{
-						let mut chain = chain.clone();
-						chain.push(this.clone());
-						chain
-					},
-					child,
-				)?;
-				this.borrow_mut().add_child(c);
+				let child = lex_child_with_parent(&chain, &this, child)?;
+				this.borrow_mut().add_child(child);
 			}
 
 			this
@@ -1397,20 +1253,15 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			}
 
 			let this: NodeReference = Node::r#struct(name.as_ref(), Vec::new()).into();
-
 			for field in fields {
-				let mut chain = chain.clone();
-				chain.push(this.clone());
-				let c = lex_parsed_node(chain, &field)?;
-				this.borrow_mut().add_child(c);
+				let field = lex_child_with_parent(&chain, &this, field)?;
+				this.borrow_mut().add_child(field);
 			}
 
 			this
 		}
 		parser::Nodes::Specialization { name, r#type } => {
-			let t = get_reference(&chain, r#type.as_ref()).ok_or(LexError::ReferenceToUndefinedType {
-				type_name: r#type.to_string(),
-			})?;
+			let t = resolve_type(&chain, r#type.as_ref())?;
 
 			let this = Node::new(Nodes::Specialization {
 				name: name.to_string(),
@@ -1427,9 +1278,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 					message: Some("No outer name".to_string()),
 				})?;
 
-				let outer_type = get_reference(&chain, outer_type_name).ok_or(LexError::ReferenceToUndefinedType {
-					type_name: outer_type_name.to_string(),
-				})?;
+				let outer_type = resolve_type(&chain, outer_type_name)?;
 
 				let inner_type_name = s.next().ok_or(LexError::Undefined {
 					message: Some("No inner name".to_string()),
@@ -1447,9 +1296,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 
 					x
 				} else {
-					get_reference(&chain, inner_type_name).ok_or(LexError::ReferenceToUndefinedType {
-						type_name: inner_type_name.to_string(),
-					})?
+					resolve_type(&chain, inner_type_name)?
 				};
 
 				if let Some(n) = get_reference(&chain, r#type) {
@@ -1478,9 +1325,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 					message: Some("No type name".to_string()),
 				})?;
 
-				let member_type = get_reference(&chain, type_name).ok_or(LexError::ReferenceToUndefinedType {
-					type_name: type_name.to_string(),
-				})?;
+				let member_type = resolve_type(&chain, type_name)?;
 
 				let count = s
 					.next()
@@ -1494,9 +1339,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 
 				return Ok(Node::array(name, member_type, count));
 			} else {
-				get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType {
-					type_name: r#type.to_string(),
-				})?
+				resolve_type(&chain, r#type)?
 			};
 
 			let this: NodeReference = Node::member(name, t).into();
@@ -1504,9 +1347,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			this
 		}
 		parser::Nodes::Parameter { name, r#type } => {
-			let t = get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType {
-				type_name: r#type.to_string(),
-			})?;
+			let t = resolve_type(&chain, r#type)?;
 
 			let this = Node::new(Nodes::Parameter {
 				name: name.to_string(),
@@ -1516,9 +1357,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			this.into()
 		}
 		parser::Nodes::Input { name, format, location } => {
-			let t = get_reference(&chain, format).ok_or(LexError::ReferenceToUndefinedType {
-				type_name: format.to_string(),
-			})?;
+			let t = resolve_type(&chain, format)?;
 
 			let this = Node::new(Nodes::Input {
 				name: name.to_string(),
@@ -1534,9 +1373,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			location,
 			count,
 		} => {
-			let t = get_reference(&chain, format).ok_or(LexError::ReferenceToUndefinedType {
-				type_name: format.to_string(),
-			})?;
+			let t = resolve_type(&chain, format)?;
 
 			let this = Node::new(Nodes::Output {
 				name: name.to_string(),
@@ -1554,19 +1391,15 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			params,
 			..
 		} => {
-			let t = get_reference(&chain, return_type).ok_or(LexError::ReferenceToUndefinedType {
-				type_name: return_type.to_string(),
-			})?;
+			let t = resolve_type(&chain, return_type)?;
 
 			let this: NodeReference = Node::function(name, Vec::new(), t, Vec::new()).into();
 
 			for param in params {
-				let mut chain = chain.clone();
-				chain.push(this.clone());
-				let c = lex_parsed_node(chain, param)?;
+				let param = lex_child_with_parent(&chain, &this, param)?;
 				match this.borrow_mut().node_mut() {
 					Nodes::Function { params, .. } => {
-						params.push(c);
+						params.push(param);
 					}
 					_ => {
 						panic!("Expected function");
@@ -1575,10 +1408,8 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			}
 
 			for statement in statements {
-				let mut chain = chain.clone();
-				chain.push(this.clone());
-				let c = lex_parsed_node(chain, statement)?;
-				this.borrow_mut().add_child(c);
+				let statement = lex_child_with_parent(&chain, &this, statement)?;
+				this.borrow_mut().add_child(statement);
 			}
 
 			this
@@ -1596,13 +1427,12 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 		parser::Nodes::PushConstant { members } => {
 			let this: NodeReference = Node::push_constant(vec![]).into();
 
-			for member in members {
-				let mut chain = chain.clone();
-				chain.push(this.clone());
-				if let parser::Nodes::Member { .. } = &member.node {
-					let c = lex_parsed_node(chain, &member)?;
-					this.borrow_mut().add_child(c);
-				}
+			for member in members
+				.iter()
+				.filter(|member| matches!(member.node, parser::Nodes::Member { .. }))
+			{
+				let c = lex_child_with_parent(&chain, &this, member)?;
+				this.borrow_mut().add_child(c);
 			}
 
 			this
@@ -1688,40 +1518,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			input,
 			output,
 			..
-		} => {
-			let mut inputs = Vec::new();
-
-			for i in *input {
-				let name = i;
-				inputs.push(
-					get_reference(&chain, name)
-						.ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })?
-						.clone(),
-				);
-			}
-
-			let mut outputs = Vec::new();
-
-			for o in *output {
-				let name = o.to_string();
-				outputs.push(
-					Node::expression(Expressions::VariableDeclaration {
-						name: name.clone(),
-						r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name })?,
-					})
-					.into(),
-				);
-			}
-
-			let this = Node::raw(
-				glsl.as_ref().map(|v| v.to_string()),
-				hlsl.as_ref().map(|v| v.to_string()),
-				inputs,
-				outputs,
-			);
-
-			this.into()
-		}
+		} => lex_raw_code(&chain, glsl.as_deref(), hlsl.as_deref(), input, output)?.into(),
 		parser::Nodes::Literal { name, body } => Node::new(Nodes::Literal {
 			name: name.to_string(),
 			value: lex_parsed_node(chain, body)?,
@@ -1750,9 +1547,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 					Node::expression(Expressions::Accessor { left, right })
 				}
 				parser::Expressions::Member { name } => Node::expression(Expressions::Member {
-					source: get_reference(&chain, name)
-						.ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })?
-						.clone(),
+					source: resolve_member(&chain, name)?,
 					name: name.to_string(),
 				}),
 				parser::Expressions::Literal { value } => Node::expression(Expressions::Literal {
@@ -1766,9 +1561,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				),
 				parser::Expressions::Call { name, parameters } => {
 					// let r = function.clone(); // Clone to be able to borrow it in and return it
-					let function = get_reference(&chain, name).ok_or(LexError::ReferenceToUndefinedType {
-						type_name: name.to_string(),
-					})?;
+					let function = resolve_type(&chain, name)?;
 					let r = function.clone(); // Clone to be able to borrow it in and return it
 					let parameters = parameters
 						.iter()
@@ -1822,9 +1615,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				parser::Expressions::VariableDeclaration { name, r#type } => {
 					let this = Node::expression(Expressions::VariableDeclaration {
 						name: name.to_string(),
-						r#type: get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType {
-							type_name: r#type.to_string(),
-						})?,
+						r#type: resolve_type(&chain, r#type)?,
 					});
 
 					this
@@ -1834,33 +1625,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 					hlsl,
 					input,
 					output,
-				} => {
-					let mut inputs = Vec::new();
-
-					for i in *input {
-						let name = i;
-						inputs.push(
-							get_reference(&chain, name)
-								.ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })?
-								.clone(),
-						);
-					}
-
-					let mut outputs = Vec::new();
-
-					for o in *output {
-						let name = o.to_string();
-						outputs.push(
-							Node::expression(Expressions::VariableDeclaration {
-								name: name.clone(),
-								r#type: get_reference(&chain, "vec3f").ok_or(LexError::AccessingUndeclaredMember { name })?,
-							})
-							.into(),
-						);
-					}
-
-					Node::raw(glsl.map(|v| v.to_string()), hlsl.map(|v| v.to_string()), inputs, outputs)
-				}
+				} => lex_raw_code(&chain, *glsl, *hlsl, input, output)?,
 				parser::Expressions::Macro { name, body } => Node::r#macro(name, lex_parsed_node(chain, body)?),
 			};
 
@@ -1872,28 +1637,17 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			r#return,
 			..
 		} => {
-			let this: NodeReference = Node::intrinsic(
-				name,
-				Vec::new(),
-				get_reference(&chain, r#return).ok_or(LexError::ReferenceToUndefinedType {
-					type_name: r#return.to_string(),
-				})?,
-			)
-			.into();
+			let this: NodeReference = Node::intrinsic(name, Vec::new(), resolve_type(&chain, r#return)?).into();
 
-			for e in elements {
-				let mut chain = chain.clone();
-				chain.push(this.clone());
-				let c = lex_parsed_node(chain, e)?;
-				this.borrow_mut().add_child(c);
+			for element in elements {
+				let element = lex_child_with_parent(&chain, &this, element)?;
+				this.borrow_mut().add_child(element);
 			}
 
 			this
 		}
 		parser::Nodes::Const { name, r#type, value } => {
-			let t = get_reference(&chain, r#type).ok_or(LexError::ReferenceToUndefinedType {
-				type_name: r#type.to_string(),
-			})?;
+			let t = resolve_type(&chain, r#type)?;
 
 			let v = lex_parsed_node(chain.clone(), value)?;
 
@@ -1975,6 +1729,21 @@ fn builtin_intrinsic(name: &str, parameters: Vec<(&str, NodeReference)>, r#retur
 	}
 
 	intrinsic
+}
+
+fn primitive_type(name: &str) -> NodeReference {
+	Node::r#struct(name, Vec::new()).into()
+}
+
+fn record_type<const N: usize>(name: &str, fields: [(&str, NodeReference); N]) -> NodeReference {
+	Node::r#struct(
+		name,
+		fields
+			.into_iter()
+			.map(|(field_name, field_type)| Node::member(field_name, field_type).into())
+			.collect(),
+	)
+	.into()
 }
 
 #[cfg(test)]

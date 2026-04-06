@@ -1,3 +1,5 @@
+//! The `tokenizer` module splits BESL source text into the token stream that the parser consumes.
+
 pub struct Tokens<'a> {
 	/// The tokens in the stream.
 	pub(crate) tokens: Vec<&'a str>,

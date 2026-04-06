@@ -1,4 +1,4 @@
-//! The parser module contains all code related to the parsing of the BESL language and the generation of the JSPD.
+//! The `parser` module turns BESL tokens into syntax nodes that preserve source structure before semantic resolution.
 //!
 //! # Example beShader
 //!
@@ -103,6 +103,18 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn binding(name: &'a str, r#type: Node<'a>, set: u32, descriptor: u32, read: bool, write: bool) -> Node<'a> {
+		Self::binding_with_count(name, r#type, set, descriptor, read, write, None)
+	}
+
+	fn binding_with_count(
+		name: &'a str,
+		r#type: Node<'a>,
+		set: u32,
+		descriptor: u32,
+		read: bool,
+		write: bool,
+		count: Option<NonZeroUsize>,
+	) -> Node<'a> {
 		Node {
 			node: Nodes::Binding {
 				name,
@@ -111,7 +123,7 @@ impl<'a> Node<'a> {
 				descriptor,
 				read,
 				write,
-				count: None,
+				count,
 			},
 		}
 	}
@@ -125,17 +137,7 @@ impl<'a> Node<'a> {
 		write: bool,
 		count: u32,
 	) -> Node<'a> {
-		Node {
-			node: Nodes::Binding {
-				name,
-				r#type: Box::new(r#type),
-				set,
-				descriptor,
-				read,
-				write,
-				count: NonZeroUsize::new(count as usize),
-			},
-		}
+		Self::binding_with_count(name, r#type, set, descriptor, read, write, NonZeroUsize::new(count as usize))
 	}
 
 	pub fn specialization(name: &'a str, r#type: &'a str) -> Node<'a> {
@@ -224,25 +226,22 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn output(name: &'a str, format: &'a str, location: u8) -> Node<'a> {
+		Self::output_with_count(name, format, location, None)
+	}
+
+	fn output_with_count(name: &'a str, format: &'a str, location: u8, count: Option<NonZeroUsize>) -> Node<'a> {
 		Node {
 			node: Nodes::Output {
 				name,
 				format,
 				location,
-				count: None,
+				count,
 			},
 		}
 	}
 
 	pub fn output_array(name: &'a str, format: &'a str, location: u8, count: u32) -> Node<'a> {
-		Node {
-			node: Nodes::Output {
-				name,
-				format,
-				location,
-				count: NonZeroUsize::new(count as usize),
-			},
-		}
+		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize))
 	}
 
 	pub fn intrinsic(name: &'a str, parameters: Node<'a>, body: Node<'a>, r#return: &'a str) -> Node<'a> {

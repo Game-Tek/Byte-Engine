@@ -1444,6 +1444,31 @@ impl MSLShaderGenerator {
 					string.push('\n');
 				}
 			}
+			besl::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				string.push_str("for(");
+				self.emit_node_string(string, initializer);
+				string.push(';');
+				self.emit_node_string(string, condition);
+				string.push(';');
+				self.emit_node_string(string, update);
+				if self.minified {
+					string.push_str("){");
+				} else {
+					string.push_str(") {\n");
+				}
+
+				self.emit_statement_block(string, statements, 1);
+
+				string.push('}');
+				if !self.minified {
+					string.push('\n');
+				}
+			}
 			besl::Nodes::Binding {
 				name,
 				set,

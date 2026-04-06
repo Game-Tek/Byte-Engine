@@ -98,6 +98,17 @@ impl<'a> Node<'a> {
 		}
 	}
 
+	pub fn for_loop(initializer: Node<'a>, condition: Node<'a>, update: Node<'a>, statements: Vec<Node<'a>>) -> Node<'a> {
+		Node {
+			node: Nodes::ForLoop {
+				initializer: Box::new(initializer),
+				condition: Box::new(condition),
+				update: Box::new(update),
+				statements,
+			},
+		}
+	}
+
 	pub fn main_function(statements: Vec<Node<'a>>) -> Node<'a> {
 		make_function("main", Vec::new(), "void", statements)
 	}
@@ -280,7 +291,7 @@ impl<'a> Node<'a> {
 			Nodes::Struct { name, .. } => Some(name),
 			Nodes::Member { name, .. } => Some(name),
 			Nodes::Function { name, .. } => Some(name),
-			Nodes::Conditional { .. } => None,
+			Nodes::Conditional { .. } | Nodes::ForLoop { .. } => None,
 			Nodes::Binding { name, .. } => Some(name),
 			Nodes::Specialization { name, .. } => Some(name),
 			Nodes::Type { name, .. } => Some(name),
@@ -374,6 +385,12 @@ pub enum Nodes<'a> {
 	},
 	Conditional {
 		condition: Box<Node<'a>>,
+		statements: Vec<Node<'a>>,
+	},
+	ForLoop {
+		initializer: Box<Node<'a>>,
+		condition: Box<Node<'a>>,
+		update: Box<Node<'a>>,
 		statements: Vec<Node<'a>>,
 	},
 	/// A binding declaration. A binding is a resource that can be used in the shader.
@@ -1155,6 +1172,48 @@ fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) ->
 	Ok((Node::conditional(condition, statements), iterator))
 }
 
+fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	iterator.next_str("for")?;
+	iterator.next_str("(")?;
+
+	let statement_parsers = vec![parse_keywords, parse_var_decl, parse_function_call, parse_variable];
+	let (initializer_atoms, mut iterator) = execute_expression_parsers(&statement_parsers, iterator, Vec::new())?;
+	let initializer = expression_atoms_to_node(&initializer_atoms);
+
+	iterator.next_str(";")?;
+
+	let (condition_atoms, mut iterator) = execute_expression_parsers(&[parse_rvalue], iterator, Vec::new())?;
+	let condition = expression_atoms_to_node(&condition_atoms);
+
+	iterator.next_str(";")?;
+
+	let (update_atoms, mut iterator) = execute_expression_parsers(&statement_parsers, iterator, Vec::new())?;
+	let update = expression_atoms_to_node(&update_atoms);
+
+	iterator.next_str(")")?;
+	iterator.next_str("{")?;
+
+	let mut statements = vec![];
+	loop {
+		if **iterator
+			.clone()
+			.peekable()
+			.peek()
+			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
+			== "}"
+		{
+			iterator.next();
+			break;
+		}
+
+		let (statement, new_iterator) = parse_statement(iterator)?;
+		statements.push(statement);
+		iterator = new_iterator;
+	}
+
+	Ok((Node::for_loop(initializer, condition, update, statements), iterator))
+}
+
 fn parse_function_call<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	mut expressions: Vec<Atoms<'a>>,
@@ -1218,6 +1277,10 @@ fn parse_function_call<'i, 'a: 'i>(
 
 fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	if let Some(result) = try_execute_parsers(&[parse_conditional], iterator.clone()) {
+		return result;
+	}
+
+	if let Some(result) = try_execute_parsers(&[parse_for_loop], iterator.clone()) {
 		return result;
 	}
 
@@ -2014,6 +2077,52 @@ main: fn () -> void {
 		} else {
 			panic!("Expected main function");
 		}
+	}
+
+	#[test]
+	fn parse_for_loop_block() {
+		let source = "
+main: fn () -> void {
+	let sum: u32 = 0;
+	for (let i: u32 = 0; i < 4; i = i + 1) {
+		sum = sum + i;
+	}
+}";
+
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+
+		let main_node = &node["main"];
+		let Nodes::Function { statements, .. } = &main_node.node else {
+			panic!("Expected main function");
+		};
+
+		assert_eq!(statements.len(), 2);
+
+		let for_loop = &statements[1];
+		let Nodes::ForLoop {
+			initializer,
+			condition,
+			update,
+			statements,
+		} = &for_loop.node
+		else {
+			panic!("Expected for loop block");
+		};
+
+		assert!(matches!(
+			initializer.node,
+			Nodes::Expression(Expressions::Operator { name, .. }) if name == "="
+		));
+		assert!(matches!(
+			condition.node,
+			Nodes::Expression(Expressions::Operator { name, .. }) if name == "<"
+		));
+		assert!(matches!(
+			update.node,
+			Nodes::Expression(Expressions::Operator { name, .. }) if name == "="
+		));
+		assert_eq!(statements.len(), 1);
 	}
 
 	#[test]

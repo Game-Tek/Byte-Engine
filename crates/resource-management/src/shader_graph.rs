@@ -152,6 +152,20 @@ pub fn build_graph(main_function_node: besl::NodeReference) -> Graph {
 					build_graph_impl(node.clone(), statement.clone(), graph, expanded, active);
 				}
 			}
+			besl::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				build_graph_impl(node.clone(), initializer.clone(), graph, expanded, active);
+				build_graph_impl(node.clone(), condition.clone(), graph, expanded, active);
+				build_graph_impl(node.clone(), update.clone(), graph, expanded, active);
+
+				for statement in statements {
+					build_graph_impl(node.clone(), statement.clone(), graph, expanded, active);
+				}
+			}
 			besl::Nodes::Struct { fields, .. } => {
 				for field in fields {
 					build_graph_impl(node.clone(), field.clone(), graph, expanded, active);

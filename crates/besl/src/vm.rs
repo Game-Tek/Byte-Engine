@@ -576,7 +576,9 @@ impl ExecutableProgram {
 			locals[index] = Some(argument.clone());
 		}
 
-		for instruction in &function.instructions {
+		let mut instruction_index = 0usize;
+		while instruction_index < function.instructions.len() {
+			let instruction = &function.instructions[instruction_index];
 			match instruction {
 				Instruction::LoadLiteral { register, value } => {
 					registers[*register] = Some(value.clone());
@@ -601,6 +603,22 @@ impl ExecutableProgram {
 					let left = read_register(&registers, *left)?;
 					let right = read_register(&registers, *right)?;
 					registers[*register] = Some(apply_arithmetic(*operator, &left, &right)?);
+				}
+				Instruction::CompareLessThan { register, left, right } => {
+					let left = read_register(&registers, *left)?;
+					let right = read_register(&registers, *right)?;
+					registers[*register] = Some(apply_less_than(&left, &right)?);
+				}
+				Instruction::JumpIfZero { register, target } => {
+					let value = read_register(&registers, *register)?;
+					if is_zero_value(&value)? {
+						instruction_index = *target;
+						continue;
+					}
+				}
+				Instruction::Jump { target } => {
+					instruction_index = *target;
+					continue;
 				}
 				Instruction::DotProduct { register, left, right } => {
 					let left = read_register(&registers, *left)?;
@@ -761,6 +779,8 @@ impl ExecutableProgram {
 					};
 				}
 			}
+
+			instruction_index += 1;
 		}
 
 		match &function.return_type {
@@ -827,6 +847,18 @@ enum Instruction {
 		operator: ArithmeticOperator,
 		left: usize,
 		right: usize,
+	},
+	CompareLessThan {
+		register: usize,
+		left: usize,
+		right: usize,
+	},
+	JumpIfZero {
+		register: usize,
+		target: usize,
+	},
+	Jump {
+		target: usize,
 	},
 	DotProduct {
 		register: usize,
@@ -983,6 +1015,19 @@ impl Compiler {
 	) -> Result<(), VmError> {
 		let borrowed = statement.borrow();
 		let result = match borrowed.node() {
+			Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				let initializer = initializer.clone();
+				let condition = condition.clone();
+				let update = update.clone();
+				let statements = statements.clone();
+				drop(borrowed);
+				self.compile_for_loop(&initializer, &condition, &update, &statements, descriptor_layouts)
+			}
 			Nodes::Expression(Expressions::Operator {
 				operator: Operators::Assignment,
 				left,
@@ -1024,6 +1069,40 @@ impl Compiler {
 		result
 	}
 
+	fn compile_for_loop(
+		&mut self,
+		initializer: &NodeReference,
+		condition: &NodeReference,
+		update: &NodeReference,
+		statements: &[NodeReference],
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<(), VmError> {
+		self.compile_statement(initializer, descriptor_layouts)?;
+
+		let condition_start = self.instructions.len();
+		let condition_register = self.compile_value_expression(condition, &ValueType::U32, descriptor_layouts)?;
+		let jump_if_zero_index = self.instructions.len();
+		self.instructions.push(Instruction::JumpIfZero {
+			register: condition_register,
+			target: usize::MAX,
+		});
+
+		for statement in statements {
+			self.compile_statement(statement, descriptor_layouts)?;
+		}
+
+		self.compile_statement(update, descriptor_layouts)?;
+		self.instructions.push(Instruction::Jump { target: condition_start });
+
+		let loop_end = self.instructions.len();
+		match &mut self.instructions[jump_if_zero_index] {
+			Instruction::JumpIfZero { target, .. } => *target = loop_end,
+			_ => unreachable!("Expected JumpIfZero placeholder"),
+		}
+
+		Ok(())
+	}
+
 	fn compile_assignment(
 		&mut self,
 		statement: &NodeReference,
@@ -1044,18 +1123,30 @@ impl Compiler {
 				self.instructions.push(Instruction::StoreLocal { local, register });
 				Ok(())
 			}
-			Nodes::Expression(Expressions::Member { .. }) => {
+			Nodes::Expression(Expressions::Member { source, .. }) => {
+				let source = source.clone();
 				drop(left_expression);
 
-				let target = self.resolve_output_access(&left, descriptor_layouts)?;
-				let register = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
-				self.instructions.push(Instruction::StoreBuffer {
-					slot: target.slot,
-					offset: target.offset,
-					value_type: target.value_type,
-					register,
-				});
-				Ok(())
+				if let Some(local) = self.locals_by_reference.get(&source).copied() {
+					let value_type = self
+						.local_types
+						.get(local)
+						.cloned()
+						.ok_or(VmError::UninitializedLocal { local })?;
+					let register = self.compile_value_expression(&right, &value_type, descriptor_layouts)?;
+					self.instructions.push(Instruction::StoreLocal { local, register });
+					Ok(())
+				} else {
+					let target = self.resolve_output_access(&left, descriptor_layouts)?;
+					let register = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
+					self.instructions.push(Instruction::StoreBuffer {
+						slot: target.slot,
+						offset: target.offset,
+						value_type: target.value_type,
+						register,
+					});
+					Ok(())
+				}
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
@@ -1112,9 +1203,14 @@ impl Compiler {
 				self.compile_intrinsic_call_expression(&intrinsic, &arguments, expected_type, descriptor_layouts)
 			}
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-				let operator = arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
-					message: format!("Unsupported value operator: {:?}", operator),
-				})?;
+				let comparison = *operator == Operators::LessThan;
+				let operator = if comparison {
+					None
+				} else {
+					Some(arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
+						message: format!("Unsupported value operator: {:?}", operator),
+					})?)
+				};
 				let left = left.clone();
 				let right = right.clone();
 				drop(borrowed);
@@ -1143,12 +1239,16 @@ impl Compiler {
 				let left = self.compile_value_expression(&left, &left_expected_type, descriptor_layouts)?;
 				let right = self.compile_value_expression(&right, &right_expected_type, descriptor_layouts)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::Arithmetic {
-					register,
-					operator,
-					left,
-					right,
-				});
+				if comparison {
+					self.instructions.push(Instruction::CompareLessThan { register, left, right });
+				} else {
+					self.instructions.push(Instruction::Arithmetic {
+						register,
+						operator: operator.expect("Expected arithmetic operator"),
+						left,
+						right,
+					});
+				}
 				Ok(register)
 			}
 			Nodes::Expression(Expressions::Literal { value }) => {
@@ -2413,6 +2513,7 @@ fn describe_node(node: &Nodes) -> &'static str {
 		Nodes::Member { .. } => "member",
 		Nodes::Function { .. } => "function",
 		Nodes::Conditional { .. } => "conditional",
+		Nodes::ForLoop { .. } => "for loop",
 		Nodes::Specialization { .. } => "specialization",
 		Nodes::Expression(_) => "expression",
 		Nodes::Raw { .. } => "raw",
@@ -2688,6 +2789,30 @@ fn apply_arithmetic(operator: ArithmeticOperator, left: &ScalarValue, right: &Sc
 		(left, right) => Err(VmError::TypeMismatch {
 			expected: left.value_type().name().to_string(),
 			found: right.value_type().name().to_string(),
+		}),
+	}
+}
+
+fn apply_less_than(left: &ScalarValue, right: &ScalarValue) -> Result<ScalarValue, VmError> {
+	match (left, right) {
+		(ScalarValue::U32(left), ScalarValue::U32(right)) => Ok(ScalarValue::U32(u32::from(left < right))),
+		(ScalarValue::I32(left), ScalarValue::I32(right)) => Ok(ScalarValue::U32(u32::from(left < right))),
+		(ScalarValue::F32(left), ScalarValue::F32(right)) => Ok(ScalarValue::U32(u32::from(left < right))),
+		(left, right) => Err(VmError::TypeMismatch {
+			expected: left.value_type().name().to_string(),
+			found: right.value_type().name().to_string(),
+		}),
+	}
+}
+
+fn is_zero_value(value: &ScalarValue) -> Result<bool, VmError> {
+	match value {
+		ScalarValue::U32(value) => Ok(*value == 0),
+		ScalarValue::I32(value) => Ok(*value == 0),
+		ScalarValue::F32(value) => Ok(*value == 0.0),
+		value => Err(VmError::TypeMismatch {
+			expected: "u32, i32, or f32".to_string(),
+			found: value.value_type().name().to_string(),
 		}),
 	}
 }
@@ -4543,5 +4668,47 @@ mod tests {
 		}
 
 		assert_eq!(buffer.read("thread").expect("Expected thread value"), Value::U32(0));
+	}
+
+	#[test]
+	fn executable_program_executes_for_loops() {
+		let script = r#"
+		main: fn () -> void {
+			let sum: u32 = 0;
+			for (let i: u32 = 0; i < 4; i = i + 1) {
+				sum = sum + i;
+			}
+			buff.sum = sum;
+		}
+		"#;
+
+		let mut root = Node::root();
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		root.add_child(
+			Node::binding(
+				"buff",
+				BindingTypes::Buffer {
+					members: vec![Node::member("sum", u32_type).into()],
+				},
+				0,
+				24,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let executable = compile_test_program(script, Some(root));
+
+		let slot = DescriptorSlot::new(0, 24);
+		let mut buffer = buffer_for_slot(&executable, slot);
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(slot, &mut buffer);
+			executable.run_main(&mut descriptors).expect("Expected execution to succeed");
+		}
+
+		assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(6));
 	}
 }

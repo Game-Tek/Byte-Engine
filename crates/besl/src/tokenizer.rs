@@ -176,4 +176,17 @@ mod tests {
 		let tokens = tokenize(source).unwrap();
 		assert_eq!(tokens.tokens, vec!["color", ":", "In", "<", "vec4f", ">", ";"]);
 	}
+
+	#[test]
+	fn test_for_loop() {
+		let source = "main: fn () -> void { for (let i: u32 = 0; i < 4; i = i + 1) { value = value + i; } }";
+		let tokens = tokenize(source).unwrap();
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"main", ":", "fn", "(", ")", "->", "void", "{", "for", "(", "let", "i", ":", "u32", "=", "0", ";", "i", "<",
+				"4", ";", "i", "=", "i", "+", "1", ")", "{", "value", "=", "value", "+", "i", ";", "}", "}"
+			]
+		);
+	}
 }

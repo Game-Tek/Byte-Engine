@@ -380,6 +380,22 @@ impl Node {
 		}
 	}
 
+	pub fn for_loop(
+		initializer: NodeReference,
+		condition: NodeReference,
+		update: NodeReference,
+		statements: Vec<NodeReference>,
+	) -> Node {
+		Node {
+			node: Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			},
+		}
+	}
+
 	pub fn expression(expression: Expressions) -> Node {
 		Node {
 			node: Nodes::Expression(expression),
@@ -613,6 +629,19 @@ impl Node {
 				children.extend(statements.iter().cloned());
 				Some(children)
 			}
+			Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				let mut children = Vec::with_capacity(statements.len() + 3);
+				children.push(initializer.clone());
+				children.push(condition.clone());
+				children.push(update.clone());
+				children.extend(statements.iter().cloned());
+				Some(children)
+			}
 			Nodes::Expression(expression) => match expression {
 				Expressions::IntrinsicCall { elements: children, .. } => Some(children.clone()),
 				_ => None,
@@ -678,6 +707,12 @@ pub enum Nodes {
 		condition: NodeReference,
 		statements: Vec<NodeReference>,
 	},
+	ForLoop {
+		initializer: NodeReference,
+		condition: NodeReference,
+		update: NodeReference,
+		statements: Vec<NodeReference>,
+	},
 	Specialization {
 		name: String,
 		r#type: NodeReference,
@@ -737,7 +772,7 @@ impl Nodes {
 	pub fn is_leaf(&self) -> bool {
 		match self {
 			Nodes::Function { .. } => false,
-			Nodes::Conditional { .. } => false,
+			Nodes::Conditional { .. } | Nodes::ForLoop { .. } => false,
 			Nodes::Struct { .. } => false,
 			Nodes::Binding { .. } => false,
 			Nodes::PushConstant { .. } => false,
@@ -826,6 +861,18 @@ impl std::fmt::Debug for Node {
 					f,
 					"Conditional {{ condition: {:?}, statements: {:?} }}",
 					condition, statements
+				)
+			}
+			Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				write!(
+					f,
+					"ForLoop {{ initializer: {:?}, condition: {:?}, update: {:?}, statements: {:?} }}",
+					initializer, condition, update, statements
 				)
 			}
 			Nodes::Specialization { name, r#type } => {
@@ -1118,6 +1165,15 @@ fn find_descendant(node: &NodeReference, child_name: &str, mode: DescendantSearc
 		Nodes::Conditional { condition, statements } if mode == DescendantSearch::NonIntrinsic => {
 			find_descendant(condition, child_name, mode).or_else(|| find_in_descendants(statements, child_name, mode))
 		}
+		Nodes::ForLoop {
+			initializer,
+			condition,
+			update,
+			statements,
+		} if mode == DescendantSearch::NonIntrinsic => find_descendant(initializer, child_name, mode)
+			.or_else(|| find_descendant(condition, child_name, mode))
+			.or_else(|| find_descendant(update, child_name, mode))
+			.or_else(|| find_in_descendants(statements, child_name, mode)),
 		Nodes::Expression(expression) => find_in_expression(expression, child_name, mode),
 		Nodes::Raw { output, .. } => find_in_descendants(output, child_name, mode),
 		Nodes::Binding { r#type, .. } => match r#type {
@@ -1423,6 +1479,25 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			}
 
 			Node::conditional(condition, lexed_statements).into()
+		}
+		parser::Nodes::ForLoop {
+			initializer,
+			condition,
+			update,
+			statements,
+		} => {
+			let initializer = lex_parsed_node(chain.clone(), initializer)?;
+			let mut scoped_chain = chain.clone();
+			scoped_chain.push(initializer.clone());
+			let condition = lex_parsed_node(scoped_chain.clone(), condition)?;
+			let update = lex_parsed_node(scoped_chain.clone(), update)?;
+			let mut lexed_statements = Vec::with_capacity(statements.len());
+
+			for statement in statements {
+				lexed_statements.push(lex_parsed_node(scoped_chain.clone(), statement)?);
+			}
+
+			Node::for_loop(initializer, condition, update, lexed_statements).into()
 		}
 		parser::Nodes::PushConstant { members } => {
 			let this: NodeReference = Node::push_constant(vec![]).into();
@@ -2778,6 +2853,51 @@ main: fn () -> void {
 				}
 			}
 			_ => panic!("Expected conditional node"),
+		}
+	}
+
+	#[test]
+	fn lex_for_loop_block() {
+		let script = r#"
+		main: fn () -> void {
+			let sum: u32 = 0;
+			for (let i: u32 = 0; i < 4; i = i + 1) {
+				sum = sum + i;
+			}
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let for_loop = statements[1].borrow();
+		match for_loop.node() {
+			Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				assert_eq!(statements.len(), 1);
+				assert!(matches!(
+					initializer.borrow().node(),
+					Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::Assignment
+				));
+				assert!(matches!(
+					condition.borrow().node(),
+					Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::LessThan
+				));
+				assert!(matches!(
+					update.borrow().node(),
+					Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::Assignment
+				));
+			}
+			_ => panic!("Expected for loop node"),
 		}
 	}
 

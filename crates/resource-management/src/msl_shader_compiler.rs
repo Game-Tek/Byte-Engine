@@ -125,6 +125,19 @@ impl MSLShaderCompiler {
 					self.build_graph(bindings, statement);
 				}
 			}
+			besl::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				self.build_graph(bindings, initializer);
+				self.build_graph(bindings, condition);
+				self.build_graph(bindings, update);
+				for statement in statements {
+					self.build_graph(bindings, statement);
+				}
+			}
 			besl::Nodes::Expression(expresions) => {
 				match expresions {
 					besl::Expressions::FunctionCall { parameters, function } => {

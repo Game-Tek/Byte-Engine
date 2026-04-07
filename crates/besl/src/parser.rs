@@ -205,20 +205,25 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn glsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		make_raw_code(Some(code.into()), None, input, output)
+		make_raw_code(Some(code.into()), None, None, input, output)
 	}
 
 	pub fn hlsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		make_raw_code(None, Some(code.into()), input, output)
+		make_raw_code(None, Some(code.into()), None, input, output)
+	}
+
+	pub fn msl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
+		make_raw_code(None, None, Some(code.into()), input, output)
 	}
 
 	pub fn raw_code(
 		glsl: Option<Cow<'a, str>>,
 		hlsl: Option<Cow<'a, str>>,
+		msl: Option<Cow<'a, str>>,
 		input: &'a [&'a str],
 		output: &'a [&'a str],
 	) -> Node<'a> {
-		make_raw_code(glsl, hlsl, input, output)
+		make_raw_code(glsl, hlsl, msl, input, output)
 	}
 
 	pub fn literal(name: &'a str, body: Node<'a>) -> Node<'a> {
@@ -427,6 +432,7 @@ pub enum Nodes<'a> {
 	RawCode {
 		glsl: Option<Cow<'a, str>>,
 		hlsl: Option<Cow<'a, str>>,
+		msl: Option<Cow<'a, str>>,
 		input: &'a [&'a str],
 		output: &'a [&'a str],
 	},
@@ -491,6 +497,7 @@ pub enum Expressions<'a> {
 	RawCode {
 		glsl: Option<&'a str>,
 		hlsl: Option<&'a str>,
+		msl: Option<&'a str>,
 		input: &'a [&'a str],
 		output: &'a [&'a str],
 	},
@@ -575,6 +582,7 @@ fn make_function<'a>(name: &'a str, params: Vec<Node<'a>>, return_type: &'a str,
 fn make_raw_code<'a>(
 	glsl: Option<Cow<'a, str>>,
 	hlsl: Option<Cow<'a, str>>,
+	msl: Option<Cow<'a, str>>,
 	input: &'a [&'a str],
 	output: &'a [&'a str],
 ) -> Node<'a> {
@@ -582,6 +590,7 @@ fn make_raw_code<'a>(
 		node: Nodes::RawCode {
 			glsl,
 			hlsl,
+			msl,
 			input,
 			output,
 		},

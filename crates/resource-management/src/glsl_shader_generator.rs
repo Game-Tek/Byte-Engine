@@ -1063,6 +1063,7 @@ mod tests {
 				besl::Node::raw(
 					Some("gl_Position = vec4(0)".to_string()),
 					Some("output.position = float4(0, 0, 0, 1)".to_string()),
+					Some("out.position = float4(0, 0, 0, 1)".to_string()),
 					vec![vertex_struct],
 					vec![],
 				)

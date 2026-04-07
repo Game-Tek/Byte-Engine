@@ -476,6 +476,7 @@ impl Node {
 			node: Nodes::Raw {
 				glsl: Some(code),
 				hlsl: None,
+				msl: None,
 				input: inputs,
 				output: outputs,
 			},
@@ -487,17 +488,37 @@ impl Node {
 			node: Nodes::Raw {
 				glsl: None,
 				hlsl: Some(code),
+				msl: None,
 				input: inputs,
 				output: outputs,
 			},
 		}
 	}
 
-	pub fn raw(glsl: Option<String>, hlsl: Option<String>, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
+	pub fn msl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
+		Node {
+			node: Nodes::Raw {
+				glsl: None,
+				hlsl: None,
+				msl: Some(code),
+				input: inputs,
+				output: outputs,
+			},
+		}
+	}
+
+	pub fn raw(
+		glsl: Option<String>,
+		hlsl: Option<String>,
+		msl: Option<String>,
+		inputs: Vec<NodeReference>,
+		outputs: Vec<NodeReference>,
+	) -> Node {
 		Node {
 			node: Nodes::Raw {
 				glsl,
 				hlsl,
+				msl,
 				input: inputs,
 				output: outputs,
 			},
@@ -790,6 +811,7 @@ pub enum Nodes {
 	Raw {
 		glsl: Option<String>,
 		hlsl: Option<String>,
+		msl: Option<String>,
 		input: Vec<NodeReference>,
 		output: Vec<NodeReference>,
 	},
@@ -959,14 +981,16 @@ impl std::fmt::Debug for Node {
 			Nodes::Raw {
 				glsl,
 				hlsl,
+				msl,
 				input,
 				output,
 			} => {
 				write!(
 					f,
-					"RawCode {{ glsl: {:?}, hlsl: {:?}, input: {:?}, output: {:?} }}",
+					"RawCode {{ glsl: {:?}, hlsl: {:?}, msl: {:?}, input: {:?}, output: {:?} }}",
 					glsl,
 					hlsl,
+					msl,
 					input.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())),
 					output.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))
 				)
@@ -1219,6 +1243,7 @@ fn lex_raw_code(
 	chain: &[NodeReference],
 	glsl: Option<&str>,
 	hlsl: Option<&str>,
+	msl: Option<&str>,
 	input: &[&str],
 	output: &[&str],
 ) -> Result<Node, LexError> {
@@ -1239,7 +1264,13 @@ fn lex_raw_code(
 		})
 		.collect();
 
-	Ok(Node::raw(glsl.map(str::to_string), hlsl.map(str::to_string), inputs, outputs))
+	Ok(Node::raw(
+		glsl.map(str::to_string),
+		hlsl.map(str::to_string),
+		msl.map(str::to_string),
+		inputs,
+		outputs,
+	))
 }
 
 fn find_descendant(node: &NodeReference, child_name: &str, mode: DescendantSearch) -> Option<NodeReference> {
@@ -1713,10 +1744,11 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 		parser::Nodes::RawCode {
 			glsl,
 			hlsl,
+			msl,
 			input,
 			output,
 			..
-		} => lex_raw_code(&chain, glsl.as_deref(), hlsl.as_deref(), input, output)?.into(),
+		} => lex_raw_code(&chain, glsl.as_deref(), hlsl.as_deref(), msl.as_deref(), input, output)?.into(),
 		parser::Nodes::Literal { name, body } => Node::new(Nodes::Literal {
 			name: name.to_string(),
 			value: lex_parsed_node(chain, body)?,
@@ -1827,9 +1859,10 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 				parser::Expressions::RawCode {
 					glsl,
 					hlsl,
+					msl,
 					input,
 					output,
-				} => lex_raw_code(&chain, *glsl, *hlsl, input, output)?,
+				} => lex_raw_code(&chain, *glsl, *hlsl, *msl, input, output)?,
 				parser::Expressions::Macro { name, body } => Node::r#macro(name, lex_parsed_node(chain, body)?),
 			};
 

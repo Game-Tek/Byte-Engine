@@ -817,8 +817,8 @@ impl VisibilityWorldRenderDomain {
 
 				let fshader = if cfg!(target_os = "macos") {
 					let mut source_generator = MSLShaderGenerator::new();
-					let source = source_generator.generate(&settings, &main_node).map_err(|e| {
-						log::error!("{}", e);
+					let source = source_generator.generate(&settings, &main_node).map_err(|_| {
+						log::error!("Failed to generate Metal shader source for material evaluation");
 						()
 					})?;
 					let reflected_shader = SPIRVShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {

@@ -878,6 +878,66 @@ impl MSLShaderGenerator {
 		string.push_str("out_mesh");
 	}
 
+	fn emit_compute_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool) {
+		if self.mesh_stage_context.is_some() {
+			self.emit_mesh_hidden_parameters(string, has_previous_parameter);
+			return;
+		}
+
+		if !self.in_compute_body {
+			return;
+		}
+
+		let mut has_previous_parameter = has_previous_parameter;
+		let separator = if self.minified { "," } else { ", " };
+
+		if has_previous_parameter {
+			string.push_str(separator);
+		}
+		string.push_str("uint2 gid");
+		has_previous_parameter = true;
+
+		string.push_str(separator);
+		string.push_str("constant PushConstant& push_constant");
+
+		for set in 0..=2u32 {
+			string.push_str(separator);
+			string.push_str("constant _set");
+			string.push_str(set.to_string().as_str());
+			string.push_str("& set");
+			string.push_str(set.to_string().as_str());
+		}
+	}
+
+	fn emit_compute_hidden_call_arguments(&self, string: &mut String, has_previous_parameter: bool) {
+		if self.mesh_stage_context.is_some() {
+			self.emit_mesh_hidden_call_arguments(string, has_previous_parameter);
+			return;
+		}
+
+		if !self.in_compute_body {
+			return;
+		}
+
+		let mut has_previous_parameter = has_previous_parameter;
+		let separator = if self.minified { "," } else { ", " };
+
+		if has_previous_parameter {
+			string.push_str(separator);
+		}
+		string.push_str("gid");
+		has_previous_parameter = true;
+
+		string.push_str(separator);
+		string.push_str("push_constant");
+
+		for set in 0..=2u32 {
+			string.push_str(separator);
+			string.push_str("set");
+			string.push_str(set.to_string().as_str());
+		}
+	}
+
 	fn emit_function_prototype(&mut self, string: &mut String, function_node: &besl::NodeReference) {
 		let node = RefCell::borrow(function_node);
 		let besl::Nodes::Function {
@@ -900,8 +960,8 @@ impl MSLShaderGenerator {
 			self.emit_node_string(string, param)
 		});
 
-		if self.mesh_stage_context.is_some() && name == "main" {
-			self.emit_mesh_hidden_parameters(string, !params.is_empty());
+		if name == "main" {
+			self.emit_compute_hidden_parameters(string, !params.is_empty());
 		}
 
 		string.push(')');
@@ -1377,9 +1437,8 @@ impl MSLShaderGenerator {
 					string.push(']');
 				}
 			}
-			besl::Nodes::Raw { glsl, hlsl, .. } => {
-				// TODO: BESL Raw nodes do not expose MSL. Using HLSL as the closest fallback.
-				if let Some(code) = hlsl.as_ref().or(glsl.as_ref()) {
+			besl::Nodes::Raw { glsl, hlsl, msl, .. } => {
+				if let Some(code) = msl.as_ref().or(hlsl.as_ref()).or(glsl.as_ref()) {
 					string.push_str(code);
 				}
 			}
@@ -1428,16 +1487,16 @@ impl MSLShaderGenerator {
 				} => {
 					let function = RefCell::borrow(&function);
 					let name = function.get_name().unwrap();
-					let append_mesh_context = self.mesh_stage_context.is_some()
-						&& matches!(function.node(), besl::Nodes::Function { name, .. } if name == "main");
+					let append_hidden_context = matches!(function.node(), besl::Nodes::Function { name, .. } if name == "main")
+						&& (self.mesh_stage_context.is_some() || self.in_compute_body);
 
 					Self::emit_type_name(string, &name);
 					string.push('(');
 					emit_comma_separated_nodes(string, formatting, parameters, |string, parameter| {
 						self.emit_node_string(string, parameter)
 					});
-					if append_mesh_context {
-						self.emit_mesh_hidden_call_arguments(string, !parameters.is_empty());
+					if append_hidden_context {
+						self.emit_compute_hidden_call_arguments(string, !parameters.is_empty());
 					}
 					string.push_str(&format!(")"));
 				}
@@ -1878,6 +1937,18 @@ struct PrimitiveOutput {
 "#
 				.into(),
 			),
+			Some(
+				r#"
+struct VertexOutput {
+	float4 position [[position]];
+};
+
+struct PrimitiveOutput {
+	uint primitive_index [[flat]] [[user(locn0)]];
+};
+"#
+				.into(),
+			),
 			&[],
 			&["VertexOutput", "PrimitiveOutput"],
 		);
@@ -1887,6 +1958,7 @@ struct PrimitiveOutput {
 			"void",
 			vec![besl::parser::Node::raw_code(
 				Some("".into()),
+				Some("push_constant;threadgroup_position;thread_index;out_mesh;".into()),
 				Some("push_constant;threadgroup_position;thread_index;out_mesh;".into()),
 				&["push_constant", "VertexOutput", "PrimitiveOutput"],
 				&[],
@@ -2124,6 +2196,7 @@ struct PrimitiveOutput {
 				besl::Node::raw(
 					Some("gl_Position = vec4(0)".to_string()),
 					Some("output.position = float4(0, 0, 0, 1)".to_string()),
+					Some("out.position = float4(0, 0, 0, 1)".to_string()),
 					vec![vertex_struct],
 					vec![],
 				)
@@ -2136,9 +2209,9 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		// MSL generator should use the HLSL code as the closest fallback
+		// MSL generator should use the explicit MSL code
 		assert_string_contains!(shader, "struct Vertex{float3 position;float3 normal;};");
-		assert_string_contains!(shader, "void main(){output.position = float4(0, 0, 0, 1);}");
+		assert_string_contains!(shader, "void main(){out.position = float4(0, 0, 0, 1);}");
 		// Should NOT contain GLSL code
 		assert!(!shader.contains("gl_Position"), "MSL shader should not contain GLSL code");
 	}
@@ -2160,6 +2233,19 @@ struct PrimitiveOutput {
 	fn mesh_intrinsics_emit_msl_mesh_commands() {
 		let mesh_output_types = besl::parser::Node::raw_code(
 			Some("".into()),
+			Some(
+				r#"
+struct VertexOutput {
+	float4 position [[position]];
+};
+
+struct PrimitiveOutput {
+	uint instance_index [[flat]] [[user(locn0)]];
+	uint primitive_index [[flat]] [[user(locn1)]];
+};
+"#
+				.into(),
+			),
 			Some(
 				r#"
 struct VertexOutput {
@@ -2223,6 +2309,19 @@ struct PrimitiveOutput {
 "#
 				.into(),
 			),
+			Some(
+				r#"
+struct VertexOutput {
+	float4 position [[position]];
+};
+
+struct PrimitiveOutput {
+	uint instance_index [[flat]] [[user(locn0)]];
+	uint primitive_index [[flat]] [[user(locn1)]];
+};
+"#
+				.into(),
+			),
 			&[],
 			&["VertexOutput", "PrimitiveOutput"],
 		);
@@ -2269,6 +2368,18 @@ struct PrimitiveOutput {
 		);
 		let mesh_output_types = besl::parser::Node::raw_code(
 			Some("".into()),
+			Some(
+				r#"
+struct VertexOutput {
+	float4 position [[position]];
+};
+
+struct PrimitiveOutput {
+	uint primitive_index [[flat]] [[user(locn0)]];
+};
+"#
+				.into(),
+			),
 			Some(
 				r#"
 struct VertexOutput {

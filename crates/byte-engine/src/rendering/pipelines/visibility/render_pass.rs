@@ -2,15 +2,15 @@ use std::borrow::Borrow as _;
 
 use crate::rendering::pipelines::visibility::scene_manager::Instance;
 use crate::rendering::pipelines::visibility::{
-	get_gtao_blur_shader, get_gtao_shader, get_material_count_msl_source, get_material_count_source,
-	get_material_offset_msl_source, get_material_offset_source, get_pixel_mapping_shader, get_shadow_pass_mesh_msl_source,
-	get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source, INSTANCE_ID_BINDING,
-	MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING,
-	MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
-	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
-	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
-	VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
+	get_gtao_bitfield_blur_x_shader, get_gtao_bitfield_shader, get_gtao_blur_shader, get_gtao_shader,
+	get_material_count_msl_source, get_material_count_source, get_material_offset_msl_source, get_material_offset_source,
+	get_pixel_mapping_shader, get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source,
+	get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
+	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
+	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
+	MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
+	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
+	VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE, VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
@@ -49,518 +49,6 @@ const GTAO_BLUR_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
 
 const GTAO_USE_BITFIELD_BINARY_IMPL: bool = false;
 const GTAO_PACKED_WORD_BITS: u32 = 32;
-
-const GTAO_BITFIELD_PASS_SOURCE: &str = r#"
-#version 460 core
-#pragma shader_stage(compute)
-#extension GL_EXT_shader_image_load_formatted: enable
-#extension GL_EXT_scalar_block_layout: enable
-
-layout(row_major) uniform;
-layout(row_major) buffer;
-
-struct View {
-    mat4 view;
-    mat4 projection;
-    mat4 view_projection;
-    mat4 inverse_view;
-    mat4 inverse_projection;
-    mat4 inverse_view_projection;
-    vec2 fov;
-    float near;
-    float far;
-};
-
-layout(set=0, binding=0, scalar) readonly buffer ViewsBuffer {
-    View views[8];
-} views_buffer;
-
-layout(set=1, binding=0) uniform sampler2D visibility_depth;
-layout(set=1, binding=1, r32ui) uniform uimage2D ao_output;
-
-layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
-
-const float PI = 3.14159265359;
-
-const float GTAO_RADIUS = 1.0;
-const float GTAO_BIAS = 0.05;
-const float GTAO_STRENGTH = 1.0;
-const uint GTAO_PACKED_WORD_BITS = 32u;
-
-const float GTAO_MIN_RADIUS_PIXELS = 4.0;
-const float GTAO_MAX_RADIUS_PIXELS = 64.0;
-const float GTAO_MIN_EFFECTIVE_RADIUS_PIXELS = 1.0;
-
-const int GTAO_DIRECTIONS = 8;
-const int GTAO_STEPS = 6;
-
-float interleaved_gradient_noise(ivec2 pixel) {
-    return fract(52.9829189 * fract(0.06711056 * float(pixel.x) + 0.00583715 * float(pixel.y)));
-}
-
-vec2 make_uv(ivec2 pixel, ivec2 extent) {
-    return (vec2(pixel) + vec2(0.5)) / vec2(extent);
-}
-
-vec3 reconstruct_view_space_position(vec2 uv, float depth) {
-    vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    vec4 clip_space = vec4(ndc, depth, 1.0);
-    vec4 view_space = views_buffer.views[0].inverse_projection * clip_space;
-    view_space /= view_space.w;
-    return view_space.xyz;
-}
-
-vec3 sample_view_space_position(ivec2 pixel, ivec2 extent, vec3 fallback_position) {
-    if (pixel.x < 0 || pixel.x >= extent.x || pixel.y < 0 || pixel.y >= extent.y) {
-        return fallback_position;
-    }
-
-    float depth = texelFetch(visibility_depth, pixel, 0).r;
-    if (depth == 0.0) {
-        return fallback_position;
-    }
-
-    vec2 uv = make_uv(pixel, extent);
-    return reconstruct_view_space_position(uv, depth);
-}
-
-vec3 min_diff(vec3 center, vec3 a, vec3 b) {
-    vec3 da = a - center;
-    vec3 db = b - center;
-    return dot(da, da) < dot(db, db) ? da : db;
-}
-
-vec3 reconstruct_normal(ivec2 pixel, ivec2 extent, vec3 center_position) {
-    vec3 right_position  = sample_view_space_position(pixel + ivec2( 1,  0), extent, center_position);
-    vec3 left_position   = sample_view_space_position(pixel + ivec2(-1,  0), extent, center_position);
-    vec3 top_position    = sample_view_space_position(pixel + ivec2( 0, -1), extent, center_position);
-    vec3 bottom_position = sample_view_space_position(pixel + ivec2( 0,  1), extent, center_position);
-
-    vec3 dx = min_diff(center_position, right_position, left_position);
-    vec3 dy = min_diff(center_position, bottom_position, top_position);
-
-    vec3 normal = normalize(cross(dx, dy));
-
-    if (dot(normal, -center_position) < 0.0) {
-        normal = -normal;
-    }
-
-    return normal;
-}
-
-void compute_radii(
-    vec3 view_position,
-    ivec2 extent,
-    out float screen_radius,
-    out float world_radius,
-    out float radius_fade
-) {
-    float tan_half_fov_y = tan(radians(views_buffer.views[0].fov.y) * 0.5);
-    float pixels_per_unit = float(extent.y) / max(2.0 * tan_half_fov_y * abs(view_position.z), 1e-3);
-    float ideal = GTAO_RADIUS * pixels_per_unit;
-
-    radius_fade = smoothstep(0.0, GTAO_MIN_RADIUS_PIXELS, ideal);
-    screen_radius = clamp(ideal, GTAO_MIN_EFFECTIVE_RADIUS_PIXELS, GTAO_MAX_RADIUS_PIXELS);
-    world_radius = screen_radius / pixels_per_unit;
-}
-
-float sample_direction(
-    vec3 center_position,
-    vec3 normal,
-    vec2 direction,
-    float screen_radius,
-    float world_radius,
-    ivec2 extent,
-    float noise
-) {
-    float max_occlusion = 0.0;
-    float radius_sq = world_radius * world_radius;
-
-    for (int step = 1; step <= GTAO_STEPS; ++step) {
-        float step_noise = fract(noise + float(step) * 0.618033988749);
-        float step_ratio = (float(step) - 0.5 + step_noise * 0.5) / float(GTAO_STEPS);
-        vec2 sample_offset = direction * screen_radius * step_ratio;
-        ivec2 sample_pixel = ivec2(gl_GlobalInvocationID.xy) + ivec2(round(sample_offset));
-
-        if (sample_pixel.x < 0 || sample_pixel.x >= extent.x || sample_pixel.y < 0 || sample_pixel.y >= extent.y) {
-            continue;
-        }
-
-        float sample_depth = texelFetch(visibility_depth, sample_pixel, 0).r;
-        if (sample_depth == 0.0) {
-            continue;
-        }
-
-        vec2 sample_uv = make_uv(sample_pixel, extent);
-        vec3 sample_position = reconstruct_view_space_position(sample_uv, sample_depth);
-        vec3 sample_vector = sample_position - center_position;
-        float distance_sq = dot(sample_vector, sample_vector);
-
-        if (distance_sq <= 1e-5 || distance_sq > radius_sq) {
-            continue;
-        }
-
-        vec3 sample_direction_vector = sample_vector * inversesqrt(distance_sq);
-        float alignment = max(dot(normal, sample_direction_vector) - GTAO_BIAS, 0.0);
-        float falloff = 1.0 - distance_sq / radius_sq;
-        max_occlusion = max(max_occlusion, alignment * falloff * falloff);
-    }
-
-    return max_occlusion;
-}
-
-void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 extent = textureSize(visibility_depth, 0);
-
-    if (pixel.x >= extent.x || pixel.y >= extent.y) {
-        return;
-    }
-
-    float center_depth = texelFetch(visibility_depth, pixel, 0).r;
-    if (center_depth == 0.0) {
-        return;
-    }
-
-    vec2 uv = make_uv(pixel, extent);
-    vec3 center_position = reconstruct_view_space_position(uv, center_depth);
-    vec3 normal = reconstruct_normal(pixel, extent, center_position);
-
-    float screen_radius;
-    float world_radius;
-    float radius_fade;
-    compute_radii(center_position, extent, screen_radius, world_radius, radius_fade);
-
-    float rotation = interleaved_gradient_noise(pixel) * PI;
-    float occlusion = 0.0;
-
-    for (int direction_index = 0; direction_index < GTAO_DIRECTIONS; ++direction_index) {
-        float angle = rotation + (2.0 * PI * float(direction_index)) / float(GTAO_DIRECTIONS);
-        vec2 direction = vec2(cos(angle), sin(angle));
-        occlusion += sample_direction(
-            center_position,
-            normal,
-            direction,
-            screen_radius,
-            world_radius,
-            extent,
-            interleaved_gradient_noise(pixel + ivec2(direction_index * 7, direction_index * 13))
-        );
-    }
-
-    occlusion = clamp(occlusion / float(GTAO_DIRECTIONS) * GTAO_STRENGTH, 0.0, 1.0);
-    occlusion *= radius_fade;
-
-    // Stochastic quantization keeps the expected occlusion close to the scalar path
-    // instead of biasing the binary representation toward over-darkening.
-    float quantization_noise = interleaved_gradient_noise(pixel + ivec2(19, 47));
-    if (occlusion <= quantization_noise) {
-        return;
-    }
-
-    ivec2 packed_pixel = ivec2(pixel.x / int(GTAO_PACKED_WORD_BITS), pixel.y);
-    uint bit_index = uint(pixel.x) % GTAO_PACKED_WORD_BITS;
-    imageAtomicOr(ao_output, packed_pixel, 1u << bit_index);
-}
-"#;
-
-const GTAO_BLUR_BITFIELD_X_PASS_SOURCE: &str = r#"
-#version 460 core
-#pragma shader_stage(compute)
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_shader_image_load_formatted: enable
-
-layout(row_major) uniform;
-layout(row_major) buffer;
-
-struct View {
-    mat4 view;
-    mat4 projection;
-    mat4 view_projection;
-    mat4 inverse_view;
-    mat4 inverse_projection;
-    mat4 inverse_view_projection;
-    vec2 fov;
-    float near;
-    float far;
-};
-
-layout(set=0, binding=0, scalar) readonly buffer ViewsBuffer {
-    View views[8];
-} views_buffer;
-
-layout(set=1, binding=0) uniform sampler2D visibility_depth;
-layout(set=1, binding=1) uniform usampler2D ao_source;
-layout(set=1, binding=2, r8) uniform writeonly image2D ao_output;
-
-layout(constant_id=0) const float BLUR_DIRECTION_X = 1.0;
-layout(constant_id=1) const float BLUR_DIRECTION_Y = 0.0;
-const vec2 BLUR_DIRECTION = vec2(BLUR_DIRECTION_X, BLUR_DIRECTION_Y);
-
-layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
-
-const uint GTAO_PACKED_WORD_BITS = 32u;
-const int GTAO_BLUR_RADIUS = 4;
-const float GTAO_BLUR_SPATIAL_WEIGHTS[5] = float[5](
-    0.2270270270,
-    0.1945945946,
-    0.1216216216,
-    0.0540540541,
-    0.0162162162
-);
-const float GTAO_BLUR_BASE_RELATIVE_SIGMA = 0.03;
-const float GTAO_BLUR_MIN_RELATIVE_SIGMA = 0.004;
-const float GTAO_BLUR_SIGMA_VARIANCE_SCALE = 32.0;
-const float GTAO_BLUR_VARIANCE_BLEND_SCALE = 96.0;
-
-float unpack_binary_ao(ivec2 pixel) {
-    ivec2 packed_pixel = ivec2(pixel.x / int(GTAO_PACKED_WORD_BITS), pixel.y);
-    uint packed_bits = texelFetch(ao_source, packed_pixel, 0).r;
-    uint bit_index = uint(pixel.x) % GTAO_PACKED_WORD_BITS;
-    return ((packed_bits >> bit_index) & 1u) == 0u ? 1.0 : 0.0;
-}
-
-float linear_view_depth(float depth) {
-    vec4 clip_space = vec4(0.0, 0.0, depth, 1.0);
-    vec4 view_space = views_buffer.views[0].inverse_projection * clip_space;
-    return max(view_space.z / view_space.w, 1e-4);
-}
-
-float relative_depth_delta(float center_linear_depth, float sample_depth) {
-    float sample_linear_depth = linear_view_depth(sample_depth);
-    return (sample_linear_depth - center_linear_depth) / max(center_linear_depth, 1e-4);
-}
-
-float compute_local_depth_variance(ivec2 pixel, ivec2 extent, float center_linear_depth) {
-    float mean = 0.0;
-    float mean_sq = 0.0;
-    float sample_count = 0.0;
-
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            ivec2 sample_pixel = clamp(pixel + ivec2(x, y), ivec2(0), extent - ivec2(1));
-            float sample_depth = texelFetch(visibility_depth, sample_pixel, 0).r;
-            if (sample_depth == 0.0) {
-                continue;
-            }
-
-            float delta = relative_depth_delta(center_linear_depth, sample_depth);
-            mean += delta;
-            mean_sq += delta * delta;
-            sample_count += 1.0;
-        }
-    }
-
-    if (sample_count <= 1.0) {
-        return 0.0;
-    }
-
-    mean /= sample_count;
-    mean_sq /= sample_count;
-    return max(mean_sq - mean * mean, 0.0);
-}
-
-float compute_bilateral_weight(float relative_depth_difference, float local_depth_variance) {
-    float local_depth_stddev = sqrt(local_depth_variance);
-    float sigma = max(
-        GTAO_BLUR_MIN_RELATIVE_SIGMA,
-        GTAO_BLUR_BASE_RELATIVE_SIGMA / (1.0 + local_depth_stddev * GTAO_BLUR_SIGMA_VARIANCE_SCALE)
-    );
-    return exp(-(relative_depth_difference * relative_depth_difference) / max(2.0 * sigma * sigma, 1e-6));
-}
-
-void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 extent = imageSize(ao_output);
-
-    if (pixel.x >= extent.x || pixel.y >= extent.y) {
-        return;
-    }
-
-    float center_depth = texelFetch(visibility_depth, pixel, 0).r;
-    if (center_depth == 0.0) {
-        imageStore(ao_output, pixel, vec4(1.0));
-        return;
-    }
-
-    float center_ao = unpack_binary_ao(pixel);
-    float center_linear_depth = linear_view_depth(center_depth);
-    float local_depth_variance = compute_local_depth_variance(pixel, extent, center_linear_depth);
-    float local_depth_stddev = sqrt(local_depth_variance);
-    float blur_mix = 1.0 / (1.0 + local_depth_stddev * GTAO_BLUR_VARIANCE_BLEND_SCALE);
-
-    float filtered_ao = center_ao * GTAO_BLUR_SPATIAL_WEIGHTS[0];
-    float total_weight = GTAO_BLUR_SPATIAL_WEIGHTS[0];
-
-    for (int offset = 1; offset <= GTAO_BLUR_RADIUS; ++offset) {
-        float spatial_weight = GTAO_BLUR_SPATIAL_WEIGHTS[offset];
-
-        for (int sign = -1; sign <= 1; sign += 2) {
-            ivec2 sample_offset = ivec2(BLUR_DIRECTION * float(offset * sign));
-            ivec2 sample_pixel = clamp(pixel + sample_offset, ivec2(0), extent - ivec2(1));
-            float sample_depth = texelFetch(visibility_depth, sample_pixel, 0).r;
-            if (sample_depth == 0.0) {
-                continue;
-            }
-
-            float relative_depth_difference = abs(relative_depth_delta(center_linear_depth, sample_depth));
-            float weight = spatial_weight * compute_bilateral_weight(relative_depth_difference, local_depth_variance);
-            filtered_ao += unpack_binary_ao(sample_pixel) * weight;
-            total_weight += weight;
-        }
-    }
-
-    float blurred_ao = filtered_ao / max(total_weight, 1e-5);
-    float final_ao = mix(center_ao, blurred_ao, blur_mix);
-    imageStore(ao_output, pixel, vec4(final_ao, 0.0, 0.0, 1.0));
-}
-"#;
-
-const GTAO_BLUR_BITFIELD_Y_PASS_SOURCE: &str = r#"
-#version 460 core
-#pragma shader_stage(compute)
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_shader_image_load_formatted: enable
-
-layout(row_major) uniform;
-layout(row_major) buffer;
-
-struct View {
-    mat4 view;
-    mat4 projection;
-    mat4 view_projection;
-    mat4 inverse_view;
-    mat4 inverse_projection;
-    mat4 inverse_view_projection;
-    vec2 fov;
-    float near;
-    float far;
-};
-
-layout(set=0, binding=0, scalar) readonly buffer ViewsBuffer {
-    View views[8];
-} views_buffer;
-
-layout(set=1, binding=0) uniform sampler2D visibility_depth;
-layout(set=1, binding=1) uniform sampler2D ao_source;
-layout(set=1, binding=2, r8) uniform writeonly image2D ao_output;
-
-layout(constant_id=0) const float BLUR_DIRECTION_X = 0.0;
-layout(constant_id=1) const float BLUR_DIRECTION_Y = 1.0;
-const vec2 BLUR_DIRECTION = vec2(BLUR_DIRECTION_X, BLUR_DIRECTION_Y);
-
-layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
-
-const int GTAO_BLUR_RADIUS = 6;
-const float GTAO_BLUR_SPATIAL_WEIGHTS[7] = float[7](
-    0.1996756275,
-    0.1762131228,
-    0.1211093901,
-    0.0648251851,
-    0.0270231576,
-    0.0087731348,
-    0.0022181960
-);
-const float GTAO_BLUR_BASE_RELATIVE_SIGMA = 0.04;
-const float GTAO_BLUR_MIN_RELATIVE_SIGMA = 0.006;
-const float GTAO_BLUR_SIGMA_VARIANCE_SCALE = 24.0;
-const float GTAO_BLUR_VARIANCE_BLEND_SCALE = 56.0;
-
-float linear_view_depth(float depth) {
-    vec4 clip_space = vec4(0.0, 0.0, depth, 1.0);
-    vec4 view_space = views_buffer.views[0].inverse_projection * clip_space;
-    return max(view_space.z / view_space.w, 1e-4);
-}
-
-float relative_depth_delta(float center_linear_depth, float sample_depth) {
-    float sample_linear_depth = linear_view_depth(sample_depth);
-    return (sample_linear_depth - center_linear_depth) / max(center_linear_depth, 1e-4);
-}
-
-float compute_local_depth_variance(ivec2 pixel, ivec2 extent, float center_linear_depth) {
-    float mean = 0.0;
-    float mean_sq = 0.0;
-    float sample_count = 0.0;
-
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            ivec2 sample_pixel = clamp(pixel + ivec2(x, y), ivec2(0), extent - ivec2(1));
-            float sample_depth = texelFetch(visibility_depth, sample_pixel, 0).r;
-            if (sample_depth == 0.0) {
-                continue;
-            }
-
-            float delta = relative_depth_delta(center_linear_depth, sample_depth);
-            mean += delta;
-            mean_sq += delta * delta;
-            sample_count += 1.0;
-        }
-    }
-
-    if (sample_count <= 1.0) {
-        return 0.0;
-    }
-
-    mean /= sample_count;
-    mean_sq /= sample_count;
-    return max(mean_sq - mean * mean, 0.0);
-}
-
-float compute_bilateral_weight(float relative_depth_difference, float local_depth_variance) {
-    float local_depth_stddev = sqrt(local_depth_variance);
-    float sigma = max(
-        GTAO_BLUR_MIN_RELATIVE_SIGMA,
-        GTAO_BLUR_BASE_RELATIVE_SIGMA / (1.0 + local_depth_stddev * GTAO_BLUR_SIGMA_VARIANCE_SCALE)
-    );
-    return exp(-(relative_depth_difference * relative_depth_difference) / max(2.0 * sigma * sigma, 1e-6));
-}
-
-void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 extent = imageSize(ao_output);
-
-    if (pixel.x >= extent.x || pixel.y >= extent.y) {
-        return;
-    }
-
-    float center_depth = texelFetch(visibility_depth, pixel, 0).r;
-    if (center_depth == 0.0) {
-        imageStore(ao_output, pixel, vec4(1.0));
-        return;
-    }
-
-    float center_ao = texelFetch(ao_source, pixel, 0).r;
-    float center_linear_depth = linear_view_depth(center_depth);
-    float local_depth_variance = compute_local_depth_variance(pixel, extent, center_linear_depth);
-    float local_depth_stddev = sqrt(local_depth_variance);
-    float blur_mix = 1.0 / (1.0 + local_depth_stddev * GTAO_BLUR_VARIANCE_BLEND_SCALE);
-
-    float filtered_ao = center_ao * GTAO_BLUR_SPATIAL_WEIGHTS[0];
-    float total_weight = GTAO_BLUR_SPATIAL_WEIGHTS[0];
-
-    for (int offset = 1; offset <= GTAO_BLUR_RADIUS; ++offset) {
-        float spatial_weight = GTAO_BLUR_SPATIAL_WEIGHTS[offset];
-
-        for (int sign = -1; sign <= 1; sign += 2) {
-            ivec2 sample_offset = ivec2(BLUR_DIRECTION * float(offset * sign));
-            ivec2 sample_pixel = clamp(pixel + sample_offset, ivec2(0), extent - ivec2(1));
-            float sample_depth = texelFetch(visibility_depth, sample_pixel, 0).r;
-            if (sample_depth == 0.0) {
-                continue;
-            }
-
-            float relative_depth_difference = abs(relative_depth_delta(center_linear_depth, sample_depth));
-            float weight = spatial_weight * compute_bilateral_weight(relative_depth_difference, local_depth_variance);
-            filtered_ao += texelFetch(ao_source, sample_pixel, 0).r * weight;
-            total_weight += weight;
-        }
-    }
-
-    float blurred_ao = filtered_ao / max(total_weight, 1e-5);
-    float final_ao = mix(center_ao, blurred_ao, blur_mix);
-    imageStore(ao_output, pixel, vec4(final_ao, 0.0, 0.0, 1.0));
-}
-"#;
 
 #[derive(Clone)]
 pub struct VisibilityPass {
@@ -1284,15 +772,30 @@ impl GtaoPass {
 			GTAO_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
 		];
 		let gtao_shader = if GTAO_USE_BITFIELD_BINARY_IMPL {
-			let shader_artifact = glsl::compile(GTAO_BITFIELD_PASS_SOURCE, "GTAO Pass Compute Shader").unwrap();
-			device
-				.create_shader(
-					Some("GTAO Pass Compute Shader"),
-					ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-					ghi::ShaderTypes::Compute,
-					gtao_shader_bindings,
-				)
-				.expect("Failed to create shader")
+			let gtao_shader = get_gtao_bitfield_shader();
+			if gtao_shader.language().is_glsl() {
+				let artifact = glsl::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
+				device
+					.create_shader(
+						Some("GTAO Pass Compute Shader"),
+						ghi::shader::Sources::SPIRV(artifact.borrow().into()),
+						ghi::ShaderTypes::Compute,
+						gtao_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			} else {
+				device
+					.create_shader(
+						Some("GTAO Pass Compute Shader"),
+						ghi::shader::Sources::MTL {
+							source: gtao_shader.source(),
+							entry_point: gtao_shader.entry_point(),
+						},
+						ghi::ShaderTypes::Compute,
+						gtao_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			}
 		} else {
 			let gtao_shader = get_gtao_shader();
 			if gtao_shader.language().is_glsl() {
@@ -1333,15 +836,30 @@ impl GtaoPass {
 			GTAO_BLUR_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
 		];
 		let blur_x_shader = if GTAO_USE_BITFIELD_BINARY_IMPL {
-			let blur_x_shader_artifact = glsl::compile(GTAO_BLUR_BITFIELD_X_PASS_SOURCE, "GTAO Blur X Compute Shader").unwrap();
-			device
-				.create_shader(
-					Some("GTAO Blur X Compute Shader"),
-					ghi::shader::Sources::SPIRV(blur_x_shader_artifact.borrow().into()),
-					ghi::ShaderTypes::Compute,
-					blur_shader_bindings,
-				)
-				.expect("Failed to create shader")
+			let blur_shader = get_gtao_bitfield_blur_x_shader();
+			if blur_shader.language().is_glsl() {
+				let artifact = glsl::compile(blur_shader.source(), "GTAO Blur X Compute Shader").unwrap();
+				device
+					.create_shader(
+						Some("GTAO Blur X Compute Shader"),
+						ghi::shader::Sources::SPIRV(artifact.borrow().into()),
+						ghi::ShaderTypes::Compute,
+						blur_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			} else {
+				device
+					.create_shader(
+						Some("GTAO Blur X Compute Shader"),
+						ghi::shader::Sources::MTL {
+							source: blur_shader.source(),
+							entry_point: blur_shader.entry_point(),
+						},
+						ghi::ShaderTypes::Compute,
+						blur_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			}
 		} else {
 			let blur_shader = get_gtao_blur_shader();
 			if blur_shader.language().is_glsl() {
@@ -1369,15 +887,30 @@ impl GtaoPass {
 			}
 		};
 		let blur_y_shader = if GTAO_USE_BITFIELD_BINARY_IMPL {
-			let blur_y_shader_artifact = glsl::compile(GTAO_BLUR_BITFIELD_Y_PASS_SOURCE, "GTAO Blur Y Compute Shader").unwrap();
-			device
-				.create_shader(
-					Some("GTAO Blur Y Compute Shader"),
-					ghi::shader::Sources::SPIRV(blur_y_shader_artifact.borrow().into()),
-					ghi::ShaderTypes::Compute,
-					blur_shader_bindings,
-				)
-				.expect("Failed to create shader")
+			let blur_shader = get_gtao_blur_shader();
+			if blur_shader.language().is_glsl() {
+				let artifact = glsl::compile(blur_shader.source(), "GTAO Blur Y Compute Shader").unwrap();
+				device
+					.create_shader(
+						Some("GTAO Blur Y Compute Shader"),
+						ghi::shader::Sources::SPIRV(artifact.borrow().into()),
+						ghi::ShaderTypes::Compute,
+						blur_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			} else {
+				device
+					.create_shader(
+						Some("GTAO Blur Y Compute Shader"),
+						ghi::shader::Sources::MTL {
+							source: blur_shader.source(),
+							entry_point: blur_shader.entry_point(),
+						},
+						ghi::ShaderTypes::Compute,
+						blur_shader_bindings,
+					)
+					.expect("Failed to create shader")
+			}
 		} else {
 			let blur_shader = get_gtao_blur_shader();
 			if blur_shader.language().is_glsl() {
@@ -1727,11 +1260,18 @@ mod tests {
 	#[test]
 	fn gtao_shader_compiles() {
 		if super::GTAO_USE_BITFIELD_BINARY_IMPL {
-			resource_management::glsl::compile(super::GTAO_BITFIELD_PASS_SOURCE, "GTAO Pass Compute Shader").unwrap();
-			return;
+			let gtao_shader = super::get_gtao_bitfield_shader();
+			if gtao_shader.language().is_glsl() {
+				resource_management::glsl::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
+				return;
+			}
 		}
 
-		let gtao_shader = super::get_gtao_shader();
+		let gtao_shader = if super::GTAO_USE_BITFIELD_BINARY_IMPL {
+			super::get_gtao_bitfield_shader()
+		} else {
+			super::get_gtao_shader()
+		};
 		if gtao_shader.language().is_glsl() {
 			resource_management::glsl::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
 			return;
@@ -1776,8 +1316,12 @@ mod tests {
 	#[test]
 	fn gtao_blur_shader_compiles() {
 		if super::GTAO_USE_BITFIELD_BINARY_IMPL {
-			resource_management::glsl::compile(super::GTAO_BLUR_BITFIELD_X_PASS_SOURCE, "GTAO Blur X Compute Shader").unwrap();
-			resource_management::glsl::compile(super::GTAO_BLUR_BITFIELD_Y_PASS_SOURCE, "GTAO Blur Y Compute Shader").unwrap();
+			resource_management::glsl::compile(
+				super::get_gtao_bitfield_blur_x_shader().source(),
+				"GTAO Blur X Compute Shader",
+			)
+			.unwrap();
+			resource_management::glsl::compile(super::get_gtao_blur_shader().source(), "GTAO Blur Y Compute Shader").unwrap();
 			return;
 		}
 

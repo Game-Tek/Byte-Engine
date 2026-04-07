@@ -184,6 +184,11 @@ impl Node {
 			vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
 			vec4f32.clone(),
 		);
+		let fetch_u32_intrinsic = builtin_intrinsic(
+			"fetch_u32",
+			vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
+			u32_t.clone(),
+		);
 		let dot_intrinsic = builtin_intrinsic(
 			"dot",
 			vec![("left", vec4f32.clone()), ("right", vec4f32.clone())],
@@ -293,6 +298,15 @@ impl Node {
 			],
 			void.clone(),
 		);
+		let image_atomic_or_intrinsic = builtin_intrinsic(
+			"image_atomic_or",
+			vec![
+				("image", texture_2d.clone()),
+				("coord", vec2u32.clone()),
+				("value", u32_t.clone()),
+			],
+			u32_t.clone(),
+		);
 
 		let builtins = vec![
 			void,
@@ -313,6 +327,7 @@ impl Node {
 			array_texture_2d,
 			sample_intrinsic,
 			fetch_intrinsic,
+			fetch_u32_intrinsic,
 			dot_intrinsic,
 			cross_intrinsic,
 			length_intrinsic,
@@ -349,6 +364,7 @@ impl Node {
 			image_size_intrinsic,
 			guard_image_bounds_intrinsic,
 			write_intrinsic,
+			image_atomic_or_intrinsic,
 		];
 
 		let mut root = Node::scope("root".to_string());
@@ -2371,7 +2387,12 @@ color: In<vec4f>;
 		let Nodes::Expression(Expressions::Accessor { left, right }) = right.node() else {
 			panic!("Expected outer accessor");
 		};
-		assert!(matches!(right.borrow().node(), Nodes::Expression(Expressions::Literal { value }) if value == "1"));
+		assert!(matches!(
+			right.borrow().node(),
+			Nodes::Expression(Expressions::Expression { elements })
+				if elements.len() == 1
+					&& matches!(elements[0].borrow().node(), Nodes::Expression(Expressions::Literal { value }) if value == "1")
+		));
 		assert!(matches!(
 			left.borrow().node(),
 			Nodes::Expression(Expressions::Accessor { .. })

@@ -1354,6 +1354,11 @@ impl Compiler {
 	) -> Result<usize, VmError> {
 		let borrowed = expression.borrow();
 		match borrowed.node() {
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+				let inner = elements[0].clone();
+				drop(borrowed);
+				self.compile_value_expression(&inner, expected_type, descriptor_layouts)
+			}
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
 				let function = function.clone();
 				let parameters = parameters.clone();
@@ -1995,6 +2000,11 @@ impl Compiler {
 	) -> Result<ValueType, VmError> {
 		let borrowed = expression.borrow();
 		match borrowed.node() {
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+				let inner = elements[0].clone();
+				drop(borrowed);
+				self.infer_expression_type(&inner, expected_type, descriptor_layouts)
+			}
 			Nodes::Expression(Expressions::Literal { .. }) => {
 				if supports_scalar_broadcast(expected_type) {
 					Ok(ValueType::F32)

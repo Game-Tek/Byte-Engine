@@ -216,6 +216,18 @@ impl GLSLShaderGenerator {
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(")).x");
 			}
+			"fetch_u32" => {
+				string.push_str("texelFetch(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				string.push_str("ivec2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str("),0).x");
+			}
 			"fetch" => {
 				string.push_str("texelFetch(");
 				self.emit_node_string(string, &arguments[0]);
@@ -257,6 +269,25 @@ impl GLSLShaderGenerator {
 				self.emit_node_string(string, &arguments[2]);
 				string.push(')');
 			}
+			"image_atomic_or" => {
+				string.push_str("imageAtomicOr(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				string.push_str("ivec2(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				self.emit_node_string(string, &arguments[2]);
+				string.push(')');
+			}
 			"guard_image_bounds" => {
 				string.push_str("if(");
 				self.emit_node_string(string, &arguments[1]);
@@ -279,9 +310,7 @@ impl GLSLShaderGenerator {
 
 	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
 		match node.borrow().node() {
-			besl::Nodes::Expression(
-				besl::Expressions::Operator { .. } | besl::Expressions::Accessor { .. } | besl::Expressions::Expression { .. },
-			) => {
+			besl::Nodes::Expression(besl::Expressions::Operator { .. } | besl::Expressions::Expression { .. }) => {
 				string.push('(');
 				self.emit_node_string(string, node);
 				string.push(')');
@@ -579,7 +608,7 @@ impl GLSLShaderGenerator {
 					) && left.borrow().node().is_indexable()
 					{
 						string.push('[');
-						self.emit_wrapped_expression(string, &right);
+						self.emit_node_string(string, &right);
 						string.push(']');
 					} else {
 						string.push('.');
@@ -650,6 +679,7 @@ impl GLSLShaderGenerator {
 					},
 					besl::BindingTypes::CombinedImageSampler { format } => match format.as_str() {
 						"ArrayTexture2D" => "uniform sampler2DArray",
+						"r8ui" | "r16ui" | "r32ui" => "uniform usampler2D",
 						_ => "uniform sampler2D",
 					},
 				};
@@ -1148,7 +1178,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "uint32_t packed=1<<8|2&255;");
+		assert_string_contains!(shader, "uint32_t packed=((1<<8)|(2&255));");
 	}
 
 	#[test]
@@ -1171,7 +1201,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=i+1){if(i>=2){continue;};};");
+		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=(i+1)){if(i>=2){continue;};};");
 	}
 
 	#[test]

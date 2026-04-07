@@ -58,9 +58,7 @@ impl MSLShaderGenerator {
 
 	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
 		match node.borrow().node() {
-			besl::Nodes::Expression(
-				besl::Expressions::Operator { .. } | besl::Expressions::Accessor { .. } | besl::Expressions::Expression { .. },
-			) => {
+			besl::Nodes::Expression(besl::Expressions::Operator { .. } | besl::Expressions::Expression { .. }) => {
 				string.push('(');
 				self.emit_node_string(string, node);
 				string.push(')');
@@ -411,6 +409,7 @@ impl MSLShaderGenerator {
 			besl::BindingTypes::CombinedImageSampler { format } => {
 				let texture_type = match format.as_str() {
 					"ArrayTexture2D" => "texture2d_array<float>",
+					"r8ui" | "r16ui" | "r32ui" => "texture2d<uint>",
 					_ => "texture2d<float>",
 				};
 				string.push_str(texture_type);
@@ -1495,7 +1494,7 @@ impl MSLShaderGenerator {
 					) && left.borrow().node().is_indexable()
 					{
 						string.push('[');
-						self.emit_wrapped_expression(string, &right);
+						self.emit_node_string(string, &right);
 						string.push(']');
 					} else {
 						string.push('.');
@@ -1636,6 +1635,7 @@ impl MSLShaderGenerator {
 					besl::BindingTypes::CombinedImageSampler { format } => {
 						let texture_type = match format.as_str() {
 							"ArrayTexture2D" => "texture2d_array<float>",
+							"r8ui" | "r16ui" | "r32ui" => "texture2d<uint>",
 							_ => "texture2d<float>",
 						};
 
@@ -2360,7 +2360,7 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "uint packed=1<<8|2&255;");
+		assert_string_contains!(shader, "uint packed=((1<<8)|(2&255));");
 	}
 
 	#[test]
@@ -2383,7 +2383,7 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "for(uint i=0;i<=4;i=i+1){if(i>=2){continue;};};");
+		assert_string_contains!(shader, "for(uint i=0;i<=4;i=(i+1)){if(i>=2){continue;};};");
 	}
 
 	#[test]
@@ -2425,7 +2425,7 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "constant float WEIGHTS[3]={0.5,0.25,0.125};");
+		assert_string_contains!(shader, "constant float WEIGHTS[3] = {0.5,0.25,0.125};");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
 	}
 

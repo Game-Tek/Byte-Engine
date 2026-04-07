@@ -1032,7 +1032,8 @@ fn parse_index_accessor<'i, 'a: 'i>(
 ) -> ExpressionParserResult<'i, 'a> {
 	let _ = iterator.next_str("[")?;
 	expressions.push(Atoms::Accessor);
-	let (expressions, mut iterator) = execute_expression_parsers(&[parse_rvalue], iterator, expressions)?;
+	let (inner_expressions, mut iterator) = execute_expression_parsers(&[parse_rvalue], iterator, Vec::new())?;
+	expressions.push(Atoms::GroupedExpression(inner_expressions));
 	iterator.next_str("]")?;
 
 	let lexers = vec![parse_operator, parse_accessor, parse_index_accessor];
@@ -2040,7 +2041,12 @@ main: fn () -> void {
 			if let Nodes::Expression(Expressions::Operator { right, .. }) = &statement.node {
 				if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
 					assert!(matches!(left.node, Nodes::Expression(Expressions::Member { name }) if name == "values"));
-					assert!(matches!(right.node, Nodes::Expression(Expressions::Literal { value }) if value == "1"));
+					assert!(matches!(
+						right.node,
+						Nodes::Expression(Expressions::Expression(ref elements))
+							if elements.len() == 1
+								&& matches!(elements[0].node, Nodes::Expression(Expressions::Literal { value }) if value == "1")
+					));
 				} else {
 					panic!("Not an accessor");
 				}

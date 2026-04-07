@@ -33,9 +33,7 @@ impl HLSLShaderGenerator {
 impl HLSLShaderGenerator {
 	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
 		match node.borrow().node() {
-			besl::Nodes::Expression(
-				besl::Expressions::Operator { .. } | besl::Expressions::Accessor { .. } | besl::Expressions::Expression { .. },
-			) => {
+			besl::Nodes::Expression(besl::Expressions::Operator { .. } | besl::Expressions::Expression { .. }) => {
 				string.push('(');
 				self.emit_node_string(string, node);
 				string.push(')');
@@ -110,6 +108,21 @@ impl HLSLShaderGenerator {
 				string.push_str(".Load(int3(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(", 0))");
+			}
+			"fetch_u32" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".Load(int3(");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", 0)).x");
+			}
+			"image_atomic_or" => {
+				string.push_str("({ uint _previous; InterlockedOr(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push('[');
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str("], ");
+				self.emit_node_string(string, &arguments[2]);
+				string.push_str(", _previous); _previous; })");
 			}
 			_ => {
 				for element in elements {
@@ -473,7 +486,7 @@ impl HLSLShaderGenerator {
 					self.emit_node_string(string, &left);
 					if left.borrow().node().is_indexable() {
 						string.push('[');
-						self.emit_wrapped_expression(string, &right);
+						self.emit_node_string(string, &right);
 						string.push(']');
 					} else {
 						string.push('.');
@@ -649,7 +662,10 @@ impl HLSLShaderGenerator {
 						};
 
 						string.push_str(texture_type);
-						string.push_str("<float4>");
+						string.push_str(match format.as_str() {
+							"r8ui" | "r16ui" | "r32ui" => "<uint>",
+							_ => "<float4>",
+						});
 						string.push(' ');
 						string.push_str(&name);
 
@@ -1082,7 +1098,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "uint32_t packed=1<<8|2&255;");
+		assert_string_contains!(shader, "uint32_t packed=((1<<8)|(2&255));");
 	}
 
 	#[test]
@@ -1105,7 +1121,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=i+1){if(i>=2){continue;};};");
+		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=(i+1)){if(i>=2){continue;};};");
 	}
 
 	#[test]

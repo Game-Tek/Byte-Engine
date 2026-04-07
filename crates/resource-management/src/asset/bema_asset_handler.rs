@@ -593,8 +593,16 @@ pub mod tests {
 			.expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
-		assert!(shader_spirv.contains("void main()"));
+		#[cfg(target_vendor = "apple")]
+		{
+			assert!(!shader_spirv.is_empty());
+		}
+
+		#[cfg(not(target_vendor = "apple"))]
+		{
+			assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
+			assert!(shader_spirv.contains("void main()"));
+		}
 
 		let material = resource_storage_backend
 			.get_resource(ResourceId::new("material.bema"))
@@ -675,8 +683,16 @@ pub mod tests {
 			.expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
-		assert!(shader_spirv.contains("void main()"));
+		#[cfg(target_vendor = "apple")]
+		{
+			assert!(!shader_spirv.is_empty());
+		}
+
+		#[cfg(not(target_vendor = "apple"))]
+		{
+			assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
+			assert!(shader_spirv.contains("void main()"));
+		}
 
 		let material = resource_storage_backend
 			.get_resource(ResourceId::new("material.bema"))

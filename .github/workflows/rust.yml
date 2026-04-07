@@ -13,13 +13,13 @@ jobs:
   build-test:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, blacksmith-32vcpu-windows-2025]
         profile: [debug, release]
         feature: [default, headless]
         include:
           - os: ubuntu-latest
             platform: linux
-          - os: windows-latest
+          - os: blacksmith-32vcpu-windows-2025
             platform: windows
     runs-on: ${{ matrix.os }}
     steps:

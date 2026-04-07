@@ -23,7 +23,7 @@
     "vite": "^7.1.7"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.13.6",
+    "@cloudflare/vite-plugin": "^1.21.1",
     "@tailwindcss/vite": "^4.1.13",
     "@types/mdx": "^2.0.13",
     "@types/node": "^24.5.2",
@@ -33,6 +33,6 @@
     "tailwindcss": "^4.1.13",
     "typescript": "^5.9.2",
     "vite-tsconfig-paths": "^5.1.4",
-    "wrangler": "^4.40.1"
+    "wrangler": "^4.59.3"
   }
 }

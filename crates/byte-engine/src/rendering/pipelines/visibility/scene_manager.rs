@@ -2,7 +2,6 @@ use ::core::slice::SlicePattern;
 use std::borrow::Borrow;
 use std::cell::{OnceCell, RefCell};
 use std::collections::VecDeque;
-use std::mem::transmute;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::OnceLock;
@@ -38,6 +37,7 @@ use log::{error, warn};
 use math::{mat::MatInverse as _, Matrix4, Vector3};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
+use resource_management::msl_shader_generator::MSLShaderGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;
 use resource_management::resources::material::Variant as ResourceVariant;
@@ -813,23 +813,55 @@ impl VisibilityWorldRenderDomain {
 
 				let main_node = root.get_main().ok_or(())?;
 
-				let shader = SPIRVShaderGenerator::new()
-					.generate(&ShaderGenerationSettings::compute(Extent::line(128)), &main_node)
-					.map_err(|e| {
+				let settings = ShaderGenerationSettings::compute(Extent::line(128));
+
+				let fshader = if cfg!(target_os = "macos") {
+					let mut source_generator = MSLShaderGenerator::new();
+					let source = source_generator.generate(&settings, &main_node).map_err(|e| {
 						log::error!("{}", e);
 						()
 					})?;
+					let reflected_shader = SPIRVShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {
+						log::error!("{}", e);
+						()
+					})?;
+					let bindings = reflected_shader
+						.bindings()
+						.iter()
+						.map(map_shader_binding_to_shader_binding_descriptor)
+						.collect::<Vec<_>>();
 
-				let bindings = shader.bindings().iter().map(map_shader_binding_to_shader_binding_descriptor);
+					device
+						.create_shader(
+							None,
+							ghi::shader::Sources::MTL {
+								source: source.as_str(),
+								entry_point: "besl_main",
+							},
+							ghi::ShaderTypes::Compute,
+							bindings,
+						)
+						.unwrap()
+				} else {
+					let shader = SPIRVShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {
+						log::error!("{}", e);
+						()
+					})?;
+					let bindings = shader
+						.bindings()
+						.iter()
+						.map(map_shader_binding_to_shader_binding_descriptor)
+						.collect::<Vec<_>>();
 
-				let fshader = device
-					.create_shader(
-						None,
-						ghi::shader::Sources::SPIRV(&shader.binary()),
-						ghi::ShaderTypes::Compute,
-						bindings,
-					)
-					.unwrap();
+					device
+						.create_shader(
+							None,
+							ghi::shader::Sources::SPIRV(shader.binary()),
+							ghi::ShaderTypes::Compute,
+							bindings,
+						)
+						.unwrap()
+				};
 
 				let pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 					&[

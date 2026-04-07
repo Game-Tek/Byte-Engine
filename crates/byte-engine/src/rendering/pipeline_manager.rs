@@ -30,6 +30,89 @@ impl PipelineManager {
 		}
 	}
 
+	fn load_shader_handles(
+		&self,
+		material: &mut Material,
+		device: &mut ghi::implementation::Frame,
+	) -> Result<Vec<(ghi::ShaderHandle, ghi::ShaderTypes)>, ()> {
+		material
+			.shaders_mut()
+			.iter_mut()
+			.map(|shader: &mut Reference<Shader>| {
+				if let Entry::Fresh((old_shader, old_shader_type)) = self.shaders.read().entry(&shader.id, shader.get_hash()) {
+					return Ok((*old_shader, *old_shader_type));
+				}
+
+				let shader_binding_descriptors = shader
+					.resource()
+					.interface
+					.bindings
+					.iter()
+					.map(|binding| {
+						ghi::shader::BindingDescriptor::new(
+							binding.set,
+							binding.binding,
+							if binding.read {
+								ghi::AccessPolicies::READ
+							} else {
+								ghi::AccessPolicies::empty()
+							} | if binding.write {
+								ghi::AccessPolicies::WRITE
+							} else {
+								ghi::AccessPolicies::empty()
+							},
+						)
+					})
+					.collect::<Vec<_>>();
+
+				let stage = match shader.resource().stage {
+					ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
+					ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
+					ShaderTypes::Compute => ghi::ShaderTypes::Compute,
+					ShaderTypes::Fragment => ghi::ShaderTypes::Fragment,
+					ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
+					ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
+					ShaderTypes::Miss => ghi::ShaderTypes::Miss,
+					ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
+					ShaderTypes::Callable => ghi::ShaderTypes::Callable,
+					ShaderTypes::Task => ghi::ShaderTypes::Task,
+					ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
+				};
+
+				let read_target = shader.into();
+				let load_request = shader.load(read_target).unwrap();
+
+				let buffer = if let Some(b) = load_request.buffer() {
+					b
+				} else {
+					return Err(());
+				};
+
+				let new_shader = device
+					.create_shader(
+						Some(shader.id()),
+						if ghi::implementation::USES_METAL {
+							ghi::shader::Sources::MTLB {
+								binary: buffer,
+								entry_point: "besl_main",
+							}
+						} else {
+							ghi::shader::Sources::SPIRV(buffer)
+						},
+						stage,
+						shader_binding_descriptors,
+					)
+					.unwrap();
+
+				self.shaders
+					.write()
+					.insert(shader.id().to_string(), shader.get_hash(), (new_shader, stage));
+
+				Ok((new_shader, stage))
+			})
+			.collect::<Result<Vec<_>, ()>>()
+	}
+
 	pub fn load_material(
 		&self,
 		descriptor_set_template_handles: &[ghi::DescriptorSetTemplateHandle],
@@ -47,79 +130,7 @@ impl PipelineManager {
 		let r: Result<&ghi::PipelineHandle, ()> = v.get_or_try_init(|| {
 			let material = reference.resource_mut();
 
-			let shaders = material
-				.shaders_mut()
-				.iter_mut()
-				.map(|shader: &mut Reference<Shader>| {
-					let hash = shader.get_hash();
-
-					if let Entry::Fresh((old_shader, old_shader_type)) =
-						self.shaders.read().entry(&shader.id, shader.get_hash())
-					{
-						return Ok((*old_shader, *old_shader_type)); // If the shader has not changed, return the old shader
-					}
-
-					let shader_binding_descriptors = shader
-						.resource()
-						.interface
-						.bindings
-						.iter()
-						.map(|binding| {
-							ghi::shader::BindingDescriptor::new(
-								binding.set,
-								binding.binding,
-								if binding.read {
-									ghi::AccessPolicies::READ
-								} else {
-									ghi::AccessPolicies::empty()
-								} | if binding.write {
-									ghi::AccessPolicies::WRITE
-								} else {
-									ghi::AccessPolicies::empty()
-								},
-							)
-						})
-						.collect::<Vec<_>>();
-
-					let stage = match shader.resource().stage {
-						ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
-						ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
-						ShaderTypes::Compute => ghi::ShaderTypes::Compute,
-						ShaderTypes::Fragment => ghi::ShaderTypes::Fragment,
-						ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
-						ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
-						ShaderTypes::Miss => ghi::ShaderTypes::Miss,
-						ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
-						ShaderTypes::Callable => ghi::ShaderTypes::Callable,
-						ShaderTypes::Task => ghi::ShaderTypes::Task,
-						ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
-					};
-
-					let read_target = shader.into();
-					let load_request = shader.load(read_target).unwrap();
-
-					let buffer = if let Some(b) = load_request.buffer() {
-						b
-					} else {
-						return Err(());
-					};
-
-					let new_shader = device
-						.create_shader(
-							Some(shader.id()),
-							ghi::shader::Sources::SPIRV(buffer),
-							stage,
-							shader_binding_descriptors,
-						)
-						.unwrap();
-
-					self.shaders
-						.write()
-						.insert(shader.id().to_string(), shader.get_hash(), (new_shader, stage));
-
-					Ok((new_shader, stage))
-				})
-				.collect::<Result<Vec<_>, ()>>()?;
+			let shaders = self.load_shader_handles(material, device)?;
 
 			let pipeline_handle = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 				descriptor_set_template_handles,
@@ -149,13 +160,7 @@ impl PipelineManager {
 		};
 
 		let r: Result<&ghi::PipelineHandle, ()> = v.get_or_try_init(|| {
-			self.load_material(
-				descriptor_set_template_handles,
-				push_constant_ranges,
-				&mut reference.resource_mut().material,
-				device,
-			)
-			.unwrap();
+			self.load_shader_handles(reference.resource_mut().material.resource_mut(), device)?;
 
 			let variant = reference.resource_mut();
 

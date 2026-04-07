@@ -224,8 +224,16 @@ impl VisibilityShaderScope {
 				Node::parameter("primitive_index", "u32"),
 			],
 			"u32",
-			vec![Node::glsl(
-				"return mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */",
+			vec![Node::raw_code(
+				Some(
+					"return mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */"
+						.into(),
+				),
+				None,
+				Some(
+					"return mesh.base_vertex_index + set0.vertex_indices->vertex_indices[mesh.base_primitive_index + uint(meshlet.primitive_offset) + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */"
+						.into(),
+				),
 				&["vertex_indices"],
 				&[],
 			)],
@@ -647,7 +655,12 @@ struct PrimitiveOutput {
 					world_space_position,
 					view_space_position,
 					surface_normal,
-					pcf_offset
+					pcf_offset,
+					gid,
+					push_constant,
+					set0,
+					set1,
+					set2
 				);
 			}
 
@@ -757,7 +770,8 @@ struct PrimitiveOutput {
 			}
 
 			uv = clamp(uv, float2(0.0), float2(1.0));
-			return cubemap.sample_level(ibl_cubemap_sampler, uv, uint(face), 0.0).rgb;"
+			constexpr sampler ibl_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
+			return cubemap.sample(ibl_sampler, uv, uint(face), level(0.0)).rgb;"
 						.into(),
 				),
 				&[],
@@ -927,15 +941,15 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		Material material = set2.materials->materials[push_constant.material_id];
 
 		uint primitive_indices[3] = {
-			set0.primitive_indices->primitive_indices[(mesh.base_triangle_index + u32(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 0],
-			set0.primitive_indices->primitive_indices[(mesh.base_triangle_index + u32(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 1],
-			set0.primitive_indices->primitive_indices[(mesh.base_triangle_index + u32(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 2]
+			set0.primitive_indices->primitive_indices[(mesh.base_triangle_index + uint(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 0],
+			set0.primitive_indices->primitive_indices[(mesh.base_triangle_index + uint(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 1],
+			set0.primitive_indices->primitive_indices[(mesh.base_triangle_index + uint(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 2]
 		};
 
 		uint vertex_indices[3] = {
-			compute_vertex_index(mesh, meshlet, primitive_indices[0]),
-			compute_vertex_index(mesh, meshlet, primitive_indices[1]),
-			compute_vertex_index(mesh, meshlet, primitive_indices[2])
+			compute_vertex_index(mesh, meshlet, primitive_indices[0], gid, push_constant, set0, set1, set2),
+			compute_vertex_index(mesh, meshlet, primitive_indices[1], gid, push_constant, set0, set1, set2),
+			compute_vertex_index(mesh, meshlet, primitive_indices[2], gid, push_constant, set0, set1, set2)
 		};
 
 		float4 model_space_vertex_positions[3] = {
@@ -1063,7 +1077,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 			if (light.type == 68) {
 				float4 view_space_surface_position = view.view * float4(world_space_surface_position, 1.0);
-				float c_occlusion_factor  = sample_shadow(set2.depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal);
+				float c_occlusion_factor  = sample_shadow(set2.depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal, gid, push_constant, set0, set1, set2);
 
 				occlusion_factor = c_occlusion_factor;
 
@@ -1284,9 +1298,16 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 #[cfg(test)]
 mod tests {
 	use resource_management::asset::bema_asset_handler::ProgramGenerator;
+	use resource_management::{
+		msl_shader_generator::MSLShaderGenerator,
+		shader_generator::{ShaderGenerationSettings, ShaderGenerator as _},
+		spirv_shader_generator::SPIRVShaderGenerator,
+	};
 	use utils::json;
+	use utils::Extent;
 
 	use crate::besl;
+	use crate::rendering::map_shader_binding_to_shader_binding_descriptor;
 
 	#[test]
 	fn write_to_albedo() {
@@ -1328,6 +1349,60 @@ mod tests {
 		println!("{:#?}", shader);
 
 		// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
+	}
+
+	#[test]
+	fn material_evaluation_msl_source_compiles_for_metal() {
+		use ghi::device::DeviceCreate as _;
+
+		if !ghi::implementation::USES_METAL {
+			return;
+		}
+
+		let material = json::object! {
+			"variables": []
+		};
+
+		let shader_source = "main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }";
+		let shader_node = besl::parse(shader_source).unwrap();
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = shader_generator.transform(shader_node, &material);
+		let root = besl::lex(shader).unwrap();
+		let main_node = root.get_main().unwrap();
+		let settings = ShaderGenerationSettings::compute(Extent::line(128));
+		let mut source_generator = MSLShaderGenerator::new();
+		let source = source_generator.generate(&settings, &main_node).unwrap();
+		let reflected_shader = SPIRVShaderGenerator::new().generate(&settings, &main_node).unwrap();
+		let bindings = reflected_shader
+			.bindings()
+			.iter()
+			.map(map_shader_binding_to_shader_binding_descriptor)
+			.collect::<Vec<_>>();
+
+		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
+			.expect("Expected a Metal instance for the material evaluation shader test");
+		let mut queue = None;
+		let mut device = instance
+			.create_device(
+				ghi::device::Features::new(),
+				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
+			)
+			.expect("Expected a Metal device for the material evaluation shader test");
+
+		let shader_handle = device.create_shader(
+			Some("Material Evaluation Shader"),
+			ghi::shader::Sources::MTL {
+				source: source.as_str(),
+				entry_point: "besl_main",
+			},
+			ghi::ShaderTypes::Compute,
+			bindings,
+		);
+
+		assert!(
+			shader_handle.is_ok(),
+			"Expected the material evaluation MSL source to compile for Metal"
+		);
 	}
 
 	// #[test]

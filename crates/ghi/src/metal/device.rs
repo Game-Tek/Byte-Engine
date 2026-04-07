@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::{
+	fs,
+	time::{SystemTime, UNIX_EPOCH},
+};
 
 use ::utils::hash::{HashMap, HashSet};
 use objc2::ClassType;
@@ -824,6 +828,27 @@ impl Device {
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let (spirv, metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
 			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None, None, None),
+			crate::shader::Sources::MTLB { binary, entry_point } => {
+				let temporary_name = format!(
+					"byte_engine_{}_{}.metallib",
+					entry_point,
+					SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| ())?.as_nanos()
+				);
+				let metallib_path = std::env::temp_dir().join(temporary_name);
+				fs::write(&metallib_path, binary).map_err(|_| ())?;
+				let metallib_path_string = metallib_path.to_string_lossy().into_owned();
+				let metallib_path = NSString::from_str(&metallib_path_string);
+				let library = self.device.newLibraryWithFile_error(&metallib_path).map_err(|error| {
+					eprintln!(
+						"Metal shader library load failed: {}",
+						error.localizedDescription().to_string()
+					);
+					()
+				})?;
+				let _ = fs::remove_file(std::path::Path::new(&metallib_path_string));
+
+				(None, Some(library), Some(entry_point.to_owned()), None)
+			}
 			crate::shader::Sources::MTL { source, entry_point } => {
 				let threadgroup_size = match stage {
 					crate::ShaderTypes::Task | crate::ShaderTypes::Mesh => parse_threadgroup_size_metadata(source),
@@ -880,10 +905,6 @@ impl Device {
 		let library = shader.metal_library.as_ref()?;
 		let entry_point = shader.metal_entry_point.as_ref()?;
 		let entry_point = NSString::from_str(entry_point);
-
-		if shader_parameter.specialization_map.is_empty() {
-			return library.newFunctionWithName(&entry_point);
-		}
 
 		let constant_values = mtl::MTLFunctionConstantValues::new();
 

@@ -14,6 +14,7 @@ pub struct MSLShaderGenerator {
 	minified: bool,
 	compute_binding_mode: ComputeBindingMode,
 	in_compute_body: bool,
+	compute_stage_context: Option<ComputeStageContext>,
 	mesh_stage_context: Option<MeshStageContext>,
 }
 
@@ -33,6 +34,12 @@ struct MeshStageContext {
 	maximum_primitives: u32,
 }
 
+#[derive(Clone, Debug)]
+struct ComputeStageContext {
+	binding_sets: Vec<u32>,
+	has_push_constant: bool,
+}
+
 impl ShaderGenerator for MSLShaderGenerator {}
 
 impl MSLShaderGenerator {
@@ -42,6 +49,7 @@ impl MSLShaderGenerator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 			compute_binding_mode: ComputeBindingMode::ArgumentBuffers,
 			in_compute_body: false,
+			compute_stage_context: None,
 			mesh_stage_context: None,
 		}
 	}
@@ -65,6 +73,96 @@ impl MSLShaderGenerator {
 			}
 			_ => self.emit_node_string(string, node),
 		}
+	}
+
+	fn function_requires_compute_context(&self, function_node: &besl::NodeReference) -> bool {
+		fn node_requires_compute_context(node: &besl::NodeReference, visited: &mut Vec<besl::NodeReference>) -> bool {
+			if visited.iter().any(|visited_node| visited_node == node) {
+				return false;
+			}
+
+			visited.push(node.clone());
+
+			let result = match node.borrow().node() {
+				besl::Nodes::Binding { .. } | besl::Nodes::PushConstant { .. } => true,
+				besl::Nodes::Scope { children, .. } => {
+					children.iter().any(|child| node_requires_compute_context(child, visited))
+				}
+				besl::Nodes::Function {
+					params,
+					return_type,
+					statements,
+					..
+				} => {
+					params.iter().any(|param| node_requires_compute_context(param, visited))
+						|| node_requires_compute_context(return_type, visited)
+						|| statements
+							.iter()
+							.any(|statement| node_requires_compute_context(statement, visited))
+				}
+				besl::Nodes::Conditional { condition, statements } => {
+					node_requires_compute_context(condition, visited)
+						|| statements
+							.iter()
+							.any(|statement| node_requires_compute_context(statement, visited))
+				}
+				besl::Nodes::ForLoop {
+					initializer,
+					condition,
+					update,
+					statements,
+				} => {
+					node_requires_compute_context(initializer, visited)
+						|| node_requires_compute_context(condition, visited)
+						|| node_requires_compute_context(update, visited)
+						|| statements
+							.iter()
+							.any(|statement| node_requires_compute_context(statement, visited))
+				}
+				besl::Nodes::Struct { fields, .. } => fields.iter().any(|field| node_requires_compute_context(field, visited)),
+				besl::Nodes::Raw { input, output, .. } => {
+					input.iter().any(|input| node_requires_compute_context(input, visited))
+						|| output.iter().any(|output| node_requires_compute_context(output, visited))
+				}
+				besl::Nodes::Parameter { r#type, .. }
+				| besl::Nodes::Member { r#type, .. }
+				| besl::Nodes::Specialization { r#type, .. }
+				| besl::Nodes::Input { format: r#type, .. }
+				| besl::Nodes::Output { format: r#type, .. } => node_requires_compute_context(r#type, visited),
+				besl::Nodes::Expression(expression) => match expression {
+					besl::Expressions::Operator { left, right, .. } => {
+						node_requires_compute_context(left, visited) || node_requires_compute_context(right, visited)
+					}
+					besl::Expressions::FunctionCall {
+						function, parameters, ..
+					} => {
+						node_requires_compute_context(function, visited)
+							|| parameters
+								.iter()
+								.any(|parameter| node_requires_compute_context(parameter, visited))
+					}
+					besl::Expressions::IntrinsicCall { elements, .. } | besl::Expressions::Expression { elements } => {
+						elements.iter().any(|element| node_requires_compute_context(element, visited))
+					}
+					besl::Expressions::Macro { body, .. } => node_requires_compute_context(body, visited),
+					besl::Expressions::Member { source, .. } => node_requires_compute_context(source, visited),
+					besl::Expressions::VariableDeclaration { r#type, .. } => node_requires_compute_context(r#type, visited),
+					besl::Expressions::Return { value } => value
+						.as_ref()
+						.is_some_and(|value| node_requires_compute_context(value, visited)),
+					besl::Expressions::Accessor { left, right } => {
+						node_requires_compute_context(left, visited) || node_requires_compute_context(right, visited)
+					}
+					besl::Expressions::Literal { .. } | besl::Expressions::Continue => false,
+				},
+				_ => false,
+			};
+
+			visited.pop();
+			result
+		}
+
+		node_requires_compute_context(function_node, &mut Vec::new())
 	}
 }
 
@@ -148,9 +246,17 @@ impl MSLShaderGenerator {
 			self.emit_node_string(string, &node);
 		}
 
-		for node in function_nodes.iter().rev() {
-			self.emit_function_prototype(string, node);
+		if let Some(push_constant) = push_constant.as_ref() {
+			self.emit_push_constant_struct(string, push_constant);
 		}
+
+		let binding_sets = self.group_bindings_by_set(bindings.as_slice());
+		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
+			binding_sets: binding_sets.keys().copied().collect(),
+			has_push_constant: push_constant.is_some(),
+		});
+		let previous_in_compute_body = self.in_compute_body;
+		self.in_compute_body = true;
 
 		for binding in &bindings {
 			if let besl::Nodes::Binding {
@@ -162,19 +268,22 @@ impl MSLShaderGenerator {
 			}
 		}
 
+		if matches!(self.compute_binding_mode, ComputeBindingMode::ArgumentBuffers) {
+			for (&set, bindings) in &binding_sets {
+				self.emit_argument_buffer_struct(string, set, bindings);
+			}
+		}
+
+		for node in function_nodes.iter().rev() {
+			self.emit_function_prototype(string, node);
+		}
+
 		for node in function_nodes.into_iter().rev() {
 			self.emit_node_string(string, &node);
 		}
 
-		let previous_in_compute_body = self.in_compute_body;
-		self.in_compute_body = true;
-
 		match self.compute_binding_mode {
 			ComputeBindingMode::ArgumentBuffers => {
-				let binding_sets = self.group_bindings_by_set(bindings.as_slice());
-				for (&set, bindings) in &binding_sets {
-					self.emit_argument_buffer_struct(string, set, bindings);
-				}
 				self.emit_compute_entry_point_argument_buffers(
 					string,
 					main_function_node,
@@ -193,6 +302,7 @@ impl MSLShaderGenerator {
 		}
 
 		self.in_compute_body = previous_in_compute_body;
+		self.compute_stage_context = previous_compute_stage_context;
 	}
 
 	fn generate_mesh_shader(
@@ -884,6 +994,10 @@ impl MSLShaderGenerator {
 			return;
 		}
 
+		let Some(compute_stage_context) = &self.compute_stage_context else {
+			return;
+		};
+
 		if !self.in_compute_body {
 			return;
 		}
@@ -897,15 +1011,21 @@ impl MSLShaderGenerator {
 		string.push_str("uint2 gid");
 		has_previous_parameter = true;
 
-		string.push_str(separator);
-		string.push_str("constant PushConstant& push_constant");
-
-		for set in 0..=2u32 {
+		if compute_stage_context.has_push_constant {
 			string.push_str(separator);
+			string.push_str("constant PushConstant& push_constant");
+			has_previous_parameter = true;
+		}
+
+		for &set in &compute_stage_context.binding_sets {
+			if has_previous_parameter {
+				string.push_str(separator);
+			}
 			string.push_str("constant _set");
 			string.push_str(set.to_string().as_str());
 			string.push_str("& set");
 			string.push_str(set.to_string().as_str());
+			has_previous_parameter = true;
 		}
 	}
 
@@ -914,6 +1034,10 @@ impl MSLShaderGenerator {
 			self.emit_mesh_hidden_call_arguments(string, has_previous_parameter);
 			return;
 		}
+
+		let Some(compute_stage_context) = &self.compute_stage_context else {
+			return;
+		};
 
 		if !self.in_compute_body {
 			return;
@@ -928,13 +1052,19 @@ impl MSLShaderGenerator {
 		string.push_str("gid");
 		has_previous_parameter = true;
 
-		string.push_str(separator);
-		string.push_str("push_constant");
-
-		for set in 0..=2u32 {
+		if compute_stage_context.has_push_constant {
 			string.push_str(separator);
+			string.push_str("push_constant");
+			has_previous_parameter = true;
+		}
+
+		for &set in &compute_stage_context.binding_sets {
+			if has_previous_parameter {
+				string.push_str(separator);
+			}
 			string.push_str("set");
 			string.push_str(set.to_string().as_str());
+			has_previous_parameter = true;
 		}
 	}
 
@@ -960,7 +1090,7 @@ impl MSLShaderGenerator {
 			self.emit_node_string(string, param)
 		});
 
-		if name == "main" {
+		if self.in_compute_body && self.function_requires_compute_context(function_node) {
 			self.emit_compute_hidden_parameters(string, !params.is_empty());
 		}
 
@@ -1309,6 +1439,10 @@ impl MSLShaderGenerator {
 					self.emit_node_string(string, param)
 				});
 
+				if self.in_compute_body && self.function_requires_compute_context(this_node) {
+					self.emit_compute_hidden_parameters(string, !params.is_empty());
+				}
+
 				if self.mesh_stage_context.is_some() && name == "main" {
 					self.emit_mesh_hidden_parameters(string, !params.is_empty());
 				}
@@ -1485,10 +1619,12 @@ impl MSLShaderGenerator {
 				besl::Expressions::FunctionCall {
 					parameters, function, ..
 				} => {
-					let function = RefCell::borrow(&function);
+					let function_ref = function.clone();
+					let function = RefCell::borrow(&function_ref);
 					let name = function.get_name().unwrap();
-					let append_hidden_context = matches!(function.node(), besl::Nodes::Function { name, .. } if name == "main")
-						&& (self.mesh_stage_context.is_some() || self.in_compute_body);
+					let append_hidden_context = self.in_compute_body
+						&& matches!(function.node(), besl::Nodes::Function { name, .. } if name != "main")
+						&& self.function_requires_compute_context(&function_ref);
 
 					Self::emit_type_name(string, &name);
 					string.push('(');

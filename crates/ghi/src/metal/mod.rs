@@ -557,7 +557,7 @@ mod utils {
 			usage |= mtl::MTLTextureUsage::ShaderWrite;
 		}
 
-		if uses.contains(Uses::RenderTarget) {
+		if uses.intersects(Uses::RenderTarget | Uses::DepthStencil) {
 			usage |= mtl::MTLTextureUsage::RenderTarget;
 		}
 

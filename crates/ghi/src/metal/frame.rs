@@ -63,6 +63,10 @@ impl Frame<'_> {
 			.expect(
 				"Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.",
 			);
+		let buffer = buffer
+			.staging
+			.map(|staging_handle| self.device.buffers.resource(staging_handle))
+			.unwrap_or(buffer);
 
 		unsafe { &mut *(buffer.pointer as *mut T) }
 	}

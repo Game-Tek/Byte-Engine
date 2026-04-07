@@ -9,7 +9,10 @@ use std::{
 use ::utils::hash::{HashMap, HashSet};
 use objc2::ClassType;
 use objc2_foundation::{NSArray, NSRange, NSString};
-use objc2_metal::{MTLArgumentEncoder, MTLBuffer, MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource, MTLTexture};
+use objc2_metal::{
+	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
+	MTLLibrary, MTLResource, MTLTexture,
+};
 
 use super::*;
 use crate::{
@@ -139,7 +142,7 @@ impl Device {
 	}
 
 	fn create_buffer_resource(
-		&self,
+		&mut self,
 		name: Option<&str>,
 		size: usize,
 		resource_uses: crate::Uses,
@@ -151,16 +154,45 @@ impl Device {
 			.newBufferWithLength_options(size as _, options)
 			.expect("Metal buffer creation failed. The most likely cause is that the device is out of memory.");
 
+		let staging = if device_accesses == crate::DeviceAccesses::DeviceOnly {
+			Some(
+				self.device
+					.newBufferWithLength_options(size as _, mtl::MTLResourceOptions::StorageModeShared)
+					.expect("Metal staging buffer creation failed. The most likely cause is that the device is out of memory."),
+			)
+		} else {
+			None
+		};
+
 		if let Some(name) = name {
 			buffer.setLabel(Some(&NSString::from_str(name)));
+			if let Some(staging) = staging.as_ref() {
+				staging.setLabel(Some(&NSString::from_str(&format!("{name}_staging"))));
+			}
 		}
 
-		let pointer = buffer.contents().as_ptr() as *mut u8;
+		let pointer = staging
+			.as_ref()
+			.map(|staging| staging.contents().as_ptr() as *mut u8)
+			.unwrap_or_else(|| buffer.contents().as_ptr() as *mut u8);
 		let gpu_address = buffer.gpuAddress() as u64;
+		let staging = staging.map(|staging| {
+			let mut creator = self.buffers.creator();
+			let handle = creator.add(buffer::Buffer {
+				staging: None,
+				buffer: staging,
+				size,
+				gpu_address: 0,
+				pointer,
+				uses: resource_uses,
+				access: crate::DeviceAccesses::HostToDevice,
+			});
+			handle
+		});
 
 		buffer::Buffer {
 			buffer,
-			staging: None,
+			staging,
 			size,
 			gpu_address,
 			pointer,
@@ -1562,17 +1594,59 @@ impl Device {
 
 	pub fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
+		let buffer = buffer
+			.staging
+			.map(|staging_handle| self.buffers.resource(staging_handle))
+			.unwrap_or(buffer);
 		unsafe { &*(buffer.pointer as *const T) }
 	}
 
 	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
+		let buffer = buffer
+			.staging
+			.map(|staging_handle| self.buffers.resource(staging_handle))
+			.unwrap_or(buffer);
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 
 	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
 		let handle = self.buffers.nth_handle(buffer_handle.into(), 0).unwrap();
-		self.pending_buffer_syncs.push_back(handle);
+		let buffer = self.buffers.resource(handle);
+		if buffer.staging.is_some() {
+			self.pending_buffer_syncs.push_back(handle);
+		}
+	}
+
+	fn upload_buffer_from_staging(&mut self, buffer_handle: BufferHandle) {
+		let buffer = self.buffers.resource(buffer_handle);
+
+		let Some(staging_handle) = buffer.staging else {
+			return;
+		};
+
+		let staging = self.buffers.resource(staging_handle);
+		let queue = &self.queues[0];
+		let command_buffer = queue.queue.commandBuffer().expect(
+			"Metal command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
+		);
+		let blit_encoder = command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+
+		unsafe {
+			blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+				staging.buffer.as_ref(),
+				0,
+				buffer.buffer.as_ref(),
+				0,
+				buffer.size as _,
+			);
+		}
+
+		blit_encoder.endEncoding();
+		command_buffer.commit();
+		command_buffer.waitUntilCompleted();
 	}
 
 	fn upload_image_from_staging(&mut self, image_handle: ImageHandle) {
@@ -1609,7 +1683,10 @@ impl Device {
 	}
 
 	fn flush_pending_uploads(&mut self) {
-		self.pending_buffer_syncs.clear();
+		let pending_buffers = self.pending_buffer_syncs.drain(..).collect::<Vec<_>>();
+		for buffer_handle in pending_buffers {
+			self.upload_buffer_from_staging(buffer_handle);
+		}
 
 		let pending_images = self.pending_image_syncs.drain(..).collect::<Vec<_>>();
 		for image_handle in pending_images {

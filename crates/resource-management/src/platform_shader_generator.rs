@@ -38,6 +38,7 @@ impl PlatformShaderLanguage {
 /// The `GeneratedPlatformShader` struct stores the shader source emitted for the selected platform language.
 pub struct GeneratedPlatformShader {
 	language: PlatformShaderLanguage,
+	entry_point: &'static str,
 	source: String,
 }
 
@@ -55,7 +56,7 @@ impl GeneratedPlatformShader {
 	}
 
 	pub fn entry_point(&self) -> &'static str {
-		self.language.entry_point()
+		self.entry_point
 	}
 }
 
@@ -102,8 +103,13 @@ impl PlatformShaderGenerator {
 				.msl_shader_generator
 				.generate(shader_generation_settings, main_function_node)?,
 		};
+		let entry_point = language.entry_point();
 
-		Ok(GeneratedPlatformShader { language, source })
+		Ok(GeneratedPlatformShader {
+			language,
+			entry_point,
+			source,
+		})
 	}
 }
 

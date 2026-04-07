@@ -217,7 +217,8 @@ pub(crate) struct VertexLayoutHandle(pub(crate) u64);
 pub(crate) struct Shader {
 	stage: crate::Stages,
 	shader_binding_descriptors: Vec<crate::shader::BindingDescriptor>,
-	metal_function: Option<Retained<ProtocolObject<dyn mtl::MTLFunction>>>,
+	metal_library: Option<Retained<ProtocolObject<dyn mtl::MTLLibrary>>>,
+	metal_entry_point: Option<String>,
 	spirv: Option<Vec<u8>>,
 	threadgroup_size: Option<Extent>,
 }

@@ -1,9 +1,10 @@
 use std::collections::VecDeque;
+use std::ffi::c_void;
 use std::ptr::NonNull;
 
 use ::utils::hash::{HashMap, HashSet};
 use objc2::ClassType;
-use objc2_foundation::{NSArray, NSString};
+use objc2_foundation::{NSArray, NSRange, NSString};
 use objc2_metal::{MTLArgumentEncoder, MTLBuffer, MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource, MTLTexture};
 
 use super::*;
@@ -821,8 +822,8 @@ impl Device {
 		stage: crate::ShaderTypes,
 		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let (spirv, metal_function, threadgroup_size) = match shader_source_type {
-			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None, None),
+		let (spirv, metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
+			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None, None, None),
 			crate::shader::Sources::MTL { source, entry_point } => {
 				let threadgroup_size = match stage {
 					crate::ShaderTypes::Task | crate::ShaderTypes::Mesh => parse_threadgroup_size_metadata(source),
@@ -840,10 +841,8 @@ impl Device {
 						);
 						()
 					})?;
-				let entry_point = NSString::from_str(entry_point);
-				let function = library.newFunctionWithName(&entry_point).ok_or(())?;
 
-				(None, Some(function), threadgroup_size)
+				(None, Some(library), Some(entry_point.to_owned()), threadgroup_size)
 			}
 		};
 
@@ -864,12 +863,115 @@ impl Device {
 		self.shaders.push(Shader {
 			stage: stages,
 			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
-			metal_function,
+			metal_library,
+			metal_entry_point,
 			spirv,
 			threadgroup_size,
 		});
 
 		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
+	}
+
+	fn create_metal_function(
+		&self,
+		shader_parameter: &crate::pipelines::ShaderParameter,
+	) -> Option<Retained<ProtocolObject<dyn mtl::MTLFunction>>> {
+		let shader = &self.shaders[shader_parameter.handle.0 as usize];
+		let library = shader.metal_library.as_ref()?;
+		let entry_point = shader.metal_entry_point.as_ref()?;
+		let entry_point = NSString::from_str(entry_point);
+
+		if shader_parameter.specialization_map.is_empty() {
+			return library.newFunctionWithName(&entry_point);
+		}
+
+		let constant_values = mtl::MTLFunctionConstantValues::new();
+
+		for specialization_map_entry in shader_parameter.specialization_map {
+			self.apply_specialization_map_entry(&constant_values, specialization_map_entry);
+		}
+
+		library
+			.newFunctionWithName_constantValues_error(&entry_point, &constant_values)
+			.map_err(|error| {
+				eprintln!(
+					"Metal shader specialization failed: {}",
+					error.localizedDescription().to_string()
+				);
+			})
+			.ok()
+	}
+
+	fn apply_specialization_map_entry(
+		&self,
+		constant_values: &mtl::MTLFunctionConstantValues,
+		specialization_map_entry: &crate::pipelines::SpecializationMapEntry,
+	) {
+		match specialization_map_entry.get_type().as_str() {
+			"bool" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValue_type_atIndex(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					mtl::MTLDataType::Bool,
+					specialization_map_entry.get_constant_id() as usize,
+				);
+			},
+			"u32" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValue_type_atIndex(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					mtl::MTLDataType::UInt,
+					specialization_map_entry.get_constant_id() as usize,
+				);
+			},
+			"f32" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValue_type_atIndex(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					mtl::MTLDataType::Float,
+					specialization_map_entry.get_constant_id() as usize,
+				);
+			},
+			"vec2f" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValues_type_withRange(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					mtl::MTLDataType::Float,
+					NSRange::new(specialization_map_entry.get_constant_id() as usize, 2),
+				);
+			},
+			"vec3f" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValues_type_withRange(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					mtl::MTLDataType::Float,
+					NSRange::new(specialization_map_entry.get_constant_id() as usize, 3),
+				);
+			},
+			"vec4f" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValues_type_withRange(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					mtl::MTLDataType::Float,
+					NSRange::new(specialization_map_entry.get_constant_id() as usize, 4),
+				);
+			},
+			_ => panic!(
+				"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
+			),
+		}
 	}
 
 	/// Builds the Metal argument-buffer layout that backs a descriptor set template.
@@ -1157,15 +1259,15 @@ impl Device {
 				shader_handles.insert(*shader_parameter.handle, [0; 32]);
 				match shader_parameter.stage {
 					crate::ShaderTypes::Task => {
-						object_function = shader.metal_function.clone();
+						object_function = self.create_metal_function(shader_parameter);
 						object_threadgroup_size = shader.threadgroup_size;
 					}
-					crate::ShaderTypes::Vertex => vertex_function = shader.metal_function.clone(),
+					crate::ShaderTypes::Vertex => vertex_function = self.create_metal_function(shader_parameter),
 					crate::ShaderTypes::Mesh => {
-						mesh_function = shader.metal_function.clone();
+						mesh_function = self.create_metal_function(shader_parameter);
 						mesh_threadgroup_size = shader.threadgroup_size;
 					}
-					crate::ShaderTypes::Fragment => fragment_function = shader.metal_function.clone(),
+					crate::ShaderTypes::Fragment => fragment_function = self.create_metal_function(shader_parameter),
 					_ => {}
 				}
 				shader
@@ -1273,18 +1375,19 @@ impl Device {
 		let layout = self.get_or_create_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
 		let shader_handle = *builder.shader.handle;
 		let compute_pipeline_state = {
+			let shader_parameter = &builder.shader;
 			let shader = &self.shaders[shader_handle.0 as usize];
 			assert!(
 				shader.stage == crate::Stages::COMPUTE,
 				"Metal compute pipeline creation requires a compute shader. The most likely cause is that a non-compute shader was passed to compute::Builder.",
 			);
-			let function = shader.metal_function.as_ref().expect(
+			let function = self.create_metal_function(shader_parameter).expect(
 				"Metal compute pipeline creation requires a Metal shader function. The most likely cause is that this compute shader was created from SPIR-V, which this backend does not translate to MSL.",
 			);
 
 			Some(
 				self.device
-					.newComputePipelineStateWithFunction_error(function)
+					.newComputePipelineStateWithFunction_error(&function)
 					.expect("Metal compute pipeline creation failed. The most likely cause is that the shader function was invalid for compute pipeline creation."),
 			)
 		};

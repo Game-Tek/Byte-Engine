@@ -76,9 +76,23 @@ impl HLSLShaderGenerator {
 
 		match name.as_str() {
 			"max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
-			| "radians" | "smoothstep" | "mix" | "dot" | "cross" | "normalize" | "reflect" | "length" | "f32" | "u32" => {
+			| "radians" | "smoothstep" | "mix" | "dot" | "cross" | "normalize" | "reflect" | "length" => {
 				string.push_str(name);
 				string.push('(');
+				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
+					self.emit_node_string(string, argument)
+				});
+				string.push(')');
+			}
+			"f32" => {
+				string.push_str("float(");
+				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
+					self.emit_node_string(string, argument)
+				});
+				string.push(')');
+			}
+			"u32" => {
+				string.push_str("uint(");
 				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {
 					self.emit_node_string(string, argument)
 				});

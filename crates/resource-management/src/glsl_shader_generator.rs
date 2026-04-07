@@ -139,9 +139,19 @@ impl GLSLShaderGenerator {
 
 		match name.as_str() {
 			"max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
-			| "radians" | "inversesqrt" | "smoothstep" | "mix" | "f32" | "u32" => {
+			| "radians" | "inversesqrt" | "smoothstep" | "mix" => {
 				string.push_str(name);
 				string.push('(');
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"f32" => {
+				string.push_str("float(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"u32" => {
+				string.push_str("uint(");
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
@@ -563,7 +573,11 @@ impl GLSLShaderGenerator {
 				}
 				besl::Expressions::Accessor { left, right } => {
 					self.emit_node_string(string, &left);
-					if left.borrow().node().is_indexable() {
+					if !matches!(
+						right.borrow().node(),
+						besl::Nodes::Expression(besl::Expressions::Member { .. })
+					) && left.borrow().node().is_indexable()
+					{
 						string.push('[');
 						self.emit_wrapped_expression(string, &right);
 						string.push(']');

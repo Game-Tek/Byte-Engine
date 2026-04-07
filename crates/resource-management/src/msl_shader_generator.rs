@@ -1084,9 +1084,23 @@ impl MSLShaderGenerator {
 
 		match name.as_str() {
 			"max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
-			| "radians" | "inversesqrt" | "smoothstep" | "mix" => {
+			| "smoothstep" | "mix" => {
 				string.push_str(name);
 				string.push('(');
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
+			"radians" => {
+				string.push('(');
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push_str("*(PI/180.0))");
+				} else {
+					string.push_str(" * (PI / 180.0))");
+				}
+			}
+			"inversesqrt" => {
+				string.push_str("rsqrt(");
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
@@ -1472,13 +1486,17 @@ impl MSLShaderGenerator {
 				}
 				besl::Expressions::Accessor { left, right } => {
 					self.emit_node_string(string, &left);
-					if left.borrow().node().is_indexable() {
+					if left.borrow().node().is_buffer_binding() {
+						string.push_str("->");
+						self.emit_node_string(string, &right);
+					} else if !matches!(
+						right.borrow().node(),
+						besl::Nodes::Expression(besl::Expressions::Member { .. })
+					) && left.borrow().node().is_indexable()
+					{
 						string.push('[');
 						self.emit_wrapped_expression(string, &right);
 						string.push(']');
-					} else if left.borrow().node().is_buffer_binding() {
-						string.push_str("->");
-						self.emit_node_string(string, &right);
 					} else {
 						string.push('.');
 						self.emit_node_string(string, &right);
@@ -1814,7 +1832,33 @@ mod tests {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "set0.pixel_mapping->pixel_mapping[0]=set0.meshes->meshes[1];");
+		assert_string_contains!(shader, "set0.pixel_mapping->pixel_mapping[0]");
+		assert_string_contains!(shader, "set0.meshes->meshes[1]");
+	}
+
+	#[test]
+	fn intrinsics_lower_to_valid_msl_names() {
+		let source = r#"
+		main: fn () -> void {
+			let angle: f32 = radians(180.0);
+			let inverse: f32 = inversesqrt(4.0);
+			angle;
+			inverse;
+		}
+		"#;
+
+		let root = besl::compile_to_besl(source, None).expect(
+			"Expected intrinsic test shader source to compile. The most likely cause is invalid BESL syntax in the test shader.",
+		);
+		let main = RefCell::borrow(&root).get_child("main").unwrap();
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "float angle=(180.0*(PI/180.0));");
+		assert_string_contains!(shader, "rsqrt(4.0)");
 	}
 
 	#[test]

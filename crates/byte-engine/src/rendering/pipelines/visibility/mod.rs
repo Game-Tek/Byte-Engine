@@ -1071,8 +1071,9 @@ fn build_gtao_program() -> besl::NodeReference {
 		let coord: vec2u = thread_id();
 		guard_image_bounds(ao_output, coord);
 		let extent: vec2u = image_size(ao_output);
-		let inverse_projection: mat4f = views.views[0].inverse_projection;
-		let view_fov: vec2f = views.views[0].fov;
+		let view: View = views.views[0];
+		let inverse_projection: mat4f = view.inverse_projection;
+		let view_fov: vec2f = view.fov;
 
 		let center_depth: f32 = fetch(visibility_depth, coord).x;
 		if (center_depth == 0.0) {
@@ -1703,11 +1704,25 @@ mod tests {
 			"Expected generated GLSL GTAO shader to lower BESL fetch calls to texelFetch. Shader: {shader}"
 		);
 		assert!(
-			shader.contains("cross(dx,dy)"),
+			shader.contains("cross(dx,dy)") || shader.contains("cross(dx, dy)"),
 			"Expected generated GLSL GTAO shader to preserve the cross-product normal reconstruction. Shader: {shader}"
 		);
 
 		resource_management::glsl::compile(&shader, "GTAO Compute Shader")
 			.expect("Expected generated GLSL GTAO shader to compile");
+	}
+
+	#[test]
+	fn gtao_msl_source_uses_argument_buffer_accessors() {
+		let shader = generate_gtao_shader_for_language(PlatformShaderLanguage::Msl).into_source();
+
+		assert!(
+			shader.contains("View view = set0.views->views[0];"),
+			"Expected generated MSL GTAO shader to lower the view lookup through the Metal argument buffer. Shader: {shader}"
+		);
+		assert!(
+			shader.contains("view.inverse_projection") && shader.contains("view.fov"),
+			"Expected generated MSL GTAO shader to read inverse projection and FOV from the loaded view. Shader: {shader}"
+		);
 	}
 }

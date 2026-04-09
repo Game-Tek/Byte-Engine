@@ -1,8 +1,8 @@
-use std::ptr::NonNull;
+use std::{cell::RefCell, ptr::NonNull};
 
 use ::utils::hash::HashMap;
 use objc2::runtime::ProtocolObject;
-use objc2_foundation::NSString;
+use objc2_foundation::{NSRange, NSString};
 use objc2_metal::{
 	MTLBlitCommandEncoder, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture,
 };
@@ -25,6 +25,7 @@ pub struct CommandBufferRecording<'a> {
 	command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	sequence_index: u8,
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
+	debug_regions: RefCell<Vec<String>>,
 	states: HashMap<PrivateHandles, TransitionState>,
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
@@ -68,6 +69,7 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer_handle,
 			sequence_index,
 			command_buffer,
+			debug_regions: RefCell::new(Vec::new()),
 			states,
 			drawables,
 			active_pipeline_layout: None,
@@ -83,15 +85,29 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
+	fn current_encoder_label(&self, suffix: &str) -> Retained<NSString> {
+		let debug_regions = self.debug_regions.borrow();
+		let label = if debug_regions.is_empty() {
+			suffix.to_owned()
+		} else {
+			format!("{} / {}", debug_regions.join(" > "), suffix)
+		};
+
+		NSString::from_str(&label)
+	}
+
 	fn ensure_compute_encoder(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>> {
 		if let Some(encoder) = self.active_render_encoder.take() {
 			encoder.endEncoding();
 		}
 
 		if self.active_compute_encoder.is_none() {
-			self.active_compute_encoder = Some(self.command_buffer.computeCommandEncoder().expect(
+			let encoder = self.command_buffer.computeCommandEncoder().expect(
 				"Metal compute command encoder creation failed. The most likely cause is that the command buffer could not start a compute pass.",
-			));
+			);
+			let label = self.current_encoder_label("Compute Pass");
+			encoder.setLabel(Some(&label));
+			self.active_compute_encoder = Some(encoder);
 		}
 
 		self.active_compute_encoder.as_ref().unwrap()
@@ -229,8 +245,7 @@ impl<'a> CommandBufferRecording<'a> {
 			encoder.endEncoding();
 		}
 
-		self.command_buffer.commit();
-		self.command_buffer.waitUntilCompleted();
+		self.device.submit_metal_command_buffer(self.command_buffer.as_ref());
 
 		if let Some(synchronizer) = self.device.synchronizers.get_mut(synchronizer.0 as usize) {
 			synchronizer.signaled = true;
@@ -332,6 +347,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		let rce = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).unwrap();
+		let label = self.current_encoder_label("Render Pass");
+		rce.setLabel(Some(&label));
 
 		rce.setViewport(mtl::MTLViewport {
 			originX: 0.0,
@@ -373,6 +390,14 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			.collect::<Vec<_>>();
 		self.consume_resources(consumptions);
 
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
 		// TODO: Encode blit clears for textures.
 	}
 
@@ -388,7 +413,28 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			.collect::<Vec<_>>();
 		self.consume_resources(consumptions);
 
-		// TODO: Encode fillBuffer on MTLBlitCommandEncoder.
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+		let label = self.current_encoder_label("Buffer Clear");
+		blit_encoder.setLabel(Some(&label));
+
+		for buffer_handle in buffer_handles {
+			let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(*buffer_handle));
+			unsafe {
+				blit_encoder.fillBuffer_range_value(buffer.buffer.as_ref(), NSRange::new(0, buffer.size), 0);
+			}
+		}
+
+		blit_encoder.endEncoding();
 	}
 
 	fn transfer_textures(
@@ -511,6 +557,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
+		blit_encoder.setLabel(Some(&NSString::from_str("Blit Pass")));
 
 		unsafe {
 			blit_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
@@ -575,10 +622,12 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	}
 
 	fn start_region(&self, name: &str) {
+		self.debug_regions.borrow_mut().push(name.to_owned());
 		self.command_buffer.pushDebugGroup(&NSString::from_str(name));
 	}
 
 	fn end_region(&self) {
+		self.debug_regions.borrow_mut().pop();
 		self.command_buffer.popDebugGroup();
 	}
 
@@ -887,22 +936,24 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
 		let mesh = &self.device.meshes[mesh_handle.0 as usize];
+		let encoder = self
+			.active_render_encoder
+			.as_ref()
+			.expect("No active render pass. The most likely cause is that draw_mesh was called outside start_render_pass.");
 
 		unsafe {
-			self.active_render_encoder
-				.as_ref()
-				.expect("No active render pass. The most likely cause is that draw_mesh was called outside start_render_pass.")
-				.setVertexBuffer_offset_atIndex(Some(mesh.vertex_buffer.as_ref()), 0, 0);
-			self.active_render_encoder
-				.as_ref()
-				.unwrap()
-				.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(
-					mtl::MTLPrimitiveType::Triangle,
-					mesh.index_count as _,
-					mtl::MTLIndexType::UInt16,
-					mesh.index_buffer.as_ref(),
-					0,
-				);
+			for (binding, vertex_buffer) in mesh.vertex_buffers.iter().enumerate() {
+				if let Some(vertex_buffer) = vertex_buffer.as_ref() {
+					encoder.setVertexBuffer_offset_atIndex(Some(vertex_buffer.as_ref()), 0, binding as _);
+				}
+			}
+			encoder.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(
+				mtl::MTLPrimitiveType::Triangle,
+				mesh.index_count as _,
+				mtl::MTLIndexType::UInt16,
+				mesh.index_buffer.as_ref(),
+				0,
+			);
 		}
 	}
 

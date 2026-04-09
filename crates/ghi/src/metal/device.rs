@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::ffi::c_void;
+use std::fmt::Write as _;
 use std::ptr::NonNull;
 use std::{
 	fs,
@@ -7,11 +8,12 @@ use std::{
 };
 
 use ::utils::hash::{HashMap, HashSet};
-use objc2::ClassType;
+use objc2::runtime::AnyObject;
+use objc2::{msg_send, ClassType};
 use objc2_foundation::{NSArray, NSRange, NSString};
 use objc2_metal::{
-	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
-	MTLLibrary, MTLResource, MTLTexture,
+	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLCommandEncoder,
+	MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource, MTLTexture,
 };
 
 use super::*;
@@ -71,6 +73,112 @@ fn parse_threadgroup_size_metadata(source: &str) -> Option<Extent> {
 	Some(Extent::new(extents.next()??, extents.next()??, extents.next()??))
 }
 
+fn metal_command_buffer_status_name(status: mtl::MTLCommandBufferStatus) -> &'static str {
+	match status {
+		mtl::MTLCommandBufferStatus::NotEnqueued => "not_enqueued",
+		mtl::MTLCommandBufferStatus::Enqueued => "enqueued",
+		mtl::MTLCommandBufferStatus::Committed => "committed",
+		mtl::MTLCommandBufferStatus::Scheduled => "scheduled",
+		mtl::MTLCommandBufferStatus::Completed => "completed",
+		mtl::MTLCommandBufferStatus::Error => "error",
+		_ => "unknown",
+	}
+}
+
+fn metal_command_encoder_error_state_name(state: mtl::MTLCommandEncoderErrorState) -> &'static str {
+	match state {
+		mtl::MTLCommandEncoderErrorState::Unknown => "unknown",
+		mtl::MTLCommandEncoderErrorState::Completed => "completed",
+		mtl::MTLCommandEncoderErrorState::Affected => "affected",
+		mtl::MTLCommandEncoderErrorState::Pending => "pending",
+		mtl::MTLCommandEncoderErrorState::Faulted => "faulted",
+		_ => "unknown",
+	}
+}
+
+fn metal_command_encoder_label(
+	encoder_info: &ProtocolObject<dyn mtl::MTLCommandBufferEncoderInfo>,
+) -> Option<Retained<NSString>> {
+	unsafe { msg_send![encoder_info, label] }
+}
+
+fn metal_command_encoder_debug_signposts(
+	encoder_info: &ProtocolObject<dyn mtl::MTLCommandBufferEncoderInfo>,
+) -> Option<Retained<NSArray<NSString>>> {
+	unsafe { msg_send![encoder_info, debugSignposts] }
+}
+
+// Formats the detailed Metal failure report, including per-encoder execution status when Metal provides it.
+fn describe_metal_command_buffer_failure(command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) -> String {
+	let status = command_buffer.status();
+	let mut report = String::from(
+		"Metal command buffer execution failed. The most likely cause is that a Metal encoder triggered a GPU validation, resource lifetime, or shader execution fault.",
+	);
+
+	if let Some(label) = command_buffer.label().filter(|label| !label.to_string().is_empty()) {
+		let _ = write!(report, "\nCommand buffer: {}", label);
+	}
+
+	let _ = write!(report, "\nStatus: {}", metal_command_buffer_status_name(status));
+
+	let Some(error) = command_buffer.error() else {
+		return report;
+	};
+
+	let _ = write!(report, "\nDomain: {}", error.domain());
+	let _ = write!(report, "\nCode: {}", error.code());
+	let _ = write!(report, "\nDescription: {}", error.localizedDescription());
+
+	if let Some(reason) = error.localizedFailureReason().filter(|reason| !reason.to_string().is_empty()) {
+		let _ = write!(report, "\nFailure reason: {}", reason);
+	}
+
+	let user_info = error.userInfo();
+	let encoder_info_key = unsafe { mtl::MTLCommandBufferEncoderInfoErrorKey };
+	let Some(encoder_info_value) = user_info.objectForKeyedSubscript(encoder_info_key) else {
+		return report;
+	};
+
+	let encoder_infos = unsafe { objc2::rc::Retained::cast_unchecked::<NSArray<AnyObject>>(encoder_info_value) };
+	if encoder_infos.count() == 0 {
+		return report;
+	}
+
+	report.push_str("\nEncoders:");
+	for index in 0..encoder_infos.count() {
+		let encoder_info = unsafe {
+			objc2::rc::Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLCommandBufferEncoderInfo>>(
+				encoder_infos.objectAtIndex(index),
+			)
+		};
+		let label = metal_command_encoder_label(encoder_info.as_ref())
+			.map(|label| label.to_string())
+			.unwrap_or_default();
+		let label = if label.is_empty() { "<unlabeled>" } else { label.as_str() };
+		let state = metal_command_encoder_error_state_name(encoder_info.errorState());
+		let _ = write!(report, "\n  {}. {} [{}]", index, label, state);
+
+		if let Some(signposts) =
+			metal_command_encoder_debug_signposts(encoder_info.as_ref()).filter(|signposts| signposts.count() > 0)
+		{
+			let joined_signposts = signposts.componentsJoinedByString(&NSString::from_str(" > "));
+			let _ = write!(report, "\n     Signposts: {}", joined_signposts);
+		}
+	}
+
+	report
+}
+
+// Waits for the Metal command buffer and turns Metal's enhanced error payload into a readable panic.
+fn wait_for_metal_command_buffer(command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
+	command_buffer.commit();
+	command_buffer.waitUntilCompleted();
+
+	if command_buffer.status() != mtl::MTLCommandBufferStatus::Completed || command_buffer.error().is_some() {
+		panic!("{}", describe_metal_command_buffer_failure(command_buffer));
+	}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SwapchainDescriptorBinding {
 	pub(crate) binding_handle: DescriptorSetBindingHandle,
@@ -84,6 +192,31 @@ pub(crate) struct SwapchainDescriptorSource {
 }
 
 impl Device {
+	// Creates a Metal command buffer with enhanced encoder execution status enabled.
+	pub(super) fn create_metal_command_buffer(
+		&self,
+		queue: &ProtocolObject<dyn mtl::MTLCommandQueue>,
+		label: Option<&str>,
+		error_message: &'static str,
+	) -> Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>> {
+		let descriptor = mtl::MTLCommandBufferDescriptor::new();
+		descriptor.setRetainedReferences(true);
+		descriptor.setErrorOptions(mtl::MTLCommandBufferErrorOption::EncoderExecutionStatus);
+
+		let command_buffer = queue.commandBufferWithDescriptor(&descriptor).expect(error_message);
+
+		if let Some(label) = label {
+			command_buffer.setLabel(Some(&NSString::from_str(label)));
+		}
+
+		command_buffer
+	}
+
+	// Submits the Metal command buffer and validates its completion status with enhanced diagnostics.
+	pub(super) fn submit_metal_command_buffer(&self, command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
+		wait_for_metal_command_buffer(command_buffer);
+	}
+
 	pub fn new(
 		settings: crate::device::Features,
 		device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
@@ -823,25 +956,76 @@ impl Device {
 		indices: &[u8],
 		vertex_layout: &[crate::pipelines::VertexElement],
 	) -> graphics_hardware_interface::MeshHandle {
+		// Split interleaved vertices into one packed stream per Metal vertex binding.
 		let options = mtl::MTLResourceOptions::StorageModeShared;
-		let vertex_ptr = NonNull::new(vertices.as_ptr() as *mut std::ffi::c_void)
-			.expect("Vertex data pointer was null. The most likely cause is an empty vertex slice.");
 		let index_ptr = NonNull::new(indices.as_ptr() as *mut std::ffi::c_void)
 			.expect("Index data pointer was null. The most likely cause is an empty index slice.");
-		let vertex_buffer = unsafe {
-			self.device
-				.newBufferWithBytes_length_options(vertex_ptr, vertices.len() as _, options)
-		}
-		.expect("Metal vertex buffer creation failed. The most likely cause is that the device is out of memory.");
 		let index_buffer = unsafe {
 			self.device
 				.newBufferWithBytes_length_options(index_ptr, indices.len() as _, options)
 		}
 		.expect("Metal index buffer creation failed. The most likely cause is that the device is out of memory.");
 		let vertex_size = utils::vertex_layout_size(vertex_layout);
+		let max_binding = vertex_layout
+			.iter()
+			.map(|element| element.binding)
+			.max()
+			.map(|binding| binding as usize + 1)
+			.unwrap_or(0);
+		let mut binding_spans = vec![Vec::<(usize, usize, usize)>::new(); max_binding];
+		let mut source_offset = 0usize;
+
+		for element in vertex_layout {
+			let element_size = utils::data_type_size(element.format);
+			let binding = element.binding as usize;
+			let destination_offset = binding_spans[binding]
+				.last()
+				.map(|(_, destination_offset, size)| destination_offset + size)
+				.unwrap_or(0);
+			binding_spans[binding].push((source_offset, destination_offset, element_size));
+			source_offset += element_size;
+		}
+
+		let vertex_buffers = binding_spans
+			.iter()
+			.map(|spans| {
+				if spans.is_empty() {
+					return None;
+				}
+
+				let binding_stride = spans
+					.last()
+					.map(|(_, destination_offset, size)| destination_offset + size)
+					.unwrap_or(0);
+				let mut binding_vertices = vec![0u8; binding_stride * vertex_count as usize];
+
+				for vertex_index in 0..vertex_count as usize {
+					let source_vertex_offset = vertex_index * vertex_size;
+					let destination_vertex_offset = vertex_index * binding_stride;
+
+					for &(span_source_offset, span_destination_offset, span_size) in spans {
+						let source_range =
+							source_vertex_offset + span_source_offset..source_vertex_offset + span_source_offset + span_size;
+						let destination_range = destination_vertex_offset + span_destination_offset
+							..destination_vertex_offset + span_destination_offset + span_size;
+						binding_vertices[destination_range].copy_from_slice(&vertices[source_range]);
+					}
+				}
+
+				let vertex_ptr = NonNull::new(binding_vertices.as_ptr() as *mut std::ffi::c_void)
+					.expect("Vertex data pointer was null. The most likely cause is an empty vertex slice.");
+				Some(
+					unsafe {
+						self.device
+							.newBufferWithBytes_length_options(vertex_ptr, binding_vertices.len() as _, options)
+					}
+					.expect("Metal vertex buffer creation failed. The most likely cause is that the device is out of memory."),
+				)
+			})
+			.collect::<Vec<_>>();
 
 		self.meshes.push(Mesh {
-			vertex_buffer,
+			vertex_buffers,
 			index_buffer,
 			vertex_count,
 			index_count,
@@ -1509,10 +1693,13 @@ impl Device {
 
 	pub fn create_command_buffer(
 		&mut self,
-		_name: Option<&str>,
+		name: Option<&str>,
 		queue_handle: graphics_hardware_interface::QueueHandle,
 	) -> graphics_hardware_interface::CommandBufferHandle {
-		self.command_buffers.push(CommandBuffer { queue_handle });
+		self.command_buffers.push(CommandBuffer {
+			queue_handle,
+			name: name.map(str::to_owned),
+		});
 		graphics_hardware_interface::CommandBufferHandle((self.command_buffers.len() - 1) as u64)
 	}
 
@@ -1532,7 +1719,9 @@ impl Device {
 
 		let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
 		let queue = &self.queues[command_buffer.queue_handle.0 as usize];
-		let mtl_command_buffer = queue.queue.commandBuffer().expect(
+		let mtl_command_buffer = self.create_metal_command_buffer(
+			queue.queue.as_ref(),
+			command_buffer.name.as_deref(),
 			"Metal command buffer creation failed. The most likely cause is that the command queue did not provide a command buffer.",
 		);
 
@@ -1627,12 +1816,15 @@ impl Device {
 
 		let staging = self.buffers.resource(staging_handle);
 		let queue = &self.queues[0];
-		let command_buffer = queue.queue.commandBuffer().expect(
+		let command_buffer = self.create_metal_command_buffer(
+			queue.queue.as_ref(),
+			Some("Buffer Upload"),
 			"Metal command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
 		);
 		let blit_encoder = command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
+		blit_encoder.setLabel(Some(&NSString::from_str("Buffer Upload")));
 
 		unsafe {
 			blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
@@ -1645,8 +1837,7 @@ impl Device {
 		}
 
 		blit_encoder.endEncoding();
-		command_buffer.commit();
-		command_buffer.waitUntilCompleted();
+		self.submit_metal_command_buffer(command_buffer.as_ref());
 	}
 
 	fn upload_image_from_staging(&mut self, image_handle: ImageHandle) {

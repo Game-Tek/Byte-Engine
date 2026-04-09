@@ -1,11 +1,12 @@
 use std::{cell::RefCell, ops::Deref, rc::Rc};
 
-use besl::{parser::Node, NodeReference};
+use besl::{NodeReference, parser::Node};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use std::sync::Arc;
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;
+use crate::rendering::pipelines::visibility::MAX_PIXEL_MAPPING_ENTRIES;
 
 pub struct VisibilityShaderScope {}
 
@@ -111,7 +112,7 @@ impl VisibilityShaderScope {
 		);
 		let meshes = Node::binding(
 			"meshes",
-			Node::buffer("MeshBuffer", vec![Node::member("meshes", "Mesh[64]")]),
+			Node::buffer("MeshBuffer", vec![Node::member("meshes", "Mesh[1024]")]),
 			0,
 			1,
 			true,
@@ -169,7 +170,7 @@ impl VisibilityShaderScope {
 
 		let material_count = Node::binding(
 			"material_count",
-			Node::buffer("MaterialCount", vec![Node::member("material_count", "u32[2073600]")]),
+			Node::buffer("MaterialCount", vec![Node::member("material_count", "u32[1024]")]),
 			1,
 			0,
 			material_count_read,
@@ -177,7 +178,7 @@ impl VisibilityShaderScope {
 		); // TODO: somehow set read/write properties per shader
 		let material_offset = Node::binding(
 			"material_offset",
-			Node::buffer("MaterialOffset", vec![Node::member("material_offset", "u32[2073600]")]),
+			Node::buffer("MaterialOffset", vec![Node::member("material_offset", "u32[1024]")]),
 			1,
 			1,
 			material_offset_read,
@@ -187,7 +188,7 @@ impl VisibilityShaderScope {
 			"material_offset_scratch",
 			Node::buffer(
 				"MaterialOffsetScratch",
-				vec![Node::member("material_offset_scratch", "u32[2073600]")],
+				vec![Node::member("material_offset_scratch", "u32[1024]")],
 			),
 			1,
 			2,
@@ -198,7 +199,7 @@ impl VisibilityShaderScope {
 			"material_evaluation_dispatches",
 			Node::buffer(
 				"MaterialEvaluationDispatches",
-				vec![Node::member("material_evaluation_dispatches", "vec3u[2073600]")],
+				vec![Node::member("material_evaluation_dispatches", "vec3u[1024]")],
 			),
 			1,
 			3,
@@ -207,7 +208,13 @@ impl VisibilityShaderScope {
 		);
 		let pixel_mapping = Node::binding(
 			"pixel_mapping",
-			Node::buffer("PixelMapping", vec![Node::member("pixel_mapping", "vec2u16[2073600]")]),
+			Node::buffer(
+				"PixelMapping",
+				vec![Node::member(
+					"pixel_mapping",
+					&format!("vec2u16[{MAX_PIXEL_MAPPING_ENTRIES}]"),
+				)],
+			),
 			1,
 			4,
 			pixel_mapping_read,
@@ -356,7 +363,7 @@ struct PrimitiveOutput {
 					if (primitive_index < u8_to_u32(meshlet.primitive_count)) {
 						set_mesh_vertex_position(
 							primitive_index,
-							matrix * mesh.model * compute_vertex_position(mesh, meshlet, primitive_index)
+							compute_vertex_position(mesh, meshlet, primitive_index) * mesh.model * matrix
 						);
 					}
 
@@ -547,7 +554,7 @@ struct PrimitiveOutput {
 
 			View view = set0.views->views[light.cascades[cascade_index]];
 
-			float4 surface_light_clip_position = view.view_projection * float4(world_space_position, 1.0);
+			float4 surface_light_clip_position = float4(world_space_position, 1.0) * view.view_projection;
 			float3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
 
 			float2 shadow_uv = float2(
@@ -648,7 +655,7 @@ struct PrimitiveOutput {
 			);
 
 			for (int i = 0; i < 8; ++i) {
-				float2 pcf_offset = (poisson_rotation * poisson_disk[i]) * texel_size * 1.5f;
+			float2 pcf_offset = (poisson_disk[i] * poisson_rotation) * texel_size * 1.5f;
 				occlusion += sample_shadow_tap(
 					shadow_map,
 					light,
@@ -977,14 +984,14 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		View view = set0.views->views[0];
 		float surface_depth = set2.visibility_depth.sample(set2.visibility_depth_sampler, normalized_xy).r;
 		float4 surface_clip_position = float4(nc, surface_depth, 1.0);
-		float4 surface_view_position = view.inverse_projection * surface_clip_position;
+		float4 surface_view_position = surface_clip_position * view.inverse_projection;
 		surface_view_position /= surface_view_position.w;
-		float3 world_space_surface_position = (view.inverse_view * surface_view_position).xyz;
+		float3 world_space_surface_position = (surface_view_position * view.inverse_view).xyz;
 
-		float4 world_space_vertex_positions[3] = {mesh.model * model_space_vertex_positions[0], mesh.model * model_space_vertex_positions[1], mesh.model * model_space_vertex_positions[2]};
-		float4 clip_space_vertex_positions[3] = {view.view_projection * world_space_vertex_positions[0], view.view_projection * world_space_vertex_positions[1], view.view_projection * world_space_vertex_positions[2]};
+		float4 world_space_vertex_positions[3] = {model_space_vertex_positions[0] * mesh.model, model_space_vertex_positions[1] * mesh.model, model_space_vertex_positions[2] * mesh.model};
+		float4 clip_space_vertex_positions[3] = {world_space_vertex_positions[0] * view.view_projection, world_space_vertex_positions[1] * view.view_projection, world_space_vertex_positions[2] * view.view_projection};
 
-		float4 world_space_vertex_normals[3] = {normalize(mesh.model * vertex_normals[0]), normalize(mesh.model * vertex_normals[1]), normalize(mesh.model * vertex_normals[2])};
+		float4 world_space_vertex_normals[3] = {normalize(vertex_normals[0] * mesh.model), normalize(vertex_normals[1] * mesh.model), normalize(vertex_normals[2] * mesh.model)};
 
 		BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, float2(image_extent));
 		float3 barycenter = barycentric_deriv.lambda;
@@ -1076,7 +1083,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float attenuation = 1.0;
 
 			if (light.type == 68) {
-				float4 view_space_surface_position = view.view * float4(world_space_surface_position, 1.0);
+				float4 view_space_surface_position = float4(world_space_surface_position, 1.0) * view.view;
 				float c_occlusion_factor  = sample_shadow(set2.depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal, gid, push_constant, set0, set1, set2);
 
 				occlusion_factor = c_occlusion_factor;
@@ -1303,8 +1310,8 @@ mod tests {
 		shader_generator::{ShaderGenerationSettings, ShaderGenerator as _},
 		spirv_shader_generator::SPIRVShaderGenerator,
 	};
-	use utils::json;
 	use utils::Extent;
+	use utils::json;
 
 	use crate::besl;
 	use crate::rendering::map_shader_binding_to_shader_binding_descriptor;

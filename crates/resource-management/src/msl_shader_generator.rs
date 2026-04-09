@@ -5,11 +5,13 @@ use crate::shader_generator::{
 	ordered_shader_nodes, MatrixLayouts, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
 };
 
-/// The `MSLShaderGenerator` struct generates Metal Shading Language shaders from BESL ASTs.
+/// The `MSLShaderGenerator` struct generates Metal Shading Language shaders from BESL ASTs while preserving the engine's row-major matrix semantics in Metal.
 ///
 /// # Parameters
 ///
 /// - *minified*: Controls whether the shader string output is minified. Is `true` by default in release builds.
+///
+/// Matrix multiplications are emitted with reversed operands whenever a matrix participates in the `*` expression so the generated MSL matches the engine's row-major conventions against Metal's column-major multiplication rules.
 pub struct MSLShaderGenerator {
 	minified: bool,
 	compute_binding_mode: ComputeBindingMode,
@@ -73,6 +75,129 @@ impl MSLShaderGenerator {
 			}
 			_ => self.emit_node_string(string, node),
 		}
+	}
+
+	fn is_matrix_type_name(type_name: &str) -> bool {
+		matches!(type_name, "mat2f" | "mat3f" | "mat4f")
+	}
+
+	fn is_vector_type_name(type_name: &str) -> bool {
+		matches!(
+			type_name,
+			"vec2f" | "vec3f" | "vec4f" | "vec2u" | "vec3u" | "vec2i" | "vec2u16"
+		)
+	}
+
+	fn is_scalar_type_name(type_name: &str) -> bool {
+		matches!(type_name, "f32" | "u8" | "u16" | "u32" | "i32")
+	}
+
+	fn find_named_member_type(parent_type: &besl::NodeReference, member_name: &str) -> Option<besl::NodeReference> {
+		match parent_type.borrow().node() {
+			besl::Nodes::Struct { fields, .. } => fields.iter().find_map(|field| match field.borrow().node() {
+				besl::Nodes::Member { name, r#type, .. } if name == member_name => Some(r#type.clone()),
+				_ => None,
+			}),
+			_ => None,
+		}
+	}
+
+	fn infer_member_type(source: &besl::NodeReference) -> Option<besl::NodeReference> {
+		match source.borrow().node() {
+			besl::Nodes::Member { r#type, .. }
+			| besl::Nodes::Parameter { r#type, .. }
+			| besl::Nodes::Input { format: r#type, .. }
+			| besl::Nodes::Output { format: r#type, .. }
+			| besl::Nodes::Specialization { r#type, .. }
+			| besl::Nodes::Const { r#type, .. } => Some(r#type.clone()),
+			besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
+			besl::Nodes::Expression(besl::Expressions::Member { source, name }) => {
+				let parent_type = Self::infer_member_type(source)?;
+				Self::find_named_member_type(&parent_type, name)
+			}
+			besl::Nodes::Expression(besl::Expressions::Accessor { right, .. }) => Self::infer_expression_type(right),
+			_ => None,
+		}
+	}
+
+	fn infer_callable_return_type(callable: &besl::NodeReference) -> Option<besl::NodeReference> {
+		match callable.borrow().node() {
+			besl::Nodes::Function { return_type, .. } => Some(return_type.clone()),
+			besl::Nodes::Struct { .. } => Some(callable.clone()),
+			besl::Nodes::Intrinsic { r#return, .. } => Some(r#return.clone()),
+			_ => None,
+		}
+	}
+
+	fn infer_multiply_result_type(left: &besl::NodeReference, right: &besl::NodeReference) -> Option<besl::NodeReference> {
+		let left_type = Self::infer_expression_type(left)?;
+		let right_type = Self::infer_expression_type(right)?;
+		let left_name = left_type.borrow().get_name().map(str::to_owned)?;
+		let right_name = right_type.borrow().get_name().map(str::to_owned)?;
+
+		if Self::is_matrix_type_name(&left_name) && Self::is_vector_type_name(&right_name) {
+			return Some(right_type.clone());
+		}
+
+		if Self::is_vector_type_name(&left_name) && Self::is_matrix_type_name(&right_name) {
+			return Some(left_type.clone());
+		}
+
+		if Self::is_matrix_type_name(&left_name) && Self::is_scalar_type_name(&right_name) {
+			return Some(left_type.clone());
+		}
+
+		if Self::is_scalar_type_name(&left_name) && Self::is_matrix_type_name(&right_name) {
+			return Some(right_type.clone());
+		}
+
+		if Self::is_vector_type_name(&left_name) && Self::is_scalar_type_name(&right_name) {
+			return Some(left_type.clone());
+		}
+
+		if Self::is_scalar_type_name(&left_name) && Self::is_vector_type_name(&right_name) {
+			return Some(right_type.clone());
+		}
+
+		if Self::is_matrix_type_name(&left_name) && Self::is_matrix_type_name(&right_name) {
+			return Some(right_type.clone());
+		}
+
+		Some(left_type)
+	}
+
+	fn infer_expression_type(expression: &besl::NodeReference) -> Option<besl::NodeReference> {
+		match expression.borrow().node() {
+			besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
+			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => Self::infer_member_type(source),
+			besl::Nodes::Expression(besl::Expressions::Accessor { right, .. }) => Self::infer_expression_type(right),
+			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => {
+				Self::infer_callable_return_type(function)
+			}
+			besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) => {
+				Self::infer_callable_return_type(intrinsic)
+			}
+			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right }) => match operator {
+				besl::Operators::Assignment => Self::infer_expression_type(left),
+				besl::Operators::Multiply => Self::infer_multiply_result_type(left, right),
+				besl::Operators::Equality
+				| besl::Operators::LessThan
+				| besl::Operators::Inequality
+				| besl::Operators::GreaterThan
+				| besl::Operators::LessThanOrEqual
+				| besl::Operators::GreaterThanOrEqual
+				| besl::Operators::LogicalAnd
+				| besl::Operators::LogicalOr => None,
+				_ => Self::infer_expression_type(left).or_else(|| Self::infer_expression_type(right)),
+			},
+			_ => None,
+		}
+	}
+
+	fn expression_is_matrix_type(expression: &besl::NodeReference) -> bool {
+		Self::infer_expression_type(expression)
+			.and_then(|r#type| r#type.borrow().get_name().map(str::to_owned))
+			.is_some_and(|type_name| Self::is_matrix_type_name(&type_name))
 	}
 
 	fn function_requires_compute_context(&self, function_node: &besl::NodeReference) -> bool {
@@ -1605,7 +1730,13 @@ impl MSLShaderGenerator {
 			}
 			besl::Nodes::Expression(expression) => match expression {
 				besl::Expressions::Operator { operator, left, right } => {
-					self.emit_wrapped_expression(string, &left);
+					let swap_matrix_multiply = matches!(operator, besl::Operators::Multiply)
+						&& (Self::expression_is_matrix_type(left) || Self::expression_is_matrix_type(right));
+					if swap_matrix_multiply {
+						self.emit_wrapped_expression(string, &right);
+					} else {
+						self.emit_wrapped_expression(string, &left);
+					}
 					let operator = operator_token(operator);
 					if self.minified {
 						string.push_str(operator);
@@ -1614,7 +1745,11 @@ impl MSLShaderGenerator {
 						string.push_str(operator);
 						string.push(' ');
 					}
-					self.emit_wrapped_expression(string, &right);
+					if swap_matrix_multiply {
+						self.emit_wrapped_expression(string, &left);
+					} else {
+						self.emit_wrapped_expression(string, &right);
+					}
 				}
 				besl::Expressions::FunctionCall {
 					parameters, function, ..
@@ -2306,6 +2441,94 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "void main(){0 + 1.0 * 2;}");
+	}
+
+	#[test]
+	fn matrix_multiplication_operands_are_flipped_for_msl() {
+		let script = r#"
+		main: fn (projection: mat4f, model: mat4f, position: vec4f) -> vec4f {
+			return projection * model * position;
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected matrix multiply shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(
+			shader,
+			"float4 main(float4x4 projection,float4x4 model,float4 position){return position*(model*projection);}"
+		);
+	}
+
+	#[test]
+	fn matrix_on_both_sides_is_flipped_for_msl() {
+		let script = r#"
+		main: fn (projection: mat4f, model: mat4f) -> mat4f {
+			return projection * model;
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected matrix-matrix shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(
+			shader,
+			"float4x4 main(float4x4 projection,float4x4 model){return model*projection;}"
+		);
+	}
+
+	#[test]
+	fn matrix_and_vector_multiplication_is_flipped_for_msl() {
+		let script = r#"
+		main: fn (projection: mat4f, position: vec4f) -> vec4f {
+			return projection * position;
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected matrix-vector shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(
+			shader,
+			"float4 main(float4x4 projection,float4 position){return position*projection;}"
+		);
+	}
+
+	#[test]
+	fn chained_matrix_vector_scalar_multiplication_only_flips_matrix_step() {
+		let script = r#"
+		main: fn (projection: mat4f, position: vec4f, scale: f32) -> vec4f {
+			return projection * position * scale;
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected chained multiply shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(
+			shader,
+			"float4 main(float4x4 projection,float4 position,float scale){return (position*projection)*scale;}"
+		);
 	}
 
 	#[test]

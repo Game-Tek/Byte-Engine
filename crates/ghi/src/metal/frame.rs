@@ -3,6 +3,7 @@ use crate::SwapchainHandle;
 
 use super::*;
 use objc2_foundation::NSAutoreleasePool;
+use objc2_foundation::NSString;
 use objc2_metal::MTLBlitCommandEncoder;
 use objc2_metal::MTLCommandBuffer;
 use objc2_metal::MTLCommandEncoder;
@@ -187,6 +188,7 @@ impl Frame<'_> {
 			let blit_encoder = command_buffer.blitCommandEncoder().expect(
 				"Metal blit command encoder creation failed. The most likely cause is that the command buffer could not start the swapchain resolve pass.",
 			);
+			blit_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
 
 			for (present_key, drawable) in present_keys.iter().zip(present_drawables.iter()) {
 				let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
@@ -209,8 +211,7 @@ impl Frame<'_> {
 			command_buffer.presentDrawable(drawable_ref);
 		}
 
-		command_buffer.commit();
-		command_buffer.waitUntilCompleted();
+		self.device.submit_metal_command_buffer(command_buffer.as_ref());
 
 		if let Some(synchronizer) = self.device.synchronizers.get_mut(synchronizer.0 as usize) {
 			synchronizer.signaled = true;

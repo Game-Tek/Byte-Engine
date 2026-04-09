@@ -109,6 +109,7 @@ const MAX_LIGHTS: usize = 16;
 const MAX_TRIANGLES: usize = 65536 * 4;
 const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
 const MAX_VERTICES: usize = 65536 * 4;
+pub(crate) const MAX_PIXEL_MAPPING_ENTRIES: usize = 3840 * 2160;
 pub const SHADOW_CASCADE_COUNT: usize = 4;
 pub const SHADOW_MAP_RESOLUTION: u32 = 2048;
 
@@ -174,22 +175,7 @@ fn generate_mesh_source_for_language(
 	generated
 }
 
-pub fn get_visibility_pass_mesh_source() -> String {
-	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
-
-	generate_mesh_source_for_language(
-		r#"
-		main: fn () -> void {
-			let view: View = views.views[0];
-			process_meshlet(push_constant.instance_index, view.view_projection);
-		}
-		"#,
-		push_constant,
-		PlatformShaderLanguage::Glsl,
-	)
-}
-
-pub fn get_visibility_pass_mesh_msl_source() -> String {
+fn build_mesh_pass_msl_source(push_constant_fields: &str, view_lookup: &str) -> String {
 	format!(
 		r#"#include <metal_stdlib>
 using namespace metal;
@@ -199,7 +185,7 @@ using namespace metal;
 {mesh_outputs}
 
 struct PushConstant {{
-	uint instance_index;
+{push_constant_fields}
 }};
 
 struct View {{
@@ -235,31 +221,31 @@ struct _views {{
 }};
 
 struct _meshes {{
-	Mesh meshes[64];
+	Mesh meshes[{max_instances}];
 }};
 
 struct _vertex_positions {{
-	float3 positions[8192];
+	packed_float3 positions[{max_vertices}];
 }};
 
 struct _vertex_normals {{
-	float3 normals[8192];
+	packed_float3 normals[{max_vertices}];
 }};
 
 struct _vertex_uvs {{
-	float2 uvs[8192];
+	packed_float2 uvs[{max_vertices}];
 }};
 
 struct _vertex_indices {{
-	ushort vertex_indices[8192];
+	ushort vertex_indices[{max_primitive_triangles}];
 }};
 
 struct _primitive_indices {{
-	uchar primitive_indices[8192];
+	uchar primitive_indices[{max_primitive_indices}];
 }};
 
 struct _meshlets {{
-	Meshlet meshlets[8192];
+	Meshlet meshlets[{max_meshlets}];
 }};
 
 struct _set0 {{
@@ -281,7 +267,7 @@ struct _set0 {{
 	metal::mesh<VertexOutput, PrimitiveOutput, 64, 126, topology::triangle> out_mesh
 ) {{
 	Mesh mesh = set0.meshes->meshes[push_constant.instance_index];
-	View view = set0.views->views[0];
+	View view = set0.views->views[{view_lookup}];
 	uint meshlet_index = threadgroup_position + mesh.base_meshlet_index;
 	Meshlet meshlet = set0.meshlets->meshlets[meshlet_index];
 	uint primitive_index = thread_index;
@@ -293,8 +279,8 @@ struct _set0 {{
 	if (primitive_index < uint(meshlet.primitive_count)) {{
 		uint vertex_index = mesh.base_vertex_index
 			+ uint(set0.vertex_indices->vertex_indices[mesh.base_primitive_index + uint(meshlet.primitive_offset) + primitive_index]);
-		float4 position = float4(set0.vertex_positions->positions[vertex_index], 1.0);
-		out_mesh.set_vertex(primitive_index, VertexOutput{{ .position = view.view_projection * mesh.model * position }});
+		float4 position = float4(float3(set0.vertex_positions->positions[vertex_index]), 1.0);
+		out_mesh.set_vertex(primitive_index, VertexOutput{{ .position = position * mesh.model * view.view_projection }});
 	}}
 
 	if (primitive_index < uint(meshlet.triangle_count)) {{
@@ -310,7 +296,33 @@ struct _set0 {{
 }}
 "#,
 		mesh_outputs = MESH_OUTPUT_TYPES_MSL,
+		push_constant_fields = push_constant_fields,
+		view_lookup = view_lookup,
+		max_instances = MAX_INSTANCES,
+		max_vertices = MAX_VERTICES,
+		max_primitive_triangles = MAX_PRIMITIVE_TRIANGLES,
+		max_primitive_indices = MAX_TRIANGLES * 3,
+		max_meshlets = MAX_MESHLETS,
 	)
+}
+
+pub fn get_visibility_pass_mesh_source() -> String {
+	let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
+
+	generate_mesh_source_for_language(
+		r#"
+		main: fn () -> void {
+			let view: View = views.views[0];
+			process_meshlet(push_constant.instance_index, view.view_projection);
+		}
+		"#,
+		push_constant,
+		PlatformShaderLanguage::Glsl,
+	)
+}
+
+pub fn get_visibility_pass_mesh_msl_source() -> String {
+	build_mesh_pass_msl_source("\tuint instance_index;", "0")
 }
 
 pub fn get_shadow_pass_mesh_source() -> String {
@@ -333,128 +345,7 @@ pub fn get_shadow_pass_mesh_source() -> String {
 }
 
 pub fn get_shadow_pass_mesh_msl_source() -> String {
-	format!(
-		r#"#include <metal_stdlib>
-using namespace metal;
-// #pragma shader_stage(mesh)
-// besl-threadgroup-size:128,1,1
-
-{mesh_outputs}
-
-struct PushConstant {{
-	uint instance_index;
-	uint view_index;
-}};
-
-struct View {{
-	float4x4 view;
-	float4x4 projection;
-	float4x4 view_projection;
-	float4x4 inverse_view;
-	float4x4 inverse_projection;
-	float4x4 inverse_view_projection;
-	float2 fov;
-	float near;
-	float far;
-}};
-
-struct Mesh {{
-	float4x4 model;
-	uint material_index;
-	uint base_vertex_index;
-	uint base_primitive_index;
-	uint base_triangle_index;
-	uint base_meshlet_index;
-}};
-
-struct Meshlet {{
-	ushort primitive_offset;
-	ushort triangle_offset;
-	uchar primitive_count;
-	uchar triangle_count;
-}};
-
-struct _views {{
-	View views[8];
-}};
-
-struct _meshes {{
-	Mesh meshes[64];
-}};
-
-struct _vertex_positions {{
-	float3 positions[8192];
-}};
-
-struct _vertex_normals {{
-	float3 normals[8192];
-}};
-
-struct _vertex_uvs {{
-	float2 uvs[8192];
-}};
-
-struct _vertex_indices {{
-	ushort vertex_indices[8192];
-}};
-
-struct _primitive_indices {{
-	uchar primitive_indices[8192];
-}};
-
-struct _meshlets {{
-	Meshlet meshlets[8192];
-}};
-
-struct _set0 {{
-	constant _views* views [[id(0)]];
-	constant _meshes* meshes [[id(1)]];
-	constant _vertex_positions* vertex_positions [[id(2)]];
-	constant _vertex_normals* vertex_normals [[id(3)]];
-	constant _vertex_uvs* vertex_uvs [[id(4)]];
-	constant _vertex_indices* vertex_indices [[id(5)]];
-	constant _primitive_indices* primitive_indices [[id(6)]];
-	constant _meshlets* meshlets [[id(7)]];
-}};
-
-[[mesh]] void besl_main(
-	constant PushConstant& push_constant [[buffer(15)]],
-	constant _set0& set0 [[buffer(16)]],
-	uint threadgroup_position [[threadgroup_position_in_grid]],
-	uint thread_index [[thread_index_in_threadgroup]],
-	metal::mesh<VertexOutput, PrimitiveOutput, 64, 126, topology::triangle> out_mesh
-) {{
-	Mesh mesh = set0.meshes->meshes[push_constant.instance_index];
-	View view = set0.views->views[push_constant.view_index];
-	uint meshlet_index = threadgroup_position + mesh.base_meshlet_index;
-	Meshlet meshlet = set0.meshlets->meshlets[meshlet_index];
-	uint primitive_index = thread_index;
-
-	if (thread_index == 0) {{
-		out_mesh.set_primitive_count(uint(meshlet.triangle_count));
-	}}
-
-	if (primitive_index < uint(meshlet.primitive_count)) {{
-		uint vertex_index = mesh.base_vertex_index
-			+ uint(set0.vertex_indices->vertex_indices[mesh.base_primitive_index + uint(meshlet.primitive_offset) + primitive_index]);
-		float4 position = float4(set0.vertex_positions->positions[vertex_index], 1.0);
-		out_mesh.set_vertex(primitive_index, VertexOutput{{ .position = view.view_projection * mesh.model * position }});
-	}}
-
-	if (primitive_index < uint(meshlet.triangle_count)) {{
-		uint triangle_base_index = mesh.base_triangle_index + uint(meshlet.triangle_offset) + primitive_index;
-		out_mesh.set_index(primitive_index * 3 + 0, uint(set0.primitive_indices->primitive_indices[triangle_base_index * 3 + 0]));
-		out_mesh.set_index(primitive_index * 3 + 1, uint(set0.primitive_indices->primitive_indices[triangle_base_index * 3 + 1]));
-		out_mesh.set_index(primitive_index * 3 + 2, uint(set0.primitive_indices->primitive_indices[triangle_base_index * 3 + 2]));
-		out_mesh.set_primitive(
-			primitive_index,
-			PrimitiveOutput{{ .instance_index = push_constant.instance_index, .primitive_index = (meshlet_index << 8) | (primitive_index & 255) }}
-		);
-	}}
-}}
-"#,
-		mesh_outputs = MESH_OUTPUT_TYPES_MSL,
-	)
+	build_mesh_pass_msl_source("\tuint instance_index;\n\tuint view_index;", "push_constant.view_index")
 }
 
 pub const VISIBILITY_PASS_FRAGMENT_SOURCE_MSL: &str = r#"
@@ -519,8 +410,10 @@ pub fn get_material_count_source() -> String {
 	uint pixel_instance_index = imageLoad(instance_index_render_target, ivec2(gl_GlobalInvocationID.xy)).r;
 
 	if (pixel_instance_index == 0xFFFFFFFF) { return; }
+	if (pixel_instance_index >= 1024u) { return; }
 
 	uint material_index = meshes.meshes[pixel_instance_index].material_index;
+	if (material_index >= 1024u) { return; }
 
 	atomicAdd(material_count.material_count[material_index], 1);
 	"#;
@@ -573,20 +466,46 @@ struct Mesh {
 };
 
 struct _meshes {
-	Mesh meshes[64];
+	Mesh meshes[1024];
+};
+
+struct _views {
+	uint views[1];
 };
 
 struct _material_count {
 	atomic_uint material_count[1024];
 };
 
+struct _material_offset {
+	uint material_offset[1024];
+};
+
+struct _material_offset_scratch_buffer {
+	atomic_uint material_offset_scratch[1024];
+};
+
+struct _material_evaluation_dispatches {
+	uint3 material_evaluation_dispatches[1024];
+};
+
+struct _pixel_mapping_buffer {
+	ushort2 pixel_mapping[1];
+};
+
 struct _set0 {
-	constant _meshes* meshes [[id(1)]];
+	constant _views* views [[id(0)]];
+	constant _meshes* mesh_data [[id(1)]];
 };
 
 struct _set1 {
-	device _material_count* material_count [[id(0)]];
-	texture2d<uint, access::read> instance_index_render_target [[id(7)]];
+	device _material_count* material_count_buffer [[id(0)]];
+	device _material_offset* material_offset_buffer [[id(1)]];
+	device _material_offset_scratch_buffer* material_offset_scratch_buffer [[id(2)]];
+	device _material_evaluation_dispatches* material_evaluation_dispatches [[id(3)]];
+	device _pixel_mapping_buffer* pixel_mapping_buffer [[id(4)]];
+	texture2d<uint, access::read> triangle_index [[id(5)]];
+	texture2d<uint, access::read> instance_index_render_target [[id(6)]];
 };
 
 kernel void besl_main(uint2 gid [[thread_position_in_grid]], constant _set0& set0 [[buffer(16)]], constant _set1& set1 [[buffer(17)]]) {
@@ -596,9 +515,11 @@ kernel void besl_main(uint2 gid [[thread_position_in_grid]], constant _set0& set
 
 	uint pixel_instance_index = set1.instance_index_render_target.read(gid).x;
 	if (pixel_instance_index == 0xFFFFFFFFu) { return; }
+	if (pixel_instance_index >= 1024u) { return; }
 
-	uint material_index = set0.meshes->meshes[pixel_instance_index].material_index;
-	atomic_fetch_add_explicit(&set1.material_count->material_count[material_index], 1, memory_order_relaxed);
+	uint material_index = set0.mesh_data->meshes[pixel_instance_index].material_index;
+	if (material_index >= 1024u) { return; }
+	atomic_fetch_add_explicit(&set1.material_count_buffer->material_count[material_index], 1, memory_order_relaxed);
 }
 "#
 }
@@ -696,6 +617,90 @@ kernel void besl_main(uint2 gid [[thread_position_in_grid]], constant _set1& set
 "#
 }
 
+pub fn get_pixel_mapping_msl_source() -> String {
+	format!(
+		r#"#include <metal_stdlib>
+using namespace metal;
+// #pragma shader_stage(compute)
+// Note: Metal threadgroup sizes are set on the pipeline state.
+
+struct Mesh {{
+	float4x4 model;
+	uint material_index;
+	uint base_vertex_index;
+	uint base_primitive_index;
+	uint base_triangle_index;
+	uint base_meshlet_index;
+}};
+
+struct _views {{
+	uint views[1];
+}};
+
+struct _mesh_data {{
+	Mesh meshes[1024];
+}};
+
+struct _material_count {{
+	atomic_uint material_count[1024];
+}};
+
+struct _material_offset {{
+	uint material_offset[1024];
+}};
+
+struct _material_offset_scratch_buffer {{
+	atomic_uint material_offset_scratch[1024];
+}};
+
+struct _material_evaluation_dispatches {{
+	uint3 material_evaluation_dispatches[1024];
+}};
+
+struct _pixel_mapping_buffer {{
+	ushort2 pixel_mapping[{MAX_PIXEL_MAPPING_ENTRIES}];
+}};
+
+struct _set0 {{
+	constant _views* views [[id(0)]];
+	constant _mesh_data* mesh_data [[id(1)]];
+}};
+
+struct _set1 {{
+	device _material_count* material_count_buffer [[id(0)]];
+	device _material_offset* material_offset_buffer [[id(1)]];
+	device _material_offset_scratch_buffer* material_offset_scratch_buffer [[id(2)]];
+	device _material_evaluation_dispatches* material_evaluation_dispatches [[id(3)]];
+	device _pixel_mapping_buffer* pixel_mapping_buffer [[id(4)]];
+	texture2d<uint, access::read> triangle_index [[id(5)]];
+	texture2d<uint, access::read> instance_index_render_target [[id(6)]];
+}};
+
+kernel void besl_main(uint2 coord [[thread_position_in_grid]], constant _set0& set0 [[buffer(16)]], constant _set1& set1 [[buffer(17)]]) {{
+	uint width = set1.instance_index_render_target.get_width();
+	uint height = set1.instance_index_render_target.get_height();
+	if (coord.x >= width || coord.y >= height) {{ return; }}
+
+	uint pixel_instance_index = set1.instance_index_render_target.read(coord).x;
+	if (pixel_instance_index == 0xFFFFFFFFu) {{ return; }}
+	if (pixel_instance_index >= 1024u) {{ return; }}
+
+	uint material_index = set0.mesh_data->meshes[pixel_instance_index].material_index;
+	if (material_index >= 1024u) {{ return; }}
+
+	uint pixel_mapping_index = atomic_fetch_add_explicit(
+		&set1.material_offset_scratch_buffer->material_offset_scratch[material_index],
+		1,
+		memory_order_relaxed
+	);
+	if (pixel_mapping_index >= {MAX_PIXEL_MAPPING_ENTRIES}u) {{ return; }}
+
+	set1.pixel_mapping_buffer->pixel_mapping[pixel_mapping_index] = ushort2(coord.x, coord.y);
+}}
+"#
+	)
+}
+
 pub fn get_pixel_mapping_source() -> String {
 	get_pixel_mapping_shader().into_source()
 }
@@ -705,11 +710,19 @@ pub fn get_pixel_mapping_shader() -> GeneratedPlatformShader {
 }
 
 fn generate_pixel_mapping_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
-	let main_node = build_pixel_mapping_program();
+	generate_compute_shader_for_language(language, Extent::square(32), build_pixel_mapping_program)
+}
+
+fn generate_compute_shader_for_language(
+	language: PlatformShaderLanguage,
+	threadgroup_extent: Extent,
+	build_program: fn() -> besl::NodeReference,
+) -> GeneratedPlatformShader {
+	let main_node = build_program();
 	let mut shader_generator = PlatformShaderGenerator::new();
 
 	shader_generator
-		.generate_for_language(language, &ShaderGenerationSettings::compute(Extent::square(32)), &main_node)
+		.generate_for_language(language, &ShaderGenerationSettings::compute(threadgroup_extent), &main_node)
 		.unwrap()
 }
 
@@ -720,14 +733,22 @@ fn build_pixel_mapping_program() -> besl::NodeReference {
 		guard_image_bounds(instance_index_render_target, coord);
 		let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
 
-		if (pixel_instance_index < 4294967295) {
+		if (pixel_instance_index < 4294967295 && pixel_instance_index < 1024) {
 			let material_index: u32 = mesh_data.meshes[pixel_instance_index].material_index;
-			pixel_mapping_buffer.pixel_mapping[atomic_add(material_offset_scratch_buffer.material_offset_scratch[material_index], 1)] = vec2u16(coord.x, coord.y);
+
+			if (material_index < 1024) {
+				let pixel_mapping_index: u32 = atomic_add(material_offset_scratch_buffer.material_offset_scratch[material_index], 1);
+
+				if (pixel_mapping_index < __MAX_PIXEL_MAPPING_ENTRIES__) {
+					pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x, coord.y);
+				}
+			}
 		}
 	}
-	"#;
+	"#
+	.replace("__MAX_PIXEL_MAPPING_ENTRIES__", &MAX_PIXEL_MAPPING_ENTRIES.to_string());
 
-	besl::compile_to_besl(source, Some(build_pixel_mapping_root()))
+	besl::compile_to_besl(&source, Some(build_pixel_mapping_root()))
 		.unwrap()
 		.get_main()
 		.unwrap()
@@ -735,18 +756,46 @@ fn build_pixel_mapping_program() -> besl::NodeReference {
 
 fn build_pixel_mapping_root() -> besl::Node {
 	let mut root = besl::Node::root();
+	let mat4f_t = root.get_child("mat4f").unwrap();
 	let u32_t = root.get_child("u32").unwrap();
 	let texture_2d = root.get_child("Texture2D").unwrap();
 	let vec2u_t = root.get_child("vec2u").unwrap();
 	let vec2u16_t = root.get_child("vec2u16").unwrap();
-	let mesh_material_index = besl::Node::member("material_index", u32_t.clone()).into();
-	let mesh = root.add_child(besl::Node::r#struct("Mesh", vec![mesh_material_index]).into());
+	let mesh = root.add_child(
+		besl::Node::r#struct(
+			"Mesh",
+			vec![
+				besl::Node::member("model", mat4f_t).into(),
+				besl::Node::member("material_index", u32_t.clone()).into(),
+				besl::Node::member("base_vertex_index", u32_t.clone()).into(),
+				besl::Node::member("base_primitive_index", u32_t.clone()).into(),
+				besl::Node::member("base_triangle_index", u32_t.clone()).into(),
+				besl::Node::member("base_meshlet_index", u32_t.clone()).into(),
+			],
+		)
+		.into(),
+	);
 	let atomic_u32 = root.add_child(besl::Node::r#struct("atomicu32", Vec::new()).into());
-	let meshes_member = besl::Node::array("meshes", mesh, 64);
-	let material_offset_scratch_member = besl::Node::array("material_offset_scratch", atomic_u32.clone(), 2073600);
-	let pixel_mapping_member = besl::Node::array("pixel_mapping", vec2u16_t, 2073600);
+	let views_member = besl::Node::array("views", u32_t.clone(), 1);
+	let meshes_member = besl::Node::array("meshes", mesh, MAX_INSTANCES);
+	let material_count_member = besl::Node::array("material_count", atomic_u32.clone(), MAX_MATERIALS);
+	let material_offset_member = besl::Node::array("material_offset", u32_t.clone(), 1);
+	let material_offset_scratch_member = besl::Node::array("material_offset_scratch", atomic_u32.clone(), MAX_MATERIALS);
+	let material_evaluation_dispatches_member = besl::Node::array("material_evaluation_dispatches", u32_t.clone(), 1);
+	let pixel_mapping_member = besl::Node::array("pixel_mapping", vec2u16_t, MAX_PIXEL_MAPPING_ENTRIES);
 
 	root.add_children(vec![
+		besl::Node::binding(
+			"views",
+			besl::BindingTypes::Buffer {
+				members: vec![views_member.into()],
+			},
+			0,
+			0,
+			true,
+			false,
+		)
+		.into(),
 		besl::Node::binding(
 			"mesh_data",
 			besl::BindingTypes::Buffer {
@@ -756,6 +805,28 @@ fn build_pixel_mapping_root() -> besl::Node {
 			1,
 			true,
 			false,
+		)
+		.into(),
+		besl::Node::binding(
+			"material_count_buffer",
+			besl::BindingTypes::Buffer {
+				members: vec![material_count_member.into()],
+			},
+			1,
+			0,
+			true,
+			true,
+		)
+		.into(),
+		besl::Node::binding(
+			"material_offset_buffer",
+			besl::BindingTypes::Buffer {
+				members: vec![material_offset_member.into()],
+			},
+			1,
+			1,
+			true,
+			true,
 		)
 		.into(),
 		besl::Node::binding(
@@ -770,6 +841,17 @@ fn build_pixel_mapping_root() -> besl::Node {
 		)
 		.into(),
 		besl::Node::binding(
+			"material_evaluation_dispatches",
+			besl::BindingTypes::Buffer {
+				members: vec![material_evaluation_dispatches_member.into()],
+			},
+			1,
+			3,
+			true,
+			true,
+		)
+		.into(),
+		besl::Node::binding(
 			"pixel_mapping_buffer",
 			besl::BindingTypes::Buffer {
 				members: vec![pixel_mapping_member.clone()],
@@ -778,6 +860,17 @@ fn build_pixel_mapping_root() -> besl::Node {
 			4,
 			false,
 			true,
+		)
+		.into(),
+		besl::Node::binding(
+			"triangle_index",
+			besl::BindingTypes::Image {
+				format: "r32ui".to_string(),
+			},
+			1,
+			6,
+			true,
+			false,
 		)
 		.into(),
 		besl::Node::binding(
@@ -840,21 +933,11 @@ pub fn get_gtao_bitfield_shader() -> GeneratedPlatformShader {
 }
 
 pub(crate) fn generate_gtao_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
-	let main_node = build_gtao_program();
-	let mut shader_generator = PlatformShaderGenerator::new();
-
-	shader_generator
-		.generate_for_language(language, &ShaderGenerationSettings::compute(Extent::square(8)), &main_node)
-		.unwrap()
+	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_program)
 }
 
 pub(crate) fn generate_gtao_bitfield_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
-	let main_node = build_gtao_bitfield_program();
-	let mut shader_generator = PlatformShaderGenerator::new();
-
-	shader_generator
-		.generate_for_language(language, &ShaderGenerationSettings::compute(Extent::square(8)), &main_node)
-		.unwrap()
+	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_bitfield_program)
 }
 
 fn build_gtao_program() -> besl::NodeReference {
@@ -1137,21 +1220,11 @@ fn build_gtao_program() -> besl::NodeReference {
 }
 
 pub(crate) fn generate_gtao_blur_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
-	let main_node = build_gtao_blur_program();
-	let mut shader_generator = PlatformShaderGenerator::new();
-
-	shader_generator
-		.generate_for_language(language, &ShaderGenerationSettings::compute(Extent::square(8)), &main_node)
-		.unwrap()
+	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_blur_program)
 }
 
 pub(crate) fn generate_gtao_bitfield_blur_x_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
-	let main_node = build_gtao_bitfield_blur_x_program();
-	let mut shader_generator = PlatformShaderGenerator::new();
-
-	shader_generator
-		.generate_for_language(language, &ShaderGenerationSettings::compute(Extent::square(8)), &main_node)
-		.unwrap()
+	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_bitfield_blur_x_program)
 }
 
 fn build_gtao_bitfield_program() -> besl::NodeReference {
@@ -1848,7 +1921,7 @@ fn build_gtao_blur_program() -> besl::NodeReference {
 		.unwrap()
 }
 
-fn build_gtao_blur_root() -> besl::Node {
+fn build_gtao_view_buffer_root() -> besl::Node {
 	let mut root = besl::Node::root();
 	let mat4f_type = root.get_child("mat4f").unwrap();
 	let vec2f_type = root.get_child("vec2f").unwrap();
@@ -1884,6 +1957,16 @@ fn build_gtao_blur_root() -> besl::Node {
 			false,
 		)
 		.into(),
+	]);
+
+	root
+}
+
+fn build_gtao_blur_root() -> besl::Node {
+	let mut root = build_gtao_view_buffer_root();
+	let vec2f_type = root.get_child("vec2f").unwrap();
+
+	root.add_children(vec![
 		besl::Node::binding(
 			"visibility_depth",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
@@ -1920,41 +2003,9 @@ fn build_gtao_blur_root() -> besl::Node {
 }
 
 fn build_gtao_bitfield_blur_x_root() -> besl::Node {
-	let mut root = besl::Node::root();
-	let mat4f_type = root.get_child("mat4f").unwrap();
-	let vec2f_type = root.get_child("vec2f").unwrap();
-	let f32_type = root.get_child("f32").unwrap();
-
-	let view_type = root.add_child(
-		besl::Node::r#struct(
-			"View",
-			vec![
-				besl::Node::member("view", mat4f_type.clone()).into(),
-				besl::Node::member("projection", mat4f_type.clone()).into(),
-				besl::Node::member("view_projection", mat4f_type.clone()).into(),
-				besl::Node::member("inverse_view", mat4f_type.clone()).into(),
-				besl::Node::member("inverse_projection", mat4f_type.clone()).into(),
-				besl::Node::member("inverse_view_projection", mat4f_type.clone()).into(),
-				besl::Node::member("fov", vec2f_type.clone()).into(),
-				besl::Node::member("near", f32_type.clone()).into(),
-				besl::Node::member("far", f32_type.clone()).into(),
-			],
-		)
-		.into(),
-	);
+	let mut root = build_gtao_view_buffer_root();
 
 	root.add_children(vec![
-		besl::Node::binding(
-			"views",
-			besl::BindingTypes::Buffer {
-				members: vec![besl::Node::array("views", view_type, 8)],
-			},
-			0,
-			0,
-			true,
-			false,
-		)
-		.into(),
 		besl::Node::binding(
 			"visibility_depth",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
@@ -1992,41 +2043,9 @@ fn build_gtao_bitfield_blur_x_root() -> besl::Node {
 }
 
 fn build_gtao_root() -> besl::Node {
-	let mut root = besl::Node::root();
-	let mat4f_type = root.get_child("mat4f").unwrap();
-	let vec2f_type = root.get_child("vec2f").unwrap();
-	let f32_type = root.get_child("f32").unwrap();
-
-	let view_type = root.add_child(
-		besl::Node::r#struct(
-			"View",
-			vec![
-				besl::Node::member("view", mat4f_type.clone()).into(),
-				besl::Node::member("projection", mat4f_type.clone()).into(),
-				besl::Node::member("view_projection", mat4f_type.clone()).into(),
-				besl::Node::member("inverse_view", mat4f_type.clone()).into(),
-				besl::Node::member("inverse_projection", mat4f_type.clone()).into(),
-				besl::Node::member("inverse_view_projection", mat4f_type.clone()).into(),
-				besl::Node::member("fov", vec2f_type.clone()).into(),
-				besl::Node::member("near", f32_type.clone()).into(),
-				besl::Node::member("far", f32_type.clone()).into(),
-			],
-		)
-		.into(),
-	);
+	let mut root = build_gtao_view_buffer_root();
 
 	root.add_children(vec![
-		besl::Node::binding(
-			"views",
-			besl::BindingTypes::Buffer {
-				members: vec![besl::Node::array("views", view_type, 8)],
-			},
-			0,
-			0,
-			true,
-			false,
-		)
-		.into(),
 		besl::Node::binding(
 			"visibility_depth",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
@@ -2053,41 +2072,9 @@ fn build_gtao_root() -> besl::Node {
 }
 
 fn build_gtao_bitfield_root() -> besl::Node {
-	let mut root = besl::Node::root();
-	let mat4f_type = root.get_child("mat4f").unwrap();
-	let vec2f_type = root.get_child("vec2f").unwrap();
-	let f32_type = root.get_child("f32").unwrap();
-
-	let view_type = root.add_child(
-		besl::Node::r#struct(
-			"View",
-			vec![
-				besl::Node::member("view", mat4f_type.clone()).into(),
-				besl::Node::member("projection", mat4f_type.clone()).into(),
-				besl::Node::member("view_projection", mat4f_type.clone()).into(),
-				besl::Node::member("inverse_view", mat4f_type.clone()).into(),
-				besl::Node::member("inverse_projection", mat4f_type.clone()).into(),
-				besl::Node::member("inverse_view_projection", mat4f_type.clone()).into(),
-				besl::Node::member("fov", vec2f_type.clone()).into(),
-				besl::Node::member("near", f32_type.clone()).into(),
-				besl::Node::member("far", f32_type.clone()).into(),
-			],
-		)
-		.into(),
-	);
+	let mut root = build_gtao_view_buffer_root();
 
 	root.add_children(vec![
-		besl::Node::binding(
-			"views",
-			besl::BindingTypes::Buffer {
-				members: vec![besl::Node::array("views", view_type, 8)],
-			},
-			0,
-			0,
-			true,
-			false,
-		)
-		.into(),
 		besl::Node::binding(
 			"visibility_depth",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
@@ -2116,12 +2103,12 @@ fn build_gtao_bitfield_root() -> besl::Node {
 #[cfg(test)]
 mod tests {
 	use super::{
-		generate_gtao_bitfield_blur_x_shader_for_language, generate_gtao_bitfield_shader_for_language,
-		generate_gtao_blur_shader_for_language, generate_gtao_shader_for_language, generate_pixel_mapping_shader_for_language,
-		get_material_count_msl_source, get_material_offset_msl_source, get_shadow_pass_mesh_msl_source,
-		get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
+		MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING,
 		PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING,
-		VIEWS_DATA_BINDING,
+		VIEWS_DATA_BINDING, generate_gtao_bitfield_blur_x_shader_for_language, generate_gtao_bitfield_shader_for_language,
+		generate_gtao_blur_shader_for_language, generate_gtao_shader_for_language, generate_pixel_mapping_shader_for_language,
+		get_material_count_msl_source, get_material_offset_msl_source, get_pixel_mapping_msl_source,
+		get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source,
 	};
 	use resource_management::platform_shader_generator::PlatformShaderLanguage;
 
@@ -2130,7 +2117,9 @@ mod tests {
 		let shader = get_shadow_pass_mesh_source();
 
 		assert!(
-			shader.contains("View view = views.views[push_constant.view_index];"),
+			shader.contains("View view = views.views[push_constant.view_index];")
+				|| shader.contains("uint32_t view_index = push_constant.view_index;")
+					&& shader.contains("View view = views.views[view_index];"),
 			"Expected GLSL shadow mesh source to read the selected view through BESL accessors. Shader: {shader}"
 		);
 	}
@@ -2143,6 +2132,20 @@ mod tests {
 			shader.contains("View view = set0.views->views[push_constant.view_index];")
 				&& shader.contains("Mesh mesh = set0.meshes->meshes[push_constant.instance_index];"),
 			"Expected MSL shadow mesh source to lower BESL accessors through the Metal argument buffer. Shader: {shader}"
+		);
+	}
+
+	#[test]
+	fn shadow_mesh_msl_source_matches_visibility_buffer_layout() {
+		let shader = get_shadow_pass_mesh_msl_source();
+
+		assert!(
+			shader.contains(&format!("packed_float3 positions[{MAX_VERTICES}];"))
+				&& shader.contains(&format!("packed_float2 uvs[{MAX_VERTICES}];"))
+				&& shader.contains(&format!("ushort vertex_indices[{MAX_PRIMITIVE_TRIANGLES}];"))
+				&& shader.contains(&format!("uchar primitive_indices[{}];", MAX_TRIANGLES * 3))
+				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];")),
+			"Expected the shadow mesh MSL source to preserve the packed visibility buffer layout. Shader: {shader}"
 		);
 	}
 
@@ -2202,6 +2205,20 @@ mod tests {
 	}
 
 	#[test]
+	fn visibility_mesh_msl_source_matches_visibility_buffer_layout() {
+		let shader = get_visibility_pass_mesh_msl_source();
+
+		assert!(
+			shader.contains(&format!("packed_float3 positions[{MAX_VERTICES}];"))
+				&& shader.contains(&format!("packed_float2 uvs[{MAX_VERTICES}];"))
+				&& shader.contains(&format!("ushort vertex_indices[{MAX_PRIMITIVE_TRIANGLES}];"))
+				&& shader.contains(&format!("uchar primitive_indices[{}];", MAX_TRIANGLES * 3))
+				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];")),
+			"Expected the visibility mesh MSL source to preserve the packed visibility buffer layout. Shader: {shader}"
+		);
+	}
+
+	#[test]
 	fn visibility_mesh_msl_source_compiles_for_metal() {
 		use ghi::device::DeviceCreate as _;
 
@@ -2251,9 +2268,13 @@ mod tests {
 
 		assert!(
 			shader.contains("set1.instance_index_render_target.read(gid).x")
-				&& shader.contains("set0.meshes->meshes[pixel_instance_index].material_index")
+				&& shader.contains("set0.mesh_data->meshes[pixel_instance_index].material_index")
+				&& shader.contains("constant _views* views [[id(0)]];")
+				&& shader.contains("constant _meshes* mesh_data [[id(1)]];")
+				&& shader.contains("device _material_count* material_count_buffer [[id(0)]];")
+				&& shader.contains("texture2d<uint, access::read> instance_index_render_target [[id(6)]];")
 				&& shader.contains(
-					"atomic_fetch_add_explicit(&set1.material_count->material_count[material_index], 1, memory_order_relaxed)"
+					"atomic_fetch_add_explicit(&set1.material_count_buffer->material_count[material_index], 1, memory_order_relaxed)"
 				),
 			"Expected MSL material count source to lower through Metal argument buffers. Shader: {shader}"
 		);
@@ -2289,16 +2310,27 @@ mod tests {
 
 	#[test]
 	fn pixel_mapping_msl_source_uses_platform_argument_buffer_lowering() {
-		let shader = generate_pixel_mapping_shader_for_language(PlatformShaderLanguage::Msl).into_source();
+		let shader = get_pixel_mapping_msl_source();
 
+		assert!(
+			shader.contains("float4x4 model;")
+				&& shader.contains("uint material_index;")
+				&& shader.contains("uint base_meshlet_index;")
+				&& shader.contains("constant _views* views [[id(0)]];")
+				&& shader.contains("constant _mesh_data* mesh_data [[id(1)]];")
+				&& shader.contains("device _material_offset_scratch_buffer* material_offset_scratch_buffer [[id(2)]];")
+				&& shader.contains("device _pixel_mapping_buffer* pixel_mapping_buffer [[id(4)]];")
+				&& shader.contains("texture2d<uint, access::read> instance_index_render_target [[id(6)]];"),
+			"Expected MSL pixel mapping source to preserve the full mesh buffer layout. Shader: {shader}"
+		);
 		assert!(
 			shader.contains("set1.instance_index_render_target.read(coord).x"),
 			"Expected MSL pixel mapping source to lower the integer image load through the Metal texture API. Shader: {shader}"
 		);
 		assert!(
-			shader.contains(
-				"atomic_fetch_add_explicit(&set1.material_offset_scratch_buffer->material_offset_scratch[material_index], 1, memory_order_relaxed)"
-			),
+			shader.contains("atomic_fetch_add_explicit(")
+				&& shader.contains("&set1.material_offset_scratch_buffer->material_offset_scratch[material_index]")
+				&& shader.contains("memory_order_relaxed"),
 			"Expected MSL pixel mapping source to lower the scratch offset increment through the Metal atomic API. Shader: {shader}"
 		);
 	}

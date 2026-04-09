@@ -15,7 +15,7 @@ use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRend
 use crate::rendering::pipelines::visibility::{
 	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
 	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS,
-	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
 	SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
 	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
@@ -34,7 +34,7 @@ use ghi::{
 	graphics_hardware_interface,
 };
 use log::{error, warn};
-use math::{mat::MatInverse as _, Matrix4, Vector3};
+use math::{Matrix4, Vector3, mat::MatInverse as _};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
 use resource_management::msl_shader_generator::MSLShaderGenerator;
@@ -46,7 +46,7 @@ use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
 use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::spirv_shader_generator::SPIRVShaderGenerator;
 use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
-use resource_management::{glsl, Reference};
+use resource_management::{Reference, glsl};
 use utils::hash::{HashMap, HashMapExt};
 use utils::json::{self, object};
 use utils::sync::{Arc, Rc, RwLock};
@@ -54,8 +54,8 @@ use utils::{Box, Extent, RGBA};
 
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
 use crate::rendering::{
-	csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain,
-	RenderableMesh, Viewport,
+	RenderableMesh, Viewport, csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh,
+	world_render_domain,
 };
 use crate::resource_management::{self};
 use crate::space::Transformable as _;
@@ -149,6 +149,52 @@ pub struct VisibilityWorldRenderDomain {
 }
 
 impl VisibilityWorldRenderDomain {
+	fn ensure_instance_capacity(&self, additional_instances: usize) {
+		let total_instances = self.render_entities.len() + additional_instances;
+
+		if total_instances > MAX_INSTANCES {
+			panic!(
+				"Visibility instance limit exceeded. The most likely cause is that the scene contains more mesh primitives than the visibility pipeline supports."
+			);
+		}
+	}
+
+	fn ensure_geometry_capacity(
+		&self,
+		additional_vertices: usize,
+		additional_primitives: usize,
+		additional_triangles: usize,
+		additional_meshlets: usize,
+	) {
+		let total_vertices = self.visibility_info.vertex_count as usize + additional_vertices;
+		if total_vertices > MAX_VERTICES {
+			panic!(
+				"Visibility vertex buffer limit exceeded. The most likely cause is that the scene contains more vertex data than the visibility pipeline supports."
+			);
+		}
+
+		let total_primitives = self.visibility_info.primitives_count as usize + additional_primitives;
+		if total_primitives > MAX_PRIMITIVE_TRIANGLES {
+			panic!(
+				"Visibility primitive index limit exceeded. The most likely cause is that the scene contains more primitive index data than the visibility pipeline supports."
+			);
+		}
+
+		let total_triangles = self.visibility_info.triangle_count as usize + additional_triangles;
+		if total_triangles > MAX_TRIANGLES {
+			panic!(
+				"Visibility triangle index limit exceeded. The most likely cause is that the scene contains more triangle index data than the visibility pipeline supports."
+			);
+		}
+
+		let total_meshlets = self.visibility_info.meshlet_count as usize + additional_meshlets;
+		if total_meshlets > MAX_MESHLETS {
+			panic!(
+				"Visibility meshlet limit exceeded. The most likely cause is that the scene contains more meshlets than the visibility pipeline supports."
+			);
+		}
+	}
+
 	pub fn new(
 		device: &mut ghi::implementation::Device,
 		texture_manager: TextureManager,
@@ -388,6 +434,7 @@ impl VisibilityWorldRenderDomain {
 				if let Ok(idx) = self.create_mesh_resources(urid, frame) {
 					let model = renderable.transform().get_matrix();
 					let mesh = &self.meshes[idx];
+					self.ensure_instance_capacity(mesh.primitives.len());
 
 					for primitive in &mesh.primitives {
 						self.render_entities.push((
@@ -411,6 +458,7 @@ impl VisibilityWorldRenderDomain {
 				if let Ok(idx) = self.create_mesh_from_generator(generator.as_ref(), frame) {
 					let model = renderable.transform().get_matrix();
 					let mesh = &self.meshes[idx];
+					self.ensure_instance_capacity(mesh.primitives.len());
 
 					for primitive in &mesh.primitives {
 						self.render_entities.push((
@@ -509,6 +557,9 @@ impl VisibilityWorldRenderDomain {
 		let vertex_count = positions_stream.count();
 		let primitive_count = vertex_indices_stream.count();
 		let triangle_count = meshlet_indices_stream.count() / 3;
+		let total_meshlet_count = meshlets_stream.count();
+
+		self.ensure_geometry_capacity(vertex_count, primitive_count, triangle_count, total_meshlet_count);
 
 		let vertex_positions_buffer = device.get_mut_buffer_slice(self.vertex_positions_buffer);
 		let vertex_normals_buffer = device.get_mut_buffer_slice(self.vertex_normals_buffer);
@@ -567,8 +618,6 @@ impl VisibilityWorldRenderDomain {
 
 		self.mesh_resources
 			.insert(id.to_string(), self.visibility_info.triangle_count);
-
-		let total_meshlet_count = meshlets_stream.count();
 
 		struct Meshlet {
 			primitive_count: u8,
@@ -756,6 +805,8 @@ impl VisibilityWorldRenderDomain {
 		let primitive_offset = self.visibility_info.primitives_count as usize;
 		let triangle_offset = self.visibility_info.triangle_count as usize;
 		let meshlet_offset = self.visibility_info.meshlet_count as usize;
+
+		self.ensure_geometry_capacity(positions.len(), vertex_indices.len(), primitive_indices.len(), meshlets.len());
 
 		let vertex_positions_buffer = device.get_mut_buffer_slice(self.vertex_positions_buffer);
 		vertex_positions_buffer[vertex_offset..][..positions.len()].copy_from_slice(&positions);
@@ -1047,6 +1098,12 @@ impl VisibilityWorldRenderDomain {
 					.clone(),
 			)
 		};
+
+		if index as usize >= MAX_MATERIALS {
+			panic!(
+				"Visibility material limit exceeded. The most likely cause is that the scene created more material variants than the visibility pipeline supports."
+			);
+		}
 
 		let material = v.get_or_try_init(|| {
 			let material_id = resource.id().to_string();
@@ -1398,6 +1455,12 @@ impl SceneManager for VisibilityWorldRenderDomain {
 
 		let meshes_data_buffer = frame.get_mut_dynamic_buffer_slice(self.meshes_data_buffer);
 
+		if self.render_entities.len() > MAX_INSTANCES {
+			panic!(
+				"Visibility instance limit exceeded. The most likely cause is that the scene contains more mesh primitives than the visibility pipeline supports."
+			);
+		}
+
 		for (index, (entity, shader_mesh)) in self.render_entities.iter().enumerate() {
 			meshes_data_buffer[index] = ShaderMesh {
 				model: entity.transform().get_matrix(),
@@ -1473,10 +1536,14 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		let material_count_buffer = device.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Material Count")
-				.device_accesses(ghi::DeviceAccesses::HostOnly),
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
-		let material_xy = device.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination));
+		let material_xy = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.name("Material XY")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+		);
 
 		let material_evaluation_dispatches = device.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::Indirect)
@@ -1668,7 +1735,7 @@ struct ShaderMeshletData {
 	triangle_count: u8,
 }
 
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone)]
 struct ShaderMesh {
 	model: Matrix4,
@@ -1835,4 +1902,28 @@ pub trait WorldRenderDomain {
 	fn get_descriptor_set_template(&self) -> ghi::DescriptorSetTemplateHandle;
 	fn get_descriptor_set(&self) -> ghi::DescriptorSetHandle;
 	fn get_visibility_info(&self) -> VisibilityInfo;
+}
+
+#[cfg(test)]
+mod tests {
+	use super::ShaderMesh;
+
+	#[test]
+	fn shader_mesh_matches_metal_buffer_layout() {
+		assert_eq!(
+			std::mem::size_of::<ShaderMesh>(),
+			96,
+			"Unexpected Visibility shader mesh size. The most likely cause is that the CPU-side mesh buffer layout drifted from the Metal shader struct alignment."
+		);
+		assert_eq!(
+			std::mem::align_of::<ShaderMesh>(),
+			16,
+			"Unexpected Visibility shader mesh alignment. The most likely cause is that the CPU-side mesh buffer no longer matches Metal's 16-byte struct alignment."
+		);
+		assert_eq!(
+			std::mem::offset_of!(ShaderMesh, material_index),
+			64,
+			"Unexpected Visibility shader mesh material offset. The most likely cause is that the CPU-side mesh fields no longer match the shader struct."
+		);
+	}
 }

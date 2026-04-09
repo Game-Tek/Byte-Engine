@@ -252,6 +252,7 @@ pub(super) struct CommandBufferInternal {
 #[derive(Clone)]
 pub(crate) struct CommandBuffer {
 	queue_handle: graphics_hardware_interface::QueueHandle,
+	name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -272,7 +273,7 @@ pub(crate) struct TransitionState {
 }
 
 pub(crate) struct Mesh {
-	vertex_buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+	vertex_buffers: Vec<Option<Retained<ProtocolObject<dyn mtl::MTLBuffer>>>>,
 	index_buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
 	vertex_count: u32,
 	index_count: u32,

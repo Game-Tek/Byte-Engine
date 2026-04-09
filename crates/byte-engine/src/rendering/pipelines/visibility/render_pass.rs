@@ -2,18 +2,19 @@ use std::borrow::Borrow as _;
 
 use crate::rendering::pipelines::visibility::scene_manager::Instance;
 use crate::rendering::pipelines::visibility::{
-	get_gtao_bitfield_blur_x_shader, get_gtao_bitfield_shader, get_gtao_blur_shader, get_gtao_shader,
-	get_material_count_msl_source, get_material_count_source, get_material_offset_msl_source, get_material_offset_source,
-	get_pixel_mapping_shader, get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source,
-	get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
-	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
-	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
-	MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
-	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
-	VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE, VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
+	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
+	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS,
+	MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING,
+	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING,
+	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	VISIBILITY_PASS_FRAGMENT_SOURCE, VISIBILITY_PASS_FRAGMENT_SOURCE_MSL, get_gtao_bitfield_blur_x_shader,
+	get_gtao_bitfield_shader, get_gtao_blur_shader, get_gtao_shader, get_material_count_msl_source, get_material_count_source,
+	get_material_offset_msl_source, get_material_offset_source, get_pixel_mapping_msl_source, get_pixel_mapping_source,
+	get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source,
+	get_visibility_pass_mesh_source,
 };
 use crate::rendering::render_pass::RenderPassFunction;
-use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
+use crate::rendering::{RenderPass, Viewport, render_pass::RenderPassReturn};
 use ghi::command_buffer::{
 	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
@@ -23,7 +24,6 @@ use ghi::frame::Frame as _;
 use ghi::implementation::Frame;
 use math::Vector2;
 use resource_management::glsl;
-use resource_management::platform_shader_generator::PlatformShaderLanguage;
 use resource_management::resources::material;
 use utils::{Box, Extent, RGBA};
 
@@ -553,7 +553,7 @@ impl MaterialOffsetPass {
 }
 
 pub struct PixelMappingPass {
-	material_xy: ghi::BufferHandle<[(u16, u16); 2073600]>,
+	material_xy: ghi::BufferHandle<[(u16, u16); MAX_PIXEL_MAPPING_ENTRIES]>,
 	descriptor_set: ghi::DescriptorSetHandle,
 	visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
 	pixel_mapping_pipeline: ghi::PipelineHandle,
@@ -566,35 +566,17 @@ impl PixelMappingPass {
 		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
-		material_xy: ghi::BufferHandle<[(u16, u16); 2073600]>,
+		material_xy: ghi::BufferHandle<[(u16, u16); MAX_PIXEL_MAPPING_ENTRIES]>,
 	) -> Self {
-		let pixel_mapping_shader_source = get_pixel_mapping_shader();
-		let pixel_mapping_shader = match pixel_mapping_shader_source.language() {
-			PlatformShaderLanguage::Glsl => {
-				let pixel_mapping_shader_artifact =
-					glsl::compile(pixel_mapping_shader_source.source(), "Pixel Mapping Pass Compute Shader").unwrap();
+		let pixel_mapping_shader = if ghi::implementation::USES_METAL {
+			let pixel_mapping_shader_source = get_pixel_mapping_msl_source();
 
-				device
-					.create_shader(
-						Some("Pixel Mapping Pass Compute Shader"),
-						ghi::shader::Sources::SPIRV(pixel_mapping_shader_artifact.borrow().into()),
-						ghi::ShaderTypes::Compute,
-						[
-							MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-							MATERIAL_OFFSET_SCRATCH_BINDING
-								.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
-							INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-							MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-						],
-					)
-					.expect("Failed to create shader")
-			}
-			PlatformShaderLanguage::Msl => device
+			device
 				.create_shader(
 					Some("Pixel Mapping Pass Compute Shader"),
 					ghi::shader::Sources::MTL {
-						source: pixel_mapping_shader_source.source(),
-						entry_point: pixel_mapping_shader_source.entry_point(),
+						source: pixel_mapping_shader_source.as_str(),
+						entry_point: "besl_main",
 					},
 					ghi::ShaderTypes::Compute,
 					[
@@ -605,7 +587,26 @@ impl PixelMappingPass {
 						MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
 					],
 				)
-				.expect("Failed to create shader"),
+				.expect("Failed to create shader")
+		} else {
+			let pixel_mapping_shader_source = get_pixel_mapping_source();
+			let pixel_mapping_shader_artifact =
+				glsl::compile(&pixel_mapping_shader_source, "Pixel Mapping Pass Compute Shader").unwrap();
+
+			device
+				.create_shader(
+					Some("Pixel Mapping Pass Compute Shader"),
+					ghi::shader::Sources::SPIRV(pixel_mapping_shader_artifact.borrow().into()),
+					ghi::ShaderTypes::Compute,
+					[
+						MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						MATERIAL_OFFSET_SCRATCH_BINDING
+							.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ | ghi::AccessPolicies::WRITE),
+						INSTANCE_ID_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
+						MATERIAL_XY_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
+					],
+				)
+				.expect("Failed to create shader")
 		};
 
 		let pixel_mapping_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
@@ -1153,7 +1154,7 @@ impl VisibilityPipelineRenderPass {
 		depth: ghi::BaseImageHandle,
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
-		material_xy: ghi::BufferHandle<[(u16, u16); 2073600]>,
+		material_xy: ghi::BufferHandle<[(u16, u16); MAX_PIXEL_MAPPING_ENTRIES]>,
 		material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_evaluation_dispatches: ghi::BufferHandle<[(u32, u32, u32); MAX_MATERIALS]>,
@@ -1370,7 +1371,7 @@ mod tests {
 
 	#[test]
 	fn gtao_view_space_reconstruction_z_is_positive() {
-		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
+		use math::{Matrix4, Vector3, Vector4, mat::MatInverse as _};
 
 		let near = 0.1f32;
 		let far = 100.0f32;
@@ -1476,7 +1477,7 @@ mod tests {
 	/// where depth varies per pixel, and checks for normal sign flips at different distances.
 	#[test]
 	fn gtao_normal_on_floor_plane() {
-		use math::{mat::MatInverse as _, Matrix4, Vector3, Vector4};
+		use math::{Matrix4, Vector3, Vector4, mat::MatInverse as _};
 
 		let near = 0.1f32;
 		let far = 100.0f32;
@@ -1533,7 +1534,7 @@ mod tests {
 			if hit_z < near || hit_z > far {
 				return None;
 			} // outside clip range
-	 // Project hit point to get depth
+			// Project hit point to get depth
 			let hit_x = p.x * t;
 			let clip = proj * Vector4::new(hit_x, floor_y, hit_z, 1.0);
 			Some((hit_z, clip.z / clip.w))
@@ -1542,11 +1543,7 @@ mod tests {
 		let min_diff = |p: Vector3, a: Vector3, b: Vector3| -> Vector3 {
 			let ap = Vector3::new(a.x - p.x, a.y - p.y, a.z - p.z);
 			let bp = Vector3::new(p.x - b.x, p.y - b.y, p.z - b.z);
-			if math::dot(ap, ap) < math::dot(bp, bp) {
-				ap
-			} else {
-				bp
-			}
+			if math::dot(ap, ap) < math::dot(bp, bp) { ap } else { bp }
 		};
 
 		eprintln!("\n--- Floor plane normal reconstruction ---");

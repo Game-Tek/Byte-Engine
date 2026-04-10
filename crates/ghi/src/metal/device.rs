@@ -1494,6 +1494,10 @@ impl Device {
 			builder.descriptor_set_templates.as_ref(),
 			builder.push_constant_ranges.as_ref(),
 		);
+		let has_depth_attachment = builder
+			.render_targets
+			.iter()
+			.any(|attachment| attachment.format.channel_layout() == crate::ChannelLayout::Depth);
 		let vertex_layout = self.get_or_create_vertex_layout(builder.vertex_elements.as_ref());
 		let mut shader_handles = HashMap::default();
 		let mut object_function = None;
@@ -1533,6 +1537,15 @@ impl Device {
 					.collect::<Vec<_>>()
 			})
 			.collect::<Vec<_>>();
+
+		let depth_stencil_state = if has_depth_attachment {
+			let descriptor = mtl::MTLDepthStencilDescriptor::new();
+			descriptor.setDepthCompareFunction(mtl::MTLCompareFunction::GreaterEqual);
+			descriptor.setDepthWriteEnabled(true);
+			self.device.newDepthStencilStateWithDescriptor(&descriptor)
+		} else {
+			None
+		};
 
 		let raster_pipeline_state = if let Some(mesh_function) = mesh_function.as_ref() {
 			let descriptor = mtl::MTLMeshRenderPipelineDescriptor::new();
@@ -1606,6 +1619,7 @@ impl Device {
 
 		self.pipelines.push(Pipeline {
 			pipeline: PipelineState::Raster(raster_pipeline_state),
+			depth_stencil_state,
 			layout,
 			vertex_layout: Some(vertex_layout),
 			shader_handles,
@@ -1660,6 +1674,7 @@ impl Device {
 
 		self.pipelines.push(Pipeline {
 			pipeline: PipelineState::Compute(compute_pipeline_state),
+			depth_stencil_state: None,
 			layout,
 			vertex_layout: None,
 			shader_handles,
@@ -1695,6 +1710,7 @@ impl Device {
 			.collect::<Vec<_>>();
 		self.pipelines.push(Pipeline {
 			pipeline: PipelineState::RayTracing,
+			depth_stencil_state: None,
 			layout,
 			vertex_layout: None,
 			shader_handles: HashMap::default(),

@@ -226,6 +226,7 @@ pub(crate) struct Shader {
 #[derive(Clone)]
 pub(crate) struct Pipeline {
 	pipeline: PipelineState,
+	depth_stencil_state: Option<Retained<ProtocolObject<dyn mtl::MTLDepthStencilState>>>,
 	layout: graphics_hardware_interface::PipelineLayoutHandle,
 	vertex_layout: Option<VertexLayoutHandle>,
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,

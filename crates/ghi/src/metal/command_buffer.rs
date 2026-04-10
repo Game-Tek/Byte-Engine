@@ -20,6 +20,32 @@ use crate::{
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
 const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
 
+fn attachment_texture_view(
+	texture: &Retained<ProtocolObject<dyn mtl::MTLTexture>>,
+	format: crate::Formats,
+	array_layers: u32,
+	layer: Option<u32>,
+) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
+	if let Some(layer) = layer {
+		if array_layers > 1 {
+			unsafe {
+				return texture
+					.newTextureViewWithPixelFormat_textureType_levels_slices(
+						utils::to_pixel_format(format),
+						mtl::MTLTextureType::Type2D,
+						NSRange::new(0, 1),
+						NSRange::new(layer as usize, 1),
+					)
+					.expect(
+						"Metal texture view creation failed. The most likely cause is an invalid array-layer render target view.",
+					);
+			}
+		}
+	}
+
+	texture.clone()
+}
+
 pub struct CommandBufferRecording<'a> {
 	device: &'a mut device::Device,
 	command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
@@ -310,7 +336,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			ImageOrSwapchain::Image(image) => {
 				let image = self.device.images.resource(self.get_internal_image_handle(image));
 
-				(attachment, image.texture.clone(), image.format)
+				(attachment, image.texture.clone(), image.format, image.array_layers)
 			}
 			ImageOrSwapchain::Swapchain(swapchain) => {
 				let drawable = self
@@ -319,7 +345,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					.find(|(handle, _)| *handle == swapchain)
 					.expect("Swapchain image not found");
 
-				(attachment, drawable.1.texture(), crate::Formats::BGRAu8) // TODO: get actual format
+				(attachment, drawable.1.texture(), crate::Formats::BGRAu8, 1) // TODO: get actual format
 			}
 		});
 
@@ -348,24 +374,28 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		let rpd = mtl::MTLRenderPassDescriptor::new();
 
-		for (i, (attachment, image, format)) in attachments
+		for (i, (attachment, image, format, array_layers)) in attachments
 			.clone()
-			.filter(|(_, _, format)| *format != crate::Formats::Depth32)
+			.filter(|(_, _, format, _)| *format != crate::Formats::Depth32)
 			.enumerate()
 		{
 			let att = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(i) };
+			let texture_view = attachment_texture_view(&image, format, array_layers, attachment.layer);
 
-			att.setTexture(Some(image.as_ref()));
+			att.setTexture(Some(texture_view.as_ref()));
 			att.setLoadAction(utils::load_action(attachment.load));
 			att.setStoreAction(utils::store_action(attachment.store));
 			att.setClearColor(utils::clear_color(attachment.clear));
 		}
 
-		if let Some((attachment, image, format)) = attachments.clone().find(|(_, _, format)| format == &crate::Formats::Depth32)
+		if let Some((attachment, image, format, array_layers)) = attachments
+			.clone()
+			.find(|(_, _, format, _)| format == &crate::Formats::Depth32)
 		{
 			let att = unsafe { rpd.depthAttachment() };
+			let texture_view = attachment_texture_view(&image, format, array_layers, attachment.layer);
 
-			att.setTexture(Some(image.as_ref()));
+			att.setTexture(Some(texture_view.as_ref()));
 			att.setLoadAction(utils::load_action(attachment.load));
 			att.setStoreAction(utils::store_action(attachment.store));
 			att.setClearDepth(utils::clear_depth(attachment.clear));
@@ -698,6 +728,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 		let pipeline_layout = pipeline.layout;
 		let pipeline_vertex_layout = pipeline.vertex_layout;
 		let pipeline_state = pipeline.pipeline.clone();
+		let depth_stencil_state = pipeline.depth_stencil_state.clone();
 		let face_winding = pipeline.face_winding;
 		let cull_mode = pipeline.cull_mode;
 
@@ -708,6 +739,10 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 		if let Some(encoder) = self.active_render_encoder.as_ref() {
 			encoder.setFrontFacingWinding(utils::winding(face_winding));
 			encoder.setCullMode(utils::cull_mode(cull_mode));
+
+			if let Some(depth_stencil_state) = depth_stencil_state.as_ref() {
+				encoder.setDepthStencilState(Some(depth_stencil_state.as_ref()));
+			}
 
 			if let PipelineState::Raster(Some(render_pipeline_state)) = &pipeline_state {
 				encoder.setRenderPipelineState(render_pipeline_state);

@@ -403,7 +403,16 @@ struct PrimitiveOutput {
 		};
 
 		let set2_binding0 = Node::binding("diffuse_map", Node::image("rgba16"), 2, 0, false, true);
+		let set2_binding1 = Node::binding(
+			"_unused_set2_binding1",
+			Node::buffer("UnusedSet2Binding1", vec![Node::member("padding", "u32")]),
+			2,
+			1,
+			true,
+			false,
+		);
 		let set2_binding2 = Node::binding("specular_map", Node::image("rgba16"), 2, 2, false, true);
+		let set2_binding3 = Node::binding("_unused_set2_binding3", Node::image("rgba16"), 2, 3, false, true);
 		let set2_binding4 = Node::binding(
 			"lighting_data",
 			Node::buffer(
@@ -822,7 +831,9 @@ struct PrimitiveOutput {
 				compute_triangle,
 				process_meshlet,
 				set2_binding0,
+				set2_binding1,
 				set2_binding2,
+				set2_binding3,
 				set2_binding4,
 				set2_binding5,
 				set2_binding10,
@@ -1293,6 +1304,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 						"lighting_data",
 						"diffuse_map",
 						"specular_map",
+						"_unused_set2_binding1",
+						"_unused_set2_binding3",
 						"sample_shadow",
 						"ibl_cubemap",
 						"sample_ibl_cubemap",
@@ -1424,6 +1437,17 @@ mod tests {
 				&& source.contains("constant _material_evaluation_dispatches* material_evaluation_dispatches [[id(3)]];")
 				&& source.contains("constant _pixel_mapping* pixel_mapping [[id(4)]];"),
 			"Expected the material evaluation MSL source to preserve the full visibility set1 binding layout. Shader: {source}"
+		);
+		assert!(
+			source.contains("texture2d<float, access::write> diffuse_map [[id(0)]];")
+				&& source.contains("constant __unused_set2_binding1* _unused_set2_binding1 [[id(1)]];")
+				&& source.contains("texture2d<float, access::write> specular_map [[id(2)]];")
+				&& source.contains("texture2d<float, access::write> _unused_set2_binding3 [[id(3)]];")
+				&& source.contains("texture2d<float> ao [[id(6)]];")
+				&& source.contains("sampler ao_sampler [[id(7)]];")
+				&& source.contains("texture2d<float> visibility_depth [[id(10)]];")
+				&& source.contains("sampler visibility_depth_sampler [[id(11)]];"),
+			"Expected the material evaluation MSL source to preserve the full visibility set2 binding layout. Shader: {source}"
 		);
 	}
 

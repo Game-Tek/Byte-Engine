@@ -47,6 +47,7 @@ pub enum ValueType {
 	F32,
 	Vec3U,
 	Vec2U,
+	Vec4U,
 	Vec2F,
 	Vec3F,
 	Vec4F,
@@ -61,8 +62,8 @@ impl ValueType {
 			ValueType::U32 | ValueType::I32 | ValueType::F32 => 4,
 			ValueType::Vec2U | ValueType::Vec2F => 8,
 			ValueType::Vec3U => 12,
+			ValueType::Vec4U | ValueType::Vec4F => 16,
 			ValueType::Vec3F => 12,
-			ValueType::Vec4F => 16,
 			ValueType::Mat4F => 64,
 		}
 	}
@@ -76,6 +77,7 @@ impl ValueType {
 			ValueType::F32 => "f32",
 			ValueType::Vec3U => "vec3u",
 			ValueType::Vec2U => "vec2u",
+			ValueType::Vec4U => "vec4u",
 			ValueType::Vec2F => "vec2f",
 			ValueType::Vec3F => "vec3f",
 			ValueType::Vec4F => "vec4f",
@@ -213,6 +215,7 @@ impl Buffer {
 			ValueType::F32 => ScalarValue::F32(f32::from_ne_bytes(bytes.try_into().expect("Invalid f32 byte count"))),
 			ValueType::Vec2U => ScalarValue::Vec2U(read_u32_array::<2>(bytes)?),
 			ValueType::Vec3U => ScalarValue::Vec3U(read_u32_array::<3>(bytes)?),
+			ValueType::Vec4U => ScalarValue::Vec4U(read_u32_array::<4>(bytes)?),
 			ValueType::Vec2F => ScalarValue::Vec2F(read_f32_array::<2>(bytes)?),
 			ValueType::Vec3F => ScalarValue::Vec3F(read_f32_array::<3>(bytes)?),
 			ValueType::Vec4F => ScalarValue::Vec4F(read_f32_array::<4>(bytes)?),
@@ -238,6 +241,7 @@ impl Buffer {
 			ScalarValue::F32(value) => value.to_ne_bytes().to_vec(),
 			ScalarValue::Vec2U(value) => write_u32_slice(value),
 			ScalarValue::Vec3U(value) => write_u32_slice(value),
+			ScalarValue::Vec4U(value) => write_u32_slice(value),
 			ScalarValue::Vec2F(value) => write_f32_slice(value),
 			ScalarValue::Vec3F(value) => write_f32_slice(value),
 			ScalarValue::Vec4F(value) => write_f32_slice(value),
@@ -843,6 +847,7 @@ pub enum Value {
 	F32(f32),
 	Vec2U([u32; 2]),
 	Vec3U([u32; 3]),
+	Vec4U([u32; 4]),
 	Vec2F([f32; 2]),
 	Vec3F([f32; 3]),
 	Vec4F([f32; 4]),
@@ -859,6 +864,7 @@ impl Value {
 			Value::F32(_) => ValueType::F32,
 			Value::Vec2U(_) => ValueType::Vec2U,
 			Value::Vec3U(_) => ValueType::Vec3U,
+			Value::Vec4U(_) => ValueType::Vec4U,
 			Value::Vec2F(_) => ValueType::Vec2F,
 			Value::Vec3F(_) => ValueType::Vec3F,
 			Value::Vec4F(_) => ValueType::Vec4F,
@@ -2737,6 +2743,7 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"f32" => Ok(ValueType::F32),
 		"vec2u" => Ok(ValueType::Vec2U),
 		"vec3u" => Ok(ValueType::Vec3U),
+		"vec4u" => Ok(ValueType::Vec4U),
 		"vec2f" => Ok(ValueType::Vec2F),
 		"vec3f" => Ok(ValueType::Vec3F),
 		"vec4f" => Ok(ValueType::Vec4F),
@@ -2914,7 +2921,7 @@ fn parse_literal(value: &str, value_type: &ValueType) -> Result<ScalarValue, VmE
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
 			})?,
-		ValueType::Vec2U | ValueType::Vec3U => {
+		ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => {
 			return Err(VmError::InvalidLiteral {
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
@@ -2942,6 +2949,7 @@ fn construct_value(value_type: &ValueType, components: &[ScalarValue]) -> Result
 	match value_type {
 		ValueType::Vec2U => Ok(ScalarValue::Vec2U(extract_u32_components::<2>(components)?)),
 		ValueType::Vec3U => Ok(ScalarValue::Vec3U(extract_u32_components::<3>(components)?)),
+		ValueType::Vec4U => Ok(ScalarValue::Vec4U(extract_u32_components::<4>(components)?)),
 		ValueType::Vec2F => Ok(ScalarValue::Vec2F(extract_f32_components::<2>(components)?)),
 		ValueType::Vec3F => Ok(ScalarValue::Vec3F(extract_f32_components::<3>(components)?)),
 		ValueType::Vec4F => Ok(ScalarValue::Vec4F(extract_f32_components::<4>(components)?)),

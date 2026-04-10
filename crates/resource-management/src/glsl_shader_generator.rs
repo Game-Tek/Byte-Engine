@@ -73,6 +73,7 @@ impl GLSLShaderGenerator {
 			"vec2i" => "ivec2",
 			"vec2u16" => "u16vec2",
 			"vec3u" => "uvec3",
+			"vec4u" => "uvec4",
 			"vec3f" => "vec3",
 			"vec4f" => "vec4",
 			"mat2f" => "mat2",

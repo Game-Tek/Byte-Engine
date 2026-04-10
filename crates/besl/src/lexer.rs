@@ -153,6 +153,15 @@ impl Node {
 		let vec2f32 = record_type("vec2f", [("x", f32_t.clone()), ("y", f32_t.clone())]);
 		let vec3f32 = record_type("vec3f", [("x", f32_t.clone()), ("y", f32_t.clone()), ("z", f32_t.clone())]);
 		let vec3u32 = record_type("vec3u", [("x", u32_t.clone()), ("y", u32_t.clone()), ("z", u32_t.clone())]);
+		let vec4u32 = record_type(
+			"vec4u",
+			[
+				("x", u32_t.clone()),
+				("y", u32_t.clone()),
+				("z", u32_t.clone()),
+				("w", u32_t.clone()),
+			],
+		);
 		let vec4f32 = record_type(
 			"vec4f",
 			[
@@ -321,6 +330,7 @@ impl Node {
 			vec2f32,
 			vec3u32,
 			vec3f32,
+			vec4u32,
 			vec4f32,
 			mat4f32,
 			texture_2d,

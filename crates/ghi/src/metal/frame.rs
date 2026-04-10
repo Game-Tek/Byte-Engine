@@ -97,9 +97,14 @@ impl Frame<'_> {
 			return;
 		}
 
-		let replacement =
-			self.device
-				.create_image_resource(None, extent, image.format, image.uses, image.access, image.array_layers);
+		let replacement = self.device.create_image_resource(
+			image.name.as_deref(),
+			extent,
+			image.format,
+			image.uses,
+			image.access,
+			image.array_layers,
+		);
 		*self.device.images.resource_mut(handle) = replacement;
 		self.device.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
 	}

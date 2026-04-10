@@ -282,6 +282,7 @@ impl Device {
 		device_accesses: crate::DeviceAccesses,
 	) -> buffer::Buffer {
 		let options = utils::resource_options_from_access(device_accesses);
+		let name = name.map(str::to_owned);
 		let buffer = self
 			.device
 			.newBufferWithLength_options(size as _, options)
@@ -297,7 +298,7 @@ impl Device {
 			None
 		};
 
-		if let Some(name) = name {
+		if let Some(name) = name.as_deref() {
 			buffer.setLabel(Some(&NSString::from_str(name)));
 			if let Some(staging) = staging.as_ref() {
 				staging.setLabel(Some(&NSString::from_str(&format!("{name}_staging"))));
@@ -312,6 +313,7 @@ impl Device {
 		let staging = staging.map(|staging| {
 			let mut creator = self.buffers.creator();
 			let handle = creator.add(buffer::Buffer {
+				name: name.as_ref().map(|name| format!("{name}_staging")),
 				staging: None,
 				buffer: staging,
 				size,
@@ -324,6 +326,7 @@ impl Device {
 		});
 
 		buffer::Buffer {
+			name,
 			buffer,
 			staging,
 			size,
@@ -344,6 +347,7 @@ impl Device {
 		array_layers: u32,
 	) -> image::Image {
 		let pixel_format = utils::to_pixel_format(format);
+		let name = name.map(str::to_owned);
 
 		let width = extent.width().max(1);
 		let height = extent.height().max(1);
@@ -373,7 +377,7 @@ impl Device {
 			.newTextureWithDescriptor(&descriptor)
 			.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
 
-		if let Some(name) = name {
+		if let Some(name) = name.as_deref() {
 			texture.setLabel(Some(&NSString::from_str(name)));
 		}
 
@@ -384,6 +388,7 @@ impl Device {
 		});
 
 		image::Image {
+			name,
 			texture,
 			extent,
 			format,
@@ -774,16 +779,23 @@ impl Device {
 			.collect::<Vec<_>>();
 
 		for image_handle in image_handles {
-			let (current_extent, format, uses, access, array_layers) = {
+			let (name, current_extent, format, uses, access, array_layers) = {
 				let image = self.images.resource(image_handle);
-				(image.extent, image.format, image.uses, image.access, image.array_layers)
+				(
+					image.name.clone(),
+					image.extent,
+					image.format,
+					image.uses,
+					image.access,
+					image.array_layers,
+				)
 			};
 
 			if current_extent == extent {
 				continue;
 			}
 
-			let replacement = self.create_image_resource(None, extent, format, uses, access, array_layers);
+			let replacement = self.create_image_resource(name.as_deref(), extent, format, uses, access, array_layers);
 			*self.images.resource_mut(image_handle) = replacement;
 			self.rewrite_descriptors_for_handle(PrivateHandles::Image(image_handle));
 		}
@@ -1067,7 +1079,9 @@ impl Device {
 			}
 			crate::shader::Sources::MTL { source, entry_point } => {
 				let threadgroup_size = match stage {
-					crate::ShaderTypes::Task | crate::ShaderTypes::Mesh => parse_threadgroup_size_metadata(source),
+					crate::ShaderTypes::Task | crate::ShaderTypes::Mesh | crate::ShaderTypes::Compute => {
+						parse_threadgroup_size_metadata(source)
+					}
 					_ => None,
 				};
 				let compile_options = mtl::MTLCompileOptions::new();
@@ -1596,6 +1610,7 @@ impl Device {
 			vertex_layout: Some(vertex_layout),
 			shader_handles,
 			resource_access,
+			compute_threadgroup_size: None,
 			object_threadgroup_size,
 			mesh_threadgroup_size,
 			face_winding: builder.face_winding,
@@ -1641,6 +1656,7 @@ impl Device {
 				)
 			})
 			.collect::<Vec<_>>();
+		let compute_threadgroup_size = self.shaders[shader_handle.0 as usize].threadgroup_size;
 
 		self.pipelines.push(Pipeline {
 			pipeline: PipelineState::Compute(compute_pipeline_state),
@@ -1648,6 +1664,7 @@ impl Device {
 			vertex_layout: None,
 			shader_handles,
 			resource_access,
+			compute_threadgroup_size,
 			object_threadgroup_size: None,
 			mesh_threadgroup_size: None,
 			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
@@ -1682,6 +1699,7 @@ impl Device {
 			vertex_layout: None,
 			shader_handles: HashMap::default(),
 			resource_access,
+			compute_threadgroup_size: None,
 			object_threadgroup_size: None,
 			mesh_threadgroup_size: None,
 			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
@@ -2157,7 +2175,7 @@ impl Device {
 
 		let uses = buffer.uses;
 		let access = buffer.access;
-		let name = buffer.buffer.label().map(|l| l.to_string());
+		let name = buffer.name.clone();
 
 		let replacement = self.create_buffer_resource(name.as_deref(), size, uses, access);
 

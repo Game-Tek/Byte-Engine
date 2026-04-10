@@ -20,7 +20,7 @@ pub struct MSLShaderGenerator {
 	mesh_stage_context: Option<MeshStageContext>,
 }
 
-const MESH_PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
+const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComputeBindingMode {
@@ -84,7 +84,7 @@ impl MSLShaderGenerator {
 	fn is_vector_type_name(type_name: &str) -> bool {
 		matches!(
 			type_name,
-			"vec2f" | "vec3f" | "vec4f" | "vec2u" | "vec3u" | "vec2i" | "vec2u16"
+			"vec2f" | "vec3f" | "vec4f" | "vec2u" | "vec3u" | "vec4u" | "vec2i" | "vec2u16"
 		)
 	}
 
@@ -951,12 +951,15 @@ impl MSLShaderGenerator {
 	fn emit_mesh_push_constant_parameter(&self, string: &mut String, _push_constant: &besl::NodeReference) {
 		string.push_str(&format!(
 			"constant PushConstant& push_constant [[buffer({})]]",
-			MESH_PUSH_CONSTANT_BINDING_INDEX
+			PUSH_CONSTANT_BINDING_INDEX
 		));
 	}
 
 	fn emit_compute_push_constant_parameter(&self, string: &mut String, _push_constant: &besl::NodeReference) {
-		string.push_str("constant PushConstant& push_constant [[buffer(0)]]");
+		string.push_str(&format!(
+			"constant PushConstant& push_constant [[buffer({})]]",
+			PUSH_CONSTANT_BINDING_INDEX
+		));
 	}
 
 	fn emit_compute_binding_parameter(&self, string: &mut String, binding_node: &besl::NodeReference) {
@@ -1332,6 +1335,7 @@ impl MSLShaderGenerator {
 			"vec2i" => "int2",
 			"vec2u16" => "ushort2",
 			"vec3u" => "uint3",
+			"vec4u" => "uint4",
 			"vec3f" => "float3",
 			"vec4f" => "float4",
 			"mat2f" => "float2x2",
@@ -1635,9 +1639,15 @@ impl MSLShaderGenerator {
 
 				// TODO: Confirm push constant mapping for Metal argument buffers.
 				if self.minified {
-					string.push_str("constant PushConstant& push_constant [[buffer(0)]];");
+					string.push_str(&format!(
+						"constant PushConstant& push_constant [[buffer({})]];",
+						PUSH_CONSTANT_BINDING_INDEX
+					));
 				} else {
-					string.push_str("constant PushConstant& push_constant [[buffer(0)]];\n");
+					string.push_str(&format!(
+						"constant PushConstant& push_constant [[buffer({})]];\n",
+						PUSH_CONSTANT_BINDING_INDEX
+					));
 				}
 			}
 			besl::Nodes::Specialization { name, r#type } => {
@@ -2049,7 +2059,13 @@ impl MSLShaderGenerator {
 		}
 
 		match compilation_settings.stage {
-			Stages::Compute { .. } => {
+			Stages::Compute { local_size } => {
+				msl_block.push_str(&format!(
+					"// besl-threadgroup-size:{},{},{}\n",
+					local_size.width(),
+					local_size.height(),
+					local_size.depth()
+				));
 				msl_block.push_str("// Note: Metal threadgroup sizes are set on the pipeline state.\n");
 			}
 			Stages::Mesh { local_size, .. } => {
@@ -2259,6 +2275,21 @@ struct PrimitiveOutput {
 	}
 
 	#[test]
+	fn compute_shaders_emit_threadgroup_metadata() {
+		let source = "main: fn () -> void { let coord: vec3u = thread_id(); }";
+		let root = besl::parse(source).unwrap();
+		let root = besl::lex(root).unwrap();
+		let main_node = root.get_main().unwrap();
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(128)), &main_node)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "// besl-threadgroup-size:128,1,1");
+	}
+
+	#[test]
 	fn specializtions() {
 		let main = shader_generator::tests::specializations();
 
@@ -2385,7 +2416,7 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "struct PushConstant{uint material_id;};");
-		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(0)]];");
+		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(15)]];");
 		assert_string_contains!(shader, "void main(){push_constant;}");
 	}
 

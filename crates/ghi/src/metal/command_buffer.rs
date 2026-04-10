@@ -96,6 +96,30 @@ impl<'a> CommandBufferRecording<'a> {
 		NSString::from_str(&label)
 	}
 
+	fn apply_debug_regions_to_compute_encoder(&self, encoder: &ProtocolObject<dyn mtl::MTLComputeCommandEncoder>) {
+		for region in self.debug_regions.borrow().iter() {
+			encoder.pushDebugGroup(&NSString::from_str(region));
+		}
+	}
+
+	fn apply_debug_regions_to_render_encoder(&self, encoder: &ProtocolObject<dyn mtl::MTLRenderCommandEncoder>) {
+		for region in self.debug_regions.borrow().iter() {
+			encoder.pushDebugGroup(&NSString::from_str(region));
+		}
+	}
+
+	fn refresh_active_encoder_labels(&self) {
+		if let Some(encoder) = self.active_compute_encoder.as_ref() {
+			let label = self.current_encoder_label("Compute Pass");
+			encoder.setLabel(Some(&label));
+		}
+
+		if let Some(encoder) = self.active_render_encoder.as_ref() {
+			let label = self.current_encoder_label("Render Pass");
+			encoder.setLabel(Some(&label));
+		}
+	}
+
 	fn ensure_compute_encoder(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>> {
 		if let Some(encoder) = self.active_render_encoder.take() {
 			encoder.endEncoding();
@@ -107,6 +131,7 @@ impl<'a> CommandBufferRecording<'a> {
 			);
 			let label = self.current_encoder_label("Compute Pass");
 			encoder.setLabel(Some(&label));
+			self.apply_debug_regions_to_compute_encoder(encoder.as_ref());
 			self.active_compute_encoder = Some(encoder);
 		}
 
@@ -349,6 +374,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let rce = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).unwrap();
 		let label = self.current_encoder_label("Render Pass");
 		rce.setLabel(Some(&label));
+		self.apply_debug_regions_to_render_encoder(rce.as_ref());
 
 		rce.setViewport(mtl::MTLViewport {
 			originX: 0.0,
@@ -593,6 +619,10 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		&mut self,
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut impl BoundComputePipelineMode {
+		if let Some(encoder) = self.active_compute_encoder.as_ref() {
+			encoder.memoryBarrierWithScope(mtl::MTLBarrierScope::Buffers | mtl::MTLBarrierScope::Textures);
+		}
+
 		self.bound_pipeline = Some(pipeline_handle);
 
 		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
@@ -624,11 +654,30 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	fn start_region(&self, name: &str) {
 		self.debug_regions.borrow_mut().push(name.to_owned());
 		self.command_buffer.pushDebugGroup(&NSString::from_str(name));
+
+		if let Some(encoder) = self.active_compute_encoder.as_ref() {
+			encoder.pushDebugGroup(&NSString::from_str(name));
+		}
+
+		if let Some(encoder) = self.active_render_encoder.as_ref() {
+			encoder.pushDebugGroup(&NSString::from_str(name));
+		}
+
+		self.refresh_active_encoder_labels();
 	}
 
 	fn end_region(&self) {
-		self.debug_regions.borrow_mut().pop();
+		if let Some(encoder) = self.active_compute_encoder.as_ref() {
+			encoder.popDebugGroup();
+		}
+
+		if let Some(encoder) = self.active_render_encoder.as_ref() {
+			encoder.popDebugGroup();
+		}
+
 		self.command_buffer.popDebugGroup();
+		self.debug_regions.borrow_mut().pop();
+		self.refresh_active_encoder_labels();
 	}
 
 	fn region(&mut self, name: &str, f: impl FnOnce(&mut Self)) {
@@ -1060,10 +1109,37 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 
 	fn indirect_dispatch<const N: usize>(
 		&mut self,
-		_buffer: graphics_hardware_interface::BufferHandle<[(u32, u32, u32); N]>,
-		_entry_index: usize,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 4]; N]>,
+		entry_index: usize,
 	) {
-		// TODO: Encode indirect dispatch.
+		let internal_buffer = self.get_internal_buffer_handle(buffer_handle.into());
+		let buffer = self.device.buffers.resource(internal_buffer).buffer.clone();
+
+		self.consume_resources([Consumption {
+			handle: PrivateHandles::Buffer(internal_buffer),
+			stages: crate::Stages::COMPUTE,
+			access: crate::AccessPolicies::READ,
+			layout: crate::Layouts::Indirect,
+		}]);
+
+		let bound_pipeline = self.bound_pipeline.expect(
+			"No pipeline bound. The most likely cause is that indirect_dispatch was called before bind_compute_pipeline.",
+		);
+		let pipeline = &self.device.pipelines[bound_pipeline.0 as usize];
+		let threadgroup_extent = pipeline.compute_threadgroup_size.unwrap_or(Extent::line(128));
+
+		unsafe {
+			self.ensure_compute_encoder()
+				.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+					buffer.as_ref(),
+					(entry_index * std::mem::size_of::<[u32; 4]>()) as _,
+					mtl::MTLSize {
+						width: threadgroup_extent.width() as _,
+						height: threadgroup_extent.height() as _,
+						depth: threadgroup_extent.depth() as _,
+					},
+				);
+		}
 	}
 }
 

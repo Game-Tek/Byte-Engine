@@ -230,6 +230,7 @@ pub(crate) struct Pipeline {
 	vertex_layout: Option<VertexLayoutHandle>,
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 	resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
+	compute_threadgroup_size: Option<Extent>,
 	object_threadgroup_size: Option<Extent>,
 	mesh_threadgroup_size: Option<Extent>,
 	face_winding: crate::pipelines::raster::FaceWinding,
@@ -736,6 +737,7 @@ pub mod buffer {
 
 	#[derive(Clone)]
 	pub(crate) struct Buffer {
+		pub(crate) name: Option<String>,
 		pub(crate) staging: Option<BufferHandle>,
 		pub(crate) buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
 		pub(crate) size: usize,
@@ -752,6 +754,7 @@ pub mod image {
 
 	#[derive(Clone)]
 	pub(crate) struct Image {
+		pub(crate) name: Option<String>,
 		pub(crate) texture: Retained<ProtocolObject<dyn mtl::MTLTexture>>,
 		pub(crate) extent: Extent,
 		pub(crate) format: Formats,

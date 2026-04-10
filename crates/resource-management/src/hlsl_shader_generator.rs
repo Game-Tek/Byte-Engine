@@ -173,6 +173,7 @@ impl HLSLShaderGenerator {
 			"vec2i" => "int2",
 			"vec2u16" => "uint16_t2",
 			"vec3u" => "uint3",
+			"vec4u" => "uint4",
 			"vec3f" => "float3",
 			"vec4f" => "float4",
 			"mat2f" => "float2x2",

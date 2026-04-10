@@ -486,7 +486,7 @@ struct _material_offset_scratch_buffer {
 };
 
 struct _material_evaluation_dispatches {
-	uint3 material_evaluation_dispatches[1024];
+	uint4 material_evaluation_dispatches[1024];
 };
 
 struct _pixel_mapping_buffer {
@@ -531,7 +531,7 @@ pub fn get_material_offset_source() -> String {
 	for (uint i = 0; i < 1024; i++) { /* 1024 is the maximum number of materials */
 		material_offset.material_offset[i] = sum;
 		material_offset_scratch.material_offset_scratch[i] = sum;
-		material_evaluation_dispatches.material_evaluation_dispatches[i] = uvec3((material_count.material_count[i] + 127) / 128, 1, 1);
+		material_evaluation_dispatches.material_evaluation_dispatches[i] = uvec4((material_count.material_count[i] + 127) / 128, 1, 1, 0);
 		sum += material_count.material_count[i];
 	}
 	"#;
@@ -592,7 +592,7 @@ struct _material_offset_scratch {
 };
 
 struct _material_evaluation_dispatches {
-	uint3 material_evaluation_dispatches[1024];
+	uint4 material_evaluation_dispatches[1024];
 };
 
 struct _set1 {
@@ -610,7 +610,7 @@ kernel void besl_main(uint2 gid [[thread_position_in_grid]], constant _set1& set
 		uint count = atomic_load_explicit(&set1.material_count->material_count[i], memory_order_relaxed);
 		set1.material_offset->material_offset[i] = sum;
 		set1.material_offset_scratch->material_offset_scratch[i] = sum;
-		set1.material_evaluation_dispatches->material_evaluation_dispatches[i] = uint3((count + 127) / 128, 1, 1);
+		set1.material_evaluation_dispatches->material_evaluation_dispatches[i] = uint4((count + 127) / 128, 1, 1, 0);
 		sum += count;
 	}
 }
@@ -654,7 +654,7 @@ struct _material_offset_scratch_buffer {{
 }};
 
 struct _material_evaluation_dispatches {{
-	uint3 material_evaluation_dispatches[1024];
+	uint4 material_evaluation_dispatches[1024];
 }};
 
 struct _pixel_mapping_buffer {{
@@ -695,7 +695,9 @@ kernel void besl_main(uint2 coord [[thread_position_in_grid]], constant _set0& s
 	);
 	if (pixel_mapping_index >= {MAX_PIXEL_MAPPING_ENTRIES}u) {{ return; }}
 
-	set1.pixel_mapping_buffer->pixel_mapping[pixel_mapping_index] = ushort2(coord.x, coord.y);
+	// Pixel mapping is zero-cleared before dispatch, so store coordinates offset by one.
+	// That leaves ushort2(0, 0) as an explicit "unwritten entry" sentinel.
+	set1.pixel_mapping_buffer->pixel_mapping[pixel_mapping_index] = ushort2(coord.x + 1, coord.y + 1);
 }}
 "#
 	)
@@ -740,7 +742,7 @@ fn build_pixel_mapping_program() -> besl::NodeReference {
 				let pixel_mapping_index: u32 = atomic_add(material_offset_scratch_buffer.material_offset_scratch[material_index], 1);
 
 				if (pixel_mapping_index < __MAX_PIXEL_MAPPING_ENTRIES__) {
-					pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x, coord.y);
+					pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x + 1, coord.y + 1);
 				}
 			}
 		}
@@ -761,6 +763,7 @@ fn build_pixel_mapping_root() -> besl::Node {
 	let texture_2d = root.get_child("Texture2D").unwrap();
 	let vec2u_t = root.get_child("vec2u").unwrap();
 	let vec2u16_t = root.get_child("vec2u16").unwrap();
+	let vec4u_t = root.get_child("vec4u").unwrap();
 	let mesh = root.add_child(
 		besl::Node::r#struct(
 			"Mesh",
@@ -781,7 +784,8 @@ fn build_pixel_mapping_root() -> besl::Node {
 	let material_count_member = besl::Node::array("material_count", atomic_u32.clone(), MAX_MATERIALS);
 	let material_offset_member = besl::Node::array("material_offset", u32_t.clone(), 1);
 	let material_offset_scratch_member = besl::Node::array("material_offset_scratch", atomic_u32.clone(), MAX_MATERIALS);
-	let material_evaluation_dispatches_member = besl::Node::array("material_evaluation_dispatches", u32_t.clone(), 1);
+	let material_evaluation_dispatches_member =
+		besl::Node::array("material_evaluation_dispatches", vec4u_t.clone(), MAX_MATERIALS);
 	let pixel_mapping_member = besl::Node::array("pixel_mapping", vec2u16_t, MAX_PIXEL_MAPPING_ENTRIES);
 
 	root.add_children(vec![
@@ -1945,19 +1949,17 @@ fn build_gtao_view_buffer_root() -> besl::Node {
 		.into(),
 	);
 
-	root.add_children(vec![
-		besl::Node::binding(
-			"views",
-			besl::BindingTypes::Buffer {
-				members: vec![besl::Node::array("views", view_type, 8)],
-			},
-			0,
-			0,
-			true,
-			false,
-		)
-		.into(),
-	]);
+	root.add_children(vec![besl::Node::binding(
+		"views",
+		besl::BindingTypes::Buffer {
+			members: vec![besl::Node::array("views", view_type, 8)],
+		},
+		0,
+		0,
+		true,
+		false,
+	)
+	.into()]);
 
 	root
 }
@@ -2103,12 +2105,13 @@ fn build_gtao_bitfield_root() -> besl::Node {
 #[cfg(test)]
 mod tests {
 	use super::{
-		MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING,
-		PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING,
-		VIEWS_DATA_BINDING, generate_gtao_bitfield_blur_x_shader_for_language, generate_gtao_bitfield_shader_for_language,
+		generate_gtao_bitfield_blur_x_shader_for_language, generate_gtao_bitfield_shader_for_language,
 		generate_gtao_blur_shader_for_language, generate_gtao_shader_for_language, generate_pixel_mapping_shader_for_language,
 		get_material_count_msl_source, get_material_offset_msl_source, get_pixel_mapping_msl_source,
-		get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source,
+		get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source, MAX_MESHLETS,
+		MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
+		PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING,
+		VIEWS_DATA_BINDING,
 	};
 	use resource_management::platform_shader_generator::PlatformShaderLanguage;
 
@@ -2288,7 +2291,7 @@ mod tests {
 			shader.contains("atomic_load_explicit(&set1.material_count->material_count[i], memory_order_relaxed)")
 				&& shader.contains("set1.material_offset->material_offset[i] = sum;")
 				&& shader.contains(
-					"set1.material_evaluation_dispatches->material_evaluation_dispatches[i] = uint3((count + 127) / 128, 1, 1);"
+					"set1.material_evaluation_dispatches->material_evaluation_dispatches[i] = uint4((count + 127) / 128, 1, 1, 0);"
 				),
 			"Expected MSL material offset source to lower through Metal argument buffers. Shader: {shader}"
 		);

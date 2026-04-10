@@ -131,7 +131,7 @@ impl<'a> CommandBufferRecording<'a> {
 
 	pub fn dispatch(&mut self, _dispatch: DispatchExtent) {}
 
-	pub fn indirect_dispatch<const N: usize>(&mut self, _buffer: BufferHandle<[(u32, u32, u32); N]>, _entry_index: usize) {}
+	pub fn indirect_dispatch<const N: usize>(&mut self, _buffer: BufferHandle<[[u32; 4]; N]>, _entry_index: usize) {}
 
 	pub fn trace_rays(&mut self, _binding_tables: crate::rt::BindingTables, _x: u32, _y: u32, _z: u32) {}
 }

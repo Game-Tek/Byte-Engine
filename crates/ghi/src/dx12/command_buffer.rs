@@ -191,7 +191,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 		// TODO: DX12 dispatch requires command list encoding.
 	}
 
-	fn indirect_dispatch<const N: usize>(&mut self, _buffer: BufferHandle<[(u32, u32, u32); N]>, _entry_index: usize) {
+	fn indirect_dispatch<const N: usize>(&mut self, _buffer: BufferHandle<[[u32; 4]; N]>, _entry_index: usize) {
 		// TODO: DX12 indirect dispatch requires command list encoding and command signature setup.
 	}
 }

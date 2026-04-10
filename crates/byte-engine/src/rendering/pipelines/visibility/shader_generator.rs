@@ -1,6 +1,6 @@
 use std::{cell::RefCell, ops::Deref, rc::Rc};
 
-use besl::{NodeReference, parser::Node};
+use besl::{parser::Node, NodeReference};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use std::sync::Arc;
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
@@ -199,7 +199,7 @@ impl VisibilityShaderScope {
 			"material_evaluation_dispatches",
 			Node::buffer(
 				"MaterialEvaluationDispatches",
-				vec![Node::member("material_evaluation_dispatches", "vec3u[1024]")],
+				vec![Node::member("material_evaluation_dispatches", "vec4u[1024]")],
 			),
 			1,
 			3,
@@ -843,7 +843,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		let a = "if (gl_GlobalInvocationID.x >= material_count.material_count[push_constant.material_id]) { return; }
 
 		uint offset = material_offset.material_offset[push_constant.material_id];
-		ivec2 pixel_coordinates = ivec2(pixel_mapping.pixel_mapping[offset + gl_GlobalInvocationID.x]);
+		uvec2 raw_pixel_coordinates = uvec2(pixel_mapping.pixel_mapping[offset + gl_GlobalInvocationID.x]);
+		if (raw_pixel_coordinates.x == 0u || raw_pixel_coordinates.y == 0u) { return; }
+		ivec2 pixel_coordinates = ivec2(raw_pixel_coordinates) - ivec2(1);
+		ivec2 pixel_mapping_extent = imageSize(triangle_index);
+		if (pixel_coordinates.x < 0 || pixel_coordinates.y < 0 || pixel_coordinates.x >= pixel_mapping_extent.x || pixel_coordinates.y >= pixel_mapping_extent.y) { return; }
 		uint triangle_meshlet_indices = imageLoad(triangle_index, pixel_coordinates).r;
 		uint instance_index = imageLoad(instance_index_render_target, pixel_coordinates).r;
 		uint meshlet_triangle_index = triangle_meshlet_indices & 0xFF;
@@ -935,7 +939,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		let a_msl = "if (gid.x >= set1.material_count->material_count[push_constant.material_id]) { return; }
 
 		uint offset = set1.material_offset->material_offset[push_constant.material_id];
-		int2 pixel_coordinates = int2(set1.pixel_mapping->pixel_mapping[offset + gid.x]);
+		uint2 raw_pixel_coordinates = uint2(set1.pixel_mapping->pixel_mapping[offset + gid.x]);
+		if (raw_pixel_coordinates.x == 0u || raw_pixel_coordinates.y == 0u) { return; }
+		int2 pixel_coordinates = int2(raw_pixel_coordinates) - int2(1);
+		int2 image_extent = int2(set1.triangle_index.get_width(), set1.triangle_index.get_height());
+		if (pixel_coordinates.x < 0 || pixel_coordinates.y < 0 || pixel_coordinates.x >= image_extent.x || pixel_coordinates.y >= image_extent.y) { return; }
 		uint triangle_meshlet_indices = set1.triangle_index.read(uint2(pixel_coordinates)).x;
 		uint instance_index = set1.instance_index_render_target.read(uint2(pixel_coordinates)).x;
 		uint meshlet_triangle_index = triangle_meshlet_indices & 0xFF;
@@ -977,7 +985,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			set0.vertex_uvs->uvs[vertex_indices[2]]
 		};
 
-		int2 image_extent = int2(set1.triangle_index.get_width(), set1.triangle_index.get_height());
 		float2 normalized_xy = (float2(pixel_coordinates) + float2(0.5)) / float2(image_extent);
 		float2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 
@@ -1252,6 +1259,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 							"visibility_depth",
 							"push_constant",
 							"material_offset",
+							"material_offset_scratch",
+							"material_evaluation_dispatches",
 							"pixel_mapping",
 							"material_count",
 							"meshes",
@@ -1310,8 +1319,8 @@ mod tests {
 		shader_generator::{ShaderGenerationSettings, ShaderGenerator as _},
 		spirv_shader_generator::SPIRVShaderGenerator,
 	};
-	use utils::Extent;
 	use utils::json;
+	use utils::Extent;
 
 	use crate::besl;
 	use crate::rendering::map_shader_binding_to_shader_binding_descriptor;
@@ -1409,6 +1418,12 @@ mod tests {
 		assert!(
 			shader_handle.is_ok(),
 			"Expected the material evaluation MSL source to compile for Metal"
+		);
+		assert!(
+			source.contains("constant _material_offset_scratch* material_offset_scratch [[id(2)]];")
+				&& source.contains("constant _material_evaluation_dispatches* material_evaluation_dispatches [[id(3)]];")
+				&& source.contains("constant _pixel_mapping* pixel_mapping [[id(4)]];"),
+			"Expected the material evaluation MSL source to preserve the full visibility set1 binding layout. Shader: {source}"
 		);
 	}
 

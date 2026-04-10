@@ -15,7 +15,7 @@ use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRend
 use crate::rendering::pipelines::visibility::{
 	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
 	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS,
-	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESH_DATA_BINDING, MESHLET_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
 	SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
 	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
@@ -34,7 +34,7 @@ use ghi::{
 	graphics_hardware_interface,
 };
 use log::{error, warn};
-use math::{Matrix4, Vector3, mat::MatInverse as _};
+use math::{mat::MatInverse as _, Matrix4, Vector3};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
 use resource_management::msl_shader_generator::MSLShaderGenerator;
@@ -46,7 +46,7 @@ use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
 use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::spirv_shader_generator::SPIRVShaderGenerator;
 use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
-use resource_management::{Reference, glsl};
+use resource_management::{glsl, Reference};
 use utils::hash::{HashMap, HashMapExt};
 use utils::json::{self, object};
 use utils::sync::{Arc, Rc, RwLock};
@@ -54,8 +54,8 @@ use utils::{Box, Extent, RGBA};
 
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
 use crate::rendering::{
-	RenderableMesh, Viewport, csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh,
-	world_render_domain,
+	csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain,
+	RenderableMesh, Viewport,
 };
 use crate::resource_management::{self};
 use crate::space::Transformable as _;

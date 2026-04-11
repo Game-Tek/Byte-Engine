@@ -359,7 +359,6 @@ impl VisibilityWorldRenderDomain {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
-
 		let material_evaluation_descriptor_set_layout =
 			device.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
 		let material_evaluation_descriptor_set = device.create_descriptor_set(
@@ -559,7 +558,6 @@ impl VisibilityWorldRenderDomain {
 		let primitive_count = vertex_indices_stream.count();
 		let triangle_count = meshlet_indices_stream.count() / 3;
 		let total_meshlet_count = meshlets_stream.count();
-
 		self.ensure_geometry_capacity(vertex_count, primitive_count, triangle_count, total_meshlet_count);
 
 		let vertex_positions_buffer = device.get_mut_buffer_slice(self.vertex_positions_buffer);
@@ -712,7 +710,6 @@ impl VisibilityWorldRenderDomain {
 			.collect::<Vec<_>>();
 
 		let meshlets_data_slice = device.get_mut_buffer_slice(self.meshlets_data_buffer);
-
 		for (i, (primitive, meshlets)) in meshlets_per_primitive.iter().enumerate() {
 			for (j, meshlet) in meshlets.iter().enumerate() {
 				meshlets_data_slice[self.visibility_info.meshlet_count as usize + primitive.meshlet_offset as usize + j] =
@@ -1375,14 +1372,14 @@ impl VisibilityWorldRenderDomain {
 
 		match light {
 			Lights::Direction(light) => LightData {
-				position: light.direction,
-				color: light.color,
+				position: light.direction.into(),
+				color: light.color.into(),
 				light_type: 68,
 				cascades,
 			},
 			Lights::Point(light) => LightData {
-				position: light.position,
-				color: light.color,
+				position: light.position.into(),
+				color: light.color.into(),
 				light_type: 0,
 				cascades: [0; 8],
 			},
@@ -1604,6 +1601,15 @@ impl SceneManager for VisibilityWorldRenderDomain {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
+		let visibility_depth_sampler = device.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Closest)
+				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+				.mip_map_mode(ghi::FilteringModes::Closest)
+				.addressing_mode(ghi::SamplerAddressingModes::Border {})
+				.min_lod(0f32)
+				.max_lod(0f32),
+		);
 
 		let _ = device.create_descriptor_binding(
 			self.material_evaluation_descriptor_set,
@@ -1644,7 +1650,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			ghi::BindingConstructor::combined_image_sampler(
 				&visibility_depth_binding_template,
 				ghi::BaseImageHandle::from(depth_target),
-				depth_sampler.clone(),
+				visibility_depth_sampler.clone(),
 				ghi::Layouts::Read,
 			),
 		);
@@ -1757,6 +1763,33 @@ pub struct LightingData {
 	pub lights: [LightData; MAX_LIGHTS],
 }
 
+#[repr(C, align(16))]
+#[derive(Copy, Clone, Default)]
+struct ShaderVec3 {
+	x: f32,
+	y: f32,
+	z: f32,
+	_padding: f32,
+}
+
+impl ShaderVec3 {
+	fn new(x: f32, y: f32, z: f32) -> Self {
+		Self { x, y, z, _padding: 0.0 }
+	}
+}
+
+impl From<(f32, f32, f32)> for ShaderVec3 {
+	fn from(value: (f32, f32, f32)) -> Self {
+		Self::new(value.0, value.1, value.2)
+	}
+}
+
+impl From<Vector3> for ShaderVec3 {
+	fn from(value: Vector3) -> Self {
+		Self::new(value.x, value.y, value.z)
+	}
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(crate) struct ShaderViewData {
@@ -1774,8 +1807,8 @@ pub(crate) struct ShaderViewData {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct LightData {
-	pub position: Vector3,
-	pub color: Vector3,
+	position: ShaderVec3,
+	color: ShaderVec3,
 	pub light_type: u8,
 	pub cascades: [u32; 8],
 }

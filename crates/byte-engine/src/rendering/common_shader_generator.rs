@@ -388,6 +388,30 @@ impl CommonShaderScope {
 			)],
 		);
 
+		let calculate_barycentric_from_position = Node::function(
+			"calculate_barycentric_from_position",
+			vec![
+				Node::member("point", "vec3f"),
+				Node::member("v0", "vec3f"),
+				Node::member("v1", "vec3f"),
+				Node::member("v2", "vec3f"),
+			],
+			"vec3f",
+			vec![Node::raw_code(
+				Some(
+					"vec3 edge0 = v1 - v0; vec3 edge1 = v2 - v0; vec3 point_delta = point - v0; float d00 = dot(edge0, edge0); float d01 = dot(edge0, edge1); float d11 = dot(edge1, edge1); float d20 = dot(point_delta, edge0); float d21 = dot(point_delta, edge1); float denom = d00 * d11 - d01 * d01; if (abs(denom) <= 1e-8) { return vec3(1.0, 0.0, 0.0); } float bary1 = (d11 * d20 - d01 * d21) / denom; float bary2 = (d00 * d21 - d01 * d20) / denom; return vec3(1.0 - bary1 - bary2, bary1, bary2);"
+						.into(),
+				),
+				None,
+				Some(
+					"float3 edge0 = v1 - v0; float3 edge1 = v2 - v0; float3 point_delta = point - v0; float d00 = dot(edge0, edge0); float d01 = dot(edge0, edge1); float d11 = dot(edge1, edge1); float d20 = dot(point_delta, edge0); float d21 = dot(point_delta, edge1); float denom = d00 * d11 - d01 * d01; if (abs(denom) <= 1e-8) { return float3(1.0, 0.0, 0.0); } float bary1 = (d11 * d20 - d01 * d21) / denom; float bary2 = (d00 * d21 - d01 * d20) / denom; return float3(1.0 - bary1 - bary2, bary1, bary2);"
+						.into(),
+				),
+				&[],
+				&[],
+			)],
+		);
+
 		let make_raster_ndc_from_pixel_coordinates = Node::function(
 			"make_raster_ndc_from_pixel_coordinates",
 			vec![
@@ -505,6 +529,7 @@ impl CommonShaderScope {
 				fresnel_schlick_roughness,
 				barycentric_deriv,
 				calculate_full_bary,
+				calculate_barycentric_from_position,
 				make_raster_ndc_from_pixel_coordinates,
 				interpolate_vec3f_with_deriv,
 				interpolate_vec2f_with_deriv,

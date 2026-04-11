@@ -18,6 +18,7 @@ pub struct MSLShaderGenerator {
 	in_compute_body: bool,
 	compute_stage_context: Option<ComputeStageContext>,
 	mesh_stage_context: Option<MeshStageContext>,
+	in_buffer_binding_struct: bool,
 }
 
 const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
@@ -53,6 +54,7 @@ impl MSLShaderGenerator {
 			in_compute_body: false,
 			compute_stage_context: None,
 			mesh_stage_context: None,
+			in_buffer_binding_struct: false,
 		}
 	}
 
@@ -346,7 +348,7 @@ impl MSLShaderGenerator {
 
 		for node in order {
 			match node.borrow().node() {
-				besl::Nodes::Binding { r#type, .. } => {
+				besl::Nodes::Binding { .. } => {
 					bindings.push(node.clone());
 				}
 				besl::Nodes::PushConstant { .. } => {
@@ -445,7 +447,7 @@ impl MSLShaderGenerator {
 
 		for node in order {
 			match node.borrow().node() {
-				besl::Nodes::Binding { r#type, .. } => {
+				besl::Nodes::Binding { .. } => {
 					bindings.push(node.clone());
 				}
 				besl::Nodes::PushConstant { .. } => {
@@ -681,6 +683,9 @@ impl MSLShaderGenerator {
 			string.push_str(" {\n");
 		}
 
+		let previous_in_buffer_binding_struct = self.in_buffer_binding_struct;
+		self.in_buffer_binding_struct = true;
+
 		for member in members {
 			if !self.minified {
 				string.push('\t');
@@ -693,9 +698,21 @@ impl MSLShaderGenerator {
 			}
 		}
 
+		self.in_buffer_binding_struct = previous_in_buffer_binding_struct;
+
 		string.push_str("};");
 		if !self.minified {
 			string.push('\n');
+		}
+	}
+
+	fn translate_buffer_member_type(source: &str) -> &str {
+		// Metal storage buffers need packed vector arrays when the CPU data is tightly packed.
+		// Keep regular struct members on the standard floatN types so only buffer layout changes.
+		match source {
+			"vec2f" => "packed_float2",
+			"vec3f" => "packed_float3",
+			_ => Self::translate_type(source),
 		}
 	}
 
@@ -1694,7 +1711,11 @@ impl MSLShaderGenerator {
 			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
-					let type_name = Self::translate_type(type_name);
+					let type_name = if self.in_buffer_binding_struct && count.is_some() {
+						Self::translate_buffer_member_type(type_name)
+					} else {
+						Self::translate_type(type_name)
+					};
 
 					string.push_str(type_name);
 					string.push(' ');
@@ -2180,6 +2201,94 @@ mod tests {
 
 		assert_string_contains!(shader, "set0.pixel_mapping->pixel_mapping[0]");
 		assert_string_contains!(shader, "set0.meshes->meshes[1]");
+	}
+
+	#[test]
+	fn buffer_vector_arrays_use_packed_msl_types() {
+		let script = r#"
+		main: fn () -> void {
+			let position: vec3f = positions.values[0];
+			let uv: vec2f = uvs.values[0];
+			position;
+			uv;
+		}
+		"#;
+
+		let mut root = besl::parse(script).expect("Expected packed buffer array test shader source to parse");
+		root.add(vec![
+			besl::parser::Node::binding(
+				"positions",
+				besl::parser::Node::buffer("Positions", vec![besl::parser::Node::member("values", "vec3f[8]")]),
+				0,
+				0,
+				true,
+				false,
+			),
+			besl::parser::Node::binding(
+				"uvs",
+				besl::parser::Node::buffer("Uvs", vec![besl::parser::Node::member("values", "vec2f[8]")]),
+				0,
+				1,
+				true,
+				false,
+			),
+		]);
+		let root = besl::lex(root).expect(
+			"Expected packed buffer array test shader source to lex. The most likely cause is invalid BESL syntax in the test shader.",
+		);
+		let main = root.get_main().expect("Expected main function");
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "struct _positions{packed_float3 values[8];};");
+		assert_string_contains!(shader, "struct _uvs{packed_float2 values[8];};");
+	}
+
+	#[test]
+	fn non_buffer_vector_arrays_keep_standard_msl_types() {
+		let script = r#"
+		VertexBlock: struct {
+			positions: vec3f[4],
+		}
+
+		main: fn () -> void {}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect(
+			"Expected non-buffer vector array test shader source to compile. The most likely cause is invalid BESL syntax in the test shader.",
+		);
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		let vertex_block = RefCell::borrow(&root)
+			.get_child("VertexBlock")
+			.expect("Expected VertexBlock struct");
+
+		{
+			let mut main = main.borrow_mut();
+			main.add_child(
+				besl::Node::raw(
+					Some("VertexBlock;".to_string()),
+					Some("VertexBlock;".to_string()),
+					Some("VertexBlock;".to_string()),
+					vec![vertex_block],
+					vec![],
+				)
+				.into(),
+			);
+		}
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "struct VertexBlock{float3 positions[4];};");
+		assert!(
+			!shader.contains("packed_float3 positions[4]"),
+			"Expected non-buffer vector arrays to keep standard MSL vector types"
+		);
 	}
 
 	#[test]

@@ -927,7 +927,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		vec2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
 		vec3 N = world_space_vertex_normal;
-		vec3 camera_position = view.inverse_view[3].xyz;
+		vec3 camera_position = (view.inverse_view * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 		vec3 V = normalize(camera_position - world_space_vertex_position);
 
 		vec3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_positions[0].xyz, world_space_vertex_positions[1].xyz, world_space_vertex_positions[2].xyz);
@@ -978,17 +978,17 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			compute_vertex_index(mesh, meshlet, primitive_indices[2], gid, push_constant, set0, set1, set2)
 		};
 
-		float4 model_space_vertex_positions[3] = {
-			float4(set0.vertex_positions->positions[vertex_indices[0]], 1.0),
-			float4(set0.vertex_positions->positions[vertex_indices[1]], 1.0),
-			float4(set0.vertex_positions->positions[vertex_indices[2]], 1.0)
-		};
+			float4 model_space_vertex_positions[3] = {
+				float4(set0.vertex_positions->positions[vertex_indices[0]], 1.0),
+				float4(set0.vertex_positions->positions[vertex_indices[1]], 1.0),
+				float4(set0.vertex_positions->positions[vertex_indices[2]], 1.0)
+			};
 
-		float4 vertex_normals[3] = {
-			float4(set0.vertex_normals->normals[vertex_indices[0]], 0.0),
-			float4(set0.vertex_normals->normals[vertex_indices[1]], 0.0),
-			float4(set0.vertex_normals->normals[vertex_indices[2]], 0.0)
-		};
+			float4 vertex_normals[3] = {
+				float4(set0.vertex_normals->normals[vertex_indices[0]], 0.0),
+				float4(set0.vertex_normals->normals[vertex_indices[1]], 0.0),
+				float4(set0.vertex_normals->normals[vertex_indices[2]], 0.0)
+			};
 
 		float2 vertex_uvs[3] = {
 			set0.vertex_uvs->uvs[vertex_indices[0]],
@@ -1000,7 +1000,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 
 		View view = set0.views->views[0];
-		float surface_depth = set2.visibility_depth.sample(set2.visibility_depth_sampler, normalized_xy).r;
+		float surface_depth = set2.visibility_depth.read(uint2(pixel_coordinates)).x;
 		float4 surface_clip_position = float4(nc, surface_depth, 1.0);
 		float4 surface_view_position = surface_clip_position * view.inverse_projection;
 		surface_view_position /= surface_view_position.w;
@@ -1022,7 +1022,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
 		float3 N = world_space_vertex_normal;
-		float3 camera_position = view.inverse_view[3].xyz;
+		float3 camera_position = (float4(0.0, 0.0, 0.0, 1.0) * view.inverse_view).xyz;
 		float3 V = normalize(camera_position - world_space_vertex_position);
 
 		float3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_positions[0].xyz, world_space_vertex_positions[1].xyz, world_space_vertex_positions[2].xyz);
@@ -1286,6 +1286,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 							"views",
 							"make_raster_ndc_from_pixel_coordinates",
 							"calculate_full_bary",
+							"calculate_barycentric_from_position",
 							"interpolate_vec3f_with_deriv",
 							"interpolate_vec2f_with_deriv",
 							"fresnel_schlick",

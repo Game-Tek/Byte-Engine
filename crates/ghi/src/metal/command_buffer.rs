@@ -1,6 +1,6 @@
 use std::{cell::RefCell, ptr::NonNull};
 
-use ::utils::{Extent, hash::HashMap};
+use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSRange, NSString};
 use objc2_metal::{
@@ -9,12 +9,12 @@ use objc2_metal::{
 
 use super::*;
 use crate::{
-	HandleLike as _, ImageOrSwapchain, PrivateHandles,
 	command_buffer::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
 		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
 	descriptors::DescriptorSetHandle,
+	HandleLike as _, ImageOrSwapchain, PrivateHandles,
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;

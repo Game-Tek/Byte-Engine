@@ -1,6 +1,6 @@
 use std::{cell::RefCell, ptr::NonNull};
 
-use ::utils::{hash::HashMap, Extent};
+use ::utils::{Extent, hash::HashMap};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSRange, NSString};
 use objc2_metal::{
@@ -9,12 +9,12 @@ use objc2_metal::{
 
 use super::*;
 use crate::{
+	HandleLike as _, ImageOrSwapchain, PrivateHandles,
 	command_buffer::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
 		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
 	descriptors::DescriptorSetHandle,
-	HandleLike as _, ImageOrSwapchain, PrivateHandles,
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
@@ -93,6 +93,43 @@ fn replace_texture_from_bytes(
 				texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, staging_ptr, bytes_per_row as _);
 			}
 		}
+	}
+}
+
+// Encodes a render-pass clear for one Metal texture, clearing every array layer individually when needed.
+fn encode_texture_clear(
+	command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>,
+	texture: &Retained<ProtocolObject<dyn mtl::MTLTexture>>,
+	format: crate::Formats,
+	array_layers: u32,
+	clear_value: graphics_hardware_interface::ClearValue,
+) {
+	let slice_count = array_layers.max(1);
+
+	for slice in 0..slice_count {
+		let rpd = mtl::MTLRenderPassDescriptor::new();
+		let texture_view = attachment_texture_view(texture, format, array_layers, (array_layers > 1).then_some(slice));
+
+		if format == crate::Formats::Depth32 {
+			let attachment = rpd.depthAttachment();
+			attachment.setTexture(Some(texture_view.as_ref()));
+			attachment.setLoadAction(mtl::MTLLoadAction::Clear);
+			attachment.setStoreAction(mtl::MTLStoreAction::Store);
+			attachment.setClearDepth(utils::clear_depth(clear_value));
+		} else {
+			let attachment = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(0) };
+			attachment.setTexture(Some(texture_view.as_ref()));
+			attachment.setLoadAction(mtl::MTLLoadAction::Clear);
+			attachment.setStoreAction(mtl::MTLStoreAction::Store);
+			attachment.setClearColor(utils::clear_color(clear_value));
+		}
+
+		let encoder = command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
+			"Metal render command encoder creation failed. The most likely cause is that the command buffer could not start an image clear pass.",
+		);
+		let label = NSString::from_str("Image Clear");
+		encoder.setLabel(Some(&label));
+		encoder.endEncoding();
 	}
 }
 
@@ -483,7 +520,18 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			encoder.endEncoding();
 		}
 
-		// TODO: Encode blit clears for textures.
+		for (handle, clear_value) in textures {
+			let image_handle = self.get_internal_image_handle(*handle);
+			let image = self.device.images.resource(image_handle);
+
+			encode_texture_clear(
+				self.command_buffer.as_ref(),
+				&image.texture,
+				image.format,
+				image.array_layers,
+				*clear_value,
+			);
+		}
 	}
 
 	fn clear_buffers(&mut self, buffer_handles: &[graphics_hardware_interface::BaseBufferHandle]) {

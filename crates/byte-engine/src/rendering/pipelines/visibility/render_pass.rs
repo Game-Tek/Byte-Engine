@@ -1083,7 +1083,6 @@ impl MaterialEvaluationPass {
 			c.clear_images(&[
 				(diffuse.into(), ghi::ClearValue::Color(RGBA::black())),
 				(specular.into(), ghi::ClearValue::Color(RGBA::black())),
-				(ao_map.into(), ghi::ClearValue::Color(RGBA::white())),
 			]);
 
 			c.start_region("Material Evaluation");

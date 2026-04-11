@@ -1084,7 +1084,6 @@ impl MaterialEvaluationPass {
 				(diffuse.into(), ghi::ClearValue::Color(RGBA::black())),
 				(specular.into(), ghi::ClearValue::Color(RGBA::black())),
 				(ao_map.into(), ghi::ClearValue::Color(RGBA::white())),
-				(ibl_cubemap.into(), ghi::ClearValue::Color(RGBA::white())),
 			]);
 
 			c.start_region("Material Evaluation");
@@ -1203,9 +1202,9 @@ impl VisibilityPipelineRenderPass {
 		let material_evaluation_pass = MaterialEvaluationPass::new(
 			diffuse,
 			specular,
-			ibl_cubemap,
 			ao_map,
 			shadow_map,
+			ibl_cubemap,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_evaluation_descriptor_set,

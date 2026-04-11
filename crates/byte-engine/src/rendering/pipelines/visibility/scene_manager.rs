@@ -88,7 +88,8 @@ const ibl_cubemap_binding_template: ghi::DescriptorSetBindingTemplate = ghi::Des
 	13,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
-);
+)
+.texture_view_type(ghi::TextureViewTypes::Texture2DArray);
 
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
@@ -1580,10 +1581,11 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		let ibl_cubemap = device.build_image(
 			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("IBL Cubemap")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.device_accesses(ghi::DeviceAccesses::HostToDevice)
 				.extent(Extent::square(1))
 				.array_layers(NonZeroU32::new(6)),
 		);
+		device.write_texture(ibl_cubemap, |bytes| bytes.fill(255));
 		let sampler = device.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)

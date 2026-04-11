@@ -399,6 +399,91 @@ impl Device {
 		}
 	}
 
+	fn upload_texture_from_staging(
+		&self,
+		texture: &ProtocolObject<dyn mtl::MTLTexture>,
+		format: crate::Formats,
+		extent: Extent,
+		array_layers: u32,
+		staging: &[u8],
+	) {
+		let Some(bytes_per_pixel) = utils::bytes_per_pixel(format) else {
+			return;
+		};
+
+		let width = extent.width().max(1) as usize;
+		let height = extent.height().max(1) as usize;
+		let bytes_per_row = width * bytes_per_pixel;
+		let bytes_per_image = bytes_per_row * height;
+		let aligned_bytes_per_row = bytes_per_row.next_multiple_of(256);
+		let aligned_bytes_per_image = aligned_bytes_per_row * height;
+		let upload_size = aligned_bytes_per_image * array_layers as usize;
+
+		let upload_buffer = self
+			.device
+			.newBufferWithLength_options(upload_size as _, mtl::MTLResourceOptions::StorageModeShared)
+			.expect("Metal upload buffer creation failed. The most likely cause is that the device is out of memory.");
+		let destination = upload_buffer.contents().as_ptr() as *mut u8;
+
+		for slice in 0..array_layers as usize {
+			let source_offset = slice * bytes_per_image;
+			let destination_offset = slice * aligned_bytes_per_image;
+			let Some(source_bytes) = staging.get(source_offset..source_offset + bytes_per_image) else {
+				break;
+			};
+
+			for row in 0..height {
+				let source_row_offset = row * bytes_per_row;
+				let destination_row_offset = destination_offset + row * aligned_bytes_per_row;
+
+				unsafe {
+					std::ptr::copy_nonoverlapping(
+						source_bytes.as_ptr().add(source_row_offset),
+						destination.add(destination_row_offset),
+						bytes_per_row,
+					);
+				}
+			}
+		}
+
+		let queue = &self.queues[0];
+		let command_buffer = self.create_metal_command_buffer(
+			queue.queue.as_ref(),
+			Some("Texture Upload"),
+			"Metal texture upload command buffer creation failed. The most likely cause is that the transfer queue did not provide a command buffer.",
+		);
+		let blit_encoder = command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+		blit_encoder.setLabel(Some(&NSString::from_str("Texture Upload")));
+
+		let source_size = mtl::MTLSize {
+			width: width as _,
+			height: height as _,
+			depth: 1,
+		};
+		let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
+
+		for slice in 0..array_layers as usize {
+			unsafe {
+				blit_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+					upload_buffer.as_ref(),
+					(slice * aligned_bytes_per_image) as _,
+					aligned_bytes_per_row as _,
+					aligned_bytes_per_image as _,
+					source_size,
+					texture,
+					slice,
+					0,
+					destination_origin,
+				);
+			}
+		}
+
+		blit_encoder.endEncoding();
+		self.submit_metal_command_buffer(command_buffer.as_ref());
+	}
+
 	/// Stores a resolved descriptor for one binding slot, re-encodes the argument buffer, and refreshes resource tracking.
 	pub(crate) fn update_descriptor_for_binding(
 		&mut self,
@@ -1260,7 +1345,12 @@ impl Device {
 							descriptor.setIndex(next_argument_index as _);
 							descriptor.setAccess(access);
 							if data_type == mtl::MTLDataType::Texture {
-								descriptor.setTextureType(mtl::MTLTextureType::Type2D);
+								let texture_type = match template.texture_view_type {
+									crate::TextureViewTypes::Texture2D => mtl::MTLTextureType::Type2D,
+									crate::TextureViewTypes::Texture2DArray => mtl::MTLTextureType::Type2DArray,
+									crate::TextureViewTypes::Texture3D => mtl::MTLTextureType::Type3D,
+								};
+								descriptor.setTextureType(texture_type);
 							}
 							metal_argument_descriptors.push(descriptor);
 							let slot = next_argument_index;
@@ -1881,30 +1971,13 @@ impl Device {
 			return;
 		};
 
-		let Some(bytes_per_pixel) = utils::bytes_per_pixel(image.format) else {
-			return;
-		};
-
+		let texture = image.texture.clone();
+		let format = image.format;
 		let extent = image.extent;
-		let width = extent.width() as usize;
-		let height = extent.height() as usize;
-		let bytes_per_row = width * bytes_per_pixel;
-		let region = mtl::MTLRegion {
-			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
-			size: mtl::MTLSize {
-				width: width as _,
-				height: height as _,
-				depth: 1,
-			},
-		};
-		let staging_ptr = NonNull::new(staging.as_ptr() as *mut std::ffi::c_void)
-			.expect("Texture staging pointer was null. The most likely cause is a zero-sized texture.");
+		let array_layers = image.array_layers;
+		let staging = staging.to_vec();
 
-		unsafe {
-			image
-				.texture
-				.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, staging_ptr, bytes_per_row as _);
-		}
+		self.upload_texture_from_staging(texture.as_ref(), format, extent, array_layers, &staging);
 	}
 
 	fn flush_pending_uploads(&mut self) {
@@ -1938,31 +2011,13 @@ impl Device {
 
 		f(staging);
 
-		let Some(bytes_per_pixel) = utils::bytes_per_pixel(image.format) else {
-			return;
-		};
-
+		let texture = image.texture.clone();
+		let format = image.format;
 		let extent = image.extent;
-		let width = extent.width() as usize;
-		let height = extent.height() as usize;
-		let bytes_per_row = width * bytes_per_pixel;
+		let array_layers = image.array_layers;
+		let staging = staging.to_vec();
 
-		let region = mtl::MTLRegion {
-			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
-			size: mtl::MTLSize {
-				width: width as _,
-				height: height as _,
-				depth: 1,
-			},
-		};
-
-		let staging_ptr = NonNull::new(staging.as_ptr() as *mut std::ffi::c_void)
-			.expect("Texture staging pointer was null. The most likely cause is a zero-sized texture.");
-		unsafe {
-			image
-				.texture
-				.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, staging_ptr, bytes_per_row as _);
-		}
+		self.upload_texture_from_staging(texture.as_ref(), format, extent, array_layers, &staging);
 	}
 
 	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {

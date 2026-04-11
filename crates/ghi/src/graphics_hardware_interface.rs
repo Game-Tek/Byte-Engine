@@ -480,6 +480,15 @@ pub struct DescriptorSetBindingTemplate {
 	pub(crate) stages: Stages,
 	/// The immutable samplers of the descriptor set layout binding.
 	pub(crate) immutable_samplers: Option<Vec<SamplerHandle>>,
+	/// The texture view type expected by this binding when it references textures.
+	pub(crate) texture_view_type: TextureViewTypes,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TextureViewTypes {
+	Texture2D,
+	Texture2DArray,
+	Texture3D,
 }
 
 /// The `TypedDescriptorSetBindingTemplate` struct provides branded descriptor-set binding templates for compile-time descriptor-type safety.
@@ -557,6 +566,7 @@ impl DescriptorSetBindingTemplate {
 			descriptor_count: 1,
 			stages,
 			immutable_samplers: None,
+			texture_view_type: TextureViewTypes::Texture2D,
 		}
 	}
 
@@ -567,7 +577,13 @@ impl DescriptorSetBindingTemplate {
 			descriptor_count: count,
 			stages,
 			immutable_samplers: None,
+			texture_view_type: TextureViewTypes::Texture2D,
 		}
+	}
+
+	pub const fn texture_view_type(mut self, texture_view_type: TextureViewTypes) -> Self {
+		self.texture_view_type = texture_view_type;
+		self
 	}
 
 	pub const fn uniform_buffer(binding: u32, stages: Stages) -> Self {
@@ -641,6 +657,7 @@ impl DescriptorSetBindingTemplate {
 			descriptor_count: 1,
 			stages,
 			immutable_samplers: samplers,
+			texture_view_type: TextureViewTypes::Texture2D,
 		}
 	}
 

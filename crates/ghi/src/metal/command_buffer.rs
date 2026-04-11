@@ -1,6 +1,6 @@
 use std::{cell::RefCell, ptr::NonNull};
 
-use ::utils::hash::HashMap;
+use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSRange, NSString};
 use objc2_metal::{
@@ -44,6 +44,56 @@ fn attachment_texture_view(
 	}
 
 	texture.clone()
+}
+
+fn replace_texture_from_bytes(
+	texture: &ProtocolObject<dyn mtl::MTLTexture>,
+	format: crate::Formats,
+	extent: Extent,
+	array_layers: u32,
+	bytes: &[u8],
+) {
+	let Some(bytes_per_pixel) = utils::bytes_per_pixel(format) else {
+		return;
+	};
+
+	let width = extent.width().max(1) as usize;
+	let height = extent.height().max(1) as usize;
+	let bytes_per_row = width * bytes_per_pixel;
+	let bytes_per_image = bytes_per_row * height;
+	let region = mtl::MTLRegion {
+		origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
+		size: mtl::MTLSize {
+			width: width as _,
+			height: height as _,
+			depth: 1,
+		},
+	};
+
+	for slice in 0..array_layers as usize {
+		let offset = slice * bytes_per_image;
+		let end = offset + bytes_per_image;
+		let Some(slice_bytes) = bytes.get(offset..end) else {
+			break;
+		};
+		let staging_ptr = NonNull::new(slice_bytes.as_ptr() as *mut std::ffi::c_void)
+			.expect("Texture staging pointer was null. The most likely cause is a zero-sized texture.");
+
+		unsafe {
+			if array_layers > 1 {
+				texture.replaceRegion_mipmapLevel_slice_withBytes_bytesPerRow_bytesPerImage(
+					region,
+					0,
+					slice,
+					staging_ptr,
+					bytes_per_row as _,
+					bytes_per_image as _,
+				);
+			} else {
+				texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, staging_ptr, bytes_per_row as _);
+			}
+		}
+	}
 }
 
 pub struct CommandBufferRecording<'a> {
@@ -112,26 +162,7 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 
 	fn current_encoder_label(&self, suffix: &str) -> Retained<NSString> {
-		let debug_regions = self.debug_regions.borrow();
-		let label = if debug_regions.is_empty() {
-			suffix.to_owned()
-		} else {
-			format!("{} / {}", debug_regions.join(" > "), suffix)
-		};
-
-		NSString::from_str(&label)
-	}
-
-	fn apply_debug_regions_to_compute_encoder(&self, encoder: &ProtocolObject<dyn mtl::MTLComputeCommandEncoder>) {
-		for region in self.debug_regions.borrow().iter() {
-			encoder.pushDebugGroup(&NSString::from_str(region));
-		}
-	}
-
-	fn apply_debug_regions_to_render_encoder(&self, encoder: &ProtocolObject<dyn mtl::MTLRenderCommandEncoder>) {
-		for region in self.debug_regions.borrow().iter() {
-			encoder.pushDebugGroup(&NSString::from_str(region));
-		}
+		NSString::from_str(suffix)
 	}
 
 	fn refresh_active_encoder_labels(&self) {
@@ -157,7 +188,6 @@ impl<'a> CommandBufferRecording<'a> {
 			);
 			let label = self.current_encoder_label("Compute Pass");
 			encoder.setLabel(Some(&label));
-			self.apply_debug_regions_to_compute_encoder(encoder.as_ref());
 			self.active_compute_encoder = Some(encoder);
 		}
 
@@ -404,7 +434,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let rce = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).unwrap();
 		let label = self.current_encoder_label("Render Pass");
 		rce.setLabel(Some(&label));
-		self.apply_debug_regions_to_render_encoder(rce.as_ref());
 
 		rce.setViewport(mtl::MTLViewport {
 			originX: 0.0,
@@ -543,28 +572,12 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let length = staging.len().min(bytes.len());
 		staging[..length].copy_from_slice(&bytes[..length]);
 
-		let Some(bytes_per_pixel) = utils::bytes_per_pixel(image.format) else {
-			return;
-		};
-		let width = image.extent.width() as usize;
-		let height = image.extent.height() as usize;
-		let bytes_per_row = width * bytes_per_pixel;
-		let region = mtl::MTLRegion {
-			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
-			size: mtl::MTLSize {
-				width: width as _,
-				height: height as _,
-				depth: 1,
-			},
-		};
-		let staging_ptr = NonNull::new(staging.as_ptr() as *mut std::ffi::c_void)
-			.expect("Texture staging pointer was null. The most likely cause is a zero-sized texture.");
+		let texture = image.texture.clone();
+		let format = image.format;
+		let extent = image.extent;
+		let array_layers = image.array_layers;
 
-		unsafe {
-			image
-				.texture
-				.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, staging_ptr, bytes_per_row as _);
-		}
+		replace_texture_from_bytes(texture.as_ref(), format, extent, array_layers, staging);
 
 		self.consume_resources([Consumption {
 			handle: PrivateHandles::Image(image_handle),

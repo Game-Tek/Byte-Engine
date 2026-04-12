@@ -6,26 +6,101 @@ use crate::{asset::ResourceId, ProcessedAsset, SerializableResource};
 
 use super::resource_handler::MultiResourceReader;
 
-pub struct Query<'a> {
-	class: Option<&'a [&'a str]>,
+use crate::QueryableValue;
+
+/// The `QueryCursor` struct represents an opaque position for paginated resource queries.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct QueryCursor {
+	pub(crate) token: Vec<u8>,
 }
 
-impl<'a> Query<'a> {
-	pub fn new() -> Self {
-		Self { class: None }
+impl QueryCursor {
+	pub fn new(token: Vec<u8>) -> Self {
+		Self { token }
+	}
+}
+
+/// The `QueryPredicate` enum represents a property constraint for a resource query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueryPredicate {
+	Eq { property: String, value: QueryableValue },
+}
+
+/// The `Query` struct represents a paged resource query against a storage backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Query {
+	pub class: String,
+	pub predicates: Vec<QueryPredicate>,
+	pub limit: usize,
+	pub cursor: Option<QueryCursor>,
+}
+
+impl Query {
+	pub fn new(class: &str) -> Self {
+		Self {
+			class: class.to_string(),
+			predicates: Vec::new(),
+			limit: usize::MAX,
+			cursor: None,
+		}
 	}
 
-	pub fn classes(mut self, classes: &'a [&'a str]) -> Self {
-		self.class = Some(classes);
+	pub fn eq(mut self, property: &str, value: &str) -> Self {
+		self.predicates.push(QueryPredicate::Eq {
+			property: property.to_string(),
+			value: QueryableValue::String(value.to_string()),
+		});
 		self
 	}
+
+	pub fn limit(mut self, limit: usize) -> Self {
+		self.limit = limit;
+		self
+	}
+
+	pub fn cursor(mut self, cursor: QueryCursor) -> Self {
+		self.cursor = Some(cursor);
+		self
+	}
+
+	pub fn matches(&self, resource: &SerializableResource, properties: &[crate::QueryableProperty]) -> bool {
+		if resource.class != self.class {
+			return false;
+		}
+
+		self.predicates.iter().all(|predicate| match predicate {
+			QueryPredicate::Eq { property, value } => properties
+				.iter()
+				.any(|candidate| candidate.name == *property && &candidate.value == value),
+		})
+	}
+
+	pub fn first_indexed_predicate(&self) -> Option<(&str, &QueryableValue)> {
+		self.predicates.first().map(|predicate| match predicate {
+			QueryPredicate::Eq { property, value } => (property.as_str(), value),
+		})
+	}
+}
+
+/// The `QueryPage` struct represents a page of query results and the cursor for the next page.
+#[derive(Debug)]
+pub struct QueryPage<T> {
+	pub items: Vec<T>,
+	pub cursor: Option<QueryCursor>,
+}
+
+/// The `QueryError` enum represents a failure while executing a resource query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryError {
+	InvalidCursor,
+	StorageFailure,
 }
 
 pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn list<'a>(&'a self) -> Result<Vec<String>, String>;
 	fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>) -> Option<(SerializableResource, MultiResourceReader)>;
 
-	fn query<'a>(&'a self, query: Query<'a>) -> Result<Vec<(SerializableResource, MultiResourceReader)>, ()>;
+	fn query(&self, query: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>;
 
 	/// Returns the type of the asset, if attainable from the url.
 	/// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
@@ -83,6 +158,7 @@ pub mod tests {
 						class: resource.class,
 						resource: resource.resource,
 						streams: resource.streams,
+						queryable_properties: resource.queryable_properties,
 					}
 				})
 				.collect()
@@ -103,6 +179,7 @@ pub mod tests {
 						class: resource.class,
 						resource: resource.resource,
 						streams: resource.streams,
+						queryable_properties: resource.queryable_properties,
 					}
 				})
 		}
@@ -144,8 +221,8 @@ pub mod tests {
 			Some((resource, resource_reader))
 		}
 
-		fn query<'a>(&'a self, _: Query<'a>) -> Result<Vec<(SerializableResource, MultiResourceReader)>, ()> {
-			Err(())
+		fn query(&self, _: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError> {
+			Err(QueryError::StorageFailure)
 		}
 	}
 
@@ -178,6 +255,7 @@ pub mod tests {
 				size,
 				streams,
 				resource: resource.resource.clone(),
+				queryable_properties: resource.queryable_properties.clone(),
 			};
 
 			let serialized_container = pot::to_vec(&container).unwrap();
@@ -191,6 +269,7 @@ pub mod tests {
 				size,
 				serialized_resource_bytes,
 				container.streams.clone(),
+				container.queryable_properties.clone(),
 			))
 		}
 

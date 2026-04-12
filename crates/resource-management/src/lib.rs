@@ -52,6 +52,7 @@ pub use asset::asset_handler::AssetHandler;
 pub use resource::resource_manager::ResourceManager;
 
 pub use model::Model;
+pub use model::{QueryableProperty, QueryableValue};
 pub use reference::Reference;
 pub use reference::ReferenceModel;
 pub use resource::Resource;
@@ -76,6 +77,7 @@ pub struct ProcessedAsset {
 	// resource: Data,
 	resource: DataStorage,
 	streams: Option<Vec<StreamDescription>>,
+	queryable_properties: Vec<QueryableProperty>,
 }
 
 impl ProcessedAsset {
@@ -85,6 +87,7 @@ impl ProcessedAsset {
 			class: T::get_class().to_string(),
 			resource: pot::to_vec(&resource).unwrap(),
 			streams: None,
+			queryable_properties: resource.queryable_properties(id.as_ref()),
 		}
 	}
 
@@ -94,6 +97,10 @@ impl ProcessedAsset {
 			class: class.to_string(),
 			resource,
 			streams: None,
+			queryable_properties: vec![QueryableProperty {
+				name: "name".to_string(),
+				value: QueryableValue::String(id.to_string()),
+			}],
 		}
 	}
 
@@ -105,11 +112,15 @@ impl ProcessedAsset {
 
 impl<'a, T: Resource + Serialize + Clone> From<Reference<T>> for ProcessedAsset {
 	fn from(value: Reference<T>) -> Self {
+		let id = value.id.clone();
+		let queryable_properties = value.resource.queryable_properties(&id);
+
 		ProcessedAsset {
-			id: value.id,
+			id,
 			class: value.resource.get_class().to_string(),
 			resource: pot::to_vec(&value.resource).unwrap(),
 			streams: None,
+			queryable_properties,
 		}
 	}
 }
@@ -121,6 +132,7 @@ impl From<SerializableResource> for ProcessedAsset {
 			class: value.class,
 			resource: value.resource.clone(),
 			streams: None,
+			queryable_properties: value.queryable_properties,
 		}
 	}
 }
@@ -155,6 +167,7 @@ pub struct SerializableResource {
 	size: usize,
 	resource: DataStorage,
 	streams: Option<Vec<StreamDescription>>,
+	queryable_properties: Vec<QueryableProperty>,
 }
 
 impl SerializableResource {
@@ -165,6 +178,7 @@ impl SerializableResource {
 		size: usize,
 		resource: DataStorage,
 		streams: Option<Vec<StreamDescription>>,
+		queryable_properties: Vec<QueryableProperty>,
 	) -> Self {
 		SerializableResource {
 			id,
@@ -173,6 +187,7 @@ impl SerializableResource {
 			size,
 			resource,
 			streams,
+			queryable_properties,
 		}
 	}
 }

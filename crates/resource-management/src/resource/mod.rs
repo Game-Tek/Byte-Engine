@@ -29,6 +29,13 @@ pub trait Resource: Send + Sync {
 	/// Is needed by the deserialize function.
 	fn get_class(&self) -> &'static str;
 
+	fn queryable_properties(&self, id: &str) -> Vec<crate::QueryableProperty> {
+		vec![crate::QueryableProperty {
+			name: "name".to_string(),
+			value: crate::QueryableValue::String(id.to_string()),
+		}]
+	}
+
 	type Model: Model;
 }
 

@@ -1,9 +1,12 @@
 use crate::{
 	asset::{asset_manager::AssetManager, ResourceId},
-	Reference, ReferenceModel, Resource, SerializableResource, Solver,
+	Model, Reference, ReferenceModel, Resource, SerializableResource, Solver,
 };
 
-use super::{storage_backend::Query, StorageBackend};
+use super::{
+	storage_backend::{Query, QueryError, QueryPage},
+	StorageBackend,
+};
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
@@ -70,21 +73,28 @@ impl ResourceManager {
 		Ok(reference)
 	}
 
-	pub fn query<'a, T: Resource + 'a>(&'a self) -> Vec<Reference<T>>
+	pub fn query<'a, T: Resource + 'a>(&'a self, query: Query) -> Result<QueryPage<Reference<T>>, QueryError>
 	where
 		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,
 		SerializableResource: Into<ReferenceModel<T::Model>>,
 	{
-		self.get_storage_backend()
-			.query(Query::new().classes(&["Material"]))
-			.unwrap()
-			.into_iter()
-			.map(|e| {
-				let r: ReferenceModel<T::Model> = e.0.into();
-				let r: Reference<T> = r.solve(self.get_storage_backend()).unwrap();
-				r
-			})
-			.collect()
+		let page = self.get_storage_backend().query(Query {
+			class: T::Model::get_class().to_string(),
+			..query
+		})?;
+
+		Ok(QueryPage {
+			items: page
+				.items
+				.into_iter()
+				.map(|e| {
+					let r: ReferenceModel<T::Model> = e.0.into();
+					let r: Reference<T> = r.solve(self.get_storage_backend()).unwrap();
+					r
+				})
+				.collect(),
+			cursor: page.cursor,
+		})
 	}
 }
 

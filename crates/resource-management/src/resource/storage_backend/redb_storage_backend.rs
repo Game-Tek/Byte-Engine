@@ -3,7 +3,7 @@
 //! Resource urls are hashed into `ResourceId`s which are the primary key of the database.
 //! Resource metadata is stored in the database by serializing the `SerializableResource` struct into a byte array. The serialization is done using the `pot` crate.
 
-use std::hash::Hasher;
+use std::{hash::Hasher, path::Path};
 
 use redb::{ReadableDatabase as _, ReadableTable};
 use utils::sync::{remove_file, File, Write};
@@ -22,6 +22,64 @@ pub struct RedbStorageBackend {
 }
 
 const RESOURCES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resources");
+const RESOURCE_MANAGEMENT_CODE_HASH: &str = env!("RESOURCE_MANAGEMENT_CODE_HASH");
+const RESOURCE_MANAGEMENT_SIGNATURE_FILE: &str = ".resource-management-version";
+
+fn sync_resource_management_signature(base_path: &Path) {
+	std::fs::create_dir_all(base_path).unwrap();
+
+	let signature_path = base_path.join(RESOURCE_MANAGEMENT_SIGNATURE_FILE);
+	let database_path = base_path.join("resources.db");
+	let stored_signature = std::fs::read_to_string(&signature_path)
+		.ok()
+		.map(|signature| signature.trim().to_string());
+
+	if stored_signature.as_deref() == Some(RESOURCE_MANAGEMENT_CODE_HASH) {
+		return;
+	}
+
+	if let Some(stored_signature) = stored_signature {
+		log::info!(
+			"Deleting resources at '{}' because the resource-management signature changed from '{}' to '{}'.",
+			base_path.display(),
+			stored_signature,
+			RESOURCE_MANAGEMENT_CODE_HASH
+		);
+
+		std::fs::remove_dir_all(base_path).unwrap_or_else(|error| {
+			panic!(
+				"Failed to delete stale resources directory. The most likely cause is that another process is still using files inside '{}'. Error: {}",
+				base_path.display(),
+				error
+			)
+		});
+
+		std::fs::create_dir_all(base_path).unwrap();
+	} else if database_path.exists() {
+		log::info!(
+			"Deleting resources at '{}' because the resource-management signature marker is missing.",
+			base_path.display()
+		);
+
+		std::fs::remove_dir_all(base_path).unwrap_or_else(|error| {
+			panic!(
+				"Failed to delete stale resources directory. The most likely cause is that another process is still using files inside '{}'. Error: {}",
+				base_path.display(),
+				error
+			)
+		});
+
+		std::fs::create_dir_all(base_path).unwrap();
+	}
+
+	std::fs::write(&signature_path, RESOURCE_MANAGEMENT_CODE_HASH).unwrap_or_else(|error| {
+		panic!(
+			"Failed to write the resource-management signature file. The most likely cause is that the resources directory '{}' is not writable. Error: {}",
+			base_path.display(),
+			error
+		)
+	});
+}
 
 impl RedbStorageBackend {
 	pub fn new(base_path: std::path::PathBuf) -> Self {
@@ -33,7 +91,7 @@ impl RedbStorageBackend {
 		}
 
 		let db_res = if !memory_only {
-			std::fs::create_dir_all(&base_path).unwrap();
+			sync_resource_management_signature(&base_path);
 			redb::Database::create(base_path.join("resources.db"))
 		} else {
 			log::info!("Using memory database instead of file database.");

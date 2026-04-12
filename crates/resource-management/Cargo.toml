@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.73.0"
+build = "build.rs"
+
+[build-dependencies]
+md5 = "0.8.0"
 
 [dependencies]
 utils = { path = "../utils" }

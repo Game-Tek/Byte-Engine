@@ -15,7 +15,7 @@ use ghi::{
 	frame::Frame,
 	implementation::Device,
 };
-use math::Matrix4;
+use math::{Matrix4, ShaderMatrix4};
 use resource_management::{
 	asset::bema_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings,
 	spirv_shader_generator::SPIRVShaderGenerator,
@@ -320,7 +320,7 @@ impl SceneManager {
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
 		instance_data_buffer[instace_id] = InstanceShaderData {
-			instance_transform: entity.transform().get_matrix(),
+			instance_transform: entity.transform().get_matrix().into(),
 		};
 	}
 
@@ -332,7 +332,7 @@ impl SceneManager {
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
 		instance_data_buffer[idx] = InstanceShaderData {
-			instance_transform: transform,
+			instance_transform: transform.into(),
 		};
 	}
 }
@@ -376,7 +376,8 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 	}
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub(super) struct InstanceShaderData {
-	instance_transform: Matrix4,
+	instance_transform: ShaderMatrix4,
 }

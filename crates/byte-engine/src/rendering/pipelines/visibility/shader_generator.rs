@@ -363,7 +363,7 @@ struct PrimitiveOutput {
 					if (primitive_index < u8_to_u32(meshlet.primitive_count)) {
 						set_mesh_vertex_position(
 							primitive_index,
-							compute_vertex_position(mesh, meshlet, primitive_index) * mesh.model * matrix
+							matrix * mesh.model * compute_vertex_position(mesh, meshlet, primitive_index)
 						);
 					}
 
@@ -563,7 +563,7 @@ struct PrimitiveOutput {
 
 			View view = set0.views->views[light.cascades[cascade_index]];
 
-			float4 surface_light_clip_position = float4(world_space_position, 1.0) * view.view_projection;
+			float4 surface_light_clip_position = view.view_projection * float4(world_space_position, 1.0);
 			float3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
 
 			float2 shadow_uv = float2(
@@ -1002,14 +1002,14 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		View view = set0.views->views[0];
 		float surface_depth = set2.visibility_depth.read(uint2(pixel_coordinates)).x;
 		float4 surface_clip_position = float4(nc, surface_depth, 1.0);
-		float4 surface_view_position = surface_clip_position * view.inverse_projection;
+		float4 surface_view_position = view.inverse_projection * surface_clip_position;
 		surface_view_position /= surface_view_position.w;
-		float3 world_space_surface_position = (surface_view_position * view.inverse_view).xyz;
+		float3 world_space_surface_position = (view.inverse_view * surface_view_position).xyz;
 
-		float4 world_space_vertex_positions[3] = {model_space_vertex_positions[0] * mesh.model, model_space_vertex_positions[1] * mesh.model, model_space_vertex_positions[2] * mesh.model};
-		float4 clip_space_vertex_positions[3] = {world_space_vertex_positions[0] * view.view_projection, world_space_vertex_positions[1] * view.view_projection, world_space_vertex_positions[2] * view.view_projection};
+		float4 world_space_vertex_positions[3] = {mesh.model * model_space_vertex_positions[0], mesh.model * model_space_vertex_positions[1], mesh.model * model_space_vertex_positions[2]};
+		float4 clip_space_vertex_positions[3] = {view.view_projection * world_space_vertex_positions[0], view.view_projection * world_space_vertex_positions[1], view.view_projection * world_space_vertex_positions[2]};
 
-		float4 world_space_vertex_normals[3] = {normalize(vertex_normals[0] * mesh.model), normalize(vertex_normals[1] * mesh.model), normalize(vertex_normals[2] * mesh.model)};
+		float4 world_space_vertex_normals[3] = {normalize(mesh.model * vertex_normals[0]), normalize(mesh.model * vertex_normals[1]), normalize(mesh.model * vertex_normals[2])};
 
 		BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, float2(image_extent));
 		float3 barycenter = barycentric_deriv.lambda;
@@ -1022,7 +1022,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float2 vertex_uv = interpolate_vec2f_with_deriv(barycenter, vertex_uvs[0], vertex_uvs[1], vertex_uvs[2]);
 
 		float3 N = world_space_vertex_normal;
-		float3 camera_position = (float4(0.0, 0.0, 0.0, 1.0) * view.inverse_view).xyz;
+		float3 camera_position = (view.inverse_view * float4(0.0, 0.0, 0.0, 1.0)).xyz;
 		float3 V = normalize(camera_position - world_space_vertex_position);
 
 		float3 pos_dx = interpolate_vec3f_with_deriv(ddx, world_space_vertex_positions[0].xyz, world_space_vertex_positions[1].xyz, world_space_vertex_positions[2].xyz);
@@ -1101,7 +1101,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float attenuation = 1.0;
 
 			if (light.type == 68) {
-				float4 view_space_surface_position = float4(world_space_surface_position, 1.0) * view.view;
+				float4 view_space_surface_position = view.view * float4(world_space_surface_position, 1.0);
 				float c_occlusion_factor  = sample_shadow(set2.depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal, gid, push_constant, set0, set1, set2);
 
 				occlusion_factor = c_occlusion_factor;
@@ -1447,7 +1447,11 @@ mod tests {
 				&& source.contains("texture2d<float> ao [[id(6)]];")
 				&& source.contains("sampler ao_sampler [[id(7)]];")
 				&& source.contains("texture2d<float> visibility_depth [[id(10)]];")
-				&& source.contains("sampler visibility_depth_sampler [[id(11)]];"),
+				&& source.contains("sampler visibility_depth_sampler [[id(11)]];")
+				&& source.contains("view.inverse_projection * surface_clip_position")
+				&& source.contains("view.inverse_view * surface_view_position")
+				&& source.contains("view.view * float4(world_space_surface_position, 1.0)")
+				&& source.contains("view.view_projection * float4(world_space_position, 1.0)"),
 			"Expected the material evaluation MSL source to preserve the full visibility set2 binding layout. Shader: {source}"
 		);
 	}

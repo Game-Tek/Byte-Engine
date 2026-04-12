@@ -82,7 +82,26 @@ pub mod macros {
 	}
 }
 
-use maths_rs::mat::MatNew4;
+use maths_rs::mat::{MatNew4, MatTranspose as _};
+
+/// The `ShaderMatrix4` struct preserves the CPU-to-GPU matrix layout expected by the active graphics backend.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShaderMatrix4(pub [f32; 16]);
+
+impl From<Matrix4> for ShaderMatrix4 {
+	fn from(mut value: Matrix4) -> Self {
+		#[cfg(target_os = "macos")]
+		{
+			value = value.transpose();
+		}
+
+		Self([
+			value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7], value[8], value[9], value[10],
+			value[11], value[12], value[13], value[14], value[15],
+		])
+	}
+}
 
 /// Calculates the direction to move in a plane from a direction(absolute) vector and a head/camera relative direction vector
 pub fn plane_navigation(direction: Vector3, command: Vector3) -> Vector3 {
@@ -300,7 +319,7 @@ mod tests {
 		assert_vec3f_near!(vec1, vec2);
 	}
 
-	use maths_rs::mat::MatInverse;
+	use maths_rs::mat::{MatInverse, MatNew4};
 
 	use crate::orientation_from_direction;
 
@@ -439,5 +458,25 @@ mod tests {
 		assert!(nearly_equal(s[1], 0f32));
 		assert!(nearly_equal(s[2], 0f32));
 		assert!(nearly_equal(s[3], 1f32));
+	}
+
+	#[test]
+	fn shader_matrix4_matches_platform_upload_layout() {
+		let matrix = crate::Matrix4::new(
+			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+		);
+		let shader_matrix = crate::ShaderMatrix4::from(matrix);
+
+		#[cfg(target_os = "macos")]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 5.0, 9.0, 13.0, 2.0, 6.0, 10.0, 14.0, 3.0, 7.0, 11.0, 15.0, 4.0, 8.0, 12.0, 16.0]
+		);
+
+		#[cfg(not(target_os = "macos"))]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]
+		);
 	}
 }

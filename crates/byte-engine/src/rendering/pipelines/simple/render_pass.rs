@@ -16,7 +16,6 @@ use ghi::{
 	frame::Frame,
 	implementation::Device,
 };
-use math::Matrix4;
 use resource_management::{
 	asset::bema_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings,
 	spirv_shader_generator::SPIRVShaderGenerator,
@@ -99,7 +98,7 @@ impl RenderPass {
 		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(camera_data_buffer);
 
 		camera_data_buffer[viewport.index()] = CameraShaderData {
-			vp: viewport.view_projection(),
+			vp: viewport.view_projection().into(),
 		};
 
 		let vertex_buffer = sm.vertex_positions_buffer;

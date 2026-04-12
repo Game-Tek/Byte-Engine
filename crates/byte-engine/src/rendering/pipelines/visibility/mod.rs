@@ -280,7 +280,7 @@ struct _set0 {{
 		uint vertex_index = mesh.base_vertex_index
 			+ uint(set0.vertex_indices->vertex_indices[mesh.base_primitive_index + uint(meshlet.primitive_offset) + primitive_index]);
 		float4 position = float4(float3(set0.vertex_positions->positions[vertex_index]), 1.0);
-		out_mesh.set_vertex(primitive_index, VertexOutput{{ .position = position * mesh.model * view.view_projection }});
+		out_mesh.set_vertex(primitive_index, VertexOutput{{ .position = view.view_projection * mesh.model * position }});
 	}}
 
 	if (primitive_index < uint(meshlet.triangle_count)) {{
@@ -2147,7 +2147,8 @@ mod tests {
 				&& shader.contains(&format!("packed_float2 uvs[{MAX_VERTICES}];"))
 				&& shader.contains(&format!("ushort vertex_indices[{MAX_PRIMITIVE_TRIANGLES}];"))
 				&& shader.contains(&format!("uchar primitive_indices[{}];", MAX_TRIANGLES * 3))
-				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];")),
+				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];"))
+				&& shader.contains("view.view_projection * mesh.model * position"),
 			"Expected the shadow mesh MSL source to preserve the packed visibility buffer layout. Shader: {shader}"
 		);
 	}
@@ -2216,7 +2217,8 @@ mod tests {
 				&& shader.contains(&format!("packed_float2 uvs[{MAX_VERTICES}];"))
 				&& shader.contains(&format!("ushort vertex_indices[{MAX_PRIMITIVE_TRIANGLES}];"))
 				&& shader.contains(&format!("uchar primitive_indices[{}];", MAX_TRIANGLES * 3))
-				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];")),
+				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];"))
+				&& shader.contains("view.view_projection * mesh.model * position"),
 			"Expected the visibility mesh MSL source to preserve the packed visibility buffer layout. Shader: {shader}"
 		);
 	}

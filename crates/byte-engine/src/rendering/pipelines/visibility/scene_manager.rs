@@ -34,7 +34,7 @@ use ghi::{
 	graphics_hardware_interface,
 };
 use log::{error, warn};
-use math::{mat::MatInverse as _, Matrix4, Vector3};
+use math::{mat::MatInverse as _, ShaderMatrix4, Vector3};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
 use resource_management::msl_shader_generator::MSLShaderGenerator;
@@ -432,7 +432,7 @@ impl VisibilityWorldRenderDomain {
 		match mesh_source {
 			MeshSource::Resource(urid) => {
 				if let Ok(idx) = self.create_mesh_resources(urid, frame) {
-					let model = renderable.transform().get_matrix();
+					let model = renderable.transform().get_matrix().into();
 					let mesh = &self.meshes[idx];
 					self.ensure_instance_capacity(mesh.primitives.len());
 
@@ -456,7 +456,7 @@ impl VisibilityWorldRenderDomain {
 			}
 			MeshSource::Generated(generator) => {
 				if let Ok(idx) = self.create_mesh_from_generator(generator.as_ref(), frame) {
-					let model = renderable.transform().get_matrix();
+					let model = renderable.transform().get_matrix().into();
 					let mesh = &self.meshes[idx];
 					self.ensure_instance_capacity(mesh.primitives.len());
 
@@ -1390,12 +1390,12 @@ impl VisibilityWorldRenderDomain {
 		let view_projection = view.view_projection();
 
 		ShaderViewData {
-			view: view.view(),
-			projection: view.projection(),
-			view_projection,
-			inverse_view: view.view().inverse(),
-			inverse_projection: view.projection().inverse(),
-			inverse_view_projection: view_projection.inverse(),
+			view: view.view().into(),
+			projection: view.projection().into(),
+			view_projection: view_projection.into(),
+			inverse_view: view.view().inverse().into(),
+			inverse_projection: view.projection().inverse().into(),
+			inverse_view_projection: view_projection.inverse().into(),
 			fov: view.fov(),
 			near: view.near(),
 			far: view.far(),
@@ -1461,7 +1461,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 
 		for (index, (entity, shader_mesh)) in self.render_entities.iter().enumerate() {
 			meshes_data_buffer[index] = ShaderMesh {
-				model: entity.transform().get_matrix(),
+				model: entity.transform().get_matrix().into(),
 				..*shader_mesh
 			};
 		}
@@ -1746,7 +1746,7 @@ struct ShaderMeshletData {
 #[repr(C, align(16))]
 #[derive(Copy, Clone)]
 struct ShaderMesh {
-	model: Matrix4,
+	model: ShaderMatrix4,
 	material_index: u32,
 	/// The position into the vertex components data (positions, normals, uvs, ..) buffer this instance's data starts
 	/// Also, the position into the vertex indices buffer this instance's data starts
@@ -1793,12 +1793,12 @@ impl From<Vector3> for ShaderVec3 {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(crate) struct ShaderViewData {
-	pub(crate) view: Matrix4,
-	pub(crate) projection: Matrix4,
-	pub(crate) view_projection: Matrix4,
-	pub(crate) inverse_view: Matrix4,
-	pub(crate) inverse_projection: Matrix4,
-	pub(crate) inverse_view_projection: Matrix4,
+	pub(crate) view: ShaderMatrix4,
+	pub(crate) projection: ShaderMatrix4,
+	pub(crate) view_projection: ShaderMatrix4,
+	pub(crate) inverse_view: ShaderMatrix4,
+	pub(crate) inverse_projection: ShaderMatrix4,
+	pub(crate) inverse_view_projection: ShaderMatrix4,
 	pub(crate) fov: [f32; 2],
 	pub(crate) near: f32,
 	pub(crate) far: f32,

@@ -5,7 +5,7 @@ use ghi::{
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
 };
-use math::{mat::MatInverse as _, Vector3, Vector4};
+use math::{mat::MatInverse as _, ShaderMatrix4, Vector3, Vector4};
 use resource_management::glsl;
 use utils::{Box, Extent};
 
@@ -62,7 +62,7 @@ impl Default for SkyRenderPassSettings {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SkyShaderData {
-	inverse_view_projection: [[f32; 4]; 4],
+	inverse_view_projection: ShaderMatrix4,
 	camera_position: [f32; 4],
 	sun_direction: [f32; 4],
 	planet_center: [f32; 4],
@@ -98,19 +98,7 @@ impl SkyRenderPass {
 			&[SKY_DEPTH_BINDING, SKY_MAIN_BINDING, SKY_PARAMETERS_BINDING],
 		);
 
-		let shader_artifact = glsl::compile(SKY_SHADER, "Sky Render Pass").expect("Failed to compile the sky shader.");
-		let shader = device
-			.create_shader(
-				Some("Sky Render Pass Compute Shader"),
-				ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-				ghi::ShaderTypes::Compute,
-				[
-					SKY_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					SKY_MAIN_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-					SKY_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				],
-			)
-			.expect("Failed to create the sky shader.");
+		let shader = create_sky_shader(device);
 
 		let pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_template],
@@ -165,13 +153,7 @@ impl SkyRenderPass {
 		let parameters = frame.get_mut_dynamic_buffer_slice(self.parameters);
 		let settings = self.settings;
 
-		let m = inverse_view_projection;
-		parameters.inverse_view_projection = [
-			[m[0], m[1], m[2], m[3]],
-			[m[4], m[5], m[6], m[7]],
-			[m[8], m[9], m[10], m[11]],
-			[m[12], m[13], m[14], m[15]],
-		];
+		parameters.inverse_view_projection = inverse_view_projection.into();
 		parameters.camera_position = [
 			camera_position.x,
 			camera_position.y,
@@ -193,6 +175,42 @@ impl SkyRenderPass {
 		];
 		parameters.misc = [settings.ozone_strength, 0.0, 0.0, 0.0];
 	}
+}
+
+fn create_sky_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+	if ghi::implementation::USES_METAL {
+		return device
+			.create_shader(
+				Some("Sky Render Pass Compute Shader"),
+				ghi::shader::Sources::MTL {
+					source: SKY_SHADER_MSL,
+					entry_point: "sky_render_pass",
+				},
+				ghi::ShaderTypes::Compute,
+				[
+					SKY_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+					SKY_MAIN_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+					SKY_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				],
+			)
+			.expect("Failed to create the sky shader. The most likely cause is an incompatible Metal shader interface.");
+	}
+
+	let shader_artifact = glsl::compile(SKY_SHADER, "Sky Render Pass")
+		.expect("Failed to compile the sky shader. The most likely cause is invalid GLSL syntax in the sky render pass.");
+
+	device
+		.create_shader(
+			Some("Sky Render Pass Compute Shader"),
+			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
+			ghi::ShaderTypes::Compute,
+			[
+				SKY_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				SKY_MAIN_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+				SKY_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			],
+		)
+		.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.")
 }
 
 impl RenderPass for SkyRenderPass {
@@ -450,6 +468,301 @@ void main() {
 	vec3 direction = reconstruct_view_direction(pixel, extent);
 	vec3 sky = integrate_atmosphere(get_camera_position(), direction);
 
-	imageStore(main_texture, pixel, vec4(sky, 1.0));
+imageStore(main_texture, pixel, vec4(sky, 1.0));
 }
 "#;
+
+const SKY_SHADER_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+// besl-threadgroup-size: 8, 8, 1
+
+struct SkyParameters {
+	float4x4 inverse_view_projection;
+	float4 camera_position;
+	float4 sun_direction;
+	float4 planet_center;
+	float4 atmosphere;
+	float4 misc;
+};
+
+struct SkySet0 {
+	texture2d<float> depth_texture [[id(0)]];
+	sampler depth_texture_sampler [[id(1)]];
+	texture2d<float, access::write> main_texture [[id(2)]];
+	device SkyParameters* parameters [[id(3)]];
+};
+
+constant float PI = 3.14159265359;
+constant int VIEW_SAMPLE_COUNT = 64;
+constant int LIGHT_SAMPLE_COUNT = 16;
+
+constant float3 BETA_RAYLEIGH = float3(5.802e-6, 13.558e-6, 33.100e-6);
+constant float3 BETA_MIE = float3(3.996e-6);
+constant float3 BETA_OZONE = float3(0.650e-6, 1.881e-6, 0.085e-6);
+
+float3 get_camera_position(const device SkyParameters& parameters) {
+	return parameters.camera_position.xyz;
+}
+
+float3 get_sun_direction(const device SkyParameters& parameters) {
+	return normalize(parameters.sun_direction.xyz);
+}
+
+float3 get_planet_center(const device SkyParameters& parameters) {
+	return parameters.planet_center.xyz;
+}
+
+float get_ground_radius(const device SkyParameters& parameters) {
+	return parameters.atmosphere.x;
+}
+
+float get_atmosphere_radius(const device SkyParameters& parameters) {
+	return parameters.atmosphere.y;
+}
+
+float get_rayleigh_scale_height(const device SkyParameters& parameters) {
+	return parameters.atmosphere.z;
+}
+
+float get_mie_scale_height(const device SkyParameters& parameters) {
+	return parameters.atmosphere.w;
+}
+
+float get_mie_g(const device SkyParameters& parameters) {
+	return parameters.sun_direction.w;
+}
+
+float get_sun_intensity(const device SkyParameters& parameters) {
+	return parameters.camera_position.w;
+}
+
+float get_sun_angular_radius(const device SkyParameters& parameters) {
+	return parameters.planet_center.w;
+}
+
+float get_ozone_strength(const device SkyParameters& parameters) {
+	return parameters.misc.x;
+}
+
+bool ray_sphere_intersection(float3 origin, float3 direction, float3 center, float radius, thread float& t_min, thread float& t_max) {
+	float3 oc = origin - center;
+	float b = dot(oc, direction);
+	float c = dot(oc, oc) - radius * radius;
+	float discriminant = b * b - c;
+
+	if (discriminant < 0.0) {
+		return false;
+	}
+
+	float root = sqrt(discriminant);
+	t_min = -b - root;
+	t_max = -b + root;
+	return true;
+}
+
+float3 density_profile(const device SkyParameters& parameters, float3 sample_position) {
+	float altitude = length(sample_position - get_planet_center(parameters)) - get_ground_radius(parameters);
+
+	if (altitude < 0.0) {
+		return float3(0.0);
+	}
+
+	float rayleigh = exp(-altitude / get_rayleigh_scale_height(parameters));
+	float mie = exp(-altitude / get_mie_scale_height(parameters));
+	float ozone = max(0.0, 1.0 - abs(altitude - 25000.0) / 15000.0) * get_ozone_strength(parameters);
+
+	return float3(rayleigh, mie, ozone);
+}
+
+float3 extinction_from_density(float3 density) {
+	return density.x * BETA_RAYLEIGH + density.y * BETA_MIE + density.z * BETA_OZONE;
+}
+
+float interleaved_gradient_noise(int2 pixel) {
+	return fract(52.9829189 * fract(0.06711056 * float(pixel.x) + 0.00583715 * float(pixel.y)));
+}
+
+float sample_distribution(float u) {
+	u = clamp(u, 0.0, 1.0);
+	return u * u;
+}
+
+float phase_rayleigh(float cosine_theta) {
+	return (3.0 / (16.0 * PI)) * (1.0 + cosine_theta * cosine_theta);
+}
+
+float phase_mie(float cosine_theta, float g) {
+	float g2 = g * g;
+	float denominator = 1.0 + g2 - 2.0 * g * cosine_theta;
+	return (3.0 / (8.0 * PI)) * ((1.0 - g2) * (1.0 + cosine_theta * cosine_theta)) /
+		((2.0 + g2) * max(1e-4, pow(denominator, 1.5)));
+}
+
+float3 march_transmittance(const device SkyParameters& parameters, float3 origin, float3 direction) {
+	float t_min;
+	float t_max;
+
+	if (!ray_sphere_intersection(origin, direction, get_planet_center(parameters), get_atmosphere_radius(parameters), t_min, t_max)) {
+		return float3(1.0);
+	}
+
+	t_min = max(0.0, t_min);
+	float distance_through_atmosphere = t_max - t_min;
+	float3 optical_depth = float3(0.0);
+
+	for (int i = 0; i < LIGHT_SAMPLE_COUNT; ++i) {
+		float t0 = t_min + distance_through_atmosphere * sample_distribution(float(i) / float(LIGHT_SAMPLE_COUNT));
+		float t1 = t_min + distance_through_atmosphere * sample_distribution(float(i + 1) / float(LIGHT_SAMPLE_COUNT));
+		float t = 0.5 * (t0 + t1);
+		float step_size = t1 - t0;
+		float3 sample_position = origin + direction * t;
+		float3 density = density_profile(parameters, sample_position);
+		optical_depth += density * step_size;
+
+		float ground_t_min;
+		float ground_t_max;
+		if (ray_sphere_intersection(
+			sample_position,
+			direction,
+			get_planet_center(parameters),
+			get_ground_radius(parameters),
+			ground_t_min,
+			ground_t_max
+		) && ground_t_max > 0.0) {
+			return float3(0.0);
+		}
+	}
+
+	return exp(-(
+		optical_depth.x * BETA_RAYLEIGH +
+		optical_depth.y * BETA_MIE +
+		optical_depth.z * BETA_OZONE
+	));
+}
+
+float3 integrate_atmosphere(const device SkyParameters& parameters, int2 pixel, float3 origin, float3 direction) {
+	float atmosphere_t_min;
+	float atmosphere_t_max;
+
+	if (!ray_sphere_intersection(
+		origin,
+		direction,
+		get_planet_center(parameters),
+		get_atmosphere_radius(parameters),
+		atmosphere_t_min,
+		atmosphere_t_max
+	)) {
+		return float3(0.0);
+	}
+
+	atmosphere_t_min = max(0.0, atmosphere_t_min);
+	float distance_through_atmosphere = atmosphere_t_max - atmosphere_t_min;
+	float3 optical_depth = float3(0.0);
+	float3 luminance = float3(0.0);
+	float cosine_theta = dot(direction, get_sun_direction(parameters));
+	float phase_r = phase_rayleigh(cosine_theta);
+	float phase_m = phase_mie(cosine_theta, get_mie_g(parameters));
+	float jitter = interleaved_gradient_noise(pixel);
+
+	for (int i = 0; i < VIEW_SAMPLE_COUNT; ++i) {
+		float t0 = atmosphere_t_min + distance_through_atmosphere * sample_distribution(float(i) / float(VIEW_SAMPLE_COUNT));
+		float t1 = atmosphere_t_min + distance_through_atmosphere * sample_distribution(float(i + 1) / float(VIEW_SAMPLE_COUNT));
+		float t = mix(t0, t1, jitter);
+		float step_size = t1 - t0;
+		float3 sample_position = origin + direction * t;
+		float3 density = density_profile(parameters, sample_position);
+		optical_depth += density * step_size;
+
+		float3 transmittance_to_camera = exp(-extinction_from_density(optical_depth));
+		float3 transmittance_to_sun = march_transmittance(parameters, sample_position, get_sun_direction(parameters));
+		float3 scattering =
+			density.x * BETA_RAYLEIGH * phase_r +
+			density.y * BETA_MIE * phase_m;
+
+		luminance += transmittance_to_camera * transmittance_to_sun * scattering * step_size;
+	}
+
+	float3 sun_transmittance = march_transmittance(parameters, origin, get_sun_direction(parameters));
+	float sun_disk = smoothstep(cos(get_sun_angular_radius(parameters) * 1.4), cos(get_sun_angular_radius(parameters)), cosine_theta);
+	float3 sun_radiance = sun_disk * sun_transmittance * float3(20.0, 18.0, 16.0);
+
+	float3 color = luminance * get_sun_intensity(parameters) + sun_radiance;
+	return color / (float3(1.0) + color);
+}
+
+float3 reconstruct_view_direction(const device SkyParameters& parameters, int2 pixel, int2 extent) {
+	float2 uv = (float2(pixel) + float2(0.5)) / float2(extent);
+	float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+	float4 world = parameters.inverse_view_projection * float4(ndc, 0.0, 1.0);
+	return normalize(world.xyz / world.w - get_camera_position(parameters));
+}
+
+kernel void sky_render_pass(
+	uint2 gid [[thread_position_in_grid]],
+	constant SkySet0& set0 [[buffer(16)]]
+) {
+	int2 pixel = int2(gid);
+	int2 extent = int2(set0.main_texture.get_width(), set0.main_texture.get_height());
+
+	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+		return;
+	}
+
+	float2 depth_uv = (float2(pixel) + 0.5) / float2(extent);
+	float depth = set0.depth_texture.sample(set0.depth_texture_sampler, depth_uv, level(0.0)).r;
+	if (depth > 1e-6) {
+		return;
+	}
+
+	const device SkyParameters& parameters = *set0.parameters;
+	float3 direction = reconstruct_view_direction(parameters, pixel, extent);
+	float3 sky = integrate_atmosphere(parameters, pixel, get_camera_position(parameters), direction);
+
+	set0.main_texture.write(float4(sky, 1.0), gid);
+}
+"#;
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn sky_shader_compiles() {
+		resource_management::glsl::compile(super::SKY_SHADER, "Sky Render Pass Test").unwrap();
+	}
+
+	#[test]
+	fn sky_msl_shader_compiles_for_metal() {
+		use ghi::{device::DeviceCreate as _, device::Features};
+
+		if !ghi::implementation::USES_METAL {
+			return;
+		}
+
+		let mut instance =
+			ghi::implementation::Instance::new(Features::new()).expect("Expected a Metal instance for the sky shader test");
+		let mut queue = None;
+		let mut device = instance
+			.create_device(
+				Features::new(),
+				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
+			)
+			.expect("Expected a Metal device for the sky shader test");
+
+		let shader_handle = device.create_shader(
+			Some("Sky Render Pass Compute Shader"),
+			ghi::shader::Sources::MTL {
+				source: super::SKY_SHADER_MSL,
+				entry_point: "sky_render_pass",
+			},
+			ghi::ShaderTypes::Compute,
+			[
+				super::SKY_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				super::SKY_MAIN_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+				super::SKY_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			],
+		);
+
+		assert!(shader_handle.is_ok(), "Expected the sky MSL source to compile for Metal");
+	}
+}

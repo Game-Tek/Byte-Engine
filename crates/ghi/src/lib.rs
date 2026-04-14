@@ -25,109 +25,69 @@ pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
 pub mod implementation {
-	pub const USES_METAL: bool = cfg!(all(target_os = "macos", feature = "metal"));
+	pub const USES_METAL: bool = cfg!(target_os = "macos");
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	pub use metal::Instance;
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	pub use metal::Device;
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	pub use metal::Frame;
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	pub use metal::CommandBufferRecording;
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	pub use metal::queue::Queue;
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	pub(crate) use metal::buffer::Buffer;
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	pub(crate) use metal::image::Image;
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	pub(crate) use metal::DescriptorSet;
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	pub(crate) use metal::Binding;
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	pub(crate) use metal::Synchronizer;
 
-	#[cfg(all(target_os = "macos", feature = "metal"))]
+	#[cfg(target_os = "macos")]
 	use crate::metal;
 
-	#[cfg(any(
-		target_os = "linux",
-		target_os = "windows",
-		all(target_os = "macos", not(feature = "metal"))
-	))]
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::Instance;
 
-	#[cfg(any(
-		target_os = "linux",
-		target_os = "windows",
-		all(target_os = "macos", not(feature = "metal"))
-	))]
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::Device;
 
-	#[cfg(any(
-		target_os = "linux",
-		target_os = "windows",
-		all(target_os = "macos", not(feature = "metal"))
-	))]
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::Frame;
 
-	#[cfg(any(
-		target_os = "linux",
-		target_os = "windows",
-		all(target_os = "macos", not(feature = "metal"))
-	))]
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::CommandBufferRecording;
 
-	#[cfg(any(
-		target_os = "linux",
-		target_os = "windows",
-		all(target_os = "macos", not(feature = "metal"))
-	))]
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::queue::Queue;
 
-	#[cfg(any(
-		target_os = "linux",
-		target_os = "windows",
-		all(target_os = "macos", not(feature = "metal"))
-	))]
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub(crate) use vulkan::buffer::Buffer;
 
-	#[cfg(any(
-		target_os = "linux",
-		target_os = "windows",
-		all(target_os = "macos", not(feature = "metal"))
-	))]
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub(crate) use vulkan::image::Image;
 
-	#[cfg(any(
-		target_os = "linux",
-		target_os = "windows",
-		all(target_os = "macos", not(feature = "metal"))
-	))]
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub(crate) use vulkan::descriptor_set::DescriptorSet;
 
-	#[cfg(any(
-		target_os = "linux",
-		target_os = "windows",
-		all(target_os = "macos", not(feature = "metal"))
-	))]
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub(crate) use vulkan::binding::Binding;
 
-	#[cfg(any(
-		target_os = "linux",
-		target_os = "windows",
-		all(target_os = "macos", not(feature = "metal"))
-	))]
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	use crate::vulkan;
 }
 

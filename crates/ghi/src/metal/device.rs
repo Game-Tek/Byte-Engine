@@ -92,13 +92,27 @@ fn metal_command_encoder_error_state_name(state: mtl::MTLCommandEncoderErrorStat
 fn metal_command_encoder_label(
 	encoder_info: &ProtocolObject<dyn mtl::MTLCommandBufferEncoderInfo>,
 ) -> Option<Retained<NSString>> {
-	unsafe { msg_send![encoder_info, label] }
+	unsafe {
+		let label: *mut NSString = msg_send![encoder_info, label];
+		if label.is_null() {
+			None
+		} else {
+			Retained::from_raw(label)
+		}
+	}
 }
 
 fn metal_command_encoder_debug_signposts(
 	encoder_info: &ProtocolObject<dyn mtl::MTLCommandBufferEncoderInfo>,
 ) -> Option<Retained<NSArray<NSString>>> {
-	unsafe { msg_send![encoder_info, debugSignposts] }
+	unsafe {
+		let debug_signposts: *mut NSArray<NSString> = msg_send![encoder_info, debugSignposts];
+		if debug_signposts.is_null() {
+			None
+		} else {
+			Retained::from_raw(debug_signposts)
+		}
+	}
 }
 
 // Formats the detailed Metal failure report, including per-encoder execution status when Metal provides it.
@@ -1142,23 +1156,14 @@ impl Device {
 		let (spirv, metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
 			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None, None, None),
 			crate::shader::Sources::MTLB { binary, entry_point } => {
-				let temporary_name = format!(
-					"byte_engine_{}_{}.metallib",
-					entry_point,
-					SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| ())?.as_nanos()
-				);
-				let metallib_path = std::env::temp_dir().join(temporary_name);
-				fs::write(&metallib_path, binary).map_err(|_| ())?;
-				let metallib_path_string = metallib_path.to_string_lossy().into_owned();
-				let metallib_path = NSString::from_str(&metallib_path_string);
-				let library = self.device.newLibraryWithFile_error(&metallib_path).map_err(|error| {
+				let data = DispatchData::from_bytes(binary);
+				let library = self.device.newLibraryWithData_error(data).map_err(|error| {
 					eprintln!(
 						"Metal shader library load failed: {}",
 						error.localizedDescription().to_string()
 					);
 					()
 				})?;
-				let _ = fs::remove_file(std::path::Path::new(&metallib_path_string));
 
 				(None, Some(library), Some(entry_point.to_owned()), None)
 			}

@@ -414,6 +414,7 @@ impl VisibilityWorldRenderDomain {
 
 			render_info: RenderInfo {
 				instances: Vec::with_capacity(4096),
+				active_instances: Vec::with_capacity(4096),
 			},
 
 			views: Vec::with_capacity(4),
@@ -1160,10 +1161,13 @@ impl VisibilityWorldRenderDomain {
 					let materials_buffer_slice = device.get_mut_buffer_slice(self.materials_data_buffer_handle);
 					let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
 					let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
+					material_data.textures.fill(u32::MAX);
 
 					for (i, e) in textures_indices.iter().enumerate() {
 						material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
 					}
+
+					device.sync_buffer(self.materials_data_buffer_handle);
 
 					self.material_evaluation_materials.insert(
 						material_id.clone(),
@@ -1201,7 +1205,6 @@ impl VisibilityWorldRenderDomain {
 			return Ok(material.index);
 		}
 
-		let index = self.material_evaluation_materials.len() as u32;
 		let variant_id = resource.id().to_string();
 
 		let specialization_constants: Vec<ghi::pipelines::SpecializationMapEntry> = resource
@@ -1240,6 +1243,14 @@ impl VisibilityWorldRenderDomain {
 		let _material_id = variant.material.id().to_string();
 
 		self.create_material_resources(&mut variant.material, frame)?;
+
+		let index = self.material_evaluation_materials.len() as u32;
+
+		if index as usize >= MAX_MATERIALS {
+			panic!(
+				"Visibility material limit exceeded. The most likely cause is that the scene created more material variants than the visibility pipeline supports."
+			);
+		}
 
 		let textures_indices = {
 			let texture_manager = &mut self.texture_manager;
@@ -1288,15 +1299,16 @@ impl VisibilityWorldRenderDomain {
 
 		let materials_buffer_slice = frame.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
-		frame.sync_buffer(self.materials_data_buffer_handle);
-
 		let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
 
 		let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
+		material_data.textures.fill(u32::MAX);
 
 		for (i, e) in textures_indices.iter().enumerate() {
 			material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
 		}
+
+		frame.sync_buffer(self.materials_data_buffer_handle);
 
 		self.material_evaluation_materials.insert(
 			variant_id.clone(),
@@ -1433,6 +1445,11 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		}
 
 		let meshes_data_buffer = frame.get_mut_dynamic_buffer_slice(self.meshes_data_buffer);
+		let mut ready_materials = [false; MAX_MATERIALS];
+
+		for material in self.material_evaluation_materials.values() {
+			ready_materials[material.index as usize] = material.pipeline.is_some();
+		}
 
 		if self.render_entities.len() > MAX_INSTANCES {
 			panic!(
@@ -1440,11 +1457,19 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			);
 		}
 
-		for (index, (entity, shader_mesh)) in self.render_entities.iter().enumerate() {
-			meshes_data_buffer[index] = ShaderMesh {
+		self.render_info.active_instances.clear();
+
+		for ((entity, shader_mesh), instance) in self.render_entities.iter().zip(self.render_info.instances.iter()) {
+			if !ready_materials[shader_mesh.material_index as usize] {
+				continue;
+			}
+
+			let active_index = self.render_info.active_instances.len();
+			meshes_data_buffer[active_index] = ShaderMesh {
 				model: entity.transform().get_matrix().into(),
 				..*shader_mesh
 			};
+			self.render_info.active_instances.push(*instance);
 		}
 
 		self.write_light_data(frame, shadow_light_index);
@@ -1469,7 +1494,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 				Box::new(r.prepare(
 					frame,
 					v,
-					&self.render_info.instances,
+					&self.render_info.active_instances,
 					&opaque_materials,
 					&transparent_materials,
 					shadow_light_index.is_some(),
@@ -1893,6 +1918,7 @@ pub struct Instance {
 
 struct RenderInfo {
 	instances: Vec<Instance>,
+	active_instances: Vec<Instance>,
 }
 
 /// This structure hosts data analogous to the image resource's data.

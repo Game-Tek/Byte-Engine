@@ -1,4 +1,4 @@
-use std::{cell::RefCell, ops::Deref, rc::Rc};
+use std::{cell::RefCell, ops::Deref, rc::Rc, sync::OnceLock};
 
 use besl::{parser::Node, NodeReference};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
@@ -6,7 +6,23 @@ use std::sync::Arc;
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;
-use crate::rendering::pipelines::visibility::MAX_PIXEL_MAPPING_ENTRIES;
+use crate::rendering::pipelines::visibility::{MAX_LIGHTS, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES};
+
+fn light_array_type() -> &'static str {
+	static LIGHT_ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
+
+	LIGHT_ARRAY_TYPE
+		.get_or_init(|| format!("Light[{MAX_LIGHTS}]").into_boxed_str())
+		.as_ref()
+}
+
+fn material_array_type() -> &'static str {
+	static MATERIAL_ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
+
+	MATERIAL_ARRAY_TYPE
+		.get_or_init(|| format!("Material[{MAX_MATERIALS}]").into_boxed_str())
+		.as_ref()
+}
 
 pub struct VisibilityShaderScope {}
 
@@ -417,7 +433,7 @@ struct PrimitiveOutput {
 			"lighting_data",
 			Node::buffer(
 				"LightingBuffer",
-				vec![Node::member("light_count", "u32"), Node::member("lights", "Light[16]")],
+				vec![Node::member("light_count", "u32"), Node::member("lights", light_array_type())],
 			),
 			2,
 			4,
@@ -426,7 +442,7 @@ struct PrimitiveOutput {
 		);
 		let set2_binding5 = Node::binding(
 			"materials",
-			Node::buffer("MaterialBuffer", vec![Node::member("materials", "Material[16]")]),
+			Node::buffer("MaterialBuffer", vec![Node::member("materials", material_array_type())]),
 			2,
 			5,
 			true,

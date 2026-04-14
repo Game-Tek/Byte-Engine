@@ -3,6 +3,7 @@ use std::{
 	panic::{catch_unwind, AssertUnwindSafe},
 	sync::mpsc::{self, Receiver, Sender},
 	thread,
+	time::Duration,
 };
 
 use ghi::device::{Device as _, DeviceCreate as _};
@@ -65,6 +66,9 @@ enum ComputePipelineResult {
 		key: String,
 	},
 }
+
+#[cfg(debug_assertions)]
+const DEBUG_PIPELINE_CREATION_DELAY: Duration = Duration::from_millis(250);
 
 pub struct PipelineManager {
 	pipelines: RwLock<HashMap<String, PipelineStatus>>,
@@ -130,6 +134,8 @@ impl PipelineManager {
 	) -> Result<ghi::implementation::ComputePipeline, ()> {
 		use ghi::pipelines::factory::Factory as _;
 
+		Self::sleep_for_debug_pipeline_delay();
+
 		let shader = request.shader;
 		let shader_handle = factory.create_shader(
 			shader.name.as_deref(),
@@ -165,6 +171,11 @@ impl PipelineManager {
 				key
 			);
 		}
+	}
+
+	fn sleep_for_debug_pipeline_delay() {
+		#[cfg(debug_assertions)]
+		thread::sleep(DEBUG_PIPELINE_CREATION_DELAY);
 	}
 
 	pub fn poll(&mut self, frame: &mut ghi::implementation::Frame, max_results: usize) -> Vec<(String, ghi::PipelineHandle)> {
@@ -409,6 +420,7 @@ impl PipelineManager {
 
 		let material = reference.resource_mut();
 		let shaders = self.load_shader_handles(material, device).ok()?;
+		Self::sleep_for_debug_pipeline_delay();
 		let handle = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			descriptor_set_template_handles,
 			push_constant_ranges,
@@ -455,6 +467,7 @@ impl PipelineManager {
 			.read()
 			.get(&shader.id().to_string(), shader.hash())
 			.map(|(handle, _)| *handle)?;
+		Self::sleep_for_debug_pipeline_delay();
 		let handle = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			descriptor_set_template_handles,
 			push_constant_ranges,

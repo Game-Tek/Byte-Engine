@@ -116,6 +116,10 @@ pub struct Device {
 }
 
 impl Device {
+	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::PipelineFactory> {
+		None
+	}
+
 	fn format_supports_formatless_storage_write(
 		vk_instance: &ash::Instance,
 		physical_device: vk::PhysicalDevice,

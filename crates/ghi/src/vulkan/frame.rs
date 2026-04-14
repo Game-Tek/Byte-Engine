@@ -548,6 +548,15 @@ impl<'a> crate::device::DeviceCreate for Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
+	pub fn intern_compute_pipeline(
+		&mut self,
+		_pipeline: crate::implementation::ComputePipeline,
+	) -> graphics_hardware_interface::PipelineHandle {
+		panic!(
+			"Vulkan async pipeline interning is unavailable. The most likely cause is that the Vulkan backend does not implement the pipeline factory path yet."
+		);
+	}
+
 	pub(crate) fn get_synchronizer(
 		&self,
 		syncronizer_handle: graphics_hardware_interface::SynchronizerHandle,

@@ -14,7 +14,7 @@ use crate::{
 	graphics_hardware_interface,
 	metal::{
 		utils::{data_type_size, parse_threadgroup_size_metadata, to_pixel_format, vertex_format},
-		PipelineLayout, PipelineState, Shader, VertexElementDescriptor,
+		PipelineLayout, PipelineState, Shader, VertexElementDescriptor, VertexLayout,
 	},
 };
 
@@ -26,7 +26,7 @@ pub struct Factory {
 
 impl crate::pipelines::factory::Factory for Factory {
 	type RasterPipeline = Pipeline;
-	type ComputePipeline = Pipeline;
+	type ComputePipeline = ComputePipeline;
 
 	fn create_shader(
 		&mut self,
@@ -104,7 +104,7 @@ impl crate::pipelines::factory::Factory for Factory {
 			.render_targets
 			.iter()
 			.any(|attachment| attachment.format.channel_layout() == crate::ChannelLayout::Depth);
-		let vertex_descriptor =
+		let vertex_layout =
 			(!builder.vertex_elements.is_empty()).then(|| self.build_vertex_layout(builder.vertex_elements.as_ref()));
 		let mut shader_handles = HashMap::default();
 		let mut object_function = None;
@@ -192,7 +192,7 @@ impl crate::pipelines::factory::Factory for Factory {
 			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
-			descriptor.setVertexDescriptor(vertex_descriptor.as_ref().map(|descriptor| descriptor.as_ref()));
+			descriptor.setVertexDescriptor(vertex_layout.as_ref().map(|layout| layout.vertex_descriptor.as_ref()));
 
 			for (index, attachment) in builder.render_targets.iter().enumerate() {
 				if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
@@ -224,7 +224,7 @@ impl crate::pipelines::factory::Factory for Factory {
 			pipeline: PipelineState::Raster(raster_pipeline_state),
 			depth_stencil_state,
 			layout,
-			vertex_layout: vertex_descriptor,
+			vertex_layout,
 			shader_handles,
 			resource_access,
 			compute_threadgroup_size: None,
@@ -270,11 +270,10 @@ impl crate::pipelines::factory::Factory for Factory {
 			.collect::<Vec<_>>();
 		let compute_threadgroup_size = self.shaders[shader_handle.0 as usize].threadgroup_size;
 
-		Pipeline {
+		ComputePipeline {
 			pipeline: PipelineState::Compute(compute_pipeline_state),
 			depth_stencil_state: None,
 			layout,
-			vertex_layout: None,
 			shader_handles,
 			resource_access,
 			compute_threadgroup_size,
@@ -408,7 +407,7 @@ impl Factory {
 		}
 	}
 
-	fn build_vertex_layout(&mut self, vertex_elements: &[crate::pipelines::VertexElement]) -> Retained<MTLVertexDescriptor> {
+	fn build_vertex_layout(&mut self, vertex_elements: &[crate::pipelines::VertexElement]) -> VertexLayout {
 		let elements = vertex_elements
 			.iter()
 			.map(|element| VertexElementDescriptor {
@@ -454,7 +453,11 @@ impl Factory {
 			layout.setStepFunction(MTLVertexStepFunction::PerVertex);
 		}
 
-		vertex_descriptor
+		VertexLayout {
+			elements,
+			strides,
+			vertex_descriptor,
+		}
 	}
 
 	fn build_library(&self, data: &[u8]) -> Retained<ProtocolObject<dyn MTLLibrary>> {
@@ -467,15 +470,29 @@ impl Factory {
 
 #[derive(Clone)]
 pub struct Pipeline {
-	pipeline: PipelineState,
-	depth_stencil_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
-	layout: PipelineLayout,
-	vertex_layout: Option<Retained<MTLVertexDescriptor>>,
-	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
-	compute_threadgroup_size: Option<Extent>,
-	object_threadgroup_size: Option<Extent>,
-	mesh_threadgroup_size: Option<Extent>,
-	face_winding: crate::pipelines::raster::FaceWinding,
-	cull_mode: crate::pipelines::raster::CullMode,
+	pub(crate) pipeline: PipelineState,
+	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
+	pub(crate) layout: PipelineLayout,
+	pub(crate) vertex_layout: Option<VertexLayout>,
+	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
+	pub(crate) resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
+	pub(crate) compute_threadgroup_size: Option<Extent>,
+	pub(crate) object_threadgroup_size: Option<Extent>,
+	pub(crate) mesh_threadgroup_size: Option<Extent>,
+	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
+	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
+}
+
+#[derive(Clone)]
+pub struct ComputePipeline {
+	pub(crate) pipeline: PipelineState,
+	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
+	pub(crate) layout: PipelineLayout,
+	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
+	pub(crate) resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
+	pub(crate) compute_threadgroup_size: Option<Extent>,
+	pub(crate) object_threadgroup_size: Option<Extent>,
+	pub(crate) mesh_threadgroup_size: Option<Extent>,
+	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
+	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
 }

@@ -1015,6 +1015,13 @@ impl Device {
 		false
 	}
 
+	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::PipelineFactory> {
+		Some(crate::metal::pipelines::factory::Factory {
+			device: self.device.clone(),
+			shaders: Vec::with_capacity(64),
+		})
+	}
+
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
 		self.frames = frames.max(1);
 		for swapchain in &mut self.swapchains {}
@@ -1512,6 +1519,20 @@ impl Device {
 		handle
 	}
 
+	fn get_or_create_pipeline_layout_from_prebuilt(
+		&mut self,
+		layout: &PipelineLayout,
+	) -> graphics_hardware_interface::PipelineLayoutHandle {
+		let mut descriptor_set_templates =
+			vec![graphics_hardware_interface::DescriptorSetTemplateHandle(0); layout.descriptor_set_template_indices.len()];
+
+		for (handle, index) in &layout.descriptor_set_template_indices {
+			descriptor_set_templates[*index as usize] = *handle;
+		}
+
+		self.get_or_create_pipeline_layout(&descriptor_set_templates, &layout.push_constant_ranges)
+	}
+
 	fn get_or_create_vertex_layout(&mut self, vertex_elements: &[crate::pipelines::VertexElement]) -> VertexLayoutHandle {
 		let elements = vertex_elements
 			.iter()
@@ -1570,6 +1591,71 @@ impl Device {
 		let handle = VertexLayoutHandle((self.vertex_layouts.len() - 1) as u64);
 		self.vertex_layout_indices.insert(key, handle);
 		handle
+	}
+
+	fn get_or_create_vertex_layout_from_prebuilt(&mut self, vertex_layout: VertexLayout) -> VertexLayoutHandle {
+		let key = VertexLayoutKey {
+			elements: vertex_layout.elements.clone(),
+		};
+
+		if let Some(handle) = self.vertex_layout_indices.get(&key) {
+			return *handle;
+		}
+
+		self.vertex_layouts.push(vertex_layout);
+		let handle = VertexLayoutHandle((self.vertex_layouts.len() - 1) as u64);
+		self.vertex_layout_indices.insert(key, handle);
+		handle
+	}
+
+	fn intern_pipeline(&mut self, pipeline: Pipeline) -> graphics_hardware_interface::PipelineHandle {
+		self.pipelines.push(pipeline);
+		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)
+	}
+
+	pub fn intern_raster_pipeline(
+		&mut self,
+		pipeline: crate::metal::pipelines::factory::Pipeline,
+	) -> graphics_hardware_interface::PipelineHandle {
+		let layout = self.get_or_create_pipeline_layout_from_prebuilt(&pipeline.layout);
+		let vertex_layout = pipeline
+			.vertex_layout
+			.map(|vertex_layout| self.get_or_create_vertex_layout_from_prebuilt(vertex_layout));
+
+		self.intern_pipeline(Pipeline {
+			pipeline: pipeline.pipeline,
+			depth_stencil_state: pipeline.depth_stencil_state,
+			layout,
+			vertex_layout,
+			shader_handles: pipeline.shader_handles,
+			resource_access: pipeline.resource_access,
+			compute_threadgroup_size: pipeline.compute_threadgroup_size,
+			object_threadgroup_size: pipeline.object_threadgroup_size,
+			mesh_threadgroup_size: pipeline.mesh_threadgroup_size,
+			face_winding: pipeline.face_winding,
+			cull_mode: pipeline.cull_mode,
+		})
+	}
+
+	pub fn intern_compute_pipeline(
+		&mut self,
+		pipeline: crate::metal::pipelines::factory::ComputePipeline,
+	) -> graphics_hardware_interface::PipelineHandle {
+		let layout = self.get_or_create_pipeline_layout_from_prebuilt(&pipeline.layout);
+
+		self.intern_pipeline(Pipeline {
+			pipeline: pipeline.pipeline,
+			depth_stencil_state: pipeline.depth_stencil_state,
+			layout,
+			vertex_layout: None,
+			shader_handles: pipeline.shader_handles,
+			resource_access: pipeline.resource_access,
+			compute_threadgroup_size: pipeline.compute_threadgroup_size,
+			object_threadgroup_size: pipeline.object_threadgroup_size,
+			mesh_threadgroup_size: pipeline.mesh_threadgroup_size,
+			face_winding: pipeline.face_winding,
+			cull_mode: pipeline.cull_mode,
+		})
 	}
 
 	pub fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {

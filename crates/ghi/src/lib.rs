@@ -60,6 +60,9 @@ pub mod implementation {
 	#[cfg(target_os = "macos")]
 	use crate::metal;
 
+	#[cfg(target_os = "macos")]
+	pub use metal::pipelines::factory::{ComputePipeline, Factory as PipelineFactory, Pipeline as RasterPipeline};
+
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::Instance;
 
@@ -89,6 +92,39 @@ pub mod implementation {
 
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	use crate::vulkan;
+
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	pub struct PipelineFactory;
+
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	pub struct ComputePipeline;
+
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	pub struct RasterPipeline;
+
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	impl crate::pipelines::factory::Factory for PipelineFactory {
+		type RasterPipeline = RasterPipeline;
+		type ComputePipeline = ComputePipeline;
+
+		fn create_shader(
+			&mut self,
+			_name: Option<&str>,
+			_shader_source_type: crate::shader::Sources,
+			_stage: crate::ShaderTypes,
+			_shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		) -> Result<crate::ShaderHandle, ()> {
+			Err(())
+		}
+
+		fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
+			RasterPipeline
+		}
+
+		fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
+			ComputePipeline
+		}
+	}
 }
 
 pub mod binding;

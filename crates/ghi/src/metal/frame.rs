@@ -45,6 +45,20 @@ impl<'a> Frame<'a> {
 }
 
 impl Frame<'_> {
+	pub fn intern_raster_pipeline(
+		&mut self,
+		pipeline: crate::metal::pipelines::factory::Pipeline,
+	) -> graphics_hardware_interface::PipelineHandle {
+		self.device.intern_raster_pipeline(pipeline)
+	}
+
+	pub fn intern_compute_pipeline(
+		&mut self,
+		pipeline: crate::implementation::ComputePipeline,
+	) -> graphics_hardware_interface::PipelineHandle {
+		self.device.intern_compute_pipeline(pipeline)
+	}
+
 	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}

@@ -1,10 +1,9 @@
 use ::core::slice::SlicePattern;
 use std::borrow::Borrow;
-use std::cell::{OnceCell, RefCell};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
-use std::sync::OnceLock;
 
 use crate::core::{Entity, EntityHandle};
 use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonShaderScope};
@@ -49,7 +48,7 @@ use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
 use resource_management::{glsl, Reference};
 use utils::hash::{HashMap, HashMapExt};
 use utils::json::{self, object};
-use utils::sync::{Arc, Rc, RwLock};
+use utils::sync::{Rc, RwLock};
 use utils::{Box, Extent, RGBA};
 
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
@@ -91,6 +90,8 @@ const ibl_cubemap_binding_template: ghi::DescriptorSetBindingTemplate = ghi::Des
 )
 .texture_view_type(ghi::TextureViewTypes::Texture2DArray);
 
+const MAX_PIPELINE_ADOPTIONS_PER_FRAME: usize = 8;
+
 /// This the visibility buffer implementation of the world render domain.
 pub struct VisibilityWorldRenderDomain {
 	/// Tracks buffer offsets and counts for various resources.
@@ -112,7 +113,7 @@ pub struct VisibilityWorldRenderDomain {
 	/// Mapping from mesh resource ID to mesh index.
 	mesh_resources: HashMap<String, u32>,
 	/// Material evaluation materials.
-	material_evaluation_materials: HashMap<String, Arc<OnceLock<RenderDescription>>>,
+	material_evaluation_materials: HashMap<String, RenderDescription>,
 	/// Vertex positions buffer for rendered meshes.
 	vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); MAX_VERTICES]>,
 	/// Vertex normals buffer for rendered meshes.
@@ -378,7 +379,7 @@ impl VisibilityWorldRenderDomain {
 			images: HashMap::with_capacity(1024),
 
 			texture_manager,
-			pipeline_manager: PipelineManager::new(),
+			pipeline_manager: PipelineManager::new(device),
 
 			mesh_resources: HashMap::new(),
 
@@ -828,22 +829,11 @@ impl VisibilityWorldRenderDomain {
 		}
 
 		{
-			let (index, v) = {
-				let material_evaluation_materials = &mut self.material_evaluation_materials;
-				let i = material_evaluation_materials.len() as u32;
-				(
-					i,
-					material_evaluation_materials
-						.entry("heyyy".to_string())
-						.or_insert_with(|| Arc::new(OnceLock::new()))
-						.clone(),
-				)
-			};
-
-			let material = v.get_or_try_init(|| {
+			if !self.material_evaluation_materials.contains_key("heyyy") {
+				let index = self.material_evaluation_materials.len() as u32;
 				let materials_buffer_slice = device.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
-				let material_data = materials_buffer_slice[index as usize];
+				let _material_data = materials_buffer_slice[index as usize];
 
 				let root = besl::parse(
 					&"main: fn () -> void {
@@ -922,14 +912,17 @@ impl VisibilityWorldRenderDomain {
 					ghi::ShaderParameter::new(&fshader, ghi::ShaderTypes::Compute),
 				));
 
-				Ok(RenderDescription {
-					name: "heyyy".to_string(),
-					index,
-					pipeline,
-					alpha: false,
-					variant: RenderDescriptionVariants::Material { shaders: vec![] },
-				})
-			})?;
+				self.material_evaluation_materials.insert(
+					"heyyy".to_string(),
+					RenderDescription {
+						name: "heyyy".to_string(),
+						index,
+						pipeline: Some(pipeline),
+						alpha: false,
+						variant: RenderDescriptionVariants::Material { shaders: vec![] },
+					},
+				);
+			}
 		}
 
 		let mesh_id = self.meshes.len();
@@ -1085,17 +1078,11 @@ impl VisibilityWorldRenderDomain {
 		resource: &mut resource_management::Reference<ResourceMaterial>,
 		device: &mut ghi::implementation::Frame,
 	) -> Result<u32, ()> {
-		let (index, v) = {
-			let material_evaluation_materials = &mut self.material_evaluation_materials;
-			let i = material_evaluation_materials.len() as u32;
-			(
-				i,
-				material_evaluation_materials
-					.entry(resource.id().to_string())
-					.or_insert_with(|| Arc::new(OnceLock::new()))
-					.clone(),
-			)
-		};
+		if let Some(material) = self.material_evaluation_materials.get(resource.id()) {
+			return Ok(material.index);
+		}
+
+		let index = self.material_evaluation_materials.len() as u32;
 
 		if index as usize >= MAX_MATERIALS {
 			panic!(
@@ -1103,108 +1090,104 @@ impl VisibilityWorldRenderDomain {
 			);
 		}
 
-		let material = v.get_or_try_init(|| {
-			let material_id = resource.id().to_string();
+		let material_id = resource.id().to_string();
 
-			let shader_names = resource
-				.resource()
-				.shaders()
-				.iter()
-				.map(|shader| shader.id().to_string())
-				.collect::<Vec<_>>();
+		let shader_names = resource
+			.resource()
+			.shaders()
+			.iter()
+			.map(|shader| shader.id().to_string())
+			.collect::<Vec<_>>();
 
-			let parameters = &mut resource.resource_mut().parameters;
+		let parameters = &mut resource.resource_mut().parameters;
 
-			let textures_indices = parameters
-				.iter_mut()
-				.map(|parameter| match parameter.value {
-					Value::Image(ref mut image) => {
-						let texture_manager = &mut self.texture_manager;
-						texture_manager.load(image, device)
-					}
-					_ => None,
-				})
-				.collect::<Vec<_>>();
+		let textures_indices = parameters
+			.iter_mut()
+			.map(|parameter| match parameter.value {
+				Value::Image(ref mut image) => {
+					let texture_manager = &mut self.texture_manager;
+					texture_manager.load(image, device)
+				}
+				_ => None,
+			})
+			.collect::<Vec<_>>();
 
-			let textures_indices = textures_indices
-				.into_iter()
-				.map(|v| {
-					if let Some((name, image, sampler)) = v {
-						let texture_index = {
-							let images = &mut self.images;
-							let index = images.len() as u32;
-							match images.entry(name) {
-								std::collections::hash_map::Entry::Occupied(v) => v.get().index,
-								std::collections::hash_map::Entry::Vacant(v) => {
-									v.insert(Image { index });
-									index
-								}
+		let textures_indices = textures_indices
+			.into_iter()
+			.map(|v| {
+				if let Some((name, image, sampler)) = v {
+					let texture_index = {
+						let images = &mut self.images;
+						let index = images.len() as u32;
+						match images.entry(name) {
+							std::collections::hash_map::Entry::Occupied(v) => v.get().index,
+							std::collections::hash_map::Entry::Vacant(v) => {
+								v.insert(Image { index });
+								index
 							}
-						};
-
-						device.write(&[ghi::descriptors::Write::combined_image_sampler_array(
-							self.textures_binding,
-							image,
-							sampler,
-							ghi::Layouts::Read,
-							texture_index,
-						)]);
-
-						Some(texture_index)
-					} else {
-						None
-					}
-				})
-				.collect::<Vec<_>>();
-
-			match resource.resource().model.name.as_str() {
-				"Visibility" => match resource.resource().model.pass.as_str() {
-					"MaterialEvaluation" => {
-						let pipeline_handle = self
-							.pipeline_manager
-							.load_material(
-								&[
-									self.descriptor_set_layout,
-									self.visibility_descriptor_set_layout,
-									self.material_evaluation_descriptor_set_layout,
-								],
-								&[ghi::pipelines::PushConstantRange::new(0, 4)],
-								resource,
-								device,
-							)
-							.unwrap();
-
-						let materials_buffer_slice = device.get_mut_buffer_slice(self.materials_data_buffer_handle);
-
-						let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
-
-						let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
-
-						for (i, e) in textures_indices.iter().enumerate() {
-							material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
 						}
+					};
 
-						Ok(RenderDescription {
+					device.write(&[ghi::descriptors::Write::combined_image_sampler_array(
+						self.textures_binding,
+						image,
+						sampler,
+						ghi::Layouts::Read,
+						texture_index,
+					)]);
+
+					Some(texture_index)
+				} else {
+					None
+				}
+			})
+			.collect::<Vec<_>>();
+
+		match resource.resource().model.name.as_str() {
+			"Visibility" => match resource.resource().model.pass.as_str() {
+				"MaterialEvaluation" => {
+					let pipeline = self.pipeline_manager.load_material(
+						&[
+							self.descriptor_set_layout,
+							self.visibility_descriptor_set_layout,
+							self.material_evaluation_descriptor_set_layout,
+						],
+						&[ghi::pipelines::PushConstantRange::new(0, 4)],
+						resource,
+						device,
+					);
+
+					let materials_buffer_slice = device.get_mut_buffer_slice(self.materials_data_buffer_handle);
+					let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+					let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
+
+					for (i, e) in textures_indices.iter().enumerate() {
+						material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
+					}
+
+					self.material_evaluation_materials.insert(
+						material_id.clone(),
+						RenderDescription {
 							name: material_id,
 							index,
-							pipeline: pipeline_handle,
+							pipeline,
 							alpha: false,
 							variant: RenderDescriptionVariants::Material { shaders: shader_names },
-						})
-					}
-					_ => {
-						error!("Unknown material pass: {}", resource.resource().model.pass);
-						Err(())
-					}
-				},
+						},
+					);
+
+					Ok(index)
+				}
 				_ => {
-					error!("Unknown material model");
+					error!("Unknown material pass: {}", resource.resource().model.pass);
 					Err(())
 				}
+			},
+			_ => {
+				error!("Unknown material model");
+				Err(())
 			}
-		})?;
-
-		return Ok(material.index);
+		}
 	}
 
 	/// Creates the needed GHI resource for the given material.
@@ -1214,127 +1197,119 @@ impl VisibilityWorldRenderDomain {
 		mut resource: resource_management::Reference<ResourceVariant>,
 		frame: &mut ghi::implementation::Frame,
 	) -> Result<u32, ()> {
-		let (index, v) = {
-			let material_evaluation_materials = &mut self.material_evaluation_materials;
-			let i = material_evaluation_materials.len() as u32;
-			(
-				i,
-				material_evaluation_materials
-					.entry(resource.id().to_string())
-					.or_insert_with(|| Arc::new(OnceLock::new()))
-					.clone(),
-			)
-		};
+		if let Some(material) = self.material_evaluation_materials.get(resource.id()) {
+			return Ok(material.index);
+		}
 
-		let material = v.get_or_try_init(|| {
-			let variant_id = resource.id().to_string();
+		let index = self.material_evaluation_materials.len() as u32;
+		let variant_id = resource.id().to_string();
 
-			let specialization_constants: Vec<ghi::pipelines::SpecializationMapEntry> = resource
-				.resource_mut()
+		let specialization_constants: Vec<ghi::pipelines::SpecializationMapEntry> = resource
+			.resource_mut()
+			.variables
+			.iter()
+			.enumerate()
+			.filter_map(|(i, variable)| match &variable.value {
+				Value::Scalar(scalar) => {
+					ghi::pipelines::SpecializationMapEntry::new(i as u32, "f32".to_string(), *scalar).into()
+				}
+				Value::Vector3(value) => {
+					ghi::pipelines::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value).into()
+				}
+				Value::Vector4(value) => {
+					ghi::pipelines::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value).into()
+				}
+				_ => None,
+			})
+			.collect();
+
+		let pipeline = self.pipeline_manager.load_variant(
+			&[
+				self.descriptor_set_layout,
+				self.visibility_descriptor_set_layout,
+				self.material_evaluation_descriptor_set_layout,
+			],
+			&[ghi::pipelines::PushConstantRange::new(0, 4)],
+			&specialization_constants,
+			&mut resource,
+			frame,
+		);
+
+		let variant = resource.resource_mut();
+
+		let _material_id = variant.material.id().to_string();
+
+		self.create_material_resources(&mut variant.material, frame)?;
+
+		let textures_indices = {
+			let texture_manager = &mut self.texture_manager;
+			variant
 				.variables
-				.iter()
-				.enumerate()
-				.filter_map(|(i, variable)| match &variable.value {
-					Value::Scalar(scalar) => {
-						ghi::pipelines::SpecializationMapEntry::new(i as u32, "f32".to_string(), *scalar).into()
-					}
-					Value::Vector3(value) => {
-						ghi::pipelines::SpecializationMapEntry::new(i as u32, "vec3f".to_string(), *value).into()
-					}
-					Value::Vector4(value) => {
-						ghi::pipelines::SpecializationMapEntry::new(i as u32, "vec4f".to_string(), *value).into()
-					}
+				.iter_mut()
+				.map(|parameter| match parameter.value {
+					Value::Image(ref mut image) => texture_manager.load(image, frame),
 					_ => None,
 				})
-				.collect();
+				.collect::<Vec<_>>()
+		};
 
-			let pipeline = self.pipeline_manager.load_variant(
-				&[
-					self.descriptor_set_layout,
-					self.visibility_descriptor_set_layout,
-					self.material_evaluation_descriptor_set_layout,
-				],
-				&[ghi::pipelines::PushConstantRange::new(0, 4)],
-				&specialization_constants,
-				&mut resource,
-				frame,
-			);
-
-			let pipeline = pipeline.unwrap();
-
-			let variant = resource.resource_mut();
-
-			let material_id = variant.material.id().to_string();
-
-			self.create_material_resources(&mut variant.material, frame)?;
-
-			let textures_indices = {
-				let texture_manager = &mut self.texture_manager;
-				variant
-					.variables
-					.iter_mut()
-					.map(|parameter| match parameter.value {
-						Value::Image(ref mut image) => texture_manager.load(image, frame),
-						_ => None,
-					})
-					.collect::<Vec<_>>()
-			};
-
-			let textures_indices = textures_indices
-				.into_iter()
-				.map(|v| {
-					if let Some((name, image, sampler)) = v {
-						let texture_index = {
-							let images = &mut self.images;
-							let index = images.len() as u32;
-							match images.entry(name) {
-								std::collections::hash_map::Entry::Occupied(v) => v.get().index,
-								std::collections::hash_map::Entry::Vacant(v) => {
-									v.insert(Image { index });
-									index
-								}
+		let textures_indices = textures_indices
+			.into_iter()
+			.map(|v| {
+				if let Some((name, image, sampler)) = v {
+					let texture_index = {
+						let images = &mut self.images;
+						let index = images.len() as u32;
+						match images.entry(name) {
+							std::collections::hash_map::Entry::Occupied(v) => v.get().index,
+							std::collections::hash_map::Entry::Vacant(v) => {
+								v.insert(Image { index });
+								index
 							}
-						};
+						}
+					};
 
-						frame.write(&[ghi::descriptors::Write::combined_image_sampler_array(
-							self.textures_binding,
-							image,
-							sampler,
-							ghi::Layouts::Read,
-							texture_index,
-						)]);
+					frame.write(&[ghi::descriptors::Write::combined_image_sampler_array(
+						self.textures_binding,
+						image,
+						sampler,
+						ghi::Layouts::Read,
+						texture_index,
+					)]);
 
-						Some(texture_index)
-					} else {
-						None
-					}
-				})
-				.collect::<Vec<_>>();
+					Some(texture_index)
+				} else {
+					None
+				}
+			})
+			.collect::<Vec<_>>();
 
-			let alpha = variant.alpha_mode == resource_management::types::AlphaMode::Blend;
+		let alpha = variant.alpha_mode == resource_management::types::AlphaMode::Blend;
 
-			let materials_buffer_slice = frame.get_mut_buffer_slice(self.materials_data_buffer_handle);
+		let materials_buffer_slice = frame.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
-			frame.sync_buffer(self.materials_data_buffer_handle);
+		frame.sync_buffer(self.materials_data_buffer_handle);
 
-			let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
+		let material_data = materials_buffer_slice.as_mut_ptr() as *mut MaterialData;
 
-			let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
+		let material_data = unsafe { material_data.add(index as usize).as_mut().unwrap() };
 
-			for (i, e) in textures_indices.iter().enumerate() {
-				material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
-			}
+		for (i, e) in textures_indices.iter().enumerate() {
+			material_data.textures[i] = e.unwrap_or(0xFFFFFFFFu32) as u32;
+		}
 
-			Ok(RenderDescription {
+		self.material_evaluation_materials.insert(
+			variant_id.clone(),
+			RenderDescription {
 				name: variant_id,
 				index,
 				pipeline,
 				alpha,
 				variant: RenderDescriptionVariants::Variant {},
-			})
-		})?;
+			},
+		);
 
-		return Ok(material.index);
+		Ok(index)
 	}
 
 	pub fn create_light(&mut self, light: Lights) {
@@ -1409,6 +1384,12 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		frame: &mut ghi::implementation::Frame,
 		viewports: &[Viewport],
 	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+		for (name, pipeline) in self.pipeline_manager.poll(frame, MAX_PIPELINE_ADOPTIONS_PER_FRAME) {
+			if let Some(material) = self.material_evaluation_materials.get_mut(&name) {
+				material.pipeline = Some(pipeline);
+			}
+		}
+
 		let main_viewport = viewports
 			.iter()
 			.find(|viewport| viewport.index() == 0)
@@ -1471,16 +1452,14 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		let opaque_materials = self
 			.material_evaluation_materials
 			.values()
-			.filter_map(|v| v.get())
 			.filter(|v| v.alpha == false)
-			.map(|v| (v.name.clone(), v.index, v.pipeline))
+			.filter_map(|v| v.pipeline.map(|pipeline| (v.name.clone(), v.index, pipeline)))
 			.collect::<Vec<_>>();
 		let transparent_materials = self
 			.material_evaluation_materials
 			.values()
-			.filter_map(|v| v.get())
 			.filter(|v| v.alpha == true)
-			.map(|v| (v.name.clone(), v.index, v.pipeline))
+			.filter_map(|v| v.pipeline.map(|pipeline| (v.name.clone(), v.index, pipeline)))
 			.collect::<Vec<_>>();
 
 		let viewport_x_rp = viewports.iter().map(|v| (v, &self.views[v.index()].1));
@@ -1901,7 +1880,7 @@ enum RenderDescriptionVariants {
 
 struct RenderDescription {
 	index: u32,
-	pipeline: ghi::PipelineHandle,
+	pipeline: Option<ghi::PipelineHandle>,
 	name: String,
 	alpha: bool,
 	variant: RenderDescriptionVariants,

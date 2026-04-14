@@ -23,6 +23,7 @@ use crate::{
 	descriptors::DescriptorSetHandle,
 	image::{self as image_builder, ImageHandle},
 	metal::swapchain::Swapchain,
+	metal::utils::parse_threadgroup_size_metadata,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
 	window, DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
@@ -63,14 +64,6 @@ pub struct Device {
 
 	#[cfg(debug_assertions)]
 	pub names: HashMap<graphics_hardware_interface::Handles, String>,
-}
-
-fn parse_threadgroup_size_metadata(source: &str) -> Option<Extent> {
-	let metadata_prefix = "// besl-threadgroup-size:";
-	let metadata = source.lines().find_map(|line| line.trim().strip_prefix(metadata_prefix))?;
-	let mut extents = metadata.split(',').map(|value| value.trim().parse::<u32>().ok());
-
-	Some(Extent::new(extents.next()??, extents.next()??, extents.next()??))
 }
 
 fn metal_command_buffer_status_name(status: mtl::MTLCommandBufferStatus) -> &'static str {

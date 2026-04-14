@@ -470,8 +470,17 @@ impl DescriptorWrite {
 
 mod utils {
 	use objc2_metal as mtl;
+	use utils::Extent;
 
 	use crate::{DeviceAccesses, FilteringModes, Formats, SamplerAddressingModes, Uses};
+
+	pub(crate) fn parse_threadgroup_size_metadata(source: &str) -> Option<Extent> {
+		let metadata_prefix = "// besl-threadgroup-size:";
+		let metadata = source.lines().find_map(|line| line.trim().strip_prefix(metadata_prefix))?;
+		let mut extents = metadata.split(',').map(|value| value.trim().parse::<u32>().ok());
+
+		Some(Extent::new(extents.next()??, extents.next()??, extents.next()??))
+	}
 
 	pub(crate) fn to_pixel_format(format: Formats) -> mtl::MTLPixelFormat {
 		match format {
@@ -833,6 +842,7 @@ pub mod command_buffer;
 pub mod device;
 pub mod frame;
 pub mod instance;
+pub mod pipelines;
 
 pub use self::binding::*;
 pub use self::command_buffer::*;

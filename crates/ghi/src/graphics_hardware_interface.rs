@@ -202,14 +202,6 @@ pub(crate) trait PrivateHandle: Copy {
 
 // HANDLES
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct Consumption {
-	pub handle: Handles,
-	pub stages: Stages,
-	pub access: AccessPolicies,
-	pub layout: Layouts,
-}
-
 /// Describes the dimesions of a dispatch operation.
 pub struct DispatchExtent {
 	workgroup_extent: Extent,

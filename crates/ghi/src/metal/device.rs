@@ -8,6 +8,7 @@ use std::{
 };
 
 use ::utils::hash::{HashMap, HashSet};
+use dispatch2::DispatchData;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, ClassType};
 use objc2_foundation::{NSArray, NSRange, NSString};
@@ -1157,7 +1158,7 @@ impl Device {
 			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None, None, None),
 			crate::shader::Sources::MTLB { binary, entry_point } => {
 				let data = DispatchData::from_bytes(binary);
-				let library = self.device.newLibraryWithData_error(data).map_err(|error| {
+				let library = self.device.newLibraryWithData_error(&data).map_err(|error| {
 					eprintln!(
 						"Metal shader library load failed: {}",
 						error.localizedDescription().to_string()

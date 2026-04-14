@@ -55,11 +55,11 @@ impl<'a> RenderPassBuilder<'a> {
 	}
 
 	pub fn alias(&mut self, orig: &'a str, alias: &'a str) {
-		self.images.alias(orig, alias);
+		self.images.alias(self.view_id, orig, alias);
 	}
 
 	pub fn format_of(&self, name: &str) -> ghi::Formats {
-		self.images.get(name).expect("Image not found").1
+		self.images.get(name, self.view_id).expect("Image not found").1
 	}
 
 	/// Use `render_to` to get a reference to an image you expect to exist.
@@ -67,7 +67,7 @@ impl<'a> RenderPassBuilder<'a> {
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
 		self.images.write_to(name, self.view_id);
 
-		let (image, format) = self.images.get(name).expect("Image not found").clone();
+		let (image, format) = self.images.get(name, self.view_id).expect("Image not found").clone();
 
 		RenderToResult {
 			image: image.into(),
@@ -97,7 +97,7 @@ impl<'a> RenderPassBuilder<'a> {
 		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
 		self.images.read_from(name, self.view_id);
 
-		let (image, _) = self.images.get(name).expect("Image not found").clone();
+		let (image, _) = self.images.get(name, self.view_id).expect("Image not found").clone();
 
 		ReadFromResult { image: image.into() }
 	}

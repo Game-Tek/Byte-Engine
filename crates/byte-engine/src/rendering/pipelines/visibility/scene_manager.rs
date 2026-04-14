@@ -77,7 +77,8 @@ const shadow_map_binding_template: ghi::DescriptorSetBindingTemplate = ghi::Desc
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
 	1,
-);
+)
+.texture_view_type(ghi::TextureViewTypes::Texture2DArray);
 const visibility_depth_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	12,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,

@@ -544,8 +544,8 @@ impl Settings {
 
 pub struct RenderTargets {
 	images: Vec<(ghi::BaseImageHandle, ghi::Formats)>,
-	/// Maps names to image indices.
-	by_name: Vec<(String, usize)>,
+	/// Maps a view-scoped name to an image index.
+	by_name: Vec<(usize, String, usize)>,
 	/// Maps view indices to image indices and access policies, making attachments.
 	by_view_index: Vec<(usize, (usize, ghi::AccessPolicies))>,
 }
@@ -559,16 +559,16 @@ impl RenderTargets {
 		}
 	}
 
-	pub fn alias(&mut self, orig: &str, alias: &str) {
-		if let Some(index) = self.get_image_index(orig) {
-			self.by_name.push((alias.to_string(), index));
+	pub fn alias(&mut self, view: usize, orig: &str, alias: &str) {
+		if let Some(index) = self.get_image_index(orig, view) {
+			self.by_name.push((view, alias.to_string(), index));
 		}
 	}
 
 	/// Inserts a new render target image, associated to a view index.
 	/// Returns the index of the image in the internal storage.
 	pub fn insert(&mut self, name: String, view: usize, image: ghi::BaseImageHandle, format: ghi::Formats) -> usize {
-		if let Some(_) = self.get_image_index(&name) {
+		if let Some(_) = self.get_image_index(&name, view) {
 			log::debug!("An image by that name already exists");
 			panic!("An image by that name already exists");
 		};
@@ -580,7 +580,7 @@ impl RenderTargets {
 
 		let index = self.images.len();
 		self.images.push((image, format));
-		self.by_name.push((name, index));
+		self.by_name.push((view, name, index));
 		self.by_view_index.push((view, (index, ghi::AccessPolicies::WRITE)));
 
 		index
@@ -592,7 +592,7 @@ impl RenderTargets {
 			return;
 		}
 
-		let Some(index) = self.get_image_index(name) else {
+		let Some(index) = self.get_image_index(name, view_id) else {
 			log::debug!("An image by that name does not exists");
 			return;
 		};
@@ -606,7 +606,7 @@ impl RenderTargets {
 			return;
 		}
 
-		let Some(index) = self.get_image_index(name) else {
+		let Some(index) = self.get_image_index(name, view_id) else {
 			log::debug!("An image by that name does not exists");
 			return;
 		};
@@ -614,8 +614,8 @@ impl RenderTargets {
 		self.by_view_index.push((view_id, (index, ghi::AccessPolicies::WRITE)));
 	}
 
-	pub fn get(&self, name: &str) -> Option<&(ghi::BaseImageHandle, ghi::Formats)> {
-		self.get_image_index(name).and_then(|index| self.images.get(index))
+	pub fn get(&self, name: &str, view_id: usize) -> Option<&(ghi::BaseImageHandle, ghi::Formats)> {
+		self.get_image_index(name, view_id).and_then(|index| self.images.get(index))
 	}
 
 	pub fn get_attachment_infos(&self, view: usize) -> Vec<ghi::AttachmentInformation> {
@@ -651,12 +651,16 @@ impl RenderTargets {
 		&self.images.get(index).unwrap().0
 	}
 
-	fn get_image_index(&self, name: &str) -> Option<usize> {
-		self.by_name.iter().rev().find(|(n, _)| n == name).map(|(_, i)| *i)
+	fn get_image_index(&self, name: &str, view_id: usize) -> Option<usize> {
+		self.by_name
+			.iter()
+			.rev()
+			.find(|(view, n, _)| *view == view_id && n == name)
+			.map(|(_, _, i)| *i)
 	}
 
 	fn get_attachment_index(&self, name: &str, view_id: usize) -> Option<usize> {
-		let image_index = self.get_image_index(name)?;
+		let image_index = self.get_image_index(name, view_id)?;
 
 		self.by_view_index
 			.iter()
@@ -693,9 +697,9 @@ mod tests {
 		let format = ghi::Formats::RGBA8UNORM;
 		let index = rt.insert("test".to_string(), 0, image, format);
 		assert_eq!(index, 0);
-		let retrieved = rt.get("test");
+		let retrieved = rt.get("test", 0);
 		assert!(retrieved.is_some());
-		assert_eq!(rt.get("nonexistent"), None);
+		assert_eq!(rt.get("nonexistent", 0), None);
 	}
 
 	#[test]
@@ -709,8 +713,8 @@ mod tests {
 		rt.insert("color".to_string(), 0, image1, format1);
 		rt.insert("depth".to_string(), 0, image2, format2);
 
-		assert!(rt.get("color").is_some());
-		assert!(rt.get("depth").is_some());
+		assert!(rt.get("color", 0).is_some());
+		assert!(rt.get("depth", 0).is_some());
 	}
 
 	#[test]
@@ -752,10 +756,25 @@ mod tests {
 
 		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM);
 		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM);
-		rt.alias("first", "main");
-		rt.alias("second", "main");
+		rt.alias(0, "first", "main");
+		rt.alias(0, "second", "main");
 
-		let (image, _) = rt.get("main").expect("main alias should resolve");
+		let (image, _) = rt.get("main", 0).expect("main alias should resolve");
 		assert_eq!(*image, second_image);
+	}
+
+	#[test]
+	fn test_insert_same_name_for_different_views() {
+		let mut rt = RenderTargets::new();
+		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
+		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
+
+		rt.insert("main".to_string(), 0, image1, ghi::Formats::RGBA16UNORM);
+		rt.insert("main".to_string(), 1, image2, ghi::Formats::RGBA16UNORM);
+
+		let (view0_image, _) = rt.get("main", 0).expect("view 0 main should resolve");
+		let (view1_image, _) = rt.get("main", 1).expect("view 1 main should resolve");
+		assert_eq!(*view0_image, image1);
+		assert_eq!(*view1_image, image2);
 	}
 }

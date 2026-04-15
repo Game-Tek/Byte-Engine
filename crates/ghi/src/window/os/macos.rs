@@ -14,8 +14,6 @@ use objc2_foundation::{
 };
 
 pub struct Window {
-	mtm: MainThreadMarker,
-	app: Retained<NSApplication>,
 	window: Retained<NSWindow>,
 	_app_delegate: Retained<ApplicationDelegate>,
 	delegate: Retained<WindowDelegate>,
@@ -240,9 +238,7 @@ impl WindowLike for Window {
 		app.activate();
 
 		Ok(Window {
-			mtm,
 			window,
-			app,
 			_app_delegate: app_delegate,
 			delegate,
 			modifier_state: ModifierState::default(),
@@ -272,7 +268,7 @@ impl WindowLike for Window {
 			events.push(Events::Maximize);
 		}
 
-		while let Some(event) = self.app.nextEventMatchingMask_untilDate_inMode_dequeue(
+		while let Some(event) = self.window.nextEventMatchingMask_untilDate_inMode_dequeue(
 			NSEventMask::Any,
 			None,
 			unsafe { NSDefaultRunLoopMode },
@@ -281,7 +277,10 @@ impl WindowLike for Window {
 			let time = (event.timestamp() * 1000.0) as u64;
 
 			match event.r#type() {
-				NSEventType::MouseMoved | NSEventType::LeftMouseDragged | NSEventType::RightMouseDragged => {
+				NSEventType::MouseMoved
+				| NSEventType::LeftMouseDragged
+				| NSEventType::RightMouseDragged
+				| NSEventType::OtherMouseDragged => {
 					let dx = event.deltaX() as f32;
 					let dy = event.deltaY() as f32;
 
@@ -289,13 +288,9 @@ impl WindowLike for Window {
 
 					let point = event.locationInWindow();
 
-					if let Some(window) = event.window(self.mtm) {
-						if window == self.window {
-							if let Some(content_view) = window.contentView() {
-								if let Some((x, y)) = normalize_mouse_position(point, content_view.frame()) {
-									events.push(Events::MousePosition { x, y, time });
-								}
-							}
+					if let Some(content_view) = self.window.contentView() {
+						if let Some((x, y)) = normalize_mouse_position(point, content_view.frame()) {
+							events.push(Events::MousePosition { x, y, time });
 						}
 					}
 				}
@@ -313,6 +308,14 @@ impl WindowLike for Window {
 					events.push(Events::Button {
 						pressed,
 						button: MouseKeys::Right,
+					});
+				}
+				NSEventType::OtherMouseDown | NSEventType::OtherMouseUp => {
+					let pressed = event.r#type() == NSEventType::OtherMouseDown;
+
+					events.push(Events::Button {
+						pressed,
+						button: MouseKeys::Middle,
 					});
 				}
 				NSEventType::KeyDown | NSEventType::KeyUp => {

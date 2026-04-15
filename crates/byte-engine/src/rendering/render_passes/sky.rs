@@ -27,9 +27,9 @@ const SKY_MAIN_BINDING: ghi::DescriptorSetBindingTemplate =
 const SKY_PARAMETERS_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 
-/// The `SkyRenderPassSettings` struct configures the physical atmosphere and sun parameters for the sky pass.
+/// The `AtmosphereSkyRenderPassSettings` struct configures the physical atmosphere and sun parameters for the sky pass.
 #[derive(Clone, Copy, Debug)]
-pub struct SkyRenderPassSettings {
+pub struct AtmosphereSkyRenderPassSettings {
 	pub sun_direction: Vector3,
 	pub sun_intensity: f32,
 	pub sun_angular_radius: f32,
@@ -42,7 +42,7 @@ pub struct SkyRenderPassSettings {
 	pub planet_center: Vector3,
 }
 
-impl Default for SkyRenderPassSettings {
+impl Default for AtmosphereSkyRenderPassSettings {
 	fn default() -> Self {
 		Self {
 			sun_direction: Vector3::new(0.35, 0.85, 0.4),
@@ -70,24 +70,24 @@ struct SkyShaderData {
 	misc: [f32; 4],
 }
 
-/// The `SkyRenderPass` struct renders an atmosphere-only sky into the main color target wherever depth remains at infinity.
-pub struct SkyRenderPass {
+/// The `AtmosphereSkyRenderPass` struct renders an atmosphere-only sky into the main color target wherever depth remains at infinity.
+pub struct AtmosphereSkyRenderPass {
 	pipeline: ghi::PipelineHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
-	settings: SkyRenderPassSettings,
+	settings: AtmosphereSkyRenderPassSettings,
 }
 
-impl Entity for SkyRenderPass {}
+impl Entity for AtmosphereSkyRenderPass {}
 
-impl SkyRenderPass {
+impl AtmosphereSkyRenderPass {
 	/// Creates a sky pass with physically plausible default atmosphere settings.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		Self::with_settings(render_pass_builder, SkyRenderPassSettings::default())
+		Self::with_settings(render_pass_builder, AtmosphereSkyRenderPassSettings::default())
 	}
 
 	/// Creates a sky pass with caller-supplied atmosphere settings.
-	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: SkyRenderPassSettings) -> Self {
+	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: AtmosphereSkyRenderPassSettings) -> Self {
 		let depth = render_pass_builder.read_from("depth");
 		let main = render_pass_builder.render_to("main");
 
@@ -144,6 +144,7 @@ impl SkyRenderPass {
 		let inverse_view_projection = view.view_projection().inverse();
 		let inverse_view = view.view().inverse();
 		let camera_position = inverse_view * Vector4::new(0.0, 0.0, 0.0, 1.0);
+		let sun_direction = math::normalize(self.settings.sun_direction);
 		let planet_center = [
 			camera_position.x + self.settings.planet_center.x,
 			self.settings.planet_center.y,
@@ -160,12 +161,7 @@ impl SkyRenderPass {
 			camera_position.z,
 			settings.sun_intensity,
 		];
-		parameters.sun_direction = [
-			settings.sun_direction.x,
-			settings.sun_direction.y,
-			settings.sun_direction.z,
-			settings.mie_anisotropy,
-		];
+		parameters.sun_direction = [sun_direction.x, sun_direction.y, sun_direction.z, settings.mie_anisotropy];
 		parameters.planet_center = planet_center;
 		parameters.atmosphere = [
 			settings.ground_radius,
@@ -213,7 +209,7 @@ fn create_sky_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHan
 		.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.")
 }
 
-impl RenderPass for SkyRenderPass {
+impl RenderPass for AtmosphereSkyRenderPass {
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
 		self.write_parameters(frame, viewport);
 
@@ -260,8 +256,8 @@ layout(set=0, binding=2, scalar) readonly buffer SkyParametersBuffer {
 layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
 
 const float PI = 3.14159265359;
-const int VIEW_SAMPLE_COUNT = 64;
-const int LIGHT_SAMPLE_COUNT = 16;
+const int VIEW_SAMPLE_COUNT = 24;
+const int LIGHT_SAMPLE_COUNT = 8;
 
 const vec3 BETA_RAYLEIGH = vec3(5.802e-6, 13.558e-6, 33.100e-6);
 const vec3 BETA_MIE = vec3(3.996e-6);
@@ -272,7 +268,7 @@ vec3 get_camera_position() {
 }
 
 vec3 get_sun_direction() {
-	return normalize(parameters.sun_direction.xyz);
+	return parameters.sun_direction.xyz;
 }
 
 vec3 get_planet_center() {
@@ -361,8 +357,9 @@ float phase_rayleigh(float cosine_theta) {
 float phase_mie(float cosine_theta, float g) {
 	float g2 = g * g;
 	float denominator = 1.0 + g2 - 2.0 * g * cosine_theta;
+	float denominator_sqrt = sqrt(max(1e-4, denominator));
 	return (3.0 / (8.0 * PI)) * ((1.0 - g2) * (1.0 + cosine_theta * cosine_theta)) /
-		((2.0 + g2) * max(1e-4, pow(denominator, 1.5)));
+		((2.0 + g2) * max(1e-4, denominator * denominator_sqrt));
 }
 
 vec3 march_transmittance(vec3 origin, vec3 direction) {
@@ -377,6 +374,12 @@ vec3 march_transmittance(vec3 origin, vec3 direction) {
 	float distance_through_atmosphere = t_max - t_min;
 	vec3 optical_depth = vec3(0.0);
 
+	float ground_t_min;
+	float ground_t_max;
+	if (ray_sphere_intersection(origin, direction, get_planet_center(), get_ground_radius(), ground_t_min, ground_t_max) && ground_t_max > 0.0) {
+		return vec3(0.0);
+	}
+
 	for (int i = 0; i < LIGHT_SAMPLE_COUNT; ++i) {
 		float t0 = t_min + distance_through_atmosphere * sample_distribution(float(i) / float(LIGHT_SAMPLE_COUNT));
 		float t1 = t_min + distance_through_atmosphere * sample_distribution(float(i + 1) / float(LIGHT_SAMPLE_COUNT));
@@ -385,19 +388,9 @@ vec3 march_transmittance(vec3 origin, vec3 direction) {
 		vec3 sample_position = origin + direction * t;
 		vec3 density = density_profile(sample_position);
 		optical_depth += density * step_size;
-
-		float ground_t_min;
-		float ground_t_max;
-		if (ray_sphere_intersection(sample_position, direction, get_planet_center(), get_ground_radius(), ground_t_min, ground_t_max) && ground_t_max > 0.0) {
-			return vec3(0.0);
-		}
 	}
 
-	return exp(-(
-		optical_depth.x * BETA_RAYLEIGH +
-		optical_depth.y * BETA_MIE +
-		optical_depth.z * BETA_OZONE
-	));
+	return exp(-extinction_from_density(optical_depth));
 }
 
 vec3 integrate_atmosphere(vec3 origin, vec3 direction) {
@@ -412,7 +405,8 @@ vec3 integrate_atmosphere(vec3 origin, vec3 direction) {
 	float distance_through_atmosphere = atmosphere_t_max - atmosphere_t_min;
 	vec3 optical_depth = vec3(0.0);
 	vec3 luminance = vec3(0.0);
-	float cosine_theta = dot(direction, get_sun_direction());
+	vec3 sun_direction = get_sun_direction();
+	float cosine_theta = dot(direction, sun_direction);
 	float phase_r = phase_rayleigh(cosine_theta);
 	float phase_m = phase_mie(cosine_theta, get_mie_g());
 	float jitter = interleaved_gradient_noise(ivec2(gl_GlobalInvocationID.xy));
@@ -427,7 +421,7 @@ vec3 integrate_atmosphere(vec3 origin, vec3 direction) {
 		optical_depth += density * step_size;
 
 		vec3 transmittance_to_camera = exp(-extinction_from_density(optical_depth));
-		vec3 transmittance_to_sun = march_transmittance(sample_position, get_sun_direction());
+		vec3 transmittance_to_sun = march_transmittance(sample_position, sun_direction);
 		vec3 scattering =
 			density.x * BETA_RAYLEIGH * phase_r +
 			density.y * BETA_MIE * phase_m;
@@ -435,7 +429,7 @@ vec3 integrate_atmosphere(vec3 origin, vec3 direction) {
 		luminance += transmittance_to_camera * transmittance_to_sun * scattering * step_size;
 	}
 
-	vec3 sun_transmittance = march_transmittance(origin, get_sun_direction());
+	vec3 sun_transmittance = march_transmittance(origin, sun_direction);
 	float sun_disk = smoothstep(cos(get_sun_angular_radius() * 1.4), cos(get_sun_angular_radius()), cosine_theta);
 	vec3 sun_radiance = sun_disk * sun_transmittance * vec3(20.0, 18.0, 16.0);
 
@@ -495,8 +489,8 @@ struct SkySet0 {
 };
 
 constant float PI = 3.14159265359;
-constant int VIEW_SAMPLE_COUNT = 64;
-constant int LIGHT_SAMPLE_COUNT = 16;
+constant int VIEW_SAMPLE_COUNT = 24;
+constant int LIGHT_SAMPLE_COUNT = 8;
 
 constant float3 BETA_RAYLEIGH = float3(5.802e-6, 13.558e-6, 33.100e-6);
 constant float3 BETA_MIE = float3(3.996e-6);
@@ -507,7 +501,7 @@ float3 get_camera_position(const device SkyParameters& parameters) {
 }
 
 float3 get_sun_direction(const device SkyParameters& parameters) {
-	return normalize(parameters.sun_direction.xyz);
+	return parameters.sun_direction.xyz;
 }
 
 float3 get_planet_center(const device SkyParameters& parameters) {
@@ -596,8 +590,9 @@ float phase_rayleigh(float cosine_theta) {
 float phase_mie(float cosine_theta, float g) {
 	float g2 = g * g;
 	float denominator = 1.0 + g2 - 2.0 * g * cosine_theta;
+	float denominator_sqrt = sqrt(max(1e-4, denominator));
 	return (3.0 / (8.0 * PI)) * ((1.0 - g2) * (1.0 + cosine_theta * cosine_theta)) /
-		((2.0 + g2) * max(1e-4, pow(denominator, 1.5)));
+		((2.0 + g2) * max(1e-4, denominator * denominator_sqrt));
 }
 
 float3 march_transmittance(const device SkyParameters& parameters, float3 origin, float3 direction) {
@@ -612,6 +607,19 @@ float3 march_transmittance(const device SkyParameters& parameters, float3 origin
 	float distance_through_atmosphere = t_max - t_min;
 	float3 optical_depth = float3(0.0);
 
+	float ground_t_min;
+	float ground_t_max;
+	if (ray_sphere_intersection(
+		origin,
+		direction,
+		get_planet_center(parameters),
+		get_ground_radius(parameters),
+		ground_t_min,
+		ground_t_max
+	) && ground_t_max > 0.0) {
+		return float3(0.0);
+	}
+
 	for (int i = 0; i < LIGHT_SAMPLE_COUNT; ++i) {
 		float t0 = t_min + distance_through_atmosphere * sample_distribution(float(i) / float(LIGHT_SAMPLE_COUNT));
 		float t1 = t_min + distance_through_atmosphere * sample_distribution(float(i + 1) / float(LIGHT_SAMPLE_COUNT));
@@ -620,26 +628,9 @@ float3 march_transmittance(const device SkyParameters& parameters, float3 origin
 		float3 sample_position = origin + direction * t;
 		float3 density = density_profile(parameters, sample_position);
 		optical_depth += density * step_size;
-
-		float ground_t_min;
-		float ground_t_max;
-		if (ray_sphere_intersection(
-			sample_position,
-			direction,
-			get_planet_center(parameters),
-			get_ground_radius(parameters),
-			ground_t_min,
-			ground_t_max
-		) && ground_t_max > 0.0) {
-			return float3(0.0);
-		}
 	}
 
-	return exp(-(
-		optical_depth.x * BETA_RAYLEIGH +
-		optical_depth.y * BETA_MIE +
-		optical_depth.z * BETA_OZONE
-	));
+	return exp(-extinction_from_density(optical_depth));
 }
 
 float3 integrate_atmosphere(const device SkyParameters& parameters, int2 pixel, float3 origin, float3 direction) {
@@ -661,7 +652,8 @@ float3 integrate_atmosphere(const device SkyParameters& parameters, int2 pixel, 
 	float distance_through_atmosphere = atmosphere_t_max - atmosphere_t_min;
 	float3 optical_depth = float3(0.0);
 	float3 luminance = float3(0.0);
-	float cosine_theta = dot(direction, get_sun_direction(parameters));
+	float3 sun_direction = get_sun_direction(parameters);
+	float cosine_theta = dot(direction, sun_direction);
 	float phase_r = phase_rayleigh(cosine_theta);
 	float phase_m = phase_mie(cosine_theta, get_mie_g(parameters));
 	float jitter = interleaved_gradient_noise(pixel);
@@ -676,7 +668,7 @@ float3 integrate_atmosphere(const device SkyParameters& parameters, int2 pixel, 
 		optical_depth += density * step_size;
 
 		float3 transmittance_to_camera = exp(-extinction_from_density(optical_depth));
-		float3 transmittance_to_sun = march_transmittance(parameters, sample_position, get_sun_direction(parameters));
+		float3 transmittance_to_sun = march_transmittance(parameters, sample_position, sun_direction);
 		float3 scattering =
 			density.x * BETA_RAYLEIGH * phase_r +
 			density.y * BETA_MIE * phase_m;
@@ -684,7 +676,7 @@ float3 integrate_atmosphere(const device SkyParameters& parameters, int2 pixel, 
 		luminance += transmittance_to_camera * transmittance_to_sun * scattering * step_size;
 	}
 
-	float3 sun_transmittance = march_transmittance(parameters, origin, get_sun_direction(parameters));
+	float3 sun_transmittance = march_transmittance(parameters, origin, sun_direction);
 	float sun_disk = smoothstep(cos(get_sun_angular_radius(parameters) * 1.4), cos(get_sun_angular_radius(parameters)), cosine_theta);
 	float3 sun_radiance = sun_disk * sun_transmittance * float3(20.0, 18.0, 16.0);
 

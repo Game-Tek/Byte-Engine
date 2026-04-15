@@ -146,7 +146,7 @@ pub struct VisibilityWorldRenderDomain {
 	/// Information about the current render.
 	render_info: RenderInfo,
 	/// Views
-	views: Vec<(usize, VisibilityPipelineRenderPass)>,
+	views: Vec<ViewState>,
 	visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 	resource_manager: EntityHandle<ResourceManager>,
 }
@@ -1130,13 +1130,20 @@ impl VisibilityWorldRenderDomain {
 						}
 					};
 
-					device.write(&[ghi::descriptors::Write::combined_image_sampler_array(
-						self.textures_binding,
-						image,
-						sampler,
-						ghi::Layouts::Read,
-						texture_index,
-					)]);
+					let writes = self
+						.texture_binding_handles()
+						.into_iter()
+						.map(|binding| {
+							ghi::descriptors::Write::combined_image_sampler_array(
+								binding,
+								image,
+								sampler,
+								ghi::Layouts::Read,
+								texture_index,
+							)
+						})
+						.collect::<Vec<_>>();
+					device.write(&writes);
 
 					Some(texture_index)
 				} else {
@@ -1281,13 +1288,20 @@ impl VisibilityWorldRenderDomain {
 						}
 					};
 
-					frame.write(&[ghi::descriptors::Write::combined_image_sampler_array(
-						self.textures_binding,
-						image,
-						sampler,
-						ghi::Layouts::Read,
-						texture_index,
-					)]);
+					let writes = self
+						.texture_binding_handles()
+						.into_iter()
+						.map(|binding| {
+							ghi::descriptors::Write::combined_image_sampler_array(
+								binding,
+								image,
+								sampler,
+								ghi::Layouts::Read,
+								texture_index,
+							)
+						})
+						.collect::<Vec<_>>();
+					frame.write(&writes);
 
 					Some(texture_index)
 				} else {
@@ -1389,6 +1403,13 @@ impl VisibilityWorldRenderDomain {
 			far: view.far(),
 		}
 	}
+
+	fn texture_binding_handles(&self) -> Vec<ghi::DescriptorSetBindingHandle> {
+		let mut bindings = Vec::with_capacity(self.views.len() + 1);
+		bindings.push(self.textures_binding);
+		bindings.extend(self.views.iter().map(|view| view.textures_binding));
+		bindings
+	}
 }
 
 impl SceneManager for VisibilityWorldRenderDomain {
@@ -1403,25 +1424,24 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			}
 		}
 
-		let main_viewport = viewports
-			.iter()
-			.find(|viewport| viewport.index() == 0)
-			.copied()
-			.or_else(|| viewports.first().copied());
 		let shadow_light = self.lights.iter().enumerate().find_map(|(index, light)| match light {
 			Lights::Direction(light) => Some((index, light.direction)),
 			Lights::Point(_) => None,
 		});
-		let shadow_light_index = if main_viewport.is_some() {
+		let shadow_light_index = if viewports.is_empty() == false {
 			shadow_light.map(|(index, _)| index)
 		} else {
 			None
 		};
 
-		if let Some(main_viewport) = main_viewport {
-			let main_view = main_viewport.view();
+		for viewport in viewports {
+			let Some(view_state) = self.views.iter().find(|view| view.id == viewport.index()) else {
+				continue;
+			};
+
+			let main_view = viewport.view();
 			let main_view_data = Self::make_shader_view_data(main_view);
-			let views_data_buffer = frame.get_mut_dynamic_buffer_slice(self.views_data_buffer_handle);
+			let views_data_buffer = frame.get_mut_dynamic_buffer_slice(view_state.views_data_buffer_handle);
 
 			for view_data in views_data_buffer.iter_mut() {
 				*view_data = main_view_data;
@@ -1488,7 +1508,12 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			.filter_map(|v| v.pipeline.map(|pipeline| (v.name.clone(), v.index, pipeline)))
 			.collect::<Vec<_>>();
 
-		let viewport_x_rp = viewports.iter().map(|v| (v, &self.views[v.index()].1));
+		let viewport_x_rp = viewports.iter().filter_map(|viewport| {
+			self.views
+				.iter()
+				.find(|view| view.id == viewport.index())
+				.map(|view| (viewport, &view.render_pass))
+		});
 
 		let commands: Vec<Box<dyn RenderPassFunction>> = viewport_x_rp
 			.map(|(v, r)| {
@@ -1532,9 +1557,74 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		);
 
 		let device = render_pass_builder.device();
+		let views_data_buffer_handle = device.build_dynamic_buffer::<[ShaderViewData; 8]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Visibility Views Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let base_descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &self.descriptor_set_layout);
+		let _ = device.create_descriptor_binding(
+			base_descriptor_set,
+			ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			base_descriptor_set,
+			ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, self.meshes_data_buffer.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			base_descriptor_set,
+			ghi::BindingConstructor::buffer(&VERTEX_POSITIONS_BINDING, self.vertex_positions_buffer.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			base_descriptor_set,
+			ghi::BindingConstructor::buffer(&VERTEX_NORMALS_BINDING, self.vertex_normals_buffer.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			base_descriptor_set,
+			ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, self.vertex_uvs_buffer.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			base_descriptor_set,
+			ghi::BindingConstructor::buffer(&VERTEX_INDICES_BINDING, self.vertex_indices_buffer.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			base_descriptor_set,
+			ghi::BindingConstructor::buffer(&PRIMITIVE_INDICES_BINDING, self.primitive_indices_buffer.into()),
+		);
+		let _ = device.create_descriptor_binding(
+			base_descriptor_set,
+			ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, self.meshlets_data_buffer.into()),
+		);
+		let textures_binding = device.create_descriptor_binding(
+			base_descriptor_set,
+			ghi::BindingConstructor::combined_image_sampler_array(&TEXTURES_BINDING),
+		);
+		let texture_writes = self
+			.texture_manager
+			.loaded_textures()
+			.into_iter()
+			.filter_map(|(name, image, sampler)| {
+				self.images.get(&name).map(|image_info| {
+					ghi::descriptors::Write::combined_image_sampler_array(
+						textures_binding,
+						image,
+						sampler,
+						ghi::Layouts::Read,
+						image_info.index,
+					)
+				})
+			})
+			.collect::<Vec<_>>();
+		if texture_writes.is_empty() == false {
+			device.write(&texture_writes);
+		}
 
 		let visibility_passes_descriptor_set =
 			device.create_descriptor_set(Some("Visibility Descriptor Set"), &self.visibility_descriptor_set_layout);
+		let material_evaluation_descriptor_set = device.create_descriptor_set(
+			Some("Material Evaluation Descriptor Set"),
+			&self.material_evaluation_descriptor_set_layout,
+		);
 
 		let material_count_buffer = device.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
@@ -1617,23 +1707,23 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		);
 
 		let _ = device.create_descriptor_binding(
-			self.material_evaluation_descriptor_set,
+			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::image(&diffuse_binding_template, ghi::BaseImageHandle::from(diffuse_target)),
 		);
 		let _ = device.create_descriptor_binding(
-			self.material_evaluation_descriptor_set,
+			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::image(&specular_binding_template, ghi::BaseImageHandle::from(specular_target)),
 		);
 		let _ = device.create_descriptor_binding(
-			self.material_evaluation_descriptor_set,
+			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::buffer(&lighting_data_binding_template, self.light_data_buffer.into()),
 		);
 		let _ = device.create_descriptor_binding(
-			self.material_evaluation_descriptor_set,
+			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::buffer(&materials_data_binding_template, self.materials_data_buffer_handle.into()),
 		);
 		let _ = device.create_descriptor_binding(
-			self.material_evaluation_descriptor_set,
+			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&ao_map_binding_template,
 				ao_map,
@@ -1642,7 +1732,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			),
 		);
 		let _ = device.create_descriptor_binding(
-			self.material_evaluation_descriptor_set,
+			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&shadow_map_binding_template,
 				shadow_map,
@@ -1651,7 +1741,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			),
 		);
 		let _ = device.create_descriptor_binding(
-			self.material_evaluation_descriptor_set,
+			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&visibility_depth_binding_template,
 				ghi::BaseImageHandle::from(depth_target),
@@ -1660,7 +1750,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			),
 		);
 		let _ = device.create_descriptor_binding(
-			self.material_evaluation_descriptor_set,
+			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&ibl_cubemap_binding_template,
 				ibl_cubemap,
@@ -1705,9 +1795,9 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			render_pass_builder.device(),
 			self.descriptor_set_layout,
 			self.visibility_descriptor_set_layout,
-			self.descriptor_set,
+			base_descriptor_set,
 			visibility_passes_descriptor_set,
-			self.material_evaluation_descriptor_set,
+			material_evaluation_descriptor_set,
 			material_count_buffer,
 			ghi::BaseImageHandle::from(diffuse_target),
 			ghi::BaseImageHandle::from(specular_target),
@@ -1723,7 +1813,12 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			material_evaluation_dispatches,
 		);
 
-		self.views.push((id, render_pass));
+		self.views.push(ViewState {
+			id,
+			views_data_buffer_handle,
+			textures_binding,
+			render_pass,
+		});
 	}
 }
 
@@ -1920,6 +2015,13 @@ pub struct Instance {
 struct RenderInfo {
 	instances: Vec<Instance>,
 	active_instances: Vec<Instance>,
+}
+
+struct ViewState {
+	id: usize,
+	views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
+	textures_binding: ghi::DescriptorSetBindingHandle,
+	render_pass: VisibilityPipelineRenderPass,
 }
 
 /// This structure hosts data analogous to the image resource's data.

@@ -198,9 +198,12 @@ impl Frame<'_> {
 		let mut present_drawables = Vec::with_capacity(present_keys.len());
 
 		for &present_key in present_keys {
-			if let Some(e) = self.drawables.pop_if(|e| e.0 == present_key.swapchain) {
-				present_drawables.push(e.1);
-			}
+			let drawable = self
+				.drawables
+				.iter()
+				.position(|(swapchain, _)| *swapchain == present_key.swapchain)
+				.map(|index| self.drawables.swap_remove(index).1);
+			present_drawables.push((present_key, drawable));
 		}
 
 		if !present_keys.is_empty() {
@@ -209,7 +212,10 @@ impl Frame<'_> {
 			);
 			blit_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
 
-			for (present_key, drawable) in present_keys.iter().zip(present_drawables.iter()) {
+			for (present_key, drawable) in &present_drawables {
+				let Some(drawable) = drawable else {
+					continue;
+				};
 				let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
 				let Some(proxy_image) = swapchain.images[present_key.sequence_index as usize] else {
 					continue;
@@ -225,7 +231,10 @@ impl Frame<'_> {
 			blit_encoder.endEncoding();
 		}
 
-		for drawable in &present_drawables {
+		for (_, drawable) in &present_drawables {
+			let Some(drawable) = drawable else {
+				continue;
+			};
 			let drawable_ref: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
 			command_buffer.presentDrawable(drawable_ref);
 		}

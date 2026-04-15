@@ -145,4 +145,11 @@ impl TextureManager {
 			}
 		}
 	}
+
+	pub fn loaded_textures(&self) -> Vec<(String, ghi::BaseImageHandle, ghi::SamplerHandle)> {
+		self.textures
+			.iter()
+			.map(|(name, (image, sampler))| (name.clone(), *image, *sampler))
+			.collect()
+	}
 }

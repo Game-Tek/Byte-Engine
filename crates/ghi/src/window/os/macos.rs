@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::{cell::Cell, sync::Mutex};
 
 use crate::input::{Keys, MouseKeys};
 use crate::{os::WindowLike, Events};
@@ -37,6 +37,8 @@ struct WindowDelegateIvars {
 struct ApplicationDelegateIvars {
 	window: Retained<NSWindow>,
 }
+
+static NEXT_WINDOW_CASCADE_TOP_LEFT: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 
 define_class!(
 	#[unsafe(super = NSObject)]
@@ -191,7 +193,7 @@ impl WindowLike for Window {
 			.unwrap_or(1.0);
 		let window_size = pixel_extent_to_window_points(extent, scale_factor);
 
-		let frame = NSRect::new(NSPoint::new(100.0, 100.0), window_size);
+		let frame = NSRect::new(NSPoint::new(0.0, 0.0), window_size);
 		let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::Resizable;
 
 		// let style = NSWindowStyleMask::Titled
@@ -213,6 +215,25 @@ impl WindowLike for Window {
 		window.setCanHide(false);
 		window.setHidesOnDeactivate(false);
 		window.setAcceptsMouseMovedEvents(true);
+
+		{
+			let mut top_left = NEXT_WINDOW_CASCADE_TOP_LEFT
+				.lock()
+				.expect("Window cascade mutex poisoned while positioning a macOS window.");
+
+			if let Some(seed) = *top_left {
+				let next = window.cascadeTopLeftFromPoint(NSPoint::new(seed.0, seed.1));
+				*top_left = Some((next.x as f64, next.y as f64));
+			} else {
+				window.center();
+
+				let frame = window.frame();
+				let centered_top_left = (frame.origin.x as f64, frame.origin.y as f64 + frame.size.height as f64);
+				let next = window.cascadeTopLeftFromPoint(NSPoint::new(centered_top_left.0, centered_top_left.1));
+				*top_left = Some((next.x as f64, next.y as f64));
+			}
+		};
+
 		window.makeKeyAndOrderFront(None);
 
 		app.setActivationPolicy(NSApplicationActivationPolicy::Regular);

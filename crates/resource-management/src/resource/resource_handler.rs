@@ -5,7 +5,10 @@ pub type MultiResourceReader = Box<dyn ResourceReader>;
 #[cfg(test)]
 pub mod tests {
 	use crate::{
-		resource::{reader::ResourceReader, ReadTargets, ReadTargetsMut},
+		resource::{
+			reader::{ResourceReader, ResourceReaderBacking},
+			ReadTargets, ReadTargetsMut,
+		},
 		StreamDescription,
 	};
 
@@ -53,6 +56,10 @@ pub mod tests {
 					}
 				}
 			}
+		}
+
+		fn into_backing_storage(self: Box<Self>) -> Result<ResourceReaderBacking, Box<dyn ResourceReader>> {
+			Ok(ResourceReaderBacking::Buffer(self.data))
 		}
 	}
 }

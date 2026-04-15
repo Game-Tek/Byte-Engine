@@ -2082,6 +2082,7 @@ dependencies = [
  "log",
  "maths-rs",
  "md5",
+ "memmap2",
  "meshopt",
  "notify-debouncer-full",
  "png",

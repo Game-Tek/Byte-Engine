@@ -43,7 +43,10 @@ pub trait Resource: Send + Sync {
 pub mod tests {
 	use crate::StreamDescription;
 
-	use super::{reader::ResourceReader, ReadTargets, ReadTargetsMut};
+	use super::{
+		reader::{ResourceReader, ResourceReaderBacking},
+		ReadTargets, ReadTargetsMut,
+	};
 
 	#[derive(Debug)]
 	pub struct TestResourceReader {
@@ -77,6 +80,10 @@ pub mod tests {
 				}
 				_ => Err(()),
 			}
+		}
+
+		fn into_backing_storage(self: Box<Self>) -> Result<ResourceReaderBacking, Box<dyn ResourceReader>> {
+			Ok(ResourceReaderBacking::Buffer(self.data))
 		}
 	}
 }

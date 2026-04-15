@@ -1,6 +1,7 @@
 use std::{
 	hash::Hash,
-	panic::{catch_unwind, AssertUnwindSafe},
+	panic::{AssertUnwindSafe, catch_unwind},
+	sync::Arc,
 	sync::mpsc::{self, Receiver, Sender},
 	thread,
 	time::Duration,
@@ -8,9 +9,10 @@ use std::{
 
 use ghi::device::{Device as _, DeviceCreate as _};
 use resource_management::{
+	Reference,
+	resource::{ReadTargets, reader::ResourceReaderBacking},
 	resources::material::{Material, Shader, Variant},
 	types::ShaderTypes,
-	Reference,
 };
 use utils::{
 	hash::{HashMap, HashMapExt},
@@ -24,24 +26,31 @@ enum PipelineStatus {
 	Failed,
 }
 
-#[derive(Clone)]
 enum OwnedShaderSource {
-	MTLB { binary: Box<[u8]>, entry_point: String },
-	MTL { source: String, entry_point: String },
-	SPIRV(Box<[u8]>),
+	MTLB {
+		binary: ResourceReaderBacking,
+		entry_point: String,
+	},
+	MTL {
+		source: String,
+		entry_point: String,
+	},
+	SPIRV(ResourceReaderBacking),
 }
 
 impl OwnedShaderSource {
 	fn sources(&self) -> ghi::shader::Sources<'_> {
 		match self {
-			OwnedShaderSource::MTLB { binary, entry_point } => ghi::shader::Sources::MTLB { binary, entry_point },
+			OwnedShaderSource::MTLB { binary, entry_point } => ghi::shader::Sources::MTLB {
+				binary: binary.as_slice(),
+				entry_point,
+			},
 			OwnedShaderSource::MTL { source, entry_point } => ghi::shader::Sources::MTL { source, entry_point },
-			OwnedShaderSource::SPIRV(binary) => ghi::shader::Sources::SPIRV(binary),
+			OwnedShaderSource::SPIRV(binary) => ghi::shader::Sources::SPIRV(binary.as_slice()),
 		}
 	}
 }
 
-#[derive(Clone)]
 struct OwnedShader {
 	name: Option<String>,
 	source: OwnedShaderSource,
@@ -53,7 +62,7 @@ struct ComputePipelineRequest {
 	key: String,
 	descriptor_set_templates: Vec<ghi::DescriptorSetTemplateHandle>,
 	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-	shader: OwnedShader,
+	shader: Arc<OwnedShader>,
 	specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
 }
 
@@ -74,8 +83,8 @@ pub struct PipelineManager {
 	pipelines: RwLock<HashMap<String, PipelineStatus>>,
 	shaders: RwLock<StaleHashMap<String, u64, (ghi::ShaderHandle, ghi::ShaderTypes)>>,
 	// Async requests cannot reload shader bytes after a sync load consumes the read target,
-	// so we keep an owned copy of the shader payload keyed by resource hash.
-	shader_requests: RwLock<StaleHashMap<String, u64, OwnedShader>>,
+	// so we keep an owned backing for the shader payload keyed by resource hash.
+	shader_requests: RwLock<StaleHashMap<String, u64, Arc<OwnedShader>>>,
 	compute_pipeline_requests: Option<Sender<ComputePipelineRequest>>,
 	compute_pipeline_results: Option<Receiver<ComputePipelineResult>>,
 }
@@ -141,7 +150,7 @@ impl PipelineManager {
 			shader.name.as_deref(),
 			shader.source.sources(),
 			shader.stage,
-			shader.binding_descriptors,
+			shader.binding_descriptors.iter().copied(),
 		)?;
 
 		Ok(factory.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
@@ -258,10 +267,10 @@ impl PipelineManager {
 		}
 	}
 
-	/// Loads the shader bytes once and keeps an owned copy so sync and async pipeline creation can reuse the same payload.
-	fn load_cached_shader_request(&self, shader: &mut Reference<Shader>) -> Result<OwnedShader, ()> {
+	/// Loads shader backing once so sync and async pipeline creation can reuse the same payload.
+	fn load_cached_shader_request(&self, shader: &mut Reference<Shader>) -> Result<Arc<OwnedShader>, ()> {
 		if let Entry::Fresh(shader_request) = self.shader_requests.read().entry(&shader.id, shader.get_hash()) {
-			return Ok(shader_request.clone());
+			return Ok(Arc::clone(shader_request));
 		}
 
 		let binding_descriptors = shader
@@ -287,35 +296,55 @@ impl PipelineManager {
 			.collect::<Vec<_>>();
 
 		let stage = Self::map_shader_type(shader.resource().stage);
-		let read_target = shader.into();
-		let load_request = shader.load(read_target).map_err(|error| {
-			log::error!(
-				"Failed to load shader bytes for {}: {:?}. The most likely cause is that the shader resource no longer has an available read target.",
-				shader.id(),
-				error
-			);
-		})?;
-		let buffer = load_request.buffer().ok_or(())?;
+		let shader_backing = Self::load_shader_backing(shader)?;
 
-		let shader_request = OwnedShader {
+		let shader_request = Arc::new(OwnedShader {
 			name: Some(shader.id().to_string()),
 			source: if ghi::implementation::USES_METAL {
 				OwnedShaderSource::MTLB {
-					binary: buffer.to_vec().into_boxed_slice(),
+					binary: shader_backing,
 					entry_point: "besl_main".to_string(),
 				}
 			} else {
-				OwnedShaderSource::SPIRV(buffer.to_vec().into_boxed_slice())
+				OwnedShaderSource::SPIRV(shader_backing)
 			},
 			stage,
 			binding_descriptors,
-		};
+		});
 
 		self.shader_requests
 			.write()
-			.insert(shader.id().to_string(), shader.get_hash(), shader_request.clone());
+			.insert(shader.id().to_string(), shader.get_hash(), Arc::clone(&shader_request));
 
 		Ok(shader_request)
+	}
+
+	/// Loads shader bytes from reader backing storage and falls back to an owned buffer when direct backing is unavailable.
+	fn load_shader_backing(shader: &mut Reference<Shader>) -> Result<ResourceReaderBacking, ()> {
+		match shader.consume_reader().into_backing_storage() {
+			Ok(backing) => Ok(backing),
+			Err(mut reader) => {
+				let read_target = shader.into();
+				let load_request = reader.read_into(None, read_target).map_err(|_| {
+					log::error!(
+						"Failed to load shader bytes for {}. The most likely cause is that the shader resource no longer has an available read target.",
+						shader.id(),
+					);
+				})?;
+
+				match load_request {
+					ReadTargets::Box(buffer) => Ok(ResourceReaderBacking::Buffer(buffer)),
+					ReadTargets::Buffer(buffer) => Ok(ResourceReaderBacking::Buffer(buffer.into())),
+					ReadTargets::Streams(_) => {
+						log::error!(
+							"Shader {} produced stream-backed data. The most likely cause is that the shader resource was loaded with an unexpected read target.",
+							shader.id(),
+						);
+						Err(())
+					}
+				}
+			}
+		}
 	}
 
 	fn queue_material_pipeline(

@@ -3,11 +3,11 @@ use std::io::{Read, Seek};
 use utils::sync::File;
 
 use crate::{
-	resource::{ReadTargets, ReadTargetsMut},
 	StreamDescription,
+	resource::{ReadTargets, ReadTargetsMut},
 };
 
-use super::ResourceReader;
+use super::{MappedFileBacking, ResourceReader, ResourceReaderBacking};
 
 #[derive(Debug)]
 pub struct FileResourceReader {
@@ -66,5 +66,48 @@ impl ResourceReader for FileResourceReader {
 				}
 			}
 		}
+	}
+
+	fn into_backing_storage(self: Box<Self>) -> Result<ResourceReaderBacking, Box<dyn ResourceReader>> {
+		let mapped_file = MappedFileBacking::new(&self.file).map_err(|_| self as Box<dyn ResourceReader>)?;
+		Ok(ResourceReaderBacking::MappedFile(mapped_file))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		fs,
+		io::Write,
+		path::PathBuf,
+		time::{SystemTime, UNIX_EPOCH},
+	};
+
+	use super::*;
+
+	fn temporary_file_path() -> PathBuf {
+		std::env::temp_dir().join(format!(
+			"byte-engine-file-resource-reader-{}-{}.bin",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		))
+	}
+
+	#[test]
+	fn file_resource_reader_can_expose_mapped_backing_storage() {
+		let path = temporary_file_path();
+		let expected = b"shader-bytes";
+
+		{
+			let mut file = fs::File::create(&path).unwrap();
+			file.write_all(expected).unwrap();
+			file.sync_all().unwrap();
+		}
+
+		let reader: Box<dyn ResourceReader> = Box::new(FileResourceReader::new(fs::File::open(&path).unwrap()));
+		let backing = reader.into_backing_storage().unwrap();
+
+		assert_eq!(backing.as_slice(), expected);
+		fs::remove_file(path).unwrap();
 	}
 }

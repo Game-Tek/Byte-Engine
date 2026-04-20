@@ -1,5 +1,6 @@
 {
 	"lldb.showDisassembly": "never",
 	"lldb.dereferencePointers": false,
-	"lldb.consoleMode": "commands"
+	"lldb.consoleMode": "commands",
+	"function-explorer.hideFolders": true
 }

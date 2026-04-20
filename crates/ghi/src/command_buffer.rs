@@ -2,18 +2,19 @@ use utils::Extent;
 
 use crate::{
 	rt, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferDescriptor, BufferHandle, ClearValue,
-	DescriptorSetHandle, DispatchExtent, Layouts, MeshHandle, PipelineHandle, PresentKey, RGBAu8, SynchronizerHandle,
-	TextureCopyHandle,
+	DescriptorSetHandle, DispatchExtent, Layouts, MeshHandle, PipelineHandle, RGBAu8, SynchronizerHandle, TextureCopyHandle,
 };
+
+pub trait CommandBuffer {
+	/// Starts recording commands into an existing command buffer.
+	fn create_command_buffer_recording(&mut self) -> impl CommandBufferRecording + CommonCommandBufferMode;
+}
 
 /// The `CommandBufferRecording` trait captures backend command encoding so GPU work can be recorded before submission.
 pub trait CommandBufferRecording
 where
 	Self: Sized,
 {
-	/// The backend-specific submission result produced when recording ends.
-	type Result<'a>;
-
 	/// Records a build for one top-level acceleration structure.
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &rt::TopLevelAccelerationStructureBuild);
 	/// Records builds for one or more bottom-level acceleration structures.
@@ -52,9 +53,6 @@ where
 
 	/// Submits the recorded commands for execution.
 	fn execute(self, synchronizer: SynchronizerHandle);
-
-	/// Finishes recording and returns the backend-specific submission payload.
-	fn end<'a>(self, present_keys: &'a [PresentKey]) -> Self::Result<'a>;
 }
 
 /// The `CommonCommandBufferMode` trait exposes commands that stay valid across multiple command-buffer recording states.

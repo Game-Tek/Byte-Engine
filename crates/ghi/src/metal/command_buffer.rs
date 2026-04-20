@@ -160,7 +160,15 @@ pub struct FinishedCommandBuffer<'a> {
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	pub(crate) command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
-	pub(crate) present_keys: &'a [graphics_hardware_interface::PresentKey],
+	pub(crate) _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl crate::command_buffer::CommandBuffer for super::CommandBuffer<'_> {
+	fn create_command_buffer_recording(
+		&mut self,
+	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
+		self.device.create_command_buffer_recording(self.command_buffer_handle)
+	}
 }
 
 impl<'a> CommandBufferRecording<'a> {
@@ -200,6 +208,23 @@ impl<'a> CommandBufferRecording<'a> {
 
 	fn current_encoder_label(&self, suffix: &str) -> Retained<NSString> {
 		NSString::from_str(suffix)
+	}
+
+	pub(crate) fn into_finished(mut self) -> FinishedCommandBuffer<'static> {
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		FinishedCommandBuffer {
+			command_buffer_handle: self.command_buffer_handle,
+			command_buffer: self.command_buffer,
+			states: self.states,
+			_marker: std::marker::PhantomData,
+		}
 	}
 
 	fn refresh_active_encoder_labels(&self) {
@@ -374,8 +399,6 @@ impl<'a> CommandBufferRecording<'a> {
 }
 
 impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
-	type Result<'a> = FinishedCommandBuffer<'a>;
-
 	fn build_top_level_acceleration_structure(
 		&mut self,
 		_acceleration_structure_build: &crate::rt::TopLevelAccelerationStructureBuild,
@@ -685,23 +708,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 	fn execute(self, _synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 		self.finish(_synchronizer);
-	}
-
-	fn end<'a>(mut self, present_keys: &'a [graphics_hardware_interface::PresentKey]) -> Self::Result<'a> {
-		if let Some(encoder) = self.active_render_encoder.take() {
-			encoder.endEncoding();
-		}
-
-		if let Some(encoder) = self.active_compute_encoder.take() {
-			encoder.endEncoding();
-		}
-
-		FinishedCommandBuffer {
-			command_buffer_handle: self.command_buffer_handle,
-			command_buffer: self.command_buffer,
-			states: self.states,
-			present_keys,
-		}
 	}
 }
 

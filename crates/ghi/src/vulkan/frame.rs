@@ -33,6 +33,127 @@ impl<'a> Frame<'a> {
 		self.device
 	}
 
+	pub(crate) fn execute_submission(
+		&mut self,
+		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+		states: utils::hash::HashMap<crate::PrivateHandles, super::TransitionState>,
+		present_keys: &[graphics_hardware_interface::PresentKey],
+		synchronizer: graphics_hardware_interface::SynchronizerHandle,
+	) {
+		self.device.handle_swapchain_proxies(present_keys);
+
+		let command_buffer =
+			self.device.command_buffers[command_buffer_handle.0 as usize].frames[self.frame_key.sequence_index as usize];
+
+		let command_buffers = [command_buffer.command_buffer];
+
+		let command_buffer_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])];
+
+		let wait_for_synchronizer_handles: [graphics_hardware_interface::SynchronizerHandle; 0] = [];
+
+		let wait_semaphores = wait_for_synchronizer_handles
+			.iter()
+			.map(|&synchronizer| {
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(self.get_synchronizer(synchronizer).semaphore)
+					.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER)
+			})
+			.chain(present_keys.iter().map(|present_key| {
+				let swapchain = self.get_swapchain(present_key.swapchain);
+				let semaphore = swapchain.acquire_synchronizers[present_key.sequence_index as usize]
+					.access(&self.device.synchronizers)
+					.semaphore;
+
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(semaphore)
+					.stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+			}))
+			.collect::<Vec<_>>();
+
+		let signal_synchronizer_handles: [graphics_hardware_interface::SynchronizerHandle; 0] = [];
+
+		let signal_semaphores = signal_synchronizer_handles
+			.iter()
+			.map(|&synchronizer| {
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(self.get_synchronizer(synchronizer).semaphore)
+					.stage_mask(vk::PipelineStageFlags2::empty())
+			})
+			.chain(present_keys.iter().map(|present_key| {
+				let swapchain = self.get_swapchain(present_key.swapchain);
+				let presentable_image_handle = self.get_presentable_swapchain_image_handle(*present_key);
+				let wait_stage = states
+					.get(&crate::PrivateHandles::Image(presentable_image_handle))
+					.map(|state| state.stage)
+					.unwrap_or(vk::PipelineStageFlags2::ALL_COMMANDS);
+
+				vk::SemaphoreSubmitInfo::default()
+					.semaphore(
+						swapchain.submit_synchronizers[present_key.image_index as usize]
+							.access(&self.device.synchronizers)
+							.semaphore,
+					)
+					.stage_mask(wait_stage)
+			}))
+			.collect::<Vec<_>>();
+
+		let submit_info = vk::SubmitInfo2::default()
+			.command_buffer_infos(&command_buffer_infos)
+			.wait_semaphore_infos(&wait_semaphores)
+			.signal_semaphore_infos(&signal_semaphores);
+
+		let execution_completion_synchronizer = &self.get_synchronizer(synchronizer);
+
+		let vk_queue = command_buffer.vk_queue;
+
+		unsafe {
+			self.device
+				.device
+				.queue_submit2(vk_queue, &[submit_info], execution_completion_synchronizer.fence)
+				.expect("Failed to submit command buffer.");
+		}
+
+		for presentation in present_keys {
+			let swapchain = self.get_swapchain(presentation.swapchain);
+
+			let wait_semaphores = signal_synchronizer_handles
+				.iter()
+				.map(|synchronizer| self.get_synchronizer(*synchronizer).semaphore)
+				.chain(present_keys.iter().map(|present_key| {
+					self.get_swapchain(present_key.swapchain).submit_synchronizers[present_key.image_index as usize]
+						.access(&self.device.synchronizers)
+						.semaphore
+				}))
+				.collect::<Vec<_>>();
+
+			let swapchains = [swapchain.swapchain];
+			let image_indices = [presentation.image_index as u32];
+
+			let mut results = [vk::Result::default()];
+
+			let present_info = vk::PresentInfoKHR::default()
+				.results(&mut results)
+				.swapchains(&swapchains)
+				.wait_semaphores(&wait_semaphores)
+				.image_indices(&image_indices);
+
+			let _ = unsafe {
+				self.device
+					.swapchain
+					.queue_present(vk_queue, &present_info)
+					.expect("No present")
+			};
+
+			if !results.iter().all(|result| *result == vk::Result::SUCCESS) {
+				dbg!("Some error occurred during presentation");
+			}
+		}
+
+		for (k, v) in states {
+			self.device.states.insert(k, v);
+		}
+	}
+
 	fn get_current_image_handle(&self, image_handle: impl graphics_hardware_interface::ImageHandleLike) -> ImageHandle {
 		let image_handle = image_handle.into_image_handle();
 		let handles = ImageHandle(image_handle.0).get_all(&self.device.images);
@@ -41,10 +162,10 @@ impl<'a> Frame<'a> {
 }
 
 impl<'a> crate::frame::Frame<'a> for Frame<'a> {
-	type CBR<'f>
-		= CommandBufferRecording<'f>
+	type CBR<'record>
+		= CommandBufferRecording<'record>
 	where
-		Self: 'f;
+		Self: 'record;
 
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: crate::BufferHandle<T>) -> &'static mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
@@ -197,7 +318,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
 	}
 
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: crate::CommandBufferHandle) -> Self::CBR<'_> {
+	fn create_command_buffer_recording<'record>(
+		&'record mut self,
+		command_buffer_handle: crate::CommandBufferHandle,
+	) -> Self::CBR<'record> {
 		let frame_key = self.frame_key;
 
 		// Update descriptors before creating command buffer
@@ -301,127 +425,6 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		let staging_buffer = buffers.resource(buffer.staging.unwrap());
 
 		unsafe { std::mem::transmute(staging_buffer.pointer) }
-	}
-
-	fn execute<'s, 'f>(
-		&mut self,
-		cbr: <Self::CBR<'f> as crate::command_buffer::CommandBufferRecording>::Result<'s>,
-		synchronizer: graphics_hardware_interface::SynchronizerHandle,
-	) where
-		Self: 'f,
-	{
-		let (command_buffer_handle, states, present_keys) = cbr;
-
-		let command_buffer =
-			self.device.command_buffers[command_buffer_handle.0 as usize].frames[self.frame_key.sequence_index as usize];
-
-		let command_buffers = [command_buffer.command_buffer];
-
-		let command_buffer_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])];
-
-		let wait_for_synchronizer_handles: [graphics_hardware_interface::SynchronizerHandle; 0] = [];
-
-		let wait_semaphores = wait_for_synchronizer_handles
-			.iter()
-			.map(|&synchronizer| {
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(self.get_synchronizer(synchronizer).semaphore)
-					.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER)
-			})
-			.chain(present_keys.iter().map(|present_key| {
-				let swapchain = self.get_swapchain(present_key.swapchain);
-				let semaphore = swapchain.acquire_synchronizers[present_key.sequence_index as usize]
-					.access(&self.device.synchronizers)
-					.semaphore;
-
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(semaphore)
-					.stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-			}))
-			.collect::<Vec<_>>();
-
-		let signal_synchronizer_handles: [graphics_hardware_interface::SynchronizerHandle; 0] = [];
-
-		let signal_semaphores = signal_synchronizer_handles
-			.iter()
-			.map(|&synchronizer| {
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(self.get_synchronizer(synchronizer).semaphore)
-					.stage_mask(vk::PipelineStageFlags2::empty())
-			})
-			.chain(present_keys.iter().map(|present_key| {
-				let swapchain = self.get_swapchain(present_key.swapchain);
-				let presentable_image_handle = self.get_presentable_swapchain_image_handle(*present_key);
-				let wait_stage = states
-					.get(&Handles::Image(presentable_image_handle))
-					.map(|state| state.stage)
-					.unwrap_or(vk::PipelineStageFlags2::ALL_COMMANDS);
-
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(
-						swapchain.submit_synchronizers[present_key.image_index as usize]
-							.access(&self.device.synchronizers)
-							.semaphore,
-					)
-					.stage_mask(wait_stage)
-			}))
-			.collect::<Vec<_>>();
-
-		let submit_info = vk::SubmitInfo2::default()
-			.command_buffer_infos(&command_buffer_infos)
-			.wait_semaphore_infos(&wait_semaphores)
-			.signal_semaphore_infos(&signal_semaphores);
-
-		let execution_completion_synchronizer = &self.get_synchronizer(synchronizer);
-
-		let vk_queue = command_buffer.vk_queue;
-
-		unsafe {
-			self.device
-				.device
-				.queue_submit2(vk_queue, &[submit_info], execution_completion_synchronizer.fence)
-				.expect("Failed to submit command buffer.");
-		}
-
-		for presentation in present_keys {
-			let swapchain = self.get_swapchain(presentation.swapchain);
-
-			let wait_semaphores = signal_synchronizer_handles
-				.iter()
-				.map(|synchronizer| self.get_synchronizer(*synchronizer).semaphore)
-				.chain(present_keys.iter().map(|present_key| {
-					self.get_swapchain(present_key.swapchain).submit_synchronizers[present_key.image_index as usize]
-						.access(&self.device.synchronizers)
-						.semaphore
-				}))
-				.collect::<Vec<_>>();
-
-			let swapchains = [swapchain.swapchain];
-			let image_indices = [presentation.image_index as u32];
-
-			let mut results = [vk::Result::default()];
-
-			let present_info = vk::PresentInfoKHR::default()
-				.results(&mut results)
-				.swapchains(&swapchains)
-				.wait_semaphores(&wait_semaphores)
-				.image_indices(&image_indices);
-
-			let _ = unsafe {
-				self.device
-					.swapchain
-					.queue_present(vk_queue, &present_info)
-					.expect("No present")
-			};
-
-			if !results.iter().all(|result| *result == vk::Result::SUCCESS) {
-				dbg!("Some error occurred during presentation");
-			}
-		}
-
-		for (k, v) in states {
-			self.device.states.insert(k, v);
-		}
 	}
 }
 

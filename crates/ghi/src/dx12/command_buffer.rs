@@ -7,8 +7,8 @@ use crate::{
 	},
 	rt::{BindingTables, BottomLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuild},
 	AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent,
-	ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle,
-	SynchronizerHandle, TextureCopyHandle,
+	ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, RGBAu8, SwapchainHandle, SynchronizerHandle,
+	TextureCopyHandle,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -16,7 +16,6 @@ pub struct CommandBufferRecording<'a> {
 	command_buffer: crate::CommandBufferHandle,
 	bound_pipeline_layout: Option<PipelineLayoutHandle>,
 	bound_pipeline: Option<PipelineHandle>,
-	present_keys: Vec<PresentKey>,
 }
 
 impl<'a> CommandBufferRecording<'a> {
@@ -30,14 +29,11 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer,
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
-			present_keys: Vec::new(),
 		}
 	}
 }
 
 impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_> {
-	type Result<'a> = (crate::CommandBufferHandle, &'a [PresentKey]);
-
 	fn build_top_level_acceleration_structure(&mut self, _acceleration_structure_build: &TopLevelAccelerationStructureBuild) {
 		// TODO: DXR acceleration structure builds are not implemented yet.
 	}
@@ -92,10 +88,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn execute(self, _synchronizer: SynchronizerHandle) {
 		// TODO: Submit DX12 command lists and signal the provided synchronizer.
-	}
-
-	fn end<'a>(self, present_keys: &'a [PresentKey]) -> Self::Result<'a> {
-		(self.command_buffer, present_keys)
 	}
 }
 

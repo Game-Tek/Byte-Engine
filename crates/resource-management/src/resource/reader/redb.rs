@@ -3,8 +3,8 @@ use std::io::{Read, Seek};
 use utils::sync::File;
 
 use crate::{
-	StreamDescription,
 	resource::{ReadTargets, ReadTargetsMut},
+	StreamDescription,
 };
 
 use super::{MappedFileBacking, ResourceReader, ResourceReaderBacking};

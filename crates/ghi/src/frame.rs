@@ -1,8 +1,8 @@
 use utils::Extent;
 
 use crate::{
-	command_buffer::CommandBufferRecording, descriptors, graphics_hardware_interface, BaseBufferHandle, BaseImageHandle,
-	BufferHandle, CommandBufferHandle, DynamicBufferHandle, DynamicImageHandle, PresentKey, SwapchainHandle,
+	command_buffer::CommandBufferRecording, descriptors, BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle,
+	DynamicBufferHandle, PresentKey, SwapchainHandle,
 };
 
 /// The `Frame` trait scopes frame-local GPU work so per-frame resources stay tied to an active frame.
@@ -11,10 +11,10 @@ pub trait Frame<'a>
 where
 	Self: Sized + crate::device::DeviceCreate,
 {
-	/// The command-buffer recording type used while the frame is active.
-	type CBR<'f>: CommandBufferRecording
+	/// The command-buffer recording type used while the frame is mutably borrowed for recording.
+	type CBR<'record>: CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode
 	where
-		Self: 'f;
+		Self: 'record;
 
 	/// Returns a mutable view into CPU-visible buffer contents for the active frame.
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: BufferHandle<T>) -> &'static mut T;
@@ -45,7 +45,10 @@ where
 	fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent);
 
 	/// Creates a new command buffer recording.
-	fn create_command_buffer_recording(&mut self, command_buffer_handle: CommandBufferHandle) -> Self::CBR<'_>;
+	fn create_command_buffer_recording<'record>(
+		&'record mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> Self::CBR<'record>;
 
 	/// Acquires an image from the swapchain as to have it ready for presentation.
 	///
@@ -57,12 +60,4 @@ where
 	/// A present key for future presentation and the extent of the image.
 	/// # Errors
 	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent);
-
-	/// Executes the provided command buffer recording.
-	fn execute<'s, 'f>(
-		&mut self,
-		cbr: <Self::CBR<'f> as CommandBufferRecording>::Result<'s>,
-		synchronizer: graphics_hardware_interface::SynchronizerHandle,
-	) where
-		Self: 'f;
 }

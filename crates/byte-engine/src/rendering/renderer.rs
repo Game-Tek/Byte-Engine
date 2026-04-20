@@ -12,7 +12,7 @@ use ghi::{
 	},
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
-	queue::Queue as _,
+	queue::{Queue as _, QueueExecution as _},
 };
 use math::direction_from_orientation;
 use resource_management::resource::resource_manager::ResourceManager;
@@ -83,6 +83,9 @@ pub struct Renderer {
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 
 	scene_managers: SmallVec<[Box<dyn SceneManager>; 16]>,
+
+	graphics_queue_handle: ghi::QueueHandle,
+	transfer_queue_handle: ghi::QueueHandle,
 
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
@@ -179,10 +182,10 @@ impl Renderer {
 		let graphics_queue_handle = graphics_queue_handle.unwrap();
 		let transfer_queue_handle = transfer_queue_handle.unwrap();
 
-		let render_command_buffer = device.create_command_buffer(Some("Render"), graphics_queue_handle);
+		let render_command_buffer = device.queue(graphics_queue_handle).create_command_buffer(Some("Render"));
 		let render_finished_synchronizer = device.create_synchronizer(Some("Render Finisished"), true);
 
-		let transfer_command_buffer = device.create_command_buffer(Some("Transfer"), transfer_queue_handle);
+		let transfer_command_buffer = device.queue(transfer_queue_handle).create_command_buffer(Some("Transfer"));
 		let transfer_finished_synchronizer = device.create_synchronizer(Some("Transfer Finished"), true);
 
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
@@ -206,6 +209,9 @@ impl Renderer {
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 
 			scene_managers: SmallVec::with_capacity(8),
+
+			graphics_queue_handle,
+			transfer_queue_handle,
 
 			render_command_buffer,
 			render_finished_synchronizer,
@@ -314,118 +320,124 @@ impl Renderer {
 			}
 		});
 
-		let mut frame = self
-			.device
-			.start_frame(self.started_frame_count as u32, self.render_finished_synchronizer);
+		let mut queue = self.device.queue(self.graphics_queue_handle);
+		let frame = ghi::queue::FrameRequest {
+			index: self.started_frame_count as u32,
+			synchronizer: self.render_finished_synchronizer,
+		};
 
 		self.started_frame_count += 1;
 
-		let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = self
-			.windows
-			.iter()
-			.map(|(window, swapchain)| {
-				let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
+		let command_buffer = self.render_command_buffer;
+		let synchronizer = self.render_finished_synchronizer;
+		let windows = &self.windows;
+		let views = &self.views;
+		let cameras = &self.cameras;
+		let render_targets = &self.render_targets;
+		let scene_managers = &mut self.scene_managers;
+		let render_passes = &mut self.render_passes;
+		let render_passes_by_viewport = &self.render_passes_by_viewport;
 
-				if extent.width() == 0 || extent.height() == 0 {
-					log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
-					return None;
-				}
+		queue.execute(Some(frame), synchronizer, |execution| {
+			let (viewports, scene_manager_commands, render_pass_commands, present_keys) = {
+				let frame = execution.frame().expect(
+					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
+				);
+				let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = windows
+					.iter()
+					.map(|(_window, swapchain)| {
+						let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
 
-				if extent.width() >= 65535 || extent.height() >= 65535 {
-					log::warn!(
-						"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
-						extent
-					);
-					return None;
-				}
-
-				Some((present_key, extent, *swapchain))
-			})
-			.collect();
-
-		let mut viewports: SmallVec<[Viewport; 16]> = SmallVec::new();
-
-		for (index, view_handle) in self.views.iter() {
-			let Some((_present_key, extent, swapchain)) = swapchains[*index] else {
-				continue;
-			};
-
-			let Some(camera) = self
-				.cameras
-				.iter()
-				.find_map(|(handle, camera)| if handle == view_handle { Some(camera) } else { None })
-			else {
-				continue;
-			};
-
-			let view = make_perspective_view_from_camera(&camera, extent);
-			viewports.push(Viewport::new(view, extent, *index));
-		}
-
-		for viewport in &viewports {
-			// Get images for the current view and render pass and resize them to window extent
-			let images = self.render_targets.get_images_for_view(viewport.index());
-
-			// Resize images to window extent
-			for &image in images {
-				frame.resize_image(image.into(), viewport.extent());
-			}
-		}
-
-		let scene_managers = self.scene_managers.iter_mut();
-
-		let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
-			scene_managers.filter_map(|sm| sm.prepare(&mut frame, &viewports)).collect();
-
-		// A list of render pass commands and their corresponding viewport index
-		let render_pass_commands: SmallVec<[(RenderPassReturn, ViewportId); 64]> = self
-			.render_passes_by_viewport
-			.iter()
-			.filter_map(|(render_pass_id, viewport_id)| {
-				if let Some(render_pass) = self.render_passes.get_mut(*render_pass_id) {
-					if let Some(viewport) = viewports.iter().find(|vp| vp.index() == *viewport_id) {
-						if let Some(command) = render_pass.prepare(&mut frame, viewport) {
-							return Some((command, viewport.index()));
+						if extent.width() == 0 || extent.height() == 0 {
+							log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
+							return None;
 						}
+
+						if extent.width() >= 65535 || extent.height() >= 65535 {
+							log::warn!(
+								"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
+								extent
+							);
+							return None;
+						}
+
+						Some((present_key, extent, *swapchain))
+					})
+					.collect();
+
+				let mut viewports: SmallVec<[Viewport; 16]> = SmallVec::new();
+
+				for (index, view_handle) in views.iter() {
+					let Some((_present_key, extent, _swapchain)) = swapchains[*index] else {
+						continue;
+					};
+
+					let Some(camera) = cameras
+						.iter()
+						.find_map(|(handle, camera)| if handle == view_handle { Some(camera) } else { None })
+					else {
+						continue;
+					};
+
+					let view = make_perspective_view_from_camera(&camera, extent);
+					viewports.push(Viewport::new(view, extent, *index));
+				}
+
+				for viewport in &viewports {
+					// Get images for the current view and render pass and resize them to window extent
+					let images = render_targets.get_images_for_view(viewport.index());
+
+					// Resize images to window extent
+					for &image in images {
+						frame.resize_image(image.into(), viewport.extent());
 					}
 				}
-				None
-			})
-			.collect();
 
-		let present_keys = swapchains
-			.iter()
-			.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
-			.collect::<SmallVec<[ghi::PresentKey; 16]>>();
+				let scene_managers = scene_managers.iter_mut();
 
-		let execute = {
-			let viewports = &viewports;
-			let render_targets = &self.render_targets;
+				let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
+					scene_managers.filter_map(|sm| sm.prepare(frame, &viewports)).collect();
 
-			move |e: &mut ghi::implementation::CommandBufferRecording| {
+				// A list of render pass commands and their corresponding viewport index
+				let render_pass_commands: SmallVec<[(RenderPassReturn, ViewportId); 64]> = render_passes_by_viewport
+					.iter()
+					.filter_map(|(render_pass_id, viewport_id)| {
+						if let Some(render_pass) = render_passes.get_mut(*render_pass_id) {
+							if let Some(viewport) = viewports.iter().find(|vp| vp.index() == *viewport_id) {
+								if let Some(command) = render_pass.prepare(frame, viewport) {
+									return Some((command, viewport.index()));
+								}
+							}
+						}
+						None
+					})
+					.collect();
+
+				let present_keys = swapchains
+					.iter()
+					.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
+					.collect::<SmallVec<[ghi::PresentKey; 16]>>();
+
+				(viewports, scene_manager_commands, render_pass_commands, present_keys)
+			};
+
+			execution.record(command_buffer, |command_buffer_recording| {
 				for commands in scene_manager_commands.into_iter() {
 					for (command, viewport) in commands.into_iter().zip(viewports.iter()) {
 						let attachment_infos = render_targets.get_attachment_infos(viewport.index());
 
-						(&command)(&mut *e, &attachment_infos);
+						(&command)(&mut *command_buffer_recording, &attachment_infos);
 					}
 				}
 
 				for (command, viewport) in render_pass_commands.into_iter() {
 					let attachment_infos = render_targets.get_attachment_infos(viewport);
-					(&command)(e, &attachment_infos);
+					(&command)(&mut *command_buffer_recording, &attachment_infos);
 				}
-			}
-		};
+			});
 
-		let command_buffer = self.render_command_buffer;
-		let synchronizer = self.render_finished_synchronizer;
-
-		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
-		execute(&mut command_buffer_recording);
-
-		let command_buffer = command_buffer_recording.end(&present_keys);
-		frame.execute(command_buffer, synchronizer);
+			present_keys
+		});
 	}
 
 	pub fn device_mut(&mut self) -> &mut ghi::implementation::Device {

@@ -2,7 +2,6 @@ use utils::Extent;
 
 use crate::{
 	buffer, descriptors, image,
-	implementation::{CommandBufferRecording, Frame},
 	pipelines::VertexElement,
 	sampler,
 	shader::{self, Sources},
@@ -18,20 +17,27 @@ pub trait Device
 where
 	Self: Sized + DeviceCreate,
 {
+	type Queue<'a>: crate::queue::Queue
+	where
+		Self: 'a;
+	type CommandBuffer<'a>: crate::command_buffer::CommandBuffer
+	where
+		Self: 'a;
+
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool;
+
+	/// Returns a queue wrapper that exposes queue-local command submission.
+	fn queue<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::Queue<'a>;
+
+	/// Returns a command-buffer wrapper that exposes command-buffer-local recording.
+	fn command_buffer<'a>(&'a mut self, command_buffer_handle: CommandBufferHandle) -> Self::CommandBuffer<'a>;
 
 	/// Updates the number of maximum frames in flight.
 	/// This operation creates extra resources to support the new number of frames in flight.
 	/// > THIS IS AN EXPENSIVE OPERATION
 	fn set_frames_in_flight(&mut self, frames: u8);
-
-	/// Starts recording commands into an existing command buffer.
-	fn create_command_buffer_recording<'a>(
-		&'a mut self,
-		command_buffer_handle: CommandBufferHandle,
-	) -> CommandBufferRecording<'a>;
 
 	/// Returns a device accessible address for the provided buffer handle.
 	fn get_buffer_address(&self, buffer_handle: BaseBufferHandle) -> u64;
@@ -90,10 +96,6 @@ where
 
 	/// Returns CPU-visible bytes previously copied from an image.
 	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8];
-
-	/// Starts a new frame by waiting for these sequence frame's synchronizers.
-	/// The returned frame allows safe access to the frame's resources and it's operations.
-	fn start_frame<'a>(&'a mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> Frame<'a>;
 
 	/// Resizes a buffer to the specified size.
 	/// Does nothing if the buffer is already the specified size.
@@ -185,11 +187,6 @@ pub trait DeviceCreate {
 
 	/// Creates a ray-tracing pipeline.
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle;
-
-	/// Creates a command buffer which will execute commands on the provided queue.
-	///
-	/// Commands can be recorded onto it by starting a recording from a `Frame` or by calling `Device::create_command_buffer_recording` if the command buffer is not for performing per frame workloads.
-	fn create_command_buffer(&mut self, name: Option<&str>, queue_handle: QueueHandle) -> CommandBufferHandle;
 
 	/// Creates a static buffer from a builder.
 	fn build_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> BufferHandle<T>;

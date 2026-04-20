@@ -184,16 +184,17 @@ impl Frame<'_> {
 		self.device
 	}
 
-	pub fn execute(
+	pub fn execute_finished(
 		&mut self,
 		cbr: super::FinishedCommandBuffer<'_>,
+		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	) {
 		let super::FinishedCommandBuffer {
 			command_buffer_handle: _command_buffer_handle,
 			command_buffer,
 			states,
-			present_keys,
+			_marker: _marker,
 		} = cbr;
 		let mut present_drawables = Vec::with_capacity(present_keys.len());
 
@@ -250,10 +251,10 @@ impl Frame<'_> {
 }
 
 impl<'a> crate::frame::Frame<'a> for Frame<'a> {
-	type CBR<'f>
-		= super::CommandBufferRecording<'f>
+	type CBR<'record>
+		= super::CommandBufferRecording<'record>
 	where
-		Self: 'f;
+		Self: 'record;
 
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: crate::BufferHandle<T>) -> &'static mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
@@ -298,10 +299,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		Frame::resize_image(self, image_handle, extent);
 	}
 
-	fn create_command_buffer_recording(
-		&mut self,
+	fn create_command_buffer_recording<'record>(
+		&'record mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	) -> Self::CBR<'_> {
+	) -> Self::CBR<'record> {
 		self.device
 			.create_command_buffer_recording_with_frame_key(command_buffer_handle, Some(self.frame_key))
 	}
@@ -311,16 +312,6 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> (graphics_hardware_interface::PresentKey, Extent) {
 		Frame::acquire_swapchain_image(self, swapchain_handle)
-	}
-
-	fn execute<'s, 'f>(
-		&mut self,
-		cbr: <Self::CBR<'f> as crate::command_buffer::CommandBufferRecording>::Result<'s>,
-		synchronizer: graphics_hardware_interface::SynchronizerHandle,
-	) where
-		Self: 'f,
-	{
-		Frame::execute(self, cbr, synchronizer);
 	}
 }
 
@@ -391,10 +382,6 @@ impl<'a> crate::device::DeviceCreate for Frame<'a> {
 
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> crate::PipelineHandle {
 		self.device.create_ray_tracing_pipeline(builder)
-	}
-
-	fn create_command_buffer(&mut self, name: Option<&str>, queue_handle: crate::QueueHandle) -> crate::CommandBufferHandle {
-		self.device.create_command_buffer(name, queue_handle)
 	}
 
 	fn build_buffer<T: Copy>(&mut self, builder: crate::buffer::Builder) -> crate::BufferHandle<T> {

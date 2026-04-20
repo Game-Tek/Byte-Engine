@@ -867,12 +867,13 @@ pub(super) mod tests {
 	use crate::{
 		command_buffer::{
 			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-			BoundRayTracingPipelineMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
+			BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 			RasterizationRenderPassMode as _,
 		},
 		device::Device,
 		frame::Frame as _,
 		pipelines::{self, raster::AttachmentDescriptor, PushConstantRange, ShaderParameter, VertexElement},
+		queue::{FrameRequest, Queue as _, QueueExecution as _},
 		rt::{
 			BindingTables, BottomLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuildDescriptions,
 			TopLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuildDescriptions,
@@ -1407,31 +1408,35 @@ pub(super) mod tests {
 			&attachments,
 		));
 
-		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
+		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 
 		device.start_frame_capture();
 
-		let mut command_buffer_recording = device.create_command_buffer_recording(command_buffer_handle);
+		let texture_copy_handles = {
+			let mut command_buffer = device.command_buffer(command_buffer_handle);
+			let mut command_buffer_recording = command_buffer.create_command_buffer_recording();
 
-		let attachments = [AttachmentInformation::new(
-			render_target,
-			Layouts::RenderTarget,
-			ClearValue::Color(RGBA::black()),
-			false,
-			true,
-		)];
+			let attachments = [AttachmentInformation::new(
+				render_target,
+				Layouts::RenderTarget,
+				ClearValue::Color(RGBA::black()),
+				false,
+				true,
+			)];
 
-		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
+			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
-		raster_pipeline_command.draw_mesh(&mesh);
+			raster_pipeline_command.draw_mesh(&mesh);
 
-		render_pass_command.end_render_pass();
+			render_pass_command.end_render_pass();
 
-		let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
 
-		command_buffer_recording.execute(signal);
+			command_buffer_recording.execute(signal);
+			texture_copy_handles
+		};
 
 		device.end_frame_capture();
 
@@ -1511,7 +1516,7 @@ pub(super) mod tests {
 			&attachments,
 		));
 
-		let command_buffer_handle = renderer.create_command_buffer(None, queue_handle);
+		let command_buffer_handle = renderer.queue(queue_handle).create_command_buffer(None);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
@@ -1519,31 +1524,40 @@ pub(super) mod tests {
 
 		renderer.start_frame_capture();
 
-		let mut frame = renderer.start_frame(0, render_finished_synchronizer);
+		{
+			let mut queue = renderer.queue(queue_handle);
+			queue.execute(
+				Some(FrameRequest {
+					index: 0,
+					synchronizer: render_finished_synchronizer,
+				}),
+				render_finished_synchronizer,
+				|execution| {
+					let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
+					let present_keys = [present_key];
 
-		let (present_key, _) = frame.acquire_swapchain_image(swapchain);
+					execution.record(command_buffer_handle, |command_buffer_recording| {
+						let attachments = [AttachmentInformation::new(
+							swapchain,
+							Layouts::RenderTarget,
+							ClearValue::Color(RGBA::black()),
+							false,
+							true,
+						)];
 
-		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
+						let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let attachments = [AttachmentInformation::new(
-			swapchain,
-			Layouts::RenderTarget,
-			ClearValue::Color(RGBA::black()),
-			false,
-			true,
-		)];
+						let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
-		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+						raster_pipeline_command.draw_mesh(&mesh);
 
-		let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
+						render_pass_command.end_render_pass();
+					});
 
-		raster_pipeline_command.draw_mesh(&mesh);
-
-		render_pass_command.end_render_pass();
-
-		let present_keys = [present_key];
-		let terminated_command_buffer = command_buffer_recording.end(&present_keys);
-		frame.execute(terminated_command_buffer, render_finished_synchronizer);
+					present_keys
+				},
+			);
+		}
 
 		renderer.end_frame_capture();
 
@@ -1615,43 +1629,52 @@ pub(super) mod tests {
 			&attachments,
 		));
 
-		let command_buffer_handle = renderer.create_command_buffer(None, queue_handle);
+		let command_buffer_handle = renderer.queue(queue_handle).create_command_buffer(None);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
 		for i in 0..2 * 64 {
 			renderer.start_frame_capture();
 
-			let mut frame = renderer.start_frame(i, render_finished_synchronizer);
+			{
+				let mut queue = renderer.queue(queue_handle);
+				queue.execute(
+					Some(FrameRequest {
+						index: i,
+						synchronizer: render_finished_synchronizer,
+					}),
+					render_finished_synchronizer,
+					|execution| {
+						let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
+						let present_keys = [present_key];
 
-			let (present_key, _) = frame.acquire_swapchain_image(swapchain);
+						execution.record(command_buffer_handle, |command_buffer_recording| {
+							let attachments = [AttachmentInformation::new(
+								swapchain,
+								Layouts::RenderTarget,
+								ClearValue::Color(RGBA {
+									r: 0.0,
+									g: 0.0,
+									b: 0.0,
+									a: 1.0,
+								}),
+								false,
+								true,
+							)];
 
-			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
+							let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let attachments = [AttachmentInformation::new(
-				swapchain,
-				Layouts::RenderTarget,
-				ClearValue::Color(RGBA {
-					r: 0.0,
-					g: 0.0,
-					b: 0.0,
-					a: 1.0,
-				}),
-				false,
-				true,
-			)];
+							let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
-			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+							raster_pipeline_command.draw_mesh(&mesh);
 
-			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
+							raster_pipeline_command.end_render_pass();
+						});
 
-			raster_pipeline_command.draw_mesh(&mesh);
-
-			raster_pipeline_command.end_render_pass();
-
-			let present_keys = [present_key];
-			let terminated_command_buffer = command_buffer_recording.end(&present_keys);
-			frame.execute(terminated_command_buffer, render_finished_synchronizer);
+						present_keys
+					},
+				);
+			}
 
 			renderer.end_frame_capture();
 
@@ -1729,37 +1752,47 @@ pub(super) mod tests {
 			&attachments,
 		));
 
-		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
+		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
 			device.start_frame_capture();
 
-			let mut frame = device.start_frame(i as u32, render_finished_synchronizer);
+			let texture_copy_handles = {
+				let mut queue = device.queue(queue_handle);
+				let mut texture_copy_handles = Vec::new();
+				queue.execute(
+					Some(FrameRequest {
+						index: i as u32,
+						synchronizer: render_finished_synchronizer,
+					}),
+					render_finished_synchronizer,
+					|execution| {
+						execution.record(command_buffer_handle, |command_buffer_recording| {
+							let attachments = [AttachmentInformation::new(
+								render_target,
+								Layouts::RenderTarget,
+								ClearValue::Color(RGBA::black()),
+								false,
+								true,
+							)];
 
-			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
+							let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let attachments = [AttachmentInformation::new(
-				render_target,
-				Layouts::RenderTarget,
-				ClearValue::Color(RGBA::black()),
-				false,
-				true,
-			)];
+							let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
-			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+							raster_pipeline_command.draw_mesh(&mesh);
 
-			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
+							raster_pipeline_command.end_render_pass();
 
-			raster_pipeline_command.draw_mesh(&mesh);
-
-			raster_pipeline_command.end_render_pass();
-
-			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
-
-			let terminated_command_buffer = command_buffer_recording.end(&[]);
-			frame.execute(terminated_command_buffer, render_finished_synchronizer);
+							texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+						});
+						[]
+					},
+				);
+				texture_copy_handles
+			};
 
 			device.end_frame_capture();
 
@@ -1844,7 +1877,7 @@ pub(super) mod tests {
 			&attachments,
 		));
 
-		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
+		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
@@ -1855,30 +1888,40 @@ pub(super) mod tests {
 
 			device.start_frame_capture();
 
-			let mut frame = device.start_frame(i as u32, render_finished_synchronizer);
+			let texture_copy_handles = {
+				let mut queue = device.queue(queue_handle);
+				let mut texture_copy_handles = Vec::new();
+				queue.execute(
+					Some(FrameRequest {
+						index: i as u32,
+						synchronizer: render_finished_synchronizer,
+					}),
+					render_finished_synchronizer,
+					|execution| {
+						execution.record(command_buffer_handle, |command_buffer_recording| {
+							let attachments = [AttachmentInformation::new(
+								render_target,
+								Layouts::RenderTarget,
+								ClearValue::Color(RGBA::black()),
+								false,
+								true,
+							)];
 
-			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
+							let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let attachments = [AttachmentInformation::new(
-				render_target,
-				Layouts::RenderTarget,
-				ClearValue::Color(RGBA::black()),
-				false,
-				true,
-			)];
+							let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
-			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+							raster_pipeline_command.draw_mesh(&mesh);
 
-			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
+							raster_pipeline_command.end_render_pass();
 
-			raster_pipeline_command.draw_mesh(&mesh);
-
-			raster_pipeline_command.end_render_pass();
-
-			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
-
-			let terminated_command_buffer = command_buffer_recording.end(&[]);
-			frame.execute(terminated_command_buffer, render_finished_synchronizer);
+							texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+						});
+						[]
+					},
+				);
+				texture_copy_handles
+			};
 
 			device.end_frame_capture();
 
@@ -1962,42 +2005,55 @@ pub(super) mod tests {
 			&attachments,
 		));
 
-		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
+		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
 			device.start_frame_capture();
 
-			let mut frame = device.start_frame(i as u32, render_finished_synchronizer);
+			let texture_copy_handles = {
+				let mut queue = device.queue(queue_handle);
+				let mut texture_copy_handles = Vec::new();
 
-			if i == 2 {
-				extent = Extent::rectangle(1920, 1080);
-				frame.resize_image(render_target.into(), extent);
-			}
+				queue.execute(
+					Some(FrameRequest {
+						index: i as u32,
+						synchronizer: render_finished_synchronizer,
+					}),
+					render_finished_synchronizer,
+					|execution| {
+						let frame = execution.frame().unwrap();
 
-			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
+						if i == 2 {
+							extent = Extent::rectangle(1920, 1080);
+							frame.resize_image(render_target.into(), extent);
+						}
 
-			let attachments = [AttachmentInformation::new(
-				render_target,
-				Layouts::RenderTarget,
-				ClearValue::Color(RGBA::black()),
-				false,
-				true,
-			)];
+						execution.record(command_buffer_handle, |command_buffer_recording| {
+							let attachments = [AttachmentInformation::new(
+								render_target,
+								Layouts::RenderTarget,
+								ClearValue::Color(RGBA::black()),
+								false,
+								true,
+							)];
 
-			let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+							let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
+							let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
 
-			raster_pipeline_command.draw_mesh(&mesh);
+							raster_pipeline_command.draw_mesh(&mesh);
 
-			raster_pipeline_command.end_render_pass();
+							raster_pipeline_command.end_render_pass();
 
-			let texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
-
-			let terminated_command_buffer = command_buffer_recording.end(&[]);
-			frame.execute(terminated_command_buffer, render_finished_synchronizer);
+							texture_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+						});
+						[]
+					},
+				);
+				texture_copy_handles
+			};
 
 			device.end_frame_capture();
 
@@ -2088,59 +2144,69 @@ pub(super) mod tests {
 		let _buffer =
 			device.build_buffer::<u8>(crate::buffer::Builder::new(Uses::Storage).device_accesses(DeviceAccesses::HostToDevice));
 
-		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
+		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
 			device.start_frame_capture();
 
-			let mut frame = device.start_frame(i as u32, render_finished_synchronizer);
+			let copy_texture_handles = {
+				let mut queue = device.queue(queue_handle);
+				let mut copy_texture_handles = Vec::new();
+				queue.execute(
+					Some(FrameRequest {
+						index: i as u32,
+						synchronizer: render_finished_synchronizer,
+					}),
+					render_finished_synchronizer,
+					|execution| {
+						execution.record(command_buffer_handle, |command_buffer_recording| {
+							let attachments = [AttachmentInformation::new(
+								render_target,
+								Layouts::RenderTarget,
+								ClearValue::Color(RGBA::black()),
+								false,
+								true,
+							)];
 
-			let mut cb = frame.create_command_buffer_recording(command_buffer_handle);
+							let c = command_buffer_recording.start_render_pass(extent, &attachments);
 
-			let attachments = [AttachmentInformation::new(
-				render_target,
-				Layouts::RenderTarget,
-				ClearValue::Color(RGBA::black()),
-				false,
-				true,
-			)];
+							let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
 
-			let c = cb.start_render_pass(extent, &attachments);
+							let matrix: [f32; 16] = [
+								angle.cos(),
+								-angle.sin(),
+								0f32,
+								0f32,
+								angle.sin(),
+								angle.cos(),
+								0f32,
+								0f32,
+								0f32,
+								0f32,
+								1f32,
+								0f32,
+								0f32,
+								0f32,
+								0f32,
+								1f32,
+							];
 
-			let angle = (i as f32) * (std::f32::consts::PI / 2.0f32);
+							let c = c.bind_raster_pipeline(pipeline);
 
-			let matrix: [f32; 16] = [
-				angle.cos(),
-				-angle.sin(),
-				0f32,
-				0f32,
-				angle.sin(),
-				angle.cos(),
-				0f32,
-				0f32,
-				0f32,
-				0f32,
-				1f32,
-				0f32,
-				0f32,
-				0f32,
-				0f32,
-				1f32,
-			];
+							c.write_push_constant(0, matrix);
+							c.draw_mesh(&mesh);
 
-			let c = c.bind_raster_pipeline(pipeline);
+							c.end_render_pass();
 
-			c.write_push_constant(0, matrix);
-			c.draw_mesh(&mesh);
-
-			c.end_render_pass();
-
-			let copy_texture_handles = cb.transfer_textures(&[render_target.into()]);
-
-			let terminated_command_buffer = cb.end(&[]);
-			frame.execute(terminated_command_buffer, render_finished_synchronizer);
+							copy_texture_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+						});
+						[]
+					},
+				);
+				copy_texture_handles
+			};
 
 			device.end_frame_capture();
 
@@ -2231,7 +2297,7 @@ pub(super) mod tests {
 				.device_accesses(DeviceAccesses::DeviceToHost),
 		);
 
-		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
+		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 		let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 		let expected_colors = [
@@ -2250,23 +2316,38 @@ pub(super) mod tests {
 		];
 
 		for (frame_index, expected_color) in expected_colors.into_iter().enumerate() {
-			let mut frame = device.start_frame(frame_index as u32, render_finished_synchronizer);
+			let texture_copy_handles = {
+				let mut queue = device.queue(queue_handle);
+				let mut texture_copy_handles = Vec::new();
+				queue.execute(
+					Some(FrameRequest {
+						index: frame_index as u32,
+						synchronizer: render_finished_synchronizer,
+					}),
+					render_finished_synchronizer,
+					|execution| {
+						let frame = execution.frame().unwrap();
 
-			let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image.into());
-			let pixels = unsafe { std::slice::from_raw_parts_mut(texture_slice.as_mut_ptr() as *mut RGBAu8, pixel_count) };
-			pixels.fill(expected_color);
-			frame.sync_texture(upload_image.into());
+						let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image.into());
+						let pixels =
+							unsafe { std::slice::from_raw_parts_mut(texture_slice.as_mut_ptr() as *mut RGBAu8, pixel_count) };
+						pixels.fill(expected_color);
+						frame.sync_texture(upload_image.into());
 
-			let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
-			command_buffer_recording.blit_image(
-				upload_image.into(),
-				Layouts::Transfer,
-				readback_image.into(),
-				Layouts::Transfer,
-			);
-			let texture_copy_handles = command_buffer_recording.transfer_textures(&[readback_image.into()]);
-			let terminated_command_buffer = command_buffer_recording.end(&[]);
-			frame.execute(terminated_command_buffer, render_finished_synchronizer);
+						execution.record(command_buffer_handle, |command_buffer_recording| {
+							command_buffer_recording.blit_image(
+								upload_image.into(),
+								Layouts::Transfer,
+								readback_image.into(),
+								Layouts::Transfer,
+							);
+							texture_copy_handles = command_buffer_recording.transfer_textures(&[readback_image.into()]);
+						});
+						[]
+					},
+				);
+				texture_copy_handles
+			};
 
 			device.wait();
 
@@ -2347,27 +2428,37 @@ pub(super) mod tests {
 			BindingConstructor::image(&last_frame_image_binding_template, image).frame(-1),
 		);
 
-		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 
 		let signal = device.create_synchronizer(None, true);
 
-		let mut frame = device.start_frame(0, signal);
+		let copy_handles = {
+			let mut queue = device.queue(queue_handle);
+			let mut copy_handles = Vec::new();
+			queue.execute(
+				Some(FrameRequest {
+					index: 0,
+					synchronizer: signal,
+				}),
+				signal,
+				|execution| {
+					execution.record(command_buffer, |command_buffer_recording| {
+						let data = [0.5f32];
 
-		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
+						let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 
-		let data = [0.5f32];
+						pipeline_command.write_push_constant(0, data);
+						pipeline_command
+							.bind_descriptor_sets(&[descriptor_set])
+							.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
-		let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
-
-		pipeline_command.write_push_constant(0, data);
-		pipeline_command
-			.bind_descriptor_sets(&[descriptor_set])
-			.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
-
-		let copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
-
-		let terminated_command_buffer = command_buffer_recording.end(&[]);
-		frame.execute(terminated_command_buffer, signal);
+						copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+					});
+					[]
+				},
+			);
+			copy_handles
+		};
 
 		device.wait();
 
@@ -2392,23 +2483,33 @@ pub(super) mod tests {
 
 		assert!(!device.has_errors());
 
-		let mut frame = device.start_frame(1, signal);
+		let copy_handles = {
+			let mut queue = device.queue(queue_handle);
+			let mut copy_handles = Vec::new();
+			queue.execute(
+				Some(FrameRequest {
+					index: 1,
+					synchronizer: signal,
+				}),
+				signal,
+				|execution| {
+					execution.record(command_buffer, |command_buffer_recording| {
+						let data = [1.0f32];
 
-		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
+						let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
 
-		let data = [1.0f32];
+						pipeline_command.write_push_constant(0, data);
+						pipeline_command
+							.bind_descriptor_sets(&[descriptor_set])
+							.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
 
-		let pipeline_command = command_buffer_recording.bind_compute_pipeline(pipeline);
-
-		pipeline_command.write_push_constant(0, data);
-		pipeline_command
-			.bind_descriptor_sets(&[descriptor_set])
-			.dispatch(DispatchExtent::new(Extent::square(1), Extent::square(1)));
-
-		let copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
-
-		let terminated_command_buffer = command_buffer_recording.end(&[]);
-		frame.execute(terminated_command_buffer, signal);
+						copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+					});
+					[]
+				},
+			);
+			copy_handles
+		};
 
 		device.wait();
 
@@ -2441,14 +2542,24 @@ pub(super) mod tests {
 
 		assert!(!device.has_errors());
 
-		let mut frame = device.start_frame(2, signal);
-
-		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
-
-		let copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
-
-		let terminated_command_buffer = command_buffer_recording.end(&[]);
-		frame.execute(terminated_command_buffer, signal);
+		let copy_handles = {
+			let mut queue = device.queue(queue_handle);
+			let mut copy_handles = Vec::new();
+			queue.execute(
+				Some(FrameRequest {
+					index: 2,
+					synchronizer: signal,
+				}),
+				signal,
+				|execution| {
+					execution.record(command_buffer, |command_buffer_recording| {
+						copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+					});
+					[]
+				},
+			);
+			copy_handles
+		};
 
 		device.wait();
 
@@ -2473,14 +2584,24 @@ pub(super) mod tests {
 
 		assert!(!device.has_errors());
 
-		let mut frame = device.start_frame(3, signal);
-
-		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer);
-
-		let copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
-
-		let terminated_command_buffer = command_buffer_recording.end(&[]);
-		frame.execute(terminated_command_buffer, signal);
+		let copy_handles = {
+			let mut queue = device.queue(queue_handle);
+			let mut copy_handles = Vec::new();
+			queue.execute(
+				Some(FrameRequest {
+					index: 3,
+					synchronizer: signal,
+				}),
+				signal,
+				|execution| {
+					execution.record(command_buffer, |command_buffer_recording| {
+						copy_handles = command_buffer_recording.transfer_textures(&[image.into()]);
+					});
+					[]
+				},
+			);
+			copy_handles
+		};
 
 		device.wait();
 
@@ -2702,43 +2823,53 @@ pub(super) mod tests {
 			&attachments,
 		));
 
-		let command_buffer_handle = device.create_command_buffer(None, queue_handle);
+		let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 
 		device.start_frame_capture();
 
-		let mut frame = device.start_frame(0, signal);
+		let texure_copy_handles = {
+			let mut queue = device.queue(queue_handle);
+			let mut texure_copy_handles = Vec::new();
+			queue.execute(
+				Some(FrameRequest {
+					index: 0,
+					synchronizer: signal,
+				}),
+				signal,
+				|execution| {
+					execution.record(command_buffer_handle, |command_buffer_recording| {
+						command_buffer_recording.write_image_data(sampled_texture.into(), &pixels);
 
-		let mut command_buffer_recording = frame.create_command_buffer_recording(command_buffer_handle);
+						let attachments = [AttachmentInformation::new(
+							render_target,
+							Layouts::RenderTarget,
+							ClearValue::Color(RGBA {
+								r: 0.0,
+								g: 0.0,
+								b: 0.0,
+								a: 1.0,
+							}),
+							false,
+							true,
+						)];
 
-		command_buffer_recording.write_image_data(sampled_texture.into(), &pixels);
+						let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 
-		let attachments = [AttachmentInformation::new(
-			render_target,
-			Layouts::RenderTarget,
-			ClearValue::Color(RGBA {
-				r: 0.0,
-				g: 0.0,
-				b: 0.0,
-				a: 1.0,
-			}),
-			false,
-			true,
-		)];
+						let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(pipeline);
 
-		let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+						raster_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
 
-		let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(pipeline);
+						raster_pipeline_command.draw_mesh(&mesh);
 
-		raster_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
+						raster_render_pass_command.end_render_pass();
 
-		raster_pipeline_command.draw_mesh(&mesh);
-
-		raster_render_pass_command.end_render_pass();
-
-		let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
-
-		let terminated_command_buffer = command_buffer_recording.end(&[]);
-		frame.execute(terminated_command_buffer, signal);
+						texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+					});
+					[]
+				},
+			);
+			texure_copy_handles
+		};
 
 		device.end_frame_capture();
 
@@ -2969,7 +3100,7 @@ void main() {
 			],
 		));
 
-		let rendering_command_buffer_handle = renderer.create_command_buffer(None, queue_handle);
+		let rendering_command_buffer_handle = renderer.queue(queue_handle).create_command_buffer(None);
 
 		let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
@@ -3006,54 +3137,73 @@ void main() {
 		for i in 0..FRAMES_IN_FLIGHT * 10 {
 			renderer.start_frame_capture();
 
-			let mut frame = renderer.start_frame(i as u32, render_finished_synchronizer);
+			let texure_copy_handles = {
+				let mut queue = renderer.queue(queue_handle);
+				let mut texure_copy_handles = Vec::new();
+				queue.execute(
+					Some(FrameRequest {
+						index: i as u32,
+						synchronizer: render_finished_synchronizer,
+					}),
+					render_finished_synchronizer,
+					|execution| {
+						execution.record(rendering_command_buffer_handle, |command_buffer_recording| {
+							{
+								command_buffer_recording.build_bottom_level_acceleration_structures(&[
+									BottomLevelAccelerationStructureBuild {
+										acceleration_structure: bottom_level_acceleration_structure,
+										description: BottomLevelAccelerationStructureBuildDescriptions::Mesh {
+											vertex_buffer: BufferStridedRange::new(
+												vertex_positions_buffer.into(),
+												0,
+												12,
+												12 * 3,
+											),
+											vertex_count: 3,
+											index_buffer: BufferStridedRange::new(index_buffer.into(), 0, 2, 2 * 3),
+											vertex_position_encoding: Encodings::FloatingPoint,
+											index_format: DataTypes::U16,
+											triangle_count: 1,
+										},
+										scratch_buffer: BufferDescriptor::new(scratch_buffer),
+									},
+								]);
 
-			let mut command_buffer_recording = frame.create_command_buffer_recording(rendering_command_buffer_handle);
+								command_buffer_recording.build_top_level_acceleration_structure(
+									&TopLevelAccelerationStructureBuild {
+										acceleration_structure: top_level_acceleration_structure,
+										description: TopLevelAccelerationStructureBuildDescriptions::Instance {
+											instances_buffer,
+											instance_count: 1,
+										},
+										scratch_buffer: BufferDescriptor::new(scratch_buffer),
+									},
+								);
+							}
 
-			{
-				command_buffer_recording.build_bottom_level_acceleration_structures(&[BottomLevelAccelerationStructureBuild {
-					acceleration_structure: bottom_level_acceleration_structure,
-					description: BottomLevelAccelerationStructureBuildDescriptions::Mesh {
-						vertex_buffer: BufferStridedRange::new(vertex_positions_buffer.into(), 0, 12, 12 * 3),
-						vertex_count: 3,
-						index_buffer: BufferStridedRange::new(index_buffer.into(), 0, 2, 2 * 3),
-						vertex_position_encoding: Encodings::FloatingPoint,
-						index_format: DataTypes::U16,
-						triangle_count: 1,
+							let ray_tracing_pipeline_command = command_buffer_recording.bind_ray_tracing_pipeline(pipeline);
+
+							ray_tracing_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
+
+							ray_tracing_pipeline_command.trace_rays(
+								BindingTables {
+									raygen: BufferStridedRange::new(raygen_sbt_buffer.into(), 0, 64, 64),
+									hit: BufferStridedRange::new(hit_sbt_buffer.into(), 0, 64, 64),
+									miss: BufferStridedRange::new(miss_sbt_buffer.into(), 0, 64, 64),
+									callable: None,
+								},
+								1920,
+								1080,
+								1,
+							);
+
+							texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
+						});
+						[]
 					},
-					scratch_buffer: BufferDescriptor::new(scratch_buffer),
-				}]);
-
-				command_buffer_recording.build_top_level_acceleration_structure(&TopLevelAccelerationStructureBuild {
-					acceleration_structure: top_level_acceleration_structure,
-					description: TopLevelAccelerationStructureBuildDescriptions::Instance {
-						instances_buffer,
-						instance_count: 1,
-					},
-					scratch_buffer: BufferDescriptor::new(scratch_buffer),
-				});
-			}
-
-			let ray_tracing_pipeline_command = command_buffer_recording.bind_ray_tracing_pipeline(pipeline);
-
-			ray_tracing_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
-
-			ray_tracing_pipeline_command.trace_rays(
-				BindingTables {
-					raygen: BufferStridedRange::new(raygen_sbt_buffer.into(), 0, 64, 64),
-					hit: BufferStridedRange::new(hit_sbt_buffer.into(), 0, 64, 64),
-					miss: BufferStridedRange::new(miss_sbt_buffer.into(), 0, 64, 64),
-					callable: None,
-				},
-				1920,
-				1080,
-				1,
-			);
-
-			let texure_copy_handles = command_buffer_recording.transfer_textures(&[render_target.into()]);
-
-			let terminated_command_buffer = command_buffer_recording.end(&[]);
-			frame.execute(terminated_command_buffer, render_finished_synchronizer);
+				);
+				texure_copy_handles
+			};
 
 			renderer.end_frame_capture();
 

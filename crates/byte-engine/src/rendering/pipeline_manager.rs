@@ -1,18 +1,18 @@
 use std::{
 	hash::Hash,
-	panic::{AssertUnwindSafe, catch_unwind},
-	sync::Arc,
+	panic::{catch_unwind, AssertUnwindSafe},
 	sync::mpsc::{self, Receiver, Sender},
+	sync::Arc,
 	thread,
 	time::Duration,
 };
 
 use ghi::device::{Device as _, DeviceCreate as _};
 use resource_management::{
-	Reference,
-	resource::{ReadTargets, reader::ResourceReaderBacking},
+	resource::{reader::ResourceReaderBacking, ReadTargets},
 	resources::material::{Material, Shader, Variant},
 	types::ShaderTypes,
+	Reference,
 };
 use utils::{
 	hash::{HashMap, HashMapExt},

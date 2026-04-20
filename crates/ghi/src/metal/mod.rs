@@ -252,9 +252,14 @@ pub(super) struct CommandBufferInternal {
 }
 
 #[derive(Clone)]
-pub(crate) struct CommandBuffer {
+pub(crate) struct StoredCommandBuffer {
 	queue_handle: graphics_hardware_interface::QueueHandle,
 	name: Option<String>,
+}
+
+pub struct CommandBuffer<'a> {
+	pub(crate) device: &'a mut device::Device,
+	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 }
 
 #[derive(Clone)]
@@ -736,8 +741,84 @@ mod utils {
 pub mod queue {
 	use super::*;
 
-	pub struct Queue {
+	pub(crate) struct StoredQueue {
 		pub(crate) queue: Retained<ProtocolObject<dyn mtl::MTLCommandQueue>>,
+	}
+
+	pub struct Queue<'a> {
+		pub(crate) device: &'a mut device::Device,
+		pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,
+	}
+
+	/// The `Execution` struct gathers Metal command-buffer recordings before queue submission.
+	pub struct Execution<'a> {
+		frame: Option<super::Frame<'a>>,
+		command_buffers: Vec<super::FinishedCommandBuffer<'static>>,
+	}
+
+	impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
+		type Frame = super::Frame<'a>;
+
+		fn frame(&mut self) -> Option<&mut Self::Frame> {
+			self.frame.as_mut()
+		}
+
+		fn record<'record>(
+			&'record mut self,
+			command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+			record: impl FnOnce(&mut <Self::Frame as crate::frame::Frame<'a>>::CBR<'record>),
+		) where
+			Self::Frame: 'record,
+		{
+			let frame = self.frame.as_mut().expect(
+				"Frame is required to record a frame command buffer. The most likely cause is that Queue::execute was called with None and the closure tried to record frame work.",
+			);
+			let mut command_buffer = frame.create_command_buffer_recording(command_buffer_handle);
+			record(&mut command_buffer);
+			self.command_buffers.push(command_buffer.into_finished());
+		}
+	}
+
+	impl crate::queue::Queue for Queue<'_> {
+		type Frame<'a> = super::Frame<'a>;
+		type Execution<'a> = Execution<'a>;
+
+		fn create_command_buffer(&mut self, name: Option<&str>) -> graphics_hardware_interface::CommandBufferHandle {
+			self.device.create_command_buffer(name, self.queue_handle)
+		}
+
+		fn start_frame<'a>(
+			&'a mut self,
+			index: u32,
+			synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		) -> Self::Frame<'a> {
+			self.device.start_frame(index, synchronizer_handle)
+		}
+
+		fn execute<'a, P>(
+			&'a mut self,
+			frame: Option<crate::queue::FrameRequest>,
+			synchronizer: graphics_hardware_interface::SynchronizerHandle,
+			execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
+		) where
+			P: AsRef<[graphics_hardware_interface::PresentKey]>,
+		{
+			let frame = frame.map(|frame| self.device.start_frame(frame.index, frame.synchronizer));
+			let mut execution = Execution {
+				frame,
+				command_buffers: Vec::new(),
+			};
+			let present_keys = execute(&mut execution);
+
+			let Some(mut frame) = execution.frame else {
+				return;
+			};
+			let last_index = execution.command_buffers.len().saturating_sub(1);
+			for (index, command_buffer) in execution.command_buffers.into_iter().enumerate() {
+				let present_keys = if index == last_index { present_keys.as_ref() } else { &[] };
+				frame.execute_finished(command_buffer, present_keys, synchronizer);
+			}
+		}
 	}
 }
 

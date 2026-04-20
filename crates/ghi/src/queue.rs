@@ -1,11 +1,48 @@
+use crate::{CommandBufferHandle, PresentKey, SynchronizerHandle};
+
+/// The `FrameRequest` struct identifies a frame that should be opened for queue execution.
+#[derive(Clone, Copy)]
+pub struct FrameRequest {
+	pub index: u32,
+	pub synchronizer: SynchronizerHandle,
+}
+
+/// The `QueueExecution` trait scopes command-buffer recordings created during one queue submission.
+pub trait QueueExecution<'a> {
+	type Frame: crate::frame::Frame<'a>;
+
+	/// Returns the frame opened for this queue execution, if one was requested.
+	fn frame(&mut self) -> Option<&mut Self::Frame>;
+
+	/// Creates a command-buffer recording, passes it to `record`, and schedules it for submission.
+	fn record<'record>(
+		&'record mut self,
+		command_buffer_handle: CommandBufferHandle,
+		record: impl FnOnce(&mut <Self::Frame as crate::frame::Frame<'a>>::CBR<'record>),
+	) where
+		Self::Frame: 'record;
+}
+
+/// The `Queue` trait provides the queue-level entry points needed to build and submit graphics work.
 pub trait Queue {
 	type Frame<'a>: crate::frame::Frame<'a>;
-	type CBR<'a>: crate::command_buffer::CommandBufferRecording;
+	type Execution<'a>: QueueExecution<'a, Frame = Self::Frame<'a>>;
 
-	fn execute<'a>(
-		frame: Self::Frame<'a>,
-		cmd: Self::CBR<'a>,
-		present_keys: &[crate::PresentKey],
+	/// Creates a command buffer which will execute commands on the provided queue.
+	///
+	/// Commands can be recorded onto it by starting a recording from a `Frame` or by calling `Device::create_command_buffer_recording` if the command buffer is not for performing per frame workloads.
+	fn create_command_buffer(&mut self, name: Option<&str>) -> CommandBufferHandle;
+
+	/// Starts a new frame by waiting for these sequence frame's synchronizers.
+	/// The returned frame allows safe access to the frame's resources and it's operations.
+	fn start_frame<'a>(&'a mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> Self::Frame<'a>;
+
+	/// Opens the requested frame, lets the closure record submission work, and submits it on this queue.
+	fn execute<'a, P>(
+		&'a mut self,
+		frame: Option<FrameRequest>,
 		synchronizer: crate::SynchronizerHandle,
-	);
+		execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
+	) where
+		P: AsRef<[PresentKey]>;
 }

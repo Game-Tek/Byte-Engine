@@ -53,6 +53,18 @@ impl CommandBufferRecording<'_> {
 		command_buffer
 	}
 
+	pub(crate) fn into_submission(
+		mut self,
+	) -> (
+		graphics_hardware_interface::CommandBufferHandle,
+		HashMap<PrivateHandles, TransitionState>,
+	) {
+		self.consume_last_resources();
+		self.end_recording();
+
+		(self.command_buffer, self.states)
+	}
+
 	fn begin(&self) {
 		let command_buffer = self.get_command_buffer();
 
@@ -748,12 +760,6 @@ impl CommandBufferRecording<'_> {
 }
 
 impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_> {
-	type Result<'a> = (
-		graphics_hardware_interface::CommandBufferHandle,
-		HashMap<Handles, TransitionState>,
-		&'a [graphics_hardware_interface::PresentKey],
-	);
-
 	fn transfer_textures(
 		&mut self,
 		image_handles: &[impl graphics_hardware_interface::ImageHandleLike],
@@ -1445,17 +1451,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn execute(self, synchronizer: crate::SynchronizerHandle) {
 		todo!()
-	}
-
-	fn end<'a>(mut self, present_keys: &'a [graphics_hardware_interface::PresentKey]) -> Self::Result<'a> {
-		self.handle_swapchain_proxies(present_keys);
-		self.consume_last_resources();
-		self.end_recording();
-
-		let states = self.states;
-		let command_buffer_handle = self.command_buffer;
-
-		(command_buffer_handle, states, present_keys)
 	}
 }
 

@@ -1,7 +1,7 @@
 use crate::{
 	input::{Keys, MouseKeys},
 	os::{self, WindowLike as _},
-	Events,
+	Events, Features,
 };
 use utils::Extent;
 
@@ -10,21 +10,23 @@ pub struct Window {
 	extent: Extent,
 	id_name: String,
 	os_window: os::Window,
+	features: Features,
 }
 
 impl Window {
 	pub fn new(name: &str, extent: Extent) -> Result<Window, String> {
-		Self::new_with_params(name, extent, name)
+		Self::new_with_params(name, extent, name, Features::empty())
 	}
 
-	pub fn new_with_params(name: &str, extent: Extent, id_name: &str) -> Result<Window, String> {
-		let os_window = os::Window::try_new(name, extent, id_name)?;
+	pub fn new_with_params(name: &str, extent: Extent, id_name: &str, features: Features) -> Result<Window, String> {
+		let os_window = os::Window::try_new(name, extent, id_name, features)?;
 
 		Ok(Window {
 			name: name.to_owned(),
 			extent,
 			id_name: id_name.to_owned(),
 			os_window,
+			features,
 		})
 	}
 

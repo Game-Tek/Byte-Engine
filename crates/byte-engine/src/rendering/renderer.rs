@@ -36,7 +36,7 @@ use crate::{
 		make_perspective_view_from_camera,
 		render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn},
 		scene_manager::SceneManager,
-		window::Window,
+		window::{self, Window},
 		Camera, Sink, View,
 	},
 	space::{Orientable as _, Positionable as _},
@@ -449,7 +449,13 @@ impl Renderer {
 		let extent = window.extent();
 		let camera = window.camera();
 
-		let window = ghi::Window::new_with_params(name, extent, "main_window");
+		let features = if window.features().contains(window::Features::DECORATIONS) {
+			ghi::window::Features::DECORATIONS
+		} else {
+			ghi::window::Features::empty()
+		};
+
+		let window = ghi::Window::new_with_params(name, extent, "main_window", features);
 
 		match window {
 			Ok(window) => {

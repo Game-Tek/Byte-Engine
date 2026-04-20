@@ -1,6 +1,7 @@
 use std::{cell::Cell, sync::Mutex};
 
 use crate::input::{Keys, MouseKeys};
+use crate::Features;
 use crate::{os::WindowLike, Events};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -179,7 +180,7 @@ fn pixel_extent_to_window_points(extent: utils::Extent, scale_factor: f64) -> NS
 }
 
 impl WindowLike for Window {
-	fn try_new(name: &str, extent: utils::Extent, _: &str) -> Result<Self, String> {
+	fn try_new(name: &str, extent: utils::Extent, _: &str, features: Features) -> Result<Self, String> {
 		let _pool = unsafe { NSAutoreleasePool::new() };
 
 		let mtm = MainThreadMarker::new()
@@ -194,10 +195,12 @@ impl WindowLike for Window {
 		let frame = NSRect::new(NSPoint::new(0.0, 0.0), window_size);
 		let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::Resizable;
 
-		// let style = NSWindowStyleMask::Titled
-		// 	| NSWindowStyleMask::Closable
-		// 	| NSWindowStyleMask::Miniaturizable
-		// 	| NSWindowStyleMask::Resizable;
+		let style = style
+			| if features.contains(Features::DECORATIONS) {
+				NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable
+			} else {
+				NSWindowStyleMask::empty()
+			};
 
 		let window = unsafe {
 			let window = NSWindow::alloc(mtm);
@@ -255,6 +258,7 @@ impl WindowLike for Window {
 
 	fn poll(&mut self) -> impl Iterator<Item = Events> {
 		let mut events = Vec::new();
+		let app = MainThreadMarker::new().map(NSApp);
 
 		if self.delegate.ivars().close_requested.replace(false) {
 			events.push(Events::Close);
@@ -334,6 +338,12 @@ impl WindowLike for Window {
 				}
 				NSEventType::AppKitDefined => {}
 				_ => {}
+			}
+
+			// AppKit owns native window interactions such as title-bar drags,
+			// close controls, and live resize; re-dispatch after translating input.
+			if let Some(app) = &app {
+				app.sendEvent(&event);
 			}
 		}
 

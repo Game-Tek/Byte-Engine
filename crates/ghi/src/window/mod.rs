@@ -39,3 +39,12 @@ pub enum Events {
 		time: u64,
 	},
 }
+
+bitflags::bitflags! {
+	#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+	/// Bit flags for the features of a window.
+	pub struct Features : u32 {
+		/// The window has decorations (title bar, border, etc.).
+		const DECORATIONS = 0b0001;
+	}
+}

@@ -3,26 +3,27 @@ use crate::{
 	CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, PresentKey,
 	RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
 };
+use std::marker::PhantomData;
 use utils::Extent;
 
 pub struct CommandBufferRecording<'a> {
-	_device: &'a mut super::Device,
 	_command_buffer_handle: CommandBufferHandle,
 	_frame_key: Option<FrameKey>,
+	_marker: PhantomData<&'a super::Device>,
 }
 
 impl<'a> CommandBufferRecording<'a> {
 	pub fn new(
-		device: &'a mut super::Device,
+		_device: &'a super::Device,
 		command_buffer_handle: CommandBufferHandle,
 		_buffer_copies: Vec<()>,
 		_image_copies: Vec<()>,
 		frame_key: Option<FrameKey>,
 	) -> Self {
 		Self {
-			_device: device,
 			_command_buffer_handle: command_buffer_handle,
 			_frame_key: frame_key,
+			_marker: PhantomData,
 		}
 	}
 

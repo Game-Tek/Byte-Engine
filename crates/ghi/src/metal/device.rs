@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::fmt::Write as _;
@@ -14,7 +15,7 @@ use objc2::{msg_send, ClassType};
 use objc2_foundation::{NSArray, NSRange, NSString};
 use objc2_metal::{
 	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLCommandEncoder,
-	MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource, MTLTexture,
+	MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource,
 };
 
 use super::*;
@@ -62,6 +63,7 @@ pub struct Device {
 	pub(crate) pending_image_syncs: VecDeque<ImageHandle>,
 	pub(crate) tasks: Vec<Task>,
 	pub(crate) texture_copies: Vec<Vec<u8>>,
+	pub(crate) next_texture_copy_handle: Cell<u64>,
 
 	#[cfg(debug_assertions)]
 	pub names: HashMap<graphics_hardware_interface::Handles, String>,
@@ -187,6 +189,10 @@ fn wait_for_metal_command_buffer(command_buffer: &ProtocolObject<dyn mtl::MTLCom
 	}
 }
 
+pub(super) fn submit_metal_command_buffer(command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
+	wait_for_metal_command_buffer(command_buffer);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SwapchainDescriptorBinding {
 	pub(crate) binding_handle: DescriptorSetBindingHandle,
@@ -222,7 +228,7 @@ impl Device {
 
 	// Submits the Metal command buffer and validates its completion status with enhanced diagnostics.
 	pub(super) fn submit_metal_command_buffer(&self, command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
-		wait_for_metal_command_buffer(command_buffer);
+		submit_metal_command_buffer(command_buffer);
 	}
 
 	pub fn new(
@@ -276,6 +282,7 @@ impl Device {
 			pending_image_syncs: VecDeque::new(),
 			tasks: Vec::new(),
 			texture_copies: Vec::new(),
+			next_texture_copy_handle: Cell::new(0),
 
 			#[cfg(debug_assertions)]
 			names: HashMap::default(),
@@ -987,40 +994,18 @@ impl Device {
 		self.tasks = tasks;
 	}
 
-	pub(super) fn copy_texture_to_cpu(&mut self, image_handle: ImageHandle) -> graphics_hardware_interface::TextureCopyHandle {
-		let image = self.images.resource(image_handle);
-
-		let Some(bytes_per_pixel) = utils::bytes_per_pixel(image.format) else {
-			self.texture_copies.push(Vec::new());
-			return graphics_hardware_interface::TextureCopyHandle((self.texture_copies.len() - 1) as u64);
-		};
-
-		let extent = image.extent;
-		let width = extent.width() as usize;
-		let height = extent.height() as usize;
-		let bytes_per_row = width * bytes_per_pixel;
-		let size = bytes_per_row * height;
-
-		let mut data = vec![0u8; size];
-		let data_ptr = NonNull::new(data.as_mut_ptr() as *mut std::ffi::c_void)
-			.expect("Texture readback buffer was null. The most likely cause is an empty allocation.");
-		let region = mtl::MTLRegion {
-			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
-			size: mtl::MTLSize {
-				width: width as _,
-				height: height as _,
-				depth: 1,
-			},
-		};
-
-		unsafe {
-			image
-				.texture
-				.getBytes_bytesPerRow_fromRegion_mipmapLevel(data_ptr, bytes_per_row as _, region, 0);
+	/// Interns texture readbacks produced by detached command-buffer recording.
+	pub(super) fn intern_texture_copies(
+		&mut self,
+		texture_copies: impl IntoIterator<Item = (graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
+	) {
+		for (handle, data) in texture_copies {
+			let index = handle.0 as usize;
+			if index >= self.texture_copies.len() {
+				self.texture_copies.resize_with(index + 1, Vec::new);
+			}
+			self.texture_copies[index] = data;
 		}
-
-		self.texture_copies.push(data);
-		graphics_hardware_interface::TextureCopyHandle((self.texture_copies.len() - 1) as u64)
 	}
 }
 
@@ -1934,7 +1919,33 @@ impl Device {
 			"Metal command buffer creation failed. The most likely cause is that the command queue did not provide a command buffer.",
 		);
 
-		super::CommandBufferRecording::new(self, command_buffer_handle, mtl_command_buffer, frame_key, Vec::new())
+		let states = self.states.clone();
+		let recording_device = super::command_buffer::RecordingDevice {
+			buffers: &self.buffers,
+			images: &self.images,
+			descriptor_sets_layouts: &self.descriptor_sets_layouts,
+			pipeline_layouts: &self.pipeline_layouts,
+			descriptor_sets: &self.descriptor_sets,
+			meshes: &self.meshes,
+			pipelines: &self.pipelines,
+			swapchains: &self.swapchains,
+			next_texture_copy_handle: &self.next_texture_copy_handle,
+		};
+		let commit = super::command_buffer::RecordingCommit {
+			states: &mut self.states,
+			synchronizers: &mut self.synchronizers,
+			texture_copies: &mut self.texture_copies,
+		};
+
+		super::CommandBufferRecording::new(
+			recording_device,
+			Some(commit),
+			states,
+			command_buffer_handle,
+			mtl_command_buffer,
+			frame_key,
+			Vec::new(),
+		)
 	}
 
 	pub fn build_buffer<T: Copy>(&mut self, builder: buffer_builder::Builder) -> graphics_hardware_interface::BufferHandle<T> {

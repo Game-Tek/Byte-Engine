@@ -1,4 +1,7 @@
-use std::{cell::RefCell, ptr::NonNull};
+use std::{
+	cell::{Cell, RefCell},
+	ptr::NonNull,
+};
 
 use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
@@ -8,13 +11,14 @@ use objc2_metal::{
 };
 
 use super::*;
+use crate::metal::swapchain::Swapchain;
 use crate::{
 	command_buffer::{
 		BoundComputePipelineMode, BoundPipelineLayoutMode, BoundRasterizationPipelineMode, BoundRayTracingPipelineMode,
 		CommandBufferRecording as CommandBufferRecordingTrait, CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
 	descriptors::DescriptorSetHandle,
-	HandleLike as _, ImageOrSwapchain, PrivateHandles,
+	HandleLike as _, ImageOrSwapchain, PrivateHandles, ResourceCollection,
 };
 
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
@@ -133,13 +137,35 @@ fn encode_texture_clear(
 	}
 }
 
+/// The `RecordingDevice` struct provides command recording with immutable access to backend resources.
+pub(super) struct RecordingDevice<'a> {
+	pub(super) buffers: &'a ResourceCollection<buffer::Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
+	pub(super) images: &'a ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
+	pub(super) descriptor_sets_layouts: &'a [DescriptorSetLayout],
+	pub(super) pipeline_layouts: &'a [PipelineLayout],
+	pub(super) descriptor_sets: &'a [DescriptorSet],
+	pub(super) meshes: &'a [Mesh],
+	pub(super) pipelines: &'a [Pipeline],
+	pub(super) swapchains: &'a [Swapchain],
+	pub(super) next_texture_copy_handle: &'a Cell<u64>,
+}
+
+/// The `RecordingCommit` struct carries recording results back into the owning device after encoding ends.
+pub(super) struct RecordingCommit<'a> {
+	pub(super) states: &'a mut HashMap<PrivateHandles, TransitionState>,
+	pub(super) synchronizers: &'a mut Vec<synchronizer::Synchronizer>,
+	pub(super) texture_copies: &'a mut Vec<Vec<u8>>,
+}
+
 pub struct CommandBufferRecording<'a> {
-	device: &'a mut device::Device,
+	device: RecordingDevice<'a>,
+	commit: Option<RecordingCommit<'a>>,
 	command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	sequence_index: u8,
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	debug_regions: RefCell<Vec<String>>,
 	states: HashMap<PrivateHandles, TransitionState>,
+	texture_copies: Vec<(graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
@@ -160,6 +186,7 @@ pub struct FinishedCommandBuffer<'a> {
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	pub(crate) command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
+	pub(crate) texture_copies: Vec<(graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
 	pub(crate) _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -171,9 +198,70 @@ impl crate::command_buffer::CommandBuffer for super::CommandBuffer<'_> {
 	}
 }
 
+impl RecordingDevice<'_> {
+	fn allocate_texture_copy_handle(&self) -> graphics_hardware_interface::TextureCopyHandle {
+		let handle = self.next_texture_copy_handle.get();
+		self.next_texture_copy_handle.set(handle + 1);
+		graphics_hardware_interface::TextureCopyHandle(handle)
+	}
+
+	/// Reads one Metal texture into CPU memory for later interning on the device.
+	fn read_texture_to_cpu(&self, image_handle: ImageHandle) -> Vec<u8> {
+		let image = self.images.resource(image_handle);
+
+		let Some(bytes_per_pixel) = utils::bytes_per_pixel(image.format) else {
+			return Vec::new();
+		};
+
+		let extent = image.extent;
+		let width = extent.width() as usize;
+		let height = extent.height() as usize;
+		let bytes_per_row = width * bytes_per_pixel;
+		let size = bytes_per_row * height;
+
+		let mut data = vec![0u8; size];
+		let data_ptr = NonNull::new(data.as_mut_ptr() as *mut std::ffi::c_void)
+			.expect("Texture readback buffer was null. The most likely cause is an empty allocation.");
+		let region = mtl::MTLRegion {
+			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
+			size: mtl::MTLSize {
+				width: width as _,
+				height: height as _,
+				depth: 1,
+			},
+		};
+
+		unsafe {
+			image
+				.texture
+				.getBytes_bytesPerRow_fromRegion_mipmapLevel(data_ptr, bytes_per_row as _, region, 0);
+		}
+
+		data
+	}
+}
+
+impl RecordingCommit<'_> {
+	/// Interns locally recorded texture readbacks into their device-assigned handles.
+	fn intern_texture_copies(
+		&mut self,
+		texture_copies: impl IntoIterator<Item = (graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
+	) {
+		for (handle, data) in texture_copies {
+			let index = handle.0 as usize;
+			if index >= self.texture_copies.len() {
+				self.texture_copies.resize_with(index + 1, Vec::new);
+			}
+			self.texture_copies[index] = data;
+		}
+	}
+}
+
 impl<'a> CommandBufferRecording<'a> {
-	pub fn new(
-		device: &'a mut device::Device,
+	pub(super) fn new(
+		device: RecordingDevice<'a>,
+		commit: Option<RecordingCommit<'a>>,
+		states: HashMap<PrivateHandles, TransitionState>,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
@@ -183,15 +271,16 @@ impl<'a> CommandBufferRecording<'a> {
 		)>,
 	) -> Self {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
-		let states = device.states.clone();
 
 		Self {
 			device,
+			commit,
 			command_buffer_handle,
 			sequence_index,
 			command_buffer,
 			debug_regions: RefCell::new(Vec::new()),
 			states,
+			texture_copies: Vec::new(),
 			drawables,
 			active_pipeline_layout: None,
 			bound_pipeline_layout: None,
@@ -223,6 +312,7 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer_handle: self.command_buffer_handle,
 			command_buffer: self.command_buffer,
 			states: self.states,
+			texture_copies: self.texture_copies,
 			_marker: std::marker::PhantomData,
 		}
 	}
@@ -388,13 +478,15 @@ impl<'a> CommandBufferRecording<'a> {
 			encoder.endEncoding();
 		}
 
-		self.device.submit_metal_command_buffer(self.command_buffer.as_ref());
+		device::submit_metal_command_buffer(self.command_buffer.as_ref());
 
-		if let Some(synchronizer) = self.device.synchronizers.get_mut(synchronizer.0 as usize) {
-			synchronizer.signaled = true;
+		if let Some(mut commit) = self.commit {
+			if let Some(synchronizer) = commit.synchronizers.get_mut(synchronizer.0 as usize) {
+				synchronizer.signaled = true;
+			}
+			*commit.states = self.states;
+			commit.intern_texture_copies(self.texture_copies);
 		}
-
-		self.device.states = self.states;
 	}
 }
 
@@ -610,7 +702,12 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		texture_handles
 			.iter()
-			.map(|handle| self.device.copy_texture_to_cpu(self.get_internal_image_handle(*handle)))
+			.map(|handle| {
+				let copy_handle = self.device.allocate_texture_copy_handle();
+				let data = self.device.read_texture_to_cpu(self.get_internal_image_handle(*handle));
+				self.texture_copies.push((copy_handle, data));
+				copy_handle
+			})
 			.collect()
 	}
 
@@ -628,9 +725,9 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			layout: crate::Layouts::Transfer,
 		}]);
 
-		let image = self.device.images.resource_mut(image_handle);
+		let image = self.device.images.resource(image_handle);
 
-		let Some(staging) = image.staging.as_mut() else {
+		let Some(staging) = image.staging.as_ref() else {
 			return;
 		};
 
@@ -640,6 +737,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				data.len() * std::mem::size_of::<graphics_hardware_interface::RGBAu8>(),
 			)
 		};
+		let mut staging: Vec<u8> = staging.clone();
 		let length = staging.len().min(bytes.len());
 		staging[..length].copy_from_slice(&bytes[..length]);
 
@@ -648,7 +746,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let extent = image.extent;
 		let array_layers = image.array_layers;
 
-		replace_texture_from_bytes(texture.as_ref(), format, extent, array_layers, staging);
+		replace_texture_from_bytes(texture.as_ref(), format, extent, array_layers, &staging);
 
 		self.consume_resources([Consumption {
 			handle: PrivateHandles::Image(image_handle),

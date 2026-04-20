@@ -55,6 +55,7 @@ pub mod tests {
 						Err(())
 					}
 				}
+				ReadTargetsMut::BackingStorage => Ok(ReadTargets::Backing(ResourceReaderBacking::Buffer(self.data.clone()))),
 			}
 		}
 

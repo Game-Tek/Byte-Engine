@@ -78,7 +78,8 @@ pub mod tests {
 					buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
 					Ok(ReadTargets::Box(buffer))
 				}
-				_ => Err(()),
+				ReadTargetsMut::Streams(_) => Err(()),
+				ReadTargetsMut::BackingStorage => Ok(ReadTargets::Backing(ResourceReaderBacking::Buffer(self.data.clone()))),
 			}
 		}
 

@@ -9,7 +9,7 @@ use std::{
 
 use ghi::device::{Device as _, DeviceCreate as _};
 use resource_management::{
-	resource::{reader::ResourceReaderBacking, ReadTargets},
+	resource::{reader::ResourceReaderBacking, ReadTargets, ReadTargetsMut},
 	resources::material::{Material, Shader, Variant},
 	types::ShaderTypes,
 	Reference,
@@ -324,7 +324,7 @@ impl PipelineManager {
 		match shader.consume_reader().into_backing_storage() {
 			Ok(backing) => Ok(backing),
 			Err(mut reader) => {
-				let read_target = shader.into();
+				let read_target = ReadTargetsMut::create_buffer(shader);
 				let load_request = reader.read_into(None, read_target).map_err(|_| {
 					log::error!(
 						"Failed to load shader bytes for {}. The most likely cause is that the shader resource no longer has an available read target.",
@@ -335,6 +335,7 @@ impl PipelineManager {
 				match load_request {
 					ReadTargets::Box(buffer) => Ok(ResourceReaderBacking::Buffer(buffer)),
 					ReadTargets::Buffer(buffer) => Ok(ResourceReaderBacking::Buffer(buffer.into())),
+					ReadTargets::Backing(backing) => Ok(backing),
 					ReadTargets::Streams(_) => {
 						log::error!(
 							"Shader {} produced stream-backed data. The most likely cause is that the shader resource was loaded with an unexpected read target.",

@@ -65,6 +65,10 @@ impl ResourceReader for FileResourceReader {
 					Err(())
 				}
 			}
+			ReadTargetsMut::BackingStorage => {
+				let mapped_file = MappedFileBacking::new(&self.file)?;
+				Ok(ReadTargets::Backing(ResourceReaderBacking::MappedFile(mapped_file)))
+			}
 		}
 	}
 

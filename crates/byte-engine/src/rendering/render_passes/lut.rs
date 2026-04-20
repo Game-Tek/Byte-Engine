@@ -338,6 +338,7 @@ fn load_lut_bytes(reference: &mut Reference<Lut>) -> StdBox<[u8]> {
 	match read_result {
 		resource_management::resource::ReadTargets::Box(bytes) => bytes,
 		resource_management::resource::ReadTargets::Buffer(bytes) => bytes.into(),
+		resource_management::resource::ReadTargets::Backing(backing) => backing.as_slice().into(),
 		resource_management::resource::ReadTargets::Streams(_) => {
 			panic!(
 				"Unexpected LUT stream layout. The most likely cause is that the LUT resource was stored as streams instead of a flat payload."

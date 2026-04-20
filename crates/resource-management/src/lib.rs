@@ -26,8 +26,6 @@ pub mod types;
 
 pub mod resources;
 
-pub mod file_tracker;
-
 pub mod shader_generator;
 pub mod shader_graph;
 

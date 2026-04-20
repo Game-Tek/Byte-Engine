@@ -10,7 +10,7 @@ pub struct Animation {
 	pub duration: f32,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct AnimationModel {
 	pub name: Option<String>,
 	pub samplers: Vec<AnimationSampler>,
@@ -53,7 +53,7 @@ impl<'de> Solver<'de, Animation> for AnimationModel {
 /// Input: times (f32 array)
 /// Output: values (depends on target path)
 /// Interpolation: LINEAR, STEP, or CUBICSPLINE
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
 pub struct AnimationSampler {
 	pub interpolation: Interpolation,
 	pub input_times: Vec<f32>,
@@ -61,7 +61,9 @@ pub struct AnimationSampler {
 }
 
 /// The `Interpolation` enum defines how keyframes are interpolated.
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(
+	Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Copy, PartialEq, Eq,
+)]
 pub enum Interpolation {
 	Linear,
 	Step,
@@ -80,7 +82,7 @@ impl From<gltf::animation::Interpolation> for Interpolation {
 
 /// The `SamplerOutput` represents the output values of an animation sampler.
 /// The type depends on what is being animated (translation, rotation, scale, or weights).
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
 pub enum SamplerOutput {
 	Translation(Vec<[f32; 3]>),
 	Rotation(Vec<[f32; 4]>),
@@ -89,7 +91,7 @@ pub enum SamplerOutput {
 }
 
 /// The `AnimationChannel` links a sampler to a target node/path.
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
 pub struct AnimationChannel {
 	pub sampler_index: usize,
 	pub target_node: usize,
@@ -97,7 +99,9 @@ pub struct AnimationChannel {
 }
 
 /// The `AnimationPath` specifies which property of the node is being animated.
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(
+	Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Copy, PartialEq, Eq,
+)]
 pub enum AnimationPath {
 	Translation,
 	Rotation,

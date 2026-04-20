@@ -3,7 +3,7 @@ name = "resource-management"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-rust-version = "1.73.0"
+rust-version = "1.81.0"
 build = "build.rs"
 
 [build-dependencies]
@@ -15,7 +15,7 @@ besl = { path = "../besl" }
 
 shaderc = "0.10.1"
 png = "0.18.0"
-pot = { version = "3.0.1" }
+rkyv = { version = "0.8.15", features = ["unaligned"] }
 md5 = "0.8.0"
 redb = "3.1.0"
 notify-debouncer-full = { version = "0.7.0", default-features = false }

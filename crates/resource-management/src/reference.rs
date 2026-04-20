@@ -1,11 +1,11 @@
 use std::hash::Hasher;
 
-use serde::{ser::SerializeStruct, Deserialize, Serialize};
+use serde::{ser::SerializeStruct, Serialize};
 
 use crate::{
 	asset::ResourceId,
 	resource::{resource_handler::MultiResourceReader, ReadTargets, ReadTargetsMut},
-	DataStorage, LoadResults, Model, Resource, StreamDescription,
+	to_vec, DataStorage, LoadResults, Model, Resource, StreamDescription,
 };
 
 #[derive(Debug)]
@@ -99,7 +99,7 @@ impl<T: Resource> std::hash::Hash for Reference<T> {
 	}
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ReferenceModel<T: Model> {
 	id: String,
 	hash: u64,
@@ -107,21 +107,19 @@ pub struct ReferenceModel<T: Model> {
 	class: String,
 	pub(crate) resource: DataStorage, // TODO: remove this visibility and use proper methods
 	#[serde(skip)]
+	#[rkyv(with = rkyv::with::Skip)]
 	phantom: std::marker::PhantomData<T>,
 	streams: Option<Vec<StreamDescription>>,
 }
 
 impl<T: Model> ReferenceModel<T> {
-	pub fn new(id: &str, hash: u64, size: usize, resource: &T, streams: Option<Vec<StreamDescription>>) -> Self
-	where
-		T: Serialize,
-	{
+	pub fn new(id: &str, hash: u64, size: usize, resource: &T, streams: Option<Vec<StreamDescription>>) -> Self {
 		ReferenceModel {
 			id: id.to_string(),
 			hash,
 			size,
 			class: T::get_class().to_string(),
-			resource: pot::to_vec(resource).unwrap(),
+			resource: to_vec(resource).unwrap(),
 			phantom: std::marker::PhantomData,
 			streams,
 		}

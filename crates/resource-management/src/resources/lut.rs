@@ -1,7 +1,9 @@
 use crate::{resource, solver::SolveErrors, Model, Reference, ReferenceModel, Resource, Solver};
 
 /// The `LutKind` enum describes the lookup-table layout a LUT resource represents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+	Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub enum LutKind {
 	OneDimensional,
 	ThreeDimensional,
@@ -17,7 +19,7 @@ impl LutKind {
 }
 
 /// The `Lut` struct carries the metadata needed to interpret baked LUT sample data.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Lut {
 	pub kind: LutKind,
 	pub size: u32,

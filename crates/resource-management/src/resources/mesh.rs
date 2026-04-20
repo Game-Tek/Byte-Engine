@@ -15,7 +15,7 @@ pub struct Primitive {
 	pub vertex_count: u32,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct PrimitiveModel {
 	pub material: ReferenceModel<VariantModel>,
 	pub streams: Vec<Stream>,
@@ -73,7 +73,7 @@ pub struct SubMesh {
 	pub primitives: Vec<Primitive>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct SubMeshModel {
 	pub primitives: Vec<PrimitiveModel>,
 }
@@ -169,7 +169,7 @@ impl Resource for Mesh {
 	type Model = MeshModel;
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct MeshModel {
 	pub vertex_components: Vec<VertexComponent>,
 	pub streams: Vec<Stream>,

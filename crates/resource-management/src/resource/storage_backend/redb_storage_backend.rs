@@ -1,7 +1,7 @@
 //! The Redb storage backend provides a way to store and retrieve assets and resources using a Redb database.
 //! This backend stores the resource's metadata/definition in a Redb database and the resource's binary data in a file.
 //! Resource urls are hashed into `ResourceId`s which are the primary key of the database.
-//! Resource metadata is stored in the database by serializing the `SerializableResource` struct into a byte array. The serialization is done using the `pot` crate.
+//! Resource metadata is stored in the database by archiving the `SerializableResource` struct into a byte array with rkyv.
 
 use std::{hash::Hasher, path::Path};
 
@@ -240,9 +240,9 @@ impl RedbStorageBackend {
 					continue;
 				};
 
-				let resource: SerializableResource =
-					pot::from_slice(serialized.value()).map_err(|_| QueryError::StorageFailure)?;
-				if !query.matches(&resource, &resource.queryable_properties) {
+				let archived = crate::archived_from_slice::<SerializableResource>(serialized.value())
+					.map_err(|_| QueryError::StorageFailure)?;
+				if !query.matches_archived(archived) {
 					continue;
 				}
 
@@ -251,6 +251,8 @@ impl RedbStorageBackend {
 					break;
 				}
 
+				let resource: SerializableResource =
+					crate::from_slice(serialized.value()).map_err(|_| QueryError::StorageFailure)?;
 				let reader = self.open_reader(resource_key).ok_or(QueryError::StorageFailure)?;
 				items.push((resource, reader));
 				last_key = Some(key.to_vec());
@@ -282,9 +284,9 @@ impl RedbStorageBackend {
 					continue;
 				};
 
-				let resource: SerializableResource =
-					pot::from_slice(serialized.value()).map_err(|_| QueryError::StorageFailure)?;
-				if !query.matches(&resource, &resource.queryable_properties) {
+				let archived = crate::archived_from_slice::<SerializableResource>(serialized.value())
+					.map_err(|_| QueryError::StorageFailure)?;
+				if !query.matches_archived(archived) {
 					continue;
 				}
 
@@ -293,6 +295,8 @@ impl RedbStorageBackend {
 					break;
 				}
 
+				let resource: SerializableResource =
+					crate::from_slice(serialized.value()).map_err(|_| QueryError::StorageFailure)?;
 				let reader = self.open_reader(resource_key).ok_or(QueryError::StorageFailure)?;
 				items.push((resource, reader));
 				last_key = Some(key.to_vec());
@@ -315,7 +319,7 @@ impl ReadStorageBackend for RedbStorageBackend {
 
 		for doc in table.iter().unwrap() {
 			let doc = doc.unwrap();
-			let resource: SerializableResource = pot::from_slice(doc.1.value()).unwrap();
+			let resource: SerializableResource = crate::from_slice(doc.1.value()).unwrap();
 			resources.push(resource.id);
 		}
 
@@ -329,7 +333,7 @@ impl ReadStorageBackend for RedbStorageBackend {
 		let id = ResourceId::from(id.as_ref());
 
 		if let Some(d) = table.get(&id).unwrap() {
-			let resource: SerializableResource = pot::from_slice(d.value()).unwrap();
+			let resource: SerializableResource = crate::from_slice(d.value()).unwrap();
 			let resource_reader = self.open_reader(id.0)?;
 
 			Some((resource, resource_reader))
@@ -367,7 +371,7 @@ impl WriteStorageBackend for RedbStorageBackend {
 			let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
 
 			if let Some(existing) = resources_table.get(&id).unwrap() {
-				let resource: SerializableResource = pot::from_slice(existing.value()).unwrap();
+				let resource: SerializableResource = crate::from_slice(existing.value()).unwrap();
 				remove_indexes(&mut class_table, &mut property_table, &resource, id.0);
 			}
 
@@ -417,12 +421,12 @@ impl WriteStorageBackend for RedbStorageBackend {
 				let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
 
 				if let Some(existing) = resources_table.get(&rid).unwrap() {
-					let existing: SerializableResource = pot::from_slice(existing.value()).unwrap();
+					let existing: SerializableResource = crate::from_slice(existing.value()).unwrap();
 					remove_indexes(&mut class_table, &mut property_table, &existing, rid.0);
 				}
 
 				resources_table
-					.insert(&rid, pot::to_vec(&resource).unwrap().as_slice())
+					.insert(&rid, crate::to_vec(&resource).unwrap().as_slice())
 					.unwrap();
 				insert_indexes(&mut class_table, &mut property_table, &resource, rid.0);
 			}
@@ -497,6 +501,8 @@ impl StorageBackend for RedbStorageBackend {}
 
 #[cfg(test)]
 mod tests {
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
 	use crate::{
 		resource::storage_backend::{Query, QueryCursor, QueryError, ReadStorageBackend, WriteStorageBackend},
 		Model, ProcessedAsset,
@@ -504,7 +510,7 @@ mod tests {
 
 	use super::RedbStorageBackend;
 
-	#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+	#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 	struct MockMaterialModel {
 		group: String,
 		tag: String,
@@ -533,7 +539,7 @@ mod tests {
 		}
 	}
 
-	#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+	#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 	struct MockShaderModel {
 		stage: String,
 	}
@@ -558,11 +564,17 @@ mod tests {
 	}
 
 	fn backend() -> RedbStorageBackend {
-		let unique = format!("byte-engine-redb-tests-{}", std::process::id());
+		static NEXT_BACKEND_ID: AtomicUsize = AtomicUsize::new(0);
+
+		let unique = format!(
+			"byte-engine-redb-tests-{}-{}",
+			std::process::id(),
+			NEXT_BACKEND_ID.fetch_add(1, Ordering::Relaxed)
+		);
 		RedbStorageBackend::new(std::env::temp_dir().join(unique))
 	}
 
-	fn store_mock<T: Model + serde::Serialize>(backend: &RedbStorageBackend, id: &str, resource: T) {
+	fn store_mock<T: Model>(backend: &RedbStorageBackend, id: &str, resource: T) {
 		let asset = ProcessedAsset::new(crate::asset::ResourceId::new(id), resource);
 		backend.store(&asset, id.as_bytes()).unwrap();
 	}

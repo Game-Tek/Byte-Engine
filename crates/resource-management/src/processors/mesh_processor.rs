@@ -707,7 +707,7 @@ fn vertex_semantic_order(semantic: VertexSemantics) -> usize {
 }
 
 fn duplicate_reference_model<T: crate::Model>(reference: &ReferenceModel<T>) -> ReferenceModel<T> {
-	pot::from_slice(&pot::to_vec(reference).expect("Reference model should serialize"))
+	crate::from_slice(&crate::to_vec(reference).expect("Reference model should serialize"))
 		.expect("Reference model should deserialize")
 }
 
@@ -885,7 +885,7 @@ mod tests {
 			"materials/test.variant",
 			0,
 			0,
-			pot::to_vec(&VariantModel {
+			crate::to_vec(&VariantModel {
 				material: ReferenceModel::new_serialized("materials/test.material", 0, 0, Vec::new(), None),
 				variables: Vec::new(),
 				alpha_mode: AlphaMode::Opaque,

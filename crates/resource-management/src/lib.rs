@@ -10,7 +10,6 @@
 #![feature(ascii_char)]
 #![feature(portable_simd)]
 
-use serde::{Deserialize, Serialize};
 use std::any::Any;
 
 use asset::ResourceId;
@@ -60,7 +59,42 @@ pub use solver::Solver;
 pub use stream::Stream;
 
 pub(crate) type DataStorage = Vec<u8>;
-pub(crate) use pot::from_slice;
+
+pub type ResourceArchiveError = rkyv::rancor::Error;
+
+/// The `ResourceArchive` trait marks values that can live in the engine resource archive format.
+pub trait ResourceArchive: Sized + rkyv::Archive + for<'a> rkyv::Serialize<ResourceHighSerializer<'a>> {}
+
+impl<T> ResourceArchive for T where T: rkyv::Archive + for<'a> rkyv::Serialize<ResourceHighSerializer<'a>> {}
+
+type ResourceHighSerializer<'a> =
+	rkyv::api::high::HighSerializer<rkyv::util::AlignedVec, rkyv::ser::allocator::ArenaHandle<'a>, ResourceArchiveError>;
+type ResourceHighDeserializer = rkyv::api::high::HighDeserializer<ResourceArchiveError>;
+type ResourceHighValidator<'a> = rkyv::api::high::HighValidator<'a, ResourceArchiveError>;
+
+/// Serializes a resource archive value into bytes for storage.
+pub(crate) fn to_vec<T: ResourceArchive>(value: &T) -> Result<Vec<u8>, ResourceArchiveError> {
+	rkyv::to_bytes::<ResourceArchiveError>(value).map(Vec::from)
+}
+
+/// Deserializes a resource archive value into an owned Rust value.
+pub(crate) fn from_slice<T>(bytes: &[u8]) -> Result<T, ResourceArchiveError>
+where
+	T: ResourceArchive,
+	<T as rkyv::Archive>::Archived:
+		for<'a> rkyv::bytecheck::CheckBytes<ResourceHighValidator<'a>> + rkyv::Deserialize<T, ResourceHighDeserializer>,
+{
+	rkyv::from_bytes::<T, ResourceArchiveError>(bytes)
+}
+
+/// Borrows a validated archived resource value directly from storage bytes.
+pub(crate) fn archived_from_slice<T>(bytes: &[u8]) -> Result<&<T as rkyv::Archive>::Archived, ResourceArchiveError>
+where
+	T: ResourceArchive,
+	<T as rkyv::Archive>::Archived: for<'a> rkyv::bytecheck::CheckBytes<ResourceHighValidator<'a>>,
+{
+	rkyv::access::<<T as rkyv::Archive>::Archived, ResourceArchiveError>(bytes)
+}
 
 // https://www.yosoygames.com.ar/wp/2018/03/vertex-formats-part-1-compression/
 
@@ -81,11 +115,11 @@ pub struct ProcessedAsset {
 }
 
 impl ProcessedAsset {
-	pub fn new<T: Model + serde::Serialize>(id: ResourceId<'_>, resource: T) -> Self {
+	pub fn new<T: Model>(id: ResourceId<'_>, resource: T) -> Self {
 		ProcessedAsset {
 			id: id.to_string(),
 			class: T::get_class().to_string(),
-			resource: pot::to_vec(&resource).unwrap(),
+			resource: to_vec(&resource).unwrap(),
 			streams: None,
 			queryable_properties: resource.queryable_properties(id.as_ref()),
 		}
@@ -110,7 +144,7 @@ impl ProcessedAsset {
 	}
 }
 
-impl<'a, T: Resource + Serialize + Clone> From<Reference<T>> for ProcessedAsset {
+impl<'a, T: Resource + ResourceArchive + Clone> From<Reference<T>> for ProcessedAsset {
 	fn from(value: Reference<T>) -> Self {
 		let id = value.id.clone();
 		let queryable_properties = value.resource.queryable_properties(&id);
@@ -118,7 +152,7 @@ impl<'a, T: Resource + Serialize + Clone> From<Reference<T>> for ProcessedAsset 
 		ProcessedAsset {
 			id,
 			class: value.resource.get_class().to_string(),
-			resource: pot::to_vec(&value.resource).unwrap(),
+			resource: to_vec(&value.resource).unwrap(),
 			streams: None,
 			queryable_properties,
 		}
@@ -137,7 +171,7 @@ impl From<SerializableResource> for ProcessedAsset {
 	}
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct StreamDescription {
 	/// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
 	name: String,
@@ -157,7 +191,7 @@ impl StreamDescription {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct SerializableResource {
 	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
 	id: String,

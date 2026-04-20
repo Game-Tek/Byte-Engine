@@ -1,6 +1,8 @@
 // Audio
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Clone, Copy)]
+#[derive(
+	Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Clone, Copy,
+)]
 pub enum BitDepths {
 	Eight,
 	Sixteen,
@@ -19,7 +21,7 @@ impl From<BitDepths> for usize {
 	}
 }
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
 pub enum AlphaMode {
 	Opaque,
 	Mask(f32),
@@ -27,7 +29,9 @@ pub enum AlphaMode {
 }
 
 /// Enumerates the types of shaders that can be created.
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
+#[derive(
+	Clone, Copy, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, PartialEq, Eq,
+)]
 pub enum ShaderTypes {
 	/// A vertex shader.
 	Vertex,
@@ -47,7 +51,9 @@ pub enum ShaderTypes {
 
 // Mesh
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+	Clone, Copy, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
+)]
 pub enum VertexSemantics {
 	Position,
 	Normal,
@@ -59,7 +65,7 @@ pub enum VertexSemantics {
 	Weights,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum IntegralTypes {
 	U8,
 	I8,
@@ -72,28 +78,32 @@ pub enum IntegralTypes {
 	F64,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+	Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
+)]
 pub struct VertexComponent {
 	pub semantic: VertexSemantics,
 	pub format: String,
 	pub channel: u32,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum QuantizationSchemes {
 	Quantization,
 	Octahedral,
 	OctahedralQuantization,
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+	Clone, Copy, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
+)]
 pub enum IndexStreamTypes {
 	Vertices,
 	Meshlets,
 	Triangles,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct IndexStream {
 	pub stream_type: IndexStreamTypes,
 	pub offset: usize,
@@ -101,7 +111,7 @@ pub struct IndexStream {
 	pub data_type: IntegralTypes,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Stream {
 	pub stream_type: Streams,
 	pub offset: usize,
@@ -116,14 +126,16 @@ impl Stream {
 	}
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+	Clone, Copy, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
+)]
 pub enum Streams {
 	Vertices(VertexSemantics),
 	Indices(IndexStreamTypes),
 	Meshlets,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct MeshletStream {
 	pub offset: usize,
 	pub count: u32,
@@ -178,13 +190,17 @@ impl Size for IntegralTypes {
 
 // Image
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+	Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub enum Gamma {
 	Linear,
 	SRGB,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+	Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub enum Formats {
 	BC5,
 	RG8,

@@ -138,7 +138,7 @@ mod tests {
 
 		assert_eq!(resource.id, "gun.wav");
 		assert_eq!(resource.class, "Audio");
-		let resource: Audio = pot::from_slice(&resource.resource).unwrap();
+		let resource: Audio = crate::from_slice(&resource.resource).unwrap();
 		assert_eq!(resource.bit_depth, BitDepths::Sixteen);
 		assert_eq!(resource.channel_count, 1);
 		assert_eq!(resource.sample_rate, 48000);

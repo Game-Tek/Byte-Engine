@@ -81,7 +81,7 @@ impl AssetManager {
 
 	/// Generates a resource from a loaded asset.
 	/// Does nothing if the resource already exists (with a matching hash).
-	pub async fn load<'a, M: Model + for<'de> serde::Deserialize<'de>>(
+	pub async fn load<'a, M: Model>(
 		&self,
 		id: &str,
 		resource_storage_backend: &dyn ResourceStorageBackend,
@@ -117,7 +117,7 @@ pub mod tests {
 
 	use super::*;
 
-	#[derive(serde::Serialize, serde::Deserialize)]
+	#[derive(serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 	struct TestResource {}
 
 	impl Model for TestResource {

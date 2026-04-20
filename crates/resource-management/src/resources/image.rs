@@ -5,7 +5,7 @@ use crate::{
 	Model, Reference, ReferenceModel, Resource, Solver,
 };
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
 pub struct Image {
 	// pub compression: Option<CompressionSchemes>,
 	pub format: Formats,

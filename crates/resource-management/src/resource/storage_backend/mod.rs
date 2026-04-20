@@ -2,14 +2,18 @@
 
 pub mod redb_storage_backend;
 
-use crate::{asset::ResourceId, ProcessedAsset, SerializableResource};
+use crate::{
+	asset::ResourceId, model::ArchivedQueryableValue, ArchivedSerializableResource, ProcessedAsset, SerializableResource,
+};
 
 use super::resource_handler::MultiResourceReader;
 
 use crate::QueryableValue;
 
 /// The `QueryCursor` struct represents an opaque position for paginated resource queries.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+	Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct QueryCursor {
 	pub(crate) token: Vec<u8>,
 }
@@ -72,6 +76,24 @@ impl Query {
 			QueryPredicate::Eq { property, value } => properties
 				.iter()
 				.any(|candidate| candidate.name == *property && &candidate.value == value),
+		})
+	}
+
+	/// Checks whether an archived resource satisfies this query without deserializing its metadata.
+	pub fn matches_archived(&self, resource: &ArchivedSerializableResource) -> bool {
+		if resource.class.as_str() != self.class {
+			return false;
+		}
+
+		self.predicates.iter().all(|predicate| match predicate {
+			QueryPredicate::Eq { property, value } => resource.queryable_properties.iter().any(|candidate| {
+				candidate.name.as_str() == property
+					&& match (&candidate.value, value) {
+						(ArchivedQueryableValue::String(candidate), QueryableValue::String(value)) => {
+							candidate.as_str() == value
+						}
+					}
+			}),
 		})
 	}
 
@@ -152,7 +174,7 @@ pub mod tests {
 				.lock()
 				.iter()
 				.map(|x| {
-					let resource: SerializableResource = pot::from_slice(&x.1 .0).unwrap();
+					let resource: SerializableResource = crate::from_slice(&x.1 .0).unwrap();
 					ProcessedAsset {
 						id: resource.id,
 						class: resource.class,
@@ -169,11 +191,11 @@ pub mod tests {
 				.lock()
 				.iter()
 				.find(|x| {
-					let resource: SerializableResource = pot::from_slice(&x.1 .0).unwrap();
+					let resource: SerializableResource = crate::from_slice(&x.1 .0).unwrap();
 					resource.id == name.as_ref()
 				})
 				.map(|x| {
-					let resource: SerializableResource = pot::from_slice(&x.1 .0).unwrap();
+					let resource: SerializableResource = crate::from_slice(&x.1 .0).unwrap();
 					ProcessedAsset {
 						id: resource.id,
 						class: resource.class,
@@ -190,7 +212,7 @@ pub mod tests {
 					.lock()
 					.iter()
 					.find(|x| {
-						let resource: SerializableResource = pot::from_slice(&x.1 .0).unwrap();
+						let resource: SerializableResource = crate::from_slice(&x.1 .0).unwrap();
 						resource.id == name.as_ref()
 					})?
 					.1
@@ -214,7 +236,7 @@ pub mod tests {
 
 			let _ = id.get_base().to_string();
 
-			let resource: SerializableResource = pot::from_slice(&resource).unwrap();
+			let resource: SerializableResource = crate::from_slice(&resource).unwrap();
 
 			let resource_reader = Box::new(MemoryResourceReader::new(data));
 
@@ -258,7 +280,7 @@ pub mod tests {
 				queryable_properties: resource.queryable_properties.clone(),
 			};
 
-			let serialized_container = pot::to_vec(&container).unwrap();
+			let serialized_container = crate::to_vec(&container).unwrap();
 
 			self.0.lock().insert(id.clone(), (serialized_container.into(), data.into()));
 

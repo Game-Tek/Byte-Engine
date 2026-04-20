@@ -21,7 +21,7 @@ pub struct Material {
 	pub parameters: Vec<Parameter>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct MaterialModel {
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
@@ -115,7 +115,7 @@ pub struct VariantVariable {
 	pub value: Value,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct VariantVariableModel {
 	pub name: String,
 	pub r#type: String,
@@ -152,7 +152,7 @@ impl Resource for Variant {
 	type Model = VariantModel;
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct VariantModel {
 	pub material: ReferenceModel<MaterialModel>,
 	pub variables: Vec<VariantVariableModel>,
@@ -189,7 +189,7 @@ impl<'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
 	}
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Binding {
 	pub set: u32,
 	pub binding: u32,
@@ -208,13 +208,13 @@ impl Binding {
 	}
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ShaderInterface {
 	pub workgroup_size: Option<(u32, u32, u32)>,
 	pub bindings: Vec<Binding>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Shader {
 	pub id: String,
 	pub stage: ShaderTypes,
@@ -251,7 +251,7 @@ impl<'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
 	}
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct RenderModel {
 	/// The name of the model.
 	pub name: String,
@@ -267,7 +267,7 @@ pub enum Value {
 	Image(Reference<Image>),
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum ValueModel {
 	Scalar(f32),
 	Vector3([f32; 3]),
@@ -282,7 +282,7 @@ pub struct Parameter {
 	pub value: Value,
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ParameterModel {
 	pub r#type: String,
 	pub name: String,

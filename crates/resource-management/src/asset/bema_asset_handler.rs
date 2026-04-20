@@ -166,7 +166,7 @@ impl AssetHandler for BEMAAssetHandler {
 					.await
 					.or_else(|_| Err(LoadErrors::FailedToProcess))?;
 
-				let material_repr: MaterialModel = pot::from_slice(&material.resource).unwrap();
+				let material_repr: MaterialModel = crate::from_slice(&material.resource).unwrap();
 
 				let mut values = Vec::with_capacity(material_repr.parameters.len());
 				for v in material_repr.parameters.iter() {

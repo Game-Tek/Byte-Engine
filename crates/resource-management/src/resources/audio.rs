@@ -1,6 +1,6 @@
 use crate::{resource, solver::SolveErrors, types::BitDepths, Model, Reference, ReferenceModel, Resource, Solver};
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Audio {
 	pub bit_depth: BitDepths,
 	pub channel_count: u16,

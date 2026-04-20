@@ -17,7 +17,7 @@ use crate::{
 		common_shader_generator::CommonShaderScope,
 		map_shader_binding_to_shader_binding_descriptor,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-		Viewport,
+		Sink,
 	},
 	ui::font::TextSystem,
 };
@@ -414,8 +414,8 @@ impl UiRenderPass {
 }
 
 impl RenderPass for UiRenderPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
-		let extent = viewport.extent();
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
+		let extent = sink.extent();
 		let geometry = build_ui_geometry(&self.data, extent);
 		let has_rectangle_batches = !geometry.batches.is_empty();
 

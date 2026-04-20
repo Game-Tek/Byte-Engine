@@ -14,7 +14,7 @@ use crate::rendering::pipelines::visibility::{
 	VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
 };
 use crate::rendering::render_pass::RenderPassFunction;
-use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
+use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
 use ghi::command_buffer::{
 	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
@@ -194,14 +194,14 @@ impl VisibilityPass {
 	pub(super) fn prepare(
 		&self,
 		_frame: &mut ghi::implementation::Frame,
-		viewport: &Viewport,
+		sink: &Sink,
 		instances: &[Instance],
 	) -> impl RenderPassFunction {
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.visibility_pass_pipeline;
 		let attachments = self.attachments;
 
-		let extent = viewport.extent();
+		let extent = sink.extent();
 		let instances = instances.iter().copied().collect::<Vec<_>>();
 
 		move |c, _| {
@@ -423,13 +423,13 @@ impl MaterialCountPass {
 		}
 	}
 
-	fn prepare(&self, frame: &ghi::implementation::Frame, viewport: &Viewport) -> impl RenderPassFunction {
+	fn prepare(&self, frame: &ghi::implementation::Frame, sink: &Sink) -> impl RenderPassFunction {
 		let descriptor_set = self.descriptor_set;
 		let visibility_pass_descriptor_set = self.visibility_pass_descriptor_set;
 		let pipeline = self.pipeline;
 		let material_count_buffer = self.material_count_buffer;
 
-		let extent = viewport.extent();
+		let extent = sink.extent();
 
 		move |c, _| {
 			c.start_region("Material Count");
@@ -625,13 +625,13 @@ impl PixelMappingPass {
 		}
 	}
 
-	pub(super) fn prepare(&self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> impl RenderPassFunction {
+	pub(super) fn prepare(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> impl RenderPassFunction {
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.pixel_mapping_pipeline;
 		let visibility_passes_descriptor_set = self.visibility_passes_descriptor_set;
 		let material_xy = self.material_xy;
 
-		let extent = viewport.extent();
+		let extent = sink.extent();
 
 		move |c, _| {
 			c.start_region("Pixel Mapping");
@@ -970,7 +970,7 @@ impl GtaoPass {
 		}
 	}
 
-	fn prepare(&self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> impl RenderPassFunction {
+	fn prepare(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> impl RenderPassFunction {
 		let base_descriptor_set = self.base_descriptor_set;
 		let gtao_descriptor_set = self.gtao_descriptor_set;
 		let blur_descriptor_set_x = self.blur_descriptor_set_x;
@@ -981,7 +981,7 @@ impl GtaoPass {
 		let ao_map = self.ao_map;
 		let temp_ao_map = self.temp_ao_map;
 		let packed_ao_map = self.packed_ao_map;
-		let extent = viewport.extent();
+		let extent = sink.extent();
 
 		frame.resize_image(ao_map.into(), extent);
 		frame.resize_image(temp_ao_map.into(), extent);
@@ -1062,7 +1062,7 @@ impl MaterialEvaluationPass {
 	fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
-		viewport: &Viewport,
+		sink: &Sink,
 		opaque_materials: &[(String, u32, ghi::PipelineHandle)],
 		transparent_materials: &[(String, u32, ghi::PipelineHandle)],
 	) -> impl RenderPassFunction {
@@ -1077,7 +1077,7 @@ impl MaterialEvaluationPass {
 		let opaque_materials = opaque_materials.to_vec();
 		let transparent_materials = transparent_materials.to_vec();
 
-		frame.resize_image(ao_map.into(), viewport.extent());
+		frame.resize_image(ao_map.into(), sink.extent());
 
 		move |c, t| {
 			c.clear_images(&[
@@ -1224,21 +1224,21 @@ impl VisibilityPipelineRenderPass {
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
-		viewport: &Viewport,
+		sink: &Sink,
 		instances: &[Instance],
 		opaque_materials: &[(String, u32, ghi::PipelineHandle)],
 		transparent_materials: &[(String, u32, ghi::PipelineHandle)],
 		shadow_enabled: bool,
 	) -> impl RenderPassFunction {
 		let shadow_pass = self.shadow_pass.prepare(frame, instances, shadow_enabled);
-		let visibility_pass = self.visibility_pass.prepare(frame, viewport, instances);
-		let material_count_pass = self.material_count_pass.prepare(frame, viewport);
+		let visibility_pass = self.visibility_pass.prepare(frame, sink, instances);
+		let material_count_pass = self.material_count_pass.prepare(frame, sink);
 		let material_offset_pass = self.material_offset_pass.prepare();
-		let pixel_mapping_pass = self.pixel_mapping_pass.prepare(frame, viewport);
-		let gtao_pass = self.gtao_pass.prepare(frame, viewport);
+		let pixel_mapping_pass = self.pixel_mapping_pass.prepare(frame, sink);
+		let gtao_pass = self.gtao_pass.prepare(frame, sink);
 		let material_evaluation_pass =
 			self.material_evaluation_pass
-				.prepare(frame, viewport, opaque_materials, transparent_materials);
+				.prepare(frame, sink, opaque_materials, transparent_materials);
 
 		move |c, t| {
 			c.start_region("Visibility Render Model");

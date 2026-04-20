@@ -13,7 +13,7 @@ use crate::{
 	core::Entity,
 	rendering::{
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-		Viewport,
+		Sink,
 	},
 };
 
@@ -139,8 +139,8 @@ impl AtmosphereSkyRenderPass {
 	}
 
 	/// Updates per-view sky constants from the active camera before dispatch.
-	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) {
-		let view = viewport.view();
+	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) {
+		let view = sink.view();
 		let inverse_view_projection = view.view_projection().inverse();
 		let inverse_view = view.view().inverse();
 		let camera_position = inverse_view * Vector4::new(0.0, 0.0, 0.0, 1.0);
@@ -210,12 +210,12 @@ fn create_sky_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHan
 }
 
 impl RenderPass for AtmosphereSkyRenderPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
-		self.write_parameters(frame, viewport);
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
+		self.write_parameters(frame, sink);
 
 		let pipeline = self.pipeline;
 		let descriptor_set = self.descriptor_set;
-		let extent = viewport.extent();
+		let extent = sink.extent();
 
 		Some(Box::new(move |command_buffer, _| {
 			command_buffer.region("Sky", |command_buffer| {

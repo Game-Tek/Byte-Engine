@@ -1,4 +1,4 @@
-use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Viewport};
+use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
 use utils::Box;
 
 pub struct SerialRenderPass {
@@ -18,11 +18,11 @@ impl SerialRenderPass {
 }
 
 impl RenderPass for SerialRenderPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
 		let mut commands: Vec<RenderPassReturn> = Vec::new();
 
 		for render_pass in &mut self.render_passes {
-			if let Some(command) = render_pass.prepare(frame, viewport) {
+			if let Some(command) = render_pass.prepare(frame, sink) {
 				commands.push(command);
 			}
 		}

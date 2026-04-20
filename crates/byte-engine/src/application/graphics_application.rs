@@ -525,7 +525,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 		fn prepare(
 			&mut self,
 			frame: &mut ghi::implementation::Frame,
-			viewports: &[rendering::Viewport],
+			sinks: &[rendering::Sink],
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
 			while let Some(message) = self.mesh_receiver.read() {
 				let handle = message.handle().clone();
@@ -538,11 +538,11 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 					.update_transform(frame, *message.handle(), message.transform().get_matrix());
 			}
 
-			self.scene_manager.prepare(frame, viewports)
+			self.scene_manager.prepare(frame, sinks)
 		}
 
-		fn create_view(&mut self, id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
-			self.scene_manager.create_view(id, render_pass_builder);
+		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
+			self.scene_manager.create_sink(sink_id, render_pass_builder);
 		}
 	}
 
@@ -571,7 +571,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		fn prepare(
 			&mut self,
 			frame: &mut ghi::implementation::Frame,
-			viewports: &[rendering::Viewport],
+			sinks: &[rendering::Sink],
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
 			while let Some(message) = self.light_receiver.read() {
 				self.visibility_world_render_domain.create_light(message.into_data());
@@ -582,11 +582,11 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 					.create_renderable_mesh(frame, message.into_data());
 			}
 
-			self.visibility_world_render_domain.prepare(frame, viewports)
+			self.visibility_world_render_domain.prepare(frame, sinks)
 		}
 
-		fn create_view(&mut self, id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
-			self.visibility_world_render_domain.create_view(id, render_pass_builder);
+		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
+			self.visibility_world_render_domain.create_sink(sink_id, render_pass_builder);
 		}
 	}
 
@@ -610,7 +610,7 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 	let renderer = &mut application.renderer;
 	let ui_channel = ui.clone_channel();
 
-	renderer.add_post_scene_render_pass_for_all_views(move |render_pass_builder| {
+	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
 		struct CustomRenderPass {
 			listener: DefaultListener<CreateMessage<Render>>,
 			render_pass: UiRenderPass,
@@ -620,13 +620,13 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 			fn prepare(
 				&mut self,
 				frame: &mut ghi::implementation::Frame,
-				viewport: &rendering::Viewport,
+				sink: &rendering::Sink,
 			) -> Option<rendering::render_pass::RenderPassReturn> {
 				while let Some(render) = self.listener.read() {
 					self.render_pass.update(render.into_data());
 				}
 
-				self.render_pass.prepare(frame, viewport)
+				self.render_pass.prepare(frame, sink)
 			}
 		}
 
@@ -646,14 +646,14 @@ pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 
 	let renderer = &mut application.renderer;
 
-	renderer.add_post_scene_render_pass_for_all_views(|render_pass_builder| Box::new(AgxToneMapPass::new(render_pass_builder)));
+	renderer.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AgxToneMapPass::new(render_pass_builder)));
 }
 
 /// Registers a reusable bloom pass that should run before tonemapping.
 pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: BloomPassSettings) {
 	let renderer = &mut application.renderer;
 
-	renderer.add_post_scene_render_pass_for_all_views(move |render_pass_builder| {
+	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
 		Box::new(BloomPass::with_settings(render_pass_builder, settings))
 	});
 }
@@ -661,7 +661,7 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
 	let renderer = &mut application.renderer;
 
-	renderer.add_post_scene_render_pass_for_all_views(|render_pass_builder| {
+	renderer.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| {
 		Box::new(AtmosphereSkyRenderPass::new(render_pass_builder))
 	});
 }

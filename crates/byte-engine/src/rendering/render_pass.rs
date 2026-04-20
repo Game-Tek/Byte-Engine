@@ -2,7 +2,7 @@ use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
 use crate::{
 	core::EntityHandle,
-	rendering::{renderer::RenderTargets, Viewport},
+	rendering::{renderer::RenderTargets, Sink},
 };
 
 use ghi::{
@@ -23,16 +23,15 @@ pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecordi
 /// The type of a boxed function object that writes a render pass to a command buffer
 pub type RenderPassReturn = Box<dyn RenderPassFunction + Send + Sync>;
 
-/// A `RenderPass` represents the definition of a rendering step.
-/// It might own resources that are used during the rendering process.
+/// The `RenderPass` trait defines a composable rendering step for a prepared sink.
 pub trait RenderPass {
 	/// Evaluates rendering condition and potentially prepares the render pass.
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn>;
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn>;
 }
 
 pub struct RenderPassBuilder<'a> {
 	device: &'a mut ghi::implementation::Device,
-	view_id: usize,
+	sink_id: usize,
 	swapchain: ghi::SwapchainHandle,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	pub(crate) images: &'a mut RenderTargets,
@@ -42,12 +41,12 @@ impl<'a> RenderPassBuilder<'a> {
 	pub fn new(
 		device: &'a mut ghi::implementation::Device,
 		images: &'a mut RenderTargets,
-		view_id: usize,
+		sink_id: usize,
 		swapchain: ghi::SwapchainHandle,
 	) -> Self {
 		RenderPassBuilder {
 			device,
-			view_id,
+			sink_id,
 			swapchain,
 			consumed_resources: Vec::new(),
 			images,
@@ -55,19 +54,19 @@ impl<'a> RenderPassBuilder<'a> {
 	}
 
 	pub fn alias(&mut self, orig: &'a str, alias: &'a str) {
-		self.images.alias(self.view_id, orig, alias);
+		self.images.alias(self.sink_id, orig, alias);
 	}
 
 	pub fn format_of(&self, name: &str) -> ghi::Formats {
-		self.images.get(name, self.view_id).expect("Image not found").1
+		self.images.get(name, self.sink_id).expect("Image not found").1
 	}
 
 	/// Use `render_to` to get a reference to an image you expect to exist.
 	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
-		self.images.write_to(name, self.view_id);
+		self.images.write_to(name, self.sink_id);
 
-		let (image, format) = self.images.get(name, self.view_id).expect("Image not found").clone();
+		let (image, format) = self.images.get(name, self.sink_id).expect("Image not found").clone();
 
 		RenderToResult {
 			image: image.into(),
@@ -85,7 +84,7 @@ impl<'a> RenderPassBuilder<'a> {
 
 		let image = self.device.build_image(builder);
 
-		self.images.insert(name, self.view_id, image.into(), format);
+		self.images.insert(name, self.sink_id, image.into(), format);
 
 		RenderToResult {
 			image: image.into(),
@@ -95,9 +94,9 @@ impl<'a> RenderPassBuilder<'a> {
 
 	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
-		self.images.read_from(name, self.view_id);
+		self.images.read_from(name, self.sink_id);
 
-		let (image, _) = self.images.get(name, self.view_id).expect("Image not found").clone();
+		let (image, _) = self.images.get(name, self.sink_id).expect("Image not found").clone();
 
 		ReadFromResult { image: image.into() }
 	}
@@ -148,7 +147,7 @@ impl FramePrepare {
 		FramePrepare {}
 	}
 
-	pub fn viewports(&self) -> &[Viewport] {
+	pub fn sinks(&self) -> &[Sink] {
 		&[]
 	}
 }

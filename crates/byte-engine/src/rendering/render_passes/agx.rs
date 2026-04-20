@@ -3,7 +3,7 @@ use crate::{
 	rendering::{
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 		view::View,
-		Viewport,
+		Sink,
 	},
 };
 
@@ -268,11 +268,11 @@ impl AgxToneMapPass {
 impl Entity for AgxToneMapPass {}
 
 impl RenderPass for AgxToneMapPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
 		let pipeline = self.render_pass.pipeline;
 		let descriptor_set = self.descriptor_set;
 
-		let extent = viewport.extent();
+		let extent = sink.extent();
 
 		Some(Box::new(move |c, _| {
 			c.region("Tonemap", |c| {

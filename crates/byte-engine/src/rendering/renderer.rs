@@ -36,9 +36,8 @@ use crate::{
 		make_perspective_view_from_camera,
 		render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn},
 		scene_manager::SceneManager,
-		viewport,
 		window::Window,
-		Camera, View, Viewport,
+		Camera, Sink, View,
 	},
 	space::{Orientable as _, Positionable as _},
 };
@@ -52,10 +51,7 @@ use utils::Box;
 
 type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
 
-/// A `Viewport` represents a specific way of looking at the scene, defined by a window.
-type ViewportId = usize;
-/// A `View` represents a specific way of looking at the scene, defined by a camera.
-type ViewId = usize;
+type SinkId = usize;
 /// A `RenderPass` represents a specific rendering task that can be performed on the scene, defined by a render pass factory.
 type RenderPassId = usize;
 
@@ -71,15 +67,15 @@ pub struct Renderer {
 
 	/// A list of display windows and their associated swapchains.
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
-	/// A list of windows (idx) and their associated cameras (Handle).
-	views: SmallVec<[(ViewportId, Handle); 16]>,
+	/// A list of sink indices and their associated camera handles.
+	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
 	/// A list of cameras and their associated handles.
 	cameras: SmallVec<[(Handle, Camera); 16]>,
 
 	render_targets: RenderTargets,
 
 	render_passes: SmallVec<[Box<dyn RenderPass>; 64]>,
-	render_passes_by_viewport: SmallVec<[(RenderPassId, ViewportId); 32]>,
+	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 
 	scene_managers: SmallVec<[Box<dyn SceneManager>; 16]>,
@@ -199,13 +195,13 @@ impl Renderer {
 			frame_queue_depth: 2,
 
 			windows: SmallVec::with_capacity(16),
-			views: SmallVec::with_capacity(16),
+			sink_cameras: SmallVec::with_capacity(16),
 			cameras: SmallVec::with_capacity(16),
 
 			render_targets: RenderTargets::new(),
 
 			render_passes: SmallVec::with_capacity(64),
-			render_passes_by_viewport: SmallVec::with_capacity(32),
+			render_passes_by_sink: SmallVec::with_capacity(32),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 
 			scene_managers: SmallVec::with_capacity(8),
@@ -223,11 +219,15 @@ impl Renderer {
 
 	pub fn add_scene_manager(&mut self, mut scene_manager: impl SceneManager + 'static) {
 		{
-			let swapchain_handles: SmallVec<[ghi::SwapchainHandle; 16]> = self.windows.iter().map(|(_, sc)| *sc).collect();
-			for (view_id, swapchain) in swapchain_handles.iter().enumerate() {
-				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id, *swapchain);
+			let sink_swapchains: SmallVec<[(SinkId, ghi::SwapchainHandle); 16]> = self
+				.sink_cameras
+				.iter()
+				.map(|(sink_id, _)| (*sink_id, self.windows[*sink_id].1))
+				.collect();
+			for (sink_id, swapchain) in sink_swapchains {
+				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain);
 
-				scene_manager.create_view(view_id, &mut rpb);
+				scene_manager.create_sink(sink_id, &mut rpb);
 
 				if rpb.consumed_resources.len() == 0 {
 					log::debug!("No resources consumed by scene manager");
@@ -238,52 +238,52 @@ impl Renderer {
 		self.scene_managers.push(Box::new(scene_manager));
 	}
 
-	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, viewport_id: ViewportId) {
+	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, sink_id: SinkId) {
 		let render_pass_id = self.render_passes.len();
 		self.render_passes.push(render_pass);
-		self.render_passes_by_viewport.push((render_pass_id, viewport_id));
+		self.render_passes_by_sink.push((render_pass_id, sink_id));
 	}
 
-	/// Registers a render pass factory that will be instantiated for every current and future view.
-	pub fn add_post_scene_render_pass_for_all_views<F>(&mut self, render_pass_factory: F)
+	/// Registers a render pass factory that will be instantiated for every current and future sink.
+	pub fn add_post_scene_render_pass_for_all_sinks<F>(&mut self, render_pass_factory: F)
 	where
 		F: for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass> + 'static,
 	{
 		let render_pass_factory: Box<RenderPassFactory> = Box::new(render_pass_factory);
-		let view_ids: SmallVec<[usize; 16]> = self.views.iter().map(|(view_id, _)| *view_id).collect();
+		let sink_ids: SmallVec<[usize; 16]> = self.sink_cameras.iter().map(|(sink_id, _)| *sink_id).collect();
 
-		for view_id in view_ids {
+		for sink_id in sink_ids {
 			let render_pass = {
-				let swapchain = self.windows[view_id].1;
+				let swapchain = self.windows[sink_id].1;
 				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, view_id, swapchain);
+					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
-			self.add_render_pass(render_pass, view_id);
+			self.add_render_pass(render_pass, sink_id);
 		}
 
 		self.post_scene_render_pass_factories.push(render_pass_factory);
 	}
 
-	/// Instantiates all registered post-scene render pass factories for a given view.
-	fn add_post_scene_render_passes_for_viewport(&mut self, viewport_id: ViewportId) {
-		let mut render_passes_for_view: SmallVec<[Box<dyn RenderPass>; 16]> = SmallVec::new();
+	/// Instantiates all registered post-scene render pass factories for a given sink.
+	fn add_post_scene_render_passes_for_sink(&mut self, sink_id: SinkId) {
+		let mut render_passes_for_sink: SmallVec<[Box<dyn RenderPass>; 16]> = SmallVec::new();
 
-		let swapchain = self.windows[viewport_id].1;
+		let swapchain = self.windows[sink_id].1;
 
 		for render_pass_factory in &self.post_scene_render_pass_factories {
 			let render_pass = {
 				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id, swapchain);
+					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
-			render_passes_for_view.push(render_pass);
+			render_passes_for_sink.push(render_pass);
 		}
 
-		for render_pass in render_passes_for_view {
-			self.add_render_pass(render_pass, viewport_id);
+		for render_pass in render_passes_for_sink {
+			self.add_render_pass(render_pass, sink_id);
 		}
 	}
 
@@ -331,15 +331,15 @@ impl Renderer {
 		let command_buffer = self.render_command_buffer;
 		let synchronizer = self.render_finished_synchronizer;
 		let windows = &self.windows;
-		let views = &self.views;
+		let sink_cameras = &self.sink_cameras;
 		let cameras = &self.cameras;
 		let render_targets = &self.render_targets;
 		let scene_managers = &mut self.scene_managers;
 		let render_passes = &mut self.render_passes;
-		let render_passes_by_viewport = &self.render_passes_by_viewport;
+		let render_passes_by_sink = &self.render_passes_by_sink;
 
 		queue.execute(Some(frame), synchronizer, |execution| {
-			let (viewports, scene_manager_commands, render_pass_commands, present_keys) = {
+			let (sinks, scene_manager_commands, render_pass_commands, present_keys) = {
 				let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
 				);
@@ -365,47 +365,47 @@ impl Renderer {
 					})
 					.collect();
 
-				let mut viewports: SmallVec<[Viewport; 16]> = SmallVec::new();
+				let mut sinks: SmallVec<[Sink; 16]> = SmallVec::new();
 
-				for (index, view_handle) in views.iter() {
-					let Some((_present_key, extent, _swapchain)) = swapchains[*index] else {
+				for (sink_id, camera_handle) in sink_cameras.iter() {
+					let Some((_present_key, extent, _swapchain)) = swapchains[*sink_id] else {
 						continue;
 					};
 
 					let Some(camera) = cameras
 						.iter()
-						.find_map(|(handle, camera)| if handle == view_handle { Some(camera) } else { None })
+						.find_map(|(handle, camera)| if handle == camera_handle { Some(camera) } else { None })
 					else {
 						continue;
 					};
 
 					let view = make_perspective_view_from_camera(&camera, extent);
-					viewports.push(Viewport::new(view, extent, *index));
+					sinks.push(Sink::new(view, extent, *sink_id));
 				}
 
-				for viewport in &viewports {
-					// Get images for the current view and render pass and resize them to window extent
-					let images = render_targets.get_images_for_view(viewport.index());
+				for sink in &sinks {
+					// Get images for the current sink and render pass and resize them to window extent
+					let images = render_targets.get_images_for_sink(sink.index());
 
 					// Resize images to window extent
 					for &image in images {
-						frame.resize_image(image.into(), viewport.extent());
+						frame.resize_image(image.into(), sink.extent());
 					}
 				}
 
 				let scene_managers = scene_managers.iter_mut();
 
 				let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
-					scene_managers.filter_map(|sm| sm.prepare(frame, &viewports)).collect();
+					scene_managers.filter_map(|sm| sm.prepare(frame, &sinks)).collect();
 
-				// A list of render pass commands and their corresponding viewport index
-				let render_pass_commands: SmallVec<[(RenderPassReturn, ViewportId); 64]> = render_passes_by_viewport
+				// A list of render pass commands and their corresponding sink index
+				let render_pass_commands: SmallVec<[(RenderPassReturn, SinkId); 64]> = render_passes_by_sink
 					.iter()
-					.filter_map(|(render_pass_id, viewport_id)| {
+					.filter_map(|(render_pass_id, sink_id)| {
 						if let Some(render_pass) = render_passes.get_mut(*render_pass_id) {
-							if let Some(viewport) = viewports.iter().find(|vp| vp.index() == *viewport_id) {
-								if let Some(command) = render_pass.prepare(frame, viewport) {
-									return Some((command, viewport.index()));
+							if let Some(sink) = sinks.iter().find(|sink| sink.index() == *sink_id) {
+								if let Some(command) = render_pass.prepare(frame, sink) {
+									return Some((command, sink.index()));
 								}
 							}
 						}
@@ -418,20 +418,20 @@ impl Renderer {
 					.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
 					.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
-				(viewports, scene_manager_commands, render_pass_commands, present_keys)
+				(sinks, scene_manager_commands, render_pass_commands, present_keys)
 			};
 
 			execution.record(command_buffer, |command_buffer_recording| {
 				for commands in scene_manager_commands.into_iter() {
-					for (command, viewport) in commands.into_iter().zip(viewports.iter()) {
-						let attachment_infos = render_targets.get_attachment_infos(viewport.index());
+					for (command, sink) in commands.into_iter().zip(sinks.iter()) {
+						let attachment_infos = render_targets.get_attachment_infos(sink.index());
 
 						(&command)(&mut *command_buffer_recording, &attachment_infos);
 					}
 				}
 
-				for (command, viewport) in render_pass_commands.into_iter() {
-					let attachment_infos = render_targets.get_attachment_infos(viewport);
+				for (command, sink) in render_pass_commands.into_iter() {
+					let attachment_infos = render_targets.get_attachment_infos(sink);
 					(&command)(&mut *command_buffer_recording, &attachment_infos);
 				}
 			});
@@ -462,24 +462,23 @@ impl Renderer {
 					ghi::Uses::RenderTarget | ghi::Uses::Storage,
 				);
 
-				let viewport_id = self.windows.len();
+				let sink_id = self.windows.len();
 
-				let view_id = if let Some(camera) = camera {
-					let view_id = self.views.len();
-					self.views.push((view_id, camera.clone()));
-					Some(view_id)
+				let sink_has_camera = if let Some(camera) = camera {
+					self.sink_cameras.push((sink_id, camera.clone()));
+					true
 				} else {
-					None
+					false
 				};
 
-				if let Some(view_id) = view_id {
+				if sink_has_camera {
 					let scene_managers = self.scene_managers.iter_mut();
 
 					for sm in scene_managers {
 						let mut rpb =
-							RenderPassBuilder::new(&mut self.device, &mut self.render_targets, viewport_id, swapchain_handle);
+							RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain_handle);
 
-						sm.create_view(view_id, &mut rpb);
+						sm.create_sink(sink_id, &mut rpb);
 
 						if rpb.consumed_resources.len() == 0 {
 							log::debug!("No resources consumed by scene manager");
@@ -489,7 +488,9 @@ impl Renderer {
 
 				self.windows.push((window, swapchain_handle));
 
-				self.add_post_scene_render_passes_for_viewport(viewport_id);
+				if sink_has_camera {
+					self.add_post_scene_render_passes_for_sink(sink_id);
+				}
 			}
 			Err(msg) => {
 				log::error!("Failed to create GHI window: {}", msg);
@@ -556,10 +557,10 @@ impl Settings {
 
 pub struct RenderTargets {
 	images: Vec<(ghi::BaseImageHandle, ghi::Formats)>,
-	/// Maps a view-scoped name to an image index.
+	/// Maps a sink-scoped name to an image index.
 	by_name: Vec<(usize, String, usize)>,
-	/// Maps view indices to image indices and access policies, making attachments.
-	by_view_index: Vec<(usize, (usize, ghi::AccessPolicies))>,
+	/// Maps sink indices to image indices and access policies, making attachments.
+	by_sink_index: Vec<(usize, (usize, ghi::AccessPolicies))>,
 }
 
 impl RenderTargets {
@@ -567,75 +568,75 @@ impl RenderTargets {
 		Self {
 			images: Vec::with_capacity(32),
 			by_name: Vec::with_capacity(32),
-			by_view_index: Vec::with_capacity(32),
+			by_sink_index: Vec::with_capacity(32),
 		}
 	}
 
-	pub fn alias(&mut self, view: usize, orig: &str, alias: &str) {
-		if let Some(index) = self.get_image_index(orig, view) {
-			self.by_name.push((view, alias.to_string(), index));
+	pub fn alias(&mut self, sink_id: usize, orig: &str, alias: &str) {
+		if let Some(index) = self.get_image_index(orig, sink_id) {
+			self.by_name.push((sink_id, alias.to_string(), index));
 		}
 	}
 
-	/// Inserts a new render target image, associated to a view index.
+	/// Inserts a new render target image, associated to a sink index.
 	/// Returns the index of the image in the internal storage.
-	pub fn insert(&mut self, name: String, view: usize, image: ghi::BaseImageHandle, format: ghi::Formats) -> usize {
-		if let Some(_) = self.get_image_index(&name, view) {
+	pub fn insert(&mut self, name: String, sink_id: usize, image: ghi::BaseImageHandle, format: ghi::Formats) -> usize {
+		if let Some(_) = self.get_image_index(&name, sink_id) {
 			log::debug!("An image by that name already exists");
 			panic!("An image by that name already exists");
 		};
 
-		if let Some(_) = self.get_attachment_index(&name, view) {
+		if let Some(_) = self.get_attachment_index(&name, sink_id) {
 			log::debug!("Attachment is already used in the render pass");
 			panic!("Attachment is already used in the render pass");
 		}
 
 		let index = self.images.len();
 		self.images.push((image, format));
-		self.by_name.push((view, name, index));
-		self.by_view_index.push((view, (index, ghi::AccessPolicies::WRITE)));
+		self.by_name.push((sink_id, name, index));
+		self.by_sink_index.push((sink_id, (index, ghi::AccessPolicies::WRITE)));
 
 		index
 	}
 
-	pub fn read_from(&mut self, name: &str, view_id: usize) {
-		if let Some(_) = self.get_attachment_index(name, view_id) {
+	pub fn read_from(&mut self, name: &str, sink_id: usize) {
+		if let Some(_) = self.get_attachment_index(name, sink_id) {
 			log::debug!("Attachment is already used in the render pass");
 			return;
 		}
 
-		let Some(index) = self.get_image_index(name, view_id) else {
+		let Some(index) = self.get_image_index(name, sink_id) else {
 			log::debug!("An image by that name does not exists");
 			return;
 		};
 
-		self.by_view_index.push((view_id, (index, ghi::AccessPolicies::READ)));
+		self.by_sink_index.push((sink_id, (index, ghi::AccessPolicies::READ)));
 	}
 
-	pub fn write_to(&mut self, name: &str, view_id: usize) {
-		if let Some(_) = self.get_attachment_index(name, view_id) {
+	pub fn write_to(&mut self, name: &str, sink_id: usize) {
+		if let Some(_) = self.get_attachment_index(name, sink_id) {
 			log::debug!("Attachment is already used in the render pass");
 			return;
 		}
 
-		let Some(index) = self.get_image_index(name, view_id) else {
+		let Some(index) = self.get_image_index(name, sink_id) else {
 			log::debug!("An image by that name does not exists");
 			return;
 		};
 
-		self.by_view_index.push((view_id, (index, ghi::AccessPolicies::WRITE)));
+		self.by_sink_index.push((sink_id, (index, ghi::AccessPolicies::WRITE)));
 	}
 
-	pub fn get(&self, name: &str, view_id: usize) -> Option<&(ghi::BaseImageHandle, ghi::Formats)> {
-		self.get_image_index(name, view_id).and_then(|index| self.images.get(index))
+	pub fn get(&self, name: &str, sink_id: usize) -> Option<&(ghi::BaseImageHandle, ghi::Formats)> {
+		self.get_image_index(name, sink_id).and_then(|index| self.images.get(index))
 	}
 
-	pub fn get_attachment_infos(&self, view: usize) -> Vec<ghi::AttachmentInformation> {
+	pub fn get_attachment_infos(&self, sink_id: usize) -> Vec<ghi::AttachmentInformation> {
 		let attachments = self
-			.by_view_index
+			.by_sink_index
 			.iter()
 			.filter_map(|(v, (i, ap))| {
-				if *v == view {
+				if *v == sink_id {
 					let (image, format) = self.images.get(*i)?;
 					Some((image, format, ap))
 				} else {
@@ -658,29 +659,29 @@ impl RenderTargets {
 		attachments.collect()
 	}
 
-	fn get_image(&self, name: &str, view_id: usize) -> &ghi::BaseImageHandle {
-		let index = self.get_attachment_index(name, view_id).unwrap();
+	fn get_image(&self, name: &str, sink_id: usize) -> &ghi::BaseImageHandle {
+		let index = self.get_attachment_index(name, sink_id).unwrap();
 		&self.images.get(index).unwrap().0
 	}
 
-	fn get_image_index(&self, name: &str, view_id: usize) -> Option<usize> {
+	fn get_image_index(&self, name: &str, sink_id: usize) -> Option<usize> {
 		self.by_name
 			.iter()
 			.rev()
-			.find(|(view, n, _)| *view == view_id && n == name)
+			.find(|(sink, n, _)| *sink == sink_id && n == name)
 			.map(|(_, _, i)| *i)
 	}
 
-	fn get_attachment_index(&self, name: &str, view_id: usize) -> Option<usize> {
-		let image_index = self.get_image_index(name, view_id)?;
+	fn get_attachment_index(&self, name: &str, sink_id: usize) -> Option<usize> {
+		let image_index = self.get_image_index(name, sink_id)?;
 
-		self.by_view_index
+		self.by_sink_index
 			.iter()
-			.find_map(|(v, (i, _))| if *v == view_id && *i == image_index { Some(*i) } else { None })
+			.find_map(|(v, (i, _))| if *v == sink_id && *i == image_index { Some(*i) } else { None })
 	}
 
-	fn get_images_for_view<'a>(&'a self, index: usize) -> impl Iterator<Item = &'a ghi::BaseImageHandle> {
-		self.by_view_index.iter().filter_map(move |(v, (i, _))| {
+	fn get_images_for_sink<'a>(&'a self, index: usize) -> impl Iterator<Item = &'a ghi::BaseImageHandle> {
+		self.by_sink_index.iter().filter_map(move |(v, (i, _))| {
 			if *v != index {
 				return None;
 			}
@@ -699,7 +700,7 @@ mod tests {
 		let rt = RenderTargets::new();
 		assert!(rt.images.is_empty());
 		assert!(rt.by_name.is_empty());
-		assert!(rt.by_view_index.is_empty());
+		assert!(rt.by_sink_index.is_empty());
 	}
 
 	#[test]
@@ -776,7 +777,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_insert_same_name_for_different_views() {
+	fn test_insert_same_name_for_different_sinks() {
 		let mut rt = RenderTargets::new();
 		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
 		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
@@ -784,9 +785,9 @@ mod tests {
 		rt.insert("main".to_string(), 0, image1, ghi::Formats::RGBA16UNORM);
 		rt.insert("main".to_string(), 1, image2, ghi::Formats::RGBA16UNORM);
 
-		let (view0_image, _) = rt.get("main", 0).expect("view 0 main should resolve");
-		let (view1_image, _) = rt.get("main", 1).expect("view 1 main should resolve");
-		assert_eq!(*view0_image, image1);
-		assert_eq!(*view1_image, image2);
+		let (sink0_image, _) = rt.get("main", 0).expect("sink 0 main should resolve");
+		let (sink1_image, _) = rt.get("main", 1).expect("sink 1 main should resolve");
+		assert_eq!(*sink0_image, image1);
+		assert_eq!(*sink1_image, image2);
 	}
 }

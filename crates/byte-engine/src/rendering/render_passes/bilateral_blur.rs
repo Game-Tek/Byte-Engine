@@ -9,7 +9,7 @@ use utils::{Box, Extent};
 
 use crate::rendering::{
 	render_pass::{FramePrepare, RenderPassBuilder, RenderPassReturn},
-	RenderPass, Viewport,
+	RenderPass, Sink,
 };
 
 const BLUR_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
@@ -167,7 +167,7 @@ impl BilateralBlurPass {
 }
 
 impl RenderPass for BilateralBlurPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
 		let execute_in_axis = |command_buffer: &mut ghi::implementation::CommandBufferRecording,
 		                       pipeline: ghi::PipelineHandle,
 		                       descriptor_set: ghi::DescriptorSetHandle,
@@ -182,7 +182,7 @@ impl RenderPass for BilateralBlurPass {
 		let descriptor_set_x = self.descriptor_set_x;
 		let descriptor_set_y = self.descriptor_set_y;
 
-		let extent = viewport.extent();
+		let extent = sink.extent();
 
 		Some(Box::new(move |command_buffer, _| {
 			command_buffer.region("Bilateral Blur", |command_buffer| {

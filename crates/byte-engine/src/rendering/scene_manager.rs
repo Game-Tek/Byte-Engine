@@ -1,6 +1,6 @@
 use crate::rendering::{
 	render_pass::{RenderPassBuilder, RenderPassFunction},
-	Viewport,
+	Sink,
 };
 use utils::{
 	hash::{HashMap, HashMapExt},
@@ -8,14 +8,10 @@ use utils::{
 	Box, Extent,
 };
 
-/// A `SceneManager` is responsible for managing scenes in the rendering engine.
+/// The `SceneManager` trait bridges scene state with render work for active sinks.
 pub trait SceneManager {
 	/// Called when a frame is being prepared for rendering.
-	fn prepare(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		viewports: &[Viewport],
-	) -> Option<Vec<Box<dyn RenderPassFunction>>>;
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>>;
 
-	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder);
+	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder);
 }

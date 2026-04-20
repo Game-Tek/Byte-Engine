@@ -20,7 +20,7 @@ use crate::{
 	core::Entity,
 	rendering::{
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-		Viewport,
+		Sink,
 	},
 };
 
@@ -160,12 +160,12 @@ impl LutRenderPass {
 }
 
 impl RenderPass for LutRenderPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
 		self.ensure_lut_uploaded(frame);
 
 		let pipeline = self.pipeline;
 		let descriptor_set = self.descriptor_set;
-		let extent = viewport.extent();
+		let extent = sink.extent();
 
 		Some(Box::new(move |command_buffer, _| {
 			command_buffer.region("LUT", |command_buffer| {

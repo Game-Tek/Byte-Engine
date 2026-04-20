@@ -4,7 +4,7 @@ use crate::{
 	core::Entity,
 	rendering::{
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-		Viewport,
+		Sink,
 	},
 };
 
@@ -350,7 +350,7 @@ impl BloomPass {
 		parameters.filter = [self.settings.radius.max(0.5), 0.0, 0.0, 0.0];
 	}
 
-	/// Resizes every bloom pyramid image to match the current viewport-dependent chain resolution.
+	/// Resizes every bloom pyramid image to match the current sink-dependent chain resolution.
 	fn resize_images(&self, frame: &mut ghi::implementation::Frame, extent: Extent) {
 		for (level, image) in self.downsample_images.iter().enumerate() {
 			frame.resize_image((*image).into(), bloom_extent(extent, level));
@@ -363,8 +363,8 @@ impl BloomPass {
 }
 
 impl RenderPass for BloomPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
-		let extent = viewport.extent();
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
+		let extent = sink.extent();
 		let bloom_enabled = self.settings.enabled;
 
 		self.resize_images(frame, extent);

@@ -46,7 +46,7 @@ use crate::{
 		renderable::mesh::MeshSource,
 		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
 		view::View,
-		RenderableMesh, Viewport,
+		RenderableMesh, Sink,
 	},
 };
 
@@ -59,7 +59,7 @@ pub struct SceneManager {
 	pub(super) mesh_buffers_stats: MeshBuffersStats<Handle>,
 	pub(super) descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 	pub(super) pipeline: ghi::PipelineHandle,
-	views: Vec<RenderPass>,
+	sinks: Vec<RenderPass>,
 }
 
 const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
@@ -254,7 +254,7 @@ impl SceneManager {
 			descriptor_set_template,
 			pipeline,
 
-			views: Vec::with_capacity(4),
+			sinks: Vec::with_capacity(4),
 		}
 	}
 
@@ -338,25 +338,28 @@ impl SceneManager {
 }
 
 impl crate::rendering::scene_manager::SceneManager for SceneManager {
-	fn prepare(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		viewports: &[Viewport],
-	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
 		let instance_batches = instance_batches.iter().into_vec();
 
-		let commands = viewports
+		let commands = sinks
 			.iter()
-			.filter_map(|viewport| self.views.iter().find(|v| v.index == viewport.index()).map(|v| (viewport, v)))
-			.map(|(viewport, v)| Box::new(v.prepare(frame, viewport, &self, &instance_batches)) as Box<dyn RenderPassFunction>)
+			.filter_map(|sink| {
+				self.sinks
+					.iter()
+					.find(|sink_state| sink_state.index == sink.index())
+					.map(|sink_state| (sink, sink_state))
+			})
+			.map(|(sink, sink_state)| {
+				Box::new(sink_state.prepare(frame, sink, &self, &instance_batches)) as Box<dyn RenderPassFunction>
+			})
 			.collect::<Vec<_>>();
 
 		Some(commands)
 	}
 
-	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder) {
+	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
 		let main = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
 				ghi::Formats::RGBA16F,
@@ -366,12 +369,12 @@ impl crate::rendering::scene_manager::SceneManager for SceneManager {
 		);
 		let depth = render_pass_builder
 			.create_render_target(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget).name("depth"));
-		self.views.push(RenderPass::new(
+		self.sinks.push(RenderPass::new(
 			render_pass_builder.device(),
 			&self.descriptor_set_template,
 			self.camera_data_buffer.into(),
 			self.instance_data_buffer.into(),
-			id,
+			sink_id,
 		))
 	}
 }

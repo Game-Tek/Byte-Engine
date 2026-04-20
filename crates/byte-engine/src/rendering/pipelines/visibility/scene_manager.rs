@@ -54,7 +54,7 @@ use utils::{Box, Extent, RGBA};
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
 use crate::rendering::{
 	csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain,
-	RenderableMesh, Viewport,
+	RenderableMesh, Sink,
 };
 use crate::resource_management::{self};
 use crate::space::Transformable as _;
@@ -145,8 +145,8 @@ pub struct VisibilityWorldRenderDomain {
 	lights: Vec<Lights>,
 	/// Information about the current render.
 	render_info: RenderInfo,
-	/// Views
-	views: Vec<ViewState>,
+	/// Per-sink render state.
+	sink_states: Vec<SinkState>,
 	visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 	resource_manager: EntityHandle<ResourceManager>,
 }
@@ -418,7 +418,7 @@ impl VisibilityWorldRenderDomain {
 				active_instances: Vec::with_capacity(4096),
 			},
 
-			views: Vec::with_capacity(4),
+			sink_states: Vec::with_capacity(4),
 
 			resource_manager,
 		}
@@ -1405,19 +1405,15 @@ impl VisibilityWorldRenderDomain {
 	}
 
 	fn texture_binding_handles(&self) -> Vec<ghi::DescriptorSetBindingHandle> {
-		let mut bindings = Vec::with_capacity(self.views.len() + 1);
+		let mut bindings = Vec::with_capacity(self.sink_states.len() + 1);
 		bindings.push(self.textures_binding);
-		bindings.extend(self.views.iter().map(|view| view.textures_binding));
+		bindings.extend(self.sink_states.iter().map(|sink_state| sink_state.textures_binding));
 		bindings
 	}
 }
 
 impl SceneManager for VisibilityWorldRenderDomain {
-	fn prepare(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		viewports: &[Viewport],
-	) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		for (name, pipeline) in self.pipeline_manager.poll(frame, MAX_PIPELINE_ADOPTIONS_PER_FRAME) {
 			if let Some(material) = self.material_evaluation_materials.get_mut(&name) {
 				material.pipeline = Some(pipeline);
@@ -1428,20 +1424,20 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			Lights::Direction(light) => Some((index, light.direction)),
 			Lights::Point(_) => None,
 		});
-		let shadow_light_index = if viewports.is_empty() == false {
+		let shadow_light_index = if sinks.is_empty() == false {
 			shadow_light.map(|(index, _)| index)
 		} else {
 			None
 		};
 
-		for viewport in viewports {
-			let Some(view_state) = self.views.iter().find(|view| view.id == viewport.index()) else {
+		for sink in sinks {
+			let Some(sink_state) = self.sink_states.iter().find(|sink_state| sink_state.id == sink.index()) else {
 				continue;
 			};
 
-			let main_view = viewport.view();
+			let main_view = sink.view();
 			let main_view_data = Self::make_shader_view_data(main_view);
-			let views_data_buffer = frame.get_mut_dynamic_buffer_slice(view_state.views_data_buffer_handle);
+			let views_data_buffer = frame.get_mut_dynamic_buffer_slice(sink_state.views_data_buffer_handle);
 
 			for view_data in views_data_buffer.iter_mut() {
 				*view_data = main_view_data;
@@ -1508,14 +1504,14 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			.filter_map(|v| v.pipeline.map(|pipeline| (v.name.clone(), v.index, pipeline)))
 			.collect::<Vec<_>>();
 
-		let viewport_x_rp = viewports.iter().filter_map(|viewport| {
-			self.views
+		let sink_x_rp = sinks.iter().filter_map(|sink| {
+			self.sink_states
 				.iter()
-				.find(|view| view.id == viewport.index())
-				.map(|view| (viewport, &view.render_pass))
+				.find(|sink_state| sink_state.id == sink.index())
+				.map(|sink_state| (sink, &sink_state.render_pass))
 		});
 
-		let commands: Vec<Box<dyn RenderPassFunction>> = viewport_x_rp
+		let commands: Vec<Box<dyn RenderPassFunction>> = sink_x_rp
 			.map(|(v, r)| {
 				Box::new(r.prepare(
 					frame,
@@ -1531,7 +1527,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		Some(commands)
 	}
 
-	fn create_view(&mut self, id: usize, render_pass_builder: &mut RenderPassBuilder) {
+	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
 		let diffuse_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
 				ghi::Formats::RGBA16UNORM,
@@ -1813,8 +1809,8 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			material_evaluation_dispatches,
 		);
 
-		self.views.push(ViewState {
-			id,
+		self.sink_states.push(SinkState {
+			id: sink_id,
 			views_data_buffer_handle,
 			textures_binding,
 			render_pass,
@@ -2017,7 +2013,7 @@ struct RenderInfo {
 	active_instances: Vec<Instance>,
 }
 
-struct ViewState {
+struct SinkState {
 	id: usize,
 	views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
 	textures_binding: ghi::DescriptorSetBindingHandle,

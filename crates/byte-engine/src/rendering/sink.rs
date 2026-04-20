@@ -3,15 +3,18 @@ use utils::Extent;
 
 use crate::rendering::view::View;
 
-/// The `Viewport` is essentially a view with an extent associated to it. Which allows mapping it to a render surface.
+/// The `Sink` struct represents a per-frame render destination for a resolved camera view.
+///
+/// A sink exists to keep the view transform, renderable extent, and renderer sink index together
+/// while scene managers and render passes prepare work for a specific output surface.
 #[derive(Debug, Clone, Copy)]
-pub struct Viewport {
+pub struct Sink {
 	view: View,
 	extent: Extent,
 	index: usize,
 }
 
-impl Viewport {
+impl Sink {
 	pub fn new(view: View, extent: Extent, index: usize) -> Self {
 		Self { view, extent, index }
 	}

@@ -5,7 +5,7 @@ use crate::{
 	rendering::{
 		render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn},
 		view::View,
-		Viewport,
+		Sink,
 	},
 };
 
@@ -160,11 +160,11 @@ impl AcesToneMapPass {
 impl Entity for AcesToneMapPass {}
 
 impl RenderPass for AcesToneMapPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, viewport: &Viewport) -> Option<RenderPassReturn> {
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
 		let pipeline = self.render_pass.pipeline;
 		let descriptor_set = self.descriptor_set;
 
-		let extent = viewport.extent();
+		let extent = sink.extent();
 
 		Some(Box::new(move |c, _| {
 			c.region("Tonemap", |c| {

@@ -28,8 +28,8 @@ pub mod pipeline_manager;
 
 pub mod pipelines;
 
+pub mod sink;
 pub mod view;
-pub mod viewport;
 
 pub mod csm;
 
@@ -38,8 +38,8 @@ pub mod utils;
 pub use camera::Camera;
 pub use render_pass::RenderPass;
 pub use renderable::mesh::RenderableMesh;
+pub use sink::Sink;
 pub use view::View;
-pub use viewport::Viewport;
 
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(

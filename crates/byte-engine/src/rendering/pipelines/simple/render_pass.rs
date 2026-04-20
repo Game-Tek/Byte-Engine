@@ -42,7 +42,7 @@ use crate::{
 		renderable::mesh::MeshSource,
 		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
 		view::View,
-		RenderableMesh, Viewport,
+		RenderableMesh, Sink,
 	},
 	space::Transformable,
 };
@@ -89,7 +89,7 @@ impl RenderPass {
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
-		viewport: &Viewport,
+		sink: &Sink,
 		sm: &SceneManager,
 		instance_batches: &[InstanceBatch],
 	) -> impl RenderPassFunction {
@@ -97,8 +97,8 @@ impl RenderPass {
 
 		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(camera_data_buffer);
 
-		camera_data_buffer[viewport.index()] = CameraShaderData {
-			vp: viewport.view_projection().into(),
+		camera_data_buffer[sink.index()] = CameraShaderData {
+			vp: sink.view_projection().into(),
 		};
 
 		let vertex_buffer = sm.vertex_positions_buffer;
@@ -106,7 +106,7 @@ impl RenderPass {
 		let pipeline = sm.pipeline.clone();
 		let descriptor_set = self.descriptor_set;
 
-		let extent = viewport.extent();
+		let extent = sink.extent();
 		let instance_batches = instance_batches.iter().copied().collect::<Vec<_>>();
 
 		move |c, t| {

@@ -4,14 +4,14 @@
 //! An application MUST be a singleton and created before any other engine functionality is used.\
 //! All state associated with the application/process should be stored in an application.
 
-use log::{info, trace};
 //use utils::hash::HashSet; // Triggers address sanitation error
 use std::collections::HashSet;
+
+use log::{info, trace};
 use tracing_subscriber;
 
-use crate::application::parameters::{parse_argument, Parameters};
-
 use super::Parameter;
+use crate::application::parameters::{parse_argument, Parameters};
 
 /// The application trait is the main entry point of the engine.
 /// It is responsible for initializing and deinitializing the engine.

@@ -1,18 +1,17 @@
 use utils::{Box, RGBA};
 
-use crate::ui::{
-	element::ConcreteElement,
-	flow::{FlowInput, FlowOutput},
-	primitive::Events,
-	style::{ConcreteLayer, ConcreteStyle, Styler, StylerFn},
-};
-
 use super::super::{
 	element::{Element, ElementHandle, Id},
 	flow::{self, FlowFunction},
 	layout::{self, Sizing},
 	primitive::{BasePrimitive, Primitive, Shapes},
 	Component,
+};
+use crate::ui::{
+	element::ConcreteElement,
+	flow::{FlowInput, FlowOutput},
+	primitive::Events,
+	style::{ConcreteLayer, ConcreteStyle, Styler, StylerFn},
 };
 
 pub trait OnEvent = Fn(Events) + Copy;

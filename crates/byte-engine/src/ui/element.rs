@@ -1,3 +1,7 @@
+use super::{
+	flow::FlowFunction,
+	primitive::{BasePrimitive, Primitive},
+};
 use crate::ui::{
 	components::{
 		container::{ContainerSettings, OnEventFunction},
@@ -8,11 +12,6 @@ use crate::ui::{
 	primitive::{Primitives, Shapes},
 	style::Styler,
 	Container,
-};
-
-use super::{
-	flow::FlowFunction,
-	primitive::{BasePrimitive, Primitive},
 };
 
 pub trait Element {

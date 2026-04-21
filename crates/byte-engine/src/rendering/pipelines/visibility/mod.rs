@@ -2104,6 +2104,8 @@ fn build_gtao_bitfield_root() -> besl::Node {
 
 #[cfg(test)]
 mod tests {
+	use resource_management::platform_shader_generator::PlatformShaderLanguage;
+
 	use super::{
 		generate_gtao_bitfield_blur_x_shader_for_language, generate_gtao_bitfield_shader_for_language,
 		generate_gtao_blur_shader_for_language, generate_gtao_shader_for_language, generate_pixel_mapping_shader_for_language,
@@ -2113,7 +2115,6 @@ mod tests {
 		PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING,
 		VIEWS_DATA_BINDING,
 	};
-	use resource_management::platform_shader_generator::PlatformShaderLanguage;
 
 	#[test]
 	fn shadow_mesh_glsl_source_uses_besl_accessors() {

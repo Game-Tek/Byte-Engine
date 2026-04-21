@@ -11,6 +11,7 @@ use ghi::{
 use resource_management::{glsl, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{Box, Extent, RGBA};
 
+use super::{element::ElementHandle as _, layout::engine};
 use crate::{
 	core::Entity,
 	rendering::{
@@ -21,8 +22,6 @@ use crate::{
 	},
 	ui::font::TextSystem,
 };
-
-use super::{element::ElementHandle as _, layout::engine};
 
 const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
 const TEXT_OVERLAY_FORMAT: ghi::Formats = ghi::Formats::RGBA8UNORM;
@@ -897,11 +896,12 @@ fn create_text_overlay_fragment_shader(device: &mut ghi::implementation::Device)
 
 #[cfg(test)]
 mod tests {
+	use utils::{Extent, RGBA};
+
 	use super::{
 		build_ui_geometry, should_rasterize_text, UiDrawBatch, UiDrawElement, UiDrawList, UiTextDrawElement, MAX_UI_ELEMENTS,
 		MAX_UI_VERTICES_PER_DRAW, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_ELEMENT,
 	};
-	use utils::{Extent, RGBA};
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);

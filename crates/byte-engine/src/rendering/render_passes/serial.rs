@@ -1,5 +1,6 @@
-use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
 use utils::Box;
+
+use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
 
 pub struct SerialRenderPass {
 	render_passes: Vec<Box<dyn RenderPass>>,

@@ -1,10 +1,5 @@
 use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
-use crate::{
-	core::EntityHandle,
-	rendering::{renderer::RenderTargets, Sink},
-};
-
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
@@ -16,6 +11,11 @@ use utils::{
 	hash::{HashMap, HashMapExt},
 	sync::RwLock,
 	Box, Extent,
+};
+
+use crate::{
+	core::EntityHandle,
+	rendering::{renderer::RenderTargets, Sink},
 };
 
 pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording, &[ghi::AttachmentInformation]);

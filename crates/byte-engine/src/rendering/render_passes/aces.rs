@@ -1,14 +1,5 @@
 use std::borrow::Borrow;
 
-use crate::{
-	core::EntityHandle,
-	rendering::{
-		render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn},
-		view::View,
-		Sink,
-	},
-};
-
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
@@ -20,6 +11,14 @@ use resource_management::glsl;
 use utils::{Box, Extent};
 
 use crate::core::Entity;
+use crate::{
+	core::EntityHandle,
+	rendering::{
+		render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn},
+		view::View,
+		Sink,
+	},
+};
 
 #[derive(Clone)]
 pub struct BaseAcesToneMapPass {

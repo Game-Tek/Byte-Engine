@@ -1,8 +1,8 @@
+use std::sync::Arc;
 use std::{cell::RefCell, ops::Deref, rc::Rc, sync::OnceLock};
 
 use besl::{parser::Node, NodeReference};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
-use std::sync::Arc;
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;

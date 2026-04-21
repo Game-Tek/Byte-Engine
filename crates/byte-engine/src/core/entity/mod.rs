@@ -3,7 +3,6 @@ pub mod handle;
 
 pub use container::Container as EntityContainer;
 pub use handle::Handle as EntityHandle;
-
 use utils::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// The Entity trait is the base trait for all entities in the engine.

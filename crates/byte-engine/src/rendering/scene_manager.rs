@@ -1,11 +1,12 @@
-use crate::rendering::{
-	render_pass::{RenderPassBuilder, RenderPassFunction},
-	Sink,
-};
 use utils::{
 	hash::{HashMap, HashMapExt},
 	sync::RwLock,
 	Box, Extent,
+};
+
+use crate::rendering::{
+	render_pass::{RenderPassBuilder, RenderPassFunction},
+	Sink,
 };
 
 /// The `SceneManager` trait bridges scene state with render work for active sinks.

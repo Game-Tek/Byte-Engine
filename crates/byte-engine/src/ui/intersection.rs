@@ -1,10 +1,9 @@
+use super::{element::Id, flow::Location, layout::LayoutElement};
 use crate::ui::{
 	element::ElementHandle,
 	flow::{Location3, Size},
 	primitive::Primitives,
 };
-
-use super::{element::Id, flow::Location, layout::LayoutElement};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct QueryElement {
@@ -154,8 +153,6 @@ pub(crate) fn build_mouse_click_acceleration(layout: &[LayoutElement]) -> MouseC
 mod tests {
 	use utils::RGBA;
 
-	use crate::ui::intersection::{MouseClickAcceleration, QueryElement};
-
 	use super::{
 		super::{
 			element::Id,
@@ -164,6 +161,7 @@ mod tests {
 		},
 		build_mouse_click_acceleration,
 	};
+	use crate::ui::intersection::{MouseClickAcceleration, QueryElement};
 
 	#[test]
 	fn mouse_click_acceleration_hits_topmost_overlapping_element() {

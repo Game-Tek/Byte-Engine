@@ -4,6 +4,12 @@ pub mod query;
 use math::{Base as _, Vector2};
 use utils::{Box, RGBA};
 
+use super::{
+	element::{self, Element, ElementHandle, Id},
+	flow::{self, FlowInput, Location, Location3, Offset, Size},
+	primitive::BasePrimitive,
+	Primitive,
+};
 use crate::ui::{
 	components::container::OnEventFunction,
 	element::ConcreteElement,
@@ -11,13 +17,6 @@ use crate::ui::{
 	font::TextSystem,
 	primitive::{Primitives, Shapes},
 	style::{Color, ConcreteStyle, Styler},
-};
-
-use super::{
-	element::{self, Element, ElementHandle, Id},
-	flow::{self, FlowInput, Location, Location3, Offset, Size},
-	primitive::BasePrimitive,
-	Primitive,
 };
 
 /// Describes an element layed out for an screen.
@@ -263,12 +262,6 @@ impl Into<Sizing> for u32 {
 mod tests {
 	use math::{Base as _, Vector2};
 
-	use crate::ui::{
-		font::TextSystem,
-		layout::IdedElement,
-		primitive::{Primitives, Shapes},
-	};
-
 	use super::super::{
 		components::container::{Container, ContainerSettings},
 		element::{ElementHandle, Id},
@@ -276,8 +269,12 @@ mod tests {
 		layout::{ConcreteElement, Sizing},
 		Element,
 	};
-
 	use super::layout_elements;
+	use crate::ui::{
+		font::TextSystem,
+		layout::IdedElement,
+		primitive::{Primitives, Shapes},
+	};
 
 	fn make_elements(elements: impl IntoIterator<Item = Container>) -> Vec<IdedElement> {
 		let mut counter = Id::MIN;

@@ -1,5 +1,17 @@
 use std::borrow::Borrow as _;
 
+use ghi::command_buffer::{
+	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
+	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+};
+use ghi::device::{Device as _, DeviceCreate as _};
+use ghi::frame::Frame as _;
+use ghi::implementation::Frame;
+use math::Vector2;
+use resource_management::glsl;
+use resource_management::resources::material;
+use utils::{Box, Extent, RGBA};
+
 use crate::rendering::pipelines::visibility::scene_manager::Instance;
 use crate::rendering::pipelines::visibility::{
 	get_gtao_bitfield_blur_x_shader, get_gtao_bitfield_shader, get_gtao_blur_shader, get_gtao_shader,
@@ -15,17 +27,6 @@ use crate::rendering::pipelines::visibility::{
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
-use ghi::command_buffer::{
-	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
-};
-use ghi::device::{Device as _, DeviceCreate as _};
-use ghi::frame::Frame as _;
-use ghi::implementation::Frame;
-use math::Vector2;
-use resource_management::glsl;
-use resource_management::resources::material;
-use utils::{Box, Extent, RGBA};
 
 const GTAO_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	0,

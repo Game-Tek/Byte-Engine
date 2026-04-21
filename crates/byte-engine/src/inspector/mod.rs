@@ -3,9 +3,9 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use crate::application::{Receiver, Sender};
 use utils::sync::Mutex;
 
+use crate::application::{Receiver, Sender};
 use crate::{
 	application::Events,
 	core::{listener::Listener, Entity, EntityHandle},

@@ -1,5 +1,6 @@
 use math::Vector3;
 
+use crate::physics;
 use crate::{
 	core::{Entity, EntityHandle},
 	physics::{
@@ -8,8 +9,6 @@ use crate::{
 	},
 	space::{Positionable, Transformable},
 };
-
-use crate::physics;
 
 pub struct Sphere {
 	radius: f32,

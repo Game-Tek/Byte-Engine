@@ -17,12 +17,17 @@ use ghi::{
 use math::direction_from_orientation;
 use resource_management::resource::resource_manager::ResourceManager;
 use smallvec::SmallVec;
+use utils::Box;
 use utils::{
 	hash::{HashMap, HashMapExt},
 	sync::RwLock,
 	Extent, RGBA,
 };
 
+use super::{
+	render_pass::{RenderPass, RenderPassBuilder},
+	texture_manager::TextureManager,
+};
 use crate::{
 	application::parameters::Parameters,
 	core::{
@@ -41,13 +46,6 @@ use crate::{
 	},
 	space::{Orientable as _, Positionable as _},
 };
-
-use super::{
-	render_pass::{RenderPass, RenderPassBuilder},
-	texture_manager::TextureManager,
-};
-
-use utils::Box;
 
 type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
 

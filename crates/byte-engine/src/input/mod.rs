@@ -1,6 +1,5 @@
-use crate::core::factory::Handle;
-
 use super::utils::RGBA;
+use crate::core::factory::Handle;
 
 mod gamepad;
 pub mod input_manager;
@@ -13,7 +12,6 @@ pub mod utils;
 
 pub use action::Action;
 pub use action::ActionBindingDescription;
-
 pub use action::ActionHandle;
 pub use device::DeviceHandle;
 pub use input_manager::InputManager;

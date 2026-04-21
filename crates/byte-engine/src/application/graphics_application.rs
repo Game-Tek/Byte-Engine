@@ -1,3 +1,34 @@
+use core::time;
+use std::{
+	net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, UdpSocket},
+	sync::Arc,
+	thread,
+	time::Duration,
+};
+
+use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll, PollReply, PortAddress};
+use math::Vector2;
+use resource_management::{
+	asset::{
+		asset_manager::AssetManager,
+		bema_asset_handler::{BEMAAssetHandler, ProgramGenerator},
+		gltf_asset_handler::GLTFAssetHandler,
+		lut_asset_handler::LUTAssetHandler,
+		png_asset_handler::PNGAssetHandler,
+		wav_asset_handler::WAVAssetHandler,
+		FileStorageBackend,
+	},
+	resource::{resource_manager::ResourceManager, RedbStorageBackend},
+	resources::material::Material,
+};
+use smallvec::SmallVec;
+use tracing::{debug_span, instrument, span, Level};
+use utils::{sync::RwLock, Box, Extent, RGBA};
+
+use super::{
+	application::{Application, BaseApplication},
+	Events, Parameter, Receiver, Sender, Time,
+};
 use crate::{
 	application::{parameters::Parameters, thread::Thread},
 	audio::generator::Generator,
@@ -35,33 +66,6 @@ use crate::{
 	},
 	ui::{layout::engine::Render, render_pass::UiRenderPass},
 };
-use core::time;
-use std::{
-	net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, UdpSocket},
-	sync::Arc,
-	thread,
-	time::Duration,
-};
-
-use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll, PollReply, PortAddress};
-use math::Vector2;
-use resource_management::{
-	asset::{
-		asset_manager::AssetManager,
-		bema_asset_handler::{BEMAAssetHandler, ProgramGenerator},
-		gltf_asset_handler::GLTFAssetHandler,
-		lut_asset_handler::LUTAssetHandler,
-		png_asset_handler::PNGAssetHandler,
-		wav_asset_handler::WAVAssetHandler,
-		FileStorageBackend,
-	},
-	resource::{resource_manager::ResourceManager, RedbStorageBackend},
-	resources::material::Material,
-};
-use smallvec::SmallVec;
-use tracing::{debug_span, instrument, span, Level};
-use utils::{sync::RwLock, Box, Extent, RGBA};
-
 use crate::{
 	audio::audio_system::{AudioSystem, DefaultAudioSystem},
 	gameplay::anchor::AnchorSystem,
@@ -70,11 +74,6 @@ use crate::{
 		self, common_shader_generator::CommonShaderGenerator,
 		pipelines::visibility::shader_generator::VisibilityShaderGenerator, renderer::Renderer, window::Window,
 	},
-};
-
-use super::{
-	application::{Application, BaseApplication},
-	Events, Parameter, Receiver, Sender, Time,
 };
 
 /// A graphics application is the base for all applications that use the graphics functionality of the engine.

@@ -3,6 +3,13 @@ use std::{cell::RefCell, collections::HashSet, marker::PhantomData, rc::Rc};
 use math::{Base as _, Vector2};
 use utils::{RefCall1, RGBA};
 
+use super::{
+	element::{ElementHandle, Id},
+	flow::Size,
+	layout_elements,
+	query::Fetcher,
+	ConcreteElement, Element, LayoutElement,
+};
 use crate::ui::{
 	components::{shape::Shape, text::Text},
 	flow::Location,
@@ -12,14 +19,6 @@ use crate::ui::{
 	primitive::{Events, Primitive, Primitives, Shapes},
 	style::{self, Color, ConcreteStyle},
 	Container,
-};
-
-use super::{
-	element::{ElementHandle, Id},
-	flow::Size,
-	layout_elements,
-	query::Fetcher,
-	ConcreteElement, Element, LayoutElement,
 };
 
 pub struct Engine {
@@ -736,14 +735,6 @@ mod tests {
 	use math::{Base, Vector2};
 	use utils::{Box, RGBA};
 
-	use crate::ui::{
-		components::container::OnEventFunction,
-		flow::Offset,
-		intersection::build_mouse_click_acceleration,
-		primitive::Events,
-		style::{ConcreteLayer, StyleState},
-	};
-
 	use super::super::super::{
 		components::{
 			container::{Container, ContainerSettings},
@@ -757,8 +748,14 @@ mod tests {
 		primitive::Shapes,
 		Component,
 	};
-
 	use super::{EngineState, Snapshot};
+	use crate::ui::{
+		components::container::OnEventFunction,
+		flow::Offset,
+		intersection::build_mouse_click_acceleration,
+		primitive::Events,
+		style::{ConcreteLayer, StyleState},
+	};
 
 	struct Bar {
 		options: Vec<BarOption>,

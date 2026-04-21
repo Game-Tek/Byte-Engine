@@ -1,12 +1,3 @@
-use crate::{
-	core::EntityHandle,
-	rendering::{
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-		view::View,
-		Sink,
-	},
-};
-
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
@@ -20,6 +11,14 @@ use resource_management::{
 use utils::{Box, Extent};
 
 use crate::core::Entity;
+use crate::{
+	core::EntityHandle,
+	rendering::{
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+		view::View,
+		Sink,
+	},
+};
 
 /// The `BaseAgxToneMapPass` struct defines the shared GPU state required for AGX tonemapping.
 #[derive(Clone)]

@@ -5,6 +5,12 @@ use math::Matrix4;
 use math::Vector3;
 use utils::BoxedFuture;
 
+use super::transform::Transform;
+#[cfg(feature = "headed")]
+use crate::rendering::{
+	mesh::{self},
+	renderable::mesh::MeshSource,
+};
 use crate::{
 	core::{Entity, EntityHandle},
 	physics::{
@@ -18,14 +24,6 @@ use crate::{
 	},
 	space::Transformable,
 };
-
-#[cfg(feature = "headed")]
-use crate::rendering::{
-	mesh::{self},
-	renderable::mesh::MeshSource,
-};
-
-use super::transform::Transform;
 
 /// An object represents a physical entity in the game world.
 /// It has physics and is rendered as a mesh.

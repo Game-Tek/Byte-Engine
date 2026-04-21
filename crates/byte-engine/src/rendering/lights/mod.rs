@@ -4,9 +4,8 @@ pub mod directional;
 pub mod point;
 
 pub use directional::DirectionalLight;
-pub use point::PointLight;
-
 pub use directional::DirectionalLight as Directional;
+pub use point::PointLight;
 pub use point::PointLight as Point;
 
 pub trait Light {

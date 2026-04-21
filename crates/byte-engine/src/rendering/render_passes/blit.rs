@@ -1,9 +1,10 @@
+use ghi::command_buffer::{CommandBufferRecording as _, CommonCommandBufferMode as _};
+use utils::Box;
+
 use crate::rendering::{
 	render_pass::{FramePrepare, RenderPassReturn},
 	RenderPass, Sink,
 };
-use ghi::command_buffer::{CommandBufferRecording as _, CommonCommandBufferMode as _};
-use utils::Box;
 
 struct BlitPass {
 	source: ghi::BaseImageHandle,

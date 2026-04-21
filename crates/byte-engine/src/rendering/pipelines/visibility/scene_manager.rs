@@ -1,28 +1,10 @@
-use ::core::slice::SlicePattern;
 use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 
-use crate::core::{Entity, EntityHandle};
-use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonShaderScope};
-use crate::rendering::lights::{DirectionalLight, Light, Lights, PointLight};
-use crate::rendering::mesh::generator::MeshGenerator;
-use crate::rendering::pipeline_manager::PipelineManager;
-use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
-use crate::rendering::pipelines::visibility::{
-	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
-	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS,
-	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
-	SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
-	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
-};
-use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassFunction, RenderPassReturn};
-use crate::rendering::renderable::mesh::MeshSource;
-use crate::rendering::scene_manager::SceneManager;
-use crate::rendering::texture_manager::TextureManager;
-use crate::rendering::view::View;
+use ::core::slice::SlicePattern;
 use ghi::device::{Device as _, DeviceCreate as _};
 use ghi::frame::Frame as _;
 use ghi::{
@@ -52,6 +34,24 @@ use utils::sync::{Rc, RwLock};
 use utils::{Box, Extent, RGBA};
 
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
+use crate::core::{Entity, EntityHandle};
+use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonShaderScope};
+use crate::rendering::lights::{DirectionalLight, Light, Lights, PointLight};
+use crate::rendering::mesh::generator::MeshGenerator;
+use crate::rendering::pipeline_manager::PipelineManager;
+use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
+use crate::rendering::pipelines::visibility::{
+	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
+	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS,
+	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+	SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
+	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+};
+use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassFunction, RenderPassReturn};
+use crate::rendering::renderable::mesh::MeshSource;
+use crate::rendering::scene_manager::SceneManager;
+use crate::rendering::texture_manager::TextureManager;
+use crate::rendering::view::View;
 use crate::rendering::{
 	csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain,
 	RenderableMesh, Sink,

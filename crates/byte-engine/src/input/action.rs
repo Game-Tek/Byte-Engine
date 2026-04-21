@@ -1,12 +1,10 @@
 use math::{Quaternion, Vector2, Vector3};
 use utils::RGBA;
 
-use crate::core::{Entity, EntityHandle};
-
-use crate::input::ValueMapping;
-
 use super::TriggerHandle;
 use super::{input_manager::TriggerReference, Function, TickPolicy, Types, Value};
+use crate::core::{Entity, EntityHandle};
+use crate::input::ValueMapping;
 
 trait ActionLike {
 	fn get_bindings(&self) -> &[ActionBindingDescription];

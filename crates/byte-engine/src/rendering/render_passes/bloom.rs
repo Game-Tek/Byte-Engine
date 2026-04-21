@@ -1,13 +1,5 @@
 use std::borrow::Borrow;
 
-use crate::{
-	core::Entity,
-	rendering::{
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-		Sink,
-	},
-};
-
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	device::{Device as _, DeviceCreate as _},
@@ -15,6 +7,14 @@ use ghi::{
 };
 use resource_management::glsl;
 use utils::{Box, Extent};
+
+use crate::{
+	core::Entity,
+	rendering::{
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+		Sink,
+	},
+};
 
 const EXTRACT_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	0,

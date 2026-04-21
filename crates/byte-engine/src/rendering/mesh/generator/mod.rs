@@ -1,12 +1,11 @@
 pub mod r#box;
 pub mod sphere;
 
-pub use r#box::BoxMeshGenerator;
-pub use sphere::SphereMeshGenerator;
-
 use std::borrow::Cow;
 
 use math::{Vector3, Vector4};
+pub use r#box::BoxMeshGenerator;
+pub use sphere::SphereMeshGenerator;
 
 /// The `MeshGenerator` trait defines a mesh generator capable of serving as a source of mesh data.
 pub trait MeshGenerator {

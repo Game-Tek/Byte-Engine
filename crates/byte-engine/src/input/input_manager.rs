@@ -24,6 +24,13 @@ use math::{normalize, Base, Vector2, Vector3};
 use serde::de;
 use utils::{insert_return_length, RGBA};
 
+use super::{
+	action::{InputValue, TriggerMapping},
+	device::Device,
+	device_class::{DeviceClass, DeviceClassHandle},
+	input_trigger::{Trigger, TriggerDescription},
+	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, TickPolicy, TriggerHandle, Types, Value,
+};
 use crate::{
 	core::{
 		channel::{Channel as _, DefaultChannel},
@@ -33,14 +40,6 @@ use crate::{
 		Entity, EntityHandle,
 	},
 	input::ActionEvent,
-};
-
-use super::{
-	action::{InputValue, TriggerMapping},
-	device::Device,
-	device_class::{DeviceClass, DeviceClassHandle},
-	input_trigger::{Trigger, TriggerDescription},
-	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, TickPolicy, TriggerHandle, Types, Value,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -835,18 +834,17 @@ impl InputManager {
 
 #[cfg(test)]
 mod tests {
+	use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
+
 	use math::Quaternion;
 
+	use super::*;
+	use crate::input::ActionBindingDescription;
 	use crate::input::{
 		input_trigger::TriggerDescription,
 		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
 		ValueMapping,
 	};
-	use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
-
-	use crate::input::ActionBindingDescription;
-
-	use super::*;
 
 	fn declare_vr_headset_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 		let device_class_handle = input_manager.register_device_class("Headset");

@@ -1,5 +1,17 @@
 use std::ops::Deref;
 
+use math::{
+	collision::{cube_vs_cube, sphere_vs_sphere, Intersection},
+	cross,
+	cube::Cube,
+	dot, length, magnitude, magnitude_squared,
+	mat::{MatInverse as _, MatTranspose as _},
+	normalize,
+	sphere::Sphere,
+	Base, Matrix3, Quaternion, Vector3,
+};
+use utils::hash::{HashMap, HashMapExt};
+
 use crate::{
 	application::Time,
 	core::{
@@ -18,18 +30,6 @@ use crate::{
 		},
 	},
 };
-use math::{
-	collision::{cube_vs_cube, sphere_vs_sphere, Intersection},
-	cross,
-	cube::Cube,
-	dot, length, magnitude, magnitude_squared,
-	mat::{MatInverse as _, MatTranspose as _},
-	normalize,
-	sphere::Sphere,
-	Base, Matrix3, Quaternion, Vector3,
-};
-
-use utils::hash::{HashMap, HashMapExt};
 
 /// Detects intersections and builds contact data for each unique body pair.
 fn detect_collisions_for_bodies(bodies: &[PhysicsBody]) -> Vec<Contact> {

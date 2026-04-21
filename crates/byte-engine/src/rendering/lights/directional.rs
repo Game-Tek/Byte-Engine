@@ -1,12 +1,11 @@
 use math::Vector3;
 
+use super::super::cct;
 use crate::{
 	core::{Entity, EntityHandle},
 	inspector::Inspectable,
 	rendering::lights::{Light, LightClasses},
 };
-
-use super::super::cct;
 
 /// The `DirectionalLight` struct represents a directional light source in a scene.
 ///

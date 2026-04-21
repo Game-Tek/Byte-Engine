@@ -5,3 +5,4 @@ brace_style = "SameLineWhere"
 use_field_init_shorthand = true
 max_width = 128
 hard_tabs = true
+group_imports = "StdExternalCrate"

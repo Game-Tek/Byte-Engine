@@ -1,12 +1,11 @@
-use crate::ui::{
-	components::{shape::Shape, text::Text},
-	Container,
-};
-
 use super::{
 	flow::{Location, Size},
 	layout::Sizing,
 	style::Style,
+};
+use crate::ui::{
+	components::{shape::Shape, text::Text},
+	Container,
 };
 
 #[derive(Clone)]

@@ -10,9 +10,7 @@ use std::ops::Deref;
 
 pub use entity::Entity;
 pub use entity::EntityHandle;
-
 pub use task::Task;
-
 use utils::sync::{Arc, RwLock};
 
 #[cfg(test)]

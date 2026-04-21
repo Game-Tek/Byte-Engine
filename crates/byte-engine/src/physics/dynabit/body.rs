@@ -1,12 +1,5 @@
-use crate::{
-	application::Time,
-	core::{factory::Handle, listener::Listener, Entity, EntityHandle},
-	physics::{
-		body::{Body, BodyTypes},
-		collider::{Collider, Shapes},
-	},
-};
 use core::ops::Mul as _;
+
 use math::{
 	collision::{cube_vs_cube, sphere_vs_cube, sphere_vs_sphere, Intersection},
 	cross,
@@ -16,6 +9,15 @@ use math::{
 	normalize,
 	sphere::Sphere,
 	Base, Magnitude as _, Matrix3, Quaternion, Vector3,
+};
+
+use crate::{
+	application::Time,
+	core::{factory::Handle, listener::Listener, Entity, EntityHandle},
+	physics::{
+		body::{Body, BodyTypes},
+		collider::{Collider, Shapes},
+	},
 };
 
 pub struct PhysicsBody {

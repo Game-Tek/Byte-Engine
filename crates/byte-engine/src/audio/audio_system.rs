@@ -1,3 +1,10 @@
+use std::{collections::HashMap, sync::Arc};
+
+use ahi::{
+	self,
+	audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams},
+	Device,
+};
 use resource_management::{
 	resource::{resource_manager::ResourceManager, ReadTargets, ReadTargetsMut},
 	resources::audio::Audio,
@@ -5,8 +12,12 @@ use resource_management::{
 	Reference,
 };
 use smallvec::SmallVec;
-use std::{collections::HashMap, sync::Arc};
+use utils::Box as Boxy;
 
+use super::{
+	sound::{self, Sound},
+	synthesizer::Synthesizer,
+};
 use crate::{
 	audio::{
 		emitter::Emitter,
@@ -16,18 +27,6 @@ use crate::{
 	core::{listener::Listener, Entity, EntityHandle},
 	space::Positionable,
 };
-use ahi::{
-	self,
-	audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams},
-	Device,
-};
-
-use super::{
-	sound::{self, Sound},
-	synthesizer::Synthesizer,
-};
-
-use utils::Box as Boxy;
 
 /// The `AudioSystem` trait defines the interface for an audio system which handles audio playback and processing.
 /// It provides methods for playing audio assets, processing audio data, and managing audio channels.

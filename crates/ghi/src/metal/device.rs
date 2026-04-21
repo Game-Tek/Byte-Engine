@@ -11,7 +11,7 @@ use std::{
 use ::utils::hash::{HashMap, HashSet};
 use dispatch2::DispatchData;
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, ClassType};
+use objc2::{ClassType, msg_send};
 use objc2_foundation::{NSArray, NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
 	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLCommandEncoder,
@@ -20,6 +20,7 @@ use objc2_metal::{
 
 use super::*;
 use crate::{
+	DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
 	binding::DescriptorSetBindingHandle,
 	buffer::{self as buffer_builder, BufferHandle},
 	descriptors::DescriptorSetHandle,
@@ -28,7 +29,7 @@ use crate::{
 	metal::utils::parse_threadgroup_size_metadata,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
-	window, DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
+	window,
 };
 
 pub struct Device {
@@ -132,11 +133,7 @@ fn metal_command_encoder_label(
 ) -> Option<Retained<NSString>> {
 	unsafe {
 		let label: *mut NSString = msg_send![encoder_info, label];
-		if label.is_null() {
-			None
-		} else {
-			Retained::from_raw(label)
-		}
+		if label.is_null() { None } else { Retained::from_raw(label) }
 	}
 }
 
@@ -2025,7 +2022,9 @@ impl Device {
 			.iter()
 			.find(|queue| queue.workloads.intersects(crate::WorkloadTypes::TRANSFER))
 			.or_else(|| self.queues.first())
-			.expect("Metal transfer queue lookup failed. The most likely cause is that the device was created without any command queues.")
+			.expect(
+				"Metal transfer queue lookup failed. The most likely cause is that the device was created without any command queues.",
+			)
 	}
 
 	pub fn command_buffer<'a>(
@@ -2416,7 +2415,8 @@ impl Device {
 		super::Frame::new(self, frame_key)
 	}
 
-	pub fn resize_buffer(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, size: usize) {
+	pub fn resize_buffer<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>, size: usize) {
+		let buffer_handle = buffer_handle.into();
 		let buffer = self.buffers.get_single(buffer_handle).unwrap();
 
 		if buffer.size >= size {
@@ -2551,7 +2551,7 @@ impl crate::device::Device for Device {
 		Device::get_image_data(self, texture_copy_handle)
 	}
 
-	fn resize_buffer(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, size: usize) {
+	fn resize_buffer<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>, size: usize) {
 		Device::resize_buffer(self, buffer_handle, size);
 	}
 

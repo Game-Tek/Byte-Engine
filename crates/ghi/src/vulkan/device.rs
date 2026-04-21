@@ -1,6 +1,7 @@
 use std::{borrow::Cow, num::NonZeroU32, u64};
 
 use crate::{
+	FrameKey, HandleLike, PrivateHandles, ResourceCollection, Size,
 	binding::DescriptorSetBindingHandle,
 	descriptors::DescriptorSetHandle,
 	graphics_hardware_interface, image,
@@ -9,27 +10,27 @@ use crate::{
 	synchronizer::SynchronizerHandle,
 	utils::StableVec,
 	vulkan::{
-		queue::Queue, BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, DescriptorWrite, Descriptors, Frame,
-		ImageCopy, ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
+		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, DescriptorWrite, Descriptors, Frame, ImageCopy,
+		ImageHandle, Instance, MAX_SWAPCHAIN_IMAGES, Task, Tasks, queue::Queue,
 	},
-	window, FrameKey, HandleLike, PrivateHandles, ResourceCollection, Size,
+	window,
 };
 use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
 use utils::hash::{HashSet, HashSetExt};
 use utils::{
-	hash::{HashMap, HashMapExt},
 	Extent,
+	hash::{HashMap, HashMapExt},
 };
 
 use super::{
+	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
+	DescriptorSet, DescriptorSetLayout, Image, MAX_FRAMES_IN_FLIGHT, MemoryBackedResourceCreationResult, Mesh, Pipeline,
+	PipelineLayout, PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState,
 	utils::{
 		image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format,
 		to_shader_stage_flags, uses_to_vk_usage_flags,
 	},
-	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
-	DescriptorSet, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
-	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
 };
 
 pub struct Device {
@@ -229,11 +230,7 @@ impl Device {
 		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::new(vk_entry, vk_instance);
 
 		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
-			if required {
-				feature != 0
-			} else {
-				true
-			}
+			if required { feature != 0 } else { true }
 		};
 
 		let mut barycentric_required_features =
@@ -1572,7 +1569,16 @@ impl Device {
 		(allocation_handle, mapped_memory)
 	}
 
+	fn uses_only_host_access(device_accesses: crate::DeviceAccesses) -> bool {
+		device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite)
+			&& !device_accesses.intersects(crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::GpuWrite)
+	}
+
 	/// Builds a buffer object with the given name, resource uses, size, Vulkan buffer usage flags, and device accesses.
+	///
+	/// Buffers that request only host access are created as a single mapped Vulkan buffer. Buffers that include GPU
+	/// access and CPU access keep a separate host-visible staging buffer so transfers can synchronize CPU writes with
+	/// GPU-visible storage.
 	fn build_buffer_internal(
 		&mut self,
 		next: Option<BufferHandle>,
@@ -1616,6 +1622,27 @@ impl Device {
 		} else {
 			vk::BufferUsageFlags::empty()
 		};
+
+		if Self::uses_only_host_access(device_accesses) {
+			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
+			let (allocation_handle, _) = self.create_allocation_internal(
+				buffer_creation_result.size,
+				buffer_creation_result.memory_flags.into(),
+				device_accesses,
+			);
+			let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+
+			return Buffer {
+				staging: None,
+				source: None,
+				buffer: buffer_creation_result.resource,
+				size,
+				device_address,
+				pointer,
+				uses: resource_uses,
+				access: device_accesses,
+			};
+		}
 
 		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
 		let (allocation_handle, _) = self.create_allocation_internal(
@@ -2852,14 +2879,14 @@ impl crate::device::Device for Device {
 
 		let buffer_copies: Vec<BufferCopy> = pending_buffers
 			.drain()
-			.map(|e| {
+			.filter_map(|e| {
 				let dst_buffer_handle = e;
 
 				let dst_buffer = self.buffers.resource(dst_buffer_handle);
 
-				let src_buffer_handle = dst_buffer.staging.unwrap();
+				let src_buffer_handle = dst_buffer.staging?;
 
-				BufferCopy::new(src_buffer_handle, 0, dst_buffer_handle, 0, dst_buffer.size)
+				Some(BufferCopy::new(src_buffer_handle, 0, dst_buffer_handle, 0, dst_buffer.size))
 			})
 			.collect();
 
@@ -2890,13 +2917,13 @@ impl crate::device::Device for Device {
 
 	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
-		let buffer = self.buffers.resource(buffer.staging.unwrap());
+		let buffer = buffer.staging.map(|staging| self.buffers.resource(staging)).unwrap_or(buffer);
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
-		let buffer = self.buffers.resource(buffer.staging.unwrap());
+		let buffer = buffer.staging.map(|staging| self.buffers.resource(staging)).unwrap_or(buffer);
 
 		unsafe { std::mem::transmute(buffer.pointer) }
 	}
@@ -2905,7 +2932,9 @@ impl crate::device::Device for Device {
 		let buffer_handle = buffer_handle.into();
 		let handle = BufferHandle(buffer_handle.0);
 
-		self.pending_buffer_syncs.insert(handle);
+		if self.buffers.resource(handle).staging.is_some() {
+			self.pending_buffer_syncs.insert(handle);
+		}
 	}
 
 	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
@@ -3025,8 +3054,8 @@ impl crate::device::Device for Device {
 			.copy_from_slice(shader_handles.get(&shader_handle).unwrap());
 	}
 
-	fn resize_buffer(&mut self, buffer_handle: graphics_hardware_interface::BaseBufferHandle, size: usize) {
-		let buffer_handle = BufferHandle(buffer_handle.0);
+	fn resize_buffer<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>, size: usize) {
+		let buffer_handle = BufferHandle(buffer_handle.into().0);
 
 		self.resize_buffer_internal(buffer_handle, size);
 	}
@@ -4260,7 +4289,10 @@ impl crate::device::DeviceCreate for Device {
 			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
 		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
 
-		if super::buffer::PERSISTENT_WRITE && builder.device_accesses.intersects(crate::DeviceAccesses::CpuWrite) {
+		if super::buffer::PERSISTENT_WRITE
+			&& builder.device_accesses.intersects(crate::DeviceAccesses::CpuWrite)
+			&& !Self::uses_only_host_access(builder.device_accesses)
+		{
 			// The master buffer's existing staging buffer becomes the shared, persistent
 			// CPU-writable source buffer. We create a new per-frame staging buffer for
 			// frame 0 and store the source handle on the master buffer.

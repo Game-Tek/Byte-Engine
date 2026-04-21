@@ -320,6 +320,23 @@ impl Renderer {
 			}
 		});
 
+		let mut submitted_transfer_work = false;
+
+		{
+			let mut transfer_command_buffer = self.device.command_buffer(self.transfer_command_buffer);
+			let mut transfer_recording = transfer_command_buffer.create_command_buffer_recording();
+			let mut recorded_transfer_work = false;
+
+			for scene_manager in &mut self.scene_managers {
+				recorded_transfer_work |= scene_manager.prepare_transfers(&mut transfer_recording);
+			}
+
+			if recorded_transfer_work {
+				transfer_recording.execute(self.transfer_finished_synchronizer);
+				submitted_transfer_work = true;
+			}
+		}
+
 		let mut queue = self.device.queue(self.graphics_queue_handle);
 		let frame = ghi::queue::FrameRequest {
 			index: self.started_frame_count as u32,
@@ -330,6 +347,7 @@ impl Renderer {
 
 		let command_buffer = self.render_command_buffer;
 		let synchronizer = self.render_finished_synchronizer;
+		let transfer_wait = [self.transfer_finished_synchronizer];
 		let windows = &self.windows;
 		let sink_cameras = &self.sink_cameras;
 		let cameras = &self.cameras;
@@ -338,7 +356,9 @@ impl Renderer {
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
 
-		queue.execute(Some(frame), synchronizer, |execution| {
+		let wait_for: &[ghi::SynchronizerHandle] = if submitted_transfer_work { &transfer_wait } else { &[] };
+
+		queue.execute(Some(frame), wait_for, synchronizer, |execution| {
 			let (sinks, scene_manager_commands, render_pass_commands, present_keys) = {
 				let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",

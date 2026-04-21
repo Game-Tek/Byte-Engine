@@ -568,6 +568,19 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	}
 
 	impl SceneManager for CustomSceneManager {
+		fn prepare_transfers(&mut self, transfer: &mut ghi::implementation::CommandBufferRecording) -> bool {
+			let mut recorded_transfer_work = false;
+
+			while let Some(message) = self.mesh_receiver.read() {
+				self.visibility_world_render_domain
+					.create_renderable_mesh(transfer, message.into_data());
+
+				recorded_transfer_work = true;
+			}
+
+			recorded_transfer_work
+		}
+
 		fn prepare(
 			&mut self,
 			frame: &mut ghi::implementation::Frame,
@@ -575,11 +588,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
 			while let Some(message) = self.light_receiver.read() {
 				self.visibility_world_render_domain.create_light(message.into_data());
-			}
-
-			while let Some(message) = self.mesh_receiver.read() {
-				self.visibility_world_render_domain
-					.create_renderable_mesh(frame, message.into_data());
 			}
 
 			self.visibility_world_render_domain.prepare(frame, sinks)

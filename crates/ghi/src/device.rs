@@ -1,15 +1,16 @@
 use utils::Extent;
 
 use crate::{
-	buffer, descriptors, image,
-	pipelines::VertexElement,
-	sampler,
-	shader::{self, Sources},
-	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
+	AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
 	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
 	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
 	DynamicImageHandle, ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle,
-	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
+	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
+	descriptors, image,
+	pipelines::VertexElement,
+	sampler,
+	shader::{self, Sources},
+	window,
 };
 
 /// The `Device` trait centralizes ownership of GPU resources and backend state for the graphics hardware interface.
@@ -97,10 +98,11 @@ where
 	/// Returns CPU-visible bytes previously copied from an image.
 	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8];
 
-	/// Resizes a buffer to the specified size.
-	/// Does nothing if the buffer is already the specified size.
+	/// Resizes a dynamic buffer to the specified size.
+	/// Static buffers created with [`DeviceCreate::build_buffer`] are fixed-size and cannot be resized.
+	/// Does nothing if the dynamic buffer is already the specified size.
 	/// May not reallocate if a smaller size is requested.
-	fn resize_buffer(&mut self, buffer_handle: BaseBufferHandle, size: usize);
+	fn resize_buffer<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize);
 
 	/// Starts capturing the underlying's API calls if the application is attached to a graphics debugger.
 	fn start_frame_capture(&mut self);
@@ -188,10 +190,12 @@ pub trait DeviceCreate {
 	/// Creates a ray-tracing pipeline.
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle;
 
-	/// Creates a static buffer from a builder.
+	/// Creates a static fixed-size buffer from a builder.
+	/// Static buffers are not resizable; use [`DeviceCreate::build_dynamic_buffer`] when the allocation must grow.
 	fn build_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> BufferHandle<T>;
 
 	/// Creates a dynamic buffer from a builder.
+	/// Dynamic buffers can be resized with [`Device::resize_buffer`].
 	fn build_dynamic_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
 
 	/// Creates a dynamic image from a builder.

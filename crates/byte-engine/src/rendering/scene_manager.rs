@@ -10,6 +10,10 @@ use utils::{
 
 /// The `SceneManager` trait bridges scene state with render work for active sinks.
 pub trait SceneManager {
+	fn prepare_transfers(&mut self, _transfer: &mut ghi::implementation::CommandBufferRecording) -> bool {
+		false
+	}
+
 	/// Called when a frame is being prepared for rendering.
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>>;
 

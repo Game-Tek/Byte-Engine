@@ -368,13 +368,13 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 		let buffer_copies: Vec<_> = pending_buffers
 			.drain()
-			.map(|e| {
+			.filter_map(|e| {
 				let dst_buffer_handle = e;
 
 				let dst_buffer = buffers.resource(dst_buffer_handle);
-				let src_buffer_handle = dst_buffer.staging.unwrap();
+				let src_buffer_handle = dst_buffer.staging?;
 
-				BufferCopy::new(src_buffer_handle, 0, dst_buffer_handle, 0, dst_buffer.size)
+				Some(BufferCopy::new(src_buffer_handle, 0, dst_buffer_handle, 0, dst_buffer.size))
 			})
 			.collect();
 
@@ -419,12 +419,15 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			}
 		}
 
-		// Fallback: original behavior for non-persistent-write buffers
-		self.device.pending_buffer_syncs.insert(handle);
+		if let Some(staging_handle) = buffer.staging {
+			self.device.pending_buffer_syncs.insert(handle);
 
-		let staging_buffer = buffers.resource(buffer.staging.unwrap());
+			let staging_buffer = buffers.resource(staging_handle);
 
-		unsafe { std::mem::transmute(staging_buffer.pointer) }
+			return unsafe { std::mem::transmute(staging_buffer.pointer) };
+		}
+
+		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 }
 

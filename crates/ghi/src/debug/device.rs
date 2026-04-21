@@ -1,10 +1,10 @@
 use crate::{
-	buffer, image, pipelines::VertexElement, sampler, shader::Sources, window, AllocationHandle, BaseBufferHandle,
-	BindingConstructor, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
-	CommandBufferHandle, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
-	DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle, Formats, ImageHandle, MeshHandle, PipelineHandle,
-	PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle,
-	TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
+	AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
+	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
+	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
+	Formats, ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes,
+	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer, image,
+	pipelines::VertexElement, sampler, shader::Sources, window,
 };
 use utils::Extent;
 
@@ -212,7 +212,7 @@ impl Device {
 		super::Frame::new(self, frame_key)
 	}
 
-	pub fn resize_buffer(&mut self, _buffer_handle: BaseBufferHandle, _size: usize) {}
+	pub fn resize_buffer<T: Copy>(&mut self, _buffer_handle: DynamicBufferHandle<T>, _size: usize) {}
 
 	pub fn start_frame_capture(&self) {}
 

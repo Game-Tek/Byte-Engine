@@ -105,6 +105,8 @@ pub struct VisibilityWorldRenderDomain {
 	meshes_by_resource: HashMap<String, usize>,
 	/// Mapping from generated mesh hash to mesh index.
 	meshes_by_generated_hash: HashMap<u64, usize>,
+	/// Mesh geometry uploaded on the transfer queue and waiting for graphics-side finalization.
+	pending_meshes_by_resource: HashMap<String, PendingMeshData>,
 	/// Loaded images.
 	images: HashMap<String, Image>,
 	/// Texture manager.
@@ -376,6 +378,7 @@ impl VisibilityWorldRenderDomain {
 			meshes: Vec::with_capacity(1024),
 			meshes_by_resource: HashMap::with_capacity(1024),
 			meshes_by_generated_hash: HashMap::with_capacity(128),
+			pending_meshes_by_resource: HashMap::with_capacity(128),
 
 			images: HashMap::with_capacity(1024),
 
@@ -484,6 +487,318 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
+	pub fn prepare_renderable_mesh_upload(
+		&mut self,
+		transfer: &mut ghi::implementation::CommandBufferRecording,
+		mesh_source: &EntityHandle<dyn RenderableMesh>,
+	) -> bool {
+		match mesh_source.get_mesh() {
+			MeshSource::Resource(id) => self.upload_mesh_resources(id, transfer).is_ok(),
+			MeshSource::Generated(_) => false,
+		}
+	}
+
+	fn finalize_uploaded_mesh_resource(&mut self, id: &str, frame: &mut ghi::implementation::Frame) -> Result<usize, ()> {
+		let Some(pending_mesh) = self.pending_meshes_by_resource.remove(id) else {
+			return Err(());
+		};
+
+		let result = (|| {
+			let primitives = pending_mesh
+				.primitives
+				.iter()
+				.map(|primitive| {
+					let resource_manager = &self.resource_manager;
+					let Ok(material) = resource_manager.request(&primitive.material_id) else {
+						log::error!("Failed to load material resource {}", primitive.material_id);
+						return Err(());
+					};
+					let material_index = self.create_variant_resources(material, frame)?;
+
+					Ok(MeshPrimitive {
+						material_index,
+						meshlet_count: primitive.meshlet_count,
+						meshlet_offset: primitive.meshlet_offset,
+						vertex_offset: primitive.vertex_offset,
+						primitive_offset: primitive.primitive_offset,
+						triangle_offset: primitive.triangle_offset,
+					})
+				})
+				.collect::<Result<Vec<_>, ()>>()?;
+
+			let mesh_id = self.meshes.len();
+			self.meshes.push(MeshData {
+				vertex_offset: pending_mesh.vertex_offset,
+				primitive_offset: pending_mesh.primitive_offset,
+				triangle_offset: pending_mesh.triangle_offset,
+				meshlet_offset: pending_mesh.meshlet_offset,
+				acceleration_structure: pending_mesh.acceleration_structure,
+				primitives,
+			});
+
+			self.meshes_by_resource.insert(id.to_string(), mesh_id);
+
+			Ok(mesh_id)
+		})();
+
+		if result.is_err() {
+			self.pending_meshes_by_resource.insert(id.to_string(), pending_mesh);
+		}
+
+		result
+	}
+
+	/// Loads mesh geometry into staging memory and records the transfer queue upload.
+	fn upload_mesh_resources<'a, 's: 'a>(
+		&'s mut self,
+		id: &'a str,
+		transfer: &mut ghi::implementation::CommandBufferRecording,
+	) -> Result<(), ()> {
+		if self.meshes_by_resource.contains_key(id) || self.pending_meshes_by_resource.contains_key(id) {
+			return Ok(());
+		}
+
+		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
+
+		let mut resource_request: Reference<ResourceMesh> = {
+			let resource_manager = &self.resource_manager;
+			let Ok(resource_request) = resource_manager.request(id) else {
+				log::error!("Failed to load mesh resource {}", id);
+				return Err(());
+			};
+			resource_request
+		};
+
+		let mesh_resource = resource_request.resource();
+
+		let Some(positions_stream) = mesh_resource.position_stream() else {
+			log::error!("Mesh resource does not contain vertex position stream");
+			return Err(());
+		};
+
+		let Some(normals_stream) = mesh_resource.normal_stream() else {
+			log::error!("Mesh resource does not contain vertex normal stream");
+			return Err(());
+		};
+
+		let Some(uvs_stream) = mesh_resource.uv_stream() else {
+			log::error!("Mesh resource does not contain vertex uv stream");
+			return Err(());
+		};
+
+		let Some(vertex_indices_stream) = mesh_resource.vertex_indices_stream() else {
+			log::error!("Mesh resource does not contain vertex index stream");
+			return Err(());
+		};
+
+		let Some(_triangle_indices_stream) = mesh_resource.triangle_indices_stream() else {
+			log::error!("Mesh resource does not contain triangle index stream");
+			return Err(());
+		};
+
+		let Some(meshlet_indices_stream) = mesh_resource.meshlet_indices_stream() else {
+			log::error!("Mesh resource does not contain meshlet index stream");
+			return Err(());
+		};
+
+		let Some(meshlets_stream) = mesh_resource.meshlets_stream() else {
+			log::error!("Mesh resource does not contain meshlet stream");
+			return Err(());
+		};
+
+		assert_eq!(meshlet_indices_stream.stride, 1, "Meshlet index stream is not u8");
+		assert_eq!(vertex_indices_stream.stride, 2, "Vertex index stream is not u16");
+		assert_eq!(meshlets_stream.stride, 2, "Meshlet stream stride is not of size 2");
+		assert_eq!(
+			meshlet_indices_stream.count() % 3,
+			0,
+			"Meshlet index stream does not contain complete triangles"
+		);
+
+		let vertex_offset = self.visibility_info.vertex_count as usize;
+		let primitive_offset = self.visibility_info.primitives_count as usize;
+		let triangle_offset = self.visibility_info.triangle_count as usize;
+		let vertex_count = positions_stream.count();
+		let primitive_count = vertex_indices_stream.count();
+		let triangle_count = meshlet_indices_stream.count() / 3;
+		let total_meshlet_count = meshlets_stream.count();
+		self.ensure_geometry_capacity(vertex_count, primitive_count, triangle_count, total_meshlet_count);
+
+		let vertex_positions_buffer = transfer.get_mut_buffer_slice(self.vertex_positions_buffer);
+		let vertex_normals_buffer = transfer.get_mut_buffer_slice(self.vertex_normals_buffer);
+		let vertex_uv_buffer = transfer.get_mut_buffer_slice(self.vertex_uvs_buffer);
+		let vertex_indices_buffer = transfer.get_mut_buffer_slice(self.vertex_indices_buffer);
+		let primitive_indices_buffer = transfer.get_mut_buffer_slice(self.primitive_indices_buffer);
+
+		let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
+
+		let streams = vec![
+			resource_management::stream::StreamMut::new(
+				"Vertex.Position",
+				&mut vertex_positions_buffer[vertex_offset..][..vertex_count],
+			),
+			resource_management::stream::StreamMut::new(
+				"Vertex.Normal",
+				&mut vertex_normals_buffer[vertex_offset..][..normals_stream.count()],
+			),
+			resource_management::stream::StreamMut::new(
+				"Vertex.UV",
+				&mut vertex_uv_buffer[vertex_offset..][..uvs_stream.count()],
+			),
+			resource_management::stream::StreamMut::new(
+				"VertexIndices",
+				&mut vertex_indices_buffer[primitive_offset..][..primitive_count],
+			),
+			resource_management::stream::StreamMut::new(
+				"MeshletIndices",
+				&mut primitive_indices_buffer[triangle_offset..][..triangle_count],
+			),
+			resource_management::stream::StreamMut::new("Meshlets", buffer_allocator.take(meshlets_stream.size)),
+		];
+
+		let Ok(load_target) = resource_request.load(streams.into()) else {
+			log::warn!("Failed to load mesh data");
+			return Err(());
+		};
+
+		let Reference {
+			resource: ResourceMesh { primitives, .. },
+			..
+		} = resource_request;
+
+		let vcps = primitives
+			.iter()
+			.scan(0, |state, p| {
+				let offset = *state;
+				*state += p.vertex_count;
+				offset.into()
+			})
+			.collect::<Vec<_>>();
+
+		self.mesh_resources
+			.insert(id.to_string(), self.visibility_info.triangle_count);
+
+		struct Meshlet {
+			primitive_count: u8,
+			triangle_count: u8,
+		}
+
+		let meshlets_per_primitive = primitives
+			.into_iter()
+			.zip(vcps.iter())
+			.scan(
+				(0, 0, 0),
+				|(mesh_primitive_counter, mesh_triangle_counter, mesh_meshlet_counter), (primitive, vcps)| {
+					let vertex_offset = *vcps;
+					let primitive_offset = *mesh_primitive_counter;
+					let triangle_offset = *mesh_triangle_counter;
+					let meshlet_offset = *mesh_meshlet_counter;
+
+					let meshlets = if let Some(stream) = primitive.meshlet_stream() {
+						let m = load_target.stream("Meshlets").unwrap();
+
+						let meshlet_stream = unsafe {
+							std::slice::from_raw_parts(
+								m.buffer().as_ptr().byte_add(stream.offset) as *const Meshlet,
+								stream.count(),
+							)
+						};
+
+						meshlet_stream
+							.iter()
+							.scan(
+								(0, 0),
+								|(primitive_primitive_counter, primitive_triangle_counter), meshlet| {
+									let meshlet_primitive_count = meshlet.primitive_count;
+									let meshlet_triangle_count = meshlet.triangle_count;
+
+									let primitive_offset = *primitive_primitive_counter as u16;
+									let triangle_offset = *primitive_triangle_counter as u16;
+
+									*primitive_primitive_counter += meshlet_primitive_count as u32;
+									*primitive_triangle_counter += meshlet_triangle_count as u32;
+
+									*mesh_primitive_counter += meshlet_primitive_count as u32;
+									*mesh_triangle_counter += meshlet_triangle_count as u32;
+									*mesh_meshlet_counter += 1;
+
+									ShaderMeshletData {
+										primitive_offset,
+										triangle_offset,
+										primitive_count: meshlet_primitive_count,
+										triangle_count: meshlet_triangle_count,
+									}
+									.into()
+								},
+							)
+							.collect::<Vec<_>>()
+					} else {
+						panic!();
+					};
+
+					(
+						MeshPrimitive {
+							material_index: 0,
+							meshlet_count: meshlets.len() as u32,
+							meshlet_offset,
+							vertex_offset,
+							primitive_offset,
+							triangle_offset,
+						},
+						meshlets,
+						primitive,
+					)
+						.into()
+				},
+			)
+			.collect::<Vec<_>>();
+
+		let meshlets_data_slice = transfer.get_mut_buffer_slice(self.meshlets_data_buffer);
+		for (primitive, meshlets, _) in &meshlets_per_primitive {
+			for (index, meshlet) in meshlets.iter().enumerate() {
+				meshlets_data_slice[self.visibility_info.meshlet_count as usize + primitive.meshlet_offset as usize + index] =
+					*meshlet;
+			}
+		}
+
+		let pending_primitives = meshlets_per_primitive
+			.into_iter()
+			.map(|(primitive, _, primitive_resource)| PendingMeshPrimitive {
+				material_id: primitive_resource.material.id().to_string(),
+				meshlet_count: primitive.meshlet_count,
+				meshlet_offset: primitive.meshlet_offset,
+				vertex_offset: primitive.vertex_offset,
+				primitive_offset: primitive.primitive_offset,
+				triangle_offset: primitive.triangle_offset,
+			})
+			.collect::<Vec<_>>();
+
+		let meshlet_offset = self.visibility_info.meshlet_count;
+
+		transfer.sync_buffer(self.vertex_positions_buffer);
+		transfer.sync_buffer(self.vertex_normals_buffer);
+		transfer.sync_buffer(self.vertex_uvs_buffer);
+		transfer.sync_buffer(self.vertex_indices_buffer);
+		transfer.sync_buffer(self.primitive_indices_buffer);
+		transfer.sync_buffer(self.meshlets_data_buffer);
+
+		self.pending_meshes_by_resource.insert(
+			id.to_string(),
+			PendingMeshData {
+				vertex_offset: self.visibility_info.vertex_count,
+				primitive_offset: self.visibility_info.primitives_count,
+				triangle_offset: self.visibility_info.triangle_count,
+				meshlet_offset,
+				acceleration_structure: None,
+				primitives: pending_primitives,
+			},
+		);
+
+		self.update_visibility_info_stats(vertex_count, primitive_count, triangle_count, total_meshlet_count);
+
+		Ok(())
+	}
+
 	/// Creates the needed GHI resource for the given mesh.
 	/// Does nothing if the mesh has already been loaded.
 	fn create_mesh_resources<'a, 's: 'a>(
@@ -493,6 +808,10 @@ impl VisibilityWorldRenderDomain {
 	) -> Result<usize, ()> {
 		if let Some(entry) = self.meshes_by_resource.get(id) {
 			return Ok(*entry);
+		}
+
+		if self.pending_meshes_by_resource.contains_key(id) {
+			return self.finalize_uploaded_mesh_resource(id, device);
 		}
 
 		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
@@ -830,8 +1149,10 @@ impl VisibilityWorldRenderDomain {
 			meshlets_data_slice[meshlet_offset + index] = *meshlet;
 		}
 
-		{
-			if !self.material_evaluation_materials.contains_key("heyyy") {
+		let material_index = {
+			if let Some(material) = self.material_evaluation_materials.get("heyyy") {
+				material.index
+			} else {
 				let index = self.material_evaluation_materials.len() as u32;
 				let materials_buffer_slice = device.get_mut_buffer_slice(self.materials_data_buffer_handle);
 
@@ -924,8 +1245,10 @@ impl VisibilityWorldRenderDomain {
 						variant: RenderDescriptionVariants::Material { shaders: vec![] },
 					},
 				);
+
+				index
 			}
-		}
+		};
 
 		let mesh_id = self.meshes.len();
 
@@ -936,7 +1259,7 @@ impl VisibilityWorldRenderDomain {
 			meshlet_offset: self.visibility_info.meshlet_count,
 			acceleration_structure: None,
 			primitives: vec![MeshPrimitive {
-				material_index: 0,
+				material_index,
 				meshlet_count: meshlets.len() as u32,
 				meshlet_offset: self.visibility_info.meshlet_count,
 				vertex_offset: self.visibility_info.vertex_count,
@@ -1409,6 +1732,19 @@ impl VisibilityWorldRenderDomain {
 		bindings.push(self.textures_binding);
 		bindings.extend(self.sink_states.iter().map(|sink_state| sink_state.textures_binding));
 		bindings
+	}
+
+	fn update_visibility_info_stats(
+		&mut self,
+		vertex_count: usize,
+		primitive_count: usize,
+		triangle_count: usize,
+		total_meshlet_count: usize,
+	) {
+		self.visibility_info.vertex_count += vertex_count as u32;
+		self.visibility_info.primitives_count += primitive_count as u32;
+		self.visibility_info.triangle_count += triangle_count as u32;
+		self.visibility_info.meshlet_count += total_meshlet_count as u32;
 	}
 }
 
@@ -1947,6 +2283,26 @@ struct MeshPrimitive {
 	/// The triangle offset.
 	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
 	triangle_offset: u32,
+}
+
+#[derive(Clone)]
+struct PendingMeshPrimitive {
+	material_id: String,
+	meshlet_count: u32,
+	meshlet_offset: u32,
+	vertex_offset: u32,
+	primitive_offset: u32,
+	triangle_offset: u32,
+}
+
+#[derive(Clone)]
+struct PendingMeshData {
+	vertex_offset: u32,
+	primitive_offset: u32,
+	triangle_offset: u32,
+	meshlet_offset: u32,
+	acceleration_structure: Option<ghi::BottomLevelAccelerationStructureHandle>,
+	primitives: Vec<PendingMeshPrimitive>,
 }
 
 /// This structure hosts data analogous to the mesh resource's data.

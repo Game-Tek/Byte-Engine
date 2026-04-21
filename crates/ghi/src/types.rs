@@ -655,5 +655,6 @@ bitflags::bitflags! {
 		const COMPUTE = 1 << 2;
 		const TRANSFER = 1 << 3;
 		const VIDEO = 1 << 4;
+		const IO = 1 << 5;
 	}
 }

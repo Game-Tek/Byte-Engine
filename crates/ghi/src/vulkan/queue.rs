@@ -48,6 +48,7 @@ impl crate::queue::Queue for Queue {
 	fn execute<'a, P>(
 		&'a mut self,
 		frame: Option<crate::queue::FrameRequest>,
+		_wait_for: &[crate::SynchronizerHandle],
 		synchronizer: crate::SynchronizerHandle,
 		execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
 	) where

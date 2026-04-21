@@ -41,6 +41,7 @@ pub trait Queue {
 	fn execute<'a, P>(
 		&'a mut self,
 		frame: Option<FrameRequest>,
+		wait_for: &[SynchronizerHandle],
 		synchronizer: crate::SynchronizerHandle,
 		execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
 	) where

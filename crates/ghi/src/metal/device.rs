@@ -12,7 +12,7 @@ use ::utils::hash::{HashMap, HashSet};
 use dispatch2::DispatchData;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, ClassType};
-use objc2_foundation::{NSArray, NSRange, NSString};
+use objc2_foundation::{NSArray, NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
 	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLCommandEncoder,
 	MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource,
@@ -90,6 +90,41 @@ fn metal_command_encoder_error_state_name(state: mtl::MTLCommandEncoderErrorStat
 		mtl::MTLCommandEncoderErrorState::Faulted => "faulted",
 		_ => "unknown",
 	}
+}
+
+fn select_metal_command_queue_workloads(
+	device: &ProtocolObject<dyn mtl::MTLDevice>,
+	requested: crate::WorkloadTypes,
+) -> Result<crate::WorkloadTypes, &'static str> {
+	if requested.is_empty() {
+		return Err("Failed to create a Metal command queue. The requested queue selection did not include any workload type.");
+	}
+
+	if requested.intersects(crate::WorkloadTypes::VIDEO) {
+		return Err(
+			"Failed to create a Metal command queue. Metal video work is not exposed through MTLCommandQueue in this backend.",
+		);
+	}
+
+	if requested.intersects(crate::WorkloadTypes::IO) {
+		return Err(
+			"Failed to create a Metal command queue. Metal IO uses MTLIOCommandQueue and is not compatible with this command-buffer queue path.",
+		);
+	}
+
+	let mut supported = crate::WorkloadTypes::RASTER | crate::WorkloadTypes::COMPUTE | crate::WorkloadTypes::TRANSFER;
+
+	if device.supportsRaytracing() {
+		supported |= crate::WorkloadTypes::RAY_TRACING;
+	}
+
+	if !supported.contains(requested) {
+		return Err(
+			"Failed to create a Metal command queue. The requested workload type is not supported by the selected Metal device.",
+		);
+	}
+
+	Ok(requested)
 }
 
 fn metal_command_encoder_label(
@@ -241,13 +276,14 @@ impl Device {
 	) -> Result<Device, &'static str> {
 		let mut created_queues = Vec::with_capacity(queues.len());
 
-		for (_selection, output_handle) in queues.iter_mut() {
+		for (selection, output_handle) in queues.iter_mut() {
+			let workloads = select_metal_command_queue_workloads(device.as_ref(), selection.r#type)?;
 			let queue = device.newCommandQueue().ok_or(
 				"Metal command queue creation failed. The most likely cause is that the device ran out of command queue resources.",
 			)?;
 			let handle = graphics_hardware_interface::QueueHandle(created_queues.len() as u64);
 
-			created_queues.push(queue::StoredQueue { queue });
+			created_queues.push(queue::StoredQueue { queue, workloads });
 
 			**output_handle = Some(handle);
 		}
@@ -461,7 +497,7 @@ impl Device {
 			}
 		}
 
-		let queue = &self.queues[0];
+		let queue = self.transfer_queue();
 		let command_buffer = self.create_metal_command_buffer(
 			queue.queue.as_ref(),
 			Some("Texture Upload"),
@@ -1909,6 +1945,8 @@ impl Device {
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
 	) -> super::CommandBufferRecording<'a> {
+		let autorelease_pool = frame_key.is_none().then(|| unsafe { NSAutoreleasePool::new() });
+
 		self.flush_pending_uploads();
 
 		let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
@@ -1945,6 +1983,7 @@ impl Device {
 			mtl_command_buffer,
 			frame_key,
 			Vec::new(),
+			autorelease_pool,
 		)
 	}
 
@@ -1979,6 +2018,14 @@ impl Device {
 			device: self,
 			queue_handle,
 		}
+	}
+
+	fn transfer_queue(&self) -> &queue::StoredQueue {
+		self.queues
+			.iter()
+			.find(|queue| queue.workloads.intersects(crate::WorkloadTypes::TRANSFER))
+			.or_else(|| self.queues.first())
+			.expect("Metal transfer queue lookup failed. The most likely cause is that the device was created without any command queues.")
 	}
 
 	pub fn command_buffer<'a>(
@@ -2052,7 +2099,7 @@ impl Device {
 		};
 
 		let staging = self.buffers.resource(staging_handle);
-		let queue = &self.queues[0];
+		let queue = self.transfer_queue();
 		let command_buffer = self.create_metal_command_buffer(
 			queue.queue.as_ref(),
 			Some("Buffer Upload"),
@@ -2335,6 +2382,25 @@ impl Device {
 	) -> graphics_hardware_interface::SynchronizerHandle {
 		self.synchronizers.push(synchronizer::Synchronizer { next: None, signaled });
 		graphics_hardware_interface::SynchronizerHandle((self.synchronizers.len() - 1) as u64)
+	}
+
+	pub fn reset_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
+		if let Some(synchronizer) = self.synchronizers.get_mut(synchronizer_handle.0 as usize) {
+			synchronizer.signaled = false;
+		}
+	}
+
+	pub fn wait_for_synchronizer(&self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
+		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.0 as usize) else {
+			panic!(
+				"Metal synchronizer wait failed. The most likely cause is that an invalid synchronizer handle was submitted.",
+			);
+		};
+
+		assert!(
+			synchronizer.signaled,
+			"Metal synchronizer wait failed. The most likely cause is that the awaited GPU submission has not completed.",
+		);
 	}
 
 	pub(crate) fn start_frame<'a>(

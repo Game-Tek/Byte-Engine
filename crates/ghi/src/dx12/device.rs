@@ -77,6 +77,34 @@ struct Queue {
 	queue_type: D3D12_COMMAND_LIST_TYPE,
 }
 
+fn select_d3d12_command_list_type(requested: WorkloadTypes) -> Result<D3D12_COMMAND_LIST_TYPE, &'static str> {
+	if requested.is_empty() {
+		return Err("Invalid workload type");
+	}
+
+	if requested.intersects(WorkloadTypes::VIDEO) {
+		return Err("D3D12 video queues are not exposed through this backend command-buffer path.");
+	}
+
+	if requested.intersects(WorkloadTypes::IO) {
+		return Err("D3D12 IO queues are not exposed through this backend command-buffer path.");
+	}
+
+	if requested.intersects(WorkloadTypes::RASTER | WorkloadTypes::RAY_TRACING) {
+		return Ok(D3D12_COMMAND_LIST_TYPE_DIRECT);
+	}
+
+	if requested.intersects(WorkloadTypes::COMPUTE) {
+		return Ok(D3D12_COMMAND_LIST_TYPE_COMPUTE);
+	}
+
+	if requested.intersects(WorkloadTypes::TRANSFER) {
+		return Ok(D3D12_COMMAND_LIST_TYPE_COPY);
+	}
+
+	Err("Invalid workload type")
+}
+
 struct CommandBuffer {
 	queue_handle: QueueHandle,
 	allocator: Option<ID3D12CommandAllocator>,
@@ -208,12 +236,7 @@ impl Device {
 		let mut queue_storage = Vec::with_capacity(queues.len());
 
 		for (selection, handle) in queues.iter_mut() {
-			let queue_type = match selection.r#type {
-				WorkloadTypes::RASTER => D3D12_COMMAND_LIST_TYPE_DIRECT,
-				WorkloadTypes::COMPUTE => D3D12_COMMAND_LIST_TYPE_COMPUTE,
-				WorkloadTypes::TRANSFER => D3D12_COMMAND_LIST_TYPE_COPY,
-				_ => return Err("Invalid workload type"),
-			};
+			let queue_type = select_d3d12_command_list_type(selection.r#type)?;
 
 			let desc = D3D12_COMMAND_QUEUE_DESC {
 				Type: queue_type,

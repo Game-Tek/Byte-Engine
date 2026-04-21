@@ -451,11 +451,32 @@ impl Device {
 		let queue_family_indices = queues
 			.iter()
 			.map(|(d, _)| {
+				if d.r#type.is_empty() {
+					return Err(
+						"Failed to find a compatible queue family. The requested queue selection did not include any workload type.",
+					);
+				}
+
+				if d.r#type.intersects(crate::types::WorkloadTypes::VIDEO) {
+					return Err(
+						"Failed to find a compatible queue family. Vulkan video queues are not exposed through this backend command-buffer path.",
+					);
+				}
+
+				if d.r#type.intersects(crate::types::WorkloadTypes::IO) {
+					return Err(
+						"Failed to find a compatible queue family. Vulkan IO queues are not exposed through this backend command-buffer path.",
+					);
+				}
+
 				let required_queue_flags = if d.r#type.intersects(crate::types::WorkloadTypes::RASTER) {
 					vk::QueueFlags::GRAPHICS
 				} else {
 					vk::QueueFlags::empty()
-				} | if d.r#type.intersects(crate::types::WorkloadTypes::COMPUTE) {
+				} | if d
+					.r#type
+					.intersects(crate::types::WorkloadTypes::COMPUTE | crate::types::WorkloadTypes::RAY_TRACING)
+				{
 					vk::QueueFlags::COMPUTE
 				} else {
 					vk::QueueFlags::empty()

@@ -1531,6 +1531,7 @@ pub(super) mod tests {
 					index: 0,
 					synchronizer: render_finished_synchronizer,
 				}),
+				&[],
 				render_finished_synchronizer,
 				|execution| {
 					let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
@@ -1643,6 +1644,7 @@ pub(super) mod tests {
 						index: i,
 						synchronizer: render_finished_synchronizer,
 					}),
+					&[],
 					render_finished_synchronizer,
 					|execution| {
 						let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
@@ -1767,6 +1769,7 @@ pub(super) mod tests {
 						index: i as u32,
 						synchronizer: render_finished_synchronizer,
 					}),
+					&[],
 					render_finished_synchronizer,
 					|execution| {
 						execution.record(command_buffer_handle, |command_buffer_recording| {
@@ -1896,6 +1899,7 @@ pub(super) mod tests {
 						index: i as u32,
 						synchronizer: render_finished_synchronizer,
 					}),
+					&[],
 					render_finished_synchronizer,
 					|execution| {
 						execution.record(command_buffer_handle, |command_buffer_recording| {
@@ -2021,6 +2025,7 @@ pub(super) mod tests {
 						index: i as u32,
 						synchronizer: render_finished_synchronizer,
 					}),
+					&[],
 					render_finished_synchronizer,
 					|execution| {
 						let frame = execution.frame().unwrap();
@@ -2324,6 +2329,7 @@ pub(super) mod tests {
 						index: frame_index as u32,
 						synchronizer: render_finished_synchronizer,
 					}),
+					&[],
 					render_finished_synchronizer,
 					|execution| {
 						let frame = execution.frame().unwrap();
@@ -2440,6 +2446,7 @@ pub(super) mod tests {
 					index: 0,
 					synchronizer: signal,
 				}),
+				&[],
 				signal,
 				|execution| {
 					execution.record(command_buffer, |command_buffer_recording| {
@@ -2491,6 +2498,7 @@ pub(super) mod tests {
 					index: 1,
 					synchronizer: signal,
 				}),
+				&[],
 				signal,
 				|execution| {
 					execution.record(command_buffer, |command_buffer_recording| {
@@ -2550,6 +2558,7 @@ pub(super) mod tests {
 					index: 2,
 					synchronizer: signal,
 				}),
+				&[],
 				signal,
 				|execution| {
 					execution.record(command_buffer, |command_buffer_recording| {
@@ -2592,6 +2601,7 @@ pub(super) mod tests {
 					index: 3,
 					synchronizer: signal,
 				}),
+				&[],
 				signal,
 				|execution| {
 					execution.record(command_buffer, |command_buffer_recording| {
@@ -2835,6 +2845,7 @@ pub(super) mod tests {
 					index: 0,
 					synchronizer: signal,
 				}),
+				&[],
 				signal,
 				|execution| {
 					execution.record(command_buffer_handle, |command_buffer_recording| {
@@ -3145,6 +3156,7 @@ void main() {
 						index: i as u32,
 						synchronizer: render_finished_synchronizer,
 					}),
+					&[],
 					render_finished_synchronizer,
 					|execution| {
 						execution.record(rendering_command_buffer_handle, |command_buffer_recording| {

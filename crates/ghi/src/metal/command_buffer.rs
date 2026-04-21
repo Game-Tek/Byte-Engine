@@ -5,7 +5,7 @@ use std::{
 
 use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
-use objc2_foundation::{NSRange, NSString};
+use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
 	MTLBlitCommandEncoder, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture,
 };
@@ -180,6 +180,7 @@ pub struct CommandBufferRecording<'a> {
 		graphics_hardware_interface::SwapchainHandle,
 		Retained<ProtocolObject<dyn CAMetalDrawable>>,
 	)>,
+	_autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 }
 
 pub struct FinishedCommandBuffer<'a> {
@@ -194,6 +195,12 @@ impl crate::command_buffer::CommandBuffer for super::CommandBuffer<'_> {
 	fn create_command_buffer_recording(
 		&mut self,
 	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
+		self.device.create_command_buffer_recording(self.command_buffer_handle)
+	}
+}
+
+impl super::CommandBuffer<'_> {
+	pub fn create_command_buffer_recording(&mut self) -> super::CommandBufferRecording<'_> {
 		self.device.create_command_buffer_recording(self.command_buffer_handle)
 	}
 }
@@ -258,6 +265,59 @@ impl RecordingCommit<'_> {
 }
 
 impl<'a> CommandBufferRecording<'a> {
+	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
+		let buffer = self.device.buffers.get_single(buffer_handle.into()).unwrap();
+		let buffer = buffer
+			.staging
+			.map(|staging_handle| self.device.buffers.resource(staging_handle))
+			.unwrap_or(buffer);
+		unsafe { std::mem::transmute(buffer.pointer) }
+	}
+
+	/// Records a staging-to-buffer upload on this command buffer.
+	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
+		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
+		let buffer = self.device.buffers.resource(buffer_handle);
+
+		let Some(staging_handle) = buffer.staging else {
+			return;
+		};
+
+		self.consume_resources([Consumption {
+			handle: PrivateHandles::Buffer(buffer_handle),
+			stages: crate::Stages::TRANSFER,
+			access: crate::AccessPolicies::WRITE,
+			layout: crate::Layouts::Transfer,
+		}]);
+
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		let staging = self.device.buffers.resource(staging_handle);
+		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+		let label = self.current_encoder_label("Buffer Upload");
+		blit_encoder.setLabel(Some(&label));
+
+		unsafe {
+			blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+				staging.buffer.as_ref(),
+				0,
+				buffer.buffer.as_ref(),
+				0,
+				buffer.size as _,
+			);
+		}
+
+		blit_encoder.endEncoding();
+	}
+
 	pub(super) fn new(
 		device: RecordingDevice<'a>,
 		commit: Option<RecordingCommit<'a>>,
@@ -269,6 +329,7 @@ impl<'a> CommandBufferRecording<'a> {
 			graphics_hardware_interface::SwapchainHandle,
 			Retained<ProtocolObject<dyn CAMetalDrawable>>,
 		)>,
+		autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 	) -> Self {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
 
@@ -292,6 +353,7 @@ impl<'a> CommandBufferRecording<'a> {
 			push_constant_data: Vec::new(),
 			active_compute_encoder: None,
 			active_render_encoder: None,
+			_autorelease_pool: autorelease_pool,
 		}
 	}
 
@@ -476,6 +538,12 @@ impl<'a> CommandBufferRecording<'a> {
 
 		if let Some(encoder) = self.active_render_encoder.take() {
 			encoder.endEncoding();
+		}
+
+		if let Some(commit) = self.commit.as_mut() {
+			if let Some(synchronizer) = commit.synchronizers.get_mut(synchronizer.0 as usize) {
+				synchronizer.signaled = false;
+			}
 		}
 
 		device::submit_metal_command_buffer(self.command_buffer.as_ref());

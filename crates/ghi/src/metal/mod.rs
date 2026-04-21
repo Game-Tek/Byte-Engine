@@ -743,6 +743,7 @@ pub mod queue {
 
 	pub(crate) struct StoredQueue {
 		pub(crate) queue: Retained<ProtocolObject<dyn mtl::MTLCommandQueue>>,
+		pub(crate) workloads: crate::WorkloadTypes,
 	}
 
 	pub struct Queue<'a> {
@@ -798,11 +799,16 @@ pub mod queue {
 		fn execute<'a, P>(
 			&'a mut self,
 			frame: Option<crate::queue::FrameRequest>,
+			wait_for: &[graphics_hardware_interface::SynchronizerHandle],
 			synchronizer: graphics_hardware_interface::SynchronizerHandle,
 			execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
 		) where
 			P: AsRef<[graphics_hardware_interface::PresentKey]>,
 		{
+			for &wait_synchronizer in wait_for {
+				self.device.wait_for_synchronizer(wait_synchronizer);
+			}
+
 			let frame = frame.map(|frame| self.device.start_frame(frame.index, frame.synchronizer));
 			let mut execution = Execution {
 				frame,

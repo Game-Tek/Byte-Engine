@@ -241,6 +241,10 @@ impl Frame<'_> {
 			command_buffer.presentDrawable(drawable_ref);
 		}
 
+		if let Some(synchronizer) = self.device.synchronizers.get_mut(synchronizer.0 as usize) {
+			synchronizer.signaled = false;
+		}
+
 		self.device.submit_metal_command_buffer(command_buffer.as_ref());
 
 		if let Some(synchronizer) = self.device.synchronizers.get_mut(synchronizer.0 as usize) {

@@ -872,9 +872,8 @@ pub mod sampler {
 }
 
 pub mod descriptor_set {
-	use crate::descriptors::DescriptorSetHandle;
-
 	use super::*;
+	use crate::descriptors::DescriptorSetHandle;
 
 	/// The `DescriptorSet` struct stores the Metal descriptor state for one frame.
 	#[derive(Clone)]
@@ -887,9 +886,8 @@ pub mod descriptor_set {
 }
 
 pub mod binding {
-	use crate::descriptors::DescriptorSetHandle;
-
 	use super::*;
+	use crate::descriptors::DescriptorSetHandle;
 
 	#[derive(Clone)]
 	pub(crate) struct Binding {
@@ -912,9 +910,8 @@ pub mod synchronizer {
 }
 
 pub mod swapchain {
-	use crate::image::ImageHandle;
-
 	use super::*;
+	use crate::image::ImageHandle;
 
 	#[derive(Clone)]
 	pub(crate) struct Swapchain {

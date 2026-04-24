@@ -1,10 +1,9 @@
 use ash::vk;
 use utils::hash::HashMap;
 
+use super::TransitionState;
 use crate::frame::Frame as _;
 use crate::vulkan::{CommandBufferRecording, Frame};
-
-use super::TransitionState;
 
 pub struct Queue {
 	pub(crate) vk_queue: vk::Queue,

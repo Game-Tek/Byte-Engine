@@ -733,17 +733,16 @@ impl IntegralTypeSize for IntegralTypes {
 
 #[cfg(test)]
 mod tests {
-	use crate::{
-		resources::material::VariantModel,
-		types::{AlphaMode, VertexComponent},
-		ReferenceModel,
-	};
-
 	use super::{
 		MeshProcessingError, MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource,
 		TriangleFrontFaceWinding,
 	};
 	use crate::types::VertexSemantics;
+	use crate::{
+		resources::material::VariantModel,
+		types::{AlphaMode, VertexComponent},
+		ReferenceModel,
+	};
 
 	#[test]
 	fn rewinds_triangle_order_for_clockwise_front_faces() {

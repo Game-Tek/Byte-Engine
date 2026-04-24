@@ -139,7 +139,6 @@ impl SPIRVShaderGenerator {
 #[cfg(test)]
 mod tests {
 	use super::*;
-
 	use crate::{shader_generator, spirv_shader_generator::SPIRVShaderGenerator};
 
 	#[test]

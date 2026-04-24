@@ -5,6 +5,15 @@ use utils::{
 	Extent,
 };
 
+use super::{
+	asset_handler::{AssetHandler, LoadErrors},
+	asset_manager::AssetManager,
+	ResourceId,
+};
+#[cfg(target_vendor = "apple")]
+use crate::msl_shader_compiler::MSLShaderCompiler;
+#[cfg(not(target_vendor = "apple"))]
+use crate::spirv_shader_generator::SPIRVShaderGenerator;
 use crate::{
 	asset,
 	r#async::{spawn_cpu_task, BoxedFuture},
@@ -16,18 +25,6 @@ use crate::{
 	shader_generator::ShaderGenerationSettings,
 	types::{AlphaMode, ShaderTypes},
 	ProcessedAsset, ReferenceModel,
-};
-
-#[cfg(target_vendor = "apple")]
-use crate::msl_shader_compiler::MSLShaderCompiler;
-
-#[cfg(not(target_vendor = "apple"))]
-use crate::spirv_shader_generator::SPIRVShaderGenerator;
-
-use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
-	ResourceId,
 };
 
 pub trait ProgramGenerator: Send + Sync {
@@ -410,6 +407,7 @@ async fn resolve_value(
 pub mod tests {
 	use utils::json;
 
+	use super::ProgramGenerator;
 	use crate::{
 		asset::{
 			asset_handler::AssetHandler, asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler,
@@ -422,8 +420,6 @@ pub mod tests {
 		shader_generator::ShaderGenerationSettings,
 		ReferenceModel,
 	};
-
-	use super::ProgramGenerator;
 
 	pub struct RootTestShaderGenerator {}
 

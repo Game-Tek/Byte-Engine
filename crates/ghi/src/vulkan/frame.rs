@@ -1,14 +1,13 @@
 use ash::vk::{self};
 use utils::Extent;
 
+use super::{command_buffer::CommandBufferRecording, device::Device};
 use crate::{
 	device::Device as _,
 	graphics_hardware_interface,
 	vulkan::{BufferCopy, BufferHandle, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
 	FrameKey, HandleLike as _,
 };
-
-use super::{command_buffer::CommandBufferRecording, device::Device};
 
 pub struct Frame<'a> {
 	frame_key: FrameKey,

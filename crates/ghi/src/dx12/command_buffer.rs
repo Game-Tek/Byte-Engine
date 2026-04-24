@@ -14,6 +14,7 @@ use crate::{
 pub struct CommandBufferRecording<'a> {
 	device: &'a mut super::Device,
 	command_buffer: crate::CommandBufferHandle,
+	frame_key: Option<crate::FrameKey>,
 	bound_pipeline_layout: Option<PipelineLayoutHandle>,
 	bound_pipeline: Option<PipelineHandle>,
 }
@@ -22,11 +23,12 @@ impl<'a> CommandBufferRecording<'a> {
 	pub fn new(
 		device: &'a mut super::Device,
 		command_buffer: crate::CommandBufferHandle,
-		_frame_key: Option<crate::FrameKey>,
+		frame_key: Option<crate::FrameKey>,
 	) -> Self {
 		Self {
 			device,
 			command_buffer,
+			frame_key,
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
 		}
@@ -34,6 +36,12 @@ impl<'a> CommandBufferRecording<'a> {
 }
 
 impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_> {
+	fn frame_key(&self) -> crate::FrameKey {
+		self.frame_key.expect(
+			"Command buffer recording has no frame key. The most likely cause is that it was created from a command buffer instead of a frame.",
+		)
+	}
+
 	fn build_top_level_acceleration_structure(&mut self, _acceleration_structure_build: &TopLevelAccelerationStructureBuild) {
 		// TODO: DXR acceleration structure builds are not implemented yet.
 	}

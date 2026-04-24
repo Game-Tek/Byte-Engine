@@ -2133,9 +2133,8 @@ fn record_type<const N: usize>(name: &str, fields: [(&str, NodeReference); N]) -
 
 #[cfg(test)]
 mod tests {
-	use crate::tokenizer;
-
 	use super::*;
+	use crate::tokenizer;
 
 	fn assert_type(node: &Node, type_name: &str) {
 		match &node.node {

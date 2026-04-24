@@ -4,6 +4,12 @@ use maths_rs::{
 };
 use utils::{json::JsonValueTrait, Extent};
 
+use super::{
+	asset_handler::{AssetHandler, LoadErrors},
+	asset_manager::AssetManager,
+	ResourceId,
+};
+pub use crate::processors::mesh_processor::TriangleFrontFaceWinding;
 use crate::{
 	asset::{self},
 	processors::{
@@ -16,14 +22,6 @@ use crate::{
 	types::{Formats, VertexComponent, VertexSemantics},
 	ProcessedAsset,
 };
-
-use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
-	ResourceId,
-};
-
-pub use crate::processors::mesh_processor::TriangleFrontFaceWinding;
 
 /// The `GLTFAssetHandler` struct stores glTF import settings for meshes and images.
 pub struct GLTFAssetHandler {

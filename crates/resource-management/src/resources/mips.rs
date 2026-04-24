@@ -306,9 +306,8 @@ fn load_u16_pixel<const CHANNELS: usize>(source: &[u8], offset: usize) -> Simd<u
 
 #[cfg(test)]
 mod tests {
-	use crate::types::Formats;
-
 	use super::{generate_mip_chain, mip_level_count, MipChain, MipGenerationError};
+	use crate::types::Formats;
 
 	#[derive(Debug, Clone, PartialEq, Eq)]
 	struct ExpectedMipLevel {

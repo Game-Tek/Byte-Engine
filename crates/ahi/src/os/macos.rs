@@ -563,11 +563,12 @@ struct CallbackState {
 
 #[cfg(test)]
 mod tests {
-	use super::SpscByteRing;
 	use std::collections::VecDeque;
 	use std::sync::atomic::Ordering;
 	use std::sync::mpsc;
 	use std::time::Duration;
+
+	use super::SpscByteRing;
 
 	#[test]
 	fn ring_rejects_zero_capacity() {

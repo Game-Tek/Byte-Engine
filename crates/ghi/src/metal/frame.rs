@@ -1,12 +1,12 @@
-use crate::image::ImageHandle;
-use crate::SwapchainHandle;
-
-use super::*;
 use objc2_foundation::NSAutoreleasePool;
 use objc2_foundation::NSString;
 use objc2_metal::MTLBlitCommandEncoder;
 use objc2_metal::MTLCommandBuffer;
 use objc2_metal::MTLCommandEncoder;
+
+use super::*;
+use crate::image::ImageHandle;
+use crate::SwapchainHandle;
 
 /// The `Frame` struct represents a single frame's worth of Metal rendering state.
 ///
@@ -261,6 +261,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		= super::CommandBufferRecording<'record>
 	where
 		Self: 'record;
+
+	fn key(&self) -> graphics_hardware_interface::FrameKey {
+		self.frame_key
+	}
 
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: crate::BufferHandle<T>) -> &'static mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)

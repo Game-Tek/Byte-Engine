@@ -1,5 +1,6 @@
-use crate::{CommandBufferHandle, DynamicBufferHandle, FrameKey, ImageHandle, PresentKey, SwapchainHandle};
 use utils::Extent;
+
+use crate::{CommandBufferHandle, DynamicBufferHandle, FrameKey, ImageHandle, PresentKey, SwapchainHandle};
 
 pub struct Frame<'a> {
 	device: &'a mut super::Device,

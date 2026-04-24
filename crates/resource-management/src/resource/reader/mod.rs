@@ -4,9 +4,8 @@ use std::fmt::Debug;
 
 use memmap2::{Mmap, MmapOptions};
 
-use crate::StreamDescription;
-
 use super::{ReadTargets, ReadTargetsMut};
+use crate::StreamDescription;
 
 #[derive(Debug)]
 /// The `ResourceReaderBacking` enum keeps resource bytes in an owned backing so clients can reuse them without forcing another read.

@@ -180,6 +180,7 @@ mod tests {
 		time::{SystemTime, UNIX_EPOCH},
 	};
 
+	use super::{Reference, ReferenceModel};
 	use crate::{
 		resource::{
 			reader::{redb::FileResourceReader, ResourceReaderBacking},
@@ -187,8 +188,6 @@ mod tests {
 		},
 		Model, Resource,
 	};
-
-	use super::{Reference, ReferenceModel};
 
 	#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 	/// The `DefaultLoadModel` struct gives the reference test a serializable resource model.

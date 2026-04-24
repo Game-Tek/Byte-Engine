@@ -292,15 +292,14 @@ fn produce_image(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, B
 mod tests {
 	use utils::Extent;
 
+	use super::{
+		determine_image_format, guess_semantic_from_name, process_image, should_compress_for_semantic, ImageDescription,
+		Semantic,
+	};
 	use crate::{
 		asset::ResourceId,
 		resources::image::Image,
 		types::{Formats, Gamma},
-	};
-
-	use super::{
-		determine_image_format, guess_semantic_from_name, process_image, should_compress_for_semantic, ImageDescription,
-		Semantic,
 	};
 
 	#[test]

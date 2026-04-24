@@ -1,12 +1,13 @@
-use crate::{
-	AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
-	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
-	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
-	Formats, ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes,
-	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer, image,
-	pipelines::VertexElement, sampler, shader::Sources, window,
-};
 use utils::Extent;
+
+use crate::{
+	buffer, image, pipelines::VertexElement, sampler, shader::Sources, window, AllocationHandle, BaseBufferHandle,
+	BindingConstructor, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
+	CommandBufferHandle, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
+	DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle, Formats, ImageHandle, MeshHandle, PipelineHandle,
+	PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle,
+	TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
+};
 
 pub struct Device {}
 

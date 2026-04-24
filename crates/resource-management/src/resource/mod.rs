@@ -11,14 +11,13 @@ pub mod resource_id;
 pub mod read_target;
 pub mod reader;
 
+pub use read_target::ReadTargets;
+pub use read_target::ReadTargetsMut;
+pub use resource_id::ResourceId;
 pub use storage_backend::redb_storage_backend::RedbStorageBackend;
 pub use storage_backend::ReadStorageBackend;
 pub use storage_backend::StorageBackend;
 pub use storage_backend::WriteStorageBackend;
-
-pub use read_target::ReadTargets;
-pub use read_target::ReadTargetsMut;
-pub use resource_id::ResourceId;
 
 use crate::Model;
 
@@ -41,12 +40,11 @@ pub trait Resource: Send + Sync {
 
 #[cfg(test)]
 pub mod tests {
-	use crate::StreamDescription;
-
 	use super::{
 		reader::{ResourceReader, ResourceReaderBacking},
 		ReadTargets, ReadTargetsMut,
 	};
+	use crate::StreamDescription;
 
 	#[derive(Debug)]
 	pub struct TestResourceReader {

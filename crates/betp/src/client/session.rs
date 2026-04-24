@@ -179,9 +179,8 @@ pub enum State {
 
 #[cfg(test)]
 mod tests {
-	use crate::packets::ChallengePacket;
-
 	use super::*;
+	use crate::packets::ChallengePacket;
 
 	#[test]
 	fn test_session_start() {

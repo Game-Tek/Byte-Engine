@@ -843,10 +843,10 @@ impl GLSLShaderGenerator {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-
-	use crate::shader_generator::{self, ShaderGenerationSettings};
 	use std::cell::RefCell;
+
+	use super::*;
+	use crate::shader_generator::{self, ShaderGenerationSettings};
 
 	macro_rules! assert_string_contains {
 		($haystack:expr, $needle:expr) => {

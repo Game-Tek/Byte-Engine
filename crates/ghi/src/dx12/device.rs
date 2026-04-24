@@ -1,36 +1,31 @@
 use std::alloc::{self, Layout};
 
-use ::utils::Extent;
 use ::utils::hash::{HashMap, HashSet};
+use ::utils::Extent;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_12_0};
 use windows::Win32::Graphics::Direct3D12::{
-	D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAGS, D3D12_FENCE_FLAGS, D3D12CreateDevice,
-	ID3D12CommandAllocator, ID3D12CommandQueue, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList,
+	D3D12CreateDevice, ID3D12CommandAllocator, ID3D12CommandQueue, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList,
+	D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAGS, D3D12_FENCE_FLAGS,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
-	CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_MWA_NO_ALT_ENTER, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
-	DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory4, IDXGISwapChain3,
+	CreateDXGIFactory2, IDXGIFactory4, IDXGISwapChain3, DXGI_CREATE_FACTORY_FLAGS, DXGI_MWA_NO_ALT_ENTER, DXGI_SCALING_STRETCH,
+	DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::{
+	core::{IUnknown, Interface},
 	Win32::Graphics::{
 		Direct3D12::{D3D12_COMMAND_LIST_TYPE_COMPUTE, D3D12_COMMAND_LIST_TYPE_COPY, D3D12_COMMAND_LIST_TYPE_DIRECT},
 		Dxgi::{DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG},
 	},
-	core::{IUnknown, Interface},
 };
 
+use super::utils;
 use crate::WorkloadTypes;
 use crate::{
-	AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
-	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
-	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
-	FilteringModes, Formats, Handle, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey,
-	PresentationModes, QueueHandle, QueueSelection, RGBAu8, SamplerAddressingModes, SamplerHandle, SamplingReductionModes,
-	ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle,
-	Uses, buffer,
+	buffer,
 	command_buffer::CommandBufferType,
 	descriptors::{DescriptorType, Write as DescriptorWrite, WriteData},
 	device::Features,
@@ -38,10 +33,14 @@ use crate::{
 	pipelines::{self, PushConstantRange, ShaderParameter, VertexElement},
 	rt, sampler,
 	shader::{BindingDescriptor, Sources},
-	window,
+	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
+	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
+	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
+	FilteringModes, Formats, Handle, ImageHandle, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey,
+	PresentationModes, QueueHandle, QueueSelection, RGBAu8, SamplerAddressingModes, SamplerHandle, SamplingReductionModes,
+	ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle,
+	Uses,
 };
-
-use super::utils;
 pub struct Device {
 	device: ID3D12Device,
 	settings: Features,

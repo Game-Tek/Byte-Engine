@@ -3760,11 +3760,10 @@ impl std::error::Error for VmError {}
 
 #[cfg(test)]
 mod tests {
-	use crate::{compile_to_besl, BindingTypes, Expressions, Node, NodeReference, Operators};
-
 	use super::{
 		input_slot, output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value, VmError,
 	};
+	use crate::{compile_to_besl, BindingTypes, Expressions, Node, NodeReference, Operators};
 
 	fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
 		buffer

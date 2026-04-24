@@ -43,12 +43,12 @@ mod packet_buffer;
 
 pub mod packets;
 
+use std::io::{Read as _, Write};
+
 pub use client::Client;
 pub use local::Local;
 pub use remote::Remote;
 pub use server::Server;
-
-use std::io::{Read as _, Write};
 
 use crate::packets::{ConnectionStatus, Packet, PacketHeader, Packets};
 

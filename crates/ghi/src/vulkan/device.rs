@@ -1,7 +1,23 @@
 use std::{borrow::Cow, num::NonZeroU32, u64};
 
+use ash::vk::{self, Handle as _};
+use smallvec::SmallVec;
+use utils::hash::{HashSet, HashSetExt};
+use utils::{
+	hash::{HashMap, HashMapExt},
+	Extent,
+};
+
+use super::{
+	utils::{
+		image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format,
+		to_shader_stage_flags, uses_to_vk_usage_flags,
+	},
+	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
+	DescriptorSet, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
+	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
+};
 use crate::{
-	FrameKey, HandleLike, PrivateHandles, ResourceCollection, Size,
 	binding::DescriptorSetBindingHandle,
 	descriptors::DescriptorSetHandle,
 	graphics_hardware_interface, image,
@@ -10,27 +26,10 @@ use crate::{
 	synchronizer::SynchronizerHandle,
 	utils::StableVec,
 	vulkan::{
-		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, DescriptorWrite, Descriptors, Frame, ImageCopy,
-		ImageHandle, Instance, MAX_SWAPCHAIN_IMAGES, Task, Tasks, queue::Queue,
+		queue::Queue, BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, DescriptorWrite, Descriptors, Frame,
+		ImageCopy, ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
 	},
-	window,
-};
-use ash::vk::{self, Handle as _};
-use smallvec::SmallVec;
-use utils::hash::{HashSet, HashSetExt};
-use utils::{
-	Extent,
-	hash::{HashMap, HashMapExt},
-};
-
-use super::{
-	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
-	DescriptorSet, DescriptorSetLayout, Image, MAX_FRAMES_IN_FLIGHT, MemoryBackedResourceCreationResult, Mesh, Pipeline,
-	PipelineLayout, PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState,
-	utils::{
-		image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format,
-		to_shader_stage_flags, uses_to_vk_usage_flags,
-	},
+	window, FrameKey, HandleLike, PrivateHandles, ResourceCollection, Size,
 };
 
 pub struct Device {
@@ -230,7 +229,11 @@ impl Device {
 		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::new(vk_entry, vk_instance);
 
 		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
-			if required { feature != 0 } else { true }
+			if required {
+				feature != 0
+			} else {
+				true
+			}
 		};
 
 		let mut barycentric_required_features =

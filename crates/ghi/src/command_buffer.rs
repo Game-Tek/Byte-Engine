@@ -2,7 +2,8 @@ use utils::Extent;
 
 use crate::{
 	rt, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferDescriptor, BufferHandle, ClearValue,
-	DescriptorSetHandle, DispatchExtent, Layouts, MeshHandle, PipelineHandle, RGBAu8, SynchronizerHandle, TextureCopyHandle,
+	DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, RGBAu8, SynchronizerHandle,
+	TextureCopyHandle,
 };
 
 pub trait CommandBuffer {
@@ -15,6 +16,9 @@ pub trait CommandBufferRecording
 where
 	Self: Sized,
 {
+	/// Returns the frame key that scoped this command-buffer recording.
+	fn frame_key(&self) -> FrameKey;
+
 	/// Records a build for one top-level acceleration structure.
 	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &rt::TopLevelAccelerationStructureBuild);
 	/// Records builds for one or more bottom-level acceleration structures.

@@ -1,62 +1,9 @@
-use std::{
-	io::Write,
-	ops::{Deref, DerefMut},
-	rc::Rc,
-	sync::Arc,
-};
-
-use ghi::{
-	command_buffer::{
-		BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording,
-		RasterizationRenderPassMode as _,
-	},
-	device::{Device as _, DeviceCreate as _},
-	frame::Frame as _,
-	queue::{Queue as _, QueueExecution as _},
-};
-use math::direction_from_orientation;
-use resource_management::resource::resource_manager::ResourceManager;
-use smallvec::SmallVec;
-use utils::Box;
-use utils::{
-	hash::{HashMap, HashMapExt},
-	sync::RwLock,
-	Extent, RGBA,
-};
-
-use super::{
-	render_pass::{RenderPass, RenderPassBuilder},
-	texture_manager::TextureManager,
-};
-use crate::{
-	application::parameters::Parameters,
-	core::{
-		channel::{Channel, DefaultChannel},
-		factory::Handle,
-		listener::Listener,
-		Entity, EntityHandle,
-	},
-	gameplay::transform::TransformationUpdate,
-	rendering::{
-		make_perspective_view_from_camera,
-		render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn},
-		scene_manager::SceneManager,
-		window::{self, Window},
-		Camera, Sink, View,
-	},
-	space::{Orientable as _, Positionable as _},
-};
-
-type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
-
-type SinkId = usize;
-/// A `RenderPass` represents a specific rendering task that can be performed on the scene, defined by a render pass factory.
-type RenderPassId = usize;
-
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
+	/// The GHI device where all rendering operations are performed.
 	device: ghi::implementation::Device, // Place device before instance to ensure proper drop order
+	/// The GHI instance that manages the device and resources.
 	instance: ghi::implementation::Instance,
 
 	started_frame_count: usize,
@@ -78,7 +25,9 @@ pub struct Renderer {
 
 	scene_managers: SmallVec<[Box<dyn SceneManager>; 16]>,
 
+	/// The GHI queue where graphics commands are submitted. The main rendering operations occur on this queue.
 	graphics_queue_handle: ghi::QueueHandle,
+	/// The GHI queue where transfer commands are submitted. Async transfer operations occur on this queue.
 	transfer_queue_handle: ghi::QueueHandle,
 
 	render_command_buffer: ghi::CommandBufferHandle,
@@ -86,6 +35,8 @@ pub struct Renderer {
 
 	transfer_command_buffer: ghi::CommandBufferHandle,
 	transfer_finished_synchronizer: ghi::SynchronizerHandle,
+
+	upload_buffer: ghi::BufferHandle<[u8; PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT]>,
 }
 
 impl Renderer {
@@ -184,6 +135,12 @@ impl Renderer {
 
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
 
+		let upload_buffer = device.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
+				.name("Renderer Async Upload Buffer")
+				.device_accesses(ghi::DeviceAccesses::HostOnly),
+		);
+
 		Renderer {
 			instance,
 			device,
@@ -212,6 +169,8 @@ impl Renderer {
 
 			transfer_command_buffer,
 			transfer_finished_synchronizer,
+
+			upload_buffer,
 		}
 	}
 
@@ -318,20 +277,30 @@ impl Renderer {
 			}
 		});
 
-		let mut submitted_transfer_work = false;
+		let mut recorded_transfer_work = false;
 
 		{
-			let mut transfer_command_buffer = self.device.command_buffer(self.transfer_command_buffer);
-			let mut transfer_recording = transfer_command_buffer.create_command_buffer_recording();
-			let mut recorded_transfer_work = false;
+			let mut transfer_queue = self.device.queue(self.transfer_queue_handle);
+			let mut frame = transfer_queue.start_frame(self.started_frame_count as _, self.transfer_finished_synchronizer);
+			let key = frame.key(); // Scene managers use this key to later know which transfers are ready
+			let mut transfer_recording = frame.create_command_buffer_recording(self.transfer_command_buffer);
+
+			let buffer = transfer_recording.get_mut_buffer_slice(self.upload_buffer);
+
+			let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
 
 			for scene_manager in &mut self.scene_managers {
-				recorded_transfer_work |= scene_manager.prepare_transfers(&mut transfer_recording);
+				let (new_slice, scene_manager_recorded_work) =
+					scene_manager.prepare_transfers(&mut transfer_recording, key, slice);
+				slice = new_slice;
+
+				if scene_manager_recorded_work {
+					recorded_transfer_work = true;
+				}
 			}
 
 			if recorded_transfer_work {
 				transfer_recording.execute(self.transfer_finished_synchronizer);
-				submitted_transfer_work = true;
 			}
 		}
 
@@ -354,7 +323,7 @@ impl Renderer {
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
 
-		let wait_for: &[ghi::SynchronizerHandle] = if submitted_transfer_work { &transfer_wait } else { &[] };
+		let wait_for: &[ghi::SynchronizerHandle] = if recorded_transfer_work { &transfer_wait } else { &[] };
 
 		queue.execute(Some(frame), wait_for, synchronizer, |execution| {
 			let (sinks, scene_manager_commands, render_pass_commands, present_keys) = {
@@ -815,3 +784,60 @@ mod tests {
 		assert_eq!(*sink1_image, image2);
 	}
 }
+
+const PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT: usize = 1024 * 1024 * 4;
+
+type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
+
+type SinkId = usize;
+/// A `RenderPass` represents a specific rendering task that can be performed on the scene, defined by a render pass factory.
+type RenderPassId = usize;
+
+use std::{
+	io::Write,
+	ops::{Deref, DerefMut},
+	rc::Rc,
+	sync::Arc,
+};
+
+use ghi::{
+	command_buffer::{
+		BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording,
+		RasterizationRenderPassMode as _,
+	},
+	device::{Device as _, DeviceCreate as _},
+	frame::Frame as _,
+	queue::{Queue as _, QueueExecution as _},
+};
+use math::direction_from_orientation;
+use resource_management::resource::resource_manager::ResourceManager;
+use smallvec::SmallVec;
+use utils::Box;
+use utils::{
+	hash::{HashMap, HashMapExt},
+	sync::RwLock,
+	Extent, RGBA,
+};
+
+use super::{
+	render_pass::{RenderPass, RenderPassBuilder},
+	texture_manager::TextureManager,
+};
+use crate::{
+	application::parameters::Parameters,
+	core::{
+		channel::{Channel, DefaultChannel},
+		factory::Handle,
+		listener::Listener,
+		Entity, EntityHandle,
+	},
+	gameplay::transform::TransformationUpdate,
+	rendering::{
+		make_perspective_view_from_camera,
+		render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn},
+		scene_manager::SceneManager,
+		window::{self, Window},
+		Camera, Sink, View,
+	},
+	space::{Orientable as _, Positionable as _},
+};

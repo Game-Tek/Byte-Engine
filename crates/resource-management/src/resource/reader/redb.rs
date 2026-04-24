@@ -2,12 +2,11 @@ use std::io::{Read, Seek};
 
 use utils::sync::File;
 
+use super::{MappedFileBacking, ResourceReader, ResourceReaderBacking};
 use crate::{
 	resource::{ReadTargets, ReadTargetsMut},
 	StreamDescription,
 };
-
-use super::{MappedFileBacking, ResourceReader, ResourceReaderBacking};
 
 #[derive(Debug)]
 pub struct FileResourceReader {

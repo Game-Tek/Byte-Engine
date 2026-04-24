@@ -1,16 +1,15 @@
 use utils::Extent;
 
 use crate::{
-	AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
-	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
-	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
-	DynamicImageHandle, ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle,
-	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
-	descriptors, image,
+	buffer, descriptors, image,
 	pipelines::VertexElement,
 	sampler,
 	shader::{self, Sources},
-	window,
+	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
+	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
+	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
+	DynamicImageHandle, ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle,
+	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
 };
 
 /// The `Device` trait centralizes ownership of GPU resources and backend state for the graphics hardware interface.

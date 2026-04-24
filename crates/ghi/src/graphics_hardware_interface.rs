@@ -864,6 +864,9 @@ impl QueueSelection {
 pub(super) mod tests {
 	use std::borrow::Borrow as _;
 
+	use resource_management::glsl;
+
+	use super::*;
 	use crate::{
 		command_buffer::{
 			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
@@ -883,10 +886,6 @@ pub(super) mod tests {
 		BufferDescriptor, BufferStridedRange, ChannelBitSize, ChannelLayout, DeviceAccesses, FilteringModes,
 		SamplerAddressingModes, SamplingReductionModes, ShaderTypes, Size as _, UseCases, Uses,
 	};
-
-	use resource_management::glsl;
-
-	use super::*;
 
 	#[test]
 	fn test_formats_encoding() {
@@ -2164,6 +2163,7 @@ pub(super) mod tests {
 						index: i as u32,
 						synchronizer: render_finished_synchronizer,
 					}),
+					&[],
 					render_finished_synchronizer,
 					|execution| {
 						execution.record(command_buffer_handle, |command_buffer_recording| {

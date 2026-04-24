@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{graphics_hardware_interface, vulkan::DebugCallbackData};
 use ash::vk::{self};
+
+use crate::{graphics_hardware_interface, vulkan::DebugCallbackData};
 
 pub struct Instance {
 	pub(crate) instance: ash::Instance,

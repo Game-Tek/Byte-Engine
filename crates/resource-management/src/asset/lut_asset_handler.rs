@@ -1,3 +1,8 @@
+use super::{
+	asset_handler::{AssetHandler, LoadErrors},
+	asset_manager::AssetManager,
+	ResourceId,
+};
 use crate::{
 	asset,
 	processors::lut_processor::{process_lut, LutDescription},
@@ -5,12 +10,6 @@ use crate::{
 	resource,
 	resources::lut::LutKind,
 	ProcessedAsset,
-};
-
-use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
-	ResourceId,
 };
 
 #[derive(Debug)]

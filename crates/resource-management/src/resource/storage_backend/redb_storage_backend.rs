@@ -8,13 +8,12 @@ use std::{hash::Hasher, path::Path};
 use redb::{ReadableDatabase as _, ReadableTable};
 use utils::sync::{remove_file, File, Write};
 
+use super::{Query, QueryCursor, QueryError, QueryPage, ReadStorageBackend, StorageBackend, WriteStorageBackend};
 use crate::{
 	asset,
 	resource::{reader::redb::FileResourceReader, resource_handler::MultiResourceReader, ResourceId},
 	ProcessedAsset, QueryableProperty, QueryableValue, SerializableResource,
 };
-
-use super::{Query, QueryCursor, QueryError, QueryPage, ReadStorageBackend, StorageBackend, WriteStorageBackend};
 
 pub struct RedbStorageBackend {
 	db: redb::Database,
@@ -503,12 +502,11 @@ impl StorageBackend for RedbStorageBackend {}
 mod tests {
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
+	use super::RedbStorageBackend;
 	use crate::{
 		resource::storage_backend::{Query, QueryCursor, QueryError, ReadStorageBackend, WriteStorageBackend},
 		Model, ProcessedAsset,
 	};
-
-	use super::RedbStorageBackend;
 
 	#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 	struct MockMaterialModel {

@@ -567,17 +567,27 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	}
 
 	impl SceneManager for CustomSceneManager {
-		fn prepare_transfers(&mut self, transfer: &mut ghi::implementation::CommandBufferRecording) -> bool {
-			let mut recorded_transfer_work = false;
+		fn prepare_transfers<'a>(
+			&mut self,
+			transfer: &mut ghi::implementation::CommandBufferRecording,
+			key: ghi::FrameKey,
+			mut slice: utils::BufferAllocator<'a>,
+		) -> (utils::BufferAllocator<'a>, bool) {
+			let mut recorded_work = false;
 
 			while let Some(message) = self.mesh_receiver.read() {
-				self.visibility_world_render_domain
-					.create_renderable_mesh(transfer, message.into_data());
-
-				recorded_transfer_work = true;
+				if let Some(new_slice) = self
+					.visibility_world_render_domain
+					.create_renderable_mesh_instance_and_write_mesh_data_if_not_exists(transfer, message.into_data(), slice)
+				{
+					slice = new_slice;
+					recorded_work = true;
+				} else {
+					todo!("Add back to queue to retry writing on another opportunity");
+				}
 			}
 
-			recorded_transfer_work
+			(slice, recorded_work)
 		}
 
 		fn prepare(

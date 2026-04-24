@@ -1,10 +1,12 @@
+use std::marker::PhantomData;
+
+use utils::Extent;
+
 use crate::{
 	graphics_hardware_interface, AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue,
 	CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, PresentKey,
 	RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
 };
-use std::marker::PhantomData;
-use utils::Extent;
 
 pub struct CommandBufferRecording<'a> {
 	_command_buffer_handle: CommandBufferHandle,

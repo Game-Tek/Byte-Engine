@@ -14,9 +14,8 @@ pub fn process_audio<'a>(
 
 #[cfg(test)]
 mod tests {
-	use crate::{asset::ResourceId, resources::audio::Audio, types::BitDepths};
-
 	use super::process_audio;
+	use crate::{asset::ResourceId, resources::audio::Audio, types::BitDepths};
 
 	#[test]
 	fn process_audio_serializes_audio_metadata_and_preserves_pcm_data() {

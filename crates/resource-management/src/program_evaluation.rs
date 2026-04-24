@@ -622,7 +622,6 @@ fn parse_literal_number(node: &besl::NodeReference) -> Option<f64> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-
 	use crate::shader_generator;
 
 	#[test]

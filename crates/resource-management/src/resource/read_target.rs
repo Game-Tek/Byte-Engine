@@ -3,9 +3,8 @@
 //! an allocated box, split into streams, or served from reader-owned backing storage.
 //! `ReadTargets` is used for read-only access, while `ReadTargetsMut` is used for mutable access.
 
-use crate::{resource::reader::ResourceReaderBacking, stream::StreamMut, Reference, Stream};
-
 use super::Resource;
+use crate::{resource::reader::ResourceReaderBacking, stream::StreamMut, Reference, Stream};
 
 #[derive(Debug)]
 /// The read targets are used to specify where the binary data should be read into.

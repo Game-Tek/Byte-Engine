@@ -11,8 +11,22 @@ use crate::rendering::{
 
 /// The `SceneManager` trait bridges scene state with render work for active sinks.
 pub trait SceneManager {
-	fn prepare_transfers(&mut self, _transfer: &mut ghi::implementation::CommandBufferRecording) -> bool {
-		false
+	/// Prepares the transfer buffer for the given frame.
+	///
+	/// Returns the remaining transfer buffer capacity and whether transfer work was recorded.
+	///
+	/// # Arguments
+	///
+	/// * `transfer` - The command buffer recording to prepare the transfer buffer for.
+	/// * `key` - The frame key identifying the frame to prepare the transfer buffer for.
+	/// * `slice` - The buffer slice to prepare the transfer buffer in.
+	fn prepare_transfers<'a>(
+		&mut self,
+		transfer: &mut ghi::implementation::CommandBufferRecording,
+		key: ghi::FrameKey,
+		slice: utils::BufferAllocator<'a>,
+	) -> (utils::BufferAllocator<'a>, bool) {
+		(slice, false)
 	}
 
 	/// Called when a frame is being prepared for rendering.

@@ -2,13 +2,11 @@
 
 pub mod redb_storage_backend;
 
+use super::resource_handler::MultiResourceReader;
+use crate::QueryableValue;
 use crate::{
 	asset::ResourceId, model::ArchivedQueryableValue, ArchivedSerializableResource, ProcessedAsset, SerializableResource,
 };
-
-use super::resource_handler::MultiResourceReader;
-
-use crate::QueryableValue;
 
 /// The `QueryCursor` struct represents an opaque position for paginated resource queries.
 #[derive(
@@ -157,9 +155,8 @@ pub mod tests {
 	use gxhash::HashMapExt;
 	use utils::{hash::HashMap, sync::Mutex};
 
-	use crate::resource::resource_handler::tests::MemoryResourceReader;
-
 	use super::*;
+	use crate::resource::resource_handler::tests::MemoryResourceReader;
 
 	#[derive(Clone)]
 	pub struct TestStorageBackend(pub Arc<Mutex<HashMap<String, (Box<[u8]>, Box<[u8]>)>>>);

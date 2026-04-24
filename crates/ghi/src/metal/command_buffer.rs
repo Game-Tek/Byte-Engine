@@ -161,6 +161,7 @@ pub struct CommandBufferRecording<'a> {
 	device: RecordingDevice<'a>,
 	commit: Option<RecordingCommit<'a>>,
 	command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+	frame_key: Option<graphics_hardware_interface::FrameKey>,
 	sequence_index: u8,
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	debug_regions: RefCell<Vec<String>>,
@@ -337,6 +338,7 @@ impl<'a> CommandBufferRecording<'a> {
 			device,
 			commit,
 			command_buffer_handle,
+			frame_key,
 			sequence_index,
 			command_buffer,
 			debug_regions: RefCell::new(Vec::new()),
@@ -559,6 +561,12 @@ impl<'a> CommandBufferRecording<'a> {
 }
 
 impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
+	fn frame_key(&self) -> graphics_hardware_interface::FrameKey {
+		self.frame_key.expect(
+			"Command buffer recording has no frame key. The most likely cause is that it was created from a command buffer instead of a frame.",
+		)
+	}
+
 	fn build_top_level_acceleration_structure(
 		&mut self,
 		_acceleration_structure_build: &crate::rt::TopLevelAccelerationStructureBuild,

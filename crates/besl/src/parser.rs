@@ -1564,7 +1564,6 @@ pub struct ProgramState {
 #[cfg(test)]
 mod tests {
 	use super::*;
-
 	use crate::tokenizer::tokenize;
 
 	fn print_tree(node: &Node) {

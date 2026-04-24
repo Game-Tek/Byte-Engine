@@ -1,11 +1,10 @@
-use crate::{
-	asset::{asset_manager::AssetManager, ResourceId},
-	Model, Reference, ReferenceModel, Resource, SerializableResource, Solver,
-};
-
 use super::{
 	storage_backend::{Query, QueryError, QueryPage},
 	StorageBackend,
+};
+use crate::{
+	asset::{asset_manager::AssetManager, ResourceId},
+	Model, Reference, ReferenceModel, Resource, SerializableResource, Solver,
 };
 
 /// Resource manager.

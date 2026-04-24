@@ -1,5 +1,6 @@
-use crate::shader_graph::{build_graph, topological_sort};
 use utils::Extent;
+
+use crate::shader_graph::{build_graph, topological_sort};
 
 /// Generates a graphics API consumable shader from a BESL shader program definition.
 pub trait ShaderGenerator {}

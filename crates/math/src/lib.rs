@@ -5,27 +5,23 @@ pub mod sphere;
 
 pub mod collision;
 
-pub use maths_rs::Vec2f as Vector2;
-pub use maths_rs::Vec3f as Vector3;
-pub use maths_rs::Vec4f as Vector4;
-
-pub use maths_rs::Mat3f as Matrix3;
-pub use maths_rs::Mat4f as Matrix4;
-pub use maths_rs::Quatf as Quaternion;
-
-pub use maths_rs::normalize;
-
-pub use maths_rs::mat;
-pub use maths_rs::num::Base;
-pub use maths_rs::num::Number;
-pub use maths_rs::vec::VecN;
-
 pub use maths_rs::cross;
 pub use maths_rs::dot;
 pub use maths_rs::length;
 pub use maths_rs::mag as magnitude;
 pub use maths_rs::mag2 as magnitude_squared;
+pub use maths_rs::mat;
+pub use maths_rs::normalize;
+pub use maths_rs::num::Base;
+pub use maths_rs::num::Number;
 pub use maths_rs::vec::Magnitude;
+pub use maths_rs::vec::VecN;
+pub use maths_rs::Mat3f as Matrix3;
+pub use maths_rs::Mat4f as Matrix4;
+pub use maths_rs::Quatf as Quaternion;
+pub use maths_rs::Vec2f as Vector2;
+pub use maths_rs::Vec3f as Vector3;
+pub use maths_rs::Vec4f as Vector4;
 
 #[macro_use]
 pub mod macros {

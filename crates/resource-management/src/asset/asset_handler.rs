@@ -1,6 +1,5 @@
-use crate::{asset, r#async::BoxedFuture, resource, ProcessedAsset};
-
 use super::{asset_manager::AssetManager, ResourceId};
+use crate::{asset, r#async::BoxedFuture, resource, ProcessedAsset};
 
 #[derive(Debug)]
 pub enum LoadErrors {

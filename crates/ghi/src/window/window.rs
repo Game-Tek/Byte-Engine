@@ -1,9 +1,10 @@
+use utils::Extent;
+
 use crate::{
 	input::{Keys, MouseKeys},
 	os::{self, WindowLike as _},
 	Events, Features,
 };
-use utils::Extent;
 
 pub struct Window {
 	name: String,

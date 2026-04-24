@@ -1,12 +1,11 @@
-use crate::{
-	asset, processors::audio_processor::process_audio, r#async::BoxedFuture, resource, resources::audio::Audio,
-	types::BitDepths, ProcessedAsset,
-};
-
 use super::{
 	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
 	ResourceId,
+};
+use crate::{
+	asset, processors::audio_processor::process_audio, r#async::BoxedFuture, resource, resources::audio::Audio,
+	types::BitDepths, ProcessedAsset,
 };
 
 impl WAVAssetHandler {

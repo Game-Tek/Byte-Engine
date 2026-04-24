@@ -1,6 +1,5 @@
-use crate::{asset::ResourceId, resource::StorageBackend as ResourceStorageBackend, Model, ReferenceModel};
-
 use super::{asset_handler::AssetHandler, StorageBackend};
+use crate::{asset::ResourceId, resource::StorageBackend as ResourceStorageBackend, Model, ReferenceModel};
 
 pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AssetHandler>>,
@@ -109,13 +108,12 @@ impl AssetManager {
 pub mod tests {
 	use utils::json;
 
+	use super::*;
 	use crate::{
 		asset::{asset_handler::LoadErrors, storage_backend::tests::TestStorageBackend},
 		r#async::BoxedFuture,
 		Model, ProcessedAsset,
 	};
-
-	use super::*;
 
 	#[derive(serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 	struct TestResource {}

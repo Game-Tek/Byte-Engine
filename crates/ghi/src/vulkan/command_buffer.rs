@@ -2,11 +2,6 @@ use ash::vk::{self, Handle as _};
 use smallvec::SmallVec;
 use utils::{hash::HashMap, partition, Extent};
 
-use crate::{
-	descriptors::DescriptorSetHandle, device::Device as _, graphics_hardware_interface, FrameKey, HandleLike as _, Next as _,
-	PrivateHandles,
-};
-
 use super::{
 	utils::{
 		texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation,
@@ -16,10 +11,15 @@ use super::{
 	Descriptor, DescriptorSet, Device, Image, ImageHandle, Swapchain, Synchronizer, TopLevelAccelerationStructureHandle,
 	TransitionState, VulkanConsumption,
 };
+use crate::{
+	descriptors::DescriptorSetHandle, device::Device as _, graphics_hardware_interface, FrameKey, HandleLike as _, Next as _,
+	PrivateHandles,
+};
 
 pub struct CommandBufferRecording<'a> {
 	device: &'a Device,
 	command_buffer: graphics_hardware_interface::CommandBufferHandle,
+	frame_key: Option<FrameKey>,
 	sequence_index: u8,
 	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
 	pipeline_bind_point: vk::PipelineBindPoint,
@@ -38,6 +38,7 @@ impl CommandBufferRecording<'_> {
 		let command_buffer = CommandBufferRecording {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
+			frame_key,
 			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),
 			states: device.states.clone(),
 
@@ -760,6 +761,12 @@ impl CommandBufferRecording<'_> {
 }
 
 impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_> {
+	fn frame_key(&self) -> FrameKey {
+		self.frame_key.expect(
+			"Command buffer recording has no frame key. The most likely cause is that it was created from a command buffer instead of a frame.",
+		)
+	}
+
 	fn transfer_textures(
 		&mut self,
 		image_handles: &[impl graphics_hardware_interface::ImageHandleLike],

@@ -51,9 +51,8 @@ impl Plane {
 
 #[cfg(test)]
 mod tests {
-	use crate::{assert_float_eq, assert_vec3f_near};
-
 	use super::*;
+	use crate::{assert_float_eq, assert_vec3f_near};
 
 	#[test]
 	fn test_plane_new_and_signed_distance() {

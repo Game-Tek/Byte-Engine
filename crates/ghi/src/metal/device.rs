@@ -11,7 +11,7 @@ use std::{
 use ::utils::hash::{HashMap, HashSet};
 use dispatch2::DispatchData;
 use objc2::runtime::AnyObject;
-use objc2::{ClassType, msg_send};
+use objc2::{msg_send, ClassType};
 use objc2_foundation::{NSArray, NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
 	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLCommandEncoder,
@@ -20,7 +20,6 @@ use objc2_metal::{
 
 use super::*;
 use crate::{
-	DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
 	binding::DescriptorSetBindingHandle,
 	buffer::{self as buffer_builder, BufferHandle},
 	descriptors::DescriptorSetHandle,
@@ -29,7 +28,7 @@ use crate::{
 	metal::utils::parse_threadgroup_size_metadata,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
-	window,
+	window, DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
 };
 
 pub struct Device {
@@ -133,7 +132,11 @@ fn metal_command_encoder_label(
 ) -> Option<Retained<NSString>> {
 	unsafe {
 		let label: *mut NSString = msg_send![encoder_info, label];
-		if label.is_null() { None } else { Retained::from_raw(label) }
+		if label.is_null() {
+			None
+		} else {
+			Retained::from_raw(label)
+		}
 	}
 }
 

@@ -16,6 +16,9 @@ where
 	where
 		Self: 'record;
 
+	/// Returns the frame key for the active frame.
+	fn key(&self) -> crate::FrameKey;
+
 	/// Returns a mutable view into CPU-visible buffer contents for the active frame.
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: BufferHandle<T>) -> &'static mut T;
 

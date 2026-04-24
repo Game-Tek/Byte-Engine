@@ -1,8 +1,5 @@
 use std::{cell::Cell, sync::Mutex};
 
-use crate::input::{Keys, MouseKeys};
-use crate::Features;
-use crate::{os::WindowLike, Events};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message as _};
@@ -13,6 +10,10 @@ use objc2_app_kit::{
 use objc2_foundation::{
 	NSAutoreleasePool, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
+
+use crate::input::{Keys, MouseKeys};
+use crate::Features;
+use crate::{os::WindowLike, Events};
 
 pub struct Window {
 	window: Retained<NSWindow>,
@@ -535,8 +536,9 @@ fn keycode_to_key(code: u16) -> Option<Keys> {
 
 #[cfg(test)]
 mod tests {
-	use super::normalize_mouse_position;
 	use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+	use super::normalize_mouse_position;
 
 	#[test]
 	fn normalize_mouse_position_centers_the_origin() {

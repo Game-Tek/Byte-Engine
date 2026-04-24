@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 
-use crate::r#async::{future, BoxedFuture};
-
 use super::{read_asset_from_source, BEADType, ResourceId};
+use crate::r#async::{future, BoxedFuture};
 
 pub trait StorageBackend: Send + Sync {
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
@@ -35,15 +34,14 @@ pub mod tests {
 		sync::{Arc, Mutex},
 	};
 
+	use utils::json;
+
+	use super::StorageBackend;
 	use crate::{
 		asset::{BEADType, ResourceId},
 		r#async::{read, BoxedFuture},
 		tests::ASSETS_PATH,
 	};
-
-	use utils::json;
-
-	use super::StorageBackend;
 
 	/// A storage backend that can be used for tests.
 	/// It allows you to add files to the storage backend. This way you can test custom files without having to create them on the filesystem.

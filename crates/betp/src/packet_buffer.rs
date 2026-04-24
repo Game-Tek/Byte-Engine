@@ -115,9 +115,8 @@ impl<const N: usize, const S: usize> PacketBuffer<N, S> {
 
 #[cfg(test)]
 mod tests {
-	use crate::packets::ConnectionStatus;
-
 	use super::*;
+	use crate::packets::ConnectionStatus;
 
 	fn make_packet<const S: usize>(sequence: u16, fill: u8) -> DataPacket<S> {
 		DataPacket::new(1, ConnectionStatus::new(sequence, 0, 0), [fill; S])

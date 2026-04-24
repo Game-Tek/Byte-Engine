@@ -1,5 +1,10 @@
 use utils::Extent;
 
+use super::{
+	asset_handler::{AssetHandler, LoadErrors},
+	asset_manager::AssetManager,
+	ResourceId,
+};
 use crate::{
 	asset,
 	processors::image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image, ImageDescription},
@@ -7,12 +12,6 @@ use crate::{
 	resource,
 	types::{Formats, Gamma},
 	ProcessedAsset,
-};
-
-use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
-	ResourceId,
 };
 
 struct DecodedImage {

@@ -246,6 +246,7 @@ impl Frame<'_> {
 		}
 
 		self.device.submit_metal_command_buffer(command_buffer.as_ref());
+		command_buffer.waitUntilCompleted();
 
 		if let Some(synchronizer) = self.device.synchronizers.get_mut(synchronizer.0 as usize) {
 			synchronizer.signaled = true;

@@ -1,4 +1,4 @@
-use crate::{CommandBufferHandle, PresentKey, SynchronizerHandle};
+use crate::{CommandBufferHandle, FrameKey, PresentKey, SynchronizerHandle};
 
 /// The `FrameRequest` struct identifies a frame that should be opened for queue execution.
 #[derive(Clone, Copy)]
@@ -7,12 +7,35 @@ pub struct FrameRequest {
 	pub synchronizer: SynchronizerHandle,
 }
 
+/// The `StartedFrame` struct exists to pair an opened frame with the previous frame that became reusable.
+pub struct StartedFrame<F> {
+	pub frame: F,
+	pub completed_frame: Option<FrameKey>,
+}
+
+impl<F> StartedFrame<F> {
+	pub fn new(frame: F, completed_frame: Option<FrameKey>) -> Self {
+		Self { frame, completed_frame }
+	}
+}
+
+pub fn completed_frame_key(index: u32, frames_in_flight: u8) -> Option<FrameKey> {
+	let frames_in_flight = frames_in_flight as u32;
+	index.checked_sub(frames_in_flight).map(|frame_index| FrameKey {
+		frame_index,
+		sequence_index: (frame_index % frames_in_flight) as u8,
+	})
+}
+
 /// The `QueueExecution` trait scopes command-buffer recordings created during one queue submission.
 pub trait QueueExecution<'a> {
 	type Frame: crate::frame::Frame<'a>;
 
 	/// Returns the frame opened for this queue execution, if one was requested.
 	fn frame(&mut self) -> Option<&mut Self::Frame>;
+
+	/// Returns the previous frame that was completed before this execution began, if any.
+	fn completed_frame(&self) -> Option<FrameKey>;
 
 	/// Creates a command-buffer recording, passes it to `record`, and schedules it for submission.
 	fn record<'record>(
@@ -35,7 +58,7 @@ pub trait Queue {
 
 	/// Starts a new frame by waiting for these sequence frame's synchronizers.
 	/// The returned frame allows safe access to the frame's resources and it's operations.
-	fn start_frame<'a>(&'a mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> Self::Frame<'a>;
+	fn start_frame<'a>(&'a mut self, index: u32, synchronizer_handle: SynchronizerHandle) -> StartedFrame<Self::Frame<'a>>;
 
 	/// Opens the requested frame, lets the closure record submission work, and submits it on this queue.
 	fn execute<'a, P>(

@@ -3334,7 +3334,7 @@ impl crate::device::Device for Device {
 		&'a mut self,
 		index: u32,
 		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-	) -> Frame<'a> {
+	) -> crate::queue::StartedFrame<Frame<'a>> {
 		let frame_index = index;
 		let sequence_index = (index % self.frames as u32) as u8;
 
@@ -3373,11 +3373,12 @@ impl crate::device::Device for Device {
 			frame_index,
 			sequence_index,
 		};
+		let completed_frame = crate::queue::completed_frame_key(index, self.frames);
 
 		// Build lazy resources before the frame may need them
 		self.process_tasks(frame_key.sequence_index);
 
-		Frame::new(self, frame_key)
+		crate::queue::StartedFrame::new(Frame::new(self, frame_key), completed_frame)
 	}
 
 	#[inline]

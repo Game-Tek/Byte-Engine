@@ -1,5 +1,6 @@
 use core::time;
 use std::{
+	collections::VecDeque,
 	net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, UdpSocket},
 	sync::Arc,
 	thread,
@@ -563,6 +564,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	struct CustomSceneManager {
 		light_receiver: DefaultListener<CreateMessage<Lights>>,
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		pending_meshes: VecDeque<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		visibility_world_render_domain: VisibilityWorldRenderDomain,
 	}
 
@@ -571,23 +573,52 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			&mut self,
 			transfer: &mut ghi::implementation::CommandBufferRecording,
 			key: ghi::FrameKey,
+			completed_frame: Option<ghi::FrameKey>,
 			mut slice: utils::BufferAllocator<'a>,
-		) -> (utils::BufferAllocator<'a>, bool) {
+		) -> rendering::scene_manager::TransferPrepareResult<'a> {
+			if let Some(completed_frame) = completed_frame {
+				self.visibility_world_render_domain
+					.transition_finished_transfer_resources(completed_frame);
+			}
+
 			let mut recorded_work = false;
 
 			while let Some(message) = self.mesh_receiver.read() {
-				if let Some(new_slice) = self
+				self.pending_meshes.push_back(message);
+			}
+
+			while let Some(message) = self.pending_meshes.pop_front() {
+				if self
 					.visibility_world_render_domain
-					.create_renderable_mesh_instance_and_write_mesh_data_if_not_exists(transfer, message.into_data(), slice)
-				{
-					slice = new_slice;
+					.create_renderable_mesh_instance_and_write_mesh_data_if_not_exists(
+						transfer,
+						message.clone().into_data(),
+						&mut slice,
+					) {
 					recorded_work = true;
 				} else {
-					todo!("Add back to queue to retry writing on another opportunity");
+					self.pending_meshes.push_front(message);
+					break;
 				}
 			}
 
-			(slice, recorded_work)
+			rendering::scene_manager::TransferPrepareResult { slice, recorded_work }
+		}
+
+		fn finish_frame(&mut self, completed_frame: ghi::FrameKey) {
+			self.visibility_world_render_domain
+				.transition_finished_graphics_resources(completed_frame);
+		}
+
+		fn before_prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[rendering::Sink]) {
+			while let Some(message) = self.light_receiver.read() {
+				self.visibility_world_render_domain.create_light(message.into_data());
+			}
+
+			self.visibility_world_render_domain
+				.load_pending_material_evaluation_materials(frame);
+			self.visibility_world_render_domain.load_pending_material_textures(frame);
+			self.visibility_world_render_domain.before_prepare(frame, sinks);
 		}
 
 		fn prepare(
@@ -595,10 +626,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
-			while let Some(message) = self.light_receiver.read() {
-				self.visibility_world_render_domain.create_light(message.into_data());
-			}
-
 			self.visibility_world_render_domain.prepare(frame, sinks)
 		}
 
@@ -617,6 +644,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			),
 			light_receiver: application.light_factory.listener(),
 			mesh_receiver: application.renderable_factory.listener(),
+			pending_meshes: VecDeque::new(),
 		}
 	};
 

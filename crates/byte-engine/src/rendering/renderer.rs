@@ -281,7 +281,9 @@ impl Renderer {
 
 		{
 			let mut transfer_queue = self.device.queue(self.transfer_queue_handle);
-			let mut frame = transfer_queue.start_frame(self.started_frame_count as _, self.transfer_finished_synchronizer);
+			let started_frame = transfer_queue.start_frame(self.started_frame_count as _, self.transfer_finished_synchronizer);
+			let completed_transfer_frame = started_frame.completed_frame;
+			let mut frame = started_frame.frame;
 			let key = frame.key(); // Scene managers use this key to later know which transfers are ready
 			let mut transfer_recording = frame.create_command_buffer_recording(self.transfer_command_buffer);
 
@@ -290,11 +292,11 @@ impl Renderer {
 			let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
 
 			for scene_manager in &mut self.scene_managers {
-				let (new_slice, scene_manager_recorded_work) =
-					scene_manager.prepare_transfers(&mut transfer_recording, key, slice);
-				slice = new_slice;
+				let transfer_prepare_result =
+					scene_manager.prepare_transfers(&mut transfer_recording, key, completed_transfer_frame, slice);
+				slice = transfer_prepare_result.slice;
 
-				if scene_manager_recorded_work {
+				if transfer_prepare_result.recorded_work {
 					recorded_transfer_work = true;
 				}
 			}
@@ -326,6 +328,13 @@ impl Renderer {
 		let wait_for: &[ghi::SynchronizerHandle] = if recorded_transfer_work { &transfer_wait } else { &[] };
 
 		queue.execute(Some(frame), wait_for, synchronizer, |execution| {
+			let completed_graphics_frame = execution.completed_frame();
+			if let Some(completed_graphics_frame) = completed_graphics_frame {
+				for scene_manager in scene_managers.iter_mut() {
+					scene_manager.finish_frame(completed_graphics_frame);
+				}
+			}
+
 			let (sinks, scene_manager_commands, render_pass_commands, present_keys) = {
 				let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
@@ -378,6 +387,10 @@ impl Renderer {
 					for &image in images {
 						frame.resize_image(image.into(), sink.extent());
 					}
+				}
+
+				for scene_manager in scene_managers.iter_mut() {
+					scene_manager.before_prepare(frame, &sinks);
 				}
 
 				let scene_managers = scene_managers.iter_mut();

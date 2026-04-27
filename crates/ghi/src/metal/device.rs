@@ -2409,13 +2409,14 @@ impl Device {
 		&'a mut self,
 		index: u32,
 		_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-	) -> super::Frame<'a> {
+	) -> crate::queue::StartedFrame<super::Frame<'a>> {
 		let frame_key = graphics_hardware_interface::FrameKey {
 			frame_index: index,
 			sequence_index: (index % self.frames as u32) as u8,
 		};
+		let completed_frame = crate::queue::completed_frame_key(index, self.frames);
 		self.process_tasks(frame_key.sequence_index);
-		super::Frame::new(self, frame_key)
+		crate::queue::StartedFrame::new(super::Frame::new(self, frame_key), completed_frame)
 	}
 
 	pub fn resize_buffer<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>, size: usize) {

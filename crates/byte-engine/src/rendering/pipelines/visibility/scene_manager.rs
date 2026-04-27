@@ -2,8 +2,8 @@
 pub struct VisibilityWorldRenderDomain {
 	/// Tracks buffer offsets and counts for various resources.
 	visibility_info: VisibilityInfo,
-	/// Render entities that will be rendered in the scene.
-	render_entities: Vec<(EntityHandle<dyn RenderableMesh>, ShaderMesh)>,
+	/// Render entities registered in the scene.
+	render_entities: Vec<RenderEntity>,
 	/// Loaded mesh resources.
 	meshes: Vec<ResourceStates<MeshData, ()>>,
 	/// Mapping from resource ID to mesh index.
@@ -278,6 +278,8 @@ impl VisibilityWorldRenderDomain {
 			render_info: RenderInfo {
 				instances: Vec::with_capacity(4096),
 				active_instances: Vec::with_capacity(4096),
+				opaque_materials: Vec::with_capacity(MAX_MATERIALS),
+				transparent_materials: Vec::with_capacity(MAX_MATERIALS),
 			},
 
 			sink_states: Vec::with_capacity(4),
@@ -292,14 +294,14 @@ impl VisibilityWorldRenderDomain {
 		&'slf mut self,
 		c: &mut ghi::implementation::CommandBufferRecording,
 		renderable: EntityHandle<dyn RenderableMesh>,
-		slice: utils::BufferAllocator<'buffer>,
-	) -> Option<utils::BufferAllocator<'buffer>> {
+		slice: &mut utils::BufferAllocator<'buffer>,
+	) -> bool {
 		let mesh_source = renderable.get_mesh();
 
-		let Some((slice, mesh)) =
+		let Some((mesh_index, mesh)) =
 			self.create_render_mesh_if_mesh_source_does_not_exists_and_return_mesh_object(c, slice, mesh_source)
 		else {
-			return None;
+			return false;
 		};
 
 		let model = renderable.transform().get_matrix().into();
@@ -307,9 +309,10 @@ impl VisibilityWorldRenderDomain {
 		self.ensure_instance_capacity(mesh.primitives.len());
 
 		for primitive in &mesh.primitives {
-			self.render_entities.push((
-				renderable.clone(),
-				ShaderMesh {
+			self.render_entities.push(RenderEntity {
+				entity: renderable.clone(),
+				mesh_index,
+				shader_mesh: ShaderMesh {
 					model,
 					material_index: primitive.material_index,
 					base_vertex_index: mesh.vertex_offset + primitive.vertex_offset,
@@ -317,41 +320,37 @@ impl VisibilityWorldRenderDomain {
 					base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
 					base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
 				},
-			));
+			});
 			self.render_info.instances.push(Instance {
 				meshlet_count: primitive.meshlet_count,
 			});
 		}
 
-		Some(slice)
+		true
 	}
 
 	/// Creates a render mesh for the given mesh source if it does not exist in the GPU, and returns the mesh object and buffer slice.
 	fn create_render_mesh_if_mesh_source_does_not_exists_and_return_mesh_object<'slf, 'buffer>(
 		&'slf mut self,
 		c: &mut ghi::metal::CommandBufferRecording<'_>,
-		mut slice: utils::BufferAllocator<'buffer>,
+		slice: &mut utils::BufferAllocator<'buffer>,
 		mesh_source: &MeshSource,
-	) -> Option<(utils::BufferAllocator<'buffer>, MeshData)> {
+	) -> Option<(usize, MeshData)> {
 		let mesh = match mesh_source {
 			MeshSource::Resource(urid) => {
 				if let Some(e) = self.meshes_by_resource.get(*urid) {
 					// Mesh data already exists in GPU
-					self.meshes[*e].get()
+					(*e, self.meshes[*e].get())
 				} else {
 					// Mesh data needs to be written to GPU
-					if let Some((new_slice, mesh)) =
-						self.write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource(urid, c, slice)
-					{
+					if let Some(mesh) = self.write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource(urid, c, slice) {
 						let mesh_idx = self.meshes.len();
 
 						self.meshes_by_resource.insert(urid.to_string(), mesh_idx); // Store render mesh idx associated to mesh resource id
 
 						let mesh = self.meshes.push_mut(ResourceStates::Loading(c.frame_key(), mesh)).get();
 
-						slice = new_slice;
-
-						mesh
+						(mesh_idx, mesh)
 					} else {
 						return None; // We failed to load the mesh resource
 					}
@@ -360,10 +359,10 @@ impl VisibilityWorldRenderDomain {
 			MeshSource::Generated(generator) => {
 				if let Some(e) = self.meshes_by_generated_hash.get(&generator.hash()) {
 					// Mesh data already exists in GPU
-					self.meshes[*e].get()
+					(*e, self.meshes[*e].get())
 				} else {
 					// Mesh data needs to be written to GPU
-					if let Some((new_slice, mesh)) =
+					if let Some(mesh) =
 						self.write_gpu_mesh_data_and_return_mesh_object_for_mesh_generator(generator.as_ref(), c, slice)
 					{
 						let mesh_idx = self.meshes.len();
@@ -372,9 +371,7 @@ impl VisibilityWorldRenderDomain {
 
 						let mesh = self.meshes.push_mut(ResourceStates::Loading(c.frame_key(), mesh)).get();
 
-						slice = new_slice;
-
-						mesh
+						(mesh_idx, mesh)
 					} else {
 						return None; // We failed to create the mesh from the generator
 					}
@@ -382,11 +379,7 @@ impl VisibilityWorldRenderDomain {
 			}
 		};
 
-		Some((slice, mesh.clone()))
-	}
-
-	fn update_visibility_info_by_mesh(&mut self, mesh: &MeshData) {
-		todo!()
+		Some((mesh.0, mesh.1.clone()))
 	}
 
 	/// Writes GPU mesh data for a mesh resource and returns the mesh object.
@@ -396,8 +389,8 @@ impl VisibilityWorldRenderDomain {
 		&'slf mut self,
 		id: &'a str,
 		c: &mut ghi::implementation::CommandBufferRecording,
-		mut slice: utils::BufferAllocator<'buffer>,
-	) -> Option<(utils::BufferAllocator<'buffer>, MeshData)> {
+		_slice: &mut utils::BufferAllocator<'buffer>,
+	) -> Option<MeshData> {
 		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
 
 		let mut resource_request: Reference<ResourceMesh> = {
@@ -459,12 +452,25 @@ impl VisibilityWorldRenderDomain {
 		let primitive_count = vertex_indices_stream.count();
 		let triangle_count = meshlet_indices_stream.count() / 3;
 		let total_meshlet_count = meshlets_stream.count();
+		let vertex_offset = self.visibility_info.vertex_count as usize;
+		let primitive_offset = self.visibility_info.primitives_count as usize;
+		let triangle_offset = self.visibility_info.triangle_count as usize;
 
-		let vertex_positions_buffer = slice.take(vertex_count * std::mem::size_of::<(f32, f32, f32)>());
-		let vertex_normals_buffer = slice.take(vertex_count * std::mem::size_of::<(f32, f32, f32)>());
-		let vertex_uv_buffer = slice.take(vertex_count * std::mem::size_of::<(f32, f32)>());
-		let vertex_indices_buffer = slice.take(primitive_count * std::mem::size_of::<u16>());
-		let primitive_indices_buffer = slice.take(triangle_count * std::mem::size_of::<[u8; 3]>());
+		let vertex_positions_buffer = Self::as_byte_slice_mut(
+			&mut c.get_mut_buffer_slice(self.vertex_positions_buffer)[vertex_offset..vertex_offset + vertex_count],
+		);
+		let vertex_normals_buffer = Self::as_byte_slice_mut(
+			&mut c.get_mut_buffer_slice(self.vertex_normals_buffer)[vertex_offset..vertex_offset + vertex_count],
+		);
+		let vertex_uv_buffer = Self::as_byte_slice_mut(
+			&mut c.get_mut_buffer_slice(self.vertex_uvs_buffer)[vertex_offset..vertex_offset + vertex_count],
+		);
+		let vertex_indices_buffer = Self::as_byte_slice_mut(
+			&mut c.get_mut_buffer_slice(self.vertex_indices_buffer)[primitive_offset..primitive_offset + primitive_count],
+		);
+		let primitive_indices_buffer = Self::as_byte_slice_mut(
+			&mut c.get_mut_buffer_slice(self.primitive_indices_buffer)[triangle_offset..triangle_offset + triangle_count],
+		);
 
 		let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
 
@@ -481,6 +487,12 @@ impl VisibilityWorldRenderDomain {
 			log::warn!("Failed to load mesh data");
 			return None;
 		};
+
+		c.sync_buffer(self.vertex_positions_buffer);
+		c.sync_buffer(self.vertex_normals_buffer);
+		c.sync_buffer(self.vertex_uvs_buffer);
+		c.sync_buffer(self.vertex_indices_buffer);
+		c.sync_buffer(self.primitive_indices_buffer);
 
 		let Reference {
 			resource: ResourceMesh {
@@ -610,6 +622,7 @@ impl VisibilityWorldRenderDomain {
 					*meshlet;
 			}
 		}
+		c.sync_buffer(self.meshlets_data_buffer);
 
 		let primitives = meshlets_per_primitive.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>();
 
@@ -648,9 +661,9 @@ impl VisibilityWorldRenderDomain {
 			primitives,
 		};
 
-		self.update_visibility_info_by_mesh(&mesh);
+		self.update_visibility_info_stats(vertex_count, primitive_count, triangle_count, total_meshlet_count);
 
-		Some((slice, mesh))
+		Some(mesh)
 	}
 
 	/// Writes the mesh data to the GPU and returns the mesh object.
@@ -662,8 +675,8 @@ impl VisibilityWorldRenderDomain {
 		&'slf mut self,
 		generator: &dyn MeshGenerator,
 		c: &mut ghi::implementation::CommandBufferRecording,
-		mut slice: utils::BufferAllocator<'buffer>,
-	) -> Option<(utils::BufferAllocator<'buffer>, MeshData)> {
+		_slice: &mut utils::BufferAllocator<'buffer>,
+	) -> Option<MeshData> {
 		let positions = generator.positions();
 		let normals = generator.normals();
 		let uvs = generator.uvs();
@@ -680,26 +693,49 @@ impl VisibilityWorldRenderDomain {
 
 		self.ensure_geometry_capacity(positions.len(), vertex_indices.len(), primitive_indices.len(), meshlets.len());
 
-		let vertex_positions_buffer = slice.take(positions.len() * std::mem::size_of::<(f32, f32, f32)>());
-		vertex_positions_buffer.copy_from_slice(unsafe { std::mem::transmute(positions.as_slice()) });
+		let vertex_offset = self.visibility_info.vertex_count as usize;
+		let primitive_offset = self.visibility_info.primitives_count as usize;
+		let triangle_offset = self.visibility_info.triangle_count as usize;
+		let meshlet_offset = self.visibility_info.meshlet_count as usize;
 
-		let vertex_normals_buffer = slice.take(normals.len() * std::mem::size_of::<(f32, f32, f32)>());
-		vertex_normals_buffer.copy_from_slice(unsafe { std::mem::transmute(normals.as_slice()) });
+		let vertex_positions_buffer = Self::as_byte_slice_mut(
+			&mut c.get_mut_buffer_slice(self.vertex_positions_buffer)[vertex_offset..vertex_offset + positions.len()],
+		);
+		vertex_positions_buffer.copy_from_slice(Self::as_byte_slice(positions.as_ref()));
 
-		let vertex_uv_buffer = slice.take(uvs.len() * std::mem::size_of::<(f32, f32)>());
-		vertex_uv_buffer.copy_from_slice(unsafe { std::mem::transmute(uvs.as_slice()) });
+		let vertex_normals_buffer = Self::as_byte_slice_mut(
+			&mut c.get_mut_buffer_slice(self.vertex_normals_buffer)[vertex_offset..vertex_offset + normals.len()],
+		);
+		vertex_normals_buffer.copy_from_slice(Self::as_byte_slice(normals.as_ref()));
 
-		let indices_buffer = slice.take(indices.len() * std::mem::size_of::<u16>());
-		indices_buffer.copy_from_slice(unsafe { std::mem::transmute(vertex_indices.as_slice()) });
+		let vertex_uv_buffer = Self::as_byte_slice_mut(
+			&mut c.get_mut_buffer_slice(self.vertex_uvs_buffer)[vertex_offset..vertex_offset + uvs.len()],
+		);
+		vertex_uv_buffer.copy_from_slice(Self::as_byte_slice(uvs.as_ref()));
 
-		let primitive_indices_buffer = slice.take(primitive_indices.len() * std::mem::size_of::<[u8; 3]>());
-		primitive_indices_buffer.copy_from_slice(unsafe { std::mem::transmute(primitive_indices.as_slice()) });
+		let indices_buffer = Self::as_byte_slice_mut(
+			&mut c.get_mut_buffer_slice(self.vertex_indices_buffer)[primitive_offset..primitive_offset + vertex_indices.len()],
+		);
+		indices_buffer.copy_from_slice(Self::as_byte_slice(vertex_indices.as_slice()));
+
+		let primitive_indices_buffer = Self::as_byte_slice_mut(
+			&mut c.get_mut_buffer_slice(self.primitive_indices_buffer)
+				[triangle_offset..triangle_offset + primitive_indices.len()],
+		);
+		primitive_indices_buffer.copy_from_slice(Self::as_byte_slice(primitive_indices.as_slice()));
 
 		let meshlets_data_slice = c.get_mut_buffer_slice(self.meshlets_data_buffer);
 
 		for (index, meshlet) in meshlets.iter().enumerate() {
-			meshlets_data_slice[index] = *meshlet;
+			meshlets_data_slice[meshlet_offset + index] = *meshlet;
 		}
+
+		c.sync_buffer(self.vertex_positions_buffer);
+		c.sync_buffer(self.vertex_normals_buffer);
+		c.sync_buffer(self.vertex_uvs_buffer);
+		c.sync_buffer(self.vertex_indices_buffer);
+		c.sync_buffer(self.primitive_indices_buffer);
+		c.sync_buffer(self.meshlets_data_buffer);
 
 		let mesh = MeshData {
 			vertex_offset: self.visibility_info.vertex_count,
@@ -710,16 +746,16 @@ impl VisibilityWorldRenderDomain {
 			primitives: vec![MeshPrimitive {
 				material_index: 0,
 				meshlet_count: meshlets.len() as u32,
-				meshlet_offset: self.visibility_info.meshlet_count,
-				vertex_offset: self.visibility_info.vertex_count,
-				primitive_offset: self.visibility_info.primitives_count,
-				triangle_offset: self.visibility_info.triangle_count,
+				meshlet_offset: 0,
+				vertex_offset: 0,
+				primitive_offset: 0,
+				triangle_offset: 0,
 			}],
 		};
 
-		self.update_visibility_info_by_mesh(&mesh);
+		self.update_visibility_info_stats(positions.len(), vertex_indices.len(), primitive_indices.len(), meshlets.len());
 
-		Some((slice, mesh))
+		Some(mesh)
 	}
 
 	fn build_generated_meshlets(indices: &[u16]) -> Result<(Vec<u16>, Vec<[u8; 3]>, Vec<ShaderMeshletData>), ()> {
@@ -830,6 +866,14 @@ impl VisibilityWorldRenderDomain {
 		Ok(())
 	}
 
+	fn as_byte_slice<T>(slice: &[T]) -> &[u8] {
+		unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
+	}
+
+	fn as_byte_slice_mut<T>(slice: &mut [T]) -> &mut [u8] {
+		unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
+	}
+
 	fn create_material_resources<'a>(
 		&'a mut self,
 		resource: &mut resource_management::Reference<ResourceMaterial>,
@@ -896,14 +940,17 @@ impl VisibilityWorldRenderDomain {
 
 					self.material_evaluation_materials.insert(
 						material_id.clone(),
-						ResourceStates::Loaded(RenderDescription {
-							name: material_id,
-							index,
-							pipeline,
-							alpha: false,
-							textures: texture_dependencies,
-							variant: RenderDescriptionVariants::Material { shaders: shader_names },
-						}),
+						ResourceStates::Loading(
+							device.key(),
+							RenderDescription {
+								name: material_id,
+								index,
+								pipeline,
+								alpha: false,
+								textures: texture_dependencies,
+								variant: RenderDescriptionVariants::Material { shaders: shader_names },
+							},
+						),
 					);
 
 					Ok(index)
@@ -1007,14 +1054,17 @@ impl VisibilityWorldRenderDomain {
 
 		self.material_evaluation_materials.insert(
 			variant_id.clone(),
-			ResourceStates::Loaded(RenderDescription {
-				name: variant_id,
-				index,
-				pipeline,
-				alpha,
-				textures: texture_dependencies,
-				variant: RenderDescriptionVariants::Variant {},
-			}),
+			ResourceStates::Loading(
+				device.key(),
+				RenderDescription {
+					name: variant_id,
+					index,
+					pipeline,
+					alpha,
+					textures: texture_dependencies,
+					variant: RenderDescriptionVariants::Variant {},
+				},
+			),
 		);
 
 		Ok(index)
@@ -1022,6 +1072,71 @@ impl VisibilityWorldRenderDomain {
 
 	pub fn create_light(&mut self, light: Lights) {
 		self.lights.push(light);
+	}
+
+	pub fn transition_finished_transfer_resources(&mut self, frame_key: ghi::FrameKey) {
+		self.meshes = self.meshes.drain(..).map(|mesh| mesh.frame_finished(frame_key)).collect();
+	}
+
+	pub fn transition_finished_graphics_resources(&mut self, frame_key: ghi::FrameKey) {
+		self.images = self
+			.images
+			.drain()
+			.map(|(name, image)| (name, image.frame_finished(frame_key)))
+			.collect();
+		self.material_evaluation_materials = self
+			.material_evaluation_materials
+			.drain()
+			.map(|(name, material)| (name, material.frame_finished(frame_key)))
+			.collect();
+	}
+
+	pub fn load_pending_material_evaluation_materials(&mut self, frame: &mut ghi::implementation::Frame) -> bool {
+		let pending_materials = self
+			.material_evaluation_materials
+			.iter()
+			.filter_map(|(name, material)| match material {
+				ResourceStates::Pending(_) => Some(name.clone()),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+
+		let mut loaded_any = false;
+
+		for material in pending_materials {
+			let Ok(resource) = self.resource_manager.request::<ResourceVariant>(&material) else {
+				log::error!("Failed to load material resource {}", material);
+				continue;
+			};
+
+			loaded_any |= self.create_variant_resources(resource, frame).is_ok();
+		}
+
+		loaded_any
+	}
+
+	pub fn load_pending_material_textures(&mut self, frame: &mut ghi::implementation::Frame) -> bool {
+		let pending_images = self
+			.images
+			.iter()
+			.filter_map(|(name, image)| match image {
+				ResourceStates::Pending(_) => Some(name.clone()),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+
+		let mut loaded_any = false;
+
+		for image in pending_images {
+			let Ok(mut resource) = self.resource_manager.request::<ResourceImage>(&image) else {
+				log::error!("Failed to load image resource {}", image);
+				continue;
+			};
+
+			loaded_any |= self.create_image_resources(&mut resource, frame).is_some();
+		}
+
+		loaded_any
 	}
 
 	fn reserve_image_resources(&mut self, id: &str) -> u32 {
@@ -1056,7 +1171,7 @@ impl VisibilityWorldRenderDomain {
 
 		let image = Image { index, image, sampler };
 		self.write_image_descriptors(&image, device);
-		self.images.insert(image_id, ResourceStates::Loaded(image));
+		self.images.insert(image_id, ResourceStates::Loading(device.key(), image));
 
 		Some(index)
 	}
@@ -1215,7 +1330,7 @@ impl VisibilityWorldRenderDomain {
 }
 
 impl SceneManager for VisibilityWorldRenderDomain {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+	fn before_prepare(&mut self, frame: &mut ghi::implementation::Frame, _sinks: &[Sink]) {
 		for (name, pipeline) in self.pipeline_manager.poll(frame, MAX_PIPELINE_ADOPTIONS_PER_FRAME) {
 			if let Some(material) = self.material_evaluation_materials.get_mut(&name) {
 				match material {
@@ -1227,6 +1342,59 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			}
 		}
 
+		let meshes_data_buffer = frame.get_mut_dynamic_buffer_slice(self.meshes_data_buffer);
+		let mut ready_materials = [false; MAX_MATERIALS];
+
+		for material in self.material_evaluation_materials.values() {
+			if let Some(material) = material.get_loaded() {
+				ready_materials[material.index as usize] = self.material_ready(material);
+			}
+		}
+
+		if self.render_entities.len() > MAX_INSTANCES {
+			panic!(
+				"Visibility instance limit exceeded. The most likely cause is that the scene contains more mesh primitives than the visibility pipeline supports."
+			);
+		}
+
+		self.render_info.active_instances.clear();
+
+		for (render_entity, instance) in self.render_entities.iter().zip(self.render_info.instances.iter()) {
+			if !self.meshes[render_entity.mesh_index].is_ready() {
+				continue;
+			}
+
+			if !ready_materials[render_entity.shader_mesh.material_index as usize] {
+				continue;
+			}
+
+			let active_index = self.render_info.active_instances.len();
+			meshes_data_buffer[active_index] = ShaderMesh {
+				model: render_entity.entity.transform().get_matrix().into(),
+				..render_entity.shader_mesh
+			};
+			self.render_info.active_instances.push(*instance);
+		}
+
+		self.render_info.opaque_materials = self
+			.material_evaluation_materials
+			.values()
+			.filter_map(|v| v.get_loaded())
+			.filter(|v| self.material_ready(v))
+			.filter(|v| v.alpha == false)
+			.filter_map(|v| v.pipeline.map(|pipeline| (v.name.clone(), v.index, pipeline)))
+			.collect::<Vec<_>>();
+		self.render_info.transparent_materials = self
+			.material_evaluation_materials
+			.values()
+			.filter_map(|v| v.get_loaded())
+			.filter(|v| self.material_ready(v))
+			.filter(|v| v.alpha == true)
+			.filter_map(|v| v.pipeline.map(|pipeline| (v.name.clone(), v.index, pipeline)))
+			.collect::<Vec<_>>();
+	}
+
+	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let shadow_light = self.lights.iter().enumerate().find_map(|(index, light)| match light {
 			Lights::Direction(light) => Some((index, light.direction)),
 			Lights::Point(_) => None,
@@ -1268,54 +1436,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			}
 		}
 
-		let meshes_data_buffer = frame.get_mut_dynamic_buffer_slice(self.meshes_data_buffer);
-		let mut ready_materials = [false; MAX_MATERIALS];
-
-		for material in self.material_evaluation_materials.values() {
-			if let Some(material) = material.get_loaded() {
-				ready_materials[material.index as usize] = self.material_ready(material);
-			}
-		}
-
-		if self.render_entities.len() > MAX_INSTANCES {
-			panic!(
-				"Visibility instance limit exceeded. The most likely cause is that the scene contains more mesh primitives than the visibility pipeline supports."
-			);
-		}
-
-		self.render_info.active_instances.clear();
-
-		for ((entity, shader_mesh), instance) in self.render_entities.iter().zip(self.render_info.instances.iter()) {
-			if !ready_materials[shader_mesh.material_index as usize] {
-				continue;
-			}
-
-			let active_index = self.render_info.active_instances.len();
-			meshes_data_buffer[active_index] = ShaderMesh {
-				model: entity.transform().get_matrix().into(),
-				..*shader_mesh
-			};
-			self.render_info.active_instances.push(*instance);
-		}
-
 		self.write_light_data(frame, shadow_light_index);
-
-		let opaque_materials = self
-			.material_evaluation_materials
-			.values()
-			.filter_map(|v| v.get_loaded())
-			.filter(|v| self.material_ready(v))
-			.filter(|v| v.alpha == false)
-			.filter_map(|v| v.pipeline.map(|pipeline| (v.name.clone(), v.index, pipeline)))
-			.collect::<Vec<_>>();
-		let transparent_materials = self
-			.material_evaluation_materials
-			.values()
-			.filter_map(|v| v.get_loaded())
-			.filter(|v| self.material_ready(v))
-			.filter(|v| v.alpha == true)
-			.filter_map(|v| v.pipeline.map(|pipeline| (v.name.clone(), v.index, pipeline)))
-			.collect::<Vec<_>>();
 
 		let sink_x_rp = sinks.iter().filter_map(|sink| {
 			self.sink_states
@@ -1330,8 +1451,8 @@ impl SceneManager for VisibilityWorldRenderDomain {
 					frame,
 					v,
 					&self.render_info.active_instances,
-					&opaque_materials,
-					&transparent_materials,
+					&self.render_info.opaque_materials,
+					&self.render_info.transparent_materials,
 					shadow_light_index.is_some(),
 				)) as Box<dyn RenderPassFunction>
 			})
@@ -1783,6 +1904,13 @@ pub struct MeshData {
 	acceleration_structure: Option<ghi::BottomLevelAccelerationStructureHandle>,
 }
 
+/// The `RenderEntity` struct preserves the mesh readiness dependency for a renderable instance.
+struct RenderEntity {
+	entity: EntityHandle<dyn RenderableMesh>,
+	mesh_index: usize,
+	shader_mesh: ShaderMesh,
+}
+
 enum MeshState {
 	Build { mesh_handle: String },
 	Update {},
@@ -1850,6 +1978,8 @@ pub struct Instance {
 struct RenderInfo {
 	instances: Vec<Instance>,
 	active_instances: Vec<Instance>,
+	opaque_materials: Vec<(String, u32, ghi::PipelineHandle)>,
+	transparent_materials: Vec<(String, u32, ghi::PipelineHandle)>,
 }
 
 struct SinkState {

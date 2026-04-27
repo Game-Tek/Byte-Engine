@@ -14,6 +14,7 @@ pub struct Queue {
 /// The `Execution` struct gathers Vulkan command-buffer recordings before queue submission.
 pub struct Execution<'a> {
 	frame: Option<Frame<'a>>,
+	completed_frame: Option<crate::FrameKey>,
 	command_buffers: Vec<(crate::CommandBufferHandle, HashMap<crate::PrivateHandles, TransitionState>)>,
 }
 
@@ -22,6 +23,10 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 
 	fn frame(&mut self) -> Option<&mut Self::Frame> {
 		self.frame.as_mut()
+	}
+
+	fn completed_frame(&self) -> Option<crate::FrameKey> {
+		self.completed_frame
 	}
 
 	fn record<'record>(
@@ -61,6 +66,7 @@ impl crate::queue::Queue for Queue {
 		};
 		let mut execution = Execution {
 			frame,
+			completed_frame: None,
 			command_buffers: Vec::new(),
 		};
 		let present_keys = execute(&mut execution);

@@ -754,6 +754,7 @@ pub mod queue {
 	/// The `Execution` struct gathers Metal command-buffer recordings before queue submission.
 	pub struct Execution<'a> {
 		frame: Option<super::Frame<'a>>,
+		completed_frame: Option<graphics_hardware_interface::FrameKey>,
 		command_buffers: Vec<super::FinishedCommandBuffer<'static>>,
 	}
 
@@ -762,6 +763,10 @@ pub mod queue {
 
 		fn frame(&mut self) -> Option<&mut Self::Frame> {
 			self.frame.as_mut()
+		}
+
+		fn completed_frame(&self) -> Option<graphics_hardware_interface::FrameKey> {
+			self.completed_frame
 		}
 
 		fn record<'record>(
@@ -792,7 +797,7 @@ pub mod queue {
 			&'a mut self,
 			index: u32,
 			synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-		) -> Self::Frame<'a> {
+		) -> crate::queue::StartedFrame<Self::Frame<'a>> {
 			self.device.start_frame(index, synchronizer_handle)
 		}
 
@@ -810,8 +815,11 @@ pub mod queue {
 			}
 
 			let frame = frame.map(|frame| self.device.start_frame(frame.index, frame.synchronizer));
+			let completed_frame = frame.as_ref().and_then(|frame| frame.completed_frame);
+			let frame = frame.map(|frame| frame.frame);
 			let mut execution = Execution {
 				frame,
+				completed_frame,
 				command_buffers: Vec::new(),
 			};
 			let present_keys = execute(&mut execution);

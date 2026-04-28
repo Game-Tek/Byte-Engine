@@ -1,3 +1,4 @@
+pub mod gpu_vertex_data_manager;
 pub mod render_pass;
 pub mod scene_manager;
 pub mod shader_generator;
@@ -2100,6 +2101,27 @@ fn build_gtao_bitfield_root() -> besl::Node {
 	]);
 
 	root
+}
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub(super) struct ShaderMeshletData {
+	/// Base index into the vertex indices buffer
+	/// ```glsl
+	/// vertex_index = mesh.base_vertex_index + vertex_indices[meshlet.vertex_offset + gl_LocalInvocationID.x];
+	/// ```
+	primitive_offset: u16,
+	/// Base index into the primitive/triangle indices buffer
+	/// This is stored as index / 3, as the meshlet contains 3 indices per triangle
+	/// ```glsl
+	/// triangle_index = primitive_indices.primitive_indices[(meshlet.triangle_offset + gl_LocalInvocationID.x) * 3 + 0..2]
+	/// ```
+	triangle_offset: u16,
+	/// The number of primitives in the meshlet
+	/// Primitives are meshlet local indices
+	primitive_count: u8,
+	// The number of triangles in the meshlet
+	triangle_count: u8,
 }
 
 #[cfg(test)]

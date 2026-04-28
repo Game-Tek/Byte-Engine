@@ -207,6 +207,14 @@ pub fn insert_return_length<T>(collection: &mut Vec<T>, value: T) -> usize {
 	length
 }
 
+pub fn as_byte_slice<T>(slice: &[T]) -> &[u8] {
+	unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
+}
+
+pub fn as_byte_slice_mut<T>(slice: &mut [T]) -> &mut [u8] {
+	unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
+}
+
 #[cfg(test)]
 mod tests {
 	#[test]

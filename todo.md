@@ -3,3 +3,4 @@
 - Support no audio endpoint
 - Add support for perprimitiveEXT qualifier in shader outputs
 - remove them from mesh shader header
+- queue copies on transfer command buffer

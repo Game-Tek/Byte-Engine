@@ -666,12 +666,19 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub(crate) fn sync_buffers(&mut self, copy_buffers: impl Iterator<Item = BufferCopy> + Clone) {
-		self.vulkan_consume_resources(copy_buffers.clone().map(|e| VulkanConsumption {
+		let source_consumptions = copy_buffers.clone().map(|e| VulkanConsumption {
+			handle: Handles::Buffer(e.src_buffer),
+			stages: vk::PipelineStageFlags2::COPY,
+			access: vk::AccessFlags2::TRANSFER_READ,
+			layout: vk::ImageLayout::UNDEFINED,
+		});
+		let destination_consumptions = copy_buffers.clone().map(|e| VulkanConsumption {
 			handle: Handles::Buffer(e.dst_buffer),
 			stages: vk::PipelineStageFlags2::COPY,
 			access: vk::AccessFlags2::TRANSFER_WRITE,
 			layout: vk::ImageLayout::UNDEFINED,
-		}))(self);
+		});
+		self.vulkan_consume_resources(source_consumptions.chain(destination_consumptions))(self);
 
 		for e in copy_buffers {
 			// Copy all staging buffers to their respective buffers
@@ -1329,6 +1336,19 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				}
 			}
 		}
+	}
+
+	fn copy_buffers(&mut self, copies: &[crate::BufferCopyDescriptor]) {
+		let copies = copies.iter().map(|copy| {
+			BufferCopy::new(
+				self.get_internal_buffer_handle(copy.source_buffer),
+				copy.source_offset as vk::DeviceSize,
+				self.get_internal_buffer_handle(copy.destination_buffer),
+				copy.destination_offset as vk::DeviceSize,
+				copy.size,
+			)
+		});
+		self.sync_buffers(copies);
 	}
 
 	fn clear_buffers(&mut self, buffer_handles: &[graphics_hardware_interface::BaseBufferHandle]) {

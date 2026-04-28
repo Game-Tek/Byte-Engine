@@ -761,6 +761,65 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		blit_encoder.endEncoding();
 	}
 
+	fn copy_buffers(&mut self, copies: &[crate::BufferCopyDescriptor]) {
+		let consumptions = copies
+			.iter()
+			.flat_map(|copy| {
+				[
+					Consumption {
+						handle: PrivateHandles::Buffer(self.get_internal_buffer_handle(copy.source_buffer)),
+						stages: crate::Stages::TRANSFER,
+						access: crate::AccessPolicies::READ,
+						layout: crate::Layouts::Transfer,
+					},
+					Consumption {
+						handle: PrivateHandles::Buffer(self.get_internal_buffer_handle(copy.destination_buffer)),
+						stages: crate::Stages::TRANSFER,
+						access: crate::AccessPolicies::WRITE,
+						layout: crate::Layouts::Transfer,
+					},
+				]
+			})
+			.collect::<Vec<_>>();
+		self.consume_resources(consumptions);
+
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+		let label = self.current_encoder_label("Buffer Copy");
+		blit_encoder.setLabel(Some(&label));
+
+		for copy in copies {
+			let source = self
+				.device
+				.buffers
+				.resource(self.get_internal_buffer_handle(copy.source_buffer));
+			let destination = self
+				.device
+				.buffers
+				.resource(self.get_internal_buffer_handle(copy.destination_buffer));
+			unsafe {
+				blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+					source.buffer.as_ref(),
+					copy.source_offset as _,
+					destination.buffer.as_ref(),
+					copy.destination_offset as _,
+					copy.size as _,
+				);
+			}
+		}
+
+		blit_encoder.endEncoding();
+	}
+
 	fn transfer_textures(
 		&mut self,
 		texture_handles: &[graphics_hardware_interface::BaseImageHandle],

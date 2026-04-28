@@ -70,6 +70,7 @@ impl GPUVertexDataManager {
 		&'slf mut self,
 		id: &'a str,
 		c: &mut ghi::implementation::CommandBufferRecording,
+		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: &mut utils::BufferAllocator<'buffer>,
 		resource_request: &mut Reference<Mesh>,
 	) -> Option<MeshData> {
@@ -129,20 +130,11 @@ impl GPUVertexDataManager {
 		let primitive_offset = self.visibility_info.primitives_count as usize;
 		let triangle_offset = self.visibility_info.triangle_count as usize;
 
-		let vertex_positions_buffer = as_byte_slice_mut(
-			&mut c.get_mut_buffer_slice(self.vertex_positions_buffer)[vertex_offset..vertex_offset + vertex_count],
-		);
-		let vertex_normals_buffer = as_byte_slice_mut(
-			&mut c.get_mut_buffer_slice(self.vertex_normals_buffer)[vertex_offset..vertex_offset + vertex_count],
-		);
-		let vertex_uv_buffer =
-			as_byte_slice_mut(&mut c.get_mut_buffer_slice(self.vertex_uvs_buffer)[vertex_offset..vertex_offset + vertex_count]);
-		let vertex_indices_buffer = as_byte_slice_mut(
-			&mut c.get_mut_buffer_slice(self.vertex_indices_buffer)[primitive_offset..primitive_offset + primitive_count],
-		);
-		let primitive_indices_buffer = as_byte_slice_mut(
-			&mut c.get_mut_buffer_slice(self.primitive_indices_buffer)[triangle_offset..triangle_offset + triangle_count],
-		);
+		let (vertex_positions_staging_offset, vertex_positions_buffer) = slice.take_with_offset(positions_stream.size);
+		let (vertex_normals_staging_offset, vertex_normals_buffer) = slice.take_with_offset(normals_stream.size);
+		let (vertex_uv_staging_offset, vertex_uv_buffer) = slice.take_with_offset(uvs_stream.size);
+		let (vertex_indices_staging_offset, vertex_indices_buffer) = slice.take_with_offset(vertex_indices_stream.size);
+		let (primitive_indices_staging_offset, primitive_indices_buffer) = slice.take_with_offset(meshlet_indices_stream.size);
 
 		let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
 
@@ -160,11 +152,43 @@ impl GPUVertexDataManager {
 			return None;
 		};
 
-		c.sync_buffer(self.vertex_positions_buffer);
-		c.sync_buffer(self.vertex_normals_buffer);
-		c.sync_buffer(self.vertex_uvs_buffer);
-		c.sync_buffer(self.vertex_indices_buffer);
-		c.sync_buffer(self.primitive_indices_buffer);
+		c.copy_buffers(&[
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				vertex_positions_staging_offset,
+				self.vertex_positions_buffer.into(),
+				vertex_offset * std::mem::size_of::<(f32, f32, f32)>(),
+				positions_stream.size,
+			),
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				vertex_normals_staging_offset,
+				self.vertex_normals_buffer.into(),
+				vertex_offset * std::mem::size_of::<(f32, f32, f32)>(),
+				normals_stream.size,
+			),
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				vertex_uv_staging_offset,
+				self.vertex_uvs_buffer.into(),
+				vertex_offset * std::mem::size_of::<(f32, f32)>(),
+				uvs_stream.size,
+			),
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				vertex_indices_staging_offset,
+				self.vertex_indices_buffer.into(),
+				primitive_offset * std::mem::size_of::<u16>(),
+				vertex_indices_stream.size,
+			),
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				primitive_indices_staging_offset,
+				self.primitive_indices_buffer.into(),
+				triangle_offset * std::mem::size_of::<[u8; 3]>(),
+				meshlet_indices_stream.size,
+			),
+		]);
 
 		let Reference {
 			resource: Mesh {
@@ -265,14 +289,26 @@ impl GPUVertexDataManager {
 			.map(|(mp, meshlets, primitive)| (mp, meshlets))
 			.collect::<Vec<_>>();
 
-		let meshlets_data_slice = c.get_mut_buffer_slice(self.meshlets_data_buffer);
-		for (i, (primitive, meshlets)) in meshlets_per_primitive.iter().enumerate() {
+		let meshlets_data_size = total_meshlet_count * std::mem::size_of::<ShaderMeshletData>();
+		let (meshlets_data_staging_offset, meshlets_data_bytes) = slice.take_with_offset(meshlets_data_size);
+		let meshlets_data_slice = unsafe {
+			std::slice::from_raw_parts_mut(
+				meshlets_data_bytes.as_mut_ptr() as *mut ShaderMeshletData,
+				total_meshlet_count,
+			)
+		};
+		for (primitive, meshlets) in meshlets_per_primitive.iter() {
 			for (j, meshlet) in meshlets.iter().enumerate() {
-				meshlets_data_slice[self.visibility_info.meshlet_count as usize + primitive.meshlet_offset as usize + j] =
-					*meshlet;
+				meshlets_data_slice[primitive.meshlet_offset as usize + j] = *meshlet;
 			}
 		}
-		c.sync_buffer(self.meshlets_data_buffer);
+		c.copy_buffers(&[ghi::BufferCopyDescriptor::new(
+			staging_data_buffer,
+			meshlets_data_staging_offset,
+			self.meshlets_data_buffer.into(),
+			self.visibility_info.meshlet_count as usize * std::mem::size_of::<ShaderMeshletData>(),
+			meshlets_data_size,
+		)]);
 
 		let primitives = meshlets_per_primitive.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>();
 
@@ -325,7 +361,8 @@ impl GPUVertexDataManager {
 		&'slf mut self,
 		generator: &dyn MeshGenerator,
 		c: &mut ghi::implementation::CommandBufferRecording,
-		_slice: &mut utils::BufferAllocator<'buffer>,
+		staging_data_buffer: ghi::BaseBufferHandle,
+		slice: &mut utils::BufferAllocator<'buffer>,
 	) -> Option<MeshData> {
 		let positions = generator.positions();
 		let normals = generator.normals();
@@ -348,43 +385,73 @@ impl GPUVertexDataManager {
 		let triangle_offset = self.visibility_info.triangle_count as usize;
 		let meshlet_offset = self.visibility_info.meshlet_count as usize;
 
-		let vertex_positions_buffer = as_byte_slice_mut(
-			&mut c.get_mut_buffer_slice(self.vertex_positions_buffer)[vertex_offset..vertex_offset + positions.len()],
-		);
+		let (vertex_positions_staging_offset, vertex_positions_buffer) =
+			slice.take_with_offset(std::mem::size_of_val(positions.as_ref()));
 		vertex_positions_buffer.copy_from_slice(as_byte_slice(positions.as_ref()));
 
-		let vertex_normals_buffer = as_byte_slice_mut(
-			&mut c.get_mut_buffer_slice(self.vertex_normals_buffer)[vertex_offset..vertex_offset + normals.len()],
-		);
+		let (vertex_normals_staging_offset, vertex_normals_buffer) =
+			slice.take_with_offset(std::mem::size_of_val(normals.as_ref()));
 		vertex_normals_buffer.copy_from_slice(as_byte_slice(normals.as_ref()));
 
-		let vertex_uv_buffer =
-			as_byte_slice_mut(&mut c.get_mut_buffer_slice(self.vertex_uvs_buffer)[vertex_offset..vertex_offset + uvs.len()]);
+		let (vertex_uv_staging_offset, vertex_uv_buffer) = slice.take_with_offset(std::mem::size_of_val(uvs.as_ref()));
 		vertex_uv_buffer.copy_from_slice(as_byte_slice(uvs.as_ref()));
 
-		let indices_buffer = as_byte_slice_mut(
-			&mut c.get_mut_buffer_slice(self.vertex_indices_buffer)[primitive_offset..primitive_offset + vertex_indices.len()],
-		);
+		let (vertex_indices_staging_offset, indices_buffer) =
+			slice.take_with_offset(std::mem::size_of_val(vertex_indices.as_slice()));
 		indices_buffer.copy_from_slice(as_byte_slice(vertex_indices.as_slice()));
 
-		let primitive_indices_buffer = as_byte_slice_mut(
-			&mut c.get_mut_buffer_slice(self.primitive_indices_buffer)
-				[triangle_offset..triangle_offset + primitive_indices.len()],
-		);
+		let (primitive_indices_staging_offset, primitive_indices_buffer) =
+			slice.take_with_offset(std::mem::size_of_val(primitive_indices.as_slice()));
 		primitive_indices_buffer.copy_from_slice(as_byte_slice(primitive_indices.as_slice()));
 
-		let meshlets_data_slice = c.get_mut_buffer_slice(self.meshlets_data_buffer);
+		let (meshlets_data_staging_offset, meshlets_data_buffer) =
+			slice.take_with_offset(std::mem::size_of_val(meshlets.as_slice()));
+		meshlets_data_buffer.copy_from_slice(as_byte_slice(meshlets.as_slice()));
 
-		for (index, meshlet) in meshlets.iter().enumerate() {
-			meshlets_data_slice[meshlet_offset + index] = *meshlet;
-		}
-
-		c.sync_buffer(self.vertex_positions_buffer);
-		c.sync_buffer(self.vertex_normals_buffer);
-		c.sync_buffer(self.vertex_uvs_buffer);
-		c.sync_buffer(self.vertex_indices_buffer);
-		c.sync_buffer(self.primitive_indices_buffer);
-		c.sync_buffer(self.meshlets_data_buffer);
+		c.copy_buffers(&[
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				vertex_positions_staging_offset,
+				self.vertex_positions_buffer.into(),
+				vertex_offset * std::mem::size_of::<(f32, f32, f32)>(),
+				std::mem::size_of_val(positions.as_ref()),
+			),
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				vertex_normals_staging_offset,
+				self.vertex_normals_buffer.into(),
+				vertex_offset * std::mem::size_of::<(f32, f32, f32)>(),
+				std::mem::size_of_val(normals.as_ref()),
+			),
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				vertex_uv_staging_offset,
+				self.vertex_uvs_buffer.into(),
+				vertex_offset * std::mem::size_of::<(f32, f32)>(),
+				std::mem::size_of_val(uvs.as_ref()),
+			),
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				vertex_indices_staging_offset,
+				self.vertex_indices_buffer.into(),
+				primitive_offset * std::mem::size_of::<u16>(),
+				std::mem::size_of_val(vertex_indices.as_slice()),
+			),
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				primitive_indices_staging_offset,
+				self.primitive_indices_buffer.into(),
+				triangle_offset * std::mem::size_of::<[u8; 3]>(),
+				std::mem::size_of_val(primitive_indices.as_slice()),
+			),
+			ghi::BufferCopyDescriptor::new(
+				staging_data_buffer,
+				meshlets_data_staging_offset,
+				self.meshlets_data_buffer.into(),
+				meshlet_offset * std::mem::size_of::<ShaderMeshletData>(),
+				std::mem::size_of_val(meshlets.as_slice()),
+			),
+		]);
 
 		let mesh = MeshData {
 			vertex_offset: self.visibility_info.vertex_count,
@@ -609,8 +676,9 @@ pub struct MeshPrimitive {
 
 use std::collections::hash_map::Entry;
 
+use ghi::command_buffer::CommandBufferRecording as _;
 use resource_management::{resources::mesh::Mesh, Reference};
-use utils::{as_byte_slice, as_byte_slice_mut};
+use utils::as_byte_slice;
 
 use crate::rendering::{
 	mesh::generator::MeshGenerator,

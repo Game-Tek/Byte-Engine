@@ -3,9 +3,9 @@ use std::marker::PhantomData;
 use utils::Extent;
 
 use crate::{
-	graphics_hardware_interface, AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue,
-	CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, PresentKey,
-	RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	graphics_hardware_interface, AttachmentInformation, BaseBufferHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
+	ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle,
+	PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -52,6 +52,8 @@ impl<'a> CommandBufferRecording<'a> {
 	pub fn clear_images(&mut self, _textures: &[(graphics_hardware_interface::BaseImageHandle, ClearValue)]) {}
 
 	pub fn clear_buffers(&mut self, _buffer_handles: &[BaseBufferHandle]) {}
+
+	pub fn copy_buffers(&mut self, _copies: &[BufferCopyDescriptor]) {}
 
 	pub fn transfer_textures(
 		&mut self,

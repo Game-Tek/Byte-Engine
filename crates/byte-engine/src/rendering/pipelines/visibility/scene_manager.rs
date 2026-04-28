@@ -243,13 +243,17 @@ impl VisibilityWorldRenderDomain {
 		&'slf mut self,
 		c: &mut ghi::implementation::CommandBufferRecording,
 		renderable: EntityHandle<dyn RenderableMesh>,
+		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: &mut utils::BufferAllocator<'buffer>,
 	) -> bool {
 		let mesh_source = renderable.get_mesh();
 
-		let Some((mesh_index, mesh)) =
-			self.create_render_mesh_if_mesh_source_does_not_exists_and_return_mesh_object(c, slice, mesh_source)
-		else {
+		let Some((mesh_index, mesh)) = self.create_render_mesh_if_mesh_source_does_not_exists_and_return_mesh_object(
+			c,
+			staging_data_buffer,
+			slice,
+			mesh_source,
+		) else {
 			return false;
 		};
 
@@ -281,7 +285,8 @@ impl VisibilityWorldRenderDomain {
 	/// Creates a render mesh for the given mesh source if it does not exist in the GPU, and returns the mesh object and buffer slice.
 	fn create_render_mesh_if_mesh_source_does_not_exists_and_return_mesh_object<'slf, 'buffer>(
 		&'slf mut self,
-		c: &mut ghi::metal::CommandBufferRecording<'_>,
+		c: &mut ghi::implementation::CommandBufferRecording,
+		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: &mut utils::BufferAllocator<'buffer>,
 		mesh_source: &MeshSource,
 	) -> Option<(usize, MeshData)> {
@@ -303,8 +308,13 @@ impl VisibilityWorldRenderDomain {
 					// Mesh data needs to be written to GPU
 					if let Some(mesh) = self
 						.gpu_vertex_data_manager
-						.write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource(urid, c, slice, &mut resource_request)
-					{
+						.write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource(
+							urid,
+							c,
+							staging_data_buffer,
+							slice,
+							&mut resource_request,
+						) {
 						let r = resource_request.resource();
 
 						let primitives = r
@@ -365,8 +375,12 @@ impl VisibilityWorldRenderDomain {
 					// Mesh data needs to be written to GPU
 					if let Some(mesh) = self
 						.gpu_vertex_data_manager
-						.write_gpu_mesh_data_and_return_mesh_object_for_mesh_generator(generator.as_ref(), c, slice)
-					{
+						.write_gpu_mesh_data_and_return_mesh_object_for_mesh_generator(
+							generator.as_ref(),
+							c,
+							staging_data_buffer,
+							slice,
+						) {
 						let primitives = mesh
 							.primitives
 							.iter()

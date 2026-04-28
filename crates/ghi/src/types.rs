@@ -591,6 +591,34 @@ pub enum ChannelBitSize {
 	Compressed,
 }
 
+/// The `BufferCopyDescriptor` struct describes one byte range copy from a source buffer to a destination buffer.
+pub struct BufferCopyDescriptor {
+	pub source_buffer: BaseBufferHandle,
+	pub source_offset: usize,
+	pub destination_buffer: BaseBufferHandle,
+	pub destination_offset: usize,
+	pub size: usize,
+}
+
+impl BufferCopyDescriptor {
+	/// Creates a buffer copy descriptor from source and destination byte ranges.
+	pub fn new(
+		source_buffer: BaseBufferHandle,
+		source_offset: usize,
+		destination_buffer: BaseBufferHandle,
+		destination_offset: usize,
+		size: usize,
+	) -> Self {
+		Self {
+			source_buffer,
+			source_offset,
+			destination_buffer,
+			destination_offset,
+			size,
+		}
+	}
+}
+
 pub struct BufferDescriptor {
 	pub(super) buffer: BaseBufferHandle,
 	pub(super) offset: usize,

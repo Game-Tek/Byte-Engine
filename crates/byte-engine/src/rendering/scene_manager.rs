@@ -31,6 +31,7 @@ pub trait SceneManager {
 		transfer: &mut ghi::implementation::CommandBufferRecording,
 		key: ghi::FrameKey,
 		completed_frame: Option<ghi::FrameKey>,
+		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: utils::BufferAllocator<'a>,
 	) -> TransferPrepareResult<'a> {
 		TransferPrepareResult {

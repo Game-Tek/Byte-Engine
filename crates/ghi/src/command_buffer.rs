@@ -1,8 +1,8 @@
 use utils::Extent;
 
 use crate::{
-	rt, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferDescriptor, BufferHandle, ClearValue,
-	DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, RGBAu8, SynchronizerHandle,
+	rt, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
+	ClearValue, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle, RGBAu8, SynchronizerHandle,
 	TextureCopyHandle,
 };
 
@@ -39,6 +39,9 @@ where
 	fn clear_images(&mut self, textures: &[(BaseImageHandle, ClearValue)]);
 	/// Clears the provided buffers before later GPU work consumes them.
 	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]);
+
+	/// Copies byte ranges between buffers.
+	fn copy_buffers(&mut self, copies: &[BufferCopyDescriptor]);
 
 	/// Records copies that make image data available to the CPU.
 	fn transfer_textures(&mut self, texture_handles: &[BaseImageHandle]) -> Vec<TextureCopyHandle>;

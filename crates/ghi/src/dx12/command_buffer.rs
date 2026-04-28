@@ -6,9 +6,9 @@ use crate::{
 		CommandBufferRecording as _, CommonCommandBufferMode, RasterizationRenderPassMode,
 	},
 	rt::{BindingTables, BottomLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuild},
-	AttachmentInformation, BaseBufferHandle, BufferDescriptor, BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent,
-	ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, RGBAu8, SwapchainHandle, SynchronizerHandle,
-	TextureCopyHandle,
+	AttachmentInformation, BaseBufferHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle, ClearValue,
+	DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, RGBAu8,
+	SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -68,6 +68,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 	fn clear_buffers(&mut self, _buffer_handles: &[BaseBufferHandle]) {
 		// TODO: DX12 buffer clears require command list encoding.
+	}
+
+	fn copy_buffers(&mut self, _copies: &[BufferCopyDescriptor]) {
+		// TODO: DX12 buffer copies require command list encoding.
 	}
 
 	fn transfer_textures(

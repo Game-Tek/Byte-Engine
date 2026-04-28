@@ -574,6 +574,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			transfer: &mut ghi::implementation::CommandBufferRecording,
 			key: ghi::FrameKey,
 			completed_frame: Option<ghi::FrameKey>,
+			staging_data_buffer: ghi::BaseBufferHandle,
 			mut slice: utils::BufferAllocator<'a>,
 		) -> rendering::scene_manager::TransferPrepareResult<'a> {
 			if let Some(completed_frame) = completed_frame {
@@ -593,6 +594,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 					.create_renderable_mesh_instance_and_write_mesh_data_if_not_exists(
 						transfer,
 						message.clone().into_data(),
+						staging_data_buffer,
 						&mut slice,
 					) {
 					recorded_work = true;

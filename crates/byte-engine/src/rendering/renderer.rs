@@ -292,8 +292,13 @@ impl Renderer {
 			let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
 
 			for scene_manager in &mut self.scene_managers {
-				let transfer_prepare_result =
-					scene_manager.prepare_transfers(&mut transfer_recording, key, completed_transfer_frame, slice);
+				let transfer_prepare_result = scene_manager.prepare_transfers(
+					&mut transfer_recording,
+					key,
+					completed_transfer_frame,
+					self.upload_buffer.into(),
+					slice,
+				);
 				slice = transfer_prepare_result.slice;
 
 				if transfer_prepare_result.recorded_work {

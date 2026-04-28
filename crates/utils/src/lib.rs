@@ -28,10 +28,15 @@ impl<'a> BufferAllocator<'a> {
 	}
 
 	pub fn take(&mut self, size: usize) -> &'a mut [u8] {
+		self.take_with_offset(size).1
+	}
+
+	pub fn take_with_offset(&mut self, size: usize) -> (usize, &'a mut [u8]) {
+		let offset = self.offset;
 		let buffer = &mut self.buffer[self.offset..][..size];
 		self.offset += size;
 		// SAFETY: We know that the buffer is valid for the lifetime of the splitter.
-		unsafe { std::mem::transmute(buffer) }
+		(offset, unsafe { std::mem::transmute(buffer) })
 	}
 }
 

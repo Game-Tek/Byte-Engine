@@ -29,7 +29,8 @@ use super::{
 	device::Device,
 	device_class::{DeviceClass, DeviceClassHandle},
 	input_trigger::{Trigger, TriggerDescription},
-	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, TickPolicy, TriggerHandle, Types, Value,
+	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types,
+	Value,
 };
 use crate::{
 	core::{
@@ -55,6 +56,7 @@ pub enum TriggerReference {
 
 #[derive(Copy, Clone, PartialEq)]
 struct Record {
+	seat_handle: SeatHandle,
 	device_handle: DeviceHandle,
 	trigger_handle: TriggerHandle,
 	value: Value,
@@ -82,12 +84,15 @@ struct InputAction {
 }
 
 pub struct InputSourceEventState {
+	seat_handle: SeatHandle,
 	device_handle: DeviceHandle,
 	value: Value,
 }
 
 /// The input event state is the value of an input event.
 pub struct InputEventState {
+	/// The seat that triggered the input event.
+	seat_handle: SeatHandle,
 	/// The device that triggered the input event.
 	device_handle: DeviceHandle,
 	/// The handle to the input event.
@@ -105,10 +110,10 @@ pub struct InputManager {
 	devices: Vec<Device>,
 	records: Vec<Record>,
 	actions: Vec<InputAction>,
-	/// Stores the last value of a trigger relative to the device it belongs to.
-	trigger_values: HashMap<(DeviceHandle, TriggerHandle), Record>,
-	/// Stores the last value of an action relative to the device it belongs to.
-	action_values: HashMap<(DeviceHandle, ActionHandle), Value>,
+	/// Stores the last value of a trigger relative to the seat and device it belongs to.
+	trigger_values: HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
+	/// Stores the last value of an action relative to the seat and device it belongs to.
+	action_values: HashMap<(SeatHandle, DeviceHandle, ActionHandle), Value>,
 	action_listener: DefaultListener<CreateMessage<Action>>,
 	event_channel: DefaultChannel<ActionEvent>,
 }
@@ -296,6 +301,7 @@ impl InputManager {
 	/// One example is the UP key on a keyboard being pressed.
 	pub fn record_trigger_value_for_device(
 		&mut self,
+		seat_handle: SeatHandle,
 		device_handle: DeviceHandle,
 		trigger_reference: TriggerReference,
 		value: Value,
@@ -322,6 +328,7 @@ impl InputManager {
 		let time = std::time::SystemTime::now();
 
 		let record = Record {
+			seat_handle,
 			device_handle,
 			trigger_handle,
 			value,
@@ -366,18 +373,21 @@ impl InputManager {
 
 			records.sort_by(|a, b| a.time.cmp(&b.time));
 
-			let mut last_records: HashMap<(DeviceHandle, TriggerHandle), Record> = HashMap::with_capacity(records.len());
+			let mut last_records: HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record> =
+				HashMap::with_capacity(records.len());
 
 			for record in records {
-				last_records.insert((record.device_handle, record.trigger_handle), record);
+				last_records.insert((record.seat_handle, record.device_handle, record.trigger_handle), record);
 			}
 
 			// Deduped and most recent records.
 			let records = last_records.into_values().collect::<Vec<_>>();
 
 			for record in &records {
-				self.trigger_values
-					.insert((record.device_handle, record.trigger_handle), record.clone());
+				self.trigger_values.insert(
+					(record.seat_handle, record.device_handle, record.trigger_handle),
+					record.clone(),
+				);
 			}
 
 			for (i, action) in self.actions.iter().enumerate() {
@@ -400,11 +410,12 @@ impl InputManager {
 				};
 
 				self.action_values
-					.insert((record.device_handle, ActionHandle(i as u32)), value);
+					.insert((record.seat_handle, record.device_handle, ActionHandle(i as u32)), value);
 
 				// OnChange actions emit here (on actual input change).
 				if let Some(handle) = &action.handle {
-					self.event_channel.send(ActionEvent::new(handle.clone(), value));
+					self.event_channel
+						.send(ActionEvent::new(record.seat_handle, handle.clone(), value));
 				}
 			}
 		}
@@ -414,7 +425,7 @@ impl InputManager {
 		// most recently resolved value. Only emits for devices that have previously
 		// interacted with the action.
 		let entries: Vec<_> = self.action_values.iter().map(|(k, v)| (*k, *v)).collect();
-		for ((device_handle, action_handle), value) in entries {
+		for ((seat_handle, device_handle, action_handle), value) in entries {
 			let action = &self.actions[action_handle.0 as usize];
 
 			let handle = match &action.handle {
@@ -426,11 +437,11 @@ impl InputManager {
 				TickPolicy::OnChange => {} // Already handled in Phase A.
 				TickPolicy::WhileActive => {
 					if !value.is_default() {
-						self.event_channel.send(ActionEvent::new(handle, value));
+						self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
 					}
 				}
 				TickPolicy::Always => {
-					self.event_channel.send(ActionEvent::new(handle, value));
+					self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
 				}
 			}
 		}
@@ -496,6 +507,7 @@ impl InputManager {
 	/// Get the latest processed value for an trigger for a device.
 	pub fn get_trigger_value_for_device(
 		&self,
+		seat_handle: SeatHandle,
 		device_handle: DeviceHandle,
 		trigger_reference: TriggerReference,
 	) -> Result<Value, ()> {
@@ -505,16 +517,22 @@ impl InputManager {
 
 		Ok(self
 			.trigger_values
-			.get(&(device_handle, trigger_handle))
+			.get(&(seat_handle, device_handle, trigger_handle))
 			.map(|record| record.value)
 			.unwrap_or(trigger.default))
 	}
 
 	/// Gets the latest processed value of an action for a device.
-	pub fn get_action_state(&self, action_handle: ActionHandle, device_handle: DeviceHandle) -> InputEventState {
+	pub fn get_action_state(
+		&self,
+		seat_handle: SeatHandle,
+		action_handle: ActionHandle,
+		device_handle: DeviceHandle,
+	) -> InputEventState {
 		self.action_values
-			.get(&(device_handle, action_handle))
+			.get(&(seat_handle, device_handle, action_handle))
 			.map(|record| InputEventState {
+				seat_handle,
 				device_handle,
 				input_event_handle: action_handle,
 				value: record.clone(),
@@ -534,6 +552,7 @@ impl InputManager {
 				};
 
 				InputEventState {
+					seat_handle,
 					device_handle,
 					input_event_handle: action_handle,
 					value: default_value,
@@ -544,7 +563,7 @@ impl InputManager {
 	fn resolve_action_value_from_record(
 		action: &InputAction,
 		record: &Record,
-		values: &HashMap<(DeviceHandle, TriggerHandle), Record>,
+		values: &HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
 	) -> Option<Value> {
 		let mapping = action
 			.trigger_mappings
@@ -561,7 +580,7 @@ impl InputManager {
 
 					values
 						.iter()
-						.filter(|(k, _)| k.1 == h)
+						.filter(|(k, _)| k.0 == record.seat_handle && k.1 == record.device_handle && k.2 == h)
 						.map(|(_, v)| v)
 						.filter_map(|e| match e.value {
 							Value::Bool(v) => {
@@ -963,68 +982,78 @@ mod tests {
 		);
 
 		let device = input_manager.create_device(&x);
+		let seat = SeatHandle::stub();
 
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(0f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(0f32));
 
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
-
-		input_manager.update();
-
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(1f32));
-
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
 
 		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(0f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(1f32));
 
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
-
-		input_manager.update();
-
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(1f32));
-
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Down"), true.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
 
 		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(-1f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(0f32));
 
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Down"), false.into());
-
-		input_manager.update();
-
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(1f32));
-
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
 
 		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(0f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(1f32));
 
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
-
-		input_manager.update();
-
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(1f32));
-
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Down"), true.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Down"), true.into());
 
 		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(-1f32));
+		assert_eq!(
+			input_manager.get_action_state(seat, action, device).value,
+			Value::Float(-1f32)
+		);
 
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
-
-		input_manager.update();
-
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(-1f32));
-
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Down"), false.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Down"), false.into());
 
 		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(action, device).value, Value::Float(0f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(1f32));
+
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(0f32));
+
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(1f32));
+
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Down"), true.into());
+
+		input_manager.update();
+
+		assert_eq!(
+			input_manager.get_action_state(seat, action, device).value,
+			Value::Float(-1f32)
+		);
+
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
+
+		input_manager.update();
+
+		assert_eq!(
+			input_manager.get_action_state(seat, action, device).value,
+			Value::Float(-1f32)
+		);
+
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Down"), false.into());
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(0f32));
 	}
 
 	#[test]
@@ -1053,39 +1082,40 @@ mod tests {
 		);
 
 		let device = input_manager.create_device(&x);
+		let seat = SeatHandle::stub();
 
 		assert_eq!(
-			input_manager.get_action_state(action, device).value,
+			input_manager.get_action_state(seat, action, device).value,
 			Value::Vector2(Vector2::new(0f32, 0f32))
 		);
 
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Right"), true.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Right"), true.into());
 
 		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_action_state(action, device).value,
+			input_manager.get_action_state(seat, action, device).value,
 			Value::Vector2(Vector2::new(1f32 / 2f32.sqrt(), 1f32 / 2f32.sqrt()))
 		);
 
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Right"), false.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Right"), false.into());
 
 		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_action_state(action, device).value,
+			input_manager.get_action_state(seat, action, device).value,
 			Value::Vector2(Vector2::new(0f32, 0f32))
 		);
 
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Left"), true.into());
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Right"), true.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Left"), true.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Right"), true.into());
 
 		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_action_state(action, device).value,
+			input_manager.get_action_state(seat, action, device).value,
 			Value::Vector2(Vector2::new(0f32, 0f32))
 		);
 	}
@@ -1104,55 +1134,68 @@ mod tests {
 		let a: Value = a.into();
 		let b: Value = b.into();
 		let z: Value = z.into();
+		let seat = SeatHandle::stub();
 
 		assert_eq!(
-			input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(),
+			input_manager
+				.get_trigger_value_for_device(seat, device, trigger_reference)
+				.unwrap(),
 			a
 		); // Assert default value
 
-		input_manager.record_trigger_value_for_device(device, trigger_reference, b); // Record alternate value.
+		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, b); // Record alternate value.
 
 		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(),
+			input_manager
+				.get_trigger_value_for_device(seat, device, trigger_reference)
+				.unwrap(),
 			b
 		); // Assert alternate value after recording.
 
-		input_manager.record_trigger_value_for_device(device, trigger_reference, a); // Record default value.
+		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, a); // Record default value.
 
 		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(),
+			input_manager
+				.get_trigger_value_for_device(seat, device, trigger_reference)
+				.unwrap(),
 			a
 		); // Assert default value after recording.
 
-		input_manager.record_trigger_value_for_device(device, trigger_reference, a); // Record default value again.
+		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, a); // Record default value again.
 
 		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(),
+			input_manager
+				.get_trigger_value_for_device(seat, device, trigger_reference)
+				.unwrap(),
 			a
 		); // Assert default value after recording.
 
-		input_manager.record_trigger_value_for_device(device, trigger_reference, a); // Record default value.
-		input_manager.record_trigger_value_for_device(device, trigger_reference, b); // Record alternate value after recording default value.
+		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, a); // Record default value.
+		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, b); // Record alternate value after recording default value.
 
 		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(),
+			input_manager
+				.get_trigger_value_for_device(seat, device, trigger_reference)
+				.unwrap(),
 			b
 		); // Assert value is last value recorded.
 
-		input_manager.record_trigger_value_for_device(device, trigger_reference, z); // Record a different type.
+		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, z); // Record a different type.
 
 		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_trigger_value_for_device(device, trigger_reference).unwrap(),
+			input_manager
+				.get_trigger_value_for_device(seat, device, trigger_reference)
+				.unwrap(),
 			b
 		);
 		// Assert last value is kept after recording a different type.
@@ -1324,20 +1367,21 @@ mod tests {
 			T::get_type(),
 			&[ActionBindingDescription::new(input_source_name).mapped(b.into())],
 		);
+		let seat = SeatHandle::stub();
 
-		assert_eq!(input_manager.get_action_state(action, device).value, a.into());
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, a.into());
 
-		input_manager.record_trigger_value_for_device(device, handle, true.into());
-
-		input_manager.update();
-
-		assert_eq!(input_manager.get_action_state(action, device).value, b.into());
-
-		input_manager.record_trigger_value_for_device(device, handle, false.into());
+		input_manager.record_trigger_value_for_device(seat, device, handle, true.into());
 
 		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(action, device).value, a.into());
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, b.into());
+
+		input_manager.record_trigger_value_for_device(seat, device, handle, false.into());
+
+		input_manager.update();
+
+		assert_eq!(input_manager.get_action_state(seat, action, device).value, a.into());
 	}
 
 	#[test]
@@ -1429,6 +1473,7 @@ mod tests {
 		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
 		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 		let device = input_manager.create_device(&device_class_handle);
+		let seat = SeatHandle::stub();
 
 		let action = Action::new(
 			"MoveForward",
@@ -1447,7 +1492,7 @@ mod tests {
 		assert_eq!(count_events(&mut event_listener), 0);
 
 		// Press key -> 1 event.
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
 		input_manager.update();
 		assert_eq!(count_events(&mut event_listener), 1);
 
@@ -1456,7 +1501,7 @@ mod tests {
 		assert_eq!(count_events(&mut event_listener), 0);
 
 		// Release key -> 1 event.
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
 		input_manager.update();
 		assert_eq!(count_events(&mut event_listener), 1);
 
@@ -1470,6 +1515,7 @@ mod tests {
 		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
 		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 		let device = input_manager.create_device(&device_class_handle);
+		let seat = SeatHandle::stub();
 
 		let action = Action::new(
 			"MoveForward",
@@ -1484,7 +1530,7 @@ mod tests {
 		assert_eq!(count_events(&mut event_listener), 0);
 
 		// Press key -> Phase A emits 1 event + Phase B sees value is non-default and emits 1 = 2.
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
 		input_manager.update();
 		let events = count_events(&mut event_listener);
 		assert!(events >= 1, "Expected at least 1 event on key press, got {}", events);
@@ -1498,7 +1544,7 @@ mod tests {
 		assert_eq!(count_events(&mut event_listener), 1);
 
 		// Release key.
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
 		input_manager.update();
 		// Phase A emits change event, Phase B sees value is default so does not re-emit.
 		// The value is now 0.0 (default), so WhileActive should not emit in Phase B.
@@ -1519,6 +1565,7 @@ mod tests {
 		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
 		let device_class_handle = register_keyboard_device_class(&mut input_manager);
 		let device = input_manager.create_device(&device_class_handle);
+		let seat = SeatHandle::stub();
 
 		let action = Action::new(
 			"MoveForward",
@@ -1533,7 +1580,7 @@ mod tests {
 		assert_eq!(count_events(&mut event_listener), 0);
 
 		// Press key -> events emitted.
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), true.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
 		input_manager.update();
 		let events = count_events(&mut event_listener);
 		assert!(events >= 1, "Expected at least 1 event on key press, got {}", events);
@@ -1543,7 +1590,7 @@ mod tests {
 		assert_eq!(count_events(&mut event_listener), 1);
 
 		// Release key -> Still emits (Always emits regardless of value).
-		input_manager.record_trigger_value_for_device(device, TriggerReference::Name("Keyboard.Up"), false.into());
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
 		input_manager.update();
 		let events = count_events(&mut event_listener);
 		assert!(events >= 1);

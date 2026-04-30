@@ -3,7 +3,10 @@ use std::ffi::c_void;
 use utils::Extent;
 use xcb::{x, Xid};
 
-use crate::{window::{input::{Keys, MouseKeys}, Events}};
+use crate::window::{
+	input::{Keys, MouseKeys},
+	Events, Seat,
+};
 
 pub struct X11Window {
 	connection: xcb::Connection,
@@ -178,7 +181,11 @@ impl Iterator for WindowIterator<'_> {
 							let key: Result<Keys, _> = ev.detail().try_into();
 
 							if let Ok(key) = key {
-								Some(Events::Key { pressed: true, key })
+								Some(Events::Key {
+									seat: Seat::stub(),
+									pressed: true,
+									key,
+								})
 							} else {
 								None
 							}
@@ -187,7 +194,11 @@ impl Iterator for WindowIterator<'_> {
 							let key: Result<Keys, _> = ev.detail().try_into();
 
 							if let Ok(key) = key {
-								Some(Events::Key { pressed: false, key })
+								Some(Events::Key {
+									seat: Seat::stub(),
+									pressed: false,
+									key,
+								})
 							} else {
 								None
 							}
@@ -196,7 +207,11 @@ impl Iterator for WindowIterator<'_> {
 							let key: Result<MouseKeys, _> = ev.detail().try_into();
 
 							if let Ok(key) = key {
-								Some(Events::Button { pressed: true, button: key })
+								Some(Events::Button {
+									seat: Seat::stub(),
+									pressed: true,
+									button: key,
+								})
 							} else {
 								None
 							}
@@ -205,7 +220,11 @@ impl Iterator for WindowIterator<'_> {
 							let key: Result<MouseKeys, _> = ev.detail().try_into();
 
 							if let Ok(key) = key {
-								Some(Events::Button { pressed: false, button: key })
+								Some(Events::Button {
+									seat: Seat::stub(),
+									pressed: false,
+									button: key,
+								})
 							} else {
 								None
 							}
@@ -223,7 +242,12 @@ impl Iterator for WindowIterator<'_> {
 							let x = (x - half_width) / half_width;
 							let y = (y - half_height) / half_height;
 
-							Some(Events::MousePosition { x, y, time: ev.time() as u64 })
+							Some(Events::MousePosition {
+								seat: Seat::stub(),
+								x,
+								y,
+								time: ev.time() as u64,
+							})
 						},
 						x::Event::ConfigureNotify(ev) => {
 							if ev.width() == 0 || ev.height() == 0 {

@@ -26,7 +26,7 @@ use windows::{
 use crate::{
 	input::{Keys, MouseKeys},
 	os::WindowLike,
-	Events,
+	Events, Seat,
 };
 
 pub struct Window {
@@ -319,6 +319,7 @@ fn handle_event(
 		WM_LBUTTONDOWN => {
 			return Some((
 				Some(Events::Button {
+					seat: Seat::stub(),
 					pressed: true,
 					button: MouseKeys::Left,
 				}),
@@ -328,6 +329,7 @@ fn handle_event(
 		WM_LBUTTONUP => {
 			return Some((
 				Some(Events::Button {
+					seat: Seat::stub(),
 					pressed: false,
 					button: MouseKeys::Left,
 				}),
@@ -337,6 +339,7 @@ fn handle_event(
 		WM_MBUTTONDOWN => {
 			return Some((
 				Some(Events::Button {
+					seat: Seat::stub(),
 					pressed: true,
 					button: MouseKeys::Middle,
 				}),
@@ -346,6 +349,7 @@ fn handle_event(
 		WM_MBUTTONUP => {
 			return Some((
 				Some(Events::Button {
+					seat: Seat::stub(),
 					pressed: false,
 					button: MouseKeys::Middle,
 				}),
@@ -355,6 +359,7 @@ fn handle_event(
 		WM_RBUTTONDOWN => {
 			return Some((
 				Some(Events::Button {
+					seat: Seat::stub(),
 					pressed: true,
 					button: MouseKeys::Right,
 				}),
@@ -364,6 +369,7 @@ fn handle_event(
 		WM_RBUTTONUP => {
 			return Some((
 				Some(Events::Button {
+					seat: Seat::stub(),
 					pressed: false,
 					button: MouseKeys::Right,
 				}),
@@ -378,7 +384,15 @@ fn handle_event(
 				return None;
 			};
 
-			return Some((Some(Events::MousePosition { x, y, time: 0 }), LRESULT(0)));
+			return Some((
+				Some(Events::MousePosition {
+					seat: Seat::stub(),
+					x,
+					y,
+					time: 0,
+				}),
+				LRESULT(0),
+			));
 		}
 		WM_INPUT => {
 			let mut raw_input = [0u64; 1024 / 8]; // Buffer needs to be aligned to 8 bytes
@@ -411,6 +425,7 @@ fn handle_event(
 
 					return Some((
 						Some(Events::MouseMove {
+							seat: Seat::stub(),
 							dx: mouse_data.lLastX as f32 / width * 2.0,
 							dy: -(mouse_data.lLastY as f32) / height * 2.0,
 							time: 0,
@@ -422,14 +437,29 @@ fn handle_event(
 						return None;
 					};
 
-					return Some((Some(Events::MousePosition { x, y, time: 0 }), LRESULT(0)));
+					return Some((
+						Some(Events::MousePosition {
+							seat: Seat::stub(),
+							x,
+							y,
+							time: 0,
+						}),
+						LRESULT(0),
+					));
 				}
 			} else if raw_input.header.dwType == RIM_TYPEKEYBOARD.0 && window_data.state.use_raw_keyboard {
 				let keyboard_data = unsafe { &raw_input.data.keyboard };
 				let pressed = (keyboard_data.Flags as u32 & RI_KEY_BREAK) == 0;
 
 				if let Some(key) = wparam_to_key(WPARAM(keyboard_data.VKey as usize)) {
-					return Some((Some(Events::Key { pressed, key }), LRESULT(0)));
+					return Some((
+						Some(Events::Key {
+							seat: Seat::stub(),
+							pressed,
+							key,
+						}),
+						LRESULT(0),
+					));
 				}
 			} else {
 				return None;
@@ -442,6 +472,7 @@ fn handle_event(
 
 			return Some((
 				Some(Events::Button {
+					seat: Seat::stub(),
 					pressed: true,
 					button: if delta > 0 {
 						MouseKeys::ScrollUp
@@ -461,7 +492,14 @@ fn handle_event(
 				return None;
 			};
 
-			return Some((Some(Events::Key { pressed: true, key }), LRESULT(0)));
+			return Some((
+				Some(Events::Key {
+					seat: Seat::stub(),
+					pressed: true,
+					key,
+				}),
+				LRESULT(0),
+			));
 		}
 		WM_KEYUP => {
 			if window_data.state.use_raw_keyboard {
@@ -472,7 +510,14 @@ fn handle_event(
 				return None;
 			};
 
-			return Some((Some(Events::Key { pressed: false, key }), LRESULT(0)));
+			return Some((
+				Some(Events::Key {
+					seat: Seat::stub(),
+					pressed: false,
+					key,
+				}),
+				LRESULT(0),
+			));
 		}
 		WM_SIZE => {
 			let width = lparam.0 as u32;

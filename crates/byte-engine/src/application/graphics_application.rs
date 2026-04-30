@@ -250,9 +250,10 @@ impl GraphicsApplication {
 						close = true;
 					}
 
-					if let Some((device_handle, input_source_action, value)) = process_default_window_input(input_system, event)
+					if let Some((seat_handle, device_handle, input_source_action, value)) =
+						process_default_window_input(input_system, event)
 					{
-						input_system.record_trigger_value_for_device(device_handle, input_source_action, value);
+						input_system.record_trigger_value_for_device(seat_handle, device_handle, input_source_action, value);
 					}
 				}
 			}
@@ -926,7 +927,12 @@ fn resolve_artnet_port_address(reply: &PollReply) -> PortAddress {
 pub fn process_default_window_input(
 	input_system: &mut input::InputManager,
 	event: ghi::Events,
-) -> Option<(input::DeviceHandle, input::input_manager::TriggerReference, input::Value)> {
+) -> Option<(
+	input::SeatHandle,
+	input::DeviceHandle,
+	input::input_manager::TriggerReference,
+	input::Value,
+)> {
 	let mouse_device_handle = input_system
 		.get_devices_by_class_name("Mouse")
 		.unwrap()
@@ -939,78 +945,101 @@ pub fn process_default_window_input(
 		.get(0)
 		.unwrap()
 		.clone();
+	let seat_handle = input::SeatHandle::stub();
 
 	let r = match event {
-		ghi::window::Events::Button { pressed, button } => match button {
+		ghi::window::Events::Button {
+			seat: _,
+			pressed,
+			button,
+		} => match button {
 			ghi::window::input::MouseKeys::Left => (
+				seat_handle,
 				mouse_device_handle,
 				input::input_manager::TriggerReference::Name("Mouse.LeftButton"),
 				input::Value::Bool(pressed),
 			),
 			ghi::window::input::MouseKeys::Right => (
+				seat_handle,
 				mouse_device_handle,
 				input::input_manager::TriggerReference::Name("Mouse.RightButton"),
 				input::Value::Bool(pressed),
 			),
 			ghi::window::input::MouseKeys::ScrollUp => (
+				seat_handle,
 				mouse_device_handle,
 				input::input_manager::TriggerReference::Name("Mouse.Scroll"),
 				input::Value::Float(1f32),
 			),
 			ghi::window::input::MouseKeys::ScrollDown => (
+				seat_handle,
 				mouse_device_handle,
 				input::input_manager::TriggerReference::Name("Mouse.Scroll"),
 				input::Value::Float(-1f32),
 			),
 			ghi::window::input::MouseKeys::Middle => (
+				seat_handle,
 				mouse_device_handle,
 				input::input_manager::TriggerReference::Name("Mouse.MiddleButton"),
 				input::Value::Bool(pressed),
 			),
 		},
-		ghi::window::Events::MousePosition { x, y, time: _ } => {
+		ghi::window::Events::MousePosition { seat: _, x, y, time: _ } => {
 			let vec = Vector2::new(x, y);
 			(
+				seat_handle,
 				mouse_device_handle,
 				input::input_manager::TriggerReference::Name("Mouse.Position"),
 				input::Value::Vector2(vec),
 			)
 		}
-		ghi::window::Events::MouseMove { dx, dy, time: _ } => {
+		ghi::window::Events::MouseMove {
+			seat: _,
+			dx,
+			dy,
+			time: _,
+		} => {
 			let vec = Vector2::new(dx, dy);
 			(
+				seat_handle,
 				mouse_device_handle,
 				input::input_manager::TriggerReference::Name("Mouse.Movement"),
 				input::Value::Vector2(vec),
 			)
 		}
-		ghi::window::Events::Key { pressed, key } => match key {
+		ghi::window::Events::Key { seat: _, pressed, key } => match key {
 			ghi::window::input::Keys::W => (
+				seat_handle,
 				keyboard_device_handle,
 				input::input_manager::TriggerReference::Name("Keyboard.W"),
 				input::Value::Bool(pressed),
 			),
 			ghi::window::input::Keys::S => (
+				seat_handle,
 				keyboard_device_handle,
 				input::input_manager::TriggerReference::Name("Keyboard.S"),
 				input::Value::Bool(pressed),
 			),
 			ghi::window::input::Keys::A => (
+				seat_handle,
 				keyboard_device_handle,
 				input::input_manager::TriggerReference::Name("Keyboard.A"),
 				input::Value::Bool(pressed),
 			),
 			ghi::window::input::Keys::D => (
+				seat_handle,
 				keyboard_device_handle,
 				input::input_manager::TriggerReference::Name("Keyboard.D"),
 				input::Value::Bool(pressed),
 			),
 			ghi::window::input::Keys::Space => (
+				seat_handle,
 				keyboard_device_handle,
 				input::input_manager::TriggerReference::Name("Keyboard.Space"),
 				input::Value::Bool(pressed),
 			),
 			ghi::window::input::Keys::Escape => (
+				seat_handle,
 				keyboard_device_handle,
 				input::input_manager::TriggerReference::Name("Keyboard.Escape"),
 				input::Value::Bool(pressed),
@@ -1085,6 +1114,7 @@ mod tests {
 		let result = process_default_window_input(
 			&mut input_manager,
 			ghi::window::Events::MouseMove {
+				seat: ghi::window::Seat::stub(),
 				dx: 0.25,
 				dy: -0.5,
 				time: 1,
@@ -1092,12 +1122,13 @@ mod tests {
 		)
 		.unwrap();
 
-		assert_eq!(result.0, expected_mouse_device_handle);
+		assert_eq!(result.0, input::SeatHandle::stub());
+		assert_eq!(result.1, expected_mouse_device_handle);
 		assert!(matches!(
-			result.1,
+			result.2,
 			input::input_manager::TriggerReference::Name("Mouse.Movement")
 		));
-		assert_eq!(result.2, input::Value::Vector2(Vector2::new(0.25, -0.5)));
+		assert_eq!(result.3, input::Value::Vector2(Vector2::new(0.25, -0.5)));
 	}
 
 	#[test]

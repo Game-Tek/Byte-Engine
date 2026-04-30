@@ -8,6 +8,7 @@ pub mod action;
 pub mod device;
 pub mod device_class;
 pub mod input_trigger;
+mod seat;
 pub mod utils;
 
 pub use action::Action;
@@ -19,6 +20,7 @@ pub use input_trigger::TriggerHandle;
 use math::Quaternion;
 use math::Vector2;
 use math::Vector3;
+pub use seat::SeatHandle;
 
 use self::action::InputValue;
 
@@ -285,6 +287,8 @@ impl Into<ValueMapping> for Value {
 
 #[derive(Clone, Debug)]
 pub struct ActionEvent {
+	/// The seat that triggered the action event.
+	seat_handle: SeatHandle,
 	/// The handle of the action that triggered the event.
 	handle: Handle,
 	/// The value of the action that triggered the event.
@@ -292,8 +296,16 @@ pub struct ActionEvent {
 }
 
 impl ActionEvent {
-	pub fn new(handle: Handle, value: Value) -> Self {
-		Self { handle, value }
+	pub fn new(seat_handle: SeatHandle, handle: Handle, value: Value) -> Self {
+		Self {
+			seat_handle,
+			handle,
+			value,
+		}
+	}
+
+	pub fn seat_handle(&self) -> SeatHandle {
+		self.seat_handle
 	}
 
 	pub fn handle(&self) -> Handle {

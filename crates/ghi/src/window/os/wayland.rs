@@ -32,7 +32,7 @@ use crate::{
 	os::WindowLike,
 	window::{
 		input::{Keys, MouseKeys},
-		Events,
+		Events, Seat,
 	},
 };
 
@@ -845,7 +845,11 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 					_ => return,
 				};
 
-				this.events.push_back(Events::Button { pressed, button });
+				this.events.push_back(Events::Button {
+					seat: Seat::stub(),
+					pressed,
+					button,
+				});
 			}
 			wl_pointer::Event::Axis { axis, value, .. } => {
 				let _ = match axis.into_result().unwrap() {
@@ -874,7 +878,12 @@ impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
 					let x = (x - half_width) / half_width;
 					let y = (half_height - y) / half_height;
 
-					this.events.push_back(Events::MousePosition { x, y, time: time as u64 });
+					this.events.push_back(Events::MousePosition {
+						seat: Seat::stub(),
+						x,
+						y,
+						time: time as u64,
+					});
 				}
 			}
 			_ => {}
@@ -911,7 +920,11 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 				keyboard_state.state.update_key(keycode, direction);
 
 				if let Some(key) = keysym_to_key(keyboard_state.state.key_get_one_sym(keycode)) {
-					this.events.push_back(Events::Key { pressed, key });
+					this.events.push_back(Events::Key {
+						seat: Seat::stub(),
+						pressed,
+						key,
+					});
 				}
 			}
 			wl_keyboard::Event::Keymap { format, fd, size } => {
@@ -1034,6 +1047,7 @@ impl wayland_client::Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()>
 				..
 			} => {
 				this.events.push_back(Events::MouseMove {
+					seat: Seat::stub(),
 					dx: dx_unaccel as f32,
 					dy: dy_unaccel as f32,
 					time: (utime_hi as u64) << 32 | utime_lo as u64,

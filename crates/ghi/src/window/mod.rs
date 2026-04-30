@@ -7,6 +7,17 @@ pub mod window;
 pub use self::os::Handles;
 pub use self::window::Window;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The `Seat` struct identifies the input seat associated with a window input event.
+pub struct Seat(u32);
+
+impl Seat {
+	/// Returns the placeholder seat used until platform input seats are wired through.
+	pub fn stub() -> Self {
+		Self(0)
+	}
+}
+
 /// The events that can be received from a window.
 #[derive(Debug, Clone, Copy)]
 pub enum Events {
@@ -19,12 +30,17 @@ pub enum Events {
 	/// The window has been closed.
 	Close,
 	/// A key has been pressed or released.
-	Key { pressed: bool, key: input::Keys },
+	Key { seat: Seat, pressed: bool, key: input::Keys },
 	/// A mouse button has been pressed or released.
-	Button { pressed: bool, button: input::MouseKeys },
+	Button {
+		seat: Seat,
+		pressed: bool,
+		button: input::MouseKeys,
+	},
 	/// The mouse has moved relative to its previous position.
 	/// Coordinates are normalized by the current window size.
 	MouseMove {
+		seat: Seat,
 		dx: f32,
 		dy: f32,
 		/// The time at which the event occurred.
@@ -33,6 +49,7 @@ pub enum Events {
 	/// The mouse position has changed.
 	/// Coordinates are normalized to the window in the range `-1.0..=1.0`.
 	MousePosition {
+		seat: Seat,
 		x: f32,
 		y: f32,
 		/// The time at which the event occurred.

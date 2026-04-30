@@ -13,7 +13,7 @@ use objc2_foundation::{
 
 use crate::input::{Keys, MouseKeys};
 use crate::Features;
-use crate::{os::WindowLike, Events};
+use crate::{os::WindowLike, Events, Seat};
 
 pub struct Window {
 	window: Retained<NSWindow>,
@@ -289,13 +289,23 @@ impl WindowLike for Window {
 					let dx = event.deltaX() as f32;
 					let dy = event.deltaY() as f32;
 
-					events.push(Events::MouseMove { dx, dy, time });
+					events.push(Events::MouseMove {
+						seat: Seat::stub(),
+						dx,
+						dy,
+						time,
+					});
 
 					let point = event.locationInWindow();
 
 					if let Some(content_view) = self.window.contentView() {
 						if let Some((x, y)) = normalize_mouse_position(point, content_view.frame()) {
-							events.push(Events::MousePosition { x, y, time });
+							events.push(Events::MousePosition {
+								seat: Seat::stub(),
+								x,
+								y,
+								time,
+							});
 						}
 					}
 				}
@@ -303,6 +313,7 @@ impl WindowLike for Window {
 					let pressed = event.r#type() == NSEventType::LeftMouseDown;
 
 					events.push(Events::Button {
+						seat: Seat::stub(),
 						pressed,
 						button: MouseKeys::Left,
 					});
@@ -311,6 +322,7 @@ impl WindowLike for Window {
 					let pressed = event.r#type() == NSEventType::RightMouseDown;
 
 					events.push(Events::Button {
+						seat: Seat::stub(),
 						pressed,
 						button: MouseKeys::Right,
 					});
@@ -319,6 +331,7 @@ impl WindowLike for Window {
 					let pressed = event.r#type() == NSEventType::OtherMouseDown;
 
 					events.push(Events::Button {
+						seat: Seat::stub(),
 						pressed,
 						button: MouseKeys::Middle,
 					});
@@ -327,13 +340,21 @@ impl WindowLike for Window {
 					let pressed = event.r#type() == NSEventType::KeyDown;
 
 					if let Some(key) = keycode_to_key(event.keyCode()) {
-						events.push(Events::Key { pressed, key });
+						events.push(Events::Key {
+							seat: Seat::stub(),
+							pressed,
+							key,
+						});
 					}
 				}
 				NSEventType::FlagsChanged => {
 					if let Some(key) = modifier_keycode_to_key(event.keyCode()) {
 						if let Some(pressed) = self.modifier_state.update(key, event.modifierFlags()) {
-							events.push(Events::Key { pressed, key });
+							events.push(Events::Key {
+								seat: Seat::stub(),
+								pressed,
+								key,
+							});
 						}
 					}
 				}

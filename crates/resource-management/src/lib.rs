@@ -43,6 +43,8 @@ pub mod spirv_shader_generator;
 
 pub mod glsl;
 
+pub mod inspect;
+
 pub mod r#async;
 
 pub use asset::asset_handler::AssetHandler;
@@ -66,8 +68,8 @@ impl<T> ResourceArchive for T where T: rkyv::Archive + for<'a> rkyv::Serialize<R
 
 type ResourceHighSerializer<'a> =
 	rkyv::api::high::HighSerializer<rkyv::util::AlignedVec, rkyv::ser::allocator::ArenaHandle<'a>, ResourceArchiveError>;
-type ResourceHighDeserializer = rkyv::api::high::HighDeserializer<ResourceArchiveError>;
-type ResourceHighValidator<'a> = rkyv::api::high::HighValidator<'a, ResourceArchiveError>;
+pub(crate) type ResourceHighDeserializer = rkyv::api::high::HighDeserializer<ResourceArchiveError>;
+pub(crate) type ResourceHighValidator<'a> = rkyv::api::high::HighValidator<'a, ResourceArchiveError>;
 
 /// Serializes a resource archive value into bytes for storage.
 pub(crate) fn to_vec<T: ResourceArchive>(value: &T) -> Result<Vec<u8>, ResourceArchiveError> {
@@ -186,6 +188,18 @@ impl StreamDescription {
 			offset,
 		}
 	}
+
+	pub fn name(&self) -> &str {
+		&self.name
+	}
+
+	pub fn size(&self) -> usize {
+		self.size
+	}
+
+	pub fn offset(&self) -> usize {
+		self.offset
+	}
 }
 
 #[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -220,6 +234,38 @@ impl SerializableResource {
 			streams,
 			queryable_properties,
 		}
+	}
+
+	pub fn id(&self) -> &str {
+		&self.id
+	}
+
+	pub fn uid(&self) -> String {
+		resource::ResourceId::from(self.id.as_str()).to_hex()
+	}
+
+	pub fn hash(&self) -> u64 {
+		self.hash
+	}
+
+	pub fn class(&self) -> &str {
+		&self.class
+	}
+
+	pub fn size(&self) -> usize {
+		self.size
+	}
+
+	pub fn resource(&self) -> &[u8] {
+		&self.resource
+	}
+
+	pub fn streams(&self) -> Option<&[StreamDescription]> {
+		self.streams.as_deref()
+	}
+
+	pub fn queryable_properties(&self) -> &[QueryableProperty] {
+		&self.queryable_properties
 	}
 }
 

@@ -16,6 +16,26 @@ impl From<&str> for ResourceId {
 	}
 }
 
+impl ResourceId {
+	pub fn from_uid_hex(value: &str) -> Option<Self> {
+		if value.len() != 32 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+			return None;
+		}
+
+		let mut bytes = [0; 16];
+		for (index, byte) in bytes.iter_mut().enumerate() {
+			let start = index * 2;
+			*byte = u8::from_str_radix(&value[start..start + 2], 16).ok()?;
+		}
+
+		Some(Self(bytes))
+	}
+
+	pub fn to_hex(self) -> String {
+		self.into()
+	}
+}
+
 impl Into<[u8; 16]> for ResourceId {
 	fn into(self) -> [u8; 16] {
 		self.0

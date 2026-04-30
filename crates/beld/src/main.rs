@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 mod commands;
 mod utils;
@@ -28,6 +28,14 @@ enum Commands {
 	Clear {},
 	/// List all resources
 	List {},
+	/// Inspect a resource
+	Inspect {
+		/// The ID or UID of the resource to inspect.
+		/// Example: `beld inspect mesh.gltf#image` or `beld inspect d41d8cd98f00b204e9800998ecf8427e`
+		id: String,
+		#[arg(long, value_enum, default_value_t = InspectFormat::Human)]
+		format: InspectFormat,
+	},
 	/// Bake assets into resources
 	Bake {
 		/// The IDs of the resources to bake.
@@ -44,6 +52,12 @@ enum Commands {
 	},
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+pub enum InspectFormat {
+	Human,
+	Json,
+}
+
 fn main() -> Result<(), i32> {
 	let _ = simple_logger::SimpleLogger::new().env().init();
 
@@ -58,6 +72,7 @@ fn main() -> Result<(), i32> {
 		Commands::Wipe {} => commands::wipe(destination_path),
 		Commands::Clear {} => commands::wipe(destination_path),
 		Commands::List {} => commands::list(destination_path),
+		Commands::Inspect { id, format } => commands::inspect(destination_path, id, format),
 		Commands::Bake { ids } => commands::bake(source_path, destination_path, ids),
 		Commands::Delete { ids } => commands::delete(destination_path, ids),
 	}

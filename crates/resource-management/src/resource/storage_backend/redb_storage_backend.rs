@@ -197,6 +197,20 @@ impl RedbStorageBackend {
 		)))
 	}
 
+	pub fn read_uid(&self, id: ResourceId) -> Option<(SerializableResource, MultiResourceReader)> {
+		let read = self.db.begin_read().unwrap();
+		let table = read.open_table(RESOURCES_TABLE).unwrap();
+
+		if let Some(d) = table.get(&id).unwrap() {
+			let resource: SerializableResource = crate::from_slice(d.value()).unwrap();
+			let resource_reader = self.open_reader(id.0)?;
+
+			Some((resource, resource_reader))
+		} else {
+			None
+		}
+	}
+
 	fn query_index(
 		&self,
 		query: &Query,

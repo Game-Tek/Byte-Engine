@@ -467,6 +467,7 @@ pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
 	generator: impl ProgramGenerator + 'static,
 ) {
+	let generator = std::sync::Arc::new(generator);
 	let assets_path: std::path::PathBuf = application
 		.get_parameter("assets-path")
 		.map(|p| p.value.clone())
@@ -480,10 +481,12 @@ pub fn setup_default_resource_and_asset_management(
 	let mut asset_manager = AssetManager::new(storage_backend);
 
 	let mut material_asset_handler = BEMAAssetHandler::new();
-	material_asset_handler.set_shader_generator(generator);
+	material_asset_handler.set_shader_generator(generator.clone());
 	asset_manager.add_asset_handler(material_asset_handler);
 
-	asset_manager.add_asset_handler(GLTFAssetHandler::new());
+	let mut gltf_asset_handler = GLTFAssetHandler::new();
+	gltf_asset_handler.set_shader_generator(generator);
+	asset_manager.add_asset_handler(gltf_asset_handler);
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());

@@ -215,6 +215,16 @@ impl From<AlphaMode> for BrdfAlphaMode {
 	}
 }
 
+impl From<BrdfAlphaMode> for AlphaMode {
+	fn from(value: BrdfAlphaMode) -> Self {
+		match value {
+			BrdfAlphaMode::Opaque => AlphaMode::Opaque,
+			BrdfAlphaMode::Mask(cutoff) => AlphaMode::Mask(cutoff),
+			BrdfAlphaMode::Blend => AlphaMode::Blend,
+		}
+	}
+}
+
 /// The `BrdfMaterialBuilder` struct builds flat material graphs while assigning stable node ids.
 #[derive(Debug, Default)]
 pub struct BrdfMaterialBuilder {

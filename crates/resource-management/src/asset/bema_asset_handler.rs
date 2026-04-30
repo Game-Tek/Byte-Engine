@@ -32,6 +32,12 @@ pub trait ProgramGenerator: Send + Sync {
 	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a>;
 }
 
+impl<T: ProgramGenerator + ?Sized> ProgramGenerator for Arc<T> {
+	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
+		self.as_ref().transform(node, material)
+	}
+}
+
 pub struct BEMAAssetHandler {
 	generator: Option<Arc<dyn ProgramGenerator>>,
 }
@@ -253,6 +259,18 @@ fn compile_shader(
 		return Err(());
 	};
 
+	compile_shader_program(generator, name, root_node, _domain, material, stage)
+}
+
+/// Compiles a BESL shader program into a stored shader model and binary payload.
+pub(crate) fn compile_shader_program(
+	generator: &dyn ProgramGenerator,
+	name: &str,
+	root_node: besl::parser::Node<'_>,
+	_domain: &str,
+	material: &json::Object,
+	stage: &str,
+) -> Result<(Shader, Box<[u8]>), ()> {
 	let root = generator.transform(root_node, material);
 
 	let root_node = match besl::lex(root) {

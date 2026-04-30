@@ -1,37 +1,43 @@
+use std::sync::Arc;
+
 use maths_rs::{
 	mat::{MatNew4, MatScale},
 	vec::Vec3,
 };
-use utils::{json::JsonValueTrait, Extent};
+use utils::{json, json::JsonValueTrait, Extent};
 
 use super::{
 	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
+	bema_asset_handler::{compile_shader_program, ProgramGenerator},
 	ResourceId,
 };
 pub use crate::processors::mesh_processor::TriangleFrontFaceWinding;
 use crate::{
 	asset::{self},
+	pbr::{brdf_material_from_gltf, generate_solid_brdf_program},
 	processors::{
 		image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image, ImageDescription},
 		mesh_processor::{MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource},
 	},
 	r#async::{spawn_cpu_task, BoxedFuture},
 	resource,
-	resources::material::VariantModel,
-	types::{Formats, VertexComponent, VertexSemantics},
-	ProcessedAsset,
+	resources::material::{MaterialModel, RenderModel, Shader, VariantModel},
+	types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
+	ProcessedAsset, ReferenceModel,
 };
 
 /// The `GLTFAssetHandler` struct stores glTF import settings for meshes and images.
 pub struct GLTFAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
+	generator: Option<Arc<dyn ProgramGenerator>>,
 }
 
 impl GLTFAssetHandler {
 	pub fn new() -> GLTFAssetHandler {
 		GLTFAssetHandler {
 			triangle_front_face_winding: TriangleFrontFaceWinding::Clockwise,
+			generator: None,
 		}
 	}
 
@@ -46,6 +52,10 @@ impl GLTFAssetHandler {
 	pub fn with_triangle_front_face_winding(mut self, winding: TriangleFrontFaceWinding) -> GLTFAssetHandler {
 		self.set_triangle_front_face_winding(winding);
 		self
+	}
+
+	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
+		self.generator = Some(Arc::new(generator));
 	}
 }
 
@@ -144,12 +154,7 @@ impl AssetHandler for GLTFAssetHandler {
 				return process_image(url, image_description, image.pixels.into_boxed_slice());
 			}
 
-			let spec = if let Some(spec) = &spec {
-				spec
-			} else {
-				log::error!("No spec found for {:#?}", url);
-				return Err(LoadErrors::FailedToProcess);
-			};
+			let spec = spec.as_ref();
 
 			let vertex_layouts = gltf
 				.meshes()
@@ -237,25 +242,17 @@ impl AssetHandler for GLTFAssetHandler {
 				})
 			};
 
-			let material_name_per_primitive = primitives
-				.iter()
-				.map(|primitive: &gltf::Primitive| {
-					let asset = &spec["asset"];
-
-					let gltf_material = primitive.material();
-					let gltf_material_name = gltf_material.name().unwrap();
-
-					let material = &asset[gltf_material_name];
-					material["asset"].as_str().unwrap().to_string()
-				})
-				.collect::<Vec<String>>();
-
-			let mut materials_per_primitive = Vec::with_capacity(material_name_per_primitive.len());
-			for name in material_name_per_primitive {
-				let material = asset_manager
-					.load::<VariantModel>(&name, storage_backend)
-					.await
-					.map_err(|_| LoadErrors::FailedToProcess)?;
+			let mut materials_per_primitive = Vec::with_capacity(primitives.len());
+			for primitive in &primitives {
+				let material = material_for_gltf_primitive(
+					asset_manager,
+					storage_backend,
+					spec,
+					url,
+					primitive.material(),
+					self.generator.clone(),
+				)
+				.await?;
 				materials_per_primitive.push(material);
 			}
 
@@ -373,6 +370,117 @@ impl AssetHandler for GLTFAssetHandler {
 	}
 }
 
+async fn material_for_gltf_primitive(
+	asset_manager: &AssetManager,
+	storage_backend: &dyn resource::StorageBackend,
+	spec: Option<&json::Value>,
+	mesh_url: ResourceId<'_>,
+	material: gltf::Material<'_>,
+	generator: Option<Arc<dyn ProgramGenerator>>,
+) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
+	if let Some(override_asset) = material_override(spec, &material) {
+		return asset_manager
+			.load::<VariantModel>(&override_asset, storage_backend)
+			.await
+			.map_err(|_| LoadErrors::FailedToProcess);
+	}
+
+	generate_gltf_material_variant(storage_backend, mesh_url, material, generator).await
+}
+
+async fn generate_gltf_material_variant(
+	storage_backend: &dyn resource::StorageBackend,
+	mesh_url: ResourceId<'_>,
+	material: gltf::Material<'_>,
+	generator: Option<Arc<dyn ProgramGenerator>>,
+) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
+	let generator = generator.ok_or(LoadErrors::FailedToProcess)?;
+	let brdf = brdf_material_from_gltf(&material);
+	let alpha_mode = AlphaMode::from(brdf.alpha_mode);
+	let program = generate_solid_brdf_program(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
+	let base_id = generated_material_base_id(mesh_url, &material);
+	let shader_id = format!("{base_id}.shader");
+	let material_id = format!("{base_id}.material");
+	let variant_id = format!("{base_id}.variant");
+	let shader_name = shader_id.clone();
+
+	let (shader, shader_bytes) = spawn_cpu_task(move || {
+		let material_json = json::object! {
+			"variables": []
+		};
+		compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute")
+	})
+	.await
+	.map_err(|_| LoadErrors::FailedToProcess)?
+	.map_err(|_| LoadErrors::FailedToProcess)?;
+
+	let shader = store_model::<Shader>(storage_backend, &shader_id, shader, &shader_bytes)?;
+	let material = MaterialModel {
+		double_sided: brdf.double_sided,
+		alpha_mode: alpha_mode.clone(),
+		model: RenderModel {
+			name: "Visibility".to_string(),
+			pass: "MaterialEvaluation".to_string(),
+		},
+		shaders: vec![shader],
+		parameters: Vec::new(),
+	};
+	let material = store_model::<MaterialModel>(storage_backend, &material_id, material, &[])?;
+	let variant = VariantModel {
+		material,
+		variables: Vec::new(),
+		alpha_mode,
+	};
+
+	store_model::<VariantModel>(storage_backend, &variant_id, variant, &[])
+}
+
+fn material_override(spec: Option<&json::Value>, material: &gltf::Material<'_>) -> Option<String> {
+	let material_name = material.name()?;
+	let material = &spec?["asset"][material_name];
+	material["asset"].as_str().map(ToString::to_string)
+}
+
+fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gltf::Material<'_>) -> String {
+	let material_name = material
+		.name()
+		.map(sanitize_material_name)
+		.unwrap_or_else(|| format!("material_{}", material.index().unwrap_or(0)));
+	format!("{}#materials/{material_name}", mesh_url.as_ref())
+}
+
+fn sanitize_material_name(name: &str) -> String {
+	let sanitized = name
+		.chars()
+		.map(|c| {
+			if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+				c
+			} else {
+				'_'
+			}
+		})
+		.collect::<String>();
+
+	if sanitized.is_empty() {
+		"material".to_string()
+	} else {
+		sanitized
+	}
+}
+
+fn store_model<M: crate::Model>(
+	storage_backend: &dyn resource::StorageBackend,
+	id: &str,
+	model: M,
+	data: &[u8],
+) -> Result<ReferenceModel<M>, LoadErrors> {
+	let resource = ProcessedAsset::new(ResourceId::new(id), model);
+	storage_backend
+		.store(&resource, data)
+		.map(|resource| resource.into())
+		.map_err(|_| LoadErrors::FailedToProcess)
+}
+
 fn gltf_vertex_component(semantic: gltf::Semantic) -> Option<VertexComponent> {
 	match semantic {
 		gltf::Semantic::Positions => Some(VertexComponent {
@@ -448,8 +556,11 @@ fn make_bounding_box(mesh: &gltf::Primitive) -> [[f32; 3]; 2] {
 
 #[cfg(test)]
 mod tests {
+	use utils::json;
+
 	use super::{
-		gltf_vertex_component, has_vertex_component, normalize_vertex_layouts, GLTFAssetHandler, TriangleFrontFaceWinding,
+		generated_material_base_id, gltf_vertex_component, has_vertex_component, material_override, normalize_vertex_layouts,
+		sanitize_material_name, GLTFAssetHandler, TriangleFrontFaceWinding,
 	};
 	use crate::r#async;
 	use crate::{
@@ -513,6 +624,38 @@ mod tests {
 		assert_eq!(gltf_vertex_component(gltf::Semantic::Normals).unwrap().channel, 0);
 		assert_eq!(gltf_vertex_component(gltf::Semantic::TexCoords(0)).unwrap().channel, 0);
 		assert!(gltf_vertex_component(gltf::Semantic::TexCoords(1)).is_none());
+	}
+
+	#[test]
+	fn reads_bead_material_override_when_present() {
+		let gltf = gltf::Gltf::from_slice(r#"{"asset":{"version":"2.0"},"materials":[{"name":"Paint"}]}"#.as_bytes())
+			.expect("test glTF should parse");
+		let material = gltf.materials().next().unwrap();
+		let spec = json::from_str(r#"{"asset":{"Paint":{"asset":"Paint.bema"}}}"#).unwrap();
+
+		assert_eq!(material_override(Some(&spec), &material), Some("Paint.bema".to_string()));
+	}
+
+	#[test]
+	fn misses_bead_material_override_when_absent() {
+		let gltf = gltf::Gltf::from_slice(r#"{"asset":{"version":"2.0"},"materials":[{"name":"Paint"}]}"#.as_bytes())
+			.expect("test glTF should parse");
+		let material = gltf.materials().next().unwrap();
+
+		assert_eq!(material_override(None, &material), None);
+	}
+
+	#[test]
+	fn generated_material_ids_are_stable_and_sanitized() {
+		let gltf = gltf::Gltf::from_slice(r#"{"asset":{"version":"2.0"},"materials":[{"name":"Red Paint/Gloss"}]}"#.as_bytes())
+			.expect("test glTF should parse");
+		let material = gltf.materials().next().unwrap();
+
+		assert_eq!(sanitize_material_name("Red Paint/Gloss"), "Red_Paint_Gloss");
+		assert_eq!(
+			generated_material_base_id(ResourceId::new("models/car.glb"), &material),
+			"models/car.glb#materials/Red_Paint_Gloss"
+		);
 	}
 
 	#[test]

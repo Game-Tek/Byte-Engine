@@ -9,20 +9,22 @@ pub fn get_asset_manager<SB: StorageBackend + 'static>(storage_backend: SB) -> A
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
-	asset_manager.add_asset_handler(GLTFAssetHandler::new());
-
 	{
 		let mut material_asset_handler = BEMAAssetHandler::new();
-		let shader_generator = {
+		let shader_generator = std::sync::Arc::new({
 			// let common_shader_generator = byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new();
 			let visibility_shader_generation =
 				byte_engine::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator::new(
 					false, false, false, false, false, false, true, false,
 				);
 			visibility_shader_generation
-		};
-		material_asset_handler.set_shader_generator(shader_generator);
+		});
+		material_asset_handler.set_shader_generator(shader_generator.clone());
 		asset_manager.add_asset_handler(material_asset_handler);
+
+		let mut gltf_asset_handler = GLTFAssetHandler::new();
+		gltf_asset_handler.set_shader_generator(shader_generator);
+		asset_manager.add_asset_handler(gltf_asset_handler);
 	}
 
 	asset_manager

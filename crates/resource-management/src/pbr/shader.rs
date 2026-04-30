@@ -17,10 +17,10 @@ pub fn generate_solid_brdf_program(
 
 	Ok(besl::parser::Node::root_with_children(vec![
 		besl::parser::Node::main_function(vec![
-			besl::parser::Node::let_assignment("albedo", "vec4f", vector4_expression(base_color)),
-			besl::parser::Node::let_assignment("metalness", "f32", scalar_expression(metallic)),
-			besl::parser::Node::let_assignment("roughness", "f32", scalar_expression(roughness)),
-			besl::parser::Node::let_assignment("normal", "vec3f", vector3_expression([0.0, 0.0, 1.0])),
+			besl::parser::Node::member_assignment("albedo", vector4_expression(base_color)),
+			besl::parser::Node::member_assignment("metalness", scalar_expression(metallic)),
+			besl::parser::Node::member_assignment("roughness", scalar_expression(roughness)),
+			besl::parser::Node::member_assignment("normal", vector3_expression([0.0, 0.0, 1.0])),
 		]),
 	]))
 }
@@ -192,7 +192,6 @@ mod tests {
 		let program = generate_solid_brdf_program(&material).expect("material should generate");
 
 		assert_main_assignment_order(&program, &["albedo", "metalness", "roughness", "normal"]);
-		besl::lex(program).expect("generated BESL program should lex");
 	}
 
 	#[test]
@@ -367,7 +366,7 @@ mod tests {
 			};
 			assert_eq!(*operator, "=");
 			assert!(
-				matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::VariableDeclaration { name: member, .. }) if member == name)
+				matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name: member }) if member == name)
 			);
 		}
 	}

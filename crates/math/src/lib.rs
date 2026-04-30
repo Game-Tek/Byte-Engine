@@ -85,6 +85,18 @@ use maths_rs::mat::{MatNew4, MatTranspose as _};
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ShaderMatrix4(pub [f32; 16]);
 
+/// The `ShaderMatrix4x3` struct preserves affine CPU-to-GPU matrix layout for model transforms that do not need the final homogeneous row.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg(target_os = "macos")]
+pub struct ShaderMatrix4x3(pub [f32; 16]);
+
+/// The `ShaderMatrix4x3` struct preserves affine CPU-to-GPU matrix layout for model transforms that do not need the final homogeneous row.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg(not(target_os = "macos"))]
+pub struct ShaderMatrix4x3(pub [f32; 12]);
+
 impl From<Matrix4> for ShaderMatrix4 {
 	fn from(mut value: Matrix4) -> Self {
 		#[cfg(target_os = "macos")]
@@ -95,6 +107,28 @@ impl From<Matrix4> for ShaderMatrix4 {
 		Self([
 			value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7], value[8], value[9], value[10],
 			value[11], value[12], value[13], value[14], value[15],
+		])
+	}
+}
+
+impl From<Matrix4> for ShaderMatrix4x3 {
+	fn from(mut value: Matrix4) -> Self {
+		value = value.transpose();
+		let value = [
+			value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7], value[8], value[9], value[10],
+			value[11], value[12], value[13], value[14], value[15],
+		];
+
+		#[cfg(target_os = "macos")]
+		return Self([
+			value[0], value[1], value[2], 0.0, value[4], value[5], value[6], 0.0, value[8], value[9], value[10], 0.0,
+			value[12], value[13], value[14], 0.0,
+		]);
+
+		#[cfg(not(target_os = "macos"))]
+		Self([
+			value[0], value[1], value[2], value[4], value[5], value[6], value[8], value[9], value[10], value[12], value[13],
+			value[14],
 		])
 	}
 }
@@ -473,6 +507,46 @@ mod tests {
 		assert_eq!(
 			shader_matrix.0,
 			[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]
+		);
+	}
+
+	#[test]
+	fn shader_matrix4x3_preserves_affine_upload_layout() {
+		let matrix = crate::Matrix4::new(
+			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+		);
+		let shader_matrix = crate::ShaderMatrix4x3::from(matrix);
+
+		#[cfg(target_os = "macos")]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 5.0, 9.0, 0.0, 2.0, 6.0, 10.0, 0.0, 3.0, 7.0, 11.0, 0.0, 4.0, 8.0, 12.0, 0.0]
+		);
+
+		#[cfg(not(target_os = "macos"))]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 5.0, 9.0, 2.0, 6.0, 10.0, 3.0, 7.0, 11.0, 4.0, 8.0, 12.0]
+		);
+	}
+
+	#[test]
+	fn shader_matrix4x3_uploads_translation_in_fourth_column() {
+		use crate::mat::MatTranslate as _;
+
+		let matrix = crate::Matrix4::from_translation(crate::Vector3::new(10.0, 20.0, 30.0));
+		let shader_matrix = crate::ShaderMatrix4x3::from(matrix);
+
+		#[cfg(target_os = "macos")]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0, 20.0, 30.0, 0.0]
+		);
+
+		#[cfg(not(target_os = "macos"))]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0]
 		);
 	}
 }

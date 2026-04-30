@@ -179,6 +179,7 @@ impl HLSLShaderGenerator {
 			"mat2f" => "float2x2",
 			"mat3f" => "float3x3",
 			"mat4f" => "float4x4",
+			"mat4x3f" => "float4x3",
 			"f32" => "float",
 			"u8" => "uint8_t",
 			"u16" => "uint16_t",

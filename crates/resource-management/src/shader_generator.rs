@@ -188,6 +188,7 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 			| "vec2f" | "vec3f"
 			| "vec4f" | "mat2f"
 			| "mat3f" | "mat4f"
+			| "mat4x3f"
 			| "f32" | "u8"
 			| "u16" | "u32"
 			| "i32" | "Texture2D"

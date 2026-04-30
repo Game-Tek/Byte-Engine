@@ -180,6 +180,15 @@ impl Node {
 				("w", vec4f32.clone()),
 			],
 		);
+		let mat4x3f32 = record_type(
+			"mat4x3f",
+			[
+				("x", vec3f32.clone()),
+				("y", vec3f32.clone()),
+				("z", vec3f32.clone()),
+				("w", vec3f32.clone()),
+			],
+		);
 
 		let texture_2d = primitive_type("Texture2D");
 		let array_texture_2d = primitive_type("ArrayTexture2D");
@@ -333,6 +342,7 @@ impl Node {
 			vec4u32,
 			vec4f32,
 			mat4f32,
+			mat4x3f32,
 			texture_2d,
 			array_texture_2d,
 			sample_intrinsic,

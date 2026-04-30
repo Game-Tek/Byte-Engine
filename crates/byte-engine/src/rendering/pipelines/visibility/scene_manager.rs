@@ -1282,7 +1282,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 #[repr(C, align(16))]
 #[derive(Copy, Clone)]
 struct ShaderMesh {
-	model: ShaderMatrix4,
+	model: ShaderMatrix4x3,
 	material_index: u32,
 	/// The position into the vertex components data (positions, normals, uvs, ..) buffer this instance's data starts
 	/// Also, the position into the vertex indices buffer this instance's data starts
@@ -1580,9 +1580,14 @@ mod tests {
 
 	#[test]
 	fn shader_mesh_matches_metal_buffer_layout() {
+		#[cfg(target_os = "macos")]
+		let (expected_size, expected_material_offset) = (96, 64);
+		#[cfg(not(target_os = "macos"))]
+		let (expected_size, expected_material_offset) = (80, 48);
+
 		assert_eq!(
 			std::mem::size_of::<ShaderMesh>(),
-			96,
+			expected_size,
 			"Unexpected Visibility shader mesh size. The most likely cause is that the CPU-side mesh buffer layout drifted from the Metal shader struct alignment."
 		);
 		assert_eq!(
@@ -1592,7 +1597,7 @@ mod tests {
 		);
 		assert_eq!(
 			std::mem::offset_of!(ShaderMesh, material_index),
-			64,
+			expected_material_offset,
 			"Unexpected Visibility shader mesh material offset. The most likely cause is that the CPU-side mesh fields no longer match the shader struct."
 		);
 	}
@@ -1650,7 +1655,7 @@ use ghi::{
 	graphics_hardware_interface,
 };
 use log::{error, warn};
-use math::{mat::MatInverse as _, ShaderMatrix4, Vector3};
+use math::{mat::MatInverse as _, ShaderMatrix4, ShaderMatrix4x3, Vector3};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::glsl_shader_generator::GLSLShaderGenerator;
 use resource_management::msl_shader_generator::MSLShaderGenerator;

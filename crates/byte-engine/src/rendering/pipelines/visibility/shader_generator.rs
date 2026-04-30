@@ -76,7 +76,7 @@ impl VisibilityShaderScope {
 		let mesh_struct = Node::r#struct(
 			"Mesh",
 			vec![
-				Node::member("model", "mat4f"),
+				Node::member("model", "mat4x3f"),
 				Node::member("material_index", "u32"),
 				Node::member("base_vertex_index", "u32"),
 				Node::member("base_primitive_index", "u32"),
@@ -368,7 +368,18 @@ struct PrimitiveOutput {
 				&[],
 			)],
 		);
-
+		let extend_vec3f = Node::function(
+			"extend_vec3f",
+			vec![Node::parameter("value", "vec3f"), Node::parameter("w", "f32")],
+			"vec4f",
+			vec![Node::raw_code(
+				Some("return vec4(value, w);".into()),
+				Some("return float4(value, w);".into()),
+				Some("return float4(value, w);".into()),
+				&[],
+				&[],
+			)],
+		);
 		let process_meshlet = {
 			let mut process_meshlet = besl::parse(
 				r#"
@@ -383,7 +394,7 @@ struct PrimitiveOutput {
 					if (primitive_index < meshlet.primitive_count) {
 						set_mesh_vertex_position(
 							primitive_index,
-							matrix * mesh.model * compute_vertex_position(mesh, meshlet, primitive_index)
+							matrix * extend_vec3f(mesh.model * compute_vertex_position(mesh, meshlet, primitive_index), 1.0)
 						);
 					}
 
@@ -847,6 +858,7 @@ struct PrimitiveOutput {
 				compute_vertex_index,
 				u8_to_u32,
 				u16_to_u32,
+				extend_vec3f,
 				compute_vertex_position,
 				compute_triangle,
 				process_meshlet,
@@ -931,10 +943,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		surface_view_position /= surface_view_position.w;
 		vec3 world_space_surface_position = (view.inverse_view * surface_view_position).xyz;
 
-		vec4 world_space_vertex_positions[3] = vec4[3](mesh.model * model_space_vertex_positions[0], mesh.model * model_space_vertex_positions[1], mesh.model * model_space_vertex_positions[2]);
+		mat4x3 model = mesh.model;
+		vec4 world_space_vertex_positions[3] = vec4[3](vec4(model * model_space_vertex_positions[0], 1.0), vec4(model * model_space_vertex_positions[1], 1.0), vec4(model * model_space_vertex_positions[2], 1.0));
 		vec4 clip_space_vertex_positions[3] = vec4[3](view.view_projection * world_space_vertex_positions[0], view.view_projection * world_space_vertex_positions[1], view.view_projection * world_space_vertex_positions[2]);
 
-		vec4 world_space_vertex_normals[3] = vec4[3](normalize(mesh.model * vertex_normals[0]), normalize(mesh.model * vertex_normals[1]), normalize(mesh.model * vertex_normals[2]));
+		vec4 world_space_vertex_normals[3] = vec4[3](vec4(normalize(model * vertex_normals[0]), 0.0), vec4(normalize(model * vertex_normals[1]), 0.0), vec4(normalize(model * vertex_normals[2]), 0.0));
 
 		BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, vec2(image_extent));
 		vec3 barycenter = barycentric_deriv.lambda;
@@ -1026,10 +1039,11 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		surface_view_position /= surface_view_position.w;
 		float3 world_space_surface_position = (view.inverse_view * surface_view_position).xyz;
 
-		float4 world_space_vertex_positions[3] = {mesh.model * model_space_vertex_positions[0], mesh.model * model_space_vertex_positions[1], mesh.model * model_space_vertex_positions[2]};
+		float4x3 model = mesh.model;
+		float4 world_space_vertex_positions[3] = {float4(model * model_space_vertex_positions[0], 1.0), float4(model * model_space_vertex_positions[1], 1.0), float4(model * model_space_vertex_positions[2], 1.0)};
 		float4 clip_space_vertex_positions[3] = {view.view_projection * world_space_vertex_positions[0], view.view_projection * world_space_vertex_positions[1], view.view_projection * world_space_vertex_positions[2]};
 
-		float4 world_space_vertex_normals[3] = {normalize(mesh.model * vertex_normals[0]), normalize(mesh.model * vertex_normals[1]), normalize(mesh.model * vertex_normals[2])};
+		float4 world_space_vertex_normals[3] = {float4(normalize(model * vertex_normals[0]), 0.0), float4(normalize(model * vertex_normals[1]), 0.0), float4(normalize(model * vertex_normals[2]), 0.0)};
 
 		BarycentricDeriv barycentric_deriv = calculate_full_bary(clip_space_vertex_positions[0], clip_space_vertex_positions[1], clip_space_vertex_positions[2], nc, float2(image_extent));
 		float3 barycenter = barycentric_deriv.lambda;

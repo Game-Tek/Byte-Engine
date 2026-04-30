@@ -79,6 +79,7 @@ impl GLSLShaderGenerator {
 			"mat2f" => "mat2",
 			"mat3f" => "mat3",
 			"mat4f" => "mat4",
+			"mat4x3f" => "mat4x3",
 			"f32" => "float",
 			"u8" => "uint8_t",
 			"u16" => "uint16_t",

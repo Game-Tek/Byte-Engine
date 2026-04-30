@@ -205,7 +205,7 @@ struct View {{
 }};
 
 struct Mesh {{
-	float4x4 model;
+	float4x3 model;
 	uint material_index;
 	uint base_vertex_index;
 	uint base_primitive_index;
@@ -295,11 +295,11 @@ static bool sphere_intersects_frustum(thread float4* planes, float3 center, floa
 	return true;
 }}
 
-static float3 transform_world_to_object(float4x4 model, float3 world_position, float determinant) {{
-	float3 object_x = model[0].xyz;
-	float3 object_y = model[1].xyz;
-	float3 object_z = model[2].xyz;
-	float3 world_delta = world_position - model[3].xyz;
+static float3 transform_world_to_object(float4x3 model, float3 world_position, float determinant) {{
+	float3 object_x = model[0];
+	float3 object_y = model[1];
+	float3 object_z = model[2];
+	float3 world_delta = world_position - model[3];
 	float inverse_determinant = 1.0f / determinant;
 
 	return float3(
@@ -309,14 +309,24 @@ static float3 transform_world_to_object(float4x4 model, float3 world_position, f
 	);
 }}
 
+static float4x4 model_matrix(Mesh mesh) {{
+	return float4x4(
+		float4(mesh.model[0], 0.0),
+		float4(mesh.model[1], 0.0),
+		float4(mesh.model[2], 0.0),
+		float4(mesh.model[3], 1.0)
+	);
+}}
+
 static bool cone_is_backfacing(Mesh mesh, Meshlet meshlet, View view) {{
-	float determinant = dot(cross(mesh.model[0].xyz, mesh.model[1].xyz), mesh.model[2].xyz);
+	float4x3 model = mesh.model;
+	float determinant = dot(cross(model[0], model[1]), model[2]);
 	if (determinant <= 0.000001f || meshlet.cone_apex_cutoff.w > 1.0f) {{
 		return false;
 	}}
 
 	float3 camera_position_world = view.inverse_view[3].xyz;
-	float3 camera_position_object = transform_world_to_object(mesh.model, camera_position_world, determinant);
+	float3 camera_position_object = transform_world_to_object(model, camera_position_world, determinant);
 	float3 cone_view = meshlet.cone_apex_cutoff.xyz - camera_position_object;
 	float cone_view_length_squared = dot(cone_view, cone_view);
 	float cone_axis_length_squared = dot(meshlet.cone_axis.xyz, meshlet.cone_axis.xyz);
@@ -330,7 +340,8 @@ static bool cone_is_backfacing(Mesh mesh, Meshlet meshlet, View view) {{
 
 static bool meshlet_is_visible(Mesh mesh, Meshlet meshlet, View view) {{
 	float4 planes[6];
-	extract_frustum_planes(view.view_projection * mesh.model, planes);
+	float4x4 model = model_matrix(mesh);
+	extract_frustum_planes(view.view_projection * model, planes);
 	bool frustum_visible = sphere_intersects_frustum(planes, meshlet.center_radius.xyz, meshlet.center_radius.w);
 
 	return frustum_visible && !cone_is_backfacing(mesh, meshlet, view);
@@ -403,7 +414,7 @@ struct View {{
 }};
 
 struct Mesh {{
-	float4x4 model;
+	float4x3 model;
 	uint material_index;
 	uint base_vertex_index;
 	uint base_primitive_index;
@@ -478,6 +489,7 @@ struct _set0 {{
 	metal::mesh<VertexOutput, PrimitiveOutput, 64, 126, topology::triangle> out_mesh
 ) {{
 	Mesh mesh = set0.meshes->meshes[push_constant.instance_index];
+	float4x3 model = mesh.model;
 	View view = set0.views->views[{view_lookup}];
 	uint meshlet_index = payload.meshlet_indices[threadgroup_position];
 	Meshlet meshlet = set0.meshlets->meshlets[meshlet_index];
@@ -491,7 +503,7 @@ struct _set0 {{
 		uint vertex_index = mesh.base_vertex_index
 			+ uint(set0.vertex_indices->vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]);
 		float4 position = float4(float3(set0.vertex_positions->positions[vertex_index]), 1.0);
-		out_mesh.set_vertex(primitive_index, VertexOutput{{ .position = view.view_projection * mesh.model * position }});
+		out_mesh.set_vertex(primitive_index, VertexOutput{{ .position = view.view_projection * float4(model * position, 1.0) }});
 	}}
 
 	if (primitive_index < uint(meshlet.triangle_count)) {{
@@ -677,7 +689,7 @@ using namespace metal;
 // Note: Metal threadgroup sizes are set on the pipeline state.
 
 struct Mesh {
-	float4x4 model;
+	float4x3 model;
 	uint material_index;
 	uint base_vertex_index;
 	uint base_primitive_index;
@@ -846,7 +858,7 @@ using namespace metal;
 // Note: Metal threadgroup sizes are set on the pipeline state.
 
 struct Mesh {{
-	float4x4 model;
+	float4x3 model;
 	uint material_index;
 	uint base_vertex_index;
 	uint base_primitive_index;
@@ -980,7 +992,7 @@ fn build_pixel_mapping_program() -> besl::NodeReference {
 
 fn build_pixel_mapping_root() -> besl::Node {
 	let mut root = besl::Node::root();
-	let mat4f_t = root.get_child("mat4f").unwrap();
+	let mat4x3f_t = root.get_child("mat4x3f").unwrap();
 	let u32_t = root.get_child("u32").unwrap();
 	let texture_2d = root.get_child("Texture2D").unwrap();
 	let vec2u_t = root.get_child("vec2u").unwrap();
@@ -990,7 +1002,7 @@ fn build_pixel_mapping_root() -> besl::Node {
 		besl::Node::r#struct(
 			"Mesh",
 			vec![
-				besl::Node::member("model", mat4f_t).into(),
+				besl::Node::member("model", mat4x3f_t).into(),
 				besl::Node::member("material_index", u32_t.clone()).into(),
 				besl::Node::member("base_vertex_index", u32_t.clone()).into(),
 				besl::Node::member("base_primitive_index", u32_t.clone()).into(),
@@ -2400,7 +2412,8 @@ mod tests {
 				&& shader.contains(&format!("ushort vertex_indices[{MAX_PRIMITIVE_TRIANGLES}];"))
 				&& shader.contains(&format!("uchar primitive_indices[{}];", MAX_TRIANGLES * 3))
 				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];"))
-				&& shader.contains("view.view_projection * mesh.model * position"),
+				&& shader.contains("float4x3 model;")
+				&& shader.contains("view.view_projection * float4(model * position, 1.0)"),
 			"Expected the shadow mesh MSL source to preserve the packed visibility buffer layout. Shader: {shader}"
 		);
 	}
@@ -2418,8 +2431,9 @@ mod tests {
 		assert!(
 			shader.contains("[[object, max_total_threadgroups_per_mesh_grid")
 				&& shader.contains("View view = set0.views->views[push_constant.view_index];")
-				&& shader.contains("extract_frustum_planes(view.view_projection * mesh.model, planes)")
-				&& shader.contains("transform_world_to_object(mesh.model, camera_position_world, determinant)"),
+				&& shader.contains("float4x4 model = model_matrix(mesh);")
+				&& shader.contains("extract_frustum_planes(view.view_projection * model, planes)")
+				&& shader.contains("transform_world_to_object(model, camera_position_world, determinant)"),
 			"Expected shadow task MSL source to cull meshlets in object space against the selected view. Shader: {shader}"
 		);
 	}
@@ -2489,7 +2503,8 @@ mod tests {
 				&& shader.contains(&format!("ushort vertex_indices[{MAX_PRIMITIVE_TRIANGLES}];"))
 				&& shader.contains(&format!("uchar primitive_indices[{}];", MAX_TRIANGLES * 3))
 				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];"))
-				&& shader.contains("view.view_projection * mesh.model * position"),
+				&& shader.contains("float4x3 model;")
+				&& shader.contains("view.view_projection * float4(model * position, 1.0)"),
 			"Expected the visibility mesh MSL source to preserve the packed visibility buffer layout. Shader: {shader}"
 		);
 	}
@@ -2628,7 +2643,7 @@ mod tests {
 		let shader = get_pixel_mapping_msl_source();
 
 		assert!(
-			shader.contains("float4x4 model;")
+			shader.contains("float4x3 model;")
 				&& shader.contains("uint material_index;")
 				&& shader.contains("uint base_meshlet_index;")
 				&& shader.contains("uint meshlet_count;")

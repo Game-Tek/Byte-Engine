@@ -52,6 +52,7 @@ pub enum ValueType {
 	Vec3F,
 	Vec4F,
 	Mat4F,
+	Mat4x3F,
 }
 
 impl ValueType {
@@ -65,6 +66,7 @@ impl ValueType {
 			ValueType::Vec4U | ValueType::Vec4F => 16,
 			ValueType::Vec3F => 12,
 			ValueType::Mat4F => 64,
+			ValueType::Mat4x3F => 48,
 		}
 	}
 
@@ -82,6 +84,7 @@ impl ValueType {
 			ValueType::Vec3F => "vec3f",
 			ValueType::Vec4F => "vec4f",
 			ValueType::Mat4F => "mat4f",
+			ValueType::Mat4x3F => "mat4x3f",
 		}
 	}
 }
@@ -220,6 +223,7 @@ impl Buffer {
 			ValueType::Vec3F => ScalarValue::Vec3F(read_f32_array::<3>(bytes)?),
 			ValueType::Vec4F => ScalarValue::Vec4F(read_f32_array::<4>(bytes)?),
 			ValueType::Mat4F => ScalarValue::Mat4F(read_f32_array::<16>(bytes)?),
+			ValueType::Mat4x3F => ScalarValue::Mat4x3F(read_f32_array::<12>(bytes)?),
 		};
 
 		Ok(value)
@@ -246,6 +250,7 @@ impl Buffer {
 			ScalarValue::Vec3F(value) => write_f32_slice(value),
 			ScalarValue::Vec4F(value) => write_f32_slice(value),
 			ScalarValue::Mat4F(value) => write_f32_slice(value),
+			ScalarValue::Mat4x3F(value) => write_f32_slice(value),
 		};
 
 		self.write_bytes(offset, &bytes)
@@ -852,6 +857,7 @@ pub enum Value {
 	Vec3F([f32; 3]),
 	Vec4F([f32; 4]),
 	Mat4F([f32; 16]),
+	Mat4x3F([f32; 12]),
 }
 
 impl Value {
@@ -869,6 +875,7 @@ impl Value {
 			Value::Vec3F(_) => ValueType::Vec3F,
 			Value::Vec4F(_) => ValueType::Vec4F,
 			Value::Mat4F(_) => ValueType::Mat4F,
+			Value::Mat4x3F(_) => ValueType::Mat4x3F,
 		}
 	}
 }
@@ -2748,6 +2755,7 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"vec3f" => Ok(ValueType::Vec3F),
 		"vec4f" => Ok(ValueType::Vec4F),
 		"mat4f" => Ok(ValueType::Mat4F),
+		"mat4x3f" => Ok(ValueType::Mat4x3F),
 		_ => Err(VmError::UnsupportedType { type_name }),
 	}
 }
@@ -2934,7 +2942,7 @@ fn parse_literal(value: &str, value_type: &ValueType) -> Result<ScalarValue, VmE
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
 			})?,
-		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::Mat4F => {
+		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::Mat4F | ValueType::Mat4x3F => {
 			return Err(VmError::InvalidLiteral {
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
@@ -2972,6 +2980,26 @@ fn construct_value(value_type: &ValueType, components: &[ScalarValue]) -> Result
 			}
 
 			Ok(ScalarValue::Mat4F(values))
+		}
+		ValueType::Mat4x3F => {
+			if components.len() != 4 {
+				return Err(VmError::UnsupportedExpression {
+					message: format!("Constructor for `{}` expected 4 vec3f parameters", value_type.name()),
+				});
+			}
+
+			let mut values = [0.0; 12];
+			for (index, component) in components.iter().enumerate() {
+				let ScalarValue::Vec3F(component) = component else {
+					return Err(VmError::TypeMismatch {
+						expected: ValueType::Vec3F.name().to_string(),
+						found: component.value_type().name().to_string(),
+					});
+				};
+				values[index * 3..(index + 1) * 3].copy_from_slice(component);
+			}
+
+			Ok(ScalarValue::Mat4x3F(values))
 		}
 		_ => Err(VmError::UnsupportedExpression {
 			message: format!("`{}` is not a constructor-backed VM value type", value_type.name()),
@@ -3111,7 +3139,7 @@ fn comparison_operator(operator: &Operators) -> Option<ComparisonOperator> {
 fn supports_scalar_broadcast(value_type: &ValueType) -> bool {
 	matches!(
 		value_type,
-		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::Mat4F
+		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::Mat4F | ValueType::Mat4x3F
 	)
 }
 
@@ -3144,6 +3172,9 @@ fn apply_arithmetic(operator: ArithmeticOperator, left: &ScalarValue, right: &Sc
 		(ScalarValue::Mat4F(left), ScalarValue::Mat4F(right)) => {
 			apply_float_array_arithmetic::<16>(*left, *right, operator).map(ScalarValue::Mat4F)
 		}
+		(ScalarValue::Mat4x3F(left), ScalarValue::Mat4x3F(right)) => {
+			apply_float_array_arithmetic::<12>(*left, *right, operator).map(ScalarValue::Mat4x3F)
+		}
 		(ScalarValue::Vec2F(left), ScalarValue::F32(right)) => {
 			apply_float_scalar_broadcast::<2>(*left, *right, operator).map(ScalarValue::Vec2F)
 		}
@@ -3156,6 +3187,9 @@ fn apply_arithmetic(operator: ArithmeticOperator, left: &ScalarValue, right: &Sc
 		(ScalarValue::Mat4F(left), ScalarValue::F32(right)) => {
 			apply_float_scalar_broadcast::<16>(*left, *right, operator).map(ScalarValue::Mat4F)
 		}
+		(ScalarValue::Mat4x3F(left), ScalarValue::F32(right)) => {
+			apply_float_scalar_broadcast::<12>(*left, *right, operator).map(ScalarValue::Mat4x3F)
+		}
 		(ScalarValue::F32(left), ScalarValue::Vec2F(right)) => {
 			apply_scalar_float_broadcast::<2>(*left, *right, operator).map(ScalarValue::Vec2F)
 		}
@@ -3167,6 +3201,9 @@ fn apply_arithmetic(operator: ArithmeticOperator, left: &ScalarValue, right: &Sc
 		}
 		(ScalarValue::F32(left), ScalarValue::Mat4F(right)) => {
 			apply_scalar_float_broadcast::<16>(*left, *right, operator).map(ScalarValue::Mat4F)
+		}
+		(ScalarValue::F32(left), ScalarValue::Mat4x3F(right)) => {
+			apply_scalar_float_broadcast::<12>(*left, *right, operator).map(ScalarValue::Mat4x3F)
 		}
 		(left, right) => Err(VmError::TypeMismatch {
 			expected: left.value_type().name().to_string(),

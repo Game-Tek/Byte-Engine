@@ -272,6 +272,7 @@ impl VisibilityWorldRenderDomain {
 					base_primitive_index: mesh.primitive_offset + primitive.primitive_offset,
 					base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
 					base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
+					meshlet_count: primitive.meshlet_count,
 				},
 			});
 			self.render_info.instances.push(Instance {
@@ -1289,6 +1290,7 @@ struct ShaderMesh {
 	base_primitive_index: u32,
 	base_triangle_index: u32,
 	base_meshlet_index: u32,
+	meshlet_count: u32,
 }
 
 #[repr(C)]

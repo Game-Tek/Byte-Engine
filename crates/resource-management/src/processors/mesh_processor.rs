@@ -7,6 +7,11 @@ use crate::{
 	ReferenceModel, StreamDescription,
 };
 
+const MESHLET_MAX_VERTICES: usize = 64;
+const MESHLET_MAX_TRIANGLES: usize = 124;
+const MESHLET_CONE_WEIGHT: f32 = 0.25;
+const MESHLET_STREAM_STRIDE: usize = 52;
+
 /// The `TriangleFrontFaceWinding` enum describes which triangle winding should be treated as the mesh front face after processing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TriangleFrontFaceWinding {
@@ -367,13 +372,14 @@ impl MeshProcessor {
 			.iter()
 			.flat_map(|position| position.iter().flat_map(|component| component.to_le_bytes()))
 			.collect::<Vec<u8>>();
+		let meshlet_vertex_adapter = meshopt::VertexDataAdapter::new(&meshlet_source_bytes, 12, 0)
+			.map_err(|_| MeshProcessingError::FailedToBuildMeshlets)?;
 		let meshlets = meshopt::clusterize::build_meshlets(
 			&optimized_triangle_indices,
-			&meshopt::VertexDataAdapter::new(&meshlet_source_bytes, 12, 0)
-				.map_err(|_| MeshProcessingError::FailedToBuildMeshlets)?,
-			64,
-			124,
-			0.0f32,
+			&meshlet_vertex_adapter,
+			MESHLET_MAX_VERTICES,
+			MESHLET_MAX_TRIANGLES,
+			MESHLET_CONE_WEIGHT,
 		);
 
 		let mut primitive_streams = Vec::with_capacity(vertex_streams.len() + 4);
@@ -446,7 +452,10 @@ impl MeshProcessor {
 
 		let meshlet_bytes = meshlets
 			.iter()
-			.flat_map(|meshlet| [meshlet.vertices.len() as u8, (meshlet.triangles.len() / 3) as u8])
+			.flat_map(|meshlet| {
+				let bounds = meshopt::clusterize::compute_meshlet_bounds(meshlet, &meshlet_vertex_adapter);
+				meshlet_stream_record_bytes(meshlet, &bounds)
+			})
 			.collect::<Vec<u8>>();
 		append_stream(&mut primitive_streams, packed_blocks, Streams::Meshlets, meshlet_bytes);
 
@@ -672,8 +681,28 @@ fn stream_stride(stream_type: Streams) -> usize {
 		Streams::Indices(IndexStreamTypes::Vertices) => IntegralTypes::U16.size(),
 		Streams::Indices(IndexStreamTypes::Triangles) => IntegralTypes::U16.size(),
 		Streams::Indices(IndexStreamTypes::Meshlets) => IntegralTypes::U8.size(),
-		Streams::Meshlets => 2,
+		Streams::Meshlets => MESHLET_STREAM_STRIDE,
 	}
+}
+
+/// Packs a meshopt meshlet and its object-space bounds into the meshlet resource stream.
+fn meshlet_stream_record_bytes(meshlet: meshopt::clusterize::Meshlet<'_>, bounds: &meshopt::clusterize::Bounds) -> Vec<u8> {
+	let mut bytes = Vec::with_capacity(MESHLET_STREAM_STRIDE);
+	bytes.push(meshlet.vertices.len() as u8);
+	bytes.push((meshlet.triangles.len() / 3) as u8);
+	bytes.extend([0u8; 2]);
+	for value in bounds.center.iter().copied().chain([bounds.radius]) {
+		bytes.extend(value.to_le_bytes());
+	}
+	for value in bounds.cone_apex.iter().copied().chain([bounds.cone_cutoff]) {
+		bytes.extend(value.to_le_bytes());
+	}
+	for value in bounds.cone_axis.iter().copied().chain([0.0]) {
+		bytes.extend(value.to_le_bytes());
+	}
+
+	debug_assert_eq!(bytes.len(), MESHLET_STREAM_STRIDE);
+	bytes
 }
 
 fn stream_name(stream_type: Streams) -> &'static str {
@@ -814,6 +843,14 @@ mod tests {
 			processed.mesh.streams[4].stream_type,
 			crate::types::Streams::Indices(crate::types::IndexStreamTypes::Triangles)
 		);
+		let meshlet_stream = processed
+			.mesh
+			.streams
+			.iter()
+			.find(|stream| stream.stream_type == crate::types::Streams::Meshlets)
+			.expect("Processed mesh should include a packed meshlet stream");
+		assert_eq!(meshlet_stream.stride, super::MESHLET_STREAM_STRIDE);
+		assert_eq!(meshlet_stream.size, super::MESHLET_STREAM_STRIDE);
 		assert!(!processed.buffer.is_empty());
 	}
 

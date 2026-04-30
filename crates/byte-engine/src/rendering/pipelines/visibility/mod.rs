@@ -21,7 +21,8 @@ use crate::rendering::{
 pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	0,
 	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::MESH
+	ghi::Stages::TASK
+		.union(ghi::Stages::MESH)
 		.union(ghi::Stages::FRAGMENT)
 		.union(ghi::Stages::RAYGEN)
 		.union(ghi::Stages::COMPUTE),
@@ -29,7 +30,10 @@ pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descripto
 pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	1,
 	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::MESH.union(ghi::Stages::FRAGMENT).union(ghi::Stages::COMPUTE),
+	ghi::Stages::TASK
+		.union(ghi::Stages::MESH)
+		.union(ghi::Stages::FRAGMENT)
+		.union(ghi::Stages::COMPUTE),
 );
 pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	2,
@@ -59,7 +63,7 @@ pub const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::De
 pub const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	8,
 	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+	ghi::Stages::TASK.union(ghi::Stages::MESH).union(ghi::Stages::COMPUTE),
 );
 pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
 	9,
@@ -102,6 +106,7 @@ pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate =
 
 const VERTEX_COUNT: u32 = 64;
 const TRIANGLE_COUNT: u32 = 126;
+const MESHLET_CULLING_TASK_GROUP_SIZE: u32 = 32;
 
 const MAX_MESHLETS: usize = 1024 * 4;
 const MAX_INSTANCES: usize = 1024;
@@ -176,6 +181,202 @@ fn generate_mesh_source_for_language(
 	generated
 }
 
+fn build_mesh_culling_task_msl_source(push_constant_fields: &str, view_lookup: &str) -> String {
+	format!(
+		r#"#include <metal_stdlib>
+using namespace metal;
+// #pragma shader_stage(object)
+// besl-threadgroup-size:{task_group_size},1,1
+
+struct PushConstant {{
+{push_constant_fields}
+}};
+
+struct View {{
+	float4x4 view;
+	float4x4 projection;
+	float4x4 view_projection;
+	float4x4 inverse_view;
+	float4x4 inverse_projection;
+	float4x4 inverse_view_projection;
+	float2 fov;
+	float near;
+	float far;
+}};
+
+struct Mesh {{
+	float4x4 model;
+	uint material_index;
+	uint base_vertex_index;
+	uint base_primitive_index;
+	uint base_triangle_index;
+	uint base_meshlet_index;
+	uint meshlet_count;
+}};
+
+struct Meshlet {{
+	uint primitive_offset;
+	uint triangle_offset;
+	uint primitive_count;
+	uint triangle_count;
+	float4 center_radius;
+	float4 cone_apex_cutoff;
+	float4 cone_axis;
+}};
+
+struct ObjectPayload {{
+	uint meshlet_indices[{task_group_size}];
+}};
+
+struct _views {{
+	View views[8];
+}};
+
+struct _meshes {{
+	Mesh meshes[{max_instances}];
+}};
+
+struct _meshlets {{
+	Meshlet meshlets[{max_meshlets}];
+}};
+
+struct _vertex_positions {{
+	packed_float3 positions[1];
+}};
+
+struct _vertex_normals {{
+	packed_float3 normals[1];
+}};
+
+struct _vertex_uvs {{
+	packed_float2 uvs[1];
+}};
+
+struct _vertex_indices {{
+	ushort vertex_indices[1];
+}};
+
+struct _primitive_indices {{
+	uchar primitive_indices[1];
+}};
+
+struct _set0 {{
+	constant _views* views [[id(0)]];
+	constant _meshes* meshes [[id(1)]];
+	constant _vertex_positions* vertex_positions [[id(2)]];
+	constant _vertex_normals* vertex_normals [[id(3)]];
+	constant _vertex_uvs* vertex_uvs [[id(4)]];
+	constant _vertex_indices* vertex_indices [[id(5)]];
+	constant _primitive_indices* primitive_indices [[id(6)]];
+	constant _meshlets* meshlets [[id(7)]];
+}};
+
+static void extract_frustum_planes(float4x4 matrix, thread float4* planes) {{
+	float4x4 mt = transpose(matrix);
+	planes[0] = mt[3] + mt[0];
+	planes[1] = mt[3] - mt[0];
+	planes[2] = mt[3] - mt[1];
+	planes[3] = mt[3] + mt[1];
+	planes[4] = mt[2];
+	planes[5] = mt[3] - mt[2];
+
+	for (uint i = 0; i < 6; ++i) {{
+		planes[i] *= rsqrt(max(dot(planes[i].xyz, planes[i].xyz), 0.000000000001f));
+	}}
+}}
+
+static bool sphere_intersects_frustum(thread float4* planes, float3 center, float radius) {{
+	for (uint i = 0; i < 6; ++i) {{
+		if (dot(center, planes[i].xyz) + planes[i].w < -radius) {{
+			return false;
+		}}
+	}}
+
+	return true;
+}}
+
+static float3 transform_world_to_object(float4x4 model, float3 world_position, float determinant) {{
+	float3 object_x = model[0].xyz;
+	float3 object_y = model[1].xyz;
+	float3 object_z = model[2].xyz;
+	float3 world_delta = world_position - model[3].xyz;
+	float inverse_determinant = 1.0f / determinant;
+
+	return float3(
+		dot(cross(object_y, object_z) * inverse_determinant, world_delta),
+		dot(cross(object_z, object_x) * inverse_determinant, world_delta),
+		dot(cross(object_x, object_y) * inverse_determinant, world_delta)
+	);
+}}
+
+static bool cone_is_backfacing(Mesh mesh, Meshlet meshlet, View view) {{
+	float determinant = dot(cross(mesh.model[0].xyz, mesh.model[1].xyz), mesh.model[2].xyz);
+	if (determinant <= 0.000001f || meshlet.cone_apex_cutoff.w > 1.0f) {{
+		return false;
+	}}
+
+	float3 camera_position_world = view.inverse_view[3].xyz;
+	float3 camera_position_object = transform_world_to_object(mesh.model, camera_position_world, determinant);
+	float3 cone_view = meshlet.cone_apex_cutoff.xyz - camera_position_object;
+	float cone_view_length_squared = dot(cone_view, cone_view);
+	float cone_axis_length_squared = dot(meshlet.cone_axis.xyz, meshlet.cone_axis.xyz);
+
+	if (cone_view_length_squared <= 0.000000000001f || cone_axis_length_squared <= 0.000000000001f) {{
+		return false;
+	}}
+
+	return dot(cone_view * rsqrt(cone_view_length_squared), meshlet.cone_axis.xyz * rsqrt(cone_axis_length_squared)) >= meshlet.cone_apex_cutoff.w;
+}}
+
+static bool meshlet_is_visible(Mesh mesh, Meshlet meshlet, View view) {{
+	float4 planes[6];
+	extract_frustum_planes(view.view_projection * mesh.model, planes);
+	bool frustum_visible = sphere_intersects_frustum(planes, meshlet.center_radius.xyz, meshlet.center_radius.w);
+
+	return frustum_visible && !cone_is_backfacing(mesh, meshlet, view);
+}}
+
+[[object, max_total_threadgroups_per_mesh_grid({task_group_size})]]
+void besl_task_main(
+	constant PushConstant& push_constant [[buffer(15)]],
+	constant _set0& set0 [[buffer(16)]],
+	uint meshlet_thread_index [[thread_position_in_grid]],
+	uint thread_index [[thread_index_in_threadgroup]],
+	object_data ObjectPayload& payload [[payload]],
+	mesh_grid_properties mesh_grid
+) {{
+	Mesh mesh = set0.meshes->meshes[push_constant.instance_index];
+	View view = set0.views->views[{view_lookup}];
+	threadgroup atomic_uint visible_count;
+	if (thread_index == 0) {{
+		atomic_store_explicit(&visible_count, 0u, memory_order_relaxed);
+	}}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+
+	if (meshlet_thread_index < mesh.meshlet_count) {{
+		uint meshlet_index = mesh.base_meshlet_index + meshlet_thread_index;
+		Meshlet meshlet = set0.meshlets->meshlets[meshlet_index];
+
+		if (meshlet_is_visible(mesh, meshlet, view)) {{
+			uint payload_index = atomic_fetch_add_explicit(&visible_count, 1u, memory_order_relaxed);
+			payload.meshlet_indices[payload_index] = meshlet_index;
+		}}
+	}}
+
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if (thread_index == 0) {{
+		mesh_grid.set_threadgroups_per_grid(uint3(atomic_load_explicit(&visible_count, memory_order_relaxed), 1, 1));
+	}}
+}}
+"#,
+		push_constant_fields = push_constant_fields,
+		view_lookup = view_lookup,
+		task_group_size = MESHLET_CULLING_TASK_GROUP_SIZE,
+		max_instances = MAX_INSTANCES,
+		max_meshlets = MAX_MESHLETS,
+	)
+}
+
 fn build_mesh_pass_msl_source(push_constant_fields: &str, view_lookup: &str) -> String {
 	format!(
 		r#"#include <metal_stdlib>
@@ -208,13 +409,21 @@ struct Mesh {{
 	uint base_primitive_index;
 	uint base_triangle_index;
 	uint base_meshlet_index;
+	uint meshlet_count;
 }};
 
 struct Meshlet {{
-	ushort primitive_offset;
-	ushort triangle_offset;
-	uchar primitive_count;
-	uchar triangle_count;
+	uint primitive_offset;
+	uint triangle_offset;
+	uint primitive_count;
+	uint triangle_count;
+	float4 center_radius;
+	float4 cone_apex_cutoff;
+	float4 cone_axis;
+}};
+
+struct ObjectPayload {{
+	uint meshlet_indices[{task_group_size}];
 }};
 
 struct _views {{
@@ -265,11 +474,12 @@ struct _set0 {{
 	constant _set0& set0 [[buffer(16)]],
 	uint threadgroup_position [[threadgroup_position_in_grid]],
 	uint thread_index [[thread_index_in_threadgroup]],
+	const object_data ObjectPayload& payload [[payload]],
 	metal::mesh<VertexOutput, PrimitiveOutput, 64, 126, topology::triangle> out_mesh
 ) {{
 	Mesh mesh = set0.meshes->meshes[push_constant.instance_index];
 	View view = set0.views->views[{view_lookup}];
-	uint meshlet_index = threadgroup_position + mesh.base_meshlet_index;
+	uint meshlet_index = payload.meshlet_indices[threadgroup_position];
 	Meshlet meshlet = set0.meshlets->meshlets[meshlet_index];
 	uint primitive_index = thread_index;
 
@@ -279,13 +489,13 @@ struct _set0 {{
 
 	if (primitive_index < uint(meshlet.primitive_count)) {{
 		uint vertex_index = mesh.base_vertex_index
-			+ uint(set0.vertex_indices->vertex_indices[mesh.base_primitive_index + uint(meshlet.primitive_offset) + primitive_index]);
+			+ uint(set0.vertex_indices->vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]);
 		float4 position = float4(float3(set0.vertex_positions->positions[vertex_index]), 1.0);
 		out_mesh.set_vertex(primitive_index, VertexOutput{{ .position = view.view_projection * mesh.model * position }});
 	}}
 
 	if (primitive_index < uint(meshlet.triangle_count)) {{
-		uint triangle_base_index = mesh.base_triangle_index + uint(meshlet.triangle_offset) + primitive_index;
+		uint triangle_base_index = mesh.base_triangle_index + meshlet.triangle_offset + primitive_index;
 		out_mesh.set_index(primitive_index * 3 + 0, uint(set0.primitive_indices->primitive_indices[triangle_base_index * 3 + 0]));
 		out_mesh.set_index(primitive_index * 3 + 1, uint(set0.primitive_indices->primitive_indices[triangle_base_index * 3 + 1]));
 		out_mesh.set_index(primitive_index * 3 + 2, uint(set0.primitive_indices->primitive_indices[triangle_base_index * 3 + 2]));
@@ -304,6 +514,7 @@ struct _set0 {{
 		max_primitive_triangles = MAX_PRIMITIVE_TRIANGLES,
 		max_primitive_indices = MAX_TRIANGLES * 3,
 		max_meshlets = MAX_MESHLETS,
+		task_group_size = MESHLET_CULLING_TASK_GROUP_SIZE,
 	)
 }
 
@@ -324,6 +535,10 @@ pub fn get_visibility_pass_mesh_source() -> String {
 
 pub fn get_visibility_pass_mesh_msl_source() -> String {
 	build_mesh_pass_msl_source("\tuint instance_index;", "0")
+}
+
+pub fn get_visibility_pass_task_msl_source() -> String {
+	build_mesh_culling_task_msl_source("\tuint instance_index;", "0")
 }
 
 pub fn get_shadow_pass_mesh_source() -> String {
@@ -347,6 +562,10 @@ pub fn get_shadow_pass_mesh_source() -> String {
 
 pub fn get_shadow_pass_mesh_msl_source() -> String {
 	build_mesh_pass_msl_source("\tuint instance_index;\n\tuint view_index;", "push_constant.view_index")
+}
+
+pub fn get_shadow_pass_task_msl_source() -> String {
+	build_mesh_culling_task_msl_source("\tuint instance_index;\n\tuint view_index;", "push_constant.view_index")
 }
 
 pub const VISIBILITY_PASS_FRAGMENT_SOURCE_MSL: &str = r#"
@@ -464,6 +683,7 @@ struct Mesh {
 	uint base_primitive_index;
 	uint base_triangle_index;
 	uint base_meshlet_index;
+	uint meshlet_count;
 };
 
 struct _meshes {
@@ -632,6 +852,7 @@ struct Mesh {{
 	uint base_primitive_index;
 	uint base_triangle_index;
 	uint base_meshlet_index;
+	uint meshlet_count;
 }};
 
 struct _views {{
@@ -775,6 +996,7 @@ fn build_pixel_mapping_root() -> besl::Node {
 				besl::Node::member("base_primitive_index", u32_t.clone()).into(),
 				besl::Node::member("base_triangle_index", u32_t.clone()).into(),
 				besl::Node::member("base_meshlet_index", u32_t.clone()).into(),
+				besl::Node::member("meshlet_count", u32_t.clone()).into(),
 			],
 		)
 		.into(),
@@ -2103,25 +2325,32 @@ fn build_gtao_bitfield_root() -> besl::Node {
 	root
 }
 
+/// The `ShaderMeshletData` struct stores meshlet offsets and object-space culling bounds for GPU visibility passes.
 #[derive(Copy, Clone)]
-#[repr(C)]
+#[repr(C, align(16))]
 pub(super) struct ShaderMeshletData {
 	/// Base index into the vertex indices buffer
 	/// ```glsl
 	/// vertex_index = mesh.base_vertex_index + vertex_indices[meshlet.vertex_offset + gl_LocalInvocationID.x];
 	/// ```
-	primitive_offset: u16,
+	primitive_offset: u32,
 	/// Base index into the primitive/triangle indices buffer
 	/// This is stored as index / 3, as the meshlet contains 3 indices per triangle
 	/// ```glsl
 	/// triangle_index = primitive_indices.primitive_indices[(meshlet.triangle_offset + gl_LocalInvocationID.x) * 3 + 0..2]
 	/// ```
-	triangle_offset: u16,
+	triangle_offset: u32,
 	/// The number of primitives in the meshlet
 	/// Primitives are meshlet local indices
-	primitive_count: u8,
+	primitive_count: u32,
 	// The number of triangles in the meshlet
-	triangle_count: u8,
+	triangle_count: u32,
+	/// Object-space bounding sphere encoded as xyz center and w radius.
+	center_radius: [f32; 4],
+	/// Object-space normal-cone apex encoded as xyz apex and w cutoff.
+	cone_apex_cutoff: [f32; 4],
+	/// Object-space normal-cone axis encoded as xyz axis.
+	cone_axis: [f32; 4],
 }
 
 #[cfg(test)]
@@ -2132,10 +2361,10 @@ mod tests {
 		generate_gtao_bitfield_blur_x_shader_for_language, generate_gtao_bitfield_shader_for_language,
 		generate_gtao_blur_shader_for_language, generate_gtao_shader_for_language, generate_pixel_mapping_shader_for_language,
 		get_material_count_msl_source, get_material_offset_msl_source, get_pixel_mapping_msl_source,
-		get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_visibility_pass_mesh_msl_source, MAX_MESHLETS,
-		MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
-		PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING,
-		VIEWS_DATA_BINDING,
+		get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_shadow_pass_task_msl_source,
+		get_visibility_pass_mesh_msl_source, get_visibility_pass_task_msl_source, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES,
+		MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+		VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 	};
 
 	#[test]
@@ -2173,6 +2402,25 @@ mod tests {
 				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];"))
 				&& shader.contains("view.view_projection * mesh.model * position"),
 			"Expected the shadow mesh MSL source to preserve the packed visibility buffer layout. Shader: {shader}"
+		);
+	}
+
+	#[test]
+	fn shader_meshlet_data_matches_metal_buffer_layout() {
+		assert_eq!(std::mem::align_of::<super::ShaderMeshletData>(), 16);
+		assert_eq!(std::mem::size_of::<super::ShaderMeshletData>(), 64);
+	}
+
+	#[test]
+	fn shadow_task_msl_source_culls_against_selected_view() {
+		let shader = get_shadow_pass_task_msl_source();
+
+		assert!(
+			shader.contains("[[object, max_total_threadgroups_per_mesh_grid")
+				&& shader.contains("View view = set0.views->views[push_constant.view_index];")
+				&& shader.contains("extract_frustum_planes(view.view_projection * mesh.model, planes)")
+				&& shader.contains("transform_world_to_object(mesh.model, camera_position_world, determinant)"),
+			"Expected shadow task MSL source to cull meshlets in object space against the selected view. Shader: {shader}"
 		);
 	}
 
@@ -2243,6 +2491,45 @@ mod tests {
 				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];"))
 				&& shader.contains("view.view_projection * mesh.model * position"),
 			"Expected the visibility mesh MSL source to preserve the packed visibility buffer layout. Shader: {shader}"
+		);
+	}
+
+	#[test]
+	fn visibility_task_msl_source_compiles_for_metal() {
+		use ghi::device::DeviceCreate as _;
+
+		if !ghi::implementation::USES_METAL {
+			return;
+		}
+
+		let shader = get_visibility_pass_task_msl_source();
+		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
+			.expect("Expected a Metal instance for the visibility task shader test");
+		let mut queue = None;
+		let mut device = instance
+			.create_device(
+				ghi::device::Features::new(),
+				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
+			)
+			.expect("Expected a Metal device for the visibility task shader test");
+
+		let shader_handle = device.create_shader(
+			Some("Visibility Pass Task Shader"),
+			ghi::shader::Sources::MTL {
+				source: shader.as_str(),
+				entry_point: "besl_task_main",
+			},
+			ghi::ShaderTypes::Task,
+			[
+				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			],
+		);
+
+		assert!(
+			shader_handle.is_ok(),
+			"Expected the visibility task MSL source to compile for Metal"
 		);
 	}
 
@@ -2344,6 +2631,7 @@ mod tests {
 			shader.contains("float4x4 model;")
 				&& shader.contains("uint material_index;")
 				&& shader.contains("uint base_meshlet_index;")
+				&& shader.contains("uint meshlet_count;")
 				&& shader.contains("constant _views* views [[id(0)]];")
 				&& shader.contains("constant _mesh_data* mesh_data [[id(1)]];")
 				&& shader.contains("device _material_offset_scratch_buffer* material_offset_scratch_buffer [[id(2)]];")

@@ -74,8 +74,6 @@ impl GPUVertexDataManager {
 		slice: &mut utils::BufferAllocator<'buffer>,
 		resource_request: &mut Reference<Mesh>,
 	) -> Option<MeshData> {
-		let mut meshlet_stream_buffer = vec![0u8; 1024 * 8];
-
 		let mesh_resource = resource_request.resource();
 
 		let Some(positions_stream) = mesh_resource.position_stream() else {
@@ -115,7 +113,10 @@ impl GPUVertexDataManager {
 
 		assert_eq!(meshlet_indices_stream.stride, 1, "Meshlet index stream is not u8");
 		assert_eq!(vertex_indices_stream.stride, 2, "Vertex index stream is not u16");
-		assert_eq!(meshlets_stream.stride, 2, "Meshlet stream stride is not of size 2");
+		assert_eq!(
+			meshlets_stream.stride, RESOURCE_MESHLET_STRIDE,
+			"Meshlet stream stride does not match the packed meshlet bounds record"
+		);
 		assert_eq!(
 			meshlet_indices_stream.count() % 3,
 			0,
@@ -129,6 +130,10 @@ impl GPUVertexDataManager {
 		let vertex_offset = self.visibility_info.vertex_count as usize;
 		let primitive_offset = self.visibility_info.primitives_count as usize;
 		let triangle_offset = self.visibility_info.triangle_count as usize;
+
+		self.ensure_geometry_capacity(vertex_count, primitive_count, triangle_count, total_meshlet_count);
+
+		let mut meshlet_stream_buffer = vec![0u8; meshlets_stream.size];
 
 		let (vertex_positions_staging_offset, vertex_positions_buffer) = slice.take_with_offset(positions_stream.size);
 		let (vertex_normals_staging_offset, vertex_normals_buffer) = slice.take_with_offset(normals_stream.size);
@@ -208,11 +213,6 @@ impl GPUVertexDataManager {
 			})
 			.collect::<Vec<_>>();
 
-		struct Meshlet {
-			primitive_count: u8,
-			triangle_count: u8,
-		}
-
 		let meshlets_per_primitive = primitives
 			.into_iter()
 			.zip(vcps.iter())
@@ -226,24 +226,19 @@ impl GPUVertexDataManager {
 
 					let meshlets = if let Some(stream) = primitive.meshlet_stream() {
 						let m = load_target.stream("Meshlets").unwrap();
-
-						let meshlet_stream = unsafe {
-							std::slice::from_raw_parts(
-								m.buffer().as_ptr().byte_add(stream.offset) as *const Meshlet,
-								stream.count(),
-							)
-						};
+						let meshlet_stream = &m.buffer()[stream.offset..stream.offset + stream.size];
 
 						meshlet_stream
-							.iter()
+							.chunks_exact(RESOURCE_MESHLET_STRIDE)
+							.map(read_resource_meshlet)
 							.scan(
 								(0, 0),
 								|(primitive_primitive_counter, primitive_triangle_counter), meshlet| {
 									let meshlet_primitive_count = meshlet.primitive_count;
 									let meshlet_triangle_count = meshlet.triangle_count;
 
-									let primitive_offset = *primitive_primitive_counter as u16;
-									let triangle_offset = *primitive_triangle_counter as u16;
+									let primitive_offset = *primitive_primitive_counter;
+									let triangle_offset = *primitive_triangle_counter;
 
 									// Update vertex and triangle offsets per meshlet, relative to the primitive
 									*primitive_primitive_counter += meshlet_primitive_count as u32;
@@ -259,6 +254,9 @@ impl GPUVertexDataManager {
 										triangle_offset,
 										primitive_count: meshlet_primitive_count,
 										triangle_count: meshlet_triangle_count,
+										center_radius: meshlet.center_radius,
+										cone_apex_cutoff: meshlet.cone_apex_cutoff,
+										cone_axis: meshlet.cone_axis,
 									}
 									.into()
 								},
@@ -289,19 +287,15 @@ impl GPUVertexDataManager {
 			.map(|(mp, meshlets, primitive)| (mp, meshlets))
 			.collect::<Vec<_>>();
 
-		let meshlets_data_size = total_meshlet_count * std::mem::size_of::<ShaderMeshletData>();
+		let meshlets_data = meshlets_per_primitive
+			.iter()
+			.flat_map(|(_, meshlets)| meshlets.iter().copied())
+			.collect::<Vec<_>>();
+		debug_assert_eq!(meshlets_data.len(), total_meshlet_count);
+
+		let meshlets_data_size = std::mem::size_of_val(meshlets_data.as_slice());
 		let (meshlets_data_staging_offset, meshlets_data_bytes) = slice.take_with_offset(meshlets_data_size);
-		let meshlets_data_slice = unsafe {
-			std::slice::from_raw_parts_mut(
-				meshlets_data_bytes.as_mut_ptr() as *mut ShaderMeshletData,
-				total_meshlet_count,
-			)
-		};
-		for (primitive, meshlets) in meshlets_per_primitive.iter() {
-			for (j, meshlet) in meshlets.iter().enumerate() {
-				meshlets_data_slice[primitive.meshlet_offset as usize + j] = *meshlet;
-			}
-		}
+		meshlets_data_bytes.copy_from_slice(as_byte_slice(meshlets_data.as_slice()));
 		c.copy_buffers(&[ghi::BufferCopyDescriptor::new(
 			staging_data_buffer,
 			meshlets_data_staging_offset,
@@ -376,7 +370,8 @@ impl GPUVertexDataManager {
 			return None;
 		}
 
-		let (vertex_indices, primitive_indices, meshlets) = Self::build_generated_meshlets(&indices).ok()?;
+		let (vertex_indices, primitive_indices, meshlets) =
+			Self::build_generated_meshlets(&indices, positions.as_ref()).ok()?;
 
 		self.ensure_geometry_capacity(positions.len(), vertex_indices.len(), primitive_indices.len(), meshlets.len());
 
@@ -473,7 +468,10 @@ impl GPUVertexDataManager {
 		Some(mesh)
 	}
 
-	fn build_generated_meshlets(indices: &[u16]) -> Result<(Vec<u16>, Vec<[u8; 3]>, Vec<ShaderMeshletData>), ()> {
+	fn build_generated_meshlets(
+		indices: &[u16],
+		positions: &[(f32, f32, f32)],
+	) -> Result<(Vec<u16>, Vec<[u8; 3]>, Vec<ShaderMeshletData>), ()> {
 		if indices.len() % 3 != 0 {
 			log::error!(
 				"Generated mesh indices are invalid. The most likely cause is that the mesh generator returned a triangle list whose index count is not divisible by three."
@@ -495,8 +493,8 @@ impl GPUVertexDataManager {
 				.count();
 
 			if !meshlet_triangles.is_empty()
-				&& (meshlet_vertex_indices.len() + unique_vertices > u8::MAX as usize
-					|| meshlet_triangles.len() >= u8::MAX as usize)
+				&& (meshlet_vertex_indices.len() + unique_vertices > VERTEX_COUNT as usize
+					|| meshlet_triangles.len() >= TRIANGLE_COUNT as usize)
 			{
 				Self::push_generated_meshlet(
 					&mut vertex_indices,
@@ -504,6 +502,7 @@ impl GPUVertexDataManager {
 					&mut meshlets,
 					&mut meshlet_vertex_indices,
 					&mut meshlet_triangles,
+					positions,
 				)?;
 			}
 
@@ -529,6 +528,7 @@ impl GPUVertexDataManager {
 			&mut meshlets,
 			&mut meshlet_vertex_indices,
 			&mut meshlet_triangles,
+			positions,
 		)?;
 
 		Ok((vertex_indices, primitive_indices, meshlets))
@@ -540,31 +540,25 @@ impl GPUVertexDataManager {
 		meshlets: &mut Vec<ShaderMeshletData>,
 		meshlet_vertex_indices: &mut Vec<u16>,
 		meshlet_triangles: &mut Vec<[u8; 3]>,
+		positions: &[(f32, f32, f32)],
 	) -> Result<(), ()> {
 		if meshlet_triangles.is_empty() {
 			return Ok(());
 		}
 
-		let primitive_offset = u16::try_from(vertex_indices.len()).map_err(|_| {
-			log::error!(
-				"Generated mesh exceeds primitive index limits. The most likely cause is that the visibility pipeline buffers are too small for the generated mesh data."
-			);
-		})?;
-		let triangle_offset = u16::try_from(primitive_indices.len()).map_err(|_| {
-			log::error!(
-				"Generated mesh exceeds triangle index limits. The most likely cause is that the visibility pipeline buffers are too small for the generated mesh data."
-			);
-		})?;
-		let primitive_count = u8::try_from(meshlet_vertex_indices.len()).map_err(|_| {
+		let primitive_offset = vertex_indices.len() as u32;
+		let triangle_offset = primitive_indices.len() as u32;
+		let primitive_count = u32::try_from(meshlet_vertex_indices.len()).map_err(|_| {
 			log::error!(
 				"Generated meshlet exceeds vertex limits. The most likely cause is that too many unique vertices were packed into a single meshlet."
 			);
 		})?;
-		let triangle_count = u8::try_from(meshlet_triangles.len()).map_err(|_| {
+		let triangle_count = u32::try_from(meshlet_triangles.len()).map_err(|_| {
 			log::error!(
 				"Generated meshlet exceeds triangle limits. The most likely cause is that too many triangles were packed into a single meshlet."
 			);
 		})?;
+		let center_radius = Self::generated_meshlet_center_radius(meshlet_vertex_indices, positions);
 
 		vertex_indices.extend(meshlet_vertex_indices.iter().copied());
 		primitive_indices.extend(meshlet_triangles.iter().copied());
@@ -573,12 +567,41 @@ impl GPUVertexDataManager {
 			triangle_offset,
 			primitive_count,
 			triangle_count,
+			center_radius,
+			cone_apex_cutoff: [0.0, 0.0, 0.0, 2.0],
+			cone_axis: [0.0, 0.0, 1.0, 0.0],
 		});
 
 		meshlet_vertex_indices.clear();
 		meshlet_triangles.clear();
 
 		Ok(())
+	}
+
+	/// Computes a conservative object-space bounding sphere for a generated meshlet.
+	fn generated_meshlet_center_radius(meshlet_vertex_indices: &[u16], positions: &[(f32, f32, f32)]) -> [f32; 4] {
+		let mut min = [f32::INFINITY; 3];
+		let mut max = [f32::NEG_INFINITY; 3];
+
+		for &index in meshlet_vertex_indices {
+			let position = positions[index as usize];
+			let values = [position.0, position.1, position.2];
+			for axis in 0..3 {
+				min[axis] = min[axis].min(values[axis]);
+				max[axis] = max[axis].max(values[axis]);
+			}
+		}
+
+		let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5, (min[2] + max[2]) * 0.5];
+		let mut radius_squared = 0.0f32;
+
+		for &index in meshlet_vertex_indices {
+			let position = positions[index as usize];
+			let delta = [position.0 - center[0], position.1 - center[1], position.2 - center[2]];
+			radius_squared = radius_squared.max(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+		}
+
+		[center[0], center[1], center[2], radius_squared.sqrt()]
 	}
 
 	fn update_visibility_info_stats(
@@ -629,6 +652,48 @@ impl GPUVertexDataManager {
 			);
 		}
 	}
+}
+
+const RESOURCE_MESHLET_STRIDE: usize = 52;
+
+/// The `ResourceMeshletData` struct carries meshlet metadata decoded from the packed resource stream.
+#[derive(Clone, Copy)]
+struct ResourceMeshletData {
+	primitive_count: u32,
+	triangle_count: u32,
+	center_radius: [f32; 4],
+	cone_apex_cutoff: [f32; 4],
+	cone_axis: [f32; 4],
+}
+
+/// Decodes one packed meshlet record without assuming the resource stream is naturally aligned.
+fn read_resource_meshlet(bytes: &[u8]) -> ResourceMeshletData {
+	debug_assert_eq!(bytes.len(), RESOURCE_MESHLET_STRIDE);
+
+	ResourceMeshletData {
+		primitive_count: bytes[0] as u32,
+		triangle_count: bytes[1] as u32,
+		center_radius: read_f32x4(bytes, 4),
+		cone_apex_cutoff: read_f32x4(bytes, 20),
+		cone_axis: read_f32x4(bytes, 36),
+	}
+}
+
+fn read_f32x4(bytes: &[u8], offset: usize) -> [f32; 4] {
+	[
+		read_f32(bytes, offset),
+		read_f32(bytes, offset + 4),
+		read_f32(bytes, offset + 8),
+		read_f32(bytes, offset + 12),
+	]
+}
+
+fn read_f32(bytes: &[u8], offset: usize) -> f32 {
+	f32::from_le_bytes(
+		bytes[offset..offset + 4].try_into().expect(
+			"Packed meshlet record is truncated. The most likely cause is that the meshlet stream stride is incorrect.",
+		),
+	)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -683,4 +748,5 @@ use utils::as_byte_slice;
 use crate::rendering::{
 	mesh::generator::MeshGenerator,
 	pipelines::visibility::{ShaderMeshletData, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES},
+	pipelines::visibility::{TRIANGLE_COUNT, VERTEX_COUNT},
 };

@@ -82,6 +82,7 @@ impl VisibilityShaderScope {
 				Node::member("base_primitive_index", "u32"),
 				Node::member("base_triangle_index", "u32"),
 				Node::member("base_meshlet_index", "u32"),
+				Node::member("meshlet_count", "u32"),
 			],
 		);
 		let view_struct = Node::r#struct(
@@ -101,10 +102,13 @@ impl VisibilityShaderScope {
 		let meshlet_struct = Node::r#struct(
 			"Meshlet",
 			vec![
-				Node::member("primitive_offset", "u16"),
-				Node::member("triangle_offset", "u16"),
-				Node::member("primitive_count", "u8"),
-				Node::member("triangle_count", "u8"),
+				Node::member("primitive_offset", "u32"),
+				Node::member("triangle_offset", "u32"),
+				Node::member("primitive_count", "u32"),
+				Node::member("triangle_count", "u32"),
+				Node::member("center_radius", "vec4f"),
+				Node::member("cone_apex_cutoff", "vec4f"),
+				Node::member("cone_axis", "vec4f"),
 			],
 		);
 		let light_struct = Node::r#struct(
@@ -254,7 +258,7 @@ impl VisibilityShaderScope {
 				),
 				None,
 				Some(
-					"return mesh.base_vertex_index + set0.vertex_indices->vertex_indices[mesh.base_primitive_index + uint(meshlet.primitive_offset) + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */"
+					"return mesh.base_vertex_index + set0.vertex_indices->vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */"
 						.into(),
 				),
 				&["vertex_indices"],
@@ -288,7 +292,7 @@ impl VisibilityShaderScope {
 			let mut root = besl::parse(
 				r#"
 				compute_triangle: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec3u {
-					let triangle_base_index: u32 = mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index;
+					let triangle_base_index: u32 = mesh.base_triangle_index + meshlet.triangle_offset + primitive_index;
 					return vec3u(
 						primitive_indices.primitive_indices[triangle_base_index * 3 + 0],
 						primitive_indices.primitive_indices[triangle_base_index * 3 + 1],
@@ -374,16 +378,16 @@ struct PrimitiveOutput {
 					let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
 					let primitive_index: u32 = thread_idx();
 
-					set_mesh_output_counts(u8_to_u32(meshlet.primitive_count), u8_to_u32(meshlet.triangle_count));
+					set_mesh_output_counts(meshlet.primitive_count, meshlet.triangle_count);
 
-					if (primitive_index < u8_to_u32(meshlet.primitive_count)) {
+					if (primitive_index < meshlet.primitive_count) {
 						set_mesh_vertex_position(
 							primitive_index,
 							matrix * mesh.model * compute_vertex_position(mesh, meshlet, primitive_index)
 						);
 					}
 
-					if (primitive_index < u8_to_u32(meshlet.triangle_count)) {
+					if (primitive_index < meshlet.triangle_count) {
 						set_mesh_triangle(primitive_index, compute_triangle(mesh, meshlet, primitive_index));
 						out_instance_index[primitive_index] = instance_index;
 						out_primitive_index[primitive_index] = meshlet_index << 8 | primitive_index & 255;

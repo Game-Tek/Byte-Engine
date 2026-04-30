@@ -17,10 +17,11 @@ use crate::rendering::pipelines::visibility::{
 	get_gtao_bitfield_blur_x_shader, get_gtao_bitfield_shader, get_gtao_blur_shader, get_gtao_shader,
 	get_material_count_msl_source, get_material_count_source, get_material_offset_msl_source, get_material_offset_source,
 	get_pixel_mapping_msl_source, get_pixel_mapping_source, get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source,
-	get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
-	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
-	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
-	MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	get_shadow_pass_task_msl_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source,
+	get_visibility_pass_task_msl_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
+	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS,
+	MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
+	MESHLET_CULLING_TASK_GROUP_SIZE, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
 	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
 	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
 	VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
@@ -51,6 +52,15 @@ const GTAO_BLUR_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
 const GTAO_USE_BITFIELD_BINARY_IMPL: bool = false;
 const GTAO_PACKED_WORD_BITS: u32 = 32;
 
+/// Returns the dispatch grid expected by the active mesh shading path.
+fn mesh_dispatch_count(meshlet_count: u32) -> u32 {
+	if ghi::implementation::USES_METAL {
+		meshlet_count.div_ceil(MESHLET_CULLING_TASK_GROUP_SIZE)
+	} else {
+		meshlet_count
+	}
+}
+
 #[derive(Clone)]
 pub struct VisibilityPass {
 	descriptor_set: ghi::DescriptorSetHandle,
@@ -67,6 +77,30 @@ impl VisibilityPass {
 		instance_id: ghi::BaseImageHandle,
 		depth_target: ghi::BaseImageHandle,
 	) -> Self {
+		let visibility_pass_task_shader = if ghi::implementation::USES_METAL {
+			let visibility_task_shader = get_visibility_pass_task_msl_source();
+
+			Some(
+				device
+					.create_shader(
+						Some("Visibility Pass Task Shader"),
+						ghi::shader::Sources::MTL {
+							source: visibility_task_shader.as_str(),
+							entry_point: "besl_task_main",
+						},
+						ghi::ShaderTypes::Task,
+						[
+							VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						],
+					)
+					.expect("Failed to create shader"),
+			)
+		} else {
+			None
+		};
+
 		let visibility_pass_mesh_shader = if ghi::implementation::USES_METAL {
 			let visibility_shader = get_visibility_pass_mesh_msl_source();
 
@@ -139,10 +173,18 @@ impl VisibilityPass {
 				.expect("Failed to create shader")
 		};
 
-		let visibility_pass_shaders = [
-			ghi::ShaderParameter::new(&visibility_pass_mesh_shader, ghi::ShaderTypes::Mesh),
-			ghi::ShaderParameter::new(&visibility_pass_fragment_shader, ghi::ShaderTypes::Fragment),
-		];
+		let mut visibility_pass_shaders = Vec::with_capacity(3);
+		if let Some(task_shader) = visibility_pass_task_shader.as_ref() {
+			visibility_pass_shaders.push(ghi::ShaderParameter::new(task_shader, ghi::ShaderTypes::Task));
+		}
+		visibility_pass_shaders.push(ghi::ShaderParameter::new(
+			&visibility_pass_mesh_shader,
+			ghi::ShaderTypes::Mesh,
+		));
+		visibility_pass_shaders.push(ghi::ShaderParameter::new(
+			&visibility_pass_fragment_shader,
+			ghi::ShaderTypes::Fragment,
+		));
 
 		let attachments = [
 			ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::U32),
@@ -214,8 +256,12 @@ impl VisibilityPass {
 			c.bind_descriptor_sets(&[descriptor_set]);
 
 			for (i, instance) in instances.iter().enumerate() {
+				if instance.meshlet_count == 0 {
+					continue;
+				}
+
 				c.write_push_constant(0, i as u32); // TODO: use actual instance indeces, not loaded meshes indices
-				c.dispatch_meshes(instance.meshlet_count, 1, 1);
+				c.dispatch_meshes(mesh_dispatch_count(instance.meshlet_count), 1, 1);
 			}
 
 			c.end_render_pass();
@@ -238,6 +284,30 @@ impl ShadowPass {
 		descriptor_set: ghi::DescriptorSetHandle,
 		shadow_map: ghi::BaseImageHandle,
 	) -> Self {
+		let shadow_pass_task_shader = if ghi::implementation::USES_METAL {
+			let shadow_task_shader = get_shadow_pass_task_msl_source();
+
+			Some(
+				device
+					.create_shader(
+						Some("Shadow Pass Task Shader"),
+						ghi::shader::Sources::MTL {
+							source: shadow_task_shader.as_str(),
+							entry_point: "besl_task_main",
+						},
+						ghi::ShaderTypes::Task,
+						[
+							VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+							MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+						],
+					)
+					.expect("Failed to create shader"),
+			)
+		} else {
+			None
+		};
+
 		let shadow_pass_mesh_shader = if ghi::implementation::USES_METAL {
 			let shadow_shader = get_shadow_pass_mesh_msl_source();
 
@@ -288,11 +358,17 @@ impl ShadowPass {
 			ghi::pipelines::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
 		];
 
+		let mut shadow_pass_shaders = Vec::with_capacity(2);
+		if let Some(task_shader) = shadow_pass_task_shader.as_ref() {
+			shadow_pass_shaders.push(ghi::ShaderParameter::new(task_shader, ghi::ShaderTypes::Task));
+		}
+		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_mesh_shader, ghi::ShaderTypes::Mesh));
+
 		let shadow_pass_pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[base_descriptor_set_layout],
 			&[ghi::pipelines::PushConstantRange::new(0, 8)],
 			&vertex_layout,
-			&[ghi::ShaderParameter::new(&shadow_pass_mesh_shader, ghi::ShaderTypes::Mesh)],
+			&shadow_pass_shaders,
 			&attachments,
 		));
 
@@ -345,8 +421,12 @@ impl ShadowPass {
 				c.write_push_constant(4, (cascade + 1) as u32);
 
 				for (i, instance) in instances.iter().enumerate() {
+					if instance.meshlet_count == 0 {
+						continue;
+					}
+
 					c.write_push_constant(0, i as u32);
-					c.dispatch_meshes(instance.meshlet_count, 1, 1);
+					c.dispatch_meshes(mesh_dispatch_count(instance.meshlet_count), 1, 1);
 				}
 
 				c.end_render_pass();

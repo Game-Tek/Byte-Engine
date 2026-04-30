@@ -204,6 +204,73 @@ impl<'a> Node<'a> {
 		}
 	}
 
+	pub fn expression(elements: Vec<Node<'a>>) -> Node<'a> {
+		Self::sentence(elements)
+	}
+
+	pub fn accessor(left: Node<'a>, right: Node<'a>) -> Node<'a> {
+		Node {
+			node: Nodes::Expression(Expressions::Accessor {
+				left: Box::new(left),
+				right: Box::new(right),
+			}),
+		}
+	}
+
+	pub fn call(name: &'a str, parameters: Vec<Node<'a>>) -> Node<'a> {
+		Node {
+			node: Nodes::Expression(Expressions::Call { name, parameters }),
+		}
+	}
+
+	pub fn operator(name: &'a str, left: Node<'a>, right: Node<'a>) -> Node<'a> {
+		Node {
+			node: Nodes::Expression(Expressions::Operator {
+				name,
+				left: Box::new(left),
+				right: Box::new(right),
+			}),
+		}
+	}
+
+	pub fn assignment(left: Node<'a>, right: Node<'a>) -> Node<'a> {
+		Self::operator("=", left, right)
+	}
+
+	pub fn variable_declaration(name: &'a str, r#type: &'a str) -> Node<'a> {
+		Node {
+			node: Nodes::Expression(Expressions::VariableDeclaration { name, r#type }),
+		}
+	}
+
+	pub fn literal_expression(value: &'a str) -> Node<'a> {
+		Node {
+			node: Nodes::Expression(Expressions::Literal { value }),
+		}
+	}
+
+	pub fn return_value(value: Node<'a>) -> Node<'a> {
+		Node {
+			node: Nodes::Expression(Expressions::Return {
+				value: Some(Box::new(value)),
+			}),
+		}
+	}
+
+	pub fn return_void() -> Node<'a> {
+		Node {
+			node: Nodes::Expression(Expressions::Return { value: None }),
+		}
+	}
+
+	pub fn let_assignment(name: &'a str, r#type: &'a str, value: Node<'a>) -> Node<'a> {
+		Self::assignment(Self::variable_declaration(name, r#type), value)
+	}
+
+	pub fn member_assignment(name: &'a str, value: Node<'a>) -> Node<'a> {
+		Self::assignment(Self::member_expression(name), value)
+	}
+
 	pub fn glsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
 		make_raw_code(Some(code.into()), None, None, input, output)
 	}
@@ -317,6 +384,10 @@ impl<'a> Node<'a> {
 	pub fn node_mut(&mut self) -> &mut Nodes<'a> {
 		// TODO: maybe do not expose nodes
 		&mut self.node
+	}
+
+	pub fn node(&self) -> &Nodes<'a> {
+		&self.node
 	}
 
 	pub fn get_mut(&mut self, name: &str) -> Option<&mut Node<'a>> {
@@ -1820,6 +1891,73 @@ main: fn () -> void {
 		} else {
 			panic!("Not a feature");
 		}
+	}
+
+	#[test]
+	fn builder_creates_assignment_expression() {
+		let node = Node::assignment(Node::member_expression("albedo"), Node::literal_expression("1.0"));
+
+		let Nodes::Expression(Expressions::Operator { name, left, right }) = node.node else {
+			panic!("Expected assignment operator");
+		};
+
+		assert_eq!(name, "=");
+		assert!(matches!(left.node, Nodes::Expression(Expressions::Member { name }) if name == "albedo"));
+		assert!(matches!(right.node, Nodes::Expression(Expressions::Literal { value }) if value == "1.0"));
+	}
+
+	#[test]
+	fn builder_creates_call_expression() {
+		let node = Node::call(
+			"vec4f",
+			vec![
+				Node::literal_expression("1.0"),
+				Node::literal_expression("0.0"),
+				Node::literal_expression("0.0"),
+				Node::literal_expression("1.0"),
+			],
+		);
+
+		let Nodes::Expression(Expressions::Call { name, parameters }) = node.node else {
+			panic!("Expected call expression");
+		};
+
+		assert_eq!(name, "vec4f");
+		assert_eq!(parameters.len(), 4);
+	}
+
+	#[test]
+	fn builder_creates_variable_declaration_assignment() {
+		let node = Node::let_assignment("roughness", "f32", Node::literal_expression("0.5"));
+
+		let Nodes::Expression(Expressions::Operator { name, left, right }) = node.node else {
+			panic!("Expected assignment operator");
+		};
+
+		assert_eq!(name, "=");
+		assert!(
+			matches!(left.node, Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) if name == "roughness" && r#type == "f32")
+		);
+		assert!(matches!(right.node, Nodes::Expression(Expressions::Literal { value }) if value == "0.5"));
+	}
+
+	#[test]
+	fn builder_program_lexes() {
+		let program = Node::root_with_children(vec![Node::main_function(vec![Node::let_assignment(
+			"albedo",
+			"vec4f",
+			Node::call(
+				"vec4f",
+				vec![
+					Node::literal_expression("1.0"),
+					Node::literal_expression("0.0"),
+					Node::literal_expression("0.0"),
+					Node::literal_expression("1.0"),
+				],
+			),
+		)])]);
+
+		crate::lex(program).expect("builder generated program should lex");
 	}
 
 	#[test]

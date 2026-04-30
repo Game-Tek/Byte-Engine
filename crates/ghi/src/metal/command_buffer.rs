@@ -816,6 +816,91 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		blit_encoder.endEncoding();
 	}
 
+	fn copy_buffer_to_images(&mut self, copies: &[crate::BufferImageCopyDescriptor]) {
+		let consumptions = copies
+			.iter()
+			.flat_map(|copy| {
+				[
+					Consumption {
+						handle: PrivateHandles::Buffer(self.get_internal_buffer_handle(copy.source_buffer)),
+						stages: crate::Stages::TRANSFER,
+						access: crate::AccessPolicies::READ,
+						layout: crate::Layouts::Transfer,
+					},
+					Consumption {
+						handle: PrivateHandles::Image(self.get_internal_image_handle(copy.destination_image)),
+						stages: crate::Stages::TRANSFER,
+						access: crate::AccessPolicies::WRITE,
+						layout: crate::Layouts::Transfer,
+					},
+				]
+			})
+			.collect::<Vec<_>>();
+		self.consume_resources(consumptions);
+
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+		let label = self.current_encoder_label("Buffer Image Copy");
+		blit_encoder.setLabel(Some(&label));
+
+		for copy in copies {
+			let source = self
+				.device
+				.buffers
+				.resource(self.get_internal_buffer_handle(copy.source_buffer));
+			let destination = self
+				.device
+				.images
+				.resource(self.get_internal_image_handle(copy.destination_image));
+			let width = destination.extent.width().max(1) as usize;
+			let height = destination.extent.height().max(1) as usize;
+			let source_size = mtl::MTLSize {
+				width: width as _,
+				height: height as _,
+				depth: destination.extent.depth().max(1) as _,
+			};
+			let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
+
+			for slice in 0..destination.array_layers as usize {
+				unsafe {
+					blit_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+						source.buffer.as_ref(),
+						(copy.source_offset + slice * copy.source_bytes_per_image) as _,
+						copy.source_bytes_per_row as _,
+						copy.source_bytes_per_image as _,
+						source_size,
+						destination.texture.as_ref(),
+						slice,
+						0,
+						destination_origin,
+					);
+				}
+			}
+		}
+
+		blit_encoder.endEncoding();
+
+		let consumptions = copies
+			.iter()
+			.map(|copy| Consumption {
+				handle: PrivateHandles::Image(self.get_internal_image_handle(copy.destination_image)),
+				stages: crate::Stages::COMPUTE | crate::Stages::FRAGMENT,
+				access: crate::AccessPolicies::READ,
+				layout: crate::Layouts::Read,
+			})
+			.collect::<Vec<_>>();
+		self.consume_resources(consumptions);
+	}
+
 	fn transfer_textures(
 		&mut self,
 		texture_handles: &[graphics_hardware_interface::BaseImageHandle],

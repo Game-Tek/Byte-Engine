@@ -4,7 +4,7 @@ use std::{collections::hash_map::Entry, num::NonZeroU8, sync::Arc};
 
 use ghi::{
 	device::{Device as _, DeviceCreate as _},
-	Frame as _,
+	Frame as _, Size as _,
 };
 use resource_management::{resources::image::Image, Reference};
 use utils::{
@@ -30,6 +30,13 @@ pub struct TextureManager {
 	textures: HashMap<String, (ghi::BaseImageHandle, ghi::SamplerHandle)>,
 }
 
+/// The `TextureUpload` struct carries row-padded texture bytes until the transfer queue copies them.
+pub struct TextureUpload {
+	pub data: Vec<u8>,
+	pub source_bytes_per_row: usize,
+	pub source_bytes_per_image: usize,
+}
+
 impl TextureManager {
 	pub fn new() -> Self {
 		Self {
@@ -42,9 +49,9 @@ impl TextureManager {
 		&mut self,
 		reference: &mut Reference<Image>,
 		device: &mut ghi::implementation::Frame,
-	) -> Option<(String, ghi::BaseImageHandle, ghi::SamplerHandle)> {
+	) -> Option<(String, ghi::BaseImageHandle, ghi::SamplerHandle, Option<TextureUpload>)> {
 		if let Some(r) = self.textures.get(reference.id()) {
-			return Some((reference.id().to_string(), r.0, r.1));
+			return Some((reference.id().to_string(), r.0, r.1, None));
 		}
 
 		let texture = reference.resource();
@@ -65,14 +72,14 @@ impl TextureManager {
 			ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name(reference.id())
 				.extent(extent)
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.use_case(ghi::UseCases::STATIC),
 		);
-		let target_buffer = device.get_texture_slice_mut(image.into());
 
-		device.sync_texture(image.into());
-
-		let load_target = reference.load(target_buffer.into()).unwrap();
+		let mut source = vec![0u8; reference.size];
+		let load_target = reference.load(source.as_mut_slice().into()).ok()?;
+		let source = load_target.buffer()?;
+		let upload = make_texture_upload(format, extent, source)?;
 
 		// let image = if let Some(b) = resource.get_buffer() {
 		// 	ghi.get_texture_slice_mut(new_texture).copy_from_slice(b);
@@ -108,9 +115,7 @@ impl TextureManager {
 
 		self.textures.insert(reference.id().to_string(), v.clone());
 
-		// self.pending_texture_loads.push(image);
-
-		Some((reference.id().to_string(), v.0, v.1))
+		Some((reference.id().to_string(), v.0, v.1, Some(upload)))
 	}
 
 	fn build_sampler(&mut self, device: &mut ghi::implementation::Frame) -> ghi::SamplerHandle {
@@ -151,5 +156,49 @@ impl TextureManager {
 			.iter()
 			.map(|(name, (image, sampler))| (name.clone(), *image, *sampler))
 			.collect()
+	}
+}
+
+/// Builds row-padded upload data compatible with the transfer command buffer image copy path.
+fn make_texture_upload(format: ghi::Formats, extent: Extent, source: &[u8]) -> Option<TextureUpload> {
+	let (source_bytes_per_row, row_count, compact_bytes_per_image) = texture_upload_layout(format, extent)?;
+	if source.len() < compact_bytes_per_image {
+		return None;
+	}
+
+	let padded_bytes_per_row = source_bytes_per_row.next_multiple_of(256);
+	let source_bytes_per_image = padded_bytes_per_row * row_count;
+	let mut data = vec![0u8; source_bytes_per_image];
+
+	for row in 0..row_count {
+		let source_offset = row * source_bytes_per_row;
+		let destination_offset = row * padded_bytes_per_row;
+		let source_row = source.get(source_offset..source_offset + source_bytes_per_row)?;
+		data[destination_offset..destination_offset + source_bytes_per_row].copy_from_slice(source_row);
+	}
+
+	Some(TextureUpload {
+		data,
+		source_bytes_per_row: padded_bytes_per_row,
+		source_bytes_per_image,
+	})
+}
+
+/// Computes the compact source layout for one mip of the given texture format.
+fn texture_upload_layout(format: ghi::Formats, extent: Extent) -> Option<(usize, usize, usize)> {
+	let width = extent.width().max(1) as usize;
+	let height = extent.height().max(1) as usize;
+
+	match format {
+		ghi::Formats::BC5 | ghi::Formats::BC7 => {
+			let block_width = width.div_ceil(4);
+			let block_height = height.div_ceil(4);
+			let bytes_per_row = block_width * 16;
+			Some((bytes_per_row, block_height, bytes_per_row * block_height))
+		}
+		_ => {
+			let bytes_per_row = width * format.size();
+			Some((bytes_per_row, height, bytes_per_row * height))
+		}
 	}
 }

@@ -38,6 +38,10 @@ impl<'a> BufferAllocator<'a> {
 		// SAFETY: We know that the buffer is valid for the lifetime of the splitter.
 		(offset, unsafe { std::mem::transmute(buffer) })
 	}
+
+	pub fn remaining(&self) -> usize {
+		self.buffer.len().saturating_sub(self.offset)
+	}
 }
 
 pub fn partition<T>(slice: &[T], key_fn: impl Fn(&T) -> usize) -> Vec<(usize, &[T])> {

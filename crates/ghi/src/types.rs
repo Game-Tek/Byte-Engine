@@ -619,6 +619,34 @@ impl BufferCopyDescriptor {
 	}
 }
 
+/// The `BufferImageCopyDescriptor` struct describes one image upload from a source buffer to a destination image.
+pub struct BufferImageCopyDescriptor {
+	pub source_buffer: BaseBufferHandle,
+	pub source_offset: usize,
+	pub source_bytes_per_row: usize,
+	pub source_bytes_per_image: usize,
+	pub destination_image: crate::BaseImageHandle,
+}
+
+impl BufferImageCopyDescriptor {
+	/// Creates a buffer-to-image copy descriptor from a source byte layout and destination image.
+	pub fn new(
+		source_buffer: BaseBufferHandle,
+		source_offset: usize,
+		source_bytes_per_row: usize,
+		source_bytes_per_image: usize,
+		destination_image: crate::BaseImageHandle,
+	) -> Self {
+		Self {
+			source_buffer,
+			source_offset,
+			source_bytes_per_row,
+			source_bytes_per_image,
+			destination_image,
+		}
+	}
+}
+
 pub struct BufferDescriptor {
 	pub(super) buffer: BaseBufferHandle,
 	pub(super) offset: usize,

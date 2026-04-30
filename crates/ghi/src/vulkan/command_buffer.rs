@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
 	descriptors::DescriptorSetHandle, device::Device as _, graphics_hardware_interface, FrameKey, HandleLike as _, Next as _,
-	PrivateHandles,
+	PrivateHandles, Size,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -1351,6 +1351,77 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self.sync_buffers(copies);
 	}
 
+	fn copy_buffer_to_images(&mut self, copies: &[crate::BufferImageCopyDescriptor]) {
+		let consumptions = copies
+			.iter()
+			.flat_map(|copy| {
+				[
+					Consumption {
+						handle: Handles::Buffer(self.get_internal_buffer_handle(copy.source_buffer)),
+						stages: crate::Stages::TRANSFER,
+						access: crate::AccessPolicies::READ,
+						layout: crate::Layouts::Transfer,
+					},
+					Consumption {
+						handle: Handles::Image(self.get_internal_image_handle(copy.destination_image)),
+						stages: crate::Stages::TRANSFER,
+						access: crate::AccessPolicies::WRITE,
+						layout: crate::Layouts::Transfer,
+					},
+				]
+			})
+			.collect::<Vec<_>>();
+		self.consume_resources(consumptions)(self);
+
+		let command_buffer = self.get_command_buffer().command_buffer;
+
+		for copy in copies {
+			let source_buffer_handle = self.get_internal_buffer_handle(copy.source_buffer);
+			let destination_image_handle = self.get_internal_image_handle(copy.destination_image);
+			let source_buffer = self.get_buffer(source_buffer_handle);
+			let destination_image = self.get_image(destination_image_handle);
+			let source_row_count = copy.source_bytes_per_image / copy.source_bytes_per_row;
+
+			let regions = [vk::BufferImageCopy2::default()
+				.buffer_offset(copy.source_offset as _)
+				.buffer_row_length(buffer_row_length(destination_image.format_, copy.source_bytes_per_row))
+				.buffer_image_height(buffer_image_height(destination_image.format_, source_row_count))
+				.image_subresource(
+					vk::ImageSubresourceLayers::default()
+						.aspect_mask(vk::ImageAspectFlags::COLOR)
+						.mip_level(0)
+						.base_array_layer(0)
+						.layer_count(destination_image.layers.map(|layers| layers.get()).unwrap_or(1)),
+				)
+				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
+				.image_extent(
+					vk::Extent3D::default()
+						.width(destination_image.extent.width())
+						.height(destination_image.extent.height())
+						.depth(destination_image.extent.depth()),
+				)];
+
+			let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
+				.src_buffer(source_buffer.buffer)
+				.dst_image(destination_image.image)
+				.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+				.regions(&regions);
+
+			unsafe {
+				self.device
+					.device
+					.cmd_copy_buffer_to_image2(command_buffer, &buffer_image_copy);
+			}
+		}
+
+		self.consume_resources(copies.iter().map(|copy| Consumption {
+			handle: Handles::Image(self.get_internal_image_handle(copy.destination_image)),
+			stages: crate::Stages::COMPUTE | crate::Stages::FRAGMENT,
+			access: crate::AccessPolicies::READ,
+			layout: crate::Layouts::Read,
+		}))(self);
+	}
+
 	fn clear_buffers(&mut self, buffer_handles: &[graphics_hardware_interface::BaseBufferHandle]) {
 		self.consume_resources(buffer_handles.iter().map(|buffer_handle| Consumption {
 			handle: Handles::Buffer(self.get_internal_buffer_handle(*buffer_handle)),
@@ -1983,6 +2054,20 @@ impl ImageCopy {
 			_dst_offset: dst_offset,
 			_size: size,
 		}
+	}
+}
+
+fn buffer_row_length(format: crate::Formats, source_bytes_per_row: usize) -> u32 {
+	match format {
+		crate::Formats::BC5 | crate::Formats::BC7 => ((source_bytes_per_row / 16) * 4) as u32,
+		_ => (source_bytes_per_row / format.size()) as u32,
+	}
+}
+
+fn buffer_image_height(format: crate::Formats, source_row_count: usize) -> u32 {
+	match format {
+		crate::Formats::BC5 | crate::Formats::BC7 => (source_row_count * 4) as u32,
+		_ => source_row_count as u32,
 	}
 }
 

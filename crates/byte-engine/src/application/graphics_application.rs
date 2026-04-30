@@ -608,6 +608,10 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 				}
 			}
 
+			recorded_work |=
+				self.visibility_world_render_domain
+					.prepare_texture_uploads(transfer, key, staging_data_buffer, &mut slice);
+
 			rendering::scene_manager::TransferPrepareResult { slice, recorded_work }
 		}
 

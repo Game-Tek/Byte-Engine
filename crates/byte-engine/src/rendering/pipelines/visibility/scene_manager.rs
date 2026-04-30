@@ -649,14 +649,14 @@ impl VisibilityWorldRenderDomain {
 
 	pub fn transition_finished_transfer_resources(&mut self, frame_key: ghi::FrameKey) {
 		self.meshes = self.meshes.drain(..).map(|mesh| mesh.frame_finished(frame_key)).collect();
-	}
-
-	pub fn transition_finished_graphics_resources(&mut self, frame_key: ghi::FrameKey) {
 		self.images = self
 			.images
 			.drain()
 			.map(|(name, image)| (name, image.frame_finished(frame_key)))
 			.collect();
+	}
+
+	pub fn transition_finished_graphics_resources(&mut self, frame_key: ghi::FrameKey) {
 		self.material_evaluation_materials = self
 			.material_evaluation_materials
 			.drain()
@@ -712,6 +712,61 @@ impl VisibilityWorldRenderDomain {
 		loaded_any
 	}
 
+	/// Records pending texture uploads into the transfer command buffer and marks them loading for this transfer frame.
+	pub fn prepare_texture_uploads<'buffer>(
+		&mut self,
+		transfer: &mut ghi::implementation::CommandBufferRecording,
+		key: ghi::FrameKey,
+		staging_data_buffer: ghi::BaseBufferHandle,
+		slice: &mut utils::BufferAllocator<'buffer>,
+	) -> bool {
+		let pending_images = self
+			.images
+			.iter()
+			.filter_map(|(name, image)| match image {
+				ResourceStates::Pending(pending) if pending.image.is_some() && pending.upload.is_some() => Some(name.clone()),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+
+		let mut recorded_work = false;
+
+		for name in pending_images {
+			let Some(ResourceStates::Pending(mut pending)) = self.images.remove(&name) else {
+				continue;
+			};
+			let (Some(image), Some(upload)) = (pending.image.take(), pending.upload.take()) else {
+				self.images.insert(name, ResourceStates::Pending(pending));
+				continue;
+			};
+			if upload.data.len() > slice.remaining() {
+				self.images.insert(
+					name,
+					ResourceStates::Pending(PendingImage {
+						index: image.index,
+						image: Some(image),
+						upload: Some(upload),
+					}),
+				);
+				break;
+			}
+
+			let (source_offset, source_buffer) = slice.take_with_offset(upload.data.len());
+			source_buffer.copy_from_slice(&upload.data);
+			transfer.copy_buffer_to_images(&[ghi::BufferImageCopyDescriptor::new(
+				staging_data_buffer,
+				source_offset,
+				upload.source_bytes_per_row,
+				upload.source_bytes_per_image,
+				image.image,
+			)]);
+			self.images.insert(name, ResourceStates::Loading(key, image));
+			recorded_work = true;
+		}
+
+		recorded_work
+	}
+
 	fn reserve_image_resources(&mut self, id: &str) -> u32 {
 		let index = self.images.len() as u32;
 
@@ -723,7 +778,11 @@ impl VisibilityWorldRenderDomain {
 						"Visibility bindless texture limit exceeded. The most likely cause is that the scene references more material images than the global descriptor array supports."
 					);
 				}
-				image.insert(ResourceStates::Pending(PendingImage { index }));
+				image.insert(ResourceStates::Pending(PendingImage {
+					index,
+					image: None,
+					upload: None,
+				}));
 				index
 			}
 		}
@@ -738,18 +797,35 @@ impl VisibilityWorldRenderDomain {
 	) -> Option<u32> {
 		let image_id = resource.id().to_string();
 		let index = match self.images.get(&image_id) {
-			Some(ResourceStates::Pending(pending)) => pending.index,
+			Some(ResourceStates::Pending(pending)) => {
+				if pending.image.is_some() {
+					return Some(pending.index);
+				}
+				pending.index
+			}
 			Some(image) => return Some(image.index()),
 			None => self.images.len() as u32,
 		};
 
-		let Some((_, image, sampler)) = self.texture_manager.load(resource, device) else {
+		let Some((_, image, sampler, upload)) = self.texture_manager.load(resource, device) else {
 			return None;
 		};
 
 		let image = Image { index, image, sampler };
 		self.write_image_descriptors(&image, device);
-		self.images.insert(image_id, ResourceStates::Loading(device.key(), image));
+
+		if let Some(upload) = upload {
+			self.images.insert(
+				image_id,
+				ResourceStates::Pending(PendingImage {
+					index,
+					image: Some(image),
+					upload: Some(upload),
+				}),
+			);
+		} else {
+			self.images.insert(image_id, ResourceStates::Loaded(image));
+		}
 
 		Some(index)
 	}
@@ -1076,7 +1152,10 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		let texture_writes = self
 			.images
 			.values()
-			.filter_map(|image| image.get_loaded())
+			.filter_map(|image| match image {
+				ResourceStates::Pending(pending) => pending.image.as_ref(),
+				ResourceStates::Loading(_, image) | ResourceStates::Loaded(image) => Some(image),
+			})
 			.map(|image| {
 				ghi::descriptors::Write::combined_image_sampler_array(
 					textures_binding,
@@ -1487,6 +1566,8 @@ struct Image {
 /// The `PendingImage` struct preserves a texture slot before its render resources exist.
 struct PendingImage {
 	index: u32,
+	image: Option<Image>,
+	upload: Option<TextureUpload>,
 }
 
 impl ResourceStates<Image, PendingImage> {
@@ -1706,7 +1787,7 @@ use crate::rendering::pipelines::visibility::{
 use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassFunction, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;
 use crate::rendering::scene_manager::SceneManager;
-use crate::rendering::texture_manager::TextureManager;
+use crate::rendering::texture_manager::{TextureManager, TextureUpload};
 use crate::rendering::view::View;
 use crate::rendering::{
 	csm, make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor, mesh, world_render_domain,

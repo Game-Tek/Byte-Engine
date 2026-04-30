@@ -6,7 +6,9 @@ use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;
-use crate::rendering::pipelines::visibility::{MAX_LIGHTS, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES};
+use crate::rendering::pipelines::visibility::{
+	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_PIXEL_MAPPING_ENTRIES,
+};
 
 fn light_array_type() -> &'static str {
 	static LIGHT_ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
@@ -21,6 +23,14 @@ fn material_array_type() -> &'static str {
 
 	MATERIAL_ARRAY_TYPE
 		.get_or_init(|| format!("Material[{MAX_MATERIALS}]").into_boxed_str())
+		.as_ref()
+}
+
+fn material_texture_array_type() -> &'static str {
+	static MATERIAL_TEXTURE_ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
+
+	MATERIAL_TEXTURE_ARRAY_TYPE
+		.get_or_init(|| format!("u32[{MAX_MATERIAL_TEXTURES}]").into_boxed_str())
 		.as_ref()
 }
 
@@ -120,7 +130,7 @@ impl VisibilityShaderScope {
 				Node::member("cascades", "u32[8]"),
 			],
 		);
-		let material_struct = Node::r#struct("Material", vec![Node::member("textures", "u32[16]")]);
+		let material_struct = Node::r#struct("Material", vec![Node::member("textures", material_texture_array_type())]);
 
 		let views_binding = Node::binding(
 			"views",
@@ -186,7 +196,15 @@ impl VisibilityShaderScope {
 			true,
 			false,
 		);
-		let textures = Node::binding_array("textures", Node::combined_image_sampler(), 0, 9, true, false, 16);
+		let textures = Node::binding_array(
+			"textures",
+			Node::combined_image_sampler(),
+			0,
+			9,
+			true,
+			false,
+			MAX_BINDLESS_TEXTURES as u32,
+		);
 
 		let material_count = Node::binding(
 			"material_count",
@@ -474,10 +492,10 @@ struct PrimitiveOutput {
 			"sample",
 			Node::parameter("smplr", "u32"),
 			Node::sentence(vec![Node::raw_code(
-				Some("return texture(textures[nonuniformEXT(material.textures[smplr])], vertex_uv)".into()),
+				Some("texture(textures[nonuniformEXT(material.textures[smplr])], vertex_uv)".into()),
 				None,
 				Some(
-					"return set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv)"
+					"set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv)"
 						.into(),
 				),
 				&["textures"],
@@ -492,12 +510,12 @@ struct PrimitiveOutput {
 				Node::parameter("smplr", "u32"),
 				Node::sentence(vec![Node::raw_code(
 					Some(
-						"return unit_vector_from_xy(texture(textures[nonuniformEXT(material.textures[smplr])], vertex_uv).xy)"
+						"unit_vector_from_xy(texture(textures[nonuniformEXT(material.textures[smplr])], vertex_uv).xy)"
 							.into(),
 					),
 					None,
 					Some(
-						"return unit_vector_from_xy(set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv).xy)"
+						"unit_vector_from_xy(set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv).xy)"
 							.into(),
 					),
 					&["textures", "unit_vector_from_xy"],
@@ -977,7 +995,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		vec4 albedo = vec4(1, 0, 0, 1);
 		vec3 normal = vec3(0, 0, 1);
 		float metalness = 0.0;
-		float roughness = float(0.5)"
+		float roughness = float(0.5);
+		float occlusion = 1.0;
+		vec3 emission = vec3(0.0)"
 			.trim();
 
 		let a_msl = "if (gid.x >= set1.material_count->material_count[push_constant.material_id]) { return; }
@@ -1073,7 +1093,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float4 albedo = float4(1, 0, 0, 1);
 		float3 normal = float3(0, 0, 1);
 		float metalness = 0.0;
-		float roughness = float(0.5)"
+		float roughness = float(0.5);
+		float occlusion = 1.0;
+		float3 emission = float3(0.0)"
 			.trim();
 
 		let mut extra: Vec<Node<'a>> = Vec::new();
@@ -1090,15 +1112,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					extra.push(x);
 				}
 				"Texture2D" => {
-					let slot = Box::leak(texture_count.to_string().into_boxed_str());
-					let mut slot_root = besl::parse(slot).expect("Expected texture slot literal to parse");
-					let slot_node = match slot_root.node_mut() {
-						besl::parser::Nodes::Scope { children, .. } => children.remove(0),
-						_ => panic!(
-							"Expected texture slot literal to parse into a scope. The most likely cause is invalid visibility texture slot generation."
-						),
-					};
-					let x = besl::parser::Node::literal(name, slot_node);
+					let slot = Box::leak(format!("{texture_count}u").into_boxed_str());
+					let slot_node = besl::parser::Node::literal_expression(slot);
+					let x = besl::parser::Node::constant(name, "u32", slot_node);
 					extra.push(x);
 					texture_count += 1;
 				}
@@ -1188,7 +1204,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		float3 ambient = ibl_diffuse + ibl_specular;
 
-		diffuse = diffuse * ao_factor + ambient * ao_factor;
+		ao_factor *= occlusion;
+		diffuse = diffuse * ao_factor + ambient * ao_factor + emission;
 		specular = specular * ao_factor;
 
 		set2.diffuse_map.write(float4(diffuse, albedo.a), uint2(pixel_coordinates));
@@ -1279,7 +1296,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		vec3 ambient = ibl_diffuse + ibl_specular;
 
-		diffuse = diffuse * ao_factor + ambient * ao_factor;
+		ao_factor *= occlusion;
+		diffuse = diffuse * ao_factor + ambient * ao_factor + emission;
 		specular = specular * ao_factor;
 
 		imageStore(diffuse_map, pixel_coordinates, vec4(diffuse, albedo.a));
@@ -1328,7 +1346,15 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 							"geometry_smith",
 							"compute_vertex_index",
 						],
-						&["material", "albedo", "normal", "roughness", "metalness"],
+						&[
+							"material",
+							"albedo",
+							"normal",
+							"roughness",
+							"metalness",
+							"occlusion",
+							"emission",
+						],
 					),
 				);
 				statements.push(besl::parser::Node::raw_code(
@@ -1416,6 +1442,25 @@ mod tests {
 	}
 
 	#[test]
+	fn texture_variable_transform_uses_literal_slot_expression() {
+		let material = json::object! {
+			"variables": [
+				{
+					"name": "base_color",
+					"data_type": "Texture2D"
+				}
+			]
+		};
+		let shader_source = "main: fn () -> void { albedo = sample(base_color); }";
+		let shader_node = besl::parse(shader_source).unwrap();
+		let shader_generator = super::VisibilityShaderGenerator::new(true, true, true, true, true, true, true, true);
+
+		let shader = shader_generator.transform(shader_node, &material);
+
+		let _node = besl::lex(shader).unwrap();
+	}
+
+	#[test]
 	fn material_evaluation_msl_source_compiles_for_metal() {
 		use ghi::device::DeviceCreate as _;
 
@@ -1487,6 +1532,73 @@ mod tests {
 				&& source.contains("view.view * float4(world_space_surface_position, 1.0)")
 				&& source.contains("view.view_projection * float4(world_space_position, 1.0)"),
 			"Expected the material evaluation MSL source to preserve the full visibility set2 binding layout. Shader: {source}"
+		);
+	}
+
+	#[test]
+	fn material_evaluation_msl_texture_source_compiles_for_metal() {
+		use ghi::device::DeviceCreate as _;
+
+		if !ghi::implementation::USES_METAL {
+			return;
+		}
+
+		let material = json::object! {
+			"variables": [
+				{
+					"name": "base_color",
+					"data_type": "Texture2D"
+				},
+				{
+					"name": "normal_map",
+					"data_type": "Texture2D"
+				}
+			]
+		};
+		let shader_source = "main: fn () -> void { albedo = sample(base_color); normal = sample_normal(normal_map); }";
+		let shader_node = besl::parse(shader_source).unwrap();
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = shader_generator.transform(shader_node, &material);
+		let root = besl::lex(shader).unwrap();
+		let main_node = root.get_main().unwrap();
+		let settings = ShaderGenerationSettings::compute(Extent::line(128));
+		let mut source_generator = MSLShaderGenerator::new();
+		let source = source_generator.generate(&settings, &main_node).unwrap();
+		let reflected_shader = SPIRVShaderGenerator::new().generate(&settings, &main_node).unwrap();
+		let bindings = reflected_shader
+			.bindings()
+			.iter()
+			.map(map_shader_binding_to_shader_binding_descriptor)
+			.collect::<Vec<_>>();
+
+		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
+			.expect("Expected a Metal instance for the textured material evaluation shader test");
+		let mut queue = None;
+		let mut device = instance
+			.create_device(
+				ghi::device::Features::new(),
+				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
+			)
+			.expect("Expected a Metal device for the textured material evaluation shader test");
+
+		let shader_handle = device.create_shader(
+			Some("Textured Material Evaluation Shader"),
+			ghi::shader::Sources::MTL {
+				source: source.as_str(),
+				entry_point: "besl_main",
+			},
+			ghi::ShaderTypes::Compute,
+			bindings,
+		);
+
+		assert!(
+			shader_handle.is_ok(),
+			"Expected textured material evaluation MSL source to compile for Metal. Shader: {source}"
+		);
+		assert!(
+			source.contains("set0.textures[material.textures[0u]].sample(set0.textures_sampler[material.textures[0u]], vertex_uv)")
+				&& source.contains("unit_vector_from_xy(set0.textures[material.textures[1u]].sample(set0.textures_sampler[material.textures[1u]], vertex_uv).xy)"),
+			"Expected texture slots to be inlined into MSL sample calls. Shader: {source}"
 		);
 	}
 

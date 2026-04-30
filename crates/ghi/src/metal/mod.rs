@@ -627,6 +627,24 @@ mod utils {
 		Some(channel_bytes * channels)
 	}
 
+	pub(crate) fn texture_upload_layout(format: Formats, extent: Extent) -> Option<(usize, usize, usize)> {
+		let width = extent.width().max(1) as usize;
+		let height = extent.height().max(1) as usize;
+
+		match format {
+			Formats::BC5 | Formats::BC7 => {
+				let block_width = width.div_ceil(4);
+				let block_height = height.div_ceil(4);
+				Some((block_width * 16, block_height, block_width * block_height * 16))
+			}
+			_ => {
+				let bytes_per_pixel = bytes_per_pixel(format)?;
+				let bytes_per_row = width * bytes_per_pixel;
+				Some((bytes_per_row, height, bytes_per_row * height))
+			}
+		}
+	}
+
 	pub(crate) fn data_type_size(format: crate::DataTypes) -> usize {
 		match format {
 			crate::DataTypes::Float => std::mem::size_of::<f32>(),

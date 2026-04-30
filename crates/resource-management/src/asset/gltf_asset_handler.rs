@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use maths_rs::{
 	mat::{MatNew4, MatScale},
@@ -15,14 +15,20 @@ use super::{
 pub use crate::processors::mesh_processor::TriangleFrontFaceWinding;
 use crate::{
 	asset::{self},
-	pbr::{brdf_material_from_gltf, generate_solid_brdf_program},
+	pbr::{
+		brdf_material_from_gltf, generate_textured_brdf_program, BrdfMaterialDescription, BrdfMaterialValidationError,
+		BrdfNode, BrdfNodeId,
+	},
 	processors::{
-		image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image, ImageDescription},
+		image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image, ImageDescription, Semantic},
 		mesh_processor::{MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource},
 	},
 	r#async::{spawn_cpu_task, BoxedFuture},
 	resource,
-	resources::material::{MaterialModel, RenderModel, Shader, VariantModel},
+	resources::{
+		image::Image,
+		material::{MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
+	},
 	types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
 	ProcessedAsset, ReferenceModel,
 };
@@ -127,31 +133,10 @@ impl AssetHandler for GLTFAssetHandler {
 			};
 
 			if let Some(fragment) = url.get_fragment() {
-				let image = gltf
-					.images()
-					.find(|i| i.name() == Some(fragment.as_ref()))
-					.ok_or(LoadErrors::FailedToProcess)?;
-				let image =
-					gltf::image::Data::from_source(image.source(), None, &buffers).map_err(|_| LoadErrors::FailedToProcess)?;
-				let format = match image.format {
-					gltf::image::Format::R8G8B8 => Formats::RGB8,
-					gltf::image::Format::R8G8B8A8 => Formats::RGBA8,
-					gltf::image::Format::R16G16B16 => Formats::RGB16,
-					gltf::image::Format::R16G16B16A16 => Formats::RGBA16,
-					_ => return Err(LoadErrors::UnsupportedType),
-				};
-				let extent = Extent::rectangle(image.width, image.height);
-
+				let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
+				let image = load_gltf_image_data(asset_storage_backend, url, image, &buffers).await?;
 				let semantic = guess_semantic_from_name(url.get_base());
-
-				let image_description = ImageDescription {
-					format,
-					extent,
-					semantic,
-					gamma: gamma_from_semantic(semantic),
-				};
-
-				return process_image(url, image_description, image.pixels.into_boxed_slice());
+				return process_gltf_image(url, image, semantic);
 			}
 
 			let spec = spec.as_ref();
@@ -247,8 +232,11 @@ impl AssetHandler for GLTFAssetHandler {
 				let material = material_for_gltf_primitive(
 					asset_manager,
 					storage_backend,
+					asset_storage_backend,
 					spec,
 					url,
+					&gltf,
+					&buffers,
 					primitive.material(),
 					self.generator.clone(),
 				)
@@ -373,8 +361,11 @@ impl AssetHandler for GLTFAssetHandler {
 async fn material_for_gltf_primitive(
 	asset_manager: &AssetManager,
 	storage_backend: &dyn resource::StorageBackend,
+	asset_storage_backend: &dyn asset::StorageBackend,
 	spec: Option<&json::Value>,
 	mesh_url: ResourceId<'_>,
+	gltf: &gltf::Gltf,
+	buffers: &[gltf::buffer::Data],
 	material: gltf::Material<'_>,
 	generator: Option<Arc<dyn ProgramGenerator>>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
@@ -385,29 +376,49 @@ async fn material_for_gltf_primitive(
 			.map_err(|_| LoadErrors::FailedToProcess);
 	}
 
-	generate_gltf_material_variant(storage_backend, mesh_url, material, generator).await
+	generate_gltf_material_variant(
+		storage_backend,
+		asset_storage_backend,
+		mesh_url,
+		gltf,
+		buffers,
+		material,
+		generator,
+	)
+	.await
 }
 
 async fn generate_gltf_material_variant(
 	storage_backend: &dyn resource::StorageBackend,
+	asset_storage_backend: &dyn asset::StorageBackend,
 	mesh_url: ResourceId<'_>,
+	gltf: &gltf::Gltf,
+	buffers: &[gltf::buffer::Data],
 	material: gltf::Material<'_>,
 	generator: Option<Arc<dyn ProgramGenerator>>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let generator = generator.ok_or(LoadErrors::FailedToProcess)?;
 	let brdf = brdf_material_from_gltf(&material);
 	let alpha_mode = AlphaMode::from(brdf.alpha_mode);
-	let program = generate_solid_brdf_program(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
+	let texture_dependencies = collect_gltf_texture_dependencies(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
+	let texture_variables = store_gltf_texture_dependencies(
+		storage_backend,
+		asset_storage_backend,
+		mesh_url,
+		gltf,
+		buffers,
+		&texture_dependencies,
+	)
+	.await?;
+	let program = generate_textured_brdf_program(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
 	let base_id = generated_material_base_id(mesh_url, &material);
 	let shader_id = format!("{base_id}.shader");
 	let material_id = format!("{base_id}.material");
 	let variant_id = format!("{base_id}.variant");
 	let shader_name = shader_id.clone();
+	let material_json = generated_material_json(&texture_variables);
 
 	let (shader, shader_bytes) = spawn_cpu_task(move || {
-		let material_json = json::object! {
-			"variables": []
-		};
 		compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute")
 	})
 	.await
@@ -428,7 +439,7 @@ async fn generate_gltf_material_variant(
 	let material = store_model::<MaterialModel>(storage_backend, &material_id, material, &[])?;
 	let variant = VariantModel {
 		material,
-		variables: Vec::new(),
+		variables: texture_variables,
 		alpha_mode,
 	};
 
@@ -479,6 +490,280 @@ fn store_model<M: crate::Model>(
 		.store(&resource, data)
 		.map(|resource| resource.into())
 		.map_err(|_| LoadErrors::FailedToProcess)
+}
+
+/// The `GltfTextureDependency` struct records a glTF image required by a generated material variant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GltfTextureDependency {
+	image_index: u32,
+	semantic: Semantic,
+}
+
+/// Finds the image addressed by a glTF resource fragment.
+/// Generated fragments use `images/<index>...` so unnamed GLB images remain addressable.
+fn image_for_gltf_fragment<'a>(gltf: &'a gltf::Gltf, fragment: &str) -> Option<gltf::Image<'a>> {
+	if let Some(index) = generated_image_fragment_index(fragment) {
+		return gltf.images().find(|image| image.index() == index as usize);
+	}
+
+	gltf.images().find(|image| image.name() == Some(fragment))
+}
+
+fn generated_image_fragment_index(fragment: &str) -> Option<u32> {
+	let suffix = fragment.strip_prefix("images/")?;
+	let digits = suffix
+		.chars()
+		.take_while(|character| character.is_ascii_digit())
+		.collect::<String>();
+	if digits.is_empty() {
+		None
+	} else {
+		digits.parse().ok()
+	}
+}
+
+/// Loads a glTF image from embedded buffer data, data URIs, or file-local URI references.
+/// File-local references are resolved through the engine asset backend so ad-hoc textures inside `.gltf` assets do not need to be standalone engine resources.
+async fn load_gltf_image_data(
+	asset_storage_backend: &dyn asset::StorageBackend,
+	mesh_url: ResourceId<'_>,
+	image: gltf::Image<'_>,
+	buffers: &[gltf::buffer::Data],
+) -> Result<gltf::image::Data, LoadErrors> {
+	match image.source() {
+		gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
+			let image_url = resolve_gltf_uri(mesh_url, uri);
+			let (bytes, ..) = asset_storage_backend
+				.resolve(ResourceId::new(&image_url))
+				.await
+				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+			decode_external_gltf_image(&bytes)
+		}
+		_ => gltf::image::Data::from_source(image.source(), None, buffers).map_err(|_| LoadErrors::FailedToProcess),
+	}
+}
+
+fn resolve_gltf_uri(mesh_url: ResourceId<'_>, uri: &str) -> String {
+	if uri.contains("://") || uri.starts_with('/') {
+		return uri.to_string();
+	}
+
+	let base = mesh_url.get_base();
+	let parent = Path::new(base.as_ref()).parent();
+	if let Some(parent) = parent {
+		parent.join(uri).to_string_lossy().replace('\\', "/")
+	} else {
+		uri.to_string()
+	}
+}
+
+fn decode_external_gltf_image(bytes: &[u8]) -> Result<gltf::image::Data, LoadErrors> {
+	let image = image::load_from_memory(bytes).map_err(|_| LoadErrors::FailedToProcess)?;
+	let rgba = image.to_rgba8();
+	let (width, height) = rgba.dimensions();
+
+	Ok(gltf::image::Data {
+		pixels: rgba.into_raw(),
+		format: gltf::image::Format::R8G8B8A8,
+		width,
+		height,
+	})
+}
+
+fn process_gltf_image(
+	id: ResourceId<'_>,
+	image: gltf::image::Data,
+	semantic: Semantic,
+) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
+	let format = gltf_image_format(image.format)?;
+	let image_description = ImageDescription {
+		format,
+		extent: Extent::rectangle(image.width, image.height),
+		semantic,
+		gamma: gamma_from_semantic(semantic),
+	};
+
+	process_image(id, image_description, image.pixels.into_boxed_slice())
+}
+
+fn gltf_image_format(format: gltf::image::Format) -> Result<Formats, LoadErrors> {
+	match format {
+		gltf::image::Format::R8G8B8 => Ok(Formats::RGB8),
+		gltf::image::Format::R8G8B8A8 => Ok(Formats::RGBA8),
+		gltf::image::Format::R16G16B16 => Ok(Formats::RGB16),
+		gltf::image::Format::R16G16B16A16 => Ok(Formats::RGBA16),
+		_ => Err(LoadErrors::UnsupportedType),
+	}
+}
+
+/// Collects unique glTF image dependencies in material-slot order.
+/// The generated shader uses `gltf_texture_<image_index>` names while the runtime fills those slots with bindless descriptor indices.
+fn collect_gltf_texture_dependencies(
+	material: &BrdfMaterialDescription,
+) -> Result<Vec<GltfTextureDependency>, BrdfMaterialValidationError> {
+	material.validate()?;
+	let mut dependencies = Vec::new();
+	let BrdfNode::MetallicRoughness(surface) = material.node(material.surface)? else {
+		return Ok(dependencies);
+	};
+
+	collect_texture_dependencies_from_node(material, surface.base_color, Semantic::Albedo, &mut dependencies)?;
+	collect_texture_dependencies_from_node(material, surface.metallic, Semantic::Metallic, &mut dependencies)?;
+	collect_texture_dependencies_from_node(material, surface.roughness, Semantic::Roughness, &mut dependencies)?;
+	if let Some(normal) = surface.normal {
+		collect_texture_dependencies_from_node(material, normal, Semantic::Normal, &mut dependencies)?;
+	}
+	if let Some(occlusion) = surface.occlusion {
+		collect_texture_dependencies_from_node(material, occlusion, Semantic::AO, &mut dependencies)?;
+	}
+	if let Some(emission) = surface.emission {
+		collect_texture_dependencies_from_node(material, emission, Semantic::Emissive, &mut dependencies)?;
+	}
+
+	Ok(dependencies)
+}
+
+fn collect_texture_dependencies_from_node(
+	material: &BrdfMaterialDescription,
+	node: BrdfNodeId,
+	semantic: Semantic,
+	dependencies: &mut Vec<GltfTextureDependency>,
+) -> Result<(), BrdfMaterialValidationError> {
+	match material.node(node)? {
+		BrdfNode::Texture(texture) => push_gltf_texture_dependency(dependencies, texture.image_index, semantic),
+		BrdfNode::Multiply { left, right } => {
+			collect_texture_dependencies_from_node(material, *left, semantic, dependencies)?;
+			collect_texture_dependencies_from_node(material, *right, semantic, dependencies)?;
+		}
+		BrdfNode::ExtractChannel { source, .. } => {
+			collect_texture_dependencies_from_node(material, *source, semantic, dependencies)?;
+		}
+		BrdfNode::NormalMap { source, .. } => {
+			collect_texture_dependencies_from_node(material, *source, Semantic::Normal, dependencies)?;
+		}
+		BrdfNode::Occlusion { source, .. } => {
+			collect_texture_dependencies_from_node(material, *source, Semantic::AO, dependencies)?;
+		}
+		BrdfNode::Emission { color } => {
+			collect_texture_dependencies_from_node(material, *color, Semantic::Emissive, dependencies)?;
+		}
+		BrdfNode::Constant(_) | BrdfNode::MetallicRoughness(_) => {}
+	}
+
+	Ok(())
+}
+
+fn push_gltf_texture_dependency(dependencies: &mut Vec<GltfTextureDependency>, image_index: u32, semantic: Semantic) {
+	if let Some(existing) = dependencies
+		.iter_mut()
+		.find(|dependency| dependency.image_index == image_index)
+	{
+		existing.semantic = merge_texture_semantics(existing.semantic, semantic);
+		return;
+	}
+
+	dependencies.push(GltfTextureDependency { image_index, semantic });
+}
+
+fn merge_texture_semantics(left: Semantic, right: Semantic) -> Semantic {
+	if left == right {
+		return left;
+	}
+
+	// Prefer color semantics when an unusual glTF reuses the same image for color and data textures.
+	// This avoids accidentally sampling an albedo texture as linear data after processing.
+	match (left, right) {
+		(Semantic::Albedo, _) | (_, Semantic::Albedo) => Semantic::Albedo,
+		(Semantic::Emissive, _) | (_, Semantic::Emissive) => Semantic::Emissive,
+		(Semantic::Normal, _) | (_, Semantic::Normal) => Semantic::Normal,
+		(Semantic::AO, _) | (_, Semantic::AO) => Semantic::AO,
+		(Semantic::Metallic, _) | (_, Semantic::Metallic) => Semantic::Metallic,
+		(Semantic::Roughness, _) | (_, Semantic::Roughness) => Semantic::Roughness,
+		_ => left,
+	}
+}
+
+async fn store_gltf_texture_dependencies(
+	storage_backend: &dyn resource::StorageBackend,
+	asset_storage_backend: &dyn asset::StorageBackend,
+	mesh_url: ResourceId<'_>,
+	gltf: &gltf::Gltf,
+	buffers: &[gltf::buffer::Data],
+	dependencies: &[GltfTextureDependency],
+) -> Result<Vec<VariantVariableModel>, LoadErrors> {
+	let mut variables = Vec::with_capacity(dependencies.len());
+
+	for dependency in dependencies {
+		let image = gltf
+			.images()
+			.find(|image| image.index() == dependency.image_index as usize)
+			.ok_or(LoadErrors::FailedToProcess)?;
+		let id = generated_gltf_image_id(mesh_url, image.index() as u32, image.name());
+		let image_ref = store_gltf_image_resource(
+			storage_backend,
+			asset_storage_backend,
+			mesh_url,
+			&id,
+			image,
+			buffers,
+			dependency.semantic,
+		)
+		.await?;
+
+		variables.push(VariantVariableModel {
+			name: generated_texture_variable_name(dependency.image_index),
+			r#type: "Texture2D".to_string(),
+			value: ValueModel::Image(image_ref),
+		});
+	}
+
+	Ok(variables)
+}
+
+async fn store_gltf_image_resource(
+	storage_backend: &dyn resource::StorageBackend,
+	asset_storage_backend: &dyn asset::StorageBackend,
+	mesh_url: ResourceId<'_>,
+	id: &str,
+	image: gltf::Image<'_>,
+	buffers: &[gltf::buffer::Data],
+	semantic: Semantic,
+) -> Result<ReferenceModel<Image>, LoadErrors> {
+	let image_data = load_gltf_image_data(asset_storage_backend, mesh_url, image, buffers).await?;
+	let (resource, bytes) = process_gltf_image(ResourceId::new(id), image_data, semantic)?;
+	storage_backend
+		.store(&resource, &bytes)
+		.map(|resource| resource.into())
+		.map_err(|_| LoadErrors::FailedToProcess)
+}
+
+fn generated_material_json(variables: &[VariantVariableModel]) -> json::Object {
+	let variables = variables
+		.iter()
+		.map(|variable| {
+			json::object! {
+				"name": variable.name.as_str(),
+				"data_type": variable.r#type.as_str()
+			}
+		})
+		.collect::<Vec<_>>();
+
+	json::object! {
+		"variables": variables
+	}
+}
+
+fn generated_texture_variable_name(image_index: u32) -> String {
+	format!("gltf_texture_{image_index}")
+}
+
+fn generated_gltf_image_id(mesh_url: ResourceId<'_>, image_index: u32, image_name: Option<&str>) -> String {
+	let readable_name = image_name
+		.map(sanitize_material_name)
+		.filter(|name| !name.is_empty())
+		.map(|name| format!("_{name}"))
+		.unwrap_or_default();
+	format!("{}#images/{image_index}{readable_name}", mesh_url.as_ref())
 }
 
 fn gltf_vertex_component(semantic: gltf::Semantic) -> Option<VertexComponent> {
@@ -559,8 +844,9 @@ mod tests {
 	use utils::json;
 
 	use super::{
-		generated_material_base_id, gltf_vertex_component, has_vertex_component, material_override, normalize_vertex_layouts,
-		sanitize_material_name, GLTFAssetHandler, TriangleFrontFaceWinding,
+		collect_gltf_texture_dependencies, generated_gltf_image_id, generated_image_fragment_index, generated_material_base_id,
+		gltf_vertex_component, has_vertex_component, material_override, normalize_vertex_layouts, sanitize_material_name,
+		GLTFAssetHandler, GltfTextureDependency, TriangleFrontFaceWinding,
 	};
 	use crate::r#async;
 	use crate::{
@@ -572,7 +858,8 @@ mod tests {
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 			ResourceId,
 		},
-		processors::mesh_processor::orient_triangle_indices_for_front_face,
+		pbr::{BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
+		processors::{image_processor::Semantic, mesh_processor::orient_triangle_indices_for_front_face},
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::mesh::MeshModel,
 		types::{VertexComponent, VertexSemantics},
@@ -655,6 +942,86 @@ mod tests {
 		assert_eq!(
 			generated_material_base_id(ResourceId::new("models/car.glb"), &material),
 			"models/car.glb#materials/Red_Paint_Gloss"
+		);
+	}
+
+	#[test]
+	fn generated_image_ids_use_stable_indices_and_optional_names() {
+		assert_eq!(
+			generated_gltf_image_id(ResourceId::new("models/robot.glb"), 0, None),
+			"models/robot.glb#images/0"
+		);
+		assert_eq!(
+			generated_gltf_image_id(ResourceId::new("models/robot.glb"), 12, Some("Base Color/PNG")),
+			"models/robot.glb#images/12_Base_Color_PNG"
+		);
+		assert_eq!(generated_image_fragment_index("images/12_Base_Color_PNG"), Some(12));
+		assert_eq!(generated_image_fragment_index("Base Color"), None);
+	}
+
+	#[test]
+	fn collects_gltf_texture_dependencies_in_material_slot_order() {
+		let mut builder = BrdfMaterialBuilder::new();
+		let base_color = builder.texture(BrdfTexture {
+			image_index: 2,
+			texcoord_channel: 0,
+		});
+		let metallic_roughness = builder.texture(BrdfTexture {
+			image_index: 5,
+			texcoord_channel: 0,
+		});
+		let metallic = builder.extract_channel(metallic_roughness, BrdfChannel::Blue);
+		let roughness = builder.extract_channel(metallic_roughness, BrdfChannel::Green);
+		let normal_source = builder.texture(BrdfTexture {
+			image_index: 8,
+			texcoord_channel: 0,
+		});
+		let normal = builder.add(BrdfNode::NormalMap {
+			source: normal_source,
+			scale: 1.0,
+		});
+		let occlusion_source = builder.texture(BrdfTexture {
+			image_index: 10,
+			texcoord_channel: 0,
+		});
+		let occlusion = builder.add(BrdfNode::Occlusion {
+			source: occlusion_source,
+			strength: 0.75,
+		});
+		let emission_color = builder.constant(BrdfValue::Vector3([1.0, 0.25, 0.5]));
+		let emission = builder.add(BrdfNode::Emission { color: emission_color });
+		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
+			base_color,
+			metallic,
+			roughness,
+			normal: Some(normal),
+			occlusion: Some(occlusion),
+			emission: Some(emission),
+		}));
+		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+
+		let dependencies = collect_gltf_texture_dependencies(&material).expect("dependencies should collect");
+
+		assert_eq!(
+			dependencies,
+			vec![
+				GltfTextureDependency {
+					image_index: 2,
+					semantic: Semantic::Albedo,
+				},
+				GltfTextureDependency {
+					image_index: 5,
+					semantic: Semantic::Metallic,
+				},
+				GltfTextureDependency {
+					image_index: 8,
+					semantic: Semantic::Normal,
+				},
+				GltfTextureDependency {
+					image_index: 10,
+					semantic: Semantic::AO,
+				},
+			]
 		);
 	}
 

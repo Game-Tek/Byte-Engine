@@ -477,18 +477,20 @@ impl MSLShaderGenerator {
 		};
 
 		let emit_suffix = |string: &mut String, next_id: &mut u32| {
+			string.push_str(" [[id(");
+			string.push_str(next_id.to_string().as_str());
+			string.push_str(")]]");
+			let descriptor_count = count.map(|count| count.get() as u32).unwrap_or(1);
 			if let Some(count) = count {
 				string.push('[');
 				string.push_str(count.to_string().as_str());
 				string.push(']');
 			}
-			string.push_str(" [[id(");
-			string.push_str(next_id.to_string().as_str());
-			string.push_str(")]];");
+			string.push(';');
 			if !self.minified {
 				string.push('\n');
 			}
-			*next_id += 1;
+			*next_id += descriptor_count;
 		};
 
 		if !self.minified {
@@ -1263,6 +1265,49 @@ impl MSLShaderGenerator {
 		});
 	}
 
+	fn emit_visibility_texture_sample(&mut self, string: &mut String, slot: &besl::NodeReference, xy_only: bool) {
+		string.push_str("set0.textures[material.textures[");
+		self.emit_visibility_texture_slot(string, slot);
+		string.push_str("]].sample(set0.textures_sampler[material.textures[");
+		self.emit_visibility_texture_slot(string, slot);
+		string.push_str("]], vertex_uv)");
+		if xy_only {
+			string.push_str(".xy");
+		}
+	}
+
+	fn emit_visibility_texture_slot(&mut self, string: &mut String, slot: &besl::NodeReference) {
+		let slot_borrow = slot.borrow();
+		match slot_borrow.node() {
+			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => {
+				let source = source.clone();
+				drop(slot_borrow);
+				if self.try_emit_visibility_texture_const_value(string, &source) {
+					return;
+				}
+				self.emit_node_string(string, slot);
+			}
+			_ => {
+				drop(slot_borrow);
+				if self.try_emit_visibility_texture_const_value(string, slot) {
+					return;
+				}
+				self.emit_node_string(string, slot);
+			}
+		}
+	}
+
+	fn try_emit_visibility_texture_const_value(&mut self, string: &mut String, slot: &besl::NodeReference) -> bool {
+		let slot_borrow = slot.borrow();
+		let besl::Nodes::Const { value, .. } = slot_borrow.node() else {
+			return false;
+		};
+		let value = value.clone();
+		drop(slot_borrow);
+		self.emit_node_string(string, &value);
+		true
+	}
+
 	fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
@@ -1282,6 +1327,20 @@ impl MSLShaderGenerator {
 			}
 			return;
 		};
+
+		match name.as_str() {
+			"sample" => {
+				self.emit_visibility_texture_sample(string, &arguments[0], false);
+				return;
+			}
+			"sample_normal" => {
+				string.push_str("unit_vector_from_xy(");
+				self.emit_visibility_texture_sample(string, &arguments[0], true);
+				string.push(')');
+				return;
+			}
+			_ => {}
+		}
 
 		let has_body = definition
 			.iter()

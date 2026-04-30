@@ -109,6 +109,47 @@ impl GLSLShaderGenerator {
 		});
 	}
 
+	fn emit_visibility_texture_sample(&mut self, string: &mut String, slot: &besl::NodeReference, xy_only: bool) {
+		string.push_str("texture(textures[nonuniformEXT(material.textures[");
+		self.emit_visibility_texture_slot(string, slot);
+		string.push_str("])], vertex_uv)");
+		if xy_only {
+			string.push_str(".xy");
+		}
+	}
+
+	fn emit_visibility_texture_slot(&mut self, string: &mut String, slot: &besl::NodeReference) {
+		let slot_borrow = slot.borrow();
+		match slot_borrow.node() {
+			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => {
+				let source = source.clone();
+				drop(slot_borrow);
+				if self.try_emit_visibility_texture_const_value(string, &source) {
+					return;
+				}
+				self.emit_node_string(string, slot);
+			}
+			_ => {
+				drop(slot_borrow);
+				if self.try_emit_visibility_texture_const_value(string, slot) {
+					return;
+				}
+				self.emit_node_string(string, slot);
+			}
+		}
+	}
+
+	fn try_emit_visibility_texture_const_value(&mut self, string: &mut String, slot: &besl::NodeReference) -> bool {
+		let slot_borrow = slot.borrow();
+		let besl::Nodes::Const { value, .. } = slot_borrow.node() else {
+			return false;
+		};
+		let value = value.clone();
+		drop(slot_borrow);
+		self.emit_node_string(string, &value);
+		true
+	}
+
 	fn emit_intrinsic_call(
 		&mut self,
 		string: &mut String,
@@ -128,6 +169,20 @@ impl GLSLShaderGenerator {
 			}
 			return;
 		};
+
+		match name.as_str() {
+			"sample" => {
+				self.emit_visibility_texture_sample(string, &arguments[0], false);
+				return;
+			}
+			"sample_normal" => {
+				string.push_str("unit_vector_from_xy(");
+				self.emit_visibility_texture_sample(string, &arguments[0], true);
+				string.push(')');
+				return;
+			}
+			_ => {}
+		}
 
 		let has_body = definition
 			.iter()

@@ -1,6 +1,9 @@
 use std::fmt::{Display, Formatter};
 
-use super::{BrdfMaterialDescription, BrdfMaterialValidationError, BrdfMetallicRoughness, BrdfNode, BrdfNodeId, BrdfValue};
+use super::{
+	BrdfChannel, BrdfMaterialDescription, BrdfMaterialValidationError, BrdfMetallicRoughness, BrdfNode, BrdfNodeId,
+	BrdfTexture, BrdfValue,
+};
 
 /// Generates a BESL program from a solid-value BRDF material graph.
 pub fn generate_solid_brdf_program(
@@ -22,6 +25,57 @@ pub fn generate_solid_brdf_program(
 			besl::parser::Node::member_assignment("roughness", scalar_expression(roughness)),
 			besl::parser::Node::member_assignment("normal", vector3_expression([0.0, 0.0, 1.0])),
 		]),
+	]))
+}
+
+/// Generates a BESL program from a BRDF material graph that may sample visibility-pipeline material textures.
+pub fn generate_textured_brdf_program(
+	material: &BrdfMaterialDescription,
+) -> Result<besl::parser::Node<'static>, BrdfShaderGenerationError> {
+	let surface = solid_metallic_roughness_surface(material)?;
+	let mut statements = Vec::with_capacity(6);
+
+	statements.push(besl::parser::Node::member_assignment(
+		"albedo",
+		vector4_value_expression(material, surface.base_color)?,
+	));
+	statements.push(besl::parser::Node::member_assignment(
+		"metalness",
+		scalar_value_expression(material, surface.metallic)?,
+	));
+	statements.push(besl::parser::Node::member_assignment(
+		"roughness",
+		scalar_value_expression(material, surface.roughness)?,
+	));
+
+	if let Some(normal) = surface.normal {
+		statements.push(besl::parser::Node::member_assignment(
+			"normal",
+			vector3_value_expression(material, normal)?,
+		));
+	} else {
+		statements.push(besl::parser::Node::member_assignment(
+			"normal",
+			vector3_expression([0.0, 0.0, 1.0]),
+		));
+	}
+
+	if let Some(occlusion) = surface.occlusion {
+		statements.push(besl::parser::Node::member_assignment(
+			"occlusion",
+			scalar_value_expression(material, occlusion)?,
+		));
+	}
+
+	if let Some(emission) = surface.emission {
+		statements.push(besl::parser::Node::member_assignment(
+			"emission",
+			vector3_value_expression(material, emission)?,
+		));
+	}
+
+	Ok(besl::parser::Node::root_with_children(vec![
+		besl::parser::Node::main_function(statements),
 	]))
 }
 
@@ -52,6 +106,191 @@ fn evaluate_solid_value(material: &BrdfMaterialDescription, node: BrdfNodeId) ->
 		| BrdfNode::Emission { .. } => Err(BrdfShaderGenerationError::UnsupportedNode { node }),
 		BrdfNode::MetallicRoughness(_) => Err(BrdfShaderGenerationError::InvalidNodeType { node }),
 	}
+}
+
+fn value_expression(
+	material: &BrdfMaterialDescription,
+	node: BrdfNodeId,
+) -> Result<besl::parser::Node<'static>, BrdfShaderGenerationError> {
+	match material.node(node).map_err(BrdfShaderGenerationError::InvalidMaterial)? {
+		BrdfNode::Constant(value) => Ok(brdf_value_expression(*value)),
+		BrdfNode::Texture(texture) => Ok(texture_sample_expression(*texture)),
+		BrdfNode::Multiply { left, right } => Ok(besl::parser::Node::operator(
+			"*",
+			value_expression(material, *left)?,
+			value_expression(material, *right)?,
+		)),
+		BrdfNode::ExtractChannel { source, channel } => Ok(channel_expression(value_expression(material, *source)?, *channel)),
+		BrdfNode::NormalMap { source, scale } => normal_map_expression(material, *source, *scale),
+		BrdfNode::Occlusion { source, strength } => occlusion_expression(material, *source, *strength),
+		BrdfNode::Emission { color } => vector3_value_expression(material, *color),
+		BrdfNode::MetallicRoughness(_) => Err(BrdfShaderGenerationError::InvalidNodeType { node }),
+	}
+}
+
+fn scalar_value_expression(
+	material: &BrdfMaterialDescription,
+	node: BrdfNodeId,
+) -> Result<besl::parser::Node<'static>, BrdfShaderGenerationError> {
+	Ok(
+		match material.node(node).map_err(BrdfShaderGenerationError::InvalidMaterial)? {
+			BrdfNode::Constant(BrdfValue::Scalar(value)) => scalar_expression(*value),
+			BrdfNode::Constant(_) => return Err(BrdfShaderGenerationError::InvalidNodeType { node }),
+			_ => value_expression(material, node)?,
+		},
+	)
+}
+
+fn vector3_value_expression(
+	material: &BrdfMaterialDescription,
+	node: BrdfNodeId,
+) -> Result<besl::parser::Node<'static>, BrdfShaderGenerationError> {
+	Ok(
+		match material.node(node).map_err(BrdfShaderGenerationError::InvalidMaterial)? {
+			BrdfNode::Constant(BrdfValue::Vector3(value)) => vector3_expression(*value),
+			BrdfNode::Texture(texture) => texture_rgb_expression(*texture),
+			BrdfNode::Multiply { left, right } => besl::parser::Node::operator(
+				"*",
+				vector3_factor_expression(material, *left)?,
+				vector3_factor_expression(material, *right)?,
+			),
+			BrdfNode::Emission { color } => vector3_value_expression(material, *color)?,
+			BrdfNode::Constant(_) => return Err(BrdfShaderGenerationError::InvalidNodeType { node }),
+			_ => value_expression(material, node)?,
+		},
+	)
+}
+
+fn vector3_factor_expression(
+	material: &BrdfMaterialDescription,
+	node: BrdfNodeId,
+) -> Result<besl::parser::Node<'static>, BrdfShaderGenerationError> {
+	Ok(
+		match material.node(node).map_err(BrdfShaderGenerationError::InvalidMaterial)? {
+			BrdfNode::Constant(BrdfValue::Scalar(value)) => scalar_expression(*value),
+			BrdfNode::Constant(BrdfValue::Vector3(value)) => vector3_expression(*value),
+			BrdfNode::Texture(texture) => texture_rgb_expression(*texture),
+			BrdfNode::ExtractChannel { source, channel } => channel_expression(value_expression(material, *source)?, *channel),
+			BrdfNode::Multiply { left, right } => besl::parser::Node::operator(
+				"*",
+				vector3_factor_expression(material, *left)?,
+				vector3_factor_expression(material, *right)?,
+			),
+			_ => vector3_value_expression(material, node)?,
+		},
+	)
+}
+
+fn vector4_value_expression(
+	material: &BrdfMaterialDescription,
+	node: BrdfNodeId,
+) -> Result<besl::parser::Node<'static>, BrdfShaderGenerationError> {
+	Ok(
+		match material.node(node).map_err(BrdfShaderGenerationError::InvalidMaterial)? {
+			BrdfNode::Constant(BrdfValue::Vector4(value)) => vector4_expression(*value),
+			BrdfNode::Constant(_) => return Err(BrdfShaderGenerationError::InvalidNodeType { node }),
+			_ => value_expression(material, node)?,
+		},
+	)
+}
+
+fn brdf_value_expression(value: BrdfValue) -> besl::parser::Node<'static> {
+	match value {
+		BrdfValue::Scalar(value) => scalar_expression(value),
+		BrdfValue::Vector3(value) => vector3_expression(value),
+		BrdfValue::Vector4(value) => vector4_expression(value),
+	}
+}
+
+fn texture_sample_expression(texture: BrdfTexture) -> besl::parser::Node<'static> {
+	// The visibility material transform maps each generated Texture2D variable to a per-material slot.
+	// Keep the BRDF graph independent from final bindless descriptor indices by referring to the generated variable name.
+	besl::parser::Node::call(
+		"sample",
+		vec![besl::parser::Node::member_expression(texture_slot_name(texture.image_index))],
+	)
+}
+
+fn texture_rgb_expression(texture: BrdfTexture) -> besl::parser::Node<'static> {
+	let sample = texture_sample_expression(texture);
+	besl::parser::Node::call(
+		"vec3f",
+		vec![
+			channel_expression(sample.clone(), BrdfChannel::Red),
+			channel_expression(sample.clone(), BrdfChannel::Green),
+			channel_expression(sample, BrdfChannel::Blue),
+		],
+	)
+}
+
+fn normal_map_expression(
+	material: &BrdfMaterialDescription,
+	source: BrdfNodeId,
+	scale: f32,
+) -> Result<besl::parser::Node<'static>, BrdfShaderGenerationError> {
+	let source = match material.node(source).map_err(BrdfShaderGenerationError::InvalidMaterial)? {
+		BrdfNode::Texture(texture) => besl::parser::Node::call(
+			"sample_normal",
+			vec![besl::parser::Node::member_expression(texture_slot_name(texture.image_index))],
+		),
+		_ => vector3_value_expression(material, source)?,
+	};
+
+	if scale == 1.0 {
+		Ok(source)
+	} else {
+		Ok(besl::parser::Node::call(
+			"vec3f",
+			vec![
+				besl::parser::Node::operator(
+					"*",
+					channel_expression(source.clone(), BrdfChannel::Red),
+					scalar_expression(scale),
+				),
+				besl::parser::Node::operator(
+					"*",
+					channel_expression(source.clone(), BrdfChannel::Green),
+					scalar_expression(scale),
+				),
+				channel_expression(source, BrdfChannel::Blue),
+			],
+		))
+	}
+}
+
+fn occlusion_expression(
+	material: &BrdfMaterialDescription,
+	source: BrdfNodeId,
+	strength: f32,
+) -> Result<besl::parser::Node<'static>, BrdfShaderGenerationError> {
+	let source = channel_expression(value_expression(material, source)?, BrdfChannel::Red);
+	if strength == 1.0 {
+		Ok(source)
+	} else {
+		// glTF occlusion strength blends from no occlusion at 1.0 toward the sampled occlusion channel.
+		Ok(besl::parser::Node::operator(
+			"+",
+			scalar_expression(1.0 - strength),
+			besl::parser::Node::operator("*", scalar_expression(strength), source),
+		))
+	}
+}
+
+fn channel_expression(value: besl::parser::Node<'static>, channel: BrdfChannel) -> besl::parser::Node<'static> {
+	besl::parser::Node::accessor(value, besl::parser::Node::member_expression(channel_member(channel)))
+}
+
+fn channel_member(channel: BrdfChannel) -> &'static str {
+	match channel {
+		BrdfChannel::Red => "x",
+		BrdfChannel::Green => "y",
+		BrdfChannel::Blue => "z",
+		BrdfChannel::Alpha => "w",
+	}
+}
+
+fn texture_slot_name(image_index: u32) -> &'static str {
+	Box::leak(format!("gltf_texture_{image_index}").into_boxed_str())
 }
 
 fn multiply_values(
@@ -269,6 +508,82 @@ mod tests {
 	}
 
 	#[test]
+	fn generates_textured_program_with_texture_samples() {
+		let mut builder = BrdfMaterialBuilder::new();
+		let base_color = builder.texture(BrdfTexture {
+			image_index: 3,
+			texcoord_channel: 0,
+		});
+		let metallic_roughness = builder.texture(BrdfTexture {
+			image_index: 4,
+			texcoord_channel: 0,
+		});
+		let metallic = builder.extract_channel(metallic_roughness, crate::pbr::BrdfChannel::Blue);
+		let roughness = builder.extract_channel(metallic_roughness, crate::pbr::BrdfChannel::Green);
+		let normal_source = builder.texture(BrdfTexture {
+			image_index: 5,
+			texcoord_channel: 0,
+		});
+		let normal = builder.add(BrdfNode::NormalMap {
+			source: normal_source,
+			scale: 1.0,
+		});
+		let occlusion_source = builder.texture(BrdfTexture {
+			image_index: 6,
+			texcoord_channel: 0,
+		});
+		let occlusion = builder.add(BrdfNode::Occlusion {
+			source: occlusion_source,
+			strength: 1.0,
+		});
+		let emission_source = builder.texture(BrdfTexture {
+			image_index: 7,
+			texcoord_channel: 0,
+		});
+		let emission = builder.add(BrdfNode::Emission { color: emission_source });
+		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
+			base_color,
+			metallic,
+			roughness,
+			normal: Some(normal),
+			occlusion: Some(occlusion),
+			emission: Some(emission),
+		}));
+		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+
+		let program = generate_textured_brdf_program(&material).expect("material should generate");
+
+		assert_main_assignment_order(
+			&program,
+			&["albedo", "metalness", "roughness", "normal", "occlusion", "emission"],
+		);
+		assert_sample_call(assignment_right(main_statement(&program, 0)), "sample", "gltf_texture_3");
+
+		let metallic_source = assert_accessor_channel(assignment_right(main_statement(&program, 1)), "z");
+		assert_sample_call(metallic_source, "sample", "gltf_texture_4");
+
+		let roughness_source = assert_accessor_channel(assignment_right(main_statement(&program, 2)), "y");
+		assert_sample_call(roughness_source, "sample", "gltf_texture_4");
+
+		assert_sample_call(
+			assignment_right(main_statement(&program, 3)),
+			"sample_normal",
+			"gltf_texture_5",
+		);
+
+		let occlusion_source = assert_accessor_channel(assignment_right(main_statement(&program, 4)), "x");
+		assert_sample_call(occlusion_source, "sample", "gltf_texture_6");
+
+		let emission = assignment_right(main_statement(&program, 5));
+		let parameters = assert_call(emission, "vec3f");
+		assert_eq!(parameters.len(), 3);
+		for (parameter, channel) in parameters.iter().zip(["x", "y", "z"]) {
+			let source = assert_accessor_channel(parameter, channel);
+			assert_sample_call(source, "sample", "gltf_texture_7");
+		}
+	}
+
+	#[test]
 	fn rejects_extract_channel_nodes() {
 		let mut builder = BrdfMaterialBuilder::new();
 		let source = builder.constant(BrdfValue::Vector4([1.0, 1.0, 1.0, 1.0]));
@@ -387,6 +702,35 @@ mod tests {
 			panic!("Expected assignment statement");
 		};
 		right
+	}
+
+	fn assert_sample_call(node: &besl::parser::Node<'_>, name: &str, variable: &str) {
+		let parameters = assert_call(node, name);
+		assert_eq!(parameters.len(), 1);
+		assert_member_expression(&parameters[0], variable);
+	}
+
+	fn assert_call<'a>(node: &'a besl::parser::Node<'a>, expected_name: &str) -> &'a [besl::parser::Node<'a>] {
+		let besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters }) = node.node() else {
+			panic!("Expected call expression");
+		};
+		assert_eq!(*name, expected_name);
+		parameters
+	}
+
+	fn assert_accessor_channel<'a>(node: &'a besl::parser::Node<'a>, channel: &str) -> &'a besl::parser::Node<'a> {
+		let besl::parser::Nodes::Expression(besl::parser::Expressions::Accessor { left, right }) = node.node() else {
+			panic!("Expected accessor expression");
+		};
+		assert_member_expression(right, channel);
+		left
+	}
+
+	fn assert_member_expression(node: &besl::parser::Node<'_>, expected_name: &str) {
+		let besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) = node.node() else {
+			panic!("Expected member expression");
+		};
+		assert_eq!(*name, expected_name);
 	}
 
 	fn assert_vec4_call(node: &besl::parser::Node<'_>, expected: &[&str; 4]) {

@@ -496,6 +496,11 @@ impl VisibilityWorldRenderDomain {
 					material_data.textures.fill(u32::MAX);
 
 					for (i, texture) in textures.iter().enumerate() {
+						if i >= MAX_MATERIAL_TEXTURES {
+							panic!(
+								"Visibility material texture limit exceeded. The most likely cause is that a material references more textures than the fixed per-material indirection table supports."
+							);
+						}
 						material_data.textures[i] = texture.as_ref().map(|(_, index)| *index).unwrap_or(0xFFFFFFFFu32) as u32;
 					}
 
@@ -610,6 +615,11 @@ impl VisibilityWorldRenderDomain {
 		material_data.textures.fill(u32::MAX);
 
 		for (i, texture) in textures.iter().enumerate() {
+			if i >= MAX_MATERIAL_TEXTURES {
+				panic!(
+					"Visibility material texture limit exceeded. The most likely cause is that a material variant references more textures than the fixed per-material indirection table supports."
+				);
+			}
 			material_data.textures[i] = texture.as_ref().map(|(_, index)| *index).unwrap_or(0xFFFFFFFFu32) as u32;
 		}
 
@@ -708,6 +718,11 @@ impl VisibilityWorldRenderDomain {
 		match self.images.entry(id.to_string()) {
 			Entry::Occupied(image) => image.get().index(),
 			Entry::Vacant(image) => {
+				if index as usize >= MAX_BINDLESS_TEXTURES {
+					panic!(
+						"Visibility bindless texture limit exceeded. The most likely cause is that the scene references more material images than the global descriptor array supports."
+					);
+				}
 				image.insert(ResourceStates::Pending(PendingImage { index }));
 				index
 			}
@@ -1353,7 +1368,7 @@ pub struct LightData {
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct MaterialData {
-	textures: [u32; 16],
+	textures: [u32; MAX_MATERIAL_TEXTURES],
 }
 
 #[derive(Clone)]
@@ -1682,10 +1697,11 @@ use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
 use crate::rendering::pipelines::visibility::{
 	ShaderMeshletData, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
-	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS,
-	MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
-	PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING,
-	VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_BINDLESS_TEXTURES, MAX_INSTANCES,
+	MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
+	MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
+	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
+	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassFunction, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;

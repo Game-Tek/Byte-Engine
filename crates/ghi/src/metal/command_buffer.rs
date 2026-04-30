@@ -57,14 +57,12 @@ fn replace_texture_from_bytes(
 	array_layers: u32,
 	bytes: &[u8],
 ) {
-	let Some(bytes_per_pixel) = utils::bytes_per_pixel(format) else {
+	let Some((bytes_per_row, _, bytes_per_image)) = utils::texture_upload_layout(format, extent) else {
 		return;
 	};
 
 	let width = extent.width().max(1) as usize;
 	let height = extent.height().max(1) as usize;
-	let bytes_per_row = width * bytes_per_pixel;
-	let bytes_per_image = bytes_per_row * height;
 	let region = mtl::MTLRegion {
 		origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
 		size: mtl::MTLSize {
@@ -217,15 +215,13 @@ impl RecordingDevice<'_> {
 	fn read_texture_to_cpu(&self, image_handle: ImageHandle) -> Vec<u8> {
 		let image = self.images.resource(image_handle);
 
-		let Some(bytes_per_pixel) = utils::bytes_per_pixel(image.format) else {
+		let Some((bytes_per_row, _, size)) = utils::texture_upload_layout(image.format, image.extent) else {
 			return Vec::new();
 		};
 
 		let extent = image.extent;
 		let width = extent.width() as usize;
 		let height = extent.height() as usize;
-		let bytes_per_row = width * bytes_per_pixel;
-		let size = bytes_per_row * height;
 
 		let mut data = vec![0u8; size];
 		let data_ptr = NonNull::new(data.as_mut_ptr() as *mut std::ffi::c_void)

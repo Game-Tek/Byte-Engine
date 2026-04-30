@@ -432,9 +432,9 @@ impl Device {
 			texture.setLabel(Some(&NSString::from_str(name)));
 		}
 
-		let staging = utils::bytes_per_pixel(format).map(|bytes_per_pixel| {
+		let staging = utils::texture_upload_layout(format, extent).map(|(_, _, bytes_per_image)| {
 			let depth = extent.depth().max(1) as usize;
-			let size = width as usize * height as usize * depth * bytes_per_pixel * array_layers as usize;
+			let size = bytes_per_image * depth * array_layers as usize;
 			vec![0u8; size]
 		});
 
@@ -458,16 +458,14 @@ impl Device {
 		array_layers: u32,
 		staging: &[u8],
 	) {
-		let Some(bytes_per_pixel) = utils::bytes_per_pixel(format) else {
+		let Some((bytes_per_row, row_count, bytes_per_image)) = utils::texture_upload_layout(format, extent) else {
 			return;
 		};
 
 		let width = extent.width().max(1) as usize;
 		let height = extent.height().max(1) as usize;
-		let bytes_per_row = width * bytes_per_pixel;
-		let bytes_per_image = bytes_per_row * height;
 		let aligned_bytes_per_row = bytes_per_row.next_multiple_of(256);
-		let aligned_bytes_per_image = aligned_bytes_per_row * height;
+		let aligned_bytes_per_image = aligned_bytes_per_row * row_count;
 		let upload_size = aligned_bytes_per_image * array_layers as usize;
 
 		let upload_buffer = self
@@ -483,7 +481,7 @@ impl Device {
 				break;
 			};
 
-			for row in 0..height {
+			for row in 0..row_count {
 				let source_row_offset = row * bytes_per_row;
 				let destination_row_offset = destination_offset + row * aligned_bytes_per_row;
 

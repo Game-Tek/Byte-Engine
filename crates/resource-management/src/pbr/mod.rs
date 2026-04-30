@@ -4,7 +4,7 @@ pub mod gltf;
 pub mod shader;
 
 pub use gltf::brdf_material_from_gltf;
-pub use shader::{generate_solid_brdf_program, BrdfShaderGenerationError};
+pub use shader::{generate_solid_brdf_program, generate_textured_brdf_program, BrdfShaderGenerationError};
 
 /// The `BrdfMaterialDescription` struct stores a backend-neutral material graph for surface BRDFs.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

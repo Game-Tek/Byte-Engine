@@ -1984,6 +1984,7 @@ dependencies = [
  "downcast-rs 2.0.2",
  "gltf",
  "gxhash",
+ "image",
  "intel_tex_2",
  "libdeflater",
  "log",

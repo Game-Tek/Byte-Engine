@@ -69,7 +69,7 @@ pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorS
 	9,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
-	16,
+	MAX_BINDLESS_TEXTURES as u32,
 );
 
 /* Visibility */
@@ -111,6 +111,10 @@ const MESHLET_CULLING_TASK_GROUP_SIZE: u32 = 32;
 const MAX_MESHLETS: usize = 1024 * 4;
 const MAX_INSTANCES: usize = 1024;
 const MAX_MATERIALS: usize = 1024;
+// Materials keep a small indirection table so generated shaders can use stable per-material slots,
+// while the descriptor array itself is a larger scene-wide bindless texture pool.
+const MAX_MATERIAL_TEXTURES: usize = 16;
+const MAX_BINDLESS_TEXTURES: usize = 1024;
 const MAX_LIGHTS: usize = 16;
 const MAX_TRIANGLES: usize = 65536 * 4;
 const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;

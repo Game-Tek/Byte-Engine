@@ -6,7 +6,7 @@ use crate::{
 	device::Device as _,
 	graphics_hardware_interface,
 	vulkan::{BufferCopy, BufferHandle, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
-	FrameKey, HandleLike as _,
+	FrameKey, HandleLike as _, MasterHandle as _,
 };
 
 pub struct Frame<'a> {
@@ -153,9 +153,8 @@ impl<'a> Frame<'a> {
 		}
 	}
 
-	fn get_current_image_handle(&self, image_handle: impl graphics_hardware_interface::ImageHandleLike) -> ImageHandle {
-		let image_handle = image_handle.into_image_handle();
-		let handles = ImageHandle(image_handle.0).get_all(&self.device.images);
+	fn get_current_image_handle(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
+		let handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
 		handles[(self.frame_key.sequence_index as usize).rem_euclid(handles.len())]
 	}
 }
@@ -166,6 +165,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	where
 		Self: 'record;
 
+	fn key(&self) -> crate::FrameKey {
+		self.frame_key
+	}
+
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: crate::BufferHandle<T>) -> &'static mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
@@ -174,14 +177,18 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.sync_buffer(buffer_handle);
 	}
 
-	fn get_texture_slice_mut(&self, texture_handle: impl graphics_hardware_interface::ImageHandleLike) -> &'static mut [u8] {
+	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &'static mut [u8] {
 		self.device
-			.get_texture_slice_mut(crate::ImageHandle(self.get_current_image_handle(texture_handle).0))
+			.get_texture_slice_mut(crate::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
+				self.get_current_image_handle(texture_handle).0,
+			)))
 	}
 
-	fn sync_texture(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike) {
+	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
 		self.device
-			.sync_texture(crate::ImageHandle(self.get_current_image_handle(image_handle).0));
+			.sync_texture(crate::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
+				self.get_current_image_handle(image_handle).0,
+			)));
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
@@ -304,11 +311,9 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		(present_key, extent)
 	}
 
-	fn resize_image(&mut self, image_handle: impl graphics_hardware_interface::ImageHandleLike, extent: Extent) {
-		let image_handle = image_handle.into_image_handle();
-		let image_handles = ImageHandle(image_handle.0).get_all(&self.device.images);
-
+	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
 		let current_frame = self.frame_key.sequence_index;
+		let image_handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
 		let handle = image_handles[(current_frame as usize).rem_euclid(image_handles.len())];
 
 		self.device.resize_image_internal(handle, extent, current_frame);
@@ -508,6 +513,7 @@ impl<'a> crate::device::DeviceCreate for Frame<'a> {
 		self.device.create_ray_tracing_pipeline(builder)
 	}
 
+	#[cfg(any())]
 	fn create_command_buffer(&mut self, name: Option<&str>, queue_handle: crate::QueueHandle) -> crate::CommandBufferHandle {
 		self.device.create_command_buffer(name, queue_handle)
 	}

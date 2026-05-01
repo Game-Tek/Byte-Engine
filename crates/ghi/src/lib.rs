@@ -67,6 +67,8 @@ pub mod implementation {
 	pub use vulkan::Frame;
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::Instance;
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	pub(crate) use vulkan::Synchronizer;
 
 	#[cfg(target_os = "macos")]
 	use crate::metal;
@@ -146,6 +148,12 @@ pub(crate) enum PrivateHandles {
 	Buffer(buffer::BufferHandle),
 	Synchronizer(synchronizer::SynchronizerHandle),
 	Swapchain(swapchain::SwapchainHandle),
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	VkBuffer(ash::vk::Buffer),
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	TopLevelAccelerationStructure(vulkan::TopLevelAccelerationStructureHandle),
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	BottomLevelAccelerationStructure(vulkan::BottomLevelAccelerationStructureHandle),
 }
 
 pub(crate) trait HandleLike

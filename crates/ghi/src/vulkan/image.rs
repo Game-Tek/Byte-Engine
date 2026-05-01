@@ -24,3 +24,23 @@ pub(crate) struct Image {
 	pub(crate) layers: Option<NonZeroU32>,
 	pub(crate) owns_image: bool,
 }
+
+impl Next for Image {
+	type Handle = ImageHandle;
+
+	fn next(&self) -> Option<Self::Handle> {
+		self.next
+	}
+}
+
+impl HandleLike for ImageHandle {
+	type Item = Image;
+
+	fn build(value: u64) -> Self {
+		Self(value)
+	}
+
+	fn access<'a>(&self, collection: &'a [Self::Item]) -> &'a Self::Item {
+		&collection[self.0 as usize]
+	}
+}

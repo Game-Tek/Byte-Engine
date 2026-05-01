@@ -1,14 +1,20 @@
 use ash::vk;
 use utils::hash::HashMap;
 
-use super::TransitionState;
+use super::{device::Device, TransitionState};
 use crate::frame::Frame as _;
 use crate::vulkan::{CommandBufferRecording, Frame};
 
-pub struct Queue {
+#[derive(Clone)]
+pub struct StoredQueue {
 	pub(crate) vk_queue: vk::Queue,
 	pub(crate) queue_family_index: u32,
 	pub(crate) _queue_index: u32,
+}
+
+pub struct Queue<'a> {
+	pub(crate) device: &'a mut Device,
+	pub(crate) queue_handle: crate::QueueHandle,
 }
 
 /// The `Execution` struct gathers Vulkan command-buffer recordings before queue submission.
@@ -45,9 +51,21 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 	}
 }
 
-impl crate::queue::Queue for Queue {
+impl crate::queue::Queue for Queue<'_> {
 	type Frame<'a> = Frame<'a>;
 	type Execution<'a> = Execution<'a>;
+
+	fn create_command_buffer(&mut self, name: Option<&str>) -> crate::CommandBufferHandle {
+		self.device.create_command_buffer(name, self.queue_handle)
+	}
+
+	fn start_frame<'a>(
+		&'a mut self,
+		index: u32,
+		synchronizer_handle: crate::SynchronizerHandle,
+	) -> crate::queue::StartedFrame<Self::Frame<'a>> {
+		self.device.start_frame(index, synchronizer_handle)
+	}
 
 	fn execute<'a, P>(
 		&'a mut self,
@@ -58,15 +76,12 @@ impl crate::queue::Queue for Queue {
 	) where
 		P: AsRef<[crate::PresentKey]>,
 	{
-		let frame = match frame {
-			Some(_) => panic!(
-				"Vulkan queue execution cannot open a frame from the queue yet. The most likely cause is that the Vulkan queue wrapper does not currently own device access."
-			),
-			None => None,
-		};
+		let frame = frame.map(|frame| self.device.start_frame(frame.index, frame.synchronizer));
+		let completed_frame = frame.as_ref().and_then(|frame| frame.completed_frame);
+		let frame = frame.map(|frame| frame.frame);
 		let mut execution = Execution {
 			frame,
-			completed_frame: None,
+			completed_frame,
 			command_buffers: Vec::new(),
 		};
 		let present_keys = execute(&mut execution);

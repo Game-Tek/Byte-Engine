@@ -55,10 +55,10 @@ pub(super) enum Descriptor {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct TopLevelAccelerationStructureHandle(pub(super) u64);
+pub(crate) struct TopLevelAccelerationStructureHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
+pub(crate) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
 
 #[derive(Clone, PartialEq)]
 pub(super) struct Consumption {

@@ -17,6 +17,7 @@ use super::{
 	DescriptorSet, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
 	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
 };
+use crate::PrivateHandles as Handles;
 use crate::{
 	binding::DescriptorSetBindingHandle,
 	descriptors::DescriptorSetHandle,
@@ -26,10 +27,11 @@ use crate::{
 	synchronizer::SynchronizerHandle,
 	utils::StableVec,
 	vulkan::{
-		queue::Queue, BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, DescriptorWrite, Descriptors, Frame,
-		ImageCopy, ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
+		queue::{Queue, StoredQueue},
+		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, DescriptorWrite, Descriptors, Frame, ImageCopy,
+		ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
 	},
-	window, FrameKey, HandleLike, PrivateHandles, ResourceCollection, Size,
+	window, FrameKey, HandleLike, MasterHandle as _, PrivateHandles, ResourceCollection, Size,
 };
 
 pub struct Device {
@@ -60,7 +62,7 @@ pub struct Device {
 
 	pub(super) frames: u8,
 
-	pub(super) queues: Vec<Queue>,
+	pub(super) queues: Vec<StoredQueue>,
 	pub(super) buffers: ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: Vec<Image>,
 	pub(super) samplers: Vec<vk::Sampler>,
@@ -158,7 +160,7 @@ impl Device {
 	fn is_swapchain_image_root(&self, handle: graphics_hardware_interface::ImageHandle) -> bool {
 		self.swapchains
 			.iter()
-			.any(|swapchain| swapchain.images[0].0 == handle.0 || swapchain.native_images[0].0 == handle.0)
+			.any(|swapchain| swapchain.images[0].0 == handle.0.index() || swapchain.native_images[0].0 == handle.0.index())
 	}
 
 	fn get_swapchain_image_for_sequence(
@@ -169,9 +171,9 @@ impl Device {
 		self.swapchains.iter().find_map(|swapchain| {
 			let acquired_image_index = swapchain.acquired_image_indices[sequence_index] as usize;
 
-			if swapchain.images[0].0 == handle.0 {
+			if swapchain.images[0].0 == handle.0.index() {
 				Some(swapchain.images[acquired_image_index])
-			} else if swapchain.native_images[0].0 == handle.0 {
+			} else if swapchain.native_images[0].0 == handle.0.index() {
 				Some(swapchain.native_images[acquired_image_index])
 			} else {
 				None
@@ -191,16 +193,18 @@ impl Device {
 			return handle;
 		}
 
-		let handles = ImageHandle(handle.0).get_all(&self.images);
+		let handles = ImageHandle(handle.0.index()).get_all(&self.images);
 		let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
 		handles[index]
 	}
 
 	fn descriptor_targets_swapchain_image(&self, descriptor: &crate::descriptors::WriteData) -> bool {
 		match descriptor {
-			crate::descriptors::WriteData::Image { handle, .. } => self.is_swapchain_image_root(*handle),
+			crate::descriptors::WriteData::Image { handle, .. } => {
+				self.is_swapchain_image_root(graphics_hardware_interface::ImageHandle(*handle))
+			}
 			crate::descriptors::WriteData::CombinedImageSampler { image_handle, .. } => {
-				self.is_swapchain_image_root(*image_handle)
+				self.is_swapchain_image_root(graphics_hardware_interface::ImageHandle(*image_handle))
 			}
 			_ => false,
 		}
@@ -630,7 +634,7 @@ impl Device {
 
 				**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
 
-				Queue {
+				StoredQueue {
 					queue_family_index,
 					_queue_index: 0,
 					vk_queue,
@@ -1173,7 +1177,10 @@ impl Device {
 			array_layer: 0,
 		};
 
-		let texture = self.images.get(texture.0 as usize).expect("No texture with that handle.");
+		let texture = self
+			.images
+			.get(texture.0.index() as usize)
+			.expect("No texture with that handle.");
 
 		if true
 		/* TILING_OPTIMAL */
@@ -1998,7 +2005,12 @@ impl Device {
 		#[cfg(debug_assertions)]
 		let name = self
 			.names
-			.get(&graphics_hardware_interface::ImageHandle(image_handle.root(&self.images).0).into())
+			.get(
+				&graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
+					image_handle.root(&self.images).0,
+				))
+				.into(),
+			)
 			.map(|s| s.clone());
 
 		#[cfg(not(debug_assertions))]
@@ -2427,12 +2439,19 @@ impl Device {
 						crate::descriptors::WriteData::Buffer { handle, size } => {
 							let handle = self
 								.buffers
-								.nth_handle(handle, sequence_index as i64 - frame_offset as i64)
+								.nth_handle(
+									handle,
+									(sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize,
+								)
 								.unwrap();
 							Some(DescriptorWrite::new(Descriptors::Buffer { handle, size }, binding))
 						}
 						crate::descriptors::WriteData::Image { handle, layout } => {
-							let handle = self.resolve_descriptor_image_handle(handle, sequence_index as usize, frame_offset);
+							let handle = self.resolve_descriptor_image_handle(
+								graphics_hardware_interface::ImageHandle(handle),
+								sequence_index as usize,
+								frame_offset,
+							);
 							Some(DescriptorWrite::new(Descriptors::Image { handle, layout }, binding))
 						}
 						crate::descriptors::WriteData::CombinedImageSampler {
@@ -2441,8 +2460,11 @@ impl Device {
 							layout,
 							layer,
 						} => {
-							let image_handle =
-								self.resolve_descriptor_image_handle(image_handle, sequence_index as usize, frame_offset);
+							let image_handle = self.resolve_descriptor_image_handle(
+								graphics_hardware_interface::ImageHandle(image_handle),
+								sequence_index as usize,
+								frame_offset,
+							);
 							Some(DescriptorWrite::new(
 								Descriptors::CombinedImageSampler {
 									image_handle,
@@ -2631,10 +2653,122 @@ impl Drop for Device {
 	}
 }
 
+impl Device {
+	pub(crate) fn handle_swapchain_proxies(&mut self, _present_keys: &[graphics_hardware_interface::PresentKey]) {}
+
+	pub(crate) fn create_command_buffer(
+		&mut self,
+		name: Option<&str>,
+		queue_handle: graphics_hardware_interface::QueueHandle,
+	) -> graphics_hardware_interface::CommandBufferHandle {
+		let command_buffer_handle = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
+		let queue = &self.queues[queue_handle.0 as usize];
+
+		let command_buffers = (0..self.frames)
+			.map(|_| {
+				let command_pool_create_info = vk::CommandPoolCreateInfo::default()
+					.flags(vk::CommandPoolCreateFlags::TRANSIENT)
+					.queue_family_index(queue.queue_family_index);
+
+				let command_pool = unsafe {
+					self.device
+						.create_command_pool(&command_pool_create_info, None)
+						.expect("No command pool")
+				};
+
+				let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
+					.command_pool(command_pool)
+					.level(vk::CommandBufferLevel::PRIMARY)
+					.command_buffer_count(1);
+
+				let command_buffers = unsafe {
+					self.device
+						.allocate_command_buffers(&command_buffer_allocate_info)
+						.expect("No command buffer")
+				};
+
+				let command_buffer = command_buffers[0];
+				self.set_name(command_buffer, name);
+
+				CommandBufferInternal {
+					vk_queue: queue.vk_queue,
+					command_pool,
+					command_buffer,
+				}
+			})
+			.collect::<Vec<_>>();
+
+		self.command_buffers.push(CommandBuffer {
+			queue_handle,
+			frames: command_buffers,
+		});
+
+		command_buffer_handle
+	}
+
+	pub(crate) fn create_command_buffer_recording(
+		&mut self,
+		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+	) -> crate::vulkan::CommandBufferRecording<'_> {
+		self.process_tasks(0);
+		CommandBufferRecording::new(self, command_buffer_handle, None)
+	}
+
+	pub(crate) fn start_frame<'a>(
+		&'a mut self,
+		index: u32,
+		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+	) -> crate::queue::StartedFrame<Frame<'a>> {
+		let frame_index = index;
+		let sequence_index = (index % self.frames as u32) as u8;
+
+		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
+		let synchronizer = &self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
+
+		unsafe {
+			self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect(
+				"Failed to wait for Vulkan frame fence. The most likely cause is a lost device or invalid frame synchronizer.",
+			);
+			self.device
+				.reset_fences(&[synchronizer.fence])
+				.expect("Failed to reset Vulkan frame fence. The most likely cause is an invalid frame synchronizer.");
+		}
+
+		let frame_key = FrameKey {
+			frame_index,
+			sequence_index,
+		};
+		let completed_frame = crate::queue::completed_frame_key(index, self.frames);
+		self.process_tasks(frame_key.sequence_index);
+
+		crate::queue::StartedFrame::new(Frame::new(self, frame_key), completed_frame)
+	}
+}
+
 impl crate::device::Device for Device {
+	type Queue<'a> = crate::vulkan::queue::Queue<'a>;
+	type CommandBuffer<'a> = crate::vulkan::VulkanCommandBuffer<'a>;
+
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
 		self.get_log_count() > 0
+	}
+
+	fn queue<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue<'a> {
+		Queue {
+			device: self,
+			queue_handle,
+		}
+	}
+
+	fn command_buffer<'a>(
+		&'a mut self,
+		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+	) -> Self::CommandBuffer<'a> {
+		crate::vulkan::VulkanCommandBuffer {
+			device: self,
+			command_buffer_handle,
+		}
 	}
 
 	fn set_frames_in_flight(&mut self, frames: u8) {
@@ -2784,7 +2918,10 @@ impl crate::device::Device for Device {
 						for (i, &binding_handle) in binding_handles.iter().enumerate() {
 							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
 
-							let buffer_handle = self.buffers.nth_handle(handle, i as i64 - offset as i64).unwrap();
+							let buffer_handle = self
+								.buffers
+								.nth_handle(handle, (i as i32 - offset).rem_euclid(self.frames as i32) as usize)
+								.unwrap();
 
 							writes.push(
 								DescriptorWrite::new(
@@ -2805,7 +2942,11 @@ impl crate::device::Device for Device {
 
 						for (i, &binding_handle) in binding_handles.iter().enumerate() {
 							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-							let image_handle = self.resolve_descriptor_image_handle(handle, i, offset);
+							let image_handle = self.resolve_descriptor_image_handle(
+								graphics_hardware_interface::ImageHandle(handle),
+								i,
+								offset,
+							);
 
 							writes.push(
 								DescriptorWrite::new(
@@ -2833,7 +2974,11 @@ impl crate::device::Device for Device {
 
 						for (i, &binding_handle) in binding_handles.iter().enumerate() {
 							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-							let image_handle = self.resolve_descriptor_image_handle(image_handle, i, offset);
+							let image_handle = self.resolve_descriptor_image_handle(
+								graphics_hardware_interface::ImageHandle(image_handle),
+								i,
+								offset,
+							);
 
 							writes.push(
 								DescriptorWrite::new(
@@ -2874,6 +3019,7 @@ impl crate::device::Device for Device {
 		self.process_write_results(writes);
 	}
 
+	#[cfg(any())]
 	fn create_command_buffer_recording(
 		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
@@ -2941,7 +3087,7 @@ impl crate::device::Device for Device {
 	}
 
 	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-		let texture = &self.images[texture_handle.0 as usize];
+		let texture = &self.images[texture_handle.0.index() as usize];
 		let size = texture.size;
 		assert!(
 			texture.staging_buffer.is_some(),
@@ -2959,7 +3105,7 @@ impl crate::device::Device for Device {
 	}
 
 	fn sync_texture(&mut self, image_handle: crate::ImageHandle) {
-		let image_handle = ImageHandle(image_handle.0);
+		let image_handle = ImageHandle(image_handle.0.index());
 		let image = &self.images[image_handle.0 as usize];
 		assert!(
 			image.staging_buffer.is_some(),
@@ -2970,7 +3116,7 @@ impl crate::device::Device for Device {
 	}
 
 	fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		let handles = ImageHandle(image_handle.0).get_all(&self.images);
+		let handles = ImageHandle(image_handle.0.index()).get_all(&self.images);
 
 		let handle = handles[0];
 
@@ -3058,7 +3204,8 @@ impl crate::device::Device for Device {
 	}
 
 	fn resize_buffer<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>, size: usize) {
-		let buffer_handle = BufferHandle(buffer_handle.into().0);
+		let buffer_handle: graphics_hardware_interface::BaseBufferHandle = buffer_handle.into();
+		let buffer_handle = BufferHandle(buffer_handle.index());
 
 		self.resize_buffer_internal(buffer_handle, size);
 	}
@@ -3247,6 +3394,7 @@ impl crate::device::Device for Device {
 		swapchain_handle
 	}
 
+	#[cfg(any())]
 	fn get_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
@@ -3330,6 +3478,7 @@ impl crate::device::Device for Device {
 		slice
 	}
 
+	#[cfg(any())]
 	fn start_frame<'a>(
 		&'a mut self,
 		index: u32,
@@ -3476,7 +3625,7 @@ impl crate::device::DeviceCreate for Device {
 				// SAFETY: shader was checked to be aligned to 4 bytes.
 				Cow::Borrowed(unsafe { std::slice::from_raw_parts(spirv.as_ptr() as *const u32, spirv.len() / 4) })
 			}
-			crate::shader::Sources::MTL { .. } => return Err(()),
+			crate::shader::Sources::MTL { .. } | crate::shader::Sources::MTLB { .. } => return Err(()),
 		};
 
 		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&shader);
@@ -3934,6 +4083,7 @@ impl crate::device::DeviceCreate for Device {
 		handle
 	}
 
+	#[cfg(any())]
 	fn create_command_buffer(
 		&mut self,
 		name: Option<&str>,
@@ -3999,7 +4149,8 @@ impl crate::device::DeviceCreate for Device {
 			builder.extent,
 			builder.resource_uses,
 		);
-		let handle = graphics_hardware_interface::ImageHandle(root_image_handle.0);
+		let handle =
+			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(root_image_handle.0));
 
 		let instances = match builder.use_case {
 			crate::UseCases::DYNAMIC => self.frames,
@@ -4281,7 +4432,10 @@ impl crate::device::DeviceCreate for Device {
 
 		let buffer_handle =
 			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
-		let handle = graphics_hardware_interface::BufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
+		let handle = graphics_hardware_interface::BufferHandle::<T>(
+			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0),
+			std::marker::PhantomData::<T> {},
+		);
 
 		return handle;
 	}
@@ -4291,7 +4445,10 @@ impl crate::device::DeviceCreate for Device {
 
 		let buffer_handle =
 			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
-		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(buffer_handle.0, std::marker::PhantomData::<T> {});
+		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(
+			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0),
+			std::marker::PhantomData::<T> {},
+		);
 
 		if super::buffer::PERSISTENT_WRITE
 			&& builder.device_accesses.intersects(crate::DeviceAccesses::CpuWrite)

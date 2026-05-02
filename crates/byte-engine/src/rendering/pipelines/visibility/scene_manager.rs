@@ -294,13 +294,19 @@ impl VisibilityWorldRenderDomain {
 		let mesh = match mesh_source {
 			MeshSource::Resource(urid) => {
 				if let Some(e) = self.meshes_by_resource.get(*urid) {
-					// Mesh data already exists in GPU
+					// Mesh data already exists in GPU (or previously failed)
+					if self.meshes[*e].is_failed() {
+						return None;
+					}
 					(*e, self.meshes[*e].get())
 				} else {
 					let mut resource_request: Reference<ResourceMesh> = {
 						let resource_manager = &self.resource_manager;
 						let Ok(resource_request) = resource_manager.request(urid) else {
 							log::error!("Failed to load mesh resource {}", urid);
+							let mesh_idx = self.meshes.len();
+							self.meshes.push(ResourceStates::Failed);
+							self.meshes_by_resource.insert(urid.to_string(), mesh_idx);
 							return None;
 						};
 						resource_request
@@ -327,25 +333,36 @@ impl VisibilityWorldRenderDomain {
 									let idx = self.material_evaluation_materials.len() as u32;
 
 									match self.material_evaluation_materials.entry(rp.material.id.clone()) {
-										Entry::Occupied(v) => v.get().index(),
+										Entry::Occupied(v) => {
+											if v.get().is_failed() {
+												return None;
+											}
+											Some(v.get().index())
+										}
 										Entry::Vacant(v) => {
 											v.insert(ResourceStates::Pending(PendingRenderDescription { index: idx }));
-
-											idx as u32
+											Some(idx as u32)
 										}
 									}
-								};
+								}?;
 
-								MeshPrimitive {
+								Some(MeshPrimitive {
 									material_index: variant,
 									meshlet_count: mp.meshlet_count,
 									meshlet_offset: mp.meshlet_offset,
 									vertex_offset: mp.vertex_offset,
 									primitive_offset: mp.primitive_offset,
 									triangle_offset: mp.triangle_offset,
-								}
+								})
 							})
-							.collect::<Vec<_>>();
+							.collect::<Option<Vec<_>>>();
+
+						let Some(primitives) = primitives else {
+							let mesh_idx = self.meshes.len();
+							self.meshes.push(ResourceStates::Failed);
+							self.meshes_by_resource.insert(urid.to_string(), mesh_idx);
+							return None;
+						};
 
 						let mesh = MeshData {
 							primitives,
@@ -364,13 +381,19 @@ impl VisibilityWorldRenderDomain {
 
 						(mesh_idx, mesh)
 					} else {
+						let mesh_idx = self.meshes.len();
+						self.meshes.push(ResourceStates::Failed);
+						self.meshes_by_resource.insert(urid.to_string(), mesh_idx);
 						return None; // We failed to load the mesh resource
 					}
 				}
 			}
 			MeshSource::Generated(generator) => {
 				if let Some(e) = self.meshes_by_generated_hash.get(&generator.hash()) {
-					// Mesh data already exists in GPU
+					// Mesh data already exists in GPU (or previously failed)
+					if self.meshes[*e].is_failed() {
+						return None;
+					}
 					(*e, self.meshes[*e].get())
 				} else {
 					// Mesh data needs to be written to GPU
@@ -391,25 +414,36 @@ impl VisibilityWorldRenderDomain {
 
 									match self.material_evaluation_materials.entry("white_solid.bema".to_string()) {
 										// TODO: remove hardcoded material
-										Entry::Occupied(v) => v.get().index(),
+										Entry::Occupied(v) => {
+											if v.get().is_failed() {
+												return None;
+											}
+											Some(v.get().index())
+										}
 										Entry::Vacant(v) => {
 											v.insert(ResourceStates::Pending(PendingRenderDescription { index: idx }));
-
-											idx as u32
+											Some(idx as u32)
 										}
 									}
-								};
+								}?;
 
-								MeshPrimitive {
+								Some(MeshPrimitive {
 									material_index: variant,
 									meshlet_count: p.meshlet_count,
 									meshlet_offset: p.meshlet_offset,
 									vertex_offset: p.vertex_offset,
 									primitive_offset: p.primitive_offset,
 									triangle_offset: p.triangle_offset,
-								}
+								})
 							})
-							.collect::<Vec<_>>();
+							.collect::<Option<Vec<_>>>();
+
+						let Some(primitives) = primitives else {
+							let mesh_idx = self.meshes.len();
+							self.meshes.push(ResourceStates::Failed);
+							self.meshes_by_generated_hash.insert(generator.hash(), mesh_idx);
+							return None;
+						};
 
 						let mesh = MeshData {
 							primitives,
@@ -428,6 +462,9 @@ impl VisibilityWorldRenderDomain {
 
 						(mesh_idx, mesh)
 					} else {
+						let mesh_idx = self.meshes.len();
+						self.meshes.push(ResourceStates::Failed);
+						self.meshes_by_generated_hash.insert(generator.hash(), mesh_idx);
 						return None; // We failed to create the mesh from the generator
 					}
 				}
@@ -445,6 +482,7 @@ impl VisibilityWorldRenderDomain {
 		let material_id = resource.id().to_string();
 		let index = match self.material_evaluation_materials.get(&material_id) {
 			Some(ResourceStates::Pending(pending)) => pending.index,
+			Some(ResourceStates::Failed) => return Err(()),
 			Some(material) => return Ok(material.index()),
 			None => self.material_evaluation_materials.len() as u32,
 		};
@@ -545,6 +583,7 @@ impl VisibilityWorldRenderDomain {
 		let variant_id = resource.id().to_string();
 		let index = match self.material_evaluation_materials.get(&variant_id) {
 			Some(ResourceStates::Pending(pending)) => pending.index,
+			Some(ResourceStates::Failed) => return Err(()),
 			Some(material) => return Ok(material.index()),
 			None => self.material_evaluation_materials.len() as u32,
 		};
@@ -679,10 +718,24 @@ impl VisibilityWorldRenderDomain {
 		for material in pending_materials {
 			let Ok(resource) = self.resource_manager.request::<ResourceVariant>(&material) else {
 				log::error!("Failed to load material resource {}", material);
+				self.material_evaluation_materials.insert(material, ResourceStates::Failed);
 				continue;
 			};
 
-			loaded_any |= self.create_variant_resources(resource, frame).is_ok();
+			let result = self.create_variant_resources(resource, frame);
+
+			if result.is_err() {
+				// Mark as failed only if the entry is still Pending (i.e. creation did not advance it).
+				if self
+					.material_evaluation_materials
+					.get(&material)
+					.is_some_and(|s| matches!(s, ResourceStates::Pending(_)))
+				{
+					self.material_evaluation_materials.insert(material, ResourceStates::Failed);
+				}
+			} else {
+				loaded_any = true;
+			}
 		}
 
 		loaded_any
@@ -703,6 +756,7 @@ impl VisibilityWorldRenderDomain {
 		for image in pending_images {
 			let Ok(mut resource) = self.resource_manager.request::<ResourceImage>(&image) else {
 				log::error!("Failed to load image resource {}", image);
+				self.images.insert(image, ResourceStates::Failed);
 				continue;
 			};
 
@@ -790,7 +844,7 @@ impl VisibilityWorldRenderDomain {
 	}
 
 	/// Creates the needed GHI resources for the given image.
-	/// Does nothing if the image has already been loaded.
+	/// Does nothing if the image has already been loaded or failed.
 	fn create_image_resources(
 		&mut self,
 		resource: &mut resource_management::Reference<ResourceImage>,
@@ -804,11 +858,13 @@ impl VisibilityWorldRenderDomain {
 				}
 				pending.index
 			}
+			Some(ResourceStates::Failed) => return None,
 			Some(image) => return Some(image.index()),
 			None => self.images.len() as u32,
 		};
 
 		let Some((_, image, sampler, upload)) = self.texture_manager.load(resource, device) else {
+			self.images.insert(image_id, ResourceStates::Failed);
 			return None;
 		};
 
@@ -940,7 +996,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		for (name, pipeline) in self.pipeline_manager.poll(frame, MAX_PIPELINE_ADOPTIONS_PER_FRAME) {
 			if let Some(material) = self.material_evaluation_materials.get_mut(&name) {
 				match material {
-					ResourceStates::Pending(_) => {}
+					ResourceStates::Pending(_) | ResourceStates::Failed => {}
 					ResourceStates::Loading(_, material) | ResourceStates::Loaded(material) => {
 						material.pipeline = Some(pipeline)
 					}
@@ -1156,6 +1212,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			.filter_map(|image| match image {
 				ResourceStates::Pending(pending) => pending.image.as_ref(),
 				ResourceStates::Loading(_, image) | ResourceStates::Loaded(image) => Some(image),
+				ResourceStates::Failed => None,
 			})
 			.map(|image| {
 				ghi::descriptors::Write::combined_image_sampler_array(
@@ -1526,6 +1583,7 @@ impl ResourceStates<RenderDescription, PendingRenderDescription> {
 		match self {
 			ResourceStates::Pending(pending) => pending.index,
 			ResourceStates::Loading(_, material) | ResourceStates::Loaded(material) => material.index,
+			ResourceStates::Failed => panic!("Cannot get material index of a failed render description. The most likely cause is that index() was called on a resource that failed to load."),
 		}
 	}
 
@@ -1576,6 +1634,7 @@ impl ResourceStates<Image, PendingImage> {
 		match self {
 			ResourceStates::Pending(pending) => pending.index,
 			ResourceStates::Loading(_, image) | ResourceStates::Loaded(image) => image.index,
+			ResourceStates::Failed => u32::MAX,
 		}
 	}
 
@@ -1594,6 +1653,8 @@ pub enum ResourceStates<T, P> {
 	Pending(P),
 	Loading(ghi::FrameKey, T),
 	Loaded(T),
+	/// The resource failed to load and should not be retried.
+	Failed,
 }
 
 impl<T, P> ResourceStates<T, P> {
@@ -1602,6 +1663,10 @@ impl<T, P> ResourceStates<T, P> {
 			ResourceStates::Loaded(_) => true,
 			_ => false,
 		}
+	}
+
+	pub fn is_failed(&self) -> bool {
+		matches!(self, ResourceStates::Failed)
 	}
 
 	pub fn get(&self) -> &T {

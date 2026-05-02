@@ -739,7 +739,8 @@ impl VisibilityWorldRenderDomain {
 				self.images.insert(name, ResourceStates::Pending(pending));
 				continue;
 			};
-			if upload.data.len() > slice.remaining() {
+			const TEXTURE_UPLOAD_ALIGNMENT: usize = 256;
+			if upload.data.len() > slice.remaining_aligned(TEXTURE_UPLOAD_ALIGNMENT) {
 				self.images.insert(
 					name,
 					ResourceStates::Pending(PendingImage {
@@ -751,7 +752,7 @@ impl VisibilityWorldRenderDomain {
 				break;
 			}
 
-			let (source_offset, source_buffer) = slice.take_with_offset(upload.data.len());
+			let (source_offset, source_buffer) = slice.take_with_offset_aligned(upload.data.len(), TEXTURE_UPLOAD_ALIGNMENT);
 			source_buffer.copy_from_slice(&upload.data);
 			transfer.copy_buffer_to_images(&[ghi::BufferImageCopyDescriptor::new(
 				staging_data_buffer,

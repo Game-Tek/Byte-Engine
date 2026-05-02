@@ -542,6 +542,7 @@ mod utils {
 
 			Formats::BC5 => mtl::MTLPixelFormat::BC5_RGUnorm,
 			Formats::BC7 => mtl::MTLPixelFormat::BC7_RGBAUnorm,
+			Formats::BC7SRGB => mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB,
 		}
 	}
 
@@ -632,7 +633,7 @@ mod utils {
 		let height = extent.height().max(1) as usize;
 
 		match format {
-			Formats::BC5 | Formats::BC7 => {
+			Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => {
 				let block_width = width.div_ceil(4);
 				let block_height = height.div_ceil(4);
 				Some((block_width * 16, block_height, block_width * block_height * 16))
@@ -643,6 +644,26 @@ mod utils {
 				Some((bytes_per_row, height, bytes_per_row * height))
 			}
 		}
+	}
+
+	pub(crate) fn texture_copy_size(format: Formats, extent: Extent) -> mtl::MTLSize {
+		let mut width = extent.width().max(1) as usize;
+		let mut height = extent.height().max(1) as usize;
+
+		if is_block_compressed(format) {
+			width = width.next_multiple_of(4);
+			height = height.next_multiple_of(4);
+		}
+
+		mtl::MTLSize {
+			width: width as _,
+			height: height as _,
+			depth: extent.depth().max(1) as _,
+		}
+	}
+
+	pub(crate) fn is_block_compressed(format: Formats) -> bool {
+		matches!(format, Formats::BC5 | Formats::BC7 | Formats::BC7SRGB)
 	}
 
 	pub(crate) fn data_type_size(format: crate::DataTypes) -> usize {

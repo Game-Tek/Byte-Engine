@@ -398,6 +398,11 @@ impl Device {
 		array_layers: u32,
 	) -> image::Image {
 		let pixel_format = utils::to_pixel_format(format);
+		if utils::is_block_compressed(format) && !self.device.supportsBCTextureCompression() {
+			panic!(
+				"Metal device does not support BC texture compression. The most likely cause is running on a device family that cannot sample BC compressed textures."
+			);
+		}
 		let name = name.map(str::to_owned);
 
 		let width = extent.width().max(1);
@@ -462,8 +467,6 @@ impl Device {
 			return;
 		};
 
-		let width = extent.width().max(1) as usize;
-		let height = extent.height().max(1) as usize;
 		let aligned_bytes_per_row = bytes_per_row.next_multiple_of(256);
 		let aligned_bytes_per_image = aligned_bytes_per_row * row_count;
 		let upload_size = aligned_bytes_per_image * array_layers as usize;
@@ -506,11 +509,8 @@ impl Device {
 		);
 		blit_encoder.setLabel(Some(&NSString::from_str("Texture Upload")));
 
-		let source_size = mtl::MTLSize {
-			width: width as _,
-			height: height as _,
-			depth: 1,
-		};
+		let mut source_size = utils::texture_copy_size(format, extent);
+		source_size.depth = 1;
 		let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 
 		for slice in 0..array_layers as usize {

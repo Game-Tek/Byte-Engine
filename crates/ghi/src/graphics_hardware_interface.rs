@@ -936,6 +936,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::RGBA8sRGB.encoding(), Some(Encodings::sRGB));
 		assert_eq!(Formats::RGBA16sRGB.encoding(), Some(Encodings::sRGB));
 		assert_eq!(Formats::BGRAsRGB.encoding(), Some(Encodings::sRGB));
+		assert_eq!(Formats::BC7SRGB.encoding(), Some(Encodings::sRGB));
 
 		// Test formats without encoding
 		assert_eq!(Formats::U32.encoding(), None);
@@ -1043,6 +1044,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::RGBu11u11u10.channel_bit_size(), ChannelBitSize::Bits11_11_10);
 		assert_eq!(Formats::BC5.channel_bit_size(), ChannelBitSize::Compressed);
 		assert_eq!(Formats::BC7.channel_bit_size(), ChannelBitSize::Compressed);
+		assert_eq!(Formats::BC7SRGB.channel_bit_size(), ChannelBitSize::Compressed);
 	}
 
 	#[test]
@@ -1082,6 +1084,7 @@ pub(super) mod tests {
 		// Test block compressed formats
 		assert_eq!(Formats::BC5.channel_layout(), ChannelLayout::BC);
 		assert_eq!(Formats::BC7.channel_layout(), ChannelLayout::BC);
+		assert_eq!(Formats::BC7SRGB.channel_layout(), ChannelLayout::BC);
 	}
 
 	#[test]
@@ -1177,6 +1180,13 @@ pub(super) mod tests {
 		// For BC7
 		let format = Formats::BC7;
 		assert_eq!(format.encoding(), None);
+		assert_eq!(format.channel_bit_size(), ChannelBitSize::Compressed);
+		assert_eq!(format.channel_layout(), ChannelLayout::BC);
+		assert_eq!(format.size(), 1);
+
+		// For BC7 sRGB
+		let format = Formats::BC7SRGB;
+		assert_eq!(format.encoding(), Some(Encodings::sRGB));
 		assert_eq!(format.channel_bit_size(), ChannelBitSize::Compressed);
 		assert_eq!(format.channel_layout(), ChannelLayout::BC);
 		assert_eq!(format.size(), 1);

@@ -247,6 +247,8 @@ pub enum Formats {
 	BC5,
 	/// BC7 block compressed format.
 	BC7,
+	/// BC7 block compressed sRGB format.
+	BC7SRGB,
 }
 
 impl Formats {
@@ -297,6 +299,8 @@ impl Formats {
 			| Formats::RGBA16sRGB
 			| Formats::BGRAsRGB => Some(Encodings::sRGB),
 
+			Formats::BC7SRGB => Some(Encodings::sRGB),
+
 			Formats::U32 | Formats::BC5 | Formats::BC7 => None,
 		}
 	}
@@ -346,7 +350,7 @@ impl Formats {
 
 			Formats::RGBu11u11u10 => ChannelBitSize::Bits11_11_10,
 
-			Formats::BC5 | Formats::BC7 => ChannelBitSize::Compressed,
+			Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => ChannelBitSize::Compressed,
 		}
 	}
 
@@ -400,7 +404,7 @@ impl Formats {
 
 			Formats::U32 => ChannelLayout::Packed,
 
-			Formats::BC5 | Formats::BC7 => ChannelLayout::BC,
+			Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => ChannelLayout::BC,
 		}
 	}
 }
@@ -426,7 +430,7 @@ impl Size for Formats {
 			Formats::Depth32 => 4,
 			Formats::U32 => 4,
 			Formats::BC5 => 1,
-			Formats::BC7 => 1,
+			Formats::BC7 | Formats::BC7SRGB => 1,
 		}
 	}
 }

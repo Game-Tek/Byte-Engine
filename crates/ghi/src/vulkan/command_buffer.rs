@@ -2059,14 +2059,14 @@ impl ImageCopy {
 
 fn buffer_row_length(format: crate::Formats, source_bytes_per_row: usize) -> u32 {
 	match format {
-		crate::Formats::BC5 | crate::Formats::BC7 => ((source_bytes_per_row / 16) * 4) as u32,
+		crate::Formats::BC5 | crate::Formats::BC7 | crate::Formats::BC7SRGB => ((source_bytes_per_row / 16) * 4) as u32,
 		_ => (source_bytes_per_row / format.size()) as u32,
 	}
 }
 
 fn buffer_image_height(format: crate::Formats, source_row_count: usize) -> u32 {
 	match format {
-		crate::Formats::BC5 | crate::Formats::BC7 => (source_row_count * 4) as u32,
+		crate::Formats::BC5 | crate::Formats::BC7 | crate::Formats::BC7SRGB => (source_row_count * 4) as u32,
 		_ => source_row_count as u32,
 	}
 }

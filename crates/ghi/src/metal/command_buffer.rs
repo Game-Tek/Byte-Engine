@@ -61,14 +61,12 @@ fn replace_texture_from_bytes(
 		return;
 	};
 
-	let width = extent.width().max(1) as usize;
-	let height = extent.height().max(1) as usize;
 	let region = mtl::MTLRegion {
 		origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
-		size: mtl::MTLSize {
-			width: width as _,
-			height: height as _,
-			depth: 1,
+		size: {
+			let mut size = utils::texture_copy_size(format, extent);
+			size.depth = 1;
+			size
 		},
 	};
 
@@ -861,13 +859,60 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				.device
 				.images
 				.resource(self.get_internal_image_handle(copy.destination_image));
-			let width = destination.extent.width().max(1) as usize;
-			let height = destination.extent.height().max(1) as usize;
-			let source_size = mtl::MTLSize {
-				width: width as _,
-				height: height as _,
-				depth: destination.extent.depth().max(1) as _,
+			let Some((compact_bytes_per_row, row_count, compact_bytes_per_image)) =
+				utils::texture_upload_layout(destination.format, destination.extent)
+			else {
+				panic!(
+					"Metal texture copy layout is unsupported. The most likely cause is that the destination format has no upload layout. format={:?}, extent={:?}",
+					destination.format, destination.extent
+				);
 			};
+			let expected_bytes_per_row = compact_bytes_per_row.next_multiple_of(256);
+			let expected_bytes_per_image = expected_bytes_per_row * row_count;
+			assert_eq!(
+				copy.source_offset % 256,
+				0,
+				"Metal texture copy source offset alignment mismatch. The most likely cause is that the staging allocator did not provide a 256-byte aligned texture upload offset. source_offset={}, source_bytes_per_row={}, source_bytes_per_image={}, format={:?}, extent={:?}",
+				copy.source_offset,
+				copy.source_bytes_per_row,
+				copy.source_bytes_per_image,
+				destination.format,
+				destination.extent
+			);
+			assert_eq!(
+				copy.source_bytes_per_row,
+				expected_bytes_per_row,
+				"Metal texture copy row pitch mismatch. The most likely cause is that upload preparation and Metal copy recording disagree about BC block row padding. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, compact_bytes_per_image={compact_bytes_per_image}, row_count={row_count}, source_bytes_per_row={}, expected={expected_bytes_per_row}",
+				destination.format,
+				destination.extent,
+				copy.source_bytes_per_row
+			);
+			assert_eq!(
+				copy.source_bytes_per_image,
+				expected_bytes_per_image,
+				"Metal texture copy image pitch mismatch. The most likely cause is that upload preparation and Metal copy recording disagree about padded rows per image. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, compact_bytes_per_image={compact_bytes_per_image}, row_count={row_count}, source_bytes_per_image={}, expected={expected_bytes_per_image}",
+				destination.format,
+				destination.extent,
+				copy.source_bytes_per_image
+			);
+			let required_source_bytes = copy
+				.source_bytes_per_image
+				.checked_mul(destination.array_layers as usize)
+				.and_then(|copy_bytes| copy.source_offset.checked_add(copy_bytes))
+				.expect(
+					"Metal texture copy source bounds overflowed. The most likely cause is an invalid array layer count or image pitch.",
+				);
+			assert!(
+				required_source_bytes <= source.size,
+				"Metal texture copy source buffer is too small. The most likely cause is that the staging buffer allocation is smaller than the recorded texture copy. source_size={}, required_source_bytes={required_source_bytes}, source_offset={}, array_layers={}, source_bytes_per_image={}, format={:?}, extent={:?}",
+				source.size,
+				copy.source_offset,
+				destination.array_layers,
+				copy.source_bytes_per_image,
+				destination.format,
+				destination.extent
+			);
+			let source_size = utils::texture_copy_size(destination.format, destination.extent);
 			let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 
 			for slice in 0..destination.array_layers as usize {

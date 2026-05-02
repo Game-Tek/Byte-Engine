@@ -209,4 +209,5 @@ pub enum Formats {
 	BC7,
 	RGB16,
 	RGBA16,
+	BC7SRGB,
 }

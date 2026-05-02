@@ -64,6 +64,7 @@ impl TextureManager {
 			resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16UNORM,
 			resource_management::types::Formats::BC5 => ghi::Formats::BC5,
 			resource_management::types::Formats::BC7 => ghi::Formats::BC7,
+			resource_management::types::Formats::BC7SRGB => ghi::Formats::BC7SRGB,
 		};
 
 		let extent = Extent::from(texture.extent);
@@ -165,17 +166,50 @@ fn make_texture_upload(format: ghi::Formats, extent: Extent, source: &[u8]) -> O
 	if source.len() < compact_bytes_per_image {
 		return None;
 	}
+	assert_eq!(
+		source.len(),
+		compact_bytes_per_image,
+		"Texture upload source size mismatch. The most likely cause is that the baked texture payload does not match the runtime texture layout. format={format:?}, extent={extent:?}, source_len={}, source_bytes_per_row={source_bytes_per_row}, row_count={row_count}, expected={compact_bytes_per_image}",
+		source.len()
+	);
 
 	let padded_bytes_per_row = source_bytes_per_row.next_multiple_of(256);
 	let source_bytes_per_image = padded_bytes_per_row * row_count;
+	assert_eq!(
+		padded_bytes_per_row % 256,
+		0,
+		"Texture upload row pitch alignment mismatch. The most likely cause is that the Metal upload layout was built without 256-byte row alignment. format={format:?}, extent={extent:?}, source_bytes_per_row={source_bytes_per_row}, padded_bytes_per_row={padded_bytes_per_row}"
+	);
+	assert!(
+		source_bytes_per_image >= compact_bytes_per_image,
+		"Texture upload padded image is smaller than compact image. The most likely cause is an invalid row count or row pitch. format={format:?}, extent={extent:?}, compact_bytes_per_image={compact_bytes_per_image}, source_bytes_per_image={source_bytes_per_image}, row_count={row_count}, padded_bytes_per_row={padded_bytes_per_row}"
+	);
 	let mut data = vec![0u8; source_bytes_per_image];
 
 	for row in 0..row_count {
 		let source_offset = row * source_bytes_per_row;
 		let destination_offset = row * padded_bytes_per_row;
-		let source_row = source.get(source_offset..source_offset + source_bytes_per_row)?;
-		data[destination_offset..destination_offset + source_bytes_per_row].copy_from_slice(source_row);
+		let source_end = source_offset + source_bytes_per_row;
+		let destination_end = destination_offset + source_bytes_per_row;
+		assert!(
+			source_end <= source.len(),
+			"Texture upload source row is out of bounds. The most likely cause is a bad compact row pitch for this format. format={format:?}, extent={extent:?}, row={row}, row_count={row_count}, source_offset={source_offset}, source_end={source_end}, source_len={}, source_bytes_per_row={source_bytes_per_row}",
+			source.len()
+		);
+		assert!(
+			destination_end <= data.len(),
+			"Texture upload padded row is out of bounds. The most likely cause is a bad padded row pitch for this format. format={format:?}, extent={extent:?}, row={row}, row_count={row_count}, destination_offset={destination_offset}, destination_end={destination_end}, data_len={}, padded_bytes_per_row={padded_bytes_per_row}",
+			data.len()
+		);
+		let source_row = &source[source_offset..source_end];
+		data[destination_offset..destination_end].copy_from_slice(source_row);
 	}
+	assert_eq!(
+		data.len(),
+		source_bytes_per_image,
+		"Texture upload output size mismatch. The most likely cause is that the padded upload allocation changed during row copy. format={format:?}, extent={extent:?}, data_len={}, expected={source_bytes_per_image}",
+		data.len()
+	);
 
 	Some(TextureUpload {
 		data,
@@ -190,7 +224,7 @@ fn texture_upload_layout(format: ghi::Formats, extent: Extent) -> Option<(usize,
 	let height = extent.height().max(1) as usize;
 
 	match format {
-		ghi::Formats::BC5 | ghi::Formats::BC7 => {
+		ghi::Formats::BC5 | ghi::Formats::BC7 | ghi::Formats::BC7SRGB => {
 			let block_width = width.div_ceil(4);
 			let block_height = height.div_ceil(4);
 			let bytes_per_row = block_width * 16;

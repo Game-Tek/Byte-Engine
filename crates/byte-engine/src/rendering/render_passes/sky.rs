@@ -1,12 +1,9 @@
-use std::borrow::Borrow;
-
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
 };
 use math::{mat::MatInverse as _, ShaderMatrix4, Vector3, Vector4};
-use resource_management::glsl;
 use utils::{Box, Extent};
 
 use crate::{
@@ -174,39 +171,22 @@ impl AtmosphereSkyRenderPass {
 }
 
 fn create_sky_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
-	if ghi::implementation::USES_METAL {
-		return device
-			.create_shader(
-				Some("Sky Render Pass Compute Shader"),
-				ghi::shader::Sources::MTL {
-					source: SKY_SHADER_MSL,
-					entry_point: "sky_render_pass",
-				},
-				ghi::ShaderTypes::Compute,
-				[
-					SKY_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					SKY_MAIN_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-					SKY_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				],
-			)
-			.expect("Failed to create the sky shader. The most likely cause is an incompatible Metal shader interface.");
-	}
-
-	let shader_artifact = glsl::compile(SKY_SHADER, "Sky Render Pass")
-		.expect("Failed to compile the sky shader. The most likely cause is invalid GLSL syntax in the sky render pass.");
-
-	device
-		.create_shader(
-			Some("Sky Render Pass Compute Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				SKY_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				SKY_MAIN_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				SKY_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			],
-		)
-		.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.")
+	crate::rendering::create_shader_from_source(
+		device,
+		Some("Sky Render Pass Compute Shader"),
+		ghi::shader::ShaderSource::Platform {
+			glsl: SKY_SHADER,
+			msl: SKY_SHADER_MSL,
+			msl_entry_point: "sky_render_pass",
+		},
+		ghi::ShaderTypes::Compute,
+		[
+			SKY_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			SKY_MAIN_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+			SKY_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+		],
+	)
+	.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.")
 }
 
 impl RenderPass for AtmosphereSkyRenderPass {

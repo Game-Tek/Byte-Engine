@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::boxed::Box as StdBox;
 
 use ghi::{
@@ -9,7 +8,6 @@ use ghi::{
 };
 use half::f16;
 use resource_management::{
-	glsl,
 	resource::ReadTargetsMut,
 	resources::lut::{Lut, LutKind},
 	Reference,
@@ -84,8 +82,8 @@ impl LutRenderPass {
 			&[LUT_SOURCE_BINDING, LUT_TEXTURE_BINDING, LUT_OUTPUT_BINDING],
 		);
 
-		let shader_source = create_lut_shader_source(&lut_metadata);
-		let shader = create_lut_shader(device, &shader_source);
+		let (lut_glsl, lut_msl) = create_lut_shader_sources(&lut_metadata);
+		let shader = create_lut_shader(device, &lut_glsl, &lut_msl);
 		let pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_layout],
 			&[],
@@ -177,44 +175,27 @@ impl RenderPass for LutRenderPass {
 	}
 }
 
-fn create_lut_shader(device: &mut ghi::implementation::Device, shader_source: &str) -> ghi::ShaderHandle {
-	if ghi::implementation::USES_METAL {
-		return device
-			.create_shader(
-				Some("LUT Render Pass Compute Shader"),
-				ghi::shader::Sources::MTL {
-					source: shader_source,
-					entry_point: "lut_apply",
-				},
-				ghi::ShaderTypes::Compute,
-				[
-					LUT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					LUT_TEXTURE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					LUT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect("Failed to create LUT render shader. The most likely cause is an incompatible Metal shader interface.");
-	}
-
-	let shader_artifact = glsl::compile(shader_source, "LUT Render Pass")
-		.expect("Failed to compile LUT render shader. The most likely cause is invalid GLSL syntax in the LUT render pass.");
-
-	device
-		.create_shader(
-			Some("LUT Render Pass Compute Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				LUT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				LUT_TEXTURE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				LUT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-			],
-		)
-		.expect("Failed to create LUT render shader. The most likely cause is an incompatible shader interface.")
+fn create_lut_shader(device: &mut ghi::implementation::Device, glsl: &str, msl: &str) -> ghi::ShaderHandle {
+	crate::rendering::create_shader_from_source(
+		device,
+		Some("LUT Render Pass Compute Shader"),
+		ghi::shader::ShaderSource::Platform {
+			glsl,
+			msl,
+			msl_entry_point: "lut_apply",
+		},
+		ghi::ShaderTypes::Compute,
+		[
+			LUT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			LUT_TEXTURE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			LUT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+		],
+	)
+	.expect("Failed to create LUT render shader. The most likely cause is an incompatible shader interface.")
 }
 
-/// Generates the platform-specific LUT shader source with the injected LUT domain constants baked in.
-fn create_lut_shader_source(lut: &Lut) -> String {
+/// Generates both the GLSL and MSL LUT shader sources with the injected LUT domain constants baked in.
+fn create_lut_shader_sources(lut: &Lut) -> (String, String) {
 	let domain_scale = lut
 		.domain_min
 		.into_iter()
@@ -225,57 +206,7 @@ fn create_lut_shader_source(lut: &Lut) -> String {
 	let lut_texel_scale = (lut_size - 1.0) / lut_size;
 	let lut_texel_offset = 0.5 / lut_size;
 
-	if ghi::implementation::USES_METAL {
-		return format!(
-			r#"
-			#include <metal_stdlib>
-			using namespace metal;
-
-			struct LutSet0 {{
-				texture2d<float> source [[id(0)]];
-				sampler source_sampler [[id(1)]];
-				texture3d<float> lut_texture [[id(2)]];
-				sampler lut_texture_sampler [[id(3)]];
-				texture2d<float, access::write> result [[id(4)]];
-			}};
-
-			constant float3 LUT_DOMAIN_MIN = float3({:.9}, {:.9}, {:.9});
-			constant float3 LUT_DOMAIN_SCALE = float3({:.9}, {:.9}, {:.9});
-			constant float LUT_TEXEL_SCALE = {:.9};
-			constant float LUT_TEXEL_OFFSET = {:.9};
-
-			float3 apply_lut(float3 color, const constant LutSet0& set0) {{
-				float3 normalized = clamp((color - LUT_DOMAIN_MIN) * LUT_DOMAIN_SCALE, float3(0.0), float3(1.0));
-				float3 lut_uv = normalized * LUT_TEXEL_SCALE + LUT_TEXEL_OFFSET;
-				return set0.lut_texture.sample(set0.lut_texture_sampler, lut_uv).rgb;
-			}}
-
-			kernel void lut_apply(
-				uint2 gid [[thread_position_in_grid]],
-				constant LutSet0& set0 [[buffer(16)]]
-			) {{
-				if (gid.x >= set0.result.get_width() || gid.y >= set0.result.get_height()) {{
-					return;
-				}}
-
-				float2 uv = (float2(gid) + 0.5) / float2(set0.result.get_width(), set0.result.get_height());
-				float4 source_color = set0.source.sample(set0.source_sampler, uv);
-				float3 result_color = apply_lut(source_color.rgb, set0);
-				set0.result.write(float4(result_color, source_color.a), gid);
-			}}
-		"#,
-			lut.domain_min[0],
-			lut.domain_min[1],
-			lut.domain_min[2],
-			domain_scale[0],
-			domain_scale[1],
-			domain_scale[2],
-			lut_texel_scale,
-			lut_texel_offset
-		);
-	}
-
-	format!(
+	let glsl = format!(
 		r#"
 #version 460 core
 #pragma shader_stage(compute)
@@ -325,7 +256,57 @@ void main() {{
 		domain_scale[2],
 		lut_texel_scale,
 		lut_texel_offset
-	)
+	);
+
+	let msl = format!(
+		r#"
+		#include <metal_stdlib>
+		using namespace metal;
+
+		struct LutSet0 {{
+			texture2d<float> source [[id(0)]];
+			sampler source_sampler [[id(1)]];
+			texture3d<float> lut_texture [[id(2)]];
+			sampler lut_texture_sampler [[id(3)]];
+			texture2d<float, access::write> result [[id(4)]];
+		}};
+
+		constant float3 LUT_DOMAIN_MIN = float3({:.9}, {:.9}, {:.9});
+		constant float3 LUT_DOMAIN_SCALE = float3({:.9}, {:.9}, {:.9});
+		constant float LUT_TEXEL_SCALE = {:.9};
+		constant float LUT_TEXEL_OFFSET = {:.9};
+
+		float3 apply_lut(float3 color, const constant LutSet0& set0) {{
+			float3 normalized = clamp((color - LUT_DOMAIN_MIN) * LUT_DOMAIN_SCALE, float3(0.0), float3(1.0));
+			float3 lut_uv = normalized * LUT_TEXEL_SCALE + LUT_TEXEL_OFFSET;
+			return set0.lut_texture.sample(set0.lut_texture_sampler, lut_uv).rgb;
+		}}
+
+		kernel void lut_apply(
+			uint2 gid [[thread_position_in_grid]],
+			constant LutSet0& set0 [[buffer(16)]]
+		) {{
+			if (gid.x >= set0.result.get_width() || gid.y >= set0.result.get_height()) {{
+				return;
+			}}
+
+			float2 uv = (float2(gid) + 0.5) / float2(set0.result.get_width(), set0.result.get_height());
+			float4 source_color = set0.source.sample(set0.source_sampler, uv);
+			float3 result_color = apply_lut(source_color.rgb, set0);
+			set0.result.write(float4(result_color, source_color.a), gid);
+		}}
+	"#,
+		lut.domain_min[0],
+		lut.domain_min[1],
+		lut.domain_min[2],
+		domain_scale[0],
+		domain_scale[1],
+		domain_scale[2],
+		lut_texel_scale,
+		lut_texel_offset
+	);
+
+	(glsl, msl)
 }
 
 /// Reads the baked LUT payload from the resource reference into owned bytes.
@@ -393,7 +374,7 @@ mod tests {
 	use half::f16;
 	use resource_management::resources::lut::{Lut, LutKind};
 
-	use super::{convert_lut_bytes_to_rgba16f_upload, create_lut_shader_source, expected_lut_payload_size};
+	use super::{convert_lut_bytes_to_rgba16f_upload, create_lut_shader_sources, expected_lut_payload_size};
 
 	#[test]
 	fn lut_shader_compiles() {
@@ -404,9 +385,9 @@ mod tests {
 			domain_max: [1.0, 1.0, 1.0],
 		};
 
-		let shader_source = create_lut_shader_source(&lut);
+		let (glsl_source, _msl_source) = create_lut_shader_sources(&lut);
 
-		resource_management::glsl::compile(&shader_source, "LUT Render Pass Test").unwrap();
+		resource_management::glsl::compile(&glsl_source, "LUT Render Pass Test").unwrap();
 	}
 
 	#[test]

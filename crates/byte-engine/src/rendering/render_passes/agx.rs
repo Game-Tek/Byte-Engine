@@ -5,8 +5,8 @@ use ghi::{
 	device::{Device as _, DeviceCreate as _},
 };
 use resource_management::{
-	msl_shader_generator::MSLShaderGenerator, shader_generator::ShaderGenerationSettings,
-	spirv_shader_generator::SPIRVShaderGenerator,
+	glsl_shader_generator::GLSLShaderGenerator, msl_shader_generator::MSLShaderGenerator,
+	shader_generator::ShaderGenerationSettings,
 };
 use utils::{Box, Extent};
 
@@ -62,46 +62,28 @@ impl BaseAgxToneMapPass {
 fn create_tone_mapping_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
 	let main_node = create_tone_mapping_program();
 	let settings = ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping".to_string());
-
-	if ghi::implementation::USES_METAL {
-		let mut shader_generator = MSLShaderGenerator::new();
-		let shader_source = shader_generator.generate(&settings, &main_node).expect(
-			"Failed to generate the AGX MSL shader. The most likely cause is an unsupported BESL construct in the Metal transpiler.",
-		);
-
-		return device
-			.create_shader(
-				Some("AGX Tone Mapping Compute Shader"),
-				ghi::shader::Sources::MTL {
-					source: shader_source.as_str(),
-					entry_point: "besl_main",
-				},
-				ghi::ShaderTypes::Compute,
-				[
-					SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect(
-				"Failed to create AGX tone mapping shader. The most likely cause is an incompatible Metal shader interface.",
-			);
-	}
-
-	let shader_artifact = SPIRVShaderGenerator::new()
+	let glsl_source = GLSLShaderGenerator::new()
 		.generate(&settings, &main_node)
-		.expect("Failed to generate AGX tone mapping SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
+		.expect("Failed to generate AGX tone mapping GLSL. The most likely cause is invalid BESL syntax.");
+	let msl_source = MSLShaderGenerator::new().generate(&settings, &main_node).expect(
+		"Failed to generate the AGX MSL shader. The most likely cause is an unsupported BESL construct in the Metal transpiler.",
+	);
 
-	device
-		.create_shader(
-			Some("AGX Tone Mapping Compute Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.binary()),
-			ghi::ShaderTypes::Compute,
-			[
-				SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-			],
-		)
-		.expect("Failed to create AGX tone mapping shader")
+	crate::rendering::create_shader_from_source(
+		device,
+		Some("AGX Tone Mapping Compute Shader"),
+		ghi::shader::ShaderSource::Platform {
+			glsl: &glsl_source,
+			msl: &msl_source,
+			msl_entry_point: "besl_main",
+		},
+		ghi::ShaderTypes::Compute,
+		[
+			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+		],
+	)
+	.expect("Failed to create AGX tone mapping shader")
 }
 
 fn create_tone_mapping_program() -> besl::NodeReference {

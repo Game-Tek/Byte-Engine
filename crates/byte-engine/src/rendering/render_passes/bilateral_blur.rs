@@ -41,21 +41,18 @@ impl BaseBilateralBlurPass {
 			&[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING],
 		);
 
-		let shader =
-			resource_management::glsl::compile(BLUR_SHADER, "blur_shader").expect("Failed to compile the SSGI blur shader.");
-
-		let shader = device
-			.create_shader(
-				Some("SSGI Blur"),
-				ghi::shader::Sources::SPIRV(shader.as_binary_u8()),
-				ghi::ShaderTypes::Compute,
-				[
-					BLUR_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					BLUR_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					BLUR_RESULT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect("Failed to create the ray march shader.");
+		let shader = crate::rendering::create_shader_from_source(
+			device,
+			Some("SSGI Blur"),
+			ghi::shader::ShaderSource::Glsl(BLUR_SHADER),
+			ghi::ShaderTypes::Compute,
+			[
+				BLUR_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				BLUR_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				BLUR_RESULT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+			],
+		)
+		.expect("Failed to create the SSGI blur shader.");
 		let pipeline_x = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_template],
 			&[],

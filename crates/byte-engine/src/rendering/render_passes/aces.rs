@@ -1,5 +1,3 @@
-use std::borrow::Borrow;
-
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
@@ -7,7 +5,6 @@ use ghi::{
 	device::{Device as _, DeviceCreate as _},
 	FrameKey,
 };
-use resource_management::glsl;
 use utils::{Box, Extent};
 
 use crate::core::Entity;
@@ -58,69 +55,21 @@ impl BaseAcesToneMapPass {
 }
 
 fn create_tone_mapping_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
-	if ghi::implementation::USES_METAL {
-		let shader_source = r#"
-			#include <metal_stdlib>
-			using namespace metal;
-
-			struct ToneMapSet0 {
-				texture2d<float, access::read> source [[id(0)]];
-				texture2d<float, access::write> result [[id(1)]];
-			};
-
-			float3 aces_narkowicz(float3 x) {
-				constant float a = 2.51;
-				constant float b = 0.03;
-				constant float c = 2.43;
-				constant float d = 0.59;
-				constant float e = 0.14;
-				return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-			}
-
-			kernel void aces_tonemap(
-				uint2 gid [[thread_position_in_grid]],
-				constant ToneMapSet0& set0 [[buffer(16)]]
-			) {
-				if (gid.x >= set0.source.get_width() || gid.y >= set0.source.get_height()) {
-					return;
-				}
-
-				float4 source_color = set0.source.read(gid);
-				float3 result_color = aces_narkowicz(source_color.rgb);
-				result_color = pow(result_color, float3(1.0 / 2.2));
-				set0.result.write(float4(result_color, 1.0), gid);
-			}
-		"#;
-
-		return device
-			.create_shader(
-				Some("ACES Tone Mapping Compute Shader"),
-				ghi::shader::Sources::MTL {
-					source: shader_source,
-					entry_point: "aces_tonemap",
-				},
-				ghi::ShaderTypes::Compute,
-				[
-					SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect("Failed to create tone mapping shader. The most likely cause is an incompatible Metal shader interface.");
-	}
-
-	let tonemapping_shader_artifact = glsl::compile(TONE_MAPPING_SHADER, "ACES Tonemapping").unwrap();
-
-	device
-		.create_shader(
-			Some("ACES Tone Mapping Compute Shader"),
-			ghi::shader::Sources::SPIRV(tonemapping_shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-			],
-		)
-		.expect("Failed to create tone mapping shader")
+	crate::rendering::create_shader_from_source(
+		device,
+		Some("ACES Tone Mapping Compute Shader"),
+		ghi::shader::ShaderSource::Platform {
+			glsl: TONE_MAPPING_SHADER,
+			msl: TONE_MAPPING_SHADER_MSL,
+			msl_entry_point: "aces_tonemap",
+		},
+		ghi::ShaderTypes::Compute,
+		[
+			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+		],
+	)
+	.expect("Failed to create ACES tone mapping shader. The most likely cause is an incompatible shader interface.")
 }
 
 pub struct AcesToneMapPass {
@@ -174,6 +123,41 @@ impl RenderPass for AcesToneMapPass {
 		}))
 	}
 }
+
+const TONE_MAPPING_SHADER_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+// besl-threadgroup-size: 32, 32, 1
+
+struct ToneMapSet0 {
+	texture2d<float, access::read> source [[id(0)]];
+	texture2d<float, access::write> result [[id(1)]];
+};
+
+float3 aces_narkowicz(float3 x) {
+	constant float a = 2.51;
+	constant float b = 0.03;
+	constant float c = 2.43;
+	constant float d = 0.59;
+	constant float e = 0.14;
+	return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+kernel void aces_tonemap(
+	uint2 gid [[thread_position_in_grid]],
+	constant ToneMapSet0& set0 [[buffer(16)]]
+) {
+	if (gid.x >= set0.source.get_width() || gid.y >= set0.source.get_height()) {
+		return;
+	}
+
+	float4 source_color = set0.source.read(gid);
+	float3 result_color = aces_narkowicz(source_color.rgb);
+	result_color = pow(result_color, float3(1.0 / 2.2));
+	set0.result.write(float4(result_color, 1.0), gid);
+}
+"#;
 
 const TONE_MAPPING_SHADER: &'static str = r#"
 #version 450

@@ -1,11 +1,8 @@
-use std::borrow::Borrow;
-
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	device::{Device as _, DeviceCreate as _},
 	frame::Frame as _,
 };
-use resource_management::glsl;
 use utils::{Box, Extent};
 
 use crate::{
@@ -429,22 +426,18 @@ fn create_extract_pipeline(
 	device: &mut ghi::implementation::Device,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader_artifact = glsl::compile(BLOOM_EXTRACT_SHADER, "Bloom Extract Shader")
-		.expect("Failed to compile bloom extract shader. The most likely cause is invalid GLSL in the bloom extract stage.");
-	let shader = device
-		.create_shader(
-			Some("Bloom Extract Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				EXTRACT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				EXTRACT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				EXTRACT_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			],
-		)
-		.expect(
-			"Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.",
-		);
+	let shader = crate::rendering::create_shader_from_source(
+		device,
+		Some("Bloom Extract Shader"),
+		ghi::shader::ShaderSource::Glsl(BLOOM_EXTRACT_SHADER),
+		ghi::ShaderTypes::Compute,
+		[
+			EXTRACT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			EXTRACT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+			EXTRACT_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+		],
+	)
+	.expect("Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.");
 
 	device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 		&[descriptor_set_layout],
@@ -457,21 +450,20 @@ fn create_downsample_pipeline(
 	device: &mut ghi::implementation::Device,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader_artifact = glsl::compile(BLOOM_DOWNSAMPLE_SHADER, "Bloom Downsample Shader").expect(
-		"Failed to compile bloom downsample shader. The most likely cause is invalid GLSL in the bloom downsample stage.",
+	let shader = crate::rendering::create_shader_from_source(
+		device,
+		Some("Bloom Downsample Shader"),
+		ghi::shader::ShaderSource::Glsl(BLOOM_DOWNSAMPLE_SHADER),
+		ghi::ShaderTypes::Compute,
+		[
+			EXTRACT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			EXTRACT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+			EXTRACT_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+		],
+	)
+	.expect(
+		"Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
 	);
-	let shader = device
-		.create_shader(
-			Some("Bloom Downsample Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				EXTRACT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				EXTRACT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				EXTRACT_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			],
-		)
-		.expect("Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.");
 
 	device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 		&[descriptor_set_layout],
@@ -484,23 +476,21 @@ fn create_upsample_pipeline(
 	device: &mut ghi::implementation::Device,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader_artifact = glsl::compile(BLOOM_UPSAMPLE_SHADER, "Bloom Upsample Shader")
-		.expect("Failed to compile bloom upsample shader. The most likely cause is invalid GLSL in the bloom upsample stage.");
-	let shader = device
-		.create_shader(
-			Some("Bloom Upsample Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				UPSAMPLE_LOW_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				UPSAMPLE_HIGH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				UPSAMPLE_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				UPSAMPLE_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			],
-		)
-		.expect(
-			"Failed to create bloom upsample shader. The most likely cause is an incompatible bloom upsample shader interface.",
-		);
+	let shader = crate::rendering::create_shader_from_source(
+		device,
+		Some("Bloom Upsample Shader"),
+		ghi::shader::ShaderSource::Glsl(BLOOM_UPSAMPLE_SHADER),
+		ghi::ShaderTypes::Compute,
+		[
+			UPSAMPLE_LOW_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			UPSAMPLE_HIGH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			UPSAMPLE_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+			UPSAMPLE_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+		],
+	)
+	.expect(
+		"Failed to create bloom upsample shader. The most likely cause is an incompatible bloom upsample shader interface.",
+	);
 
 	device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 		&[descriptor_set_layout],
@@ -513,22 +503,21 @@ fn create_composite_pipeline(
 	device: &mut ghi::implementation::Device,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader_artifact = glsl::compile(BLOOM_COMPOSITE_SHADER, "Bloom Composite Shader").expect(
-		"Failed to compile bloom composite shader. The most likely cause is invalid GLSL in the bloom composite stage.",
+	let shader = crate::rendering::create_shader_from_source(
+		device,
+		Some("Bloom Composite Shader"),
+		ghi::shader::ShaderSource::Glsl(BLOOM_COMPOSITE_SHADER),
+		ghi::ShaderTypes::Compute,
+		[
+			COMPOSITE_SCENE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			COMPOSITE_BLOOM_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			COMPOSITE_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+			COMPOSITE_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+		],
+	)
+	.expect(
+		"Failed to create bloom composite shader. The most likely cause is an incompatible bloom composite shader interface.",
 	);
-	let shader = device
-		.create_shader(
-			Some("Bloom Composite Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				COMPOSITE_SCENE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				COMPOSITE_BLOOM_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				COMPOSITE_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				COMPOSITE_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			],
-		)
-		.expect("Failed to create bloom composite shader. The most likely cause is an incompatible bloom composite shader interface.");
 
 	device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 		&[descriptor_set_layout],

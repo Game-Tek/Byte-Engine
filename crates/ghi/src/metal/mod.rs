@@ -632,38 +632,100 @@ mod utils {
 		let width = extent.width().max(1) as usize;
 		let height = extent.height().max(1) as usize;
 
-		match format {
-			Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => {
-				let block_width = width.div_ceil(4);
-				let block_height = height.div_ceil(4);
-				Some((block_width * 16, block_height, block_width * block_height * 16))
-			}
-			_ => {
-				let bytes_per_pixel = bytes_per_pixel(format)?;
-				let bytes_per_row = width * bytes_per_pixel;
-				Some((bytes_per_row, height, bytes_per_row * height))
-			}
+		if let Some(layout) = format.bc_layout(width as u32, height as u32) {
+			Some((
+				layout.bytes_per_row as usize,
+				layout.blocks_h as usize,
+				layout.bytes_per_image as usize,
+			))
+		} else {
+			let bytes_per_pixel = bytes_per_pixel(format)?;
+			let bytes_per_row = width * bytes_per_pixel;
+			Some((bytes_per_row, height, bytes_per_row * height))
 		}
 	}
 
-	pub(crate) fn texture_copy_size(format: Formats, extent: Extent) -> mtl::MTLSize {
-		let mut width = extent.width().max(1) as usize;
-		let mut height = extent.height().max(1) as usize;
-
-		if is_block_compressed(format) {
-			width = width.next_multiple_of(4);
-			height = height.next_multiple_of(4);
-		}
-
+	pub(crate) fn texture_copy_size(_format: Formats, extent: Extent) -> mtl::MTLSize {
 		mtl::MTLSize {
-			width: width as _,
-			height: height as _,
+			width: extent.width().max(1) as _,
+			height: extent.height().max(1) as _,
 			depth: extent.depth().max(1) as _,
 		}
 	}
 
 	pub(crate) fn is_block_compressed(format: Formats) -> bool {
-		matches!(format, Formats::BC5 | Formats::BC7 | Formats::BC7SRGB)
+		format.bc_bytes_per_block().is_some()
+	}
+
+	#[cfg(debug_assertions)]
+	pub(crate) fn debug_compressed_upload(
+		format: Formats,
+		mip_index: usize,
+		slice_index: usize,
+		extent: Extent,
+		bytes_per_row: usize,
+		bytes_per_image: usize,
+		source_offset: usize,
+	) {
+		let Some(layout) = format.bc_layout(extent.width(), extent.height()) else {
+			return;
+		};
+		let expected_next_offset = source_offset + bytes_per_image;
+
+		eprintln!(
+			"Metal compressed texture upload: format={format:?}, mip={mip_index}, slice={slice_index}, width={}, height={}, blocks_w={}, blocks_h={}, bytes_per_block={}, bytes_per_row={bytes_per_row}, bytes_per_image={bytes_per_image}, compact_bytes_per_row={}, compact_bytes_per_image={}, source_offset={source_offset}, expected_next_offset={expected_next_offset}",
+			extent.width().max(1),
+			extent.height().max(1),
+			layout.blocks_w,
+			layout.blocks_h,
+			layout.bytes_per_block,
+			layout.bytes_per_row,
+			layout.bytes_per_image,
+		);
+	}
+
+	#[cfg(not(debug_assertions))]
+	pub(crate) fn debug_compressed_upload(
+		_format: Formats,
+		_mip_index: usize,
+		_slice_index: usize,
+		_extent: Extent,
+		_bytes_per_row: usize,
+		_bytes_per_image: usize,
+		_source_offset: usize,
+	) {
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+
+		#[test]
+		fn bc_upload_layout_uses_block_rows_for_non_multiple_of_four_extent() {
+			let extent = Extent::rectangle(5, 7);
+
+			let (bytes_per_row, row_count, bytes_per_image) = texture_upload_layout(Formats::BC7, extent).unwrap();
+
+			assert_eq!(bytes_per_row, 2 * 16);
+			assert_eq!(row_count, 2);
+			assert_eq!(bytes_per_image, 2 * 2 * 16);
+		}
+
+		#[test]
+		fn bc_copy_size_uses_texel_extent_not_padded_block_extent() {
+			let size = texture_copy_size(Formats::BC7, Extent::rectangle(5, 7));
+
+			assert_eq!(size.width, 5);
+			assert_eq!(size.height, 7);
+			assert_eq!(size.depth, 1);
+		}
+
+		#[test]
+		fn bc_format_mapping_preserves_linear_and_srgb_variants() {
+			assert_eq!(to_pixel_format(Formats::BC5), mtl::MTLPixelFormat::BC5_RGUnorm);
+			assert_eq!(to_pixel_format(Formats::BC7), mtl::MTLPixelFormat::BC7_RGBAUnorm);
+			assert_eq!(to_pixel_format(Formats::BC7SRGB), mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB);
+		}
 	}
 
 	pub(crate) fn data_type_size(format: crate::DataTypes) -> usize {

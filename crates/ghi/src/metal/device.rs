@@ -480,6 +480,7 @@ impl Device {
 		for slice in 0..array_layers as usize {
 			let source_offset = slice * bytes_per_image;
 			let destination_offset = slice * aligned_bytes_per_image;
+			utils::debug_compressed_upload(format, 0, slice, extent, bytes_per_row, bytes_per_image, source_offset);
 			let Some(source_bytes) = staging.get(source_offset..source_offset + bytes_per_image) else {
 				break;
 			};
@@ -498,6 +499,16 @@ impl Device {
 			}
 		}
 
+		if utils::is_block_compressed(format) {
+			let expected_size = bytes_per_image * array_layers as usize;
+			assert_eq!(
+				staging.len(),
+				expected_size,
+				"Metal compressed texture staging size mismatch. The most likely cause is that CPU staging was not packed as one compact BC image per slice. format={format:?}, extent={extent:?}, array_layers={array_layers}, staging_len={}, expected_size={expected_size}",
+				staging.len()
+			);
+		}
+
 		let queue = self.transfer_queue();
 		let command_buffer = self.create_metal_command_buffer(
 			queue.queue.as_ref(),
@@ -514,6 +525,15 @@ impl Device {
 		let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 
 		for slice in 0..array_layers as usize {
+			utils::debug_compressed_upload(
+				format,
+				0,
+				slice,
+				extent,
+				aligned_bytes_per_row,
+				aligned_bytes_per_image,
+				slice * aligned_bytes_per_image,
+			);
 			unsafe {
 				blit_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 					upload_buffer.as_ref(),

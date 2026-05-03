@@ -7,7 +7,8 @@ use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
-	MTLBlitCommandEncoder, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder, MTLTexture,
+	MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder,
+	MTLTexture,
 };
 
 use super::*;
@@ -50,6 +51,24 @@ fn attachment_texture_view(
 	texture.clone()
 }
 
+/// Flushes CPU writes to a managed Metal buffer before a GPU read command uses that range.
+fn flush_managed_buffer_range(buffer: &buffer::Buffer, offset: usize, size: usize) {
+	if utils::storage_mode_from_access(buffer.access) != mtl::MTLStorageMode::Managed {
+		return;
+	}
+
+	let end = offset.checked_add(size).expect(
+		"Metal managed buffer flush range overflowed. The most likely cause is an invalid upload buffer offset or size.",
+	);
+	assert!(
+		end <= buffer.size,
+		"Metal managed buffer flush range is out of bounds. The most likely cause is that recorded upload ranges exceed the staging buffer. offset={offset}, size={size}, buffer_size={}",
+		buffer.size
+	);
+
+	buffer.buffer.didModifyRange(NSRange::new(offset, size));
+}
+
 fn replace_texture_from_bytes(
 	texture: &ProtocolObject<dyn mtl::MTLTexture>,
 	format: crate::Formats,
@@ -73,6 +92,7 @@ fn replace_texture_from_bytes(
 	for slice in 0..array_layers as usize {
 		let offset = slice * bytes_per_image;
 		let end = offset + bytes_per_image;
+		utils::debug_compressed_upload(format, 0, slice, extent, bytes_per_row, bytes_per_image, offset);
 		let Some(slice_bytes) = bytes.get(offset..end) else {
 			break;
 		};
@@ -93,6 +113,16 @@ fn replace_texture_from_bytes(
 				texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, staging_ptr, bytes_per_row as _);
 			}
 		}
+	}
+
+	if utils::is_block_compressed(format) {
+		let expected_size = bytes_per_image * array_layers as usize;
+		assert_eq!(
+			bytes.len(),
+			expected_size,
+			"Metal compressed texture replacement size mismatch. The most likely cause is that the source payload was not packed as one compact BC image per slice. format={format:?}, extent={extent:?}, array_layers={array_layers}, bytes_len={}, expected_size={expected_size}",
+			bytes.len()
+		);
 	}
 }
 
@@ -800,6 +830,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				.device
 				.buffers
 				.resource(self.get_internal_buffer_handle(copy.destination_buffer));
+			flush_managed_buffer_range(source, copy.source_offset, copy.size);
 			unsafe {
 				blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
 					source.buffer.as_ref(),
@@ -912,14 +943,26 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				destination.format,
 				destination.extent
 			);
-			let source_size = utils::texture_copy_size(destination.format, destination.extent);
+			flush_managed_buffer_range(source, copy.source_offset, required_source_bytes - copy.source_offset);
+			let mut source_size = utils::texture_copy_size(destination.format, destination.extent);
+			source_size.depth = 1;
 			let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 
 			for slice in 0..destination.array_layers as usize {
+				let source_offset = copy.source_offset + slice * copy.source_bytes_per_image;
+				utils::debug_compressed_upload(
+					destination.format,
+					0,
+					slice,
+					destination.extent,
+					copy.source_bytes_per_row,
+					copy.source_bytes_per_image,
+					source_offset,
+				);
 				unsafe {
 					blit_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 						source.buffer.as_ref(),
-						(copy.source_offset + slice * copy.source_bytes_per_image) as _,
+						source_offset as _,
 						copy.source_bytes_per_row as _,
 						copy.source_bytes_per_image as _,
 						source_size,

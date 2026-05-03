@@ -225,14 +225,36 @@ fn texture_upload_layout(format: ghi::Formats, extent: Extent) -> Option<(usize,
 
 	match format {
 		ghi::Formats::BC5 | ghi::Formats::BC7 | ghi::Formats::BC7SRGB => {
-			let block_width = width.div_ceil(4);
-			let block_height = height.div_ceil(4);
-			let bytes_per_row = block_width * 16;
-			Some((bytes_per_row, block_height, bytes_per_row * block_height))
+			let layout = format.bc_layout(width as u32, height as u32)?;
+			Some((
+				layout.bytes_per_row as usize,
+				layout.blocks_h as usize,
+				layout.bytes_per_image as usize,
+			))
 		}
 		_ => {
 			let bytes_per_row = width * format.size();
 			Some((bytes_per_row, height, bytes_per_row * height))
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn bc_texture_upload_pads_between_block_rows_without_changing_row_contents() {
+		let extent = Extent::rectangle(5, 7);
+		let compact_row = 2 * 16;
+		let source = (0..(compact_row * 2)).map(|value| value as u8).collect::<Vec<_>>();
+
+		let upload = make_texture_upload(ghi::Formats::BC7, extent, &source).unwrap();
+
+		assert_eq!(upload.source_bytes_per_row, 256);
+		assert_eq!(upload.source_bytes_per_image, 256 * 2);
+		assert_eq!(&upload.data[0..compact_row], &source[0..compact_row]);
+		assert!(upload.data[compact_row..256].iter().all(|byte| *byte == 0));
+		assert_eq!(&upload.data[256..256 + compact_row], &source[compact_row..compact_row * 2]);
 	}
 }

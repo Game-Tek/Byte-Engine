@@ -251,7 +251,46 @@ pub enum Formats {
 	BC7SRGB,
 }
 
+/// The `BcLayout` struct describes the compact block layout for one BC-compressed image level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BcLayout {
+	pub blocks_w: u32,
+	pub blocks_h: u32,
+	pub bytes_per_block: u32,
+	pub bytes_per_row: u32,
+	pub bytes_per_image: u32,
+}
+
+/// Computes the compact 4x4 block layout for one BC-compressed image level.
+pub fn bc_layout(width: u32, height: u32, bytes_per_block: u32) -> BcLayout {
+	let blocks_w = width.max(1).div_ceil(4).max(1);
+	let blocks_h = height.max(1).div_ceil(4).max(1);
+	let bytes_per_row = blocks_w * bytes_per_block;
+	let bytes_per_image = bytes_per_row * blocks_h;
+
+	BcLayout {
+		blocks_w,
+		blocks_h,
+		bytes_per_block,
+		bytes_per_row,
+		bytes_per_image,
+	}
+}
+
 impl Formats {
+	/// Returns the byte size of one compressed block for BC formats.
+	pub fn bc_bytes_per_block(&self) -> Option<u32> {
+		match self {
+			Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => Some(16),
+			_ => None,
+		}
+	}
+
+	/// Computes the compact BC layout for this format and image level.
+	pub fn bc_layout(&self, width: u32, height: u32) -> Option<BcLayout> {
+		Some(bc_layout(width, height, self.bc_bytes_per_block()?))
+	}
+
 	/// Returns the encoding of the format.
 	pub fn encoding(&self) -> Option<Encodings> {
 		match self {
@@ -674,6 +713,35 @@ impl BufferDescriptor {
 	pub fn index_type(mut self, index_type: DataTypes) -> Self {
 		self.index_type = Some(index_type);
 		self
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn bc_layout_uses_ceil_block_counts_and_keeps_small_mips_nonzero() {
+		let layout = bc_layout(5, 7, 16);
+
+		assert_eq!(layout.blocks_w, 2);
+		assert_eq!(layout.blocks_h, 2);
+		assert_eq!(layout.bytes_per_block, 16);
+		assert_eq!(layout.bytes_per_row, 32);
+		assert_eq!(layout.bytes_per_image, 64);
+
+		let small = bc_layout(1, 1, 8);
+		assert_eq!(small.blocks_w, 1);
+		assert_eq!(small.blocks_h, 1);
+		assert_eq!(small.bytes_per_row, 8);
+		assert_eq!(small.bytes_per_image, 8);
+	}
+
+	#[test]
+	fn format_bc_layout_uses_format_block_size() {
+		assert_eq!(Formats::BC5.bc_bytes_per_block(), Some(16));
+		assert_eq!(Formats::BC7.bc_layout(8, 4).unwrap().bytes_per_image, 32);
+		assert_eq!(Formats::RGBA8UNORM.bc_layout(8, 4), None);
 	}
 }
 

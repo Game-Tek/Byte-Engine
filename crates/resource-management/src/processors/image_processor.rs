@@ -245,6 +245,7 @@ fn produce_image(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, B
 		}
 		(Formats::RGB16, Formats::BC7 | Formats::BC7SRGB) => rgb16_to_rgba8(*extent, &buffer),
 		(Formats::RGBA16, Formats::RGBA16) => buffer,
+		(Formats::RGBA16, Formats::BC5) => rgba16_to_rgba8(*extent, &buffer),
 		(Formats::RGBA16, Formats::BC7 | Formats::BC7SRGB) => rgba16_to_rgba8(*extent, &buffer),
 		_ => {
 			panic!("Unsupported format: {:#?}", format);
@@ -498,6 +499,55 @@ mod tests {
 		assert_eq!(image.gamma, Gamma::SRGB);
 		assert_eq!(image.extent, [5, 7, 1]);
 		assert_eq!(data.len(), 2 * 2 * 16);
+	}
+
+	#[test]
+	fn process_image_compresses_rgb16_albedo_to_bc7() {
+		// Regression: the old code built an RGBA16 intermediate (8 bytes/pixel) but passed it to
+		// the BC7 compressor with stride = width * 4 (an RGBA8 stride), halving the effective row
+		// width and producing horizontal stripes. The correct path converts RGB16 → RGBA8 first.
+		let description = ImageDescription {
+			format: Formats::RGB16,
+			extent: Extent::rectangle(4, 4),
+			gamma: Gamma::Linear,
+			semantic: Semantic::Albedo,
+		};
+
+		// RGB16: 3 channels × 2 bytes = 6 bytes per pixel
+		let source = vec![128_u8; 4 * 4 * 6].into_boxed_slice();
+		let (asset, data) = process_image(ResourceId::new("textures/albedo16.png"), description, source)
+			.expect("RGB16 albedo processing should succeed");
+
+		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+
+		assert_eq!(image.format, Formats::BC7);
+		assert_eq!(image.extent, [4, 4, 1]);
+		// 4×4 image → 1×1 block grid → 1 block × 16 bytes
+		assert_eq!(data.len(), 16);
+	}
+
+	#[test]
+	fn process_image_compresses_rgba16_normal_to_bc5() {
+		// Regression: the (Formats::RGBA16, Formats::BC5) arm was missing, causing a panic for
+		// RGBA16 normal maps. The fix reuses rgba16_to_rgba8 so BC5 gets correct R and G channels.
+		let description = ImageDescription {
+			format: Formats::RGBA16,
+			extent: Extent::rectangle(4, 4),
+			gamma: Gamma::Linear,
+			semantic: Semantic::Normal,
+		};
+
+		// RGBA16: 4 channels × 2 bytes = 8 bytes per pixel
+		let source = vec![128_u8; 4 * 4 * 8].into_boxed_slice();
+		let (asset, data) = process_image(ResourceId::new("textures/normal16.png"), description, source)
+			.expect("RGBA16 normal map processing should succeed");
+
+		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+
+		assert_eq!(image.format, Formats::BC5);
+		assert_eq!(image.extent, [4, 4, 1]);
+		// 4×4 image → 1×1 block grid → 1 block × 16 bytes
+		assert_eq!(data.len(), 16);
 	}
 
 	#[test]

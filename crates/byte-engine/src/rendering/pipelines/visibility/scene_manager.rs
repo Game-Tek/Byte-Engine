@@ -1,7 +1,6 @@
-/// This the visibility buffer implementation of the world render domain.
-pub struct VisibilityWorldRenderDomain {
-	/// Render entities registered in the scene.
-	render_entities: Vec<RenderEntity>,
+/// The `VisibilitySharedResources` struct holds GPU resources for the visibility pipeline
+/// that are independent of any particular scene and can be reused across multiple scenes.
+pub(crate) struct VisibilitySharedResources {
 	/// Loaded mesh resources.
 	meshes: Vec<ResourceStates<MeshData, ()>>,
 	/// Mapping from resource ID to mesh index.
@@ -18,21 +17,40 @@ pub struct VisibilityWorldRenderDomain {
 	pipeline_manager: PipelineManager,
 	/// Mapping from mesh resource ID to mesh index.
 	mesh_resources: HashMap<String, u32>,
-	/// Material evaluation materials.
+	/// Material evaluation materials (pipelines and slot assignments).
 	material_evaluation_materials: HashMap<String, ResourceStates<RenderDescription, PendingRenderDescription>>,
-	/// Views data buffer.
-	views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
-	///  Materials data buffer.
-	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
-	/// Base descriptor set layout.
+	/// Base descriptor set layout template shared across all scenes and sinks.
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
-	textures_binding: ghi::DescriptorSetBindingHandle,
-	/// Handle to the buffer where each instance's data is stored.
-	meshes_data_buffer: ghi::DynamicBufferHandle<[ShaderMesh; MAX_INSTANCES]>,
+	/// Visibility descriptor set layout template.
+	visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+	/// Material evaluation descriptor set layout template.
 	material_evaluation_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+	/// Materials data buffer shared across all scenes.
+	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
+	/// GPU vertex data manager (vertex positions, normals, UVs, indices, meshlets).
+	gpu_vertex_data_manager: GPUVertexDataManager,
+	/// Resource manager for loading assets.
+	resource_manager: EntityHandle<ResourceManager>,
+}
+
+/// The `VisibilityWorldRenderDomain` struct is the visibility buffer implementation of the world render domain.
+/// It owns the per-scene rendering state and references shared GPU resources via `VisibilitySharedResources`.
+pub struct VisibilityWorldRenderDomain {
+	/// GPU resources shared across scenes (pipelines, textures, mesh geometry, material data).
+	shared: VisibilitySharedResources,
+	/// Render entities registered in the scene.
+	render_entities: Vec<RenderEntity>,
+	/// Legacy domain-level views data buffer (superseded by per-sink buffers in sink_states).
+	views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
+	/// Legacy domain-level descriptor set (superseded by per-sink descriptor sets in sink_states).
+	descriptor_set: ghi::DescriptorSetHandle,
+	/// Bindless texture binding on the legacy domain-level descriptor set.
+	textures_binding: ghi::DescriptorSetBindingHandle,
+	/// Per-instance mesh data buffer holding transforms and material indices for this scene.
+	meshes_data_buffer: ghi::DynamicBufferHandle<[ShaderMesh; MAX_INSTANCES]>,
+	/// Legacy domain-level material evaluation descriptor set (superseded by per-sink sets).
 	material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
-	/// Buffer containing lighting data.
+	/// Buffer containing lighting data for this scene.
 	light_data_buffer: ghi::BufferHandle<LightingData>,
 	/// Lights in the scene.
 	lights: Vec<Lights>,
@@ -40,31 +58,19 @@ pub struct VisibilityWorldRenderDomain {
 	render_info: RenderInfo,
 	/// Per-sink render state.
 	sink_states: Vec<SinkState>,
-	visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-	resource_manager: EntityHandle<ResourceManager>,
-	gpu_vertex_data_manager: GPUVertexDataManager,
 }
 
-impl VisibilityWorldRenderDomain {
-	pub fn new(
+impl VisibilitySharedResources {
+	/// Creates shared GPU resources for the visibility pipeline.
+	///
+	/// These resources are independent of any specific scene and include mesh geometry buffers,
+	/// bindless textures, material evaluation pipelines, and descriptor set layout templates.
+	pub(crate) fn new(
 		device: &mut ghi::implementation::Device,
 		texture_manager: TextureManager,
 		resource_manager: EntityHandle<ResourceManager>,
 	) -> Self {
-		// Initialize the extent to 0 to allocate memory lazily.
-		let extent = Extent::square(0);
-
-		let views_data_buffer_handle = device.build_dynamic_buffer::<[ShaderViewData; 8]>(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Visibility Views Data")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-
-		let meshes_data_buffer = device.build_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Visibility Meshes Data")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
+		let mesh_data_manager = GPUVertexDataManager::new(device);
 
 		let bindings = [
 			VIEWS_DATA_BINDING,
@@ -77,50 +83,7 @@ impl VisibilityWorldRenderDomain {
 			MESHLET_DATA_BINDING,
 			TEXTURES_BINDING,
 		];
-
 		let descriptor_set_layout = device.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
-
-		let descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
-
-		let views_data_binding = device.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
-		);
-		let meshes_data_binding = device.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, meshes_data_buffer.into()),
-		);
-
-		let mesh_data_manager = GPUVertexDataManager::new(device);
-
-		let vertex_positions_binding = device.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&VERTEX_POSITIONS_BINDING, mesh_data_manager.vertex_positions_buffer.into()),
-		);
-		let vertex_normals_binding = device.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&VERTEX_NORMALS_BINDING, mesh_data_manager.vertex_normals_buffer.into()),
-		);
-		let vertex_uv_binding = device.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, mesh_data_manager.vertex_uvs_buffer.into()),
-		);
-		let vertex_indices_binding = device.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&VERTEX_INDICES_BINDING, mesh_data_manager.vertex_indices_buffer.into()),
-		);
-		let primitive_indices_binding = device.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&PRIMITIVE_INDICES_BINDING, mesh_data_manager.primitive_indices_buffer.into()),
-		);
-		let meshlets_data_binding = device.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, mesh_data_manager.meshlets_data_buffer.into()),
-		);
-		let textures_binding = device.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler_array(&TEXTURES_BINDING),
-		);
 
 		let bindings = [
 			MATERIAL_COUNT_BINDING,
@@ -131,18 +94,7 @@ impl VisibilityWorldRenderDomain {
 			TRIANGLE_INDEX_BINDING,
 			INSTANCE_ID_BINDING,
 		];
-
 		let visibility_descriptor_set_layout = device.create_descriptor_set_template(Some("Visibility Set Layout"), &bindings);
-
-		let light_data_buffer = device.build_buffer::<LightingData>(
-			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
-				.name("Light Data")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-
-		let lighting_data = device.get_mut_buffer_slice(light_data_buffer);
-
-		lighting_data.count = 0; // Initially, no lights
 
 		let materials_data_buffer_handle = device.build_buffer::<[MaterialData; MAX_MATERIALS]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
@@ -162,128 +114,74 @@ impl VisibilityWorldRenderDomain {
 			visibility_depth_binding_template,
 			ibl_cubemap_binding_template,
 		];
-
-		let sampler = device.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
-				.min_lod(0f32)
-				.max_lod(0f32),
-		);
-		let depth_sampler = device.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Border {})
-				.min_lod(0f32)
-				.max_lod(0f32),
-		);
 		let material_evaluation_descriptor_set_layout =
 			device.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
-		let material_evaluation_descriptor_set = device.create_descriptor_set(
-			Some("Material Evaluation Descriptor Set"),
-			&material_evaluation_descriptor_set_layout,
-		);
 
 		Self {
-			render_entities: Vec::with_capacity(512),
-
 			meshes: Vec::with_capacity(1024),
 			meshes_by_resource: HashMap::with_capacity(1024),
 			meshes_by_generated_hash: HashMap::with_capacity(128),
 			pending_meshes_by_resource: HashMap::with_capacity(128),
-
 			images: HashMap::with_capacity(1024),
-
 			texture_manager,
 			pipeline_manager: PipelineManager::new(device),
-			gpu_vertex_data_manager: mesh_data_manager,
-
 			mesh_resources: HashMap::new(),
-
 			material_evaluation_materials: HashMap::new(),
-
 			descriptor_set_layout,
-			descriptor_set,
-
 			visibility_descriptor_set_layout,
-
-			textures_binding,
-
-			views_data_buffer_handle,
-
-			meshes_data_buffer,
 			material_evaluation_descriptor_set_layout,
-			material_evaluation_descriptor_set,
-
-			light_data_buffer,
 			materials_data_buffer_handle,
-
-			lights: Vec::new(),
-
-			render_info: RenderInfo {
-				instances: Vec::with_capacity(4096),
-				active_instances: Vec::with_capacity(4096),
-				opaque_materials: Vec::with_capacity(MAX_MATERIALS),
-				transparent_materials: Vec::with_capacity(MAX_MATERIALS),
-			},
-
-			sink_states: Vec::with_capacity(4),
-
+			gpu_vertex_data_manager: mesh_data_manager,
 			resource_manager,
 		}
 	}
 
-	/// Registers a mesh instance for rendering and may load the mesh resource on the GPU if it is not already loaded.
-	/// The mesh data may not be usable immediately after this call, as it is written to the GPU asynchronously.
-	pub fn create_renderable_mesh_instance_and_write_mesh_data_if_not_exists<'slf, 'buffer>(
-		&'slf mut self,
-		c: &mut ghi::implementation::CommandBufferRecording,
-		renderable: EntityHandle<dyn RenderableMesh>,
-		staging_data_buffer: ghi::BaseBufferHandle,
-		slice: &mut utils::BufferAllocator<'buffer>,
-	) -> bool {
-		let mesh_source = renderable.get_mesh();
+	fn reserve_image_resources(&mut self, id: &str) -> u32 {
+		let index = self.images.len() as u32;
 
-		let Some((mesh_index, mesh)) = self.create_render_mesh_if_mesh_source_does_not_exists_and_return_mesh_object(
-			c,
-			staging_data_buffer,
-			slice,
-			mesh_source,
-		) else {
-			return false;
-		};
-
-		let model = renderable.transform().get_matrix().into();
-
-		self.ensure_instance_capacity(mesh.primitives.len());
-
-		for primitive in &mesh.primitives {
-			self.render_entities.push(RenderEntity {
-				entity: renderable.clone(),
-				mesh_index,
-				shader_mesh: ShaderMesh {
-					model,
-					material_index: primitive.material_index,
-					base_vertex_index: mesh.vertex_offset + primitive.vertex_offset,
-					base_primitive_index: mesh.primitive_offset + primitive.primitive_offset,
-					base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
-					base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
-					meshlet_count: primitive.meshlet_count,
-				},
-			});
-			self.render_info.instances.push(Instance {
-				meshlet_count: primitive.meshlet_count,
-			});
+		match self.images.entry(id.to_string()) {
+			Entry::Occupied(image) => image.get().index(),
+			Entry::Vacant(image) => {
+				if index as usize >= MAX_BINDLESS_TEXTURES {
+					panic!(
+						"Visibility bindless texture limit exceeded. The most likely cause is that the scene references more material images than the global descriptor array supports."
+					);
+				}
+				image.insert(ResourceStates::Pending(PendingImage {
+					index,
+					image: None,
+					upload: None,
+				}));
+				index
+			}
 		}
-
-		true
 	}
 
-	/// Creates a render mesh for the given mesh source if it does not exist in the GPU, and returns the mesh object and buffer slice.
+	fn material_ready(&self, material: &RenderDescription) -> bool {
+		material.pipeline.is_some()
+			&& material
+				.textures
+				.iter()
+				.all(|texture| self.images.get(texture).is_some_and(|image| image.is_ready()))
+	}
+
+	fn transition_finished_transfer_resources(&mut self, frame_key: ghi::FrameKey) {
+		self.meshes = self.meshes.drain(..).map(|mesh| mesh.frame_finished(frame_key)).collect();
+		self.images = self
+			.images
+			.drain()
+			.map(|(name, image)| (name, image.frame_finished(frame_key)))
+			.collect();
+	}
+
+	fn transition_finished_graphics_resources(&mut self, frame_key: ghi::FrameKey) {
+		self.material_evaluation_materials = self
+			.material_evaluation_materials
+			.drain()
+			.map(|(name, material)| (name, material.frame_finished(frame_key)))
+			.collect();
+	}
+
 	fn create_render_mesh_if_mesh_source_does_not_exists_and_return_mesh_object<'slf, 'buffer>(
 		&'slf mut self,
 		c: &mut ghi::implementation::CommandBufferRecording,
@@ -294,7 +192,6 @@ impl VisibilityWorldRenderDomain {
 		let mesh = match mesh_source {
 			MeshSource::Resource(urid) => {
 				if let Some(e) = self.meshes_by_resource.get(*urid) {
-					// Mesh data already exists in GPU (or previously failed)
 					if self.meshes[*e].is_failed() {
 						return None;
 					}
@@ -312,7 +209,6 @@ impl VisibilityWorldRenderDomain {
 						resource_request
 					};
 
-					// Mesh data needs to be written to GPU
 					if let Some(mesh) = self
 						.gpu_vertex_data_manager
 						.write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource(
@@ -375,7 +271,7 @@ impl VisibilityWorldRenderDomain {
 
 						let mesh_idx = self.meshes.len();
 
-						self.meshes_by_resource.insert(urid.to_string(), mesh_idx); // Store render mesh idx associated to mesh resource id
+						self.meshes_by_resource.insert(urid.to_string(), mesh_idx);
 
 						let mesh = self.meshes.push_mut(ResourceStates::Loading(c.frame_key(), mesh)).get();
 
@@ -384,19 +280,17 @@ impl VisibilityWorldRenderDomain {
 						let mesh_idx = self.meshes.len();
 						self.meshes.push(ResourceStates::Failed);
 						self.meshes_by_resource.insert(urid.to_string(), mesh_idx);
-						return None; // We failed to load the mesh resource
+						return None;
 					}
 				}
 			}
 			MeshSource::Generated(generator) => {
 				if let Some(e) = self.meshes_by_generated_hash.get(&generator.hash()) {
-					// Mesh data already exists in GPU (or previously failed)
 					if self.meshes[*e].is_failed() {
 						return None;
 					}
 					(*e, self.meshes[*e].get())
 				} else {
-					// Mesh data needs to be written to GPU
 					if let Some(mesh) = self
 						.gpu_vertex_data_manager
 						.write_gpu_mesh_data_and_return_mesh_object_for_mesh_generator(
@@ -413,7 +307,6 @@ impl VisibilityWorldRenderDomain {
 									let idx = self.material_evaluation_materials.len() as u32;
 
 									match self.material_evaluation_materials.entry("white_solid.bema".to_string()) {
-										// TODO: remove hardcoded material
 										Entry::Occupied(v) => {
 											if v.get().is_failed() {
 												return None;
@@ -456,7 +349,7 @@ impl VisibilityWorldRenderDomain {
 
 						let mesh_idx = self.meshes.len();
 
-						self.meshes_by_generated_hash.insert(generator.hash(), mesh_idx); // Store render mesh idx associated to mesh generator hash
+						self.meshes_by_generated_hash.insert(generator.hash(), mesh_idx);
 
 						let mesh = self.meshes.push_mut(ResourceStates::Loading(c.frame_key(), mesh)).get();
 
@@ -465,7 +358,7 @@ impl VisibilityWorldRenderDomain {
 						let mesh_idx = self.meshes.len();
 						self.meshes.push(ResourceStates::Failed);
 						self.meshes_by_generated_hash.insert(generator.hash(), mesh_idx);
-						return None; // We failed to create the mesh from the generator
+						return None;
 					}
 				}
 			}
@@ -573,8 +466,6 @@ impl VisibilityWorldRenderDomain {
 		}
 	}
 
-	/// Creates the needed GHI resource for the given material.
-	/// Does nothing if the material has already been loaded.
 	fn create_variant_resources<'s, 'a>(
 		&'s mut self,
 		mut resource: resource_management::Reference<ResourceVariant>,
@@ -682,29 +573,247 @@ impl VisibilityWorldRenderDomain {
 		Ok(index)
 	}
 
+	fn create_image_resources(
+		&mut self,
+		resource: &mut resource_management::Reference<ResourceImage>,
+		device: &mut ghi::implementation::Frame,
+	) -> Option<Image> {
+		let image_id = resource.id().to_string();
+		let index = match self.images.get(&image_id) {
+			Some(ResourceStates::Pending(pending)) => {
+				if pending.image.is_some() {
+					return None;
+				}
+				pending.index
+			}
+			Some(ResourceStates::Failed) => return None,
+			Some(image) => return None,
+			None => self.images.len() as u32,
+		};
+
+		let Some((_, image, sampler, upload)) = self.texture_manager.load(resource, device) else {
+			self.images.insert(image_id, ResourceStates::Failed);
+			return None;
+		};
+
+		let image = Image { index, image, sampler };
+
+		if let Some(upload) = upload {
+			self.images.insert(
+				image_id,
+				ResourceStates::Pending(PendingImage {
+					index,
+					image: Some(image),
+					upload: Some(upload),
+				}),
+			);
+		} else {
+			self.images.insert(image_id, ResourceStates::Loaded(image));
+		}
+
+		Some(image.clone())
+	}
+}
+
+impl VisibilityWorldRenderDomain {
+	pub fn new(
+		device: &mut ghi::implementation::Device,
+		texture_manager: TextureManager,
+		resource_manager: EntityHandle<ResourceManager>,
+	) -> Self {
+		let shared = VisibilitySharedResources::new(device, texture_manager, resource_manager);
+
+		let views_data_buffer_handle = device.build_dynamic_buffer::<[ShaderViewData; 8]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Visibility Views Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+
+		let meshes_data_buffer = device.build_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Visibility Meshes Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+
+		// Legacy domain-level descriptor set: created for completeness but superseded by
+		// per-sink descriptor sets allocated in create_sink(). Not used in any render pass.
+		let descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &shared.descriptor_set_layout);
+
+		let _views_data_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
+		);
+		let _meshes_data_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, meshes_data_buffer.into()),
+		);
+		let _vertex_positions_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(
+				&VERTEX_POSITIONS_BINDING,
+				shared.gpu_vertex_data_manager.vertex_positions_buffer.into(),
+			),
+		);
+		let _vertex_normals_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(
+				&VERTEX_NORMALS_BINDING,
+				shared.gpu_vertex_data_manager.vertex_normals_buffer.into(),
+			),
+		);
+		let _vertex_uv_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, shared.gpu_vertex_data_manager.vertex_uvs_buffer.into()),
+		);
+		let _vertex_indices_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(
+				&VERTEX_INDICES_BINDING,
+				shared.gpu_vertex_data_manager.vertex_indices_buffer.into(),
+			),
+		);
+		let _primitive_indices_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(
+				&PRIMITIVE_INDICES_BINDING,
+				shared.gpu_vertex_data_manager.primitive_indices_buffer.into(),
+			),
+		);
+		let _meshlets_data_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(
+				&MESHLET_DATA_BINDING,
+				shared.gpu_vertex_data_manager.meshlets_data_buffer.into(),
+			),
+		);
+		let textures_binding = device.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::combined_image_sampler_array(&TEXTURES_BINDING),
+		);
+
+		let light_data_buffer = device.build_buffer::<LightingData>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
+				.name("Light Data")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+
+		let lighting_data = device.get_mut_buffer_slice(light_data_buffer);
+		lighting_data.count = 0; // Initially, no lights
+
+		// Legacy domain-level material evaluation descriptor set: superseded by per-sink sets
+		// allocated in create_sink(). Not used in any render pass.
+		let _sampler = device.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+				.mip_map_mode(ghi::FilteringModes::Linear)
+				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
+				.min_lod(0f32)
+				.max_lod(0f32),
+		);
+		let _depth_sampler = device.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+				.mip_map_mode(ghi::FilteringModes::Linear)
+				.addressing_mode(ghi::SamplerAddressingModes::Border {})
+				.min_lod(0f32)
+				.max_lod(0f32),
+		);
+		let material_evaluation_descriptor_set = device.create_descriptor_set(
+			Some("Material Evaluation Descriptor Set"),
+			&shared.material_evaluation_descriptor_set_layout,
+		);
+
+		Self {
+			shared,
+			render_entities: Vec::with_capacity(512),
+			views_data_buffer_handle,
+			descriptor_set,
+			textures_binding,
+			meshes_data_buffer,
+			material_evaluation_descriptor_set,
+			light_data_buffer,
+			lights: Vec::new(),
+			render_info: RenderInfo {
+				instances: Vec::with_capacity(4096),
+				active_instances: Vec::with_capacity(4096),
+				opaque_materials: Vec::with_capacity(MAX_MATERIALS),
+				transparent_materials: Vec::with_capacity(MAX_MATERIALS),
+			},
+			sink_states: Vec::with_capacity(4),
+		}
+	}
+
+	/// Registers a mesh instance for rendering and may load the mesh resource on the GPU if it is not already loaded.
+	/// The mesh data may not be usable immediately after this call, as it is written to the GPU asynchronously.
+	pub fn create_renderable_mesh_instance_and_write_mesh_data_if_not_exists<'slf, 'buffer>(
+		&'slf mut self,
+		c: &mut ghi::implementation::CommandBufferRecording,
+		renderable: EntityHandle<dyn RenderableMesh>,
+		staging_data_buffer: ghi::BaseBufferHandle,
+		slice: &mut utils::BufferAllocator<'buffer>,
+	) -> bool {
+		let mesh_source = renderable.get_mesh();
+
+		let Some((mesh_index, mesh)) = self
+			.shared
+			.create_render_mesh_if_mesh_source_does_not_exists_and_return_mesh_object(
+				c,
+				staging_data_buffer,
+				slice,
+				mesh_source,
+			)
+		else {
+			return false;
+		};
+
+		let model = renderable.transform().get_matrix().into();
+
+		self.ensure_instance_capacity(mesh.primitives.len());
+
+		for primitive in &mesh.primitives {
+			self.render_entities.push(RenderEntity {
+				entity: renderable.clone(),
+				mesh_index,
+				shader_mesh: ShaderMesh {
+					model,
+					material_index: primitive.material_index,
+					base_vertex_index: mesh.vertex_offset + primitive.vertex_offset,
+					base_primitive_index: mesh.primitive_offset + primitive.primitive_offset,
+					base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
+					base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
+					meshlet_count: primitive.meshlet_count,
+				},
+			});
+			self.render_info.instances.push(Instance {
+				meshlet_count: primitive.meshlet_count,
+			});
+		}
+
+		true
+	}
+
+	/// Creates a render mesh for the given mesh source if it does not exist in the GPU, and returns the mesh object and buffer slice.
+
+	/// Creates the needed GHI resource for the given material.
+	/// Does nothing if the material has already been loaded.
+
 	pub fn create_light(&mut self, light: Lights) {
 		self.lights.push(light);
 	}
 
 	pub fn transition_finished_transfer_resources(&mut self, frame_key: ghi::FrameKey) {
-		self.meshes = self.meshes.drain(..).map(|mesh| mesh.frame_finished(frame_key)).collect();
-		self.images = self
-			.images
-			.drain()
-			.map(|(name, image)| (name, image.frame_finished(frame_key)))
-			.collect();
+		self.shared.transition_finished_transfer_resources(frame_key);
 	}
 
 	pub fn transition_finished_graphics_resources(&mut self, frame_key: ghi::FrameKey) {
-		self.material_evaluation_materials = self
-			.material_evaluation_materials
-			.drain()
-			.map(|(name, material)| (name, material.frame_finished(frame_key)))
-			.collect();
+		self.shared.transition_finished_graphics_resources(frame_key);
 	}
 
 	pub fn load_pending_material_evaluation_materials(&mut self, frame: &mut ghi::implementation::Frame) -> bool {
 		let pending_materials = self
+			.shared
 			.material_evaluation_materials
 			.iter()
 			.filter_map(|(name, material)| match material {
@@ -716,22 +825,27 @@ impl VisibilityWorldRenderDomain {
 		let mut loaded_any = false;
 
 		for material in pending_materials {
-			let Ok(resource) = self.resource_manager.request::<ResourceVariant>(&material) else {
+			let Ok(resource) = self.shared.resource_manager.request::<ResourceVariant>(&material) else {
 				log::error!("Failed to load material resource {}", material);
-				self.material_evaluation_materials.insert(material, ResourceStates::Failed);
+				self.shared
+					.material_evaluation_materials
+					.insert(material, ResourceStates::Failed);
 				continue;
 			};
 
-			let result = self.create_variant_resources(resource, frame);
+			let result = self.shared.create_variant_resources(resource, frame);
 
 			if result.is_err() {
 				// Mark as failed only if the entry is still Pending (i.e. creation did not advance it).
 				if self
+					.shared
 					.material_evaluation_materials
 					.get(&material)
 					.is_some_and(|s| matches!(s, ResourceStates::Pending(_)))
 				{
-					self.material_evaluation_materials.insert(material, ResourceStates::Failed);
+					self.shared
+						.material_evaluation_materials
+						.insert(material, ResourceStates::Failed);
 				}
 			} else {
 				loaded_any = true;
@@ -743,6 +857,7 @@ impl VisibilityWorldRenderDomain {
 
 	pub fn load_pending_material_textures(&mut self, frame: &mut ghi::implementation::Frame) -> bool {
 		let pending_images = self
+			.shared
 			.images
 			.iter()
 			.filter_map(|(name, image)| match image {
@@ -754,13 +869,16 @@ impl VisibilityWorldRenderDomain {
 		let mut loaded_any = false;
 
 		for image in pending_images {
-			let Ok(mut resource) = self.resource_manager.request::<ResourceImage>(&image) else {
+			let Ok(mut resource) = self.shared.resource_manager.request::<ResourceImage>(&image) else {
 				log::error!("Failed to load image resource {}", image);
-				self.images.insert(image, ResourceStates::Failed);
+				self.shared.images.insert(image, ResourceStates::Failed);
 				continue;
 			};
 
-			loaded_any |= self.create_image_resources(&mut resource, frame).is_some();
+			if let Some(image) = self.shared.create_image_resources(&mut resource, frame) {
+				self.write_image_descriptors(&image, frame);
+				loaded_any = true;
+			}
 		}
 
 		loaded_any
@@ -775,6 +893,7 @@ impl VisibilityWorldRenderDomain {
 		slice: &mut utils::BufferAllocator<'buffer>,
 	) -> bool {
 		let pending_images = self
+			.shared
 			.images
 			.iter()
 			.filter_map(|(name, image)| match image {
@@ -786,16 +905,16 @@ impl VisibilityWorldRenderDomain {
 		let mut recorded_work = false;
 
 		for name in pending_images {
-			let Some(ResourceStates::Pending(mut pending)) = self.images.remove(&name) else {
+			let Some(ResourceStates::Pending(mut pending)) = self.shared.images.remove(&name) else {
 				continue;
 			};
 			let (Some(image), Some(upload)) = (pending.image.take(), pending.upload.take()) else {
-				self.images.insert(name, ResourceStates::Pending(pending));
+				self.shared.images.insert(name, ResourceStates::Pending(pending));
 				continue;
 			};
 			const TEXTURE_UPLOAD_ALIGNMENT: usize = 256;
 			if upload.data.len() > slice.remaining_aligned(TEXTURE_UPLOAD_ALIGNMENT) {
-				self.images.insert(
+				self.shared.images.insert(
 					name,
 					ResourceStates::Pending(PendingImage {
 						index: image.index,
@@ -815,77 +934,15 @@ impl VisibilityWorldRenderDomain {
 				upload.source_bytes_per_image,
 				image.image,
 			)]);
-			self.images.insert(name, ResourceStates::Loading(key, image));
+			self.shared.images.insert(name, ResourceStates::Loading(key, image));
 			recorded_work = true;
 		}
 
 		recorded_work
 	}
 
-	fn reserve_image_resources(&mut self, id: &str) -> u32 {
-		let index = self.images.len() as u32;
-
-		match self.images.entry(id.to_string()) {
-			Entry::Occupied(image) => image.get().index(),
-			Entry::Vacant(image) => {
-				if index as usize >= MAX_BINDLESS_TEXTURES {
-					panic!(
-						"Visibility bindless texture limit exceeded. The most likely cause is that the scene references more material images than the global descriptor array supports."
-					);
-				}
-				image.insert(ResourceStates::Pending(PendingImage {
-					index,
-					image: None,
-					upload: None,
-				}));
-				index
-			}
-		}
-	}
-
 	/// Creates the needed GHI resources for the given image.
 	/// Does nothing if the image has already been loaded or failed.
-	fn create_image_resources(
-		&mut self,
-		resource: &mut resource_management::Reference<ResourceImage>,
-		device: &mut ghi::implementation::Frame,
-	) -> Option<u32> {
-		let image_id = resource.id().to_string();
-		let index = match self.images.get(&image_id) {
-			Some(ResourceStates::Pending(pending)) => {
-				if pending.image.is_some() {
-					return Some(pending.index);
-				}
-				pending.index
-			}
-			Some(ResourceStates::Failed) => return None,
-			Some(image) => return Some(image.index()),
-			None => self.images.len() as u32,
-		};
-
-		let Some((_, image, sampler, upload)) = self.texture_manager.load(resource, device) else {
-			self.images.insert(image_id, ResourceStates::Failed);
-			return None;
-		};
-
-		let image = Image { index, image, sampler };
-		self.write_image_descriptors(&image, device);
-
-		if let Some(upload) = upload {
-			self.images.insert(
-				image_id,
-				ResourceStates::Pending(PendingImage {
-					index,
-					image: Some(image),
-					upload: Some(upload),
-				}),
-			);
-		} else {
-			self.images.insert(image_id, ResourceStates::Loaded(image));
-		}
-
-		Some(index)
-	}
 
 	fn write_image_descriptors(&self, image: &Image, device: &mut ghi::implementation::Frame) {
 		let writes = self
@@ -902,14 +959,6 @@ impl VisibilityWorldRenderDomain {
 			})
 			.collect::<Vec<_>>();
 		device.write(&writes);
-	}
-
-	fn material_ready(&self, material: &RenderDescription) -> bool {
-		material.pipeline.is_some()
-			&& material
-				.textures
-				.iter()
-				.all(|texture| self.images.get(texture).is_some_and(|image| image.is_ready()))
 	}
 
 	/// Uploads the current scene lights to the GPU buffer used by material evaluation.
@@ -993,8 +1042,8 @@ impl VisibilityWorldRenderDomain {
 
 impl SceneManager for VisibilityWorldRenderDomain {
 	fn before_prepare(&mut self, frame: &mut ghi::implementation::Frame, _sinks: &[Sink]) {
-		for (name, pipeline) in self.pipeline_manager.poll(frame, MAX_PIPELINE_ADOPTIONS_PER_FRAME) {
-			if let Some(material) = self.material_evaluation_materials.get_mut(&name) {
+		for (name, pipeline) in self.shared.pipeline_manager.poll(frame, MAX_PIPELINE_ADOPTIONS_PER_FRAME) {
+			if let Some(material) = self.shared.material_evaluation_materials.get_mut(&name) {
 				match material {
 					ResourceStates::Pending(_) | ResourceStates::Failed => {}
 					ResourceStates::Loading(_, material) | ResourceStates::Loaded(material) => {
@@ -1007,9 +1056,9 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		let meshes_data_buffer = frame.get_mut_dynamic_buffer_slice(self.meshes_data_buffer);
 		let mut ready_materials = [false; MAX_MATERIALS];
 
-		for material in self.material_evaluation_materials.values() {
+		for material in self.shared.material_evaluation_materials.values() {
 			if let Some(material) = material.get_loaded() {
-				ready_materials[material.index as usize] = self.material_ready(material);
+				ready_materials[material.index as usize] = self.shared.material_ready(material);
 			}
 		}
 
@@ -1022,7 +1071,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		self.render_info.active_instances.clear();
 
 		for (render_entity, instance) in self.render_entities.iter().zip(self.render_info.instances.iter()) {
-			if !self.meshes[render_entity.mesh_index].is_ready() {
+			if !self.shared.meshes[render_entity.mesh_index].is_ready() {
 				continue;
 			}
 
@@ -1039,18 +1088,20 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		}
 
 		self.render_info.opaque_materials = self
+			.shared
 			.material_evaluation_materials
 			.values()
 			.filter_map(|v| v.get_loaded())
-			.filter(|v| self.material_ready(v))
+			.filter(|v| self.shared.material_ready(v))
 			.filter(|v| v.alpha == false)
 			.filter_map(|v| v.pipeline.map(|pipeline| (v.name.clone(), v.index, pipeline)))
 			.collect::<Vec<_>>();
 		self.render_info.transparent_materials = self
+			.shared
 			.material_evaluation_materials
 			.values()
 			.filter_map(|v| v.get_loaded())
-			.filter(|v| self.material_ready(v))
+			.filter(|v| self.shared.material_ready(v))
 			.filter(|v| v.alpha == true)
 			.filter_map(|v| v.pipeline.map(|pipeline| (v.name.clone(), v.index, pipeline)))
 			.collect::<Vec<_>>();
@@ -1154,7 +1205,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 				.name("Visibility Views Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let base_descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &self.descriptor_set_layout);
+		let base_descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &self.shared.descriptor_set_layout);
 		let _ = device.create_descriptor_binding(
 			base_descriptor_set,
 			ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
@@ -1167,39 +1218,42 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			base_descriptor_set,
 			ghi::BindingConstructor::buffer(
 				&VERTEX_POSITIONS_BINDING,
-				self.gpu_vertex_data_manager.vertex_positions_buffer.into(),
+				self.shared.gpu_vertex_data_manager.vertex_positions_buffer.into(),
 			),
 		);
 		let _ = device.create_descriptor_binding(
 			base_descriptor_set,
 			ghi::BindingConstructor::buffer(
 				&VERTEX_NORMALS_BINDING,
-				self.gpu_vertex_data_manager.vertex_normals_buffer.into(),
+				self.shared.gpu_vertex_data_manager.vertex_normals_buffer.into(),
 			),
 		);
 		let _ = device.create_descriptor_binding(
 			base_descriptor_set,
-			ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, self.gpu_vertex_data_manager.vertex_uvs_buffer.into()),
+			ghi::BindingConstructor::buffer(
+				&VERTEX_UV_BINDING,
+				self.shared.gpu_vertex_data_manager.vertex_uvs_buffer.into(),
+			),
 		);
 		let _ = device.create_descriptor_binding(
 			base_descriptor_set,
 			ghi::BindingConstructor::buffer(
 				&VERTEX_INDICES_BINDING,
-				self.gpu_vertex_data_manager.vertex_indices_buffer.into(),
+				self.shared.gpu_vertex_data_manager.vertex_indices_buffer.into(),
 			),
 		);
 		let _ = device.create_descriptor_binding(
 			base_descriptor_set,
 			ghi::BindingConstructor::buffer(
 				&PRIMITIVE_INDICES_BINDING,
-				self.gpu_vertex_data_manager.primitive_indices_buffer.into(),
+				self.shared.gpu_vertex_data_manager.primitive_indices_buffer.into(),
 			),
 		);
 		let _ = device.create_descriptor_binding(
 			base_descriptor_set,
 			ghi::BindingConstructor::buffer(
 				&MESHLET_DATA_BINDING,
-				self.gpu_vertex_data_manager.meshlets_data_buffer.into(),
+				self.shared.gpu_vertex_data_manager.meshlets_data_buffer.into(),
 			),
 		);
 		let textures_binding = device.create_descriptor_binding(
@@ -1207,6 +1261,7 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			ghi::BindingConstructor::combined_image_sampler_array(&TEXTURES_BINDING),
 		);
 		let texture_writes = self
+			.shared
 			.images
 			.values()
 			.filter_map(|image| match image {
@@ -1228,11 +1283,13 @@ impl SceneManager for VisibilityWorldRenderDomain {
 			device.write(&texture_writes);
 		}
 
-		let visibility_passes_descriptor_set =
-			device.create_descriptor_set(Some("Visibility Descriptor Set"), &self.visibility_descriptor_set_layout);
+		let visibility_passes_descriptor_set = device.create_descriptor_set(
+			Some("Visibility Descriptor Set"),
+			&self.shared.visibility_descriptor_set_layout,
+		);
 		let material_evaluation_descriptor_set = device.create_descriptor_set(
 			Some("Material Evaluation Descriptor Set"),
-			&self.material_evaluation_descriptor_set_layout,
+			&self.shared.material_evaluation_descriptor_set_layout,
 		);
 
 		let material_count_buffer = device.build_buffer(
@@ -1329,7 +1386,10 @@ impl SceneManager for VisibilityWorldRenderDomain {
 		);
 		let _ = device.create_descriptor_binding(
 			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::buffer(&materials_data_binding_template, self.materials_data_buffer_handle.into()),
+			ghi::BindingConstructor::buffer(
+				&materials_data_binding_template,
+				self.shared.materials_data_buffer_handle.into(),
+			),
 		);
 		let _ = device.create_descriptor_binding(
 			material_evaluation_descriptor_set,
@@ -1402,8 +1462,8 @@ impl SceneManager for VisibilityWorldRenderDomain {
 
 		let render_pass = VisibilityPipelineRenderPass::new(
 			render_pass_builder.device(),
-			self.descriptor_set_layout,
-			self.visibility_descriptor_set_layout,
+			self.shared.descriptor_set_layout,
+			self.shared.visibility_descriptor_set_layout,
 			base_descriptor_set,
 			visibility_passes_descriptor_set,
 			material_evaluation_descriptor_set,
@@ -1615,6 +1675,7 @@ struct SinkState {
 }
 
 /// This structure hosts data analogous to the image resource's data.
+#[derive(Clone, Copy)]
 struct Image {
 	/// This is the index of the image in the descriptor set.
 	index: u32,

@@ -581,6 +581,7 @@ fn process_gltf_image(
 		extent: Extent::rectangle(image.width, image.height),
 		semantic,
 		gamma: gamma_from_semantic(semantic),
+		generate_mipmaps: false,
 	};
 
 	process_image(id, image_description, image.pixels.into_boxed_slice())

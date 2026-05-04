@@ -2,9 +2,9 @@ use utils::Extent;
 
 use crate::{
 	asset::{asset_handler::LoadErrors, resource_id::ResourceIdBase, ResourceId},
-	resources::image::Image,
+	resources::{image::Image, mips::generate_mip_chain},
 	types::{Formats, Gamma},
-	Description, ProcessedAsset,
+	Description, ProcessedAsset, StreamDescription,
 };
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -27,6 +27,8 @@ pub struct ImageDescription {
 	pub extent: Extent,
 	pub gamma: Gamma,
 	pub semantic: Semantic,
+	/// When `true`, a full power-of-two mip chain is generated and stored after the base level.
+	pub generate_mipmaps: bool,
 }
 
 impl Description for ImageDescription {
@@ -40,8 +42,14 @@ pub fn process_image<'a>(
 	description: ImageDescription,
 	buffer: Box<[u8]>,
 ) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-	let (resource, buffer) = produce_image(&description, buffer);
-	Ok((ProcessedAsset::new(id, resource), buffer))
+	let (resource, buffer, streams) = produce_image(&description, buffer)?;
+	let asset = ProcessedAsset::new(id, resource);
+	let asset = if let Some(streams) = streams {
+		asset.with_streams(streams)
+	} else {
+		asset
+	};
+	Ok((asset, buffer))
 }
 
 pub fn guess_semantic_from_name(name: ResourceIdBase) -> Semantic {
@@ -174,18 +182,24 @@ pub fn determine_image_format(source_format: Formats, compress: bool, semantic: 
 	}
 }
 
-fn produce_image(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, Box<[u8]>) {
+fn produce_image(
+	description: &ImageDescription,
+	buffer: Box<[u8]>,
+) -> Result<(Image, Box<[u8]>, Option<Vec<StreamDescription>>), LoadErrors> {
 	let ImageDescription {
 		format,
 		extent,
 		semantic,
 		gamma,
+		generate_mipmaps,
 	} = description;
 
 	let compress = should_compress_for_semantic(*semantic);
 	let output_format = determine_image_format(*format, compress, *semantic, *gamma);
 
-	let data = match (format, output_format) {
+	// Convert the source data into the uncompressed intermediate that mip generation and BC
+	// compression both expect as input (always RGBA8 for BC targets, otherwise the natural format).
+	let intermediate: Box<[u8]> = match (format, output_format) {
 		(Formats::RGB8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB | Formats::BC5) => rgb8_to_rgba8(*extent, &buffer),
 		(Formats::RGBA8, Formats::BC5) => {
 			let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
@@ -252,9 +266,54 @@ fn produce_image(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, B
 		}
 	};
 
-	let data = match output_format {
+	// The format of the `intermediate` buffer — used for mip generation.
+	let intermediate_format = match output_format {
+		Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => Formats::RGBA8,
+		_ => output_format,
+	};
+
+	let (mip_count, data, streams) = if *generate_mipmaps {
+		let chain = generate_mip_chain(intermediate_format, extent.width(), extent.height(), &intermediate)
+			.map_err(|_| LoadErrors::FailedToProcess)?;
+		let mip_count = chain.len() as u32;
+
+		let mut all_data: Vec<u8> = Vec::new();
+		let mut streams = Vec::new();
+		let mut offset: usize = 0;
+
+		for (index, level) in chain.levels().enumerate() {
+			let level_extent = Extent::rectangle(level.width, level.height);
+			let level_data = compress_bc_level(output_format, level_extent, level.data);
+			let size = level_data.len();
+			streams.push(StreamDescription::new(&format!("mip[{index}]"), size, offset));
+			all_data.extend_from_slice(&level_data);
+			offset += size;
+		}
+		(mip_count, all_data.into_boxed_slice(), Some(streams))
+	} else {
+		let data = compress_bc_level(output_format, *extent, &intermediate);
+		let streams = Some(vec![StreamDescription::new("mip[0]", data.len(), 0)]);
+		(1_u32, data, streams)
+	};
+
+	Ok((
+		Image {
+			format: output_format,
+			extent: extent.as_array(),
+			gamma: *gamma,
+			mip_count,
+		},
+		data,
+		streams,
+	))
+}
+
+/// Compresses a single mip level to the target `output_format`, or returns the data unchanged for
+/// uncompressed formats. Accepts an RGBA8 surface for BC targets, or the natural format otherwise.
+fn compress_bc_level(output_format: Formats, extent: Extent, data: &[u8]) -> Box<[u8]> {
+	match output_format {
 		Formats::BC5 => {
-			let (data, width, height) = rgba8_bc_compression_surface(*extent, &data);
+			let (data, width, height) = rgba8_bc_compression_surface(extent, data);
 			let expected_surface_bytes = width as usize * height as usize * 4;
 			assert_eq!(
 				data.len(),
@@ -279,9 +338,8 @@ fn produce_image(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, B
 			);
 			compressed.into()
 		}
-		Formats::RGB8 | Formats::RGBA8 => data,
 		Formats::BC7 | Formats::BC7SRGB => {
-			let (data, width, height) = rgba8_bc_compression_surface(*extent, &data);
+			let (data, width, height) = rgba8_bc_compression_surface(extent, data);
 			let expected_surface_bytes = width as usize * height as usize * 4;
 			assert_eq!(
 				data.len(),
@@ -308,20 +366,11 @@ fn produce_image(description: &ImageDescription, buffer: Box<[u8]>) -> (Image, B
 			);
 			compressed.into()
 		}
-		Formats::RGB16 | Formats::RGBA16 => data,
+		Formats::RGB8 | Formats::RGBA8 | Formats::RGB16 | Formats::RGBA16 => data.to_vec().into_boxed_slice(),
 		_ => {
 			panic!("Unsupported format")
 		}
-	};
-
-	(
-		Image {
-			format: output_format,
-			extent: extent.as_array(),
-			gamma: *gamma,
-		},
-		data,
-	)
+	}
 }
 
 #[cfg(test)]
@@ -440,6 +489,7 @@ mod tests {
 			extent: Extent::rectangle(2, 1),
 			gamma: Gamma::SRGB,
 			semantic: Semantic::Other,
+			generate_mipmaps: false,
 		};
 
 		let (asset, data) = process_image(
@@ -466,6 +516,7 @@ mod tests {
 			extent: Extent::rectangle(4, 4),
 			gamma: Gamma::Linear,
 			semantic: Semantic::Normal,
+			generate_mipmaps: false,
 		};
 
 		let source = vec![128_u8; 4 * 4 * 4].into_boxed_slice();
@@ -487,6 +538,7 @@ mod tests {
 			extent: Extent::rectangle(5, 7),
 			gamma: Gamma::SRGB,
 			semantic: Semantic::Albedo,
+			generate_mipmaps: false,
 		};
 
 		let source = vec![128_u8; 5 * 7 * 4].into_boxed_slice();
@@ -511,6 +563,7 @@ mod tests {
 			extent: Extent::rectangle(4, 4),
 			gamma: Gamma::Linear,
 			semantic: Semantic::Albedo,
+			generate_mipmaps: false,
 		};
 
 		// RGB16: 3 channels × 2 bytes = 6 bytes per pixel
@@ -535,6 +588,7 @@ mod tests {
 			extent: Extent::rectangle(4, 4),
 			gamma: Gamma::Linear,
 			semantic: Semantic::Normal,
+			generate_mipmaps: false,
 		};
 
 		// RGBA16: 4 channels × 2 bytes = 8 bytes per pixel
@@ -557,6 +611,141 @@ mod tests {
 
 		assert_eq!(bc7_compression_settings(&opaque).channels, 3);
 		assert_eq!(bc7_compression_settings(&transparent).channels, 4);
+	}
+
+	#[test]
+	fn process_image_without_mipmaps_stores_mip_count_one() {
+		let description = ImageDescription {
+			format: Formats::RGBA8,
+			extent: Extent::rectangle(4, 4),
+			gamma: Gamma::SRGB,
+			semantic: Semantic::Other,
+			generate_mipmaps: false,
+		};
+
+		let source = vec![128_u8; 4 * 4 * 4].into_boxed_slice();
+		let (asset, _data) =
+			process_image(ResourceId::new("textures/test.png"), description, source).expect("Image processing should succeed");
+
+		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+
+		assert_eq!(image.mip_count, 1);
+	}
+
+	#[test]
+	fn process_image_with_mipmaps_produces_full_chain_for_rgba8() {
+		// 4×4 → 4 levels: 4×4, 2×2, 1×1 … wait, 4→2→1 = 3 levels.
+		let width = 4_u32;
+		let height = 4_u32;
+		let description = ImageDescription {
+			format: Formats::RGBA8,
+			extent: Extent::rectangle(width, height),
+			gamma: Gamma::SRGB,
+			semantic: Semantic::Other,
+			generate_mipmaps: true,
+		};
+
+		let source = vec![200_u8; (width * height * 4) as usize].into_boxed_slice();
+		let (asset, data) = process_image(ResourceId::new("textures/mip_rgba8.png"), description, source)
+			.expect("Mip generation should succeed");
+
+		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+
+		// 4×4 → 2×2 → 1×1  =  3 levels
+		let expected_levels = crate::resources::mips::mip_level_count(width, height).unwrap();
+		assert_eq!(image.mip_count, expected_levels);
+		assert_eq!(image.format, Formats::RGBA8);
+
+		// Each level is RGBA8: 4×4×4 + 2×2×4 + 1×1×4 = 64 + 16 + 4 = 84 bytes
+		let expected_bytes = (4 * 4 * 4) + (2 * 2 * 4) + (1 * 1 * 4);
+		assert_eq!(data.len(), expected_bytes);
+	}
+
+	#[test]
+	fn process_image_with_mipmaps_produces_correct_mip_count_for_bc5_normal_map() {
+		// BC5 compresses RGBA8 intermediate in 4×4 blocks.
+		let width = 8_u32;
+		let height = 8_u32;
+		let description = ImageDescription {
+			format: Formats::RGBA8,
+			extent: Extent::rectangle(width, height),
+			gamma: Gamma::Linear,
+			semantic: Semantic::Normal,
+			generate_mipmaps: true,
+		};
+
+		// RGBA8: 4 bytes/pixel
+		let source = vec![128_u8; (width * height * 4) as usize].into_boxed_slice();
+		let (asset, data) = process_image(ResourceId::new("textures/mip_normal_bc5.png"), description, source)
+			.expect("BC5 mip generation should succeed");
+
+		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+
+		// 8×8 → 4×4 → 2×2 → 1×1  =  4 levels
+		let expected_levels = crate::resources::mips::mip_level_count(width, height).unwrap();
+		assert_eq!(image.mip_count, expected_levels);
+		assert_eq!(image.format, Formats::BC5);
+
+		// Level 0: 8×8  → padded 8×8  → 2×2 blocks → 2*2*16 =  64 bytes
+		// Level 1: 4×4  → padded 4×4  → 1×1 block  → 1*1*16 =  16 bytes
+		// Level 2: 2×2  → padded 4×4  → 1×1 block  →          16 bytes
+		// Level 3: 1×1  → padded 4×4  → 1×1 block  →          16 bytes
+		let expected_bytes = (2 * 2 * 16) + (1 * 1 * 16) + (1 * 1 * 16) + (1 * 1 * 16);
+		assert_eq!(data.len(), expected_bytes);
+	}
+
+	#[test]
+	fn process_image_with_mipmaps_produces_correct_mip_count_for_bc7_albedo() {
+		let width = 8_u32;
+		let height = 8_u32;
+		let description = ImageDescription {
+			format: Formats::RGBA8,
+			extent: Extent::rectangle(width, height),
+			gamma: Gamma::SRGB,
+			semantic: Semantic::Albedo,
+			generate_mipmaps: true,
+		};
+
+		let source = vec![128_u8; (width * height * 4) as usize].into_boxed_slice();
+		let (asset, data) = process_image(ResourceId::new("textures/mip_albedo_bc7.png"), description, source)
+			.expect("BC7 mip generation should succeed");
+
+		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+
+		let expected_levels = crate::resources::mips::mip_level_count(width, height).unwrap();
+		assert_eq!(image.mip_count, expected_levels);
+		assert_eq!(image.format, Formats::BC7SRGB);
+
+		// Same block sizing as BC5 (16 bytes per 4×4 block)
+		let expected_bytes = (2 * 2 * 16) + (1 * 1 * 16) + (1 * 1 * 16) + (1 * 1 * 16);
+		assert_eq!(data.len(), expected_bytes);
+	}
+
+	#[test]
+	fn process_image_with_mipmaps_non_power_of_two_rgba8() {
+		// Non-power-of-two dimensions: verify that mip count and data length are consistent.
+		let width = 5_u32;
+		let height = 3_u32;
+		let description = ImageDescription {
+			format: Formats::RGBA8,
+			extent: Extent::rectangle(width, height),
+			gamma: Gamma::SRGB,
+			semantic: Semantic::Other,
+			generate_mipmaps: true,
+		};
+
+		let source = vec![100_u8; (width * height * 4) as usize].into_boxed_slice();
+		let (asset, data) = process_image(ResourceId::new("textures/mip_npot.png"), description, source)
+			.expect("Non-power-of-two mip generation should succeed");
+
+		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+
+		let expected_levels = crate::resources::mips::mip_level_count(width, height).unwrap();
+		assert_eq!(image.mip_count, expected_levels);
+
+		// Manually compute expected byte count: 5×3, 2×1, 1×1
+		let expected_bytes = (5 * 3 * 4) + (2 * 1 * 4) + (1 * 1 * 4);
+		assert_eq!(data.len(), expected_bytes);
 	}
 }
 

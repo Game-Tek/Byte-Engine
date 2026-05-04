@@ -132,6 +132,7 @@ impl AssetHandler for PNGAssetHandler {
 					extent,
 					semantic,
 					gamma,
+					generate_mipmaps: false,
 				};
 
 				Ok(DecodedImage {

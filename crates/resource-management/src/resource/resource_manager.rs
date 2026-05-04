@@ -42,9 +42,13 @@ impl ResourceManager {
 		self.storage_backend.as_ref()
 	}
 
-	/// Tries to load the information/metadata for a resource (and it's dependencies).\
+	/// Tries to load the information/metadata for a resource (and its dependencies).\
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load()` which will load the binary data.
+	///
+	/// Call this to start the process of loading a resource.
+	/// If successful, this will return a [`Reference`] to the resource.
+	/// This `Reference` can be used to load the binary data of the resource and consult its metadata.
 	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Result<Reference<T>, &'static str>
 	where
 		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,
@@ -67,7 +71,7 @@ impl ResourceManager {
 
 		let reference: Reference<T> = reference_model
 			.solve(self.get_storage_backend())
-			.map_err(|_| "Failed to solve reference")?;
+			.map_err(|e| Into::<&'static str>::into(e))?;
 
 		Ok(reference)
 	}

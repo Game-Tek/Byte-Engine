@@ -13,3 +13,12 @@ pub enum SolveErrors {
 	DeserializationFailed(String),
 	StorageError,
 }
+
+impl From<SolveErrors> for &'static str {
+	fn from(err: SolveErrors) -> Self {
+		match err {
+			SolveErrors::DeserializationFailed(_) => "Solve deserialization failed",
+			SolveErrors::StorageError => "Solve related storage error",
+		}
+	}
+}

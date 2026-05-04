@@ -311,7 +311,11 @@ void main() {{
 
 /// Reads the baked LUT payload from the resource reference into owned bytes.
 fn load_lut_bytes(reference: &mut Reference<Lut>) -> StdBox<[u8]> {
-	let read_target = ReadTargetsMut::Box(vec![0_u8; reference.size].into_boxed_slice());
+	let read_target = ReadTargetsMut::Box {
+		buffer: vec![0_u8; reference.size].into_boxed_slice(),
+		offset: 0,
+		size: None,
+	};
 	let read_result = reference.load(read_target).expect(
 		"Failed to read LUT resource data. The most likely cause is that the cached LUT payload is missing or unreadable.",
 	);

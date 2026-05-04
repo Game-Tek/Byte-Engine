@@ -63,20 +63,34 @@ pub mod tests {
 			_: Option<&'c [StreamDescription]>,
 			read_target: ReadTargetsMut<'a>,
 		) -> Result<ReadTargets<'a>, ()> {
-			let offset = 0;
-
 			match read_target {
-				ReadTargetsMut::Buffer(buffer) => {
-					let l = buffer.len();
-					buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
-					Ok(ReadTargets::Buffer(&buffer[..self.data.len().min(l)]))
+				ReadTargetsMut::Buffer { buffer, offset, size } => {
+					let read_len = size
+						.unwrap_or(buffer.len())
+						.min(buffer.len())
+						.min(self.data.len().saturating_sub(offset));
+					buffer[..read_len].copy_from_slice(&self.data[offset..][..read_len]);
+					Ok(ReadTargets::Buffer(&buffer[..read_len]))
 				}
-				ReadTargetsMut::Box(mut buffer) => {
-					let l = buffer.len();
-					buffer[..self.data.len().min(l)].copy_from_slice(&self.data[offset..][..self.data.len().min(l)]);
-					Ok(ReadTargets::Box(buffer))
+				ReadTargetsMut::Box {
+					mut buffer,
+					offset,
+					size,
+				} => {
+					let read_len = size
+						.unwrap_or(buffer.len())
+						.min(buffer.len())
+						.min(self.data.len().saturating_sub(offset));
+					buffer[..read_len].copy_from_slice(&self.data[offset..][..read_len]);
+					if read_len < buffer.len() {
+						let mut v = buffer.into_vec();
+						v.truncate(read_len);
+						Ok(ReadTargets::Box(v.into_boxed_slice()))
+					} else {
+						Ok(ReadTargets::Box(buffer))
+					}
 				}
-				ReadTargetsMut::Streams(_) => Err(()),
+				ReadTargetsMut::Streams { .. } => Err(()),
 				ReadTargetsMut::BackingStorage => Ok(ReadTargets::Backing(ResourceReaderBacking::Buffer(self.data.clone()))),
 			}
 		}

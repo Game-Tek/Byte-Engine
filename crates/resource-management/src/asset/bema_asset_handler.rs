@@ -165,7 +165,7 @@ impl AssetHandler for BEMAAssetHandler {
 				let parent_material_url = asset["parent"].as_str().unwrap();
 
 				let material = asset_manager
-					.load(parent_material_url, storage_backend)
+					.bake_if_not_exists(parent_material_url, storage_backend)
 					.await
 					.or_else(|_| Err(LoadErrors::FailedToProcess))?;
 
@@ -412,7 +412,7 @@ async fn resolve_value(
 		"float" => Ok(ValueModel::Scalar(0f32)),
 		"Texture2D" => {
 			let image = asset_manager
-				.load(value, storage_backend)
+				.bake_if_not_exists(value, storage_backend)
 				.await
 				.map_err(|_| "Failed to load texture value. The referenced texture asset could not be loaded.".to_string())?;
 			Ok(ValueModel::Image(image))
@@ -678,7 +678,7 @@ pub mod tests {
 		asset_manager.add_asset_handler(asset_handler);
 
 		let _: ReferenceModel<VariantModel> = asset_manager
-			.load("variant.bema", &resource_storage_backend)
+			.bake_if_not_exists("variant.bema", &resource_storage_backend)
 			.await
 			.expect("Failed to load material");
 

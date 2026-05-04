@@ -59,7 +59,7 @@ impl ResourceManager {
 			let runtime = compio::runtime::Runtime::new().unwrap();
 
 			runtime
-				.block_on(asset_manager.load(id, storage_backend))
+				.block_on(asset_manager.bake_if_not_exists(id, storage_backend))
 				.map_err(|_| "Failed to load asset. The asset manager could not bake the resource.")?
 		} else {
 			return Err("Resource does not exists and an asset manager is not available");

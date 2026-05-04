@@ -1,5 +1,9 @@
 use super::{asset_handler::AssetHandler, StorageBackend};
-use crate::{asset::ResourceId, resource::StorageBackend as ResourceStorageBackend, Model, ReferenceModel};
+use crate::{
+	asset::{asset_handler::LoadErrors, ResourceId},
+	resource::StorageBackend as ResourceStorageBackend,
+	Model, ReferenceModel,
+};
 
 pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AssetHandler>>,
@@ -9,16 +13,19 @@ pub struct AssetManager {
 /// Enumeration of the possible messages that can be returned when loading an asset.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoadMessages {
+	/// The asset was not found in the storage backend.
 	NoAsset,
+	/// An IO error occurred while loading the asset.
 	IO,
 	/// The URL was missing in the asset JSON.
 	NoURL,
 	/// No asset handler was found for the asset.
 	NoAssetHandler,
-	FailedToBake {
-		asset: String,
-		error: String,
-	},
+	/// The asset could not be baked by the backend.
+	/// Either it failed or an indirect asset failed to bake/load.
+	FailedToBake { asset: String, error: LoadErrors },
+	/// The asset could not be stored in the resource storage backend.
+	FailedToStore { asset: String, error: String },
 }
 
 impl AssetManager {
@@ -37,7 +44,8 @@ impl AssetManager {
 		self.storage_backend.as_ref()
 	}
 
-	/// Load a source asset from a JSON asset description.
+	/// Call this to bake an asset identified by it's URL.
+	/// Does not check if the asset already exists in the resource storage backend.
 	pub async fn bake<'a>(&self, id: &str, resource_storage_backend: &dyn ResourceStorageBackend) -> Result<(), LoadMessages> {
 		let id = ResourceId::new(id);
 
@@ -62,14 +70,17 @@ impl AssetManager {
 			Ok(baked_asset) => baked_asset,
 			Err(error) => {
 				log::error!("Failed to bake asset: {:#?}", error);
-				return Err(LoadMessages::NoAsset);
+				return Err(LoadMessages::FailedToBake {
+					asset: id.to_string(),
+					error,
+				});
 			}
 		};
 
 		if let Err(_) = resource_storage_backend.store(&resource, &buffer) {
-			return Err(LoadMessages::FailedToBake {
+			return Err(LoadMessages::FailedToStore {
 				asset: id.to_string(),
-				error: "Failed to store baked resource".to_string(),
+				error: format!("Failed to bake asset {:#?}", id),
 			});
 		}
 
@@ -78,9 +89,9 @@ impl AssetManager {
 		Ok(())
 	}
 
-	/// Generates a resource from a loaded asset.
+	/// Call this to bake an asset identified by it's URL, if it does not already exist in the resource storage backend.
 	/// Does nothing if the resource already exists (with a matching hash).
-	pub async fn load<'a, M: Model>(
+	pub async fn bake_if_not_exists<'a, M: Model>(
 		&self,
 		id: &str,
 		resource_storage_backend: &dyn ResourceStorageBackend,
@@ -97,10 +108,7 @@ impl AssetManager {
 			return Ok(resource);
 		}
 
-		Err(LoadMessages::FailedToBake {
-			asset: id.to_string(),
-			error: format!("{:#?}", id),
-		})
+		Err(LoadMessages::NoAsset)
 	}
 }
 

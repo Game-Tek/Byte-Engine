@@ -1,15 +1,16 @@
 pub mod gpu_vertex_data_manager;
+pub mod pipeline_manager;
 pub mod render_pass;
 pub mod scene_manager;
 pub mod shader_generator;
 
+pub use pipeline_manager::VisibilityPipelineManager;
 use resource_management::{
 	glsl_shader_generator::GLSLShaderGenerator,
 	platform_shader_generator::GeneratedPlatformShader,
 	platform_shader_generator::{PlatformShaderGenerator, PlatformShaderLanguage},
 	shader_generator::ShaderGenerationSettings,
 };
-pub use scene_manager::VisibilityWorldRenderDomain;
 use utils::Extent;
 
 use crate::rendering::{

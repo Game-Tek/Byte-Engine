@@ -9,7 +9,7 @@ use math::Vector2;
 use resource_management::resources::material;
 use utils::{Box, Extent, RGBA};
 
-use crate::rendering::pipelines::visibility::scene_manager::Instance;
+use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
 use crate::rendering::pipelines::visibility::{
 	get_gtao_bitfield_blur_x_shader, get_gtao_bitfield_shader, get_gtao_blur_shader, get_gtao_shader,
 	get_material_count_msl_source, get_material_count_source, get_material_offset_msl_source, get_material_offset_source,

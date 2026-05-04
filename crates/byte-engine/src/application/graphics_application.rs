@@ -49,9 +49,10 @@ use crate::{
 	physics::dynabit::{self, body::PhysicsBody},
 	rendering::{
 		lights::{Light, Lights},
+		pipeline_manager::PipelineManager,
 		pipelines::{
-			simple::{SimpleRenderPass, SimpleSceneManager},
-			visibility::VisibilityWorldRenderDomain,
+			simple::{SimplePipelineManager, SimpleRenderPass},
+			visibility::VisibilityPipelineManager,
 		},
 		render_pass::RenderPass,
 		render_passes::{
@@ -61,7 +62,6 @@ use crate::{
 			sky::AtmosphereSkyRenderPass,
 		},
 		renderable, renderer,
-		scene_manager::SceneManager,
 		texture_manager::TextureManager,
 		RenderableMesh,
 	},
@@ -519,13 +519,13 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 
 	let renderer = &mut application.renderer;
 
-	struct CustomSceneManager {
-		scene_manager: SimpleSceneManager,
+	struct CustomPipelineManager {
+		pipeline_manager: SimplePipelineManager,
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		transforms_listener: DefaultListener<TransformationUpdate>,
 	}
 
-	impl SceneManager for CustomSceneManager {
+	impl PipelineManager for CustomPipelineManager {
 		fn prepare(
 			&mut self,
 			frame: &mut ghi::implementation::Frame,
@@ -534,45 +534,45 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 			while let Some(message) = self.mesh_receiver.read() {
 				let handle = message.handle().clone();
 
-				self.scene_manager.create_mesh(frame, handle, message.into_data());
+				self.pipeline_manager.create_mesh(frame, handle, message.into_data());
 			}
 
 			while let Some(message) = self.transforms_listener.read() {
-				self.scene_manager
+				self.pipeline_manager
 					.update_transform(frame, *message.handle(), message.transform().get_matrix());
 			}
 
-			self.scene_manager.prepare(frame, sinks)
+			self.pipeline_manager.prepare(frame, sinks)
 		}
 
 		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
-			self.scene_manager.create_sink(sink_id, render_pass_builder);
+			self.pipeline_manager.create_sink(sink_id, render_pass_builder);
 		}
 	}
 
 	let sm = {
 		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		CustomSceneManager {
-			scene_manager: SimpleSceneManager::new(renderer.device_mut()),
+		CustomPipelineManager {
+			pipeline_manager: SimplePipelineManager::new(renderer.device_mut()),
 			mesh_receiver: listener,
 			transforms_listener,
 		}
 	};
 
-	renderer.add_scene_manager(sm);
+	renderer.add_pipeline_manager(sm);
 }
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
 	let renderer = &mut application.renderer;
 
-	struct CustomSceneManager {
+	struct CustomPipelineManager {
 		light_receiver: DefaultListener<CreateMessage<Lights>>,
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		pending_meshes: VecDeque<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
-		visibility_world_render_domain: VisibilityWorldRenderDomain,
+		visibility_pipeline_manager: VisibilityPipelineManager,
 	}
 
-	impl SceneManager for CustomSceneManager {
+	impl PipelineManager for CustomPipelineManager {
 		fn prepare_transfers<'a>(
 			&mut self,
 			transfer: &mut ghi::implementation::CommandBufferRecording,
@@ -580,9 +580,9 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			completed_frame: Option<ghi::FrameKey>,
 			staging_data_buffer: ghi::BaseBufferHandle,
 			mut slice: utils::BufferAllocator<'a>,
-		) -> rendering::scene_manager::TransferPrepareResult<'a> {
+		) -> rendering::pipeline_manager::TransferPrepareResult<'a> {
 			if let Some(completed_frame) = completed_frame {
-				self.visibility_world_render_domain
+				self.visibility_pipeline_manager
 					.transition_finished_transfer_resources(completed_frame);
 			}
 
@@ -594,7 +594,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 
 			while let Some(message) = self.pending_meshes.pop_front() {
 				if self
-					.visibility_world_render_domain
+					.visibility_pipeline_manager
 					.create_renderable_mesh_instance_and_write_mesh_data_if_not_exists(
 						transfer,
 						message.clone().into_data(),
@@ -609,26 +609,26 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			}
 
 			recorded_work |=
-				self.visibility_world_render_domain
+				self.visibility_pipeline_manager
 					.prepare_texture_uploads(transfer, key, staging_data_buffer, &mut slice);
 
-			rendering::scene_manager::TransferPrepareResult { slice, recorded_work }
+			rendering::pipeline_manager::TransferPrepareResult { slice, recorded_work }
 		}
 
 		fn finish_frame(&mut self, completed_frame: ghi::FrameKey) {
-			self.visibility_world_render_domain
+			self.visibility_pipeline_manager
 				.transition_finished_graphics_resources(completed_frame);
 		}
 
 		fn before_prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[rendering::Sink]) {
 			while let Some(message) = self.light_receiver.read() {
-				self.visibility_world_render_domain.create_light(message.into_data());
+				self.visibility_pipeline_manager.create_light(message.into_data());
 			}
 
-			self.visibility_world_render_domain
+			self.visibility_pipeline_manager
 				.load_pending_material_evaluation_materials(frame);
-			self.visibility_world_render_domain.load_pending_material_textures(frame);
-			self.visibility_world_render_domain.before_prepare(frame, sinks);
+			self.visibility_pipeline_manager.load_pending_material_textures(frame);
+			self.visibility_pipeline_manager.before_prepare(frame, sinks);
 		}
 
 		fn prepare(
@@ -636,18 +636,18 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
-			self.visibility_world_render_domain.prepare(frame, sinks)
+			self.visibility_pipeline_manager.prepare(frame, sinks)
 		}
 
 		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
-			self.visibility_world_render_domain.create_sink(sink_id, render_pass_builder);
+			self.visibility_pipeline_manager.create_sink(sink_id, render_pass_builder);
 		}
 	}
 
 	let sm = {
 		let texture_manager = TextureManager::new();
-		CustomSceneManager {
-			visibility_world_render_domain: VisibilityWorldRenderDomain::new(
+		CustomPipelineManager {
+			visibility_pipeline_manager: VisibilityPipelineManager::new(
 				renderer.device_mut(),
 				texture_manager,
 				application.resource_manager.clone(),
@@ -658,7 +658,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		}
 	};
 
-	renderer.add_scene_manager(sm);
+	renderer.add_pipeline_manager(sm);
 }
 
 pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultListener<CreateMessage<Render>>) {

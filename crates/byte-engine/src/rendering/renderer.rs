@@ -23,7 +23,7 @@ pub struct Renderer {
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 
-	scene_managers: SmallVec<[Box<dyn SceneManager>; 16]>,
+	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
 
 	/// The GHI queue where graphics commands are submitted. The main rendering operations occur on this queue.
 	graphics_queue_handle: ghi::QueueHandle,
@@ -159,7 +159,7 @@ impl Renderer {
 			render_passes_by_sink: SmallVec::with_capacity(32),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 
-			scene_managers: SmallVec::with_capacity(8),
+			pipeline_managers: SmallVec::with_capacity(8),
 
 			graphics_queue_handle,
 			transfer_queue_handle,
@@ -174,7 +174,7 @@ impl Renderer {
 		}
 	}
 
-	pub fn add_scene_manager(&mut self, mut scene_manager: impl SceneManager + 'static) {
+	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
 		{
 			let sink_swapchains: SmallVec<[(SinkId, ghi::SwapchainHandle); 16]> = self
 				.sink_cameras
@@ -184,7 +184,7 @@ impl Renderer {
 			for (sink_id, swapchain) in sink_swapchains {
 				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain);
 
-				scene_manager.create_sink(sink_id, &mut rpb);
+				pipeline_manager.create_sink(sink_id, &mut rpb);
 
 				if rpb.consumed_resources.len() == 0 {
 					log::debug!("No resources consumed by scene manager");
@@ -192,7 +192,7 @@ impl Renderer {
 			}
 		}
 
-		self.scene_managers.push(Box::new(scene_manager));
+		self.pipeline_managers.push(Box::new(pipeline_manager));
 	}
 
 	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, sink_id: SinkId) {
@@ -291,8 +291,8 @@ impl Renderer {
 
 			let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
 
-			for scene_manager in &mut self.scene_managers {
-				let transfer_prepare_result = scene_manager.prepare_transfers(
+			for pipeline_manager in &mut self.pipeline_managers {
+				let transfer_prepare_result = pipeline_manager.prepare_transfers(
 					&mut transfer_recording,
 					key,
 					completed_transfer_frame,
@@ -326,7 +326,7 @@ impl Renderer {
 		let sink_cameras = &self.sink_cameras;
 		let cameras = &self.cameras;
 		let render_targets = &self.render_targets;
-		let scene_managers = &mut self.scene_managers;
+		let pipeline_managers = &mut self.pipeline_managers;
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
 
@@ -335,12 +335,12 @@ impl Renderer {
 		queue.execute(Some(frame), wait_for, synchronizer, |execution| {
 			let completed_graphics_frame = execution.completed_frame();
 			if let Some(completed_graphics_frame) = completed_graphics_frame {
-				for scene_manager in scene_managers.iter_mut() {
-					scene_manager.finish_frame(completed_graphics_frame);
+				for pipeline_manager in pipeline_managers.iter_mut() {
+					pipeline_manager.finish_frame(completed_graphics_frame);
 				}
 			}
 
-			let (sinks, scene_manager_commands, render_pass_commands, present_keys) = {
+			let (sinks, pipeline_manager_commands, render_pass_commands, present_keys) = {
 				let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
 				);
@@ -394,14 +394,14 @@ impl Renderer {
 					}
 				}
 
-				for scene_manager in scene_managers.iter_mut() {
-					scene_manager.before_prepare(frame, &sinks);
+				for pipeline_manager in pipeline_managers.iter_mut() {
+					pipeline_manager.before_prepare(frame, &sinks);
 				}
 
-				let scene_managers = scene_managers.iter_mut();
+				let pipeline_managers = pipeline_managers.iter_mut();
 
-				let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
-					scene_managers.filter_map(|sm| sm.prepare(frame, &sinks)).collect();
+				let pipeline_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
+					pipeline_managers.filter_map(|sm| sm.prepare(frame, &sinks)).collect();
 
 				// A list of render pass commands and their corresponding sink index
 				let render_pass_commands: SmallVec<[(RenderPassReturn, SinkId); 64]> = render_passes_by_sink
@@ -423,11 +423,11 @@ impl Renderer {
 					.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
 					.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
-				(sinks, scene_manager_commands, render_pass_commands, present_keys)
+				(sinks, pipeline_manager_commands, render_pass_commands, present_keys)
 			};
 
 			execution.record(command_buffer, |command_buffer_recording| {
-				for commands in scene_manager_commands.into_iter() {
+				for commands in pipeline_manager_commands.into_iter() {
 					for (command, sink) in commands.into_iter().zip(sinks.iter()) {
 						let attachment_infos = render_targets.get_attachment_infos(sink.index());
 
@@ -483,9 +483,9 @@ impl Renderer {
 				};
 
 				if sink_has_camera {
-					let scene_managers = self.scene_managers.iter_mut();
+					let pipeline_managers = self.pipeline_managers.iter_mut();
 
-					for sm in scene_managers {
+					for sm in pipeline_managers {
 						let mut rpb =
 							RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain_handle);
 
@@ -852,8 +852,8 @@ use crate::{
 	gameplay::transform::TransformationUpdate,
 	rendering::{
 		make_perspective_view_from_camera,
+		pipeline_manager::PipelineManager,
 		render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn},
-		scene_manager::SceneManager,
 		window::{self, Window},
 		Camera, Sink, View,
 	},

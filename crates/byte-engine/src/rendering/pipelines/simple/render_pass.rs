@@ -37,7 +37,7 @@ use crate::{
 	rendering::{
 		common_shader_generator::CommonShaderScope,
 		make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
-		pipelines::simple::{CameraShaderData, SceneManager},
+		pipelines::simple::{CameraShaderData, PipelineManager},
 		render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn},
 		renderable::mesh::MeshSource,
 		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
@@ -90,7 +90,7 @@ impl RenderPass {
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
-		sm: &SceneManager,
+		sm: &PipelineManager,
 		instance_batches: &[InstanceBatch],
 	) -> impl RenderPassFunction {
 		let camera_data_buffer = sm.camera_data_buffer;

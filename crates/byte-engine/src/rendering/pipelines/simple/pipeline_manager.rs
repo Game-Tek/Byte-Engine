@@ -50,7 +50,7 @@ use crate::{
 	},
 };
 
-pub struct SceneManager {
+pub struct PipelineManager {
 	/// Buffer containing all vertex positions for meshes.
 	pub(super) vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
 	pub(super) indeces_buffer: ghi::BufferHandle<[u16; 1024 * 1024]>,
@@ -65,7 +65,7 @@ pub struct SceneManager {
 const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
 	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
-impl SceneManager {
+impl PipelineManager {
 	pub fn new(device: &mut ghi::implementation::Device) -> Self {
 		let vertex_positions_buffer = device.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
@@ -337,7 +337,7 @@ impl SceneManager {
 	}
 }
 
-impl crate::rendering::scene_manager::SceneManager for SceneManager {
+impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 

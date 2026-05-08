@@ -46,6 +46,10 @@ impl Material {
 	pub fn shaders_mut(&mut self) -> &mut [Reference<Shader>] {
 		&mut self.shaders
 	}
+
+	pub fn alpha_mode(&self) -> &AlphaMode {
+		&self.alpha_mode
+	}
 }
 
 impl Resource for Material {

@@ -10,6 +10,9 @@ pub struct VisibilityPipelineManager {
 	/// Materials data buffer shared across all scenes.
 	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
 	resource_manager: VisibilityPipelineResourceManagerClient,
+	pending_renderables: Vec<PendingRenderableInstance>,
+	loaded_meshes: HashMap<VisibilityMeshKey, MeshData>,
+	loaded_materials: HashMap<u32, RenderDescription>,
 	pending_texture_uploads: VecDeque<PendingTextureUpload>,
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
 }
@@ -17,7 +20,7 @@ pub struct VisibilityPipelineManager {
 impl VisibilityPipelineManager {
 	pub(crate) fn new(
 		device: &mut ghi::implementation::Device,
-		resource_manager: VisibilityPipelineResourceManagerClient,
+		mut resource_manager: VisibilityPipelineResourceManagerClient,
 	) -> Self {
 		let bindings = [
 			VIEWS_DATA_BINDING,
@@ -168,6 +171,14 @@ impl VisibilityPipelineManager {
 			Some("Material Evaluation Descriptor Set"),
 			&material_evaluation_descriptor_set_layout,
 		);
+		resource_manager.configure_material_pipeline(MaterialPipelineConfig::new(
+			[
+				descriptor_set_layout,
+				visibility_descriptor_set_layout,
+				material_evaluation_descriptor_set_layout,
+			],
+			vec![ghi::pipelines::PushConstantRange::new(0, 4)],
+		));
 
 		Self {
 			descriptor_set_layout,
@@ -175,6 +186,9 @@ impl VisibilityPipelineManager {
 			material_evaluation_descriptor_set_layout,
 			materials_data_buffer_handle,
 			resource_manager,
+			pending_renderables: Vec::new(),
+			loaded_meshes: HashMap::new(),
+			loaded_materials: HashMap::new(),
 			scene: VisibilitySceneManager {
 				render_entities: Vec::new(),
 				views_data_buffer_handle,
@@ -196,31 +210,36 @@ impl VisibilityPipelineManager {
 		}
 	}
 
-	pub(crate) fn create_light(&self, into_data: Lights) {
-		todo!()
+	pub(crate) fn create_light(&mut self, into_data: Lights) {
+		self.scene.lights.push(into_data);
 	}
 
-	pub(crate) fn request_mesh(&self, renderable: EntityHandle<dyn RenderableMesh>) {
+	/// Requests the renderable mesh resources and keeps the scene instance pending until those resources are ready.
+	pub(crate) fn request_mesh(&mut self, renderable: EntityHandle<dyn RenderableMesh>) {
 		let source = renderable.get_mesh().clone();
-		let id = match &source {
-			MeshSource::Resource(id) => (*id).to_string(),
-			MeshSource::Generated(_) => "generated".to_string(),
-		};
-
-		self.resource_manager.request(VisibilityResourceRequest::Mesh { id, source });
+		let mesh_key = self.resource_manager.request_mesh(source);
+		self.pending_renderables.push(PendingRenderableInstance {
+			entity: renderable,
+			mesh_key,
+		});
 	}
 
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
 		for completion in self.resource_manager.drain_completions() {
 			match completion {
-				VisibilityResourceCompletion::MeshReady { id: _ } => {}
+				VisibilityResourceCompletion::MeshReady { key, mesh } => {
+					self.loaded_meshes.insert(key.clone(), mesh);
+					self.resolve_pending_renderables_for_mesh(&key);
+				}
 				VisibilityResourceCompletion::MaterialReady {
-					id: _,
-					index: _,
-					pipeline: _,
-				} => {}
-				VisibilityResourceCompletion::ImageReady {
 					id,
+					index,
+					pipeline,
+					alpha,
+					textures,
+				} => self.adopt_material_completion(frame, id, index, pipeline, alpha, textures),
+				VisibilityResourceCompletion::ImageReady {
+					key,
 					index,
 					image,
 					sampler,
@@ -228,22 +247,163 @@ impl VisibilityPipelineManager {
 				} => {
 					let image = frame.intern_image(image);
 					let sampler = frame.intern_sampler(sampler);
-					self.pending_texture_uploads.push_back(PendingTextureUpload {
-						id,
-						index,
-						image: image.into(),
+					let image = ghi::BaseImageHandle::from(image);
+					frame.write(&[ghi::descriptors::Write::combined_image_sampler_array(
+						self.scene.textures_binding,
+						image,
 						sampler,
-						upload,
-					});
+						ghi::Layouts::Read,
+						index,
+					)]);
+					self.pending_texture_uploads.push_back(PendingTextureUpload { image, upload });
 				}
-				VisibilityResourceCompletion::Failed { id } => {
+				VisibilityResourceCompletion::Failed { key } => {
 					warn!(
 						"Visibility resource failed to load: {}. The most likely cause is that the resource worker could not resolve or upload the asset.",
-						id
+						key
 					);
 				}
 			}
 		}
+	}
+
+	/// Adopts material metadata and writes the material texture table into the GPU material buffer.
+	fn adopt_material_completion(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		id: String,
+		index: u32,
+		pipeline: Option<ghi::PipelineHandle>,
+		alpha: bool,
+		textures: Vec<Option<(String, u32)>>,
+	) {
+		let materials_data = frame.get_mut_buffer_slice(self.materials_data_buffer_handle);
+		let material_data = &mut materials_data[index as usize];
+		material_data.textures.fill(u32::MAX);
+
+		for (texture_index, texture) in textures.iter().enumerate() {
+			if texture_index >= MAX_MATERIAL_TEXTURES {
+				warn!(
+					"Visibility material {} has too many texture slots. The most likely cause is that the material shader expects more textures than the visibility material data supports.",
+					id
+				);
+				break;
+			}
+			material_data.textures[texture_index] = texture.as_ref().map(|(_, index)| *index).unwrap_or(u32::MAX);
+		}
+		frame.sync_buffer(self.materials_data_buffer_handle);
+
+		self.loaded_materials.insert(
+			index,
+			RenderDescription {
+				index,
+				pipeline,
+				name: id,
+				alpha,
+			},
+		);
+		self.rebuild_material_lists();
+	}
+
+	/// Adopts finished material pipelines and refreshes the render pass material lists.
+	fn adopt_pipeline_completions(&mut self, frame: &mut ghi::implementation::Frame) {
+		for (name, pipeline) in self.resource_manager.poll_pipelines(frame, MAX_PIPELINE_ADOPTIONS_PER_FRAME) {
+			for material in self.loaded_materials.values_mut() {
+				if material.name == name {
+					material.pipeline = Some(pipeline);
+				}
+			}
+		}
+		self.rebuild_material_lists();
+	}
+
+	/// Rebuilds the opaque and transparent material lists consumed by the material evaluation pass.
+	fn rebuild_material_lists(&mut self) {
+		self.scene.render_info.opaque_materials.clear();
+		self.scene.render_info.transparent_materials.clear();
+
+		for material in self.loaded_materials.values() {
+			let Some(pipeline) = material.pipeline else {
+				continue;
+			};
+			let entry = (material.name.clone(), material.index, pipeline);
+			if material.alpha {
+				self.scene.render_info.transparent_materials.push(entry);
+			} else {
+				self.scene.render_info.opaque_materials.push(entry);
+			}
+		}
+	}
+
+	/// Rebuilds the active instance list from scene entities whose material pipeline is ready.
+	fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame) {
+		self.scene.render_info.active_instances.clear();
+		let loaded_materials = &self.loaded_materials;
+		let render_entities = &self.scene.render_entities;
+		let active_instances = &mut self.scene.render_info.active_instances;
+		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_data_buffer);
+
+		let mut active_index = 0;
+		for render_entity in render_entities {
+			let material_ready = loaded_materials
+				.get(&render_entity.shader_mesh.material_index)
+				.and_then(|material| material.pipeline)
+				.is_some();
+			if !material_ready {
+				continue;
+			}
+			if active_index >= MAX_INSTANCES {
+				panic!(
+					"Visibility active instance limit exceeded. The most likely cause is that the scene contains more visible mesh primitives than the visibility pipeline supports."
+				);
+			}
+
+			let mut shader_mesh = render_entity.shader_mesh;
+			shader_mesh.model = render_entity.entity.transform().get_matrix().into();
+			mesh_data[active_index] = shader_mesh;
+			active_instances.push(Instance {
+				meshlet_count: shader_mesh.meshlet_count,
+			});
+			active_index += 1;
+		}
+	}
+
+	/// Resolves renderable instances whose mesh resource is now available.
+	fn resolve_pending_renderables_for_mesh(&mut self, key: &VisibilityMeshKey) {
+		let Some(mesh) = self.loaded_meshes.get(key).cloned() else {
+			return;
+		};
+
+		let mut remaining = Vec::with_capacity(self.pending_renderables.len());
+		let pending = std::mem::take(&mut self.pending_renderables);
+
+		for pending_renderable in pending {
+			if &pending_renderable.mesh_key != key {
+				remaining.push(pending_renderable);
+				continue;
+			}
+
+			let model = pending_renderable.entity.transform().get_matrix().into();
+			for primitive in &mesh.primitives {
+				self.scene.render_entities.push(RenderEntity {
+					entity: pending_renderable.entity.clone(),
+					shader_mesh: ShaderMesh {
+						model,
+						material_index: primitive.material_index,
+						base_vertex_index: mesh.vertex_offset + primitive.vertex_offset,
+						base_primitive_index: mesh.primitive_offset + primitive.primitive_offset,
+						base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
+						base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
+						meshlet_count: primitive.meshlet_count,
+					},
+				});
+				self.scene.render_info.instances.push(Instance {
+					meshlet_count: primitive.meshlet_count,
+				});
+			}
+		}
+
+		self.pending_renderables = remaining;
 	}
 
 	fn make_shader_view_data(view: View) -> ShaderViewData {
@@ -277,6 +437,13 @@ impl PipelineManager for VisibilityPipelineManager {
 		let mut recorded_work = false;
 		const TEXTURE_UPLOAD_ALIGNMENT: usize = 256;
 
+		if self
+			.resource_manager
+			.prepare_mesh_uploads(transfer, staging_data_buffer, &mut slice)
+		{
+			recorded_work = true;
+		}
+
 		while let Some(upload) = self.pending_texture_uploads.pop_front() {
 			if upload.upload.data.len() > slice.remaining_aligned(TEXTURE_UPLOAD_ALIGNMENT) {
 				self.pending_texture_uploads.push_front(upload);
@@ -301,6 +468,8 @@ impl PipelineManager for VisibilityPipelineManager {
 
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		self.adopt_resource_completions(frame);
+		self.adopt_pipeline_completions(frame);
+		self.rebuild_active_instances(frame);
 
 		let shadow_light = self.scene.lights.iter().enumerate().find_map(|(index, light)| match light {
 			Lights::Direction(light) => Some((index, light.direction)),
@@ -712,37 +881,13 @@ struct PendingMeshData {
 /// The `RenderEntity` struct preserves the mesh readiness dependency for a renderable instance.
 pub struct RenderEntity {
 	entity: EntityHandle<dyn RenderableMesh>,
-	mesh_index: usize,
 	shader_mesh: ShaderMesh,
 }
 
-enum MeshState {
-	Build { mesh_handle: String },
-	Update {},
-}
-
-struct RayTracing {
-	top_level_acceleration_structure: ghi::TopLevelAccelerationStructureHandle,
-	descriptor_set_template: ghi::DescriptorSetTemplateHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
-	pipeline: ghi::PipelineHandle,
-
-	ray_gen_sbt_buffer: ghi::BaseBufferHandle,
-	miss_sbt_buffer: ghi::BaseBufferHandle,
-	hit_sbt_buffer: ghi::BaseBufferHandle,
-
-	shadow_map_resolution: Extent,
-	shadow_map: ghi::BaseImageHandle,
-
-	instances_buffer: ghi::BaseBufferHandle,
-	scratch_buffer: ghi::BaseBufferHandle,
-
-	pending_meshes: Vec<MeshState>,
-}
-
-enum RenderDescriptionVariants {
-	Material { shaders: Vec<String> },
-	Variant {},
+/// The `PendingRenderableInstance` struct associates a scene renderable with the mesh resource it is waiting for.
+struct PendingRenderableInstance {
+	entity: EntityHandle<dyn RenderableMesh>,
+	mesh_key: VisibilityMeshKey,
 }
 
 struct RenderDescription {
@@ -750,8 +895,6 @@ struct RenderDescription {
 	pipeline: Option<ghi::PipelineHandle>,
 	name: String,
 	alpha: bool,
-	textures: Vec<String>,
-	variant: RenderDescriptionVariants,
 }
 
 #[derive(Clone, Copy)]
@@ -772,28 +915,9 @@ pub struct SinkState {
 	render_pass: VisibilityPipelineRenderPass,
 }
 
-/// This structure hosts data analogous to the image resource's data.
-#[derive(Clone, Copy)]
-struct Image {
-	/// This is the index of the image in the descriptor set.
-	index: u32,
-	image: ghi::BaseImageHandle,
-	sampler: ghi::SamplerHandle,
-}
-
-/// The `PendingImage` struct preserves a texture slot before its render resources exist.
-struct PendingImage {
-	index: u32,
-	image: Option<Image>,
-	upload: Option<TextureUpload>,
-}
-
 /// The `PendingTextureUpload` struct keeps an adopted texture waiting for transfer-buffer space.
 struct PendingTextureUpload {
-	id: String,
-	index: u32,
 	image: ghi::BaseImageHandle,
-	sampler: ghi::SamplerHandle,
 	upload: TextureUpload,
 }
 
@@ -802,36 +926,36 @@ struct PendingTextureUpload {
 #[derive(Debug, Clone)]
 pub struct MeshData {
 	// (material_id)
-	primitives: Vec<MeshPrimitive>,
+	pub(crate) primitives: Vec<MeshPrimitive>,
 	/// The base position into the vertex buffer
-	vertex_offset: u32,
-	primitive_offset: u32,
+	pub(crate) vertex_offset: u32,
+	pub(crate) primitive_offset: u32,
 	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
-	triangle_offset: u32,
+	pub(crate) triangle_offset: u32,
 	/// The meshlet offset.
 	/// The base position into the meshlets buffer relative to the mesh
-	meshlet_offset: u32,
-	acceleration_structure: Option<ghi::BottomLevelAccelerationStructureHandle>,
+	pub(crate) meshlet_offset: u32,
+	pub(crate) acceleration_structure: Option<ghi::BottomLevelAccelerationStructureHandle>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MeshPrimitive {
 	/// The index of the material used by this primitive.
-	material_index: u32,
+	pub(crate) material_index: u32,
 	/// The meshlet count.
-	meshlet_count: u32,
+	pub(crate) meshlet_count: u32,
 	/// The meshlet offset.
 	/// The base position into the meshlets buffer relative to the primitive in the mesh
-	meshlet_offset: u32,
+	pub(crate) meshlet_offset: u32,
 	/// The vertex offset.
 	/// The base position into the vertex buffer
-	vertex_offset: u32,
+	pub(crate) vertex_offset: u32,
 	/// The primitive indices offset.
 	/// The base position into the primitive indices buffer
-	primitive_offset: u32,
+	pub(crate) primitive_offset: u32,
 	/// The triangle offset.
 	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
-	triangle_offset: u32,
+	pub(crate) triangle_offset: u32,
 }
 
 #[cfg(test)]
@@ -921,8 +1045,6 @@ use resource_management::glsl_shader_generator::GLSLShaderGenerator;
 use resource_management::msl_shader_generator::MSLShaderGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;
-use resource_management::resources::material::Variant as ResourceVariant;
-use resource_management::resources::material::{Material as ResourceMaterial, Parameter, Shader, Value, VariantVariable};
 use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
 use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::spirv_shader_generator::SPIRVShaderGenerator;
@@ -943,7 +1065,8 @@ use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::pipelines::visibility::gpu_vertex_data_manager::GPUVertexDataManager;
 use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
 use crate::rendering::pipelines::visibility::resource_manager::{
-	TextureUpload, VisibilityPipelineResourceManagerClient, VisibilityResourceCompletion, VisibilityResourceRequest,
+	MaterialPipelineConfig, TextureUpload, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
+	VisibilityResourceCompletion,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::{

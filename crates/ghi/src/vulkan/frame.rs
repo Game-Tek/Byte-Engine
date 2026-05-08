@@ -562,6 +562,23 @@ impl<'a> Frame<'a> {
 		);
 	}
 
+	/// Rejects factory-built image interning because the Vulkan backend does not implement this path yet.
+	pub fn intern_image(&mut self, _image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+		panic!(
+			"Vulkan async image interning is unavailable. The most likely cause is that the Vulkan backend does not implement the factory image path yet."
+		);
+	}
+
+	/// Rejects factory-built sampler interning because the Vulkan backend does not implement this path yet.
+	pub fn intern_sampler(
+		&mut self,
+		_sampler: crate::implementation::FactorySampler,
+	) -> graphics_hardware_interface::SamplerHandle {
+		panic!(
+			"Vulkan async sampler interning is unavailable. The most likely cause is that the Vulkan backend does not implement the factory sampler path yet."
+		);
+	}
+
 	pub(crate) fn get_synchronizer(
 		&self,
 		syncronizer_handle: graphics_hardware_interface::SynchronizerHandle,

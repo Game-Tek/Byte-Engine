@@ -1,6 +1,7 @@
 /// The `GPUVertexDataManager` is responsible for managing the vertex data buffers used in the visibility pipeline.
 /// It tracks buffer offsets and counts for various resources, and provides handles to the vertex data buffers.
 /// It performs uploads to the GPU of mesh resources.
+#[derive(Clone)]
 pub(super) struct GPUVertexDataManager {
 	/// Tracks buffer offsets and counts for various resources.
 	visibility_info: VisibilityInfo,
@@ -66,9 +67,8 @@ impl GPUVertexDataManager {
 	/// Writes GPU mesh data for a mesh resource and returns the mesh object.
 	/// Does not check if the resource is already loaded.
 	/// Meshes may not be available yet for rendering, this just writes the mesh data to the GPU.
-	pub fn write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource<'a, 'slf: 'a, 'buffer>(
+	pub fn write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource<'slf, 'buffer>(
 		&'slf mut self,
-		id: &'a str,
 		c: &mut ghi::implementation::CommandBufferRecording,
 		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: &mut utils::BufferAllocator<'buffer>,

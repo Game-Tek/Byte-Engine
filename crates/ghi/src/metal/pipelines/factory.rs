@@ -4,29 +4,46 @@ use dispatch2::DispatchData;
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_foundation::{NSRange, NSString};
 use objc2_metal::{
-	MTLBlendFactor, MTLBlendOperation, MTLCompareFunction, MTLCompileOptions, MTLDataType, MTLDepthStencilDescriptor,
-	MTLDepthStencilState, MTLDevice, MTLFunction, MTLFunctionConstantValues, MTLLibrary, MTLMeshRenderPipelineDescriptor,
-	MTLPipelineOption, MTLRenderPipelineDescriptor, MTLVertexDescriptor, MTLVertexStepFunction,
+	self as mtl, MTLBlendFactor, MTLBlendOperation, MTLCompareFunction, MTLCompileOptions, MTLDataType,
+	MTLDepthStencilDescriptor, MTLDepthStencilState, MTLDevice, MTLFunction, MTLFunctionConstantValues, MTLLibrary,
+	MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLRenderPipelineDescriptor, MTLResource, MTLVertexDescriptor,
+	MTLVertexStepFunction,
 };
 use utils::{hash::HashMap, Extent};
 
 use crate::{
 	graphics_hardware_interface,
 	metal::{
-		utils::{data_type_size, parse_threadgroup_size_metadata, to_pixel_format, vertex_format},
+		utils::{
+			data_type_size, is_block_compressed, parse_threadgroup_size_metadata, storage_mode_from_access,
+			texture_usage_from_uses, to_pixel_format, vertex_format,
+		},
 		PipelineLayout, PipelineState, Shader, VertexElementDescriptor, VertexLayout,
 	},
 };
 
+/// The `Factory` struct builds Metal resources outside the device resource tables.
 pub struct Factory {
 	pub(crate) device: Retained<ProtocolObject<dyn MTLDevice>>,
 
 	pub(crate) shaders: Vec<Shader>,
 }
 
-impl crate::pipelines::factory::Factory for Factory {
+/// The `Image` struct carries a Metal image built before it has a public GHI handle.
+pub struct Image {
+	pub(crate) image: crate::metal::image::Image,
+}
+
+/// The `Sampler` struct carries a Metal sampler built before it has a public GHI handle.
+pub struct Sampler {
+	pub(crate) sampler: crate::metal::sampler::Sampler,
+}
+
+impl crate::factory::Factory for Factory {
 	type RasterPipeline = Pipeline;
 	type ComputePipeline = ComputePipeline;
+	type Image = Image;
+	type Sampler = Sampler;
 
 	fn create_shader(
 		&mut self,
@@ -281,6 +298,101 @@ impl crate::pipelines::factory::Factory for Factory {
 			mesh_threadgroup_size: None,
 			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
 			cull_mode: crate::pipelines::raster::CullMode::Back,
+		}
+	}
+
+	/// Builds a Metal image that can be interned by a device later.
+	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
+		if builder.use_case == crate::UseCases::DYNAMIC {
+			panic!(
+				"Metal factory image creation does not support dynamic images. The most likely cause is that the image requires per-frame resource instances."
+			);
+		}
+
+		if builder.device_accesses.intersects(crate::DeviceAccesses::HostOnly) {
+			panic!(
+				"Metal factory image creation does not support CPU-visible images. The most likely cause is that the image requires an associated staging buffer."
+			);
+		}
+
+		if is_block_compressed(builder.format) && !self.device.supportsBCTextureCompression() {
+			panic!(
+				"Metal device does not support BC texture compression. The most likely cause is running on a device family that cannot sample BC compressed textures."
+			);
+		}
+
+		let layers = builder.array_layers.map(|layers| layers.get()).unwrap_or(1);
+		let width = builder.extent.width().max(1);
+		let height = builder.extent.height().max(1);
+		let mipmapped = builder.mip_levels > 1;
+		let descriptor = unsafe {
+			mtl::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+				to_pixel_format(builder.format),
+				width as _,
+				height as _,
+				mipmapped,
+			)
+		};
+
+		if builder.extent.depth() > 1 {
+			descriptor.setTextureType(mtl::MTLTextureType::Type3D);
+		} else if layers > 1 {
+			descriptor.setTextureType(mtl::MTLTextureType::Type2DArray);
+		}
+
+		descriptor.setUsage(texture_usage_from_uses(builder.resource_uses));
+		descriptor.setStorageMode(storage_mode_from_access(builder.device_accesses));
+		unsafe {
+			descriptor.setArrayLength(layers as _);
+		}
+
+		let texture = self
+			.device
+			.newTextureWithDescriptor(&descriptor)
+			.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
+
+		if let Some(name) = builder.name {
+			texture.setLabel(Some(&NSString::from_str(name)));
+		}
+
+		Image {
+			image: crate::metal::image::Image {
+				name: builder.name.map(str::to_owned),
+				texture,
+				extent: builder.extent,
+				format: builder.format,
+				uses: builder.resource_uses,
+				access: builder.device_accesses,
+				array_layers: layers,
+				staging: None,
+			},
+		}
+	}
+
+	/// Builds a Metal sampler that can be interned by a device later.
+	fn build_sampler(&mut self, builder: crate::sampler::Builder) -> Self::Sampler {
+		let descriptor = mtl::MTLSamplerDescriptor::new();
+		descriptor.setMinFilter(crate::metal::utils::sampler_min_mag_filter(builder.filtering_mode));
+		descriptor.setMagFilter(crate::metal::utils::sampler_min_mag_filter(builder.filtering_mode));
+		descriptor.setMipFilter(crate::metal::utils::sampler_mip_filter(builder.mip_map_mode));
+		descriptor.setSAddressMode(crate::metal::utils::sampler_address_mode(builder.addressing_mode));
+		descriptor.setTAddressMode(crate::metal::utils::sampler_address_mode(builder.addressing_mode));
+		descriptor.setRAddressMode(crate::metal::utils::sampler_address_mode(builder.addressing_mode));
+		descriptor.setLodMinClamp(builder.min_lod);
+		descriptor.setLodMaxClamp(builder.max_lod);
+		descriptor.setSupportArgumentBuffers(true);
+
+		if let Some(anisotropy) = builder.anisotropy {
+			descriptor.setMaxAnisotropy(anisotropy as _);
+		}
+
+		let sampler_state = self
+			.device
+			.newSamplerStateWithDescriptor(&descriptor)
+			.expect("Metal sampler creation failed. The most likely cause is that the device is out of sampler resources.");
+
+		Sampler {
+			sampler: crate::metal::sampler::Sampler { sampler: sampler_state },
 		}
 	}
 }

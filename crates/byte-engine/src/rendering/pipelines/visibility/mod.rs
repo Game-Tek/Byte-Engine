@@ -1,6 +1,7 @@
 pub mod gpu_vertex_data_manager;
 pub mod pipeline_manager;
 pub mod render_pass;
+pub mod resource_manager;
 pub mod scene_manager;
 pub mod shader_generator;
 

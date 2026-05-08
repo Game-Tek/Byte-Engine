@@ -34,17 +34,12 @@ pub trait PipelineManager {
 		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: utils::BufferAllocator<'a>,
 	) -> TransferPrepareResult<'a> {
+		let _ = (transfer, key, completed_frame, staging_data_buffer);
 		TransferPrepareResult {
 			slice,
 			recorded_work: false,
 		}
 	}
-
-	/// Called when graphics-frame resources from a previous frame are known complete.
-	fn finish_frame(&mut self, completed_frame: ghi::FrameKey) {}
-
-	/// Called immediately before render command preparation begins for a frame.
-	fn before_prepare(&mut self, _frame: &mut ghi::implementation::Frame, _sinks: &[Sink]) {}
 
 	/// Called when a frame is being prepared for rendering.
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>>;

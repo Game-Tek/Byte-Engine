@@ -59,6 +59,19 @@ impl Frame<'_> {
 		self.device.intern_compute_pipeline(pipeline)
 	}
 
+	/// Interns a factory-built image through this frame's device.
+	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+		self.device.intern_image(image)
+	}
+
+	/// Interns a factory-built sampler through this frame's device.
+	pub fn intern_sampler(
+		&mut self,
+		sampler: crate::implementation::FactorySampler,
+	) -> graphics_hardware_interface::SamplerHandle {
+		self.device.intern_sampler(sampler)
+	}
+
 	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}

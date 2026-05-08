@@ -15,12 +15,10 @@ pub mod renderable;
 
 pub mod cct;
 
-pub mod pipeline_cache;
 pub mod pipeline_manager;
 pub mod world_render_domain;
 
 pub mod renderer;
-pub mod texture_manager;
 
 pub mod framebuffer;
 pub mod render_pass;

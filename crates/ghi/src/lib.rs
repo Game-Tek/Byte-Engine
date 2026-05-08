@@ -32,7 +32,9 @@ pub mod implementation {
 	#[cfg(target_os = "macos")]
 	pub(crate) use metal::image::Image;
 	#[cfg(target_os = "macos")]
-	pub use metal::pipelines::factory::{ComputePipeline, Factory as PipelineFactory, Pipeline as RasterPipeline};
+	pub use metal::pipelines::factory::{
+		ComputePipeline, Factory, Image as FactoryImage, Pipeline as RasterPipeline, Sampler as FactorySampler,
+	};
 	#[cfg(target_os = "macos")]
 	pub use metal::queue::Queue;
 	#[cfg(target_os = "macos")]
@@ -74,18 +76,31 @@ pub mod implementation {
 	use crate::vulkan;
 
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
-	pub struct PipelineFactory;
+	/// The `Factory` struct marks the unsupported detached-resource factory for the Vulkan implementation.
+	pub struct Factory;
 
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	/// The `ComputePipeline` struct marks the unsupported detached compute pipeline for the Vulkan implementation.
 	pub struct ComputePipeline;
 
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	/// The `RasterPipeline` struct marks the unsupported detached raster pipeline for the Vulkan implementation.
 	pub struct RasterPipeline;
 
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
-	impl crate::pipelines::factory::Factory for PipelineFactory {
+	/// The `FactoryImage` struct marks the unsupported detached image for the Vulkan implementation.
+	pub struct FactoryImage;
+
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	/// The `FactorySampler` struct marks the unsupported detached sampler for the Vulkan implementation.
+	pub struct FactorySampler;
+
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	impl crate::factory::Factory for Factory {
 		type RasterPipeline = RasterPipeline;
 		type ComputePipeline = ComputePipeline;
+		type Image = FactoryImage;
+		type Sampler = FactorySampler;
 
 		fn create_shader(
 			&mut self,
@@ -104,6 +119,14 @@ pub mod implementation {
 		fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
 			ComputePipeline
 		}
+
+		fn build_image(&mut self, _builder: crate::image::Builder) -> Self::Image {
+			FactoryImage
+		}
+
+		fn build_sampler(&mut self, _builder: crate::sampler::Builder) -> Self::Sampler {
+			FactorySampler
+		}
 	}
 }
 
@@ -112,6 +135,7 @@ pub mod buffer;
 pub mod command_buffer;
 pub mod descriptors;
 pub mod device;
+pub mod factory;
 pub mod frame;
 pub mod image;
 pub mod pipelines;

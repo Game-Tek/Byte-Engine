@@ -116,8 +116,14 @@ pub struct Device {
 }
 
 impl Device {
-	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::PipelineFactory> {
+	/// Returns no detached-resource factory because the Vulkan backend does not implement this path yet.
+	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
 		None
+	}
+
+	/// Returns no detached pipeline factory for compatibility with the previous pipeline factory API.
+	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::Factory> {
+		self.create_factory()
 	}
 
 	fn format_supports_formatless_storage_write(

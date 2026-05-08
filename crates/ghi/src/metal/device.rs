@@ -1069,11 +1069,17 @@ impl Device {
 		false
 	}
 
-	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::PipelineFactory> {
+	/// Creates a detached-resource factory backed by this Metal device.
+	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
 		Some(crate::metal::pipelines::factory::Factory {
 			device: self.device.clone(),
 			shaders: Vec::with_capacity(64),
 		})
+	}
+
+	/// Creates a detached pipeline-capable factory for compatibility with the previous pipeline factory API.
+	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::Factory> {
+		self.create_factory()
 	}
 
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
@@ -1701,6 +1707,31 @@ impl Device {
 			face_winding: pipeline.face_winding,
 			cull_mode: pipeline.cull_mode,
 		})
+	}
+
+	/// Interns a factory-built image into this device and returns its public image handle.
+	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+		let name = image.image.name.clone();
+		let (root_image_handle, _) = self.images.add(image.image);
+		let handle = graphics_hardware_interface::ImageHandle(root_image_handle);
+
+		#[cfg(debug_assertions)]
+		{
+			if let Some(name) = name {
+				self.names.insert(graphics_hardware_interface::Handles::Image(handle), name);
+			}
+		}
+
+		handle
+	}
+
+	/// Interns a factory-built sampler into this device and returns its public sampler handle.
+	pub fn intern_sampler(
+		&mut self,
+		sampler: crate::implementation::FactorySampler,
+	) -> graphics_hardware_interface::SamplerHandle {
+		self.samplers.push(sampler.sampler);
+		graphics_hardware_interface::SamplerHandle((self.samplers.len() - 1) as u64)
 	}
 
 	pub fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {

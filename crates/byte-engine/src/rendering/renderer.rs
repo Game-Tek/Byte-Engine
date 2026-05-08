@@ -133,8 +133,6 @@ impl Renderer {
 		let transfer_command_buffer = device.queue(transfer_queue_handle).create_command_buffer(Some("Transfer"));
 		let transfer_finished_synchronizer = device.create_synchronizer(Some("Transfer Finished"), true);
 
-		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-
 		let upload_buffer = device.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
 				.name("Renderer Async Upload Buffer")
@@ -284,11 +282,10 @@ impl Renderer {
 			let started_frame = transfer_queue.start_frame(self.started_frame_count as _, self.transfer_finished_synchronizer);
 			let completed_transfer_frame = started_frame.completed_frame;
 			let mut frame = started_frame.frame;
-			let key = frame.key(); // Scene managers use this key to later know which transfers are ready
+			let key = frame.key();
 			let mut transfer_recording = frame.create_command_buffer_recording(self.transfer_command_buffer);
 
 			let buffer = transfer_recording.get_mut_buffer_slice(self.upload_buffer);
-
 			let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
 
 			for pipeline_manager in &mut self.pipeline_managers {
@@ -334,11 +331,6 @@ impl Renderer {
 
 		queue.execute(Some(frame), wait_for, synchronizer, |execution| {
 			let completed_graphics_frame = execution.completed_frame();
-			if let Some(completed_graphics_frame) = completed_graphics_frame {
-				for pipeline_manager in pipeline_managers.iter_mut() {
-					pipeline_manager.finish_frame(completed_graphics_frame);
-				}
-			}
 
 			let (sinks, pipeline_manager_commands, render_pass_commands, present_keys) = {
 				let frame = execution.frame().expect(
@@ -392,10 +384,6 @@ impl Renderer {
 					for &image in images {
 						frame.resize_image(image.into(), sink.extent());
 					}
-				}
-
-				for pipeline_manager in pipeline_managers.iter_mut() {
-					pipeline_manager.before_prepare(frame, &sinks);
 				}
 
 				let pipeline_managers = pipeline_managers.iter_mut();
@@ -837,10 +825,7 @@ use utils::{
 	Extent, RGBA,
 };
 
-use super::{
-	render_pass::{RenderPass, RenderPassBuilder},
-	texture_manager::TextureManager,
-};
+use super::render_pass::{RenderPass, RenderPassBuilder};
 use crate::{
 	application::parameters::Parameters,
 	core::{

@@ -36,3 +36,4 @@ fontdue = "0.9.3"
 artnet_protocol = "0.4.4"
 half = "2.4.1"
 bitflags = "2.11.1"
+bumpalo = { version = "3", features = ["allocator-api2"] }

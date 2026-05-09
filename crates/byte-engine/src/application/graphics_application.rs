@@ -155,6 +155,8 @@ impl GraphicsApplication {
 
 		let mut close = false;
 
+		let frame_allocator = &mut self.application.frame_allocator;
+
 		{
 			let renderer = &mut self.renderer;
 			let input_system = &mut self.input_system;

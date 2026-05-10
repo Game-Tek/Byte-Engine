@@ -79,8 +79,6 @@ impl VisibilityPipelineManager {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		// Legacy domain-level descriptor set: created for completeness but superseded by
-		// per-sink descriptor sets allocated in create_sink(). Not used in any render pass.
 		let descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
 
 		let _views_data_binding = device.create_descriptor_binding(
@@ -147,8 +145,7 @@ impl VisibilityPipelineManager {
 		let lighting_data = device.get_mut_buffer_slice(light_data_buffer);
 		lighting_data.count = 0; // Initially, no lights
 
-		// Legacy domain-level material evaluation descriptor set: superseded by per-sink sets
-		// allocated in create_sink(). Not used in any render pass.
+		// Material evaluation resources still vary by sink because the output images vary by sink.
 		let _sampler = device.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
@@ -220,8 +217,9 @@ impl VisibilityPipelineManager {
 		let mesh_key = self.resource_manager.request_mesh(source);
 		self.pending_renderables.push(PendingRenderableInstance {
 			entity: renderable,
-			mesh_key,
+			mesh_key: mesh_key.clone(),
 		});
+		self.resolve_pending_renderables_for_mesh(&mesh_key);
 	}
 
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
@@ -248,13 +246,7 @@ impl VisibilityPipelineManager {
 					let image = frame.intern_image(image);
 					let sampler = frame.intern_sampler(sampler);
 					let image = ghi::BaseImageHandle::from(image);
-					frame.write(&[ghi::descriptors::Write::combined_image_sampler_array(
-						self.scene.textures_binding,
-						image,
-						sampler,
-						ghi::Layouts::Read,
-						index,
-					)]);
+					self.write_texture_descriptors(frame, index, image, sampler);
 					self.pending_texture_uploads.push_back(PendingTextureUpload { image, upload });
 				}
 				VisibilityResourceCompletion::Failed { key } => {
@@ -265,6 +257,23 @@ impl VisibilityPipelineManager {
 				}
 			}
 		}
+	}
+
+	/// Writes a loaded texture into every descriptor set that can sample bindless material textures.
+	fn write_texture_descriptors(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		index: u32,
+		image: ghi::BaseImageHandle,
+		sampler: ghi::SamplerHandle,
+	) {
+		frame.write(&[ghi::descriptors::Write::combined_image_sampler_array(
+			self.scene.textures_binding,
+			image,
+			sampler,
+			ghi::Layouts::Read,
+			index,
+		)]);
 	}
 
 	/// Adopts material metadata and writes the material texture table into the GPU material buffer.
@@ -481,14 +490,10 @@ impl PipelineManager for VisibilityPipelineManager {
 			None
 		};
 
-		for sink in sinks {
-			let Some(sink_state) = self.scene.sink_states.iter().find(|sink_state| sink_state.id == sink.index()) else {
-				continue;
-			};
-
+		if let Some(sink) = sinks.first() {
 			let main_view = sink.view();
 			let main_view_data = Self::make_shader_view_data(main_view);
-			let views_data_buffer = frame.get_mut_dynamic_buffer_slice(sink_state.views_data_buffer_handle);
+			let views_data_buffer = frame.get_mut_dynamic_buffer_slice(self.scene.views_data_buffer_handle);
 
 			for view_data in views_data_buffer.iter_mut() {
 				*view_data = main_view_data;
@@ -510,6 +515,8 @@ impl PipelineManager for VisibilityPipelineManager {
 					views_data_buffer[cascade_index + 1] = cascade_view_data;
 				}
 			}
+
+			frame.sync_buffer(self.scene.views_data_buffer_handle);
 		}
 
 		self.scene.write_light_data(frame, shadow_light_index);
@@ -564,21 +571,6 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 
 		let device = render_pass_builder.device();
-		let views_data_buffer_handle = device.build_dynamic_buffer::<[ShaderViewData; 8]>(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Visibility Views Data")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let base_descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &self.descriptor_set_layout);
-		let _ = device.create_descriptor_binding(
-			base_descriptor_set,
-			ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
-		);
-		let _ = device.create_descriptor_binding(
-			base_descriptor_set,
-			ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, self.scene.meshes_data_buffer.into()),
-		);
-
 		let visibility_passes_descriptor_set =
 			device.create_descriptor_set(Some("Visibility Descriptor Set"), &self.visibility_descriptor_set_layout);
 		let material_evaluation_descriptor_set = device.create_descriptor_set(
@@ -755,7 +747,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			render_pass_builder.device(),
 			self.descriptor_set_layout,
 			self.visibility_descriptor_set_layout,
-			base_descriptor_set,
+			self.scene.descriptor_set,
 			visibility_passes_descriptor_set,
 			material_evaluation_descriptor_set,
 			material_count_buffer,
@@ -775,7 +767,6 @@ impl PipelineManager for VisibilityPipelineManager {
 
 		self.scene.sink_states.push(SinkState {
 			id: sink_id,
-			views_data_buffer_handle,
 			render_pass,
 		});
 	}
@@ -911,7 +902,6 @@ pub struct RenderInfo {
 
 pub struct SinkState {
 	id: usize,
-	views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
 	render_pass: VisibilityPipelineRenderPass,
 }
 

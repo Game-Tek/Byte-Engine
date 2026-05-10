@@ -1,16 +1,16 @@
 pub struct VisibilitySceneManager {
 	/// Render entities registered in the scene.
 	pub(crate) render_entities: Vec<RenderEntity>,
-	/// Legacy domain-level views data buffer (superseded by per-sink buffers in sink_states).
+	/// Shared views data buffer used by every visibility sink.
 	pub(crate) views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
-	/// Legacy domain-level descriptor set (superseded by per-sink descriptor sets in sink_states).
+	/// Shared base descriptor set used by every visibility pass.
 	pub(crate) descriptor_set: ghi::DescriptorSetHandle,
-	/// Bindless texture binding on the legacy domain-level descriptor set.
+	/// Bindless texture binding on the shared base descriptor set.
 	pub(crate) textures_binding: ghi::DescriptorSetBindingHandle,
 	/// Per-instance mesh data buffer holding transforms and material indices for this scene.
 	pub(crate) meshes_data_buffer:
 		ghi::DynamicBufferHandle<[ShaderMesh; crate::rendering::pipelines::visibility::MAX_INSTANCES]>, // Using crate::rendering::pipelines::visibility::MAX_INSTANCES to avoid hardcoding MAX_INSTANCES if not exported
-	/// Legacy domain-level material evaluation descriptor set (superseded by per-sink sets).
+	/// Unused domain-level material evaluation descriptor set kept while material evaluation remains per sink.
 	pub(crate) material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 	/// Buffer containing lighting data for this scene.
 	pub(crate) light_data_buffer: ghi::BufferHandle<LightingData>,

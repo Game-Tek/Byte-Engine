@@ -111,10 +111,10 @@ impl VisibilityPipelineResourceManager {
 		self.material_pipeline_config = Some(config);
 	}
 
-	/// Loads a material resource, reserves its texture dependencies, and queues its material evaluation pipeline.
+	/// Loads a material variant resource, reserves its texture dependencies, and queues its material evaluation pipeline.
 	fn handle_material_request(&mut self, id: String) {
 		let index = self.reserve_material_slot(&id).0;
-		let result = self.load_material_metadata(&id, index);
+		let result = self.load_variant_metadata(&id, index);
 		let completion = match result {
 			Ok(material) => VisibilityResourceCompletion::MaterialReady {
 				id,
@@ -157,16 +157,17 @@ impl VisibilityPipelineResourceManager {
 		}
 	}
 
-	/// Reads material metadata while scheduling texture and pipeline dependencies.
-	fn load_material_metadata(&mut self, id: &str, index: u32) -> Result<FactoryMaterial, ()> {
-		let mut reference: Reference<ResourceMaterial> = self.resource_manager.request(id).map_err(|_| {
+	/// Reads material variant metadata while scheduling texture and pipeline dependencies.
+	fn load_variant_metadata(&mut self, id: &str, index: u32) -> Result<FactoryMaterial, ()> {
+		let mut reference: Reference<ResourceVariant> = self.resource_manager.request(id).map_err(|_| {
 			log::error!(
-				"Visibility material resource request failed for {}. The most likely cause is that the resource id is missing or the asset database is not loaded.",
+				"Visibility material variant request failed for {}. The most likely cause is that the resource id is missing or the asset database is not loaded.",
 				id
 			);
 		})?;
 
-		let material = reference.resource_mut();
+		let variant = reference.resource_mut();
+		let material = variant.material.resource_mut();
 		if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
 			log::error!(
 				"Unsupported visibility material model for {}. The most likely cause is that this material targets a different render model or pass.",
@@ -175,8 +176,26 @@ impl VisibilityPipelineResourceManager {
 			return Err(());
 		}
 
-		let textures = material
-			.parameters
+		let specialization_map_entries = variant
+			.variables
+			.iter()
+			.enumerate()
+			.filter_map(|(index, variable)| match &variable.value {
+				Value::Scalar(value) => {
+					ghi::pipelines::SpecializationMapEntry::new(index as u32, "f32".to_string(), *value).into()
+				}
+				Value::Vector3(value) => {
+					ghi::pipelines::SpecializationMapEntry::new(index as u32, "vec3f".to_string(), *value).into()
+				}
+				Value::Vector4(value) => {
+					ghi::pipelines::SpecializationMapEntry::new(index as u32, "vec4f".to_string(), *value).into()
+				}
+				Value::Image(_) => None,
+			})
+			.collect::<Vec<_>>();
+
+		let textures = variant
+			.variables
 			.iter_mut()
 			.map(|parameter| match parameter.value {
 				Value::Image(ref image) => {
@@ -187,8 +206,8 @@ impl VisibilityPipelineResourceManager {
 				_ => None,
 			})
 			.collect::<Vec<_>>();
-		let alpha = !matches!(material.alpha_mode(), resource_management::types::AlphaMode::Opaque);
-		let pipeline = self.queue_configured_material_pipeline(id.to_string(), material);
+		let alpha = !matches!(variant.alpha_mode, resource_management::types::AlphaMode::Opaque);
+		let pipeline = self.queue_configured_variant_pipeline(id.to_string(), material, specialization_map_entries);
 
 		Ok(FactoryMaterial {
 			index,
@@ -218,6 +237,30 @@ impl VisibilityPipelineResourceManager {
 		};
 
 		self.queue_material_pipeline(id, &config.descriptor_set_templates, &config.push_constant_ranges, material)
+	}
+
+	/// Queues a material variant pipeline with the descriptor configuration supplied by the render thread.
+	fn queue_configured_variant_pipeline(
+		&self,
+		id: String,
+		material: &mut ResourceMaterial,
+		specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
+	) -> Option<ghi::PipelineHandle> {
+		let Some(config) = self.material_pipeline_config.as_ref() else {
+			log::error!(
+				"Visibility material pipeline configuration is unavailable for {}. The most likely cause is that the render pipeline manager has not configured the resource worker yet.",
+				id
+			);
+			return None;
+		};
+
+		self.queue_material_pipeline_with_specialization(
+			id,
+			&config.descriptor_set_templates,
+			&config.push_constant_ranges,
+			material,
+			specialization_map_entries,
+		)
 	}
 
 	/// Builds detached image and sampler resources for a texture resource without touching the render thread's device tables.
@@ -960,6 +1003,24 @@ impl VisibilityPipelineResourceManager {
 		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
 		material: &mut ResourceMaterial,
 	) -> Option<ghi::PipelineHandle> {
+		self.queue_material_pipeline_with_specialization(
+			resource_id,
+			descriptor_set_template_handles,
+			push_constant_ranges,
+			material,
+			Vec::new(),
+		)
+	}
+
+	/// Queues a material pipeline request with variant specialization constants.
+	fn queue_material_pipeline_with_specialization(
+		&self,
+		resource_id: String,
+		descriptor_set_template_handles: &[ghi::DescriptorSetTemplateHandle],
+		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
+		material: &mut ResourceMaterial,
+		specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
+	) -> Option<ghi::PipelineHandle> {
 		if let Some(status) = self.pipelines.read().get(&resource_id) {
 			return match status {
 				PipelineStatus::Pending | PipelineStatus::Failed => None,
@@ -975,7 +1036,7 @@ impl VisibilityPipelineResourceManager {
 				descriptor_set_templates: descriptor_set_template_handles.to_vec(),
 				push_constant_ranges: push_constant_ranges.to_vec(),
 				shader,
-				specialization_map_entries: Vec::new(),
+				specialization_map_entries,
 			}),
 			None => Err(()),
 		};
@@ -1199,7 +1260,7 @@ use resource_management::resource::reader::ResourceReaderBacking;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resource::{ReadTargets, ReadTargetsMut};
 use resource_management::resources::image::Image as ResourceImage;
-use resource_management::resources::material::{Material as ResourceMaterial, Shader, Value};
+use resource_management::resources::material::{Material as ResourceMaterial, Shader, Value, Variant as ResourceVariant};
 use resource_management::resources::mesh::Mesh as ResourceMesh;
 use resource_management::types::ShaderTypes;
 use resource_management::Reference;

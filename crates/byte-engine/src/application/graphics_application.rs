@@ -474,7 +474,33 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		visibility_pipeline_manager: VisibilityPipelineManager,
 	}
 
+	impl CustomPipelineManager {
+		/// Drains renderable creation messages into the visibility resource request path.
+		fn request_pending_meshes(&mut self) {
+			while let Some(message) = self.mesh_receiver.read() {
+				self.pending_meshes.push_back(message);
+			}
+
+			while let Some(message) = self.pending_meshes.pop_front() {
+				self.visibility_pipeline_manager.request_mesh(message.into_data());
+			}
+		}
+	}
+
 	impl PipelineManager for CustomPipelineManager {
+		fn prepare_transfers<'a>(
+			&mut self,
+			transfer: &mut ghi::implementation::CommandBufferRecording,
+			key: ghi::FrameKey,
+			completed_frame: Option<ghi::FrameKey>,
+			staging_data_buffer: ghi::BaseBufferHandle,
+			slice: utils::BufferAllocator<'a>,
+		) -> rendering::pipeline_manager::TransferPrepareResult<'a> {
+			self.request_pending_meshes();
+			self.visibility_pipeline_manager
+				.prepare_transfers(transfer, key, completed_frame, staging_data_buffer, slice)
+		}
+
 		fn prepare(
 			&mut self,
 			frame: &mut ghi::implementation::Frame,
@@ -484,13 +510,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 				self.visibility_pipeline_manager.create_light(message.into_data());
 			}
 
-			while let Some(message) = self.mesh_receiver.read() {
-				self.pending_meshes.push_back(message);
-			}
-
-			while let Some(message) = self.pending_meshes.pop_front() {
-				self.visibility_pipeline_manager.request_mesh(message.into_data());
-			}
+			self.request_pending_meshes();
 
 			self.visibility_pipeline_manager.prepare(frame, sinks)
 		}

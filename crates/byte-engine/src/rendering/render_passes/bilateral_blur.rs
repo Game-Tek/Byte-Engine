@@ -6,6 +6,7 @@ use ghi::{
 	device::Device as _,
 };
 use math::Vector2;
+use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};
 use utils::{Box, Extent};
 
 use crate::rendering::{
@@ -35,6 +36,7 @@ pub struct BaseBilateralBlurPass {
 
 impl BaseBilateralBlurPass {
 	fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
+		let shader_storage = render_pass_builder.shader_storage();
 		let context = render_pass_builder.context();
 
 		let descriptor_set_template = context.create_descriptor_set_template(
@@ -42,16 +44,23 @@ impl BaseBilateralBlurPass {
 			&[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING],
 		);
 
-		let shader = crate::rendering::create_shader_from_source(
+		let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
 			context,
-			Some("SSGI Blur"),
-			ghi::shader::ShaderSource::Glsl(BLUR_SHADER),
-			ghi::ShaderTypes::Compute,
-			[
-				BLUR_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				BLUR_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				BLUR_RESULT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-			],
+			shader_storage,
+			&crate::rendering::shader_store::ShaderSourceDescriptor {
+				id: "byte-engine/rendering/bilateral-blur",
+				name: "SSGI Blur",
+				stage: ResourceShaderTypes::Compute,
+				source: ghi::shader::ShaderSource::Glsl(BLUR_SHADER),
+				interface: material::ShaderInterface {
+					workgroup_size: Some((128, 1, 1)),
+					bindings: vec![
+						material::Binding::new(0, 0, true, false),
+						material::Binding::new(0, 1, true, false),
+						material::Binding::new(0, 2, false, true),
+					],
+				},
+			},
 		)
 		.expect("Failed to create the SSGI blur shader.");
 		let pipeline_x = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(

@@ -23,6 +23,7 @@ pub mod renderer;
 pub mod framebuffer;
 pub mod render_pass;
 pub mod render_passes;
+pub mod shader_store;
 
 pub mod pipelines;
 

@@ -11,6 +11,8 @@ use half::f16;
 use resource_management::{
 	resource::ReadTargetsMut,
 	resources::lut::{Lut, LutKind},
+	resources::material,
+	types::ShaderTypes as ResourceShaderTypes,
 	Reference,
 };
 use utils::{Box, Extent};
@@ -76,6 +78,7 @@ impl LutRenderPass {
 		);
 		render_pass_builder.alias("LUT Output", "main");
 
+		let shader_storage = render_pass_builder.shader_storage();
 		let context = render_pass_builder.context();
 
 		let descriptor_set_layout = context.create_descriptor_set_template(
@@ -84,7 +87,7 @@ impl LutRenderPass {
 		);
 
 		let (lut_glsl, lut_msl) = create_lut_shader_sources(&lut_metadata);
-		let shader = create_lut_shader(context, &lut_glsl, &lut_msl);
+		let shader = create_lut_shader(context, shader_storage, &lut_glsl, &lut_msl);
 		let pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_layout],
 			&[],
@@ -176,21 +179,33 @@ impl RenderPass for LutRenderPass {
 	}
 }
 
-fn create_lut_shader(context: &mut ghi::implementation::Context, glsl: &str, msl: &str) -> ghi::ShaderHandle {
-	crate::rendering::create_shader_from_source(
+fn create_lut_shader(
+	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
+	glsl: &str,
+	msl: &str,
+) -> ghi::ShaderHandle {
+	crate::rendering::shader_store::create_shader_from_baked_or_inline(
 		context,
-		Some("LUT Render Pass Compute Shader"),
-		ghi::shader::ShaderSource::Platform {
-			glsl,
-			msl,
-			msl_entry_point: "lut_apply",
+		shader_storage,
+		&crate::rendering::shader_store::ShaderSourceDescriptor {
+			id: "byte-engine/rendering/lut/apply",
+			name: "LUT Render Pass Compute Shader",
+			stage: ResourceShaderTypes::Compute,
+			source: ghi::shader::ShaderSource::Platform {
+				glsl,
+				msl,
+				msl_entry_point: "lut_apply",
+			},
+			interface: material::ShaderInterface {
+				workgroup_size: Some((8, 8, 1)),
+				bindings: vec![
+					material::Binding::new(0, 0, true, false),
+					material::Binding::new(0, 1, true, false),
+					material::Binding::new(0, 2, false, true),
+				],
+			},
 		},
-		ghi::ShaderTypes::Compute,
-		[
-			LUT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			LUT_TEXTURE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			LUT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-		],
 	)
 	.expect("Failed to create LUT render shader. The most likely cause is an incompatible shader interface.")
 }

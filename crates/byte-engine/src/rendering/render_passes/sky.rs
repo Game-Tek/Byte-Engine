@@ -5,6 +5,7 @@ use ghi::{
 	frame::Frame as _,
 };
 use math::{mat::MatInverse as _, ShaderMatrix4, Vector3, Vector4};
+use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};
 use utils::{Box, Extent};
 
 use crate::{
@@ -89,6 +90,7 @@ impl AtmosphereSkyRenderPass {
 		let depth = render_pass_builder.read_from("depth");
 		let main = render_pass_builder.render_to("main");
 
+		let shader_storage = render_pass_builder.shader_storage();
 		let context = render_pass_builder.context();
 
 		let descriptor_set_template = context.create_descriptor_set_template(
@@ -96,7 +98,7 @@ impl AtmosphereSkyRenderPass {
 			&[SKY_DEPTH_BINDING, SKY_MAIN_BINDING, SKY_PARAMETERS_BINDING],
 		);
 
-		let shader = create_sky_shader(context);
+		let shader = create_sky_shader(context, shader_storage);
 
 		let pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_template],
@@ -171,21 +173,31 @@ impl AtmosphereSkyRenderPass {
 	}
 }
 
-fn create_sky_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
-	crate::rendering::create_shader_from_source(
+fn create_sky_shader(
+	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
+) -> ghi::ShaderHandle {
+	crate::rendering::shader_store::create_shader_from_baked_or_inline(
 		context,
-		Some("Sky Render Pass Compute Shader"),
-		ghi::shader::ShaderSource::Platform {
-			glsl: SKY_SHADER,
-			msl: SKY_SHADER_MSL,
-			msl_entry_point: "sky_render_pass",
+		shader_storage,
+		&crate::rendering::shader_store::ShaderSourceDescriptor {
+			id: "byte-engine/rendering/sky",
+			name: "Sky Render Pass Compute Shader",
+			stage: ResourceShaderTypes::Compute,
+			source: ghi::shader::ShaderSource::Platform {
+				glsl: SKY_SHADER,
+				msl: SKY_SHADER_MSL,
+				msl_entry_point: "sky_render_pass",
+			},
+			interface: material::ShaderInterface {
+				workgroup_size: Some((8, 8, 1)),
+				bindings: vec![
+					material::Binding::new(0, 0, true, false),
+					material::Binding::new(0, 1, false, true),
+					material::Binding::new(0, 2, true, false),
+				],
+			},
 		},
-		ghi::ShaderTypes::Compute,
-		[
-			SKY_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			SKY_MAIN_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-			SKY_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-		],
 	)
 	.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.")
 }

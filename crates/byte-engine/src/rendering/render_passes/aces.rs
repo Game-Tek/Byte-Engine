@@ -6,6 +6,7 @@ use ghi::{
 	device::Device as _,
 	FrameKey,
 };
+use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};
 use utils::{Box, Extent};
 
 use crate::core::Entity;
@@ -33,20 +34,21 @@ impl Entity for BaseAcesToneMapPass {}
 
 impl BaseAcesToneMapPass {
 	pub fn new<'a>(render_pass_builder: &'a mut RenderPassBuilder<'_>) -> Self {
-		let context = render_pass_builder.context();
-
-		let descriptor_set_layout = context.create_descriptor_set_template(
+		let descriptor_set_layout = render_pass_builder.context().create_descriptor_set_template(
 			Some("Tonemap Pass Set Layout"),
 			&[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE],
 		);
 
-		let tone_mapping_shader = create_tone_mapping_shader(context);
+		let tone_mapping_shader = create_tone_mapping_shader(render_pass_builder);
 
-		let tone_mapping_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[descriptor_set_layout],
-			&[],
-			ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute),
-		));
+		let tone_mapping_pipeline =
+			render_pass_builder
+				.context()
+				.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+					&[descriptor_set_layout],
+					&[],
+					ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute),
+				));
 
 		Self {
 			descriptor_set_layout,
@@ -55,22 +57,26 @@ impl BaseAcesToneMapPass {
 	}
 }
 
-fn create_tone_mapping_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
-	crate::rendering::create_shader_from_source(
-		context,
-		Some("ACES Tone Mapping Compute Shader"),
-		ghi::shader::ShaderSource::Platform {
-			glsl: TONE_MAPPING_SHADER,
-			msl: TONE_MAPPING_SHADER_MSL,
-			msl_entry_point: "aces_tonemap",
-		},
-		ghi::ShaderTypes::Compute,
-		[
-			SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-		],
-	)
-	.expect("Failed to create ACES tone mapping shader. The most likely cause is an incompatible shader interface.")
+fn create_tone_mapping_shader(render_pass_builder: &mut RenderPassBuilder<'_>) -> ghi::ShaderHandle {
+	render_pass_builder
+		.create_shader(&crate::rendering::shader_store::ShaderSourceDescriptor {
+			id: "byte-engine/rendering/aces/tone-mapping",
+			name: "ACES Tone Mapping Compute Shader",
+			stage: ResourceShaderTypes::Compute,
+			source: ghi::shader::ShaderSource::Platform {
+				glsl: TONE_MAPPING_SHADER,
+				msl: TONE_MAPPING_SHADER_MSL,
+				msl_entry_point: "aces_tonemap",
+			},
+			interface: material::ShaderInterface {
+				workgroup_size: Some((32, 32, 1)),
+				bindings: vec![
+					material::Binding::new(0, 0, true, false),
+					material::Binding::new(0, 1, false, true),
+				],
+			},
+		})
+		.expect("Failed to create ACES tone mapping shader. The most likely cause is an incompatible shader interface.")
 }
 
 pub struct AcesToneMapPass {

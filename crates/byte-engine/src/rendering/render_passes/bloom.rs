@@ -4,6 +4,7 @@ use ghi::{
 	device::Device as _,
 	frame::Frame as _,
 };
+use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};
 use utils::{Box, Extent};
 
 use crate::{
@@ -126,6 +127,7 @@ impl BloomPass {
 		);
 		render_pass_builder.alias("Bloom Output", "main");
 
+		let shader_storage = render_pass_builder.shader_storage();
 		let context = render_pass_builder.context();
 		let level_count = settings.resolved_level_count();
 		let downsample_images = (0..level_count)
@@ -195,10 +197,10 @@ impl BloomPass {
 			],
 		);
 
-		let extract_pipeline = create_extract_pipeline(context, extract_descriptor_set_layout);
-		let downsample_pipeline = create_downsample_pipeline(context, extract_descriptor_set_layout);
-		let upsample_pipeline = create_upsample_pipeline(context, upsample_descriptor_set_layout);
-		let composite_pipeline = create_composite_pipeline(context, composite_descriptor_set_layout);
+		let extract_pipeline = create_extract_pipeline(context, shader_storage, extract_descriptor_set_layout);
+		let downsample_pipeline = create_downsample_pipeline(context, shader_storage, extract_descriptor_set_layout);
+		let upsample_pipeline = create_upsample_pipeline(context, shader_storage, upsample_descriptor_set_layout);
+		let composite_pipeline = create_composite_pipeline(context, shader_storage, composite_descriptor_set_layout);
 
 		let extract_descriptor_set =
 			context.create_descriptor_set(Some("Bloom Extract Descriptor Set"), &extract_descriptor_set_layout);
@@ -425,18 +427,22 @@ fn bloom_extent(extent: Extent, level: usize) -> Extent {
 
 fn create_extract_pipeline(
 	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader = crate::rendering::create_shader_from_source(
+	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
 		context,
-		Some("Bloom Extract Shader"),
-		ghi::shader::ShaderSource::Glsl(BLOOM_EXTRACT_SHADER),
-		ghi::ShaderTypes::Compute,
-		[
-			EXTRACT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			EXTRACT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-			EXTRACT_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-		],
+		shader_storage,
+		&bloom_shader_descriptor(
+			"byte-engine/rendering/bloom/extract",
+			"Bloom Extract Shader",
+			BLOOM_EXTRACT_SHADER,
+			vec![
+				material::Binding::new(0, 0, true, false),
+				material::Binding::new(0, 1, false, true),
+				material::Binding::new(0, 2, true, false),
+			],
+		),
 	)
 	.expect("Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.");
 
@@ -449,18 +455,22 @@ fn create_extract_pipeline(
 
 fn create_downsample_pipeline(
 	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader = crate::rendering::create_shader_from_source(
+	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
 		context,
-		Some("Bloom Downsample Shader"),
-		ghi::shader::ShaderSource::Glsl(BLOOM_DOWNSAMPLE_SHADER),
-		ghi::ShaderTypes::Compute,
-		[
-			EXTRACT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			EXTRACT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-			EXTRACT_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-		],
+		shader_storage,
+		&bloom_shader_descriptor(
+			"byte-engine/rendering/bloom/downsample",
+			"Bloom Downsample Shader",
+			BLOOM_DOWNSAMPLE_SHADER,
+			vec![
+				material::Binding::new(0, 0, true, false),
+				material::Binding::new(0, 1, false, true),
+				material::Binding::new(0, 2, true, false),
+			],
+		),
 	)
 	.expect(
 		"Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
@@ -475,19 +485,23 @@ fn create_downsample_pipeline(
 
 fn create_upsample_pipeline(
 	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader = crate::rendering::create_shader_from_source(
+	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
 		context,
-		Some("Bloom Upsample Shader"),
-		ghi::shader::ShaderSource::Glsl(BLOOM_UPSAMPLE_SHADER),
-		ghi::ShaderTypes::Compute,
-		[
-			UPSAMPLE_LOW_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			UPSAMPLE_HIGH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			UPSAMPLE_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-			UPSAMPLE_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-		],
+		shader_storage,
+		&bloom_shader_descriptor(
+			"byte-engine/rendering/bloom/upsample",
+			"Bloom Upsample Shader",
+			BLOOM_UPSAMPLE_SHADER,
+			vec![
+				material::Binding::new(0, 0, true, false),
+				material::Binding::new(0, 1, true, false),
+				material::Binding::new(0, 2, false, true),
+				material::Binding::new(0, 3, true, false),
+			],
+		),
 	)
 	.expect(
 		"Failed to create bloom upsample shader. The most likely cause is an incompatible bloom upsample shader interface.",
@@ -502,19 +516,23 @@ fn create_upsample_pipeline(
 
 fn create_composite_pipeline(
 	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader = crate::rendering::create_shader_from_source(
+	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
 		context,
-		Some("Bloom Composite Shader"),
-		ghi::shader::ShaderSource::Glsl(BLOOM_COMPOSITE_SHADER),
-		ghi::ShaderTypes::Compute,
-		[
-			COMPOSITE_SCENE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			COMPOSITE_BLOOM_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			COMPOSITE_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-			COMPOSITE_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-		],
+		shader_storage,
+		&bloom_shader_descriptor(
+			"byte-engine/rendering/bloom/composite",
+			"Bloom Composite Shader",
+			BLOOM_COMPOSITE_SHADER,
+			vec![
+				material::Binding::new(0, 0, true, false),
+				material::Binding::new(0, 1, true, false),
+				material::Binding::new(0, 2, false, true),
+				material::Binding::new(0, 3, true, false),
+			],
+		),
 	)
 	.expect(
 		"Failed to create bloom composite shader. The most likely cause is an incompatible bloom composite shader interface.",
@@ -525,6 +543,24 @@ fn create_composite_pipeline(
 		&[],
 		ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
 	))
+}
+
+fn bloom_shader_descriptor<'a>(
+	id: &'a str,
+	name: &'a str,
+	source: &'a str,
+	bindings: Vec<material::Binding>,
+) -> crate::rendering::shader_store::ShaderSourceDescriptor<'a> {
+	crate::rendering::shader_store::ShaderSourceDescriptor {
+		id,
+		name,
+		stage: ResourceShaderTypes::Compute,
+		source: ghi::shader::ShaderSource::Glsl(source),
+		interface: material::ShaderInterface {
+			workgroup_size: Some((8, 8, 1)),
+			bindings,
+		},
+	}
 }
 
 const BLOOM_EXTRACT_SHADER: &str = r#"

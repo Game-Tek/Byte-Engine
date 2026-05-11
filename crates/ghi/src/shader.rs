@@ -14,6 +14,7 @@ pub enum Sources<'a> {
 ///
 /// It exists to let callers express the GLSL and/or MSL variants of a shader in one value and let
 /// [`compile`] pick the correct path for the active backend.
+#[derive(Clone, Copy)]
 pub enum ShaderSource<'a> {
 	/// GLSL source code to be compiled to SPIR-V for Vulkan backends.
 	Glsl(&'a str),

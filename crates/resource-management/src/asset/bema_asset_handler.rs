@@ -19,7 +19,7 @@ use crate::{
 	r#async::{spawn_cpu_task, BoxedFuture},
 	resource,
 	resources::material::{
-		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel,
+		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderArtifact, ShaderInterface, ValueModel, VariantModel,
 		VariantVariableModel,
 	},
 	shader_generator::ShaderGenerationSettings,
@@ -324,6 +324,13 @@ pub(crate) fn compile_shader_program(
 		id: name.to_string(),
 		stage,
 		interface,
+		#[cfg(not(target_vendor = "apple"))]
+		artifact: ShaderArtifact::Spirv,
+		#[cfg(target_vendor = "apple")]
+		artifact: ShaderArtifact::Mtlb {
+			entry_point: "besl_main".to_string(),
+		},
+		source_hash: 0,
 	};
 
 	Ok((shader, shader_program.into_binary()))

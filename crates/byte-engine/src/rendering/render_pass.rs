@@ -16,7 +16,7 @@ use utils::{
 
 use crate::{
 	core::EntityHandle,
-	rendering::{renderer::RenderTargets, Sink},
+	rendering::{renderer::RenderTargets, shader_store::ShaderSourceDescriptor, Sink},
 };
 
 pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording, &[ghi::AttachmentInformation]);
@@ -36,6 +36,7 @@ pub struct RenderPassBuilder<'a> {
 	swapchain: ghi::SwapchainHandle,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	pub(crate) images: &'a mut RenderTargets,
+	shader_storage: Option<&'a dyn resource_management::resource::StorageBackend>,
 }
 
 impl<'a> RenderPassBuilder<'a> {
@@ -51,7 +52,13 @@ impl<'a> RenderPassBuilder<'a> {
 			swapchain,
 			consumed_resources: Vec::new(),
 			images,
+			shader_storage: None,
 		}
+	}
+
+	pub fn with_shader_storage(mut self, shader_storage: &'a dyn resource_management::resource::StorageBackend) -> Self {
+		self.shader_storage = Some(shader_storage);
+		self
 	}
 
 	pub fn alias(&mut self, orig: &'a str, alias: &'a str) {
@@ -104,6 +111,14 @@ impl<'a> RenderPassBuilder<'a> {
 
 	pub fn context(&mut self) -> &'_ mut ghi::implementation::Context {
 		self.context
+	}
+
+	pub fn create_shader(&mut self, descriptor: &ShaderSourceDescriptor<'_>) -> Result<ghi::ShaderHandle, String> {
+		crate::rendering::shader_store::create_shader_from_baked_or_inline(self.context, self.shader_storage, descriptor)
+	}
+
+	pub(crate) fn shader_storage(&self) -> Option<&'a dyn resource_management::resource::StorageBackend> {
+		self.shader_storage
 	}
 
 	pub(crate) fn render_to_swapchain(&self) -> ghi::SwapchainHandle {

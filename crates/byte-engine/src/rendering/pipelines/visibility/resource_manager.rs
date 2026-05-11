@@ -25,17 +25,17 @@ pub(crate) struct VisibilityPipelineResourceManager {
 
 impl VisibilityPipelineResourceManager {
 	pub(crate) fn spawn(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		resource_manager: EntityHandle<ResourceManager>,
 	) -> (
 		VisibilityPipelineResourceManagerClient,
 		VisibilityPipelineResourceManagerWorker,
 	) {
-		let mesh_data_manager = GPUVertexDataManager::new(device);
+		let mesh_data_manager = GPUVertexDataManager::new(context);
 		let gpu_vertex_data_manager = mesh_data_manager.clone();
 		let (commands, command_receiver) = mpsc::channel();
 		let (work_completions, work_completion_receiver) = mpsc::channel();
-		let resource_manager = Self::new(device, resource_manager, mesh_data_manager, work_completions.clone());
+		let resource_manager = Self::new(context, resource_manager, mesh_data_manager, work_completions.clone());
 
 		(
 			VisibilityPipelineResourceManagerClient {
@@ -55,13 +55,13 @@ impl VisibilityPipelineResourceManager {
 	}
 
 	fn new(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		resource_manager: EntityHandle<ResourceManager>,
 		mesh_data_manager: GPUVertexDataManager,
 		work_completions: Sender<VisibilityResourceCompletion>,
 	) -> Self {
-		let resource_factory = device.create_factory();
-		let (compute_pipeline_requests, compute_pipeline_results) = if let Some(factory) = device.create_factory() {
+		let resource_factory = context.create_factory();
+		let (compute_pipeline_requests, compute_pipeline_results) = if let Some(factory) = context.create_factory() {
 			let (requests, results) = Self::spawn_compute_worker(factory);
 			(Some(requests), Some(results))
 		} else {
@@ -1382,7 +1382,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use ghi::device::Device as _;
+use ghi::context::Context as _;
 use ghi::factory::Factory as _;
 use ghi::frame::Frame as _;
 use ghi::{

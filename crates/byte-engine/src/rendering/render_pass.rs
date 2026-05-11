@@ -4,7 +4,8 @@ use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 };
 use resource_management::glsl;
 use utils::{
@@ -30,7 +31,7 @@ pub trait RenderPass {
 }
 
 pub struct RenderPassBuilder<'a> {
-	device: &'a mut ghi::implementation::Device,
+	context: &'a mut ghi::implementation::Context,
 	sink_id: usize,
 	swapchain: ghi::SwapchainHandle,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
@@ -39,13 +40,13 @@ pub struct RenderPassBuilder<'a> {
 
 impl<'a> RenderPassBuilder<'a> {
 	pub fn new(
-		device: &'a mut ghi::implementation::Device,
+		context: &'a mut ghi::implementation::Context,
 		images: &'a mut RenderTargets,
 		sink_id: usize,
 		swapchain: ghi::SwapchainHandle,
 	) -> Self {
 		RenderPassBuilder {
-			device,
+			context,
 			sink_id,
 			swapchain,
 			consumed_resources: Vec::new(),
@@ -82,7 +83,7 @@ impl<'a> RenderPassBuilder<'a> {
 		let name = builder.get_name().unwrap().to_string();
 		let format = builder.get_format();
 
-		let image = self.device.build_image(builder);
+		let image = self.context.build_image(builder);
 
 		self.images.insert(name, self.sink_id, image.into(), format);
 
@@ -101,8 +102,8 @@ impl<'a> RenderPassBuilder<'a> {
 		ReadFromResult { image: image.into() }
 	}
 
-	pub fn device(&mut self) -> &'_ mut ghi::implementation::Device {
-		self.device
+	pub fn context(&mut self) -> &'_ mut ghi::implementation::Context {
+		self.context
 	}
 
 	pub(crate) fn render_to_swapchain(&self) -> ghi::SwapchainHandle {

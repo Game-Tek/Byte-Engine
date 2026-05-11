@@ -2,9 +2,12 @@ use ghi::command_buffer::{
 	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 };
-use ghi::device::{Device as _, DeviceCreate as _};
 use ghi::frame::Frame as _;
 use ghi::implementation::Frame;
+use ghi::{
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
+};
 use math::Vector2;
 use resource_management::resources::material;
 use utils::{Box, Extent, RGBA};
@@ -83,7 +86,7 @@ pub struct VisibilityPass {
 
 impl VisibilityPass {
 	pub fn new(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		primitive_index: ghi::BaseImageHandle,
@@ -94,7 +97,7 @@ impl VisibilityPass {
 			let visibility_task_shader = get_visibility_pass_task_msl_source();
 
 			Some(
-				device
+				context
 					.create_shader(
 						Some("Visibility Pass Task Shader"),
 						ghi::shader::Sources::MTL {
@@ -125,7 +128,7 @@ impl VisibilityPass {
 			},
 		)
 		.expect("Failed to compile shader");
-		let visibility_pass_mesh_shader = device
+		let visibility_pass_mesh_shader = context
 			.create_shader(
 				Some("Visibility Pass Mesh Shader"),
 				visibility_pass_mesh_shader_source.as_source(),
@@ -152,7 +155,7 @@ impl VisibilityPass {
 			},
 		)
 		.expect("Failed to compile shader");
-		let visibility_pass_fragment_shader = device
+		let visibility_pass_fragment_shader = context
 			.create_shader(
 				Some("Visibility Pass Fragment Shader"),
 				visibility_pass_fragment_shader_source.as_source(),
@@ -185,7 +188,7 @@ impl VisibilityPass {
 			ghi::pipelines::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
 		];
 
-		let visibility_pass_pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+		let visibility_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[base_descriptor_set_layout],
 			&[ghi::pipelines::PushConstantRange::new(0, 4)],
 			&vertex_layout,
@@ -267,7 +270,7 @@ pub struct ShadowPass {
 
 impl ShadowPass {
 	fn new(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		shadow_map: ghi::BaseImageHandle,
@@ -276,7 +279,7 @@ impl ShadowPass {
 			let shadow_task_shader = get_shadow_pass_task_msl_source();
 
 			Some(
-				device
+				context
 					.create_shader(
 						Some("Shadow Pass Task Shader"),
 						ghi::shader::Sources::MTL {
@@ -299,7 +302,7 @@ impl ShadowPass {
 		let shadow_mesh_glsl = get_shadow_pass_mesh_source();
 		let shadow_mesh_msl = get_shadow_pass_mesh_msl_source();
 		let shadow_pass_mesh_shader = crate::rendering::create_shader_from_source(
-			device,
+			context,
 			Some("Shadow Pass Mesh Shader"),
 			ghi::shader::ShaderSource::Platform {
 				glsl: &shadow_mesh_glsl,
@@ -332,7 +335,7 @@ impl ShadowPass {
 		}
 		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_mesh_shader, ghi::ShaderTypes::Mesh));
 
-		let shadow_pass_pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+		let shadow_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[base_descriptor_set_layout],
 			&[ghi::pipelines::PushConstantRange::new(0, 8)],
 			&vertex_layout,
@@ -415,7 +418,7 @@ pub struct MaterialCountPass {
 
 impl MaterialCountPass {
 	fn new(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
@@ -424,7 +427,7 @@ impl MaterialCountPass {
 	) -> Self {
 		let material_count_glsl = get_material_count_source();
 		let material_count_shader = crate::rendering::create_shader_from_source(
-			device,
+			context,
 			Some("Material Count Pass Compute Shader"),
 			ghi::shader::ShaderSource::Platform {
 				glsl: &material_count_glsl,
@@ -441,7 +444,7 @@ impl MaterialCountPass {
 		)
 		.expect("Failed to create shader");
 
-		let material_count_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let material_count_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, visibility_descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute),
@@ -492,7 +495,7 @@ pub struct MaterialOffsetPass {
 
 impl MaterialOffsetPass {
 	fn new(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
@@ -503,7 +506,7 @@ impl MaterialOffsetPass {
 	) -> Self {
 		let material_offset_glsl = get_material_offset_source();
 		let material_offset_shader = crate::rendering::create_shader_from_source(
-			device,
+			context,
 			Some("Material Offset Pass Compute Shader"),
 			ghi::shader::ShaderSource::Platform {
 				glsl: &material_offset_glsl,
@@ -520,7 +523,7 @@ impl MaterialOffsetPass {
 		)
 		.expect("Failed to create shader");
 
-		let material_offset_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let material_offset_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, visibility_descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute),
@@ -578,7 +581,7 @@ pub struct PixelMappingPass {
 
 impl PixelMappingPass {
 	fn new(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
@@ -588,7 +591,7 @@ impl PixelMappingPass {
 		let pixel_mapping_glsl = get_pixel_mapping_source();
 		let pixel_mapping_msl = get_pixel_mapping_msl_source();
 		let pixel_mapping_shader = crate::rendering::create_shader_from_source(
-			device,
+			context,
 			Some("Pixel Mapping Pass Compute Shader"),
 			ghi::shader::ShaderSource::Platform {
 				glsl: &pixel_mapping_glsl,
@@ -606,7 +609,7 @@ impl PixelMappingPass {
 		)
 		.expect("Failed to create shader");
 
-		let pixel_mapping_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let pixel_mapping_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, visibility_descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute),
@@ -662,24 +665,24 @@ impl GtaoPass {
 	}
 
 	fn new(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		depth: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
 	) -> Self {
 		let descriptor_set_layout =
-			device.create_descriptor_set_template(Some("GTAO Descriptor Set"), &[GTAO_DEPTH_BINDING, GTAO_OUTPUT_BINDING]);
-		let gtao_descriptor_set = device.create_descriptor_set(Some("GTAO Descriptor Set"), &descriptor_set_layout);
-		let blur_descriptor_set_layout = device.create_descriptor_set_template(
+			context.create_descriptor_set_template(Some("GTAO Descriptor Set"), &[GTAO_DEPTH_BINDING, GTAO_OUTPUT_BINDING]);
+		let gtao_descriptor_set = context.create_descriptor_set(Some("GTAO Descriptor Set"), &descriptor_set_layout);
+		let blur_descriptor_set_layout = context.create_descriptor_set_template(
 			Some("GTAO Blur Descriptor Set"),
 			&[GTAO_BLUR_DEPTH_BINDING, GTAO_BLUR_SOURCE_BINDING, GTAO_BLUR_OUTPUT_BINDING],
 		);
 		let blur_descriptor_set_x =
-			device.create_descriptor_set(Some("GTAO Blur X Descriptor Set"), &blur_descriptor_set_layout);
+			context.create_descriptor_set(Some("GTAO Blur X Descriptor Set"), &blur_descriptor_set_layout);
 		let blur_descriptor_set_y =
-			device.create_descriptor_set(Some("GTAO Blur Y Descriptor Set"), &blur_descriptor_set_layout);
-		let depth_sampler = device.build_sampler(
+			context.create_descriptor_set(Some("GTAO Blur Y Descriptor Set"), &blur_descriptor_set_layout);
+		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
@@ -688,7 +691,7 @@ impl GtaoPass {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
-		let ao_sampler = device.build_sampler(
+		let ao_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest)
@@ -696,13 +699,13 @@ impl GtaoPass {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
-		let temp_ao_map = device.build_dynamic_image(
+		let temp_ao_map = context.build_dynamic_image(
 			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
 				.name("GTAO Blur Intermediate")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 		let packed_ao_map = GTAO_USE_BITFIELD_BINARY_IMPL.then(|| {
-			device.build_dynamic_image(
+			context.build_dynamic_image(
 				ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::Storage | ghi::Uses::Image)
 					.name("GTAO Packed AO")
 					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
@@ -711,7 +714,7 @@ impl GtaoPass {
 		let gtao_output = packed_ao_map.map(|e| e.into()).unwrap_or(ao_map);
 		let blur_source_x = packed_ao_map.map(|e| e.into()).unwrap_or(ao_map);
 
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			gtao_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&GTAO_DEPTH_BINDING,
@@ -720,11 +723,11 @@ impl GtaoPass {
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			gtao_descriptor_set,
 			ghi::BindingConstructor::image(&GTAO_OUTPUT_BINDING, gtao_output),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			blur_descriptor_set_x,
 			ghi::BindingConstructor::combined_image_sampler(
 				&GTAO_BLUR_DEPTH_BINDING,
@@ -733,7 +736,7 @@ impl GtaoPass {
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			blur_descriptor_set_x,
 			ghi::BindingConstructor::combined_image_sampler(
 				&GTAO_BLUR_SOURCE_BINDING,
@@ -742,15 +745,15 @@ impl GtaoPass {
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			blur_descriptor_set_x,
 			ghi::BindingConstructor::image(&GTAO_BLUR_OUTPUT_BINDING, temp_ao_map),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			blur_descriptor_set_y,
 			ghi::BindingConstructor::combined_image_sampler(&GTAO_BLUR_DEPTH_BINDING, depth, depth_sampler, ghi::Layouts::Read),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			blur_descriptor_set_y,
 			ghi::BindingConstructor::combined_image_sampler(
 				&GTAO_BLUR_SOURCE_BINDING,
@@ -759,7 +762,7 @@ impl GtaoPass {
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			blur_descriptor_set_y,
 			ghi::BindingConstructor::image(&GTAO_BLUR_OUTPUT_BINDING, ao_map),
 		);
@@ -775,7 +778,7 @@ impl GtaoPass {
 			get_gtao_shader()
 		};
 		let gtao_shader = crate::rendering::create_shader_from_source(
-			device,
+			context,
 			Some("GTAO Pass Compute Shader"),
 			generated_platform_shader_source(&gtao_shader_data),
 			ghi::ShaderTypes::Compute,
@@ -783,7 +786,7 @@ impl GtaoPass {
 		)
 		.expect("Failed to create shader");
 
-		let gtao_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let gtao_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&gtao_shader, ghi::ShaderTypes::Compute),
@@ -801,7 +804,7 @@ impl GtaoPass {
 			get_gtao_blur_shader()
 		};
 		let blur_x_shader = crate::rendering::create_shader_from_source(
-			device,
+			context,
 			Some("GTAO Blur X Compute Shader"),
 			generated_platform_shader_source(&blur_x_shader_data),
 			ghi::ShaderTypes::Compute,
@@ -810,7 +813,7 @@ impl GtaoPass {
 		.expect("Failed to create shader");
 		let blur_y_shader_data = get_gtao_blur_shader();
 		let blur_y_shader = crate::rendering::create_shader_from_source(
-			device,
+			context,
 			Some("GTAO Blur Y Compute Shader"),
 			generated_platform_shader_source(&blur_y_shader_data),
 			ghi::ShaderTypes::Compute,
@@ -818,14 +821,14 @@ impl GtaoPass {
 		)
 		.expect("Failed to create shader");
 
-		let blur_pipeline_x = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let blur_pipeline_x = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, blur_descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&blur_x_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
 				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(1.0f32, 0.0f32)),
 			]),
 		));
-		let blur_pipeline_y = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let blur_pipeline_y = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[base_descriptor_set_layout, blur_descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&blur_y_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
@@ -1016,7 +1019,7 @@ pub struct VisibilityPipelineRenderPass {
 
 impl VisibilityPipelineRenderPass {
 	pub fn new(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
@@ -1036,9 +1039,9 @@ impl VisibilityPipelineRenderPass {
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
 	) -> Self {
-		let shadow_pass = ShadowPass::new(device, base_descriptor_set_layout, base_descriptor_set, shadow_map);
+		let shadow_pass = ShadowPass::new(context, base_descriptor_set_layout, base_descriptor_set, shadow_map);
 		let visibility_pass = VisibilityPass::new(
-			device,
+			context,
 			base_descriptor_set_layout,
 			base_descriptor_set,
 			primitive_index,
@@ -1046,7 +1049,7 @@ impl VisibilityPipelineRenderPass {
 			depth,
 		);
 		let material_count_pass = MaterialCountPass::new(
-			device,
+			context,
 			base_descriptor_set_layout,
 			visibility_descriptor_set_layout,
 			base_descriptor_set,
@@ -1054,7 +1057,7 @@ impl VisibilityPipelineRenderPass {
 			material_count_buffer,
 		);
 		let material_offset_pass = MaterialOffsetPass::new(
-			device,
+			context,
 			base_descriptor_set_layout,
 			visibility_descriptor_set_layout,
 			base_descriptor_set,
@@ -1064,14 +1067,14 @@ impl VisibilityPipelineRenderPass {
 			material_evaluation_dispatches,
 		);
 		let pixel_mapping_pass = PixelMappingPass::new(
-			device,
+			context,
 			base_descriptor_set_layout,
 			visibility_descriptor_set_layout,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_xy,
 		);
-		let gtao_pass = GtaoPass::new(device, base_descriptor_set_layout, base_descriptor_set, depth, ao_map);
+		let gtao_pass = GtaoPass::new(context, base_descriptor_set_layout, base_descriptor_set, depth, ao_map);
 
 		let material_evaluation_dispatches = material_offset_pass.material_evaluation_dispatches.clone();
 
@@ -1155,7 +1158,10 @@ mod tests {
 			return;
 		}
 
-		use ghi::device::DeviceCreate as _;
+		use ghi::{
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+		};
 
 		if !ghi::implementation::USES_METAL {
 			return;
@@ -1164,14 +1170,16 @@ mod tests {
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
 			.expect("Expected a Metal instance for the GTAO shader test");
 		let mut queue = None;
-		let mut device = instance
+		let mut context = instance
 			.create_device(
 				ghi::device::Features::new(),
 				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
 			)
-			.expect("Expected a Metal device for the GTAO shader test");
+			.expect("Expected a Metal device for the GTAO shader test")
+			.create_context()
+			.expect("Expected a Metal context for the GTAO shader test");
 
-		let shader_handle = device.create_shader(
+		let shader_handle = context.create_shader(
 			Some("GTAO Compute Shader"),
 			ghi::shader::Sources::MTL {
 				source: gtao_shader.source(),
@@ -1209,7 +1217,10 @@ mod tests {
 			return;
 		}
 
-		use ghi::device::DeviceCreate as _;
+		use ghi::{
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+		};
 
 		if !ghi::implementation::USES_METAL {
 			return;
@@ -1218,14 +1229,16 @@ mod tests {
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
 			.expect("Expected a Metal instance for the GTAO blur shader test");
 		let mut queue = None;
-		let mut device = instance
+		let mut context = instance
 			.create_device(
 				ghi::device::Features::new(),
 				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
 			)
-			.expect("Expected a Metal device for the GTAO blur shader test");
+			.expect("Expected a Metal device for the GTAO blur shader test")
+			.create_context()
+			.expect("Expected a Metal context for the GTAO blur shader test");
 
-		let shader_handle = device.create_shader(
+		let shader_handle = context.create_shader(
 			Some("GTAO Blur Compute Shader"),
 			ghi::shader::Sources::MTL {
 				source: blur_shader.source(),

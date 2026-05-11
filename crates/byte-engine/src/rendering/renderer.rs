@@ -1,9 +1,11 @@
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
-	/// The GHI device where all rendering operations are performed.
-	device: ghi::implementation::Device, // Place device before instance to ensure proper drop order
-	/// The GHI instance that manages the device and resources.
+	/// The GHI context where all rendering resources and operations are performed.
+	context: ghi::implementation::Context,
+	/// The GHI device that owns the underlying GPU device object.
+	device: ghi::implementation::Device,
+	/// The GHI instance that manages devices.
 	instance: ghi::implementation::Instance,
 
 	started_frame_count: usize,
@@ -41,7 +43,7 @@ impl Renderer {
 	/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
 	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
-	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics device. Defaults to true.
+	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics context. Defaults to true.
 	pub fn new(parameters: &dyn Parameters) -> Self {
 		let settings = Settings::new();
 
@@ -103,7 +105,7 @@ impl Renderer {
 		let mut graphics_queue_handle = None;
 		let mut transfer_queue_handle = None;
 
-		let mut device = instance
+		let device = instance
 			.create_device(
 				features.clone(),
 				&mut [
@@ -118,18 +120,20 @@ impl Renderer {
 				],
 			)
 			.unwrap();
+		let mut context = device.create_context().unwrap();
 
 		let graphics_queue_handle = graphics_queue_handle.unwrap();
 		let transfer_queue_handle = transfer_queue_handle.unwrap();
 
-		let render_command_buffer = device
+		let render_command_buffer = context
 			.queue_reference(graphics_queue_handle)
 			.create_command_buffer(Some("Render"));
-		let render_finished_synchronizer = device.create_synchronizer(Some("Render Finisished"), true);
+		let render_finished_synchronizer = context.create_synchronizer(Some("Render Finisished"), true);
 
 		Renderer {
-			instance,
+			context,
 			device,
+			instance,
 
 			started_frame_count: 0,
 
@@ -163,7 +167,7 @@ impl Renderer {
 				.map(|(sink_id, _)| (*sink_id, self.windows[*sink_id].1))
 				.collect();
 			for (sink_id, swapchain) in sink_swapchains {
-				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain);
+				let mut rpb = RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
 
 				pipeline_manager.create_sink(sink_id, &mut rpb);
 
@@ -194,7 +198,7 @@ impl Renderer {
 			let render_pass = {
 				let swapchain = self.windows[sink_id].1;
 				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain);
+					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -213,7 +217,7 @@ impl Renderer {
 		for render_pass_factory in &self.post_scene_render_pass_factories {
 			let render_pass = {
 				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain);
+					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -238,7 +242,7 @@ impl Renderer {
 			return;
 		};
 
-		self.device.start_frame_capture();
+		self.context.start_frame_capture();
 
 		let mut transforms_listener = transforms_listener.to_vec();
 
@@ -258,7 +262,7 @@ impl Renderer {
 			}
 		});
 
-		let mut queue = self.device.queue(self.graphics_queue_handle);
+		let mut queue = self.context.queue(self.graphics_queue_handle);
 		let frame = ghi::queue::FrameRequest {
 			index: self.started_frame_count as u32,
 			synchronizer: self.render_finished_synchronizer,
@@ -381,8 +385,8 @@ impl Renderer {
 		});
 	}
 
-	pub fn device_mut(&mut self) -> &mut ghi::implementation::Device {
-		&mut self.device
+	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
+		&mut self.context
 	}
 
 	pub fn create_window(&mut self, window: Window) {
@@ -402,7 +406,7 @@ impl Renderer {
 			Ok(window) => {
 				let os_handles = window.os_handles();
 
-				let swapchain_handle = self.device.bind_to_window(
+				let swapchain_handle = self.context.bind_to_window(
 					&os_handles,
 					ghi::PresentationModes::FIFO,
 					extent,
@@ -423,7 +427,7 @@ impl Renderer {
 
 					for sm in pipeline_managers {
 						let mut rpb =
-							RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain_handle);
+							RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain_handle);
 
 						sm.create_sink(sink_id, &mut rpb);
 
@@ -457,13 +461,13 @@ struct Attachment {
 
 /// This struct holds the settings to configure a `Renderer` during it's creation.
 pub struct Settings {
-	/// Controls whether validation layers will be enabled or not on the GHI device.
+	/// Controls whether validation layers will be enabled or not on the GHI context.
 	validation: bool,
 	/// Controls whether to enable or not writing out the parameters sent to the underlaying graphics API. Depends on `validation` being enabled.
 	api_dump: bool,
 	/// Controls wheter to enable or not some extra (bbut expensive) validation for the graphics API. This can include GPU validation. Depends on `validation` being enabled.
 	extended_validation: bool,
-	/// Controls whether to enable or not mesh shading on the GHI device.
+	/// Controls whether to enable or not mesh shading on the GHI context.
 	mesh_shading: bool,
 }
 
@@ -757,7 +761,8 @@ use ghi::{
 		BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording,
 		RasterizationRenderPassMode as _,
 	},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 	frame::Frame as _,
 	queue::{Queue as _, QueueExecution as _},
 };

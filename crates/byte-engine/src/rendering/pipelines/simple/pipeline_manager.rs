@@ -11,9 +11,10 @@ use ghi::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
 		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 	frame::Frame,
-	implementation::Device,
+	implementation::Context,
 };
 use math::{Matrix4, ShaderMatrix4};
 use resource_management::{
@@ -66,24 +67,24 @@ const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
 	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
 impl PipelineManager {
-	pub fn new(device: &mut ghi::implementation::Device) -> Self {
-		let vertex_positions_buffer = device.build_buffer(
+	pub fn new(context: &mut ghi::implementation::Context) -> Self {
+		let vertex_positions_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
 				.name("Vertex Positions")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let indeces_buffer = device.build_buffer(
+		let indeces_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Index)
 				.name("Indeces")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let camera_data_buffer = device.build_dynamic_buffer(
+		let camera_data_buffer = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Camera Data Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let instance_data_buffer = device.build_dynamic_buffer(
+		let instance_data_buffer = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Instance Data Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
@@ -94,7 +95,7 @@ impl PipelineManager {
 		let instance_data_binding_template =
 			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
 
-		let descriptor_set_template = device.create_descriptor_set_template(
+		let descriptor_set_template = context.create_descriptor_set_template(
 			None,
 			&[camera_data_binding_template.clone(), instance_data_binding_template.clone()],
 		);
@@ -205,7 +206,7 @@ impl PipelineManager {
 			generated
 		};
 
-		let vertex_shader = device
+		let vertex_shader = context
 			.create_shader(
 				Some("Vertex Shader"),
 				ghi::shader::Sources::SPIRV(generated_vertex_shader.binary()),
@@ -216,7 +217,7 @@ impl PipelineManager {
 					.map(map_shader_binding_to_shader_binding_descriptor),
 			)
 			.unwrap();
-		let fragment_shader = device
+		let fragment_shader = context
 			.create_shader(
 				Some("Fragment Shader"),
 				ghi::shader::Sources::SPIRV(generated_fragment_shader.binary()),
@@ -228,7 +229,7 @@ impl PipelineManager {
 			)
 			.unwrap();
 
-		let pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[descriptor_set_template],
 			&[ghi::pipelines::PushConstantRange::new(0, 4)],
 			&VERTEX_LAYOUT,
@@ -370,7 +371,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		let depth = render_pass_builder
 			.create_render_target(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget).name("depth"));
 		self.sinks.push(RenderPass::new(
-			render_pass_builder.device(),
+			render_pass_builder.context(),
 			&self.descriptor_set_template,
 			self.camera_data_buffer.into(),
 			self.instance_data_buffer.into(),

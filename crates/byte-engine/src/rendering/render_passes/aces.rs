@@ -2,7 +2,8 @@ use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 	FrameKey,
 };
 use utils::{Box, Extent};
@@ -32,16 +33,16 @@ impl Entity for BaseAcesToneMapPass {}
 
 impl BaseAcesToneMapPass {
 	pub fn new<'a>(render_pass_builder: &'a mut RenderPassBuilder<'_>) -> Self {
-		let device = render_pass_builder.device();
+		let context = render_pass_builder.context();
 
-		let descriptor_set_layout = device.create_descriptor_set_template(
+		let descriptor_set_layout = context.create_descriptor_set_template(
 			Some("Tonemap Pass Set Layout"),
 			&[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE],
 		);
 
-		let tone_mapping_shader = create_tone_mapping_shader(device);
+		let tone_mapping_shader = create_tone_mapping_shader(context);
 
-		let tone_mapping_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let tone_mapping_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute),
@@ -54,9 +55,9 @@ impl BaseAcesToneMapPass {
 	}
 }
 
-fn create_tone_mapping_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+fn create_tone_mapping_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
 	crate::rendering::create_shader_from_source(
-		device,
+		context,
 		Some("ACES Tone Mapping Compute Shader"),
 		ghi::shader::ShaderSource::Platform {
 			glsl: TONE_MAPPING_SHADER,
@@ -84,16 +85,16 @@ impl AcesToneMapPass {
 		let read_from_main = render_pass_builder.read_from("main");
 		let render_to_main = render_pass_builder.render_to_swapchain();
 
-		let device = render_pass_builder.device();
+		let context = render_pass_builder.context();
 
 		let descriptor_set =
-			device.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &render_pass.descriptor_set_layout);
+			context.create_descriptor_set(Some("Tonemap Pass Descriptor Set"), &render_pass.descriptor_set_layout);
 
-		let source_binding = device.create_descriptor_binding(
+		let source_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main),
 		);
-		let destination_binding = device.create_descriptor_binding(
+		let destination_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::swapchain(&DESTINATION_BINDING_TEMPLATE, render_to_main),
 		);

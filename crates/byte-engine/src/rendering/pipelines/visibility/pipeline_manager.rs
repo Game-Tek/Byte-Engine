@@ -19,7 +19,7 @@ pub struct VisibilityPipelineManager {
 
 impl VisibilityPipelineManager {
 	pub(crate) fn new(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		resource_manager: VisibilityPipelineResourceManagerClient,
 	) -> Self {
 		let bindings = [
@@ -33,7 +33,7 @@ impl VisibilityPipelineManager {
 			MESHLET_DATA_BINDING,
 			TEXTURES_BINDING,
 		];
-		let descriptor_set_layout = device.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
+		let descriptor_set_layout = context.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
 
 		let bindings = [
 			MATERIAL_COUNT_BINDING,
@@ -44,9 +44,9 @@ impl VisibilityPipelineManager {
 			TRIANGLE_INDEX_BINDING,
 			INSTANCE_ID_BINDING,
 		];
-		let visibility_descriptor_set_layout = device.create_descriptor_set_template(Some("Visibility Set Layout"), &bindings);
+		let visibility_descriptor_set_layout = context.create_descriptor_set_template(Some("Visibility Set Layout"), &bindings);
 
-		let materials_data_buffer_handle = device.build_buffer::<[MaterialData; MAX_MATERIALS]>(
+		let materials_data_buffer_handle = context.build_buffer::<[MaterialData; MAX_MATERIALS]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Materials Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
@@ -65,27 +65,27 @@ impl VisibilityPipelineManager {
 			ibl_cubemap_binding_template,
 		];
 		let material_evaluation_descriptor_set_layout =
-			device.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
+			context.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
 
-		let views_data_buffer_handle = device.build_dynamic_buffer::<[ShaderViewData; 8]>(
+		let views_data_buffer_handle = context.build_dynamic_buffer::<[ShaderViewData; 8]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Visibility Views Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let meshes_data_buffer = device.build_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(
+		let meshes_data_buffer = context.build_dynamic_buffer::<[ShaderMesh; MAX_INSTANCES]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Visibility Meshes Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let descriptor_set = device.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
+		let descriptor_set = context.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
 
-		let _views_data_binding = device.create_descriptor_binding(
+		let _views_data_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
 		);
-		let _meshes_data_binding = device.create_descriptor_binding(
+		let _meshes_data_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, meshes_data_buffer.into()),
 		);
@@ -106,46 +106,46 @@ impl VisibilityPipelineManager {
 				resource_manager.gpu_vertex_data_manager.meshlets_data_buffer,
 			)
 		};
-		let _vertex_positions_binding = device.create_descriptor_binding(
+		let _vertex_positions_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&VERTEX_POSITIONS_BINDING, vertex_positions_buffer.into()),
 		);
-		let _vertex_normals_binding = device.create_descriptor_binding(
+		let _vertex_normals_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&VERTEX_NORMALS_BINDING, vertex_normals_buffer.into()),
 		);
-		let _vertex_uv_binding = device.create_descriptor_binding(
+		let _vertex_uv_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, vertex_uvs_buffer.into()),
 		);
-		let _vertex_indices_binding = device.create_descriptor_binding(
+		let _vertex_indices_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&VERTEX_INDICES_BINDING, vertex_indices_buffer.into()),
 		);
-		let _primitive_indices_binding = device.create_descriptor_binding(
+		let _primitive_indices_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&PRIMITIVE_INDICES_BINDING, primitive_indices_buffer.into()),
 		);
-		let _meshlets_data_binding = device.create_descriptor_binding(
+		let _meshlets_data_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, meshlets_data_buffer.into()),
 		);
-		let textures_binding = device.create_descriptor_binding(
+		let textures_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler_array(&TEXTURES_BINDING),
 		);
 
-		let light_data_buffer = device.build_buffer::<LightingData>(
+		let light_data_buffer = context.build_buffer::<LightingData>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Light Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let lighting_data = device.get_mut_buffer_slice(light_data_buffer);
+		let lighting_data = context.get_mut_buffer_slice(light_data_buffer);
 		lighting_data.count = 0; // Initially, no lights
 
 		// Material evaluation resources still vary by sink because the output images vary by sink.
-		let _sampler = device.build_sampler(
+		let _sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
@@ -154,7 +154,7 @@ impl VisibilityPipelineManager {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
-		let _depth_sampler = device.build_sampler(
+		let _depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
@@ -163,7 +163,7 @@ impl VisibilityPipelineManager {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
-		let material_evaluation_descriptor_set = device.create_descriptor_set(
+		let material_evaluation_descriptor_set = context.create_descriptor_set(
 			Some("Material Evaluation Descriptor Set"),
 			&material_evaluation_descriptor_set_layout,
 		);
@@ -528,45 +528,45 @@ impl PipelineManager for VisibilityPipelineManager {
 			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Storage).name("instance_id"),
 		);
 
-		let device = render_pass_builder.device();
+		let context = render_pass_builder.context();
 		let visibility_passes_descriptor_set =
-			device.create_descriptor_set(Some("Visibility Descriptor Set"), &self.visibility_descriptor_set_layout);
-		let material_evaluation_descriptor_set = device.create_descriptor_set(
+			context.create_descriptor_set(Some("Visibility Descriptor Set"), &self.visibility_descriptor_set_layout);
+		let material_evaluation_descriptor_set = context.create_descriptor_set(
 			Some("Material Evaluation Descriptor Set"),
 			&self.material_evaluation_descriptor_set_layout,
 		);
 
-		let material_count_buffer = device.build_buffer(
+		let material_count_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Material Count")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
-		let material_xy = device.build_buffer(
+		let material_xy = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Material XY")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
-		let material_evaluation_dispatches = device.build_buffer(
+		let material_evaluation_dispatches = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::Indirect)
 				.name("Material Evaluation Dipatches")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
-		let material_offset_buffer = device.build_buffer(
+		let material_offset_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Material Offset")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
-		let material_offset_scratch_buffer = device.build_buffer(
+		let material_offset_scratch_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Material Offset Scratch")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
-		let ao_map = device.build_dynamic_image(
+		let ao_map = context.build_dynamic_image(
 			ghi::image::Builder::new(
 				ghi::Formats::R8UNORM,
 				ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination,
@@ -574,21 +574,21 @@ impl PipelineManager for VisibilityPipelineManager {
 			.name("Occlusion Map")
 			.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let shadow_map = device.build_dynamic_image(
+		let shadow_map = context.build_dynamic_image(
 			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image)
 				.name("Shadow Map")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32)),
 		);
-		let ibl_cubemap = device.build_image(
+		let ibl_cubemap = context.build_image(
 			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("IBL Cubemap")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice)
 				.extent(Extent::square(1))
 				.array_layers(NonZeroU32::new(6)),
 		);
-		device.write_texture(ibl_cubemap, |bytes| bytes.fill(255));
-		let sampler = device.build_sampler(
+		context.write_texture(ibl_cubemap, |bytes| bytes.fill(255));
+		let sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
@@ -597,7 +597,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
-		let depth_sampler = device.build_sampler(
+		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
@@ -606,7 +606,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
-		let visibility_depth_sampler = device.build_sampler(
+		let visibility_depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
@@ -616,23 +616,23 @@ impl PipelineManager for VisibilityPipelineManager {
 				.max_lod(0f32),
 		);
 
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::image(&diffuse_binding_template, ghi::BaseImageHandle::from(diffuse_target)),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::image(&specular_binding_template, ghi::BaseImageHandle::from(specular_target)),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::buffer(&lighting_data_binding_template, self.scene.light_data_buffer.into()),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::buffer(&materials_data_binding_template, self.materials_data_buffer_handle.into()),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&ao_map_binding_template,
@@ -641,7 +641,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&shadow_map_binding_template,
@@ -650,7 +650,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&visibility_depth_binding_template,
@@ -659,7 +659,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&ibl_cubemap_binding_template,
@@ -669,31 +669,31 @@ impl PipelineManager for VisibilityPipelineManager {
 			),
 		);
 
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			visibility_passes_descriptor_set,
 			ghi::BindingConstructor::buffer(&MATERIAL_COUNT_BINDING, material_count_buffer.into()),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			visibility_passes_descriptor_set,
 			ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_BINDING, material_offset_buffer.into()),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			visibility_passes_descriptor_set,
 			ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_SCRATCH_BINDING, material_offset_scratch_buffer.into()),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			visibility_passes_descriptor_set,
 			ghi::BindingConstructor::buffer(&MATERIAL_EVALUATION_DISPATCHES_BINDING, material_evaluation_dispatches.into()),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			visibility_passes_descriptor_set,
 			ghi::BindingConstructor::buffer(&MATERIAL_XY_BINDING, material_xy.into()),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			visibility_passes_descriptor_set,
 			ghi::BindingConstructor::image(&TRIANGLE_INDEX_BINDING, ghi::BaseImageHandle::from(primitive_index)),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			visibility_passes_descriptor_set,
 			ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, ghi::BaseImageHandle::from(instance_id)),
 		);
@@ -702,7 +702,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		render_pass_builder.alias("Diffuse", "main");
 
 		let render_pass = VisibilityPipelineRenderPass::new(
-			render_pass_builder.device(),
+			render_pass_builder.context(),
 			self.descriptor_set_layout,
 			self.visibility_descriptor_set_layout,
 			self.scene.descriptor_set,
@@ -968,7 +968,6 @@ use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 
 use ::core::slice::SlicePattern;
-use ghi::device::{Device as _, DeviceCreate as _};
 use ghi::frame::Frame as _;
 use ghi::{
 	command_buffer::{
@@ -976,6 +975,10 @@ use ghi::{
 		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
 	graphics_hardware_interface,
+};
+use ghi::{
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 };
 use log::{error, warn};
 use math::{mat::MatInverse as _, ShaderMatrix4, ShaderMatrix4x3, Vector3};

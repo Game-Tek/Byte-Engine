@@ -9,7 +9,7 @@ use crate::{
 /// It exists to use Rust's lifetime system to keep frame operations borrowed from the `Device` for only as long as the frame is active.
 pub trait Frame<'a>
 where
-	Self: Sized + crate::device::DeviceCreate,
+	Self: Sized + crate::context::ContextCreate,
 {
 	/// The command-buffer recording type used while the frame is mutably borrowed for recording.
 	type CBR<'record>: CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode

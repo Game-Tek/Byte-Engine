@@ -42,6 +42,8 @@ pub mod implementation {
 	#[cfg(target_os = "macos")]
 	pub use metal::CommandBufferRecording;
 	#[cfg(target_os = "macos")]
+	pub use metal::Context;
+	#[cfg(target_os = "macos")]
 	pub(crate) use metal::DescriptorSet;
 	#[cfg(target_os = "macos")]
 	pub use metal::Device;
@@ -133,6 +135,7 @@ pub mod implementation {
 pub mod binding;
 pub mod buffer;
 pub mod command_buffer;
+pub mod context;
 pub mod descriptors;
 pub mod device;
 pub mod factory;
@@ -149,6 +152,7 @@ pub mod synchronizer;
 pub mod types;
 mod utils;
 
+pub use context::{Context, ContextCreate};
 pub use device::Device;
 pub use frame::Frame;
 pub use pipelines::ShaderParameter;

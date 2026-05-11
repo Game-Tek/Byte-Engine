@@ -258,7 +258,7 @@ pub(crate) struct StoredCommandBuffer {
 }
 
 pub struct CommandBuffer<'a> {
-	pub(crate) device: &'a mut device::Device,
+	pub(crate) device: &'a mut context::Context,
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 }
 
@@ -842,6 +842,7 @@ mod utils {
 pub mod queue {
 	use super::*;
 
+	#[derive(Clone)]
 	pub(crate) struct StoredQueue {
 		pub(crate) queue: Retained<ProtocolObject<dyn mtl::MTLCommandQueue>>,
 		pub(crate) workloads: crate::WorkloadTypes,
@@ -849,7 +850,7 @@ pub mod queue {
 
 	/// The `Queue` struct owns the queue submission entry point without borrowing the device.
 	pub struct Queue {
-		pub(crate) device: std::ptr::NonNull<device::Device>,
+		pub(crate) device: std::ptr::NonNull<context::Context>,
 		pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,
 	}
 
@@ -857,7 +858,7 @@ pub mod queue {
 
 	/// The `QueueReference` struct preserves the borrowed queue API while queue ownership is being split out.
 	pub struct QueueReference<'a> {
-		pub(crate) device: &'a mut device::Device,
+		pub(crate) device: &'a mut context::Context,
 		pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,
 	}
 
@@ -897,7 +898,7 @@ pub mod queue {
 
 	impl Queue {
 		/// Returns mutable device access for the queue wrapper until device state is split out.
-		fn device_mut(&mut self) -> &mut device::Device {
+		fn device_mut(&mut self) -> &mut context::Context {
 			// The owned queue is created from a live Device and must not outlive it.
 			// Thread-safe ownership will require moving queue-local state out of Device.
 			unsafe { self.device.as_mut() }
@@ -1102,6 +1103,7 @@ pub mod swapchain {
 }
 
 pub mod command_buffer;
+pub mod context;
 pub mod device;
 pub mod frame;
 pub mod instance;
@@ -1109,6 +1111,7 @@ pub mod pipelines;
 
 pub use self::binding::*;
 pub use self::command_buffer::*;
+pub use self::context::*;
 pub(crate) use self::descriptor_set::*;
 pub use self::device::*;
 pub use self::frame::*;

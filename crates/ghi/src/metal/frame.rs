@@ -21,12 +21,12 @@ use crate::SwapchainHandle;
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
 	drawables: Vec<(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>)>,
-	device: &'a mut device::Device,
+	device: &'a mut context::Context,
 	_autorelease_pool: Retained<NSAutoreleasePool>,
 }
 
 impl<'a> Frame<'a> {
-	pub fn new(device: &'a mut device::Device, frame_key: graphics_hardware_interface::FrameKey) -> Self {
+	pub fn new(device: &'a mut context::Context, frame_key: graphics_hardware_interface::FrameKey) -> Self {
 		let pool = unsafe { NSAutoreleasePool::new() };
 		Self {
 			frame_key,
@@ -193,7 +193,7 @@ impl Frame<'_> {
 		(present_key, extent)
 	}
 
-	pub fn device(&mut self) -> &mut device::Device {
+	pub fn device(&mut self) -> &mut context::Context {
 		self.device
 	}
 
@@ -339,7 +339,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 }
 
-impl<'a> crate::device::DeviceCreate for Frame<'a> {
+impl<'a> crate::context::ContextCreate for Frame<'a> {
 	fn create_allocation(
 		&mut self,
 		size: usize,

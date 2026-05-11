@@ -2,7 +2,8 @@ use std::boxed::Box as StdBox;
 
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 	frame::Frame as _,
 	types::Size as _,
 };
@@ -75,34 +76,34 @@ impl LutRenderPass {
 		);
 		render_pass_builder.alias("LUT Output", "main");
 
-		let device = render_pass_builder.device();
+		let context = render_pass_builder.context();
 
-		let descriptor_set_layout = device.create_descriptor_set_template(
+		let descriptor_set_layout = context.create_descriptor_set_template(
 			Some("LUT Render Pass Descriptor Set"),
 			&[LUT_SOURCE_BINDING, LUT_TEXTURE_BINDING, LUT_OUTPUT_BINDING],
 		);
 
 		let (lut_glsl, lut_msl) = create_lut_shader_sources(&lut_metadata);
-		let shader = create_lut_shader(device, &lut_glsl, &lut_msl);
-		let pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let shader = create_lut_shader(context, &lut_glsl, &lut_msl);
+		let pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
 		));
 
-		let source_sampler = device.build_sampler(
+		let source_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let lut_sampler = device.build_sampler(
+		let lut_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let lut_image = device.build_image(
+		let lut_image = context.build_image(
 			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("LUT Texture")
 				.extent(Extent::cube(lut_metadata.size, lut_metadata.size, lut_metadata.size))
@@ -110,16 +111,16 @@ impl LutRenderPass {
 				.use_case(ghi::UseCases::STATIC),
 		);
 
-		let descriptor_set = device.create_descriptor_set(Some("LUT Render Pass Descriptor Set"), &descriptor_set_layout);
-		let _ = device.create_descriptor_binding(
+		let descriptor_set = context.create_descriptor_set(Some("LUT Render Pass Descriptor Set"), &descriptor_set_layout);
+		let _ = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(&LUT_SOURCE_BINDING, source, source_sampler, ghi::Layouts::Read),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(&LUT_TEXTURE_BINDING, lut_image, lut_sampler, ghi::Layouts::Read),
 		);
-		let _ = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&LUT_OUTPUT_BINDING, output));
+		let _ = context.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&LUT_OUTPUT_BINDING, output));
 
 		Self {
 			pipeline,
@@ -175,9 +176,9 @@ impl RenderPass for LutRenderPass {
 	}
 }
 
-fn create_lut_shader(device: &mut ghi::implementation::Device, glsl: &str, msl: &str) -> ghi::ShaderHandle {
+fn create_lut_shader(context: &mut ghi::implementation::Context, glsl: &str, msl: &str) -> ghi::ShaderHandle {
 	crate::rendering::create_shader_from_source(
-		device,
+		context,
 		Some("LUT Render Pass Compute Shader"),
 		ghi::shader::ShaderSource::Platform {
 			glsl,

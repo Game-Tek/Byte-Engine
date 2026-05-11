@@ -1,6 +1,7 @@
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 	frame::Frame as _,
 };
 use math::{mat::MatInverse as _, ShaderMatrix4, Vector3, Vector4};
@@ -88,41 +89,41 @@ impl AtmosphereSkyRenderPass {
 		let depth = render_pass_builder.read_from("depth");
 		let main = render_pass_builder.render_to("main");
 
-		let device = render_pass_builder.device();
+		let context = render_pass_builder.context();
 
-		let descriptor_set_template = device.create_descriptor_set_template(
+		let descriptor_set_template = context.create_descriptor_set_template(
 			Some("Sky Render Pass Descriptor Set"),
 			&[SKY_DEPTH_BINDING, SKY_MAIN_BINDING, SKY_PARAMETERS_BINDING],
 		);
 
-		let shader = create_sky_shader(device);
+		let shader = create_sky_shader(context);
 
-		let pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_template],
 			&[],
 			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
 		));
 
-		let parameters = device.build_dynamic_buffer(
+		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Sky Render Pass Parameters")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let sampler = device.build_sampler(
+		let sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
 
-		let descriptor_set = device.create_descriptor_set(Some("Sky Render Pass Descriptor Set"), &descriptor_set_template);
-		let _ = device.create_descriptor_binding(
+		let descriptor_set = context.create_descriptor_set(Some("Sky Render Pass Descriptor Set"), &descriptor_set_template);
+		let _ = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(&SKY_DEPTH_BINDING, depth, sampler, ghi::Layouts::Read),
 		);
-		let _ = device.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SKY_MAIN_BINDING, main));
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SKY_MAIN_BINDING, main));
+		let _ = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&SKY_PARAMETERS_BINDING, parameters.into()),
 		);
@@ -170,9 +171,9 @@ impl AtmosphereSkyRenderPass {
 	}
 }
 
-fn create_sky_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+fn create_sky_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
 	crate::rendering::create_shader_from_source(
-		device,
+		context,
 		Some("Sky Render Pass Compute Shader"),
 		ghi::shader::ShaderSource::Platform {
 			glsl: SKY_SHADER,
@@ -705,7 +706,10 @@ mod tests {
 
 	#[test]
 	fn sky_msl_shader_compiles_for_metal() {
-		use ghi::{device::DeviceCreate as _, device::Features};
+		use ghi::{
+			context::ContextCreate as _,
+			device::{Device as _, Features},
+		};
 
 		if !ghi::implementation::USES_METAL {
 			return;
@@ -714,14 +718,16 @@ mod tests {
 		let mut instance =
 			ghi::implementation::Instance::new(Features::new()).expect("Expected a Metal instance for the sky shader test");
 		let mut queue = None;
-		let mut device = instance
+		let mut context = instance
 			.create_device(
 				Features::new(),
 				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
 			)
-			.expect("Expected a Metal device for the sky shader test");
+			.expect("Expected a Metal device for the sky shader test")
+			.create_context()
+			.expect("Expected a Metal context for the sky shader test");
 
-		let shader_handle = device.create_shader(
+		let shader_handle = context.create_shader(
 			Some("Sky Render Pass Compute Shader"),
 			ghi::shader::Sources::MTL {
 				source: super::SKY_SHADER_MSL,

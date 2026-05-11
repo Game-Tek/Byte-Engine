@@ -2637,12 +2637,7 @@ impl Drop for Device {
 	}
 }
 
-impl crate::device::Device for Device {
-	#[cfg(debug_assertions)]
-	fn has_errors(&self) -> bool {
-		self.get_log_count() > 0
-	}
-
+impl crate::context::Context for Device {
 	fn set_frames_in_flight(&mut self, frames: u8) {
 		if self.frames == frames {
 			return;
@@ -2773,6 +2768,13 @@ impl crate::device::Device for Device {
 		}
 
 		self.frames = target_frames;
+	}
+}
+
+impl crate::device::Device for Device {
+	#[cfg(debug_assertions)]
+	fn has_errors(&self) -> bool {
+		self.get_log_count() > 0
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
@@ -3406,7 +3408,7 @@ impl crate::device::Device for Device {
 	}
 }
 
-impl crate::device::DeviceCreate for Device {
+impl crate::context::ContextCreate for Device {
 	/// Creates a new allocation from a managed allocator for the underlying GPU allocations.
 	fn create_allocation(
 		&mut self,

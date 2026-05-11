@@ -21,33 +21,33 @@ pub(super) struct GPUVertexDataManager {
 }
 
 impl GPUVertexDataManager {
-	pub fn new(device: &mut ghi::implementation::Device) -> Self {
-		let vertex_positions_buffer_handle = device.build_buffer(
+	pub fn new(context: &mut ghi::implementation::Context) -> Self {
+		let vertex_positions_buffer_handle = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
 				.name("Visibility Vertex Positions Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let vertex_normals_buffer_handle = device.build_buffer(
+		let vertex_normals_buffer_handle = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
 				.name("Visibility Vertex Normals Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let vertex_uv_buffer_handle = device.build_buffer(
+		let vertex_uv_buffer_handle = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
 				.name("Visibility Vertex UV Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let vertex_indices_buffer_handle = device.build_buffer(
+		let vertex_indices_buffer_handle = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
 				.name("Visibility Index Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let primitive_indices_buffer_handle = device.build_buffer(
+		let primitive_indices_buffer_handle = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
 				.name("Visibility Primitive Indices Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let meshlets_data_buffer = device.build_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(
+		let meshlets_data_buffer = context.build_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Visibility Meshlets Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),

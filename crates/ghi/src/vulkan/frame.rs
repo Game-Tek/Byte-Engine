@@ -430,7 +430,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 }
 
-impl<'a> crate::device::DeviceCreate for Frame<'a> {
+impl<'a> crate::context::ContextCreate for Frame<'a> {
 	fn add_mesh_from_vertices_and_indices(
 		&mut self,
 		vertex_count: u32,

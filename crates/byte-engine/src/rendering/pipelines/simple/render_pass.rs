@@ -12,9 +12,10 @@ use ghi::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
 		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 	frame::Frame,
-	implementation::Device,
+	implementation::Context,
 };
 use resource_management::{
 	asset::bema_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings,
@@ -57,7 +58,7 @@ const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
 
 impl RenderPass {
 	pub fn new(
-		device: &mut ghi::implementation::Device,
+		context: &mut ghi::implementation::Context,
 		descriptor_set_layout: &ghi::DescriptorSetTemplateHandle,
 		camera_data_buffer: ghi::BaseBufferHandle,
 		instance_data_buffer: ghi::BaseBufferHandle,
@@ -68,13 +69,13 @@ impl RenderPass {
 		let instance_data_binding_template =
 			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
 
-		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_layout);
+		let descriptor_set = context.create_descriptor_set(None, &descriptor_set_layout);
 
-		device.create_descriptor_binding(
+		context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&camera_data_binding_template, camera_data_buffer.into()),
 		);
-		device.create_descriptor_binding(
+		context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&instance_data_binding_template, instance_data_buffer.into()),
 		);

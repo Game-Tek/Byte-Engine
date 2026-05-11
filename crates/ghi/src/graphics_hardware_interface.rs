@@ -1353,7 +1353,7 @@ pub(super) mod tests {
 		);
 	}
 
-	pub(crate) fn render_triangle(device: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn render_triangle(device: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, false);
 
 		let floats: [f32; 21] = [
@@ -1464,7 +1464,7 @@ pub(super) mod tests {
 		check_triangle(pixels, extent);
 	}
 
-	pub(crate) fn present(renderer: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn present(renderer: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1921, 1080);
 
@@ -1578,7 +1578,7 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors())
 	}
 
-	pub(crate) fn multiframe_present(renderer: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn multiframe_present(renderer: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
 
@@ -1693,7 +1693,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn multiframe_rendering(device: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn multiframe_rendering(device: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -1823,7 +1823,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn change_frames(device: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn change_frames(device: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering while changing the amount of frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -1953,7 +1953,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn resize(device: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn resize(device: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering while resize the render targets.
 
 		const FRAMES_IN_FLIGHT: usize = 3;
@@ -2088,7 +2088,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn dynamic_data(device: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn dynamic_data(device: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 
@@ -2294,7 +2294,7 @@ pub(super) mod tests {
 		assert!(!device.has_errors())
 	}
 
-	pub(crate) fn dynamic_textures(device: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn dynamic_textures(device: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		//! Tests that dynamic textures write to the current frame image instead of always writing to the root image.
 
 		let extent = Extent::square(2);
@@ -2379,7 +2379,7 @@ pub(super) mod tests {
 		}
 	}
 
-	pub(crate) fn multiframe_resources(device: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn multiframe_resources(device: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		// TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
 			#version 450
@@ -2655,7 +2655,7 @@ pub(super) mod tests {
 		assert!(!device.has_errors());
 	}
 
-	pub(crate) fn descriptor_sets(device: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn descriptor_sets(device: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, true);
 
 		let floats: [f32; 21] = [
@@ -2904,7 +2904,7 @@ pub(super) mod tests {
 		assert!(!device.has_errors());
 	}
 
-	pub(crate) fn ray_tracing(renderer: &mut impl Device, queue_handle: QueueHandle) {
+	pub(crate) fn ray_tracing(renderer: &mut (impl Device + crate::context::Context), queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
 

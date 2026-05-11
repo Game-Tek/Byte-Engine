@@ -29,15 +29,21 @@ pub struct Factory {
 	pub(crate) shaders: Vec<Shader>,
 }
 
+unsafe impl Send for Factory {}
+
 /// The `Image` struct carries a Metal image built before it has a public GHI handle.
 pub struct Image {
 	pub(crate) image: crate::metal::image::Image,
 }
 
+unsafe impl Send for Image {}
+
 /// The `Sampler` struct carries a Metal sampler built before it has a public GHI handle.
 pub struct Sampler {
 	pub(crate) sampler: crate::metal::sampler::Sampler,
 }
+
+unsafe impl Send for Sampler {}
 
 impl crate::factory::Factory for Factory {
 	type RasterPipeline = Pipeline;
@@ -595,6 +601,8 @@ pub struct Pipeline {
 	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
 }
 
+unsafe impl Send for Pipeline {}
+
 #[derive(Clone)]
 pub struct ComputePipeline {
 	pub(crate) pipeline: PipelineState,
@@ -608,3 +616,5 @@ pub struct ComputePipeline {
 	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
 	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
 }
+
+unsafe impl Send for ComputePipeline {}

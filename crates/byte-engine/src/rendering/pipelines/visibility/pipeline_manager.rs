@@ -10,17 +10,17 @@ pub struct VisibilityPipelineManager {
 	/// Materials data buffer shared across all scenes.
 	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
 	resource_manager: VisibilityPipelineResourceManagerClient,
+	requested_meshes: std::collections::HashSet<VisibilityMeshKey>,
 	pending_renderables: Vec<PendingRenderableInstance>,
 	loaded_meshes: HashMap<VisibilityMeshKey, MeshData>,
 	loaded_materials: HashMap<u32, RenderDescription>,
-	pending_texture_uploads: VecDeque<PendingTextureUpload>,
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
 }
 
 impl VisibilityPipelineManager {
 	pub(crate) fn new(
 		device: &mut ghi::implementation::Device,
-		mut resource_manager: VisibilityPipelineResourceManagerClient,
+		resource_manager: VisibilityPipelineResourceManagerClient,
 	) -> Self {
 		let bindings = [
 			VIEWS_DATA_BINDING,
@@ -89,47 +89,46 @@ impl VisibilityPipelineManager {
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, meshes_data_buffer.into()),
 		);
+		let (
+			vertex_positions_buffer,
+			vertex_normals_buffer,
+			vertex_uvs_buffer,
+			vertex_indices_buffer,
+			primitive_indices_buffer,
+			meshlets_data_buffer,
+		) = {
+			(
+				resource_manager.gpu_vertex_data_manager.vertex_positions_buffer,
+				resource_manager.gpu_vertex_data_manager.vertex_normals_buffer,
+				resource_manager.gpu_vertex_data_manager.vertex_uvs_buffer,
+				resource_manager.gpu_vertex_data_manager.vertex_indices_buffer,
+				resource_manager.gpu_vertex_data_manager.primitive_indices_buffer,
+				resource_manager.gpu_vertex_data_manager.meshlets_data_buffer,
+			)
+		};
 		let _vertex_positions_binding = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::buffer(
-				&VERTEX_POSITIONS_BINDING,
-				resource_manager.gpu_vertex_data_manager.vertex_positions_buffer.into(),
-			),
+			ghi::BindingConstructor::buffer(&VERTEX_POSITIONS_BINDING, vertex_positions_buffer.into()),
 		);
 		let _vertex_normals_binding = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::buffer(
-				&VERTEX_NORMALS_BINDING,
-				resource_manager.gpu_vertex_data_manager.vertex_normals_buffer.into(),
-			),
+			ghi::BindingConstructor::buffer(&VERTEX_NORMALS_BINDING, vertex_normals_buffer.into()),
 		);
 		let _vertex_uv_binding = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::buffer(
-				&VERTEX_UV_BINDING,
-				resource_manager.gpu_vertex_data_manager.vertex_uvs_buffer.into(),
-			),
+			ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, vertex_uvs_buffer.into()),
 		);
 		let _vertex_indices_binding = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::buffer(
-				&VERTEX_INDICES_BINDING,
-				resource_manager.gpu_vertex_data_manager.vertex_indices_buffer.into(),
-			),
+			ghi::BindingConstructor::buffer(&VERTEX_INDICES_BINDING, vertex_indices_buffer.into()),
 		);
 		let _primitive_indices_binding = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::buffer(
-				&PRIMITIVE_INDICES_BINDING,
-				resource_manager.gpu_vertex_data_manager.primitive_indices_buffer.into(),
-			),
+			ghi::BindingConstructor::buffer(&PRIMITIVE_INDICES_BINDING, primitive_indices_buffer.into()),
 		);
 		let _meshlets_data_binding = device.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::buffer(
-				&MESHLET_DATA_BINDING,
-				resource_manager.gpu_vertex_data_manager.meshlets_data_buffer.into(),
-			),
+			ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, meshlets_data_buffer.into()),
 		);
 		let textures_binding = device.create_descriptor_binding(
 			descriptor_set,
@@ -183,6 +182,7 @@ impl VisibilityPipelineManager {
 			material_evaluation_descriptor_set_layout,
 			materials_data_buffer_handle,
 			resource_manager,
+			requested_meshes: std::collections::HashSet::new(),
 			pending_renderables: Vec::new(),
 			loaded_meshes: HashMap::new(),
 			loaded_materials: HashMap::new(),
@@ -203,7 +203,6 @@ impl VisibilityPipelineManager {
 				},
 				sink_states: Vec::new(),
 			},
-			pending_texture_uploads: VecDeque::new(),
 		}
 	}
 
@@ -214,7 +213,10 @@ impl VisibilityPipelineManager {
 	/// Requests the renderable mesh resources and keeps the scene instance pending until those resources are ready.
 	pub(crate) fn request_mesh(&mut self, renderable: EntityHandle<dyn RenderableMesh>) {
 		let source = renderable.get_mesh().clone();
-		let mesh_key = self.resource_manager.request_mesh(source);
+		let mesh_key = VisibilityMeshKey::from_source(&source);
+		if self.requested_meshes.insert(mesh_key.clone()) {
+			self.resource_manager.request_mesh(mesh_key.clone(), source);
+		}
 		self.pending_renderables.push(PendingRenderableInstance {
 			entity: renderable,
 			mesh_key: mesh_key.clone(),
@@ -223,11 +225,21 @@ impl VisibilityPipelineManager {
 	}
 
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
-		for completion in self.resource_manager.drain_completions() {
+		let completions = self.resource_manager.drain_completions();
+		for completion in completions {
 			match completion {
 				VisibilityResourceCompletion::MeshReady { key, mesh } => {
 					self.loaded_meshes.insert(key.clone(), mesh);
 					self.resolve_pending_renderables_for_mesh(&key);
+				}
+				VisibilityResourceCompletion::PipelineReady { name, pipeline } => {
+					let pipeline = frame.intern_compute_pipeline(pipeline);
+					for material in self.loaded_materials.values_mut() {
+						if material.name == name {
+							material.pipeline = Some(pipeline);
+						}
+					}
+					self.rebuild_material_lists();
 				}
 				VisibilityResourceCompletion::MaterialReady {
 					id,
@@ -243,11 +255,12 @@ impl VisibilityPipelineManager {
 					sampler,
 					upload,
 				} => {
+					let _ = key;
 					let image = frame.intern_image(image);
 					let sampler = frame.intern_sampler(sampler);
 					let image = ghi::BaseImageHandle::from(image);
 					self.write_texture_descriptors(frame, index, image, sampler);
-					self.pending_texture_uploads.push_back(PendingTextureUpload { image, upload });
+					self.resource_manager.enqueue_texture_upload(image, upload);
 				}
 				VisibilityResourceCompletion::Failed { key } => {
 					warn!(
@@ -311,18 +324,6 @@ impl VisibilityPipelineManager {
 				alpha,
 			},
 		);
-		self.rebuild_material_lists();
-	}
-
-	/// Adopts finished material pipelines and refreshes the render pass material lists.
-	fn adopt_pipeline_completions(&mut self, frame: &mut ghi::implementation::Frame) {
-		for (name, pipeline) in self.resource_manager.poll_pipelines(frame, MAX_PIPELINE_ADOPTIONS_PER_FRAME) {
-			for material in self.loaded_materials.values_mut() {
-				if material.name == name {
-					material.pipeline = Some(pipeline);
-				}
-			}
-		}
 		self.rebuild_material_lists();
 	}
 
@@ -433,51 +434,8 @@ impl VisibilityPipelineManager {
 }
 
 impl PipelineManager for VisibilityPipelineManager {
-	/// Records pending texture uploads into the transfer command buffer.
-	fn prepare_transfers<'a>(
-		&mut self,
-		transfer: &mut ghi::implementation::CommandBufferRecording,
-		key: ghi::FrameKey,
-		completed_frame: Option<ghi::FrameKey>,
-		staging_data_buffer: ghi::BaseBufferHandle,
-		mut slice: utils::BufferAllocator<'a>,
-	) -> crate::rendering::pipeline_manager::TransferPrepareResult<'a> {
-		let _ = (key, completed_frame);
-		let mut recorded_work = false;
-		const TEXTURE_UPLOAD_ALIGNMENT: usize = 256;
-
-		if self
-			.resource_manager
-			.prepare_mesh_uploads(transfer, staging_data_buffer, &mut slice)
-		{
-			recorded_work = true;
-		}
-
-		while let Some(upload) = self.pending_texture_uploads.pop_front() {
-			if upload.upload.data.len() > slice.remaining_aligned(TEXTURE_UPLOAD_ALIGNMENT) {
-				self.pending_texture_uploads.push_front(upload);
-				break;
-			}
-
-			let (source_offset, source_buffer) =
-				slice.take_with_offset_aligned(upload.upload.data.len(), TEXTURE_UPLOAD_ALIGNMENT);
-			source_buffer.copy_from_slice(&upload.upload.data);
-			transfer.copy_buffer_to_images(&[ghi::BufferImageCopyDescriptor::new(
-				staging_data_buffer,
-				source_offset,
-				upload.upload.source_bytes_per_row,
-				upload.upload.source_bytes_per_image,
-				upload.image,
-			)]);
-			recorded_work = true;
-		}
-
-		crate::rendering::pipeline_manager::TransferPrepareResult { slice, recorded_work }
-	}
-
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
 		self.adopt_resource_completions(frame);
-		self.adopt_pipeline_completions(frame);
 		self.rebuild_active_instances(frame);
 
 		let shadow_light = self.scene.lights.iter().enumerate().find_map(|(index, light)| match light {
@@ -905,12 +863,6 @@ pub struct SinkState {
 	render_pass: VisibilityPipelineRenderPass,
 }
 
-/// The `PendingTextureUpload` struct keeps an adopted texture waiting for transfer-buffer space.
-struct PendingTextureUpload {
-	image: ghi::BaseImageHandle,
-	upload: TextureUpload,
-}
-
 /// This structure hosts data analogous to the mesh resource's data.
 /// It stores data relevant to the renderer which allows not to have to access/request the mesh resource.
 #[derive(Debug, Clone)]
@@ -1009,12 +961,9 @@ const ibl_cubemap_binding_template: ghi::DescriptorSetBindingTemplate = ghi::Des
 )
 .texture_view_type(ghi::TextureViewTypes::Texture2DArray);
 
-const MAX_PIPELINE_ADOPTIONS_PER_FRAME: usize = 8;
-
 use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
-use std::collections::VecDeque;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 
@@ -1055,8 +1004,7 @@ use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::pipelines::visibility::gpu_vertex_data_manager::GPUVertexDataManager;
 use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
 use crate::rendering::pipelines::visibility::resource_manager::{
-	MaterialPipelineConfig, TextureUpload, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
-	VisibilityResourceCompletion,
+	MaterialPipelineConfig, VisibilityMeshKey, VisibilityPipelineResourceManagerClient, VisibilityResourceCompletion,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::{

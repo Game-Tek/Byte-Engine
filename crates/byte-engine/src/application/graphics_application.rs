@@ -467,6 +467,64 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 }
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
+	let application_resource_manager = application.resource_manager.clone();
+	let renderer = &mut application.renderer;
+	let transfer_queue_handle = renderer.transfer_queue_handle;
+	let device = renderer.device_mut();
+	let mut transfer_queue = device.queue(transfer_queue_handle);
+	let transfer_finished_synchronizer = device.create_synchronizer(Some("Transfer Thread Synchronizer"), true);
+	let transfer_command_buffer = transfer_queue.create_command_buffer(Some("Transfer Command Buffer"));
+
+	const PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT: usize = 1024 * 1024 * 32;
+	const NO_WORK_SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(1);
+
+	let upload_buffer: ghi::BufferHandle<[u8; PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT]> = device.build_buffer(
+		ghi::buffer::Builder::new(ghi::Uses::TransferSource)
+			.name("Renderer Async Upload Buffer")
+			.device_accesses(ghi::DeviceAccesses::HostOnly),
+	);
+
+	let (resource_manager, mut resource_worker) =
+		VisibilityPipelineResourceManager::spawn(renderer.device_mut(), application_resource_manager);
+
+	application
+		.threads
+		.push(Thread::new(application.application_events.1.clone(), {
+			move |mut application_events| {
+				let mut started_frame_count = 0;
+
+				loop {
+					if application_events.try_recv().is_ok() {
+						break;
+					}
+
+					let started_frame = transfer_queue.start_frame(started_frame_count as _, transfer_finished_synchronizer);
+					if let Some(completed_frame) = started_frame.completed_frame {
+						resource_worker.complete_frame(completed_frame);
+					}
+
+					let mut frame = started_frame.frame;
+					let frame_key = frame.key();
+					let mut transfer_recording = frame.create_command_buffer_recording(transfer_command_buffer);
+
+					let buffer = transfer_recording.get_mut_buffer_slice(upload_buffer);
+					let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
+
+					let prepared_uploads =
+						resource_worker.prepare_uploads(&mut transfer_recording, upload_buffer.into(), &mut slice);
+
+					if prepared_uploads.recorded_work {
+						transfer_recording.execute(transfer_finished_synchronizer);
+						resource_worker.track_submitted_uploads(frame_key, prepared_uploads.completions);
+					} else {
+						std::thread::sleep(NO_WORK_SLEEP_DURATION);
+					}
+
+					started_frame_count += 1;
+				}
+			}
+		}));
+
 	struct CustomPipelineManager {
 		light_receiver: DefaultListener<CreateMessage<Lights>>,
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
@@ -488,19 +546,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	}
 
 	impl PipelineManager for CustomPipelineManager {
-		fn prepare_transfers<'a>(
-			&mut self,
-			transfer: &mut ghi::implementation::CommandBufferRecording,
-			key: ghi::FrameKey,
-			completed_frame: Option<ghi::FrameKey>,
-			staging_data_buffer: ghi::BaseBufferHandle,
-			slice: utils::BufferAllocator<'a>,
-		) -> rendering::pipeline_manager::TransferPrepareResult<'a> {
-			self.request_pending_meshes();
-			self.visibility_pipeline_manager
-				.prepare_transfers(transfer, key, completed_frame, staging_data_buffer, slice)
-		}
-
 		fn prepare(
 			&mut self,
 			frame: &mut ghi::implementation::Frame,
@@ -523,10 +568,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	{
 		let light_receiver = application.world().light_factory().listener();
 		let mesh_receiver = application.world().renderable_factory().listener();
-		let resource_manager = application.resource_manager.clone();
 
 		let renderer = &mut application.renderer;
-		let resource_manager = VisibilityPipelineResourceManager::spawn(renderer.device_mut(), resource_manager);
 
 		let sm = CustomPipelineManager {
 			visibility_pipeline_manager: VisibilityPipelineManager::new(renderer.device_mut(), resource_manager),
@@ -1080,6 +1123,7 @@ use std::{
 };
 
 use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll, PollReply, PortAddress};
+use ghi::{Frame as _, Queue as _};
 use math::Vector2;
 use resource_management::{
 	asset::{
@@ -1112,6 +1156,7 @@ use crate::{
 		task, Entity, EntityHandle,
 	},
 	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
+	ghi::command_buffer::CommandBufferRecording as _,
 	input::{
 		input_trigger,
 		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},

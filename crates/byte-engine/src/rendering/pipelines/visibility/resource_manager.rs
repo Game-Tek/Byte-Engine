@@ -20,7 +20,6 @@ pub(crate) struct VisibilityPipelineResourceManager {
 	compute_pipeline_results: Option<Receiver<ComputePipelineResult>>,
 	resource_factory: Option<ghi::implementation::Factory>,
 	material_pipeline_config: Option<MaterialPipelineConfig>,
-	work_requests: Receiver<VisibilityResourceRequest>,
 	work_completions: Sender<VisibilityResourceCompletion>,
 }
 
@@ -28,29 +27,37 @@ impl VisibilityPipelineResourceManager {
 	pub(crate) fn spawn(
 		device: &mut ghi::implementation::Device,
 		resource_manager: EntityHandle<ResourceManager>,
-	) -> VisibilityPipelineResourceManagerClient {
+	) -> (
+		VisibilityPipelineResourceManagerClient,
+		VisibilityPipelineResourceManagerWorker,
+	) {
 		let mesh_data_manager = GPUVertexDataManager::new(device);
 		let gpu_vertex_data_manager = mesh_data_manager.clone();
-		let (work_request_sender, work_requests) = mpsc::channel();
+		let (commands, command_receiver) = mpsc::channel();
 		let (work_completions, work_completion_receiver) = mpsc::channel();
-		let worker = Self::new(device, resource_manager, mesh_data_manager, work_requests, work_completions);
+		let resource_manager = Self::new(device, resource_manager, mesh_data_manager, work_completions.clone());
 
-		VisibilityPipelineResourceManagerClient {
-			gpu_vertex_data_manager,
-			requests: work_request_sender,
-			completions: work_completion_receiver,
-			worker,
-			requested_meshes: std::collections::HashSet::new(),
-			pending_mesh_uploads: VecDeque::new(),
-			mesh_upload_completions: VecDeque::new(),
-		}
+		(
+			VisibilityPipelineResourceManagerClient {
+				gpu_vertex_data_manager,
+				commands,
+				completions: work_completion_receiver,
+			},
+			VisibilityPipelineResourceManagerWorker {
+				resource_manager,
+				commands: command_receiver,
+				completions: work_completions,
+				pending_mesh_uploads: VecDeque::new(),
+				pending_texture_uploads: VecDeque::new(),
+				submitted_uploads: VecDeque::new(),
+			},
+		)
 	}
 
 	fn new(
 		device: &mut ghi::implementation::Device,
 		resource_manager: EntityHandle<ResourceManager>,
 		mesh_data_manager: GPUVertexDataManager,
-		work_requests: Receiver<VisibilityResourceRequest>,
 		work_completions: Sender<VisibilityResourceCompletion>,
 	) -> Self {
 		let resource_factory = device.create_factory();
@@ -74,24 +81,7 @@ impl VisibilityPipelineResourceManager {
 			compute_pipeline_results,
 			resource_factory,
 			material_pipeline_config: None,
-			work_requests,
 			work_completions,
-		}
-	}
-
-	fn run(&mut self) {
-		while let Ok(request) = self.work_requests.recv() {
-			if self.handle_request(request) == ResourceWorkerFlow::Stop {
-				break;
-			}
-		}
-	}
-
-	fn run_pending(&mut self) {
-		while let Ok(request) = self.work_requests.try_recv() {
-			if self.handle_request(request) == ResourceWorkerFlow::Stop {
-				break;
-			}
 		}
 	}
 
@@ -107,7 +97,7 @@ impl VisibilityPipelineResourceManager {
 	}
 
 	/// Stores the descriptor layout data needed to compile material evaluation pipelines.
-	fn configure_material_pipeline(&mut self, config: MaterialPipelineConfig) {
+	pub(crate) fn configure_material_pipeline(&mut self, config: MaterialPipelineConfig) {
 		self.material_pipeline_config = Some(config);
 	}
 
@@ -135,7 +125,7 @@ impl VisibilityPipelineResourceManager {
 		}
 	}
 
-	/// Loads one texture resource, creates detached GHI resources for it, and reports the result to the render thread.
+	/// Loads one texture resource and reports render-thread creation data.
 	fn handle_image_request(&mut self, key: VisibilityTextureKey) {
 		let index = self.reserve_texture_slot(key.as_str()).0;
 		let result = self.load_texture_with_factory(key.as_str(), index);
@@ -263,16 +253,8 @@ impl VisibilityPipelineResourceManager {
 		)
 	}
 
-	/// Builds detached image and sampler resources for a texture resource without touching the render thread's device tables.
+	/// Loads texture bytes and builds detached GPU resources for render-thread adoption.
 	fn load_texture_with_factory(&mut self, id: &str, index: u32) -> Result<FactoryTexture, ()> {
-		use ghi::factory::Factory as _;
-
-		let factory = self.resource_factory.as_mut().ok_or_else(|| {
-			log::error!(
-				"Visibility texture factory is unavailable for {}. The most likely cause is that the active backend does not expose a generic resource factory.",
-				id
-			);
-		})?;
 		let mut reference: Reference<ResourceImage> = self.resource_manager.request(id).map_err(|_| {
 			log::error!(
 				"Visibility texture resource request failed for {}. The most likely cause is that the resource id is missing or the asset database is not loaded.",
@@ -282,14 +264,6 @@ impl VisibilityPipelineResourceManager {
 		let texture = reference.resource();
 		let format = resource_image_format_to_ghi(texture.format);
 		let extent = Extent::from(texture.extent);
-		let image = factory.build_image(
-			ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
-				.name(reference.id())
-				.extent(extent)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-				.use_case(ghi::UseCases::STATIC),
-		);
-		let sampler = factory.build_sampler(default_material_sampler_builder());
 
 		let mut source = vec![0u8; reference.size];
 		let load_target = reference.load(source.as_mut_slice().into()).map_err(|_| {
@@ -310,6 +284,20 @@ impl VisibilityPipelineResourceManager {
 				id
 			);
 		})?;
+		let factory = self.resource_factory.as_mut().ok_or_else(|| {
+			log::error!(
+				"Visibility texture factory is unavailable for {}. The most likely cause is that the active backend does not expose a generic resource factory.",
+				id
+			);
+		})?;
+		let image = factory.build_image(
+			ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
+				.name(reference.id())
+				.extent(extent)
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.use_case(ghi::UseCases::STATIC),
+		);
+		let sampler = factory.build_sampler(default_material_sampler_builder());
 
 		Ok(FactoryTexture {
 			index,
@@ -483,93 +471,185 @@ impl VisibilityPipelineResourceManager {
 /// The `VisibilityPipelineResourceManagerClient` struct connects render logic to the asynchronous visibility resource worker.
 pub(crate) struct VisibilityPipelineResourceManagerClient {
 	pub(super) gpu_vertex_data_manager: GPUVertexDataManager,
-	requests: Sender<VisibilityResourceRequest>,
+	commands: Sender<VisibilityTransferCommand>,
 	completions: Receiver<VisibilityResourceCompletion>,
-	worker: VisibilityPipelineResourceManager,
-	requested_meshes: std::collections::HashSet<VisibilityMeshKey>,
+}
+
+/// The `VisibilityPipelineResourceManagerWorker` struct owns visibility resource loading on the transfer thread.
+pub(crate) struct VisibilityPipelineResourceManagerWorker {
+	resource_manager: VisibilityPipelineResourceManager,
+	commands: Receiver<VisibilityTransferCommand>,
+	completions: Sender<VisibilityResourceCompletion>,
 	pending_mesh_uploads: VecDeque<(VisibilityMeshKey, MeshSource)>,
-	mesh_upload_completions: VecDeque<VisibilityResourceCompletion>,
+	pending_texture_uploads: VecDeque<(ghi::BaseImageHandle, TextureUpload)>,
+	submitted_uploads: VecDeque<SubmittedUploadBatch>,
 }
 
 impl VisibilityPipelineResourceManagerClient {
-	/// Sends a resource request to the asynchronous visibility resource worker.
-	pub(crate) fn request(&self, request: VisibilityResourceRequest) {
-		if self.requests.send(request).is_err() {
+	/// Sends a command to the transfer-thread visibility resource worker.
+	pub(crate) fn send(&self, command: VisibilityTransferCommand) {
+		if self.commands.send(command).is_err() {
 			log::error!(
 				"Visibility resource request failed. The most likely cause is that the resource worker thread terminated."
 			);
 		}
 	}
 
-	/// Requests a mesh resource once and returns the stable key associated with the request.
-	pub(crate) fn request_mesh(&mut self, source: MeshSource) -> VisibilityMeshKey {
-		let key = VisibilityMeshKey::from_source(&source);
-		if self.requested_meshes.insert(key.clone()) {
-			self.pending_mesh_uploads.push_back((key.clone(), source.clone()));
-			self.request(VisibilityResourceRequest::Mesh {
-				key: key.clone(),
-				source,
-			});
-		}
-		key
+	/// Requests a mesh resource from the transfer-thread worker.
+	pub(crate) fn request_mesh(&self, key: VisibilityMeshKey, source: MeshSource) {
+		self.send(VisibilityTransferCommand::RequestMesh { key, source });
 	}
 
-	/// Configures material pipeline creation after the render thread has created visibility descriptor layouts.
-	pub(crate) fn configure_material_pipeline(&mut self, config: MaterialPipelineConfig) {
-		self.worker.configure_material_pipeline(config);
-	}
-
-	/// Drains completed asynchronous pipeline creations into render-thread GHI handles.
-	pub(crate) fn poll_pipelines(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		max_results: usize,
-	) -> Vec<(String, ghi::PipelineHandle)> {
-		self.worker.poll_pipelines(frame, max_results)
+	/// Configures material pipeline creation on the transfer-thread worker.
+	pub(crate) fn configure_material_pipeline(&self, config: MaterialPipelineConfig) {
+		self.send(VisibilityTransferCommand::ConfigureMaterialPipeline(config));
 	}
 
 	/// Drains completed resource work without blocking the render thread.
 	pub(crate) fn drain_completions(&mut self) -> Vec<VisibilityResourceCompletion> {
-		self.worker.run_pending();
-
 		let mut completions = Vec::new();
-		while let Some(completion) = self.mesh_upload_completions.pop_front() {
-			completions.push(completion);
-		}
 		while let Ok(completion) = self.completions.try_recv() {
 			completions.push(completion);
 		}
 		completions
 	}
 
-	/// Records pending mesh uploads into the transfer command buffer.
-	pub(crate) fn prepare_mesh_uploads<'buffer>(
+	/// Enqueues texture upload bytes for the transfer queue.
+	pub(crate) fn enqueue_texture_upload(&self, image: ghi::BaseImageHandle, upload: TextureUpload) {
+		self.send(VisibilityTransferCommand::EnqueueTextureUpload { image, upload });
+	}
+}
+
+impl VisibilityPipelineResourceManagerWorker {
+	/// Publishes upload completions for transfer frames reported as complete by the queue.
+	pub(crate) fn complete_frame(&mut self, completed_frame: ghi::FrameKey) {
+		while self
+			.submitted_uploads
+			.front()
+			.is_some_and(|batch| batch.frame_key == completed_frame)
+		{
+			let Some(batch) = self.submitted_uploads.pop_front() else {
+				break;
+			};
+
+			for completion in batch.completions {
+				if self.completions.send(completion).is_err() {
+					log::error!(
+						"Visibility upload completion failed. The most likely cause is that the render thread stopped receiving worker results."
+					);
+				}
+			}
+		}
+	}
+
+	/// Tracks resources handled by a submitted transfer frame.
+	pub(crate) fn track_submitted_uploads(&mut self, frame_key: ghi::FrameKey, completions: Vec<VisibilityResourceCompletion>) {
+		if completions.is_empty() {
+			return;
+		}
+		self.submitted_uploads
+			.push_back(SubmittedUploadBatch { frame_key, completions });
+	}
+
+	/// Records pending mesh and texture uploads into the transfer command buffer.
+	pub(crate) fn prepare_uploads<'buffer>(
 		&mut self,
 		transfer: &mut ghi::implementation::CommandBufferRecording,
 		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: &mut utils::BufferAllocator<'buffer>,
-	) -> bool {
+	) -> TransferUploadPrepareResult {
+		self.drain_commands();
+		self.resource_manager
+			.drain_pipeline_completions(MAX_PIPELINE_ADOPTIONS_PER_FRAME);
+		self.record_uploads(transfer, staging_data_buffer, slice)
+	}
+
+	/// Drains render-thread commands into worker-owned state.
+	fn drain_commands(&mut self) -> bool {
+		let mut should_stop = false;
+		while let Ok(command) = self.commands.try_recv() {
+			match command {
+				VisibilityTransferCommand::RequestMesh { key, source } => {
+					self.pending_mesh_uploads.push_back((key.clone(), source.clone()));
+					self.resource_manager
+						.handle_request(VisibilityResourceRequest::Mesh { key, source });
+				}
+				VisibilityTransferCommand::EnqueueTextureUpload { image, upload } => {
+					self.pending_texture_uploads.push_back((image, upload));
+				}
+				VisibilityTransferCommand::ConfigureMaterialPipeline(config) => {
+					self.resource_manager.configure_material_pipeline(config);
+				}
+				VisibilityTransferCommand::Shutdown => should_stop = true,
+			}
+		}
+
+		should_stop
+	}
+
+	/// Records queued upload work into the transfer command buffer.
+	fn record_uploads<'buffer>(
+		&mut self,
+		transfer: &mut ghi::implementation::CommandBufferRecording,
+		staging_data_buffer: ghi::BaseBufferHandle,
+		slice: &mut utils::BufferAllocator<'buffer>,
+	) -> TransferUploadPrepareResult {
 		let mut recorded_work = false;
+		let mut completions = Vec::new();
+		const TEXTURE_UPLOAD_ALIGNMENT: usize = 256;
 
 		while let Some((key, source)) = self.pending_mesh_uploads.pop_front() {
 			let result = self
-				.worker
+				.resource_manager
 				.load_mesh_source_for_transfer(transfer, staging_data_buffer, slice, &source);
 			match result {
 				Ok(mesh) => {
-					self.mesh_upload_completions
-						.push_back(VisibilityResourceCompletion::MeshReady { key, mesh });
+					completions.push(VisibilityResourceCompletion::MeshReady { key, mesh });
 					recorded_work = true;
 				}
 				Err(()) => {
-					self.mesh_upload_completions
-						.push_back(VisibilityResourceCompletion::Failed { key: key.into() });
+					let _ = self
+						.completions
+						.send(VisibilityResourceCompletion::Failed { key: key.into() });
 				}
 			}
 		}
 
-		recorded_work
+		while let Some((image, upload)) = self.pending_texture_uploads.pop_front() {
+			if upload.data.len() > slice.remaining_aligned(TEXTURE_UPLOAD_ALIGNMENT) {
+				self.pending_texture_uploads.push_front((image, upload));
+				break;
+			}
+
+			let (source_offset, source_buffer) = slice.take_with_offset_aligned(upload.data.len(), TEXTURE_UPLOAD_ALIGNMENT);
+			source_buffer.copy_from_slice(&upload.data);
+			transfer.copy_buffer_to_images(&[ghi::BufferImageCopyDescriptor::new(
+				staging_data_buffer,
+				source_offset,
+				upload.source_bytes_per_row,
+				upload.source_bytes_per_image,
+				image,
+			)]);
+			recorded_work = true;
+		}
+
+		TransferUploadPrepareResult {
+			recorded_work,
+			completions,
+		}
 	}
+}
+
+/// The `TransferUploadPrepareResult` struct tracks transfer work and resources handled by a recording.
+pub(crate) struct TransferUploadPrepareResult {
+	pub(crate) recorded_work: bool,
+	pub(crate) completions: Vec<VisibilityResourceCompletion>,
+}
+
+/// The `SubmittedUploadBatch` struct holds resource completions until a transfer frame is complete.
+struct SubmittedUploadBatch {
+	frame_key: ghi::FrameKey,
+	completions: Vec<VisibilityResourceCompletion>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -592,6 +672,10 @@ pub(crate) enum VisibilityResourceCompletion {
 		key: VisibilityMeshKey,
 		mesh: crate::rendering::pipelines::visibility::pipeline_manager::MeshData,
 	},
+	PipelineReady {
+		name: String,
+		pipeline: ghi::implementation::ComputePipeline,
+	},
 	MaterialReady {
 		id: String,
 		index: u32,
@@ -609,6 +693,20 @@ pub(crate) enum VisibilityResourceCompletion {
 	Failed {
 		key: VisibilityResourceKey,
 	},
+}
+
+/// The `VisibilityTransferCommand` enum describes commands sent from rendering to the transfer worker.
+pub(crate) enum VisibilityTransferCommand {
+	RequestMesh {
+		key: VisibilityMeshKey,
+		source: MeshSource,
+	},
+	EnqueueTextureUpload {
+		image: ghi::BaseImageHandle,
+		upload: TextureUpload,
+	},
+	ConfigureMaterialPipeline(MaterialPipelineConfig),
+	Shutdown,
 }
 
 /// The `VisibilityResourceKey` enum identifies a visibility resource independently of scene instances.
@@ -899,6 +997,43 @@ impl VisibilityPipelineResourceManager {
 		resolved_pipelines
 	}
 
+	pub(crate) fn drain_pipeline_completions(&mut self, max_results: usize) {
+		let Some(compute_pipeline_results) = self.compute_pipeline_results.as_ref() else {
+			return;
+		};
+
+		let mut result_count = 0;
+		while result_count < max_results {
+			let Ok(result) = compute_pipeline_results.try_recv() else {
+				break;
+			};
+
+			match result {
+				ComputePipelineResult::Ready { key, pipeline } => {
+					self.pipelines.write().insert(key.clone(), PipelineStatus::Pending);
+					if self
+						.work_completions
+						.send(VisibilityResourceCompletion::PipelineReady { name: key, pipeline })
+						.is_err()
+					{
+						log::error!(
+							"Visibility pipeline completion failed. The most likely cause is that the render thread stopped receiving worker results."
+						);
+					}
+				}
+				ComputePipelineResult::Failed { key } => {
+					self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
+					log::error!(
+						"Async pipeline compilation failed for {}. The most likely cause is that shader creation or pipeline specialization failed on the compilation thread.",
+						key
+					);
+				}
+			}
+
+			result_count += 1;
+		}
+	}
+
 	fn map_shader_type(stage: ShaderTypes) -> ghi::ShaderTypes {
 		match stage {
 			ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
@@ -1125,7 +1260,7 @@ fn resource_image_format_to_ghi(format: resource_management::types::Formats) -> 
 }
 
 /// Builds the default sampler used by visibility material textures.
-fn default_material_sampler_builder() -> ghi::sampler::Builder {
+pub(crate) fn default_material_sampler_builder() -> ghi::sampler::Builder {
 	ghi::sampler::Builder::new()
 		.filtering_mode(ghi::FilteringModes::Linear)
 		.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
@@ -1248,6 +1383,7 @@ use std::thread;
 use std::time::Duration;
 
 use ghi::device::Device as _;
+use ghi::factory::Factory as _;
 use ghi::frame::Frame as _;
 use ghi::{
 	command_buffer::{

@@ -847,7 +847,16 @@ pub mod queue {
 		pub(crate) workloads: crate::WorkloadTypes,
 	}
 
-	pub struct Queue<'a> {
+	/// The `Queue` struct owns the queue submission entry point without borrowing the device.
+	pub struct Queue {
+		pub(crate) device: std::ptr::NonNull<device::Device>,
+		pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,
+	}
+
+	unsafe impl Send for Queue {}
+
+	/// The `QueueReference` struct preserves the borrowed queue API while queue ownership is being split out.
+	pub struct QueueReference<'a> {
 		pub(crate) device: &'a mut device::Device,
 		pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,
 	}
@@ -886,7 +895,68 @@ pub mod queue {
 		}
 	}
 
-	impl crate::queue::Queue for Queue<'_> {
+	impl Queue {
+		/// Returns mutable device access for the queue wrapper until device state is split out.
+		fn device_mut(&mut self) -> &mut device::Device {
+			// The owned queue is created from a live Device and must not outlive it.
+			// Thread-safe ownership will require moving queue-local state out of Device.
+			unsafe { self.device.as_mut() }
+		}
+	}
+
+	impl crate::queue::Queue for Queue {
+		type Frame<'a> = super::Frame<'a>;
+		type Execution<'a> = Execution<'a>;
+
+		fn create_command_buffer(&mut self, name: Option<&str>) -> graphics_hardware_interface::CommandBufferHandle {
+			let queue_handle = self.queue_handle;
+			self.device_mut().create_command_buffer(name, queue_handle)
+		}
+
+		fn start_frame<'a>(
+			&'a mut self,
+			index: u32,
+			synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		) -> crate::queue::StartedFrame<Self::Frame<'a>> {
+			self.device_mut().start_frame(index, synchronizer_handle)
+		}
+
+		fn execute<'a, P>(
+			&'a mut self,
+			frame: Option<crate::queue::FrameRequest>,
+			wait_for: &[graphics_hardware_interface::SynchronizerHandle],
+			synchronizer: graphics_hardware_interface::SynchronizerHandle,
+			execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
+		) where
+			P: AsRef<[graphics_hardware_interface::PresentKey]>,
+		{
+			let device = self.device_mut();
+			for &wait_synchronizer in wait_for {
+				device.wait_for_synchronizer(wait_synchronizer);
+			}
+
+			let frame = frame.map(|frame| device.start_frame(frame.index, frame.synchronizer));
+			let completed_frame = frame.as_ref().and_then(|frame| frame.completed_frame);
+			let frame = frame.map(|frame| frame.frame);
+			let mut execution = Execution {
+				frame,
+				completed_frame,
+				command_buffers: Vec::new(),
+			};
+			let present_keys = execute(&mut execution);
+
+			let Some(mut frame) = execution.frame else {
+				return;
+			};
+			let last_index = execution.command_buffers.len().saturating_sub(1);
+			for (index, command_buffer) in execution.command_buffers.into_iter().enumerate() {
+				let present_keys = if index == last_index { present_keys.as_ref() } else { &[] };
+				frame.execute_finished(command_buffer, present_keys, synchronizer);
+			}
+		}
+	}
+
+	impl crate::queue::Queue for QueueReference<'_> {
 		type Frame<'a> = super::Frame<'a>;
 		type Execution<'a> = Execution<'a>;
 

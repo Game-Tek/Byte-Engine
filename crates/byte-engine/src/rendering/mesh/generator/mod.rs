@@ -8,7 +8,7 @@ pub use r#box::BoxMeshGenerator;
 pub use sphere::SphereMeshGenerator;
 
 /// The `MeshGenerator` trait defines a mesh generator capable of serving as a source of mesh data.
-pub trait MeshGenerator {
+pub trait MeshGenerator: Send + Sync {
 	/// Returns the positions of the vertices.
 	fn positions(&self) -> Cow<'_, [(f32, f32, f32)]>;
 

@@ -2062,8 +2062,20 @@ impl Device {
 		graphics_hardware_interface::DynamicBufferHandle::<T>(master.into(), std::marker::PhantomData)
 	}
 
-	pub fn queue<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> queue::Queue<'a> {
+	/// Creates an owned queue wrapper for queue-local submission work.
+	pub fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> queue::Queue {
 		queue::Queue {
+			device: std::ptr::NonNull::from(self),
+			queue_handle,
+		}
+	}
+
+	/// Creates the borrowed queue wrapper used by the previous queue API.
+	pub fn queue_reference<'a>(
+		&'a mut self,
+		queue_handle: graphics_hardware_interface::QueueHandle,
+	) -> queue::QueueReference<'a> {
+		queue::QueueReference {
 			device: self,
 			queue_handle,
 		}
@@ -2503,7 +2515,8 @@ impl Device {
 }
 
 impl crate::device::Device for Device {
-	type Queue<'a> = crate::metal::queue::Queue<'a>;
+	type Queue = crate::metal::queue::Queue;
+	type QueueReference<'a> = crate::metal::queue::QueueReference<'a>;
 	type CommandBuffer<'a> = crate::metal::CommandBuffer<'a>;
 
 	#[cfg(debug_assertions)]
@@ -2511,8 +2524,12 @@ impl crate::device::Device for Device {
 		Device::has_errors(self)
 	}
 
-	fn queue<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue<'a> {
+	fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue {
 		Device::queue(self, queue_handle)
+	}
+
+	fn queue_reference<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::QueueReference<'a> {
+		Device::queue_reference(self, queue_handle)
 	}
 
 	fn command_buffer<'a>(

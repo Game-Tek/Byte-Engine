@@ -17,7 +17,8 @@ pub trait Device
 where
 	Self: Sized + DeviceCreate,
 {
-	type Queue<'a>: crate::queue::Queue
+	type Queue: crate::queue::Queue;
+	type QueueReference<'a>: crate::queue::Queue
 	where
 		Self: 'a;
 	type CommandBuffer<'a>: crate::command_buffer::CommandBuffer
@@ -28,8 +29,11 @@ where
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool;
 
-	/// Returns a queue wrapper that exposes queue-local command submission.
-	fn queue<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::Queue<'a>;
+	/// Returns an owned queue wrapper that exposes queue-local command submission.
+	fn queue(&mut self, queue_handle: QueueHandle) -> Self::Queue;
+
+	/// Returns a borrowed queue wrapper that exposes queue-local command submission.
+	fn queue_reference<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::QueueReference<'a>;
 
 	/// Returns a command-buffer wrapper that exposes command-buffer-local recording.
 	fn command_buffer<'a>(&'a mut self, command_buffer_handle: CommandBufferHandle) -> Self::CommandBuffer<'a>;

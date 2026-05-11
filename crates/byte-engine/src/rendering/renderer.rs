@@ -28,15 +28,10 @@ pub struct Renderer {
 	/// The GHI queue where graphics commands are submitted. The main rendering operations occur on this queue.
 	graphics_queue_handle: ghi::QueueHandle,
 	/// The GHI queue where transfer commands are submitted. Async transfer operations occur on this queue.
-	transfer_queue_handle: ghi::QueueHandle,
+	pub transfer_queue_handle: ghi::QueueHandle,
 
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
-
-	transfer_command_buffer: ghi::CommandBufferHandle,
-	transfer_finished_synchronizer: ghi::SynchronizerHandle,
-
-	upload_buffer: ghi::BufferHandle<[u8; PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT]>,
 }
 
 impl Renderer {
@@ -127,17 +122,10 @@ impl Renderer {
 		let graphics_queue_handle = graphics_queue_handle.unwrap();
 		let transfer_queue_handle = transfer_queue_handle.unwrap();
 
-		let render_command_buffer = device.queue(graphics_queue_handle).create_command_buffer(Some("Render"));
+		let render_command_buffer = device
+			.queue_reference(graphics_queue_handle)
+			.create_command_buffer(Some("Render"));
 		let render_finished_synchronizer = device.create_synchronizer(Some("Render Finisished"), true);
-
-		let transfer_command_buffer = device.queue(transfer_queue_handle).create_command_buffer(Some("Transfer"));
-		let transfer_finished_synchronizer = device.create_synchronizer(Some("Transfer Finished"), true);
-
-		let upload_buffer = device.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
-				.name("Renderer Async Upload Buffer")
-				.device_accesses(ghi::DeviceAccesses::HostOnly),
-		);
 
 		Renderer {
 			instance,
@@ -164,11 +152,6 @@ impl Renderer {
 
 			render_command_buffer,
 			render_finished_synchronizer,
-
-			transfer_command_buffer,
-			transfer_finished_synchronizer,
-
-			upload_buffer,
 		}
 	}
 
@@ -275,39 +258,6 @@ impl Renderer {
 			}
 		});
 
-		let mut recorded_transfer_work = false;
-
-		{
-			let mut transfer_queue = self.device.queue(self.transfer_queue_handle);
-			let started_frame = transfer_queue.start_frame(self.started_frame_count as _, self.transfer_finished_synchronizer);
-			let completed_transfer_frame = started_frame.completed_frame;
-			let mut frame = started_frame.frame;
-			let key = frame.key();
-			let mut transfer_recording = frame.create_command_buffer_recording(self.transfer_command_buffer);
-
-			let buffer = transfer_recording.get_mut_buffer_slice(self.upload_buffer);
-			let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
-
-			for pipeline_manager in &mut self.pipeline_managers {
-				let transfer_prepare_result = pipeline_manager.prepare_transfers(
-					&mut transfer_recording,
-					key,
-					completed_transfer_frame,
-					self.upload_buffer.into(),
-					slice,
-				);
-				slice = transfer_prepare_result.slice;
-
-				if transfer_prepare_result.recorded_work {
-					recorded_transfer_work = true;
-				}
-			}
-
-			if recorded_transfer_work {
-				transfer_recording.execute(self.transfer_finished_synchronizer);
-			}
-		}
-
 		let mut queue = self.device.queue(self.graphics_queue_handle);
 		let frame = ghi::queue::FrameRequest {
 			index: self.started_frame_count as u32,
@@ -318,7 +268,7 @@ impl Renderer {
 
 		let command_buffer = self.render_command_buffer;
 		let synchronizer = self.render_finished_synchronizer;
-		let transfer_wait = [self.transfer_finished_synchronizer];
+		let wait_for = &[];
 		let windows = &self.windows;
 		let sink_cameras = &self.sink_cameras;
 		let cameras = &self.cameras;
@@ -326,8 +276,6 @@ impl Renderer {
 		let pipeline_managers = &mut self.pipeline_managers;
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
-
-		let wait_for: &[ghi::SynchronizerHandle] = if recorded_transfer_work { &transfer_wait } else { &[] };
 
 		queue.execute(Some(frame), wait_for, synchronizer, |execution| {
 			let completed_graphics_frame = execution.completed_frame();
@@ -790,8 +738,6 @@ mod tests {
 		assert_eq!(*sink1_image, image2);
 	}
 }
-
-const PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT: usize = 1024 * 1024 * 32;
 
 type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
 

@@ -30,7 +30,4 @@
 - Map interpolation qualifiers to Metal shader output semantics in crates/resource-management/src/msl_shader_generator.rs.
 - Use actual scene instance indices instead of loaded mesh indices in the visibility render pass push constant path in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs.
 - Sort visibility/transparent render pass work by distance to camera where required in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs.
-- Fix or remove stale cargo aliases that reference the missing ghi/metal feature in .cargo/config.toml.
-- Align workspace and crate rust-version metadata with the actual nightly toolchain requirement.
 - Add CI coverage for at least one smoke rendering path per supported backend instead of skipping all render-prefixed tests.
-- Populate or remove stale report.json workspace_crates metadata.

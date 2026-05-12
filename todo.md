@@ -25,7 +25,6 @@
 - Implement or document Windows audio pause behavior in crates/ahi/src/os/win32.rs.
 - Add OGG output bit-depth support beyond forced unsigned 8-bit PCM in crates/resource-management/src/asset/ogg_asset_handler.rs.
 - Replace the ignored OGG asset test with committed fixture data or a generated in-test fixture in crates/resource-management/src/asset/ogg_asset_handler.rs.
-- Make WAV parsing handle valid WAV files with extra chunks, extensible format, metadata chunks, and reordered chunks in crates/resource-management/src/asset/wav_asset_handler.rs.
 - Finish PNG transformation/normalization configuration in crates/resource-management/src/asset/png_asset_handler.rs.
 - Confirm and implement Metal push-constant mapping in crates/resource-management/src/msl_shader_generator.rs.
 - Map interpolation qualifiers to Metal shader output semantics in crates/resource-management/src/msl_shader_generator.rs.

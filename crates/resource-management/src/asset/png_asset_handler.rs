@@ -19,11 +19,21 @@ struct DecodedImage {
 	description: ImageDescription,
 }
 
-pub struct PNGAssetHandler {}
+/// The `PNGAssetHandler` struct configures PNG decoding for image assets.
+pub struct PNGAssetHandler {
+	transformations: png::Transformations,
+}
 
 impl PNGAssetHandler {
 	pub fn new() -> PNGAssetHandler {
-		PNGAssetHandler {}
+		PNGAssetHandler {
+			transformations: png::Transformations::EXPAND,
+		}
+	}
+
+	/// Creates a PNG asset handler with explicit decoder transformations.
+	pub fn with_transformations(transformations: png::Transformations) -> PNGAssetHandler {
+		PNGAssetHandler { transformations }
 	}
 }
 
@@ -52,6 +62,7 @@ impl AssetHandler for PNGAssetHandler {
 				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
 			let semantic = guess_semantic_from_name(url.get_base());
+			let transformations = self.transformations;
 
 			let decoded = spawn_cpu_task(move || -> Result<DecodedImage, LoadErrors> {
 				let mut buffer;
@@ -62,10 +73,8 @@ impl AssetHandler for PNGAssetHandler {
 				match dt.as_str() {
 					"png" | "image/png" => {
 						let cursor = std::io::Cursor::new(data);
-						let decoder = png::Decoder::new(cursor);
-						if true { // TODO: make this a setting
-							 // decoder.set_transformations(png::Transformations::normalize_to_color8());
-						}
+						let mut decoder = png::Decoder::new(cursor);
+						decoder.set_transformations(transformations);
 						let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
 
 						let Some(size) = reader.output_buffer_size() else {
@@ -75,52 +84,11 @@ impl AssetHandler for PNGAssetHandler {
 						buffer = vec![0u8; size];
 
 						let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
+						buffer.truncate(info.buffer_size());
 
 						extent = Extent::rectangle(info.width, info.height);
-
-						gamma = reader
-							.info()
-							.gama_chunk
-							.map(|g: png::ScaledFloat| {
-								if g.into_scaled() == 45455 {
-									Gamma::SRGB
-								} else {
-									Gamma::Linear
-								}
-							})
-							.unwrap_or(gamma_from_semantic(semantic));
-
-						match info.bit_depth {
-							png::BitDepth::Eight => {}
-							png::BitDepth::Sixteen => {
-								for i in 0..buffer.len() / 2 {
-									buffer.swap(i * 2, i * 2 + 1);
-								}
-							}
-							_ => {
-								return Err(LoadErrors::FailedToProcess);
-							}
-						}
-
-						format = match info.color_type {
-							png::ColorType::Rgb => match info.bit_depth {
-								png::BitDepth::Eight => Formats::RGB8,
-								png::BitDepth::Sixteen => Formats::RGB16,
-								_ => {
-									return Err(LoadErrors::FailedToProcess);
-								}
-							},
-							png::ColorType::Rgba => match info.bit_depth {
-								png::BitDepth::Eight => Formats::RGBA8,
-								png::BitDepth::Sixteen => Formats::RGBA16,
-								_ => {
-									return Err(LoadErrors::FailedToProcess);
-								}
-							},
-							_ => {
-								return Err(LoadErrors::FailedToProcess);
-							}
-						};
+						gamma = png_gamma(reader.info(), semantic);
+						(buffer, format) = normalize_png_buffer(buffer, info.color_type, info.bit_depth, extent)?;
 					}
 					_ => {
 						return Err(LoadErrors::UnsupportedType);
@@ -148,6 +116,100 @@ impl AssetHandler for PNGAssetHandler {
 			process_image(url, description, data)
 		})
 	}
+}
+
+/// Determines the image gamma from PNG metadata before falling back to the asset semantic.
+fn png_gamma(info: &png::Info<'_>, semantic: crate::processors::image_processor::Semantic) -> Gamma {
+	info.source_gamma
+		.map(|g| {
+			if g.into_scaled() == 45455 {
+				Gamma::SRGB
+			} else {
+				Gamma::Linear
+			}
+		})
+		.unwrap_or(gamma_from_semantic(semantic))
+}
+
+/// Normalizes PNG decoder output into formats supported by the image processor.
+fn normalize_png_buffer(
+	mut buffer: Vec<u8>,
+	color_type: png::ColorType,
+	bit_depth: png::BitDepth,
+	extent: Extent,
+) -> Result<(Vec<u8>, Formats), LoadErrors> {
+	let format = match (color_type, bit_depth) {
+		(png::ColorType::Rgb, png::BitDepth::Eight) => Formats::RGB8,
+		(png::ColorType::Rgb, png::BitDepth::Sixteen) => Formats::RGB16,
+		(png::ColorType::Rgba, png::BitDepth::Eight) => Formats::RGBA8,
+		(png::ColorType::Rgba, png::BitDepth::Sixteen) => Formats::RGBA16,
+		(png::ColorType::Grayscale, png::BitDepth::Eight) => {
+			return Ok((grayscale8_to_rgb8(&buffer), Formats::RGB8));
+		}
+		(png::ColorType::Grayscale, png::BitDepth::Sixteen) => {
+			swap_16_bit_png_samples(&mut buffer);
+			return Ok((grayscale16_to_rgb16(&buffer, extent), Formats::RGB16));
+		}
+		(png::ColorType::GrayscaleAlpha, png::BitDepth::Eight) => {
+			return Ok((grayscale_alpha8_to_rgba8(&buffer), Formats::RGBA8));
+		}
+		(png::ColorType::GrayscaleAlpha, png::BitDepth::Sixteen) => {
+			swap_16_bit_png_samples(&mut buffer);
+			return Ok((grayscale_alpha16_to_rgba16(&buffer, extent), Formats::RGBA16));
+		}
+		_ => return Err(LoadErrors::FailedToProcess),
+	};
+
+	if bit_depth == png::BitDepth::Sixteen {
+		swap_16_bit_png_samples(&mut buffer);
+	}
+
+	Ok((buffer, format))
+}
+
+fn swap_16_bit_png_samples(buffer: &mut [u8]) {
+	for sample in buffer.chunks_exact_mut(2) {
+		sample.swap(0, 1);
+	}
+}
+
+fn grayscale8_to_rgb8(buffer: &[u8]) -> Vec<u8> {
+	let mut output = Vec::with_capacity(buffer.len() * 3);
+	for value in buffer {
+		output.extend_from_slice(&[*value, *value, *value]);
+	}
+	output
+}
+
+fn grayscale16_to_rgb16(buffer: &[u8], extent: Extent) -> Vec<u8> {
+	let mut output = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 6);
+	for value in buffer.chunks_exact(2) {
+		output.extend_from_slice(value);
+		output.extend_from_slice(value);
+		output.extend_from_slice(value);
+	}
+	output
+}
+
+fn grayscale_alpha8_to_rgba8(buffer: &[u8]) -> Vec<u8> {
+	let mut output = Vec::with_capacity(buffer.len() * 2);
+	for pixel in buffer.chunks_exact(2) {
+		output.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
+	}
+	output
+}
+
+fn grayscale_alpha16_to_rgba16(buffer: &[u8], extent: Extent) -> Vec<u8> {
+	let mut output = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 8);
+	for pixel in buffer.chunks_exact(4) {
+		let gray = &pixel[0..2];
+		let alpha = &pixel[2..4];
+		output.extend_from_slice(gray);
+		output.extend_from_slice(gray);
+		output.extend_from_slice(gray);
+		output.extend_from_slice(alpha);
+	}
+	output
 }
 
 #[cfg(test)]

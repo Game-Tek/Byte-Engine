@@ -1010,7 +1010,11 @@ impl Context {
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let (spirv, metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
 			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None, None, None),
-			crate::shader::Sources::MTLB { binary, entry_point } => {
+			crate::shader::Sources::MTLB {
+				binary,
+				entry_point,
+				threadgroup_size,
+			} => {
 				let data = DispatchData::from_bytes(binary);
 				let library = self.device.newLibraryWithData_error(&data).map_err(|error| {
 					eprintln!(
@@ -1020,7 +1024,7 @@ impl Context {
 					()
 				})?;
 
-				(None, Some(library), Some(entry_point.to_owned()), None)
+				(None, Some(library), Some(entry_point.to_owned()), threadgroup_size)
 			}
 			crate::shader::Sources::MTL { source, entry_point } => {
 				let threadgroup_size = match stage {

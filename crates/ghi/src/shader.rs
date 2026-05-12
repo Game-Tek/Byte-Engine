@@ -1,3 +1,5 @@
+use utils::Extent;
+
 use crate::AccessPolicies;
 
 /// Possible types of a shader source
@@ -5,7 +7,11 @@ pub enum Sources<'a> {
 	/// SPIR-V binary
 	SPIRV(&'a [u8]),
 	/// Compiled Metal library bytes and entry-point name
-	MTLB { binary: &'a [u8], entry_point: &'a str },
+	MTLB {
+		binary: &'a [u8],
+		entry_point: &'a str,
+		threadgroup_size: Option<Extent>,
+	},
 	/// Metal shading language source and entry-point name
 	MTL { source: &'a str, entry_point: &'a str },
 }

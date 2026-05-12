@@ -8,6 +8,7 @@ use resource_management::{
 	types::ShaderTypes,
 	ProcessedAsset, Reference, ReferenceModel, Solver,
 };
+use utils::Extent;
 
 /// The `ShaderSourceDescriptor` struct describes an inline shader that can be baked into a `Shader` resource.
 pub struct ShaderSourceDescriptor<'a> {
@@ -52,7 +53,7 @@ pub fn create_shader_from_baked_or_inline(
 			"Failed to load baked shader bytes. The most likely cause is an unsupported shader resource reader.".to_string()
 		})?;
 		let bytes = backing.as_slice();
-		let source = shader_artifact_source(&shader.resource.artifact, bytes)?;
+		let source = shader_artifact_source(&shader.resource.artifact, shader.resource.interface.workgroup_size, bytes)?;
 		return context
 			.create_shader(
 				Some(descriptor.name),
@@ -89,7 +90,8 @@ fn bake_shader(descriptor: &ShaderSourceDescriptor<'_>, source_hash: u64) -> Res
 	let (artifact, bytes) = match compiled {
 		ghi::shader::CompiledShaderSource::SPIRV(bytes) => (ShaderArtifact::Spirv, bytes),
 		ghi::shader::CompiledShaderSource::MTL { source, entry_point } => {
-			(ShaderArtifact::Msl { entry_point }, source.into_bytes())
+			let bytes = resource_management::msl_shader_compiler::compile_msl_source_to_metallib(&source, descriptor.name)?;
+			(ShaderArtifact::Mtlb { entry_point }, bytes.into_vec())
 		}
 	};
 
@@ -105,7 +107,11 @@ fn bake_shader(descriptor: &ShaderSourceDescriptor<'_>, source_hash: u64) -> Res
 	))
 }
 
-fn shader_artifact_source<'a>(artifact: &'a ShaderArtifact, bytes: &'a [u8]) -> Result<ghi::shader::Sources<'a>, String> {
+fn shader_artifact_source<'a>(
+	artifact: &'a ShaderArtifact,
+	workgroup_size: Option<(u32, u32, u32)>,
+	bytes: &'a [u8],
+) -> Result<ghi::shader::Sources<'a>, String> {
 	match artifact {
 		ShaderArtifact::Spirv => Ok(ghi::shader::Sources::SPIRV(bytes)),
 		ShaderArtifact::Msl { entry_point } => Ok(ghi::shader::Sources::MTL {
@@ -117,12 +123,21 @@ fn shader_artifact_source<'a>(artifact: &'a ShaderArtifact, bytes: &'a [u8]) -> 
 		ShaderArtifact::Mtlb { entry_point } => Ok(ghi::shader::Sources::MTLB {
 			binary: bytes,
 			entry_point,
+			threadgroup_size: shader_threadgroup_size(artifact, workgroup_size),
 		}),
+	}
+}
+
+fn shader_threadgroup_size(artifact: &ShaderArtifact, workgroup_size: Option<(u32, u32, u32)>) -> Option<Extent> {
+	match artifact {
+		ShaderArtifact::Mtlb { .. } => workgroup_size.map(|(width, height, depth)| Extent::new(width, height, depth)),
+		_ => None,
 	}
 }
 
 fn hash_shader_source(descriptor: &ShaderSourceDescriptor<'_>) -> u64 {
 	let mut hasher = DefaultHasher::new();
+	hasher.write(b"shader-store-mtlb-v1");
 	hasher.write(descriptor.id.as_bytes());
 	hasher.write(descriptor.name.as_bytes());
 	hasher.write(format!("{:?}", descriptor.stage).as_bytes());
@@ -152,6 +167,11 @@ fn hash_shader_source(descriptor: &ShaderSourceDescriptor<'_>) -> u64 {
 		hasher.write_u32(binding.binding);
 		hasher.write_u8(binding.read as u8);
 		hasher.write_u8(binding.write as u8);
+	}
+	if let Some((width, height, depth)) = descriptor.interface.workgroup_size {
+		hasher.write_u32(width);
+		hasher.write_u32(height);
+		hasher.write_u32(depth);
 	}
 	hasher.finish()
 }

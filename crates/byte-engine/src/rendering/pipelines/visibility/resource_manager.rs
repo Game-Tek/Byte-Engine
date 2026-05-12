@@ -833,6 +833,7 @@ enum OwnedShaderSource {
 	MTLB {
 		binary: ResourceReaderBacking,
 		entry_point: String,
+		threadgroup_size: Option<Extent>,
 	},
 	MTL {
 		source: String,
@@ -844,9 +845,14 @@ enum OwnedShaderSource {
 impl OwnedShaderSource {
 	fn sources(&self) -> ghi::shader::Sources<'_> {
 		match self {
-			OwnedShaderSource::MTLB { binary, entry_point } => ghi::shader::Sources::MTLB {
+			OwnedShaderSource::MTLB {
+				binary,
+				entry_point,
+				threadgroup_size,
+			} => ghi::shader::Sources::MTLB {
 				binary: binary.as_slice(),
 				entry_point,
+				threadgroup_size: *threadgroup_size,
 			},
 			OwnedShaderSource::MTL { source, entry_point } => ghi::shader::Sources::MTL { source, entry_point },
 			OwnedShaderSource::SPIRV(binary) => ghi::shader::Sources::SPIRV(binary.as_slice()),
@@ -1087,6 +1093,11 @@ impl VisibilityPipelineResourceManager {
 				OwnedShaderSource::MTLB {
 					binary: shader_backing,
 					entry_point: "besl_main".to_string(),
+					threadgroup_size: shader
+						.resource()
+						.interface
+						.workgroup_size
+						.map(|(width, height, depth)| Extent::new(width, height, depth)),
 				}
 			} else {
 				OwnedShaderSource::SPIRV(shader_backing)

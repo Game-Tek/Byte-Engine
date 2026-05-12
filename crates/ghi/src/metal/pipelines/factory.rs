@@ -59,10 +59,14 @@ impl crate::factory::Factory for Factory {
 		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let (spirv, metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
-			crate::shader::Sources::MTLB { binary, entry_point } => {
+			crate::shader::Sources::MTLB {
+				binary,
+				entry_point,
+				threadgroup_size,
+			} => {
 				let library = self.build_library(binary);
 
-				(None, Some(library), Some(entry_point.to_owned()), None)
+				(None, Some(library), Some(entry_point.to_owned()), threadgroup_size)
 			}
 			crate::shader::Sources::MTL { source, entry_point } => {
 				let threadgroup_size = match stage {

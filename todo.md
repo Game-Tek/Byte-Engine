@@ -1,6 +1,37 @@
-- Test render frame with renderer but no elements
-- Test asset path
-- Support no audio endpoint
-- Add support for perprimitiveEXT qualifier in shader outputs
-- remove them from mesh shader header
-- see how to deal with now potentially unused staging buffers in GHI
+- Test render frame with renderer but no elements.
+- Test asset path handling.
+- Support no audio endpoint.
+- Add support for the perprimitiveEXT qualifier in shader outputs.
+- Remove perprimitiveEXT qualifiers from the mesh shader header when they are not needed.
+- Decide how to handle potentially unused staging buffers in GHI.
+- Implement DX12 command recording for render passes, clears, copies, descriptor binding, push constants, draw/dispatch, mesh shading, ray tracing, and submission in crates/ghi/src/dx12/command_buffer.rs.
+- Complete DX12 device-side GPU resource and pipeline support, including pipeline state creation, buffer/image resource mapping, texture upload, DXR structures, shader tables, and fence waiting in crates/ghi/src/dx12/device.rs.
+- Implement Vulkan standalone command buffer execute in crates/ghi/src/vulkan/command_buffer.rs.
+- Replace the Vulkan internal handle translation unimplemented branch with explicit handling or a recoverable error in crates/ghi/src/vulkan/command_buffer.rs.
+- Support Vulkan frame-count reductions or non-growth frame changes in crates/ghi/src/vulkan/device.rs.
+- Implement Metal ray tracing pipeline mapping, acceleration structure creation/build, instance buffer population, shader binding table mapping, and ray dispatch in crates/ghi/src/metal/context.rs and crates/ghi/src/metal/command_buffer.rs.
+- Rebuild Metal dynamic resources correctly when swapchain frame count changes in crates/ghi/src/metal/context.rs.
+- Implement macOS cursor visibility and cursor confinement in crates/ghi/src/window/os/macos.rs.
+- Wire real platform input seats instead of stub seats across X11, Wayland, Win32, and byte-engine input manager paths.
+- Implement sampled UI colors for Color::Sample in crates/byte-engine/src/ui/layout/engine.rs.
+- Audit and implement the remaining UI layout engine unimplemented path in crates/byte-engine/src/ui/layout/engine.rs.
+- Implement primitive style access and non-box shape bounding boxes in crates/byte-engine/src/ui/primitive.rs.
+- Implement Positionable state for gameplay Sphere and Cube colliders in crates/byte-engine/src/gameplay/collider.rs.
+- Implement server-side client entity lifecycle on connect/disconnect events in crates/byte-engine/src/network/server/server.rs.
+- Replace the temporary network client identity key in crates/byte-engine/src/network/client/udp.rs with a better identity strategy.
+- Fix Streams::frames so it reports typed buffer frame counts correctly in crates/ahi/src/audio_hardware_interface.rs.
+- Make Linux audio pause handle devices that do not support ALSA pause without panicking in crates/ahi/src/os/linux.rs.
+- Make Windows audio format negotiation return Err instead of panicking when requested formats are unsupported in crates/ahi/src/os/win32.rs.
+- Implement or document Windows audio pause behavior in crates/ahi/src/os/win32.rs.
+- Add OGG output bit-depth support beyond forced unsigned 8-bit PCM in crates/resource-management/src/asset/ogg_asset_handler.rs.
+- Replace the ignored OGG asset test with committed fixture data or a generated in-test fixture in crates/resource-management/src/asset/ogg_asset_handler.rs.
+- Make WAV parsing handle valid WAV files with extra chunks, extensible format, metadata chunks, and reordered chunks in crates/resource-management/src/asset/wav_asset_handler.rs.
+- Finish PNG transformation/normalization configuration in crates/resource-management/src/asset/png_asset_handler.rs.
+- Confirm and implement Metal push-constant mapping in crates/resource-management/src/msl_shader_generator.rs.
+- Map interpolation qualifiers to Metal shader output semantics in crates/resource-management/src/msl_shader_generator.rs.
+- Use actual scene instance indices instead of loaded mesh indices in the visibility render pass push constant path in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs.
+- Sort visibility/transparent render pass work by distance to camera where required in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs.
+- Fix or remove stale cargo aliases that reference the missing ghi/metal feature in .cargo/config.toml.
+- Align workspace and crate rust-version metadata with the actual nightly toolchain requirement.
+- Add CI coverage for at least one smoke rendering path per supported backend instead of skipping all render-prefixed tests.
+- Populate or remove stale report.json workspace_crates metadata.

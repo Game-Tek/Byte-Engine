@@ -701,8 +701,10 @@ impl PipelineManager for VisibilityPipelineManager {
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Diffuse", "main");
 
+		let shader_storage = render_pass_builder.shader_storage();
 		let render_pass = VisibilityPipelineRenderPass::new(
 			render_pass_builder.context(),
+			shader_storage,
 			self.descriptor_set_layout,
 			self.visibility_descriptor_set_layout,
 			self.scene.descriptor_set,

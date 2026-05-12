@@ -1,11 +1,11 @@
 use super::{
 	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
+	audio_utils::{bit_depth_from_bits_per_sample, sample_count_from_pcm_len},
 	ResourceId,
 };
 use crate::{
-	asset, processors::audio_processor::process_audio, r#async::BoxedFuture, resource, resources::audio::Audio,
-	types::BitDepths, ProcessedAsset,
+	asset, processors::audio_processor::process_audio, r#async::BoxedFuture, resource, resources::audio::Audio, ProcessedAsset,
 };
 
 impl WAVAssetHandler {
@@ -93,17 +93,9 @@ impl WAVAssetHandler {
 						);
 					}
 
-					let bit_depth = match bits_per_sample {
-						8 => BitDepths::Eight,
-						16 => BitDepths::Sixteen,
-						24 => BitDepths::TwentyFour,
-						32 => BitDepths::ThirtyTwo,
-						_ => {
-							return Err(
-								"Unsupported bit depth. The WAV header likely reports an unsupported format.".to_string()
-							);
-						}
-					};
+					let bit_depth = bit_depth_from_bits_per_sample(bits_per_sample).ok_or_else(|| {
+						"Unsupported bit depth. The WAV header likely reports an unsupported format.".to_string()
+					})?;
 
 					wav_format = Some((bit_depth, num_channels, sample_rate, bits_per_sample));
 				}
@@ -114,10 +106,11 @@ impl WAVAssetHandler {
 			offset = chunk_end + (chunk_size % 2);
 		}
 
-		let (bit_depth, num_channels, sample_rate, bits_per_sample) =
-			wav_format.ok_or_else(|| "Missing fmt chunk. The WAV file likely has no format description.".to_string())?;
+		let (bit_depth, num_channels, sample_rate) = wav_format
+			.map(|(bit_depth, num_channels, sample_rate, _bits_per_sample)| (bit_depth, num_channels, sample_rate))
+			.ok_or_else(|| "Missing fmt chunk. The WAV file likely has no format description.".to_string())?;
 		let data = pcm_data.ok_or_else(|| "Missing data chunk. The WAV file likely has no PCM payload.".to_string())?;
-		let sample_count = data.len() as u32 / (bits_per_sample / 8) as u32 / num_channels as u32;
+		let sample_count = sample_count_from_pcm_len(data.len(), num_channels, bit_depth);
 		let audio_resource = Audio {
 			bit_depth,
 			channel_count: num_channels,

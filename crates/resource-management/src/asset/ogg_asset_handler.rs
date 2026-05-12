@@ -1,6 +1,7 @@
 use super::{
 	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
+	audio_utils::{bytes_per_sample, push_pcm_sample, sample_count_from_pcm_len},
 	ResourceId,
 };
 use crate::{
@@ -24,7 +25,7 @@ impl OGGAssetHandler {
 		let sample_rate = decoder.sampling_frequency().get();
 		let channel_count = decoder.channels().get();
 
-		let bytes_per_sample = usize::from(bit_depth) / 8;
+		let bytes_per_sample = bytes_per_sample(bit_depth);
 		let mut data = Vec::with_capacity(channel_count as usize * sample_rate as usize * bytes_per_sample);
 
 		while let Some(block) = decoder
@@ -39,7 +40,7 @@ impl OGGAssetHandler {
 			}
 		}
 
-		let sample_count = (data.len() / channel_count as usize / bytes_per_sample) as u32;
+		let sample_count = sample_count_from_pcm_len(data.len(), channel_count as u16, bit_depth);
 		let channel_count = channel_count as u16;
 
 		let audio_resource = Audio {
@@ -67,30 +68,6 @@ impl OGGAssetHandler {
 /// The `OGGAssetHandler` struct exists to decode OGG Vorbis assets into engine audio resources.
 pub struct OGGAssetHandler {
 	bit_depth: BitDepths,
-}
-
-fn push_pcm_sample(data: &mut Vec<u8>, sample: f32, bit_depth: BitDepths) {
-	let sample = sample.clamp(-1.0, 1.0);
-
-	match bit_depth {
-		BitDepths::Eight => {
-			let sample = ((sample * 0.5 + 0.5) * u8::MAX as f32).round() as u8;
-			data.push(sample);
-		}
-		BitDepths::Sixteen => {
-			let sample = (sample * i16::MAX as f32).round() as i16;
-			data.extend_from_slice(&sample.to_le_bytes());
-		}
-		BitDepths::TwentyFour => {
-			let sample = (sample * 8_388_607.0).round() as i32;
-			let bytes = sample.to_le_bytes();
-			data.extend_from_slice(&bytes[..3]);
-		}
-		BitDepths::ThirtyTwo => {
-			let sample = (sample * i32::MAX as f32).round() as i32;
-			data.extend_from_slice(&sample.to_le_bytes());
-		}
-	}
 }
 
 impl AssetHandler for OGGAssetHandler {

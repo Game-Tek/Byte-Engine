@@ -111,7 +111,6 @@ mod tests {
 	};
 
 	#[r#async::test]
-	#[ignore = "Test uses data not pushed to the repository"]
 	async fn test_audio_asset_handler() {
 		let audio_asset_handler = OGGAssetHandler::new();
 
@@ -119,7 +118,8 @@ mod tests {
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
 		let asset_manager = AssetManager::new(asset_storage_backend.clone());
 
-		let url = ResourceId::new("gun.wav");
+		let url = ResourceId::new("test-tone.ogg");
+		asset_storage_backend.add_file("test-tone.ogg", &make_test_ogg());
 
 		let (resource, data) = audio_asset_handler
 			.bake(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)
@@ -135,12 +135,29 @@ mod tests {
 
 		let resource = &generated_resources[0];
 
-		assert_eq!(resource.id, "gun.wav");
+		assert_eq!(resource.id, "test-tone.ogg");
 		assert_eq!(resource.class, "Audio");
 		let resource: Audio = crate::from_slice(&resource.resource).unwrap();
-		assert_eq!(resource.bit_depth, BitDepths::Sixteen);
+		assert_eq!(resource.bit_depth, BitDepths::Eight);
 		assert_eq!(resource.channel_count, 1);
-		assert_eq!(resource.sample_rate, 48000);
-		assert_eq!(resource.sample_count, 152456 / 1 / (16 / 8));
+		assert_eq!(resource.sample_rate, 48_000);
+		assert_eq!(resource.sample_count, 1024);
+	}
+
+	/// Generates a deterministic OGG Vorbis fixture for the audio asset handler test.
+	fn make_test_ogg() -> Vec<u8> {
+		use std::num::{NonZeroU32, NonZeroU8};
+
+		let sample_rate = NonZeroU32::new(48_000).unwrap();
+		let channels = NonZeroU8::new(1).unwrap();
+		let sink = Vec::new();
+		let mut builder = vorbis_rs::VorbisEncoderBuilder::new_with_serial(sample_rate, channels, sink, 1);
+		let mut encoder = builder.build().expect("Test OGG encoder should initialize");
+		let samples: Vec<f32> = (0..1024)
+			.map(|index| ((index as f32 / 48_000.0) * 440.0 * std::f32::consts::TAU).sin() * 0.25)
+			.collect();
+
+		encoder.encode_audio_block([samples]).expect("Test OGG samples should encode");
+		encoder.finish().expect("Test OGG stream should finish")
 	}
 }

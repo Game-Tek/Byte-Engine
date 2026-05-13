@@ -73,6 +73,7 @@ use ghi::BufferHandle;
 use ghi::DescriptorSetBindingHandle;
 use ghi::DescriptorSetHandle;
 use ghi::DynamicBufferHandle;
+use ghi::Frame as _;
 use log::warn;
 use math::mat::MatInverse as _;
 use utils::hash::HashMap;

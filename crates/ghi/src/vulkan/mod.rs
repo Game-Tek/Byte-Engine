@@ -15,6 +15,7 @@ use crate::PrivateHandles;
 pub mod binding;
 pub mod buffer;
 pub mod command_buffer;
+pub mod context;
 pub mod descriptor_set;
 pub mod device;
 pub mod frame;
@@ -30,6 +31,7 @@ mod utils;
 pub use self::binding::*;
 pub(crate) use self::buffer::*;
 pub use self::command_buffer::*;
+pub use self::context::*;
 pub use self::descriptor_set::*;
 pub use self::device::*;
 pub use self::frame::*;
@@ -52,6 +54,9 @@ pub(super) enum Descriptor {
 		buffer: BufferHandle,
 		size: graphics_hardware_interface::Ranges,
 	},
+	Swapchain {
+		handle: graphics_hardware_interface::SwapchainHandle,
+	},
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -60,9 +65,19 @@ pub(super) struct TopLevelAccelerationStructureHandle(pub(super) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum Handles {
+	Image(ImageHandle),
+	Buffer(BufferHandle),
+	VkBuffer(vk::Buffer),
+	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
+	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
+	Synchronizer(crate::synchronizer::SynchronizerHandle),
+}
+
 #[derive(Clone, PartialEq)]
 pub(super) struct Consumption {
-	pub(super) handle: PrivateHandles,
+	pub(super) handle: Handles,
 	pub(super) stages: crate::Stages,
 	pub(super) access: crate::AccessPolicies,
 	pub(super) layout: crate::Layouts,
@@ -70,7 +85,7 @@ pub(super) struct Consumption {
 
 #[derive(Clone, PartialEq)]
 pub(super) struct VulkanConsumption {
-	pub(super) handle: PrivateHandles,
+	pub(super) handle: Handles,
 	pub(super) stages: vk::PipelineStageFlags2,
 	pub(super) access: vk::AccessFlags2,
 	pub(super) layout: vk::ImageLayout,
@@ -282,6 +297,9 @@ pub(crate) enum Descriptors {
 	},
 	Sampler {
 		handle: SamplerHandle,
+	},
+	Swapchain {
+		handle: graphics_hardware_interface::SwapchainHandle,
 	},
 }
 

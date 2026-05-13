@@ -1,6 +1,6 @@
 use std::{collections::hash_map::DefaultHasher, hash::Hasher as _};
 
-use ghi::context::Context as _;
+use ghi::context::{Context as _, ContextCreate as _};
 use resource_management::{
 	asset::ResourceId,
 	resource::{ReadStorageBackend as _, StorageBackend},

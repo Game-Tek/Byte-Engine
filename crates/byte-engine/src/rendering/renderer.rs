@@ -3,8 +3,6 @@
 pub struct Renderer {
 	/// The GHI context where all rendering resources and operations are performed.
 	context: ghi::implementation::Context,
-	/// The GHI device that owns the underlying GPU device object.
-	device: ghi::implementation::Device,
 	/// The GHI instance that manages devices.
 	instance: ghi::implementation::Instance,
 
@@ -132,7 +130,6 @@ impl Renderer {
 
 		Renderer {
 			context,
-			device,
 			instance,
 
 			started_frame_count: 0,
@@ -366,7 +363,7 @@ impl Renderer {
 				(sinks, pipeline_manager_commands, render_pass_commands, present_keys)
 			};
 
-			execution.record(command_buffer, |command_buffer_recording| {
+			execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
 				for commands in pipeline_manager_commands.into_iter() {
 					for (command, sink) in commands.into_iter().zip(sinks.iter()) {
 						let attachment_infos = render_targets.get_attachment_infos(sink.index());

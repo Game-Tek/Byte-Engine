@@ -9,8 +9,8 @@ where
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool;
 
-	/// Creates a rendering context associated with this device.
-	fn create_context(&self) -> Result<Self::Context, &'static str>;
+	/// Creates a rendering context that takes ownership of this device.
+	fn create_context(self) -> Result<Self::Context, &'static str>;
 }
 
 /// Configuration for which features to request from the underlying API when creating a device/instance.

@@ -1393,7 +1393,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use ghi::context::Context as _;
+use ghi::context::{Context as _, ContextCreate as _};
 use ghi::factory::Factory as _;
 use ghi::frame::Frame as _;
 use ghi::{

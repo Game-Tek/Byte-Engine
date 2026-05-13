@@ -66,11 +66,15 @@ pub mod implementation {
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::CommandBufferRecording;
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	pub use vulkan::Context;
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::Device;
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::Frame;
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	pub use vulkan::Instance;
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	pub(crate) use vulkan::Synchronizer;
 
 	#[cfg(target_os = "macos")]
 	use crate::metal;

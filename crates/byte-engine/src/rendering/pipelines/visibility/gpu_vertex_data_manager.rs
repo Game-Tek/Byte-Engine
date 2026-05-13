@@ -741,7 +741,7 @@ pub struct MeshPrimitive {
 
 use std::collections::hash_map::Entry;
 
-use ghi::command_buffer::CommandBufferRecording as _;
+use ghi::{command_buffer::CommandBufferRecording as _, context::ContextCreate as _};
 use resource_management::{resources::mesh::Mesh, Reference};
 use utils::as_byte_slice;
 

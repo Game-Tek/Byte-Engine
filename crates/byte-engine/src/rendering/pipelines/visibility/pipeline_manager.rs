@@ -506,14 +506,14 @@ impl PipelineManager for VisibilityPipelineManager {
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
 		let diffuse_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
-				ghi::Formats::RGBA16UNORM,
+				ghi::Formats::RGBA16F,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
 			)
 			.name("Diffuse"),
 		);
 		let specular_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
-				ghi::Formats::RGBA16UNORM,
+				ghi::Formats::RGBA16F,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
 			)
 			.name("Specular"),

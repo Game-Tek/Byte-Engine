@@ -585,21 +585,9 @@ impl Size for &[crate::pipelines::VertexElement<'_>] {
 	}
 }
 
-impl Into<crate::Stages> for crate::ShaderTypes {
-	fn into(self) -> crate::Stages {
-		match self {
-			crate::ShaderTypes::Vertex => crate::Stages::VERTEX,
-			crate::ShaderTypes::Fragment => crate::Stages::FRAGMENT,
-			crate::ShaderTypes::Compute => crate::Stages::COMPUTE,
-			crate::ShaderTypes::Task => crate::Stages::TASK,
-			crate::ShaderTypes::Mesh => crate::Stages::MESH,
-			crate::ShaderTypes::RayGen => crate::Stages::RAYGEN,
-			crate::ShaderTypes::ClosestHit => crate::Stages::CLOSEST_HIT,
-			crate::ShaderTypes::AnyHit => crate::Stages::ANY_HIT,
-			crate::ShaderTypes::Intersection => crate::Stages::INTERSECTION,
-			crate::ShaderTypes::Miss => crate::Stages::MISS,
-			crate::ShaderTypes::Callable => crate::Stages::CALLABLE,
-		}
+impl From<crate::ShaderTypes> for vk::ShaderStageFlags {
+	fn from(value: crate::ShaderTypes) -> Self {
+		to_shader_stage_flags(value.into())
 	}
 }
 

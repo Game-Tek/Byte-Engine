@@ -15,7 +15,6 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	device::Device as _,
 	frame::Frame,
-	implementation::Context,
 };
 use resource_management::{
 	asset::bema_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings,

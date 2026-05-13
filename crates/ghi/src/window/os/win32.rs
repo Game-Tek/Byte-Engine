@@ -26,7 +26,7 @@ use windows::{
 use crate::{
 	input::{Keys, MouseKeys},
 	os::WindowLike,
-	Events, Seat,
+	Events, Features, Seat,
 };
 
 pub struct Window {
@@ -43,7 +43,7 @@ pub struct Handles {
 }
 
 impl WindowLike for Window {
-	fn try_new(name: &str, extent: utils::Extent, id_name: &str) -> Result<Window, String> {
+	fn try_new(name: &str, extent: utils::Extent, id_name: &str, _features: Features) -> Result<Window, String> {
 		let hinstance = unsafe {
 			GetModuleHandleA(PCSTR(std::ptr::null()))
 				.map_err(|_| "Failed to acquire the module handle. The most likely cause is that the current process module handle could not be resolved.")?

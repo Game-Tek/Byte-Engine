@@ -14,7 +14,6 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	device::Device as _,
 	frame::Frame,
-	implementation::Context,
 };
 use math::{Matrix4, ShaderMatrix4};
 use resource_management::{

@@ -77,8 +77,8 @@ impl crate::device::Device for Device {
 		false
 	}
 
-	fn create_context(&self) -> Result<Self::Context, &'static str> {
-		crate::metal::context::Context::new(self.settings, self.device.clone(), self.queues.clone())
+	fn create_context(self) -> Result<Self::Context, &'static str> {
+		crate::metal::context::Context::new(self.settings, self.device, self.queues)
 	}
 }
 

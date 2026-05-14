@@ -3861,7 +3861,10 @@ impl crate::context::ContextCreate for Device {
 				// SAFETY: shader was checked to be aligned to 4 bytes.
 				Cow::Borrowed(unsafe { std::slice::from_raw_parts(spirv.as_ptr() as *const u32, spirv.len() / 4) })
 			}
-			crate::shader::Sources::MTL { .. } | crate::shader::Sources::MTLB { .. } => return Err(()),
+			crate::shader::Sources::DXIL(_)
+			| crate::shader::Sources::HLSL { .. }
+			| crate::shader::Sources::MTL { .. }
+			| crate::shader::Sources::MTLB { .. } => return Err(()),
 		};
 
 		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&shader);

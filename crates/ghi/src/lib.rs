@@ -13,11 +13,11 @@ pub mod render_debugger;
 
 pub mod debug;
 
-#[cfg(false)]
+#[cfg(all(target_os = "windows", feature = "dx12"))]
 pub mod dx12;
 #[cfg(target_os = "macos")]
 pub mod metal;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 pub mod vulkan;
 
 pub use crate::frame_resources::*;
@@ -25,8 +25,37 @@ pub use crate::graphics_hardware_interface::*;
 pub use crate::window::*;
 
 pub mod implementation {
+	pub const USES_DX12: bool = cfg!(all(target_os = "windows", feature = "dx12"));
 	pub const USES_METAL: bool = cfg!(target_os = "macos");
 
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub use dx12::factory::{ComputePipeline, Factory, FactoryImage, FactorySampler, RasterPipeline};
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub use dx12::CommandBufferRecording;
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub use dx12::Device as Context;
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub use dx12::Device;
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub use dx12::Frame;
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub use dx12::Instance;
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub(crate) struct Binding {
+		pub(crate) next: Option<crate::binding::DescriptorSetBindingHandle>,
+	}
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub(crate) struct Buffer;
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub(crate) struct DescriptorSet {
+		pub(crate) next: Option<crate::descriptors::DescriptorSetHandle>,
+	}
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub(crate) struct Image;
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	pub(crate) struct Synchronizer {
+		pub(crate) next: Option<crate::synchronizer::SynchronizerHandle>,
+	}
 	#[cfg(target_os = "macos")]
 	pub(crate) use metal::buffer::Buffer;
 	#[cfg(target_os = "macos")]
@@ -53,55 +82,57 @@ pub mod implementation {
 	pub use metal::Instance;
 	#[cfg(target_os = "macos")]
 	pub(crate) use metal::Synchronizer;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub(crate) use vulkan::binding::Binding;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub(crate) use vulkan::buffer::Buffer;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub(crate) use vulkan::descriptor_set::DescriptorSet;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub(crate) use vulkan::image::Image;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub use vulkan::queue::Queue;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub use vulkan::CommandBufferRecording;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub use vulkan::Context;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub use vulkan::Device;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub use vulkan::Frame;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub use vulkan::Instance;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	pub(crate) use vulkan::Synchronizer;
 
+	#[cfg(all(target_os = "windows", feature = "dx12"))]
+	use crate::dx12;
 	#[cfg(target_os = "macos")]
 	use crate::metal;
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	use crate::vulkan;
 
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	/// The `Factory` struct marks the unsupported detached-resource factory for the Vulkan implementation.
 	pub struct Factory;
 
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	/// The `ComputePipeline` struct marks the unsupported detached compute pipeline for the Vulkan implementation.
 	pub struct ComputePipeline;
 
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	/// The `RasterPipeline` struct marks the unsupported detached raster pipeline for the Vulkan implementation.
 	pub struct RasterPipeline;
 
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	/// The `FactoryImage` struct marks the unsupported detached image for the Vulkan implementation.
 	pub struct FactoryImage;
 
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	/// The `FactorySampler` struct marks the unsupported detached sampler for the Vulkan implementation.
 	pub struct FactorySampler;
 
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "dx12"))))]
 	impl crate::factory::Factory for Factory {
 		type RasterPipeline = RasterPipeline;
 		type ComputePipeline = ComputePipeline;

@@ -1010,6 +1010,7 @@ impl Context {
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 		let (spirv, metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
 			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None, None, None),
+			crate::shader::Sources::DXIL(_) | crate::shader::Sources::HLSL { .. } => return Err(()),
 			crate::shader::Sources::MTLB {
 				binary,
 				entry_point,

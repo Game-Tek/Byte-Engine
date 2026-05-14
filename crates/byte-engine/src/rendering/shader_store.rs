@@ -89,6 +89,9 @@ fn bake_shader(descriptor: &ShaderSourceDescriptor<'_>, source_hash: u64) -> Res
 	let compiled = ghi::shader::compile(descriptor.name, descriptor.source)?;
 	let (artifact, bytes) = match compiled {
 		ghi::shader::CompiledShaderSource::SPIRV(bytes) => (ShaderArtifact::Spirv, bytes),
+		ghi::shader::CompiledShaderSource::HLSL { source, entry_point } => {
+			todo!("Handle HLSL shader baking");
+		}
 		ghi::shader::CompiledShaderSource::MTL { source, entry_point } => {
 			let bytes = resource_management::msl_shader_compiler::compile_msl_source_to_metallib(&source, descriptor.name)?;
 			(ShaderArtifact::Mtlb { entry_point }, bytes.into_vec())
@@ -146,6 +149,9 @@ fn hash_shader_source(descriptor: &ShaderSourceDescriptor<'_>) -> u64 {
 			hasher.write(b"glsl");
 			hasher.write(source.as_bytes());
 		}
+		ghi::shader::ShaderSource::Hlsl { source, entry_point } => {
+			todo!("implement hash shader source for hlsl");
+		}
 		ghi::shader::ShaderSource::Msl { source, entry_point } => {
 			hasher.write(b"msl");
 			hasher.write(source.as_bytes());
@@ -160,6 +166,15 @@ fn hash_shader_source(descriptor: &ShaderSourceDescriptor<'_>) -> u64 {
 			hasher.write(glsl.as_bytes());
 			hasher.write(msl.as_bytes());
 			hasher.write(msl_entry_point.as_bytes());
+		}
+		ghi::shader::ShaderSource::PlatformNative {
+			glsl,
+			msl,
+			msl_entry_point,
+			hlsl,
+			hlsl_entry_point,
+		} => {
+			todo!("implement whatever this is. damned clankers");
 		}
 	}
 	for binding in &descriptor.interface.bindings {

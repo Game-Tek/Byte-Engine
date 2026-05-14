@@ -802,6 +802,9 @@ impl<'a> BindingConstructor<'a> {
 			descriptors::WriteData::Image { layout: old_layout, .. } => {
 				*old_layout = layout;
 			}
+			descriptors::WriteData::CombinedImageSampler { layout: old_layout, .. } => {
+				*old_layout = layout;
+			}
 			_ => (),
 		}
 
@@ -991,6 +994,26 @@ pub(super) mod tests {
 		assert_eq!(array_templates[5].descriptor_count, 7);
 		assert_eq!(array_templates[6].descriptor_count, 8);
 		assert_eq!(array_templates[7].descriptor_count, 9);
+	}
+
+	#[test]
+	fn binding_constructor_layout_updates_combined_image_sampler() {
+		let template = DescriptorSetBindingTemplate::combined_image_sampler(0, Stages::FRAGMENT);
+		let constructor = BindingConstructor::combined_image_sampler(
+			&template,
+			ImageHandle(BaseImageHandle(3)),
+			SamplerHandle(4),
+			Layouts::Read,
+		)
+		.layout(Layouts::General);
+
+		assert!(matches!(
+			constructor.descriptor,
+			descriptors::WriteData::CombinedImageSampler {
+				layout: Layouts::General,
+				..
+			}
+		));
 	}
 
 	#[test]

@@ -1,15 +1,18 @@
+use super::context::{Device, Execution};
+use crate::{CommandBufferHandle, PresentKey, QueueHandle, SynchronizerHandle};
+
 /// The `Queue` struct exists to expose DX12 queue submission through the shared GHI queue API.
 pub struct Queue {
-	device: std::ptr::NonNull<Device>,
-	queue_handle: QueueHandle,
+	pub(crate) device: std::ptr::NonNull<Device>,
+	pub(crate) queue_handle: QueueHandle,
 }
 
 unsafe impl Send for Queue {}
 
 /// The `QueueReference` struct exists to expose borrowed DX12 queue submission through the shared GHI queue API.
 pub struct QueueReference<'a> {
-	device: &'a mut Device,
-	queue_handle: QueueHandle,
+	pub(crate) device: &'a mut Device,
+	pub(crate) queue_handle: QueueHandle,
 }
 
 impl Queue {

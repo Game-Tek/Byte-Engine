@@ -1,8 +1,9 @@
-pub struct Context {
+/// The `Device` struct exists to own DX12 GPU resources for the shared GHI device API.
+pub struct Device {
 	device: ID3D12Device,
 	settings: Features,
 	debugger: RenderDebugger,
-	frames: u8,
+	pub(crate) frames: u8,
 
 	queues: Vec<StoredQueue>,
 	command_buffers: Vec<CommandBuffer>,
@@ -92,7 +93,7 @@ pub struct Context {
 	debug_region_end_count: Cell<usize>,
 }
 
-impl Context {
+impl Device {
 	/// Creates a DX12 device and initializes command queues for the requested queue types.
 	pub fn new(settings: Features, queues: &mut [(QueueSelection, &mut Option<QueueHandle>)]) -> Result<Self, &'static str> {
 		let adapter: Option<&IUnknown> = None;
@@ -5934,12 +5935,12 @@ impl Context {
 pub(crate) type Binding = DescriptorSetBinding;
 const DYNAMIC_BUFFER_HANDLE_FLAG: u64 = 1 << 63;
 
-struct StoredQueue {
+pub(crate) struct StoredQueue {
 	queue: ID3D12CommandQueue,
 	queue_type: D3D12_COMMAND_LIST_TYPE,
 }
 
-fn select_d3d12_command_list_type(requested: WorkloadTypes) -> Result<D3D12_COMMAND_LIST_TYPE, &'static str> {
+pub(crate) fn select_d3d12_command_list_type(requested: WorkloadTypes) -> Result<D3D12_COMMAND_LIST_TYPE, &'static str> {
 	if requested.is_empty() {
 		return Err("Invalid workload type");
 	}
@@ -6222,9 +6223,9 @@ fn wide_null(value: &str) -> Vec<u16> {
 
 /// The `Execution` struct exists to collect frame-scoped DX12 command recordings for a queue submission.
 pub struct Execution<'a> {
-	frame: Option<super::Frame<'a>>,
-	completed_frame: Option<crate::FrameKey>,
-	command_buffers: Vec<CommandBufferHandle>,
+	pub(crate) frame: Option<super::Frame<'a>>,
+	pub(crate) completed_frame: Option<crate::FrameKey>,
+	pub(crate) command_buffers: Vec<CommandBufferHandle>,
 }
 
 /// The `CommandBufferReference` struct exists to start DX12 command-buffer recordings from a command-buffer handle.
@@ -6241,20 +6242,131 @@ impl crate::command_buffer::CommandBuffer for CommandBufferReference<'_> {
 	}
 }
 
+impl crate::device::Device for Device {
+	type Context = Device;
+
+	#[cfg(debug_assertions)]
+	fn has_errors(&self) -> bool {
+		false
+	}
+
+	fn create_context(self) -> Result<Self::Context, &'static str> {
+		Ok(self)
+	}
+}
+
+impl crate::context::ContextCreate for Device {
+	fn create_allocation(
+		&mut self,
+		size: usize,
+		resource_uses: Uses,
+		resource_device_accesses: DeviceAccesses,
+	) -> AllocationHandle {
+		Device::create_allocation(self, size, resource_uses, resource_device_accesses)
+	}
+	fn add_mesh_from_vertices_and_indices(
+		&mut self,
+		vertex_count: u32,
+		index_count: u32,
+		vertices: &[u8],
+		indices: &[u8],
+		vertex_layout: &[VertexElement],
+	) -> MeshHandle {
+		Device::add_mesh_from_vertices_and_indices(self, vertex_count, index_count, vertices, indices, vertex_layout)
+	}
+	fn create_shader(
+		&mut self,
+		name: Option<&str>,
+		shader_source_type: Sources,
+		stage: ShaderTypes,
+		shader_binding_descriptors: impl IntoIterator<Item = BindingDescriptor>,
+	) -> Result<ShaderHandle, ()> {
+		Device::create_shader(self, name, shader_source_type, stage, shader_binding_descriptors)
+	}
+	fn create_descriptor_set_template(
+		&mut self,
+		name: Option<&str>,
+		binding_templates: &[DescriptorSetBindingTemplate],
+	) -> DescriptorSetTemplateHandle {
+		Device::create_descriptor_set_template(self, name, binding_templates)
+	}
+	fn create_descriptor_set(
+		&mut self,
+		name: Option<&str>,
+		descriptor_set_template_handle: &DescriptorSetTemplateHandle,
+	) -> DescriptorSetHandle {
+		Device::create_descriptor_set(self, name, descriptor_set_template_handle)
+	}
+	fn create_descriptor_binding(
+		&mut self,
+		descriptor_set: DescriptorSetHandle,
+		binding_constructor: BindingConstructor,
+	) -> DescriptorSetBindingHandle {
+		Device::create_descriptor_binding(self, descriptor_set, binding_constructor)
+	}
+	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> PipelineHandle {
+		Device::create_raster_pipeline(self, builder)
+	}
+	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> PipelineHandle {
+		Device::create_compute_pipeline(self, builder)
+	}
+	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle {
+		Device::create_ray_tracing_pipeline(self, builder)
+	}
+	fn build_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
+		Device::build_buffer(self, builder)
+	}
+	fn build_dynamic_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
+		Device::build_dynamic_buffer(self, builder)
+	}
+	fn build_dynamic_image(&mut self, builder: image::Builder) -> crate::DynamicImageHandle {
+		Device::build_dynamic_image(self, builder)
+	}
+	fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
+		Device::build_image(self, builder)
+	}
+	fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle {
+		Device::build_sampler(self, builder)
+	}
+	fn create_acceleration_structure_instance_buffer(
+		&mut self,
+		name: Option<&str>,
+		max_instance_count: u32,
+	) -> BaseBufferHandle {
+		Device::create_acceleration_structure_instance_buffer(self, name, max_instance_count)
+	}
+	fn create_top_level_acceleration_structure(
+		&mut self,
+		name: Option<&str>,
+		max_instance_count: u32,
+	) -> TopLevelAccelerationStructureHandle {
+		Device::create_top_level_acceleration_structure(self, name, max_instance_count)
+	}
+	fn create_bottom_level_acceleration_structure(
+		&mut self,
+		description: &BottomLevelAccelerationStructure,
+	) -> BottomLevelAccelerationStructureHandle {
+		Device::create_bottom_level_acceleration_structure(self, description)
+	}
+	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
+		Device::create_synchronizer(self, name, signaled)
+	}
+}
+
 impl crate::context::Context for Device {
-	type Queue = Queue;
-	type QueueReference<'a> = QueueReference<'a>;
+	type Queue = super::queue::Queue;
+	type QueueReference<'a> = super::queue::QueueReference<'a>;
 	type CommandBuffer<'a> = CommandBufferReference<'a>;
 
 	fn queue(&mut self, queue_handle: QueueHandle) -> Self::Queue {
-		Queue {
+		super::queue::Queue {
 			device: std::ptr::NonNull::from(self),
 			queue_handle,
 		}
 	}
 
 	fn queue_reference<'a>(&'a mut self, queue_handle: QueueHandle) -> Self::QueueReference<'a> {
-		QueueReference {
+		super::queue::QueueReference {
 			device: self,
 			queue_handle,
 		}

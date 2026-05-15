@@ -1,6 +1,7 @@
 use super::{
 	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
+	audio_utils::{bytes_per_sample, push_pcm_sample, sample_count_from_pcm_len},
 	ResourceId,
 };
 use crate::{
@@ -15,7 +16,7 @@ use crate::{
 
 impl OGGAssetHandler {
 	/// Decodes an OGG Vorbis buffer into audio metadata and PCM data.
-	fn decode_ogg(data: &[u8]) -> Result<(Audio, Vec<u8>), String> {
+	fn decode_ogg(data: &[u8], bit_depth: BitDepths) -> Result<(Audio, Vec<u8>), String> {
 		use std::io::Cursor;
 
 		let mut decoder = vorbis_rs::VorbisDecoder::new(Cursor::new(data))
@@ -24,25 +25,22 @@ impl OGGAssetHandler {
 		let sample_rate = decoder.sampling_frequency().get();
 		let channel_count = decoder.channels().get();
 
-		let mut data = Vec::with_capacity(channel_count as usize * sample_rate as usize * 4);
-
-		// Force bit depth to 8-bit, TODO: support other bit depths
-		let bit_depth = BitDepths::Eight;
+		let bytes_per_sample = bytes_per_sample(bit_depth);
+		let mut data = Vec::with_capacity(channel_count as usize * sample_rate as usize * bytes_per_sample);
 
 		while let Some(block) = decoder
 			.decode_audio_block()
 			.map_err(|_| "Failed to decode OGG data. The stream is likely corrupt.".to_string())?
 		{
 			let samples = block.samples();
-			for &x in samples {
-				for y in x {
-					let sample = (y.clamp(-1.0, 1.0) * 127.0).round() as i8;
-					data.push(sample.cast_unsigned());
+			for &channel in samples {
+				for sample in channel {
+					push_pcm_sample(&mut data, *sample, bit_depth);
 				}
 			}
 		}
 
-		let sample_count = (data.len() / (channel_count as usize)) as u32;
+		let sample_count = sample_count_from_pcm_len(data.len(), channel_count as u16, bit_depth);
 		let channel_count = channel_count as u16;
 
 		let audio_resource = Audio {
@@ -56,11 +54,21 @@ impl OGGAssetHandler {
 	}
 
 	pub fn new() -> OGGAssetHandler {
-		OGGAssetHandler {}
+		OGGAssetHandler {
+			bit_depth: BitDepths::Sixteen,
+		}
+	}
+
+	/// Creates an OGG asset handler that outputs PCM at the requested bit depth.
+	pub fn with_bit_depth(bit_depth: BitDepths) -> OGGAssetHandler {
+		OGGAssetHandler { bit_depth }
 	}
 }
 
-pub struct OGGAssetHandler {}
+/// The `OGGAssetHandler` struct exists to decode OGG Vorbis assets into engine audio resources.
+pub struct OGGAssetHandler {
+	bit_depth: BitDepths,
+}
 
 impl AssetHandler for OGGAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
@@ -90,7 +98,8 @@ impl AssetHandler for OGGAssetHandler {
 				return Err(LoadErrors::UnsupportedType);
 			}
 
-			let (audio_resource, data) = spawn_cpu_task(move || Self::decode_ogg(&data))
+			let bit_depth = self.bit_depth;
+			let (audio_resource, data) = spawn_cpu_task(move || Self::decode_ogg(&data, bit_depth))
 				.await
 				.map_err(|_| LoadErrors::FailedToProcess)?
 				.map_err(|_| LoadErrors::FailedToProcess)?;
@@ -111,7 +120,6 @@ mod tests {
 	};
 
 	#[r#async::test]
-	#[ignore = "Test uses data not pushed to the repository"]
 	async fn test_audio_asset_handler() {
 		let audio_asset_handler = OGGAssetHandler::new();
 
@@ -119,7 +127,8 @@ mod tests {
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
 		let asset_manager = AssetManager::new(asset_storage_backend.clone());
 
-		let url = ResourceId::new("gun.wav");
+		let url = ResourceId::new("test-tone.ogg");
+		asset_storage_backend.add_file("test-tone.ogg", &make_test_ogg());
 
 		let (resource, data) = audio_asset_handler
 			.bake(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)
@@ -135,12 +144,50 @@ mod tests {
 
 		let resource = &generated_resources[0];
 
-		assert_eq!(resource.id, "gun.wav");
+		assert_eq!(resource.id, "test-tone.ogg");
 		assert_eq!(resource.class, "Audio");
 		let resource: Audio = crate::from_slice(&resource.resource).unwrap();
 		assert_eq!(resource.bit_depth, BitDepths::Sixteen);
 		assert_eq!(resource.channel_count, 1);
-		assert_eq!(resource.sample_rate, 48000);
-		assert_eq!(resource.sample_count, 152456 / 1 / (16 / 8));
+		assert_eq!(resource.sample_rate, 48_000);
+		assert_eq!(resource.sample_count, 1024);
+		assert_eq!(data.len(), 1024 * 2);
+	}
+
+	#[test]
+	fn decode_ogg_supports_configured_output_bit_depths() {
+		let ogg = make_test_ogg();
+
+		for (bit_depth, bytes_per_sample) in [
+			(BitDepths::Eight, 1),
+			(BitDepths::Sixteen, 2),
+			(BitDepths::TwentyFour, 3),
+			(BitDepths::ThirtyTwo, 4),
+		] {
+			let (audio, data) = OGGAssetHandler::decode_ogg(&ogg, bit_depth).expect("Generated OGG should decode");
+
+			assert_eq!(audio.bit_depth, bit_depth);
+			assert_eq!(audio.channel_count, 1);
+			assert_eq!(audio.sample_rate, 48_000);
+			assert_eq!(audio.sample_count, 1024);
+			assert_eq!(data.len(), 1024 * bytes_per_sample);
+		}
+	}
+
+	/// Generates a deterministic OGG Vorbis fixture for the audio asset handler test.
+	fn make_test_ogg() -> Vec<u8> {
+		use std::num::{NonZeroU32, NonZeroU8};
+
+		let sample_rate = NonZeroU32::new(48_000).unwrap();
+		let channels = NonZeroU8::new(1).unwrap();
+		let sink = Vec::new();
+		let mut builder = vorbis_rs::VorbisEncoderBuilder::new_with_serial(sample_rate, channels, sink, 1);
+		let mut encoder = builder.build().expect("Test OGG encoder should initialize");
+		let samples: Vec<f32> = (0..1024)
+			.map(|index| ((index as f32 / 48_000.0) * 440.0 * std::f32::consts::TAU).sin() * 0.25)
+			.collect();
+
+		encoder.encode_audio_block([samples]).expect("Test OGG samples should encode");
+		encoder.finish().expect("Test OGG stream should finish")
 	}
 }

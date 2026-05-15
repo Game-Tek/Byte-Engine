@@ -38,6 +38,21 @@ impl<'a> BufferAllocator<'a> {
 		// SAFETY: We know that the buffer is valid for the lifetime of the splitter.
 		(offset, unsafe { std::mem::transmute(buffer) })
 	}
+
+	pub fn take_with_offset_aligned(&mut self, size: usize, alignment: usize) -> (usize, &'a mut [u8]) {
+		self.offset = self.offset.next_multiple_of(alignment.max(1));
+		self.take_with_offset(size)
+	}
+
+	pub fn remaining_aligned(&self, alignment: usize) -> usize {
+		self.buffer
+			.len()
+			.saturating_sub(self.offset.next_multiple_of(alignment.max(1)))
+	}
+
+	pub fn remaining(&self) -> usize {
+		self.buffer.len().saturating_sub(self.offset)
+	}
 }
 
 pub fn partition<T>(slice: &[T], key_fn: impl Fn(&T) -> usize) -> Vec<(usize, &[T])> {

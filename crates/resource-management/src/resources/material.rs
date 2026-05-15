@@ -46,6 +46,10 @@ impl Material {
 	pub fn shaders_mut(&mut self) -> &mut [Reference<Shader>] {
 		&mut self.shaders
 	}
+
+	pub fn alpha_mode(&self) -> &AlphaMode {
+		&self.alpha_mode
+	}
 }
 
 impl Resource for Material {
@@ -215,10 +219,19 @@ pub struct ShaderInterface {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum ShaderArtifact {
+	Spirv,
+	Msl { entry_point: String },
+	Mtlb { entry_point: String },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Shader {
 	pub id: String,
 	pub stage: ShaderTypes,
 	pub interface: ShaderInterface,
+	pub artifact: ShaderArtifact,
+	pub source_hash: u64,
 }
 
 impl Shader {
@@ -244,10 +257,25 @@ impl Model for Shader {
 impl<'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Shader>, SolveErrors> {
 		let (gr, reader) = storage_backend.read(self.id()).ok_or_else(|| SolveErrors::StorageError)?;
-		let Shader { id, stage, interface } =
-			crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+		let Shader {
+			id,
+			stage,
+			interface,
+			artifact,
+			source_hash,
+		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
-		Ok(Reference::from_model(self, Shader { id, stage, interface }, reader))
+		Ok(Reference::from_model(
+			self,
+			Shader {
+				id,
+				stage,
+				interface,
+				artifact,
+				source_hash,
+			},
+			reader,
+		))
 	}
 }
 

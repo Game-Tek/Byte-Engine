@@ -21,12 +21,12 @@ use crate::SwapchainHandle;
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
 	drawables: Vec<(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>)>,
-	device: &'a mut device::Device,
+	device: &'a mut context::Context,
 	_autorelease_pool: Retained<NSAutoreleasePool>,
 }
 
 impl<'a> Frame<'a> {
-	pub fn new(device: &'a mut device::Device, frame_key: graphics_hardware_interface::FrameKey) -> Self {
+	pub fn new(device: &'a mut context::Context, frame_key: graphics_hardware_interface::FrameKey) -> Self {
 		let pool = unsafe { NSAutoreleasePool::new() };
 		Self {
 			frame_key,
@@ -57,6 +57,19 @@ impl Frame<'_> {
 		pipeline: crate::implementation::ComputePipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
 		self.device.intern_compute_pipeline(pipeline)
+	}
+
+	/// Interns a factory-built image through this frame's device.
+	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+		self.device.intern_image(image)
+	}
+
+	/// Interns a factory-built sampler through this frame's device.
+	pub fn intern_sampler(
+		&mut self,
+		sampler: crate::implementation::FactorySampler,
+	) -> graphics_hardware_interface::SamplerHandle {
+		self.device.intern_sampler(sampler)
 	}
 
 	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
@@ -180,7 +193,7 @@ impl Frame<'_> {
 		(present_key, extent)
 	}
 
-	pub fn device(&mut self) -> &mut device::Device {
+	pub fn device(&mut self) -> &mut context::Context {
 		self.device
 	}
 
@@ -326,7 +339,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 }
 
-impl<'a> crate::device::DeviceCreate for Frame<'a> {
+impl<'a> crate::context::ContextCreate for Frame<'a> {
 	fn create_allocation(
 		&mut self,
 		size: usize,

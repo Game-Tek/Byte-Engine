@@ -1,9 +1,9 @@
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
-	/// The GHI device where all rendering operations are performed.
-	device: ghi::implementation::Device, // Place device before instance to ensure proper drop order
-	/// The GHI instance that manages the device and resources.
+	/// The GHI context where all rendering resources and operations are performed.
+	context: ghi::implementation::Context,
+	/// The GHI instance that manages devices.
 	instance: ghi::implementation::Instance,
 
 	started_frame_count: usize,
@@ -23,20 +23,15 @@ pub struct Renderer {
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 
-	scene_managers: SmallVec<[Box<dyn SceneManager>; 16]>,
+	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
 
 	/// The GHI queue where graphics commands are submitted. The main rendering operations occur on this queue.
 	graphics_queue_handle: ghi::QueueHandle,
 	/// The GHI queue where transfer commands are submitted. Async transfer operations occur on this queue.
-	transfer_queue_handle: ghi::QueueHandle,
+	pub transfer_queue_handle: ghi::QueueHandle,
 
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
-
-	transfer_command_buffer: ghi::CommandBufferHandle,
-	transfer_finished_synchronizer: ghi::SynchronizerHandle,
-
-	upload_buffer: ghi::BufferHandle<[u8; PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT]>,
 }
 
 impl Renderer {
@@ -46,7 +41,7 @@ impl Renderer {
 	/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
 	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
-	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics device. Defaults to true.
+	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics context. Defaults to true.
 	pub fn new(parameters: &dyn Parameters) -> Self {
 		let settings = Settings::new();
 
@@ -108,7 +103,7 @@ impl Renderer {
 		let mut graphics_queue_handle = None;
 		let mut transfer_queue_handle = None;
 
-		let mut device = instance
+		let device = instance
 			.create_device(
 				features.clone(),
 				&mut [
@@ -123,27 +118,19 @@ impl Renderer {
 				],
 			)
 			.unwrap();
+		let mut context = device.create_context().unwrap();
 
 		let graphics_queue_handle = graphics_queue_handle.unwrap();
 		let transfer_queue_handle = transfer_queue_handle.unwrap();
 
-		let render_command_buffer = device.queue(graphics_queue_handle).create_command_buffer(Some("Render"));
-		let render_finished_synchronizer = device.create_synchronizer(Some("Render Finisished"), true);
-
-		let transfer_command_buffer = device.queue(transfer_queue_handle).create_command_buffer(Some("Transfer"));
-		let transfer_finished_synchronizer = device.create_synchronizer(Some("Transfer Finished"), true);
-
-		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-
-		let upload_buffer = device.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
-				.name("Renderer Async Upload Buffer")
-				.device_accesses(ghi::DeviceAccesses::HostOnly),
-		);
+		let render_command_buffer = context
+			.queue_reference(graphics_queue_handle)
+			.create_command_buffer(Some("Render"));
+		let render_finished_synchronizer = context.create_synchronizer(Some("Render Finisished"), true);
 
 		Renderer {
+			context,
 			instance,
-			device,
 
 			started_frame_count: 0,
 
@@ -159,22 +146,17 @@ impl Renderer {
 			render_passes_by_sink: SmallVec::with_capacity(32),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 
-			scene_managers: SmallVec::with_capacity(8),
+			pipeline_managers: SmallVec::with_capacity(8),
 
 			graphics_queue_handle,
 			transfer_queue_handle,
 
 			render_command_buffer,
 			render_finished_synchronizer,
-
-			transfer_command_buffer,
-			transfer_finished_synchronizer,
-
-			upload_buffer,
 		}
 	}
 
-	pub fn add_scene_manager(&mut self, mut scene_manager: impl SceneManager + 'static) {
+	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
 		{
 			let sink_swapchains: SmallVec<[(SinkId, ghi::SwapchainHandle); 16]> = self
 				.sink_cameras
@@ -182,9 +164,9 @@ impl Renderer {
 				.map(|(sink_id, _)| (*sink_id, self.windows[*sink_id].1))
 				.collect();
 			for (sink_id, swapchain) in sink_swapchains {
-				let mut rpb = RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain);
+				let mut rpb = RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
 
-				scene_manager.create_sink(sink_id, &mut rpb);
+				pipeline_manager.create_sink(sink_id, &mut rpb);
 
 				if rpb.consumed_resources.len() == 0 {
 					log::debug!("No resources consumed by scene manager");
@@ -192,7 +174,7 @@ impl Renderer {
 			}
 		}
 
-		self.scene_managers.push(Box::new(scene_manager));
+		self.pipeline_managers.push(Box::new(pipeline_manager));
 	}
 
 	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, sink_id: SinkId) {
@@ -213,7 +195,7 @@ impl Renderer {
 			let render_pass = {
 				let swapchain = self.windows[sink_id].1;
 				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain);
+					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -232,7 +214,7 @@ impl Renderer {
 		for render_pass_factory in &self.post_scene_render_pass_factories {
 			let render_pass = {
 				let mut render_pass_builder =
-					RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain);
+					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -257,7 +239,7 @@ impl Renderer {
 			return;
 		};
 
-		self.device.start_frame_capture();
+		self.context.start_frame_capture();
 
 		let mut transforms_listener = transforms_listener.to_vec();
 
@@ -277,41 +259,7 @@ impl Renderer {
 			}
 		});
 
-		let mut recorded_transfer_work = false;
-
-		{
-			let mut transfer_queue = self.device.queue(self.transfer_queue_handle);
-			let started_frame = transfer_queue.start_frame(self.started_frame_count as _, self.transfer_finished_synchronizer);
-			let completed_transfer_frame = started_frame.completed_frame;
-			let mut frame = started_frame.frame;
-			let key = frame.key(); // Scene managers use this key to later know which transfers are ready
-			let mut transfer_recording = frame.create_command_buffer_recording(self.transfer_command_buffer);
-
-			let buffer = transfer_recording.get_mut_buffer_slice(self.upload_buffer);
-
-			let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
-
-			for scene_manager in &mut self.scene_managers {
-				let transfer_prepare_result = scene_manager.prepare_transfers(
-					&mut transfer_recording,
-					key,
-					completed_transfer_frame,
-					self.upload_buffer.into(),
-					slice,
-				);
-				slice = transfer_prepare_result.slice;
-
-				if transfer_prepare_result.recorded_work {
-					recorded_transfer_work = true;
-				}
-			}
-
-			if recorded_transfer_work {
-				transfer_recording.execute(self.transfer_finished_synchronizer);
-			}
-		}
-
-		let mut queue = self.device.queue(self.graphics_queue_handle);
+		let mut queue = self.context.queue(self.graphics_queue_handle);
 		let frame = ghi::queue::FrameRequest {
 			index: self.started_frame_count as u32,
 			synchronizer: self.render_finished_synchronizer,
@@ -321,26 +269,19 @@ impl Renderer {
 
 		let command_buffer = self.render_command_buffer;
 		let synchronizer = self.render_finished_synchronizer;
-		let transfer_wait = [self.transfer_finished_synchronizer];
+		let wait_for = &[];
 		let windows = &self.windows;
 		let sink_cameras = &self.sink_cameras;
 		let cameras = &self.cameras;
 		let render_targets = &self.render_targets;
-		let scene_managers = &mut self.scene_managers;
+		let pipeline_managers = &mut self.pipeline_managers;
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
 
-		let wait_for: &[ghi::SynchronizerHandle] = if recorded_transfer_work { &transfer_wait } else { &[] };
-
 		queue.execute(Some(frame), wait_for, synchronizer, |execution| {
 			let completed_graphics_frame = execution.completed_frame();
-			if let Some(completed_graphics_frame) = completed_graphics_frame {
-				for scene_manager in scene_managers.iter_mut() {
-					scene_manager.finish_frame(completed_graphics_frame);
-				}
-			}
 
-			let (sinks, scene_manager_commands, render_pass_commands, present_keys) = {
+			let (sinks, pipeline_manager_commands, render_pass_commands, present_keys) = {
 				let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
 				);
@@ -394,14 +335,10 @@ impl Renderer {
 					}
 				}
 
-				for scene_manager in scene_managers.iter_mut() {
-					scene_manager.before_prepare(frame, &sinks);
-				}
+				let pipeline_managers = pipeline_managers.iter_mut();
 
-				let scene_managers = scene_managers.iter_mut();
-
-				let scene_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
-					scene_managers.filter_map(|sm| sm.prepare(frame, &sinks)).collect();
+				let pipeline_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
+					pipeline_managers.filter_map(|sm| sm.prepare(frame, &sinks)).collect();
 
 				// A list of render pass commands and their corresponding sink index
 				let render_pass_commands: SmallVec<[(RenderPassReturn, SinkId); 64]> = render_passes_by_sink
@@ -423,11 +360,11 @@ impl Renderer {
 					.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
 					.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
-				(sinks, scene_manager_commands, render_pass_commands, present_keys)
+				(sinks, pipeline_manager_commands, render_pass_commands, present_keys)
 			};
 
-			execution.record(command_buffer, |command_buffer_recording| {
-				for commands in scene_manager_commands.into_iter() {
+			execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
+				for commands in pipeline_manager_commands.into_iter() {
 					for (command, sink) in commands.into_iter().zip(sinks.iter()) {
 						let attachment_infos = render_targets.get_attachment_infos(sink.index());
 
@@ -445,8 +382,8 @@ impl Renderer {
 		});
 	}
 
-	pub fn device_mut(&mut self) -> &mut ghi::implementation::Device {
-		&mut self.device
+	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
+		&mut self.context
 	}
 
 	pub fn create_window(&mut self, window: Window) {
@@ -466,7 +403,7 @@ impl Renderer {
 			Ok(window) => {
 				let os_handles = window.os_handles();
 
-				let swapchain_handle = self.device.bind_to_window(
+				let swapchain_handle = self.context.bind_to_window(
 					&os_handles,
 					ghi::PresentationModes::FIFO,
 					extent,
@@ -483,11 +420,11 @@ impl Renderer {
 				};
 
 				if sink_has_camera {
-					let scene_managers = self.scene_managers.iter_mut();
+					let pipeline_managers = self.pipeline_managers.iter_mut();
 
-					for sm in scene_managers {
+					for sm in pipeline_managers {
 						let mut rpb =
-							RenderPassBuilder::new(&mut self.device, &mut self.render_targets, sink_id, swapchain_handle);
+							RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain_handle);
 
 						sm.create_sink(sink_id, &mut rpb);
 
@@ -521,13 +458,13 @@ struct Attachment {
 
 /// This struct holds the settings to configure a `Renderer` during it's creation.
 pub struct Settings {
-	/// Controls whether validation layers will be enabled or not on the GHI device.
+	/// Controls whether validation layers will be enabled or not on the GHI context.
 	validation: bool,
 	/// Controls whether to enable or not writing out the parameters sent to the underlaying graphics API. Depends on `validation` being enabled.
 	api_dump: bool,
 	/// Controls wheter to enable or not some extra (bbut expensive) validation for the graphics API. This can include GPU validation. Depends on `validation` being enabled.
 	extended_validation: bool,
-	/// Controls whether to enable or not mesh shading on the GHI device.
+	/// Controls whether to enable or not mesh shading on the GHI context.
 	mesh_shading: bool,
 }
 
@@ -803,8 +740,6 @@ mod tests {
 	}
 }
 
-const PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT: usize = 1024 * 1024 * 4;
-
 type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
 
 type SinkId = usize;
@@ -823,7 +758,8 @@ use ghi::{
 		BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording,
 		RasterizationRenderPassMode as _,
 	},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 	frame::Frame as _,
 	queue::{Queue as _, QueueExecution as _},
 };
@@ -837,10 +773,7 @@ use utils::{
 	Extent, RGBA,
 };
 
-use super::{
-	render_pass::{RenderPass, RenderPassBuilder},
-	texture_manager::TextureManager,
-};
+use super::render_pass::{RenderPass, RenderPassBuilder};
 use crate::{
 	application::parameters::Parameters,
 	core::{
@@ -852,8 +785,8 @@ use crate::{
 	gameplay::transform::TransformationUpdate,
 	rendering::{
 		make_perspective_view_from_camera,
+		pipeline_manager::PipelineManager,
 		render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn},
-		scene_manager::SceneManager,
 		window::{self, Window},
 		Camera, Sink, View,
 	},

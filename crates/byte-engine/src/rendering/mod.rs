@@ -1,4 +1,5 @@
 use ::utils::Extent;
+use ghi::context::ContextCreate as _;
 
 use crate::space::Positionable as _;
 
@@ -14,17 +15,15 @@ pub mod renderable;
 
 pub mod cct;
 
-pub mod scene_manager;
+pub mod pipeline_manager;
 pub mod world_render_domain;
 
 pub mod renderer;
-pub mod texture_manager;
 
 pub mod framebuffer;
 pub mod render_pass;
 pub mod render_passes;
-
-pub mod pipeline_manager;
+pub mod shader_store;
 
 pub mod pipelines;
 
@@ -58,6 +57,19 @@ pub fn map_shader_binding_to_shader_binding_descriptor(
 			ghi::AccessPolicies::empty()
 		},
 	)
+}
+
+pub fn create_shader_from_source(
+	context: &mut ghi::implementation::Context,
+	name: Option<&str>,
+	source: ghi::shader::ShaderSource,
+	stage: ghi::ShaderTypes,
+	binding_descriptors: impl IntoIterator<Item = ghi::shader::BindingDescriptor>,
+) -> Result<ghi::ShaderHandle, String> {
+	let compiled = ghi::shader::compile(name.unwrap_or(""), source)?;
+	context
+		.create_shader(name, compiled.as_source(), stage, binding_descriptors)
+		.map_err(|_| "Failed to create shader. The most likely cause is an incompatible shader interface.".to_string())
 }
 
 pub fn make_perspective_view_from_camera(camera: &Camera, extent: Extent) -> View {

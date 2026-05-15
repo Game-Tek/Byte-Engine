@@ -1462,7 +1462,10 @@ mod tests {
 
 	#[test]
 	fn material_evaluation_msl_source_compiles_for_metal() {
-		use ghi::device::DeviceCreate as _;
+		use ghi::{
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+		};
 
 		if !ghi::implementation::USES_METAL {
 			return;
@@ -1491,14 +1494,16 @@ mod tests {
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
 			.expect("Expected a Metal instance for the material evaluation shader test");
 		let mut queue = None;
-		let mut device = instance
+		let mut context = instance
 			.create_device(
 				ghi::device::Features::new(),
 				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
 			)
-			.expect("Expected a Metal device for the material evaluation shader test");
+			.expect("Expected a Metal device for the material evaluation shader test")
+			.create_context()
+			.expect("Expected a Metal context");
 
-		let shader_handle = device.create_shader(
+		let shader_handle = context.create_shader(
 			Some("Material Evaluation Shader"),
 			ghi::shader::Sources::MTL {
 				source: source.as_str(),
@@ -1537,7 +1542,10 @@ mod tests {
 
 	#[test]
 	fn material_evaluation_msl_texture_source_compiles_for_metal() {
-		use ghi::device::DeviceCreate as _;
+		use ghi::{
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+		};
 
 		if !ghi::implementation::USES_METAL {
 			return;
@@ -1574,14 +1582,16 @@ mod tests {
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
 			.expect("Expected a Metal instance for the textured material evaluation shader test");
 		let mut queue = None;
-		let mut device = instance
+		let mut context = instance
 			.create_device(
 				ghi::device::Features::new(),
 				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
 			)
-			.expect("Expected a Metal device for the textured material evaluation shader test");
+			.expect("Expected a Metal device for the textured material evaluation shader test")
+			.create_context()
+			.expect("Expected a Metal context");
 
-		let shader_handle = device.create_shader(
+		let shader_handle = context.create_shader(
 			Some("Textured Material Evaluation Shader"),
 			ghi::shader::Sources::MTL {
 				source: source.as_str(),

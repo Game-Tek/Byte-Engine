@@ -19,7 +19,7 @@ use crate::{
 	r#async::{spawn_cpu_task, BoxedFuture},
 	resource,
 	resources::material::{
-		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel,
+		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderArtifact, ShaderInterface, ValueModel, VariantModel,
 		VariantVariableModel,
 	},
 	shader_generator::ShaderGenerationSettings,
@@ -165,7 +165,7 @@ impl AssetHandler for BEMAAssetHandler {
 				let parent_material_url = asset["parent"].as_str().unwrap();
 
 				let material = asset_manager
-					.load(parent_material_url, storage_backend)
+					.bake_if_not_exists(parent_material_url, storage_backend)
 					.await
 					.or_else(|_| Err(LoadErrors::FailedToProcess))?;
 
@@ -324,6 +324,13 @@ pub(crate) fn compile_shader_program(
 		id: name.to_string(),
 		stage,
 		interface,
+		#[cfg(not(target_vendor = "apple"))]
+		artifact: ShaderArtifact::Spirv,
+		#[cfg(target_vendor = "apple")]
+		artifact: ShaderArtifact::Mtlb {
+			entry_point: "besl_main".to_string(),
+		},
+		source_hash: 0,
 	};
 
 	Ok((shader, shader_program.into_binary()))
@@ -412,7 +419,7 @@ async fn resolve_value(
 		"float" => Ok(ValueModel::Scalar(0f32)),
 		"Texture2D" => {
 			let image = asset_manager
-				.load(value, storage_backend)
+				.bake_if_not_exists(value, storage_backend)
 				.await
 				.map_err(|_| "Failed to load texture value. The referenced texture asset could not be loaded.".to_string())?;
 			Ok(ValueModel::Image(image))
@@ -678,7 +685,7 @@ pub mod tests {
 		asset_manager.add_asset_handler(asset_handler);
 
 		let _: ReferenceModel<VariantModel> = asset_manager
-			.load("variant.bema", &resource_storage_backend)
+			.bake_if_not_exists("variant.bema", &resource_storage_backend)
 			.await
 			.expect("Failed to load material");
 

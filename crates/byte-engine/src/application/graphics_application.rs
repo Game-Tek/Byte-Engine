@@ -1,82 +1,3 @@
-use core::time;
-use std::{
-	collections::VecDeque,
-	net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, UdpSocket},
-	sync::Arc,
-	thread,
-	time::Duration,
-};
-
-use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll, PollReply, PortAddress};
-use math::Vector2;
-use resource_management::{
-	asset::{
-		asset_manager::AssetManager,
-		bema_asset_handler::{BEMAAssetHandler, ProgramGenerator},
-		gltf_asset_handler::GLTFAssetHandler,
-		lut_asset_handler::LUTAssetHandler,
-		png_asset_handler::PNGAssetHandler,
-		wav_asset_handler::WAVAssetHandler,
-		FileStorageBackend,
-	},
-	resource::{resource_manager::ResourceManager, RedbStorageBackend},
-	resources::material::Material,
-};
-use smallvec::SmallVec;
-use tracing::{debug_span, instrument, span, Level};
-use utils::{sync::RwLock, Box, Extent, RGBA};
-
-use super::{
-	application::{Application, BaseApplication},
-	Events, Parameter, Receiver, Sender, Time,
-};
-use crate::{
-	application::{parameters::Parameters, thread::Thread},
-	audio::generator::Generator,
-	core::{
-		channel::{Channel, DefaultChannel},
-		factory::{CreateMessage, Factory},
-		listener::{DefaultListener, Listener},
-		task, Entity, EntityHandle,
-	},
-	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
-	input::{
-		input_trigger,
-		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
-		Action,
-	},
-	inspector::{http::HttpInspectorServer, Inspector},
-	physics::dynabit::{self, body::PhysicsBody},
-	rendering::{
-		lights::{Light, Lights},
-		pipelines::{
-			simple::{SimpleRenderPass, SimpleSceneManager},
-			visibility::VisibilityWorldRenderDomain,
-		},
-		render_pass::RenderPass,
-		render_passes::{
-			aces::AcesToneMapPass,
-			agx::AgxToneMapPass,
-			bloom::{BloomPass, BloomPassSettings},
-			sky::AtmosphereSkyRenderPass,
-		},
-		renderable, renderer,
-		scene_manager::SceneManager,
-		texture_manager::TextureManager,
-		RenderableMesh,
-	},
-	ui::{layout::engine::Render, render_pass::UiRenderPass},
-};
-use crate::{
-	audio::audio_system::{AudioSystem, DefaultAudioSystem},
-	gameplay::anchor::AnchorSystem,
-	input, physics,
-	rendering::{
-		self, common_shader_generator::CommonShaderGenerator,
-		pipelines::visibility::shader_generator::VisibilityShaderGenerator, renderer::Renderer, window::Window,
-	},
-};
-
 /// A graphics application is the base for all applications that use the graphics functionality of the engine.
 /// It uses the orchestrated application as a base and adds rendering and windowing functionality.
 ///
@@ -103,8 +24,6 @@ pub struct GraphicsApplication {
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
 	action_factory: Factory<Action>,
 
-	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
-	light_factory: Factory<Lights>,
 	generator_factory: Factory<Arc<dyn Generator>>,
 
 	world: DefaultWorld,
@@ -149,8 +68,6 @@ impl Application for GraphicsApplication {
 			input::InputManager::new(action_listener, event_channel)
 		};
 
-		let renderable_factory = Factory::new();
-
 		let renderer = rendering::renderer::Renderer::new(&application);
 
 		#[cfg(debug_assertions)]
@@ -186,8 +103,6 @@ impl Application for GraphicsApplication {
 
 			window_factory: (window_factory, window_factory_listener),
 			action_factory,
-			renderable_factory,
-			light_factory: Factory::new(),
 
 			generator_factory: Factory::new(),
 
@@ -240,6 +155,8 @@ impl GraphicsApplication {
 
 		let mut close = false;
 
+		let frame_allocator = &mut self.application.frame_allocator;
+
 		{
 			let renderer = &mut self.renderer;
 			let input_system = &mut self.input_system;
@@ -283,7 +200,7 @@ impl GraphicsApplication {
 		let mut cameras_listener = self.world.camera_factory().listener();
 		let mut renderer_transforms_listener = self.world.transforms_channel().listener();
 		let mut physics_transforms_listener = self.world.transforms_channel().listener();
-		let mut light_listener = self.light_factory.listener();
+		let light_listener = self.world.light_factory().listener();
 
 		let result = f(self, time);
 
@@ -371,18 +288,6 @@ impl GraphicsApplication {
 
 	pub fn world_mut(&mut self) -> &mut DefaultWorld {
 		&mut self.world
-	}
-
-	pub fn renderable_factory(&self) -> &Factory<EntityHandle<dyn RenderableMesh>> {
-		&self.renderable_factory
-	}
-
-	pub fn renderable_factory_mut(&mut self) -> &mut Factory<EntityHandle<dyn RenderableMesh>> {
-		&mut self.renderable_factory
-	}
-
-	pub fn light_factory_mut(&mut self) -> &mut Factory<Lights> {
-		&mut self.light_factory
 	}
 
 	pub fn generator_factory(&self) -> &Factory<Arc<dyn Generator>> {
@@ -514,18 +419,18 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 }
 
 pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
-	let listener = application.renderable_factory().listener();
+	let listener = application.world().renderable_factory().listener();
 	let transforms_listener = application.world().transforms_channel().listener();
 
 	let renderer = &mut application.renderer;
 
-	struct CustomSceneManager {
-		scene_manager: SimpleSceneManager,
+	struct CustomPipelineManager {
+		pipeline_manager: SimplePipelineManager,
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		transforms_listener: DefaultListener<TransformationUpdate>,
 	}
 
-	impl SceneManager for CustomSceneManager {
+	impl PipelineManager for CustomPipelineManager {
 		fn prepare(
 			&mut self,
 			frame: &mut ghi::implementation::Frame,
@@ -534,127 +439,147 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 			while let Some(message) = self.mesh_receiver.read() {
 				let handle = message.handle().clone();
 
-				self.scene_manager.create_mesh(frame, handle, message.into_data());
+				self.pipeline_manager.create_mesh(frame, handle, message.into_data());
 			}
 
 			while let Some(message) = self.transforms_listener.read() {
-				self.scene_manager
+				self.pipeline_manager
 					.update_transform(frame, *message.handle(), message.transform().get_matrix());
 			}
 
-			self.scene_manager.prepare(frame, sinks)
+			self.pipeline_manager.prepare(frame, sinks)
 		}
 
 		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
-			self.scene_manager.create_sink(sink_id, render_pass_builder);
+			self.pipeline_manager.create_sink(sink_id, render_pass_builder);
 		}
 	}
 
 	let sm = {
-		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-		CustomSceneManager {
-			scene_manager: SimpleSceneManager::new(renderer.device_mut()),
+		CustomPipelineManager {
+			pipeline_manager: SimplePipelineManager::new(renderer.context_mut()),
 			mesh_receiver: listener,
 			transforms_listener,
 		}
 	};
 
-	renderer.add_scene_manager(sm);
+	renderer.add_pipeline_manager(sm);
 }
 
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
+	let application_resource_manager = application.resource_manager.clone();
 	let renderer = &mut application.renderer;
+	let transfer_queue_handle = renderer.transfer_queue_handle;
+	let context = renderer.context_mut();
+	let mut transfer_queue = context.queue(transfer_queue_handle);
+	let transfer_finished_synchronizer = context.create_synchronizer(Some("Transfer Thread Synchronizer"), true);
+	let transfer_command_buffer = transfer_queue.create_command_buffer(Some("Transfer Command Buffer"));
 
-	struct CustomSceneManager {
+	const PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT: usize = 1024 * 1024 * 32;
+	const NO_WORK_SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(1);
+
+	let upload_buffer: ghi::BufferHandle<[u8; PER_FRAME_ASYNC_UPLOAD_BYTES_LIMIT]> = context.build_buffer(
+		ghi::buffer::Builder::new(ghi::Uses::TransferSource)
+			.name("Renderer Async Upload Buffer")
+			.device_accesses(ghi::DeviceAccesses::HostOnly),
+	);
+
+	let (resource_manager, mut resource_worker) =
+		VisibilityPipelineResourceManager::spawn(renderer.context_mut(), application_resource_manager);
+
+	application
+		.threads
+		.push(Thread::new(application.application_events.1.clone(), {
+			move |mut application_events| {
+				let mut started_frame_count = 0;
+
+				loop {
+					if application_events.try_recv().is_ok() {
+						break;
+					}
+
+					let started_frame = transfer_queue.start_frame(started_frame_count as _, transfer_finished_synchronizer);
+					if let Some(completed_frame) = started_frame.completed_frame {
+						resource_worker.complete_frame(completed_frame);
+					}
+
+					let mut frame = started_frame.frame;
+					let frame_key = frame.key();
+
+					let mut transfer_recording = frame.create_command_buffer_recording(transfer_command_buffer);
+					let buffer = transfer_recording.get_mut_buffer_slice(upload_buffer);
+					let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
+
+					let prepared_uploads =
+						resource_worker.prepare_uploads(&mut transfer_recording, upload_buffer.into(), &mut slice);
+
+					if prepared_uploads.recorded_work {
+						transfer_recording.execute(transfer_finished_synchronizer);
+						resource_worker.track_submitted_uploads(frame_key, prepared_uploads.completions);
+					} else {
+						std::thread::sleep(NO_WORK_SLEEP_DURATION);
+					}
+
+					started_frame_count += 1;
+				}
+			}
+		}));
+
+	struct CustomPipelineManager {
 		light_receiver: DefaultListener<CreateMessage<Lights>>,
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		pending_meshes: VecDeque<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
-		visibility_world_render_domain: VisibilityWorldRenderDomain,
+		visibility_pipeline_manager: VisibilityPipelineManager,
 	}
 
-	impl SceneManager for CustomSceneManager {
-		fn prepare_transfers<'a>(
-			&mut self,
-			transfer: &mut ghi::implementation::CommandBufferRecording,
-			key: ghi::FrameKey,
-			completed_frame: Option<ghi::FrameKey>,
-			staging_data_buffer: ghi::BaseBufferHandle,
-			mut slice: utils::BufferAllocator<'a>,
-		) -> rendering::scene_manager::TransferPrepareResult<'a> {
-			if let Some(completed_frame) = completed_frame {
-				self.visibility_world_render_domain
-					.transition_finished_transfer_resources(completed_frame);
-			}
-
-			let mut recorded_work = false;
-
+	impl CustomPipelineManager {
+		/// Drains renderable creation messages into the visibility resource request path.
+		fn request_pending_meshes(&mut self) {
 			while let Some(message) = self.mesh_receiver.read() {
 				self.pending_meshes.push_back(message);
 			}
 
 			while let Some(message) = self.pending_meshes.pop_front() {
-				if self
-					.visibility_world_render_domain
-					.create_renderable_mesh_instance_and_write_mesh_data_if_not_exists(
-						transfer,
-						message.clone().into_data(),
-						staging_data_buffer,
-						&mut slice,
-					) {
-					recorded_work = true;
-				} else {
-					self.pending_meshes.push_front(message);
-					break;
-				}
+				self.visibility_pipeline_manager.request_mesh(message.into_data());
 			}
-
-			rendering::scene_manager::TransferPrepareResult { slice, recorded_work }
 		}
+	}
 
-		fn finish_frame(&mut self, completed_frame: ghi::FrameKey) {
-			self.visibility_world_render_domain
-				.transition_finished_graphics_resources(completed_frame);
-		}
-
-		fn before_prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[rendering::Sink]) {
-			while let Some(message) = self.light_receiver.read() {
-				self.visibility_world_render_domain.create_light(message.into_data());
-			}
-
-			self.visibility_world_render_domain
-				.load_pending_material_evaluation_materials(frame);
-			self.visibility_world_render_domain.load_pending_material_textures(frame);
-			self.visibility_world_render_domain.before_prepare(frame, sinks);
-		}
-
+	impl PipelineManager for CustomPipelineManager {
 		fn prepare(
 			&mut self,
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
-			self.visibility_world_render_domain.prepare(frame, sinks)
+			while let Some(message) = self.light_receiver.read() {
+				self.visibility_pipeline_manager.create_light(message.into_data());
+			}
+
+			self.request_pending_meshes();
+
+			self.visibility_pipeline_manager.prepare(frame, sinks)
 		}
 
 		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
-			self.visibility_world_render_domain.create_sink(sink_id, render_pass_builder);
+			self.visibility_pipeline_manager.create_sink(sink_id, render_pass_builder);
 		}
 	}
 
-	let sm = {
-		let texture_manager = TextureManager::new();
-		CustomSceneManager {
-			visibility_world_render_domain: VisibilityWorldRenderDomain::new(
-				renderer.device_mut(),
-				texture_manager,
-				application.resource_manager.clone(),
-			),
-			light_receiver: application.light_factory.listener(),
-			mesh_receiver: application.renderable_factory.listener(),
-			pending_meshes: VecDeque::new(),
-		}
-	};
+	{
+		let light_receiver = application.world().light_factory().listener();
+		let mesh_receiver = application.world().renderable_factory().listener();
 
-	renderer.add_scene_manager(sm);
+		let renderer = &mut application.renderer;
+
+		let sm = CustomPipelineManager {
+			visibility_pipeline_manager: VisibilityPipelineManager::new(renderer.context_mut(), resource_manager),
+			light_receiver,
+			mesh_receiver,
+			pending_meshes: VecDeque::new(),
+		};
+
+		renderer.add_pipeline_manager(sm);
+	}
 }
 
 pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultListener<CreateMessage<Render>>) {
@@ -681,8 +606,6 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 			}
 		}
 
-		println!("Adding UI render pass");
-
 		Box::new(CustomRenderPass {
 			// Spawn only the listeners that are actively consumed by render passes.
 			listener: ui_channel.listener(),
@@ -692,7 +615,7 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 }
 
 pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
-	let renderable_mesh_factory = application.renderable_factory_mut();
+	let renderable_mesh_factory = application.world().renderable_factory();
 	let listener = renderable_mesh_factory.listener();
 
 	let renderer = &mut application.renderer;
@@ -1189,3 +1112,82 @@ mod tests {
 		}
 	}
 }
+
+use core::time;
+use std::{
+	collections::VecDeque,
+	net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, UdpSocket},
+	sync::Arc,
+	thread,
+	time::Duration,
+};
+
+use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll, PollReply, PortAddress};
+use ghi::{Context as _, ContextCreate as _, Device, Frame as _, Queue as _};
+use math::Vector2;
+use resource_management::{
+	asset::{
+		asset_manager::AssetManager,
+		bema_asset_handler::{BEMAAssetHandler, ProgramGenerator},
+		gltf_asset_handler::GLTFAssetHandler,
+		lut_asset_handler::LUTAssetHandler,
+		png_asset_handler::PNGAssetHandler,
+		wav_asset_handler::WAVAssetHandler,
+		FileStorageBackend,
+	},
+	resource::{resource_manager::ResourceManager, RedbStorageBackend},
+	resources::material::Material,
+};
+use smallvec::SmallVec;
+use tracing::{debug_span, instrument, span, Level};
+use utils::{sync::RwLock, Box, Extent, RGBA};
+
+use super::{
+	application::{Application, BaseApplication},
+	Events, Parameter, Receiver, Sender, Time,
+};
+use crate::{
+	application::{parameters::Parameters, thread::Thread},
+	audio::generator::Generator,
+	core::{
+		channel::{Channel, DefaultChannel},
+		factory::{CreateMessage, Factory},
+		listener::{DefaultListener, Listener},
+		task, Entity, EntityHandle,
+	},
+	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
+	ghi::command_buffer::CommandBufferRecording as _,
+	input::{
+		input_trigger,
+		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
+		Action,
+	},
+	inspector::{http::HttpInspectorServer, Inspector},
+	physics::dynabit::{self, body::PhysicsBody},
+	rendering::{
+		lights::{Light, Lights},
+		pipeline_manager::PipelineManager,
+		pipelines::{
+			simple::{SimplePipelineManager, SimpleRenderPass},
+			visibility::{resource_manager::VisibilityPipelineResourceManager, VisibilityPipelineManager},
+		},
+		render_pass::RenderPass,
+		render_passes::{
+			aces::AcesToneMapPass,
+			agx::AgxToneMapPass,
+			bloom::{BloomPass, BloomPassSettings},
+			sky::AtmosphereSkyRenderPass,
+		},
+		renderable, renderer, RenderableMesh,
+	},
+	ui::{layout::engine::Render, render_pass::UiRenderPass},
+};
+use crate::{
+	audio::audio_system::{AudioSystem, DefaultAudioSystem},
+	gameplay::anchor::AnchorSystem,
+	input, physics,
+	rendering::{
+		self, common_shader_generator::CommonShaderGenerator,
+		pipelines::visibility::shader_generator::VisibilityShaderGenerator, renderer::Renderer, window::Window,
+	},
+};

@@ -43,6 +43,7 @@ pub trait Application {
 pub struct BaseApplication {
 	name: String,
 	parameters: HashSet<Parameter>,
+	pub(crate) frame_allocator: bumpalo::Bump,
 }
 
 impl Application for BaseApplication {
@@ -76,6 +77,7 @@ impl Application for BaseApplication {
 		let application = BaseApplication {
 			name: String::from(name),
 			parameters: parameter_set,
+			frame_allocator: bumpalo::Bump::with_capacity(1024 * 1024 * 32), // TODO: take this from parameters
 		};
 
 		if let Some(e) = application.get_parameter("log.level") {

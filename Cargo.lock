@@ -245,6 +245,9 @@ name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
+dependencies = [
+ "allocator-api2",
+]
 
 [[package]]
 name = "byte-engine"
@@ -255,6 +258,7 @@ dependencies = [
  "besl",
  "betp",
  "bitflags 2.11.1",
+ "bumpalo",
  "colored",
  "ctrlc",
  "downcast-rs 2.0.2",

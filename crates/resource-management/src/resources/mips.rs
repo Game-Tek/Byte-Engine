@@ -176,7 +176,7 @@ fn bytes_per_pixel(format: Formats) -> Option<usize> {
 		Formats::RGBA8 => Some(4),
 		Formats::RGB16 => Some(6),
 		Formats::RGBA16 => Some(8),
-		Formats::BC5 | Formats::BC7 => None,
+		Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => None,
 	}
 }
 
@@ -198,7 +198,7 @@ fn downsample_level(
 		Formats::RGBA8 => downsample_u8::<4>(source_width, source_height, source, destination),
 		Formats::RGB16 => downsample_u16::<3>(source_width, source_height, source, destination),
 		Formats::RGBA16 => downsample_u16::<4>(source_width, source_height, source, destination),
-		Formats::BC5 | Formats::BC7 => {
+		Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => {
 			return Err(MipGenerationError::UnsupportedFormat(format));
 		}
 	}

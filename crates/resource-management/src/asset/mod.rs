@@ -8,6 +8,7 @@ use utils::json;
 
 pub mod asset_handler;
 pub mod asset_manager;
+mod audio_utils;
 
 pub mod bema_asset_handler;
 pub mod gltf_asset_handler;

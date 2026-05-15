@@ -2,11 +2,12 @@ use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 };
 use resource_management::{
-	msl_shader_generator::MSLShaderGenerator, shader_generator::ShaderGenerationSettings,
-	spirv_shader_generator::SPIRVShaderGenerator,
+	glsl_shader_generator::GLSLShaderGenerator, msl_shader_generator::MSLShaderGenerator, resources::material,
+	shader_generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
 };
 use utils::{Box, Extent};
 
@@ -37,20 +38,21 @@ impl Entity for BaseAgxToneMapPass {}
 impl BaseAgxToneMapPass {
 	/// Creates the shared AGX compute pipeline resources used by per-view tonemap passes.
 	pub fn new<'a>(render_pass_builder: &'a mut RenderPassBuilder<'_>) -> Self {
-		let device = render_pass_builder.device();
-
-		let descriptor_set_layout = device.create_descriptor_set_template(
+		let descriptor_set_layout = render_pass_builder.context().create_descriptor_set_template(
 			Some("AGX Tonemap Pass Set Layout"),
 			&[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE],
 		);
 
-		let tone_mapping_shader = create_tone_mapping_shader(device);
+		let tone_mapping_shader = create_tone_mapping_shader(render_pass_builder);
 
-		let tone_mapping_pipeline = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[descriptor_set_layout],
-			&[],
-			ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute),
-		));
+		let tone_mapping_pipeline =
+			render_pass_builder
+				.context()
+				.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+					&[descriptor_set_layout],
+					&[],
+					ghi::ShaderParameter::new(&tone_mapping_shader, ghi::ShaderTypes::Compute),
+				));
 
 		Self {
 			descriptor_set_layout,
@@ -59,48 +61,34 @@ impl BaseAgxToneMapPass {
 	}
 }
 
-fn create_tone_mapping_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+fn create_tone_mapping_shader(render_pass_builder: &mut RenderPassBuilder<'_>) -> ghi::ShaderHandle {
 	let main_node = create_tone_mapping_program();
 	let settings = ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping".to_string());
-
-	if ghi::implementation::USES_METAL {
-		let mut shader_generator = MSLShaderGenerator::new();
-		let shader_source = shader_generator.generate(&settings, &main_node).expect(
-			"Failed to generate the AGX MSL shader. The most likely cause is an unsupported BESL construct in the Metal transpiler.",
-		);
-
-		return device
-			.create_shader(
-				Some("AGX Tone Mapping Compute Shader"),
-				ghi::shader::Sources::MTL {
-					source: shader_source.as_str(),
-					entry_point: "besl_main",
-				},
-				ghi::ShaderTypes::Compute,
-				[
-					SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect(
-				"Failed to create AGX tone mapping shader. The most likely cause is an incompatible Metal shader interface.",
-			);
-	}
-
-	let shader_artifact = SPIRVShaderGenerator::new()
+	let glsl_source = GLSLShaderGenerator::new()
 		.generate(&settings, &main_node)
-		.expect("Failed to generate AGX tone mapping SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
+		.expect("Failed to generate AGX tone mapping GLSL. The most likely cause is invalid BESL syntax.");
+	let msl_source = MSLShaderGenerator::new().generate(&settings, &main_node).expect(
+		"Failed to generate the AGX MSL shader. The most likely cause is an unsupported BESL construct in the Metal transpiler.",
+	);
 
-	device
-		.create_shader(
-			Some("AGX Tone Mapping Compute Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.binary()),
-			ghi::ShaderTypes::Compute,
-			[
-				SOURCE_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				DESTINATION_BINDING_TEMPLATE.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-			],
-		)
+	render_pass_builder
+		.create_shader(&crate::rendering::shader_store::ShaderSourceDescriptor {
+			id: "byte-engine/rendering/agx/tone-mapping",
+			name: "AGX Tone Mapping Compute Shader",
+			stage: ResourceShaderTypes::Compute,
+			source: ghi::shader::ShaderSource::Platform {
+				glsl: &glsl_source,
+				msl: &msl_source,
+				msl_entry_point: "besl_main",
+			},
+			interface: material::ShaderInterface {
+				workgroup_size: Some((32, 32, 1)),
+				bindings: vec![
+					material::Binding::new(0, 0, true, false),
+					material::Binding::new(0, 1, false, true),
+				],
+			},
+		})
 		.expect("Failed to create AGX tone mapping shader")
 }
 
@@ -243,16 +231,16 @@ impl AgxToneMapPass {
 		let read_from_main = render_pass_builder.read_from("main");
 		let render_to_main = render_pass_builder.render_to_swapchain();
 
-		let device = render_pass_builder.device();
+		let context = render_pass_builder.context();
 
 		let descriptor_set =
-			device.create_descriptor_set(Some("AGX Tonemap Pass Descriptor Set"), &render_pass.descriptor_set_layout);
+			context.create_descriptor_set(Some("AGX Tonemap Pass Descriptor Set"), &render_pass.descriptor_set_layout);
 
-		let source_binding = device.create_descriptor_binding(
+		let source_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main),
 		);
-		let destination_binding = device.create_descriptor_binding(
+		let destination_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::swapchain(&DESTINATION_BINDING_TEMPLATE, render_to_main),
 		);

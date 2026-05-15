@@ -122,6 +122,26 @@ impl Write {
 		}
 	}
 
+	pub fn combined_image_sampler_with_frame(
+		binding_handle: DescriptorSetBindingHandle,
+		image_handle: impl Into<BaseImageHandle>,
+		sampler_handle: SamplerHandle,
+		layout: Layouts,
+		frame_offset: i32,
+	) -> Write {
+		Write {
+			binding_handle,
+			array_element: 0,
+			descriptor: WriteData::CombinedImageSampler {
+				image_handle: image_handle.into(),
+				sampler_handle,
+				layout,
+				layer: None,
+			},
+			frame_offset: Some(frame_offset),
+		}
+	}
+
 	pub fn combined_image_sampler_array(
 		binding_handle: DescriptorSetBindingHandle,
 		image_handle: impl Into<BaseImageHandle>,
@@ -139,6 +159,27 @@ impl Write {
 				layer: None,
 			},
 			frame_offset: None,
+		}
+	}
+
+	pub fn combined_image_sampler_array_with_frame(
+		binding_handle: DescriptorSetBindingHandle,
+		image_handle: impl Into<BaseImageHandle>,
+		sampler_handle: SamplerHandle,
+		layout: Layouts,
+		index: u32,
+		frame_offset: i32,
+	) -> Write {
+		Write {
+			binding_handle,
+			array_element: index,
+			descriptor: WriteData::CombinedImageSampler {
+				image_handle: image_handle.into(),
+				sampler_handle,
+				layout,
+				layer: None,
+			},
+			frame_offset: Some(frame_offset),
 		}
 	}
 

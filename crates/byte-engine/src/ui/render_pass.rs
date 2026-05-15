@@ -4,11 +4,12 @@ use ghi::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
 		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 	frame::Frame as _,
 	types::Size as _,
 };
-use resource_management::{glsl, shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
+use resource_management::{shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
 use utils::{Box, Extent, RGBA};
 
 use super::{element::ElementHandle as _, layout::engine};
@@ -327,10 +328,10 @@ impl UiRenderPass {
 
 		render_pass_builder.alias("UI", "main");
 
-		let device = render_pass_builder.device();
+		let context = render_pass_builder.context();
 
-		let vertex_shader = create_vertex_shader(device);
-		let fragment_shader = create_fragment_shader(device);
+		let vertex_shader = create_vertex_shader(context);
+		let fragment_shader = create_fragment_shader(context);
 
 		let shaders = [
 			ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
@@ -339,7 +340,7 @@ impl UiRenderPass {
 		let attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(MAIN_ATTACHMENT_FORMAT)
 			.blend(ghi::pipelines::raster::BlendMode::Alpha)];
 
-		let pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[],
 			&[],
 			&UI_VERTEX_LAYOUT,
@@ -347,43 +348,43 @@ impl UiRenderPass {
 			&attachments,
 		));
 
-		let vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]> = device.build_buffer(
+		let vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
 				.name("UI Vertices")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = device.build_buffer(
+		let index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Index)
 				.name("UI Indices")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let text_descriptor_set_template = device.create_descriptor_set_template(Some("UI Text"), &[TEXT_OVERLAY_BINDING]);
-		let text_vertex_shader = create_text_overlay_vertex_shader(device);
-		let text_fragment_shader = create_text_overlay_fragment_shader(device);
+		let text_descriptor_set_template = context.create_descriptor_set_template(Some("UI Text"), &[TEXT_OVERLAY_BINDING]);
+		let text_vertex_shader = create_text_overlay_vertex_shader(context);
+		let text_fragment_shader = create_text_overlay_fragment_shader(context);
 		let text_shaders = [
 			ghi::ShaderParameter::new(&text_vertex_shader, ghi::ShaderTypes::Vertex),
 			ghi::ShaderParameter::new(&text_fragment_shader, ghi::ShaderTypes::Fragment),
 		];
-		let text_pipeline = device.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+		let text_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[text_descriptor_set_template],
 			&[],
 			&[],
 			&text_shaders,
 			&attachments,
 		));
-		let text_overlay = device.build_dynamic_image(
+		let text_overlay = context.build_dynamic_image(
 			ghi::image::Builder::new(TEXT_OVERLAY_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("UI Text Overlay")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let text_sampler = device.build_sampler(
+		let text_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let text_descriptor_set = device.create_descriptor_set(Some("UI Text"), &text_descriptor_set_template);
-		device.create_descriptor_binding(
+		let text_descriptor_set = context.create_descriptor_set(Some("UI Text"), &text_descriptor_set_template);
+		context.create_descriptor_binding(
 			text_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&TEXT_OVERLAY_BINDING,
@@ -522,7 +523,7 @@ impl RenderPass for UiRenderPass {
 }
 
 /// Builds the UI vertex shader using BESL and compiles it to SPIR-V.
-fn create_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
 	if ghi::implementation::USES_METAL {
 		let shader_source = r#"
 			#include <metal_stdlib>
@@ -555,7 +556,7 @@ fn create_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::Shader
 			}
 		"#;
 
-		return device
+		return context
 			.create_shader(
 				Some("UI Vertex Shader"),
 				ghi::shader::Sources::MTL {
@@ -630,7 +631,7 @@ fn create_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::Shader
 		.generate(&ShaderGenerationSettings::vertex(), &main_node)
 		.expect("Failed to generate UI vertex shader SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
 
-	device
+	context
 		.create_shader(
 			Some("UI Vertex Shader"),
 			ghi::shader::Sources::SPIRV(generated.binary()),
@@ -644,7 +645,7 @@ fn create_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::Shader
 }
 
 /// Builds the UI fragment shader using BESL and compiles it to SPIR-V.
-fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
+fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
 	if ghi::implementation::USES_METAL {
 		let shader_source = r#"
 			#include <metal_stdlib>
@@ -671,7 +672,7 @@ fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::Shad
 			}
 		"#;
 
-		return device
+		return context
 			.create_shader(
 				Some("UI Fragment Shader"),
 				ghi::shader::Sources::MTL {
@@ -738,7 +739,7 @@ fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::Shad
 		.generate(&ShaderGenerationSettings::fragment(), &main_node)
 		.expect("Failed to generate UI fragment shader SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
 
-	device
+	context
 		.create_shader(
 			Some("UI Fragment Shader"),
 			ghi::shader::Sources::SPIRV(generated.binary()),
@@ -751,148 +752,112 @@ fn create_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::Shad
 		.expect("Failed to create the UI fragment shader. The most likely cause is an incompatible shader interface.")
 }
 
-fn create_text_overlay_vertex_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
-	if ghi::implementation::USES_METAL {
-		let shader_source = r#"
-			#include <metal_stdlib>
-			using namespace metal;
-
-			struct TextOverlayVertexOut {
-				float4 position [[position]];
-				float2 uv;
-			};
-
-			vertex TextOverlayVertexOut ui_text_overlay_vertex(uint vertex_id [[vertex_id]]) {
-				float2 positions[3] = {
-					float2(-1.0, -1.0),
-					float2(-1.0, 3.0),
-					float2(3.0, -1.0)
-				};
-				float2 position = positions[vertex_id];
-				TextOverlayVertexOut out;
-				out.position = float4(position, 0.0, 1.0);
-				out.uv = float2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
-				return out;
-			}
-		"#;
-
-		return device
-			.create_shader(
-				Some("UI Text Overlay Vertex Shader"),
-				ghi::shader::Sources::MTL {
-					source: shader_source,
-					entry_point: "ui_text_overlay_vertex",
-				},
-				ghi::ShaderTypes::Vertex,
-				[],
-			)
-			.expect(
-				"Failed to create the UI text overlay vertex shader. The most likely cause is an incompatible shader interface.",
-			);
-	}
-
-	let shader_source = glsl::compile(
-		r#"
-		#version 460
-		#pragma shader_stage(vertex)
-
-		layout(location = 0) out vec2 out_uv;
-
-		void main() {
-			vec2 positions[3] = vec2[](
-				vec2(-1.0, -1.0),
-				vec2(-1.0, 3.0),
-				vec2(3.0, -1.0)
-			);
-			vec2 position = positions[gl_VertexIndex];
-			gl_Position = vec4(position, 0.0, 1.0);
-			out_uv = vec2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
-		}
-		"#,
-		"ui_text_overlay.vert",
+fn create_text_overlay_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
+	crate::rendering::create_shader_from_source(
+		context,
+		Some("UI Text Overlay Vertex Shader"),
+		ghi::shader::ShaderSource::Platform {
+			glsl: TEXT_OVERLAY_VERTEX_SHADER_GLSL,
+			msl: TEXT_OVERLAY_VERTEX_SHADER_MSL,
+			msl_entry_point: "ui_text_overlay_vertex",
+		},
+		ghi::ShaderTypes::Vertex,
+		[],
 	)
-	.expect("Failed to compile the UI text overlay vertex shader. The most likely cause is invalid GLSL syntax.");
-
-	device
-		.create_shader(
-			Some("UI Text Overlay Vertex Shader"),
-			ghi::shader::Sources::SPIRV(shader_source.as_binary_u8()),
-			ghi::ShaderTypes::Vertex,
-			[],
-		)
-		.expect(
-			"Failed to create the UI text overlay vertex shader. The most likely cause is an incompatible shader interface.",
-		)
+	.expect("Failed to create the UI text overlay vertex shader. The most likely cause is an incompatible shader interface.")
 }
 
-fn create_text_overlay_fragment_shader(device: &mut ghi::implementation::Device) -> ghi::ShaderHandle {
-	if ghi::implementation::USES_METAL {
-		let shader_source = r#"
-			#include <metal_stdlib>
-			using namespace metal;
-
-			struct TextOverlayVertexOut {
-				float4 position [[position]];
-				float2 uv;
-			};
-
-			struct TextOverlaySet0 {
-				texture2d<float> text_overlay [[id(0)]];
-				sampler text_overlay_sampler [[id(1)]];
-			};
-
-			fragment float4 ui_text_overlay_fragment(
-				TextOverlayVertexOut in [[stage_in]],
-				constant TextOverlaySet0& set0 [[buffer(16)]]
-			) {
-				return set0.text_overlay.sample(set0.text_overlay_sampler, in.uv);
-			}
-		"#;
-
-		return device
-			.create_shader(
-				Some("UI Text Overlay Fragment Shader"),
-				ghi::shader::Sources::MTL {
-					source: shader_source,
-					entry_point: "ui_text_overlay_fragment",
-				},
-				ghi::ShaderTypes::Fragment,
-				[TEXT_OVERLAY_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ)],
-			)
-			.expect(
-				"Failed to create the UI text overlay fragment shader. The most likely cause is an incompatible shader interface.",
-			);
-	}
-
-	let shader_source = glsl::compile(
-		r#"
-		#version 460
-		#pragma shader_stage(fragment)
-
-		layout(set = 0, binding = 0) uniform sampler2D text_overlay;
-
-		layout(location = 0) in vec2 in_uv;
-		layout(location = 0) out vec4 out_color_attachment;
-
-		void main() {
-			out_color_attachment = texture(text_overlay, in_uv);
-		}
-		"#,
-		"ui_text_overlay.frag",
+fn create_text_overlay_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
+	crate::rendering::create_shader_from_source(
+		context,
+		Some("UI Text Overlay Fragment Shader"),
+		ghi::shader::ShaderSource::Platform {
+			glsl: TEXT_OVERLAY_FRAGMENT_SHADER_GLSL,
+			msl: TEXT_OVERLAY_FRAGMENT_SHADER_MSL,
+			msl_entry_point: "ui_text_overlay_fragment",
+		},
+		ghi::ShaderTypes::Fragment,
+		[TEXT_OVERLAY_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ)],
 	)
-	.expect("Failed to compile the UI text overlay fragment shader. The most likely cause is invalid GLSL syntax.");
-
-	device
-		.create_shader(
-			Some("UI Text Overlay Fragment Shader"),
-			ghi::shader::Sources::SPIRV(shader_source.as_binary_u8()),
-			ghi::ShaderTypes::Fragment,
-			[TEXT_OVERLAY_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ)],
-		)
-		.expect(
-			"Failed to create the UI text overlay fragment shader. The most likely cause is an incompatible shader interface.",
-		)
+	.expect("Failed to create the UI text overlay fragment shader. The most likely cause is an incompatible shader interface.")
 }
+
+const TEXT_OVERLAY_VERTEX_SHADER_GLSL: &str = r#"
+#version 460
+#pragma shader_stage(vertex)
+
+layout(location = 0) out vec2 out_uv;
+
+void main() {
+	vec2 positions[3] = vec2[](
+		vec2(-1.0, -1.0),
+		vec2(-1.0, 3.0),
+		vec2(3.0, -1.0)
+	);
+	vec2 position = positions[gl_VertexIndex];
+	gl_Position = vec4(position, 0.0, 1.0);
+	out_uv = vec2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
+}
+"#;
+
+const TEXT_OVERLAY_VERTEX_SHADER_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct TextOverlayVertexOut {
+	float4 position [[position]];
+	float2 uv;
+};
+
+vertex TextOverlayVertexOut ui_text_overlay_vertex(uint vertex_id [[vertex_id]]) {
+	float2 positions[3] = {
+		float2(-1.0, -1.0),
+		float2(-1.0, 3.0),
+		float2(3.0, -1.0)
+	};
+	float2 position = positions[vertex_id];
+	TextOverlayVertexOut out;
+	out.position = float4(position, 0.0, 1.0);
+	out.uv = float2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
+	return out;
+}
+"#;
+
+const TEXT_OVERLAY_FRAGMENT_SHADER_GLSL: &str = r#"
+#version 460
+#pragma shader_stage(fragment)
+
+layout(set = 0, binding = 0) uniform sampler2D text_overlay;
+
+layout(location = 0) in vec2 in_uv;
+layout(location = 0) out vec4 out_color_attachment;
+
+void main() {
+	out_color_attachment = texture(text_overlay, in_uv);
+}
+"#;
+
+const TEXT_OVERLAY_FRAGMENT_SHADER_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct TextOverlayVertexOut {
+	float4 position [[position]];
+	float2 uv;
+};
+
+struct TextOverlaySet0 {
+	texture2d<float> text_overlay [[id(0)]];
+	sampler text_overlay_sampler [[id(1)]];
+};
+
+fragment float4 ui_text_overlay_fragment(
+	TextOverlayVertexOut in [[stage_in]],
+	constant TextOverlaySet0& set0 [[buffer(16)]]
+) {
+	return set0.text_overlay.sample(set0.text_overlay_sampler, in.uv);
+}
+"#;
 
 #[cfg(test)]
 mod tests {

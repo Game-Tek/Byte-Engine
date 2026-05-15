@@ -1,6 +1,51 @@
-- Test render frame with renderer but no elements
-- Test asset path
-- Support no audio endpoint
-- Add support for perprimitiveEXT qualifier in shader outputs
-- remove them from mesh shader header
-- see how to deal with now potentially unused staging buffers in GHI
+- Test render frame with renderer but no elements.
+- Test asset path handling.
+- Support no audio endpoint.
+- Add support for the perprimitiveEXT qualifier in shader outputs.
+- Remove perprimitiveEXT qualifiers from the mesh shader header when they are not needed.
+- Decide how to handle potentially unused staging buffers in GHI.
+- Implement DX12 command recording for render passes, clears, copies, descriptor binding, push constants, draw/dispatch, mesh shading, ray tracing, and submission in crates/ghi/src/dx12/command_buffer.rs.
+- Complete DX12 device-side GPU resource and pipeline support, including pipeline state creation, buffer/image resource mapping, texture upload, DXR structures, shader tables, and fence waiting in crates/ghi/src/dx12/device.rs.
+- Implement Vulkan standalone command buffer execute in crates/ghi/src/vulkan/command_buffer.rs.
+- Replace the Vulkan internal handle translation unimplemented branch with explicit handling or a recoverable error in crates/ghi/src/vulkan/command_buffer.rs.
+- Support Vulkan frame-count reductions or non-growth frame changes in crates/ghi/src/vulkan/device.rs.
+- Implement Metal ray tracing pipeline mapping, acceleration structure creation/build, instance buffer population, shader binding table mapping, and ray dispatch in crates/ghi/src/metal/context.rs and crates/ghi/src/metal/command_buffer.rs.
+- Rebuild Metal dynamic resources correctly when swapchain frame count changes in crates/ghi/src/metal/context.rs.
+- Implement macOS cursor visibility and cursor confinement in crates/ghi/src/window/os/macos.rs.
+- Wire real platform input seats instead of stub seats across X11, Wayland, Win32, and byte-engine input manager paths.
+- Implement sampled UI colors for Color::Sample in crates/byte-engine/src/ui/layout/engine.rs.
+- Audit and implement the remaining UI layout engine unimplemented path in crates/byte-engine/src/ui/layout/engine.rs.
+- Implement primitive style access and non-box shape bounding boxes in crates/byte-engine/src/ui/primitive.rs.
+- Implement Positionable state for gameplay Sphere and Cube colliders in crates/byte-engine/src/gameplay/collider.rs.
+- Implement server-side client entity lifecycle on connect/disconnect events in crates/byte-engine/src/network/server/server.rs.
+- Replace the temporary network client identity key in crates/byte-engine/src/network/client/udp.rs with a better identity strategy.
+- Fix Streams::frames so it reports typed buffer frame counts correctly in crates/ahi/src/audio_hardware_interface.rs.
+- Make Linux audio pause handle devices that do not support ALSA pause without panicking in crates/ahi/src/os/linux.rs.
+- Make Windows audio format negotiation return Err instead of panicking when requested formats are unsupported in crates/ahi/src/os/win32.rs.
+- Implement or document Windows audio pause behavior in crates/ahi/src/os/win32.rs.
+- Confirm and implement Metal push-constant mapping in crates/resource-management/src/msl_shader_generator.rs.
+- Map interpolation qualifiers to Metal shader output semantics in crates/resource-management/src/msl_shader_generator.rs.
+- Use actual scene instance indices instead of loaded mesh indices in the visibility render pass push constant path in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs.
+- Sort visibility/transparent render pass work by distance to camera where required in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs.
+- Add CI coverage for at least one smoke rendering path per supported backend instead of skipping all render-prefixed tests.
+- Fix the Cube test which halts the test runs.
+- Fix or update the failing math::tests::test_from_normal expectation in crates/math/src/lib.rs.
+- Gate renderer/window integration tests so cargo llvm-cov can run without hanging on crates/byte-engine/tests/cube.rs and related graphics tests.
+- Replace ignored GLTF asset tests that depend on missing fixture data with committed fixtures or generated in-test fixtures in crates/resource-management/src/asset/gltf_asset_handler.rs.
+- Replace the ignored WAV asset test that depends on missing fixture data with committed fixture data or a generated in-test fixture in crates/resource-management/src/asset/wav_asset_handler.rs.
+- Replace the ignored PNG asset test that depends on missing fixture data with committed fixture data or a generated in-test fixture in crates/resource-management/src/asset/png_asset_handler.rs.
+- Fix or rewrite ignored asset manager dependency-injection tests in crates/resource-management/src/asset/asset_manager.rs.
+- Fix or rewrite the ignored BESL member lexer test in crates/besl/src/lexer.rs.
+- Add an in-process test setup for the ignored UDP client connection test in crates/byte-engine/src/network/client/udp.rs.
+- Fix or remove ignored Vulkan WSI tests in crates/ghi/src/vulkan/mod.rs.
+- Add a test plan or implementation for the ignored Vulkan ray tracing test in crates/ghi/src/vulkan/mod.rs.
+- Add unit tests for crates/utils/src/stale_map.rs, which currently has 0% coverage.
+- Add focused tests for crates/ghi/src/window/window.rs, which currently has 0% coverage.
+- Add more macOS window/input tests for crates/ghi/src/window/os/macos.rs, especially keyboard-event consumption, cursor visibility, and cursor confinement.
+- Add targeted GHI backend tests or fakes to raise coverage for device/context/resource lifecycle paths.
+- Add tests for AHI core audio_hardware_interface.rs behavior beyond default hardware parameters.
+- Add tests for byte-engine UI primitive non-box bounding boxes and primitive style access in crates/byte-engine/src/ui/primitive.rs.
+- Add tests for byte-engine UI layout Color::Sample behavior and the remaining unimplemented layout branch in crates/byte-engine/src/ui/layout/engine.rs.
+- Add tests for byte-engine gameplay collider Positionable behavior once Sphere and Cube collider state is implemented.
+- Add coverage for byte-engine network server client entity lifecycle on connect/disconnect.
+- Review and either use or remove dead test helper structs TestTransport and TestSynthesizer in crates/byte-engine/tests/replication.rs and crates/byte-engine/tests/sound.rs.

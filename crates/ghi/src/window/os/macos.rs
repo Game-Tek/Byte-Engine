@@ -364,8 +364,15 @@ impl WindowLike for Window {
 
 			// AppKit owns native window interactions such as title-bar drags,
 			// close controls, and live resize; re-dispatch after translating input.
-			if let Some(app) = &app {
-				app.sendEvent(&event);
+			// Keyboard events are consumed here because the default responder chain
+			// treats unhandled key presses as errors and plays the system beep.
+			if !matches!(
+				event.r#type(),
+				NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged
+			) {
+				if let Some(app) = &app {
+					app.sendEvent(&event);
+				}
 			}
 		}
 

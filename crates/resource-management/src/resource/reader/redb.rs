@@ -26,29 +26,45 @@ impl ResourceReader for FileResourceReader {
 		read_target: ReadTargetsMut<'a>,
 	) -> Result<ReadTargets<'a>, ()> {
 		match read_target {
-			ReadTargetsMut::Buffer(buffer) => {
-				self.file.seek(std::io::SeekFrom::Start(0 as u64)).or(Err(()))?;
-				self.file.read_exact(buffer).or(Err(()))?;
-				Ok(ReadTargets::Buffer(buffer))
+			ReadTargetsMut::Buffer { buffer, offset, size } => {
+				let read_len = size.unwrap_or(buffer.len()).min(buffer.len());
+				self.file.seek(std::io::SeekFrom::Start(offset as u64)).or(Err(()))?;
+				self.file.read_exact(&mut buffer[..read_len]).or(Err(()))?;
+				Ok(ReadTargets::Buffer(&buffer[..read_len]))
 			}
-			ReadTargetsMut::Box(mut buffer) => {
-				self.file.seek(std::io::SeekFrom::Start(0 as u64)).or(Err(()))?;
-				self.file.read_exact(&mut buffer[..]).or(Err(()))?;
-				Ok(ReadTargets::Box(buffer))
+			ReadTargetsMut::Box {
+				mut buffer,
+				offset,
+				size,
+			} => {
+				let read_len = size.unwrap_or(buffer.len()).min(buffer.len());
+				self.file.seek(std::io::SeekFrom::Start(offset as u64)).or(Err(()))?;
+				self.file.read_exact(&mut buffer[..read_len]).or(Err(()))?;
+				if read_len < buffer.len() {
+					let mut v = buffer.into_vec();
+					v.truncate(read_len);
+					Ok(ReadTargets::Box(v.into_boxed_slice()))
+				} else {
+					Ok(ReadTargets::Box(buffer))
+				}
 			}
 			ReadTargetsMut::Streams(mut streams) => {
 				if let Some(stream_descriptions) = stream_descriptions {
 					for sd in stream_descriptions {
-						let offset = sd.offset;
+						let stream_offset = sd.offset;
 						if let Some(s) = streams.iter_mut().find(|s| s.name() == sd.name) {
-							self.file.seek(std::io::SeekFrom::Start(offset as u64)).or(Err(()))?;
+							let offset = s.offset();
+							let read_len = s.size().unwrap_or(s.buffer().len()).min(s.buffer().len());
 							self.file
-								.read_exact(s.buffer_mut())
+								.seek(std::io::SeekFrom::Start((stream_offset + offset) as u64))
+								.or(Err(()))?;
+							self.file
+								.read_exact(&mut s.buffer_mut()[..read_len])
 								.inspect_err(|e| {
 									log::error!(
 										"Failed to read stream '{}' from file resource. Expected to read: {}. Error: {}",
 										s.name(),
-										s.buffer().len(),
+										read_len,
 										e,
 									)
 								})

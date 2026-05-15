@@ -3,6 +3,7 @@ name = "byte-engine"
 version = "0.1.0"
 edition = "2021"
 
+rust-version.workspace = true
 [features]
 default = ["headed", "network"]
 headed = ["dep:ahi", "dep:ghi", "dep:besl"]
@@ -36,3 +37,4 @@ fontdue = "0.9.3"
 artnet_protocol = "0.4.4"
 half = "2.4.1"
 bitflags = "2.11.1"
+bumpalo = { version = "3", features = ["allocator-api2"] }

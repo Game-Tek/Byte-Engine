@@ -2,9 +2,11 @@ use std::borrow::Borrow as _;
 
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 };
 use math::Vector2;
+use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};
 use utils::{Box, Extent};
 
 use crate::rendering::{
@@ -34,36 +36,41 @@ pub struct BaseBilateralBlurPass {
 
 impl BaseBilateralBlurPass {
 	fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let device = render_pass_builder.device();
+		let shader_storage = render_pass_builder.shader_storage();
+		let context = render_pass_builder.context();
 
-		let descriptor_set_template = device.create_descriptor_set_template(
+		let descriptor_set_template = context.create_descriptor_set_template(
 			Some("SSGI Blur"),
 			&[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING],
 		);
 
-		let shader =
-			resource_management::glsl::compile(BLUR_SHADER, "blur_shader").expect("Failed to compile the SSGI blur shader.");
-
-		let shader = device
-			.create_shader(
-				Some("SSGI Blur"),
-				ghi::shader::Sources::SPIRV(shader.as_binary_u8()),
-				ghi::ShaderTypes::Compute,
-				[
-					BLUR_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					BLUR_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-					BLUR_RESULT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				],
-			)
-			.expect("Failed to create the ray march shader.");
-		let pipeline_x = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+			context,
+			shader_storage,
+			&crate::rendering::shader_store::ShaderSourceDescriptor {
+				id: "byte-engine/rendering/bilateral-blur",
+				name: "SSGI Blur",
+				stage: ResourceShaderTypes::Compute,
+				source: ghi::shader::ShaderSource::Glsl(BLUR_SHADER),
+				interface: material::ShaderInterface {
+					workgroup_size: Some((128, 1, 1)),
+					bindings: vec![
+						material::Binding::new(0, 0, true, false),
+						material::Binding::new(0, 1, true, false),
+						material::Binding::new(0, 2, false, true),
+					],
+				},
+			},
+		)
+		.expect("Failed to create the SSGI blur shader.");
+		let pipeline_x = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_template],
 			&[],
 			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
 				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(1f32, 0f32)),
 			]),
 		));
-		let pipeline_y = device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		let pipeline_y = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_template],
 			&[],
 			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
@@ -94,30 +101,30 @@ impl BilateralBlurPass {
 		let read_depth = render_pass_builder.read_from("depth");
 		let depth_image: ghi::BaseImageHandle = (*read_depth.borrow()).into();
 
-		let device = render_pass_builder.device();
+		let context = render_pass_builder.context();
 
 		let descriptor_set_template = render_pass.descriptor_set_template;
 
-		let descriptor_set_x = device.create_descriptor_set(Some("X SSGI Blur"), &descriptor_set_template);
-		let descriptor_set_y = device.create_descriptor_set(Some("Y SSGI Blur"), &descriptor_set_template);
+		let descriptor_set_x = context.create_descriptor_set(Some("X SSGI Blur"), &descriptor_set_template);
+		let descriptor_set_y = context.create_descriptor_set(Some("Y SSGI Blur"), &descriptor_set_template);
 
-		let x_blur_map = device.build_image(ghi::image::Builder::new(
+		let x_blur_map = context.build_image(ghi::image::Builder::new(
 			ghi::Formats::RGB16UNORM,
 			ghi::Uses::Image | ghi::Uses::Storage,
 		));
-		let y_blur_map = device.build_image(ghi::image::Builder::new(
+		let y_blur_map = context.build_image(ghi::image::Builder::new(
 			ghi::Formats::RGB16UNORM,
 			ghi::Uses::Image | ghi::Uses::Storage,
 		));
 
-		let sampler = device.build_sampler(ghi::sampler::Builder::new());
-		let depth_sampler = device.build_sampler(
+		let sampler = context.build_sampler(ghi::sampler::Builder::new());
+		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.mip_map_mode(ghi::FilteringModes::Linear),
 		);
 
-		device.create_descriptor_binding(
+		context.create_descriptor_binding(
 			descriptor_set_x,
 			ghi::BindingConstructor::combined_image_sampler(
 				&BLUR_DEPTH_BINDING,
@@ -126,16 +133,16 @@ impl BilateralBlurPass {
 				ghi::Layouts::Read,
 			),
 		);
-		device.create_descriptor_binding(
+		context.create_descriptor_binding(
 			descriptor_set_x,
 			ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, source, sampler.clone(), ghi::Layouts::Read),
 		);
-		device.create_descriptor_binding(
+		context.create_descriptor_binding(
 			descriptor_set_x,
 			ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, x_blur_map),
 		);
 
-		device.create_descriptor_binding(
+		context.create_descriptor_binding(
 			descriptor_set_y,
 			ghi::BindingConstructor::combined_image_sampler(
 				&BLUR_DEPTH_BINDING,
@@ -144,7 +151,7 @@ impl BilateralBlurPass {
 				ghi::Layouts::Read,
 			),
 		);
-		device.create_descriptor_binding(
+		context.create_descriptor_binding(
 			descriptor_set_y,
 			ghi::BindingConstructor::combined_image_sampler(
 				&BLUR_SOURCE_BINDING,
@@ -153,7 +160,7 @@ impl BilateralBlurPass {
 				ghi::Layouts::Read,
 			),
 		);
-		device.create_descriptor_binding(
+		context.create_descriptor_binding(
 			descriptor_set_y,
 			ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, y_blur_map),
 		);

@@ -1,15 +1,17 @@
 pub mod gpu_vertex_data_manager;
+pub mod pipeline_manager;
 pub mod render_pass;
+pub mod resource_manager;
 pub mod scene_manager;
 pub mod shader_generator;
 
+pub use pipeline_manager::VisibilityPipelineManager;
 use resource_management::{
 	glsl_shader_generator::GLSLShaderGenerator,
 	platform_shader_generator::GeneratedPlatformShader,
 	platform_shader_generator::{PlatformShaderGenerator, PlatformShaderLanguage},
 	shader_generator::ShaderGenerationSettings,
 };
-pub use scene_manager::VisibilityWorldRenderDomain;
 use utils::Extent;
 
 use crate::rendering::{
@@ -2444,7 +2446,10 @@ mod tests {
 
 	#[test]
 	fn shadow_mesh_msl_source_compiles_for_metal() {
-		use ghi::device::DeviceCreate as _;
+		use ghi::{
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+		};
 
 		if !ghi::implementation::USES_METAL {
 			return;
@@ -2454,14 +2459,16 @@ mod tests {
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
 			.expect("Expected a Metal instance for the shadow mesh shader test");
 		let mut queue = None;
-		let mut device = instance
+		let mut context = instance
 			.create_device(
 				ghi::device::Features::new(),
 				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
 			)
-			.expect("Expected a Metal device for the shadow mesh shader test");
+			.expect("Expected a Metal device for the shadow mesh shader test")
+			.create_context()
+			.expect("Expected a Metal context");
 
-		let shader_handle = device.create_shader(
+		let shader_handle = context.create_shader(
 			Some("Shadow Pass Mesh Shader"),
 			ghi::shader::Sources::MTL {
 				source: shader.as_str(),
@@ -2515,7 +2522,10 @@ mod tests {
 
 	#[test]
 	fn visibility_task_msl_source_compiles_for_metal() {
-		use ghi::device::DeviceCreate as _;
+		use ghi::{
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+		};
 
 		if !ghi::implementation::USES_METAL {
 			return;
@@ -2525,14 +2535,16 @@ mod tests {
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
 			.expect("Expected a Metal instance for the visibility task shader test");
 		let mut queue = None;
-		let mut device = instance
+		let mut context = instance
 			.create_device(
 				ghi::device::Features::new(),
 				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
 			)
-			.expect("Expected a Metal device for the visibility task shader test");
+			.expect("Expected a Metal device for the visibility task shader test")
+			.create_context()
+			.expect("Expected a Metal context");
 
-		let shader_handle = device.create_shader(
+		let shader_handle = context.create_shader(
 			Some("Visibility Pass Task Shader"),
 			ghi::shader::Sources::MTL {
 				source: shader.as_str(),
@@ -2554,7 +2566,10 @@ mod tests {
 
 	#[test]
 	fn visibility_mesh_msl_source_compiles_for_metal() {
-		use ghi::device::DeviceCreate as _;
+		use ghi::{
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+		};
 
 		if !ghi::implementation::USES_METAL {
 			return;
@@ -2564,14 +2579,16 @@ mod tests {
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
 			.expect("Expected a Metal instance for the visibility mesh shader test");
 		let mut queue = None;
-		let mut device = instance
+		let mut context = instance
 			.create_device(
 				ghi::device::Features::new(),
 				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
 			)
-			.expect("Expected a Metal device for the visibility mesh shader test");
+			.expect("Expected a Metal device for the visibility mesh shader test")
+			.create_context()
+			.expect("Expected a Metal context");
 
-		let shader_handle = device.create_shader(
+		let shader_handle = context.create_shader(
 			Some("Visibility Pass Mesh Shader"),
 			ghi::shader::Sources::MTL {
 				source: shader.as_str(),

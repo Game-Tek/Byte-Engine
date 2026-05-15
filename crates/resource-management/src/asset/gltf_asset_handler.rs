@@ -371,7 +371,7 @@ async fn material_for_gltf_primitive(
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	if let Some(override_asset) = material_override(spec, &material) {
 		return asset_manager
-			.load::<VariantModel>(&override_asset, storage_backend)
+			.bake_if_not_exists::<VariantModel>(&override_asset, storage_backend)
 			.await
 			.map_err(|_| LoadErrors::FailedToProcess);
 	}
@@ -581,6 +581,7 @@ fn process_gltf_image(
 		extent: Extent::rectangle(image.width, image.height),
 		semantic,
 		gamma: gamma_from_semantic(semantic),
+		generate_mipmaps: false,
 	};
 
 	process_image(id, image_description, image.pixels.into_boxed_slice())
@@ -1101,7 +1102,7 @@ mod tests {
 		let url = "Box.glb";
 
 		let mesh: ReferenceModel<MeshModel> = asset_manager
-			.load(url, &resource_storage_backend)
+			.bake_if_not_exists(url, &resource_storage_backend)
 			.await
 			.expect("Failed to parse asset");
 
@@ -1164,7 +1165,7 @@ mod tests {
 		let url = "Suzanne.gltf";
 
 		let mesh: ReferenceModel<MeshModel> = asset_manager
-			.load(url, &resource_storage_backend)
+			.bake_if_not_exists(url, &resource_storage_backend)
 			.await
 			.expect("Failed to parse asset");
 
@@ -1369,7 +1370,10 @@ mod tests {
 
 		let url = "Revolver.glb";
 
-		let _mesh: ReferenceModel<MeshModel> = asset_manager.load(&url, &resource_storage_backend).await.unwrap();
+		let _mesh: ReferenceModel<MeshModel> = asset_manager
+			.bake_if_not_exists(&url, &resource_storage_backend)
+			.await
+			.unwrap();
 
 		let url = ResourceId::new(url);
 

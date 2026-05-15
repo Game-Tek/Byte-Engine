@@ -73,7 +73,7 @@ impl MSLShaderCompiler {
 				)
 			})?;
 
-		let binary = compile_msl_to_metallib(&msl_shader, &shader_compilation_settings.name)?;
+		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name)?;
 
 		let mut bindings = Vec::with_capacity(16);
 
@@ -287,7 +287,8 @@ impl Drop for TempShaderDir {
 	}
 }
 
-fn compile_msl_to_metallib(msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
+/// Compiles Metal Shading Language source into a Metal library binary.
+pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Box<[u8]>, String> {
 	if !cfg!(target_os = "macos") {
 		return Err(error(
 			"MSL compilation is only supported on macOS",

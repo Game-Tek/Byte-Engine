@@ -9,7 +9,12 @@ use crate::{
 };
 
 #[derive(Debug)]
-/// Represents a resource reference and can be use to embed resources in other resources.
+/// Represents a resource reference and can be use to embed to access related resources when loading.
+///
+/// The `Reference` can be used to consult the memory requirements of the resource to, for example, pre-allocate/reserve memory destined for the resource.
+///
+/// The `Reference` can contain a `reader` that provides the backing store for the resource's binary data.
+/// This `reader` usually comes assigned from a call to [`ResourceManager::request`].
 pub struct Reference<T: Resource> {
 	pub id: String,
 	pub hash: u64,
@@ -119,6 +124,8 @@ impl<T: Resource> std::hash::Hash for Reference<T> {
 }
 
 #[derive(Clone, Debug, serde::Deserialize, Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+/// `ReferenceModel` is a model for [`Reference`] that can be used to serialize/deserialize references.
+/// `ReferenceModel` has to be turned into a [`Reference`] using `solve()` which will allow loading the resource's binary data and fetching related resources.
 pub struct ReferenceModel<T: Model> {
 	id: String,
 	hash: u64,

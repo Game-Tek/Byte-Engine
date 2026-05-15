@@ -44,6 +44,18 @@ pub trait QueueExecution<'a> {
 		record: impl FnOnce(&mut <Self::Frame as crate::frame::Frame<'a>>::CBR<'record>),
 	) where
 		Self::Frame: 'record;
+
+	/// Creates a command-buffer recording that also performs presentation preparation before submission.
+	fn record_with_present_keys<'record>(
+		&'record mut self,
+		command_buffer_handle: CommandBufferHandle,
+		_present_keys: &[PresentKey],
+		record: impl FnOnce(&mut <Self::Frame as crate::frame::Frame<'a>>::CBR<'record>),
+	) where
+		Self::Frame: 'record,
+	{
+		self.record(command_buffer_handle, record);
+	}
 }
 
 /// The `Queue` trait provides the queue-level entry points needed to build and submit graphics work.

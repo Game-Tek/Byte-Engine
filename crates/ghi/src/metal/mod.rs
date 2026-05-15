@@ -258,7 +258,7 @@ pub(crate) struct StoredCommandBuffer {
 }
 
 pub struct CommandBuffer<'a> {
-	pub(crate) device: &'a mut device::Device,
+	pub(crate) device: &'a mut context::Context,
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 }
 
@@ -542,6 +542,7 @@ mod utils {
 
 			Formats::BC5 => mtl::MTLPixelFormat::BC5_RGUnorm,
 			Formats::BC7 => mtl::MTLPixelFormat::BC7_RGBAUnorm,
+			Formats::BC7SRGB => mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB,
 		}
 	}
 
@@ -631,17 +632,99 @@ mod utils {
 		let width = extent.width().max(1) as usize;
 		let height = extent.height().max(1) as usize;
 
-		match format {
-			Formats::BC5 | Formats::BC7 => {
-				let block_width = width.div_ceil(4);
-				let block_height = height.div_ceil(4);
-				Some((block_width * 16, block_height, block_width * block_height * 16))
-			}
-			_ => {
-				let bytes_per_pixel = bytes_per_pixel(format)?;
-				let bytes_per_row = width * bytes_per_pixel;
-				Some((bytes_per_row, height, bytes_per_row * height))
-			}
+		if let Some(layout) = format.bc_layout(width as u32, height as u32) {
+			Some((
+				layout.bytes_per_row as usize,
+				layout.blocks_h as usize,
+				layout.bytes_per_image as usize,
+			))
+		} else {
+			let bytes_per_pixel = bytes_per_pixel(format)?;
+			let bytes_per_row = width * bytes_per_pixel;
+			Some((bytes_per_row, height, bytes_per_row * height))
+		}
+	}
+
+	pub(crate) fn texture_copy_size(_format: Formats, extent: Extent) -> mtl::MTLSize {
+		mtl::MTLSize {
+			width: extent.width().max(1) as _,
+			height: extent.height().max(1) as _,
+			depth: extent.depth().max(1) as _,
+		}
+	}
+
+	pub(crate) fn is_block_compressed(format: Formats) -> bool {
+		format.bc_bytes_per_block().is_some()
+	}
+
+	#[cfg(debug_assertions)]
+	pub(crate) fn debug_compressed_upload(
+		format: Formats,
+		mip_index: usize,
+		slice_index: usize,
+		extent: Extent,
+		bytes_per_row: usize,
+		bytes_per_image: usize,
+		source_offset: usize,
+	) {
+		let Some(layout) = format.bc_layout(extent.width(), extent.height()) else {
+			return;
+		};
+		let expected_next_offset = source_offset + bytes_per_image;
+
+		eprintln!(
+			"Metal compressed texture upload: format={format:?}, mip={mip_index}, slice={slice_index}, width={}, height={}, blocks_w={}, blocks_h={}, bytes_per_block={}, bytes_per_row={bytes_per_row}, bytes_per_image={bytes_per_image}, compact_bytes_per_row={}, compact_bytes_per_image={}, source_offset={source_offset}, expected_next_offset={expected_next_offset}",
+			extent.width().max(1),
+			extent.height().max(1),
+			layout.blocks_w,
+			layout.blocks_h,
+			layout.bytes_per_block,
+			layout.bytes_per_row,
+			layout.bytes_per_image,
+		);
+	}
+
+	#[cfg(not(debug_assertions))]
+	pub(crate) fn debug_compressed_upload(
+		_format: Formats,
+		_mip_index: usize,
+		_slice_index: usize,
+		_extent: Extent,
+		_bytes_per_row: usize,
+		_bytes_per_image: usize,
+		_source_offset: usize,
+	) {
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+
+		#[test]
+		fn bc_upload_layout_uses_block_rows_for_non_multiple_of_four_extent() {
+			let extent = Extent::rectangle(5, 7);
+
+			let (bytes_per_row, row_count, bytes_per_image) = texture_upload_layout(Formats::BC7, extent).unwrap();
+
+			assert_eq!(bytes_per_row, 2 * 16);
+			assert_eq!(row_count, 2);
+			assert_eq!(bytes_per_image, 2 * 2 * 16);
+		}
+
+		#[test]
+		fn bc_copy_size_uses_texel_extent_not_padded_block_extent() {
+			let size = texture_copy_size(Formats::BC7, Extent::rectangle(5, 7));
+
+			assert_eq!(size.width, 5);
+			assert_eq!(size.height, 7);
+			assert_eq!(size.depth, 1);
+		}
+
+		#[test]
+		fn bc_format_mapping_preserves_linear_and_srgb_variants() {
+			assert_eq!(to_pixel_format(Formats::BC5), mtl::MTLPixelFormat::BC5_RGUnorm);
+			assert_eq!(to_pixel_format(Formats::BC7), mtl::MTLPixelFormat::BC7_RGBAUnorm);
+			assert_eq!(to_pixel_format(Formats::BC7SRGB), mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB);
 		}
 	}
 
@@ -759,13 +842,23 @@ mod utils {
 pub mod queue {
 	use super::*;
 
+	#[derive(Clone)]
 	pub(crate) struct StoredQueue {
 		pub(crate) queue: Retained<ProtocolObject<dyn mtl::MTLCommandQueue>>,
 		pub(crate) workloads: crate::WorkloadTypes,
 	}
 
-	pub struct Queue<'a> {
-		pub(crate) device: &'a mut device::Device,
+	/// The `Queue` struct owns the queue submission entry point without borrowing the device.
+	pub struct Queue {
+		pub(crate) device: std::ptr::NonNull<context::Context>,
+		pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,
+	}
+
+	unsafe impl Send for Queue {}
+
+	/// The `QueueReference` struct preserves the borrowed queue API while queue ownership is being split out.
+	pub struct QueueReference<'a> {
+		pub(crate) device: &'a mut context::Context,
 		pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,
 	}
 
@@ -803,7 +896,68 @@ pub mod queue {
 		}
 	}
 
-	impl crate::queue::Queue for Queue<'_> {
+	impl Queue {
+		/// Returns mutable device access for the queue wrapper until device state is split out.
+		fn device_mut(&mut self) -> &mut context::Context {
+			// The owned queue is created from a live Device and must not outlive it.
+			// Thread-safe ownership will require moving queue-local state out of Device.
+			unsafe { self.device.as_mut() }
+		}
+	}
+
+	impl crate::queue::Queue for Queue {
+		type Frame<'a> = super::Frame<'a>;
+		type Execution<'a> = Execution<'a>;
+
+		fn create_command_buffer(&mut self, name: Option<&str>) -> graphics_hardware_interface::CommandBufferHandle {
+			let queue_handle = self.queue_handle;
+			self.device_mut().create_command_buffer(name, queue_handle)
+		}
+
+		fn start_frame<'a>(
+			&'a mut self,
+			index: u32,
+			synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		) -> crate::queue::StartedFrame<Self::Frame<'a>> {
+			self.device_mut().start_frame(index, synchronizer_handle)
+		}
+
+		fn execute<'a, P>(
+			&'a mut self,
+			frame: Option<crate::queue::FrameRequest>,
+			wait_for: &[graphics_hardware_interface::SynchronizerHandle],
+			synchronizer: graphics_hardware_interface::SynchronizerHandle,
+			execute: impl FnOnce(&mut Self::Execution<'a>) -> P,
+		) where
+			P: AsRef<[graphics_hardware_interface::PresentKey]>,
+		{
+			let device = self.device_mut();
+			for &wait_synchronizer in wait_for {
+				device.wait_for_synchronizer(wait_synchronizer);
+			}
+
+			let frame = frame.map(|frame| device.start_frame(frame.index, frame.synchronizer));
+			let completed_frame = frame.as_ref().and_then(|frame| frame.completed_frame);
+			let frame = frame.map(|frame| frame.frame);
+			let mut execution = Execution {
+				frame,
+				completed_frame,
+				command_buffers: Vec::new(),
+			};
+			let present_keys = execute(&mut execution);
+
+			let Some(mut frame) = execution.frame else {
+				return;
+			};
+			let last_index = execution.command_buffers.len().saturating_sub(1);
+			for (index, command_buffer) in execution.command_buffers.into_iter().enumerate() {
+				let present_keys = if index == last_index { present_keys.as_ref() } else { &[] };
+				frame.execute_finished(command_buffer, present_keys, synchronizer);
+			}
+		}
+	}
+
+	impl crate::queue::Queue for QueueReference<'_> {
 		type Frame<'a> = super::Frame<'a>;
 		type Execution<'a> = Execution<'a>;
 
@@ -949,6 +1103,7 @@ pub mod swapchain {
 }
 
 pub mod command_buffer;
+pub mod context;
 pub mod device;
 pub mod frame;
 pub mod instance;
@@ -956,6 +1111,7 @@ pub mod pipelines;
 
 pub use self::binding::*;
 pub use self::command_buffer::*;
+pub use self::context::*;
 pub(crate) use self::descriptor_set::*;
 pub use self::device::*;
 pub use self::frame::*;

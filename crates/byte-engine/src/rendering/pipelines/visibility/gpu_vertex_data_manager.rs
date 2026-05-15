@@ -1,6 +1,7 @@
 /// The `GPUVertexDataManager` is responsible for managing the vertex data buffers used in the visibility pipeline.
 /// It tracks buffer offsets and counts for various resources, and provides handles to the vertex data buffers.
 /// It performs uploads to the GPU of mesh resources.
+#[derive(Clone)]
 pub(super) struct GPUVertexDataManager {
 	/// Tracks buffer offsets and counts for various resources.
 	visibility_info: VisibilityInfo,
@@ -20,33 +21,33 @@ pub(super) struct GPUVertexDataManager {
 }
 
 impl GPUVertexDataManager {
-	pub fn new(device: &mut ghi::implementation::Device) -> Self {
-		let vertex_positions_buffer_handle = device.build_buffer(
+	pub fn new(context: &mut ghi::implementation::Context) -> Self {
+		let vertex_positions_buffer_handle = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
 				.name("Visibility Vertex Positions Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let vertex_normals_buffer_handle = device.build_buffer(
+		let vertex_normals_buffer_handle = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
 				.name("Visibility Vertex Normals Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let vertex_uv_buffer_handle = device.build_buffer(
+		let vertex_uv_buffer_handle = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
 				.name("Visibility Vertex UV Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let vertex_indices_buffer_handle = device.build_buffer(
+		let vertex_indices_buffer_handle = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
 				.name("Visibility Index Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let primitive_indices_buffer_handle = device.build_buffer(
+		let primitive_indices_buffer_handle = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Index | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage)
 				.name("Visibility Primitive Indices Buffer")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let meshlets_data_buffer = device.build_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(
+		let meshlets_data_buffer = context.build_buffer::<[ShaderMeshletData; MAX_MESHLETS]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Visibility Meshlets Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
@@ -66,9 +67,8 @@ impl GPUVertexDataManager {
 	/// Writes GPU mesh data for a mesh resource and returns the mesh object.
 	/// Does not check if the resource is already loaded.
 	/// Meshes may not be available yet for rendering, this just writes the mesh data to the GPU.
-	pub fn write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource<'a, 'slf: 'a, 'buffer>(
+	pub fn write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource<'slf, 'buffer>(
 		&'slf mut self,
-		id: &'a str,
 		c: &mut ghi::implementation::CommandBufferRecording,
 		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: &mut utils::BufferAllocator<'buffer>,
@@ -741,7 +741,7 @@ pub struct MeshPrimitive {
 
 use std::collections::hash_map::Entry;
 
-use ghi::command_buffer::CommandBufferRecording as _;
+use ghi::{command_buffer::CommandBufferRecording as _, context::ContextCreate as _};
 use resource_management::{resources::mesh::Mesh, Reference};
 use utils::as_byte_slice;
 

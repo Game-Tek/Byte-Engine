@@ -1,11 +1,10 @@
-use std::borrow::Borrow;
-
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-	device::{Device as _, DeviceCreate as _},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 	frame::Frame as _,
 };
-use resource_management::glsl;
+use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};
 use utils::{Box, Extent};
 
 use crate::{
@@ -128,11 +127,12 @@ impl BloomPass {
 		);
 		render_pass_builder.alias("Bloom Output", "main");
 
-		let device = render_pass_builder.device();
+		let shader_storage = render_pass_builder.shader_storage();
+		let context = render_pass_builder.context();
 		let level_count = settings.resolved_level_count();
 		let downsample_images = (0..level_count)
 			.map(|index| {
-				device.build_dynamic_image(
+				context.build_dynamic_image(
 					ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image)
 						.name(match index {
 							0 => "Bloom Downsample 0",
@@ -148,7 +148,7 @@ impl BloomPass {
 			.collect::<Vec<_>>();
 		let upsample_images = (0..level_count.saturating_sub(1))
 			.map(|index| {
-				device.build_dynamic_image(
+				context.build_dynamic_image(
 					ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image)
 						.name(match index {
 							0 => "Bloom Upsample 0",
@@ -162,23 +162,23 @@ impl BloomPass {
 			})
 			.collect::<Vec<_>>();
 
-		let parameters = device.build_dynamic_buffer(
+		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Bloom Parameters")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let sampler = device.build_sampler(
+		let sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
 
-		let extract_descriptor_set_layout = device.create_descriptor_set_template(
+		let extract_descriptor_set_layout = context.create_descriptor_set_template(
 			Some("Bloom Extract Descriptor Set Layout"),
 			&[EXTRACT_SOURCE_BINDING, EXTRACT_OUTPUT_BINDING, EXTRACT_PARAMETERS_BINDING],
 		);
-		let upsample_descriptor_set_layout = device.create_descriptor_set_template(
+		let upsample_descriptor_set_layout = context.create_descriptor_set_template(
 			Some("Bloom Upsample Descriptor Set Layout"),
 			&[
 				UPSAMPLE_LOW_BINDING,
@@ -187,7 +187,7 @@ impl BloomPass {
 				UPSAMPLE_PARAMETERS_BINDING,
 			],
 		);
-		let composite_descriptor_set_layout = device.create_descriptor_set_template(
+		let composite_descriptor_set_layout = context.create_descriptor_set_template(
 			Some("Bloom Composite Descriptor Set Layout"),
 			&[
 				COMPOSITE_SCENE_BINDING,
@@ -197,14 +197,14 @@ impl BloomPass {
 			],
 		);
 
-		let extract_pipeline = create_extract_pipeline(device, extract_descriptor_set_layout);
-		let downsample_pipeline = create_downsample_pipeline(device, extract_descriptor_set_layout);
-		let upsample_pipeline = create_upsample_pipeline(device, upsample_descriptor_set_layout);
-		let composite_pipeline = create_composite_pipeline(device, composite_descriptor_set_layout);
+		let extract_pipeline = create_extract_pipeline(context, shader_storage, extract_descriptor_set_layout);
+		let downsample_pipeline = create_downsample_pipeline(context, shader_storage, extract_descriptor_set_layout);
+		let upsample_pipeline = create_upsample_pipeline(context, shader_storage, upsample_descriptor_set_layout);
+		let composite_pipeline = create_composite_pipeline(context, shader_storage, composite_descriptor_set_layout);
 
 		let extract_descriptor_set =
-			device.create_descriptor_set(Some("Bloom Extract Descriptor Set"), &extract_descriptor_set_layout);
-		let _ = device.create_descriptor_binding(
+			context.create_descriptor_set(Some("Bloom Extract Descriptor Set"), &extract_descriptor_set_layout);
+		let _ = context.create_descriptor_binding(
 			extract_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&EXTRACT_SOURCE_BINDING,
@@ -213,11 +213,11 @@ impl BloomPass {
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			extract_descriptor_set,
 			ghi::BindingConstructor::image(&EXTRACT_OUTPUT_BINDING, downsample_images[0]),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			extract_descriptor_set,
 			ghi::BindingConstructor::buffer(&EXTRACT_PARAMETERS_BINDING, parameters.into()),
 		);
@@ -225,8 +225,8 @@ impl BloomPass {
 		let downsample_descriptor_sets = (1..level_count)
 			.map(|index| {
 				let descriptor_set =
-					device.create_descriptor_set(Some("Bloom Downsample Descriptor Set"), &extract_descriptor_set_layout);
-				let _ = device.create_descriptor_binding(
+					context.create_descriptor_set(Some("Bloom Downsample Descriptor Set"), &extract_descriptor_set_layout);
+				let _ = context.create_descriptor_binding(
 					descriptor_set,
 					ghi::BindingConstructor::combined_image_sampler(
 						&EXTRACT_SOURCE_BINDING,
@@ -235,11 +235,11 @@ impl BloomPass {
 						ghi::Layouts::Read,
 					),
 				);
-				let _ = device.create_descriptor_binding(
+				let _ = context.create_descriptor_binding(
 					descriptor_set,
 					ghi::BindingConstructor::image(&EXTRACT_OUTPUT_BINDING, downsample_images[index]),
 				);
-				let _ = device.create_descriptor_binding(
+				let _ = context.create_descriptor_binding(
 					descriptor_set,
 					ghi::BindingConstructor::buffer(&EXTRACT_PARAMETERS_BINDING, parameters.into()),
 				);
@@ -251,13 +251,13 @@ impl BloomPass {
 			.rev()
 			.map(|level| {
 				let descriptor_set =
-					device.create_descriptor_set(Some("Bloom Upsample Descriptor Set"), &upsample_descriptor_set_layout);
+					context.create_descriptor_set(Some("Bloom Upsample Descriptor Set"), &upsample_descriptor_set_layout);
 				let low_resolution_source: ghi::BaseImageHandle = if level == level_count - 2 {
 					downsample_images[level + 1].into()
 				} else {
 					upsample_images[level + 1].into()
 				};
-				let _ = device.create_descriptor_binding(
+				let _ = context.create_descriptor_binding(
 					descriptor_set,
 					ghi::BindingConstructor::combined_image_sampler(
 						&UPSAMPLE_LOW_BINDING,
@@ -266,7 +266,7 @@ impl BloomPass {
 						ghi::Layouts::Read,
 					),
 				);
-				let _ = device.create_descriptor_binding(
+				let _ = context.create_descriptor_binding(
 					descriptor_set,
 					ghi::BindingConstructor::combined_image_sampler(
 						&UPSAMPLE_HIGH_BINDING,
@@ -275,11 +275,11 @@ impl BloomPass {
 						ghi::Layouts::Read,
 					),
 				);
-				let _ = device.create_descriptor_binding(
+				let _ = context.create_descriptor_binding(
 					descriptor_set,
 					ghi::BindingConstructor::image(&UPSAMPLE_OUTPUT_BINDING, upsample_images[level]),
 				);
-				let _ = device.create_descriptor_binding(
+				let _ = context.create_descriptor_binding(
 					descriptor_set,
 					ghi::BindingConstructor::buffer(&UPSAMPLE_PARAMETERS_BINDING, parameters.into()),
 				);
@@ -293,8 +293,8 @@ impl BloomPass {
 			upsample_images[0].into()
 		};
 		let composite_descriptor_set =
-			device.create_descriptor_set(Some("Bloom Composite Descriptor Set"), &composite_descriptor_set_layout);
-		let _ = device.create_descriptor_binding(
+			context.create_descriptor_set(Some("Bloom Composite Descriptor Set"), &composite_descriptor_set_layout);
+		let _ = context.create_descriptor_binding(
 			composite_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&COMPOSITE_SCENE_BINDING,
@@ -303,7 +303,7 @@ impl BloomPass {
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			composite_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&COMPOSITE_BLOOM_BINDING,
@@ -312,11 +312,11 @@ impl BloomPass {
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			composite_descriptor_set,
 			ghi::BindingConstructor::image(&COMPOSITE_OUTPUT_BINDING, output),
 		);
-		let _ = device.create_descriptor_binding(
+		let _ = context.create_descriptor_binding(
 			composite_descriptor_set,
 			ghi::BindingConstructor::buffer(&COMPOSITE_PARAMETERS_BINDING, parameters.into()),
 		);
@@ -426,27 +426,27 @@ fn bloom_extent(extent: Extent, level: usize) -> Extent {
 }
 
 fn create_extract_pipeline(
-	device: &mut ghi::implementation::Device,
+	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader_artifact = glsl::compile(BLOOM_EXTRACT_SHADER, "Bloom Extract Shader")
-		.expect("Failed to compile bloom extract shader. The most likely cause is invalid GLSL in the bloom extract stage.");
-	let shader = device
-		.create_shader(
-			Some("Bloom Extract Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				EXTRACT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				EXTRACT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				EXTRACT_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		context,
+		shader_storage,
+		&bloom_shader_descriptor(
+			"byte-engine/rendering/bloom/extract",
+			"Bloom Extract Shader",
+			BLOOM_EXTRACT_SHADER,
+			vec![
+				material::Binding::new(0, 0, true, false),
+				material::Binding::new(0, 1, false, true),
+				material::Binding::new(0, 2, true, false),
 			],
-		)
-		.expect(
-			"Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.",
-		);
+		),
+	)
+	.expect("Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.");
 
-	device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+	context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 		&[descriptor_set_layout],
 		&[],
 		ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
@@ -454,26 +454,29 @@ fn create_extract_pipeline(
 }
 
 fn create_downsample_pipeline(
-	device: &mut ghi::implementation::Device,
+	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader_artifact = glsl::compile(BLOOM_DOWNSAMPLE_SHADER, "Bloom Downsample Shader").expect(
-		"Failed to compile bloom downsample shader. The most likely cause is invalid GLSL in the bloom downsample stage.",
-	);
-	let shader = device
-		.create_shader(
-			Some("Bloom Downsample Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				EXTRACT_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				EXTRACT_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				EXTRACT_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		context,
+		shader_storage,
+		&bloom_shader_descriptor(
+			"byte-engine/rendering/bloom/downsample",
+			"Bloom Downsample Shader",
+			BLOOM_DOWNSAMPLE_SHADER,
+			vec![
+				material::Binding::new(0, 0, true, false),
+				material::Binding::new(0, 1, false, true),
+				material::Binding::new(0, 2, true, false),
 			],
-		)
-		.expect("Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.");
+		),
+	)
+	.expect(
+		"Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
+	);
 
-	device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+	context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 		&[descriptor_set_layout],
 		&[],
 		ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
@@ -481,28 +484,30 @@ fn create_downsample_pipeline(
 }
 
 fn create_upsample_pipeline(
-	device: &mut ghi::implementation::Device,
+	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader_artifact = glsl::compile(BLOOM_UPSAMPLE_SHADER, "Bloom Upsample Shader")
-		.expect("Failed to compile bloom upsample shader. The most likely cause is invalid GLSL in the bloom upsample stage.");
-	let shader = device
-		.create_shader(
-			Some("Bloom Upsample Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				UPSAMPLE_LOW_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				UPSAMPLE_HIGH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				UPSAMPLE_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				UPSAMPLE_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		context,
+		shader_storage,
+		&bloom_shader_descriptor(
+			"byte-engine/rendering/bloom/upsample",
+			"Bloom Upsample Shader",
+			BLOOM_UPSAMPLE_SHADER,
+			vec![
+				material::Binding::new(0, 0, true, false),
+				material::Binding::new(0, 1, true, false),
+				material::Binding::new(0, 2, false, true),
+				material::Binding::new(0, 3, true, false),
 			],
-		)
-		.expect(
-			"Failed to create bloom upsample shader. The most likely cause is an incompatible bloom upsample shader interface.",
-		);
+		),
+	)
+	.expect(
+		"Failed to create bloom upsample shader. The most likely cause is an incompatible bloom upsample shader interface.",
+	);
 
-	device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+	context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 		&[descriptor_set_layout],
 		&[],
 		ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
@@ -510,31 +515,52 @@ fn create_upsample_pipeline(
 }
 
 fn create_composite_pipeline(
-	device: &mut ghi::implementation::Device,
+	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader_artifact = glsl::compile(BLOOM_COMPOSITE_SHADER, "Bloom Composite Shader").expect(
-		"Failed to compile bloom composite shader. The most likely cause is invalid GLSL in the bloom composite stage.",
-	);
-	let shader = device
-		.create_shader(
-			Some("Bloom Composite Shader"),
-			ghi::shader::Sources::SPIRV(shader_artifact.borrow().into()),
-			ghi::ShaderTypes::Compute,
-			[
-				COMPOSITE_SCENE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				COMPOSITE_BLOOM_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				COMPOSITE_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				COMPOSITE_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		context,
+		shader_storage,
+		&bloom_shader_descriptor(
+			"byte-engine/rendering/bloom/composite",
+			"Bloom Composite Shader",
+			BLOOM_COMPOSITE_SHADER,
+			vec![
+				material::Binding::new(0, 0, true, false),
+				material::Binding::new(0, 1, true, false),
+				material::Binding::new(0, 2, false, true),
+				material::Binding::new(0, 3, true, false),
 			],
-		)
-		.expect("Failed to create bloom composite shader. The most likely cause is an incompatible bloom composite shader interface.");
+		),
+	)
+	.expect(
+		"Failed to create bloom composite shader. The most likely cause is an incompatible bloom composite shader interface.",
+	);
 
-	device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+	context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 		&[descriptor_set_layout],
 		&[],
 		ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
 	))
+}
+
+fn bloom_shader_descriptor<'a>(
+	id: &'a str,
+	name: &'a str,
+	source: &'a str,
+	bindings: Vec<material::Binding>,
+) -> crate::rendering::shader_store::ShaderSourceDescriptor<'a> {
+	crate::rendering::shader_store::ShaderSourceDescriptor {
+		id,
+		name,
+		stage: ResourceShaderTypes::Compute,
+		source: ghi::shader::ShaderSource::Glsl(source),
+		interface: material::ShaderInterface {
+			workgroup_size: Some((8, 8, 1)),
+			bindings,
+		},
+	}
 }
 
 const BLOOM_EXTRACT_SHADER: &str = r#"

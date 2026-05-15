@@ -3,7 +3,6 @@ use utils::Extent;
 
 use super::{command_buffer::CommandBufferRecording, device::Device};
 use crate::{
-	device::Device as _,
 	graphics_hardware_interface,
 	vulkan::{BufferCopy, BufferHandle, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
 	FrameKey, HandleLike as _, MasterHandle as _,
@@ -35,12 +34,10 @@ impl<'a> Frame<'a> {
 	pub(crate) fn execute_submission(
 		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-		states: utils::hash::HashMap<crate::PrivateHandles, super::TransitionState>,
+		states: utils::hash::HashMap<super::Handles, super::TransitionState>,
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	) {
-		self.device.handle_swapchain_proxies(present_keys);
-
 		let command_buffer =
 			self.device.command_buffers[command_buffer_handle.0 as usize].frames[self.frame_key.sequence_index as usize];
 
@@ -82,7 +79,7 @@ impl<'a> Frame<'a> {
 				let swapchain = self.get_swapchain(present_key.swapchain);
 				let presentable_image_handle = self.get_presentable_swapchain_image_handle(*present_key);
 				let wait_stage = states
-					.get(&crate::PrivateHandles::Image(presentable_image_handle))
+					.get(&super::Handles::Image(presentable_image_handle))
 					.map(|state| state.stage)
 					.unwrap_or(vk::PipelineStageFlags2::ALL_COMMANDS);
 
@@ -435,7 +432,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 }
 
-impl<'a> crate::device::DeviceCreate for Frame<'a> {
+impl<'a> crate::context::ContextCreate for Frame<'a> {
 	fn add_mesh_from_vertices_and_indices(
 		&mut self,
 		vertex_count: u32,
@@ -513,11 +510,6 @@ impl<'a> crate::device::DeviceCreate for Frame<'a> {
 		self.device.create_ray_tracing_pipeline(builder)
 	}
 
-	#[cfg(any())]
-	fn create_command_buffer(&mut self, name: Option<&str>, queue_handle: crate::QueueHandle) -> crate::CommandBufferHandle {
-		self.device.create_command_buffer(name, queue_handle)
-	}
-
 	fn create_descriptor_binding(
 		&mut self,
 		descriptor_set: crate::DescriptorSetHandle,
@@ -565,6 +557,23 @@ impl<'a> Frame<'a> {
 	) -> graphics_hardware_interface::PipelineHandle {
 		panic!(
 			"Vulkan async pipeline interning is unavailable. The most likely cause is that the Vulkan backend does not implement the pipeline factory path yet."
+		);
+	}
+
+	/// Rejects factory-built image interning because the Vulkan backend does not implement this path yet.
+	pub fn intern_image(&mut self, _image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+		panic!(
+			"Vulkan async image interning is unavailable. The most likely cause is that the Vulkan backend does not implement the factory image path yet."
+		);
+	}
+
+	/// Rejects factory-built sampler interning because the Vulkan backend does not implement this path yet.
+	pub fn intern_sampler(
+		&mut self,
+		_sampler: crate::implementation::FactorySampler,
+	) -> graphics_hardware_interface::SamplerHandle {
+		panic!(
+			"Vulkan async sampler interning is unavailable. The most likely cause is that the Vulkan backend does not implement the factory sampler path yet."
 		);
 	}
 

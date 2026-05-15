@@ -1,7 +1,7 @@
 use super::{asset_manager::AssetManager, ResourceId};
 use crate::{asset, r#async::BoxedFuture, resource, ProcessedAsset};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum LoadErrors {
 	AssetDoesNotExist,
 	FailedToProcess,

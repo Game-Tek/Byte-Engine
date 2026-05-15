@@ -325,6 +325,13 @@ impl DescriptorWrite {
 	}
 }
 
+/// The `StoredQueue` struct stores per-queue device data for internal GPU queue management.
+pub(super) struct StoredQueue {
+	pub(crate) vk_queue: vk::Queue,
+	pub(crate) queue_family_index: u32,
+	pub(crate) _queue_index: u32,
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

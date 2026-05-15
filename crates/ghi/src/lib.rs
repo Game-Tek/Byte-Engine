@@ -209,6 +209,12 @@ pub(crate) enum PrivateHandles {
 	Buffer(buffer::BufferHandle),
 	Synchronizer(synchronizer::SynchronizerHandle),
 	Swapchain(swapchain::SwapchainHandle),
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	VkBuffer(ash::vk::Buffer),
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	TopLevelAccelerationStructure(vulkan::TopLevelAccelerationStructureHandle),
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	BottomLevelAccelerationStructure(vulkan::BottomLevelAccelerationStructureHandle),
 }
 
 pub(crate) trait HandleLike

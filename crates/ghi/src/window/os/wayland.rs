@@ -29,7 +29,7 @@ use wayland_protocols::{
 use xkbcommon::xkb::{self, keysyms};
 
 use crate::{
-	os::WindowLike,
+	os::{Features, WindowLike},
 	window::{
 		input::{Keys, MouseKeys},
 		Events, Seat,
@@ -66,7 +66,7 @@ enum Requests {
 }
 
 impl WindowLike for Window {
-	fn try_new(name: &str, extent: Extent, id_name: &str) -> Result<Self, String> {
+	fn try_new(name: &str, extent: Extent, id_name: &str, _features: Features) -> Result<Self, String> {
 		let conn = wayland_client::Connection::connect_to_env().map_err(|e| e.to_string())?;
 
 		let mut configuration_event_queue: wayland_client::EventQueue<Configuration> = conn.new_event_queue();
@@ -1172,6 +1172,7 @@ mod tests {
 				"My Test Wayland Window",
 				Extent::rectangle(1920, 1080),
 				"my_test_wayland_window.byte_engine",
+				Features::default(),
 			);
 		}
 	}

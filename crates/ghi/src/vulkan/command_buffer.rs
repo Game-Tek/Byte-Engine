@@ -41,6 +41,19 @@ pub struct CommandBufferRecording<'a> {
 	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
 }
 
+pub struct VulkanCommandBuffer<'a> {
+	pub(crate) device: &'a mut Device,
+	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+}
+
+impl crate::command_buffer::CommandBuffer for VulkanCommandBuffer<'_> {
+	fn create_command_buffer_recording(
+		&mut self,
+	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
+		crate::vulkan::device::Device::create_command_buffer_recording(self.device, self.command_buffer_handle)
+	}
+}
+
 impl CommandBufferRecording<'_> {
 	pub fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
@@ -523,7 +536,9 @@ impl CommandBufferRecording<'_> {
 
 	fn get_internal_handle(&self, handle: graphics_hardware_interface::Handles) -> Handles {
 		match handle {
-			graphics_hardware_interface::Handles::Image(handle) => Handles::Image(self.get_internal_image_handle(handle)),
+			graphics_hardware_interface::Handles::Image(handle) => {
+				Handles::Image(self.get_internal_image_handle(handle.into()))
+			}
 			graphics_hardware_interface::Handles::Buffer(handle) => Handles::Buffer(self.get_internal_buffer_handle(handle)),
 			graphics_hardware_interface::Handles::TopLevelAccelerationStructure(handle) => {
 				Handles::TopLevelAccelerationStructure(self.get_internal_top_level_acceleration_structure_handle(handle))

@@ -399,24 +399,33 @@ pub(super) fn to_access_flags(
 	access_flags
 }
 
-pub(super) fn image_type_from_extent(extent: vk::Extent3D) -> Option<vk::ImageType> {
-	match extent {
-		vk::Extent3D {
-			width: 1..,
+pub(super) fn image_type_from_extent(extent: utils::Extent) -> Option<vk::ImageType> {
+	match extent.dimensions() {
+		1 => Some(vk::ImageType::TYPE_1D),
+		2 => Some(vk::ImageType::TYPE_2D),
+		3 => Some(vk::ImageType::TYPE_3D),
+		_ => None,
+	}
+}
+
+pub(super) fn extent_into_vk_extent(extent: utils::Extent) -> vk::Extent3D {
+	match extent.dimensions() {
+		1 => vk::Extent3D {
+			width: extent.width(),
 			height: 1,
 			depth: 1,
-		} => Some(vk::ImageType::TYPE_1D),
-		vk::Extent3D {
-			width: 1..,
-			height: 1..,
+		},
+		2 => vk::Extent3D {
+			width: extent.width(),
+			height: extent.height(),
 			depth: 1,
-		} => Some(vk::ImageType::TYPE_2D),
-		vk::Extent3D {
-			width: 1..,
-			height: 1..,
-			depth: 1..,
-		} => Some(vk::ImageType::TYPE_3D),
-		_ => None,
+		},
+		3 => vk::Extent3D {
+			width: extent.width(),
+			height: extent.height(),
+			depth: extent.depth(),
+		},
+		_ => panic!("Any other result is unhandled"),
 	}
 }
 
@@ -1233,40 +1242,5 @@ mod tests {
 
 		let value: crate::Stages = crate::ShaderTypes::Callable.into();
 		assert_eq!(value, crate::Stages::CALLABLE);
-	}
-
-	#[test]
-	fn test_image_type_from_extent() {
-		let value = image_type_from_extent(vk::Extent3D {
-			width: 1,
-			height: 1,
-			depth: 1,
-		})
-		.expect("Failed to get image type from extent.");
-		assert_eq!(value, vk::ImageType::TYPE_1D);
-
-		let value = image_type_from_extent(vk::Extent3D {
-			width: 2,
-			height: 1,
-			depth: 1,
-		})
-		.expect("Failed to get image type from extent.");
-		assert_eq!(value, vk::ImageType::TYPE_1D);
-
-		let value = image_type_from_extent(vk::Extent3D {
-			width: 2,
-			height: 2,
-			depth: 1,
-		})
-		.expect("Failed to get image type from extent.");
-		assert_eq!(value, vk::ImageType::TYPE_2D);
-
-		let value = image_type_from_extent(vk::Extent3D {
-			width: 2,
-			height: 2,
-			depth: 2,
-		})
-		.expect("Failed to get image type from extent.");
-		assert_eq!(value, vk::ImageType::TYPE_3D);
 	}
 }

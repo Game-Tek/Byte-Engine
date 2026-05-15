@@ -60,10 +60,10 @@ pub(super) enum Descriptor {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct TopLevelAccelerationStructureHandle(pub(super) u64);
+pub(crate) struct TopLevelAccelerationStructureHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
+pub(crate) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Handles {
@@ -323,6 +323,13 @@ impl DescriptorWrite {
 		self.array_element = index;
 		self
 	}
+}
+
+/// The `StoredQueue` struct stores per-queue device data for internal GPU queue management.
+pub(super) struct StoredQueue {
+	pub(crate) vk_queue: vk::Queue,
+	pub(crate) queue_family_index: u32,
+	pub(crate) _queue_index: u32,
 }
 
 #[cfg(test)]

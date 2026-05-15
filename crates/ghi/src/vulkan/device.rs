@@ -17,6 +17,7 @@ use super::{
 	DescriptorSet, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
 	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
 };
+use crate::vulkan::utils::extent_into_vk_extent;
 use crate::PrivateHandles as Handles;
 use crate::{
 	binding::DescriptorSetBindingHandle,
@@ -1130,7 +1131,7 @@ impl Device {
 	fn create_vulkan_texture(
 		&self,
 		name: Option<&str>,
-		extent: vk::Extent3D,
+		extent: Extent,
 		format: crate::Formats,
 		resource_uses: crate::Uses,
 		mip_levels: u32,
@@ -1139,7 +1140,7 @@ impl Device {
 		let image_create_info = vk::ImageCreateInfo::default()
 			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
 			.format(to_format(format))
-			.extent(extent)
+			.extent(extent_into_vk_extent(extent))
 			.mip_levels(mip_levels)
 			.array_layers(array_layers.map(|e| e.get()).unwrap_or(1))
 			.samples(vk::SampleCountFlags::TYPE_1)
@@ -1849,12 +1850,6 @@ impl Device {
 			};
 		}
 
-		let vk_extent = vk::Extent3D {
-			width: extent.width(),
-			height: extent.height(),
-			depth: extent.depth(),
-		};
-
 		let transfer_uses = (if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
 			crate::Uses::TransferSource
 		} else {
@@ -1866,7 +1861,7 @@ impl Device {
 		});
 
 		let texture_creation_result =
-			self.create_vulkan_texture(name, vk_extent, format, resource_uses | transfer_uses, 1, array_layers);
+			self.create_vulkan_texture(name, extent, format, resource_uses | transfer_uses, 1, array_layers);
 
 		let m_device_accesses = if device_accesses.intersects(crate::DeviceAccesses::HostOnly) {
 			crate::DeviceAccesses::DeviceOnly

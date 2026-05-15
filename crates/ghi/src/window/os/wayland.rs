@@ -1172,6 +1172,7 @@ mod tests {
 				"My Test Wayland Window",
 				Extent::rectangle(1920, 1080),
 				"my_test_wayland_window.byte_engine",
+				Features::default(),
 			);
 		}
 	}

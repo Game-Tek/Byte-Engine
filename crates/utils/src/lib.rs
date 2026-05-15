@@ -88,8 +88,8 @@ impl Extent {
 	pub fn line(width: u32) -> Self {
 		Self {
 			width,
-			height: 1,
-			depth: 1,
+			height: 0,
+			depth: 0,
 		}
 	}
 
@@ -97,12 +97,12 @@ impl Extent {
 		Self {
 			width: size,
 			height: size,
-			depth: 1,
+			depth: 0,
 		}
 	}
 
 	pub fn rectangle(width: u32, height: u32) -> Self {
-		Self { width, height, depth: 1 }
+		Self { width, height, depth: 0 }
 	}
 
 	pub fn cube(width: u32, height: u32, depth: u32) -> Self {
@@ -132,6 +132,27 @@ impl Extent {
 
 	pub fn aspect_ratio(&self) -> f32 {
 		(self.width as f32) / (self.height as f32)
+	}
+
+	pub fn dimensions(&self) -> u32 {
+		match self {
+			Extent {
+				width: 1..,
+				height: 1,
+				depth: 1,
+			} => 1,
+			Extent {
+				width: 1..,
+				height: 1..,
+				depth: 1,
+			} => 2,
+			Extent {
+				width: 1..,
+				height: 1..,
+				depth: 1..,
+			} => 3,
+			_ => 0,
+		}
 	}
 }
 

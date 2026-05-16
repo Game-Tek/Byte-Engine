@@ -1,7 +1,7 @@
 use ash::vk::{self};
 use utils::Extent;
 
-use super::{command_buffer::CommandBufferRecording, device::Device};
+use super::{command_buffer::CommandBufferRecording, context::Context};
 use crate::{
 	graphics_hardware_interface,
 	vulkan::{BufferCopy, BufferHandle, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
@@ -10,12 +10,12 @@ use crate::{
 
 pub struct Frame<'a> {
 	frame_key: FrameKey,
-	device: &'a mut Device,
+	device: &'a mut Context,
 	acquired_swapchains: Vec<crate::PresentKey>,
 }
 
 impl<'a> Frame<'a> {
-	pub fn new(device: &'a mut Device, frame_key: FrameKey) -> Self {
+	pub fn new(device: &'a mut Context, frame_key: FrameKey) -> Self {
 		Self {
 			frame_key,
 			device,
@@ -23,11 +23,11 @@ impl<'a> Frame<'a> {
 		}
 	}
 
-	pub fn device(&self) -> &Device {
+	pub fn device(&self) -> &Context {
 		self.device
 	}
 
-	pub fn device_mut(&mut self) -> &mut Device {
+	pub fn device_mut(&mut self) -> &mut Context {
 		self.device
 	}
 

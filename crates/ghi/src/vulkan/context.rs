@@ -1,6 +1,6 @@
 /// The `Context` struct owns Vulkan device state while presenting the GHI context API.
 pub struct Context {
-	pub(super) device: ash::Device,
+	pub(super) device: InnerDevice,
 
 	pub(super) frames: u8,
 
@@ -61,10 +61,19 @@ pub struct Context {
 
 impl Context {
 	pub(super) fn new(device: Device) -> Result<Self, &'static str> {
+		let mut device = device.inner;
+		let memory_properties = device.memory_properties;
+		let queues = std::mem::take(&mut device.queues);
+		let settings = device.settings.clone();
+		let swapchain_native_supports_formatless_storage_write = device.swapchain_native_supports_formatless_storage_write;
+		let swapchain_proxy_supports_formatless_storage_write = device.swapchain_proxy_supports_formatless_storage_write;
+
 		Ok(Context {
+			device,
+
 			memory_properties,
 
-			frames, // Assuming double buffering
+			frames: 2, // Assuming double buffering
 
 			queues,
 			allocations: Vec::new(),
@@ -89,6 +98,8 @@ impl Context {
 			descriptors: HashMap::with_capacity(4096),
 			descriptor_set_to_resource: HashMap::with_capacity(4096),
 
+			settings,
+
 			states: HashMap::with_capacity(4096),
 
 			pending_buffer_syncs: HashSet::with_capacity(128),
@@ -107,12 +118,12 @@ impl Context {
 
 	/// Returns no detached-resource factory because the Vulkan backend does not implement this path yet.
 	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
-		self.device.create_factory()
+		None
 	}
 
 	/// Returns no detached pipeline factory for compatibility with the previous pipeline factory API.
 	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::Factory> {
-		self.device.create_pipeline_factory()
+		None
 	}
 
 	pub(crate) fn create_command_buffer(
@@ -424,6 +435,7 @@ impl Context {
 
 		let address = unsafe {
 			self.device
+				.device
 				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
 		};
 
@@ -499,104 +511,20 @@ impl Context {
 		fallback_extent: Extent,
 		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
-		let vk_surface = self.create_vulkan_surface(window_os_handles);
-
-		let vk_present_mode = match presentation_mode {
-			graphics_hardware_interface::PresentationModes::FIFO => vk::PresentModeKHR::FIFO,
-			graphics_hardware_interface::PresentationModes::Inmediate => vk::PresentModeKHR::IMMEDIATE,
-			graphics_hardware_interface::PresentationModes::Mailbox => vk::PresentModeKHR::MAILBOX,
-		};
-
-		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(vk_present_mode);
-
-		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
-			.push_next(&mut vk_surface_present_mode)
-			.surface(vk_surface);
-
-		let mut vk_presentation_modes = [vk::PresentModeKHR::default(); 8];
-
-		let mut vk_surface_present_mode_compatibility =
-			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_presentation_modes);
-
-		let mut vk_surface_capabilities =
-			vk::SurfaceCapabilities2KHR::default().push_next(&mut vk_surface_present_mode_compatibility);
-
-		unsafe {
-			self.surface_capabilities
-				.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities)
-				.expect("No surface capabilities")
-		};
-
-		let vk_surface_capabilities = vk_surface_capabilities.surface_capabilities;
-
-		let min_image_count = vk_surface_capabilities.min_image_count;
-		let max_image_count = vk_surface_capabilities.max_image_count;
-
-		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX
-			&& vk_surface_capabilities.current_extent.height != u32::MAX
-		{
-			vk_surface_capabilities.current_extent
-		} else {
-			vk::Extent2D::default()
-				.width(fallback_extent.width())
-				.height(fallback_extent.height())
-		};
-
-		let presentation_modes = [vk_present_mode];
-
-		let mut present_modes_create_info =
-			vk::SwapchainPresentModesCreateInfoEXT::default().present_modes(&presentation_modes);
-
-		let requested_image_count = if max_image_count != 0 {
-			max_image_count.max(min_image_count)
-		} else {
-			(min_image_count * 2).min(MAX_SWAPCHAIN_IMAGES as u32)
-		};
-
-		let format = crate::Formats::BGRAsRGB;
-		let proxy_format = crate::Formats::BGRAu8;
-
-		let requested_image_usage = into_vk_image_usage_flags(uses, format);
-		let supported_image_usage = vk_surface_capabilities.supported_usage_flags;
-		let uses_proxy_images = self.swapchain_needs_proxy(supported_image_usage, requested_image_usage, uses);
-
-		let native_image_usage = if uses_proxy_images {
-			self.validate_swapchain_proxy_format(uses);
-
-			let fallback_usage = vk::ImageUsageFlags::TRANSFER_DST;
-
-			if !supported_image_usage.contains(fallback_usage) {
-				panic!(
-					"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
-				);
-			}
-
-			fallback_usage
-		} else {
-			requested_image_usage
-		};
-
-		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-			.push_next(&mut present_modes_create_info)
-			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
-			.surface(vk_surface)
-			.min_image_count(requested_image_count)
-			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
-			.image_format(vk::Format::B8G8R8A8_SRGB)
-			.image_extent(extent)
-			.image_usage(native_image_usage)
-			.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-			.pre_transform(vk_surface_capabilities.current_transform)
-			.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-			.present_mode(vk_present_mode)
-			.image_array_layers(1)
-			.clipped(true);
-
-		let vk_swapchain = unsafe {
-			self.swapchain
-				.create_swapchain(&swapchain_create_info, None)
-				.expect("No swapchain")
-		};
+		let (
+			vk_surface,
+			vk_present_mode,
+			min_image_count,
+			extent,
+			format,
+			proxy_format,
+			supported_image_usage,
+			uses_proxy_images,
+			native_image_usage,
+			vk_swapchain,
+		) = self
+			.device
+			.build_swapchain(window_os_handles, presentation_mode, fallback_extent, uses);
 
 		let swapchain_handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
 
@@ -608,7 +536,8 @@ impl Context {
 		}
 
 		let vk_images = unsafe {
-			self.swapchain
+			self.device
+				.swapchain
 				.get_swapchain_images(vk_swapchain)
 				.expect("No swapchain images found.")
 		};
@@ -789,6 +718,7 @@ impl Context {
 		loop {
 			match unsafe {
 				self.device
+					.device
 					.wait_for_fences(&[synchronizer.fence], true, per_cycle_wait_ms * 1000000)
 			} {
 				Ok(_) => break,
@@ -807,7 +737,10 @@ impl Context {
 		}
 
 		unsafe {
-			self.device.reset_fences(&[synchronizer.fence]).expect("No fence reset");
+			self.device
+				.device
+				.reset_fences(&[synchronizer.fence])
+				.expect("No fence reset");
 		}
 
 		let frame_key = FrameKey {
@@ -820,23 +753,6 @@ impl Context {
 		self.process_tasks(frame_key.sequence_index);
 
 		crate::queue::StartedFrame::new(Frame::new(self, frame_key), completed_frame)
-	}
-
-	fn format_supports_formatless_storage_write(
-		vk_instance: &ash::Instance,
-		physical_device: vk::PhysicalDevice,
-		format: vk::Format,
-	) -> bool {
-		let mut format_properties_3 = vk::FormatProperties3::default();
-		let mut format_properties_2 = vk::FormatProperties2::default().push_next(&mut format_properties_3);
-
-		unsafe {
-			vk_instance.get_physical_device_format_properties2(physical_device, format, &mut format_properties_2);
-		}
-
-		format_properties_3
-			.optimal_tiling_features
-			.contains(vk::FormatFeatureFlags2::STORAGE_IMAGE | vk::FormatFeatureFlags2::STORAGE_WRITE_WITHOUT_FORMAT)
 	}
 
 	fn swapchain_needs_proxy(
@@ -1569,10 +1485,10 @@ impl Context {
 				offset: 0,
 				size: texture.size,
 				row_pitch: texture.extent.width() as usize * texture.format_.size(),
-				array_pitch: texture.extent.width() as usize * texture.extent.height() as usize * texture.format_.size(),
+				array_pitch: texture.extent.width() as usize * texture.extent.height().max(1) as usize * texture.format_.size(),
 				depth_pitch: texture.extent.width() as usize
-					* texture.extent.height() as usize
-					* texture.extent.depth() as usize
+					* texture.extent.height().max(1) as usize
+					* texture.extent.depth().max(1) as usize
 					* texture.format_.size(),
 			}
 		} else {
@@ -1800,100 +1716,6 @@ impl Context {
 		self.images.push(root_image);
 
 		root_handle
-	}
-
-	fn create_vulkan_surface(&self, window_os_handles: &window::Handles) -> vk::SurfaceKHR {
-		let surface = {
-			#[cfg(target_os = "linux")]
-			{
-				let wayland_surface_create_info = vk::WaylandSurfaceCreateInfoKHR::default()
-					.display(window_os_handles.display)
-					.surface(window_os_handles.surface);
-
-				unsafe {
-					self.wayland_surface
-						.create_wayland_surface(&wayland_surface_create_info, None)
-						.expect("No surface")
-				}
-			}
-			#[cfg(target_os = "windows")]
-			{
-				let win32_surface_create_info = vk::Win32SurfaceCreateInfoKHR::default()
-					.hinstance(window_os_handles.hinstance.0 as isize)
-					.hwnd(window_os_handles.hwnd.0 as isize);
-
-				unsafe {
-					self.win32_surface
-						.create_win32_surface(&win32_surface_create_info, None)
-						.expect("No surface")
-				}
-			}
-			#[cfg(target_os = "macos")]
-			{
-				let metal_layer = objc2_quartz_core::CAMetalLayer::new();
-
-				let view = &window_os_handles.view;
-				let logical_size = view.frame().size;
-				let drawable_size = view.convertSizeToBacking(logical_size);
-				let scale_factor = if logical_size.width > 0.0 {
-					(drawable_size.width / logical_size.width).max(1.0)
-				} else if logical_size.height > 0.0 {
-					(drawable_size.height / logical_size.height).max(1.0)
-				} else {
-					1.0
-				};
-
-				view.setWantsLayer(true);
-				view.setLayer(Some(&metal_layer));
-				metal_layer.setContentsScale(scale_factor);
-				metal_layer.setDrawableSize(drawable_size);
-
-				let macos_surface_create_info =
-					vk::MetalSurfaceCreateInfoEXT::default().layer(objc2::rc::Retained::as_ptr(&metal_layer) as _);
-
-				unsafe {
-					self.macos_surface
-						.create_metal_surface(&macos_surface_create_info, None)
-						.expect("No surface")
-				}
-			}
-		};
-
-		let surface_capabilities = unsafe {
-			self.surface
-				.get_physical_device_surface_capabilities(self.physical_device, surface)
-				.expect("No surface capabilities")
-		};
-
-		let surface_format = unsafe {
-			self.surface
-				.get_physical_device_surface_formats(self.physical_device, surface)
-				.expect("No surface formats")
-		};
-
-		let _: vk::SurfaceFormatKHR = surface_format
-			.iter()
-			.find(|format| {
-				format.format == vk::Format::B8G8R8A8_SRGB && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
-			})
-			.expect("No surface format")
-			.to_owned();
-
-		let surface_present_modes = unsafe {
-			self.surface
-				.get_physical_device_surface_present_modes(self.physical_device, surface)
-				.expect("No surface present modes")
-		};
-
-		let _: vk::PresentModeKHR = surface_present_modes
-			.iter()
-			.find(|present_mode| **present_mode == vk::PresentModeKHR::FIFO)
-			.expect("No surface present mode")
-			.to_owned();
-
-		let _surface_resolution = surface_capabilities.current_extent;
-
-		surface
 	}
 
 	/// Allocates memory from the device.
@@ -2180,9 +2002,9 @@ impl Context {
 		extent: Extent,
 		resource_uses: crate::Uses,
 	) -> Image {
-		let size = extent.width() as usize * extent.height() as usize * extent.depth() as usize * format.size();
+		let size = extent.width() as usize * extent.height().max(1) as usize * extent.depth().max(1) as usize * format.size();
 
-		if size == 0 {
+		if extent.width() == 0 {
 			return Image {
 				next,
 				size: 0,
@@ -2214,7 +2036,9 @@ impl Context {
 		let texture_creation_result =
 			self.create_vulkan_texture(name, extent, format, resource_uses | transfer_uses, 1, array_layers);
 
-		let m_device_accesses = if device_accesses.intersects(crate::DeviceAccesses::HostOnly) {
+		let uses_cpu_staging = device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
+
+		let m_device_accesses = if uses_cpu_staging {
 			crate::DeviceAccesses::DeviceOnly
 		} else {
 			device_accesses
@@ -2228,7 +2052,7 @@ impl Context {
 
 		let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
 
-		let (staging_buffer, pointer) = if device_accesses.intersects(crate::DeviceAccesses::HostOnly) {
+		let (staging_buffer, pointer) = if uses_cpu_staging {
 			let vk_buffer_usage_flags = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
 				vk::BufferUsageFlags::TRANSFER_DST
 			} else {
@@ -2850,14 +2674,41 @@ impl Context {
 	}
 }
 
+impl std::ops::Deref for Context {
+	type Target = InnerDevice;
+
+	fn deref(&self) -> &Self::Target {
+		&self.device
+	}
+}
+
+impl std::ops::DerefMut for Context {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.device
+	}
+}
+
+impl crate::device::Device for Context {
+	type Context = Self;
+
+	#[cfg(debug_assertions)]
+	fn has_errors(&self) -> bool {
+		self.device.has_errors()
+	}
+
+	fn create_context(self) -> Result<Self::Context, &'static str> {
+		Ok(self)
+	}
+}
+
 impl crate::context::Context for Context {
-	type Queue = <Device as crate::context::Context>::Queue;
+	type Queue = crate::vulkan::queue::Queue;
 	type QueueReference<'a>
-		= <Device as crate::context::Context>::QueueReference<'a>
+		= crate::vulkan::queue::QueueReference<'a>
 	where
 		Self: 'a;
 	type CommandBuffer<'a>
-		= <Device as crate::context::Context>::CommandBuffer<'a>
+		= crate::vulkan::command_buffer::CommandBufferReference<'a>
 	where
 		Self: 'a;
 
@@ -2872,6 +2723,23 @@ impl crate::context::Context for Context {
 			vk_queue,
 			queue_family_index,
 			_queue_index: queue_index,
+		}
+	}
+
+	fn queue_reference<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::QueueReference<'a> {
+		crate::vulkan::queue::QueueReference {
+			device: self,
+			queue_handle,
+		}
+	}
+
+	fn command_buffer<'a>(
+		&'a mut self,
+		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+	) -> Self::CommandBuffer<'a> {
+		crate::vulkan::command_buffer::CommandBufferReference {
+			device: self,
+			command_buffer_handle,
 		}
 	}
 
@@ -3006,55 +2874,37 @@ impl crate::context::Context for Context {
 
 		self.frames = target_frames;
 	}
-	fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue {
-		crate::context::Context::queue(&mut self.device, queue_handle)
-	}
-
-	fn queue_reference<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::QueueReference<'a> {
-		crate::context::Context::queue_reference(&mut self.device, queue_handle)
-	}
-
-	fn command_buffer<'a>(
-		&'a mut self,
-		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	) -> Self::CommandBuffer<'a> {
-		crate::context::Context::command_buffer(&mut self.device, command_buffer_handle)
-	}
-
-	fn set_frames_in_flight(&mut self, frames: u8) {
-		crate::context::Context::set_frames_in_flight(&mut self.device, frames);
-	}
 
 	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
-		crate::context::Context::get_buffer_address(&self.device, buffer_handle)
+		self.get_buffer_address(buffer_handle)
 	}
 
 	fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
-		crate::context::Context::get_buffer_slice(&mut self.device, buffer_handle)
+		self.get_buffer_slice(buffer_handle)
 	}
 
 	fn get_mut_buffer_slice<T: Copy>(&self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &'static mut T {
-		crate::context::Context::get_mut_buffer_slice(&self.device, buffer_handle)
+		self.get_mut_buffer_slice(buffer_handle)
 	}
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		crate::context::Context::sync_buffer(&mut self.device, buffer_handle);
+		self.sync_buffer(buffer_handle);
 	}
 
 	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::ImageHandle) -> &'static mut [u8] {
-		crate::context::Context::get_texture_slice_mut(&self.device, texture_handle)
+		self.get_texture_slice_mut(texture_handle)
 	}
 
 	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {
-		crate::context::Context::sync_texture(&mut self.device, image_handle);
+		self.sync_texture(image_handle);
 	}
 
 	fn write_texture(&mut self, texture_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		crate::context::Context::write_texture(&mut self.device, texture_handle, f);
+		self.write_texture(texture_handle, f);
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
-		crate::context::Context::write(&mut self.device, descriptor_set_writes);
+		self.write(descriptor_set_writes);
 	}
 
 	fn write_instance(
@@ -3067,8 +2917,7 @@ impl crate::context::Context for Context {
 		sbt_record_offset: usize,
 		acceleration_structure: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
 	) {
-		crate::context::Context::write_instance(
-			&mut self.device,
+		self.write_instance(
 			instances_buffer_handle,
 			instance_index,
 			transform,
@@ -3086,13 +2935,7 @@ impl crate::context::Context for Context {
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 		shader_handle: graphics_hardware_interface::ShaderHandle,
 	) {
-		crate::context::Context::write_sbt_entry(
-			&mut self.device,
-			sbt_buffer_handle,
-			sbt_record_offset,
-			pipeline_handle,
-			shader_handle,
-		);
+		self.write_sbt_entry(sbt_buffer_handle, sbt_record_offset, pipeline_handle, shader_handle);
 	}
 
 	fn bind_to_window(
@@ -3102,27 +2945,27 @@ impl crate::context::Context for Context {
 		fallback_extent: Extent,
 		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
-		crate::context::Context::bind_to_window(&mut self.device, window_os_handles, presentation_mode, fallback_extent, uses)
+		self.bind_to_window(window_os_handles, presentation_mode, fallback_extent, uses)
 	}
 
 	fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {
-		crate::context::Context::get_image_data(&self.device, texture_copy_handle)
+		self.get_image_data(texture_copy_handle)
 	}
 
 	fn resize_buffer<T: Copy>(&mut self, buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>, size: usize) {
-		crate::context::Context::resize_buffer(&mut self.device, buffer_handle, size);
+		self.resize_buffer(buffer_handle, size);
 	}
 
 	fn start_frame_capture(&mut self) {
-		crate::context::Context::start_frame_capture(&mut self.device);
+		self.device.start_frame_capture();
 	}
 
 	fn end_frame_capture(&mut self) {
-		crate::context::Context::end_frame_capture(&mut self.device);
+		self.device.end_frame_capture();
 	}
 
 	fn wait(&self) {
-		crate::context::Context::wait(&self.device);
+		self.device.wait();
 	}
 }
 
@@ -4131,8 +3974,6 @@ impl Drop for Context {
 			self.allocations.iter().for_each(|allocation| {
 				self.device.free_memory(allocation.memory, None);
 			});
-
-			self.device.destroy_device(None);
 		}
 	}
 }
@@ -4165,7 +4006,7 @@ use super::{
 	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
 };
 use crate::vulkan::utils::extent_into_vk_extent;
-use crate::vulkan::{Device, StoredQueue};
+use crate::vulkan::{Device, InnerDevice, StoredQueue};
 use crate::{
 	binding::DescriptorSetBindingHandle,
 	descriptors::DescriptorSetHandle,
@@ -4175,8 +4016,8 @@ use crate::{
 	synchronizer::SynchronizerHandle,
 	utils::StableVec,
 	vulkan::{
-		queue::Queue, BufferCopy, BuildBuffer, CommandBufferRecording, Context, Descriptor, DescriptorWrite, Descriptors,
-		Frame, ImageCopy, ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
+		queue::Queue, BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, DescriptorWrite, Descriptors, Frame,
+		ImageCopy, ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
 	},
 	window, FrameKey, HandleLike, MasterHandle as _, PrivateHandles, ResourceCollection, Size,
 };

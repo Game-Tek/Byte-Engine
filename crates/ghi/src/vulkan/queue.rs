@@ -1,13 +1,13 @@
 use ash::vk;
 use utils::hash::HashMap;
 
-use super::{device::Device, TransitionState};
+use super::{context::Context, TransitionState};
 use crate::frame::Frame as _;
 use crate::vulkan::Frame;
 
 /// The `Queue` struct provides owned access to a Vulkan queue through the GHI queue API.
 pub struct Queue {
-	pub(crate) device: std::ptr::NonNull<Device>,
+	pub(crate) device: std::ptr::NonNull<Context>,
 	pub(crate) queue_handle: crate::QueueHandle,
 	pub(crate) vk_queue: vk::Queue,
 	pub(crate) queue_family_index: u32,
@@ -18,7 +18,7 @@ unsafe impl Send for Queue {}
 
 /// The `QueueReference` struct provides borrowed access to a Vulkan queue while a context remains mutably borrowed.
 pub struct QueueReference<'a> {
-	pub(crate) device: &'a mut Device,
+	pub(crate) device: &'a mut Context,
 	pub(crate) queue_handle: crate::QueueHandle,
 }
 

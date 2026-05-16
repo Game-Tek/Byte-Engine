@@ -336,14 +336,14 @@ pub(super) struct StoredQueue {
 mod tests {
 	use super::*;
 
-	fn create_default_device_setup() -> (Instance, Device, graphics_hardware_interface::QueueHandle) {
+	fn create_default_device_setup() -> (Instance, Context, graphics_hardware_interface::QueueHandle) {
 		let features = crate::device::Features::new().validation(true);
 		create_default_device_setup_with_features(features)
 	}
 
 	fn create_default_device_setup_with_features(
 		features: crate::device::Features,
-	) -> (Instance, Device, graphics_hardware_interface::QueueHandle) {
+	) -> (Instance, Context, graphics_hardware_interface::QueueHandle) {
 		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
 		let mut queue_handle = None;
 		let device = instance
@@ -355,7 +355,8 @@ mod tests {
 				)],
 			)
 			.expect("Failed to create VulkanGHI.");
-		(instance, device, queue_handle.unwrap())
+		let context = crate::device::Device::create_context(device).expect("Failed to create Vulkan context.");
+		(instance, context, queue_handle.unwrap())
 	}
 
 	#[test]

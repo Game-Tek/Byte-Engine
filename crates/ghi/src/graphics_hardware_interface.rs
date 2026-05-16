@@ -225,9 +225,18 @@ impl DispatchExtent {
 	/// The extent for a dispatch operation, which is the result of dividing the dispatch extent by the workgroup extent, rounded up.
 	pub fn get_extent(&self) -> Extent {
 		Extent::new(
-			self.dispatch_extent.width().div_ceil(self.workgroup_extent.width()),
-			self.dispatch_extent.height().div_ceil(self.workgroup_extent.height()),
-			self.dispatch_extent.depth().div_ceil(self.workgroup_extent.depth()),
+			self.dispatch_extent
+				.width()
+				.max(1)
+				.div_ceil(self.workgroup_extent.width().max(1)),
+			self.dispatch_extent
+				.height()
+				.max(1)
+				.div_ceil(self.workgroup_extent.height().max(1)),
+			self.dispatch_extent
+				.depth()
+				.max(1)
+				.div_ceil(self.workgroup_extent.depth().max(1)),
 		)
 	}
 

@@ -400,32 +400,22 @@ pub(super) fn to_access_flags(
 }
 
 pub(super) fn image_type_from_extent(extent: utils::Extent) -> Option<vk::ImageType> {
-	match extent.dimensions() {
-		1 => Some(vk::ImageType::TYPE_1D),
-		2 => Some(vk::ImageType::TYPE_2D),
-		3 => Some(vk::ImageType::TYPE_3D),
-		_ => None,
+	if extent.width() == 0 {
+		None
+	} else if extent.height() == 0 {
+		Some(vk::ImageType::TYPE_1D)
+	} else if extent.depth() == 0 {
+		Some(vk::ImageType::TYPE_2D)
+	} else {
+		Some(vk::ImageType::TYPE_3D)
 	}
 }
 
 pub(super) fn extent_into_vk_extent(extent: utils::Extent) -> vk::Extent3D {
-	match extent.dimensions() {
-		1 => vk::Extent3D {
-			width: extent.width(),
-			height: 1,
-			depth: 1,
-		},
-		2 => vk::Extent3D {
-			width: extent.width(),
-			height: extent.height(),
-			depth: 1,
-		},
-		3 => vk::Extent3D {
-			width: extent.width(),
-			height: extent.height(),
-			depth: extent.depth(),
-		},
-		_ => panic!("Any other result is unhandled"),
+	vk::Extent3D {
+		width: extent.width(),
+		height: extent.height().max(1),
+		depth: extent.depth().max(1),
 	}
 }
 

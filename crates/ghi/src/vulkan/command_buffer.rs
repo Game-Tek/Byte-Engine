@@ -4,18 +4,18 @@ use utils::{hash::HashMap, partition, Extent};
 
 use super::{
 	utils::{
-		texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value, to_load_operation,
-		to_pipeline_stage_flags, to_store_operation,
+		extent_into_vk_extent, texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value,
+		to_load_operation, to_pipeline_stage_flags, to_store_operation,
 	},
 	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption,
-	Descriptor, DescriptorSet, Device, Handles, Image, ImageHandle, Swapchain, Synchronizer,
+	Context, Descriptor, DescriptorSet, Handles, Image, ImageHandle, Swapchain, Synchronizer,
 	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
 use crate::{descriptors::DescriptorSetHandle, graphics_hardware_interface, FrameKey, HandleLike as _, Size};
 
 /// The `CommandBufferReference` struct creates recordings for one Vulkan command buffer through a borrowed context.
 pub struct CommandBufferReference<'a> {
-	pub(crate) device: &'a mut Device,
+	pub(crate) device: &'a mut Context,
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 }
 
@@ -29,7 +29,7 @@ impl crate::command_buffer::CommandBuffer for CommandBufferReference<'_> {
 
 /// The `CommandBufferRecording` struct exists to encode Vulkan commands for one GHI command-buffer recording.
 pub struct CommandBufferRecording<'a> {
-	device: &'a Device,
+	device: &'a Context,
 	command_buffer: graphics_hardware_interface::CommandBufferHandle,
 	frame_key: Option<FrameKey>,
 	sequence_index: u8,
@@ -42,7 +42,7 @@ pub struct CommandBufferRecording<'a> {
 }
 
 pub struct VulkanCommandBuffer<'a> {
-	pub(crate) device: &'a mut Device,
+	pub(crate) device: &'a mut Context,
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 }
 
@@ -50,7 +50,7 @@ impl crate::command_buffer::CommandBuffer for VulkanCommandBuffer<'_> {
 	fn create_command_buffer_recording(
 		&mut self,
 	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
-		crate::vulkan::device::Device::create_command_buffer_recording(self.device, self.command_buffer_handle)
+		Context::create_command_buffer_recording(self.device, self.command_buffer_handle)
 	}
 }
 
@@ -60,7 +60,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub(crate) fn new(
-		device: &'_ Device,
+		device: &'_ Context,
 		command_buffer: graphics_hardware_interface::CommandBufferHandle,
 		frame_key: Option<FrameKey>,
 	) -> CommandBufferRecording<'_> {
@@ -296,7 +296,7 @@ impl CommandBufferRecording<'_> {
 
 	#[must_use]
 	fn vulkan_consume_resources_impl(
-		device: &Device,
+		device: &Context,
 		command_buffer: &CommandBufferRecording,
 		states: &HashMap<Handles, TransitionState>,
 		consumptions: impl IntoIterator<Item = VulkanConsumption>,
@@ -579,13 +579,7 @@ impl CommandBufferRecording<'_> {
 			destination_extent_raw
 		};
 
-		if source_extent.width() == 0
-			|| source_extent.height() == 0
-			|| source_extent.depth() == 0
-			|| destination_extent.width() == 0
-			|| destination_extent.height() == 0
-			|| destination_extent.depth() == 0
-		{
+		if source_extent.width() == 0 || destination_extent.width() == 0 {
 			return;
 		}
 
@@ -629,8 +623,8 @@ impl CommandBufferRecording<'_> {
 				vk::Offset3D::default().x(0).y(0).z(0),
 				vk::Offset3D::default()
 					.x(source_extent.width() as i32)
-					.y(source_extent.height() as i32)
-					.z(source_extent.depth() as i32),
+					.y(source_extent.height().max(1) as i32)
+					.z(source_extent.depth().max(1) as i32),
 			])
 			.dst_subresource(
 				vk::ImageSubresourceLayers::default()
@@ -643,8 +637,8 @@ impl CommandBufferRecording<'_> {
 				vk::Offset3D::default().x(0).y(0).z(0),
 				vk::Offset3D::default()
 					.x(destination_extent.width() as i32)
-					.y(destination_extent.height() as i32)
-					.z(destination_extent.depth() as i32),
+					.y(destination_extent.height().max(1) as i32)
+					.z(destination_extent.depth().max(1) as i32),
 			])];
 
 		let copy_image_info = vk::BlitImageInfo2::default()
@@ -792,12 +786,7 @@ impl CommandBufferRecording<'_> {
 						.layer_count(1),
 				)
 				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-				.image_extent(
-					vk::Extent3D::default()
-						.width(image.extent.width())
-						.height(image.extent.height())
-						.depth(image.extent.depth()),
-				)];
+				.image_extent(extent_into_vk_extent(image.extent))];
 
 			let buffer = image.staging_buffer.unwrap();
 
@@ -873,12 +862,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 							.layer_count(1),
 					)
 					.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-					.image_extent(
-						vk::Extent3D::default()
-							.width(image.extent.width())
-							.height(image.extent.height())
-							.depth(image.extent.depth()),
-					)];
+					.image_extent(extent_into_vk_extent(image.extent))];
 
 				let copy_image_to_buffer_info = vk::CopyImageToBufferInfo2KHR::default()
 					.src_image(image.image)
@@ -1457,12 +1441,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 						.layer_count(destination_image.layers.map(|layers| layers.get()).unwrap_or(1)),
 				)
 				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-				.image_extent(
-					vk::Extent3D::default()
-						.width(destination_image.extent.width())
-						.height(destination_image.extent.height())
-						.depth(destination_image.extent.depth()),
-				)];
+				.image_extent(extent_into_vk_extent(destination_image.extent))];
 
 			let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
 				.src_buffer(source_buffer.buffer)
@@ -1546,8 +1525,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.get_image_subresource_layout(&graphics_hardware_interface::ImageHandle(image_handle), 0);
 
 		if pointer.is_null() {
-			for i in
-				data.len()..texture.extent.width() as usize * texture.extent.height() as usize * texture.extent.depth() as usize
+			for i in data.len()
+				..texture.extent.width() as usize
+					* texture.extent.height().max(1) as usize
+					* texture.extent.depth().max(1) as usize
 			{
 				unsafe {
 					std::ptr::write(pointer.offset(i as isize), if i % 4 == 0 { 255 } else { 0 });
@@ -1581,12 +1562,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 					.layer_count(1),
 			)
 			.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-			.image_extent(
-				vk::Extent3D::default()
-					.width(texture.extent.width())
-					.height(texture.extent.height())
-					.depth(texture.extent.depth()),
-			)];
+			.image_extent(extent_into_vk_extent(texture.extent))];
 
 		// Copy to images from staging buffer
 		let buffer_image_copy = vk::CopyBufferToImageInfo2::default()

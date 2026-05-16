@@ -1,36 +1,3 @@
-use std::cell::Cell;
-use std::collections::VecDeque;
-use std::ffi::c_void;
-use std::fmt::Write as _;
-use std::ptr::NonNull;
-use std::{
-	fs,
-	time::{SystemTime, UNIX_EPOCH},
-};
-
-use ::utils::hash::{HashMap, HashSet};
-use dispatch2::DispatchData;
-use objc2::runtime::AnyObject;
-use objc2::{msg_send, sel, ClassType};
-use objc2_foundation::{NSArray, NSAutoreleasePool, NSRange, NSString};
-use objc2_metal::{
-	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLCommandEncoder,
-	MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource,
-};
-
-use super::*;
-use crate::{
-	binding::DescriptorSetBindingHandle,
-	buffer::{self as buffer_builder, BufferHandle},
-	descriptors::DescriptorSetHandle,
-	image::{self as image_builder, ImageHandle},
-	metal::swapchain::Swapchain,
-	metal::utils::parse_threadgroup_size_metadata,
-	pipelines::raster as raster_pipeline,
-	sampler::{self as sampler_builder, SamplerHandle},
-	window, DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
-};
-
 /// The `Device` struct owns the underlying Metal GPU device object.
 pub struct Device {
 	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
@@ -258,3 +225,13 @@ pub(crate) struct SwapchainDescriptorSource {
 	pub(crate) swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	pub(crate) frame_offset: i32,
 }
+
+use std::fmt::Write as _;
+
+use objc2::runtime::AnyObject;
+use objc2::{msg_send, sel};
+use objc2_foundation::{NSArray, NSString};
+use objc2_metal::{MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLDevice};
+
+use super::*;
+use crate::binding::DescriptorSetBindingHandle;

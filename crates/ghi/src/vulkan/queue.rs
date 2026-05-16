@@ -1,13 +1,13 @@
 use ash::vk;
 use utils::hash::HashMap;
 
-use super::{device::Device, TransitionState};
+use super::{context::Context, BufferTransitionState, Handles, TransitionState};
 use crate::frame::Frame as _;
 use crate::vulkan::Frame;
 
 /// The `Queue` struct provides owned access to a Vulkan queue through the GHI queue API.
 pub struct Queue {
-	pub(crate) device: std::ptr::NonNull<Device>,
+	pub(crate) device: std::ptr::NonNull<Context>, // TODO: remove this
 	pub(crate) queue_handle: crate::QueueHandle,
 	pub(crate) vk_queue: vk::Queue,
 	pub(crate) queue_family_index: u32,
@@ -18,7 +18,7 @@ unsafe impl Send for Queue {}
 
 /// The `QueueReference` struct provides borrowed access to a Vulkan queue while a context remains mutably borrowed.
 pub struct QueueReference<'a> {
-	pub(crate) device: &'a mut Device,
+	pub(crate) device: &'a mut Context,
 	pub(crate) queue_handle: crate::QueueHandle,
 }
 
@@ -26,7 +26,11 @@ pub struct QueueReference<'a> {
 pub struct Execution<'a> {
 	frame: Option<Frame<'a>>,
 	completed_frame: Option<crate::FrameKey>,
-	command_buffers: Vec<(crate::CommandBufferHandle, HashMap<super::Handles, TransitionState>)>,
+	command_buffers: Vec<(
+		crate::CommandBufferHandle,
+		HashMap<Handles, TransitionState>,
+		HashMap<Handles, Vec<BufferTransitionState>>,
+	)>,
 }
 
 impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
@@ -113,9 +117,14 @@ impl crate::queue::Queue for Queue {
 			return;
 		};
 		let last_index = execution.command_buffers.len().saturating_sub(1);
-		for (index, (command_buffer, states)) in execution.command_buffers.into_iter().enumerate() {
+		if execution.command_buffers.is_empty() {
+			frame.complete_without_submissions(synchronizer);
+			return;
+		}
+		for (index, (command_buffer, states, buffer_states)) in execution.command_buffers.into_iter().enumerate() {
 			let present_keys = if index == last_index { present_keys } else { &[] };
-			frame.execute_submission(command_buffer, states, present_keys, synchronizer);
+			let completion_synchronizer = (index == last_index).then_some(synchronizer);
+			frame.execute_submission(command_buffer, states, buffer_states, present_keys, completion_synchronizer);
 		}
 	}
 }
@@ -164,9 +173,14 @@ impl crate::queue::Queue for QueueReference<'_> {
 			return;
 		};
 		let last_index = execution.command_buffers.len().saturating_sub(1);
-		for (index, (command_buffer, states)) in execution.command_buffers.into_iter().enumerate() {
+		if execution.command_buffers.is_empty() {
+			frame.complete_without_submissions(synchronizer);
+			return;
+		}
+		for (index, (command_buffer, states, buffer_states)) in execution.command_buffers.into_iter().enumerate() {
 			let present_keys = if index == last_index { present_keys } else { &[] };
-			frame.execute_submission(command_buffer, states, present_keys, synchronizer);
+			let completion_synchronizer = (index == last_index).then_some(synchronizer);
+			frame.execute_submission(command_buffer, states, buffer_states, present_keys, completion_synchronizer);
 		}
 	}
 }

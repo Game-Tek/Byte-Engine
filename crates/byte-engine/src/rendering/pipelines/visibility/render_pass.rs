@@ -762,9 +762,12 @@ impl GtaoPass {
 		);
 		let packed_ao_map = GTAO_USE_BITFIELD_BINARY_IMPL.then(|| {
 			context.build_dynamic_image(
-				ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::Storage | ghi::Uses::Image)
-					.name("GTAO Packed AO")
-					.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+				ghi::image::Builder::new(
+					ghi::Formats::U32,
+					ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::Image,
+				)
+				.name("GTAO Packed AO")
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 			)
 		});
 		let gtao_output = packed_ao_map.map(|e| e.into()).unwrap_or(ao_map);

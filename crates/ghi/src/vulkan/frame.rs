@@ -1,7 +1,7 @@
 use ash::vk::{self};
 use utils::Extent;
 
-use super::{command_buffer::CommandBufferRecording, device::Device};
+use super::{command_buffer::CommandBufferRecording, context::Context};
 use crate::{
 	graphics_hardware_interface,
 	vulkan::{BufferCopy, BufferHandle, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
@@ -10,12 +10,12 @@ use crate::{
 
 pub struct Frame<'a> {
 	frame_key: FrameKey,
-	device: &'a mut Device,
+	device: &'a mut Context,
 	acquired_swapchains: Vec<crate::PresentKey>,
 }
 
 impl<'a> Frame<'a> {
-	pub fn new(device: &'a mut Device, frame_key: FrameKey) -> Self {
+	pub fn new(device: &'a mut Context, frame_key: FrameKey) -> Self {
 		Self {
 			frame_key,
 			device,
@@ -23,11 +23,11 @@ impl<'a> Frame<'a> {
 		}
 	}
 
-	pub fn device(&self) -> &Device {
+	pub fn device(&self) -> &Context {
 		self.device
 	}
 
-	pub fn device_mut(&mut self) -> &mut Device {
+	pub fn device_mut(&mut self) -> &mut Context {
 		self.device
 	}
 
@@ -35,8 +35,9 @@ impl<'a> Frame<'a> {
 		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		states: utils::hash::HashMap<super::Handles, super::TransitionState>,
+		buffer_states: utils::hash::HashMap<super::Handles, Vec<super::BufferTransitionState>>,
 		present_keys: &[graphics_hardware_interface::PresentKey],
-		synchronizer: graphics_hardware_interface::SynchronizerHandle,
+		synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
 	) {
 		let command_buffer =
 			self.device.command_buffers[command_buffer_handle.0 as usize].frames[self.frame_key.sequence_index as usize];
@@ -98,14 +99,16 @@ impl<'a> Frame<'a> {
 			.wait_semaphore_infos(&wait_semaphores)
 			.signal_semaphore_infos(&signal_semaphores);
 
-		let execution_completion_synchronizer = &self.get_synchronizer(synchronizer);
+		let execution_completion_fence = synchronizer
+			.map(|synchronizer| self.get_synchronizer(synchronizer).fence)
+			.unwrap_or(vk::Fence::null());
 
 		let vk_queue = command_buffer.vk_queue;
 
 		unsafe {
 			self.device
 				.device
-				.queue_submit2(vk_queue, &[submit_info], execution_completion_synchronizer.fence)
+				.queue_submit2(vk_queue, &[submit_info], execution_completion_fence)
 				.expect("Failed to submit command buffer.");
 		}
 
@@ -147,6 +150,22 @@ impl<'a> Frame<'a> {
 
 		for (k, v) in states {
 			self.device.states.insert(k, v);
+		}
+		for (k, v) in buffer_states {
+			self.device.buffer_states.insert(k, v);
+		}
+	}
+
+	pub(crate) fn complete_without_submissions(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
+		let synchronizer = self.get_synchronizer(synchronizer);
+		let queue = self.device.queues[0].vk_queue;
+		let submit_info = vk::SubmitInfo2::default();
+
+		unsafe {
+			self.device
+				.device
+				.queue_submit2(queue, &[submit_info], synchronizer.fence)
+				.expect("Failed to submit empty Vulkan frame. The most likely cause is that the completion fence is invalid.");
 		}
 	}
 

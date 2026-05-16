@@ -197,8 +197,14 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 }
 
 impl ShaderGenerationSettings {
+	fn normalize_local_size(extent: Extent) -> Extent {
+		Extent::new(extent.width().max(1), extent.height().max(1), extent.depth().max(1))
+	}
+
 	pub fn compute(extent: Extent) -> ShaderGenerationSettings {
-		Self::from_stage(Stages::Compute { local_size: extent })
+		Self::from_stage(Stages::Compute {
+			local_size: Self::normalize_local_size(extent),
+		})
 	}
 
 	pub fn task() -> ShaderGenerationSettings {
@@ -209,7 +215,7 @@ impl ShaderGenerationSettings {
 		Self::from_stage(Stages::Mesh {
 			maximum_vertices,
 			maximum_primitives,
-			local_size,
+			local_size: Self::normalize_local_size(local_size),
 		})
 	}
 

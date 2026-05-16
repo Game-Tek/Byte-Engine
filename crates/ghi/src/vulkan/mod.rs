@@ -83,12 +83,33 @@ pub(super) struct Consumption {
 	pub(super) layout: crate::Layouts,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct BufferRange {
+	pub(super) offset: vk::DeviceSize,
+	pub(super) size: vk::DeviceSize,
+}
+
+impl BufferRange {
+	pub(super) fn new(offset: vk::DeviceSize, size: vk::DeviceSize) -> Self {
+		Self { offset, size }
+	}
+
+	pub(super) fn end(self) -> vk::DeviceSize {
+		self.offset.saturating_add(self.size)
+	}
+
+	pub(super) fn overlaps(self, other: Self) -> bool {
+		self.offset < other.end() && other.offset < self.end()
+	}
+}
+
 #[derive(Clone, PartialEq)]
 pub(super) struct VulkanConsumption {
 	pub(super) handle: Handles,
 	pub(super) stages: vk::PipelineStageFlags2,
 	pub(super) access: vk::AccessFlags2,
 	pub(super) layout: vk::ImageLayout,
+	pub(super) range: Option<BufferRange>,
 }
 
 const MAX_FRAMES_IN_FLIGHT: usize = 3;
@@ -157,6 +178,53 @@ pub struct TransitionState {
 	pub stage: vk::PipelineStageFlags2,
 	pub access: vk::AccessFlags2,
 	pub layout: vk::ImageLayout,
+	pub last_write_stage: vk::PipelineStageFlags2,
+	pub last_write_access: vk::AccessFlags2,
+}
+
+impl TransitionState {
+	pub(super) fn new(stage: vk::PipelineStageFlags2, access: vk::AccessFlags2, layout: vk::ImageLayout) -> Self {
+		let (last_write_stage, last_write_access) = if Self::access_includes_write(access) {
+			(stage, access)
+		} else {
+			(vk::PipelineStageFlags2::empty(), vk::AccessFlags2::empty())
+		};
+
+		Self {
+			stage,
+			access,
+			layout,
+			last_write_stage,
+			last_write_access,
+		}
+	}
+
+	pub(super) fn inherit_last_write_from(mut self, source: Self) -> Self {
+		if !Self::access_includes_write(self.access) {
+			self.last_write_stage = source.last_write_stage;
+			self.last_write_access = source.last_write_access;
+		}
+
+		self
+	}
+
+	pub(super) fn access_includes_write(access: vk::AccessFlags2) -> bool {
+		access.intersects(
+			vk::AccessFlags2::MEMORY_WRITE
+				| vk::AccessFlags2::TRANSFER_WRITE
+				| vk::AccessFlags2::SHADER_WRITE
+				| vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+				| vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+				| vk::AccessFlags2::HOST_WRITE
+				| vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+		)
+	}
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(super) struct BufferTransitionState {
+	pub(super) range: BufferRange,
+	pub(super) state: TransitionState,
 }
 
 struct Mesh {
@@ -336,14 +404,14 @@ pub(super) struct StoredQueue {
 mod tests {
 	use super::*;
 
-	fn create_default_device_setup() -> (Instance, Device, graphics_hardware_interface::QueueHandle) {
+	fn create_default_device_setup() -> (Instance, Context, graphics_hardware_interface::QueueHandle) {
 		let features = crate::device::Features::new().validation(true);
 		create_default_device_setup_with_features(features)
 	}
 
 	fn create_default_device_setup_with_features(
 		features: crate::device::Features,
-	) -> (Instance, Device, graphics_hardware_interface::QueueHandle) {
+	) -> (Instance, Context, graphics_hardware_interface::QueueHandle) {
 		let mut instance = Instance::new(features.clone()).expect("Failed to create Vulkan instance.");
 		let mut queue_handle = None;
 		let device = instance
@@ -355,7 +423,8 @@ mod tests {
 				)],
 			)
 			.expect("Failed to create VulkanGHI.");
-		(instance, device, queue_handle.unwrap())
+		let context = crate::device::Device::create_context(device).expect("Failed to create Vulkan context.");
+		(instance, context, queue_handle.unwrap())
 	}
 
 	#[test]

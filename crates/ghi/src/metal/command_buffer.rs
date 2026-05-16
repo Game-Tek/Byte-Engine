@@ -1604,9 +1604,9 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 				depth: threadgroups.depth() as _,
 			},
 			mtl::MTLSize {
-				width: threads_per_threadgroup.width() as _,
-				height: threads_per_threadgroup.height() as _,
-				depth: threads_per_threadgroup.depth() as _,
+				width: threads_per_threadgroup.width().max(1) as _,
+				height: threads_per_threadgroup.height().max(1) as _,
+				depth: threads_per_threadgroup.depth().max(1) as _,
 			},
 		);
 	}
@@ -1638,9 +1638,9 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 					buffer.as_ref(),
 					(entry_index * std::mem::size_of::<[u32; 4]>()) as _,
 					mtl::MTLSize {
-						width: threadgroup_extent.width() as _,
-						height: threadgroup_extent.height() as _,
-						depth: threadgroup_extent.depth() as _,
+						width: threadgroup_extent.width().max(1) as _,
+						height: threadgroup_extent.height().max(1) as _,
+						depth: threadgroup_extent.depth().max(1) as _,
 					},
 				);
 		}

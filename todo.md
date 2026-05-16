@@ -49,3 +49,5 @@
 - Add tests for byte-engine gameplay collider Positionable behavior once Sphere and Cube collider state is implemented.
 - Add coverage for byte-engine network server client entity lifecycle on connect/disconnect.
 - Review and either use or remove dead test helper structs TestTransport and TestSynthesizer in crates/byte-engine/tests/replication.rs and crates/byte-engine/tests/sound.rs.
+- Cleanup vulkan transition code
+- Fix "Warning: -[NSWindow makeKeyWindow] called on <NSWindow: 0xb97cd0280> windowNumber=1ae1 which returned NO from -[NSWindow canBecomeKeyWindow]." on macOS

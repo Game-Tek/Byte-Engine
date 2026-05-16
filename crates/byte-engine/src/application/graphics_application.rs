@@ -519,10 +519,11 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 					let prepared_uploads =
 						resource_worker.prepare_uploads(&mut transfer_recording, upload_buffer.into(), &mut slice);
 
-					if prepared_uploads.recorded_work {
-						transfer_recording.execute(transfer_finished_synchronizer);
-						resource_worker.track_submitted_uploads(frame_key, prepared_uploads.completions);
-					} else {
+					transfer_recording.execute(transfer_finished_synchronizer);
+					resource_worker.track_submitted_uploads(frame_key, prepared_uploads.completions);
+
+					if !prepared_uploads.recorded_work {
+						// TODO: maybe get GHI to track work submissions
 						std::thread::sleep(NO_WORK_SLEEP_DURATION);
 					}
 

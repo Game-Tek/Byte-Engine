@@ -748,8 +748,10 @@ impl GLSLShaderGenerator {
 						string.push_str(",scalar");
 					}
 					besl::BindingTypes::Image { format } => {
-						string.push(',');
-						string.push_str(&format);
+						if format != "unknown" {
+							string.push(',');
+							string.push_str(&format);
+						}
 					}
 					besl::BindingTypes::CombinedImageSampler { .. } => {}
 				}

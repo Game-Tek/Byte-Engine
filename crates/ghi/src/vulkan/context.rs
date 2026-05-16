@@ -34,6 +34,7 @@ pub struct Context {
 	pub settings: crate::device::Features,
 
 	pub(super) states: HashMap<super::Handles, TransitionState>,
+	pub(super) buffer_states: HashMap<super::Handles, Vec<super::BufferTransitionState>>,
 
 	/// Tracks pending buffer host to device, or device to host synchronization operations.
 	pub(super) pending_buffer_syncs: HashSet<BufferHandle>,
@@ -101,6 +102,7 @@ impl Context {
 			settings,
 
 			states: HashMap::with_capacity(4096),
+			buffer_states: HashMap::with_capacity(4096),
 
 			pending_buffer_syncs: HashSet::with_capacity(128),
 			pending_image_syncs: HashSet::with_capacity(128),
@@ -723,13 +725,18 @@ impl Context {
 			} {
 				Ok(_) => break,
 				Err(vk::Result::TIMEOUT) => {
+					let name = self.get_object_debug_name(synchronizer_handle.into());
+
 					if timeout_count * per_cycle_wait_ms >= wait_warning_time_threshold && timeout_count % 500 == 0 {
 						println!(
-							"Stuck waiting for fences for {} ms at frame {index}. There is a potential issue with synchronization.",
+							"Stuck waiting for fence ({}) for {} ms at frame {index}. There is a potential issue with synchronization.",
+							name.as_deref().unwrap_or("unknown"),
 							per_cycle_wait_ms * timeout_count
 						);
 					}
+
 					timeout_count += 1;
+
 					continue;
 				}
 				Err(_) => panic!("Failed to wait for fence"),
@@ -948,14 +955,7 @@ impl Context {
 					}
 				}
 				Tasks::BuildImage(builder) => {
-					#[cfg(debug_assertions)]
-					let name = self
-						.names
-						.get(&graphics_hardware_interface::Handles::Image(builder.master))
-						.map(|e| e.clone());
-
-					#[cfg(not(debug_assertions))]
-					let name: Option<String> = None;
+					let name = self.get_object_debug_name(builder.master.into());
 
 					let previous_image = builder.previous.access(&self.images);
 
@@ -971,14 +971,7 @@ impl Context {
 					);
 				}
 				Tasks::BuildBuffer(builder) => {
-					#[cfg(debug_assertions)]
-					let name = self
-						.names
-						.get(&graphics_hardware_interface::Handles::Buffer(builder.master))
-						.map(|e| e.clone());
-
-					#[cfg(not(debug_assertions))]
-					let name: Option<String> = None;
+					let name = self.get_object_debug_name(builder.master.into());
 
 					let previous_buffer = self.buffers.resource(builder.previous);
 
@@ -2216,6 +2209,13 @@ impl Context {
 	}
 
 	pub(crate) fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
+		let name = self.get_object_debug_name(
+			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
+				image_handle.root(&self.images).0,
+			))
+			.into(),
+		);
+
 		let image = image_handle.access(&self.images);
 
 		if !image.owns_image {
@@ -2246,20 +2246,6 @@ impl Context {
 		self.tasks.push(Task::delete_vulkan_image(image.image, sequence_index));
 
 		// TODO: release memory/allocation
-
-		#[cfg(debug_assertions)]
-		let name = self
-			.names
-			.get(
-				&graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
-					image_handle.root(&self.images).0,
-				))
-				.into(),
-			)
-			.map(|s| s.clone());
-
-		#[cfg(not(debug_assertions))]
-		let name: Option<String> = None;
 
 		let new_image = self.build_image_internal(
 			image.next,
@@ -2671,6 +2657,25 @@ impl Context {
 		let mut writes = SmallVec::<[DescriptorWrite; 8]>::new();
 		self.add_descriptor_writes_for_update_image_descriptors(handle, &mut writes);
 		self.write_internal(writes);
+	}
+
+	#[inline]
+	fn set_object_debug_name(&mut self, name: Option<&str>, handle: graphics_hardware_interface::Handles) {
+		#[cfg(debug_assertions)]
+		if let Some(name) = name {
+			self.names.insert(handle, name.to_string());
+		}
+	}
+
+	#[inline]
+	fn get_object_debug_name(&self, handle: graphics_hardware_interface::Handles) -> Option<String> {
+		#[cfg(debug_assertions)]
+		let name = self.names.get(&handle).map(|e| e.clone());
+
+		#[cfg(not(debug_assertions))]
+		let name: Option<String> = None;
+
+		name
 	}
 }
 
@@ -3517,6 +3522,7 @@ impl crate::context::ContextCreate for Context {
 			builder.extent,
 			builder.resource_uses,
 		);
+
 		let handle =
 			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(root_image_handle.0));
 
@@ -3539,13 +3545,7 @@ impl crate::context::ContextCreate for Context {
 			);
 		}
 
-		#[cfg(debug_assertions)]
-		{
-			if let Some(name) = builder.name {
-				self.names
-					.insert(graphics_hardware_interface::Handles::Image(handle), name.to_string());
-			}
-		}
+		self.set_object_debug_name(builder.name, handle.into());
 
 		handle
 	}
@@ -3894,6 +3894,8 @@ impl crate::context::ContextCreate for Context {
 				previous = Some(synchronizer_handle);
 			}
 		}
+
+		self.set_object_debug_name(name, synchronizer_handle.into());
 
 		synchronizer_handle
 	}

@@ -325,6 +325,7 @@ impl InnerDevice {
 					{
 						queue_create_infos.push(
 							vk::DeviceQueueCreateInfo::default()
+								// .flags(vk::DeviceQueueCreateFlags::from_raw(0x00000004)) // VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR
 								.queue_family_index(queue_family_index)
 								.queue_priorities(&[1.0]),
 						);

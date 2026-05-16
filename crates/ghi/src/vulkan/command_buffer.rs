@@ -7,9 +7,9 @@ use super::{
 		extent_into_vk_extent, texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value,
 		to_load_operation, to_pipeline_stage_flags, to_store_operation,
 	},
-	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, CommandBufferInternal, Consumption,
-	Context, Descriptor, DescriptorSet, Handles, Image, ImageHandle, Swapchain, Synchronizer,
-	TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
+	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, BufferRange, BufferTransitionState,
+	CommandBufferInternal, Consumption, Context, Descriptor, DescriptorSet, Handles, Image, ImageHandle, Swapchain,
+	Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
 use crate::{descriptors::DescriptorSetHandle, graphics_hardware_interface, FrameKey, HandleLike as _, Size};
 
@@ -29,11 +29,12 @@ impl crate::command_buffer::CommandBuffer for CommandBufferReference<'_> {
 
 /// The `CommandBufferRecording` struct exists to encode Vulkan commands for one GHI command-buffer recording.
 pub struct CommandBufferRecording<'a> {
-	device: &'a Context,
+	device: &'a mut Context,
 	command_buffer: graphics_hardware_interface::CommandBufferHandle,
 	frame_key: Option<FrameKey>,
 	sequence_index: u8,
 	pub(crate) states: HashMap<Handles, TransitionState>,
+	pub(crate) buffer_states: HashMap<Handles, Vec<BufferTransitionState>>,
 	pipeline_bind_point: vk::PipelineBindPoint,
 
 	bound_pipeline_layout: Option<crate::PipelineLayoutHandle>,
@@ -60,7 +61,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub(crate) fn new(
-		device: &'_ Context,
+		device: &'_ mut Context,
 		command_buffer: graphics_hardware_interface::CommandBufferHandle,
 		frame_key: Option<FrameKey>,
 	) -> CommandBufferRecording<'_> {
@@ -70,6 +71,7 @@ impl CommandBufferRecording<'_> {
 			frame_key,
 			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),
 			states: device.states.clone(),
+			buffer_states: device.buffer_states.clone(),
 
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
@@ -89,12 +91,13 @@ impl CommandBufferRecording<'_> {
 	) -> (
 		graphics_hardware_interface::CommandBufferHandle,
 		HashMap<Handles, TransitionState>,
+		HashMap<Handles, Vec<BufferTransitionState>>,
 	) {
 		self.handle_swapchain_proxies(presentation_keys);
 		self.consume_last_resources();
 		self.end_recording();
 
-		(self.command_buffer, self.states)
+		(self.command_buffer, self.states, self.buffer_states)
 	}
 
 	fn begin(&self) {
@@ -278,6 +281,7 @@ impl CommandBufferRecording<'_> {
 				stages,
 				access,
 				layout,
+				range: None,
 			}
 		});
 
@@ -303,6 +307,7 @@ impl CommandBufferRecording<'_> {
 	) -> Box<dyn FnOnce(&mut Self) -> ()> {
 		let planned = Self::plan_vulkan_resource_transitions(
 			states,
+			&command_buffer.buffer_states,
 			consumptions,
 			|handle| {
 				let image = command_buffer.get_image(handle);
@@ -350,8 +355,8 @@ impl CommandBufferRecording<'_> {
 					.dst_access_mask(barrier.dst_access)
 					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 					.buffer(barrier.buffer)
-					.offset(0)
-					.size(vk::WHOLE_SIZE)
+					.offset(barrier.offset)
+					.size(barrier.size)
 			})
 			.collect::<Vec<_>>();
 
@@ -368,10 +373,14 @@ impl CommandBufferRecording<'_> {
 			.collect::<Vec<_>>();
 
 		let new_states = planned.state_updates;
+		let buffer_state_updates = planned.buffer_state_updates;
 
 		let ret = move |s: &mut Self| {
 			for (handle, state) in new_states {
 				s.states.insert(handle, state);
+			}
+			for (handle, states) in buffer_state_updates {
+				s.buffer_states.insert(handle, states);
 			}
 		};
 
@@ -398,6 +407,7 @@ impl CommandBufferRecording<'_> {
 
 	fn plan_vulkan_resource_transitions(
 		states: &HashMap<Handles, TransitionState>,
+		buffer_states: &HashMap<Handles, Vec<BufferTransitionState>>,
 		consumptions: impl IntoIterator<Item = VulkanConsumption>,
 		mut resolve_image: impl FnMut(ImageHandle) -> Option<(vk::Image, vk::Format)>,
 		mut resolve_buffer: impl FnMut(BufferHandle) -> Option<vk::Buffer>,
@@ -405,20 +415,21 @@ impl CommandBufferRecording<'_> {
 		let mut planned = PlannedTransitions::default();
 
 		for consumption in consumptions {
-			let transition_state = TransitionState {
-				stage: consumption.stages,
-				access: consumption.access,
-				layout: consumption.layout,
-			};
+			let source_state = states.get(&consumption.handle).copied();
+			let mut transition_state = TransitionState::new(consumption.stages, consumption.access, consumption.layout);
 
-			if let Some(state) = states.get(&consumption.handle) {
-				if *state == transition_state {
+			if let Some(source_state) = source_state {
+				transition_state = transition_state.inherit_last_write_from(source_state);
+
+				if !matches!(consumption.handle, Handles::Buffer(_))
+					&& source_state == transition_state
+					&& !TransitionState::access_includes_write(transition_state.access)
+				{
 					continue;
 				}
 			}
 
-			let source_state = states.get(&consumption.handle).copied();
-			let (src_stage, src_access, src_layout) = if let Some(source_state) = source_state {
+			let (mut src_stage, mut src_access, src_layout) = if let Some(source_state) = source_state {
 				(source_state.stage, source_state.access, source_state.layout)
 			} else {
 				(
@@ -427,6 +438,13 @@ impl CommandBufferRecording<'_> {
 					vk::ImageLayout::UNDEFINED,
 				)
 			};
+
+			if TransitionState::access_includes_write(transition_state.access) {
+				if let Some(source_state) = source_state {
+					src_stage |= source_state.last_write_stage;
+					src_access |= source_state.last_write_access;
+				}
+			}
 
 			match consumption.handle {
 				Handles::Image(handle) => {
@@ -462,13 +480,64 @@ impl CommandBufferRecording<'_> {
 						continue;
 					}
 
-					planned.buffer_barriers.push(PlannedBufferBarrier {
-						src_stage,
-						src_access,
-						dst_stage: transition_state.stage,
-						dst_access: transition_state.access,
-						buffer,
-					});
+					let range = consumption.range.unwrap_or(BufferRange::new(0, vk::WHOLE_SIZE));
+					let overlapping_states = buffer_states
+						.get(&consumption.handle)
+						.into_iter()
+						.flatten()
+						.filter(|state| state.range.overlaps(range))
+						.copied()
+						.collect::<Vec<_>>();
+
+					if !TransitionState::access_includes_write(transition_state.access) {
+						transition_state.last_write_stage = vk::PipelineStageFlags2::empty();
+						transition_state.last_write_access = vk::AccessFlags2::empty();
+
+						for overlapping_state in &overlapping_states {
+							transition_state.last_write_stage |= overlapping_state.state.last_write_stage;
+							transition_state.last_write_access |= overlapping_state.state.last_write_access;
+						}
+
+						if overlapping_states.is_empty() {
+							if let Some(source_state) = source_state {
+								transition_state = transition_state.inherit_last_write_from(source_state);
+							}
+						}
+					}
+
+					for overlapping_state in &overlapping_states {
+						let mut range_src_stage = overlapping_state.state.stage;
+						let mut range_src_access = overlapping_state.state.access;
+
+						if TransitionState::access_includes_write(transition_state.access) {
+							range_src_stage |= overlapping_state.state.last_write_stage;
+							range_src_access |= overlapping_state.state.last_write_access;
+						}
+
+						planned.buffer_barriers.push(PlannedBufferBarrier {
+							src_stage: range_src_stage,
+							src_access: range_src_access,
+							dst_stage: transition_state.stage,
+							dst_access: transition_state.access,
+							buffer,
+							offset: range.offset,
+							size: range.size,
+						});
+					}
+
+					if overlapping_states.is_empty() && consumption.range.is_none() {
+						planned.buffer_barriers.push(PlannedBufferBarrier {
+							src_stage,
+							src_access,
+							dst_stage: transition_state.stage,
+							dst_access: transition_state.access,
+							buffer,
+							offset: 0,
+							size: vk::WHOLE_SIZE,
+						});
+					}
+
+					planned.update_buffer_state(consumption.handle, range, transition_state, buffer_states);
 				}
 				Handles::VkBuffer(buffer) => {
 					planned.buffer_barriers.push(PlannedBufferBarrier {
@@ -477,6 +546,8 @@ impl CommandBufferRecording<'_> {
 						dst_stage: transition_state.stage,
 						dst_access: transition_state.access,
 						buffer,
+						offset: consumption.range.map(|range| range.offset).unwrap_or(0),
+						size: consumption.range.map(|range| range.size).unwrap_or(vk::WHOLE_SIZE),
 					});
 				}
 				Handles::TopLevelAccelerationStructure(_) | Handles::BottomLevelAccelerationStructure(_) => {
@@ -585,13 +656,13 @@ impl CommandBufferRecording<'_> {
 
 		self.states.insert(
 			Handles::Image(destination_image_handle),
-			TransitionState {
-				stage: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+			TransitionState::new(
+				vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
 					| vk::PipelineStageFlags2::BLIT
 					| vk::PipelineStageFlags2::TRANSFER,
-				layout: vk::ImageLayout::UNDEFINED,
-				access: vk::AccessFlags2::NONE,
-			},
+				vk::AccessFlags2::NONE,
+				vk::ImageLayout::UNDEFINED,
+			),
 		);
 
 		self.consume_resources([
@@ -651,6 +722,13 @@ impl CommandBufferRecording<'_> {
 		unsafe {
 			self.device.device.cmd_blit_image2(vk_command_buffer, &copy_image_info);
 		}
+
+		self.consume_resources([Consumption {
+			handle: Handles::Image(source_image_handle),
+			stages: crate::Stages::TRANSFER,
+			access: crate::AccessPolicies::NONE,
+			layout: crate::Layouts::General,
+		}])(self);
 	}
 
 	pub fn handle_swapchain_proxies(&mut self, presentation_keys: &[graphics_hardware_interface::PresentKey]) {
@@ -722,12 +800,14 @@ impl CommandBufferRecording<'_> {
 			stages: vk::PipelineStageFlags2::COPY,
 			access: vk::AccessFlags2::TRANSFER_READ,
 			layout: vk::ImageLayout::UNDEFINED,
+			range: Some(BufferRange::new(e.src_offset, e.size as vk::DeviceSize)),
 		});
 		let destination_consumptions = copy_buffers.clone().map(|e| VulkanConsumption {
 			handle: Handles::Buffer(e.dst_buffer),
 			stages: vk::PipelineStageFlags2::COPY,
 			access: vk::AccessFlags2::TRANSFER_WRITE,
 			layout: vk::ImageLayout::UNDEFINED,
+			range: Some(BufferRange::new(e.dst_offset, e.size as vk::DeviceSize)),
 		});
 		self.vulkan_consume_resources(source_consumptions.chain(destination_consumptions))(self);
 
@@ -767,6 +847,7 @@ impl CommandBufferRecording<'_> {
 			stages: vk::PipelineStageFlags2::TRANSFER,
 			access: vk::AccessFlags2::TRANSFER_WRITE,
 			layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+			range: None,
 		}))(self);
 
 		let command_buffer = self.get_command_buffer();
@@ -841,6 +922,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			stages: vk::PipelineStageFlags2::TRANSFER,
 			access: vk::AccessFlags2::TRANSFER_WRITE,
 			layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+			range: None,
 		}))(self);
 
 		let command_buffer = self.get_command_buffer();
@@ -1041,11 +1123,11 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			Handles::TopLevelAccelerationStructure(
 				self.get_internal_top_level_acceleration_structure_handle(acceleration_structure_handle),
 			),
-			TransitionState {
-				stage: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
-				access: vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-				layout: vk::ImageLayout::UNDEFINED,
-			},
+			TransitionState::new(
+				vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
+				vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+				vk::ImageLayout::UNDEFINED,
+			),
 		);
 
 		let infos = vec![build_geometry_info];
@@ -1174,11 +1256,11 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 					Handles::BottomLevelAccelerationStructure(
 						this.get_internal_bottom_level_acceleration_structure_handle(acceleration_structure_handle),
 					),
-					TransitionState {
-						stage: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
-						access: vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-						layout: vk::ImageLayout::UNDEFINED,
-					},
+					TransitionState::new(
+						vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
+						vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+						vk::ImageLayout::UNDEFINED,
+					),
 				);
 
 				infos.push(build_geometry_info);
@@ -1492,11 +1574,11 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 			self.states.insert(
 				Handles::Buffer(internal_buffer_handle),
-				TransitionState {
-					stage: vk::PipelineStageFlags2::TRANSFER,
-					access: vk::AccessFlags2::TRANSFER_WRITE,
-					layout: vk::ImageLayout::UNDEFINED,
-				},
+				TransitionState::new(
+					vk::PipelineStageFlags2::TRANSFER,
+					vk::AccessFlags2::TRANSFER_WRITE,
+					vk::ImageLayout::UNDEFINED,
+				),
 			);
 		}
 	}
@@ -1607,6 +1689,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.queue_submit2(command_buffer.vk_queue, &[submit_info], synchronizer.fence)
 				.expect("Failed to submit Vulkan command buffer. The most likely cause is that the command buffer was not recorded for this queue.");
 		}
+
+		for (handle, state) in self.states {
+			self.device.states.insert(handle, state);
+		}
+		for (handle, states) in self.buffer_states {
+			self.device.buffer_states.insert(handle, states);
+		}
 	}
 }
 
@@ -1714,6 +1803,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			stages: vk::PipelineStageFlags2::VERTEX_INPUT,
 			access: vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
 			layout: vk::ImageLayout::UNDEFINED,
+			range: None,
 		});
 
 		self.vulkan_consume_resources(consumptions)(self);
@@ -1749,6 +1839,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			stages: vk::PipelineStageFlags2::INDEX_INPUT,
 			access: vk::AccessFlags2::INDEX_READ,
 			layout: vk::ImageLayout::UNDEFINED,
+			range: None,
 		}])(self);
 
 		let command_buffer = self.get_command_buffer();
@@ -2148,6 +2239,8 @@ struct PlannedBufferBarrier {
 	dst_stage: vk::PipelineStageFlags2,
 	dst_access: vk::AccessFlags2,
 	buffer: vk::Buffer,
+	offset: vk::DeviceSize,
+	size: vk::DeviceSize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2164,6 +2257,37 @@ struct PlannedTransitions {
 	buffer_barriers: Vec<PlannedBufferBarrier>,
 	memory_barriers: Vec<PlannedMemoryBarrier>,
 	state_updates: SmallVec<[(Handles, TransitionState); 64]>,
+	buffer_state_updates: SmallVec<[(Handles, Vec<BufferTransitionState>); 16]>,
+}
+
+impl PlannedTransitions {
+	fn update_buffer_state(
+		&mut self,
+		handle: Handles,
+		range: BufferRange,
+		state: TransitionState,
+		buffer_states: &HashMap<Handles, Vec<BufferTransitionState>>,
+	) {
+		let mut states = self
+			.buffer_state_updates
+			.iter()
+			.find_map(|(updated_handle, states)| (*updated_handle == handle).then(|| states.clone()))
+			.or_else(|| buffer_states.get(&handle).cloned())
+			.unwrap_or_default();
+
+		states.retain(|existing| !existing.range.overlaps(range));
+		states.push(BufferTransitionState { range, state });
+
+		if let Some((_, updated_states)) = self
+			.buffer_state_updates
+			.iter_mut()
+			.find(|(updated_handle, _)| *updated_handle == handle)
+		{
+			*updated_states = states;
+		} else {
+			self.buffer_state_updates.push((handle, states));
+		}
+	}
 }
 
 #[cfg(test)]
@@ -2173,7 +2297,13 @@ mod tests {
 	use super::*;
 
 	fn transition(stage: vk::PipelineStageFlags2, access: vk::AccessFlags2, layout: vk::ImageLayout) -> TransitionState {
-		TransitionState { stage, access, layout }
+		TransitionState::new(stage, access, layout)
+	}
+
+	fn assert_visible_state_eq(actual: TransitionState, expected: TransitionState) {
+		assert!(actual.stage == expected.stage);
+		assert!(actual.access == expected.access);
+		assert!(actual.layout == expected.layout);
 	}
 
 	fn consumption(
@@ -2187,11 +2317,27 @@ mod tests {
 			stages: stage,
 			access,
 			layout,
+			range: None,
+		}
+	}
+
+	fn ranged_consumption(
+		handle: Handles,
+		stage: vk::PipelineStageFlags2,
+		access: vk::AccessFlags2,
+		range: BufferRange,
+	) -> VulkanConsumption {
+		VulkanConsumption {
+			handle,
+			stages: stage,
+			access,
+			layout: vk::ImageLayout::UNDEFINED,
+			range: Some(range),
 		}
 	}
 
 	#[test]
-	fn planner_skips_equal_states() {
+	fn planner_barriers_equal_write_states() {
 		let handle = Handles::Buffer(BufferHandle(1));
 		let current = transition(
 			vk::PipelineStageFlags2::TRANSFER,
@@ -2203,6 +2349,7 @@ mod tests {
 
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
 			&states,
+			&HashMap::default(),
 			[consumption(
 				handle,
 				vk::PipelineStageFlags2::TRANSFER,
@@ -2214,9 +2361,128 @@ mod tests {
 		);
 
 		assert!(planned.image_barriers.is_empty());
-		assert!(planned.buffer_barriers.is_empty());
+		assert_eq!(planned.buffer_barriers.len(), 1);
 		assert!(planned.memory_barriers.is_empty());
-		assert!(planned.state_updates.is_empty());
+		assert_eq!(planned.state_updates.len(), 1);
+
+		let barrier = planned.buffer_barriers[0];
+		assert!(barrier.src_stage == vk::PipelineStageFlags2::TRANSFER);
+		assert!(barrier.src_access == vk::AccessFlags2::TRANSFER_WRITE);
+		assert!(barrier.dst_stage == vk::PipelineStageFlags2::TRANSFER);
+		assert!(barrier.dst_access == vk::AccessFlags2::TRANSFER_WRITE);
+	}
+
+	#[test]
+	fn planner_skips_non_overlapping_buffer_ranges() {
+		let handle = Handles::Buffer(BufferHandle(12));
+		let mut buffer_states = HashMap::default();
+		buffer_states.insert(
+			handle,
+			vec![BufferTransitionState {
+				range: BufferRange::new(0, 64),
+				state: transition(
+					vk::PipelineStageFlags2::COPY,
+					vk::AccessFlags2::TRANSFER_WRITE,
+					vk::ImageLayout::UNDEFINED,
+				),
+			}],
+		);
+
+		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
+			&HashMap::default(),
+			&buffer_states,
+			[ranged_consumption(
+				handle,
+				vk::PipelineStageFlags2::COPY,
+				vk::AccessFlags2::TRANSFER_WRITE,
+				BufferRange::new(128, 64),
+			)],
+			|_| None,
+			|_| Some(vk::Buffer::from_raw(14)),
+		);
+
+		assert!(planned.buffer_barriers.is_empty());
+		assert_eq!(planned.buffer_state_updates.len(), 1);
+	}
+
+	#[test]
+	fn planner_barriers_overlapping_buffer_ranges() {
+		let handle = Handles::Buffer(BufferHandle(13));
+		let mut buffer_states = HashMap::default();
+		buffer_states.insert(
+			handle,
+			vec![BufferTransitionState {
+				range: BufferRange::new(0, 128),
+				state: transition(
+					vk::PipelineStageFlags2::COPY,
+					vk::AccessFlags2::TRANSFER_WRITE,
+					vk::ImageLayout::UNDEFINED,
+				),
+			}],
+		);
+
+		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
+			&HashMap::default(),
+			&buffer_states,
+			[ranged_consumption(
+				handle,
+				vk::PipelineStageFlags2::COPY,
+				vk::AccessFlags2::TRANSFER_WRITE,
+				BufferRange::new(64, 64),
+			)],
+			|_| None,
+			|_| Some(vk::Buffer::from_raw(15)),
+		);
+
+		assert_eq!(planned.buffer_barriers.len(), 1);
+		let barrier = planned.buffer_barriers[0];
+		assert!(barrier.src_stage == vk::PipelineStageFlags2::COPY);
+		assert!(barrier.src_access == vk::AccessFlags2::TRANSFER_WRITE);
+		assert!(barrier.offset == 64);
+		assert!(barrier.size == 64);
+	}
+
+	#[test]
+	fn planner_includes_last_buffer_write_when_read_state_transitions_to_write() {
+		let handle = Handles::Buffer(BufferHandle(14));
+		let mut read_state = transition(
+			vk::PipelineStageFlags2::COMPUTE_SHADER,
+			vk::AccessFlags2::SHADER_READ,
+			vk::ImageLayout::UNDEFINED,
+		);
+		read_state.last_write_stage = vk::PipelineStageFlags2::COPY;
+		read_state.last_write_access = vk::AccessFlags2::TRANSFER_WRITE;
+
+		let mut buffer_states = HashMap::default();
+		buffer_states.insert(
+			handle,
+			vec![BufferTransitionState {
+				range: BufferRange::new(64, 64),
+				state: read_state,
+			}],
+		);
+
+		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
+			&HashMap::default(),
+			&buffer_states,
+			[ranged_consumption(
+				handle,
+				vk::PipelineStageFlags2::COPY,
+				vk::AccessFlags2::TRANSFER_WRITE,
+				BufferRange::new(64, 64),
+			)],
+			|_| None,
+			|_| Some(vk::Buffer::from_raw(16)),
+		);
+
+		assert_eq!(planned.buffer_barriers.len(), 1);
+		let barrier = planned.buffer_barriers[0];
+		assert!(barrier.src_stage.contains(vk::PipelineStageFlags2::COMPUTE_SHADER));
+		assert!(barrier.src_stage.contains(vk::PipelineStageFlags2::COPY));
+		assert!(barrier.src_access.contains(vk::AccessFlags2::SHADER_READ));
+		assert!(barrier.src_access.contains(vk::AccessFlags2::TRANSFER_WRITE));
+		assert!(barrier.dst_stage == vk::PipelineStageFlags2::COPY);
+		assert!(barrier.dst_access == vk::AccessFlags2::TRANSFER_WRITE);
 	}
 
 	#[test]
@@ -2237,6 +2503,7 @@ mod tests {
 
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
 			&states,
+			&HashMap::default(),
 			[consumption(handle, destination.stage, destination.access, destination.layout)],
 			|_| Some((vk::Image::from_raw(77), vk::Format::R8G8B8A8_UNORM)),
 			|_| None,
@@ -2257,7 +2524,7 @@ mod tests {
 		assert_eq!(planned.state_updates.len(), 1);
 		let (updated_handle, updated_state) = planned.state_updates[0];
 		assert!(updated_handle == handle);
-		assert!(updated_state == destination);
+		assert_visible_state_eq(updated_state, destination);
 	}
 
 	#[test]
@@ -2270,6 +2537,7 @@ mod tests {
 		);
 
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
+			&HashMap::default(),
 			&HashMap::default(),
 			[consumption(handle, destination.stage, destination.access, destination.layout)],
 			|_| Some((vk::Image::from_raw(88), vk::Format::R8G8B8A8_UNORM)),
@@ -2289,6 +2557,7 @@ mod tests {
 		let handle = Handles::Image(ImageHandle(4));
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
 			&HashMap::default(),
+			&HashMap::default(),
 			[consumption(
 				handle,
 				vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
@@ -2307,6 +2576,7 @@ mod tests {
 	fn planner_skips_null_image_and_does_not_update_state() {
 		let handle = Handles::Image(ImageHandle(5));
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
+			&HashMap::default(),
 			&HashMap::default(),
 			[consumption(
 				handle,
@@ -2340,6 +2610,7 @@ mod tests {
 
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
 			&states,
+			&HashMap::default(),
 			[consumption(handle, destination.stage, destination.access, destination.layout)],
 			|_| None,
 			|_| Some(vk::Buffer::from_raw(111)),
@@ -2356,13 +2627,14 @@ mod tests {
 
 		assert_eq!(planned.state_updates.len(), 1);
 		let (_, updated_state) = planned.state_updates[0];
-		assert!(updated_state == destination);
+		assert_visible_state_eq(updated_state, destination);
 	}
 
 	#[test]
 	fn planner_skips_null_buffer_and_does_not_update_state() {
 		let handle = Handles::Buffer(BufferHandle(7));
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
+			&HashMap::default(),
 			&HashMap::default(),
 			[consumption(
 				handle,
@@ -2389,6 +2661,7 @@ mod tests {
 
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
 			&HashMap::default(),
+			&HashMap::default(),
 			[consumption(handle, destination.stage, destination.access, destination.layout)],
 			|_| None,
 			|_| panic!("buffer lookup must not be called for Handle::VkBuffer"),
@@ -2403,7 +2676,7 @@ mod tests {
 		assert_eq!(planned.state_updates.len(), 1);
 		let (updated_handle, updated_state) = planned.state_updates[0];
 		assert!(updated_handle == handle);
-		assert!(updated_state == destination);
+		assert_visible_state_eq(updated_state, destination);
 	}
 
 	#[test]
@@ -2424,6 +2697,7 @@ mod tests {
 
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
 			&states,
+			&HashMap::default(),
 			[consumption(handle, destination.stage, destination.access, destination.layout)],
 			|_| None,
 			|_| None,
@@ -2438,7 +2712,7 @@ mod tests {
 
 		assert_eq!(planned.state_updates.len(), 1);
 		let (_, updated_state) = planned.state_updates[0];
-		assert!(updated_state == destination);
+		assert_visible_state_eq(updated_state, destination);
 	}
 
 	#[test]
@@ -2452,6 +2726,7 @@ mod tests {
 
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
 			&HashMap::default(),
+			&HashMap::default(),
 			[consumption(handle, destination.stage, destination.access, destination.layout)],
 			|_| panic!("image lookup must not be called for synchronizers"),
 			|_| panic!("buffer lookup must not be called for synchronizers"),
@@ -2464,7 +2739,7 @@ mod tests {
 
 		let (updated_handle, updated_state) = planned.state_updates[0];
 		assert!(updated_handle == handle);
-		assert!(updated_state == destination);
+		assert_visible_state_eq(updated_state, destination);
 	}
 
 	#[test]
@@ -2490,6 +2765,7 @@ mod tests {
 
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
 			&states,
+			&HashMap::default(),
 			[
 				consumption(handle, first.stage, first.access, first.layout),
 				consumption(handle, second.stage, second.access, second.layout),
@@ -2509,7 +2785,7 @@ mod tests {
 		assert_eq!(planned.state_updates.len(), 2);
 		let (_, first_state) = planned.state_updates[0];
 		let (_, second_state) = planned.state_updates[1];
-		assert!(first_state == first);
-		assert!(second_state == second);
+		assert_visible_state_eq(first_state, first);
+		assert_visible_state_eq(second_state, second);
 	}
 }

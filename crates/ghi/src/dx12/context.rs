@@ -690,10 +690,16 @@ impl Device {
 					.bindings
 					.iter()
 					.filter(|binding| Self::descriptor_range_type(binding.descriptor_type, sampler_heap).is_some())
-					.map(|binding| binding.descriptor_count.max(1))
+					.map(|binding| Self::descriptor_count_for_heap(binding, sampler_heap))
 					.sum()
 			})
 			.unwrap_or(0)
+	}
+
+	fn descriptor_count_for_heap(binding: &DescriptorSetBindingTemplate, _sampler_heap: bool) -> u32 {
+		// Keep DX12 descriptor ranges conservative until descriptor indexing support is queried and handled.
+		// Large bindless-style ranges can be invalid on lower resource binding tiers and can remove the device.
+		binding.descriptor_count.max(1).min(16)
 	}
 
 	fn create_descriptor_heap(
@@ -717,7 +723,14 @@ impl Device {
 			NodeMask: 0,
 		};
 
-		unsafe { self.device.CreateDescriptorHeap(&desc) }.ok()
+		let heap = unsafe { self.device.CreateDescriptorHeap(&desc) };
+		if let Err(error) = &heap {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			eprintln!(
+				"Failed to create DX12 descriptor heap. Sampler heap: {sampler_heap}. Descriptor count: {count}. Error: {error:?}. Device removed reason: {removed_reason:?}"
+			);
+		}
+		heap.ok()
 	}
 
 	fn descriptor_heap_slot(
@@ -807,18 +820,19 @@ impl Device {
 					let Some(range_type) = Self::descriptor_range_type(binding.descriptor_type, sampler_heap) else {
 						continue;
 					};
+					let descriptor_count = Self::descriptor_count_for_heap(binding, sampler_heap);
 					let heap_slot = if sampler_heap {
 						let slot = sampler_slot;
-						sampler_slot += binding.descriptor_count.max(1);
+						sampler_slot += descriptor_count;
 						slot
 					} else {
 						let slot = cbv_srv_uav_slot;
-						cbv_srv_uav_slot += binding.descriptor_count.max(1);
+						cbv_srv_uav_slot += descriptor_count;
 						slot
 					};
 					ranges.push(D3D12_DESCRIPTOR_RANGE {
 						RangeType: range_type,
-						NumDescriptors: binding.descriptor_count.max(1),
+						NumDescriptors: descriptor_count,
 						BaseShaderRegister: binding.binding,
 						RegisterSpace: space as u32,
 						OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
@@ -881,7 +895,19 @@ impl Device {
 		};
 
 		let mut blob = None;
-		if unsafe { D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1_0, &mut blob, None) }.is_err() {
+		let mut error_blob = None;
+		if unsafe { D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1_0, &mut blob, Some(&mut error_blob)) }
+			.is_err()
+		{
+			if let Some(error_blob) = error_blob {
+				let message = unsafe {
+					std::slice::from_raw_parts(error_blob.GetBufferPointer().cast::<u8>(), error_blob.GetBufferSize())
+				};
+				eprintln!(
+					"Failed to serialize DX12 root signature: {}",
+					String::from_utf8_lossy(message)
+				);
+			}
 			return (None, tables, constants);
 		}
 		let Some(blob) = blob else {
@@ -889,7 +915,18 @@ impl Device {
 		};
 		let bytes = unsafe { std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize()) };
 
-		(unsafe { self.device.CreateRootSignature(0, bytes) }.ok(), tables, constants)
+		let root_signature = unsafe { self.device.CreateRootSignature(0, bytes) };
+		if let Err(error) = &root_signature {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			eprintln!(
+				"Failed to create DX12 root signature with {} parameters, {} descriptor tables, and {} constants: {error:?}; device removed reason: {removed_reason:?}",
+				parameters.len(),
+				tables.len(),
+				constants.len()
+			);
+		}
+
+		(root_signature.ok(), tables, constants)
 	}
 
 	fn get_or_create_pipeline_layout(
@@ -1058,6 +1095,10 @@ impl Device {
 			}
 			Err(error) => {
 				self.graphics_pipeline_state_last_error = Some(error.code().0);
+				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+				eprintln!(
+					"Failed to create DX12 graphics pipeline state: {error:?}; device removed reason: {removed_reason:?}"
+				);
 				None
 			}
 		}
@@ -1068,6 +1109,11 @@ impl Device {
 		layout: PipelineLayoutHandle,
 		builder: &pipelines::raster::Builder,
 	) -> Option<ID3D12PipelineState> {
+		if !self.supports_native_mesh_shaders() {
+			eprintln!("Skipping DX12 mesh pipeline creation because native mesh shaders are not supported by this device.");
+			return None;
+		}
+
 		let root_signature = self
 			.pipeline_root_signatures
 			.get(layout.0 as usize)
@@ -1192,6 +1238,7 @@ impl Device {
 			}
 			Err(error) => {
 				self.graphics_pipeline_state_last_error = Some(error.code().0);
+				eprintln!("Failed to create DX12 mesh pipeline state: {error:?}");
 				None
 			}
 		}
@@ -1338,7 +1385,12 @@ impl Device {
 			Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
 		};
 
-		unsafe { self.device.CreateComputePipelineState::<ID3D12PipelineState>(&desc) }.ok()
+		let pipeline_state = unsafe { self.device.CreateComputePipelineState::<ID3D12PipelineState>(&desc) };
+		if let Err(error) = &pipeline_state {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			eprintln!("Failed to create DX12 compute pipeline state: {error:?}; device removed reason: {removed_reason:?}");
+		}
+		pipeline_state.ok()
 	}
 
 	pub fn create_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> PipelineHandle {
@@ -3575,9 +3627,11 @@ impl Device {
 			return;
 		}
 
+		eprintln!("[byte-engine diagnostic] dx12: SetDescriptorHeaps count {}", heaps.len());
 		unsafe {
 			command_list.SetDescriptorHeaps(&heaps);
 		}
+		eprintln!("[byte-engine diagnostic] dx12: SetDescriptorHeaps done");
 		self.descriptor_heap_bind_count += 1;
 
 		let Some(pipeline_handle) = pipeline_handle else {
@@ -3587,10 +3641,17 @@ impl Device {
 			return;
 		};
 		let mut table_binds = 0;
+		let Some(Some(_root_signature)) = self.pipeline_root_signatures.get(pipeline.layout.0 as usize) else {
+			panic!(
+				"Failed to bind DX12 descriptor tables because the pipeline layout has no native root signature. The most likely cause is that root signature creation failed while the pipeline still kept descriptor table metadata."
+			);
+		};
 		let Some(root_tables) = self.pipeline_root_tables.get(pipeline.layout.0 as usize).cloned() else {
 			return;
 		};
+		eprintln!("[byte-engine diagnostic] dx12: binding {} root tables", root_tables.len());
 		for (root_parameter_index, table) in root_tables.iter().enumerate() {
+			eprintln!("[byte-engine diagnostic] dx12: binding root table {root_parameter_index}");
 			let set = sets
 				.get(table.set_index)
 				.and_then(|set_handle| self.descriptor_sets.get(set_handle.0 as usize));
@@ -3606,6 +3667,10 @@ impl Device {
 					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
 				};
 				let handle = self.descriptor_gpu_handle(heap, heap_type, table.heap_slot);
+				eprintln!(
+					"[byte-engine diagnostic] dx12: SetRootDescriptorTable root {root_parameter_index} slot {} sampler {}",
+					table.heap_slot, table.sampler_heap
+				);
 				unsafe {
 					match pipeline.kind {
 						PipelineKind::Compute | PipelineKind::RayTracing => {
@@ -3616,6 +3681,7 @@ impl Device {
 						}
 					}
 				}
+				eprintln!("[byte-engine diagnostic] dx12: SetRootDescriptorTable done root {root_parameter_index}");
 				table_binds += 1;
 				self.descriptor_table_bind_records.push(DescriptorTableBindRecord {
 					root_parameter_index: root_parameter_index as u32,
@@ -3812,24 +3878,27 @@ impl Device {
 	}
 
 	fn copy_buffer_shadow(&mut self, copy: &crate::BufferCopyDescriptor) {
-		Self::copy_buffer_shadow_in_storage(&mut self.buffers, copy);
-		Self::copy_buffer_shadow_in_storage(&mut self.dynamic_buffers, copy);
-	}
-
-	fn copy_buffer_shadow_in_storage(storage: &mut [Buffer], copy: &crate::BufferCopyDescriptor) {
-		let source_index = copy.source_buffer.0 as usize;
-		let destination_index = copy.destination_buffer.0 as usize;
-		if source_index >= storage.len() || destination_index >= storage.len() {
+		// Resolve handles through `buffer` instead of indexing storage directly. Dynamic buffer handles carry
+		// `DYNAMIC_BUFFER_HANDLE_FLAG`, so the raw handle value is not always a valid index into `buffers`.
+		let Some(source) = self.buffer(copy.source_buffer) else {
 			return;
-		}
+		};
+		let Some(destination) = self.buffer(copy.destination_buffer) else {
+			return;
+		};
 
-		let source = &storage[source_index];
-		let destination = &storage[destination_index];
 		let source_end = copy.source_offset.saturating_add(copy.size);
 		let destination_end = copy.destination_offset.saturating_add(copy.size);
 		if source_end > source.size || destination_end > destination.size {
 			panic!(
-				"Failed to copy DX12 buffer data. The most likely cause is that the requested source or destination range is outside the buffer allocation."
+				"Failed to copy DX12 buffer data from {:?} offset {} to {:?} offset {} for {} bytes. The most likely cause is that the requested source or destination range is outside the buffer allocation. Source size: {} bytes. Destination size: {} bytes.",
+				copy.source_buffer,
+				copy.source_offset,
+				copy.destination_buffer,
+				copy.destination_offset,
+				copy.size,
+				source.size,
+				destination.size
 			);
 		}
 		if copy.size == 0 {
@@ -3837,11 +3906,11 @@ impl Device {
 		}
 
 		unsafe {
-			let source = storage[source_index].data.add(copy.source_offset);
-			let destination = storage[destination_index].data.add(copy.destination_offset);
+			let source = source.data.add(copy.source_offset);
+			let destination = destination.data.add(copy.destination_offset);
 			std::ptr::copy(source, destination, copy.size);
 		}
-		if let Some(destination) = storage.get(destination_index) {
+		if let Some(destination) = self.buffer(copy.destination_buffer) {
 			Self::sync_buffer_storage(destination);
 		}
 	}
@@ -3862,6 +3931,21 @@ impl Device {
 		};
 		if destination.access.intersects(DeviceAccesses::CpuWrite) {
 			return;
+		}
+
+		let source_end = copy.source_offset.saturating_add(copy.size);
+		let destination_end = copy.destination_offset.saturating_add(copy.size);
+		if source_end > source.size || destination_end > destination.size {
+			panic!(
+				"Failed to record DX12 buffer copy from {:?} offset {} to {:?} offset {} for {} bytes. The most likely cause is that the requested source or destination range is outside the GPU buffer allocation. Source size: {} bytes. Destination size: {} bytes.",
+				copy.source_buffer,
+				copy.source_offset,
+				copy.destination_buffer,
+				copy.destination_offset,
+				copy.size,
+				source.size,
+				destination.size
+			);
 		}
 
 		unsafe {
@@ -3951,6 +4035,7 @@ impl Device {
 				resource,
 				access: buffer.access,
 				heap_kind: buffer.heap_kind,
+				size: buffer.size,
 			})
 		})
 	}
@@ -4162,32 +4247,15 @@ impl Device {
 		self.gpu_uploaded_images.insert(image_handle.0);
 	}
 
-	pub(crate) fn begin_debug_region(&self, command_buffer_handle: CommandBufferHandle, name: &str) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
-			return;
-		};
-		let bytes = name.as_bytes();
-		unsafe {
-			command_list.BeginEvent(0, Some(bytes.as_ptr().cast()), bytes.len() as u32);
-		}
+	pub(crate) fn begin_debug_region(&self, _command_buffer_handle: CommandBufferHandle, _name: &str) {
+		// DX12 debug regions require PIX-formatted event metadata. Passing arbitrary UTF-8 bytes to
+		// ID3D12GraphicsCommandList::BeginEvent can fault inside the native runtime, so this backend
+		// leaves regions disabled until PIX event encoding is implemented.
 		self.debug_region_begin_count.set(self.debug_region_begin_count.get() + 1);
 	}
 
-	pub(crate) fn end_debug_region(&self, command_buffer_handle: CommandBufferHandle) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
-			return;
-		};
-		unsafe {
-			command_list.EndEvent();
-		}
+	pub(crate) fn end_debug_region(&self, _command_buffer_handle: CommandBufferHandle) {
+		// Keep this paired with `begin_debug_region`; see the comment above for why DX12 event calls are skipped.
 		self.debug_region_end_count.set(self.debug_region_end_count.get() + 1);
 	}
 
@@ -5863,7 +5931,15 @@ impl Device {
 				&mut resource,
 			)
 		};
-		if result.is_err() {
+		if let Err(error) = result {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			eprintln!(
+				"Failed to create DX12 image resource. Format: {:?}. Extent: {:?}. Uses: {:?}. Array layers: {}. Error: {error:?}. Device removed reason: {removed_reason:?}",
+				format,
+				extent,
+				uses,
+				array_layers
+			);
 			None
 		} else {
 			resource
@@ -5995,6 +6071,7 @@ struct BufferCopyInfo {
 	resource: ID3D12Resource,
 	access: DeviceAccesses,
 	heap_kind: BufferHeapKind,
+	size: usize,
 }
 
 struct TextureReadback {

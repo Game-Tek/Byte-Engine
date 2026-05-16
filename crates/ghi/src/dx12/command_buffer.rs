@@ -233,10 +233,13 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self {
 		self.bound_descriptor_sets.clear();
 		self.bound_descriptor_sets.extend_from_slice(sets);
+		eprintln!("[byte-engine diagnostic] dx12: flush_pending_descriptor_texture_syncs");
 		self.device
 			.flush_pending_descriptor_texture_syncs(self.command_buffer, sets, self.sequence_index());
+		eprintln!("[byte-engine diagnostic] dx12: bind_descriptor_heaps_and_tables");
 		self.device
 			.bind_descriptor_heaps_and_tables(self.command_buffer, self.bound_pipeline, sets);
+		eprintln!("[byte-engine diagnostic] dx12: bound descriptor sets");
 		self
 	}
 

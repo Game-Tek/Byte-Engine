@@ -876,9 +876,9 @@ impl GLSLShaderGenerator {
 			Stages::Compute { local_size } | Stages::Mesh { local_size, .. } => {
 				glsl_block.push_str(&format!(
 					"layout(local_size_x={},local_size_y={},local_size_z={}) in;\n",
-					local_size.width(),
-					local_size.height(),
-					local_size.depth()
+					local_size.width().max(1),
+					local_size.height().max(1),
+					local_size.depth().max(1)
 				));
 			}
 			_ => {}

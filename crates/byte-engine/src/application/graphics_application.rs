@@ -207,6 +207,10 @@ impl GraphicsApplication {
 		self.world.update(time, &mut physics_transforms_listener);
 
 		{
+			eprintln!(
+				"[byte-engine diagnostic] tick {}: syncing renderer resources",
+				self.tick_count
+			);
 			let window_listener = &mut self.window_factory.1;
 
 			while let Some(message) = window_listener.read() {
@@ -217,7 +221,9 @@ impl GraphicsApplication {
 				self.renderer.create_camera(message.handle().clone(), message.into_data());
 			}
 
+			eprintln!("[byte-engine diagnostic] tick {}: entering renderer.prepare", self.tick_count);
 			self.renderer.prepare(&mut renderer_transforms_listener);
+			eprintln!("[byte-engine diagnostic] tick {}: leaving renderer.prepare", self.tick_count);
 		}
 
 		self.tick_count += 1;

@@ -752,9 +752,9 @@ impl HLSLShaderGenerator {
 			Stages::Compute { local_size } => {
 				hlsl_block.push_str(&format!(
 					"[numthreads({}, {}, {})]\n",
-					local_size.width(),
-					local_size.height(),
-					local_size.depth()
+					local_size.width().max(1),
+					local_size.height().max(1),
+					local_size.depth().max(1)
 				));
 			}
 			Stages::Mesh { local_size: _, .. } => {

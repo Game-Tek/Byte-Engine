@@ -11,7 +11,7 @@ use std::{
 use ::utils::hash::{HashMap, HashSet};
 use dispatch2::DispatchData;
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, ClassType};
+use objc2::{msg_send, sel, ClassType};
 use objc2_foundation::{NSArray, NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
 	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLCommandEncoder,
@@ -127,7 +127,7 @@ pub(super) fn select_metal_command_queue_workloads(
 
 	let mut supported = crate::WorkloadTypes::RASTER | crate::WorkloadTypes::COMPUTE | crate::WorkloadTypes::TRANSFER;
 
-	if device.supportsRaytracing() {
+	if requested.intersects(crate::WorkloadTypes::RAY_TRACING) && metal_device_supports_ray_tracing(device) {
 		supported |= crate::WorkloadTypes::RAY_TRACING;
 	}
 
@@ -138,6 +138,12 @@ pub(super) fn select_metal_command_queue_workloads(
 	}
 
 	Ok(requested)
+}
+
+fn metal_device_supports_ray_tracing(device: &ProtocolObject<dyn mtl::MTLDevice>) -> bool {
+	let responds_to_supports_raytracing: bool = unsafe { msg_send![device, respondsToSelector: sel!(supportsRaytracing)] };
+
+	responds_to_supports_raytracing && device.supportsRaytracing()
 }
 
 fn metal_command_encoder_label(

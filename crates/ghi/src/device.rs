@@ -1,9 +1,19 @@
+use crate::{
+	image, pipelines, sampler,
+	shader::{self, Sources},
+	ShaderHandle, ShaderTypes,
+};
+
 /// The `Device` trait centralizes ownership of backend device state for the graphics hardware interface.
 pub trait Device
 where
 	Self: Sized,
 {
 	type Context: crate::context::Context;
+	type RasterPipeline;
+	type ComputePipeline;
+	type Image;
+	type Sampler;
 
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
 	#[cfg(debug_assertions)]
@@ -11,6 +21,27 @@ where
 
 	/// Creates a rendering context that takes ownership of this device.
 	fn create_context(self) -> Result<Self::Context, &'static str>;
+
+	/// Creates a shader.
+	fn create_shader(
+		&mut self,
+		name: Option<&str>,
+		shader_source_type: Sources,
+		stage: ShaderTypes,
+		shader_binding_descriptors: impl IntoIterator<Item = shader::BindingDescriptor>,
+	) -> Result<ShaderHandle, ()>;
+
+	/// Creates a graphics/rasterization pipeline from a builder.
+	fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> Self::RasterPipeline;
+
+	/// Creates a compute pipeline from a builder.
+	fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> Self::ComputePipeline;
+
+	/// Creates an image that can be interned into a rendering context later.
+	fn build_image(&mut self, builder: image::Builder) -> Self::Image;
+
+	/// Creates a sampler that can be interned into a rendering context later.
+	fn build_sampler(&mut self, builder: sampler::Builder) -> Self::Sampler;
 }
 
 /// Configuration for which features to request from the underlying API when creating a device/instance.

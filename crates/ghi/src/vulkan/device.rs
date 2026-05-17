@@ -830,6 +830,10 @@ impl std::ops::Deref for InnerDevice {
 
 impl crate::device::Device for Device {
 	type Context = Context;
+	type RasterPipeline = crate::implementation::RasterPipeline;
+	type ComputePipeline = crate::implementation::ComputePipeline;
+	type Image = crate::implementation::FactoryImage;
+	type Sampler = crate::implementation::FactorySampler;
 
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
@@ -838,6 +842,32 @@ impl crate::device::Device for Device {
 
 	fn create_context(self) -> Result<Self::Context, &'static str> {
 		Context::new(self)
+	}
+
+	fn create_shader(
+		&mut self,
+		_name: Option<&str>,
+		_shader_source_type: crate::shader::Sources,
+		_stage: crate::ShaderTypes,
+		_shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+	) -> Result<crate::ShaderHandle, ()> {
+		Err(())
+	}
+
+	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
+		crate::implementation::RasterPipeline
+	}
+
+	fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
+		crate::implementation::ComputePipeline
+	}
+
+	fn build_image(&mut self, _builder: crate::image::Builder) -> Self::Image {
+		crate::implementation::FactoryImage
+	}
+
+	fn build_sampler(&mut self, _builder: crate::sampler::Builder) -> Self::Sampler {
+		crate::implementation::FactorySampler
 	}
 }
 

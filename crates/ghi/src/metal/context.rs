@@ -1,32 +1,3 @@
-use std::cell::Cell;
-use std::collections::VecDeque;
-use std::ffi::c_void;
-use std::ptr::NonNull;
-
-use ::utils::hash::{HashMap, HashSet};
-use dispatch2::DispatchData;
-use objc2::runtime::ProtocolObject;
-use objc2::ClassType;
-use objc2_foundation::{NSArray, NSAutoreleasePool, NSRange, NSString};
-use objc2_metal::{
-	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
-	MTLLibrary, MTLResource,
-};
-
-use super::device::*;
-use super::*;
-use crate::{
-	binding::DescriptorSetBindingHandle,
-	buffer::{self as buffer_builder, BufferHandle},
-	descriptors::DescriptorSetHandle,
-	image::{self as image_builder, ImageHandle},
-	metal::swapchain::Swapchain,
-	metal::utils::parse_threadgroup_size_metadata,
-	pipelines::raster as raster_pipeline,
-	sampler::{self as sampler_builder, SamplerHandle},
-	window, DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
-};
-
 /// The `Context` struct owns resources created for rendering on a Metal GPU device.
 pub struct Context {
 	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
@@ -878,17 +849,12 @@ impl Context {
 		false
 	}
 
-	/// Creates a detached-resource factory backed by this Metal device.
-	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
+	/// Creates a detached device backed by this Metal device.
+	pub fn create_detached_device(&self) -> Option<crate::implementation::DetachedDevice> {
 		Some(crate::metal::pipelines::factory::Factory {
 			device: self.device.clone(),
 			shaders: Vec::with_capacity(64),
 		})
-	}
-
-	/// Creates a detached pipeline-capable factory for compatibility with the previous pipeline factory API.
-	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::Factory> {
-		self.create_factory()
 	}
 
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
@@ -2333,6 +2299,11 @@ impl crate::context::Context for Context {
 	type QueueReference<'a> = crate::metal::queue::QueueReference<'a>;
 	type CommandBuffer<'a> = crate::metal::CommandBuffer<'a>;
 
+	#[cfg(debug_assertions)]
+	fn has_errors(&self) -> bool {
+		Context::has_errors(self)
+	}
+
 	fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue {
 		Context::queue(self, queue_handle)
 	}
@@ -2573,3 +2544,32 @@ impl crate::context::ContextCreate for Context {
 		Context::create_synchronizer(self, name, signaled)
 	}
 }
+
+use std::cell::Cell;
+use std::collections::VecDeque;
+use std::ffi::c_void;
+use std::ptr::NonNull;
+
+use ::utils::hash::{HashMap, HashSet};
+use dispatch2::DispatchData;
+use objc2::runtime::ProtocolObject;
+use objc2::ClassType;
+use objc2_foundation::{NSArray, NSAutoreleasePool, NSRange, NSString};
+use objc2_metal::{
+	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
+	MTLLibrary, MTLResource,
+};
+
+use super::device::*;
+use super::*;
+use crate::{
+	binding::DescriptorSetBindingHandle,
+	buffer::{self as buffer_builder, BufferHandle},
+	descriptors::DescriptorSetHandle,
+	image::{self as image_builder, ImageHandle},
+	metal::swapchain::Swapchain,
+	metal::utils::parse_threadgroup_size_metadata,
+	pipelines::raster as raster_pipeline,
+	sampler::{self as sampler_builder, SamplerHandle},
+	window, DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
+};

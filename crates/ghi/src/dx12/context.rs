@@ -2653,12 +2653,8 @@ impl Device {
 		SwapchainHandle((self.swapchains.len() - 1) as u64)
 	}
 
-	pub fn create_factory(&mut self) -> Option<crate::implementation::Factory> {
-		Some(crate::implementation::Factory::default())
-	}
-
-	pub fn create_pipeline_factory(&mut self) -> Option<crate::implementation::Factory> {
-		self.create_factory()
+	pub fn create_detached_device(&mut self) -> Option<crate::implementation::DetachedDevice> {
+		Some(crate::implementation::DetachedDevice::default())
 	}
 
 	pub fn get_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, uses: Uses) -> (ImageHandle, Formats) {
@@ -6244,6 +6240,10 @@ impl crate::command_buffer::CommandBuffer for CommandBufferReference<'_> {
 
 impl crate::device::Device for Device {
 	type Context = Device;
+	type RasterPipeline = crate::dx12::factory::RasterPipeline;
+	type ComputePipeline = crate::dx12::factory::ComputePipeline;
+	type Image = crate::dx12::factory::FactoryImage;
+	type Sampler = crate::dx12::factory::FactorySampler;
 
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
@@ -6252,6 +6252,32 @@ impl crate::device::Device for Device {
 
 	fn create_context(self) -> Result<Self::Context, &'static str> {
 		Ok(self)
+	}
+
+	fn create_shader(
+		&mut self,
+		_name: Option<&str>,
+		_shader_source_type: Sources,
+		_stage: ShaderTypes,
+		_shader_binding_descriptors: impl IntoIterator<Item = BindingDescriptor>,
+	) -> Result<ShaderHandle, ()> {
+		panic!("DX12 detached shader creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+	}
+
+	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
+		panic!("DX12 detached raster pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+	}
+
+	fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
+		panic!("DX12 detached compute pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+	}
+
+	fn build_image(&mut self, _builder: crate::image::Builder) -> Self::Image {
+		panic!("DX12 detached image creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+	}
+
+	fn build_sampler(&mut self, _builder: crate::sampler::Builder) -> Self::Sampler {
+		panic!("DX12 detached sampler creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
 	}
 }
 
@@ -6357,6 +6383,11 @@ impl crate::context::Context for Device {
 	type Queue = super::queue::Queue;
 	type QueueReference<'a> = super::queue::QueueReference<'a>;
 	type CommandBuffer<'a> = CommandBufferReference<'a>;
+
+	#[cfg(debug_assertions)]
+	fn has_errors(&self) -> bool {
+		Device::has_errors(self)
+	}
 
 	fn queue(&mut self, queue_handle: QueueHandle) -> Self::Queue {
 		super::queue::Queue {

@@ -29,7 +29,7 @@ pub mod implementation {
 	pub const USES_METAL: bool = cfg!(target_os = "macos");
 
 	#[cfg(target_os = "windows")]
-	pub use dx12::factory::{ComputePipeline, Factory, FactoryImage, FactorySampler, RasterPipeline};
+	pub use dx12::factory::{ComputePipeline, Factory as DetachedDevice, FactoryImage, FactorySampler, RasterPipeline};
 	#[cfg(target_os = "windows")]
 	pub use dx12::CommandBufferRecording;
 	#[cfg(target_os = "windows")]
@@ -62,7 +62,8 @@ pub mod implementation {
 	pub(crate) use metal::image::Image;
 	#[cfg(target_os = "macos")]
 	pub use metal::pipelines::factory::{
-		ComputePipeline, Factory, Image as FactoryImage, Pipeline as RasterPipeline, Sampler as FactorySampler,
+		ComputePipeline, Factory as DetachedDevice, Image as FactoryImage, Pipeline as RasterPipeline,
+		Sampler as FactorySampler,
 	};
 	#[cfg(target_os = "macos")]
 	pub use metal::queue::Queue;
@@ -113,8 +114,8 @@ pub mod implementation {
 	use crate::vulkan;
 
 	#[cfg(target_os = "linux")]
-	/// The `Factory` struct marks the unsupported detached-resource factory for the Vulkan implementation.
-	pub struct Factory;
+	/// The `DetachedDevice` struct marks the unsupported detached resource device for the Vulkan implementation.
+	pub struct DetachedDevice;
 
 	#[cfg(target_os = "linux")]
 	/// The `ComputePipeline` struct marks the unsupported detached compute pipeline for the Vulkan implementation.
@@ -131,40 +132,6 @@ pub mod implementation {
 	#[cfg(target_os = "linux")]
 	/// The `FactorySampler` struct marks the unsupported detached sampler for the Vulkan implementation.
 	pub struct FactorySampler;
-
-	#[cfg(target_os = "linux")]
-	impl crate::factory::Factory for Factory {
-		type RasterPipeline = RasterPipeline;
-		type ComputePipeline = ComputePipeline;
-		type Image = FactoryImage;
-		type Sampler = FactorySampler;
-
-		fn create_shader(
-			&mut self,
-			_name: Option<&str>,
-			_shader_source_type: crate::shader::Sources,
-			_stage: crate::ShaderTypes,
-			_shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
-		) -> Result<crate::ShaderHandle, ()> {
-			Err(())
-		}
-
-		fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-			RasterPipeline
-		}
-
-		fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-			ComputePipeline
-		}
-
-		fn build_image(&mut self, _builder: crate::image::Builder) -> Self::Image {
-			FactoryImage
-		}
-
-		fn build_sampler(&mut self, _builder: crate::sampler::Builder) -> Self::Sampler {
-			FactorySampler
-		}
-	}
 }
 
 pub mod binding;
@@ -173,7 +140,6 @@ pub mod command_buffer;
 pub mod context;
 pub mod descriptors;
 pub mod device;
-pub mod factory;
 pub mod frame;
 pub mod image;
 pub mod pipelines;

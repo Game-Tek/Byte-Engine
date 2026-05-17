@@ -84,11 +84,21 @@ impl Default for Factory {
 	}
 }
 
-impl crate::factory::Factory for Factory {
+impl crate::device::Device for Factory {
+	type Context = crate::dx12::Device;
 	type RasterPipeline = RasterPipeline;
 	type ComputePipeline = ComputePipeline;
 	type Image = FactoryImage;
 	type Sampler = FactorySampler;
+
+	#[cfg(debug_assertions)]
+	fn has_errors(&self) -> bool {
+		false
+	}
+
+	fn create_context(self) -> Result<Self::Context, &'static str> {
+		Err("Detached DX12 device cannot create a rendering context. The most likely cause is that asynchronous resource construction attempted to become the primary graphics device.")
+	}
 
 	fn create_shader(
 		&mut self,

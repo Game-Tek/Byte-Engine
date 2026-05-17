@@ -18,7 +18,7 @@ pub(crate) struct VisibilityPipelineResourceManager {
 	shader_requests: RwLock<StaleHashMap<String, u64, Arc<OwnedShader>>>,
 	compute_pipeline_requests: Option<Sender<ComputePipelineRequest>>,
 	compute_pipeline_results: Option<Receiver<ComputePipelineResult>>,
-	resource_factory: Option<ghi::implementation::Factory>,
+	resource_device: Option<ghi::implementation::DetachedDevice>,
 	material_pipeline_config: Option<MaterialPipelineConfig>,
 	work_completions: Sender<VisibilityResourceCompletion>,
 }
@@ -60,9 +60,9 @@ impl VisibilityPipelineResourceManager {
 		mesh_data_manager: GPUVertexDataManager,
 		work_completions: Sender<VisibilityResourceCompletion>,
 	) -> Self {
-		let resource_factory = context.create_factory();
-		let (compute_pipeline_requests, compute_pipeline_results) = if let Some(factory) = context.create_factory() {
-			let (requests, results) = Self::spawn_compute_worker(factory);
+		let resource_device = context.create_detached_device();
+		let (compute_pipeline_requests, compute_pipeline_results) = if let Some(device) = context.create_detached_device() {
+			let (requests, results) = Self::spawn_compute_worker(device);
 			(Some(requests), Some(results))
 		} else {
 			(None, None)
@@ -79,7 +79,7 @@ impl VisibilityPipelineResourceManager {
 			shader_requests: RwLock::new(StaleHashMap::with_capacity(1024)),
 			compute_pipeline_requests,
 			compute_pipeline_results,
-			resource_factory,
+			resource_device,
 			material_pipeline_config: None,
 			work_completions,
 		}
@@ -284,20 +284,20 @@ impl VisibilityPipelineResourceManager {
 				id
 			);
 		})?;
-		let factory = self.resource_factory.as_mut().ok_or_else(|| {
+		let device = self.resource_device.as_mut().ok_or_else(|| {
 			log::error!(
-				"Visibility texture factory is unavailable for {}. The most likely cause is that the active backend does not expose a generic resource factory.",
+				"Visibility detached resource device is unavailable for {}. The most likely cause is that the active backend does not expose detached resource creation.",
 				id
 			);
 		})?;
-		let image = factory.build_image(
+		let image = device.build_image(
 			ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name(reference.id())
 				.extent(extent)
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.use_case(ghi::UseCases::STATIC),
 		);
-		let sampler = factory.build_sampler(default_material_sampler_builder());
+		let sampler = device.build_sampler(default_material_sampler_builder());
 
 		Ok(FactoryTexture {
 			index,
@@ -892,17 +892,17 @@ const DEBUG_PIPELINE_CREATION_DELAY: Duration = Duration::from_millis(250);
 
 impl VisibilityPipelineResourceManager {
 	fn spawn_compute_worker(
-		factory: ghi::implementation::Factory,
+		device: ghi::implementation::DetachedDevice,
 	) -> (Sender<ComputePipelineRequest>, Receiver<ComputePipelineResult>) {
 		let (request_sender, request_receiver) = mpsc::channel::<ComputePipelineRequest>();
 		let (result_sender, result_receiver) = mpsc::channel::<ComputePipelineResult>();
 
 		thread::spawn(move || {
-			let mut factory = factory;
+			let mut device = device;
 
 			while let Ok(request) = request_receiver.recv() {
 				let key = request.key.clone();
-				let result = catch_unwind(AssertUnwindSafe(|| Self::compile_compute_pipeline(&mut factory, request)));
+				let result = catch_unwind(AssertUnwindSafe(|| Self::compile_compute_pipeline(&mut device, request)));
 
 				let message = match result {
 					Ok(Ok(pipeline)) => ComputePipelineResult::Ready { key, pipeline },
@@ -919,22 +919,22 @@ impl VisibilityPipelineResourceManager {
 	}
 
 	fn compile_compute_pipeline(
-		factory: &mut ghi::implementation::Factory,
+		device: &mut ghi::implementation::DetachedDevice,
 		request: ComputePipelineRequest,
 	) -> Result<ghi::implementation::ComputePipeline, ()> {
-		use ghi::factory::Factory as _;
+		use ghi::Device as _;
 
 		Self::sleep_for_debug_pipeline_delay();
 
 		let shader = request.shader;
-		let shader_handle = factory.create_shader(
+		let shader_handle = device.create_shader(
 			shader.name.as_deref(),
 			shader.source.sources(),
 			shader.stage,
 			shader.binding_descriptors.iter().copied(),
 		)?;
 
-		Ok(factory.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+		Ok(device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&request.descriptor_set_templates,
 			&request.push_constant_ranges,
 			ghi::ShaderParameter::new(&shader_handle, shader.stage)
@@ -1394,8 +1394,8 @@ use std::thread;
 use std::time::Duration;
 
 use ghi::context::{Context as _, ContextCreate as _};
-use ghi::factory::Factory as _;
 use ghi::frame::Frame as _;
+use ghi::Device as _;
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,

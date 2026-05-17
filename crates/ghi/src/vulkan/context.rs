@@ -118,13 +118,8 @@ impl Context {
 		})
 	}
 
-	/// Returns no detached-resource factory because the Vulkan backend does not implement this path yet.
-	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
-		None
-	}
-
-	/// Returns no detached pipeline factory for compatibility with the previous pipeline factory API.
-	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::Factory> {
+	/// Returns no detached device because the Vulkan backend does not implement this path yet.
+	pub fn create_detached_device(&self) -> Option<crate::implementation::DetachedDevice> {
 		None
 	}
 
@@ -2716,6 +2711,11 @@ impl crate::context::Context for Context {
 		= crate::vulkan::command_buffer::CommandBufferReference<'a>
 	where
 		Self: 'a;
+
+	#[cfg(debug_assertions)]
+	fn has_errors(&self) -> bool {
+		self.device.has_errors()
+	}
 
 	fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue {
 		let queue = &self.queues[queue_handle.0 as usize];

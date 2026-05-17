@@ -23,6 +23,10 @@ pub trait Context: ContextCreate {
 	where
 		Self: 'a;
 
+	/// Returns whether the underlying API has encountered any errors.
+	#[cfg(debug_assertions)]
+	fn has_errors(&self) -> bool;
+
 	/// Returns an owned queue wrapper that exposes queue-local command submission.
 	fn queue(&mut self, queue_handle: QueueHandle) -> Self::Queue;
 
@@ -161,7 +165,7 @@ pub trait ContextCreate {
 		descriptor_set_template_handle: &DescriptorSetTemplateHandle,
 	) -> DescriptorSetHandle;
 
-	/// ```rust
+	/// ```rust,ignore
 	///	let views_data_binding = device.create_descriptor_binding(
 	///		descriptor_set,
 	///		ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),

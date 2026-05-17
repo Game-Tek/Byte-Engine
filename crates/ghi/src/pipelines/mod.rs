@@ -1,7 +1,6 @@
 use crate::{DataTypes, ShaderHandle, ShaderTypes};
 
 pub mod compute;
-pub mod factory;
 
 pub mod raster;
 pub mod ray_tracing;

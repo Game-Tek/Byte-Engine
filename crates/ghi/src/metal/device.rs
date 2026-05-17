@@ -38,6 +38,10 @@ impl Device {
 
 impl crate::device::Device for Device {
 	type Context = crate::metal::context::Context;
+	type RasterPipeline = crate::metal::pipelines::factory::Pipeline;
+	type ComputePipeline = crate::metal::pipelines::factory::ComputePipeline;
+	type Image = crate::metal::pipelines::factory::Image;
+	type Sampler = crate::metal::pipelines::factory::Sampler;
 
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
@@ -46,6 +50,32 @@ impl crate::device::Device for Device {
 
 	fn create_context(self) -> Result<Self::Context, &'static str> {
 		crate::metal::context::Context::new(self.settings, self.device, self.queues)
+	}
+
+	fn create_shader(
+		&mut self,
+		_name: Option<&str>,
+		_shader_source_type: crate::shader::Sources,
+		_stage: crate::ShaderTypes,
+		_shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+	) -> Result<crate::ShaderHandle, ()> {
+		panic!("Metal device shader creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+	}
+
+	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
+		panic!("Metal detached raster pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+	}
+
+	fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
+		panic!("Metal detached compute pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+	}
+
+	fn build_image(&mut self, _builder: crate::image::Builder) -> Self::Image {
+		panic!("Metal detached image creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+	}
+
+	fn build_sampler(&mut self, _builder: crate::sampler::Builder) -> Self::Sampler {
+		panic!("Metal detached sampler creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
 	}
 }
 

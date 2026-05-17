@@ -1772,9 +1772,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.device
 				.reset_fences(&[synchronizer.fence])
 				.expect("Failed to reset Vulkan command buffer synchronizer. The most likely cause is that the fence is invalid or already in use.");
+			let vk_queue = command_buffer
+				.vk_queue
+				.lock()
+				.expect("Failed to lock Vulkan queue for command-buffer submission. The most likely cause is that another thread panicked while holding the queue lock.");
 			self.device
 				.device
-				.queue_submit2(command_buffer.vk_queue, &[submit_info], synchronizer.fence)
+				.queue_submit2(*vk_queue, &[submit_info], synchronizer.fence)
 				.expect("Failed to submit Vulkan command buffer. The most likely cause is that the command buffer was not recorded for this queue.");
 		}
 

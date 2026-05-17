@@ -131,6 +131,7 @@ impl Context {
 		let command_buffer_handle = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
 
 		let queue = &self.queues[queue_handle.0 as usize];
+		let vk_queue = queue.vk_queue.clone();
 
 		let command_buffers = (0..self.frames)
 			.map(|_| {
@@ -160,7 +161,7 @@ impl Context {
 				self.set_name(command_buffer, name);
 
 				CommandBufferInternal {
-					vk_queue: queue.vk_queue,
+					vk_queue: vk_queue.clone(),
 					command_pool,
 					command_buffer,
 				}
@@ -2882,7 +2883,7 @@ impl crate::context::Context for Context {
 
 	fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue {
 		let queue = &self.queues[queue_handle.0 as usize];
-		let vk_queue = queue.vk_queue;
+		let vk_queue = queue.vk_queue.clone();
 		let queue_family_index = queue.queue_family_index;
 		let queue_index = queue._queue_index;
 		crate::vulkan::queue::Queue {
@@ -3006,6 +3007,7 @@ impl crate::context::Context for Context {
 
 			for command_buffer in &mut self.command_buffers {
 				let queue = &self.queues[command_buffer.queue_handle.0 as usize];
+				let vk_queue = queue.vk_queue.clone();
 				let command_pool_create_info =
 					vk::CommandPoolCreateInfo::default().queue_family_index(queue.queue_family_index);
 
@@ -3031,7 +3033,7 @@ impl crate::context::Context for Context {
 				// self.set_name(vk_command_buffer, name);
 
 				command_buffer.frames.push(CommandBufferInternal {
-					vk_queue: queue.vk_queue,
+					vk_queue: vk_queue.clone(),
 					command_pool,
 					command_buffer: vk_command_buffer,
 				});

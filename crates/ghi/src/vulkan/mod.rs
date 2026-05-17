@@ -1,4 +1,4 @@
-use std::sync::atomic::AtomicU64;
+use std::sync::{atomic::AtomicU64, Arc, Mutex};
 
 use ::utils::hash::HashMap;
 use ::utils::Extent;
@@ -150,9 +150,9 @@ pub(crate) struct PipelineLayoutKey {
 	push_constant_ranges: Vec<crate::pipelines::PushConstantRange>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct CommandBufferInternal {
-	vk_queue: vk::Queue,
+	vk_queue: Arc<Mutex<vk::Queue>>,
 	command_pool: vk::CommandPool,
 	command_buffer: vk::CommandBuffer,
 }
@@ -396,7 +396,7 @@ impl DescriptorWrite {
 
 /// The `StoredQueue` struct stores per-queue device data for internal GPU queue management.
 pub(super) struct StoredQueue {
-	pub(crate) vk_queue: vk::Queue,
+	pub(crate) vk_queue: Arc<Mutex<vk::Queue>>,
 	pub(crate) queue_family_index: u32,
 	pub(crate) _queue_index: u32,
 }

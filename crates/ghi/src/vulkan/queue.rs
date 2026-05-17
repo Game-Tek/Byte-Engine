@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use ash::vk;
 use utils::hash::HashMap;
 
@@ -9,7 +11,7 @@ use crate::vulkan::Frame;
 pub struct Queue {
 	pub(crate) device: std::ptr::NonNull<Context>, // TODO: remove this
 	pub(crate) queue_handle: crate::QueueHandle,
-	pub(crate) vk_queue: vk::Queue,
+	pub(crate) vk_queue: Arc<Mutex<vk::Queue>>,
 	pub(crate) queue_family_index: u32,
 	pub(crate) _queue_index: u32,
 }

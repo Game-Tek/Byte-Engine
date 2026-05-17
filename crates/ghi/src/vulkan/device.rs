@@ -449,12 +449,26 @@ impl InnerDevice {
 				})?
 		};
 
+		// Multiple GHI queue requests can resolve to the same Vulkan queue, so they must share one lock.
+		// This mutex is a temporary external synchronization fix; prefer internally synchronized Vulkan queues when available.
+		let mut shared_queues = Vec::<(u32, std::sync::Arc<std::sync::Mutex<vk::Queue>>)>::new();
 		let queues = queues
 			.iter_mut()
 			.zip(queue_family_indices.iter().copied())
 			.enumerate()
 			.map(|(index, ((_, queue_handle), queue_family_index))| {
-				let vk_queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+				let vk_queue = if let Some((_, vk_queue)) = shared_queues
+					.iter()
+					.find(|(stored_queue_family_index, _)| *stored_queue_family_index == queue_family_index)
+				{
+					vk_queue.clone()
+				} else {
+					let vk_queue = std::sync::Arc::new(std::sync::Mutex::new(unsafe {
+						device.get_device_queue(queue_family_index, 0)
+					}));
+					shared_queues.push((queue_family_index, vk_queue.clone()));
+					vk_queue
+				};
 
 				**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
 

@@ -40,8 +40,9 @@ impl<'a> Frame<'a> {
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
 	) {
-		let command_buffer =
-			self.device.command_buffers[command_buffer_handle.0 as usize].frames[self.frame_key.sequence_index as usize];
+		let command_buffer = self.device.command_buffers[command_buffer_handle.0 as usize].frames
+			[self.frame_key.sequence_index as usize]
+			.clone();
 
 		let command_buffers = [command_buffer.command_buffer];
 
@@ -104,12 +105,15 @@ impl<'a> Frame<'a> {
 			.map(|synchronizer| self.get_synchronizer(synchronizer).fence)
 			.unwrap_or(vk::Fence::null());
 
-		let vk_queue = command_buffer.vk_queue;
+		let vk_queue = command_buffer
+			.vk_queue
+			.lock()
+			.expect("Failed to lock Vulkan queue for frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
 
 		unsafe {
 			self.device
 				.device
-				.queue_submit2(vk_queue, &[submit_info], execution_completion_fence)
+				.queue_submit2(*vk_queue, &[submit_info], execution_completion_fence)
 				.expect("Failed to submit command buffer.");
 		}
 
@@ -140,7 +144,7 @@ impl<'a> Frame<'a> {
 			let _ = unsafe {
 				self.device
 					.swapchain
-					.queue_present(vk_queue, &present_info)
+					.queue_present(*vk_queue, &present_info)
 					.expect("No present")
 			};
 
@@ -159,13 +163,16 @@ impl<'a> Frame<'a> {
 
 	pub(crate) fn complete_without_submissions(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 		let synchronizer = self.get_synchronizer(synchronizer);
-		let queue = self.device.queues[0].vk_queue;
+		let queue = self.device.queues[0]
+			.vk_queue
+			.lock()
+			.expect("Failed to lock Vulkan queue for empty frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
 		let submit_info = vk::SubmitInfo2::default();
 
 		unsafe {
 			self.device
 				.device
-				.queue_submit2(queue, &[submit_info], synchronizer.fence)
+				.queue_submit2(*queue, &[submit_info], synchronizer.fence)
 				.expect("Failed to submit empty Vulkan frame. The most likely cause is that the completion fence is invalid.");
 		}
 	}

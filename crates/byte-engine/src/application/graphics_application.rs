@@ -494,8 +494,9 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 				let mut started_frame_count = 0;
 
 				loop {
-					if application_events.try_recv().is_ok() {
-						break;
+					match application_events.try_recv() {
+						Ok(Events::Close) => break,
+						_ => {}
 					}
 
 					let started_frame = transfer_queue.start_frame(started_frame_count as _, transfer_finished_synchronizer);

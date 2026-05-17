@@ -895,6 +895,7 @@ enum ComputePipelineResult {
 	},
 	Failed {
 		key: String,
+		reason: String,
 	},
 }
 
@@ -917,7 +918,11 @@ impl VisibilityPipelineResourceManager {
 
 				let message = match result {
 					Ok(Ok(pipeline)) => ComputePipelineResult::Ready { key, pipeline },
-					Ok(Err(())) | Err(_) => ComputePipelineResult::Failed { key },
+					Ok(Err(reason)) => ComputePipelineResult::Failed { key, reason },
+					Err(reason) => ComputePipelineResult::Failed {
+						key,
+						reason: panic_payload_to_string(reason),
+					},
 				};
 
 				if result_sender.send(message).is_err() {
@@ -932,7 +937,7 @@ impl VisibilityPipelineResourceManager {
 	fn compile_compute_pipeline(
 		device: &mut ghi::implementation::Device,
 		request: ComputePipelineRequest,
-	) -> Result<ghi::implementation::ComputePipeline, ()> {
+	) -> Result<ghi::implementation::ComputePipeline, String> {
 		use ghi::Device as _;
 
 		Self::sleep_for_debug_pipeline_delay();
@@ -943,7 +948,13 @@ impl VisibilityPipelineResourceManager {
 			shader.source.sources(),
 			shader.stage,
 			shader.binding_descriptors.iter().copied(),
-		)?;
+		)
+		.map_err(|_| {
+			format!(
+				"shader creation failed for {}. The most likely cause is that the active backend does not support detached shader creation for this shader source or the shader payload is invalid.",
+				request.key
+			)
+		})?;
 
 		Ok(device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&request.descriptor_set_templates,
@@ -1001,12 +1012,9 @@ impl VisibilityPipelineResourceManager {
 					self.pipelines.write().insert(key.clone(), PipelineStatus::Ready(handle));
 					resolved_pipelines.push((key, handle));
 				}
-				ComputePipelineResult::Failed { key } => {
+				ComputePipelineResult::Failed { key, reason } => {
 					self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
-					log::error!(
-						"Async pipeline compilation failed for {}. The most likely cause is that shader creation or pipeline specialization failed on the compilation thread.",
-						key
-					);
+					log::error!("Async pipeline compilation failed for {}: {}", key, reason);
 				}
 			}
 		}
@@ -1038,12 +1046,9 @@ impl VisibilityPipelineResourceManager {
 						);
 					}
 				}
-				ComputePipelineResult::Failed { key } => {
+				ComputePipelineResult::Failed { key, reason } => {
 					self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
-					log::error!(
-						"Async pipeline compilation failed for {}. The most likely cause is that shader creation or pipeline specialization failed on the compilation thread.",
-						key
-					);
+					log::error!("Async pipeline compilation failed for {}: {}", key, reason);
 				}
 			}
 
@@ -1311,6 +1316,19 @@ fn texture_upload_layout(format: ghi::Formats, extent: Extent) -> Option<(usize,
 			Some((bytes_per_row, height, bytes_per_row * height))
 		}
 	}
+}
+
+/// Converts a worker panic into a useful error reason for async pipeline diagnostics.
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+	if let Some(message) = payload.downcast_ref::<&str>() {
+		return (*message).to_string();
+	}
+
+	if let Some(message) = payload.downcast_ref::<String>() {
+		return message.clone();
+	}
+
+	"pipeline worker panicked with a non-string payload. The most likely cause is that backend pipeline creation hit an unexpected assertion.".to_string()
 }
 
 #[cfg(test)]

@@ -3363,6 +3363,21 @@ impl crate::context::ContextCreate for Context {
 		descriptor_write.array_element = array_element;
 		descriptor_write.frame_offset = frame_offset;
 
+		// Descriptor creation must make the descriptor set immediately valid. The
+		// queued task below still refreshes frame-specific resources that may be
+		// created after this binding, but first use cannot depend on a future frame
+		// task being processed by the graphics queue.
+		match descriptor_write.descriptor {
+			crate::descriptors::WriteData::Buffer { .. }
+			| crate::descriptors::WriteData::Image { .. }
+			| crate::descriptors::WriteData::CombinedImageSampler { .. }
+			| crate::descriptors::WriteData::Sampler(_) => self.write(&[descriptor_write]),
+			crate::descriptors::WriteData::AccelerationStructure { .. }
+			| crate::descriptors::WriteData::Swapchain(_)
+			| crate::descriptors::WriteData::StaticSamplers
+			| crate::descriptors::WriteData::CombinedImageSamplerArray => {}
+		}
+
 		self.add_task_to_all_frames(Tasks::UpdateDescriptor { descriptor_write });
 
 		handle

@@ -3,6 +3,7 @@ use utils::Extent;
 
 use super::{command_buffer::CommandBufferRecording, context::Context};
 use crate::{
+	context::ContextCreate as _,
 	graphics_hardware_interface,
 	vulkan::{BufferCopy, BufferHandle, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
 	FrameKey, HandleLike as _, MasterHandle as _,
@@ -312,6 +313,8 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 		self.device.swapchains[swapchain_handle.0 as usize].acquired_image_indices[self.frame_key.sequence_index as usize] =
 			index as u8;
+		self.device
+			.update_swapchain_descriptors_for_sequence(swapchain_handle, self.frame_key.sequence_index as usize);
 
 		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX
 			&& vk_surface_capabilities.current_extent.height != u32::MAX
@@ -570,30 +573,53 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
+	/// Interns a factory-built compute pipeline into this frame's device.
 	pub fn intern_compute_pipeline(
 		&mut self,
-		_pipeline: crate::implementation::ComputePipeline,
+		pipeline: crate::implementation::ComputePipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
-		panic!(
-			"Vulkan async pipeline interning is unavailable. The most likely cause is that the Vulkan backend does not implement the pipeline factory path yet."
-		);
+		let layout_handle = graphics_hardware_interface::PipelineLayoutHandle(self.device.pipeline_layouts.len() as u64);
+		self.device.pipeline_layouts.push(pipeline.layout);
+		let handle = graphics_hardware_interface::PipelineHandle(self.device.pipelines.len() as u64);
+		self.device.pipelines.push(crate::vulkan::Pipeline {
+			pipeline: pipeline.pipeline,
+			layout: layout_handle,
+			shader_handles: pipeline.shader_handles,
+			resource_access: pipeline.resource_access,
+		});
+
+		handle
 	}
 
-	/// Rejects factory-built image interning because the Vulkan backend does not implement this path yet.
-	pub fn intern_image(&mut self, _image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
-		panic!(
-			"Vulkan async image interning is unavailable. The most likely cause is that the Vulkan backend does not implement the factory image path yet."
-		);
+	/// Interns a factory-built image through this frame's device.
+	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+		let mut builder = crate::image::Builder::new(image.format, image.resource_uses)
+			.extent(image.extent)
+			.device_accesses(image.device_accesses)
+			.use_case(image.use_case);
+		builder.name = image.name.as_deref();
+		builder.array_layers = image.array_layers;
+
+		self.device.build_image(builder)
 	}
 
-	/// Rejects factory-built sampler interning because the Vulkan backend does not implement this path yet.
+	/// Interns a factory-built sampler through this frame's device.
 	pub fn intern_sampler(
 		&mut self,
-		_sampler: crate::implementation::FactorySampler,
+		sampler: crate::implementation::FactorySampler,
 	) -> graphics_hardware_interface::SamplerHandle {
-		panic!(
-			"Vulkan async sampler interning is unavailable. The most likely cause is that the Vulkan backend does not implement the factory sampler path yet."
-		);
+		let mut builder = crate::sampler::Builder::new()
+			.filtering_mode(sampler.filtering_mode)
+			.reduction_mode(sampler.reduction_mode)
+			.mip_map_mode(sampler.mip_map_mode)
+			.addressing_mode(sampler.addressing_mode)
+			.min_lod(sampler.min_lod)
+			.max_lod(sampler.max_lod);
+		if let Some(anisotropy) = sampler.anisotropy {
+			builder = builder.anisotropy(anisotropy);
+		}
+
+		self.device.build_sampler(builder)
 	}
 
 	pub(crate) fn get_synchronizer(

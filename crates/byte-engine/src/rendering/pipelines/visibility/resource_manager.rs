@@ -97,7 +97,15 @@ impl VisibilityPipelineResourceManager {
 	}
 
 	/// Stores the descriptor layout data needed to compile material evaluation pipelines.
-	pub(crate) fn configure_material_pipeline(&mut self, config: MaterialPipelineConfig) {
+	pub(crate) fn configure_material_pipeline(&mut self, mut config: MaterialPipelineConfig) {
+		if self.compute_pipeline_requests.is_none() {
+			if let Some(factory) = config.pipeline_factory.take() {
+				let (requests, results) = Self::spawn_compute_worker(factory);
+				self.compute_pipeline_requests = Some(requests);
+				self.compute_pipeline_results = Some(results);
+			}
+		}
+
 		self.material_pipeline_config = Some(config);
 	}
 
@@ -801,6 +809,7 @@ struct FactoryMaterial {
 pub(crate) struct MaterialPipelineConfig {
 	descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
+	pipeline_factory: Option<ghi::implementation::Factory>,
 }
 
 impl MaterialPipelineConfig {
@@ -808,10 +817,12 @@ impl MaterialPipelineConfig {
 	pub(crate) fn new(
 		descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 		push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
+		pipeline_factory: Option<ghi::implementation::Factory>,
 	) -> Self {
 		Self {
 			descriptor_set_templates,
 			push_constant_ranges,
+			pipeline_factory,
 		}
 	}
 }

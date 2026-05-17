@@ -16,11 +16,21 @@ mod utils;
 
 #[cfg(test)]
 mod tests {
+	use std::sync::atomic::{AtomicU64, Ordering};
+
 	use super::*;
 	use crate::command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 		RasterizationRenderPassMode as _,
 	};
+
+	static DX12_DEBUG_TEST_LOGS: AtomicU64 = AtomicU64::new(0);
+
+	fn count_dx12_debug_test_message(message: &str) {
+		if message.contains("ghi dx12 test application message") {
+			DX12_DEBUG_TEST_LOGS.fetch_add(1, Ordering::Relaxed);
+		}
+	}
 
 	fn create_default_device_setup() -> (Instance, Device, crate::QueueHandle) {
 		let features = crate::device::Features::new().validation(false);
@@ -36,6 +46,32 @@ mod tests {
 			)
 			.expect("Failed to create DX12 GHI.");
 		(instance, device, queue_handle.unwrap())
+	}
+
+	#[test]
+	fn debug_info_queue_messages_use_device_log_function() {
+		DX12_DEBUG_TEST_LOGS.store(0, Ordering::Relaxed);
+		let features = crate::device::Features::new()
+			.validation(true)
+			.debug_log_function(count_dx12_debug_test_message);
+		let Ok(mut instance) = Instance::new(features) else {
+			return;
+		};
+		let mut queue_handle = None;
+		let device = instance
+			.create_device(
+				features,
+				&mut [(
+					crate::QueueSelection::new(crate::types::WorkloadTypes::RASTER),
+					&mut queue_handle,
+				)],
+			)
+			.expect("Failed to create DX12 GHI.");
+
+		device.add_debug_message_for_test("ghi dx12 test application message");
+
+		assert!(DX12_DEBUG_TEST_LOGS.load(Ordering::Relaxed) > 0);
+		assert!(device.has_errors());
 	}
 
 	#[test]
@@ -1028,6 +1064,81 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			);
 		} else {
 			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
+		}
+	}
+
+	#[test]
+	fn dispatch_meshes_encodes_native_command_with_mesh_pipeline_state() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let mesh = match device.create_shader(
+			None,
+			crate::shader::Sources::HLSL {
+				source: r#"
+struct MeshVertex {
+	float4 position : SV_Position;
+	float4 color : COLOR0;
+};
+
+[numthreads(1, 1, 1)]
+[outputtopology("triangle")]
+void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
+	SetMeshOutputCounts(3, 1);
+	vertices[0].position = float4(0.0, 0.5, 0.0, 1.0);
+	vertices[0].color = float4(1.0, 0.0, 0.0, 1.0);
+	vertices[1].position = float4(0.5, -0.5, 0.0, 1.0);
+	vertices[1].color = float4(0.0, 1.0, 0.0, 1.0);
+	vertices[2].position = float4(-0.5, -0.5, 0.0, 1.0);
+	vertices[2].color = float4(0.0, 0.0, 1.0, 1.0);
+	triangles[0] = uint3(0, 1, 2);
+}
+"#,
+				entry_point: "main",
+			},
+			crate::ShaderTypes::Mesh,
+			[],
+		) {
+			Ok(shader) => shader,
+			Err(()) => return,
+		};
+		let fragment = device
+			.create_shader(
+				None,
+				crate::shader::Sources::HLSL {
+					source: "float4 main(float4 color : COLOR0) : SV_Target { return color; }",
+					entry_point: "main",
+				},
+				crate::ShaderTypes::Fragment,
+				[],
+			)
+			.expect("Failed to compile DX12 fragment HLSL.");
+		let shaders = [
+			crate::pipelines::ShaderParameter::new(&mesh, crate::ShaderTypes::Mesh),
+			crate::pipelines::ShaderParameter::new(&fragment, crate::ShaderTypes::Fragment),
+		];
+		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(
+			crate::Formats::RGBA8UNORM,
+		)];
+		let pipeline = device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
+			&[],
+			&[],
+			&[],
+			&shaders,
+			&render_targets,
+		));
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_raster_pipeline(pipeline);
+		recording.dispatch_meshes(1, 2, 3);
+		drop(recording);
+
+		if device.supports_native_mesh_shaders() {
+			assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
+			assert_eq!(device.pipeline_state_bind_count(), 1);
+			assert_eq!(device.mesh_dispatch_encode_count(), 1);
+		} else {
+			assert_eq!(device.pipeline_has_native_state(pipeline), Some(false));
+			assert_eq!(device.mesh_dispatch_encode_count(), 0);
 		}
 	}
 

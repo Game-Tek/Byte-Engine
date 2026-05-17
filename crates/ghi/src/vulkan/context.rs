@@ -118,9 +118,23 @@ impl Context {
 		})
 	}
 
-	/// Returns no detached device because the Vulkan backend does not implement this path yet.
+	/// Creates a detached-resource factory backed by this Vulkan device.
+	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
+		Some(crate::implementation::Factory {
+			device: self.device.device.clone(),
+			descriptor_set_layouts: self.descriptor_sets_layouts.clone(),
+			shaders: Vec::with_capacity(64),
+		})
+	}
+
+	/// Creates a detached device backed by the Vulkan factory implementation.
 	pub fn create_detached_device(&self) -> Option<crate::implementation::DetachedDevice> {
-		None
+		self.create_factory()
+	}
+
+	/// Creates a detached pipeline-capable factory for compatibility with the previous pipeline factory API.
+	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::Factory> {
+		self.create_factory()
 	}
 
 	pub(crate) fn create_command_buffer(
@@ -827,6 +841,110 @@ impl Context {
 		}
 	}
 
+	fn descriptor_set_sequence_index(&self, descriptor_set_handle: DescriptorSetHandle) -> usize {
+		let root = descriptor_set_handle.root(&self.descriptor_sets);
+		root.get_all(&self.descriptor_sets)
+			.iter()
+			.position(|handle| *handle == descriptor_set_handle)
+			.unwrap_or(0)
+	}
+
+	fn swapchain_descriptor_image_handle(
+		&self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		descriptor_set_handle: DescriptorSetHandle,
+	) -> ImageHandle {
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let sequence_index = self.descriptor_set_sequence_index(descriptor_set_handle);
+		let image_index = swapchain.acquired_image_indices[sequence_index] as usize;
+
+		swapchain.images[image_index]
+	}
+
+	pub(crate) fn update_swapchain_descriptors_for_sequence(
+		&mut self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		sequence_index: usize,
+	) {
+		let targets = self
+			.descriptors
+			.iter()
+			.filter(|(descriptor_set_handle, _)| self.descriptor_set_sequence_index(**descriptor_set_handle) == sequence_index)
+			.flat_map(|(descriptor_set_handle, bindings)| {
+				bindings.iter().flat_map(move |(binding_index, array_elements)| {
+					array_elements
+						.iter()
+						.filter_map(move |(array_element, descriptor)| match descriptor {
+							Descriptor::Swapchain { handle } if *handle == swapchain_handle => {
+								Some((*descriptor_set_handle, *binding_index, *array_element))
+							}
+							_ => None,
+						})
+				})
+			})
+			.collect::<Vec<_>>();
+
+		if targets.is_empty() {
+			return;
+		}
+
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let image_index = swapchain.acquired_image_indices[sequence_index] as usize;
+		let image_handle = swapchain.images[image_index];
+		let image = &self.images[image_handle.0 as usize];
+		let image_view = if !image.full_image_view.is_null() {
+			image.full_image_view
+		} else {
+			image.image_views[0]
+		};
+
+		if image.image.is_null() || image_view.is_null() {
+			eprintln!(
+				"Vulkan swapchain descriptor update skipped for swapchain {:?}. The most likely cause is that the acquired swapchain image does not have a valid image view.",
+				swapchain_handle
+			);
+			return;
+		}
+
+		let mut images: StableVec<vk::DescriptorImageInfo, 1024> = StableVec::new();
+		let writes = targets
+			.into_iter()
+			.filter_map(|(descriptor_set_handle, binding_index, array_element)| {
+				let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
+				let Some(binding) = self
+					.bindings
+					.iter()
+					.find(|binding| binding.descriptor_set_handle == descriptor_set_handle && binding.index == binding_index)
+				else {
+					eprintln!(
+						"Vulkan swapchain descriptor update skipped for binding {}. The most likely cause is that descriptor bookkeeping lost the binding handle for this descriptor set.",
+						binding_index
+					);
+					return None;
+				};
+
+				let image_info = images.append([vk::DescriptorImageInfo::default()
+					.image_layout(texture_format_and_resource_use_to_image_layout(
+						image.format_,
+						crate::Layouts::General,
+						None,
+					))
+					.image_view(image_view)]);
+
+				Some(
+					vk::WriteDescriptorSet::default()
+						.dst_set(descriptor_set.descriptor_set)
+						.dst_binding(binding_index)
+						.dst_array_element(array_element)
+						.descriptor_type(binding.descriptor_type)
+						.image_info(&image_info),
+				)
+			})
+			.collect::<Vec<_>>();
+
+		unsafe { self.device.update_descriptor_sets(&writes, &[]) };
+	}
+
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
 		let mut descriptor_writes = Vec::with_capacity(32);
 		let mut recurring_tasks = Vec::new();
@@ -936,17 +1054,25 @@ impl Context {
 						_ => None,
 					};
 
-					if let Some(write) = new_descriptor_write {
+					if let crate::descriptors::WriteData::Swapchain(handle) = descriptor_write.descriptor {
+						let binding_data = binding.access(&self.bindings);
+						self.descriptors
+							.entry(binding_data.descriptor_set_handle)
+							.or_insert_with(HashMap::new)
+							.entry(binding_data.index)
+							.or_insert_with(HashMap::new)
+							.insert(descriptor_write.array_element, Descriptor::Swapchain { handle });
+					} else if let Some(write) = new_descriptor_write {
 						descriptor_writes.push(write.index(descriptor_write.array_element));
-					}
 
-					if targets_swapchain {
-						recurring_tasks.push(Task::new(
-							Tasks::UpdateDescriptor {
-								descriptor_write: *descriptor_write,
-							},
-							Some(sequence_index),
-						));
+						if targets_swapchain {
+							recurring_tasks.push(Task::new(
+								Tasks::UpdateDescriptor {
+									descriptor_write: *descriptor_write,
+								},
+								Some(sequence_index),
+							));
+						}
 					}
 				}
 				Tasks::BuildImage(builder) => {
@@ -2450,8 +2576,7 @@ impl Context {
 					}
 					Descriptors::Swapchain { handle } => {
 						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
-						let swapchain = &self.swapchains[handle.0 as usize];
-						let image_handle = swapchain.images[0];
+						let image_handle = self.swapchain_descriptor_image_handle(handle, descriptor_set_handle);
 						let image = &self.images[image_handle.0 as usize];
 						let image_view = if !image.full_image_view.is_null() {
 							image.full_image_view
@@ -3288,6 +3413,16 @@ impl crate::context::ContextCreate for Context {
 		for specialization_map_entry in shader_parameter.specialization_map {
 			// TODO: accumulate offset
 			match specialization_map_entry.get_type().as_str() {
+				"bool" | "u32" | "f32" => {
+					specialization_map_entries.push(
+						vk::SpecializationMapEntry::default()
+							.constant_id(specialization_map_entry.get_constant_id())
+							.offset(specialization_entries_buffer.len() as u32)
+							.size(4),
+					);
+
+					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
+				}
 				"vec2f" => {
 					for i in 0..2 {
 						specialization_map_entries.push(

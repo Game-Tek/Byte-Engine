@@ -29,7 +29,9 @@ pub mod implementation {
 	pub const USES_METAL: bool = cfg!(target_os = "macos");
 
 	#[cfg(target_os = "windows")]
-	pub use dx12::factory::{ComputePipeline, Factory as DetachedDevice, FactoryImage, FactorySampler, RasterPipeline};
+	pub use dx12::factory::{
+		ComputePipeline, Factory, Factory as DetachedDevice, FactoryImage, FactorySampler, RasterPipeline,
+	};
 	#[cfg(target_os = "windows")]
 	pub use dx12::CommandBufferRecording;
 	#[cfg(target_os = "windows")]
@@ -62,7 +64,7 @@ pub mod implementation {
 	pub(crate) use metal::image::Image;
 	#[cfg(target_os = "macos")]
 	pub use metal::pipelines::factory::{
-		ComputePipeline, Factory as DetachedDevice, Image as FactoryImage, Pipeline as RasterPipeline,
+		ComputePipeline, Factory, Factory as DetachedDevice, Image as FactoryImage, Pipeline as RasterPipeline,
 		Sampler as FactorySampler,
 	};
 	#[cfg(target_os = "macos")]
@@ -90,6 +92,10 @@ pub mod implementation {
 	#[cfg(target_os = "linux")]
 	pub(crate) use vulkan::descriptor_set::DescriptorSet;
 	#[cfg(target_os = "linux")]
+	pub use vulkan::factory::{
+		ComputePipeline, Factory, Factory as DetachedDevice, FactoryImage, FactorySampler, RasterPipeline,
+	};
+	#[cfg(target_os = "linux")]
 	pub(crate) use vulkan::image::Image;
 	#[cfg(target_os = "linux")]
 	pub use vulkan::queue::Queue;
@@ -113,25 +119,6 @@ pub mod implementation {
 	#[cfg(target_os = "linux")]
 	use crate::vulkan;
 
-	#[cfg(target_os = "linux")]
-	/// The `DetachedDevice` struct marks the unsupported detached resource device for the Vulkan implementation.
-	pub struct DetachedDevice;
-
-	#[cfg(target_os = "linux")]
-	/// The `ComputePipeline` struct marks the unsupported detached compute pipeline for the Vulkan implementation.
-	pub struct ComputePipeline;
-
-	#[cfg(target_os = "linux")]
-	/// The `RasterPipeline` struct marks the unsupported detached raster pipeline for the Vulkan implementation.
-	pub struct RasterPipeline;
-
-	#[cfg(target_os = "linux")]
-	/// The `FactoryImage` struct marks the unsupported detached image for the Vulkan implementation.
-	pub struct FactoryImage;
-
-	#[cfg(target_os = "linux")]
-	/// The `FactorySampler` struct marks the unsupported detached sampler for the Vulkan implementation.
-	pub struct FactorySampler;
 }
 
 pub mod binding;
@@ -178,9 +165,9 @@ pub(crate) enum PrivateHandles {
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	VkBuffer(ash::vk::Buffer),
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
-	TopLevelAccelerationStructure(vulkan::TopLevelAccelerationStructureHandle),
+	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
-	BottomLevelAccelerationStructure(vulkan::BottomLevelAccelerationStructureHandle),
+	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
 pub(crate) trait HandleLike

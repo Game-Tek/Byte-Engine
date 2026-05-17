@@ -69,7 +69,7 @@ impl Renderer {
 			settings
 		};
 
-		let features = ghi::device::Features::new()
+		let mut features = ghi::device::Features::new()
 			.validation(settings.validation)
 			.api_dump(settings.api_dump)
 			.gpu_validation(settings.extended_validation)
@@ -98,7 +98,17 @@ impl Renderer {
 			.geometry_shader(false)
 			.mesh_shading(settings.mesh_shading);
 
-		let mut instance = ghi::implementation::Instance::new(features.clone()).unwrap();
+		let mut instance = match ghi::implementation::Instance::new(features) {
+			Ok(instance) => instance,
+			Err(error) if settings.validation => {
+				log::warn!(
+					"Renderer validation was requested but could not be enabled: {error} Falling back to renderer validation disabled."
+				);
+				features = features.validation(false).gpu_validation(false).api_dump(false);
+				ghi::implementation::Instance::new(features).unwrap()
+			}
+			Err(error) => panic!("Failed to create GHI instance: {error}"),
+		};
 
 		let mut graphics_queue_handle = None;
 		let mut transfer_queue_handle = None;
@@ -364,7 +374,7 @@ impl Renderer {
 			};
 
 			execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
-				for commands in pipeline_manager_commands.into_iter() {
+				for commands in pipeline_manager_commands {
 					for (command, sink) in commands.into_iter().zip(sinks.iter()) {
 						let attachment_infos = render_targets.get_attachment_infos(sink.index());
 
@@ -372,7 +382,7 @@ impl Renderer {
 					}
 				}
 
-				for (command, sink) in render_pass_commands.into_iter() {
+				for (command, sink) in render_pass_commands {
 					let attachment_infos = render_targets.get_attachment_infos(sink);
 					(&command)(&mut *command_buffer_recording, &attachment_infos);
 				}

@@ -2,6 +2,9 @@
 pub struct Device {
 	device: ID3D12Device,
 	settings: Features,
+	info_queue: Option<ID3D12InfoQueue>,
+	debug_log_function: fn(&str),
+	debug_log_count: AtomicU64,
 	debugger: RenderDebugger,
 	pub(crate) frames: u8,
 
@@ -104,6 +107,14 @@ impl Device {
 		let device = device.ok_or(
 			"Failed to acquire a D3D12 device. The most likely cause is that the D3D12CreateDevice call returned no device instance.",
 		)?;
+		let info_queue = if settings.validation {
+			device.cast::<ID3D12InfoQueue>().ok()
+		} else {
+			None
+		};
+		let debug_log_function = settings.debug_log_function.unwrap_or(|message| {
+			println!("{}", message);
+		});
 
 		let mut queue_storage = Vec::with_capacity(queues.len());
 
@@ -128,6 +139,9 @@ impl Device {
 		Ok(Self {
 			device,
 			settings,
+			info_queue,
+			debug_log_function,
+			debug_log_count: AtomicU64::new(0),
 			debugger: RenderDebugger::new(),
 			frames: 2,
 
@@ -222,7 +236,73 @@ impl Device {
 
 	#[cfg(debug_assertions)]
 	pub fn has_errors(&self) -> bool {
-		false
+		self.drain_debug_messages();
+		self.debug_log_count.load(Ordering::Relaxed) > 0
+	}
+
+	fn log_debug_message(&self, message: impl AsRef<str>) {
+		(self.debug_log_function)(message.as_ref());
+	}
+
+	fn log_dx12_error(&self, message: impl AsRef<str>) {
+		self.log_debug_message(message);
+		self.debug_log_count.fetch_add(10, Ordering::Relaxed);
+		self.drain_debug_messages();
+	}
+
+	fn drain_debug_messages(&self) {
+		let Some(info_queue) = &self.info_queue else {
+			return;
+		};
+
+		let count = unsafe { info_queue.GetNumStoredMessages() };
+		for index in 0..count {
+			let mut message_byte_len = 0;
+			if unsafe { info_queue.GetMessage(index, None, &mut message_byte_len) }.is_err() || message_byte_len == 0 {
+				continue;
+			}
+
+			let mut message_bytes = vec![0u8; message_byte_len];
+			let message = message_bytes.as_mut_ptr().cast::<D3D12_MESSAGE>();
+			if unsafe { info_queue.GetMessage(index, Some(message), &mut message_byte_len) }.is_err() {
+				continue;
+			}
+
+			let message = unsafe { &*message };
+			let description = if message.pDescription.is_null() || message.DescriptionByteLength == 0 {
+				""
+			} else {
+				let bytes = unsafe {
+					std::slice::from_raw_parts(message.pDescription, message.DescriptionByteLength.saturating_sub(1))
+				};
+				std::str::from_utf8(bytes).unwrap_or("<non-utf8 D3D12 debug message>")
+			};
+			self.log_debug_message(format!(
+				"DX12 {:?} {:?} #{}: {}",
+				message.Severity, message.Category, message.ID.0, description
+			));
+			if matches!(
+				message.Severity,
+				D3D12_MESSAGE_SEVERITY_CORRUPTION | D3D12_MESSAGE_SEVERITY_ERROR
+			) {
+				self.debug_log_count.fetch_add(10, Ordering::Relaxed);
+			}
+		}
+
+		unsafe { info_queue.ClearStoredMessages() };
+	}
+
+	#[cfg(test)]
+	pub(crate) fn add_debug_message_for_test(&self, message: &str) {
+		let Some(info_queue) = &self.info_queue else {
+			return;
+		};
+		let Ok(message) = std::ffi::CString::new(message) else {
+			return;
+		};
+		if unsafe { info_queue.AddApplicationMessage(D3D12_MESSAGE_SEVERITY_ERROR, PCSTR(message.as_ptr().cast())) }.is_ok() {
+			self.drain_debug_messages();
+		}
 	}
 
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
@@ -690,10 +770,16 @@ impl Device {
 					.bindings
 					.iter()
 					.filter(|binding| Self::descriptor_range_type(binding.descriptor_type, sampler_heap).is_some())
-					.map(|binding| binding.descriptor_count.max(1))
+					.map(|binding| Self::descriptor_count_for_heap(binding, sampler_heap))
 					.sum()
 			})
 			.unwrap_or(0)
+	}
+
+	fn descriptor_count_for_heap(binding: &DescriptorSetBindingTemplate, _sampler_heap: bool) -> u32 {
+		// Keep DX12 descriptor ranges conservative until descriptor indexing support is queried and handled.
+		// Large bindless-style ranges can be invalid on lower resource binding tiers and can remove the device.
+		binding.descriptor_count.max(1).min(16)
 	}
 
 	fn create_descriptor_heap(
@@ -717,7 +803,14 @@ impl Device {
 			NodeMask: 0,
 		};
 
-		unsafe { self.device.CreateDescriptorHeap(&desc) }.ok()
+		let heap = unsafe { self.device.CreateDescriptorHeap(&desc) };
+		if let Err(error) = &heap {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			self.log_dx12_error(format!(
+				"Failed to create DX12 descriptor heap. Sampler heap: {sampler_heap}. Descriptor count: {count}. Error: {error:?}. Device removed reason: {removed_reason:?}"
+			));
+		}
+		heap.ok()
 	}
 
 	fn descriptor_heap_slot(
@@ -807,18 +900,19 @@ impl Device {
 					let Some(range_type) = Self::descriptor_range_type(binding.descriptor_type, sampler_heap) else {
 						continue;
 					};
+					let descriptor_count = Self::descriptor_count_for_heap(binding, sampler_heap);
 					let heap_slot = if sampler_heap {
 						let slot = sampler_slot;
-						sampler_slot += binding.descriptor_count.max(1);
+						sampler_slot += descriptor_count;
 						slot
 					} else {
 						let slot = cbv_srv_uav_slot;
-						cbv_srv_uav_slot += binding.descriptor_count.max(1);
+						cbv_srv_uav_slot += descriptor_count;
 						slot
 					};
 					ranges.push(D3D12_DESCRIPTOR_RANGE {
 						RangeType: range_type,
-						NumDescriptors: binding.descriptor_count.max(1),
+						NumDescriptors: descriptor_count,
 						BaseShaderRegister: binding.binding,
 						RegisterSpace: space as u32,
 						OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
@@ -881,7 +975,19 @@ impl Device {
 		};
 
 		let mut blob = None;
-		if unsafe { D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1_0, &mut blob, None) }.is_err() {
+		let mut error_blob = None;
+		if unsafe { D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1_0, &mut blob, Some(&mut error_blob)) }
+			.is_err()
+		{
+			if let Some(error_blob) = error_blob {
+				let message = unsafe {
+					std::slice::from_raw_parts(error_blob.GetBufferPointer().cast::<u8>(), error_blob.GetBufferSize())
+				};
+				self.log_dx12_error(format!(
+					"Failed to serialize DX12 root signature: {}",
+					String::from_utf8_lossy(message)
+				));
+			}
 			return (None, tables, constants);
 		}
 		let Some(blob) = blob else {
@@ -889,7 +995,18 @@ impl Device {
 		};
 		let bytes = unsafe { std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize()) };
 
-		(unsafe { self.device.CreateRootSignature(0, bytes) }.ok(), tables, constants)
+		let root_signature = unsafe { self.device.CreateRootSignature(0, bytes) };
+		if let Err(error) = &root_signature {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			self.log_dx12_error(format!(
+				"Failed to create DX12 root signature with {} parameters, {} descriptor tables, and {} constants: {error:?}; device removed reason: {removed_reason:?}",
+				parameters.len(),
+				tables.len(),
+				constants.len()
+			));
+		}
+
+		(root_signature.ok(), tables, constants)
 	}
 
 	fn get_or_create_pipeline_layout(
@@ -1058,6 +1175,10 @@ impl Device {
 			}
 			Err(error) => {
 				self.graphics_pipeline_state_last_error = Some(error.code().0);
+				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+				self.log_dx12_error(format!(
+					"Failed to create DX12 graphics pipeline state: {error:?}; device removed reason: {removed_reason:?}"
+				));
 				None
 			}
 		}
@@ -1068,12 +1189,20 @@ impl Device {
 		layout: PipelineLayoutHandle,
 		builder: &pipelines::raster::Builder,
 	) -> Option<ID3D12PipelineState> {
+		if !self.supports_native_mesh_shaders() {
+			self.log_debug_message(
+				"Skipping DX12 mesh pipeline creation because native mesh shaders are not supported by this device.",
+			);
+			return None;
+		}
+
 		let root_signature = self
 			.pipeline_root_signatures
 			.get(layout.0 as usize)
 			.and_then(|root_signature| root_signature.clone())?;
 		let mesh_shader = self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Mesh)?;
-		let fragment_shader = self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Fragment)?;
+		let fragment_shader =
+			self.shader_dxil_for_stage_with_dxc_target(builder.shaders.as_ref(), ShaderTypes::Fragment, "ps_6_0")?;
 		if mesh_shader.is_empty() || fragment_shader.is_empty() {
 			return None;
 		}
@@ -1153,12 +1282,6 @@ impl Device {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT,
 				value: DXGI_FORMAT_UNKNOWN,
 			},
-			primitive_topology: PipelineStateStreamSubobject {
-				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY,
-				value: D3D12_PRIMITIVE_TOPOLOGY_DESC {
-					PrimitiveTopology: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-				},
-			},
 			render_targets: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS,
 				value: D3D12_RT_FORMAT_ARRAY {
@@ -1192,12 +1315,34 @@ impl Device {
 			}
 			Err(error) => {
 				self.graphics_pipeline_state_last_error = Some(error.code().0);
+				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+				self.log_dx12_error(format!(
+					"Failed to create DX12 mesh pipeline state: {error:?}; device removed reason: {removed_reason:?}"
+				));
 				None
 			}
 		}
 	}
 
 	fn shader_dxil_for_stage(&mut self, shaders: &[pipelines::ShaderParameter], stage: ShaderTypes) -> Option<Vec<u8>> {
+		self.shader_dxil_for_stage_impl(shaders, stage, None)
+	}
+
+	fn shader_dxil_for_stage_with_dxc_target(
+		&mut self,
+		shaders: &[pipelines::ShaderParameter],
+		stage: ShaderTypes,
+		target: &str,
+	) -> Option<Vec<u8>> {
+		self.shader_dxil_for_stage_impl(shaders, stage, Some(target))
+	}
+
+	fn shader_dxil_for_stage_impl(
+		&mut self,
+		shaders: &[pipelines::ShaderParameter],
+		stage: ShaderTypes,
+		dxc_target: Option<&str>,
+	) -> Option<Vec<u8>> {
 		let parameter = shaders.iter().find(|parameter| {
 			matches!(
 				(parameter.stage, stage),
@@ -1207,7 +1352,16 @@ impl Device {
 			)
 		})?;
 		let shader = self.shaders.get(parameter.handle.0 as usize)?;
-		if !parameter.specialization_map.is_empty() {
+		if let Some(target) = dxc_target {
+			if let Some(hlsl) = shader.hlsl.as_ref() {
+				let dxil =
+					Self::compile_hlsl_with_dxc(&hlsl.source, &hlsl.entry_point, target, parameter.specialization_map).ok();
+				if dxil.is_some() && !parameter.specialization_map.is_empty() {
+					self.hlsl_specialization_compile_count += 1;
+				}
+				return dxil;
+			}
+		} else if !parameter.specialization_map.is_empty() {
 			if let Some(hlsl) = shader.hlsl.as_ref() {
 				let dxil = Self::compile_hlsl(&hlsl.source, &hlsl.entry_point, stage, parameter.specialization_map).ok();
 				if dxil.is_some() {
@@ -1338,7 +1492,14 @@ impl Device {
 			Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
 		};
 
-		unsafe { self.device.CreateComputePipelineState::<ID3D12PipelineState>(&desc) }.ok()
+		let pipeline_state = unsafe { self.device.CreateComputePipelineState::<ID3D12PipelineState>(&desc) };
+		if let Err(error) = &pipeline_state {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			self.log_dx12_error(format!(
+				"Failed to create DX12 compute pipeline state: {error:?}; device removed reason: {removed_reason:?}"
+			));
+		}
+		pipeline_state.ok()
 	}
 
 	pub fn create_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> PipelineHandle {
@@ -3583,6 +3744,11 @@ impl Device {
 			return;
 		};
 		let mut table_binds = 0;
+		let Some(Some(_root_signature)) = self.pipeline_root_signatures.get(pipeline.layout.0 as usize) else {
+			panic!(
+				"Failed to bind DX12 descriptor tables because the pipeline layout has no native root signature. The most likely cause is that root signature creation failed while the pipeline still kept descriptor table metadata."
+			);
+		};
 		let Some(root_tables) = self.pipeline_root_tables.get(pipeline.layout.0 as usize).cloned() else {
 			return;
 		};
@@ -3741,6 +3907,73 @@ impl Device {
 		self.refresh_readback_texture_copies();
 	}
 
+	pub(crate) fn record_present_preparation(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		present_keys: &[PresentKey],
+	) {
+		let Some(command_list) = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.and_then(|command_buffer| command_buffer.command_list.clone())
+		else {
+			return;
+		};
+
+		for present_key in present_keys {
+			let Some((source_image, proxy_uses)) =
+				self.swapchains.get(present_key.swapchain.0 as usize).and_then(|swapchain| {
+					let image_index = (present_key.image_index as usize).min(swapchain.images.len().saturating_sub(1));
+					swapchain.images[image_index]
+						.or(swapchain.images[0])
+						.map(|image| (image, swapchain.proxy_uses[image_index]))
+				})
+			else {
+				continue;
+			};
+			if !proxy_uses.intersects(Uses::Storage) {
+				continue;
+			}
+			let Some(source_resource) = self
+				.images
+				.get(source_image.0 .0 as usize)
+				.and_then(|image| image.resource.clone())
+			else {
+				continue;
+			};
+			let Some(destination_resource) =
+				self.swapchain_backbuffer_resource(present_key.swapchain, present_key.sequence_index)
+			else {
+				continue;
+			};
+
+			unsafe {
+				// Copy the engine swapchain proxy image into the actual DXGI backbuffer before Present.
+				self.transition_tracked_image(
+					&command_list,
+					source_image.0,
+					&source_resource,
+					D3D12_RESOURCE_STATE_COPY_SOURCE,
+				);
+				Self::transition_resource(
+					&command_list,
+					&destination_resource,
+					D3D12_RESOURCE_STATE_PRESENT,
+					D3D12_RESOURCE_STATE_COPY_DEST,
+				);
+				command_list.CopyResource(&destination_resource, &source_resource);
+				Self::transition_resource(
+					&command_list,
+					&destination_resource,
+					D3D12_RESOURCE_STATE_COPY_DEST,
+					D3D12_RESOURCE_STATE_PRESENT,
+				);
+				self.transition_tracked_image(&command_list, source_image.0, &source_resource, D3D12_RESOURCE_STATE_COMMON);
+			}
+			self.texture_copy_count += 1;
+		}
+	}
+
 	fn transition_present_resources(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -3808,24 +4041,27 @@ impl Device {
 	}
 
 	fn copy_buffer_shadow(&mut self, copy: &crate::BufferCopyDescriptor) {
-		Self::copy_buffer_shadow_in_storage(&mut self.buffers, copy);
-		Self::copy_buffer_shadow_in_storage(&mut self.dynamic_buffers, copy);
-	}
-
-	fn copy_buffer_shadow_in_storage(storage: &mut [Buffer], copy: &crate::BufferCopyDescriptor) {
-		let source_index = copy.source_buffer.0 as usize;
-		let destination_index = copy.destination_buffer.0 as usize;
-		if source_index >= storage.len() || destination_index >= storage.len() {
+		// Resolve handles through `buffer` instead of indexing storage directly. Dynamic buffer handles carry
+		// `DYNAMIC_BUFFER_HANDLE_FLAG`, so the raw handle value is not always a valid index into `buffers`.
+		let Some(source) = self.buffer(copy.source_buffer) else {
 			return;
-		}
+		};
+		let Some(destination) = self.buffer(copy.destination_buffer) else {
+			return;
+		};
 
-		let source = &storage[source_index];
-		let destination = &storage[destination_index];
 		let source_end = copy.source_offset.saturating_add(copy.size);
 		let destination_end = copy.destination_offset.saturating_add(copy.size);
 		if source_end > source.size || destination_end > destination.size {
 			panic!(
-				"Failed to copy DX12 buffer data. The most likely cause is that the requested source or destination range is outside the buffer allocation."
+				"Failed to copy DX12 buffer data from {:?} offset {} to {:?} offset {} for {} bytes. The most likely cause is that the requested source or destination range is outside the buffer allocation. Source size: {} bytes. Destination size: {} bytes.",
+				copy.source_buffer,
+				copy.source_offset,
+				copy.destination_buffer,
+				copy.destination_offset,
+				copy.size,
+				source.size,
+				destination.size
 			);
 		}
 		if copy.size == 0 {
@@ -3833,11 +4069,11 @@ impl Device {
 		}
 
 		unsafe {
-			let source = storage[source_index].data.add(copy.source_offset);
-			let destination = storage[destination_index].data.add(copy.destination_offset);
+			let source = source.data.add(copy.source_offset);
+			let destination = destination.data.add(copy.destination_offset);
 			std::ptr::copy(source, destination, copy.size);
 		}
-		if let Some(destination) = storage.get(destination_index) {
+		if let Some(destination) = self.buffer(copy.destination_buffer) {
 			Self::sync_buffer_storage(destination);
 		}
 	}
@@ -3858,6 +4094,21 @@ impl Device {
 		};
 		if destination.access.intersects(DeviceAccesses::CpuWrite) {
 			return;
+		}
+
+		let source_end = copy.source_offset.saturating_add(copy.size);
+		let destination_end = copy.destination_offset.saturating_add(copy.size);
+		if source_end > source.size || destination_end > destination.size {
+			panic!(
+				"Failed to record DX12 buffer copy from {:?} offset {} to {:?} offset {} for {} bytes. The most likely cause is that the requested source or destination range is outside the GPU buffer allocation. Source size: {} bytes. Destination size: {} bytes.",
+				copy.source_buffer,
+				copy.source_offset,
+				copy.destination_buffer,
+				copy.destination_offset,
+				copy.size,
+				source.size,
+				destination.size
+			);
 		}
 
 		unsafe {
@@ -3947,6 +4198,7 @@ impl Device {
 				resource,
 				access: buffer.access,
 				heap_kind: buffer.heap_kind,
+				size: buffer.size,
 			})
 		})
 	}
@@ -4158,32 +4410,15 @@ impl Device {
 		self.gpu_uploaded_images.insert(image_handle.0);
 	}
 
-	pub(crate) fn begin_debug_region(&self, command_buffer_handle: CommandBufferHandle, name: &str) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
-			return;
-		};
-		let bytes = name.as_bytes();
-		unsafe {
-			command_list.BeginEvent(0, Some(bytes.as_ptr().cast()), bytes.len() as u32);
-		}
+	pub(crate) fn begin_debug_region(&self, _command_buffer_handle: CommandBufferHandle, _name: &str) {
+		// DX12 debug regions require PIX-formatted event metadata. Passing arbitrary UTF-8 bytes to
+		// ID3D12GraphicsCommandList::BeginEvent can fault inside the native runtime, so this backend
+		// leaves regions disabled until PIX event encoding is implemented.
 		self.debug_region_begin_count.set(self.debug_region_begin_count.get() + 1);
 	}
 
-	pub(crate) fn end_debug_region(&self, command_buffer_handle: CommandBufferHandle) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
-			return;
-		};
-		unsafe {
-			command_list.EndEvent();
-		}
+	pub(crate) fn end_debug_region(&self, _command_buffer_handle: CommandBufferHandle) {
+		// Keep this paired with `begin_debug_region`; see the comment above for why DX12 event calls are skipped.
 		self.debug_region_end_count.set(self.debug_region_end_count.get() + 1);
 	}
 
@@ -5610,7 +5845,7 @@ impl Device {
 			AddressW: address_mode,
 			MipLODBias: 0.0,
 			MaxAnisotropy: max_anisotropy,
-			ComparisonFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+			ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
 			BorderColor: [0.0, 0.0, 0.0, 0.0],
 			MinLOD: sampler.min_lod,
 			MaxLOD: sampler.max_lod,
@@ -5760,6 +5995,11 @@ impl Device {
 			BufferHeapKind::Default => D3D12_RESOURCE_STATE_COMMON,
 		};
 		let cpu_visible = host_write || host_read;
+		let resource_flags = if heap_kind == BufferHeapKind::Default {
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+		} else {
+			D3D12_RESOURCE_FLAG_NONE
+		};
 		let heap_properties = D3D12_HEAP_PROPERTIES {
 			Type: heap_type,
 			CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
@@ -5777,7 +6017,7 @@ impl Device {
 			Format: DXGI_FORMAT_UNKNOWN,
 			SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
 			Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-			Flags: D3D12_RESOURCE_FLAG_NONE,
+			Flags: resource_flags,
 		};
 
 		let mut resource: Option<ID3D12Resource> = None;
@@ -5859,7 +6099,15 @@ impl Device {
 				&mut resource,
 			)
 		};
-		if result.is_err() {
+		if let Err(error) = result {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			self.log_dx12_error(format!(
+				"Failed to create DX12 image resource. Format: {:?}. Extent: {:?}. Uses: {:?}. Array layers: {}. Error: {error:?}. Device removed reason: {removed_reason:?}",
+				format,
+				extent,
+				uses,
+				array_layers
+			));
 			None
 		} else {
 			resource
@@ -5991,6 +6239,7 @@ struct BufferCopyInfo {
 	resource: ID3D12Resource,
 	access: DeviceAccesses,
 	heap_kind: BufferHeapKind,
+	size: usize,
 }
 
 struct TextureReadback {
@@ -6127,7 +6376,7 @@ pub(crate) struct Pipeline {
 	has_mesh_shader: bool,
 }
 
-#[repr(C)]
+#[repr(C, align(8))]
 struct PipelineStateStreamSubobject<T> {
 	subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE,
 	value: T,
@@ -6143,7 +6392,6 @@ struct MeshPipelineStateStream {
 	rasterizer: PipelineStateStreamSubobject<D3D12_RASTERIZER_DESC>,
 	depth_stencil: PipelineStateStreamSubobject<D3D12_DEPTH_STENCIL_DESC>,
 	depth_stencil_format: PipelineStateStreamSubobject<DXGI_FORMAT>,
-	primitive_topology: PipelineStateStreamSubobject<D3D12_PRIMITIVE_TOPOLOGY_DESC>,
 	render_targets: PipelineStateStreamSubobject<D3D12_RT_FORMAT_ARRAY>,
 	sample_desc: PipelineStateStreamSubobject<DXGI_SAMPLE_DESC>,
 	node_mask: PipelineStateStreamSubobject<u32>,
@@ -6247,7 +6495,7 @@ impl crate::device::Device for Device {
 
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
-		false
+		Device::has_errors(self)
 	}
 
 	fn create_context(self) -> Result<Self::Context, &'static str> {
@@ -6512,6 +6760,7 @@ impl crate::context::Context for Device {
 use std::{
 	alloc::{self, Layout},
 	cell::Cell,
+	sync::atomic::{AtomicU64, Ordering},
 };
 
 use ::utils::hash::{HashMap, HashSet};
@@ -6529,16 +6778,17 @@ use windows::Win32::Graphics::Direct3D::{
 use windows::Win32::Graphics::Direct3D12::{
 	D3D12CreateDevice, D3D12SerializeRootSignature, ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue,
 	ID3D12CommandSignature, ID3D12DescriptorHeap, ID3D12Device, ID3D12Device2, ID3D12Device5, ID3D12Fence,
-	ID3D12GraphicsCommandList, ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList6, ID3D12PipelineState, ID3D12Resource,
-	ID3D12RootSignature, ID3D12StateObject, ID3D12StateObjectProperties, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA,
-	D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_ZERO, D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAG_NONE,
-	D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAG_NONE, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC,
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0,
-	D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMMAND_LIST_TYPE,
-	D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAGS, D3D12_COMMAND_SIGNATURE_DESC, D3D12_COMPARISON_FUNC_ALWAYS,
-	D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CONSTANT_BUFFER_VIEW_DESC,
-	D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_FRONT,
-	D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_STENCIL_DESC,
+	ID3D12GraphicsCommandList, ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList6, ID3D12InfoQueue, ID3D12PipelineState,
+	ID3D12Resource, ID3D12RootSignature, ID3D12StateObject, ID3D12StateObjectProperties, D3D12_BLEND_DESC,
+	D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_ZERO, D3D12_BUFFER_SRV,
+	D3D12_BUFFER_SRV_FLAG_NONE, D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAG_NONE,
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS,
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0, D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH,
+	D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAGS,
+	D3D12_COMMAND_SIGNATURE_DESC, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC,
+	D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE,
+	D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_FRONT, D3D12_CULL_MODE_NONE,
+	D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_STENCIL_DESC,
 	D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
 	D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
 	D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
@@ -6554,23 +6804,24 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW, D3D12_INDIRECT_ARGUMENT_DESC,
 	D3D12_INDIRECT_ARGUMENT_DESC_0, D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
 	D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_MEMORY_POOL_UNKNOWN,
-	D3D12_MESH_SHADER_TIER_NOT_SUPPORTED, D3D12_PIPELINE_STATE_FLAGS, D3D12_PIPELINE_STATE_FLAG_NONE,
-	D3D12_PIPELINE_STATE_STREAM_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND,
+	D3D12_MESH_SHADER_TIER_NOT_SUPPORTED, D3D12_MESSAGE, D3D12_MESSAGE_SEVERITY_CORRUPTION, D3D12_MESSAGE_SEVERITY_ERROR,
+	D3D12_PIPELINE_STATE_FLAGS, D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PIPELINE_STATE_STREAM_DESC,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT,
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK,
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_PRIMITIVE_TOPOLOGY_DESC, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RANGE,
-	D3D12_RASTERIZER_DESC, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE,
-	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,
-	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL, D3D12_RAYTRACING_GEOMETRY_AABBS_DESC,
-	D3D12_RAYTRACING_GEOMETRY_DESC, D3D12_RAYTRACING_GEOMETRY_DESC_0, D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE,
-	D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC, D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS,
-	D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES, D3D12_RAYTRACING_INSTANCE_DESC, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE,
-	D3D12_RAYTRACING_PIPELINE_CONFIG, D3D12_RAYTRACING_SHADER_CONFIG, D3D12_RAYTRACING_TIER_NOT_SUPPORTED,
-	D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK, D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+	D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RANGE, D3D12_RASTERIZER_DESC,
+	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV,
+	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL,
+	D3D12_RAYTRACING_GEOMETRY_AABBS_DESC, D3D12_RAYTRACING_GEOMETRY_DESC, D3D12_RAYTRACING_GEOMETRY_DESC_0,
+	D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE, D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC,
+	D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS, D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
+	D3D12_RAYTRACING_INSTANCE_DESC, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE, D3D12_RAYTRACING_PIPELINE_CONFIG,
+	D3D12_RAYTRACING_SHADER_CONFIG, D3D12_RAYTRACING_TIER_NOT_SUPPORTED, D3D12_RENDER_TARGET_BLEND_DESC,
+	D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
 	D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_DESC,
 	D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAGS,
 	D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,

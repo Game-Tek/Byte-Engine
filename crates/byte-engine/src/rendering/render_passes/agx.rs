@@ -98,7 +98,7 @@ fn create_tone_mapping_program() -> besl::NodeReference {
 		besl::Node::binding(
 			"source",
 			besl::BindingTypes::Image {
-				format: "rgba16f".to_string(),
+				format: "rgba16".to_string(),
 			},
 			0,
 			0,

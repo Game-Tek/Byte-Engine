@@ -167,6 +167,7 @@ impl VisibilityPipelineManager {
 			Some("Material Evaluation Descriptor Set"),
 			&material_evaluation_descriptor_set_layout,
 		);
+		let material_pipeline_factory = context.create_pipeline_factory();
 		resource_manager.configure_material_pipeline(MaterialPipelineConfig::new(
 			[
 				descriptor_set_layout,
@@ -174,6 +175,7 @@ impl VisibilityPipelineManager {
 				material_evaluation_descriptor_set_layout,
 			],
 			vec![ghi::pipelines::PushConstantRange::new(0, 4)],
+			material_pipeline_factory,
 		));
 
 		Self {
@@ -506,14 +508,14 @@ impl PipelineManager for VisibilityPipelineManager {
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
 		let diffuse_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
-				ghi::Formats::RGBA16F,
+				ghi::Formats::RGBA16UNORM,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
 			)
 			.name("Diffuse"),
 		);
 		let specular_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
-				ghi::Formats::RGBA16F,
+				ghi::Formats::RGBA16UNORM,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
 			)
 			.name("Specular"),

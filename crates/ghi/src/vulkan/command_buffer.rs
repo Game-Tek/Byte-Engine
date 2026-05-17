@@ -11,7 +11,7 @@ use super::{
 	CommandBufferInternal, Consumption, Context, Descriptor, DescriptorSet, Handles, Image, ImageHandle, Swapchain,
 	Synchronizer, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 };
-use crate::{descriptors::DescriptorSetHandle, graphics_hardware_interface, FrameKey, HandleLike as _, Size};
+use crate::{descriptors::DescriptorSetHandle, graphics_hardware_interface, utils::StableVec, FrameKey, HandleLike as _, Size};
 
 /// The `CommandBufferReference` struct creates recordings for one Vulkan command buffer through a borrowed context.
 pub struct CommandBufferReference<'a> {
@@ -197,6 +197,98 @@ impl CommandBufferRecording<'_> {
 		&self.device.descriptor_sets[descriptor_set_handle.0 as usize]
 	}
 
+	/// Refreshes image descriptors for one internal descriptor set before it is used by a command buffer.
+	/// TODO: replace with a better fitted solution
+	fn refresh_image_descriptors_for_set(&mut self, descriptor_set_handle: DescriptorSetHandle) {
+		let Some(bindings) = self.device.descriptors.get(&descriptor_set_handle) else {
+			return;
+		};
+
+		let mut images: StableVec<vk::DescriptorImageInfo, 1024> = StableVec::new();
+		let mut writes = Vec::new();
+
+		for (binding_index, array_elements) in bindings {
+			let Some(binding) = self
+				.device
+				.bindings
+				.iter()
+				.find(|binding| binding.descriptor_set_handle == descriptor_set_handle && binding.index == *binding_index)
+			else {
+				continue;
+			};
+			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
+
+			for (array_element, descriptor) in array_elements {
+				match descriptor {
+					Descriptor::Image { image, layout } => {
+						let image_resource = &self.device.images[image.0 as usize];
+						let image_view = if !image_resource.full_image_view.is_null() {
+							image_resource.full_image_view
+						} else {
+							image_resource.image_views[0]
+						};
+
+						if image_resource.image.is_null() || image_view.is_null() {
+							continue;
+						}
+
+						let image_info = images.append([vk::DescriptorImageInfo::default()
+							.image_layout(texture_format_and_resource_use_to_image_layout(
+								image_resource.format_,
+								*layout,
+								None,
+							))
+							.image_view(image_view)]);
+
+						writes.push(
+							vk::WriteDescriptorSet::default()
+								.dst_set(descriptor_set.descriptor_set)
+								.dst_binding(*binding_index)
+								.dst_array_element(*array_element)
+								.descriptor_type(binding.descriptor_type)
+								.image_info(&image_info),
+						);
+					}
+					Descriptor::CombinedImageSampler { image, sampler, layout } => {
+						let image_resource = &self.device.images[image.0 as usize];
+						let image_view = if !image_resource.full_image_view.is_null() {
+							image_resource.full_image_view
+						} else {
+							image_resource.image_views[0]
+						};
+
+						if image_resource.image.is_null() || image_view.is_null() {
+							continue;
+						}
+
+						let image_info = images.append([vk::DescriptorImageInfo::default()
+							.image_layout(texture_format_and_resource_use_to_image_layout(
+								image_resource.format_,
+								*layout,
+								None,
+							))
+							.image_view(image_view)
+							.sampler(*sampler)]);
+
+						writes.push(
+							vk::WriteDescriptorSet::default()
+								.dst_set(descriptor_set.descriptor_set)
+								.dst_binding(*binding_index)
+								.dst_array_element(*array_element)
+								.descriptor_type(binding.descriptor_type)
+								.image_info(&image_info),
+						);
+					}
+					_ => {}
+				}
+			}
+		}
+
+		if !writes.is_empty() {
+			unsafe { self.device.device.update_descriptor_sets(&writes, &[]) };
+		}
+	}
+
 	#[must_use]
 	fn consume_resources_current(
 		&self,
@@ -229,7 +321,8 @@ impl CommandBufferRecording<'_> {
 					Descriptor::CombinedImageSampler { image, layout, .. } => (*layout, Handles::Image(*image)),
 					Descriptor::Swapchain { handle } => {
 						let swapchain = &self.device.swapchains[handle.0 as usize];
-						(crate::Layouts::General, Handles::Image(swapchain.images[0]))
+						let image_index = swapchain.acquired_image_indices[self.sequence_index as usize] as usize;
+						(crate::Layouts::General, Handles::Image(swapchain.images[image_index]))
 					}
 				};
 
@@ -438,13 +531,6 @@ impl CommandBufferRecording<'_> {
 					vk::ImageLayout::UNDEFINED,
 				)
 			};
-
-			if TransitionState::access_includes_write(transition_state.access) {
-				if let Some(source_state) = source_state {
-					src_stage |= source_state.last_write_stage;
-					src_access |= source_state.last_write_access;
-				}
-			}
 
 			match consumption.handle {
 				Handles::Image(handle) => {
@@ -1933,7 +2019,9 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 
 		let vulkan_pipeline_layout_handle = pipeline_layout.pipeline_layout;
 
-		for (descriptor_set_index, descriptor_set_handle, _) in s {
+		for &(descriptor_set_index, descriptor_set_handle, _) in &s {
+			self.refresh_image_descriptors_for_set(descriptor_set_handle);
+
 			if (descriptor_set_index as usize) < self.bound_descriptor_set_handles.len() {
 				self.bound_descriptor_set_handles[descriptor_set_index as usize] =
 					(descriptor_set_index, descriptor_set_handle);

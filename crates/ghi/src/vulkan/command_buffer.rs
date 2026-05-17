@@ -40,6 +40,7 @@ pub struct CommandBufferRecording<'a> {
 	bound_pipeline_layout: Option<crate::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
+	bound_descriptor_sets_in_recording: Vec<DescriptorSetHandle>,
 }
 
 pub struct VulkanCommandBuffer<'a> {
@@ -76,6 +77,7 @@ impl CommandBufferRecording<'_> {
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
 			bound_descriptor_set_handles: Vec::new(),
+			bound_descriptor_sets_in_recording: Vec::new(),
 
 			device,
 		};
@@ -2020,7 +2022,13 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		let vulkan_pipeline_layout_handle = pipeline_layout.pipeline_layout;
 
 		for &(descriptor_set_index, descriptor_set_handle, _) in &s {
-			self.refresh_image_descriptors_for_set(descriptor_set_handle);
+			if !self.bound_descriptor_sets_in_recording.contains(&descriptor_set_handle) {
+				// Updating a descriptor set after it has been bound invalidates this command buffer unless
+				// the set layout was created with UPDATE_AFTER_BIND. Keep this legacy refresh limited to
+				// the first use of each set in this recording.
+				self.refresh_image_descriptors_for_set(descriptor_set_handle);
+				self.bound_descriptor_sets_in_recording.push(descriptor_set_handle);
+			}
 
 			if (descriptor_set_index as usize) < self.bound_descriptor_set_handles.len() {
 				self.bound_descriptor_set_handles[descriptor_set_index as usize] =

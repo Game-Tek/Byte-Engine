@@ -2,8 +2,6 @@
 pub struct Device {
 	pub inner: Option<InnerDevice>,
 	device: ash::Device,
-	descriptor_set_layouts: Vec<DescriptorSetLayout>,
-	pub(crate) shaders: Vec<crate::vulkan::Shader>,
 }
 
 // Vulkan device handles are thread-safe, and detached resource creation uses `Device` with no `InnerDevice`.
@@ -24,18 +22,11 @@ impl Device {
 		Ok(Self {
 			inner: Some(inner),
 			device,
-			descriptor_set_layouts: Vec::new(),
-			shaders: Vec::with_capacity(64),
 		})
 	}
 
-	pub(crate) fn detached(device: ash::Device, descriptor_set_layouts: Vec<DescriptorSetLayout>) -> Self {
-		Self {
-			inner: None,
-			device,
-			descriptor_set_layouts,
-			shaders: Vec::with_capacity(64),
-		}
+	pub(crate) fn detached(device: ash::Device) -> Self {
+		Self { inner: None, device }
 	}
 }
 
@@ -832,14 +823,15 @@ pub struct InnerDevice {
 	pub(super) swapchain_proxy_supports_formatless_storage_write: bool,
 }
 
-impl Drop for InnerDevice {
-	fn drop(&mut self) {
-		unsafe {
-			self.device.device_wait_idle().expect("Failed to wait for device idle");
-			self.device.destroy_device(None);
-		}
-	}
-}
+// TODO: re-implement when we use a Box
+// impl Drop for InnerDevice {
+// 	fn drop(&mut self) {
+// 		unsafe {
+// 			self.device.device_wait_idle().expect("Failed to wait for device idle");
+// 			self.device.destroy_device(None);
+// 		}
+// 	}
+// }
 
 impl std::ops::Deref for InnerDevice {
 	type Target = ash::Device;
@@ -890,69 +882,17 @@ impl crate::device::Device for Device {
 			| crate::shader::Sources::MTLB { .. } => return Err(()),
 		};
 
-		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&shader);
-		let shader_module = unsafe {
-			self.device
-				.create_shader_module(&shader_module_create_info, None)
-				.map_err(|_| ())?
-		};
-		let handle = graphics_hardware_interface::ShaderHandle(self.shaders.len() as u64);
+		let _ = (shader, stage, shader_binding_descriptors);
 
-		self.shaders.push(crate::vulkan::Shader {
-			shader: shader_module,
-			stage: stage.into(),
-			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
-		});
-
-		Ok(handle)
+		Err(())
 	}
 
 	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
 		RasterPipeline
 	}
 
-	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		let layout = self.build_pipeline_layout(builder.descriptor_set_templates, builder.push_constant_ranges);
-		let shader_parameter = builder.shader;
-		let shader = &self.shaders[shader_parameter.handle.0 as usize];
-		let (specialization_entries_buffer, specialization_map_entries) =
-			build_specialization_entries(shader_parameter.specialization_map);
-		let specialization_info = vk::SpecializationInfo::default()
-			.data(&specialization_entries_buffer)
-			.map_entries(&specialization_map_entries);
-		let create_infos = [vk::ComputePipelineCreateInfo::default()
-			.stage(
-				vk::PipelineShaderStageCreateInfo::default()
-					.stage(vk::ShaderStageFlags::COMPUTE)
-					.module(shader.shader)
-					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
-					.specialization_info(&specialization_info),
-			)
-			.layout(layout.pipeline_layout)];
-		let pipeline = unsafe {
-			self.device
-				.create_compute_pipelines(vk::PipelineCache::null(), &create_infos, None)
-				.expect("Vulkan compute pipeline creation failed. The most likely cause is that shader specialization or pipeline layout creation failed.")[0]
-		};
-		let resource_access = shader
-			.shader_binding_descriptors
-			.iter()
-			.map(|descriptor| {
-				(
-					(descriptor.set, descriptor.binding),
-					(crate::Stages::COMPUTE, descriptor.access),
-				)
-			})
-			.collect::<Vec<_>>();
-		let mut shader_handles = HashMap::default();
-		shader_handles.insert(*shader_parameter.handle, [0; 32]);
-
-		ComputePipeline {
-			pipeline,
-			layout,
-			shader_handles,
-			resource_access,
-		}
+	fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
+		panic!("Vulkan detached compute pipeline creation requires context-owned shaders and descriptor set layouts. The most likely cause is that a pipeline factory was used without the Vulkan context factory path.");
 	}
 
 	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
@@ -1000,43 +940,6 @@ impl InnerDevice {
 	}
 }
 
-use std::{borrow::Cow, num::NonZeroU32, u64};
-
-use ash::vk::{self, Handle as _};
-use smallvec::SmallVec;
-use utils::hash::{HashSet, HashSetExt};
-use utils::{
-	hash::{HashMap, HashMapExt},
-	Extent,
-};
-
-use super::{
-	utils::{
-		image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format,
-		to_shader_stage_flags, uses_to_vk_usage_flags,
-	},
-	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
-	DescriptorSet, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
-	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
-};
-use crate::vulkan::utils::extent_into_vk_extent;
-use crate::vulkan::StoredQueue;
-use crate::PrivateHandles as Handles;
-use crate::{
-	binding::DescriptorSetBindingHandle,
-	descriptors::DescriptorSetHandle,
-	graphics_hardware_interface, image,
-	render_debugger::RenderDebugger,
-	sampler::{self, SamplerHandle},
-	synchronizer::SynchronizerHandle,
-	utils::StableVec,
-	vulkan::{
-		queue::Queue, BufferCopy, BuildBuffer, CommandBufferRecording, Context, Descriptor, DescriptorWrite, Descriptors,
-		Frame, ImageCopy, ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
-	},
-	window, FrameKey, HandleLike, MasterHandle as _, PrivateHandles, ResourceCollection, Size,
-};
-
 /// The `ComputePipeline` struct carries a Vulkan compute pipeline before it has a public GHI handle.
 pub struct ComputePipeline {
 	pub(crate) pipeline: vk::Pipeline,
@@ -1073,14 +976,70 @@ pub struct FactorySampler {
 }
 
 impl Device {
+	/// Creates a detached compute pipeline using context-owned shader modules and descriptor set layouts without storing them on the detached device.
+	pub(crate) fn create_compute_pipeline_with_resources(
+		&self,
+		builder: crate::pipelines::compute::Builder,
+		descriptor_set_layouts: &[DescriptorSetLayout],
+		shaders: &[crate::vulkan::Shader],
+	) -> ComputePipeline {
+		let layout = self.build_pipeline_layout(
+			builder.descriptor_set_templates,
+			builder.push_constant_ranges,
+			descriptor_set_layouts,
+		);
+		let shader_parameter = builder.shader;
+		let shader = &shaders[shader_parameter.handle.0 as usize];
+		let (specialization_entries_buffer, specialization_map_entries) =
+			build_specialization_entries(shader_parameter.specialization_map);
+		let specialization_info = vk::SpecializationInfo::default()
+			.data(&specialization_entries_buffer)
+			.map_entries(&specialization_map_entries);
+		let create_infos = [vk::ComputePipelineCreateInfo::default()
+			.stage(
+				vk::PipelineShaderStageCreateInfo::default()
+					.stage(vk::ShaderStageFlags::COMPUTE)
+					.module(shader.shader)
+					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+					.specialization_info(&specialization_info),
+			)
+			.layout(layout.pipeline_layout)];
+		let pipeline = unsafe {
+			self.device
+				.create_compute_pipelines(vk::PipelineCache::null(), &create_infos, None)
+				.expect("Vulkan compute pipeline creation failed. The most likely cause is that shader specialization or pipeline layout creation failed.")[0]
+		};
+		let resource_access = shader
+			.shader_binding_descriptors
+			.iter()
+			.map(|descriptor| {
+				(
+					(descriptor.set, descriptor.binding),
+					(crate::Stages::COMPUTE, descriptor.access),
+				)
+			})
+			.collect::<Vec<_>>();
+		let mut shader_handles = HashMap::default();
+		shader_handles.insert(*shader_parameter.handle, [0; 32]);
+
+		ComputePipeline {
+			pipeline,
+			layout,
+			shader_handles,
+			resource_access,
+		}
+	}
+
 	fn build_pipeline_layout(
 		&self,
 		descriptor_set_template_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
 		push_constant_ranges: &[crate::pipelines::PushConstantRange],
+		stored_descriptor_set_layouts: &[DescriptorSetLayout],
 	) -> crate::vulkan::PipelineLayout {
+		// Resolve template handles against the caller-provided layouts so the factory device stays stateless.
 		let descriptor_set_layouts = descriptor_set_template_handles
 			.iter()
-			.map(|handle| self.descriptor_set_layouts[handle.0 as usize].descriptor_set_layout)
+			.map(|handle| stored_descriptor_set_layouts[handle.0 as usize].descriptor_set_layout)
 			.collect::<Vec<_>>();
 		let default_push_constant_range;
 		let push_constant_ranges = if push_constant_ranges.is_empty() {
@@ -1151,3 +1110,40 @@ fn build_specialization_entries(
 
 	(data, entries)
 }
+
+use std::{borrow::Cow, num::NonZeroU32, u64};
+
+use ash::vk::{self, Handle as _};
+use smallvec::SmallVec;
+use utils::hash::{HashSet, HashSetExt};
+use utils::{
+	hash::{HashMap, HashMapExt},
+	Extent,
+};
+
+use super::{
+	utils::{
+		image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format,
+		to_shader_stage_flags, uses_to_vk_usage_flags,
+	},
+	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
+	DescriptorSet, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
+	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
+};
+use crate::vulkan::utils::extent_into_vk_extent;
+use crate::vulkan::StoredQueue;
+use crate::PrivateHandles as Handles;
+use crate::{
+	binding::DescriptorSetBindingHandle,
+	descriptors::DescriptorSetHandle,
+	graphics_hardware_interface, image,
+	render_debugger::RenderDebugger,
+	sampler::{self, SamplerHandle},
+	synchronizer::SynchronizerHandle,
+	utils::StableVec,
+	vulkan::{
+		queue::Queue, BufferCopy, BuildBuffer, CommandBufferRecording, Context, Descriptor, DescriptorWrite, Descriptors,
+		Frame, ImageCopy, ImageHandle, Instance, Task, Tasks, MAX_SWAPCHAIN_IMAGES,
+	},
+	window, FrameKey, HandleLike, MasterHandle as _, PrivateHandles, ResourceCollection, Size,
+};

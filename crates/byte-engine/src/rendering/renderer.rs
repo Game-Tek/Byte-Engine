@@ -129,6 +129,8 @@ impl Renderer {
 			)
 			.unwrap();
 		let mut context = ghi::Device::create_context(device).unwrap();
+		let frame_queue_depth = 2;
+		context.set_frames_in_flight(frame_queue_depth);
 
 		let graphics_queue_handle = graphics_queue_handle.unwrap();
 		let transfer_queue_handle = transfer_queue_handle.unwrap();
@@ -144,7 +146,7 @@ impl Renderer {
 
 			started_frame_count: 0,
 
-			frame_queue_depth: 2,
+			frame_queue_depth: frame_queue_depth as usize,
 
 			windows: SmallVec::with_capacity(16),
 			sink_cameras: SmallVec::with_capacity(16),

@@ -120,10 +120,7 @@ impl Context {
 
 	/// Creates a device that shares this Vulkan context's logical device for detached resource creation.
 	pub fn create_detached_device(&self) -> Option<crate::implementation::Device> {
-		Some(crate::implementation::Device::detached(
-			self.device.device.clone(),
-			self.descriptor_sets_layouts.clone(),
-		))
+		Some(crate::implementation::Device::detached(self.device.device.clone()))
 	}
 
 	pub(crate) fn create_command_buffer(
@@ -2836,11 +2833,10 @@ impl crate::device::Device for Context {
 	}
 
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		let mut detached_device = self
+		let detached_device = self
 			.create_detached_device()
 			.expect("Failed to create a Vulkan detached device. The most likely cause is that the rendering context was not fully initialized.");
-		detached_device.shaders = self.shaders.clone();
-		crate::device::Device::create_compute_pipeline(&mut detached_device, builder)
+		detached_device.create_compute_pipeline_with_resources(builder, &self.descriptor_sets_layouts, &self.shaders)
 	}
 
 	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {

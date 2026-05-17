@@ -1403,100 +1403,6 @@ impl Context {
 		})
 	}
 
-	fn create_vulkan_buffer(
-		&self,
-		name: Option<&str>,
-		size: usize,
-		usage: vk::BufferUsageFlags,
-	) -> MemoryBackedResourceCreationResult<vk::Buffer> {
-		let buffer_create_info = vk::BufferCreateInfo::default()
-			.size(size as u64)
-			.sharing_mode(vk::SharingMode::EXCLUSIVE)
-			.usage(usage);
-
-		let buffer = unsafe { self.device.create_buffer(&buffer_create_info, None).expect("No buffer") };
-
-		self.set_name(buffer, name);
-
-		let memory_requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
-
-		MemoryBackedResourceCreationResult {
-			resource: buffer,
-			size: memory_requirements.size as usize,
-			memory_flags: memory_requirements.memory_type_bits,
-		}
-	}
-
-	fn create_vulkan_texture(
-		&self,
-		name: Option<&str>,
-		extent: Extent,
-		format: crate::Formats,
-		resource_uses: crate::Uses,
-		mip_levels: u32,
-		array_layers: Option<NonZeroU32>,
-	) -> MemoryBackedResourceCreationResult<vk::Image> {
-		let image_create_info = vk::ImageCreateInfo::default()
-			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
-			.format(to_format(format))
-			.extent(extent_into_vk_extent(extent))
-			.mip_levels(mip_levels)
-			.array_layers(array_layers.map(|e| e.get()).unwrap_or(1))
-			.samples(vk::SampleCountFlags::TYPE_1)
-			.tiling(vk::ImageTiling::OPTIMAL)
-			.usage(into_vk_image_usage_flags(resource_uses, format))
-			.sharing_mode(vk::SharingMode::EXCLUSIVE)
-			.initial_layout(vk::ImageLayout::UNDEFINED);
-
-		let image = unsafe { self.device.create_image(&image_create_info, None).expect("No image") };
-
-		let memory_requirements = unsafe { self.device.get_image_memory_requirements(image) };
-
-		self.set_name(image, name);
-
-		MemoryBackedResourceCreationResult {
-			resource: image.to_owned(),
-			size: memory_requirements.size as usize,
-			memory_flags: memory_requirements.memory_type_bits,
-		}
-	}
-
-	fn create_vulkan_sampler(
-		&self,
-		min_mag_filter: vk::Filter,
-		reduction_mode: vk::SamplerReductionMode,
-		mip_map_filter: vk::SamplerMipmapMode,
-		address_mode: vk::SamplerAddressMode,
-		anisotropy: Option<f32>,
-		min_lod: f32,
-		max_lod: f32,
-	) -> vk::Sampler {
-		let mut vk_sampler_reduction_mode_create_info =
-			vk::SamplerReductionModeCreateInfo::default().reduction_mode(reduction_mode);
-
-		let sampler_create_info = vk::SamplerCreateInfo::default()
-			.push_next(&mut vk_sampler_reduction_mode_create_info)
-			.mag_filter(min_mag_filter)
-			.min_filter(min_mag_filter)
-			.mipmap_mode(mip_map_filter)
-			.address_mode_u(address_mode)
-			.address_mode_v(address_mode)
-			.address_mode_w(address_mode)
-			.border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK)
-			.anisotropy_enable(anisotropy.is_some())
-			.max_anisotropy(anisotropy.unwrap_or(0f32))
-			.compare_enable(false)
-			.compare_op(vk::CompareOp::NEVER)
-			.min_lod(min_lod)
-			.max_lod(max_lod)
-			.mip_lod_bias(0.0)
-			.unnormalized_coordinates(false);
-
-		let sampler = unsafe { self.device.create_sampler(&sampler_create_info, None).expect("No sampler") };
-
-		sampler
-	}
-
 	pub(super) fn get_image_subresource_layout(
 		&self,
 		texture: &graphics_hardware_interface::ImageHandle,
@@ -1597,115 +1503,6 @@ impl Context {
 				.expect("No image memory binding")
 		};
 		(0, unsafe { allocation.pointer.add(offset) })
-	}
-
-	fn create_vulkan_fence(&self, signaled: bool) -> vk::Fence {
-		let fence_create_info = vk::FenceCreateInfo::default().flags(
-			vk::FenceCreateFlags::empty()
-				| if signaled {
-					vk::FenceCreateFlags::SIGNALED
-				} else {
-					vk::FenceCreateFlags::empty()
-				},
-		);
-		unsafe { self.device.create_fence(&fence_create_info, None).expect("No fence") }
-	}
-
-	fn set_name<T: vk::Handle>(&self, handle: T, name: Option<&str>) {
-		if let Some(name) = name {
-			let name = std::ffi::CString::new(name).unwrap();
-			let name = name.as_c_str();
-			#[cfg(debug_assertions)]
-			unsafe {
-				if let Some(debug_utils) = &self.debug_utils {
-					debug_utils
-						.set_debug_utils_object_name(
-							&vk::DebugUtilsObjectNameInfoEXT::default()
-								.object_handle(handle)
-								.object_name(name),
-						)
-						.ok();
-					// Ignore errors, if the name can't be set, it's not a big deal.
-				}
-			}
-		}
-	}
-
-	fn create_vulkan_semaphore(&self, name: Option<&str>, _: bool) -> vk::Semaphore {
-		let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-		let handle = unsafe {
-			self.device
-				.create_semaphore(&semaphore_create_info, None)
-				.expect("No semaphore")
-		};
-
-		self.set_name(handle, name);
-
-		handle
-	}
-
-	fn create_vulkan_image_view(
-		&self,
-		name: Option<&str>,
-		texture: &vk::Image,
-		format: crate::Formats,
-		usage: vk::ImageUsageFlags,
-		_mip_levels: u32,
-		base_layer: u32,
-		layer_count: Option<NonZeroU32>,
-	) -> vk::ImageView {
-		if !Self::image_usage_allows_views(usage) {
-			return vk::ImageView::null();
-		}
-
-		let image_view_create_info = vk::ImageViewCreateInfo::default()
-			.image(*texture)
-			.view_type(if layer_count.is_none() {
-				vk::ImageViewType::TYPE_2D
-			} else {
-				vk::ImageViewType::TYPE_2D_ARRAY
-			})
-			.format(to_format(format))
-			.components(vk::ComponentMapping {
-				r: vk::ComponentSwizzle::IDENTITY,
-				g: vk::ComponentSwizzle::IDENTITY,
-				b: vk::ComponentSwizzle::IDENTITY,
-				a: vk::ComponentSwizzle::IDENTITY,
-			})
-			.subresource_range(vk::ImageSubresourceRange {
-				aspect_mask: if format != crate::Formats::Depth32 {
-					vk::ImageAspectFlags::COLOR
-				} else {
-					vk::ImageAspectFlags::DEPTH
-				},
-				base_mip_level: 0,
-				level_count: 1,
-				base_array_layer: base_layer,
-				layer_count: layer_count.map(|e| e.get()).unwrap_or(1),
-			});
-
-		let vk_image_view = unsafe {
-			self.device
-				.create_image_view(&image_view_create_info, None)
-				.expect("No image view")
-		};
-
-		self.set_name(vk_image_view, name);
-
-		vk_image_view
-	}
-
-	fn image_usage_allows_views(usage: vk::ImageUsageFlags) -> bool {
-		usage.intersects(
-			vk::ImageUsageFlags::SAMPLED
-				| vk::ImageUsageFlags::STORAGE
-				| vk::ImageUsageFlags::COLOR_ATTACHMENT
-				| vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-				| vk::ImageUsageFlags::TRANSIENT_ATTACHMENT
-				| vk::ImageUsageFlags::INPUT_ATTACHMENT
-				| vk::ImageUsageFlags::FRAGMENT_SHADING_RATE_ATTACHMENT_KHR
-				| vk::ImageUsageFlags::FRAGMENT_DENSITY_MAP_EXT,
-		)
 	}
 
 	/// Creates swapchain-backed image wrappers chained across frames and returns the root handle.
@@ -2087,7 +1884,7 @@ impl Context {
 		let image_usage_flags = into_vk_image_usage_flags(resource_uses | transfer_uses, format);
 		// Vulkan only allows image views for images created with view-capable usage bits.
 		// Transfer-only staging/readback images intentionally keep null views.
-		let image_can_have_views = Self::image_usage_allows_views(image_usage_flags);
+		let image_can_have_views = InnerDevice::image_usage_allows_views(image_usage_flags);
 
 		let full_image_view = image_can_have_views
 			.then(|| {
@@ -2721,71 +2518,6 @@ impl std::ops::Deref for Context {
 impl std::ops::DerefMut for Context {
 	fn deref_mut(&mut self) -> &mut Self::Target {
 		&mut self.device
-	}
-}
-
-impl crate::device::Device for Context {
-	type Context = Self;
-	type RasterPipeline = crate::implementation::RasterPipeline;
-	type ComputePipeline = crate::implementation::ComputePipeline;
-	type Image = crate::implementation::FactoryImage;
-	type Sampler = crate::implementation::FactorySampler;
-
-	#[cfg(debug_assertions)]
-	fn has_errors(&self) -> bool {
-		self.device.has_errors()
-	}
-
-	fn create_context(self) -> Result<Self::Context, &'static str> {
-		Ok(self)
-	}
-
-	fn create_shader(
-		&mut self,
-		name: Option<&str>,
-		shader_source_type: crate::shader::Sources,
-		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
-	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		crate::context::ContextCreate::create_shader(self, name, shader_source_type, stage, shader_binding_descriptors)
-	}
-
-	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		let mut detached_device = self
-			.create_detached_device()
-			.expect("Failed to create a Vulkan detached device. The most likely cause is that the rendering context was not fully initialized.");
-		crate::device::Device::create_raster_pipeline(&mut detached_device, builder)
-	}
-
-	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		let detached_device = self
-			.create_detached_device()
-			.expect("Failed to create a Vulkan detached device. The most likely cause is that the rendering context was not fully initialized.");
-		detached_device.create_compute_pipeline_with_resources(builder, &self.descriptor_sets_layouts, &self.shaders)
-	}
-
-	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
-		crate::implementation::FactoryImage {
-			name: builder.name.map(str::to_owned),
-			extent: builder.extent,
-			format: builder.format,
-			resource_uses: builder.resource_uses,
-			device_accesses: builder.device_accesses,
-			use_case: builder.use_case,
-			array_layers: builder.array_layers,
-		}
-	}
-
-	fn build_sampler(&mut self, builder: crate::sampler::Builder) -> Self::Sampler {
-		crate::implementation::FactorySampler {
-			filtering_mode: builder.filtering_mode,
-			reduction_mode: builder.reduction_mode,
-			mip_map_mode: builder.mip_map_mode,
-			addressing_mode: builder.addressing_mode,
-			anisotropy: builder.anisotropy,
-			min_lod: builder.min_lod,
-			max_lod: builder.max_lod,
-		}
 	}
 }
 
@@ -4114,14 +3846,13 @@ use utils::{
 
 use super::{
 	utils::{
-		image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format,
-		to_shader_stage_flags, uses_to_vk_usage_flags,
+		into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags,
+		uses_to_vk_usage_flags,
 	},
-	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
-	DescriptorSet, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
-	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
+	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorSet,
+	DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey, Shader,
+	Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
 };
-use crate::vulkan::utils::extent_into_vk_extent;
 use crate::vulkan::{Device, InnerDevice, StoredQueue};
 use crate::{
 	binding::DescriptorSetBindingHandle,

@@ -952,6 +952,214 @@ impl InnerDevice {
 			self.device.device_wait_idle().unwrap();
 		}
 	}
+
+	/// Creates a Vulkan buffer and reports the memory requirements needed to bind it.
+	pub(super) fn create_vulkan_buffer(
+		&self,
+		name: Option<&str>,
+		size: usize,
+		usage: vk::BufferUsageFlags,
+	) -> MemoryBackedResourceCreationResult<vk::Buffer> {
+		let buffer_create_info = vk::BufferCreateInfo::default()
+			.size(size as u64)
+			.sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.usage(usage);
+
+		let buffer = unsafe { self.device.create_buffer(&buffer_create_info, None).expect("No buffer") };
+
+		self.set_name(buffer, name);
+
+		let memory_requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
+
+		MemoryBackedResourceCreationResult {
+			resource: buffer,
+			size: memory_requirements.size as usize,
+			memory_flags: memory_requirements.memory_type_bits,
+		}
+	}
+
+	/// Creates a Vulkan image and reports the memory requirements needed to bind it.
+	pub(super) fn create_vulkan_texture(
+		&self,
+		name: Option<&str>,
+		extent: Extent,
+		format: crate::Formats,
+		resource_uses: crate::Uses,
+		mip_levels: u32,
+		array_layers: Option<NonZeroU32>,
+	) -> MemoryBackedResourceCreationResult<vk::Image> {
+		let image_create_info = vk::ImageCreateInfo::default()
+			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
+			.format(to_format(format))
+			.extent(extent_into_vk_extent(extent))
+			.mip_levels(mip_levels)
+			.array_layers(array_layers.map(|e| e.get()).unwrap_or(1))
+			.samples(vk::SampleCountFlags::TYPE_1)
+			.tiling(vk::ImageTiling::OPTIMAL)
+			.usage(into_vk_image_usage_flags(resource_uses, format))
+			.sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.initial_layout(vk::ImageLayout::UNDEFINED);
+
+		let image = unsafe { self.device.create_image(&image_create_info, None).expect("No image") };
+
+		let memory_requirements = unsafe { self.device.get_image_memory_requirements(image) };
+
+		self.set_name(image, name);
+
+		MemoryBackedResourceCreationResult {
+			resource: image.to_owned(),
+			size: memory_requirements.size as usize,
+			memory_flags: memory_requirements.memory_type_bits,
+		}
+	}
+
+	/// Creates a Vulkan sampler from the resolved sampler builder parameters.
+	pub(super) fn create_vulkan_sampler(
+		&self,
+		min_mag_filter: vk::Filter,
+		reduction_mode: vk::SamplerReductionMode,
+		mip_map_filter: vk::SamplerMipmapMode,
+		address_mode: vk::SamplerAddressMode,
+		anisotropy: Option<f32>,
+		min_lod: f32,
+		max_lod: f32,
+	) -> vk::Sampler {
+		let mut vk_sampler_reduction_mode_create_info =
+			vk::SamplerReductionModeCreateInfo::default().reduction_mode(reduction_mode);
+
+		let sampler_create_info = vk::SamplerCreateInfo::default()
+			.push_next(&mut vk_sampler_reduction_mode_create_info)
+			.mag_filter(min_mag_filter)
+			.min_filter(min_mag_filter)
+			.mipmap_mode(mip_map_filter)
+			.address_mode_u(address_mode)
+			.address_mode_v(address_mode)
+			.address_mode_w(address_mode)
+			.border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK)
+			.anisotropy_enable(anisotropy.is_some())
+			.max_anisotropy(anisotropy.unwrap_or(0f32))
+			.compare_enable(false)
+			.compare_op(vk::CompareOp::NEVER)
+			.min_lod(min_lod)
+			.max_lod(max_lod)
+			.mip_lod_bias(0.0)
+			.unnormalized_coordinates(false);
+
+		unsafe { self.device.create_sampler(&sampler_create_info, None).expect("No sampler") }
+	}
+
+	/// Creates a Vulkan fence with the requested initial signal state.
+	pub(super) fn create_vulkan_fence(&self, signaled: bool) -> vk::Fence {
+		let fence_create_info = vk::FenceCreateInfo::default().flags(
+			vk::FenceCreateFlags::empty()
+				| if signaled {
+					vk::FenceCreateFlags::SIGNALED
+				} else {
+					vk::FenceCreateFlags::empty()
+				},
+		);
+		unsafe { self.device.create_fence(&fence_create_info, None).expect("No fence") }
+	}
+
+	/// Assigns a Vulkan debug name when debug utilities are available.
+	pub(super) fn set_name<T: vk::Handle>(&self, handle: T, name: Option<&str>) {
+		#[cfg(debug_assertions)]
+		if let Some(name) = name {
+			let name = std::ffi::CString::new(name).unwrap();
+			let name = name.as_c_str();
+			unsafe {
+				if let Some(debug_utils) = &self.debug_utils {
+					debug_utils
+						.set_debug_utils_object_name(
+							&vk::DebugUtilsObjectNameInfoEXT::default()
+								.object_handle(handle)
+								.object_name(name),
+						)
+						.ok();
+					// Ignore errors, if the name can't be set, it's not a big deal.
+				}
+			}
+		}
+	}
+
+	/// Creates a Vulkan semaphore and assigns its debug name.
+	pub(super) fn create_vulkan_semaphore(&self, name: Option<&str>, _: bool) -> vk::Semaphore {
+		let semaphore_create_info = vk::SemaphoreCreateInfo::default();
+		let handle = unsafe {
+			self.device
+				.create_semaphore(&semaphore_create_info, None)
+				.expect("No semaphore")
+		};
+
+		self.set_name(handle, name);
+
+		handle
+	}
+
+	/// Creates a Vulkan image view for images with view-capable usage flags.
+	pub(super) fn create_vulkan_image_view(
+		&self,
+		name: Option<&str>,
+		texture: &vk::Image,
+		format: crate::Formats,
+		usage: vk::ImageUsageFlags,
+		_mip_levels: u32,
+		base_layer: u32,
+		layer_count: Option<NonZeroU32>,
+	) -> vk::ImageView {
+		if !Self::image_usage_allows_views(usage) {
+			return vk::ImageView::null();
+		}
+
+		let image_view_create_info = vk::ImageViewCreateInfo::default()
+			.image(*texture)
+			.view_type(if layer_count.is_none() {
+				vk::ImageViewType::TYPE_2D
+			} else {
+				vk::ImageViewType::TYPE_2D_ARRAY
+			})
+			.format(to_format(format))
+			.components(vk::ComponentMapping {
+				r: vk::ComponentSwizzle::IDENTITY,
+				g: vk::ComponentSwizzle::IDENTITY,
+				b: vk::ComponentSwizzle::IDENTITY,
+				a: vk::ComponentSwizzle::IDENTITY,
+			})
+			.subresource_range(vk::ImageSubresourceRange {
+				aspect_mask: if format != crate::Formats::Depth32 {
+					vk::ImageAspectFlags::COLOR
+				} else {
+					vk::ImageAspectFlags::DEPTH
+				},
+				base_mip_level: 0,
+				level_count: 1,
+				base_array_layer: base_layer,
+				layer_count: layer_count.map(|e| e.get()).unwrap_or(1),
+			});
+
+		let vk_image_view = unsafe {
+			self.device
+				.create_image_view(&image_view_create_info, None)
+				.expect("No image view")
+		};
+
+		self.set_name(vk_image_view, name);
+
+		vk_image_view
+	}
+
+	pub(super) fn image_usage_allows_views(usage: vk::ImageUsageFlags) -> bool {
+		usage.intersects(
+			vk::ImageUsageFlags::SAMPLED
+				| vk::ImageUsageFlags::STORAGE
+				| vk::ImageUsageFlags::COLOR_ATTACHMENT
+				| vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+				| vk::ImageUsageFlags::TRANSIENT_ATTACHMENT
+				| vk::ImageUsageFlags::INPUT_ATTACHMENT
+				| vk::ImageUsageFlags::FRAGMENT_SHADING_RATE_ATTACHMENT_KHR
+				| vk::ImageUsageFlags::FRAGMENT_DENSITY_MAP_EXT,
+		)
+	}
 }
 
 /// The `ComputePipeline` struct carries a Vulkan compute pipeline before it has a public GHI handle.

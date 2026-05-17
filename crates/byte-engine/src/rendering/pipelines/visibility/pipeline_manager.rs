@@ -571,7 +571,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let ao_map = context.build_dynamic_image(
 			ghi::image::Builder::new(
 				ghi::Formats::R8UNORM,
-				ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination,
+				ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::TransferDestination,
 			)
 			.name("Occlusion Map")
 			.device_accesses(ghi::DeviceAccesses::DeviceOnly),

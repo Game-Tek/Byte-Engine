@@ -160,9 +160,9 @@ pub(crate) enum PrivateHandles {
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	VkBuffer(ash::vk::Buffer),
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
-	TopLevelAccelerationStructure(vulkan::TopLevelAccelerationStructureHandle),
+	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
-	BottomLevelAccelerationStructure(vulkan::BottomLevelAccelerationStructureHandle),
+	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
 pub(crate) trait HandleLike

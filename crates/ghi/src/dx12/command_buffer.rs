@@ -49,6 +49,10 @@ impl<'a> CommandBufferRecording<'a> {
 	fn sequence_index(&self) -> u8 {
 		self.frame_key.map(|frame_key| frame_key.sequence_index).unwrap_or(0)
 	}
+
+	pub(crate) fn record_present_preparation(&mut self, present_keys: &[crate::PresentKey]) {
+		self.device.record_present_preparation(self.command_buffer, present_keys);
+	}
 }
 
 impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_> {

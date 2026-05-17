@@ -2008,18 +2008,18 @@ impl MSLShaderGenerator {
 			Stages::Compute { local_size } => {
 				msl_block.push_str(&format!(
 					"// besl-threadgroup-size:{},{},{}\n",
-					local_size.width(),
-					local_size.height(),
-					local_size.depth()
+					local_size.width().max(1),
+					local_size.height().max(1),
+					local_size.depth().max(1)
 				));
 				msl_block.push_str("// Note: Metal threadgroup sizes are set on the pipeline state.\n");
 			}
 			Stages::Mesh { local_size, .. } => {
 				msl_block.push_str(&format!(
 					"// besl-threadgroup-size:{},{},{}\n",
-					local_size.width(),
-					local_size.height(),
-					local_size.depth()
+					local_size.width().max(1),
+					local_size.height().max(1),
+					local_size.depth().max(1)
 				));
 			}
 			_ => {}

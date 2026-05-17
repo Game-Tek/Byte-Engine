@@ -12,7 +12,6 @@ use ghi::{
 		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 	frame::Frame,
 };
 use math::{Matrix4, ShaderMatrix4};

@@ -167,7 +167,7 @@ impl VisibilityPipelineManager {
 			Some("Material Evaluation Descriptor Set"),
 			&material_evaluation_descriptor_set_layout,
 		);
-		let material_pipeline_factory = context.create_pipeline_factory();
+		let material_pipeline_factory = context.create_detached_device();
 		resource_manager.configure_material_pipeline(MaterialPipelineConfig::new(
 			[
 				descriptor_set_layout,
@@ -972,6 +972,7 @@ use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 
 use ::core::slice::SlicePattern;
+use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use ghi::{
 	command_buffer::{
@@ -979,10 +980,6 @@ use ghi::{
 		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
 	graphics_hardware_interface,
-};
-use ghi::{
-	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 };
 use log::{error, warn};
 use math::{mat::MatInverse as _, ShaderMatrix4, ShaderMatrix4x3, Vector3};

@@ -92,10 +92,6 @@ pub mod implementation {
 	#[cfg(target_os = "linux")]
 	pub(crate) use vulkan::descriptor_set::DescriptorSet;
 	#[cfg(target_os = "linux")]
-	pub use vulkan::factory::{
-		ComputePipeline, Factory, Factory as DetachedDevice, FactoryImage, FactorySampler, RasterPipeline,
-	};
-	#[cfg(target_os = "linux")]
 	pub(crate) use vulkan::image::Image;
 	#[cfg(target_os = "linux")]
 	pub use vulkan::queue::Queue;
@@ -111,6 +107,8 @@ pub mod implementation {
 	pub use vulkan::Instance;
 	#[cfg(target_os = "linux")]
 	pub(crate) use vulkan::Synchronizer;
+	#[cfg(target_os = "linux")]
+	pub use vulkan::{ComputePipeline, FactoryImage, FactorySampler, RasterPipeline};
 
 	#[cfg(target_os = "windows")]
 	use crate::dx12;
@@ -118,7 +116,6 @@ pub mod implementation {
 	use crate::metal;
 	#[cfg(target_os = "linux")]
 	use crate::vulkan;
-
 }
 
 pub mod binding;

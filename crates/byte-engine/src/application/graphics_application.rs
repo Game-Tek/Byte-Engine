@@ -1124,7 +1124,7 @@ use std::{
 };
 
 use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll, PollReply, PortAddress};
-use ghi::{Context as _, ContextCreate as _, Device, Frame as _, Queue as _};
+use ghi::{Context as _, ContextCreate as _, Frame as _, Queue as _};
 use math::Vector2;
 use resource_management::{
 	asset::{

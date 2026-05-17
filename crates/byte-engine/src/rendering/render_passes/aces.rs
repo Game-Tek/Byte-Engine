@@ -3,7 +3,6 @@ use ghi::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 	FrameKey,
 };
 use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};

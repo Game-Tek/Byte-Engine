@@ -18,7 +18,7 @@ pub(crate) struct VisibilityPipelineResourceManager {
 	shader_requests: RwLock<StaleHashMap<String, u64, Arc<OwnedShader>>>,
 	compute_pipeline_requests: Option<Sender<ComputePipelineRequest>>,
 	compute_pipeline_results: Option<Receiver<ComputePipelineResult>>,
-	resource_device: Option<ghi::implementation::DetachedDevice>,
+	resource_device: Option<ghi::implementation::Device>,
 	material_pipeline_config: Option<MaterialPipelineConfig>,
 	work_completions: Sender<VisibilityResourceCompletion>,
 }
@@ -99,8 +99,8 @@ impl VisibilityPipelineResourceManager {
 	/// Stores the descriptor layout data needed to compile material evaluation pipelines.
 	pub(crate) fn configure_material_pipeline(&mut self, mut config: MaterialPipelineConfig) {
 		if self.compute_pipeline_requests.is_none() {
-			if let Some(factory) = config.pipeline_factory.take() {
-				let (requests, results) = Self::spawn_compute_worker(factory);
+			if let Some(device) = config.pipeline_factory.take() {
+				let (requests, results) = Self::spawn_compute_worker(device);
 				self.compute_pipeline_requests = Some(requests);
 				self.compute_pipeline_results = Some(results);
 			}
@@ -809,7 +809,7 @@ struct FactoryMaterial {
 pub(crate) struct MaterialPipelineConfig {
 	descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-	pipeline_factory: Option<ghi::implementation::Factory>,
+	pipeline_factory: Option<ghi::implementation::Device>,
 }
 
 impl MaterialPipelineConfig {
@@ -817,7 +817,7 @@ impl MaterialPipelineConfig {
 	pub(crate) fn new(
 		descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 		push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-		pipeline_factory: Option<ghi::implementation::Factory>,
+		pipeline_factory: Option<ghi::implementation::Device>,
 	) -> Self {
 		Self {
 			descriptor_set_templates,
@@ -903,7 +903,7 @@ const DEBUG_PIPELINE_CREATION_DELAY: Duration = Duration::from_millis(250);
 
 impl VisibilityPipelineResourceManager {
 	fn spawn_compute_worker(
-		device: ghi::implementation::DetachedDevice,
+		device: ghi::implementation::Device,
 	) -> (Sender<ComputePipelineRequest>, Receiver<ComputePipelineResult>) {
 		let (request_sender, request_receiver) = mpsc::channel::<ComputePipelineRequest>();
 		let (result_sender, result_receiver) = mpsc::channel::<ComputePipelineResult>();
@@ -930,7 +930,7 @@ impl VisibilityPipelineResourceManager {
 	}
 
 	fn compile_compute_pipeline(
-		device: &mut ghi::implementation::DetachedDevice,
+		device: &mut ghi::implementation::Device,
 		request: ComputePipelineRequest,
 	) -> Result<ghi::implementation::ComputePipeline, ()> {
 		use ghi::Device as _;

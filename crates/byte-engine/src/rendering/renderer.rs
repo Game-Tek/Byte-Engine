@@ -128,7 +128,7 @@ impl Renderer {
 				],
 			)
 			.unwrap();
-		let mut context = device.create_context().unwrap();
+		let mut context = ghi::Device::create_context(device).unwrap();
 
 		let graphics_queue_handle = graphics_queue_handle.unwrap();
 		let transfer_queue_handle = transfer_queue_handle.unwrap();
@@ -769,7 +769,6 @@ use ghi::{
 		RasterizationRenderPassMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 	frame::Frame as _,
 	queue::{Queue as _, QueueExecution as _},
 };

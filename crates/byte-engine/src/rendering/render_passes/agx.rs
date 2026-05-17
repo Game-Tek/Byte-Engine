@@ -3,7 +3,6 @@ use ghi::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 };
 use resource_management::{
 	glsl_shader_generator::GLSLShaderGenerator, msl_shader_generator::MSLShaderGenerator, resources::material,

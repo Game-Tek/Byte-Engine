@@ -2,12 +2,9 @@ use ghi::command_buffer::{
 	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 };
+use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use ghi::implementation::Frame;
-use ghi::{
-	context::{Context as _, ContextCreate as _},
-	device::Device as _,
-};
 use math::Vector2;
 use resource_management::{resource::StorageBackend, resources::material, types::ShaderTypes as ResourceShaderTypes};
 use utils::{Box, Extent, RGBA};

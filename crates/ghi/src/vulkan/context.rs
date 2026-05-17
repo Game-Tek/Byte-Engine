@@ -62,7 +62,7 @@ pub struct Context {
 
 impl Context {
 	pub(super) fn new(device: Device) -> Result<Self, &'static str> {
-		let mut device = device.inner;
+		let mut device = device.inner.ok_or("Failed to create a Vulkan context. The most likely cause is that a detached device was used as the primary graphics device.")?;
 		let memory_properties = device.memory_properties;
 		let queues = std::mem::take(&mut device.queues);
 		let settings = device.settings.clone();
@@ -118,23 +118,12 @@ impl Context {
 		})
 	}
 
-	/// Creates a detached-resource factory backed by this Vulkan device.
-	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
-		Some(crate::implementation::Factory {
-			device: self.device.device.clone(),
-			descriptor_set_layouts: self.descriptor_sets_layouts.clone(),
-			shaders: Vec::with_capacity(64),
-		})
-	}
-
-	/// Creates a detached device backed by the Vulkan factory implementation.
-	pub fn create_detached_device(&self) -> Option<crate::implementation::DetachedDevice> {
-		self.create_factory()
-	}
-
-	/// Creates a detached pipeline-capable factory for compatibility with the previous pipeline factory API.
-	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::Factory> {
-		self.create_factory()
+	/// Creates a device that shares this Vulkan context's logical device for detached resource creation.
+	pub fn create_detached_device(&self) -> Option<crate::implementation::Device> {
+		Some(crate::implementation::Device::detached(
+			self.device.device.clone(),
+			self.descriptor_sets_layouts.clone(),
+		))
 	}
 
 	pub(crate) fn create_command_buffer(
@@ -2815,6 +2804,10 @@ impl std::ops::DerefMut for Context {
 
 impl crate::device::Device for Context {
 	type Context = Self;
+	type RasterPipeline = crate::implementation::RasterPipeline;
+	type ComputePipeline = crate::implementation::ComputePipeline;
+	type Image = crate::implementation::FactoryImage;
+	type Sampler = crate::implementation::FactorySampler;
 
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
@@ -2823,6 +2816,55 @@ impl crate::device::Device for Context {
 
 	fn create_context(self) -> Result<Self::Context, &'static str> {
 		Ok(self)
+	}
+
+	fn create_shader(
+		&mut self,
+		name: Option<&str>,
+		shader_source_type: crate::shader::Sources,
+		stage: crate::ShaderTypes,
+		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
+		crate::context::ContextCreate::create_shader(self, name, shader_source_type, stage, shader_binding_descriptors)
+	}
+
+	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
+		let mut detached_device = self
+			.create_detached_device()
+			.expect("Failed to create a Vulkan detached device. The most likely cause is that the rendering context was not fully initialized.");
+		crate::device::Device::create_raster_pipeline(&mut detached_device, builder)
+	}
+
+	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
+		let mut detached_device = self
+			.create_detached_device()
+			.expect("Failed to create a Vulkan detached device. The most likely cause is that the rendering context was not fully initialized.");
+		detached_device.shaders = self.shaders.clone();
+		crate::device::Device::create_compute_pipeline(&mut detached_device, builder)
+	}
+
+	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
+		crate::implementation::FactoryImage {
+			name: builder.name.map(str::to_owned),
+			extent: builder.extent,
+			format: builder.format,
+			resource_uses: builder.resource_uses,
+			device_accesses: builder.device_accesses,
+			use_case: builder.use_case,
+			array_layers: builder.array_layers,
+		}
+	}
+
+	fn build_sampler(&mut self, builder: crate::sampler::Builder) -> Self::Sampler {
+		crate::implementation::FactorySampler {
+			filtering_mode: builder.filtering_mode,
+			reduction_mode: builder.reduction_mode,
+			mip_map_mode: builder.mip_map_mode,
+			addressing_mode: builder.addressing_mode,
+			anisotropy: builder.anisotropy,
+			min_lod: builder.min_lod,
+			max_lod: builder.max_lod,
+		}
 	}
 }
 

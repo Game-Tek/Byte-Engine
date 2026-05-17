@@ -18,7 +18,7 @@ pub mod command_buffer;
 pub mod context;
 pub mod descriptor_set;
 pub mod device;
-pub mod factory;
+
 pub mod frame;
 pub mod image;
 pub mod instance;
@@ -35,7 +35,6 @@ pub use self::command_buffer::*;
 pub use self::context::*;
 pub use self::descriptor_set::*;
 pub use self::device::*;
-pub use self::factory::*;
 pub use self::frame::*;
 pub(crate) use self::image::*;
 pub use self::instance::*;

@@ -398,7 +398,6 @@ impl ShadowPass {
 				return;
 			}
 
-			eprintln!("[byte-engine diagnostic] shadow pass: start region");
 			c.start_region("Shadow Map");
 
 			for cascade in 0..SHADOW_CASCADE_COUNT {
@@ -413,14 +412,10 @@ impl ShadowPass {
 				)
 				.layer(cascade as u32)];
 
-				eprintln!("[byte-engine diagnostic] shadow pass: cascade {cascade} start_render_pass");
 				let c = c.start_render_pass(extent, &attachments);
-				eprintln!("[byte-engine diagnostic] shadow pass: cascade {cascade} bind_raster_pipeline");
 				let c = c.bind_raster_pipeline(pipeline);
-				eprintln!("[byte-engine diagnostic] shadow pass: cascade {cascade} bind_descriptor_sets");
 				c.bind_descriptor_sets(&[descriptor_set]);
 
-				eprintln!("[byte-engine diagnostic] shadow pass: cascade {cascade} write view push constant");
 				c.write_push_constant(4, (cascade + 1) as u32);
 
 				for (i, instance) in instances.iter().enumerate() {
@@ -432,7 +427,6 @@ impl ShadowPass {
 					c.dispatch_meshes(mesh_dispatch_count(instance.meshlet_count), 1, 1);
 				}
 
-				eprintln!("[byte-engine diagnostic] shadow pass: cascade {cascade} end_render_pass");
 				c.end_render_pass();
 				c.end_region();
 			}
@@ -1233,25 +1227,16 @@ impl VisibilityPipelineRenderPass {
 				.prepare(frame, sink, opaque_materials, transparent_materials);
 
 		move |c, t| {
-			eprintln!("[byte-engine diagnostic] visibility pass: start region");
 			c.start_region("Visibility Render Model");
 
-			eprintln!("[byte-engine diagnostic] visibility pass: shadow_pass");
 			shadow_pass(c, t);
-			eprintln!("[byte-engine diagnostic] visibility pass: visibility_pass");
 			visibility_pass(c, t);
-			eprintln!("[byte-engine diagnostic] visibility pass: material_count_pass");
 			material_count_pass(c, t);
-			eprintln!("[byte-engine diagnostic] visibility pass: material_offset_pass");
 			material_offset_pass(c, t);
-			eprintln!("[byte-engine diagnostic] visibility pass: pixel_mapping_pass");
 			pixel_mapping_pass(c, t);
-			eprintln!("[byte-engine diagnostic] visibility pass: gtao_pass");
 			gtao_pass(c, t);
-			eprintln!("[byte-engine diagnostic] visibility pass: material_evaluation_pass");
 			material_evaluation_pass(c, t);
 
-			eprintln!("[byte-engine diagnostic] visibility pass: end region");
 			c.end_region();
 		}
 	}

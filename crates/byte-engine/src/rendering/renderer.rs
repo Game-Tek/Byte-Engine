@@ -289,11 +289,9 @@ impl Renderer {
 		let render_passes_by_sink = &self.render_passes_by_sink;
 
 		queue.execute(Some(frame), wait_for, synchronizer, |execution| {
-			eprintln!("[byte-engine diagnostic] renderer.prepare: entered queue.execute");
 			let completed_graphics_frame = execution.completed_frame();
 
 			let (sinks, pipeline_manager_commands, render_pass_commands, present_keys) = {
-				eprintln!("[byte-engine diagnostic] renderer.prepare: acquiring frame/swapchains");
 				let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
 				);
@@ -349,13 +347,10 @@ impl Renderer {
 
 				let pipeline_managers = pipeline_managers.iter_mut();
 
-				eprintln!("[byte-engine diagnostic] renderer.prepare: preparing pipeline managers");
 				let pipeline_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
 					pipeline_managers.filter_map(|sm| sm.prepare(frame, &sinks)).collect();
-				eprintln!("[byte-engine diagnostic] renderer.prepare: prepared pipeline managers");
 
 				// A list of render pass commands and their corresponding sink index
-				eprintln!("[byte-engine diagnostic] renderer.prepare: preparing render passes");
 				let render_pass_commands: SmallVec<[(RenderPassReturn, SinkId); 64]> = render_passes_by_sink
 					.iter()
 					.filter_map(|(render_pass_id, sink_id)| {
@@ -370,7 +365,6 @@ impl Renderer {
 					})
 					.collect();
 
-				eprintln!("[byte-engine diagnostic] renderer.prepare: prepared render passes");
 				let present_keys = swapchains
 					.iter()
 					.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
@@ -379,29 +373,20 @@ impl Renderer {
 				(sinks, pipeline_manager_commands, render_pass_commands, present_keys)
 			};
 
-			eprintln!("[byte-engine diagnostic] renderer.prepare: recording command buffer");
 			execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
-				for (command_group_index, commands) in pipeline_manager_commands.into_iter().enumerate() {
-					for (command_index, (command, sink)) in commands.into_iter().zip(sinks.iter()).enumerate() {
-						eprintln!(
-							"[byte-engine diagnostic] renderer.prepare: recording pipeline manager command group {command_group_index} command {command_index} sink {}",
-							sink.index()
-						);
+				for commands in pipeline_manager_commands {
+					for (command, sink) in commands.into_iter().zip(sinks.iter()) {
 						let attachment_infos = render_targets.get_attachment_infos(sink.index());
 
 						(&command)(&mut *command_buffer_recording, &attachment_infos);
 					}
 				}
 
-				for (command_index, (command, sink)) in render_pass_commands.into_iter().enumerate() {
-					eprintln!(
-						"[byte-engine diagnostic] renderer.prepare: recording render pass command {command_index} sink {sink}"
-					);
+				for (command, sink) in render_pass_commands {
 					let attachment_infos = render_targets.get_attachment_infos(sink);
 					(&command)(&mut *command_buffer_recording, &attachment_infos);
 				}
 			});
-			eprintln!("[byte-engine diagnostic] renderer.prepare: recorded command buffer");
 
 			present_keys
 		});

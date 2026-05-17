@@ -39,11 +39,25 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 	) where
 		Self::Frame: 'record,
 	{
+		self.record_with_present_keys(command_buffer_handle, &[], record);
+	}
+
+	fn record_with_present_keys<'record>(
+		&'record mut self,
+		command_buffer_handle: CommandBufferHandle,
+		present_keys: &[PresentKey],
+		record: impl FnOnce(&mut <Self::Frame as crate::frame::Frame<'a>>::CBR<'record>),
+	) where
+		Self::Frame: 'record,
+	{
 		let frame = self.frame.as_mut().expect(
 			"Frame is required to record a DX12 frame command buffer. The most likely cause is that Queue::execute was called without a frame request.",
 		);
 		let mut command_buffer = frame.create_command_buffer_recording(command_buffer_handle);
 		record(&mut command_buffer);
+		// Present keys are recorded after user commands so swapchain proxy images written by compute passes
+		// are copied to the native backbuffer before the command list is submitted.
+		command_buffer.record_present_preparation(present_keys);
 		self.command_buffers.push(command_buffer_handle);
 	}
 }

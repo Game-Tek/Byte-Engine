@@ -28,8 +28,8 @@ pub struct Context {
 
 	pub(super) descriptors: HashMap<DescriptorSetHandle, HashMap<u32, HashMap<u32, Descriptor>>>,
 
-	/// Maps a descriptor set and binding to N resources that it references.
-	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<PrivateHandles>>,
+	/// Maps a descriptor set binding element to N resources that it references.
+	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32, u32), HashSet<PrivateHandles>>,
 
 	pub settings: crate::device::Features,
 
@@ -177,128 +177,27 @@ impl Context {
 	}
 
 	pub(crate) fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
-		let writes = descriptor_set_writes
-			.iter()
-			.filter_map(|descriptor_set_write| {
-				let binding_handles = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0).get_all(&self.bindings);
+		let writes = descriptor_set_writes.iter().flat_map(|descriptor_set_write| {
+			let binding_handles = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0).get_all(&self.bindings);
 
-				// assert!(descriptor_set_write.array_element < binding.count, "Binding index out of range.");
+			// assert!(descriptor_set_write.array_element < binding.count, "Binding index out of range.");
 
-				match descriptor_set_write.descriptor {
-					crate::descriptors::WriteData::Buffer { handle, size } => {
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+			match descriptor_set_write.descriptor {
+				crate::descriptors::WriteData::Buffer { .. }
+				| crate::descriptors::WriteData::Image { .. }
+				| crate::descriptors::WriteData::CombinedImageSampler { .. }
+				| crate::descriptors::WriteData::Sampler(_)
+				| crate::descriptors::WriteData::Swapchain(_) => {}
+				_ => unimplemented!(),
+			}
 
-						for (i, &binding_handle) in binding_handles.iter().enumerate() {
-							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-							let buffer_handle = self
-								.buffers
-								.nth_handle(handle, (i as i32 - offset).rem_euclid(self.frames as i32) as usize)
-								.unwrap();
-
-							writes.push(
-								DescriptorWrite::new(
-									Descriptors::Buffer {
-										handle: buffer_handle,
-										size,
-									},
-									binding_handle,
-								)
-								.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					crate::descriptors::WriteData::Image { handle, layout } => {
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						for (i, &binding_handle) in binding_handles.iter().enumerate() {
-							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-							let image_handle = self.resolve_descriptor_image_handle(
-								graphics_hardware_interface::ImageHandle(handle),
-								i,
-								offset,
-							);
-
-							writes.push(
-								DescriptorWrite::new(
-									Descriptors::Image {
-										handle: image_handle,
-										layout,
-									},
-									binding_handle,
-								)
-								.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					crate::descriptors::WriteData::CombinedImageSampler {
-						image_handle,
-						sampler_handle,
-						layout,
-						layer,
-					} => {
-						let sampler_handle = SamplerHandle(sampler_handle.0);
-
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						for (i, &binding_handle) in binding_handles.iter().enumerate() {
-							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-							let image_handle = self.resolve_descriptor_image_handle(
-								graphics_hardware_interface::ImageHandle(image_handle),
-								i,
-								offset,
-							);
-
-							writes.push(
-								DescriptorWrite::new(
-									Descriptors::CombinedImageSampler {
-										image_handle,
-										layout,
-										sampler_handle,
-										layer,
-									},
-									binding_handle,
-								)
-								.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					crate::descriptors::WriteData::Sampler(handle) => {
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						let sampler_handle = SamplerHandle(handle.0);
-
-						for (_, &binding_handle) in binding_handles.iter().enumerate() {
-							writes.push(
-								DescriptorWrite::new(Descriptors::Sampler { handle: sampler_handle }, binding_handle)
-									.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					crate::descriptors::WriteData::Swapchain(handle) => {
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						for (_, &binding_handle) in binding_handles.iter().enumerate() {
-							writes.push(
-								DescriptorWrite::new(Descriptors::Swapchain { handle }, binding_handle)
-									.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					_ => unimplemented!(),
-				}
-			})
-			.flatten();
+			binding_handles
+				.into_iter()
+				.enumerate()
+				.filter_map(|(sequence_index, binding_handle)| {
+					self.resolve_descriptor_write_for_sequence(descriptor_set_write, binding_handle, sequence_index)
+				})
+		});
 
 		let writes = self.produce_writes(writes);
 		self.process_write_results(writes);
@@ -828,6 +727,61 @@ impl Context {
 		}
 	}
 
+	/// Resolves a public descriptor write into the frame-local Vulkan write used by one descriptor set.
+	fn resolve_descriptor_write_for_sequence(
+		&self,
+		descriptor_set_write: &crate::descriptors::Write,
+		binding_handle: DescriptorSetBindingHandle,
+		sequence_index: usize,
+	) -> Option<DescriptorWrite> {
+		let frame_offset = descriptor_set_write.frame_offset.unwrap_or(0);
+		let write = match descriptor_set_write.descriptor {
+			crate::descriptors::WriteData::Buffer { handle, size } => {
+				let handle = self
+					.buffers
+					.nth_handle(
+						handle,
+						(sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize,
+					)
+					.unwrap();
+				Descriptors::Buffer { handle, size }
+			}
+			crate::descriptors::WriteData::Image { handle, layout } => {
+				let handle = self.resolve_descriptor_image_handle(
+					graphics_hardware_interface::ImageHandle(handle),
+					sequence_index,
+					frame_offset,
+				);
+				Descriptors::Image { handle, layout }
+			}
+			crate::descriptors::WriteData::CombinedImageSampler {
+				image_handle,
+				sampler_handle,
+				layout,
+				layer,
+			} => {
+				let image_handle = self.resolve_descriptor_image_handle(
+					graphics_hardware_interface::ImageHandle(image_handle),
+					sequence_index,
+					frame_offset,
+				);
+				Descriptors::CombinedImageSampler {
+					image_handle,
+					sampler_handle: SamplerHandle(sampler_handle.0),
+					layout,
+					layer,
+				}
+			}
+			crate::descriptors::WriteData::Sampler(handle) => Descriptors::Sampler {
+				handle: SamplerHandle(handle.0),
+			},
+			crate::descriptors::WriteData::Swapchain(handle) => Descriptors::Swapchain { handle },
+			_ => return None,
+		};
+
+		Some(DescriptorWrite::new(write, binding_handle).index(descriptor_set_write.array_element))
+	}
+
 	fn descriptor_set_sequence_index(&self, descriptor_set_handle: DescriptorSetHandle) -> usize {
 		let root = descriptor_set_handle.root(&self.descriptor_sets);
 		root.get_all(&self.descriptor_sets)
@@ -986,71 +940,21 @@ impl Context {
 					}
 
 					let binding = binding_handles[(sequence_index as usize).rem_euclid(binding_handles.len())];
-					let frame_offset = descriptor_write.frame_offset.unwrap_or(0);
 					let targets_swapchain = self.descriptor_targets_swapchain_image(&descriptor_write.descriptor);
-
-					let new_descriptor_write = match descriptor_write.descriptor {
-						crate::descriptors::WriteData::Buffer { handle, size } => {
-							let handle = self
-								.buffers
-								.nth_handle(
-									handle,
-									(sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize,
-								)
-								.unwrap();
-							Some(DescriptorWrite::new(Descriptors::Buffer { handle, size }, binding))
-						}
-						crate::descriptors::WriteData::Image { handle, layout } => {
-							let handle = self.resolve_descriptor_image_handle(
-								graphics_hardware_interface::ImageHandle(handle),
-								sequence_index as usize,
-								frame_offset,
-							);
-							Some(DescriptorWrite::new(Descriptors::Image { handle, layout }, binding))
-						}
-						crate::descriptors::WriteData::CombinedImageSampler {
-							image_handle,
-							sampler_handle,
-							layout,
-							layer,
-						} => {
-							let image_handle = self.resolve_descriptor_image_handle(
-								graphics_hardware_interface::ImageHandle(image_handle),
-								sequence_index as usize,
-								frame_offset,
-							);
-							Some(DescriptorWrite::new(
-								Descriptors::CombinedImageSampler {
-									image_handle,
-									sampler_handle: SamplerHandle(sampler_handle.0),
-									layout,
-									layer,
-								},
-								binding,
-							))
-						}
-						crate::descriptors::WriteData::Sampler(sampler_handle) => Some(DescriptorWrite::new(
-							Descriptors::Sampler {
-								handle: SamplerHandle(sampler_handle.0),
-							},
-							binding,
-						)),
-						crate::descriptors::WriteData::Swapchain(handle) => {
-							Some(DescriptorWrite::new(Descriptors::Swapchain { handle }, binding))
-						}
-						_ => None,
-					};
+					let new_descriptor_write =
+						self.resolve_descriptor_write_for_sequence(descriptor_write, binding, sequence_index as usize);
 
 					if let crate::descriptors::WriteData::Swapchain(handle) = descriptor_write.descriptor {
 						let binding_data = binding.access(&self.bindings);
-						self.descriptors
-							.entry(binding_data.descriptor_set_handle)
-							.or_insert_with(HashMap::new)
-							.entry(binding_data.index)
-							.or_insert_with(HashMap::new)
-							.insert(descriptor_write.array_element, Descriptor::Swapchain { handle });
+						self.store_descriptor(
+							binding_data.descriptor_set_handle,
+							binding,
+							binding_data.index,
+							descriptor_write.array_element,
+							Descriptor::Swapchain { handle },
+						);
 					} else if let Some(write) = new_descriptor_write {
-						descriptor_writes.push(write.index(descriptor_write.array_element));
+						descriptor_writes.push(write);
 
 						if targets_swapchain {
 							recurring_tasks.push(Task::new(
@@ -2618,65 +2522,98 @@ impl Context {
 			let array_element = write.array_element;
 			let binding_handle = write.binding_handle;
 
-			match write.descriptor {
-				Descriptor::Buffer { buffer, size } => {
-					self.descriptors
-						.entry(descriptor_set_handle)
-						.or_insert_with(HashMap::new)
-						.entry(binding_index)
-						.or_insert_with(HashMap::new)
-						.insert(array_element, Descriptor::Buffer { size, buffer });
-					self.descriptor_set_to_resource
-						.entry((descriptor_set_handle, binding_index))
-						.or_insert_with(HashSet::new)
-						.insert(PrivateHandles::Buffer(buffer));
-					self.resource_to_descriptor
-						.entry(PrivateHandles::Buffer(buffer))
-						.or_insert_with(HashSet::new)
-						.insert((binding_handle, array_element));
-				}
-				Descriptor::Image { image, layout } => {
-					self.descriptors
-						.entry(descriptor_set_handle)
-						.or_insert_with(HashMap::new)
-						.entry(binding_index)
-						.or_insert_with(HashMap::new)
-						.insert(array_element, Descriptor::Image { image, layout });
-					self.descriptor_set_to_resource
-						.entry((descriptor_set_handle, binding_index))
-						.or_insert_with(HashSet::new)
-						.insert(PrivateHandles::Image(image));
-					self.resource_to_descriptor
-						.entry(PrivateHandles::Image(image))
-						.or_insert_with(HashSet::new)
-						.insert((binding_handle, array_element));
-				}
-				Descriptor::CombinedImageSampler { image, sampler, layout } => {
-					self.descriptors
-						.entry(descriptor_set_handle)
-						.or_insert_with(HashMap::new)
-						.entry(binding_index)
-						.or_insert_with(HashMap::new)
-						.insert(array_element, Descriptor::CombinedImageSampler { image, sampler, layout });
-					self.descriptor_set_to_resource
-						.entry((descriptor_set_handle, binding_index))
-						.or_insert_with(HashSet::new)
-						.insert(PrivateHandles::Image(image));
-					self.resource_to_descriptor
-						.entry(PrivateHandles::Image(image))
-						.or_insert_with(HashSet::new)
-						.insert((binding_handle, array_element));
-				}
-				Descriptor::Swapchain { handle } => {
-					self.descriptors
-						.entry(descriptor_set_handle)
-						.or_insert_with(HashMap::new)
-						.entry(binding_index)
-						.or_insert_with(HashMap::new)
-						.insert(array_element, Descriptor::Swapchain { handle });
-				}
+			self.store_descriptor(
+				descriptor_set_handle,
+				binding_handle,
+				binding_index,
+				array_element,
+				write.descriptor,
+			);
+		}
+	}
+
+	/// Stores a descriptor value and refreshes the reverse resource tracking for its binding element.
+	fn store_descriptor(
+		&mut self,
+		descriptor_set_handle: DescriptorSetHandle,
+		binding_handle: DescriptorSetBindingHandle,
+		binding_index: u32,
+		array_element: u32,
+		descriptor: Descriptor,
+	) {
+		self.clear_descriptor_tracking(descriptor_set_handle, binding_handle, binding_index, array_element);
+		self.register_descriptor_tracking(
+			descriptor_set_handle,
+			binding_handle,
+			binding_index,
+			array_element,
+			&descriptor,
+		);
+
+		self.descriptors
+			.entry(descriptor_set_handle)
+			.or_insert_with(HashMap::new)
+			.entry(binding_index)
+			.or_insert_with(HashMap::new)
+			.insert(array_element, descriptor);
+	}
+
+	/// Removes stale resource-to-descriptor links before a binding element is overwritten.
+	fn clear_descriptor_tracking(
+		&mut self,
+		descriptor_set_handle: DescriptorSetHandle,
+		binding_handle: DescriptorSetBindingHandle,
+		binding_index: u32,
+		array_element: u32,
+	) {
+		let key = (descriptor_set_handle, binding_index, array_element);
+		let Some(resources) = self.descriptor_set_to_resource.remove(&key) else {
+			return;
+		};
+
+		for resource in resources {
+			let should_remove = if let Some(descriptor_bindings) = self.resource_to_descriptor.get_mut(&resource) {
+				descriptor_bindings.remove(&(binding_handle, array_element));
+				descriptor_bindings.is_empty()
+			} else {
+				false
+			};
+
+			if should_remove {
+				self.resource_to_descriptor.remove(&resource);
 			}
 		}
+	}
+
+	/// Registers resource-backed descriptors so backing resource rebuilds can refresh affected bindings.
+	fn register_descriptor_tracking(
+		&mut self,
+		descriptor_set_handle: DescriptorSetHandle,
+		binding_handle: DescriptorSetBindingHandle,
+		binding_index: u32,
+		array_element: u32,
+		descriptor: &Descriptor,
+	) {
+		let resource = match descriptor {
+			Descriptor::Buffer { buffer, .. } => Some(PrivateHandles::Buffer(*buffer)),
+			Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
+				Some(PrivateHandles::Image(*image))
+			}
+			Descriptor::Swapchain { .. } => None,
+		};
+
+		let Some(resource) = resource else {
+			return;
+		};
+
+		self.descriptor_set_to_resource
+			.entry((descriptor_set_handle, binding_index, array_element))
+			.or_insert_with(HashSet::new)
+			.insert(resource);
+		self.resource_to_descriptor
+			.entry(resource)
+			.or_insert_with(HashSet::new)
+			.insert((binding_handle, array_element));
 	}
 
 	fn write_internal(&mut self, writes: impl IntoIterator<Item = DescriptorWrite>) {

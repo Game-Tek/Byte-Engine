@@ -4,8 +4,8 @@ use utils::Extent;
 
 use crate::{
 	graphics_hardware_interface, AttachmentInformation, BaseBufferHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
-	BufferImageCopyDescriptor, ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts,
-	MeshHandle, PipelineHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
+	BufferImageCopyDescriptor, ClearValue, CommandBufferHandle, DescriptorSetHandle, DispatchExtent, FrameKey,
+	ImageBufferCopyDescriptor, Layouts, MeshHandle, PipelineHandle, PresentKey, RGBAu8, SynchronizerHandle, TextureCopyHandle,
 };
 
 pub struct CommandBufferRecording<'a> {
@@ -56,6 +56,8 @@ impl<'a> CommandBufferRecording<'a> {
 	pub fn copy_buffers(&mut self, _copies: &[BufferCopyDescriptor]) {}
 
 	pub fn copy_buffer_to_images(&mut self, _copies: &[BufferImageCopyDescriptor]) {}
+
+	pub fn copy_images_to_buffer(&mut self, _copies: &[ImageBufferCopyDescriptor]) {}
 
 	pub fn transfer_textures(
 		&mut self,

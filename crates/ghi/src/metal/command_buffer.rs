@@ -989,6 +989,140 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		self.consume_resources(consumptions);
 	}
 
+	fn copy_images_to_buffer(&mut self, copies: &[crate::ImageBufferCopyDescriptor]) {
+		let consumptions = copies
+			.iter()
+			.flat_map(|copy| {
+				[
+					Consumption {
+						handle: PrivateHandles::Image(self.get_internal_image_handle(copy.source_image)),
+						stages: crate::Stages::TRANSFER,
+						access: crate::AccessPolicies::READ,
+						layout: crate::Layouts::Transfer,
+					},
+					Consumption {
+						handle: PrivateHandles::Buffer(self.get_internal_buffer_handle(copy.destination_buffer)),
+						stages: crate::Stages::TRANSFER,
+						access: crate::AccessPolicies::WRITE,
+						layout: crate::Layouts::Transfer,
+					},
+				]
+			})
+			.collect::<Vec<_>>();
+		self.consume_resources(consumptions);
+
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+		let label = self.current_encoder_label("Image Buffer Copy");
+		blit_encoder.setLabel(Some(&label));
+
+		for copy in copies {
+			let source = self.device.images.resource(self.get_internal_image_handle(copy.source_image));
+			let destination = self
+				.device
+				.buffers
+				.resource(self.get_internal_buffer_handle(copy.destination_buffer));
+			let Some((compact_bytes_per_row, row_count, _)) = utils::texture_upload_layout(source.format, source.extent) else {
+				panic!(
+					"Metal texture copy layout is unsupported. The most likely cause is that the source format has no buffer copy layout. format={:?}, extent={:?}",
+					source.format, source.extent
+				);
+			};
+			let expected_bytes_per_row = compact_bytes_per_row.next_multiple_of(256);
+			let expected_bytes_per_image = expected_bytes_per_row * row_count;
+			assert_eq!(
+				copy.destination_offset % 256,
+				0,
+				"Metal image copy destination offset alignment mismatch. The most likely cause is that the destination buffer offset is not 256-byte aligned. destination_offset={}, destination_bytes_per_row={}, destination_bytes_per_image={}, format={:?}, extent={:?}",
+				copy.destination_offset,
+				copy.destination_bytes_per_row,
+				copy.destination_bytes_per_image,
+				source.format,
+				source.extent
+			);
+			assert_eq!(
+				copy.destination_bytes_per_row,
+				expected_bytes_per_row,
+				"Metal image copy row pitch mismatch. The most likely cause is that readback preparation and Metal copy recording disagree about row padding. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, row_count={row_count}, destination_bytes_per_row={}, expected={expected_bytes_per_row}",
+				source.format,
+				source.extent,
+				copy.destination_bytes_per_row
+			);
+			assert_eq!(
+				copy.destination_bytes_per_image,
+				expected_bytes_per_image,
+				"Metal image copy image pitch mismatch. The most likely cause is that readback preparation and Metal copy recording disagree about padded rows per image. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, row_count={row_count}, destination_bytes_per_image={}, expected={expected_bytes_per_image}",
+				source.format,
+				source.extent,
+				copy.destination_bytes_per_image
+			);
+			let required_destination_bytes = copy
+				.destination_bytes_per_image
+				.checked_mul(source.array_layers as usize)
+				.and_then(|copy_bytes| copy.destination_offset.checked_add(copy_bytes))
+				.expect(
+					"Metal image copy destination bounds overflowed. The most likely cause is an invalid array layer count or image pitch.",
+				);
+			assert!(
+				required_destination_bytes <= destination.size,
+				"Metal image copy destination buffer is too small. The most likely cause is that the readback buffer allocation is smaller than the recorded texture copy. destination_size={}, required_destination_bytes={required_destination_bytes}, destination_offset={}, array_layers={}, destination_bytes_per_image={}, format={:?}, extent={:?}",
+				destination.size,
+				copy.destination_offset,
+				source.array_layers,
+				copy.destination_bytes_per_image,
+				source.format,
+				source.extent
+			);
+
+			let mut source_size = utils::texture_copy_size(source.format, source.extent);
+			source_size.depth = 1;
+			let source_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
+
+			for slice in 0..source.array_layers as usize {
+				let destination_offset = copy.destination_offset + slice * copy.destination_bytes_per_image;
+				unsafe {
+					blit_encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
+						source.texture.as_ref(),
+						slice as _,
+						0,
+						source_origin,
+						source_size,
+						destination.buffer.as_ref(),
+						destination_offset as _,
+						copy.destination_bytes_per_row as _,
+						copy.destination_bytes_per_image as _,
+					);
+				}
+			}
+
+			if utils::storage_mode_from_access(destination.access) == mtl::MTLStorageMode::Managed {
+				blit_encoder.synchronizeResource(destination.buffer.as_ref());
+			}
+		}
+
+		blit_encoder.endEncoding();
+
+		let consumptions = copies
+			.iter()
+			.map(|copy| Consumption {
+				handle: PrivateHandles::Buffer(self.get_internal_buffer_handle(copy.destination_buffer)),
+				stages: crate::Stages::TRANSFER,
+				access: crate::AccessPolicies::READ,
+				layout: crate::Layouts::Transfer,
+			})
+			.collect::<Vec<_>>();
+		self.consume_resources(consumptions);
+	}
+
 	fn transfer_textures(
 		&mut self,
 		texture_handles: &[graphics_hardware_interface::BaseImageHandle],

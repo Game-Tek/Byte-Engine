@@ -2,8 +2,8 @@ use utils::Extent;
 
 use crate::{
 	rt, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
-	BufferImageCopyDescriptor, ClearValue, DescriptorSetHandle, DispatchExtent, FrameKey, Layouts, MeshHandle, PipelineHandle,
-	RGBAu8, SynchronizerHandle, TextureCopyHandle,
+	BufferImageCopyDescriptor, ClearValue, DescriptorSetHandle, DispatchExtent, FrameKey, ImageBufferCopyDescriptor, Layouts,
+	MeshHandle, PipelineHandle, RGBAu8, SynchronizerHandle, TextureCopyHandle,
 };
 
 pub trait CommandBuffer {
@@ -44,6 +44,8 @@ where
 	fn copy_buffers(&mut self, copies: &[BufferCopyDescriptor]);
 	/// Copies buffer byte ranges into images.
 	fn copy_buffer_to_images(&mut self, copies: &[BufferImageCopyDescriptor]);
+	/// Copies images into buffer byte ranges.
+	fn copy_images_to_buffer(&mut self, copies: &[ImageBufferCopyDescriptor]);
 
 	/// Records copies that make image data available to the CPU.
 	fn transfer_textures(&mut self, texture_handles: &[BaseImageHandle]) -> Vec<TextureCopyHandle>;

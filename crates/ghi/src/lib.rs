@@ -118,7 +118,6 @@ pub mod implementation {
 	use crate::metal;
 	#[cfg(target_os = "linux")]
 	use crate::vulkan;
-
 }
 
 pub mod binding;

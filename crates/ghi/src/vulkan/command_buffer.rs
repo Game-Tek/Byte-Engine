@@ -1059,6 +1059,12 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		texture_copies
 	}
 
+	fn copy_images_to_buffer(&mut self, _copies: &[crate::ImageBufferCopyDescriptor]) {
+		panic!(
+			"Vulkan image-to-buffer copy is not implemented. The most likely cause is that this backend has not been wired for arbitrary texture readback buffers."
+		);
+	}
+
 	fn start_render_pass(
 		&mut self,
 		extent: Extent,

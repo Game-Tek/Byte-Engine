@@ -2049,7 +2049,10 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 
 		let partitions = partition(&self.bound_descriptor_set_handles, |e| e.0 as usize);
 
-		// Always rebind all descriptor sets set by the user as previously bound descriptor sets might have been invalidated by a pipeline layout change
+		// Always rebind all descriptor sets set by the user as previously bound descriptor sets might have been invalidated by a pipeline layout change.
+		// Descriptor bindings are scoped to the active bind point. Binding compute-only descriptor sets to graphics leaves
+		// storage/read image descriptors visible to later draws and makes Vulkan validate resources the graphics pipeline does
+		// not actually use.
 		for (base_index, descriptor_sets) in partitions {
 			let base_index = base_index as u32;
 
@@ -2059,28 +2062,14 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 				.collect::<Vec<_>>();
 
 			unsafe {
-				for bp in [vk::PipelineBindPoint::GRAPHICS, vk::PipelineBindPoint::COMPUTE] {
-					// TODO: do this for all needed bind points
-					self.device.device.cmd_bind_descriptor_sets(
-						command_buffer.command_buffer,
-						bp,
-						vulkan_pipeline_layout_handle,
-						base_index,
-						&descriptor_sets,
-						&[],
-					);
-				}
-
-				if self.pipeline_bind_point == vk::PipelineBindPoint::RAY_TRACING_KHR {
-					self.device.device.cmd_bind_descriptor_sets(
-						command_buffer.command_buffer,
-						vk::PipelineBindPoint::RAY_TRACING_KHR,
-						vulkan_pipeline_layout_handle,
-						base_index,
-						&descriptor_sets,
-						&[],
-					);
-				}
+				self.device.device.cmd_bind_descriptor_sets(
+					command_buffer.command_buffer,
+					self.pipeline_bind_point,
+					vulkan_pipeline_layout_handle,
+					base_index,
+					&descriptor_sets,
+					&[],
+				);
 			}
 		}
 

@@ -53,6 +53,18 @@ where
 		command_buffer_handle: CommandBufferHandle,
 	) -> Self::CBR<'record>;
 
+	/// Creates a new command buffer recording without injecting frame-global pending sync work.
+	///
+	/// Use this for command buffers that record explicit transfer or maintenance work. The regular
+	/// frame recording path may prepend pending dynamic-resource uploads, which would make helper
+	/// queues unexpectedly replay render-frame synchronization copies.
+	fn create_command_buffer_recording_without_implicit_sync<'record>(
+		&'record mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> Self::CBR<'record> {
+		self.create_command_buffer_recording(command_buffer_handle)
+	}
+
 	/// Acquires an image from the swapchain as to have it ready for presentation.
 	///
 	/// # Arguments

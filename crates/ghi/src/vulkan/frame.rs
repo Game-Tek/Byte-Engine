@@ -352,6 +352,53 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&'record mut self,
 		command_buffer_handle: crate::CommandBufferHandle,
 	) -> Self::CBR<'record> {
+		self.create_command_buffer_recording_internal(command_buffer_handle, true)
+	}
+
+	fn create_command_buffer_recording_without_implicit_sync<'record>(
+		&'record mut self,
+		command_buffer_handle: crate::CommandBufferHandle,
+	) -> Self::CBR<'record> {
+		self.create_command_buffer_recording_internal(command_buffer_handle, false)
+	}
+
+	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
+		let buffers = &self.device.buffers;
+		let frame_key = self.frame_key;
+
+		let handle = buffers
+			.nth_handle(buffer_handle.into(), frame_key.sequence_index as _)
+			.unwrap();
+		let buffer = buffers.resource(handle);
+
+		if super::buffer::PERSISTENT_WRITE {
+			if let Some(source_handle) = buffer.source {
+				// Return the persistent source buffer's pointer. The user writes
+				// here and every frame the data is automatically memcpy'd to per-frame
+				// staging and then GPU-copied. No need to push to pending_buffer_syncs.
+				let source_buffer = buffers.resource(source_handle);
+				return unsafe { std::mem::transmute(source_buffer.pointer) };
+			}
+		}
+
+		if let Some(staging_handle) = buffer.staging {
+			self.device.pending_buffer_syncs.insert(handle);
+
+			let staging_buffer = buffers.resource(staging_handle);
+
+			return unsafe { std::mem::transmute(staging_buffer.pointer) };
+		}
+
+		unsafe { std::mem::transmute(buffer.pointer) }
+	}
+}
+
+impl Frame<'_> {
+	fn create_command_buffer_recording_internal(
+		&mut self,
+		command_buffer_handle: crate::CommandBufferHandle,
+		include_implicit_sync: bool,
+	) -> CommandBufferRecording<'_> {
 		let frame_key = self.frame_key;
 
 		// Update descriptors before creating command buffer
@@ -361,9 +408,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		// persistent source buffer into the current frame's staging buffer, then
 		// enqueue the staging→GPU copy. This ensures every frame gets the latest
 		// data even if the CPU didn't write this frame.
-		if super::buffer::PERSISTENT_WRITE {
-			let buffers = &self.device.buffers;
-
+		if include_implicit_sync && super::buffer::PERSISTENT_WRITE {
 			for master_handle in &self.device.persistent_write_dynamic_buffers {
 				let frame_buffer_handle = self
 					.device()
@@ -428,36 +473,6 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		recording.sync_textures(image_copies.iter().copied());
 
 		recording
-	}
-
-	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
-		let buffers = &self.device.buffers;
-		let frame_key = self.frame_key;
-
-		let handle = buffers
-			.nth_handle(buffer_handle.into(), frame_key.sequence_index as _)
-			.unwrap();
-		let buffer = buffers.resource(handle);
-
-		if super::buffer::PERSISTENT_WRITE {
-			if let Some(source_handle) = buffer.source {
-				// Return the persistent source buffer's pointer. The user writes
-				// here and every frame the data is automatically memcpy'd to per-frame
-				// staging and then GPU-copied. No need to push to pending_buffer_syncs.
-				let source_buffer = buffers.resource(source_handle);
-				return unsafe { std::mem::transmute(source_buffer.pointer) };
-			}
-		}
-
-		if let Some(staging_handle) = buffer.staging {
-			self.device.pending_buffer_syncs.insert(handle);
-
-			let staging_buffer = buffers.resource(staging_handle);
-
-			return unsafe { std::mem::transmute(staging_buffer.pointer) };
-		}
-
-		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 }
 

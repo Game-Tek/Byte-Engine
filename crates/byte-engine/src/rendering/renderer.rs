@@ -24,6 +24,7 @@ pub struct Renderer {
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 
 	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
+	pipeline_manager_resources_by_sink: SmallVec<[(PipelineManagerId, SinkId, Vec<(String, ghi::AccessPolicies)>); 64]>,
 
 	/// The GHI queue where graphics commands are submitted. The main rendering operations occur on this queue.
 	graphics_queue_handle: ghi::QueueHandle,
@@ -159,6 +160,7 @@ impl Renderer {
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 
 			pipeline_managers: SmallVec::with_capacity(8),
+			pipeline_manager_resources_by_sink: SmallVec::with_capacity(64),
 
 			graphics_queue_handle,
 			transfer_queue_handle,
@@ -169,6 +171,7 @@ impl Renderer {
 	}
 
 	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
+		let pipeline_manager_id = self.pipeline_managers.len();
 		{
 			let sink_swapchains: SmallVec<[(SinkId, ghi::SwapchainHandle); 16]> = self
 				.sink_cameras
@@ -179,6 +182,13 @@ impl Renderer {
 				let mut rpb = RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
 
 				pipeline_manager.create_sink(sink_id, &mut rpb);
+				let consumed_resources = rpb
+					.consumed_resources
+					.iter()
+					.map(|(name, access)| ((*name).to_string(), *access))
+					.collect();
+				self.pipeline_manager_resources_by_sink
+					.push((pipeline_manager_id, sink_id, consumed_resources));
 
 				if rpb.consumed_resources.len() == 0 {
 					log::debug!("No resources consumed by scene manager");
@@ -287,6 +297,7 @@ impl Renderer {
 		let cameras = &self.cameras;
 		let render_targets = &self.render_targets;
 		let pipeline_managers = &mut self.pipeline_managers;
+		let pipeline_manager_resources_by_sink = &self.pipeline_manager_resources_by_sink;
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
 
@@ -347,19 +358,23 @@ impl Renderer {
 					}
 				}
 
-				let pipeline_managers = pipeline_managers.iter_mut();
+				let pipeline_managers = pipeline_managers.iter_mut().enumerate();
 
-				let pipeline_manager_commands: SmallVec<[Vec<Box<dyn RenderPassFunction>>; 16]> =
-					pipeline_managers.filter_map(|sm| sm.prepare(frame, &sinks)).collect();
+				let pipeline_manager_commands: SmallVec<[(PipelineManagerId, Vec<Box<dyn RenderPassFunction>>); 16]> =
+					pipeline_managers
+						.filter_map(|(pipeline_manager_id, sm)| {
+							sm.prepare(frame, &sinks).map(|commands| (pipeline_manager_id, commands))
+						})
+						.collect();
 
-				// A list of render pass commands and their corresponding sink index
-				let render_pass_commands: SmallVec<[(RenderPassReturn, SinkId); 64]> = render_passes_by_sink
+				// A list of render pass commands and their corresponding pass/sink indices.
+				let render_pass_commands: SmallVec<[(RenderPassReturn, RenderPassId, SinkId); 64]> = render_passes_by_sink
 					.iter()
 					.filter_map(|(render_pass_id, sink_id)| {
 						if let Some(render_pass) = render_passes.get_mut(*render_pass_id) {
 							if let Some(sink) = sinks.iter().find(|sink| sink.index() == *sink_id) {
 								if let Some(command) = render_pass.prepare(frame, sink) {
-									return Some((command, sink.index()));
+									return Some((command, *render_pass_id, sink.index()));
 								}
 							}
 						}
@@ -376,15 +391,23 @@ impl Renderer {
 			};
 
 			execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
-				for commands in pipeline_manager_commands {
+				for (pipeline_manager_id, commands) in pipeline_manager_commands {
 					for (command, sink) in commands.into_iter().zip(sinks.iter()) {
-						let attachment_infos = render_targets.get_attachment_infos(sink.index());
+						let attachment_infos = render_targets.get_attachment_infos_for_resources(
+							sink.index(),
+							pipeline_manager_resources_by_sink
+								.iter()
+								.find_map(|(id, sink_id, resources)| {
+									(*id == pipeline_manager_id && *sink_id == sink.index()).then_some(resources.as_slice())
+								})
+								.unwrap_or(&[]),
+						);
 
 						(&command)(&mut *command_buffer_recording, &attachment_infos);
 					}
 				}
 
-				for (command, sink) in render_pass_commands {
+				for (command, _render_pass_id, sink) in render_pass_commands {
 					let attachment_infos = render_targets.get_attachment_infos(sink);
 					(&command)(&mut *command_buffer_recording, &attachment_infos);
 				}
@@ -432,13 +455,20 @@ impl Renderer {
 				};
 
 				if sink_has_camera {
-					let pipeline_managers = self.pipeline_managers.iter_mut();
+					let pipeline_managers = self.pipeline_managers.iter_mut().enumerate();
 
-					for sm in pipeline_managers {
+					for (pipeline_manager_id, sm) in pipeline_managers {
 						let mut rpb =
 							RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain_handle);
 
 						sm.create_sink(sink_id, &mut rpb);
+						let consumed_resources = rpb
+							.consumed_resources
+							.iter()
+							.map(|(name, access)| ((*name).to_string(), *access))
+							.collect();
+						self.pipeline_manager_resources_by_sink
+							.push((pipeline_manager_id, sink_id, consumed_resources));
 
 						if rpb.consumed_resources.len() == 0 {
 							log::debug!("No resources consumed by scene manager");
@@ -603,6 +633,7 @@ impl RenderTargets {
 					None
 				}
 			})
+			.filter(|(_, _, access)| access.intersects(ghi::AccessPolicies::WRITE))
 			.map(|(image, format, access)| {
 				let load = access.intersects(ghi::AccessPolicies::READ);
 				let store = access.intersects(ghi::AccessPolicies::WRITE);
@@ -617,6 +648,45 @@ impl RenderTargets {
 			});
 
 		attachments.collect()
+	}
+
+	pub fn get_attachment_infos_for_resources(
+		&self,
+		sink_id: usize,
+		resources: &[(String, ghi::AccessPolicies)],
+	) -> Vec<ghi::AttachmentInformation> {
+		let mut accesses_by_name = HashMap::new();
+		for (name, access) in resources {
+			accesses_by_name
+				.entry(name.as_str())
+				.and_modify(|existing| *existing |= *access)
+				.or_insert(*access);
+		}
+
+		accesses_by_name
+			.into_iter()
+			.filter_map(|(name, access)| {
+				if !access.intersects(ghi::AccessPolicies::WRITE) {
+					return None;
+				}
+
+				let (image, _format) = self.get(name, sink_id)?;
+				let load = access.intersects(ghi::AccessPolicies::READ);
+				let clear_value = if load {
+					ghi::ClearValue::None
+				} else {
+					ghi::ClearValue::Color(RGBA::black())
+				};
+
+				Some(ghi::AttachmentInformation::new(
+					*image,
+					ghi::Layouts::RenderTarget,
+					clear_value,
+					load,
+					true,
+				))
+			})
+			.collect()
 	}
 
 	fn get_image(&self, name: &str, sink_id: usize) -> &ghi::BaseImageHandle {
@@ -757,6 +827,7 @@ type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dy
 type SinkId = usize;
 /// A `RenderPass` represents a specific rendering task that can be performed on the scene, defined by a render pass factory.
 type RenderPassId = usize;
+type PipelineManagerId = usize;
 
 use std::{
 	io::Write,

@@ -247,9 +247,10 @@ impl VisibilityPipelineManager {
 					id,
 					index,
 					pipeline,
+					pending_pipeline,
 					alpha,
 					textures,
-				} => self.adopt_material_completion(frame, id, index, pipeline, alpha, textures),
+				} => self.adopt_material_completion(frame, id, index, pipeline, pending_pipeline, alpha, textures),
 				VisibilityResourceCompletion::ImageReady {
 					key,
 					index,
@@ -297,10 +298,15 @@ impl VisibilityPipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		id: String,
 		index: u32,
-		pipeline: Option<ghi::PipelineHandle>,
+		mut pipeline: Option<ghi::PipelineHandle>,
+		pending_pipeline: Option<PendingMaterialPipeline>,
 		alpha: bool,
 		textures: Vec<Option<(String, u32)>>,
 	) {
+		if pipeline.is_none() {
+			pipeline = pending_pipeline.and_then(|pending_pipeline| pending_pipeline.create(frame));
+		}
+
 		let materials_data = frame.get_mut_buffer_slice(self.materials_data_buffer_handle);
 		let material_data = &mut materials_data[index as usize];
 		material_data.textures.fill(u32::MAX);
@@ -1008,7 +1014,8 @@ use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::pipelines::visibility::gpu_vertex_data_manager::GPUVertexDataManager;
 use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
 use crate::rendering::pipelines::visibility::resource_manager::{
-	MaterialPipelineConfig, VisibilityMeshKey, VisibilityPipelineResourceManagerClient, VisibilityResourceCompletion,
+	MaterialPipelineConfig, PendingMaterialPipeline, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
+	VisibilityResourceCompletion,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::{

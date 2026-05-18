@@ -507,7 +507,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 					let mut frame = started_frame.frame;
 					let frame_key = frame.key();
 
-					let mut transfer_recording = frame.create_command_buffer_recording(transfer_command_buffer);
+					let mut transfer_recording =
+						frame.create_command_buffer_recording_without_implicit_sync(transfer_command_buffer);
 					let buffer = transfer_recording.get_mut_buffer_slice(upload_buffer);
 					let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
 

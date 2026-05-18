@@ -690,9 +690,10 @@ impl BufferImageCopyDescriptor {
 	}
 }
 
-/// The `ImageBufferCopyDescriptor` struct describes one image download into a destination buffer.
+/// The `ImageBufferCopyDescriptor` struct exists to configure one image download into a destination buffer.
+#[derive(Clone, Copy)]
 pub struct ImageBufferCopyDescriptor {
-	pub source_image: crate::BaseImageHandle,
+	pub source: crate::ImageOrSwapchain,
 	pub destination_buffer: BaseBufferHandle,
 	pub destination_offset: usize,
 	pub destination_bytes_per_row: usize,
@@ -709,7 +710,24 @@ impl ImageBufferCopyDescriptor {
 		destination_bytes_per_image: usize,
 	) -> Self {
 		Self {
-			source_image,
+			source: source_image.into(),
+			destination_buffer,
+			destination_offset,
+			destination_bytes_per_row,
+			destination_bytes_per_image,
+		}
+	}
+
+	/// Creates an image-to-buffer copy descriptor from a swapchain and destination byte layout.
+	pub fn swapchain(
+		source_swapchain: crate::SwapchainHandle,
+		destination_buffer: BaseBufferHandle,
+		destination_offset: usize,
+		destination_bytes_per_row: usize,
+		destination_bytes_per_image: usize,
+	) -> Self {
+		Self {
+			source: source_swapchain.into(),
 			destination_buffer,
 			destination_offset,
 			destination_bytes_per_row,

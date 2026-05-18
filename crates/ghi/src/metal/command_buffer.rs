@@ -993,9 +993,17 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let consumptions = copies
 			.iter()
 			.flat_map(|copy| {
+				let source_handle = match copy.source {
+					ImageOrSwapchain::Image(image) => self.get_internal_image_handle(image),
+					ImageOrSwapchain::Swapchain(swapchain) => self.device.swapchains[swapchain.0 as usize].images
+						[self.sequence_index as usize]
+						.expect(
+							"Metal swapchain capture failed. The most likely cause is that no swapchain image was acquired for this frame.",
+						),
+				};
 				[
 					Consumption {
-						handle: PrivateHandles::Image(self.get_internal_image_handle(copy.source_image)),
+						handle: PrivateHandles::Image(source_handle),
 						stages: crate::Stages::TRANSFER,
 						access: crate::AccessPolicies::READ,
 						layout: crate::Layouts::Transfer,
@@ -1026,7 +1034,15 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		blit_encoder.setLabel(Some(&label));
 
 		for copy in copies {
-			let source = self.device.images.resource(self.get_internal_image_handle(copy.source_image));
+			let source_handle = match copy.source {
+				ImageOrSwapchain::Image(image) => self.get_internal_image_handle(image),
+				ImageOrSwapchain::Swapchain(swapchain) => self.device.swapchains[swapchain.0 as usize].images
+					[self.sequence_index as usize]
+					.expect(
+						"Metal swapchain capture failed. The most likely cause is that no swapchain image was acquired for this frame.",
+					),
+			};
+			let source = self.device.images.resource(source_handle);
 			let destination = self
 				.device
 				.buffers

@@ -105,6 +105,10 @@ impl Context {
 		})
 	}
 
+	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
+		Some(crate::implementation::Factory::new(self.device.clone(), self.settings))
+	}
+
 	fn create_buffer_resource(
 		&mut self,
 		name: Option<&str>,
@@ -849,14 +853,6 @@ impl Context {
 		false
 	}
 
-	/// Creates a detached device backed by this Metal device.
-	pub fn create_detached_device(&self) -> Option<crate::implementation::DetachedDevice> {
-		Some(crate::metal::pipelines::factory::Factory {
-			device: self.device.clone(),
-			shaders: Vec::with_capacity(64),
-		})
-	}
-
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
 		self.frames = frames.max(1);
 		for swapchain in &mut self.swapchains {}
@@ -1446,7 +1442,7 @@ impl Context {
 
 	pub fn intern_raster_pipeline(
 		&mut self,
-		pipeline: crate::metal::pipelines::factory::Pipeline,
+		pipeline: crate::metal::device::Pipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
 		let layout = self.get_or_create_pipeline_layout_from_prebuilt(&pipeline.layout);
 		let vertex_layout = pipeline
@@ -1470,7 +1466,7 @@ impl Context {
 
 	pub fn intern_compute_pipeline(
 		&mut self,
-		pipeline: crate::metal::pipelines::factory::ComputePipeline,
+		pipeline: crate::metal::device::ComputePipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
 		let layout = self.get_or_create_pipeline_layout_from_prebuilt(&pipeline.layout);
 
@@ -1490,7 +1486,7 @@ impl Context {
 	}
 
 	/// Interns a factory-built image into this device and returns its public image handle.
-	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+	pub fn intern_image(&mut self, image: crate::metal::device::Image) -> graphics_hardware_interface::ImageHandle {
 		let name = image.image.name.clone();
 		let (root_image_handle, _) = self.images.add(image.image);
 		let handle = graphics_hardware_interface::ImageHandle(root_image_handle);
@@ -1506,10 +1502,7 @@ impl Context {
 	}
 
 	/// Interns a factory-built sampler into this device and returns its public sampler handle.
-	pub fn intern_sampler(
-		&mut self,
-		sampler: crate::implementation::FactorySampler,
-	) -> graphics_hardware_interface::SamplerHandle {
+	pub fn intern_sampler(&mut self, sampler: crate::metal::device::Sampler) -> graphics_hardware_interface::SamplerHandle {
 		self.samplers.push(sampler.sampler);
 		graphics_hardware_interface::SamplerHandle((self.samplers.len() - 1) as u64)
 	}

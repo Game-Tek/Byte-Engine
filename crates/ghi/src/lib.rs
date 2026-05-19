@@ -12,6 +12,7 @@ pub mod graphics_hardware_interface;
 pub mod render_debugger;
 
 pub mod debug;
+pub mod factory;
 
 #[cfg(target_os = "windows")]
 pub mod dx12;
@@ -29,9 +30,7 @@ pub mod implementation {
 	pub const USES_METAL: bool = cfg!(target_os = "macos");
 
 	#[cfg(target_os = "windows")]
-	pub use dx12::factory::{
-		ComputePipeline, Factory, Factory as DetachedDevice, FactoryImage, FactorySampler, RasterPipeline,
-	};
+	pub use dx12::factory::{ComputePipeline, Factory, FactoryImage, FactorySampler, RasterPipeline};
 	#[cfg(target_os = "windows")]
 	pub use dx12::CommandBufferRecording;
 	#[cfg(target_os = "windows")]
@@ -61,12 +60,9 @@ pub mod implementation {
 	#[cfg(target_os = "macos")]
 	pub(crate) use metal::buffer::Buffer;
 	#[cfg(target_os = "macos")]
-	pub(crate) use metal::image::Image;
+	pub use metal::factory::{ComputePipeline, Factory, FactoryImage, FactorySampler, RasterPipeline};
 	#[cfg(target_os = "macos")]
-	pub use metal::pipelines::factory::{
-		ComputePipeline, Factory, Factory as DetachedDevice, Image as FactoryImage, Pipeline as RasterPipeline,
-		Sampler as FactorySampler,
-	};
+	pub(crate) use metal::image::Image;
 	#[cfg(target_os = "macos")]
 	pub use metal::queue::Queue;
 	#[cfg(target_os = "macos")]
@@ -92,9 +88,7 @@ pub mod implementation {
 	#[cfg(target_os = "linux")]
 	pub(crate) use vulkan::descriptor_set::DescriptorSet;
 	#[cfg(target_os = "linux")]
-	pub use vulkan::factory::{
-		ComputePipeline, Factory, Factory as DetachedDevice, FactoryImage, FactorySampler, RasterPipeline,
-	};
+	pub use vulkan::factory::{ComputePipeline, Factory, FactoryImage, FactorySampler, RasterPipeline};
 	#[cfg(target_os = "linux")]
 	pub(crate) use vulkan::image::Image;
 	#[cfg(target_os = "linux")]

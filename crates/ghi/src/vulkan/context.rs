@@ -127,11 +127,6 @@ impl Context {
 		})
 	}
 
-	/// Creates a detached device backed by the Vulkan factory implementation.
-	pub fn create_detached_device(&self) -> Option<crate::implementation::DetachedDevice> {
-		self.create_factory()
-	}
-
 	/// Creates a detached pipeline-capable factory for compatibility with the previous pipeline factory API.
 	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::Factory> {
 		self.create_factory()

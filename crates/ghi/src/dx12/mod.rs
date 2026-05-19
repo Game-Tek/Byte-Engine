@@ -384,14 +384,12 @@ mod tests {
 	}
 
 	#[test]
-	fn detached_device_resources_intern_into_device() {
+	fn factory_resources_intern_into_device() {
 		use crate::Device as _;
 
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
-		let mut detached_device = device
-			.create_detached_device()
-			.expect("DX12 should expose a detached resource device.");
-		let vertex = detached_device
+		let mut factory = device.create_factory().expect("DX12 should expose a resource factory.");
+		let vertex = factory
 			.create_shader(
 				Some("factory vertex"),
 				crate::shader::Sources::DXIL(&[0, 0, 0, 0]),
@@ -399,7 +397,7 @@ mod tests {
 				[],
 			)
 			.expect("Failed to create detached DX12 vertex shader.");
-		let fragment = detached_device
+		let fragment = factory
 			.create_shader(
 				Some("factory fragment"),
 				crate::shader::Sources::DXIL(&[0, 0, 0, 0]),
@@ -407,7 +405,7 @@ mod tests {
 				[],
 			)
 			.expect("Failed to create detached DX12 fragment shader.");
-		let compute = detached_device
+		let compute = factory
 			.create_shader(
 				Some("factory compute"),
 				crate::shader::Sources::DXIL(&[0, 0, 0, 0]),
@@ -423,22 +421,22 @@ mod tests {
 		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(
 			crate::Formats::RGBA8UNORM,
 		)];
-		let detached_raster = detached_device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
+		let detached_raster = factory.create_raster_pipeline(crate::pipelines::raster::Builder::new(
 			&[],
 			&[],
 			&vertex_elements,
 			&raster_shaders,
 			&render_targets,
 		));
-		let detached_compute = detached_device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+		let detached_compute = factory.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
 			&[],
 			crate::pipelines::ShaderParameter::new(&compute, crate::ShaderTypes::Compute),
 		));
-		let detached_image = detached_device.build_image(
+		let detached_image = factory.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(2, 2)),
 		);
-		let detached_sampler = detached_device.build_sampler(crate::sampler::Builder::new().anisotropy(2.0));
+		let detached_sampler = factory.build_sampler(crate::sampler::Builder::new().anisotropy(2.0));
 		let synchronizer = device.create_synchronizer(None, false);
 
 		let mut frame = device.start_frame(0, synchronizer);
@@ -605,14 +603,12 @@ mod tests {
 	}
 
 	#[test]
-	fn detached_device_compute_pipeline_preserves_hlsl_specialization_map() {
+	fn factory_compute_pipeline_preserves_hlsl_specialization_map() {
 		use crate::Device as _;
 
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
-		let mut detached_device = device
-			.create_detached_device()
-			.expect("DX12 should expose a detached resource device.");
-		let shader = detached_device
+		let mut factory = device.create_factory().expect("DX12 should expose a resource factory.");
+		let shader = factory
 			.create_shader(
 				None,
 				crate::shader::Sources::HLSL {
@@ -632,7 +628,7 @@ mod tests {
 			)
 			.expect("Failed to create detached DX12 HLSL shader.");
 		let specialization = [crate::pipelines::SpecializationMapEntry::new(0, "f32".to_string(), 8.0f32)];
-		let detached_compute = detached_device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+		let detached_compute = factory.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
 			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)
@@ -880,14 +876,12 @@ mod tests {
 	}
 
 	#[test]
-	fn detached_device_raster_pipeline_preserves_hlsl_specialization_map() {
+	fn factory_raster_pipeline_preserves_hlsl_specialization_map() {
 		use crate::Device as _;
 
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
-		let mut detached_device = device
-			.create_detached_device()
-			.expect("DX12 should expose a detached resource device.");
-		let vertex = detached_device
+		let mut factory = device.create_factory().expect("DX12 should expose a resource factory.");
+		let vertex = factory
 			.create_shader(
 				None,
 				crate::shader::Sources::HLSL {
@@ -907,7 +901,7 @@ mod tests {
 				[],
 			)
 			.expect("Failed to create detached DX12 HLSL vertex shader.");
-		let fragment = detached_device
+		let fragment = factory
 			.create_shader(
 				None,
 				crate::shader::Sources::HLSL {
@@ -934,7 +928,7 @@ mod tests {
 		let render_targets = [crate::pipelines::raster::AttachmentDescriptor::new(
 			crate::Formats::RGBA8UNORM,
 		)];
-		let detached_raster = detached_device.create_raster_pipeline(crate::pipelines::raster::Builder::new(
+		let detached_raster = factory.create_raster_pipeline(crate::pipelines::raster::Builder::new(
 			&[],
 			&[],
 			&[],

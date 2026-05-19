@@ -1105,9 +1105,9 @@ pub mod swapchain {
 pub mod command_buffer;
 pub mod context;
 pub mod device;
+pub mod factory;
 pub mod frame;
 pub mod instance;
-pub mod pipelines;
 
 pub use self::binding::*;
 pub use self::command_buffer::*;

@@ -2814,8 +2814,8 @@ impl Device {
 		SwapchainHandle((self.swapchains.len() - 1) as u64)
 	}
 
-	pub fn create_detached_device(&mut self) -> Option<crate::implementation::DetachedDevice> {
-		Some(crate::implementation::DetachedDevice::default())
+	pub fn create_factory(&mut self) -> Option<crate::implementation::Factory> {
+		Some(crate::implementation::Factory::default())
 	}
 
 	pub fn get_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, uses: Uses) -> (ImageHandle, Formats) {

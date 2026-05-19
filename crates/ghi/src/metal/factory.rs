@@ -1,49 +1,214 @@
-use std::{ffi::c_void, ptr::NonNull};
+//! The `factory` module exposes detached Metal resource types for public API consumers.
 
-use dispatch2::DispatchData;
-use objc2::{rc::Retained, runtime::ProtocolObject};
-use objc2_foundation::{NSRange, NSString};
-use objc2_metal::{
-	self as mtl, MTLBlendFactor, MTLBlendOperation, MTLCompareFunction, MTLCompileOptions, MTLDataType,
-	MTLDepthStencilDescriptor, MTLDepthStencilState, MTLDevice, MTLFunction, MTLFunctionConstantValues, MTLLibrary,
-	MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLRenderPipelineDescriptor, MTLResource, MTLVertexDescriptor,
-	MTLVertexStepFunction,
-};
-use utils::{hash::HashMap, Extent};
-
-use crate::{
-	graphics_hardware_interface,
-	metal::{
-		utils::{
-			data_type_size, is_block_compressed, parse_threadgroup_size_metadata, storage_mode_from_access,
-			texture_usage_from_uses, to_pixel_format, vertex_format,
-		},
-		PipelineLayout, PipelineState, Shader, VertexElementDescriptor, VertexLayout,
-	},
-};
-
-/// The `Factory` struct builds Metal resources outside the device resource tables.
+/// The `Factory` struct provides detached Metal resource creation without owning render context state.
 pub struct Factory {
-	pub(crate) device: Retained<ProtocolObject<dyn MTLDevice>>,
-
+	pub(crate) device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
+	pub settings: crate::device::Features,
 	pub(crate) shaders: Vec<Shader>,
 }
 
-unsafe impl Send for Factory {}
+impl Factory {
+	/// Creates a detached Metal factory from a backend device snapshot.
+	pub(crate) fn new(device: Retained<ProtocolObject<dyn mtl::MTLDevice>>, settings: crate::device::Features) -> Self {
+		Self {
+			device,
+			settings,
+			shaders: Vec::new(),
+		}
+	}
 
-/// The `Image` struct carries a Metal image built before it has a public GHI handle.
-pub struct Image {
-	pub(crate) image: crate::metal::image::Image,
+	fn create_metal_function(
+		&self,
+		shader_parameter: &crate::pipelines::ShaderParameter,
+	) -> Option<Retained<ProtocolObject<dyn MTLFunction>>> {
+		let shader = &self.shaders[shader_parameter.handle.0 as usize];
+		let library = shader.metal_library.as_ref()?;
+		let entry_point = shader.metal_entry_point.as_ref()?;
+		let entry_point = NSString::from_str(entry_point);
+
+		let constant_values = MTLFunctionConstantValues::new();
+
+		for specialization_map_entry in shader_parameter.specialization_map {
+			self.apply_specialization_map_entry(&constant_values, specialization_map_entry);
+		}
+
+		library
+			.newFunctionWithName_constantValues_error(&entry_point, &constant_values)
+			.map_err(|error| {
+				eprintln!(
+					"Metal shader specialization failed: {}",
+					error.localizedDescription().to_string()
+				);
+			})
+			.ok()
+	}
+
+	fn apply_specialization_map_entry(
+		&self,
+		constant_values: &MTLFunctionConstantValues,
+		specialization_map_entry: &crate::pipelines::SpecializationMapEntry,
+	) {
+		match specialization_map_entry.get_type().as_str() {
+			"bool" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValue_type_atIndex(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					MTLDataType::Bool,
+					specialization_map_entry.get_constant_id() as usize,
+				);
+			},
+			"u32" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValue_type_atIndex(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					MTLDataType::UInt,
+					specialization_map_entry.get_constant_id() as usize,
+				);
+			},
+			"f32" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValue_type_atIndex(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					MTLDataType::Float,
+					specialization_map_entry.get_constant_id() as usize,
+				);
+			},
+			"vec2f" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValues_type_withRange(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					MTLDataType::Float,
+					NSRange::new(specialization_map_entry.get_constant_id() as usize, 2),
+				);
+			},
+			"vec3f" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValues_type_withRange(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					MTLDataType::Float,
+					NSRange::new(specialization_map_entry.get_constant_id() as usize, 3),
+				);
+			},
+			"vec4f" => unsafe {
+				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+				constant_values.setConstantValues_type_withRange(
+					NonNull::new(value).expect(
+						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+					),
+					MTLDataType::Float,
+					NSRange::new(specialization_map_entry.get_constant_id() as usize, 4),
+				);
+			},
+			_ => panic!(
+				"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
+			),
+		}
+	}
+
+	fn build_pipeline_layout(
+		&self,
+		descriptor_set_template_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
+		push_constant_ranges: &[crate::pipelines::PushConstantRange],
+	) -> PipelineLayout {
+		let descriptor_set_template_indices = descriptor_set_template_handles
+			.iter()
+			.enumerate()
+			.map(|(index, handle)| (*handle, index as u32))
+			.collect();
+		let push_constant_size = push_constant_ranges
+			.iter()
+			.map(|range| range.offset as usize + range.size as usize)
+			.max()
+			.unwrap_or(0);
+
+		PipelineLayout {
+			descriptor_set_template_indices,
+			push_constant_ranges: push_constant_ranges.to_vec(),
+			push_constant_size,
+		}
+	}
+
+	fn build_vertex_layout(&self, vertex_elements: &[crate::pipelines::VertexElement]) -> VertexLayout {
+		let elements = vertex_elements
+			.iter()
+			.map(|element| VertexElementDescriptor {
+				name: element.name.to_owned(),
+				format: element.format,
+				binding: element.binding,
+			})
+			.collect::<Vec<_>>();
+
+		let max_binding = elements
+			.iter()
+			.map(|element| element.binding)
+			.max()
+			.map(|binding| binding as usize + 1)
+			.unwrap_or(0);
+
+		let mut strides = vec![0; max_binding];
+
+		let vertex_descriptor = MTLVertexDescriptor::vertexDescriptor();
+
+		let mut binding_offsets = vec![0usize; max_binding];
+
+		for (attribute_index, element) in elements.iter().enumerate() {
+			strides[element.binding as usize] += element.format.size() as u32;
+
+			let offset = binding_offsets[element.binding as usize];
+			let attribute = unsafe { vertex_descriptor.attributes().objectAtIndexedSubscript(attribute_index as _) };
+			attribute.setFormat(vertex_format(element.format));
+			unsafe {
+				attribute.setOffset(offset as _);
+				attribute.setBufferIndex(element.binding as _);
+			}
+
+			binding_offsets[element.binding as usize] += data_type_size(element.format);
+		}
+
+		for (binding, stride) in strides.iter().copied().enumerate() {
+			let layout = unsafe { vertex_descriptor.layouts().objectAtIndexedSubscript(binding as _) };
+			unsafe {
+				layout.setStride(stride as _);
+				layout.setStepRate(1);
+			}
+			layout.setStepFunction(MTLVertexStepFunction::PerVertex);
+		}
+
+		VertexLayout {
+			elements,
+			strides,
+			vertex_descriptor,
+		}
+	}
+
+	fn build_library(&self, data: &[u8]) -> Retained<ProtocolObject<dyn MTLLibrary>> {
+		let data = DispatchData::from_bytes(data);
+		self.device.newLibraryWithData_error(&data).expect(
+			"Metal library creation failed. The most likely cause is that the provided bytes were not a valid metallib binary.",
+		)
+	}
 }
 
-unsafe impl Send for Image {}
+pub use crate::metal::device::{ComputePipeline, Image, Pipeline, Sampler};
 
-/// The `Sampler` struct carries a Metal sampler built before it has a public GHI handle.
-pub struct Sampler {
-	pub(crate) sampler: crate::metal::sampler::Sampler,
-}
+/// The `RasterPipeline` type alias preserves the cross-platform raster pipeline name.
+pub type RasterPipeline = Pipeline;
 
-unsafe impl Send for Sampler {}
+/// The `FactoryImage` type alias preserves the cross-platform detached image name.
+pub type FactoryImage = Image;
+
+/// The `FactorySampler` type alias preserves the cross-platform detached sampler name.
+pub type FactorySampler = Sampler;
 
 impl crate::device::Device for Factory {
 	type Context = crate::metal::context::Context;
@@ -57,8 +222,8 @@ impl crate::device::Device for Factory {
 		false
 	}
 
-	fn create_context(self) -> Result<Self::Context, &'static str> {
-		Err("Detached Metal device cannot create a rendering context. The most likely cause is that asynchronous resource construction attempted to become the primary graphics device.")
+	fn create_context(&self) -> Result<Self::Context, &'static str> {
+		Err("Detached Metal factory cannot create a rendering context. The most likely cause is that asynchronous resource construction attempted to become the primary graphics device.")
 	}
 
 	fn create_shader(
@@ -418,218 +583,24 @@ impl crate::device::Device for Factory {
 	}
 }
 
-impl Factory {
-	fn create_metal_function(
-		&self,
-		shader_parameter: &crate::pipelines::ShaderParameter,
-	) -> Option<Retained<ProtocolObject<dyn MTLFunction>>> {
-		let shader = &self.shaders[shader_parameter.handle.0 as usize];
-		let library = shader.metal_library.as_ref()?;
-		let entry_point = shader.metal_entry_point.as_ref()?;
-		let entry_point = NSString::from_str(entry_point);
+use std::ffi::c_void;
+use std::fmt::Write as _;
+use std::ptr::NonNull;
 
-		let constant_values = MTLFunctionConstantValues::new();
+use dispatch2::DispatchData;
+use objc2::runtime::AnyObject;
+use objc2::{msg_send, sel};
+use objc2_foundation::{NSArray, NSRange, NSString};
+use objc2_metal::{
+	MTLBlendFactor, MTLBlendOperation, MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLCompareFunction, MTLCompileOptions,
+	MTLDataType, MTLDepthStencilDescriptor, MTLDepthStencilState, MTLDevice, MTLFunction, MTLFunctionConstantValues,
+	MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLRenderPipelineDescriptor, MTLResource as _,
+	MTLVertexDescriptor, MTLVertexStepFunction,
+};
 
-		for specialization_map_entry in shader_parameter.specialization_map {
-			self.apply_specialization_map_entry(&constant_values, specialization_map_entry);
-		}
-
-		library
-			.newFunctionWithName_constantValues_error(&entry_point, &constant_values)
-			.map_err(|error| {
-				eprintln!(
-					"Metal shader specialization failed: {}",
-					error.localizedDescription().to_string()
-				);
-			})
-			.ok()
-	}
-
-	fn apply_specialization_map_entry(
-		&self,
-		constant_values: &MTLFunctionConstantValues,
-		specialization_map_entry: &crate::pipelines::SpecializationMapEntry,
-	) {
-		match specialization_map_entry.get_type().as_str() {
-			"bool" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::Bool,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"u32" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::UInt,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"f32" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::Float,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"vec2f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 2),
-				);
-			},
-			"vec3f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 3),
-				);
-			},
-			"vec4f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 4),
-				);
-			},
-			_ => panic!(
-				"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
-			),
-		}
-	}
-
-	fn build_pipeline_layout(
-		&self,
-		descriptor_set_template_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
-		push_constant_ranges: &[crate::pipelines::PushConstantRange],
-	) -> PipelineLayout {
-		let descriptor_set_template_indices = descriptor_set_template_handles
-			.iter()
-			.enumerate()
-			.map(|(index, handle)| (*handle, index as u32))
-			.collect();
-		let push_constant_size = push_constant_ranges
-			.iter()
-			.map(|range| range.offset as usize + range.size as usize)
-			.max()
-			.unwrap_or(0);
-
-		PipelineLayout {
-			descriptor_set_template_indices,
-			push_constant_ranges: push_constant_ranges.to_vec(),
-			push_constant_size,
-		}
-	}
-
-	fn build_vertex_layout(&mut self, vertex_elements: &[crate::pipelines::VertexElement]) -> VertexLayout {
-		let elements = vertex_elements
-			.iter()
-			.map(|element| VertexElementDescriptor {
-				name: element.name.to_owned(),
-				format: element.format,
-				binding: element.binding,
-			})
-			.collect::<Vec<_>>();
-
-		let max_binding = elements
-			.iter()
-			.map(|element| element.binding)
-			.max()
-			.map(|binding| binding as usize + 1)
-			.unwrap_or(0);
-
-		let mut strides = vec![0; max_binding];
-
-		let vertex_descriptor = MTLVertexDescriptor::vertexDescriptor();
-
-		let mut binding_offsets = vec![0usize; max_binding];
-
-		for (attribute_index, element) in elements.iter().enumerate() {
-			strides[element.binding as usize] += element.format.size() as u32;
-
-			let offset = binding_offsets[element.binding as usize];
-			let attribute = unsafe { vertex_descriptor.attributes().objectAtIndexedSubscript(attribute_index as _) };
-			attribute.setFormat(vertex_format(element.format));
-			unsafe {
-				attribute.setOffset(offset as _);
-				attribute.setBufferIndex(element.binding as _);
-			}
-
-			binding_offsets[element.binding as usize] += data_type_size(element.format);
-		}
-
-		for (binding, stride) in strides.iter().copied().enumerate() {
-			let layout = unsafe { vertex_descriptor.layouts().objectAtIndexedSubscript(binding as _) };
-			unsafe {
-				layout.setStride(stride as _);
-				layout.setStepRate(1);
-			}
-			layout.setStepFunction(MTLVertexStepFunction::PerVertex);
-		}
-
-		VertexLayout {
-			elements,
-			strides,
-			vertex_descriptor,
-		}
-	}
-
-	fn build_library(&self, data: &[u8]) -> Retained<ProtocolObject<dyn MTLLibrary>> {
-		let data = DispatchData::from_bytes(data);
-		self.device.newLibraryWithData_error(&data).expect(
-			"Metal library creation failed. The most likely cause is that the provided bytes were not a valid metallib binary.",
-		)
-	}
-}
-
-#[derive(Clone)]
-pub struct Pipeline {
-	pub(crate) pipeline: PipelineState,
-	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
-	pub(crate) layout: PipelineLayout,
-	pub(crate) vertex_layout: Option<VertexLayout>,
-	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	pub(crate) resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
-	pub(crate) compute_threadgroup_size: Option<Extent>,
-	pub(crate) object_threadgroup_size: Option<Extent>,
-	pub(crate) mesh_threadgroup_size: Option<Extent>,
-	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
-	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
-}
-
-unsafe impl Send for Pipeline {}
-
-#[derive(Clone)]
-pub struct ComputePipeline {
-	pub(crate) pipeline: PipelineState,
-	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
-	pub(crate) layout: PipelineLayout,
-	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	pub(crate) resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
-	pub(crate) compute_threadgroup_size: Option<Extent>,
-	pub(crate) object_threadgroup_size: Option<Extent>,
-	pub(crate) mesh_threadgroup_size: Option<Extent>,
-	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
-	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
-}
-
-unsafe impl Send for ComputePipeline {}
+use super::*;
+use crate::binding::DescriptorSetBindingHandle;
+use crate::metal::utils::{
+	data_type_size, is_block_compressed, parse_threadgroup_size_metadata, storage_mode_from_access, texture_usage_from_uses,
+	to_pixel_format, vertex_format,
+};

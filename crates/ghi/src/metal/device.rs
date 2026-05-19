@@ -35,21 +35,20 @@ impl Device {
 		})
 	}
 }
-
 impl crate::device::Device for Device {
 	type Context = crate::metal::context::Context;
-	type RasterPipeline = crate::metal::pipelines::factory::Pipeline;
-	type ComputePipeline = crate::metal::pipelines::factory::ComputePipeline;
-	type Image = crate::metal::pipelines::factory::Image;
-	type Sampler = crate::metal::pipelines::factory::Sampler;
+	type RasterPipeline = crate::metal::factory::RasterPipeline;
+	type ComputePipeline = crate::metal::factory::ComputePipeline;
+	type Image = crate::metal::factory::FactoryImage;
+	type Sampler = crate::metal::factory::FactorySampler;
 
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
 		false
 	}
 
-	fn create_context(self) -> Result<Self::Context, &'static str> {
-		crate::metal::context::Context::new(self.settings, self.device, self.queues)
+	fn create_context(&self) -> Result<Self::Context, &'static str> {
+		Self::Context::new(self.settings, self.device.clone(), self.queues.clone())
 	}
 
 	fn create_shader(
@@ -58,24 +57,34 @@ impl crate::device::Device for Device {
 		_shader_source_type: crate::shader::Sources,
 		_stage: crate::ShaderTypes,
 		_shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
-	) -> Result<crate::ShaderHandle, ()> {
-		panic!("Metal device shader creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
+		panic!(
+			"Metal device shader creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."
+		);
 	}
 
 	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		panic!("Metal detached raster pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+		panic!(
+			"Metal device raster pipeline creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."
+		);
 	}
 
 	fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		panic!("Metal detached compute pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+		panic!(
+			"Metal device compute pipeline creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."
+		);
 	}
 
 	fn build_image(&mut self, _builder: crate::image::Builder) -> Self::Image {
-		panic!("Metal detached image creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+		panic!(
+			"Metal device image creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."
+		);
 	}
 
 	fn build_sampler(&mut self, _builder: crate::sampler::Builder) -> Self::Sampler {
-		panic!("Metal detached sampler creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+		panic!(
+			"Metal device sampler creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."
+		);
 	}
 }
 
@@ -256,12 +265,59 @@ pub(crate) struct SwapchainDescriptorSource {
 	pub(crate) frame_offset: i32,
 }
 
+#[derive(Clone)]
+pub struct Pipeline {
+	pub(crate) pipeline: PipelineState,
+	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
+	pub(crate) layout: PipelineLayout,
+	pub(crate) vertex_layout: Option<VertexLayout>,
+	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
+	pub(crate) resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
+	pub(crate) compute_threadgroup_size: Option<Extent>,
+	pub(crate) object_threadgroup_size: Option<Extent>,
+	pub(crate) mesh_threadgroup_size: Option<Extent>,
+	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
+	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
+}
+
+unsafe impl Send for Pipeline {}
+
+#[derive(Clone)]
+pub struct ComputePipeline {
+	pub(crate) pipeline: PipelineState,
+	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
+	pub(crate) layout: PipelineLayout,
+	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
+	pub(crate) resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
+	pub(crate) compute_threadgroup_size: Option<Extent>,
+	pub(crate) object_threadgroup_size: Option<Extent>,
+	pub(crate) mesh_threadgroup_size: Option<Extent>,
+	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
+	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
+}
+
+unsafe impl Send for ComputePipeline {}
+
+/// The `Image` struct carries a Metal image built before it has a public GHI handle.
+pub struct Image {
+	pub(crate) image: crate::metal::image::Image,
+}
+
+unsafe impl Send for Image {}
+
+/// The `Sampler` struct carries a Metal sampler built before it has a public GHI handle.
+pub struct Sampler {
+	pub(crate) sampler: crate::metal::sampler::Sampler,
+}
+
+unsafe impl Send for Sampler {}
+
 use std::fmt::Write as _;
 
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel};
 use objc2_foundation::{NSArray, NSString};
-use objc2_metal::{MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLDevice};
+use objc2_metal::{MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLDepthStencilState, MTLDevice, MTLResource as _};
 
 use super::*;
 use crate::binding::DescriptorSetBindingHandle;

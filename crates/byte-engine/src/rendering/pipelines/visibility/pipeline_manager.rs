@@ -167,7 +167,7 @@ impl VisibilityPipelineManager {
 			Some("Material Evaluation Descriptor Set"),
 			&material_evaluation_descriptor_set_layout,
 		);
-		let material_pipeline_factory = context.create_pipeline_factory();
+
 		resource_manager.configure_material_pipeline(MaterialPipelineConfig::new(
 			[
 				descriptor_set_layout,
@@ -175,7 +175,7 @@ impl VisibilityPipelineManager {
 				material_evaluation_descriptor_set_layout,
 			],
 			vec![ghi::pipelines::PushConstantRange::new(0, 4)],
-			material_pipeline_factory,
+			context.create_factory(),
 		));
 
 		Self {

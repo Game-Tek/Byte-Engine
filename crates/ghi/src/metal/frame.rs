@@ -47,28 +47,25 @@ impl<'a> Frame<'a> {
 impl Frame<'_> {
 	pub fn intern_raster_pipeline(
 		&mut self,
-		pipeline: crate::metal::pipelines::factory::Pipeline,
+		pipeline: crate::metal::device::Pipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
 		self.device.intern_raster_pipeline(pipeline)
 	}
 
 	pub fn intern_compute_pipeline(
 		&mut self,
-		pipeline: crate::implementation::ComputePipeline,
+		pipeline: crate::metal::device::ComputePipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
 		self.device.intern_compute_pipeline(pipeline)
 	}
 
 	/// Interns a factory-built image through this frame's device.
-	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+	pub fn intern_image(&mut self, image: crate::metal::device::Image) -> graphics_hardware_interface::ImageHandle {
 		self.device.intern_image(image)
 	}
 
 	/// Interns a factory-built sampler through this frame's device.
-	pub fn intern_sampler(
-		&mut self,
-		sampler: crate::implementation::FactorySampler,
-	) -> graphics_hardware_interface::SamplerHandle {
+	pub fn intern_sampler(&mut self, sampler: crate::metal::device::Sampler) -> graphics_hardware_interface::SamplerHandle {
 		self.device.intern_sampler(sampler)
 	}
 

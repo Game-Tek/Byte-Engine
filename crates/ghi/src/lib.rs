@@ -30,88 +30,11 @@ pub mod implementation {
 	pub const USES_METAL: bool = cfg!(target_os = "macos");
 
 	#[cfg(target_os = "windows")]
-	pub use dx12::factory::{ComputePipeline, Factory, FactoryImage, FactorySampler, RasterPipeline};
-	#[cfg(target_os = "windows")]
-	pub use dx12::CommandBufferRecording;
-	#[cfg(target_os = "windows")]
-	pub use dx12::Device as Context;
-	#[cfg(target_os = "windows")]
-	pub use dx12::Device;
-	#[cfg(target_os = "windows")]
-	pub use dx12::Frame;
-	#[cfg(target_os = "windows")]
-	pub use dx12::Instance;
-	#[cfg(target_os = "windows")]
-	pub(crate) struct Binding {
-		pub(crate) next: Option<crate::binding::DescriptorSetBindingHandle>,
-	}
-	#[cfg(target_os = "windows")]
-	pub(crate) struct Buffer;
-	#[cfg(target_os = "windows")]
-	pub(crate) struct DescriptorSet {
-		pub(crate) next: Option<crate::descriptors::DescriptorSetHandle>,
-	}
-	#[cfg(target_os = "windows")]
-	pub(crate) struct Image;
-	#[cfg(target_os = "windows")]
-	pub(crate) struct Synchronizer {
-		pub(crate) next: Option<crate::synchronizer::SynchronizerHandle>,
-	}
+	use crate::dx12::*;
 	#[cfg(target_os = "macos")]
-	pub(crate) use metal::buffer::Buffer;
-	#[cfg(target_os = "macos")]
-	pub use metal::factory::{ComputePipeline, Factory, FactoryImage, FactorySampler, RasterPipeline};
-	#[cfg(target_os = "macos")]
-	pub(crate) use metal::image::Image;
-	#[cfg(target_os = "macos")]
-	pub use metal::queue::Queue;
-	#[cfg(target_os = "macos")]
-	pub(crate) use metal::Binding;
-	#[cfg(target_os = "macos")]
-	pub use metal::CommandBufferRecording;
-	#[cfg(target_os = "macos")]
-	pub use metal::Context;
-	#[cfg(target_os = "macos")]
-	pub(crate) use metal::DescriptorSet;
-	#[cfg(target_os = "macos")]
-	pub use metal::Device;
-	#[cfg(target_os = "macos")]
-	pub use metal::Frame;
-	#[cfg(target_os = "macos")]
-	pub use metal::Instance;
-	#[cfg(target_os = "macos")]
-	pub(crate) use metal::Synchronizer;
+	pub use crate::metal::*;
 	#[cfg(target_os = "linux")]
-	pub(crate) use vulkan::binding::Binding;
-	#[cfg(target_os = "linux")]
-	pub(crate) use vulkan::buffer::Buffer;
-	#[cfg(target_os = "linux")]
-	pub(crate) use vulkan::descriptor_set::DescriptorSet;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::factory::{ComputePipeline, Factory, FactoryImage, FactorySampler, RasterPipeline};
-	#[cfg(target_os = "linux")]
-	pub(crate) use vulkan::image::Image;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::queue::Queue;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::CommandBufferRecording;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::Context;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::Device;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::Frame;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::Instance;
-	#[cfg(target_os = "linux")]
-	pub(crate) use vulkan::Synchronizer;
-
-	#[cfg(target_os = "windows")]
-	use crate::dx12;
-	#[cfg(target_os = "macos")]
-	use crate::metal;
-	#[cfg(target_os = "linux")]
-	use crate::vulkan;
+	use crate::vulkan::*;
 }
 
 pub mod binding;
@@ -144,7 +67,6 @@ pub use types::*;
 pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 pub(crate) use implementation::Binding;
-pub(crate) use implementation::Buffer;
 pub(crate) use implementation::DescriptorSet;
 pub(crate) use implementation::Image;
 pub(crate) use implementation::Synchronizer;

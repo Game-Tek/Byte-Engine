@@ -105,8 +105,8 @@ impl Context {
 		})
 	}
 
-	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
-		Some(crate::implementation::Factory::new(self.device.clone(), self.settings))
+	pub fn create_factory(&self) -> Option<crate::metal::factory::Factory> {
+		Some(crate::metal::factory::Factory::new(self.device.clone(), self.settings))
 	}
 
 	fn create_buffer_resource(

@@ -810,8 +810,8 @@ impl std::fmt::Display for VisibilityResourceKey {
 /// The `FactoryTexture` struct packages detached texture resources with upload bytes for render-thread adoption.
 struct FactoryTexture {
 	index: u32,
-	image: ghi::implementation::FactoryImage,
-	sampler: ghi::implementation::FactorySampler,
+	image: ghi::implementation::factory::Image,
+	sampler: ghi::implementation::factory::Sampler,
 	upload: TextureUpload,
 }
 

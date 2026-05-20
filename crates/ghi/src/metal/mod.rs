@@ -1114,6 +1114,7 @@ pub use self::command_buffer::*;
 pub use self::context::*;
 pub(crate) use self::descriptor_set::*;
 pub use self::device::*;
+pub use self::factory::Factory;
 pub use self::frame::*;
 pub use self::instance::*;
 pub use self::synchronizer::*;

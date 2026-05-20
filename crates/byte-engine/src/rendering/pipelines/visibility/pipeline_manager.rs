@@ -14,6 +14,7 @@ pub struct VisibilityPipelineManager {
 	pending_renderables: Vec<PendingRenderableInstance>,
 	loaded_meshes: HashMap<VisibilityMeshKey, MeshData>,
 	loaded_materials: HashMap<u32, RenderDescription>,
+	loaded_textures: HashSet<u32>,
 	loaded_pipelines: HashMap<String, ghi::PipelineHandle>,
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
 }
@@ -189,6 +190,7 @@ impl VisibilityPipelineManager {
 			pending_renderables: Vec::new(),
 			loaded_meshes: HashMap::new(),
 			loaded_materials: HashMap::new(),
+			loaded_textures: HashSet::new(),
 			loaded_pipelines: HashMap::new(),
 			scene: VisibilitySceneManager {
 				render_entities: Vec::new(),
@@ -264,8 +266,12 @@ impl VisibilityPipelineManager {
 					let image = frame.intern_image(image);
 					let sampler = frame.intern_sampler(sampler);
 					let image = ghi::BaseImageHandle::from(image);
+					self.resource_manager.enqueue_texture_upload(index, image, sampler, upload);
+				}
+				VisibilityResourceCompletion::TextureUploadReady { index, image, sampler } => {
 					self.write_texture_descriptors(frame, index, image, sampler);
-					self.resource_manager.enqueue_texture_upload(image, upload);
+					self.loaded_textures.insert(index);
+					self.rebuild_material_lists();
 				}
 				VisibilityResourceCompletion::Failed { key } => {
 					warn!(
@@ -328,6 +334,10 @@ impl VisibilityPipelineManager {
 				pipeline,
 				name: id,
 				alpha,
+				texture_indices: textures
+					.iter()
+					.filter_map(|texture| texture.as_ref().map(|(_, index)| *index))
+					.collect(),
 			},
 		);
 		self.rebuild_material_lists();
@@ -342,6 +352,15 @@ impl VisibilityPipelineManager {
 			let Some(pipeline) = material.pipeline else {
 				continue;
 			};
+			// Material shaders index bindless textures directly, so a material must not render until every
+			// referenced texture descriptor points at an upload-completed image.
+			if !material
+				.texture_indices
+				.iter()
+				.all(|texture_index| self.loaded_textures.contains(texture_index))
+			{
+				continue;
+			}
 			let entry = (material.name.clone(), material.index, pipeline);
 			if material.alpha {
 				self.scene.render_info.transparent_materials.push(entry);
@@ -852,6 +871,7 @@ struct RenderDescription {
 	pipeline: Option<ghi::PipelineHandle>,
 	name: String,
 	alpha: bool,
+	texture_indices: Vec<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -971,7 +991,7 @@ const ibl_cubemap_binding_template: ghi::DescriptorSetBindingTemplate = ghi::Des
 
 use std::borrow::Borrow;
 use std::cell::RefCell;
-use std::collections::hash_map::Entry;
+use std::collections::{hash_map::Entry, HashSet};
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 

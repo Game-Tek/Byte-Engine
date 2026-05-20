@@ -482,7 +482,7 @@ pub(crate) struct VisibilityPipelineResourceManagerWorker {
 	commands: Receiver<VisibilityTransferCommand>,
 	completions: Sender<VisibilityResourceCompletion>,
 	pending_mesh_uploads: VecDeque<(VisibilityMeshKey, MeshSource)>,
-	pending_texture_uploads: VecDeque<(ghi::BaseImageHandle, TextureUpload)>,
+	pending_texture_uploads: VecDeque<(u32, ghi::BaseImageHandle, ghi::SamplerHandle, TextureUpload)>,
 	submitted_uploads: VecDeque<SubmittedUploadBatch>,
 }
 
@@ -515,9 +515,20 @@ impl VisibilityPipelineResourceManagerClient {
 		completions
 	}
 
-	/// Enqueues texture upload bytes for the transfer queue.
-	pub(crate) fn enqueue_texture_upload(&self, image: ghi::BaseImageHandle, upload: TextureUpload) {
-		self.send(VisibilityTransferCommand::EnqueueTextureUpload { image, upload });
+	/// Enqueues a texture upload and reports the descriptor data once the transfer frame completes.
+	pub(crate) fn enqueue_texture_upload(
+		&self,
+		index: u32,
+		image: ghi::BaseImageHandle,
+		sampler: ghi::SamplerHandle,
+		upload: TextureUpload,
+	) {
+		self.send(VisibilityTransferCommand::EnqueueTextureUpload {
+			index,
+			image,
+			sampler,
+			upload,
+		});
 	}
 }
 
@@ -576,8 +587,13 @@ impl VisibilityPipelineResourceManagerWorker {
 					self.resource_manager
 						.handle_request(VisibilityResourceRequest::Mesh { key, source });
 				}
-				VisibilityTransferCommand::EnqueueTextureUpload { image, upload } => {
-					self.pending_texture_uploads.push_back((image, upload));
+				VisibilityTransferCommand::EnqueueTextureUpload {
+					index,
+					image,
+					sampler,
+					upload,
+				} => {
+					self.pending_texture_uploads.push_back((index, image, sampler, upload));
 				}
 				VisibilityTransferCommand::ConfigureMaterialPipeline(config) => {
 					self.resource_manager.configure_material_pipeline(config);
@@ -617,9 +633,9 @@ impl VisibilityPipelineResourceManagerWorker {
 			}
 		}
 
-		while let Some((image, upload)) = self.pending_texture_uploads.pop_front() {
+		while let Some((index, image, sampler, upload)) = self.pending_texture_uploads.pop_front() {
 			if upload.data.len() > slice.remaining_aligned(TEXTURE_UPLOAD_ALIGNMENT) {
-				self.pending_texture_uploads.push_front((image, upload));
+				self.pending_texture_uploads.push_front((index, image, sampler, upload));
 				break;
 			}
 
@@ -632,6 +648,7 @@ impl VisibilityPipelineResourceManagerWorker {
 				upload.source_bytes_per_image,
 				image,
 			)]);
+			completions.push(VisibilityResourceCompletion::TextureUploadReady { index, image, sampler });
 			recorded_work = true;
 		}
 
@@ -692,6 +709,11 @@ pub(crate) enum VisibilityResourceCompletion {
 		sampler: ghi::factory::FactorySampler,
 		upload: TextureUpload,
 	},
+	TextureUploadReady {
+		index: u32,
+		image: ghi::BaseImageHandle,
+		sampler: ghi::SamplerHandle,
+	},
 	Failed {
 		key: VisibilityResourceKey,
 	},
@@ -704,7 +726,9 @@ pub(crate) enum VisibilityTransferCommand {
 		source: MeshSource,
 	},
 	EnqueueTextureUpload {
+		index: u32,
 		image: ghi::BaseImageHandle,
+		sampler: ghi::SamplerHandle,
 		upload: TextureUpload,
 	},
 	ConfigureMaterialPipeline(MaterialPipelineConfig),

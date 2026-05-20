@@ -51,3 +51,4 @@
 - Review and either use or remove dead test helper structs TestTransport and TestSynthesizer in crates/byte-engine/tests/replication.rs and crates/byte-engine/tests/sound.rs.
 - Cleanup vulkan transition code
 - Fix "Warning: -[NSWindow makeKeyWindow] called on <NSWindow: 0xb97cd0280> windowNumber=1ae1 which returned NO from -[NSWindow canBecomeKeyWindow]." on macOS
+- Check order of texture upload vs material and when the rendering starts, we are seeing flashes of black objects

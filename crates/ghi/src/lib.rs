@@ -21,9 +21,9 @@ pub mod metal;
 #[cfg(target_os = "linux")]
 pub mod vulkan;
 
-pub use crate::frame_resources::*;
+pub(crate) use crate::frame_resources::*;
 pub use crate::graphics_hardware_interface::*;
-pub use crate::window::*;
+pub use crate::window::Window;
 
 pub mod implementation {
 	pub const USES_DX12: bool = cfg!(target_os = "windows");
@@ -68,7 +68,6 @@ pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 pub(crate) use implementation::Binding;
 pub(crate) use implementation::DescriptorSet;
-pub(crate) use implementation::Image;
 pub(crate) use implementation::Synchronizer;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

@@ -674,7 +674,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			.clone()
 			.find(|(_, _, format, _)| format == &crate::Formats::Depth32)
 		{
-			let att = unsafe { rpd.depthAttachment() };
+			let att = rpd.depthAttachment();
 			let texture_view = attachment_texture_view(&image, format, array_layers, attachment.layer);
 
 			att.setTexture(Some(texture_view.as_ref()));
@@ -777,9 +777,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		for buffer_handle in buffer_handles {
 			let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(*buffer_handle));
-			unsafe {
-				blit_encoder.fillBuffer_range_value(buffer.buffer.as_ref(), NSRange::new(0, buffer.size), 0);
-			}
+			blit_encoder.fillBuffer_range_value(buffer.buffer.as_ref(), NSRange::new(0, buffer.size), 0);
 		}
 
 		blit_encoder.endEncoding();
@@ -1522,18 +1520,24 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 
 						// Make resources referenced through argument buffers resident so the GPU can access them.
 						let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
+						let stages = mtl::MTLRenderStages(
+							mtl::MTLRenderStages::Vertex.0
+								| mtl::MTLRenderStages::Fragment.0
+								| mtl::MTLRenderStages::Object.0
+								| mtl::MTLRenderStages::Mesh.0,
+						);
 						for descriptors_at_binding in descriptor_set.descriptors.values() {
 							for descriptor in descriptors_at_binding.values() {
 								match *descriptor {
 									Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
 										let tex: &ProtocolObject<dyn mtl::MTLTexture> =
 											&self.device.images.resource(image).texture;
-										encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
+										encoder.useResource_usage_stages(ProtocolObject::from_ref(tex), usage, stages);
 									}
 									Descriptor::Buffer { buffer, .. } => {
 										let buf: &ProtocolObject<dyn mtl::MTLBuffer> =
 											&self.device.buffers.resource(buffer).buffer;
-										encoder.useResource_usage(ProtocolObject::from_ref(buf), usage);
+										encoder.useResource_usage_stages(ProtocolObject::from_ref(buf), usage, stages);
 									}
 									Descriptor::Swapchain { handle } => {
 										if let Some(proxy_handle) =
@@ -1541,7 +1545,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 										{
 											let tex: &ProtocolObject<dyn mtl::MTLTexture> =
 												&self.device.images.resource(proxy_handle).texture;
-											encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
+											encoder.useResource_usage_stages(ProtocolObject::from_ref(tex), usage, stages);
 										}
 									}
 									Descriptor::Sampler { .. } => {}

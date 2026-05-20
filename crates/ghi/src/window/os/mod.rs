@@ -19,8 +19,7 @@ pub use macos::Handles;
 #[cfg(target_os = "macos")]
 pub use macos::Window;
 
-use crate::Events;
-use crate::Features;
+use crate::window::{Events, Features};
 
 pub trait WindowLike: Sized {
 	/// Create a new window with the given name, extent, and id name.

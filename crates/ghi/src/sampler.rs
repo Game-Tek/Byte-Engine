@@ -1,4 +1,4 @@
-use crate::{context::ContextCreate as _, device::Device, FilteringModes, SamplerAddressingModes, SamplingReductionModes};
+use crate::{FilteringModes, SamplerAddressingModes, SamplingReductionModes};
 
 pub struct Builder {
 	pub(crate) filtering_mode: FilteringModes,

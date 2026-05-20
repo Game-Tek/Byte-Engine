@@ -584,22 +584,17 @@ impl crate::device::Device for Factory {
 }
 
 use std::ffi::c_void;
-use std::fmt::Write as _;
 use std::ptr::NonNull;
 
 use dispatch2::DispatchData;
-use objc2::runtime::AnyObject;
-use objc2::{msg_send, sel};
-use objc2_foundation::{NSArray, NSRange, NSString};
+use objc2_foundation::{NSRange, NSString};
 use objc2_metal::{
-	MTLBlendFactor, MTLBlendOperation, MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLCompareFunction, MTLCompileOptions,
-	MTLDataType, MTLDepthStencilDescriptor, MTLDepthStencilState, MTLDevice, MTLFunction, MTLFunctionConstantValues,
-	MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLRenderPipelineDescriptor, MTLResource as _,
-	MTLVertexDescriptor, MTLVertexStepFunction,
+	MTLBlendFactor, MTLBlendOperation, MTLCompareFunction, MTLCompileOptions, MTLDataType, MTLDepthStencilDescriptor,
+	MTLDevice, MTLFunction, MTLFunctionConstantValues, MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLPipelineOption,
+	MTLRenderPipelineDescriptor, MTLResource as _, MTLVertexDescriptor, MTLVertexStepFunction,
 };
 
 use super::*;
-use crate::binding::DescriptorSetBindingHandle;
 use crate::metal::utils::{
 	data_type_size, is_block_compressed, parse_threadgroup_size_metadata, storage_mode_from_access, texture_usage_from_uses,
 	to_pixel_format, vertex_format,

@@ -241,7 +241,7 @@ impl Renderer {
 		}
 	}
 
-	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::Events> + 'a> + 'a {
+	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::window::Events> + 'a> + 'a {
 		self.windows.iter_mut().map(|(window, _)| window.poll())
 	}
 

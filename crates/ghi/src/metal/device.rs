@@ -317,7 +317,7 @@ use std::fmt::Write as _;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel};
 use objc2_foundation::{NSArray, NSString};
-use objc2_metal::{MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLDepthStencilState, MTLDevice, MTLResource as _};
+use objc2_metal::{MTLCommandBuffer, MTLCommandBufferEncoderInfo, MTLDepthStencilState, MTLDevice};
 
 use super::*;
 use crate::binding::DescriptorSetBindingHandle;

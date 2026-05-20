@@ -163,7 +163,7 @@ impl GraphicsApplication {
 
 			for window_events in renderer.update_windows() {
 				for event in window_events {
-					if let ghi::Events::Close { .. } = event {
+					if let ghi::window::Events::Close { .. } = event {
 						close = true;
 					}
 
@@ -877,7 +877,7 @@ fn resolve_artnet_port_address(reply: &PollReply) -> PortAddress {
 
 pub fn process_default_window_input(
 	input_system: &mut input::InputManager,
-	event: ghi::Events,
+	event: ghi::window::Events,
 ) -> Option<(
 	input::SeatHandle,
 	input::DeviceHandle,

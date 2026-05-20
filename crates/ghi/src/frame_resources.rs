@@ -15,37 +15,35 @@
 
 use std::marker::PhantomData;
 
-use smallvec::SmallVec;
-
 use crate::{MasterHandle, PrivateHandle};
 
 #[derive(Debug)]
 /// The `MasterFrameResource` struct stores one backend-private resource and an optional link to the next frame-specific representation.
-pub struct MasterFrameResource<T, PH> {
+pub(crate) struct MasterFrameResource<T, PH> {
 	next: Option<PH>,
 	resource: T,
 }
 
 impl<T, PH: Copy> MasterFrameResource<T, PH> {
 	/// Returns the backend-private resource stored in this chain entry.
-	pub fn resource(&self) -> &T {
+	pub(crate) fn resource(&self) -> &T {
 		&self.resource
 	}
 
 	/// Returns mutable access to the backend-private resource stored in this chain entry.
-	pub fn resource_mut(&mut self) -> &mut T {
+	pub(crate) fn resource_mut(&mut self) -> &mut T {
 		&mut self.resource
 	}
 
 	/// Extracts the backend-private resource from this chain entry.
-	pub fn into_inner(self) -> T {
+	pub(crate) fn into_inner(self) -> T {
 		self.resource
 	}
 }
 
 #[derive(Debug)]
 /// The `ResourceCollection` struct stores master-addressed resources whose private representations may form per-frame chains.
-pub struct ResourceCollection<T, MH, PH> {
+pub(crate) struct ResourceCollection<T, MH, PH> {
 	resources: Vec<MasterFrameResource<T, PH>>,
 	master_handle_type: PhantomData<MH>,
 }
@@ -61,7 +59,7 @@ impl<T, MH, PH> Default for ResourceCollection<T, MH, PH> {
 
 impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	/// Creates empty storage for master-addressed resources and their private frame representations.
-	pub fn new() -> Self {
+	pub(crate) fn new() -> Self {
 		Self {
 			resources: Vec::new(),
 			master_handle_type: PhantomData,
@@ -69,7 +67,7 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	}
 
 	/// Creates empty storage with capacity for the requested number of private resources.
-	pub fn with_capacity(capacity: usize) -> Self {
+	pub(crate) fn with_capacity(capacity: usize) -> Self {
 		Self {
 			resources: Vec::with_capacity(capacity),
 			master_handle_type: PhantomData,
@@ -77,11 +75,9 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	}
 
 	/// Adds a resource as both the public master entry and its first private representation.
-	pub fn add(&mut self, resource: T) -> (MH, PH) {
+	pub(crate) fn add(&mut self, resource: T) -> (MH, PH) {
 		let i = self.resources.len() as u64;
-
 		let master_handle = MH::new(i);
-
 		let private_handle = PH::new(i);
 
 		self.resources.push(MasterFrameResource { next: None, resource });
@@ -90,9 +86,8 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	}
 
 	/// Adds another private representation to an existing master handle's resource chain.
-	pub fn add_with_master(&mut self, resource: T, master_handle: MH) -> PH {
+	pub(crate) fn add_with_master(&mut self, resource: T, master_handle: MH) -> PH {
 		let i = master_handle.index();
-
 		let private_handle = PH::new(i);
 
 		self.resources.push(MasterFrameResource { next: None, resource });
@@ -120,19 +115,19 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	}
 
 	/// Returns the backend-private resource addressed by the provided private handle.
-	pub fn resource(&self, private_handle: PH) -> &T {
+	pub(crate) fn resource(&self, private_handle: PH) -> &T {
 		&self.entry(private_handle).resource
 	}
 
 	/// Returns mutable access to the backend-private resource addressed by the provided private handle.
-	pub fn resource_mut(&mut self, private_handle: PH) -> &mut T {
+	pub(crate) fn resource_mut(&mut self, private_handle: PH) -> &mut T {
 		&mut self.entry_mut(private_handle).resource
 	}
 
 	/// Returns the first resource for a master handle without walking any per-frame chain.
 	///
 	/// This is useful for resources that only have a single representation.
-	pub fn get_single(&self, handle: MH) -> Option<&T> {
+	pub(crate) fn get_single(&self, handle: MH) -> Option<&T> {
 		self.resources.get(handle.index() as usize).map(|r| &r.resource)
 	}
 
@@ -149,36 +144,33 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	pub(crate) fn nth_handle(&self, handle: MH, frame_offset: usize) -> Option<PH> {
 		let mut current = PH::new(handle.index());
 
-		{
-			let mut i = 0;
-
-			while i <= frame_offset {
-				if let Some(next) = self.entry(current).next {
-					current = next;
-				} else {
-					break;
-				}
-
-				i += 1;
+		let mut i = 0;
+		while i <= frame_offset {
+			if let Some(next) = self.entry(current).next {
+				current = next;
+			} else {
+				break;
 			}
+
+			i += 1;
 		}
 
 		Some(current)
 	}
 
 	/// Iterates over all stored private resources in insertion order.
-	pub fn iter(&self) -> impl Iterator<Item = &T> {
+	pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
 		self.resources.iter().map(|r| &r.resource)
 	}
 
 	/// Starts building a chained resource sequence that will share one master handle.
-	pub fn creator<'a>(&'a mut self) -> Creator<'a, T, MH, PH> {
+	pub(crate) fn creator<'a>(&'a mut self) -> Creator<'a, T, MH, PH> {
 		let mh = MH::new(self.resources.len() as _);
 		Creator::new(&mut self.resources, mh)
 	}
 
 	/// Returns the master handle that would be assigned to the next created resource chain.
-	pub fn master(&self) -> MH {
+	pub(crate) fn master(&self) -> MH {
 		MH::new(self.resources.len() as _)
 	}
 }
@@ -200,29 +192,24 @@ impl<'a, T, MH: MasterHandle, PH: PrivateHandle> Creator<'a, T, MH, PH> {
 		let private_handle = PH::new(self.resources.len() as u64);
 		self.resources.push(MasterFrameResource { next: None, resource });
 
-		{
-			let mut current = PH::new(self.handle.index());
-
-			while let Some(last) = self.resources.get_mut(current.index() as usize).unwrap().next {
-				current = last;
-			}
-
-			self.resources.get_mut(current.index() as usize).unwrap().next = Some(private_handle);
+		let mut current = PH::new(self.handle.index());
+		while let Some(last) = self.resources.get_mut(current.index() as usize).unwrap().next {
+			current = last;
 		}
+
+		self.resources.get_mut(current.index() as usize).unwrap().next = Some(private_handle);
 
 		private_handle
 	}
 
 	/// Finishes chain creation and returns the shared master handle.
-	pub fn into(self) -> MH {
+	pub(crate) fn into(self) -> MH {
 		self.handle
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-
 	#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 	struct MasterHandle(u64);
 }

@@ -855,7 +855,6 @@ impl Context {
 
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
 		self.frames = frames.max(1);
-		for swapchain in &mut self.swapchains {}
 		// TODO: Rebuild dynamic resources for new frame count.
 	}
 
@@ -1876,9 +1875,6 @@ impl Context {
 
 	pub fn build_dynamic_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::DynamicImageHandle {
 		let layers = builder.array_layers.map(|l| l.get()).unwrap_or(1);
-		let mut first_handle: Option<ImageHandle> = None;
-		let mut previous_handle: Option<ImageHandle> = None;
-
 		let master = self.images.master();
 
 		for _ in 0..self.frames {
@@ -2145,7 +2141,7 @@ impl Context {
 		&mut self,
 		window_os_handles: &window::Handles,
 		_presentation_mode: graphics_hardware_interface::PresentationModes,
-		fallback_extent: Extent,
+		_fallback_extent: Extent,
 		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
 		let layer = CAMetalLayer::new();
@@ -2553,8 +2549,8 @@ use objc2_metal::{
 	MTLLibrary, MTLResource,
 };
 
-use super::device::*;
 use super::*;
+use crate::implementation::device::submit_metal_command_buffer;
 use crate::{
 	binding::DescriptorSetBindingHandle,
 	buffer::{self as buffer_builder, BufferHandle},
@@ -2564,5 +2560,5 @@ use crate::{
 	metal::utils::parse_threadgroup_size_metadata,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
-	window, DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
+	window, DeviceAccesses, HandleLike as _, ResourceCollection, Uses,
 };

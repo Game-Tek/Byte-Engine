@@ -5,7 +5,6 @@
 use utils::{Extent, RGBA};
 
 use crate::{
-	command_buffer::CommandBufferType,
 	descriptors::{self, DescriptorType},
 	shader::BindingDescriptor,
 	AccessPolicies, DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,

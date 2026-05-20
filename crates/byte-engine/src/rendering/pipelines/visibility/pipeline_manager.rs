@@ -14,6 +14,7 @@ pub struct VisibilityPipelineManager {
 	pending_renderables: Vec<PendingRenderableInstance>,
 	loaded_meshes: HashMap<VisibilityMeshKey, MeshData>,
 	loaded_materials: HashMap<u32, RenderDescription>,
+	loaded_pipelines: HashMap<String, ghi::PipelineHandle>,
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
 }
 
@@ -188,6 +189,7 @@ impl VisibilityPipelineManager {
 			pending_renderables: Vec::new(),
 			loaded_meshes: HashMap::new(),
 			loaded_materials: HashMap::new(),
+			loaded_pipelines: HashMap::new(),
 			scene: VisibilitySceneManager {
 				render_entities: Vec::new(),
 				views_data_buffer_handle,
@@ -236,6 +238,7 @@ impl VisibilityPipelineManager {
 				}
 				VisibilityResourceCompletion::PipelineReady { name, pipeline } => {
 					let pipeline = frame.intern_compute_pipeline(pipeline);
+					self.loaded_pipelines.insert(name.clone(), pipeline);
 					for material in self.loaded_materials.values_mut() {
 						if material.name == name {
 							material.pipeline = Some(pipeline);
@@ -301,6 +304,7 @@ impl VisibilityPipelineManager {
 		alpha: bool,
 		textures: Vec<Option<(String, u32)>>,
 	) {
+		let pipeline = pipeline.or_else(|| self.loaded_pipelines.get(&id).copied());
 		let materials_data = frame.get_mut_buffer_slice(self.materials_data_buffer_handle);
 		let material_data = &mut materials_data[index as usize];
 		material_data.textures.fill(u32::MAX);

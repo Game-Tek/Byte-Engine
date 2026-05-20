@@ -523,7 +523,7 @@ impl VisibilityPipelineResourceManagerClient {
 
 impl VisibilityPipelineResourceManagerWorker {
 	/// Publishes upload completions for transfer frames reported as complete by the queue.
-	pub(crate) fn complete_frame(&mut self, completed_frame: ghi::FrameKey) {
+	pub(crate) fn signal_completed_frame(&mut self, completed_frame: ghi::FrameKey) {
 		while self
 			.submitted_uploads
 			.front()
@@ -548,6 +548,7 @@ impl VisibilityPipelineResourceManagerWorker {
 		if completions.is_empty() {
 			return;
 		}
+
 		self.submitted_uploads
 			.push_back(SubmittedUploadBatch { frame_key, completions });
 	}

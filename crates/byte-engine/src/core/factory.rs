@@ -1,6 +1,10 @@
 //! The Factory is an special Channel that handles the creation of new entities.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+	cell::{Cell, RefCell},
+	rc::Rc,
+	sync::atomic::{AtomicU32, Ordering},
+};
 
 use crate::core::{
 	channel::{Channel as _, DefaultChannel},
@@ -9,32 +13,58 @@ use crate::core::{
 };
 
 #[derive(Clone)]
-pub struct Factory<T: Clone + ?Sized>(DefaultChannel<CreateMessage<T>>);
+/// The `Factory` struct exists to create entity messages while preserving setup-time history for the first system listener.
+pub struct Factory<T: Clone + ?Sized> {
+	channel: DefaultChannel<CreateMessage<T>>,
+	created_before_listener: Rc<RefCell<Vec<CreateMessage<T>>>>,
+	record_created_before_listener: Rc<Cell<bool>>,
+}
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 impl<T: Clone> Factory<T> {
 	pub fn new() -> Self {
 		let sender = DefaultChannel::new();
-		Factory(sender)
+		Factory {
+			channel: sender,
+			created_before_listener: Rc::new(RefCell::new(Vec::new())),
+			record_created_before_listener: Rc::new(Cell::new(true)),
+		}
 	}
 
 	pub fn create(&mut self, data: T) -> Handle {
 		let id = COUNTER.fetch_add(1, Ordering::Relaxed);
 
 		let handle = Handle(id);
+		let message = CreateMessage::new(handle, data);
 
-		self.0.send(CreateMessage::new(handle, data));
+		self.record_creation_before_listener(&message);
+		self.channel.send(message);
 
 		Handle(id)
 	}
 
 	pub fn derive(&mut self, handle: Handle, data: T) {
-		self.0.send(CreateMessage::new(handle, data));
+		let message = CreateMessage::new(handle, data);
+
+		self.record_creation_before_listener(&message);
+		self.channel.send(message);
 	}
 
 	pub fn listener(&self) -> DefaultListener<CreateMessage<T>> {
-		self.0.listener()
+		self.record_created_before_listener.set(false);
+		self.channel.listener()
+	}
+
+	/// Drains messages created before the first listener was registered.
+	pub fn drain_created_before_listener(&mut self) -> Vec<CreateMessage<T>> {
+		std::mem::take(&mut *self.created_before_listener.borrow_mut())
+	}
+
+	fn record_creation_before_listener(&mut self, message: &CreateMessage<T>) {
+		if self.record_created_before_listener.get() {
+			self.created_before_listener.borrow_mut().push(message.clone());
+		}
 	}
 }
 

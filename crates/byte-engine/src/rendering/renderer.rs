@@ -502,6 +502,15 @@ impl Renderer {
 	}
 
 	pub fn create_camera(&mut self, handle: Handle, camera: Camera) {
+		if let Some((_, existing_camera)) = self
+			.cameras
+			.iter_mut()
+			.find(|(existing_handle, _)| *existing_handle == handle)
+		{
+			*existing_camera = camera;
+			return;
+		}
+
 		self.cameras.push((handle, camera));
 	}
 }

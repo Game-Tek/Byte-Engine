@@ -145,7 +145,7 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 		let mut current = PH::new(handle.index());
 
 		let mut i = 0;
-		while i <= frame_offset {
+		while i < frame_offset {
 			if let Some(next) = self.entry(current).next {
 				current = next;
 			} else {
@@ -210,6 +210,51 @@ impl<'a, T, MH: MasterHandle, PH: PrivateHandle> Creator<'a, T, MH, PH> {
 
 #[cfg(test)]
 mod tests {
+	use crate::{MasterHandle, PrivateHandle};
+
 	#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-	struct MasterHandle(u64);
+	struct TestMasterHandle(u64);
+
+	impl MasterHandle for TestMasterHandle {
+		fn new(i: u64) -> Self {
+			Self(i)
+		}
+
+		fn index(&self) -> u64 {
+			self.0
+		}
+	}
+
+	#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+	struct TestPrivateHandle(u64);
+
+	impl PrivateHandle for TestPrivateHandle {
+		fn new(i: u64) -> Self {
+			Self(i)
+		}
+
+		fn index(&self) -> u64 {
+			self.0
+		}
+	}
+
+	#[test]
+	fn nth_handle_returns_first_resource_for_frame_zero() {
+		let mut resources = super::ResourceCollection::<&'static str, TestMasterHandle, TestPrivateHandle>::new();
+		let (master, first) = resources.add("frame 0");
+		let (_, second) = resources.add("frame 1");
+		resources.set_next(first, Some(second));
+
+		assert_eq!(resources.get_nth(master, 0), Some(&"frame 0"));
+		assert_eq!(resources.get_nth(master, 1), Some(&"frame 1"));
+	}
+
+	#[test]
+	fn nth_handle_reuses_last_resource_when_chain_is_shorter_than_frames() {
+		let mut resources = super::ResourceCollection::<&'static str, TestMasterHandle, TestPrivateHandle>::new();
+		let (master, _) = resources.add("single");
+
+		assert_eq!(resources.get_nth(master, 0), Some(&"single"));
+		assert_eq!(resources.get_nth(master, 3), Some(&"single"));
+	}
 }

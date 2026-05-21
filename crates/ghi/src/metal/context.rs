@@ -172,6 +172,25 @@ impl Context {
 		}
 	}
 
+	/// Creates a Metal buffer and optionally links it after an existing private frame resource.
+	fn create_buffer_internal(
+		&mut self,
+		previous: Option<BufferHandle>,
+		name: Option<&str>,
+		size: usize,
+		resource_uses: crate::Uses,
+		device_accesses: crate::DeviceAccesses,
+	) -> BufferHandle {
+		let buffer = self.create_buffer_resource(name, size, resource_uses, device_accesses);
+		let (_, handle) = self.buffers.add(buffer);
+
+		if let Some(previous) = previous {
+			self.buffers.set_next(previous, Some(handle));
+		}
+
+		handle
+	}
+
 	pub(super) fn create_image_resource(
 		&self,
 		name: Option<&str>,
@@ -237,6 +256,27 @@ impl Context {
 			array_layers,
 			staging,
 		}
+	}
+
+	/// Creates a Metal image and optionally links it after an existing private frame resource.
+	fn create_image_internal(
+		&mut self,
+		previous: Option<ImageHandle>,
+		name: Option<&str>,
+		extent: Extent,
+		format: crate::Formats,
+		resource_uses: crate::Uses,
+		device_accesses: crate::DeviceAccesses,
+		array_layers: u32,
+	) -> ImageHandle {
+		let image = self.create_image_resource(name, extent, format, resource_uses, device_accesses, array_layers);
+		let (_, handle) = self.images.add(image);
+
+		if let Some(previous) = previous {
+			self.images.set_next(previous, Some(handle));
+		}
+
+		handle
 	}
 
 	fn upload_texture_from_staging(
@@ -608,16 +648,15 @@ impl Context {
 		sequence_index: u8,
 		frame_offset: i32,
 	) -> Option<Descriptor> {
+		let resource_frame_index = (sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize;
+
 		match descriptor {
 			crate::descriptors::WriteData::Buffer { handle, size } => {
-				let index = (sequence_index as i32 - frame_offset) as usize;
-				let handle = self.buffers.nth_handle(handle, index)?;
+				let handle = self.buffers.nth_handle(handle, resource_frame_index)?;
 				Some(Descriptor::Buffer { buffer: handle, size })
 			}
 			crate::descriptors::WriteData::Image { handle, layout } => {
-				let handle = self
-					.images
-					.nth_handle(handle, (sequence_index as i64 - frame_offset as i64) as usize)?;
+				let handle = self.images.nth_handle(handle, resource_frame_index)?;
 				Some(Descriptor::Image { image: handle, layout })
 			}
 			crate::descriptors::WriteData::CombinedImageSampler {
@@ -626,9 +665,7 @@ impl Context {
 				layout,
 				..
 			} => {
-				let handle = self
-					.images
-					.nth_handle(image_handle, (sequence_index as i64 - frame_offset as i64) as usize)?;
+				let handle = self.images.nth_handle(image_handle, resource_frame_index)?;
 				Some(Descriptor::CombinedImageSampler {
 					image: handle,
 					sampler: SamplerHandle(sampler_handle.0),
@@ -704,6 +741,78 @@ impl Context {
 		}
 	}
 
+	/// Returns the private buffer handles currently known for one master buffer chain.
+	fn buffer_chain_handles(&self, master: graphics_hardware_interface::BaseBufferHandle) -> Vec<PrivateHandles> {
+		let mut handles = Vec::with_capacity(self.frames as usize);
+
+		for frame_index in 0..self.frames as usize {
+			let Some(handle) = self.buffers.nth_handle(master, frame_index) else {
+				continue;
+			};
+			let handle = PrivateHandles::Buffer(handle);
+
+			if !handles.contains(&handle) {
+				handles.push(handle);
+			}
+		}
+
+		handles
+	}
+
+	/// Returns the private image handles currently known for one master image chain.
+	fn image_chain_handles(&self, master: graphics_hardware_interface::BaseImageHandle) -> Vec<PrivateHandles> {
+		let mut handles = Vec::with_capacity(self.frames as usize);
+
+		for frame_index in 0..self.frames as usize {
+			let Some(handle) = self.images.nth_handle(master, frame_index) else {
+				continue;
+			};
+			let handle = PrivateHandles::Image(handle);
+
+			if !handles.contains(&handle) {
+				handles.push(handle);
+			}
+		}
+
+		handles
+	}
+
+	/// Moves frame-local descriptor references from any fallback resource to the deferred resource.
+	fn rewrite_deferred_descriptors(&mut self, candidates: &[PrivateHandles], replacement: PrivateHandles, frame_index: u8) {
+		let descriptor_bindings = candidates
+			.iter()
+			.copied()
+			.filter(|candidate| *candidate != replacement)
+			.filter_map(|candidate| self.resource_to_descriptor.get(&candidate))
+			.flat_map(|bindings| bindings.iter().copied())
+			.filter(|(_, _, descriptor_frame_index)| *descriptor_frame_index == frame_index)
+			.collect::<HashSet<_>>();
+
+		for (binding_handle, array_element, _) in descriptor_bindings {
+			let binding = self.bindings[binding_handle.0 as usize].clone();
+			let set_handle = binding.descriptor_set_handle;
+			let Some(descriptor) = self.descriptor_sets[set_handle.0 as usize]
+				.descriptors
+				.get(&binding.index)
+				.and_then(|descriptors| descriptors.get(&array_element))
+				.copied()
+			else {
+				continue;
+			};
+
+			let descriptor = match (descriptor, replacement) {
+				(Descriptor::Buffer { size, .. }, PrivateHandles::Buffer(buffer)) => Descriptor::Buffer { buffer, size },
+				(Descriptor::Image { layout, .. }, PrivateHandles::Image(image)) => Descriptor::Image { image, layout },
+				(Descriptor::CombinedImageSampler { sampler, layout, .. }, PrivateHandles::Image(image)) => {
+					Descriptor::CombinedImageSampler { image, sampler, layout }
+				}
+				_ => continue,
+			};
+
+			self.update_descriptor_for_binding(binding_handle, descriptor, frame_index, array_element);
+		}
+	}
+
 	/// Resizes every swapchain proxy image in place so existing descriptors can keep their image handles.
 	pub(crate) fn resize_swapchain_images(
 		&mut self,
@@ -741,6 +850,7 @@ impl Context {
 
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
 		let mut tasks = self.tasks.split_off(0);
+		let mut deferred_frame_tasks = Vec::new();
 
 		tasks.retain(|task| {
 			if let Some(frame) = task.frame() {
@@ -819,16 +929,67 @@ impl Context {
 					),
 					Descriptors::CombinedImageSamplerArray => {}
 				},
-				Tasks::DeleteMetalTexture { .. }
-				| Tasks::DeleteMetalBuffer { .. }
-				| Tasks::ResizeImage { .. }
-				| Tasks::BuildImage(_)
-				| Tasks::BuildBuffer(_) => {}
+				Tasks::BuildImage(builder) => {
+					let previous = self.images.resource(builder.previous);
+					let name = previous.name.clone();
+					let extent = previous.extent;
+					let format = previous.format;
+					let uses = previous.uses;
+					let access = previous.access;
+					let array_layers = previous.array_layers;
+					let handle = self.create_image_internal(
+						Some(builder.previous),
+						name.as_deref(),
+						extent,
+						format,
+						uses,
+						access,
+						array_layers,
+					);
+
+					let candidates = self.image_chain_handles(builder.master.0);
+					self.rewrite_deferred_descriptors(&candidates, PrivateHandles::Image(handle), sequence_index);
+
+					let next_frame = sequence_index + 1;
+					if next_frame < self.frames {
+						deferred_frame_tasks.push(Task::new(
+							Tasks::BuildImage(BuildImage {
+								previous: handle,
+								master: builder.master,
+							}),
+							Some(next_frame),
+						));
+					}
+				}
+				Tasks::BuildBuffer(builder) => {
+					let previous = self.buffers.resource(builder.previous);
+					let name = previous.name.clone();
+					let size = previous.size;
+					let uses = previous.uses;
+					let access = previous.access;
+					let handle = self.create_buffer_internal(Some(builder.previous), name.as_deref(), size, uses, access);
+
+					let candidates = self.buffer_chain_handles(builder.master);
+					self.rewrite_deferred_descriptors(&candidates, PrivateHandles::Buffer(handle), sequence_index);
+
+					let next_frame = sequence_index + 1;
+					if next_frame < self.frames {
+						deferred_frame_tasks.push(Task::new(
+							Tasks::BuildBuffer(BuildBuffer {
+								previous: handle,
+								master: builder.master,
+							}),
+							Some(next_frame),
+						));
+					}
+				}
+				Tasks::DeleteMetalTexture { .. } | Tasks::DeleteMetalBuffer { .. } | Tasks::ResizeImage { .. } => {}
 			}
 
 			false
 		});
 
+		tasks.extend(deferred_frame_tasks);
 		self.tasks = tasks;
 	}
 
@@ -1810,12 +1971,12 @@ impl Context {
 
 	pub fn build_buffer<T: Copy>(&mut self, builder: buffer_builder::Builder) -> graphics_hardware_interface::BufferHandle<T> {
 		let size = std::mem::size_of::<T>();
-		let buffer = self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.device_accesses);
+		let handle = self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
 
-		let mut creator = self.buffers.creator();
-		creator.add(buffer);
-
-		graphics_hardware_interface::BufferHandle::<T>(creator.into(), std::marker::PhantomData)
+		graphics_hardware_interface::BufferHandle::<T>(
+			graphics_hardware_interface::BaseBufferHandle::new(handle.0),
+			std::marker::PhantomData,
+		)
 	}
 
 	pub fn build_dynamic_buffer<T: Copy>(
@@ -1824,14 +1985,16 @@ impl Context {
 	) -> graphics_hardware_interface::DynamicBufferHandle<T> {
 		let size = std::mem::size_of::<T>();
 
-		let master = self.buffers.master();
+		let root = self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
+		let master = graphics_hardware_interface::BaseBufferHandle::new(root.0);
 
-		for _ in 0..self.frames {
-			let buffer = self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.device_accesses);
-			self.buffers.add_with_master(buffer, master);
+		if self.frames > 1 {
+			// Defer frame-local resources until the frame is first processed so startup only pays for frame 0.
+			self.tasks
+				.push(Task::new(Tasks::BuildBuffer(BuildBuffer { previous: root, master }), Some(1)));
 		}
 
-		graphics_hardware_interface::DynamicBufferHandle::<T>(master.into(), std::marker::PhantomData)
+		graphics_hardware_interface::DynamicBufferHandle::<T>(master, std::marker::PhantomData)
 	}
 
 	/// Creates an owned queue wrapper for queue-local submission work.
@@ -1875,19 +2038,26 @@ impl Context {
 
 	pub fn build_dynamic_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::DynamicImageHandle {
 		let layers = builder.array_layers.map(|l| l.get()).unwrap_or(1);
-		let master = self.images.master();
+		let root = self.create_image_internal(
+			None,
+			builder.get_name(),
+			builder.extent,
+			builder.format,
+			builder.resource_uses,
+			builder.device_accesses,
+			layers,
+		);
+		let master = graphics_hardware_interface::BaseImageHandle::new(root.0);
 
-		for _ in 0..self.frames {
-			let image = self.create_image_resource(
-				builder.get_name(),
-				builder.extent,
-				builder.format,
-				builder.resource_uses,
-				builder.device_accesses,
-				layers,
-			);
-
-			self.images.add_with_master(image, master);
+		if self.frames > 1 {
+			// Defer frame-local resources until the frame is first processed so startup only pays for frame 0.
+			self.tasks.push(Task::new(
+				Tasks::BuildImage(BuildImage {
+					previous: root,
+					master: graphics_hardware_interface::ImageHandle(master),
+				}),
+				Some(1),
+			));
 		}
 
 		graphics_hardware_interface::DynamicImageHandle(master)
@@ -2019,8 +2189,8 @@ impl Context {
 
 	pub fn build_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::ImageHandle {
 		let layers = builder.array_layers.map(|l| l.get()).unwrap_or(1);
-
-		let image = self.create_image_resource(
+		let image_handle = self.create_image_internal(
+			None,
 			builder.get_name(),
 			builder.extent,
 			builder.format,
@@ -2029,9 +2199,7 @@ impl Context {
 			layers,
 		);
 
-		let image_handle = self.images.add(image);
-
-		graphics_hardware_interface::ImageHandle(image_handle.0)
+		graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(image_handle.0))
 	}
 
 	pub fn build_sampler(&mut self, builder: sampler_builder::Builder) -> graphics_hardware_interface::SamplerHandle {
@@ -2560,5 +2728,5 @@ use crate::{
 	metal::utils::parse_threadgroup_size_metadata,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
-	window, DeviceAccesses, HandleLike as _, ResourceCollection, Uses,
+	window, DeviceAccesses, HandleLike as _, MasterHandle as _, ResourceCollection, Uses,
 };

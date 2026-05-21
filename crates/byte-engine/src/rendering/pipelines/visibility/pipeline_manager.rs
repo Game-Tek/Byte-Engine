@@ -55,16 +55,16 @@ impl VisibilityPipelineManager {
 		);
 
 		let bindings = [
-			diffuse_binding_template,
+			DIFFUSE_BINDING_TEMPLATE,
 			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-			specular_binding_template,
+			SPECULAR_BINDING_TEMPLATE,
 			ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
-			lighting_data_binding_template,
-			materials_data_binding_template,
-			ao_map_binding_template,
-			shadow_map_binding_template,
-			visibility_depth_binding_template,
-			ibl_cubemap_binding_template,
+			LIGHTING_DATA_BINDING_TEMPLATE,
+			MATERIALS_DATA_BINDING_TEMPLATE,
+			AO_MAP_BINDING_TEMPLATE,
+			SHADOW_MAP_BINDING_TEMPLATE,
+			VISIBILITY_DEPTH_BINDING_TEMPLATE,
+			IBL_CUBEMAP_BINDING_TEMPLATE,
 		];
 		let material_evaluation_descriptor_set_layout =
 			context.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
@@ -643,24 +643,24 @@ impl PipelineManager for VisibilityPipelineManager {
 
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&diffuse_binding_template, ghi::BaseImageHandle::from(diffuse_target)),
+			ghi::BindingConstructor::image(&DIFFUSE_BINDING_TEMPLATE, ghi::BaseImageHandle::from(diffuse_target)),
 		);
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&specular_binding_template, ghi::BaseImageHandle::from(specular_target)),
+			ghi::BindingConstructor::image(&SPECULAR_BINDING_TEMPLATE, ghi::BaseImageHandle::from(specular_target)),
 		);
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::buffer(&lighting_data_binding_template, self.scene.light_data_buffer.into()),
+			ghi::BindingConstructor::buffer(&LIGHTING_DATA_BINDING_TEMPLATE, self.scene.light_data_buffer.into()),
 		);
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::buffer(&materials_data_binding_template, self.materials_data_buffer_handle.into()),
+			ghi::BindingConstructor::buffer(&MATERIALS_DATA_BINDING_TEMPLATE, self.materials_data_buffer_handle.into()),
 		);
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
-				&ao_map_binding_template,
+				&AO_MAP_BINDING_TEMPLATE,
 				ao_map,
 				sampler.clone(),
 				ghi::Layouts::Read,
@@ -669,7 +669,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
-				&shadow_map_binding_template,
+				&SHADOW_MAP_BINDING_TEMPLATE,
 				shadow_map,
 				depth_sampler.clone(),
 				ghi::Layouts::Read,
@@ -678,7 +678,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
-				&visibility_depth_binding_template,
+				&VISIBILITY_DEPTH_BINDING_TEMPLATE,
 				ghi::BaseImageHandle::from(depth_target),
 				visibility_depth_sampler.clone(),
 				ghi::Layouts::Read,
@@ -687,7 +687,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
-				&ibl_cubemap_binding_template,
+				&IBL_CUBEMAP_BINDING_TEMPLATE,
 				ibl_cubemap,
 				sampler.clone(),
 				ghi::Layouts::Read,
@@ -780,7 +780,7 @@ pub struct LightingData {
 
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Default)]
-pub(crate) struct ShaderVec3 {
+pub struct ShaderVec3 {
 	x: f32,
 	y: f32,
 	z: f32,
@@ -957,32 +957,32 @@ mod tests {
 	}
 }
 
-const diffuse_binding_template: ghi::DescriptorSetBindingTemplate =
+const DIFFUSE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const specular_binding_template: ghi::DescriptorSetBindingTemplate =
+const SPECULAR_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const lighting_data_binding_template: ghi::DescriptorSetBindingTemplate =
+const LIGHTING_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-const materials_data_binding_template: ghi::DescriptorSetBindingTemplate =
+const MATERIALS_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(5, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-const ao_map_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+const AO_MAP_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	10,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
 );
-const shadow_map_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
+const SHADOW_MAP_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
 	11,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
 	1,
 )
 .texture_view_type(ghi::TextureViewTypes::Texture2DArray);
-const visibility_depth_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+const VISIBILITY_DEPTH_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	12,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
 );
-const ibl_cubemap_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+const IBL_CUBEMAP_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	13,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,

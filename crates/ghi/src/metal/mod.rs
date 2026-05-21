@@ -1109,7 +1109,7 @@ pub mod factory;
 pub mod frame;
 pub mod instance;
 
-pub use self::binding::*;
+pub(crate) use self::binding::*;
 pub use self::command_buffer::*;
 pub use self::context::*;
 pub(crate) use self::descriptor_set::*;
@@ -1117,4 +1117,4 @@ pub use self::device::Device;
 pub use self::factory::{ComputePipeline, Factory};
 pub use self::frame::*;
 pub use self::instance::*;
-pub use self::synchronizer::*;
+pub(crate) use self::synchronizer::*;

@@ -205,7 +205,7 @@ impl Frame<'_> {
 			command_buffer,
 			states,
 			texture_copies,
-			_marker: _marker,
+			_marker,
 		} = cbr;
 		let mut present_drawables = Vec::with_capacity(present_keys.len());
 

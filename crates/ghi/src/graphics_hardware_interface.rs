@@ -884,7 +884,6 @@ pub(super) mod tests {
 			BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 			RasterizationRenderPassMode as _,
 		},
-		device::Device,
 		frame::Frame as _,
 		pipelines::{self, raster::AttachmentDescriptor, PushConstantRange, ShaderParameter, VertexElement},
 		queue::{FrameRequest, Queue as _, QueueExecution as _},

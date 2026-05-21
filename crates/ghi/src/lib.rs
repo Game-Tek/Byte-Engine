@@ -1,5 +1,8 @@
 //! The G.H.I. module (graphics hardware interface) is responsible for abstracting the access to the graphics hardware.
 
+#![allow(dead_code)]
+#![allow(incomplete_features)]
+#![allow(private_interfaces)]
 #![feature(generic_const_exprs)]
 #![feature(str_as_str)]
 #![feature(pointer_is_aligned_to)]

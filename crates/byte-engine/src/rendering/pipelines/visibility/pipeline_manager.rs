@@ -55,16 +55,15 @@ impl VisibilityPipelineManager {
 		);
 
 		let bindings = [
-			DIFFUSE_BINDING_TEMPLATE,
+			LIT_BINDING_TEMPLATE,
 			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-			SPECULAR_BINDING_TEMPLATE,
+			UNUSED_SET2_BINDING2_TEMPLATE,
 			ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
 			LIGHTING_DATA_BINDING_TEMPLATE,
 			MATERIALS_DATA_BINDING_TEMPLATE,
 			AO_MAP_BINDING_TEMPLATE,
 			SHADOW_MAP_BINDING_TEMPLATE,
 			VISIBILITY_DEPTH_BINDING_TEMPLATE,
-			IBL_CUBEMAP_BINDING_TEMPLATE,
 		];
 		let material_evaluation_descriptor_set_layout =
 			context.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
@@ -529,19 +528,12 @@ impl PipelineManager for VisibilityPipelineManager {
 	}
 
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
-		let diffuse_target = render_pass_builder.create_render_target(
+		let lit_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
 				ghi::Formats::RGBA16UNORM,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
 			)
-			.name("Diffuse"),
-		);
-		let specular_target = render_pass_builder.create_render_target(
-			ghi::image::Builder::new(
-				ghi::Formats::RGBA16UNORM,
-				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
-			)
-			.name("Specular"),
+			.name("Lit"),
 		);
 		let depth_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image).name("Depth"),
@@ -605,14 +597,6 @@ impl PipelineManager for VisibilityPipelineManager {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32)),
 		);
-		let ibl_cubemap = context.build_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
-				.name("IBL Cubemap")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
-				.extent(Extent::square(1))
-				.array_layers(NonZeroU32::new(6)),
-		);
-		context.write_texture(ibl_cubemap, |bytes| bytes.fill(255));
 		let sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
@@ -643,11 +627,7 @@ impl PipelineManager for VisibilityPipelineManager {
 
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&DIFFUSE_BINDING_TEMPLATE, ghi::BaseImageHandle::from(diffuse_target)),
-		);
-		let _ = context.create_descriptor_binding(
-			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&SPECULAR_BINDING_TEMPLATE, ghi::BaseImageHandle::from(specular_target)),
+			ghi::BindingConstructor::image(&LIT_BINDING_TEMPLATE, ghi::BaseImageHandle::from(lit_target)),
 		);
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
@@ -685,16 +665,6 @@ impl PipelineManager for VisibilityPipelineManager {
 			),
 		);
 		let _ = context.create_descriptor_binding(
-			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&IBL_CUBEMAP_BINDING_TEMPLATE,
-				ibl_cubemap,
-				sampler.clone(),
-				ghi::Layouts::Read,
-			),
-		);
-
-		let _ = context.create_descriptor_binding(
 			visibility_passes_descriptor_set,
 			ghi::BindingConstructor::buffer(&MATERIAL_COUNT_BINDING, material_count_buffer.into()),
 		);
@@ -724,7 +694,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 
 		render_pass_builder.alias("Depth", "depth");
-		render_pass_builder.alias("Diffuse", "main");
+		render_pass_builder.alias("Lit", "main");
 
 		let shader_storage = render_pass_builder.shader_storage();
 		let render_pass = VisibilityPipelineRenderPass::new(
@@ -736,11 +706,9 @@ impl PipelineManager for VisibilityPipelineManager {
 			visibility_passes_descriptor_set,
 			material_evaluation_descriptor_set,
 			material_count_buffer,
-			ghi::BaseImageHandle::from(diffuse_target),
-			ghi::BaseImageHandle::from(specular_target),
+			ghi::BaseImageHandle::from(lit_target),
 			ao_map.into(),
 			shadow_map.into(),
-			ibl_cubemap.into(),
 			ghi::BaseImageHandle::from(depth_target),
 			ghi::BaseImageHandle::from(primitive_index),
 			ghi::BaseImageHandle::from(instance_id),
@@ -957,9 +925,9 @@ mod tests {
 	}
 }
 
-const DIFFUSE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
+const LIT_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const SPECULAR_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
+const UNUSED_SET2_BINDING2_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 const LIGHTING_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
@@ -982,13 +950,6 @@ const VISIBILITY_DEPTH_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
 );
-const IBL_CUBEMAP_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	13,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-)
-.texture_view_type(ghi::TextureViewTypes::Texture2DArray);
-
 use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::{hash_map::Entry, HashSet};

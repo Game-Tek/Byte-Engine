@@ -584,6 +584,112 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 }
 
+impl CommandBufferRecording<'_> {
+	/// Converts descriptor visibility to the Metal render stages that can access the argument buffer.
+	fn render_stages_for_descriptor_set_layout(descriptor_set_layout: &DescriptorSetLayout) -> mtl::MTLRenderStages {
+		let descriptor_visibility = descriptor_set_layout
+			.bindings
+			.iter()
+			.fold(crate::Stages::NONE, |visibility, binding| visibility | binding.stages);
+		let mut render_stages = mtl::MTLRenderStages(0);
+
+		if descriptor_visibility.intersects(crate::Stages::VERTEX) {
+			render_stages |= mtl::MTLRenderStages::Vertex;
+		}
+
+		if descriptor_visibility.intersects(crate::Stages::FRAGMENT) {
+			render_stages |= mtl::MTLRenderStages::Fragment;
+		}
+
+		if descriptor_visibility.intersects(crate::Stages::TASK) {
+			render_stages |= mtl::MTLRenderStages::Object;
+		}
+
+		if descriptor_visibility.intersects(crate::Stages::MESH) {
+			render_stages |= mtl::MTLRenderStages::Mesh;
+		}
+
+		if render_stages.is_empty() {
+			mtl::MTLRenderStages(
+				mtl::MTLRenderStages::Vertex.0
+					| mtl::MTLRenderStages::Fragment.0
+					| mtl::MTLRenderStages::Object.0
+					| mtl::MTLRenderStages::Mesh.0,
+			)
+		} else {
+			render_stages
+		}
+	}
+
+	/// Makes resources referenced through a render argument buffer resident for the active render encoder.
+	fn make_render_descriptor_set_resources_resident(
+		&self,
+		encoder: &ProtocolObject<dyn mtl::MTLRenderCommandEncoder>,
+		descriptor_set: &DescriptorSet,
+		descriptor_set_layout: &DescriptorSetLayout,
+	) {
+		let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
+		let stages = Self::render_stages_for_descriptor_set_layout(descriptor_set_layout);
+
+		for descriptors_at_binding in descriptor_set.descriptors.values() {
+			for descriptor in descriptors_at_binding.values() {
+				match *descriptor {
+					Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
+						let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(image).texture;
+						encoder.useResource_usage_stages(ProtocolObject::from_ref(tex), usage, stages);
+					}
+					Descriptor::Buffer { buffer, .. } => {
+						let buf: &ProtocolObject<dyn mtl::MTLBuffer> = &self.device.buffers.resource(buffer).buffer;
+						encoder.useResource_usage_stages(ProtocolObject::from_ref(buf), usage, stages);
+					}
+					Descriptor::Swapchain { handle } => {
+						if let Some(proxy_handle) =
+							self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize]
+						{
+							let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(proxy_handle).texture;
+							encoder.useResource_usage_stages(ProtocolObject::from_ref(tex), usage, stages);
+						}
+					}
+					Descriptor::Sampler { .. } => {}
+				}
+			}
+		}
+	}
+
+	/// Makes resources referenced through a compute argument buffer resident for the active compute encoder.
+	fn make_compute_descriptor_set_resources_resident(
+		&self,
+		encoder: &ProtocolObject<dyn mtl::MTLComputeCommandEncoder>,
+		descriptor_set: &DescriptorSet,
+	) {
+		let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
+
+		for descriptors_at_binding in descriptor_set.descriptors.values() {
+			for descriptor in descriptors_at_binding.values() {
+				match *descriptor {
+					Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
+						let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(image).texture;
+						encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
+					}
+					Descriptor::Buffer { buffer, .. } => {
+						let buf: &ProtocolObject<dyn mtl::MTLBuffer> = &self.device.buffers.resource(buffer).buffer;
+						encoder.useResource_usage(ProtocolObject::from_ref(buf), usage);
+					}
+					Descriptor::Swapchain { handle } => {
+						if let Some(proxy_handle) =
+							self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize]
+						{
+							let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(proxy_handle).texture;
+							encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
+						}
+					}
+					Descriptor::Sampler { .. } => {}
+				}
+			}
+		}
+	}
+}
+
 impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	fn frame_key(&self) -> graphics_hardware_interface::FrameKey {
 		self.frame_key.expect(
@@ -1518,40 +1624,11 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 							}
 						}
 
-						// Make resources referenced through argument buffers resident so the GPU can access them.
-						let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
-						let stages = mtl::MTLRenderStages(
-							mtl::MTLRenderStages::Vertex.0
-								| mtl::MTLRenderStages::Fragment.0
-								| mtl::MTLRenderStages::Object.0
-								| mtl::MTLRenderStages::Mesh.0,
+						self.make_render_descriptor_set_resources_resident(
+							encoder.as_ref(),
+							descriptor_set,
+							descriptor_set_layout,
 						);
-						for descriptors_at_binding in descriptor_set.descriptors.values() {
-							for descriptor in descriptors_at_binding.values() {
-								match *descriptor {
-									Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
-										let tex: &ProtocolObject<dyn mtl::MTLTexture> =
-											&self.device.images.resource(image).texture;
-										encoder.useResource_usage_stages(ProtocolObject::from_ref(tex), usage, stages);
-									}
-									Descriptor::Buffer { buffer, .. } => {
-										let buf: &ProtocolObject<dyn mtl::MTLBuffer> =
-											&self.device.buffers.resource(buffer).buffer;
-										encoder.useResource_usage_stages(ProtocolObject::from_ref(buf), usage, stages);
-									}
-									Descriptor::Swapchain { handle } => {
-										if let Some(proxy_handle) =
-											self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize]
-										{
-											let tex: &ProtocolObject<dyn mtl::MTLTexture> =
-												&self.device.images.resource(proxy_handle).texture;
-											encoder.useResource_usage_stages(ProtocolObject::from_ref(tex), usage, stages);
-										}
-									}
-									Descriptor::Sampler { .. } => {}
-								}
-							}
-						}
 					}
 				}
 				PipelineState::Compute(_) => {
@@ -1570,34 +1647,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 							}
 						}
 
-						// Make resources referenced through argument buffers resident so the GPU can access them.
-						let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
-						for descriptors_at_binding in descriptor_set.descriptors.values() {
-							for descriptor in descriptors_at_binding.values() {
-								match *descriptor {
-									Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
-										let tex: &ProtocolObject<dyn mtl::MTLTexture> =
-											&self.device.images.resource(image).texture;
-										encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
-									}
-									Descriptor::Buffer { buffer, .. } => {
-										let buf: &ProtocolObject<dyn mtl::MTLBuffer> =
-											&self.device.buffers.resource(buffer).buffer;
-										encoder.useResource_usage(ProtocolObject::from_ref(buf), usage);
-									}
-									Descriptor::Swapchain { handle } => {
-										if let Some(proxy_handle) =
-											self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize]
-										{
-											let tex: &ProtocolObject<dyn mtl::MTLTexture> =
-												&self.device.images.resource(proxy_handle).texture;
-											encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
-										}
-									}
-									Descriptor::Sampler { .. } => {}
-								}
-							}
-						}
+						self.make_compute_descriptor_set_resources_resident(encoder.as_ref(), descriptor_set);
 					}
 				}
 				PipelineState::RayTracing => {}

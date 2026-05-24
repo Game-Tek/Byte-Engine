@@ -64,38 +64,13 @@ pub struct PipelineManager {
 const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
 	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
-const SIMPLE_VERTEX_MSL: &str = r#"
+const SIMPLE_FRAGMENT_MSL: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
 
-struct Camera {
-	float4x4 view_projection;
-};
-
-struct Instance {
-	float4x4 transform;
-};
-
-struct CamerasBuffer {
-	Camera cameras[8];
-};
-
-struct InstancesBuffer {
-	Instance instances[8];
-};
-
-struct Set0 {
-	device CamerasBuffer* cameras [[id(0)]];
-	device InstancesBuffer* instances [[id(1)]];
-};
-
-struct VertexInput {
-	float3 position [[attribute(0)]];
-};
-
 struct VertexOutput {
 	float4 position [[position]];
-	float4 color;
+	uint out_instance_index [[flat]] [[user(locn0)]];
 };
 
 static float4 debug_color(uint index) {
@@ -112,31 +87,8 @@ static float4 debug_color(uint index) {
 	return float4(palette[index % 8], 1.0);
 }
 
-vertex VertexOutput besl_main(
-	VertexInput in [[stage_in]],
-	uint instance_index [[instance_id]],
-	constant Set0& set0 [[buffer(16)]]
-) {
-	VertexOutput out;
-	Camera camera = set0.cameras->cameras[0];
-	Instance instance = set0.instances->instances[instance_index];
-	out.position = camera.view_projection * instance.transform * float4(in.position, 1.0);
-	out.color = debug_color(instance_index);
-	return out;
-}
-"#;
-
-const SIMPLE_FRAGMENT_MSL: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
-
-struct VertexOutput {
-	float4 position [[position]];
-	float4 color;
-};
-
 fragment float4 besl_main(VertexOutput in [[stage_in]]) {
-	return in.color;
+	return debug_color(in.out_instance_index);
 }
 "#;
 
@@ -187,11 +139,21 @@ impl PipelineManager {
 			out_instance_index = instance_index;
 			"#
 			.trim();
+			let main_msl = r#"
+			VertexOutput out;
+			Camera camera = set0.cameras->cameras[0];
+			Instance instance = set0.instances->instances[instance_index];
+
+			out.position = camera.view_projection * instance.transform * float4(in.position, 1.0);
+			out.out_instance_index = instance_index;
+			return out;
+			"#
+			.trim();
 
 			let main = besl::ParserNode::main_function(vec![besl::ParserNode::raw_code(
 				Some(main_code.into()),
 				None,
-				Some(format!("// besl-full-source\n{SIMPLE_VERTEX_MSL}").into()),
+				Some(main_msl.into()),
 				&["cameras", "instances", "push_constant", "in_position", "out_instance_index"],
 				&[],
 			)]);

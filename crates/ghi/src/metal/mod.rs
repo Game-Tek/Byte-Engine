@@ -1080,12 +1080,51 @@ pub mod binding {
 }
 
 pub mod synchronizer {
+	use std::cell::{Cell, RefCell};
+
+	use super::*;
 	use crate::synchronizer::SynchronizerHandle;
 
-	#[derive(Clone)]
+	/// The `Synchronizer` struct owns the Metal workloads associated with one GHI synchronization point.
 	pub(crate) struct Synchronizer {
 		pub next: Option<SynchronizerHandle>,
-		pub signaled: bool,
+		signaled: Cell<bool>,
+		workloads: RefCell<Vec<Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>>>,
+	}
+
+	impl Synchronizer {
+		pub(crate) fn new(signaled: bool) -> Self {
+			Self {
+				next: None,
+				signaled: Cell::new(signaled),
+				workloads: RefCell::new(Vec::new()),
+			}
+		}
+
+		pub(crate) fn reset(&self) {
+			// Reset only after previous work is complete so diagnostics are not lost for in-flight submissions.
+			self.wait();
+			self.signaled.set(false);
+		}
+
+		pub(crate) fn signal_workload(&self, command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>) {
+			self.signaled.set(false);
+			self.workloads.borrow_mut().push(command_buffer);
+		}
+
+		pub(crate) fn wait(&self) {
+			if self.signaled.get() {
+				return;
+			}
+
+			// Retain the command buffers until completion so asynchronous Metal submissions can be diagnosed later.
+			let workloads = self.workloads.take();
+			for command_buffer in &workloads {
+				device::wait_for_metal_command_buffer(command_buffer.as_ref());
+			}
+
+			self.signaled.set(true);
+		}
 	}
 }
 

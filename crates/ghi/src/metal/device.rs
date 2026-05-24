@@ -240,8 +240,7 @@ fn describe_metal_command_buffer_failure(command_buffer: &ProtocolObject<dyn mtl
 }
 
 // Waits for the Metal command buffer and turns Metal's enhanced error payload into a readable panic.
-fn wait_for_metal_command_buffer(command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
-	command_buffer.commit();
+pub(super) fn wait_for_metal_command_buffer(command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
 	command_buffer.waitUntilCompleted();
 
 	if command_buffer.status() != mtl::MTLCommandBufferStatus::Completed || command_buffer.error().is_some() {
@@ -250,7 +249,7 @@ fn wait_for_metal_command_buffer(command_buffer: &ProtocolObject<dyn mtl::MTLCom
 }
 
 pub(super) fn submit_metal_command_buffer(command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
-	wait_for_metal_command_buffer(command_buffer);
+	command_buffer.commit();
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

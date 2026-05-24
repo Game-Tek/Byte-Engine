@@ -251,16 +251,8 @@ impl Frame<'_> {
 			command_buffer.presentDrawable(drawable_ref);
 		}
 
-		if let Some(synchronizer) = self.device.synchronizers.get_mut(synchronizer.0 as usize) {
-			synchronizer.signaled = false;
-		}
-
-		self.device.submit_metal_command_buffer(command_buffer.as_ref());
-		command_buffer.waitUntilCompleted();
-
-		if let Some(synchronizer) = self.device.synchronizers.get_mut(synchronizer.0 as usize) {
-			synchronizer.signaled = true;
-		}
+		self.device
+			.submit_metal_command_buffer_for_synchronizer(command_buffer, synchronizer, self.frame_key.sequence_index);
 
 		self.device.states = states;
 		self.device.intern_texture_copies(texture_copies);

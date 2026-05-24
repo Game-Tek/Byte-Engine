@@ -96,6 +96,16 @@ pub struct MeshHandle(pub(super) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SynchronizerHandle(pub(super) u64);
 
+impl MasterHandle for SynchronizerHandle {
+	fn new(i: u64) -> Self {
+		Self(i)
+	}
+
+	fn index(&self) -> u64 {
+		self.0
+	}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DescriptorSetTemplateHandle(pub(super) u64);
 

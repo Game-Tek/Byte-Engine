@@ -19,7 +19,12 @@ pub struct Context {
 	pub(crate) shaders: Vec<Shader>,
 	pub(crate) pipelines: Vec<Pipeline>,
 	pub(crate) command_buffers: Vec<StoredCommandBuffer>,
-	pub(crate) synchronizers: Vec<synchronizer::Synchronizer>,
+	pub(crate) synchronizers: ResourceCollection<
+		synchronizer::Synchronizer,
+		graphics_hardware_interface::SynchronizerHandle,
+		crate::synchronizer::SynchronizerHandle,
+	>,
+	internal_upload_synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
 	pub(crate) swapchains: Vec<swapchain::Swapchain>,
 
 	pub(crate) resource_to_descriptor: HashMap<PrivateHandles, HashSet<(DescriptorSetBindingHandle, u32, u8)>>,
@@ -58,9 +63,46 @@ impl Context {
 		command_buffer
 	}
 
-	// Submits the Metal command buffer and validates its completion status with enhanced diagnostics.
+	// Submits the Metal command buffer without blocking; synchronizers retain submitted work for later waits.
 	pub(super) fn submit_metal_command_buffer(&self, command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
 		submit_metal_command_buffer(command_buffer);
+	}
+
+	fn synchronizer_for_sequence(
+		&self,
+		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		sequence_index: u8,
+	) -> crate::synchronizer::SynchronizerHandle {
+		self.synchronizers
+			.nth_handle(synchronizer_handle, sequence_index as usize)
+			.expect(
+				"Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.",
+			)
+	}
+
+	pub(crate) fn submit_metal_command_buffer_for_synchronizer(
+		&self,
+		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
+		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		sequence_index: u8,
+	) {
+		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, sequence_index);
+		let synchronizer = self.synchronizers.resource(synchronizer_handle);
+
+		// The synchronizer owns a retained command buffer until a GHI wait observes completion.
+		synchronizer.signal_workload(command_buffer.clone());
+		self.submit_metal_command_buffer(command_buffer.as_ref());
+	}
+
+	fn submit_internal_metal_command_buffer(
+		&self,
+		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
+		sequence_index: u8,
+	) {
+		let synchronizer = self.internal_upload_synchronizer.expect(
+			"Metal internal upload synchronizer is missing. The most likely cause is that the context was not initialized correctly.",
+		);
+		self.submit_metal_command_buffer_for_synchronizer(command_buffer, synchronizer, sequence_index);
 	}
 
 	pub fn new(
@@ -68,7 +110,7 @@ impl Context {
 		device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 		queues: Vec<queue::StoredQueue>,
 	) -> Result<Context, &'static str> {
-		Ok(Context {
+		let mut context = Context {
 			device,
 			frames: MAX_FRAMES_IN_FLIGHT as u8,
 			queues,
@@ -88,7 +130,8 @@ impl Context {
 			shaders: Vec::new(),
 			pipelines: Vec::new(),
 			command_buffers: Vec::new(),
-			synchronizers: Vec::new(),
+			synchronizers: ResourceCollection::with_capacity(32),
+			internal_upload_synchronizer: None,
 			swapchains: Vec::new(),
 			resource_to_descriptor: HashMap::default(),
 			descriptor_set_to_resource: HashMap::default(),
@@ -102,7 +145,10 @@ impl Context {
 
 			#[cfg(debug_assertions)]
 			names: HashMap::default(),
-		})
+		};
+		context.internal_upload_synchronizer = Some(context.create_synchronizer(Some("Metal Internal Upload Sync"), true));
+
+		Ok(context)
 	}
 
 	pub fn create_factory(&self) -> Option<crate::metal::factory::Factory> {
@@ -280,12 +326,14 @@ impl Context {
 	}
 
 	fn upload_texture_from_staging(
-		&self,
+		&mut self,
 		texture: &ProtocolObject<dyn mtl::MTLTexture>,
 		format: crate::Formats,
 		extent: Extent,
 		array_layers: u32,
 		staging: &[u8],
+		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
+		sequence_index: u8,
 	) {
 		let Some((bytes_per_row, row_count, bytes_per_image)) = utils::texture_upload_layout(format, extent) else {
 			return;
@@ -333,7 +381,9 @@ impl Context {
 			);
 		}
 
-		let queue = self.transfer_queue();
+		let queue = queue_handle
+			.and_then(|queue_handle| self.queues.get(queue_handle.0 as usize))
+			.unwrap_or_else(|| self.transfer_queue());
 		let command_buffer = self.create_metal_command_buffer(
 			queue.queue.as_ref(),
 			Some("Texture Upload"),
@@ -374,7 +424,7 @@ impl Context {
 		}
 
 		blit_encoder.endEncoding();
-		self.submit_metal_command_buffer(command_buffer.as_ref());
+		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
 	}
 
 	/// Stores a resolved descriptor for one binding slot, re-encodes the argument buffer, and refreshes resource tracking.
@@ -1928,14 +1978,19 @@ impl Context {
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
 	) -> super::CommandBufferRecording<'a> {
 		let autorelease_pool = frame_key.is_none().then(|| unsafe { NSAutoreleasePool::new() });
+		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
+		let (queue_handle, command_buffer_name) = {
+			let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
+			(command_buffer.queue_handle, command_buffer.name.clone())
+		};
 
-		self.flush_pending_uploads();
+		// Uploads committed on the same Metal queue are ordered before this command buffer without a CPU wait.
+		self.flush_pending_uploads(Some(queue_handle), sequence_index);
 
-		let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
-		let queue = &self.queues[command_buffer.queue_handle.0 as usize];
+		let queue = &self.queues[queue_handle.0 as usize];
 		let mtl_command_buffer = self.create_metal_command_buffer(
 			queue.queue.as_ref(),
-			command_buffer.name.as_deref(),
+			command_buffer_name.as_deref(),
 			"Metal command buffer creation failed. The most likely cause is that the command queue did not provide a command buffer.",
 		);
 
@@ -2093,7 +2148,12 @@ impl Context {
 		}
 	}
 
-	fn upload_buffer_from_staging(&mut self, buffer_handle: BufferHandle) {
+	fn upload_buffer_from_staging(
+		&mut self,
+		buffer_handle: BufferHandle,
+		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
+		sequence_index: u8,
+	) {
 		let buffer = self.buffers.resource(buffer_handle);
 
 		let Some(staging_handle) = buffer.staging else {
@@ -2101,7 +2161,9 @@ impl Context {
 		};
 
 		let staging = self.buffers.resource(staging_handle);
-		let queue = self.transfer_queue();
+		let queue = queue_handle
+			.and_then(|queue_handle| self.queues.get(queue_handle.0 as usize))
+			.unwrap_or_else(|| self.transfer_queue());
 		let command_buffer = self.create_metal_command_buffer(
 			queue.queue.as_ref(),
 			Some("Buffer Upload"),
@@ -2123,10 +2185,15 @@ impl Context {
 		}
 
 		blit_encoder.endEncoding();
-		self.submit_metal_command_buffer(command_buffer.as_ref());
+		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
 	}
 
-	fn upload_image_from_staging(&mut self, image_handle: ImageHandle) {
+	fn upload_image_from_staging(
+		&mut self,
+		image_handle: ImageHandle,
+		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
+		sequence_index: u8,
+	) {
 		let image = self.images.resource_mut(image_handle);
 
 		let Some(staging) = image.staging.as_ref() else {
@@ -2139,18 +2206,26 @@ impl Context {
 		let array_layers = image.array_layers;
 		let staging = staging.to_vec();
 
-		self.upload_texture_from_staging(texture.as_ref(), format, extent, array_layers, &staging);
+		self.upload_texture_from_staging(
+			texture.as_ref(),
+			format,
+			extent,
+			array_layers,
+			&staging,
+			queue_handle,
+			sequence_index,
+		);
 	}
 
-	fn flush_pending_uploads(&mut self) {
+	fn flush_pending_uploads(&mut self, queue_handle: Option<graphics_hardware_interface::QueueHandle>, sequence_index: u8) {
 		let pending_buffers = self.pending_buffer_syncs.drain(..).collect::<Vec<_>>();
 		for buffer_handle in pending_buffers {
-			self.upload_buffer_from_staging(buffer_handle);
+			self.upload_buffer_from_staging(buffer_handle, queue_handle, sequence_index);
 		}
 
 		let pending_images = self.pending_image_syncs.drain(..).collect::<Vec<_>>();
 		for image_handle in pending_images {
-			self.upload_image_from_staging(image_handle);
+			self.upload_image_from_staging(image_handle, queue_handle, sequence_index);
 		}
 	}
 
@@ -2179,7 +2254,7 @@ impl Context {
 		let array_layers = image.array_layers;
 		let staging = staging.to_vec();
 
-		self.upload_texture_from_staging(texture.as_ref(), format, extent, array_layers, &staging);
+		self.upload_texture_from_staging(texture.as_ref(), format, extent, array_layers, &staging, None, 0);
 	}
 
 	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {
@@ -2380,39 +2455,45 @@ impl Context {
 		_name: Option<&str>,
 		signaled: bool,
 	) -> graphics_hardware_interface::SynchronizerHandle {
-		self.synchronizers.push(synchronizer::Synchronizer { next: None, signaled });
-		graphics_hardware_interface::SynchronizerHandle((self.synchronizers.len() - 1) as u64)
+		let (master, mut previous) = self.synchronizers.add(synchronizer::Synchronizer::new(signaled));
+
+		for _ in 1..self.frames {
+			let handle = self
+				.synchronizers
+				.add_with_master(synchronizer::Synchronizer::new(signaled), master);
+			self.synchronizers.set_next(previous, Some(handle));
+			previous = handle;
+		}
+
+		master
 	}
 
 	pub fn reset_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
-		if let Some(synchronizer) = self.synchronizers.get_mut(synchronizer_handle.0 as usize) {
-			synchronizer.signaled = false;
+		for frame_index in 0..self.frames as usize {
+			let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_index as u8);
+			self.synchronizers.resource(synchronizer_handle).reset();
 		}
 	}
 
 	pub fn wait_for_synchronizer(&self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
-		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.0 as usize) else {
-			panic!(
-				"Metal synchronizer wait failed. The most likely cause is that an invalid synchronizer handle was submitted.",
-			);
-		};
-
-		assert!(
-			synchronizer.signaled,
-			"Metal synchronizer wait failed. The most likely cause is that the awaited GPU submission has not completed.",
-		);
+		for frame_index in 0..self.frames as usize {
+			let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_index as u8);
+			self.synchronizers.resource(synchronizer_handle).wait();
+		}
 	}
 
 	pub(crate) fn start_frame<'a>(
 		&'a mut self,
 		index: u32,
-		_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	) -> crate::queue::StartedFrame<super::Frame<'a>> {
 		let frame_key = graphics_hardware_interface::FrameKey {
 			frame_index: index,
 			sequence_index: (index % self.frames as u32) as u8,
 		};
 		let completed_frame = crate::queue::completed_frame_key(index, self.frames);
+		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_key.sequence_index);
+		self.synchronizers.resource(synchronizer_handle).wait();
 		self.process_tasks(frame_key.sequence_index);
 		crate::queue::StartedFrame::new(super::Frame::new(self, frame_key), completed_frame)
 	}
@@ -2447,7 +2528,9 @@ impl Context {
 	}
 
 	pub fn wait(&self) {
-		// TODO: Track pending command buffers and wait for completion.
+		for synchronizer in self.synchronizers.iter() {
+			synchronizer.wait();
+		}
 	}
 }
 

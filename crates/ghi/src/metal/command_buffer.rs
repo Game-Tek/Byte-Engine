@@ -179,7 +179,11 @@ pub(super) struct RecordingDevice<'a> {
 /// The `RecordingCommit` struct carries recording results back into the owning device after encoding ends.
 pub(super) struct RecordingCommit<'a> {
 	pub(super) states: &'a mut HashMap<PrivateHandles, TransitionState>,
-	pub(super) synchronizers: &'a mut Vec<synchronizer::Synchronizer>,
+	pub(super) synchronizers: &'a mut ResourceCollection<
+		synchronizer::Synchronizer,
+		graphics_hardware_interface::SynchronizerHandle,
+		crate::synchronizer::SynchronizerHandle,
+	>,
 	pub(super) texture_copies: &'a mut Vec<Vec<u8>>,
 }
 
@@ -274,6 +278,18 @@ impl RecordingDevice<'_> {
 }
 
 impl RecordingCommit<'_> {
+	fn synchronizer_for_sequence(
+		&self,
+		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		sequence_index: u8,
+	) -> crate::synchronizer::SynchronizerHandle {
+		self.synchronizers
+			.nth_handle(synchronizer_handle, sequence_index as usize)
+			.expect(
+				"Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.",
+			)
+	}
+
 	/// Interns locally recorded texture readbacks into their device-assigned handles.
 	fn intern_texture_copies(
 		&mut self,
@@ -567,17 +583,17 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 
 		if let Some(commit) = self.commit.as_mut() {
-			if let Some(synchronizer) = commit.synchronizers.get_mut(synchronizer.0 as usize) {
-				synchronizer.signaled = false;
-			}
+			let synchronizer = commit.synchronizer_for_sequence(synchronizer, self.sequence_index);
+			// Retain the command buffer until a GHI wait observes completion.
+			commit
+				.synchronizers
+				.resource(synchronizer)
+				.signal_workload(self.command_buffer.clone());
 		}
 
 		device::submit_metal_command_buffer(self.command_buffer.as_ref());
 
 		if let Some(mut commit) = self.commit {
-			if let Some(synchronizer) = commit.synchronizers.get_mut(synchronizer.0 as usize) {
-				synchronizer.signaled = true;
-			}
 			*commit.states = self.states;
 			commit.intern_texture_copies(self.texture_copies);
 		}

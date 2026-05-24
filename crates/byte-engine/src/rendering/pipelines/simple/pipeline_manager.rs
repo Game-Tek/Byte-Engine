@@ -17,8 +17,8 @@ use ghi::{
 };
 use math::{Matrix4, ShaderMatrix4};
 use resource_management::{
-	asset::bema_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings,
-	spirv_shader_generator::SPIRVShaderGenerator,
+	asset::bema_asset_handler::ProgramGenerator, msl_shader_generator::MSLShaderGenerator,
+	shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator,
 };
 use utils::{
 	hash::{HashMap, HashMapExt},
@@ -38,7 +38,6 @@ use crate::{
 	gameplay::transform::TransformationUpdate,
 	rendering::Camera,
 	rendering::{
-		common_shader_generator::CommonShaderScope,
 		lights::{Light, Lights},
 		make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
 		pipelines::simple::{render_pass, CameraShaderData, RenderPass},
@@ -65,7 +64,6 @@ pub struct PipelineManager {
 const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
 	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
-#[cfg(target_vendor = "apple")]
 const SIMPLE_VERTEX_MSL: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
@@ -128,7 +126,6 @@ vertex VertexOutput besl_main(
 }
 "#;
 
-#[cfg(target_vendor = "apple")]
 const SIMPLE_FRAGMENT_MSL: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
@@ -177,9 +174,10 @@ impl PipelineManager {
 			&[camera_data_binding_template.clone(), instance_data_binding_template.clone()],
 		);
 
-		let mut shader_generator = SPIRVShaderGenerator::new();
+		let mut spirv_shader_generator = SPIRVShaderGenerator::new();
+		let mut msl_shader_generator = MSLShaderGenerator::new();
 
-		let generated_vertex_shader = {
+		let (generated_vertex_shader, generated_vertex_msl) = {
 			let main_code = r#"
 			Camera camera = cameras.cameras[0];
 			uint instance_index = gl_InstanceIndex;
@@ -190,8 +188,10 @@ impl PipelineManager {
 			"#
 			.trim();
 
-			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(
-				main_code,
+			let main = besl::ParserNode::main_function(vec![besl::ParserNode::raw_code(
+				Some(main_code.into()),
+				None,
+				Some(format!("// besl-full-source\n{SIMPLE_VERTEX_MSL}").into()),
 				&["cameras", "instances", "push_constant", "in_position", "out_instance_index"],
 				&[],
 			)]);
@@ -237,29 +237,45 @@ impl PipelineManager {
 				],
 			);
 
-			root.add(vec![CommonShaderScope::new(), shader]);
+			root.add(vec![shader]);
 
 			let root_node = besl::lex(root).unwrap();
 
 			let main_node = root_node.get_main().unwrap();
 
-			let generated = shader_generator
+			let generated_spirv = spirv_shader_generator
 				.generate(&ShaderGenerationSettings::vertex(), &main_node)
 				.unwrap();
 
-			generated
+			let generated_msl = msl_shader_generator
+				.generate(&ShaderGenerationSettings::vertex(), &main_node)
+				.unwrap();
+
+			(generated_spirv, generated_msl)
 		};
 
-		let generated_fragment_shader = {
+		let (generated_fragment_shader, generated_fragment_msl) = {
 			let main_code = r#"
 			uint instance_index = in_instance_index;
-			out_albedo = get_debug_color(instance_index);
+			vec3 palette[8] = vec3[](
+				vec3(0.90, 0.20, 0.20),
+				vec3(0.20, 0.70, 0.95),
+				vec3(0.35, 0.85, 0.35),
+				vec3(0.95, 0.75, 0.20),
+				vec3(0.75, 0.35, 0.95),
+				vec3(0.95, 0.45, 0.20),
+				vec3(0.25, 0.90, 0.75),
+				vec3(0.85, 0.85, 0.90)
+			);
+			out_albedo = vec4(palette[instance_index % 8], 1.0);
 			"#
 			.trim();
 
-			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(
-				main_code,
-				&["in_instance_index", "out_albedo", "get_debug_color"],
+			let main = besl::ParserNode::main_function(vec![besl::ParserNode::raw_code(
+				Some(main_code.into()),
+				None,
+				Some(format!("// besl-full-source\n{SIMPLE_FRAGMENT_MSL}").into()),
+				&["in_instance_index", "out_albedo"],
 				&[],
 			)]);
 
@@ -270,22 +286,26 @@ impl PipelineManager {
 
 			let shader = besl::ParserNode::scope("Shader", vec![instance_index_input, albedo_output, main]);
 
-			root.add(vec![CommonShaderScope::new(), shader]);
+			root.add(vec![shader]);
 
 			let root_node = besl::lex(root).unwrap();
 
 			let main_node = root_node.get_main().unwrap();
 
-			let generated = shader_generator
+			let generated_spirv = spirv_shader_generator
 				.generate(&ShaderGenerationSettings::fragment(), &main_node)
 				.unwrap();
 
-			generated
+			let generated_msl = msl_shader_generator
+				.generate(&ShaderGenerationSettings::fragment(), &main_node)
+				.unwrap();
+
+			(generated_spirv, generated_msl)
 		};
 
 		#[cfg(target_vendor = "apple")]
 		let vertex_shader_source = ghi::shader::Sources::MTL {
-			source: SIMPLE_VERTEX_MSL,
+			source: &generated_vertex_msl,
 			entry_point: "besl_main",
 		};
 		#[cfg(not(target_vendor = "apple"))]
@@ -304,7 +324,7 @@ impl PipelineManager {
 			.unwrap();
 		#[cfg(target_vendor = "apple")]
 		let fragment_shader_source = ghi::shader::Sources::MTL {
-			source: SIMPLE_FRAGMENT_MSL,
+			source: &generated_fragment_msl,
 			entry_point: "besl_main",
 		};
 		#[cfg(not(target_vendor = "apple"))]

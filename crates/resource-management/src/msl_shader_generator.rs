@@ -188,8 +188,14 @@ impl MSLShaderGenerator {
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
-		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "MSL");
+		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment) {
+			if let Some(source) = Self::find_full_source_passthrough(main_function_node) {
+				return Ok(source);
+			}
+		}
+
+		let mut string = String::with_capacity(2048);
 
 		self.generate_msl_header_block(&mut string, shader_compilation_settings);
 
@@ -208,6 +214,26 @@ impl MSLShaderGenerator {
 		}
 
 		Ok(string)
+	}
+
+	fn find_full_source_passthrough(main_function_node: &besl::NodeReference) -> Option<String> {
+		// Raster-stage MSL entrypoint lowering is not implemented yet, so callers can carry a full
+		// Metal source through a BESL raw node while the GLSL path keeps using normal BESL generation.
+		const MARKER: &str = "// besl-full-source";
+
+		let main_function_node = main_function_node.borrow();
+		let besl::Nodes::Function { statements, .. } = main_function_node.node() else {
+			return None;
+		};
+
+		statements.iter().find_map(|node| {
+			let node = node.borrow();
+			let besl::Nodes::Raw { msl: Some(source), .. } = node.node() else {
+				return None;
+			};
+
+			source.strip_prefix(MARKER).map(|source| source.trim_start().to_string())
+		})
 	}
 
 	fn generate_compute_shader(
@@ -2375,6 +2401,27 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "void main(){float3 albedo=float3(1.0,0.0,0.0);}");
+	}
+
+	#[test]
+	fn raster_full_source_passthrough_uses_raw_msl_source() {
+		let source = "// besl-full-source\n#include <metal_stdlib>\nvertex void besl_main() {}";
+		let mut root = besl::parser::Node::root();
+		let main = besl::parser::Node::main_function(vec![besl::parser::Node::raw_code(
+			Some("".into()),
+			None,
+			Some(source.into()),
+			&[],
+			&[],
+		)]);
+		root.add(vec![besl::parser::Node::scope("Shader", vec![main])]);
+
+		let main = besl::lex(root).unwrap().get_main().unwrap();
+		let shader = MSLShaderGenerator::new()
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_eq!(shader, "#include <metal_stdlib>\nvertex void besl_main() {}");
 	}
 
 	#[test]

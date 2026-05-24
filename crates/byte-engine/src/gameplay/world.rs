@@ -11,6 +11,7 @@ use crate::{
 	rendering::{lights::Lights, Camera, RenderableMesh},
 };
 
+#[derive(Clone)]
 pub struct DefaultWorld {
 	body_factory: Factory<EntityHandle<dyn physics::Body>>,
 	transforms: DefaultChannel<TransformationUpdate>,

@@ -26,6 +26,7 @@ pub struct GraphicsApplication {
 
 	generator_factory: Factory<Arc<dyn Generator>>,
 
+	world_factory: Factory<DefaultWorld>,
 	world: DefaultWorld,
 
 	input_system: input::InputManager,
@@ -106,6 +107,7 @@ impl Application for GraphicsApplication {
 
 			generator_factory: Factory::new(),
 
+			world_factory: Factory::new(),
 			world,
 
 			input_system,
@@ -283,6 +285,14 @@ impl GraphicsApplication {
 
 	pub fn action_factory_mut(&mut self) -> &mut Factory<Action> {
 		&mut self.action_factory
+	}
+
+	pub fn world_factory(&self) -> &Factory<DefaultWorld> {
+		&self.world_factory
+	}
+
+	pub fn world_factory_mut(&mut self) -> &mut Factory<DefaultWorld> {
+		&mut self.world_factory
 	}
 
 	pub fn world(&self) -> &DefaultWorld {

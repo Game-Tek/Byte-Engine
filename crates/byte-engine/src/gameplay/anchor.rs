@@ -85,6 +85,7 @@ impl Anchoring for Anchor {
 	}
 }
 
+#[derive(Clone)]
 pub struct AnchorSystem {
 	anchors: Vec<EntityHandle<dyn Anchoring>>,
 }

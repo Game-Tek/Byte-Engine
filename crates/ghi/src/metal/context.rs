@@ -228,6 +228,13 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 	) -> BufferHandle {
 		let buffer = self.create_buffer_resource(name, size, resource_uses, device_accesses);
+		if let Some(previous) = previous {
+			let previous_buffer = self.buffers.resource(previous);
+			let copy_size = previous_buffer.size.min(buffer.size);
+			unsafe {
+				std::ptr::copy_nonoverlapping(previous_buffer.pointer, buffer.pointer, copy_size);
+			}
+		}
 		let (_, handle) = self.buffers.add(buffer);
 
 		if let Some(previous) = previous {
@@ -1153,13 +1160,20 @@ impl Context {
 
 	pub fn create_shader(
 		&mut self,
-		_name: Option<&str>,
+		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
 		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let (spirv, metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
-			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None, None, None),
+		let (metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
+			crate::shader::Sources::SPIRV(_) => {
+				eprintln!(
+					"Metal shader creation failed for {:?} shader {:?}. The most likely cause is that SPIR-V was supplied to the Metal backend without translation to MSL or MTLB.",
+					stage,
+					name.unwrap_or("<unnamed>"),
+				);
+				return Err(());
+			}
 			crate::shader::Sources::DXIL(_) | crate::shader::Sources::HLSL { .. } => return Err(()),
 			crate::shader::Sources::MTLB {
 				binary,
@@ -1175,7 +1189,7 @@ impl Context {
 					()
 				})?;
 
-				(None, Some(library), Some(entry_point.to_owned()), threadgroup_size)
+				(Some(library), Some(entry_point.to_owned()), threadgroup_size)
 			}
 			crate::shader::Sources::MTL { source, entry_point } => {
 				let threadgroup_size = match stage {
@@ -1197,7 +1211,7 @@ impl Context {
 						()
 					})?;
 
-				(None, Some(library), Some(entry_point.to_owned()), threadgroup_size)
+				(Some(library), Some(entry_point.to_owned()), threadgroup_size)
 			}
 		};
 
@@ -1216,11 +1230,11 @@ impl Context {
 		};
 
 		self.shaders.push(Shader {
+			name: name.map(str::to_owned),
 			stage: stages,
 			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
 			metal_library,
 			metal_entry_point,
-			spirv,
 			threadgroup_size,
 		});
 
@@ -1698,7 +1712,13 @@ impl Context {
 					mtl::MTLPipelineOption::None,
 					None,
 				)
-				.ok()
+				.unwrap_or_else(|error| {
+					panic!(
+						"Metal mesh raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the raster pipeline descriptor.",
+						error.localizedDescription().to_string(),
+					)
+				})
+				.into()
 		} else if let Some(vertex_function) = vertex_function.as_ref() {
 			let descriptor = mtl::MTLRenderPipelineDescriptor::new();
 			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
@@ -1708,9 +1728,32 @@ impl Context {
 
 			configure_render_targets(&descriptor, builder.render_targets.as_ref());
 
-			self.device.newRenderPipelineStateWithDescriptor_error(&descriptor).ok()
+			self.device
+				.newRenderPipelineStateWithDescriptor_error(&descriptor)
+				.unwrap_or_else(|error| {
+					panic!(
+						"Metal raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the raster pipeline descriptor.",
+						error.localizedDescription().to_string(),
+					)
+				})
+				.into()
 		} else {
-			None
+			let shader_names = builder
+				.shaders
+				.iter()
+				.map(|shader_parameter| {
+					let shader = &self.shaders[shader_parameter.handle.0 as usize];
+					format!(
+						"{:?} {:?}",
+						shader_parameter.stage,
+						shader.name.as_deref().unwrap_or("<unnamed>")
+					)
+				})
+				.collect::<Vec<_>>()
+				.join(", ");
+			panic!(
+				"Metal raster pipeline creation failed because no vertex or mesh shader function was available. The most likely cause is shader creation failed or SPIR-V was supplied to the Metal backend without translation to MSL or MTLB. Shaders: {shader_names}",
+			);
 		};
 
 		self.pipelines.push(Pipeline {

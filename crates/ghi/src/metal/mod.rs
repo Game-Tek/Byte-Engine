@@ -400,11 +400,11 @@ pub(crate) struct VertexLayoutHandle(pub(crate) u64);
 
 #[derive(Clone)]
 pub(crate) struct Shader {
+	name: Option<String>,
 	stage: crate::Stages,
 	shader_binding_descriptors: Vec<crate::shader::BindingDescriptor>,
 	metal_library: Option<Retained<ProtocolObject<dyn mtl::MTLLibrary>>>,
 	metal_entry_point: Option<String>,
-	spirv: Option<Vec<u8>>,
 	threadgroup_size: Option<Extent>,
 }
 

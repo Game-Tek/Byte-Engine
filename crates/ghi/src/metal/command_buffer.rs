@@ -1540,8 +1540,18 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 				encoder.setDepthStencilState(Some(depth_stencil_state.as_ref()));
 			}
 
-			if let PipelineState::Raster(Some(render_pipeline_state)) = &pipeline_state {
-				encoder.setRenderPipelineState(render_pipeline_state);
+			match &pipeline_state {
+				PipelineState::Raster(Some(render_pipeline_state)) => {
+					encoder.setRenderPipelineState(render_pipeline_state);
+				}
+				PipelineState::Raster(None) => {
+					panic!(
+						"Metal raster pipeline has no MTLRenderPipelineState. The most likely cause is shader creation failed or SPIR-V was supplied to the Metal backend without translation to MSL or MTLB.",
+					);
+				}
+				_ => panic!(
+					"Cannot bind non-raster pipeline as a Metal raster pipeline. The most likely cause is that a compute or ray tracing pipeline handle was passed to bind_raster_pipeline.",
+				),
 			}
 
 			self.bound_vertex_layout = pipeline_vertex_layout;

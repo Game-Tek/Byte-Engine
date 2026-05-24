@@ -65,6 +65,84 @@ pub struct PipelineManager {
 const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
 	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
+#[cfg(target_vendor = "apple")]
+const SIMPLE_VERTEX_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct Camera {
+	float4x4 view_projection;
+};
+
+struct Instance {
+	float4x4 transform;
+};
+
+struct CamerasBuffer {
+	Camera cameras[8];
+};
+
+struct InstancesBuffer {
+	Instance instances[8];
+};
+
+struct Set0 {
+	device CamerasBuffer* cameras [[id(0)]];
+	device InstancesBuffer* instances [[id(1)]];
+};
+
+struct VertexInput {
+	float3 position [[attribute(0)]];
+};
+
+struct VertexOutput {
+	float4 position [[position]];
+	float4 color;
+};
+
+static float4 debug_color(uint index) {
+	const float3 palette[8] = {
+		float3(0.90, 0.20, 0.20),
+		float3(0.20, 0.70, 0.95),
+		float3(0.35, 0.85, 0.35),
+		float3(0.95, 0.75, 0.20),
+		float3(0.75, 0.35, 0.95),
+		float3(0.95, 0.45, 0.20),
+		float3(0.25, 0.90, 0.75),
+		float3(0.85, 0.85, 0.90),
+	};
+	return float4(palette[index % 8], 1.0);
+}
+
+vertex VertexOutput besl_main(
+	VertexInput in [[stage_in]],
+	uint instance_index [[instance_id]],
+	constant Set0& set0 [[buffer(16)]]
+) {
+	VertexOutput out;
+	Camera camera = set0.cameras->cameras[0];
+	Instance instance = set0.instances->instances[instance_index];
+	out.position = camera.view_projection * instance.transform * float4(in.position, 1.0);
+	out.color = debug_color(instance_index);
+	return out;
+}
+"#;
+
+#[cfg(target_vendor = "apple")]
+const SIMPLE_FRAGMENT_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexOutput {
+	float4 position [[position]];
+	float4 color;
+};
+
+fragment float4 besl_main(VertexOutput in [[stage_in]]) {
+	return in.color;
+}
+"#;
+
 impl PipelineManager {
 	pub fn new(context: &mut ghi::implementation::Context) -> Self {
 		let vertex_positions_buffer = context.build_buffer(
@@ -205,10 +283,18 @@ impl PipelineManager {
 			generated
 		};
 
+		#[cfg(target_vendor = "apple")]
+		let vertex_shader_source = ghi::shader::Sources::MTL {
+			source: SIMPLE_VERTEX_MSL,
+			entry_point: "besl_main",
+		};
+		#[cfg(not(target_vendor = "apple"))]
+		let vertex_shader_source = ghi::shader::Sources::SPIRV(generated_vertex_shader.binary());
+
 		let vertex_shader = context
 			.create_shader(
 				Some("Vertex Shader"),
-				ghi::shader::Sources::SPIRV(generated_vertex_shader.binary()),
+				vertex_shader_source,
 				ghi::ShaderTypes::Vertex,
 				generated_vertex_shader
 					.bindings()
@@ -216,10 +302,18 @@ impl PipelineManager {
 					.map(map_shader_binding_to_shader_binding_descriptor),
 			)
 			.unwrap();
+		#[cfg(target_vendor = "apple")]
+		let fragment_shader_source = ghi::shader::Sources::MTL {
+			source: SIMPLE_FRAGMENT_MSL,
+			entry_point: "besl_main",
+		};
+		#[cfg(not(target_vendor = "apple"))]
+		let fragment_shader_source = ghi::shader::Sources::SPIRV(generated_fragment_shader.binary());
+
 		let fragment_shader = context
 			.create_shader(
 				Some("Fragment Shader"),
-				ghi::shader::Sources::SPIRV(generated_fragment_shader.binary()),
+				fragment_shader_source,
 				ghi::ShaderTypes::Fragment,
 				generated_fragment_shader
 					.bindings()
@@ -283,8 +377,6 @@ impl PipelineManager {
 
 				let vertex_buffer = frame.get_mut_buffer_slice(self.vertex_positions_buffer);
 
-				frame.sync_buffer(self.vertex_positions_buffer);
-
 				let mesh_ref = self
 					.mesh_buffers_stats
 					.add_mesh(MeshStats::new(vertex_count, index_count), mesh_hash);
@@ -293,6 +385,7 @@ impl PipelineManager {
 				let index_buffer_offset = mesh_ref.index_offset();
 
 				vertex_buffer[vertex_buffer_offset..][..vertex_count].copy_from_slice(&positions);
+				frame.sync_buffer(self.vertex_positions_buffer);
 
 				let index_buffer = frame.get_mut_buffer_slice(self.indeces_buffer);
 

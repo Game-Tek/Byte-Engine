@@ -246,7 +246,6 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
 	) -> image::Image {
-		let pixel_format = utils::to_pixel_format(format);
 		if utils::is_block_compressed(format) && !self.device.supportsBCTextureCompression() {
 			panic!(
 				"Metal device does not support BC texture compression. The most likely cause is running on a device family that cannot sample BC compressed textures."
@@ -254,28 +253,7 @@ impl Context {
 		}
 		let name = name.map(str::to_owned);
 
-		let width = extent.width().max(1);
-		let height = extent.height().max(1);
-		let mipmapped = false;
-
-		let descriptor = unsafe {
-			mtl::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-				pixel_format,
-				width as _,
-				height as _,
-				mipmapped,
-			)
-		};
-		if extent.depth() > 1 {
-			descriptor.setTextureType(mtl::MTLTextureType::Type3D);
-		} else if array_layers > 1 {
-			descriptor.setTextureType(mtl::MTLTextureType::Type2DArray);
-		}
-		descriptor.setUsage(utils::texture_usage_from_uses(resource_uses));
-		descriptor.setStorageMode(utils::storage_mode_from_access(device_accesses));
-		unsafe {
-			descriptor.setArrayLength(array_layers as _);
-		}
+		let descriptor = build_texture_descriptor(format, extent, resource_uses, device_accesses, array_layers, 1);
 
 		let texture = self
 			.device
@@ -1261,7 +1239,7 @@ impl Context {
 		let constant_values = mtl::MTLFunctionConstantValues::new();
 
 		for specialization_map_entry in shader_parameter.specialization_map {
-			self.apply_specialization_map_entry(&constant_values, specialization_map_entry);
+			apply_specialization_map_entry(&constant_values, specialization_map_entry);
 		}
 
 		library
@@ -1273,78 +1251,6 @@ impl Context {
 				);
 			})
 			.ok()
-	}
-
-	fn apply_specialization_map_entry(
-		&self,
-		constant_values: &mtl::MTLFunctionConstantValues,
-		specialization_map_entry: &crate::pipelines::SpecializationMapEntry,
-	) {
-		match specialization_map_entry.get_type().as_str() {
-			"bool" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::Bool,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"u32" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::UInt,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"f32" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::Float,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"vec2f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 2),
-				);
-			},
-			"vec3f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 3),
-				);
-			},
-			"vec4f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 4),
-				);
-			},
-			_ => panic!(
-				"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
-			),
-		}
 	}
 
 	/// Builds the Metal argument-buffer layout that backs a descriptor set template.
@@ -1784,26 +1690,7 @@ impl Context {
 				descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
 			}
 
-			for (index, attachment) in builder.render_targets.iter().enumerate() {
-				if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
-					descriptor.setDepthAttachmentPixelFormat(utils::to_pixel_format(attachment.format));
-				} else {
-					let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
-					color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
-					match attachment.blend {
-						crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingEnabled(false),
-						crate::pipelines::raster::BlendMode::Alpha => {
-							color_attachment.setBlendingEnabled(true);
-							color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
-							color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
-							color_attachment.setSourceRGBBlendFactor(mtl::MTLBlendFactor::SourceAlpha);
-							color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
-							color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
-							color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
-						}
-					}
-				}
-			}
+			configure_mesh_render_targets(&descriptor, builder.render_targets.as_ref());
 
 			self.device
 				.newRenderPipelineStateWithMeshDescriptor_options_reflection_error(
@@ -1819,26 +1706,7 @@ impl Context {
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
 			descriptor.setVertexDescriptor(Some(&self.vertex_layouts[vertex_layout.0 as usize].vertex_descriptor));
 
-			for (index, attachment) in builder.render_targets.iter().enumerate() {
-				if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
-					descriptor.setDepthAttachmentPixelFormat(utils::to_pixel_format(attachment.format));
-				} else {
-					let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
-					color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
-					match attachment.blend {
-						crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingEnabled(false),
-						crate::pipelines::raster::BlendMode::Alpha => {
-							color_attachment.setBlendingEnabled(true);
-							color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
-							color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
-							color_attachment.setSourceRGBBlendFactor(mtl::MTLBlendFactor::SourceAlpha);
-							color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
-							color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
-							color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
-						}
-					}
-				}
-			}
+			configure_render_targets(&descriptor, builder.render_targets.as_ref());
 
 			self.device.newRenderPipelineStateWithDescriptor_error(&descriptor).ok()
 		} else {
@@ -1994,7 +1862,6 @@ impl Context {
 			"Metal command buffer creation failed. The most likely cause is that the command queue did not provide a command buffer.",
 		);
 
-		let states = self.states.clone();
 		let recording_device = super::command_buffer::RecordingDevice {
 			buffers: &self.buffers,
 			images: &self.images,
@@ -2015,7 +1882,6 @@ impl Context {
 		super::CommandBufferRecording::new(
 			recording_device,
 			Some(commit),
-			states,
 			command_buffer_handle,
 			mtl_command_buffer,
 			frame_key,
@@ -2278,20 +2144,7 @@ impl Context {
 	}
 
 	pub fn build_sampler(&mut self, builder: sampler_builder::Builder) -> graphics_hardware_interface::SamplerHandle {
-		let descriptor = mtl::MTLSamplerDescriptor::new();
-		descriptor.setMinFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
-		descriptor.setMagFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
-		descriptor.setMipFilter(utils::sampler_mip_filter(builder.mip_map_mode));
-		descriptor.setSAddressMode(utils::sampler_address_mode(builder.addressing_mode));
-		descriptor.setTAddressMode(utils::sampler_address_mode(builder.addressing_mode));
-		descriptor.setRAddressMode(utils::sampler_address_mode(builder.addressing_mode));
-		descriptor.setLodMinClamp(builder.min_lod);
-		descriptor.setLodMaxClamp(builder.max_lod);
-		descriptor.setSupportArgumentBuffers(true);
-
-		if let Some(anisotropy) = builder.anisotropy {
-			descriptor.setMaxAnisotropy(anisotropy as _);
-		}
+		let descriptor = build_sampler_descriptor(&builder);
 
 		let sampler_state = self
 			.device
@@ -2787,14 +2640,13 @@ impl crate::context::ContextCreate for Context {
 
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::ffi::c_void;
 use std::ptr::NonNull;
 
 use ::utils::hash::{HashMap, HashSet};
 use dispatch2::DispatchData;
 use objc2::runtime::ProtocolObject;
 use objc2::ClassType;
-use objc2_foundation::{NSArray, NSAutoreleasePool, NSRange, NSString};
+use objc2_foundation::{NSArray, NSAutoreleasePool, NSString};
 use objc2_metal::{
 	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
 	MTLLibrary, MTLResource,

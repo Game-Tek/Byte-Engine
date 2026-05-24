@@ -3,7 +3,10 @@ use std::{
 	ptr::NonNull,
 };
 
-use ::utils::{hash::HashMap, Extent};
+use ::utils::{
+	hash::{HashMap, HashSet},
+	Extent,
+};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
@@ -126,7 +129,7 @@ fn replace_texture_from_bytes(
 	}
 }
 
-// Encodes a render-pass clear for one Metal texture, clearing every array layer individually when needed.
+// Encodes a render-pass clear for one Metal texture, using a layered render pass for array textures.
 fn encode_texture_clear(
 	command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>,
 	texture: &Retained<ProtocolObject<dyn mtl::MTLTexture>>,
@@ -134,33 +137,31 @@ fn encode_texture_clear(
 	array_layers: u32,
 	clear_value: graphics_hardware_interface::ClearValue,
 ) {
-	let slice_count = array_layers.max(1);
-
-	for slice in 0..slice_count {
-		let rpd = mtl::MTLRenderPassDescriptor::new();
-		let texture_view = attachment_texture_view(texture, format, array_layers, (array_layers > 1).then_some(slice));
-
-		if format == crate::Formats::Depth32 {
-			let attachment = rpd.depthAttachment();
-			attachment.setTexture(Some(texture_view.as_ref()));
-			attachment.setLoadAction(mtl::MTLLoadAction::Clear);
-			attachment.setStoreAction(mtl::MTLStoreAction::Store);
-			attachment.setClearDepth(utils::clear_depth(clear_value));
-		} else {
-			let attachment = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(0) };
-			attachment.setTexture(Some(texture_view.as_ref()));
-			attachment.setLoadAction(mtl::MTLLoadAction::Clear);
-			attachment.setStoreAction(mtl::MTLStoreAction::Store);
-			attachment.setClearColor(utils::clear_color(clear_value));
-		}
-
-		let encoder = command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
-			"Metal render command encoder creation failed. The most likely cause is that the command buffer could not start an image clear pass.",
-		);
-		let label = NSString::from_str("Image Clear");
-		encoder.setLabel(Some(&label));
-		encoder.endEncoding();
+	let rpd = mtl::MTLRenderPassDescriptor::new();
+	if array_layers > 1 {
+		rpd.setRenderTargetArrayLength(array_layers as _);
 	}
+
+	if format == crate::Formats::Depth32 {
+		let attachment = rpd.depthAttachment();
+		attachment.setTexture(Some(texture.as_ref()));
+		attachment.setLoadAction(mtl::MTLLoadAction::Clear);
+		attachment.setStoreAction(mtl::MTLStoreAction::Store);
+		attachment.setClearDepth(utils::clear_depth(clear_value));
+	} else {
+		let attachment = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(0) };
+		attachment.setTexture(Some(texture.as_ref()));
+		attachment.setLoadAction(mtl::MTLLoadAction::Clear);
+		attachment.setStoreAction(mtl::MTLStoreAction::Store);
+		attachment.setClearColor(utils::clear_color(clear_value));
+	}
+
+	let encoder = command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
+		"Metal render command encoder creation failed. The most likely cause is that the command buffer could not start an image clear pass.",
+	);
+	let label = NSString::from_str("Image Clear");
+	encoder.setLabel(Some(&label));
+	encoder.endEncoding();
 }
 
 /// The `RecordingDevice` struct provides command recording with immutable access to backend resources.
@@ -195,7 +196,9 @@ pub struct CommandBufferRecording<'a> {
 	sequence_index: u8,
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	debug_regions: RefCell<Vec<String>>,
-	states: HashMap<PrivateHandles, TransitionState>,
+	state_updates: HashMap<PrivateHandles, TransitionState>,
+	compute_written_resources: HashSet<PrivateHandles>,
+	pending_compute_barrier_scope: mtl::MTLBarrierScope,
 	texture_copies: Vec<(graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
@@ -217,7 +220,7 @@ pub struct CommandBufferRecording<'a> {
 pub struct FinishedCommandBuffer<'a> {
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	pub(crate) command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
-	pub(crate) states: HashMap<PrivateHandles, TransitionState>,
+	pub(crate) state_updates: HashMap<PrivateHandles, TransitionState>,
 	pub(crate) texture_copies: Vec<(graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
 	pub(crate) _marker: std::marker::PhantomData<&'a ()>,
 }
@@ -362,7 +365,6 @@ impl<'a> CommandBufferRecording<'a> {
 	pub(super) fn new(
 		device: RecordingDevice<'a>,
 		commit: Option<RecordingCommit<'a>>,
-		states: HashMap<PrivateHandles, TransitionState>,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
@@ -382,7 +384,9 @@ impl<'a> CommandBufferRecording<'a> {
 			sequence_index,
 			command_buffer,
 			debug_regions: RefCell::new(Vec::new()),
-			states,
+			state_updates: HashMap::default(),
+			compute_written_resources: HashSet::default(),
+			pending_compute_barrier_scope: mtl::MTLBarrierScope(0),
 			texture_copies: Vec::new(),
 			drawables,
 			active_pipeline_layout: None,
@@ -415,7 +419,7 @@ impl<'a> CommandBufferRecording<'a> {
 		FinishedCommandBuffer {
 			command_buffer_handle: self.command_buffer_handle,
 			command_buffer: self.command_buffer,
-			states: self.states,
+			state_updates: self.state_updates,
 			texture_copies: self.texture_copies,
 			_marker: std::marker::PhantomData,
 		}
@@ -460,7 +464,8 @@ impl<'a> CommandBufferRecording<'a> {
 
 	fn consume_resources(&mut self, consumptions: impl IntoIterator<Item = Consumption>) {
 		for consumption in consumptions {
-			self.states.insert(
+			self.schedule_compute_barrier_for_consumption(&consumption);
+			self.state_updates.insert(
 				consumption.handle,
 				TransitionState {
 					layout: consumption.layout,
@@ -469,9 +474,47 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
-	fn consume_bound_descriptor_resources(&mut self) {
-		let Some(bound_pipeline_handle) = self.bound_pipeline else {
+	fn barrier_scope_for_handle(handle: PrivateHandles) -> Option<mtl::MTLBarrierScope> {
+		match handle {
+			PrivateHandles::Buffer(_) => Some(mtl::MTLBarrierScope::Buffers),
+			PrivateHandles::Image(_) | PrivateHandles::Swapchain(_) => Some(mtl::MTLBarrierScope::Textures),
+			PrivateHandles::Synchronizer(_) => None,
+			#[cfg(any(target_os = "linux", target_os = "windows"))]
+			PrivateHandles::VkBuffer(_) => None,
+			#[cfg(any(target_os = "linux", target_os = "windows"))]
+			PrivateHandles::TopLevelAccelerationStructure(_) | PrivateHandles::BottomLevelAccelerationStructure(_) => None,
+		}
+	}
+
+	fn schedule_compute_barrier_for_consumption(&mut self, consumption: &Consumption) {
+		// Metal only needs an explicit compute memory barrier inside one compute encoder when later work reads earlier writes.
+		if self.active_compute_encoder.is_none()
+			|| !consumption.stages.intersects(crate::Stages::COMPUTE)
+			|| !consumption.access.intersects(crate::AccessPolicies::READ)
+			|| !self.compute_written_resources.contains(&consumption.handle)
+		{
 			return;
+		}
+
+		if let Some(scope) = Self::barrier_scope_for_handle(consumption.handle) {
+			self.pending_compute_barrier_scope |= scope;
+		}
+	}
+
+	fn flush_pending_compute_barrier(&mut self) {
+		if self.pending_compute_barrier_scope.is_empty() {
+			return;
+		}
+
+		let scope = self.pending_compute_barrier_scope;
+		self.ensure_compute_encoder().memoryBarrierWithScope(scope);
+		self.pending_compute_barrier_scope = mtl::MTLBarrierScope(0);
+		self.compute_written_resources.clear();
+	}
+
+	fn bound_descriptor_resource_consumptions(&self) -> Vec<Consumption> {
+		let Some(bound_pipeline_handle) = self.bound_pipeline else {
+			return Vec::new();
 		};
 
 		let pipeline = &self.device.pipelines[bound_pipeline_handle.0 as usize];
@@ -511,7 +554,22 @@ impl<'a> CommandBufferRecording<'a> {
 			}
 		}
 
+		consumptions
+	}
+
+	fn consume_bound_descriptor_resources(&mut self) {
+		let consumptions = self.bound_descriptor_resource_consumptions();
 		self.consume_resources(consumptions);
+	}
+
+	fn mark_bound_compute_writes(&mut self) {
+		for consumption in self.bound_descriptor_resource_consumptions() {
+			if consumption.stages.intersects(crate::Stages::COMPUTE)
+				&& consumption.access.intersects(crate::AccessPolicies::WRITE)
+			{
+				self.compute_written_resources.insert(consumption.handle);
+			}
+		}
 	}
 
 	fn resize_push_constants_for_layout(&mut self, pipeline_layout: graphics_hardware_interface::PipelineLayoutHandle) {
@@ -594,7 +652,7 @@ impl<'a> CommandBufferRecording<'a> {
 		device::submit_metal_command_buffer(self.command_buffer.as_ref());
 
 		if let Some(mut commit) = self.commit {
-			*commit.states = self.states;
+			commit.states.extend(self.state_updates);
 			commit.intern_texture_copies(self.texture_copies);
 		}
 	}
@@ -736,22 +794,25 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			encoder.endEncoding();
 		}
 
-		let attachments = attachments.iter().map(|attachment| match attachment.target {
-			ImageOrSwapchain::Image(image) => {
-				let image = self.device.images.resource(self.get_internal_image_handle(image));
+		let attachments = attachments
+			.iter()
+			.map(|attachment| match attachment.target {
+				ImageOrSwapchain::Image(image) => {
+					let image = self.device.images.resource(self.get_internal_image_handle(image));
 
-				(attachment, image.texture.clone(), image.format, image.array_layers)
-			}
-			ImageOrSwapchain::Swapchain(swapchain) => {
-				let drawable = self
-					.drawables
-					.iter()
-					.find(|(handle, _)| *handle == swapchain)
-					.expect("Swapchain image not found");
+					(attachment, image.texture.clone(), image.format, image.array_layers)
+				}
+				ImageOrSwapchain::Swapchain(swapchain) => {
+					let drawable = self
+						.drawables
+						.iter()
+						.find(|(handle, _)| *handle == swapchain)
+						.expect("Swapchain image not found");
 
-				(attachment, drawable.1.texture(), crate::Formats::BGRAu8, 1) // TODO: get actual format
-			}
-		});
+					(attachment, drawable.1.texture(), crate::Formats::BGRAu8, 1) // TODO: get actual format
+				}
+			})
+			.collect::<Vec<_>>();
 
 		// let consumptions = attachments
 		// 	.filter_map(|(attachment, _, _)| Some(Consumption {
@@ -779,12 +840,12 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let rpd = mtl::MTLRenderPassDescriptor::new();
 
 		for (i, (attachment, image, format, array_layers)) in attachments
-			.clone()
+			.iter()
 			.filter(|(_, _, format, _)| *format != crate::Formats::Depth32)
 			.enumerate()
 		{
 			let att = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(i) };
-			let texture_view = attachment_texture_view(&image, format, array_layers, attachment.layer);
+			let texture_view = attachment_texture_view(image, *format, *array_layers, attachment.layer);
 
 			att.setTexture(Some(texture_view.as_ref()));
 			att.setLoadAction(utils::load_action(attachment.load));
@@ -793,11 +854,11 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		if let Some((attachment, image, format, array_layers)) = attachments
-			.clone()
-			.find(|(_, _, format, _)| format == &crate::Formats::Depth32)
+			.iter()
+			.find(|(_, _, format, _)| *format == crate::Formats::Depth32)
 		{
 			let att = rpd.depthAttachment();
-			let texture_view = attachment_texture_view(&image, format, array_layers, attachment.layer);
+			let texture_view = attachment_texture_view(image, *format, *array_layers, attachment.layer);
 
 			att.setTexture(Some(texture_view.as_ref()));
 			att.setLoadAction(utils::load_action(attachment.load));
@@ -1388,10 +1449,6 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		&mut self,
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut impl BoundComputePipelineMode {
-		if let Some(encoder) = self.active_compute_encoder.as_ref() {
-			encoder.memoryBarrierWithScope(mtl::MTLBarrierScope::Buffers | mtl::MTLBarrierScope::Textures);
-		}
-
 		self.bound_pipeline = Some(pipeline_handle);
 
 		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
@@ -1816,6 +1873,9 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 	fn dispatch(&mut self, dispatch: graphics_hardware_interface::DispatchExtent) {
 		let threadgroups = dispatch.get_extent();
 		let threads_per_threadgroup = dispatch.get_workgroup_extent();
+		let consumptions = self.bound_descriptor_resource_consumptions();
+		self.consume_resources(consumptions);
+		self.flush_pending_compute_barrier();
 
 		self.ensure_compute_encoder().dispatchThreadgroups_threadsPerThreadgroup(
 			mtl::MTLSize {
@@ -1829,6 +1889,8 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 				depth: threads_per_threadgroup.depth().max(1) as _,
 			},
 		);
+
+		self.mark_bound_compute_writes();
 	}
 
 	fn indirect_dispatch<const N: usize>(
@@ -1845,6 +1907,9 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Indirect,
 		}]);
+		let consumptions = self.bound_descriptor_resource_consumptions();
+		self.consume_resources(consumptions);
+		self.flush_pending_compute_barrier();
 
 		let bound_pipeline = self.bound_pipeline.expect(
 			"No pipeline bound. The most likely cause is that indirect_dispatch was called before bind_compute_pipeline.",
@@ -1864,6 +1929,8 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 					},
 				);
 		}
+
+		self.mark_bound_compute_writes();
 	}
 }
 

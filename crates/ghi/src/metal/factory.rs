@@ -29,7 +29,7 @@ impl Factory {
 		let constant_values = MTLFunctionConstantValues::new();
 
 		for specialization_map_entry in shader_parameter.specialization_map {
-			self.apply_specialization_map_entry(&constant_values, specialization_map_entry);
+			apply_specialization_map_entry(&constant_values, specialization_map_entry);
 		}
 
 		library
@@ -41,78 +41,6 @@ impl Factory {
 				);
 			})
 			.ok()
-	}
-
-	fn apply_specialization_map_entry(
-		&self,
-		constant_values: &MTLFunctionConstantValues,
-		specialization_map_entry: &crate::pipelines::SpecializationMapEntry,
-	) {
-		match specialization_map_entry.get_type().as_str() {
-			"bool" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::Bool,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"u32" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::UInt,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"f32" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::Float,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"vec2f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 2),
-				);
-			},
-			"vec3f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 3),
-				);
-			},
-			"vec4f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 4),
-				);
-			},
-			_ => panic!(
-				"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
-			),
-		}
 	}
 
 	fn build_pipeline_layout(
@@ -135,59 +63,6 @@ impl Factory {
 			descriptor_set_template_indices,
 			push_constant_ranges: push_constant_ranges.to_vec(),
 			push_constant_size,
-		}
-	}
-
-	fn build_vertex_layout(&self, vertex_elements: &[crate::pipelines::VertexElement]) -> VertexLayout {
-		let elements = vertex_elements
-			.iter()
-			.map(|element| VertexElementDescriptor {
-				name: element.name.to_owned(),
-				format: element.format,
-				binding: element.binding,
-			})
-			.collect::<Vec<_>>();
-
-		let max_binding = elements
-			.iter()
-			.map(|element| element.binding)
-			.max()
-			.map(|binding| binding as usize + 1)
-			.unwrap_or(0);
-
-		let mut strides = vec![0; max_binding];
-
-		let vertex_descriptor = MTLVertexDescriptor::vertexDescriptor();
-
-		let mut binding_offsets = vec![0usize; max_binding];
-
-		for (attribute_index, element) in elements.iter().enumerate() {
-			strides[element.binding as usize] += element.format.size() as u32;
-
-			let offset = binding_offsets[element.binding as usize];
-			let attribute = unsafe { vertex_descriptor.attributes().objectAtIndexedSubscript(attribute_index as _) };
-			attribute.setFormat(vertex_format(element.format));
-			unsafe {
-				attribute.setOffset(offset as _);
-				attribute.setBufferIndex(element.binding as _);
-			}
-
-			binding_offsets[element.binding as usize] += data_type_size(element.format);
-		}
-
-		for (binding, stride) in strides.iter().copied().enumerate() {
-			let layout = unsafe { vertex_descriptor.layouts().objectAtIndexedSubscript(binding as _) };
-			unsafe {
-				layout.setStride(stride as _);
-				layout.setStepRate(1);
-			}
-			layout.setStepFunction(MTLVertexStepFunction::PerVertex);
-		}
-
-		VertexLayout {
-			elements,
-			strides,
-			vertex_descriptor,
 		}
 	}
 
@@ -308,7 +183,7 @@ impl crate::device::Device for Factory {
 			.iter()
 			.any(|attachment| attachment.format.channel_layout() == crate::ChannelLayout::Depth);
 		let vertex_layout =
-			(!builder.vertex_elements.is_empty()).then(|| self.build_vertex_layout(builder.vertex_elements.as_ref()));
+			(!builder.vertex_elements.is_empty()).then(|| build_vertex_layout(builder.vertex_elements.as_ref()));
 		let mut shader_handles = HashMap::default();
 		let mut object_function = None;
 		let mut vertex_function = None;
@@ -366,26 +241,7 @@ impl crate::device::Device for Factory {
 				descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
 			}
 
-			for (index, attachment) in builder.render_targets.iter().enumerate() {
-				if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
-					descriptor.setDepthAttachmentPixelFormat(to_pixel_format(attachment.format));
-				} else {
-					let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
-					color_attachment.setPixelFormat(to_pixel_format(attachment.format));
-					match attachment.blend {
-						crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingEnabled(false),
-						crate::pipelines::raster::BlendMode::Alpha => {
-							color_attachment.setBlendingEnabled(true);
-							color_attachment.setRgbBlendOperation(MTLBlendOperation::Add);
-							color_attachment.setAlphaBlendOperation(MTLBlendOperation::Add);
-							color_attachment.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
-							color_attachment.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
-							color_attachment.setSourceAlphaBlendFactor(MTLBlendFactor::One);
-							color_attachment.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
-						}
-					}
-				}
-			}
+			configure_mesh_render_targets(&descriptor, builder.render_targets.as_ref());
 
 			self.device
 				.newRenderPipelineStateWithMeshDescriptor_options_reflection_error(&descriptor, MTLPipelineOption::None, None)
@@ -397,26 +253,7 @@ impl crate::device::Device for Factory {
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
 			descriptor.setVertexDescriptor(vertex_layout.as_ref().map(|layout| layout.vertex_descriptor.as_ref()));
 
-			for (index, attachment) in builder.render_targets.iter().enumerate() {
-				if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
-					descriptor.setDepthAttachmentPixelFormat(to_pixel_format(attachment.format));
-				} else {
-					let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
-					color_attachment.setPixelFormat(to_pixel_format(attachment.format));
-					match attachment.blend {
-						crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingEnabled(false),
-						crate::pipelines::raster::BlendMode::Alpha => {
-							color_attachment.setBlendingEnabled(true);
-							color_attachment.setRgbBlendOperation(MTLBlendOperation::Add);
-							color_attachment.setAlphaBlendOperation(MTLBlendOperation::Add);
-							color_attachment.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
-							color_attachment.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
-							color_attachment.setSourceAlphaBlendFactor(MTLBlendFactor::One);
-							color_attachment.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
-						}
-					}
-				}
-			}
+			configure_render_targets(&descriptor, builder.render_targets.as_ref());
 
 			self.device.newRenderPipelineStateWithDescriptor_error(&descriptor).ok()
 		} else {
@@ -508,29 +345,14 @@ impl crate::device::Device for Factory {
 		}
 
 		let layers = builder.array_layers.map(|layers| layers.get()).unwrap_or(1);
-		let width = builder.extent.width().max(1);
-		let height = builder.extent.height().max(1);
-		let mipmapped = builder.mip_levels > 1;
-		let descriptor = unsafe {
-			mtl::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-				to_pixel_format(builder.format),
-				width as _,
-				height as _,
-				mipmapped,
-			)
-		};
-
-		if builder.extent.depth() > 1 {
-			descriptor.setTextureType(mtl::MTLTextureType::Type3D);
-		} else if layers > 1 {
-			descriptor.setTextureType(mtl::MTLTextureType::Type2DArray);
-		}
-
-		descriptor.setUsage(texture_usage_from_uses(builder.resource_uses));
-		descriptor.setStorageMode(storage_mode_from_access(builder.device_accesses));
-		unsafe {
-			descriptor.setArrayLength(layers as _);
-		}
+		let descriptor = build_texture_descriptor(
+			builder.format,
+			builder.extent,
+			builder.resource_uses,
+			builder.device_accesses,
+			layers,
+			builder.mip_levels,
+		);
 
 		let texture = self
 			.device
@@ -557,20 +379,7 @@ impl crate::device::Device for Factory {
 
 	/// Builds a Metal sampler that can be interned by a device later.
 	fn build_sampler(&mut self, builder: crate::sampler::Builder) -> Self::Sampler {
-		let descriptor = mtl::MTLSamplerDescriptor::new();
-		descriptor.setMinFilter(crate::metal::utils::sampler_min_mag_filter(builder.filtering_mode));
-		descriptor.setMagFilter(crate::metal::utils::sampler_min_mag_filter(builder.filtering_mode));
-		descriptor.setMipFilter(crate::metal::utils::sampler_mip_filter(builder.mip_map_mode));
-		descriptor.setSAddressMode(crate::metal::utils::sampler_address_mode(builder.addressing_mode));
-		descriptor.setTAddressMode(crate::metal::utils::sampler_address_mode(builder.addressing_mode));
-		descriptor.setRAddressMode(crate::metal::utils::sampler_address_mode(builder.addressing_mode));
-		descriptor.setLodMinClamp(builder.min_lod);
-		descriptor.setLodMaxClamp(builder.max_lod);
-		descriptor.setSupportArgumentBuffers(true);
-
-		if let Some(anisotropy) = builder.anisotropy {
-			descriptor.setMaxAnisotropy(anisotropy as _);
-		}
+		let descriptor = build_sampler_descriptor(&builder);
 
 		let sampler_state = self
 			.device
@@ -583,19 +392,12 @@ impl crate::device::Device for Factory {
 	}
 }
 
-use std::ffi::c_void;
-use std::ptr::NonNull;
-
 use dispatch2::DispatchData;
-use objc2_foundation::{NSRange, NSString};
+use objc2_foundation::NSString;
 use objc2_metal::{
-	MTLBlendFactor, MTLBlendOperation, MTLCompareFunction, MTLCompileOptions, MTLDataType, MTLDepthStencilDescriptor,
-	MTLDevice, MTLFunction, MTLFunctionConstantValues, MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLPipelineOption,
-	MTLRenderPipelineDescriptor, MTLResource as _, MTLVertexDescriptor, MTLVertexStepFunction,
+	MTLCompareFunction, MTLCompileOptions, MTLDepthStencilDescriptor, MTLDevice, MTLFunction, MTLFunctionConstantValues,
+	MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLRenderPipelineDescriptor, MTLResource as _,
 };
 
 use super::*;
-use crate::metal::utils::{
-	data_type_size, is_block_compressed, parse_threadgroup_size_metadata, storage_mode_from_access, texture_usage_from_uses,
-	to_pixel_format, vertex_format,
-};
+use crate::metal::utils::{is_block_compressed, parse_threadgroup_size_metadata};

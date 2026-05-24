@@ -38,6 +38,7 @@ pub struct AtmosphereSkyRenderPassSettings {
 	pub mie_scale_height: f32,
 	pub mie_anisotropy: f32,
 	pub ozone_strength: f32,
+	pub skip_below_horizon: bool,
 	pub planet_center: Vector3,
 }
 
@@ -53,6 +54,7 @@ impl Default for AtmosphereSkyRenderPassSettings {
 			mie_scale_height: 1_200.0,
 			mie_anisotropy: 0.76,
 			ozone_strength: 1.0,
+			skip_below_horizon: true,
 			planet_center: Vector3::new(0.0, -6_360_000.0, 0.0),
 		}
 	}
@@ -169,7 +171,12 @@ impl AtmosphereSkyRenderPass {
 			settings.rayleigh_scale_height,
 			settings.mie_scale_height,
 		];
-		parameters.misc = [settings.ozone_strength, 0.0, 0.0, 0.0];
+		parameters.misc = [
+			settings.ozone_strength,
+			if settings.skip_below_horizon { 1.0 } else { 0.0 },
+			0.0,
+			0.0,
+		];
 	}
 }
 
@@ -249,8 +256,9 @@ layout(set=0, binding=2, scalar) readonly buffer SkyParametersBuffer {
 layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
 
 const float PI = 3.14159265359;
-const int VIEW_SAMPLE_COUNT = 24;
-const int LIGHT_SAMPLE_COUNT = 8;
+// These loops are nested per sky pixel, so keep both counts conservative.
+const int VIEW_SAMPLE_COUNT = 16;
+const int LIGHT_SAMPLE_COUNT = 4;
 
 const vec3 BETA_RAYLEIGH = vec3(5.802e-6, 13.558e-6, 33.100e-6);
 const vec3 BETA_MIE = vec3(3.996e-6);
@@ -298,6 +306,10 @@ float get_sun_angular_radius() {
 
 float get_ozone_strength() {
 	return parameters.misc.x;
+}
+
+bool should_skip_below_horizon() {
+	return parameters.misc.y > 0.5;
 }
 
 bool ray_sphere_intersection(vec3 origin, vec3 direction, vec3 center, float radius, out float t_min, out float t_max) {
@@ -422,9 +434,12 @@ vec3 integrate_atmosphere(vec3 origin, vec3 direction) {
 		luminance += transmittance_to_camera * transmittance_to_sun * scattering * step_size;
 	}
 
-	vec3 sun_transmittance = march_transmittance(origin, sun_direction);
 	float sun_disk = smoothstep(cos(get_sun_angular_radius() * 1.4), cos(get_sun_angular_radius()), cosine_theta);
-	vec3 sun_radiance = sun_disk * sun_transmittance * vec3(20.0, 18.0, 16.0);
+	vec3 sun_radiance = vec3(0.0);
+	if (sun_disk > 0.0) {
+		vec3 sun_transmittance = march_transmittance(origin, sun_direction);
+		sun_radiance = sun_disk * sun_transmittance * vec3(20.0, 18.0, 16.0);
+	}
 
 	vec3 color = luminance * get_sun_intensity() + sun_radiance;
 	return color / (vec3(1.0) + color);
@@ -437,6 +452,11 @@ vec3 reconstruct_view_direction(ivec2 pixel, ivec2 extent) {
 	// Unproject a point on the far plane (z=0 in reversed-Z)
 	vec4 world = parameters.inverse_view_projection * vec4(ndc, 0.0, 1.0);
 	return normalize(world.xyz / world.w - get_camera_position());
+}
+
+bool is_below_horizon(vec3 origin, vec3 direction) {
+	vec3 local_up = normalize(origin - get_planet_center());
+	return dot(direction, local_up) < 0.0;
 }
 
 void main() {
@@ -453,6 +473,10 @@ void main() {
 	}
 
 	vec3 direction = reconstruct_view_direction(pixel, extent);
+	if (should_skip_below_horizon() && is_below_horizon(get_camera_position(), direction)) {
+		return;
+	}
+
 	vec3 sky = integrate_atmosphere(get_camera_position(), direction);
 
 imageStore(main_texture, pixel, vec4(sky, 1.0));
@@ -482,8 +506,9 @@ struct SkySet0 {
 };
 
 constant float PI = 3.14159265359;
-constant int VIEW_SAMPLE_COUNT = 24;
-constant int LIGHT_SAMPLE_COUNT = 8;
+// These loops are nested per sky pixel, so keep both counts conservative.
+constant int VIEW_SAMPLE_COUNT = 16;
+constant int LIGHT_SAMPLE_COUNT = 4;
 
 constant float3 BETA_RAYLEIGH = float3(5.802e-6, 13.558e-6, 33.100e-6);
 constant float3 BETA_MIE = float3(3.996e-6);
@@ -531,6 +556,10 @@ float get_sun_angular_radius(const device SkyParameters& parameters) {
 
 float get_ozone_strength(const device SkyParameters& parameters) {
 	return parameters.misc.x;
+}
+
+bool should_skip_below_horizon(const device SkyParameters& parameters) {
+	return parameters.misc.y > 0.5;
 }
 
 bool ray_sphere_intersection(float3 origin, float3 direction, float3 center, float radius, thread float& t_min, thread float& t_max) {
@@ -669,9 +698,12 @@ float3 integrate_atmosphere(const device SkyParameters& parameters, int2 pixel, 
 		luminance += transmittance_to_camera * transmittance_to_sun * scattering * step_size;
 	}
 
-	float3 sun_transmittance = march_transmittance(parameters, origin, sun_direction);
 	float sun_disk = smoothstep(cos(get_sun_angular_radius(parameters) * 1.4), cos(get_sun_angular_radius(parameters)), cosine_theta);
-	float3 sun_radiance = sun_disk * sun_transmittance * float3(20.0, 18.0, 16.0);
+	float3 sun_radiance = float3(0.0);
+	if (sun_disk > 0.0) {
+		float3 sun_transmittance = march_transmittance(parameters, origin, sun_direction);
+		sun_radiance = sun_disk * sun_transmittance * float3(20.0, 18.0, 16.0);
+	}
 
 	float3 color = luminance * get_sun_intensity(parameters) + sun_radiance;
 	return color / (float3(1.0) + color);
@@ -682,6 +714,11 @@ float3 reconstruct_view_direction(const device SkyParameters& parameters, int2 p
 	float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
 	float4 world = parameters.inverse_view_projection * float4(ndc, 0.0, 1.0);
 	return normalize(world.xyz / world.w - get_camera_position(parameters));
+}
+
+bool is_below_horizon(const device SkyParameters& parameters, float3 origin, float3 direction) {
+	float3 local_up = normalize(origin - get_planet_center(parameters));
+	return dot(direction, local_up) < 0.0;
 }
 
 kernel void sky_render_pass(
@@ -703,6 +740,10 @@ kernel void sky_render_pass(
 
 	const device SkyParameters& parameters = *set0.parameters;
 	float3 direction = reconstruct_view_direction(parameters, pixel, extent);
+	if (should_skip_below_horizon(parameters) && is_below_horizon(parameters, get_camera_position(parameters), direction)) {
+		return;
+	}
+
 	float3 sky = integrate_atmosphere(parameters, pixel, get_camera_position(parameters), direction);
 
 	set0.main_texture.write(float4(sky, 1.0), gid);

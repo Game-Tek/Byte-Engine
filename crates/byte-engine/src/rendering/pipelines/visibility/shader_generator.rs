@@ -329,36 +329,10 @@ impl VisibilityShaderScope {
 			}
 		};
 
-		let mesh_outputs = Node::raw_code(
-			Some("".into()),
-			Some(
-				r#"
-struct VertexOutput {
-	float4 position [[position]];
-};
-
-struct PrimitiveOutput {
-	uint instance_index [[flat]] [[user(locn0)]];
-	uint primitive_index [[flat]] [[user(locn1)]];
-};
-"#
-				.into(),
-			),
-			Some(
-				r#"
-struct VertexOutput {
-	float4 position [[position]];
-};
-
-struct PrimitiveOutput {
-	uint instance_index [[flat]] [[user(locn0)]];
-	uint primitive_index [[flat]] [[user(locn1)]];
-};
-"#
-				.into(),
-			),
-			&[],
-			&["VertexOutput", "PrimitiveOutput"],
+		let mesh_vertex_output = Node::r#struct("VertexOutput", vec![Node::member("position", "vec4f")]);
+		let mesh_primitive_output = Node::r#struct(
+			"PrimitiveOutput",
+			vec![Node::member("instance_index", "u32"), Node::member("primitive_index", "u32")],
 		);
 		let out_instance_index = Node::output_array("out_instance_index", "u32", 0, 126);
 		let out_primitive_index = Node::output_array("out_primitive_index", "u32", 1, 126);
@@ -798,7 +772,8 @@ struct PrimitiveOutput {
 				views_binding,
 				mesh_struct,
 				meshlet_struct,
-				mesh_outputs,
+				mesh_vertex_output,
+				mesh_primitive_output,
 				out_instance_index,
 				out_primitive_index,
 				light_struct,

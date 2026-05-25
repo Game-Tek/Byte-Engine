@@ -193,6 +193,8 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 			| "u16" | "u32"
 			| "i32" | "Texture2D"
 			| "ArrayTexture2D"
+			| "VertexOutput"
+			| "PrimitiveOutput"
 	) || supports_atomic_u32 && name == "atomicu32"
 }
 

@@ -7,6 +7,14 @@ use crate::shader_generator::{
 
 /// The `MSLShaderGenerator` struct generates Metal Shading Language shaders from BESL ASTs.
 ///
+/// Raster-stage IO uses conventional BESL names for Metal semantics. Vertex inputs named
+/// `vertex_id` and `instance_id` are emitted as entry-point parameters with `[[vertex_id]]` and
+/// `[[instance_id]]` instead of vertex-attribute struct fields. Fragment inputs named
+/// `front_facing` are emitted as a `[[front_facing]]` entry-point parameter. Fragment outputs named
+/// `depth`, `stencil`, and `sample_mask` are emitted with their matching Metal attributes; other
+/// fragment outputs are emitted as color attachments by location. Fragment shaders may also return
+/// an explicit output struct directly. Integer user varyings are emitted as `[[flat]]` user attributes.
+///
 /// # Parameters
 ///
 /// - *minified*: Controls whether the shader string output is minified. Is `true` by default in release builds.
@@ -200,8 +208,11 @@ impl MSLShaderGenerator {
 		self.generate_msl_header_block(&mut string, shader_compilation_settings);
 
 		match shader_compilation_settings.stage {
-			Stages::Vertex if Self::has_msl_raw_statement(main_function_node) && Self::has_raster_interface(&order) => {
+			Stages::Vertex if Self::has_raster_interface(&order) => {
 				self.generate_vertex_shader(&mut string, &order, main_function_node)
+			}
+			Stages::Fragment if Self::has_raster_interface(&order) || Self::has_non_void_return(main_function_node) => {
+				self.generate_fragment_shader(&mut string, &order, main_function_node)
 			}
 			Stages::Compute { .. } => self.generate_compute_shader(&mut string, &order, main_function_node),
 			Stages::Mesh {
@@ -239,24 +250,23 @@ impl MSLShaderGenerator {
 		})
 	}
 
-	fn has_msl_raw_statement(main_function_node: &besl::NodeReference) -> bool {
-		let main_function_node = main_function_node.borrow();
-		let besl::Nodes::Function { statements, .. } = main_function_node.node() else {
-			return false;
-		};
-
-		statements
+	fn has_raster_interface(order: &[besl::NodeReference]) -> bool {
+		order
 			.iter()
-			.any(|node| matches!(node.borrow().node(), besl::Nodes::Raw { msl: Some(source), .. } if !source.is_empty()))
+			.any(|node| matches!(node.borrow().node(), besl::Nodes::Input { .. } | besl::Nodes::Output { .. }))
 	}
 
-	fn has_raster_interface(order: &[besl::NodeReference]) -> bool {
-		order.iter().any(|node| {
-			matches!(
-				node.borrow().node(),
-				besl::Nodes::Binding { .. } | besl::Nodes::Input { .. } | besl::Nodes::Output { .. }
-			)
-		})
+	fn function_return_type_name(function_node: &besl::NodeReference) -> Option<String> {
+		let node = function_node.borrow();
+		let besl::Nodes::Function { return_type, .. } = node.node() else {
+			return None;
+		};
+		let return_type_name = return_type.borrow().get_name().map(str::to_string);
+		return_type_name
+	}
+
+	fn has_non_void_return(function_node: &besl::NodeReference) -> bool {
+		Self::function_return_type_name(function_node).is_some_and(|name| name != "void")
 	}
 
 	fn emit_separator(&self, string: &mut String) {
@@ -352,7 +362,7 @@ impl MSLShaderGenerator {
 			self.emit_node_string(string, &node);
 		}
 
-		self.emit_vertex_entry_point(string, main_function_node, &binding_sets);
+		self.emit_vertex_entry_point(string, main_function_node, &inputs, &outputs, &binding_sets);
 	}
 
 	fn emit_vertex_input_struct(&mut self, string: &mut String, inputs: &[besl::NodeReference]) {
@@ -364,6 +374,9 @@ impl MSLShaderGenerator {
 			let besl::Nodes::Input { name, location, format } = input.node() else {
 				continue;
 			};
+			if Self::is_vertex_builtin_input(name) {
+				continue;
+			}
 			formatting.push_indentation(string, 1);
 			string.push_str(Self::translate_type(&format.borrow().get_name().unwrap()));
 			string.push(' ');
@@ -371,6 +384,74 @@ impl MSLShaderGenerator {
 			string.push_str(" [[attribute(");
 			string.push_str(location.to_string().as_str());
 			string.push_str(")]]");
+			formatting.push_statement_end(string);
+		}
+
+		self.emit_struct_end(string);
+	}
+
+	fn emit_fragment_input_struct(&mut self, string: &mut String, inputs: &[besl::NodeReference]) {
+		let formatting = ShaderFormatting::new(self.minified);
+		self.emit_struct_start(string, "FragmentInput");
+
+		for input in inputs {
+			let input = input.borrow();
+			let besl::Nodes::Input { name, location, format } = input.node() else {
+				continue;
+			};
+			if Self::is_fragment_builtin_input(name) {
+				continue;
+			}
+			formatting.push_indentation(string, 1);
+			let format = format.borrow();
+			let type_name = format.get_name().unwrap();
+			string.push_str(Self::translate_type(type_name));
+			string.push(' ');
+			string.push_str(name);
+			if Self::is_integer_type(type_name) {
+				string.push_str(" [[flat]]");
+			}
+			string.push_str(" [[user(locn");
+			string.push_str(location.to_string().as_str());
+			string.push_str(")]]");
+			formatting.push_statement_end(string);
+		}
+
+		self.emit_struct_end(string);
+	}
+
+	fn emit_fragment_output_struct(&mut self, string: &mut String, outputs: &[besl::NodeReference]) {
+		let formatting = ShaderFormatting::new(self.minified);
+		self.emit_struct_start(string, "FragmentOutput");
+
+		for output in outputs {
+			let output = output.borrow();
+			let besl::Nodes::Output {
+				name,
+				location,
+				format,
+				count,
+			} = output.node()
+			else {
+				continue;
+			};
+			if count.is_some() {
+				continue;
+			}
+			formatting.push_indentation(string, 1);
+			string.push_str(Self::translate_type(&format.borrow().get_name().unwrap()));
+			string.push(' ');
+			string.push_str(name);
+			match name.as_str() {
+				"depth" => string.push_str(" [[depth(any)]]"),
+				"stencil" => string.push_str(" [[stencil]]"),
+				"sample_mask" => string.push_str(" [[sample_mask]]"),
+				_ => {
+					string.push_str(" [[color(");
+					string.push_str(location.to_string().as_str());
+					string.push_str(")]]");
+				}
+			}
 			formatting.push_statement_end(string);
 		}
 
@@ -396,7 +477,7 @@ impl MSLShaderGenerator {
 			else {
 				continue;
 			};
-			if count.is_some() {
+			if count.is_some() || name == "position" {
 				continue;
 			}
 			formatting.push_indentation(string, 1);
@@ -417,18 +498,164 @@ impl MSLShaderGenerator {
 		self.emit_struct_end(string);
 	}
 
+	fn generate_fragment_shader(
+		&mut self,
+		string: &mut String,
+		order: &[besl::NodeReference],
+		main_function_node: &besl::NodeReference,
+	) {
+		let mut bindings = Vec::new();
+		let mut inputs = Vec::new();
+		let mut outputs = Vec::new();
+		let mut declaration_nodes = Vec::new();
+		let mut function_nodes = Vec::new();
+
+		for node in order {
+			match node.borrow().node() {
+				besl::Nodes::Binding { .. } => bindings.push(node.clone()),
+				besl::Nodes::Input { .. } => inputs.push(node.clone()),
+				besl::Nodes::Output { .. } => outputs.push(node.clone()),
+				besl::Nodes::Function { name, .. } if name == "main" => {}
+				besl::Nodes::Function { .. } => function_nodes.push(node.clone()),
+				besl::Nodes::Struct { .. }
+				| besl::Nodes::Raw { .. }
+				| besl::Nodes::Intrinsic { .. }
+				| besl::Nodes::Const { .. }
+				| besl::Nodes::Specialization { .. } => declaration_nodes.push(node.clone()),
+				_ => {}
+			}
+		}
+
+		for node in declaration_nodes {
+			self.emit_node_string(string, &node);
+		}
+
+		for binding in &bindings {
+			if let besl::Nodes::Binding {
+				r#type: besl::BindingTypes::Buffer { members },
+				..
+			} = binding.borrow().node()
+			{
+				self.emit_buffer_binding_struct(string, binding, members.as_slice());
+			}
+		}
+
+		let binding_sets = self.group_bindings_by_set(bindings.as_slice());
+		for (&set, bindings) in &binding_sets {
+			self.emit_argument_buffer_struct(string, set, bindings);
+		}
+
+		self.emit_fragment_input_struct(string, &inputs);
+		if !outputs.is_empty() {
+			self.emit_fragment_output_struct(string, &outputs);
+		}
+
+		for node in function_nodes.iter().rev() {
+			self.emit_function_prototype(string, node);
+		}
+
+		for node in function_nodes.into_iter().rev() {
+			self.emit_node_string(string, &node);
+		}
+
+		self.emit_fragment_entry_point(string, main_function_node, &inputs, &outputs, &binding_sets);
+	}
+
+	fn has_msl_raw_statement_in(statements: &[besl::NodeReference]) -> bool {
+		statements.iter().any(
+			|statement| matches!(statement.borrow().node(), besl::Nodes::Raw { msl: Some(source), .. } if !source.is_empty()),
+		)
+	}
+
+	fn emit_raster_input_locals(
+		&mut self,
+		string: &mut String,
+		inputs: &[besl::NodeReference],
+		input_name: &str,
+		builtin_values: &[(&str, &str)],
+		indent: usize,
+	) {
+		let formatting = ShaderFormatting::new(self.minified);
+		for input in inputs {
+			let input = input.borrow();
+			let besl::Nodes::Input { name, format, .. } = input.node() else {
+				continue;
+			};
+			formatting.push_indentation(string, indent);
+			string.push_str(Self::translate_type(&format.borrow().get_name().unwrap()));
+			string.push(' ');
+			string.push_str(name);
+			string.push('=');
+			if let Some((_, value)) = builtin_values.iter().find(|(builtin_name, _)| builtin_name == name) {
+				string.push_str(value);
+			} else {
+				string.push_str(input_name);
+				string.push('.');
+				string.push_str(name);
+			}
+			formatting.push_statement_end(string);
+		}
+	}
+
+	fn emit_raster_output_locals(&mut self, string: &mut String, outputs: &[besl::NodeReference], indent: usize) {
+		let formatting = ShaderFormatting::new(self.minified);
+		for output in outputs {
+			let output = output.borrow();
+			let besl::Nodes::Output { name, format, count, .. } = output.node() else {
+				continue;
+			};
+			if count.is_some() {
+				continue;
+			}
+			formatting.push_indentation(string, indent);
+			string.push_str(Self::translate_type(&format.borrow().get_name().unwrap()));
+			string.push(' ');
+			string.push_str(name);
+			formatting.push_statement_end(string);
+		}
+	}
+
+	fn emit_raster_output_assignments(
+		&mut self,
+		string: &mut String,
+		outputs: &[besl::NodeReference],
+		output_name: &str,
+		indent: usize,
+	) {
+		let formatting = ShaderFormatting::new(self.minified);
+		for output in outputs {
+			let output = output.borrow();
+			let besl::Nodes::Output { name, count, .. } = output.node() else {
+				continue;
+			};
+			if count.is_some() {
+				continue;
+			}
+			formatting.push_indentation(string, indent);
+			string.push_str(output_name);
+			string.push('.');
+			string.push_str(name);
+			string.push('=');
+			string.push_str(name);
+			formatting.push_statement_end(string);
+		}
+	}
+
 	fn emit_vertex_entry_point(
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
+		inputs: &[besl::NodeReference],
+		outputs: &[besl::NodeReference],
 		binding_sets: &BTreeMap<u32, Vec<besl::NodeReference>>,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function { statements, .. } = node.node() else {
 			return;
 		};
+		let formatting = ShaderFormatting::new(self.minified);
 
-		string.push_str("vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint instance_index [[instance_id]]");
+		string.push_str("vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint vertex_id [[vertex_id]], uint instance_index [[instance_id]]");
 		for &set in binding_sets.keys() {
 			self.emit_separator(string);
 			self.emit_binding_set_parameter(string, set);
@@ -440,12 +667,107 @@ impl MSLShaderGenerator {
 			string.push_str(") {\n");
 		}
 
-		self.emit_statement_block(string, statements, 1);
+		if Self::has_msl_raw_statement_in(statements) {
+			self.emit_statement_block(string, statements, 1);
+		} else {
+			// Mirror BESL global stage inputs and outputs through local variables so ordinary BESL
+			// assignments lower to a valid Metal entry point without raw source snippets.
+			self.emit_raster_input_locals(
+				string,
+				inputs,
+				"in",
+				&[("vertex_id", "vertex_id"), ("instance_id", "instance_index")],
+				1,
+			);
+			formatting.push_indentation(string, 1);
+			string.push_str("VertexOutput out");
+			formatting.push_statement_end(string);
+			self.emit_raster_output_locals(string, outputs, 1);
+
+			self.emit_statement_block(string, statements, 1);
+
+			self.emit_raster_output_assignments(string, outputs, "out", 1);
+			formatting.push_indentation(string, 1);
+			string.push_str("return out");
+			formatting.push_statement_end(string);
+		}
 
 		string.push('}');
 		if !self.minified {
 			string.push('\n');
 		}
+	}
+
+	fn emit_fragment_entry_point(
+		&mut self,
+		string: &mut String,
+		main_function_node: &besl::NodeReference,
+		inputs: &[besl::NodeReference],
+		outputs: &[besl::NodeReference],
+		binding_sets: &BTreeMap<u32, Vec<besl::NodeReference>>,
+	) {
+		let node = RefCell::borrow(main_function_node);
+		let besl::Nodes::Function {
+			statements, return_type, ..
+		} = node.node()
+		else {
+			return;
+		};
+		let formatting = ShaderFormatting::new(self.minified);
+		let return_type_name = return_type.borrow().get_name().unwrap_or("void").to_string();
+		let returns_explicit_output = return_type_name != "void";
+		let entry_return_type = if returns_explicit_output {
+			Self::translate_type(&return_type_name).to_string()
+		} else {
+			"FragmentOutput".to_string()
+		};
+
+		string.push_str("fragment ");
+		string.push_str(&entry_return_type);
+		string.push_str(" besl_main(FragmentInput in [[stage_in]], bool front_facing [[front_facing]]");
+		for &set in binding_sets.keys() {
+			self.emit_separator(string);
+			self.emit_binding_set_parameter(string, set);
+		}
+
+		if self.minified {
+			string.push_str("){");
+		} else {
+			string.push_str(") {\n");
+		}
+
+		// Mirror BESL global stage inputs through local variables so ordinary BESL can read
+		// stage inputs while explicit output structs can be returned directly.
+		self.emit_raster_input_locals(string, inputs, "in", &[("front_facing", "front_facing")], 1);
+
+		if returns_explicit_output {
+			self.emit_statement_block(string, statements, 1);
+		} else {
+			formatting.push_indentation(string, 1);
+			string.push_str("FragmentOutput out");
+			formatting.push_statement_end(string);
+			self.emit_raster_output_locals(string, outputs, 1);
+
+			self.emit_statement_block(string, statements, 1);
+
+			self.emit_raster_output_assignments(string, outputs, "out", 1);
+			formatting.push_indentation(string, 1);
+			string.push_str("return out");
+			formatting.push_statement_end(string);
+		}
+
+		string.push('}');
+		if !self.minified {
+			string.push('\n');
+		}
+	}
+
+	fn is_vertex_builtin_input(name: &str) -> bool {
+		matches!(name, "vertex_id" | "instance_id")
+	}
+
+	fn is_fragment_builtin_input(name: &str) -> bool {
+		matches!(name, "front_facing")
 	}
 
 	fn is_integer_type(name: &str) -> bool {
@@ -562,6 +884,7 @@ impl MSLShaderGenerator {
 	) {
 		let mut bindings = Vec::new();
 		let mut push_constant = None;
+		let mut outputs = Vec::new();
 		let mut declaration_nodes = Vec::new();
 		let mut function_nodes = Vec::new();
 
@@ -576,11 +899,11 @@ impl MSLShaderGenerator {
 						push_constant = Some(node.clone());
 					}
 				}
+				besl::Nodes::Output { .. } => outputs.push(node.clone()),
 				besl::Nodes::Function { name, .. } if name == "main" => {}
 				besl::Nodes::Function { .. } => function_nodes.push(node.clone()),
 				besl::Nodes::Struct { .. }
 				| besl::Nodes::Raw { .. }
-				| besl::Nodes::Output { .. }
 				| besl::Nodes::Input { .. }
 				| besl::Nodes::Intrinsic { .. }
 				| besl::Nodes::Const { .. }
@@ -596,8 +919,8 @@ impl MSLShaderGenerator {
 			maximum_vertices,
 			maximum_primitives,
 		});
-		for node in declaration_nodes {
-			self.emit_node_string(string, &node);
+		for node in &declaration_nodes {
+			self.emit_node_string(string, node);
 		}
 
 		for binding in &bindings {
@@ -612,6 +935,10 @@ impl MSLShaderGenerator {
 
 		for (&set, bindings) in &binding_sets {
 			self.emit_argument_buffer_struct(string, set, bindings);
+		}
+
+		if !Self::has_raw_mesh_output_structs(&declaration_nodes) {
+			self.emit_mesh_output_structs(string, &outputs);
 		}
 
 		for node in function_nodes.iter().rev() {
@@ -632,6 +959,61 @@ impl MSLShaderGenerator {
 		);
 
 		self.mesh_stage_context = previous_mesh_stage_context;
+	}
+
+	fn has_raw_mesh_output_structs(nodes: &[besl::NodeReference]) -> bool {
+		nodes.iter().any(|node| match node.borrow().node() {
+			besl::Nodes::Raw { msl, hlsl, .. } => msl
+				.as_ref()
+				.or(hlsl.as_ref())
+				.is_some_and(|source| source.contains("struct VertexOutput") || source.contains("struct PrimitiveOutput")),
+			_ => false,
+		})
+	}
+
+	fn mesh_output_field_name(name: &str) -> &str {
+		name.strip_prefix("out_").unwrap_or(name)
+	}
+
+	fn emit_mesh_output_structs(&mut self, string: &mut String, outputs: &[besl::NodeReference]) {
+		let formatting = ShaderFormatting::new(self.minified);
+		self.emit_struct_start(string, "VertexOutput");
+		formatting.push_indentation(string, 1);
+		string.push_str("float4 position [[position]]");
+		formatting.push_statement_end(string);
+		self.emit_struct_end(string);
+
+		self.emit_struct_start(string, "PrimitiveOutput");
+		for output in outputs {
+			let output = output.borrow();
+			let besl::Nodes::Output {
+				name,
+				location,
+				format,
+				count,
+			} = output.node()
+			else {
+				continue;
+			};
+			if count.is_none() {
+				continue;
+			}
+
+			formatting.push_indentation(string, 1);
+			let format = format.borrow();
+			let type_name = format.get_name().unwrap();
+			string.push_str(Self::translate_type(type_name));
+			string.push(' ');
+			string.push_str(Self::mesh_output_field_name(name));
+			if Self::is_integer_type(type_name) {
+				string.push_str(" [[flat]]");
+			}
+			string.push_str(" [[user(locn");
+			string.push_str(location.to_string().as_str());
+			string.push_str(")]]");
+			formatting.push_statement_end(string);
+		}
+		self.emit_struct_end(string);
 	}
 
 	fn group_bindings_by_set(&self, bindings: &[besl::NodeReference]) -> BTreeMap<u32, Vec<besl::NodeReference>> {
@@ -1385,6 +1767,7 @@ impl MSLShaderGenerator {
 	fn translate_type(source: &str) -> &str {
 		match source {
 			"void" => "void",
+			"bool" => "bool",
 			"atomicu32" => "atomic_uint",
 			"vec2f" => "float2",
 			"vec2u" => "uint2",
@@ -2510,8 +2893,13 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "float3 color [[attribute(0)]];");
-		assert_string_contains!(shader, "void main(){color;}");
+		assert_string_contains!(shader, "struct VertexInput{float3 color [[attribute(0)]];};");
+		assert_string_contains!(
+			shader,
+			"vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint vertex_id [[vertex_id]], uint instance_index [[instance_id]])"
+		);
+		assert_string_contains!(shader, "float3 color=in.color;");
+		assert_string_contains!(shader, "color;return out;");
 	}
 
 	#[test]
@@ -2523,8 +2911,93 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "float3 color [[color(0)]];");
-		assert_string_contains!(shader, "void main(){color;}");
+		assert_string_contains!(
+			shader,
+			"struct VertexOutput{float4 position [[position]];float3 color [[user(locn0)]];};"
+		);
+		assert_string_contains!(
+			shader,
+			"vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint vertex_id [[vertex_id]], uint instance_index [[instance_id]])"
+		);
+		assert_string_contains!(shader, "float3 color;color;out.color=color;return out;");
+	}
+
+	#[test]
+	fn vertex_builtin_stage_inputs_lower_to_msl_semantics() {
+		let mut root = besl::Node::root();
+		let u32_type = root.get_child("u32").expect("Expected u32 type");
+		root.add_child(besl::Node::input("vertex_id", u32_type.clone(), 0).into());
+		root.add_child(besl::Node::input("instance_id", u32_type, 1).into());
+
+		let root = besl::compile_to_besl("main: fn () -> void { vertex_id; instance_id; }", Some(root)).unwrap();
+		let main = root.borrow().get_child("main").unwrap();
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "struct VertexInput{};");
+		assert_string_contains!(shader, "uint vertex_id [[vertex_id]], uint instance_index [[instance_id]]");
+		assert_string_contains!(shader, "uint vertex_id=vertex_id;");
+		assert_string_contains!(shader, "uint instance_id=instance_index;");
+	}
+
+	#[test]
+	fn fragment_explicit_output_struct_return_lowers_to_msl_entry_return() {
+		let script = r#"
+		FragmentOutput: struct {
+			color: vec4f,
+		}
+
+		main: fn () -> FragmentOutput {
+			return FragmentOutput(vec4f(1.0, 0.0, 0.0, 1.0));
+		}
+		"#;
+		let root = besl::compile_to_besl(script, None).expect("Expected explicit fragment output shader to lex");
+		let main = root.borrow().get_child("main").expect("Expected main function");
+
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::fragment(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "struct FragmentInput{};");
+		assert_string_contains!(shader, "struct FragmentOutput{float4 color;};");
+		assert_string_contains!(
+			shader,
+			"fragment FragmentOutput besl_main(FragmentInput in [[stage_in]], bool front_facing [[front_facing]])"
+		);
+		assert_string_contains!(shader, "return FragmentOutput(float4(1.0,0.0,0.0,1.0));");
+	}
+
+	#[test]
+	fn fragment_builtin_stage_io_lowers_to_msl_semantics() {
+		let mut root = besl::Node::root();
+		let bool_type = root.get_child("bool").expect("Expected bool type");
+		let f32_type = root.get_child("f32").expect("Expected f32 type");
+		root.add_child(besl::Node::input("front_facing", bool_type, 0).into());
+		let u32_type = root.get_child("u32").expect("Expected u32 type");
+		root.add_child(besl::Node::output("depth", f32_type, 0).into());
+		root.add_child(besl::Node::output("stencil", u32_type.clone(), 1).into());
+		root.add_child(besl::Node::output("sample_mask", u32_type, 2).into());
+
+		let root = besl::compile_to_besl(
+			"main: fn () -> void { front_facing; depth; stencil; sample_mask; }",
+			Some(root),
+		)
+		.unwrap();
+		let main = root.borrow().get_child("main").unwrap();
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::fragment(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "struct FragmentInput{};");
+		assert_string_contains!(shader, "float depth [[depth(any)]];");
+		assert_string_contains!(shader, "uint stencil [[stencil]];");
+		assert_string_contains!(shader, "uint sample_mask [[sample_mask]];");
+		assert_string_contains!(shader, "bool front_facing [[front_facing]]");
+		assert_string_contains!(shader, "bool front_facing=front_facing;");
 	}
 
 	#[test]
@@ -2605,7 +3078,7 @@ struct PrimitiveOutput {
 			shader,
 			"struct VertexOutput{float4 position [[position]];uint out_instance_index [[flat]] [[user(locn0)]];};"
 		);
-		assert_string_contains!(shader, "vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint instance_index [[instance_id]],constant _set0& set0 [[buffer(16)]])");
+		assert_string_contains!(shader, "vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint vertex_id [[vertex_id]], uint instance_index [[instance_id]],constant _set0& set0 [[buffer(16)]])");
 		assert_string_contains!(shader, "return out;");
 	}
 

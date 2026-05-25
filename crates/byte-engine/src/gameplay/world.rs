@@ -70,12 +70,12 @@ impl DefaultWorld {
 		&mut self.transforms
 	}
 
-	pub fn delete(&mut self, handle: crate::core::factory::Handle) {
-		self.deletes.send(DeleteMessage::new(handle));
-	}
-
 	pub fn delete_channel(&self) -> &DefaultChannel<DeleteMessage> {
 		&self.deletes
+	}
+
+	pub fn delete_channel_mut(&mut self) -> &mut DefaultChannel<DeleteMessage> {
+		&mut self.deletes
 	}
 
 	pub fn renderable_factory(&self) -> &Factory<EntityHandle<dyn RenderableMesh>> {

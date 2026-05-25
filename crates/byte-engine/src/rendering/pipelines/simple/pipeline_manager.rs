@@ -144,7 +144,7 @@ impl PipelineManager {
 			Camera camera = set0.cameras->cameras[0];
 			Instance instance = set0.instances->instances[instance_index];
 
-			out.position = camera.view_projection * instance.transform * float4(in.position, 1.0);
+			out.position = camera.view_projection * instance.transform * float4(in.in_position, 1.0);
 			out.out_instance_index = instance_index;
 			return out;
 			"#

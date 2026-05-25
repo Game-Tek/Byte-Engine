@@ -433,6 +433,7 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 
 pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	let listener = application.world().renderable_factory().listener();
+	let delete_listener = application.world().delete_channel().listener();
 	let transforms_listener = application.world().transforms_channel().listener();
 
 	let renderer = &mut application.renderer;
@@ -440,6 +441,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	struct CustomPipelineManager {
 		pipeline_manager: SimplePipelineManager,
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		mesh_delete_receiver: DefaultListener<DeleteMessage>,
 		transforms_listener: DefaultListener<TransformationUpdate>,
 	}
 
@@ -453,6 +455,10 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 				let handle = message.handle().clone();
 
 				self.pipeline_manager.create_mesh(frame, handle, message.into_data());
+			}
+
+			while let Some(message) = self.mesh_delete_receiver.read() {
+				self.pipeline_manager.remove_mesh(message.into_handle());
 			}
 
 			while let Some(message) = self.transforms_listener.read() {
@@ -472,6 +478,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 		CustomPipelineManager {
 			pipeline_manager: SimplePipelineManager::new(renderer.context_mut()),
 			mesh_receiver: listener,
+			mesh_delete_receiver: delete_listener,
 			transforms_listener,
 		}
 	};
@@ -543,8 +550,10 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 
 	struct CustomPipelineManager {
 		light_receiver: DefaultListener<CreateMessage<Lights>>,
+		light_delete_receiver: DefaultListener<DeleteMessage>,
 		pending_lights: VecDeque<CreateMessage<Lights>>,
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		mesh_delete_receiver: DefaultListener<DeleteMessage>,
 		pending_meshes: VecDeque<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		visibility_pipeline_manager: VisibilityPipelineManager,
 	}
@@ -557,7 +566,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			}
 
 			while let Some(message) = self.pending_lights.pop_front() {
-				self.visibility_pipeline_manager.create_light(message.into_data());
+				let handle = *message.handle();
+				self.visibility_pipeline_manager.create_light(handle, message.into_data());
+			}
+
+			while let Some(message) = self.light_delete_receiver.read() {
+				self.visibility_pipeline_manager.remove_light(message.into_handle());
 			}
 		}
 
@@ -568,7 +582,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			}
 
 			while let Some(message) = self.pending_meshes.pop_front() {
-				self.visibility_pipeline_manager.request_mesh(message.into_data());
+				let handle = *message.handle();
+				self.visibility_pipeline_manager.request_mesh(handle, message.into_data());
+			}
+
+			while let Some(message) = self.mesh_delete_receiver.read() {
+				self.visibility_pipeline_manager.remove_mesh(message.into_handle());
 			}
 		}
 	}
@@ -598,6 +617,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			.into_iter()
 			.collect::<VecDeque<_>>();
 		let light_receiver = application.world().light_factory().listener();
+		let light_delete_receiver = application.world().delete_channel().listener();
 		let pending_meshes = application
 			.world_mut()
 			.renderable_factory_mut()
@@ -605,14 +625,17 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			.into_iter()
 			.collect::<VecDeque<_>>();
 		let mesh_receiver = application.world().renderable_factory().listener();
+		let mesh_delete_receiver = application.world().delete_channel().listener();
 
 		let renderer = &mut application.renderer;
 
 		let sm = CustomPipelineManager {
 			visibility_pipeline_manager: VisibilityPipelineManager::new(renderer.context_mut(), resource_manager_client),
 			light_receiver,
+			light_delete_receiver,
 			pending_lights,
 			mesh_receiver,
+			mesh_delete_receiver,
 			pending_meshes,
 		};
 
@@ -1191,6 +1214,7 @@ use crate::{
 		channel::{Channel, DefaultChannel},
 		factory::{CreateMessage, Factory},
 		listener::{DefaultListener, Listener},
+		message::DeleteMessage,
 		task, Entity, EntityHandle,
 	},
 	gameplay::{transform::TransformationUpdate, world::DefaultWorld},

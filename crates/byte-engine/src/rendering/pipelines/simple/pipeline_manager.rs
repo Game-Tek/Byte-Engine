@@ -410,6 +410,14 @@ impl PipelineManager {
 			instance_transform: transform.into(),
 		};
 	}
+
+	pub fn remove_mesh(&mut self, handle: Handle) {
+		let Some(instance_id) = self.mesh_buffers_stats.get_instance_id(handle) else {
+			return;
+		};
+
+		self.mesh_buffers_stats.remove_instance(instance_id);
+	}
 }
 
 impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {

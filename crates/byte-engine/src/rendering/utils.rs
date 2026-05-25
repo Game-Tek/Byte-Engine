@@ -1,11 +1,9 @@
-use std::{
-	collections::hash_map::{Entry, Values},
-	hash::Hash,
-	marker::PhantomData,
-	usize,
-};
+use std::{hash::Hash, marker::PhantomData, usize};
 
-use utils::hash::{HashMap, HashMapExt as _};
+use utils::{
+	hash::{HashMap, HashMapExt as _},
+	StableVec,
+};
 
 use crate::core::factory::Handle;
 
@@ -56,7 +54,7 @@ pub struct MeshBuffersStats<I> {
 
 	meshes: HashMap<usize, Mesh>,
 
-	instances: Vec<(usize, I)>,
+	instances: StableVec<(usize, I)>,
 }
 
 #[derive(Clone, Copy)]
@@ -147,36 +145,68 @@ impl<I> MeshBuffersStats<I> {
 			self.meshes.contains_key(&mesh_id),
 			"Provided mesh_id for instance does not exist!"
 		);
-		let instance_id = self.instances.len();
-		self.instances.push((mesh_id, instance_data));
-		instance_id
+		self.instances.push((mesh_id, instance_data))
+	}
+
+	/// Removes an instance without shifting the remaining instance indices.
+	pub fn remove_instance(&mut self, instance_id: usize) -> Option<I> {
+		self.instances.remove(instance_id).map(|(_, instance)| instance)
 	}
 
 	pub fn get_instance_batches(&self) -> InstanceBatches<'_, I> {
-		let mut batches = HashMap::with_capacity(self.meshes.len());
+		let mut batches = Vec::with_capacity(self.instances.len());
+		let mut current_batch: Option<(usize, InstanceBatch)> = None;
 
-		for (instance_id, &(mesh_id, _)) in self.instances.iter().enumerate() {
-			let mesh = &self.meshes.get(&mesh_id).unwrap();
-
-			match batches.entry(mesh_id) {
-				Entry::Vacant(e) => {
-					e.insert(InstanceBatch {
-						index_count: mesh.index_count,
-						instance_count: 1,
-						base_vertex: mesh.base_vertex,
-						base_index: mesh.base_index,
-						base_instance: instance_id,
-					});
+		for instance_id in 0..self.instances.slots_len() {
+			let Some((mesh_id, _)) = self.instances.get(instance_id) else {
+				if let Some((_, batch)) = current_batch.take() {
+					batches.push(batch);
 				}
-				Entry::Occupied(mut e) => {
-					e.get_mut().instance_count += 1;
+				continue;
+			};
+
+			let mesh = &self.meshes.get(mesh_id).unwrap();
+			match &mut current_batch {
+				Some((current_mesh_id, batch)) if current_mesh_id == mesh_id => {
+					batch.instance_count += 1;
+				}
+				Some(_) => {
+					let (_, batch) = current_batch
+						.replace((
+							*mesh_id,
+							InstanceBatch {
+								index_count: mesh.index_count,
+								instance_count: 1,
+								base_vertex: mesh.base_vertex,
+								base_index: mesh.base_index,
+								base_instance: instance_id,
+							},
+						))
+						.unwrap();
+					batches.push(batch);
+				}
+				None => {
+					current_batch = Some((
+						*mesh_id,
+						InstanceBatch {
+							index_count: mesh.index_count,
+							instance_count: 1,
+							base_vertex: mesh.base_vertex,
+							base_index: mesh.base_index,
+							base_instance: instance_id,
+						},
+					));
 				}
 			}
 		}
 
+		if let Some((_, batch)) = current_batch {
+			batches.push(batch);
+		}
+
 		InstanceBatches {
-			map: batches,
-			instances: &self.instances,
+			batches,
+			_marker: PhantomData,
 		}
 	}
 
@@ -192,7 +222,9 @@ impl<I> MeshBuffersStats<I> {
 	where
 		I: Eq,
 	{
-		self.instances.iter().position(|(_, h)| *h == handle)
+		self.instances
+			.indexed_iter()
+			.find_map(|(index, (_, h))| (*h == handle).then_some(index))
 	}
 }
 
@@ -202,53 +234,53 @@ impl<I> Default for MeshBuffersStats<I> {
 			vertex_count: 0,
 			index_count: 0,
 			meshes: HashMap::with_capacity(4096),
-			instances: Vec::new(),
+			instances: StableVec::new(),
 		}
 	}
 }
 
 pub struct InstanceBatches<'a, I> {
-	map: HashMap<usize, InstanceBatch>,
-	instances: &'a [(usize, I)],
+	batches: Vec<InstanceBatch>,
+	_marker: PhantomData<&'a I>,
 }
 
 impl<'a, I> InstanceBatches<'a, I> {
 	pub fn iter(&self) -> InstanceBatchesIterator<'_, I> {
 		InstanceBatchesIterator {
-			map: self.map.values(),
-			instances: &self.instances,
+			batches: self.batches.iter(),
+			_marker: PhantomData,
 		}
 	}
 }
 
 #[derive(Clone)]
 pub struct InstanceBatchesIterator<'a, I> {
-	map: Values<'a, usize, InstanceBatch>,
-	instances: &'a [(usize, I)],
+	batches: std::slice::Iter<'a, InstanceBatch>,
+	_marker: PhantomData<I>,
 }
 
 impl<'a, I> InstanceBatchesIterator<'a, I> {
 	pub fn into_vec(self) -> Vec<InstanceBatch> {
-		self.map.map(|e| *e).collect()
+		self.batches.copied().collect()
 	}
 }
 
-impl<'a, I> Iterator for InstanceBatchesIterator<'a, I> {
+impl<'a, I: 'a> Iterator for InstanceBatchesIterator<'a, I> {
 	type Item = BatchInstancesIterator<'a, I>;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		self.map.next().map(|b| BatchInstancesIterator {
+		self.batches.next().map(|b| BatchInstancesIterator {
 			batch: *b,
-			instances: self.instances,
 			index: 0,
+			_marker: PhantomData,
 		})
 	}
 }
 
 pub struct BatchInstancesIterator<'a, I> {
 	batch: InstanceBatch,
-	instances: &'a [(usize, I)],
 	index: usize,
+	_marker: PhantomData<&'a I>,
 }
 
 impl<'a, I> BatchInstancesIterator<'a, I> {
@@ -274,14 +306,13 @@ impl<'a, I> BatchInstancesIterator<'a, I> {
 }
 
 impl<'a, I> Iterator for BatchInstancesIterator<'a, I> {
-	type Item = (usize, &'a I);
+	type Item = usize;
 
 	fn next(&mut self) -> Option<Self::Item> {
 		if self.index < self.batch.instance_count {
 			let i = self.batch.base_instance + self.index;
-			let instance = &self.instances[i];
 			self.index += 1;
-			Some((i, &instance.1))
+			Some(i)
 		} else {
 			None
 		}
@@ -370,5 +401,28 @@ mod tests {
 		assert_eq!(batch.base_vertex(), 32);
 		assert_eq!(batch.base_index(), 96);
 		assert_eq!(batch.base_instance(), 1);
+	}
+
+	#[test]
+	fn test_removed_instance_does_not_shift_or_batch_through_hole() {
+		let mut mesh_buffer_stats = MeshBuffersStats::default();
+
+		let mesh = mesh_buffer_stats.add_mesh(MeshStats::new(32, 96), 1);
+		let first = mesh_buffer_stats.add_instance(mesh.id(), "first");
+		let second = mesh_buffer_stats.add_instance(mesh.id(), "second");
+		let third = mesh_buffer_stats.add_instance(mesh.id(), "third");
+
+		assert_eq!(mesh_buffer_stats.remove_instance(second), Some("second"));
+		assert_eq!(mesh_buffer_stats.get_instance_id("first"), Some(first));
+		assert_eq!(mesh_buffer_stats.get_instance_id("third"), Some(third));
+
+		let batches = mesh_buffer_stats.get_instance_batches();
+		let batches = batches.iter().into_vec();
+
+		assert_eq!(batches.len(), 2);
+		assert_eq!(batches[0].base_instance(), first);
+		assert_eq!(batches[0].instance_count(), 1);
+		assert_eq!(batches[1].base_instance(), third);
+		assert_eq!(batches[1].instance_count(), 1);
 	}
 }

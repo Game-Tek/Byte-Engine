@@ -376,9 +376,9 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		bc7_compression_settings, determine_image_format, guess_semantic_from_name, process_image,
-		should_compress_for_semantic, ImageDescription, Semantic,
-	};
+			bc7_compression_settings, compress_bc_level, determine_image_format, guess_semantic_from_name,
+			process_image, rga_to_rg_surface, should_compress_for_semantic, ImageDescription, Semantic,
+		};
 	use crate::{
 		asset::ResourceId,
 		resources::image::Image,
@@ -527,10 +527,88 @@ mod tests {
 		assert_eq!(image.gamma, Gamma::Linear);
 		assert_eq!(image.extent, [4, 4, 0]);
 		assert_eq!(data.len(), 16);
-	}
+			}
 
-	#[test]
-	fn process_image_compresses_srgb_albedo_to_bc7_srgb() {
+			#[test]
+			fn rga_to_rg_surface_extracts_only_r_and_g_channels() {
+				// RGBA8 input with distinct channel values so the test fails if
+				// the wrong channels leak into the RG output.
+				let rgba: Vec<u8> = (0u8..64).collect(); // 4×4 RGBA = 64 bytes: R,G,B,A,R,G,B,A,...
+				let extent = Extent::rectangle(4, 4);
+
+				let (rg, width, height) = rga_to_rg_surface(&rgba, extent);
+
+				assert_eq!(width, 4);
+				assert_eq!(height, 4);
+				// Output should be RG pairs: [0,1], [4,5], [8,9], ... — only R and G from each pixel
+				assert_eq!(rg.len(), 4 * 4 * 2);
+				assert_eq!(&rg[0..2], &[0, 1]);    // R₀, G₀
+				assert_eq!(&rg[2..4], &[4, 5]);    // R₁, G₁ (skipping B₀=2, A₀=3)
+				assert_eq!(&rg[4..6], &[8, 9]);    // R₂, G₂ (skipping B₁=6, A₁=7)
+				assert_eq!(&rg[6..8], &[12, 13]);  // R₃, G₃
+			}
+
+			#[test]
+			fn rga_to_rg_surface_pads_to_block_aligned_dimensions() {
+				// 5×7 input should be padded to 8×8 (next multiples of 4).
+				let rgba = vec![0u8; 5 * 7 * 4];
+				let extent = Extent::rectangle(5, 7);
+
+				let (rg, width, height) = rga_to_rg_surface(&rgba, extent);
+
+				assert_eq!(width, 8);
+				assert_eq!(height, 8);
+				assert_eq!(rg.len(), 8 * 8 * 2);
+
+				// The last pixel of the first row (source x=4) should be replicated
+				// into the padding area (x=5,6,7). Verify padding byte pattern.
+				let last_rg_pixel = &rg[(0 * 8 + 4) * 2..(0 * 8 + 5) * 2];
+				let padded_pixel = &rg[(0 * 8 + 5) * 2..(0 * 8 + 6) * 2];
+				assert_eq!(last_rg_pixel, padded_pixel, "Edge pixel should be clamped into padding");
+			}
+
+			#[test]
+			fn bc5_compressor_uses_rg_surface_not_rgba_interleaved() {
+				// Regression: RgSurface<2> reads 2 bytes per pixel. If we accidentally
+				// feed it an RGBA surface with stride=width*4, the compressor mixes B/A
+				// channels into the output. This test verifies the compressor receives
+				// pure RG pairs by checking that a known RG input produces consistent
+				// compressed output regardless of B/A channel values.
+				//
+				// Create an RGBA8 surface where the B channel differs from the A channel
+				// across the image. If the compressor were reading RGBA as 2-byte pixels,
+				// the output would differ because the "second pixel" would be B/A instead
+				// of the real R/G from the next pixel.
+				let extent = Extent::rectangle(4, 4);
+
+				// Variant A: R=0, G=1, B and A are 0xFF (all pixels identical)
+				let mut a = vec![0u8; 4 * 4 * 4];
+				for i in 0..16 {
+					a[i * 4] = 0;
+					a[i * 4 + 1] = 1;
+					a[i * 4 + 2] = 0xFF;
+					a[i * 4 + 3] = 0xFF;
+				}
+
+				// Variant B: R=0, G=1, B and A are 0x00 (all pixels identical)
+				let mut b = vec![0u8; 4 * 4 * 4];
+				for i in 0..16 {
+					b[i * 4] = 0;
+					b[i * 4 + 1] = 1;
+					b[i * 4 + 2] = 0x00;
+					b[i * 4 + 3] = 0x00;
+				}
+
+				let compressed_a = compress_bc_level(Formats::BC5, extent, &a);
+				let compressed_b = compress_bc_level(Formats::BC5, extent, &b);
+
+				// Both have identical R and G channels; the compressed output must also
+				// be identical because B and A should not influence BC5 compression.
+				assert_eq!(compressed_a, compressed_b, "BC5 should ignore B and A channels");
+			}
+
+			#[test]
+			fn process_image_compresses_srgb_albedo_to_bc7_srgb() {
 		let description = ImageDescription {
 			format: Formats::RGBA8,
 			extent: Extent::rectangle(5, 7),

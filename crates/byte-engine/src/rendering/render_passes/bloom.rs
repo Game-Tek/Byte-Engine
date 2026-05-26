@@ -773,22 +773,22 @@ mod tests {
 
 	#[test]
 	fn bloom_extract_shader_compiles() {
-		resource_management::glsl::compile(BLOOM_EXTRACT_SHADER, "Bloom Extract Shader").unwrap();
+		resource_management::shader::glsl_compile::compile(BLOOM_EXTRACT_SHADER, "Bloom Extract Shader").unwrap();
 	}
 
 	#[test]
 	fn bloom_downsample_shader_compiles() {
-		resource_management::glsl::compile(BLOOM_DOWNSAMPLE_SHADER, "Bloom Downsample Shader").unwrap();
+		resource_management::shader::glsl_compile::compile(BLOOM_DOWNSAMPLE_SHADER, "Bloom Downsample Shader").unwrap();
 	}
 
 	#[test]
 	fn bloom_upsample_shader_compiles() {
-		resource_management::glsl::compile(BLOOM_UPSAMPLE_SHADER, "Bloom Upsample Shader").unwrap();
+		resource_management::shader::glsl_compile::compile(BLOOM_UPSAMPLE_SHADER, "Bloom Upsample Shader").unwrap();
 	}
 
 	#[test]
 	fn bloom_composite_shader_compiles() {
-		resource_management::glsl::compile(BLOOM_COMPOSITE_SHADER, "Bloom Composite Shader").unwrap();
+		resource_management::shader::glsl_compile::compile(BLOOM_COMPOSITE_SHADER, "Bloom Composite Shader").unwrap();
 	}
 
 	#[test]

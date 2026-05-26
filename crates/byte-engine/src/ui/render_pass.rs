@@ -8,7 +8,7 @@ use ghi::{
 	frame::Frame as _,
 	types::Size as _,
 };
-use resource_management::{shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator};
+use resource_management::shader::{besl::backends::spirv::SPIRVShaderGenerator, generator::ShaderGenerationSettings};
 use utils::{Box, Extent, RGBA};
 
 use super::{element::ElementHandle as _, layout::engine};

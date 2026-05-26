@@ -1,9 +1,11 @@
+use std::cell::RefCell;
+
 use utils::Extent;
 
-use crate::shader_graph::{build_graph, topological_sort};
+use crate::shader::besl::graph::{build_graph, topological_sort};
 
 /// Generates a graphics API consumable shader from a BESL shader program definition.
-pub trait ShaderGenerator {}
+pub trait Generator {}
 
 pub enum Stages {
 	Vertex,
@@ -36,7 +38,7 @@ impl Default for GLSLSettings {
 	}
 }
 
-pub struct ShaderGenerationSettings {
+pub struct Settings {
 	pub(crate) glsl: GLSLSettings,
 	pub(crate) stage: Stages,
 	pub(crate) matrix_layout: MatrixLayouts,
@@ -198,22 +200,22 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 	) || supports_atomic_u32 && name == "atomicu32"
 }
 
-impl ShaderGenerationSettings {
+impl Settings {
 	fn normalize_local_size(extent: Extent) -> Extent {
 		Extent::new(extent.width().max(1), extent.height().max(1), extent.depth().max(1))
 	}
 
-	pub fn compute(extent: Extent) -> ShaderGenerationSettings {
+	pub fn compute(extent: Extent) -> Settings {
 		Self::from_stage(Stages::Compute {
 			local_size: Self::normalize_local_size(extent),
 		})
 	}
 
-	pub fn task() -> ShaderGenerationSettings {
+	pub fn task() -> Settings {
 		Self::from_stage(Stages::Task)
 	}
 
-	pub fn mesh(maximum_vertices: u32, maximum_primitives: u32, local_size: Extent) -> ShaderGenerationSettings {
+	pub fn mesh(maximum_vertices: u32, maximum_primitives: u32, local_size: Extent) -> Settings {
 		Self::from_stage(Stages::Mesh {
 			maximum_vertices,
 			maximum_primitives,
@@ -221,16 +223,16 @@ impl ShaderGenerationSettings {
 		})
 	}
 
-	pub fn fragment() -> ShaderGenerationSettings {
+	pub fn fragment() -> Settings {
 		Self::from_stage(Stages::Fragment)
 	}
 
-	pub fn vertex() -> ShaderGenerationSettings {
+	pub fn vertex() -> Settings {
 		Self::from_stage(Stages::Vertex)
 	}
 
 	fn from_stage(stage: Stages) -> Self {
-		ShaderGenerationSettings {
+		Settings {
 			glsl: GLSLSettings::default(),
 			stage,
 			matrix_layout: MatrixLayouts::RowMajor,
@@ -241,6 +243,298 @@ impl ShaderGenerationSettings {
 	pub fn name(mut self, name: String) -> Self {
 		self.name = name;
 		self
+	}
+}
+
+/// The `NodeEmitter` trait provides shared code generation helpers for shader language backends.
+///
+/// Backends implement the required methods and inherit default implementations for
+/// common emit operations like `emit_wrapped_expression`, `emit_type_name`, and
+/// `emit_call_arguments`.
+pub(crate) trait NodeEmitter {
+	/// Maps a BESL type name to the backend's native type name.
+	fn type_from_besl(source: &str) -> &str;
+
+	/// Whether the backend uses minified output.
+	fn minified(&self) -> bool;
+
+	/// Appends the string representation of a BESL node to the output buffer.
+	fn emit_node(&mut self, string: &mut String, node: &besl::NodeReference);
+
+	/// Emits a backend intrinsic call.
+	fn emit_intrinsic_call(
+		&mut self,
+		string: &mut String,
+		intrinsic: &besl::NodeReference,
+		arguments: &[besl::NodeReference],
+		elements: &[besl::NodeReference],
+	);
+
+	fn supports_atomic_u32(&self) -> bool {
+		true
+	}
+
+	fn emit_separator(&self, string: &mut String) {
+		string.push_str(ShaderFormatting::new(self.minified()).comma_str());
+	}
+
+	fn emit_named_struct_start(&self, string: &mut String, name: &str) {
+		string.push_str("struct ");
+		string.push_str(name);
+		if self.minified() {
+			string.push('{');
+		} else {
+			string.push_str(" {\n");
+		}
+	}
+
+	fn emit_struct_declaration_end(&self, string: &mut String) {
+		string.push_str("};");
+		if !self.minified() {
+			string.push('\n');
+		}
+	}
+
+	fn emit_block_end(&self, string: &mut String) {
+		string.push('}');
+		if !self.minified() {
+			string.push('\n');
+		}
+	}
+
+	fn emit_indentation(&self, string: &mut String, indent: usize) {
+		ShaderFormatting::new(self.minified()).push_indentation(string, indent);
+	}
+
+	fn emit_statement_end(&self, string: &mut String) {
+		ShaderFormatting::new(self.minified()).push_statement_end(string);
+	}
+
+	fn emit_function_extra_parameters(
+		&mut self,
+		_string: &mut String,
+		_node: &besl::NodeReference,
+		_name: &str,
+		_has_previous_parameter: bool,
+	) {
+	}
+
+	fn emit_function_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
+		let formatting = ShaderFormatting::new(self.minified());
+		emit_statement_block(string, formatting, statements, indent, |string, statement| {
+			self.emit_node(string, statement)
+		});
+	}
+
+	fn emit_function_call_extra_arguments(
+		&mut self,
+		_string: &mut String,
+		_function: &besl::NodeReference,
+		_has_previous_argument: bool,
+	) {
+	}
+
+	fn emit_expression_member(&mut self, _string: &mut String, _name: &str, _source: &besl::NodeReference) -> bool {
+		false
+	}
+
+	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
+		self.emit_node(string, left);
+		if left.borrow().node().is_indexable() {
+			string.push('[');
+			self.emit_node(string, right);
+			string.push(']');
+		} else {
+			string.push('.');
+			self.emit_node(string, right);
+		}
+	}
+
+	fn emit_function_node(
+		&mut self,
+		string: &mut String,
+		this_node: &besl::NodeReference,
+		name: &str,
+		statements: &[besl::NodeReference],
+		return_type: &besl::NodeReference,
+		params: &[besl::NodeReference],
+	) {
+		let formatting = ShaderFormatting::new(self.minified());
+		Self::emit_type_name(string, &return_type.borrow().get_name().unwrap());
+		string.push(' ');
+		string.push_str(name);
+		string.push('(');
+		emit_comma_separated_nodes(string, formatting, params, |string, param| self.emit_node(string, param));
+		self.emit_function_extra_parameters(string, this_node, name, !params.is_empty());
+		formatting.push_block_start(string);
+		self.emit_function_statement_block(string, statements, 1);
+		self.emit_block_end(string);
+	}
+
+	fn emit_struct_node(
+		&mut self,
+		string: &mut String,
+		name: &str,
+		fields: &[besl::NodeReference],
+		template: &Option<besl::NodeReference>,
+	) {
+		if template.is_some() || is_builtin_struct_type(name, self.supports_atomic_u32()) {
+			return;
+		}
+
+		let formatting = ShaderFormatting::new(self.minified());
+		self.emit_named_struct_start(string, name);
+		for field in fields {
+			formatting.push_indentation(string, 1);
+			self.emit_node(string, field);
+			formatting.push_statement_end(string);
+		}
+		self.emit_struct_declaration_end(string);
+	}
+
+	fn emit_parameter_node(&mut self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
+		string.push_str(&format!(
+			"{} {}",
+			Self::type_from_besl(&r#type.borrow().get_name().unwrap()),
+			name
+		));
+	}
+
+	fn emit_expression_node(&mut self, string: &mut String, expression: &besl::Expressions) {
+		let formatting = ShaderFormatting::new(self.minified());
+		match expression {
+			besl::Expressions::Operator { operator, left, right } => {
+				self.emit_wrapped_expression(string, left);
+				let operator = operator_token(operator);
+				if self.minified() {
+					string.push_str(operator)
+				} else {
+					string.push(' ');
+					string.push_str(operator);
+					string.push(' ');
+				}
+				self.emit_wrapped_expression(string, right);
+			}
+			besl::Expressions::FunctionCall {
+				parameters, function, ..
+			} => {
+				let function_ref = function.clone();
+				let function = RefCell::borrow(&function_ref);
+				let name = function.get_name().unwrap();
+				Self::emit_type_name(string, &name);
+				string.push('(');
+				emit_comma_separated_nodes(string, formatting, parameters, |string, parameter| {
+					self.emit_node(string, parameter)
+				});
+				self.emit_function_call_extra_arguments(string, &function_ref, !parameters.is_empty());
+				string.push(')');
+			}
+			besl::Expressions::IntrinsicCall {
+				intrinsic,
+				arguments,
+				elements,
+			} => {
+				self.emit_intrinsic_call(string, intrinsic, arguments, elements);
+			}
+			besl::Expressions::Expression { elements } => {
+				for element in elements {
+					self.emit_node(string, element);
+				}
+			}
+			besl::Expressions::Macro { .. } => {}
+			besl::Expressions::Member { name, source, .. } => {
+				if self.emit_expression_member(string, name, source) {
+					return;
+				}
+				match source.borrow().node() {
+					besl::Nodes::Literal { value, .. } => self.emit_node(string, value),
+					_ => string.push_str(name),
+				}
+			}
+			besl::Expressions::VariableDeclaration { name, r#type } => {
+				Self::emit_type_name(string, &r#type.borrow().get_name().unwrap());
+				string.push(' ');
+				string.push_str(name);
+			}
+			besl::Expressions::Literal { value } => string.push_str(value),
+			besl::Expressions::Return { value } => {
+				string.push_str("return");
+				if let Some(value) = value {
+					string.push(' ');
+					self.emit_node(string, value);
+				}
+			}
+			besl::Expressions::Continue => string.push_str("continue"),
+			besl::Expressions::Accessor { left, right } => self.emit_accessor_expression(string, left, right),
+		}
+	}
+
+	fn emit_conditional_node(
+		&mut self,
+		string: &mut String,
+		condition: &besl::NodeReference,
+		statements: &[besl::NodeReference],
+	) {
+		let formatting = ShaderFormatting::new(self.minified());
+		string.push_str("if(");
+		self.emit_node(string, condition);
+		formatting.push_block_start(string);
+		self.emit_function_statement_block(string, statements, 1);
+		self.emit_block_end(string);
+	}
+
+	fn emit_for_loop_node(
+		&mut self,
+		string: &mut String,
+		initializer: &besl::NodeReference,
+		condition: &besl::NodeReference,
+		update: &besl::NodeReference,
+		statements: &[besl::NodeReference],
+	) {
+		let formatting = ShaderFormatting::new(self.minified());
+		string.push_str("for(");
+		self.emit_node(string, initializer);
+		string.push(';');
+		self.emit_node(string, condition);
+		string.push(';');
+		self.emit_node(string, update);
+		formatting.push_block_start(string);
+		self.emit_function_statement_block(string, statements, 1);
+		self.emit_block_end(string);
+	}
+
+	/// Wraps a node's string representation in parentheses when the node is an operator or
+	/// expression, otherwise emits it directly.
+	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
+		match node.borrow().node() {
+			besl::Nodes::Expression(besl::Expressions::Operator { .. } | besl::Expressions::Expression { .. }) => {
+				string.push('(');
+				self.emit_node(string, node);
+				string.push(')');
+			}
+			_ => self.emit_node(string, node),
+		}
+	}
+
+	/// Emits a type name with optional array dimension suffix, delegating type mapping to
+	/// [`Self::type_from_besl`].
+	fn emit_type_name(string: &mut String, source: &str) {
+		if let Some((element_type, count)) = source.split_once('[') {
+			string.push_str(Self::type_from_besl(element_type));
+			string.push('[');
+			string.push_str(count.trim_end_matches(']'));
+			string.push(']');
+		} else {
+			string.push_str(Self::type_from_besl(source));
+		}
+	}
+
+	/// Emits comma-separated call arguments with the backend's formatting rules.
+	fn emit_call_arguments(&mut self, string: &mut String, arguments: &[besl::NodeReference]) {
+		let formatting = ShaderFormatting::new(self.minified());
+		emit_comma_separated_nodes(string, formatting, arguments, |string, argument| {
+			self.emit_node(string, argument);
+		});
 	}
 }
 
@@ -539,3 +833,6 @@ pub mod tests {
 		main
 	}
 }
+
+pub use Generator as ShaderGenerator;
+pub use Settings as ShaderGenerationSettings;

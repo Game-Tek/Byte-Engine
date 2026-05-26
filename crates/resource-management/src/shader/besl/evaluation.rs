@@ -622,11 +622,11 @@ fn parse_literal_number(node: &besl::NodeReference) -> Option<f64> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::shader_generator;
+	use crate::shader::generator;
 
 	#[test]
 	fn bindings_from_main() {
-		let main = shader_generator::tests::bindings();
+		let main = generator::tests::bindings();
 
 		let evaluation = ProgramEvaluation::from_main(&main).expect("Failed to evaluate program");
 		let bindings = evaluation.bindings();

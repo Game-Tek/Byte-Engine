@@ -6,7 +6,6 @@ use ghi::{
 	},
 	context::{Context as _, ContextCreate as _},
 };
-use resource_management::glsl;
 use utils::{
 	hash::{HashMap, HashMapExt},
 	sync::RwLock,

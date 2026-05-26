@@ -125,7 +125,8 @@ pub fn compile(name: &str, source: ShaderSource) -> Result<CompiledShaderSource,
 }
 
 fn compile_glsl(name: &str, source: &str) -> Result<CompiledShaderSource, String> {
-	resource_management::glsl::compile(source, name).map(|artifact| CompiledShaderSource::SPIRV(artifact.as_ref().to_vec()))
+	resource_management::shader::glsl_compile::compile(source, name)
+		.map(|artifact| CompiledShaderSource::SPIRV(artifact.as_ref().to_vec()))
 }
 
 #[derive(Clone, Copy)]

@@ -1,8 +1,7 @@
 use std::cell::RefCell;
 
-use crate::shader_generator::{
-	emit_comma_separated_nodes, emit_statement_block, is_builtin_struct_type, operator_token, ordered_shader_nodes,
-	MatrixLayouts, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
+use crate::shader::generator::{
+	ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
 };
 
 /// Shader generator.
@@ -10,16 +9,16 @@ use crate::shader_generator::{
 /// # Parameters
 ///
 /// - *minified*: Controls wheter the shader string output is minified. Is `true` by default in release builds.
-pub struct GLSLShaderGenerator {
+pub struct Generator {
 	minified: bool,
 }
 
-impl ShaderGenerator for GLSLShaderGenerator {}
+impl ShaderGenerator for Generator {}
 
-impl GLSLShaderGenerator {
+impl Generator {
 	/// Creates a new ShaderGenerator.
 	pub fn new() -> Self {
-		GLSLShaderGenerator {
+		Generator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 		}
 	}
@@ -30,7 +29,7 @@ impl GLSLShaderGenerator {
 	}
 }
 
-impl GLSLShaderGenerator {
+impl Generator {
 	/// Generates a GLSL shader from a BESL AST.
 	///
 	/// # Arguments
@@ -89,24 +88,6 @@ impl GLSLShaderGenerator {
 			"ArrayTexture2D" => "in sampler2DArray",
 			_ => source,
 		}
-	}
-
-	fn emit_type_name(string: &mut String, source: &str) {
-		if let Some((element_type, count)) = source.split_once('[') {
-			string.push_str(Self::translate_type(element_type));
-			string.push('[');
-			string.push_str(count.trim_end_matches(']'));
-			string.push(']');
-		} else {
-			string.push_str(Self::translate_type(source));
-		}
-	}
-
-	fn emit_call_arguments(&mut self, string: &mut String, arguments: &[besl::NodeReference]) {
-		let formatting = ShaderFormatting::new(self.minified);
-		emit_comma_separated_nodes(string, formatting, arguments, |string, argument| {
-			self.emit_node_string(string, argument)
-		});
 	}
 
 	fn emit_visibility_texture_sample(&mut self, string: &mut String, slot: &besl::NodeReference, xy_only: bool) {
@@ -365,17 +346,6 @@ impl GLSLShaderGenerator {
 		}
 	}
 
-	fn emit_wrapped_expression(&mut self, string: &mut String, node: &besl::NodeReference) {
-		match node.borrow().node() {
-			besl::Nodes::Expression(besl::Expressions::Operator { .. } | besl::Expressions::Expression { .. }) => {
-				string.push('(');
-				self.emit_node_string(string, node);
-				string.push(')');
-			}
-			_ => self.emit_node_string(string, node),
-		}
-	}
-
 	// This function appends to the `string` parameter the string representation of the node.
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
@@ -396,62 +366,10 @@ impl GLSLShaderGenerator {
 				return_type,
 				params,
 				..
-			} => {
-				Self::emit_type_name(string, &return_type.borrow().get_name().unwrap());
-
-				string.push(' ');
-
-				string.push_str(name);
-
-				string.push('(');
-
-				emit_comma_separated_nodes(string, formatting, params, |string, param| {
-					self.emit_node_string(string, param)
-				});
-
-				formatting.push_block_start(string);
-				emit_statement_block(string, formatting, statements, 1, |string, statement| {
-					self.emit_node_string(string, statement)
-				});
-
-				if self.minified {
-					string.push('}')
-				} else {
-					string.push_str("}\n");
-				}
-			}
+			} => self.emit_function_node(string, this_node, name, statements, return_type, params),
 			besl::Nodes::Struct {
 				name, fields, template, ..
-			} => {
-				if template.is_some() {
-					return;
-				}
-
-				if is_builtin_struct_type(name, true) {
-					return;
-				}
-
-				string.push_str("struct ");
-				string.push_str(name.as_str());
-
-				if self.minified {
-					string.push('{');
-				} else {
-					string.push_str(" {\n");
-				}
-
-				for field in fields {
-					formatting.push_indentation(string, 1);
-					self.emit_node_string(string, &field);
-					formatting.push_statement_end(string);
-				}
-
-				string.push_str("};");
-
-				if !self.minified {
-					string.push('\n');
-				}
-			}
+			} => self.emit_struct_node(string, name, fields, template),
 			besl::Nodes::PushConstant { members } => {
 				if self.minified {
 					string.push_str("layout(push_constant)uniform PushConstant{");
@@ -541,13 +459,7 @@ impl GLSLShaderGenerator {
 					string.push_str(code);
 				}
 			}
-			besl::Nodes::Parameter { name, r#type } => {
-				string.push_str(&format!(
-					"{} {}",
-					Self::translate_type(&r#type.borrow().get_name().unwrap()),
-					name
-				));
-			}
+			besl::Nodes::Parameter { name, r#type } => self.emit_parameter_node(string, name, r#type),
 			besl::Nodes::Input { name, location, format } => {
 				let format = format.borrow();
 				let type_name = Self::translate_type(&format.get_name().unwrap());
@@ -592,132 +504,14 @@ impl GLSLShaderGenerator {
 					));
 				}
 			}
-			besl::Nodes::Expression(expression) => match expression {
-				besl::Expressions::Operator { operator, left, right } => {
-					self.emit_wrapped_expression(string, &left);
-					let operator = operator_token(operator);
-					if self.minified {
-						string.push_str(operator);
-					} else {
-						string.push(' ');
-						string.push_str(operator);
-						string.push(' ');
-					}
-					self.emit_wrapped_expression(string, &right);
-				}
-				besl::Expressions::FunctionCall {
-					parameters, function, ..
-				} => {
-					let function = RefCell::borrow(&function);
-					let name = function.get_name().unwrap();
-
-					Self::emit_type_name(string, &name);
-					string.push('(');
-					emit_comma_separated_nodes(string, formatting, parameters, |string, parameter| {
-						self.emit_node_string(string, parameter)
-					});
-					string.push(')');
-				}
-				besl::Expressions::IntrinsicCall {
-					intrinsic,
-					arguments,
-					elements,
-				} => {
-					self.emit_intrinsic_call(string, intrinsic, arguments, elements);
-				}
-				besl::Expressions::Expression { elements } => {
-					for element in elements {
-						self.emit_node_string(string, &element);
-					}
-				}
-				besl::Expressions::Macro { .. } => {}
-				besl::Expressions::Member { name, source, .. } => match source.borrow().node() {
-					besl::Nodes::Literal { value, .. } => {
-						self.emit_node_string(string, &value);
-					}
-					_ => {
-						string.push_str(name);
-					}
-				},
-				besl::Expressions::VariableDeclaration { name, r#type } => {
-					Self::emit_type_name(string, &r#type.borrow().get_name().unwrap());
-					string.push(' ');
-					string.push_str(name);
-				}
-				besl::Expressions::Literal { value } => {
-					string.push_str(&value);
-				}
-				besl::Expressions::Return { value } => {
-					string.push_str("return");
-					if let Some(value) = value {
-						string.push(' ');
-						self.emit_node_string(string, value);
-					}
-				}
-				besl::Expressions::Continue => {
-					string.push_str("continue");
-				}
-				besl::Expressions::Accessor { left, right } => {
-					self.emit_node_string(string, &left);
-					if !matches!(
-						right.borrow().node(),
-						besl::Nodes::Expression(besl::Expressions::Member { .. })
-					) && left.borrow().node().is_indexable()
-					{
-						string.push('[');
-						self.emit_node_string(string, &right);
-						string.push(']');
-					} else {
-						string.push('.');
-						self.emit_node_string(string, &right);
-					}
-				}
-			},
-			besl::Nodes::Conditional { condition, statements } => {
-				string.push_str("if(");
-				self.emit_node_string(string, condition);
-				if self.minified {
-					string.push_str("){");
-				} else {
-					string.push_str(") {\n");
-				}
-
-				emit_statement_block(string, formatting, statements, 1, |string, statement| {
-					self.emit_node_string(string, statement)
-				});
-
-				string.push('}');
-				if !self.minified {
-					string.push('\n');
-				}
-			}
+			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
+			besl::Nodes::Conditional { condition, statements } => self.emit_conditional_node(string, condition, statements),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
 				update,
 				statements,
-			} => {
-				string.push_str("for(");
-				self.emit_node_string(string, initializer);
-				string.push(';');
-				self.emit_node_string(string, condition);
-				string.push(';');
-				self.emit_node_string(string, update);
-				if self.minified {
-					string.push_str("){");
-				} else {
-					string.push_str(") {\n");
-				}
-
-				emit_statement_block(string, formatting, statements, 1, |string, statement| {
-					self.emit_node_string(string, statement)
-				});
-
-				string.push('}');
-				if !self.minified {
-					string.push('\n');
-				}
-			}
+			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
 			besl::Nodes::Binding {
 				name,
 				set,
@@ -781,11 +575,7 @@ impl GLSLShaderGenerator {
 
 						for member in members.iter() {
 							self.emit_node_string(string, &member);
-							if !self.minified {
-								string.push_str(";\n");
-							} else {
-								string.push(';');
-							}
+							self.emit_statement_end(string);
 						}
 
 						string.push_str("}");
@@ -801,11 +591,7 @@ impl GLSLShaderGenerator {
 					string.push(']');
 				}
 
-				if !self.minified {
-					string.push_str(";\n");
-				} else {
-					string.push(';');
-				}
+				self.emit_statement_end(string);
 			}
 			besl::Nodes::Intrinsic { elements, .. } => {
 				for element in elements {
@@ -899,12 +685,47 @@ impl GLSLShaderGenerator {
 	}
 }
 
+impl crate::shader::generator::NodeEmitter for Generator {
+	fn type_from_besl(source: &str) -> &str {
+		Generator::translate_type(source)
+	}
+	fn minified(&self) -> bool {
+		self.minified
+	}
+	fn emit_intrinsic_call(
+		&mut self,
+		string: &mut String,
+		intrinsic: &besl::NodeReference,
+		arguments: &[besl::NodeReference],
+		elements: &[besl::NodeReference],
+	) {
+		Generator::emit_intrinsic_call(self, string, intrinsic, arguments, elements)
+	}
+	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
+		self.emit_node_string(string, left);
+		if !matches!(
+			right.borrow().node(),
+			besl::Nodes::Expression(besl::Expressions::Member { .. })
+		) && left.borrow().node().is_indexable()
+		{
+			string.push('[');
+			self.emit_node_string(string, right);
+			string.push(']');
+		} else {
+			string.push('.');
+			self.emit_node_string(string, right);
+		}
+	}
+	fn emit_node(&mut self, string: &mut String, node: &besl::NodeReference) {
+		self.emit_node_string(string, node)
+	}
+}
 #[cfg(test)]
 mod tests {
 	use std::cell::RefCell;
 
 	use super::*;
-	use crate::shader_generator::{self, ShaderGenerationSettings};
+	use crate::shader::generator::{self, ShaderGenerationSettings};
 
 	macro_rules! assert_string_contains {
 		($haystack:expr, $needle:expr) => {
@@ -919,9 +740,9 @@ mod tests {
 
 	#[test]
 	fn bindings() {
-		let main = shader_generator::tests::bindings();
+		let main = generator::tests::bindings();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -938,9 +759,9 @@ mod tests {
 
 	#[test]
 	fn same_named_buffer_members_lower_to_glsl() {
-		let main = shader_generator::tests::same_named_buffer_member_access();
+		let main = generator::tests::same_named_buffer_member_access();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
@@ -950,9 +771,9 @@ mod tests {
 
 	#[test]
 	fn specializtions() {
-		let main = shader_generator::tests::specializations();
+		let main = generator::tests::specializations();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -965,9 +786,9 @@ mod tests {
 
 	#[test]
 	fn input() {
-		let main = shader_generator::tests::input();
+		let main = generator::tests::input();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -977,9 +798,9 @@ mod tests {
 
 	#[test]
 	fn output() {
-		let main = shader_generator::tests::output();
+		let main = generator::tests::output();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -989,9 +810,9 @@ mod tests {
 
 	#[test]
 	fn fragment_shader() {
-		let main = shader_generator::tests::fragment_shader();
+		let main = generator::tests::fragment_shader();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::fragment(), &main)
 			.expect("Failed to generate shader");
@@ -1001,9 +822,9 @@ mod tests {
 
 	#[test]
 	fn cull_unused_functions() {
-		let main = shader_generator::tests::cull_unused_functions();
+		let main = generator::tests::cull_unused_functions();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1016,9 +837,9 @@ mod tests {
 
 	#[test]
 	fn structure() {
-		let main = shader_generator::tests::structure();
+		let main = generator::tests::structure();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1031,9 +852,9 @@ mod tests {
 
 	#[test]
 	fn push_constant() {
-		let main = shader_generator::tests::push_constant();
+		let main = generator::tests::push_constant();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1076,7 +897,7 @@ mod tests {
 			);
 		}
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1088,9 +909,9 @@ mod tests {
 
 	#[test]
 	fn test_instrinsic() {
-		let main = shader_generator::tests::intrinsic();
+		let main = generator::tests::intrinsic();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1130,7 +951,7 @@ mod tests {
 			);
 		}
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1144,9 +965,9 @@ mod tests {
 
 	#[test]
 	fn test_const_variable() {
-		let main = shader_generator::tests::const_variable();
+		let main = generator::tests::const_variable();
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1168,7 +989,7 @@ mod tests {
 		let root = besl::compile_to_besl(script, None).expect("Expected const-array shader source to lex");
 		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1190,7 +1011,7 @@ mod tests {
 		let root = besl::compile_to_besl(script, None).expect("Expected mesh shader source to lex");
 		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)), &main)
 			.expect("Failed to generate shader");
@@ -1214,7 +1035,7 @@ mod tests {
 		let root = besl::compile_to_besl(script, None).expect("Expected conditional shader source to lex");
 		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1233,7 +1054,7 @@ mod tests {
 		let root = besl::compile_to_besl(script, None).expect("Expected bitwise shader source to lex");
 		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1256,7 +1077,7 @@ mod tests {
 		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
 		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1283,7 +1104,7 @@ mod tests {
 		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
 		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1311,7 +1132,7 @@ mod tests {
 		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
 		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1345,7 +1166,7 @@ mod tests {
 		let root = besl::compile_to_besl(script, Some(root)).expect("Expected fetch shader source to lex");
 		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 
-		let shader = GLSLShaderGenerator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
@@ -1355,16 +1176,16 @@ mod tests {
 
 	#[test]
 	fn return_values_and_pretty_spacing_lower_to_glsl() {
-		let main = shader_generator::tests::return_value();
+		let main = generator::tests::return_value();
 
-		let minified_shader = GLSLShaderGenerator::new()
+		let minified_shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(minified_shader, "float main(){return 1.0;}");
 
-		let pretty_shader = GLSLShaderGenerator::new()
+		let pretty_shader = Generator::new()
 			.minified(false)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
@@ -1372,3 +1193,5 @@ mod tests {
 		assert_string_contains!(pretty_shader, "float main() {\n\treturn 1.0;\n}\n");
 	}
 }
+
+pub use Generator as GLSLShaderGenerator;

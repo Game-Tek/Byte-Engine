@@ -1308,10 +1308,10 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 #[cfg(test)]
 mod tests {
 	use resource_management::asset::bema_asset_handler::ProgramGenerator;
-	use resource_management::{
-		msl_shader_generator::MSLShaderGenerator,
-		shader_generator::{ShaderGenerationSettings, ShaderGenerator as _},
-		spirv_shader_generator::SPIRVShaderGenerator,
+	use resource_management::shader::{
+		besl::backends::msl::MSLShaderGenerator,
+		besl::backends::spirv::SPIRVShaderGenerator,
+		generator::{ShaderGenerationSettings, ShaderGenerator as _},
 	};
 	use utils::json;
 	use utils::Extent;

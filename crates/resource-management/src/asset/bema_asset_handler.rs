@@ -10,10 +10,10 @@ use super::{
 	asset_manager::AssetManager,
 	ResourceId,
 };
-#[cfg(target_vendor = "apple")]
-use crate::msl_shader_compiler::MSLShaderCompiler;
 #[cfg(not(target_vendor = "apple"))]
-use crate::spirv_shader_generator::SPIRVShaderGenerator;
+use crate::shader::besl::backends::spirv::SPIRVShaderGenerator;
+#[cfg(target_vendor = "apple")]
+use crate::shader::msl_shader_compiler::MSLShaderCompiler;
 use crate::{
 	asset,
 	r#async::{spawn_cpu_task, BoxedFuture},
@@ -22,7 +22,7 @@ use crate::{
 		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderArtifact, ShaderInterface, ValueModel, VariantModel,
 		VariantVariableModel,
 	},
-	shader_generator::ShaderGenerationSettings,
+	shader::generator::ShaderGenerationSettings,
 	types::{AlphaMode, ShaderTypes},
 	ProcessedAsset, ReferenceModel,
 };
@@ -438,11 +438,11 @@ pub mod tests {
 			asset_handler::AssetHandler, asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler,
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ResourceId,
 		},
-		glsl_shader_generator::GLSLShaderGenerator,
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::material::VariantModel,
-		shader_generator::ShaderGenerationSettings,
+		shader::besl::backends::glsl::GLSLShaderGenerator,
+		shader::generator::ShaderGenerationSettings,
 		ReferenceModel,
 	};
 

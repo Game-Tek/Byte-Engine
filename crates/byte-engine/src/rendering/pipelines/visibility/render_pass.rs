@@ -26,13 +26,13 @@ use crate::rendering::pipelines::visibility::{
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
 
-/// Converts a [`resource_management::platform_shader_generator::GeneratedPlatformShader`] to a
+/// Converts a [`resource_management::shader::besl::backends::platform::GeneratedPlatformShader`] to a
 /// [`ghi::shader::ShaderSource`] so callers can pass generated shaders to `ghi::shader::compile` without
 /// manually inspecting the language variant.
 fn generated_platform_shader_source(
-	shader: &resource_management::platform_shader_generator::GeneratedPlatformShader,
+	shader: &resource_management::shader::besl::backends::platform::GeneratedPlatformShader,
 ) -> ghi::shader::ShaderSource<'_> {
-	use resource_management::platform_shader_generator::PlatformShaderLanguage;
+	use resource_management::shader::besl::backends::platform::PlatformShaderLanguage;
 	match shader.language() {
 		PlatformShaderLanguage::Glsl => ghi::shader::ShaderSource::Glsl(shader.source()),
 		PlatformShaderLanguage::Msl => ghi::shader::ShaderSource::Msl {
@@ -1231,7 +1231,7 @@ mod tests {
 		if super::GTAO_USE_BITFIELD_BINARY_IMPL {
 			let gtao_shader = super::get_gtao_bitfield_shader();
 			if gtao_shader.language().is_glsl() {
-				resource_management::glsl::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
+				resource_management::shader::glsl_compile::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
 				return;
 			}
 		}
@@ -1242,7 +1242,7 @@ mod tests {
 			super::get_gtao_shader()
 		};
 		if gtao_shader.language().is_glsl() {
-			resource_management::glsl::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
+			resource_management::shader::glsl_compile::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
 			return;
 		}
 
@@ -1290,18 +1290,22 @@ mod tests {
 	#[test]
 	fn gtao_blur_shader_compiles() {
 		if super::GTAO_USE_BITFIELD_BINARY_IMPL {
-			resource_management::glsl::compile(
+			resource_management::shader::glsl_compile::compile(
 				super::get_gtao_bitfield_blur_x_shader().source(),
 				"GTAO Blur X Compute Shader",
 			)
 			.unwrap();
-			resource_management::glsl::compile(super::get_gtao_blur_shader().source(), "GTAO Blur Y Compute Shader").unwrap();
+			resource_management::shader::glsl_compile::compile(
+				super::get_gtao_blur_shader().source(),
+				"GTAO Blur Y Compute Shader",
+			)
+			.unwrap();
 			return;
 		}
 
 		let blur_shader = super::get_gtao_blur_shader();
 		if blur_shader.language().is_glsl() {
-			resource_management::glsl::compile(blur_shader.source(), "GTAO Blur Compute Shader").unwrap();
+			resource_management::shader::glsl_compile::compile(blur_shader.source(), "GTAO Blur Compute Shader").unwrap();
 			return;
 		}
 

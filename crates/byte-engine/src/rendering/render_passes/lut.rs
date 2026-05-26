@@ -406,7 +406,7 @@ mod tests {
 
 		let (glsl_source, _msl_source) = create_lut_shader_sources(&lut);
 
-		resource_management::glsl::compile(&glsl_source, "LUT Render Pass Test").unwrap();
+		resource_management::shader::glsl_compile::compile(&glsl_source, "LUT Render Pass Test").unwrap();
 	}
 
 	#[test]

@@ -435,8 +435,11 @@ use ghi::{
 };
 use math::{Matrix4, ShaderMatrix4};
 use resource_management::{
-	asset::bema_asset_handler::ProgramGenerator, msl_shader_generator::MSLShaderGenerator,
-	shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator,
+	asset::bema_asset_handler::ProgramGenerator,
+	shader::{
+		besl::backends::msl::MSLShaderGenerator, besl::backends::spirv::SPIRVShaderGenerator,
+		generator::ShaderGenerationSettings,
+	},
 };
 use utils::{
 	hash::{HashMap, HashMapExt},

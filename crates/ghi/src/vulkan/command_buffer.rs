@@ -40,6 +40,7 @@ pub struct CommandBufferRecording<'a> {
 	bound_pipeline_layout: Option<crate::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
+	bound_descriptor_sets_in_recording: Vec<DescriptorSetHandle>,
 }
 
 pub struct VulkanCommandBuffer<'a> {
@@ -76,6 +77,7 @@ impl CommandBufferRecording<'_> {
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
 			bound_descriptor_set_handles: Vec::new(),
+			bound_descriptor_sets_in_recording: Vec::new(),
 
 			device,
 		};
@@ -1776,9 +1778,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.device
 				.reset_fences(&[synchronizer.fence])
 				.expect("Failed to reset Vulkan command buffer synchronizer. The most likely cause is that the fence is invalid or already in use.");
+			let vk_queue = command_buffer
+				.vk_queue
+				.lock()
+				.expect("Failed to lock Vulkan queue for command-buffer submission. The most likely cause is that another thread panicked while holding the queue lock.");
 			self.device
 				.device
-				.queue_submit2(command_buffer.vk_queue, &[submit_info], synchronizer.fence)
+				.queue_submit2(*vk_queue, &[submit_info], synchronizer.fence)
 				.expect("Failed to submit Vulkan command buffer. The most likely cause is that the command buffer was not recorded for this queue.");
 		}
 
@@ -2026,7 +2032,13 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		let vulkan_pipeline_layout_handle = pipeline_layout.pipeline_layout;
 
 		for &(descriptor_set_index, descriptor_set_handle, _) in &s {
-			self.refresh_image_descriptors_for_set(descriptor_set_handle);
+			if !self.bound_descriptor_sets_in_recording.contains(&descriptor_set_handle) {
+				// Updating a descriptor set after it has been bound invalidates this command buffer unless
+				// the set layout was created with UPDATE_AFTER_BIND. Keep this legacy refresh limited to
+				// the first use of each set in this recording.
+				self.refresh_image_descriptors_for_set(descriptor_set_handle);
+				self.bound_descriptor_sets_in_recording.push(descriptor_set_handle);
+			}
 
 			if (descriptor_set_index as usize) < self.bound_descriptor_set_handles.len() {
 				self.bound_descriptor_set_handles[descriptor_set_index as usize] =
@@ -2043,7 +2055,10 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 
 		let partitions = partition(&self.bound_descriptor_set_handles, |e| e.0 as usize);
 
-		// Always rebind all descriptor sets set by the user as previously bound descriptor sets might have been invalidated by a pipeline layout change
+		// Always rebind all descriptor sets set by the user as previously bound descriptor sets might have been invalidated by a pipeline layout change.
+		// Descriptor bindings are scoped to the active bind point. Binding compute-only descriptor sets to graphics leaves
+		// storage/read image descriptors visible to later draws and makes Vulkan validate resources the graphics pipeline does
+		// not actually use.
 		for (base_index, descriptor_sets) in partitions {
 			let base_index = base_index as u32;
 
@@ -2053,28 +2068,14 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 				.collect::<Vec<_>>();
 
 			unsafe {
-				for bp in [vk::PipelineBindPoint::GRAPHICS, vk::PipelineBindPoint::COMPUTE] {
-					// TODO: do this for all needed bind points
-					self.device.device.cmd_bind_descriptor_sets(
-						command_buffer.command_buffer,
-						bp,
-						vulkan_pipeline_layout_handle,
-						base_index,
-						&descriptor_sets,
-						&[],
-					);
-				}
-
-				if self.pipeline_bind_point == vk::PipelineBindPoint::RAY_TRACING_KHR {
-					self.device.device.cmd_bind_descriptor_sets(
-						command_buffer.command_buffer,
-						vk::PipelineBindPoint::RAY_TRACING_KHR,
-						vulkan_pipeline_layout_handle,
-						base_index,
-						&descriptor_sets,
-						&[],
-					);
-				}
+				self.device.device.cmd_bind_descriptor_sets(
+					command_buffer.command_buffer,
+					self.pipeline_bind_point,
+					vulkan_pipeline_layout_handle,
+					base_index,
+					&descriptor_sets,
+					&[],
+				);
 			}
 		}
 

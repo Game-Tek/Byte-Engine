@@ -3,7 +3,6 @@ use std::boxed::Box as StdBox;
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 	frame::Frame as _,
 	types::Size as _,
 };

@@ -1,7 +1,11 @@
 /// The `Device` struct carries the selected Vulkan device until a rendering context is created.
 pub struct Device {
-	pub inner: InnerDevice,
+	pub inner: Option<InnerDevice>,
+	device: ash::Device,
 }
+
+// Vulkan device handles are thread-safe, and detached resource creation uses `Device` with no `InnerDevice`.
+unsafe impl Send for Device {}
 
 impl Device {
 	pub fn new(
@@ -12,9 +16,17 @@ impl Device {
 			&mut Option<graphics_hardware_interface::QueueHandle>,
 		)],
 	) -> Result<Self, &'static str> {
+		let inner = InnerDevice::new(settings, instance, queues)?;
+		let device = inner.device.clone();
+
 		Ok(Self {
-			inner: InnerDevice::new(settings, instance, queues)?,
+			inner: Some(inner),
+			device,
 		})
+	}
+
+	pub(crate) fn detached(device: ash::Device) -> Self {
+		Self { inner: None, device }
 	}
 }
 
@@ -437,12 +449,26 @@ impl InnerDevice {
 				})?
 		};
 
+		// Multiple GHI queue requests can resolve to the same Vulkan queue, so they must share one lock.
+		// This mutex is a temporary external synchronization fix; prefer internally synchronized Vulkan queues when available.
+		let mut shared_queues = Vec::<(u32, std::sync::Arc<std::sync::Mutex<vk::Queue>>)>::new();
 		let queues = queues
 			.iter_mut()
 			.zip(queue_family_indices.iter().copied())
 			.enumerate()
 			.map(|(index, ((_, queue_handle), queue_family_index))| {
-				let vk_queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+				let vk_queue = if let Some((_, vk_queue)) = shared_queues
+					.iter()
+					.find(|(stored_queue_family_index, _)| *stored_queue_family_index == queue_family_index)
+				{
+					vk_queue.clone()
+				} else {
+					let vk_queue = std::sync::Arc::new(std::sync::Mutex::new(unsafe {
+						device.get_device_queue(queue_family_index, 0)
+					}));
+					shared_queues.push((queue_family_index, vk_queue.clone()));
+					vk_queue
+				};
 
 				**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
 
@@ -811,14 +837,15 @@ pub struct InnerDevice {
 	pub(super) swapchain_proxy_supports_formatless_storage_write: bool,
 }
 
-impl Drop for InnerDevice {
-	fn drop(&mut self) {
-		unsafe {
-			self.device.device_wait_idle().expect("Failed to wait for device idle");
-			self.device.destroy_device(None);
-		}
-	}
-}
+// TODO: re-implement when we use a Box
+// impl Drop for InnerDevice {
+// 	fn drop(&mut self) {
+// 		unsafe {
+// 			self.device.device_wait_idle().expect("Failed to wait for device idle");
+// 			self.device.destroy_device(None);
+// 		}
+// 	}
+// }
 
 impl std::ops::Deref for InnerDevice {
 	type Target = ash::Device;
@@ -830,14 +857,14 @@ impl std::ops::Deref for InnerDevice {
 
 impl crate::device::Device for Device {
 	type Context = Context;
-	type RasterPipeline = crate::implementation::RasterPipeline;
-	type ComputePipeline = crate::implementation::ComputePipeline;
-	type Image = crate::implementation::FactoryImage;
-	type Sampler = crate::implementation::FactorySampler;
+	type RasterPipeline = RasterPipeline;
+	type ComputePipeline = ComputePipeline;
+	type Image = FactoryImage;
+	type Sampler = FactorySampler;
 
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
-		self.inner.get_log_count() > 0
+		self.inner.as_ref().is_some_and(InnerDevice::has_errors)
 	}
 
 	fn create_context(self) -> Result<Self::Context, &'static str> {
@@ -847,27 +874,63 @@ impl crate::device::Device for Device {
 	fn create_shader(
 		&mut self,
 		_name: Option<&str>,
-		_shader_source_type: crate::shader::Sources,
-		_stage: crate::ShaderTypes,
-		_shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		shader_source_type: crate::shader::Sources,
+		stage: crate::ShaderTypes,
+		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
 	) -> Result<crate::ShaderHandle, ()> {
+		let shader = match shader_source_type {
+			crate::shader::Sources::SPIRV(spirv) => {
+				if spirv.as_ptr().is_aligned_to(std::mem::align_of::<u32>()) {
+					Cow::Borrowed(unsafe { std::slice::from_raw_parts(spirv.as_ptr() as *const u32, spirv.len() / 4) })
+				} else {
+					let mut words = Vec::with_capacity(spirv.len() / 4);
+					for chunk in spirv.chunks_exact(4) {
+						words.push(u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+					}
+					Cow::Owned(words)
+				}
+			}
+			crate::shader::Sources::DXIL(_)
+			| crate::shader::Sources::HLSL { .. }
+			| crate::shader::Sources::MTL { .. }
+			| crate::shader::Sources::MTLB { .. } => return Err(()),
+		};
+
+		let _ = (shader, stage, shader_binding_descriptors);
+
 		Err(())
 	}
 
 	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		crate::implementation::RasterPipeline
+		RasterPipeline
 	}
 
 	fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		crate::implementation::ComputePipeline
+		panic!("Vulkan detached compute pipeline creation requires context-owned shaders and descriptor set layouts. The most likely cause is that a pipeline factory was used without the Vulkan context factory path.");
 	}
 
-	fn build_image(&mut self, _builder: crate::image::Builder) -> Self::Image {
-		crate::implementation::FactoryImage
+	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
+		FactoryImage {
+			name: builder.name.map(str::to_owned),
+			extent: builder.extent,
+			format: builder.format,
+			resource_uses: builder.resource_uses,
+			device_accesses: builder.device_accesses,
+			use_case: builder.use_case,
+			array_layers: builder.array_layers,
+		}
 	}
 
-	fn build_sampler(&mut self, _builder: crate::sampler::Builder) -> Self::Sampler {
-		crate::implementation::FactorySampler
+	fn build_sampler(&mut self, builder: crate::sampler::Builder) -> Self::Sampler {
+		FactorySampler {
+			filtering_mode: builder.filtering_mode,
+			reduction_mode: builder.reduction_mode,
+			mip_map_mode: builder.mip_map_mode,
+			addressing_mode: builder.addressing_mode,
+			anisotropy: builder.anisotropy,
+			min_lod: builder.min_lod,
+			max_lod: builder.max_lod,
+		}
 	}
 }
 
@@ -889,6 +952,385 @@ impl InnerDevice {
 			self.device.device_wait_idle().unwrap();
 		}
 	}
+
+	/// Creates a Vulkan buffer and reports the memory requirements needed to bind it.
+	pub(super) fn create_vulkan_buffer(
+		&self,
+		name: Option<&str>,
+		size: usize,
+		usage: vk::BufferUsageFlags,
+	) -> MemoryBackedResourceCreationResult<vk::Buffer> {
+		let buffer_create_info = vk::BufferCreateInfo::default()
+			.size(size as u64)
+			.sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.usage(usage);
+
+		let buffer = unsafe { self.device.create_buffer(&buffer_create_info, None).expect("No buffer") };
+
+		self.set_name(buffer, name);
+
+		let memory_requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
+
+		MemoryBackedResourceCreationResult {
+			resource: buffer,
+			size: memory_requirements.size as usize,
+			memory_flags: memory_requirements.memory_type_bits,
+		}
+	}
+
+	/// Creates a Vulkan image and reports the memory requirements needed to bind it.
+	pub(super) fn create_vulkan_texture(
+		&self,
+		name: Option<&str>,
+		extent: Extent,
+		format: crate::Formats,
+		resource_uses: crate::Uses,
+		mip_levels: u32,
+		array_layers: Option<NonZeroU32>,
+	) -> MemoryBackedResourceCreationResult<vk::Image> {
+		let image_create_info = vk::ImageCreateInfo::default()
+			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
+			.format(to_format(format))
+			.extent(extent_into_vk_extent(extent))
+			.mip_levels(mip_levels)
+			.array_layers(array_layers.map(|e| e.get()).unwrap_or(1))
+			.samples(vk::SampleCountFlags::TYPE_1)
+			.tiling(vk::ImageTiling::OPTIMAL)
+			.usage(into_vk_image_usage_flags(resource_uses, format))
+			.sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.initial_layout(vk::ImageLayout::UNDEFINED);
+
+		let image = unsafe { self.device.create_image(&image_create_info, None).expect("No image") };
+
+		let memory_requirements = unsafe { self.device.get_image_memory_requirements(image) };
+
+		self.set_name(image, name);
+
+		MemoryBackedResourceCreationResult {
+			resource: image.to_owned(),
+			size: memory_requirements.size as usize,
+			memory_flags: memory_requirements.memory_type_bits,
+		}
+	}
+
+	/// Creates a Vulkan sampler from the resolved sampler builder parameters.
+	pub(super) fn create_vulkan_sampler(
+		&self,
+		min_mag_filter: vk::Filter,
+		reduction_mode: vk::SamplerReductionMode,
+		mip_map_filter: vk::SamplerMipmapMode,
+		address_mode: vk::SamplerAddressMode,
+		anisotropy: Option<f32>,
+		min_lod: f32,
+		max_lod: f32,
+	) -> vk::Sampler {
+		let mut vk_sampler_reduction_mode_create_info =
+			vk::SamplerReductionModeCreateInfo::default().reduction_mode(reduction_mode);
+
+		let sampler_create_info = vk::SamplerCreateInfo::default()
+			.push_next(&mut vk_sampler_reduction_mode_create_info)
+			.mag_filter(min_mag_filter)
+			.min_filter(min_mag_filter)
+			.mipmap_mode(mip_map_filter)
+			.address_mode_u(address_mode)
+			.address_mode_v(address_mode)
+			.address_mode_w(address_mode)
+			.border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK)
+			.anisotropy_enable(anisotropy.is_some())
+			.max_anisotropy(anisotropy.unwrap_or(0f32))
+			.compare_enable(false)
+			.compare_op(vk::CompareOp::NEVER)
+			.min_lod(min_lod)
+			.max_lod(max_lod)
+			.mip_lod_bias(0.0)
+			.unnormalized_coordinates(false);
+
+		unsafe { self.device.create_sampler(&sampler_create_info, None).expect("No sampler") }
+	}
+
+	/// Creates a Vulkan fence with the requested initial signal state.
+	pub(super) fn create_vulkan_fence(&self, signaled: bool) -> vk::Fence {
+		let fence_create_info = vk::FenceCreateInfo::default().flags(
+			vk::FenceCreateFlags::empty()
+				| if signaled {
+					vk::FenceCreateFlags::SIGNALED
+				} else {
+					vk::FenceCreateFlags::empty()
+				},
+		);
+		unsafe { self.device.create_fence(&fence_create_info, None).expect("No fence") }
+	}
+
+	/// Assigns a Vulkan debug name when debug utilities are available.
+	pub(super) fn set_name<T: vk::Handle>(&self, handle: T, name: Option<&str>) {
+		#[cfg(debug_assertions)]
+		if let Some(name) = name {
+			let name = std::ffi::CString::new(name).unwrap();
+			let name = name.as_c_str();
+			unsafe {
+				if let Some(debug_utils) = &self.debug_utils {
+					debug_utils
+						.set_debug_utils_object_name(
+							&vk::DebugUtilsObjectNameInfoEXT::default()
+								.object_handle(handle)
+								.object_name(name),
+						)
+						.ok();
+					// Ignore errors, if the name can't be set, it's not a big deal.
+				}
+			}
+		}
+	}
+
+	/// Creates a Vulkan semaphore and assigns its debug name.
+	pub(super) fn create_vulkan_semaphore(&self, name: Option<&str>, _: bool) -> vk::Semaphore {
+		let semaphore_create_info = vk::SemaphoreCreateInfo::default();
+		let handle = unsafe {
+			self.device
+				.create_semaphore(&semaphore_create_info, None)
+				.expect("No semaphore")
+		};
+
+		self.set_name(handle, name);
+
+		handle
+	}
+
+	/// Creates a Vulkan image view for images with view-capable usage flags.
+	pub(super) fn create_vulkan_image_view(
+		&self,
+		name: Option<&str>,
+		texture: &vk::Image,
+		format: crate::Formats,
+		usage: vk::ImageUsageFlags,
+		_mip_levels: u32,
+		base_layer: u32,
+		layer_count: Option<NonZeroU32>,
+	) -> vk::ImageView {
+		if !Self::image_usage_allows_views(usage) {
+			return vk::ImageView::null();
+		}
+
+		let image_view_create_info = vk::ImageViewCreateInfo::default()
+			.image(*texture)
+			.view_type(if layer_count.is_none() {
+				vk::ImageViewType::TYPE_2D
+			} else {
+				vk::ImageViewType::TYPE_2D_ARRAY
+			})
+			.format(to_format(format))
+			.components(vk::ComponentMapping {
+				r: vk::ComponentSwizzle::IDENTITY,
+				g: vk::ComponentSwizzle::IDENTITY,
+				b: vk::ComponentSwizzle::IDENTITY,
+				a: vk::ComponentSwizzle::IDENTITY,
+			})
+			.subresource_range(vk::ImageSubresourceRange {
+				aspect_mask: if format != crate::Formats::Depth32 {
+					vk::ImageAspectFlags::COLOR
+				} else {
+					vk::ImageAspectFlags::DEPTH
+				},
+				base_mip_level: 0,
+				level_count: 1,
+				base_array_layer: base_layer,
+				layer_count: layer_count.map(|e| e.get()).unwrap_or(1),
+			});
+
+		let vk_image_view = unsafe {
+			self.device
+				.create_image_view(&image_view_create_info, None)
+				.expect("No image view")
+		};
+
+		self.set_name(vk_image_view, name);
+
+		vk_image_view
+	}
+
+	pub(super) fn image_usage_allows_views(usage: vk::ImageUsageFlags) -> bool {
+		usage.intersects(
+			vk::ImageUsageFlags::SAMPLED
+				| vk::ImageUsageFlags::STORAGE
+				| vk::ImageUsageFlags::COLOR_ATTACHMENT
+				| vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+				| vk::ImageUsageFlags::TRANSIENT_ATTACHMENT
+				| vk::ImageUsageFlags::INPUT_ATTACHMENT
+				| vk::ImageUsageFlags::FRAGMENT_SHADING_RATE_ATTACHMENT_KHR
+				| vk::ImageUsageFlags::FRAGMENT_DENSITY_MAP_EXT,
+		)
+	}
+}
+
+/// The `ComputePipeline` struct carries a Vulkan compute pipeline before it has a public GHI handle.
+pub struct ComputePipeline {
+	pub(crate) pipeline: vk::Pipeline,
+	pub(crate) layout: crate::vulkan::PipelineLayout,
+	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
+	pub(crate) resource_access: Vec<((u32, u32), (crate::Stages, crate::AccessPolicies))>,
+}
+
+unsafe impl Send for ComputePipeline {}
+
+/// The `RasterPipeline` struct marks detached Vulkan raster pipelines for future support.
+pub struct RasterPipeline;
+
+/// The `FactoryImage` struct stores Vulkan image creation parameters until a context interns them.
+pub struct FactoryImage {
+	pub(crate) name: Option<String>,
+	pub(crate) extent: Extent,
+	pub(crate) format: crate::Formats,
+	pub(crate) resource_uses: crate::Uses,
+	pub(crate) device_accesses: crate::DeviceAccesses,
+	pub(crate) use_case: crate::UseCases,
+	pub(crate) array_layers: Option<NonZeroU32>,
+}
+
+/// The `FactorySampler` struct stores Vulkan sampler creation parameters until a context interns them.
+pub struct FactorySampler {
+	pub(crate) filtering_mode: crate::FilteringModes,
+	pub(crate) reduction_mode: crate::SamplingReductionModes,
+	pub(crate) mip_map_mode: crate::FilteringModes,
+	pub(crate) addressing_mode: crate::SamplerAddressingModes,
+	pub(crate) anisotropy: Option<f32>,
+	pub(crate) min_lod: f32,
+	pub(crate) max_lod: f32,
+}
+
+impl Device {
+	/// Creates a detached compute pipeline using context-owned shader modules and descriptor set layouts without storing them on the detached device.
+	pub(crate) fn create_compute_pipeline_with_resources(
+		&self,
+		builder: crate::pipelines::compute::Builder,
+		descriptor_set_layouts: &[DescriptorSetLayout],
+		shaders: &[crate::vulkan::Shader],
+	) -> ComputePipeline {
+		let layout = self.build_pipeline_layout(
+			builder.descriptor_set_templates,
+			builder.push_constant_ranges,
+			descriptor_set_layouts,
+		);
+		let shader_parameter = builder.shader;
+		let shader = &shaders[shader_parameter.handle.0 as usize];
+		let (specialization_entries_buffer, specialization_map_entries) =
+			build_specialization_entries(shader_parameter.specialization_map);
+		let specialization_info = vk::SpecializationInfo::default()
+			.data(&specialization_entries_buffer)
+			.map_entries(&specialization_map_entries);
+		let create_infos = [vk::ComputePipelineCreateInfo::default()
+			.stage(
+				vk::PipelineShaderStageCreateInfo::default()
+					.stage(vk::ShaderStageFlags::COMPUTE)
+					.module(shader.shader)
+					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+					.specialization_info(&specialization_info),
+			)
+			.layout(layout.pipeline_layout)];
+		let pipeline = unsafe {
+			self.device
+				.create_compute_pipelines(vk::PipelineCache::null(), &create_infos, None)
+				.expect("Vulkan compute pipeline creation failed. The most likely cause is that shader specialization or pipeline layout creation failed.")[0]
+		};
+		let resource_access = shader
+			.shader_binding_descriptors
+			.iter()
+			.map(|descriptor| {
+				(
+					(descriptor.set, descriptor.binding),
+					(crate::Stages::COMPUTE, descriptor.access),
+				)
+			})
+			.collect::<Vec<_>>();
+		let mut shader_handles = HashMap::default();
+		shader_handles.insert(*shader_parameter.handle, [0; 32]);
+
+		ComputePipeline {
+			pipeline,
+			layout,
+			shader_handles,
+			resource_access,
+		}
+	}
+
+	fn build_pipeline_layout(
+		&self,
+		descriptor_set_template_handles: &[graphics_hardware_interface::DescriptorSetTemplateHandle],
+		push_constant_ranges: &[crate::pipelines::PushConstantRange],
+		stored_descriptor_set_layouts: &[DescriptorSetLayout],
+	) -> crate::vulkan::PipelineLayout {
+		// Resolve template handles against the caller-provided layouts so the factory device stays stateless.
+		let descriptor_set_layouts = descriptor_set_template_handles
+			.iter()
+			.map(|handle| stored_descriptor_set_layouts[handle.0 as usize].descriptor_set_layout)
+			.collect::<Vec<_>>();
+		let default_push_constant_range;
+		let push_constant_ranges = if push_constant_ranges.is_empty() {
+			default_push_constant_range = [crate::pipelines::PushConstantRange::new(0, 128)];
+			default_push_constant_range.as_slice()
+		} else {
+			push_constant_ranges
+		};
+		let push_constant_stages = vk::ShaderStageFlags::VERTEX
+			| vk::ShaderStageFlags::FRAGMENT
+			| vk::ShaderStageFlags::COMPUTE
+			| vk::ShaderStageFlags::MESH_EXT;
+		let push_constant_ranges_vk = push_constant_ranges
+			.iter()
+			.map(|range| {
+				vk::PushConstantRange::default()
+					.stage_flags(push_constant_stages)
+					.offset(range.offset)
+					.size(range.size)
+			})
+			.collect::<Vec<_>>();
+		let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
+			.set_layouts(&descriptor_set_layouts)
+			.push_constant_ranges(&push_constant_ranges_vk);
+		let pipeline_layout = unsafe {
+			self.device
+				.create_pipeline_layout(&pipeline_layout_create_info, None)
+				.expect("Vulkan detached pipeline layout creation failed. The most likely cause is that a descriptor set template handle was invalid.")
+		};
+		let descriptor_set_template_indices = descriptor_set_template_handles
+			.iter()
+			.enumerate()
+			.map(|(index, handle)| (*handle, index as u32))
+			.collect();
+
+		crate::vulkan::PipelineLayout {
+			pipeline_layout,
+			descriptor_set_template_indices,
+		}
+	}
+}
+
+fn build_specialization_entries(
+	specialization_map: &[crate::pipelines::SpecializationMapEntry],
+) -> (Vec<u8>, Vec<vk::SpecializationMapEntry>) {
+	let mut data = Vec::<u8>::with_capacity(256);
+	let mut entries = Vec::with_capacity(48);
+
+	for specialization_map_entry in specialization_map {
+		let scalar_count = match specialization_map_entry.get_type().as_str() {
+			"bool" | "u32" | "f32" => 1,
+			"vec2f" => 2,
+			"vec3f" => 3,
+			"vec4f" => 4,
+			_ => panic!("Unsupported Vulkan specialization constant type. The most likely cause is that the Vulkan backend was not updated for a new specialization entry type."),
+		};
+		let offset = data.len() as u32;
+		for i in 0..scalar_count {
+			entries.push(
+				vk::SpecializationMapEntry::default()
+					.constant_id(specialization_map_entry.get_constant_id() + i)
+					.offset(offset + i * 4)
+					.size(4),
+			);
+		}
+		data.extend_from_slice(specialization_map_entry.get_data());
+	}
+
+	(data, entries)
 }
 
 use std::{borrow::Cow, num::NonZeroU32, u64};

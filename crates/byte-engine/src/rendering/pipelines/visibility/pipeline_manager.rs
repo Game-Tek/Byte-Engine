@@ -281,9 +281,10 @@ impl VisibilityPipelineManager {
 					id,
 					index,
 					pipeline,
+					pending_pipeline,
 					alpha,
 					textures,
-				} => self.adopt_material_completion(frame, id, index, pipeline, alpha, textures),
+				} => self.adopt_material_completion(frame, id, index, pipeline, pending_pipeline, alpha, textures),
 				VisibilityResourceCompletion::ImageReady {
 					key,
 					index,
@@ -335,7 +336,8 @@ impl VisibilityPipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		id: String,
 		index: u32,
-		pipeline: Option<ghi::PipelineHandle>,
+		mut pipeline: Option<ghi::PipelineHandle>,
+		pending_pipeline: Option<PendingMaterialPipeline>,
 		alpha: bool,
 		textures: Vec<Option<(String, u32)>>,
 	) {
@@ -995,6 +997,7 @@ use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 
 use ::core::slice::SlicePattern;
+use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use ghi::{
 	command_buffer::{
@@ -1002,10 +1005,6 @@ use ghi::{
 		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
 	graphics_hardware_interface,
-};
-use ghi::{
-	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 };
 use log::{error, warn};
 use math::{mat::MatInverse as _, ShaderMatrix4, ShaderMatrix4x3, Vector3};
@@ -1034,7 +1033,8 @@ use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::pipelines::visibility::gpu_vertex_data_manager::GPUVertexDataManager;
 use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
 use crate::rendering::pipelines::visibility::resource_manager::{
-	MaterialPipelineConfig, VisibilityMeshKey, VisibilityPipelineResourceManagerClient, VisibilityResourceCompletion,
+	MaterialPipelineConfig, PendingMaterialPipeline, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
+	VisibilityResourceCompletion,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::{

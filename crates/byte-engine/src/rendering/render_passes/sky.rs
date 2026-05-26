@@ -1,7 +1,6 @@
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 	frame::Frame as _,
 };
 use math::{mat::MatInverse as _, ShaderMatrix4, Vector3, Vector4};

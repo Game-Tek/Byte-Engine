@@ -28,8 +28,8 @@ pub struct Context {
 
 	pub(super) descriptors: HashMap<DescriptorSetHandle, HashMap<u32, HashMap<u32, Descriptor>>>,
 
-	/// Maps a descriptor set and binding to N resources that it references.
-	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<PrivateHandles>>,
+	/// Maps a descriptor set binding element to N resources that it references.
+	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32, u32), HashSet<PrivateHandles>>,
 
 	pub settings: crate::device::Features,
 
@@ -62,7 +62,7 @@ pub struct Context {
 
 impl Context {
 	pub(super) fn new(device: Device) -> Result<Self, &'static str> {
-		let mut device = device.inner;
+		let mut device = device.inner.ok_or("Failed to create a Vulkan context. The most likely cause is that a detached device was used as the primary graphics device.")?;
 		let memory_properties = device.memory_properties;
 		let queues = std::mem::take(&mut device.queues);
 		let settings = device.settings.clone();
@@ -140,6 +140,7 @@ impl Context {
 		let command_buffer_handle = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
 
 		let queue = &self.queues[queue_handle.0 as usize];
+		let vk_queue = queue.vk_queue.clone();
 
 		let command_buffers = (0..self.frames)
 			.map(|_| {
@@ -169,7 +170,7 @@ impl Context {
 				self.set_name(command_buffer, name);
 
 				CommandBufferInternal {
-					vk_queue: queue.vk_queue,
+					vk_queue: vk_queue.clone(),
 					command_pool,
 					command_buffer,
 				}
@@ -185,128 +186,27 @@ impl Context {
 	}
 
 	pub(crate) fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
-		let writes = descriptor_set_writes
-			.iter()
-			.filter_map(|descriptor_set_write| {
-				let binding_handles = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0).get_all(&self.bindings);
+		let writes = descriptor_set_writes.iter().flat_map(|descriptor_set_write| {
+			let binding_handles = DescriptorSetBindingHandle(descriptor_set_write.binding_handle.0).get_all(&self.bindings);
 
-				// assert!(descriptor_set_write.array_element < binding.count, "Binding index out of range.");
+			// assert!(descriptor_set_write.array_element < binding.count, "Binding index out of range.");
 
-				match descriptor_set_write.descriptor {
-					crate::descriptors::WriteData::Buffer { handle, size } => {
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+			match descriptor_set_write.descriptor {
+				crate::descriptors::WriteData::Buffer { .. }
+				| crate::descriptors::WriteData::Image { .. }
+				| crate::descriptors::WriteData::CombinedImageSampler { .. }
+				| crate::descriptors::WriteData::Sampler(_)
+				| crate::descriptors::WriteData::Swapchain(_) => {}
+				_ => unimplemented!(),
+			}
 
-						for (i, &binding_handle) in binding_handles.iter().enumerate() {
-							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-
-							let buffer_handle = self
-								.buffers
-								.nth_handle(handle, (i as i32 - offset).rem_euclid(self.frames as i32) as usize)
-								.unwrap();
-
-							writes.push(
-								DescriptorWrite::new(
-									Descriptors::Buffer {
-										handle: buffer_handle,
-										size,
-									},
-									binding_handle,
-								)
-								.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					crate::descriptors::WriteData::Image { handle, layout } => {
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						for (i, &binding_handle) in binding_handles.iter().enumerate() {
-							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-							let image_handle = self.resolve_descriptor_image_handle(
-								graphics_hardware_interface::ImageHandle(handle),
-								i,
-								offset,
-							);
-
-							writes.push(
-								DescriptorWrite::new(
-									Descriptors::Image {
-										handle: image_handle,
-										layout,
-									},
-									binding_handle,
-								)
-								.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					crate::descriptors::WriteData::CombinedImageSampler {
-						image_handle,
-						sampler_handle,
-						layout,
-						layer,
-					} => {
-						let sampler_handle = SamplerHandle(sampler_handle.0);
-
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						for (i, &binding_handle) in binding_handles.iter().enumerate() {
-							let offset = descriptor_set_write.frame_offset.unwrap_or(0);
-							let image_handle = self.resolve_descriptor_image_handle(
-								graphics_hardware_interface::ImageHandle(image_handle),
-								i,
-								offset,
-							);
-
-							writes.push(
-								DescriptorWrite::new(
-									Descriptors::CombinedImageSampler {
-										image_handle,
-										layout,
-										sampler_handle,
-										layer,
-									},
-									binding_handle,
-								)
-								.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					crate::descriptors::WriteData::Sampler(handle) => {
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						let sampler_handle = SamplerHandle(handle.0);
-
-						for (_, &binding_handle) in binding_handles.iter().enumerate() {
-							writes.push(
-								DescriptorWrite::new(Descriptors::Sampler { handle: sampler_handle }, binding_handle)
-									.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					crate::descriptors::WriteData::Swapchain(handle) => {
-						let mut writes = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-						for (_, &binding_handle) in binding_handles.iter().enumerate() {
-							writes.push(
-								DescriptorWrite::new(Descriptors::Swapchain { handle }, binding_handle)
-									.index(descriptor_set_write.array_element),
-							);
-						}
-
-						Some(writes)
-					}
-					_ => unimplemented!(),
-				}
-			})
-			.flatten();
+			binding_handles
+				.into_iter()
+				.enumerate()
+				.filter_map(|(sequence_index, binding_handle)| {
+					self.resolve_descriptor_write_for_sequence(descriptor_set_write, binding_handle, sequence_index)
+				})
+		});
 
 		let writes = self.produce_writes(writes);
 		self.process_write_results(writes);
@@ -814,15 +714,39 @@ impl Context {
 		sequence_index: usize,
 		frame_offset: i32,
 	) -> ImageHandle {
-		let frame_index = (sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize;
+		let frame_index = self.frame_index_with_offset(sequence_index, frame_offset);
 
 		if let Some(handle) = self.get_swapchain_image_for_sequence(handle, frame_index) {
 			return handle;
 		}
 
-		let handles = ImageHandle(handle.0 .0).get_all(&self.images);
-		let index = (sequence_index as i32 - frame_offset).rem_euclid(handles.len() as i32) as usize;
-		handles[index]
+		self.image_handle_for_sequence(ImageHandle(handle.0 .0), frame_index)
+	}
+
+	/// Resolves a frame sequence and offset into a valid per-frame resource index.
+	fn frame_index_with_offset(&self, sequence_index: usize, frame_offset: i32) -> usize {
+		(sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize
+	}
+
+	/// Selects the frame-local image handle for a chained image resource.
+	fn image_handle_for_sequence(&self, handle: ImageHandle, sequence_index: usize) -> ImageHandle {
+		let root_handle = handle.root(&self.images);
+		let handles = root_handle.get_all(&self.images);
+		handles[sequence_index.rem_euclid(handles.len())]
+	}
+
+	/// Selects the frame-local descriptor binding handle for a chained binding resource.
+	fn descriptor_binding_for_sequence(
+		&self,
+		handle: graphics_hardware_interface::DescriptorSetBindingHandle,
+		sequence_index: usize,
+	) -> Option<DescriptorSetBindingHandle> {
+		let binding_handles = DescriptorSetBindingHandle(handle.0).get_all(&self.bindings);
+		if binding_handles.is_empty() {
+			return None;
+		}
+
+		Some(binding_handles[sequence_index.rem_euclid(binding_handles.len())])
 	}
 
 	fn descriptor_targets_swapchain_image(&self, descriptor: &crate::descriptors::WriteData) -> bool {
@@ -834,6 +758,58 @@ impl Context {
 			crate::descriptors::WriteData::Swapchain(_) => true,
 			_ => false,
 		}
+	}
+
+	/// Resolves a public descriptor write into the frame-local Vulkan write used by one descriptor set.
+	fn resolve_descriptor_write_for_sequence(
+		&self,
+		descriptor_set_write: &crate::descriptors::Write,
+		binding_handle: DescriptorSetBindingHandle,
+		sequence_index: usize,
+	) -> Option<DescriptorWrite> {
+		let frame_offset = descriptor_set_write.frame_offset.unwrap_or(0);
+		let write = match descriptor_set_write.descriptor {
+			crate::descriptors::WriteData::Buffer { handle, size } => {
+				let handle = self
+					.buffers
+					.nth_handle(handle, self.frame_index_with_offset(sequence_index, frame_offset))
+					.unwrap();
+				Descriptors::Buffer { handle, size }
+			}
+			crate::descriptors::WriteData::Image { handle, layout } => {
+				let handle = self.resolve_descriptor_image_handle(
+					graphics_hardware_interface::ImageHandle(handle),
+					sequence_index,
+					frame_offset,
+				);
+				Descriptors::Image { handle, layout }
+			}
+			crate::descriptors::WriteData::CombinedImageSampler {
+				image_handle,
+				sampler_handle,
+				layout,
+				layer,
+			} => {
+				let image_handle = self.resolve_descriptor_image_handle(
+					graphics_hardware_interface::ImageHandle(image_handle),
+					sequence_index,
+					frame_offset,
+				);
+				Descriptors::CombinedImageSampler {
+					image_handle,
+					sampler_handle: SamplerHandle(sampler_handle.0),
+					layout,
+					layer,
+				}
+			}
+			crate::descriptors::WriteData::Sampler(handle) => Descriptors::Sampler {
+				handle: SamplerHandle(handle.0),
+			},
+			crate::descriptors::WriteData::Swapchain(handle) => Descriptors::Swapchain { handle },
+			_ => return None,
+		};
+
+		Some(DescriptorWrite::new(write, binding_handle).index(descriptor_set_write.array_element))
 	}
 
 	fn descriptor_set_sequence_index(&self, descriptor_set_handle: DescriptorSetHandle) -> usize {
@@ -854,6 +830,19 @@ impl Context {
 		let image_index = swapchain.acquired_image_indices[sequence_index] as usize;
 
 		swapchain.images[image_index]
+	}
+
+	/// Selects the Vulkan image view a descriptor should bind for a full image or layer.
+	fn descriptor_image_view(image: &Image, layer: Option<u32>) -> vk::ImageView {
+		if let Some(layer) = layer {
+			return image.image_views[layer as usize];
+		}
+
+		if !image.full_image_view.is_null() {
+			image.full_image_view
+		} else {
+			image.image_views[0]
+		}
 	}
 
 	pub(crate) fn update_swapchain_descriptors_for_sequence(
@@ -887,11 +876,7 @@ impl Context {
 		let image_index = swapchain.acquired_image_indices[sequence_index] as usize;
 		let image_handle = swapchain.images[image_index];
 		let image = &self.images[image_handle.0 as usize];
-		let image_view = if !image.full_image_view.is_null() {
-			image.full_image_view
-		} else {
-			image.image_views[0]
-		};
+		let image_view = Self::descriptor_image_view(image, None);
 
 		if image.image.is_null() || image_view.is_null() {
 			eprintln!(
@@ -987,78 +972,27 @@ impl Context {
 					self.add_descriptor_writes_for_update_buffer_descriptors(*handle, &mut descriptor_writes);
 				}
 				Tasks::UpdateDescriptor { descriptor_write } => {
-					let binding_handles = DescriptorSetBindingHandle(descriptor_write.binding_handle.0).get_all(&self.bindings);
-
-					if binding_handles.is_empty() {
+					let Some(binding) =
+						self.descriptor_binding_for_sequence(descriptor_write.binding_handle, sequence_index as usize)
+					else {
 						return false;
-					}
-
-					let binding = binding_handles[(sequence_index as usize).rem_euclid(binding_handles.len())];
-					let frame_offset = descriptor_write.frame_offset.unwrap_or(0);
-					let targets_swapchain = self.descriptor_targets_swapchain_image(&descriptor_write.descriptor);
-
-					let new_descriptor_write = match descriptor_write.descriptor {
-						crate::descriptors::WriteData::Buffer { handle, size } => {
-							let handle = self
-								.buffers
-								.nth_handle(
-									handle,
-									(sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize,
-								)
-								.unwrap();
-							Some(DescriptorWrite::new(Descriptors::Buffer { handle, size }, binding))
-						}
-						crate::descriptors::WriteData::Image { handle, layout } => {
-							let handle = self.resolve_descriptor_image_handle(
-								graphics_hardware_interface::ImageHandle(handle),
-								sequence_index as usize,
-								frame_offset,
-							);
-							Some(DescriptorWrite::new(Descriptors::Image { handle, layout }, binding))
-						}
-						crate::descriptors::WriteData::CombinedImageSampler {
-							image_handle,
-							sampler_handle,
-							layout,
-							layer,
-						} => {
-							let image_handle = self.resolve_descriptor_image_handle(
-								graphics_hardware_interface::ImageHandle(image_handle),
-								sequence_index as usize,
-								frame_offset,
-							);
-							Some(DescriptorWrite::new(
-								Descriptors::CombinedImageSampler {
-									image_handle,
-									sampler_handle: SamplerHandle(sampler_handle.0),
-									layout,
-									layer,
-								},
-								binding,
-							))
-						}
-						crate::descriptors::WriteData::Sampler(sampler_handle) => Some(DescriptorWrite::new(
-							Descriptors::Sampler {
-								handle: SamplerHandle(sampler_handle.0),
-							},
-							binding,
-						)),
-						crate::descriptors::WriteData::Swapchain(handle) => {
-							Some(DescriptorWrite::new(Descriptors::Swapchain { handle }, binding))
-						}
-						_ => None,
 					};
+
+					let targets_swapchain = self.descriptor_targets_swapchain_image(&descriptor_write.descriptor);
+					let new_descriptor_write =
+						self.resolve_descriptor_write_for_sequence(descriptor_write, binding, sequence_index as usize);
 
 					if let crate::descriptors::WriteData::Swapchain(handle) = descriptor_write.descriptor {
 						let binding_data = binding.access(&self.bindings);
-						self.descriptors
-							.entry(binding_data.descriptor_set_handle)
-							.or_insert_with(HashMap::new)
-							.entry(binding_data.index)
-							.or_insert_with(HashMap::new)
-							.insert(descriptor_write.array_element, Descriptor::Swapchain { handle });
+						self.store_descriptor(
+							binding_data.descriptor_set_handle,
+							binding,
+							binding_data.index,
+							descriptor_write.array_element,
+							Descriptor::Swapchain { handle },
+						);
 					} else if let Some(write) = new_descriptor_write {
-						descriptor_writes.push(write.index(descriptor_write.array_element));
+						descriptor_writes.push(write);
 
 						if targets_swapchain {
 							recurring_tasks.push(Task::new(
@@ -1112,9 +1046,7 @@ impl Context {
 					}
 				}
 				Tasks::ResizeImage { handle, extent } => {
-					let root_handle = handle.root(&self.images);
-					let handles = root_handle.get_all(&self.images);
-					let handle = handles[(sequence_index as usize).rem_euclid(handles.len())];
+					let handle = self.image_handle_for_sequence(*handle, sequence_index as usize);
 					self.resize_image_internal(handle, *extent, sequence_index);
 				}
 			}
@@ -1480,100 +1412,6 @@ impl Context {
 		})
 	}
 
-	fn create_vulkan_buffer(
-		&self,
-		name: Option<&str>,
-		size: usize,
-		usage: vk::BufferUsageFlags,
-	) -> MemoryBackedResourceCreationResult<vk::Buffer> {
-		let buffer_create_info = vk::BufferCreateInfo::default()
-			.size(size as u64)
-			.sharing_mode(vk::SharingMode::EXCLUSIVE)
-			.usage(usage);
-
-		let buffer = unsafe { self.device.create_buffer(&buffer_create_info, None).expect("No buffer") };
-
-		self.set_name(buffer, name);
-
-		let memory_requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
-
-		MemoryBackedResourceCreationResult {
-			resource: buffer,
-			size: memory_requirements.size as usize,
-			memory_flags: memory_requirements.memory_type_bits,
-		}
-	}
-
-	fn create_vulkan_texture(
-		&self,
-		name: Option<&str>,
-		extent: Extent,
-		format: crate::Formats,
-		resource_uses: crate::Uses,
-		mip_levels: u32,
-		array_layers: Option<NonZeroU32>,
-	) -> MemoryBackedResourceCreationResult<vk::Image> {
-		let image_create_info = vk::ImageCreateInfo::default()
-			.image_type(image_type_from_extent(extent).expect("Failed to get VkImageType from extent"))
-			.format(to_format(format))
-			.extent(extent_into_vk_extent(extent))
-			.mip_levels(mip_levels)
-			.array_layers(array_layers.map(|e| e.get()).unwrap_or(1))
-			.samples(vk::SampleCountFlags::TYPE_1)
-			.tiling(vk::ImageTiling::OPTIMAL)
-			.usage(into_vk_image_usage_flags(resource_uses, format))
-			.sharing_mode(vk::SharingMode::EXCLUSIVE)
-			.initial_layout(vk::ImageLayout::UNDEFINED);
-
-		let image = unsafe { self.device.create_image(&image_create_info, None).expect("No image") };
-
-		let memory_requirements = unsafe { self.device.get_image_memory_requirements(image) };
-
-		self.set_name(image, name);
-
-		MemoryBackedResourceCreationResult {
-			resource: image.to_owned(),
-			size: memory_requirements.size as usize,
-			memory_flags: memory_requirements.memory_type_bits,
-		}
-	}
-
-	fn create_vulkan_sampler(
-		&self,
-		min_mag_filter: vk::Filter,
-		reduction_mode: vk::SamplerReductionMode,
-		mip_map_filter: vk::SamplerMipmapMode,
-		address_mode: vk::SamplerAddressMode,
-		anisotropy: Option<f32>,
-		min_lod: f32,
-		max_lod: f32,
-	) -> vk::Sampler {
-		let mut vk_sampler_reduction_mode_create_info =
-			vk::SamplerReductionModeCreateInfo::default().reduction_mode(reduction_mode);
-
-		let sampler_create_info = vk::SamplerCreateInfo::default()
-			.push_next(&mut vk_sampler_reduction_mode_create_info)
-			.mag_filter(min_mag_filter)
-			.min_filter(min_mag_filter)
-			.mipmap_mode(mip_map_filter)
-			.address_mode_u(address_mode)
-			.address_mode_v(address_mode)
-			.address_mode_w(address_mode)
-			.border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK)
-			.anisotropy_enable(anisotropy.is_some())
-			.max_anisotropy(anisotropy.unwrap_or(0f32))
-			.compare_enable(false)
-			.compare_op(vk::CompareOp::NEVER)
-			.min_lod(min_lod)
-			.max_lod(max_lod)
-			.mip_lod_bias(0.0)
-			.unnormalized_coordinates(false);
-
-		let sampler = unsafe { self.device.create_sampler(&sampler_create_info, None).expect("No sampler") };
-
-		sampler
-	}
-
 	pub(super) fn get_image_subresource_layout(
 		&self,
 		texture: &graphics_hardware_interface::ImageHandle,
@@ -1674,115 +1512,6 @@ impl Context {
 				.expect("No image memory binding")
 		};
 		(0, unsafe { allocation.pointer.add(offset) })
-	}
-
-	fn create_vulkan_fence(&self, signaled: bool) -> vk::Fence {
-		let fence_create_info = vk::FenceCreateInfo::default().flags(
-			vk::FenceCreateFlags::empty()
-				| if signaled {
-					vk::FenceCreateFlags::SIGNALED
-				} else {
-					vk::FenceCreateFlags::empty()
-				},
-		);
-		unsafe { self.device.create_fence(&fence_create_info, None).expect("No fence") }
-	}
-
-	fn set_name<T: vk::Handle>(&self, handle: T, name: Option<&str>) {
-		if let Some(name) = name {
-			let name = std::ffi::CString::new(name).unwrap();
-			let name = name.as_c_str();
-			#[cfg(debug_assertions)]
-			unsafe {
-				if let Some(debug_utils) = &self.debug_utils {
-					debug_utils
-						.set_debug_utils_object_name(
-							&vk::DebugUtilsObjectNameInfoEXT::default()
-								.object_handle(handle)
-								.object_name(name),
-						)
-						.ok();
-					// Ignore errors, if the name can't be set, it's not a big deal.
-				}
-			}
-		}
-	}
-
-	fn create_vulkan_semaphore(&self, name: Option<&str>, _: bool) -> vk::Semaphore {
-		let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-		let handle = unsafe {
-			self.device
-				.create_semaphore(&semaphore_create_info, None)
-				.expect("No semaphore")
-		};
-
-		self.set_name(handle, name);
-
-		handle
-	}
-
-	fn create_vulkan_image_view(
-		&self,
-		name: Option<&str>,
-		texture: &vk::Image,
-		format: crate::Formats,
-		usage: vk::ImageUsageFlags,
-		_mip_levels: u32,
-		base_layer: u32,
-		layer_count: Option<NonZeroU32>,
-	) -> vk::ImageView {
-		if !Self::image_usage_allows_views(usage) {
-			return vk::ImageView::null();
-		}
-
-		let image_view_create_info = vk::ImageViewCreateInfo::default()
-			.image(*texture)
-			.view_type(if layer_count.is_none() {
-				vk::ImageViewType::TYPE_2D
-			} else {
-				vk::ImageViewType::TYPE_2D_ARRAY
-			})
-			.format(to_format(format))
-			.components(vk::ComponentMapping {
-				r: vk::ComponentSwizzle::IDENTITY,
-				g: vk::ComponentSwizzle::IDENTITY,
-				b: vk::ComponentSwizzle::IDENTITY,
-				a: vk::ComponentSwizzle::IDENTITY,
-			})
-			.subresource_range(vk::ImageSubresourceRange {
-				aspect_mask: if format != crate::Formats::Depth32 {
-					vk::ImageAspectFlags::COLOR
-				} else {
-					vk::ImageAspectFlags::DEPTH
-				},
-				base_mip_level: 0,
-				level_count: 1,
-				base_array_layer: base_layer,
-				layer_count: layer_count.map(|e| e.get()).unwrap_or(1),
-			});
-
-		let vk_image_view = unsafe {
-			self.device
-				.create_image_view(&image_view_create_info, None)
-				.expect("No image view")
-		};
-
-		self.set_name(vk_image_view, name);
-
-		vk_image_view
-	}
-
-	fn image_usage_allows_views(usage: vk::ImageUsageFlags) -> bool {
-		usage.intersects(
-			vk::ImageUsageFlags::SAMPLED
-				| vk::ImageUsageFlags::STORAGE
-				| vk::ImageUsageFlags::COLOR_ATTACHMENT
-				| vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-				| vk::ImageUsageFlags::TRANSIENT_ATTACHMENT
-				| vk::ImageUsageFlags::INPUT_ATTACHMENT
-				| vk::ImageUsageFlags::FRAGMENT_SHADING_RATE_ATTACHMENT_KHR
-				| vk::ImageUsageFlags::FRAGMENT_DENSITY_MAP_EXT,
-		)
 	}
 
 	/// Creates swapchain-backed image wrappers chained across frames and returns the root handle.
@@ -1913,6 +1642,36 @@ impl Context {
 			&& !device_accesses.intersects(crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::GpuWrite)
 	}
 
+	/// Creates a Vulkan buffer, allocates memory for it, binds the memory, and returns the tracked buffer object.
+	fn create_bound_buffer(
+		&mut self,
+		name: Option<&str>,
+		size: usize,
+		vk_usage_flags: vk::BufferUsageFlags,
+		allocation_accesses: crate::DeviceAccesses,
+		buffer_accesses: crate::DeviceAccesses,
+		resource_uses: crate::Uses,
+	) -> Buffer {
+		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
+		let (allocation_handle, _) = self.create_allocation_internal(
+			buffer_creation_result.size,
+			buffer_creation_result.memory_flags.into(),
+			allocation_accesses,
+		);
+		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+
+		Buffer {
+			staging: None,
+			source: None,
+			buffer: buffer_creation_result.resource,
+			size,
+			device_address,
+			pointer,
+			uses: resource_uses,
+			access: buffer_accesses,
+		}
+	}
+
 	/// Builds a buffer object with the given name, resource uses, size, Vulkan buffer usage flags, and device accesses.
 	///
 	/// Buffers that request only host access are created as a single mapped Vulkan buffer. Buffers that include GPU
@@ -1963,33 +1722,17 @@ impl Context {
 		};
 
 		if Self::uses_only_host_access(device_accesses) {
-			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
-			let (allocation_handle, _) = self.create_allocation_internal(
-				buffer_creation_result.size,
-				buffer_creation_result.memory_flags.into(),
-				device_accesses,
-			);
-			let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
-
-			return Buffer {
-				staging: None,
-				source: None,
-				buffer: buffer_creation_result.resource,
-				size,
-				device_address,
-				pointer,
-				uses: resource_uses,
-				access: device_accesses,
-			};
+			return self.create_bound_buffer(name, size, vk_usage_flags, device_accesses, device_accesses, resource_uses);
 		}
 
-		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
-		let (allocation_handle, _) = self.create_allocation_internal(
-			buffer_creation_result.size,
-			buffer_creation_result.memory_flags.into(),
+		let mut buffer = self.create_bound_buffer(
+			name,
+			size,
+			vk_usage_flags,
 			device_accesses & !(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite),
+			device_accesses,
+			resource_uses,
 		);
-		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
 		let staging = if device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite) {
 			let vk_usage_flags = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
@@ -2012,24 +1755,8 @@ impl Context {
 				crate::DeviceAccesses::empty()
 			};
 
-			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
-			let (allocation_handle, _) = self.create_allocation_internal(
-				buffer_creation_result.size,
-				buffer_creation_result.memory_flags.into(),
-				device_access,
-			);
-			let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
-
-			let staging_buffer = Buffer {
-				staging: None,
-				source: None,
-				buffer: buffer_creation_result.resource,
-				size,
-				device_address,
-				pointer,
-				uses: resource_uses,
-				access: device_accesses,
-			};
+			let staging_buffer =
+				self.create_bound_buffer(name, size, vk_usage_flags, device_access, device_accesses, resource_uses);
 
 			let (_, handle) = self.buffers.add(staging_buffer);
 
@@ -2038,16 +1765,8 @@ impl Context {
 			None
 		};
 
-		Buffer {
-			staging,
-			source: None,
-			buffer: buffer_creation_result.resource,
-			size,
-			device_address,
-			pointer,
-			uses: resource_uses,
-			access: device_accesses,
-		}
+		buffer.staging = staging;
+		buffer
 	}
 
 	/// Builds a buffer and returns its handle.
@@ -2079,24 +1798,8 @@ impl Context {
 		let vk_usage_flags = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
 		let device_access = crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::CpuWrite;
 
-		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
-		let (allocation_handle, _) = self.create_allocation_internal(
-			buffer_creation_result.size,
-			buffer_creation_result.memory_flags.into(),
-			device_access,
-		);
-		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
-
-		let (_, handle) = self.buffers.add(Buffer {
-			staging: None,
-			source: None,
-			buffer: buffer_creation_result.resource,
-			size,
-			device_address,
-			pointer,
-			uses: crate::Uses::empty(),
-			access: device_access,
-		});
+		let buffer = self.create_bound_buffer(name, size, vk_usage_flags, device_access, device_access, crate::Uses::empty());
+		let (_, handle) = self.buffers.add(buffer);
 
 		handle
 	}
@@ -2190,7 +1893,7 @@ impl Context {
 		let image_usage_flags = into_vk_image_usage_flags(resource_uses | transfer_uses, format);
 		// Vulkan only allows image views for images created with view-capable usage bits.
 		// Transfer-only staging/readback images intentionally keep null views.
-		let image_can_have_views = Self::image_usage_allows_views(image_usage_flags);
+		let image_can_have_views = InnerDevice::image_usage_allows_views(image_usage_flags);
 
 		let full_image_view = image_can_have_views
 			.then(|| {
@@ -2462,11 +2165,7 @@ impl Context {
 						let image_handle = handle;
 
 						let image = &self.images[image_handle.0 as usize];
-						let image_view = if !image.full_image_view.is_null() {
-							image.full_image_view
-						} else {
-							image.image_views[0]
-						};
+						let image_view = Self::descriptor_image_view(image, None);
 						let format = image.format_;
 						let image = image.image;
 
@@ -2511,14 +2210,7 @@ impl Context {
 						let image = &self.images[image_handle.0 as usize];
 
 						let res = if !image.image.is_null() {
-							let image_view = if let Some(layer) = layer {
-								// If the descriptor asks for a subresource, we need to create a new image view
-								image.image_views[layer as usize]
-							} else if !image.full_image_view.is_null() {
-								image.full_image_view
-							} else {
-								image.image_views[0]
-							};
+							let image_view = Self::descriptor_image_view(image, layer);
 
 							let e = images.append([vk::DescriptorImageInfo::default()
 								.image_layout(texture_format_and_resource_use_to_image_layout(image.format_, layout, None))
@@ -2573,11 +2265,7 @@ impl Context {
 						let descriptor_set = &self.descriptor_sets[descriptor_set_handle.0 as usize];
 						let image_handle = self.swapchain_descriptor_image_handle(handle, descriptor_set_handle);
 						let image = &self.images[image_handle.0 as usize];
-						let image_view = if !image.full_image_view.is_null() {
-							image.full_image_view
-						} else {
-							image.image_views[0]
-						};
+						let image_view = Self::descriptor_image_view(image, None);
 
 						let res = if !image.image.is_null() && !image_view.is_null() {
 							let e = images.append([vk::DescriptorImageInfo::default()
@@ -2626,65 +2314,115 @@ impl Context {
 			let array_element = write.array_element;
 			let binding_handle = write.binding_handle;
 
-			match write.descriptor {
-				Descriptor::Buffer { buffer, size } => {
-					self.descriptors
-						.entry(descriptor_set_handle)
-						.or_insert_with(HashMap::new)
-						.entry(binding_index)
-						.or_insert_with(HashMap::new)
-						.insert(array_element, Descriptor::Buffer { size, buffer });
-					self.descriptor_set_to_resource
-						.entry((descriptor_set_handle, binding_index))
-						.or_insert_with(HashSet::new)
-						.insert(PrivateHandles::Buffer(buffer));
-					self.resource_to_descriptor
-						.entry(PrivateHandles::Buffer(buffer))
-						.or_insert_with(HashSet::new)
-						.insert((binding_handle, array_element));
-				}
-				Descriptor::Image { image, layout } => {
-					self.descriptors
-						.entry(descriptor_set_handle)
-						.or_insert_with(HashMap::new)
-						.entry(binding_index)
-						.or_insert_with(HashMap::new)
-						.insert(array_element, Descriptor::Image { image, layout });
-					self.descriptor_set_to_resource
-						.entry((descriptor_set_handle, binding_index))
-						.or_insert_with(HashSet::new)
-						.insert(PrivateHandles::Image(image));
-					self.resource_to_descriptor
-						.entry(PrivateHandles::Image(image))
-						.or_insert_with(HashSet::new)
-						.insert((binding_handle, array_element));
-				}
-				Descriptor::CombinedImageSampler { image, sampler, layout } => {
-					self.descriptors
-						.entry(descriptor_set_handle)
-						.or_insert_with(HashMap::new)
-						.entry(binding_index)
-						.or_insert_with(HashMap::new)
-						.insert(array_element, Descriptor::CombinedImageSampler { image, sampler, layout });
-					self.descriptor_set_to_resource
-						.entry((descriptor_set_handle, binding_index))
-						.or_insert_with(HashSet::new)
-						.insert(PrivateHandles::Image(image));
-					self.resource_to_descriptor
-						.entry(PrivateHandles::Image(image))
-						.or_insert_with(HashSet::new)
-						.insert((binding_handle, array_element));
-				}
-				Descriptor::Swapchain { handle } => {
-					self.descriptors
-						.entry(descriptor_set_handle)
-						.or_insert_with(HashMap::new)
-						.entry(binding_index)
-						.or_insert_with(HashMap::new)
-						.insert(array_element, Descriptor::Swapchain { handle });
-				}
+			self.store_descriptor(
+				descriptor_set_handle,
+				binding_handle,
+				binding_index,
+				array_element,
+				write.descriptor,
+			);
+		}
+	}
+
+	/// Stores a descriptor value and refreshes the reverse resource tracking for its binding element.
+	fn store_descriptor(
+		&mut self,
+		descriptor_set_handle: DescriptorSetHandle,
+		binding_handle: DescriptorSetBindingHandle,
+		binding_index: u32,
+		array_element: u32,
+		descriptor: Descriptor,
+	) {
+		self.clear_descriptor_tracking(descriptor_set_handle, binding_handle, binding_index, array_element);
+		self.register_descriptor_tracking(
+			descriptor_set_handle,
+			binding_handle,
+			binding_index,
+			array_element,
+			&descriptor,
+		);
+
+		self.descriptors
+			.entry(descriptor_set_handle)
+			.or_insert_with(HashMap::new)
+			.entry(binding_index)
+			.or_insert_with(HashMap::new)
+			.insert(array_element, descriptor);
+	}
+
+	/// Removes stale resource-to-descriptor links before a binding element is overwritten.
+	fn clear_descriptor_tracking(
+		&mut self,
+		descriptor_set_handle: DescriptorSetHandle,
+		binding_handle: DescriptorSetBindingHandle,
+		binding_index: u32,
+		array_element: u32,
+	) {
+		let key = (descriptor_set_handle, binding_index, array_element);
+		let Some(resources) = self.descriptor_set_to_resource.remove(&key) else {
+			return;
+		};
+
+		for resource in resources {
+			let should_remove = if let Some(descriptor_bindings) = self.resource_to_descriptor.get_mut(&resource) {
+				descriptor_bindings.remove(&(binding_handle, array_element));
+				descriptor_bindings.is_empty()
+			} else {
+				false
+			};
+
+			if should_remove {
+				self.resource_to_descriptor.remove(&resource);
 			}
 		}
+	}
+
+	/// Registers resource-backed descriptors so backing resource rebuilds can refresh affected bindings.
+	fn register_descriptor_tracking(
+		&mut self,
+		descriptor_set_handle: DescriptorSetHandle,
+		binding_handle: DescriptorSetBindingHandle,
+		binding_index: u32,
+		array_element: u32,
+		descriptor: &Descriptor,
+	) {
+		let resource = match descriptor {
+			Descriptor::Buffer { buffer, .. } => Some(PrivateHandles::Buffer(*buffer)),
+			Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
+				Some(PrivateHandles::Image(*image))
+			}
+			Descriptor::Swapchain { .. } => None,
+		};
+
+		let Some(resource) = resource else {
+			return;
+		};
+
+		self.descriptor_set_to_resource
+			.entry((descriptor_set_handle, binding_index, array_element))
+			.or_insert_with(HashSet::new)
+			.insert(resource);
+		self.resource_to_descriptor
+			.entry(resource)
+			.or_insert_with(HashSet::new)
+			.insert((binding_handle, array_element));
+	}
+
+	/// Returns descriptor binding elements that need to be refreshed when a resource changes.
+	fn tracked_descriptor_bindings(&self, resource: PrivateHandles) -> SmallVec<[(DescriptorSetBindingHandle, u32); 8]> {
+		self.resource_to_descriptor
+			.get(&resource)
+			.into_iter()
+			.flat_map(|bindings| bindings.iter().copied())
+			.collect()
+	}
+
+	/// Looks up the descriptor currently stored for a descriptor binding element.
+	fn stored_descriptor(&self, binding: &Binding, array_element: u32) -> Option<&Descriptor> {
+		self.descriptors
+			.get(&binding.descriptor_set_handle)
+			.and_then(|descriptors| descriptors.get(&binding.index))
+			.and_then(|descriptors| descriptors.get(&array_element))
 	}
 
 	fn write_internal(&mut self, writes: impl IntoIterator<Item = DescriptorWrite>) {
@@ -2697,26 +2435,18 @@ impl Context {
 		handle: BufferHandle,
 		descriptor_writes: &mut impl Extend<DescriptorWrite>,
 	) {
-		if let Some(e) = self.resource_to_descriptor.get(&handle.into()) {
-			for (binding_handle, index) in e {
-				let binding = binding_handle.access(&self.bindings);
+		for (binding_handle, index) in self.tracked_descriptor_bindings(handle.into()) {
+			let binding = binding_handle.access(&self.bindings);
 
-				if let Some(descriptor) = self
-					.descriptors
-					.get(&binding.descriptor_set_handle)
-					.and_then(|d| d.get(&binding.index))
-					.and_then(|d| d.get(&index))
-				{
-					match descriptor {
-						Descriptor::Buffer { size, .. } => {
-							descriptor_writes.extend_one(
-								DescriptorWrite::new(Descriptors::Buffer { handle, size: *size }, *binding_handle)
-									.index(*index),
-							);
-						}
-						_ => {
-							println!("Unexpected descriptor type for buffer handle {:#?}", handle);
-						}
+			if let Some(descriptor) = self.stored_descriptor(binding, index) {
+				match descriptor {
+					Descriptor::Buffer { size, .. } => {
+						descriptor_writes.extend_one(
+							DescriptorWrite::new(Descriptors::Buffer { handle, size: *size }, binding_handle).index(index),
+						);
+					}
+					_ => {
+						println!("Unexpected descriptor type for buffer handle {:#?}", handle);
 					}
 				}
 			}
@@ -2728,40 +2458,32 @@ impl Context {
 		handle: ImageHandle,
 		descriptor_writes: &mut impl Extend<DescriptorWrite>,
 	) {
-		if let Some(e) = self.resource_to_descriptor.get(&handle.into()) {
-			for (binding_handle, index) in e {
-				let binding = binding_handle.access(&self.bindings);
+		for (binding_handle, index) in self.tracked_descriptor_bindings(handle.into()) {
+			let binding = binding_handle.access(&self.bindings);
 
-				if let Some(descriptor) = self
-					.descriptors
-					.get(&binding.descriptor_set_handle)
-					.and_then(|d| d.get(&binding.index))
-					.and_then(|d| d.get(&index))
-				{
-					match descriptor {
-						Descriptor::Image { layout, .. } => {
-							descriptor_writes.extend_one(
-								DescriptorWrite::new(Descriptors::Image { handle, layout: *layout }, *binding_handle)
-									.index(*index),
-							);
-						}
-						Descriptor::CombinedImageSampler { sampler, layout, .. } => {
-							descriptor_writes.extend_one(
-								DescriptorWrite::new(
-									Descriptors::CombinedImageSampler {
-										image_handle: handle,
-										sampler_handle: SamplerHandle(sampler.as_raw()),
-										layout: *layout,
-										layer: None,
-									},
-									*binding_handle,
-								)
-								.index(*index),
-							);
-						}
-						_ => {
-							println!("Unexpected descriptor type for image handle {:#?}", handle);
-						}
+			if let Some(descriptor) = self.stored_descriptor(binding, index) {
+				match descriptor {
+					Descriptor::Image { layout, .. } => {
+						descriptor_writes.extend_one(
+							DescriptorWrite::new(Descriptors::Image { handle, layout: *layout }, binding_handle).index(index),
+						);
+					}
+					Descriptor::CombinedImageSampler { sampler, layout, .. } => {
+						descriptor_writes.extend_one(
+							DescriptorWrite::new(
+								Descriptors::CombinedImageSampler {
+									image_handle: handle,
+									sampler_handle: SamplerHandle(sampler.as_raw()),
+									layout: *layout,
+									layer: None,
+								},
+								binding_handle,
+							)
+							.index(index),
+						);
+					}
+					_ => {
+						println!("Unexpected descriptor type for image handle {:#?}", handle);
 					}
 				}
 			}
@@ -2808,19 +2530,6 @@ impl std::ops::DerefMut for Context {
 	}
 }
 
-impl crate::device::Device for Context {
-	type Context = Self;
-
-	#[cfg(debug_assertions)]
-	fn has_errors(&self) -> bool {
-		self.device.has_errors()
-	}
-
-	fn create_context(self) -> Result<Self::Context, &'static str> {
-		Ok(self)
-	}
-}
-
 impl crate::context::Context for Context {
 	type Queue = crate::vulkan::queue::Queue;
 	type QueueReference<'a>
@@ -2843,7 +2552,7 @@ impl crate::context::Context for Context {
 
 	fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue {
 		let queue = &self.queues[queue_handle.0 as usize];
-		let vk_queue = queue.vk_queue;
+		let vk_queue = queue.vk_queue.clone();
 		let queue_family_index = queue.queue_family_index;
 		let queue_index = queue._queue_index;
 		crate::vulkan::queue::Queue {
@@ -2967,6 +2676,7 @@ impl crate::context::Context for Context {
 
 			for command_buffer in &mut self.command_buffers {
 				let queue = &self.queues[command_buffer.queue_handle.0 as usize];
+				let vk_queue = queue.vk_queue.clone();
 				let command_pool_create_info =
 					vk::CommandPoolCreateInfo::default().queue_family_index(queue.queue_family_index);
 
@@ -2992,7 +2702,7 @@ impl crate::context::Context for Context {
 				// self.set_name(vk_command_buffer, name);
 
 				command_buffer.frames.push(CommandBufferInternal {
-					vk_queue: queue.vk_queue,
+					vk_queue: vk_queue.clone(),
 					command_pool,
 					command_buffer: vk_command_buffer,
 				});
@@ -3321,6 +3031,21 @@ impl crate::context::ContextCreate for Context {
 		let mut descriptor_write = crate::descriptors::Write::new(handle, descriptor);
 		descriptor_write.array_element = array_element;
 		descriptor_write.frame_offset = frame_offset;
+
+		// Descriptor creation must make the descriptor set immediately valid. The
+		// queued task below still refreshes frame-specific resources that may be
+		// created after this binding, but first use cannot depend on a future frame
+		// task being processed by the graphics queue.
+		match descriptor_write.descriptor {
+			crate::descriptors::WriteData::Buffer { .. }
+			| crate::descriptors::WriteData::Image { .. }
+			| crate::descriptors::WriteData::CombinedImageSampler { .. }
+			| crate::descriptors::WriteData::Sampler(_) => self.write(&[descriptor_write]),
+			crate::descriptors::WriteData::AccelerationStructure { .. }
+			| crate::descriptors::WriteData::Swapchain(_)
+			| crate::descriptors::WriteData::StaticSamplers
+			| crate::descriptors::WriteData::CombinedImageSamplerArray => {}
+		}
 
 		self.add_task_to_all_frames(Tasks::UpdateDescriptor { descriptor_write });
 
@@ -4134,14 +3859,13 @@ use utils::{
 
 use super::{
 	utils::{
-		image_type_from_extent, into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format,
-		to_shader_stage_flags, uses_to_vk_usage_flags,
+		into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags,
+		uses_to_vk_usage_flags,
 	},
-	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DebugCallbackData,
-	DescriptorSet, DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout,
-	PipelineLayoutKey, Shader, Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
+	AccelerationStructure, Allocation, Binding, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorSet,
+	DescriptorSetLayout, Image, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey, Shader,
+	Swapchain, Synchronizer, TransitionState, MAX_FRAMES_IN_FLIGHT,
 };
-use crate::vulkan::utils::extent_into_vk_extent;
 use crate::vulkan::{Device, InnerDevice, StoredQueue};
 use crate::{
 	binding::DescriptorSetBindingHandle,

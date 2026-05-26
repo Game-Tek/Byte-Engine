@@ -3,7 +3,6 @@ use std::borrow::Borrow as _;
 use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 };
 use math::Vector2;
 use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};

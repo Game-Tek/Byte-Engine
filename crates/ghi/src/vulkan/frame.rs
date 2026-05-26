@@ -40,8 +40,9 @@ impl<'a> Frame<'a> {
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
 	) {
-		let command_buffer =
-			self.device.command_buffers[command_buffer_handle.0 as usize].frames[self.frame_key.sequence_index as usize];
+		let command_buffer = self.device.command_buffers[command_buffer_handle.0 as usize].frames
+			[self.frame_key.sequence_index as usize]
+			.clone();
 
 		let command_buffers = [command_buffer.command_buffer];
 
@@ -104,12 +105,15 @@ impl<'a> Frame<'a> {
 			.map(|synchronizer| self.get_synchronizer(synchronizer).fence)
 			.unwrap_or(vk::Fence::null());
 
-		let vk_queue = command_buffer.vk_queue;
+		let vk_queue = command_buffer
+			.vk_queue
+			.lock()
+			.expect("Failed to lock Vulkan queue for frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
 
 		unsafe {
 			self.device
 				.device
-				.queue_submit2(vk_queue, &[submit_info], execution_completion_fence)
+				.queue_submit2(*vk_queue, &[submit_info], execution_completion_fence)
 				.expect("Failed to submit command buffer.");
 		}
 
@@ -140,7 +144,7 @@ impl<'a> Frame<'a> {
 			let _ = unsafe {
 				self.device
 					.swapchain
-					.queue_present(vk_queue, &present_info)
+					.queue_present(*vk_queue, &present_info)
 					.expect("No present")
 			};
 
@@ -159,13 +163,16 @@ impl<'a> Frame<'a> {
 
 	pub(crate) fn complete_without_submissions(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 		let synchronizer = self.get_synchronizer(synchronizer);
-		let queue = self.device.queues[0].vk_queue;
+		let queue = self.device.queues[0]
+			.vk_queue
+			.lock()
+			.expect("Failed to lock Vulkan queue for empty frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
 		let submit_info = vk::SubmitInfo2::default();
 
 		unsafe {
 			self.device
 				.device
-				.queue_submit2(queue, &[submit_info], synchronizer.fence)
+				.queue_submit2(*queue, &[submit_info], synchronizer.fence)
 				.expect("Failed to submit empty Vulkan frame. The most likely cause is that the completion fence is invalid.");
 		}
 	}
@@ -345,6 +352,53 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&'record mut self,
 		command_buffer_handle: crate::CommandBufferHandle,
 	) -> Self::CBR<'record> {
+		self.create_command_buffer_recording_internal(command_buffer_handle, true)
+	}
+
+	fn create_command_buffer_recording_without_implicit_sync<'record>(
+		&'record mut self,
+		command_buffer_handle: crate::CommandBufferHandle,
+	) -> Self::CBR<'record> {
+		self.create_command_buffer_recording_internal(command_buffer_handle, false)
+	}
+
+	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
+		let buffers = &self.device.buffers;
+		let frame_key = self.frame_key;
+
+		let handle = buffers
+			.nth_handle(buffer_handle.into(), frame_key.sequence_index as _)
+			.unwrap();
+		let buffer = buffers.resource(handle);
+
+		if super::buffer::PERSISTENT_WRITE {
+			if let Some(source_handle) = buffer.source {
+				// Return the persistent source buffer's pointer. The user writes
+				// here and every frame the data is automatically memcpy'd to per-frame
+				// staging and then GPU-copied. No need to push to pending_buffer_syncs.
+				let source_buffer = buffers.resource(source_handle);
+				return unsafe { std::mem::transmute(source_buffer.pointer) };
+			}
+		}
+
+		if let Some(staging_handle) = buffer.staging {
+			self.device.pending_buffer_syncs.insert(handle);
+
+			let staging_buffer = buffers.resource(staging_handle);
+
+			return unsafe { std::mem::transmute(staging_buffer.pointer) };
+		}
+
+		unsafe { std::mem::transmute(buffer.pointer) }
+	}
+}
+
+impl Frame<'_> {
+	fn create_command_buffer_recording_internal(
+		&mut self,
+		command_buffer_handle: crate::CommandBufferHandle,
+		include_implicit_sync: bool,
+	) -> CommandBufferRecording<'_> {
 		let frame_key = self.frame_key;
 
 		// Update descriptors before creating command buffer
@@ -354,9 +408,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		// persistent source buffer into the current frame's staging buffer, then
 		// enqueue the staging→GPU copy. This ensures every frame gets the latest
 		// data even if the CPU didn't write this frame.
-		if super::buffer::PERSISTENT_WRITE {
-			let buffers = &self.device.buffers;
-
+		if include_implicit_sync && super::buffer::PERSISTENT_WRITE {
 			for master_handle in &self.device.persistent_write_dynamic_buffers {
 				let frame_buffer_handle = self
 					.device()
@@ -421,36 +473,6 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		recording.sync_textures(image_copies.iter().copied());
 
 		recording
-	}
-
-	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
-		let buffers = &self.device.buffers;
-		let frame_key = self.frame_key;
-
-		let handle = buffers
-			.nth_handle(buffer_handle.into(), frame_key.sequence_index as _)
-			.unwrap();
-		let buffer = buffers.resource(handle);
-
-		if super::buffer::PERSISTENT_WRITE {
-			if let Some(source_handle) = buffer.source {
-				// Return the persistent source buffer's pointer. The user writes
-				// here and every frame the data is automatically memcpy'd to per-frame
-				// staging and then GPU-copied. No need to push to pending_buffer_syncs.
-				let source_buffer = buffers.resource(source_handle);
-				return unsafe { std::mem::transmute(source_buffer.pointer) };
-			}
-		}
-
-		if let Some(staging_handle) = buffer.staging {
-			self.device.pending_buffer_syncs.insert(handle);
-
-			let staging_buffer = buffers.resource(staging_handle);
-
-			return unsafe { std::mem::transmute(staging_buffer.pointer) };
-		}
-
-		unsafe { std::mem::transmute(buffer.pointer) }
 	}
 }
 

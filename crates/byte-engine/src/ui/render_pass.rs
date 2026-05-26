@@ -5,7 +5,6 @@ use ghi::{
 		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 	frame::Frame as _,
 	types::Size as _,
 };

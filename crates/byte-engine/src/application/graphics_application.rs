@@ -514,8 +514,9 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 				let mut started_frame_count = 0;
 
 				loop {
-					if application_events.try_recv().is_ok() {
-						break;
+					match application_events.try_recv() {
+						Ok(Events::Close) => break,
+						_ => {}
 					}
 
 					let started_frame = transfer_queue.start_frame(started_frame_count as _, transfer_finished_synchronizer);
@@ -527,7 +528,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 					let mut frame = started_frame.frame;
 					let frame_key = frame.key();
 
-					let mut transfer_recording = frame.create_command_buffer_recording(transfer_command_buffer);
+					let mut transfer_recording =
+						frame.create_command_buffer_recording_without_implicit_sync(transfer_command_buffer);
 					let buffer = transfer_recording.get_mut_buffer_slice(upload_buffer);
 					let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
 
@@ -1184,7 +1186,7 @@ use std::{
 };
 
 use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll, PollReply, PortAddress};
-use ghi::{Context as _, ContextCreate as _, Device, Frame as _, Queue as _};
+use ghi::{Context as _, ContextCreate as _, Frame as _, Queue as _};
 use math::Vector2;
 use resource_management::{
 	asset::{

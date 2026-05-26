@@ -99,6 +99,7 @@ impl VisibilityPipelineResourceManager {
 				id,
 				index,
 				pipeline: material.pipeline,
+				pending_pipeline: material.pending_pipeline,
 				alpha: material.alpha,
 				textures: material.textures,
 			},
@@ -186,11 +187,12 @@ impl VisibilityPipelineResourceManager {
 			})
 			.collect::<Vec<_>>();
 		let alpha = !matches!(variant.alpha_mode, resource_management::types::AlphaMode::Opaque);
-		let pipeline = self.queue_configured_variant_pipeline(id.to_string(), material, specialization_map_entries);
+		let queued_pipeline = self.queue_configured_variant_pipeline(id.to_string(), material, specialization_map_entries);
 
 		Ok(FactoryMaterial {
 			index,
-			pipeline,
+			pipeline: queued_pipeline.pipeline,
+			pending_pipeline: queued_pipeline.pending_pipeline,
 			alpha,
 			textures,
 		})
@@ -206,17 +208,13 @@ impl VisibilityPipelineResourceManager {
 	}
 
 	/// Queues a material evaluation pipeline with the descriptor configuration supplied by the render thread.
-	fn queue_configured_material_pipeline(
-		&mut self,
-		id: String,
-		material: &mut ResourceMaterial,
-	) -> Option<ghi::PipelineHandle> {
+	fn queue_configured_material_pipeline(&mut self, id: String, material: &mut ResourceMaterial) -> QueuedMaterialPipeline {
 		let Some(config) = self.material_pipeline_config.as_ref() else {
 			log::error!(
 				"Visibility material pipeline configuration is unavailable for {}. The most likely cause is that the render pipeline manager has not configured the resource worker yet.",
 				id
 			);
-			return None;
+			return QueuedMaterialPipeline::default();
 		};
 		let descriptor_set_templates = config.descriptor_set_templates;
 		let push_constant_ranges = config.push_constant_ranges.clone();
@@ -230,13 +228,13 @@ impl VisibilityPipelineResourceManager {
 		id: String,
 		material: &mut ResourceMaterial,
 		specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
-	) -> Option<ghi::PipelineHandle> {
+	) -> QueuedMaterialPipeline {
 		let Some(config) = self.material_pipeline_config.as_ref() else {
 			log::error!(
 				"Visibility material pipeline configuration is unavailable for {}. The most likely cause is that the render pipeline manager has not configured the resource worker yet.",
 				id
 			);
-			return None;
+			return QueuedMaterialPipeline::default();
 		};
 		let descriptor_set_templates = config.descriptor_set_templates;
 		let push_constant_ranges = config.push_constant_ranges.clone();
@@ -699,6 +697,7 @@ pub(crate) enum VisibilityResourceCompletion {
 		id: String,
 		index: u32,
 		pipeline: Option<ghi::PipelineHandle>,
+		pending_pipeline: Option<PendingMaterialPipeline>,
 		alpha: bool,
 		textures: Vec<Option<(String, u32)>>,
 	},
@@ -819,15 +818,56 @@ struct FactoryTexture {
 struct FactoryMaterial {
 	index: u32,
 	pipeline: Option<ghi::PipelineHandle>,
+	pending_pipeline: Option<PendingMaterialPipeline>,
 	alpha: bool,
 	textures: Vec<Option<(String, u32)>>,
+}
+
+/// A material evaluation pipeline that must be created on the render thread.
+pub(crate) struct PendingMaterialPipeline {
+	request: ComputePipelineRequest,
+}
+
+impl PendingMaterialPipeline {
+	pub(crate) fn create(self, frame: &mut ghi::implementation::Frame) -> Option<ghi::PipelineHandle> {
+		let shader = self.request.shader;
+		let shader_handle = frame
+			.create_shader(
+				shader.name.as_deref(),
+				shader.source.sources(),
+				shader.stage,
+				shader.binding_descriptors.iter().copied(),
+			)
+			.map_err(|_| {
+				log::error!(
+					"Material shader creation failed for {}. The most likely cause is invalid shader payload data.",
+					self.request.key
+				);
+			})
+			.ok()?;
+
+		Some(
+			frame.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+				&self.request.descriptor_set_templates,
+				&self.request.push_constant_ranges,
+				ghi::ShaderParameter::new(&shader_handle, shader.stage)
+					.with_specialization_map(&self.request.specialization_map_entries),
+			)),
+		)
+	}
+}
+
+#[derive(Default)]
+struct QueuedMaterialPipeline {
+	pipeline: Option<ghi::PipelineHandle>,
+	pending_pipeline: Option<PendingMaterialPipeline>,
 }
 
 /// The `MaterialPipelineConfig` struct names the descriptor and push-constant contract for material evaluation pipelines.
 pub(crate) struct MaterialPipelineConfig {
 	descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-	pipeline_factory: Option<ghi::implementation::Factory>,
+	pipeline_factory: Option<ghi::implementation::Device>,
 }
 
 impl MaterialPipelineConfig {
@@ -835,7 +875,7 @@ impl MaterialPipelineConfig {
 	pub(crate) fn new(
 		descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 		push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-		pipeline_factory: Option<ghi::implementation::Factory>,
+		pipeline_factory: Option<ghi::implementation::Device>,
 	) -> Self {
 		Self {
 			descriptor_set_templates,
@@ -913,6 +953,7 @@ enum ComputePipelineResult {
 	},
 	Failed {
 		key: String,
+		reason: String,
 	},
 }
 
@@ -920,7 +961,7 @@ impl VisibilityPipelineResourceManager {
 	fn compile_compute_pipeline(
 		device: &mut ghi::implementation::Factory,
 		request: ComputePipelineRequest,
-	) -> Result<ghi::implementation::ComputePipeline, ()> {
+	) -> Result<ghi::implementation::ComputePipeline, String> {
 		use ghi::Device as _;
 
 		let shader = request.shader;
@@ -929,7 +970,13 @@ impl VisibilityPipelineResourceManager {
 			shader.source.sources(),
 			shader.stage,
 			shader.binding_descriptors.iter().copied(),
-		)?;
+		)
+		.map_err(|_| {
+			format!(
+				"shader creation failed for {}. The most likely cause is that the active backend does not support detached shader creation for this shader source or the shader payload is invalid.",
+				request.key
+			)
+		})?;
 
 		Ok(device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&request.descriptor_set_templates,
@@ -1092,7 +1139,7 @@ impl VisibilityPipelineResourceManager {
 		descriptor_set_template_handles: &[ghi::DescriptorSetTemplateHandle],
 		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
 		material: &mut ResourceMaterial,
-	) -> Option<ghi::PipelineHandle> {
+	) -> QueuedMaterialPipeline {
 		self.queue_material_pipeline_with_specialization(
 			resource_id,
 			descriptor_set_template_handles,
@@ -1110,11 +1157,14 @@ impl VisibilityPipelineResourceManager {
 		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
 		material: &mut ResourceMaterial,
 		specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
-	) -> Option<ghi::PipelineHandle> {
+	) -> QueuedMaterialPipeline {
 		if let Some(status) = self.pipelines.read().get(&resource_id) {
 			return match status {
-				PipelineStatus::Pending | PipelineStatus::Failed => None,
-				PipelineStatus::Ready(handle) => Some(*handle),
+				PipelineStatus::Pending | PipelineStatus::Failed => QueuedMaterialPipeline::default(),
+				PipelineStatus::Ready(handle) => QueuedMaterialPipeline {
+					pipeline: Some(*handle),
+					pending_pipeline: None,
+				},
 			};
 		}
 
@@ -1132,13 +1182,26 @@ impl VisibilityPipelineResourceManager {
 		};
 
 		match request {
-			Ok(request) => self.queue_compute_pipeline(request),
+			Ok(request) => {
+				if Self::supports_async_material_pipeline_creation() {
+					self.queue_compute_pipeline(request);
+				} else {
+					return QueuedMaterialPipeline {
+						pipeline: None,
+						pending_pipeline: Some(PendingMaterialPipeline { request }),
+					};
+				}
+			}
 			Err(()) => {
 				self.pipelines.write().insert(resource_id, PipelineStatus::Failed);
 			}
 		}
 
-		None
+		QueuedMaterialPipeline::default()
+	}
+
+	fn supports_async_material_pipeline_creation() -> bool {
+		ghi::implementation::USES_DX12 || ghi::implementation::USES_METAL
 	}
 }
 
@@ -1245,6 +1308,19 @@ fn texture_upload_layout(format: ghi::Formats, extent: Extent) -> Option<(usize,
 			Some((bytes_per_row, height, bytes_per_row * height))
 		}
 	}
+}
+
+/// Converts a worker panic into a useful error reason for async pipeline diagnostics.
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+	if let Some(message) = payload.downcast_ref::<&str>() {
+		return (*message).to_string();
+	}
+
+	if let Some(message) = payload.downcast_ref::<String>() {
+		return message.clone();
+	}
+
+	"pipeline worker panicked with a non-string payload. The most likely cause is that backend pipeline creation hit an unexpected assertion.".to_string()
 }
 
 #[cfg(test)]

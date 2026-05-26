@@ -1,68 +1,3 @@
-use std::ops::Deref;
-
-use math::{
-	collision::{cube_vs_cube, sphere_vs_sphere, Intersection},
-	cross,
-	cube::Cube,
-	dot, length, magnitude, magnitude_squared,
-	mat::{MatInverse as _, MatTranspose as _},
-	normalize,
-	sphere::Sphere,
-	Base, Matrix3, Quaternion, Vector3,
-};
-use utils::{
-	hash::{HashMap, HashMapExt},
-	StableVec,
-};
-
-use crate::{
-	application::Time,
-	core::{
-		channel::Channel,
-		factory::{CreateMessage, Handle},
-		listener::{DefaultListener, Listener},
-		message::DeleteMessage,
-		Entity, EntityHandle,
-	},
-	gameplay::transform::{Transform, TransformationUpdate},
-	physics::{
-		body::{Body, BodyTypes},
-		collider::{Collider, Shapes},
-		dynabit::{
-			body::{intersect, PhysicsBody},
-			contact::{Contact, Side},
-		},
-	},
-};
-
-/// Detects intersections and builds contact data for each unique body pair.
-fn detect_collisions_for_bodies(bodies: &StableVec<PhysicsBody>) -> Vec<Contact> {
-	let mut contacts = Vec::new();
-
-	for (i, a) in bodies.indexed_iter() {
-		for (j, b) in bodies.indexed_iter().filter(|(j, _)| *j > i) {
-			let Some(intersection) = intersect(a, b) else {
-				continue;
-			};
-
-			contacts.push(Contact {
-				normal: intersection.normal,
-				depth: intersection.depth,
-				a: Side {
-					object: i,
-					point: intersection.point_on_a,
-				},
-				b: Side {
-					object: j,
-					point: intersection.point_on_b,
-				},
-			});
-		}
-	}
-
-	contacts
-}
-
 #[derive(Clone)]
 pub struct World {
 	bodies: StableVec<PhysicsBody>,
@@ -113,10 +48,6 @@ impl World {
 			let body = body_handle;
 
 			self.create_body(handle, body.deref());
-		}
-
-		while let Some(message) = self.body_delete_listener.read() {
-			self.remove_body(message.into_handle());
 		}
 
 		while let Some(message) = transforms_rx.read() {
@@ -315,10 +246,44 @@ impl World {
 		self.handles_to_bodies.insert(handle, index);
 	}
 
+	pub fn process_pending_deletions(&mut self) {
+		while let Some(message) = self.body_delete_listener.read() {
+			self.remove_body(message.into_handle());
+		}
+	}
+
 	pub fn remove_body(&mut self, handle: Handle) -> Option<PhysicsBody> {
 		let index = self.handles_to_bodies.remove(&handle)?;
 		self.bodies.remove(index)
 	}
+}
+
+/// Detects intersections and builds contact data for each unique body pair.
+fn detect_collisions_for_bodies(bodies: &StableVec<PhysicsBody>) -> Vec<Contact> {
+	let mut contacts = Vec::new();
+
+	for (i, a) in bodies.indexed_iter() {
+		for (j, b) in bodies.indexed_iter().filter(|(j, _)| *j > i) {
+			let Some(intersection) = intersect(a, b) else {
+				continue;
+			};
+
+			contacts.push(Contact {
+				normal: intersection.normal,
+				depth: intersection.depth,
+				a: Side {
+					object: i,
+					point: intersection.point_on_a,
+				},
+				b: Side {
+					object: j,
+					point: intersection.point_on_b,
+				},
+			});
+		}
+	}
+
+	contacts
 }
 
 #[cfg(test)]
@@ -403,3 +368,40 @@ mod tests {
 		assert!(depth_when_sphere_first <= 1e-4);
 	}
 }
+
+use std::ops::Deref;
+
+use math::{
+	collision::{cube_vs_cube, sphere_vs_sphere, Intersection},
+	cross,
+	cube::Cube,
+	dot, length, magnitude, magnitude_squared,
+	mat::{MatInverse as _, MatTranspose as _},
+	normalize,
+	sphere::Sphere,
+	Base, Matrix3, Quaternion, Vector3,
+};
+use utils::{
+	hash::{HashMap, HashMapExt},
+	StableVec,
+};
+
+use crate::{
+	application::Time,
+	core::{
+		channel::Channel,
+		factory::{CreateMessage, Handle},
+		listener::{DefaultListener, Listener},
+		message::DeleteMessage,
+		Entity, EntityHandle,
+	},
+	gameplay::transform::{Transform, TransformationUpdate},
+	physics::{
+		body::{Body, BodyTypes},
+		collider::{Collider, Shapes},
+		dynabit::{
+			body::{intersect, PhysicsBody},
+			contact::{Contact, Side},
+		},
+	},
+};

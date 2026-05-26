@@ -1,53 +1,5 @@
 //! The simple render model provides a simplified rendering model for Byte-Engine applications. Useful for debugging and prototyping.
 
-use std::{
-	collections::{hash_map::Entry, VecDeque},
-	sync::Arc,
-};
-
-use besl::ParserNode;
-use ghi::{
-	command_buffer::{
-		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
-		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
-	},
-	context::{Context as _, ContextCreate as _},
-	frame::Frame,
-};
-use math::{Matrix4, ShaderMatrix4};
-use resource_management::{
-	asset::bema_asset_handler::ProgramGenerator, msl_shader_generator::MSLShaderGenerator,
-	shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator,
-};
-use utils::{
-	hash::{HashMap, HashMapExt},
-	json::{self, JsonContainerTrait as _, JsonValueTrait as _},
-	sync::RwLock,
-	Box, Extent,
-};
-
-use crate::{
-	core::{
-		channel::DefaultChannel,
-		entity::{self},
-		factory::{CreateMessage, Handle},
-		listener::{DefaultListener, Listener},
-		Entity, EntityHandle,
-	},
-	gameplay::transform::TransformationUpdate,
-	rendering::Camera,
-	rendering::{
-		lights::{Light, Lights},
-		make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
-		pipelines::simple::{render_pass, CameraShaderData, RenderPass},
-		render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn},
-		renderable::mesh::MeshSource,
-		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
-		view::View,
-		RenderableMesh, Sink,
-	},
-};
-
 pub struct PipelineManager {
 	/// Buffer containing all vertex positions for meshes.
 	pub(super) vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); 1024 * 1024]>,
@@ -466,3 +418,51 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 pub(super) struct InstanceShaderData {
 	instance_transform: ShaderMatrix4,
 }
+
+use std::{
+	collections::{hash_map::Entry, VecDeque},
+	sync::Arc,
+};
+
+use besl::ParserNode;
+use ghi::{
+	command_buffer::{
+		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
+		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+	},
+	context::{Context as _, ContextCreate as _},
+	frame::Frame,
+};
+use math::{Matrix4, ShaderMatrix4};
+use resource_management::{
+	asset::bema_asset_handler::ProgramGenerator, msl_shader_generator::MSLShaderGenerator,
+	shader_generator::ShaderGenerationSettings, spirv_shader_generator::SPIRVShaderGenerator,
+};
+use utils::{
+	hash::{HashMap, HashMapExt},
+	json::{self, JsonContainerTrait as _, JsonValueTrait as _},
+	sync::RwLock,
+	Box, Extent,
+};
+
+use crate::{
+	core::{
+		channel::DefaultChannel,
+		entity::{self},
+		factory::{CreateMessage, Handle},
+		listener::{DefaultListener, Listener},
+		Entity, EntityHandle,
+	},
+	gameplay::transform::TransformationUpdate,
+	rendering::Camera,
+	rendering::{
+		lights::{Light, Lights},
+		make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
+		pipelines::simple::{render_pass, CameraShaderData, RenderPass},
+		render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn},
+		renderable::mesh::MeshSource,
+		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
+		view::View,
+		RenderableMesh, Sink,
+	},
+};

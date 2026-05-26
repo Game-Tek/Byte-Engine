@@ -225,6 +225,8 @@ impl GraphicsApplication {
 			self.renderer.prepare(&mut renderer_transforms_listener);
 		}
 
+		self.world.flush_deletions();
+
 		self.tick_count += 1;
 
 		#[cfg(debug_assertions)]
@@ -457,13 +459,15 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 				self.pipeline_manager.create_mesh(frame, handle, message.into_data());
 			}
 
-			while let Some(message) = self.mesh_delete_receiver.read() {
-				self.pipeline_manager.remove_mesh(message.into_handle());
-			}
-
 			while let Some(message) = self.transforms_listener.read() {
 				self.pipeline_manager
 					.update_transform(frame, *message.handle(), message.transform().get_matrix());
+			}
+
+			while let Some(message) = self.mesh_delete_receiver.read() {
+				self.pipeline_manager.remove_mesh(message.into_handle());
+
+				// TODO: handle light removal
 			}
 
 			self.pipeline_manager.prepare(frame, sinks)
@@ -571,10 +575,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 				let handle = *message.handle();
 				self.visibility_pipeline_manager.create_light(handle, message.into_data());
 			}
-
-			while let Some(message) = self.light_delete_receiver.read() {
-				self.visibility_pipeline_manager.remove_light(message.into_handle());
-			}
 		}
 
 		/// Drains renderable creation messages into the visibility resource request path.
@@ -586,6 +586,13 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			while let Some(message) = self.pending_meshes.pop_front() {
 				let handle = *message.handle();
 				self.visibility_pipeline_manager.request_mesh(handle, message.into_data());
+			}
+		}
+
+		/// Drains pending deletion messages.
+		fn process_deletions(&mut self) {
+			while let Some(message) = self.light_delete_receiver.read() {
+				self.visibility_pipeline_manager.remove_light(message.into_handle());
 			}
 
 			while let Some(message) = self.mesh_delete_receiver.read() {
@@ -602,6 +609,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
 			self.request_pending_lights();
 			self.request_pending_meshes();
+
+			self.process_deletions();
 
 			self.visibility_pipeline_manager.prepare(frame, sinks)
 		}

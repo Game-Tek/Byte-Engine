@@ -54,6 +54,10 @@ impl DefaultWorld {
 		self.physics_system.update(time, transforms_rx, &mut self.transforms);
 	}
 
+	pub fn flush_deletions(&mut self) {
+		self.physics_system.process_pending_deletions();
+	}
+
 	pub fn body_factory(&self) -> &Factory<EntityHandle<dyn physics::Body>> {
 		&self.body_factory
 	}

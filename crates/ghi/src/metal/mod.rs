@@ -899,12 +899,12 @@ mod utils {
 
 		#[test]
 		fn bc_copy_size_uses_texel_extent_not_padded_block_extent() {
-					let size = texture_copy_size(Formats::BC7, Extent::rectangle(5, 7));
+			let size = texture_copy_size(Formats::BC7, Extent::rectangle(5, 7));
 
-					assert_eq!(size.width, 5);
-					assert_eq!(size.height, 7);
-					assert_eq!(size.depth, 1);
-				}
+			assert_eq!(size.width, 5);
+			assert_eq!(size.height, 7);
+			assert_eq!(size.depth, 1);
+		}
 
 		#[test]
 		fn bc_format_mapping_preserves_linear_and_srgb_variants() {

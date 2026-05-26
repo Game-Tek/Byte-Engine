@@ -208,11 +208,7 @@ impl VisibilityPipelineResourceManager {
 	}
 
 	/// Queues a material evaluation pipeline with the descriptor configuration supplied by the render thread.
-	fn queue_configured_material_pipeline(
-		&mut self,
-		id: String,
-		material: &mut ResourceMaterial,
-	) -> QueuedMaterialPipeline {
+	fn queue_configured_material_pipeline(&mut self, id: String, material: &mut ResourceMaterial) -> QueuedMaterialPipeline {
 		let Some(config) = self.material_pipeline_config.as_ref() else {
 			log::error!(
 				"Visibility material pipeline configuration is unavailable for {}. The most likely cause is that the render pipeline manager has not configured the resource worker yet.",

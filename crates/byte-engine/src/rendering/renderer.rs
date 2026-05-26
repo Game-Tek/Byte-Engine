@@ -1,12 +1,12 @@
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
-	/// The GHI instance that manages devices.
-	instance: ghi::implementation::Instance,
-	/// The GHI device that is used for rendering.
-	device: Arc<ghi::implementation::Device>,
 	/// The GHI context where all rendering resources and operations are performed.
 	context: ghi::implementation::Context,
+	/// The GHI device that is used for rendering.
+	device: Arc<ghi::implementation::Device>,
+	/// The GHI instance that manages devices.
+	instance: ghi::implementation::Instance,
 
 	started_frame_count: usize,
 
@@ -132,7 +132,7 @@ impl Renderer {
 				],
 			)
 			.unwrap();
-		let mut context = ghi::Device::create_context(device).unwrap();
+		let mut context = ghi::Device::create_context(&device).unwrap();
 		let frame_queue_depth = 2;
 		context.set_frames_in_flight(frame_queue_depth);
 

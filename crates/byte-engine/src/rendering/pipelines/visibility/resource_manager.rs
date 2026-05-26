@@ -1011,7 +1011,11 @@ impl VisibilityPipelineResourceManager {
 					);
 				}
 			}
-			Ok(Err(())) | Err(_) => {
+			Ok(Err(reason)) => {
+				self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
+				log::error!("Pipeline compilation failed for {}. The most likely cause is {}", key, reason);
+			}
+			Err(_) => {
 				self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
 				log::error!(
 					"Pipeline compilation failed for {}. The most likely cause is that shader creation or pipeline specialization failed on the resource-manager thread.",

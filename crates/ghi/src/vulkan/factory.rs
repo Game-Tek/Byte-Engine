@@ -49,6 +49,12 @@ pub struct FactorySampler {
 	pub(crate) max_lod: f32,
 }
 
+/// The `Image` type alias preserves the detached image name used by backend-specific factory paths.
+pub type Image = crate::vulkan::device::FactoryImage;
+
+/// The `Sampler` type alias preserves the detached sampler name used by backend-specific factory paths.
+pub type Sampler = crate::vulkan::device::FactorySampler;
+
 impl crate::device::Device for Factory {
 	type Context = crate::vulkan::context::Context;
 	type RasterPipeline = RasterPipeline;

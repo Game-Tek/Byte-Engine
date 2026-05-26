@@ -29,7 +29,7 @@ use wayland_protocols::{
 use xkbcommon::xkb::{self, keysyms};
 
 use crate::{
-	os::{Features, WindowLike},
+	window::os::{Features, WindowLike},
 	window::{
 		input::{Keys, MouseKeys},
 		Events, Seat,

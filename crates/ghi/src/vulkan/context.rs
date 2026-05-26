@@ -61,8 +61,8 @@ pub struct Context {
 }
 
 impl Context {
-	pub(super) fn new(device: Device) -> Result<Self, &'static str> {
-		let mut device = device.inner.ok_or("Failed to create a Vulkan context. The most likely cause is that a detached device was used as the primary graphics device.")?;
+	pub(super) fn new(device: &Device) -> Result<Self, &'static str> {
+		let mut device = device.inner.clone().ok_or("Failed to create a Vulkan context. The most likely cause is that a detached device was used as the primary graphics device.")?;
 		let memory_properties = device.memory_properties;
 		let queues = std::mem::take(&mut device.queues);
 		let settings = device.settings.clone();
@@ -120,11 +120,10 @@ impl Context {
 
 	/// Creates a detached-resource factory backed by this Vulkan device.
 	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
-		Some(crate::implementation::Factory {
-			device: self.device.device.clone(),
-			descriptor_set_layouts: self.descriptor_sets_layouts.clone(),
-			shaders: Vec::with_capacity(64),
-		})
+		Some(crate::implementation::Factory::detached_with_resources(
+			self.device.device.clone(),
+			self.descriptor_sets_layouts.clone(),
+		))
 	}
 
 	/// Creates a detached pipeline-capable factory for compatibility with the previous pipeline factory API.

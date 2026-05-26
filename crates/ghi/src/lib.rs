@@ -21,6 +21,10 @@ pub mod factory;
 pub mod dx12;
 #[cfg(target_os = "macos")]
 pub mod metal;
+#[cfg(not(target_os = "macos"))]
+pub mod metal {
+	pub mod context {}
+}
 #[cfg(target_os = "linux")]
 pub mod vulkan;
 
@@ -37,7 +41,7 @@ pub mod implementation {
 	#[cfg(target_os = "macos")]
 	pub use crate::metal::*;
 	#[cfg(target_os = "linux")]
-	use crate::vulkan::*;
+	pub use crate::vulkan::*;
 }
 
 pub mod binding;

@@ -1,10 +1,12 @@
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
-	/// The GHI context where all rendering resources and operations are performed.
-	context: ghi::implementation::Context,
 	/// The GHI instance that manages devices.
 	instance: ghi::implementation::Instance,
+	/// The GHI device that is used for rendering.
+	device: Arc<ghi::implementation::Device>,
+	/// The GHI context where all rendering resources and operations are performed.
+	context: ghi::implementation::Context,
 
 	started_frame_count: usize,
 
@@ -22,6 +24,7 @@ pub struct Renderer {
 	render_passes: SmallVec<[Box<dyn RenderPass>; 64]>,
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
+	pending_swapchain_captures: SmallVec<[SwapchainCapture; 16]>,
 
 	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
 	pipeline_manager_resources_by_sink: SmallVec<[(PipelineManagerId, SinkId, Vec<(String, ghi::AccessPolicies)>); 64]>,
@@ -143,6 +146,7 @@ impl Renderer {
 
 		Renderer {
 			context,
+			device: Arc::new(device),
 			instance,
 
 			started_frame_count: 0,
@@ -158,6 +162,7 @@ impl Renderer {
 			render_passes: SmallVec::with_capacity(64),
 			render_passes_by_sink: SmallVec::with_capacity(32),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
+			pending_swapchain_captures: SmallVec::with_capacity(16),
 
 			pipeline_managers: SmallVec::with_capacity(8),
 			pipeline_manager_resources_by_sink: SmallVec::with_capacity(64),
@@ -248,8 +253,26 @@ impl Renderer {
 		}
 	}
 
-	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::Events> + 'a> + 'a {
+	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::window::Events> + 'a> + 'a {
 		self.windows.iter_mut().map(|(window, _)| window.poll())
+	}
+
+	/// Schedules copying a sink's swapchain image into a buffer during the next prepared frame.
+	pub fn capture_swapchain_to_buffer(
+		&mut self,
+		sink_id: SinkId,
+		destination_buffer: impl Into<ghi::BaseBufferHandle>,
+		destination_offset: usize,
+		destination_bytes_per_row: usize,
+		destination_bytes_per_image: usize,
+	) {
+		self.pending_swapchain_captures.push(SwapchainCapture {
+			sink_id,
+			destination_buffer: destination_buffer.into(),
+			destination_offset,
+			destination_bytes_per_row,
+			destination_bytes_per_image,
+		});
 	}
 
 	/// This function prepares a frame by invoking multiple render passes.
@@ -300,11 +323,12 @@ impl Renderer {
 		let pipeline_manager_resources_by_sink = &self.pipeline_manager_resources_by_sink;
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
+		let pending_swapchain_captures = self.pending_swapchain_captures.drain(..).collect::<SmallVec<[_; 16]>>();
 
 		queue.execute(Some(frame), wait_for, synchronizer, |execution| {
 			let completed_graphics_frame = execution.completed_frame();
 
-			let (sinks, pipeline_manager_commands, render_pass_commands, present_keys) = {
+			let (sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies) = {
 				let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
 				);
@@ -387,7 +411,24 @@ impl Renderer {
 					.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
 					.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
-				(sinks, pipeline_manager_commands, render_pass_commands, present_keys)
+				let swapchain_capture_copies = pending_swapchain_captures
+					.iter()
+					.filter_map(|capture| {
+						let Some(Some((_present_key, _extent, swapchain))) = swapchains.get(capture.sink_id) else {
+							return None;
+						};
+
+						Some(ghi::ImageBufferCopyDescriptor::swapchain(
+							*swapchain,
+							capture.destination_buffer,
+							capture.destination_offset,
+							capture.destination_bytes_per_row,
+							capture.destination_bytes_per_image,
+						))
+					})
+					.collect::<SmallVec<[ghi::ImageBufferCopyDescriptor; 16]>>();
+
+				(sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies)
 			};
 
 			execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
@@ -410,6 +451,10 @@ impl Renderer {
 				for (command, _render_pass_id, sink) in render_pass_commands {
 					let attachment_infos = render_targets.get_attachment_infos(sink);
 					(&command)(&mut *command_buffer_recording, &attachment_infos);
+				}
+
+				if !swapchain_capture_copies.is_empty() {
+					command_buffer_recording.copy_images_to_buffer(&swapchain_capture_copies);
 				}
 			});
 
@@ -489,6 +534,15 @@ impl Renderer {
 	}
 
 	pub fn create_camera(&mut self, handle: Handle, camera: Camera) {
+		if let Some((_, existing_camera)) = self
+			.cameras
+			.iter_mut()
+			.find(|(existing_handle, _)| *existing_handle == handle)
+		{
+			*existing_camera = camera;
+			return;
+		}
+
 		self.cameras.push((handle, camera));
 	}
 }
@@ -496,6 +550,16 @@ impl Renderer {
 struct Attachment {
 	name: String,
 	image: ghi::BaseImageHandle,
+}
+
+/// The `SwapchainCapture` struct exists to defer one swapchain-to-buffer capture request until the next frame.
+#[derive(Clone, Copy)]
+struct SwapchainCapture {
+	sink_id: SinkId,
+	destination_buffer: ghi::BaseBufferHandle,
+	destination_offset: usize,
+	destination_bytes_per_row: usize,
+	destination_bytes_per_image: usize,
 }
 
 /// This struct holds the settings to configure a `Renderer` during it's creation.

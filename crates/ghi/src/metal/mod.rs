@@ -1,6 +1,8 @@
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {}
 
+use std::ffi::c_void;
+use std::ptr::NonNull;
 use std::sync::atomic::AtomicU64;
 
 use ::utils::hash::HashMap;
@@ -8,7 +10,7 @@ use ::utils::Extent;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;
-use objc2_foundation::NSSize;
+use objc2_foundation::{NSRange, NSSize};
 use objc2_metal as mtl;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 
@@ -123,6 +125,189 @@ fn update_layer_extent(layer: &CAMetalLayer, view: &NSView) -> Extent {
 	)
 }
 
+/// Applies one GHI specialization constant entry to a Metal function constant table.
+fn apply_specialization_map_entry(
+	constant_values: &mtl::MTLFunctionConstantValues,
+	specialization_map_entry: &crate::pipelines::SpecializationMapEntry,
+) {
+	let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+	let value = NonNull::new(value).expect(
+		"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
+	);
+	let constant_id = specialization_map_entry.get_constant_id() as usize;
+
+	match specialization_map_entry.get_type().as_str() {
+		"bool" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::Bool, constant_id) },
+		"u32" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::UInt, constant_id) },
+		"f32" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::Float, constant_id) },
+		"vec2f" => unsafe {
+			constant_values.setConstantValues_type_withRange(value, mtl::MTLDataType::Float, NSRange::new(constant_id, 2))
+		}
+		"vec3f" => unsafe {
+			constant_values.setConstantValues_type_withRange(value, mtl::MTLDataType::Float, NSRange::new(constant_id, 3))
+		}
+		"vec4f" => unsafe {
+			constant_values.setConstantValues_type_withRange(value, mtl::MTLDataType::Float, NSRange::new(constant_id, 4))
+		}
+		_ => panic!(
+			"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
+		),
+	}
+}
+
+/// Builds the Metal vertex descriptor and matching GHI vertex-layout metadata.
+fn build_vertex_layout(vertex_elements: &[crate::pipelines::VertexElement]) -> VertexLayout {
+	let elements = vertex_elements
+		.iter()
+		.map(|element| VertexElementDescriptor {
+			name: element.name.to_owned(),
+			format: element.format,
+			binding: element.binding,
+		})
+		.collect::<Vec<_>>();
+
+	let max_binding = elements
+		.iter()
+		.map(|element| element.binding)
+		.max()
+		.map(|binding| binding as usize + 1)
+		.unwrap_or(0);
+	let mut strides = vec![0; max_binding];
+	let mut binding_offsets = vec![0usize; max_binding];
+	let vertex_descriptor = mtl::MTLVertexDescriptor::vertexDescriptor();
+
+	for (attribute_index, element) in elements.iter().enumerate() {
+		strides[element.binding as usize] += element.format.size() as u32;
+
+		let offset = binding_offsets[element.binding as usize];
+		let attribute = unsafe { vertex_descriptor.attributes().objectAtIndexedSubscript(attribute_index as _) };
+		attribute.setFormat(utils::vertex_format(element.format));
+		unsafe {
+			attribute.setOffset(offset as _);
+			attribute.setBufferIndex(element.binding as _);
+		}
+
+		binding_offsets[element.binding as usize] += utils::data_type_size(element.format);
+	}
+
+	for (binding, stride) in strides.iter().copied().enumerate() {
+		let layout = unsafe { vertex_descriptor.layouts().objectAtIndexedSubscript(binding as _) };
+		unsafe {
+			layout.setStride(stride as _);
+			layout.setStepRate(1);
+		}
+		layout.setStepFunction(mtl::MTLVertexStepFunction::PerVertex);
+	}
+
+	VertexLayout {
+		elements,
+		strides,
+		vertex_descriptor,
+	}
+}
+
+/// Builds a Metal texture descriptor from GHI image creation parameters.
+fn build_texture_descriptor(
+	format: crate::Formats,
+	extent: Extent,
+	resource_uses: crate::Uses,
+	device_accesses: crate::DeviceAccesses,
+	array_layers: u32,
+	mip_levels: u32,
+) -> Retained<mtl::MTLTextureDescriptor> {
+	let descriptor = unsafe {
+		mtl::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+			utils::to_pixel_format(format),
+			extent.width().max(1) as _,
+			extent.height().max(1) as _,
+			mip_levels > 1,
+		)
+	};
+
+	if extent.depth() > 1 {
+		descriptor.setTextureType(mtl::MTLTextureType::Type3D);
+	} else if array_layers > 1 {
+		descriptor.setTextureType(mtl::MTLTextureType::Type2DArray);
+	}
+	descriptor.setUsage(utils::texture_usage_from_uses(resource_uses));
+	descriptor.setStorageMode(utils::storage_mode_from_access(device_accesses));
+	unsafe {
+		descriptor.setArrayLength(array_layers as _);
+	}
+
+	descriptor
+}
+
+/// Builds a Metal sampler descriptor from a GHI sampler builder.
+fn build_sampler_descriptor(builder: &crate::sampler::Builder) -> Retained<mtl::MTLSamplerDescriptor> {
+	let descriptor = mtl::MTLSamplerDescriptor::new();
+	descriptor.setMinFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
+	descriptor.setMagFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
+	descriptor.setMipFilter(utils::sampler_mip_filter(builder.mip_map_mode));
+	descriptor.setSAddressMode(utils::sampler_address_mode(builder.addressing_mode));
+	descriptor.setTAddressMode(utils::sampler_address_mode(builder.addressing_mode));
+	descriptor.setRAddressMode(utils::sampler_address_mode(builder.addressing_mode));
+	descriptor.setLodMinClamp(builder.min_lod);
+	descriptor.setLodMaxClamp(builder.max_lod);
+	descriptor.setSupportArgumentBuffers(true);
+
+	if let Some(anisotropy) = builder.anisotropy {
+		descriptor.setMaxAnisotropy(anisotropy as _);
+	}
+
+	descriptor
+}
+
+/// Configures one Metal color attachment with the GHI format and blend mode.
+fn configure_color_attachment(
+	color_attachment: &mtl::MTLRenderPipelineColorAttachmentDescriptor,
+	attachment: &crate::pipelines::raster::AttachmentDescriptor,
+) {
+	color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
+	match attachment.blend {
+		crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingEnabled(false),
+		crate::pipelines::raster::BlendMode::Alpha => {
+			color_attachment.setBlendingEnabled(true);
+			color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
+			color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
+			color_attachment.setSourceRGBBlendFactor(mtl::MTLBlendFactor::SourceAlpha);
+			color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
+			color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
+			color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
+		}
+	}
+}
+
+/// Configures render-target formats for a Metal mesh pipeline descriptor.
+fn configure_mesh_render_targets(
+	descriptor: &mtl::MTLMeshRenderPipelineDescriptor,
+	render_targets: &[crate::pipelines::raster::AttachmentDescriptor],
+) {
+	for (index, attachment) in render_targets.iter().enumerate() {
+		if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
+			descriptor.setDepthAttachmentPixelFormat(utils::to_pixel_format(attachment.format));
+		} else {
+			let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
+			configure_color_attachment(&color_attachment, attachment);
+		}
+	}
+}
+
+/// Configures render-target formats for a Metal raster pipeline descriptor.
+fn configure_render_targets(
+	descriptor: &mtl::MTLRenderPipelineDescriptor,
+	render_targets: &[crate::pipelines::raster::AttachmentDescriptor],
+) {
+	for (index, attachment) in render_targets.iter().enumerate() {
+		if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
+			descriptor.setDepthAttachmentPixelFormat(utils::to_pixel_format(attachment.format));
+		} else {
+			let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
+			configure_color_attachment(&color_attachment, attachment);
+		}
+	}
+}
+
 #[derive(Clone)]
 pub(crate) struct DescriptorSetLayout {
 	bindings: Vec<DescriptorSetLayoutBinding>,
@@ -215,11 +400,11 @@ pub(crate) struct VertexLayoutHandle(pub(crate) u64);
 
 #[derive(Clone)]
 pub(crate) struct Shader {
+	name: Option<String>,
 	stage: crate::Stages,
 	shader_binding_descriptors: Vec<crate::shader::BindingDescriptor>,
 	metal_library: Option<Retained<ProtocolObject<dyn mtl::MTLLibrary>>>,
 	metal_entry_point: Option<String>,
-	spirv: Option<Vec<u8>>,
 	threadgroup_size: Option<Extent>,
 }
 
@@ -1080,12 +1265,51 @@ pub mod binding {
 }
 
 pub mod synchronizer {
+	use std::cell::{Cell, RefCell};
+
+	use super::*;
 	use crate::synchronizer::SynchronizerHandle;
 
-	#[derive(Clone)]
+	/// The `Synchronizer` struct owns the Metal workloads associated with one GHI synchronization point.
 	pub(crate) struct Synchronizer {
 		pub next: Option<SynchronizerHandle>,
-		pub signaled: bool,
+		signaled: Cell<bool>,
+		workloads: RefCell<Vec<Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>>>,
+	}
+
+	impl Synchronizer {
+		pub(crate) fn new(signaled: bool) -> Self {
+			Self {
+				next: None,
+				signaled: Cell::new(signaled),
+				workloads: RefCell::new(Vec::new()),
+			}
+		}
+
+		pub(crate) fn reset(&self) {
+			// Reset only after previous work is complete so diagnostics are not lost for in-flight submissions.
+			self.wait();
+			self.signaled.set(false);
+		}
+
+		pub(crate) fn signal_workload(&self, command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>) {
+			self.signaled.set(false);
+			self.workloads.borrow_mut().push(command_buffer);
+		}
+
+		pub(crate) fn wait(&self) {
+			if self.signaled.get() {
+				return;
+			}
+
+			// Retain the command buffers until completion so asynchronous Metal submissions can be diagnosed later.
+			let workloads = self.workloads.take();
+			for command_buffer in &workloads {
+				device::wait_for_metal_command_buffer(command_buffer.as_ref());
+			}
+
+			self.signaled.set(true);
+		}
 	}
 }
 
@@ -1105,15 +1329,16 @@ pub mod swapchain {
 pub mod command_buffer;
 pub mod context;
 pub mod device;
+pub mod factory;
 pub mod frame;
 pub mod instance;
-pub mod pipelines;
 
-pub use self::binding::*;
+pub(crate) use self::binding::*;
 pub use self::command_buffer::*;
 pub use self::context::*;
 pub(crate) use self::descriptor_set::*;
-pub use self::device::*;
+pub use self::device::Device;
+pub use self::factory::{ComputePipeline, Factory};
 pub use self::frame::*;
 pub use self::instance::*;
-pub use self::synchronizer::*;
+pub(crate) use self::synchronizer::*;

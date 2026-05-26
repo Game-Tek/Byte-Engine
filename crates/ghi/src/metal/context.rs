@@ -19,7 +19,12 @@ pub struct Context {
 	pub(crate) shaders: Vec<Shader>,
 	pub(crate) pipelines: Vec<Pipeline>,
 	pub(crate) command_buffers: Vec<StoredCommandBuffer>,
-	pub(crate) synchronizers: Vec<synchronizer::Synchronizer>,
+	pub(crate) synchronizers: ResourceCollection<
+		synchronizer::Synchronizer,
+		graphics_hardware_interface::SynchronizerHandle,
+		crate::synchronizer::SynchronizerHandle,
+	>,
+	internal_upload_synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
 	pub(crate) swapchains: Vec<swapchain::Swapchain>,
 
 	pub(crate) resource_to_descriptor: HashMap<PrivateHandles, HashSet<(DescriptorSetBindingHandle, u32, u8)>>,
@@ -58,9 +63,46 @@ impl Context {
 		command_buffer
 	}
 
-	// Submits the Metal command buffer and validates its completion status with enhanced diagnostics.
+	// Submits the Metal command buffer without blocking; synchronizers retain submitted work for later waits.
 	pub(super) fn submit_metal_command_buffer(&self, command_buffer: &ProtocolObject<dyn mtl::MTLCommandBuffer>) {
 		submit_metal_command_buffer(command_buffer);
+	}
+
+	fn synchronizer_for_sequence(
+		&self,
+		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		sequence_index: u8,
+	) -> crate::synchronizer::SynchronizerHandle {
+		self.synchronizers
+			.nth_handle(synchronizer_handle, sequence_index as usize)
+			.expect(
+				"Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.",
+			)
+	}
+
+	pub(crate) fn submit_metal_command_buffer_for_synchronizer(
+		&self,
+		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
+		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		sequence_index: u8,
+	) {
+		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, sequence_index);
+		let synchronizer = self.synchronizers.resource(synchronizer_handle);
+
+		// The synchronizer owns a retained command buffer until a GHI wait observes completion.
+		synchronizer.signal_workload(command_buffer.clone());
+		self.submit_metal_command_buffer(command_buffer.as_ref());
+	}
+
+	fn submit_internal_metal_command_buffer(
+		&self,
+		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
+		sequence_index: u8,
+	) {
+		let synchronizer = self.internal_upload_synchronizer.expect(
+			"Metal internal upload synchronizer is missing. The most likely cause is that the context was not initialized correctly.",
+		);
+		self.submit_metal_command_buffer_for_synchronizer(command_buffer, synchronizer, sequence_index);
 	}
 
 	pub fn new(
@@ -68,7 +110,7 @@ impl Context {
 		device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 		queues: Vec<queue::StoredQueue>,
 	) -> Result<Context, &'static str> {
-		Ok(Context {
+		let mut context = Context {
 			device,
 			frames: MAX_FRAMES_IN_FLIGHT as u8,
 			queues,
@@ -88,7 +130,8 @@ impl Context {
 			shaders: Vec::new(),
 			pipelines: Vec::new(),
 			command_buffers: Vec::new(),
-			synchronizers: Vec::new(),
+			synchronizers: ResourceCollection::with_capacity(32),
+			internal_upload_synchronizer: None,
 			swapchains: Vec::new(),
 			resource_to_descriptor: HashMap::default(),
 			descriptor_set_to_resource: HashMap::default(),
@@ -102,7 +145,14 @@ impl Context {
 
 			#[cfg(debug_assertions)]
 			names: HashMap::default(),
-		})
+		};
+		context.internal_upload_synchronizer = Some(context.create_synchronizer(Some("Metal Internal Upload Sync"), true));
+
+		Ok(context)
+	}
+
+	pub fn create_factory(&self) -> Option<crate::metal::factory::Factory> {
+		Some(crate::metal::factory::Factory::new(self.device.clone(), self.settings))
 	}
 
 	fn create_buffer_resource(
@@ -168,6 +218,32 @@ impl Context {
 		}
 	}
 
+	/// Creates a Metal buffer and optionally links it after an existing private frame resource.
+	fn create_buffer_internal(
+		&mut self,
+		previous: Option<BufferHandle>,
+		name: Option<&str>,
+		size: usize,
+		resource_uses: crate::Uses,
+		device_accesses: crate::DeviceAccesses,
+	) -> BufferHandle {
+		let buffer = self.create_buffer_resource(name, size, resource_uses, device_accesses);
+		if let Some(previous) = previous {
+			let previous_buffer = self.buffers.resource(previous);
+			let copy_size = previous_buffer.size.min(buffer.size);
+			unsafe {
+				std::ptr::copy_nonoverlapping(previous_buffer.pointer, buffer.pointer, copy_size);
+			}
+		}
+		let (_, handle) = self.buffers.add(buffer);
+
+		if let Some(previous) = previous {
+			self.buffers.set_next(previous, Some(handle));
+		}
+
+		handle
+	}
+
 	pub(super) fn create_image_resource(
 		&self,
 		name: Option<&str>,
@@ -177,7 +253,6 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
 	) -> image::Image {
-		let pixel_format = utils::to_pixel_format(format);
 		if utils::is_block_compressed(format) && !self.device.supportsBCTextureCompression() {
 			panic!(
 				"Metal device does not support BC texture compression. The most likely cause is running on a device family that cannot sample BC compressed textures."
@@ -185,28 +260,7 @@ impl Context {
 		}
 		let name = name.map(str::to_owned);
 
-		let width = extent.width().max(1);
-		let height = extent.height().max(1);
-		let mipmapped = false;
-
-		let descriptor = unsafe {
-			mtl::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-				pixel_format,
-				width as _,
-				height as _,
-				mipmapped,
-			)
-		};
-		if extent.depth() > 1 {
-			descriptor.setTextureType(mtl::MTLTextureType::Type3D);
-		} else if array_layers > 1 {
-			descriptor.setTextureType(mtl::MTLTextureType::Type2DArray);
-		}
-		descriptor.setUsage(utils::texture_usage_from_uses(resource_uses));
-		descriptor.setStorageMode(utils::storage_mode_from_access(device_accesses));
-		unsafe {
-			descriptor.setArrayLength(array_layers as _);
-		}
+		let descriptor = build_texture_descriptor(format, extent, resource_uses, device_accesses, array_layers, 1);
 
 		let texture = self
 			.device
@@ -235,13 +289,36 @@ impl Context {
 		}
 	}
 
+	/// Creates a Metal image and optionally links it after an existing private frame resource.
+	fn create_image_internal(
+		&mut self,
+		previous: Option<ImageHandle>,
+		name: Option<&str>,
+		extent: Extent,
+		format: crate::Formats,
+		resource_uses: crate::Uses,
+		device_accesses: crate::DeviceAccesses,
+		array_layers: u32,
+	) -> ImageHandle {
+		let image = self.create_image_resource(name, extent, format, resource_uses, device_accesses, array_layers);
+		let (_, handle) = self.images.add(image);
+
+		if let Some(previous) = previous {
+			self.images.set_next(previous, Some(handle));
+		}
+
+		handle
+	}
+
 	fn upload_texture_from_staging(
-		&self,
+		&mut self,
 		texture: &ProtocolObject<dyn mtl::MTLTexture>,
 		format: crate::Formats,
 		extent: Extent,
 		array_layers: u32,
 		staging: &[u8],
+		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
+		sequence_index: u8,
 	) {
 		let Some((bytes_per_row, row_count, bytes_per_image)) = utils::texture_upload_layout(format, extent) else {
 			return;
@@ -289,7 +366,9 @@ impl Context {
 			);
 		}
 
-		let queue = self.transfer_queue();
+		let queue = queue_handle
+			.and_then(|queue_handle| self.queues.get(queue_handle.0 as usize))
+			.unwrap_or_else(|| self.transfer_queue());
 		let command_buffer = self.create_metal_command_buffer(
 			queue.queue.as_ref(),
 			Some("Texture Upload"),
@@ -330,7 +409,7 @@ impl Context {
 		}
 
 		blit_encoder.endEncoding();
-		self.submit_metal_command_buffer(command_buffer.as_ref());
+		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
 	}
 
 	/// Stores a resolved descriptor for one binding slot, re-encodes the argument buffer, and refreshes resource tracking.
@@ -604,16 +683,15 @@ impl Context {
 		sequence_index: u8,
 		frame_offset: i32,
 	) -> Option<Descriptor> {
+		let resource_frame_index = (sequence_index as i32 - frame_offset).rem_euclid(self.frames as i32) as usize;
+
 		match descriptor {
 			crate::descriptors::WriteData::Buffer { handle, size } => {
-				let index = (sequence_index as i32 - frame_offset) as usize;
-				let handle = self.buffers.nth_handle(handle, index)?;
+				let handle = self.buffers.nth_handle(handle, resource_frame_index)?;
 				Some(Descriptor::Buffer { buffer: handle, size })
 			}
 			crate::descriptors::WriteData::Image { handle, layout } => {
-				let handle = self
-					.images
-					.nth_handle(handle, (sequence_index as i64 - frame_offset as i64) as usize)?;
+				let handle = self.images.nth_handle(handle, resource_frame_index)?;
 				Some(Descriptor::Image { image: handle, layout })
 			}
 			crate::descriptors::WriteData::CombinedImageSampler {
@@ -622,9 +700,7 @@ impl Context {
 				layout,
 				..
 			} => {
-				let handle = self
-					.images
-					.nth_handle(image_handle, (sequence_index as i64 - frame_offset as i64) as usize)?;
+				let handle = self.images.nth_handle(image_handle, resource_frame_index)?;
 				Some(Descriptor::CombinedImageSampler {
 					image: handle,
 					sampler: SamplerHandle(sampler_handle.0),
@@ -700,6 +776,78 @@ impl Context {
 		}
 	}
 
+	/// Returns the private buffer handles currently known for one master buffer chain.
+	fn buffer_chain_handles(&self, master: graphics_hardware_interface::BaseBufferHandle) -> Vec<PrivateHandles> {
+		let mut handles = Vec::with_capacity(self.frames as usize);
+
+		for frame_index in 0..self.frames as usize {
+			let Some(handle) = self.buffers.nth_handle(master, frame_index) else {
+				continue;
+			};
+			let handle = PrivateHandles::Buffer(handle);
+
+			if !handles.contains(&handle) {
+				handles.push(handle);
+			}
+		}
+
+		handles
+	}
+
+	/// Returns the private image handles currently known for one master image chain.
+	fn image_chain_handles(&self, master: graphics_hardware_interface::BaseImageHandle) -> Vec<PrivateHandles> {
+		let mut handles = Vec::with_capacity(self.frames as usize);
+
+		for frame_index in 0..self.frames as usize {
+			let Some(handle) = self.images.nth_handle(master, frame_index) else {
+				continue;
+			};
+			let handle = PrivateHandles::Image(handle);
+
+			if !handles.contains(&handle) {
+				handles.push(handle);
+			}
+		}
+
+		handles
+	}
+
+	/// Moves frame-local descriptor references from any fallback resource to the deferred resource.
+	fn rewrite_deferred_descriptors(&mut self, candidates: &[PrivateHandles], replacement: PrivateHandles, frame_index: u8) {
+		let descriptor_bindings = candidates
+			.iter()
+			.copied()
+			.filter(|candidate| *candidate != replacement)
+			.filter_map(|candidate| self.resource_to_descriptor.get(&candidate))
+			.flat_map(|bindings| bindings.iter().copied())
+			.filter(|(_, _, descriptor_frame_index)| *descriptor_frame_index == frame_index)
+			.collect::<HashSet<_>>();
+
+		for (binding_handle, array_element, _) in descriptor_bindings {
+			let binding = self.bindings[binding_handle.0 as usize].clone();
+			let set_handle = binding.descriptor_set_handle;
+			let Some(descriptor) = self.descriptor_sets[set_handle.0 as usize]
+				.descriptors
+				.get(&binding.index)
+				.and_then(|descriptors| descriptors.get(&array_element))
+				.copied()
+			else {
+				continue;
+			};
+
+			let descriptor = match (descriptor, replacement) {
+				(Descriptor::Buffer { size, .. }, PrivateHandles::Buffer(buffer)) => Descriptor::Buffer { buffer, size },
+				(Descriptor::Image { layout, .. }, PrivateHandles::Image(image)) => Descriptor::Image { image, layout },
+				(Descriptor::CombinedImageSampler { sampler, layout, .. }, PrivateHandles::Image(image)) => {
+					Descriptor::CombinedImageSampler { image, sampler, layout }
+				}
+				_ => continue,
+			};
+
+			self.update_descriptor_for_binding(binding_handle, descriptor, frame_index, array_element);
+		}
+	}
+
 	/// Resizes every swapchain proxy image in place so existing descriptors can keep their image handles.
 	pub(crate) fn resize_swapchain_images(
 		&mut self,
@@ -737,6 +885,7 @@ impl Context {
 
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
 		let mut tasks = self.tasks.split_off(0);
+		let mut deferred_frame_tasks = Vec::new();
 
 		tasks.retain(|task| {
 			if let Some(frame) = task.frame() {
@@ -815,16 +964,67 @@ impl Context {
 					),
 					Descriptors::CombinedImageSamplerArray => {}
 				},
-				Tasks::DeleteMetalTexture { .. }
-				| Tasks::DeleteMetalBuffer { .. }
-				| Tasks::ResizeImage { .. }
-				| Tasks::BuildImage(_)
-				| Tasks::BuildBuffer(_) => {}
+				Tasks::BuildImage(builder) => {
+					let previous = self.images.resource(builder.previous);
+					let name = previous.name.clone();
+					let extent = previous.extent;
+					let format = previous.format;
+					let uses = previous.uses;
+					let access = previous.access;
+					let array_layers = previous.array_layers;
+					let handle = self.create_image_internal(
+						Some(builder.previous),
+						name.as_deref(),
+						extent,
+						format,
+						uses,
+						access,
+						array_layers,
+					);
+
+					let candidates = self.image_chain_handles(builder.master.0);
+					self.rewrite_deferred_descriptors(&candidates, PrivateHandles::Image(handle), sequence_index);
+
+					let next_frame = sequence_index + 1;
+					if next_frame < self.frames {
+						deferred_frame_tasks.push(Task::new(
+							Tasks::BuildImage(BuildImage {
+								previous: handle,
+								master: builder.master,
+							}),
+							Some(next_frame),
+						));
+					}
+				}
+				Tasks::BuildBuffer(builder) => {
+					let previous = self.buffers.resource(builder.previous);
+					let name = previous.name.clone();
+					let size = previous.size;
+					let uses = previous.uses;
+					let access = previous.access;
+					let handle = self.create_buffer_internal(Some(builder.previous), name.as_deref(), size, uses, access);
+
+					let candidates = self.buffer_chain_handles(builder.master);
+					self.rewrite_deferred_descriptors(&candidates, PrivateHandles::Buffer(handle), sequence_index);
+
+					let next_frame = sequence_index + 1;
+					if next_frame < self.frames {
+						deferred_frame_tasks.push(Task::new(
+							Tasks::BuildBuffer(BuildBuffer {
+								previous: handle,
+								master: builder.master,
+							}),
+							Some(next_frame),
+						));
+					}
+				}
+				Tasks::DeleteMetalTexture { .. } | Tasks::DeleteMetalBuffer { .. } | Tasks::ResizeImage { .. } => {}
 			}
 
 			false
 		});
 
+		tasks.extend(deferred_frame_tasks);
 		self.tasks = tasks;
 	}
 
@@ -849,17 +1049,8 @@ impl Context {
 		false
 	}
 
-	/// Creates a detached device backed by this Metal device.
-	pub fn create_detached_device(&self) -> Option<crate::implementation::DetachedDevice> {
-		Some(crate::metal::pipelines::factory::Factory {
-			device: self.device.clone(),
-			shaders: Vec::with_capacity(64),
-		})
-	}
-
 	pub fn set_frames_in_flight(&mut self, frames: u8) {
 		self.frames = frames.max(1);
-		for swapchain in &mut self.swapchains {}
 		// TODO: Rebuild dynamic resources for new frame count.
 	}
 
@@ -969,13 +1160,20 @@ impl Context {
 
 	pub fn create_shader(
 		&mut self,
-		_name: Option<&str>,
+		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
 		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let (spirv, metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
-			crate::shader::Sources::SPIRV(data) => (Some(data.to_vec()), None, None, None),
+		let (metal_library, metal_entry_point, threadgroup_size) = match shader_source_type {
+			crate::shader::Sources::SPIRV(_) => {
+				eprintln!(
+					"Metal shader creation failed for {:?} shader {:?}. The most likely cause is that SPIR-V was supplied to the Metal backend without translation to MSL or MTLB.",
+					stage,
+					name.unwrap_or("<unnamed>"),
+				);
+				return Err(());
+			}
 			crate::shader::Sources::DXIL(_) | crate::shader::Sources::HLSL { .. } => return Err(()),
 			crate::shader::Sources::MTLB {
 				binary,
@@ -991,7 +1189,7 @@ impl Context {
 					()
 				})?;
 
-				(None, Some(library), Some(entry_point.to_owned()), threadgroup_size)
+				(Some(library), Some(entry_point.to_owned()), threadgroup_size)
 			}
 			crate::shader::Sources::MTL { source, entry_point } => {
 				let threadgroup_size = match stage {
@@ -1013,7 +1211,7 @@ impl Context {
 						()
 					})?;
 
-				(None, Some(library), Some(entry_point.to_owned()), threadgroup_size)
+				(Some(library), Some(entry_point.to_owned()), threadgroup_size)
 			}
 		};
 
@@ -1032,11 +1230,11 @@ impl Context {
 		};
 
 		self.shaders.push(Shader {
+			name: name.map(str::to_owned),
 			stage: stages,
 			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
 			metal_library,
 			metal_entry_point,
-			spirv,
 			threadgroup_size,
 		});
 
@@ -1055,7 +1253,7 @@ impl Context {
 		let constant_values = mtl::MTLFunctionConstantValues::new();
 
 		for specialization_map_entry in shader_parameter.specialization_map {
-			self.apply_specialization_map_entry(&constant_values, specialization_map_entry);
+			apply_specialization_map_entry(&constant_values, specialization_map_entry);
 		}
 
 		library
@@ -1067,78 +1265,6 @@ impl Context {
 				);
 			})
 			.ok()
-	}
-
-	fn apply_specialization_map_entry(
-		&self,
-		constant_values: &mtl::MTLFunctionConstantValues,
-		specialization_map_entry: &crate::pipelines::SpecializationMapEntry,
-	) {
-		match specialization_map_entry.get_type().as_str() {
-			"bool" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::Bool,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"u32" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::UInt,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"f32" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValue_type_atIndex(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::Float,
-					specialization_map_entry.get_constant_id() as usize,
-				);
-			},
-			"vec2f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 2),
-				);
-			},
-			"vec3f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 3),
-				);
-			},
-			"vec4f" => unsafe {
-				let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
-				constant_values.setConstantValues_type_withRange(
-					NonNull::new(value).expect(
-						"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
-					),
-					mtl::MTLDataType::Float,
-					NSRange::new(specialization_map_entry.get_constant_id() as usize, 4),
-				);
-			},
-			_ => panic!(
-				"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
-			),
-		}
 	}
 
 	/// Builds the Metal argument-buffer layout that backs a descriptor set template.
@@ -1446,7 +1572,7 @@ impl Context {
 
 	pub fn intern_raster_pipeline(
 		&mut self,
-		pipeline: crate::metal::pipelines::factory::Pipeline,
+		pipeline: crate::metal::device::Pipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
 		let layout = self.get_or_create_pipeline_layout_from_prebuilt(&pipeline.layout);
 		let vertex_layout = pipeline
@@ -1470,7 +1596,7 @@ impl Context {
 
 	pub fn intern_compute_pipeline(
 		&mut self,
-		pipeline: crate::metal::pipelines::factory::ComputePipeline,
+		pipeline: crate::metal::device::ComputePipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
 		let layout = self.get_or_create_pipeline_layout_from_prebuilt(&pipeline.layout);
 
@@ -1490,7 +1616,7 @@ impl Context {
 	}
 
 	/// Interns a factory-built image into this device and returns its public image handle.
-	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+	pub fn intern_image(&mut self, image: crate::metal::device::Image) -> graphics_hardware_interface::ImageHandle {
 		let name = image.image.name.clone();
 		let (root_image_handle, _) = self.images.add(image.image);
 		let handle = graphics_hardware_interface::ImageHandle(root_image_handle);
@@ -1506,10 +1632,7 @@ impl Context {
 	}
 
 	/// Interns a factory-built sampler into this device and returns its public sampler handle.
-	pub fn intern_sampler(
-		&mut self,
-		sampler: crate::implementation::FactorySampler,
-	) -> graphics_hardware_interface::SamplerHandle {
+	pub fn intern_sampler(&mut self, sampler: crate::metal::device::Sampler) -> graphics_hardware_interface::SamplerHandle {
 		self.samplers.push(sampler.sampler);
 		graphics_hardware_interface::SamplerHandle((self.samplers.len() - 1) as u64)
 	}
@@ -1581,26 +1704,7 @@ impl Context {
 				descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
 			}
 
-			for (index, attachment) in builder.render_targets.iter().enumerate() {
-				if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
-					descriptor.setDepthAttachmentPixelFormat(utils::to_pixel_format(attachment.format));
-				} else {
-					let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
-					color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
-					match attachment.blend {
-						crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingEnabled(false),
-						crate::pipelines::raster::BlendMode::Alpha => {
-							color_attachment.setBlendingEnabled(true);
-							color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
-							color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
-							color_attachment.setSourceRGBBlendFactor(mtl::MTLBlendFactor::SourceAlpha);
-							color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
-							color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
-							color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
-						}
-					}
-				}
-			}
+			configure_mesh_render_targets(&descriptor, builder.render_targets.as_ref());
 
 			self.device
 				.newRenderPipelineStateWithMeshDescriptor_options_reflection_error(
@@ -1608,7 +1712,13 @@ impl Context {
 					mtl::MTLPipelineOption::None,
 					None,
 				)
-				.ok()
+				.unwrap_or_else(|error| {
+					panic!(
+						"Metal mesh raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the raster pipeline descriptor.",
+						error.localizedDescription().to_string(),
+					)
+				})
+				.into()
 		} else if let Some(vertex_function) = vertex_function.as_ref() {
 			let descriptor = mtl::MTLRenderPipelineDescriptor::new();
 			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
@@ -1616,30 +1726,34 @@ impl Context {
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
 			descriptor.setVertexDescriptor(Some(&self.vertex_layouts[vertex_layout.0 as usize].vertex_descriptor));
 
-			for (index, attachment) in builder.render_targets.iter().enumerate() {
-				if attachment.format.channel_layout() == crate::ChannelLayout::Depth {
-					descriptor.setDepthAttachmentPixelFormat(utils::to_pixel_format(attachment.format));
-				} else {
-					let color_attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index as _) };
-					color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
-					match attachment.blend {
-						crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingEnabled(false),
-						crate::pipelines::raster::BlendMode::Alpha => {
-							color_attachment.setBlendingEnabled(true);
-							color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
-							color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
-							color_attachment.setSourceRGBBlendFactor(mtl::MTLBlendFactor::SourceAlpha);
-							color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
-							color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
-							color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
-						}
-					}
-				}
-			}
+			configure_render_targets(&descriptor, builder.render_targets.as_ref());
 
-			self.device.newRenderPipelineStateWithDescriptor_error(&descriptor).ok()
+			self.device
+				.newRenderPipelineStateWithDescriptor_error(&descriptor)
+				.unwrap_or_else(|error| {
+					panic!(
+						"Metal raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the raster pipeline descriptor.",
+						error.localizedDescription().to_string(),
+					)
+				})
+				.into()
 		} else {
-			None
+			let shader_names = builder
+				.shaders
+				.iter()
+				.map(|shader_parameter| {
+					let shader = &self.shaders[shader_parameter.handle.0 as usize];
+					format!(
+						"{:?} {:?}",
+						shader_parameter.stage,
+						shader.name.as_deref().unwrap_or("<unnamed>")
+					)
+				})
+				.collect::<Vec<_>>()
+				.join(", ");
+			panic!(
+				"Metal raster pipeline creation failed because no vertex or mesh shader function was available. The most likely cause is shader creation failed or SPIR-V was supplied to the Metal backend without translation to MSL or MTLB. Shaders: {shader_names}",
+			);
 		};
 
 		self.pipelines.push(Pipeline {
@@ -1775,18 +1889,22 @@ impl Context {
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
 	) -> super::CommandBufferRecording<'a> {
 		let autorelease_pool = frame_key.is_none().then(|| unsafe { NSAutoreleasePool::new() });
+		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
+		let (queue_handle, command_buffer_name) = {
+			let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
+			(command_buffer.queue_handle, command_buffer.name.clone())
+		};
 
-		self.flush_pending_uploads();
+		// Uploads committed on the same Metal queue are ordered before this command buffer without a CPU wait.
+		self.flush_pending_uploads(Some(queue_handle), sequence_index);
 
-		let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
-		let queue = &self.queues[command_buffer.queue_handle.0 as usize];
+		let queue = &self.queues[queue_handle.0 as usize];
 		let mtl_command_buffer = self.create_metal_command_buffer(
 			queue.queue.as_ref(),
-			command_buffer.name.as_deref(),
+			command_buffer_name.as_deref(),
 			"Metal command buffer creation failed. The most likely cause is that the command queue did not provide a command buffer.",
 		);
 
-		let states = self.states.clone();
 		let recording_device = super::command_buffer::RecordingDevice {
 			buffers: &self.buffers,
 			images: &self.images,
@@ -1807,7 +1925,6 @@ impl Context {
 		super::CommandBufferRecording::new(
 			recording_device,
 			Some(commit),
-			states,
 			command_buffer_handle,
 			mtl_command_buffer,
 			frame_key,
@@ -1818,12 +1935,12 @@ impl Context {
 
 	pub fn build_buffer<T: Copy>(&mut self, builder: buffer_builder::Builder) -> graphics_hardware_interface::BufferHandle<T> {
 		let size = std::mem::size_of::<T>();
-		let buffer = self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.device_accesses);
+		let handle = self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
 
-		let mut creator = self.buffers.creator();
-		creator.add(buffer);
-
-		graphics_hardware_interface::BufferHandle::<T>(creator.into(), std::marker::PhantomData)
+		graphics_hardware_interface::BufferHandle::<T>(
+			graphics_hardware_interface::BaseBufferHandle::new(handle.0),
+			std::marker::PhantomData,
+		)
 	}
 
 	pub fn build_dynamic_buffer<T: Copy>(
@@ -1832,14 +1949,16 @@ impl Context {
 	) -> graphics_hardware_interface::DynamicBufferHandle<T> {
 		let size = std::mem::size_of::<T>();
 
-		let master = self.buffers.master();
+		let root = self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
+		let master = graphics_hardware_interface::BaseBufferHandle::new(root.0);
 
-		for _ in 0..self.frames {
-			let buffer = self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.device_accesses);
-			self.buffers.add_with_master(buffer, master);
+		if self.frames > 1 {
+			// Defer frame-local resources until the frame is first processed so startup only pays for frame 0.
+			self.tasks
+				.push(Task::new(Tasks::BuildBuffer(BuildBuffer { previous: root, master }), Some(1)));
 		}
 
-		graphics_hardware_interface::DynamicBufferHandle::<T>(master.into(), std::marker::PhantomData)
+		graphics_hardware_interface::DynamicBufferHandle::<T>(master, std::marker::PhantomData)
 	}
 
 	/// Creates an owned queue wrapper for queue-local submission work.
@@ -1883,22 +2002,26 @@ impl Context {
 
 	pub fn build_dynamic_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::DynamicImageHandle {
 		let layers = builder.array_layers.map(|l| l.get()).unwrap_or(1);
-		let mut first_handle: Option<ImageHandle> = None;
-		let mut previous_handle: Option<ImageHandle> = None;
+		let root = self.create_image_internal(
+			None,
+			builder.get_name(),
+			builder.extent,
+			builder.format,
+			builder.resource_uses,
+			builder.device_accesses,
+			layers,
+		);
+		let master = graphics_hardware_interface::BaseImageHandle::new(root.0);
 
-		let master = self.images.master();
-
-		for _ in 0..self.frames {
-			let image = self.create_image_resource(
-				builder.get_name(),
-				builder.extent,
-				builder.format,
-				builder.resource_uses,
-				builder.device_accesses,
-				layers,
-			);
-
-			self.images.add_with_master(image, master);
+		if self.frames > 1 {
+			// Defer frame-local resources until the frame is first processed so startup only pays for frame 0.
+			self.tasks.push(Task::new(
+				Tasks::BuildImage(BuildImage {
+					previous: root,
+					master: graphics_hardware_interface::ImageHandle(master),
+				}),
+				Some(1),
+			));
 		}
 
 		graphics_hardware_interface::DynamicImageHandle(master)
@@ -1934,7 +2057,12 @@ impl Context {
 		}
 	}
 
-	fn upload_buffer_from_staging(&mut self, buffer_handle: BufferHandle) {
+	fn upload_buffer_from_staging(
+		&mut self,
+		buffer_handle: BufferHandle,
+		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
+		sequence_index: u8,
+	) {
 		let buffer = self.buffers.resource(buffer_handle);
 
 		let Some(staging_handle) = buffer.staging else {
@@ -1942,7 +2070,9 @@ impl Context {
 		};
 
 		let staging = self.buffers.resource(staging_handle);
-		let queue = self.transfer_queue();
+		let queue = queue_handle
+			.and_then(|queue_handle| self.queues.get(queue_handle.0 as usize))
+			.unwrap_or_else(|| self.transfer_queue());
 		let command_buffer = self.create_metal_command_buffer(
 			queue.queue.as_ref(),
 			Some("Buffer Upload"),
@@ -1964,10 +2094,15 @@ impl Context {
 		}
 
 		blit_encoder.endEncoding();
-		self.submit_metal_command_buffer(command_buffer.as_ref());
+		self.submit_internal_metal_command_buffer(command_buffer, sequence_index);
 	}
 
-	fn upload_image_from_staging(&mut self, image_handle: ImageHandle) {
+	fn upload_image_from_staging(
+		&mut self,
+		image_handle: ImageHandle,
+		queue_handle: Option<graphics_hardware_interface::QueueHandle>,
+		sequence_index: u8,
+	) {
 		let image = self.images.resource_mut(image_handle);
 
 		let Some(staging) = image.staging.as_ref() else {
@@ -1980,18 +2115,26 @@ impl Context {
 		let array_layers = image.array_layers;
 		let staging = staging.to_vec();
 
-		self.upload_texture_from_staging(texture.as_ref(), format, extent, array_layers, &staging);
+		self.upload_texture_from_staging(
+			texture.as_ref(),
+			format,
+			extent,
+			array_layers,
+			&staging,
+			queue_handle,
+			sequence_index,
+		);
 	}
 
-	fn flush_pending_uploads(&mut self) {
+	fn flush_pending_uploads(&mut self, queue_handle: Option<graphics_hardware_interface::QueueHandle>, sequence_index: u8) {
 		let pending_buffers = self.pending_buffer_syncs.drain(..).collect::<Vec<_>>();
 		for buffer_handle in pending_buffers {
-			self.upload_buffer_from_staging(buffer_handle);
+			self.upload_buffer_from_staging(buffer_handle, queue_handle, sequence_index);
 		}
 
 		let pending_images = self.pending_image_syncs.drain(..).collect::<Vec<_>>();
 		for image_handle in pending_images {
-			self.upload_image_from_staging(image_handle);
+			self.upload_image_from_staging(image_handle, queue_handle, sequence_index);
 		}
 	}
 
@@ -2020,7 +2163,7 @@ impl Context {
 		let array_layers = image.array_layers;
 		let staging = staging.to_vec();
 
-		self.upload_texture_from_staging(texture.as_ref(), format, extent, array_layers, &staging);
+		self.upload_texture_from_staging(texture.as_ref(), format, extent, array_layers, &staging, None, 0);
 	}
 
 	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {
@@ -2030,8 +2173,8 @@ impl Context {
 
 	pub fn build_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::ImageHandle {
 		let layers = builder.array_layers.map(|l| l.get()).unwrap_or(1);
-
-		let image = self.create_image_resource(
+		let image_handle = self.create_image_internal(
+			None,
 			builder.get_name(),
 			builder.extent,
 			builder.format,
@@ -2040,26 +2183,11 @@ impl Context {
 			layers,
 		);
 
-		let image_handle = self.images.add(image);
-
-		graphics_hardware_interface::ImageHandle(image_handle.0)
+		graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(image_handle.0))
 	}
 
 	pub fn build_sampler(&mut self, builder: sampler_builder::Builder) -> graphics_hardware_interface::SamplerHandle {
-		let descriptor = mtl::MTLSamplerDescriptor::new();
-		descriptor.setMinFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
-		descriptor.setMagFilter(utils::sampler_min_mag_filter(builder.filtering_mode));
-		descriptor.setMipFilter(utils::sampler_mip_filter(builder.mip_map_mode));
-		descriptor.setSAddressMode(utils::sampler_address_mode(builder.addressing_mode));
-		descriptor.setTAddressMode(utils::sampler_address_mode(builder.addressing_mode));
-		descriptor.setRAddressMode(utils::sampler_address_mode(builder.addressing_mode));
-		descriptor.setLodMinClamp(builder.min_lod);
-		descriptor.setLodMaxClamp(builder.max_lod);
-		descriptor.setSupportArgumentBuffers(true);
-
-		if let Some(anisotropy) = builder.anisotropy {
-			descriptor.setMaxAnisotropy(anisotropy as _);
-		}
+		let descriptor = build_sampler_descriptor(&builder);
 
 		let sampler_state = self
 			.device
@@ -2152,7 +2280,7 @@ impl Context {
 		&mut self,
 		window_os_handles: &window::Handles,
 		_presentation_mode: graphics_hardware_interface::PresentationModes,
-		fallback_extent: Extent,
+		_fallback_extent: Extent,
 		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
 		let layer = CAMetalLayer::new();
@@ -2223,39 +2351,45 @@ impl Context {
 		_name: Option<&str>,
 		signaled: bool,
 	) -> graphics_hardware_interface::SynchronizerHandle {
-		self.synchronizers.push(synchronizer::Synchronizer { next: None, signaled });
-		graphics_hardware_interface::SynchronizerHandle((self.synchronizers.len() - 1) as u64)
+		let (master, mut previous) = self.synchronizers.add(synchronizer::Synchronizer::new(signaled));
+
+		for _ in 1..self.frames {
+			let handle = self
+				.synchronizers
+				.add_with_master(synchronizer::Synchronizer::new(signaled), master);
+			self.synchronizers.set_next(previous, Some(handle));
+			previous = handle;
+		}
+
+		master
 	}
 
 	pub fn reset_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
-		if let Some(synchronizer) = self.synchronizers.get_mut(synchronizer_handle.0 as usize) {
-			synchronizer.signaled = false;
+		for frame_index in 0..self.frames as usize {
+			let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_index as u8);
+			self.synchronizers.resource(synchronizer_handle).reset();
 		}
 	}
 
 	pub fn wait_for_synchronizer(&self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
-		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.0 as usize) else {
-			panic!(
-				"Metal synchronizer wait failed. The most likely cause is that an invalid synchronizer handle was submitted.",
-			);
-		};
-
-		assert!(
-			synchronizer.signaled,
-			"Metal synchronizer wait failed. The most likely cause is that the awaited GPU submission has not completed.",
-		);
+		for frame_index in 0..self.frames as usize {
+			let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_index as u8);
+			self.synchronizers.resource(synchronizer_handle).wait();
+		}
 	}
 
 	pub(crate) fn start_frame<'a>(
 		&'a mut self,
 		index: u32,
-		_synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	) -> crate::queue::StartedFrame<super::Frame<'a>> {
 		let frame_key = graphics_hardware_interface::FrameKey {
 			frame_index: index,
 			sequence_index: (index % self.frames as u32) as u8,
 		};
 		let completed_frame = crate::queue::completed_frame_key(index, self.frames);
+		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_key.sequence_index);
+		self.synchronizers.resource(synchronizer_handle).wait();
 		self.process_tasks(frame_key.sequence_index);
 		crate::queue::StartedFrame::new(super::Frame::new(self, frame_key), completed_frame)
 	}
@@ -2290,7 +2424,9 @@ impl Context {
 	}
 
 	pub fn wait(&self) {
-		// TODO: Track pending command buffers and wait for completion.
+		for synchronizer in self.synchronizers.iter() {
+			synchronizer.wait();
+		}
 	}
 }
 
@@ -2547,21 +2683,20 @@ impl crate::context::ContextCreate for Context {
 
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::ffi::c_void;
 use std::ptr::NonNull;
 
 use ::utils::hash::{HashMap, HashSet};
 use dispatch2::DispatchData;
 use objc2::runtime::ProtocolObject;
 use objc2::ClassType;
-use objc2_foundation::{NSArray, NSAutoreleasePool, NSRange, NSString};
+use objc2_foundation::{NSArray, NSAutoreleasePool, NSString};
 use objc2_metal::{
 	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
 	MTLLibrary, MTLResource,
 };
 
-use super::device::*;
 use super::*;
+use crate::implementation::device::submit_metal_command_buffer;
 use crate::{
 	binding::DescriptorSetBindingHandle,
 	buffer::{self as buffer_builder, BufferHandle},
@@ -2571,5 +2706,5 @@ use crate::{
 	metal::utils::parse_threadgroup_size_metadata,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
-	window, DeviceAccesses, HandleLike as _, ResourceCollection, Size, Uses,
+	window, DeviceAccesses, HandleLike as _, MasterHandle as _, ResourceCollection, Uses,
 };

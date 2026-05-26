@@ -16,9 +16,7 @@ pub(crate) struct VisibilityPipelineResourceManager {
 	// Async requests cannot reload shader bytes after a sync load consumes the read target,
 	// so we keep an owned backing for the shader payload keyed by resource hash.
 	shader_requests: RwLock<StaleHashMap<String, u64, Arc<OwnedShader>>>,
-	compute_pipeline_requests: Option<Sender<ComputePipelineRequest>>,
-	compute_pipeline_results: Option<Receiver<ComputePipelineResult>>,
-	resource_device: Option<ghi::implementation::Device>,
+	factory: Option<ghi::implementation::Factory>,
 	material_pipeline_config: Option<MaterialPipelineConfig>,
 	work_completions: Sender<VisibilityResourceCompletion>,
 }
@@ -35,7 +33,7 @@ impl VisibilityPipelineResourceManager {
 		let gpu_vertex_data_manager = mesh_data_manager.clone();
 		let (commands, command_receiver) = mpsc::channel();
 		let (work_completions, work_completion_receiver) = mpsc::channel();
-		let resource_manager = Self::new(context, resource_manager, mesh_data_manager, work_completions.clone());
+		let resource_manager = Self::new(resource_manager, mesh_data_manager, work_completions.clone());
 
 		(
 			VisibilityPipelineResourceManagerClient {
@@ -44,6 +42,7 @@ impl VisibilityPipelineResourceManager {
 				completions: work_completion_receiver,
 			},
 			VisibilityPipelineResourceManagerWorker {
+				settings: Default::default(),
 				resource_manager,
 				commands: command_receiver,
 				completions: work_completions,
@@ -55,19 +54,10 @@ impl VisibilityPipelineResourceManager {
 	}
 
 	fn new(
-		context: &mut ghi::implementation::Context,
 		resource_manager: EntityHandle<ResourceManager>,
 		mesh_data_manager: GPUVertexDataManager,
 		work_completions: Sender<VisibilityResourceCompletion>,
 	) -> Self {
-		let resource_device = context.create_detached_device();
-		let (compute_pipeline_requests, compute_pipeline_results) = if let Some(device) = context.create_detached_device() {
-			let (requests, results) = Self::spawn_compute_worker(device);
-			(Some(requests), Some(results))
-		} else {
-			(None, None)
-		};
-
 		Self {
 			images: Vec::with_capacity(4096),
 			images_by_resource: HashMap::with_capacity(4096),
@@ -77,9 +67,7 @@ impl VisibilityPipelineResourceManager {
 			resource_manager,
 			pipelines: RwLock::new(HashMap::with_capacity(1024)),
 			shader_requests: RwLock::new(StaleHashMap::with_capacity(1024)),
-			compute_pipeline_requests,
-			compute_pipeline_results,
-			resource_device,
+			factory: None,
 			material_pipeline_config: None,
 			work_completions,
 		}
@@ -98,14 +86,7 @@ impl VisibilityPipelineResourceManager {
 
 	/// Stores the descriptor layout data needed to compile material evaluation pipelines.
 	pub(crate) fn configure_material_pipeline(&mut self, mut config: MaterialPipelineConfig) {
-		if self.compute_pipeline_requests.is_none() {
-			if let Some(device) = config.pipeline_factory.take() {
-				let (requests, results) = Self::spawn_compute_worker(device);
-				self.compute_pipeline_requests = Some(requests);
-				self.compute_pipeline_results = Some(results);
-			}
-		}
-
+		self.factory = config.pipeline_factory.take();
 		self.material_pipeline_config = Some(config);
 	}
 
@@ -227,7 +208,11 @@ impl VisibilityPipelineResourceManager {
 	}
 
 	/// Queues a material evaluation pipeline with the descriptor configuration supplied by the render thread.
-	fn queue_configured_material_pipeline(&self, id: String, material: &mut ResourceMaterial) -> QueuedMaterialPipeline {
+	fn queue_configured_material_pipeline(
+		&mut self,
+		id: String,
+		material: &mut ResourceMaterial,
+	) -> QueuedMaterialPipeline {
 		let Some(config) = self.material_pipeline_config.as_ref() else {
 			log::error!(
 				"Visibility material pipeline configuration is unavailable for {}. The most likely cause is that the render pipeline manager has not configured the resource worker yet.",
@@ -235,13 +220,15 @@ impl VisibilityPipelineResourceManager {
 			);
 			return QueuedMaterialPipeline::default();
 		};
+		let descriptor_set_templates = config.descriptor_set_templates;
+		let push_constant_ranges = config.push_constant_ranges.clone();
 
-		self.queue_material_pipeline(id, &config.descriptor_set_templates, &config.push_constant_ranges, material)
+		self.queue_material_pipeline(id, &descriptor_set_templates, &push_constant_ranges, material)
 	}
 
 	/// Queues a material variant pipeline with the descriptor configuration supplied by the render thread.
 	fn queue_configured_variant_pipeline(
-		&self,
+		&mut self,
 		id: String,
 		material: &mut ResourceMaterial,
 		specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
@@ -253,11 +240,13 @@ impl VisibilityPipelineResourceManager {
 			);
 			return QueuedMaterialPipeline::default();
 		};
+		let descriptor_set_templates = config.descriptor_set_templates;
+		let push_constant_ranges = config.push_constant_ranges.clone();
 
 		self.queue_material_pipeline_with_specialization(
 			id,
-			&config.descriptor_set_templates,
-			&config.push_constant_ranges,
+			&descriptor_set_templates,
+			&push_constant_ranges,
 			material,
 			specialization_map_entries,
 		)
@@ -294,12 +283,14 @@ impl VisibilityPipelineResourceManager {
 				id
 			);
 		})?;
-		let device = self.resource_device.as_mut().ok_or_else(|| {
+
+		let device = self.factory.as_mut().ok_or_else(|| {
 			log::error!(
-				"Visibility detached resource device is unavailable for {}. The most likely cause is that the active backend does not expose detached resource creation.",
+				"Visibility texture creation failed for {}. The most likely cause is that material pipeline creation was configured without a factory.",
 				id
 			);
 		})?;
+
 		let image = device.build_image(
 			ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name(reference.id())
@@ -307,6 +298,7 @@ impl VisibilityPipelineResourceManager {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.use_case(ghi::UseCases::STATIC),
 		);
+
 		let sampler = device.build_sampler(default_material_sampler_builder());
 
 		Ok(FactoryTexture {
@@ -487,11 +479,12 @@ pub(crate) struct VisibilityPipelineResourceManagerClient {
 
 /// The `VisibilityPipelineResourceManagerWorker` struct owns visibility resource loading on the transfer thread.
 pub(crate) struct VisibilityPipelineResourceManagerWorker {
+	settings: Settings,
 	resource_manager: VisibilityPipelineResourceManager,
 	commands: Receiver<VisibilityTransferCommand>,
 	completions: Sender<VisibilityResourceCompletion>,
 	pending_mesh_uploads: VecDeque<(VisibilityMeshKey, MeshSource)>,
-	pending_texture_uploads: VecDeque<(ghi::BaseImageHandle, TextureUpload)>,
+	pending_texture_uploads: VecDeque<(u32, ghi::BaseImageHandle, ghi::SamplerHandle, TextureUpload)>,
 	submitted_uploads: VecDeque<SubmittedUploadBatch>,
 }
 
@@ -524,15 +517,26 @@ impl VisibilityPipelineResourceManagerClient {
 		completions
 	}
 
-	/// Enqueues texture upload bytes for the transfer queue.
-	pub(crate) fn enqueue_texture_upload(&self, image: ghi::BaseImageHandle, upload: TextureUpload) {
-		self.send(VisibilityTransferCommand::EnqueueTextureUpload { image, upload });
+	/// Enqueues a texture upload and reports the descriptor data once the transfer frame completes.
+	pub(crate) fn enqueue_texture_upload(
+		&self,
+		index: u32,
+		image: ghi::BaseImageHandle,
+		sampler: ghi::SamplerHandle,
+		upload: TextureUpload,
+	) {
+		self.send(VisibilityTransferCommand::EnqueueTextureUpload {
+			index,
+			image,
+			sampler,
+			upload,
+		});
 	}
 }
 
 impl VisibilityPipelineResourceManagerWorker {
 	/// Publishes upload completions for transfer frames reported as complete by the queue.
-	pub(crate) fn complete_frame(&mut self, completed_frame: ghi::FrameKey) {
+	pub(crate) fn signal_completed_frame(&mut self, completed_frame: ghi::FrameKey) {
 		while self
 			.submitted_uploads
 			.front()
@@ -557,6 +561,7 @@ impl VisibilityPipelineResourceManagerWorker {
 		if completions.is_empty() {
 			return;
 		}
+
 		self.submitted_uploads
 			.push_back(SubmittedUploadBatch { frame_key, completions });
 	}
@@ -570,7 +575,7 @@ impl VisibilityPipelineResourceManagerWorker {
 	) -> TransferUploadPrepareResult {
 		self.drain_commands();
 		self.resource_manager
-			.drain_pipeline_completions(MAX_PIPELINE_ADOPTIONS_PER_FRAME);
+			.drain_pipeline_completions(self.settings.max_pipeline_adoptions_per_frame);
 		self.record_uploads(transfer, staging_data_buffer, slice)
 	}
 
@@ -584,8 +589,13 @@ impl VisibilityPipelineResourceManagerWorker {
 					self.resource_manager
 						.handle_request(VisibilityResourceRequest::Mesh { key, source });
 				}
-				VisibilityTransferCommand::EnqueueTextureUpload { image, upload } => {
-					self.pending_texture_uploads.push_back((image, upload));
+				VisibilityTransferCommand::EnqueueTextureUpload {
+					index,
+					image,
+					sampler,
+					upload,
+				} => {
+					self.pending_texture_uploads.push_back((index, image, sampler, upload));
 				}
 				VisibilityTransferCommand::ConfigureMaterialPipeline(config) => {
 					self.resource_manager.configure_material_pipeline(config);
@@ -625,9 +635,9 @@ impl VisibilityPipelineResourceManagerWorker {
 			}
 		}
 
-		while let Some((image, upload)) = self.pending_texture_uploads.pop_front() {
+		while let Some((index, image, sampler, upload)) = self.pending_texture_uploads.pop_front() {
 			if upload.data.len() > slice.remaining_aligned(TEXTURE_UPLOAD_ALIGNMENT) {
-				self.pending_texture_uploads.push_front((image, upload));
+				self.pending_texture_uploads.push_front((index, image, sampler, upload));
 				break;
 			}
 
@@ -640,6 +650,7 @@ impl VisibilityPipelineResourceManagerWorker {
 				upload.source_bytes_per_image,
 				image,
 			)]);
+			completions.push(VisibilityResourceCompletion::TextureUploadReady { index, image, sampler });
 			recorded_work = true;
 		}
 
@@ -684,7 +695,7 @@ pub(crate) enum VisibilityResourceCompletion {
 	},
 	PipelineReady {
 		name: String,
-		pipeline: ghi::implementation::ComputePipeline,
+		pipeline: ghi::factory::ComputePipeline,
 	},
 	MaterialReady {
 		id: String,
@@ -697,9 +708,14 @@ pub(crate) enum VisibilityResourceCompletion {
 	ImageReady {
 		key: VisibilityTextureKey,
 		index: u32,
-		image: ghi::implementation::FactoryImage,
-		sampler: ghi::implementation::FactorySampler,
+		image: ghi::factory::FactoryImage,
+		sampler: ghi::factory::FactorySampler,
 		upload: TextureUpload,
+	},
+	TextureUploadReady {
+		index: u32,
+		image: ghi::BaseImageHandle,
+		sampler: ghi::SamplerHandle,
 	},
 	Failed {
 		key: VisibilityResourceKey,
@@ -713,7 +729,9 @@ pub(crate) enum VisibilityTransferCommand {
 		source: MeshSource,
 	},
 	EnqueueTextureUpload {
+		index: u32,
 		image: ghi::BaseImageHandle,
+		sampler: ghi::SamplerHandle,
 		upload: TextureUpload,
 	},
 	ConfigureMaterialPipeline(MaterialPipelineConfig),
@@ -795,8 +813,8 @@ impl std::fmt::Display for VisibilityResourceKey {
 /// The `FactoryTexture` struct packages detached texture resources with upload bytes for render-thread adoption.
 struct FactoryTexture {
 	index: u32,
-	image: ghi::implementation::FactoryImage,
-	sampler: ghi::implementation::FactorySampler,
+	image: ghi::implementation::factory::Image,
+	sampler: ghi::implementation::factory::Sampler,
 	upload: TextureUpload,
 }
 
@@ -943,48 +961,12 @@ enum ComputePipelineResult {
 	},
 }
 
-#[cfg(debug_assertions)]
-const DEBUG_PIPELINE_CREATION_DELAY: Duration = Duration::from_millis(250);
-
 impl VisibilityPipelineResourceManager {
-	fn spawn_compute_worker(
-		device: ghi::implementation::Device,
-	) -> (Sender<ComputePipelineRequest>, Receiver<ComputePipelineResult>) {
-		let (request_sender, request_receiver) = mpsc::channel::<ComputePipelineRequest>();
-		let (result_sender, result_receiver) = mpsc::channel::<ComputePipelineResult>();
-
-		thread::spawn(move || {
-			let mut device = device;
-
-			while let Ok(request) = request_receiver.recv() {
-				let key = request.key.clone();
-				let result = catch_unwind(AssertUnwindSafe(|| Self::compile_compute_pipeline(&mut device, request)));
-
-				let message = match result {
-					Ok(Ok(pipeline)) => ComputePipelineResult::Ready { key, pipeline },
-					Ok(Err(reason)) => ComputePipelineResult::Failed { key, reason },
-					Err(reason) => ComputePipelineResult::Failed {
-						key,
-						reason: panic_payload_to_string(reason),
-					},
-				};
-
-				if result_sender.send(message).is_err() {
-					break;
-				}
-			}
-		});
-
-		(request_sender, result_receiver)
-	}
-
 	fn compile_compute_pipeline(
-		device: &mut ghi::implementation::Device,
+		device: &mut ghi::implementation::Factory,
 		request: ComputePipelineRequest,
 	) -> Result<ghi::implementation::ComputePipeline, String> {
 		use ghi::Device as _;
-
-		Self::sleep_for_debug_pipeline_delay();
 
 		let shader = request.shader;
 		let shader_handle = device.create_shader(
@@ -1008,97 +990,50 @@ impl VisibilityPipelineResourceManager {
 		)))
 	}
 
-	fn queue_compute_pipeline(&self, request: ComputePipelineRequest) {
+	fn queue_compute_pipeline(&mut self, request: ComputePipelineRequest) {
 		let key = request.key.clone();
-
-		let Some(compute_pipeline_requests) = self.compute_pipeline_requests.as_ref() else {
+		let Some(pipeline_factory) = self.factory.as_mut() else {
 			self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
 			log::error!(
-				"Async pipeline requests are unavailable for {}. The most likely cause is that the active backend does not expose a pipeline factory.",
+				"Pipeline compilation failed for {}. The most likely cause is that material pipeline creation was configured without a pipeline factory.",
 				key
 			);
 			return;
 		};
+		let result = catch_unwind(AssertUnwindSafe(|| Self::compile_compute_pipeline(pipeline_factory, request)));
 
-		if compute_pipeline_requests.send(request).is_err() {
-			self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
-			log::error!(
-				"Async pipeline request channel closed for {}. The most likely cause is that the compilation worker terminated unexpectedly.",
-				key
-			);
+		match result {
+			Ok(Ok(pipeline)) => {
+				self.pipelines.write().insert(key.clone(), PipelineStatus::Pending);
+				if self
+					.work_completions
+					.send(VisibilityResourceCompletion::PipelineReady { name: key, pipeline })
+					.is_err()
+				{
+					log::error!(
+						"Visibility pipeline completion failed. The most likely cause is that the render thread stopped receiving worker results."
+					);
+				}
+			}
+			Ok(Err(())) | Err(_) => {
+				self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
+				log::error!(
+					"Pipeline compilation failed for {}. The most likely cause is that shader creation or pipeline specialization failed on the resource-manager thread.",
+					key
+				);
+			}
 		}
-	}
-
-	fn sleep_for_debug_pipeline_delay() {
-		#[cfg(debug_assertions)]
-		thread::sleep(DEBUG_PIPELINE_CREATION_DELAY);
 	}
 
 	pub(crate) fn poll_pipelines(
 		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		max_results: usize,
+		_frame: &mut ghi::implementation::Frame,
+		_max_results: usize,
 	) -> Vec<(String, ghi::PipelineHandle)> {
-		let Some(compute_pipeline_results) = self.compute_pipeline_results.as_ref() else {
-			return Vec::new();
-		};
-
-		let mut resolved_pipelines = Vec::with_capacity(max_results.min(16));
-
-		while resolved_pipelines.len() < max_results {
-			let Ok(result) = compute_pipeline_results.try_recv() else {
-				break;
-			};
-
-			match result {
-				ComputePipelineResult::Ready { key, pipeline } => {
-					let handle = frame.intern_compute_pipeline(pipeline);
-					self.pipelines.write().insert(key.clone(), PipelineStatus::Ready(handle));
-					resolved_pipelines.push((key, handle));
-				}
-				ComputePipelineResult::Failed { key, reason } => {
-					self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
-					log::error!("Async pipeline compilation failed for {}: {}", key, reason);
-				}
-			}
-		}
-
-		resolved_pipelines
+		Vec::new()
 	}
 
-	pub(crate) fn drain_pipeline_completions(&mut self, max_results: usize) {
-		let Some(compute_pipeline_results) = self.compute_pipeline_results.as_ref() else {
-			return;
-		};
-
-		let mut result_count = 0;
-		while result_count < max_results {
-			let Ok(result) = compute_pipeline_results.try_recv() else {
-				break;
-			};
-
-			match result {
-				ComputePipelineResult::Ready { key, pipeline } => {
-					self.pipelines.write().insert(key.clone(), PipelineStatus::Pending);
-					if self
-						.work_completions
-						.send(VisibilityResourceCompletion::PipelineReady { name: key, pipeline })
-						.is_err()
-					{
-						log::error!(
-							"Visibility pipeline completion failed. The most likely cause is that the render thread stopped receiving worker results."
-						);
-					}
-				}
-				ComputePipelineResult::Failed { key, reason } => {
-					self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
-					log::error!("Async pipeline compilation failed for {}: {}", key, reason);
-				}
-			}
-
-			result_count += 1;
-		}
-	}
+	pub(crate) fn drain_pipeline_completions(&mut self, _max_results: usize) {}
 
 	fn map_shader_type(stage: ShaderTypes) -> ghi::ShaderTypes {
 		match stage {
@@ -1203,7 +1138,7 @@ impl VisibilityPipelineResourceManager {
 	}
 
 	fn queue_material_pipeline(
-		&self,
+		&mut self,
 		resource_id: String,
 		descriptor_set_template_handles: &[ghi::DescriptorSetTemplateHandle],
 		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
@@ -1220,7 +1155,7 @@ impl VisibilityPipelineResourceManager {
 
 	/// Queues a material pipeline request with variant specialization constants.
 	fn queue_material_pipeline_with_specialization(
-		&self,
+		&mut self,
 		resource_id: String,
 		descriptor_set_template_handles: &[ghi::DescriptorSetTemplateHandle],
 		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
@@ -1472,18 +1407,28 @@ impl<P, L> ResourceStates<P, L> {
 	}
 }
 
-const MAX_PIPELINE_ADOPTIONS_PER_FRAME: usize = 8;
+struct Settings {
+	max_pipeline_adoptions_per_frame: usize,
+}
+
+impl Default for Settings {
+	fn default() -> Self {
+		Self {
+			max_pipeline_adoptions_per_frame: 8,
+		}
+	}
+}
 
 use std::collections::hash_map::Entry;
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
+use ghi::metal::context;
 use ghi::Device as _;
 use ghi::{
 	command_buffer::{

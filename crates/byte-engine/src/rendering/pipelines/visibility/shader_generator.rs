@@ -451,7 +451,7 @@ struct PrimitiveOutput {
 			}
 		};
 
-		let set2_binding0 = Node::binding("diffuse_map", Node::image("rgba16"), 2, 0, false, true);
+		let set2_binding0 = Node::binding("lit_map", Node::image("rgba16"), 2, 0, false, true);
 		let set2_binding1 = Node::binding(
 			"_unused_set2_binding1",
 			Node::buffer("UnusedSet2Binding1", vec![Node::member("padding", "u32")]),
@@ -460,7 +460,7 @@ struct PrimitiveOutput {
 			true,
 			false,
 		);
-		let set2_binding2 = Node::binding("specular_map", Node::image("rgba16"), 2, 2, false, true);
+		let set2_binding2 = Node::binding("_unused_set2_binding2", Node::image("rgba16"), 2, 2, false, true);
 		let set2_binding3 = Node::binding("_unused_set2_binding3", Node::image("rgba16"), 2, 3, false, true);
 		let set2_binding4 = Node::binding(
 			"lighting_data",
@@ -484,7 +484,6 @@ struct PrimitiveOutput {
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 2, 10, true, false);
 		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 2, 11, true, false);
 		let set2_binding12 = Node::binding("visibility_depth", Node::combined_image_sampler(), 2, 12, true, false);
-		let set2_binding13 = Node::binding("ibl_cubemap", Node::combined_array_image_sampler(), 2, 13, true, false);
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 
@@ -737,106 +736,54 @@ struct PrimitiveOutput {
 			)],
 		);
 
-		let sample_ibl_cubemap = Node::function(
-			"sample_ibl_cubemap",
-			vec![
-				Node::parameter("cubemap", "ArrayTexture2D"),
-				Node::parameter("direction", "vec3f"),
-			],
+		let sample_analytical_reflection = Node::function(
+			"sample_analytical_reflection",
+			vec![Node::parameter("direction", "vec3f"), Node::parameter("roughness", "f32")],
 			"vec3f",
 			vec![Node::raw_code(
 				Some(
 					"
 			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return vec3(1.0); }
+			if (direction_length <= 0.0) { return vec3(0.04); }
 
 			vec3 dir = direction / direction_length;
-			vec3 abs_dir = abs(dir);
+			float sky_factor = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+			vec3 ground_color = vec3(0.025, 0.022, 0.02);
+			vec3 horizon_color = vec3(0.38, 0.42, 0.46);
+			vec3 zenith_color = vec3(0.58, 0.68, 0.9);
+			vec3 sky_color = mix(horizon_color, zenith_color, sky_factor * sky_factor);
+			vec3 environment_color = mix(ground_color, sky_color, smoothstep(0.0, 0.08, dir.y));
 
-			if (max(max(abs_dir.x, abs_dir.y), abs_dir.z) <= 0.0) { return vec3(1.0); }
+			// The procedural sun lobe gives glossy materials a visible reflection until real IBL assets exist.
+			vec3 sun_direction = normalize(vec3(0.35, 0.85, 0.38));
+			float sun_power = mix(192.0, 8.0, clamp(roughness, 0.0, 1.0));
+			float sun_lobe = pow(max(dot(dir, sun_direction), 0.0), sun_power);
+			vec3 sun_color = vec3(1.0, 0.88, 0.62) * sun_lobe * mix(3.0, 0.4, clamp(roughness, 0.0, 1.0));
 
-			vec2 uv = vec2(0.5);
-			float face = 0.0;
-
-			if (abs_dir.x >= abs_dir.y && abs_dir.x >= abs_dir.z) {
-				float inv_axis = 0.5 / abs_dir.x;
-				if (dir.x > 0.0) {
-					uv = vec2(-dir.z, -dir.y) * inv_axis + 0.5;
-					face = 0.0;
-				} else {
-					uv = vec2(dir.z, -dir.y) * inv_axis + 0.5;
-					face = 1.0;
-				}
-			} else if (abs_dir.y >= abs_dir.z) {
-				float inv_axis = 0.5 / abs_dir.y;
-				if (dir.y > 0.0) {
-					uv = vec2(dir.x, dir.z) * inv_axis + 0.5;
-					face = 2.0;
-				} else {
-					uv = vec2(dir.x, -dir.z) * inv_axis + 0.5;
-					face = 3.0;
-				}
-			} else {
-				float inv_axis = 0.5 / abs_dir.z;
-				if (dir.z > 0.0) {
-					uv = vec2(dir.x, -dir.y) * inv_axis + 0.5;
-					face = 4.0;
-				} else {
-					uv = vec2(-dir.x, -dir.y) * inv_axis + 0.5;
-					face = 5.0;
-				}
-			}
-
-			uv = clamp(uv, vec2(0.0), vec2(1.0));
-			return textureLod(cubemap, vec3(uv, face), 0.0).rgb;"
+			return environment_color + sun_color;"
 						.into(),
 				),
 				None,
 				Some(
 					"
 			float direction_length = length(direction);
-			if (direction_length <= 0.0) { return float3(1.0); }
+			if (direction_length <= 0.0) { return float3(0.04); }
 
 			float3 dir = direction / direction_length;
-			float3 abs_dir = abs(dir);
+			float sky_factor = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+			float3 ground_color = float3(0.025, 0.022, 0.02);
+			float3 horizon_color = float3(0.38, 0.42, 0.46);
+			float3 zenith_color = float3(0.58, 0.68, 0.9);
+			float3 sky_color = mix(horizon_color, zenith_color, sky_factor * sky_factor);
+			float3 environment_color = mix(ground_color, sky_color, smoothstep(0.0, 0.08, dir.y));
 
-			if (max(max(abs_dir.x, abs_dir.y), abs_dir.z) <= 0.0) { return float3(1.0); }
+			// The procedural sun lobe gives glossy materials a visible reflection until real IBL assets exist.
+			float3 sun_direction = normalize(float3(0.35, 0.85, 0.38));
+			float sun_power = mix(192.0, 8.0, clamp(roughness, 0.0, 1.0));
+			float sun_lobe = pow(max(dot(dir, sun_direction), 0.0), sun_power);
+			float3 sun_color = float3(1.0, 0.88, 0.62) * sun_lobe * mix(3.0, 0.4, clamp(roughness, 0.0, 1.0));
 
-			float2 uv = float2(0.5);
-			float face = 0.0;
-
-			if (abs_dir.x >= abs_dir.y && abs_dir.x >= abs_dir.z) {
-				float inv_axis = 0.5 / abs_dir.x;
-				if (dir.x > 0.0) {
-					uv = float2(-dir.z, -dir.y) * inv_axis + 0.5;
-					face = 0.0;
-				} else {
-					uv = float2(dir.z, -dir.y) * inv_axis + 0.5;
-					face = 1.0;
-				}
-			} else if (abs_dir.y >= abs_dir.z) {
-				float inv_axis = 0.5 / abs_dir.y;
-				if (dir.y > 0.0) {
-					uv = float2(dir.x, dir.z) * inv_axis + 0.5;
-					face = 2.0;
-				} else {
-					uv = float2(dir.x, -dir.z) * inv_axis + 0.5;
-					face = 3.0;
-				}
-			} else {
-				float inv_axis = 0.5 / abs_dir.z;
-				if (dir.z > 0.0) {
-					uv = float2(dir.x, -dir.y) * inv_axis + 0.5;
-					face = 4.0;
-				} else {
-					uv = float2(-dir.x, -dir.y) * inv_axis + 0.5;
-					face = 5.0;
-				}
-			}
-
-			uv = clamp(uv, float2(0.0), float2(1.0));
-			constexpr sampler ibl_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
-			return cubemap.sample(ibl_sampler, uv, uint(face), level(0.0)).rgb;"
+			return environment_color + sun_color;"
 						.into(),
 				),
 				&[],
@@ -889,11 +836,10 @@ struct PrimitiveOutput {
 				set2_binding10,
 				set2_binding11,
 				set2_binding12,
-				set2_binding13,
 				push_constant,
 				sample_function,
 				sample_normal_function,
-				sample_ibl_cubemap,
+				sample_analytical_reflection,
 			],
 		)
 	}
@@ -1185,12 +1131,14 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			specular += local_specular * radiance * NdotL * occlusion_factor;
 		}
 
-		float3 irradiance = sample_ibl_cubemap(set2.ibl_cubemap, normal);
+		float3 ambient_irradiance = sample_analytical_reflection(normal, 1.0) * 0.35;
+		float3 reflection_direction = reflect(-V, normal);
+		float3 reflection_radiance = sample_analytical_reflection(reflection_direction, roughness);
 
 		float3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
 		float3 kD_ibl = (float3(1.0) - F_ibl) * (1.0 - metalness);
 
-		float3 ibl_diffuse = kD_ibl * albedo.xyz * irradiance;
+		float3 ibl_diffuse = kD_ibl * albedo.xyz * ambient_irradiance;
 
 		float2 env_brdf = float2(1.0, 0.0);
 		{
@@ -1200,16 +1148,14 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
 			env_brdf = float2(-1.04, 1.04) * a004 + r.zw;
 		}
-		float3 ibl_specular = (F_ibl * env_brdf.x + env_brdf.y) * irradiance;
+		float3 ibl_specular = (F_ibl * env_brdf.x + env_brdf.y) * reflection_radiance;
 
 		float3 ambient = ibl_diffuse + ibl_specular;
 
 		ao_factor *= occlusion;
-		diffuse = diffuse * ao_factor + ambient * ao_factor + emission;
-		specular = specular * ao_factor;
+		float3 lit = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
 
-		set2.diffuse_map.write(float4(diffuse, albedo.a), uint2(pixel_coordinates));
-		set2.specular_map.write(float4(specular, 1.0), uint2(pixel_coordinates))
+		set2.lit_map.write(float4(lit, albedo.a), uint2(pixel_coordinates))
 		"
 		.trim();
 
@@ -1277,12 +1223,14 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			specular += local_specular * radiance * NdotL * occlusion_factor;
 		}
 
-		vec3 irradiance = sample_ibl_cubemap(ibl_cubemap, normal);
+		vec3 ambient_irradiance = sample_analytical_reflection(normal, 1.0) * 0.35;
+		vec3 reflection_direction = reflect(-V, normal);
+		vec3 reflection_radiance = sample_analytical_reflection(reflection_direction, roughness);
 
 		vec3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
 		vec3 kD_ibl = (vec3(1.0) - F_ibl) * (1.0 - metalness);
 
-		vec3 ibl_diffuse = kD_ibl * albedo.xyz * irradiance;
+		vec3 ibl_diffuse = kD_ibl * albedo.xyz * ambient_irradiance;
 
 		vec2 env_brdf = vec2(1.0, 0.0);
 		{
@@ -1292,16 +1240,14 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
 			env_brdf = vec2(-1.04, 1.04) * a004 + r.zw;
 		}
-		vec3 ibl_specular = (F_ibl * env_brdf.x + env_brdf.y) * irradiance;
+		vec3 ibl_specular = (F_ibl * env_brdf.x + env_brdf.y) * reflection_radiance;
 
 		vec3 ambient = ibl_diffuse + ibl_specular;
 
 		ao_factor *= occlusion;
-		diffuse = diffuse * ao_factor + ambient * ao_factor + emission;
-		specular = specular * ao_factor;
+		vec3 lit = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
 
-		imageStore(diffuse_map, pixel_coordinates, vec4(diffuse, albedo.a));
-		imageStore(specular_map, pixel_coordinates, vec4(specular, 1.0))
+		imageStore(lit_map, pixel_coordinates, vec4(lit, albedo.a))
 		"
 		.trim();
 
@@ -1363,13 +1309,12 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					Some(b_msl.into()),
 					&[
 						"lighting_data",
-						"diffuse_map",
-						"specular_map",
+						"lit_map",
 						"_unused_set2_binding1",
+						"_unused_set2_binding2",
 						"_unused_set2_binding3",
 						"sample_shadow",
-						"ibl_cubemap",
-						"sample_ibl_cubemap",
+						"sample_analytical_reflection",
 						"fresnel_schlick_roughness",
 					],
 					&[],
@@ -1524,14 +1469,16 @@ mod tests {
 			"Expected the material evaluation MSL source to preserve the full visibility set1 binding layout. Shader: {source}"
 		);
 		assert!(
-			source.contains("texture2d<float, access::write> diffuse_map [[id(0)]];")
+			source.contains("texture2d<float, access::write> lit_map [[id(0)]];")
 				&& source.contains("constant __unused_set2_binding1* _unused_set2_binding1 [[id(1)]];")
-				&& source.contains("texture2d<float, access::write> specular_map [[id(2)]];")
+				&& source.contains("texture2d<float, access::write> _unused_set2_binding2 [[id(2)]];")
 				&& source.contains("texture2d<float, access::write> _unused_set2_binding3 [[id(3)]];")
 				&& source.contains("texture2d<float> ao [[id(6)]];")
 				&& source.contains("sampler ao_sampler [[id(7)]];")
 				&& source.contains("texture2d<float> visibility_depth [[id(10)]];")
 				&& source.contains("sampler visibility_depth_sampler [[id(11)]];")
+				&& source.contains("sample_analytical_reflection")
+				&& !source.contains("ibl_cubemap")
 				&& source.contains("view.inverse_projection * surface_clip_position")
 				&& source.contains("view.inverse_view * surface_view_position")
 				&& source.contains("view.view * float4(world_space_surface_position, 1.0)")

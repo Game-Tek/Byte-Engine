@@ -8,8 +8,7 @@ use byte_engine::{
 	audio::synthesizer::Synthesizer,
 };
 
-#[test]
-fn sound() {
+fn main() {
 	let mut app = byte_engine::application::GraphicsApplication::new(
 		"Sound Smoke Test",
 		&[

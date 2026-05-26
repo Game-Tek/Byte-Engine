@@ -5,7 +5,6 @@
 use utils::{Extent, RGBA};
 
 use crate::{
-	command_buffer::CommandBufferType,
 	descriptors::{self, DescriptorType},
 	shader::BindingDescriptor,
 	AccessPolicies, DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,
@@ -96,6 +95,16 @@ pub struct MeshHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SynchronizerHandle(pub(super) u64);
+
+impl MasterHandle for SynchronizerHandle {
+	fn new(i: u64) -> Self {
+		Self(i)
+	}
+
+	fn index(&self) -> u64 {
+		self.0
+	}
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DescriptorSetTemplateHandle(pub(super) u64);
@@ -885,7 +894,6 @@ pub(super) mod tests {
 			BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 			RasterizationRenderPassMode as _,
 		},
-		device::Device,
 		frame::Frame as _,
 		pipelines::{self, raster::AttachmentDescriptor, PushConstantRange, ShaderParameter, VertexElement},
 		queue::{FrameRequest, Queue as _, QueueExecution as _},

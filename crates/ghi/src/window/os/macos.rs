@@ -11,9 +11,8 @@ use objc2_foundation::{
 	NSAutoreleasePool, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 
-use crate::input::{Keys, MouseKeys};
-use crate::Features;
-use crate::{os::WindowLike, Events, Seat};
+use crate::window::input::{Keys, MouseKeys};
+use crate::window::{os::WindowLike, Events, Features, Seat};
 
 pub struct Window {
 	window: Retained<NSWindow>,
@@ -249,11 +248,11 @@ impl WindowLike for Window {
 		})
 	}
 
-	fn show_cursor(&mut self, show: bool) {
+	fn show_cursor(&mut self, _show: bool) {
 		todo!()
 	}
 
-	fn confine_cursor(&mut self, confine: bool) {
+	fn confine_cursor(&mut self, _confine: bool) {
 		todo!()
 	}
 

@@ -987,10 +987,8 @@ impl GtaoPass {
 }
 
 pub struct MaterialEvaluationPass {
-	diffuse: ghi::BaseImageHandle,
-	specular: ghi::BaseImageHandle,
+	lit: ghi::BaseImageHandle,
 	ao_map: ghi::BaseImageHandle,
-	ibl_cubemap: ghi::BaseImageHandle,
 	/// Base layout descriptor set
 	base_descriptor_set: ghi::DescriptorSetHandle,
 	/// Visibility passes descriptor set
@@ -1002,21 +1000,17 @@ pub struct MaterialEvaluationPass {
 
 impl MaterialEvaluationPass {
 	fn new(
-		diffuse: ghi::BaseImageHandle,
-		specular: ghi::BaseImageHandle,
+		lit: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
 		_shadow_map: ghi::BaseImageHandle,
-		ibl_cubemap: ghi::BaseImageHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
 	) -> Self {
 		MaterialEvaluationPass {
-			diffuse,
-			specular,
+			lit,
 			ao_map,
-			ibl_cubemap,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			descriptor_set,
@@ -1031,10 +1025,8 @@ impl MaterialEvaluationPass {
 		opaque_materials: &[(String, u32, ghi::PipelineHandle)],
 		transparent_materials: &[(String, u32, ghi::PipelineHandle)],
 	) -> impl RenderPassFunction {
-		let diffuse = self.diffuse;
-		let specular = self.specular;
+		let lit = self.lit;
 		let ao_map = self.ao_map;
-		let ibl_cubemap = self.ibl_cubemap;
 		let base_descriptor_set = self.base_descriptor_set;
 		let material_evaluation_dispatches = self.material_evaluation_dispatches;
 		let visibility_descriptor_set = self.visibility_descriptor_set;
@@ -1045,10 +1037,7 @@ impl MaterialEvaluationPass {
 		frame.resize_image(ao_map.into(), sink.extent());
 
 		move |c, t| {
-			c.clear_images(&[
-				(diffuse.into(), ghi::ClearValue::Color(RGBA::black())),
-				(specular.into(), ghi::ClearValue::Color(RGBA::black())),
-			]);
+			c.clear_images(&[(lit.into(), ghi::ClearValue::Color(RGBA::black()))]);
 
 			c.start_region("Material Evaluation");
 
@@ -1112,11 +1101,9 @@ impl VisibilityPipelineRenderPass {
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
-		diffuse: ghi::BaseImageHandle,
-		specular: ghi::BaseImageHandle,
+		lit: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
 		shadow_map: ghi::BaseImageHandle,
-		ibl_cubemap: ghi::BaseImageHandle,
 		depth: ghi::BaseImageHandle,
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
@@ -1182,11 +1169,9 @@ impl VisibilityPipelineRenderPass {
 		let material_evaluation_dispatches = material_offset_pass.material_evaluation_dispatches.clone();
 
 		let material_evaluation_pass = MaterialEvaluationPass::new(
-			diffuse,
-			specular,
+			lit,
 			ao_map,
 			shadow_map,
-			ibl_cubemap,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_evaluation_descriptor_set,

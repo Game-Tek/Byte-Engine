@@ -110,7 +110,7 @@ impl RenderPass {
 
 		move |c, t| {
 			c.bind_vertex_buffers(&[vertex_buffer.into()]);
-			c.bind_index_buffer(&index_buffer.into());
+			c.bind_index_buffer(&ghi::BufferDescriptor::new(index_buffer.into()).index_type(ghi::DataTypes::U16));
 
 			let c = c.start_render_pass(extent, t);
 

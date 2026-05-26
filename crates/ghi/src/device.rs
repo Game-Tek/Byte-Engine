@@ -19,8 +19,8 @@ where
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool;
 
-	/// Creates a rendering context that takes ownership of this device.
-	fn create_context(self) -> Result<Self::Context, &'static str>;
+	/// Creates a new rendering context that operates on this device.
+	fn create_context(&self) -> Result<Self::Context, &'static str>;
 
 	/// Creates a shader.
 	fn create_shader(

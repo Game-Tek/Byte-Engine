@@ -188,12 +188,21 @@ impl MSLShaderGenerator {
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
-		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "MSL");
+		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment) {
+			if let Some(source) = Self::find_full_source_passthrough(main_function_node) {
+				return Ok(source);
+			}
+		}
+
+		let mut string = String::with_capacity(2048);
 
 		self.generate_msl_header_block(&mut string, shader_compilation_settings);
 
 		match shader_compilation_settings.stage {
+			Stages::Vertex if Self::has_msl_raw_statement(main_function_node) && Self::has_raster_interface(&order) => {
+				self.generate_vertex_shader(&mut string, &order, main_function_node)
+			}
 			Stages::Compute { .. } => self.generate_compute_shader(&mut string, &order, main_function_node),
 			Stages::Mesh {
 				maximum_vertices,
@@ -208,6 +217,242 @@ impl MSLShaderGenerator {
 		}
 
 		Ok(string)
+	}
+
+	fn find_full_source_passthrough(main_function_node: &besl::NodeReference) -> Option<String> {
+		// Raster-stage MSL entrypoint lowering is not implemented yet, so callers can carry a full
+		// Metal source through a BESL raw node while the GLSL path keeps using normal BESL generation.
+		const MARKER: &str = "// besl-full-source";
+
+		let main_function_node = main_function_node.borrow();
+		let besl::Nodes::Function { statements, .. } = main_function_node.node() else {
+			return None;
+		};
+
+		statements.iter().find_map(|node| {
+			let node = node.borrow();
+			let besl::Nodes::Raw { msl: Some(source), .. } = node.node() else {
+				return None;
+			};
+
+			source.strip_prefix(MARKER).map(|source| source.trim_start().to_string())
+		})
+	}
+
+	fn has_msl_raw_statement(main_function_node: &besl::NodeReference) -> bool {
+		let main_function_node = main_function_node.borrow();
+		let besl::Nodes::Function { statements, .. } = main_function_node.node() else {
+			return false;
+		};
+
+		statements
+			.iter()
+			.any(|node| matches!(node.borrow().node(), besl::Nodes::Raw { msl: Some(source), .. } if !source.is_empty()))
+	}
+
+	fn has_raster_interface(order: &[besl::NodeReference]) -> bool {
+		order.iter().any(|node| {
+			matches!(
+				node.borrow().node(),
+				besl::Nodes::Binding { .. } | besl::Nodes::Input { .. } | besl::Nodes::Output { .. }
+			)
+		})
+	}
+
+	fn emit_separator(&self, string: &mut String) {
+		if self.minified {
+			string.push(',');
+		} else {
+			string.push_str(", ");
+		}
+	}
+
+	fn emit_struct_start(&self, string: &mut String, name: &str) {
+		string.push_str("struct ");
+		string.push_str(name);
+		if self.minified {
+			string.push('{');
+		} else {
+			string.push_str(" {\n");
+		}
+	}
+
+	fn emit_struct_end(&self, string: &mut String) {
+		string.push_str("};");
+		if !self.minified {
+			string.push('\n');
+		}
+	}
+
+	fn emit_binding_set_parameter(&self, string: &mut String, set: u32) {
+		string.push_str("constant _set");
+		string.push_str(set.to_string().as_str());
+		string.push_str("& set");
+		string.push_str(set.to_string().as_str());
+		string.push_str(" [[buffer(");
+		string.push_str((16 + set).to_string().as_str());
+		string.push_str(")]]");
+	}
+
+	fn generate_vertex_shader(
+		&mut self,
+		string: &mut String,
+		order: &[besl::NodeReference],
+		main_function_node: &besl::NodeReference,
+	) {
+		let mut bindings = Vec::new();
+		let mut inputs = Vec::new();
+		let mut outputs = Vec::new();
+		let mut declaration_nodes = Vec::new();
+		let mut function_nodes = Vec::new();
+
+		for node in order {
+			match node.borrow().node() {
+				besl::Nodes::Binding { .. } => bindings.push(node.clone()),
+				besl::Nodes::Input { .. } => inputs.push(node.clone()),
+				besl::Nodes::Output { .. } => outputs.push(node.clone()),
+				besl::Nodes::Function { name, .. } if name == "main" => {}
+				besl::Nodes::Function { .. } => function_nodes.push(node.clone()),
+				besl::Nodes::Struct { .. }
+				| besl::Nodes::Raw { .. }
+				| besl::Nodes::Intrinsic { .. }
+				| besl::Nodes::Const { .. }
+				| besl::Nodes::Specialization { .. } => declaration_nodes.push(node.clone()),
+				_ => {}
+			}
+		}
+
+		for node in declaration_nodes {
+			self.emit_node_string(string, &node);
+		}
+
+		for binding in &bindings {
+			if let besl::Nodes::Binding {
+				r#type: besl::BindingTypes::Buffer { members },
+				..
+			} = binding.borrow().node()
+			{
+				self.emit_buffer_binding_struct(string, binding, members.as_slice());
+			}
+		}
+
+		let binding_sets = self.group_bindings_by_set(bindings.as_slice());
+		for (&set, bindings) in &binding_sets {
+			self.emit_argument_buffer_struct(string, set, bindings);
+		}
+
+		self.emit_vertex_input_struct(string, &inputs);
+		self.emit_vertex_output_struct(string, &outputs);
+
+		for node in function_nodes.iter().rev() {
+			self.emit_function_prototype(string, node);
+		}
+
+		for node in function_nodes.into_iter().rev() {
+			self.emit_node_string(string, &node);
+		}
+
+		self.emit_vertex_entry_point(string, main_function_node, &binding_sets);
+	}
+
+	fn emit_vertex_input_struct(&mut self, string: &mut String, inputs: &[besl::NodeReference]) {
+		let formatting = ShaderFormatting::new(self.minified);
+		self.emit_struct_start(string, "VertexInput");
+
+		for input in inputs {
+			let input = input.borrow();
+			let besl::Nodes::Input { name, location, format } = input.node() else {
+				continue;
+			};
+			formatting.push_indentation(string, 1);
+			string.push_str(Self::translate_type(&format.borrow().get_name().unwrap()));
+			string.push(' ');
+			string.push_str(name);
+			string.push_str(" [[attribute(");
+			string.push_str(location.to_string().as_str());
+			string.push_str(")]]");
+			formatting.push_statement_end(string);
+		}
+
+		self.emit_struct_end(string);
+	}
+
+	fn emit_vertex_output_struct(&mut self, string: &mut String, outputs: &[besl::NodeReference]) {
+		let formatting = ShaderFormatting::new(self.minified);
+		self.emit_struct_start(string, "VertexOutput");
+
+		formatting.push_indentation(string, 1);
+		string.push_str("float4 position [[position]]");
+		formatting.push_statement_end(string);
+
+		for output in outputs {
+			let output = output.borrow();
+			let besl::Nodes::Output {
+				name,
+				location,
+				format,
+				count,
+			} = output.node()
+			else {
+				continue;
+			};
+			if count.is_some() {
+				continue;
+			}
+			formatting.push_indentation(string, 1);
+			let format = format.borrow();
+			let type_name = format.get_name().unwrap();
+			string.push_str(Self::translate_type(type_name));
+			string.push(' ');
+			string.push_str(name);
+			if Self::is_integer_type(type_name) {
+				string.push_str(" [[flat]]");
+			}
+			string.push_str(" [[user(locn");
+			string.push_str(location.to_string().as_str());
+			string.push_str(")]]");
+			formatting.push_statement_end(string);
+		}
+
+		self.emit_struct_end(string);
+	}
+
+	fn emit_vertex_entry_point(
+		&mut self,
+		string: &mut String,
+		main_function_node: &besl::NodeReference,
+		binding_sets: &BTreeMap<u32, Vec<besl::NodeReference>>,
+	) {
+		let node = RefCell::borrow(main_function_node);
+		let besl::Nodes::Function { statements, .. } = node.node() else {
+			return;
+		};
+
+		string.push_str("vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint instance_index [[instance_id]]");
+		for &set in binding_sets.keys() {
+			self.emit_separator(string);
+			self.emit_binding_set_parameter(string, set);
+		}
+
+		if self.minified {
+			string.push_str("){");
+		} else {
+			string.push_str(") {\n");
+		}
+
+		self.emit_statement_block(string, statements, 1);
+
+		string.push('}');
+		if !self.minified {
+			string.push('\n');
+		}
+	}
+
+	fn is_integer_type(name: &str) -> bool {
+		matches!(
+			name,
+			"u8" | "u16" | "u32" | "i32" | "vec2u" | "vec2u16" | "vec2i" | "vec3u" | "vec4u"
+		)
 	}
 
 	fn generate_compute_shader(
@@ -417,12 +662,7 @@ impl MSLShaderGenerator {
 			return;
 		};
 
-		string.push_str("struct PushConstant");
-		if self.minified {
-			string.push('{');
-		} else {
-			string.push_str(" {\n");
-		}
+		self.emit_struct_start(string, "PushConstant");
 
 		for member in members {
 			if !self.minified {
@@ -436,30 +676,18 @@ impl MSLShaderGenerator {
 			}
 		}
 
-		string.push_str("};");
-		if !self.minified {
-			string.push('\n');
-		}
+		self.emit_struct_end(string);
 	}
 
 	fn emit_argument_buffer_struct(&mut self, string: &mut String, set: u32, bindings: &[besl::NodeReference]) {
-		string.push_str("struct _set");
-		string.push_str(set.to_string().as_str());
-		if self.minified {
-			string.push('{');
-		} else {
-			string.push_str(" {\n");
-		}
+		self.emit_struct_start(string, &format!("_set{set}"));
 
 		let mut next_id = 0u32;
 		for binding in bindings {
 			self.emit_argument_buffer_field(string, binding, &mut next_id);
 		}
 
-		string.push_str("};");
-		if !self.minified {
-			string.push('\n');
-		}
+		self.emit_struct_end(string);
 	}
 
 	fn emit_argument_buffer_field(&mut self, string: &mut String, binding_node: &besl::NodeReference, next_id: &mut u32) {
@@ -552,13 +780,7 @@ impl MSLShaderGenerator {
 			return;
 		};
 
-		string.push_str("struct _");
-		string.push_str(name);
-		if self.minified {
-			string.push('{');
-		} else {
-			string.push_str(" {\n");
-		}
+		self.emit_struct_start(string, &format!("_{name}"));
 
 		let previous_in_buffer_binding_struct = self.in_buffer_binding_struct;
 		self.in_buffer_binding_struct = true;
@@ -577,10 +799,7 @@ impl MSLShaderGenerator {
 
 		self.in_buffer_binding_struct = previous_in_buffer_binding_struct;
 
-		string.push_str("};");
-		if !self.minified {
-			string.push('\n');
-		}
+		self.emit_struct_end(string);
 	}
 
 	fn translate_buffer_member_type(source: &str) -> &str {
@@ -622,20 +841,12 @@ impl MSLShaderGenerator {
 		string.push_str("uint2 gid [[thread_position_in_grid]]");
 
 		for param in params {
-			if self.minified {
-				string.push(',');
-			} else {
-				string.push_str(", ");
-			}
+			self.emit_separator(string);
 			self.emit_node_string(string, param);
 		}
 
 		if let Some(push_constant) = push_constant {
-			if self.minified {
-				string.push(',');
-			} else {
-				string.push_str(", ");
-			}
+			self.emit_separator(string);
 			self.emit_compute_push_constant_parameter(string, push_constant);
 		}
 
@@ -686,36 +897,18 @@ impl MSLShaderGenerator {
 		string.push_str("uint2 gid [[thread_position_in_grid]]");
 
 		for param in params {
-			if self.minified {
-				string.push(',');
-			} else {
-				string.push_str(", ");
-			}
+			self.emit_separator(string);
 			self.emit_node_string(string, param);
 		}
 
 		if let Some(push_constant) = push_constant {
-			if self.minified {
-				string.push(',');
-			} else {
-				string.push_str(", ");
-			}
+			self.emit_separator(string);
 			self.emit_compute_push_constant_parameter(string, push_constant);
 		}
 
 		for &set in binding_sets.keys() {
-			if self.minified {
-				string.push(',');
-			} else {
-				string.push_str(", ");
-			}
-			string.push_str("constant _set");
-			string.push_str(set.to_string().as_str());
-			string.push_str("& set");
-			string.push_str(set.to_string().as_str());
-			string.push_str(" [[buffer(");
-			string.push_str((16 + set).to_string().as_str());
-			string.push_str(")]]");
+			self.emit_separator(string);
+			self.emit_binding_set_parameter(string, set);
 		}
 
 		if self.minified {
@@ -764,11 +957,7 @@ impl MSLShaderGenerator {
 		let mut has_previous_parameter = false;
 		for param in params {
 			if has_previous_parameter {
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 			}
 			self.emit_node_string(string, param);
 			has_previous_parameter = true;
@@ -776,11 +965,7 @@ impl MSLShaderGenerator {
 
 		if let Some(push_constant) = push_constant {
 			if has_previous_parameter {
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 			}
 			self.emit_mesh_push_constant_parameter(string, push_constant);
 			has_previous_parameter = true;
@@ -788,41 +973,19 @@ impl MSLShaderGenerator {
 
 		for &set in binding_sets.keys() {
 			if has_previous_parameter {
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 			}
-			string.push_str("constant _set");
-			string.push_str(set.to_string().as_str());
-			string.push_str("& set");
-			string.push_str(set.to_string().as_str());
-			string.push_str(" [[buffer(");
-			string.push_str((16 + set).to_string().as_str());
-			string.push_str(")]]");
+			self.emit_binding_set_parameter(string, set);
 			has_previous_parameter = true;
 		}
 
 		if has_previous_parameter {
-			if self.minified {
-				string.push(',');
-			} else {
-				string.push_str(", ");
-			}
+			self.emit_separator(string);
 		}
 		string.push_str("uint threadgroup_position [[threadgroup_position_in_grid]]");
-		if self.minified {
-			string.push(',');
-		} else {
-			string.push_str(", ");
-		}
+		self.emit_separator(string);
 		string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
-		if self.minified {
-			string.push(',');
-		} else {
-			string.push_str(", ");
-		}
+		self.emit_separator(string);
 		string.push_str(&format!(
 			"metal::mesh<VertexOutput, PrimitiveOutput, {}, {}, topology::triangle> out_mesh",
 			maximum_vertices, maximum_primitives
@@ -872,12 +1035,11 @@ impl MSLShaderGenerator {
 		};
 
 		let index = set * 100 + binding;
-		let separator = if self.minified { "," } else { ", " };
 
 		match r#type {
 			besl::BindingTypes::Buffer { .. } => {
 				let address_space = if *write { "device" } else { "constant" };
-				string.push_str(separator);
+				self.emit_separator(string);
 				string.push_str(address_space);
 				string.push(' ');
 				string.push_str(&format!("_{}* {} [[buffer({})]]", name, name, index));
@@ -895,7 +1057,7 @@ impl MSLShaderGenerator {
 					"access::read"
 				};
 
-				string.push_str(separator);
+				self.emit_separator(string);
 				string.push_str(&format!(
 					"texture2d<{}, {}> {} [[texture({})]]",
 					element_type, access, name, index
@@ -907,9 +1069,9 @@ impl MSLShaderGenerator {
 					_ => "texture2d<float>",
 				};
 
-				string.push_str(separator);
+				self.emit_separator(string);
 				string.push_str(&format!("{} {} [[texture({})]]", texture_type, name, index));
-				string.push_str(separator);
+				self.emit_separator(string);
 				string.push_str(&format!("sampler {}_sampler [[sampler({})]]", name, index));
 			}
 		}
@@ -1646,13 +1808,13 @@ impl MSLShaderGenerator {
 			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
-					let type_name = if self.in_buffer_binding_struct && count.is_some() {
-						Self::translate_buffer_member_type(type_name)
+					if self.in_buffer_binding_struct && count.is_some() {
+						string.push_str(Self::translate_buffer_member_type(type_name));
+					} else if type_name.contains('[') {
+						Self::emit_type_name(string, type_name);
 					} else {
-						Self::translate_type(type_name)
-					};
-
-					string.push_str(type_name);
+						string.push_str(Self::translate_type(type_name));
+					}
 					string.push(' ');
 				}
 				string.push_str(name.as_str());
@@ -2375,6 +2537,76 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "void main(){float3 albedo=float3(1.0,0.0,0.0);}");
+	}
+
+	#[test]
+	fn raster_full_source_passthrough_uses_raw_msl_source() {
+		let source = "// besl-full-source\n#include <metal_stdlib>\nvertex void besl_main() {}";
+		let mut root = besl::parser::Node::root();
+		let main = besl::parser::Node::main_function(vec![besl::parser::Node::raw_code(
+			Some("".into()),
+			None,
+			Some(source.into()),
+			&[],
+			&[],
+		)]);
+		root.add(vec![besl::parser::Node::scope("Shader", vec![main])]);
+
+		let main = besl::lex(root).unwrap().get_main().unwrap();
+		let shader = MSLShaderGenerator::new()
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_eq!(shader, "#include <metal_stdlib>\nvertex void besl_main() {}");
+	}
+
+	#[test]
+	fn vertex_shader_generates_msl_entry_point() {
+		let mut root = besl::parser::Node::root();
+		let camera = besl::parser::Node::r#struct("Camera", vec![besl::parser::Node::member("view_projection", "mat4f")]);
+		let cameras = besl::parser::Node::binding(
+			"cameras",
+			besl::parser::Node::buffer("CamerasBuffer", vec![besl::parser::Node::member("cameras", "Camera[8]")]),
+			0,
+			0,
+			true,
+			false,
+		);
+		let main = besl::parser::Node::main_function(vec![besl::parser::Node::raw_code(
+			Some("".into()),
+			None,
+			Some(
+				"VertexOutput out; out.position = set0.cameras->cameras[0].view_projection * float4(in.position, 1.0); out.out_instance_index = instance_index; return out;".into(),
+			),
+			&["cameras", "in_position", "out_instance_index"],
+			&[],
+		)]);
+		root.add(vec![besl::parser::Node::scope(
+			"Shader",
+			vec![
+				camera,
+				cameras,
+				besl::parser::Node::input("in_position", "vec3f", 0),
+				besl::parser::Node::output("out_instance_index", "u32", 0),
+				main,
+			],
+		)]);
+
+		let main = besl::lex(root).unwrap().get_main().unwrap();
+		let shader = MSLShaderGenerator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "struct _cameras{Camera cameras[8];};");
+		assert_string_contains!(shader, "struct _set0{constant _cameras* cameras [[id(0)]];};");
+		assert_string_contains!(shader, "struct VertexInput{float3 in_position [[attribute(0)]];};");
+		assert_string_contains!(
+			shader,
+			"struct VertexOutput{float4 position [[position]];uint out_instance_index [[flat]] [[user(locn0)]];};"
+		);
+		assert_string_contains!(shader, "vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint instance_index [[instance_id]],constant _set0& set0 [[buffer(16)]])");
+		assert_string_contains!(shader, "return out;");
 	}
 
 	#[test]

@@ -4,8 +4,7 @@
 
 use byte_engine::application::{Application, Parameter};
 
-#[test]
-fn window() {
+fn main() {
 	let mut app = byte_engine::application::GraphicsApplication::new(
 		"Window Smoke Test",
 		&[

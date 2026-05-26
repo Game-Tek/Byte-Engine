@@ -1,4 +1,4 @@
-use crate::{HandleLike, Next, PrivateHandles, Synchronizer};
+use crate::{HandleLike, Next, PrivateHandle, PrivateHandles, Synchronizer};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SynchronizerHandle(pub(crate) u64);
@@ -6,6 +6,16 @@ pub(crate) struct SynchronizerHandle(pub(crate) u64);
 impl Into<PrivateHandles> for SynchronizerHandle {
 	fn into(self) -> PrivateHandles {
 		PrivateHandles::Synchronizer(self)
+	}
+}
+
+impl PrivateHandle for SynchronizerHandle {
+	fn new(i: u64) -> Self {
+		Self(i)
+	}
+
+	fn index(&self) -> u64 {
+		self.0
 	}
 }
 

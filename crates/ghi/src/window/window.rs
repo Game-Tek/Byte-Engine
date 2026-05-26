@@ -1,6 +1,6 @@
 use utils::Extent;
 
-use crate::{
+use crate::window::{
 	input::{Keys, MouseKeys},
 	os::{self, WindowLike as _},
 	Events, Features,

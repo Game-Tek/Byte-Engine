@@ -137,6 +137,12 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.copy_buffer_to_images(self.command_buffer, copies, self.sequence_index());
 	}
 
+	fn copy_images_to_buffer(&mut self, _copies: &[crate::ImageBufferCopyDescriptor]) {
+		panic!(
+			"DX12 image-to-buffer copy is not implemented. The most likely cause is that this backend has not been wired for arbitrary texture readback buffers."
+		);
+	}
+
 	fn transfer_textures(&mut self, texture_handles: &[BaseImageHandle]) -> Vec<TextureCopyHandle> {
 		texture_handles
 			.iter()

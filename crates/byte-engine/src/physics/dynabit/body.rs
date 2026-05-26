@@ -20,6 +20,7 @@ use crate::{
 	},
 };
 
+#[derive(Clone)]
 pub struct PhysicsBody {
 	pub(crate) body_type: BodyTypes,
 	pub(crate) collision_shape: Shapes,

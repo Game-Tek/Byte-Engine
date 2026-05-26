@@ -42,33 +42,61 @@ impl<'a> Frame<'a> {
 			.nth_handle(image_handle, self.frame_key.sequence_index as _)
 			.unwrap()
 	}
+
+	fn get_current_buffer_handle(
+		&self,
+		buffer_handle: graphics_hardware_interface::BaseBufferHandle,
+	) -> crate::buffer::BufferHandle {
+		self.device
+			.buffers
+			.nth_handle(buffer_handle, self.frame_key.sequence_index as _)
+			.expect(
+				"Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.",
+			)
+	}
+
+	fn frame_buffer_pointer(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> *mut u8 {
+		let buffer = self.device.buffers.resource(self.get_current_buffer_handle(buffer_handle));
+		let buffer = buffer
+			.staging
+			.map(|staging_handle| self.device.buffers.resource(staging_handle))
+			.unwrap_or(buffer);
+
+		buffer.pointer
+	}
+
+	fn frame_texture_staging_parts(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> (*mut u8, usize) {
+		let image = self.device.images.resource(self.get_current_image_handle(image_handle));
+		let staging = image.staging.as_ref().expect(
+			"Missing Metal texture staging data. The most likely cause is that CPU texture access was requested for a device-only image.",
+		);
+
+		(staging.as_ptr() as *mut u8, staging.len())
+	}
 }
 
 impl Frame<'_> {
 	pub fn intern_raster_pipeline(
 		&mut self,
-		pipeline: crate::metal::pipelines::factory::Pipeline,
+		pipeline: crate::metal::device::Pipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
 		self.device.intern_raster_pipeline(pipeline)
 	}
 
 	pub fn intern_compute_pipeline(
 		&mut self,
-		pipeline: crate::implementation::ComputePipeline,
+		pipeline: crate::metal::device::ComputePipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
 		self.device.intern_compute_pipeline(pipeline)
 	}
 
 	/// Interns a factory-built image through this frame's device.
-	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
+	pub fn intern_image(&mut self, image: crate::metal::device::Image) -> graphics_hardware_interface::ImageHandle {
 		self.device.intern_image(image)
 	}
 
 	/// Interns a factory-built sampler through this frame's device.
-	pub fn intern_sampler(
-		&mut self,
-		sampler: crate::implementation::FactorySampler,
-	) -> graphics_hardware_interface::SamplerHandle {
+	pub fn intern_sampler(&mut self, sampler: crate::metal::device::Sampler) -> graphics_hardware_interface::SamplerHandle {
 		self.device.intern_sampler(sampler)
 	}
 
@@ -80,31 +108,17 @@ impl Frame<'_> {
 		self.device.sync_buffer(buffer_handle);
 	}
 
-	pub fn get_mut_dynamic_buffer_slice<'a, T: Copy>(
-		&'a self,
+	pub fn get_mut_dynamic_buffer_slice<T: Copy>(
+		&self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
-	) -> &'a mut T {
-		let buffer = self
-			.device
-			.buffers
-			.get_nth(buffer_handle.into(), self.frame_key.sequence_index as _)
-			.expect(
-				"Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.",
-			);
-		let buffer = buffer
-			.staging
-			.map(|staging_handle| self.device.buffers.resource(staging_handle))
-			.unwrap_or(buffer);
-
-		unsafe { &mut *(buffer.pointer as *mut T) }
+	) -> &mut T {
+		unsafe { &mut *(self.frame_buffer_pointer(buffer_handle.into()) as *mut T) }
 	}
 
-	pub fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &'static mut [u8] {
-		let image = self.device.images.resource(self.get_current_image_handle(texture_handle));
+	pub fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &'static mut [u8] {
+		let (pointer, length) = self.frame_texture_staging_parts(texture_handle);
 
-		let staging = image.staging.as_ref().unwrap();
-
-		unsafe { std::slice::from_raw_parts_mut(staging.as_ptr() as *mut u8, staging.len()) }
+		unsafe { std::slice::from_raw_parts_mut(pointer, length) }
 	}
 
 	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
@@ -206,9 +220,9 @@ impl Frame<'_> {
 		let super::FinishedCommandBuffer {
 			command_buffer_handle: _command_buffer_handle,
 			command_buffer,
-			states,
+			state_updates,
 			texture_copies,
-			_marker: _marker,
+			_marker,
 		} = cbr;
 		let mut present_drawables = Vec::with_capacity(present_keys.len());
 
@@ -254,18 +268,10 @@ impl Frame<'_> {
 			command_buffer.presentDrawable(drawable_ref);
 		}
 
-		if let Some(synchronizer) = self.device.synchronizers.get_mut(synchronizer.0 as usize) {
-			synchronizer.signaled = false;
-		}
+		self.device
+			.submit_metal_command_buffer_for_synchronizer(command_buffer, synchronizer, self.frame_key.sequence_index);
 
-		self.device.submit_metal_command_buffer(command_buffer.as_ref());
-		command_buffer.waitUntilCompleted();
-
-		if let Some(synchronizer) = self.device.synchronizers.get_mut(synchronizer.0 as usize) {
-			synchronizer.signaled = true;
-		}
-
-		self.device.states = states;
+		self.device.states.extend(state_updates);
 		self.device.intern_texture_copies(texture_copies);
 	}
 }
@@ -289,10 +295,9 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 
 	fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &'static mut [u8] {
-		let handle = self.get_current_image_handle(texture_handle);
-		let image = self.device.images.resource(handle);
-		let staging = image.staging.as_ref().unwrap();
-		unsafe { std::slice::from_raw_parts_mut(staging.as_ptr() as *mut u8, staging.len()) }
+		let (pointer, length) = self.frame_texture_staging_parts(texture_handle);
+
+		unsafe { std::slice::from_raw_parts_mut(pointer, length) }
 	}
 
 	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
@@ -308,15 +313,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 	) -> &mut T {
-		let buffer = self
-			.device
-			.buffers
-			.get_nth(buffer_handle.into(), self.frame_key.sequence_index as _)
-			.expect(
-				"Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.",
-			);
-
-		unsafe { &mut *(buffer.pointer as *mut T) }
+		Frame::get_mut_dynamic_buffer_slice(self, buffer_handle)
 	}
 
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {

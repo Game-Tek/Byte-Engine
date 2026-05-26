@@ -51,3 +51,11 @@
 - Review and either use or remove dead test helper structs TestTransport and TestSynthesizer in crates/byte-engine/tests/replication.rs and crates/byte-engine/tests/sound.rs.
 - Cleanup vulkan transition code
 - Fix "Warning: -[NSWindow makeKeyWindow] called on <NSWindow: 0xb97cd0280> windowNumber=1ae1 which returned NO from -[NSWindow canBecomeKeyWindow]." on macOS
+- Check order of texture upload vs material and when the rendering starts, we are seeing flashes of black objects
+- Batch pending Metal buffer and texture uploads into one transfer command buffer and blit encoder in crates/ghi/src/metal/context.rs.
+- Avoid cloning Metal texture staging data before upload in crates/ghi/src/metal/context.rs.
+- Use actual descriptor access when marking Metal argument-buffer resources resident instead of always using read-write in crates/ghi/src/metal/command_buffer.rs.
+- Precompute Metal descriptor set layout stage visibility to simplify descriptor binding and avoid repeated scans in crates/ghi/src/metal/mod.rs and crates/ghi/src/metal/command_buffer.rs.
+- Deduplicate Metal descriptor encoding paths by merging encode_descriptor_binding and encode_binding in crates/ghi/src/metal/context.rs.
+- Avoid cloning Metal pipeline state during descriptor set binding in crates/ghi/src/metal/command_buffer.rs.
+- Simplify Metal frame-chain handle deduplication if frame counts grow beyond the current small fixed count in crates/ghi/src/metal/context.rs.

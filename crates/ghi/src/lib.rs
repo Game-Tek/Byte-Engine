@@ -1,5 +1,8 @@
 //! The G.H.I. module (graphics hardware interface) is responsible for abstracting the access to the graphics hardware.
 
+#![allow(dead_code)]
+#![allow(incomplete_features)]
+#![allow(private_interfaces)]
 #![feature(generic_const_exprs)]
 #![feature(str_as_str)]
 #![feature(pointer_is_aligned_to)]
@@ -12,6 +15,7 @@ pub mod graphics_hardware_interface;
 pub mod render_debugger;
 
 pub mod debug;
+pub mod factory;
 
 #[cfg(target_os = "windows")]
 pub mod dx12;
@@ -20,102 +24,20 @@ pub mod metal;
 #[cfg(target_os = "linux")]
 pub mod vulkan;
 
-pub use crate::frame_resources::*;
+pub(crate) use crate::frame_resources::*;
 pub use crate::graphics_hardware_interface::*;
-pub use crate::window::*;
+pub use crate::window::Window;
 
 pub mod implementation {
 	pub const USES_DX12: bool = cfg!(target_os = "windows");
 	pub const USES_METAL: bool = cfg!(target_os = "macos");
 
 	#[cfg(target_os = "windows")]
-	pub use dx12::factory::{
-		ComputePipeline, Factory, Factory as DetachedDevice, FactoryImage, FactorySampler, RasterPipeline,
-	};
-	#[cfg(target_os = "windows")]
-	pub use dx12::CommandBufferRecording;
-	#[cfg(target_os = "windows")]
-	pub use dx12::Device as Context;
-	#[cfg(target_os = "windows")]
-	pub use dx12::Device;
-	#[cfg(target_os = "windows")]
-	pub use dx12::Frame;
-	#[cfg(target_os = "windows")]
-	pub use dx12::Instance;
-	#[cfg(target_os = "windows")]
-	pub(crate) struct Binding {
-		pub(crate) next: Option<crate::binding::DescriptorSetBindingHandle>,
-	}
-	#[cfg(target_os = "windows")]
-	pub(crate) struct Buffer;
-	#[cfg(target_os = "windows")]
-	pub(crate) struct DescriptorSet {
-		pub(crate) next: Option<crate::descriptors::DescriptorSetHandle>,
-	}
-	#[cfg(target_os = "windows")]
-	pub(crate) struct Image;
-	#[cfg(target_os = "windows")]
-	pub(crate) struct Synchronizer {
-		pub(crate) next: Option<crate::synchronizer::SynchronizerHandle>,
-	}
+	use crate::dx12::*;
 	#[cfg(target_os = "macos")]
-	pub(crate) use metal::buffer::Buffer;
-	#[cfg(target_os = "macos")]
-	pub(crate) use metal::image::Image;
-	#[cfg(target_os = "macos")]
-	pub use metal::pipelines::factory::{
-		ComputePipeline, Factory, Factory as DetachedDevice, Image as FactoryImage, Pipeline as RasterPipeline,
-		Sampler as FactorySampler,
-	};
-	#[cfg(target_os = "macos")]
-	pub use metal::queue::Queue;
-	#[cfg(target_os = "macos")]
-	pub(crate) use metal::Binding;
-	#[cfg(target_os = "macos")]
-	pub use metal::CommandBufferRecording;
-	#[cfg(target_os = "macos")]
-	pub use metal::Context;
-	#[cfg(target_os = "macos")]
-	pub(crate) use metal::DescriptorSet;
-	#[cfg(target_os = "macos")]
-	pub use metal::Device;
-	#[cfg(target_os = "macos")]
-	pub use metal::Frame;
-	#[cfg(target_os = "macos")]
-	pub use metal::Instance;
-	#[cfg(target_os = "macos")]
-	pub(crate) use metal::Synchronizer;
+	pub use crate::metal::*;
 	#[cfg(target_os = "linux")]
-	pub(crate) use vulkan::binding::Binding;
-	#[cfg(target_os = "linux")]
-	pub(crate) use vulkan::buffer::Buffer;
-	#[cfg(target_os = "linux")]
-	pub(crate) use vulkan::descriptor_set::DescriptorSet;
-	#[cfg(target_os = "linux")]
-	pub(crate) use vulkan::image::Image;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::queue::Queue;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::CommandBufferRecording;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::Context;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::Device;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::Frame;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::Instance;
-	#[cfg(target_os = "linux")]
-	pub(crate) use vulkan::Synchronizer;
-	#[cfg(target_os = "linux")]
-	pub use vulkan::{ComputePipeline, FactoryImage, FactorySampler, RasterPipeline};
-
-	#[cfg(target_os = "windows")]
-	use crate::dx12;
-	#[cfg(target_os = "macos")]
-	use crate::metal;
-	#[cfg(target_os = "linux")]
-	use crate::vulkan;
+	use crate::vulkan::*;
 }
 
 pub mod binding;
@@ -148,9 +70,7 @@ pub use types::*;
 pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 pub(crate) use implementation::Binding;
-pub(crate) use implementation::Buffer;
 pub(crate) use implementation::DescriptorSet;
-pub(crate) use implementation::Image;
 pub(crate) use implementation::Synchronizer;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

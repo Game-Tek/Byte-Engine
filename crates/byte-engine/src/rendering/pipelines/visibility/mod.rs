@@ -91,12 +91,10 @@ pub const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(7, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 /* Material Evaluation */
-pub const OUT_DIFFUSE: ghi::DescriptorSetBindingTemplate =
+pub const OUT_LIT: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const CAMERA: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const OUT_SPECULAR: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const LIGHTING_DATA: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const MATERIALS: ghi::DescriptorSetBindingTemplate =

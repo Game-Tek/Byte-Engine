@@ -118,9 +118,18 @@ impl Context {
 		})
 	}
 
-	/// Creates a device that shares this Vulkan context's logical device for detached resource creation.
-	pub fn create_detached_device(&self) -> Option<crate::implementation::Device> {
-		Some(crate::implementation::Device::detached(self.device.device.clone()))
+	/// Creates a detached-resource factory backed by this Vulkan device.
+	pub fn create_factory(&self) -> Option<crate::implementation::Factory> {
+		Some(crate::implementation::Factory {
+			device: self.device.device.clone(),
+			descriptor_set_layouts: self.descriptor_sets_layouts.clone(),
+			shaders: Vec::with_capacity(64),
+		})
+	}
+
+	/// Creates a detached pipeline-capable factory for compatibility with the previous pipeline factory API.
+	pub fn create_pipeline_factory(&self) -> Option<crate::implementation::Factory> {
+		self.create_factory()
 	}
 
 	pub(crate) fn create_command_buffer(

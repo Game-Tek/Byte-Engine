@@ -14,6 +14,8 @@ pub struct VisibilityPipelineManager {
 	pending_renderables: Vec<PendingRenderableInstance>,
 	loaded_meshes: HashMap<VisibilityMeshKey, MeshData>,
 	loaded_materials: HashMap<u32, RenderDescription>,
+	loaded_textures: HashSet<u32>,
+	loaded_pipelines: HashMap<String, ghi::PipelineHandle>,
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
 }
 
@@ -53,16 +55,15 @@ impl VisibilityPipelineManager {
 		);
 
 		let bindings = [
-			diffuse_binding_template,
+			LIT_BINDING_TEMPLATE,
 			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
-			specular_binding_template,
+			UNUSED_SET2_BINDING2_TEMPLATE,
 			ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
-			lighting_data_binding_template,
-			materials_data_binding_template,
-			ao_map_binding_template,
-			shadow_map_binding_template,
-			visibility_depth_binding_template,
-			ibl_cubemap_binding_template,
+			LIGHTING_DATA_BINDING_TEMPLATE,
+			MATERIALS_DATA_BINDING_TEMPLATE,
+			AO_MAP_BINDING_TEMPLATE,
+			SHADOW_MAP_BINDING_TEMPLATE,
+			VISIBILITY_DEPTH_BINDING_TEMPLATE,
 		];
 		let material_evaluation_descriptor_set_layout =
 			context.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
@@ -167,7 +168,7 @@ impl VisibilityPipelineManager {
 			Some("Material Evaluation Descriptor Set"),
 			&material_evaluation_descriptor_set_layout,
 		);
-		let material_pipeline_factory = context.create_detached_device();
+
 		resource_manager.configure_material_pipeline(MaterialPipelineConfig::new(
 			[
 				descriptor_set_layout,
@@ -175,7 +176,7 @@ impl VisibilityPipelineManager {
 				material_evaluation_descriptor_set_layout,
 			],
 			vec![ghi::pipelines::PushConstantRange::new(0, 4)],
-			material_pipeline_factory,
+			context.create_factory(),
 		));
 
 		Self {
@@ -188,6 +189,8 @@ impl VisibilityPipelineManager {
 			pending_renderables: Vec::new(),
 			loaded_meshes: HashMap::new(),
 			loaded_materials: HashMap::new(),
+			loaded_textures: HashSet::new(),
+			loaded_pipelines: HashMap::new(),
 			scene: VisibilitySceneManager {
 				render_entities: Vec::new(),
 				views_data_buffer_handle,
@@ -236,6 +239,7 @@ impl VisibilityPipelineManager {
 				}
 				VisibilityResourceCompletion::PipelineReady { name, pipeline } => {
 					let pipeline = frame.intern_compute_pipeline(pipeline);
+					self.loaded_pipelines.insert(name.clone(), pipeline);
 					for material in self.loaded_materials.values_mut() {
 						if material.name == name {
 							material.pipeline = Some(pipeline);
@@ -262,8 +266,12 @@ impl VisibilityPipelineManager {
 					let image = frame.intern_image(image);
 					let sampler = frame.intern_sampler(sampler);
 					let image = ghi::BaseImageHandle::from(image);
+					self.resource_manager.enqueue_texture_upload(index, image, sampler, upload);
+				}
+				VisibilityResourceCompletion::TextureUploadReady { index, image, sampler } => {
 					self.write_texture_descriptors(frame, index, image, sampler);
-					self.resource_manager.enqueue_texture_upload(image, upload);
+					self.loaded_textures.insert(index);
+					self.rebuild_material_lists();
 				}
 				VisibilityResourceCompletion::Failed { key } => {
 					warn!(
@@ -303,10 +311,7 @@ impl VisibilityPipelineManager {
 		alpha: bool,
 		textures: Vec<Option<(String, u32)>>,
 	) {
-		if pipeline.is_none() {
-			pipeline = pending_pipeline.and_then(|pending_pipeline| pending_pipeline.create(frame));
-		}
-
+		let pipeline = pipeline.or_else(|| self.loaded_pipelines.get(&id).copied());
 		let materials_data = frame.get_mut_buffer_slice(self.materials_data_buffer_handle);
 		let material_data = &mut materials_data[index as usize];
 		material_data.textures.fill(u32::MAX);
@@ -330,6 +335,10 @@ impl VisibilityPipelineManager {
 				pipeline,
 				name: id,
 				alpha,
+				texture_indices: textures
+					.iter()
+					.filter_map(|texture| texture.as_ref().map(|(_, index)| *index))
+					.collect(),
 			},
 		);
 		self.rebuild_material_lists();
@@ -344,6 +353,15 @@ impl VisibilityPipelineManager {
 			let Some(pipeline) = material.pipeline else {
 				continue;
 			};
+			// Material shaders index bindless textures directly, so a material must not render until every
+			// referenced texture descriptor points at an upload-completed image.
+			if !material
+				.texture_indices
+				.iter()
+				.all(|texture_index| self.loaded_textures.contains(texture_index))
+			{
+				continue;
+			}
 			let entry = (material.name.clone(), material.index, pipeline);
 			if material.alpha {
 				self.scene.render_info.transparent_materials.push(entry);
@@ -512,19 +530,12 @@ impl PipelineManager for VisibilityPipelineManager {
 	}
 
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
-		let diffuse_target = render_pass_builder.create_render_target(
+		let lit_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
 				ghi::Formats::RGBA16UNORM,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
 			)
-			.name("Diffuse"),
-		);
-		let specular_target = render_pass_builder.create_render_target(
-			ghi::image::Builder::new(
-				ghi::Formats::RGBA16UNORM,
-				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::TransferDestination,
-			)
-			.name("Specular"),
+			.name("Lit"),
 		);
 		let depth_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::DepthStencil | ghi::Uses::Image).name("Depth"),
@@ -588,14 +599,6 @@ impl PipelineManager for VisibilityPipelineManager {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32)),
 		);
-		let ibl_cubemap = context.build_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
-				.name("IBL Cubemap")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice)
-				.extent(Extent::square(1))
-				.array_layers(NonZeroU32::new(6)),
-		);
-		context.write_texture(ibl_cubemap, |bytes| bytes.fill(255));
 		let sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
@@ -626,24 +629,20 @@ impl PipelineManager for VisibilityPipelineManager {
 
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&diffuse_binding_template, ghi::BaseImageHandle::from(diffuse_target)),
+			ghi::BindingConstructor::image(&LIT_BINDING_TEMPLATE, ghi::BaseImageHandle::from(lit_target)),
 		);
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&specular_binding_template, ghi::BaseImageHandle::from(specular_target)),
+			ghi::BindingConstructor::buffer(&LIGHTING_DATA_BINDING_TEMPLATE, self.scene.light_data_buffer.into()),
 		);
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::buffer(&lighting_data_binding_template, self.scene.light_data_buffer.into()),
-		);
-		let _ = context.create_descriptor_binding(
-			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::buffer(&materials_data_binding_template, self.materials_data_buffer_handle.into()),
+			ghi::BindingConstructor::buffer(&MATERIALS_DATA_BINDING_TEMPLATE, self.materials_data_buffer_handle.into()),
 		);
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
-				&ao_map_binding_template,
+				&AO_MAP_BINDING_TEMPLATE,
 				ao_map,
 				sampler.clone(),
 				ghi::Layouts::Read,
@@ -652,7 +651,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
-				&shadow_map_binding_template,
+				&SHADOW_MAP_BINDING_TEMPLATE,
 				shadow_map,
 				depth_sampler.clone(),
 				ghi::Layouts::Read,
@@ -661,22 +660,12 @@ impl PipelineManager for VisibilityPipelineManager {
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
-				&visibility_depth_binding_template,
+				&VISIBILITY_DEPTH_BINDING_TEMPLATE,
 				ghi::BaseImageHandle::from(depth_target),
 				visibility_depth_sampler.clone(),
 				ghi::Layouts::Read,
 			),
 		);
-		let _ = context.create_descriptor_binding(
-			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&ibl_cubemap_binding_template,
-				ibl_cubemap,
-				sampler.clone(),
-				ghi::Layouts::Read,
-			),
-		);
-
 		let _ = context.create_descriptor_binding(
 			visibility_passes_descriptor_set,
 			ghi::BindingConstructor::buffer(&MATERIAL_COUNT_BINDING, material_count_buffer.into()),
@@ -707,7 +696,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 
 		render_pass_builder.alias("Depth", "depth");
-		render_pass_builder.alias("Diffuse", "main");
+		render_pass_builder.alias("Lit", "main");
 
 		let shader_storage = render_pass_builder.shader_storage();
 		let render_pass = VisibilityPipelineRenderPass::new(
@@ -719,11 +708,9 @@ impl PipelineManager for VisibilityPipelineManager {
 			visibility_passes_descriptor_set,
 			material_evaluation_descriptor_set,
 			material_count_buffer,
-			ghi::BaseImageHandle::from(diffuse_target),
-			ghi::BaseImageHandle::from(specular_target),
+			ghi::BaseImageHandle::from(lit_target),
 			ao_map.into(),
 			shadow_map.into(),
-			ibl_cubemap.into(),
 			ghi::BaseImageHandle::from(depth_target),
 			ghi::BaseImageHandle::from(primitive_index),
 			ghi::BaseImageHandle::from(instance_id),
@@ -763,7 +750,7 @@ pub struct LightingData {
 
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Default)]
-pub(crate) struct ShaderVec3 {
+pub struct ShaderVec3 {
 	x: f32,
 	y: f32,
 	z: f32,
@@ -854,6 +841,7 @@ struct RenderDescription {
 	pipeline: Option<ghi::PipelineHandle>,
 	name: String,
 	alpha: bool,
+	texture_indices: Vec<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -939,41 +927,34 @@ mod tests {
 	}
 }
 
-const diffuse_binding_template: ghi::DescriptorSetBindingTemplate =
+const LIT_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const specular_binding_template: ghi::DescriptorSetBindingTemplate =
+const UNUSED_SET2_BINDING2_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const lighting_data_binding_template: ghi::DescriptorSetBindingTemplate =
+const LIGHTING_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-const materials_data_binding_template: ghi::DescriptorSetBindingTemplate =
+const MATERIALS_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(5, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-const ao_map_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+const AO_MAP_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	10,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
 );
-const shadow_map_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
+const SHADOW_MAP_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
 	11,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
 	1,
 )
 .texture_view_type(ghi::TextureViewTypes::Texture2DArray);
-const visibility_depth_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+const VISIBILITY_DEPTH_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	12,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
 );
-const ibl_cubemap_binding_template: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	13,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-)
-.texture_view_type(ghi::TextureViewTypes::Texture2DArray);
-
 use std::borrow::Borrow;
 use std::cell::RefCell;
-use std::collections::hash_map::Entry;
+use std::collections::{hash_map::Entry, HashSet};
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 

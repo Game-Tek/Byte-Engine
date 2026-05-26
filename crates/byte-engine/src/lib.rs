@@ -20,6 +20,7 @@
 )]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(dead_code)]
+#![allow(incomplete_features)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 #![deny(unused_must_use)]

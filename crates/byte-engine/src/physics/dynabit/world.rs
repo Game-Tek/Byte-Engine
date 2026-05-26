@@ -62,6 +62,7 @@ fn detect_collisions_for_bodies(bodies: &[PhysicsBody]) -> Vec<Contact> {
 	contacts
 }
 
+#[derive(Clone)]
 pub struct World {
 	bodies: Vec<PhysicsBody>,
 	gravity: Vector3,

@@ -26,6 +26,7 @@ pub struct GraphicsApplication {
 
 	generator_factory: Factory<Arc<dyn Generator>>,
 
+	world_factory: Factory<DefaultWorld>,
 	world: DefaultWorld,
 
 	input_system: input::InputManager,
@@ -106,6 +107,7 @@ impl Application for GraphicsApplication {
 
 			generator_factory: Factory::new(),
 
+			world_factory: Factory::new(),
 			world,
 
 			input_system,
@@ -163,7 +165,7 @@ impl GraphicsApplication {
 
 			for window_events in renderer.update_windows() {
 				for event in window_events {
-					if let ghi::Events::Close { .. } = event {
+					if let ghi::window::Events::Close { .. } = event {
 						close = true;
 					}
 
@@ -207,13 +209,16 @@ impl GraphicsApplication {
 		self.world.update(time, &mut physics_transforms_listener);
 
 		{
+			let mut camera_messages = self.world.camera_factory_mut().drain_created_before_listener();
+			camera_messages.extend(cameras_listener.to_vec());
+
 			let window_listener = &mut self.window_factory.1;
 
 			while let Some(message) = window_listener.read() {
 				self.renderer.create_window(message.into_data());
 			}
 
-			while let Some(message) = cameras_listener.read() {
+			for message in camera_messages {
 				self.renderer.create_camera(message.handle().clone(), message.into_data());
 			}
 
@@ -280,6 +285,14 @@ impl GraphicsApplication {
 
 	pub fn action_factory_mut(&mut self) -> &mut Factory<Action> {
 		&mut self.action_factory
+	}
+
+	pub fn world_factory(&self) -> &Factory<DefaultWorld> {
+		&self.world_factory
+	}
+
+	pub fn world_factory_mut(&mut self) -> &mut Factory<DefaultWorld> {
+		&mut self.world_factory
 	}
 
 	pub fn world(&self) -> &DefaultWorld {
@@ -484,7 +497,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			.device_accesses(ghi::DeviceAccesses::HostOnly),
 	);
 
-	let (resource_manager, mut resource_worker) =
+	let (resource_manager_client, mut resource_manager) =
 		VisibilityPipelineResourceManager::spawn(renderer.context_mut(), application_resource_manager);
 
 	application
@@ -500,8 +513,9 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 					}
 
 					let started_frame = transfer_queue.start_frame(started_frame_count as _, transfer_finished_synchronizer);
+
 					if let Some(completed_frame) = started_frame.completed_frame {
-						resource_worker.complete_frame(completed_frame);
+						resource_manager.signal_completed_frame(completed_frame);
 					}
 
 					let mut frame = started_frame.frame;
@@ -513,10 +527,11 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 					let mut slice = utils::BufferAllocator::new(buffer.as_mut_slice());
 
 					let prepared_uploads =
-						resource_worker.prepare_uploads(&mut transfer_recording, upload_buffer.into(), &mut slice);
+						resource_manager.prepare_uploads(&mut transfer_recording, upload_buffer.into(), &mut slice);
 
 					transfer_recording.execute(transfer_finished_synchronizer);
-					resource_worker.track_submitted_uploads(frame_key, prepared_uploads.completions);
+
+					resource_manager.track_submitted_uploads(frame_key, prepared_uploads.completions);
 
 					if !prepared_uploads.recorded_work {
 						// TODO: maybe get GHI to track work submissions
@@ -530,12 +545,24 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 
 	struct CustomPipelineManager {
 		light_receiver: DefaultListener<CreateMessage<Lights>>,
+		pending_lights: VecDeque<CreateMessage<Lights>>,
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		pending_meshes: VecDeque<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		visibility_pipeline_manager: VisibilityPipelineManager,
 	}
 
 	impl CustomPipelineManager {
+		/// Drains light creation messages into the visibility scene.
+		fn request_pending_lights(&mut self) {
+			while let Some(message) = self.light_receiver.read() {
+				self.pending_lights.push_back(message);
+			}
+
+			while let Some(message) = self.pending_lights.pop_front() {
+				self.visibility_pipeline_manager.create_light(message.into_data());
+			}
+		}
+
 		/// Drains renderable creation messages into the visibility resource request path.
 		fn request_pending_meshes(&mut self) {
 			while let Some(message) = self.mesh_receiver.read() {
@@ -554,10 +581,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
-			while let Some(message) = self.light_receiver.read() {
-				self.visibility_pipeline_manager.create_light(message.into_data());
-			}
-
+			self.request_pending_lights();
 			self.request_pending_meshes();
 
 			self.visibility_pipeline_manager.prepare(frame, sinks)
@@ -569,16 +593,29 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	}
 
 	{
+		let pending_lights = application
+			.world_mut()
+			.light_factory_mut()
+			.drain_created_before_listener()
+			.into_iter()
+			.collect::<VecDeque<_>>();
 		let light_receiver = application.world().light_factory().listener();
+		let pending_meshes = application
+			.world_mut()
+			.renderable_factory_mut()
+			.drain_created_before_listener()
+			.into_iter()
+			.collect::<VecDeque<_>>();
 		let mesh_receiver = application.world().renderable_factory().listener();
 
 		let renderer = &mut application.renderer;
 
 		let sm = CustomPipelineManager {
-			visibility_pipeline_manager: VisibilityPipelineManager::new(renderer.context_mut(), resource_manager),
+			visibility_pipeline_manager: VisibilityPipelineManager::new(renderer.context_mut(), resource_manager_client),
 			light_receiver,
+			pending_lights,
 			mesh_receiver,
-			pending_meshes: VecDeque::new(),
+			pending_meshes,
 		};
 
 		renderer.add_pipeline_manager(sm);
@@ -852,7 +889,7 @@ fn resolve_artnet_port_address(reply: &PollReply) -> PortAddress {
 
 pub fn process_default_window_input(
 	input_system: &mut input::InputManager,
-	event: ghi::Events,
+	event: ghi::window::Events,
 ) -> Option<(
 	input::SeatHandle,
 	input::DeviceHandle,

@@ -468,7 +468,7 @@ impl VisibilityShaderScope {
 				Some("texture(textures[nonuniformEXT(material.textures[smplr])], vertex_uv)".into()),
 				None,
 				Some(
-					"set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv)"
+					"set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv, level(0.0))"
 						.into(),
 				),
 				&["textures"],
@@ -488,7 +488,7 @@ impl VisibilityShaderScope {
 					),
 					None,
 					Some(
-						"unit_vector_from_xy(set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv).xy)"
+						"unit_vector_from_xy(set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv, level(0.0)).xy)"
 							.into(),
 					),
 					&["textures", "unit_vector_from_xy"],
@@ -1047,7 +1047,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float3 diffuse = float3(0.0);
 		float3 specular = float3(0.0);
 
-		float ao_factor = set2.ao.sample(set2.ao_sampler, normalized_xy).r;
+		float ao_factor = set2.ao.sample(set2.ao_sampler, normalized_xy, level(0.0)).r;
 
 		normal = normalize(TBN * normal);
 		float3 F0 = mix(float3(0.04), albedo.xyz, metalness);
@@ -1528,9 +1528,9 @@ mod tests {
 			"Expected textured material evaluation MSL source to compile for Metal. Shader: {source}"
 		);
 		assert!(
-			source.contains("set0.textures[material.textures[0u]].sample(set0.textures_sampler[material.textures[0u]], vertex_uv)")
-				&& source.contains("unit_vector_from_xy(set0.textures[material.textures[1u]].sample(set0.textures_sampler[material.textures[1u]], vertex_uv).xy)"),
-			"Expected texture slots to be inlined into MSL sample calls. Shader: {source}"
+			source.contains("set0.textures[material.textures[0u]].sample(set0.textures_sampler[material.textures[0u]], vertex_uv, level(0.0))")
+				&& source.contains("unit_vector_from_xy(set0.textures[material.textures[1u]].sample(set0.textures_sampler[material.textures[1u]], vertex_uv, level(0.0)).xy)"),
+			"Expected texture slots to be inlined into MSL sample calls with explicit LOD. Shader: {source}"
 		);
 	}
 

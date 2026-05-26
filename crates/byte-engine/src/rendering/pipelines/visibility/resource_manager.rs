@@ -1209,6 +1209,7 @@ fn resource_image_format_to_ghi(format: resource_management::types::Formats) -> 
 		resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8UNORM,
 		resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16UNORM,
 		resource_management::types::Formats::BC5 => ghi::Formats::BC5,
+		resource_management::types::Formats::BC5SNORM => ghi::Formats::BC5SNORM,
 		resource_management::types::Formats::BC7 => ghi::Formats::BC7,
 		resource_management::types::Formats::BC7SRGB => ghi::Formats::BC7SRGB,
 	}
@@ -1231,7 +1232,7 @@ fn texture_upload_layout(format: ghi::Formats, extent: Extent) -> Option<(usize,
 	let height = extent.height().max(1) as usize;
 
 	match format {
-		ghi::Formats::BC5 | ghi::Formats::BC7 | ghi::Formats::BC7SRGB => {
+		ghi::Formats::BC5 | ghi::Formats::BC5SNORM | ghi::Formats::BC7 | ghi::Formats::BC7SRGB => {
 			let layout = format.bc_layout(width as u32, height as u32)?;
 			Some((
 				layout.bytes_per_row as usize,

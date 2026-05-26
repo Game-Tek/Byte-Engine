@@ -203,6 +203,7 @@ pub enum Gamma {
 )]
 pub enum Formats {
 	BC5,
+	BC5SNORM,
 	RG8,
 	RGB8,
 	RGBA8,

@@ -254,20 +254,14 @@ impl RecordingDevice<'_> {
 			return Vec::new();
 		};
 
-		let extent = image.extent;
-		let width = extent.width() as usize;
-		let height = extent.height() as usize;
-
 		let mut data = vec![0u8; size];
 		let data_ptr = NonNull::new(data.as_mut_ptr() as *mut std::ffi::c_void)
 			.expect("Texture readback buffer was null. The most likely cause is an empty allocation.");
+		let mut region_size = utils::texture_copy_size(image.format, image.extent);
+		region_size.depth = 1;
 		let region = mtl::MTLRegion {
 			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
-			size: mtl::MTLSize {
-				width: width as _,
-				height: height as _,
-				depth: 1,
-			},
+			size: region_size,
 		};
 
 		unsafe {

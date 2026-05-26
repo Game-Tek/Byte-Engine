@@ -1815,7 +1815,7 @@ impl MSLShaderGenerator {
 		self.emit_visibility_texture_slot(string, slot);
 		string.push_str("]].sample(set0.textures_sampler[material.textures[");
 		self.emit_visibility_texture_slot(string, slot);
-		string.push_str("]], vertex_uv)");
+		string.push_str("]], vertex_uv, level(0.0))");
 		if xy_only {
 			string.push_str(".xy");
 		}

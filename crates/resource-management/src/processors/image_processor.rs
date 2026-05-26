@@ -200,8 +200,10 @@ fn produce_image(
 	// Convert the source data into the uncompressed intermediate that mip generation and BC
 	// compression both expect as input (always RGBA8 for BC targets, otherwise the natural format).
 	let intermediate: Box<[u8]> = match (format, output_format) {
-		(Formats::RGB8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB | Formats::BC5) => rgb8_to_rgba8(*extent, &buffer),
-		(Formats::RGBA8, Formats::BC5) => {
+		(Formats::RGB8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB | Formats::BC5 | Formats::BC5SNORM) => {
+			rgb8_to_rgba8(*extent, &buffer)
+		}
+		(Formats::RGBA8, Formats::BC5 | Formats::BC5SNORM) => {
 			let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
 
 			for y in 0..extent.height() {
@@ -218,7 +220,7 @@ fn produce_image(
 			buf
 		}
 		(Formats::RGBA8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB) => buffer,
-		(Formats::RGB16, Formats::BC5) => {
+		(Formats::RGB16, Formats::BC5 | Formats::BC5SNORM) => {
 			let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
 
 			for y in 0..extent.height() {
@@ -259,7 +261,7 @@ fn produce_image(
 		}
 		(Formats::RGB16, Formats::BC7 | Formats::BC7SRGB) => rgb16_to_rgba8(*extent, &buffer),
 		(Formats::RGBA16, Formats::RGBA16) => buffer,
-		(Formats::RGBA16, Formats::BC5) => rgba16_to_rgba8(*extent, &buffer),
+		(Formats::RGBA16, Formats::BC5 | Formats::BC5SNORM) => rgba16_to_rgba8(*extent, &buffer),
 		(Formats::RGBA16, Formats::BC7 | Formats::BC7SRGB) => rgba16_to_rgba8(*extent, &buffer),
 		_ => {
 			panic!("Unsupported format: {:#?}", format);
@@ -268,7 +270,7 @@ fn produce_image(
 
 	// The format of the `intermediate` buffer — used for mip generation.
 	let intermediate_format = match output_format {
-		Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => Formats::RGBA8,
+		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => Formats::RGBA8,
 		_ => output_format,
 	};
 
@@ -312,30 +314,26 @@ fn produce_image(
 /// uncompressed formats. Accepts an RGBA8 surface for BC targets, or the natural format otherwise.
 fn compress_bc_level(output_format: Formats, extent: Extent, data: &[u8]) -> Box<[u8]> {
 	match output_format {
-		Formats::BC5 => {
-			let (data, width, height) = rgba8_bc_compression_surface(extent, data);
-			let expected_surface_bytes = width as usize * height as usize * 4;
-			assert_eq!(
-				data.len(),
-				expected_surface_bytes,
-				"BC5 padded surface size mismatch. The most likely cause is that the BC compression padding copied an unexpected number of RGBA8 texels. extent={extent:?}, padded_width={width}, padded_height={height}, data_len={}, expected={expected_surface_bytes}",
-				data.len()
-			);
-			let rgba_surface = intel_tex_2::RgSurface {
-				data: &data,
+		Formats::BC5 | Formats::BC5SNORM => {
+			// RgSurface<2> expects tightly packed RG pairs (2 bytes per pixel),
+			// not interleaved RGBA. Convert the RGBA8 intermediate to RG8
+			// before compression to avoid reading B/A as the second pixel's R/G.
+			let (rg_data, width, height) = rga_to_rg_surface(data, extent);
+			let rg_surface = intel_tex_2::RgSurface {
+				data: &rg_data,
 				width,
 				height,
-				stride: width * 4,
+				stride: width * 2,
 			};
 
-			let compressed = intel_tex_2::bc5::compress_blocks(&rgba_surface);
+			let compressed = intel_tex_2::bc5::compress_blocks(&rg_surface);
 			let expected_payload_bytes = width as usize / 4 * (height as usize / 4) * 16;
 			assert_eq!(
-				compressed.len(),
-				expected_payload_bytes,
-				"BC5 payload size mismatch. The most likely cause is that the compressor block count no longer matches the padded image dimensions. extent={extent:?}, padded_width={width}, padded_height={height}, compressed_len={}, expected={expected_payload_bytes}",
-				compressed.len()
-			);
+					compressed.len(),
+					expected_payload_bytes,
+					"BC5 payload size mismatch. The most likely cause is that the compressor block count no longer matches the padded image dimensions. extent={extent:?}, padded_width={width}, padded_height={height}, compressed_len={}, expected={expected_payload_bytes}",
+					compressed.len()
+				);
 			compressed.into()
 		}
 		Formats::BC7 | Formats::BC7SRGB => {
@@ -527,7 +525,7 @@ mod tests {
 
 		assert_eq!(image.format, Formats::BC5);
 		assert_eq!(image.gamma, Gamma::Linear);
-		assert_eq!(image.extent, [4, 4, 1]);
+		assert_eq!(image.extent, [4, 4, 0]);
 		assert_eq!(data.len(), 16);
 	}
 
@@ -581,8 +579,8 @@ mod tests {
 
 	#[test]
 	fn process_image_compresses_rgba16_normal_to_bc5() {
-		// Regression: the (Formats::RGBA16, Formats::BC5) arm was missing, causing a panic for
-		// RGBA16 normal maps. The fix reuses rgba16_to_rgba8 so BC5 gets correct R and G channels.
+		// BC5 compresses RGBA16 normal maps by first converting to RGBA8
+		// and then compressing R and G channels with BC5.
 		let description = ImageDescription {
 			format: Formats::RGBA16,
 			extent: Extent::rectangle(4, 4),
@@ -599,7 +597,7 @@ mod tests {
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
 
 		assert_eq!(image.format, Formats::BC5);
-		assert_eq!(image.extent, [4, 4, 1]);
+		assert_eq!(image.extent, [4, 4, 0]);
 		// 4×4 image → 1×1 block grid → 1 block × 16 bytes
 		assert_eq!(data.len(), 16);
 	}
@@ -841,6 +839,30 @@ fn rgba8_bc_compression_surface(extent: Extent, data: &[u8]) -> (Box<[u8]>, u32,
 			let source_offset = ((source_y * width + source_x) * 4) as usize;
 			let destination_offset = ((y * padded_width + x) * 4) as usize;
 			padded[destination_offset..destination_offset + 4].copy_from_slice(&data[source_offset..source_offset + 4]);
+		}
+	}
+
+	(padded, padded_width, padded_height)
+}
+
+/// Produces a tightly packed RG surface (2 bytes per pixel) from RGBA8 data,
+/// padded to 4×4 block boundaries. RgSurface<2> expects the pixel stride to
+/// be exactly 2 bytes, not interleaved RGBA.
+fn rga_to_rg_surface(data: &[u8], extent: Extent) -> (Box<[u8]>, u32, u32) {
+	let width = extent.width().max(1);
+	let height = extent.height().max(1);
+	let padded_width = width.next_multiple_of(4);
+	let padded_height = height.next_multiple_of(4);
+	let mut padded = vec![0u8; padded_width as usize * padded_height as usize * 2].into_boxed_slice();
+
+	for y in 0..padded_height {
+		let source_y = y.min(height - 1);
+		for x in 0..padded_width {
+			let source_x = x.min(width - 1);
+			let source_offset = ((source_y * width + source_x) * 4) as usize;
+			let destination_offset = ((y * padded_width + x) * 2) as usize;
+			// Copy only R and G channels from the RGBA source
+			padded[destination_offset..destination_offset + 2].copy_from_slice(&data[source_offset..source_offset + 2]);
 		}
 	}
 

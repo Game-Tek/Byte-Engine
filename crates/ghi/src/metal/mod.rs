@@ -726,6 +726,7 @@ mod utils {
 			Formats::U32 => mtl::MTLPixelFormat::R32Uint,
 
 			Formats::BC5 => mtl::MTLPixelFormat::BC5_RGUnorm,
+			Formats::BC5SNORM => mtl::MTLPixelFormat::BC5_RGSnorm,
 			Formats::BC7 => mtl::MTLPixelFormat::BC7_RGBAUnorm,
 			Formats::BC7SRGB => mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB,
 		}
@@ -897,17 +898,31 @@ mod utils {
 		}
 
 		#[test]
-		fn bc_copy_size_uses_texel_extent_not_padded_block_extent() {
+		fn bc_copy_size_rounds_up_to_block_aligned_dimensions() {
+			// BC7 uses 4x4 blocks; the source size must be block-aligned.
 			let size = texture_copy_size(Formats::BC7, Extent::rectangle(5, 7));
 
-			assert_eq!(size.width, 5);
-			assert_eq!(size.height, 7);
+			assert_eq!(size.width, 8);
+			assert_eq!(size.height, 8);
 			assert_eq!(size.depth, 1);
+
+			// Block-aligned dimensions pass through unchanged.
+			let aligned = texture_copy_size(Formats::BC7, Extent::rectangle(8, 4));
+			assert_eq!(aligned.width, 8);
+			assert_eq!(aligned.height, 4);
+			assert_eq!(aligned.depth, 1);
+
+			// Non-BC formats use the raw texel extent.
+			let uncompressed = texture_copy_size(Formats::RGBA8UNORM, Extent::rectangle(5, 7));
+			assert_eq!(uncompressed.width, 5);
+			assert_eq!(uncompressed.height, 7);
+			assert_eq!(uncompressed.depth, 1);
 		}
 
 		#[test]
 		fn bc_format_mapping_preserves_linear_and_srgb_variants() {
 			assert_eq!(to_pixel_format(Formats::BC5), mtl::MTLPixelFormat::BC5_RGUnorm);
+			assert_eq!(to_pixel_format(Formats::BC5SNORM), mtl::MTLPixelFormat::BC5_RGSnorm);
 			assert_eq!(to_pixel_format(Formats::BC7), mtl::MTLPixelFormat::BC7_RGBAUnorm);
 			assert_eq!(to_pixel_format(Formats::BC7SRGB), mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB);
 		}

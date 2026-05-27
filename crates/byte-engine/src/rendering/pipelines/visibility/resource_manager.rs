@@ -867,7 +867,7 @@ struct QueuedMaterialPipeline {
 pub(crate) struct MaterialPipelineConfig {
 	descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-	pipeline_factory: Option<ghi::implementation::Device>,
+	pipeline_factory: Option<ghi::implementation::Factory>,
 }
 
 impl MaterialPipelineConfig {
@@ -875,7 +875,7 @@ impl MaterialPipelineConfig {
 	pub(crate) fn new(
 		descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 		push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-		pipeline_factory: Option<ghi::implementation::Device>,
+		pipeline_factory: Option<ghi::implementation::Factory>,
 	) -> Self {
 		Self {
 			descriptor_set_templates,
@@ -1011,10 +1011,18 @@ impl VisibilityPipelineResourceManager {
 					);
 				}
 			}
-			Ok(Err(())) | Err(_) => {
+			Ok(Err(reason)) => {
 				self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
 				log::error!(
-					"Pipeline compilation failed for {}. The most likely cause is that shader creation or pipeline specialization failed on the resource-manager thread.",
+					"Pipeline compilation failed for {}: {}. The most likely cause is that shader creation or pipeline specialization failed on the resource-manager thread.",
+					key,
+					reason
+				);
+			}
+			Err(_) => {
+				self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
+				log::error!(
+					"Pipeline compilation panicked for {}. The most likely cause is that shader creation or pipeline specialization failed on the resource-manager thread.",
 					key
 				);
 			}

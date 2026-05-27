@@ -226,8 +226,6 @@ impl World {
 			_ => 0f32,
 		};
 
-		let inertia_tensor = body.inertia_tensor();
-
 		let index = self.add_body(PhysicsBody {
 			body_type,
 			position: body.position(),
@@ -239,7 +237,6 @@ impl World {
 			inv_mass,
 			center_of_mass: body.center_of_mass(),
 			elasticity: body.elasticity(),
-			inertia_tensor,
 			handle,
 			friction: body.friction(),
 		});
@@ -311,7 +308,6 @@ mod tests {
 			inv_mass: 0.0,
 			center_of_mass: Vector3::zero(),
 			elasticity: 0.0,
-			inertia_tensor: Matrix3::identity(),
 			friction: 0.0,
 			handle: test_handle(),
 		}
@@ -329,7 +325,6 @@ mod tests {
 			inv_mass: 1.0,
 			center_of_mass: Vector3::zero(),
 			elasticity: 0.0,
-			inertia_tensor: Matrix3::identity(),
 			friction: 0.0,
 			handle: test_handle(),
 		}

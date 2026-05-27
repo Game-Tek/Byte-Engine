@@ -22,6 +22,7 @@ using namespace metal;
 struct VertexOutput {
 	float4 position [[position]];
 	uint out_instance_index [[flat]] [[user(locn0)]];
+	float3 out_local_position [[user(locn1)]];
 };
 
 static float4 debug_color(uint index) {
@@ -39,7 +40,13 @@ static float4 debug_color(uint index) {
 }
 
 fragment float4 besl_main(VertexOutput in [[stage_in]]) {
-	return debug_color(in.out_instance_index);
+	// Build the grid from object-space position so it rotates with the rendered mesh.
+	float3 local_grid = abs(fract(in.out_local_position * 4.0 + 0.5) - 0.5);
+	float grid_distance = min(local_grid.x, min(local_grid.y, local_grid.z));
+	float grid_line = 1.0 - smoothstep(0.015, 0.035, grid_distance);
+	float3 base_color = debug_color(in.out_instance_index).rgb;
+	float3 grid_color = mix(base_color, float3(1.0), grid_line * 0.45);
+	return float4(grid_color, 1.0);
 }
 "#;
 
@@ -88,6 +95,7 @@ impl PipelineManager {
 
 			gl_Position = camera.view_projection * instance.transform * vec4(in_position, 1.0);
 			out_instance_index = instance_index;
+			out_local_position = in_position;
 			"#
 			.trim();
 			let main_msl = r#"
@@ -97,6 +105,7 @@ impl PipelineManager {
 
 			out.position = camera.view_projection * instance.transform * float4(in.in_position, 1.0);
 			out.out_instance_index = instance_index;
+			out.out_local_position = in.in_position;
 			return out;
 			"#
 			.trim();
@@ -105,7 +114,14 @@ impl PipelineManager {
 				Some(main_code.into()),
 				None,
 				Some(main_msl.into()),
-				&["cameras", "instances", "push_constant", "in_position", "out_instance_index"],
+				&[
+					"cameras",
+					"instances",
+					"push_constant",
+					"in_position",
+					"out_instance_index",
+					"out_local_position",
+				],
 				&[],
 			)]);
 
@@ -135,6 +151,7 @@ impl PipelineManager {
 
 			let position_input = ParserNode::input("in_position", "vec3f", 0);
 			let instance_index_output = ParserNode::output("out_instance_index", "u32", 0);
+			let local_position_output = ParserNode::output("out_local_position", "vec3f", 1);
 
 			let shader = besl::ParserNode::scope(
 				"Shader",
@@ -145,6 +162,7 @@ impl PipelineManager {
 					instances_binding,
 					position_input,
 					instance_index_output,
+					local_position_output,
 					push_constant,
 					main,
 				],
@@ -170,6 +188,10 @@ impl PipelineManager {
 		let (generated_fragment_shader, generated_fragment_msl) = {
 			let main_code = r#"
 			uint instance_index = in_instance_index;
+			// Build the grid from object-space position so it rotates with the rendered mesh.
+			vec3 local_grid = abs(fract(in_local_position * 4.0 + 0.5) - 0.5);
+			float grid_distance = min(local_grid.x, min(local_grid.y, local_grid.z));
+			float grid_line = 1.0 - smoothstep(0.015, 0.035, grid_distance);
 			vec3 palette[8] = vec3[](
 				vec3(0.90, 0.20, 0.20),
 				vec3(0.20, 0.70, 0.95),
@@ -180,7 +202,9 @@ impl PipelineManager {
 				vec3(0.25, 0.90, 0.75),
 				vec3(0.85, 0.85, 0.90)
 			);
-			out_albedo = vec4(palette[instance_index % 8], 1.0);
+			vec3 base_color = palette[instance_index % 8];
+			vec3 grid_color = mix(base_color, vec3(1.0), grid_line * 0.45);
+			out_albedo = vec4(grid_color, 1.0);
 			"#
 			.trim();
 
@@ -188,16 +212,20 @@ impl PipelineManager {
 				Some(main_code.into()),
 				None,
 				Some(format!("// besl-full-source\n{SIMPLE_FRAGMENT_MSL}").into()),
-				&["in_instance_index", "out_albedo"],
+				&["in_instance_index", "in_local_position", "out_albedo"],
 				&[],
 			)]);
 
 			let mut root = besl::ParserNode::root();
 
 			let instance_index_input = ParserNode::input("in_instance_index", "u32", 0);
+			let local_position_input = ParserNode::input("in_local_position", "vec3f", 1);
 			let albedo_output = ParserNode::output("out_albedo", "vec4f", 0);
 
-			let shader = besl::ParserNode::scope("Shader", vec![instance_index_input, albedo_output, main]);
+			let shader = besl::ParserNode::scope(
+				"Shader",
+				vec![instance_index_input, local_position_input, albedo_output, main],
+			);
 
 			root.add(vec![shader]);
 

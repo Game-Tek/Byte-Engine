@@ -31,9 +31,9 @@ pub struct PhysicsBody {
 	pub(crate) angular_velocity: Vector3,
 	/// Reciprocal mass of the body.
 	pub(crate) inv_mass: f32,
+	/// Model space center of mass.
 	pub(crate) center_of_mass: Vector3,
 	pub(crate) elasticity: f32,
-	pub(crate) inertia_tensor: Matrix3,
 	pub(crate) friction: f32,
 	pub(crate) handle: Handle,
 }
@@ -43,10 +43,13 @@ impl PhysicsBody {
 		if self.inv_mass == 0f32 {
 			return;
 		}
+
 		self.apply_linear_impulse(impulse);
+
 		let world_space_center_of_mass = self.world_space_center_of_mass();
 		let r = point - world_space_center_of_mass;
 		let dl = cross(r, impulse);
+
 		self.apply_angular_impulse(dl);
 	}
 
@@ -54,6 +57,7 @@ impl PhysicsBody {
 		if self.inv_mass == 0f32 {
 			return;
 		}
+
 		self.linear_velocity += impulse * self.inv_mass;
 	}
 
@@ -61,15 +65,23 @@ impl PhysicsBody {
 		if self.inv_mass == 0f32 {
 			return;
 		}
+
 		self.angular_velocity += self.inverse_world_space_inertia_tensor() * impulse;
+
+		// TODO: clamp angular velocity
 	}
 
 	pub fn world_space_center_of_mass(&self) -> Vector3 {
 		self.position + self.orientation.get_matrix() * self.center_of_mass
 	}
 
+	pub fn inverse_body_space_inertia_tensor(&self) -> Matrix3 {
+		let inertia_tensor = self.collision_shape.inertia_tensor();
+		inertia_tensor.inverse() * Matrix3::from_scale(Vector3::from(self.inv_mass))
+	}
+
 	pub fn inverse_world_space_inertia_tensor(&self) -> Matrix3 {
-		let inertia_tensor = self.inertia_tensor;
+		let inertia_tensor = self.collision_shape.inertia_tensor();
 		let inv_mass = self.inv_mass;
 		let inverse =
 			inertia_tensor.inverse() * Matrix3::from((inv_mass, 0f32, 0f32, 0f32, inv_mass, 0f32, 0f32, 0f32, inv_mass));
@@ -87,14 +99,20 @@ impl PhysicsBody {
 		let delta = self.position - world_space_center_of_mass;
 
 		let orientation = self.orientation.get_matrix();
-		let inertia_tensor = orientation * self.inertia_tensor * orientation.transpose();
+		let inertia_tensor = orientation * self.collision_shape.inertia_tensor() * orientation.transpose();
 		let alpha = inertia_tensor.inverse() * (cross(self.angular_velocity, inertia_tensor * self.angular_velocity));
 
 		self.angular_velocity += alpha * dt;
 
-		// Apply rotation
-		let d = self.angular_velocity * dt;
-		let dq = Quaternion::from_axis_angle(d, length(d));
+		// Apply rotation from angular velocity. The axis-angle constructor expects
+		// a unit axis, while the angular step length is the rotation angle.
+		let angular_step = self.angular_velocity * dt;
+		let angle = length(angular_step);
+		let dq = if angle > 0.0 {
+			Quaternion::from_axis_angle(angular_step / angle, angle)
+		} else {
+			Quaternion::identity()
+		};
 
 		self.orientation = Quaternion::normalize(dq * self.orientation);
 
@@ -123,5 +141,42 @@ pub fn intersect(a: &PhysicsBody, b: &PhysicsBody) -> Option<Intersection> {
 		(Shapes::Cube { size: sa }, Shapes::Sphere { radius: rb }) => {
 			sphere_vs_cube(&Sphere::new(b.position, rb), &Cube::new(a.position, sa)).map(|intersection| intersection.swap())
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::time::Duration;
+
+	use super::*;
+
+	fn test_handle() -> Handle {
+		crate::core::factory::Factory::<()>::new().create(())
+	}
+
+	#[test]
+	fn update_applies_full_angular_velocity_step_to_orientation() {
+		let mut body = PhysicsBody {
+			body_type: BodyTypes::Dynamic,
+			collision_shape: Shapes::Sphere { radius: 1.0 },
+			position: Vector3::zero(),
+			orientation: Quaternion::identity(),
+			acceleration: Vector3::zero(),
+			linear_velocity: Vector3::zero(),
+			angular_velocity: Vector3::new(0.0, 1.0, 0.0),
+			inv_mass: 1.0,
+			center_of_mass: Vector3::zero(),
+			elasticity: 0.0,
+			friction: 1.0,
+			handle: test_handle(),
+		};
+
+		body.update(Time::new(Duration::from_secs(0), Duration::from_secs(1)));
+
+		let expected = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), 1.0);
+		let rotated = body.orientation * Vector3::new(1.0, 0.0, 0.0);
+		let expected_rotated = expected * Vector3::new(1.0, 0.0, 0.0);
+
+		assert!(magnitude(rotated - expected_rotated) < 1e-5);
 	}
 }

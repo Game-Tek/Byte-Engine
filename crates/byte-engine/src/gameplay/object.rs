@@ -34,6 +34,7 @@ pub struct Object {
 	velocity: Vector3,
 	body_type: BodyTypes,
 	collider: Shapes,
+	friction: f32,
 }
 
 impl Object {
@@ -44,6 +45,7 @@ impl Object {
 			velocity,
 			body_type,
 			collider: Shapes::Sphere { radius: 1.0 },
+			friction: 0.5,
 		}
 	}
 
@@ -54,6 +56,7 @@ impl Object {
 			velocity: Vector3::default(),
 			body_type: BodyTypes::Dynamic,
 			collider: Shapes::Sphere { radius },
+			friction: 0.5,
 		}
 	}
 
@@ -64,6 +67,7 @@ impl Object {
 			velocity: Vector3::default(),
 			body_type: BodyTypes::Dynamic,
 			collider: Shapes::Cube { size },
+			friction: 0.5,
 		}
 	}
 
@@ -74,6 +78,7 @@ impl Object {
 			velocity: Vector3::default(),
 			body_type: BodyTypes::Dynamic,
 			collider: Shapes::Sphere { radius: 1.0 },
+			friction: 0.5,
 		}
 	}
 
@@ -84,6 +89,7 @@ impl Object {
 			velocity: Vector3::default(),
 			body_type: BodyTypes::Dynamic,
 			collider: Shapes::Sphere { radius: 1.0 },
+			friction: 0.5,
 		}
 	}
 
@@ -112,6 +118,10 @@ impl Transformable for Object {
 impl Collider for Object {
 	fn shape(&self) -> Shapes {
 		self.collider
+	}
+
+	fn friction(&self) -> f32 {
+		self.friction
 	}
 }
 

@@ -294,7 +294,7 @@ void main() {{
 		float3 apply_lut(float3 color, const constant LutSet0& set0) {{
 			float3 normalized = clamp((color - LUT_DOMAIN_MIN) * LUT_DOMAIN_SCALE, float3(0.0), float3(1.0));
 			float3 lut_uv = normalized * LUT_TEXEL_SCALE + LUT_TEXEL_OFFSET;
-			return set0.lut_texture.sample(set0.lut_texture_sampler, lut_uv).rgb;
+			return set0.lut_texture.sample(set0.lut_texture_sampler, lut_uv, level(0.0)).rgb;
 		}}
 
 		kernel void lut_apply(
@@ -306,7 +306,7 @@ void main() {{
 			}}
 
 			float2 uv = (float2(gid) + 0.5) / float2(set0.result.get_width(), set0.result.get_height());
-			float4 source_color = set0.source.sample(set0.source_sampler, uv);
+			float4 source_color = set0.source.sample(set0.source_sampler, uv, level(0.0));
 			float3 result_color = apply_lut(source_color.rgb, set0);
 			set0.result.write(float4(result_color, source_color.a), gid);
 		}}
@@ -406,7 +406,7 @@ mod tests {
 
 		let (glsl_source, _msl_source) = create_lut_shader_sources(&lut);
 
-		resource_management::glsl::compile(&glsl_source, "LUT Render Pass Test").unwrap();
+		resource_management::shader::glsl_compile::compile(&glsl_source, "LUT Render Pass Test").unwrap();
 	}
 
 	#[test]

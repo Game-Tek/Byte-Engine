@@ -26,22 +26,11 @@ pub mod types;
 
 pub mod resources;
 
-pub mod shader_generator;
-pub mod shader_graph;
+pub mod shader;
 
 pub mod pbr;
 
 pub mod processors;
-
-pub mod glsl_shader_generator;
-pub mod hlsl_shader_generator;
-pub mod msl_shader_compiler;
-pub mod msl_shader_generator;
-pub mod platform_shader_generator;
-pub mod program_evaluation;
-pub mod spirv_shader_generator;
-
-pub mod glsl;
 
 pub mod inspect;
 

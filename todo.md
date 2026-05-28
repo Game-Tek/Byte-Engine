@@ -59,3 +59,15 @@
 - Deduplicate Metal descriptor encoding paths by merging encode_descriptor_binding and encode_binding in crates/ghi/src/metal/context.rs.
 - Avoid cloning Metal pipeline state during descriptor set binding in crates/ghi/src/metal/command_buffer.rs.
 - Simplify Metal frame-chain handle deduplication if frame counts grow beyond the current small fixed count in crates/ghi/src/metal/context.rs.
+
+# BESL
+- Add explicit BESL syntax for interpolation modifiers on stage IO; MSL now infers position, depth, color, user attributes, front-facing, vertex ID, and instance ID semantics from conventional IO names.
+- Replace visibility-pass-specific texture sampling lowering with a generic BESL texture and sampler resource model for separate textures, samplers, combined samplers, array textures, integer textures, depth textures, and sample level/bias/gradient operations.
+- Complete MSL lowering for all declared BESL built-in intrinsics, including `fetch_u32` and `image_atomic_or`, and either add or remove the mismatched `image_load_u32` intrinsic.
+- Confirm and implement Metal push-constant and argument-buffer mapping without hardcoded backend conventions.
+- Add BESL compute built-ins for 3D global thread IDs, local thread IDs, threadgroup size, grid size, threadgroup memory, and threadgroup barriers.
+- Expand BESL mesh-stage abstractions to cover vertex attributes, primitive attributes, topology, and per-vertex/per-primitive output data without backend-shaped raw snippets.
+- Add BESL address-space and memory/storage-class semantics for Metal `device`, `constant`, `thread`, and `threadgroup` data.
+- Add missing shader control-flow and expression features such as `else`, `while`, `break`, `discard`, unary operators, ternary/select expressions, and a boolean type.
+- Expand BESL built-in types for bools, signed integer vectors, half/f16 vectors, additional matrix shapes, typed texture resources, and less ad-hoc array support.
+- Represent MSL-related compile options in BESL or shader metadata, including threadgroup size, matrix layout, and function constants, instead of comments or limited backend conventions.

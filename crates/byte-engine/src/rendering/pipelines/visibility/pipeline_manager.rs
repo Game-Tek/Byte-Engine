@@ -192,14 +192,14 @@ impl VisibilityPipelineManager {
 			loaded_textures: HashSet::new(),
 			loaded_pipelines: HashMap::new(),
 			scene: VisibilitySceneManager {
-				render_entities: Vec::new(),
+				render_entities: StableVec::new(),
 				views_data_buffer_handle,
 				descriptor_set,
 				textures_binding,
 				meshes_data_buffer,
 				material_evaluation_descriptor_set,
 				light_data_buffer,
-				lights: Vec::new(),
+				lights: StableVec::new(),
 				render_info: RenderInfo {
 					instances: Vec::new(),
 					active_instances: Vec::new(),
@@ -211,22 +211,52 @@ impl VisibilityPipelineManager {
 		}
 	}
 
-	pub(crate) fn create_light(&mut self, into_data: Lights) {
-		self.scene.lights.push(into_data);
+	pub(crate) fn create_light(&mut self, handle: Handle, light: Lights) {
+		self.scene.lights.push((handle, light));
+	}
+
+	pub(crate) fn remove_light(&mut self, handle: Handle) {
+		let Some((index, _)) = self
+			.scene
+			.lights
+			.indexed_iter()
+			.find(|(_, (light_handle, _))| *light_handle == handle)
+		else {
+			return;
+		};
+
+		self.scene.lights.remove(index);
 	}
 
 	/// Requests the renderable mesh resources and keeps the scene instance pending until those resources are ready.
-	pub(crate) fn request_mesh(&mut self, renderable: EntityHandle<dyn RenderableMesh>) {
+	pub(crate) fn request_mesh(&mut self, handle: Handle, renderable: EntityHandle<dyn RenderableMesh>) {
 		let source = renderable.get_mesh().clone();
 		let mesh_key = VisibilityMeshKey::from_source(&source);
 		if self.requested_meshes.insert(mesh_key.clone()) {
 			self.resource_manager.request_mesh(mesh_key.clone(), source);
 		}
 		self.pending_renderables.push(PendingRenderableInstance {
+			handle,
 			entity: renderable,
 			mesh_key: mesh_key.clone(),
 		});
 		self.resolve_pending_renderables_for_mesh(&mesh_key);
+	}
+
+	pub(crate) fn remove_mesh(&mut self, handle: Handle) {
+		self.pending_renderables
+			.retain(|pending_renderable| pending_renderable.handle != handle);
+
+		let render_entity_indices = self
+			.scene
+			.render_entities
+			.indexed_iter()
+			.filter_map(|(index, render_entity)| (render_entity.handle == handle).then_some(index))
+			.collect::<Vec<_>>();
+
+		for index in render_entity_indices {
+			self.scene.render_entities.remove(index);
+		}
 	}
 
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
@@ -380,7 +410,7 @@ impl VisibilityPipelineManager {
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_data_buffer);
 
 		let mut active_index = 0;
-		for render_entity in render_entities {
+		for render_entity in render_entities.iter() {
 			let material_ready = loaded_materials
 				.get(&render_entity.shader_mesh.material_index)
 				.and_then(|material| material.pipeline)
@@ -422,6 +452,7 @@ impl VisibilityPipelineManager {
 			let model = pending_renderable.entity.transform().get_matrix().into();
 			for primitive in &mesh.primitives {
 				self.scene.render_entities.push(RenderEntity {
+					handle: pending_renderable.handle,
 					entity: pending_renderable.entity.clone(),
 					shader_mesh: ShaderMesh {
 						model,
@@ -464,10 +495,15 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.adopt_resource_completions(frame);
 		self.rebuild_active_instances(frame);
 
-		let shadow_light = self.scene.lights.iter().enumerate().find_map(|(index, light)| match light {
-			Lights::Direction(light) => Some((index, light.direction)),
-			Lights::Point(_) => None,
-		});
+		let shadow_light = self
+			.scene
+			.lights
+			.iter()
+			.enumerate()
+			.find_map(|(index, (_, light))| match light {
+				Lights::Direction(light) => Some((index, light.direction)),
+				Lights::Point(_) => None,
+			});
 		let shadow_light_index = if sinks.is_empty() == false {
 			shadow_light.map(|(index, _)| index)
 		} else {
@@ -826,12 +862,14 @@ struct PendingMeshData {
 
 /// The `RenderEntity` struct preserves the mesh readiness dependency for a renderable instance.
 pub struct RenderEntity {
+	handle: Handle,
 	entity: EntityHandle<dyn RenderableMesh>,
 	shader_mesh: ShaderMesh,
 }
 
 /// The `PendingRenderableInstance` struct associates a scene renderable with the mesh resource it is waiting for.
 struct PendingRenderableInstance {
+	handle: Handle,
 	entity: EntityHandle<dyn RenderableMesh>,
 	mesh_key: VisibilityMeshKey,
 }
@@ -971,22 +1009,22 @@ use ghi::{
 use log::{error, warn};
 use math::{mat::MatInverse as _, ShaderMatrix4, ShaderMatrix4x3, Vector3};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;
-use resource_management::glsl_shader_generator::GLSLShaderGenerator;
-use resource_management::msl_shader_generator::MSLShaderGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;
 use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
-use resource_management::shader_generator::{ShaderGenerationSettings, ShaderGenerator};
-use resource_management::spirv_shader_generator::SPIRVShaderGenerator;
+use resource_management::shader::besl::backends::glsl::GLSLShaderGenerator;
+use resource_management::shader::besl::backends::msl::MSLShaderGenerator;
+use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
+use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
-use resource_management::{glsl, Reference};
+use resource_management::Reference;
 use utils::hash::{HashMap, HashMapExt};
 use utils::json::{self, object};
 use utils::sync::{Rc, RwLock};
-use utils::{Box, Extent, RGBA};
+use utils::{Box, Extent, StableVec, RGBA};
 
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
-use crate::core::{Entity, EntityHandle};
+use crate::core::{factory::Handle, Entity, EntityHandle};
 use crate::ghi;
 use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonShaderScope};
 use crate::rendering::lights::{DirectionalLight, Light, Lights, PointLight};

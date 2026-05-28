@@ -1,92 +1,31 @@
-use std::ops::Deref;
-
-use math::{
-	collision::{cube_vs_cube, sphere_vs_sphere, Intersection},
-	cross,
-	cube::Cube,
-	dot, length, magnitude, magnitude_squared,
-	mat::{MatInverse as _, MatTranspose as _},
-	normalize,
-	sphere::Sphere,
-	Base, Matrix3, Quaternion, Vector3,
-};
-use utils::hash::{HashMap, HashMapExt};
-
-use crate::{
-	application::Time,
-	core::{
-		channel::Channel,
-		factory::{CreateMessage, Handle},
-		listener::{DefaultListener, Listener},
-		Entity, EntityHandle,
-	},
-	gameplay::transform::{Transform, TransformationUpdate},
-	physics::{
-		body::{Body, BodyTypes},
-		collider::{Collider, Shapes},
-		dynabit::{
-			body::{intersect, PhysicsBody},
-			contact::{Contact, Side},
-		},
-	},
-};
-
-/// Detects intersections and builds contact data for each unique body pair.
-fn detect_collisions_for_bodies(bodies: &[PhysicsBody]) -> Vec<Contact> {
-	let mut contacts = Vec::new();
-
-	for i in 0..bodies.len() {
-		for j in (i + 1)..bodies.len() {
-			let a = &bodies[i];
-			let b = &bodies[j];
-
-			let Some(intersection) = intersect(a, b) else {
-				continue;
-			};
-
-			contacts.push(Contact {
-				normal: intersection.normal,
-				depth: intersection.depth,
-				a: Side {
-					object: i,
-					point: intersection.point_on_a,
-				},
-				b: Side {
-					object: j,
-					point: intersection.point_on_b,
-				},
-			});
-		}
-	}
-
-	contacts
-}
-
 #[derive(Clone)]
 pub struct World {
-	bodies: Vec<PhysicsBody>,
+	bodies: StableVec<PhysicsBody>,
 	gravity: Vector3,
 
 	body_listener: DefaultListener<CreateMessage<EntityHandle<dyn Body>>>,
+	body_delete_listener: DefaultListener<DeleteMessage>,
 
 	handles_to_bodies: HashMap<Handle, usize>,
 }
 
 impl World {
-	pub fn new(body_listener: DefaultListener<CreateMessage<EntityHandle<dyn Body>>>) -> Self {
+	pub fn new(
+		body_listener: DefaultListener<CreateMessage<EntityHandle<dyn Body>>>,
+		body_delete_listener: DefaultListener<DeleteMessage>,
+	) -> Self {
 		Self {
-			bodies: Vec::new(),
+			bodies: StableVec::new(),
 			gravity: Vector3::new(0f32, -16f32, 0f32),
 			body_listener,
+			body_delete_listener,
 
 			handles_to_bodies: HashMap::with_capacity(1024),
 		}
 	}
 
 	fn add_body(&mut self, body: PhysicsBody) -> usize {
-		let index = self.bodies.len();
-		self.bodies.push(body);
-		index
+		self.bodies.push(body)
 	}
 
 	pub fn apply_impulse(&mut self, entity: EntityHandle<dyn Body>, impulse: Vector3) {
@@ -186,8 +125,12 @@ impl World {
 		let a_index = contact.a.object;
 		let b_index = contact.b.object;
 
-		let a = &self.bodies[a_index];
-		let b = &self.bodies[b_index];
+		let Some(a) = self.bodies.get(a_index).cloned() else {
+			return;
+		};
+		let Some(b) = self.bodies.get(b_index).cloned() else {
+			return;
+		};
 
 		let a_point = contact.a.point;
 		let b_point = contact.b.point;
@@ -233,11 +176,13 @@ impl World {
 		let impulse = (1.0 + elasticity) * dot(vab, n) / (a_inv_mass + b_inv_mass + angular_factor);
 		let impulse_vector = impulse * n;
 
-		let a = &mut self.bodies[a_index];
-		a.apply_impulse(a_point, -impulse_vector);
+		if let Some(a) = self.bodies.get_mut(a_index) {
+			a.apply_impulse(a_point, -impulse_vector);
+		}
 
-		let b = &mut self.bodies[b_index];
-		b.apply_impulse(b_point, impulse_vector);
+		if let Some(b) = self.bodies.get_mut(b_index) {
+			b.apply_impulse(b_point, impulse_vector);
+		}
 
 		let vel_normal = n * dot(vab, n);
 		let vel_tangent = vab - vel_normal;
@@ -251,22 +196,26 @@ impl World {
 		let reduced_mass = 1.0 / (a_inv_mass + b_inv_mass + inv_inertia);
 		let impulse_friction = vel_tangent * reduced_mass * friction;
 
-		let a = &mut self.bodies[a_index];
-		a.apply_impulse(a_point, -impulse_friction);
+		if let Some(a) = self.bodies.get_mut(a_index) {
+			a.apply_impulse(a_point, -impulse_friction);
+		}
 
-		let b = &mut self.bodies[b_index];
-		b.apply_impulse(b_point, impulse_friction);
+		if let Some(b) = self.bodies.get_mut(b_index) {
+			b.apply_impulse(b_point, impulse_friction);
+		}
 
 		let separation = n * contact.depth;
 		//let separation = b_point - a_point; // Book suggests this way but it causes orbiting around the world center
 		let t_a = a_inv_mass / inv_mass_sum;
 		let t_b = b_inv_mass / inv_mass_sum;
 
-		let a = &mut self.bodies[a_index];
-		a.position -= separation * t_a;
+		if let Some(a) = self.bodies.get_mut(a_index) {
+			a.position -= separation * t_a;
+		}
 
-		let b = &mut self.bodies[b_index];
-		b.position += separation * t_b;
+		if let Some(b) = self.bodies.get_mut(b_index) {
+			b.position += separation * t_b;
+		}
 	}
 
 	fn create_body(&mut self, handle: Handle, body: &dyn Body) {
@@ -277,9 +226,7 @@ impl World {
 			_ => 0f32,
 		};
 
-		let inertia_tensor = body.inertia_tensor();
-
-		self.add_body(PhysicsBody {
+		let index = self.add_body(PhysicsBody {
 			body_type,
 			position: body.position(),
 			orientation: Quaternion::identity(),
@@ -290,16 +237,56 @@ impl World {
 			inv_mass,
 			center_of_mass: body.center_of_mass(),
 			elasticity: body.elasticity(),
-			inertia_tensor,
 			handle,
 			friction: body.friction(),
 		});
+		self.handles_to_bodies.insert(handle, index);
 	}
+
+	pub fn process_pending_deletions(&mut self) {
+		while let Some(message) = self.body_delete_listener.read() {
+			self.remove_body(message.into_handle());
+		}
+	}
+
+	pub fn remove_body(&mut self, handle: Handle) -> Option<PhysicsBody> {
+		let index = self.handles_to_bodies.remove(&handle)?;
+		self.bodies.remove(index)
+	}
+}
+
+/// Detects intersections and builds contact data for each unique body pair.
+fn detect_collisions_for_bodies(bodies: &StableVec<PhysicsBody>) -> Vec<Contact> {
+	let mut contacts = Vec::new();
+
+	for (i, a) in bodies.indexed_iter() {
+		for (j, b) in bodies.indexed_iter().filter(|(j, _)| *j > i) {
+			let Some(intersection) = intersect(a, b) else {
+				continue;
+			};
+
+			contacts.push(Contact {
+				normal: intersection.normal,
+				depth: intersection.depth,
+				a: Side {
+					object: i,
+					point: intersection.point_on_a,
+				},
+				b: Side {
+					object: j,
+					point: intersection.point_on_b,
+				},
+			});
+		}
+	}
+
+	contacts
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::core::channel::DefaultChannel;
 	use crate::core::factory::Factory;
 
 	fn test_handle() -> Handle {
@@ -321,7 +308,6 @@ mod tests {
 			inv_mass: 0.0,
 			center_of_mass: Vector3::zero(),
 			elasticity: 0.0,
-			inertia_tensor: Matrix3::identity(),
 			friction: 0.0,
 			handle: test_handle(),
 		}
@@ -339,7 +325,6 @@ mod tests {
 			inv_mass: 1.0,
 			center_of_mass: Vector3::zero(),
 			elasticity: 0.0,
-			inertia_tensor: Matrix3::identity(),
 			friction: 0.0,
 			handle: test_handle(),
 		}
@@ -348,8 +333,10 @@ mod tests {
 	fn resolve_penetration_depth(mut bodies: Vec<PhysicsBody>) -> f32 {
 		let body_factory = Factory::<EntityHandle<dyn Body>>::new();
 		let listener = body_factory.listener();
-		let mut world = World::new(listener);
-		world.bodies = std::mem::take(&mut bodies);
+		let delete_channel = DefaultChannel::new();
+		let delete_listener = delete_channel.listener();
+		let mut world = World::new(listener, delete_listener);
+		world.bodies = std::mem::take(&mut bodies).into_iter().collect();
 
 		let contacts = detect_collisions_for_bodies(&world.bodies);
 		assert_eq!(contacts.len(), 1);
@@ -360,7 +347,8 @@ mod tests {
 
 	#[test]
 	fn detects_each_pair_once() {
-		let contacts = detect_collisions_for_bodies(&[make_ground_body(), make_sphere_body()]);
+		let bodies = [make_ground_body(), make_sphere_body()].into_iter().collect();
+		let contacts = detect_collisions_for_bodies(&bodies);
 
 		assert_eq!(contacts.len(), 1);
 		assert_eq!((contacts[0].a.object, contacts[0].b.object), (0, 1));
@@ -375,3 +363,40 @@ mod tests {
 		assert!(depth_when_sphere_first <= 1e-4);
 	}
 }
+
+use std::ops::Deref;
+
+use math::{
+	collision::{cube_vs_cube, sphere_vs_sphere, Intersection},
+	cross,
+	cube::Cube,
+	dot, length, magnitude, magnitude_squared,
+	mat::{MatInverse as _, MatTranspose as _},
+	normalize,
+	sphere::Sphere,
+	Base, Matrix3, Quaternion, Vector3,
+};
+use utils::{
+	hash::{HashMap, HashMapExt},
+	StableVec,
+};
+
+use crate::{
+	application::Time,
+	core::{
+		channel::Channel,
+		factory::{CreateMessage, Handle},
+		listener::{DefaultListener, Listener},
+		message::DeleteMessage,
+		Entity, EntityHandle,
+	},
+	gameplay::transform::{Transform, TransformationUpdate},
+	physics::{
+		body::{Body, BodyTypes},
+		collider::{Collider, Shapes},
+		dynabit::{
+			body::{intersect, PhysicsBody},
+			contact::{Contact, Side},
+		},
+	},
+};

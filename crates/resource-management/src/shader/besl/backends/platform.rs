@@ -1,7 +1,6 @@
-use crate::{
-	glsl_shader_generator::GLSLShaderGenerator,
-	msl_shader_generator::MSLShaderGenerator,
-	shader_generator::{ShaderGenerationSettings, ShaderGenerator},
+use crate::shader::{
+	besl::backends::{glsl::GLSLShaderGenerator, msl::MSLShaderGenerator},
+	generator::{ShaderGenerationSettings, ShaderGenerator},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,15 +59,15 @@ impl GeneratedPlatformShader {
 	}
 }
 
-/// The `PlatformShaderGenerator` struct selects the shader source generator that matches the current platform.
-pub struct PlatformShaderGenerator {
+/// The `Generator` struct selects the shader source generator that matches the current platform.
+pub struct Generator {
 	glsl_shader_generator: GLSLShaderGenerator,
 	msl_shader_generator: MSLShaderGenerator,
 }
 
-impl ShaderGenerator for PlatformShaderGenerator {}
+impl ShaderGenerator for Generator {}
 
-impl PlatformShaderGenerator {
+impl Generator {
 	pub fn new() -> Self {
 		Self {
 			glsl_shader_generator: GLSLShaderGenerator::new(),
@@ -115,11 +114,10 @@ impl PlatformShaderGenerator {
 
 #[cfg(test)]
 mod tests {
-	use super::{PlatformShaderGenerator, PlatformShaderLanguage};
-	use crate::{
-		glsl_shader_generator::GLSLShaderGenerator,
-		msl_shader_generator::MSLShaderGenerator,
-		shader_generator::{self, ShaderGenerationSettings},
+	use super::{Generator, PlatformShaderLanguage};
+	use crate::shader::{
+		besl::backends::{glsl::GLSLShaderGenerator, msl::MSLShaderGenerator},
+		generator::{self, ShaderGenerationSettings},
 	};
 
 	#[test]
@@ -133,9 +131,9 @@ mod tests {
 
 	#[test]
 	fn generate_uses_current_platform_generator() {
-		let main = shader_generator::tests::fragment_shader();
+		let main = generator::tests::fragment_shader();
 		let settings = ShaderGenerationSettings::fragment();
-		let mut generator = PlatformShaderGenerator::new();
+		let mut generator = Generator::new();
 		let generated = generator
 			.generate(&settings, &main)
 			.expect("Failed to generate platform shader source");
@@ -157,3 +155,5 @@ mod tests {
 		);
 	}
 }
+
+pub use Generator as PlatformShaderGenerator;

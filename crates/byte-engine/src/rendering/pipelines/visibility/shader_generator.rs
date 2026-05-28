@@ -329,36 +329,10 @@ impl VisibilityShaderScope {
 			}
 		};
 
-		let mesh_outputs = Node::raw_code(
-			Some("".into()),
-			Some(
-				r#"
-struct VertexOutput {
-	float4 position [[position]];
-};
-
-struct PrimitiveOutput {
-	uint instance_index [[flat]] [[user(locn0)]];
-	uint primitive_index [[flat]] [[user(locn1)]];
-};
-"#
-				.into(),
-			),
-			Some(
-				r#"
-struct VertexOutput {
-	float4 position [[position]];
-};
-
-struct PrimitiveOutput {
-	uint instance_index [[flat]] [[user(locn0)]];
-	uint primitive_index [[flat]] [[user(locn1)]];
-};
-"#
-				.into(),
-			),
-			&[],
-			&["VertexOutput", "PrimitiveOutput"],
+		let mesh_vertex_output = Node::r#struct("VertexOutput", vec![Node::member("position", "vec4f")]);
+		let mesh_primitive_output = Node::r#struct(
+			"PrimitiveOutput",
+			vec![Node::member("instance_index", "u32"), Node::member("primitive_index", "u32")],
 		);
 		let out_instance_index = Node::output_array("out_instance_index", "u32", 0, 126);
 		let out_primitive_index = Node::output_array("out_primitive_index", "u32", 1, 126);
@@ -494,7 +468,7 @@ struct PrimitiveOutput {
 				Some("texture(textures[nonuniformEXT(material.textures[smplr])], vertex_uv)".into()),
 				None,
 				Some(
-					"set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv)"
+					"set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv, level(0.0))"
 						.into(),
 				),
 				&["textures"],
@@ -514,7 +488,7 @@ struct PrimitiveOutput {
 					),
 					None,
 					Some(
-						"unit_vector_from_xy(set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv).xy)"
+						"unit_vector_from_xy(set0.textures[material.textures[smplr]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv, level(0.0)).xy)"
 							.into(),
 					),
 					&["textures", "unit_vector_from_xy"],
@@ -798,7 +772,8 @@ struct PrimitiveOutput {
 				views_binding,
 				mesh_struct,
 				meshlet_struct,
-				mesh_outputs,
+				mesh_vertex_output,
+				mesh_primitive_output,
 				out_instance_index,
 				out_primitive_index,
 				light_struct,
@@ -1072,7 +1047,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float3 diffuse = float3(0.0);
 		float3 specular = float3(0.0);
 
-		float ao_factor = set2.ao.sample(set2.ao_sampler, normalized_xy).r;
+		float ao_factor = set2.ao.sample(set2.ao_sampler, normalized_xy, level(0.0)).r;
 
 		normal = normalize(TBN * normal);
 		float3 F0 = mix(float3(0.04), albedo.xyz, metalness);
@@ -1333,10 +1308,10 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 #[cfg(test)]
 mod tests {
 	use resource_management::asset::bema_asset_handler::ProgramGenerator;
-	use resource_management::{
-		msl_shader_generator::MSLShaderGenerator,
-		shader_generator::{ShaderGenerationSettings, ShaderGenerator as _},
-		spirv_shader_generator::SPIRVShaderGenerator,
+	use resource_management::shader::{
+		besl::backends::msl::MSLShaderGenerator,
+		besl::backends::spirv::SPIRVShaderGenerator,
+		generator::{ShaderGenerationSettings, ShaderGenerator as _},
 	};
 	use utils::json;
 	use utils::Extent;
@@ -1553,9 +1528,9 @@ mod tests {
 			"Expected textured material evaluation MSL source to compile for Metal. Shader: {source}"
 		);
 		assert!(
-			source.contains("set0.textures[material.textures[0u]].sample(set0.textures_sampler[material.textures[0u]], vertex_uv)")
-				&& source.contains("unit_vector_from_xy(set0.textures[material.textures[1u]].sample(set0.textures_sampler[material.textures[1u]], vertex_uv).xy)"),
-			"Expected texture slots to be inlined into MSL sample calls. Shader: {source}"
+			source.contains("set0.textures[material.textures[0u]].sample(set0.textures_sampler[material.textures[0u]], vertex_uv, level(0.0))")
+				&& source.contains("unit_vector_from_xy(set0.textures[material.textures[1u]].sample(set0.textures_sampler[material.textures[1u]], vertex_uv, level(0.0)).xy)"),
+			"Expected texture slots to be inlined into MSL sample calls with explicit LOD. Shader: {source}"
 		);
 	}
 

@@ -6,11 +6,11 @@ pub mod scene_manager;
 pub mod shader_generator;
 
 pub use pipeline_manager::VisibilityPipelineManager;
-use resource_management::{
-	glsl_shader_generator::GLSLShaderGenerator,
-	platform_shader_generator::GeneratedPlatformShader,
-	platform_shader_generator::{PlatformShaderGenerator, PlatformShaderLanguage},
-	shader_generator::ShaderGenerationSettings,
+use resource_management::shader::{
+	besl::backends::glsl::GLSLShaderGenerator,
+	besl::backends::platform::GeneratedPlatformShader,
+	besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
+	generator::ShaderGenerationSettings,
 };
 use utils::Extent;
 
@@ -2371,7 +2371,7 @@ pub(super) struct ShaderMeshletData {
 
 #[cfg(test)]
 mod tests {
-	use resource_management::platform_shader_generator::PlatformShaderLanguage;
+	use resource_management::shader::besl::backends::platform::PlatformShaderLanguage;
 
 	use super::{
 		generate_gtao_bitfield_blur_x_shader_for_language, generate_gtao_bitfield_shader_for_language,
@@ -2699,7 +2699,7 @@ mod tests {
 			"Expected generated GLSL blur shader to lower BESL fetch calls to texelFetch. Shader: {shader}"
 		);
 
-		resource_management::glsl::compile(&shader, "GTAO Blur Compute Shader")
+		resource_management::shader::glsl_compile::compile(&shader, "GTAO Blur Compute Shader")
 			.expect("Expected generated GLSL blur shader to compile");
 	}
 
@@ -2717,7 +2717,7 @@ mod tests {
 			"Expected generated GLSL GTAO shader to preserve the cross-product normal reconstruction. Shader: {shader}"
 		);
 
-		resource_management::glsl::compile(&shader, "GTAO Compute Shader")
+		resource_management::shader::glsl_compile::compile(&shader, "GTAO Compute Shader")
 			.expect("Expected generated GLSL GTAO shader to compile");
 	}
 
@@ -2745,7 +2745,7 @@ mod tests {
 			"Expected generated GLSL bitfield GTAO shader to lower packed writes through imageAtomicOr. Shader: {shader}"
 		);
 
-		resource_management::glsl::compile(&shader, "Bitfield GTAO Compute Shader")
+		resource_management::shader::glsl_compile::compile(&shader, "Bitfield GTAO Compute Shader")
 			.expect("Expected generated GLSL bitfield GTAO shader to compile");
 	}
 
@@ -2763,7 +2763,7 @@ mod tests {
 			"Expected generated GLSL bitfield blur shader to lower integer AO fetches through texelFetch. Shader: {shader}"
 		);
 
-		resource_management::glsl::compile(&shader, "Bitfield GTAO Blur X Compute Shader")
+		resource_management::shader::glsl_compile::compile(&shader, "Bitfield GTAO Blur X Compute Shader")
 			.expect("Expected generated GLSL bitfield blur shader to compile");
 	}
 }

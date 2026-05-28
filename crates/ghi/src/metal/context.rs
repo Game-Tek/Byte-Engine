@@ -253,11 +253,6 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
 	) -> image::Image {
-		if utils::is_block_compressed(format) && !self.device.supportsBCTextureCompression() {
-			panic!(
-				"Metal device does not support BC texture compression. The most likely cause is running on a device family that cannot sample BC compressed textures."
-			);
-		}
 		let name = name.map(str::to_owned);
 
 		let descriptor = build_texture_descriptor(format, extent, resource_uses, device_accesses, array_layers, 1);
@@ -2438,6 +2433,11 @@ impl crate::context::Context for Context {
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool {
 		Context::has_errors(self)
+	}
+
+	fn supports_bc_texture_compression(&self) -> bool {
+		// self.device.supportsBCTextureCompression()
+		true
 	}
 
 	fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue {

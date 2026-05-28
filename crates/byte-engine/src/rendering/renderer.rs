@@ -132,7 +132,7 @@ impl Renderer {
 				],
 			)
 			.unwrap();
-		let mut context = ghi::Device::create_context(&device).unwrap();
+		let mut context = device.create_context().unwrap();
 		let frame_queue_depth = 2;
 		context.set_frames_in_flight(frame_queue_depth);
 
@@ -906,6 +906,7 @@ use ghi::{
 		RasterizationRenderPassMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
+	device::Device as _,
 	frame::Frame as _,
 	queue::{Queue as _, QueueExecution as _},
 };

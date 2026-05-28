@@ -2,8 +2,9 @@ use crate::{
 	application::Time,
 	core::{
 		channel::{Channel, DefaultChannel},
-		factory::{CreateMessage, Factory},
+		factory::Factory,
 		listener::{DefaultListener, Listener},
+		message::DeleteMessage,
 		EntityHandle,
 	},
 	gameplay::{anchor::AnchorSystem, transform::TransformationUpdate},
@@ -15,6 +16,7 @@ use crate::{
 pub struct DefaultWorld {
 	body_factory: Factory<EntityHandle<dyn physics::Body>>,
 	transforms: DefaultChannel<TransformationUpdate>,
+	deletes: DefaultChannel<DeleteMessage>,
 	cameras: Factory<Camera>,
 	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
 	light_factory: Factory<Lights>,
@@ -27,15 +29,17 @@ impl DefaultWorld {
 	pub fn new() -> Self {
 		let body_factory = Factory::new();
 		let transforms = DefaultChannel::new();
+		let deletes = DefaultChannel::new();
 		let cameras = Factory::new();
 		let renderable_factory = Factory::new();
 
 		let anchor_system = AnchorSystem::new();
-		let physics_system = dynabit::World::new(body_factory.listener());
+		let physics_system = dynabit::World::new(body_factory.listener(), deletes.listener());
 
 		Self {
 			body_factory,
 			transforms,
+			deletes,
 			cameras,
 			renderable_factory,
 			light_factory: Factory::new(),
@@ -48,6 +52,10 @@ impl DefaultWorld {
 	pub fn update(&mut self, time: Time, transforms_rx: &mut impl Listener<TransformationUpdate>) {
 		self.anchor_system.update();
 		self.physics_system.update(time, transforms_rx, &mut self.transforms);
+	}
+
+	pub fn flush_deletions(&mut self) {
+		self.physics_system.process_pending_deletions();
 	}
 
 	pub fn body_factory(&self) -> &Factory<EntityHandle<dyn physics::Body>> {
@@ -64,6 +72,14 @@ impl DefaultWorld {
 
 	pub fn transforms_channel_mut(&mut self) -> &mut DefaultChannel<TransformationUpdate> {
 		&mut self.transforms
+	}
+
+	pub fn delete_channel(&self) -> &DefaultChannel<DeleteMessage> {
+		&self.deletes
+	}
+
+	pub fn delete_channel_mut(&mut self) -> &mut DefaultChannel<DeleteMessage> {
+		&mut self.deletes
 	}
 
 	pub fn renderable_factory(&self) -> &Factory<EntityHandle<dyn RenderableMesh>> {

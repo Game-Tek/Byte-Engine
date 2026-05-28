@@ -27,6 +27,12 @@ pub trait Context: ContextCreate {
 	#[cfg(debug_assertions)]
 	fn has_errors(&self) -> bool;
 
+	/// Returns whether the GPU device supports BC block-compressed texture
+	/// formats (BC5, BC7). On Apple Silicon this is always true; on Intel
+	/// Macs and iOS Simulator it may be false. Callers should check this
+	/// before creating any BC-compressed images or samplers.
+	fn supports_bc_texture_compression(&self) -> bool;
+
 	/// Returns an owned queue wrapper that exposes queue-local command submission.
 	fn queue(&mut self, queue_handle: QueueHandle) -> Self::Queue;
 

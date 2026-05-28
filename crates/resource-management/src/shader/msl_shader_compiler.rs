@@ -8,9 +8,9 @@ use std::{
 
 use utils::Extent;
 
-use crate::{
-	msl_shader_generator::MSLShaderGenerator,
-	shader_generator::{ShaderGenerationSettings, ShaderGenerator},
+use crate::shader::{
+	besl::backends::msl::MSLShaderGenerator,
+	generator::{ShaderGenerationSettings, ShaderGenerator},
 };
 
 pub struct Binding {
@@ -44,14 +44,14 @@ impl GeneratedShader {
 	}
 }
 
-/// The `MSLShaderCompiler` struct compiles Metal Shading Language shaders into binary libraries.
-pub struct MSLShaderCompiler {
+/// The `Compiler` struct compiles Metal Shading Language shaders into binary libraries.
+pub struct Compiler {
 	msl_shader_generator: MSLShaderGenerator,
 }
 
-impl ShaderGenerator for MSLShaderCompiler {}
+impl ShaderGenerator for Compiler {}
 
-impl MSLShaderCompiler {
+impl Compiler {
 	pub fn new() -> Self {
 		Self {
 			msl_shader_generator: MSLShaderGenerator::new(),
@@ -103,7 +103,7 @@ impl MSLShaderCompiler {
 			binary,
 			bindings,
 			extent: match shader_compilation_settings.stage {
-				crate::shader_generator::Stages::Compute { local_size } => Some(local_size),
+				crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
 				_ => None,
 			},
 		})
@@ -403,3 +403,5 @@ fn error_with_details(message: &str, cause: &str, details: &str) -> String {
 
 	format!("{message}. {cause}.\n{details}")
 }
+
+pub use Compiler as MSLShaderCompiler;

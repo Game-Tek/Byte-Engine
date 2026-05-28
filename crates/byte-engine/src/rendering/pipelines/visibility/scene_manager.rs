@@ -1,6 +1,6 @@
 pub struct VisibilitySceneManager {
 	/// Render entities registered in the scene.
-	pub(crate) render_entities: Vec<RenderEntity>,
+	pub(crate) render_entities: StableVec<RenderEntity>,
 	/// Shared views data buffer used by every visibility sink.
 	pub(crate) views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
 	/// Shared base descriptor set used by every visibility pass.
@@ -15,7 +15,7 @@ pub struct VisibilitySceneManager {
 	/// Buffer containing lighting data for this scene.
 	pub(crate) light_data_buffer: ghi::BufferHandle<LightingData>,
 	/// Lights in the scene.
-	pub(crate) lights: Vec<Lights>,
+	pub(crate) lights: StableVec<(Handle, Lights)>,
 	/// Information about the current render.
 	pub(crate) render_info: RenderInfo,
 	/// Per-sink render state.
@@ -36,7 +36,7 @@ impl VisibilitySceneManager {
 
 		lighting_data.count = light_count as u32;
 
-		for (index, light) in self.lights.iter().take(light_count).enumerate() {
+		for (index, (_, light)) in self.lights.iter().take(light_count).enumerate() {
 			lighting_data.lights[index] = Self::make_light_data(light, shadow_light_index == Some(index));
 		}
 
@@ -76,8 +76,9 @@ use ghi::DynamicBufferHandle;
 use ghi::Frame as _;
 use log::warn;
 use math::mat::MatInverse as _;
-use utils::hash::HashMap;
+use utils::{hash::HashMap, StableVec};
 
+use crate::core::factory::Handle;
 use crate::rendering::lights::Lights;
 use crate::rendering::pipelines::visibility::pipeline_manager::LightData;
 use crate::rendering::pipelines::visibility::pipeline_manager::LightingData;

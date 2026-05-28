@@ -243,8 +243,10 @@ pub enum Formats {
 	Depth32,
 	/// 32 bit unsigned integer.
 	U32,
-	/// BC5 block compressed format.
+	/// BC5 block compressed format (unsigned normalized).
 	BC5,
+	/// BC5 block compressed format (signed normalized) for normal maps.
+	BC5SNORM,
 	/// BC7 block compressed format.
 	BC7,
 	/// BC7 block compressed sRGB format.
@@ -281,7 +283,7 @@ impl Formats {
 	/// Returns the byte size of one compressed block for BC formats.
 	pub fn bc_bytes_per_block(&self) -> Option<u32> {
 		match self {
-			Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => Some(16),
+			Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => Some(16),
 			_ => None,
 		}
 	}
@@ -340,6 +342,8 @@ impl Formats {
 
 			Formats::BC7SRGB => Some(Encodings::sRGB),
 
+			Formats::BC5SNORM => Some(Encodings::SignedNormalized),
+
 			Formats::U32 | Formats::BC5 | Formats::BC7 => None,
 		}
 	}
@@ -389,7 +393,7 @@ impl Formats {
 
 			Formats::RGBu11u11u10 => ChannelBitSize::Bits11_11_10,
 
-			Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => ChannelBitSize::Compressed,
+			Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => ChannelBitSize::Compressed,
 		}
 	}
 
@@ -443,7 +447,7 @@ impl Formats {
 
 			Formats::U32 => ChannelLayout::Packed,
 
-			Formats::BC5 | Formats::BC7 | Formats::BC7SRGB => ChannelLayout::BC,
+			Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => ChannelLayout::BC,
 		}
 	}
 }
@@ -468,7 +472,7 @@ impl Size for Formats {
 			Formats::BGRAu8 | Formats::BGRAsRGB => 4,
 			Formats::Depth32 => 4,
 			Formats::U32 => 4,
-			Formats::BC5 => 1,
+			Formats::BC5 | Formats::BC5SNORM => 1,
 			Formats::BC7 | Formats::BC7SRGB => 1,
 		}
 	}

@@ -2545,6 +2545,10 @@ impl crate::context::Context for Context {
 		self.device.has_errors()
 	}
 
+	fn supports_bc_texture_compression(&self) -> bool {
+		true
+	}
+
 	fn queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue {
 		let queue = &self.queues[queue_handle.0 as usize];
 		let vk_queue = queue.vk_queue.clone();

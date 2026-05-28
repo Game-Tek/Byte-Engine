@@ -16,8 +16,8 @@ use ghi::{
 	frame::Frame,
 };
 use resource_management::{
-	asset::bema_asset_handler::ProgramGenerator, shader_generator::ShaderGenerationSettings,
-	spirv_shader_generator::SPIRVShaderGenerator,
+	asset::bema_asset_handler::ProgramGenerator,
+	shader::{besl::backends::spirv::SPIRVShaderGenerator, generator::ShaderGenerationSettings},
 };
 use utils::{
 	hash::{HashMap, HashMapExt},

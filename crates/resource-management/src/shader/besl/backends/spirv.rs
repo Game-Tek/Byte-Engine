@@ -2,11 +2,10 @@ use std::cell::RefCell;
 
 use utils::Extent;
 
-use crate::{
-	glsl,
-	glsl_shader_generator::GLSLShaderGenerator,
-	program_evaluation::ProgramEvaluation,
-	shader_generator::{ShaderGenerationSettings, ShaderGenerator},
+use crate::shader::{
+	besl::{backends::glsl::GLSLShaderGenerator, evaluation::ProgramEvaluation},
+	generator::{ShaderGenerationSettings, ShaderGenerator},
+	glsl_compile,
 };
 
 pub struct Binding {
@@ -40,16 +39,16 @@ impl GeneratedShader {
 	}
 }
 
-/// The `SPIRVShaderGenerator` generates SPIR-V shaders from Byte Engine Shader Language program descriptions.
+/// The `Generator` generates SPIR-V shaders from Byte Engine Shader Language program descriptions.
 /// > [!IMPORTANT]
-/// > Creating an instance of `SPIRVShaderGenerator` is an expensive operation, and as such, it should be reused whenever possible.
-pub struct SPIRVShaderGenerator {
+/// > Creating an instance of `Generator` is an expensive operation, and as such, it should be reused whenever possible.
+pub struct Generator {
 	glsl_shader_generator: GLSLShaderGenerator,
 }
 
-impl ShaderGenerator for SPIRVShaderGenerator {}
+impl ShaderGenerator for Generator {}
 
-impl SPIRVShaderGenerator {
+impl Generator {
 	pub fn new() -> Self {
 		Self {
 			glsl_shader_generator: GLSLShaderGenerator::new(),
@@ -93,7 +92,7 @@ impl SPIRVShaderGenerator {
 				let error_string = err.to_string();
 				dbg!(&error_string);
 				println!("{}", &glsl_shader);
-				return Err(glsl::pretty_format_glslang_error_string(
+				return Err(glsl_compile::pretty_format_glslang_error_string(
 					&error_string,
 					&shader_compilation_settings.name,
 					&glsl_shader,
@@ -129,7 +128,7 @@ impl SPIRVShaderGenerator {
 				})
 				.collect(),
 			extent: match shader_compilation_settings.stage {
-				crate::shader_generator::Stages::Compute { local_size } => Some(local_size),
+				crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
 				_ => None,
 			},
 		});
@@ -139,13 +138,14 @@ impl SPIRVShaderGenerator {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{shader_generator, spirv_shader_generator::SPIRVShaderGenerator};
+	use crate::shader::besl::backends::spirv::Generator;
+	use crate::shader::{generator, generator::ShaderGenerationSettings};
 
 	#[test]
 	fn bindings() {
-		let main = shader_generator::tests::bindings();
+		let main = generator::tests::bindings();
 
-		let shader = SPIRVShaderGenerator::new()
+		let shader = Generator::new()
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
@@ -172,3 +172,5 @@ mod tests {
 		assert_eq!(texture_binding.write, false);
 	}
 }
+
+pub use Generator as SPIRVShaderGenerator;

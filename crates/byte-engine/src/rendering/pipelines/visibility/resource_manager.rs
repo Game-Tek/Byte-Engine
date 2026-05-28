@@ -867,7 +867,7 @@ struct QueuedMaterialPipeline {
 pub(crate) struct MaterialPipelineConfig {
 	descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-	pipeline_factory: Option<ghi::implementation::Device>,
+	pipeline_factory: Option<ghi::implementation::Factory>,
 }
 
 impl MaterialPipelineConfig {
@@ -875,7 +875,7 @@ impl MaterialPipelineConfig {
 	pub(crate) fn new(
 		descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 		push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
-		pipeline_factory: Option<ghi::implementation::Device>,
+		pipeline_factory: Option<ghi::implementation::Factory>,
 	) -> Self {
 		Self {
 			descriptor_set_templates,
@@ -1013,12 +1013,16 @@ impl VisibilityPipelineResourceManager {
 			}
 			Ok(Err(reason)) => {
 				self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
-				log::error!("Pipeline compilation failed for {}. The most likely cause is {}", key, reason);
+				log::error!(
+					"Pipeline compilation failed for {}: {}. The most likely cause is that shader creation or pipeline specialization failed on the resource-manager thread.",
+					key,
+					reason
+				);
 			}
 			Err(_) => {
 				self.pipelines.write().insert(key.clone(), PipelineStatus::Failed);
 				log::error!(
-					"Pipeline compilation failed for {}. The most likely cause is that shader creation or pipeline specialization failed on the resource-manager thread.",
+					"Pipeline compilation panicked for {}. The most likely cause is that shader creation or pipeline specialization failed on the resource-manager thread.",
 					key
 				);
 			}
@@ -1276,6 +1280,7 @@ fn resource_image_format_to_ghi(format: resource_management::types::Formats) -> 
 		resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8UNORM,
 		resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16UNORM,
 		resource_management::types::Formats::BC5 => ghi::Formats::BC5,
+		resource_management::types::Formats::BC5SNORM => ghi::Formats::BC5SNORM,
 		resource_management::types::Formats::BC7 => ghi::Formats::BC7,
 		resource_management::types::Formats::BC7SRGB => ghi::Formats::BC7SRGB,
 	}
@@ -1298,7 +1303,7 @@ fn texture_upload_layout(format: ghi::Formats, extent: Extent) -> Option<(usize,
 	let height = extent.height().max(1) as usize;
 
 	match format {
-		ghi::Formats::BC5 | ghi::Formats::BC7 | ghi::Formats::BC7SRGB => {
+		ghi::Formats::BC5 | ghi::Formats::BC5SNORM | ghi::Formats::BC7 | ghi::Formats::BC7SRGB => {
 			let layout = format.bc_layout(width as u32, height as u32)?;
 			Some((
 				layout.bytes_per_row as usize,

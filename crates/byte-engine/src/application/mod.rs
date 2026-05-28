@@ -22,6 +22,10 @@ pub struct Time {
 }
 
 impl Time {
+	pub fn new(elapsed: Duration, delta: Duration) -> Self {
+		Self { elapsed, delta }
+	}
+
 	pub fn elapsed(&self) -> Duration {
 		self.elapsed
 	}

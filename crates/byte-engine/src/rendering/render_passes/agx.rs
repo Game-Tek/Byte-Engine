@@ -5,8 +5,11 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 };
 use resource_management::{
-	glsl_shader_generator::GLSLShaderGenerator, msl_shader_generator::MSLShaderGenerator, resources::material,
-	shader_generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
+	resources::material,
+	shader::{
+		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings,
+	},
+	types::ShaderTypes as ResourceShaderTypes,
 };
 use utils::{Box, Extent};
 
@@ -272,10 +275,10 @@ impl RenderPass for AgxToneMapPass {
 
 #[cfg(test)]
 mod tests {
-	use resource_management::{
-		glsl_shader_generator::GLSLShaderGenerator, msl_shader_compiler::MSLShaderCompiler,
-		msl_shader_generator::MSLShaderGenerator, shader_generator::ShaderGenerationSettings,
-		spirv_shader_generator::SPIRVShaderGenerator,
+	use resource_management::shader::{
+		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator,
+		besl::backends::spirv::SPIRVShaderGenerator, generator::ShaderGenerationSettings,
+		msl_shader_compiler::MSLShaderCompiler,
 	};
 	use utils::Extent;
 

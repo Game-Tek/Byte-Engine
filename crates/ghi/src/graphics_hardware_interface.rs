@@ -885,7 +885,7 @@ impl QueueSelection {
 pub(super) mod tests {
 	use std::borrow::Borrow as _;
 
-	use resource_management::glsl;
+	use resource_management::shader::glsl_compile as glsl;
 
 	use super::*;
 	use crate::{

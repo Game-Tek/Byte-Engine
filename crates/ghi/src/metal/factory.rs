@@ -375,12 +375,6 @@ impl crate::device::Device for Factory {
 			);
 		}
 
-		if is_block_compressed(builder.format) && !self.device.supportsBCTextureCompression() {
-			panic!(
-				"Metal device does not support BC texture compression. The most likely cause is running on a device family that cannot sample BC compressed textures."
-			);
-		}
-
 		let layers = builder.array_layers.map(|layers| layers.get()).unwrap_or(1);
 		let descriptor = build_texture_descriptor(
 			builder.format,

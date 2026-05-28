@@ -726,6 +726,7 @@ mod utils {
 			Formats::U32 => mtl::MTLPixelFormat::R32Uint,
 
 			Formats::BC5 => mtl::MTLPixelFormat::BC5_RGUnorm,
+			Formats::BC5SNORM => mtl::MTLPixelFormat::BC5_RGSnorm,
 			Formats::BC7 => mtl::MTLPixelFormat::BC7_RGBAUnorm,
 			Formats::BC7SRGB => mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB,
 		}
@@ -908,6 +909,7 @@ mod utils {
 		#[test]
 		fn bc_format_mapping_preserves_linear_and_srgb_variants() {
 			assert_eq!(to_pixel_format(Formats::BC5), mtl::MTLPixelFormat::BC5_RGUnorm);
+			assert_eq!(to_pixel_format(Formats::BC5SNORM), mtl::MTLPixelFormat::BC5_RGSnorm);
 			assert_eq!(to_pixel_format(Formats::BC7), mtl::MTLPixelFormat::BC7_RGBAUnorm);
 			assert_eq!(to_pixel_format(Formats::BC7SRGB), mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB);
 		}

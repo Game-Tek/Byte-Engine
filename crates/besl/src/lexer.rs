@@ -141,6 +141,7 @@ impl Node {
 	/// Only one root node should exist in a program.
 	pub fn root() -> Node {
 		let void = primitive_type("void");
+		let bool_t = primitive_type("bool");
 		let u8_t = primitive_type("u8");
 		let u16_t = primitive_type("u16");
 		let u32_t = primitive_type("u32");
@@ -328,6 +329,7 @@ impl Node {
 
 		let builtins = vec![
 			void,
+			bool_t,
 			u8_t,
 			u16_t,
 			u32_t,

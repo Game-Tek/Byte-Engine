@@ -93,7 +93,8 @@ fn bake_shader(descriptor: &ShaderSourceDescriptor<'_>, source_hash: u64) -> Res
 			todo!("Handle HLSL shader baking");
 		}
 		ghi::shader::CompiledShaderSource::MTL { source, entry_point } => {
-			let bytes = resource_management::msl_shader_compiler::compile_msl_source_to_metallib(&source, descriptor.name)?;
+			let bytes =
+				resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, descriptor.name)?;
 			(ShaderArtifact::Mtlb { entry_point }, bytes.into_vec())
 		}
 	};

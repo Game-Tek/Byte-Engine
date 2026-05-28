@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{cell::RefCell, collections::BTreeMap, fmt::Write as _};
 
 use crate::shader::generator::{
 	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting,
@@ -260,11 +260,11 @@ impl Generator {
 
 	fn emit_argument_buffer_parameter(&self, string: &mut String, set: u32) {
 		string.push_str("constant _set");
-		string.push_str(set.to_string().as_str());
+		let _ = write!(string, "{set}");
 		string.push_str("& set");
-		string.push_str(set.to_string().as_str());
+		let _ = write!(string, "{set}");
 		string.push_str(" [[buffer(");
-		string.push_str((16 + set).to_string().as_str());
+		let _ = write!(string, "{}", 16 + set);
 		string.push_str(")]]");
 	}
 
@@ -1032,12 +1032,12 @@ impl Generator {
 
 		let emit_suffix = |string: &mut String, next_id: &mut u32| {
 			string.push_str(" [[id(");
-			string.push_str(next_id.to_string().as_str());
+			let _ = write!(string, "{next_id}");
 			string.push_str(")]]");
 			let descriptor_count = count.map(|count| count.get() as u32).unwrap_or(1);
 			if let Some(count) = count {
 				string.push('[');
-				string.push_str(count.to_string().as_str());
+				let _ = write!(string, "{count}");
 				string.push(']');
 			}
 			self.emit_statement_end(string);
@@ -1372,7 +1372,7 @@ impl Generator {
 	fn emit_compute_binding_reference(&self, string: &mut String, set: u32, name: &str) {
 		if self.mesh_stage_context.is_some() {
 			string.push_str("set");
-			string.push_str(set.to_string().as_str());
+			let _ = write!(string, "{set}");
 			string.push('.');
 			string.push_str(name);
 			return;
@@ -1381,7 +1381,7 @@ impl Generator {
 		match self.compute_binding_mode {
 			ComputeBindingMode::ArgumentBuffers => {
 				string.push_str("set");
-				string.push_str(set.to_string().as_str());
+				let _ = write!(string, "{set}");
 				string.push('.');
 				string.push_str(name);
 			}
@@ -1409,9 +1409,9 @@ impl Generator {
 				self.emit_separator(string);
 			}
 			string.push_str("constant _set");
-			string.push_str(set.to_string().as_str());
+			let _ = write!(string, "{set}");
 			string.push_str("& set");
-			string.push_str(set.to_string().as_str());
+			let _ = write!(string, "{set}");
 			has_previous_parameter = true;
 		}
 
@@ -1448,7 +1448,7 @@ impl Generator {
 				self.emit_separator(string);
 			}
 			string.push_str("set");
-			string.push_str(set.to_string().as_str());
+			let _ = write!(string, "{set}");
 			has_previous_parameter = true;
 		}
 
@@ -1495,9 +1495,9 @@ impl Generator {
 				self.emit_separator(string);
 			}
 			string.push_str("constant _set");
-			string.push_str(set.to_string().as_str());
+			let _ = write!(string, "{set}");
 			string.push_str("& set");
-			string.push_str(set.to_string().as_str());
+			let _ = write!(string, "{set}");
 			has_previous_parameter = true;
 		}
 	}
@@ -1535,7 +1535,7 @@ impl Generator {
 				self.emit_separator(string);
 			}
 			string.push_str("set");
-			string.push_str(set.to_string().as_str());
+			let _ = write!(string, "{set}");
 			has_previous_parameter = true;
 		}
 	}

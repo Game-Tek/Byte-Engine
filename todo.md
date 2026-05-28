@@ -61,6 +61,14 @@
 - Simplify Metal frame-chain handle deduplication if frame counts grow beyond the current small fixed count in crates/ghi/src/metal/context.rs.
 - Consider how to deal with texture usages when multiple "unknown" render passes use them.
 
+# Allocation reduction opportunities
+- Avoid copying the transform listener into a Vec every renderer frame in crates/byte-engine/src/rendering/renderer.rs; consume/filter listener updates without allocating when possible.
+- Avoid collecting visibility and shadow pass instances into owned Vecs in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs; capture a borrowed slice or prebuilt frame work list instead.
+- Avoid allocating debug-region labels with format! inside per-frame visibility rendering loops in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs; use static labels, cached labels, or backend integer debug markers.
+- Avoid cloning Metal image staging data in write_image_data before replacing textures in crates/ghi/src/metal/command_buffer.rs; write directly into staging storage or upload from the caller-provided byte slice.
+- Avoid draining pending Metal uploads into temporary Vecs in crates/ghi/src/metal/context.rs; process drain iterators directly once borrow conflicts are resolved.
+- Avoid repeated set/binding/input/output/function Vec classification in BESL MSL generation in crates/resource-management/src/shader/besl/backends/msl.rs; classify the ordered graph once and reuse borrowed node slices across stage generators.
+
 # BESL
 - Add explicit BESL syntax for interpolation modifiers on stage IO; MSL now infers position, depth, color, user attributes, front-facing, vertex ID, and instance ID semantics from conventional IO names.
 - Replace visibility-pass-specific texture sampling lowering with a generic BESL texture and sampler resource model for separate textures, samplers, combined samplers, array textures, integer textures, depth textures, and sample level/bias/gradient operations.

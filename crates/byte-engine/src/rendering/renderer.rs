@@ -1,12 +1,12 @@
 /// The `Renderer` class centralizes the management of the rendering tasks and state.
 /// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
 pub struct Renderer {
-	/// The GHI instance that manages devices.
-	instance: ghi::implementation::Instance,
-	/// The GHI device that is used for rendering.
-	device: Arc<ghi::implementation::Device>,
 	/// The GHI context where all rendering resources and operations are performed.
 	context: ghi::implementation::Context,
+	/// The GHI device that is used for rendering.
+	device: Arc<ghi::implementation::Device>,
+	/// The GHI instance that manages devices.
+	instance: ghi::implementation::Instance,
 
 	started_frame_count: usize,
 
@@ -636,13 +636,15 @@ impl RenderTargets {
 	/// Returns the index of the image in the internal storage.
 	pub fn insert(&mut self, name: String, sink_id: usize, image: ghi::BaseImageHandle, format: ghi::Formats) -> usize {
 		if let Some(_) = self.get_image_index(&name, sink_id) {
-			log::debug!("An image by that name already exists");
-			panic!("An image by that name already exists");
+			panic!(
+				"Render target image '{name}' already exists for sink {sink_id}. The most likely cause is that two render pipeline setup paths create the same named target."
+			);
 		};
 
 		if let Some(_) = self.get_attachment_index(&name, sink_id) {
-			log::debug!("Attachment is already used in the render pass");
-			panic!("Attachment is already used in the render pass");
+			panic!(
+				"Render target image '{name}' is already registered as an attachment for sink {sink_id}. The most likely cause is that a target was manually added to the attachment list before insertion."
+			);
 		}
 
 		let index = self.images.len();
@@ -655,12 +657,13 @@ impl RenderTargets {
 
 	pub fn read_from(&mut self, name: &str, sink_id: usize) {
 		if let Some(_) = self.get_attachment_index(name, sink_id) {
-			log::debug!("Attachment is already used in the render pass");
 			return;
 		}
 
 		let Some(index) = self.get_image_index(name, sink_id) else {
-			log::debug!("An image by that name does not exists");
+			log::warn!(
+				"Render target image '{name}' does not exist for sink {sink_id}; read attachment was not registered. The most likely cause is that a render pass was added before the pipeline that creates this target."
+			);
 			return;
 		};
 
@@ -669,12 +672,13 @@ impl RenderTargets {
 
 	pub fn write_to(&mut self, name: &str, sink_id: usize) {
 		if let Some(_) = self.get_attachment_index(name, sink_id) {
-			log::debug!("Attachment is already used in the render pass");
 			return;
 		}
 
 		let Some(index) = self.get_image_index(name, sink_id) else {
-			log::debug!("An image by that name does not exists");
+			log::warn!(
+				"Render target image '{name}' does not exist for sink {sink_id}; write attachment was not registered. The most likely cause is that a render pass was added before the pipeline that creates this target."
+			);
 			return;
 		};
 

@@ -789,7 +789,6 @@ pub fn setup_default_dmx(application: &mut GraphicsApplication, mut rx: DefaultL
 				.write_to_buffer()
 				.unwrap();
 				socket.send_to(&buff, &target).unwrap();
-				log::debug!("Sent poll packet!");
 
 				socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
 

@@ -438,34 +438,44 @@ impl Frame<'_> {
 			}
 		}
 
-		let pending_buffers = &mut self.device.pending_buffer_syncs;
-		let buffers = &self.device.buffers;
+		let (buffer_copies, image_copies): (Vec<_>, Vec<_>) = if include_implicit_sync {
+			let pending_buffers = &mut self.device.pending_buffer_syncs;
+			let buffers = &self.device.buffers;
 
-		let buffer_copies: Vec<_> = pending_buffers
-			.drain()
-			.filter_map(|e| {
-				let dst_buffer_handle = e;
+			let buffer_copies = pending_buffers
+				.drain()
+				.filter_map(|e| {
+					let dst_buffer_handle = e;
 
-				let dst_buffer = buffers.resource(dst_buffer_handle);
-				let src_buffer_handle = dst_buffer.staging?;
+					let dst_buffer = buffers.resource(dst_buffer_handle);
+					let src_buffer_handle = dst_buffer.staging?;
 
-				Some(BufferCopy::new(src_buffer_handle, 0, dst_buffer_handle, 0, dst_buffer.size))
-			})
-			.collect();
+					Some(BufferCopy::new(src_buffer_handle, 0, dst_buffer_handle, 0, dst_buffer.size))
+				})
+				.collect();
 
-		let pending_images = &mut self.device.pending_image_syncs;
-		let images = &self.device.images;
+			let pending_images = &mut self.device.pending_image_syncs;
+			let images = &self.device.images;
 
-		let image_copies: Vec<_> = pending_images
-			.drain()
-			.map(|e| {
-				let dst_image_handle = e;
+			let image_copies = pending_images
+				.drain()
+				.map(|e| {
+					let dst_image_handle = e;
 
-				let dst_image = &images[dst_image_handle.0 as usize];
+					let dst_image = &images[dst_image_handle.0 as usize];
 
-				ImageCopy::new(dst_image_handle, 0, dst_image_handle, 0, dst_image.size)
-			})
-			.collect();
+					ImageCopy::new(dst_image_handle, 0, dst_image_handle, 0, dst_image.size)
+				})
+				.collect();
+
+			(buffer_copies, image_copies)
+		} else {
+			// Explicit transfer command buffers must not consume frame-global pending
+			// uploads. Those uploads belong to the normal render recording path, and
+			// stealing them here makes helper transfer submissions write render-frame
+			// resources such as dynamic view buffers.
+			(Vec::new(), Vec::new())
+		};
 
 		let mut recording = CommandBufferRecording::new(self.device, command_buffer_handle, frame_key.into());
 

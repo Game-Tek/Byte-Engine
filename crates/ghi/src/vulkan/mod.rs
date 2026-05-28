@@ -19,6 +19,7 @@ pub mod context;
 pub mod descriptor_set;
 pub mod device;
 
+pub mod factory;
 pub mod frame;
 pub mod image;
 pub mod instance;
@@ -35,6 +36,8 @@ pub use self::command_buffer::*;
 pub use self::context::*;
 pub use self::descriptor_set::*;
 pub use self::device::*;
+/// The `Factory` type alias keeps Vulkan detached resource creation aligned with the backend device API.
+pub type Factory = Device;
 pub use self::frame::*;
 pub(crate) use self::image::*;
 pub use self::instance::*;
@@ -395,6 +398,7 @@ impl DescriptorWrite {
 }
 
 /// The `StoredQueue` struct stores per-queue device data for internal GPU queue management.
+#[derive(Clone)]
 pub(super) struct StoredQueue {
 	pub(crate) vk_queue: Arc<Mutex<vk::Queue>>,
 	pub(crate) queue_family_index: u32,
@@ -424,7 +428,7 @@ mod tests {
 				)],
 			)
 			.expect("Failed to create VulkanGHI.");
-		let context = crate::device::Device::create_context(device).expect("Failed to create Vulkan context.");
+		let context = crate::device::Device::create_context(&device).expect("Failed to create Vulkan context.");
 		(instance, context, queue_handle.unwrap())
 	}
 

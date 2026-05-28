@@ -59,6 +59,7 @@
 - Deduplicate Metal descriptor encoding paths by merging encode_descriptor_binding and encode_binding in crates/ghi/src/metal/context.rs.
 - Avoid cloning Metal pipeline state during descriptor set binding in crates/ghi/src/metal/command_buffer.rs.
 - Simplify Metal frame-chain handle deduplication if frame counts grow beyond the current small fixed count in crates/ghi/src/metal/context.rs.
+- Consider how to deal with texture usages when multiple "unknown" render passes use them.
 
 # BESL
 - Add explicit BESL syntax for interpolation modifiers on stage IO; MSL now infers position, depth, color, user attributes, front-facing, vertex ID, and instance ID semantics from conventional IO names.

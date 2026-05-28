@@ -233,6 +233,11 @@ impl VisibilityPipelineManager {
 		let source = renderable.get_mesh().clone();
 		let mesh_key = VisibilityMeshKey::from_source(&source);
 		if self.requested_meshes.insert(mesh_key.clone()) {
+			let source_kind = match &source {
+				MeshSource::Resource(_) => "resource",
+				MeshSource::Generated(_) => "generated",
+			};
+			log::debug!("Visibility mesh requested: key={}, source={}", mesh_key, source_kind);
 			self.resource_manager.request_mesh(mesh_key.clone(), source);
 		}
 		self.pending_renderables.push(PendingRenderableInstance {
@@ -261,14 +266,27 @@ impl VisibilityPipelineManager {
 
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
 		let completions = self.resource_manager.drain_completions();
+		if !completions.is_empty() {
+			log::debug!("Visibility resource completions received: count={}", completions.len());
+		}
 		for completion in completions {
 			match completion {
 				VisibilityResourceCompletion::MeshReady { key, mesh } => {
+					let meshlet_count = mesh.primitives.iter().map(|primitive| primitive.meshlet_count).sum::<u32>();
+					log::debug!(
+						"Visibility mesh adopted: key={}, primitives={}, meshlets={}, loaded_meshes_before={}, pending_renderables={}",
+						key,
+						mesh.primitives.len(),
+						meshlet_count,
+						self.loaded_meshes.len(),
+						self.pending_renderables.len(),
+					);
 					self.loaded_meshes.insert(key.clone(), mesh);
 					self.resolve_pending_renderables_for_mesh(&key);
 				}
 				VisibilityResourceCompletion::PipelineReady { name, pipeline } => {
 					let pipeline = frame.intern_compute_pipeline(pipeline);
+					log::debug!("Visibility material pipeline adopted: name={}", name);
 					self.loaded_pipelines.insert(name.clone(), pipeline);
 					for material in self.loaded_materials.values_mut() {
 						if material.name == name {
@@ -299,6 +317,7 @@ impl VisibilityPipelineManager {
 					self.resource_manager.enqueue_texture_upload(index, image, sampler, upload);
 				}
 				VisibilityResourceCompletion::TextureUploadReady { index, image, sampler } => {
+					log::debug!("Visibility texture upload adopted: index={}", index);
 					self.write_texture_descriptors(frame, index, image, sampler);
 					self.loaded_textures.insert(index);
 					self.rebuild_material_lists();
@@ -358,6 +377,19 @@ impl VisibilityPipelineManager {
 		}
 		frame.sync_buffer(self.materials_data_buffer_handle);
 
+		let texture_indices = textures
+			.iter()
+			.filter_map(|texture| texture.as_ref().map(|(_, index)| *index))
+			.collect::<Vec<_>>();
+		log::debug!(
+			"Visibility material adopted: id={}, index={}, has_pipeline={}, alpha={}, textures={}",
+			id,
+			index,
+			pipeline.is_some(),
+			alpha,
+			texture_indices.len(),
+		);
+
 		self.loaded_materials.insert(
 			index,
 			RenderDescription {
@@ -365,10 +397,7 @@ impl VisibilityPipelineManager {
 				pipeline,
 				name: id,
 				alpha,
-				texture_indices: textures
-					.iter()
-					.filter_map(|texture| texture.as_ref().map(|(_, index)| *index))
-					.collect(),
+				texture_indices,
 			},
 		);
 		self.rebuild_material_lists();
@@ -379,8 +408,12 @@ impl VisibilityPipelineManager {
 		self.scene.render_info.opaque_materials.clear();
 		self.scene.render_info.transparent_materials.clear();
 
+		let mut missing_pipeline_count = 0usize;
+		let mut missing_texture_count = 0usize;
+
 		for material in self.loaded_materials.values() {
 			let Some(pipeline) = material.pipeline else {
+				missing_pipeline_count += 1;
 				continue;
 			};
 			// Material shaders index bindless textures directly, so a material must not render until every
@@ -390,6 +423,7 @@ impl VisibilityPipelineManager {
 				.iter()
 				.all(|texture_index| self.loaded_textures.contains(texture_index))
 			{
+				missing_texture_count += 1;
 				continue;
 			}
 			let entry = (material.name.clone(), material.index, pipeline);
@@ -399,6 +433,15 @@ impl VisibilityPipelineManager {
 				self.scene.render_info.opaque_materials.push(entry);
 			}
 		}
+
+		log::debug!(
+			"Visibility material lists rebuilt: loaded={}, opaque_ready={}, transparent_ready={}, missing_pipeline={}, missing_textures={}",
+			self.loaded_materials.len(),
+			self.scene.render_info.opaque_materials.len(),
+			self.scene.render_info.transparent_materials.len(),
+			missing_pipeline_count,
+			missing_texture_count,
+		);
 	}
 
 	/// Rebuilds the active instance list from scene entities whose material pipeline is ready.
@@ -410,12 +453,15 @@ impl VisibilityPipelineManager {
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_data_buffer);
 
 		let mut active_index = 0;
+		let mut skipped_missing_material = 0usize;
+		let mut active_meshlets = 0u32;
 		for render_entity in render_entities.iter() {
 			let material_ready = loaded_materials
 				.get(&render_entity.shader_mesh.material_index)
 				.and_then(|material| material.pipeline)
 				.is_some();
 			if !material_ready {
+				skipped_missing_material += 1;
 				continue;
 			}
 			if active_index >= MAX_INSTANCES {
@@ -427,11 +473,20 @@ impl VisibilityPipelineManager {
 			let mut shader_mesh = render_entity.shader_mesh;
 			shader_mesh.model = render_entity.entity.transform().get_matrix().into();
 			mesh_data[active_index] = shader_mesh;
+			active_meshlets += shader_mesh.meshlet_count;
 			active_instances.push(Instance {
 				meshlet_count: shader_mesh.meshlet_count,
 			});
 			active_index += 1;
 		}
+
+		log::debug!(
+			"Visibility active primitives rebuilt: render_entities={}, active={}, skipped_missing_material={}, active_meshlets={}",
+			render_entities.len(),
+			active_instances.len(),
+			skipped_missing_material,
+			active_meshlets,
+		);
 	}
 
 	/// Resolves renderable instances whose mesh resource is now available.
@@ -440,6 +495,11 @@ impl VisibilityPipelineManager {
 			return;
 		};
 
+		let pending_before = self.pending_renderables.len();
+		let render_entities_before = self.scene.render_entities.len();
+		let mut resolved_renderables = 0usize;
+		let mut added_primitives = 0usize;
+		let mut added_meshlets = 0u32;
 		let mut remaining = Vec::with_capacity(self.pending_renderables.len());
 		let pending = std::mem::take(&mut self.pending_renderables);
 
@@ -450,7 +510,10 @@ impl VisibilityPipelineManager {
 			}
 
 			let model = pending_renderable.entity.transform().get_matrix().into();
+			resolved_renderables += 1;
 			for primitive in &mesh.primitives {
+				added_primitives += 1;
+				added_meshlets += primitive.meshlet_count;
 				self.scene.render_entities.push(RenderEntity {
 					handle: pending_renderable.handle,
 					entity: pending_renderable.entity.clone(),
@@ -471,6 +534,19 @@ impl VisibilityPipelineManager {
 		}
 
 		self.pending_renderables = remaining;
+		if resolved_renderables > 0 {
+			log::debug!(
+				"Visibility pending mesh resolved: key={}, resolved_renderables={}, added_primitives={}, added_meshlets={}, render_entities_before={}, render_entities_after={}, pending_before={}, pending_after={}",
+				key,
+				resolved_renderables,
+				added_primitives,
+				added_meshlets,
+				render_entities_before,
+				self.scene.render_entities.len(),
+				pending_before,
+				self.pending_renderables.len(),
+			);
+		}
 	}
 
 	fn make_shader_view_data(view: View) -> ShaderViewData {
@@ -562,10 +638,26 @@ impl PipelineManager for VisibilityPipelineManager {
 			})
 			.collect::<Vec<_>>();
 
+		log::debug!(
+			"Visibility prepare summary: sinks={}, sink_states={}, commands={}, requested_meshes={}, loaded_meshes={}, pending_renderables={}, render_entities={}, active_primitives={}, opaque_materials={}, transparent_materials={}, shadow_enabled={}",
+			sinks.len(),
+			self.scene.sink_states.len(),
+			commands.len(),
+			self.requested_meshes.len(),
+			self.loaded_meshes.len(),
+			self.pending_renderables.len(),
+			self.scene.render_entities.len(),
+			self.scene.render_info.active_instances.len(),
+			self.scene.render_info.opaque_materials.len(),
+			self.scene.render_info.transparent_materials.len(),
+			shadow_light_index.is_some(),
+		);
+
 		Some(commands)
 	}
 
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
+		log::debug!("Visibility sink created: sink_id={}", sink_id);
 		let lit_target = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
 				ghi::Formats::RGBA16UNORM,

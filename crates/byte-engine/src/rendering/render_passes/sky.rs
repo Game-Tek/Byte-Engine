@@ -263,52 +263,52 @@ const vec3 BETA_RAYLEIGH = vec3(5.802e-6, 13.558e-6, 33.100e-6);
 const vec3 BETA_MIE = vec3(3.996e-6);
 const vec3 BETA_OZONE = vec3(0.650e-6, 1.881e-6, 0.085e-6);
 
-vec3 get_camera_position() {
-	return parameters.camera_position.xyz;
+vec3 get_camera_position(SkyParameters sky_parameters) {
+	return sky_parameters.camera_position.xyz;
 }
 
-vec3 get_sun_direction() {
-	return parameters.sun_direction.xyz;
+vec3 get_sun_direction(SkyParameters sky_parameters) {
+	return sky_parameters.sun_direction.xyz;
 }
 
-vec3 get_planet_center() {
-	return parameters.planet_center.xyz;
+vec3 get_planet_center(SkyParameters sky_parameters) {
+	return sky_parameters.planet_center.xyz;
 }
 
-float get_ground_radius() {
-	return parameters.atmosphere.x;
+float get_ground_radius(SkyParameters sky_parameters) {
+	return sky_parameters.atmosphere.x;
 }
 
-float get_atmosphere_radius() {
-	return parameters.atmosphere.y;
+float get_atmosphere_radius(SkyParameters sky_parameters) {
+	return sky_parameters.atmosphere.y;
 }
 
-float get_rayleigh_scale_height() {
-	return parameters.atmosphere.z;
+float get_rayleigh_scale_height(SkyParameters sky_parameters) {
+	return sky_parameters.atmosphere.z;
 }
 
-float get_mie_scale_height() {
-	return parameters.atmosphere.w;
+float get_mie_scale_height(SkyParameters sky_parameters) {
+	return sky_parameters.atmosphere.w;
 }
 
-float get_mie_g() {
-	return parameters.sun_direction.w;
+float get_mie_g(SkyParameters sky_parameters) {
+	return sky_parameters.sun_direction.w;
 }
 
-float get_sun_intensity() {
-	return parameters.camera_position.w;
+float get_sun_intensity(SkyParameters sky_parameters) {
+	return sky_parameters.camera_position.w;
 }
 
-float get_sun_angular_radius() {
-	return parameters.planet_center.w;
+float get_sun_angular_radius(SkyParameters sky_parameters) {
+	return sky_parameters.planet_center.w;
 }
 
-float get_ozone_strength() {
-	return parameters.misc.x;
+float get_ozone_strength(SkyParameters sky_parameters) {
+	return sky_parameters.misc.x;
 }
 
-bool should_skip_below_horizon() {
-	return parameters.misc.y > 0.5;
+bool should_skip_below_horizon(SkyParameters sky_parameters) {
+	return sky_parameters.misc.y > 0.5;
 }
 
 bool ray_sphere_intersection(vec3 origin, vec3 direction, vec3 center, float radius, out float t_min, out float t_max) {
@@ -327,16 +327,16 @@ bool ray_sphere_intersection(vec3 origin, vec3 direction, vec3 center, float rad
 	return true;
 }
 
-vec3 density_profile(vec3 sample_position) {
-	float altitude = length(sample_position - get_planet_center()) - get_ground_radius();
+vec3 density_profile(SkyParameters sky_parameters, vec3 sample_position) {
+	float altitude = length(sample_position - get_planet_center(sky_parameters)) - get_ground_radius(sky_parameters);
 
 	if (altitude < 0.0) {
 		return vec3(0.0);
 	}
 
-	float rayleigh = exp(-altitude / get_rayleigh_scale_height());
-	float mie = exp(-altitude / get_mie_scale_height());
-	float ozone = max(0.0, 1.0 - abs(altitude - 25000.0) / 15000.0) * get_ozone_strength();
+	float rayleigh = exp(-altitude / get_rayleigh_scale_height(sky_parameters));
+	float mie = exp(-altitude / get_mie_scale_height(sky_parameters));
+	float ozone = max(0.0, 1.0 - abs(altitude - 25000.0) / 15000.0) * get_ozone_strength(sky_parameters);
 
 	return vec3(rayleigh, mie, ozone);
 }
@@ -366,11 +366,11 @@ float phase_mie(float cosine_theta, float g) {
 		((2.0 + g2) * max(1e-4, denominator * denominator_sqrt));
 }
 
-vec3 march_transmittance(vec3 origin, vec3 direction) {
+vec3 march_transmittance(SkyParameters sky_parameters, vec3 origin, vec3 direction) {
 	float t_min;
 	float t_max;
 
-	if (!ray_sphere_intersection(origin, direction, get_planet_center(), get_atmosphere_radius(), t_min, t_max)) {
+	if (!ray_sphere_intersection(origin, direction, get_planet_center(sky_parameters), get_atmosphere_radius(sky_parameters), t_min, t_max)) {
 		return vec3(1.0);
 	}
 
@@ -380,7 +380,7 @@ vec3 march_transmittance(vec3 origin, vec3 direction) {
 
 	float ground_t_min;
 	float ground_t_max;
-	if (ray_sphere_intersection(origin, direction, get_planet_center(), get_ground_radius(), ground_t_min, ground_t_max) && ground_t_max > 0.0) {
+	if (ray_sphere_intersection(origin, direction, get_planet_center(sky_parameters), get_ground_radius(sky_parameters), ground_t_min, ground_t_max) && ground_t_max > 0.0) {
 		return vec3(0.0);
 	}
 
@@ -390,18 +390,18 @@ vec3 march_transmittance(vec3 origin, vec3 direction) {
 		float t = 0.5 * (t0 + t1);
 		float step_size = t1 - t0;
 		vec3 sample_position = origin + direction * t;
-		vec3 density = density_profile(sample_position);
+		vec3 density = density_profile(sky_parameters, sample_position);
 		optical_depth += density * step_size;
 	}
 
 	return exp(-extinction_from_density(optical_depth));
 }
 
-vec3 integrate_atmosphere(vec3 origin, vec3 direction) {
+vec3 integrate_atmosphere(SkyParameters sky_parameters, ivec2 pixel, vec3 origin, vec3 direction) {
 	float atmosphere_t_min;
 	float atmosphere_t_max;
 
-	if (!ray_sphere_intersection(origin, direction, get_planet_center(), get_atmosphere_radius(), atmosphere_t_min, atmosphere_t_max)) {
+	if (!ray_sphere_intersection(origin, direction, get_planet_center(sky_parameters), get_atmosphere_radius(sky_parameters), atmosphere_t_min, atmosphere_t_max)) {
 		return vec3(0.0);
 	}
 
@@ -409,11 +409,11 @@ vec3 integrate_atmosphere(vec3 origin, vec3 direction) {
 	float distance_through_atmosphere = atmosphere_t_max - atmosphere_t_min;
 	vec3 optical_depth = vec3(0.0);
 	vec3 luminance = vec3(0.0);
-	vec3 sun_direction = get_sun_direction();
+	vec3 sun_direction = get_sun_direction(sky_parameters);
 	float cosine_theta = dot(direction, sun_direction);
 	float phase_r = phase_rayleigh(cosine_theta);
-	float phase_m = phase_mie(cosine_theta, get_mie_g());
-	float jitter = interleaved_gradient_noise(ivec2(gl_GlobalInvocationID.xy));
+	float phase_m = phase_mie(cosine_theta, get_mie_g(sky_parameters));
+	float jitter = interleaved_gradient_noise(pixel);
 
 	for (int i = 0; i < VIEW_SAMPLE_COUNT; ++i) {
 		float t0 = atmosphere_t_min + distance_through_atmosphere * sample_distribution(float(i) / float(VIEW_SAMPLE_COUNT));
@@ -421,11 +421,11 @@ vec3 integrate_atmosphere(vec3 origin, vec3 direction) {
 		float t = mix(t0, t1, jitter);
 		float step_size = t1 - t0;
 		vec3 sample_position = origin + direction * t;
-		vec3 density = density_profile(sample_position);
+		vec3 density = density_profile(sky_parameters, sample_position);
 		optical_depth += density * step_size;
 
 		vec3 transmittance_to_camera = exp(-extinction_from_density(optical_depth));
-		vec3 transmittance_to_sun = march_transmittance(sample_position, sun_direction);
+		vec3 transmittance_to_sun = march_transmittance(sky_parameters, sample_position, sun_direction);
 		vec3 scattering =
 			density.x * BETA_RAYLEIGH * phase_r +
 			density.y * BETA_MIE * phase_m;
@@ -433,28 +433,26 @@ vec3 integrate_atmosphere(vec3 origin, vec3 direction) {
 		luminance += transmittance_to_camera * transmittance_to_sun * scattering * step_size;
 	}
 
-	float sun_disk = smoothstep(cos(get_sun_angular_radius() * 1.4), cos(get_sun_angular_radius()), cosine_theta);
+	float sun_disk = smoothstep(cos(get_sun_angular_radius(sky_parameters) * 1.4), cos(get_sun_angular_radius(sky_parameters)), cosine_theta);
 	vec3 sun_radiance = vec3(0.0);
 	if (sun_disk > 0.0) {
-		vec3 sun_transmittance = march_transmittance(origin, sun_direction);
+		vec3 sun_transmittance = march_transmittance(sky_parameters, origin, sun_direction);
 		sun_radiance = sun_disk * sun_transmittance * vec3(20.0, 18.0, 16.0);
 	}
 
-	vec3 color = luminance * get_sun_intensity() + sun_radiance;
+	vec3 color = luminance * get_sun_intensity(sky_parameters) + sun_radiance;
 	return color / (vec3(1.0) + color);
 }
 
-vec3 reconstruct_view_direction(ivec2 pixel, ivec2 extent) {
+vec3 reconstruct_view_direction(SkyParameters sky_parameters, ivec2 pixel, ivec2 extent) {
 	vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(extent);
-	// Match make_raster_ndc_from_pixel_coordinates: Y-flip for negative viewport height
 	vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-	// Unproject a point on the far plane (z=0 in reversed-Z)
-	vec4 world = parameters.inverse_view_projection * vec4(ndc, 0.0, 1.0);
-	return normalize(world.xyz / world.w - get_camera_position());
+	vec4 world = sky_parameters.inverse_view_projection * vec4(ndc, 0.0, 1.0);
+	return normalize(world.xyz / world.w - get_camera_position(sky_parameters));
 }
 
-bool is_below_horizon(vec3 origin, vec3 direction) {
-	vec3 local_up = normalize(origin - get_planet_center());
+bool is_below_horizon(SkyParameters sky_parameters, vec3 origin, vec3 direction) {
+	vec3 local_up = normalize(origin - get_planet_center(sky_parameters));
 	return dot(direction, local_up) < 0.0;
 }
 
@@ -466,17 +464,19 @@ void main() {
 		return;
 	}
 
-	float depth = texelFetch(depth_texture, pixel, 0).r;
+	vec2 depth_uv = (vec2(pixel) + vec2(0.5)) / vec2(extent);
+	float depth = textureLod(depth_texture, depth_uv, 0.0).r;
 	if (depth > 1e-6) {
 		return;
 	}
 
-	vec3 direction = reconstruct_view_direction(pixel, extent);
-	if (should_skip_below_horizon() && is_below_horizon(get_camera_position(), direction)) {
+	SkyParameters sky_parameters = parameters;
+	vec3 direction = reconstruct_view_direction(sky_parameters, pixel, extent);
+	if (should_skip_below_horizon(sky_parameters) && is_below_horizon(sky_parameters, get_camera_position(sky_parameters), direction)) {
 		return;
 	}
 
-	vec3 sky = integrate_atmosphere(get_camera_position(), direction);
+	vec3 sky = integrate_atmosphere(sky_parameters, pixel, get_camera_position(sky_parameters), direction);
 
 imageStore(main_texture, pixel, vec4(sky, 1.0));
 }

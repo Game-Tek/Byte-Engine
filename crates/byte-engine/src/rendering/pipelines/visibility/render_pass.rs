@@ -246,8 +246,18 @@ impl VisibilityPass {
 
 		let extent = sink.extent();
 		let instances = instances.iter().copied().collect::<Vec<_>>();
+		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
+		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
 
 		move |c, _| {
+			log::debug!(
+				"Visibility pass executing: extent={}x{}, active_primitives={}, drawable_primitives={}, meshlets={}",
+				extent.width(),
+				extent.height(),
+				instances.len(),
+				drawable_instances,
+				meshlet_count,
+			);
 			c.start_region("Visibility Buffer");
 
 			let c = c.start_render_pass(extent, &attachments);
@@ -385,6 +395,8 @@ impl ShadowPass {
 		let shadow_map = self.shadow_map;
 		let extent = Extent::square(SHADOW_MAP_RESOLUTION);
 		let instances = instances.iter().copied().collect::<Vec<_>>();
+		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
+		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
 
 		if shadow_enabled {
 			frame.resize_image(shadow_map.into(), extent);
@@ -392,9 +404,17 @@ impl ShadowPass {
 
 		move |c, _| {
 			if !shadow_enabled {
+				log::debug!("Visibility shadow pass skipped: no directional shadow light");
 				return;
 			}
 
+			log::debug!(
+				"Visibility shadow pass executing: cascades={}, active_primitives={}, drawable_primitives={}, meshlets={}",
+				SHADOW_CASCADE_COUNT,
+				instances.len(),
+				drawable_instances,
+				meshlet_count,
+			);
 			c.start_region("Shadow Map");
 
 			for cascade in 0..SHADOW_CASCADE_COUNT {
@@ -498,6 +518,11 @@ impl MaterialCountPass {
 		let extent = sink.extent();
 
 		move |c, _| {
+			log::debug!(
+				"Visibility material count pass executing: extent={}x{}",
+				extent.width(),
+				extent.height()
+			);
 			c.start_region("Material Count");
 
 			c.clear_buffers(&[material_count_buffer.into()]);
@@ -587,6 +612,7 @@ impl MaterialOffsetPass {
 		let material_evaluation_dispatches = self.material_evaluation_dispatches;
 
 		move |c, _| {
+			log::debug!("Visibility material offset pass executing");
 			c.start_region("Material Offset");
 
 			c.clear_buffers(&[
@@ -678,6 +704,11 @@ impl PixelMappingPass {
 		let extent = sink.extent();
 
 		move |c, _| {
+			log::debug!(
+				"Visibility pixel mapping pass executing: extent={}x{}",
+				extent.width(),
+				extent.height()
+			);
 			c.start_region("Pixel Mapping");
 
 			c.clear_buffers(&[material_xy.into()]);
@@ -1033,10 +1064,18 @@ impl MaterialEvaluationPass {
 		let material_evaluation_descriptor_set = self.descriptor_set;
 		let opaque_materials = opaque_materials.to_vec();
 		let transparent_materials = transparent_materials.to_vec();
+		let extent = sink.extent();
 
-		frame.resize_image(ao_map.into(), sink.extent());
+		frame.resize_image(ao_map.into(), extent);
 
 		move |c, t| {
+			log::debug!(
+				"Visibility material evaluation executing: extent={}x{}, opaque_materials={}, transparent_materials={}",
+				extent.width(),
+				extent.height(),
+				opaque_materials.len(),
+				transparent_materials.len(),
+			);
 			c.clear_images(&[(lit.into(), ghi::ClearValue::Color(RGBA::black()))]);
 
 			c.start_region("Material Evaluation");
@@ -1207,8 +1246,20 @@ impl VisibilityPipelineRenderPass {
 		let material_evaluation_pass =
 			self.material_evaluation_pass
 				.prepare(frame, sink, opaque_materials, transparent_materials);
+		let instance_count = instances.len();
+		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
+		let opaque_count = opaque_materials.len();
+		let transparent_count = transparent_materials.len();
 
 		move |c, t| {
+			log::debug!(
+				"Visibility render model executing: primitives={}, meshlets={}, opaque_materials={}, transparent_materials={}, shadow_enabled={}",
+				instance_count,
+				meshlet_count,
+				opaque_count,
+				transparent_count,
+				shadow_enabled,
+			);
 			c.start_region("Visibility Render Model");
 
 			shadow_pass(c, t);

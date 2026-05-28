@@ -2,6 +2,8 @@
 pub struct Device {
 	pub inner: Option<InnerDevice>,
 	device: ash::Device,
+	descriptor_set_layouts: Vec<DescriptorSetLayout>,
+	shaders: Vec<crate::vulkan::Shader>,
 }
 
 // Vulkan device handles are thread-safe, and detached resource creation uses `Device` with no `InnerDevice`.
@@ -22,11 +24,27 @@ impl Device {
 		Ok(Self {
 			inner: Some(inner),
 			device,
+			descriptor_set_layouts: Vec::new(),
+			shaders: Vec::new(),
 		})
 	}
 
 	pub(crate) fn detached(device: ash::Device) -> Self {
-		Self { inner: None, device }
+		Self {
+			inner: None,
+			device,
+			descriptor_set_layouts: Vec::new(),
+			shaders: Vec::new(),
+		}
+	}
+
+	pub(crate) fn detached_with_resources(device: ash::Device, descriptor_set_layouts: Vec<DescriptorSetLayout>) -> Self {
+		Self {
+			inner: None,
+			device,
+			descriptor_set_layouts,
+			shaders: Vec::with_capacity(64),
+		}
 	}
 }
 
@@ -527,9 +545,8 @@ impl InnerDevice {
 			acceleration_structure,
 			ray_tracing_pipeline,
 			mesh_shading,
-
-			#[cfg(debug_assertions)]
-			debugger: RenderDebugger::new(),
+			// #[cfg(debug_assertions)]
+			// debugger: RenderDebugger::new(),
 		})
 	}
 
@@ -804,6 +821,7 @@ impl InnerDevice {
 	}
 }
 
+#[derive(Clone)]
 pub struct InnerDevice {
 	pub(super) debug_utils: Option<ash::ext::debug_utils::Device>,
 
@@ -827,9 +845,8 @@ pub struct InnerDevice {
 	#[cfg(target_os = "macos")]
 	pub(super) macos_surface: ash::ext::metal_surface::Instance,
 
-	#[cfg(debug_assertions)]
-	debugger: RenderDebugger,
-
+	// #[cfg(debug_assertions)]
+	// debugger: RenderDebugger, // DISABLED FOR NOW
 	pub(super) memory_properties: vk::PhysicalDeviceMemoryProperties,
 	pub(super) queues: Vec<StoredQueue>,
 	pub(super) settings: crate::device::Features,
@@ -867,8 +884,8 @@ impl crate::device::Device for Device {
 		self.inner.as_ref().is_some_and(InnerDevice::has_errors)
 	}
 
-	fn create_context(self) -> Result<Self::Context, &'static str> {
-		Context::new(self)
+	fn create_context(&self) -> Result<Self::Context, &'static str> {
+		Context::new(&self)
 	}
 
 	fn create_shader(
@@ -896,17 +913,29 @@ impl crate::device::Device for Device {
 			| crate::shader::Sources::MTLB { .. } => return Err(()),
 		};
 
-		let _ = (shader, stage, shader_binding_descriptors);
+		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&shader);
+		let shader_module = unsafe {
+			self.device
+				.create_shader_module(&shader_module_create_info, None)
+				.map_err(|_| ())?
+		};
+		let handle = crate::ShaderHandle(self.shaders.len() as u64);
 
-		Err(())
+		self.shaders.push(crate::vulkan::Shader {
+			shader: shader_module,
+			stage: stage.into(),
+			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
+		});
+
+		Ok(handle)
 	}
 
 	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
 		RasterPipeline
 	}
 
-	fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		panic!("Vulkan detached compute pipeline creation requires context-owned shaders and descriptor set layouts. The most likely cause is that a pipeline factory was used without the Vulkan context factory path.");
+	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
+		self.create_compute_pipeline_with_resources(builder, &self.descriptor_set_layouts, &self.shaders)
 	}
 
 	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
@@ -937,14 +966,14 @@ impl crate::device::Device for Device {
 impl InnerDevice {
 	#[inline]
 	pub(crate) fn start_frame_capture(&mut self) {
-		#[cfg(debug_assertions)]
-		self.debugger.start_frame_capture();
+		// #[cfg(debug_assertions)]
+		// self.debugger.start_frame_capture();
 	}
 
 	#[inline]
 	pub(crate) fn end_frame_capture(&mut self) {
-		#[cfg(debug_assertions)]
-		self.debugger.end_frame_capture();
+		// #[cfg(debug_assertions)]
+		// self.debugger.end_frame_capture();
 	}
 
 	pub(crate) fn wait(&self) {

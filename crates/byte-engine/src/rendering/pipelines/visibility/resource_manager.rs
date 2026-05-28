@@ -620,6 +620,25 @@ impl VisibilityPipelineResourceManagerWorker {
 				.load_mesh_source_for_transfer(transfer, staging_data_buffer, slice, &source);
 			match result {
 				Ok(mesh) => {
+					let source_kind = match &source {
+						MeshSource::Resource(_) => "resource",
+						MeshSource::Generated(_) => "generated",
+					};
+					let meshlet_count = mesh.primitives.iter().map(|primitive| primitive.meshlet_count).sum::<u32>();
+
+					// This logs unique visibility mesh resources as they are uploaded, not scene instances.
+					log::debug!(
+						"Visibility mesh created: key={}, source={}, primitives={}, meshlets={}, vertex_offset={}, primitive_offset={}, triangle_offset={}, meshlet_offset={}",
+						key,
+						source_kind,
+						mesh.primitives.len(),
+						meshlet_count,
+						mesh.vertex_offset,
+						mesh.primitive_offset,
+						mesh.triangle_offset,
+						mesh.meshlet_offset,
+					);
+
 					completions.push(VisibilityResourceCompletion::MeshReady { key, mesh });
 					recorded_work = true;
 				}

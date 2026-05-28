@@ -49,6 +49,15 @@ struct ComputeStageContext {
 	has_push_constant: bool,
 }
 
+struct ClassifiedNodes<'a> {
+	bindings: Vec<&'a besl::NodeReference>,
+	inputs: Vec<&'a besl::NodeReference>,
+	outputs: Vec<&'a besl::NodeReference>,
+	declarations: Vec<&'a besl::NodeReference>,
+	functions: Vec<&'a besl::NodeReference>,
+	push_constant: Option<&'a besl::NodeReference>,
+}
+
 impl ShaderGenerator for Generator {}
 
 impl Generator {
@@ -268,39 +277,48 @@ impl Generator {
 		string.push_str(")]]");
 	}
 
-	fn generate_vertex_shader(
-		&mut self,
-		string: &mut String,
-		order: &[besl::NodeReference],
-		main_function_node: &besl::NodeReference,
-	) {
-		let mut bindings = Vec::new();
-		let mut inputs = Vec::new();
-		let mut outputs = Vec::new();
-		let mut declaration_nodes = Vec::new();
-		let mut function_nodes = Vec::new();
+	fn classify_nodes<'a>(order: &'a [besl::NodeReference]) -> ClassifiedNodes<'a> {
+		let mut nodes = ClassifiedNodes {
+			bindings: Vec::new(),
+			inputs: Vec::new(),
+			outputs: Vec::new(),
+			declarations: Vec::new(),
+			functions: Vec::new(),
+			push_constant: None,
+		};
 
 		for node in order {
 			match node.borrow().node() {
-				besl::Nodes::Binding { .. } => bindings.push(node.clone()),
-				besl::Nodes::Input { .. } => inputs.push(node.clone()),
-				besl::Nodes::Output { .. } => outputs.push(node.clone()),
+				besl::Nodes::Binding { .. } => nodes.bindings.push(node),
+				besl::Nodes::Input { .. } => nodes.inputs.push(node),
+				besl::Nodes::Output { .. } => nodes.outputs.push(node),
+				besl::Nodes::PushConstant { .. } => {
+					if nodes.push_constant.is_none() {
+						nodes.push_constant = Some(node);
+					}
+				}
 				besl::Nodes::Function { name, .. } if name == "main" => {}
-				besl::Nodes::Function { .. } => function_nodes.push(node.clone()),
+				besl::Nodes::Function { .. } => nodes.functions.push(node),
 				besl::Nodes::Struct { .. }
 				| besl::Nodes::Raw { .. }
 				| besl::Nodes::Intrinsic { .. }
 				| besl::Nodes::Const { .. }
-				| besl::Nodes::Specialization { .. } => declaration_nodes.push(node.clone()),
+				| besl::Nodes::Specialization { .. } => nodes.declarations.push(node),
 				_ => {}
 			}
 		}
 
-		for node in declaration_nodes {
-			self.emit_node_string(string, &node);
-		}
+		nodes
+	}
 
-		for binding in &bindings {
+	fn emit_declarations(&mut self, string: &mut String, nodes: &[&besl::NodeReference]) {
+		for node in nodes {
+			self.emit_node_string(string, node);
+		}
+	}
+
+	fn emit_buffer_binding_structs(&mut self, string: &mut String, bindings: &[&besl::NodeReference]) {
+		for binding in bindings {
 			if let besl::Nodes::Binding {
 				r#type: besl::BindingTypes::Buffer { members },
 				..
@@ -309,27 +327,38 @@ impl Generator {
 				self.emit_buffer_binding_struct(string, binding, members.as_slice());
 			}
 		}
+	}
 
-		let binding_sets = self.group_bindings_by_set(bindings.as_slice());
+	fn generate_vertex_shader(
+		&mut self,
+		string: &mut String,
+		order: &[besl::NodeReference],
+		main_function_node: &besl::NodeReference,
+	) {
+		let nodes = Self::classify_nodes(order);
+		self.emit_declarations(string, &nodes.declarations);
+		self.emit_buffer_binding_structs(string, &nodes.bindings);
+
+		let binding_sets = self.group_bindings_by_set(nodes.bindings.as_slice());
 		for (&set, bindings) in &binding_sets {
 			self.emit_argument_buffer_struct(string, set, bindings);
 		}
 
-		self.emit_vertex_input_struct(string, &inputs);
-		self.emit_vertex_output_struct(string, &outputs);
+		self.emit_vertex_input_struct(string, &nodes.inputs);
+		self.emit_vertex_output_struct(string, &nodes.outputs);
 
-		for node in function_nodes.iter().rev() {
+		for node in nodes.functions.iter().rev() {
 			self.emit_function_prototype(string, node);
 		}
 
-		for node in function_nodes.into_iter().rev() {
-			self.emit_node_string(string, &node);
+		for node in nodes.functions.iter().rev() {
+			self.emit_node_string(string, node);
 		}
 
-		self.emit_vertex_entry_point(string, main_function_node, &inputs, &outputs, &binding_sets);
+		self.emit_vertex_entry_point(string, main_function_node, &nodes.inputs, &nodes.outputs, &binding_sets);
 	}
 
-	fn emit_vertex_input_struct(&mut self, string: &mut String, inputs: &[besl::NodeReference]) {
+	fn emit_vertex_input_struct(&mut self, string: &mut String, inputs: &[&besl::NodeReference]) {
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "VertexInput");
 
@@ -354,7 +383,7 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	fn emit_fragment_input_struct(&mut self, string: &mut String, inputs: &[besl::NodeReference]) {
+	fn emit_fragment_input_struct(&mut self, string: &mut String, inputs: &[&besl::NodeReference]) {
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "FragmentInput");
 
@@ -384,7 +413,7 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	fn emit_fragment_output_struct(&mut self, string: &mut String, outputs: &[besl::NodeReference]) {
+	fn emit_fragment_output_struct(&mut self, string: &mut String, outputs: &[&besl::NodeReference]) {
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "FragmentOutput");
 
@@ -422,7 +451,7 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	fn emit_vertex_output_struct(&mut self, string: &mut String, outputs: &[besl::NodeReference]) {
+	fn emit_vertex_output_struct(&mut self, string: &mut String, outputs: &[&besl::NodeReference]) {
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "VertexOutput");
 
@@ -468,61 +497,29 @@ impl Generator {
 		order: &[besl::NodeReference],
 		main_function_node: &besl::NodeReference,
 	) {
-		let mut bindings = Vec::new();
-		let mut inputs = Vec::new();
-		let mut outputs = Vec::new();
-		let mut declaration_nodes = Vec::new();
-		let mut function_nodes = Vec::new();
+		let nodes = Self::classify_nodes(order);
+		self.emit_declarations(string, &nodes.declarations);
+		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
-		for node in order {
-			match node.borrow().node() {
-				besl::Nodes::Binding { .. } => bindings.push(node.clone()),
-				besl::Nodes::Input { .. } => inputs.push(node.clone()),
-				besl::Nodes::Output { .. } => outputs.push(node.clone()),
-				besl::Nodes::Function { name, .. } if name == "main" => {}
-				besl::Nodes::Function { .. } => function_nodes.push(node.clone()),
-				besl::Nodes::Struct { .. }
-				| besl::Nodes::Raw { .. }
-				| besl::Nodes::Intrinsic { .. }
-				| besl::Nodes::Const { .. }
-				| besl::Nodes::Specialization { .. } => declaration_nodes.push(node.clone()),
-				_ => {}
-			}
-		}
-
-		for node in declaration_nodes {
-			self.emit_node_string(string, &node);
-		}
-
-		for binding in &bindings {
-			if let besl::Nodes::Binding {
-				r#type: besl::BindingTypes::Buffer { members },
-				..
-			} = binding.borrow().node()
-			{
-				self.emit_buffer_binding_struct(string, binding, members.as_slice());
-			}
-		}
-
-		let binding_sets = self.group_bindings_by_set(bindings.as_slice());
+		let binding_sets = self.group_bindings_by_set(nodes.bindings.as_slice());
 		for (&set, bindings) in &binding_sets {
 			self.emit_argument_buffer_struct(string, set, bindings);
 		}
 
-		self.emit_fragment_input_struct(string, &inputs);
-		if !outputs.is_empty() {
-			self.emit_fragment_output_struct(string, &outputs);
+		self.emit_fragment_input_struct(string, &nodes.inputs);
+		if !nodes.outputs.is_empty() {
+			self.emit_fragment_output_struct(string, &nodes.outputs);
 		}
 
-		for node in function_nodes.iter().rev() {
+		for node in nodes.functions.iter().rev() {
 			self.emit_function_prototype(string, node);
 		}
 
-		for node in function_nodes.into_iter().rev() {
-			self.emit_node_string(string, &node);
+		for node in nodes.functions.iter().rev() {
+			self.emit_node_string(string, node);
 		}
 
-		self.emit_fragment_entry_point(string, main_function_node, &inputs, &outputs, &binding_sets);
+		self.emit_fragment_entry_point(string, main_function_node, &nodes.inputs, &nodes.outputs, &binding_sets);
 	}
 
 	fn has_msl_raw_statement_in(statements: &[besl::NodeReference]) -> bool {
@@ -534,7 +531,7 @@ impl Generator {
 	fn emit_raster_input_locals(
 		&mut self,
 		string: &mut String,
-		inputs: &[besl::NodeReference],
+		inputs: &[&besl::NodeReference],
 		input_name: &str,
 		builtin_values: &[(&str, &str)],
 		indent: usize,
@@ -561,7 +558,7 @@ impl Generator {
 		}
 	}
 
-	fn emit_raster_output_locals(&mut self, string: &mut String, outputs: &[besl::NodeReference], indent: usize) {
+	fn emit_raster_output_locals(&mut self, string: &mut String, outputs: &[&besl::NodeReference], indent: usize) {
 		let formatting = ShaderFormatting::new(self.minified);
 		for output in outputs {
 			let output = output.borrow();
@@ -582,7 +579,7 @@ impl Generator {
 	fn emit_raster_output_assignments(
 		&mut self,
 		string: &mut String,
-		outputs: &[besl::NodeReference],
+		outputs: &[&besl::NodeReference],
 		output_name: &str,
 		indent: usize,
 	) {
@@ -609,9 +606,9 @@ impl Generator {
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
-		inputs: &[besl::NodeReference],
-		outputs: &[besl::NodeReference],
-		binding_sets: &BTreeMap<u32, Vec<besl::NodeReference>>,
+		inputs: &[&besl::NodeReference],
+		outputs: &[&besl::NodeReference],
+		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference>>,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function { statements, .. } = node.node() else {
@@ -659,9 +656,9 @@ impl Generator {
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
-		inputs: &[besl::NodeReference],
-		outputs: &[besl::NodeReference],
-		binding_sets: &BTreeMap<u32, Vec<besl::NodeReference>>,
+		inputs: &[&besl::NodeReference],
+		outputs: &[&besl::NodeReference],
+		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference>>,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function {
@@ -733,59 +730,24 @@ impl Generator {
 		order: &[besl::NodeReference],
 		main_function_node: &besl::NodeReference,
 	) {
-		let mut bindings = Vec::new();
-		let mut push_constant = None;
-		let mut declaration_nodes = Vec::new();
-		let mut function_nodes = Vec::new();
+		let nodes = Self::classify_nodes(order);
+		self.emit_declarations(string, &nodes.declarations);
+		self.emit_declarations(string, &nodes.inputs);
+		self.emit_declarations(string, &nodes.outputs);
 
-		for node in order {
-			match node.borrow().node() {
-				besl::Nodes::Binding { .. } => {
-					bindings.push(node.clone());
-				}
-				besl::Nodes::PushConstant { .. } => {
-					if push_constant.is_none() {
-						push_constant = Some(node.clone());
-					}
-				}
-				besl::Nodes::Function { name, .. } if name == "main" => {}
-				besl::Nodes::Function { .. } => function_nodes.push(node.clone()),
-				besl::Nodes::Struct { .. }
-				| besl::Nodes::Raw { .. }
-				| besl::Nodes::Output { .. }
-				| besl::Nodes::Input { .. }
-				| besl::Nodes::Intrinsic { .. }
-				| besl::Nodes::Const { .. }
-				| besl::Nodes::Specialization { .. } => declaration_nodes.push(node.clone()),
-				_ => {}
-			}
-		}
-
-		for node in declaration_nodes {
-			self.emit_node_string(string, &node);
-		}
-
-		if let Some(push_constant) = push_constant.as_ref() {
+		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		let binding_sets = self.group_bindings_by_set(bindings.as_slice());
+		let binding_sets = self.group_bindings_by_set(nodes.bindings.as_slice());
 		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
 			binding_sets: binding_sets.keys().copied().collect(),
-			has_push_constant: push_constant.is_some(),
+			has_push_constant: nodes.push_constant.is_some(),
 		});
 		let previous_in_compute_body = self.in_compute_body;
 		self.in_compute_body = true;
 
-		for binding in &bindings {
-			if let besl::Nodes::Binding {
-				r#type: besl::BindingTypes::Buffer { members },
-				..
-			} = binding.borrow().node()
-			{
-				self.emit_buffer_binding_struct(string, binding, members.as_slice());
-			}
-		}
+		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
 		if matches!(self.compute_binding_mode, ComputeBindingMode::ArgumentBuffers) {
 			for (&set, bindings) in &binding_sets {
@@ -793,29 +755,24 @@ impl Generator {
 			}
 		}
 
-		for node in function_nodes.iter().rev() {
+		for node in nodes.functions.iter().rev() {
 			self.emit_function_prototype(string, node);
 		}
 
-		for node in function_nodes.into_iter().rev() {
-			self.emit_node_string(string, &node);
+		for node in nodes.functions.iter().rev() {
+			self.emit_node_string(string, node);
 		}
 
 		match self.compute_binding_mode {
 			ComputeBindingMode::ArgumentBuffers => {
-				self.emit_compute_entry_point_argument_buffers(
-					string,
-					main_function_node,
-					&binding_sets,
-					push_constant.as_ref(),
-				);
+				self.emit_compute_entry_point_argument_buffers(string, main_function_node, &binding_sets, nodes.push_constant);
 			}
 			ComputeBindingMode::BareResources => {
 				self.emit_compute_entry_point_bare_resources(
 					string,
 					main_function_node,
-					bindings.as_slice(),
-					push_constant.as_ref(),
+					nodes.bindings.as_slice(),
+					nodes.push_constant,
 				);
 			}
 		}
@@ -832,78 +789,43 @@ impl Generator {
 		maximum_vertices: u32,
 		maximum_primitives: u32,
 	) {
-		let mut bindings = Vec::new();
-		let mut push_constant = None;
-		let mut outputs = Vec::new();
-		let mut declaration_nodes = Vec::new();
-		let mut function_nodes = Vec::new();
-
-		for node in order {
-			match node.borrow().node() {
-				besl::Nodes::Binding { .. } => {
-					bindings.push(node.clone());
-				}
-				besl::Nodes::PushConstant { .. } => {
-					if push_constant.is_none() {
-						self.emit_push_constant_struct(string, node);
-						push_constant = Some(node.clone());
-					}
-				}
-				besl::Nodes::Output { .. } => outputs.push(node.clone()),
-				besl::Nodes::Function { name, .. } if name == "main" => {}
-				besl::Nodes::Function { .. } => function_nodes.push(node.clone()),
-				besl::Nodes::Struct { .. }
-				| besl::Nodes::Raw { .. }
-				| besl::Nodes::Input { .. }
-				| besl::Nodes::Intrinsic { .. }
-				| besl::Nodes::Const { .. }
-				| besl::Nodes::Specialization { .. } => declaration_nodes.push(node.clone()),
-				_ => {}
-			}
+		let nodes = Self::classify_nodes(order);
+		if let Some(push_constant) = nodes.push_constant {
+			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		let binding_sets = self.group_bindings_by_set(bindings.as_slice());
+		let binding_sets = self.group_bindings_by_set(nodes.bindings.as_slice());
 		let previous_mesh_stage_context = self.mesh_stage_context.replace(MeshStageContext {
 			binding_sets: binding_sets.keys().copied().collect(),
-			has_push_constant: push_constant.is_some(),
+			has_push_constant: nodes.push_constant.is_some(),
 			maximum_vertices,
 			maximum_primitives,
 		});
-		for node in &declaration_nodes {
-			self.emit_node_string(string, node);
-		}
-
-		for binding in &bindings {
-			if let besl::Nodes::Binding {
-				r#type: besl::BindingTypes::Buffer { members },
-				..
-			} = binding.borrow().node()
-			{
-				self.emit_buffer_binding_struct(string, binding, members.as_slice());
-			}
-		}
+		self.emit_declarations(string, &nodes.declarations);
+		self.emit_declarations(string, &nodes.inputs);
+		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
 		for (&set, bindings) in &binding_sets {
 			self.emit_argument_buffer_struct(string, set, bindings);
 		}
 
-		if !Self::has_raw_mesh_output_structs(&declaration_nodes) {
-			self.emit_mesh_output_structs(string, &outputs);
+		if !Self::has_raw_mesh_output_structs(&nodes.declarations) {
+			self.emit_mesh_output_structs(string, &nodes.outputs);
 		}
 
-		for node in function_nodes.iter().rev() {
+		for node in nodes.functions.iter().rev() {
 			self.emit_function_prototype(string, node);
 		}
 
-		for node in function_nodes.into_iter().rev() {
-			self.emit_node_string(string, &node);
+		for node in nodes.functions.iter().rev() {
+			self.emit_node_string(string, node);
 		}
 
 		self.emit_mesh_entry_point_argument_buffers(
 			string,
 			main_function_node,
 			&binding_sets,
-			push_constant.as_ref(),
+			nodes.push_constant,
 			maximum_vertices,
 			maximum_primitives,
 		);
@@ -911,7 +833,7 @@ impl Generator {
 		self.mesh_stage_context = previous_mesh_stage_context;
 	}
 
-	fn has_raw_mesh_output_structs(nodes: &[besl::NodeReference]) -> bool {
+	fn has_raw_mesh_output_structs(nodes: &[&besl::NodeReference]) -> bool {
 		nodes.iter().any(|node| match node.borrow().node() {
 			besl::Nodes::Raw { msl, hlsl, .. } => msl
 				.as_ref()
@@ -925,7 +847,7 @@ impl Generator {
 		name.strip_prefix("out_").unwrap_or(name)
 	}
 
-	fn emit_mesh_output_structs(&mut self, string: &mut String, outputs: &[besl::NodeReference]) {
+	fn emit_mesh_output_structs(&mut self, string: &mut String, outputs: &[&besl::NodeReference]) {
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "VertexOutput");
 		formatting.push_indentation(string, 1);
@@ -966,8 +888,8 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	fn group_bindings_by_set(&self, bindings: &[besl::NodeReference]) -> BTreeMap<u32, Vec<besl::NodeReference>> {
-		let mut binding_sets = BTreeMap::<u32, Vec<besl::NodeReference>>::new();
+	fn group_bindings_by_set<'a>(&self, bindings: &[&'a besl::NodeReference]) -> BTreeMap<u32, Vec<&'a besl::NodeReference>> {
+		let mut binding_sets = BTreeMap::<u32, Vec<&besl::NodeReference>>::new();
 
 		for binding in bindings {
 			let set = match binding.borrow().node() {
@@ -975,7 +897,7 @@ impl Generator {
 				_ => continue,
 			};
 
-			binding_sets.entry(set).or_default().push(binding.clone());
+			binding_sets.entry(set).or_default().push(*binding);
 		}
 
 		for bindings in binding_sets.values_mut() {
@@ -1005,7 +927,7 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	fn emit_argument_buffer_struct(&mut self, string: &mut String, set: u32, bindings: &[besl::NodeReference]) {
+	fn emit_argument_buffer_struct(&mut self, string: &mut String, set: u32, bindings: &[&besl::NodeReference]) {
 		self.emit_named_struct_start(string, &format!("_set{set}"));
 
 		let mut next_id = 0u32;
@@ -1129,7 +1051,7 @@ impl Generator {
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
-		bindings: &[besl::NodeReference],
+		bindings: &[&besl::NodeReference],
 		push_constant: Option<&besl::NodeReference>,
 	) {
 		let node = RefCell::borrow(main_function_node);
@@ -1178,7 +1100,7 @@ impl Generator {
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
-		binding_sets: &BTreeMap<u32, Vec<besl::NodeReference>>,
+		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference>>,
 		push_constant: Option<&besl::NodeReference>,
 	) {
 		let node = RefCell::borrow(main_function_node);
@@ -1228,7 +1150,7 @@ impl Generator {
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
-		binding_sets: &BTreeMap<u32, Vec<besl::NodeReference>>,
+		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference>>,
 		push_constant: Option<&besl::NodeReference>,
 		maximum_vertices: u32,
 		maximum_primitives: u32,

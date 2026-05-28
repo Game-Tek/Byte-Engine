@@ -68,7 +68,11 @@ impl PhysicsBody {
 
 		self.angular_velocity += self.inverse_world_space_inertia_tensor() * impulse;
 
-		// TODO: clamp angular velocity
+		let max_angular_speed = 30f32;
+
+		if magnitude_squared(self.angular_velocity) > max_angular_speed * max_angular_speed {
+			self.angular_velocity = normalize(self.angular_velocity) * max_angular_speed;
+		}
 	}
 
 	pub fn world_space_center_of_mass(&self) -> Vector3 {

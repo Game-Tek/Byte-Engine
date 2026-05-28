@@ -624,11 +624,7 @@ impl VisibilityPipelineResourceManagerWorker {
 						MeshSource::Resource(_) => "resource",
 						MeshSource::Generated(_) => "generated",
 					};
-					let meshlet_count = mesh
-						.primitives
-						.iter()
-						.map(|primitive| primitive.meshlet_count)
-						.sum::<u32>();
+					let meshlet_count = mesh.primitives.iter().map(|primitive| primitive.meshlet_count).sum::<u32>();
 
 					// This logs unique visibility mesh resources as they are uploaded, not scene instances.
 					log::debug!(

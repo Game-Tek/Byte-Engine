@@ -518,7 +518,11 @@ impl MaterialCountPass {
 		let extent = sink.extent();
 
 		move |c, _| {
-			log::debug!("Visibility material count pass executing: extent={}x{}", extent.width(), extent.height());
+			log::debug!(
+				"Visibility material count pass executing: extent={}x{}",
+				extent.width(),
+				extent.height()
+			);
 			c.start_region("Material Count");
 
 			c.clear_buffers(&[material_count_buffer.into()]);
@@ -700,7 +704,11 @@ impl PixelMappingPass {
 		let extent = sink.extent();
 
 		move |c, _| {
-			log::debug!("Visibility pixel mapping pass executing: extent={}x{}", extent.width(), extent.height());
+			log::debug!(
+				"Visibility pixel mapping pass executing: extent={}x{}",
+				extent.width(),
+				extent.height()
+			);
 			c.start_region("Pixel Mapping");
 
 			c.clear_buffers(&[material_xy.into()]);

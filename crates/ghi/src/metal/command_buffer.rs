@@ -1356,26 +1356,25 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		let image = self.device.images.resource(image_handle);
 
-		let Some(staging) = image.staging.as_ref() else {
+		let Some(_) = image.staging.as_ref() else {
 			return;
 		};
 
+		// Metal accepts a CPU pointer for immediate texture replacement, so the caller-provided
+		// pixel slice can be used directly instead of cloning through the image staging Vec.
 		let bytes = unsafe {
 			std::slice::from_raw_parts(
 				data.as_ptr() as *const u8,
 				data.len() * std::mem::size_of::<graphics_hardware_interface::RGBAu8>(),
 			)
 		};
-		let mut staging: Vec<u8> = staging.clone();
-		let length = staging.len().min(bytes.len());
-		staging[..length].copy_from_slice(&bytes[..length]);
 
 		let texture = image.texture.clone();
 		let format = image.format;
 		let extent = image.extent;
 		let array_layers = image.array_layers;
 
-		replace_texture_from_bytes(texture.as_ref(), format, extent, array_layers, &staging);
+		replace_texture_from_bytes(texture.as_ref(), format, extent, array_layers, bytes);
 
 		self.consume_resources([Consumption {
 			handle: PrivateHandles::Image(image_handle),

@@ -65,7 +65,6 @@
 - Avoid copying the transform listener into a Vec every renderer frame in crates/byte-engine/src/rendering/renderer.rs; consume/filter listener updates without allocating when possible.
 - Avoid collecting visibility and shadow pass instances into owned Vecs in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs; capture a borrowed slice or prebuilt frame work list instead.
 - Avoid allocating debug-region labels with format! inside per-frame visibility rendering loops in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs; use static labels, cached labels, or backend integer debug markers.
-- Avoid cloning Metal image staging data in write_image_data before replacing textures in crates/ghi/src/metal/command_buffer.rs; write directly into staging storage or upload from the caller-provided byte slice.
 - Avoid draining pending Metal uploads into temporary Vecs in crates/ghi/src/metal/context.rs; process drain iterators directly once borrow conflicts are resolved.
 - Avoid repeated set/binding/input/output/function Vec classification in BESL MSL generation in crates/resource-management/src/shader/besl/backends/msl.rs; classify the ordered graph once and reuse borrowed node slices across stage generators.
 

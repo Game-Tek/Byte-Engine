@@ -429,8 +429,9 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 			)
 			.name("main"),
 		);
-		let depth = render_pass_builder
-			.create_render_target(ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget).name("depth"));
+		let depth = render_pass_builder.create_render_target(
+			ghi::image::Builder::new(ghi::Formats::Depth32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("depth"),
+		);
 		self.sinks.push(RenderPass::new(
 			render_pass_builder.context(),
 			&self.descriptor_set_template,

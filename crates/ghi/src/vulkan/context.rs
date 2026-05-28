@@ -990,6 +990,14 @@ impl Context {
 							descriptor_write.array_element,
 							Descriptor::Swapchain { handle },
 						);
+
+						// Swapchain descriptors still need an actual Vulkan descriptor write after
+						// their bookkeeping entry is stored. Frame acquisition refreshes stored
+						// swapchain descriptors later, but first use cannot rely on that refresh
+						// having seen a descriptor entry that did not exist yet.
+						if let Some(write) = new_descriptor_write {
+							descriptor_writes.push(write);
+						}
 					} else if let Some(write) = new_descriptor_write {
 						descriptor_writes.push(write);
 

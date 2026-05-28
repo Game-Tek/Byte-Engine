@@ -41,6 +41,7 @@ pub struct CommandBufferRecording<'a> {
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
 	bound_descriptor_sets_in_recording: Vec<DescriptorSetHandle>,
+	active_rendering: bool,
 }
 
 pub struct VulkanCommandBuffer<'a> {
@@ -78,6 +79,7 @@ impl CommandBufferRecording<'_> {
 			bound_pipeline: None,
 			bound_descriptor_set_handles: Vec::new(),
 			bound_descriptor_sets_in_recording: Vec::new(),
+			active_rendering: false,
 
 			device,
 		};
@@ -414,49 +416,87 @@ impl CommandBufferRecording<'_> {
 			},
 		);
 
-		let image_memory_barriers = planned
-			.image_barriers
-			.iter()
-			.map(|barrier| {
-				vk::ImageMemoryBarrier2::default()
-					.old_layout(barrier.old_layout)
-					.src_stage_mask(barrier.src_stage)
-					.src_access_mask(barrier.src_access)
-					.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-					.new_layout(barrier.new_layout)
-					.dst_stage_mask(barrier.dst_stage)
-					.dst_access_mask(barrier.dst_access)
-					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-					.image(barrier.image)
-					.subresource_range(vk::ImageSubresourceRange {
-						aspect_mask: barrier.aspect_mask,
-						base_mip_level: 0,
-						level_count: vk::REMAINING_MIP_LEVELS,
-						base_array_layer: 0,
-						layer_count: vk::REMAINING_ARRAY_LAYERS,
-					})
-			})
-			.collect::<Vec<_>>();
+		let active_rendering = command_buffer.active_rendering;
 
-		let buffer_memory_barriers = planned
-			.buffer_barriers
-			.iter()
-			.map(|barrier| {
-				vk::BufferMemoryBarrier2::default()
-					.src_stage_mask(barrier.src_stage)
-					.src_access_mask(barrier.src_access)
-					.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-					.dst_stage_mask(barrier.dst_stage)
-					.dst_access_mask(barrier.dst_access)
-					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-					.buffer(barrier.buffer)
-					.offset(barrier.offset)
-					.size(barrier.size)
-			})
-			.collect::<Vec<_>>();
+		if active_rendering {
+			if planned
+				.image_barriers
+				.iter()
+				.any(|barrier| barrier.old_layout != barrier.new_layout)
+			{
+				eprintln!(
+					"Unable to transition image layout inside an active render pass. The most likely cause is that a graphics draw samples or stores an image that was not transitioned before vkCmdBeginRendering."
+				);
+			}
 
-		let memory_barriers = planned
-			.memory_barriers
+			let new_states = planned.state_updates;
+			let buffer_state_updates = planned.buffer_state_updates;
+
+			// Dynamic rendering without dynamicRenderingLocalRead cannot call vkCmdPipelineBarrier2 at
+			// all while rendering is active. The state cache is still advanced so later passes do not
+			// repeatedly try to emit the same invalid in-render-pass barrier.
+			return Box::new(move |s: &mut Self| {
+				for (handle, state) in new_states {
+					s.states.insert(handle, state);
+				}
+				for (handle, states) in buffer_state_updates {
+					s.buffer_states.insert(handle, states);
+				}
+			});
+		}
+
+		let folded_memory_barriers = planned.memory_barriers;
+
+		let image_memory_barriers = if active_rendering {
+			Vec::new()
+		} else {
+			planned
+				.image_barriers
+				.iter()
+				.map(|barrier| {
+					vk::ImageMemoryBarrier2::default()
+						.old_layout(barrier.old_layout)
+						.src_stage_mask(barrier.src_stage)
+						.src_access_mask(barrier.src_access)
+						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+						.new_layout(barrier.new_layout)
+						.dst_stage_mask(barrier.dst_stage)
+						.dst_access_mask(barrier.dst_access)
+						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+						.image(barrier.image)
+						.subresource_range(vk::ImageSubresourceRange {
+							aspect_mask: barrier.aspect_mask,
+							base_mip_level: 0,
+							level_count: vk::REMAINING_MIP_LEVELS,
+							base_array_layer: 0,
+							layer_count: vk::REMAINING_ARRAY_LAYERS,
+						})
+				})
+				.collect::<Vec<_>>()
+		};
+
+		let buffer_memory_barriers = if active_rendering {
+			Vec::new()
+		} else {
+			planned
+				.buffer_barriers
+				.iter()
+				.map(|barrier| {
+					vk::BufferMemoryBarrier2::default()
+						.src_stage_mask(barrier.src_stage)
+						.src_access_mask(barrier.src_access)
+						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+						.dst_stage_mask(barrier.dst_stage)
+						.dst_access_mask(barrier.dst_access)
+						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+						.buffer(barrier.buffer)
+						.offset(barrier.offset)
+						.size(barrier.size)
+				})
+				.collect::<Vec<_>>()
+		};
+
+		let memory_barriers = folded_memory_barriers
 			.iter()
 			.map(|barrier| {
 				vk::MemoryBarrier2::default()
@@ -1162,6 +1202,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.device
 				.cmd_begin_rendering(command_buffer.command_buffer, &rendering_info);
 		}
+
+		self.active_rendering = true;
 
 		self
 	}
@@ -1970,6 +2012,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 		unsafe {
 			self.device.device.cmd_end_rendering(command_buffer.command_buffer);
 		}
+		self.active_rendering = false;
 	}
 }
 
@@ -2086,6 +2129,10 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	/// Draws a render system mesh.
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
+		// Raster pipelines can read descriptor-backed resources in vertex, mesh, and fragment stages.
+		// Transition them before issuing the draw so transfer uploads are visible to shader reads.
+		self.consume_resources_current([])(self);
+
 		let command_buffer = self.get_command_buffer();
 
 		let mesh = &self.device.meshes[mesh_handle.0 as usize];
@@ -2118,6 +2165,11 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
+		// Mesh shaders in the visibility pipeline read descriptor-backed storage buffers populated by
+		// transfer uploads. Without this transition, Vulkan can execute the mesh read before those
+		// transfer writes are available even though the descriptor set itself is correctly bound.
+		self.consume_resources_current([])(self);
+
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
 
@@ -2127,6 +2179,9 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 	}
 
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
+		// Draw calls use the currently bound pipeline descriptors just like compute dispatches do.
+		self.consume_resources_current([])(self);
+
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
 
@@ -2149,6 +2204,9 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		vertex_offset: i32,
 		first_instance: u32,
 	) {
+		// Draw calls use the currently bound pipeline descriptors just like compute dispatches do.
+		self.consume_resources_current([])(self);
+
 		let command_buffer = self.get_command_buffer();
 		let command_buffer_handle = command_buffer.command_buffer;
 

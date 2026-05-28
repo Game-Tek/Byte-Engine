@@ -2122,13 +2122,11 @@ impl Context {
 	}
 
 	fn flush_pending_uploads(&mut self, queue_handle: Option<graphics_hardware_interface::QueueHandle>, sequence_index: u8) {
-		let pending_buffers = self.pending_buffer_syncs.drain(..).collect::<Vec<_>>();
-		for buffer_handle in pending_buffers {
+		while let Some(buffer_handle) = self.pending_buffer_syncs.pop_front() {
 			self.upload_buffer_from_staging(buffer_handle, queue_handle, sequence_index);
 		}
 
-		let pending_images = self.pending_image_syncs.drain(..).collect::<Vec<_>>();
-		for image_handle in pending_images {
+		while let Some(image_handle) = self.pending_image_syncs.pop_front() {
 			self.upload_image_from_staging(image_handle, queue_handle, sequence_index);
 		}
 	}

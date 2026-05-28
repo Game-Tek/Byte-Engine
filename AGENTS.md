@@ -18,3 +18,6 @@ When writing errors, first write a succint error message and then a sentence wit
 - If I ask you to defer any task, write that into the todo.md file
 - Always leave comments for any non-trivial code
 - Always prefer breaking APIs to ad-hoc changes. The app is not shipped yet. We can make all breaking changes.
+
+# Best Practices
+- Avoid allocations. Specially transient ones.

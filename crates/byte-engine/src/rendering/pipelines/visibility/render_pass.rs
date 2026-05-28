@@ -418,7 +418,7 @@ impl ShadowPass {
 			c.start_region("Shadow Map");
 
 			for cascade in 0..SHADOW_CASCADE_COUNT {
-				c.start_region(&format!("Cascade {}", cascade));
+				c.start_region("Cascade");
 
 				let attachments = [ghi::AttachmentInformation::new(
 					shadow_map,
@@ -1083,7 +1083,7 @@ impl MaterialEvaluationPass {
 			c.start_region("Opaque");
 
 			for (name, index, pipeline) in &opaque_materials {
-				c.start_region(&format!("Material: {}", name));
+				c.start_region(name);
 				let c = c.bind_compute_pipeline(*pipeline);
 				c.bind_descriptor_sets(&[
 					base_descriptor_set,
@@ -1101,7 +1101,7 @@ impl MaterialEvaluationPass {
 
 			for (name, index, pipeline) in &transparent_materials {
 				// TODO: sort by distance to camera
-				c.start_region(&format!("Material: {}", name));
+				c.start_region(name);
 				let c = c.bind_compute_pipeline(*pipeline);
 				c.bind_descriptor_sets(&[
 					base_descriptor_set,

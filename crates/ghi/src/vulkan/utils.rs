@@ -182,6 +182,7 @@ pub(super) fn to_format(format: crate::Formats) -> vk::Format {
 		crate::Formats::Depth32 => vk::Format::D32_SFLOAT,
 		crate::Formats::U32 => vk::Format::R32_UINT,
 		crate::Formats::BC5 => vk::Format::BC5_UNORM_BLOCK,
+		crate::Formats::BC5SNORM => vk::Format::BC5_SNORM_BLOCK,
 		crate::Formats::BC7 => vk::Format::BC7_UNORM_BLOCK,
 		crate::Formats::BC7SRGB => vk::Format::BC7_SRGB_BLOCK,
 	}

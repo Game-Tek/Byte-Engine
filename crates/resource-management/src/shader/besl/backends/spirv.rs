@@ -1,43 +1,11 @@
 use std::cell::RefCell;
 
-use utils::Extent;
-
+pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledShaderBinding as Binding};
 use crate::shader::{
 	besl::{backends::glsl::GLSLShaderGenerator, evaluation::ProgramEvaluation},
-	generator::{ShaderGenerationSettings, ShaderGenerator},
+	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
 	glsl_compile,
 };
-
-pub struct Binding {
-	pub binding: u32,
-	pub set: u32,
-	pub read: bool,
-	pub write: bool,
-}
-
-pub struct GeneratedShader {
-	binary: Box<[u8]>,
-	bindings: Vec<Binding>,
-	extent: Option<Extent>,
-}
-
-impl GeneratedShader {
-	pub fn extent(&self) -> Option<Extent> {
-		self.extent
-	}
-
-	pub fn binary(&self) -> &[u8] {
-		&self.binary
-	}
-
-	pub fn into_binary(self) -> Box<[u8]> {
-		self.binary
-	}
-
-	pub fn bindings(&self) -> &[Binding] {
-		&self.bindings
-	}
-}
 
 /// The `Generator` generates SPIR-V shaders from Byte Engine Shader Language program descriptions.
 /// > [!IMPORTANT]
@@ -116,22 +84,17 @@ impl Generator {
 
 		let bindings = program_evaluation.bindings();
 
-		return Ok(GeneratedShader {
-			binary: Box::from(compilation_artifact.as_binary_u8()),
-			bindings: bindings
+		return Ok(CompiledShader::new(
+			Box::from(compilation_artifact.as_binary_u8()),
+			bindings
 				.iter()
-				.map(|b| Binding {
-					binding: b.binding,
-					set: b.set,
-					read: b.read,
-					write: b.write,
-				})
+				.map(|b| CompiledShaderBinding::new(b.set, b.binding, b.read, b.write))
 				.collect(),
-			extent: match shader_compilation_settings.stage {
+			match shader_compilation_settings.stage {
 				crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
 				_ => None,
 			},
-		});
+		));
 	}
 }
 

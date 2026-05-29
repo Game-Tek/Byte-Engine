@@ -7,9 +7,7 @@ pub mod shader_generator;
 
 pub use pipeline_manager::VisibilityPipelineManager;
 use resource_management::shader::{
-	besl::backends::glsl::GLSLShaderGenerator,
-	besl::backends::platform::GeneratedPlatformShader,
-	besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
+	besl::backends::{glsl::GLSLShaderGenerator, msl::MSLShaderGenerator, platform::PlatformShaderLanguage},
 	generator::ShaderGenerationSettings,
 };
 use utils::Extent;
@@ -17,6 +15,31 @@ use utils::Extent;
 use crate::rendering::{
 	common_shader_generator::CommonShaderScope, pipelines::visibility::shader_generator::VisibilityShaderScope,
 };
+
+/// The `GeneratedVisibilityShader` struct stores visibility shader source for APIs that still compile inline shaders.
+pub struct GeneratedVisibilityShader {
+	language: PlatformShaderLanguage,
+	entry_point: &'static str,
+	source: String,
+}
+
+impl GeneratedVisibilityShader {
+	pub fn language(&self) -> PlatformShaderLanguage {
+		self.language
+	}
+
+	pub fn source(&self) -> &str {
+		&self.source
+	}
+
+	pub fn into_source(self) -> String {
+		self.source
+	}
+
+	pub fn entry_point(&self) -> &'static str {
+		self.entry_point
+	}
+}
 
 /* BASE */
 /// Binding to access the views which may be used to render the scene.
@@ -164,15 +187,8 @@ fn generate_mesh_source_for_language(
 	language: PlatformShaderLanguage,
 ) -> String {
 	let main_node = build_mesh_program_from_source(source, push_constant);
-	let mut shader_generator = PlatformShaderGenerator::new();
-	let generated = shader_generator
-		.generate_for_language(
-			language,
-			&ShaderGenerationSettings::mesh(64, 126, Extent::line(128)),
-			&main_node,
-		)
-		.unwrap()
-		.into_source();
+	let settings = ShaderGenerationSettings::mesh(64, 126, Extent::line(128));
+	let generated = generate_shader_source_for_language(language, &settings, &main_node).unwrap();
 
 	if language == PlatformShaderLanguage::Msl && !generated.contains("struct VertexOutput") {
 		return generated.replacen(
@@ -945,11 +961,11 @@ pub fn get_pixel_mapping_source() -> String {
 	get_pixel_mapping_shader().into_source()
 }
 
-pub fn get_pixel_mapping_shader() -> GeneratedPlatformShader {
+pub fn get_pixel_mapping_shader() -> GeneratedVisibilityShader {
 	generate_pixel_mapping_shader_for_language(PlatformShaderLanguage::current_platform())
 }
 
-fn generate_pixel_mapping_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
+fn generate_pixel_mapping_shader_for_language(language: PlatformShaderLanguage) -> GeneratedVisibilityShader {
 	generate_compute_shader_for_language(language, Extent::square(32), build_pixel_mapping_program)
 }
 
@@ -957,13 +973,27 @@ fn generate_compute_shader_for_language(
 	language: PlatformShaderLanguage,
 	threadgroup_extent: Extent,
 	build_program: fn() -> besl::NodeReference,
-) -> GeneratedPlatformShader {
+) -> GeneratedVisibilityShader {
 	let main_node = build_program();
-	let mut shader_generator = PlatformShaderGenerator::new();
+	let settings = ShaderGenerationSettings::compute(threadgroup_extent);
+	let source = generate_shader_source_for_language(language, &settings, &main_node).unwrap();
 
-	shader_generator
-		.generate_for_language(language, &ShaderGenerationSettings::compute(threadgroup_extent), &main_node)
-		.unwrap()
+	GeneratedVisibilityShader {
+		language,
+		entry_point: language.entry_point(),
+		source,
+	}
+}
+
+fn generate_shader_source_for_language(
+	language: PlatformShaderLanguage,
+	settings: &ShaderGenerationSettings,
+	main_node: &besl::NodeReference,
+) -> Result<String, ()> {
+	match language {
+		PlatformShaderLanguage::Glsl => GLSLShaderGenerator::new().generate(settings, main_node),
+		PlatformShaderLanguage::Msl => MSLShaderGenerator::new().generate(settings, main_node),
+	}
 }
 
 fn build_pixel_mapping_program() -> besl::NodeReference {
@@ -1159,27 +1189,27 @@ fn build_pixel_mapping_root() -> besl::Node {
 	root
 }
 
-pub fn get_gtao_blur_shader() -> GeneratedPlatformShader {
+pub fn get_gtao_blur_shader() -> GeneratedVisibilityShader {
 	generate_gtao_blur_shader_for_language(PlatformShaderLanguage::current_platform())
 }
 
-pub fn get_gtao_shader() -> GeneratedPlatformShader {
+pub fn get_gtao_shader() -> GeneratedVisibilityShader {
 	generate_gtao_shader_for_language(PlatformShaderLanguage::current_platform())
 }
 
-pub fn get_gtao_bitfield_blur_x_shader() -> GeneratedPlatformShader {
+pub fn get_gtao_bitfield_blur_x_shader() -> GeneratedVisibilityShader {
 	generate_gtao_bitfield_blur_x_shader_for_language(PlatformShaderLanguage::current_platform())
 }
 
-pub fn get_gtao_bitfield_shader() -> GeneratedPlatformShader {
+pub fn get_gtao_bitfield_shader() -> GeneratedVisibilityShader {
 	generate_gtao_bitfield_shader_for_language(PlatformShaderLanguage::current_platform())
 }
 
-pub(crate) fn generate_gtao_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
+pub(crate) fn generate_gtao_shader_for_language(language: PlatformShaderLanguage) -> GeneratedVisibilityShader {
 	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_program)
 }
 
-pub(crate) fn generate_gtao_bitfield_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
+pub(crate) fn generate_gtao_bitfield_shader_for_language(language: PlatformShaderLanguage) -> GeneratedVisibilityShader {
 	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_bitfield_program)
 }
 
@@ -1462,11 +1492,11 @@ fn build_gtao_program() -> besl::NodeReference {
 		.unwrap()
 }
 
-pub(crate) fn generate_gtao_blur_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
+pub(crate) fn generate_gtao_blur_shader_for_language(language: PlatformShaderLanguage) -> GeneratedVisibilityShader {
 	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_blur_program)
 }
 
-pub(crate) fn generate_gtao_bitfield_blur_x_shader_for_language(language: PlatformShaderLanguage) -> GeneratedPlatformShader {
+pub(crate) fn generate_gtao_bitfield_blur_x_shader_for_language(language: PlatformShaderLanguage) -> GeneratedVisibilityShader {
 	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_bitfield_blur_x_program)
 }
 

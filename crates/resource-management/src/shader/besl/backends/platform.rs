@@ -1,7 +1,8 @@
-use crate::shader::{
-	besl::backends::{glsl::GLSLShaderGenerator, msl::MSLShaderGenerator},
-	generator::{ShaderGenerationSettings, ShaderGenerator},
-};
+#[cfg(not(target_vendor = "apple"))]
+use crate::shader::besl::backends::spirv::SPIRVShaderGenerator;
+use crate::shader::generator::{CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator};
+#[cfg(target_vendor = "apple")]
+use crate::shader::msl_shader_compiler::MSLShaderCompiler;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlatformShaderLanguage {
@@ -34,35 +35,42 @@ impl PlatformShaderLanguage {
 	}
 }
 
-/// The `GeneratedPlatformShader` struct stores the shader source emitted for the selected platform language.
-pub struct GeneratedPlatformShader {
-	language: PlatformShaderLanguage,
-	entry_point: &'static str,
-	source: String,
+/// The `GeneratedCompiledPlatformShader` struct stores compiled shader bytes and reflection metadata for the active platform.
+pub struct GeneratedCompiledPlatformShader {
+	binary: Box<[u8]>,
+	bindings: Vec<CompiledShaderBinding>,
+	extent: Option<utils::Extent>,
+	entry_point: Option<&'static str>,
 }
 
-impl GeneratedPlatformShader {
-	pub fn language(&self) -> PlatformShaderLanguage {
-		self.language
+impl GeneratedCompiledPlatformShader {
+	pub fn binary(&self) -> &[u8] {
+		&self.binary
 	}
 
-	pub fn source(&self) -> &str {
-		&self.source
+	pub fn into_binary(self) -> Box<[u8]> {
+		self.binary
 	}
 
-	pub fn into_source(self) -> String {
-		self.source
+	pub fn bindings(&self) -> &[CompiledShaderBinding] {
+		&self.bindings
 	}
 
-	pub fn entry_point(&self) -> &'static str {
+	pub fn extent(&self) -> Option<utils::Extent> {
+		self.extent
+	}
+
+	pub fn entry_point(&self) -> Option<&'static str> {
 		self.entry_point
 	}
 }
 
-/// The `Generator` struct selects the shader source generator that matches the current platform.
+/// The `Generator` struct selects the compiled shader backend that matches the current platform.
 pub struct Generator {
-	glsl_shader_generator: GLSLShaderGenerator,
-	msl_shader_generator: MSLShaderGenerator,
+	#[cfg(not(target_vendor = "apple"))]
+	spirv_shader_generator: SPIRVShaderGenerator,
+	#[cfg(target_vendor = "apple")]
+	msl_shader_compiler: MSLShaderCompiler,
 }
 
 impl ShaderGenerator for Generator {}
@@ -70,17 +78,19 @@ impl ShaderGenerator for Generator {}
 impl Generator {
 	pub fn new() -> Self {
 		Self {
-			glsl_shader_generator: GLSLShaderGenerator::new(),
-			msl_shader_generator: MSLShaderGenerator::new(),
+			#[cfg(not(target_vendor = "apple"))]
+			spirv_shader_generator: SPIRVShaderGenerator::new(),
+			#[cfg(target_vendor = "apple")]
+			msl_shader_compiler: MSLShaderCompiler::new(),
 		}
 	}
 
-	/// Generates platform-native shader source for the provided BESL entry point.
+	/// Generates a compiled shader artifact for the current platform.
 	pub fn generate(
 		&mut self,
 		shader_generation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
-	) -> Result<GeneratedPlatformShader, ()> {
+	) -> Result<GeneratedCompiledPlatformShader, String> {
 		self.generate_for_language(
 			PlatformShaderLanguage::current_platform(),
 			shader_generation_settings,
@@ -88,37 +98,54 @@ impl Generator {
 		)
 	}
 
+	/// Generates a compiled shader artifact for the backend associated with `language`.
 	pub fn generate_for_language(
 		&mut self,
 		language: PlatformShaderLanguage,
 		shader_generation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
-	) -> Result<GeneratedPlatformShader, ()> {
-		let source = match language {
-			PlatformShaderLanguage::Glsl => self
-				.glsl_shader_generator
-				.generate(shader_generation_settings, main_function_node)?,
-			PlatformShaderLanguage::Msl => self
-				.msl_shader_generator
-				.generate(shader_generation_settings, main_function_node)?,
-		};
-		let entry_point = language.entry_point();
+	) -> Result<GeneratedCompiledPlatformShader, String> {
+		match language {
+			#[cfg(not(target_vendor = "apple"))]
+			PlatformShaderLanguage::Glsl => {
+				let (binary, bindings, extent) = self
+					.spirv_shader_generator
+					.generate(shader_generation_settings, main_function_node)?
+					.into_parts();
 
-		Ok(GeneratedPlatformShader {
-			language,
-			entry_point,
-			source,
-		})
+				Ok(GeneratedCompiledPlatformShader {
+					binary,
+					bindings,
+					extent,
+					entry_point: None,
+				})
+			}
+			#[cfg(target_vendor = "apple")]
+			PlatformShaderLanguage::Msl => {
+				let (binary, bindings, extent) = self
+					.msl_shader_compiler
+					.generate(shader_generation_settings, main_function_node)?
+					.into_parts();
+
+				Ok(GeneratedCompiledPlatformShader {
+					binary,
+					bindings,
+					extent,
+					entry_point: Some(PlatformShaderLanguage::Msl.entry_point()),
+				})
+			}
+			_ => Err(
+				"Unsupported platform shader language. The most likely cause is that this compiler backend is gated off for the current target platform."
+					.to_string(),
+			),
+		}
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::{Generator, PlatformShaderLanguage};
-	use crate::shader::{
-		besl::backends::{glsl::GLSLShaderGenerator, msl::MSLShaderGenerator},
-		generator::{self, ShaderGenerationSettings},
-	};
+	use crate::shader::generator::{self, ShaderGenerationSettings};
 
 	#[test]
 	fn current_platform_language_matches_target() {
@@ -130,29 +157,20 @@ mod tests {
 	}
 
 	#[test]
-	fn generate_uses_current_platform_generator() {
+	fn generate_uses_current_platform_compiler() {
 		let main = generator::tests::fragment_shader();
 		let settings = ShaderGenerationSettings::fragment();
 		let mut generator = Generator::new();
 		let generated = generator
 			.generate(&settings, &main)
-			.expect("Failed to generate platform shader source");
+			.expect("Failed to generate compiled platform shader");
 
-		let expected = match PlatformShaderLanguage::current_platform() {
-			PlatformShaderLanguage::Glsl => GLSLShaderGenerator::new()
-				.generate(&settings, &main)
-				.expect("Failed to generate expected GLSL shader"),
-			PlatformShaderLanguage::Msl => MSLShaderGenerator::new()
-				.generate(&settings, &main)
-				.expect("Failed to generate expected MSL shader"),
-		};
-
-		assert_eq!(generated.language(), PlatformShaderLanguage::current_platform());
-		assert_eq!(generated.source(), expected);
-		assert_eq!(
-			generated.entry_point(),
-			PlatformShaderLanguage::current_platform().entry_point()
-		);
+		if cfg!(target_vendor = "apple") {
+			assert_eq!(generated.entry_point(), Some(PlatformShaderLanguage::Msl.entry_point()));
+		} else {
+			assert_eq!(generated.entry_point(), None);
+		}
+		assert!(!generated.binary().is_empty());
 	}
 }
 

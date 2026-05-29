@@ -10,10 +10,7 @@ use super::{
 	asset_manager::AssetManager,
 	ResourceId,
 };
-#[cfg(not(target_vendor = "apple"))]
-use crate::shader::besl::backends::spirv::SPIRVShaderGenerator;
-#[cfg(target_vendor = "apple")]
-use crate::shader::msl_shader_compiler::MSLShaderCompiler;
+use crate::shader::besl::backends::platform::PlatformShaderGenerator;
 use crate::{
 	asset,
 	r#async::{spawn_cpu_task, BoxedFuture},
@@ -292,13 +289,7 @@ pub(crate) fn compile_shader_program(
 		}
 	};
 
-	#[cfg(target_vendor = "apple")]
-	let shader_program = MSLShaderCompiler::new().generate(&settings, &main_node).map_err(|e| {
-		log::error!("Error compiling shader: {:#?}", e);
-	})?;
-
-	#[cfg(not(target_vendor = "apple"))]
-	let shader_program = SPIRVShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {
+	let shader_program = PlatformShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {
 		log::error!("Error compiling shader: {:#?}", e);
 	})?;
 
@@ -320,16 +311,19 @@ pub(crate) fn compile_shader_program(
 			.collect(),
 	};
 
+	let artifact = if let Some(entry_point) = shader_program.entry_point() {
+		ShaderArtifact::Mtlb {
+			entry_point: entry_point.to_string(),
+		}
+	} else {
+		ShaderArtifact::Spirv
+	};
+
 	let shader = Shader {
 		id: name.to_string(),
 		stage,
 		interface,
-		#[cfg(not(target_vendor = "apple"))]
-		artifact: ShaderArtifact::Spirv,
-		#[cfg(target_vendor = "apple")]
-		artifact: ShaderArtifact::Mtlb {
-			entry_point: "besl_main".to_string(),
-		},
+		artifact,
 		source_hash: 0,
 	};
 

@@ -6,43 +6,11 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-use utils::Extent;
-
+pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledShaderBinding as Binding};
 use crate::shader::{
 	besl::backends::msl::MSLShaderGenerator,
-	generator::{ShaderGenerationSettings, ShaderGenerator},
+	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
 };
-
-pub struct Binding {
-	pub binding: u32,
-	pub set: u32,
-	pub read: bool,
-	pub write: bool,
-}
-
-pub struct GeneratedShader {
-	binary: Box<[u8]>,
-	bindings: Vec<Binding>,
-	extent: Option<Extent>,
-}
-
-impl GeneratedShader {
-	pub fn extent(&self) -> Option<Extent> {
-		self.extent
-	}
-
-	pub fn binary(&self) -> &[u8] {
-		&self.binary
-	}
-
-	pub fn into_binary(self) -> Box<[u8]> {
-		self.binary
-	}
-
-	pub fn bindings(&self) -> &[Binding] {
-		&self.bindings
-	}
-}
 
 /// The `Compiler` struct compiles Metal Shading Language shaders into binary libraries.
 pub struct Compiler {
@@ -99,17 +67,17 @@ impl Compiler {
 			}
 		});
 
-		Ok(GeneratedShader {
+		Ok(CompiledShader::new(
 			binary,
 			bindings,
-			extent: match shader_compilation_settings.stage {
+			match shader_compilation_settings.stage {
 				crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
 				_ => None,
 			},
-		})
+		))
 	}
 
-	fn build_graph(&mut self, bindings: &mut Vec<Binding>, node: &besl::NodeReference) {
+	fn build_graph(&mut self, bindings: &mut Vec<CompiledShaderBinding>, node: &besl::NodeReference) {
 		let node_borrow = RefCell::borrow(&node);
 		let node_ref = node_borrow.node();
 
@@ -187,12 +155,7 @@ impl Compiler {
 				..
 			} => {
 				if let None = bindings.iter().find(|b| b.binding == *binding && b.set == *set) {
-					bindings.push(Binding {
-						binding: *binding,
-						set: *set,
-						read: *read,
-						write: *write,
-					});
+					bindings.push(CompiledShaderBinding::new(*set, *binding, *read, *write));
 				}
 			}
 			besl::Nodes::Raw { input, output, .. } => {

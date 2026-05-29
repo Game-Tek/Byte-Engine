@@ -26,11 +26,11 @@ use crate::rendering::pipelines::visibility::{
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
 
-/// Converts a [`resource_management::shader::besl::backends::platform::GeneratedPlatformShader`] to a
+/// Converts a [`crate::rendering::pipelines::visibility::GeneratedVisibilityShader`] to a
 /// [`ghi::shader::ShaderSource`] so callers can pass generated shaders to `ghi::shader::compile` without
 /// manually inspecting the language variant.
 fn generated_platform_shader_source(
-	shader: &resource_management::shader::besl::backends::platform::GeneratedPlatformShader,
+	shader: &crate::rendering::pipelines::visibility::GeneratedVisibilityShader,
 ) -> ghi::shader::ShaderSource<'_> {
 	use resource_management::shader::besl::backends::platform::PlatformShaderLanguage;
 	match shader.language() {

@@ -7,6 +7,63 @@ use crate::shader::besl::graph::{build_graph, topological_sort};
 /// Generates a graphics API consumable shader from a BESL shader program definition.
 pub trait Generator {}
 
+/// The `CompiledShaderBinding` struct describes a descriptor binding used by a compiled shader artifact.
+#[derive(Clone, Debug)]
+pub struct CompiledShaderBinding {
+	pub binding: u32,
+	pub set: u32,
+	pub read: bool,
+	pub write: bool,
+}
+
+impl CompiledShaderBinding {
+	pub fn new(set: u32, binding: u32, read: bool, write: bool) -> Self {
+		Self {
+			binding,
+			set,
+			read,
+			write,
+		}
+	}
+}
+
+/// The `CompiledShader` struct stores compiled shader bytes and reflection metadata shared by compiler backends.
+pub struct CompiledShader {
+	binary: Box<[u8]>,
+	bindings: Vec<CompiledShaderBinding>,
+	extent: Option<Extent>,
+}
+
+impl CompiledShader {
+	pub fn new(binary: Box<[u8]>, bindings: Vec<CompiledShaderBinding>, extent: Option<Extent>) -> Self {
+		Self {
+			binary,
+			bindings,
+			extent,
+		}
+	}
+
+	pub fn extent(&self) -> Option<Extent> {
+		self.extent
+	}
+
+	pub fn binary(&self) -> &[u8] {
+		&self.binary
+	}
+
+	pub fn into_binary(self) -> Box<[u8]> {
+		self.binary
+	}
+
+	pub fn into_parts(self) -> (Box<[u8]>, Vec<CompiledShaderBinding>, Option<Extent>) {
+		(self.binary, self.bindings, self.extent)
+	}
+
+	pub fn bindings(&self) -> &[CompiledShaderBinding] {
+		&self.bindings
+	}
+}
+
 pub enum Stages {
 	Vertex,
 	Compute {

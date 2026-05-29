@@ -9,6 +9,7 @@
 #![feature(once_cell_try)]
 #![feature(ascii_char)]
 #![feature(portable_simd)]
+#![feature(allocator_api)]
 
 use std::any::Any;
 

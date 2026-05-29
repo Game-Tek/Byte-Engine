@@ -1,11 +1,4 @@
-use std::{cell::RefCell, collections::BTreeMap, fmt::Write as _};
-
-use crate::shader::generator::{
-	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting,
-	ShaderGenerationSettings, ShaderGenerator, Stages,
-};
-
-/// The `Generator` struct generates Metal Shading Language shaders from BESL ASTs.
+/// The `Generator` struct exists to generate Metal Shading Language shaders from BESL ASTs.
 ///
 /// Raster-stage IO uses conventional BESL names for Metal semantics. Vertex inputs named
 /// `vertex_id` and `instance_id` are emitted as entry-point parameters with `[[vertex_id]]` and
@@ -18,12 +11,13 @@ use crate::shader::generator::{
 /// # Parameters
 ///
 /// - *minified*: Controls whether the shader string output is minified. Is `true` by default in release builds.
-pub struct Generator {
+pub struct Generator<A: Allocator + Clone = Global> {
+	allocator: A,
 	minified: bool,
 	compute_binding_mode: ComputeBindingMode,
 	in_compute_body: bool,
-	compute_stage_context: Option<ComputeStageContext>,
-	mesh_stage_context: Option<MeshStageContext>,
+	compute_stage_context: Option<ComputeStageContext<A>>,
+	mesh_stage_context: Option<MeshStageContext<A>>,
 	in_buffer_binding_struct: bool,
 }
 
@@ -36,34 +30,42 @@ pub enum ComputeBindingMode {
 }
 
 #[derive(Clone, Debug)]
-struct MeshStageContext {
-	binding_sets: Vec<u32>,
+struct MeshStageContext<A: Allocator + Clone> {
+	binding_sets: Vec<u32, A>,
 	has_push_constant: bool,
 	maximum_vertices: u32,
 	maximum_primitives: u32,
 }
 
 #[derive(Clone, Debug)]
-struct ComputeStageContext {
-	binding_sets: Vec<u32>,
+struct ComputeStageContext<A: Allocator + Clone> {
+	binding_sets: Vec<u32, A>,
 	has_push_constant: bool,
 }
 
-struct ClassifiedNodes<'a> {
-	bindings: Vec<&'a besl::NodeReference>,
-	inputs: Vec<&'a besl::NodeReference>,
-	outputs: Vec<&'a besl::NodeReference>,
-	declarations: Vec<&'a besl::NodeReference>,
-	functions: Vec<&'a besl::NodeReference>,
+struct ClassifiedNodes<'a, A: Allocator + Clone> {
+	bindings: Vec<&'a besl::NodeReference, A>,
+	inputs: Vec<&'a besl::NodeReference, A>,
+	outputs: Vec<&'a besl::NodeReference, A>,
+	declarations: Vec<&'a besl::NodeReference, A>,
+	functions: Vec<&'a besl::NodeReference, A>,
 	push_constant: Option<&'a besl::NodeReference>,
 }
 
-impl ShaderGenerator for Generator {}
+impl<A: Allocator + Clone> ShaderGenerator for Generator<A> {}
 
-impl Generator {
+impl Generator<Global> {
 	/// Creates a new Generator.
 	pub fn new() -> Self {
+		Self::new_in(Global)
+	}
+}
+
+impl<A: Allocator + Clone> Generator<A> {
+	/// Creates a new Generator with the allocator used for transient generation buffers.
+	pub fn new_in(allocator: A) -> Self {
 		Generator {
+			allocator,
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 			compute_binding_mode: ComputeBindingMode::ArgumentBuffers,
 			in_compute_body: false,
@@ -83,8 +85,15 @@ impl Generator {
 		self
 	}
 
+	pub fn allocator(&self) -> &A {
+		&self.allocator
+	}
+
 	fn function_requires_compute_context(&self, function_node: &besl::NodeReference) -> bool {
-		fn node_requires_compute_context(node: &besl::NodeReference, visited: &mut Vec<besl::NodeReference>) -> bool {
+		fn node_requires_compute_context<A: Allocator + Clone>(
+			node: &besl::NodeReference,
+			visited: &mut Vec<besl::NodeReference, A>,
+		) -> bool {
 			if visited.iter().any(|visited_node| visited_node == node) {
 				return false;
 			}
@@ -170,11 +179,11 @@ impl Generator {
 			result
 		}
 
-		node_requires_compute_context(function_node, &mut Vec::new())
+		node_requires_compute_context(function_node, &mut Vec::new_in(self.allocator.clone()))
 	}
 }
 
-impl Generator {
+impl<A: Allocator + Clone> Generator<A> {
 	/// Generates an MSL shader from a BESL AST.
 	///
 	/// # Arguments
@@ -194,7 +203,28 @@ impl Generator {
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
-		let order = ordered_shader_nodes(main_function_node, "MSL");
+		self.generate_in(shader_compilation_settings, main_function_node, self.allocator.clone())
+	}
+
+	/// Generates an MSL shader using `allocator` for temporary graph and classification storage.
+	pub fn generate_in(
+		&mut self,
+		shader_compilation_settings: &ShaderGenerationSettings,
+		main_function_node: &besl::NodeReference,
+		allocator: A,
+	) -> Result<String, ()> {
+		let previous_allocator = std::mem::replace(&mut self.allocator, allocator);
+		let result = self.generate_with_current_allocator(shader_compilation_settings, main_function_node);
+		self.allocator = previous_allocator;
+		result
+	}
+
+	fn generate_with_current_allocator(
+		&mut self,
+		shader_compilation_settings: &ShaderGenerationSettings,
+		main_function_node: &besl::NodeReference,
+	) -> Result<String, ()> {
+		let order = ordered_shader_nodes_in(main_function_node, "MSL", self.allocator.clone());
 		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment) {
 			if let Some(source) = Self::find_full_source_passthrough(main_function_node) {
 				return Ok(source);
@@ -277,13 +307,13 @@ impl Generator {
 		string.push_str(")]]");
 	}
 
-	fn classify_nodes<'a>(order: &'a [besl::NodeReference]) -> ClassifiedNodes<'a> {
+	fn classify_nodes<'a>(&self, order: &'a [besl::NodeReference]) -> ClassifiedNodes<'a, A> {
 		let mut nodes = ClassifiedNodes {
-			bindings: Vec::new(),
-			inputs: Vec::new(),
-			outputs: Vec::new(),
-			declarations: Vec::new(),
-			functions: Vec::new(),
+			bindings: Vec::new_in(self.allocator.clone()),
+			inputs: Vec::new_in(self.allocator.clone()),
+			outputs: Vec::new_in(self.allocator.clone()),
+			declarations: Vec::new_in(self.allocator.clone()),
+			functions: Vec::new_in(self.allocator.clone()),
 			push_constant: None,
 		};
 
@@ -311,6 +341,14 @@ impl Generator {
 		nodes
 	}
 
+	fn collect_binding_set_ids(&self, binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference, A>>) -> Vec<u32, A> {
+		let mut ids = Vec::with_capacity_in(binding_sets.len(), self.allocator.clone());
+		for &set in binding_sets.keys() {
+			ids.push(set);
+		}
+		ids
+	}
+
 	fn emit_declarations(&mut self, string: &mut String, nodes: &[&besl::NodeReference]) {
 		for node in nodes {
 			self.emit_node_string(string, node);
@@ -335,7 +373,7 @@ impl Generator {
 		order: &[besl::NodeReference],
 		main_function_node: &besl::NodeReference,
 	) {
-		let nodes = Self::classify_nodes(order);
+		let nodes = self.classify_nodes(order);
 		self.emit_declarations(string, &nodes.declarations);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
@@ -497,7 +535,7 @@ impl Generator {
 		order: &[besl::NodeReference],
 		main_function_node: &besl::NodeReference,
 	) {
-		let nodes = Self::classify_nodes(order);
+		let nodes = self.classify_nodes(order);
 		self.emit_declarations(string, &nodes.declarations);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
@@ -608,7 +646,7 @@ impl Generator {
 		main_function_node: &besl::NodeReference,
 		inputs: &[&besl::NodeReference],
 		outputs: &[&besl::NodeReference],
-		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference>>,
+		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference, A>>,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function { statements, .. } = node.node() else {
@@ -658,7 +696,7 @@ impl Generator {
 		main_function_node: &besl::NodeReference,
 		inputs: &[&besl::NodeReference],
 		outputs: &[&besl::NodeReference],
-		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference>>,
+		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference, A>>,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function {
@@ -730,7 +768,7 @@ impl Generator {
 		order: &[besl::NodeReference],
 		main_function_node: &besl::NodeReference,
 	) {
-		let nodes = Self::classify_nodes(order);
+		let nodes = self.classify_nodes(order);
 		self.emit_declarations(string, &nodes.declarations);
 		self.emit_declarations(string, &nodes.inputs);
 		self.emit_declarations(string, &nodes.outputs);
@@ -741,7 +779,7 @@ impl Generator {
 
 		let binding_sets = self.group_bindings_by_set(nodes.bindings.as_slice());
 		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
-			binding_sets: binding_sets.keys().copied().collect(),
+			binding_sets: self.collect_binding_set_ids(&binding_sets),
 			has_push_constant: nodes.push_constant.is_some(),
 		});
 		let previous_in_compute_body = self.in_compute_body;
@@ -789,14 +827,14 @@ impl Generator {
 		maximum_vertices: u32,
 		maximum_primitives: u32,
 	) {
-		let nodes = Self::classify_nodes(order);
+		let nodes = self.classify_nodes(order);
 		if let Some(push_constant) = nodes.push_constant {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
 		let binding_sets = self.group_bindings_by_set(nodes.bindings.as_slice());
 		let previous_mesh_stage_context = self.mesh_stage_context.replace(MeshStageContext {
-			binding_sets: binding_sets.keys().copied().collect(),
+			binding_sets: self.collect_binding_set_ids(&binding_sets),
 			has_push_constant: nodes.push_constant.is_some(),
 			maximum_vertices,
 			maximum_primitives,
@@ -888,8 +926,11 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	fn group_bindings_by_set<'a>(&self, bindings: &[&'a besl::NodeReference]) -> BTreeMap<u32, Vec<&'a besl::NodeReference>> {
-		let mut binding_sets = BTreeMap::<u32, Vec<&besl::NodeReference>>::new();
+	fn group_bindings_by_set<'a>(
+		&self,
+		bindings: &[&'a besl::NodeReference],
+	) -> BTreeMap<u32, Vec<&'a besl::NodeReference, A>> {
+		let mut binding_sets = BTreeMap::<u32, Vec<&besl::NodeReference, A>>::new();
 
 		for binding in bindings {
 			let set = match binding.borrow().node() {
@@ -897,7 +938,10 @@ impl Generator {
 				_ => continue,
 			};
 
-			binding_sets.entry(set).or_default().push(*binding);
+			binding_sets
+				.entry(set)
+				.or_insert_with(|| Vec::new_in(self.allocator.clone()))
+				.push(*binding);
 		}
 
 		for bindings in binding_sets.values_mut() {
@@ -1100,7 +1144,7 @@ impl Generator {
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
-		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference>>,
+		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference, A>>,
 		push_constant: Option<&besl::NodeReference>,
 	) {
 		let node = RefCell::borrow(main_function_node);
@@ -1150,7 +1194,7 @@ impl Generator {
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
-		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference>>,
+		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference, A>>,
 		push_constant: Option<&besl::NodeReference>,
 		maximum_vertices: u32,
 		maximum_primitives: u32,
@@ -2174,9 +2218,9 @@ impl Generator {
 	}
 }
 
-impl crate::shader::generator::NodeEmitter for Generator {
+impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A> {
 	fn type_from_besl(source: &str) -> &str {
-		Generator::translate_type(source)
+		Generator::<A>::translate_type(source)
 	}
 	fn minified(&self) -> bool {
 		self.minified
@@ -2188,7 +2232,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		arguments: &[besl::NodeReference],
 		elements: &[besl::NodeReference],
 	) {
-		Generator::emit_intrinsic_call(self, string, intrinsic, arguments, elements)
+		Generator::<A>::emit_intrinsic_call(self, string, intrinsic, arguments, elements)
 	}
 	fn emit_function_extra_parameters(
 		&mut self,
@@ -2285,6 +2329,30 @@ mod tests {
 		assert_string_contains!(shader, "texture2d<float> texture [[texture(100)]];");
 		assert_string_contains!(shader, "sampler texture_sampler [[sampler(100)]];");
 		assert_string_contains!(shader, "void main(){buff;image;texture;}");
+	}
+
+	#[test]
+	fn generator_accepts_custom_allocator() {
+		let main = generator::tests::bindings();
+
+		let shader = Generator::new_in(std::alloc::System)
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader with custom allocator");
+
+		assert_string_contains!(shader, "struct _buff{float member;};");
+	}
+
+	#[test]
+	fn generate_accepts_call_scoped_allocator() {
+		let main = generator::tests::bindings();
+		let mut generator = Generator::new_in(std::alloc::System).minified(true);
+
+		let shader = generator
+			.generate_in(&ShaderGenerationSettings::vertex(), &main, std::alloc::System)
+			.expect("Failed to generate shader with call-scoped allocator");
+
+		assert_string_contains!(shader, "struct _buff{float member;};");
 	}
 
 	#[test]
@@ -3361,4 +3429,17 @@ struct PrimitiveOutput {
 	}
 }
 
+use std::{
+	alloc::{Allocator, Global},
+	cell::RefCell,
+	collections::BTreeMap,
+	fmt::Write as _,
+	vec::Vec,
+};
+
 pub use Generator as MSLShaderGenerator;
+
+use crate::shader::generator::{
+	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes_in, MatrixLayouts, NodeEmitter, ShaderFormatting,
+	ShaderGenerationSettings, ShaderGenerator, Stages,
+};

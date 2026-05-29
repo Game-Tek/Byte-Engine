@@ -1,8 +1,12 @@
-use std::cell::RefCell;
+use std::{
+	alloc::{Allocator, Global},
+	cell::RefCell,
+	vec::Vec as AllocVec,
+};
 
 use utils::Extent;
 
-use crate::shader::besl::graph::{build_graph, topological_sort};
+use crate::shader::besl::graph::{build_graph_in, topological_sort_in};
 
 /// Generates a graphics API consumable shader from a BESL shader program definition.
 pub trait Generator {}
@@ -164,22 +168,35 @@ impl ShaderFormatting {
 
 /// Returns the reachable non-leaf shader nodes in emission order.
 pub(crate) fn ordered_shader_nodes(main_function_node: &besl::NodeReference, backend_name: &str) -> Vec<besl::NodeReference> {
+	ordered_shader_nodes_in(main_function_node, backend_name, Global)
+}
+
+/// Returns the reachable non-leaf shader nodes in emission order using the provided allocator for transient graph storage.
+pub(crate) fn ordered_shader_nodes_in<A: Allocator + Clone>(
+	main_function_node: &besl::NodeReference,
+	backend_name: &str,
+	allocator: A,
+) -> AllocVec<besl::NodeReference, A> {
 	if !matches!(main_function_node.borrow().node(), besl::Nodes::Function { .. }) {
 		panic!(
 			"{backend_name} shader generation requires a function node as the main function. The provided node was not a function."
 		);
 	}
 
-	let graph = build_graph(main_function_node.clone());
+	let graph = build_graph_in(main_function_node.clone(), allocator.clone());
 
-	topological_sort(&graph)
-		.into_iter()
-		.filter(|node| {
+	let mut ordered = AllocVec::new_in(allocator.clone());
+	for node in topological_sort_in(&graph, allocator) {
+		let include = {
 			let borrowed = node.borrow();
 			!borrowed.node().is_leaf()
 				&& !matches!(borrowed.node(), besl::Nodes::Conditional { .. } | besl::Nodes::ForLoop { .. })
-		})
-		.collect()
+		};
+		if include {
+			ordered.push(node);
+		}
+	}
+	ordered
 }
 
 pub(crate) fn emit_comma_separated_nodes<F>(

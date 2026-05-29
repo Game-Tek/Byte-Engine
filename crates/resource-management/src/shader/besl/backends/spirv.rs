@@ -112,7 +112,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 
-		let bindings = shader.bindings;
+		let bindings = shader.bindings();
 
 		assert_eq!(bindings.len(), 3);
 

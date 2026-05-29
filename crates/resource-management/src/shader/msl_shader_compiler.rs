@@ -1,4 +1,5 @@
 use std::{
+	alloc::{Allocator, Global},
 	cell::RefCell,
 	fs,
 	path::{Path, PathBuf},
@@ -12,17 +13,25 @@ use crate::shader::{
 	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
 };
 
-/// The `Compiler` struct compiles Metal Shading Language shaders into binary libraries.
-pub struct Compiler {
-	msl_shader_generator: MSLShaderGenerator,
+/// The `Compiler` struct exists to compile Metal Shading Language shaders into binary libraries.
+pub struct Compiler<A: Allocator + Clone = Global> {
+	allocator: A,
+	msl_shader_generator: MSLShaderGenerator<A>,
 }
 
-impl ShaderGenerator for Compiler {}
+impl<A: Allocator + Clone> ShaderGenerator for Compiler<A> {}
 
-impl Compiler {
+impl Compiler<Global> {
 	pub fn new() -> Self {
+		Self::new_in(Global)
+	}
+}
+
+impl<A: Allocator + Clone> Compiler<A> {
+	pub fn new_in(allocator: A) -> Self {
 		Self {
-			msl_shader_generator: MSLShaderGenerator::new(),
+			allocator: allocator.clone(),
+			msl_shader_generator: MSLShaderGenerator::new_in(allocator),
 		}
 	}
 
@@ -31,9 +40,19 @@ impl Compiler {
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
 	) -> Result<GeneratedShader, String> {
+		self.generate_in(shader_compilation_settings, main_function_node, self.allocator.clone())
+	}
+
+	/// Generates a compiled Metal shader using `allocator` for one-call source-generation scratch.
+	pub fn generate_in(
+		&mut self,
+		shader_compilation_settings: &ShaderGenerationSettings,
+		main_function_node: &besl::NodeReference,
+		allocator: A,
+	) -> Result<GeneratedShader, String> {
 		let msl_shader = self
 			.msl_shader_generator
-			.generate(shader_compilation_settings, main_function_node)
+			.generate_in(shader_compilation_settings, main_function_node, allocator)
 			.map_err(|_| {
 				error(
 					"Failed to generate MSL shader source",

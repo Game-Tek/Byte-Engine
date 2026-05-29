@@ -121,7 +121,7 @@ impl RenderPass for AcesToneMapPass {
 		let extent = sink.extent();
 
 		Some(Box::new(move |c, _| {
-			c.region("Tonemap", |c| {
+			c.region(|label| label.write_str("Tonemap"), |c| {
 				let r = c.bind_compute_pipeline(pipeline);
 				r.bind_descriptor_sets(&[descriptor_set]);
 				r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));

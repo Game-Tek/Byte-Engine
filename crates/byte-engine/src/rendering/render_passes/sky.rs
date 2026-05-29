@@ -217,7 +217,7 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		let extent = sink.extent();
 
 		Some(Box::new(move |command_buffer, _| {
-			command_buffer.region("Sky", |command_buffer| {
+			command_buffer.region(|label| label.write_str("Sky"), |command_buffer| {
 				let pipeline = command_buffer.bind_compute_pipeline(pipeline);
 				pipeline.bind_descriptor_sets(&[descriptor_set]);
 				pipeline.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));

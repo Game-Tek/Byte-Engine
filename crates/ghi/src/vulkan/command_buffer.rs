@@ -1882,12 +1882,17 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 		self
 	}
 
-	fn start_region(&self, name: &str) {
+	fn start_region(&self, write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
 		let command_buffer = self.get_command_buffer();
+		let mut label = crate::command_buffer::DebugLabelWriter::new();
+		write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
 
-		let name = std::ffi::CString::new(name).unwrap();
-
-		let marker_info = vk::DebugUtilsLabelEXT::default().label_name(name.as_c_str());
+		// Vulkan requires a null-terminated label that remains alive for the duration of the call.
+		label.null_terminate();
+		let name = std::ffi::CStr::from_bytes_with_nul(label.as_bytes()).expect(
+			"Invalid debug label. The label most likely contains an interior null byte.",
+		);
+		let marker_info = vk::DebugUtilsLabelEXT::default().label_name(name);
 
 		#[cfg(debug_assertions)]
 		unsafe {
@@ -1897,8 +1902,12 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 		}
 	}
 
-	fn region(&mut self, name: &str, f: impl FnOnce(&mut Self)) {
-		self.start_region(name);
+	fn region(
+		&mut self,
+		write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result,
+		f: impl FnOnce(&mut Self),
+	) {
+		self.start_region(write_label);
 		f(self);
 		self.end_region();
 	}

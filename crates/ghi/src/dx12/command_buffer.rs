@@ -200,16 +200,22 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		self
 	}
 
-	fn start_region(&self, name: &str) {
-		self.device.begin_debug_region(self.command_buffer, name);
+	fn start_region(&self, write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
+		let mut label = crate::command_buffer::DebugLabelWriter::new();
+		write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
+		self.device.begin_debug_region(self.command_buffer, label.as_str());
 	}
 
 	fn end_region(&self) {
 		self.device.end_debug_region(self.command_buffer);
 	}
 
-	fn region(&mut self, name: &str, f: impl FnOnce(&mut Self)) {
-		self.start_region(name);
+	fn region(
+		&mut self,
+		write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result,
+		f: impl FnOnce(&mut Self),
+	) {
+		self.start_region(write_label);
 		f(self);
 		self.end_region();
 	}

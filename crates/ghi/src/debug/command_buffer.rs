@@ -92,11 +92,16 @@ impl<'a> CommandBufferRecording<'a> {
 	) {
 	}
 
-	pub fn start_region(&self, _name: &str) {}
+	pub fn start_region(&self, _write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {}
 
 	pub fn end_region(&self) {}
 
-	pub fn region(&mut self, _name: &str, _f: impl FnOnce(&mut Self)) {}
+	pub fn region(
+		&mut self,
+		_write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result,
+		_f: impl FnOnce(&mut Self),
+	) {
+	}
 
 	pub fn end_render_pass(&mut self) {}
 

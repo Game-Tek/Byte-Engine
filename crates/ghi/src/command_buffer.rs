@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use utils::Extent;
 
 use crate::{
@@ -5,6 +6,53 @@ use crate::{
 	BufferImageCopyDescriptor, ClearValue, DescriptorSetHandle, DispatchExtent, FrameKey, ImageBufferCopyDescriptor, Layouts,
 	MeshHandle, PipelineHandle, RGBAu8, SynchronizerHandle, TextureCopyHandle,
 };
+
+/// The `DebugLabelWriter` struct exists so command-buffer implementations can provide temporary label storage without forcing callers to allocate strings.
+pub struct DebugLabelWriter {
+	bytes: SmallVec<[u8; 128]>,
+}
+
+impl DebugLabelWriter {
+	/// Creates an empty label writer with inline storage for common debug-label sizes.
+	pub fn new() -> Self {
+		Self { bytes: SmallVec::new() }
+	}
+
+	/// Returns the written label as UTF-8 text.
+	pub fn as_str(&self) -> &str {
+		std::str::from_utf8(&self.bytes).expect(
+			"Invalid debug label. The label writer most likely received non UTF-8 bytes.",
+		)
+	}
+
+	/// Writes text into the label buffer.
+	pub fn write_str(&mut self, s: &str) -> std::fmt::Result {
+		self.bytes.extend_from_slice(s.as_bytes());
+		Ok(())
+	}
+
+	/// Appends a null terminator so the label can be passed to C APIs.
+	pub fn null_terminate(&mut self) {
+		self.bytes.push(0);
+	}
+
+	/// Returns the written bytes for backend-specific native API calls.
+	pub fn as_bytes(&self) -> &[u8] {
+		&self.bytes
+	}
+}
+
+impl Default for DebugLabelWriter {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl std::fmt::Write for DebugLabelWriter {
+	fn write_str(&mut self, s: &str) -> std::fmt::Result {
+		self.write_str(s)
+	}
+}
 
 pub trait CommandBuffer {
 	/// Starts recording commands into an existing command buffer.
@@ -74,13 +122,13 @@ pub trait CommonCommandBufferMode {
 	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode;
 
 	/// Starts a named GPU debug region.
-	fn start_region(&self, name: &str);
+	fn start_region(&self, write_label: impl FnOnce(&mut DebugLabelWriter) -> std::fmt::Result);
 
 	/// Ends the current GPU debug region.
 	fn end_region(&self);
 
 	/// Starts a debug region on the GPU and executes the closure.
-	fn region(&mut self, name: &str, f: impl FnOnce(&mut Self));
+	fn region(&mut self, write_label: impl FnOnce(&mut DebugLabelWriter) -> std::fmt::Result, f: impl FnOnce(&mut Self));
 }
 
 /// The `RasterizationRenderPassMode` trait represents the recording state inside an active raster render pass.

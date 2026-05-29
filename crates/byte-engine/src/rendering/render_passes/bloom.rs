@@ -380,7 +380,7 @@ impl RenderPass for BloomPass {
 		let level_count = self.downsample_images.len();
 
 		Some(Box::new(move |command_buffer, _| {
-			command_buffer.region("Bloom", |command_buffer| {
+			command_buffer.region(|label| label.write_str("Bloom"), |command_buffer| {
 				if bloom_enabled {
 					let extract = command_buffer.bind_compute_pipeline(extract_pipeline);
 					extract.bind_descriptor_sets(&[extract_descriptor_set]);

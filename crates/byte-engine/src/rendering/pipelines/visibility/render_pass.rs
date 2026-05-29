@@ -257,7 +257,7 @@ impl VisibilityPass {
 				drawable_instances,
 				meshlet_count,
 			);
-			c.start_region("Visibility Buffer");
+			c.start_region(|label| label.write_str("Visibility Buffer"));
 
 			let c = c.start_render_pass(extent, &attachments);
 
@@ -413,10 +413,10 @@ impl ShadowPass {
 				drawable_instances,
 				meshlet_count,
 			);
-			c.start_region("Shadow Map");
+			c.start_region(|label| label.write_str("Shadow Map"));
 
 			for cascade in 0..SHADOW_CASCADE_COUNT {
-				c.start_region("Cascade");
+				c.start_region(|label| label.write_str("Cascade"));
 
 				let attachments = [ghi::AttachmentInformation::new(
 					shadow_map,
@@ -521,7 +521,7 @@ impl MaterialCountPass {
 				extent.width(),
 				extent.height()
 			);
-			c.start_region("Material Count");
+			c.start_region(|label| label.write_str("Material Count"));
 
 			c.clear_buffers(&[material_count_buffer.into()]);
 
@@ -611,7 +611,7 @@ impl MaterialOffsetPass {
 
 		move |c, _| {
 			log::debug!("Visibility material offset pass executing");
-			c.start_region("Material Offset");
+			c.start_region(|label| label.write_str("Material Offset"));
 
 			c.clear_buffers(&[
 				material_offset_buffer.into(),
@@ -707,7 +707,7 @@ impl PixelMappingPass {
 				extent.width(),
 				extent.height()
 			);
-			c.start_region("Pixel Mapping");
+			c.start_region(|label| label.write_str("Pixel Mapping"));
 
 			c.clear_buffers(&[material_xy.into()]);
 
@@ -985,7 +985,7 @@ impl GtaoPass {
 		}
 
 		move |c, _| {
-			c.start_region("GTAO");
+			c.start_region(|label| label.write_str("GTAO"));
 			if let Some(packed_ao_map) = packed_ao_map {
 				c.clear_images(&[(packed_ao_map.into(), ghi::ClearValue::Color(RGBA::black()))]);
 			} else {
@@ -1076,12 +1076,12 @@ impl MaterialEvaluationPass {
 			);
 			c.clear_images(&[(lit.into(), ghi::ClearValue::Color(RGBA::black()))]);
 
-			c.start_region("Material Evaluation");
+			c.start_region(|label| label.write_str("Material Evaluation"));
 
-			c.start_region("Opaque");
+			c.start_region(|label| label.write_str("Opaque"));
 
 			for (name, index, pipeline) in &opaque_materials {
-				c.start_region(name);
+				c.start_region(|label| label.write_str(name));
 				let c = c.bind_compute_pipeline(*pipeline);
 				c.bind_descriptor_sets(&[
 					base_descriptor_set,
@@ -1095,11 +1095,11 @@ impl MaterialEvaluationPass {
 
 			c.end_region();
 
-			c.start_region("Transparent");
+			c.start_region(|label| label.write_str("Transparent"));
 
 			for (name, index, pipeline) in &transparent_materials {
 				// TODO: sort by distance to camera
-				c.start_region(name);
+				c.start_region(|label| label.write_str(name));
 				let c = c.bind_compute_pipeline(*pipeline);
 				c.bind_descriptor_sets(&[
 					base_descriptor_set,
@@ -1258,7 +1258,7 @@ impl VisibilityPipelineRenderPass {
 				transparent_count,
 				shadow_enabled,
 			);
-			c.start_region("Visibility Render Model");
+			c.start_region(|label| label.write_str("Visibility Render Model"));
 
 			shadow_pass(c, t);
 			visibility_pass(c, t);

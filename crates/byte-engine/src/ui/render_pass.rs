@@ -469,7 +469,7 @@ impl RenderPass for UiRenderPass {
 		let batches = geometry.batches;
 
 		Some(Box::new(move |command_buffer, _| {
-			command_buffer.region("UI", |command_buffer| {
+			command_buffer.region(|label| label.write_str("UI"), |command_buffer| {
 				assert!(
 					!draw_text_overlay || extent.width() > 0 && extent.height() > 0,
 					"UI text overlay render pass requires a non-zero attachment extent. The most likely cause is that a stale prepared UI pass survived a viewport resize or minimization."

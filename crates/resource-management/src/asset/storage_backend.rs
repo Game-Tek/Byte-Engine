@@ -1,23 +1,54 @@
-use std::{
-	alloc::Allocator,
-	path::PathBuf,
+use std::{alloc::Allocator, ops::Deref, path::PathBuf};
+
+use super::{read_asset_from_source, BEADType, ResourceId};
+use crate::{
+	r#async::{future, BoxedFuture},
+	resource::reader::MappedFileBacking,
 };
 
-use super::{read_asset_from_source, read_asset_from_source_in, BEADType, ResourceId};
-use crate::r#async::{future, BoxedFuture};
+/// The `AssetStorageBytes` enum owns asset source storage while exposing it as a borrowed byte slice.
+#[derive(Debug)]
+pub enum AssetStorageBytes<'a> {
+	Owned(Box<[u8]>),
+	Allocated(Box<[u8], &'a dyn Allocator>),
+	MappedFile(MappedFileBacking),
+}
+
+impl AssetStorageBytes<'_> {
+	/// Returns the asset source bytes from the current backing storage.
+	pub fn as_slice(&self) -> &[u8] {
+		match self {
+			AssetStorageBytes::Owned(bytes) => bytes,
+			AssetStorageBytes::Allocated(bytes) => bytes,
+			AssetStorageBytes::MappedFile(mapped_file) => mapped_file.as_slice(),
+		}
+	}
+}
+
+impl AsRef<[u8]> for AssetStorageBytes<'_> {
+	fn as_ref(&self) -> &[u8] {
+		self.as_slice()
+	}
+}
+
+impl Deref for AssetStorageBytes<'_> {
+	type Target = [u8];
+
+	fn deref(&self) -> &Self::Target {
+		self.as_slice()
+	}
+}
+
+type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>;
 
 pub trait StorageBackend: Send + Sync {
-	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
-		future(read_asset_from_source(url, None))
+	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
+		future(read_asset_from_source(url, None, &std::alloc::Global))
 	}
 
 	/// Resolves an asset while using the provided allocator for source bytes.
-	fn resolve_in<'a>(
-		&'a self,
-		url: ResourceId<'a>,
-		allocator: &'a dyn Allocator,
-	) -> BoxedFuture<'a, Result<(Box<[u8], &'a dyn Allocator>, Option<BEADType>, String), ()>> {
-		future(read_asset_from_source_in(url, None, allocator))
+	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
+		future(read_asset_from_source(url, None, allocator))
 	}
 }
 
@@ -34,24 +65,20 @@ impl FileStorageBackend {
 }
 
 impl StorageBackend for FileStorageBackend {
-	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
-		future(read_asset_from_source(url, Some(&self.base_path)))
+	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
+		future(read_asset_from_source(url, Some(&self.base_path), &std::alloc::Global))
 	}
 
-	fn resolve_in<'a>(
-		&'a self,
-		url: ResourceId<'a>,
-		allocator: &'a dyn Allocator,
-	) -> BoxedFuture<'a, Result<(Box<[u8], &'a dyn Allocator>, Option<BEADType>, String), ()>> {
-		future(read_asset_from_source_in(url, Some(&self.base_path), allocator))
+	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
+		future(read_asset_from_source(url, Some(&self.base_path), allocator))
 	}
 }
 
-fn move_bytes_in<A: Allocator + Clone>(bytes: impl AsRef<[u8]>, allocator: A) -> Box<[u8], A> {
+fn move_bytes_in<'a>(bytes: impl AsRef<[u8]>, allocator: &'a dyn Allocator) -> AssetStorageBytes<'a> {
 	let bytes = bytes.as_ref();
 	let mut output = Vec::with_capacity_in(bytes.len(), allocator);
 	output.extend_from_slice(bytes);
-	output.into_boxed_slice()
+	AssetStorageBytes::Allocated(output.into_boxed_slice())
 }
 
 #[cfg(test)]
@@ -59,12 +86,14 @@ pub mod tests {
 	use std::{
 		alloc::Allocator,
 		collections::HashMap,
+		fs,
 		sync::{Arc, Mutex},
+		time::{SystemTime, UNIX_EPOCH},
 	};
 
 	use utils::json;
 
-	use super::StorageBackend;
+	use super::{AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend};
 	use crate::{
 		asset::{BEADType, ResourceId},
 		r#async::{read, BoxedFuture},
@@ -88,10 +117,10 @@ pub mod tests {
 	}
 
 	impl StorageBackend for TestStorageBackend {
-		fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(Box<[u8]>, Option<BEADType>, String), ()>> {
+		fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
 			Box::pin(async move {
 				if let Some(data) = self.0.lock().unwrap().get(url.as_ref()).cloned() {
-					return Ok((data.clone(), None, url.get_extension().to_string()));
+					return Ok((AssetStorageBytes::Owned(data), None, url.get_extension().to_string()));
 				}
 
 				// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()
@@ -131,15 +160,11 @@ pub mod tests {
 
 				let source_bytes = read(&path).await.or(Err(()))?;
 
-				Ok((source_bytes.into_boxed_slice(), spec, format))
+				Ok((AssetStorageBytes::Owned(source_bytes.into_boxed_slice()), spec, format))
 			})
 		}
 
-		fn resolve_in<'a>(
-			&'a self,
-			url: ResourceId<'a>,
-			allocator: &'a dyn Allocator,
-		) -> BoxedFuture<'a, Result<(Box<[u8], &'a dyn Allocator>, Option<BEADType>, String), ()>> {
+		fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
 			Box::pin(async move {
 				if let Some(data) = self.0.lock().unwrap().get(url.as_ref()).cloned() {
 					return Ok((super::move_bytes_in(data, allocator), None, url.get_extension().to_string()));
@@ -185,5 +210,35 @@ pub mod tests {
 				Ok((super::move_bytes_in(source_bytes, allocator), spec, format))
 			})
 		}
+	}
+
+	fn temporary_asset_directory() -> std::path::PathBuf {
+		std::env::temp_dir().join(format!(
+			"byte-engine-asset-storage-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		))
+	}
+
+	#[crate::r#async::test]
+	async fn file_storage_backend_resolves_assets_as_mapped_slices() {
+		let directory = temporary_asset_directory();
+		fs::create_dir_all(&directory).unwrap();
+		let path = directory.join("shader.bin");
+		let expected = b"asset-bytes";
+		fs::write(&path, expected).unwrap();
+
+		let storage_backend = FileStorageBackend::new(directory.clone());
+		let (bytes, spec, format) = storage_backend
+			.resolve(ResourceId::new("shader.bin"))
+			.await
+			.expect("asset should resolve");
+
+		assert!(matches!(bytes, AssetStorageBytes::MappedFile(_)));
+		assert_eq!(bytes.as_slice(), expected);
+		assert!(spec.is_none());
+		assert_eq!(format, "bin");
+
+		fs::remove_dir_all(directory).unwrap();
 	}
 }

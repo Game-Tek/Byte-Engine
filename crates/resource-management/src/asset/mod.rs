@@ -2,10 +2,7 @@
 //! This system is responsible for loading assets from different sources (network, local, etc.) and generating the resources from them.
 //! Each assert is a file in a specific format, and the asset handlers are responsible for parsing the file and generating the resources from it.
 
-use std::{
-	alloc::{Allocator, Global},
-	io::ErrorKind,
-};
+use std::{alloc::Allocator, io::ErrorKind};
 
 use utils::json;
 
@@ -27,9 +24,10 @@ pub mod storage_backend;
 
 pub use resource_id::ResourceId;
 pub use storage_backend::FileStorageBackend;
-pub use storage_backend::StorageBackend;
+pub use storage_backend::{AssetStorageBytes, StorageBackend};
 
 use crate::r#async::read;
+use crate::resource::reader::MappedFileBacking;
 
 /// Loads an asset from source asynchronously.\
 /// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
@@ -37,16 +35,8 @@ use crate::r#async::read;
 pub async fn read_asset_from_source<'a>(
 	url: ResourceId<'a>,
 	base_path: Option<&'a std::path::Path>,
-) -> Result<(Box<[u8]>, Option<BEADType>, String), ()> {
-	read_asset_from_source_in(url, base_path, Global).await
-}
-
-/// Loads an asset from source using the provided allocator for source bytes.
-pub async fn read_asset_from_source_in<'a, A: Allocator + Clone>(
-	url: ResourceId<'a>,
-	base_path: Option<&'a std::path::Path>,
-	allocator: A,
-) -> Result<(Box<[u8], A>, Option<BEADType>, String), ()> {
+	allocator: &'a dyn Allocator,
+) -> Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()> {
 	let base = url.get_base();
 	let resource_origin = if base.as_ref().starts_with("http://") || base.as_ref().starts_with("https://") {
 		"network"
@@ -89,11 +79,20 @@ pub async fn read_asset_from_source_in<'a, A: Allocator + Clone>(
 
 			let format = path.extension().and_then(|e| e.to_str()).ok_or(())?.to_string();
 
-			let source_bytes = read(&path).await.or(Err(()))?;
-			let mut source_data = Vec::with_capacity_in(source_bytes.len(), allocator);
-			source_data.extend_from_slice(&source_bytes);
+			let source_bytes = match std::fs::File::open(&path)
+				.map_err(|_| ())
+				.and_then(|file| MappedFileBacking::new(&file))
+			{
+				Ok(mapped_file) => AssetStorageBytes::MappedFile(mapped_file),
+				Err(_) => {
+					let source_bytes = read(&path).await.or(Err(()))?;
+					let mut source_data = Vec::with_capacity_in(source_bytes.len(), allocator);
+					source_data.extend_from_slice(&source_bytes);
+					AssetStorageBytes::Allocated(source_data.into_boxed_slice())
+				}
+			};
 
-			return Ok((source_data.into_boxed_slice(), spec, format));
+			return Ok((source_bytes, spec, format));
 		}
 		_ => {
 			// Could not resolve how to get raw resource, return empty bytes

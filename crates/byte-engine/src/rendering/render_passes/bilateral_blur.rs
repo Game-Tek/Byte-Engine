@@ -191,10 +191,13 @@ impl RenderPass for BilateralBlurPass {
 		let extent = sink.extent();
 
 		Some(Box::new(move |command_buffer, _| {
-			command_buffer.region(|label| label.write_str("Bilateral Blur"), |command_buffer| {
-				execute_in_axis(command_buffer, pipeline_x, descriptor_set_x, extent);
-				execute_in_axis(command_buffer, pipeline_y, descriptor_set_y, extent);
-			});
+			command_buffer.region(
+				|label| label.write_str("Bilateral Blur"),
+				|command_buffer| {
+					execute_in_axis(command_buffer, pipeline_x, descriptor_set_x, extent);
+					execute_in_axis(command_buffer, pipeline_y, descriptor_set_y, extent);
+				},
+			);
 		}))
 	}
 }

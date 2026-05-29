@@ -26,9 +26,12 @@ impl RenderPass for BlitPass {
 		let destination = self.destination;
 
 		Some(Box::new(move |command_buffer, _| {
-			command_buffer.region(|label| label.write_str("Blit"), |command_buffer| {
-				command_buffer.blit_image(source, ghi::Layouts::Transfer, destination, ghi::Layouts::Transfer);
-			});
+			command_buffer.region(
+				|label| label.write_str("Blit"),
+				|command_buffer| {
+					command_buffer.blit_image(source, ghi::Layouts::Transfer, destination, ghi::Layouts::Transfer);
+				},
+			);
 		}))
 	}
 }

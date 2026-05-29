@@ -279,6 +279,13 @@ impl Renderer {
 	/// If no swapchains are available no rendering/execution will be performed.
 	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
 	pub fn prepare(&'_ mut self, transforms_listener: &mut impl Listener<TransformationUpdate>) {
+		let span = debug_span!(
+			"Renderer::prepare",
+			frame = self.started_frame_count,
+			windows = self.windows.len()
+		);
+		let _enter = span.enter();
+
 		let Some(_) = self.windows.first() else {
 			log::debug!("No swapchains available to present to. Skipping rendering!");
 			return;
@@ -286,16 +293,20 @@ impl Renderer {
 
 		self.context.start_frame_capture();
 
-		while let Some(message) = transforms_listener.read() {
-			let handle = message.handle().clone();
+		{
+			let span = debug_span!("Renderer::update_camera_transforms");
+			let _enter = span.enter();
+			while let Some(message) = transforms_listener.read() {
+				let handle = message.handle().clone();
 
-			if let Some(camera) = self
-				.cameras
-				.iter_mut()
-				.find_map(|(h, camera)| if handle == *h { Some(camera) } else { None })
-			{
-				camera.set_position(message.transform().get_position());
-				camera.set_orientation(message.transform().get_orientation());
+				if let Some(camera) = self
+					.cameras
+					.iter_mut()
+					.find_map(|(h, camera)| if handle == *h { Some(camera) } else { None })
+				{
+					camera.set_position(message.transform().get_position());
+					camera.set_orientation(message.transform().get_orientation());
+				}
 			}
 		}
 
@@ -320,141 +331,182 @@ impl Renderer {
 		let render_passes_by_sink = &self.render_passes_by_sink;
 		let pending_swapchain_captures = self.pending_swapchain_captures.drain(..).collect::<SmallVec<[_; 16]>>();
 
-		queue.execute(Some(frame), wait_for, synchronizer, |execution| {
-			let completed_graphics_frame = execution.completed_frame();
+		{
+			let span = debug_span!("Renderer::queue_execute");
+			let _enter = span.enter();
+			queue.execute(Some(frame), wait_for, synchronizer, |execution| {
+				let completed_graphics_frame = execution.completed_frame();
 
-			let (sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies) = {
-				let frame = execution.frame().expect(
+				let (sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies) = {
+					let span = debug_span!("Renderer::prepare_frame_work");
+					let _enter = span.enter();
+					let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
 				);
-				let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = windows
-					.iter()
-					.map(|(_window, swapchain)| {
-						let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
+					let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = {
+						let span = debug_span!("Renderer::acquire_swapchains", count = windows.len());
+						let _enter = span.enter();
+						windows
+							.iter()
+							.map(|(_window, swapchain)| {
+								let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
 
-						if extent.width() == 0 || extent.height() == 0 {
-							log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
-							return None;
-						}
-
-						if extent.width() >= 65535 || extent.height() >= 65535 {
-							log::warn!(
-								"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
-								extent
-							);
-							return None;
-						}
-
-						Some((present_key, extent, *swapchain))
-					})
-					.collect();
-
-				let mut sinks: SmallVec<[Sink; 16]> = SmallVec::new();
-
-				for (sink_id, camera_handle) in sink_cameras.iter() {
-					let Some((_present_key, extent, _swapchain)) = swapchains[*sink_id] else {
-						continue;
-					};
-
-					let Some(camera) = cameras
-						.iter()
-						.find_map(|(handle, camera)| if handle == camera_handle { Some(camera) } else { None })
-					else {
-						continue;
-					};
-
-					let view = make_perspective_view_from_camera(&camera, extent);
-					sinks.push(Sink::new(view, extent, *sink_id));
-				}
-
-				for sink in &sinks {
-					// Get images for the current sink and render pass and resize them to window extent
-					let images = render_targets.get_images_for_sink(sink.index());
-
-					// Resize images to window extent
-					for &image in images {
-						frame.resize_image(image.into(), sink.extent());
-					}
-				}
-
-				let pipeline_managers = pipeline_managers.iter_mut().enumerate();
-
-				let pipeline_manager_commands: SmallVec<[(PipelineManagerId, Vec<Box<dyn RenderPassFunction + '_>>); 16]> =
-					pipeline_managers
-						.filter_map(|(pipeline_manager_id, sm)| {
-							sm.prepare(frame, &sinks).map(|commands| (pipeline_manager_id, commands))
-						})
-						.collect();
-
-				// A list of render pass commands and their corresponding pass/sink indices.
-				let render_pass_commands: SmallVec<[(RenderPassReturn, RenderPassId, SinkId); 64]> = render_passes_by_sink
-					.iter()
-					.filter_map(|(render_pass_id, sink_id)| {
-						if let Some(render_pass) = render_passes.get_mut(*render_pass_id) {
-							if let Some(sink) = sinks.iter().find(|sink| sink.index() == *sink_id) {
-								if let Some(command) = render_pass.prepare(frame, sink) {
-									return Some((command, *render_pass_id, sink.index()));
+								if extent.width() == 0 || extent.height() == 0 {
+									log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
+									return None;
 								}
+
+								if extent.width() >= 65535 || extent.height() >= 65535 {
+									log::warn!(
+										"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
+										extent
+									);
+									return None;
+								}
+
+								Some((present_key, extent, *swapchain))
+							})
+							.collect()
+					};
+
+					let mut sinks: SmallVec<[Sink; 16]> = SmallVec::new();
+
+					{
+						let span = debug_span!("Renderer::build_sinks", cameras = cameras.len());
+						let _enter = span.enter();
+						for (sink_id, camera_handle) in sink_cameras.iter() {
+							let Some((_present_key, extent, _swapchain)) = swapchains[*sink_id] else {
+								continue;
+							};
+
+							let Some(camera) = cameras
+								.iter()
+								.find_map(|(handle, camera)| if handle == camera_handle { Some(camera) } else { None })
+							else {
+								continue;
+							};
+
+							let view = make_perspective_view_from_camera(&camera, extent);
+							sinks.push(Sink::new(view, extent, *sink_id));
+						}
+					}
+
+					{
+						let span = debug_span!("Renderer::resize_render_targets", sinks = sinks.len());
+						let _enter = span.enter();
+						for sink in &sinks {
+							// Get images for the current sink and render pass and resize them to window extent
+							let images = render_targets.get_images_for_sink(sink.index());
+
+							// Resize images to window extent
+							for &image in images {
+								frame.resize_image(image.into(), sink.extent());
 							}
 						}
-						None
-					})
-					.collect();
-
-				let present_keys = swapchains
-					.iter()
-					.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
-					.collect::<SmallVec<[ghi::PresentKey; 16]>>();
-
-				let swapchain_capture_copies = pending_swapchain_captures
-					.iter()
-					.filter_map(|capture| {
-						let Some(Some((_present_key, _extent, swapchain))) = swapchains.get(capture.sink_id) else {
-							return None;
-						};
-
-						Some(ghi::ImageBufferCopyDescriptor::swapchain(
-							*swapchain,
-							capture.destination_buffer,
-							capture.destination_offset,
-							capture.destination_bytes_per_row,
-							capture.destination_bytes_per_image,
-						))
-					})
-					.collect::<SmallVec<[ghi::ImageBufferCopyDescriptor; 16]>>();
-
-				(sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies)
-			};
-
-			execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
-				for (pipeline_manager_id, commands) in pipeline_manager_commands {
-					for (command, sink) in commands.into_iter().zip(sinks.iter()) {
-						let attachment_infos = render_targets.get_attachment_infos_for_resources(
-							sink.index(),
-							pipeline_manager_resources_by_sink
-								.iter()
-								.find_map(|(id, sink_id, resources)| {
-									(*id == pipeline_manager_id && *sink_id == sink.index()).then_some(resources.as_slice())
-								})
-								.unwrap_or(&[]),
-						);
-
-						(&command)(&mut *command_buffer_recording, &attachment_infos);
 					}
-				}
 
-				for (command, _render_pass_id, sink) in render_pass_commands {
-					let attachment_infos = render_targets.get_attachment_infos(sink);
-					(&command)(&mut *command_buffer_recording, &attachment_infos);
-				}
+					let pipeline_managers = pipeline_managers.iter_mut().enumerate();
 
-				if !swapchain_capture_copies.is_empty() {
-					command_buffer_recording.copy_images_to_buffer(&swapchain_capture_copies);
-				}
+					let pipeline_manager_commands: SmallVec<[(PipelineManagerId, Vec<Box<dyn RenderPassFunction + '_>>); 16]> = {
+						let span = debug_span!("Renderer::prepare_pipeline_managers");
+						let _enter = span.enter();
+						pipeline_managers
+							.filter_map(|(pipeline_manager_id, sm)| {
+								sm.prepare(frame, &sinks).map(|commands| (pipeline_manager_id, commands))
+							})
+							.collect()
+					};
+
+					// A list of render pass commands and their corresponding pass/sink indices.
+					let render_pass_commands: SmallVec<[(RenderPassReturn, RenderPassId, SinkId); 64]> = {
+						let span = debug_span!("Renderer::prepare_render_passes");
+						let _enter = span.enter();
+						render_passes_by_sink
+							.iter()
+							.filter_map(|(render_pass_id, sink_id)| {
+								if let Some(render_pass) = render_passes.get_mut(*render_pass_id) {
+									if let Some(sink) = sinks.iter().find(|sink| sink.index() == *sink_id) {
+										if let Some(command) = render_pass.prepare(frame, sink) {
+											return Some((command, *render_pass_id, sink.index()));
+										}
+									}
+								}
+								None
+							})
+							.collect()
+					};
+
+					let present_keys = swapchains
+						.iter()
+						.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
+						.collect::<SmallVec<[ghi::PresentKey; 16]>>();
+
+					let swapchain_capture_copies = {
+						let span = debug_span!("Renderer::prepare_swapchain_captures", captures = pending_swapchain_captures.len());
+						let _enter = span.enter();
+						pending_swapchain_captures
+							.iter()
+							.filter_map(|capture| {
+								let Some(Some((_present_key, _extent, swapchain))) = swapchains.get(capture.sink_id) else {
+									return None;
+								};
+
+								Some(ghi::ImageBufferCopyDescriptor::swapchain(
+									*swapchain,
+									capture.destination_buffer,
+									capture.destination_offset,
+									capture.destination_bytes_per_row,
+									capture.destination_bytes_per_image,
+								))
+							})
+							.collect::<SmallVec<[ghi::ImageBufferCopyDescriptor; 16]>>()
+					};
+
+					(sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies)
+				};
+
+				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
+					let span = debug_span!("Renderer::record_commands", sinks = sinks.len());
+					let _enter = span.enter();
+					{
+						let span = debug_span!("Renderer::record_pipeline_manager_commands");
+						let _enter = span.enter();
+						for (pipeline_manager_id, commands) in pipeline_manager_commands {
+							for (command, sink) in commands.into_iter().zip(sinks.iter()) {
+								let attachment_infos = render_targets.get_attachment_infos_for_resources(
+									sink.index(),
+									pipeline_manager_resources_by_sink
+										.iter()
+										.find_map(|(id, sink_id, resources)| {
+											(*id == pipeline_manager_id && *sink_id == sink.index()).then_some(resources.as_slice())
+										})
+										.unwrap_or(&[]),
+								);
+
+								(&command)(&mut *command_buffer_recording, &attachment_infos);
+							}
+						}
+					}
+
+					{
+						let span = debug_span!("Renderer::record_render_pass_commands");
+						let _enter = span.enter();
+						for (command, _render_pass_id, sink) in render_pass_commands {
+							let attachment_infos = render_targets.get_attachment_infos(sink);
+							(&command)(&mut *command_buffer_recording, &attachment_infos);
+						}
+					}
+
+					if !swapchain_capture_copies.is_empty() {
+						let span = debug_span!("Renderer::record_swapchain_captures", captures = swapchain_capture_copies.len());
+						let _enter = span.enter();
+						command_buffer_recording.copy_images_to_buffer(&swapchain_capture_copies);
+					}
+				});
+
+				present_keys
 			});
-
-			present_keys
-		});
+		}
 	}
 
 	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
@@ -912,6 +964,7 @@ use ghi::{
 use math::direction_from_orientation;
 use resource_management::resource::resource_manager::ResourceManager;
 use smallvec::SmallVec;
+use tracing::debug_span;
 use utils::Box;
 use utils::{
 	hash::{HashMap, HashMapExt},

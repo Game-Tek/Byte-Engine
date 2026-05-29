@@ -1889,9 +1889,8 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 
 		// Vulkan requires a null-terminated label that remains alive for the duration of the call.
 		label.null_terminate();
-		let name = std::ffi::CStr::from_bytes_with_nul(label.as_bytes()).expect(
-			"Invalid debug label. The label most likely contains an interior null byte.",
-		);
+		let name = std::ffi::CStr::from_bytes_with_nul(label.as_bytes())
+			.expect("Invalid debug label. The label most likely contains an interior null byte.");
 		let marker_info = vk::DebugUtilsLabelEXT::default().label_name(name);
 
 		#[cfg(debug_assertions)]

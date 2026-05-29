@@ -264,11 +264,14 @@ impl RenderPass for AgxToneMapPass {
 		let extent = sink.extent();
 
 		Some(Box::new(move |c, _| {
-			c.region(|label| label.write_str("Tonemap"), |c| {
-				let r = c.bind_compute_pipeline(pipeline);
-				r.bind_descriptor_sets(&[descriptor_set]);
-				r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-			});
+			c.region(
+				|label| label.write_str("Tonemap"),
+				|c| {
+					let r = c.bind_compute_pipeline(pipeline);
+					r.bind_descriptor_sets(&[descriptor_set]);
+					r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+				},
+			);
 		}))
 	}
 }

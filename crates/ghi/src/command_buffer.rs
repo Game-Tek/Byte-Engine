@@ -20,9 +20,7 @@ impl DebugLabelWriter {
 
 	/// Returns the written label as UTF-8 text.
 	pub fn as_str(&self) -> &str {
-		std::str::from_utf8(&self.bytes).expect(
-			"Invalid debug label. The label writer most likely received non UTF-8 bytes.",
-		)
+		std::str::from_utf8(&self.bytes).expect("Invalid debug label. The label writer most likely received non UTF-8 bytes.")
 	}
 
 	/// Writes text into the label buffer.

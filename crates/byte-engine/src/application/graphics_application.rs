@@ -158,9 +158,15 @@ impl GraphicsApplication {
 		let mut close = false;
 
 		let frame_allocator = &mut self.application.frame_allocator;
-		frame_allocator.reset();
+		{
+			let span = debug_span!("GraphicsApplication::reset_frame_allocator");
+			let _enter = span.enter();
+			frame_allocator.reset();
+		}
 
 		{
+			let span = debug_span!("GraphicsApplication::process_window_events");
+			let _enter = span.enter();
 			let renderer = &mut self.renderer;
 			let input_system = &mut self.input_system;
 
@@ -179,10 +185,14 @@ impl GraphicsApplication {
 			}
 		}
 
-		if let Ok(e) = self.application_events.1.try_recv() {
-			match e {
-				Events::Close => {
-					close = true;
+		{
+			let span = debug_span!("GraphicsApplication::process_application_events");
+			let _enter = span.enter();
+			if let Ok(e) = self.application_events.1.try_recv() {
+				match e {
+					Events::Close => {
+						close = true;
+					}
 				}
 			}
 		}
@@ -198,18 +208,32 @@ impl GraphicsApplication {
 
 		let time = Time { elapsed, delta: dt };
 
-		self.input_system.update(frame_allocator);
+		{
+			let span = debug_span!("GraphicsApplication::update_input");
+			let _enter = span.enter();
+			self.input_system.update(frame_allocator);
+		}
 
 		let mut cameras_listener = self.world.camera_factory().listener();
 		let mut renderer_transforms_listener = self.world.transforms_channel().listener();
 		let mut physics_transforms_listener = self.world.transforms_channel().listener();
 		let light_listener = self.world.light_factory().listener();
 
-		let result = f(self, time);
-
-		self.world.update(time, &mut physics_transforms_listener);
+		let result = {
+			let span = debug_span!("GraphicsApplication::user_tick");
+			let _enter = span.enter();
+			f(self, time)
+		};
 
 		{
+			let span = debug_span!("GraphicsApplication::update_world");
+			let _enter = span.enter();
+			self.world.update(time, &mut physics_transforms_listener);
+		}
+
+		{
+			let span = debug_span!("GraphicsApplication::prepare_renderer_state");
+			let _enter = span.enter();
 			let mut camera_messages = self.world.camera_factory_mut().drain_created_before_listener();
 			camera_messages.extend(cameras_listener.to_vec());
 
@@ -222,11 +246,19 @@ impl GraphicsApplication {
 			for message in camera_messages {
 				self.renderer.create_camera(message.handle().clone(), message.into_data());
 			}
+		}
 
+		{
+			let span = debug_span!("GraphicsApplication::render_frame");
+			let _enter = span.enter();
 			self.renderer.prepare(&mut renderer_transforms_listener);
 		}
 
-		self.world.flush_deletions();
+		{
+			let span = debug_span!("GraphicsApplication::flush_world_deletions");
+			let _enter = span.enter();
+			self.world.flush_deletions();
+		}
 
 		self.tick_count += 1;
 

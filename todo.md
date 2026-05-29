@@ -63,6 +63,13 @@
 
 # Allocation reduction opportunities
 - Remove names from materials in Visibility Pipeline on non-debug builds.
+- Deduplicate GLTF material generation per material and resolve primitive material references concurrently in crates/resource-management/src/asset/gltf_asset_handler.rs.
+- Store GLTF texture dependencies concurrently while preserving variable order in crates/resource-management/src/asset/gltf_asset_handler.rs.
+- Run BEMA material shader source loading and shader compilation for independent stages concurrently in crates/resource-management/src/asset/bema_asset_handler.rs.
+- Resolve BEMA material and variant variables concurrently while preserving parameter order in crates/resource-management/src/asset/bema_asset_handler.rs.
+- Extract GLTF primitive attributes and transform vertex data concurrently before constructing OwnedMeshSource in crates/resource-management/src/asset/gltf_asset_handler.rs.
+- Redesign MeshProcessor primitive packing so each primitive packs local stream chunks independently, then merge offsets and buffers sequentially in crates/resource-management/src/processors/mesh_processor.rs.
+- Compress generated image mip levels concurrently after mip-chain generation in crates/resource-management/src/processors/image_processor.rs.
 
 # BESL
 - Add explicit BESL syntax for interpolation modifiers on stage IO; MSL now infers position, depth, color, user attributes, front-facing, vertex ID, and instance ID semantics from conventional IO names.

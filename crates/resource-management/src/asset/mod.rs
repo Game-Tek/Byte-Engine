@@ -38,11 +38,13 @@ pub async fn read_asset_from_source<'a>(
 	allocator: &'a dyn Allocator,
 ) -> Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()> {
 	let base = url.get_base();
+
 	let resource_origin = if base.as_ref().starts_with("http://") || base.as_ref().starts_with("https://") {
 		"network"
 	} else {
 		"local"
 	};
+
 	match resource_origin {
 		// "network" => {
 		// 	let request = if let Ok(request) = ureq::get(base.as_ref()).call() { request } else { return Err(()); };
@@ -59,44 +61,51 @@ pub async fn read_asset_from_source<'a>(
 			let path = base_path.unwrap_or(std::path::Path::new(""));
 
 			let path = path.join(base.as_ref());
-
-			let spec = {
-				// Append ".bead" to the file name to check for a resource file
-				let spec_path = path.with_added_extension("bead");
-				let spec_bytes = match read(&spec_path).await {
-					Ok(bytes) => Some(bytes),
-					Err(err) if err.kind() == ErrorKind::NotFound => None,
-					Err(_) => return Err(()),
-				};
-				if let Some(spec_bytes) = spec_bytes {
-					let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-					let spec: json::Value = json::from_str(spec).or(Err(()))?;
-					Some(spec)
-				} else {
-					None
-				}
-			};
-
+			let spec_path = path.with_added_extension("bead");
 			let format = path.extension().and_then(|e| e.to_str()).ok_or(())?.to_string();
 
-			let source_bytes = match std::fs::File::open(&path)
-				.map_err(|_| ())
-				.and_then(|file| MappedFileBacking::new(&file))
-			{
-				Ok(mapped_file) => AssetStorageBytes::MappedFile(mapped_file),
-				Err(_) => {
-					let source_bytes = read(&path).await.or(Err(()))?;
-					let mut source_data = Vec::with_capacity_in(source_bytes.len(), allocator);
-					source_data.extend_from_slice(&source_bytes);
-					AssetStorageBytes::Allocated(source_data.into_boxed_slice())
-				}
-			};
+			let spec = read_asset_spec(&spec_path);
+			let source_bytes = read_asset_bytes(&path, allocator);
 
-			return Ok((source_bytes, spec, format));
+			let (spec, source_bytes) = std::future::join!(spec, source_bytes).await;
+
+			return Ok((source_bytes?, spec?, format));
 		}
 		_ => {
 			// Could not resolve how to get raw resource, return empty bytes
 			return Err(());
+		}
+	}
+}
+
+async fn read_asset_spec(spec_path: &std::path::Path) -> Result<Option<BEADType>, ()> {
+	// Append ".bead" to the file name to check for a resource file.
+	let spec_bytes = match read(spec_path).await {
+		Ok(bytes) => Some(bytes),
+		Err(err) if err.kind() == ErrorKind::NotFound => None,
+		Err(_) => return Err(()),
+	};
+
+	if let Some(spec_bytes) = spec_bytes {
+		let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
+		let spec: json::Value = json::from_str(spec).or(Err(()))?;
+		Ok(Some(spec))
+	} else {
+		Ok(None)
+	}
+}
+
+async fn read_asset_bytes<'a>(path: &std::path::Path, allocator: &'a dyn Allocator) -> Result<AssetStorageBytes<'a>, ()> {
+	match std::fs::File::open(path)
+		.map_err(|_| ())
+		.and_then(|file| MappedFileBacking::new(&file))
+	{
+		Ok(mapped_file) => Ok(AssetStorageBytes::MappedFile(mapped_file)),
+		Err(_) => {
+			let source_bytes = read(path).await.or(Err(()))?;
+			let mut source_data = Vec::with_capacity_in(source_bytes.len(), allocator);
+			source_data.extend_from_slice(&source_bytes);
+			Ok(AssetStorageBytes::Allocated(source_data.into_boxed_slice()))
 		}
 	}
 }

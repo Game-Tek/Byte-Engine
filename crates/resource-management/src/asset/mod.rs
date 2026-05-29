@@ -2,7 +2,10 @@
 //! This system is responsible for loading assets from different sources (network, local, etc.) and generating the resources from them.
 //! Each assert is a file in a specific format, and the asset handlers are responsible for parsing the file and generating the resources from it.
 
-use std::io::ErrorKind;
+use std::{
+	alloc::{Allocator, Global},
+	io::ErrorKind,
+};
 
 use utils::json;
 
@@ -35,6 +38,15 @@ pub async fn read_asset_from_source<'a>(
 	url: ResourceId<'a>,
 	base_path: Option<&'a std::path::Path>,
 ) -> Result<(Box<[u8]>, Option<BEADType>, String), ()> {
+	read_asset_from_source_in(url, base_path, Global).await
+}
+
+/// Loads an asset from source using the provided allocator for source bytes.
+pub async fn read_asset_from_source_in<'a, A: Allocator + Clone>(
+	url: ResourceId<'a>,
+	base_path: Option<&'a std::path::Path>,
+	allocator: A,
+) -> Result<(Box<[u8], A>, Option<BEADType>, String), ()> {
 	let base = url.get_base();
 	let resource_origin = if base.as_ref().starts_with("http://") || base.as_ref().starts_with("https://") {
 		"network"
@@ -78,8 +90,10 @@ pub async fn read_asset_from_source<'a>(
 			let format = path.extension().and_then(|e| e.to_str()).ok_or(())?.to_string();
 
 			let source_bytes = read(&path).await.or(Err(()))?;
+			let mut source_data = Vec::with_capacity_in(source_bytes.len(), allocator);
+			source_data.extend_from_slice(&source_bytes);
 
-			return Ok((source_bytes.into_boxed_slice(), spec, format));
+			return Ok((source_data.into_boxed_slice(), spec, format));
 		}
 		_ => {
 			// Could not resolve how to get raw resource, return empty bytes

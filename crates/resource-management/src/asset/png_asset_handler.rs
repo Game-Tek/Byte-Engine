@@ -8,7 +8,7 @@ use super::{
 use crate::{
 	asset,
 	processors::image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription},
-	r#async::{spawn_cpu_task, BoxedFuture},
+	r#async::BoxedFuture,
 	resource,
 	types::{Formats, Gamma},
 	ProcessedAsset,
@@ -58,14 +58,15 @@ impl AssetHandler for PNGAssetHandler {
 			}
 
 			let (data, _, dt) = asset_storage_backend
-				.resolve(url)
+				.resolve_in(url, allocator)
 				.await
 				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
 			let semantic = guess_semantic_from_name(url.get_base());
 			let transformations = self.transformations;
 
-			let decoded = spawn_cpu_task(move || -> Result<DecodedImage, LoadErrors> {
+			// Arena-backed source bytes borrow the bake allocator, so decoding stays in this task.
+			let decoded = {
 				let mut buffer;
 				let extent;
 				let gamma: Gamma;
@@ -108,9 +109,7 @@ impl AssetHandler for PNGAssetHandler {
 					data: buffer.into(),
 					description,
 				})
-			})
-			.await
-			.map_err(|_| LoadErrors::FailedToProcess)??;
+			}?;
 
 			let DecodedImage { data, description } = decoded;
 

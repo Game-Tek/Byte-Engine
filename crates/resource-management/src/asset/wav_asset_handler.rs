@@ -139,7 +139,7 @@ impl AssetHandler for WAVAssetHandler {
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
-		_: &'a dyn std::alloc::Allocator,
+		allocator: &'a dyn std::alloc::Allocator,
 	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
@@ -149,7 +149,7 @@ impl AssetHandler for WAVAssetHandler {
 			}
 
 			let (data, _, dt) = asset_storage_backend
-				.resolve(url)
+				.resolve_in(url, allocator)
 				.await
 				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 

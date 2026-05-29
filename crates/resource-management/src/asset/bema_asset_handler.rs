@@ -60,7 +60,7 @@ impl AssetHandler for BEMAAssetHandler {
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
-		_: &'a dyn std::alloc::Allocator,
+		allocator: &'a dyn std::alloc::Allocator,
 	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
@@ -70,7 +70,7 @@ impl AssetHandler for BEMAAssetHandler {
 			}
 
 			let (data, _, at) = asset_storage_backend
-				.resolve(url)
+				.resolve_in(url, allocator)
 				.await
 				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
@@ -106,6 +106,7 @@ impl AssetHandler for BEMAAssetHandler {
 						asset_object,
 						shader_json,
 						s_type,
+						allocator,
 					)
 					.await
 					.map_err(|_| LoadErrors::FailedToProcess)?;
@@ -340,12 +341,13 @@ async fn transform_shader(
 	material: &json::Object,
 	shader_json: &json::Value,
 	stage: &str,
+	allocator: &dyn std::alloc::Allocator,
 ) -> Result<(ReferenceModel<Shader>, Box<[u8]>), String> {
 	let path = shader_json
 		.as_str()
 		.ok_or("Invalid shader path. The shader entry is missing a file path.".to_string())?;
 	let path = ResourceId::new(path);
-	let (arlp, _, format) = asset_storage_backend.resolve(path).await.or(Err(
+	let (arlp, _, format) = asset_storage_backend.resolve_in(path, allocator).await.or(Err(
 		"Failed to load shader source. The shader file is missing or unreadable.".to_string(),
 	))?;
 

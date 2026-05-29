@@ -6,7 +6,7 @@ use super::{
 use crate::{
 	asset,
 	processors::lut_processor::{process_lut, LutDescription},
-	r#async::{spawn_cpu_task, BoxedFuture},
+	r#async::BoxedFuture,
 	resource,
 	resources::lut::LutKind,
 	ProcessedAsset,
@@ -101,7 +101,7 @@ impl AssetHandler for LUTAssetHandler {
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
-		_: &'a dyn std::alloc::Allocator,
+		allocator: &'a dyn std::alloc::Allocator,
 	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
@@ -111,7 +111,7 @@ impl AssetHandler for LUTAssetHandler {
 			}
 
 			let (data, _, dt) = asset_storage_backend
-				.resolve(url)
+				.resolve_in(url, allocator)
 				.await
 				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
@@ -119,10 +119,8 @@ impl AssetHandler for LUTAssetHandler {
 				return Err(LoadErrors::UnsupportedType);
 			}
 
-			let parsed = spawn_cpu_task(move || Self::parse_lut(&data))
-				.await
-				.map_err(|_| LoadErrors::FailedToProcess)?
-				.map_err(|_| LoadErrors::FailedToProcess)?;
+			// The source bytes borrow the bake allocator, so parsing stays in this task.
+			let parsed = Self::parse_lut(&data).map_err(|_| LoadErrors::FailedToProcess)?;
 
 			process_lut(url, parsed.description, parsed.entries)
 		})

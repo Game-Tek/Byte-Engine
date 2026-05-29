@@ -51,26 +51,20 @@ impl AssetHandler for GLTFAssetHandler {
 			}
 
 			let (data, spec, dt) = asset_storage_backend
-				.resolve(url)
+				.resolve_in(url, allocator)
 				.await
 				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
 			let (gltf, buffers) = if dt == "glb" {
-				let parsed = spawn_cpu_task(move || -> Result<(gltf::Gltf, Vec<gltf::buffer::Data>), LoadErrors> {
-					let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
-					let gltf = gltf::Gltf::from_slice(&glb.json).map_err(|_| LoadErrors::FailedToProcess)?;
-					let buffers = gltf::import_buffers(&gltf, None, glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect()))
-						.map_err(|_| LoadErrors::FailedToProcess)?;
-					Ok((gltf, buffers))
-				})
-				.await
-				.map_err(|_| LoadErrors::FailedToProcess)??;
-
-				parsed
+				// Arena-backed source bytes borrow the bake allocator, so parsing stays in this task instead of crossing a thread boundary.
+				let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
+				let gltf = gltf::Gltf::from_slice(&glb.json).map_err(|_| LoadErrors::FailedToProcess)?;
+				let buffers = gltf::import_buffers(&gltf, None, glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect()))
+					.map_err(|_| LoadErrors::FailedToProcess)?;
+				(gltf, buffers)
 			} else {
-				let gltf = spawn_cpu_task(move || gltf::Gltf::from_slice(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded))
-					.await
-					.map_err(|_| LoadErrors::FailedToProcess)??;
+				// Keep the allocator-backed `.gltf` bytes local to this bake task.
+				let gltf = gltf::Gltf::from_slice(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
 
 				let buffers = if let Some(bin_file) = gltf.buffers().find_map(|b| {
 					if let gltf::buffer::Source::Uri(r) = b.source() {
@@ -85,11 +79,11 @@ impl AssetHandler for GLTFAssetHandler {
 				}) {
 					let bin_file = ResourceId::new(bin_file);
 					let (bin, ..) = asset_storage_backend
-						.resolve(bin_file)
+						.resolve_in(bin_file, allocator)
 						.await
 						.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 					gltf.buffers()
-						.map(|_| gltf::buffer::Data(bin.clone().into()))
+						.map(|_| gltf::buffer::Data(bin.iter().copied().collect()))
 						.collect::<Vec<_>>()
 				} else {
 					gltf::import_buffers(&gltf, None, None).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?
@@ -100,7 +94,7 @@ impl AssetHandler for GLTFAssetHandler {
 
 			if let Some(fragment) = url.get_fragment() {
 				let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
-				let image = load_gltf_image_data(asset_storage_backend, url, image, &buffers).await?;
+				let image = load_gltf_image_data(asset_storage_backend, url, image, &buffers, allocator).await?;
 				let semantic = guess_semantic_from_name(url.get_base());
 				return process_gltf_image(url, image, semantic, allocator);
 			}
@@ -500,12 +494,13 @@ async fn load_gltf_image_data(
 	mesh_url: ResourceId<'_>,
 	image: gltf::Image<'_>,
 	buffers: &[gltf::buffer::Data],
+	allocator: &dyn std::alloc::Allocator,
 ) -> Result<gltf::image::Data, LoadErrors> {
 	match image.source() {
 		gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
 			let image_url = resolve_gltf_uri(mesh_url, uri);
 			let (bytes, ..) = asset_storage_backend
-				.resolve(ResourceId::new(&image_url))
+				.resolve_in(ResourceId::new(&image_url), allocator)
 				.await
 				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 			decode_external_gltf_image(&bytes)
@@ -706,7 +701,7 @@ async fn store_gltf_image_resource(
 	semantic: Semantic,
 	allocator: &dyn std::alloc::Allocator,
 ) -> Result<ReferenceModel<Image>, LoadErrors> {
-	let image_data = load_gltf_image_data(asset_storage_backend, mesh_url, image, buffers).await?;
+	let image_data = load_gltf_image_data(asset_storage_backend, mesh_url, image, buffers, allocator).await?;
 	let (resource, bytes) = process_gltf_image(ResourceId::new(id), image_data, semantic, allocator)?;
 	storage_backend
 		.store(&resource, &bytes)

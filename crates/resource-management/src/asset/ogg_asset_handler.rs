@@ -5,13 +5,8 @@ use super::{
 	ResourceId,
 };
 use crate::{
-	asset,
-	processors::audio_processor::process_audio,
-	r#async::{spawn_cpu_task, BoxedFuture},
-	resource,
-	resources::audio::Audio,
-	types::BitDepths,
-	ProcessedAsset,
+	asset, processors::audio_processor::process_audio, r#async::BoxedFuture, resource, resources::audio::Audio,
+	types::BitDepths, ProcessedAsset,
 };
 
 impl OGGAssetHandler {
@@ -81,7 +76,7 @@ impl AssetHandler for OGGAssetHandler {
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
-		_: &'a dyn std::alloc::Allocator,
+		allocator: &'a dyn std::alloc::Allocator,
 	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
@@ -91,7 +86,7 @@ impl AssetHandler for OGGAssetHandler {
 			}
 
 			let (data, _, dt) = asset_storage_backend
-				.resolve(url)
+				.resolve_in(url, allocator)
 				.await
 				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
@@ -99,11 +94,8 @@ impl AssetHandler for OGGAssetHandler {
 				return Err(LoadErrors::UnsupportedType);
 			}
 
-			let bit_depth = self.bit_depth;
-			let (audio_resource, data) = spawn_cpu_task(move || Self::decode_ogg(&data, bit_depth))
-				.await
-				.map_err(|_| LoadErrors::FailedToProcess)?
-				.map_err(|_| LoadErrors::FailedToProcess)?;
+			// The source bytes borrow the bake allocator, so decoding stays in this task.
+			let (audio_resource, data) = Self::decode_ogg(&data, self.bit_depth).map_err(|_| LoadErrors::FailedToProcess)?;
 
 			process_audio(url, audio_resource, data)
 		})

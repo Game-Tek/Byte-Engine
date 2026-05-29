@@ -286,9 +286,7 @@ impl Renderer {
 
 		self.context.start_frame_capture();
 
-		let mut transforms_listener = transforms_listener.to_vec();
-
-		transforms_listener.retain(|message| {
+		while let Some(message) = transforms_listener.read() {
 			let handle = message.handle().clone();
 
 			if let Some(camera) = self
@@ -298,11 +296,8 @@ impl Renderer {
 			{
 				camera.set_position(message.transform().get_position());
 				camera.set_orientation(message.transform().get_orientation());
-				false
-			} else {
-				true
 			}
-		});
+		}
 
 		let mut queue = self.context.queue(self.graphics_queue_handle);
 		let frame = ghi::queue::FrameRequest {

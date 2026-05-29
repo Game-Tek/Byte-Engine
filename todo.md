@@ -62,7 +62,6 @@
 - Consider how to deal with texture usages when multiple "unknown" render passes use them.
 
 # Allocation reduction opportunities
-- Avoid copying the transform listener into a Vec every renderer frame in crates/byte-engine/src/rendering/renderer.rs; consume/filter listener updates without allocating when possible.
 - Remove names from materials in Visibility Pipeline on non-debug builds.
 
 # BESL

@@ -17,92 +17,6 @@
 //! - [ ] Remove panics.
 //! - [ ] Add device class and device grouping.
 
-use std::{collections::HashMap, default, f32::consts::PI};
-
-use log::warn;
-use math::{normalize, Base, Vector2, Vector3};
-use serde::de;
-use utils::{insert_return_length, RGBA};
-
-use super::{
-	action::{InputValue, TriggerMapping},
-	device::Device,
-	device_class::{DeviceClass, DeviceClassHandle},
-	input_trigger::{Trigger, TriggerDescription},
-	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types,
-	Value,
-};
-use crate::{
-	core::{
-		channel::{Channel as _, DefaultChannel},
-		factory::{CreateMessage, Factory, Handle},
-		listener::{DefaultListener, Listener},
-		message::Message,
-		Entity, EntityHandle,
-	},
-	input::ActionEvent,
-};
-
-#[derive(Copy, Clone, Debug)]
-/// A trigger reference is a way to reference an input trigger.
-/// It can be referenced by it's name or by it's handle.
-/// It's provided as a convenience to the developer.
-pub enum TriggerReference {
-	/// Refer to the input trigger by it's handle.
-	Handle(TriggerHandle),
-	/// Refer to the input trigger by it's name.
-	Name(&'static str),
-}
-
-#[derive(Copy, Clone, PartialEq)]
-struct Record {
-	seat_handle: SeatHandle,
-	device_handle: DeviceHandle,
-	trigger_handle: TriggerHandle,
-	value: Value,
-	time: std::time::SystemTime,
-}
-
-impl PartialOrd for Record {
-	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-		self.time.partial_cmp(&other.time)
-	}
-}
-
-struct InputSourceState {
-	value: Value,
-	time: std::time::SystemTime,
-}
-
-/// An input event is an application specific event that is triggered by a combination of input sources.
-struct InputAction {
-	name: String,
-	r#type: Types,
-	trigger_mappings: Vec<TriggerMapping>,
-	handle: Option<Handle>,
-	tick_policy: TickPolicy,
-}
-
-pub struct InputSourceEventState {
-	seat_handle: SeatHandle,
-	device_handle: DeviceHandle,
-	value: Value,
-}
-
-/// The input event state is the value of an input event.
-pub struct InputEventState {
-	/// The seat that triggered the input event.
-	seat_handle: SeatHandle,
-	/// The device that triggered the input event.
-	device_handle: DeviceHandle,
-	/// The handle to the input event.
-	input_event_handle: ActionHandle,
-	/// The value of the input event.
-	value: Value,
-}
-
-impl Message for Value {}
-
 /// The input manager is responsible for managing input devices and input events.
 pub struct InputManager {
 	device_classes: Vec<DeviceClass>,
@@ -887,6 +801,66 @@ fn boolean_record_stack<'a>(
 	stack
 }
 
+#[derive(Copy, Clone, Debug)]
+/// A trigger reference is a way to reference an input trigger.
+/// It can be referenced by it's name or by it's handle.
+/// It's provided as a convenience to the developer.
+pub enum TriggerReference {
+	/// Refer to the input trigger by it's handle.
+	Handle(TriggerHandle),
+	/// Refer to the input trigger by it's name.
+	Name(&'static str),
+}
+
+#[derive(Copy, Clone, PartialEq)]
+struct Record {
+	seat_handle: SeatHandle,
+	device_handle: DeviceHandle,
+	trigger_handle: TriggerHandle,
+	value: Value,
+	time: std::time::SystemTime,
+}
+
+impl PartialOrd for Record {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+		self.time.partial_cmp(&other.time)
+	}
+}
+
+struct InputSourceState {
+	value: Value,
+	time: std::time::SystemTime,
+}
+
+/// An input event is an application specific event that is triggered by a combination of input sources.
+struct InputAction {
+	name: String,
+	r#type: Types,
+	trigger_mappings: Vec<TriggerMapping>,
+	handle: Option<Handle>,
+	tick_policy: TickPolicy,
+}
+
+pub struct InputSourceEventState {
+	seat_handle: SeatHandle,
+	device_handle: DeviceHandle,
+	value: Value,
+}
+
+/// The input event state is the value of an input event.
+pub struct InputEventState {
+	/// The seat that triggered the input event.
+	seat_handle: SeatHandle,
+	/// The device that triggered the input event.
+	device_handle: DeviceHandle,
+	/// The handle to the input event.
+	input_event_handle: ActionHandle,
+	/// The value of the input event.
+	value: Value,
+}
+
+impl Message for Value {}
+
 #[cfg(test)]
 mod tests {
 	use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
@@ -1645,3 +1619,29 @@ mod tests {
 		assert_eq!(count_events(&mut event_listener), 1);
 	}
 }
+
+use std::{collections::HashMap, default, f32::consts::PI};
+
+use log::warn;
+use math::{normalize, Base, Vector2, Vector3};
+use serde::de;
+use utils::{insert_return_length, RGBA};
+
+use super::{
+	action::{InputValue, TriggerMapping},
+	device::Device,
+	device_class::{DeviceClass, DeviceClassHandle},
+	input_trigger::{Trigger, TriggerDescription},
+	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types,
+	Value,
+};
+use crate::{
+	core::{
+		channel::{Channel as _, DefaultChannel},
+		factory::{CreateMessage, Factory, Handle},
+		listener::{DefaultListener, Listener},
+		message::Message,
+		Entity, EntityHandle,
+	},
+	input::ActionEvent,
+};

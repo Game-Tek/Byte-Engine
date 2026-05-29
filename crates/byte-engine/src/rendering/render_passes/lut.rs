@@ -1,47 +1,3 @@
-use std::boxed::Box as StdBox;
-
-use ghi::{
-	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-	context::{Context as _, ContextCreate as _},
-	frame::Frame as _,
-	types::Size as _,
-};
-use half::f16;
-use resource_management::{
-	resource::ReadTargetsMut,
-	resources::lut::{Lut, LutKind},
-	resources::material,
-	types::ShaderTypes as ResourceShaderTypes,
-	Reference,
-};
-use utils::{Box, Extent};
-
-use crate::{
-	core::Entity,
-	rendering::{
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-		Sink,
-	},
-};
-
-const LUT_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-);
-const LUT_TEXTURE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	1,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-);
-const LUT_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-
-/// The `LutRenderPassSettings` struct carries the LUT resource used by the LUT grading pass.
-pub struct LutRenderPassSettings {
-	pub lut: Reference<Lut>,
-}
-
 /// The `LutRenderPass` struct applies a baked 3D LUT to the current `main` render target.
 pub struct LutRenderPass {
 	pipeline: ghi::PipelineHandle,
@@ -144,15 +100,9 @@ impl LutRenderPass {
 			"LUT reference missing during LUT upload. The most likely cause is that the LUT render pass lost its source resource before the first frame.",
 		);
 		let lut_bytes = load_lut_bytes(lut_reference);
-		let upload_bytes = convert_lut_bytes_to_rgba16f_upload(&self.lut, &lut_bytes);
 		let target = frame.get_texture_slice_mut(self.lut_image.into());
 
-		assert_eq!(
-			target.len(),
-			upload_bytes.len(),
-			"Unexpected LUT texture upload size. The most likely cause is that the GPU image extent or format does not match the LUT resource metadata."
-		);
-		target.copy_from_slice(&upload_bytes);
+		write_lut_bytes_to_rgba16f_upload_target(&self.lut, &lut_bytes, target);
 		frame.sync_texture(self.lut_image.into());
 
 		self.lut_uploaded = true;
@@ -347,8 +297,8 @@ fn load_lut_bytes(reference: &mut Reference<Lut>) -> StdBox<[u8]> {
 	}
 }
 
-/// Converts the baked LUT RGB float payload into an RGBA16F 3D texture upload buffer.
-fn convert_lut_bytes_to_rgba16f_upload(lut: &Lut, lut_bytes: &[u8]) -> StdBox<[u8]> {
+/// Converts the baked LUT RGB float payload directly into an RGBA16F 3D texture upload target.
+fn write_lut_bytes_to_rgba16f_upload_target(lut: &Lut, lut_bytes: &[u8], upload_target: &mut [u8]) {
 	assert!(
 		matches!(lut.kind, LutKind::ThreeDimensional),
 		"Unsupported LUT kind for upload. The most likely cause is that a non-3D LUT resource reached the LUT render pass."
@@ -365,20 +315,27 @@ fn convert_lut_bytes_to_rgba16f_upload(lut: &Lut, lut_bytes: &[u8]) -> StdBox<[u
 		.kind
 		.expected_entry_count(lut.size)
 		.expect("Invalid LUT dimensions. The most likely cause is that the LUT size overflowed during texture upload.");
-	let mut upload_bytes = Vec::with_capacity(texel_count * 4 * std::mem::size_of::<u16>());
+	let expected_upload_size = texel_count * 4 * std::mem::size_of::<u16>();
+	assert_eq!(
+		upload_target.len(),
+		expected_upload_size,
+		"Unexpected LUT texture upload size. The most likely cause is that the GPU image extent or format does not match the LUT resource metadata."
+	);
 
-	for rgb in lut_bytes.chunks_exact(3 * std::mem::size_of::<f32>()) {
+	// The resource stores tightly packed RGB f32 texels, while the GPU texture expects RGBA16F texels.
+	for (rgb, rgba16f) in lut_bytes
+		.chunks_exact(3 * std::mem::size_of::<f32>())
+		.zip(upload_target.chunks_exact_mut(4 * std::mem::size_of::<u16>()))
+	{
 		let r = f32::from_le_bytes(rgb[0..4].try_into().unwrap());
 		let g = f32::from_le_bytes(rgb[4..8].try_into().unwrap());
 		let b = f32::from_le_bytes(rgb[8..12].try_into().unwrap());
 
-		upload_bytes.extend_from_slice(&f16::from_f32(r).to_bits().to_le_bytes());
-		upload_bytes.extend_from_slice(&f16::from_f32(g).to_bits().to_le_bytes());
-		upload_bytes.extend_from_slice(&f16::from_f32(b).to_bits().to_le_bytes());
-		upload_bytes.extend_from_slice(&f16::from_f32(1.0).to_bits().to_le_bytes());
+		rgba16f[0..2].copy_from_slice(&f16::from_f32(r).to_bits().to_le_bytes());
+		rgba16f[2..4].copy_from_slice(&f16::from_f32(g).to_bits().to_le_bytes());
+		rgba16f[4..6].copy_from_slice(&f16::from_f32(b).to_bits().to_le_bytes());
+		rgba16f[6..8].copy_from_slice(&f16::from_f32(1.0).to_bits().to_le_bytes());
 	}
-
-	upload_bytes.into_boxed_slice()
 }
 
 fn expected_lut_payload_size(lut: &Lut) -> usize {
@@ -388,12 +345,30 @@ fn expected_lut_payload_size(lut: &Lut) -> usize {
 		.expect("Invalid LUT payload size calculation. The most likely cause is that the LUT dimensions overflowed.")
 }
 
+const LUT_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	0,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+);
+const LUT_TEXTURE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	1,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::COMPUTE,
+);
+const LUT_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
+	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+
+/// The `LutRenderPassSettings` struct carries the LUT resource used by the LUT grading pass.
+pub struct LutRenderPassSettings {
+	pub lut: Reference<Lut>,
+}
+
 #[cfg(test)]
 mod tests {
 	use half::f16;
 	use resource_management::resources::lut::{Lut, LutKind};
 
-	use super::{convert_lut_bytes_to_rgba16f_upload, create_lut_shader_sources, expected_lut_payload_size};
+	use super::{create_lut_shader_sources, expected_lut_payload_size, write_lut_bytes_to_rgba16f_upload_target};
 
 	#[test]
 	fn lut_shader_compiles() {
@@ -434,9 +409,10 @@ mod tests {
 			lut_bytes.extend_from_slice(&b.to_le_bytes());
 		}
 
-		let upload = convert_lut_bytes_to_rgba16f_upload(&lut, &lut_bytes);
+		let mut upload = [0_u8; 8 * 4 * std::mem::size_of::<u16>()];
 
-		assert_eq!(upload.len(), 8 * 4 * std::mem::size_of::<u16>());
+		write_lut_bytes_to_rgba16f_upload_target(&lut, &lut_bytes, &mut upload);
+
 		assert_eq!(
 			u16::from_le_bytes(upload[0..2].try_into().unwrap()),
 			f16::from_f32(0.0).to_bits()
@@ -465,7 +441,9 @@ mod tests {
 			domain_max: [1.0, 1.0, 1.0],
 		};
 
-		let _ = convert_lut_bytes_to_rgba16f_upload(&lut, &[0_u8; 8]);
+		let mut upload = [0_u8; 8 * 4 * std::mem::size_of::<u16>()];
+
+		write_lut_bytes_to_rgba16f_upload_target(&lut, &[0_u8; 8], &mut upload);
 	}
 
 	#[test]
@@ -483,3 +461,29 @@ mod tests {
 		);
 	}
 }
+
+use std::boxed::Box as StdBox;
+
+use ghi::{
+	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
+	context::{Context as _, ContextCreate as _},
+	frame::Frame as _,
+	types::Size as _,
+};
+use half::f16;
+use resource_management::{
+	resource::ReadTargetsMut,
+	resources::lut::{Lut, LutKind},
+	resources::material,
+	types::ShaderTypes as ResourceShaderTypes,
+	Reference,
+};
+use utils::{Box, Extent};
+
+use crate::{
+	core::Entity,
+	rendering::{
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+		Sink,
+	},
+};

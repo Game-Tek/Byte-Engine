@@ -7,6 +7,8 @@ use utils::{r#async::StreamExt, sync::Arc};
 
 use crate::{utils::get_asset_manager, InspectFormat};
 
+const DEFAULT_BAKE_ARENA_CAPACITY: usize = 64 * 1024 * 1024;
+
 pub fn wipe(destination_path: String) -> Result<(), i32> {
 	std::fs::remove_dir_all(&destination_path).map_err(|e| {
 		log::error!("Failed to wipe resources. Error: {}", e);
@@ -190,8 +192,10 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 
 	let tasks = ids.into_iter().map(async |id| {
 		let asset_manager = asset_manager.clone();
+		let arena = bumpalo::Bump::with_capacity(DEFAULT_BAKE_ARENA_CAPACITY);
+		let allocator = &arena;
 		log::info!("Baking resource '{}'", id);
-		match asset_manager.bake(&id, &storage_backend).await {
+		match asset_manager.bake_in(&id, &storage_backend, &allocator).await {
 			Ok(_) => {
 				log::info!("Baked resource '{}'", id);
 			}

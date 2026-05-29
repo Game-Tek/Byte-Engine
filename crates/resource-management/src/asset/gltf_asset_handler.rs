@@ -1,38 +1,3 @@
-use std::{path::Path, sync::Arc};
-
-use maths_rs::{
-	mat::{MatNew4, MatScale},
-	vec::Vec3,
-};
-use utils::{json, json::JsonValueTrait, Extent};
-
-use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
-	bema_asset_handler::{compile_shader_program, ProgramGenerator},
-	ResourceId,
-};
-pub use crate::processors::mesh_processor::TriangleFrontFaceWinding;
-use crate::{
-	asset::{self},
-	pbr::{
-		brdf_material_from_gltf, generate_textured_brdf_program, BrdfMaterialDescription, BrdfMaterialValidationError,
-		BrdfNode, BrdfNodeId,
-	},
-	processors::{
-		image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription, Semantic},
-		mesh_processor::{MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource},
-	},
-	r#async::{spawn_cpu_task, BoxedFuture},
-	resource,
-	resources::{
-		image::Image,
-		material::{MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
-	},
-	types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
-	ProcessedAsset, ReferenceModel,
-};
-
 /// The `GLTFAssetHandler` struct stores glTF import settings for meshes and images.
 pub struct GLTFAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
@@ -1472,3 +1437,38 @@ mod tests {
 	// 	// assert_eq!(resource.class, "Image");
 	// }
 }
+
+use std::{path::Path, sync::Arc};
+
+use maths_rs::{
+	mat::{MatNew4, MatScale},
+	vec::Vec3,
+};
+use utils::{json, json::JsonValueTrait, Extent};
+
+use super::{
+	asset_handler::{AssetHandler, LoadErrors},
+	asset_manager::AssetManager,
+	bema_asset_handler::{compile_shader_program, ProgramGenerator},
+	ResourceId,
+};
+pub use crate::processors::mesh_processor::TriangleFrontFaceWinding;
+use crate::{
+	asset::{self},
+	pbr::{
+		brdf_material_from_gltf, generate_textured_brdf_program, BrdfMaterialDescription, BrdfMaterialValidationError,
+		BrdfNode, BrdfNodeId,
+	},
+	processors::{
+		image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription, Semantic},
+		mesh_processor::{MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource},
+	},
+	r#async::{spawn_cpu_task, BoxedFuture},
+	resource,
+	resources::{
+		image::Image,
+		material::{MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
+	},
+	types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
+	ProcessedAsset, ReferenceModel,
+};

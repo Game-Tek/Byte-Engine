@@ -176,6 +176,7 @@ name = "beld"
 version = "0.1.0"
 dependencies = [
  "besl",
+ "bumpalo",
  "byte-engine",
  "clap",
  "log",

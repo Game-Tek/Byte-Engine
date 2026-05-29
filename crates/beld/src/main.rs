@@ -1,3 +1,5 @@
+#![feature(allocator_api)]
+
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod commands;

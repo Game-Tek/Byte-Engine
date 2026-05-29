@@ -20,7 +20,7 @@ use crate::{
 		BrdfNode, BrdfNodeId,
 	},
 	processors::{
-		image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image, ImageDescription, Semantic},
+		image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription, Semantic},
 		mesh_processor::{MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource},
 	},
 	r#async::{spawn_cpu_task, BoxedFuture},
@@ -76,6 +76,7 @@ impl AssetHandler for GLTFAssetHandler {
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
+		allocator: &'a dyn std::alloc::Allocator,
 	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
@@ -136,7 +137,7 @@ impl AssetHandler for GLTFAssetHandler {
 				let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
 				let image = load_gltf_image_data(asset_storage_backend, url, image, &buffers).await?;
 				let semantic = guess_semantic_from_name(url.get_base());
-				return process_gltf_image(url, image, semantic);
+				return process_gltf_image(url, image, semantic, allocator);
 			}
 
 			let spec = spec.as_ref();
@@ -239,6 +240,7 @@ impl AssetHandler for GLTFAssetHandler {
 					&buffers,
 					primitive.material(),
 					self.generator.clone(),
+					allocator,
 				)
 				.await?;
 				materials_per_primitive.push(material);
@@ -368,10 +370,11 @@ async fn material_for_gltf_primitive(
 	buffers: &[gltf::buffer::Data],
 	material: gltf::Material<'_>,
 	generator: Option<Arc<dyn ProgramGenerator>>,
+	allocator: &dyn std::alloc::Allocator,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	if let Some(override_asset) = material_override(spec, &material) {
 		return asset_manager
-			.bake_if_not_exists::<VariantModel>(&override_asset, storage_backend)
+			.bake_if_not_exists_in::<VariantModel>(&override_asset, storage_backend, allocator)
 			.await
 			.map_err(|_| LoadErrors::FailedToProcess);
 	}
@@ -384,6 +387,7 @@ async fn material_for_gltf_primitive(
 		buffers,
 		material,
 		generator,
+		allocator,
 	)
 	.await
 }
@@ -396,6 +400,7 @@ async fn generate_gltf_material_variant(
 	buffers: &[gltf::buffer::Data],
 	material: gltf::Material<'_>,
 	generator: Option<Arc<dyn ProgramGenerator>>,
+	allocator: &dyn std::alloc::Allocator,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let generator = generator.ok_or(LoadErrors::FailedToProcess)?;
 	let brdf = brdf_material_from_gltf(&material);
@@ -408,6 +413,7 @@ async fn generate_gltf_material_variant(
 		gltf,
 		buffers,
 		&texture_dependencies,
+		allocator,
 	)
 	.await?;
 	let program = generate_textured_brdf_program(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
@@ -574,6 +580,7 @@ fn process_gltf_image(
 	id: ResourceId<'_>,
 	image: gltf::image::Data,
 	semantic: Semantic,
+	allocator: &dyn std::alloc::Allocator,
 ) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
 	let format = gltf_image_format(image.format)?;
 	let image_description = ImageDescription {
@@ -584,7 +591,8 @@ fn process_gltf_image(
 		generate_mipmaps: false,
 	};
 
-	process_image(id, image_description, image.pixels.into_boxed_slice())
+	let (asset, data) = process_image_in(id, image_description, image.pixels.into_boxed_slice(), allocator)?;
+	Ok((asset, data.to_vec().into_boxed_slice()))
 }
 
 fn gltf_image_format(format: gltf::image::Format) -> Result<Formats, LoadErrors> {
@@ -691,6 +699,7 @@ async fn store_gltf_texture_dependencies(
 	gltf: &gltf::Gltf,
 	buffers: &[gltf::buffer::Data],
 	dependencies: &[GltfTextureDependency],
+	allocator: &dyn std::alloc::Allocator,
 ) -> Result<Vec<VariantVariableModel>, LoadErrors> {
 	let mut variables = Vec::with_capacity(dependencies.len());
 
@@ -708,6 +717,7 @@ async fn store_gltf_texture_dependencies(
 			image,
 			buffers,
 			dependency.semantic,
+			allocator,
 		)
 		.await?;
 
@@ -729,9 +739,10 @@ async fn store_gltf_image_resource(
 	image: gltf::Image<'_>,
 	buffers: &[gltf::buffer::Data],
 	semantic: Semantic,
+	allocator: &dyn std::alloc::Allocator,
 ) -> Result<ReferenceModel<Image>, LoadErrors> {
 	let image_data = load_gltf_image_data(asset_storage_backend, mesh_url, image, buffers).await?;
-	let (resource, bytes) = process_gltf_image(ResourceId::new(id), image_data, semantic)?;
+	let (resource, bytes) = process_gltf_image(ResourceId::new(id), image_data, semantic, allocator)?;
 	storage_backend
 		.store(&resource, &bytes)
 		.map(|resource| resource.into())
@@ -1419,6 +1430,7 @@ mod tests {
 				&resource_storage_backend,
 				asset_manager.get_storage_backend(),
 				url,
+				&std::alloc::Global,
 			)
 			.await
 			.expect("Image asset handler did not handle asset");

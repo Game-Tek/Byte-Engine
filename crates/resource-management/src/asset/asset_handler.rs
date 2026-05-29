@@ -1,3 +1,5 @@
+use std::alloc::Allocator;
+
 use super::{asset_manager::AssetManager, ResourceId};
 use crate::{asset, r#async::BoxedFuture, resource, ProcessedAsset};
 
@@ -19,5 +21,6 @@ pub trait AssetHandler: Send + Sync {
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
+		allocator: &'a dyn Allocator,
 	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>>;
 }

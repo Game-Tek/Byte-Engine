@@ -1,3 +1,5 @@
+use std::alloc::{Allocator, Global};
+
 use super::{asset_handler::AssetHandler, StorageBackend};
 use crate::{
 	asset::{asset_handler::LoadErrors, ResourceId},
@@ -47,6 +49,16 @@ impl AssetManager {
 	/// Call this to bake an asset identified by it's URL.
 	/// Does not check if the asset already exists in the resource storage backend.
 	pub async fn bake<'a>(&self, id: &str, resource_storage_backend: &dyn ResourceStorageBackend) -> Result<(), LoadMessages> {
+		self.bake_in(id, resource_storage_backend, &Global).await
+	}
+
+	/// Bakes an asset while using the provided allocator for generation-time buffers.
+	pub async fn bake_in<'a>(
+		&self,
+		id: &str,
+		resource_storage_backend: &dyn ResourceStorageBackend,
+		allocator: &dyn Allocator,
+	) -> Result<(), LoadMessages> {
 		let id = ResourceId::new(id);
 
 		let asset_handler = match self
@@ -64,7 +76,7 @@ impl AssetManager {
 		let start_time = std::time::Instant::now();
 
 		let (resource, buffer) = match asset_handler
-			.bake(self, resource_storage_backend, self.storage_backend.as_ref(), id)
+			.bake(self, resource_storage_backend, self.storage_backend.as_ref(), id, allocator)
 			.await
 		{
 			Ok(baked_asset) => baked_asset,
@@ -100,6 +112,28 @@ impl AssetManager {
 
 		if resource_storage_backend.read(id).is_none() {
 			self.bake(id.as_ref(), resource_storage_backend).await?;
+		}
+
+		if let Some(result) = resource_storage_backend.read(id) {
+			let (resource, _) = result;
+			let resource: ReferenceModel<M> = resource.into();
+			return Ok(resource);
+		}
+
+		Err(LoadMessages::NoAsset)
+	}
+
+	/// Bakes an asset with the provided allocator if the resource does not already exist.
+	pub async fn bake_if_not_exists_in<'a, M: Model>(
+		&self,
+		id: &str,
+		resource_storage_backend: &dyn ResourceStorageBackend,
+		allocator: &dyn Allocator,
+	) -> Result<ReferenceModel<M>, LoadMessages> {
+		let id = ResourceId::new(id);
+
+		if resource_storage_backend.read(id).is_none() {
+			self.bake_in(id.as_ref(), resource_storage_backend, allocator).await?;
 		}
 
 		if let Some(result) = resource_storage_backend.read(id) {
@@ -151,6 +185,7 @@ pub mod tests {
 			_: &'a dyn ResourceStorageBackend,
 			_: &'a dyn StorageBackend,
 			id: ResourceId<'a>,
+			_: &'a dyn std::alloc::Allocator,
 		) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 			Box::pin(async move {
 				if id.get_base().as_ref() == "example" {

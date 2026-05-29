@@ -101,6 +101,7 @@ impl AssetHandler for LUTAssetHandler {
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
+		_: &'a dyn std::alloc::Allocator,
 	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
@@ -295,6 +296,7 @@ mod tests {
 				&resource_storage_backend,
 				&asset_storage_backend,
 				ResourceId::new("grading/neutral.lut"),
+				&std::alloc::Global,
 			)
 			.await
 			.expect("LUT asset handler should bake the asset");

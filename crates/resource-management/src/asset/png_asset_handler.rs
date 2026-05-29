@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
 	asset,
-	processors::image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image, ImageDescription},
+	processors::image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription},
 	r#async::{spawn_cpu_task, BoxedFuture},
 	resource,
 	types::{Formats, Gamma},
@@ -48,6 +48,7 @@ impl AssetHandler for PNGAssetHandler {
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
+		allocator: &'a dyn std::alloc::Allocator,
 	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
@@ -113,7 +114,8 @@ impl AssetHandler for PNGAssetHandler {
 
 			let DecodedImage { data, description } = decoded;
 
-			process_image(url, description, data)
+			let (asset, data) = process_image_in(url, description, data, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
+			Ok((asset, data.iter().copied().collect::<Vec<_>>().into_boxed_slice()))
 		})
 	}
 }
@@ -233,7 +235,13 @@ mod tests {
 		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
 
 		let (resource, data) = asset_handler
-			.bake(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)
+			.bake(
+				&asset_manager,
+				&resource_storage_backend,
+				&asset_storage_backend,
+				url,
+				&std::alloc::Global,
+			)
 			.await
 			.expect("Image asset handler did not handle asset");
 

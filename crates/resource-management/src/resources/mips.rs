@@ -1,4 +1,9 @@
-use std::{borrow::Cow, error::Error, fmt, simd::Simd};
+use std::{
+	alloc::{Allocator, Global},
+	error::Error,
+	fmt,
+	simd::Simd,
+};
 
 use crate::types::Formats;
 
@@ -12,28 +17,43 @@ pub struct MipLevel<'a> {
 
 /// The `MipChain` struct owns generated levels while exposing each level as a borrowed slice.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MipChain<'a> {
-	levels: Vec<StoredMipLevel<'a>>,
+pub struct MipChain<'a, A: Allocator = Global> {
+	levels: Vec<StoredMipLevel<'a, A>, A>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct StoredMipLevel<'a> {
+struct StoredMipLevel<'a, A: Allocator = Global> {
 	width: u32,
 	height: u32,
-	data: Cow<'a, [u8]>,
+	data: MipLevelData<'a, A>,
 }
 
-impl<'a> StoredMipLevel<'a> {
-	fn as_borrowed(&self) -> MipLevel<'_> {
-		MipLevel {
-			width: self.width,
-			height: self.height,
-			data: self.data.as_ref(),
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MipLevelData<'a, A: Allocator = Global> {
+	Borrowed(&'a [u8]),
+	Owned(Vec<u8, A>),
+}
+
+impl<A: Allocator> MipLevelData<'_, A> {
+	fn as_slice(&self) -> &[u8] {
+		match self {
+			MipLevelData::Borrowed(data) => data,
+			MipLevelData::Owned(data) => data.as_slice(),
 		}
 	}
 }
 
-impl<'a> MipChain<'a> {
+impl<'a, A: Allocator> StoredMipLevel<'a, A> {
+	fn as_borrowed(&self) -> MipLevel<'_> {
+		MipLevel {
+			width: self.width,
+			height: self.height,
+			data: self.data.as_slice(),
+		}
+	}
+}
+
+impl<'a, A: Allocator> MipChain<'a, A> {
 	pub fn len(&self) -> usize {
 		self.levels.len()
 	}
@@ -112,6 +132,17 @@ pub fn generate_mip_chain<'a>(
 	height: u32,
 	base_level: &'a [u8],
 ) -> Result<MipChain<'a>, MipGenerationError> {
+	generate_mip_chain_in(format, width, height, base_level, Global)
+}
+
+/// Generates a full mip chain using the provided allocator for generated levels.
+pub fn generate_mip_chain_in<'a, A: Allocator + Clone>(
+	format: Formats,
+	width: u32,
+	height: u32,
+	base_level: &'a [u8],
+	allocator: A,
+) -> Result<MipChain<'a, A>, MipGenerationError> {
 	if width == 0 || height == 0 {
 		return Err(MipGenerationError::ZeroDimensions);
 	}
@@ -127,12 +158,12 @@ pub fn generate_mip_chain<'a>(
 	}
 
 	let levels_count = mip_level_count(width, height)?;
-	let mut levels = Vec::with_capacity(levels_count as usize);
+	let mut levels = Vec::with_capacity_in(levels_count as usize, allocator.clone());
 
 	let mut current_level = StoredMipLevel {
 		width,
 		height,
-		data: Cow::Borrowed(base_level),
+		data: MipLevelData::Borrowed(base_level),
 	};
 
 	loop {
@@ -149,12 +180,13 @@ pub fn generate_mip_chain<'a>(
 		let next_size =
 			expected_size(next_width, next_height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?;
 
-		let mut next_data = vec![0_u8; next_size];
+		let mut next_data = Vec::with_capacity_in(next_size, allocator.clone());
+		next_data.resize(next_size, 0_u8);
 		downsample_level(
 			format,
 			current_width,
 			current_height,
-			current_level.data.as_ref(),
+			current_level.data.as_slice(),
 			&mut next_data,
 		)?;
 
@@ -162,7 +194,7 @@ pub fn generate_mip_chain<'a>(
 		current_level = StoredMipLevel {
 			width: next_width,
 			height: next_height,
-			data: Cow::Owned(next_data),
+			data: MipLevelData::Owned(next_data),
 		};
 	}
 

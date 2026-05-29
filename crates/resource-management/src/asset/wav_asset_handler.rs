@@ -139,6 +139,7 @@ impl AssetHandler for WAVAssetHandler {
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
+		_: &'a dyn std::alloc::Allocator,
 	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
 		Box::pin(async move {
 			if let Some(dt) = storage_backend.get_type(url) {
@@ -258,7 +259,13 @@ mod tests {
 		let url = ResourceId::new("gun.wav");
 
 		let (resource, data) = audio_asset_handler
-			.bake(&asset_manager, &resource_storage_backend, &asset_storage_backend, url)
+			.bake(
+				&asset_manager,
+				&resource_storage_backend,
+				&asset_storage_backend,
+				url,
+				&std::alloc::Global,
+			)
 			.await
 			.expect("Audio asset handler failed to load asset");
 

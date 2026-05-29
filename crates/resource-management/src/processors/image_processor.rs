@@ -1,8 +1,10 @@
+use std::alloc::{Allocator, Global};
+
 use utils::Extent;
 
 use crate::{
 	asset::{asset_handler::LoadErrors, resource_id::ResourceIdBase, ResourceId},
-	resources::{image::Image, mips::generate_mip_chain},
+	resources::{image::Image, mips::generate_mip_chain_in},
 	types::{Formats, Gamma},
 	Description, ProcessedAsset, StreamDescription,
 };
@@ -42,7 +44,24 @@ pub fn process_image<'a>(
 	description: ImageDescription,
 	buffer: Box<[u8]>,
 ) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-	let (resource, buffer, streams) = produce_image(&description, buffer)?;
+	let (resource, buffer, streams) = produce_image_in(&description, buffer, Global)?;
+	let asset = ProcessedAsset::new(id, resource);
+	let asset = if let Some(streams) = streams {
+		asset.with_streams(streams)
+	} else {
+		asset
+	};
+	Ok((asset, buffer))
+}
+
+/// Processes image pixels using the provided allocator for transient and output buffers.
+pub fn process_image_in<'a, A: Allocator + Clone>(
+	id: ResourceId<'a>,
+	description: ImageDescription,
+	buffer: Box<[u8]>,
+	allocator: A,
+) -> Result<(ProcessedAsset, Box<[u8], A>), LoadErrors> {
+	let (resource, buffer, streams) = produce_image_in(&description, buffer, allocator)?;
 	let asset = ProcessedAsset::new(id, resource);
 	let asset = if let Some(streams) = streams {
 		asset.with_streams(streams)
@@ -182,10 +201,11 @@ pub fn determine_image_format(source_format: Formats, compress: bool, semantic: 
 	}
 }
 
-fn produce_image(
+fn produce_image_in<A: Allocator + Clone>(
 	description: &ImageDescription,
 	buffer: Box<[u8]>,
-) -> Result<(Image, Box<[u8]>, Option<Vec<StreamDescription>>), LoadErrors> {
+	allocator: A,
+) -> Result<(Image, Box<[u8], A>, Option<Vec<StreamDescription>>), LoadErrors> {
 	let ImageDescription {
 		format,
 		extent,
@@ -199,12 +219,12 @@ fn produce_image(
 
 	// Convert the source data into the uncompressed intermediate that mip generation and BC
 	// compression both expect as input (always RGBA8 for BC targets, otherwise the natural format).
-	let intermediate: Box<[u8]> = match (format, output_format) {
+	let intermediate: Box<[u8], A> = match (format, output_format) {
 		(Formats::RGB8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB | Formats::BC5 | Formats::BC5SNORM) => {
-			rgb8_to_rgba8(*extent, &buffer)
+			rgb8_to_rgba8_in(*extent, &buffer, allocator.clone())
 		}
 		(Formats::RGBA8, Formats::BC5 | Formats::BC5SNORM) => {
-			let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
+			let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator.clone());
 
 			for y in 0..extent.height() {
 				let source_row = &buffer[(y * extent.width() * 4) as usize..][..(extent.width() * 4) as usize];
@@ -219,9 +239,9 @@ fn produce_image(
 
 			buf
 		}
-		(Formats::RGBA8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB) => buffer,
+		(Formats::RGBA8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB) => move_boxed_slice_in(buffer, allocator.clone()),
 		(Formats::RGB16, Formats::BC5 | Formats::BC5SNORM) => {
-			let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
+			let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator.clone());
 
 			for y in 0..extent.height() {
 				let source_row = &buffer[(y * extent.width() * 6) as usize..][..(extent.width() * 6) as usize];
@@ -243,7 +263,7 @@ fn produce_image(
 			buf
 		}
 		(Formats::RGB16, Formats::RGBA16) => {
-			let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 8].into();
+			let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 8, allocator.clone());
 
 			for y in 0..extent.height() {
 				let source_row = &buffer[(y * extent.width() * 6) as usize..][..(extent.width() * 6) as usize];
@@ -259,10 +279,10 @@ fn produce_image(
 
 			buf
 		}
-		(Formats::RGB16, Formats::BC7 | Formats::BC7SRGB) => rgb16_to_rgba8(*extent, &buffer),
-		(Formats::RGBA16, Formats::RGBA16) => buffer,
-		(Formats::RGBA16, Formats::BC5 | Formats::BC5SNORM) => rgba16_to_rgba8(*extent, &buffer),
-		(Formats::RGBA16, Formats::BC7 | Formats::BC7SRGB) => rgba16_to_rgba8(*extent, &buffer),
+		(Formats::RGB16, Formats::BC7 | Formats::BC7SRGB) => rgb16_to_rgba8_in(*extent, &buffer, allocator.clone()),
+		(Formats::RGBA16, Formats::RGBA16) => move_boxed_slice_in(buffer, allocator.clone()),
+		(Formats::RGBA16, Formats::BC5 | Formats::BC5SNORM) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
+		(Formats::RGBA16, Formats::BC7 | Formats::BC7SRGB) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
 		_ => {
 			panic!("Unsupported format: {:#?}", format);
 		}
@@ -275,17 +295,23 @@ fn produce_image(
 	};
 
 	let (mip_count, data, streams) = if *generate_mipmaps {
-		let chain = generate_mip_chain(intermediate_format, extent.width(), extent.height(), &intermediate)
-			.map_err(|_| LoadErrors::FailedToProcess)?;
+		let chain = generate_mip_chain_in(
+			intermediate_format,
+			extent.width(),
+			extent.height(),
+			&intermediate,
+			allocator.clone(),
+		)
+		.map_err(|_| LoadErrors::FailedToProcess)?;
 		let mip_count = chain.len() as u32;
 
-		let mut all_data: Vec<u8> = Vec::new();
+		let mut all_data = Vec::new_in(allocator.clone());
 		let mut streams = Vec::new();
 		let mut offset: usize = 0;
 
 		for (index, level) in chain.levels().enumerate() {
 			let level_extent = Extent::rectangle(level.width, level.height);
-			let level_data = compress_bc_level(output_format, level_extent, level.data);
+			let level_data = compress_bc_level_in(output_format, level_extent, level.data, allocator.clone());
 			let size = level_data.len();
 			streams.push(StreamDescription::new(&format!("mip[{index}]"), size, offset));
 			all_data.extend_from_slice(&level_data);
@@ -293,7 +319,7 @@ fn produce_image(
 		}
 		(mip_count, all_data.into_boxed_slice(), Some(streams))
 	} else {
-		let data = compress_bc_level(output_format, *extent, &intermediate);
+		let data = compress_bc_level_in(output_format, *extent, &intermediate, allocator.clone());
 		let streams = Some(vec![StreamDescription::new("mip[0]", data.len(), 0)]);
 		(1_u32, data, streams)
 	};
@@ -301,7 +327,7 @@ fn produce_image(
 	Ok((
 		Image {
 			format: output_format,
-			extent: extent.as_array(),
+			extent: image_resource_extent(output_format, *extent),
 			gamma: *gamma,
 			mip_count,
 		},
@@ -310,15 +336,32 @@ fn produce_image(
 	))
 }
 
+fn image_resource_extent(format: Formats, extent: Extent) -> [u32; 3] {
+	match format {
+		Formats::BC5 | Formats::BC5SNORM => extent.as_array(),
+		_ => [extent.width(), extent.height(), extent.depth().max(1)],
+	}
+}
+
 /// Compresses a single mip level to the target `output_format`, or returns the data unchanged for
 /// uncompressed formats. Accepts an RGBA8 surface for BC targets, or the natural format otherwise.
 fn compress_bc_level(output_format: Formats, extent: Extent, data: &[u8]) -> Box<[u8]> {
+	compress_bc_level_in(output_format, extent, data, Global)
+}
+
+/// Compresses or copies one mip level using the provided allocator for padding and output buffers.
+fn compress_bc_level_in<A: Allocator + Clone>(
+	output_format: Formats,
+	extent: Extent,
+	data: &[u8],
+	allocator: A,
+) -> Box<[u8], A> {
 	match output_format {
 		Formats::BC5 | Formats::BC5SNORM => {
 			// RgSurface<2> expects tightly packed RG pairs (2 bytes per pixel),
 			// not interleaved RGBA. Convert the RGBA8 intermediate to RG8
 			// before compression to avoid reading B/A as the second pixel's R/G.
-			let (rg_data, width, height) = rga_to_rg_surface(data, extent);
+			let (rg_data, width, height) = rga_to_rg_surface_in(data, extent, allocator.clone());
 			let rg_surface = intel_tex_2::RgSurface {
 				data: &rg_data,
 				width,
@@ -334,10 +377,10 @@ fn compress_bc_level(output_format: Formats, extent: Extent, data: &[u8]) -> Box
 					"BC5 payload size mismatch. The most likely cause is that the compressor block count no longer matches the padded image dimensions. extent={extent:?}, padded_width={width}, padded_height={height}, compressed_len={}, expected={expected_payload_bytes}",
 					compressed.len()
 				);
-			compressed.into()
+			move_boxed_slice_in(compressed.into_boxed_slice(), allocator)
 		}
 		Formats::BC7 | Formats::BC7SRGB => {
-			let (data, width, height) = rgba8_bc_compression_surface(extent, data);
+			let (data, width, height) = rgba8_bc_compression_surface_in(extent, data, allocator.clone());
 			let expected_surface_bytes = width as usize * height as usize * 4;
 			assert_eq!(
 				data.len(),
@@ -362,9 +405,13 @@ fn compress_bc_level(output_format: Formats, extent: Extent, data: &[u8]) -> Box
 				"BC7 payload size mismatch. The most likely cause is that the compressor block count no longer matches the padded image dimensions. format={output_format:?}, extent={extent:?}, padded_width={width}, padded_height={height}, compressed_len={}, expected={expected_payload_bytes}",
 				compressed.len()
 			);
-			compressed.into()
+			move_boxed_slice_in(compressed.into_boxed_slice(), allocator)
 		}
-		Formats::RGB8 | Formats::RGBA8 | Formats::RGB16 | Formats::RGBA16 => data.to_vec().into_boxed_slice(),
+		Formats::RGB8 | Formats::RGBA8 | Formats::RGB16 | Formats::RGBA16 => {
+			let mut output = Vec::with_capacity_in(data.len(), allocator);
+			output.extend_from_slice(data);
+			output.into_boxed_slice()
+		}
 		_ => {
 			panic!("Unsupported format")
 		}
@@ -827,7 +874,12 @@ mod tests {
 
 /// Expands an RGB8 image into RGBA8 so all runtime texture uploads use GPU-supported color layouts.
 fn rgb8_to_rgba8(extent: Extent, buffer: &[u8]) -> Box<[u8]> {
-	let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
+	rgb8_to_rgba8_in(extent, buffer, Global)
+}
+
+/// Expands an RGB8 image into RGBA8 using caller-provided storage.
+fn rgb8_to_rgba8_in<A: Allocator + Clone>(extent: Extent, buffer: &[u8], allocator: A) -> Box<[u8], A> {
+	let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator);
 
 	for y in 0..extent.height() {
 		let source_row = &buffer[(y * extent.width() * 3) as usize..][..(extent.width() * 3) as usize];
@@ -846,7 +898,12 @@ fn rgb8_to_rgba8(extent: Extent, buffer: &[u8]) -> Box<[u8]> {
 
 /// Converts RGB16 data to RGBA8 before BC compression because the compressor accepts 8-bit surfaces.
 fn rgb16_to_rgba8(extent: Extent, buffer: &[u8]) -> Box<[u8]> {
-	let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
+	rgb16_to_rgba8_in(extent, buffer, Global)
+}
+
+/// Converts RGB16 data to RGBA8 using caller-provided storage.
+fn rgb16_to_rgba8_in<A: Allocator + Clone>(extent: Extent, buffer: &[u8], allocator: A) -> Box<[u8], A> {
+	let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator);
 
 	for y in 0..extent.height() {
 		let source_row = &buffer[(y * extent.width() * 6) as usize..][..(extent.width() * 6) as usize];
@@ -866,7 +923,12 @@ fn rgb16_to_rgba8(extent: Extent, buffer: &[u8]) -> Box<[u8]> {
 
 /// Converts RGBA16 data to RGBA8 before BC compression because the compressor accepts 8-bit surfaces.
 fn rgba16_to_rgba8(extent: Extent, buffer: &[u8]) -> Box<[u8]> {
-	let mut buf: Box<[u8]> = vec![0_u8; extent.width() as usize * extent.height() as usize * 4].into();
+	rgba16_to_rgba8_in(extent, buffer, Global)
+}
+
+/// Converts RGBA16 data to RGBA8 using caller-provided storage.
+fn rgba16_to_rgba8_in<A: Allocator + Clone>(extent: Extent, buffer: &[u8], allocator: A) -> Box<[u8], A> {
+	let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator);
 
 	for y in 0..extent.height() {
 		let source_row = &buffer[(y * extent.width() * 8) as usize..][..(extent.width() * 8) as usize];
@@ -897,6 +959,15 @@ fn bc7_compression_settings(data: &[u8]) -> intel_tex_2::bc7::EncodeSettings {
 
 /// Pads RGBA8 data to full BC blocks so compressed payload size matches GPU upload layout.
 fn rgba8_bc_compression_surface(extent: Extent, data: &[u8]) -> (Box<[u8]>, u32, u32) {
+	rgba8_bc_compression_surface_in(extent, data, Global)
+}
+
+/// Pads RGBA8 data to BC block dimensions using caller-provided storage.
+fn rgba8_bc_compression_surface_in<A: Allocator + Clone>(
+	extent: Extent,
+	data: &[u8],
+	allocator: A,
+) -> (Box<[u8], A>, u32, u32) {
 	let width = extent.width().max(1);
 	let height = extent.height().max(1);
 	let expected_source_bytes = width as usize * height as usize * 4;
@@ -908,7 +979,7 @@ fn rgba8_bc_compression_surface(extent: Extent, data: &[u8]) -> (Box<[u8]>, u32,
 	);
 	let padded_width = width.next_multiple_of(4);
 	let padded_height = height.next_multiple_of(4);
-	let mut padded = vec![0u8; padded_width as usize * padded_height as usize * 4].into_boxed_slice();
+	let mut padded = zeroed_boxed_slice_in(padded_width as usize * padded_height as usize * 4, allocator);
 
 	for y in 0..padded_height {
 		let source_y = y.min(height - 1);
@@ -927,11 +998,16 @@ fn rgba8_bc_compression_surface(extent: Extent, data: &[u8]) -> (Box<[u8]>, u32,
 /// padded to 4×4 block boundaries. RgSurface<2> expects the pixel stride to
 /// be exactly 2 bytes, not interleaved RGBA.
 fn rga_to_rg_surface(data: &[u8], extent: Extent) -> (Box<[u8]>, u32, u32) {
+	rga_to_rg_surface_in(data, extent, Global)
+}
+
+/// Produces a BC5 RG surface using caller-provided storage.
+fn rga_to_rg_surface_in<A: Allocator + Clone>(data: &[u8], extent: Extent, allocator: A) -> (Box<[u8], A>, u32, u32) {
 	let width = extent.width().max(1);
 	let height = extent.height().max(1);
 	let padded_width = width.next_multiple_of(4);
 	let padded_height = height.next_multiple_of(4);
-	let mut padded = vec![0u8; padded_width as usize * padded_height as usize * 2].into_boxed_slice();
+	let mut padded = zeroed_boxed_slice_in(padded_width as usize * padded_height as usize * 2, allocator);
 
 	for y in 0..padded_height {
 		let source_y = y.min(height - 1);
@@ -945,4 +1021,16 @@ fn rga_to_rg_surface(data: &[u8], extent: Extent) -> (Box<[u8]>, u32, u32) {
 	}
 
 	(padded, padded_width, padded_height)
+}
+
+fn zeroed_boxed_slice_in<A: Allocator + Clone>(len: usize, allocator: A) -> Box<[u8], A> {
+	let mut buffer = Vec::with_capacity_in(len, allocator);
+	buffer.resize(len, 0_u8);
+	buffer.into_boxed_slice()
+}
+
+fn move_boxed_slice_in<A: Allocator + Clone>(buffer: Box<[u8]>, allocator: A) -> Box<[u8], A> {
+	let mut output = Vec::with_capacity_in(buffer.len(), allocator);
+	output.extend_from_slice(&buffer);
+	output.into_boxed_slice()
 }

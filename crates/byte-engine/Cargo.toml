@@ -9,6 +9,7 @@ default = ["headed", "network"]
 headed = ["dep:ahi", "dep:ghi", "dep:besl"]
 network = ["client"]
 client = ["dep:betp"]
+tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 
 [dependencies]
 utils = { path = "../utils" }
@@ -27,7 +28,9 @@ colored = "3.0.0"
 downcast-rs = "2.0.1"
 oxhttp = { version = "0.3.1", default-features = false, features = ["server"] }
 tracing = { version = "0.1.41" }
+tracing-log = { version = "0.2.0", optional = true }
 tracing-subscriber = { version = "0.3.20", features = ["fmt"] }
+tracing-tracy = { version = "0.11.4", optional = true }
 smallvec = "1.15.1"
 hidapi = "2.6.1"
 trotcast = "0.5.0"

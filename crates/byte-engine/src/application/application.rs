@@ -8,7 +8,6 @@
 use std::collections::HashSet;
 
 use log::{info, trace};
-use tracing_subscriber;
 
 use super::Parameter;
 use crate::application::parameters::{parse_argument, Parameters};
@@ -48,8 +47,6 @@ pub struct BaseApplication {
 
 impl Application for BaseApplication {
 	fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
-		let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).finish();
-
 		let _ = simple_logger::SimpleLogger::new().env().init();
 
 		let parameters = parameters.to_vec();
@@ -94,8 +91,8 @@ impl Application for BaseApplication {
 			log::set_max_level(level);
 		}
 
-		if let Some(e) = application.get_parameter("trace") {
-			tracing_subscriber::fmt::init();
+		if application.get_parameter("trace").is_some() {
+			let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).try_init();
 		}
 
 		info!("Byte-Engine");

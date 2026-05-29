@@ -3,7 +3,9 @@ use std::time::Duration;
 pub mod application;
 pub mod parameters;
 pub mod thread;
+pub mod tracy;
 pub use application::{Application, BaseApplication};
+pub use tracy::{setup_tracy, TracySetupError};
 pub use trotcast::Channel as Sender;
 pub use trotcast::Receiver;
 

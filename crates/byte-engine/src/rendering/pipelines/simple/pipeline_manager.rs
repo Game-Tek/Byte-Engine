@@ -400,7 +400,11 @@ impl PipelineManager {
 }
 
 impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+	fn prepare<'a>(
+		&'a mut self,
+		frame: &mut ghi::implementation::Frame,
+		sinks: &[Sink],
+	) -> Option<Vec<Box<dyn RenderPassFunction + 'a>>> {
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
 		let instance_batches = instance_batches.iter().into_vec();

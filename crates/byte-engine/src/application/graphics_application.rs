@@ -448,11 +448,11 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	}
 
 	impl PipelineManager for CustomPipelineManager {
-		fn prepare(
-			&mut self,
+		fn prepare<'a>(
+			&'a mut self,
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
-		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
+		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction + 'a>>> {
 			while let Some(message) = self.mesh_receiver.read() {
 				let handle = message.handle().clone();
 
@@ -602,11 +602,11 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	}
 
 	impl PipelineManager for CustomPipelineManager {
-		fn prepare(
-			&mut self,
+		fn prepare<'a>(
+			&'a mut self,
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
-		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction>>> {
+		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction + 'a>>> {
 			self.request_pending_lights();
 			self.request_pending_meshes();
 

@@ -234,18 +234,17 @@ impl VisibilityPass {
 		}
 	}
 
-	pub(super) fn prepare(
+	pub(super) fn prepare<'a>(
 		&self,
 		_frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
-		instances: &[Instance],
-	) -> impl RenderPassFunction {
+		instances: &'a [Instance],
+	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.visibility_pass_pipeline;
 		let attachments = self.attachments;
 
 		let extent = sink.extent();
-		let instances = instances.iter().copied().collect::<Vec<_>>();
 		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
 		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
 
@@ -384,17 +383,16 @@ impl ShadowPass {
 		}
 	}
 
-	fn prepare(
+	fn prepare<'a>(
 		&self,
 		frame: &mut ghi::implementation::Frame,
-		instances: &[Instance],
+		instances: &'a [Instance],
 		shadow_enabled: bool,
-	) -> impl RenderPassFunction {
+	) -> impl RenderPassFunction + use<'a> {
 		let descriptor_set = self.descriptor_set;
 		let pipeline = self.shadow_pass_pipeline;
 		let shadow_map = self.shadow_map;
 		let extent = Extent::square(SHADOW_MAP_RESOLUTION);
-		let instances = instances.iter().copied().collect::<Vec<_>>();
 		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
 		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
 
@@ -1228,15 +1226,15 @@ impl VisibilityPipelineRenderPass {
 		}
 	}
 
-	pub(super) fn prepare(
+	pub(super) fn prepare<'a>(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
-		instances: &[Instance],
+		instances: &'a [Instance],
 		opaque_materials: &[(String, u32, ghi::PipelineHandle)],
 		transparent_materials: &[(String, u32, ghi::PipelineHandle)],
 		shadow_enabled: bool,
-	) -> impl RenderPassFunction {
+	) -> impl RenderPassFunction + use<'a> {
 		let shadow_pass = self.shadow_pass.prepare(frame, instances, shadow_enabled);
 		let visibility_pass = self.visibility_pass.prepare(frame, sink, instances);
 		let material_count_pass = self.material_count_pass.prepare(frame, sink);

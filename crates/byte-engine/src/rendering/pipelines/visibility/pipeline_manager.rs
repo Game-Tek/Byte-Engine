@@ -567,7 +567,11 @@ impl VisibilityPipelineManager {
 }
 
 impl PipelineManager for VisibilityPipelineManager {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sinks: &[Sink]) -> Option<Vec<Box<dyn RenderPassFunction>>> {
+	fn prepare<'a>(
+		&'a mut self,
+		frame: &mut ghi::implementation::Frame,
+		sinks: &[Sink],
+	) -> Option<Vec<Box<dyn RenderPassFunction + 'a>>> {
 		self.adopt_resource_completions(frame);
 		self.rebuild_active_instances(frame);
 
@@ -625,7 +629,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.map(|sink_state| (sink, &sink_state.render_pass))
 		});
 
-		let commands: Vec<Box<dyn RenderPassFunction>> = sink_x_rp
+		let commands: Vec<Box<dyn RenderPassFunction + 'a>> = sink_x_rp
 			.map(|(v, r)| {
 				Box::new(r.prepare(
 					frame,
@@ -634,7 +638,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					&self.scene.render_info.opaque_materials,
 					&self.scene.render_info.transparent_materials,
 					shadow_light_index.is_some(),
-				)) as Box<dyn RenderPassFunction>
+				)) as Box<dyn RenderPassFunction + 'a>
 			})
 			.collect::<Vec<_>>();
 

@@ -384,7 +384,7 @@ impl Renderer {
 
 				let pipeline_managers = pipeline_managers.iter_mut().enumerate();
 
-				let pipeline_manager_commands: SmallVec<[(PipelineManagerId, Vec<Box<dyn RenderPassFunction>>); 16]> =
+				let pipeline_manager_commands: SmallVec<[(PipelineManagerId, Vec<Box<dyn RenderPassFunction + '_>>); 16]> =
 					pipeline_managers
 						.filter_map(|(pipeline_manager_id, sm)| {
 							sm.prepare(frame, &sinks).map(|commands| (pipeline_manager_id, commands))

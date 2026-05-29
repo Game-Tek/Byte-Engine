@@ -1,11 +1,15 @@
 use resource_management::{
 	asset::{FileStorageBackend, ResourceId},
-	resource::{ReadStorageBackend, RedbStorageBackend, ResourceId as ResourceUid, WriteStorageBackend},
+	resource::{
+		storage_backend::{Query, QueryCursor, QueryError},
+		ReadStorageBackend, RedbStorageBackend, ResourceId as ResourceUid, WriteStorageBackend,
+	},
+	QueryableValue,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use utils::{r#async::StreamExt, sync::Arc};
 
-use crate::{utils::get_asset_manager, InspectFormat};
+use crate::{utils::get_asset_manager, InspectFormat, QueryFormat};
 
 const DEFAULT_BAKE_ARENA_CAPACITY: usize = 64 * 1024 * 1024;
 
@@ -42,6 +46,228 @@ pub fn list(destination_path: String) -> Result<(), i32> {
 			log::error!("Failed to list resources. Error: {}", e);
 			Err(1)
 		}
+	}
+}
+
+/// Queries the resources database by class and queryable property equality predicates.
+pub fn query(
+	destination_path: String,
+	class: String,
+	properties: Vec<String>,
+	limit: Option<usize>,
+	cursor: Option<String>,
+	format: QueryFormat,
+) -> Result<(), i32> {
+	let storage_backend = RedbStorageBackend::new(destination_path.into());
+	let mut query = Query::new(&class);
+
+	if let Some(limit) = limit {
+		query = query.limit(limit);
+	}
+
+	for property in properties {
+		let (name, value) = parse_query_property(&property)?;
+		query = query.eq(name, value);
+	}
+
+	if let Some(cursor) = cursor {
+		query = query.cursor(decode_query_cursor(&cursor)?);
+	}
+
+	let page = storage_backend.query(query).map_err(|error| {
+		log::error!("{}", query_error_message(error));
+		1
+	})?;
+
+	match format {
+		QueryFormat::Human => print_human_query_page(&page.items, page.cursor.as_ref()),
+		QueryFormat::Json => print_json_query_page(&page.items, page.cursor.as_ref())?,
+	}
+
+	Ok(())
+}
+
+/// Parses a `name=value` query predicate from the CLI.
+fn parse_query_property(property: &str) -> Result<(&str, &str), i32> {
+	let Some((name, value)) = property.split_once('=') else {
+		log::error!(
+			"Invalid query property '{}'. The most likely cause is that the filter is not in `property=value` form.",
+			property
+		);
+		return Err(1);
+	};
+
+	if name.is_empty() || value.is_empty() {
+		log::error!(
+			"Invalid query property '{}'. The most likely cause is an empty property name or value.",
+			property
+		);
+		return Err(1);
+	}
+
+	Ok((name, value))
+}
+
+/// Converts storage query failures into user-facing CLI errors.
+fn query_error_message(error: QueryError) -> &'static str {
+	match error {
+		QueryError::InvalidCursor => "Failed to query resources. The most likely cause is that the provided cursor is invalid.",
+		QueryError::StorageFailure => {
+			"Failed to query resources. The most likely cause is that the resources database could not be read."
+		}
+	}
+}
+
+/// Prints query results in a compact human-readable form.
+fn print_human_query_page(
+	items: &[(
+		resource_management::SerializableResource,
+		resource_management::resource::resource_handler::MultiResourceReader,
+	)],
+	cursor: Option<&QueryCursor>,
+) {
+	if items.is_empty() {
+		log::info!("No resources found.");
+	}
+
+	for (resource, _) in items {
+		println!("{}", resource.id());
+		for property in resource.queryable_properties() {
+			print!("  {}: ", property.name);
+			print_queryable_value(&property.value);
+			println!();
+		}
+	}
+
+	if let Some(cursor) = cursor {
+		println!("cursor: {}", encode_query_cursor(cursor));
+	}
+}
+
+/// Prints query results as JSON for scripts and editor integrations.
+fn print_json_query_page(
+	items: &[(
+		resource_management::SerializableResource,
+		resource_management::resource::resource_handler::MultiResourceReader,
+	)],
+	cursor: Option<&QueryCursor>,
+) -> Result<(), i32> {
+	let resources = items
+		.iter()
+		.map(|(resource, _)| {
+			json!({
+				"id": resource.id(),
+				"uid": resource.uid(),
+				"class": resource.class(),
+				"properties": queryable_properties_json(resource.queryable_properties()),
+			})
+		})
+		.collect::<Vec<_>>();
+
+	let output = json!({
+		"resources": resources,
+		"cursor": cursor.map(encode_query_cursor),
+	});
+
+	println!(
+		"{}",
+		serde_json::to_string_pretty(&output).map_err(|error| {
+			log::error!(
+				"Failed to print query JSON. The most likely cause is an invalid JSON value. Error: {}",
+				error
+			);
+			1
+		})?
+	);
+
+	Ok(())
+}
+
+/// Converts queryable properties to JSON without deserializing the resource body.
+fn queryable_properties_json(properties: &[resource_management::QueryableProperty]) -> Value {
+	let properties = properties
+		.iter()
+		.map(|property| {
+			let value = match &property.value {
+				QueryableValue::String(value) => Value::String(value.clone()),
+			};
+
+			(property.name.clone(), value)
+		})
+		.collect();
+
+	Value::Object(properties)
+}
+
+/// Prints one queryable value without allocating an intermediate string.
+fn print_queryable_value(value: &QueryableValue) {
+	match value {
+		QueryableValue::String(value) => print!("{}", value),
+	}
+}
+
+/// Encodes an opaque query cursor as JSON and hex so it is safe to pass through the shell.
+fn encode_query_cursor(cursor: &QueryCursor) -> String {
+	let bytes = serde_json::to_vec(cursor).expect("query cursors should serialize");
+	encode_hex(&bytes)
+}
+
+/// Decodes a shell-safe query cursor produced by `encode_query_cursor`.
+fn decode_query_cursor(cursor: &str) -> Result<QueryCursor, i32> {
+	let bytes = decode_hex(cursor).ok_or_else(|| {
+		log::error!(
+			"Invalid query cursor '{}'. The most likely cause is that the cursor was not copied from a previous query result.",
+			cursor
+		);
+		1
+	})?;
+
+	serde_json::from_slice(&bytes).map_err(|error| {
+		log::error!(
+			"Invalid query cursor '{}'. The most likely cause is that the cursor was not copied from a previous query result. Error: {}",
+			cursor,
+			error
+		);
+		1
+	})
+}
+
+/// Encodes bytes as lowercase hexadecimal text for shell-safe cursor transport.
+fn encode_hex(bytes: &[u8]) -> String {
+	const HEX: &[u8; 16] = b"0123456789abcdef";
+	let mut output = String::with_capacity(bytes.len() * 2);
+
+	for byte in bytes {
+		output.push(HEX[(byte >> 4) as usize] as char);
+		output.push(HEX[(byte & 0x0f) as usize] as char);
+	}
+
+	output
+}
+
+/// Decodes lowercase or uppercase hexadecimal text into the original bytes.
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+	if value.len() % 2 != 0 {
+		return None;
+	}
+
+	let mut bytes = Vec::with_capacity(value.len() / 2);
+	for chunk in value.as_bytes().chunks_exact(2) {
+		let high = decode_hex_digit(chunk[0])?;
+		let low = decode_hex_digit(chunk[1])?;
+		bytes.push((high << 4) | low);
+	}
+
+	Some(bytes)
+}
+
+/// Decodes one hexadecimal ASCII digit.
+fn decode_hex_digit(value: u8) -> Option<u8> {
+	match value {
+		b'0'..=b'9' => Some(value - b'0'),
+		b'a'..=b'f' => Some(value - b'a' + 10),
+		b'A'..=b'F' => Some(value - b'A' + 10),
+		_ => None,
 	}
 }
 

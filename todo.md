@@ -63,6 +63,15 @@
 
 # Allocation reduction opportunities
 - Remove names from materials in Visibility Pipeline on non-debug builds.
+- Reuse UI draw list and geometry buffers instead of rebuilding fresh vectors and cloning text each update in crates/byte-engine/src/ui/render_pass.rs.
+- Avoid per-frame visibility render pass command collection allocations in crates/byte-engine/src/rendering/pipelines/visibility/pipeline_manager.rs.
+- Reduce visibility resource manager string churn by interning resource IDs or using compact typed keys in crates/byte-engine/src/rendering/pipelines/visibility/resource_manager.rs.
+- Avoid repeated render-resource name allocation when registering pipeline manager resources in crates/byte-engine/src/rendering/renderer.rs.
+- Convert LUT resources directly into GPU upload target slices instead of allocating an intermediate upload buffer in crates/byte-engine/src/rendering/render_passes/lut.rs.
+- Reuse or caller-provide scratch buffers for rendering utility batching instead of allocating temporary batch vectors in crates/byte-engine/src/rendering/utils.rs.
+- Route short-lived per-frame byte-engine buffers through the existing frame allocator where lifetimes are frame-local.
+- Return references or compact handles for UI primitive shapes instead of cloning shapes in crates/byte-engine/src/ui/primitive.rs.
+- Avoid allocating formatted shader stage strings while hashing shader descriptors in crates/byte-engine/src/rendering/shader_store.rs.
 - Deduplicate GLTF material generation per material and resolve primitive material references concurrently in crates/resource-management/src/asset/gltf_asset_handler.rs.
 - Store GLTF texture dependencies concurrently while preserving variable order in crates/resource-management/src/asset/gltf_asset_handler.rs.
 - Run BEMA material shader source loading and shader compilation for independent stages concurrently in crates/resource-management/src/asset/bema_asset_handler.rs.

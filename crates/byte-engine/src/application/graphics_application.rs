@@ -158,6 +158,7 @@ impl GraphicsApplication {
 		let mut close = false;
 
 		let frame_allocator = &mut self.application.frame_allocator;
+		frame_allocator.reset();
 
 		{
 			let renderer = &mut self.renderer;
@@ -197,7 +198,7 @@ impl GraphicsApplication {
 
 		let time = Time { elapsed, delta: dt };
 
-		self.input_system.update();
+		self.input_system.update(frame_allocator);
 
 		let mut cameras_listener = self.world.camera_factory().listener();
 		let mut renderer_transforms_listener = self.world.transforms_channel().listener();

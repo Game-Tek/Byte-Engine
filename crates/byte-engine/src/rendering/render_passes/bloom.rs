@@ -558,7 +558,7 @@ fn bloom_shader_descriptor<'a>(
 		id,
 		name,
 		stage: ResourceShaderTypes::Compute,
-		source: ghi::shader::ShaderSource::Glsl(source),
+		source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Glsl(source)),
 		interface: material::ShaderInterface {
 			workgroup_size: Some((8, 8, 1)),
 			bindings,

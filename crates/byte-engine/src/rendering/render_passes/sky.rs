@@ -190,11 +190,11 @@ fn create_sky_shader(
 			id: "byte-engine/rendering/sky",
 			name: "Sky Render Pass Compute Shader",
 			stage: ResourceShaderTypes::Compute,
-			source: ghi::shader::ShaderSource::Platform {
+			source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
 				glsl: SKY_SHADER,
 				msl: SKY_SHADER_MSL,
 				msl_entry_point: "sky_render_pass",
-			},
+			}),
 			interface: material::ShaderInterface {
 				workgroup_size: Some((8, 8, 1)),
 				bindings: vec![

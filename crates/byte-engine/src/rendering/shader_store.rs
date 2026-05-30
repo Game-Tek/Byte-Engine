@@ -1,21 +1,18 @@
-use std::{collections::hash_map::DefaultHasher, hash::Hasher as _};
-
-use ghi::context::{Context as _, ContextCreate as _};
-use resource_management::{
-	asset::ResourceId,
-	resource::{ReadStorageBackend as _, StorageBackend},
-	resources::material::{Binding, Shader, ShaderArtifact, ShaderInterface},
-	types::ShaderTypes,
-	ProcessedAsset, Reference, ReferenceModel, Solver,
-};
-use utils::Extent;
+/// The `ShaderSourceDefinition` enum describes the source program used to create a shader resource.
+pub enum ShaderSourceDefinition<'a> {
+	Inline(ghi::shader::ShaderSource<'a>),
+	Besl {
+		settings: ShaderGenerationSettings,
+		main_node: besl::NodeReference,
+	},
+}
 
 /// The `ShaderSourceDescriptor` struct describes an inline shader that can be baked into a `Shader` resource.
 pub struct ShaderSourceDescriptor<'a> {
 	pub id: &'a str,
 	pub name: &'a str,
 	pub stage: ShaderTypes,
-	pub source: ghi::shader::ShaderSource<'a>,
+	pub source: ShaderSourceDefinition<'a>,
 	pub interface: ShaderInterface,
 }
 
@@ -66,13 +63,42 @@ pub fn create_shader_from_baked_or_inline(
 			});
 	}
 
-	crate::rendering::create_shader_from_source(
-		context,
-		Some(descriptor.name),
-		descriptor.source,
-		shader_type_to_ghi(descriptor.stage),
-		descriptor.interface.bindings.iter().map(binding_to_descriptor),
-	)
+	with_shader_source(descriptor.name, &descriptor.source, |source| {
+		crate::rendering::create_shader_from_source(
+			context,
+			Some(descriptor.name),
+			source,
+			shader_type_to_ghi(descriptor.stage),
+			descriptor.interface.bindings.iter().map(binding_to_descriptor),
+		)
+	})
+}
+
+fn with_shader_source<T>(
+	name: &str,
+	definition: &ShaderSourceDefinition<'_>,
+	use_source: impl FnOnce(ghi::shader::ShaderSource<'_>) -> Result<T, String>,
+) -> Result<T, String> {
+	match definition {
+		ShaderSourceDefinition::Inline(source) => use_source(*source),
+		ShaderSourceDefinition::Besl { settings, main_node } => {
+			// BESL generation is centralized here so render passes do not need to know about platform shader sources.
+			let glsl_source = GLSLShaderGenerator::new()
+				.generate(settings, main_node)
+				.map_err(|_| format!("Failed to generate {name} GLSL. The most likely cause is invalid BESL syntax."))?;
+			let msl_source = MSLShaderGenerator::new().generate(settings, main_node).map_err(|_| {
+				format!(
+					"Failed to generate {name} MSL. The most likely cause is an unsupported BESL construct in the Metal transpiler."
+				)
+			})?;
+
+			use_source(ghi::shader::ShaderSource::Platform {
+				glsl: &glsl_source,
+				msl: &msl_source,
+				msl_entry_point: "besl_main",
+			})
+		}
+	}
 }
 
 fn load_shader_reference(storage_backend: &dyn StorageBackend, id: &str) -> Result<Reference<Shader>, String> {
@@ -86,7 +112,9 @@ fn load_shader_reference(storage_backend: &dyn StorageBackend, id: &str) -> Resu
 }
 
 fn bake_shader(descriptor: &ShaderSourceDescriptor<'_>, source_hash: u64) -> Result<(Shader, Vec<u8>), String> {
-	let compiled = ghi::shader::compile(descriptor.name, descriptor.source)?;
+	let compiled = with_shader_source(descriptor.name, &descriptor.source, |source| {
+		ghi::shader::compile(descriptor.name, source)
+	})?;
 	let (artifact, bytes) = match compiled {
 		ghi::shader::CompiledShaderSource::SPIRV(bytes) => (ShaderArtifact::Spirv, bytes),
 		ghi::shader::CompiledShaderSource::HLSL { source, entry_point } => {
@@ -139,45 +167,47 @@ fn shader_threadgroup_size(artifact: &ShaderArtifact, workgroup_size: Option<(u3
 	}
 }
 
+fn hash_shader_source_definition(name: &str, definition: &ShaderSourceDefinition<'_>, hasher: &mut DefaultHasher) {
+	with_shader_source(name, definition, |source| {
+		match source {
+			ghi::shader::ShaderSource::Glsl(source) => {
+				hasher.write(b"glsl");
+				hasher.write(source.as_bytes());
+			}
+			ghi::shader::ShaderSource::Hlsl { .. } => {
+				todo!("implement hash shader source for hlsl");
+			}
+			ghi::shader::ShaderSource::Msl { source, entry_point } => {
+				hasher.write(b"msl");
+				hasher.write(source.as_bytes());
+				hasher.write(entry_point.as_bytes());
+			}
+			ghi::shader::ShaderSource::Platform {
+				glsl,
+				msl,
+				msl_entry_point,
+			} => {
+				hasher.write(b"platform");
+				hasher.write(glsl.as_bytes());
+				hasher.write(msl.as_bytes());
+				hasher.write(msl_entry_point.as_bytes());
+			}
+			ghi::shader::ShaderSource::PlatformNative { .. } => {
+				todo!("implement whatever this is. damned clankers");
+			}
+		}
+		Ok(())
+	})
+	.expect("Failed to hash shader source. The most likely cause is invalid generated shader source.");
+}
+
 fn hash_shader_source(descriptor: &ShaderSourceDescriptor<'_>) -> u64 {
 	let mut hasher = DefaultHasher::new();
 	hasher.write(b"shader-store-mtlb-v1");
 	hasher.write(descriptor.id.as_bytes());
 	hasher.write(descriptor.name.as_bytes());
 	hasher.write(format!("{:?}", descriptor.stage).as_bytes());
-	match descriptor.source {
-		ghi::shader::ShaderSource::Glsl(source) => {
-			hasher.write(b"glsl");
-			hasher.write(source.as_bytes());
-		}
-		ghi::shader::ShaderSource::Hlsl { source, entry_point } => {
-			todo!("implement hash shader source for hlsl");
-		}
-		ghi::shader::ShaderSource::Msl { source, entry_point } => {
-			hasher.write(b"msl");
-			hasher.write(source.as_bytes());
-			hasher.write(entry_point.as_bytes());
-		}
-		ghi::shader::ShaderSource::Platform {
-			glsl,
-			msl,
-			msl_entry_point,
-		} => {
-			hasher.write(b"platform");
-			hasher.write(glsl.as_bytes());
-			hasher.write(msl.as_bytes());
-			hasher.write(msl_entry_point.as_bytes());
-		}
-		ghi::shader::ShaderSource::PlatformNative {
-			glsl,
-			msl,
-			msl_entry_point,
-			hlsl,
-			hlsl_entry_point,
-		} => {
-			todo!("implement whatever this is. damned clankers");
-		}
-	}
+	hash_shader_source_definition(descriptor.name, &descriptor.source, &mut hasher);
 	for binding in &descriptor.interface.bindings {
 		hasher.write_u32(binding.set);
 		hasher.write_u32(binding.binding);
@@ -223,3 +253,19 @@ fn shader_type_to_ghi(shader_type: ShaderTypes) -> ghi::ShaderTypes {
 		ShaderTypes::Callable => ghi::ShaderTypes::Callable,
 	}
 }
+
+use std::{collections::hash_map::DefaultHasher, hash::Hasher as _};
+
+use ghi::context::{Context as _, ContextCreate as _};
+use resource_management::{
+	asset::ResourceId,
+	resource::{ReadStorageBackend as _, StorageBackend},
+	resources::material::{Binding, Shader, ShaderArtifact, ShaderInterface},
+	shader::{
+		besl::backends::{glsl::GLSLShaderGenerator, msl::MSLShaderGenerator},
+		generator::ShaderGenerationSettings,
+	},
+	types::ShaderTypes,
+	ProcessedAsset, Reference, ReferenceModel, Solver,
+};
+use utils::Extent;

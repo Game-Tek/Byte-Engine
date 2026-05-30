@@ -50,7 +50,9 @@ impl BaseBilateralBlurPass {
 				id: "byte-engine/rendering/bilateral-blur",
 				name: "SSGI Blur",
 				stage: ResourceShaderTypes::Compute,
-				source: ghi::shader::ShaderSource::Glsl(BLUR_SHADER),
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Glsl(
+					BLUR_SHADER,
+				)),
 				interface: material::ShaderInterface {
 					workgroup_size: Some((128, 1, 1)),
 					bindings: vec![

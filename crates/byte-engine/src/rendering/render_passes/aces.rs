@@ -62,11 +62,11 @@ fn create_tone_mapping_shader(render_pass_builder: &mut RenderPassBuilder<'_>) -
 			id: "byte-engine/rendering/aces/tone-mapping",
 			name: "ACES Tone Mapping Compute Shader",
 			stage: ResourceShaderTypes::Compute,
-			source: ghi::shader::ShaderSource::Platform {
+			source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
 				glsl: TONE_MAPPING_SHADER,
 				msl: TONE_MAPPING_SHADER_MSL,
 				msl_entry_point: "aces_tonemap",
-			},
+			}),
 			interface: material::ShaderInterface {
 				workgroup_size: Some((32, 32, 1)),
 				bindings: vec![

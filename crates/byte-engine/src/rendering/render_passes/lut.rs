@@ -144,11 +144,11 @@ fn create_lut_shader(
 			id: "byte-engine/rendering/lut/apply",
 			name: "LUT Render Pass Compute Shader",
 			stage: ResourceShaderTypes::Compute,
-			source: ghi::shader::ShaderSource::Platform {
+			source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
 				glsl,
 				msl,
 				msl_entry_point: "lut_apply",
-			},
+			}),
 			interface: material::ShaderInterface {
 				workgroup_size: Some((8, 8, 1)),
 				bindings: vec![

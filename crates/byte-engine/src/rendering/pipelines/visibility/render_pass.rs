@@ -102,10 +102,12 @@ impl VisibilityPass {
 						id: "byte-engine/rendering/visibility/visibility-task",
 						name: "Visibility Pass Task Shader",
 						stage: ResourceShaderTypes::Task,
-						source: ghi::shader::ShaderSource::Msl {
-							source: visibility_task_shader.as_str(),
-							entry_point: "besl_task_main",
-						},
+						source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(
+							ghi::shader::ShaderSource::Msl {
+								source: visibility_task_shader.as_str(),
+								entry_point: "besl_task_main",
+							},
+						),
 						interface: material::ShaderInterface {
 							workgroup_size: None,
 							bindings: vec![
@@ -131,11 +133,11 @@ impl VisibilityPass {
 				id: "byte-engine/rendering/visibility/visibility-mesh",
 				name: "Visibility Pass Mesh Shader",
 				stage: ResourceShaderTypes::Mesh,
-				source: ghi::shader::ShaderSource::Platform {
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
 					glsl: &visibility_mesh_glsl,
 					msl: &visibility_mesh_msl,
 					msl_entry_point: "besl_main",
-				},
+				}),
 				interface: material::ShaderInterface {
 					workgroup_size: None,
 					bindings: vec![
@@ -160,11 +162,11 @@ impl VisibilityPass {
 				id: "byte-engine/rendering/visibility/visibility-fragment",
 				name: "Visibility Pass Fragment Shader",
 				stage: ResourceShaderTypes::Fragment,
-				source: ghi::shader::ShaderSource::Platform {
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
 					glsl: VISIBILITY_PASS_FRAGMENT_SOURCE,
 					msl: VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
 					msl_entry_point: "visibility_fragment_main",
-				},
+				}),
 				interface: material::ShaderInterface {
 					workgroup_size: None,
 					bindings: vec![],
@@ -305,10 +307,12 @@ impl ShadowPass {
 						id: "byte-engine/rendering/visibility/shadow-task",
 						name: "Shadow Pass Task Shader",
 						stage: ResourceShaderTypes::Task,
-						source: ghi::shader::ShaderSource::Msl {
-							source: shadow_task_shader.as_str(),
-							entry_point: "besl_task_main",
-						},
+						source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(
+							ghi::shader::ShaderSource::Msl {
+								source: shadow_task_shader.as_str(),
+								entry_point: "besl_task_main",
+							},
+						),
 						interface: material::ShaderInterface {
 							workgroup_size: None,
 							bindings: vec![
@@ -334,11 +338,11 @@ impl ShadowPass {
 				id: "byte-engine/rendering/visibility/shadow-mesh",
 				name: "Shadow Pass Mesh Shader",
 				stage: ResourceShaderTypes::Mesh,
-				source: ghi::shader::ShaderSource::Platform {
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
 					glsl: &shadow_mesh_glsl,
 					msl: &shadow_mesh_msl,
 					msl_entry_point: "besl_main",
-				},
+				}),
 				interface: material::ShaderInterface {
 					workgroup_size: None,
 					bindings: vec![
@@ -476,11 +480,11 @@ impl MaterialCountPass {
 				id: "byte-engine/rendering/visibility/material-count",
 				name: "Material Count Pass Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: ghi::shader::ShaderSource::Platform {
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
 					glsl: &material_count_glsl,
 					msl: get_material_count_msl_source(),
 					msl_entry_point: "besl_main",
-				},
+				}),
 				interface: material::ShaderInterface {
 					workgroup_size: Some((32, 32, 1)),
 					bindings: vec![
@@ -567,11 +571,11 @@ impl MaterialOffsetPass {
 				id: "byte-engine/rendering/visibility/material-offset",
 				name: "Material Offset Pass Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: ghi::shader::ShaderSource::Platform {
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
 					glsl: &material_offset_glsl,
 					msl: get_material_offset_msl_source(),
 					msl_entry_point: "besl_main",
-				},
+				}),
 				interface: material::ShaderInterface {
 					workgroup_size: Some((1, 1, 1)),
 					bindings: vec![
@@ -661,11 +665,11 @@ impl PixelMappingPass {
 				id: "byte-engine/rendering/visibility/pixel-mapping",
 				name: "Pixel Mapping Pass Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: ghi::shader::ShaderSource::Platform {
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
 					glsl: &pixel_mapping_glsl,
 					msl: &pixel_mapping_msl,
 					msl_entry_point: "besl_main",
-				},
+				}),
 				interface: material::ShaderInterface {
 					workgroup_size: Some((32, 32, 1)),
 					bindings: vec![
@@ -863,7 +867,9 @@ impl GtaoPass {
 				id: "byte-engine/rendering/visibility/gtao",
 				name: "GTAO Pass Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: generated_platform_shader_source(&gtao_shader_data),
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(generated_platform_shader_source(
+					&gtao_shader_data,
+				)),
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![
@@ -900,7 +906,9 @@ impl GtaoPass {
 				id: "byte-engine/rendering/visibility/gtao-blur-x",
 				name: "GTAO Blur X Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: generated_platform_shader_source(&blur_x_shader_data),
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(generated_platform_shader_source(
+					&blur_x_shader_data,
+				)),
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![
@@ -921,7 +929,9 @@ impl GtaoPass {
 				id: "byte-engine/rendering/visibility/gtao-blur-y",
 				name: "GTAO Blur Y Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: generated_platform_shader_source(&blur_y_shader_data),
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(generated_platform_shader_source(
+					&blur_y_shader_data,
+				)),
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![

@@ -5,11 +5,7 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 };
 use resource_management::{
-	resources::material,
-	shader::{
-		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings,
-	},
-	types::ShaderTypes as ResourceShaderTypes,
+	resources::material, shader::generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
 };
 use utils::{Box, Extent};
 
@@ -18,6 +14,7 @@ use crate::{
 	core::EntityHandle,
 	rendering::{
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+		shader_store::{ShaderSourceDefinition, ShaderSourceDescriptor},
 		view::View,
 		Sink,
 	},
@@ -64,24 +61,14 @@ impl BaseAgxToneMapPass {
 }
 
 fn create_tone_mapping_shader(render_pass_builder: &mut RenderPassBuilder<'_>) -> ghi::ShaderHandle {
-	let main_node = create_tone_mapping_program();
-	let settings = ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping".to_string());
-	let glsl_source = GLSLShaderGenerator::new()
-		.generate(&settings, &main_node)
-		.expect("Failed to generate AGX tone mapping GLSL. The most likely cause is invalid BESL syntax.");
-	let msl_source = MSLShaderGenerator::new().generate(&settings, &main_node).expect(
-		"Failed to generate the AGX MSL shader. The most likely cause is an unsupported BESL construct in the Metal transpiler.",
-	);
-
 	render_pass_builder
-		.create_shader(&crate::rendering::shader_store::ShaderSourceDescriptor {
+		.create_shader(&ShaderSourceDescriptor {
 			id: "byte-engine/rendering/agx/tone-mapping",
 			name: "AGX Tone Mapping Compute Shader",
 			stage: ResourceShaderTypes::Compute,
-			source: ghi::shader::ShaderSource::Platform {
-				glsl: &glsl_source,
-				msl: &msl_source,
-				msl_entry_point: "besl_main",
+			source: ShaderSourceDefinition::Besl {
+				settings: ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping".to_string()),
+				main_node: create_tone_mapping_program(),
 			},
 			interface: material::ShaderInterface {
 				workgroup_size: Some((32, 32, 1)),

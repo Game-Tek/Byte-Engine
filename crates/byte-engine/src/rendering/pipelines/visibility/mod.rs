@@ -655,6 +655,40 @@ pub fn get_material_count_shader() -> ShaderSourceDefinition<'static> {
 	visibility_compute_shader(Extent::square(32), build_material_count_program)
 }
 
+fn preserve_visibility_compute_layout(program: &besl::NodeReference) -> besl::NodeReference {
+	let main = program
+		.get_main()
+		.expect("Missing BESL main function. The most likely cause is invalid visibility shader source.");
+	let inputs = [
+		"views",
+		"mesh_data",
+		"material_count_buffer",
+		"material_offset_buffer",
+		"material_offset_scratch_buffer",
+		"material_evaluation_dispatches",
+		"pixel_mapping_buffer",
+		"triangle_index",
+		"instance_index_render_target",
+	]
+	.into_iter()
+	.filter_map(|name| program.get_descendant(name))
+	.collect();
+
+	// The raw node is intentionally empty. Its inputs keep the complete visibility descriptor layout reachable
+	// so Metal's compact argument-buffer IDs match the descriptor set template even when a shader only touches
+	// a subset of the bindings.
+	main.borrow_mut()
+		.add_child(besl::Node::raw(Some(String::new()), None, Some(String::new()), inputs, Vec::new()).into());
+
+	main
+}
+
+fn compile_visibility_compute_program(source: &str, pixel_mapping_entries: usize) -> besl::NodeReference {
+	let program = besl::compile_to_besl(source, Some(build_visibility_compute_root(pixel_mapping_entries)))
+		.expect("Failed to compile visibility BESL shader. The most likely cause is invalid BESL syntax.");
+	preserve_visibility_compute_layout(&program)
+}
+
 fn build_material_count_program() -> besl::NodeReference {
 	let source = r#"
 	main: fn () -> void {
@@ -672,10 +706,7 @@ fn build_material_count_program() -> besl::NodeReference {
 	}
 	"#;
 
-	besl::compile_to_besl(source, Some(build_visibility_compute_root(MAX_PIXEL_MAPPING_ENTRIES)))
-		.unwrap()
-		.get_main()
-		.unwrap()
+	compile_visibility_compute_program(source, 1)
 }
 
 pub fn get_material_offset_shader() -> ShaderSourceDefinition<'static> {
@@ -701,10 +732,7 @@ fn build_material_offset_program() -> besl::NodeReference {
 	}
 	"#;
 
-	besl::compile_to_besl(source, Some(build_visibility_compute_root(1)))
-		.unwrap()
-		.get_main()
-		.unwrap()
+	compile_visibility_compute_program(source, 1)
 }
 
 pub fn get_pixel_mapping_shader() -> ShaderSourceDefinition<'static> {
@@ -733,10 +761,7 @@ fn build_pixel_mapping_program() -> besl::NodeReference {
 	"#
 	.replace("__MAX_PIXEL_MAPPING_ENTRIES__", &MAX_PIXEL_MAPPING_ENTRIES.to_string());
 
-	besl::compile_to_besl(&source, Some(build_visibility_compute_root(MAX_PIXEL_MAPPING_ENTRIES)))
-		.unwrap()
-		.get_main()
-		.unwrap()
+	compile_visibility_compute_program(&source, MAX_PIXEL_MAPPING_ENTRIES)
 }
 
 fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {

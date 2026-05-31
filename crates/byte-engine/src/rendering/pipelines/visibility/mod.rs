@@ -14,32 +14,8 @@ use utils::Extent;
 
 use crate::rendering::{
 	common_shader_generator::CommonShaderScope, pipelines::visibility::shader_generator::VisibilityShaderScope,
+	shader_store::ShaderSourceDefinition,
 };
-
-/// The `GeneratedVisibilityShader` struct stores visibility shader source for APIs that still compile inline shaders.
-pub struct GeneratedVisibilityShader {
-	language: PlatformShaderLanguage,
-	entry_point: &'static str,
-	source: String,
-}
-
-impl GeneratedVisibilityShader {
-	pub fn language(&self) -> PlatformShaderLanguage {
-		self.language
-	}
-
-	pub fn source(&self) -> &str {
-		&self.source
-	}
-
-	pub fn into_source(self) -> String {
-		self.source
-	}
-
-	pub fn entry_point(&self) -> &'static str {
-		self.entry_point
-	}
-}
 
 /* BASE */
 /// Binding to access the views which may be used to render the scene.
@@ -179,6 +155,17 @@ fn build_mesh_program_from_source(source: &'static str, push_constant: besl::par
 	]);
 
 	besl::lex(root).unwrap().get_main().unwrap()
+}
+
+fn generate_shader_source_for_language(
+	language: PlatformShaderLanguage,
+	settings: &ShaderGenerationSettings,
+	main_node: &besl::NodeReference,
+) -> Result<String, ()> {
+	match language {
+		PlatformShaderLanguage::Glsl => GLSLShaderGenerator::new().generate(settings, main_node),
+		PlatformShaderLanguage::Msl => MSLShaderGenerator::new().generate(settings, main_node),
+	}
 }
 
 fn generate_mesh_source_for_language(
@@ -653,347 +640,75 @@ void main() {
 }
 "#;
 
-pub fn get_material_count_source() -> String {
-	let main_code = r#"
-	// If thread is out of bound respect to the material_id texture, return
-	ivec2 extent = imageSize(instance_index_render_target);
-	if (gl_GlobalInvocationID.x >= extent.x || gl_GlobalInvocationID.y >= extent.y) { return; }
-
-	uint pixel_instance_index = imageLoad(instance_index_render_target, ivec2(gl_GlobalInvocationID.xy)).r;
-
-	if (pixel_instance_index == 0xFFFFFFFF) { return; }
-	if (pixel_instance_index >= 1024u) { return; }
-
-	uint material_index = meshes.meshes[pixel_instance_index].material_index;
-	if (material_index >= 1024u) { return; }
-
-	atomicAdd(material_count.material_count[material_index], 1);
-	"#;
-
-	let main = besl::parser::Node::function(
-		"main",
-		Vec::new(),
-		"void",
-		vec![besl::parser::Node::glsl(
-			main_code,
-			&["meshes", "material_count", "instance_index_render_target"],
-			&[],
-		)],
-	);
-
-	let shader = besl::parser::Node::scope("Shader", vec![main]);
-
-	let mut root = besl::parser::Node::root();
-
-	root.add(vec![
-		CommonShaderScope::new(),
-		VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false),
-		shader,
-	]);
-
-	let root_node = besl::lex(root).unwrap();
-
-	let main_node = root_node.get_main().unwrap();
-
-	let glsl = GLSLShaderGenerator::new()
-		.generate(&ShaderGenerationSettings::compute(Extent::square(32)), &main_node)
-		.unwrap();
-
-	glsl
-}
-
-pub fn get_material_count_msl_source() -> &'static str {
-	r#"#include <metal_stdlib>
-using namespace metal;
-// #pragma shader_stage(compute)
-// Note: Metal threadgroup sizes are set on the pipeline state.
-
-struct Mesh {
-	float4x3 model;
-	uint material_index;
-	uint base_vertex_index;
-	uint base_primitive_index;
-	uint base_triangle_index;
-	uint base_meshlet_index;
-	uint meshlet_count;
-};
-
-struct _meshes {
-	Mesh meshes[1024];
-};
-
-struct _views {
-	uint views[1];
-};
-
-struct _material_count {
-	atomic_uint material_count[1024];
-};
-
-struct _material_offset {
-	uint material_offset[1024];
-};
-
-struct _material_offset_scratch_buffer {
-	atomic_uint material_offset_scratch[1024];
-};
-
-struct _material_evaluation_dispatches {
-	uint4 material_evaluation_dispatches[1024];
-};
-
-struct _pixel_mapping_buffer {
-	ushort2 pixel_mapping[1];
-};
-
-struct _set0 {
-	constant _views* views [[id(0)]];
-	constant _meshes* mesh_data [[id(1)]];
-};
-
-struct _set1 {
-	device _material_count* material_count_buffer [[id(0)]];
-	device _material_offset* material_offset_buffer [[id(1)]];
-	device _material_offset_scratch_buffer* material_offset_scratch_buffer [[id(2)]];
-	device _material_evaluation_dispatches* material_evaluation_dispatches [[id(3)]];
-	device _pixel_mapping_buffer* pixel_mapping_buffer [[id(4)]];
-	texture2d<uint, access::read> triangle_index [[id(5)]];
-	texture2d<uint, access::read> instance_index_render_target [[id(6)]];
-};
-
-kernel void besl_main(uint2 gid [[thread_position_in_grid]], constant _set0& set0 [[buffer(16)]], constant _set1& set1 [[buffer(17)]]) {
-	uint width = set1.instance_index_render_target.get_width();
-	uint height = set1.instance_index_render_target.get_height();
-	if (gid.x >= width || gid.y >= height) { return; }
-
-	uint pixel_instance_index = set1.instance_index_render_target.read(gid).x;
-	if (pixel_instance_index == 0xFFFFFFFFu) { return; }
-	if (pixel_instance_index >= 1024u) { return; }
-
-	uint material_index = set0.mesh_data->meshes[pixel_instance_index].material_index;
-	if (material_index >= 1024u) { return; }
-	atomic_fetch_add_explicit(&set1.material_count_buffer->material_count[material_index], 1, memory_order_relaxed);
-}
-"#
-}
-
-pub fn get_material_offset_source() -> String {
-	let main_code = r#"
-	uint sum = 0;
-
-	for (uint i = 0; i < 1024; i++) { /* 1024 is the maximum number of materials */
-		material_offset.material_offset[i] = sum;
-		material_offset_scratch.material_offset_scratch[i] = sum;
-		material_evaluation_dispatches.material_evaluation_dispatches[i] = uvec4((material_count.material_count[i] + 127) / 128, 1, 1, 0);
-		sum += material_count.material_count[i];
-	}
-	"#;
-
-	let main = besl::parser::Node::function(
-		"main",
-		Vec::new(),
-		"void",
-		vec![besl::parser::Node::glsl(
-			main_code,
-			&[
-				"material_offset",
-				"material_offset_scratch",
-				"material_count",
-				"material_evaluation_dispatches",
-			],
-			&[],
-		)],
-	);
-
-	let shader = besl::parser::Node::scope("Shader", vec![main]);
-
-	let mut root = besl::parser::Node::root();
-
-	root.add(vec![
-		CommonShaderScope::new(),
-		VisibilityShaderScope::new_with_params(false, false, false, true, false, true, false, false),
-		shader,
-	]);
-
-	let root_node = besl::lex(root).unwrap();
-
-	let main_node = root_node.get_main().unwrap();
-
-	let glsl = GLSLShaderGenerator::new()
-		.generate(&ShaderGenerationSettings::compute(Extent::square(1)), &main_node)
-		.unwrap();
-
-	glsl
-}
-
-pub fn get_material_offset_msl_source() -> &'static str {
-	r#"#include <metal_stdlib>
-using namespace metal;
-// #pragma shader_stage(compute)
-// Note: Metal threadgroup sizes are set on the pipeline state.
-
-struct _material_count {
-	atomic_uint material_count[1024];
-};
-
-struct _material_offset {
-	uint material_offset[1024];
-};
-
-struct _material_offset_scratch {
-	uint material_offset_scratch[1024];
-};
-
-struct _material_evaluation_dispatches {
-	uint4 material_evaluation_dispatches[1024];
-};
-
-struct _set1 {
-	device _material_count* material_count [[id(0)]];
-	device _material_offset* material_offset [[id(1)]];
-	device _material_offset_scratch* material_offset_scratch [[id(2)]];
-	device _material_evaluation_dispatches* material_evaluation_dispatches [[id(3)]];
-};
-
-kernel void besl_main(uint2 gid [[thread_position_in_grid]], constant _set1& set1 [[buffer(17)]]) {
-	if (gid.x != 0 || gid.y != 0) { return; }
-
-	uint sum = 0;
-	for (uint i = 0; i < 1024; i++) {
-		uint count = atomic_load_explicit(&set1.material_count->material_count[i], memory_order_relaxed);
-		set1.material_offset->material_offset[i] = sum;
-		set1.material_offset_scratch->material_offset_scratch[i] = sum;
-		set1.material_evaluation_dispatches->material_evaluation_dispatches[i] = uint4((count + 127) / 128, 1, 1, 0);
-		sum += count;
-	}
-}
-"#
-}
-
-pub fn get_pixel_mapping_msl_source() -> String {
-	format!(
-		r#"#include <metal_stdlib>
-using namespace metal;
-// #pragma shader_stage(compute)
-// Note: Metal threadgroup sizes are set on the pipeline state.
-
-struct Mesh {{
-	float4x3 model;
-	uint material_index;
-	uint base_vertex_index;
-	uint base_primitive_index;
-	uint base_triangle_index;
-	uint base_meshlet_index;
-	uint meshlet_count;
-}};
-
-struct _views {{
-	uint views[1];
-}};
-
-struct _mesh_data {{
-	Mesh meshes[1024];
-}};
-
-struct _material_count {{
-	atomic_uint material_count[1024];
-}};
-
-struct _material_offset {{
-	uint material_offset[1024];
-}};
-
-struct _material_offset_scratch_buffer {{
-	atomic_uint material_offset_scratch[1024];
-}};
-
-struct _material_evaluation_dispatches {{
-	uint4 material_evaluation_dispatches[1024];
-}};
-
-struct _pixel_mapping_buffer {{
-	ushort2 pixel_mapping[{MAX_PIXEL_MAPPING_ENTRIES}];
-}};
-
-struct _set0 {{
-	constant _views* views [[id(0)]];
-	constant _mesh_data* mesh_data [[id(1)]];
-}};
-
-struct _set1 {{
-	device _material_count* material_count_buffer [[id(0)]];
-	device _material_offset* material_offset_buffer [[id(1)]];
-	device _material_offset_scratch_buffer* material_offset_scratch_buffer [[id(2)]];
-	device _material_evaluation_dispatches* material_evaluation_dispatches [[id(3)]];
-	device _pixel_mapping_buffer* pixel_mapping_buffer [[id(4)]];
-	texture2d<uint, access::read> triangle_index [[id(5)]];
-	texture2d<uint, access::read> instance_index_render_target [[id(6)]];
-}};
-
-kernel void besl_main(uint2 coord [[thread_position_in_grid]], constant _set0& set0 [[buffer(16)]], constant _set1& set1 [[buffer(17)]]) {{
-	uint width = set1.instance_index_render_target.get_width();
-	uint height = set1.instance_index_render_target.get_height();
-	if (coord.x >= width || coord.y >= height) {{ return; }}
-
-	uint pixel_instance_index = set1.instance_index_render_target.read(coord).x;
-	if (pixel_instance_index == 0xFFFFFFFFu) {{ return; }}
-	if (pixel_instance_index >= 1024u) {{ return; }}
-
-	uint material_index = set0.mesh_data->meshes[pixel_instance_index].material_index;
-	if (material_index >= 1024u) {{ return; }}
-
-	uint pixel_mapping_index = atomic_fetch_add_explicit(
-		&set1.material_offset_scratch_buffer->material_offset_scratch[material_index],
-		1,
-		memory_order_relaxed
-	);
-	if (pixel_mapping_index >= {MAX_PIXEL_MAPPING_ENTRIES}u) {{ return; }}
-
-	// Pixel mapping is zero-cleared before dispatch, so store coordinates offset by one.
-	// That leaves ushort2(0, 0) as an explicit "unwritten entry" sentinel.
-	set1.pixel_mapping_buffer->pixel_mapping[pixel_mapping_index] = ushort2(coord.x + 1, coord.y + 1);
-}}
-"#
-	)
-}
-
-pub fn get_pixel_mapping_source() -> String {
-	get_pixel_mapping_shader().into_source()
-}
-
-pub fn get_pixel_mapping_shader() -> GeneratedVisibilityShader {
-	generate_pixel_mapping_shader_for_language(PlatformShaderLanguage::current_platform())
-}
-
-fn generate_pixel_mapping_shader_for_language(language: PlatformShaderLanguage) -> GeneratedVisibilityShader {
-	generate_compute_shader_for_language(language, Extent::square(32), build_pixel_mapping_program)
-}
-
-fn generate_compute_shader_for_language(
-	language: PlatformShaderLanguage,
+/// Creates a BESL shader source definition for a visibility compute pass.
+fn visibility_compute_shader(
 	threadgroup_extent: Extent,
 	build_program: fn() -> besl::NodeReference,
-) -> GeneratedVisibilityShader {
-	let main_node = build_program();
-	let settings = ShaderGenerationSettings::compute(threadgroup_extent);
-	let source = generate_shader_source_for_language(language, &settings, &main_node).unwrap();
-
-	GeneratedVisibilityShader {
-		language,
-		entry_point: language.entry_point(),
-		source,
+) -> ShaderSourceDefinition<'static> {
+	ShaderSourceDefinition::Besl {
+		settings: ShaderGenerationSettings::compute(threadgroup_extent),
+		main_node: build_program(),
 	}
 }
 
-fn generate_shader_source_for_language(
-	language: PlatformShaderLanguage,
-	settings: &ShaderGenerationSettings,
-	main_node: &besl::NodeReference,
-) -> Result<String, ()> {
-	match language {
-		PlatformShaderLanguage::Glsl => GLSLShaderGenerator::new().generate(settings, main_node),
-		PlatformShaderLanguage::Msl => MSLShaderGenerator::new().generate(settings, main_node),
+pub fn get_material_count_shader() -> ShaderSourceDefinition<'static> {
+	visibility_compute_shader(Extent::square(32), build_material_count_program)
+}
+
+fn build_material_count_program() -> besl::NodeReference {
+	let source = r#"
+	main: fn () -> void {
+		let coord: vec2u = thread_id();
+		guard_image_bounds(instance_index_render_target, coord);
+		let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
+
+		if (pixel_instance_index < 4294967295 && pixel_instance_index < 1024) {
+			let material_index: u32 = mesh_data.meshes[pixel_instance_index].material_index;
+
+			if (material_index < 1024) {
+				atomic_add(material_count_buffer.material_count[material_index], 1);
+			}
+		}
 	}
+	"#;
+
+	besl::compile_to_besl(source, Some(build_visibility_compute_root(MAX_PIXEL_MAPPING_ENTRIES)))
+		.unwrap()
+		.get_main()
+		.unwrap()
+}
+
+pub fn get_material_offset_shader() -> ShaderSourceDefinition<'static> {
+	visibility_compute_shader(Extent::square(1), build_material_offset_program)
+}
+
+fn build_material_offset_program() -> besl::NodeReference {
+	let source = r#"
+	main: fn () -> void {
+		let coord: vec2u = thread_id();
+
+		if (coord.x == 0 && coord.y == 0) {
+			let sum: u32 = 0;
+
+			for (let i: u32 = 0; i < 1024; i = i + 1) {
+				let count: u32 = atomic_load(material_count_buffer.material_count[i]);
+				material_offset_buffer.material_offset[i] = sum;
+				atomic_store(material_offset_scratch_buffer.material_offset_scratch[i], sum);
+				material_evaluation_dispatches.material_evaluation_dispatches[i] = vec4u((count + 127) / 128, 1, 1, 0);
+				sum = sum + count;
+			}
+		}
+	}
+	"#;
+
+	besl::compile_to_besl(source, Some(build_visibility_compute_root(1)))
+		.unwrap()
+		.get_main()
+		.unwrap()
+}
+
+pub fn get_pixel_mapping_shader() -> ShaderSourceDefinition<'static> {
+	visibility_compute_shader(Extent::square(32), build_pixel_mapping_program)
 }
 
 fn build_pixel_mapping_program() -> besl::NodeReference {
@@ -1018,13 +733,13 @@ fn build_pixel_mapping_program() -> besl::NodeReference {
 	"#
 	.replace("__MAX_PIXEL_MAPPING_ENTRIES__", &MAX_PIXEL_MAPPING_ENTRIES.to_string());
 
-	besl::compile_to_besl(&source, Some(build_pixel_mapping_root()))
+	besl::compile_to_besl(&source, Some(build_visibility_compute_root(MAX_PIXEL_MAPPING_ENTRIES)))
 		.unwrap()
 		.get_main()
 		.unwrap()
 }
 
-fn build_pixel_mapping_root() -> besl::Node {
+fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 	let mut root = besl::Node::root();
 	let mat4x3f_t = root.get_child("mat4x3f").unwrap();
 	let u32_t = root.get_child("u32").unwrap();
@@ -1051,11 +766,11 @@ fn build_pixel_mapping_root() -> besl::Node {
 	let views_member = besl::Node::array("views", u32_t.clone(), 1);
 	let meshes_member = besl::Node::array("meshes", mesh, MAX_INSTANCES);
 	let material_count_member = besl::Node::array("material_count", atomic_u32.clone(), MAX_MATERIALS);
-	let material_offset_member = besl::Node::array("material_offset", u32_t.clone(), 1);
+	let material_offset_member = besl::Node::array("material_offset", u32_t.clone(), MAX_MATERIALS);
 	let material_offset_scratch_member = besl::Node::array("material_offset_scratch", atomic_u32.clone(), MAX_MATERIALS);
 	let material_evaluation_dispatches_member =
 		besl::Node::array("material_evaluation_dispatches", vec4u_t.clone(), MAX_MATERIALS);
-	let pixel_mapping_member = besl::Node::array("pixel_mapping", vec2u16_t, MAX_PIXEL_MAPPING_ENTRIES);
+	let pixel_mapping_member = besl::Node::array("pixel_mapping", vec2u16_t, pixel_mapping_entries);
 
 	root.add_children(vec![
 		besl::Node::binding(
@@ -1177,7 +892,7 @@ fn build_pixel_mapping_root() -> besl::Node {
 	atomic_add.borrow_mut().add_children(vec![
 		besl::Node::new(besl::Nodes::Parameter {
 			name: "value".to_string(),
-			r#type: atomic_u32,
+			r#type: atomic_u32.clone(),
 		})
 		.into(),
 		besl::Node::new(besl::Nodes::Parameter {
@@ -1186,31 +901,47 @@ fn build_pixel_mapping_root() -> besl::Node {
 		})
 		.into(),
 	]);
+
+	let atomic_load = root.add_child(besl::Node::intrinsic("atomic_load", Vec::new(), u32_t.clone()).into());
+	atomic_load
+		.borrow_mut()
+		.add_children(vec![besl::Node::new(besl::Nodes::Parameter {
+			name: "value".to_string(),
+			r#type: atomic_u32.clone(),
+		})
+		.into()]);
+
+	let atomic_store =
+		root.add_child(besl::Node::intrinsic("atomic_store", Vec::new(), root.get_child("void").unwrap()).into());
+	atomic_store.borrow_mut().add_children(vec![
+		besl::Node::new(besl::Nodes::Parameter {
+			name: "value".to_string(),
+			r#type: atomic_u32,
+		})
+		.into(),
+		besl::Node::new(besl::Nodes::Parameter {
+			name: "stored".to_string(),
+			r#type: u32_t,
+		})
+		.into(),
+	]);
 	root
 }
 
-pub fn get_gtao_blur_shader() -> GeneratedVisibilityShader {
-	generate_gtao_blur_shader_for_language(PlatformShaderLanguage::current_platform())
+pub fn get_gtao_blur_shader() -> ShaderSourceDefinition<'static> {
+	visibility_compute_shader(Extent::square(8), build_gtao_blur_program)
 }
 
-pub fn get_gtao_shader() -> GeneratedVisibilityShader {
-	generate_gtao_shader_for_language(PlatformShaderLanguage::current_platform())
+pub fn get_gtao_shader() -> ShaderSourceDefinition<'static> {
+	visibility_compute_shader(Extent::square(8), build_gtao_program)
 }
 
-pub fn get_gtao_bitfield_blur_x_shader() -> GeneratedVisibilityShader {
-	generate_gtao_bitfield_blur_x_shader_for_language(PlatformShaderLanguage::current_platform())
+pub fn get_gtao_bitfield_blur_x_shader() -> ShaderSourceDefinition<'static> {
+	visibility_compute_shader(Extent::square(8), build_gtao_bitfield_blur_x_program)
 }
 
-pub fn get_gtao_bitfield_shader() -> GeneratedVisibilityShader {
-	generate_gtao_bitfield_shader_for_language(PlatformShaderLanguage::current_platform())
-}
-
-pub(crate) fn generate_gtao_shader_for_language(language: PlatformShaderLanguage) -> GeneratedVisibilityShader {
-	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_program)
-}
-
-pub(crate) fn generate_gtao_bitfield_shader_for_language(language: PlatformShaderLanguage) -> GeneratedVisibilityShader {
-	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_bitfield_program)
+pub fn get_gtao_bitfield_shader() -> ShaderSourceDefinition<'static> {
+	visibility_compute_shader(Extent::square(8), build_gtao_bitfield_program)
 }
 
 fn build_gtao_program() -> besl::NodeReference {
@@ -1490,14 +1221,6 @@ fn build_gtao_program() -> besl::NodeReference {
 		.unwrap()
 		.get_main()
 		.unwrap()
-}
-
-pub(crate) fn generate_gtao_blur_shader_for_language(language: PlatformShaderLanguage) -> GeneratedVisibilityShader {
-	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_blur_program)
-}
-
-pub(crate) fn generate_gtao_bitfield_blur_x_shader_for_language(language: PlatformShaderLanguage) -> GeneratedVisibilityShader {
-	generate_compute_shader_for_language(language, Extent::square(8), build_gtao_bitfield_blur_x_program)
 }
 
 fn build_gtao_bitfield_program() -> besl::NodeReference {
@@ -2401,12 +2124,7 @@ pub(super) struct ShaderMeshletData {
 
 #[cfg(test)]
 mod tests {
-	use resource_management::shader::besl::backends::platform::PlatformShaderLanguage;
-
 	use super::{
-		generate_gtao_bitfield_blur_x_shader_for_language, generate_gtao_bitfield_shader_for_language,
-		generate_gtao_blur_shader_for_language, generate_gtao_shader_for_language, generate_pixel_mapping_shader_for_language,
-		get_material_count_msl_source, get_material_offset_msl_source, get_pixel_mapping_msl_source,
 		get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_shadow_pass_task_msl_source,
 		get_visibility_pass_mesh_msl_source, get_visibility_pass_task_msl_source, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES,
 		MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
@@ -2639,161 +2357,5 @@ mod tests {
 			shader_handle.is_ok(),
 			"Expected the visibility mesh MSL source to compile for Metal"
 		);
-	}
-
-	#[test]
-	fn material_count_msl_source_uses_argument_buffer_accessors() {
-		let shader = get_material_count_msl_source();
-
-		assert!(
-			shader.contains("set1.instance_index_render_target.read(gid).x")
-				&& shader.contains("set0.mesh_data->meshes[pixel_instance_index].material_index")
-				&& shader.contains("constant _views* views [[id(0)]];")
-				&& shader.contains("constant _meshes* mesh_data [[id(1)]];")
-				&& shader.contains("device _material_count* material_count_buffer [[id(0)]];")
-				&& shader.contains("texture2d<uint, access::read> instance_index_render_target [[id(6)]];")
-				&& shader.contains(
-					"atomic_fetch_add_explicit(&set1.material_count_buffer->material_count[material_index], 1, memory_order_relaxed)"
-				),
-			"Expected MSL material count source to lower through Metal argument buffers. Shader: {shader}"
-		);
-	}
-
-	#[test]
-	fn material_offset_msl_source_uses_argument_buffer_accessors() {
-		let shader = get_material_offset_msl_source();
-
-		assert!(
-			shader.contains("atomic_load_explicit(&set1.material_count->material_count[i], memory_order_relaxed)")
-				&& shader.contains("set1.material_offset->material_offset[i] = sum;")
-				&& shader.contains(
-					"set1.material_evaluation_dispatches->material_evaluation_dispatches[i] = uint4((count + 127) / 128, 1, 1, 0);"
-				),
-			"Expected MSL material offset source to lower through Metal argument buffers. Shader: {shader}"
-		);
-	}
-
-	#[test]
-	fn pixel_mapping_glsl_source_uses_besl_intrinsics() {
-		let shader = generate_pixel_mapping_shader_for_language(PlatformShaderLanguage::Glsl).into_source();
-
-		assert!(
-			shader.contains("imageLoad(instance_index_render_target, ivec2(coord)).x"),
-			"Expected GLSL pixel mapping source to lower the integer image load through a BESL intrinsic. Shader: {shader}"
-		);
-		assert!(
-			shader.contains("atomicAdd(material_offset_scratch_buffer.material_offset_scratch[material_index], 1)"),
-			"Expected GLSL pixel mapping source to lower the scratch offset increment through a BESL intrinsic. Shader: {shader}"
-		);
-	}
-
-	#[test]
-	fn pixel_mapping_msl_source_uses_platform_argument_buffer_lowering() {
-		let shader = get_pixel_mapping_msl_source();
-
-		assert!(
-			shader.contains("float4x3 model;")
-				&& shader.contains("uint material_index;")
-				&& shader.contains("uint base_meshlet_index;")
-				&& shader.contains("uint meshlet_count;")
-				&& shader.contains("constant _views* views [[id(0)]];")
-				&& shader.contains("constant _mesh_data* mesh_data [[id(1)]];")
-				&& shader.contains("device _material_offset_scratch_buffer* material_offset_scratch_buffer [[id(2)]];")
-				&& shader.contains("device _pixel_mapping_buffer* pixel_mapping_buffer [[id(4)]];")
-				&& shader.contains("texture2d<uint, access::read> instance_index_render_target [[id(6)]];"),
-			"Expected MSL pixel mapping source to preserve the full mesh buffer layout. Shader: {shader}"
-		);
-		assert!(
-			shader.contains("set1.instance_index_render_target.read(coord).x"),
-			"Expected MSL pixel mapping source to lower the integer image load through the Metal texture API. Shader: {shader}"
-		);
-		assert!(
-			shader.contains("atomic_fetch_add_explicit(")
-				&& shader.contains("&set1.material_offset_scratch_buffer->material_offset_scratch[material_index]")
-				&& shader.contains("memory_order_relaxed"),
-			"Expected MSL pixel mapping source to lower the scratch offset increment through the Metal atomic API. Shader: {shader}"
-		);
-	}
-
-	#[test]
-	fn gtao_blur_glsl_source_compiles_and_uses_const_array_weights() {
-		let shader = generate_gtao_blur_shader_for_language(PlatformShaderLanguage::Glsl).into_source();
-
-		assert!(
-			shader.contains("const float[5] GTAO_BLUR_SPATIAL_WEIGHTS"),
-			"Expected generated GLSL blur shader to preserve the const array weights. Shader: {shader}"
-		);
-		assert!(
-			shader.contains("texelFetch(ao_source, ivec2(positive_coord),0)")
-				|| shader.contains("texelFetch(ao_source,ivec2(positive_coord),0)"),
-			"Expected generated GLSL blur shader to lower BESL fetch calls to texelFetch. Shader: {shader}"
-		);
-
-		resource_management::shader::glsl_compile::compile(&shader, "GTAO Blur Compute Shader")
-			.expect("Expected generated GLSL blur shader to compile");
-	}
-
-	#[test]
-	fn gtao_glsl_source_compiles_and_uses_fetch_lowering() {
-		let shader = generate_gtao_shader_for_language(PlatformShaderLanguage::Glsl).into_source();
-
-		assert!(
-			shader.contains("texelFetch(visibility_depth, ivec2(coord),0)")
-				|| shader.contains("texelFetch(visibility_depth,ivec2(coord),0)"),
-			"Expected generated GLSL GTAO shader to lower BESL fetch calls to texelFetch. Shader: {shader}"
-		);
-		assert!(
-			shader.contains("cross(dx,dy)") || shader.contains("cross(dx, dy)"),
-			"Expected generated GLSL GTAO shader to preserve the cross-product normal reconstruction. Shader: {shader}"
-		);
-
-		resource_management::shader::glsl_compile::compile(&shader, "GTAO Compute Shader")
-			.expect("Expected generated GLSL GTAO shader to compile");
-	}
-
-	#[test]
-	fn gtao_msl_source_uses_argument_buffer_accessors() {
-		let shader = generate_gtao_shader_for_language(PlatformShaderLanguage::Msl).into_source();
-
-		assert!(
-			shader.contains("View view = set0.views->views[0];"),
-			"Expected generated MSL GTAO shader to lower the view lookup through the Metal argument buffer. Shader: {shader}"
-		);
-		assert!(
-			shader.contains("view.inverse_projection") && shader.contains("view.fov"),
-			"Expected generated MSL GTAO shader to read inverse projection and FOV from the loaded view. Shader: {shader}"
-		);
-	}
-
-	#[test]
-	fn gtao_bitfield_glsl_source_compiles_and_uses_image_atomic_or() {
-		let shader = generate_gtao_bitfield_shader_for_language(PlatformShaderLanguage::Glsl).into_source();
-
-		assert!(
-			shader.contains("imageAtomicOr(ao_output, ivec2(packed_pixel), 1 << bit_index)")
-				|| shader.contains("imageAtomicOr(ao_output,ivec2(packed_pixel),1 << bit_index)"),
-			"Expected generated GLSL bitfield GTAO shader to lower packed writes through imageAtomicOr. Shader: {shader}"
-		);
-
-		resource_management::shader::glsl_compile::compile(&shader, "Bitfield GTAO Compute Shader")
-			.expect("Expected generated GLSL bitfield GTAO shader to compile");
-	}
-
-	#[test]
-	fn gtao_bitfield_blur_x_glsl_source_compiles_and_uses_integer_fetch() {
-		let shader = generate_gtao_bitfield_blur_x_shader_for_language(PlatformShaderLanguage::Glsl).into_source();
-
-		assert!(
-			shader.contains("uniform usampler2D ao_source"),
-			"Expected generated GLSL bitfield blur shader to use an unsigned sampler for packed AO reads. Shader: {shader}"
-		);
-		assert!(
-			shader.contains("texelFetch(ao_source, ivec2(packed_pixel),0).x")
-				|| shader.contains("texelFetch(ao_source,ivec2(packed_pixel),0).x"),
-			"Expected generated GLSL bitfield blur shader to lower integer AO fetches through texelFetch. Shader: {shader}"
-		);
-
-		resource_management::shader::glsl_compile::compile(&shader, "Bitfield GTAO Blur X Compute Shader")
-			.expect("Expected generated GLSL bitfield blur shader to compile");
 	}
 }

@@ -137,7 +137,7 @@ fn create_lut_shader(
 	glsl: &str,
 	msl: &str,
 ) -> ghi::ShaderHandle {
-	crate::rendering::shader_store::create_shader_from_baked_or_inline(
+	crate::rendering::shader_store::create_shader(
 		context,
 		shader_storage,
 		&crate::rendering::shader_store::ShaderSourceDescriptor {

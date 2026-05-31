@@ -183,7 +183,7 @@ fn create_sky_shader(
 	context: &mut ghi::implementation::Context,
 	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 ) -> ghi::ShaderHandle {
-	crate::rendering::shader_store::create_shader_from_baked_or_inline(
+	crate::rendering::shader_store::create_shader(
 		context,
 		shader_storage,
 		&crate::rendering::shader_store::ShaderSourceDescriptor {

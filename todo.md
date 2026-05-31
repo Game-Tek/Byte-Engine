@@ -80,6 +80,13 @@
 - Compress generated image mip levels concurrently after mip-chain generation in crates/resource-management/src/processors/image_processor.rs.
 
 # BESL
+- Convert visibility compute shaders (`pixel_mapping`, GTAO, GTAO bitfield, GTAO blur, and GTAO bitfield blur X) to use `ShaderSourceDefinition::Besl` instead of generating current-platform sources in crates/byte-engine/src/rendering/pipelines/visibility/mod.rs and crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs.
+- Remove or shrink `GeneratedVisibilityShader`, `generated_platform_shader_source`, and related `PlatformShaderLanguage::current_platform()` plumbing once visibility compute shaders use shader-store BESL generation.
+- Add a convenience constructor/helper for BESL compute shader descriptors so callers can provide workgroup extent and `besl::NodeReference` without spelling out platform generation details.
+- Decide whether visibility mesh/task shaders need a `Besl` plus platform-specific override source definition, because their Metal path still uses custom mesh/task MSL.
+- Consider rewriting manually authored platform shaders such as ACES, LUT, sky, visibility fragment, material count, and material offset in BESL, or add descriptor helpers for raw platform shader pairs to reduce call-site noise.
+- Consider routing UI shader creation through the shader store, or add a lower-level helper, so UI text overlay platform GLSL/MSL sources in crates/byte-engine/src/ui/render_pass.rs do not call `create_shader_from_source` directly with platform details.
+- Evaluate whether simple pipeline material shader generation in crates/byte-engine/src/rendering/pipelines/simple/pipeline_manager.rs can share the shader-store BESL generation path or a common platform-source helper.
 - Add explicit BESL syntax for interpolation modifiers on stage IO; MSL now infers position, depth, color, user attributes, front-facing, vertex ID, and instance ID semantics from conventional IO names.
 - Replace visibility-pass-specific texture sampling lowering with a generic BESL texture and sampler resource model for separate textures, samplers, combined samplers, array textures, integer textures, depth textures, and sample level/bias/gradient operations.
 - Complete MSL lowering for all declared BESL built-in intrinsics, including `fetch_u32` and `image_atomic_or`, and either add or remove the mismatched `image_load_u32` intrinsic.

@@ -112,7 +112,7 @@ impl<'a> RenderPassBuilder<'a> {
 	}
 
 	pub fn create_shader(&mut self, descriptor: &ShaderSourceDescriptor<'_>) -> Result<ghi::ShaderHandle, String> {
-		crate::rendering::shader_store::create_shader_from_baked_or_inline(self.context, self.shader_storage, descriptor)
+		crate::rendering::shader_store::create_shader(self.context, self.shader_storage, descriptor)
 	}
 
 	pub(crate) fn shader_storage(&self) -> Option<&'a dyn resource_management::resource::StorageBackend> {

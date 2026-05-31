@@ -204,6 +204,18 @@ impl Generator {
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
 			}
+			"atomic_load" => {
+				self.emit_node_string(string, &arguments[0]);
+			}
+			"atomic_store" => {
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push('=');
+				} else {
+					string.push_str(" = ");
+				}
+				self.emit_node_string(string, &arguments[1]);
+			}
 			"thread_id" => {
 				string.push_str("uvec2(gl_GlobalInvocationID.xy)");
 			}

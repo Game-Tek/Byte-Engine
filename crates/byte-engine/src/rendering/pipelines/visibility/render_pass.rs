@@ -12,35 +12,18 @@ use utils::{Box, Extent, RGBA};
 use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
 use crate::rendering::pipelines::visibility::{
 	get_gtao_bitfield_blur_x_shader, get_gtao_bitfield_shader, get_gtao_blur_shader, get_gtao_shader,
-	get_material_count_msl_source, get_material_count_source, get_material_offset_msl_source, get_material_offset_source,
-	get_pixel_mapping_msl_source, get_pixel_mapping_source, get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source,
-	get_shadow_pass_task_msl_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source,
-	get_visibility_pass_task_msl_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
-	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS,
-	MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
-	MESHLET_CULLING_TASK_GROUP_SIZE, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
-	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
+	get_material_count_shader, get_material_offset_shader, get_pixel_mapping_shader, get_shadow_pass_mesh_msl_source,
+	get_shadow_pass_mesh_source, get_shadow_pass_task_msl_source, get_visibility_pass_mesh_msl_source,
+	get_visibility_pass_mesh_source, get_visibility_pass_task_msl_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
+	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
+	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
+	MAX_VERTICES, MESHLET_CULLING_TASK_GROUP_SIZE, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+	SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
+	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
 	VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
-
-/// Converts a [`crate::rendering::pipelines::visibility::GeneratedVisibilityShader`] to a
-/// [`ghi::shader::ShaderSource`] so callers can pass generated shaders to `ghi::shader::compile` without
-/// manually inspecting the language variant.
-fn generated_platform_shader_source(
-	shader: &crate::rendering::pipelines::visibility::GeneratedVisibilityShader,
-) -> ghi::shader::ShaderSource<'_> {
-	use resource_management::shader::besl::backends::platform::PlatformShaderLanguage;
-	match shader.language() {
-		PlatformShaderLanguage::Glsl => ghi::shader::ShaderSource::Glsl(shader.source()),
-		PlatformShaderLanguage::Msl => ghi::shader::ShaderSource::Msl {
-			source: shader.source(),
-			entry_point: shader.entry_point(),
-		},
-	}
-}
 
 const GTAO_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	0,
@@ -95,7 +78,7 @@ impl VisibilityPass {
 			let visibility_task_shader = get_visibility_pass_task_msl_source();
 
 			Some(
-				crate::rendering::shader_store::create_shader_from_baked_or_inline(
+				crate::rendering::shader_store::create_shader(
 					context,
 					shader_storage,
 					&crate::rendering::shader_store::ShaderSourceDescriptor {
@@ -126,7 +109,7 @@ impl VisibilityPass {
 
 		let visibility_mesh_glsl = get_visibility_pass_mesh_source();
 		let visibility_mesh_msl = get_visibility_pass_mesh_msl_source();
-		let visibility_pass_mesh_shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		let visibility_pass_mesh_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {
@@ -155,7 +138,7 @@ impl VisibilityPass {
 		)
 		.expect("Failed to create shader");
 
-		let visibility_pass_fragment_shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		let visibility_pass_fragment_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {
@@ -300,7 +283,7 @@ impl ShadowPass {
 			let shadow_task_shader = get_shadow_pass_task_msl_source();
 
 			Some(
-				crate::rendering::shader_store::create_shader_from_baked_or_inline(
+				crate::rendering::shader_store::create_shader(
 					context,
 					shader_storage,
 					&crate::rendering::shader_store::ShaderSourceDescriptor {
@@ -331,7 +314,7 @@ impl ShadowPass {
 
 		let shadow_mesh_glsl = get_shadow_pass_mesh_source();
 		let shadow_mesh_msl = get_shadow_pass_mesh_msl_source();
-		let shadow_pass_mesh_shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		let shadow_pass_mesh_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {
@@ -472,19 +455,14 @@ impl MaterialCountPass {
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	) -> Self {
-		let material_count_glsl = get_material_count_source();
-		let material_count_shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		let material_count_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {
 				id: "byte-engine/rendering/visibility/material-count",
 				name: "Material Count Pass Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
-					glsl: &material_count_glsl,
-					msl: get_material_count_msl_source(),
-					msl_entry_point: "besl_main",
-				}),
+				source: get_material_count_shader(),
 				interface: material::ShaderInterface {
 					workgroup_size: Some((32, 32, 1)),
 					bindings: vec![
@@ -563,19 +541,14 @@ impl MaterialOffsetPass {
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
 	) -> Self {
-		let material_offset_glsl = get_material_offset_source();
-		let material_offset_shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		let material_offset_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {
 				id: "byte-engine/rendering/visibility/material-offset",
 				name: "Material Offset Pass Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
-					glsl: &material_offset_glsl,
-					msl: get_material_offset_msl_source(),
-					msl_entry_point: "besl_main",
-				}),
+				source: get_material_offset_shader(),
 				interface: material::ShaderInterface {
 					workgroup_size: Some((1, 1, 1)),
 					bindings: vec![
@@ -656,20 +629,14 @@ impl PixelMappingPass {
 		visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
 		material_xy: ghi::BufferHandle<[(u16, u16); MAX_PIXEL_MAPPING_ENTRIES]>,
 	) -> Self {
-		let pixel_mapping_glsl = get_pixel_mapping_source();
-		let pixel_mapping_msl = get_pixel_mapping_msl_source();
-		let pixel_mapping_shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		let pixel_mapping_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {
 				id: "byte-engine/rendering/visibility/pixel-mapping",
 				name: "Pixel Mapping Pass Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
-					glsl: &pixel_mapping_glsl,
-					msl: &pixel_mapping_msl,
-					msl_entry_point: "besl_main",
-				}),
+				source: get_pixel_mapping_shader(),
 				interface: material::ShaderInterface {
 					workgroup_size: Some((32, 32, 1)),
 					bindings: vec![
@@ -860,16 +827,14 @@ impl GtaoPass {
 		} else {
 			get_gtao_shader()
 		};
-		let gtao_shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		let gtao_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {
 				id: "byte-engine/rendering/visibility/gtao",
 				name: "GTAO Pass Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(generated_platform_shader_source(
-					&gtao_shader_data,
-				)),
+				source: gtao_shader_data,
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![
@@ -899,16 +864,14 @@ impl GtaoPass {
 		} else {
 			get_gtao_blur_shader()
 		};
-		let blur_x_shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		let blur_x_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {
 				id: "byte-engine/rendering/visibility/gtao-blur-x",
 				name: "GTAO Blur X Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(generated_platform_shader_source(
-					&blur_x_shader_data,
-				)),
+				source: blur_x_shader_data,
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![
@@ -922,16 +885,14 @@ impl GtaoPass {
 		)
 		.expect("Failed to create shader");
 		let blur_y_shader_data = get_gtao_blur_shader();
-		let blur_y_shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		let blur_y_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {
 				id: "byte-engine/rendering/visibility/gtao-blur-y",
 				name: "GTAO Blur Y Compute Shader",
 				stage: ResourceShaderTypes::Compute,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(generated_platform_shader_source(
-					&blur_y_shader_data,
-				)),
+				source: blur_y_shader_data,
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![
@@ -1285,128 +1246,132 @@ impl VisibilityPipelineRenderPass {
 
 #[cfg(test)]
 mod tests {
-	#[test]
-	fn gtao_shader_compiles() {
-		if super::GTAO_USE_BITFIELD_BINARY_IMPL {
-			let gtao_shader = super::get_gtao_bitfield_shader();
-			if gtao_shader.language().is_glsl() {
-				resource_management::shader::glsl_compile::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
-				return;
-			}
-		}
+	use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};
 
-		let gtao_shader = if super::GTAO_USE_BITFIELD_BINARY_IMPL {
-			super::get_gtao_bitfield_shader()
-		} else {
-			super::get_gtao_shader()
-		};
-		if gtao_shader.language().is_glsl() {
-			resource_management::shader::glsl_compile::compile(gtao_shader.source(), "GTAO Pass Compute Shader").unwrap();
-			return;
-		}
-
-		use ghi::{
-			context::{Context as _, ContextCreate as _},
-			device::Device as _,
-		};
+	fn create_test_context() -> Option<ghi::implementation::Context> {
+		use ghi::{context::ContextCreate as _, device::Device as _};
 
 		if !ghi::implementation::USES_METAL {
-			return;
+			return None;
 		}
 
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
-			.expect("Expected a Metal instance for the GTAO shader test");
+			.expect("Expected a Metal instance for the visibility shader test");
 		let mut queue = None;
-		let mut context = instance
-			.create_device(
-				ghi::device::Features::new(),
-				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
-			)
-			.expect("Expected a Metal device for the GTAO shader test")
-			.create_context()
-			.expect("Expected a Metal context for the GTAO shader test");
+		Some(
+			instance
+				.create_device(
+					ghi::device::Features::new(),
+					&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
+				)
+				.expect("Expected a Metal device for the visibility shader test")
+				.create_context()
+				.expect("Expected a Metal context for the visibility shader test"),
+		)
+	}
 
-		let shader_handle = context.create_shader(
-			Some("GTAO Compute Shader"),
-			ghi::shader::Sources::MTL {
-				source: gtao_shader.source(),
-				entry_point: gtao_shader.entry_point(),
+	#[test]
+	fn material_offset_shader_compiles() {
+		let Some(mut context) = create_test_context() else {
+			return;
+		};
+
+		let shader_handle = crate::rendering::shader_store::create_shader(
+			&mut context,
+			None,
+			&crate::rendering::shader_store::ShaderSourceDescriptor {
+				id: "byte-engine/tests/visibility/material-offset",
+				name: "Material Offset Pass Compute Shader",
+				stage: ResourceShaderTypes::Compute,
+				source: super::get_material_offset_shader(),
+				interface: material::ShaderInterface {
+					workgroup_size: Some((1, 1, 1)),
+					bindings: vec![
+						material::Binding::new(1, 0, true, false),
+						material::Binding::new(1, 1, false, true),
+						material::Binding::new(1, 2, false, true),
+						material::Binding::new(1, 3, false, true),
+					],
+				},
 			},
-			ghi::ShaderTypes::Compute,
-			[
-				super::VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				super::GTAO_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				super::GTAO_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-			],
 		);
 
 		assert!(
 			shader_handle.is_ok(),
-			"Expected generated GTAO source to compile for the active backend"
+			"Expected the material offset BESL shader descriptor to compile for the active backend"
+		);
+	}
+
+	#[test]
+	fn gtao_shader_compiles() {
+		let Some(mut context) = create_test_context() else {
+			return;
+		};
+		let source = if super::GTAO_USE_BITFIELD_BINARY_IMPL {
+			super::get_gtao_bitfield_shader()
+		} else {
+			super::get_gtao_shader()
+		};
+
+		let shader_handle = crate::rendering::shader_store::create_shader(
+			&mut context,
+			None,
+			&crate::rendering::shader_store::ShaderSourceDescriptor {
+				id: "byte-engine/tests/visibility/gtao",
+				name: "GTAO Pass Compute Shader",
+				stage: ResourceShaderTypes::Compute,
+				source,
+				interface: material::ShaderInterface {
+					workgroup_size: Some((8, 8, 1)),
+					bindings: vec![
+						material::Binding::new(0, 0, true, false),
+						material::Binding::new(1, 0, true, false),
+						material::Binding::new(1, 1, false, true),
+					],
+				},
+			},
+		);
+
+		assert!(
+			shader_handle.is_ok(),
+			"Expected the GTAO BESL shader descriptor to compile for the active backend"
 		);
 	}
 
 	#[test]
 	fn gtao_blur_shader_compiles() {
-		if super::GTAO_USE_BITFIELD_BINARY_IMPL {
-			resource_management::shader::glsl_compile::compile(
-				super::get_gtao_bitfield_blur_x_shader().source(),
-				"GTAO Blur X Compute Shader",
-			)
-			.unwrap();
-			resource_management::shader::glsl_compile::compile(
-				super::get_gtao_blur_shader().source(),
-				"GTAO Blur Y Compute Shader",
-			)
-			.unwrap();
+		let Some(mut context) = create_test_context() else {
 			return;
-		}
-
-		let blur_shader = super::get_gtao_blur_shader();
-		if blur_shader.language().is_glsl() {
-			resource_management::shader::glsl_compile::compile(blur_shader.source(), "GTAO Blur Compute Shader").unwrap();
-			return;
-		}
-
-		use ghi::{
-			context::{Context as _, ContextCreate as _},
-			device::Device as _,
+		};
+		let source = if super::GTAO_USE_BITFIELD_BINARY_IMPL {
+			super::get_gtao_bitfield_blur_x_shader()
+		} else {
+			super::get_gtao_blur_shader()
 		};
 
-		if !ghi::implementation::USES_METAL {
-			return;
-		}
-
-		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
-			.expect("Expected a Metal instance for the GTAO blur shader test");
-		let mut queue = None;
-		let mut context = instance
-			.create_device(
-				ghi::device::Features::new(),
-				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
-			)
-			.expect("Expected a Metal device for the GTAO blur shader test")
-			.create_context()
-			.expect("Expected a Metal context for the GTAO blur shader test");
-
-		let shader_handle = context.create_shader(
-			Some("GTAO Blur Compute Shader"),
-			ghi::shader::Sources::MTL {
-				source: blur_shader.source(),
-				entry_point: blur_shader.entry_point(),
+		let shader_handle = crate::rendering::shader_store::create_shader(
+			&mut context,
+			None,
+			&crate::rendering::shader_store::ShaderSourceDescriptor {
+				id: "byte-engine/tests/visibility/gtao-blur",
+				name: "GTAO Blur Compute Shader",
+				stage: ResourceShaderTypes::Compute,
+				source,
+				interface: material::ShaderInterface {
+					workgroup_size: Some((8, 8, 1)),
+					bindings: vec![
+						material::Binding::new(0, 0, true, false),
+						material::Binding::new(1, 0, true, false),
+						material::Binding::new(1, 1, true, false),
+						material::Binding::new(1, 2, false, true),
+					],
+				},
 			},
-			ghi::ShaderTypes::Compute,
-			[
-				super::VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				super::GTAO_BLUR_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				super::GTAO_BLUR_SOURCE_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-				super::GTAO_BLUR_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-			],
 		);
 
 		assert!(
 			shader_handle.is_ok(),
-			"Expected generated GTAO blur source to compile for the active backend"
+			"Expected the GTAO blur BESL shader descriptor to compile for the active backend"
 		);
 	}
 

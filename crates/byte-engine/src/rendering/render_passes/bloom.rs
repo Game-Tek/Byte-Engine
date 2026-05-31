@@ -433,7 +433,7 @@ fn create_extract_pipeline(
 	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+	let shader = crate::rendering::shader_store::create_shader(
 		context,
 		shader_storage,
 		&bloom_shader_descriptor(
@@ -461,7 +461,7 @@ fn create_downsample_pipeline(
 	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+	let shader = crate::rendering::shader_store::create_shader(
 		context,
 		shader_storage,
 		&bloom_shader_descriptor(
@@ -491,7 +491,7 @@ fn create_upsample_pipeline(
 	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+	let shader = crate::rendering::shader_store::create_shader(
 		context,
 		shader_storage,
 		&bloom_shader_descriptor(
@@ -522,7 +522,7 @@ fn create_composite_pipeline(
 	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 ) -> ghi::PipelineHandle {
-	let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+	let shader = crate::rendering::shader_store::create_shader(
 		context,
 		shader_storage,
 		&bloom_shader_descriptor(

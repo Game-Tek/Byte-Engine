@@ -43,7 +43,7 @@ impl BaseBilateralBlurPass {
 			&[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING],
 		);
 
-		let shader = crate::rendering::shader_store::create_shader_from_baked_or_inline(
+		let shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {

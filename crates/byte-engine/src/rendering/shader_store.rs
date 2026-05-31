@@ -38,7 +38,7 @@ pub fn upsert_shader(storage_backend: &dyn StorageBackend, descriptor: &ShaderSo
 }
 
 /// Creates a GPU shader from storage, baking the inline descriptor first when needed.
-pub fn create_shader_from_baked_or_inline(
+pub fn create_shader(
 	context: &mut ghi::implementation::Context,
 	storage_backend: Option<&dyn StorageBackend>,
 	descriptor: &ShaderSourceDescriptor<'_>,
@@ -72,6 +72,14 @@ pub fn create_shader_from_baked_or_inline(
 			descriptor.interface.bindings.iter().map(binding_to_descriptor),
 		)
 	})
+}
+
+pub fn create_shader_from_baked_or_inline(
+	context: &mut ghi::implementation::Context,
+	storage_backend: Option<&dyn StorageBackend>,
+	descriptor: &ShaderSourceDescriptor<'_>,
+) -> Result<ghi::ShaderHandle, String> {
+	create_shader(context, storage_backend, descriptor)
 }
 
 fn with_shader_source<T>(

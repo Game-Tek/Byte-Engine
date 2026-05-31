@@ -989,6 +989,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			read,
 			write,
 			r#type,
+			binding,
 			count,
 			..
 		} = node.node()
@@ -996,18 +997,19 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
-		let emit_suffix = |string: &mut String, next_id: &mut u32| {
+		let descriptor_count = count.map(|count| count.get() as u32).unwrap_or(1);
+		let emit_suffix = |string: &mut String, binding: u32, consumed_ids: u32, next_id: &mut u32| {
+			let id = binding.max(*next_id);
 			string.push_str(" [[id(");
-			let _ = write!(string, "{next_id}");
+			let _ = write!(string, "{id}");
 			string.push_str(")]]");
-			let descriptor_count = count.map(|count| count.get() as u32).unwrap_or(1);
 			if let Some(count) = count {
 				string.push('[');
 				let _ = write!(string, "{count}");
 				string.push(']');
 			}
 			self.emit_statement_end(string);
-			*next_id += descriptor_count;
+			*next_id = id + consumed_ids * descriptor_count;
 		};
 
 		self.emit_indentation(string, 1);
@@ -1018,7 +1020,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(address_space);
 				string.push(' ');
 				string.push_str(&format!("_{}* {}", name, name));
-				emit_suffix(string, next_id);
+				emit_suffix(string, *binding, 1, next_id);
 			}
 			besl::BindingTypes::Image { format } => {
 				let element_type = match format.as_str() {
@@ -1033,7 +1035,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					"access::read"
 				};
 				string.push_str(&format!("texture2d<{}, {}> {}", element_type, access, name));
-				emit_suffix(string, next_id);
+				emit_suffix(string, *binding, 1, next_id);
 			}
 			besl::BindingTypes::CombinedImageSampler { format } => {
 				let texture_type = match format.as_str() {
@@ -1044,12 +1046,12 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(texture_type);
 				string.push(' ');
 				string.push_str(name);
-				emit_suffix(string, next_id);
+				emit_suffix(string, *binding, 1, next_id);
 
 				self.emit_indentation(string, 1);
 				string.push_str("sampler ");
 				string.push_str(&format!("{}_sampler", name));
-				emit_suffix(string, next_id);
+				emit_suffix(string, *binding + 1, 1, next_id);
 			}
 		}
 	}
@@ -1783,11 +1785,19 @@ impl<A: Allocator + Clone> Generator<A> {
 			"atomic_add" => {
 				string.push_str("atomic_fetch_add_explicit(&");
 				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", memory_order_relaxed)");
+			}
+			"atomic_load" => {
+				string.push_str("atomic_load_explicit(&");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(", memory_order_relaxed)");
+			}
+			"atomic_store" => {
+				string.push_str("atomic_store_explicit(&");
+				self.emit_node_string(string, &arguments[0]);
+				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(", memory_order_relaxed)");
 			}

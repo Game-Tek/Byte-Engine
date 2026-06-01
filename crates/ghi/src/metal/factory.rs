@@ -170,7 +170,7 @@ impl crate::device::Device for Factory {
 		};
 
 		self.shaders.push(Shader {
-			name: name.map(str::to_owned),
+			name: crate::debug_name(name),
 			stage: stages,
 			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
 			metal_library,
@@ -242,6 +242,7 @@ impl crate::device::Device for Factory {
 
 		let raster_pipeline_state = if let Some(mesh_function) = mesh_function.as_ref() {
 			let descriptor = MTLMeshRenderPipelineDescriptor::new();
+			#[cfg(debug_assertions)]
 			descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
 			unsafe {
 				descriptor.setObjectFunction(object_function.as_ref().map(|function| function.as_ref()));
@@ -262,6 +263,7 @@ impl crate::device::Device for Factory {
 				.into()
 		} else if let Some(vertex_function) = vertex_function.as_ref() {
 			let descriptor = MTLRenderPipelineDescriptor::new();
+			#[cfg(debug_assertions)]
 			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
@@ -390,13 +392,14 @@ impl crate::device::Device for Factory {
 			.newTextureWithDescriptor(&descriptor)
 			.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
 
+		#[cfg(debug_assertions)]
 		if let Some(name) = builder.name {
 			texture.setLabel(Some(&NSString::from_str(name)));
 		}
 
 		Image {
 			image: crate::metal::image::Image {
-				name: builder.name.map(str::to_owned),
+				name: crate::debug_name(builder.name),
 				texture,
 				extent: builder.extent,
 				format: builder.format,

@@ -118,7 +118,7 @@ impl crate::device::Device for Factory {
 		};
 
 		self.shaders.push(Shader {
-			name: name.map(str::to_owned),
+			name: crate::debug_name(name),
 			source,
 			stage,
 			bindings: shader_binding_descriptors.into_iter().collect(),
@@ -171,7 +171,7 @@ impl crate::device::Device for Factory {
 
 	fn build_image(&mut self, builder: image::Builder) -> Self::Image {
 		FactoryImage {
-			name: builder.name.map(str::to_owned),
+			name: crate::debug_name(builder.name),
 			extent: builder.extent,
 			format: builder.format,
 			resource_uses: builder.resource_uses,

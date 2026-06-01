@@ -86,6 +86,18 @@ pub use types::{
 
 pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
+#[cfg(debug_assertions)]
+#[inline]
+pub(crate) fn debug_name(name: Option<&str>) -> Option<String> {
+	name.map(str::to_owned)
+}
+
+#[cfg(not(debug_assertions))]
+#[inline]
+pub(crate) fn debug_name(_name: Option<&str>) -> Option<String> {
+	None
+}
+
 pub(crate) use implementation::Binding;
 pub(crate) use implementation::DescriptorSet;
 pub(crate) use implementation::Synchronizer;

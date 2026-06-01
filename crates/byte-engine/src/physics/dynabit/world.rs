@@ -97,8 +97,8 @@ impl World {
 		}
 	}
 
-	fn detect_collisions(&self, _time: Time) -> Vec<Contact> {
-		detect_collisions_for_bodies(&self.bodies)
+	fn detect_collisions(&self, time: Time) -> Vec<Contact> {
+		detect_collisions_for_bodies(&self.bodies, time.delta().as_secs_f32())
 	}
 
 	/// Updates bodies' positions and orientation based on their velocities.
@@ -256,12 +256,12 @@ impl World {
 }
 
 /// Detects intersections and builds contact data for each unique body pair.
-fn detect_collisions_for_bodies(bodies: &StableVec<PhysicsBody>) -> Vec<Contact> {
+fn detect_collisions_for_bodies(bodies: &StableVec<PhysicsBody>, dt: f32) -> Vec<Contact> {
 	let mut contacts = Vec::new();
 
 	for (i, a) in bodies.indexed_iter() {
 		for (j, b) in bodies.indexed_iter().filter(|(j, _)| *j > i) {
-			let Some(intersection) = intersect(a, b) else {
+			let Some(intersection) = intersect(a, b, dt) else {
 				continue;
 			};
 
@@ -330,7 +330,7 @@ mod tests {
 		}
 	}
 
-	fn resolve_penetration_depth(mut bodies: Vec<PhysicsBody>) -> f32 {
+	fn resolve_penetration_depth(mut bodies: Vec<PhysicsBody>, dt: f32) -> f32 {
 		let body_factory = Factory::<EntityHandle<dyn Body>>::new();
 		let listener = body_factory.listener();
 		let delete_channel = DefaultChannel::new();
@@ -338,17 +338,17 @@ mod tests {
 		let mut world = World::new(listener, delete_listener);
 		world.bodies = std::mem::take(&mut bodies).into_iter().collect();
 
-		let contacts = detect_collisions_for_bodies(&world.bodies);
+		let contacts = detect_collisions_for_bodies(&world.bodies, dt);
 		assert_eq!(contacts.len(), 1);
 		world.resolve_contact(&contacts[0]);
 
-		intersect(&world.bodies[0], &world.bodies[1]).map_or(0.0, |intersection| intersection.depth)
+		intersect(&world.bodies[0], &world.bodies[1], dt).map_or(0.0, |intersection| intersection.depth)
 	}
 
 	#[test]
 	fn detects_each_pair_once() {
 		let bodies = [make_ground_body(), make_sphere_body()].into_iter().collect();
-		let contacts = detect_collisions_for_bodies(&bodies);
+		let contacts = detect_collisions_for_bodies(&bodies, 1.0);
 
 		assert_eq!(contacts.len(), 1);
 		assert_eq!((contacts[0].a.object, contacts[0].b.object), (0, 1));
@@ -356,8 +356,8 @@ mod tests {
 
 	#[test]
 	fn resolves_sphere_ground_penetration_for_both_body_orders() {
-		let depth_when_ground_first = resolve_penetration_depth(vec![make_ground_body(), make_sphere_body()]);
-		let depth_when_sphere_first = resolve_penetration_depth(vec![make_sphere_body(), make_ground_body()]);
+		let depth_when_ground_first = resolve_penetration_depth(vec![make_ground_body(), make_sphere_body()], 1.0);
+		let depth_when_sphere_first = resolve_penetration_depth(vec![make_sphere_body(), make_ground_body()], 1.0);
 
 		assert!(depth_when_ground_first <= 1e-4);
 		assert!(depth_when_sphere_first <= 1e-4);

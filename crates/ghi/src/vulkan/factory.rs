@@ -163,7 +163,7 @@ impl crate::device::Device for Factory {
 
 	fn build_image(&mut self, builder: crate::image::Builder) -> Self::Image {
 		FactoryImage {
-			name: builder.name.map(str::to_owned),
+			name: crate::debug_name(builder.name),
 			extent: builder.extent,
 			format: builder.format,
 			resource_uses: builder.resource_uses,

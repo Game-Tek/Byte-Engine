@@ -1882,21 +1882,25 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 		self
 	}
 
-	fn start_region(&self, write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
-		let command_buffer = self.get_command_buffer();
-		let mut label = crate::command_buffer::DebugLabelWriter::new();
-		write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
-
-		// Vulkan requires a null-terminated label that remains alive for the duration of the call.
-		label.null_terminate();
-		let name = std::ffi::CStr::from_bytes_with_nul(label.as_bytes())
-			.expect("Invalid debug label. The label most likely contains an interior null byte.");
-		let marker_info = vk::DebugUtilsLabelEXT::default().label_name(name);
-
+	fn start_region(&self, _write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
 		#[cfg(debug_assertions)]
-		unsafe {
-			if let Some(debug_utils) = &self.device.debug_utils {
-				debug_utils.cmd_begin_debug_utils_label(command_buffer.command_buffer, &marker_info);
+		let write_label = _write_label;
+		#[cfg(debug_assertions)]
+		{
+			let command_buffer = self.get_command_buffer();
+			let mut label = crate::command_buffer::DebugLabelWriter::new();
+			write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
+
+			// Vulkan requires a null-terminated label that remains alive for the duration of the call.
+			label.null_terminate();
+			let name = std::ffi::CStr::from_bytes_with_nul(label.as_bytes())
+				.expect("Invalid debug label. The label most likely contains an interior null byte.");
+			let marker_info = vk::DebugUtilsLabelEXT::default().label_name(name);
+
+			unsafe {
+				if let Some(debug_utils) = &self.device.debug_utils {
+					debug_utils.cmd_begin_debug_utils_label(command_buffer.command_buffer, &marker_info);
+				}
 			}
 		}
 	}
@@ -1912,12 +1916,14 @@ impl crate::command_buffer::CommonCommandBufferMode for CommandBufferRecording<'
 	}
 
 	fn end_region(&self) {
-		let command_buffer = self.get_command_buffer();
-
 		#[cfg(debug_assertions)]
-		unsafe {
-			if let Some(debug_utils) = &self.device.debug_utils {
-				debug_utils.cmd_end_debug_utils_label(command_buffer.command_buffer);
+		{
+			let command_buffer = self.get_command_buffer();
+
+			unsafe {
+				if let Some(debug_utils) = &self.device.debug_utils {
+					debug_utils.cmd_end_debug_utils_label(command_buffer.command_buffer);
+				}
 			}
 		}
 	}

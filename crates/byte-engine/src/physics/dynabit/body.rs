@@ -1,14 +1,7 @@
 use core::ops::Mul as _;
 
 use math::{
-	collision::{cube_vs_cube, sphere_vs_cube, sphere_vs_sphere, Intersection},
-	cross,
-	cube::Cube,
-	dot, length, magnitude, magnitude_squared,
-	mat::{MatInverse as _, MatScale as _, MatTranspose as _},
-	normalize,
-	sphere::Sphere,
-	Base, Magnitude as _, Matrix3, Quaternion, Vector3,
+	Base, Magnitude as _, Matrix3, Quaternion, Vector3, collision::{Intersection, cube_vs_cube, sphere_vs_cube, sphere_vs_sphere, sphere_vs_sphere_dynamic}, cross, cube::Cube, dot, length, magnitude, magnitude_squared, mat::{MatInverse as _, MatScale as _, MatTranspose as _}, normalize, sphere::Sphere
 };
 
 use crate::{
@@ -124,9 +117,9 @@ impl PhysicsBody {
 	}
 }
 
-pub fn intersect(a: &PhysicsBody, b: &PhysicsBody) -> Option<Intersection> {
+pub fn intersect(a: &PhysicsBody, b: &PhysicsBody, dt: f32) -> Option<Intersection> {
 	match (a.collision_shape, b.collision_shape) {
-		(Shapes::Sphere { radius: ra }, Shapes::Sphere { radius: rb }) => sphere_vs_sphere(
+		(Shapes::Sphere { radius: ra }, Shapes::Sphere { radius: rb }) => sphere_vs_sphere_dynamic(
 			&Sphere {
 				center: a.position,
 				radius: ra,
@@ -135,7 +128,10 @@ pub fn intersect(a: &PhysicsBody, b: &PhysicsBody) -> Option<Intersection> {
 				center: b.position,
 				radius: rb,
 			},
-		),
+			a.linear_velocity,
+			b.linear_velocity,
+			dt,
+		).map(|intersection| intersection.into()),
 		(Shapes::Cube { size: sa }, Shapes::Cube { size: sb }) => {
 			cube_vs_cube(&Cube::new(a.position, sa), &Cube::new(b.position, sb))
 		}

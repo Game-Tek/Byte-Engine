@@ -6,16 +6,9 @@
 	future_join,
 	coerce_unsized,
 	unsize,
-	once_cell_try,
-	iter_map_windows,
 	slice_pattern,
 	trait_alias,
-	associated_type_defaults,
-	downcast_unchecked,
-	mpmc_channel,
 	assert_matches,
-	iter_collect_into,
-	impl_trait_in_assoc_type,
 	iterator_try_collect
 )]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199

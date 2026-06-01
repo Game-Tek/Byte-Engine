@@ -159,8 +159,11 @@ fn encode_texture_clear(
 	let encoder = command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
 		"Metal render command encoder creation failed. The most likely cause is that the command buffer could not start an image clear pass.",
 	);
-	let label = NSString::from_str("Image Clear");
-	encoder.setLabel(Some(&label));
+	#[cfg(debug_assertions)]
+	{
+		let label = NSString::from_str("Image Clear");
+		encoder.setLabel(Some(&label));
+	}
 	encoder.endEncoding();
 }
 
@@ -195,6 +198,7 @@ pub struct CommandBufferRecording<'a> {
 	frame_key: Option<graphics_hardware_interface::FrameKey>,
 	sequence_index: u8,
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
+	#[cfg(debug_assertions)]
 	debug_regions: RefCell<Vec<String>>,
 	state_updates: HashMap<PrivateHandles, TransitionState>,
 	compute_written_resources: HashSet<PrivateHandles>,
@@ -340,8 +344,11 @@ impl<'a> CommandBufferRecording<'a> {
 		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
-		let label = self.current_encoder_label("Buffer Upload");
-		blit_encoder.setLabel(Some(&label));
+		#[cfg(debug_assertions)]
+		{
+			let label = self.current_encoder_label("Buffer Upload");
+			blit_encoder.setLabel(Some(&label));
+		}
 
 		unsafe {
 			blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
@@ -377,6 +384,7 @@ impl<'a> CommandBufferRecording<'a> {
 			frame_key,
 			sequence_index,
 			command_buffer,
+			#[cfg(debug_assertions)]
 			debug_regions: RefCell::new(Vec::new()),
 			state_updates: HashMap::default(),
 			compute_written_resources: HashSet::default(),
@@ -397,6 +405,7 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
+	#[cfg(debug_assertions)]
 	fn current_encoder_label(&self, suffix: &str) -> Retained<NSString> {
 		NSString::from_str(suffix)
 	}
@@ -419,10 +428,14 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
+	#[cfg(debug_assertions)]
 	fn refresh_active_encoder_labels(&self) {
 		if let Some(encoder) = self.active_compute_encoder.as_ref() {
-			let label = self.current_encoder_label("Compute Pass");
-			encoder.setLabel(Some(&label));
+			#[cfg(debug_assertions)]
+			{
+				let label = self.current_encoder_label("Compute Pass");
+				encoder.setLabel(Some(&label));
+			}
 		}
 
 		if let Some(encoder) = self.active_render_encoder.as_ref() {
@@ -440,8 +453,11 @@ impl<'a> CommandBufferRecording<'a> {
 			let encoder = self.command_buffer.computeCommandEncoder().expect(
 				"Metal compute command encoder creation failed. The most likely cause is that the command buffer could not start a compute pass.",
 			);
-			let label = self.current_encoder_label("Compute Pass");
-			encoder.setLabel(Some(&label));
+			#[cfg(debug_assertions)]
+			{
+				let label = self.current_encoder_label("Compute Pass");
+				encoder.setLabel(Some(&label));
+			}
 			self.active_compute_encoder = Some(encoder);
 		}
 
@@ -861,8 +877,11 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		let rce = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).unwrap();
-		let label = self.current_encoder_label("Render Pass");
-		rce.setLabel(Some(&label));
+		#[cfg(debug_assertions)]
+		{
+			let label = self.current_encoder_label("Render Pass");
+			rce.setLabel(Some(&label));
+		}
 
 		rce.setViewport(mtl::MTLViewport {
 			originX: 0.0,
@@ -949,8 +968,11 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
-		let label = self.current_encoder_label("Buffer Clear");
-		blit_encoder.setLabel(Some(&label));
+		#[cfg(debug_assertions)]
+		{
+			let label = self.current_encoder_label("Buffer Clear");
+			blit_encoder.setLabel(Some(&label));
+		}
 
 		for buffer_handle in buffer_handles {
 			let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(*buffer_handle));
@@ -993,8 +1015,11 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
-		let label = self.current_encoder_label("Buffer Copy");
-		blit_encoder.setLabel(Some(&label));
+		#[cfg(debug_assertions)]
+		{
+			let label = self.current_encoder_label("Buffer Copy");
+			blit_encoder.setLabel(Some(&label));
+		}
 
 		for copy in copies {
 			let source = self
@@ -1053,8 +1078,11 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
-		let label = self.current_encoder_label("Buffer Image Copy");
-		blit_encoder.setLabel(Some(&label));
+		#[cfg(debug_assertions)]
+		{
+			let label = self.current_encoder_label("Buffer Image Copy");
+			blit_encoder.setLabel(Some(&label));
+		}
 
 		for copy in copies {
 			let source = self
@@ -1205,8 +1233,11 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
-		let label = self.current_encoder_label("Image Buffer Copy");
-		blit_encoder.setLabel(Some(&label));
+		#[cfg(debug_assertions)]
+		{
+			let label = self.current_encoder_label("Image Buffer Copy");
+			blit_encoder.setLabel(Some(&label));
+		}
 
 		for copy in copies {
 			let source_handle = match copy.source {
@@ -1423,6 +1454,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
+		#[cfg(debug_assertions)]
 		blit_encoder.setLabel(Some(&NSString::from_str("Blit Pass")));
 
 		unsafe {
@@ -1470,37 +1502,45 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		self
 	}
 
-	fn start_region(&self, write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
-		let mut label = crate::command_buffer::DebugLabelWriter::new();
-		write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
-		let name = label.as_str();
+	fn start_region(&self, _write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
+		#[cfg(debug_assertions)]
+		let write_label = _write_label;
+		#[cfg(debug_assertions)]
+		{
+			let mut label = crate::command_buffer::DebugLabelWriter::new();
+			write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
+			let name = label.as_str();
 
-		self.debug_regions.borrow_mut().push(name.to_owned());
-		self.command_buffer.pushDebugGroup(&NSString::from_str(name));
+			self.debug_regions.borrow_mut().push(name.to_owned());
+			self.command_buffer.pushDebugGroup(&NSString::from_str(name));
 
-		if let Some(encoder) = self.active_compute_encoder.as_ref() {
-			encoder.pushDebugGroup(&NSString::from_str(name));
+			if let Some(encoder) = self.active_compute_encoder.as_ref() {
+				encoder.pushDebugGroup(&NSString::from_str(name));
+			}
+
+			if let Some(encoder) = self.active_render_encoder.as_ref() {
+				encoder.pushDebugGroup(&NSString::from_str(name));
+			}
+
+			self.refresh_active_encoder_labels();
 		}
-
-		if let Some(encoder) = self.active_render_encoder.as_ref() {
-			encoder.pushDebugGroup(&NSString::from_str(name));
-		}
-
-		self.refresh_active_encoder_labels();
 	}
 
 	fn end_region(&self) {
-		if let Some(encoder) = self.active_compute_encoder.as_ref() {
-			encoder.popDebugGroup();
-		}
+		#[cfg(debug_assertions)]
+		{
+			if let Some(encoder) = self.active_compute_encoder.as_ref() {
+				encoder.popDebugGroup();
+			}
 
-		if let Some(encoder) = self.active_render_encoder.as_ref() {
-			encoder.popDebugGroup();
-		}
+			if let Some(encoder) = self.active_render_encoder.as_ref() {
+				encoder.popDebugGroup();
+			}
 
-		self.command_buffer.popDebugGroup();
-		self.debug_regions.borrow_mut().pop();
-		self.refresh_active_encoder_labels();
+			self.command_buffer.popDebugGroup();
+			self.debug_regions.borrow_mut().pop();
+			self.refresh_active_encoder_labels();
+		}
 	}
 
 	fn region(

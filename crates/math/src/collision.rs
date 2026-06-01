@@ -55,6 +55,7 @@ pub fn sphere_in_frustum(sphere: &Sphere, frustum_planes: &[Plane; 6]) -> bool {
 	true
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Intersection {
 	pub normal: Vector3,
 	pub depth: f32,
@@ -76,12 +77,32 @@ impl Intersection {
 	}
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct DynamicIntersection {
 	pub toi: f32,
+	pub normal: Vector3,
+	pub depth: f32,
 	/// Contact on A in world space coordinates.
 	pub point_on_a: Vector3,
 	/// Contact on B in world space coordinates.
 	pub point_on_b: Vector3,
+}
+
+impl From<DynamicIntersection> for Intersection {
+	fn from(intersection: DynamicIntersection) -> Self {
+		Intersection {
+			normal: intersection.normal,
+			depth: intersection.depth,
+			point_on_a: intersection.point_on_a,
+			point_on_b: intersection.point_on_b,
+		}
+	}
+}
+
+impl PartialOrd for DynamicIntersection {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+		self.toi.partial_cmp(&other.toi)
+	}
 }
 
 pub fn sphere_vs_sphere(sphere_a: &Sphere, sphere_b: &Sphere) -> Option<Intersection> {
@@ -223,7 +244,8 @@ pub fn sphere_vs_cube(sphere_a: &Sphere, cube_b: &Cube) -> Option<Intersection> 
 	})
 }
 
-pub fn ray_vs_sphere(ray_a: &Ray, sphere_b: &Sphere) -> bool {
+/// Returns the intersection times of a ray and a sphere, if one exists.
+pub fn ray_vs_sphere(ray_a: &Ray, sphere_b: &Sphere) -> Option<(f32, f32)> {
 	let m = sphere_b.center - ray_a.origin;
 	let a = dot(ray_a.direction, ray_a.direction);
 	let b = dot(m, ray_a.direction);
@@ -232,16 +254,16 @@ pub fn ray_vs_sphere(ray_a: &Ray, sphere_b: &Sphere) -> bool {
 	let delta = b * b - a * c;
 
 	if delta < 0.0 {
-		return false;
+		return None;
 	}
 
 	let inv_a = 1.0 / a;
 
 	let delta_root = delta.sqrt();
-	let _t1 = inv_a * (b - delta_root);
-	let _t2 = inv_a * (b + delta_root);
+	let t1 = inv_a * (b - delta_root);
+	let t2 = inv_a * (b + delta_root);
 
-	true
+	Some((t1, t2))
 }
 
 pub fn sphere_vs_sphere_dynamic(
@@ -266,15 +288,12 @@ pub fn sphere_vs_sphere_dynamic(
 		}
 	}
 
-	let t0 = 0.0;
-	let t1 = 0.0;
-
-	if !ray_vs_sphere(
+	let Some((t0, t1)) = ray_vs_sphere(
 		&Ray::new(start, ray_dir),
 		&Sphere::new(sphere_b.center, sphere_a.radius + sphere_b.radius),
-	) {
+	) else {
 		return None;
-	}
+	};
 
 	let t0 = t0 * dt;
 	let t1 = t1 * dt;
@@ -293,15 +312,23 @@ pub fn sphere_vs_sphere_dynamic(
 	let new_pos_b = sphere_b.center + b_velocity * toi;
 	let ab = normalize(new_pos_b - new_pos_a);
 
+	let depth = dot(new_pos_a - new_pos_b, ab);
+
+	let normal = if depth > 0.0 { -ab } else { ab };
+
 	Some(DynamicIntersection {
 		toi,
-		point_on_a: new_pos_a + ab * sphere_a.radius,
-		point_on_b: new_pos_b - ab * sphere_b.radius,
+		point_on_a: new_pos_a + normal * sphere_a.radius,
+		point_on_b: new_pos_b - normal * sphere_b.radius,
+		normal,
+		depth,
 	})
 }
 
 #[cfg(test)]
 mod tests {
+	use std::assert_matches;
+
 	use maths_rs::num::Base;
 
 	use super::*;
@@ -389,7 +416,7 @@ mod tests {
 			radius: 1.0,
 		};
 
-		assert!(sphere_vs_sphere(&sphere_a, &sphere_b).is_some());
+		assert_matches!(sphere_vs_sphere(&sphere_a, &sphere_b), Some(_));
 	}
 
 	#[test]
@@ -404,7 +431,7 @@ mod tests {
 			half_size: Vector3::new(1.0, 1.0, 1.0),
 		};
 
-		assert!(cube_vs_cube(&cube_a, &cube_b).is_some());
+		assert_matches!(cube_vs_cube(&cube_a, &cube_b), Some(_));
 	}
 
 	#[test]
@@ -419,7 +446,7 @@ mod tests {
 			half_size: Vector3::new(1.0, 1.0, 1.0),
 		};
 
-		assert!(sphere_vs_cube(&sphere, &cube).is_some());
+		assert_matches!(sphere_vs_cube(&sphere, &cube), Some(_));
 
 		let sphere = Sphere {
 			center: Vector3::new(0.0, 3.0, 0.0),
@@ -431,7 +458,7 @@ mod tests {
 			half_size: Vector3::new(1.0, 1.0, 1.0),
 		};
 
-		assert!(sphere_vs_cube(&sphere, &cube).is_none());
+		assert_matches!(sphere_vs_cube(&sphere, &cube), None);
 	}
 
 	#[test]
@@ -441,13 +468,13 @@ mod tests {
 
 		let result = ray_vs_sphere(&ray, &sphere);
 
-		assert!(result);
+		assert_matches!(result, Some(_));
 
 		let ray = Ray::new(Vector3::zero(), Vector3::new(0.0, 0.0, 1.0));
 		let sphere = Sphere::new(Vector3::new(0.0, 4.0, 10.0), 1.0);
 
 		let result = ray_vs_sphere(&ray, &sphere);
 
-		assert!(!result);
+		assert_matches!(result, None);
 	}
 }

@@ -56,6 +56,7 @@ impl Context {
 
 		let command_buffer = queue.commandBufferWithDescriptor(&descriptor).expect(error_message);
 
+		#[cfg(debug_assertions)]
 		if let Some(label) = label {
 			command_buffer.setLabel(Some(&NSString::from_str(label)));
 		}
@@ -163,7 +164,7 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 	) -> buffer::Buffer {
 		let options = utils::resource_options_from_access(device_accesses);
-		let name = name.map(str::to_owned);
+		let name = crate::debug_name(name);
 		let buffer = self
 			.device
 			.newBufferWithLength_options(size as _, options)
@@ -179,6 +180,7 @@ impl Context {
 			None
 		};
 
+		#[cfg(debug_assertions)]
 		if let Some(name) = name.as_deref() {
 			buffer.setLabel(Some(&NSString::from_str(name)));
 			if let Some(staging) = staging.as_ref() {
@@ -253,7 +255,7 @@ impl Context {
 		device_accesses: crate::DeviceAccesses,
 		array_layers: u32,
 	) -> image::Image {
-		let name = name.map(str::to_owned);
+		let name = crate::debug_name(name);
 
 		let descriptor = build_texture_descriptor(format, extent, resource_uses, device_accesses, array_layers, 1);
 
@@ -262,6 +264,7 @@ impl Context {
 			.newTextureWithDescriptor(&descriptor)
 			.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
 
+		#[cfg(debug_assertions)]
 		if let Some(name) = name.as_deref() {
 			texture.setLabel(Some(&NSString::from_str(name)));
 		}
@@ -372,6 +375,7 @@ impl Context {
 		let blit_encoder = command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
+		#[cfg(debug_assertions)]
 		blit_encoder.setLabel(Some(&NSString::from_str("Texture Upload")));
 
 		let mut source_size = utils::texture_copy_size(format, extent);
@@ -1225,7 +1229,7 @@ impl Context {
 		};
 
 		self.shaders.push(Shader {
-			name: name.map(str::to_owned),
+			name: crate::debug_name(name),
 			stage: stages,
 			shader_binding_descriptors: shader_binding_descriptors.into_iter().collect(),
 			metal_library,
@@ -1692,6 +1696,7 @@ impl Context {
 
 		let raster_pipeline_state = if let Some(mesh_function) = mesh_function.as_ref() {
 			let descriptor = mtl::MTLMeshRenderPipelineDescriptor::new();
+			#[cfg(debug_assertions)]
 			descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
 			unsafe {
 				descriptor.setObjectFunction(object_function.as_ref().map(|function| function.as_ref()));
@@ -1716,6 +1721,7 @@ impl Context {
 				.into()
 		} else if let Some(vertex_function) = vertex_function.as_ref() {
 			let descriptor = mtl::MTLRenderPipelineDescriptor::new();
+			#[cfg(debug_assertions)]
 			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
@@ -1866,7 +1872,7 @@ impl Context {
 	) -> graphics_hardware_interface::CommandBufferHandle {
 		self.command_buffers.push(StoredCommandBuffer {
 			queue_handle,
-			name: name.map(str::to_owned),
+			name: crate::debug_name(name),
 		});
 		graphics_hardware_interface::CommandBufferHandle((self.command_buffers.len() - 1) as u64)
 	}
@@ -2076,6 +2082,7 @@ impl Context {
 		let blit_encoder = command_buffer.blitCommandEncoder().expect(
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
+		#[cfg(debug_assertions)]
 		blit_encoder.setLabel(Some(&NSString::from_str("Buffer Upload")));
 
 		unsafe {

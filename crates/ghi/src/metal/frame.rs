@@ -239,6 +239,7 @@ impl Frame<'_> {
 			let blit_encoder = command_buffer.blitCommandEncoder().expect(
 				"Metal blit command encoder creation failed. The most likely cause is that the command buffer could not start the swapchain resolve pass.",
 			);
+			#[cfg(debug_assertions)]
 			blit_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
 
 			for (present_key, drawable) in &present_drawables {

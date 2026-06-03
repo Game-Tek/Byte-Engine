@@ -1,15 +1,23 @@
 use core::ops::Mul as _;
+use std::time::Duration;
 
 use math::{
-	Base, Magnitude as _, Matrix3, Quaternion, Vector3, collision::{Intersection, cube_vs_cube, sphere_vs_cube, sphere_vs_sphere, sphere_vs_sphere_dynamic}, cross, cube::Cube, dot, length, magnitude, magnitude_squared, mat::{MatInverse as _, MatScale as _, MatTranspose as _}, normalize, sphere::Sphere
+	collision::{cube_vs_cube, sphere_vs_cube, sphere_vs_sphere_dynamic},
+	cross,
+	cube::Cube,
+	dot, length, magnitude, magnitude_squared,
+	mat::{MatInverse as _, MatScale as _, MatTranspose as _},
+	normalize,
+	sphere::Sphere,
+	Base, Magnitude as _, Matrix3, Quaternion, Vector3,
 };
 
 use crate::{
-	application::Time,
-	core::{factory::Handle, listener::Listener, Entity, EntityHandle},
+	core::factory::Handle,
 	physics::{
-		body::{Body, BodyTypes},
-		collider::{Collider, Shapes},
+		body::BodyTypes,
+		collider::Shapes,
+		dynabit::contact::{Contact, Side},
 	},
 };
 
@@ -68,6 +76,11 @@ impl PhysicsBody {
 		}
 	}
 
+	#[inline]
+	pub fn mass(&self) -> f32 {
+		1f32 / self.inv_mass
+	}
+
 	pub fn world_space_center_of_mass(&self) -> Vector3 {
 		self.position + self.orientation.get_matrix() * self.center_of_mass
 	}
@@ -86,8 +99,7 @@ impl PhysicsBody {
 		orientation * inverse * orientation.transpose()
 	}
 
-	pub fn update(&mut self, time: Time) {
-		let dt = time.delta();
+	pub fn update(&mut self, dt: Duration) {
 		let dt = dt.as_secs_f32();
 
 		self.position += self.linear_velocity * dt;
@@ -117,29 +129,85 @@ impl PhysicsBody {
 	}
 }
 
-pub fn intersect(a: &PhysicsBody, b: &PhysicsBody, dt: f32) -> Option<Intersection> {
+pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), dt: f32) -> Option<Contact> {
 	match (a.collision_shape, b.collision_shape) {
-		(Shapes::Sphere { radius: ra }, Shapes::Sphere { radius: rb }) => sphere_vs_sphere_dynamic(
-			&Sphere {
-				center: a.position,
-				radius: ra,
-			},
-			&Sphere {
-				center: b.position,
-				radius: rb,
-			},
-			a.linear_velocity,
-			b.linear_velocity,
-			dt,
-		).map(|intersection| intersection.into()),
+		(Shapes::Sphere { radius: ra }, Shapes::Sphere { radius: rb }) => {
+			let intersection = sphere_vs_sphere_dynamic(
+				&Sphere {
+					center: a.position,
+					radius: ra,
+				},
+				&Sphere {
+					center: b.position,
+					radius: rb,
+				},
+				a.linear_velocity,
+				b.linear_velocity,
+				dt,
+			);
+
+			intersection.map(|e| Contact {
+				a: Side {
+					object: i,
+					point: e.point_on_a,
+				},
+				b: Side {
+					object: j,
+					point: e.point_on_b,
+				},
+				normal: e.normal,
+				depth: e.depth,
+				toi: e.toi,
+			})
+		}
 		(Shapes::Cube { size: sa }, Shapes::Cube { size: sb }) => {
-			cube_vs_cube(&Cube::new(a.position, sa), &Cube::new(b.position, sb))
+			cube_vs_cube(&Cube::new(a.position, sa), &Cube::new(b.position, sb)).map(|e| Contact {
+				a: Side {
+					object: i,
+					point: e.point_on_a,
+				},
+				b: Side {
+					object: j,
+					point: e.point_on_b,
+				},
+				normal: e.normal,
+				depth: e.depth,
+				toi: 0f32, // TODO: is this correct?
+			})
 		}
 		(Shapes::Sphere { radius: ra }, Shapes::Cube { size: sb }) => {
-			sphere_vs_cube(&Sphere::new(a.position, ra), &Cube::new(b.position, sb))
+			sphere_vs_cube(&Sphere::new(a.position, ra), &Cube::new(b.position, sb)).map(|e| Contact {
+				a: Side {
+					object: i,
+					point: e.point_on_a,
+				},
+				b: Side {
+					object: j,
+					point: e.point_on_b,
+				},
+				normal: e.normal,
+				depth: e.depth,
+				toi: 0f32, // TODO: is this correct?
+			})
 		}
 		(Shapes::Cube { size: sa }, Shapes::Sphere { radius: rb }) => {
-			sphere_vs_cube(&Sphere::new(b.position, rb), &Cube::new(a.position, sa)).map(|intersection| intersection.swap())
+			sphere_vs_cube(&Sphere::new(b.position, rb), &Cube::new(a.position, sa))
+				.map(|e| e.swap())
+				.map(|e| Contact {
+					// The broadphase pair order remains cube A, sphere B after swapping only
+					// the contact points returned by the sphere-cube narrowphase.
+					a: Side {
+						object: i,
+						point: e.point_on_a,
+					},
+					b: Side {
+						object: j,
+						point: e.point_on_b,
+					},
+					normal: e.normal,
+					depth: e.depth,
+					toi: 0f32, // TODO: is this correct?
+				})
 		}
 	}
 }
@@ -171,7 +239,7 @@ mod tests {
 			handle: test_handle(),
 		};
 
-		body.update(Time::new(Duration::from_secs(0), Duration::from_secs(1)));
+		body.update(Duration::from_secs(1));
 
 		let expected = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), 1.0);
 		let rotated = body.orientation * Vector3::new(1.0, 0.0, 0.0);

@@ -77,6 +77,43 @@ impl Intersection {
 	}
 }
 
+fn sphere_sphere_intersection_at_time(
+	sphere_a: &Sphere,
+	sphere_b: &Sphere,
+	a_velocity: Vector3,
+	b_velocity: Vector3,
+	toi: f32,
+) -> DynamicIntersection {
+	let new_pos_a = sphere_a.center + a_velocity * toi;
+	let new_pos_b = sphere_b.center + b_velocity * toi;
+	let ab = new_pos_b - new_pos_a;
+	let distance_squared = magnitude_squared(ab);
+
+	// Coincident centers need a stable fallback normal so penetration correction does
+	// not produce NaNs while the solver separates the pair.
+	let (normal, distance) = if distance_squared > 1e-12 {
+		let distance = distance_squared.sqrt();
+		(ab / distance, distance)
+	} else {
+		let relative_velocity = a_velocity - b_velocity;
+		if magnitude_squared(relative_velocity) > 1e-12 {
+			(normalize(relative_velocity), 0.0)
+		} else {
+			(Vector3::new(1.0, 0.0, 0.0), 0.0)
+		}
+	};
+
+	let depth = (sphere_a.radius + sphere_b.radius - distance).max(0.0);
+
+	DynamicIntersection {
+		toi,
+		normal,
+		depth,
+		point_on_a: new_pos_a + normal * sphere_a.radius,
+		point_on_b: new_pos_b - normal * sphere_b.radius,
+	}
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DynamicIntersection {
 	pub toi: f32,
@@ -219,22 +256,68 @@ pub fn sphere_vs_cube(sphere_a: &Sphere, cube_b: &Cube) -> Option<Intersection> 
 		return None;
 	}
 
-	let distance = distance_squared.sqrt();
-	let depth = sphere_a.radius - distance;
-
-	let normal = if distance > 1e-6 {
-		normalize(to_center)
+	let (normal, depth, point_on_b) = if distance_squared > 1e-12 {
+		let distance = distance_squared.sqrt();
+		(normalize(to_center), sphere_a.radius - distance, closest_point_on_cube)
 	} else {
-		let normal = sphere_a.center - cube_b.center;
-		if dot(normal, normal) > 1e-6 {
-			normalize(normal)
+		let distances_to_faces = cube_b.half_size - Vector3::new(delta.x.abs(), delta.y.abs(), delta.z.abs());
+
+		// When the sphere center is inside the AABB, the closest clamped point is the
+		// center itself. Use the nearest face so correction pushes the sphere outside.
+		let axis = if distances_to_faces.y < distances_to_faces.x && distances_to_faces.y <= distances_to_faces.z {
+			1
+		} else if distances_to_faces.z < distances_to_faces.x && distances_to_faces.z < distances_to_faces.y {
+			2
 		} else {
-			Vector3::new(0.0, 1.0, 0.0)
-		}
+			0
+		};
+
+		let sign = match axis {
+			0 => delta.x.signum(),
+			1 => delta.y.signum(),
+			2 => delta.z.signum(),
+			_ => unreachable!(),
+		};
+		let sign = if sign == 0.0 { 1.0 } else { sign };
+
+		let normal = match axis {
+			0 => Vector3::new(sign, 0.0, 0.0),
+			1 => Vector3::new(0.0, sign, 0.0),
+			2 => Vector3::new(0.0, 0.0, sign),
+			_ => unreachable!(),
+		};
+
+		let point_on_b = match axis {
+			0 => Vector3::new(
+				cube_b.center.x + sign * cube_b.half_size.x,
+				sphere_a.center.y,
+				sphere_a.center.z,
+			),
+			1 => Vector3::new(
+				sphere_a.center.x,
+				cube_b.center.y + sign * cube_b.half_size.y,
+				sphere_a.center.z,
+			),
+			2 => Vector3::new(
+				sphere_a.center.x,
+				sphere_a.center.y,
+				cube_b.center.z + sign * cube_b.half_size.z,
+			),
+			_ => unreachable!(),
+		};
+
+		let depth = sphere_a.radius
+			+ match axis {
+				0 => distances_to_faces.x,
+				1 => distances_to_faces.y,
+				2 => distances_to_faces.z,
+				_ => unreachable!(),
+			};
+
+		(normal, depth, point_on_b)
 	};
 
 	let point_on_a = sphere_a.center - normal * sphere_a.radius;
-	let point_on_b = cube_b.center + normal * depth;
 
 	Some(Intersection {
 		normal,
@@ -273,56 +356,43 @@ pub fn sphere_vs_sphere_dynamic(
 	b_velocity: Vector3,
 	dt: f32,
 ) -> Option<DynamicIntersection> {
-	let relative_velocity = b_velocity - a_velocity;
+	let relative_velocity = a_velocity - b_velocity;
+	let ray_dir = relative_velocity * dt;
+	let expanded_radius = sphere_a.radius + sphere_b.radius;
 
-	let start = sphere_a.center;
-	let end = start + relative_velocity * dt;
-	let ray_dir = end - start;
-
+	// With no relative motion, this is just a static overlap at the start of the step.
 	if magnitude_squared(ray_dir) < 0.00001 {
 		let ab = sphere_b.center - sphere_a.center;
-		let radius = sphere_a.radius + sphere_b.radius + 0.00001;
+		let radius = expanded_radius + 0.00001;
 
-		if magnitude_squared(ab) > radius * radius {
-			return None;
-		}
+		return (magnitude_squared(ab) <= radius * radius)
+			.then(|| sphere_sphere_intersection_at_time(sphere_a, sphere_b, a_velocity, b_velocity, 0.0));
 	}
 
 	let Some((t0, t1)) = ray_vs_sphere(
-		&Ray::new(start, ray_dir),
-		&Sphere::new(sphere_b.center, sphere_a.radius + sphere_b.radius),
+		&Ray::new(sphere_a.center, ray_dir),
+		&Sphere::new(sphere_b.center, expanded_radius),
 	) else {
 		return None;
 	};
-
-	let t0 = t0 * dt;
-	let t1 = t1 * dt;
 
 	if t1 < 0.0 {
 		return None;
 	}
 
-	let toi = 0f32.max(t0);
+	let toi_fraction = 0f32.max(t0);
 
-	if toi > dt {
+	if toi_fraction > 1.0 {
 		return None;
 	}
 
-	let new_pos_a = sphere_a.center + a_velocity * toi;
-	let new_pos_b = sphere_b.center + b_velocity * toi;
-	let ab = normalize(new_pos_b - new_pos_a);
-
-	let depth = dot(new_pos_a - new_pos_b, ab);
-
-	let normal = if depth > 0.0 { -ab } else { ab };
-
-	Some(DynamicIntersection {
-		toi,
-		point_on_a: new_pos_a + normal * sphere_a.radius,
-		point_on_b: new_pos_b - normal * sphere_b.radius,
-		normal,
-		depth,
-	})
+	Some(sphere_sphere_intersection_at_time(
+		sphere_a,
+		sphere_b,
+		a_velocity,
+		b_velocity,
+		toi_fraction * dt,
+	))
 }
 
 #[cfg(test)]
@@ -459,6 +529,60 @@ mod tests {
 		};
 
 		assert_matches!(sphere_vs_cube(&sphere, &cube), None);
+	}
+
+	#[test]
+	fn sphere_vs_cube_uses_closest_cube_surface_point() {
+		let sphere = Sphere::new(Vector3::new(0.0, 0.9, 0.0), 0.5);
+		let cube = Cube::new(Vector3::zero(), Vector3::new(0.5, 0.5, 0.5));
+
+		let intersection = sphere_vs_cube(&sphere, &cube).unwrap();
+
+		assert_eq!(intersection.point_on_b, Vector3::new(0.0, 0.5, 0.0));
+		assert!((intersection.depth - 0.1).abs() < 1e-6);
+	}
+
+	#[test]
+	fn sphere_vs_cube_pushes_out_from_nearest_face_when_center_is_inside() {
+		let sphere = Sphere::new(Vector3::new(0.0, 0.49, 0.0), 0.5);
+		let cube = Cube::new(Vector3::zero(), Vector3::new(0.5, 0.5, 0.5));
+
+		let intersection = sphere_vs_cube(&sphere, &cube).unwrap();
+
+		assert_eq!(intersection.normal, Vector3::new(0.0, 1.0, 0.0));
+		assert_eq!(intersection.point_on_b, Vector3::new(0.0, 0.5, 0.0));
+		assert!((intersection.depth - 0.51).abs() < 1e-6);
+	}
+
+	#[test]
+	fn sphere_vs_sphere_dynamic_detects_approaching_spheres_before_overlap() {
+		let sphere_a = Sphere::new(Vector3::new(0.0, 0.0, 0.0), 1.0);
+		let sphere_b = Sphere::new(Vector3::new(4.0, 0.0, 0.0), 1.0);
+
+		let intersection = sphere_vs_sphere_dynamic(
+			&sphere_a,
+			&sphere_b,
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(-1.0, 0.0, 0.0),
+			2.0,
+		)
+		.unwrap();
+
+		assert!((intersection.toi - 1.0).abs() < 1e-6);
+		assert!(intersection.depth <= 1e-6);
+		assert_eq!(intersection.normal, Vector3::new(1.0, 0.0, 0.0));
+	}
+
+	#[test]
+	fn sphere_vs_sphere_dynamic_reports_positive_depth_for_initial_overlap() {
+		let sphere_a = Sphere::new(Vector3::new(0.0, 0.0, 0.0), 1.0);
+		let sphere_b = Sphere::new(Vector3::new(1.5, 0.0, 0.0), 1.0);
+
+		let intersection = sphere_vs_sphere_dynamic(&sphere_a, &sphere_b, Vector3::zero(), Vector3::zero(), 1.0).unwrap();
+
+		assert_eq!(intersection.toi, 0.0);
+		assert!((intersection.depth - 0.5).abs() < 1e-6);
+		assert_eq!(intersection.normal, Vector3::new(1.0, 0.0, 0.0));
 	}
 
 	#[test]

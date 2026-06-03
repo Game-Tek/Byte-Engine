@@ -63,14 +63,15 @@ impl World {
 			}
 		}
 
-		self.update_velocities(time);
-		self.update_collisions(time);
-		self.update_bodies(time, transforms_tx);
+		let dt = time.delta();
+
+		self.update_velocities(dt);
+		let dt = dt - self.update_collisions(dt);
+		self.update_bodies(dt, transforms_tx);
 	}
 
 	/// Applies all initial impulses to bodies based on forces.
-	pub fn update_velocities(&mut self, time: Time) {
-		let dt = time.delta();
+	pub fn update_velocities(&mut self, dt: Duration) {
 		let dt = dt.as_secs_f32();
 
 		for body in self.bodies.iter_mut() {
@@ -78,7 +79,7 @@ impl World {
 				BodyTypes::Dynamic => {
 					let forces = self.gravity;
 
-					let mass = 1f32 / body.inv_mass;
+					let mass = body.mass();
 
 					let impulse = forces * mass * dt;
 
@@ -90,26 +91,41 @@ impl World {
 	}
 
 	/// Calculates and solves collisions.
-	pub fn update_collisions(&mut self, time: Time) {
-		let contacts = self.detect_collisions(time);
+	pub fn update_collisions(&mut self, dt: Duration) -> Duration {
+		let mut contacts = self.detect_collisions(dt);
+
+		contacts.sort(); // Sort contacts by time of impact
+
+		let mut accumulated_time = Duration::ZERO;
+
 		for contact in &contacts {
+			let contact_time = Duration::from_secs_f32(contact.toi.max(0.0));
+			let dt = contact_time.saturating_sub(accumulated_time);
+
+			// Contacts from dynamic detection are expressed at their time of impact, so
+			// bodies must be advanced before impulses are applied at those points.
+			for body in self.bodies.iter_mut() {
+				body.update(dt);
+			}
+
 			self.resolve_contact(contact);
+
+			accumulated_time += dt;
 		}
+
+		accumulated_time
 	}
 
-	fn detect_collisions(&self, time: Time) -> Vec<Contact> {
-		detect_collisions_for_bodies(&self.bodies, time.delta().as_secs_f32())
+	fn detect_collisions(&self, dt: Duration) -> Vec<Contact> {
+		detect_collisions_for_bodies(&self.bodies, dt.as_secs_f32())
 	}
 
 	/// Updates bodies' positions and orientation based on their velocities.
-	pub fn update_bodies(&mut self, time: Time, transforms_tx: &mut impl Channel<TransformationUpdate>) {
-		let dt = time.delta();
-		let dt = dt.as_secs_f32();
-
+	pub fn update_bodies(&mut self, dt: Duration, transforms_tx: &mut impl Channel<TransformationUpdate>) {
 		for body in self.bodies.iter_mut() {
 			match body.body_type {
 				BodyTypes::Dynamic => {
-					body.update(time);
+					body.update(dt);
 
 					transforms_tx.send(TransformationUpdate::new(
 						body.handle,
@@ -125,12 +141,8 @@ impl World {
 		let a_index = contact.a.object;
 		let b_index = contact.b.object;
 
-		let Some(a) = self.bodies.get(a_index).cloned() else {
-			return;
-		};
-		let Some(b) = self.bodies.get(b_index).cloned() else {
-			return;
-		};
+		let a = self.bodies.get(a_index).cloned().unwrap();
+		let b = self.bodies.get(b_index).cloned().unwrap();
 
 		let a_point = contact.a.point;
 		let b_point = contact.b.point;
@@ -204,17 +216,21 @@ impl World {
 			b.apply_impulse(b_point, impulse_friction);
 		}
 
-		let separation = n * contact.depth;
-		//let separation = b_point - a_point; // Book suggests this way but it causes orbiting around the world center
-		let t_a = a_inv_mass / inv_mass_sum;
-		let t_b = b_inv_mass / inv_mass_sum;
+		if contact.toi == 0f32 {
+			let separation = n * contact.depth;
 
-		if let Some(a) = self.bodies.get_mut(a_index) {
-			a.position -= separation * t_a;
-		}
+			//let separation = b_point - a_point; // Book suggests this way but it causes orbiting around the world center
 
-		if let Some(b) = self.bodies.get_mut(b_index) {
-			b.position += separation * t_b;
+			let t_a = a_inv_mass / inv_mass_sum;
+			let t_b = b_inv_mass / inv_mass_sum;
+
+			if let Some(a) = self.bodies.get_mut(a_index) {
+				a.position -= separation * t_a;
+			}
+
+			if let Some(b) = self.bodies.get_mut(b_index) {
+				b.position += separation * t_b;
+			}
 		}
 	}
 
@@ -257,26 +273,15 @@ impl World {
 
 /// Detects intersections and builds contact data for each unique body pair.
 fn detect_collisions_for_bodies(bodies: &StableVec<PhysicsBody>, dt: f32) -> Vec<Contact> {
-	let mut contacts = Vec::new();
+	let mut contacts = Vec::with_capacity((bodies.len() as f32 * 16f32).sqrt() as usize); // Arbitrary heuristic
 
 	for (i, a) in bodies.indexed_iter() {
 		for (j, b) in bodies.indexed_iter().filter(|(j, _)| *j > i) {
-			let Some(intersection) = intersect(a, b, dt) else {
+			let Some(contact) = intersect((a, i), (b, j), dt) else {
 				continue;
 			};
 
-			contacts.push(Contact {
-				normal: intersection.normal,
-				depth: intersection.depth,
-				a: Side {
-					object: i,
-					point: intersection.point_on_a,
-				},
-				b: Side {
-					object: j,
-					point: intersection.point_on_b,
-				},
-			});
+			contacts.push(contact);
 		}
 	}
 
@@ -314,13 +319,17 @@ mod tests {
 	}
 
 	fn make_sphere_body() -> PhysicsBody {
+		make_dynamic_sphere_body(Vector3::new(0.0, 1.4, 0.0), Vector3::zero(), 0.5)
+	}
+
+	fn make_dynamic_sphere_body(position: Vector3, linear_velocity: Vector3, radius: f32) -> PhysicsBody {
 		PhysicsBody {
 			body_type: BodyTypes::Dynamic,
-			collision_shape: Shapes::Sphere { radius: 0.5 },
-			position: Vector3::new(0.0, 1.4, 0.0),
+			collision_shape: Shapes::Sphere { radius },
+			position,
 			orientation: Quaternion::identity(),
 			acceleration: Vector3::zero(),
-			linear_velocity: Vector3::zero(),
+			linear_velocity,
 			angular_velocity: Vector3::zero(),
 			inv_mass: 1.0,
 			center_of_mass: Vector3::zero(),
@@ -342,7 +351,7 @@ mod tests {
 		assert_eq!(contacts.len(), 1);
 		world.resolve_contact(&contacts[0]);
 
-		intersect(&world.bodies[0], &world.bodies[1], dt).map_or(0.0, |intersection| intersection.depth)
+		intersect((&world.bodies[0], 0), (&world.bodies[1], 1), dt).map_or(0.0, |intersection| intersection.depth)
 	}
 
 	#[test]
@@ -362,9 +371,31 @@ mod tests {
 		assert!(depth_when_ground_first <= 1e-4);
 		assert!(depth_when_sphere_first <= 1e-4);
 	}
+
+	#[test]
+	fn resolves_overlapping_spheres_without_deepening_penetration() {
+		let body_factory = Factory::<EntityHandle<dyn Body>>::new();
+		let listener = body_factory.listener();
+		let delete_channel = DefaultChannel::new();
+		let delete_listener = delete_channel.listener();
+		let mut world = World::new(listener, delete_listener);
+		world.bodies = vec![
+			make_dynamic_sphere_body(Vector3::new(0.0, 0.0, 0.0), Vector3::new(-1.0, 0.0, 0.0), 1.0),
+			make_dynamic_sphere_body(Vector3::new(1.5, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0), 1.0),
+		]
+		.into_iter()
+		.collect();
+
+		let contacts = detect_collisions_for_bodies(&world.bodies, 1.0);
+		assert_eq!(contacts.len(), 1);
+		world.resolve_contact(&contacts[0]);
+
+		let separation = length(world.bodies[1].position - world.bodies[0].position);
+		assert!(separation >= 2.0 - 1e-4);
+	}
 }
 
-use std::ops::Deref;
+use std::{ops::Deref, time::Duration};
 
 use math::{
 	collision::{cube_vs_cube, sphere_vs_sphere, Intersection},

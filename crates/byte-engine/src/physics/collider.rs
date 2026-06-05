@@ -113,8 +113,15 @@ impl Shapes {
 			}
 		}
 	}
+
+	pub fn bounds(&self) -> Bounds {
+		match self {
+			Self::Sphere { radius } => Bounds::new(Vector3::from(-*radius), Vector3::from(*radius)),
+			Self::Cube { size: half_size } => Bounds::new(-*half_size, *half_size),
+		}
+	}
 }
 
 use math::{magnitude_squared, mat::MatNew3 as _, Base as _, Matrix3, Vector3};
 
-use crate::space::Positionable;
+use crate::{physics::bounds::Bounds, space::Positionable};

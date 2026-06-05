@@ -66,6 +66,7 @@ impl World {
 		let dt = time.delta();
 
 		self.update_velocities(dt);
+
 		let dt = dt - self.update_collisions(dt);
 		self.update_bodies(dt, transforms_tx);
 	}
@@ -92,7 +93,14 @@ impl World {
 
 	/// Calculates and solves collisions.
 	pub fn update_collisions(&mut self, dt: Duration) -> Duration {
-		let mut contacts = self.detect_collisions(dt);
+		let use_broadphase = true;
+
+		let mut contacts = if use_broadphase {
+			let broadphase = broadphase(self.bodies.indexed_iter(), dt.as_secs_f32());
+			self.detect_collisions_from_pairs(&broadphase, dt.as_secs_f32())
+		} else {
+			self.detect_collisions(dt)
+		};
 
 		contacts.sort(); // Sort contacts by time of impact
 
@@ -116,8 +124,15 @@ impl World {
 		accumulated_time
 	}
 
+	/// Brute-force collision detection for all bodies in the world.
 	fn detect_collisions(&self, dt: Duration) -> Vec<Contact> {
 		detect_collisions_for_bodies(&self.bodies, dt.as_secs_f32())
+	}
+
+	/// Collision detection for a subset of body pairs.
+	fn detect_collisions_from_pairs(&self, pairs: &[Pair], dt: f32) -> Vec<Contact> {
+		let pairs = pairs.iter().map(|p| ((p.a, &self.bodies[p.a]), (p.b, &self.bodies[p.b])));
+		detect_collisions_for_body_pairs(pairs, dt)
 	}
 
 	/// Updates bodies' positions and orientation based on their velocities.
@@ -273,17 +288,27 @@ impl World {
 
 /// Detects intersections and builds contact data for each unique body pair.
 fn detect_collisions_for_bodies(bodies: &StableVec<PhysicsBody>, dt: f32) -> Vec<Contact> {
-	let mut contacts = Vec::with_capacity((bodies.len() as f32 * 16f32).sqrt() as usize); // Arbitrary heuristic
+	let iter = bodies.iter().enumerate().flat_map(|(i, a)| {
+		bodies
+			.iter()
+			.enumerate()
+			.filter(move |(j, _)| *j > i)
+			.map(move |(j, b)| ((i, a), (j, b)))
+	});
 
-	for (i, a) in bodies.indexed_iter() {
-		for (j, b) in bodies.indexed_iter().filter(|(j, _)| *j > i) {
-			let Some(contact) = intersect((a, i), (b, j), dt) else {
-				continue;
-			};
+	detect_collisions_for_body_pairs(iter, dt)
+}
 
-			contacts.push(contact);
-		}
-	}
+/// Detects intersections and builds contact data for each unique body pair.
+fn detect_collisions_for_body_pairs<'a>(
+	pairs: impl Iterator<Item = ((usize, &'a PhysicsBody), (usize, &'a PhysicsBody))>,
+	dt: f32,
+) -> Vec<Contact> {
+	let mut contacts = Vec::with_capacity((pairs.size_hint().0 as f32 * 16f32).sqrt() as usize); // Arbitrary heuristic
+
+	pairs
+		.filter_map(|((i, a), (j, b))| intersect((a, i), (b, j), dt))
+		.collect_into(&mut contacts);
 
 	contacts
 }
@@ -427,7 +452,8 @@ use crate::{
 		collider::{Collider, Shapes},
 		dynabit::{
 			body::{intersect, PhysicsBody},
-			contact::{Contact, Side},
+			contact::{Contact, Pair, Side},
 		},
+		intersection::broadphase,
 	},
 };

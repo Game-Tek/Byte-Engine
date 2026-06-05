@@ -36,3 +36,22 @@ pub struct Side {
 	/// The point in the world where the contact ocurred.
 	pub(crate) point: Vector3,
 }
+
+pub struct Pair {
+	pub a: usize,
+	pub b: usize,
+}
+
+impl Pair {
+	pub fn new(a: usize, b: usize) -> Self {
+		Self { a, b }
+	}
+}
+
+impl Eq for Pair {}
+
+impl PartialEq for Pair {
+	fn eq(&self, other: &Self) -> bool {
+		self.a == other.a && self.b == other.b || self.a == other.b && self.b == other.a
+	}
+}

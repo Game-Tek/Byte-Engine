@@ -1,4 +1,5 @@
 pub mod body;
+pub mod bounds;
 pub mod collider;
 pub mod intersection;
 

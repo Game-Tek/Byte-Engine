@@ -16,6 +16,7 @@ use crate::{
 	core::factory::Handle,
 	physics::{
 		body::BodyTypes,
+		bounds::Bounds,
 		collider::Shapes,
 		dynabit::contact::{Contact, Side},
 	},
@@ -126,6 +127,10 @@ impl PhysicsBody {
 		self.orientation = Quaternion::normalize(dq * self.orientation);
 
 		self.position = world_space_center_of_mass + dq * delta;
+	}
+
+	pub fn bounds(&self) -> Bounds {
+		self.collision_shape.bounds() + self.position // TODO: adjust by orientation
 	}
 }
 

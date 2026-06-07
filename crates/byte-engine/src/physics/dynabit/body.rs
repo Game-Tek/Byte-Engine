@@ -135,16 +135,16 @@ impl PhysicsBody {
 }
 
 pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), dt: f32) -> Option<Contact> {
-	match (a.collision_shape, b.collision_shape) {
+	match (&a.collision_shape, &b.collision_shape) {
 		(Shapes::Sphere { radius: ra }, Shapes::Sphere { radius: rb }) => {
 			let intersection = sphere_vs_sphere_dynamic(
 				&Sphere {
 					center: a.position,
-					radius: ra,
+					radius: *ra,
 				},
 				&Sphere {
 					center: b.position,
-					radius: rb,
+					radius: *rb,
 				},
 				a.linear_velocity,
 				b.linear_velocity,
@@ -166,7 +166,7 @@ pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), d
 			})
 		}
 		(Shapes::Cube { size: sa }, Shapes::Cube { size: sb }) => {
-			cube_vs_cube(&Cube::new(a.position, sa), &Cube::new(b.position, sb)).map(|e| Contact {
+			cube_vs_cube(&Cube::new(a.position, *sa), &Cube::new(b.position, *sb)).map(|e| Contact {
 				a: Side {
 					object: i,
 					point: e.point_on_a,
@@ -181,7 +181,7 @@ pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), d
 			})
 		}
 		(Shapes::Sphere { radius: ra }, Shapes::Cube { size: sb }) => {
-			sphere_vs_cube(&Sphere::new(a.position, ra), &Cube::new(b.position, sb)).map(|e| Contact {
+			sphere_vs_cube(&Sphere::new(a.position, *ra), &Cube::new(b.position, *sb)).map(|e| Contact {
 				a: Side {
 					object: i,
 					point: e.point_on_a,
@@ -196,7 +196,7 @@ pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), d
 			})
 		}
 		(Shapes::Cube { size: sa }, Shapes::Sphere { radius: rb }) => {
-			sphere_vs_cube(&Sphere::new(b.position, rb), &Cube::new(a.position, sa))
+			sphere_vs_cube(&Sphere::new(b.position, *rb), &Cube::new(a.position, *sa))
 				.map(|e| e.swap())
 				.map(|e| Contact {
 					// The broadphase pair order remains cube A, sphere B after swapping only
@@ -214,6 +214,7 @@ pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), d
 					toi: 0f32, // TODO: is this correct?
 				})
 		}
+		(Shapes::ConvexHull { .. }, _) | (_, Shapes::ConvexHull { .. }) => None,
 	}
 }
 

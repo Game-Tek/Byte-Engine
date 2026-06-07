@@ -117,7 +117,7 @@ impl Transformable for Object {
 
 impl Collider for Object {
 	fn shape(&self) -> Shapes {
-		self.collider
+		self.collider.clone()
 	}
 
 	fn friction(&self) -> f32 {

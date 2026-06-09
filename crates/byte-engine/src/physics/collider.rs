@@ -345,6 +345,98 @@ pub fn build_tetrahedron(verts: impl Iterator<Item = Vector3> + Clone) -> Option
 	Some((tetrahedron_vertices, tetrahedron_triangles))
 }
 
+pub fn expand_convex_hull(hull_vertices: &mut Vec<Vector3>, hull_triangles: &mut Vec<(usize, usize, usize)>, vertices: &Vec<Vector3>) {
+	let mut external_vertices = vertices.clone();
+
+	remove_internal_points(hull_vertices, hull_triangles, &mut external_vertices);
+
+	while !external_vertices.is_empty() {
+		let idx = furthest_point_in_direction(external_vertices.iter().map(|e| *e), external_vertices[0]);
+
+		let pt = external_vertices[idx.unwrap()];
+
+		external_vertices.remove(idx);
+
+		add_points(hull_vertices, hull_triangles, pt);
+
+		remove_internal_points(hull_vertices, hull_triangles, &mut external_vertices);
+	}
+
+	remove_unreferenced_vertices(hull_vertices, hull_triangles);
+}
+
+pub fn remove_internal_points(hull_vertices: &[Vector3], hull_triangles: &[(usize, usize, usize)], check_points: &mut Vec<Vector3>) {
+	check_points.retain(|&pt| {
+		for &(a, b, c) in hull_triangles {
+			let (a, b, c) = (
+				hull_vertices[a],
+				hull_vertices[b],
+				hull_vertices[c]
+			);
+
+			let distance = distance_from_triangle(a, b, c, pt);
+
+			if distance > 0.0 {
+				return true;
+			}
+		}
+
+		// TODO: cull points close to the surface
+
+		false
+	});
+}
+
+pub fn is_edge_unique(triangles: &[(usize, usize, usize)], facing_tris: &[usize], ignore_tri: usize, edge: (usize, usize)) -> bool {
+	for &tri_idx in facing_tris {
+		if tri_idx == ignore_tri {
+			continue;
+		}
+
+		let (a, b, c) = triangles[tri_idx];
+
+		let ab = (a, b);
+		let bc = (b, c);
+		let ca = (c, a);
+
+		if ab == edge || bc == edge || ca == edge {
+			return false;
+		}
+	}
+
+	true
+}
+
+pub fn add_point_to_hull(hull_vertices: &mut Vec<Vector3>, hull_triangles: &mut Vec<(usize, usize, usize)>, point: Vector3) {
+	let facing_tris: Vec<usize> = hull_triangles.iter().enumerate().rev().filter_map(|(idx, &(a, b, c))| {
+		let a = hull_vertices[a];
+		let b = hull_vertices[b];
+		let c = hull_vertices[c];
+
+		if distance_from_triangle(a, b, c, point) > 0f32 {
+			Some(idx)
+		} else {
+			None
+		}
+	}).collect();
+
+	let unique_edges: Vec<(usize, usize)> = facing_tris.iter().filter_map(|&idx| {
+		let (a, b, c) = hull_triangles[idx];
+
+		let ab = (a, b);
+		let bc = (b, c);
+		let ca = (c, a);
+
+		todo!()
+	}).collect();
+
+	// TODO: remove old facing tris
+
+	// TODO: add new point
+
+	// TODO: add triangles for each unique edge
+}
+
 use math::{cross, dot, length, magnitude, magnitude_squared, mat::MatNew3 as _, Base as _, Matrix3, Vector3};
 
 use crate::{physics::bounds::Bounds, space::Positionable};

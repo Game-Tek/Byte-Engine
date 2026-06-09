@@ -1,7 +1,7 @@
 use super::utils::RGBA;
 use crate::core::factory::Handle;
 
-mod gamepad;
+pub(crate) mod gamepad;
 pub mod input_manager;
 
 pub mod action;

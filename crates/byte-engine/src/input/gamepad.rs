@@ -4,7 +4,7 @@ use std::{
 };
 
 use hidapi::{HidApi, HidDevice};
-use log::warn;
+use log::{debug, warn};
 use math::Vector2;
 
 use super::{input_manager::TriggerReference, DeviceHandle, Value};
@@ -67,20 +67,22 @@ impl Default for GamepadState {
 	}
 }
 
-pub(super) enum GamepadKind {
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GamepadKind {
 	DualShock4,
 	DualSense,
+	GenericJoystick,
 	Xbox,
 }
 
-pub(super) struct GamepadSystem {
+pub(crate) struct GamepadSystem {
 	api: HidApi,
 	devices: HashMap<String, GamepadDevice>,
 	last_refresh: Instant,
 }
 
 impl GamepadSystem {
-	pub(super) fn new() -> Result<Self, String> {
+	pub(crate) fn new() -> Result<Self, String> {
 		let api = HidApi::new().map_err(|e| {
 			format!(
 				"Failed to initialize HID API. The most likely cause is that the system HID backend is unavailable: {}",
@@ -95,7 +97,7 @@ impl GamepadSystem {
 		})
 	}
 
-	pub(super) fn poll(&mut self) -> (Vec<(String, GamepadKind, HidDevice)>, Vec<GamepadEvent>) {
+	pub(crate) fn poll(&mut self) -> (Vec<(String, GamepadKind, HidDevice)>, Vec<GamepadEvent>) {
 		let new_devices = self.refresh_devices();
 		let mut events = Vec::new();
 
@@ -104,6 +106,10 @@ impl GamepadSystem {
 		}
 
 		(new_devices, events)
+	}
+
+	pub(crate) fn add_device(&mut self, path: String, kind: GamepadKind, device: HidDevice, device_handle: DeviceHandle) {
+		self.devices.insert(path, GamepadDevice::new(kind, device, device_handle));
 	}
 
 	fn refresh_devices(&mut self) -> Vec<(String, GamepadKind, HidDevice)> {
@@ -129,6 +135,8 @@ impl GamepadSystem {
 				device_info.vendor_id(),
 				device_info.product_id(),
 				device_info.product_string(),
+				device_info.usage_page(),
+				device_info.usage(),
 			) {
 				Some(kind) => kind,
 				None => continue,
@@ -158,6 +166,16 @@ impl GamepadSystem {
 					error
 				);
 			}
+
+			debug!(
+				target: "byte_engine::input::events",
+				"Detected HID gamepad: path={}, kind={:?}, vendor={:#06x}, product={:#06x}, name={}",
+				path,
+				kind,
+				device_info.vendor_id(),
+				device_info.product_id(),
+				device_info.product_string().unwrap_or("<unknown>")
+			);
 
 			new_devices.push((path, kind, device));
 		}
@@ -202,6 +220,7 @@ impl GamepadDevice {
 			let state = match self.kind {
 				GamepadKind::DualShock4 => parse_dualshock4(report),
 				GamepadKind::DualSense => parse_dualsense(report),
+				GamepadKind::GenericJoystick => parse_generic_joystick(report),
 				GamepadKind::Xbox => parse_xbox(report),
 			};
 
@@ -269,7 +288,7 @@ impl GamepadDevice {
 	}
 }
 
-pub(super) struct GamepadEvent {
+pub(crate) struct GamepadEvent {
 	device_handle: DeviceHandle,
 	trigger: TriggerReference,
 	value: Value,
@@ -283,9 +302,27 @@ impl GamepadEvent {
 			value,
 		}
 	}
+
+	pub(crate) fn device_handle(&self) -> DeviceHandle {
+		self.device_handle
+	}
+
+	pub(crate) fn trigger(&self) -> TriggerReference {
+		self.trigger
+	}
+
+	pub(crate) fn value(&self) -> Value {
+		self.value
+	}
 }
 
-fn classify_gamepad(vendor_id: u16, product_id: u16, product_string: Option<&str>) -> Option<GamepadKind> {
+fn classify_gamepad(
+	vendor_id: u16,
+	product_id: u16,
+	product_string: Option<&str>,
+	usage_page: u16,
+	usage: u16,
+) -> Option<GamepadKind> {
 	match vendor_id {
 		0x054C => match product_id {
 			0x05C4 | 0x09CC | 0x0BA0 | 0x0E5F => Some(GamepadKind::DualShock4),
@@ -297,6 +334,8 @@ fn classify_gamepad(vendor_id: u16, product_id: u16, product_string: Option<&str
 			let product = product_string.unwrap_or_default().to_lowercase();
 			if product.contains("xbox") {
 				Some(GamepadKind::Xbox)
+			} else if product.contains("joystick") || (usage_page == 0x01 && usage == 0x04) {
+				Some(GamepadKind::GenericJoystick)
 			} else {
 				None
 			}
@@ -382,6 +421,85 @@ fn parse_dualshock4(report: &[u8]) -> Option<GamepadState> {
 		right_stick,
 		left_trigger,
 		right_trigger,
+		buttons: mask,
+	})
+}
+
+fn parse_generic_joystick(report: &[u8]) -> Option<GamepadState> {
+	let report = match report {
+		[report_id @ 1..=15, rest @ ..] if rest.len() >= 6 => {
+			debug!(target: "byte_engine::input::events", "Parsing generic joystick report id: {}", report_id);
+			rest
+		}
+		_ => report,
+	};
+
+	if report.len() < 5 {
+		debug!(
+			target: "byte_engine::input::events",
+			"Ignoring generic joystick report with unsupported size: {}",
+			report.len()
+		);
+		return None;
+	}
+
+	let left_stick = Vector2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
+	let right_stick = if report.len() >= 6 {
+		Vector2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]))
+	} else {
+		Vector2::new(0.0, 0.0)
+	};
+
+	let button_offset = if report.len() >= 6 { 4 } else { 2 };
+	let raw_buttons = u16::from_le_bytes([
+		report[button_offset],
+		report.get(button_offset + 1).copied().unwrap_or_default(),
+	]);
+	let mut mask = 0u32;
+
+	// Generic USB joysticks usually expose a packed button bitfield. Map the first
+	// common buttons to the engine's standard gamepad layout.
+	for (index, engine_mask) in [
+		BUTTON_A,
+		BUTTON_B,
+		BUTTON_X,
+		BUTTON_Y,
+		BUTTON_LEFT_BUMPER,
+		BUTTON_RIGHT_BUMPER,
+		BUTTON_SELECT,
+		BUTTON_START,
+		BUTTON_LEFT_STICK,
+		BUTTON_RIGHT_STICK,
+		BUTTON_GUIDE,
+	]
+	.iter()
+	.enumerate()
+	{
+		if raw_buttons & (1 << index) != 0 {
+			mask |= *engine_mask;
+		}
+	}
+
+	if let Some(hat) = report.get(button_offset + 2).map(|v| v & 0x0F) {
+		if hat == 0 || hat == 1 || hat == 7 {
+			mask |= BUTTON_DPAD_UP;
+		}
+		if hat == 2 || hat == 1 || hat == 3 {
+			mask |= BUTTON_DPAD_RIGHT;
+		}
+		if hat == 4 || hat == 3 || hat == 5 {
+			mask |= BUTTON_DPAD_DOWN;
+		}
+		if hat == 6 || hat == 5 || hat == 7 {
+			mask |= BUTTON_DPAD_LEFT;
+		}
+	}
+
+	Some(GamepadState {
+		left_stick,
+		right_stick,
+		left_trigger: 0.0,
+		right_trigger: 0.0,
 		buttons: mask,
 	})
 }

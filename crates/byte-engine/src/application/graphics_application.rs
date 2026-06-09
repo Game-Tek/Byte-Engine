@@ -30,6 +30,8 @@ pub struct GraphicsApplication {
 	world: DefaultWorld,
 
 	input_system: input::InputManager,
+	gamepad_system: Option<input::gamepad::GamepadSystem>,
+	gamepad_device_class_handle: Option<input::device_class::DeviceClassHandle>,
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
 
@@ -68,6 +70,9 @@ impl Application for GraphicsApplication {
 
 			input::InputManager::new(action_listener, event_channel)
 		};
+		let gamepad_system = input::gamepad::GamepadSystem::new()
+			.map_err(|error| log::warn!("{}", error))
+			.ok();
 
 		let renderer = rendering::renderer::Renderer::new(&application);
 
@@ -111,6 +116,8 @@ impl Application for GraphicsApplication {
 			world,
 
 			input_system,
+			gamepad_system,
+			gamepad_device_class_handle: None,
 			renderer,
 			resource_manager: EntityHandle::from(resource_manager),
 
@@ -193,6 +200,43 @@ impl GraphicsApplication {
 					Events::Close => {
 						close = true;
 					}
+				}
+			}
+		}
+
+		{
+			let span = debug_span!("GraphicsApplication::process_gamepad_events");
+			let _enter = span.enter();
+			if let Some(gamepad_system) = &mut self.gamepad_system {
+				let (new_devices, events) = gamepad_system.poll();
+
+				if let Some(gamepad_device_class_handle) = self.gamepad_device_class_handle {
+					for (path, kind, device) in new_devices {
+						// Each physical HID device gets its own input-system device so actions can
+						// preserve player/device identity instead of collapsing into one gamepad.
+						let device_handle = self.input_system.create_device(&gamepad_device_class_handle);
+						gamepad_system.add_device(path, kind, device, device_handle);
+					}
+				} else if !new_devices.is_empty() {
+					log::warn!(
+						"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called."
+					);
+				}
+
+				for event in events {
+					log::debug!(
+						target: "byte_engine::input::events",
+						"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
+						event.device_handle(),
+						event.trigger(),
+						event.value()
+					);
+					self.input_system.record_trigger_value_for_device(
+						input::SeatHandle::stub(),
+						event.device_handle(),
+						event.trigger(),
+						event.value(),
+					);
 				}
 			}
 		}
@@ -460,6 +504,7 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 	let mouse_device_class_handle = register_mouse_device_class(input_system);
 	let keyboard_device_class_handle = register_keyboard_device_class(input_system);
 	let gamepad_device_class_handle = register_gamepad_device_class(input_system);
+	application.gamepad_device_class_handle = Some(gamepad_device_class_handle);
 
 	input_system.create_device(&mouse_device_class_handle);
 	input_system.create_device(&keyboard_device_class_handle);

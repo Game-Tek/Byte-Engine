@@ -220,6 +220,19 @@ pub fn highest_point_speed(
 /// Finds the point furthest from the given line along the given direction.
 ///
 /// Returns `None` if the iterator is empty.
+pub fn find_furthest_point_in_direction(points: impl Iterator<Item = (usize, Vector3)>, direction: Vector3) -> Option<usize> {
+	points
+		.max_by(|&(_, a), &(_, b)| {
+			let da = dot(a, direction);
+			let db = dot(b, direction);
+			da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+		})
+		.map(|(i, _)| i)
+}
+
+/// Finds the point furthest from the given line along the given direction.
+///
+/// Returns `None` if the iterator is empty.
 pub fn furthest_point_in_direction(points: impl Iterator<Item = Vector3>, direction: Vector3) -> Option<Vector3> {
 	points.max_by(|&a, &b| {
 		let da = dot(a, direction);
@@ -348,20 +361,24 @@ pub fn build_tetrahedron(verts: impl Iterator<Item = Vector3> + Clone) -> Option
 pub fn expand_convex_hull(
 	hull_vertices: &mut Vec<Vector3>,
 	hull_triangles: &mut Vec<(usize, usize, usize)>,
-	vertices: &Vec<Vector3>,
+	vertices: &[Vector3],
 ) {
-	let mut external_vertices = vertices.clone();
+	let mut external_vertices = vertices.to_vec();
 
 	remove_internal_points(hull_vertices, hull_triangles, &mut external_vertices);
 
 	while !external_vertices.is_empty() {
-		let idx = furthest_point_in_direction(external_vertices.iter().map(|e| *e), external_vertices[0]);
+		let idx = find_furthest_point_in_direction(
+			external_vertices.iter().enumerate().map(|(i, e)| (i, *e)),
+			external_vertices[0],
+		)
+		.unwrap();
 
-		let pt = external_vertices[idx.unwrap()];
+		let pt = external_vertices[idx];
 
 		external_vertices.remove(idx);
 
-		add_points(hull_vertices, hull_triangles, pt);
+		add_point_to_hull(hull_vertices, hull_triangles, pt);
 
 		remove_internal_points(hull_vertices, hull_triangles, &mut external_vertices);
 	}
@@ -369,6 +386,7 @@ pub fn expand_convex_hull(
 	remove_unreferenced_vertices(hull_vertices, hull_triangles);
 }
 
+/// Retains only points lying outside at least one hull face.
 pub fn remove_internal_points(
 	hull_vertices: &[Vector3],
 	hull_triangles: &[(usize, usize, usize)],
@@ -378,7 +396,7 @@ pub fn remove_internal_points(
 		for &(a, b, c) in hull_triangles {
 			let (a, b, c) = (hull_vertices[a], hull_vertices[b], hull_vertices[c]);
 
-			let distance = distance_from_triangle(a, b, c, pt);
+			let distance = signed_distance_from_triangle(a, b, c, pt);
 
 			if distance > 0.0 {
 				return true;
@@ -391,12 +409,15 @@ pub fn remove_internal_points(
 	});
 }
 
+/// Checks whether an edge belongs to only one triangle in a selected set.
 pub fn is_edge_unique(
 	triangles: &[(usize, usize, usize)],
 	facing_tris: &[usize],
 	ignore_tri: usize,
 	edge: (usize, usize),
 ) -> bool {
+	let reverse_edge = (edge.1, edge.0);
+
 	for &tri_idx in facing_tris {
 		if tri_idx == ignore_tri {
 			continue;
@@ -408,7 +429,8 @@ pub fn is_edge_unique(
 		let bc = (b, c);
 		let ca = (c, a);
 
-		if ab == edge || bc == edge || ca == edge {
+		// Adjacent consistently wound triangles traverse their shared edge in opposite directions.
+		if ab == edge || bc == edge || ca == edge || ab == reverse_edge || bc == reverse_edge || ca == reverse_edge {
 			return false;
 		}
 	}
@@ -416,6 +438,7 @@ pub fn is_edge_unique(
 	true
 }
 
+/// Expands a convex hull to include an external point.
 pub fn add_point_to_hull(hull_vertices: &mut Vec<Vector3>, hull_triangles: &mut Vec<(usize, usize, usize)>, point: Vector3) {
 	let facing_tris: Vec<usize> = hull_triangles
 		.iter()
@@ -426,7 +449,7 @@ pub fn add_point_to_hull(hull_vertices: &mut Vec<Vector3>, hull_triangles: &mut 
 			let b = hull_vertices[b];
 			let c = hull_vertices[c];
 
-			if distance_from_triangle(a, b, c, point) > 0f32 {
+			if signed_distance_from_triangle(a, b, c, point) > 0.0 {
 				Some(idx)
 			} else {
 				None
@@ -436,22 +459,82 @@ pub fn add_point_to_hull(hull_vertices: &mut Vec<Vector3>, hull_triangles: &mut 
 
 	let unique_edges: Vec<(usize, usize)> = facing_tris
 		.iter()
-		.filter_map(|&idx| {
+		.map(|&idx| {
 			let (a, b, c) = hull_triangles[idx];
 
 			let ab = (a, b);
 			let bc = (b, c);
 			let ca = (c, a);
 
-			todo!()
+			[
+				is_edge_unique(&hull_triangles, &facing_tris, idx, ab).then_some(ab),
+				is_edge_unique(&hull_triangles, &facing_tris, idx, bc).then_some(bc),
+				is_edge_unique(&hull_triangles, &facing_tris, idx, ca).then_some(ca),
+			]
+			.into_iter()
 		})
+		.flatten()
+		.filter(Option::is_some)
+		.map(Option::unwrap)
 		.collect();
 
-	// TODO: remove old facing tris
+	// Remove old facing tris
+	for &idx in &facing_tris {
+		hull_triangles.remove(idx);
+	}
 
-	// TODO: add new point
+	// Add new point
+	let new_point_idx = hull_vertices.len();
+	hull_vertices.push(point);
 
-	// TODO: add triangles for each unique edge
+	// Add triangles for each unique edge
+	for &(a, b) in &unique_edges {
+		hull_triangles.push((a, b, new_point_idx));
+	}
+}
+
+/// Removes vertices unused by the hull and remaps triangle indices in place.
+pub fn remove_unreferenced_vertices(hull_vertices: &mut Vec<Vector3>, hull_triangles: &mut Vec<(usize, usize, usize)>) {
+	let mut i = 0;
+
+	hull_vertices.retain_mut(move |_| {
+		for &(a, b, c) in hull_triangles.iter() {
+			if a == i || b == i || c == i {
+				i += 1;
+				return true;
+			}
+		}
+
+		// The next shifted vertex occupies the same index, so only triangle references move.
+		for (a, b, c) in hull_triangles.iter_mut() {
+			if *a > i {
+				*a -= 1;
+			}
+			if *b > i {
+				*b -= 1;
+			}
+			if *c > i {
+				*c -= 1;
+			}
+		}
+
+		false
+	});
+}
+
+pub fn build_convex_hull(vertices: &[Vector3]) -> Option<(Vec<Vector3>, Vec<(usize, usize, usize)>)> {
+	if vertices.len() < 4 {
+		return None;
+	}
+
+	let tetrahedron = build_tetrahedron(vertices.iter().map(|v| *v))?;
+
+	let mut hull_vertices = tetrahedron.0;
+	let mut hull_triangles = tetrahedron.1;
+
+	expand_convex_hull(&mut hull_vertices, &mut hull_triangles, vertices);
+
+	Some((hull_vertices, hull_triangles))
 }
 
 use math::{cross, dot, length, magnitude, magnitude_squared, mat::MatNew3 as _, Base as _, Matrix3, Vector3};
@@ -536,6 +619,69 @@ mod tests {
 	}
 
 	#[test]
+	fn internal_point_removal_uses_oriented_hull_faces() {
+		let vertices = vec![
+			Vector3::zero(),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(0.0, 0.0, 1.0),
+		];
+		let triangles = vec![(0, 1, 2), (0, 2, 3), (2, 1, 3), (1, 0, 3)];
+		let outside = Vector3::new(0.2, 0.2, -1.0);
+		let mut points = vec![Vector3::new(0.1, 0.1, 0.1), Vector3::new(0.2, 0.2, 0.0), outside];
+
+		remove_internal_points(&vertices, &triangles, &mut points);
+
+		assert_eq!(points, vec![outside]);
+	}
+
+	#[test]
+	fn shared_edges_are_compared_without_direction() {
+		let triangles = vec![(0, 1, 2), (2, 1, 3)];
+		let facing_triangles = vec![0, 1];
+
+		assert!(!is_edge_unique(&triangles, &facing_triangles, 0, (1, 2)));
+		assert!(is_edge_unique(&triangles, &facing_triangles, 0, (0, 1)));
+	}
+
+	#[test]
+	fn adding_point_replaces_only_facing_triangles() {
+		let mut vertices = vec![
+			Vector3::zero(),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(1.0, 0.0, 0.0),
+			Vector3::new(0.0, 0.0, 1.0),
+		];
+		let mut triangles = vec![(0, 1, 2), (0, 2, 3), (2, 1, 3), (1, 0, 3)];
+
+		add_point_to_hull(&mut vertices, &mut triangles, Vector3::new(0.2, 0.2, -1.0));
+
+		assert_eq!(vertices.len(), 5);
+		assert_eq!(triangles.len(), 6);
+		assert!(!triangles.contains(&(0, 1, 2)));
+	}
+
+	#[test]
+	fn unreferenced_vertex_removal_keeps_the_shifted_index() {
+		let mut vertices = vec![
+			Vector3::new(-1.0, 0.0, 0.0),
+			Vector3::zero(),
+			Vector3::new(2.0, 0.0, 0.0),
+			Vector3::new(0.0, 1.0, 0.0),
+			Vector3::new(0.0, 0.0, 1.0),
+		];
+		let mut triangles = vec![(1, 3, 4)];
+
+		remove_unreferenced_vertices(&mut vertices, &mut triangles);
+
+		assert_eq!(
+			vertices,
+			vec![Vector3::zero(), Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.0, 0.0, 1.0)]
+		);
+		assert_eq!(triangles, vec![(0, 1, 2)]);
+	}
+
+	#[test]
 	fn furthest_point_helpers_return_none_for_empty_iterators() {
 		assert!(furthest_point_in_direction([].into_iter(), Vector3::new(1.0, 0.0, 0.0)).is_none());
 		assert!(find_point_furthest_from_line([].into_iter(), Vector3::zero(), Vector3::new(1.0, 0.0, 0.0)).is_none());
@@ -611,5 +757,29 @@ mod tests {
 			Vector3::new(0.5, 0.5, 0.0),
 		];
 		assert!(build_tetrahedron(coplanar.into_iter()).is_none());
+	}
+
+	#[test]
+	fn convex_hull_builds_cube_and_discards_interior_points() {
+		let points = [
+			Vector3::new(-1.0, -1.0, -1.0),
+			Vector3::new(-1.0, -1.0, 1.0),
+			Vector3::new(-1.0, 1.0, -1.0),
+			Vector3::new(-1.0, 1.0, 1.0),
+			Vector3::new(1.0, -1.0, -1.0),
+			Vector3::new(1.0, -1.0, 1.0),
+			Vector3::new(1.0, 1.0, -1.0),
+			Vector3::new(1.0, 1.0, 1.0),
+			Vector3::zero(),
+		];
+
+		let (vertices, triangles) = build_convex_hull(&points).unwrap();
+
+		assert_eq!(vertices.len(), 8);
+		assert_eq!(triangles.len(), 12);
+		assert!(!vertices.contains(&Vector3::zero()));
+		assert!(triangles
+			.iter()
+			.all(|&(a, b, c)| a < vertices.len() && b < vertices.len() && c < vertices.len()));
 	}
 }

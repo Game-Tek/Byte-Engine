@@ -320,6 +320,16 @@ impl InputManager {
 
 				// OnChange actions emit here (on actual input change).
 				if let Some(handle) = &action.handle {
+					log::debug!(
+						target: "byte_engine::input::actions",
+						"Emitting input action event: policy={:?}, action={}, handle={:?}, seat={:?}, device={:?}, value={:?}",
+						action.tick_policy,
+						action.name,
+						handle,
+						record.seat_handle,
+						record.device_handle,
+						value
+					);
 					self.event_channel
 						.send(ActionEvent::new(record.seat_handle, handle.clone(), value));
 				}
@@ -343,10 +353,30 @@ impl InputManager {
 				TickPolicy::OnChange => {} // Already handled in Phase A.
 				TickPolicy::WhileActive => {
 					if !value.is_default() {
+						log::debug!(
+							target: "byte_engine::input::actions",
+							"Emitting input action event: policy={:?}, action={}, handle={:?}, seat={:?}, device={:?}, value={:?}",
+							action.tick_policy,
+							action.name,
+							handle,
+							seat_handle,
+							device_handle,
+							value
+						);
 						self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
 					}
 				}
 				TickPolicy::Always => {
+					log::debug!(
+						target: "byte_engine::input::actions",
+						"Emitting input action event: policy={:?}, action={}, handle={:?}, seat={:?}, device={:?}, value={:?}",
+						action.tick_policy,
+						action.name,
+						handle,
+						seat_handle,
+						device_handle,
+						value
+					);
 					self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
 				}
 			}

@@ -190,6 +190,7 @@ struct GamepadDevice {
 	device: HidDevice,
 	device_handle: DeviceHandle,
 	state: GamepadState,
+	initialized: bool,
 }
 
 impl GamepadDevice {
@@ -199,6 +200,7 @@ impl GamepadDevice {
 			device,
 			device_handle,
 			state: GamepadState::default(),
+			initialized: false,
 		}
 	}
 
@@ -234,6 +236,14 @@ impl GamepadDevice {
 
 	fn emit_changes(&mut self, state: GamepadState) -> Vec<GamepadEvent> {
 		let mut events = Vec::new();
+
+		if !self.initialized {
+			// The first HID report is the physical device's current state. Treat it as
+			// baseline so neutral axes or held buttons do not replay as startup input.
+			self.state = state;
+			self.initialized = true;
+			return events;
+		}
 
 		if (self.state.left_stick.x - state.left_stick.x).abs() > STICK_EPSILON
 			|| (self.state.left_stick.y - state.left_stick.y).abs() > STICK_EPSILON
@@ -444,25 +454,35 @@ fn parse_generic_joystick(report: &[u8]) -> Option<GamepadState> {
 	}
 
 	let left_stick = Vector2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
-	let right_stick = if report.len() >= 6 {
+	let right_stick = if report.len() >= 7 {
 		Vector2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]))
 	} else {
 		Vector2::new(0.0, 0.0)
 	};
 
-	let button_offset = if report.len() >= 6 { 4 } else { 2 };
-	let raw_buttons = u16::from_le_bytes([
-		report[button_offset],
-		report.get(button_offset + 1).copied().unwrap_or_default(),
-	]);
+	let (hat, raw_buttons) = if report.len() >= 7 {
+		let packed_hat_buttons = report[4];
+		let buttons = u16::from_le_bytes([packed_hat_buttons >> 4, report[5]]);
+		(Some(packed_hat_buttons & 0x0F), buttons)
+	} else {
+		let packed_hat_buttons = report[2];
+		let buttons = u16::from_le_bytes([packed_hat_buttons >> 4, report.get(3).copied().unwrap_or_default()]);
+		(Some(packed_hat_buttons & 0x0F), buttons)
+	};
 	let mut mask = 0u32;
+	debug!(
+		target: "byte_engine::input::events",
+		"Generic joystick raw buttons={:#06x}, hat={:?}, report_size={}",
+		raw_buttons,
+		hat,
+		report.len()
+	);
 
-	// Generic USB joysticks usually expose a packed button bitfield. Map the first
-	// common buttons to the engine's standard gamepad layout.
+	// Generic USB joysticks commonly keep non-button metadata in the low nibble.
+	// Start mapping at bit 4 so neutral metadata does not look like held buttons.
 	for (index, engine_mask) in [
 		BUTTON_A,
 		BUTTON_B,
-		BUTTON_X,
 		BUTTON_Y,
 		BUTTON_LEFT_BUMPER,
 		BUTTON_RIGHT_BUMPER,
@@ -475,12 +495,17 @@ fn parse_generic_joystick(report: &[u8]) -> Option<GamepadState> {
 	.iter()
 	.enumerate()
 	{
-		if raw_buttons & (1 << index) != 0 {
+		if raw_buttons & (1 << (index + 4)) != 0 {
 			mask |= *engine_mask;
 		}
 	}
 
-	if let Some(hat) = report.get(button_offset + 2).map(|v| v & 0x0F) {
+	// This AppleUserHIDDevice generic joystick reports X as an active-low bit.
+	if raw_buttons & 0x4000 == 0 {
+		mask |= BUTTON_X;
+	}
+
+	if let Some(hat) = hat {
 		if hat == 0 || hat == 1 || hat == 7 {
 			mask |= BUTTON_DPAD_UP;
 		}

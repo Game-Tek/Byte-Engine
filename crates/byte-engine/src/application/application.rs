@@ -5,12 +5,6 @@
 //! All state associated with the application/process should be stored in an application.
 
 //use utils::hash::HashSet; // Triggers address sanitation error
-use std::collections::HashSet;
-
-use log::{info, trace};
-
-use super::Parameter;
-use crate::application::parameters::{parse_argument, Parameters};
 
 /// The application trait is the main entry point of the engine.
 /// It is responsible for initializing and deinitializing the engine.
@@ -47,7 +41,7 @@ pub struct BaseApplication {
 
 impl Application for BaseApplication {
 	fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
-		let _ = simple_logger::SimpleLogger::new().env().init();
+		let _ = env_logger::init();
 
 		let parameters = parameters.to_vec();
 
@@ -138,3 +132,10 @@ mod tests {
 		assert!(app.get_name() == "Test");
 	}
 }
+
+use std::collections::HashSet;
+
+use log::{info, trace};
+
+use super::Parameter;
+use crate::application::parameters::{parse_argument, Parameters};

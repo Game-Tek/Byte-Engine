@@ -1,99 +1,139 @@
-- Test render frame with renderer but no elements.
+# P0 - Correctness and stability
+
+- Fix the Cube test hang and gate renderer/window integration tests so normal test and `cargo llvm-cov` runs complete.
+- Fix or update the failing `math::tests::test_from_normal` expectation in `crates/math/src/lib.rs`.
+- Fix visibility rendering to use scene instance indices instead of loaded mesh indices in `crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs`.
+- Fix texture/material upload ordering that causes black-object flashes, including correct synchronization before rendering starts.
+- Fix `Streams::frames` so typed audio buffers report frame counts correctly in `crates/ahi/src/audio_hardware_interface.rs`.
+- Support applications with no audio endpoint.
+- Make Linux audio pause tolerate devices without ALSA pause support, make Windows format negotiation return an error instead of panicking, and implement or document Windows pause behavior.
+- Rebuild Metal dynamic resources correctly when swapchain frame counts change in `crates/ghi/src/metal/context.rs`.
+- Support Vulkan frame-count reductions and replace unimplemented internal-handle translation with explicit handling or a recoverable error.
+- Fix the macOS `NSWindow canBecomeKeyWindow` warning.
+- Define texture usage semantics for resources consumed by multiple unknown render passes.
+- Remove completed audio sources instead of retaining and revisiting them in `crates/byte-engine/src/audio/audio_system.rs`.
+- Replace permanent `Box::leak` texture-slot names with owned or bounded-interned names in `crates/resource-management/src/pbr/shader.rs`.
+- Redesign `StableVec` with generation-aware handles and constant-time free-slot tracking to reject stale indices and avoid linear operations.
+
+# P1 - Runtime performance
+
+## Frame and rendering
+
+- Add allocation instrumentation and budgets for steady-state frames, GHI recording, audio callbacks, and BELD peak memory before large optimization work.
+- Replace boxed per-frame render-pass closures and visibility command vectors with concrete prepared command structs or enums.
+- Pass a shared frame context through world, UI, renderer, physics, and GHI for frame-local scratch allocation.
+- Add borrowed GHI frame allocators with two lifetime classes: CPU scratch reset after submission and retained frame-slot storage reset only after its `FrameKey` completes.
+- Route backend recording scratch through those allocators: Vulkan semaphore/copy/barrier data, Metal resource/binding/attachment/push-constant data, and DX12 pipeline/binding/queue data.
+- Keep Metal finished-command-buffer updates, native object ownership, readback state, and completion data out of CPU scratch.
+- Change GHI collection-returning APIs such as `transfer_textures` to accept caller-provided storage or allocator-aware output.
+- Prefer `SmallVec` for normally tiny GHI collections such as swapchains, command buffers, descriptor sets, present drawables, and semaphores.
+- Replace Vulkan command recording's full device state-map clones with immutable base state plus recording-local changes, and clean up the transition implementation.
+- Replace render-target linear lookups with direct `(SinkId, ResourceId) -> ImageIndex` maps and per-sink image lists.
+- Precompute render-pass resource access and attachment templates instead of rebuilding hash maps and vectors each frame.
+- Intern or use compact typed render-resource and visibility-resource keys; remove material names from non-debug visibility builds.
+- Reuse caller-provided scratch for render batching and add reusable or allocator-aware listener draining.
+- Replace generated meshlet membership scans with fixed-capacity local storage and a generation-tagged global-to-local lookup, or consistently use meshopt.
+- Sort visibility and transparent work by camera distance where required.
+
+## UI
+
+- Reuse UI layout, draw-list, geometry, vertex, index, text, relation, and batch storage instead of rebuilding and cloning it each frame.
+- Replace UI layout relation and element scans with an ID index and contiguous parent-to-children adjacency storage.
+- Replace hit-test `Vec<Vec<usize>>` buckets with contiguous candidate storage plus per-cell ranges.
+- Return references or compact handles for UI primitive shapes instead of cloning them.
+
+## Physics
+
+- Persist broadphase endpoints and implement a true sweep-and-prune active set with insertion sorting for temporal coherence.
+- Reuse endpoint, pair, and contact scratch storage based on body count and previous overlap counts.
+- Resolve contacts through disjoint mutable body access instead of cloning complete bodies.
+- Group contacts by time of impact or use collision substeps so every body is not advanced once per contact.
+
+## Audio and input
+
+- Eliminate real-time audio callback allocation by reusing a mix buffer or converting in fixed-size chunks.
+- Resolve named input triggers to handles during action registration and index device classes and triggers by name.
+- Reuse gamepad event, new-device, and present-path scratch storage; allocate owned HID paths only for confirmed new devices.
+
+## Metal-specific
+
+- Batch pending Metal buffer and texture uploads into one transfer command buffer and blit encoder.
+- Avoid cloning Metal texture staging data and pipeline state during upload and descriptor binding.
+- Use actual descriptor access when making Metal argument-buffer resources resident.
+- Precompute Metal descriptor-set stage visibility and merge duplicate descriptor-encoding paths.
+- Simplify Metal frame-chain handle deduplication if frame counts grow beyond the current small fixed count.
+
+# P1 - Bake and asset performance
+
+- Make BELD bake concurrency and initial arena capacity configurable or memory-aware instead of reserving sixteen 32 MiB arenas.
+- Replace asset-handler tuple results with an allocator-backed or borrowed `BakedAsset` payload that storage can consume before arena reset.
+- Make Redb storage move processed metadata instead of cloning it and serialize metadata using bake-arena scratch.
+- Redesign `MeshProcessor` as a two-pass packer that computes offsets and writes directly into one final allocation.
+- Add allocator-aware PNG, WAV, and OGG decoding; borrow WAV PCM when no conversion is required.
+- Let glTF parsing borrow GLB and external BIN data instead of copying whole buffers.
+- Flatten glTF traversal into one caller-owned primitive record buffer rather than separate tree and primitive collections.
+- Bake each unique glTF material once, resolve primitive material references concurrently, and reuse generated resources.
+- Extract independent glTF primitive attributes concurrently before constructing the mesh source.
+- Store glTF texture dependencies concurrently while preserving variable order.
+- Run independent BEMA shader loading/compilation and material/variant variable resolution concurrently while preserving order.
+- Compress generated image mip levels concurrently after mip-chain generation.
+- Drain BELD's buffered task stream directly instead of collecting unit results.
+- Replace formatted mip stream names with typed stream identifiers or prefix-plus-index metadata.
+
+# P2 - Platform and feature completeness
+
+## GHI and windows
+
+- Complete DX12 command recording and device support for resources, pipelines, uploads, mesh shading, DXR, shader tables, fences, and submission.
+- Implement Vulkan standalone command-buffer execution.
+- Implement Metal ray tracing pipelines, acceleration structures, instance data, shader binding tables, and ray dispatch.
+- Decide how GHI should handle potentially unused staging buffers.
+- Implement macOS cursor visibility and confinement.
+- Wire real platform input seats across X11, Wayland, Win32, and the byte-engine input manager.
+
+## Engine systems
+
+- Implement sampled UI colors, the remaining UI layout branch, primitive style access, and non-box bounding boxes.
+- Implement `Positionable` state for gameplay sphere and cube colliders.
+- Implement server-side client entity lifecycle and replace the temporary UDP client identity strategy.
+
+## Shader behavior
+
+- Add and conditionally emit `perprimitiveEXT` qualifiers.
+- Implement Metal interpolation, push-constant, and argument-buffer mapping without hardcoded backend conventions.
+
+# P2 - BESL architecture
+
+- Convert visibility compute shaders to `ShaderSourceDefinition::Besl`, then remove generated current-platform visibility plumbing.
+- Add concise BESL compute descriptor helpers and decide how mesh/task shaders express platform-specific overrides.
+- Route UI and simple-pipeline shader creation through the shader store or a common platform-source helper.
+- Decide whether manually authored ACES, LUT, sky, visibility, material-count, and material-offset shaders should move to BESL.
+- Add explicit interpolation syntax and a generic texture/sampler resource model.
+- Complete MSL lowering for all declared intrinsics and reconcile `fetch_u32`, `image_atomic_or`, and `image_load_u32`.
+- Add 3D compute built-ins, threadgroup memory/barriers, mesh-stage abstractions, and address-space semantics.
+- Add missing control flow, boolean and numeric types, typed textures, matrix shapes, and structured array support.
+- Represent threadgroup size, matrix layout, function constants, and other MSL compile options in shader metadata.
+- Analyze each BESL graph once with visited-node tracking and keyed binding deduplication, sharing results across generation, reflection, and opacity evaluation.
+- Write GLSL/MSL directly into capacity-estimated output strings instead of creating repeated temporary formatted strings.
+
+# P3 - Tests and tooling
+
+- Add one smoke rendering path per supported backend to CI.
+- Test rendering a frame with no elements.
+- Fix or replace ignored Vulkan WSI and ray-tracing tests.
+- Add targeted GHI backend tests or fakes for device, context, resource, and command lifecycle behavior.
+- Add focused window tests, including macOS keyboard consumption, cursor visibility, and confinement.
+- Replace ignored glTF, WAV, and PNG tests with committed or generated fixtures.
+- Fix ignored asset-manager dependency-injection and BESL member-lexer tests.
 - Test asset path handling.
-- Support no audio endpoint.
-- Add support for the perprimitiveEXT qualifier in shader outputs.
-- Remove perprimitiveEXT qualifiers from the mesh shader header when they are not needed.
-- Decide how to handle potentially unused staging buffers in GHI.
-- Implement DX12 command recording for render passes, clears, copies, descriptor binding, push constants, draw/dispatch, mesh shading, ray tracing, and submission in crates/ghi/src/dx12/command_buffer.rs.
-- Complete DX12 device-side GPU resource and pipeline support, including pipeline state creation, buffer/image resource mapping, texture upload, DXR structures, shader tables, and fence waiting in crates/ghi/src/dx12/device.rs.
-- Implement Vulkan standalone command buffer execute in crates/ghi/src/vulkan/command_buffer.rs.
-- Replace the Vulkan internal handle translation unimplemented branch with explicit handling or a recoverable error in crates/ghi/src/vulkan/command_buffer.rs.
-- Support Vulkan frame-count reductions or non-growth frame changes in crates/ghi/src/vulkan/device.rs.
-- Implement Metal ray tracing pipeline mapping, acceleration structure creation/build, instance buffer population, shader binding table mapping, and ray dispatch in crates/ghi/src/metal/context.rs and crates/ghi/src/metal/command_buffer.rs.
-- Rebuild Metal dynamic resources correctly when swapchain frame count changes in crates/ghi/src/metal/context.rs.
-- Implement macOS cursor visibility and cursor confinement in crates/ghi/src/window/os/macos.rs.
-- Wire real platform input seats instead of stub seats across X11, Wayland, Win32, and byte-engine input manager paths.
-- Implement sampled UI colors for Color::Sample in crates/byte-engine/src/ui/layout/engine.rs.
-- Audit and implement the remaining UI layout engine unimplemented path in crates/byte-engine/src/ui/layout/engine.rs.
-- Implement primitive style access and non-box shape bounding boxes in crates/byte-engine/src/ui/primitive.rs.
-- Implement Positionable state for gameplay Sphere and Cube colliders in crates/byte-engine/src/gameplay/collider.rs.
-- Implement server-side client entity lifecycle on connect/disconnect events in crates/byte-engine/src/network/server/server.rs.
-- Replace the temporary network client identity key in crates/byte-engine/src/network/client/udp.rs with a better identity strategy.
-- Fix Streams::frames so it reports typed buffer frame counts correctly in crates/ahi/src/audio_hardware_interface.rs.
-- Make Linux audio pause handle devices that do not support ALSA pause without panicking in crates/ahi/src/os/linux.rs.
-- Make Windows audio format negotiation return Err instead of panicking when requested formats are unsupported in crates/ahi/src/os/win32.rs.
-- Implement or document Windows audio pause behavior in crates/ahi/src/os/win32.rs.
-- Confirm and implement Metal push-constant mapping in crates/resource-management/src/msl_shader_generator.rs.
-- Map interpolation qualifiers to Metal shader output semantics in crates/resource-management/src/msl_shader_generator.rs.
-- Use actual scene instance indices instead of loaded mesh indices in the visibility render pass push constant path in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs.
-- Sort visibility/transparent render pass work by distance to camera where required in crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs.
-- Add CI coverage for at least one smoke rendering path per supported backend instead of skipping all render-prefixed tests.
-- Fix the Cube test which halts the test runs.
-- Fix or update the failing math::tests::test_from_normal expectation in crates/math/src/lib.rs.
-- Gate renderer/window integration tests so cargo llvm-cov can run without hanging on crates/byte-engine/tests/cube.rs and related graphics tests.
-- Replace ignored GLTF asset tests that depend on missing fixture data with committed fixtures or generated in-test fixtures in crates/resource-management/src/asset/gltf_asset_handler.rs.
-- Replace the ignored WAV asset test that depends on missing fixture data with committed fixture data or a generated in-test fixture in crates/resource-management/src/asset/wav_asset_handler.rs.
-- Replace the ignored PNG asset test that depends on missing fixture data with committed fixture data or a generated in-test fixture in crates/resource-management/src/asset/png_asset_handler.rs.
-- Fix or rewrite ignored asset manager dependency-injection tests in crates/resource-management/src/asset/asset_manager.rs.
-- Fix or rewrite the ignored BESL member lexer test in crates/besl/src/lexer.rs.
-- Add an in-process test setup for the ignored UDP client connection test in crates/byte-engine/src/network/client/udp.rs.
-- Fix or remove ignored Vulkan WSI tests in crates/ghi/src/vulkan/mod.rs.
-- Add a test plan or implementation for the ignored Vulkan ray tracing test in crates/ghi/src/vulkan/mod.rs.
-- Add unit tests for crates/utils/src/stale_map.rs, which currently has 0% coverage.
-- Add focused tests for crates/ghi/src/window/window.rs, which currently has 0% coverage.
-- Add more macOS window/input tests for crates/ghi/src/window/os/macos.rs, especially keyboard-event consumption, cursor visibility, and cursor confinement.
-- Add targeted GHI backend tests or fakes to raise coverage for device/context/resource lifecycle paths.
-- Add tests for AHI core audio_hardware_interface.rs behavior beyond default hardware parameters.
-- Add tests for byte-engine UI primitive non-box bounding boxes and primitive style access in crates/byte-engine/src/ui/primitive.rs.
-- Add tests for byte-engine UI layout Color::Sample behavior and the remaining unimplemented layout branch in crates/byte-engine/src/ui/layout/engine.rs.
-- Add tests for byte-engine gameplay collider Positionable behavior once Sphere and Cube collider state is implemented.
-- Add coverage for byte-engine network server client entity lifecycle on connect/disconnect.
-- Review and either use or remove dead test helper structs TestTransport and TestSynthesizer in crates/byte-engine/tests/replication.rs and crates/byte-engine/tests/sound.rs.
-- Cleanup vulkan transition code
-- Fix "Warning: -[NSWindow makeKeyWindow] called on <NSWindow: 0xb97cd0280> windowNumber=1ae1 which returned NO from -[NSWindow canBecomeKeyWindow]." on macOS
-- Check order of texture upload vs material and when the rendering starts, we are seeing flashes of black objects
-- Batch pending Metal buffer and texture uploads into one transfer command buffer and blit encoder in crates/ghi/src/metal/context.rs.
-- Avoid cloning Metal texture staging data before upload in crates/ghi/src/metal/context.rs.
-- Use actual descriptor access when marking Metal argument-buffer resources resident instead of always using read-write in crates/ghi/src/metal/command_buffer.rs.
-- Precompute Metal descriptor set layout stage visibility to simplify descriptor binding and avoid repeated scans in crates/ghi/src/metal/mod.rs and crates/ghi/src/metal/command_buffer.rs.
-- Deduplicate Metal descriptor encoding paths by merging encode_descriptor_binding and encode_binding in crates/ghi/src/metal/context.rs.
-- Avoid cloning Metal pipeline state during descriptor set binding in crates/ghi/src/metal/command_buffer.rs.
-- Simplify Metal frame-chain handle deduplication if frame counts grow beyond the current small fixed count in crates/ghi/src/metal/context.rs.
-- Consider how to deal with texture usages when multiple "unknown" render passes use them.
+- Add an in-process UDP client connection test and server lifecycle coverage.
+- Add AHI behavior tests beyond default parameters.
+- Add UI tests for sampled colors, remaining layout behavior, primitive styles, and non-box bounds.
+- Add gameplay collider `Positionable` tests.
+- Add unit tests for `crates/utils/src/stale_map.rs`.
+- Review and remove or use dead `TestTransport` and `TestSynthesizer` helpers.
 
-# Allocation reduction opportunities
-- Remove names from materials in Visibility Pipeline on non-debug builds.
-- Reuse UI draw list and geometry buffers instead of rebuilding fresh vectors and cloning text each update in crates/byte-engine/src/ui/render_pass.rs.
-- Avoid per-frame visibility render pass command collection allocations in crates/byte-engine/src/rendering/pipelines/visibility/pipeline_manager.rs.
-- Reduce visibility resource manager string churn by interning resource IDs or using compact typed keys in crates/byte-engine/src/rendering/pipelines/visibility/resource_manager.rs.
-- Avoid repeated render-resource name allocation when registering pipeline manager resources in crates/byte-engine/src/rendering/renderer.rs.
-- Reuse or caller-provide scratch buffers for rendering utility batching instead of allocating temporary batch vectors in crates/byte-engine/src/rendering/utils.rs.
-- Route short-lived per-frame byte-engine buffers through the existing frame allocator where lifetimes are frame-local.
-- Return references or compact handles for UI primitive shapes instead of cloning shapes in crates/byte-engine/src/ui/primitive.rs.
-- Avoid allocating formatted shader stage strings while hashing shader descriptors in crates/byte-engine/src/rendering/shader_store.rs.
-- Deduplicate GLTF material generation per material and resolve primitive material references concurrently in crates/resource-management/src/asset/gltf_asset_handler.rs.
-- Store GLTF texture dependencies concurrently while preserving variable order in crates/resource-management/src/asset/gltf_asset_handler.rs.
-- Run BEMA material shader source loading and shader compilation for independent stages concurrently in crates/resource-management/src/asset/bema_asset_handler.rs.
-- Resolve BEMA material and variant variables concurrently while preserving parameter order in crates/resource-management/src/asset/bema_asset_handler.rs.
-- Extract GLTF primitive attributes and transform vertex data concurrently before constructing OwnedMeshSource in crates/resource-management/src/asset/gltf_asset_handler.rs.
-- Redesign MeshProcessor primitive packing so each primitive packs local stream chunks independently, then merge offsets and buffers sequentially in crates/resource-management/src/processors/mesh_processor.rs.
-- Compress generated image mip levels concurrently after mip-chain generation in crates/resource-management/src/processors/image_processor.rs.
+# P3 - Conditional optimizations
 
-# BESL
-- Convert visibility compute shaders (`pixel_mapping`, GTAO, GTAO bitfield, GTAO blur, and GTAO bitfield blur X) to use `ShaderSourceDefinition::Besl` instead of generating current-platform sources in crates/byte-engine/src/rendering/pipelines/visibility/mod.rs and crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs.
-- Remove or shrink `GeneratedVisibilityShader`, `generated_platform_shader_source`, and related `PlatformShaderLanguage::current_platform()` plumbing once visibility compute shaders use shader-store BESL generation.
-- Add a convenience constructor/helper for BESL compute shader descriptors so callers can provide workgroup extent and `besl::NodeReference` without spelling out platform generation details.
-- Decide whether visibility mesh/task shaders need a `Besl` plus platform-specific override source definition, because their Metal path still uses custom mesh/task MSL.
-- Consider rewriting manually authored platform shaders such as ACES, LUT, sky, visibility fragment, material count, and material offset in BESL, or add descriptor helpers for raw platform shader pairs to reduce call-site noise.
-- Consider routing UI shader creation through the shader store, or add a lower-level helper, so UI text overlay platform GLSL/MSL sources in crates/byte-engine/src/ui/render_pass.rs do not call `create_shader_from_source` directly with platform details.
-- Evaluate whether simple pipeline material shader generation in crates/byte-engine/src/rendering/pipelines/simple/pipeline_manager.rs can share the shader-store BESL generation path or a common platform-source helper.
-- Add explicit BESL syntax for interpolation modifiers on stage IO; MSL now infers position, depth, color, user attributes, front-facing, vertex ID, and instance ID semantics from conventional IO names.
-- Replace visibility-pass-specific texture sampling lowering with a generic BESL texture and sampler resource model for separate textures, samplers, combined samplers, array textures, integer textures, depth textures, and sample level/bias/gradient operations.
-- Complete MSL lowering for all declared BESL built-in intrinsics, including `fetch_u32` and `image_atomic_or`, and either add or remove the mismatched `image_load_u32` intrinsic.
-- Confirm and implement Metal push-constant and argument-buffer mapping without hardcoded backend conventions.
-- Add BESL compute built-ins for 3D global thread IDs, local thread IDs, threadgroup size, grid size, threadgroup memory, and threadgroup barriers.
-- Expand BESL mesh-stage abstractions to cover vertex attributes, primitive attributes, topology, and per-vertex/per-primitive output data without backend-shaped raw snippets.
-- Add BESL address-space and memory/storage-class semantics for Metal `device`, `constant`, `thread`, and `threadgroup` data.
-- Add missing shader control-flow and expression features such as `else`, `while`, `break`, `discard`, unary operators, ternary/select expressions, and a boolean type.
-- Expand BESL built-in types for bools, signed integer vectors, half/f16 vectors, additional matrix shapes, typed texture resources, and less ad-hoc array support.
-- Represent MSL-related compile options in BESL or shader metadata, including threadgroup size, matrix layout, and function constants, instead of comments or limited backend conventions.
+- Add a free-slot stack and sequence-to-slot index to BETP packet buffering if profiling shows fixed-array scans are significant.
+- Avoid formatted shader-stage strings while hashing shader descriptors if shader-cache profiling identifies meaningful churn.

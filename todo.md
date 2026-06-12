@@ -137,3 +137,49 @@
 
 - Add a free-slot stack and sequence-to-slot index to BETP packet buffering if profiling shows fixed-array scans are significant.
 - Avoid formatted shader-stage strings while hashing shader descriptors if shader-cache profiling identifies meaningful churn.
+
+# P2 - Architecture and module cohesion
+
+## Visibility rendering
+
+- Split `rendering/pipelines/visibility/mod.rs` into focused modules for bindings, limits, GPU data layouts, and visibility, shadow, and material shader sources.
+- Split `rendering/pipelines/visibility/render_pass.rs` so visibility, shadow, material-count, material-offset, pixel-mapping, GTAO, and material-evaluation passes each own their resources, preparation logic, and tests.
+- Split the visibility resource manager into request/completion protocol, worker lifecycle, resource loading, texture upload, pipeline compilation, and reusable resource-state modules.
+- Move visibility production definitions and imports before test modules so tests remain the final section of each source module.
+- Replace high-argument visibility pipeline and render-pass construction with operation-specific configuration and resource structs.
+
+## Application and input
+
+- Split graphics application defaults into focused resource, input, rendering, audio, window, and Art-Net setup modules.
+- Move Art-Net and DMX support out of the core graphics application module into an optional integration module.
+- Move input trigger and evaluation documentation beside the implementation that owns those rules.
+
+## Assets and resource processing
+
+- Split glTF importing into document loading, mesh extraction, material generation, image loading, and URI resolution modules.
+- Introduce a focused glTF import context to replace repeated long parameter lists without creating a generic dependency bag.
+- Split image processing into source-format conversion, mip-chain generation, BC compression, and image-layout modules.
+- Keep processor tests beside the conversion or compression module they verify.
+- Separate mesh source models and normalization from final mesh stream packing in `mesh_processor`.
+
+## BESL and shader generation
+
+- Move generic AST traversal and shader emission helpers from resource management into the BESL crate.
+- Keep resource management responsible for compiled shader resources, platform compilation, and persistence rather than language-level emission.
+- Split the MSL backend into type/expression emission, bindings, raster stages, compute stages, and mesh stages.
+- Apply the same shared emitter structure to GLSL and HLSL so backend differences remain explicit and duplicated formatting logic is removed.
+
+## Graphics hardware interface
+
+- Split each large backend context implementation into resources, descriptors, pipelines, synchronization, transfers, and acceleration-structure modules while keeping the public context type in `context/mod.rs`.
+- Move GHI handles, resource descriptions, and behavioral traits into their existing domain modules instead of declaring most contracts in `graphics_hardware_interface.rs`.
+- Reduce `graphics_hardware_interface.rs` to compatibility re-exports or remove it after callers migrate to domain modules.
+
+## Cross-cutting layout
+
+- Keep every `#[cfg(test)] mod tests` at the end of its production module.
+- Split production files once they contain multiple independently testable responsibilities, rather than using line count alone.
+- Prefer operation-specific context structs for cohesive long argument lists; do not replace them with broad service-locator-style bags.
+- Keep tests in the new owning submodules instead of retaining large centralized test sections.
+- Avoid creating additional crates until module-level splits show a stable dependency boundary that needs independent compilation or ownership.
+- Prioritize the visibility pipeline refactor first because it combines the greatest file size, dependency breadth, duplicated shader contracts, and constructor complexity.

@@ -284,8 +284,8 @@ impl InputManager {
 			let records = frame_allocator.alloc_slice_fill_iter(self.records.drain(..));
 
 			// Sort records by source first and time second so each source's last record is the most recent.
-			records.sort_by(compare_record_source_then_time);
-			let record_count = compact_latest_records_by_source(records);
+			records.sort_by(compare_source_then_time);
+			let record_count = compact_latest_by_source(records);
 			let records = &records[..record_count];
 
 			for record in records {
@@ -306,9 +306,7 @@ impl InputManager {
 					continue;
 				};
 
-				let value = if let Some(value) =
-					Self::resolve_action_value_from_record(action, record, &self.trigger_values, frame_allocator)
-				{
+				let value = if let Some(value) = resolve_action_value(action, record, &self.trigger_values, frame_allocator) {
 					value
 				} else {
 					continue;
@@ -493,216 +491,6 @@ impl InputManager {
 			})
 	}
 
-	fn resolve_action_value_from_record(
-		action: &InputAction,
-		record: &Record,
-		values: &HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
-		frame_allocator: &bumpalo::Bump,
-	) -> Option<Value> {
-		let mapping = action
-			.trigger_mappings
-			.iter()
-			.find(|ied| ied.trigger_handle == record.trigger_handle)?;
-
-		match action.r#type {
-			Types::Boolean => {
-				let bool: Option<bool> = match record.value {
-					Value::Bool(record_value) => record_value.into(),
-					Value::Float(record_value) => (record_value != 0f32).into(),
-					_ => {
-						log::error!("resolve_action_value_from_record not implemented for type!");
-						return None;
-					}
-				};
-
-				bool.map(Value::Bool)
-			}
-			Types::Float => {
-				let float: Option<f32> = match record.value {
-					Value::Bool(record_value) => {
-						let stack = boolean_record_stack(action, record, values, frame_allocator);
-
-						if let Some((mapping, last)) = stack.last() {
-							if let Value::Bool(pressed) = last.value {
-								// Stack entry value does not really matter because if it is in the stack it _is_ pressed.
-								match mapping.mapping {
-									Value::Bool(value) => {
-										if value {
-											1f32
-										} else {
-											0f32
-										}
-									}
-									Value::Unicode(_) => 0f32,
-									Value::Float(value) => value,
-									Value::Int(value) => value as f32,
-									Value::Rgba(value) => value.r,
-									Value::Vector2(value) => value.x,
-									Value::Vector3(value) => value.x,
-									Value::Quaternion(value) => value[0],
-								}
-							} else {
-								panic!("Last value is not a boolean!");
-							}
-						} else {
-							match mapping.mapping {
-								Value::Bool(value) => {
-									if value {
-										1f32
-									} else {
-										0f32
-									}
-								}
-								Value::Unicode(_) => 0f32,
-								Value::Float(mapping_value) => mapping_value * record_value as u32 as f32,
-								Value::Int(value) => value as f32,
-								Value::Rgba(value) => value.r,
-								Value::Vector2(value) => value.x,
-								Value::Vector3(value) => value.x,
-								Value::Quaternion(value) => value[0],
-							}
-						}
-						.into()
-					}
-					Value::Float(record_value) => record_value.into(),
-					_ => {
-						log::error!("Not implemented!");
-						return None;
-					}
-				};
-
-				float.map(Value::Float)
-			}
-			Types::Vector2 => {
-				let vector2: Option<Vector2> = match record.value {
-					Value::Bool(_) => {
-						let stack = boolean_record_stack(action, record, values, frame_allocator);
-
-						let res = stack.iter().fold(Vector2::zero(), |acc, &(mapping, record)| {
-							acc + match mapping.mapping {
-								Value::Vector2(mapping_value) => mapping_value, // Record value is not accessed because if record is in stack it necessarily is `true`
-								_ => Vector2::zero(),
-							}
-						});
-
-						if !(res.x == 0.0 && res.y == 0.0) {
-							// Avoid division by zero
-							normalize(res)
-						} else {
-							Vector2::zero()
-						}
-						.into()
-					}
-					Value::Unicode(_) => {
-						log::error!("Not implemented!");
-						return None;
-					}
-					Value::Float(_) => {
-						log::error!("Not implemented!");
-						return None;
-					}
-					Value::Int(_) => {
-						log::error!("Not implemented!");
-						return None;
-					}
-					Value::Rgba(_) => {
-						log::error!("Not implemented!");
-						return None;
-					}
-					Value::Vector2(value) => value.into(),
-					Value::Vector3(value) => Vector2 { x: value.x, y: value.y }.into(),
-					Value::Quaternion(_) => {
-						log::error!("Not implemented!");
-						return None;
-					}
-				};
-
-				vector2.map(Value::Vector2)
-			}
-			Types::Vector3 => {
-				let vector3: Option<Vector3> = match record.value {
-					Value::Bool(_) => {
-						let stack = boolean_record_stack(action, record, values, frame_allocator);
-
-						let res = stack.iter().fold(Vector3::zero(), |acc, &(mapping, record)| {
-							acc + match mapping.mapping {
-								Value::Vector3(mapping_value) => mapping_value, // Record value is not accessed because if record is in stack it necessarily is `true`
-								_ => Vector3::zero(),
-							}
-						});
-
-						if !(res.x == 0f32 && res.y == 0f32 && res.z == 0f32) {
-							normalize(res)
-						} else {
-							Vector3::zero()
-						}
-						.into()
-					}
-					Value::Unicode(_) => {
-						log::error!("Not implemented!");
-						return None;
-					}
-					Value::Float(_) => {
-						log::error!("Not implemented!");
-						return None;
-					}
-					Value::Int(_) => {
-						log::error!("Not implemented!");
-						return None;
-					}
-					Value::Rgba(_) => {
-						log::error!("Not implemented!");
-						return None;
-					}
-					Value::Vector2(record_value) => {
-						if let Some(function) = mapping.function {
-							if let Function::Sphere = function {
-								let r = record_value;
-
-								let x_pi = r.x * PI;
-								let y_pi = r.y * PI * 0.5f32;
-
-								let x = x_pi.sin() * y_pi.cos();
-								let y = y_pi.sin();
-								let z = x_pi.cos() * y_pi.cos();
-
-								let transformation = if let Value::Vector3(transformation) = mapping.mapping {
-									transformation
-								} else {
-									log::error!("Not implemented!");
-									return None;
-								};
-
-								(Vector3 { x, y, z } * transformation).into()
-							} else {
-								log::error!("Not implemented!");
-								return None;
-							}
-						} else {
-							Vector3 {
-								x: record_value.x,
-								y: record_value.y,
-								z: 0f32,
-							}
-							.into()
-						}
-					}
-					Value::Vector3(value) => value.into(),
-					Value::Quaternion(_) => {
-						log::error!("Not implemented!");
-						return None;
-					}
-				};
-
-				vector3.map(Value::Vector3)
-			}
-			_ => {
-				log::error!("Not implemented!");
-				None
-			}
-		}
-	}
-
 	fn get_trigger_from_trigger_reference(&self, trigger_reference: &TriggerReference) -> Option<&Trigger> {
 		self.to_trigger_handle(trigger_reference)
 			.and_then(|trigger_handle| self.triggers.get(trigger_handle.0 as usize))
@@ -745,85 +533,6 @@ impl InputManager {
 	}
 }
 
-fn compare_record_source_then_time(left: &Record, right: &Record) -> std::cmp::Ordering {
-	left.seat_handle
-		.0
-		.cmp(&right.seat_handle.0)
-		.then(left.device_handle.0.cmp(&right.device_handle.0))
-		.then(left.trigger_handle.0.cmp(&right.trigger_handle.0))
-		.then(left.time.cmp(&right.time))
-}
-
-fn same_record_source(left: &Record, right: &Record) -> bool {
-	left.seat_handle == right.seat_handle
-		&& left.device_handle == right.device_handle
-		&& left.trigger_handle == right.trigger_handle
-}
-
-/// Compacts source-sorted records so each input source keeps only its most recent record.
-fn compact_latest_records_by_source(records: &mut [Record]) -> usize {
-	if records.is_empty() {
-		return 0;
-	}
-
-	let mut write_index = 0;
-	let mut read_index = 0;
-
-	while read_index < records.len() {
-		let mut latest = records[read_index];
-		read_index += 1;
-
-		// Since the records are sorted by source and then time, the final record in each source run is current.
-		while read_index < records.len() && same_record_source(&latest, &records[read_index]) {
-			latest = records[read_index];
-			read_index += 1;
-		}
-
-		records[write_index] = latest;
-		write_index += 1;
-	}
-
-	write_index
-}
-
-/// Builds the active boolean trigger stack for an action using the frame allocator.
-fn boolean_record_stack<'a>(
-	action: &InputAction,
-	record: &Record,
-	values: &HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
-	frame_allocator: &'a bumpalo::Bump,
-) -> &'a mut [(TriggerMapping, Record)] {
-	let active_count = action
-		.trigger_mappings
-		.iter()
-		.filter(|mapping| {
-			values
-				.get(&(record.seat_handle, record.device_handle, mapping.trigger_handle))
-				.is_some_and(|candidate| matches!(candidate.value, Value::Bool(true)))
-		})
-		.count();
-
-	let mut mappings = action.trigger_mappings.iter();
-	let stack = frame_allocator.alloc_slice_fill_with(active_count, |_| loop {
-		let mapping = mappings
-			.next()
-			.expect("active boolean record count must match the action mapping scan");
-		let Some(candidate) = values
-			.get(&(record.seat_handle, record.device_handle, mapping.trigger_handle))
-			.copied()
-		else {
-			continue;
-		};
-
-		if matches!(candidate.value, Value::Bool(true)) {
-			break (*mapping, candidate);
-		}
-	});
-
-	stack.sort_by_key(|left| left.1.time);
-	stack
-}
-
 #[derive(Copy, Clone, Debug)]
 /// A trigger reference is a way to reference an input trigger.
 /// It can be referenced by it's name or by it's handle.
@@ -833,53 +542,6 @@ pub enum TriggerReference {
 	Handle(TriggerHandle),
 	/// Refer to the input trigger by it's name.
 	Name(&'static str),
-}
-
-#[derive(Copy, Clone, PartialEq)]
-struct Record {
-	seat_handle: SeatHandle,
-	device_handle: DeviceHandle,
-	trigger_handle: TriggerHandle,
-	value: Value,
-	time: std::time::SystemTime,
-}
-
-impl PartialOrd for Record {
-	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-		self.time.partial_cmp(&other.time)
-	}
-}
-
-struct InputSourceState {
-	value: Value,
-	time: std::time::SystemTime,
-}
-
-/// An input event is an application specific event that is triggered by a combination of input sources.
-struct InputAction {
-	name: String,
-	r#type: Types,
-	trigger_mappings: Vec<TriggerMapping>,
-	handle: Option<Handle>,
-	tick_policy: TickPolicy,
-}
-
-pub struct InputSourceEventState {
-	seat_handle: SeatHandle,
-	device_handle: DeviceHandle,
-	value: Value,
-}
-
-/// The input event state is the value of an input event.
-pub struct InputEventState {
-	/// The seat that triggered the input event.
-	seat_handle: SeatHandle,
-	/// The device that triggered the input event.
-	device_handle: DeviceHandle,
-	/// The handle to the input event.
-	input_event_handle: ActionHandle,
-	/// The value of the input event.
-	value: Value,
 }
 
 impl Message for Value {}
@@ -1643,25 +1305,28 @@ mod tests {
 	}
 }
 
-use std::{collections::HashMap, default, f32::consts::PI};
+use std::{collections::HashMap, default};
 
 use log::warn;
-use math::{normalize, Base, Vector2, Vector3};
+use math::{Base, Vector2, Vector3};
 use serde::de;
 use utils::{insert_return_length, RGBA};
 
+pub use super::action_evaluator::InputEventState;
 use super::{
 	action::{InputValue, TriggerMapping},
+	action_evaluator::{resolve_action_value, InputAction},
 	device::Device,
 	device_class::{DeviceClass, DeviceClassHandle},
 	input_trigger::{Trigger, TriggerDescription},
+	records::{compact_latest_by_source, compare_source_then_time, Record},
 	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types,
 	Value,
 };
 use crate::{
 	core::{
 		channel::{Channel as _, DefaultChannel},
-		factory::{CreateMessage, Factory, Handle},
+		factory::{CreateMessage, Factory},
 		listener::{DefaultListener, Listener},
 		message::Message,
 		Entity, EntityHandle,

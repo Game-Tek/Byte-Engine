@@ -1,8 +1,10 @@
 use super::utils::RGBA;
 use crate::core::factory::Handle;
 
+mod action_evaluator;
 pub(crate) mod gamepad;
 pub mod input_manager;
+mod records;
 
 pub mod action;
 pub mod device;

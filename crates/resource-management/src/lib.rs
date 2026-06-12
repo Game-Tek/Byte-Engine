@@ -2,12 +2,8 @@
 //! Handles loading assets or resources from different origins (network, local, etc.).
 //! It also handles caching of resources.
 
-#![feature(closure_lifetime_binder)]
 #![feature(stmt_expr_attributes)]
-#![feature(map_try_insert)]
 #![feature(future_join)]
-#![feature(once_cell_try)]
-#![feature(ascii_char)]
 #![feature(portable_simd)]
 #![feature(allocator_api)]
 

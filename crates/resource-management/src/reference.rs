@@ -14,7 +14,7 @@ use crate::{
 /// The `Reference` can be used to consult the memory requirements of the resource to, for example, pre-allocate/reserve memory destined for the resource.
 ///
 /// The `Reference` can contain a `reader` that provides the backing store for the resource's binary data.
-/// This `reader` usually comes assigned from a call to [`ResourceManager::request`].
+/// This `reader` usually comes assigned from a call to [`crate::ResourceManager::request`].
 pub struct Reference<T: Resource> {
 	pub id: String,
 	pub hash: u64,

@@ -369,12 +369,10 @@ pub fn sphere_vs_sphere_dynamic(
 			.then(|| sphere_sphere_intersection_at_time(sphere_a, sphere_b, a_velocity, b_velocity, 0.0));
 	}
 
-	let Some((t0, t1)) = ray_vs_sphere(
+	let (t0, t1) = ray_vs_sphere(
 		&Ray::new(sphere_a.center, ray_dir),
 		&Sphere::new(sphere_b.center, expanded_radius),
-	) else {
-		return None;
-	};
+	)?;
 
 	if t1 < 0.0 {
 		return None;

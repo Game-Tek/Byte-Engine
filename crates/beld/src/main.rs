@@ -1,5 +1,3 @@
-#![feature(allocator_api)]
-
 use clap::{
 	builder::styling::{AnsiColor, Effects, Styles},
 	CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,

@@ -142,10 +142,6 @@ impl crate::device::Device for Factory {
 
 				(Some(library), Some(entry_point.to_owned()), threadgroup_size)
 			}
-			_ => {
-				eprintln!("Unsupported shader source type");
-				return Err(());
-			}
 		};
 
 		let stages = match stage {

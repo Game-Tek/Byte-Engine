@@ -1,4 +1,4 @@
-//! The [`GraphicsHardwareInterface`] implements easy to use rendering functionality.
+//! The graphics hardware interface implements easy to use rendering functionality.
 //! It provides useful abstractions to interact with the GPU.
 //! It's not tied to any particular render pipeline implementation.
 

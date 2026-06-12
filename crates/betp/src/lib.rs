@@ -31,7 +31,6 @@
 //! The protocol is designed to be simple and easy to implement, making it suitable for use in real-time multiplayer games.
 
 #![allow(incomplete_features)]
-#![feature(buf_read_has_data_left)]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 
 pub mod client;
@@ -51,7 +50,7 @@ pub use local::Local;
 pub use remote::Remote;
 pub use server::Server;
 
-use crate::packets::{ConnectionStatus, Packet, PacketHeader, Packets};
+use crate::packets::{ConnectionStatus, Packet, PacketHeader, PacketType, Packets};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// [`PacketInfo`] contains information about a packet.
@@ -124,7 +123,7 @@ pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, ()> {
 
 	cursor.read_exact(&mut protocol_id).map_err(|_| ())?;
 
-	if protocol_id != [b'B', b'E', b'T', b'P'] {
+	if protocol_id != *b"BETP" {
 		return Err(());
 	}
 
@@ -132,7 +131,7 @@ pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, ()> {
 
 	cursor.read_exact(&mut r#type).map_err(|_| ())?;
 
-	let r#type = unsafe { std::mem::transmute(r#type[0]) };
+	let r#type = unsafe { std::mem::transmute::<u8, PacketType>(r#type[0]) };
 
 	Ok(PacketHeader { protocol_id, r#type })
 }

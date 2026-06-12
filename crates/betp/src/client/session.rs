@@ -137,10 +137,7 @@ impl Session {
 	}
 
 	pub fn is_connected(&self) -> bool {
-		match self.state {
-			State::Connected { .. } => true,
-			_ => false,
-		}
+		matches!(self.state, State::Connected { .. })
 	}
 }
 

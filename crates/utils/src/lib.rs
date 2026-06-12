@@ -39,7 +39,7 @@ impl<'a> BufferAllocator<'a> {
 		let buffer = &mut self.buffer[self.offset..][..size];
 		self.offset += size;
 		// SAFETY: We know that the buffer is valid for the lifetime of the splitter.
-		(offset, unsafe { std::mem::transmute(buffer) })
+		(offset, unsafe { std::mem::transmute::<&mut [u8], &'a mut [u8]>(buffer) })
 	}
 
 	pub fn take_with_offset_aligned(&mut self, size: usize, alignment: usize) -> (usize, &'a mut [u8]) {

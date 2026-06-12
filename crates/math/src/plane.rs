@@ -194,7 +194,7 @@ mod tests {
 		// Normals should be opposite
 		assert_vec3f_near!(plane1.normal, plane2.normal * -1.0, "Normals should be opposite");
 		// Distances D should be opposite (since D = -N.p1)
-		assert_float_eq!(plane1.distance, plane2.distance * -1.0, "Distances D should be opposite");
+		assert_float_eq!(plane1.distance, -plane2.distance, "Distances D should be opposite");
 
 		// Both planes must still contain all three points (distance = 0)
 		for p_idx in [p1, p2, p3].iter().enumerate() {

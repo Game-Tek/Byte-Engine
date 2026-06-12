@@ -345,6 +345,7 @@ fn image_resource_extent(format: Formats, extent: Extent) -> [u32; 3] {
 
 /// Compresses a single mip level to the target `output_format`, or returns the data unchanged for
 /// uncompressed formats. Accepts an RGBA8 surface for BC targets, or the natural format otherwise.
+#[cfg(test)]
 fn compress_bc_level(output_format: Formats, extent: Extent, data: &[u8]) -> Box<[u8]> {
 	compress_bc_level_in(output_format, extent, data, Global)
 }
@@ -609,8 +610,8 @@ mod tests {
 
 		// The last pixel of the first row (source x=4) should be replicated
 		// into the padding area (x=5,6,7). Verify padding byte pattern.
-		let last_rg_pixel = &rg[(0 * 8 + 4) * 2..(0 * 8 + 5) * 2];
-		let padded_pixel = &rg[(0 * 8 + 5) * 2..(0 * 8 + 6) * 2];
+		let last_rg_pixel = &rg[4 * 2..5 * 2];
+		let padded_pixel = &rg[5 * 2..6 * 2];
 		assert_eq!(last_rg_pixel, padded_pixel, "Edge pixel should be clamped into padding");
 	}
 
@@ -872,11 +873,6 @@ mod tests {
 	}
 }
 
-/// Expands an RGB8 image into RGBA8 so all runtime texture uploads use GPU-supported color layouts.
-fn rgb8_to_rgba8(extent: Extent, buffer: &[u8]) -> Box<[u8]> {
-	rgb8_to_rgba8_in(extent, buffer, Global)
-}
-
 /// Expands an RGB8 image into RGBA8 using caller-provided storage.
 fn rgb8_to_rgba8_in<A: Allocator + Clone>(extent: Extent, buffer: &[u8], allocator: A) -> Box<[u8], A> {
 	let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator);
@@ -894,11 +890,6 @@ fn rgb8_to_rgba8_in<A: Allocator + Clone>(extent: Extent, buffer: &[u8], allocat
 	}
 
 	buf
-}
-
-/// Converts RGB16 data to RGBA8 before BC compression because the compressor accepts 8-bit surfaces.
-fn rgb16_to_rgba8(extent: Extent, buffer: &[u8]) -> Box<[u8]> {
-	rgb16_to_rgba8_in(extent, buffer, Global)
 }
 
 /// Converts RGB16 data to RGBA8 using caller-provided storage.
@@ -919,11 +910,6 @@ fn rgb16_to_rgba8_in<A: Allocator + Clone>(extent: Extent, buffer: &[u8], alloca
 	}
 
 	buf
-}
-
-/// Converts RGBA16 data to RGBA8 before BC compression because the compressor accepts 8-bit surfaces.
-fn rgba16_to_rgba8(extent: Extent, buffer: &[u8]) -> Box<[u8]> {
-	rgba16_to_rgba8_in(extent, buffer, Global)
 }
 
 /// Converts RGBA16 data to RGBA8 using caller-provided storage.
@@ -955,11 +941,6 @@ fn bc7_compression_settings(data: &[u8]) -> intel_tex_2::bc7::EncodeSettings {
 	} else {
 		intel_tex_2::bc7::opaque_basic_settings()
 	}
-}
-
-/// Pads RGBA8 data to full BC blocks so compressed payload size matches GPU upload layout.
-fn rgba8_bc_compression_surface(extent: Extent, data: &[u8]) -> (Box<[u8]>, u32, u32) {
-	rgba8_bc_compression_surface_in(extent, data, Global)
 }
 
 /// Pads RGBA8 data to BC block dimensions using caller-provided storage.
@@ -997,6 +978,7 @@ fn rgba8_bc_compression_surface_in<A: Allocator + Clone>(
 /// Produces a tightly packed RG surface (2 bytes per pixel) from RGBA8 data,
 /// padded to 4×4 block boundaries. RgSurface<2> expects the pixel stride to
 /// be exactly 2 bytes, not interleaved RGBA.
+#[cfg(test)]
 fn rga_to_rg_surface(data: &[u8], extent: Extent) -> (Box<[u8]>, u32, u32) {
 	rga_to_rg_surface_in(data, extent, Global)
 }

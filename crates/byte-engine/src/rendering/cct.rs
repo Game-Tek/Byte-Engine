@@ -1,4 +1,4 @@
-//! Taken from https://github.com/m-lima/tempergb
+//! Taken from <https://github.com/m-lima/tempergb>.
 
 use math::Vector3;
 

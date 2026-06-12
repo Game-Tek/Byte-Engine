@@ -106,7 +106,6 @@ impl Generator {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use crate::shader::besl::backends::spirv::Generator;
 	use crate::shader::{generator, generator::ShaderGenerationSettings};
 

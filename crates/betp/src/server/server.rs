@@ -22,11 +22,14 @@ pub struct Settings {
 pub trait Server {
 	/// Runs periodic updates on the server.
 	/// Performs the following tasks:
+	///
 	/// - Disconnects clients timed out clients.
 	/// - Gathers unacknowledged packets to retry. This will count as a retry attempt.
 	///
-	/// - `current_time`: The current time.
+	/// `current_time` is the current time.
+	///
 	/// Returns a list of packets to send to the clients.
+	///
 	/// Returns an error if the server encountered an error.
 	///
 	/// This function should be called periodically.

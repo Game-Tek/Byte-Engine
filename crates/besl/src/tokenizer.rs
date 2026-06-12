@@ -22,24 +22,15 @@ pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 			c.is_numeric()
 		} else if last == '_' {
 			c.is_alphanumeric() || c == '_'
-		} else if last == '-' && c == '>' {
-			true
-		} else if last == '=' && c == '=' {
-			true
-		} else if last == '!' && c == '=' {
-			true
-		} else if last == '<' && c == '=' {
-			true
-		} else if last == '>' && c == '=' {
-			true
-		} else if last == '<' && c == '<' {
-			true
-		} else if last == '>' && c == '>' {
-			true
-		} else if last == '&' && c == '&' {
-			true
 		} else {
-			last == '|' && c == '|'
+			matches!(
+				(last, c),
+				('-', '>')
+					| ('=', '=') | ('!', '=')
+					| ('<', '=') | ('>', '=')
+					| ('<', '<') | ('>', '>')
+					| ('&', '&') | ('|', '|')
+			)
 		}
 	};
 

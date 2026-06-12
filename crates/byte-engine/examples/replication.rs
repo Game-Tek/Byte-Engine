@@ -20,13 +20,9 @@ fn main() {
 
 	// space_handle.spawn(Cube::new(Vector3::new(0.5f32, 0.5f32, 0.5f32)).builder());
 
-	struct TestTransport {}
+	let world = DefaultWorld::new();
 
-	impl TestTransport {}
-
-	let mut world = DefaultWorld::new();
-
-	let world_handle = app.world_factory_mut().create(world);
+	let _world_handle = app.world_factory_mut().create(world);
 
 	let mut replicable_factory = Factory::new();
 

@@ -4,9 +4,6 @@
 #![allow(incomplete_features)]
 #![allow(private_interfaces)]
 #![feature(generic_const_exprs)]
-#![feature(str_as_str)]
-#![feature(pointer_is_aligned_to)]
-#![feature(extend_one)]
 
 pub mod window;
 

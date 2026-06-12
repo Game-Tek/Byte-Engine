@@ -270,7 +270,7 @@ mod tests {
 		let b = 7u64;
 		let function = InlineCopyFn::<fn(u64) -> u64>::new(move |value| value + a + b);
 		let copied = function;
-		let cloned = function.clone();
+		let cloned = function;
 
 		assert_eq!(copied.call(1), 11);
 		assert_eq!(cloned.call(5), 15);

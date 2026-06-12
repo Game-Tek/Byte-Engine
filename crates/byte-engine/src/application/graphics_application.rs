@@ -848,10 +848,8 @@ pub fn setup_default_dmx(application: &mut GraphicsApplication, mut rx: DefaultL
 			);
 
 			loop {
-				while let Ok(m) = arx.try_recv() {
-					match m {
-						Events::Close => return,
-					}
+				if let Ok(Events::Close) = arx.try_recv() {
+					return;
 				}
 
 				let buff = ArtCommand::Poll(Poll {

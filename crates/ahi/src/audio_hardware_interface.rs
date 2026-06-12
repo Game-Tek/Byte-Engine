@@ -146,6 +146,12 @@ impl HardwareParameters {
 	}
 }
 
+impl Default for HardwareParameters {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

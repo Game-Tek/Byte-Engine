@@ -197,7 +197,7 @@ pub trait ContextCreate {
 	fn build_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> BufferHandle<T>;
 
 	/// Creates a dynamic buffer from a builder.
-	/// Dynamic buffers can be resized with [`Device::resize_buffer`].
+	/// Dynamic buffers can be resized with [`Context::resize_buffer`].
 	fn build_dynamic_buffer<T: Copy>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T>;
 
 	/// Creates a dynamic image from a builder.

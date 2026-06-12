@@ -15,6 +15,12 @@ pub enum Entry<V> {
 /// A hash map that allows for tracking the staleness of values.
 pub struct StaleHashMap<K, H, V>(HashMap<K, (H, V)>);
 
+impl<K: Eq + std::hash::Hash, H: PartialEq, V> Default for StaleHashMap<K, H, V> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl<K: Eq + std::hash::Hash, H: PartialEq, V> StaleHashMap<K, H, V> {
 	/// Creates a new `StaleHashMap`.
 	pub fn new() -> Self {

@@ -4,12 +4,12 @@
 //!
 //! ```glsl
 //! Light: struct {
-//! 	position: vec3,
-//! 	color: vec3,
+//!     position: vec3,
+//!     color: vec3,
 //! }
 //!
 //! main: fn () -> void {
-//! 	gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+//!     gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
 //! }
 //! ```
 //!

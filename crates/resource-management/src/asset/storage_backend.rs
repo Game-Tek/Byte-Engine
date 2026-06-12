@@ -74,6 +74,7 @@ impl StorageBackend for FileStorageBackend {
 	}
 }
 
+#[cfg(test)]
 fn move_bytes_in<'a>(bytes: impl AsRef<[u8]>, allocator: &'a dyn Allocator) -> AssetStorageBytes<'a> {
 	let bytes = bytes.as_ref();
 	let mut output = Vec::with_capacity_in(bytes.len(), allocator);
@@ -95,7 +96,7 @@ pub mod tests {
 
 	use super::{AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend};
 	use crate::{
-		asset::{BEADType, ResourceId},
+		asset::ResourceId,
 		r#async::{read, BoxedFuture},
 		tests::ASSETS_PATH,
 	};

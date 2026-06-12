@@ -717,10 +717,7 @@ impl Node {
 			| Nodes::Const { name, .. } => Some(name),
 			Nodes::Input { name, .. } | Nodes::Output { name, .. } => Some(name),
 			Nodes::PushConstant { .. } => Some("push_constant"),
-			Nodes::Expression(expression) => match expression {
-				Expressions::VariableDeclaration { name, .. } | Expressions::Member { name, .. } => Some(name),
-				_ => None,
-			},
+			Nodes::Expression(Expressions::VariableDeclaration { name, .. } | Expressions::Member { name, .. }) => Some(name),
 			_ => None,
 		}
 	}
@@ -750,10 +747,7 @@ impl Node {
 				children.extend(statements.iter().cloned());
 				Some(children)
 			}
-			Nodes::Expression(expression) => match expression {
-				Expressions::IntrinsicCall { elements: children, .. } => Some(children.clone()),
-				_ => None,
-			},
+			Nodes::Expression(Expressions::IntrinsicCall { elements: children, .. }) => Some(children.clone()),
 			_ => None,
 		}
 	}
@@ -1335,10 +1329,10 @@ fn find_descendant(node: &NodeReference, child_name: &str, mode: DescendantSearc
 			.or_else(|| find_in_descendants(statements, child_name, mode)),
 		Nodes::Expression(expression) => find_in_expression(expression, child_name, mode),
 		Nodes::Raw { output, .. } => find_in_descendants(output, child_name, mode),
-		Nodes::Binding { r#type, .. } => match r#type {
-			BindingTypes::Buffer { members } => find_in_descendants(members, child_name, mode),
-			_ => None,
-		},
+		Nodes::Binding {
+			r#type: BindingTypes::Buffer { members },
+			..
+		} => find_in_descendants(members, child_name, mode),
 		Nodes::Input { format, .. } | Nodes::Output { format, .. } => find_descendant(format, child_name, mode),
 		_ => None,
 	};
@@ -1447,7 +1441,7 @@ fn find_in_expression(expression: &Expressions, child_name: &str, mode: Descenda
 	}
 }
 
-fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Result<NodeReference, LexError> {
+fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Result<NodeReference, LexError> {
 	let node = match &parser_node.node {
 		parser::Nodes::Null => Node::new(Nodes::Null).into(),
 		parser::Nodes::Scope { name, children } => {
@@ -3059,7 +3053,7 @@ main: fn () -> void {
 	fn lex_builtin_reflect_intrinsic() {
 		let root = Node::root();
 		let reflect = root.get_child("reflect").expect("Expected reflect builtin");
-		let result = match reflect.borrow().node() {
+		match reflect.borrow().node() {
 			Nodes::Intrinsic {
 				name,
 				elements,
@@ -3071,7 +3065,6 @@ main: fn () -> void {
 			}
 			_ => panic!("Expected intrinsic"),
 		};
-		result
 	}
 
 	#[test]

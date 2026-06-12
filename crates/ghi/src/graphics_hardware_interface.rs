@@ -1324,7 +1324,7 @@ pub(super) mod tests {
 			}
 		);
 
-		if extent.width() % 2 != 0 {
+		if !extent.width().is_multiple_of(2) {
 			let pixel = pixels[(extent.width() / 2) as usize]; // middle top center
 			assert_eq!(
 				pixel,

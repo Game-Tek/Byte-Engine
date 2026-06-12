@@ -870,51 +870,6 @@ mod utils {
 		);
 	}
 
-	#[cfg(not(debug_assertions))]
-	pub(crate) fn debug_compressed_upload(
-		_format: Formats,
-		_mip_index: usize,
-		_slice_index: usize,
-		_extent: Extent,
-		_bytes_per_row: usize,
-		_bytes_per_image: usize,
-		_source_offset: usize,
-	) {
-	}
-
-	#[cfg(test)]
-	mod tests {
-		use super::*;
-
-		#[test]
-		fn bc_upload_layout_uses_block_rows_for_non_multiple_of_four_extent() {
-			let extent = Extent::rectangle(5, 7);
-
-			let (bytes_per_row, row_count, bytes_per_image) = texture_upload_layout(Formats::BC7, extent).unwrap();
-
-			assert_eq!(bytes_per_row, 2 * 16);
-			assert_eq!(row_count, 2);
-			assert_eq!(bytes_per_image, 2 * 2 * 16);
-		}
-
-		#[test]
-		fn bc_copy_size_uses_texel_extent_not_padded_block_extent() {
-			let size = texture_copy_size(Formats::BC7, Extent::rectangle(5, 7));
-
-			assert_eq!(size.width, 5);
-			assert_eq!(size.height, 7);
-			assert_eq!(size.depth, 1);
-		}
-
-		#[test]
-		fn bc_format_mapping_preserves_linear_and_srgb_variants() {
-			assert_eq!(to_pixel_format(Formats::BC5), mtl::MTLPixelFormat::BC5_RGUnorm);
-			assert_eq!(to_pixel_format(Formats::BC5SNORM), mtl::MTLPixelFormat::BC5_RGSnorm);
-			assert_eq!(to_pixel_format(Formats::BC7), mtl::MTLPixelFormat::BC7_RGBAUnorm);
-			assert_eq!(to_pixel_format(Formats::BC7SRGB), mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB);
-		}
-	}
-
 	pub(crate) fn data_type_size(format: crate::DataTypes) -> usize {
 		match format {
 			crate::DataTypes::Float => std::mem::size_of::<f32>(),
@@ -1022,6 +977,51 @@ mod utils {
 			crate::pipelines::raster::CullMode::None => mtl::MTLCullMode::None,
 			crate::pipelines::raster::CullMode::Front => mtl::MTLCullMode::Front,
 			crate::pipelines::raster::CullMode::Back => mtl::MTLCullMode::Back,
+		}
+	}
+
+	#[cfg(not(debug_assertions))]
+	pub(crate) fn debug_compressed_upload(
+		_format: Formats,
+		_mip_index: usize,
+		_slice_index: usize,
+		_extent: Extent,
+		_bytes_per_row: usize,
+		_bytes_per_image: usize,
+		_source_offset: usize,
+	) {
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+
+		#[test]
+		fn bc_upload_layout_uses_block_rows_for_non_multiple_of_four_extent() {
+			let extent = Extent::rectangle(5, 7);
+
+			let (bytes_per_row, row_count, bytes_per_image) = texture_upload_layout(Formats::BC7, extent).unwrap();
+
+			assert_eq!(bytes_per_row, 2 * 16);
+			assert_eq!(row_count, 2);
+			assert_eq!(bytes_per_image, 2 * 2 * 16);
+		}
+
+		#[test]
+		fn bc_copy_size_uses_texel_extent_not_padded_block_extent() {
+			let size = texture_copy_size(Formats::BC7, Extent::rectangle(5, 7));
+
+			assert_eq!(size.width, 5);
+			assert_eq!(size.height, 7);
+			assert_eq!(size.depth, 1);
+		}
+
+		#[test]
+		fn bc_format_mapping_preserves_linear_and_srgb_variants() {
+			assert_eq!(to_pixel_format(Formats::BC5), mtl::MTLPixelFormat::BC5_RGUnorm);
+			assert_eq!(to_pixel_format(Formats::BC5SNORM), mtl::MTLPixelFormat::BC5_RGSnorm);
+			assert_eq!(to_pixel_format(Formats::BC7), mtl::MTLPixelFormat::BC7_RGBAUnorm);
+			assert_eq!(to_pixel_format(Formats::BC7SRGB), mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB);
 		}
 	}
 }

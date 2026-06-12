@@ -12,7 +12,7 @@ impl<'a> Frame<'a> {
 		Self { device, frame_key }
 	}
 
-	pub fn get_mut_dynamic_buffer_slice<T: Copy>(&self, _buffer_handle: DynamicBufferHandle<T>) -> &mut T {
+	pub fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, _buffer_handle: DynamicBufferHandle<T>) -> &mut T {
 		todo!("Handle true allocations");
 	}
 

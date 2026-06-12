@@ -109,13 +109,13 @@ impl Frame<'_> {
 	}
 
 	pub fn get_mut_dynamic_buffer_slice<T: Copy>(
-		&self,
+		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 	) -> &mut T {
 		unsafe { &mut *(self.frame_buffer_pointer(buffer_handle.into()) as *mut T) }
 	}
 
-	pub fn get_texture_slice_mut(&self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &'static mut [u8] {
+	pub fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &'static mut [u8] {
 		let (pointer, length) = self.frame_texture_staging_parts(texture_handle);
 
 		unsafe { std::slice::from_raw_parts_mut(pointer, length) }

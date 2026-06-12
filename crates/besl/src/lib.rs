@@ -76,7 +76,7 @@ pub fn parse<'a>(source: &'a str) -> Result<parser::Node<'a>, CompilationError> 
 /// This step is the final transformation step.
 /// The returned node is the root of the lexed syntax tree.
 pub fn lex(node: parser::Node) -> Result<NodeReference, CompilationError> {
-	let besl = lexer::lex(node).map_err(|e| CompilationError::Lex(e))?;
+	let besl = lexer::lex(node).map_err(CompilationError::Lex)?;
 
 	Ok(besl)
 }
@@ -88,7 +88,7 @@ pub fn lex(node: parser::Node) -> Result<NodeReference, CompilationError> {
 /// * `source` - The source code to compile.
 /// * `parent` - An optional reference to a parent Scope node where the source code will be compiled into.
 pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReference, CompilationError> {
-	if source.split_whitespace().next() == None {
+	if source.split_whitespace().next().is_none() {
 		return Ok(lexer::Node::scope("".to_string()).into());
 	}
 

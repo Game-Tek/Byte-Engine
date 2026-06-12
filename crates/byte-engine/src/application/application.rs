@@ -24,7 +24,7 @@ pub trait Application {
 	fn new(name: &str, parameters: &[Parameter]) -> Self;
 
 	/// Returns the name of the application.
-	fn get_name<'a>(&'a self) -> &'a str;
+	fn get_name(&self) -> &str;
 
 	/// Performs a tick of the application.
 	fn tick(&mut self) -> bool;
@@ -41,18 +41,13 @@ pub struct BaseApplication {
 
 impl Application for BaseApplication {
 	fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
-		let _ = env_logger::init();
+		env_logger::init();
 
 		let parameters = parameters.to_vec();
 
 		let environment_variables = std::env::vars()
 			.filter(|(k, v)| k.as_str().starts_with("BE_"))
-			.map(|(k, v)| {
-				Parameter::new_string(
-					k.trim_start_matches("BE_").to_string().replace('_', "-").to_lowercase(),
-					v.into(),
-				)
-			})
+			.map(|(k, v)| Parameter::new_string(k.trim_start_matches("BE_").to_string().replace('_', "-").to_lowercase(), v))
 			.collect::<Vec<Parameter>>();
 		// Take all arguments that have the form `--name=value` and convert them to parameters.
 		let arguments = std::env::args()

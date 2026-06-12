@@ -32,7 +32,7 @@ const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 impl Entity for BaseAcesToneMapPass {}
 
 impl BaseAcesToneMapPass {
-	pub fn new<'a>(render_pass_builder: &'a mut RenderPassBuilder<'_>) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let descriptor_set_layout = render_pass_builder.context().create_descriptor_set_template(
 			Some("Tonemap Pass Set Layout"),
 			&[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE],
@@ -168,7 +168,7 @@ kernel void aces_tonemap(
 }
 "#;
 
-const TONE_MAPPING_SHADER: &'static str = r#"
+const TONE_MAPPING_SHADER: &str = r#"
 #version 450
 #pragma shader_stage(compute)
 

@@ -13,16 +13,11 @@ const MESHLET_CONE_WEIGHT: f32 = 0.25;
 const MESHLET_STREAM_STRIDE: usize = 52;
 
 /// The `TriangleFrontFaceWinding` enum describes which triangle winding should be treated as the mesh front face after processing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum TriangleFrontFaceWinding {
+	#[default]
 	Clockwise,
 	CounterClockwise,
-}
-
-impl Default for TriangleFrontFaceWinding {
-	fn default() -> Self {
-		Self::Clockwise
-	}
 }
 
 /// The `MeshAttributeData` enum describes borrowed attribute payloads that mesh sources expose to the mesh processor.
@@ -363,7 +358,7 @@ impl MeshProcessor {
 		let triangle_indices =
 			orient_triangle_indices_for_front_face(triangle_indices.to_u32_vec(), self.triangle_front_face_winding);
 
-		if triangle_indices.len() % 3 != 0 {
+		if !triangle_indices.len().is_multiple_of(3) {
 			return Err(MeshProcessingError::InvalidTriangleIndexCount);
 		}
 

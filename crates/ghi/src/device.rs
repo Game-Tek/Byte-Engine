@@ -70,6 +70,12 @@ pub struct Features {
 	pub(crate) mesh_shading: bool,
 }
 
+impl Default for Features {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Features {
 	pub fn new() -> Self {
 		Self {

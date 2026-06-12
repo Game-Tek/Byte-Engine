@@ -64,11 +64,11 @@ impl SpecializationMapEntry {
 	where
 		[(); std::mem::size_of::<T>()]:,
 	{
-		if r#type == "vec4f".to_owned() {
+		if r#type == "vec4f" {
 			assert_eq!(std::mem::size_of::<T>(), 16);
 		}
 
-		let mut data = [0 as u8; std::mem::size_of::<T>()];
+		let mut data = [0_u8; std::mem::size_of::<T>()];
 
 		// SAFETY: We know that the data is valid for the lifetime of the specialization map entry.
 		unsafe {

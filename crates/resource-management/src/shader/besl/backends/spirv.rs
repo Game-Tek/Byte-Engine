@@ -16,6 +16,12 @@ pub struct Generator {
 
 impl ShaderGenerator for Generator {}
 
+impl Default for Generator {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Generator {
 	pub fn new() -> Self {
 		Self {
@@ -59,7 +65,7 @@ impl Generator {
 			Err(err) => {
 				let error_string = err.to_string();
 				dbg!(&error_string);
-				println!("{}", &glsl_shader);
+				println!("{}", glsl_shader);
 				return Err(glsl_compile::pretty_format_glslang_error_string(
 					&error_string,
 					&shader_compilation_settings.name,
@@ -69,7 +75,7 @@ impl Generator {
 		};
 
 		{
-			let node_borrow = RefCell::borrow(&main_function_node);
+			let node_borrow = RefCell::borrow(main_function_node);
 			let node_ref = node_borrow.node();
 
 			match node_ref {
@@ -84,7 +90,7 @@ impl Generator {
 
 		let bindings = program_evaluation.bindings();
 
-		return Ok(CompiledShader::new(
+		Ok(CompiledShader::new(
 			Box::from(compilation_artifact.as_binary_u8()),
 			bindings
 				.iter()
@@ -94,7 +100,7 @@ impl Generator {
 				crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
 				_ => None,
 			},
-		));
+		))
 	}
 }
 

@@ -239,9 +239,9 @@ impl Default for RGBA {
 	}
 }
 
-impl Into<[f32; 4]> for RGBA {
-	fn into(self) -> [f32; 4] {
-		[self.r, self.g, self.b, self.a]
+impl From<RGBA> for [f32; 4] {
+	fn from(val: RGBA) -> Self {
+		[val.r, val.g, val.b, val.a]
 	}
 }
 

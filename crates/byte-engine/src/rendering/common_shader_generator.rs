@@ -12,6 +12,12 @@ pub struct CommonShaderScope {}
 
 pub struct CommonShaderGenerator {}
 
+impl Default for CommonShaderGenerator {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl CommonShaderGenerator {
 	pub fn new() -> Self {
 		Self {}

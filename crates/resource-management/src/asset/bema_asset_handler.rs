@@ -39,6 +39,12 @@ pub struct BEMAAssetHandler {
 	generator: Option<Arc<dyn ProgramGenerator>>,
 }
 
+impl Default for BEMAAssetHandler {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl BEMAAssetHandler {
 	pub fn new() -> BEMAAssetHandler {
 		BEMAAssetHandler { generator: None }
@@ -78,10 +84,10 @@ impl AssetHandler for BEMAAssetHandler {
 				return Err(LoadErrors::UnsupportedType);
 			}
 
-			let asset: json::Value = json::from_str(std::str::from_utf8(&data).or_else(|_| Err(LoadErrors::FailedToProcess))?)
-				.or_else(|_| Err(LoadErrors::FailedToProcess))?;
+			let asset: json::Value = json::from_str(std::str::from_utf8(&data).map_err(|_| LoadErrors::FailedToProcess)?)
+				.map_err(|_| LoadErrors::FailedToProcess)?;
 
-			let is_material = asset.get(&"parent").is_none();
+			let is_material = asset.get("parent").is_none();
 
 			if is_material {
 				let asset_object = asset.as_object().ok_or(LoadErrors::FailedToProcess)?;
@@ -102,7 +108,7 @@ impl AssetHandler for BEMAAssetHandler {
 						generator.clone(),
 						storage_backend,
 						asset_storage_backend,
-						&material_domain,
+						material_domain,
 						asset_object,
 						shader_json,
 						s_type,
@@ -133,7 +139,7 @@ impl AssetHandler for BEMAAssetHandler {
 
 				let parameters = asset_variables
 					.iter()
-					.zip(values.into_iter())
+					.zip(values)
 					.map(|(v, value)| {
 						let name = v["name"].as_str().unwrap().to_string();
 						let data_type = v["data_type"].as_str().unwrap().to_string();
@@ -166,7 +172,7 @@ impl AssetHandler for BEMAAssetHandler {
 				let material = asset_manager
 					.bake_if_not_exists(parent_material_url, storage_backend)
 					.await
-					.or_else(|_| Err(LoadErrors::FailedToProcess))?;
+					.map_err(|_| LoadErrors::FailedToProcess)?;
 
 				let material_repr: MaterialModel = crate::from_slice(&material.resource).unwrap();
 
@@ -193,7 +199,7 @@ impl AssetHandler for BEMAAssetHandler {
 				let variables = material_repr
 					.parameters
 					.iter()
-					.zip(values.into_iter())
+					.zip(values)
 					.map(|(v, value)| VariantVariableModel {
 						value,
 						name: v.name.clone(),
@@ -201,7 +207,7 @@ impl AssetHandler for BEMAAssetHandler {
 					})
 					.collect();
 
-				let alpha_mode = match asset.get(&"transparency").map(|e| e.as_ref()) {
+				let alpha_mode = match asset.get("transparency").map(|e| e.as_ref()) {
 					Some(json::ValueRef::Bool(v)) => {
 						if v {
 							AlphaMode::Blend
@@ -247,7 +253,7 @@ fn compile_shader(
 		// besl::parser::NodeReference::glsl(&shader_code,/*Vec::new()*/)
 		panic!()
 	} else if format == "besl" {
-		if let Ok(e) = besl::parse(&shader_code) {
+		if let Ok(e) = besl::parse(shader_code) {
 			e
 		} else {
 			log::error!("Error compiling shader");

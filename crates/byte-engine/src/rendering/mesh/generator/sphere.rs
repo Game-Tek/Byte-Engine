@@ -15,6 +15,12 @@ pub struct SphereMeshGenerator {
 	vertex_positions: Vec<(f32, f32, f32)>,
 }
 
+impl Default for SphereMeshGenerator {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl SphereMeshGenerator {
 	pub fn new() -> Self {
 		SphereMeshGenerator::from_radius(1.0)
@@ -186,14 +192,14 @@ impl MeshGenerator for SphereMeshGenerator {
 	}
 }
 
-impl Into<Arc<dyn MeshGenerator>> for SphereMeshGenerator {
-	fn into(self) -> Arc<dyn MeshGenerator> {
-		Arc::new(self)
+impl From<SphereMeshGenerator> for Arc<dyn MeshGenerator> {
+	fn from(val: SphereMeshGenerator) -> Self {
+		Arc::new(val)
 	}
 }
 
-impl Into<MeshSource> for SphereMeshGenerator {
-	fn into(self) -> MeshSource {
-		Into::<Arc<dyn MeshGenerator>>::into(self).into()
+impl From<SphereMeshGenerator> for MeshSource {
+	fn from(val: SphereMeshGenerator) -> Self {
+		Into::<Arc<dyn MeshGenerator>>::into(val).into()
 	}
 }

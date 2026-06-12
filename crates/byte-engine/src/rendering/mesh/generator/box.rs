@@ -190,14 +190,14 @@ impl MeshGenerator for BoxMeshGenerator {
 	}
 }
 
-impl Into<Arc<dyn MeshGenerator>> for BoxMeshGenerator {
-	fn into(self) -> Arc<dyn MeshGenerator> {
-		Arc::new(self)
+impl From<BoxMeshGenerator> for Arc<dyn MeshGenerator> {
+	fn from(val: BoxMeshGenerator) -> Self {
+		Arc::new(val)
 	}
 }
 
-impl Into<MeshSource> for BoxMeshGenerator {
-	fn into(self) -> MeshSource {
-		Into::<Arc<dyn MeshGenerator>>::into(self).into()
+impl From<BoxMeshGenerator> for MeshSource {
+	fn from(val: BoxMeshGenerator) -> Self {
+		Into::<Arc<dyn MeshGenerator>>::into(val).into()
 	}
 }

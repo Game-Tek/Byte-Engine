@@ -370,7 +370,7 @@ impl VisibilityPipelineResourceManager {
 	) -> Result<crate::rendering::pipelines::visibility::pipeline_manager::MeshData, ()> {
 		match mesh_source {
 			MeshSource::Resource(id) => {
-				let mut resource: Reference<ResourceMesh> = self.resource_manager.request(*id).map_err(|_| {
+				let mut resource: Reference<ResourceMesh> = self.resource_manager.request(id).map_err(|_| {
 					log::error!(
 						"Visibility mesh resource request failed for {}. The most likely cause is that the mesh id is missing or the asset database is not loaded.",
 						id

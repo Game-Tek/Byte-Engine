@@ -35,10 +35,7 @@ impl Factory {
 		library
 			.newFunctionWithName_constantValues_error(&entry_point, &constant_values)
 			.map_err(|error| {
-				eprintln!(
-					"Metal shader specialization failed: {}",
-					error.localizedDescription().to_string()
-				);
+				eprintln!("Metal shader specialization failed: {}", error.localizedDescription());
 			})
 			.ok()
 	}
@@ -140,11 +137,7 @@ impl crate::device::Device for Factory {
 					.device
 					.newLibraryWithSource_options_error(&source, Some(&compile_options))
 					.map_err(|error| {
-						eprintln!(
-							"Metal shader compilation failed: {}",
-							error.localizedDescription().to_string()
-						);
-						()
+						eprintln!("Metal shader compilation failed: {}", error.localizedDescription());
 					})?;
 
 				(Some(library), Some(entry_point.to_owned()), threadgroup_size)
@@ -257,7 +250,7 @@ impl crate::device::Device for Factory {
 				.unwrap_or_else(|error| {
 					panic!(
 						"Metal mesh raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the raster pipeline descriptor.",
-						error.localizedDescription().to_string(),
+						error.localizedDescription(),
 					)
 				})
 				.into()
@@ -276,7 +269,7 @@ impl crate::device::Device for Factory {
 				.unwrap_or_else(|error| {
 					panic!(
 						"Metal raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the raster pipeline descriptor.",
-						error.localizedDescription().to_string(),
+						error.localizedDescription(),
 					)
 				})
 				.into()
@@ -434,4 +427,4 @@ use objc2_metal::{
 };
 
 use super::*;
-use crate::metal::utils::{is_block_compressed, parse_threadgroup_size_metadata};
+use crate::metal::utils::parse_threadgroup_size_metadata;

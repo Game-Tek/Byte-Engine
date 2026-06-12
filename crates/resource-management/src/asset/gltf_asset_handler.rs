@@ -4,6 +4,12 @@ pub struct GLTFAssetHandler {
 	generator: Option<Arc<dyn ProgramGenerator>>,
 }
 
+impl Default for GLTFAssetHandler {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl GLTFAssetHandler {
 	pub fn new() -> GLTFAssetHandler {
 		GLTFAssetHandler {
@@ -59,7 +65,7 @@ impl AssetHandler for GLTFAssetHandler {
 				// Arena-backed source bytes borrow the bake allocator, so parsing stays in this task instead of crossing a thread boundary.
 				let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
 				let gltf = gltf::Gltf::from_slice(&glb.json).map_err(|_| LoadErrors::FailedToProcess)?;
-				let buffers = gltf::import_buffers(&gltf, None, glb.bin.as_ref().map(|b| b.iter().map(|e| *e).collect()))
+				let buffers = gltf::import_buffers(&gltf, None, glb.bin.as_ref().map(|b| b.iter().copied().collect()))
 					.map_err(|_| LoadErrors::FailedToProcess)?;
 				(gltf, buffers)
 			} else {
@@ -103,7 +109,7 @@ impl AssetHandler for GLTFAssetHandler {
 
 			let vertex_layouts = gltf
 				.meshes()
-				.map(|mesh| {
+				.flat_map(|mesh| {
 					mesh.primitives().map(|primitive| {
 						primitive
 							.attributes()
@@ -111,7 +117,6 @@ impl AssetHandler for GLTFAssetHandler {
 							.collect::<Vec<VertexComponent>>()
 					})
 				})
-				.flatten()
 				.collect::<Vec<Vec<VertexComponent>>>();
 			let vertex_layout = normalize_vertex_layouts(&vertex_layouts);
 
@@ -148,13 +153,7 @@ impl AssetHandler for GLTFAssetHandler {
 
 			let mut flat_tree = gltf
 				.scenes()
-				.map(|scene| {
-					scene
-						.nodes()
-						.map(|node| flatten_tree(maths_rs::Mat4f::identity(), node))
-						.flatten()
-				})
-				.flatten()
+				.flat_map(|scene| scene.nodes().flat_map(|node| flatten_tree(maths_rs::Mat4f::identity(), node)))
 				.collect::<Vec<(gltf::Node, maths_rs::Mat4f)>>();
 
 			for (_, transform) in &mut flat_tree {
@@ -164,7 +163,7 @@ impl AssetHandler for GLTFAssetHandler {
 
 			let primitives = flat_tree
 				.iter()
-				.filter_map(|(node, _)| node.mesh().map(|mesh| mesh.primitives().map(|primitive| primitive)))
+				.filter_map(|(node, _)| node.mesh().map(|mesh| mesh.primitives()))
 				.flatten()
 				.collect::<Vec<_>>();
 
@@ -206,7 +205,7 @@ impl AssetHandler for GLTFAssetHandler {
 			}
 
 			let primitives = flat_mesh_tree
-				.zip(materials_per_primitive.into_iter())
+				.zip(materials_per_primitive)
 				.map(|((primitive, reader, transform), material)| {
 					let triangle_indices = reader
 						.read_indices()

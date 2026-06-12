@@ -184,11 +184,11 @@ impl WindowLike for Window {
 		let _pool = unsafe { NSAutoreleasePool::new() };
 
 		let mtm = MainThreadMarker::new()
-			.ok_or_else(|| "Failed to create MainThreadMarker. Window is probably being created on a non-main thread.")?;
+			.ok_or("Failed to create MainThreadMarker. Window is probably being created on a non-main thread.")?;
 
 		let app = NSApp(mtm);
 		let scale_factor = NSScreen::mainScreen(mtm)
-			.map(|screen| screen.backingScaleFactor() as f64)
+			.map(|screen| screen.backingScaleFactor())
 			.unwrap_or(1.0);
 		let window_size = pixel_extent_to_window_points(extent, scale_factor);
 

@@ -6,6 +6,12 @@ pub struct SerialRenderPass {
 	render_passes: Vec<Box<dyn RenderPass>>,
 }
 
+impl Default for SerialRenderPass {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl SerialRenderPass {
 	pub fn new() -> Self {
 		Self {

@@ -106,15 +106,12 @@ pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 
 	write_packet_header(buffer, header)?;
 
-	match packet {
-		Packets::Data(packet) => {
-			write_connection_status(buffer, packet.connection_status)?;
+	if let Packets::Data(packet) = packet {
+		write_connection_status(buffer, packet.connection_status)?;
 
-			let mut cursor = std::io::Cursor::new(buffer);
+		let mut cursor = std::io::Cursor::new(buffer);
 
-			cursor.write(&packet.data).ok().and_then(has_written_anything)?;
-		}
-		_ => {}
+		cursor.write(&packet.data).ok().and_then(has_written_anything)?;
 	}
 
 	Some(())
@@ -127,7 +124,7 @@ pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, ()> {
 
 	cursor.read_exact(&mut protocol_id).map_err(|_| ())?;
 
-	if protocol_id != ['B' as u8, 'E' as u8, 'T' as u8, 'P' as u8] {
+	if protocol_id != [b'B', b'E', b'T', b'P'] {
 		return Err(());
 	}
 

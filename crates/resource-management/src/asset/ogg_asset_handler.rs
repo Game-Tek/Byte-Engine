@@ -9,6 +9,12 @@ use crate::{
 	types::BitDepths, ProcessedAsset,
 };
 
+impl Default for OGGAssetHandler {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl OGGAssetHandler {
 	/// Decodes an OGG Vorbis buffer into audio metadata and PCM data.
 	fn decode_ogg(data: &[u8], bit_depth: BitDepths) -> Result<(Audio, Vec<u8>), String> {

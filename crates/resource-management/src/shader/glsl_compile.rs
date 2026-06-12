@@ -4,7 +4,7 @@ pub struct CompiledShader {
 	artifact: shaderc::CompilationArtifact,
 }
 
-pub fn compile<'a>(source_code: &'a str, shader_name: &str) -> Result<CompiledShader, String> {
+pub fn compile(source_code: &str, shader_name: &str) -> Result<CompiledShader, String> {
 	let compiler = shaderc::Compiler::new().unwrap();
 	let mut options = shaderc::CompileOptions::new().unwrap();
 
@@ -23,13 +23,11 @@ pub fn compile<'a>(source_code: &'a str, shader_name: &str) -> Result<CompiledSh
 
 	match binary {
 		Ok(binary) => Ok(CompiledShader { artifact: binary }),
-		Err(err) => {
-			return Err(pretty_format_glsl_error_lines(&process_glslc_error(
-				shader_name,
-				source_code,
-				err.to_string().as_str(),
-			)));
-		}
+		Err(err) => Err(pretty_format_glsl_error_lines(&process_glslc_error(
+			shader_name,
+			source_code,
+			err.to_string().as_str(),
+		))),
 	}
 }
 
@@ -47,9 +45,9 @@ impl<'a> AsRef<[u8]> for CompiledShader {
 	}
 }
 
-impl<'a> Into<&'a [u8]> for &'a CompiledShader {
-	fn into(self) -> &'a [u8] {
-		self.artifact.as_binary_u8()
+impl<'a> From<&'a CompiledShader> for &'a [u8] {
+	fn from(val: &'a CompiledShader) -> Self {
+		val.artifact.as_binary_u8()
 	}
 }
 
@@ -98,7 +96,7 @@ pub fn process_glslc_error<'a>(shader_name: &str, source_code: &'a str, error_st
 	// Sort errors by line number
 	let mut errors = errors_by_line_number.into_iter().collect::<Vec<_>>();
 
-	errors.sort_by(|(line_number_a, _), (line_number_b, _)| line_number_a.cmp(line_number_b));
+	errors.sort_by_key(|(line_number_a, _)| *line_number_a);
 
 	errors
 		.into_iter()
@@ -185,8 +183,8 @@ pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> 
 
 pub fn pretty_format_glslang_error_string(error_string: &str, shader_name: &str, source_code: &str) -> String {
 	let error_lines = process_glslc_error(shader_name, source_code, error_string);
-	let error_string = pretty_format_glslang_errors(&error_lines, source_code).unwrap_or_else(|| error_string.to_string());
-	error_string
+
+	pretty_format_glslang_errors(&error_lines, source_code).unwrap_or_else(|| error_string.to_string())
 }
 
 #[cfg(test)]

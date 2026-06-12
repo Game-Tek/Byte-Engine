@@ -43,7 +43,7 @@ impl World {
 		transforms_tx: &mut impl Channel<TransformationUpdate>,
 	) {
 		while let Some(message) = self.body_listener.read() {
-			let handle = message.handle().clone();
+			let handle = *message.handle();
 			let body_handle = message.into_data();
 			let body = body_handle;
 

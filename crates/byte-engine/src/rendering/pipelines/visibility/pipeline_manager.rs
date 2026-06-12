@@ -355,7 +355,7 @@ impl VisibilityPipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		id: String,
 		index: u32,
-		mut pipeline: Option<ghi::PipelineHandle>,
+		pipeline: Option<ghi::PipelineHandle>,
 		pending_pipeline: Option<PendingMaterialPipeline>,
 		alpha: bool,
 		textures: Vec<Option<(String, u32)>>,
@@ -584,7 +584,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				Lights::Direction(light) => Some((index, light.direction)),
 				Lights::Point(_) => None,
 			});
-		let shadow_light_index = if sinks.is_empty() == false {
+		let shadow_light_index = if !sinks.is_empty() {
 			shadow_light.map(|(index, _)| index)
 		} else {
 			None
@@ -773,19 +773,14 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&AO_MAP_BINDING_TEMPLATE,
-				ao_map,
-				sampler.clone(),
-				ghi::Layouts::Read,
-			),
+			ghi::BindingConstructor::combined_image_sampler(&AO_MAP_BINDING_TEMPLATE, ao_map, sampler, ghi::Layouts::Read),
 		);
 		let _ = context.create_descriptor_binding(
 			material_evaluation_descriptor_set,
 			ghi::BindingConstructor::combined_image_sampler(
 				&SHADOW_MAP_BINDING_TEMPLATE,
 				shadow_map,
-				depth_sampler.clone(),
+				depth_sampler,
 				ghi::Layouts::Read,
 			),
 		);
@@ -794,7 +789,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			ghi::BindingConstructor::combined_image_sampler(
 				&VISIBILITY_DEPTH_BINDING_TEMPLATE,
 				ghi::BaseImageHandle::from(depth_target),
-				visibility_depth_sampler.clone(),
+				visibility_depth_sampler,
 				ghi::Layouts::Read,
 			),
 		);

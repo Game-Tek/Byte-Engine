@@ -28,9 +28,8 @@ impl Session {
 	}
 
 	pub fn connect(&mut self, salt: u64) {
-		match self.state {
-			State::Initial => self.state = State::InitiatingConnection { salt },
-			_ => {}
+		if let State::Initial = self.state {
+			self.state = State::InitiatingConnection { salt }
 		}
 	}
 
@@ -41,21 +40,18 @@ impl Session {
 				let salt = *salt;
 
 				for packet in packets {
-					match packet {
-						Packets::Challenge(challenge_packet) => {
-							if salt == challenge_packet.get_client_salt() {
-								let connection_id = challenge_packet.get_client_salt() ^ challenge_packet.get_server_salt();
+					if let Packets::Challenge(challenge_packet) = packet {
+						if salt == challenge_packet.get_client_salt() {
+							let connection_id = challenge_packet.get_client_salt() ^ challenge_packet.get_server_salt();
 
-								let id = connection_id;
+							let id = connection_id;
 
-								self.state = State::Connecting { id };
+							self.state = State::Connecting { id };
 
-								return Ok(vec![ChallengeResponsePacket::new(id).into()]);
-							} else {
-								return Err(());
-							}
+							return Ok(vec![ChallengeResponsePacket::new(id).into()]);
+						} else {
+							return Err(());
 						}
-						_ => {}
 					}
 				}
 
@@ -115,7 +111,7 @@ impl Session {
 				Ok(packet_buffer
 					.gather_unsent_packets_for_retry()
 					.into_iter()
-					.map(|p| Packets::Data(p))
+					.map(Packets::Data)
 					.collect())
 			}
 			State::Disconnecting { id } => {
@@ -150,9 +146,8 @@ impl Session {
 	/// The client will no longer be able to handle server packets after this.
 	/// The client will need to reconnect to the server to continue.
 	pub fn disconnect(&mut self) {
-		match self.state {
-			State::Connected { id, .. } => self.state = State::Disconnecting { id },
-			_ => {}
+		if let State::Connected { id, .. } = self.state {
+			self.state = State::Disconnecting { id }
 		}
 	}
 

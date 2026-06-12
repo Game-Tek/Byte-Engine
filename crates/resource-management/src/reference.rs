@@ -101,7 +101,7 @@ impl<'a, T: Resource + 'a> Reference<T> {
 				Err(mut reader) => {
 					let read_target = ReadTargetsMut::create_buffer(self);
 					reader
-						.read_into(self.streams.as_ref().map(|s| s.as_slice()), read_target)
+						.read_into(self.streams.as_deref(), read_target)
 						.map_err(|_| LoadResults::LoadFailed)
 				}
 			};
@@ -109,7 +109,7 @@ impl<'a, T: Resource + 'a> Reference<T> {
 
 		let mut reader = reader;
 		reader
-			.read_into(self.streams.as_ref().map(|s| s.as_slice()), read_target)
+			.read_into(self.streams.as_deref(), read_target)
 			.map_err(|_| LoadResults::LoadFailed)
 	}
 }

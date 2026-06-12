@@ -72,9 +72,9 @@ impl ElementHandle for IdedElement {
 
 /// Lays out the given elements and returns a vector of layout elements with their calculated positions and sizes for a given viewport.
 /// The relation map describes embedded elements.
-fn layout_elements<'a>(
+fn layout_elements(
 	mut elements: Vec<IdedElement>,
-	relation_map: &'a [(Id, Id)],
+	relation_map: &[(Id, Id)],
 	available_space: Size,
 	text_system: &mut TextSystem,
 ) -> Vec<LayoutElement> {
@@ -252,9 +252,9 @@ impl Default for Sizing {
 	}
 }
 
-impl Into<Sizing> for u32 {
-	fn into(self) -> Sizing {
-		Sizing::Absolute(self)
+impl From<u32> for Sizing {
+	fn from(val: u32) -> Self {
+		Sizing::Absolute(val)
 	}
 }
 

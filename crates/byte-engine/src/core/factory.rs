@@ -22,6 +22,12 @@ pub struct Factory<T: Clone + ?Sized> {
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+impl<T: Clone> Default for Factory<T> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl<T: Clone> Factory<T> {
 	pub fn new() -> Self {
 		let sender = DefaultChannel::new();

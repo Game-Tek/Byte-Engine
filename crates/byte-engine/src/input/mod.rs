@@ -67,33 +67,33 @@ pub enum Value {
 	Quaternion(Quaternion),
 }
 
-impl Into<Value> for bool {
-	fn into(self) -> Value {
-		Value::Bool(self)
+impl From<bool> for Value {
+	fn from(val: bool) -> Self {
+		Value::Bool(val)
 	}
 }
 
-impl Into<Value> for char {
-	fn into(self) -> Value {
-		Value::Unicode(self)
+impl From<char> for Value {
+	fn from(val: char) -> Self {
+		Value::Unicode(val)
 	}
 }
 
-impl Into<Value> for f32 {
-	fn into(self) -> Value {
-		Value::Float(self)
+impl From<f32> for Value {
+	fn from(val: f32) -> Self {
+		Value::Float(val)
 	}
 }
 
-impl Into<Value> for i32 {
-	fn into(self) -> Value {
-		Value::Int(self)
+impl From<i32> for Value {
+	fn from(val: i32) -> Self {
+		Value::Int(val)
 	}
 }
 
-impl Into<Value> for RGBA {
-	fn into(self) -> Value {
-		Value::Rgba(self)
+impl From<RGBA> for Value {
+	fn from(val: RGBA) -> Self {
+		Value::Rgba(val)
 	}
 }
 
@@ -109,9 +109,9 @@ impl Into<Value> for Vector3 {
 	}
 }
 
-impl Into<Value> for Quaternion {
-	fn into(self) -> Value {
-		Value::Quaternion(self)
+impl From<Quaternion> for Value {
+	fn from(val: Quaternion) -> Self {
+		Value::Quaternion(val)
 	}
 }
 
@@ -133,9 +133,9 @@ impl Value {
 	}
 }
 
-impl Into<Types> for Value {
-	fn into(self) -> Types {
-		match self {
+impl From<Value> for Types {
+	fn from(val: Value) -> Self {
+		match val {
 			Value::Bool(_) => Types::Boolean,
 			Value::Unicode(_) => Types::Unicode,
 			Value::Float(_) => Types::Float,
@@ -249,9 +249,9 @@ impl ValueMapping {
 	}
 }
 
-impl Into<ValueMapping> for bool {
-	fn into(self) -> ValueMapping {
-		ValueMapping::new(Function::Linear, self)
+impl From<bool> for ValueMapping {
+	fn from(val: bool) -> Self {
+		ValueMapping::new(Function::Linear, val)
 	}
 }
 
@@ -267,21 +267,21 @@ impl Into<ValueMapping> for Vector3 {
 	}
 }
 
-impl Into<ValueMapping> for Quaternion {
-	fn into(self) -> ValueMapping {
-		ValueMapping::new(Function::Linear, self)
+impl From<Quaternion> for ValueMapping {
+	fn from(val: Quaternion) -> Self {
+		ValueMapping::new(Function::Linear, val)
 	}
 }
 
-impl Into<ValueMapping> for f32 {
-	fn into(self) -> ValueMapping {
-		ValueMapping::new(Function::Linear, self)
+impl From<f32> for ValueMapping {
+	fn from(val: f32) -> Self {
+		ValueMapping::new(Function::Linear, val)
 	}
 }
 
-impl Into<ValueMapping> for Value {
-	fn into(self) -> ValueMapping {
-		ValueMapping::new(Function::Linear, self)
+impl From<Value> for ValueMapping {
+	fn from(val: Value) -> Self {
+		ValueMapping::new(Function::Linear, val)
 	}
 }
 
@@ -309,7 +309,7 @@ impl ActionEvent {
 	}
 
 	pub fn handle(&self) -> Handle {
-		self.handle.clone()
+		self.handle
 	}
 
 	pub fn value(&self) -> Value {

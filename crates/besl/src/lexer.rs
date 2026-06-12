@@ -118,11 +118,9 @@ pub(super) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 				root.borrow_mut().add_child(c);
 			}
 
-			return Ok(root);
+			Ok(root)
 		}
-		_ => {
-			return Err(LexError::Undefined { message: None });
-		}
+		_ => Err(LexError::Undefined { message: None }),
 	}
 }
 
@@ -397,15 +395,13 @@ impl Node {
 
 	/// Creates a scope node which is a logical container for other nodes.
 	pub fn scope(name: String) -> Node {
-		let node = Node {
+		Node {
 			// parent: None,
 			node: Nodes::Scope {
 				name,
 				children: Vec::with_capacity(16),
 			},
-		};
-
-		node
+		}
 	}
 
 	/// Creates a struct node which is a type definition.
@@ -1207,7 +1203,7 @@ fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReferenc
 	}
 
 	if type_name.contains('[') {
-		let mut parts = type_name.split(|c| c == '[' || c == ']');
+		let mut parts = type_name.split(['[', ']']);
 		let element_type_name = parts.next().ok_or(LexError::Undefined {
 			message: Some("No type name".to_string()),
 		})?;
@@ -1466,12 +1462,12 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			this
 		}
 		parser::Nodes::Struct { name, fields } => {
-			if let Some(n) = get_reference(&chain, name.as_ref()) {
+			if let Some(n) = get_reference(&chain, name) {
 				// If the type already exists, return it.
 				return Ok(n.clone());
 			}
 
-			let this: NodeReference = Node::r#struct(name.as_ref(), Vec::new()).into();
+			let this: NodeReference = Node::r#struct(name, Vec::new()).into();
 			for field in fields {
 				let field = lex_child_with_parent(&chain, &this, field)?;
 				this.borrow_mut().add_child(field);
@@ -1480,7 +1476,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			this
 		}
 		parser::Nodes::Specialization { name, r#type } => {
-			let t = resolve_type(&chain, r#type.as_ref())?;
+			let t = resolve_type(&chain, r#type)?;
 
 			let this = Node::new(Nodes::Specialization {
 				name: name.to_string(),
@@ -1491,7 +1487,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 		}
 		parser::Nodes::Member { name, r#type } => {
 			let t = if r#type.contains('<') {
-				let mut s = r#type.split(|c| c == '<' || c == '>');
+				let mut s = r#type.split(['<', '>']);
 
 				let outer_type_name = s.next().ok_or(LexError::Undefined {
 					message: Some("No outer name".to_string()),
@@ -1538,7 +1534,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 
 				return Ok(this);
 			} else if r#type.contains('[') {
-				let mut s = r#type.split(|c| c == '[' || c == ']');
+				let mut s = r#type.split(['[', ']']);
 
 				let type_name = s.next().ok_or(LexError::Undefined {
 					message: Some("No type name".to_string()),
@@ -1581,7 +1577,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			let this = Node::new(Nodes::Input {
 				name: name.to_string(),
 				format: t,
-				location: location.clone(),
+				location: *location,
 			});
 
 			this.into()
@@ -1597,7 +1593,7 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 			let this = Node::new(Nodes::Output {
 				name: name.to_string(),
 				format: t,
-				location: location.clone(),
+				location: *location,
 				count: *count,
 			});
 
@@ -1871,12 +1867,10 @@ fn lex_parsed_node<'a>(chain: Vec<NodeReference>, parser_node: &parser::Node) ->
 					right: lex_parsed_node(chain.clone(), right)?,
 				}),
 				parser::Expressions::VariableDeclaration { name, r#type } => {
-					let this = Node::expression(Expressions::VariableDeclaration {
+					Node::expression(Expressions::VariableDeclaration {
 						name: name.to_string(),
 						r#type: resolve_type(&chain, r#type)?,
-					});
-
-					this
+					})
 				}
 				parser::Expressions::RawCode {
 					glsl,

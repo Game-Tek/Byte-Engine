@@ -13,6 +13,12 @@ pub trait Channel<M> {
 #[derive(Clone)]
 pub struct DefaultChannel<M>(pub(super) Sender<M>);
 
+impl<M: Clone> Default for DefaultChannel<M> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl<M: Clone> DefaultChannel<M> {
 	pub fn new() -> Self {
 		let sender = Sender::new(128);
@@ -31,11 +37,8 @@ impl<M: Clone> DefaultChannel<M> {
 
 impl<M: Clone> Channel<M> for DefaultChannel<M> {
 	fn send(&self, message: M) {
-		match self.0.blocking_send(message) {
-			Err(BlockingSendError::Disconnected(_)) => {
-				log::debug!("No listeners for the message!");
-			}
-			_ => (),
+		if let Err(BlockingSendError::Disconnected(_)) = self.0.blocking_send(message) {
+			log::debug!("No listeners for the message!");
 		}
 	}
 }

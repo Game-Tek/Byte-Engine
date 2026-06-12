@@ -271,7 +271,7 @@ fn produce_image_in<A: Allocator + Clone>(
 				for x in 0..extent.width() {
 					let source_pixel = &source_row[(x * 6) as usize..][..6];
 					let dest_pixel = &mut dest_row[(x * 8) as usize..][..8];
-					dest_pixel[..6].copy_from_slice(&source_pixel);
+					dest_pixel[..6].copy_from_slice(source_pixel);
 					dest_pixel[6] = 0xFF;
 					dest_pixel[7] = 0xFF;
 				}

@@ -7,18 +7,13 @@ use crate::core::listener::Listener;
 use crate::core::{Entity, EntityHandle};
 use crate::space::Positionable;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum Anchorage {
 	/// The object is attached to the anchor.
+	#[default]
 	Default,
 	/// The anchorage is offset from the anchor.
 	Offset { offset: Transform },
-}
-
-impl Default for Anchorage {
-	fn default() -> Self {
-		Anchorage::Default
-	}
 }
 
 pub trait Anchoring: Positionable {
@@ -88,6 +83,12 @@ impl Anchoring for Anchor {
 #[derive(Clone)]
 pub struct AnchorSystem {
 	anchors: Vec<EntityHandle<dyn Anchoring>>,
+}
+
+impl Default for AnchorSystem {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl AnchorSystem {

@@ -23,7 +23,7 @@ impl Client {
 }
 
 impl betp::Client for Client {
-	fn connect(&mut self, current_time: std::time::Instant) -> () {
+	fn connect(&mut self, current_time: std::time::Instant) {
 		let salt = current_time.elapsed().as_nanos() as u64;
 
 		self.session.connect(salt);

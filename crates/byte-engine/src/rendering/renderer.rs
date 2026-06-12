@@ -119,7 +119,7 @@ impl Renderer {
 
 		let device = instance
 			.create_device(
-				features.clone(),
+				features,
 				&mut [
 					(
 						ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER),
@@ -195,7 +195,7 @@ impl Renderer {
 				self.pipeline_manager_resources_by_sink
 					.push((pipeline_manager_id, sink_id, consumed_resources));
 
-				if rpb.consumed_resources.len() == 0 {
+				if rpb.consumed_resources.is_empty() {
 					log::debug!("No resources consumed by scene manager");
 				}
 			}
@@ -297,7 +297,7 @@ impl Renderer {
 			let span = debug_span!("Renderer::update_camera_transforms");
 			let _enter = span.enter();
 			while let Some(message) = transforms_listener.read() {
-				let handle = message.handle().clone();
+				let handle = *message.handle();
 
 				if let Some(camera) = self
 					.cameras
@@ -386,7 +386,7 @@ impl Renderer {
 								continue;
 							};
 
-							let view = make_perspective_view_from_camera(&camera, extent);
+							let view = make_perspective_view_from_camera(camera, extent);
 							sinks.push(Sink::new(view, extent, *sink_id));
 						}
 					}
@@ -400,7 +400,7 @@ impl Renderer {
 
 							// Resize images to window extent
 							for &image in images {
-								frame.resize_image(image.into(), sink.extent());
+								frame.resize_image(image, sink.extent());
 							}
 						}
 					}
@@ -483,7 +483,7 @@ impl Renderer {
 										.unwrap_or(&[]),
 								);
 
-								(&command)(&mut *command_buffer_recording, &attachment_infos);
+								command(&mut *command_buffer_recording, &attachment_infos);
 							}
 						}
 					}
@@ -493,7 +493,7 @@ impl Renderer {
 						let _enter = span.enter();
 						for (command, _render_pass_id, sink) in render_pass_commands {
 							let attachment_infos = render_targets.get_attachment_infos(sink);
-							(&command)(&mut *command_buffer_recording, &attachment_infos);
+							command(&mut *command_buffer_recording, &attachment_infos);
 						}
 					}
 
@@ -540,7 +540,7 @@ impl Renderer {
 				let sink_id = self.windows.len();
 
 				let sink_has_camera = if let Some(camera) = camera {
-					self.sink_cameras.push((sink_id, camera.clone()));
+					self.sink_cameras.push((sink_id, *camera));
 					true
 				} else {
 					false
@@ -562,7 +562,7 @@ impl Renderer {
 						self.pipeline_manager_resources_by_sink
 							.push((pipeline_manager_id, sink_id, consumed_resources));
 
-						if rpb.consumed_resources.len() == 0 {
+						if rpb.consumed_resources.is_empty() {
 							log::debug!("No resources consumed by scene manager");
 						}
 					}
@@ -664,6 +664,12 @@ pub struct RenderTargets {
 	by_sink_index: Vec<(usize, (usize, ghi::AccessPolicies))>,
 }
 
+impl Default for RenderTargets {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl RenderTargets {
 	pub fn new() -> Self {
 		Self {
@@ -682,13 +688,13 @@ impl RenderTargets {
 	/// Inserts a new render target image, associated to a sink index.
 	/// Returns the index of the image in the internal storage.
 	pub fn insert(&mut self, name: String, sink_id: usize, image: ghi::BaseImageHandle, format: ghi::Formats) -> usize {
-		if let Some(_) = self.get_image_index(&name, sink_id) {
+		if self.get_image_index(&name, sink_id).is_some() {
 			panic!(
 				"Render target image '{name}' already exists for sink {sink_id}. The most likely cause is that two render pipeline setup paths create the same named target."
 			);
 		};
 
-		if let Some(_) = self.get_attachment_index(&name, sink_id) {
+		if self.get_attachment_index(&name, sink_id).is_some() {
 			panic!(
 				"Render target image '{name}' is already registered as an attachment for sink {sink_id}. The most likely cause is that a target was manually added to the attachment list before insertion."
 			);
@@ -703,7 +709,7 @@ impl RenderTargets {
 	}
 
 	pub fn read_from(&mut self, name: &str, sink_id: usize) {
-		if let Some(_) = self.get_attachment_index(name, sink_id) {
+		if self.get_attachment_index(name, sink_id).is_some() {
 			return;
 		}
 
@@ -718,7 +724,7 @@ impl RenderTargets {
 	}
 
 	pub fn write_to(&mut self, name: &str, sink_id: usize) {
-		if let Some(_) = self.get_attachment_index(name, sink_id) {
+		if self.get_attachment_index(name, sink_id).is_some() {
 			return;
 		}
 
@@ -825,7 +831,7 @@ impl RenderTargets {
 			.find_map(|(v, (i, _))| if *v == sink_id && *i == image_index { Some(*i) } else { None })
 	}
 
-	fn get_images_for_sink<'a>(&'a self, index: usize) -> impl Iterator<Item = &'a ghi::BaseImageHandle> {
+	fn get_images_for_sink(&self, index: usize) -> impl Iterator<Item = &ghi::BaseImageHandle> {
 		self.by_sink_index.iter().filter_map(move |(v, (i, _))| {
 			if *v != index {
 				return None;

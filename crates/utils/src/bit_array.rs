@@ -6,6 +6,15 @@ where
 	data: [u8; N / 8],
 }
 
+impl<const N: usize> Default for BitArray<N>
+where
+	[u8; N / 8]:,
+{
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl<const N: usize> BitArray<N>
 where
 	[u8; N / 8]:,

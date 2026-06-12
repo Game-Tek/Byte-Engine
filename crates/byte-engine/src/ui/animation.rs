@@ -6,6 +6,12 @@ pub struct Animation<V: Interpolate> {
 	keyframes: Vec<(f32, V)>,
 }
 
+impl<V: Interpolate> Default for Animation<V> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl<V: Interpolate> Animation<V> {
 	pub fn new() -> Self {
 		Self { keyframes: Vec::new() }

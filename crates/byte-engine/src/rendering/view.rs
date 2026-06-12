@@ -136,7 +136,7 @@ impl View {
 			corners[i] = corner / corner.w;
 		}
 
-		return corners;
+		corners
 	}
 
 	/// Returns the frustum planes of the view, in world space.

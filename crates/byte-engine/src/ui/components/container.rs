@@ -112,7 +112,7 @@ impl ContainerSettings {
 		Self { depth, ..self }
 	}
 
-	pub fn flow(self, flow: impl FlowFunction + Copy + 'static) -> Self {
+	pub fn flow(self, flow: impl FlowFunction + 'static) -> Self {
 		Self {
 			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow),
 			..self

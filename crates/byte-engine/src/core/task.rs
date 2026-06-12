@@ -18,20 +18,20 @@ impl Interval {
 	pub fn is_now(&self, elapsed_time: std::time::Duration, dt: std::time::Duration, frame: u64) -> bool {
 		match self {
 			Interval::Time(duration) => elapsed_time.as_secs_f64() % duration.as_secs_f64() < dt.as_secs_f64(),
-			Interval::Frames(frames) => frame % *frames as u64 == 0,
+			Interval::Frames(frames) => frame.is_multiple_of(*frames as u64),
 		}
 	}
 }
 
-impl Into<Interval> for std::time::Duration {
-	fn into(self) -> Interval {
-		Interval::Time(self)
+impl From<std::time::Duration> for Interval {
+	fn from(val: std::time::Duration) -> Self {
+		Interval::Time(val)
 	}
 }
 
-impl Into<Interval> for u32 {
-	fn into(self) -> Interval {
-		Interval::Frames(self)
+impl From<u32> for Interval {
+	fn from(val: u32) -> Self {
+		Interval::Frames(val)
 	}
 }
 

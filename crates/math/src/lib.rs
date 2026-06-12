@@ -319,7 +319,7 @@ pub fn inverse(m: maths_rs::Mat4f) -> maths_rs::Mat4f {
 	let det = 1.0 / det;
 
 	for i in 0..16 {
-		inv[i] = inv[i] * det;
+		inv[i] *= det;
 	}
 
 	inv

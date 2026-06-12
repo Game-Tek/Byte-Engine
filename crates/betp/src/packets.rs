@@ -42,7 +42,7 @@ pub struct PacketHeader {
 impl PacketHeader {
 	pub fn new(r#type: PacketType) -> Self {
 		Self {
-			protocol_id: [b'B', b'E', b'T', b'P'],
+			protocol_id: *b"BETP",
 			r#type,
 		}
 	}
@@ -87,9 +87,9 @@ impl Packet for ConnectionRequestPacket {
 	}
 }
 
-impl Into<Packets> for ConnectionRequestPacket {
-	fn into(self) -> Packets {
-		Packets::ConnectionRequest(self)
+impl From<ConnectionRequestPacket> for Packets {
+	fn from(val: ConnectionRequestPacket) -> Self {
+		Packets::ConnectionRequest(val)
 	}
 }
 
@@ -130,9 +130,9 @@ impl Packet for ChallengePacket {
 	}
 }
 
-impl Into<Packets> for ChallengePacket {
-	fn into(self) -> Packets {
-		Packets::Challenge(self)
+impl From<ChallengePacket> for Packets {
+	fn from(val: ChallengePacket) -> Self {
+		Packets::Challenge(val)
 	}
 }
 
@@ -163,9 +163,9 @@ impl Packet for ChallengeResponsePacket {
 	}
 }
 
-impl Into<Packets> for ChallengeResponsePacket {
-	fn into(self) -> Packets {
-		Packets::ChallengeResponse(self)
+impl From<ChallengeResponsePacket> for Packets {
+	fn from(val: ChallengeResponsePacket) -> Self {
+		Packets::ChallengeResponse(val)
 	}
 }
 
@@ -274,9 +274,9 @@ impl Packet for DisconnectPacket {
 	}
 }
 
-impl Into<Packets> for DisconnectPacket {
-	fn into(self) -> Packets {
-		Packets::Disconnect(self)
+impl From<DisconnectPacket> for Packets {
+	fn from(val: DisconnectPacket) -> Self {
+		Packets::Disconnect(val)
 	}
 }
 

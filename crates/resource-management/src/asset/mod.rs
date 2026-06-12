@@ -73,7 +73,7 @@ pub async fn read_asset_from_source<'a>(
 		}
 		_ => {
 			// Could not resolve how to get raw resource, return empty bytes
-			return Err(());
+			Err(())
 		}
 	}
 }

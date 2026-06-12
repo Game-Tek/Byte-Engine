@@ -214,7 +214,7 @@ impl GPUVertexDataManager {
 			.collect::<Vec<_>>();
 
 		let meshlets_per_primitive = primitives
-			.into_iter()
+			.iter_mut()
 			.zip(vcps.iter())
 			.scan(
 				(0, 0, 0),
@@ -241,12 +241,12 @@ impl GPUVertexDataManager {
 									let triangle_offset = *primitive_triangle_counter;
 
 									// Update vertex and triangle offsets per meshlet, relative to the primitive
-									*primitive_primitive_counter += meshlet_primitive_count as u32;
-									*primitive_triangle_counter += meshlet_triangle_count as u32;
+									*primitive_primitive_counter += meshlet_primitive_count;
+									*primitive_triangle_counter += meshlet_triangle_count;
 
 									// Update vertex, triangle and meshlet offsets per meshlet, relative to the mesh
-									*mesh_primitive_counter += meshlet_primitive_count as u32;
-									*mesh_triangle_counter += meshlet_triangle_count as u32;
+									*mesh_primitive_counter += meshlet_primitive_count;
+									*mesh_triangle_counter += meshlet_triangle_count;
 									*mesh_meshlet_counter += 1;
 
 									ShaderMeshletData {
@@ -472,7 +472,7 @@ impl GPUVertexDataManager {
 		indices: &[u16],
 		positions: &[(f32, f32, f32)],
 	) -> Result<(Vec<u16>, Vec<[u8; 3]>, Vec<ShaderMeshletData>), ()> {
-		if indices.len() % 3 != 0 {
+		if !indices.len().is_multiple_of(3) {
 			log::error!(
 				"Generated mesh indices are invalid. The most likely cause is that the mesh generator returned a triangle list whose index count is not divisible by three."
 			);

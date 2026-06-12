@@ -75,6 +75,12 @@ pub struct Generator {
 
 impl ShaderGenerator for Generator {}
 
+impl Default for Generator {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Generator {
 	pub fn new() -> Self {
 		Self {

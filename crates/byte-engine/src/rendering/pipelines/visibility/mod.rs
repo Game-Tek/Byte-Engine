@@ -618,7 +618,7 @@ fragment FragmentOutput visibility_fragment_main(FragmentIn in [[stage_in]]) {
 }
 "#;
 
-pub const VISIBILITY_PASS_FRAGMENT_SOURCE: &'static str = r#"
+pub const VISIBILITY_PASS_FRAGMENT_SOURCE: &str = r#"
 #version 450
 #pragma shader_stage(fragment)
 
@@ -801,7 +801,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 		besl::Node::binding(
 			"views",
 			besl::BindingTypes::Buffer {
-				members: vec![views_member.into()],
+				members: vec![views_member],
 			},
 			0,
 			0,
@@ -823,7 +823,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 		besl::Node::binding(
 			"material_count_buffer",
 			besl::BindingTypes::Buffer {
-				members: vec![material_count_member.into()],
+				members: vec![material_count_member],
 			},
 			1,
 			0,
@@ -834,7 +834,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 		besl::Node::binding(
 			"material_offset_buffer",
 			besl::BindingTypes::Buffer {
-				members: vec![material_offset_member.into()],
+				members: vec![material_offset_member],
 			},
 			1,
 			1,
@@ -856,7 +856,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 		besl::Node::binding(
 			"material_evaluation_dispatches",
 			besl::BindingTypes::Buffer {
-				members: vec![material_evaluation_dispatches_member.into()],
+				members: vec![material_evaluation_dispatches_member],
 			},
 			1,
 			3,

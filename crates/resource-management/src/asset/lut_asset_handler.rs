@@ -21,6 +21,12 @@ struct ParsedLut {
 /// The `LUTAssetHandler` struct bakes text lookup-table assets into LUT resources.
 pub struct LUTAssetHandler {}
 
+impl Default for LUTAssetHandler {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl LUTAssetHandler {
 	pub fn new() -> LUTAssetHandler {
 		LUTAssetHandler {}

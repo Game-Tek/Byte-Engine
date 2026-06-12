@@ -33,15 +33,15 @@ impl<'a> Builder<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct BufferHandle(pub(crate) u64);
 
-impl Into<graphics_hardware_interface::Handles> for BufferHandle {
-	fn into(self) -> graphics_hardware_interface::Handles {
-		graphics_hardware_interface::Handles::Buffer(graphics_hardware_interface::BaseBufferHandle(self.0))
+impl From<BufferHandle> for graphics_hardware_interface::Handles {
+	fn from(val: BufferHandle) -> Self {
+		graphics_hardware_interface::Handles::Buffer(graphics_hardware_interface::BaseBufferHandle(val.0))
 	}
 }
 
-impl Into<PrivateHandles> for BufferHandle {
-	fn into(self) -> PrivateHandles {
-		PrivateHandles::Buffer(self)
+impl From<BufferHandle> for PrivateHandles {
+	fn from(val: BufferHandle) -> Self {
+		PrivateHandles::Buffer(val)
 	}
 }
 

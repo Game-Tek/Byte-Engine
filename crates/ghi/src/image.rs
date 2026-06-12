@@ -78,9 +78,9 @@ impl<'a> Builder<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ImageHandle(pub(crate) u64);
 
-impl Into<PrivateHandles> for ImageHandle {
-	fn into(self) -> PrivateHandles {
-		PrivateHandles::Image(self)
+impl From<ImageHandle> for PrivateHandles {
+	fn from(val: ImageHandle) -> Self {
+		PrivateHandles::Image(val)
 	}
 }
 

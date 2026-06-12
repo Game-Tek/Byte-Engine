@@ -3,9 +3,9 @@ use crate::{HandleLike, Next, PrivateHandle, PrivateHandles, Synchronizer};
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SynchronizerHandle(pub(crate) u64);
 
-impl Into<PrivateHandles> for SynchronizerHandle {
-	fn into(self) -> PrivateHandles {
-		PrivateHandles::Synchronizer(self)
+impl From<SynchronizerHandle> for PrivateHandles {
+	fn from(val: SynchronizerHandle) -> Self {
+		PrivateHandles::Synchronizer(val)
 	}
 }
 

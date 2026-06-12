@@ -132,7 +132,7 @@ where
 	fn root(&self, collection: &[Self::Item]) -> Self {
 		let handle_option = Some(*self);
 
-		return if let Some(e) = collection
+		if let Some(e) = collection
 			.iter()
 			.enumerate()
 			.find(|(_, e)| e.next() == handle_option)
@@ -141,7 +141,7 @@ where
 			e.root(collection)
 		} else {
 			handle_option.unwrap()
-		};
+		}
 	}
 
 	fn get_all(&self, collection: &[Self::Item]) -> SmallVec<[Self; MAX_FRAMES_IN_FLIGHT]> {

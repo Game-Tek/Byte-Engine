@@ -7,9 +7,9 @@ pub enum Color {
 	Sample(String),
 }
 
-impl Into<Color> for RGBA {
-	fn into(self) -> Color {
-		Color::Value(self)
+impl From<RGBA> for Color {
+	fn from(val: RGBA) -> Self {
+		Color::Value(val)
 	}
 }
 
@@ -79,9 +79,9 @@ impl Layer for ConcreteLayer {
 	}
 }
 
-impl Into<ConcreteStyle> for ConcreteLayer {
-	fn into(self) -> ConcreteStyle {
-		ConcreteStyle { layers: vec![self] }
+impl From<ConcreteLayer> for ConcreteStyle {
+	fn from(val: ConcreteLayer) -> Self {
+		ConcreteStyle { layers: vec![val] }
 	}
 }
 

@@ -24,6 +24,12 @@ pub struct PNGAssetHandler {
 	transformations: png::Transformations,
 }
 
+impl Default for PNGAssetHandler {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl PNGAssetHandler {
 	pub fn new() -> PNGAssetHandler {
 		PNGAssetHandler {
@@ -114,7 +120,7 @@ impl AssetHandler for PNGAssetHandler {
 			let DecodedImage { data, description } = decoded;
 
 			let (asset, data) = process_image_in(url, description, data, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
-			Ok((asset, data.iter().copied().collect::<Vec<_>>().into_boxed_slice()))
+			Ok((asset, data.to_vec().into_boxed_slice()))
 		})
 	}
 }

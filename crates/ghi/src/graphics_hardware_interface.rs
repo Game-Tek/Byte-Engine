@@ -133,21 +133,21 @@ pub struct AllocationHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TextureCopyHandle(pub(crate) u64);
 
-impl<T: Copy> Into<BaseBufferHandle> for BufferHandle<T> {
-	fn into(self) -> BaseBufferHandle {
-		self.0
+impl<T: Copy> From<BufferHandle<T>> for BaseBufferHandle {
+	fn from(val: BufferHandle<T>) -> Self {
+		val.0
 	}
 }
 
-impl<T: Copy> Into<BaseBufferHandle> for DynamicBufferHandle<T> {
-	fn into(self) -> BaseBufferHandle {
-		self.0
+impl<T: Copy> From<DynamicBufferHandle<T>> for BaseBufferHandle {
+	fn from(val: DynamicBufferHandle<T>) -> Self {
+		val.0
 	}
 }
 
-impl Into<Handles> for DynamicImageHandle {
-	fn into(self) -> Handles {
-		self.0.into()
+impl From<DynamicImageHandle> for Handles {
+	fn from(val: DynamicImageHandle) -> Self {
+		val.0.into()
 	}
 }
 
@@ -171,21 +171,21 @@ pub enum Handles {
 	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
-impl Into<Handles> for BaseBufferHandle {
-	fn into(self) -> Handles {
-		Handles::Buffer(self)
+impl From<BaseBufferHandle> for Handles {
+	fn from(val: BaseBufferHandle) -> Self {
+		Handles::Buffer(val)
 	}
 }
 
-impl Into<Handles> for ImageHandle {
-	fn into(self) -> Handles {
-		Handles::Image(self)
+impl From<ImageHandle> for Handles {
+	fn from(val: ImageHandle) -> Self {
+		Handles::Image(val)
 	}
 }
 
-impl Into<Handles> for SynchronizerHandle {
-	fn into(self) -> Handles {
-		Handles::Synchronizer(self)
+impl From<SynchronizerHandle> for Handles {
+	fn from(val: SynchronizerHandle) -> Self {
+		Handles::Synchronizer(val)
 	}
 }
 
@@ -319,17 +319,12 @@ pub struct RGBAu8 {
 	a: u8,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum PresentationModes {
 	Inmediate,
+	#[default]
 	FIFO,
 	Mailbox,
-}
-
-impl Default for PresentationModes {
-	fn default() -> Self {
-		Self::FIFO
-	}
 }
 
 #[derive(Clone, Copy)]

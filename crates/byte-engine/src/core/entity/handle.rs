@@ -97,11 +97,7 @@ impl<T: ?Sized> Handle<T> {
 	}
 
 	pub fn try_map_mut<'a, R>(&mut self, function: impl FnOnce(&mut T) -> R) -> Option<R> {
-		if let Some(e) = Arc::get_mut(&mut self.container) {
-			Some(function(e))
-		} else {
-			None
-		}
+		Arc::get_mut(&mut self.container).map(function)
 	}
 }
 
@@ -109,6 +105,6 @@ impl<T: ?Sized> Deref for Handle<T> {
 	type Target = T;
 
 	fn deref(&self) -> &Self::Target {
-		&*self.container
+		&self.container
 	}
 }

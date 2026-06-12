@@ -259,9 +259,9 @@ impl SerializableResource {
 	}
 }
 
-impl<M: Model> Into<ReferenceModel<M>> for SerializableResource {
-	fn into(self) -> ReferenceModel<M> {
-		ReferenceModel::new_serialized(&self.id, self.hash, self.size, self.resource, self.streams)
+impl<M: Model> From<SerializableResource> for ReferenceModel<M> {
+	fn from(val: SerializableResource) -> Self {
+		ReferenceModel::new_serialized(&val.id, val.hash, val.size, val.resource, val.streams)
 	}
 }
 

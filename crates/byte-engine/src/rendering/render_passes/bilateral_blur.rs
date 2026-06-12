@@ -129,14 +129,14 @@ impl BilateralBlurPass {
 			descriptor_set_x,
 			ghi::BindingConstructor::combined_image_sampler(
 				&BLUR_DEPTH_BINDING,
-				depth_image.clone(),
-				depth_sampler.clone(),
+				depth_image,
+				depth_sampler,
 				ghi::Layouts::Read,
 			),
 		);
 		context.create_descriptor_binding(
 			descriptor_set_x,
-			ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, source, sampler.clone(), ghi::Layouts::Read),
+			ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, source, sampler, ghi::Layouts::Read),
 		);
 		context.create_descriptor_binding(
 			descriptor_set_x,
@@ -147,19 +147,14 @@ impl BilateralBlurPass {
 			descriptor_set_y,
 			ghi::BindingConstructor::combined_image_sampler(
 				&BLUR_DEPTH_BINDING,
-				depth_image.clone(),
-				depth_sampler.clone(),
+				depth_image,
+				depth_sampler,
 				ghi::Layouts::Read,
 			),
 		);
 		context.create_descriptor_binding(
 			descriptor_set_y,
-			ghi::BindingConstructor::combined_image_sampler(
-				&BLUR_SOURCE_BINDING,
-				x_blur_map,
-				sampler.clone(),
-				ghi::Layouts::Read,
-			),
+			ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, x_blur_map, sampler, ghi::Layouts::Read),
 		);
 		context.create_descriptor_binding(
 			descriptor_set_y,
@@ -204,7 +199,7 @@ impl RenderPass for BilateralBlurPass {
 	}
 }
 
-const BLUR_SHADER: &'static str = r#"
+const BLUR_SHADER: &str = r#"
 #version 460 core
 #pragma shader_stage(compute)
 

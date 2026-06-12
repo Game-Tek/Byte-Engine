@@ -21,6 +21,12 @@ pub struct Remote {
 	receive_sequence_buffer: [u16; PACKET_HISTORY],
 }
 
+impl Default for Remote {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Remote {
 	pub fn new() -> Self {
 		Self {

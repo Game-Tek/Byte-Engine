@@ -155,7 +155,7 @@ impl Shapes {
 					r2 - rz2,
 				);
 
-				let inertia = Matrix3::new(
+				Matrix3::new(
 					tensor[0] + pat_tensor[0],
 					tensor[1] + pat_tensor[1],
 					tensor[2] + pat_tensor[2],
@@ -165,9 +165,7 @@ impl Shapes {
 					pat_tensor[6],
 					pat_tensor[7],
 					tensor[8] + pat_tensor[8],
-				);
-
-				inertia
+				)
 			}
 			Self::ConvexHull { bounds, .. } => Shapes::cube(bounds.size() * 0.5).inertia_tensor(),
 		}
@@ -210,9 +208,8 @@ pub fn highest_point_speed(
 	points
 		.map(|e| {
 			let linear_velocity = cross(angular_velocity, e);
-			let speed = dot(direction, linear_velocity);
 
-			speed
+			dot(direction, linear_velocity)
 		})
 		.max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }
@@ -291,9 +288,8 @@ fn signed_distance_from_triangle(a: Vector3, b: Vector3, c: Vector3, pt: Vector3
 	}
 
 	let ray = pt - a;
-	let distance = dot(ray, normal);
 
-	distance
+	dot(ray, normal)
 }
 
 /// Finds the point furthest from the given triangle along the given direction.
@@ -459,7 +455,7 @@ pub fn add_point_to_hull(hull_vertices: &mut Vec<Vector3>, hull_triangles: &mut 
 
 	let unique_edges: Vec<(usize, usize)> = facing_tris
 		.iter()
-		.map(|&idx| {
+		.flat_map(|&idx| {
 			let (a, b, c) = hull_triangles[idx];
 
 			let ab = (a, b);
@@ -467,15 +463,13 @@ pub fn add_point_to_hull(hull_vertices: &mut Vec<Vector3>, hull_triangles: &mut 
 			let ca = (c, a);
 
 			[
-				is_edge_unique(&hull_triangles, &facing_tris, idx, ab).then_some(ab),
-				is_edge_unique(&hull_triangles, &facing_tris, idx, bc).then_some(bc),
-				is_edge_unique(&hull_triangles, &facing_tris, idx, ca).then_some(ca),
+				is_edge_unique(hull_triangles, &facing_tris, idx, ab).then_some(ab),
+				is_edge_unique(hull_triangles, &facing_tris, idx, bc).then_some(bc),
+				is_edge_unique(hull_triangles, &facing_tris, idx, ca).then_some(ca),
 			]
 			.into_iter()
 		})
 		.flatten()
-		.filter(Option::is_some)
-		.map(Option::unwrap)
 		.collect();
 
 	// Remove old facing tris
@@ -527,7 +521,7 @@ pub fn build_convex_hull(vertices: &[Vector3]) -> Option<(Vec<Vector3>, Vec<(usi
 		return None;
 	}
 
-	let tetrahedron = build_tetrahedron(vertices.iter().map(|v| *v))?;
+	let tetrahedron = build_tetrahedron(vertices.iter().copied())?;
 
 	let mut hull_vertices = tetrahedron.0;
 	let mut hull_triangles = tetrahedron.1;

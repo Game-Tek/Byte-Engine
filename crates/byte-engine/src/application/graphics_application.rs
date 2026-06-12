@@ -179,7 +179,7 @@ impl GraphicsApplication {
 
 			for window_events in renderer.update_windows() {
 				for event in window_events {
-					if let ghi::window::Events::Close { .. } = event {
+					if let ghi::window::Events::Close = event {
 						close = true;
 					}
 
@@ -288,7 +288,7 @@ impl GraphicsApplication {
 			}
 
 			for message in camera_messages {
-				self.renderer.create_camera(message.handle().clone(), message.into_data());
+				self.renderer.create_camera(*message.handle(), message.into_data());
 			}
 		}
 
@@ -324,7 +324,7 @@ impl GraphicsApplication {
 			}
 		}
 
-		(!close).then(|| result)
+		(!close).then_some(result)
 	}
 
 	/// Flags the application for closing.
@@ -423,11 +423,7 @@ impl Parameters for GraphicsApplication {
 /// A window is created with the application name.
 pub fn default_setup(application: &mut GraphicsApplication) {
 	{
-		let generator = {
-			let visibility_shader_generation =
-				VisibilityShaderGenerator::new(false, false, false, false, false, false, true, false);
-			visibility_shader_generation
-		};
+		let generator = { VisibilityShaderGenerator::new(false, false, false, false, false, false, true, false) };
 
 		setup_default_resource_and_asset_management(application, generator);
 	}
@@ -532,7 +528,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 			sinks: &[rendering::Sink],
 		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction + 'a>>> {
 			while let Some(message) = self.mesh_receiver.read() {
-				let handle = message.handle().clone();
+				let handle = *message.handle();
 
 				self.pipeline_manager.create_mesh(frame, handle, message.into_data());
 			}
@@ -596,9 +592,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 				let mut started_frame_count = 0;
 
 				loop {
-					match application_events.try_recv() {
-						Ok(Events::Close) => break,
-						_ => {}
+					if let Ok(Events::Close) = application_events.try_recv() {
+						break;
 					}
 
 					let started_frame = transfer_queue.start_frame(started_frame_count as _, transfer_finished_synchronizer);
@@ -866,7 +861,7 @@ pub fn setup_default_dmx(application: &mut GraphicsApplication, mut rx: DefaultL
 				})
 				.write_to_buffer()
 				.unwrap();
-				socket.send_to(&buff, &target).unwrap();
+				socket.send_to(&buff, target).unwrap();
 
 				socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
 
@@ -1005,18 +1000,8 @@ pub fn process_default_window_input(
 	input::input_manager::TriggerReference,
 	input::Value,
 )> {
-	let mouse_device_handle = input_system
-		.get_devices_by_class_name("Mouse")
-		.unwrap()
-		.get(0)
-		.unwrap()
-		.clone();
-	let keyboard_device_handle = input_system
-		.get_devices_by_class_name("Keyboard")
-		.unwrap()
-		.get(0)
-		.unwrap()
-		.clone();
+	let mouse_device_handle = *input_system.get_devices_by_class_name("Mouse").unwrap().first().unwrap();
+	let keyboard_device_handle = *input_system.get_devices_by_class_name("Keyboard").unwrap().first().unwrap();
 	let seat_handle = input::SeatHandle::stub();
 
 	let r = match event {
@@ -1134,11 +1119,8 @@ trait LogResult {
 
 impl<T> LogResult for Result<T, &'static str> {
 	fn warn(self) -> Self {
-		match &self {
-			Err(error) => {
-				log::warn!("{}", error);
-			}
-			_ => {}
+		if let Err(error) = &self {
+			log::warn!("{}", error);
 		}
 
 		self
@@ -1147,11 +1129,8 @@ impl<T> LogResult for Result<T, &'static str> {
 
 impl<T> LogResult for Result<T, String> {
 	fn warn(self) -> Self {
-		match &self {
-			Err(error) => {
-				log::warn!("{}", error);
-			}
-			_ => {}
+		if let Err(error) = &self {
+			log::warn!("{}", error);
 		}
 
 		self

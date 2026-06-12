@@ -795,10 +795,10 @@ mod tests {
 	}
 }
 
-impl<T: Copy> Into<BufferDescriptor> for BufferHandle<T> {
-	fn into(self) -> BufferDescriptor {
+impl<T: Copy> From<BufferHandle<T>> for BufferDescriptor {
+	fn from(val: BufferHandle<T>) -> Self {
 		BufferDescriptor {
-			buffer: self.into(),
+			buffer: val.into(),
 			offset: 0,
 			index_type: None,
 		}

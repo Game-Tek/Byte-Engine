@@ -103,7 +103,7 @@ pub trait Context: ContextCreate {
 	) -> SwapchainHandle;
 
 	/// Returns CPU-visible bytes previously copied from an image.
-	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8];
+	fn get_image_data(&self, texture_copy_handle: TextureCopyHandle) -> &[u8];
 
 	/// Resizes a dynamic buffer to the specified size.
 	fn resize_buffer<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize);

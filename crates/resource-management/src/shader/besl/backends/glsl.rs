@@ -310,7 +310,7 @@ impl Generator {
 				}
 				string.push_str("ivec2(");
 				self.emit_node_string(string, &arguments[1]);
-				string.push_str(")");
+				string.push(')');
 				if self.minified {
 					string.push(',');
 				} else {
@@ -363,7 +363,7 @@ impl Generator {
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
 	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
 	fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
-		let node = RefCell::borrow(&this_node);
+		let node = RefCell::borrow(this_node);
 		let formatting = ShaderFormatting::new(self.minified);
 
 		let break_char = formatting.break_str();
@@ -395,7 +395,7 @@ impl Generator {
 
 				for member in members {
 					formatting.push_indentation(string, 1);
-					self.emit_node_string(string, &member);
+					self.emit_node_string(string, member);
 					formatting.push_statement_end(string);
 				}
 
@@ -417,36 +417,31 @@ impl Generator {
 				let t = r#type.get_name().unwrap();
 				let type_name = Self::translate_type(t);
 
-				match r#type.node() {
-					besl::Nodes::Struct { fields, .. } => {
-						for (i, field) in fields.iter().enumerate() {
-							match field.borrow().node() {
-								besl::Nodes::Member {
-									name: member_name,
-									r#type,
-									..
-								} => {
-									let member_name = format!("{}_{}", name, { member_name });
-									string.push_str(&format!(
-										"layout(constant_id={})const {} {}={};{}",
-										i,
-										Self::translate_type(&r#type.borrow().get_name().unwrap()),
-										&member_name,
-										"1.0f",
-										if !self.minified { "\n" } else { "" }
-									));
-									members.push(member_name);
-								}
-								_ => {}
-							}
+				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
+					for (i, field) in fields.iter().enumerate() {
+						if let besl::Nodes::Member {
+							name: member_name,
+							r#type,
+							..
+						} = field.borrow().node()
+						{
+							let member_name = format!("{}_{}", name, { member_name });
+							string.push_str(&format!(
+								"layout(constant_id={})const {} {}={};{}",
+								i,
+								Self::translate_type(r#type.borrow().get_name().unwrap()),
+								member_name,
+								"1.0f",
+								if !self.minified { "\n" } else { "" }
+							));
+							members.push(member_name);
 						}
 					}
-					_ => {}
 				}
 
 				string.push_str(&format!(
 					"const {} {}={};{}",
-					&type_name,
+					type_name,
 					name,
 					format!("{}({})", &type_name, members.join(",")),
 					if !self.minified { "\n" } else { "" }
@@ -474,7 +469,7 @@ impl Generator {
 			besl::Nodes::Parameter { name, r#type } => self.emit_parameter_node(string, name, r#type),
 			besl::Nodes::Input { name, location, format } => {
 				let format = format.borrow();
-				let type_name = Self::translate_type(&format.get_name().unwrap());
+				let type_name = Self::translate_type(format.get_name().unwrap());
 				let is_flat = type_name == "int8_t"
 					|| type_name == "uint8_t"
 					|| type_name == "int16_t"
@@ -488,7 +483,7 @@ impl Generator {
 				string.push_str(&format!(
 					"layout(location={}){space_char}{}in {} {};{break_char}",
 					location,
-					if is_flat { format!("flat{space_char}") } else { format!("") },
+					if is_flat { format!("flat{space_char}") } else { String::new() },
 					type_name,
 					name
 				));
@@ -503,7 +498,7 @@ impl Generator {
 					string.push_str(&format!(
 						"layout(location={}){space_char}perprimitiveEXT out {} {}[{}];{break_char}",
 						location,
-						Self::translate_type(&format.borrow().get_name().unwrap()),
+						Self::translate_type(format.borrow().get_name().unwrap()),
 						name,
 						count
 					));
@@ -511,7 +506,7 @@ impl Generator {
 					string.push_str(&format!(
 						"layout(location={}){space_char}out {} {};{break_char}",
 						location,
-						Self::translate_type(&format.borrow().get_name().unwrap()),
+						Self::translate_type(format.borrow().get_name().unwrap()),
 						name
 					));
 				}
@@ -556,7 +551,7 @@ impl Generator {
 					besl::BindingTypes::Image { format } => {
 						if format != "unknown" {
 							string.push(',');
-							string.push_str(&format);
+							string.push_str(format);
 						}
 					}
 					besl::BindingTypes::CombinedImageSampler { .. } => {}
@@ -581,21 +576,18 @@ impl Generator {
 					}
 				}
 
-				match r#type {
-					besl::BindingTypes::Buffer { members } => {
-						string.push_str(&format!("_{}{{", name));
+				if let besl::BindingTypes::Buffer { members } = r#type {
+					string.push_str(&format!("_{}{{", name));
 
-						for member in members.iter() {
-							self.emit_node_string(string, &member);
-							self.emit_statement_end(string);
-						}
-
-						string.push_str("}");
+					for member in members.iter() {
+						self.emit_node_string(string, member);
+						self.emit_statement_end(string);
 					}
-					_ => {}
+
+					string.push('}');
 				}
 
-				string.push_str(&name);
+				string.push_str(name);
 
 				if let Some(count) = count {
 					string.push('[');
@@ -607,19 +599,19 @@ impl Generator {
 			}
 			besl::Nodes::Intrinsic { elements, .. } => {
 				for element in elements {
-					self.emit_node_string(string, &element);
+					self.emit_node_string(string, element);
 				}
 			}
 			besl::Nodes::Literal { value, .. } => {
-				self.emit_node_string(string, &value);
+				self.emit_node_string(string, value);
 			}
 			besl::Nodes::Const { name, r#type, value } => {
 				string.push_str("const ");
-				Self::emit_type_name(string, &r#type.borrow().get_name().unwrap());
+				Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
 				string.push(' ');
 				string.push_str(name);
 				string.push_str(" = ");
-				self.emit_node_string(string, &value);
+				self.emit_node_string(string, value);
 				string.push_str(&format!(";{break_char}"));
 			}
 		}

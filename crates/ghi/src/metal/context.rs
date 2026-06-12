@@ -192,7 +192,7 @@ impl Context {
 			.as_ref()
 			.map(|staging| staging.contents().as_ptr() as *mut u8)
 			.unwrap_or_else(|| buffer.contents().as_ptr() as *mut u8);
-		let gpu_address = buffer.gpuAddress() as u64;
+		let gpu_address = buffer.gpuAddress();
 		let staging = staging.map(|staging| {
 			let mut creator = self.buffers.creator();
 			let handle = creator.add(buffer::Buffer {
@@ -1181,11 +1181,7 @@ impl Context {
 			} => {
 				let data = DispatchData::from_bytes(binary);
 				let library = self.device.newLibraryWithData_error(&data).map_err(|error| {
-					eprintln!(
-						"Metal shader library load failed: {}",
-						error.localizedDescription().to_string()
-					);
-					()
+					eprintln!("Metal shader library load failed: {}", error.localizedDescription());
 				})?;
 
 				(Some(library), Some(entry_point.to_owned()), threadgroup_size)
@@ -1203,11 +1199,7 @@ impl Context {
 					.device
 					.newLibraryWithSource_options_error(&source, Some(&compile_options))
 					.map_err(|error| {
-						eprintln!(
-							"Metal shader compilation failed: {}",
-							error.localizedDescription().to_string()
-						);
-						()
+						eprintln!("Metal shader compilation failed: {}", error.localizedDescription());
 					})?;
 
 				(Some(library), Some(entry_point.to_owned()), threadgroup_size)
@@ -1258,10 +1250,7 @@ impl Context {
 		library
 			.newFunctionWithName_constantValues_error(&entry_point, &constant_values)
 			.map_err(|error| {
-				eprintln!(
-					"Metal shader specialization failed: {}",
-					error.localizedDescription().to_string()
-				);
+				eprintln!("Metal shader specialization failed: {}", error.localizedDescription());
 			})
 			.ok()
 	}
@@ -1358,7 +1347,7 @@ impl Context {
 		);
 		self.descriptor_sets_layouts.push(DescriptorSetLayout {
 			bindings,
-			encoded_length: argument_encoder.encodedLength() as usize,
+			encoded_length: argument_encoder.encodedLength(),
 			argument_encoder,
 		});
 		graphics_hardware_interface::DescriptorSetTemplateHandle((self.descriptor_sets_layouts.len() - 1) as u64)
@@ -1715,7 +1704,7 @@ impl Context {
 				.unwrap_or_else(|error| {
 					panic!(
 						"Metal mesh raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the raster pipeline descriptor.",
-						error.localizedDescription().to_string(),
+						error.localizedDescription(),
 					)
 				})
 				.into()
@@ -1734,7 +1723,7 @@ impl Context {
 				.unwrap_or_else(|error| {
 					panic!(
 						"Metal raster pipeline creation failed: {}. The most likely cause is invalid shader functions or render-target state in the raster pipeline descriptor.",
-						error.localizedDescription().to_string(),
+						error.localizedDescription(),
 					)
 				})
 				.into()
@@ -2047,7 +2036,7 @@ impl Context {
 			.staging
 			.map(|staging_handle| self.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
-		unsafe { std::mem::transmute(buffer.pointer) }
+		unsafe { &mut *(buffer.pointer as *mut T) }
 	}
 
 	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
@@ -2339,7 +2328,7 @@ impl Context {
 		handle
 	}
 
-	pub fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {
+	pub fn get_image_data(&self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
 		self.texture_copies
 			.get(texture_copy_handle.0 as usize)
 			.map(|data| data.as_slice())
@@ -2534,7 +2523,7 @@ impl crate::context::Context for Context {
 		Context::bind_to_window(self, window_os_handles, presentation_mode, fallback_extent, uses)
 	}
 
-	fn get_image_data<'a>(&'a self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &'a [u8] {
+	fn get_image_data(&self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
 		Context::get_image_data(self, texture_copy_handle)
 	}
 

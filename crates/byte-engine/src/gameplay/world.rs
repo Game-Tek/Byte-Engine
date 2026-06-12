@@ -25,6 +25,12 @@ pub struct DefaultWorld {
 	physics_system: dynabit::World,
 }
 
+impl Default for DefaultWorld {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl DefaultWorld {
 	pub fn new() -> Self {
 		let body_factory = Factory::new();

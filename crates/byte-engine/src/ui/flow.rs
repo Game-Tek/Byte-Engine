@@ -48,9 +48,9 @@ impl Add for Offset {
 	}
 }
 
-impl Into<Location> for Offset {
-	fn into(self) -> Location {
-		Location(self.0 as u32, self.1 as u32)
+impl From<Offset> for Location {
+	fn from(val: Offset) -> Self {
+		Location(val.0 as u32, val.1 as u32)
 	}
 }
 
@@ -78,15 +78,15 @@ impl Add for Location {
 	}
 }
 
-impl Into<Offset> for Location {
-	fn into(self) -> Offset {
-		Offset(self.0 as i32, self.1 as i32)
+impl From<Location> for Offset {
+	fn from(val: Location) -> Self {
+		Offset(val.0 as i32, val.1 as i32)
 	}
 }
 
-impl Into<(u32, u32)> for Location {
-	fn into(self) -> (u32, u32) {
-		(self.0, self.1)
+impl From<Location> for (u32, u32) {
+	fn from(val: Location) -> Self {
+		(val.0, val.1)
 	}
 }
 

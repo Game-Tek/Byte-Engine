@@ -412,22 +412,19 @@ impl<'a> Node<'a> {
 	pub(crate) fn sort(&mut self) {
 		// Place main function node at the end
 
-		match &mut self.node {
-			Nodes::Scope { children, .. } => {
-				// Only sort scopes
-				// Place main function node at the end
-				children.sort_by(|a, b| {
-					if a.name() == Some("main") {
-						std::cmp::Ordering::Greater
-					} else if b.name() == Some("main") {
-						std::cmp::Ordering::Less
-					} else {
-						std::cmp::Ordering::Equal
-					}
-				});
-				children.iter_mut().for_each(|n| n.sort()); // Recursively sort children
-			}
-			_ => {}
+		if let Nodes::Scope { children, .. } = &mut self.node {
+			// Only sort scopes
+			// Place main function node at the end
+			children.sort_by(|a, b| {
+				if a.name() == Some("main") {
+					std::cmp::Ordering::Greater
+				} else if b.name() == Some("main") {
+					std::cmp::Ordering::Less
+				} else {
+					std::cmp::Ordering::Equal
+				}
+			});
+			children.iter_mut().for_each(|n| n.sort()); // Recursively sort children
 		}
 	}
 }
@@ -863,7 +860,7 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 					let right = atoms_to_node(&atoms[i + 1..]);
 					Node {
 						node: Nodes::Expression(Expressions::Operator {
-							name: *name,
+							name,
 							left: Box::new(left),
 							right: Box::new(right),
 						}),
@@ -872,14 +869,14 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 				Atoms::FunctionCall { name, parameters } => {
 					let parameters = parameters.iter().map(|v| atoms_to_node(v)).collect::<Vec<_>>();
 					Node {
-						node: Nodes::Expression(Expressions::Call { name: *name, parameters }),
+						node: Nodes::Expression(Expressions::Call { name, parameters }),
 					}
 				}
 				Atoms::Literal { value } => Node {
-					node: Nodes::Expression(Expressions::Literal { value: *value }),
+					node: Nodes::Expression(Expressions::Literal { value }),
 				},
 				Atoms::Member { name } => Node {
-					node: Nodes::Expression(Expressions::Member { name: *name }),
+					node: Nodes::Expression(Expressions::Member { name }),
 				},
 				_ => panic!("Unexpected atom in const expression"),
 			}
@@ -909,20 +906,20 @@ fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Feat
 	if let Some(&&n) = iterator.clone().peekable().peek() {
 		if n == "<" {
 			iterator.next();
-			r#type.push_str("<");
+			r#type.push('<');
 			let next = iterator.next().ok_or(ParsingFailReasons::BadSyntax {
 				message: format!("Expected to find type while parsing generic argument for member {}", name),
 			})?;
 			r#type.push_str(next.as_ref());
 			iterator.next();
-			r#type.push_str(">");
+			r#type.push('>');
 		}
 	}
 
 	let node = Node::member(name, &r#type);
 
 	iterator.next().ok_or(ParsingFailReasons::BadSyntax {
-		message: format!("Expected semicolon"),
+		message: "Expected semicolon".to_string(),
 	})?; // Skip semicolon
 
 	Ok(((node), iterator))
@@ -935,18 +932,18 @@ fn parse_macro<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> FeaturePa
 	iter.next_str("[")?;
 	iter.next_identifier().map_err(|e| match e {
 		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-			message: format!("Expected to find macro name after #[."),
+			message: "Expected to find macro name after #[.".to_string(),
 		},
 		_ => e,
 	})?;
 	iter.next_str("]").map_err(|e| match e {
 		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
-			message: format!("Expected to find ] after macro name."),
+			message: "Expected to find ] after macro name.".to_string(),
 		},
 		_ => e,
 	})?;
 
-	Ok((make_scope("MACRO", vec![]).into(), iter))
+	Ok((make_scope("MACRO", vec![]), iter))
 }
 
 fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
@@ -998,7 +995,7 @@ fn parse_struct<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Feat
 			type_name.to_string()
 		};
 
-		fields.push(make_member(v, &type_name).into());
+		fields.push(make_member(v, &type_name));
 	}
 
 	let node = Node::r#struct(name, fields);
@@ -1121,7 +1118,7 @@ fn parse_index_accessor<'i, 'a: 'i>(
 }
 
 fn is_number_literal(s: &str) -> bool {
-	s.chars().all(|c| c.is_digit(10) || c == '.')
+	s.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 fn parse_literal<'i, 'a: 'i>(
@@ -1205,15 +1202,13 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 					.filter(|remaining| !remaining.is_empty())
 					.map(|remaining| Box::new(expression_atoms_to_node(remaining))),
 			}),
-		}
-		.into();
+		};
 	}
 
 	if matches!(atoms.first(), Some(Atoms::Continue)) {
 		return Node {
 			node: Nodes::Expression(Expressions::Continue),
-		}
-		.into();
+		};
 	}
 
 	let max_precedence_item = atoms.iter().enumerate().max_by_key(|(_, v)| v.precedence());
@@ -1232,7 +1227,7 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 
 				Node {
 					node: Nodes::Expression(Expressions::Operator {
-						name: *name,
+						name,
 						left: Box::new(left),
 						right: Box::new(right),
 					}),
@@ -1254,23 +1249,19 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 				let parameters = parameters.iter().map(|v| expression_atoms_to_node(v)).collect::<Vec<_>>();
 
 				Node {
-					node: Nodes::Expression(Expressions::Call { name: *name, parameters }),
+					node: Nodes::Expression(Expressions::Call { name, parameters }),
 				}
 			}
 			Atoms::Literal { value } => Node {
-				node: Nodes::Expression(Expressions::Literal { value: *value }),
+				node: Nodes::Expression(Expressions::Literal { value }),
 			},
 			Atoms::Member { name } => Node {
-				node: Nodes::Expression(Expressions::Member { name: *name }),
+				node: Nodes::Expression(Expressions::Member { name }),
 			},
 			Atoms::VariableDeclaration { name, r#type } => Node {
-				node: Nodes::Expression(Expressions::VariableDeclaration {
-					name: *name,
-					r#type: *r#type,
-				}),
+				node: Nodes::Expression(Expressions::VariableDeclaration { name, r#type }),
 			},
 		}
-		.into()
 	} else {
 		panic!("No max precedence item");
 	}
@@ -1575,10 +1566,8 @@ impl<'a> Index<&str> for Node<'a> {
 								return child;
 							}
 						}
-						Nodes::Const { name: child_name, .. } => {
-							if child_name == index {
-								return child;
-							}
+						Nodes::Const { name: child_name, .. } if child_name == index => {
+							return child;
 						}
 						_ => {}
 					}
@@ -1588,7 +1577,7 @@ impl<'a> Index<&str> for Node<'a> {
 				for field in fields {
 					if let Nodes::Member { name: child_name, .. } = field.node {
 						if child_name == index {
-							return &field;
+							return field;
 						}
 					}
 				}

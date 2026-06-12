@@ -100,11 +100,10 @@ pub fn build_pairs(pseudo_bodies: &[PseudoBody]) -> Vec<Pair> {
 
 pub fn sweep_and_prune_1d<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> Vec<Pair> {
 	let e = sort_bodies_bounds(bodies, dt);
-	let pairs = build_pairs(&e);
-	pairs
+
+	build_pairs(&e)
 }
 
 pub fn broadphase<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> Vec<Pair> {
-	let pairs = sweep_and_prune_1d(bodies, dt);
-	pairs
+	sweep_and_prune_1d(bodies, dt)
 }

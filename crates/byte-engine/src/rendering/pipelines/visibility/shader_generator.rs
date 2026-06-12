@@ -1228,74 +1228,71 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 		let m = root.get_mut("main").unwrap();
 
-		match m.node_mut() {
-			besl::parser::Nodes::Function { statements, .. } => {
-				statements.insert(
-					0,
-					besl::parser::Node::raw_code(
-						Some(a.into()),
-						None,
-						Some(a_msl.into()),
-						&[
-							"vertex_uvs",
-							"ao",
-							"depth_shadow_map",
-							"visibility_depth",
-							"push_constant",
-							"material_offset",
-							"material_offset_scratch",
-							"material_evaluation_dispatches",
-							"pixel_mapping",
-							"material_count",
-							"meshes",
-							"meshlets",
-							"materials",
-							"primitive_indices",
-							"vertex_indices",
-							"vertex_positions",
-							"vertex_normals",
-							"triangle_index",
-							"instance_index_render_target",
-							"views",
-							"make_raster_ndc_from_pixel_coordinates",
-							"calculate_full_bary",
-							"calculate_barycentric_from_position",
-							"interpolate_vec3f_with_deriv",
-							"interpolate_vec2f_with_deriv",
-							"fresnel_schlick",
-							"distribution_ggx",
-							"geometry_smith",
-							"compute_vertex_index",
-						],
-						&[
-							"material",
-							"albedo",
-							"normal",
-							"roughness",
-							"metalness",
-							"occlusion",
-							"emission",
-						],
-					),
-				);
-				statements.push(besl::parser::Node::raw_code(
-					Some(b.into()),
+		if let besl::parser::Nodes::Function { statements, .. } = m.node_mut() {
+			statements.insert(
+				0,
+				besl::parser::Node::raw_code(
+					Some(a.into()),
 					None,
-					Some(b_msl.into()),
+					Some(a_msl.into()),
 					&[
-						"lighting_data",
-						"lit_map",
-						"_unused_set2_binding1",
-						"_unused_set2_binding2",
-						"_unused_set2_binding3",
-						"sample_shadow",
-						"sample_analytical_reflection",
-						"fresnel_schlick_roughness",
+						"vertex_uvs",
+						"ao",
+						"depth_shadow_map",
+						"visibility_depth",
+						"push_constant",
+						"material_offset",
+						"material_offset_scratch",
+						"material_evaluation_dispatches",
+						"pixel_mapping",
+						"material_count",
+						"meshes",
+						"meshlets",
+						"materials",
+						"primitive_indices",
+						"vertex_indices",
+						"vertex_positions",
+						"vertex_normals",
+						"triangle_index",
+						"instance_index_render_target",
+						"views",
+						"make_raster_ndc_from_pixel_coordinates",
+						"calculate_full_bary",
+						"calculate_barycentric_from_position",
+						"interpolate_vec3f_with_deriv",
+						"interpolate_vec2f_with_deriv",
+						"fresnel_schlick",
+						"distribution_ggx",
+						"geometry_smith",
+						"compute_vertex_index",
 					],
-					&[],
-				));
-			}
-			_ => {}
+					&[
+						"material",
+						"albedo",
+						"normal",
+						"roughness",
+						"metalness",
+						"occlusion",
+						"emission",
+					],
+				),
+			);
+			statements.push(besl::parser::Node::raw_code(
+				Some(b.into()),
+				None,
+				Some(b_msl.into()),
+				&[
+					"lighting_data",
+					"lit_map",
+					"_unused_set2_binding1",
+					"_unused_set2_binding2",
+					"_unused_set2_binding3",
+					"sample_shadow",
+					"sample_analytical_reflection",
+					"fresnel_schlick_roughness",
+				],
+				&[],
+			));
 		}
 
 		root.add(extra);

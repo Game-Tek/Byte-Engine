@@ -384,7 +384,7 @@ impl ShadowPass {
 		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
 
 		if shadow_enabled {
-			frame.resize_image(shadow_map.into(), extent);
+			frame.resize_image(shadow_map, extent);
 		}
 
 		move |c, _| {
@@ -766,12 +766,7 @@ impl GtaoPass {
 
 		let _ = context.create_descriptor_binding(
 			gtao_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&GTAO_DEPTH_BINDING,
-				depth,
-				depth_sampler.clone(),
-				ghi::Layouts::Read,
-			),
+			ghi::BindingConstructor::combined_image_sampler(&GTAO_DEPTH_BINDING, depth, depth_sampler, ghi::Layouts::Read),
 		);
 		let _ = context.create_descriptor_binding(
 			gtao_descriptor_set,
@@ -779,19 +774,14 @@ impl GtaoPass {
 		);
 		let _ = context.create_descriptor_binding(
 			blur_descriptor_set_x,
-			ghi::BindingConstructor::combined_image_sampler(
-				&GTAO_BLUR_DEPTH_BINDING,
-				depth,
-				depth_sampler.clone(),
-				ghi::Layouts::Read,
-			),
+			ghi::BindingConstructor::combined_image_sampler(&GTAO_BLUR_DEPTH_BINDING, depth, depth_sampler, ghi::Layouts::Read),
 		);
 		let _ = context.create_descriptor_binding(
 			blur_descriptor_set_x,
 			ghi::BindingConstructor::combined_image_sampler(
 				&GTAO_BLUR_SOURCE_BINDING,
 				blur_source_x,
-				ao_sampler.clone(),
+				ao_sampler,
 				ghi::Layouts::Read,
 			),
 		);
@@ -948,7 +938,7 @@ impl GtaoPass {
 		let packed_ao_map = self.packed_ao_map;
 		let extent = sink.extent();
 
-		frame.resize_image(ao_map.into(), extent);
+		frame.resize_image(ao_map, extent);
 		frame.resize_image(temp_ao_map.into(), extent);
 
 		if let Some(packed_ao_map) = packed_ao_map {
@@ -960,7 +950,7 @@ impl GtaoPass {
 			if let Some(packed_ao_map) = packed_ao_map {
 				c.clear_images(&[(packed_ao_map.into(), ghi::ClearValue::Color(RGBA::black()))]);
 			} else {
-				c.clear_images(&[(ao_map.into(), ghi::ClearValue::Color(RGBA::white()))]);
+				c.clear_images(&[(ao_map, ghi::ClearValue::Color(RGBA::white()))]);
 			}
 
 			{
@@ -1035,7 +1025,7 @@ impl MaterialEvaluationPass {
 		let transparent_materials = transparent_materials.to_vec();
 		let extent = sink.extent();
 
-		frame.resize_image(ao_map.into(), extent);
+		frame.resize_image(ao_map, extent);
 
 		move |c, t| {
 			log::debug!(
@@ -1045,7 +1035,7 @@ impl MaterialEvaluationPass {
 				opaque_materials.len(),
 				transparent_materials.len(),
 			);
-			c.clear_images(&[(lit.into(), ghi::ClearValue::Color(RGBA::black()))]);
+			c.clear_images(&[(lit, ghi::ClearValue::Color(RGBA::black()))]);
 
 			c.start_region(|label| label.write_str("Material Evaluation"));
 
@@ -1174,7 +1164,7 @@ impl VisibilityPipelineRenderPass {
 			ao_map,
 		);
 
-		let material_evaluation_dispatches = material_offset_pass.material_evaluation_dispatches.clone();
+		let material_evaluation_dispatches = material_offset_pass.material_evaluation_dispatches;
 
 		let material_evaluation_pass = MaterialEvaluationPass::new(
 			lit,

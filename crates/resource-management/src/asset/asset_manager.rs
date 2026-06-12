@@ -89,7 +89,7 @@ impl AssetManager {
 			}
 		};
 
-		if let Err(_) = resource_storage_backend.store(&resource, &buffer) {
+		if resource_storage_backend.store(&resource, &buffer).is_err() {
 			return Err(LoadMessages::FailedToStore {
 				asset: id.to_string(),
 				error: format!("Failed to bake asset {:#?}", id),

@@ -324,7 +324,7 @@ impl RedbStorageBackend {
 }
 
 impl ReadStorageBackend for RedbStorageBackend {
-	fn list<'a>(&'a self) -> Result<Vec<String>, String> {
+	fn list(&self) -> Result<Vec<String>, String> {
 		let mut resources = Vec::new();
 
 		let read = self.db.begin_read().unwrap();
@@ -459,7 +459,7 @@ impl WriteStorageBackend for RedbStorageBackend {
 		Ok(resource)
 	}
 
-	fn sync<'s, 'a>(&'s self, other: &'a dyn ReadStorageBackend) -> () {
+	fn sync(&self, other: &dyn ReadStorageBackend) {
 		if let Some(other) = other.downcast_ref::<RedbStorageBackend>() {
 			{
 				let write = self.db.begin_write().unwrap();

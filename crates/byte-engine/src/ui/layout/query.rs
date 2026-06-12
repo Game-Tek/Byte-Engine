@@ -72,7 +72,7 @@ impl<'a, T: ElementHandle> ChildrenResult<'a, T> {
 		self.children.iter().filter_map(|id| self.fetcher.get(*id))
 	}
 	pub fn ids(&self) -> impl Iterator<Item = Id> + '_ {
-		self.children.iter().map(|id| *id)
+		self.children.iter().copied()
 	}
 }
 

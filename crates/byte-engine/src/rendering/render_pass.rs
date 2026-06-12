@@ -72,12 +72,9 @@ impl<'a> RenderPassBuilder<'a> {
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
 		self.images.write_to(name, self.sink_id);
 
-		let (image, format) = self.images.get(name, self.sink_id).expect("Image not found").clone();
+		let (image, format) = *self.images.get(name, self.sink_id).expect("Image not found");
 
-		RenderToResult {
-			image: image.into(),
-			format,
-		}
+		RenderToResult { image, format }
 	}
 
 	/// Use `create_render_target` to create a new image and get a reference to it.
@@ -102,9 +99,9 @@ impl<'a> RenderPassBuilder<'a> {
 		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
 		self.images.read_from(name, self.sink_id);
 
-		let (image, _) = self.images.get(name, self.sink_id).expect("Image not found").clone();
+		let (image, _) = *self.images.get(name, self.sink_id).expect("Image not found");
 
-		ReadFromResult { image: image.into() }
+		ReadFromResult { image }
 	}
 
 	pub fn context(&mut self) -> &'_ mut ghi::implementation::Context {
@@ -147,14 +144,20 @@ impl From<RenderToResult> for ghi::BaseImageHandle {
 	}
 }
 
-impl Into<ghi::pipelines::raster::AttachmentDescriptor> for RenderToResult {
-	fn into(self) -> ghi::pipelines::raster::AttachmentDescriptor {
-		ghi::pipelines::raster::AttachmentDescriptor::new(self.format)
+impl From<RenderToResult> for ghi::pipelines::raster::AttachmentDescriptor {
+	fn from(val: RenderToResult) -> Self {
+		ghi::pipelines::raster::AttachmentDescriptor::new(val.format)
 	}
 }
 
 #[derive(Hash)]
 pub struct FramePrepare {}
+
+impl Default for FramePrepare {
+	fn default() -> Self {
+		Self::new()
+	}
+}
 
 impl FramePrepare {
 	pub fn new() -> Self {

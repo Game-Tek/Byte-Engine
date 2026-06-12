@@ -3,9 +3,9 @@ use crate::{PrivateHandle, PrivateHandles};
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct SwapchainHandle(pub(crate) u64);
 
-impl Into<PrivateHandles> for SwapchainHandle {
-	fn into(self) -> PrivateHandles {
-		PrivateHandles::Swapchain(self)
+impl From<SwapchainHandle> for PrivateHandles {
+	fn from(val: SwapchainHandle) -> Self {
+		PrivateHandles::Swapchain(val)
 	}
 }
 

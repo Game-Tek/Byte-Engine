@@ -409,7 +409,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				continue;
 			}
 			formatting.push_indentation(string, 1);
-			string.push_str(Self::translate_type(&format.borrow().get_name().unwrap()));
+			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
 			string.push_str(name);
 			string.push_str(" [[attribute(");
@@ -470,7 +470,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				continue;
 			}
 			formatting.push_indentation(string, 1);
-			string.push_str(Self::translate_type(&format.borrow().get_name().unwrap()));
+			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
 			string.push_str(name);
 			match name.as_str() {
@@ -581,7 +581,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				continue;
 			};
 			formatting.push_indentation(string, indent);
-			string.push_str(Self::translate_type(&format.borrow().get_name().unwrap()));
+			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
 			string.push_str(name);
 			string.push('=');
@@ -607,7 +607,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				continue;
 			}
 			formatting.push_indentation(string, indent);
-			string.push_str(Self::translate_type(&format.borrow().get_name().unwrap()));
+			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
 			string.push_str(name);
 			formatting.push_statement_end(string);
@@ -1518,7 +1518,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
-		string.push_str(Self::translate_type(&return_type.borrow().get_name().unwrap()));
+		string.push_str(Self::translate_type(return_type.borrow().get_name().unwrap()));
 		string.push(' ');
 		string.push_str(name);
 		string.push('(');
@@ -1897,7 +1897,7 @@ impl<A: Allocator + Clone> Generator<A> {
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
 	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
 	fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
-		let node = RefCell::borrow(&this_node);
+		let node = RefCell::borrow(this_node);
 		let formatting = ShaderFormatting::new(self.minified);
 
 		let break_char = formatting.break_str();
@@ -1920,7 +1920,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 				for member in members {
 					formatting.push_indentation(string, 1);
-					self.emit_node_string(string, &member);
+					self.emit_node_string(string, member);
 					formatting.push_statement_end(string);
 				}
 
@@ -1947,35 +1947,30 @@ impl<A: Allocator + Clone> Generator<A> {
 				let t = r#type.get_name().unwrap();
 				let type_name = Self::translate_type(t);
 
-				match r#type.node() {
-					besl::Nodes::Struct { fields, .. } => {
-						for (i, field) in fields.iter().enumerate() {
-							match field.borrow().node() {
-								besl::Nodes::Member {
-									name: member_name,
-									r#type,
-									..
-								} => {
-									let member_name = format!("{}_{}", name, { member_name });
-									string.push_str(&format!(
-										"constant {} {} [[function_constant({})]];{}",
-										Self::translate_type(&r#type.borrow().get_name().unwrap()),
-										&member_name,
-										i,
-										if !self.minified { "\n" } else { "" }
-									));
-									members.push(member_name);
-								}
-								_ => {}
-							}
+				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
+					for (i, field) in fields.iter().enumerate() {
+						if let besl::Nodes::Member {
+							name: member_name,
+							r#type,
+							..
+						} = field.borrow().node()
+						{
+							let member_name = format!("{}_{}", name, { member_name });
+							string.push_str(&format!(
+								"constant {} {} [[function_constant({})]];{}",
+								Self::translate_type(r#type.borrow().get_name().unwrap()),
+								member_name,
+								i,
+								if !self.minified { "\n" } else { "" }
+							));
+							members.push(member_name);
 						}
 					}
-					_ => {}
 				}
 
 				string.push_str(&format!(
 					"constant {} {}={};{}",
-					&type_name,
+					type_name,
 					name,
 					format!("{}({})", &type_name, members.join(",")),
 					if !self.minified { "\n" } else { "" }
@@ -2007,7 +2002,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::Nodes::Parameter { name, r#type } => self.emit_parameter_node(string, name, r#type),
 			besl::Nodes::Input { name, location, format } => {
 				let format = format.borrow();
-				let type_name = Self::translate_type(&format.get_name().unwrap());
+				let type_name = Self::translate_type(format.get_name().unwrap());
 				// TODO: Map interpolation qualifiers to Metal (flat/linear).
 				string.push_str(&format!("{} {} [[attribute({})]];{break_char}", type_name, name, location));
 			}
@@ -2022,7 +2017,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				}
 
 				let format = format.borrow();
-				let type_name = Self::translate_type(&format.get_name().unwrap());
+				let type_name = Self::translate_type(format.get_name().unwrap());
 				string.push_str(&format!("{} {} [[color({})]];{break_char}", type_name, name, location));
 			}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
@@ -2056,7 +2051,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 						for member in members.iter() {
 							self.emit_indentation(string, 1);
-							self.emit_node_string(string, &member);
+							self.emit_node_string(string, member);
 							self.emit_statement_end(string);
 						}
 
@@ -2115,7 +2110,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 						string.push_str(texture_type);
 						string.push(' ');
-						string.push_str(&name);
+						string.push_str(name);
 
 						if let Some(count) = count {
 							string.push('[');
@@ -2139,11 +2134,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 			besl::Nodes::Intrinsic { elements, .. } => {
 				for element in elements {
-					self.emit_node_string(string, &element);
+					self.emit_node_string(string, element);
 				}
 			}
 			besl::Nodes::Literal { value, .. } => {
-				self.emit_node_string(string, &value);
+				self.emit_node_string(string, value);
 			}
 			besl::Nodes::Const { name, r#type, value } => {
 				string.push_str("constant ");
@@ -2170,10 +2165,10 @@ impl<A: Allocator + Clone> Generator<A> {
 						self.emit_call_arguments(string, parameters);
 						string.push('}');
 					} else {
-						self.emit_node_string(string, &value);
+						self.emit_node_string(string, value);
 					}
 				} else {
-					self.emit_node_string(string, &value);
+					self.emit_node_string(string, value);
 				}
 				string.push_str(&format!(";{break_char}"));
 			}

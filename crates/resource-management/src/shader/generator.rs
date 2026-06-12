@@ -434,7 +434,7 @@ pub(crate) trait NodeEmitter {
 		params: &[besl::NodeReference],
 	) {
 		let formatting = ShaderFormatting::new(self.minified());
-		Self::emit_type_name(string, &return_type.borrow().get_name().unwrap());
+		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
 		string.push(' ');
 		string.push_str(name);
 		string.push('(');
@@ -469,7 +469,7 @@ pub(crate) trait NodeEmitter {
 	fn emit_parameter_node(&mut self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
 		string.push_str(&format!(
 			"{} {}",
-			Self::type_from_besl(&r#type.borrow().get_name().unwrap()),
+			Self::type_from_besl(r#type.borrow().get_name().unwrap()),
 			name
 		));
 	}
@@ -495,7 +495,7 @@ pub(crate) trait NodeEmitter {
 				let function_ref = function.clone();
 				let function = RefCell::borrow(&function_ref);
 				let name = function.get_name().unwrap();
-				Self::emit_type_name(string, &name);
+				Self::emit_type_name(string, name);
 				string.push('(');
 				emit_comma_separated_nodes(string, formatting, parameters, |string, parameter| {
 					self.emit_node(string, parameter)
@@ -526,7 +526,7 @@ pub(crate) trait NodeEmitter {
 				}
 			}
 			besl::Expressions::VariableDeclaration { name, r#type } => {
-				Self::emit_type_name(string, &r#type.borrow().get_name().unwrap());
+				Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
 				string.push(' ');
 				string.push_str(name);
 			}

@@ -8,6 +8,12 @@ use crate::{
 	asset, processors::audio_processor::process_audio, r#async::BoxedFuture, resource, resources::audio::Audio, ProcessedAsset,
 };
 
+impl Default for WAVAssetHandler {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl WAVAssetHandler {
 	/// Parses a WAV buffer into audio metadata and PCM data.
 	fn decode_wav(data: &[u8]) -> Result<(Audio, Vec<u8>), String> {

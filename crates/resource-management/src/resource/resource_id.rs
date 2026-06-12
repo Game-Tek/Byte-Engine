@@ -36,9 +36,9 @@ impl ResourceId {
 	}
 }
 
-impl Into<[u8; 16]> for ResourceId {
-	fn into(self) -> [u8; 16] {
-		self.0
+impl From<ResourceId> for [u8; 16] {
+	fn from(val: ResourceId) -> Self {
+		val.0
 	}
 }
 
@@ -54,10 +54,10 @@ impl Borrow<[u8; 16]> for &ResourceId {
 	}
 }
 
-impl Into<String> for ResourceId {
-	fn into(self) -> String {
+impl From<ResourceId> for String {
+	fn from(val: ResourceId) -> Self {
 		let mut s = String::with_capacity(32);
-		for byte in &self.0 {
+		for byte in &val.0 {
 			write!(s, "{:02x}", byte).unwrap();
 		}
 		s

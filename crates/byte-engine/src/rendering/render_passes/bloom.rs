@@ -205,12 +205,7 @@ impl BloomPass {
 			context.create_descriptor_set(Some("Bloom Extract Descriptor Set"), &extract_descriptor_set_layout);
 		let _ = context.create_descriptor_binding(
 			extract_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&EXTRACT_SOURCE_BINDING,
-				source,
-				sampler.clone(),
-				ghi::Layouts::Read,
-			),
+			ghi::BindingConstructor::combined_image_sampler(&EXTRACT_SOURCE_BINDING, source, sampler, ghi::Layouts::Read),
 		);
 		let _ = context.create_descriptor_binding(
 			extract_descriptor_set,
@@ -230,7 +225,7 @@ impl BloomPass {
 					ghi::BindingConstructor::combined_image_sampler(
 						&EXTRACT_SOURCE_BINDING,
 						downsample_images[index - 1],
-						sampler.clone(),
+						sampler,
 						ghi::Layouts::Read,
 					),
 				);
@@ -261,7 +256,7 @@ impl BloomPass {
 					ghi::BindingConstructor::combined_image_sampler(
 						&UPSAMPLE_LOW_BINDING,
 						low_resolution_source,
-						sampler.clone(),
+						sampler,
 						ghi::Layouts::Read,
 					),
 				);
@@ -270,7 +265,7 @@ impl BloomPass {
 					ghi::BindingConstructor::combined_image_sampler(
 						&UPSAMPLE_HIGH_BINDING,
 						downsample_images[level],
-						sampler.clone(),
+						sampler,
 						ghi::Layouts::Read,
 					),
 				);
@@ -298,7 +293,7 @@ impl BloomPass {
 			ghi::BindingConstructor::combined_image_sampler(
 				&COMPOSITE_SCENE_BINDING,
 				bloom_source,
-				sampler.clone(),
+				sampler,
 				ghi::Layouts::Read,
 			),
 		);

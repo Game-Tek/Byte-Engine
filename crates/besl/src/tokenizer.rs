@@ -38,10 +38,8 @@ pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 			true
 		} else if last == '&' && c == '&' {
 			true
-		} else if last == '|' && c == '|' {
-			true
 		} else {
-			false
+			last == '|' && c == '|'
 		}
 	};
 

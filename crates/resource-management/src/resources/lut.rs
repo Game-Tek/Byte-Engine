@@ -43,7 +43,7 @@ impl Model for Lut {
 
 impl<'de> Solver<'de, Reference<Lut>> for ReferenceModel<Lut> {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Lut>, SolveErrors> {
-		let (resource, reader) = storage_backend.read(self.id()).ok_or_else(|| SolveErrors::StorageError)?;
+		let (resource, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
 		let lut: Lut = crate::from_slice(&resource.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 		Ok(Reference::from_model(self, lut, reader))

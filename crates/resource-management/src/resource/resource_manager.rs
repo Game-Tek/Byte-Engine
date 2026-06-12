@@ -71,7 +71,7 @@ impl ResourceManager {
 
 		let reference: Reference<T> = reference_model
 			.solve(self.get_storage_backend())
-			.map_err(|e| Into::<&'static str>::into(e))?;
+			.map_err(Into::<&'static str>::into)?;
 
 		Ok(reference)
 	}

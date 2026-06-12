@@ -23,14 +23,14 @@ pub enum Lights {
 	Point(PointLight),
 }
 
-impl Into<Lights> for PointLight {
-	fn into(self) -> Lights {
-		Lights::Point(self)
+impl From<PointLight> for Lights {
+	fn from(val: PointLight) -> Self {
+		Lights::Point(val)
 	}
 }
 
-impl Into<Lights> for DirectionalLight {
-	fn into(self) -> Lights {
-		Lights::Direction(self)
+impl From<DirectionalLight> for Lights {
+	fn from(val: DirectionalLight) -> Self {
+		Lights::Direction(val)
 	}
 }

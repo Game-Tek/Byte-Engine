@@ -16,6 +16,12 @@ pub struct Camera {
 	focus_distance: f32,
 }
 
+impl Default for Camera {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Camera {
 	pub fn new() -> Self {
 		Self {

@@ -418,7 +418,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 					.map(|sink_state| (sink, sink_state))
 			})
 			.map(|(sink, sink_state)| {
-				Box::new(sink_state.prepare(frame, sink, &self, &instance_batches)) as Box<dyn RenderPassFunction>
+				Box::new(sink_state.prepare(frame, sink, self, &instance_batches)) as Box<dyn RenderPassFunction>
 			})
 			.collect::<Vec<_>>();
 

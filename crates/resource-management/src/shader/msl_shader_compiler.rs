@@ -21,6 +21,12 @@ pub struct Compiler<A: Allocator + Clone = Global> {
 
 impl<A: Allocator + Clone> ShaderGenerator for Compiler<A> {}
 
+impl Default for Compiler<Global> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Compiler<Global> {
 	pub fn new() -> Self {
 		Self::new_in(Global)
@@ -65,7 +71,7 @@ impl<A: Allocator + Clone> Compiler<A> {
 		let mut bindings = Vec::with_capacity(16);
 
 		{
-			let node_borrow = RefCell::borrow(&main_function_node);
+			let node_borrow = RefCell::borrow(main_function_node);
 			let node_ref = node_borrow.node();
 
 			match node_ref {
@@ -97,7 +103,7 @@ impl<A: Allocator + Clone> Compiler<A> {
 	}
 
 	fn build_graph(&mut self, bindings: &mut Vec<CompiledShaderBinding>, node: &besl::NodeReference) {
-		let node_borrow = RefCell::borrow(&node);
+		let node_borrow = RefCell::borrow(node);
 		let node_ref = node_borrow.node();
 
 		match node_ref {
@@ -173,7 +179,7 @@ impl<A: Allocator + Clone> Compiler<A> {
 				write,
 				..
 			} => {
-				if let None = bindings.iter().find(|b| b.binding == *binding && b.set == *set) {
+				if bindings.iter().find(|b| b.binding == *binding && b.set == *set).is_none() {
 					bindings.push(CompiledShaderBinding::new(*set, *binding, *read, *write));
 				}
 			}
@@ -205,7 +211,7 @@ impl<A: Allocator + Clone> Compiler<A> {
 			besl::Nodes::Input { format, .. } | besl::Nodes::Output { format, .. } => {
 				self.build_graph(bindings, format);
 			}
-			besl::Nodes::Null { .. } => {
+			besl::Nodes::Null => {
 				// Do nothing
 			}
 			besl::Nodes::Parameter { r#type, .. } => {

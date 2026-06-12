@@ -185,7 +185,7 @@ impl Generator {
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
 	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
 	fn emit_node_string(&mut self, string: &mut String, this_node: &besl::NodeReference) {
-		let node = RefCell::borrow(&this_node);
+		let node = RefCell::borrow(this_node);
 		let formatting = ShaderFormatting::new(self.minified);
 
 		let break_char = formatting.break_str();
@@ -215,7 +215,7 @@ impl Generator {
 
 				for member in members {
 					formatting.push_indentation(string, 1);
-					self.emit_node_string(string, &member);
+					self.emit_node_string(string, member);
 					formatting.push_statement_end(string);
 				}
 
@@ -235,36 +235,31 @@ impl Generator {
 				let t = r#type.get_name().unwrap();
 				let type_name = Self::translate_type(t);
 
-				match r#type.node() {
-					besl::Nodes::Struct { fields, .. } => {
-						for (i, field) in fields.iter().enumerate() {
-							match field.borrow().node() {
-								besl::Nodes::Member {
-									name: member_name,
-									r#type,
-									..
-								} => {
-									let member_name = format!("{}_{}", name, { member_name });
-									string.push_str(&format!(
-										"[[vk::constant_id({})]]const {} {}={};{}",
-										i,
-										Self::translate_type(&r#type.borrow().get_name().unwrap()),
-										&member_name,
-										"1.0f",
-										if !self.minified { "\n" } else { "" }
-									));
-									members.push(member_name);
-								}
-								_ => {}
-							}
+				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
+					for (i, field) in fields.iter().enumerate() {
+						if let besl::Nodes::Member {
+							name: member_name,
+							r#type,
+							..
+						} = field.borrow().node()
+						{
+							let member_name = format!("{}_{}", name, { member_name });
+							string.push_str(&format!(
+								"[[vk::constant_id({})]]const {} {}={};{}",
+								i,
+								Self::translate_type(r#type.borrow().get_name().unwrap()),
+								member_name,
+								"1.0f",
+								if !self.minified { "\n" } else { "" }
+							));
+							members.push(member_name);
 						}
 					}
-					_ => {}
 				}
 
 				string.push_str(&format!(
 					"const {} {}={};{}",
-					&type_name,
+					type_name,
 					name,
 					format!("{}({})", &type_name, members.join(",")),
 					if !self.minified { "\n" } else { "" }
@@ -296,7 +291,7 @@ impl Generator {
 			besl::Nodes::Parameter { name, r#type } => self.emit_parameter_node(string, name, r#type),
 			besl::Nodes::Input { name, location, format } => {
 				let format = format.borrow();
-				let type_name = Self::translate_type(&format.get_name().unwrap());
+				let type_name = Self::translate_type(format.get_name().unwrap());
 				let is_flat = type_name == "int8_t"
 					|| type_name == "uint8_t"
 					|| type_name == "int16_t"
@@ -314,7 +309,7 @@ impl Generator {
 					if is_flat {
 						format!("nointerpolation{space_char}")
 					} else {
-						format!("")
+						String::new()
 					},
 					type_name,
 					name,
@@ -334,7 +329,7 @@ impl Generator {
 				// HLSL uses SV_Target0, SV_Target1, etc. for render targets
 				string.push_str(&format!(
 					"{} {} : SV_Target{};{break_char}",
-					Self::translate_type(&format.borrow().get_name().unwrap()),
+					Self::translate_type(format.borrow().get_name().unwrap()),
 					name,
 					location
 				));
@@ -370,7 +365,7 @@ impl Generator {
 
 						if use_cbuffer {
 							string.push_str("cbuffer ");
-							string.push_str(&name);
+							string.push_str(name);
 							string.push_str(&format!(" : register(b{}, space{}) {{", register_index, set));
 
 							for member in members.iter() {
@@ -378,7 +373,7 @@ impl Generator {
 									string.push('\n');
 								}
 								self.emit_indentation(string, 1);
-								self.emit_node_string(string, &member);
+								self.emit_node_string(string, member);
 								self.emit_statement_end(string);
 							}
 
@@ -396,7 +391,7 @@ impl Generator {
 
 							for member in members.iter() {
 								self.emit_indentation(string, 1);
-								self.emit_node_string(string, &member);
+								self.emit_node_string(string, member);
 								self.emit_statement_end(string);
 							}
 
@@ -409,7 +404,7 @@ impl Generator {
 							// Declare the buffer
 							string.push_str(&format!("{}<_{}>", buffer_type, name));
 							string.push(' ');
-							string.push_str(&name);
+							string.push_str(name);
 
 							if let Some(count) = count {
 								string.push('[');
@@ -433,7 +428,7 @@ impl Generator {
 
 						string.push_str(texture_type);
 						string.push(' ');
-						string.push_str(&name);
+						string.push_str(name);
 
 						if let Some(count) = count {
 							string.push('[');
@@ -459,7 +454,7 @@ impl Generator {
 							_ => "<float4>",
 						});
 						string.push(' ');
-						string.push_str(&name);
+						string.push_str(name);
 
 						if let Some(count) = count {
 							string.push('[');
@@ -474,7 +469,7 @@ impl Generator {
 
 						// Also declare a sampler with the same name + _sampler suffix
 						string.push_str("SamplerState ");
-						string.push_str(&name);
+						string.push_str(name);
 						string.push_str("_sampler");
 						string.push_str(&format!(" : register(s{}, space{});", register_index, set));
 						if !self.minified {
@@ -485,19 +480,19 @@ impl Generator {
 			}
 			besl::Nodes::Intrinsic { elements, .. } => {
 				for element in elements {
-					self.emit_node_string(string, &element);
+					self.emit_node_string(string, element);
 				}
 			}
 			besl::Nodes::Literal { value, .. } => {
-				self.emit_node_string(string, &value);
+				self.emit_node_string(string, value);
 			}
 			besl::Nodes::Const { name, r#type, value } => {
 				string.push_str("static const ");
-				Self::emit_type_name(string, &r#type.borrow().get_name().unwrap());
+				Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
 				string.push(' ');
 				string.push_str(name);
 				string.push_str(" = ");
-				self.emit_node_string(string, &value);
+				self.emit_node_string(string, value);
 				string.push_str(&format!(";{break_char}"));
 			}
 		}
@@ -524,14 +519,10 @@ impl Generator {
 			Stages::Compute { .. } => {
 				hlsl_block.push_str("// Requires: Wave intrinsics (WaveGetLaneCount, WaveGetLaneIndex, etc.)\n");
 			}
-			Stages::Mesh {
-				maximum_vertices: _,
-				maximum_primitives: _,
-				..
-			} => {
+			Stages::Mesh { .. } => {
 				hlsl_block.push_str("// Requires: Mesh shader support\n");
-				hlsl_block.push_str(&format!("[outputtopology(\"triangle\")]\n"));
-				hlsl_block.push_str(&format!("[numthreads(1, 1, 1)]\n"));
+				hlsl_block.push_str("[outputtopology(\"triangle\")]\n");
+				hlsl_block.push_str("[numthreads(1, 1, 1)]\n");
 				hlsl_block.push_str("// Note: Mesh shader configuration needs manual setup\n");
 			}
 			_ => {}
@@ -547,7 +538,7 @@ impl Generator {
 					local_size.depth().max(1)
 				));
 			}
-			Stages::Mesh { local_size: _, .. } => {
+			Stages::Mesh { .. } => {
 				// Already added above in mesh-specific section
 			}
 			_ => {}

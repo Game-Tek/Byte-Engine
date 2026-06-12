@@ -117,7 +117,7 @@ pub enum QueryError {
 }
 
 pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
-	fn list<'a>(&'a self) -> Result<Vec<String>, String>;
+	fn list(&self) -> Result<Vec<String>, String>;
 	fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>) -> Option<(SerializableResource, MultiResourceReader)>;
 
 	fn query(&self, query: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>;
@@ -136,7 +136,7 @@ pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
 pub trait WriteStorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
 	fn store<'a, 'b: 'a>(&'a self, resource: &'b ProcessedAsset, data: &'a [u8]) -> Result<SerializableResource, ()>;
-	fn sync<'s, 'a>(&'s self, _: &'a dyn ReadStorageBackend) -> () {}
+	fn sync(&self, _: &dyn ReadStorageBackend) {}
 
 	fn start(&self, _: ResourceId<'_>) {}
 }

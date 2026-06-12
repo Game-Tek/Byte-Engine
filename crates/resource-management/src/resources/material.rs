@@ -68,7 +68,7 @@ impl Model for MaterialModel {
 
 impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Material>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or_else(|| SolveErrors::StorageError)?;
+		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
 		let MaterialModel {
 			double_sided,
 			alpha_mode,
@@ -171,7 +171,7 @@ impl Model for VariantModel {
 
 impl<'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Variant>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or_else(|| SolveErrors::StorageError)?;
+		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
 		let VariantModel {
 			material,
 			variables,
@@ -256,7 +256,7 @@ impl Model for Shader {
 
 impl<'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Shader>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or_else(|| SolveErrors::StorageError)?;
+		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
 		let Shader {
 			id,
 			stage,

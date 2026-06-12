@@ -313,7 +313,7 @@ impl<'a> CommandBufferRecording<'a> {
 			.staging
 			.map(|staging_handle| self.device.buffers.resource(staging_handle))
 			.unwrap_or(buffer);
-		unsafe { std::mem::transmute(buffer.pointer) }
+		unsafe { &mut *(buffer.pointer as *mut T) }
 	}
 
 	/// Records a staging-to-buffer upload on this command buffer.
@@ -1393,12 +1393,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		// Metal accepts a CPU pointer for immediate texture replacement, so the caller-provided
 		// pixel slice can be used directly instead of cloning through the image staging Vec.
-		let bytes = unsafe {
-			std::slice::from_raw_parts(
-				data.as_ptr() as *const u8,
-				data.len() * std::mem::size_of::<graphics_hardware_interface::RGBAu8>(),
-			)
-		};
+		let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) };
 
 		let texture = image.texture.clone();
 		let format = image.format;
@@ -1658,8 +1653,8 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 
 		for descriptor_set_handle in sets {
 			let descriptor_set_handles = DescriptorSetHandle(descriptor_set_handle.0)
-				.root(&self.device.descriptor_sets)
-				.get_all(&self.device.descriptor_sets);
+				.root(self.device.descriptor_sets)
+				.get_all(self.device.descriptor_sets);
 			let descriptor_set_handle =
 				descriptor_set_handles[(self.sequence_index as usize).rem_euclid(descriptor_set_handles.len())];
 			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];

@@ -36,7 +36,7 @@ impl Entity for BaseAgxToneMapPass {}
 
 impl BaseAgxToneMapPass {
 	/// Creates the shared AGX compute pipeline resources used by per-view tonemap passes.
-	pub fn new<'a>(render_pass_builder: &'a mut RenderPassBuilder<'_>) -> Self {
+	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let descriptor_set_layout = render_pass_builder.context().create_descriptor_set_template(
 			Some("AGX Tonemap Pass Set Layout"),
 			&[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE],

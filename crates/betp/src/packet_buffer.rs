@@ -77,7 +77,7 @@ impl<const N: usize, const S: usize> PacketBuffer<N, S> {
 			if let Some(p) = self
 				.buffer
 				.iter_mut()
-				.filter(|packet| packet.as_ref().map_or(false, |p| !p.reliable))
+				.filter(|packet| packet.as_ref().is_some_and(|p| !p.reliable))
 				.max_by_key(|packet| packet.as_ref().map_or(0, |p| p.try_count))
 			{
 				*p = Some(BufferedPacket::new(packet, connection_id, reliable));

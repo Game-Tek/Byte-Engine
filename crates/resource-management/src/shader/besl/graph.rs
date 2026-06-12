@@ -13,6 +13,12 @@ pub struct Graph<A: Allocator + Clone = Global> {
 	allocator: A,
 }
 
+impl Default for Graph<Global> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Graph<Global> {
 	pub fn new() -> Self {
 		Self::new_in(Global)
@@ -45,7 +51,7 @@ pub fn topological_sort_in<A: Allocator + Clone>(graph: &Graph<A>, allocator: A)
 	let mut visited = HashSet::with_hasher_in(RandomState::new(), allocator.clone());
 	let mut stack = AllocVec::new_in(allocator.clone());
 
-	for (node, _) in graph.set.iter() {
+	for node in graph.set.keys() {
 		if !visited.contains(node) {
 			topological_sort_impl(node.clone(), graph, &mut visited, &mut stack, allocator.clone());
 		}

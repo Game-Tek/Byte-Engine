@@ -59,6 +59,12 @@ impl EngineState {
 	}
 }
 
+impl Default for Engine {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Engine {
 	pub fn new() -> Self {
 		Self {
@@ -76,7 +82,7 @@ impl Engine {
 	}
 
 	/// Evaluates the layout of the given root component and returns a snapshot of the resulting layout.
-	pub fn evaluate<'a>(&'a mut self, root: &impl Component, size: Size) -> Snapshot {
+	pub fn evaluate(&mut self, root: &impl Component, size: Size) -> Snapshot {
 		struct State<'a> {
 			id: Id,
 			counter: &'a mut u32,
@@ -214,7 +220,7 @@ impl Engine {
 	}
 
 	/// Renders the given snapshot into a [`Render`] object.
-	pub fn render<'a>(&'a mut self, snapshot: &mut Snapshot) -> Render {
+	pub fn render(&mut self, snapshot: &mut Snapshot) -> Render {
 		let size = snapshot.size;
 
 		let mouse_pos = (self.cursor_position + 1.0) * 0.5;
@@ -485,13 +491,10 @@ impl Snapshot {
 	fn actuate_element(&self, id: Id) -> Option<Id> {
 		let element = self.element(id)?;
 
-		match &element.element.element.primitive {
-			Primitives::Container(c) => {
-				if let Some(on_event) = &c.on_event {
-					on_event.call(Events::Actuate {});
-				}
+		if let Primitives::Container(c) = &element.element.element.primitive {
+			if let Some(on_event) = &c.on_event {
+				on_event.call(Events::Actuate {});
 			}
-			_ => {}
 		}
 
 		Some(id)

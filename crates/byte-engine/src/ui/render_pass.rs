@@ -445,14 +445,14 @@ impl RenderPass for UiRenderPass {
 				"UI text overlay resize requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
 			);
 
-			frame.resize_image(self.text_overlay.into(), Extent::rectangle(extent.width(), extent.height()));
+			frame.resize_image(self.text_overlay, Extent::rectangle(extent.width(), extent.height()));
 
-			let overlay = frame.get_texture_slice_mut(self.text_overlay.into());
+			let overlay = frame.get_texture_slice_mut(self.text_overlay);
 			let expected_overlay_size = extent.width() as usize * extent.height() as usize * TEXT_OVERLAY_FORMAT.size();
 			draw_text_overlay = rasterize_text_overlay(&self.data, extent, &mut self.text_system, overlay);
 
 			if draw_text_overlay {
-				frame.sync_texture(self.text_overlay.into());
+				frame.sync_texture(self.text_overlay);
 			}
 		}
 

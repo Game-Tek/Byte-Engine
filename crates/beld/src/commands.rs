@@ -247,7 +247,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 
 /// Decodes lowercase or uppercase hexadecimal text into the original bytes.
 fn decode_hex(value: &str) -> Option<Vec<u8>> {
-	if value.len() % 2 != 0 {
+	if !value.len().is_multiple_of(2) {
 		return None;
 	}
 

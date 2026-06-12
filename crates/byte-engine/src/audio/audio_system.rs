@@ -155,7 +155,7 @@ impl DefaultAudioSystem {
 
 			let state = PlaybackState { current_sample };
 
-			if let None = playing_sound.generator.render(settings, state, buffer) {
+			if playing_sound.generator.render(settings, state, buffer).is_none() {
 				to_destroy.push(idx);
 			}
 		}

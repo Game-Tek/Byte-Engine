@@ -24,7 +24,7 @@ impl Model for Audio {
 
 impl<'de> Solver<'de, Reference<Audio>> for ReferenceModel<Audio> {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Audio>, SolveErrors> {
-		let (resource, reader) = storage_backend.read(self.id()).ok_or_else(|| SolveErrors::StorageError)?;
+		let (resource, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
 		let Audio {
 			bit_depth,
 			channel_count,

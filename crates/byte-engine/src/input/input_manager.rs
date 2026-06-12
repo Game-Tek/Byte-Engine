@@ -141,7 +141,7 @@ impl InputManager {
 		};
 
 		let device = Device {
-			device_class_handle: device_class_handle.clone(),
+			device_class_handle: *device_class_handle,
 			index,
 		};
 
@@ -264,14 +264,13 @@ impl InputManager {
 				r#type,
 				trigger_mappings: input_events
 					.iter()
-					.map(|input_event| {
+					.filter_map(|input_event| {
 						Some(TriggerMapping {
 							trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
 							mapping: input_event.mapping.value,
 							function: Some(input_event.mapping.function),
 						})
 					})
-					.filter_map(|input_event| input_event)
 					.collect::<Vec<_>>(),
 				handle: Some(handle),
 				tick_policy,
@@ -330,8 +329,7 @@ impl InputManager {
 						record.device_handle,
 						value
 					);
-					self.event_channel
-						.send(ActionEvent::new(record.seat_handle, handle.clone(), value));
+					self.event_channel.send(ActionEvent::new(record.seat_handle, *handle, value));
 				}
 			}
 		}
@@ -345,7 +343,7 @@ impl InputManager {
 			let action = &self.actions[action_handle.0 as usize];
 
 			let handle = match &action.handle {
-				Some(h) => h.clone(),
+				Some(h) => *h,
 				None => continue,
 			};
 
@@ -405,14 +403,13 @@ impl InputManager {
 			r#type,
 			trigger_mappings: action_binding_descriptions
 				.iter()
-				.map(|input_event| {
+				.filter_map(|input_event| {
 					Some(TriggerMapping {
 						trigger_handle: self.to_trigger_handle(&input_event.input_source)?,
 						mapping: input_event.mapping.value,
 						function: Some(input_event.mapping.function),
 					})
 				})
-				.filter_map(|input_event| input_event)
 				.collect::<Vec<_>>(),
 			handle: None,
 			tick_policy,
@@ -435,7 +432,7 @@ impl InputManager {
 			self.devices
 				.iter()
 				.filter(|d| d.device_class_handle == device_class_handle)
-				.map(|d| DeviceHandle(d.index as u32))
+				.map(|d| DeviceHandle(d.index))
 				.collect(),
 		)
 	}
@@ -471,7 +468,7 @@ impl InputManager {
 				seat_handle,
 				device_handle,
 				input_event_handle: action_handle,
-				value: record.clone(),
+				value: *record,
 			})
 			.unwrap_or_else(|| {
 				let action = self.actions.get(action_handle.0 as usize).unwrap();
@@ -518,7 +515,7 @@ impl InputManager {
 					}
 				};
 
-				bool.map(|b| Value::Bool(b))
+				bool.map(Value::Bool)
 			}
 			Types::Float => {
 				let float: Option<f32> = match record.value {
@@ -574,7 +571,7 @@ impl InputManager {
 					}
 				};
 
-				float.map(|f| Value::Float(f))
+				float.map(Value::Float)
 			}
 			Types::Vector2 => {
 				let vector2: Option<Vector2> = match record.value {
@@ -620,7 +617,7 @@ impl InputManager {
 					}
 				};
 
-				vector2.map(|v| Value::Vector2(v))
+				vector2.map(Value::Vector2)
 			}
 			Types::Vector3 => {
 				let vector3: Option<Vector3> = match record.value {
@@ -697,11 +694,11 @@ impl InputManager {
 					}
 				};
 
-				vector3.map(|v| Value::Vector3(v))
+				vector3.map(Value::Vector3)
 			}
 			_ => {
 				log::error!("Not implemented!");
-				return None;
+				None
 			}
 		}
 	}
@@ -731,15 +728,11 @@ impl InputManager {
 					let input_device_class_handle = DeviceClassHandle(idc_index as u32);
 
 					let trigger = self.triggers.iter().enumerate().find(|(_, input_source)| {
-						input_source.name == tokens.clone().last().unwrap()
+						input_source.name == tokens.clone().next_back().unwrap()
 							&& input_source.device_class_handle == input_device_class_handle
 					});
 
-					if let Some(trigger) = trigger {
-						Some(TriggerHandle(trigger.0 as u32))
-					} else {
-						None
-					}
+					trigger.map(|trigger| TriggerHandle(trigger.0 as u32))
 				} else {
 					None
 				}
@@ -827,7 +820,7 @@ fn boolean_record_stack<'a>(
 		}
 	});
 
-	stack.sort_by(|left, right| left.1.time.cmp(&right.1.time));
+	stack.sort_by_key(|left| left.1.time);
 	stack
 }
 

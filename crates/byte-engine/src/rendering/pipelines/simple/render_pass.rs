@@ -67,15 +67,15 @@ impl RenderPass {
 		let instance_data_binding_template =
 			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
 
-		let descriptor_set = context.create_descriptor_set(None, &descriptor_set_layout);
+		let descriptor_set = context.create_descriptor_set(None, descriptor_set_layout);
 
 		context.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::buffer(&camera_data_binding_template, camera_data_buffer.into()),
+			ghi::BindingConstructor::buffer(&camera_data_binding_template, camera_data_buffer),
 		);
 		context.create_descriptor_binding(
 			descriptor_set,
-			ghi::BindingConstructor::buffer(&instance_data_binding_template, instance_data_buffer.into()),
+			ghi::BindingConstructor::buffer(&instance_data_binding_template, instance_data_buffer),
 		);
 
 		Self { index, descriptor_set }
@@ -102,15 +102,15 @@ impl RenderPass {
 
 		let vertex_buffer = sm.vertex_positions_buffer;
 		let index_buffer = sm.indeces_buffer;
-		let pipeline = sm.pipeline.clone();
+		let pipeline = sm.pipeline;
 		let descriptor_set = self.descriptor_set;
 
 		let extent = sink.extent();
-		let instance_batches = instance_batches.iter().copied().collect::<Vec<_>>();
+		let instance_batches = instance_batches.to_vec();
 
 		move |c, t| {
 			c.bind_vertex_buffers(&[vertex_buffer.into()]);
-			c.bind_index_buffer(&ghi::BufferDescriptor::new(index_buffer.into()).index_type(ghi::DataTypes::U16));
+			c.bind_index_buffer(&ghi::BufferDescriptor::new(index_buffer).index_type(ghi::DataTypes::U16));
 
 			let c = c.start_render_pass(extent, t);
 

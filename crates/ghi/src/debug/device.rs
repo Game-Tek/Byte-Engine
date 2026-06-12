@@ -11,6 +11,12 @@ use crate::{
 
 pub struct Device {}
 
+impl Default for Device {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Device {
 	pub fn new() -> Self {
 		Device {}
@@ -120,7 +126,7 @@ impl Device {
 		todo!("Handle true allocations");
 	}
 
-	pub fn get_mut_buffer_slice<'a, T: Copy>(&'a self, _buffer_handle: BufferHandle<T>) -> &'a mut T {
+	pub fn get_mut_buffer_slice<T: Copy>(&self, _buffer_handle: BufferHandle<T>) -> &mut T {
 		todo!("Handle true allocations");
 	}
 
@@ -197,7 +203,7 @@ impl Device {
 		(ImageHandle(crate::BaseImageHandle(0)), Formats::BGRAu8)
 	}
 
-	pub fn get_image_data<'a>(&'a self, _texture_copy_handle: TextureCopyHandle) -> &'a [u8] {
+	pub fn get_image_data(&self, _texture_copy_handle: TextureCopyHandle) -> &[u8] {
 		&[]
 	}
 

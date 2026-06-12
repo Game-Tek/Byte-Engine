@@ -17,7 +17,7 @@ fn main() {
 		],
 	);
 
-	// space_handle.spawn(TestSynthesizer{}.builder());
+	TestSynthesizer{}; // TODO: wire to audio system
 
 	app.do_loop();
 }

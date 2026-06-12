@@ -10,7 +10,7 @@ use byte_engine::{
 use math::Vector3;
 
 fn main() {
-	let mut app = byte_engine::application::GraphicsApplication::new(
+	let mut app = byte_engine::application::graphics::GraphicsApplication::new(
 		"Replication Test",
 		&[
 			Parameter::new("kill-after", "60"),

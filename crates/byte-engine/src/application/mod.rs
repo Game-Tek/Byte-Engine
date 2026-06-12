@@ -10,10 +10,7 @@ pub use trotcast::Channel as Sender;
 pub use trotcast::Receiver;
 
 #[cfg(feature = "headed")]
-pub mod graphics_application;
-
-#[cfg(feature = "headed")]
-pub use graphics_application::GraphicsApplication;
+pub mod graphics;
 
 /// [`Time`] is used to query information about time from an application.
 /// Is contains the elapsed time since the application started and the time since the last tick.

@@ -150,8 +150,7 @@
 
 ## Application and input
 
-- Split graphics application defaults into focused resource, input, rendering, audio, window, and Art-Net setup modules.
-- Move Art-Net and DMX support out of the core graphics application module into an optional integration module.
+- Feature-gate the Art-Net and DMX integration so applications that do not use lighting control avoid its dependencies.
 - Move input trigger and evaluation documentation beside the implementation that owns those rules.
 
 ## Assets and resource processing

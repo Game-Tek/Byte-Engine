@@ -5,7 +5,7 @@
 use byte_engine::application::{Application, Parameter};
 
 fn main() {
-	let mut app = byte_engine::application::GraphicsApplication::new(
+	let mut app = byte_engine::application::graphics::GraphicsApplication::new(
 		"Window Smoke Test",
 		&[
 			Parameter::new("kill-after", "60"),
@@ -13,7 +13,7 @@ fn main() {
 		],
 	);
 
-	byte_engine::application::graphics_application::setup_default_window(&mut app);
+	byte_engine::application::graphics::setup_default_window(&mut app);
 
 	app.do_loop();
 }

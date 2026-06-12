@@ -6,7 +6,7 @@
 use byte_engine::application::{Application, Parameter};
 
 fn main() {
-	let mut app = byte_engine::application::GraphicsApplication::new(
+	let mut app = byte_engine::application::graphics::GraphicsApplication::new(
 		"Triangle Smoke Test",
 		&[
 			Parameter::new("kill-after", "60"),
@@ -14,7 +14,7 @@ fn main() {
 		],
 	);
 
-	byte_engine::application::graphics_application::default_setup(&mut app);
+	byte_engine::application::graphics::default_setup(&mut app);
 
 	app.do_loop();
 }

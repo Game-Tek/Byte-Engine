@@ -6,7 +6,7 @@
 use byte_engine::application::{Application, Parameter};
 
 fn main() {
-	let mut app = byte_engine::application::GraphicsApplication::new(
+	let mut app = byte_engine::application::graphics::GraphicsApplication::new(
 		"Cube Smoke Test",
 		&[
 			Parameter::new("kill-after", "60"),

@@ -9,7 +9,7 @@ use byte_engine::{
 };
 
 fn main() {
-	let mut app = byte_engine::application::GraphicsApplication::new(
+	let mut app = byte_engine::application::graphics::GraphicsApplication::new(
 		"Sound Smoke Test",
 		&[
 			Parameter::new("kill-after", "60"),

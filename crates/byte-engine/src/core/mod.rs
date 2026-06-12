@@ -1,3 +1,10 @@
+//! Shared ownership, messaging, factories, and task primitives.
+//!
+//! Use [`factory::Factory`] when systems need stable creation handles and a
+//! stream of created values. Use [`channel::DefaultChannel`] for general
+//! broadcast messages and consume them through [`listener::Listener`].
+//! Long-lived shared objects should be exposed through [`EntityHandle`].
+
 pub mod channel;
 pub mod entity;
 pub mod factory;

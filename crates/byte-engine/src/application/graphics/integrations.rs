@@ -1,3 +1,9 @@
+//! Adapters between the graphics application and external event protocols.
+//!
+//! [`process_default_window_input`] targets device classes installed by
+//! [`super::setup_default_input`]. [`setup_default_dmx`] is optional and should
+//! only be installed by applications that publish color values to Art-Net.
+
 use std::{
 	net::{Ipv4Addr, UdpSocket},
 	time::Duration,
@@ -14,7 +20,8 @@ use crate::{
 	input,
 };
 
-/// Starts an Art-Net output worker for RGBA input values.
+/// Starts an Art-Net worker that publishes received [`RGBA`] values as DMX
+/// output.
 pub fn setup_default_dmx(application: &mut GraphicsApplication, mut receiver: DefaultListener<RGBA>) {
 	let bind_address = parse_artnet_ipv4_parameter(application.get_parameter("artnet.bind-address"), Ipv4Addr::UNSPECIFIED);
 	let poll_target = parse_artnet_ipv4_parameter(application.get_parameter("artnet.poll-target"), Ipv4Addr::BROADCAST);
@@ -85,7 +92,8 @@ fn parse_artnet_ipv4_parameter(parameter: Option<&Parameter>, default: Ipv4Addr)
 	})
 }
 
-/// Converts supported window events into standard engine input records.
+/// Converts GHI window events into records for the standard mouse and keyboard
+/// device classes.
 pub fn process_default_window_input(
 	input_system: &mut input::InputManager,
 	event: ghi::window::Events,

@@ -1,3 +1,10 @@
+//! Composable sink-local rendering stages.
+//!
+//! Implement [`RenderPass`] for post-processing or overlays that run after scene
+//! pipelines. Construct resources through [`RenderPassBuilder`] so the renderer
+//! can track access policies and named render targets. Existing implementations
+//! live in [`crate::rendering::render_passes`].
+
 use std::{borrow::Borrow, rc::Rc, sync::Arc};
 
 use ghi::{
@@ -28,6 +35,8 @@ pub trait RenderPass {
 	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn>;
 }
 
+/// The [`RenderPassBuilder`] struct provides sink resources and records the
+/// dependencies of a render pass.
 pub struct RenderPassBuilder<'a> {
 	context: &'a mut ghi::implementation::Context,
 	sink_id: usize,

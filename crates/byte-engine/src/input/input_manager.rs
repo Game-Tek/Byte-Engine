@@ -1,23 +1,22 @@
-//! The input manager is responsible for managing HID devices and their events and properties.
+//! Runtime storage and evaluation for input devices, triggers, and actions.
 //!
-//! # Concepts
-//! ## Device Class
-//! A device class represents a type of device. Such as a keyboard, mouse, or gamepad.
-//! ## Input Source
-//! An input source is a source of input on a device class/type. Such as the UP key on a keyboard or the left trigger on a gamepad.
-//! ## Input Destination
-//! An input destination is a destination of input on a device. Such as the rumble motors on a gamepad.
-//! ## Action
-//! An action is an application specific event that is triggered by a combination of input sources.
-//! For example move sideways is triggered by the left and right keys being pressed.
+//! Device classes describe layouts such as "Mouse" or "Gamepad"; devices are
+//! concrete instances of those classes; triggers are named values on a class.
+//! Actions map one or more triggers into application concepts such as movement.
 //!
-//! # TODO
-//! - [ ] Clamp input source values to their min and max values.
-//! - [ ] Add deadzone support.
-//! - [ ] Remove panics.
-//! - [ ] Add device class and device grouping.
+//! Most applications receive an [`InputManager`] through
+//! [`crate::application::graphics::GraphicsApplication`] and install the
+//! standard layouts with [`crate::application::graphics::setup_default_input`].
+//! Custom runtimes construct it from an action factory listener and an action
+//! event channel, then register classes before creating devices.
 
-/// The input manager is responsible for managing input devices and input events.
+/// The [`InputManager`] struct owns input topology, current values, and action
+/// evaluation state.
+///
+/// Feed platform records into this type before calling its update path. For the
+/// standard headed integration, use
+/// [`crate::application::graphics::process_default_window_input`] rather than
+/// duplicating the mouse and keyboard trigger-name mapping.
 pub struct InputManager {
 	device_classes: Vec<DeviceClass>,
 	triggers: Vec<Trigger>,

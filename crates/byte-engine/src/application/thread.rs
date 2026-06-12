@@ -1,7 +1,13 @@
+//! Worker-thread support for application-owned subsystems.
+//!
+//! Use [`Thread`] for workers that must stop with the application. The standard
+//! audio and Art-Net workers in [`crate::application::graphics`] show how to
+//! provide a receiver from the application event bus.
+
 use super::{Receiver, Sender};
 use crate::application::Events;
 
-/// An application thread that receives events from the application bus.
+/// The [`Thread`] struct owns a worker that participates in application shutdown.
 pub struct Thread {
 	handle: std::thread::JoinHandle<()>,
 }

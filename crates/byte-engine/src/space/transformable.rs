@@ -6,7 +6,12 @@ use crate::{
 	space::{Orientable, Positionable, Scalable},
 };
 
-// [`Transformable`] represents an object that can be transformed in the game world.
+/// The [`Transformable`] trait connects a type's complete gameplay transform to
+/// spatial consumers.
+///
+/// Implement this trait on renderable or physical entities that store a
+/// [`Transform`]. Position, orientation, and scale traits are supplied
+/// automatically.
 pub trait Transformable: Positionable + Orientable + Scalable {
 	fn transform(&self) -> &Transform;
 	fn transform_mut(&mut self) -> &mut Transform;

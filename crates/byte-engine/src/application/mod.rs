@@ -1,3 +1,13 @@
+//! Application lifecycle and composition.
+//!
+//! Use [`BaseApplication`] when building a custom runtime that only needs parameter
+//! handling and frame-local storage. Headed applications should start with
+//! [`graphics::GraphicsApplication`] and choose either
+//! [`graphics::default_setup`] or individual graphics setup functions.
+//!
+//! The `triangle` example demonstrates the standard setup path, while the
+//! `window` example demonstrates selecting only one setup component.
+
 use std::time::Duration;
 
 pub mod application;
@@ -12,8 +22,8 @@ pub use trotcast::Receiver;
 #[cfg(feature = "headed")]
 pub mod graphics;
 
-/// [`Time`] is used to query information about time from an application.
-/// Is contains the elapsed time since the application started and the time since the last tick.
+/// The [`Time`] struct provides frame timing to application systems without exposing
+/// the lifecycle clock owned by the application.
 #[derive(Debug, Clone, Copy)]
 pub struct Time {
 	elapsed: Duration,
@@ -34,7 +44,8 @@ impl Time {
 	}
 }
 
-/// A parameter for applications.
+/// The [`Parameter`] struct represents one application configuration value from
+/// code, the environment, or command-line arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Parameter {
 	name: String,
@@ -84,7 +95,7 @@ impl Parameter {
 	}
 }
 
-/// Event that can be sent to an application. Mostly used to control the application life cycle.
+/// The [`Events`] enum defines messages shared with application-owned worker threads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Events {
 	/// Request the application to close.

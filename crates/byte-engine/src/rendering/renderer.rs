@@ -1,5 +1,14 @@
-/// The `Renderer` class centralizes the management of the rendering tasks and state.
-/// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
+//! Frame orchestration and ownership of graphics hardware resources.
+//!
+//! Applications register windows, pipeline managers, and post-scene
+//! [`crate::rendering::RenderPass`] values with [`Renderer`]. The graphics
+//! application owns frame timing and calls the renderer in lifecycle order.
+
+/// The [`Renderer`] struct owns graphics queues, render targets, scene pipelines,
+/// and per-sink render passes.
+///
+/// Prefer the setup helpers in [`crate::application::graphics`] unless building
+/// a custom headed runtime.
 pub struct Renderer {
 	/// The GHI context where all rendering resources and operations are performed.
 	context: ghi::implementation::Context,

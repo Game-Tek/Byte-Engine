@@ -1,3 +1,8 @@
+//! Strong and weak handles for shared engine entities.
+//!
+//! Use [`Handle`] when a subsystem must keep an entity alive and [`WeakHandle`]
+//! for caches or relationships that must not extend its lifetime.
+
 use std::{
 	marker::Unsize,
 	ops::{CoerceUnsized, Deref},
@@ -7,10 +12,13 @@ use std::{
 pub type EntityWrapper<T> = Arc<T>;
 
 #[derive(Debug)]
+/// The [`Handle`] struct provides shared ownership of an entity across engine
+/// systems.
 pub struct Handle<T: ?Sized> {
 	pub(super) container: EntityWrapper<T>,
 }
 
+/// The [`WeakHandle`] struct references an entity without extending its lifetime.
 pub struct WeakHandle<T: ?Sized> {
 	pub(super) container: std::sync::Weak<T>,
 }

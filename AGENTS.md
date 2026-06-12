@@ -2,7 +2,8 @@
 Always write struct and trait documentation as:
 The `<NAME>` struct/trait <PURPOSE>
 
-Always write about the purpose of the struct/trait or why it wxists instead of what it does.
+Always write about the purpose of the struct/trait or why it exists instead of what it does.
+Write usage-oriented documentation. How/where will this element be used, instead of this is what it does or how.
 
 If functions is larger than a few lines, write a short description of what the function does.
 

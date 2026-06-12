@@ -1,12 +1,23 @@
-/// A graphics application is the base for all applications that use the graphics functionality of the engine.
-/// It uses the orchestrated application as a base and adds rendering and windowing functionality.
+//! Headed application runtime and graphics setup entry points.
+//!
+//! Construct [`GraphicsApplication`], configure it with either [`default_setup`]
+//! or selected setup functions, then run its loop. The `triangle` example uses
+//! the complete default stack; the `window` example creates only a window.
+//!
+//! Rendering setup remains in this module because it coordinates the world,
+//! renderer, and application factories. General startup defaults and external
+//! adapters are kept behind the setup functions re-exported from this module.
+
+/// The [`GraphicsApplication`] struct owns the headed runtime and coordinates
+/// windows, input, worlds, resources, audio workers, and rendering.
 ///
-/// # Parameters
+/// Use [`default_setup`] for the conventional engine stack. Use
+/// [`setup_default_window`], [`setup_default_input`], and the render-pass setup
+/// functions independently when an application needs explicit composition.
+///
+/// # Configuration
 /// - `kill-after`: The number of ticks after which the application should be killed. Defaults to None.
-/// ## Resources
 /// - `resources.path`: The path to the resources directory. Defaults to "./resources".
-/// ## Render
-/// ### Render > Debug
 /// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
 /// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 /// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.

@@ -1,3 +1,10 @@
+//! UI tree evaluation, interaction state, and render snapshots.
+//!
+//! Implement [`Component`] to populate a layout context, then call
+//! [`Engine::evaluate`] with the root and viewport size. The resulting
+//! [`Snapshot`] retains query and interaction state, while [`Render`] is the
+//! compact payload consumed by [`crate::ui::render_pass::UiRenderPass`].
+
 use std::{cell::RefCell, collections::HashSet, marker::PhantomData, rc::Rc};
 
 use math::{Base as _, Vector2};
@@ -21,6 +28,8 @@ use crate::ui::{
 	Container,
 };
 
+/// The [`Engine`] struct owns UI evaluation state, text shaping, and pointer
+/// interaction across viewports.
 pub struct Engine {
 	viewports: Vec<VirtualViewport>,
 	state: Rc<RefCell<EngineState>>,
@@ -702,7 +711,11 @@ impl Render {
 	}
 }
 
-/// The `Context` is the API offered to UI layouting code to create it's elements.
+/// The [`Context`] trait is the element-construction API available while rendering
+/// a [`Component`].
+///
+/// Component implementations should use this interface instead of constructing
+/// layout IDs or engine state directly.
 pub trait Context: Sized {
 	type Child<'a>: Context
 	where
@@ -723,6 +736,10 @@ impl ElementHandle for VirtualViewport {
 	}
 }
 
+/// The [`Component`] trait defines a reusable UI tree fragment.
+///
+/// Pass a root implementation to [`Engine::evaluate`], and compose child
+/// components through [`Context::component`].
 pub trait Component {
 	fn render(&self, ctx: &mut impl Context);
 }

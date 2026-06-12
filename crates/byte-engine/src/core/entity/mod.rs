@@ -1,3 +1,10 @@
+//! Shared entity ownership used across subsystem boundaries.
+//!
+//! Convert concrete values into [`EntityHandle`] when several systems need
+//! stable access to the same object. Trait-object handles are used by
+//! [`crate::gameplay::world::DefaultWorld`] for physics bodies and renderable
+//! meshes.
+
 pub mod container;
 pub mod handle;
 
@@ -5,10 +12,8 @@ pub use container::Container as EntityContainer;
 pub use handle::Handle as EntityHandle;
 use utils::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-/// The Entity trait is the base trait for all entities in the engine.
-///
-/// An entity is a type that can be spawned and managed by the engine.
-/// The trait provides some convenience methods to interact with the entity.
+/// The [`Entity`] trait marks values that participate in engine-managed shared
+/// ownership.
 pub trait Entity {}
 
 use std::ops::CoerceUnsized;

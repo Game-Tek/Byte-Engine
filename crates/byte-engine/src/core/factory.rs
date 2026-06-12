@@ -1,4 +1,9 @@
-//! The Factory is an special Channel that handles the creation of new entities.
+//! Creation messages with stable handles.
+//!
+//! A [`Factory`] is the standard boundary between code that creates an object
+//! and systems that mirror it. World factories use this pattern to notify
+//! rendering and physics without giving those systems ownership of gameplay
+//! objects.
 
 use std::{
 	cell::{Cell, RefCell},
@@ -75,6 +80,8 @@ impl<T: Clone> Factory<T> {
 }
 
 #[derive(Debug, Clone)]
+/// The [`CreateMessage`] struct carries a created value and the stable handle
+/// shared by systems that mirror it.
 pub struct CreateMessage<T: Clone> {
 	handle: Handle,
 	data: T,
@@ -101,4 +108,6 @@ impl<T: Clone> CreateMessage<T> {
 impl<T: Clone> Message for CreateMessage<T> {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// The [`Handle`] struct identifies one creation stream entry across consuming
+/// systems.
 pub struct Handle(u32);

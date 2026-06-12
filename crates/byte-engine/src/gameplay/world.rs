@@ -1,3 +1,10 @@
+//! Standard world composition shared by gameplay, physics, and rendering.
+//!
+//! Create objects through the factories exposed by [`DefaultWorld`] so
+//! downstream systems receive creation and deletion messages. The graphics
+//! application updates this world and attaches its listeners to render
+//! pipelines.
+
 use crate::{
 	application::Time,
 	core::{
@@ -13,6 +20,8 @@ use crate::{
 };
 
 #[derive(Clone)]
+/// The [`DefaultWorld`] struct owns the standard entity factories and coordinates
+/// transform, physics, anchoring, and deletion updates.
 pub struct DefaultWorld {
 	body_factory: Factory<EntityHandle<dyn physics::Body>>,
 	transforms: DefaultChannel<TransformationUpdate>,

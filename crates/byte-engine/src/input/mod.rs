@@ -1,3 +1,17 @@
+//! Device-independent input actions and device registration.
+//!
+//! Typical headed applications call
+//! [`crate::application::graphics::setup_default_input`], translate window
+//! events with
+//! [`crate::application::graphics::process_default_window_input`], and create
+//! application-level [`Action`] values through the graphics application's action
+//! factory. Use [`utils`] when registering the standard mouse, keyboard, or
+//! gamepad classes in a custom application.
+//!
+//! [`InputManager`] owns device and action state. [`Value`] is the erased value
+//! passed through that runtime; typed action declarations use
+//! [`action::InputValue`] to constrain supported value types.
+
 use super::utils::RGBA;
 use crate::core::factory::Handle;
 
@@ -26,7 +40,8 @@ pub use seat::SeatHandle;
 
 use self::action::InputValue;
 
-/// Enumerates the different types of types of values the input manager can handle.
+/// The [`Types`] enum identifies the value representation accepted by input
+/// triggers and actions.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Types {
 	/// A boolean value.
@@ -48,8 +63,8 @@ pub enum Types {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-/// A simple "typeless" container for several underlying types.
-/// Can be used to store any of these types, but will be usually used to traffic record and input event values.
+/// The [`Value`] enum carries device and action values through the non-generic
+/// input runtime.
 pub enum Value {
 	/// A boolean value.
 	Bool(bool),

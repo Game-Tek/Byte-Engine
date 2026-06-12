@@ -1,5 +1,8 @@
-//! Byte-Engine inspector module.
-//! Provides interfaces to interact with the engine's internal state.
+//! Runtime inspection contracts and protocol-facing state access.
+//!
+//! Implement [`Inspectable`] on entities exposed to tooling, then register their
+//! handles with an [`Inspector`]. Protocol adapters such as [`http`] should
+//! query this object rather than reaching into application subsystems directly.
 
 use std::{fmt::Debug, sync::Arc};
 
@@ -13,6 +16,8 @@ use crate::{
 
 pub mod http;
 
+/// The [`Inspectable`] trait defines the read and mutation surface exposed to
+/// external engine tooling.
 pub trait Inspectable: Send + Sync {
 	fn as_string(&self) -> String;
 
@@ -25,7 +30,8 @@ pub trait Inspectable: Send + Sync {
 	}
 }
 
-/// The inspector allows different implementations of the Byte Engine Inspection Protocol to interact an query the engine's internal state.
+/// The [`Inspector`] struct owns the entity registry and application controls
+/// shared by Byte Engine Inspection Protocol adapters.
 pub struct Inspector {
 	entities: Mutex<Vec<EntityHandle<dyn Inspectable>>>,
 	events: Sender<Events>,

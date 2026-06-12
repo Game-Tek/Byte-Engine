@@ -9,7 +9,12 @@ use crate::rendering::{
 	Sink,
 };
 
-/// The `PipelineManager` trait bridges scene state with render work for active sinks.
+/// The [`PipelineManager`] trait bridges scene state with render work for active
+/// sinks.
+///
+/// Implement this for a scene rendering strategy that needs persistent
+/// per-sink resources. Post-processing that only consumes rendered images should
+/// implement [`crate::rendering::RenderPass`] instead.
 pub trait PipelineManager {
 	/// Called when a frame is being prepared for rendering.
 	fn prepare<'a>(

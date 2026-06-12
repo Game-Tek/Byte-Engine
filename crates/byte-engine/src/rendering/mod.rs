@@ -1,3 +1,14 @@
+//! Rendering orchestration, scene pipelines, and composable post-processing.
+//!
+//! [`renderer::Renderer`] owns GHI resources and executes [`RenderPass`] values
+//! for each [`Sink`]. Applications normally configure it through the setup
+//! functions in [`crate::application::graphics`]. Implement
+//! [`pipeline_manager::PipelineManager`] for scene rendering strategies and
+//! [`RenderPass`] for sink-local post-processing.
+//!
+//! Use [`pipelines::simple`] for debugging or prototypes. The
+//! [`pipelines::visibility`] pipeline is the primary material and lighting path.
+
 use ::utils::Extent;
 use ghi::context::ContextCreate as _;
 

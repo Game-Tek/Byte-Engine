@@ -1,3 +1,11 @@
+//! Reliability policy for application messages sent over engine networking.
+//!
+//! Implement [`Replicable`] on payloads submitted to network sessions.
+//! [`Importance::Essential`] retains retry behavior for state that must arrive;
+//! use [`Importance::Optional`] for replaceable cosmetic or high-frequency data.
+
+/// The [`Replicable`] trait supplies payload access and delivery importance to
+/// network sessions.
 pub trait Replicable {
 	fn payload(&self) -> &u8;
 
@@ -8,6 +16,7 @@ pub trait Replicable {
 	}
 }
 
+/// The [`Importance`] enum selects whether delivery should be retried.
 pub enum Importance {
 	Essential,
 	Optional,

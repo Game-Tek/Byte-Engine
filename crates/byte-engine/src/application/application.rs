@@ -1,24 +1,22 @@
-//! The application module contains the application trait and some alternative implementations.\
-//! An application is the main entry point of the engine and is responsible for initializing and deinitializing the engine.
-//! It also contains the main loop of the engine.
-//! An application MUST be a singleton and created before any other engine functionality is used.\
-//! All state associated with the application/process should be stored in an application.
+//! Core application contract and the minimal implementation used by higher-level runtimes.
+//!
+//! Implement [`Application`] for a new top-level runtime, or compose
+//! [`BaseApplication`] into it to reuse parameter precedence, logging setup, and
+//! frame-local allocation. [`crate::application::graphics::GraphicsApplication`]
+//! is the main example of that composition.
 
 //use utils::hash::HashSet; // Triggers address sanitation error
 
-/// The application trait is the main entry point of the engine.
-/// It is responsible for initializing and deinitializing the engine.
-/// It also contains the main loop of the engine.
-/// An application MUST be a singleton and created before any other engine functionality is used.\
-/// All state associated with the application/process should be stored in an application.
+/// The [`Application`] trait defines the lifecycle contract for a process-level
+/// Byte-Engine runtime.
 ///
-/// ## Features
-/// ### Arguments
-/// The application can take arguments during startup.
-/// The arguments can be passed as OS environment variables in the form of `BE_NAME=value`, as command line arguments in the form of `--name=value`, or as parameters in code during the creation of the application.
+/// Applications are intended to be singletons that own engine-wide state. Most
+/// headed programs should use
+/// [`crate::application::graphics::GraphicsApplication`] instead of implementing
+/// this trait directly.
 ///
-/// Parameters as command line arguments take precedence over environment variables which take precedence over parameters in code.
-/// Parameters < Environment variables < Command line arguments
+/// Parameters passed to [`Application::new`] may be overridden by `BE_*`
+/// environment variables and then by `--name=value` command-line arguments.
 pub trait Application {
 	/// Creates a new application with the given name.
 	fn new(name: &str, parameters: &[Parameter]) -> Self;
@@ -30,9 +28,12 @@ pub trait Application {
 	fn tick(&mut self) -> bool;
 }
 
-/// The most basic implementation of the application trait.
-/// It has no functionality and is only used as a base for other implementations.
-/// It just stores the name of the application.
+/// The [`BaseApplication`] struct provides shared process configuration and
+/// frame-local storage for application implementations.
+///
+/// Embed it in a specialized application rather than using it as a complete game
+/// loop. See [`crate::application::graphics::GraphicsApplication`] for the
+/// established composition pattern.
 pub struct BaseApplication {
 	name: String,
 	parameters: HashSet<Parameter>,

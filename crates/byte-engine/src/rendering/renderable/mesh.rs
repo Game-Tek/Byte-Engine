@@ -1,3 +1,10 @@
+//! Renderable mesh contracts and the standard transform-backed mesh entity.
+//!
+//! Use [`Mesh`] for common resource or generated geometry. Implement
+//! [`RenderableMesh`] on custom entities that own a transform and expose a
+//! [`MeshSource`], then create them through
+//! [`crate::gameplay::world::DefaultWorld::renderable_factory_mut`].
+
 use std::sync::Arc;
 
 use math::{normalize, Vector3};
@@ -9,11 +16,15 @@ use crate::{
 	space::Transformable,
 };
 
+/// The [`RenderableMesh`] trait exposes geometry and transform state to scene
+/// pipeline managers.
 pub trait RenderableMesh: Transformable {
 	fn get_mesh(&self) -> &MeshSource;
 }
 
 #[derive(Clone)]
+/// The [`MeshSource`] enum selects resource-backed or procedurally generated
+/// geometry.
 pub enum MeshSource {
 	Resource(&'static str),
 	Generated(Arc<dyn MeshGenerator>),
@@ -36,6 +47,7 @@ impl Into<MeshSource> for Arc<dyn MeshGenerator> {
 }
 
 #[derive(Clone)]
+/// The [`Mesh`] struct provides the standard transformable renderable entity.
 pub struct Mesh {
 	source: MeshSource,
 	transform: Transform,

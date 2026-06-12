@@ -1,3 +1,11 @@
+//! Application-facing action declarations.
+//!
+//! Actions decouple gameplay concepts from physical controls. Create an
+//! [`Action`] with bindings such as `Keyboard.W` or `Gamepad.LeftStick`, then
+//! submit it through the action factory owned by
+//! [`crate::application::graphics::GraphicsApplication`]. The standard trigger
+//! names are defined by [`crate::input::utils`].
+
 use math::{Quaternion, Vector2, Vector3};
 use utils::RGBA;
 
@@ -12,6 +20,8 @@ trait ActionLike {
 }
 
 #[derive(Clone)]
+/// The [`Action`] struct describes an application-level input value and the
+/// physical trigger bindings that can produce it.
 pub struct Action {
 	pub(crate) name: &'static str,
 	pub(crate) bindings: Vec<ActionBindingDescription>,
@@ -29,7 +39,11 @@ impl ActionLike for Action {
 	}
 }
 
-/// This trait allows us to extract the `Types` from a generic type as a convenience to clients and also allows us to constrain generic types to only those that are valid for input values.
+/// The [`InputValue`] trait marks typed values supported by the input runtime.
+///
+/// It is primarily used with [`crate::input::input_trigger::TriggerDescription`]
+/// and should only be implemented when a matching [`Value`] representation
+/// exists.
 pub trait InputValue: Default + Clone + Copy + 'static {
 	fn get_type() -> Types;
 }
@@ -100,7 +114,8 @@ impl Action {
 	}
 }
 
-/// An action binding description is a description of how an input source is mapped to a value for an action.
+/// The [`ActionBindingDescription`] struct connects a named or handled trigger to
+/// one contribution to an [`Action`].
 #[derive(Copy, Clone, Debug)]
 pub struct ActionBindingDescription {
 	pub(crate) input_source: TriggerReference,
@@ -121,7 +136,8 @@ impl ActionBindingDescription {
 	}
 }
 
-/// A trigger mapping is a mapping of an input trigger to a value for an action.
+/// The [`TriggerMapping`] struct is the resolved form of an action binding used by
+/// the evaluator after trigger registration.
 #[derive(Copy, Clone, Debug)]
 pub struct TriggerMapping {
 	/// The handle to the trigger that this mapping is for.
@@ -133,5 +149,6 @@ pub struct TriggerMapping {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-/// Handle to an input event.
+/// The [`ActionHandle`] struct identifies an action registered with an
+/// [`crate::input::InputManager`].
 pub struct ActionHandle(pub(super) u32);

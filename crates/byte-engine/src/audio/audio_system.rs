@@ -28,8 +28,11 @@ use crate::{
 	space::Positionable,
 };
 
-/// The `AudioSystem` trait defines the interface for an audio system which handles audio playback and processing.
-/// It provides methods for playing audio assets, processing audio data, and managing audio channels.
+/// The [`AudioSystem`] trait defines the playback boundary used by application
+/// audio workers.
+///
+/// Use [`DefaultAudioSystem`] for hardware output. Alternative implementations
+/// can target offline rendering or tests while preserving generator handling.
 pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
 	fn play<'a>(&'a mut self, audio_asset_url: &'a str) -> ();
@@ -43,6 +46,11 @@ pub trait AudioSystem: Entity {
 	fn render_available(&mut self) -> bool;
 }
 
+/// The [`DefaultAudioSystem`] struct mixes generators and submits samples to the
+/// platform audio device.
+///
+/// It is normally created by
+/// [`crate::application::graphics::setup_default_audio`] rather than directly.
 pub struct DefaultAudioSystem {
 	device: Device,
 	audio_resources: HashMap<String, (Audio, Vec<i16>)>,

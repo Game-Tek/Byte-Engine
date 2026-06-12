@@ -1,3 +1,10 @@
+//! Conventional setup components for [`GraphicsApplication`].
+//!
+//! [`default_setup`] is the batteries-included path used by the `triangle`
+//! example. Applications that replace a subsystem can call the remaining setup
+//! functions individually; the `window` example demonstrates that narrower
+//! composition.
+
 use resource_management::asset::{
 	asset_manager::AssetManager,
 	bema_asset_handler::{BEMAAssetHandler, ProgramGenerator},
@@ -19,7 +26,8 @@ use crate::{
 	rendering::{pipelines::visibility::shader_generator::VisibilityShaderGenerator, window::Window},
 };
 
-/// Performs the standard graphics application setup.
+/// Installs the standard assets, input devices, audio worker, visibility
+/// rendering pipeline, and window.
 pub fn default_setup(application: &mut GraphicsApplication) {
 	let generator = VisibilityShaderGenerator::new(false, false, false, false, false, false, true, false);
 	setup_default_resource_and_asset_management(application, generator);
@@ -29,7 +37,7 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 	setup_default_window(application);
 }
 
-/// Creates the standard application window.
+/// Creates the 1920x1080 window used by the default headed setup.
 pub fn setup_default_window(application: &mut GraphicsApplication) {
 	application
 		.window_factory
@@ -37,7 +45,8 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 		.create(Window::new(application.get_name(), Extent::rectangle(1920, 1080)));
 }
 
-/// Registers the standard asset handlers and source storage.
+/// Connects the asset directory and standard material, glTF, image, LUT, and
+/// audio handlers to the application's resource manager.
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
 	generator: impl ProgramGenerator + 'static,
@@ -69,7 +78,7 @@ pub fn setup_default_resource_and_asset_management(
 		.expect("Failed to set up resource manager. Application cannot run without a resource manager.");
 }
 
-/// Registers standard mouse, keyboard, and gamepad input devices.
+/// Installs the device classes expected by [`super::process_default_window_input`].
 pub fn setup_default_input(application: &mut GraphicsApplication) {
 	let input_system = &mut application.input_system;
 	let mouse = register_mouse_device_class(input_system);
@@ -82,7 +91,8 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 	input_system.create_device(&gamepad);
 }
 
-/// Starts the standard audio rendering worker.
+/// Starts the audio worker and connects generators created through the
+/// application's generator factory.
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
 	application
 		.threads

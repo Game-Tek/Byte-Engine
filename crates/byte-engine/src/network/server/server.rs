@@ -2,6 +2,11 @@ use betp::Server as _;
 
 use crate::{core::Entity, network::server::udp};
 
+/// The [`Server`] struct owns the authoritative BETP session endpoint for a
+/// replicated application.
+///
+/// Call [`Server::update`] from the application loop to process connection
+/// events. Transport details are provided by the private UDP adapter.
 pub struct Server {
 	server: udp::Server,
 }

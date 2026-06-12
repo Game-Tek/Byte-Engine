@@ -1,4 +1,7 @@
-/// The `Collider` trait allows an entity to present itself as a collision shape.
+/// The [`Collider`] trait exposes collision geometry and material response to a
+/// physics world.
+///
+/// Physical entities usually implement this as part of [`crate::physics::Body`].
 pub trait Collider: Positionable {
 	/// Returns the shape of the collider.
 	fn shape(&self) -> Shapes;

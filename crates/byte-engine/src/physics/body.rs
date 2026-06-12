@@ -6,7 +6,12 @@ use crate::{
 	space::{Positionable, Transformable},
 };
 
-/// The `Body` trait represents a physical body in the world.
+/// The [`Body`] trait exposes the simulation properties required by a physics
+/// world.
+///
+/// Implement it on transformable gameplay entities and submit their
+/// [`crate::core::EntityHandle`] through
+/// [`crate::gameplay::world::DefaultWorld::body_factory_mut`].
 pub trait Body: Collider + Transformable {
 	fn body_type(&self) -> BodyTypes;
 

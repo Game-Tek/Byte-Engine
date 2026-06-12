@@ -82,14 +82,10 @@ impl<'a> ReadTargetsMut<'a> {
 		ReadTargetsMut::BackingStorage
 	}
 
+	/// Creates an owned byte buffer sized for the referenced resource.
 	pub fn create_buffer<T: Resource + 'a>(reference: &Reference<T>) -> Self {
 		ReadTargetsMut::Box {
-			buffer: unsafe {
-				let mut v = Vec::with_capacity(reference.size);
-				v.set_len(reference.size);
-				v
-			}
-			.into_boxed_slice(),
+			buffer: vec![0; reference.size].into_boxed_slice(),
 			offset: 0,
 			size: None,
 		}

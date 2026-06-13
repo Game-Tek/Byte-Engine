@@ -788,4 +788,6 @@ mod integrations;
 pub use defaults::{
 	default_setup, setup_default_audio, setup_default_input, setup_default_resource_and_asset_management, setup_default_window,
 };
-pub use integrations::{process_default_window_input, setup_default_dmx};
+pub use integrations::process_default_window_input;
+#[cfg(feature = "dmx")]
+pub use integrations::setup_default_dmx;

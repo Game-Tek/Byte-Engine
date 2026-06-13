@@ -148,7 +148,6 @@
 
 ## Application and input
 
-- Feature-gate the Art-Net and DMX integration so applications that do not use lighting control avoid its dependencies.
 - Move input trigger and evaluation documentation beside the implementation that owns those rules.
 
 ## Assets and resource processing

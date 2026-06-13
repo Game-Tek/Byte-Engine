@@ -4,24 +4,30 @@
 //! [`super::setup_default_input`]. [`setup_default_dmx`] is optional and should
 //! only be installed by applications that publish color values to Art-Net.
 
+#[cfg(feature = "dmx")]
 use std::{
 	net::{Ipv4Addr, UdpSocket},
 	time::Duration,
 };
 
+#[cfg(feature = "dmx")]
 use artnet_protocol::{ArtCommand, ArtTalkToMe, Output, Poll};
 use math::Vector2;
+#[cfg(feature = "dmx")]
 use utils::RGBA;
 
+#[cfg(feature = "dmx")]
 use super::GraphicsApplication;
+use crate::input;
+#[cfg(feature = "dmx")]
 use crate::{
 	application::{parameters::Parameters as _, thread::Thread, Events, Parameter},
 	core::listener::{DefaultListener, Listener as _},
-	input,
 };
 
 /// Starts an Art-Net worker that publishes received [`RGBA`] values as DMX
 /// output.
+#[cfg(feature = "dmx")]
 pub fn setup_default_dmx(application: &mut GraphicsApplication, mut receiver: DefaultListener<RGBA>) {
 	let bind_address = parse_artnet_ipv4_parameter(application.get_parameter("artnet.bind-address"), Ipv4Addr::UNSPECIFIED);
 	let poll_target = parse_artnet_ipv4_parameter(application.get_parameter("artnet.poll-target"), Ipv4Addr::BROADCAST);
@@ -78,6 +84,7 @@ pub fn setup_default_dmx(application: &mut GraphicsApplication, mut receiver: De
 		}));
 }
 
+#[cfg(feature = "dmx")]
 fn parse_artnet_ipv4_parameter(parameter: Option<&Parameter>, default: Ipv4Addr) -> Ipv4Addr {
 	let Some(parameter) = parameter else {
 		return default;
@@ -209,6 +216,7 @@ mod tests {
 		assert_eq!(result.3, input::Value::Vector2(Vector2::new(0.25, -0.5)));
 	}
 
+	#[cfg(feature = "dmx")]
 	#[test]
 	fn parses_artnet_ipv4_parameter() {
 		let parameter = Parameter::new("artnet.bind-address", "2.0.0.15");

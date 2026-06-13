@@ -9,6 +9,7 @@ default = ["headed", "network"]
 headed = ["dep:ahi", "dep:ghi", "dep:besl"]
 network = ["client"]
 client = ["dep:betp"]
+dmx = ["dep:artnet_protocol"]
 tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 
 [dependencies]
@@ -37,7 +38,7 @@ trotcast = "0.5.0"
 ctrlc = "3.5.1"
 mid = "5.0.1"
 fontdue = "0.9.3"
-artnet_protocol = "0.4.4"
+artnet_protocol = { version = "0.4.4", optional = true }
 half = "2.4.1"
 bitflags = "2.11.1"
 bumpalo = { version = "3", features = ["allocator-api2"] }

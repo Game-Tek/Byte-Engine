@@ -216,16 +216,16 @@ impl VisibilityPipelineManager {
 	}
 
 	pub(crate) fn remove_light(&mut self, handle: Handle) {
-		let Some((index, _)) = self
+		let Some((handle, _)) = self
 			.scene
 			.lights
-			.indexed_iter()
+			.handled_iter()
 			.find(|(_, (light_handle, _))| *light_handle == handle)
 		else {
 			return;
 		};
 
-		self.scene.lights.remove(index);
+		self.scene.lights.remove(handle);
 	}
 
 	/// Requests the renderable mesh resources and keeps the scene instance pending until those resources are ready.
@@ -252,15 +252,17 @@ impl VisibilityPipelineManager {
 		self.pending_renderables
 			.retain(|pending_renderable| pending_renderable.handle != handle);
 
-		let render_entity_indices = self
+		let render_entity_handles = self
 			.scene
 			.render_entities
-			.indexed_iter()
-			.filter_map(|(index, render_entity)| (render_entity.handle == handle).then_some(index))
+			.handled_iter()
+			.filter_map(|(render_entity_handle, render_entity)| {
+				(render_entity.handle == handle).then_some(render_entity_handle)
+			})
 			.collect::<Vec<_>>();
 
-		for index in render_entity_indices {
-			self.scene.render_entities.remove(index);
+		for render_entity_handle in render_entity_handles {
+			self.scene.render_entities.remove(render_entity_handle);
 		}
 	}
 

@@ -19,7 +19,7 @@ pub type Box<T> = smallbox::SmallBox<T, [u8; 32]>;
 pub use copy_fn::{InlineCopyFn, InlineCopyFnError, RefCall1, RefCall2, RefCall3};
 pub use gxhash as hash;
 pub use sonic_rs as json;
-pub use stable_vec::StableVec;
+pub use stable_vec::{StableVec, StableVecHandle};
 pub struct BufferAllocator<'a> {
 	buffer: &'a mut [u8],
 	offset: usize,

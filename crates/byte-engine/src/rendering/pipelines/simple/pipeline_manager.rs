@@ -373,7 +373,7 @@ impl PipelineManager {
 
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
-		instance_data_buffer[instace_id] = InstanceShaderData {
+		instance_data_buffer[instace_id.index()] = InstanceShaderData {
 			instance_transform: entity.transform().get_matrix().into(),
 		};
 	}
@@ -385,7 +385,7 @@ impl PipelineManager {
 
 		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 
-		instance_data_buffer[idx] = InstanceShaderData {
+		instance_data_buffer[idx.index()] = InstanceShaderData {
 			instance_transform: transform.into(),
 		};
 	}

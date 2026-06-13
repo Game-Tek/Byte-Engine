@@ -15,7 +15,7 @@ pub struct World {
 	body_listener: DefaultListener<CreateMessage<EntityHandle<dyn Body>>>,
 	body_delete_listener: DefaultListener<DeleteMessage>,
 
-	handles_to_bodies: HashMap<Handle, usize>,
+	handles_to_bodies: HashMap<Handle, StableVecHandle>,
 }
 
 impl World {
@@ -33,7 +33,7 @@ impl World {
 		}
 	}
 
-	fn add_body(&mut self, body: PhysicsBody) -> usize {
+	fn add_body(&mut self, body: PhysicsBody) -> StableVecHandle {
 		self.bodies.push(body)
 	}
 
@@ -140,7 +140,12 @@ impl World {
 
 	/// Collision detection for a subset of body pairs.
 	fn detect_collisions_from_pairs(&self, pairs: &[Pair], dt: f32) -> Vec<Contact> {
-		let pairs = pairs.iter().map(|p| ((p.a, &self.bodies[p.a]), (p.b, &self.bodies[p.b])));
+		let pairs = pairs.iter().filter_map(|p| {
+			let a = self.bodies.get_slot(p.a)?;
+			let b = self.bodies.get_slot(p.b)?;
+
+			Some(((p.a, a), (p.b, b)))
+		});
 		detect_collisions_for_body_pairs(pairs, dt)
 	}
 
@@ -165,8 +170,8 @@ impl World {
 		let a_index = contact.a.object;
 		let b_index = contact.b.object;
 
-		let a = self.bodies.get(a_index).cloned().unwrap();
-		let b = self.bodies.get(b_index).cloned().unwrap();
+		let a = self.bodies.get_slot(a_index).cloned().unwrap();
+		let b = self.bodies.get_slot(b_index).cloned().unwrap();
 
 		let a_point = contact.a.point;
 		let b_point = contact.b.point;
@@ -212,11 +217,11 @@ impl World {
 		let impulse = (1.0 + elasticity) * dot(vab, n) / (a_inv_mass + b_inv_mass + angular_factor);
 		let impulse_vector = impulse * n;
 
-		if let Some(a) = self.bodies.get_mut(a_index) {
+		if let Some(a) = self.bodies.get_slot_mut(a_index) {
 			a.apply_impulse(a_point, -impulse_vector);
 		}
 
-		if let Some(b) = self.bodies.get_mut(b_index) {
+		if let Some(b) = self.bodies.get_slot_mut(b_index) {
 			b.apply_impulse(b_point, impulse_vector);
 		}
 
@@ -232,11 +237,11 @@ impl World {
 		let reduced_mass = 1.0 / (a_inv_mass + b_inv_mass + inv_inertia);
 		let impulse_friction = vel_tangent * reduced_mass * friction;
 
-		if let Some(a) = self.bodies.get_mut(a_index) {
+		if let Some(a) = self.bodies.get_slot_mut(a_index) {
 			a.apply_impulse(a_point, -impulse_friction);
 		}
 
-		if let Some(b) = self.bodies.get_mut(b_index) {
+		if let Some(b) = self.bodies.get_slot_mut(b_index) {
 			b.apply_impulse(b_point, impulse_friction);
 		}
 
@@ -248,11 +253,11 @@ impl World {
 			let t_a = a_inv_mass / inv_mass_sum;
 			let t_b = b_inv_mass / inv_mass_sum;
 
-			if let Some(a) = self.bodies.get_mut(a_index) {
+			if let Some(a) = self.bodies.get_slot_mut(a_index) {
 				a.position -= separation * t_a;
 			}
 
-			if let Some(b) = self.bodies.get_mut(b_index) {
+			if let Some(b) = self.bodies.get_slot_mut(b_index) {
 				b.position += separation * t_b;
 			}
 		}
@@ -297,10 +302,9 @@ impl World {
 
 /// Detects intersections and builds contact data for each unique body pair.
 fn detect_collisions_for_bodies(bodies: &StableVec<PhysicsBody>, dt: f32) -> Vec<Contact> {
-	let iter = bodies.iter().enumerate().flat_map(|(i, a)| {
+	let iter = bodies.indexed_iter().flat_map(|(i, a)| {
 		bodies
-			.iter()
-			.enumerate()
+			.indexed_iter()
 			.filter(move |(j, _)| *j > i)
 			.map(move |(j, b)| ((i, a), (j, b)))
 	});
@@ -385,7 +389,12 @@ mod tests {
 		assert_eq!(contacts.len(), 1);
 		world.resolve_contact(&contacts[0]);
 
-		intersect((&world.bodies[0], 0), (&world.bodies[1], 1), dt).map_or(0.0, |intersection| intersection.depth)
+		intersect(
+			(world.bodies.get_slot(0).unwrap(), 0),
+			(world.bodies.get_slot(1).unwrap(), 1),
+			dt,
+		)
+		.map_or(0.0, |intersection| intersection.depth)
 	}
 
 	#[test]
@@ -424,7 +433,7 @@ mod tests {
 		assert_eq!(contacts.len(), 1);
 		world.resolve_contact(&contacts[0]);
 
-		let separation = length(world.bodies[1].position - world.bodies[0].position);
+		let separation = length(world.bodies.get_slot(1).unwrap().position - world.bodies.get_slot(0).unwrap().position);
 		assert!(separation >= 2.0 - 1e-4);
 	}
 }
@@ -443,7 +452,7 @@ use math::{
 };
 use utils::{
 	hash::{HashMap, HashMapExt},
-	StableVec,
+	StableVec, StableVecHandle,
 };
 
 use crate::{

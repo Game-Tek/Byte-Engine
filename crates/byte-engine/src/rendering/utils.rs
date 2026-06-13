@@ -2,7 +2,7 @@ use std::{hash::Hash, marker::PhantomData, usize};
 
 use utils::{
 	hash::{HashMap, HashMapExt as _},
-	StableVec,
+	StableVec, StableVecHandle,
 };
 
 use crate::core::factory::Handle;
@@ -140,7 +140,7 @@ impl<I> MeshBuffersStats<I> {
 		}
 	}
 
-	pub fn add_instance(&mut self, mesh_id: usize, instance_data: I) -> usize {
+	pub fn add_instance(&mut self, mesh_id: usize, instance_data: I) -> StableVecHandle {
 		assert!(
 			self.meshes.contains_key(&mesh_id),
 			"Provided mesh_id for instance does not exist!"
@@ -149,7 +149,7 @@ impl<I> MeshBuffersStats<I> {
 	}
 
 	/// Removes an instance without shifting the remaining instance indices.
-	pub fn remove_instance(&mut self, instance_id: usize) -> Option<I> {
+	pub fn remove_instance(&mut self, instance_id: StableVecHandle) -> Option<I> {
 		self.instances.remove(instance_id).map(|(_, instance)| instance)
 	}
 
@@ -158,7 +158,7 @@ impl<I> MeshBuffersStats<I> {
 		let mut current_batch: Option<(usize, InstanceBatch)> = None;
 
 		for instance_id in 0..self.instances.slots_len() {
-			let Some((mesh_id, _)) = self.instances.get(instance_id) else {
+			let Some((mesh_id, _)) = self.instances.get_slot(instance_id) else {
 				if let Some((_, batch)) = current_batch.take() {
 					batches.push(batch);
 				}
@@ -218,13 +218,13 @@ impl<I> MeshBuffersStats<I> {
 		self.index_count
 	}
 
-	pub fn get_instance_id(&self, handle: I) -> Option<usize>
+	pub fn get_instance_id(&self, handle: I) -> Option<StableVecHandle>
 	where
 		I: Eq,
 	{
 		self.instances
-			.indexed_iter()
-			.find_map(|(index, (_, h))| (*h == handle).then_some(index))
+			.handled_iter()
+			.find_map(|(instance_handle, (_, h))| (*h == handle).then_some(instance_handle))
 	}
 }
 
@@ -420,9 +420,9 @@ mod tests {
 		let batches = batches.iter().into_vec();
 
 		assert_eq!(batches.len(), 2);
-		assert_eq!(batches[0].base_instance(), first);
+		assert_eq!(batches[0].base_instance(), first.index());
 		assert_eq!(batches[0].instance_count(), 1);
-		assert_eq!(batches[1].base_instance(), third);
+		assert_eq!(batches[1].base_instance(), third.index());
 		assert_eq!(batches[1].instance_count(), 1);
 	}
 }

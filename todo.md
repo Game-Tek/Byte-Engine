@@ -12,7 +12,6 @@
 - Fix the macOS `NSWindow canBecomeKeyWindow` warning.
 - Define texture usage semantics for resources consumed by multiple unknown render passes.
 - Remove completed audio sources instead of retaining and revisiting them in `crates/byte-engine/src/audio/audio_system.rs`.
-- Redesign `StableVec` with generation-aware handles and constant-time free-slot tracking to reject stale indices and avoid linear operations.
 
 # P1 - Runtime performance
 

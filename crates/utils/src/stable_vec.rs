@@ -1,10 +1,40 @@
-use std::ops::{Index, IndexMut};
+/// The `StableVecHandle` struct identifies a live `StableVec` slot across removals and slot reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StableVecHandle {
+	index: u32,
+	generation: u32,
+}
 
-/// The `StableVec` struct exists to provide vector-like storage for values whose indices must survive removals.
+impl StableVecHandle {
+	pub fn index(self) -> usize {
+		self.index as usize
+	}
+
+	pub fn generation(self) -> u32 {
+		self.generation
+	}
+
+	fn new(index: usize, generation: u32) -> Self {
+		let index = u32::try_from(index).expect(
+			"StableVec handle index exceeds u32::MAX. The most likely cause is that this StableVec grew beyond handle capacity.",
+		);
+
+		Self { index, generation }
+	}
+}
+
+#[derive(Debug, Clone)]
+struct Entry<T> {
+	value: Option<T>,
+	generation: u32,
+	next_free: Option<usize>,
+}
+
+/// The `StableVec` struct exists to provide vector-like storage for values whose handles must reject stale slot reuse.
 #[derive(Debug, Clone)]
 pub struct StableVec<T> {
-	entries: Vec<Option<T>>,
-	vacant_indices: Vec<usize>,
+	entries: Vec<Entry<T>>,
+	first_free: Option<usize>,
 	len: usize,
 }
 
@@ -12,7 +42,7 @@ impl<T> StableVec<T> {
 	pub fn new() -> Self {
 		Self {
 			entries: Vec::new(),
-			vacant_indices: Vec::new(),
+			first_free: None,
 			len: 0,
 		}
 	}
@@ -20,7 +50,7 @@ impl<T> StableVec<T> {
 	pub fn with_capacity(capacity: usize) -> Self {
 		Self {
 			entries: Vec::with_capacity(capacity),
-			vacant_indices: Vec::new(),
+			first_free: None,
 			len: 0,
 		}
 	}
@@ -41,103 +71,133 @@ impl<T> StableVec<T> {
 		self.entries.len()
 	}
 
-	/// Inserts a value into the first available slot and returns its stable index.
-	pub fn push(&mut self, value: T) -> usize {
-		if let Some(index) = self.vacant_indices.pop() {
-			self.entries[index] = Some(value);
+	/// Inserts a value into the first available slot and returns its generation-aware handle.
+	pub fn push(&mut self, value: T) -> StableVecHandle {
+		if let Some(index) = self.first_free {
+			let entry = &mut self.entries[index];
+			self.first_free = entry.next_free;
+			entry.next_free = None;
+			entry.value = Some(value);
 			self.len += 1;
-			return index;
+
+			return StableVecHandle::new(index, entry.generation);
 		}
 
 		let index = self.entries.len();
-		self.entries.push(Some(value));
+		self.entries.push(Entry {
+			value: Some(value),
+			generation: 0,
+			next_free: None,
+		});
 		self.len += 1;
-		index
+
+		StableVecHandle::new(index, 0)
 	}
 
-	/// Inserts a value at an exact slot without shifting any existing indices.
-	pub fn insert(&mut self, index: usize, value: T) -> Option<T> {
-		assert!(
-			index <= self.entries.len(),
-			"StableVec insert index is out of bounds. The most likely cause is that a stale or foreign index was used."
-		);
-
-		if index == self.entries.len() {
-			self.entries.push(Some(value));
-			self.len += 1;
-			return None;
-		}
-
-		let previous = self.entries[index].replace(value);
-		if previous.is_none() {
-			self.remove_vacant_index(index);
-			self.len += 1;
-		}
-		previous
+	/// Replaces the value addressed by a live handle.
+	pub fn insert(&mut self, handle: StableVecHandle, value: T) -> Option<T> {
+		let entry = self.valid_entry_mut(handle)?;
+		entry.value.replace(value)
 	}
 
-	pub fn get(&self, index: usize) -> Option<&T> {
-		self.entries.get(index).and_then(Option::as_ref)
+	pub fn get(&self, handle: StableVecHandle) -> Option<&T> {
+		self.valid_entry(handle).and_then(|entry| entry.value.as_ref())
 	}
 
-	pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-		self.entries.get_mut(index).and_then(Option::as_mut)
+	pub fn get_mut(&mut self, handle: StableVecHandle) -> Option<&mut T> {
+		self.valid_entry_mut(handle).and_then(|entry| entry.value.as_mut())
 	}
 
-	pub fn contains_index(&self, index: usize) -> bool {
-		self.get(index).is_some()
+	pub fn contains_handle(&self, handle: StableVecHandle) -> bool {
+		self.get(handle).is_some()
 	}
 
-	/// Removes a value from an exact slot without shifting any remaining indices.
-	pub fn remove(&mut self, index: usize) -> Option<T> {
-		let entry = self.entries.get_mut(index)?;
-		let value = entry.take()?;
+	/// Returns a live value by raw slot for algorithms that use transient slot ids internally.
+	pub fn get_slot(&self, index: usize) -> Option<&T> {
+		self.entries.get(index).and_then(|entry| entry.value.as_ref())
+	}
 
-		self.vacant_indices.push(index);
+	/// Returns a live mutable value by raw slot for algorithms that use transient slot ids internally.
+	pub fn get_slot_mut(&mut self, index: usize) -> Option<&mut T> {
+		self.entries.get_mut(index).and_then(|entry| entry.value.as_mut())
+	}
+
+	/// Removes a value addressed by a live handle without shifting any remaining slots.
+	pub fn remove(&mut self, handle: StableVecHandle) -> Option<T> {
+		let index = handle.index();
+		let first_free = self.first_free;
+		let entry = self.valid_entry_mut(handle)?;
+		let value = entry.value.take()?;
+
+		entry.generation = entry.generation.wrapping_add(1);
+		entry.next_free = first_free;
+		self.first_free = Some(index);
 		self.len -= 1;
 
 		Some(value)
 	}
 
-	/// Removes the last occupied value without shifting any remaining indices.
+	/// Removes the last occupied value without shifting any remaining slots.
 	pub fn pop(&mut self) -> Option<T> {
-		let index = self.entries.iter().rposition(Option::is_some)?;
-		self.remove(index)
+		let (index, entry) = self.entries.iter().enumerate().rfind(|(_, entry)| entry.value.is_some())?;
+		let handle = StableVecHandle::new(index, entry.generation);
+		self.remove(handle)
 	}
 
 	pub fn clear(&mut self) {
 		self.entries.clear();
-		self.vacant_indices.clear();
+		self.first_free = None;
 		self.len = 0;
 	}
 
 	pub fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
-		self.entries.iter().filter_map(Option::as_ref)
+		self.entries.iter().filter_map(|entry| entry.value.as_ref())
 	}
 
 	pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut T> {
-		self.entries.iter_mut().filter_map(Option::as_mut)
+		self.entries.iter_mut().filter_map(|entry| entry.value.as_mut())
 	}
 
 	pub fn indexed_iter(&self) -> impl DoubleEndedIterator<Item = (usize, &T)> {
 		self.entries
 			.iter()
 			.enumerate()
-			.filter_map(|(index, entry)| entry.as_ref().map(|value| (index, value)))
+			.filter_map(|(index, entry)| entry.value.as_ref().map(|value| (index, value)))
 	}
 
 	pub fn indexed_iter_mut(&mut self) -> impl DoubleEndedIterator<Item = (usize, &mut T)> {
 		self.entries
 			.iter_mut()
 			.enumerate()
-			.filter_map(|(index, entry)| entry.as_mut().map(|value| (index, value)))
+			.filter_map(|(index, entry)| entry.value.as_mut().map(|value| (index, value)))
 	}
 
-	fn remove_vacant_index(&mut self, index: usize) {
-		if let Some(position) = self.vacant_indices.iter().position(|&vacant| vacant == index) {
-			// The free list is unordered, so swap removal avoids shifting unrelated vacant slots.
-			self.vacant_indices.swap_remove(position);
-		}
+	pub fn handled_iter(&self) -> impl DoubleEndedIterator<Item = (StableVecHandle, &T)> {
+		self.entries.iter().enumerate().filter_map(|(index, entry)| {
+			entry
+				.value
+				.as_ref()
+				.map(|value| (StableVecHandle::new(index, entry.generation), value))
+		})
+	}
+
+	pub fn handled_iter_mut(&mut self) -> impl DoubleEndedIterator<Item = (StableVecHandle, &mut T)> {
+		self.entries.iter_mut().enumerate().filter_map(|(index, entry)| {
+			entry
+				.value
+				.as_mut()
+				.map(|value| (StableVecHandle::new(index, entry.generation), value))
+		})
+	}
+
+	fn valid_entry(&self, handle: StableVecHandle) -> Option<&Entry<T>> {
+		let entry = self.entries.get(handle.index())?;
+		(entry.generation == handle.generation).then_some(entry)
+	}
+
+	fn valid_entry_mut(&mut self, handle: StableVecHandle) -> Option<&mut Entry<T>> {
+		let entry = self.entries.get_mut(handle.index())?;
+		(entry.generation == handle.generation).then_some(entry)
 	}
 }
 
@@ -147,32 +207,39 @@ impl<T> Default for StableVec<T> {
 	}
 }
 
-impl<T> Index<usize> for StableVec<T> {
+impl<T> std::ops::Index<StableVecHandle> for StableVec<T> {
 	type Output = T;
 
-	fn index(&self, index: usize) -> &Self::Output {
-		self.get(index).expect(
-			"StableVec index does not contain a value. The most likely cause is that the slot was removed or never inserted.",
+	fn index(&self, handle: StableVecHandle) -> &Self::Output {
+		self.get(handle).expect(
+			"StableVec handle does not contain a value. The most likely cause is that the handle was removed or belongs to another StableVec.",
 		)
 	}
 }
 
-impl<T> IndexMut<usize> for StableVec<T> {
-	fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-		self.get_mut(index).expect(
-			"StableVec index does not contain a value. The most likely cause is that the slot was removed or never inserted.",
+impl<T> std::ops::IndexMut<StableVecHandle> for StableVec<T> {
+	fn index_mut(&mut self, handle: StableVecHandle) -> &mut Self::Output {
+		self.get_mut(handle).expect(
+			"StableVec handle does not contain a value. The most likely cause is that the handle was removed or belongs to another StableVec.",
 		)
 	}
 }
 
 impl<T> FromIterator<T> for StableVec<T> {
 	fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-		let entries = iter.into_iter().map(Some).collect::<Vec<_>>();
+		let entries = iter
+			.into_iter()
+			.map(|value| Entry {
+				value: Some(value),
+				generation: 0,
+				next_free: None,
+			})
+			.collect::<Vec<_>>();
 		let len = entries.len();
 
 		Self {
 			entries,
-			vacant_indices: Vec::new(),
+			first_free: None,
 			len,
 		}
 	}
@@ -180,23 +247,23 @@ impl<T> FromIterator<T> for StableVec<T> {
 
 #[cfg(test)]
 mod tests {
-	use super::StableVec;
+	use super::{StableVec, StableVecHandle};
 
 	#[test]
-	fn push_returns_stable_indices() {
+	fn push_returns_stable_handles() {
 		let mut values = StableVec::new();
 
 		let first = values.push("first");
 		let second = values.push("second");
 
-		assert_eq!(first, 0);
-		assert_eq!(second, 1);
+		assert_eq!(first.index(), 0);
+		assert_eq!(second.index(), 1);
 		assert_eq!(values.get(first), Some(&"first"));
 		assert_eq!(values.get(second), Some(&"second"));
 	}
 
 	#[test]
-	fn remove_preserves_other_indices() {
+	fn remove_preserves_other_handles() {
 		let mut values = StableVec::new();
 
 		let first = values.push("first");
@@ -210,7 +277,7 @@ mod tests {
 	}
 
 	#[test]
-	fn push_reuses_removed_indices() {
+	fn push_reuses_removed_slots_with_new_generation() {
 		let mut values = StableVec::new();
 
 		let first = values.push("first");
@@ -221,25 +288,11 @@ mod tests {
 
 		let reused = values.push("replacement");
 
-		assert_eq!(reused, second);
+		assert_eq!(reused.index(), second.index());
+		assert_ne!(reused.generation(), second.generation());
 		assert_eq!(values.get(first), Some(&"first"));
+		assert_eq!(values.get(second), None);
 		assert_eq!(values.get(reused), Some(&"replacement"));
-		assert_eq!(values.get(third), Some(&"third"));
-	}
-
-	#[test]
-	fn insert_uses_exact_index_without_shifting() {
-		let mut values = StableVec::new();
-
-		let first = values.push("first");
-		let second = values.push("second");
-		let third = values.push("third");
-
-		assert_eq!(values.remove(second), Some("second"));
-		assert_eq!(values.insert(second, "replacement"), None);
-
-		assert_eq!(values.get(first), Some(&"first"));
-		assert_eq!(values.get(second), Some(&"replacement"));
 		assert_eq!(values.get(third), Some(&"third"));
 	}
 
@@ -247,11 +300,22 @@ mod tests {
 	fn insert_replaces_occupied_slot() {
 		let mut values = StableVec::new();
 
-		let index = values.push("first");
+		let handle = values.push("first");
 
-		assert_eq!(values.insert(index, "replacement"), Some("first"));
+		assert_eq!(values.insert(handle, "replacement"), Some("first"));
 		assert_eq!(values.len(), 1);
-		assert_eq!(values.get(index), Some(&"replacement"));
+		assert_eq!(values.get(handle), Some(&"replacement"));
+	}
+
+	#[test]
+	fn insert_rejects_stale_handle() {
+		let mut values = StableVec::new();
+
+		let handle = values.push("first");
+		assert_eq!(values.remove(handle), Some("first"));
+
+		assert_eq!(values.insert(handle, "stale"), None);
+		assert_eq!(values.len(), 0);
 	}
 
 	#[test]
@@ -282,5 +346,29 @@ mod tests {
 		let entries = values.indexed_iter().collect::<Vec<_>>();
 
 		assert_eq!(entries, vec![(0, &"first"), (2, &"third")]);
+	}
+
+	#[test]
+	fn handled_iter_returns_live_handles() {
+		let mut values = StableVec::new();
+
+		let first = values.push("first");
+		let second = values.push("second");
+		values.remove(first);
+
+		let entries = values.handled_iter().collect::<Vec<_>>();
+
+		assert_eq!(entries, vec![(second, &"second")]);
+	}
+
+	#[test]
+	fn stale_foreign_generation_is_rejected() {
+		let mut values = StableVec::new();
+		let handle = values.push("first");
+		let stale = StableVecHandle::new(handle.index(), handle.generation().wrapping_add(1));
+
+		assert_eq!(values.get(stale), None);
+		assert_eq!(values.remove(stale), None);
+		assert_eq!(values.get(handle), Some(&"first"));
 	}
 }

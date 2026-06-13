@@ -114,22 +114,30 @@ impl AcesToneMapPass {
 impl Entity for AcesToneMapPass {}
 
 impl RenderPass for AcesToneMapPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
+	fn prepare<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
 		let pipeline = self.render_pass.pipeline;
 		let descriptor_set = self.descriptor_set;
 
 		let extent = sink.extent();
 
-		Some(Box::new(move |c, _| {
-			c.region(
-				|label| label.write_str("Tonemap"),
-				|c| {
-					let r = c.bind_compute_pipeline(pipeline);
-					r.bind_descriptor_sets(&[descriptor_set]);
-					r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-				},
-			);
-		}))
+		Some(crate::rendering::render_pass::allocate_render_command(
+			frame_allocator,
+			move |c, _| {
+				c.region(
+					|label| label.write_str("Tonemap"),
+					|c| {
+						let r = c.bind_compute_pipeline(pipeline);
+						r.bind_descriptor_sets(&[descriptor_set]);
+						r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
+					},
+				);
+			},
+		))
 	}
 }
 

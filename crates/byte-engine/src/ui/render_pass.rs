@@ -413,7 +413,12 @@ impl UiRenderPass {
 }
 
 impl RenderPass for UiRenderPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
+	fn prepare<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
 		let extent = sink.extent();
 		let geometry = build_ui_geometry(&self.data, extent);
 		let has_rectangle_batches = !geometry.batches.is_empty();
@@ -468,8 +473,10 @@ impl RenderPass for UiRenderPass {
 		let main_attachment = self.main_attachment;
 		let batches = geometry.batches;
 
-		Some(Box::new(move |command_buffer, _| {
-			command_buffer.region(|label| label.write_str("UI"), |command_buffer| {
+		Some(crate::rendering::render_pass::allocate_render_command(
+			frame_allocator,
+			move |command_buffer, _| {
+				command_buffer.region(|label| label.write_str("UI"), |command_buffer| {
 				assert!(
 					!draw_text_overlay || extent.width() > 0 && extent.height() > 0,
 					"UI text overlay render pass requires a non-zero attachment extent. The most likely cause is that a stale prepared UI pass survived a viewport resize or minimization."
@@ -517,7 +524,8 @@ impl RenderPass for UiRenderPass {
 					command_buffer.end_render_pass();
 				}
 			});
-		}))
+			},
+		))
 	}
 }
 

@@ -571,7 +571,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		&'a mut self,
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
-	) -> Option<Vec<Box<dyn RenderPassFunction + 'a>>> {
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<Vec<RenderPassReturn<'a>>> {
 		self.adopt_resource_completions(frame);
 		self.rebuild_active_instances(frame);
 
@@ -629,16 +630,19 @@ impl PipelineManager for VisibilityPipelineManager {
 				.map(|sink_state| (sink, &sink_state.render_pass))
 		});
 
-		let commands: Vec<Box<dyn RenderPassFunction + 'a>> = sink_x_rp
+		let commands: Vec<RenderPassReturn<'a>> = sink_x_rp
 			.map(|(v, r)| {
-				Box::new(r.prepare(
-					frame,
-					v,
-					&self.scene.render_info.active_instances,
-					&self.scene.render_info.opaque_materials,
-					&self.scene.render_info.transparent_materials,
-					shadow_light_index.is_some(),
-				)) as Box<dyn RenderPassFunction + 'a>
+				crate::rendering::render_pass::allocate_render_command(
+					frame_allocator,
+					r.prepare(
+						frame,
+						v,
+						&self.scene.render_info.active_instances,
+						&self.scene.render_info.opaque_materials,
+						&self.scene.render_info.transparent_materials,
+						shadow_light_index.is_some(),
+					),
+				)
 			})
 			.collect::<Vec<_>>();
 
@@ -1136,7 +1140,7 @@ use crate::rendering::pipelines::visibility::{
 	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
 	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
-use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassFunction, RenderPassReturn};
+use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;
 use crate::rendering::view::View;
 use crate::rendering::{

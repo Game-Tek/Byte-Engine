@@ -17,7 +17,7 @@ fn main() {
 		],
 	);
 
-	TestSynthesizer{}; // TODO: wire to audio system
+	TestSynthesizer {}; // TODO: wire to audio system
 
 	app.do_loop();
 }

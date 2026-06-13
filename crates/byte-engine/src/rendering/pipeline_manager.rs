@@ -5,7 +5,7 @@ use utils::{
 };
 
 use crate::rendering::{
-	render_pass::{RenderPassBuilder, RenderPassFunction},
+	render_pass::{RenderPassBuilder, RenderPassReturn},
 	Sink,
 };
 
@@ -21,7 +21,8 @@ pub trait PipelineManager {
 		&'a mut self,
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
-	) -> Option<Vec<Box<dyn RenderPassFunction + 'a>>>;
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<Vec<RenderPassReturn<'a>>>;
 
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder);
 }

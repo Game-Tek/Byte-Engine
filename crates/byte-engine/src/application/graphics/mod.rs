@@ -175,11 +175,10 @@ impl GraphicsApplication {
 
 		let mut close = false;
 
-		let frame_allocator = &mut self.application.frame_allocator;
 		{
 			let span = debug_span!("GraphicsApplication::reset_frame_allocator");
 			let _enter = span.enter();
-			frame_allocator.reset();
+			self.application.frame_allocator.reset();
 		}
 
 		{
@@ -266,7 +265,7 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::update_input");
 			let _enter = span.enter();
-			self.input_system.update(frame_allocator);
+			self.input_system.update(&self.application.frame_allocator);
 		}
 
 		let mut cameras_listener = self.world.camera_factory().listener();
@@ -306,7 +305,8 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::render_frame");
 			let _enter = span.enter();
-			self.renderer.prepare(&mut renderer_transforms_listener);
+			let frame_allocator = &self.application.frame_allocator;
+			self.renderer.prepare(&mut renderer_transforms_listener, frame_allocator);
 		}
 
 		{
@@ -443,7 +443,8 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 			&'a mut self,
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
-		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction + 'a>>> {
+			frame_allocator: &'a bumpalo::Bump,
+		) -> Option<Vec<rendering::render_pass::RenderPassReturn<'a>>> {
 			while let Some(message) = self.mesh_receiver.read() {
 				let handle = *message.handle();
 
@@ -461,7 +462,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 				// TODO: handle light removal
 			}
 
-			self.pipeline_manager.prepare(frame, sinks)
+			self.pipeline_manager.prepare(frame, sinks, frame_allocator)
 		}
 
 		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
@@ -596,13 +597,14 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			&'a mut self,
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
-		) -> Option<Vec<Box<dyn rendering::render_pass::RenderPassFunction + 'a>>> {
+			frame_allocator: &'a bumpalo::Bump,
+		) -> Option<Vec<rendering::render_pass::RenderPassReturn<'a>>> {
 			self.request_pending_lights();
 			self.request_pending_meshes();
 
 			self.process_deletions();
 
-			self.visibility_pipeline_manager.prepare(frame, sinks)
+			self.visibility_pipeline_manager.prepare(frame, sinks, frame_allocator)
 		}
 
 		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
@@ -655,16 +657,17 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 		}
 
 		impl rendering::RenderPass for CustomRenderPass {
-			fn prepare(
+			fn prepare<'a>(
 				&mut self,
 				frame: &mut ghi::implementation::Frame,
 				sink: &rendering::Sink,
-			) -> Option<rendering::render_pass::RenderPassReturn> {
+				frame_allocator: &'a bumpalo::Bump,
+			) -> Option<rendering::render_pass::RenderPassReturn<'a>> {
 				while let Some(render) = self.listener.read() {
 					self.render_pass.update(render.into_data());
 				}
 
-				self.render_pass.prepare(frame, sink)
+				self.render_pass.prepare(frame, sink, frame_allocator)
 			}
 		}
 

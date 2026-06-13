@@ -404,7 +404,8 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		&'a mut self,
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
-	) -> Option<Vec<Box<dyn RenderPassFunction + 'a>>> {
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<Vec<RenderPassReturn<'a>>> {
 		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
 
 		let instance_batches = instance_batches.iter().into_vec();
@@ -418,7 +419,10 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 					.map(|sink_state| (sink, sink_state))
 			})
 			.map(|(sink, sink_state)| {
-				Box::new(sink_state.prepare(frame, sink, self, &instance_batches)) as Box<dyn RenderPassFunction>
+				crate::rendering::render_pass::allocate_render_command(
+					frame_allocator,
+					sink_state.prepare(frame, sink, self, &instance_batches),
+				)
 			})
 			.collect::<Vec<_>>();
 
@@ -495,7 +499,7 @@ use crate::{
 		lights::{Light, Lights},
 		make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
 		pipelines::simple::{render_pass, CameraShaderData, RenderPass},
-		render_pass::{FramePrepare, RenderPassBuilder, RenderPassFunction, RenderPassReturn},
+		render_pass::{FramePrepare, RenderPassBuilder, RenderPassReturn},
 		renderable::mesh::MeshSource,
 		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
 		view::View,

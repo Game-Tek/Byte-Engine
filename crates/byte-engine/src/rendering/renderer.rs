@@ -287,7 +287,11 @@ impl Renderer {
 	/// This function prepares a frame by invoking multiple render passes.
 	/// If no swapchains are available no rendering/execution will be performed.
 	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
-	pub fn prepare(&'_ mut self, transforms_listener: &mut impl Listener<TransformationUpdate>) {
+	pub fn prepare(
+		&'_ mut self,
+		transforms_listener: &mut impl Listener<TransformationUpdate>,
+		frame_allocator: &bumpalo::Bump,
+	) {
 		let span = debug_span!(
 			"Renderer::prepare",
 			frame = self.started_frame_count,
@@ -339,6 +343,7 @@ impl Renderer {
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
 		let pending_swapchain_captures = self.pending_swapchain_captures.drain(..).collect::<SmallVec<[_; 16]>>();
+		let frame_allocator = frame_allocator;
 
 		{
 			let span = debug_span!("Renderer::queue_execute");
@@ -416,12 +421,12 @@ impl Renderer {
 
 					let pipeline_managers = pipeline_managers.iter_mut().enumerate();
 
-					let pipeline_manager_commands: SmallVec<[(PipelineManagerId, Vec<Box<dyn RenderPassFunction + '_>>); 16]> = {
+					let pipeline_manager_commands: SmallVec<[(PipelineManagerId, Vec<RenderPassReturn<'_>>); 16]> = {
 						let span = debug_span!("Renderer::prepare_pipeline_managers");
 						let _enter = span.enter();
 						pipeline_managers
 							.filter_map(|(pipeline_manager_id, sm)| {
-								sm.prepare(frame, &sinks).map(|commands| (pipeline_manager_id, commands))
+								sm.prepare(frame, &sinks, frame_allocator).map(|commands| (pipeline_manager_id, commands))
 							})
 							.collect()
 					};
@@ -435,7 +440,7 @@ impl Renderer {
 							.filter_map(|(render_pass_id, sink_id)| {
 								if let Some(render_pass) = render_passes.get_mut(*render_pass_id) {
 									if let Some(sink) = sinks.iter().find(|sink| sink.index() == *sink_id) {
-										if let Some(command) = render_pass.prepare(frame, sink) {
+										if let Some(command) = render_pass.prepare(frame, sink, frame_allocator) {
 											return Some((command, *render_pass_id, sink.index()));
 										}
 									}
@@ -1000,7 +1005,7 @@ use crate::{
 	rendering::{
 		make_perspective_view_from_camera,
 		pipeline_manager::PipelineManager,
-		render_pass::{FramePrepare, RenderPassFunction, RenderPassReturn},
+		render_pass::{FramePrepare, RenderPassReturn},
 		window::{self, Window},
 		Camera, Sink, View,
 	},

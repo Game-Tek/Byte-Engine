@@ -170,7 +170,12 @@ impl BilateralBlurPass {
 }
 
 impl RenderPass for BilateralBlurPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
+	fn prepare<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
 		let execute_in_axis = |command_buffer: &mut ghi::implementation::CommandBufferRecording,
 		                       pipeline: ghi::PipelineHandle,
 		                       descriptor_set: ghi::DescriptorSetHandle,
@@ -187,15 +192,18 @@ impl RenderPass for BilateralBlurPass {
 
 		let extent = sink.extent();
 
-		Some(Box::new(move |command_buffer, _| {
-			command_buffer.region(
-				|label| label.write_str("Bilateral Blur"),
-				|command_buffer| {
-					execute_in_axis(command_buffer, pipeline_x, descriptor_set_x, extent);
-					execute_in_axis(command_buffer, pipeline_y, descriptor_set_y, extent);
-				},
-			);
-		}))
+		Some(crate::rendering::render_pass::allocate_render_command(
+			frame_allocator,
+			move |command_buffer, _| {
+				command_buffer.region(
+					|label| label.write_str("Bilateral Blur"),
+					|command_buffer| {
+						execute_in_axis(command_buffer, pipeline_x, descriptor_set_x, extent);
+						execute_in_axis(command_buffer, pipeline_y, descriptor_set_y, extent);
+					},
+				);
+			},
+		))
 	}
 }
 

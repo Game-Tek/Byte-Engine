@@ -209,23 +209,31 @@ fn create_sky_shader(
 }
 
 impl RenderPass for AtmosphereSkyRenderPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
+	fn prepare<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
 		self.write_parameters(frame, sink);
 
 		let pipeline = self.pipeline;
 		let descriptor_set = self.descriptor_set;
 		let extent = sink.extent();
 
-		Some(Box::new(move |command_buffer, _| {
-			command_buffer.region(
-				|label| label.write_str("Sky"),
-				|command_buffer| {
-					let pipeline = command_buffer.bind_compute_pipeline(pipeline);
-					pipeline.bind_descriptor_sets(&[descriptor_set]);
-					pipeline.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
-				},
-			);
-		}))
+		Some(crate::rendering::render_pass::allocate_render_command(
+			frame_allocator,
+			move |command_buffer, _| {
+				command_buffer.region(
+					|label| label.write_str("Sky"),
+					|command_buffer| {
+						let pipeline = command_buffer.bind_compute_pipeline(pipeline);
+						pipeline.bind_descriptor_sets(&[descriptor_set]);
+						pipeline.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
+					},
+				);
+			},
+		))
 	}
 }
 

@@ -357,7 +357,12 @@ impl BloomPass {
 }
 
 impl RenderPass for BloomPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
+	fn prepare<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
 		let extent = sink.extent();
 		let bloom_enabled = self.settings.enabled;
 
@@ -374,40 +379,45 @@ impl RenderPass for BloomPass {
 		let composite_descriptor_set = self.composite_descriptor_set;
 		let level_count = self.downsample_images.len();
 
-		Some(Box::new(move |command_buffer, _| {
-			command_buffer.region(
-				|label| label.write_str("Bloom"),
-				|command_buffer| {
-					if bloom_enabled {
-						let extract = command_buffer.bind_compute_pipeline(extract_pipeline);
-						extract.bind_descriptor_sets(&[extract_descriptor_set]);
-						extract.dispatch(ghi::DispatchExtent::new(bloom_extent(extent, 0), bloom_dispatch_extent()));
+		Some(crate::rendering::render_pass::allocate_render_command(
+			frame_allocator,
+			move |command_buffer, _| {
+				command_buffer.region(
+					|label| label.write_str("Bloom"),
+					|command_buffer| {
+						if bloom_enabled {
+							let extract = command_buffer.bind_compute_pipeline(extract_pipeline);
+							extract.bind_descriptor_sets(&[extract_descriptor_set]);
+							extract.dispatch(ghi::DispatchExtent::new(bloom_extent(extent, 0), bloom_dispatch_extent()));
 
-						for (index, descriptor_set) in downsample_descriptor_sets.iter().enumerate() {
-							let downsample = command_buffer.bind_compute_pipeline(downsample_pipeline);
-							downsample.bind_descriptor_sets(&[*descriptor_set]);
-							downsample.dispatch(ghi::DispatchExtent::new(
-								bloom_extent(extent, index + 1),
-								bloom_dispatch_extent(),
-							));
-						}
+							for (index, descriptor_set) in downsample_descriptor_sets.iter().enumerate() {
+								let downsample = command_buffer.bind_compute_pipeline(downsample_pipeline);
+								downsample.bind_descriptor_sets(&[*descriptor_set]);
+								downsample.dispatch(ghi::DispatchExtent::new(
+									bloom_extent(extent, index + 1),
+									bloom_dispatch_extent(),
+								));
+							}
 
-						if level_count > 1 {
-							for (level, descriptor_set) in (0..level_count - 1).rev().zip(upsample_descriptor_sets.iter()) {
-								let upsample = command_buffer.bind_compute_pipeline(upsample_pipeline);
-								upsample.bind_descriptor_sets(&[*descriptor_set]);
-								upsample
-									.dispatch(ghi::DispatchExtent::new(bloom_extent(extent, level), bloom_dispatch_extent()));
+							if level_count > 1 {
+								for (level, descriptor_set) in (0..level_count - 1).rev().zip(upsample_descriptor_sets.iter()) {
+									let upsample = command_buffer.bind_compute_pipeline(upsample_pipeline);
+									upsample.bind_descriptor_sets(&[*descriptor_set]);
+									upsample.dispatch(ghi::DispatchExtent::new(
+										bloom_extent(extent, level),
+										bloom_dispatch_extent(),
+									));
+								}
 							}
 						}
-					}
 
-					let composite = command_buffer.bind_compute_pipeline(composite_pipeline);
-					composite.bind_descriptor_sets(&[composite_descriptor_set]);
-					composite.dispatch(ghi::DispatchExtent::new(extent, bloom_dispatch_extent()));
-				},
-			);
-		}))
+						let composite = command_buffer.bind_compute_pipeline(composite_pipeline);
+						composite.bind_descriptor_sets(&[composite_descriptor_set]);
+						composite.dispatch(ghi::DispatchExtent::new(extent, bloom_dispatch_extent()));
+					},
+				);
+			},
+		))
 	}
 }
 

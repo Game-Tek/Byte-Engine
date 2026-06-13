@@ -26,13 +26,26 @@ use crate::{
 
 pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording, &[ghi::AttachmentInformation]);
 
-/// The type of a boxed function object that writes a render pass to a command buffer
-pub type RenderPassReturn = Box<dyn RenderPassFunction + Send + Sync>;
+/// The type of a frame-allocated function object that writes a render pass to a command buffer.
+pub type RenderPassReturn<'a> = &'a (dyn RenderPassFunction + Send + Sync + 'a);
+
+/// Allocates a prepared render command in the application frame allocator.
+pub fn allocate_render_command<'a>(
+	frame_allocator: &'a bumpalo::Bump,
+	command: impl RenderPassFunction + Send + Sync + 'a,
+) -> RenderPassReturn<'a> {
+	frame_allocator.alloc(command)
+}
 
 /// The `RenderPass` trait defines a composable rendering step for a prepared sink.
 pub trait RenderPass {
 	/// Evaluates rendering condition and potentially prepares the render pass.
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn>;
+	fn prepare<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>>;
 }
 
 /// The [`RenderPassBuilder`] struct provides sink resources and records the

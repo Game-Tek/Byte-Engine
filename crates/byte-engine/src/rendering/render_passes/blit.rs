@@ -21,17 +21,25 @@ impl BlitPass {
 }
 
 impl RenderPass for BlitPass {
-	fn prepare(&mut self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> Option<RenderPassReturn> {
+	fn prepare<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
 		let source = self.source;
 		let destination = self.destination;
 
-		Some(Box::new(move |command_buffer, _| {
-			command_buffer.region(
-				|label| label.write_str("Blit"),
-				|command_buffer| {
-					command_buffer.blit_image(source, ghi::Layouts::Transfer, destination, ghi::Layouts::Transfer);
-				},
-			);
-		}))
+		Some(crate::rendering::render_pass::allocate_render_command(
+			frame_allocator,
+			move |command_buffer, _| {
+				command_buffer.region(
+					|label| label.write_str("Blit"),
+					|command_buffer| {
+						command_buffer.blit_image(source, ghi::Layouts::Transfer, destination, ghi::Layouts::Transfer);
+					},
+				);
+			},
+		))
 	}
 }

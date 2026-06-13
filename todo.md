@@ -18,7 +18,6 @@
 ## Frame and rendering
 
 - Add allocation instrumentation and budgets for steady-state frames, GHI recording, audio callbacks, and BELD peak memory before large optimization work.
-- Replace boxed per-frame render-pass closures and visibility command vectors with concrete prepared command structs or enums.
 - Pass a shared frame context through world, UI, renderer, physics, and GHI for frame-local scratch allocation.
 - Add borrowed GHI frame allocators with two lifetime classes: CPU scratch reset after submission and retained frame-slot storage reset only after its `FrameKey` completes.
 - Route backend recording scratch through those allocators: Vulkan semaphore/copy/barrier data, Metal resource/binding/attachment/push-constant data, and DX12 pipeline/binding/queue data.
@@ -49,7 +48,6 @@
 
 ## Audio and input
 
-- Eliminate real-time audio callback allocation by reusing a mix buffer or converting in fixed-size chunks.
 - Resolve named input triggers to handles during action registration and index device classes and triggers by name.
 - Reuse gamepad event, new-device, and present-path scratch storage; allocate owned HID paths only for confirmed new devices.
 

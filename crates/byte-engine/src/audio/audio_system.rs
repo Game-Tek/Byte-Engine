@@ -57,6 +57,7 @@ pub struct DefaultAudioSystem {
 	sources: Vec<Source>,
 	channels: HashMap<String, Channel>,
 	params: HardwareParameters,
+	mix_buffer: Vec<f32>,
 	last_reported_underrun_count: usize,
 }
 
@@ -85,6 +86,7 @@ impl DefaultAudioSystem {
 			sources: Vec::with_capacity(64),
 			channels,
 			params,
+			mix_buffer: Vec::new(),
 			last_reported_underrun_count: 0,
 		})
 	}
@@ -135,38 +137,7 @@ impl DefaultAudioSystem {
 	// }
 
 	fn render_sources(&self, buffer: &mut [f32]) {
-		let sample_rate = self.params.get_sample_rate();
-
-		let mut to_destroy: SmallVec<[usize; 16]> = SmallVec::with_capacity(16);
-
-		let settings = PlaybackSettings { sample_rate };
-
-		for (idx, playing_sound) in self.sources.iter().enumerate() {
-			let current_sample = playing_sound.current_sample;
-			let gain = playing_sound.gain;
-
-			let play_sound = |url: &str| {
-				let (audio, audio_data) = self.audio_resources.get(url).unwrap();
-
-				if current_sample >= audio.sample_count {
-					return;
-				}
-
-				let current_sample = current_sample.min(audio.sample_count);
-
-				let audio_data = &audio_data[current_sample as usize..];
-
-				for (b, s) in buffer.iter_mut().zip(audio_data.iter()) {
-					*b += i16_to_f32(*s) * gain;
-				}
-			};
-
-			let state = PlaybackState { current_sample };
-
-			if playing_sound.generator.render(settings, state, buffer).is_none() {
-				to_destroy.push(idx);
-			}
-		}
+		render_sources(&self.audio_resources, &self.sources, self.params.get_sample_rate(), buffer);
 	}
 
 	/// Reports newly observed underruns since the previous render call.
@@ -196,6 +167,44 @@ impl DefaultAudioSystem {
 	}
 }
 
+fn render_sources(
+	audio_resources: &HashMap<String, (Audio, Vec<i16>)>,
+	sources: &[Source],
+	sample_rate: u32,
+	buffer: &mut [f32],
+) {
+	let mut to_destroy: SmallVec<[usize; 16]> = SmallVec::with_capacity(16);
+
+	let settings = PlaybackSettings { sample_rate };
+
+	for (idx, playing_sound) in sources.iter().enumerate() {
+		let current_sample = playing_sound.current_sample;
+		let gain = playing_sound.gain;
+
+		let play_sound = |url: &str| {
+			let (audio, audio_data) = audio_resources.get(url).unwrap();
+
+			if current_sample >= audio.sample_count {
+				return;
+			}
+
+			let current_sample = current_sample.min(audio.sample_count);
+
+			let audio_data = &audio_data[current_sample as usize..];
+
+			for (b, s) in buffer.iter_mut().zip(audio_data.iter()) {
+				*b += i16_to_f32(*s) * gain;
+			}
+		};
+
+		let state = PlaybackState { current_sample };
+
+		if playing_sound.generator.render(settings, state, buffer).is_none() {
+			to_destroy.push(idx);
+		}
+	}
+}
+
 impl Entity for DefaultAudioSystem {}
 
 impl AudioSystem for DefaultAudioSystem {
@@ -206,26 +215,44 @@ impl AudioSystem for DefaultAudioSystem {
 	}
 
 	fn render_available(&mut self) -> bool {
-		let device = &self.device;
+		let Self {
+			device,
+			audio_resources,
+			sources,
+			params,
+			mix_buffer,
+			..
+		} = self;
+		let sample_rate = params.get_sample_rate();
 
 		let frames = device
 			.play(|streams| {
 				match streams {
 					Streams::MonoFloat32(buffer) => {
 						// Hardware is the same format as what we use for rendering
-						self.render_sources(buffer);
+						render_sources(audio_resources, sources, sample_rate, buffer);
 					}
 					Streams::Mono16Bit(buffer) => {
-						let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
-						self.render_sources(&mut mix_buffer);
+						if mix_buffer.len() < buffer.len() {
+							mix_buffer.resize(buffer.len(), 0.0);
+						}
+
+						let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
+						mix_buffer.fill(0.0);
+						render_sources(audio_resources, sources, sample_rate, mix_buffer);
 
 						for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 							*destination = f32_to_i16(*sample);
 						}
 					}
 					Streams::Stereo16Bit(buffer) => {
-						let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
-						self.render_sources(&mut mix_buffer);
+						if mix_buffer.len() < buffer.len() {
+							mix_buffer.resize(buffer.len(), 0.0);
+						}
+
+						let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
+						mix_buffer.fill(0.0);
+						render_sources(audio_resources, sources, sample_rate, mix_buffer);
 
 						for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 							let sample = f32_to_i16(*sample);
@@ -234,8 +261,13 @@ impl AudioSystem for DefaultAudioSystem {
 						}
 					}
 					Streams::StereoFloat32(buffer) => {
-						let mut mix_buffer = vec![0f32; buffer.len()].into_boxed_slice();
-						self.render_sources(&mut mix_buffer);
+						if mix_buffer.len() < buffer.len() {
+							mix_buffer.resize(buffer.len(), 0.0);
+						}
+
+						let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
+						mix_buffer.fill(0.0);
+						render_sources(audio_resources, sources, sample_rate, mix_buffer);
 
 						for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 							*left = *sample;

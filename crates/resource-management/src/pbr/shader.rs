@@ -289,8 +289,8 @@ fn channel_member(channel: BrdfChannel) -> &'static str {
 	}
 }
 
-fn texture_slot_name(image_index: u32) -> &'static str {
-	Box::leak(format!("gltf_texture_{image_index}").into_boxed_str())
+fn texture_slot_name(image_index: u32) -> String {
+	format!("gltf_texture_{image_index}")
 }
 
 fn multiply_values(
@@ -342,7 +342,7 @@ fn expect_vector4(node: BrdfNodeId, value: BrdfValue) -> Result<[f32; 4], BrdfSh
 }
 
 fn scalar_expression(value: f32) -> besl::parser::Node<'static> {
-	besl::parser::Node::literal_expression(leak_float_literal(value))
+	besl::parser::Node::literal_expression(float_literal(value))
 }
 
 fn vector3_expression(value: [f32; 3]) -> besl::parser::Node<'static> {
@@ -368,12 +368,12 @@ fn vector4_expression(value: [f32; 4]) -> besl::parser::Node<'static> {
 	)
 }
 
-fn leak_float_literal(value: f32) -> &'static str {
+fn float_literal(value: f32) -> String {
 	let mut literal = value.to_string();
 	if !literal.contains('.') && !literal.contains('e') && !literal.contains('E') {
 		literal.push_str(".0");
 	}
-	Box::leak(literal.into_boxed_str())
+	literal
 }
 
 /// The `BrdfShaderGenerationError` enum explains why a BRDF graph cannot be lowered into a solid BESL program.

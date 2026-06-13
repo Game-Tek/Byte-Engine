@@ -215,11 +215,7 @@ fn grayscale_alpha8_to_rgba8<'a>(buffer: &[u8], allocator: &'a dyn Allocator) ->
 	output
 }
 
-fn grayscale_alpha16_to_rgba16<'a>(
-	buffer: &[u8],
-	extent: Extent,
-	allocator: &'a dyn Allocator,
-) -> Vec<u8, &'a dyn Allocator> {
+fn grayscale_alpha16_to_rgba16<'a>(buffer: &[u8], extent: Extent, allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
 	let mut output = Vec::with_capacity_in(extent.width() as usize * extent.height() as usize * 8, allocator);
 	for pixel in buffer.chunks_exact(4) {
 		let gray = &pixel[0..2];

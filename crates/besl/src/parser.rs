@@ -79,9 +79,9 @@ impl<'a> Node<'a> {
 		make_member(name, r#type)
 	}
 
-	pub fn member_expression(name: &'a str) -> Node<'a> {
+	pub fn member_expression(name: impl Into<Cow<'a, str>>) -> Node<'a> {
 		Node {
-			node: Nodes::Expression(Expressions::Member { name }),
+			node: Nodes::Expression(Expressions::Member { name: name.into() }),
 		}
 	}
 
@@ -243,9 +243,9 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn literal_expression(value: &'a str) -> Node<'a> {
+	pub fn literal_expression(value: impl Into<Cow<'a, str>>) -> Node<'a> {
 		Node {
-			node: Nodes::Expression(Expressions::Literal { value }),
+			node: Nodes::Expression(Expressions::Literal { value: value.into() }),
 		}
 	}
 
@@ -544,10 +544,10 @@ pub enum Expressions<'a> {
 		right: Box<Node<'a>>,
 	},
 	Member {
-		name: &'a str,
+		name: Cow<'a, str>,
 	},
 	Literal {
-		value: &'a str,
+		value: Cow<'a, str>,
 	},
 	Call {
 		name: &'a str,
@@ -873,10 +873,10 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 					}
 				}
 				Atoms::Literal { value } => Node {
-					node: Nodes::Expression(Expressions::Literal { value }),
+					node: Nodes::Expression(Expressions::Literal { value: (*value).into() }),
 				},
 				Atoms::Member { name } => Node {
-					node: Nodes::Expression(Expressions::Member { name }),
+					node: Nodes::Expression(Expressions::Member { name: (*name).into() }),
 				},
 				_ => panic!("Unexpected atom in const expression"),
 			}
@@ -1253,10 +1253,10 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 				}
 			}
 			Atoms::Literal { value } => Node {
-				node: Nodes::Expression(Expressions::Literal { value }),
+				node: Nodes::Expression(Expressions::Literal { value: (*value).into() }),
 			},
 			Atoms::Member { name } => Node {
-				node: Nodes::Expression(Expressions::Member { name }),
+				node: Nodes::Expression(Expressions::Member { name: (*name).into() }),
 			},
 			Atoms::VariableDeclaration { name, r#type } => Node {
 				node: Nodes::Expression(Expressions::VariableDeclaration { name, r#type }),
@@ -1728,7 +1728,7 @@ Light: struct {
 
 					let x_param = &parameters[0];
 
-					if let Nodes::Expression(Expressions::Literal { value }) = x_param.node {
+					if let Nodes::Expression(Expressions::Literal { value }) = &x_param.node {
 						assert_eq!(value, "0.0");
 					} else {
 						panic!("Not a literal");
@@ -1866,7 +1866,7 @@ main: fn () -> void {
 						panic!("Not a function call");
 					}
 
-					if let Nodes::Expression(Expressions::Literal { value }) = literal.node {
+					if let Nodes::Expression(Expressions::Literal { value }) = &literal.node {
 						assert_eq!(value, "2.0");
 					} else {
 						panic!("Not a literal");
@@ -1987,13 +1987,13 @@ main: fn () -> void {
 						right: y,
 					}) = &accessor.node
 					{
-						if let Nodes::Expression(Expressions::Member { name }) = position.node {
+						if let Nodes::Expression(Expressions::Member { name }) = &position.node {
 							assert_eq!(name, "position");
 						} else {
 							panic!("Not a member");
 						}
 
-						if let Nodes::Expression(Expressions::Member { name }) = y.node {
+						if let Nodes::Expression(Expressions::Member { name }) = &y.node {
 							assert_eq!(name, "y");
 						} else {
 							panic!("Not a member");
@@ -2002,7 +2002,7 @@ main: fn () -> void {
 						panic!("Not an accessor");
 					}
 
-					if let Nodes::Expression(Expressions::Literal { value }) = literal.node {
+					if let Nodes::Expression(Expressions::Literal { value }) = &literal.node {
 						assert_eq!(value, "2.0");
 					} else {
 						panic!("Not a literal");
@@ -2132,7 +2132,7 @@ main: fn () -> void {
 							assert_eq!(*name, "intrinsic");
 							assert_eq!(parameters.len(), 1);
 
-							if let Nodes::Expression(Expressions::Literal { value }) = parameters[0].node {
+							if let Nodes::Expression(Expressions::Literal { value }) = &parameters[0].node {
 								assert_eq!(value, "0");
 							} else {
 								panic!("Not a literal");
@@ -2141,7 +2141,7 @@ main: fn () -> void {
 							panic!("Not a function call");
 						}
 
-						if let Nodes::Expression(Expressions::Member { name }) = right.node {
+						if let Nodes::Expression(Expressions::Member { name }) = &right.node {
 							assert_eq!(name, "y");
 						} else {
 							panic!("Not a member");
@@ -2175,12 +2175,12 @@ main: fn () -> void {
 			let statement = &statements[0];
 			if let Nodes::Expression(Expressions::Operator { right, .. }) = &statement.node {
 				if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
-					assert!(matches!(left.node, Nodes::Expression(Expressions::Member { name }) if name == "values"));
+					assert!(matches!(&left.node, Nodes::Expression(Expressions::Member { name }) if name == "values"));
 					assert!(matches!(
 						right.node,
 						Nodes::Expression(Expressions::Expression(ref elements))
 							if elements.len() == 1
-								&& matches!(elements[0].node, Nodes::Expression(Expressions::Literal { value }) if value == "1")
+								&& matches!(&elements[0].node, Nodes::Expression(Expressions::Literal { value }) if value == "1")
 					));
 				} else {
 					panic!("Not an accessor");

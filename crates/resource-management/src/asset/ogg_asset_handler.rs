@@ -105,7 +105,8 @@ impl AssetHandler for OGGAssetHandler {
 			}
 
 			// The source bytes borrow the bake allocator, so decoding stays in this task.
-			let (audio_resource, data) = Self::decode_ogg(&data, self.bit_depth, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
+			let (audio_resource, data) =
+				Self::decode_ogg(&data, self.bit_depth, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
 
 			let (asset, data) = process_audio_in(url, audio_resource, data)?;
 			Ok((asset, data.to_vec().into_boxed_slice()))
@@ -174,8 +175,8 @@ mod tests {
 			(BitDepths::TwentyFour, 3),
 			(BitDepths::ThirtyTwo, 4),
 		] {
-			let (audio, data) = OGGAssetHandler::decode_ogg(&ogg, bit_depth, &std::alloc::Global)
-				.expect("Generated OGG should decode");
+			let (audio, data) =
+				OGGAssetHandler::decode_ogg(&ogg, bit_depth, &std::alloc::Global).expect("Generated OGG should decode");
 
 			assert_eq!(audio.bit_depth, bit_depth);
 			assert_eq!(audio.channel_count, 1);

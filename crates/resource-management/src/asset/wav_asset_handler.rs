@@ -5,7 +5,8 @@ use super::{
 	ResourceId,
 };
 use crate::{
-	asset, processors::audio_processor::process_audio_in, r#async::BoxedFuture, resource, resources::audio::Audio, ProcessedAsset,
+	asset, processors::audio_processor::process_audio_in, r#async::BoxedFuture, resource, resources::audio::Audio,
+	ProcessedAsset,
 };
 
 impl Default for WAVAssetHandler {

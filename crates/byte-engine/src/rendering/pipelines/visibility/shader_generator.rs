@@ -1033,7 +1033,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					extra.push(x);
 				}
 				"Texture2D" => {
-					let slot = Box::leak(format!("{texture_count}u").into_boxed_str());
+					let slot = format!("{texture_count}u");
 					let slot_node = besl::parser::Node::literal_expression(slot);
 					let x = besl::parser::Node::constant(name, "u32", slot_node);
 					extra.push(x);

@@ -305,7 +305,7 @@ mod tests {
 			.await
 			.expect("LUT asset handler should bake the asset");
 
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, &resource, &data)
+		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
 			.expect("LUT resource should store");
 
 		let generated = resource_storage_backend

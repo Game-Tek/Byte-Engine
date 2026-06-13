@@ -30,7 +30,7 @@ pub fn upsert_shader(storage_backend: &dyn StorageBackend, descriptor: &ShaderSo
 
 	let (shader, bytes) = bake_shader(descriptor, source_hash)?;
 	let processed = ProcessedAsset::new(ResourceId::new(descriptor.id), shader.clone());
-	storage_backend.store(&processed, &bytes).map_err(|_| {
+	storage_backend.store(processed, &bytes).map_err(|_| {
 		"Failed to store baked shader. The most likely cause is a resource storage backend failure.".to_string()
 	})?;
 

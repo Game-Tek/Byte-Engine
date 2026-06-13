@@ -400,12 +400,13 @@ impl WriteStorageBackend for RedbStorageBackend {
 		Ok(())
 	}
 
-	fn store<'a, 'b: 'a>(&'a self, resource: &'b ProcessedAsset, data: &'a [u8]) -> Result<SerializableResource, ()> {
-		let id = resource.id.clone();
+	fn store_in(
+		&self,
+		resource: ProcessedAsset,
+		data: &[u8],
+		allocator: &dyn std::alloc::Allocator,
+	) -> Result<SerializableResource, ()> {
 		let size = data.len();
-		let class = resource.class.clone();
-		let streams = resource.streams.clone();
-		let queryable_properties = resource.queryable_properties.clone();
 
 		let hash = {
 			let mut hasher = gxhash::GxHasher::with_seed(961961961961961);
@@ -416,15 +417,7 @@ impl WriteStorageBackend for RedbStorageBackend {
 		let rid = ResourceId::from(resource.id.as_ref());
 
 		let resource = {
-			let resource = SerializableResource {
-				id,
-				hash,
-				class,
-				size,
-				streams,
-				resource: resource.resource.clone(),
-				queryable_properties,
-			};
+			let resource = resource.into_serializable(hash, size);
 
 			let write = self.db.begin_write().unwrap();
 
@@ -438,9 +431,8 @@ impl WriteStorageBackend for RedbStorageBackend {
 					remove_indexes(&mut class_table, &mut property_table, &existing, rid.0);
 				}
 
-				resources_table
-					.insert(&rid, crate::to_vec(&resource).unwrap().as_slice())
-					.unwrap();
+				let serialized_resource = crate::to_vec_in(&resource, allocator).unwrap();
+				resources_table.insert(&rid, serialized_resource.as_slice()).unwrap();
 				insert_indexes(&mut class_table, &mut property_table, &resource, rid.0);
 			}
 
@@ -588,7 +580,7 @@ mod tests {
 
 	fn store_mock<T: Model>(backend: &RedbStorageBackend, id: &str, resource: T) {
 		let asset = ProcessedAsset::new(crate::asset::ResourceId::new(id), resource);
-		backend.store(&asset, id.as_bytes()).unwrap();
+		backend.store(asset, id.as_bytes()).unwrap();
 	}
 
 	fn query_ids(backend: &RedbStorageBackend, query: Query) -> (Vec<String>, Option<super::QueryCursor>) {

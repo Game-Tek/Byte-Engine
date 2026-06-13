@@ -109,7 +109,7 @@ impl Asset for AnimationAsset {
 
             let resource_document = ProcessedAsset::new(url, animation_resource);
             storage_backend
-                .store(&resource_document, &[])
+                .store(resource_document, &[])
                 .map_err(|_| "Failed to store animation resource. The storage backend likely rejected the write.".to_string())?;
 
             Ok(())

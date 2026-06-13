@@ -451,7 +451,7 @@ fn store_model<M: crate::Model>(
 ) -> Result<ReferenceModel<M>, LoadErrors> {
 	let resource = ProcessedAsset::new(ResourceId::new(id), model);
 	storage_backend
-		.store(&resource, data)
+		.store(resource, data)
 		.map(|resource| resource.into())
 		.map_err(|_| LoadErrors::FailedToProcess)
 }
@@ -703,7 +703,7 @@ async fn store_gltf_image_resource(
 	let image_data = load_gltf_image_data(asset_storage_backend, mesh_url, image, buffers, allocator).await?;
 	let (resource, bytes) = process_gltf_image(ResourceId::new(id), image_data, semantic, allocator)?;
 	storage_backend
-		.store(&resource, &bytes)
+		.store(resource, &bytes)
 		.map(|resource| resource.into())
 		.map_err(|_| LoadErrors::FailedToProcess)
 }
@@ -1394,7 +1394,7 @@ mod tests {
 			.await
 			.expect("Image asset handler did not handle asset");
 
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, &resource, &data)
+		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
 			.expect("Image asset handler did not store asset");
 
 		let _ = resource_storage_backend.get_resource_data_by_name(url).unwrap();

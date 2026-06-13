@@ -135,7 +135,15 @@ pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
 
 pub trait WriteStorageBackend: Sync + Send + downcast_rs::Downcast {
 	fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String>;
-	fn store<'a, 'b: 'a>(&'a self, resource: &'b ProcessedAsset, data: &'a [u8]) -> Result<SerializableResource, ()>;
+	fn store(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, ()> {
+		self.store_in(resource, data, &std::alloc::Global)
+	}
+	fn store_in(
+		&self,
+		resource: ProcessedAsset,
+		data: &[u8],
+		allocator: &dyn std::alloc::Allocator,
+	) -> Result<SerializableResource, ()>;
 	fn sync(&self, _: &dyn ReadStorageBackend) {}
 
 	fn start(&self, _: ResourceId<'_>) {}
@@ -251,11 +259,14 @@ pub mod tests {
 			Ok(())
 		}
 
-		fn store<'a, 'b: 'a>(&'a self, resource: &'b ProcessedAsset, data: &'a [u8]) -> Result<SerializableResource, ()> {
+		fn store_in(
+			&self,
+			resource: ProcessedAsset,
+			data: &[u8],
+			allocator: &dyn std::alloc::Allocator,
+		) -> Result<SerializableResource, ()> {
 			let id = resource.id.clone();
 			let size = data.len();
-			let class = resource.class.clone();
-			let streams = resource.streams.clone();
 
 			let hash = {
 				let mut hasher = gxhash::GxHasher::with_seed(961961961961961);
@@ -265,31 +276,12 @@ pub mod tests {
 				hasher.finish()
 			};
 
-			let serialized_resource_bytes = resource.resource.clone();
+			let container = resource.into_serializable(hash, size);
+			let serialized_container = crate::to_vec_in(&container, allocator).unwrap();
 
-			let container = SerializableResource {
-				id: id.clone(),
-				hash,
-				class,
-				size,
-				streams,
-				resource: resource.resource.clone(),
-				queryable_properties: resource.queryable_properties.clone(),
-			};
+			self.0.lock().insert(id, (serialized_container.to_vec().into(), data.into()));
 
-			let serialized_container = crate::to_vec(&container).unwrap();
-
-			self.0.lock().insert(id.clone(), (serialized_container.into(), data.into()));
-
-			Ok(SerializableResource::new(
-				id,
-				hash,
-				container.class.clone(),
-				size,
-				serialized_resource_bytes,
-				container.streams.clone(),
-				container.queryable_properties.clone(),
-			))
+			Ok(container)
 		}
 
 		fn sync<'s, 'a>(&'s self, _: &'a dyn ReadStorageBackend) -> () {

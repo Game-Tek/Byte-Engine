@@ -418,6 +418,7 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 
 	let tasks = ids.into_iter().map(async |id| {
 		let asset_manager = asset_manager.clone();
+		// Keep decode-time allocations local to each asset so large PNG/WAV/OGG temporaries are released after baking.
 		let arena = bumpalo::Bump::with_capacity(DEFAULT_BAKE_ARENA_CAPACITY);
 		let allocator = &arena;
 		log::info!("Baking resource '{}'", id);

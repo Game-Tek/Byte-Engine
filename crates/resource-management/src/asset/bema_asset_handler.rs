@@ -385,7 +385,7 @@ async fn transform_shader(
 	.map_err(|_| "Failed to compile shader. The shader source likely contains errors.".to_string())?;
 
 	let r = storage_backend
-		.store(&ProcessedAsset::new(path, shader), &result_shader_bytes)
+		.store(ProcessedAsset::new(path, shader), &result_shader_bytes)
 		.or(Err(
 			"Failed to store shader resource. The storage backend likely rejected the write.".to_string(),
 		))?;
@@ -599,7 +599,7 @@ pub mod tests {
 			.await
 			.expect("Failed to load material");
 
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, &resource, &data)
+		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
 			.expect("Failed to store material");
 
 		let generated_resources = resource_storage_backend.get_resources();

@@ -7,7 +7,7 @@
 #![feature(portable_simd)]
 #![feature(allocator_api)]
 
-use std::any::Any;
+use std::{alloc::Allocator, any::Any};
 
 use asset::ResourceId;
 
@@ -62,6 +62,17 @@ pub(crate) fn to_vec<T: ResourceArchive>(value: &T) -> Result<Vec<u8>, ResourceA
 	rkyv::to_bytes::<ResourceArchiveError>(value).map(Vec::from)
 }
 
+/// Serializes a resource archive value, then moves bytes into the provided allocator.
+pub(crate) fn to_vec_in<'a, T: ResourceArchive>(
+	value: &T,
+	allocator: &'a dyn Allocator,
+) -> Result<Vec<u8, &'a dyn Allocator>, ResourceArchiveError> {
+	let bytes = rkyv::to_bytes::<ResourceArchiveError>(value)?;
+	let mut output = Vec::with_capacity_in(bytes.len(), allocator);
+	output.extend_from_slice(&bytes);
+	Ok(output)
+}
+
 /// Deserializes a resource archive value into an owned Rust value.
 pub(crate) fn from_slice<T>(bytes: &[u8]) -> Result<T, ResourceArchiveError>
 where
@@ -107,6 +118,19 @@ impl ProcessedAsset {
 			resource: to_vec(&resource).unwrap(),
 			streams: None,
 			queryable_properties: resource.queryable_properties(id.as_ref()),
+		}
+	}
+
+	/// Moves processed metadata into a serializable resource container.
+	pub fn into_serializable(self, hash: u64, size: usize) -> SerializableResource {
+		SerializableResource {
+			id: self.id,
+			hash,
+			class: self.class,
+			size,
+			resource: self.resource,
+			streams: self.streams,
+			queryable_properties: self.queryable_properties,
 		}
 	}
 

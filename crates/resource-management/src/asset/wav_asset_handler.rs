@@ -278,7 +278,7 @@ mod tests {
 			.await
 			.expect("Audio asset handler failed to load asset");
 
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, &resource, &data)
+		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
 			.expect("Audio asset failed to store");
 
 		let generated_resources = resource_storage_backend.get_resources();

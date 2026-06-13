@@ -263,7 +263,7 @@ mod tests {
 			.await
 			.expect("Image asset handler did not handle asset");
 
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, &resource, &data)
+		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
 			.expect("Image asset did not store");
 
 		let generated_resources = resource_storage_backend.get_resources();

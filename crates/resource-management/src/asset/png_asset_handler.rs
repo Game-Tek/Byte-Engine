@@ -1,3 +1,5 @@
+use std::alloc::Allocator;
+
 use utils::Extent;
 
 use super::{
@@ -14,8 +16,8 @@ use crate::{
 	ProcessedAsset,
 };
 
-struct DecodedImage {
-	data: Box<[u8]>,
+struct DecodedImage<'a> {
+	data: Box<[u8], &'a dyn Allocator>,
 	description: ImageDescription,
 }
 
@@ -89,14 +91,14 @@ impl AssetHandler for PNGAssetHandler {
 							return Err(LoadErrors::FailedToProcess);
 						};
 
-						buffer = vec![0u8; size];
+						buffer = zeroed_vec_in(size, allocator);
 
 						let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
 						buffer.truncate(info.buffer_size());
 
 						extent = Extent::rectangle(info.width, info.height);
 						gamma = png_gamma(reader.info(), semantic);
-						(buffer, format) = normalize_png_buffer(buffer, info.color_type, info.bit_depth, extent)?;
+						(buffer, format) = normalize_png_buffer(buffer, info.color_type, info.bit_depth, extent, allocator)?;
 					}
 					_ => {
 						return Err(LoadErrors::UnsupportedType);
@@ -139,30 +141,31 @@ fn png_gamma(info: &png::Info<'_>, semantic: crate::processors::image_processor:
 }
 
 /// Normalizes PNG decoder output into formats supported by the image processor.
-fn normalize_png_buffer(
-	mut buffer: Vec<u8>,
+fn normalize_png_buffer<'a>(
+	mut buffer: Vec<u8, &'a dyn Allocator>,
 	color_type: png::ColorType,
 	bit_depth: png::BitDepth,
 	extent: Extent,
-) -> Result<(Vec<u8>, Formats), LoadErrors> {
+	allocator: &'a dyn Allocator,
+) -> Result<(Vec<u8, &'a dyn Allocator>, Formats), LoadErrors> {
 	let format = match (color_type, bit_depth) {
 		(png::ColorType::Rgb, png::BitDepth::Eight) => Formats::RGB8,
 		(png::ColorType::Rgb, png::BitDepth::Sixteen) => Formats::RGB16,
 		(png::ColorType::Rgba, png::BitDepth::Eight) => Formats::RGBA8,
 		(png::ColorType::Rgba, png::BitDepth::Sixteen) => Formats::RGBA16,
 		(png::ColorType::Grayscale, png::BitDepth::Eight) => {
-			return Ok((grayscale8_to_rgb8(&buffer), Formats::RGB8));
+			return Ok((grayscale8_to_rgb8(&buffer, allocator), Formats::RGB8));
 		}
 		(png::ColorType::Grayscale, png::BitDepth::Sixteen) => {
 			swap_16_bit_png_samples(&mut buffer);
-			return Ok((grayscale16_to_rgb16(&buffer, extent), Formats::RGB16));
+			return Ok((grayscale16_to_rgb16(&buffer, extent, allocator), Formats::RGB16));
 		}
 		(png::ColorType::GrayscaleAlpha, png::BitDepth::Eight) => {
-			return Ok((grayscale_alpha8_to_rgba8(&buffer), Formats::RGBA8));
+			return Ok((grayscale_alpha8_to_rgba8(&buffer, allocator), Formats::RGBA8));
 		}
 		(png::ColorType::GrayscaleAlpha, png::BitDepth::Sixteen) => {
 			swap_16_bit_png_samples(&mut buffer);
-			return Ok((grayscale_alpha16_to_rgba16(&buffer, extent), Formats::RGBA16));
+			return Ok((grayscale_alpha16_to_rgba16(&buffer, extent, allocator), Formats::RGBA16));
 		}
 		_ => return Err(LoadErrors::FailedToProcess),
 	};
@@ -180,16 +183,22 @@ fn swap_16_bit_png_samples(buffer: &mut [u8]) {
 	}
 }
 
-fn grayscale8_to_rgb8(buffer: &[u8]) -> Vec<u8> {
-	let mut output = Vec::with_capacity(buffer.len() * 3);
+fn zeroed_vec_in<'a>(len: usize, allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
+	let mut output = Vec::with_capacity_in(len, allocator);
+	output.resize(len, 0);
+	output
+}
+
+fn grayscale8_to_rgb8<'a>(buffer: &[u8], allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
+	let mut output = Vec::with_capacity_in(buffer.len() * 3, allocator);
 	for value in buffer {
 		output.extend_from_slice(&[*value, *value, *value]);
 	}
 	output
 }
 
-fn grayscale16_to_rgb16(buffer: &[u8], extent: Extent) -> Vec<u8> {
-	let mut output = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 6);
+fn grayscale16_to_rgb16<'a>(buffer: &[u8], extent: Extent, allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
+	let mut output = Vec::with_capacity_in(extent.width() as usize * extent.height() as usize * 6, allocator);
 	for value in buffer.chunks_exact(2) {
 		output.extend_from_slice(value);
 		output.extend_from_slice(value);
@@ -198,16 +207,20 @@ fn grayscale16_to_rgb16(buffer: &[u8], extent: Extent) -> Vec<u8> {
 	output
 }
 
-fn grayscale_alpha8_to_rgba8(buffer: &[u8]) -> Vec<u8> {
-	let mut output = Vec::with_capacity(buffer.len() * 2);
+fn grayscale_alpha8_to_rgba8<'a>(buffer: &[u8], allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
+	let mut output = Vec::with_capacity_in(buffer.len() * 2, allocator);
 	for pixel in buffer.chunks_exact(2) {
 		output.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
 	}
 	output
 }
 
-fn grayscale_alpha16_to_rgba16(buffer: &[u8], extent: Extent) -> Vec<u8> {
-	let mut output = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 8);
+fn grayscale_alpha16_to_rgba16<'a>(
+	buffer: &[u8],
+	extent: Extent,
+	allocator: &'a dyn Allocator,
+) -> Vec<u8, &'a dyn Allocator> {
+	let mut output = Vec::with_capacity_in(extent.width() as usize * extent.height() as usize * 8, allocator);
 	for pixel in buffer.chunks_exact(4) {
 		let gray = &pixel[0..2];
 		let alpha = &pixel[2..4];

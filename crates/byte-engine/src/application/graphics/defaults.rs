@@ -10,6 +10,7 @@ use resource_management::asset::{
 	bema_asset_handler::{BEMAAssetHandler, ProgramGenerator},
 	gltf_asset_handler::GLTFAssetHandler,
 	lut_asset_handler::LUTAssetHandler,
+	ogg_asset_handler::OGGAssetHandler,
 	png_asset_handler::PNGAssetHandler,
 	wav_asset_handler::WAVAssetHandler,
 	FileStorageBackend,
@@ -71,6 +72,7 @@ pub fn setup_default_resource_and_asset_management(
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
+	asset_manager.add_asset_handler(OGGAssetHandler::new());
 
 	application
 		.resource_manager

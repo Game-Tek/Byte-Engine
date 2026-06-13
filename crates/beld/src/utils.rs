@@ -1,6 +1,7 @@
 use resource_management::asset::{
 	asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, gltf_asset_handler::GLTFAssetHandler,
-	lut_asset_handler::LUTAssetHandler, png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler, StorageBackend,
+	lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler, png_asset_handler::PNGAssetHandler,
+	wav_asset_handler::WAVAssetHandler, StorageBackend,
 };
 
 pub fn get_asset_manager<SB: StorageBackend + 'static>(storage_backend: SB) -> AssetManager {
@@ -9,6 +10,7 @@ pub fn get_asset_manager<SB: StorageBackend + 'static>(storage_backend: SB) -> A
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
+	asset_manager.add_asset_handler(OGGAssetHandler::new());
 	{
 		let mut material_asset_handler = BEMAAssetHandler::new();
 		let shader_generator = std::sync::Arc::new({

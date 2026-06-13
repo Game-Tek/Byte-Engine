@@ -5,7 +5,7 @@ use super::{
 	ResourceId,
 };
 use crate::{
-	asset, processors::audio_processor::process_audio, r#async::BoxedFuture, resource, resources::audio::Audio,
+	asset, processors::audio_processor::process_audio_in, r#async::BoxedFuture, resource, resources::audio::Audio,
 	types::BitDepths, ProcessedAsset,
 };
 
@@ -16,8 +16,12 @@ impl Default for OGGAssetHandler {
 }
 
 impl OGGAssetHandler {
-	/// Decodes an OGG Vorbis buffer into audio metadata and PCM data.
-	fn decode_ogg(data: &[u8], bit_depth: BitDepths) -> Result<(Audio, Vec<u8>), String> {
+	/// Decodes an OGG Vorbis buffer into audio metadata and allocator-backed PCM data.
+	fn decode_ogg<'a>(
+		data: &[u8],
+		bit_depth: BitDepths,
+		allocator: &'a dyn std::alloc::Allocator,
+	) -> Result<(Audio, Box<[u8], &'a dyn std::alloc::Allocator>), String> {
 		use std::io::Cursor;
 
 		let mut decoder = vorbis_rs::VorbisDecoder::new(Cursor::new(data))
@@ -27,7 +31,7 @@ impl OGGAssetHandler {
 		let channel_count = decoder.channels().get();
 
 		let bytes_per_sample = bytes_per_sample(bit_depth);
-		let mut data = Vec::with_capacity(channel_count as usize * sample_rate as usize * bytes_per_sample);
+		let mut data = Vec::with_capacity_in(channel_count as usize * sample_rate as usize * bytes_per_sample, allocator);
 
 		while let Some(block) = decoder
 			.decode_audio_block()
@@ -51,7 +55,7 @@ impl OGGAssetHandler {
 			sample_count,
 		};
 
-		Ok((audio_resource, data))
+		Ok((audio_resource, data.into_boxed_slice()))
 	}
 
 	pub fn new() -> OGGAssetHandler {
@@ -101,9 +105,10 @@ impl AssetHandler for OGGAssetHandler {
 			}
 
 			// The source bytes borrow the bake allocator, so decoding stays in this task.
-			let (audio_resource, data) = Self::decode_ogg(&data, self.bit_depth).map_err(|_| LoadErrors::FailedToProcess)?;
+			let (audio_resource, data) = Self::decode_ogg(&data, self.bit_depth, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
 
-			process_audio(url, audio_resource, data)
+			let (asset, data) = process_audio_in(url, audio_resource, data)?;
+			Ok((asset, data.to_vec().into_boxed_slice()))
 		})
 	}
 }
@@ -169,7 +174,8 @@ mod tests {
 			(BitDepths::TwentyFour, 3),
 			(BitDepths::ThirtyTwo, 4),
 		] {
-			let (audio, data) = OGGAssetHandler::decode_ogg(&ogg, bit_depth).expect("Generated OGG should decode");
+			let (audio, data) = OGGAssetHandler::decode_ogg(&ogg, bit_depth, &std::alloc::Global)
+				.expect("Generated OGG should decode");
 
 			assert_eq!(audio.bit_depth, bit_depth);
 			assert_eq!(audio.channel_count, 1);

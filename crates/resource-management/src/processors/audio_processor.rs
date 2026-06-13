@@ -12,6 +12,15 @@ pub fn process_audio<'a>(
 	Ok((ProcessedAsset::new(id, description), buffer.into()))
 }
 
+/// Processes audio samples using the provided allocator for the output buffer.
+pub fn process_audio_in<'a, A: std::alloc::Allocator>(
+	id: ResourceId<'a>,
+	description: Audio,
+	buffer: Box<[u8], A>,
+) -> Result<(ProcessedAsset, Box<[u8], A>), LoadErrors> {
+	Ok((ProcessedAsset::new(id, description), buffer))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::process_audio;

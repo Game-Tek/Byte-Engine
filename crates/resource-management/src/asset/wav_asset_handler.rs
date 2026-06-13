@@ -5,7 +5,7 @@ use super::{
 	ResourceId,
 };
 use crate::{
-	asset, processors::audio_processor::process_audio, r#async::BoxedFuture, resource, resources::audio::Audio, ProcessedAsset,
+	asset, processors::audio_processor::process_audio_in, r#async::BoxedFuture, resource, resources::audio::Audio, ProcessedAsset,
 };
 
 impl Default for WAVAssetHandler {
@@ -15,8 +15,8 @@ impl Default for WAVAssetHandler {
 }
 
 impl WAVAssetHandler {
-	/// Parses a WAV buffer into audio metadata and PCM data.
-	fn decode_wav(data: &[u8]) -> Result<(Audio, Vec<u8>), String> {
+	/// Parses a WAV buffer into audio metadata and a borrowed PCM payload.
+	fn decode_wav(data: &[u8]) -> Result<(Audio, &[u8]), String> {
 		fn read_u16(bytes: &[u8], offset: usize, name: &str) -> Result<u16, String> {
 			let bytes = bytes
 				.get(offset..offset + 2)
@@ -123,7 +123,7 @@ impl WAVAssetHandler {
 			sample_rate,
 			sample_count,
 		};
-		Ok((audio_resource, data.to_vec()))
+		Ok((audio_resource, data))
 	}
 
 	pub fn new() -> WAVAssetHandler {
@@ -163,9 +163,12 @@ impl AssetHandler for WAVAssetHandler {
 				return Err(LoadErrors::UnsupportedType);
 			}
 
-			let (audio_resource, data) = Self::decode_wav(&data).map_err(|_| LoadErrors::FailedToProcess)?;
+			let (audio_resource, pcm_data) = Self::decode_wav(&data).map_err(|_| LoadErrors::FailedToProcess)?;
+			let mut output = Vec::with_capacity_in(pcm_data.len(), allocator);
+			output.extend_from_slice(pcm_data);
 
-			process_audio(url, audio_resource, data)
+			let (asset, data) = process_audio_in(url, audio_resource, output.into_boxed_slice())?;
+			Ok((asset, data.to_vec().into_boxed_slice()))
 		})
 	}
 }

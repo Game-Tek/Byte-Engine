@@ -55,10 +55,10 @@ pub fn process_image<'a>(
 }
 
 /// Processes image pixels using the provided allocator for transient and output buffers.
-pub fn process_image_in<'a, A: Allocator + Clone>(
+pub fn process_image_in<'a, A: Allocator + Clone, B: Allocator>(
 	id: ResourceId<'a>,
 	description: ImageDescription,
-	buffer: Box<[u8]>,
+	buffer: Box<[u8], B>,
 	allocator: A,
 ) -> Result<(ProcessedAsset, Box<[u8], A>), LoadErrors> {
 	let (resource, buffer, streams) = produce_image_in(&description, buffer, allocator)?;
@@ -201,9 +201,9 @@ pub fn determine_image_format(source_format: Formats, compress: bool, semantic: 
 	}
 }
 
-fn produce_image_in<A: Allocator + Clone>(
+fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 	description: &ImageDescription,
-	buffer: Box<[u8]>,
+	buffer: Box<[u8], B>,
 	allocator: A,
 ) -> Result<(Image, Box<[u8], A>, Option<Vec<StreamDescription>>), LoadErrors> {
 	let ImageDescription {
@@ -239,7 +239,7 @@ fn produce_image_in<A: Allocator + Clone>(
 
 			buf
 		}
-		(Formats::RGBA8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB) => move_boxed_slice_in(buffer, allocator.clone()),
+		(Formats::RGBA8, Formats::RGBA8 | Formats::BC7 | Formats::BC7SRGB) => copy_slice_in(&buffer, allocator.clone()),
 		(Formats::RGB16, Formats::BC5 | Formats::BC5SNORM) => {
 			let mut buf = zeroed_boxed_slice_in(extent.width() as usize * extent.height() as usize * 4, allocator.clone());
 
@@ -280,7 +280,7 @@ fn produce_image_in<A: Allocator + Clone>(
 			buf
 		}
 		(Formats::RGB16, Formats::BC7 | Formats::BC7SRGB) => rgb16_to_rgba8_in(*extent, &buffer, allocator.clone()),
-		(Formats::RGBA16, Formats::RGBA16) => move_boxed_slice_in(buffer, allocator.clone()),
+		(Formats::RGBA16, Formats::RGBA16) => copy_slice_in(&buffer, allocator.clone()),
 		(Formats::RGBA16, Formats::BC5 | Formats::BC5SNORM) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
 		(Formats::RGBA16, Formats::BC7 | Formats::BC7SRGB) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
 		_ => {
@@ -1011,8 +1011,12 @@ fn zeroed_boxed_slice_in<A: Allocator + Clone>(len: usize, allocator: A) -> Box<
 	buffer.into_boxed_slice()
 }
 
-fn move_boxed_slice_in<A: Allocator + Clone>(buffer: Box<[u8]>, allocator: A) -> Box<[u8], A> {
+fn copy_slice_in<A: Allocator + Clone>(buffer: &[u8], allocator: A) -> Box<[u8], A> {
 	let mut output = Vec::with_capacity_in(buffer.len(), allocator);
-	output.extend_from_slice(&buffer);
+	output.extend_from_slice(buffer);
 	output.into_boxed_slice()
+}
+
+fn move_boxed_slice_in<A: Allocator + Clone>(buffer: Box<[u8]>, allocator: A) -> Box<[u8], A> {
+	copy_slice_in(&buffer, allocator)
 }

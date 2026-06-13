@@ -22,7 +22,7 @@ pub(super) fn sample_count_from_pcm_len(byte_len: usize, channel_count: u16, bit
 }
 
 /// Appends one normalized float sample as PCM at the requested bit depth.
-pub(super) fn push_pcm_sample(data: &mut Vec<u8>, sample: f32, bit_depth: BitDepths) {
+pub(super) fn push_pcm_sample<A: std::alloc::Allocator>(data: &mut Vec<u8, A>, sample: f32, bit_depth: BitDepths) {
 	let sample = sample.clamp(-1.0, 1.0);
 
 	match bit_depth {

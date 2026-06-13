@@ -69,7 +69,6 @@
 - Replace asset-handler tuple results with an allocator-backed or borrowed `BakedAsset` payload that storage can consume before arena reset.
 - Make Redb storage move processed metadata instead of cloning it and serialize metadata using bake-arena scratch.
 - Redesign `MeshProcessor` as a two-pass packer that computes offsets and writes directly into one final allocation.
-- Add allocator-aware PNG, WAV, and OGG decoding; borrow WAV PCM when no conversion is required.
 - Let glTF parsing borrow GLB and external BIN data instead of copying whole buffers.
 - Flatten glTF traversal into one caller-owned primitive record buffer rather than separate tree and primitive collections.
 - Bake each unique glTF material once, resolve primitive material references concurrently, and reuse generated resources.

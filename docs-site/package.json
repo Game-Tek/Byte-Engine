@@ -14,22 +14,22 @@
     "@tanstack/react-router-devtools": "^1.133.21",
     "@tanstack/react-start": "^1.133.21",
     "fumadocs-core": "16.0.3",
-    "fumadocs-mdx": "13.0.1",
+    "fumadocs-mdx": "15.0.12",
     "fumadocs-ui": "16.0.3",
     "lucide-static": "^0.546.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwind-merge": "^3.3.1",
-    "vite": "^7.1.11"
+    "vite": "^8.0.16"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.13.15",
-    "@tailwindcss/vite": "^4.1.15",
+    "@cloudflare/vite-plugin": "^1.40.2",
+    "@tailwindcss/vite": "^4.3.1",
     "@types/mdx": "^2.0.13",
     "@types/node": "^24.9.1",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
-    "@vitejs/plugin-react": "^5.0.4",
+    "@vitejs/plugin-react": "^5.2.0",
     "tailwindcss": "^4.1.15",
     "typescript": "^5.9.3",
     "vite-tsconfig-paths": "^5.1.4"

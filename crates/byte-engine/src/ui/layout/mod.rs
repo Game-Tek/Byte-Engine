@@ -23,9 +23,10 @@ use crate::ui::{
 
 /// Describes an element layed out for an screen.
 pub(crate) struct LayoutElement {
+	pub(crate) id: Id,
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
-	pub(crate) element: IdedElement,
+	pub(crate) hit_testable: bool,
 }
 
 /// Describes an element ready for rendering.
@@ -75,11 +76,12 @@ impl ElementHandle for IdedElement {
 /// Lays out the given elements and returns a vector of layout elements with their calculated positions and sizes for a given viewport.
 /// The relation map describes embedded elements.
 fn layout_elements(
-	mut elements: Vec<IdedElement>,
+	elements: impl AsRef<[IdedElement]>,
 	relation_map: &[(Id, Id)],
 	available_space: Size,
 	text_system: &mut TextSystem,
 ) -> Vec<LayoutElement> {
+	let elements = elements.as_ref();
 	let mut lelements = Vec::with_capacity(elements.len());
 
 	if elements.is_empty() {
@@ -100,7 +102,7 @@ fn layout_elements(
 	}
 
 	fn calculate_element<'a>(
-		element: IdedElement,
+		element: &IdedElement,
 		ctx: Context<'a>,
 		ts: TraversalState,
 		text_system: &mut TextSystem,
@@ -110,7 +112,14 @@ fn layout_elements(
 
 		let position = Location3::from((ts.offset.into(), ts.depth));
 
-		LayoutElement { position, size, element }
+		let hit_testable = matches!(element.element.primitive, Primitives::Container(_));
+
+		LayoutElement {
+			id: element.id,
+			position,
+			size,
+			hit_testable,
+		}
 	}
 
 	fn calculate_element_size(element: &IdedElement, available_space: Size, text_system: &mut TextSystem) -> Size {
@@ -126,9 +135,9 @@ fn layout_elements(
 	}
 
 	fn layout_element<'a>(
-		elements: &mut Vec<IdedElement>,
+		elements: &[IdedElement],
 		lelements: &mut Vec<LayoutElement>,
-		element: IdedElement,
+		element: &IdedElement,
 		ctx: Context<'a>,
 		ts: TraversalState,
 		text_system: &mut TextSystem,
@@ -137,9 +146,9 @@ fn layout_elements(
 
 		let size = p.size;
 		let mut cursor: Offset = Into::<Location>::into(p.position).into();
-		let element_id = p.element.id;
+		let element_id = p.id;
 
-		match &p.element.element.primitive {
+		match &element.element.primitive {
 			Primitives::Container(container) => {
 				let flow = container.settings.flow;
 
@@ -160,10 +169,9 @@ fn layout_elements(
 				lelements.push(p);
 
 				for child_id in child_ids {
-					let Some(child_index) = elements.iter().position(|element| element.id == child_id) else {
+					let Some(child) = elements.iter().find(|element| element.id == child_id) else {
 						continue;
 					};
-					let child = elements.swap_remove(child_index);
 					let expected_child_size = calculate_element_size(&child, size, text_system);
 					let flow_output = flow.call(FlowInput::new(size, cursor, expected_child_size));
 					let child_size = layout_element(
@@ -208,10 +216,10 @@ fn layout_elements(
 		})
 		.expect("Root container not found");
 	let root_index = elements.iter().position(|element| element.id == root_id).unwrap();
-	let root = elements.swap_remove(root_index);
+	let root = &elements[root_index];
 
 	layout_element(
-		&mut elements,
+		elements,
 		&mut lelements,
 		root,
 		Context {

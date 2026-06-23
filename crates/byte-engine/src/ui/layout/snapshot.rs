@@ -107,7 +107,7 @@ impl Snapshot {
 		let mut best_candidate: Option<(Id, CandidateScore)> = None;
 
 		for (layout_index, element) in self.elements.iter().enumerate() {
-			let candidate_id = element.element.id;
+			let candidate_id = element.id;
 
 			if Some(candidate_id) == current_cursor {
 				continue;
@@ -151,7 +151,7 @@ impl Snapshot {
 	}
 
 	fn element(&self, id: Id) -> Option<&LayoutElement> {
-		self.elements.iter().find(|element| element.element.id == id)
+		self.elements.iter().find(|element| element.id == id)
 	}
 
 	fn is_cursor_related(&self, cursor: Id, candidate: Id) -> bool {

@@ -60,8 +60,6 @@ struct FrameTree {
 
 impl FrameTree {
 	fn begin_frame(&mut self) {
-		self.elements.clear();
-		self.relations.clear();
 		self.path_counts.clear();
 	}
 
@@ -108,10 +106,16 @@ impl FrameTree {
 		let path_string = self.element_path(parent_path, name);
 		let id = self.id_for_path(path_string.clone());
 
+		if self.elements.iter().any(|element| element.id == id) {
+			return (id, path_string.split('/').map(ToOwned::to_owned).collect());
+		}
+
 		self.elements.push(IdedElement { id, element });
 
 		if let Some(parent) = parent {
-			self.relations.push((parent, id));
+			if !self.relations.iter().any(|relation| *relation == (parent, id)) {
+				self.relations.push((parent, id));
+			}
 		}
 
 		let path = if path_string.is_empty() {
@@ -210,7 +214,7 @@ impl ElementContext for ElementSlot<'_> {
 		let path = tree.borrow_mut().scope_path(&self.parent.path, self.name);
 		let ctx = EvaluationContext {
 			id: self.parent.id,
-			parent: self.parent.parent,
+			parent: Some(self.parent.id),
 			path,
 			runtime: Rc::clone(&runtime),
 			tree,
@@ -386,15 +390,16 @@ impl Engine {
 	fn build_snapshot_from_ui_tree(&mut self, size: Size) -> Snapshot {
 		let (elements, relations) = {
 			let tree = Rc::clone(&self.runtime.borrow().tree);
-			let mut tree = tree.borrow_mut();
-			(std::mem::take(&mut tree.elements), tree.relations.clone())
+			let tree = tree.borrow();
+			(
+				layout_elements(&tree.elements, &tree.relations, size, &mut self.text_system),
+				tree.relations.clone(),
+			)
 		};
-
-		let elements = layout_elements(elements, &relations, size, &mut self.text_system);
 
 		{
 			let mut state = self.state.borrow_mut();
-			state.set_element_ids(elements.iter().map(|element| element.element.id));
+			state.set_element_ids(elements.iter().map(|element| element.id));
 		}
 
 		let acceleration = build_mouse_click_acceleration(&elements);
@@ -456,16 +461,22 @@ impl Engine {
 
 		let mut elements = Vec::new();
 		let mut text_elements = Vec::new();
+		let tree = Rc::clone(&self.runtime.borrow().tree);
 
 		for element in &mut snapshot.elements {
 			let state = StyleContextImpl {
 				acceleration: &snapshot.acceleration,
 				cursor: snapshot.cursor,
-				self_id: element.element.id,
+				self_id: element.id,
 				mouse_pos: Location::new(mouse_pos.x as u32, mouse_pos.y as u32),
 			};
 
-			let style = match &mut element.element.element.primitive {
+			let mut tree = tree.borrow_mut();
+			let Some(retained_element) = tree.elements.iter_mut().find(|retained| retained.id == element.id) else {
+				continue;
+			};
+
+			let style = match &mut retained_element.element.primitive {
 				Primitives::Container(container) => container.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
 				Primitives::Shape(shape) => shape.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
 				Primitives::Text(text) => text.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
@@ -477,9 +488,9 @@ impl Engine {
 				Color::Sample(_) => RGBA::white(),
 			};
 
-			match &element.element.element.primitive {
+			match &retained_element.element.primitive {
 				Primitives::Container(container) => elements.push(RenderElement {
-					id: element.element.id.get(),
+					id: element.id.get(),
 					position: element.position,
 					size: element.size,
 					color,
@@ -492,7 +503,7 @@ impl Engine {
 					};
 
 					elements.push(RenderElement {
-						id: element.element.id.get(),
+						id: element.id.get(),
 						position: element.position,
 						size: element.size,
 						color,
@@ -500,7 +511,7 @@ impl Engine {
 					});
 				}
 				Primitives::Text(text) => text_elements.push(RenderTextElement {
-					id: element.element.id.get(),
+					id: element.id.get(),
 					position: element.position,
 					size: element.size,
 					color,
@@ -752,8 +763,6 @@ mod tests {
 		Arc,
 	};
 
-	use utils::r#async::select;
-
 	use super::*;
 	use crate::ui::{
 		components::container::ContainerSettings,
@@ -762,16 +771,13 @@ mod tests {
 	};
 
 	#[test]
-	fn mounted_task_rebuilds_tree_after_render_await() {
+	fn mounted_task_retains_markup_without_render_loop() {
 		let mut engine = Engine::new();
 
 		engine.mount(|ctx| {
 			Box::pin(async move {
-				loop {
-					ctx.element("root")
-						.container(Container::new(ContainerSettings::default().flow(flow::column)));
-					ctx.render().await;
-				}
+				ctx.element("root")
+					.container(Container::new(ContainerSettings::default().flow(flow::column)));
 			})
 		});
 
@@ -783,7 +789,7 @@ mod tests {
 	}
 
 	#[test]
-	fn click_event_wakes_waiting_ui_task() {
+	fn retained_button_receives_later_click_event() {
 		let hits = Arc::new(AtomicUsize::new(0));
 		let hits_for_task = Arc::clone(&hits);
 		let mut engine = Engine::new();
@@ -791,14 +797,10 @@ mod tests {
 		engine.mount(move |ctx| {
 			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
+				let mut button = ctx.element("button").container(Container::new(ContainerSettings::default()));
 				loop {
-					let mut button = ctx.element("button").container(Container::new(ContainerSettings::default()));
-					select! {
-						_ = button.on(Events::Actuated) => {
-							hits.fetch_add(1, Ordering::SeqCst);
-						},
-						_ = ctx.render() => {},
-					}
+					button.on(Events::Actuated).await;
+					hits.fetch_add(1, Ordering::SeqCst);
 				}
 			})
 		});
@@ -809,5 +811,43 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100));
 
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn nested_retained_components_attach_under_declaring_element_with_stable_ids() {
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx
+					.element("frame")
+					.container(Container::new(ContainerSettings::default().flow(flow::column)));
+				frame.element("child").component(|ctx| {
+					Box::pin(async move {
+						ctx.element("button")
+							.container(Container::new(ContainerSettings::default().size(20.into())));
+					})
+				});
+			})
+		});
+
+		let first = engine.evaluate(Size::new(100, 100));
+		let first_ids = first.elements.iter().map(|element| element.id).collect::<Vec<_>>();
+		assert_eq!(first.elements.len(), 2);
+		assert_eq!(first.relations, vec![(first_ids[0], first_ids[1])]);
+
+		let second = engine.evaluate(Size::new(100, 100));
+		let second_ids = second.elements.iter().map(|element| element.id).collect::<Vec<_>>();
+		assert_eq!(second_ids, first_ids);
+		assert_eq!(second.relations, first.relations);
+	}
+
+	#[test]
+	fn empty_retained_tree_does_not_panic() {
+		let mut engine = Engine::new();
+		let mut snapshot = engine.evaluate(Size::new(100, 100));
+
+		assert!(snapshot.elements.is_empty());
+		assert_eq!(engine.render(&mut snapshot).size(), 0);
 	}
 }

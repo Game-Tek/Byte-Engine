@@ -5,7 +5,6 @@ use super::super::{
 	flow::{self, FlowFunction},
 	layout::{self, Sizing},
 	primitive::{BasePrimitive, Primitive, Shapes},
-	Component,
 };
 use crate::ui::{
 	element::ConcreteElement,

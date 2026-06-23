@@ -1,5 +1,7 @@
+pub mod context;
 pub mod engine;
 pub mod query;
+pub mod snapshot;
 
 use math::{Base as _, Vector2};
 use utils::{Box, RGBA};
@@ -79,6 +81,10 @@ fn layout_elements(
 	text_system: &mut TextSystem,
 ) -> Vec<LayoutElement> {
 	let mut lelements = Vec::with_capacity(elements.len());
+
+	if elements.is_empty() {
+		return lelements;
+	}
 
 	#[derive(Clone, Copy)]
 	struct TraversalState {

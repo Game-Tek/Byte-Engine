@@ -1,31 +1,35 @@
 //! UI tree evaluation, interaction state, and render snapshots.
-//!
-//! Implement [`Component`] to populate a layout context, then call
-//! [`Engine::evaluate`] with the root and viewport size. The resulting
-//! [`Snapshot`] retains query and interaction state, while [`Render`] is the
-//! compact payload consumed by [`crate::ui::render_pass::UiRenderPass`].
 
-use std::{cell::RefCell, collections::HashSet, marker::PhantomData, rc::Rc};
+use std::{
+	boxed::Box,
+	cell::RefCell,
+	collections::{HashMap, HashSet, VecDeque},
+	future::Future,
+	pin::Pin,
+	rc::Rc,
+	sync::Arc,
+	task::{Context as TaskContext, Poll, Wake, Waker},
+};
 
 use math::{Base as _, Vector2};
-use utils::{RefCall1, RGBA};
+use utils::{r#async::FusedFuture, sync::Mutex, RGBA};
 
 use super::{
+	context::{Context, ElementContext, ElementSlot, UiFuture},
 	element::{ElementHandle, Id},
 	flow::Size,
 	layout_elements,
-	query::Fetcher,
-	ConcreteElement, Element, LayoutElement,
+	snapshot::Snapshot,
+	ConcreteElement, IdedElement, RenderElement, RenderTextElement,
 };
 use crate::ui::{
-	components::{shape::Shape, text::Text},
+	components::shape::Shape,
 	flow::Location,
 	font::TextSystem,
 	intersection::{build_mouse_click_acceleration, MouseClickAcceleration},
-	layout::{IdedElement, RenderElement, RenderTextElement},
-	primitive::{Events, Primitive, Primitives, Shapes},
-	style::{self, Color, ConcreteStyle},
-	Container,
+	primitive::{Events, Primitives, Shapes},
+	style::{self, Color},
+	Container, Text,
 };
 
 /// The [`Engine`] struct owns UI evaluation state, text shaping, and pointer
@@ -37,11 +41,274 @@ pub struct Engine {
 	is_clicking: bool,
 	clicks: Vec<bool>,
 	text_system: TextSystem,
+	runtime: Rc<RefCell<Runtime>>,
 }
 
-struct EngineState {
+pub(super) struct EngineState {
 	element_ids: HashSet<Id>,
 	cursor: Option<Id>,
+}
+
+#[derive(Default)]
+struct FrameTree {
+	elements: Vec<IdedElement>,
+	relations: Vec<(Id, Id)>,
+	path_counts: HashMap<String, u32>,
+	path_ids: HashMap<String, Id>,
+	next_id: u32,
+}
+
+impl FrameTree {
+	fn begin_frame(&mut self) {
+		self.elements.clear();
+		self.relations.clear();
+		self.path_counts.clear();
+	}
+
+	fn element_path(&mut self, parent_path: &[String], name: &'static str) -> String {
+		let parent = parent_path.join("/");
+		let key = if parent.is_empty() {
+			name.to_string()
+		} else {
+			format!("{parent}/{name}")
+		};
+		let count = self.path_counts.entry(key).or_insert(0);
+		*count += 1;
+
+		let mut path = parent_path.to_vec();
+		path.push(format!("{name}#{count}"));
+		path.join("/")
+	}
+
+	fn scope_path(&mut self, parent_path: &[String], name: &'static str) -> Vec<String> {
+		self.element_path(parent_path, name)
+			.split('/')
+			.map(ToOwned::to_owned)
+			.collect()
+	}
+
+	fn id_for_path(&mut self, path: String) -> Id {
+		if let Some(id) = self.path_ids.get(&path) {
+			return *id;
+		}
+
+		let id = Id::new(self.next_id).expect("UI id counter must stay non-zero");
+		self.next_id += 1;
+		self.path_ids.insert(path, id);
+		id
+	}
+
+	fn add_element(
+		&mut self,
+		parent: Option<Id>,
+		parent_path: &[String],
+		name: &'static str,
+		element: ConcreteElement,
+	) -> (Id, Vec<String>) {
+		let path_string = self.element_path(parent_path, name);
+		let id = self.id_for_path(path_string.clone());
+
+		self.elements.push(IdedElement { id, element });
+
+		if let Some(parent) = parent {
+			self.relations.push((parent, id));
+		}
+
+		let path = if path_string.is_empty() {
+			Vec::new()
+		} else {
+			path_string.split('/').map(ToOwned::to_owned).collect()
+		};
+
+		(id, path)
+	}
+}
+
+/// Context owned by a mounted async UI task.
+pub struct EvaluationContext {
+	id: Id,
+	parent: Option<Id>,
+	path: Vec<String>,
+	runtime: Rc<RefCell<Runtime>>,
+	tree: Rc<RefCell<FrameTree>>,
+	task_id: TaskId,
+}
+
+impl EvaluationContext {
+	fn new_root(runtime: Rc<RefCell<Runtime>>, tree: Rc<RefCell<FrameTree>>, task_id: TaskId) -> Self {
+		Self {
+			id: Id::new(1).unwrap(),
+			parent: None,
+			path: Vec::new(),
+			runtime,
+			tree,
+			task_id,
+		}
+	}
+
+	fn new_child(
+		runtime: Rc<RefCell<Runtime>>,
+		tree: Rc<RefCell<FrameTree>>,
+		task_id: TaskId,
+		id: Id,
+		path: Vec<String>,
+	) -> Self {
+		Self {
+			id,
+			parent: Some(id),
+			path,
+			runtime,
+			tree,
+			task_id,
+		}
+	}
+
+	fn add_element(&mut self, name: &'static str, element: ConcreteElement) -> EvaluationContext {
+		let (id, path) = self.tree.borrow_mut().add_element(self.parent, &self.path, name, element);
+		EvaluationContext::new_child(Rc::clone(&self.runtime), Rc::clone(&self.tree), self.task_id, id, path)
+	}
+}
+
+impl Context for EvaluationContext {
+	fn id(&self) -> Id {
+		self.id
+	}
+
+	fn element<'a>(&'a mut self, name: &'static str) -> ElementSlot<'a> {
+		ElementSlot { parent: self, name }
+	}
+
+	fn render(&mut self) -> RenderFuture {
+		RenderFuture {
+			runtime: Rc::clone(&self.runtime),
+			frame_seen: None,
+			complete: false,
+		}
+	}
+}
+
+impl ElementContext for ElementSlot<'_> {
+	fn container(self, element: Container) -> EvaluationContext {
+		self.parent.add_element(self.name, ConcreteElement::container(element))
+	}
+
+	fn text(self, text: Text) -> EvaluationContext {
+		self.parent.add_element(self.name, ConcreteElement::text(text))
+	}
+
+	fn shape(self, shape: Shape) -> EvaluationContext {
+		self.parent.add_element(self.name, ConcreteElement::shape(shape))
+	}
+
+	fn component<F>(self, component: F)
+	where
+		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> UiFuture<'ctx> + 'static,
+	{
+		let runtime = Rc::clone(&self.parent.runtime);
+		let tree = Rc::clone(&self.parent.tree);
+		let task_id = Runtime::spawn_placeholder(Rc::clone(&runtime));
+		let path = tree.borrow_mut().scope_path(&self.parent.path, self.name);
+		let ctx = EvaluationContext {
+			id: self.parent.id,
+			parent: self.parent.parent,
+			path,
+			runtime: Rc::clone(&runtime),
+			tree,
+			task_id,
+		};
+
+		let ctx = Box::leak(Box::new(ctx));
+		let future = component(ctx);
+		Runtime::replace_task_future(runtime, task_id, future);
+	}
+}
+
+impl super::context::ContainerContext for EvaluationContext {
+	fn on(&mut self, event: Events) -> EventFuture {
+		EventFuture {
+			runtime: Rc::clone(&self.runtime),
+			task_id: self.task_id,
+			target: self.id,
+			kind: event,
+			complete: false,
+		}
+	}
+}
+
+pub struct RenderFuture {
+	runtime: Rc<RefCell<Runtime>>,
+	frame_seen: Option<u64>,
+	complete: bool,
+}
+
+impl Future for RenderFuture {
+	type Output = ();
+
+	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+		if self.complete {
+			return Poll::Pending;
+		}
+
+		let current = self.runtime.borrow().frame;
+
+		match self.frame_seen {
+			None => {
+				self.frame_seen = Some(current);
+				self.runtime.borrow_mut().frame_waiters.push(cx.waker().clone());
+				Poll::Pending
+			}
+			Some(seen) if seen < current => {
+				self.complete = true;
+				Poll::Ready(())
+			}
+			Some(_) => {
+				self.runtime.borrow_mut().frame_waiters.push(cx.waker().clone());
+				Poll::Pending
+			}
+		}
+	}
+}
+
+impl FusedFuture for RenderFuture {
+	fn is_terminated(&self) -> bool {
+		self.complete
+	}
+}
+
+pub struct EventFuture {
+	runtime: Rc<RefCell<Runtime>>,
+	task_id: TaskId,
+	target: Id,
+	kind: Events,
+	complete: bool,
+}
+
+impl Future for EventFuture {
+	type Output = UiEvent;
+
+	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+		if self.complete {
+			return Poll::Pending;
+		}
+
+		let event = self.runtime.borrow_mut().take_event(self.task_id, self.target, self.kind);
+
+		if let Some(event) = event {
+			self.complete = true;
+			return Poll::Ready(event);
+		}
+
+		self.runtime
+			.borrow_mut()
+			.wait_for_event(self.task_id, self.target, self.kind, cx.waker().clone());
+		Poll::Pending
+	}
+}
+
+impl FusedFuture for EventFuture {
+	fn is_terminated(&self) -> bool {
+		self.complete
+	}
 }
 
 impl EngineState {
@@ -58,7 +325,7 @@ impl EngineState {
 		self.cursor = self.cursor.filter(|id| self.element_ids.contains(id));
 	}
 
-	fn set_cursor(&mut self, cursor: Option<Id>) -> Option<Id> {
+	pub(super) fn set_cursor(&mut self, cursor: Option<Id>) -> Option<Id> {
 		self.cursor = cursor.filter(|id| self.element_ids.contains(id));
 		self.cursor
 	}
@@ -83,6 +350,7 @@ impl Engine {
 			is_clicking: false,
 			clicks: Vec::new(),
 			text_system: TextSystem::new(),
+			runtime: Rc::new(RefCell::new(Runtime::new())),
 		}
 	}
 
@@ -90,116 +358,37 @@ impl Engine {
 		self.viewports.push(viewport);
 	}
 
-	/// Evaluates the layout of the given root component and returns a snapshot of the resulting layout.
-	pub fn evaluate(&mut self, root: &impl Component, size: Size) -> Snapshot {
-		struct State<'a> {
-			id: Id,
-			counter: &'a mut u32,
-			elements: &'a mut Vec<IdedElement>,
-			relations: &'a mut Vec<(Id, Id)>,
-		}
+	pub fn mount<F>(&mut self, root: F)
+	where
+		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> UiFuture<'ctx> + 'static,
+	{
+		let runtime = Rc::clone(&self.runtime);
+		let tree = Rc::clone(&runtime.borrow().tree);
+		let task_id = Runtime::spawn_placeholder(Rc::clone(&runtime));
+		let ctx = EvaluationContext::new_root(Rc::clone(&runtime), tree, task_id);
+		let ctx = Box::leak(Box::new(ctx));
+		let future = root(ctx);
+		Runtime::replace_task_future(runtime, task_id, future);
+	}
 
-		impl<'state> Context for State<'state> {
-			type Child<'a>
-				= State<'a>
-			where
-				Self: 'a;
+	/// Evaluates mounted UI tasks and returns a snapshot of the resulting layout.
+	pub fn evaluate(&mut self, size: Size) -> Snapshot {
+		Runtime::begin_frame(Rc::clone(&self.runtime));
+		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
 
-			fn container<'a>(&'a mut self, element: impl FnOnce() -> Container) -> Self::Child<'a> {
-				let id = Id::new(*self.counter).unwrap();
+		let mut snapshot = self.build_snapshot_from_ui_tree(size);
+		self.route_input_events(&mut snapshot);
 
-				*self.counter += 1;
+		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
+		snapshot
+	}
 
-				let element = element();
-
-				self.elements.push(IdedElement {
-					id,
-					element: ConcreteElement::container(element),
-				});
-
-				if id != self.id {
-					self.relations.push((self.id, id));
-				}
-
-				State {
-					id,
-					counter: &mut *self.counter,
-					elements: &mut *self.elements,
-					relations: &mut *self.relations,
-				}
-			}
-
-			fn shape<'a>(&'a mut self, shape: impl FnOnce() -> Shape) -> Self::Child<'a> {
-				let id = Id::new(*self.counter).unwrap();
-
-				*self.counter += 1;
-
-				let shape = shape();
-
-				self.elements.push(IdedElement {
-					id,
-					element: ConcreteElement::shape(shape),
-				});
-
-				if id != self.id {
-					self.relations.push((self.id, id));
-				}
-
-				State {
-					id,
-					counter: &mut *self.counter,
-					elements: &mut *self.elements,
-					relations: &mut *self.relations,
-				}
-			}
-
-			fn text<'a>(&'a mut self, text: impl FnOnce() -> Text) -> Self::Child<'a> {
-				let id = Id::new(*self.counter).unwrap();
-
-				*self.counter += 1;
-
-				let text = text();
-
-				self.elements.push(IdedElement {
-					id,
-					element: ConcreteElement::text(text),
-				});
-
-				if id != self.id {
-					self.relations.push((self.id, id));
-				}
-
-				State {
-					id,
-					counter: &mut *self.counter,
-					elements: &mut *self.elements,
-					relations: &mut *self.relations,
-				}
-			}
-
-			fn component<C: Component>(&mut self, component: impl FnOnce(&C)) {
-				// component()
-				// component.render(self);
-			}
-
-			fn id(&self) -> Id {
-				self.id
-			}
-		}
-
-		let mut elements = Vec::new();
-		let mut relations = Vec::new();
-
-		let mut counter = 1;
-
-		let mut state = State {
-			id: Id::new(counter).unwrap(),
-			counter: &mut counter,
-			elements: &mut elements,
-			relations: &mut relations,
+	fn build_snapshot_from_ui_tree(&mut self, size: Size) -> Snapshot {
+		let (elements, relations) = {
+			let tree = Rc::clone(&self.runtime.borrow().tree);
+			let mut tree = tree.borrow_mut();
+			(std::mem::take(&mut tree.elements), tree.relations.clone())
 		};
-
-		root.render(&mut state);
 
 		let elements = layout_elements(elements, &relations, size, &mut self.text_system);
 
@@ -208,29 +397,34 @@ impl Engine {
 			state.set_element_ids(elements.iter().map(|element| element.element.id));
 		}
 
-		let acc = build_mouse_click_acceleration(&elements);
+		let acceleration = build_mouse_click_acceleration(&elements);
 
-		let mut snapshot = Snapshot {
+		Snapshot {
 			elements,
 			relations,
-			acceleration: acc,
+			acceleration,
 			cursor: self.state.borrow().cursor(),
 			engine_state: Rc::clone(&self.state),
 			size,
-		};
+		}
+	}
 
+	fn route_input_events(&mut self, snapshot: &mut Snapshot) {
 		while let Some(click) = self.clicks.pop() {
 			if click {
-				let _ = snapshot.click(self.cursor_position);
+				if let Some(target) = snapshot.click(self.cursor_position) {
+					self.runtime.borrow_mut().push_event(UiEvent {
+						target,
+						kind: Events::Actuated,
+					});
+				}
 			}
 		}
-
-		snapshot
 	}
 
 	/// Renders the given snapshot into a [`Render`] object.
 	pub fn render(&mut self, snapshot: &mut Snapshot) -> Render {
-		let size = snapshot.size;
+		let size = snapshot.size();
 
 		let mouse_pos = (self.cursor_position + 1.0) * 0.5;
 		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
@@ -280,7 +474,7 @@ impl Engine {
 			let layer = &style.layers[0];
 			let color = match layer.color {
 				Color::Value(rgba) => rgba,
-				Color::Sample(_) => todo!(),
+				Color::Sample(_) => RGBA::white(),
 			};
 
 			match &element.element.element.primitive {
@@ -345,343 +539,169 @@ impl Engine {
 	}
 }
 
-/// The `Snapshot` struct preserves a laid out UI tree together with the interaction state needed to drive it by mouse or spatial cursor.
-pub struct Snapshot {
-	elements: Vec<LayoutElement>,
-	relations: Vec<(Id, Id)>,
-	acceleration: MouseClickAcceleration,
-	cursor: Option<Id>,
-	engine_state: Rc<RefCell<EngineState>>,
-	size: Size,
+type BoxedUiFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
+
+struct UiTask {
+	future: BoxedUiFuture,
+	inbox: VecDeque<UiEvent>,
+	complete: bool,
 }
 
-impl Snapshot {
-	pub fn cursor(&self) -> Option<Id> {
-		self.cursor
+type TaskId = usize;
+
+struct EventWaiter {
+	task_id: TaskId,
+	target: Id,
+	kind: Events,
+	waker: Waker,
+}
+
+pub struct Runtime {
+	tasks: Vec<UiTask>,
+	ready: Arc<Mutex<VecDeque<TaskId>>>,
+	frame_waiters: Vec<Waker>,
+	event_waiters: Vec<EventWaiter>,
+	frame: u64,
+	tree: Rc<RefCell<FrameTree>>,
+}
+
+struct TaskWaker {
+	task: TaskId,
+	ready: Arc<Mutex<VecDeque<TaskId>>>,
+}
+
+impl Wake for TaskWaker {
+	fn wake(self: Arc<Self>) {
+		self.ready.lock().push_back(self.task);
 	}
 
-	/// Updates the snapshot cursor to a specific element when that element still exists in the snapshot.
-	pub fn set_cursor(&mut self, cursor: Option<Id>) -> Option<Id> {
-		self.cursor = self
-			.engine_state
-			.borrow_mut()
-			.set_cursor(cursor.filter(|id| self.element(*id).is_some()));
-		self.cursor
+	fn wake_by_ref(self: &Arc<Self>) {
+		self.ready.lock().push_back(self.task);
 	}
+}
 
-	pub fn clear_cursor(&mut self) {
-		let _ = self.set_cursor(None);
-	}
+fn task_waker(task: TaskId, ready: Arc<Mutex<VecDeque<TaskId>>>) -> Waker {
+	Waker::from(Arc::new(TaskWaker { task, ready }))
+}
 
-	/// Moves the snapshot cursor from a joystick-like axis by following the dominant axis.
-	pub fn move_cursor(&mut self, axis: Vector2) -> Option<Id> {
-		if axis.x.abs() < SPATIAL_CURSOR_DEADZONE && axis.y.abs() < SPATIAL_CURSOR_DEADZONE {
-			return self.cursor;
+impl Runtime {
+	fn new() -> Self {
+		Self {
+			tasks: Vec::new(),
+			ready: Arc::new(Mutex::new(VecDeque::new())),
+			frame_waiters: Vec::new(),
+			event_waiters: Vec::new(),
+			frame: 0,
+			tree: Rc::new(RefCell::new(FrameTree {
+				next_id: 1,
+				..FrameTree::default()
+			})),
 		}
+	}
 
-		if axis.x.abs() >= axis.y.abs() {
-			self.move_cursor_sideways(axis.x)
-		} else {
-			self.move_cursor_longitudinally(axis.y)
+	fn spawn_placeholder(runtime: Rc<RefCell<Self>>) -> TaskId {
+		let mut runtime = runtime.borrow_mut();
+		let id = runtime.tasks.len();
+		runtime.tasks.push(UiTask {
+			future: Box::pin(async {}),
+			inbox: VecDeque::new(),
+			complete: false,
+		});
+		runtime.ready.lock().push_back(id);
+		id
+	}
+
+	fn replace_task_future(runtime: Rc<RefCell<Self>>, id: TaskId, future: UiFuture<'static>) {
+		let mut runtime = runtime.borrow_mut();
+		runtime.tasks[id].future = future;
+		runtime.tasks[id].complete = false;
+		runtime.ready.lock().push_back(id);
+	}
+
+	fn begin_frame(runtime: Rc<RefCell<Self>>) {
+		let mut runtime = runtime.borrow_mut();
+		runtime.frame += 1;
+		runtime.tree.borrow_mut().begin_frame();
+
+		for waker in runtime.frame_waiters.drain(..) {
+			waker.wake();
 		}
 	}
 
-	/// Moves the snapshot cursor horizontally, with positive values going right and negative values going left.
-	pub fn move_cursor_sideways(&mut self, axis: f32) -> Option<Id> {
-		if axis.abs() < SPATIAL_CURSOR_DEADZONE {
-			return self.cursor;
-		}
-
-		let direction = if axis.is_sign_positive() {
-			SpatialCursorDirection::Right
-		} else {
-			SpatialCursorDirection::Left
-		};
-
-		self.move_cursor_in_direction(direction)
-	}
-
-	/// Moves the snapshot cursor vertically, with positive values going up and negative values going down.
-	pub fn move_cursor_longitudinally(&mut self, axis: f32) -> Option<Id> {
-		if axis.abs() < SPATIAL_CURSOR_DEADZONE {
-			return self.cursor;
-		}
-
-		let direction = if axis.is_sign_positive() {
-			SpatialCursorDirection::Up
-		} else {
-			SpatialCursorDirection::Down
-		};
-
-		self.move_cursor_in_direction(direction)
-	}
-
-	/// Resolves a mouse click against the snapshot and stores the clicked element in the snapshot cursor.
-	pub fn click(&mut self, mouse_pos: Vector2) -> Option<Id> {
-		let size = self.size;
-
-		let mouse_pos = (mouse_pos + 1f32) * 0.5;
-		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
-		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
-
-		if let Some(id) = self
-			.acceleration
-			.query(Location::new(mouse_pos.x as u32, mouse_pos.y as u32))
-			.and_then(Id::new)
-		{
-			let _ = self.set_cursor(Some(id));
-			return self.actuate_element(id);
-		}
-
-		None
-	}
-
-	/// Activates the element currently stored in the snapshot cursor.
-	pub fn click_cursor(&self) -> Option<Id> {
-		self.cursor.and_then(|id| self.actuate_element(id))
-	}
-
-	// Moves the snapshot cursor toward the best element in the requested cardinal direction.
-	fn move_cursor_in_direction(&mut self, direction: SpatialCursorDirection) -> Option<Id> {
-		let current_cursor = self.cursor;
-		let origin = current_cursor
-			.and_then(|id| self.element(id))
-			.map(NavigationFrame::from_element)
-			.unwrap_or_else(|| self.snapshot_frame());
-
-		let mut best_candidate: Option<(Id, CandidateScore)> = None;
-
-		for (layout_index, element) in self.elements.iter().enumerate() {
-			let candidate_id = element.element.id;
-
-			if Some(candidate_id) == current_cursor {
-				continue;
-			}
-
-			if let Some(cursor_id) = current_cursor {
-				if self.is_cursor_related(cursor_id, candidate_id) {
-					continue;
-				}
-			}
-
-			let candidate = NavigationFrame::from_element(element);
-
-			// Scores candidates by lane alignment first and travel distance second.
-			let Some(score) = direction_score(direction, origin, candidate, layout_index) else {
-				continue;
+	fn poll_ready_tasks(runtime: Rc<RefCell<Self>>) {
+		loop {
+			let (id, ready) = {
+				let runtime = runtime.borrow();
+				let Some(id) = runtime.ready.lock().pop_front() else {
+					return;
+				};
+				(id, Arc::clone(&runtime.ready))
 			};
 
-			match best_candidate {
-				Some((_, best_score)) if !score.is_better_than(&best_score) => {}
-				_ => best_candidate = Some((candidate_id, score)),
-			}
-		}
-
-		if let Some((candidate_id, _)) = best_candidate {
-			let _ = self.set_cursor(Some(candidate_id));
-		}
-
-		self.cursor
-	}
-
-	fn snapshot_frame(&self) -> NavigationFrame {
-		let mut right: f32 = 1.0;
-		let mut bottom: f32 = 1.0;
-
-		for element in &self.elements {
-			let frame = NavigationFrame::from_element(element);
-			right = right.max(frame.right);
-			bottom = bottom.max(frame.bottom);
-		}
-
-		NavigationFrame::from_point(Vector2::new(right * 0.5, bottom * 0.5))
-	}
-
-	fn actuate_element(&self, id: Id) -> Option<Id> {
-		let element = self.element(id)?;
-
-		if let Primitives::Container(c) = &element.element.element.primitive {
-			if let Some(on_event) = &c.on_event {
-				on_event.call(Events::Actuate {});
-			}
-		}
-
-		Some(id)
-	}
-
-	fn element(&self, id: Id) -> Option<&LayoutElement> {
-		self.elements.iter().find(|element| element.element.id == id)
-	}
-
-	fn is_cursor_related(&self, cursor: Id, candidate: Id) -> bool {
-		self.is_ancestor_of(cursor, candidate) || self.is_ancestor_of(candidate, cursor)
-	}
-
-	// Walks the snapshot tree so spatial cursor moves stay between nearby peers instead of climbing to ancestors.
-	fn is_ancestor_of(&self, ancestor: Id, descendant: Id) -> bool {
-		let mut stack = vec![ancestor];
-
-		while let Some(parent) = stack.pop() {
-			for &(candidate_parent, candidate_child) in &self.relations {
-				if candidate_parent != parent {
+			let mut future = {
+				let mut runtime = runtime.borrow_mut();
+				if runtime.tasks.get(id).map(|t| t.complete).unwrap_or(true) {
 					continue;
 				}
 
-				if candidate_child == descendant {
-					return true;
-				}
+				std::mem::replace(&mut runtime.tasks[id].future, Box::pin(async {}))
+			};
 
-				stack.push(candidate_child);
+			let waker = task_waker(id, ready);
+			let mut cx = TaskContext::from_waker(&waker);
+			let poll = future.as_mut().poll(&mut cx);
+
+			let mut runtime = runtime.borrow_mut();
+			if let Some(task) = runtime.tasks.get_mut(id) {
+				task.future = future;
+				if poll.is_ready() {
+					task.complete = true;
+				}
 			}
 		}
-
-		false
-	}
-}
-
-#[derive(Clone, Copy)]
-enum SpatialCursorDirection {
-	Left,
-	Right,
-	Up,
-	Down,
-}
-
-#[derive(Clone, Copy)]
-struct NavigationFrame {
-	left: f32,
-	right: f32,
-	top: f32,
-	bottom: f32,
-	center: Vector2,
-	depth: u32,
-}
-
-impl NavigationFrame {
-	fn from_element(element: &LayoutElement) -> Self {
-		let left = element.position.x() as f32;
-		let top = element.position.y() as f32;
-		let right = left + element.size.x() as f32;
-		let bottom = top + element.size.y() as f32;
-
-		Self {
-			left,
-			right,
-			top,
-			bottom,
-			center: Vector2::new((left + right) * 0.5, (top + bottom) * 0.5),
-			depth: element.position.z(),
-		}
 	}
 
-	fn from_point(point: Vector2) -> Self {
-		Self {
-			left: point.x,
-			right: point.x,
-			top: point.y,
-			bottom: point.y,
-			center: point,
-			depth: 0,
+	fn wait_for_event(&mut self, task_id: TaskId, target: Id, kind: Events, waker: Waker) {
+		if let Some(waiter) = self
+			.event_waiters
+			.iter_mut()
+			.find(|waiter| waiter.task_id == task_id && waiter.target == target && waiter.kind == kind)
+		{
+			waiter.waker = waker;
+			return;
 		}
-	}
-}
 
-#[derive(Clone, Copy)]
-struct CandidateScore {
-	alignment_rank: u8,
-	orthogonal_gap: f32,
-	forward_gap: f32,
-	center_distance_squared: f32,
-	depth: u32,
-	layout_index: usize,
-}
-
-impl CandidateScore {
-	fn is_better_than(&self, other: &Self) -> bool {
-		self.alignment_rank < other.alignment_rank
-			|| (self.alignment_rank == other.alignment_rank && self.orthogonal_gap < other.orthogonal_gap)
-			|| (self.alignment_rank == other.alignment_rank
-				&& self.orthogonal_gap == other.orthogonal_gap
-				&& self.forward_gap < other.forward_gap)
-			|| (self.alignment_rank == other.alignment_rank
-				&& self.orthogonal_gap == other.orthogonal_gap
-				&& self.forward_gap == other.forward_gap
-				&& self.center_distance_squared < other.center_distance_squared)
-			|| (self.alignment_rank == other.alignment_rank
-				&& self.orthogonal_gap == other.orthogonal_gap
-				&& self.forward_gap == other.forward_gap
-				&& self.center_distance_squared == other.center_distance_squared
-				&& self.depth > other.depth)
-			|| (self.alignment_rank == other.alignment_rank
-				&& self.orthogonal_gap == other.orthogonal_gap
-				&& self.forward_gap == other.forward_gap
-				&& self.center_distance_squared == other.center_distance_squared
-				&& self.depth == other.depth
-				&& self.layout_index > other.layout_index)
-	}
-}
-
-const SPATIAL_CURSOR_DEADZONE: f32 = 0.35;
-
-// Converts a candidate into a directional score so cursor moves prefer aligned neighbors before longer diagonal jumps.
-fn direction_score(
-	direction: SpatialCursorDirection,
-	origin: NavigationFrame,
-	candidate: NavigationFrame,
-	layout_index: usize,
-) -> Option<CandidateScore> {
-	let dx = candidate.center.x - origin.center.x;
-	let dy = candidate.center.y - origin.center.y;
-	let center_distance_squared = dx * dx + dy * dy;
-
-	let (forward, forward_gap, alignment_rank, orthogonal_gap) = match direction {
-		SpatialCursorDirection::Left => {
-			let forward = -dx;
-			let forward_gap = (origin.left - candidate.right).max(0.0);
-			let (alignment_rank, orthogonal_gap) = interval_gap(origin.top, origin.bottom, candidate.top, candidate.bottom);
-			(forward, forward_gap, alignment_rank, orthogonal_gap)
-		}
-		SpatialCursorDirection::Right => {
-			let forward = dx;
-			let forward_gap = (candidate.left - origin.right).max(0.0);
-			let (alignment_rank, orthogonal_gap) = interval_gap(origin.top, origin.bottom, candidate.top, candidate.bottom);
-			(forward, forward_gap, alignment_rank, orthogonal_gap)
-		}
-		SpatialCursorDirection::Up => {
-			let forward = -dy;
-			let forward_gap = (origin.top - candidate.bottom).max(0.0);
-			let (alignment_rank, orthogonal_gap) = interval_gap(origin.left, origin.right, candidate.left, candidate.right);
-			(forward, forward_gap, alignment_rank, orthogonal_gap)
-		}
-		SpatialCursorDirection::Down => {
-			let forward = dy;
-			let forward_gap = (candidate.top - origin.bottom).max(0.0);
-			let (alignment_rank, orthogonal_gap) = interval_gap(origin.left, origin.right, candidate.left, candidate.right);
-			(forward, forward_gap, alignment_rank, orthogonal_gap)
-		}
-	};
-
-	if forward <= 0.0 {
-		return None;
+		self.event_waiters.push(EventWaiter {
+			task_id,
+			target,
+			kind,
+			waker,
+		});
 	}
 
-	Some(CandidateScore {
-		alignment_rank,
-		orthogonal_gap,
-		forward_gap,
-		center_distance_squared,
-		depth: candidate.depth,
-		layout_index,
-	})
-}
+	fn push_event(&mut self, event: UiEvent) {
+		let mut i = 0;
+		while i < self.event_waiters.len() {
+			let waiter = &self.event_waiters[i];
 
-fn interval_gap(start_a: f32, end_a: f32, start_b: f32, end_b: f32) -> (u8, f32) {
-	if start_a <= end_b && start_b <= end_a {
-		(0, 0.0)
-	} else if end_a < start_b {
-		(1, start_b - end_a)
-	} else {
-		(1, start_a - end_b)
+			if waiter.target == event.target && waiter.kind == event.kind {
+				let waiter = self.event_waiters.swap_remove(i);
+
+				if let Some(task) = self.tasks.get_mut(waiter.task_id) {
+					task.inbox.push_back(event.clone());
+				}
+
+				waiter.waker.wake();
+			} else {
+				i += 1;
+			}
+		}
+	}
+
+	fn take_event(&mut self, task_id: TaskId, target: Id, kind: Events) -> Option<UiEvent> {
+		let inbox = &mut self.tasks.get_mut(task_id)?.inbox;
+		let index = inbox.iter().position(|e| e.target == target && e.kind == kind)?;
+		inbox.remove(index)
 	}
 }
 
@@ -711,23 +731,6 @@ impl Render {
 	}
 }
 
-/// The [`Context`] trait is the element-construction API available while rendering
-/// a [`Component`].
-///
-/// Component implementations should use this interface instead of constructing
-/// layout IDs or engine state directly.
-pub trait Context: Sized {
-	type Child<'a>: Context
-	where
-		Self: 'a;
-
-	fn id(&self) -> Id;
-	fn container<'a>(&'a mut self, element: impl FnOnce() -> Container) -> Self::Child<'a>;
-	fn shape<'a>(&'a mut self, shape: impl FnOnce() -> Shape) -> Self::Child<'a>;
-	fn text<'a>(&'a mut self, text: impl FnOnce() -> Text) -> Self::Child<'a>;
-	fn component<C: Component>(&mut self, component: impl FnOnce(&C));
-}
-
 pub(crate) struct VirtualViewport;
 
 impl ElementHandle for VirtualViewport {
@@ -736,12 +739,10 @@ impl ElementHandle for VirtualViewport {
 	}
 }
 
-/// The [`Component`] trait defines a reusable UI tree fragment.
-///
-/// Pass a root implementation to [`Engine::evaluate`], and compose child
-/// components through [`Context::component`].
-pub trait Component {
-	fn render(&self, ctx: &mut impl Context);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiEvent {
+	pub target: Id,
+	pub kind: Events,
 }
 
 #[cfg(test)]
@@ -750,370 +751,63 @@ mod tests {
 		atomic::{AtomicUsize, Ordering},
 		Arc,
 	};
-	use std::{cell::RefCell, rc::Rc};
 
-	use math::{Base, Vector2};
-	use utils::{Box, RGBA};
+	use utils::r#async::select;
 
-	use super::super::super::{
-		components::{
-			container::{Container, ContainerSettings},
-			shape::Shape,
-			text::Text,
-		},
-		element::Id,
-		flow::{self, Location3, Size},
-		layout::engine::{Context, Engine, VirtualViewport},
-		layout::{ConcreteElement, IdedElement, LayoutElement, Sizing},
-		primitive::Shapes,
-		Component,
-	};
-	use super::{EngineState, Snapshot};
+	use super::*;
 	use crate::ui::{
-		components::container::OnEventFunction,
-		flow::Offset,
-		intersection::build_mouse_click_acceleration,
-		primitive::Events,
-		style::{ConcreteLayer, StyleState},
+		components::container::ContainerSettings,
+		flow,
+		layout::context::{ContainerContext, ElementContext},
 	};
 
-	struct Bar {
-		options: Vec<BarOption>,
-	}
+	#[test]
+	fn mounted_task_rebuilds_tree_after_render_await() {
+		let mut engine = Engine::new();
 
-	impl Bar {
-		pub fn new(options: Vec<BarOption>) -> Self {
-			Self { options }
-		}
-	}
-
-	impl Component for Bar {
-		fn render(&self, ctx: &mut impl Context) {
-			let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().height(32.into())));
-
-			for option in &self.options {
-				option.render(&mut ctx);
-			}
-		}
-	}
-
-	struct BarOption {
-		label: String,
-	}
-
-	impl BarOption {
-		pub fn new(label: String) -> Self {
-			Self { label }
-		}
-	}
-
-	impl Component for BarOption {
-		fn render(&self, ctx: &mut impl Context) {
-			ctx.container(|| Container::new(ContainerSettings::default()));
-		}
-	}
-
-	struct BarList {}
-
-	impl BarList {
-		pub fn new() -> Self {
-			Self {}
-		}
-	}
-
-	struct BarListOption {}
-
-	impl BarListOption {
-		pub fn new() -> Self {
-			Self {}
-		}
-	}
-
-	struct Application {
-		bar: Bar,
-	}
-
-	impl Application {
-		pub fn new() -> Self {
-			let options = vec![
-				BarOption::new("File".to_string()),
-				BarOption::new("Edit".to_string()),
-				BarOption::new("View".to_string()),
-			];
-
-			Self { bar: Bar::new(options) }
-		}
-	}
-
-	impl Component for Application {
-		fn render(&self, ctx: &mut impl Context) {
-			let mut ctx = ctx.container(|| Container::new(ContainerSettings::default()));
-			self.bar.render(&mut ctx);
-		}
-	}
-
-	fn test_snapshot(
-		elements: Vec<(u32, Location3, Size, Option<utils::InlineCopyFn<OnEventFunction>>)>,
-		relations: &[(u32, u32)],
-	) -> Snapshot {
-		let mut engine_state = EngineState::new();
-
-		let elements = elements
-			.into_iter()
-			.map(|(id, position, size, on_event)| LayoutElement {
-				position,
-				size,
-				element: IdedElement {
-					id: Id::new(id).unwrap(),
-					element: ConcreteElement {
-						primitive: Container::new(
-							ContainerSettings::default()
-								.width(Sizing::Absolute(size.x()))
-								.height(Sizing::Absolute(size.y())),
-						)
-						.into(),
-					},
-				},
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				loop {
+					ctx.element("root")
+						.container(Container::new(ContainerSettings::default().flow(flow::column)));
+					ctx.render().await;
+				}
 			})
-			.collect::<Vec<_>>();
+		});
 
-		engine_state.set_element_ids(elements.iter().map(|element| element.element.id));
+		let mut first = engine.evaluate(Size::new(100, 100));
+		assert_eq!(engine.render(&mut first).size(), 1);
 
-		Snapshot {
-			acceleration: build_mouse_click_acceleration(&elements),
-			elements,
-			relations: relations
-				.iter()
-				.map(|&(parent, child)| (Id::new(parent).unwrap(), Id::new(child).unwrap()))
-				.collect(),
-			cursor: None,
-			engine_state: Rc::new(RefCell::new(engine_state)),
-			size: Size::new(1024, 1024),
-		}
+		let mut second = engine.evaluate(Size::new(100, 100));
+		assert_eq!(engine.render(&mut second).size(), 1);
 	}
 
 	#[test]
-	fn snapshot_moves_cursor_sideways_between_physical_neighbors() {
-		let mut snapshot = test_snapshot(
-			vec![
-				(1, Location3::new(0, 0, 0), Size::new(400, 120), None),
-				(2, Location3::new(40, 40, 1), Size::new(80, 40), None),
-				(3, Location3::new(160, 40, 1), Size::new(80, 40), None),
-				(4, Location3::new(280, 40, 1), Size::new(80, 40), None),
-			],
-			&[(1, 2), (1, 3), (1, 4)],
-		);
+	fn click_event_wakes_waiting_ui_task() {
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
 
-		assert_eq!(snapshot.move_cursor_sideways(1.0), Id::new(4));
-		assert_eq!(snapshot.move_cursor_sideways(-1.0), Id::new(3));
-		assert_eq!(snapshot.move_cursor_sideways(-1.0), Id::new(2));
-	}
-
-	#[test]
-	fn snapshot_moves_cursor_longitudinally_with_positive_input_going_up() {
-		let mut snapshot = test_snapshot(
-			vec![
-				(1, Location3::new(0, 0, 0), Size::new(240, 300), None),
-				(2, Location3::new(80, 20, 1), Size::new(80, 40), None),
-				(3, Location3::new(80, 130, 1), Size::new(80, 40), None),
-				(4, Location3::new(80, 240, 1), Size::new(80, 40), None),
-			],
-			&[(1, 2), (1, 3), (1, 4)],
-		);
-
-		assert_eq!(snapshot.set_cursor(Some(Id::new(3).unwrap())), Id::new(3));
-		assert_eq!(snapshot.move_cursor_longitudinally(1.0), Id::new(2));
-		assert_eq!(snapshot.move_cursor_longitudinally(-1.0), Id::new(3));
-		assert_eq!(snapshot.move_cursor(Vector2::new(0.2, -1.0)), Id::new(4));
-	}
-
-	#[test]
-	fn snapshot_keeps_the_current_cursor_when_only_an_ancestor_exists_in_that_direction() {
-		let mut snapshot = test_snapshot(
-			vec![
-				(1, Location3::new(0, 0, 0), Size::new(400, 160), None),
-				(2, Location3::new(260, 60, 1), Size::new(80, 40), None),
-			],
-			&[(1, 2)],
-		);
-
-		assert_eq!(snapshot.set_cursor(Some(Id::new(2).unwrap())), Id::new(2));
-		assert_eq!(snapshot.move_cursor_sideways(-1.0), Id::new(2));
-	}
-
-	#[test]
-	fn render_applies_container_stylers_to_render_elements() {
-		struct StyledColumn;
-
-		impl Component for StyledColumn {
-			fn render(&self, ctx: &mut impl Context) {
-				let styler = |state: StyleState| {
-					if state.is_hovered(state.id()) {
-						ConcreteLayer::new().color(RGBA::new(1.0, 0.0, 0.0, 1.0).into()).into()
-					} else {
-						ConcreteLayer::new().color(RGBA::new(0.0, 1.0, 0.0, 1.0).into()).into()
+		engine.mount(move |ctx| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				loop {
+					let mut button = ctx.element("button").container(Container::new(ContainerSettings::default()));
+					select! {
+						_ = button.on(Events::Actuated) => {
+							hits.fetch_add(1, Ordering::SeqCst);
+						},
+						_ = ctx.render() => {},
 					}
-				};
+				}
+			})
+		});
 
-				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().flow(flow::column)));
+		let _ = engine.evaluate(Size::new(100, 100));
+		engine.set_cursor_position(Vector2::zero());
+		engine.update_click_state(true);
+		let _ = engine.evaluate(Size::new(100, 100));
 
-				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))).styler(styler));
-				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))).styler(styler));
-			}
-		}
-
-		let mut engine = Engine::new();
-		engine.set_cursor_position(Vector2::new(-0.8, 0.8));
-
-		let mut snapshot = engine.evaluate(&StyledColumn, Size::new(100, 100));
-		let render = engine.render(&mut snapshot);
-
-		assert_eq!(render.size(), 3);
-
-		let root = render.elements().find(|element| element.id == 1).unwrap();
-		assert_eq!(root.position, Location3::new(0, 0, 0));
-		assert_eq!(root.size, Size::new(100, 100));
-		assert_eq!(root.color, RGBA::white());
-		assert_eq!(root.corner_radius, 0.0);
-
-		let first_child = render.elements().find(|element| element.id == 2).unwrap();
-		assert_eq!(first_child.position, Location3::new(0, 0, 1));
-		assert_eq!(first_child.size, Size::new(20, 20));
-		assert_eq!(first_child.color, RGBA::new(1.0, 0.0, 0.0, 1.0));
-		assert_eq!(first_child.corner_radius, 0.0);
-
-		let second_child = render.elements().find(|element| element.id == 3).unwrap();
-		assert_eq!(second_child.position, Location3::new(0, 20, 1));
-		assert_eq!(second_child.size, Size::new(20, 20));
-		assert_eq!(second_child.color, RGBA::new(0.0, 1.0, 0.0, 1.0));
-		assert_eq!(second_child.corner_radius, 0.0);
+		assert_eq!(hits.load(Ordering::SeqCst), 1);
 	}
-
-	#[test]
-	fn render_preserves_corner_radius_for_boxes() {
-		struct RoundedBoxes;
-
-		impl Component for RoundedBoxes {
-			fn render(&self, ctx: &mut impl Context) {
-				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default()));
-				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(32)).corner_radius(12.0)));
-				ctx.shape(|| Shape::new(ContainerSettings::default().size(Sizing::Absolute(24)).corner_radius(6.0)));
-			}
-		}
-
-		let mut engine = Engine::new();
-		let mut snapshot = engine.evaluate(&RoundedBoxes, Size::new(100, 100));
-		let render = engine.render(&mut snapshot);
-
-		let container = render.elements().find(|element| element.id == 2).unwrap();
-		assert_eq!(container.corner_radius, 12.0);
-
-		let shape = render.elements().find(|element| element.id == 3).unwrap();
-		assert_eq!(shape.corner_radius, 6.0);
-	}
-
-	#[test]
-	fn text_elements_participate_in_flow_layout() {
-		struct LabelStack;
-
-		impl Component for LabelStack {
-			fn render(&self, ctx: &mut impl Context) {
-				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().flow(flow::column)));
-				ctx.text(|| Text::new("Hello Byte").font_size(18.0));
-				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(12))));
-			}
-		}
-
-		let mut engine = Engine::new();
-		let mut snapshot = engine.evaluate(&LabelStack, Size::new(200, 100));
-		let render = engine.render(&mut snapshot);
-
-		let text = render.texts().next().expect("Expected a text render element");
-		assert_eq!(text.position, Location3::new(0, 0, 1));
-		assert!(text.size.x() > 0);
-		assert!(text.size.y() > 0);
-
-		let container = render.elements().find(|element| element.id == 3).unwrap();
-		assert_eq!(container.position, Location3::new(0, text.size.y(), 1));
-	}
-
-	#[test]
-	fn engine_propagates_cursor_from_previous_snapshot_to_the_next_one() {
-		struct TwoOptions;
-
-		impl Component for TwoOptions {
-			fn render(&self, ctx: &mut impl Context) {
-				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().flow(flow::column)));
-				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))));
-				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))));
-			}
-		}
-
-		let mut engine = Engine::new();
-
-		let mut snapshot = engine.evaluate(&TwoOptions, Size::new(100, 100));
-		assert_eq!(snapshot.set_cursor(Some(Id::new(3).unwrap())), Id::new(3));
-		assert_eq!(engine.cursor(), Id::new(3));
-
-		let snapshot = engine.evaluate(&TwoOptions, Size::new(100, 100));
-		assert_eq!(snapshot.cursor(), Id::new(3));
-	}
-
-	#[test]
-	fn engine_clears_cursor_when_the_focused_element_no_longer_exists() {
-		struct TwoOptions;
-		struct OneOption;
-
-		impl Component for TwoOptions {
-			fn render(&self, ctx: &mut impl Context) {
-				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().flow(flow::column)));
-				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))));
-				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))));
-			}
-		}
-
-		impl Component for OneOption {
-			fn render(&self, ctx: &mut impl Context) {
-				let mut ctx = ctx.container(|| Container::new(ContainerSettings::default().flow(flow::column)));
-				ctx.container(|| Container::new(ContainerSettings::default().size(Sizing::Absolute(20))));
-			}
-		}
-
-		let mut engine = Engine::new();
-
-		let mut snapshot = engine.evaluate(&TwoOptions, Size::new(100, 100));
-		assert_eq!(snapshot.set_cursor(Some(Id::new(3).unwrap())), Id::new(3));
-		assert_eq!(engine.cursor(), Id::new(3));
-
-		let snapshot = engine.evaluate(&OneOption, Size::new(100, 100));
-		assert_eq!(engine.cursor(), None);
-		assert_eq!(snapshot.cursor(), None);
-	}
-
-	// 	#[test]
-	// 	fn snapshot_click_cursor_activates_the_focused_element() {
-	// 		let click_count = Arc::new(AtomicUsize::new(0));
-	// 		let on_event = {
-	// 			let click_count = Arc::clone(&click_count);
-	// 			utils::InlineCopyFn::<OnEventFunction>::new(move |e| {
-	// 				match e {
-	// 					Events::Actuate {  } => {
-	// 						click_count.fetch_add(1, Ordering::SeqCst);
-	// 					}
-	// 				}
-	// 			})
-	// 		};
-
-	// 		let mut snapshot = test_snapshot(
-	// 			vec![
-	// 				(1, Location3::new(0, 0, 0), Size::new(200, 120), None),
-	// 				(2, Location3::new(60, 40, 1), Size::new(80, 40), Some(on_event)),
-	// 			],
-	// 			&[(1, 2)],
-	// 		);
-
-	// 		assert_eq!(snapshot.set_cursor(Some(Id::new(2).unwrap())), Id::new(2));
-	// 		assert_eq!(snapshot.click_cursor(), Id::new(2));
-	// 		assert_eq!(click_count.load(Ordering::SeqCst), 1);
-	// 	}
 }

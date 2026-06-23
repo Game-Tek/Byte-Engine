@@ -62,12 +62,9 @@ impl Shapes {
 	fn geo_center(&self) {}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Events {
-	HoverBegin {},
-	HoverEnd {},
-	FocusBegin {},
-	FocusEnd {},
-	Actuate {},
+	Actuated,
 }
 
 pub enum Primitives {

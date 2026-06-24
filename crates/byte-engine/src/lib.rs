@@ -9,7 +9,8 @@
 	slice_pattern,
 	trait_alias,
 	iterator_try_collect,
-	iter_collect_into
+	iter_collect_into,
+	allocator_api
 )]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(dead_code)]

@@ -96,11 +96,11 @@ struct UiDrawBatch {
 	vertex_offset: i32,
 }
 
-#[derive(Debug, Default, Clone)]
-struct UiGeometry {
-	vertices: Vec<UiVertex>,
-	indices: Vec<u16>,
-	batches: Vec<UiDrawBatch>,
+#[derive(Debug)]
+struct UiGeometry<'a> {
+	vertices: Vec<UiVertex, &'a bumpalo::Bump>,
+	indices: Vec<u16, &'a bumpalo::Bump>,
+	batches: Vec<UiDrawBatch, &'a bumpalo::Bump>,
 	truncated: bool,
 }
 
@@ -189,7 +189,7 @@ fn rasterize_text_overlay(draw_list: &UiDrawList, viewport: Extent, text_system:
 }
 
 /// Builds the packed UI geometry for the current viewport and splits it into `u16`-safe draw ranges.
-fn build_ui_geometry(draw_list: &UiDrawList, viewport: Extent) -> UiGeometry {
+fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocator: &'a bumpalo::Bump) -> UiGeometry<'a> {
 	let viewport_width = viewport.width().max(1) as f32;
 	let viewport_height = viewport.height().max(1) as f32;
 	let sx = viewport_width / draw_list.layout_size[0].max(1.0);
@@ -197,9 +197,15 @@ fn build_ui_geometry(draw_list: &UiDrawList, viewport: Extent) -> UiGeometry {
 	let radius_scale = sx.min(sy);
 
 	let mut geometry = UiGeometry {
-		vertices: Vec::with_capacity(draw_list.elements.len().min(MAX_UI_ELEMENTS) * UI_VERTICES_PER_ELEMENT),
-		indices: Vec::with_capacity(draw_list.elements.len().min(MAX_UI_ELEMENTS) * UI_INDICES_PER_ELEMENT),
-		batches: Vec::new(),
+		vertices: Vec::with_capacity_in(
+			draw_list.elements.len().min(MAX_UI_ELEMENTS) * UI_VERTICES_PER_ELEMENT,
+			frame_allocator,
+		),
+		indices: Vec::with_capacity_in(
+			draw_list.elements.len().min(MAX_UI_ELEMENTS) * UI_INDICES_PER_ELEMENT,
+			frame_allocator,
+		),
+		batches: Vec::new_in(frame_allocator),
 		truncated: false,
 	};
 
@@ -420,7 +426,7 @@ impl RenderPass for UiRenderPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		let extent = sink.extent();
-		let geometry = build_ui_geometry(&self.data, extent);
+		let geometry = build_ui_geometry(&self.data, extent, frame_allocator);
 		let has_rectangle_batches = !geometry.batches.is_empty();
 
 		if geometry.truncated && !self.reported_capacity_limit {
@@ -471,7 +477,7 @@ impl RenderPass for UiRenderPass {
 		let text_pipeline = self.text_pipeline;
 		let text_descriptor_set = self.text_descriptor_set;
 		let main_attachment = self.main_attachment;
-		let batches = geometry.batches;
+		let batches: &'a [UiDrawBatch] = frame_allocator.alloc_slice_copy(&geometry.batches);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
@@ -501,7 +507,7 @@ impl RenderPass for UiRenderPass {
 					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
 					let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
 
-					for batch in &batches {
+					for batch in batches {
 						command_buffer.draw_indexed(batch.index_count, 1, batch.first_index, batch.vertex_offset, 0);
 					}
 
@@ -882,6 +888,7 @@ mod tests {
 
 	#[test]
 	fn builds_a_single_batched_quad() {
+		let frame_allocator = bumpalo::Bump::new();
 		let geometry = build_ui_geometry(
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
@@ -894,13 +901,14 @@ mod tests {
 				texts: vec![],
 			},
 			Extent::rectangle(200, 100),
+			&frame_allocator,
 		);
 
 		assert_eq!(geometry.vertices.len(), 4);
 		assert_eq!(geometry.indices.len(), UI_INDICES_PER_ELEMENT);
 		assert_eq!(
-			geometry.batches,
-			vec![UiDrawBatch {
+			geometry.batches.as_slice(),
+			[UiDrawBatch {
 				index_count: UI_INDICES_PER_ELEMENT as u32,
 				first_index: 0,
 				vertex_offset: 0,
@@ -915,6 +923,7 @@ mod tests {
 
 	#[test]
 	fn splits_large_batches_to_stay_within_u16_indices() {
+		let frame_allocator = bumpalo::Bump::new();
 		let element_count = MAX_UI_VERTICES_PER_DRAW / UI_VERTICES_PER_ELEMENT + 1;
 		let elements = (0..element_count)
 			.map(|_| UiDrawElement {
@@ -932,6 +941,7 @@ mod tests {
 				texts: vec![],
 			},
 			Extent::square(1),
+			&frame_allocator,
 		);
 
 		assert_eq!(geometry.batches.len(), 2);
@@ -951,6 +961,7 @@ mod tests {
 
 	#[test]
 	fn skips_zero_alpha_elements_before_capacity_checks() {
+		let frame_allocator = bumpalo::Bump::new();
 		let mut elements = Vec::with_capacity(MAX_UI_ELEMENTS + 1);
 
 		elements.extend((0..MAX_UI_ELEMENTS).map(|_| UiDrawElement {
@@ -973,6 +984,7 @@ mod tests {
 				texts: vec![],
 			},
 			Extent::square(1),
+			&frame_allocator,
 		);
 
 		assert!(!geometry.truncated);

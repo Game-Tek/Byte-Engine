@@ -52,6 +52,7 @@ pub(super) struct EngineState {
 #[derive(Default)]
 struct RetainedTree {
 	elements: Vec<IdedElement>,
+	element_indices: HashMap<Id, usize>,
 	relations: Vec<(Id, Id)>,
 	path_counts: HashMap<String, u32>,
 	path_ids: HashMap<String, Id>,
@@ -106,10 +107,11 @@ impl RetainedTree {
 		let path_string = self.element_path(parent_path, name);
 		let id = self.id_for_path(path_string.clone());
 
-		if self.elements.iter().any(|element| element.id == id) {
+		if self.element_indices.contains_key(&id) {
 			return (id, path_string.split('/').map(ToOwned::to_owned).collect());
 		}
 
+		self.element_indices.insert(id, self.elements.len());
 		self.elements.push(IdedElement { id, element });
 
 		if let Some(parent) = parent {
@@ -125,6 +127,11 @@ impl RetainedTree {
 		};
 
 		(id, path)
+	}
+
+	fn element_mut(&mut self, id: Id) -> Option<&mut IdedElement> {
+		let index = *self.element_indices.get(&id)?;
+		self.elements.get_mut(index)
 	}
 }
 
@@ -462,6 +469,7 @@ impl Engine {
 		let mut elements = Vec::new();
 		let mut text_elements = Vec::new();
 		let tree = Rc::clone(&self.runtime.borrow().tree);
+		let mut tree = tree.borrow_mut();
 
 		for element in &mut snapshot.elements {
 			let state = StyleContextImpl {
@@ -471,8 +479,7 @@ impl Engine {
 				mouse_pos: Location::new(mouse_pos.x as u32, mouse_pos.y as u32),
 			};
 
-			let mut tree = tree.borrow_mut();
-			let Some(retained_element) = tree.elements.iter_mut().find(|retained| retained.id == element.id) else {
+			let Some(retained_element) = tree.element_mut(element.id) else {
 				continue;
 			};
 
@@ -553,7 +560,7 @@ impl Engine {
 type BoxedUiFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
 
 struct UiTask {
-	future: BoxedUiFuture,
+	future: Option<BoxedUiFuture>,
 	inbox: VecDeque<UiEvent>,
 	complete: bool,
 }
@@ -614,7 +621,7 @@ impl Runtime {
 		let mut runtime = runtime.borrow_mut();
 		let id = runtime.tasks.len();
 		runtime.tasks.push(UiTask {
-			future: Box::pin(async {}),
+			future: Some(Box::pin(async {})),
 			inbox: VecDeque::new(),
 			complete: false,
 		});
@@ -624,7 +631,7 @@ impl Runtime {
 
 	fn replace_task_future(runtime: Rc<RefCell<Self>>, id: TaskId, future: UiFuture<'static>) {
 		let mut runtime = runtime.borrow_mut();
-		runtime.tasks[id].future = future;
+		runtime.tasks[id].future = Some(future);
 		runtime.tasks[id].complete = false;
 		runtime.ready.lock().push_back(id);
 	}
@@ -655,7 +662,11 @@ impl Runtime {
 					continue;
 				}
 
-				std::mem::replace(&mut runtime.tasks[id].future, Box::pin(async {}))
+				let Some(future) = runtime.tasks[id].future.take() else {
+					continue;
+				};
+
+				future
 			};
 
 			let waker = task_waker(id, ready);
@@ -664,9 +675,9 @@ impl Runtime {
 
 			let mut runtime = runtime.borrow_mut();
 			if let Some(task) = runtime.tasks.get_mut(id) {
-				task.future = future;
-				if poll.is_ready() {
-					task.complete = true;
+				match poll {
+					Poll::Ready(()) => task.complete = true,
+					Poll::Pending => task.future = Some(future),
 				}
 			}
 		}

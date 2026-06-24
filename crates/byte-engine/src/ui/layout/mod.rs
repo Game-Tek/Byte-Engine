@@ -152,23 +152,9 @@ fn layout_elements(
 			Primitives::Container(container) => {
 				let flow = container.settings.flow;
 
-				let child_ids = ctx
-					.relation_map
-					.iter()
-					.filter_map(
-						|&(parent_id, child_id)| {
-							if parent_id == element_id {
-								Some(child_id)
-							} else {
-								None
-							}
-						},
-					)
-					.collect::<Vec<_>>();
-
 				lelements.push(p);
 
-				for child_id in child_ids {
+				for &(_, child_id) in ctx.relation_map.iter().filter(|&&(parent_id, _)| parent_id == element_id) {
 					let Some(child) = elements.iter().find(|element| element.id == child_id) else {
 						continue;
 					};

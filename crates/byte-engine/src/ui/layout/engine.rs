@@ -1,4 +1,4 @@
-//! UI tree evaluation, interaction state, and render snapshots.
+//! UI retained tree evaluation, interaction state, and render snapshots.
 
 use std::{
 	boxed::Box,
@@ -50,7 +50,7 @@ pub(super) struct EngineState {
 }
 
 #[derive(Default)]
-struct FrameTree {
+struct RetainedTree {
 	elements: Vec<IdedElement>,
 	relations: Vec<(Id, Id)>,
 	path_counts: HashMap<String, u32>,
@@ -58,7 +58,7 @@ struct FrameTree {
 	next_id: u32,
 }
 
-impl FrameTree {
+impl RetainedTree {
 	fn begin_frame(&mut self) {
 		self.path_counts.clear();
 	}
@@ -134,12 +134,12 @@ pub struct EvaluationContext {
 	parent: Option<Id>,
 	path: Vec<String>,
 	runtime: Rc<RefCell<Runtime>>,
-	tree: Rc<RefCell<FrameTree>>,
+	tree: Rc<RefCell<RetainedTree>>,
 	task_id: TaskId,
 }
 
 impl EvaluationContext {
-	fn new_root(runtime: Rc<RefCell<Runtime>>, tree: Rc<RefCell<FrameTree>>, task_id: TaskId) -> Self {
+	fn new_root(runtime: Rc<RefCell<Runtime>>, tree: Rc<RefCell<RetainedTree>>, task_id: TaskId) -> Self {
 		Self {
 			id: Id::new(1).unwrap(),
 			parent: None,
@@ -152,7 +152,7 @@ impl EvaluationContext {
 
 	fn new_child(
 		runtime: Rc<RefCell<Runtime>>,
-		tree: Rc<RefCell<FrameTree>>,
+		tree: Rc<RefCell<RetainedTree>>,
 		task_id: TaskId,
 		id: Id,
 		path: Vec<String>,
@@ -573,7 +573,7 @@ pub struct Runtime {
 	frame_waiters: Vec<Waker>,
 	event_waiters: Vec<EventWaiter>,
 	frame: u64,
-	tree: Rc<RefCell<FrameTree>>,
+	tree: Rc<RefCell<RetainedTree>>,
 }
 
 struct TaskWaker {
@@ -603,9 +603,9 @@ impl Runtime {
 			frame_waiters: Vec::new(),
 			event_waiters: Vec::new(),
 			frame: 0,
-			tree: Rc::new(RefCell::new(FrameTree {
+			tree: Rc::new(RefCell::new(RetainedTree {
 				next_id: 1,
-				..FrameTree::default()
+				..RetainedTree::default()
 			})),
 		}
 	}

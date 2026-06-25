@@ -1,17 +1,17 @@
 use crate::ui::{
-	components::container::ContainerSettings,
+	components::container::Container,
 	primitive::Shapes,
 	style::{Styler, StylerFn},
 };
 
 pub struct Shape {
 	pub(crate) shape: Shapes,
-	pub(crate) settings: ContainerSettings,
+	pub(crate) settings: Container,
 	pub(crate) styler: Option<utils::Box<dyn Styler>>,
 }
 
 impl Shape {
-	pub fn new(settings: ContainerSettings) -> Self {
+	pub fn new(settings: Container) -> Self {
 		Self {
 			shape: Shapes::Box {
 				half: (settings.width, settings.height),
@@ -27,7 +27,7 @@ impl Shape {
 		self
 	}
 
-	pub fn settings(&self) -> &ContainerSettings {
+	pub fn settings(&self) -> &Container {
 		&self.settings
 	}
 }

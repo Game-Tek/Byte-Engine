@@ -13,40 +13,7 @@ use crate::ui::{
 	style::{ConcreteLayer, ConcreteStyle, Styler, StylerFn},
 };
 
-pub trait OnEvent = Fn(Events) + Copy;
-pub type OnEventFunction = fn(Events);
-
 pub struct Container {
-	pub(crate) settings: ContainerSettings,
-	pub(crate) on_event: Option<utils::InlineCopyFn<OnEventFunction>>,
-	pub(crate) styler: Option<utils::Box<dyn Styler>>,
-}
-
-impl Container {
-	pub fn new(settings: ContainerSettings) -> Self {
-		Self {
-			settings,
-			on_event: None,
-			styler: None,
-		}
-	}
-
-	pub fn on_event<F: OnEvent + 'static>(mut self, on_event: F) -> Self {
-		self.on_event = Some(utils::InlineCopyFn::<OnEventFunction>::new(on_event));
-		self
-	}
-
-	pub fn styler<F: Styler + 'static>(mut self, styler: F) -> Self {
-		self.styler = Some(utils::Box::new(styler));
-		self
-	}
-
-	pub fn settings(&self) -> &ContainerSettings {
-		&self.settings
-	}
-}
-
-pub struct ContainerSettings {
 	min_width: Option<Sizing>,
 	min_height: Option<Sizing>,
 	pub width: Sizing,
@@ -58,7 +25,7 @@ pub struct ContainerSettings {
 	pub flow: utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>,
 }
 
-impl ContainerSettings {
+impl Container {
 	pub fn size(self, sizing: Sizing) -> Self {
 		Self {
 			width: sizing,
@@ -119,7 +86,7 @@ impl ContainerSettings {
 	}
 }
 
-impl Default for ContainerSettings {
+impl Default for Container {
 	fn default() -> Self {
 		Self {
 			width: Sizing::full(),

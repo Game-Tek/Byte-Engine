@@ -89,8 +89,8 @@ impl Primitive for Primitives {
 	fn shape(&self) -> Shapes {
 		match self {
 			Primitives::Container(container) => Shapes::Box {
-				half: (container.settings.width, container.settings.height),
-				radius: container.settings.corner_radius,
+				half: (container.width, container.height),
+				radius: container.corner_radius,
 			},
 			Primitives::Text(_) => Shapes::Box {
 				half: (Sizing::Absolute(0), Sizing::Absolute(0)),

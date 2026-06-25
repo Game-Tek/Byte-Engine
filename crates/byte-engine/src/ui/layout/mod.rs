@@ -13,7 +13,6 @@ use super::{
 	Primitive,
 };
 use crate::ui::{
-	components::container::OnEventFunction,
 	element::ConcreteElement,
 	flow::FlowFunction,
 	font::TextSystem,
@@ -126,8 +125,8 @@ fn layout_elements<'a>(
 	fn calculate_element_size(element: &IdedElement, available_space: Size, text_system: &mut TextSystem) -> Size {
 		match &element.element.primitive {
 			Primitives::Container(container) => Shapes::Box {
-				half: (container.settings.width, container.settings.height),
-				radius: container.settings.corner_radius,
+				half: (container.width, container.height),
+				radius: container.corner_radius,
 			}
 			.bbox(available_space),
 			Primitives::Shape(shape) => shape.shape.bbox(available_space),
@@ -151,7 +150,7 @@ fn layout_elements<'a>(
 
 		match &element.element.primitive {
 			Primitives::Container(container) => {
-				let flow = container.settings.flow;
+				let flow = container.flow;
 
 				lelements.push(p);
 
@@ -264,7 +263,7 @@ mod tests {
 	use math::{Base as _, Vector2};
 
 	use super::super::{
-		components::container::{Container, ContainerSettings},
+		components::container::Container,
 		element::{ElementHandle, Id},
 		flow::{self, Location, Location3, Size},
 		layout::{ConcreteElement, Sizing},
@@ -300,7 +299,7 @@ mod tests {
 	#[test]
 	fn layout_root() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::new(Default::default());
+		let root = Container::default();
 
 		let elements = make_elements([root]);
 
@@ -316,7 +315,7 @@ mod tests {
 	#[test]
 	fn layout_root_half_size() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
+		let root = Container::default().size(Sizing::Relative(1, 2));
 
 		let elements = make_elements([root]);
 
@@ -332,11 +331,11 @@ mod tests {
 	#[test]
 	fn layout_half_children() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::new(Default::default());
-		let a = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
-		let b = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
-		let c = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
-		let d = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
+		let root = Container::default();
+		let a = Container::default().size(Sizing::Relative(1, 2));
+		let b = Container::default().size(Sizing::Relative(1, 2));
+		let c = Container::default().size(Sizing::Relative(1, 2));
+		let d = Container::default().size(Sizing::Relative(1, 2));
 
 		let elements = make_elements([root, a, b, c, d]);
 
@@ -382,11 +381,11 @@ mod tests {
 	#[test]
 	fn layout_column() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::new(ContainerSettings::default().flow(flow::column));
-		let a = Container::new(ContainerSettings::default().size(Sizing::Absolute(64)));
-		let b = Container::new(ContainerSettings::default().size(Sizing::Absolute(64)));
-		let c = Container::new(ContainerSettings::default().size(Sizing::Absolute(64)));
-		let d = Container::new(ContainerSettings::default().size(Sizing::Absolute(64)));
+		let root = Container::default().flow(flow::column);
+		let a = Container::default().size(Sizing::Absolute(64));
+		let b = Container::default().size(Sizing::Absolute(64));
+		let c = Container::default().size(Sizing::Absolute(64));
+		let d = Container::default().size(Sizing::Absolute(64));
 
 		let elements = make_elements([root, a, b, c, d]);
 
@@ -437,17 +436,9 @@ mod tests {
 	#[test]
 	fn layout_centered_column() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::new(ContainerSettings::default().flow(flow::centered_column));
-		let a = Container::new(
-			ContainerSettings::default()
-				.width(Sizing::Absolute(64))
-				.height(Sizing::Absolute(32)),
-		);
-		let b = Container::new(
-			ContainerSettings::default()
-				.width(Sizing::Absolute(20))
-				.height(Sizing::Absolute(16)),
-		);
+		let root = Container::default().flow(flow::centered_column);
+		let a = Container::default().width(Sizing::Absolute(64)).height(Sizing::Absolute(32));
+		let b = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(16));
 
 		let elements = make_elements([root, a, b]);
 
@@ -479,17 +470,9 @@ mod tests {
 	#[test]
 	fn layout_center() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::new(ContainerSettings::default().flow(flow::center));
-		let a = Container::new(
-			ContainerSettings::default()
-				.width(Sizing::Absolute(20))
-				.height(Sizing::Absolute(10)),
-		);
-		let b = Container::new(
-			ContainerSettings::default()
-				.width(Sizing::Absolute(40))
-				.height(Sizing::Absolute(20)),
-		);
+		let root = Container::default().flow(flow::center);
+		let a = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(10));
+		let b = Container::default().width(Sizing::Absolute(40)).height(Sizing::Absolute(20));
 
 		let elements = make_elements([root, a, b]);
 

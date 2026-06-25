@@ -28,7 +28,7 @@ use crate::ui::{
 	font::TextSystem,
 	intersection::{build_mouse_click_acceleration, MouseClickAcceleration},
 	primitive::{Events, Primitives, Shapes},
-	style::{self, Color},
+	style::{self, Color, ConcreteStyle},
 	Container, Text,
 };
 
@@ -487,7 +487,7 @@ impl Engine {
 			};
 
 			let style = match &mut retained_element.element.primitive {
-				Primitives::Container(container) => container.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
+				Primitives::Container(container) => ConcreteStyle::default(),
 				Primitives::Shape(shape) => shape.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
 				Primitives::Text(text) => text.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
 			};
@@ -504,7 +504,7 @@ impl Engine {
 					position: element.position,
 					size: element.size,
 					color,
-					corner_radius: container.settings.corner_radius,
+					corner_radius: container.corner_radius,
 				}),
 				Primitives::Shape(shape) => {
 					let corner_radius = match shape.shape {
@@ -779,7 +779,7 @@ mod tests {
 
 	use super::*;
 	use crate::ui::{
-		components::container::ContainerSettings,
+		components::container::Container,
 		flow,
 		layout::context::{ContainerContext, ElementContext},
 	};
@@ -791,8 +791,7 @@ mod tests {
 
 		engine.mount(|ctx| {
 			Box::pin(async move {
-				ctx.element("root")
-					.container(Container::new(ContainerSettings::default().flow(flow::column)));
+				ctx.element("root").container(Container::default().flow(flow::column));
 			})
 		});
 
@@ -813,7 +812,7 @@ mod tests {
 		engine.mount(move |ctx| {
 			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
-				let mut button = ctx.element("button").container(Container::new(ContainerSettings::default()));
+				let mut button = ctx.element("button").container(Container::default());
 				loop {
 					button.on(Events::Actuated).await;
 					hits.fetch_add(1, Ordering::SeqCst);
@@ -836,13 +835,10 @@ mod tests {
 
 		engine.mount(|ctx| {
 			Box::pin(async move {
-				let mut frame = ctx
-					.element("frame")
-					.container(Container::new(ContainerSettings::default().flow(flow::column)));
+				let mut frame = ctx.element("frame").container(Container::default().flow(flow::column));
 				frame.element("child").component(|ctx| {
 					Box::pin(async move {
-						ctx.element("button")
-							.container(Container::new(ContainerSettings::default().size(20.into())));
+						ctx.element("button").container(Container::default().size(20.into()));
 					})
 				});
 			})

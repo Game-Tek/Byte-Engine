@@ -10,11 +10,7 @@ use super::{
 	primitive::{BasePrimitive, Primitive},
 };
 use crate::ui::{
-	components::{
-		container::{ContainerSettings, OnEventFunction},
-		shape::Shape,
-		text::Text,
-	},
+	components::{shape::Shape, text::Text},
 	flow::{Offset, Size},
 	primitive::{Primitives, Shapes},
 	style::Styler,

@@ -11,16 +11,16 @@ use super::{
 use crate::ui::intersection::MouseClickAcceleration;
 
 /// Preserves a laid-out UI tree together with interaction state.
-pub struct Snapshot {
-	pub(super) elements: Vec<LayoutElement>,
-	pub(super) relations: Vec<(Id, Id)>,
-	pub(super) acceleration: MouseClickAcceleration,
+pub struct Snapshot<'a> {
+	pub(super) elements: Vec<LayoutElement, &'a bumpalo::Bump>,
+	pub(super) relations: Vec<(Id, Id), &'a bumpalo::Bump>,
+	pub(super) acceleration: MouseClickAcceleration<'a>,
 	pub(super) cursor: Option<Id>,
 	pub(super) engine_state: Rc<RefCell<EngineState>>,
 	pub(super) size: Size,
 }
 
-impl Snapshot {
+impl Snapshot<'_> {
 	pub fn cursor(&self) -> Option<Id> {
 		self.cursor
 	}
@@ -159,7 +159,8 @@ impl Snapshot {
 	}
 
 	fn is_ancestor_of(&self, ancestor: Id, descendant: Id) -> bool {
-		let mut stack = vec![ancestor];
+		let mut stack = Vec::new();
+		stack.push(ancestor);
 
 		while let Some(parent) = stack.pop() {
 			for &(candidate_parent, candidate_child) in &self.relations {

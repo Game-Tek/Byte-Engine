@@ -75,14 +75,15 @@ impl ElementHandle for IdedElement {
 
 /// Lays out the given elements and returns a vector of layout elements with their calculated positions and sizes for a given viewport.
 /// The relation map describes embedded elements.
-fn layout_elements(
+fn layout_elements<'a>(
 	elements: impl AsRef<[IdedElement]>,
 	relation_map: &[(Id, Id)],
 	available_space: Size,
 	text_system: &mut TextSystem,
-) -> Vec<LayoutElement> {
+	frame_allocator: &'a bumpalo::Bump,
+) -> Vec<LayoutElement, &'a bumpalo::Bump> {
 	let elements = elements.as_ref();
-	let mut lelements = Vec::with_capacity(elements.len());
+	let mut lelements = Vec::with_capacity_in(elements.len(), frame_allocator);
 
 	if elements.is_empty() {
 		return lelements;
@@ -136,7 +137,7 @@ fn layout_elements(
 
 	fn layout_element<'a>(
 		elements: &[IdedElement],
-		lelements: &mut Vec<LayoutElement>,
+		lelements: &mut Vec<LayoutElement, &bumpalo::Bump>,
 		element: &IdedElement,
 		ctx: Context<'a>,
 		ts: TraversalState,
@@ -298,11 +299,12 @@ mod tests {
 
 	#[test]
 	fn layout_root() {
+		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::new(Default::default());
 
 		let elements = make_elements([root]);
 
-		let elements = layout_elements(elements, &[], Size::new(1024, 10), &mut TextSystem::new());
+		let elements = layout_elements(elements, &[], Size::new(1024, 10), &mut TextSystem::new(), &frame_allocator);
 
 		assert_eq!(elements.len(), 1);
 
@@ -313,11 +315,12 @@ mod tests {
 
 	#[test]
 	fn layout_root_half_size() {
+		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
 
 		let elements = make_elements([root]);
 
-		let elements = layout_elements(elements, &[], Size::new(1024, 10), &mut TextSystem::new());
+		let elements = layout_elements(elements, &[], Size::new(1024, 10), &mut TextSystem::new(), &frame_allocator);
 
 		assert_eq!(elements.len(), 1);
 
@@ -328,6 +331,7 @@ mod tests {
 
 	#[test]
 	fn layout_half_children() {
+		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::new(Default::default());
 		let a = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
 		let b = Container::new(ContainerSettings::default().size(Sizing::Relative(1, 2)));
@@ -344,7 +348,13 @@ mod tests {
 
 		let relations = [(root.id(), a.id()), (a.id(), b.id()), (b.id(), c.id()), (c.id(), d.id())];
 
-		let elements = layout_elements(elements, &relations, Size::new(1024, 1024), &mut TextSystem::new());
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(1024, 1024),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
 
 		assert_eq!(elements.len(), 5);
 
@@ -371,6 +381,7 @@ mod tests {
 
 	#[test]
 	fn layout_column() {
+		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::new(ContainerSettings::default().flow(flow::column));
 		let a = Container::new(ContainerSettings::default().size(Sizing::Absolute(64)));
 		let b = Container::new(ContainerSettings::default().size(Sizing::Absolute(64)));
@@ -392,7 +403,13 @@ mod tests {
 			(root.id(), d.id()),
 		];
 
-		let elements = layout_elements(elements, &relations, Size::new(1024, 1024), &mut TextSystem::new());
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(1024, 1024),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
 
 		assert_eq!(elements.len(), 5);
 
@@ -419,6 +436,7 @@ mod tests {
 
 	#[test]
 	fn layout_centered_column() {
+		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::new(ContainerSettings::default().flow(flow::centered_column));
 		let a = Container::new(
 			ContainerSettings::default()
@@ -439,7 +457,13 @@ mod tests {
 
 		let relations = [(root.id(), a.id()), (root.id(), b.id())];
 
-		let elements = layout_elements(elements, &relations, Size::new(100, 100), &mut TextSystem::new());
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 100),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
 
 		assert_eq!(elements.len(), 3);
 
@@ -454,6 +478,7 @@ mod tests {
 
 	#[test]
 	fn layout_center() {
+		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::new(ContainerSettings::default().flow(flow::center));
 		let a = Container::new(
 			ContainerSettings::default()
@@ -474,7 +499,13 @@ mod tests {
 
 		let relations = [(root.id(), a.id()), (root.id(), b.id())];
 
-		let elements = layout_elements(elements, &relations, Size::new(100, 80), &mut TextSystem::new());
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 80),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
 
 		assert_eq!(elements.len(), 3);
 

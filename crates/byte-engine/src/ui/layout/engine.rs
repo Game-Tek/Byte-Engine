@@ -383,24 +383,27 @@ impl Engine {
 	}
 
 	/// Evaluates mounted UI tasks and returns a snapshot of the resulting layout.
-	pub fn evaluate(&mut self, size: Size) -> Snapshot {
+	pub fn evaluate<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
 		Runtime::begin_frame(Rc::clone(&self.runtime));
 		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
 
-		let mut snapshot = self.build_snapshot_from_ui_tree(size);
+		let mut snapshot = self.build_snapshot_from_ui_tree(size, frame_allocator);
 		self.route_input_events(&mut snapshot);
 
 		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
 		snapshot
 	}
 
-	fn build_snapshot_from_ui_tree(&mut self, size: Size) -> Snapshot {
+	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
 		let (elements, relations) = {
 			let tree = Rc::clone(&self.runtime.borrow().tree);
 			let tree = tree.borrow();
+			let mut relations = Vec::with_capacity_in(tree.relations.len(), frame_allocator);
+			relations.extend_from_slice(&tree.relations);
+
 			(
-				layout_elements(&tree.elements, &tree.relations, size, &mut self.text_system),
-				tree.relations.clone(),
+				layout_elements(&tree.elements, &tree.relations, size, &mut self.text_system, frame_allocator),
+				relations,
 			)
 		};
 
@@ -409,7 +412,7 @@ impl Engine {
 			state.set_element_ids(elements.iter().map(|element| element.id));
 		}
 
-		let acceleration = build_mouse_click_acceleration(&elements);
+		let acceleration = build_mouse_click_acceleration(&elements, frame_allocator);
 
 		Snapshot {
 			elements,
@@ -421,7 +424,7 @@ impl Engine {
 		}
 	}
 
-	fn route_input_events(&mut self, snapshot: &mut Snapshot) {
+	fn route_input_events(&mut self, snapshot: &mut Snapshot<'_>) {
 		while let Some(click) = self.clicks.pop() {
 			if click {
 				if let Some(target) = snapshot.click(self.cursor_position) {
@@ -435,7 +438,7 @@ impl Engine {
 	}
 
 	/// Renders the given snapshot into a [`Render`] object.
-	pub fn render(&mut self, snapshot: &mut Snapshot) -> Render {
+	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
 		let size = snapshot.size();
 
 		let mouse_pos = (self.cursor_position + 1.0) * 0.5;
@@ -443,7 +446,7 @@ impl Engine {
 		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
 
 		struct StyleContextImpl<'a> {
-			acceleration: &'a MouseClickAcceleration,
+			acceleration: &'a MouseClickAcceleration<'a>,
 			cursor: Option<Id>,
 			self_id: Id,
 			mouse_pos: Location,
@@ -531,7 +534,7 @@ impl Engine {
 		Render {
 			elements,
 			text_elements,
-			relations: snapshot.relations.clone(),
+			relations: snapshot.relations.to_vec(),
 		}
 	}
 
@@ -783,6 +786,7 @@ mod tests {
 
 	#[test]
 	fn mounted_task_retains_markup_without_render_loop() {
+		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 
 		engine.mount(|ctx| {
@@ -792,15 +796,16 @@ mod tests {
 			})
 		});
 
-		let mut first = engine.evaluate(Size::new(100, 100));
+		let mut first = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(engine.render(&mut first).size(), 1);
 
-		let mut second = engine.evaluate(Size::new(100, 100));
+		let mut second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(engine.render(&mut second).size(), 1);
 	}
 
 	#[test]
 	fn retained_button_receives_later_click_event() {
+		let frame_allocator = bumpalo::Bump::new();
 		let hits = Arc::new(AtomicUsize::new(0));
 		let hits_for_task = Arc::clone(&hits);
 		let mut engine = Engine::new();
@@ -816,16 +821,17 @@ mod tests {
 			})
 		});
 
-		let _ = engine.evaluate(Size::new(100, 100));
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.set_cursor_position(Vector2::zero());
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100));
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
 	fn nested_retained_components_attach_under_declaring_element_with_stable_ids() {
+		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 
 		engine.mount(|ctx| {
@@ -842,12 +848,12 @@ mod tests {
 			})
 		});
 
-		let first = engine.evaluate(Size::new(100, 100));
+		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let first_ids = first.elements.iter().map(|element| element.id).collect::<Vec<_>>();
 		assert_eq!(first.elements.len(), 2);
 		assert_eq!(first.relations, vec![(first_ids[0], first_ids[1])]);
 
-		let second = engine.evaluate(Size::new(100, 100));
+		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let second_ids = second.elements.iter().map(|element| element.id).collect::<Vec<_>>();
 		assert_eq!(second_ids, first_ids);
 		assert_eq!(second.relations, first.relations);
@@ -855,8 +861,9 @@ mod tests {
 
 	#[test]
 	fn empty_retained_tree_does_not_panic() {
+		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
-		let mut snapshot = engine.evaluate(Size::new(100, 100));
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert!(snapshot.elements.is_empty());
 		assert_eq!(engine.render(&mut snapshot).size(), 0);

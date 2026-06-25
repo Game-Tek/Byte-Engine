@@ -162,6 +162,10 @@ impl Application for GraphicsApplication {
 }
 
 impl GraphicsApplication {
+	pub fn frame_allocator(&self) -> &bumpalo::Bump {
+		&self.application.frame_allocator
+	}
+
 	pub fn tick_with<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, f: F) -> Option<R> {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();

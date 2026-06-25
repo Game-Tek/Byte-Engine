@@ -9,25 +9,27 @@ struct QueryElement {
 }
 
 /// A uniform-grid spatial index for fast mouse click hit-testing.
-pub(crate) struct MouseClickAcceleration {
+pub(crate) struct MouseClickAcceleration<'a> {
 	cell_size: u32,
 	columns: usize,
 	rows: usize,
 	bounds: (u32, u32),
-	elements: Vec<QueryElement>,
-	buckets: Vec<Vec<usize>>,
+	elements: Vec<QueryElement, &'a bumpalo::Bump>,
+	buckets: Vec<Vec<usize, &'a bumpalo::Bump>, &'a bumpalo::Bump>,
 }
 
-impl MouseClickAcceleration {
-	fn new(layout: Vec<QueryElement>) -> Self {
+impl<'a> MouseClickAcceleration<'a> {
+	fn new(layout: Vec<QueryElement, &'a bumpalo::Bump>, frame_allocator: &'a bumpalo::Bump) -> Self {
 		if layout.is_empty() {
+			let mut buckets = Vec::with_capacity_in(1, frame_allocator);
+			buckets.push(Vec::new_in(frame_allocator));
 			return Self {
 				cell_size: 1,
 				columns: 1,
 				rows: 1,
 				bounds: (1, 1),
-				elements: Vec::new(),
-				buckets: vec![Vec::new()],
+				elements: Vec::new_in(frame_allocator),
+				buckets,
 			};
 		}
 
@@ -45,7 +47,10 @@ impl MouseClickAcceleration {
 
 		let columns = bounds.0.div_ceil(cell_size) as usize;
 		let rows = bounds.1.div_ceil(cell_size) as usize;
-		let mut buckets = vec![Vec::new(); columns * rows];
+		let mut buckets = Vec::with_capacity_in(columns * rows, frame_allocator);
+		for _ in 0..columns * rows {
+			buckets.push(Vec::new_in(frame_allocator));
+		}
 
 		for (index, element) in layout.iter().enumerate() {
 			if element.size.x() == 0 || element.size.y() == 0 {
@@ -127,18 +132,20 @@ fn point_in_layout_element(element: &QueryElement, point: Location) -> bool {
 }
 
 /// Builds an acceleration structure from `layout_containers` output for mouse click hit-testing.
-pub(crate) fn build_mouse_click_acceleration(layout: &[LayoutElement]) -> MouseClickAcceleration {
-	MouseClickAcceleration::new(
-		layout
-			.iter()
-			.filter(|e| e.hit_testable)
-			.map(|e| QueryElement {
-				id: e.id.get(),
-				position: e.position,
-				size: e.size,
-			})
-			.collect(),
-	)
+pub(crate) fn build_mouse_click_acceleration<'a>(
+	layout: &[LayoutElement],
+	frame_allocator: &'a bumpalo::Bump,
+) -> MouseClickAcceleration<'a> {
+	let mut query_elements = Vec::with_capacity_in(layout.len(), frame_allocator);
+	for e in layout.iter().filter(|e| e.hit_testable) {
+		query_elements.push(QueryElement {
+			id: e.id.get(),
+			position: e.position,
+			size: e.size,
+		});
+	}
+
+	MouseClickAcceleration::new(query_elements, frame_allocator)
 }
 
 #[cfg(test)]
@@ -157,25 +164,25 @@ mod tests {
 
 	#[test]
 	fn mouse_click_acceleration_hits_topmost_overlapping_element() {
-		let layout = vec![
-			QueryElement {
-				id: 1,
-				position: Location3::new(0, 0, 0),
-				size: Size::new(200, 200),
-			},
-			QueryElement {
-				id: 2,
-				position: Location3::new(20, 20, 0),
-				size: Size::new(120, 120),
-			},
-			QueryElement {
-				id: 3,
-				position: Location3::new(40, 40, 0),
-				size: Size::new(60, 60),
-			},
-		];
+		let frame_allocator = bumpalo::Bump::new();
+		let mut layout = Vec::with_capacity_in(3, &frame_allocator);
+		layout.push(QueryElement {
+			id: 1,
+			position: Location3::new(0, 0, 0),
+			size: Size::new(200, 200),
+		});
+		layout.push(QueryElement {
+			id: 2,
+			position: Location3::new(20, 20, 0),
+			size: Size::new(120, 120),
+		});
+		layout.push(QueryElement {
+			id: 3,
+			position: Location3::new(40, 40, 0),
+			size: Size::new(60, 60),
+		});
 
-		let acceleration = MouseClickAcceleration::new(layout);
+		let acceleration = MouseClickAcceleration::new(layout, &frame_allocator);
 
 		assert_eq!(acceleration.query(Location::new(50, 50)), Some(3));
 		assert_eq!(acceleration.query(Location::new(30, 30)), Some(2));
@@ -184,20 +191,20 @@ mod tests {
 
 	#[test]
 	fn mouse_click_acceleration_returns_none_when_no_hit() {
-		let layout = vec![
-			QueryElement {
-				id: 10,
-				position: Location3::new(0, 0, 0),
-				size: Size::new(100, 100),
-			},
-			QueryElement {
-				id: 11,
-				position: Location3::new(150, 150, 0),
-				size: Size::new(50, 50),
-			},
-		];
+		let frame_allocator = bumpalo::Bump::new();
+		let mut layout = Vec::with_capacity_in(2, &frame_allocator);
+		layout.push(QueryElement {
+			id: 10,
+			position: Location3::new(0, 0, 0),
+			size: Size::new(100, 100),
+		});
+		layout.push(QueryElement {
+			id: 11,
+			position: Location3::new(150, 150, 0),
+			size: Size::new(50, 50),
+		});
 
-		let acceleration = MouseClickAcceleration::new(layout);
+		let acceleration = MouseClickAcceleration::new(layout, &frame_allocator);
 
 		assert_eq!(acceleration.query(Location::new(125, 125)), None);
 		assert_eq!(acceleration.query(Location::new(300, 300)), None);
@@ -205,20 +212,20 @@ mod tests {
 
 	#[test]
 	fn mouse_click_acceleration_prefers_deeper_elements_over_layout_order() {
-		let layout = vec![
-			QueryElement {
-				id: 20,
-				position: Location3::new(0, 0, 3),
-				size: Size::new(100, 100),
-			},
-			QueryElement {
-				id: 21,
-				position: Location3::new(0, 0, 1),
-				size: Size::new(100, 100),
-			},
-		];
+		let frame_allocator = bumpalo::Bump::new();
+		let mut layout = Vec::with_capacity_in(2, &frame_allocator);
+		layout.push(QueryElement {
+			id: 20,
+			position: Location3::new(0, 0, 3),
+			size: Size::new(100, 100),
+		});
+		layout.push(QueryElement {
+			id: 21,
+			position: Location3::new(0, 0, 1),
+			size: Size::new(100, 100),
+		});
 
-		let acceleration = MouseClickAcceleration::new(layout);
+		let acceleration = MouseClickAcceleration::new(layout, &frame_allocator);
 
 		assert_eq!(acceleration.query(Location::new(50, 50)), Some(20));
 	}

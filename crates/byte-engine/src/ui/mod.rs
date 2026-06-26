@@ -19,8 +19,10 @@ pub mod layout;
 pub mod primitive;
 pub mod render_pass;
 pub mod style;
+pub mod timer;
 
 pub use components::container::Container;
 pub use components::text::Text;
 pub use element::Element;
 pub use primitive::Primitive;
+pub use timer::{seconds, wait, WaitFuture};

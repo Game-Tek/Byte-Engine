@@ -776,12 +776,13 @@ mod tests {
 		atomic::{AtomicUsize, Ordering},
 		Arc,
 	};
+	use std::time::Duration;
 
 	use super::*;
 	use crate::ui::{
 		components::container::Container,
 		flow,
-		layout::context::{ContainerContext, ElementContext},
+		layout::context::{ContainerContext, Context, ElementContext},
 	};
 
 	#[test]
@@ -863,5 +864,49 @@ mod tests {
 
 		assert!(snapshot.elements.is_empty());
 		assert_eq!(engine.render(&mut snapshot).size(), 0);
+	}
+
+	#[test]
+	fn wait_future_resumes_mounted_task_after_duration() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |_| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				crate::ui::wait(Duration::from_millis(5)).await;
+				hits.fetch_add(1, Ordering::SeqCst);
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+		std::thread::sleep(Duration::from_millis(20));
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn context_seconds_returns_timer_future() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				ctx.seconds(0).await;
+				hits.fetch_add(1, Ordering::SeqCst);
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(hits.load(Ordering::SeqCst), 1);
 	}
 }

@@ -1,10 +1,11 @@
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, time::Duration};
 
 use crate::ui::{
 	components::shape::Shape,
 	element::Id,
 	layout::engine::{EvaluationContext, EventFuture, RenderFuture},
 	primitive::Events,
+	timer::{seconds as wait_seconds, wait, WaitFuture},
 	Container, Text,
 };
 
@@ -25,6 +26,14 @@ pub trait Context: Sized {
 	}
 
 	fn render(&mut self) -> RenderFuture;
+
+	fn wait(&mut self, duration: Duration) -> WaitFuture {
+		wait(duration)
+	}
+
+	fn seconds(&mut self, seconds: u64) -> WaitFuture {
+		wait_seconds(seconds)
+	}
 }
 
 pub struct ElementSlot<'a> {

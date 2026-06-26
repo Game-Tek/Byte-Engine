@@ -3,7 +3,7 @@ use utils::{Box, RGBA};
 use super::super::{
 	element::{Element, ElementHandle, Id},
 	flow::{self, FlowFunction},
-	layout::{self, Sizing},
+	layout::{self, Depth, Sizing},
 	primitive::{BasePrimitive, Primitive, Shapes},
 };
 use crate::ui::{
@@ -21,7 +21,7 @@ pub struct Container {
 	pub corner_radius: f32,
 	max_width: Option<Sizing>,
 	max_height: Option<Sizing>,
-	depth: i16,
+	pub depth: Depth,
 	pub flow: utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>,
 }
 
@@ -74,8 +74,11 @@ impl Container {
 		}
 	}
 
-	pub fn depth(self, depth: i16) -> Self {
-		Self { depth, ..self }
+	pub fn depth(self, depth: impl Into<Depth>) -> Self {
+		Self {
+			depth: depth.into(),
+			..self
+		}
 	}
 
 	pub fn flow(self, flow: impl FlowFunction + 'static) -> Self {
@@ -96,7 +99,7 @@ impl Default for Container {
 			min_height: None,
 			max_width: None,
 			max_height: None,
-			depth: 0,
+			depth: Depth::default(),
 			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow::grid),
 		}
 	}

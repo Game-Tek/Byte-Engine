@@ -693,6 +693,9 @@ impl Engine {
 			}
 		}
 
+		elements.sort_by_key(|element| element.position.z());
+		text_elements.sort_by_key(|element| element.position.z());
+
 		Render {
 			elements,
 			text_elements,
@@ -953,8 +956,9 @@ mod tests {
 	use super::*;
 	use crate::ui::{
 		components::container::Container,
-		flow,
+		flow::{self, Location3},
 		layout::context::{ContainerContext, Context, ElementContext},
+		Depth,
 	};
 
 	#[test]
@@ -1223,22 +1227,88 @@ mod tests {
 	}
 
 	#[test]
+	fn awaited_modal_can_mount_absolute_depth_container_above_opener() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame.element("opener").container(Container::default());
+				frame
+					.element("modal")
+					.mount(|ctx| {
+						Box::pin(async move {
+							let mut modal = ctx
+								.element("modal_container")
+								.container(Container::default().depth(Depth::absolute(1)));
+							modal.element("button").container(Container::default());
+							modal.on(Events::Actuated).await;
+						})
+					})
+					.await;
+			})
+		});
+
+		let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(snapshot.elements.len(), 4);
+		assert_eq!(snapshot.elements[0].position.z(), 0);
+		assert_eq!(snapshot.elements[1].position.z(), 1);
+		assert_eq!(snapshot.elements[2].position, Location3::new(0, 0, 2));
+		assert_eq!(snapshot.elements[3].position.z(), 3);
+	}
+
+	#[test]
+	fn render_orders_elements_by_resolved_depth() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame.element("high").container(Container::default().depth(10));
+				frame.element("low").container(Container::default());
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let depths = render.elements().map(|element| element.position.z()).collect::<Vec<_>>();
+
+		assert_eq!(depths, vec![0, 1, 10]);
+	}
+
+	#[test]
 	fn backdrop_style_modal_receives_actuated_event() {
 		let frame_allocator = bumpalo::Bump::new();
 		let hits = Arc::new(AtomicUsize::new(0));
 		let hits_for_task = Arc::clone(&hits);
+		let background_hits = Arc::new(AtomicUsize::new(0));
+		let background_hits_for_task = Arc::clone(&background_hits);
 		let mut engine = Engine::new();
 
 		engine.mount(move |ctx| {
 			let hits = Arc::clone(&hits_for_task);
+			let background_hits = Arc::clone(&background_hits_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
+				frame.element("background").component(move |ctx| {
+					let background_hits = Arc::clone(&background_hits);
+					Box::pin(async move {
+						let mut background = ctx.element("button").container(Container::default());
+						background.on(Events::Actuated).await;
+						background_hits.fetch_add(1, Ordering::SeqCst);
+					})
+				});
 				frame
 					.element("modal")
 					.mount(move |ctx| {
 						let hits = Arc::clone(&hits);
 						Box::pin(async move {
-							let mut backdrop = ctx.element("backdrop").container(Container::default());
+							let mut backdrop = ctx
+								.element("backdrop")
+								.container(Container::default().depth(Depth::absolute(1)));
 							backdrop.on(Events::Actuated).await;
 							hits.fetch_add(1, Ordering::SeqCst);
 						})
@@ -1253,5 +1323,6 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
+		assert_eq!(background_hits.load(Ordering::SeqCst), 0);
 	}
 }

@@ -8,7 +8,7 @@ use utils::{Box, RGBA};
 
 use super::{
 	element::{self, Element, ElementHandle, Id},
-	flow::{self, FlowInput, Location, Location3, Offset, Size},
+	flow::{self, FlowInput, FlowOutput, Location, Location3, Offset, Size},
 	primitive::BasePrimitive,
 	Primitive,
 };
@@ -93,7 +93,8 @@ fn layout_elements<'a>(
 	struct TraversalState {
 		available_space: Size,
 		offset: Offset,
-		depth: u32,
+		depth: i32,
+		is_root: bool,
 	}
 
 	#[derive(Clone, Copy)]
@@ -108,10 +109,10 @@ fn layout_elements<'a>(
 		ts: TraversalState,
 		text_system: &mut TextSystem,
 	) -> LayoutElement {
-		let available_space = if ts.depth == 0 { ctx.root_size } else { ts.available_space };
+		let available_space = if ts.is_root { ctx.root_size } else { ts.available_space };
 		let size = calculate_element_size(&element, available_space, text_system);
 
-		let position = Location3::from((ts.offset.into(), ts.depth));
+		let position = Location3::from((ts.offset.into(), clamp_depth(ts.depth)));
 
 		let hit_testable = matches!(element.element.primitive, Primitives::Container(_));
 
@@ -142,6 +143,7 @@ fn layout_elements<'a>(
 		ctx: Context<'a>,
 		ts: TraversalState,
 		text_system: &mut TextSystem,
+		highest_depth: &mut i32,
 	) -> Size {
 		let p = calculate_element(element, ctx, ts, text_system);
 
@@ -155,27 +157,45 @@ fn layout_elements<'a>(
 
 				lelements.push(p);
 
-				for &(_, child_id) in ctx.relation_map.iter().filter(|&&(parent_id, _)| parent_id == element_id) {
-					let Some(child) = elements.iter().find(|element| element.id == child_id) else {
-						continue;
-					};
-					let expected_child_size = calculate_element_size(&child, size, text_system);
-					let flow_output = flow.call(FlowInput::new(size, cursor, expected_child_size));
-					let child_size = layout_element(
-						elements,
-						lelements,
-						child,
-						ctx,
-						TraversalState {
-							available_space: size,
-							offset: flow_output.child_offset(),
-							depth: ts.depth + 1,
-						},
-						text_system,
-					);
+				for layout_reset_layer in [false, true] {
+					for &(_, child_id) in ctx.relation_map.iter().filter(|&&(parent_id, _)| parent_id == element_id) {
+						let Some(child) = elements.iter().find(|element| element.id == child_id) else {
+							continue;
+						};
+						let reset_layout = resets_layout(child);
+						if reset_layout != layout_reset_layer {
+							continue;
+						}
 
-					cursor = flow_output.next_cursor();
-					debug_assert_eq!(expected_child_size, child_size);
+						let child_available_space = if reset_layout { ctx.root_size } else { size };
+						let expected_child_size = calculate_element_size(&child, child_available_space, text_system);
+						let flow_output = if reset_layout {
+							FlowOutput::new(Offset::new(0, 0), cursor)
+						} else {
+							flow.call(FlowInput::new(size, cursor, expected_child_size))
+						};
+						let child_depth = resolve_element_depth(child, ts.depth, *highest_depth);
+						*highest_depth = (*highest_depth).max(child_depth);
+						let child_size = layout_element(
+							elements,
+							lelements,
+							child,
+							ctx,
+							TraversalState {
+								available_space: child_available_space,
+								offset: flow_output.child_offset(),
+								depth: child_depth,
+								is_root: false,
+							},
+							text_system,
+							highest_depth,
+						);
+
+						if !reset_layout {
+							cursor = flow_output.next_cursor();
+						}
+						debug_assert_eq!(expected_child_size, child_size);
+					}
 				}
 
 				size
@@ -191,6 +211,27 @@ fn layout_elements<'a>(
 		}
 	}
 
+	fn resets_layout(element: &IdedElement) -> bool {
+		matches!(
+			&element.element.primitive,
+			Primitives::Container(container) if matches!(container.depth, Depth::Absolute(_))
+		)
+	}
+
+	fn resolve_element_depth(element: &IdedElement, parent_depth: i32, highest_depth: i32) -> i32 {
+		match &element.element.primitive {
+			Primitives::Container(container) => match container.depth {
+				Depth::Relative(depth) => parent_depth.saturating_add(depth),
+				Depth::Absolute(depth) => highest_depth.saturating_add(depth),
+			},
+			_ => parent_depth.saturating_add(1),
+		}
+	}
+
+	fn clamp_depth(depth: i32) -> u32 {
+		depth.max(0) as u32
+	}
+
 	let root_id = elements
 		.iter()
 		.find_map(|element| {
@@ -204,6 +245,7 @@ fn layout_elements<'a>(
 		.expect("Root container not found");
 	let root_index = elements.iter().position(|element| element.id == root_id).unwrap();
 	let root = &elements[root_index];
+	let mut highest_depth = 0;
 
 	layout_element(
 		elements,
@@ -217,11 +259,47 @@ fn layout_elements<'a>(
 			available_space,
 			offset: Offset::new(0, 0),
 			depth: 0,
+			is_root: true,
 		},
 		text_system,
+		&mut highest_depth,
 	);
 
 	lelements
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Depth {
+	Relative(i32),
+	Absolute(i32),
+}
+
+impl Depth {
+	pub fn relative(depth: i32) -> Self {
+		Self::Relative(depth)
+	}
+
+	pub fn absolute(depth: i32) -> Self {
+		Self::Absolute(depth)
+	}
+}
+
+impl Default for Depth {
+	fn default() -> Self {
+		Self::relative(1)
+	}
+}
+
+impl From<i16> for Depth {
+	fn from(value: i16) -> Self {
+		Self::relative(value.into())
+	}
+}
+
+impl From<i32> for Depth {
+	fn from(value: i32) -> Self {
+		Self::relative(value)
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -267,7 +345,7 @@ mod tests {
 		components::container::Container,
 		element::{ElementHandle, Id},
 		flow::{self, Location, Location3, Size},
-		layout::{ConcreteElement, Sizing},
+		layout::{ConcreteElement, Depth, Sizing},
 		Element,
 	};
 	use super::layout_elements;
@@ -433,6 +511,193 @@ mod tests {
 		let element = &elements[4];
 		assert_eq!(element.size, Size::new(64, 64));
 		assert_eq!(element.position, Location3::new(0, 192, 1));
+	}
+
+	#[test]
+	fn layout_relative_depth_offsets_from_parent_depth() {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = Container::default();
+		let child = Container::default().depth(Depth::relative(2));
+		let grandchild = Container::default();
+
+		let elements = make_elements([root, child, grandchild]);
+
+		let root = &elements[0];
+		let child = &elements[1];
+		let grandchild = &elements[2];
+
+		let relations = [(root.id(), child.id()), (child.id(), grandchild.id())];
+
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 100),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
+
+		assert_eq!(elements[0].position, Location3::new(0, 0, 0));
+		assert_eq!(elements[1].position, Location3::new(0, 0, 2));
+		assert_eq!(elements[2].position, Location3::new(0, 0, 3));
+	}
+
+	#[test]
+	fn layout_absolute_depth_offsets_from_current_highest_depth() {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = Container::default();
+		let regular = Container::default().depth(Depth::relative(3));
+		let modal = Container::default().depth(Depth::absolute(1));
+		let modal_child = Container::default();
+
+		let elements = make_elements([root, regular, modal, modal_child]);
+
+		let root = &elements[0];
+		let regular = &elements[1];
+		let modal = &elements[2];
+		let modal_child = &elements[3];
+
+		let relations = [
+			(root.id(), regular.id()),
+			(root.id(), modal.id()),
+			(modal.id(), modal_child.id()),
+		];
+
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 100),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
+
+		assert_eq!(elements[0].position, Location3::new(0, 0, 0));
+		assert_eq!(elements[1].position, Location3::new(0, 0, 3));
+		assert_eq!(elements[2].position.z(), 4);
+		assert_eq!(elements[3].position.z(), 5);
+	}
+
+	#[test]
+	fn layout_absolute_depth_siblings_stack_in_layout_order() {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = Container::default();
+		let first_modal = Container::default().depth(Depth::absolute(1));
+		let second_modal = Container::default().depth(Depth::absolute(1));
+
+		let elements = make_elements([root, first_modal, second_modal]);
+
+		let root = &elements[0];
+		let first_modal = &elements[1];
+		let second_modal = &elements[2];
+
+		let relations = [(root.id(), first_modal.id()), (root.id(), second_modal.id())];
+
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 100),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
+
+		assert_eq!(elements[0].position, Location3::new(0, 0, 0));
+		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
+		assert_eq!(elements[2].position.z(), 2);
+	}
+
+	#[test]
+	fn layout_absolute_depth_resets_position_to_root_origin() {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = Container::default().flow(flow::row_with_gap(10));
+		let menu_item = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+		let modal = Container::default()
+			.width(Sizing::Absolute(30))
+			.height(Sizing::Absolute(30))
+			.depth(Depth::absolute(1));
+
+		let elements = make_elements([root, menu_item, modal]);
+
+		let root = &elements[0];
+		let menu_item = &elements[1];
+		let modal = &elements[2];
+
+		let relations = [(root.id(), menu_item.id()), (root.id(), modal.id())];
+
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 100),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
+
+		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
+		assert_eq!(elements[2].position, Location3::new(0, 0, 2));
+	}
+
+	#[test]
+	fn layout_absolute_depth_does_not_advance_parent_flow_cursor() {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = Container::default().flow(flow::row_with_gap(10));
+		let first = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+		let modal = Container::default()
+			.width(Sizing::Absolute(30))
+			.height(Sizing::Absolute(30))
+			.depth(Depth::absolute(1));
+		let second = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+
+		let elements = make_elements([root, first, modal, second]);
+
+		let root = &elements[0];
+		let first = &elements[1];
+		let modal_id = elements[2].id();
+		let modal = &elements[2];
+		let second = &elements[3];
+
+		let relations = [(root.id(), first.id()), (root.id(), modal.id()), (root.id(), second.id())];
+
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 100),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
+
+		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
+		assert_eq!(elements[2].position, Location3::new(30, 0, 1));
+		assert_eq!(elements[3].id, modal_id);
+		assert_eq!(elements[3].position, Location3::new(0, 0, 2));
+	}
+
+	#[test]
+	fn layout_absolute_depth_resolves_after_relative_siblings_even_when_declared_first() {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = Container::default();
+		let modal = Container::default().depth(Depth::absolute(1));
+		let background = Container::default();
+
+		let elements = make_elements([root, modal, background]);
+
+		let root = &elements[0];
+		let modal_id = elements[1].id();
+		let background_id = elements[2].id();
+		let modal = &elements[1];
+		let background = &elements[2];
+
+		let relations = [(root.id(), modal.id()), (root.id(), background.id())];
+
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 100),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
+
+		assert_eq!(elements[1].id, background_id);
+		assert_eq!(elements[1].position.z(), 1);
+		assert_eq!(elements[2].id, modal_id);
+		assert_eq!(elements[2].position.z(), 2);
 	}
 
 	#[test]

@@ -3,13 +3,14 @@ use std::{future::Future, pin::Pin, time::Duration};
 use crate::ui::{
 	components::shape::Shape,
 	element::Id,
-	layout::engine::{EvaluationContext, EventFuture, RenderFuture},
+	layout::engine::{EvaluationContext, EventFuture, MountedComponentFuture, RenderFuture},
 	primitive::Events,
 	timer::{seconds as wait_seconds, wait, WaitFuture},
 	Container, Text,
 };
 
 pub type UiFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
+pub type MountedUiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// Element-construction API available to async UI components.
 pub trait Context: Sized {
@@ -48,6 +49,10 @@ pub trait ElementContext {
 	fn component<F>(self, component: F)
 	where
 		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> UiFuture<'ctx> + 'static;
+
+	fn mount<F, T>(self, component: F) -> MountedComponentFuture<F, T>
+	where
+		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, T> + 'static;
 }
 
 pub trait ContainerContext: Context {

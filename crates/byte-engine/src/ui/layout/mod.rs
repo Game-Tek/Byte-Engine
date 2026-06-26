@@ -64,6 +64,7 @@ fn random_color_from_id(id: u32) -> RGBA {
 pub struct IdedElement {
 	pub(crate) id: Id,
 	pub(crate) element: ConcreteElement,
+	pub(crate) path: Vec<String>,
 }
 
 impl ElementHandle for IdedElement {
@@ -291,6 +292,7 @@ mod tests {
 					element: ConcreteElement {
 						primitive: Primitives::Container(e),
 					},
+					path: Vec::new(),
 				}
 			})
 			.collect()

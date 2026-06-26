@@ -5,6 +5,7 @@ use std::{
 	cell::RefCell,
 	collections::{HashMap, HashSet, VecDeque},
 	future::Future,
+	marker::PhantomData,
 	pin::Pin,
 	rc::Rc,
 	sync::Arc,
@@ -15,7 +16,7 @@ use math::{Base as _, Vector2};
 use utils::{r#async::FusedFuture, sync::Mutex, RGBA};
 
 use super::{
-	context::{Context, ElementContext, ElementSlot, UiFuture},
+	context::{Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
 	element::{ElementHandle, Id},
 	flow::Size,
 	layout_elements,
@@ -112,7 +113,17 @@ impl RetainedTree {
 		}
 
 		self.element_indices.insert(id, self.elements.len());
-		self.elements.push(IdedElement { id, element });
+		let path = if path_string.is_empty() {
+			Vec::new()
+		} else {
+			path_string.split('/').map(ToOwned::to_owned).collect()
+		};
+
+		self.elements.push(IdedElement {
+			id,
+			element,
+			path: path.clone(),
+		});
 
 		if let Some(parent) = parent {
 			if !self.relations.iter().any(|relation| *relation == (parent, id)) {
@@ -120,18 +131,43 @@ impl RetainedTree {
 			}
 		}
 
-		let path = if path_string.is_empty() {
-			Vec::new()
-		} else {
-			path_string.split('/').map(ToOwned::to_owned).collect()
-		};
-
 		(id, path)
 	}
 
 	fn element_mut(&mut self, id: Id) -> Option<&mut IdedElement> {
 		let index = *self.element_indices.get(&id)?;
 		self.elements.get_mut(index)
+	}
+
+	fn remove_scope(&mut self, scope: &[String]) -> Vec<Id> {
+		if scope.is_empty() {
+			return Vec::new();
+		}
+
+		let mut removed = HashSet::new();
+		self.elements.retain(|element| {
+			let should_remove = element.path.starts_with(scope);
+			if should_remove {
+				removed.insert(element.id);
+			}
+			!should_remove
+		});
+
+		if removed.is_empty() {
+			return Vec::new();
+		}
+
+		self.relations
+			.retain(|(parent, child)| !removed.contains(parent) && !removed.contains(child));
+		self.rebuild_element_indices();
+		removed.into_iter().collect()
+	}
+
+	fn rebuild_element_indices(&mut self) {
+		self.element_indices.clear();
+		for (index, element) in self.elements.iter().enumerate() {
+			self.element_indices.insert(element.id, index);
+		}
 	}
 }
 
@@ -232,6 +268,25 @@ impl ElementContext for ElementSlot<'_> {
 		let future = component(ctx);
 		Runtime::replace_task_future(runtime, task_id, future);
 	}
+
+	fn mount<F, T>(self, component: F) -> MountedComponentFuture<F, T>
+	where
+		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, T> + 'static,
+	{
+		MountedComponentFuture {
+			component: Some(component),
+			future: None,
+			runtime: Rc::clone(&self.parent.runtime),
+			tree: Rc::clone(&self.parent.tree),
+			parent: self.parent.id,
+			parent_path: self.parent.path.clone(),
+			name: self.name,
+			task_id: self.parent.task_id,
+			scope: None,
+			complete: false,
+			output: PhantomData,
+		}
+	}
 }
 
 impl super::context::ContainerContext for EvaluationContext {
@@ -243,6 +298,113 @@ impl super::context::ContainerContext for EvaluationContext {
 			kind: event,
 			complete: false,
 		}
+	}
+}
+
+type BoxedMountedUiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
+
+pub struct MountedComponentFuture<F, T> {
+	component: Option<F>,
+	future: Option<BoxedMountedUiFuture<T>>,
+	runtime: Rc<RefCell<Runtime>>,
+	tree: Rc<RefCell<RetainedTree>>,
+	parent: Id,
+	parent_path: Vec<String>,
+	name: &'static str,
+	task_id: TaskId,
+	scope: Option<Vec<String>>,
+	complete: bool,
+	output: PhantomData<T>,
+}
+
+impl<F, T> Unpin for MountedComponentFuture<F, T> {}
+
+impl<F, T> MountedComponentFuture<F, T> {
+	fn cleanup_scope(&mut self) {
+		let Some(scope) = self.scope.take() else {
+			return;
+		};
+
+		let removed = self.tree.borrow_mut().remove_scope(&scope);
+		if !removed.is_empty() {
+			self.runtime.borrow_mut().remove_events_for_targets(&removed);
+		}
+	}
+}
+
+impl<F, T> MountedComponentFuture<F, T>
+where
+	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, T> + 'static,
+{
+	fn start(&mut self) {
+		if self.future.is_some() {
+			return;
+		}
+
+		let Some(component) = self.component.take() else {
+			return;
+		};
+
+		let scope = self.tree.borrow_mut().scope_path(&self.parent_path, self.name);
+		let ctx = EvaluationContext {
+			id: self.parent,
+			parent: Some(self.parent),
+			path: scope.clone(),
+			runtime: Rc::clone(&self.runtime),
+			tree: Rc::clone(&self.tree),
+			task_id: self.task_id,
+		};
+
+		let ctx = Box::leak(Box::new(ctx));
+		let future = component(ctx);
+		self.scope = Some(scope);
+		self.future = Some(future);
+	}
+}
+
+impl<F, T> Future for MountedComponentFuture<F, T>
+where
+	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, T> + 'static,
+{
+	type Output = T;
+
+	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+		if self.complete {
+			return Poll::Pending;
+		}
+
+		self.start();
+
+		let Some(future) = self.future.as_mut() else {
+			return Poll::Pending;
+		};
+
+		match future.as_mut().poll(cx) {
+			Poll::Ready(output) => {
+				self.complete = true;
+				self.future = None;
+				self.cleanup_scope();
+				Poll::Ready(output)
+			}
+			Poll::Pending => Poll::Pending,
+		}
+	}
+}
+
+impl<F, T> Drop for MountedComponentFuture<F, T> {
+	fn drop(&mut self) {
+		if !self.complete {
+			self.cleanup_scope();
+		}
+	}
+}
+
+impl<F, T> FusedFuture for MountedComponentFuture<F, T>
+where
+	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, T> + 'static,
+{
+	fn is_terminated(&self) -> bool {
+		self.complete
 	}
 }
 
@@ -728,6 +890,16 @@ impl Runtime {
 		let index = inbox.iter().position(|e| e.target == target && e.kind == kind)?;
 		inbox.remove(index)
 	}
+
+	fn remove_events_for_targets(&mut self, targets: &[Id]) {
+		self.event_waiters
+			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
+
+		for task in &mut self.tasks {
+			task.inbox
+				.retain(|event| !targets.iter().any(|target| *target == event.target));
+		}
+	}
 }
 
 /// The `Render` struct preserves the visual data derived from a snapshot so UI primitives can be submitted to the renderer.
@@ -774,7 +946,7 @@ pub struct UiEvent {
 mod tests {
 	use std::sync::{
 		atomic::{AtomicUsize, Ordering},
-		Arc,
+		Arc, Mutex as StdMutex,
 	};
 	use std::time::Duration;
 
@@ -905,6 +1077,179 @@ mod tests {
 			})
 		});
 
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn awaited_modal_blocks_caller_until_component_returns_value() {
+		let frame_allocator = bumpalo::Bump::new();
+		let result = Arc::new(StdMutex::new(None));
+		let result_for_task = Arc::clone(&result);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let result = Arc::clone(&result_for_task);
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				let value = frame
+					.element("modal")
+					.mount(|ctx| {
+						Box::pin(async move {
+							let mut button = ctx.element("button").container(Container::default());
+							button.on(Events::Actuated).await;
+							42
+						})
+					})
+					.await;
+				*result.lock().unwrap() = Some(value);
+			})
+		});
+
+		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(first.elements.len(), 2);
+		assert_eq!(*result.lock().unwrap(), None);
+
+		engine.set_cursor_position(Vector2::zero());
+		engine.update_click_state(true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(*result.lock().unwrap(), Some(42));
+	}
+
+	#[test]
+	fn awaited_modal_subtree_is_removed_after_component_returns() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame
+					.element("modal")
+					.mount(|ctx| {
+						Box::pin(async move {
+							let mut button = ctx.element("button").container(Container::default());
+							button.on(Events::Actuated).await;
+						})
+					})
+					.await;
+			})
+		});
+
+		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(first.elements.len(), 2);
+
+		engine.set_cursor_position(Vector2::zero());
+		engine.update_click_state(true);
+		let during_close = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(during_close.elements.len(), 2);
+
+		let after_close = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(after_close.elements.len(), 1);
+	}
+
+	#[test]
+	fn dropping_pending_awaited_modal_removes_its_subtree() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				let mut modal = frame.element("modal").mount(|ctx| {
+					Box::pin(async move {
+						let mut button = ctx.element("button").container(Container::default());
+						button.on(Events::Actuated).await;
+					})
+				});
+
+				utils::r#async::select! {
+					_ = modal => {}
+					_ = ctx.render() => {}
+				}
+			})
+		});
+
+		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(first.elements.len(), 2);
+
+		let after_drop = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(after_drop.elements.len(), 1);
+	}
+
+	#[test]
+	fn reopening_awaited_modal_reuses_stable_ids() {
+		let frame_allocator = bumpalo::Bump::new();
+		let ids = Arc::new(StdMutex::new(Vec::new()));
+		let ids_for_task = Arc::clone(&ids);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let ids = Arc::clone(&ids_for_task);
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				for _ in 0..2 {
+					let ids = Arc::clone(&ids);
+					frame
+						.element("modal")
+						.mount(move |ctx| {
+							let ids = Arc::clone(&ids);
+							Box::pin(async move {
+								let mut button = ctx.element("button").container(Container::default());
+								ids.lock().unwrap().push(button.id());
+								button.on(Events::Actuated).await;
+							})
+						})
+						.await;
+				}
+			})
+		});
+
+		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(first.elements.len(), 2);
+
+		engine.set_cursor_position(Vector2::zero());
+		engine.update_click_state(true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(second.elements.len(), 2);
+
+		let ids = ids.lock().unwrap();
+		assert_eq!(ids.len(), 2);
+		assert_eq!(ids[0], ids[1]);
+	}
+
+	#[test]
+	fn backdrop_style_modal_receives_actuated_event() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame
+					.element("modal")
+					.mount(move |ctx| {
+						let hits = Arc::clone(&hits);
+						Box::pin(async move {
+							let mut backdrop = ctx.element("backdrop").container(Container::default());
+							backdrop.on(Events::Actuated).await;
+							hits.fetch_add(1, Ordering::SeqCst);
+						})
+					})
+					.await;
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.set_cursor_position(Vector2::zero());
+		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(hits.load(Ordering::SeqCst), 1);

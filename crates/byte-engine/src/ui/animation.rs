@@ -9,6 +9,172 @@ pub enum Curves {
 	Linear,
 }
 
+type EaseFunction = fn(f32) -> f32;
+
+fn capped_frame_duration(dt: Duration) -> Duration {
+	Duration::from_secs_f32(dt.as_secs_f32().min(MAX_STEP))
+}
+
+fn ease_in_curve(t: f32) -> f32 {
+	let t = t.clamp(0.0, 1.0);
+	t * t
+}
+
+fn ease_out_curve(t: f32) -> f32 {
+	let t = t.clamp(0.0, 1.0);
+	1.0 - (1.0 - t) * (1.0 - t)
+}
+
+fn ease_out_cubic_curve(t: f32) -> f32 {
+	let t = t.clamp(0.0, 1.0);
+	1.0 - (1.0 - t).powi(3)
+}
+
+fn ease_out_quart_curve(t: f32) -> f32 {
+	let t = t.clamp(0.0, 1.0);
+	1.0 - (1.0 - t).powi(4)
+}
+
+fn emphasized_out_curve(t: f32) -> f32 {
+	let t = t.clamp(0.0, 1.0);
+	1.0 - (1.0 - t).powi(5)
+}
+
+fn ease_in_out_curve(t: f32) -> f32 {
+	let t = t.clamp(0.0, 1.0);
+	if t < 0.5 {
+		2.0 * t * t
+	} else {
+		1.0 - (-2.0 * t + 2.0).powi(2) * 0.5
+	}
+}
+
+pub trait AnimationDriver {
+	fn value(&self) -> f32;
+	fn advance(&mut self, dt: Duration) -> f32;
+	fn is_complete(&self) -> bool;
+	fn finish(&mut self) -> f32;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Easing {
+	elapsed: f32,
+	duration: f32,
+	curve: EaseFunction,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BackOut {
+	elapsed: f32,
+	duration: f32,
+	overshoot: f32,
+}
+
+pub fn ease_in(duration: f32) -> Easing {
+	Easing::new(duration, ease_in_curve)
+}
+
+pub fn ease_out(duration: f32) -> Easing {
+	Easing::new(duration, ease_out_curve)
+}
+
+pub fn ease_out_cubic(duration: f32) -> Easing {
+	Easing::new(duration, ease_out_cubic_curve)
+}
+
+pub fn ease_out_quart(duration: f32) -> Easing {
+	Easing::new(duration, ease_out_quart_curve)
+}
+
+pub fn emphasized_out(duration: f32) -> Easing {
+	Easing::new(duration, emphasized_out_curve)
+}
+
+pub fn ease_in_out(duration: f32) -> Easing {
+	Easing::new(duration, ease_in_out_curve)
+}
+
+pub fn back_out(duration: f32, overshoot: f32) -> BackOut {
+	BackOut::new(duration, overshoot)
+}
+
+impl Easing {
+	fn new(duration: f32, curve: EaseFunction) -> Self {
+		Self {
+			elapsed: 0.0,
+			duration: duration.max(0.0),
+			curve,
+		}
+	}
+
+	fn progress(&self) -> f32 {
+		if self.duration == 0.0 {
+			1.0
+		} else {
+			(self.elapsed / self.duration).clamp(0.0, 1.0)
+		}
+	}
+}
+
+impl BackOut {
+	fn new(duration: f32, overshoot: f32) -> Self {
+		Self {
+			elapsed: 0.0,
+			duration: duration.max(0.0),
+			overshoot: overshoot.max(0.0),
+		}
+	}
+
+	fn progress(&self) -> f32 {
+		if self.duration == 0.0 {
+			1.0
+		} else {
+			(self.elapsed / self.duration).clamp(0.0, 1.0)
+		}
+	}
+}
+
+impl AnimationDriver for Easing {
+	fn value(&self) -> f32 {
+		(self.curve)(self.progress())
+	}
+
+	fn advance(&mut self, dt: Duration) -> f32 {
+		self.elapsed = (self.elapsed + dt.as_secs_f32()).min(self.duration);
+		self.value()
+	}
+
+	fn is_complete(&self) -> bool {
+		self.elapsed >= self.duration
+	}
+
+	fn finish(&mut self) -> f32 {
+		self.elapsed = self.duration;
+		self.value()
+	}
+}
+
+impl AnimationDriver for BackOut {
+	fn value(&self) -> f32 {
+		let t = self.progress() - 1.0;
+		1.0 + t * t * ((self.overshoot + 1.0) * t + self.overshoot)
+	}
+
+	fn advance(&mut self, dt: Duration) -> f32 {
+		self.elapsed = (self.elapsed + dt.as_secs_f32()).min(self.duration);
+		self.value()
+	}
+
+	fn is_complete(&self) -> bool {
+		self.elapsed >= self.duration
+	}
+
+	fn finish(&mut self) -> f32 {
+		self.elapsed = self.duration;
+		self.value()
+	}
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Spring {
 	value: f32,
@@ -74,22 +240,41 @@ impl Spring {
 	}
 }
 
-pub async fn animate<C: 'static, F>(target: &mut EvaluationContext<C>, mut spring: Spring, mut apply: F)
-where
-	F: FnMut(&mut EvaluationContext<C>, f32),
-{
-	apply(target, spring.value());
-
-	let mut last_frame = Instant::now();
-	while !spring.is_settled() {
-		target.render().await;
-		let now = Instant::now();
-		spring.step(now.duration_since(last_frame));
-		last_frame = now;
-		apply(target, spring.value());
+impl AnimationDriver for Spring {
+	fn value(&self) -> f32 {
+		Spring::value(self)
 	}
 
-	apply(target, spring.finish());
+	fn advance(&mut self, dt: Duration) -> f32 {
+		Spring::step(self, dt)
+	}
+
+	fn is_complete(&self) -> bool {
+		Spring::is_settled(self)
+	}
+
+	fn finish(&mut self) -> f32 {
+		Spring::finish(self)
+	}
+}
+
+pub async fn animate<C: 'static, A, F>(target: &mut EvaluationContext<C>, mut animation: A, mut apply: F)
+where
+	A: AnimationDriver,
+	F: FnMut(&mut EvaluationContext<C>, f32),
+{
+	apply(target, animation.value());
+
+	let mut last_frame = Instant::now();
+	while !animation.is_complete() {
+		target.render().await;
+		let now = Instant::now();
+		animation.advance(capped_frame_duration(now.duration_since(last_frame)));
+		last_frame = now;
+		apply(target, animation.value());
+	}
+
+	apply(target, animation.finish());
 }
 
 pub struct Animation<V: Interpolate> {
@@ -207,5 +392,85 @@ mod tests {
 		capped_step.step(Duration::from_secs_f32(MAX_STEP));
 
 		assert_eq!(large_step.value(), capped_step.value());
+	}
+
+	#[test]
+	fn animation_frame_duration_is_capped_for_all_drivers() {
+		assert!((capped_frame_duration(Duration::from_secs(1)).as_secs_f32() - MAX_STEP).abs() < f32::EPSILON);
+		assert!((capped_frame_duration(Duration::from_millis(16)).as_secs_f32() - 0.016).abs() < f32::EPSILON);
+	}
+
+	#[test]
+	fn easing_drivers_preserve_endpoints_and_handle_zero_duration() {
+		let mut ease_in_driver = ease_in(1.0);
+		let mut ease_out_driver = ease_out(1.0);
+		let mut ease_in_out_driver = ease_in_out(1.0);
+		let mut emphasized_out_driver = emphasized_out(1.0);
+		let mut back_out_driver = back_out(1.0, 1.70158);
+
+		assert_eq!(ease_in_driver.value(), 0.0);
+		assert_eq!(ease_out_driver.value(), 0.0);
+		assert_eq!(ease_in_out_driver.value(), 0.0);
+		assert_eq!(emphasized_out_driver.value(), 0.0);
+		assert_eq!(back_out_driver.value(), 0.0);
+
+		assert_eq!(ease_in_driver.finish(), 1.0);
+		assert_eq!(ease_out_driver.finish(), 1.0);
+		assert_eq!(ease_in_out_driver.finish(), 1.0);
+		assert_eq!(emphasized_out_driver.finish(), 1.0);
+		assert_eq!(back_out_driver.finish(), 1.0);
+
+		assert_eq!(ease_in(-1.0).value(), 1.0);
+	}
+
+	#[test]
+	fn easing_drivers_have_expected_midpoint_shape() {
+		let mut ease_in_driver = ease_in(1.0);
+		let mut ease_out_driver = ease_out(1.0);
+		let mut ease_in_out_driver = ease_in_out(1.0);
+
+		ease_in_driver.advance(Duration::from_millis(500));
+		ease_out_driver.advance(Duration::from_millis(500));
+		ease_in_out_driver.advance(Duration::from_millis(500));
+
+		assert!(ease_in_driver.value() < 0.5);
+		assert!(ease_out_driver.value() > 0.5);
+		assert_eq!(ease_in_out_driver.value(), 0.5);
+
+		let mut ease_in_out_first_half = ease_in_out(1.0);
+		let mut ease_in_out_second_half = ease_in_out(1.0);
+		ease_in_out_first_half.advance(Duration::from_millis(250));
+		ease_in_out_second_half.advance(Duration::from_millis(750));
+
+		assert!(ease_in_out_first_half.value() < 0.25);
+		assert!(ease_in_out_second_half.value() > 0.75);
+	}
+
+	#[test]
+	fn emphasized_easing_moves_more_decisively_than_quadratic_ease_out() {
+		let mut quadratic = ease_out(1.0);
+		let mut cubic = ease_out_cubic(1.0);
+		let mut quart = ease_out_quart(1.0);
+		let mut emphasized = emphasized_out(1.0);
+
+		quadratic.advance(Duration::from_millis(250));
+		cubic.advance(Duration::from_millis(250));
+		quart.advance(Duration::from_millis(250));
+		emphasized.advance(Duration::from_millis(250));
+
+		assert!(cubic.value() > quadratic.value());
+		assert!(quart.value() > cubic.value());
+		assert!(emphasized.value() > quart.value());
+		assert!(emphasized.value() < 1.0);
+	}
+
+	#[test]
+	fn back_out_overshoots_before_settling() {
+		let mut driver = back_out(1.0, 1.70158);
+
+		driver.advance(Duration::from_millis(600));
+		assert!(driver.value() > 1.0);
+
+		assert_eq!(driver.finish(), 1.0);
 	}
 }

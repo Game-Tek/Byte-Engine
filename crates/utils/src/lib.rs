@@ -202,6 +202,19 @@ impl std::ops::Mul for RGBA {
 	}
 }
 
+impl std::ops::Mul<f32> for RGBA {
+	type Output = Self;
+
+	fn mul(self, rhs: f32) -> Self::Output {
+		Self {
+			r: self.r * rhs,
+			g: self.g * rhs,
+			b: self.b * rhs,
+			a: self.a * rhs,
+		}
+	}
+}
+
 impl std::hash::Hash for RGBA {
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
 		self.r.to_bits().hash(state);

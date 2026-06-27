@@ -38,6 +38,7 @@
 - Replace UI layout relation and element scans with an ID index and contiguous parent-to-children adjacency storage.
 - Replace hit-test `Vec<Vec<usize>>` buckets with contiguous candidate storage plus per-cell ranges.
 - Return references or compact handles for UI primitive shapes instead of cloning them.
+- Drive multiple animations concurrently using a single animation driver.
 
 ## Physics
 

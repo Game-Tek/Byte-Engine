@@ -20,11 +20,16 @@ pub mod primitive;
 pub mod render_pass;
 pub mod style;
 pub mod timer;
+pub mod transform;
 
-pub use animation::{animate, spring, Spring};
+pub use animation::{
+	animate, back_out, ease_in, ease_in_out, ease_out, ease_out_cubic, ease_out_quart, emphasized_out, spring, AnimationDriver,
+	BackOut, Easing, Spring,
+};
 pub use components::container::Container;
 pub use components::text::Text;
 pub use element::Element;
 pub use layout::Depth;
 pub use primitive::Primitive;
 pub use timer::{seconds, wait, WaitFuture};
+pub use transform::Transform;

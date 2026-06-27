@@ -144,6 +144,151 @@ impl RetainedTree {
 	}
 }
 
+#[derive(Clone, Copy)]
+struct Affine2 {
+	a: f32,
+	b: f32,
+	c: f32,
+	d: f32,
+	tx: f32,
+	ty: f32,
+}
+
+impl Affine2 {
+	fn identity() -> Self {
+		Self {
+			a: 1.0,
+			b: 0.0,
+			c: 0.0,
+			d: 1.0,
+			tx: 0.0,
+			ty: 0.0,
+		}
+	}
+
+	fn from_transform(transform: Transform, element: &LayoutElement) -> Self {
+		let center_x = element.position.x() as f32 + element.size.x() as f32 * 0.5;
+		let center_y = element.position.y() as f32 + element.size.y() as f32 * 0.5;
+		let scale_x = sanitize_scale(transform.scale_x);
+		let scale_y = sanitize_scale(transform.scale_y);
+
+		Self {
+			a: scale_x,
+			b: 0.0,
+			c: 0.0,
+			d: scale_y,
+			tx: center_x + sanitize_offset(transform.translate_x) - center_x * scale_x,
+			ty: center_y + sanitize_offset(transform.translate_y) - center_y * scale_y,
+		}
+	}
+
+	fn compose(self, rhs: Self) -> Self {
+		Self {
+			a: self.a * rhs.a + self.c * rhs.b,
+			b: self.b * rhs.a + self.d * rhs.b,
+			c: self.a * rhs.c + self.c * rhs.d,
+			d: self.b * rhs.c + self.d * rhs.d,
+			tx: self.a * rhs.tx + self.c * rhs.ty + self.tx,
+			ty: self.b * rhs.tx + self.d * rhs.ty + self.ty,
+		}
+	}
+
+	fn transform_point(self, x: f32, y: f32) -> (f32, f32) {
+		(self.a * x + self.c * y + self.tx, self.b * x + self.d * y + self.ty)
+	}
+
+	fn transform_rect(self, element: &LayoutElement) -> (Location3, Size) {
+		let left = element.position.x() as f32;
+		let top = element.position.y() as f32;
+		let right = left + element.size.x() as f32;
+		let bottom = top + element.size.y() as f32;
+
+		let corners = [
+			self.transform_point(left, top),
+			self.transform_point(right, top),
+			self.transform_point(right, bottom),
+			self.transform_point(left, bottom),
+		];
+
+		let mut min_x = f32::INFINITY;
+		let mut min_y = f32::INFINITY;
+		let mut max_x = f32::NEG_INFINITY;
+		let mut max_y = f32::NEG_INFINITY;
+
+		for (x, y) in corners {
+			min_x = min_x.min(x);
+			min_y = min_y.min(y);
+			max_x = max_x.max(x);
+			max_y = max_y.max(y);
+		}
+
+		let x = clamp_to_u32(min_x.round());
+		let y = clamp_to_u32(min_y.round());
+		let width = clamp_to_u32((max_x - min_x).round());
+		let height = clamp_to_u32((max_y - min_y).round());
+
+		(Location3::new(x, y, element.position.z()), Size::new(width, height))
+	}
+}
+
+fn sanitize_offset(value: f32) -> f32 {
+	if value.is_finite() {
+		value
+	} else {
+		0.0
+	}
+}
+
+fn sanitize_scale(value: f32) -> f32 {
+	if value.is_finite() {
+		value.max(0.0)
+	} else {
+		1.0
+	}
+}
+
+fn clamp_to_u32(value: f32) -> u32 {
+	if !value.is_finite() || value <= 0.0 {
+		0
+	} else if value >= u32::MAX as f32 {
+		u32::MAX
+	} else {
+		value as u32
+	}
+}
+
+fn apply_visual_transforms<'a>(
+	elements: &mut [LayoutElement],
+	relations: &[(Id, Id)],
+	tree: &RetainedTree,
+	frame_allocator: &'a bumpalo::Bump,
+) {
+	let mut resolved = Vec::with_capacity_in(elements.len(), frame_allocator);
+
+	for element in elements {
+		let parent_transform = relations
+			.iter()
+			.find_map(|(parent, child)| (*child == element.id).then_some(*parent))
+			.and_then(|parent| {
+				resolved
+					.iter()
+					.find_map(|(id, transform)| (*id == parent).then_some(*transform))
+			})
+			.unwrap_or_else(Affine2::identity);
+
+		let local_transform = tree
+			.element(element.id)
+			.map(|retained_element| *retained_element.element.primitive.transform())
+			.unwrap_or_default();
+		let transform = parent_transform.compose(Affine2::from_transform(local_transform, element));
+		let (position, size) = transform.transform_rect(element);
+
+		element.position = position;
+		element.size = size;
+		resolved.push((element.id, transform));
+	}
+}
+
 /// Context owned by a mounted async UI task.
 pub struct EvaluationContext<C = ()> {
 	id: Id,
@@ -602,16 +747,16 @@ impl<C: 'static> Engine<C> {
 	}
 
 	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
-		let (elements, relations) = {
+		let (mut elements, relations) = {
 			let tree = Rc::clone(&self.runtime.borrow().tree);
 			let tree = tree.borrow();
 			let mut relations = Vec::with_capacity_in(tree.relations.len(), frame_allocator);
 			relations.extend_from_slice(&tree.relations);
 
-			(
-				layout_elements(&tree.elements, &tree.relations, size, &mut self.text_system, frame_allocator),
-				relations,
-			)
+			let mut elements = layout_elements(&tree.elements, &tree.relations, size, &mut self.text_system, frame_allocator);
+			apply_visual_transforms(&mut elements, &tree.relations, &tree, frame_allocator);
+
+			(elements, relations)
 		};
 
 		{
@@ -1365,6 +1510,90 @@ mod tests {
 	}
 
 	#[test]
+	fn render_uses_container_transform_after_layout() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("frame").container(
+					Container::default()
+						.width(20.into())
+						.height(10.into())
+						.transform(Transform::identity().translate_y(6.0).scale(0.5)),
+				);
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let frame = render.elements().next().unwrap();
+
+		assert_eq!(frame.position, Location3::new(5, 9, 0));
+		assert_eq!(frame.size, Size::new(10, 5));
+	}
+
+	#[test]
+	fn child_visual_bounds_inherit_parent_transform() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(
+					Container::default()
+						.width(100.into())
+						.height(100.into())
+						.flow(flow::row)
+						.transform(Transform::identity().translate_y(10.0).scale(0.5)),
+				);
+				frame
+					.element("child")
+					.container(Container::default().width(20.into()).height(10.into()));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let child = render.elements().find(|element| element.id == 2).unwrap();
+
+		assert_eq!(child.position, Location3::new(25, 35, 1));
+		assert_eq!(child.size, Size::new(10, 5));
+	}
+
+	#[test]
+	fn hit_testing_uses_transformed_visual_bounds() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				let mut button = ctx.element("button").container(
+					Container::default()
+						.width(20.into())
+						.height(20.into())
+						.transform(Transform::identity().translate(40.0, 40.0)),
+				);
+
+				loop {
+					button.on(Events::Actuated).await;
+					hits.fetch_add(1, Ordering::SeqCst);
+				}
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.set_cursor_position(Vector2::new(0.0, 0.0));
+		engine.update_click_state(true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
 	fn update_container_changes_later_layout_and_render_style() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -1510,10 +1739,10 @@ use utils::{r#async::FusedFuture, sync::Mutex, RGBA};
 use super::{
 	context::{Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
 	element::{ElementHandle, Id},
-	flow::Size,
+	flow::{Location3, Size},
 	layout_elements,
 	snapshot::Snapshot,
-	ConcreteElement, IdedElement, RenderElement, RenderTextElement,
+	ConcreteElement, IdedElement, LayoutElement, RenderElement, RenderTextElement,
 };
 use crate::ui::{
 	components::shape::Shape,
@@ -1521,5 +1750,5 @@ use crate::ui::{
 	intersection::build_mouse_click_acceleration,
 	primitive::{Events, Primitive as _, Primitives, Shapes},
 	style::Color,
-	Container, Text,
+	Container, Text, Transform,
 };

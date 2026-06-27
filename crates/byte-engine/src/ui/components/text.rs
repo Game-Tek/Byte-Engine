@@ -1,10 +1,11 @@
-use crate::ui::style::ConcreteStyle;
+use crate::ui::{style::ConcreteStyle, Transform};
 
 /// The `Text` struct carries styled UI copy that participates in layout and rendering.
 pub struct Text {
 	pub(crate) content: String,
 	pub(crate) settings: TextSettings,
 	pub(crate) style: ConcreteStyle,
+	pub(crate) transform: Transform,
 }
 
 impl Text {
@@ -13,6 +14,7 @@ impl Text {
 			content: content.into(),
 			settings: TextSettings::default(),
 			style: ConcreteStyle::default(),
+			transform: Transform::default(),
 		}
 	}
 
@@ -26,8 +28,17 @@ impl Text {
 		self
 	}
 
+	pub fn transform(mut self, transform: impl Into<Transform>) -> Self {
+		self.transform = transform.into();
+		self
+	}
+
 	pub fn set_style(&mut self, style: impl Into<ConcreteStyle>) {
 		self.style = style.into();
+	}
+
+	pub fn set_transform(&mut self, transform: impl Into<Transform>) {
+		self.transform = transform.into();
 	}
 
 	pub fn content(&self) -> &str {
@@ -40,6 +51,10 @@ impl Text {
 
 	pub fn style_ref(&self) -> &ConcreteStyle {
 		&self.style
+	}
+
+	pub fn transform_ref(&self) -> &Transform {
+		&self.transform
 	}
 }
 

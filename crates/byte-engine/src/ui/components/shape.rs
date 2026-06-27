@@ -1,9 +1,10 @@
-use crate::ui::{components::container::Container, primitive::Shapes, style::ConcreteStyle};
+use crate::ui::{components::container::Container, primitive::Shapes, style::ConcreteStyle, Transform};
 
 pub struct Shape {
 	pub(crate) shape: Shapes,
 	pub(crate) settings: Container,
 	pub(crate) style: ConcreteStyle,
+	pub(crate) transform: Transform,
 }
 
 impl Shape {
@@ -15,6 +16,7 @@ impl Shape {
 			},
 			settings,
 			style: ConcreteStyle::default(),
+			transform: Transform::default(),
 		}
 	}
 
@@ -23,8 +25,17 @@ impl Shape {
 		self
 	}
 
+	pub fn transform(mut self, transform: impl Into<Transform>) -> Self {
+		self.transform = transform.into();
+		self
+	}
+
 	pub fn set_style(&mut self, style: impl Into<ConcreteStyle>) {
 		self.style = style.into();
+	}
+
+	pub fn set_transform(&mut self, transform: impl Into<Transform>) {
+		self.transform = transform.into();
 	}
 
 	pub fn settings(&self) -> &Container {
@@ -33,5 +44,9 @@ impl Shape {
 
 	pub fn style_ref(&self) -> &ConcreteStyle {
 		&self.style
+	}
+
+	pub fn transform_ref(&self) -> &Transform {
+		&self.transform
 	}
 }

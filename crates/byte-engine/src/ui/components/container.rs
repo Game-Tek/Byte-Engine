@@ -90,6 +90,10 @@ impl Container {
 		}
 	}
 
+	pub fn set_style(&mut self, style: impl Into<ConcreteStyle>) {
+		self.style = style.into();
+	}
+
 	pub fn style_ref(&self) -> &ConcreteStyle {
 		&self.style
 	}

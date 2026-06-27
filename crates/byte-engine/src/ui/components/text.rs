@@ -26,6 +26,10 @@ impl Text {
 		self
 	}
 
+	pub fn set_style(&mut self, style: impl Into<ConcreteStyle>) {
+		self.style = style.into();
+	}
+
 	pub fn content(&self) -> &str {
 		&self.content
 	}

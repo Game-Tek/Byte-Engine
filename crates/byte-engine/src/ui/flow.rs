@@ -203,7 +203,7 @@ pub fn centered_row(input: FlowInput) -> FlowOutput {
 		input.cursor.1 + ((input.parent_size.1 as i32 - input.child_size.1 as i32) / 2).max(0),
 	);
 
-	FlowOutput::new(offset, Offset(offset.0 + input.child_size.0 as i32, offset.1))
+	FlowOutput::new(offset, Offset(input.cursor.0 + input.child_size.0 as i32, input.cursor.1))
 }
 
 pub fn centered_column(input: FlowInput) -> FlowOutput {

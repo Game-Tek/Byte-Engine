@@ -1,46 +1,15 @@
 //! UI retained tree evaluation, interaction state, and render snapshots.
 
-use std::{
-	boxed::Box,
-	cell::RefCell,
-	collections::{HashMap, HashSet, VecDeque},
-	future::Future,
-	marker::PhantomData,
-	pin::Pin,
-	rc::Rc,
-	sync::Arc,
-	task::{Context as TaskContext, Poll, Wake, Waker},
-};
-
-use math::{Base as _, Vector2};
-use utils::{r#async::FusedFuture, sync::Mutex, RGBA};
-
-use super::{
-	context::{Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
-	element::{ElementHandle, Id},
-	flow::Size,
-	layout_elements,
-	snapshot::Snapshot,
-	ConcreteElement, IdedElement, RenderElement, RenderTextElement,
-};
-use crate::ui::{
-	components::shape::Shape,
-	font::TextSystem,
-	intersection::build_mouse_click_acceleration,
-	primitive::{Events, Primitive as _, Primitives, Shapes},
-	style::Color,
-	Container, Text,
-};
-
 /// The [`Engine`] struct owns UI evaluation state, text shaping, and pointer
 /// interaction across viewports.
-pub struct Engine {
+pub struct Engine<C = ()> {
 	viewports: Vec<VirtualViewport>,
 	state: Rc<RefCell<EngineState>>,
 	cursor_position: Vector2,
 	is_clicking: bool,
 	clicks: Vec<bool>,
 	text_system: TextSystem,
+	ctx: Rc<C>,
 	runtime: Rc<RefCell<Runtime>>,
 }
 
@@ -176,21 +145,23 @@ impl RetainedTree {
 }
 
 /// Context owned by a mounted async UI task.
-pub struct EvaluationContext {
+pub struct EvaluationContext<C = ()> {
 	id: Id,
 	parent: Option<Id>,
 	path: Vec<String>,
+	ctx: Rc<C>,
 	runtime: Rc<RefCell<Runtime>>,
 	tree: Rc<RefCell<RetainedTree>>,
 	task_id: TaskId,
 }
 
-impl EvaluationContext {
-	fn new_root(runtime: Rc<RefCell<Runtime>>, tree: Rc<RefCell<RetainedTree>>, task_id: TaskId) -> Self {
+impl<C> EvaluationContext<C> {
+	fn new_root(ctx: Rc<C>, runtime: Rc<RefCell<Runtime>>, tree: Rc<RefCell<RetainedTree>>, task_id: TaskId) -> Self {
 		Self {
 			id: Id::new(1).unwrap(),
 			parent: None,
 			path: Vec::new(),
+			ctx,
 			runtime,
 			tree,
 			task_id,
@@ -198,6 +169,7 @@ impl EvaluationContext {
 	}
 
 	fn new_child(
+		ctx: Rc<C>,
 		runtime: Rc<RefCell<Runtime>>,
 		tree: Rc<RefCell<RetainedTree>>,
 		task_id: TaskId,
@@ -208,24 +180,75 @@ impl EvaluationContext {
 			id,
 			parent: Some(id),
 			path,
+			ctx,
 			runtime,
 			tree,
 			task_id,
 		}
 	}
 
-	fn add_element(&mut self, name: &'static str, element: ConcreteElement) -> EvaluationContext {
+	fn add_element(&mut self, name: &'static str, element: ConcreteElement) -> EvaluationContext<C> {
 		let (id, path) = self.tree.borrow_mut().add_element(self.parent, &self.path, name, element);
-		EvaluationContext::new_child(Rc::clone(&self.runtime), Rc::clone(&self.tree), self.task_id, id, path)
+		EvaluationContext::new_child(
+			Rc::clone(&self.ctx),
+			Rc::clone(&self.runtime),
+			Rc::clone(&self.tree),
+			self.task_id,
+			id,
+			path,
+		)
+	}
+
+	pub fn update_container(&mut self, update: impl FnOnce(&mut Container)) -> bool {
+		let mut tree = self.tree.borrow_mut();
+		let Some(element) = tree.element_mut(self.id) else {
+			return false;
+		};
+		let Primitives::Container(container) = &mut element.element.primitive else {
+			return false;
+		};
+
+		update(container);
+		true
+	}
+
+	pub fn update_text(&mut self, update: impl FnOnce(&mut Text)) -> bool {
+		let mut tree = self.tree.borrow_mut();
+		let Some(element) = tree.element_mut(self.id) else {
+			return false;
+		};
+		let Primitives::Text(text) = &mut element.element.primitive else {
+			return false;
+		};
+
+		update(text);
+		true
+	}
+
+	pub fn update_shape(&mut self, update: impl FnOnce(&mut Shape)) -> bool {
+		let mut tree = self.tree.borrow_mut();
+		let Some(element) = tree.element_mut(self.id) else {
+			return false;
+		};
+		let Primitives::Shape(shape) = &mut element.element.primitive else {
+			return false;
+		};
+
+		update(shape);
+		true
 	}
 }
 
-impl Context for EvaluationContext {
+impl<C: 'static> Context<C> for EvaluationContext<C> {
 	fn id(&self) -> Id {
 		self.id
 	}
 
-	fn element<'a>(&'a mut self, name: &'static str) -> ElementSlot<'a> {
+	fn ctx(&self) -> &C {
+		self.ctx.as_ref()
+	}
+
+	fn element<'a>(&'a mut self, name: &'static str) -> ElementSlot<'a, C> {
 		ElementSlot { parent: self, name }
 	}
 
@@ -238,22 +261,22 @@ impl Context for EvaluationContext {
 	}
 }
 
-impl ElementContext for ElementSlot<'_> {
-	fn container(self, element: Container) -> EvaluationContext {
+impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
+	fn container(self, element: Container) -> EvaluationContext<C> {
 		self.parent.add_element(self.name, ConcreteElement::container(element))
 	}
 
-	fn text(self, text: Text) -> EvaluationContext {
+	fn text(self, text: Text) -> EvaluationContext<C> {
 		self.parent.add_element(self.name, ConcreteElement::text(text))
 	}
 
-	fn shape(self, shape: Shape) -> EvaluationContext {
+	fn shape(self, shape: Shape) -> EvaluationContext<C> {
 		self.parent.add_element(self.name, ConcreteElement::shape(shape))
 	}
 
 	fn component<F>(self, component: F)
 	where
-		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> UiFuture<'ctx> + 'static,
+		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> UiFuture<'ctx> + 'static,
 	{
 		let runtime = Rc::clone(&self.parent.runtime);
 		let tree = Rc::clone(&self.parent.tree);
@@ -263,6 +286,7 @@ impl ElementContext for ElementSlot<'_> {
 			id: self.parent.id,
 			parent: Some(self.parent.id),
 			path,
+			ctx: Rc::clone(&self.parent.ctx),
 			runtime: Rc::clone(&runtime),
 			tree,
 			task_id,
@@ -273,13 +297,14 @@ impl ElementContext for ElementSlot<'_> {
 		Runtime::replace_task_future(runtime, task_id, future);
 	}
 
-	fn mount<F, T>(self, component: F) -> MountedComponentFuture<F, T>
+	fn mount<F, T>(self, component: F) -> MountedComponentFuture<F, T, C>
 	where
-		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, T> + 'static,
+		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> MountedUiFuture<'ctx, T> + 'static,
 	{
 		MountedComponentFuture {
 			component: Some(component),
 			future: None,
+			ctx: Rc::clone(&self.parent.ctx),
 			runtime: Rc::clone(&self.parent.runtime),
 			tree: Rc::clone(&self.parent.tree),
 			parent: self.parent.id,
@@ -293,7 +318,7 @@ impl ElementContext for ElementSlot<'_> {
 	}
 }
 
-impl super::context::ContainerContext for EvaluationContext {
+impl<C: 'static> super::context::ContainerContext<C> for EvaluationContext<C> {
 	fn on(&mut self, event: Events) -> EventFuture {
 		EventFuture {
 			runtime: Rc::clone(&self.runtime),
@@ -307,9 +332,10 @@ impl super::context::ContainerContext for EvaluationContext {
 
 type BoxedMountedUiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 
-pub struct MountedComponentFuture<F, T> {
+pub struct MountedComponentFuture<F, T, C = ()> {
 	component: Option<F>,
 	future: Option<BoxedMountedUiFuture<T>>,
+	ctx: Rc<C>,
 	runtime: Rc<RefCell<Runtime>>,
 	tree: Rc<RefCell<RetainedTree>>,
 	parent: Id,
@@ -321,9 +347,9 @@ pub struct MountedComponentFuture<F, T> {
 	output: PhantomData<T>,
 }
 
-impl<F, T> Unpin for MountedComponentFuture<F, T> {}
+impl<F, T, C> Unpin for MountedComponentFuture<F, T, C> {}
 
-impl<F, T> MountedComponentFuture<F, T> {
+impl<F, T, C> MountedComponentFuture<F, T, C> {
 	fn cleanup_scope(&mut self) {
 		let Some(scope) = self.scope.take() else {
 			return;
@@ -336,9 +362,10 @@ impl<F, T> MountedComponentFuture<F, T> {
 	}
 }
 
-impl<F, T> MountedComponentFuture<F, T>
+impl<F, T, C> MountedComponentFuture<F, T, C>
 where
-	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, T> + 'static,
+	C: 'static,
+	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> MountedUiFuture<'ctx, T> + 'static,
 {
 	fn start(&mut self) {
 		if self.future.is_some() {
@@ -354,6 +381,7 @@ where
 			id: self.parent,
 			parent: Some(self.parent),
 			path: scope.clone(),
+			ctx: Rc::clone(&self.ctx),
 			runtime: Rc::clone(&self.runtime),
 			tree: Rc::clone(&self.tree),
 			task_id: self.task_id,
@@ -366,9 +394,10 @@ where
 	}
 }
 
-impl<F, T> Future for MountedComponentFuture<F, T>
+impl<F, T, C> Future for MountedComponentFuture<F, T, C>
 where
-	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, T> + 'static,
+	C: 'static,
+	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> MountedUiFuture<'ctx, T> + 'static,
 {
 	type Output = T;
 
@@ -395,7 +424,7 @@ where
 	}
 }
 
-impl<F, T> Drop for MountedComponentFuture<F, T> {
+impl<F, T, C> Drop for MountedComponentFuture<F, T, C> {
 	fn drop(&mut self) {
 		if !self.complete {
 			self.cleanup_scope();
@@ -403,9 +432,10 @@ impl<F, T> Drop for MountedComponentFuture<F, T> {
 	}
 }
 
-impl<F, T> FusedFuture for MountedComponentFuture<F, T>
+impl<F, T, C> FusedFuture for MountedComponentFuture<F, T, C>
 where
-	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, T> + 'static,
+	C: 'static,
+	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> MountedUiFuture<'ctx, T> + 'static,
 {
 	fn is_terminated(&self) -> bool {
 		self.complete
@@ -512,14 +542,20 @@ impl EngineState {
 	}
 }
 
-impl Default for Engine {
+impl Default for Engine<()> {
 	fn default() -> Self {
 		Self::new()
 	}
 }
 
-impl Engine {
+impl Engine<()> {
 	pub fn new() -> Self {
+		Self::with_context(())
+	}
+}
+
+impl<C: 'static> Engine<C> {
+	pub fn with_context(ctx: C) -> Self {
 		Self {
 			viewports: Vec::new(),
 			state: Rc::new(RefCell::new(EngineState::new())),
@@ -527,8 +563,13 @@ impl Engine {
 			is_clicking: false,
 			clicks: Vec::new(),
 			text_system: TextSystem::new(),
+			ctx: Rc::new(ctx),
 			runtime: Rc::new(RefCell::new(Runtime::new())),
 		}
+	}
+
+	pub fn ctx(&self) -> &C {
+		self.ctx.as_ref()
 	}
 
 	pub(crate) fn add_viewport(&mut self, viewport: VirtualViewport) {
@@ -537,12 +578,12 @@ impl Engine {
 
 	pub fn mount<F>(&mut self, root: F)
 	where
-		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> UiFuture<'ctx> + 'static,
+		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> UiFuture<'ctx> + 'static,
 	{
 		let runtime = Rc::clone(&self.runtime);
 		let tree = Rc::clone(&runtime.borrow().tree);
 		let task_id = Runtime::spawn_placeholder(Rc::clone(&runtime));
-		let ctx = EvaluationContext::new_root(Rc::clone(&runtime), tree, task_id);
+		let ctx = EvaluationContext::new_root(Rc::clone(&self.ctx), Rc::clone(&runtime), tree, task_id);
 		let ctx = Box::leak(Box::new(ctx));
 		let future = root(ctx);
 		Runtime::replace_task_future(runtime, task_id, future);
@@ -916,9 +957,14 @@ mod tests {
 
 	use super::*;
 	use crate::ui::{
+		animate,
 		components::container::Container,
 		flow::{self, Location3},
-		layout::context::{ContainerContext, Context, ElementContext},
+		layout::{
+			context::{ContainerContext, Context, ElementContext},
+			Sizing,
+		},
+		spring,
 		style::ConcreteLayer,
 		Depth,
 	};
@@ -1046,6 +1092,64 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[derive(Clone)]
+	struct TestContext {
+		value: u32,
+	}
+
+	trait TestUiContext = Context<TestContext>;
+
+	#[test]
+	fn components_can_access_engine_context() {
+		let frame_allocator = bumpalo::Bump::new();
+		let seen = Arc::new(StdMutex::new(Vec::new()));
+		let seen_for_task = Arc::clone(&seen);
+		let mut engine = Engine::with_context(TestContext { value: 7 });
+
+		engine.mount(move |ctx| {
+			let seen = Arc::clone(&seen_for_task);
+			Box::pin(async move {
+				seen.lock().unwrap().push(ctx.ctx().value);
+
+				ctx.element("child")
+					.component(move |ctx: &mut EvaluationContext<TestContext>| {
+						let seen = Arc::clone(&seen);
+						Box::pin(async move {
+							seen.lock().unwrap().push(ctx.ctx().value + 1);
+						})
+					});
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(*seen.lock().unwrap(), vec![7, 8]);
+	}
+
+	#[test]
+	fn mounted_component_can_access_engine_context() {
+		async fn modal(ctx: &mut impl TestUiContext) -> u32 {
+			ctx.ctx().value
+		}
+
+		let frame_allocator = bumpalo::Bump::new();
+		let result = Arc::new(StdMutex::new(None));
+		let result_for_task = Arc::clone(&result);
+		let mut engine = Engine::with_context(TestContext { value: 11 });
+
+		engine.mount(move |ctx| {
+			let result = Arc::clone(&result_for_task);
+			Box::pin(async move {
+				let value = ctx.element("modal").mount(|ctx| Box::pin(modal(ctx))).await;
+				*result.lock().unwrap() = Some(value);
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(*result.lock().unwrap(), Some(11));
 	}
 
 	#[test]
@@ -1261,6 +1365,86 @@ mod tests {
 	}
 
 	#[test]
+	fn update_container_changes_later_layout_and_render_style() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx
+					.element("frame")
+					.container(Container::default().width(10.into()).height(10.into()));
+				frame.render().await;
+				assert!(frame.update_container(|container| {
+					container.width = Sizing::pixels(30);
+					container.set_style(ConcreteLayer::default().color(RGBA::new(0.4, 0.5, 0.6, 1.0).into()));
+				}));
+			})
+		});
+
+		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(first.elements[0].size, Size::new(10, 10));
+
+		let mut second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(second.elements[0].size, Size::new(30, 10));
+
+		let render = engine.render(&mut second);
+		assert_eq!(render.elements[0].color, RGBA::new(0.4, 0.5, 0.6, 1.0));
+	}
+
+	#[test]
+	fn update_text_changes_later_render_style() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut text = ctx.element("label").text(Text::new("Hello"));
+				text.render().await;
+				assert!(text.update_text(|text| {
+					text.set_style(ConcreteLayer::default().color(RGBA::new(0.7, 0.8, 0.9, 1.0).into()));
+				}));
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let text = render.texts().next().unwrap();
+
+		assert_eq!(text.color, RGBA::new(0.7, 0.8, 0.9, 1.0));
+	}
+
+	#[test]
+	fn animate_updates_existing_retained_element_across_frames() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx
+					.element("frame")
+					.container(Container::default().width(10.into()).height(10.into()));
+				animate(&mut frame, spring(0.0, 1.0), |frame, t| {
+					frame.update_container(|container| {
+						container.width = Sizing::pixels(10 + (90.0 * t.clamp(0.0, 1.0)) as u32);
+					});
+				})
+				.await;
+			})
+		});
+
+		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(first.elements.len(), 1);
+		assert_eq!(first.elements[0].size, Size::new(10, 10));
+
+		std::thread::sleep(Duration::from_millis(20));
+		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(second.elements.len(), 1);
+		assert!(second.elements[0].size.x() > 10);
+	}
+
+	#[test]
 	fn backdrop_style_modal_receives_actuated_event() {
 		let frame_allocator = bumpalo::Bump::new();
 		let hits = Arc::new(AtomicUsize::new(0));
@@ -1307,3 +1491,35 @@ mod tests {
 		assert_eq!(background_hits.load(Ordering::SeqCst), 0);
 	}
 }
+
+use std::{
+	boxed::Box,
+	cell::RefCell,
+	collections::{HashMap, HashSet, VecDeque},
+	future::Future,
+	marker::PhantomData,
+	pin::Pin,
+	rc::Rc,
+	sync::Arc,
+	task::{Context as TaskContext, Poll, Wake, Waker},
+};
+
+use math::{Base as _, Vector2};
+use utils::{r#async::FusedFuture, sync::Mutex, RGBA};
+
+use super::{
+	context::{Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
+	element::{ElementHandle, Id},
+	flow::Size,
+	layout_elements,
+	snapshot::Snapshot,
+	ConcreteElement, IdedElement, RenderElement, RenderTextElement,
+};
+use crate::ui::{
+	components::shape::Shape,
+	font::TextSystem,
+	intersection::build_mouse_click_acceleration,
+	primitive::{Events, Primitive as _, Primitives, Shapes},
+	style::Color,
+	Container, Text,
+};

@@ -734,6 +734,34 @@ mod tests {
 	}
 
 	#[test]
+	fn layout_centered_row_keeps_siblings_on_same_baseline() {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = Container::default().flow(flow::centered_row);
+		let a = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(10));
+		let b = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(10));
+
+		let elements = make_elements([root, a, b]);
+
+		let root = &elements[0];
+		let a = &elements[1];
+		let b = &elements[2];
+
+		let relations = [(root.id(), a.id()), (root.id(), b.id())];
+
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 80),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
+
+		assert_eq!(elements.len(), 3);
+		assert_eq!(elements[1].position, Location3::new(0, 35, 1));
+		assert_eq!(elements[2].position, Location3::new(20, 35, 1));
+	}
+
+	#[test]
 	fn layout_center() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default().flow(flow::center);

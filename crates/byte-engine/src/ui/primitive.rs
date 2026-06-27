@@ -1,7 +1,7 @@
 use super::{
 	flow::{Location, Size},
 	layout::Sizing,
-	style::Style,
+	style::ConcreteStyle,
 };
 use crate::ui::{
 	components::{shape::Shape, text::Text},
@@ -21,17 +21,21 @@ pub trait CustomShape {
 
 pub trait Primitive {
 	fn shape(&self) -> Shapes;
-	fn style(&self) -> &dyn Style;
+	fn style(&self) -> &ConcreteStyle;
 }
 
 // #[derive(Clone)]
 pub struct BasePrimitive {
 	pub(crate) shape: Shapes,
+	pub(crate) style: ConcreteStyle,
 }
 
 impl BasePrimitive {
 	pub fn new(shape: Shapes) -> Self {
-		BasePrimitive { shape }
+		BasePrimitive {
+			shape,
+			style: ConcreteStyle::default(),
+		}
 	}
 }
 
@@ -40,8 +44,8 @@ impl Primitive for BasePrimitive {
 		self.shape.clone()
 	}
 
-	fn style(&self) -> &dyn Style {
-		unimplemented!()
+	fn style(&self) -> &ConcreteStyle {
+		&self.style
 	}
 }
 
@@ -100,7 +104,11 @@ impl Primitive for Primitives {
 		}
 	}
 
-	fn style(&self) -> &dyn Style {
-		unimplemented!()
+	fn style(&self) -> &ConcreteStyle {
+		match self {
+			Primitives::Container(container) => container.style_ref(),
+			Primitives::Text(text) => text.style_ref(),
+			Primitives::Shape(shape) => shape.style_ref(),
+		}
 	}
 }

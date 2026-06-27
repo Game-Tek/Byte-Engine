@@ -25,11 +25,10 @@ use super::{
 };
 use crate::ui::{
 	components::shape::Shape,
-	flow::Location,
 	font::TextSystem,
-	intersection::{build_mouse_click_acceleration, MouseClickAcceleration},
-	primitive::{Events, Primitives, Shapes},
-	style::{self, Color, ConcreteStyle},
+	intersection::build_mouse_click_acceleration,
+	primitive::{Events, Primitive as _, Primitives, Shapes},
+	style::Color,
 	Container, Text,
 };
 
@@ -137,6 +136,11 @@ impl RetainedTree {
 	fn element_mut(&mut self, id: Id) -> Option<&mut IdedElement> {
 		let index = *self.element_indices.get(&id)?;
 		self.elements.get_mut(index)
+	}
+
+	fn element(&self, id: Id) -> Option<&IdedElement> {
+		let index = *self.element_indices.get(&id)?;
+		self.elements.get(index)
 	}
 
 	fn remove_scope(&mut self, scope: &[String]) -> Vec<Id> {
@@ -601,62 +605,19 @@ impl Engine {
 
 	/// Renders the given snapshot into a [`Render`] object.
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
-		let size = snapshot.size();
-
-		let mouse_pos = (self.cursor_position + 1.0) * 0.5;
-		let mouse_pos = mouse_pos * Vector2::new(size.x() as f32, size.y() as f32);
-		let mouse_pos = Vector2::new(mouse_pos.x, size.y() as f32 - mouse_pos.y);
-
-		struct StyleContextImpl<'a> {
-			acceleration: &'a MouseClickAcceleration<'a>,
-			cursor: Option<Id>,
-			self_id: Id,
-			mouse_pos: Location,
-		}
-
-		impl style::ContextStyle for StyleContextImpl<'_> {
-			fn id(&self) -> Id {
-				self.self_id
-			}
-
-			fn is_hovered(&self, id: Id) -> bool {
-				self.acceleration
-					.query(self.mouse_pos)
-					.map(|e| e == id.get())
-					.unwrap_or(false)
-			}
-
-			fn is_focused(&self, id: Id) -> bool {
-				self.cursor.map(|e| e == id).unwrap_or(false)
-			}
-		}
-
 		let mut elements = Vec::new();
 		let mut text_elements = Vec::new();
 		let tree = Rc::clone(&self.runtime.borrow().tree);
-		let mut tree = tree.borrow_mut();
+		let tree = tree.borrow();
 
 		for element in &mut snapshot.elements {
-			let state = StyleContextImpl {
-				acceleration: &snapshot.acceleration,
-				cursor: snapshot.cursor,
-				self_id: element.id,
-				mouse_pos: Location::new(mouse_pos.x as u32, mouse_pos.y as u32),
-			};
-
-			let Some(retained_element) = tree.element_mut(element.id) else {
+			let Some(retained_element) = tree.element(element.id) else {
 				continue;
 			};
 
-			let style = match &mut retained_element.element.primitive {
-				Primitives::Container(container) => ConcreteStyle::default(),
-				Primitives::Shape(shape) => shape.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
-				Primitives::Text(text) => text.styler.as_mut().map(|styler| styler(&state)).unwrap_or_default(),
-			};
-
-			let layer = &style.layers[0];
-			let color = match layer.color {
-				Color::Value(rgba) => rgba,
+			let layer = &retained_element.element.primitive.style().layer;
+			let color = match &layer.color {
+				Color::Value(rgba) => *rgba,
 				Color::Sample(_) => RGBA::white(),
 			};
 
@@ -958,6 +919,7 @@ mod tests {
 		components::container::Container,
 		flow::{self, Location3},
 		layout::context::{ContainerContext, Context, ElementContext},
+		style::ConcreteLayer,
 		Depth,
 	};
 
@@ -1277,6 +1239,25 @@ mod tests {
 		let depths = render.elements().map(|element| element.position.z()).collect::<Vec<_>>();
 
 		assert_eq!(depths, vec![0, 1, 10]);
+	}
+
+	#[test]
+	fn render_uses_container_stored_style() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("frame").container(
+					Container::default().style(ConcreteLayer::default().color(RGBA::new(0.2, 0.3, 0.4, 1.0).into())),
+				);
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		assert_eq!(render.elements[0].color, RGBA::new(0.2, 0.3, 0.4, 1.0));
 	}
 
 	#[test]

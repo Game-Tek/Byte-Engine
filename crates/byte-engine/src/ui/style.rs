@@ -1,7 +1,6 @@
 use utils::RGBA;
 
-use crate::ui::element::Id;
-
+#[derive(Clone)]
 pub enum Color {
 	Value(RGBA),
 	Sample(String),
@@ -13,10 +12,7 @@ impl From<RGBA> for Color {
 	}
 }
 
-pub trait Style {
-	fn layers(&self) -> &[&dyn Layer];
-}
-
+#[derive(Clone, Copy)]
 pub enum MixModes {
 	Add,
 	Multiply,
@@ -28,18 +24,20 @@ pub trait Layer {
 	fn mix_mode(&self) -> MixModes;
 }
 
+#[derive(Clone)]
 pub struct ConcreteStyle {
-	pub(crate) layers: Vec<ConcreteLayer>,
+	pub(crate) layer: ConcreteLayer,
 }
 
 impl Default for ConcreteStyle {
 	fn default() -> Self {
 		Self {
-			layers: vec![ConcreteLayer::default()], // Always has a default layer
+			layer: ConcreteLayer::default(),
 		}
 	}
 }
 
+#[derive(Clone)]
 pub struct ConcreteLayer {
 	pub(crate) color: Color,
 }
@@ -63,12 +61,6 @@ impl Default for ConcreteLayer {
 	}
 }
 
-impl Style for ConcreteStyle {
-	fn layers(&self) -> &[&dyn Layer] {
-		&[]
-	}
-}
-
 impl Layer for ConcreteLayer {
 	fn fill(&self) -> &Color {
 		&self.color
@@ -81,17 +73,6 @@ impl Layer for ConcreteLayer {
 
 impl From<ConcreteLayer> for ConcreteStyle {
 	fn from(val: ConcreteLayer) -> Self {
-		ConcreteStyle { layers: vec![val] }
+		ConcreteStyle { layer: val }
 	}
 }
-
-pub type StyleState<'a> = &'a dyn ContextStyle;
-
-pub trait ContextStyle {
-	fn id(&self) -> Id;
-	fn is_hovered(&self, id: Id) -> bool;
-	fn is_focused(&self, id: Id) -> bool;
-}
-
-pub trait Styler = FnMut(&dyn ContextStyle) -> ConcreteStyle + 'static;
-pub type StylerFn = fn(&dyn ContextStyle) -> ConcreteStyle;

@@ -13,7 +13,6 @@ use crate::ui::{
 	components::{shape::Shape, text::Text},
 	flow::{Offset, Size},
 	primitive::{Primitives, Shapes},
-	style::Styler,
 	Container,
 };
 

@@ -1,13 +1,9 @@
-use crate::ui::{
-	components::container::Container,
-	primitive::Shapes,
-	style::{Styler, StylerFn},
-};
+use crate::ui::{components::container::Container, primitive::Shapes, style::ConcreteStyle};
 
 pub struct Shape {
 	pub(crate) shape: Shapes,
 	pub(crate) settings: Container,
-	pub(crate) styler: Option<utils::Box<dyn Styler>>,
+	pub(crate) style: ConcreteStyle,
 }
 
 impl Shape {
@@ -18,16 +14,20 @@ impl Shape {
 				radius: settings.corner_radius,
 			},
 			settings,
-			styler: None,
+			style: ConcreteStyle::default(),
 		}
 	}
 
-	pub fn styler<F: Styler + 'static>(mut self, styler: F) -> Self {
-		self.styler = Some(utils::Box::new(styler));
+	pub fn style(mut self, style: impl Into<ConcreteStyle>) -> Self {
+		self.style = style.into();
 		self
 	}
 
 	pub fn settings(&self) -> &Container {
 		&self.settings
+	}
+
+	pub fn style_ref(&self) -> &ConcreteStyle {
+		&self.style
 	}
 }

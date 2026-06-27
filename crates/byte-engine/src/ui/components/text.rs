@@ -1,10 +1,10 @@
-use crate::ui::style::Styler;
+use crate::ui::style::ConcreteStyle;
 
 /// The `Text` struct carries styled UI copy that participates in layout and rendering.
 pub struct Text {
 	pub(crate) content: String,
 	pub(crate) settings: TextSettings,
-	pub(crate) styler: Option<utils::Box<dyn Styler>>,
+	pub(crate) style: ConcreteStyle,
 }
 
 impl Text {
@@ -12,7 +12,7 @@ impl Text {
 		Self {
 			content: content.into(),
 			settings: TextSettings::default(),
-			styler: None,
+			style: ConcreteStyle::default(),
 		}
 	}
 
@@ -21,8 +21,8 @@ impl Text {
 		self
 	}
 
-	pub fn styler<F: Styler + 'static>(mut self, styler: F) -> Self {
-		self.styler = Some(utils::Box::new(styler));
+	pub fn style(mut self, style: impl Into<ConcreteStyle>) -> Self {
+		self.style = style.into();
 		self
 	}
 
@@ -32,6 +32,10 @@ impl Text {
 
 	pub fn settings(&self) -> &TextSettings {
 		&self.settings
+	}
+
+	pub fn style_ref(&self) -> &ConcreteStyle {
+		&self.style
 	}
 }
 

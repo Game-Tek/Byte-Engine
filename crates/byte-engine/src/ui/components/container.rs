@@ -1,16 +1,10 @@
-use utils::{Box, RGBA};
-
 use super::super::{
-	element::{Element, ElementHandle, Id},
 	flow::{self, FlowFunction},
-	layout::{self, Depth, Sizing},
-	primitive::{BasePrimitive, Primitive, Shapes},
+	layout::{Depth, Sizing},
 };
 use crate::ui::{
-	element::ConcreteElement,
 	flow::{FlowInput, FlowOutput},
-	primitive::Events,
-	style::{ConcreteLayer, ConcreteStyle, Styler, StylerFn},
+	style::ConcreteStyle,
 };
 
 pub struct Container {
@@ -23,6 +17,7 @@ pub struct Container {
 	max_height: Option<Sizing>,
 	pub depth: Depth,
 	pub flow: utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>,
+	pub(crate) style: ConcreteStyle,
 }
 
 impl Container {
@@ -87,6 +82,17 @@ impl Container {
 			..self
 		}
 	}
+
+	pub fn style(self, style: impl Into<ConcreteStyle>) -> Self {
+		Self {
+			style: style.into(),
+			..self
+		}
+	}
+
+	pub fn style_ref(&self) -> &ConcreteStyle {
+		&self.style
+	}
 }
 
 impl Default for Container {
@@ -101,6 +107,7 @@ impl Default for Container {
 			max_height: None,
 			depth: Depth::default(),
 			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow::grid),
+			style: ConcreteStyle::default(),
 		}
 	}
 }

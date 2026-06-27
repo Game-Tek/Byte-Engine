@@ -814,11 +814,12 @@ impl<C: 'static> Engine<C> {
 					size: element.size,
 					color,
 					corner_radius: container.corner_radius,
+					corner_exponent: container.corner_exponent,
 				}),
 				Primitives::Shape(shape) => {
-					let corner_radius = match shape.shape {
-						Shapes::Box { radius, .. } => radius,
-						_ => 0.0,
+					let (corner_radius, corner_exponent) = match shape.shape {
+						Shapes::Box { radius, exponent, .. } => (radius, exponent),
+						_ => (0.0, 2.0),
 					};
 
 					elements.push(RenderElement {
@@ -827,6 +828,7 @@ impl<C: 'static> Engine<C> {
 						size: element.size,
 						color,
 						corner_radius,
+						corner_exponent,
 					});
 				}
 				Primitives::Text(text) => text_elements.push(RenderTextElement {
@@ -1103,7 +1105,7 @@ mod tests {
 	use super::*;
 	use crate::ui::{
 		animate,
-		components::container::Container,
+		components::{container::Container, shape::Shape},
 		flow::{self, Location3},
 		layout::{
 			context::{ContainerContext, Context, ElementContext},
@@ -1507,6 +1509,49 @@ mod tests {
 		let render = engine.render(&mut snapshot);
 
 		assert_eq!(render.elements[0].color, RGBA::new(0.2, 0.3, 0.4, 1.0));
+	}
+
+	#[test]
+	fn render_uses_container_corner_exponent() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("frame")
+					.container(Container::default().corner_radius(8.0).corner_exponent(4.0));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		assert_eq!(render.elements[0].corner_radius, 8.0);
+		assert_eq!(render.elements[0].corner_exponent, 4.0);
+	}
+
+	#[test]
+	fn render_uses_shape_corner_exponent_from_settings() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("shape").shape(Shape::new(
+					Container::default()
+						.width(20.into())
+						.height(20.into())
+						.corner_radius(6.0)
+						.corner_exponent(4.0),
+				));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		assert_eq!(render.elements[0].corner_radius, 6.0);
+		assert_eq!(render.elements[0].corner_exponent, 4.0);
 	}
 
 	#[test]

@@ -13,6 +13,7 @@ impl Shape {
 			shape: Shapes::Box {
 				half: (settings.width, settings.height),
 				radius: settings.corner_radius,
+				exponent: settings.corner_exponent,
 			},
 			settings,
 			style: ConcreteStyle::default(),

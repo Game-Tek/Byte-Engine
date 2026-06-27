@@ -35,6 +35,7 @@ pub(crate) struct RenderElement {
 	pub(crate) size: Size,
 	pub(crate) color: RGBA,
 	pub(crate) corner_radius: f32,
+	pub(crate) corner_exponent: f32,
 }
 
 #[derive(Clone)]
@@ -128,6 +129,7 @@ fn layout_elements<'a>(
 			Primitives::Container(container) => Shapes::Box {
 				half: (container.width, container.height),
 				radius: container.corner_radius,
+				exponent: container.corner_exponent,
 			}
 			.bbox(available_space),
 			Primitives::Shape(shape) => shape.shape.bbox(available_space),

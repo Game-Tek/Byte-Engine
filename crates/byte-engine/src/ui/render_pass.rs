@@ -38,12 +38,13 @@ const MAX_UI_ELEMENTS: usize = 65_536;
 const MAX_UI_VERTICES: usize = MAX_UI_ELEMENTS * UI_VERTICES_PER_ELEMENT;
 const MAX_UI_INDICES: usize = MAX_UI_ELEMENTS * UI_INDICES_PER_ELEMENT;
 
-const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 5] = [
+const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 6] = [
 	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("LOCAL_POSITION", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("RECT_SIZE", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
 	ghi::pipelines::VertexElement::new("CORNER_RADIUS", ghi::DataTypes::Float, 0),
+	ghi::pipelines::VertexElement::new("CORNER_EXPONENT", ghi::DataTypes::Float, 0),
 ];
 #[derive(Debug, Clone, Copy)]
 struct UiDrawElement {
@@ -51,6 +52,7 @@ struct UiDrawElement {
 	size: [f32; 2],
 	color: [f32; 4],
 	corner_radius: f32,
+	corner_exponent: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +89,7 @@ struct UiVertex {
 	rect_size: [f32; 2],
 	color: [f32; 4],
 	corner_radius: f32,
+	corner_exponent: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +112,18 @@ fn should_rasterize_text(text: &UiTextDrawElement) -> bool {
 	!text.text.is_empty() && text.color.a > 0.0 && text.size[0] > 0.0 && text.size[1] > 0.0
 }
 
+fn resolved_corner_radius(radius: f32, rect_width: f32, rect_height: f32) -> f32 {
+	radius.max(0.0).min(rect_width.min(rect_height) * 0.5)
+}
+
+fn resolved_corner_exponent(exponent: f32) -> f32 {
+	if !exponent.is_finite() || exponent < 1.0 {
+		2.0
+	} else {
+		exponent.clamp(1.0, 8.0)
+	}
+}
+
 fn update_from_render(render: &engine::Render) -> UiDrawList {
 	let root_size = render.root().size;
 	let elements = render
@@ -122,6 +137,7 @@ fn update_from_render(render: &engine::Render) -> UiDrawList {
 				size: [size.x() as f32, size.y() as f32],
 				color: element.color.into(),
 				corner_radius: element.corner_radius,
+				corner_exponent: element.corner_exponent,
 			}
 		})
 		.collect();
@@ -248,7 +264,8 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 		let x1 = x0 + rect_width;
 		let y1 = y0 + rect_height;
 		let color = element.color;
-		let corner_radius = element.corner_radius * radius_scale;
+		let corner_radius = resolved_corner_radius(element.corner_radius * radius_scale, rect_width, rect_height);
+		let corner_exponent = resolved_corner_exponent(element.corner_exponent);
 
 		let to_clip_x = |pixel_x: f32| (pixel_x / viewport_width) * 2.0 - 1.0;
 		let to_clip_y = |pixel_y: f32| 1.0 - (pixel_y / viewport_height) * 2.0;
@@ -260,6 +277,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				rect_size: [rect_width, rect_height],
 				color,
 				corner_radius,
+				corner_exponent,
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y0)],
@@ -267,6 +285,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				rect_size: [rect_width, rect_height],
 				color,
 				corner_radius,
+				corner_exponent,
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y1)],
@@ -274,6 +293,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				rect_size: [rect_width, rect_height],
 				color,
 				corner_radius,
+				corner_exponent,
 			},
 			UiVertex {
 				position: [to_clip_x(x0), to_clip_y(y1)],
@@ -281,6 +301,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				rect_size: [rect_width, rect_height],
 				color,
 				corner_radius,
+				corner_exponent,
 			},
 		]);
 
@@ -548,6 +569,7 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 				float2 rect_size [[attribute(2)]];
 				float4 color [[attribute(3)]];
 				float corner_radius [[attribute(4)]];
+				float corner_exponent [[attribute(5)]];
 			};
 
 			struct UiVertexOut {
@@ -556,6 +578,7 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 				float2 local_position;
 				float2 rect_size;
 				float corner_radius;
+				float corner_exponent;
 			};
 
 			vertex UiVertexOut ui_vertex_main(UiVertexIn in [[stage_in]]) {
@@ -565,6 +588,7 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 				out.local_position = in.local_position;
 				out.rect_size = in.rect_size;
 				out.corner_radius = in.corner_radius;
+				out.corner_exponent = in.corner_exponent;
 				return out;
 			}
 		"#;
@@ -591,6 +615,7 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 		out_local_position = in_local_position;
 		out_rect_size = in_rect_size;
 		out_corner_radius = in_corner_radius;
+		out_corner_exponent = in_corner_exponent;
 	"#
 	.trim();
 
@@ -602,10 +627,12 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 			"in_rect_size",
 			"in_color",
 			"in_corner_radius",
+			"in_corner_exponent",
 			"out_color",
 			"out_local_position",
 			"out_rect_size",
 			"out_corner_radius",
+			"out_corner_exponent",
 		],
 		&[],
 	)]);
@@ -614,10 +641,12 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 	let rect_size_input = ParserNode::input("in_rect_size", "vec2f", 2);
 	let color_input = ParserNode::input("in_color", "vec4f", 3);
 	let corner_radius_input = ParserNode::input("in_corner_radius", "f32", 4);
+	let corner_exponent_input = ParserNode::input("in_corner_exponent", "f32", 5);
 	let color_output = ParserNode::output("out_color", "vec4f", 0);
 	let local_position_output = ParserNode::output("out_local_position", "vec2f", 1);
 	let rect_size_output = ParserNode::output("out_rect_size", "vec2f", 2);
 	let corner_radius_output = ParserNode::output("out_corner_radius", "f32", 3);
+	let corner_exponent_output = ParserNode::output("out_corner_exponent", "f32", 4);
 
 	let shader_scope = ParserNode::scope(
 		"Shader",
@@ -627,10 +656,12 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 			rect_size_input,
 			color_input,
 			corner_radius_input,
+			corner_exponent_input,
 			color_output,
 			local_position_output,
 			rect_size_output,
 			corner_radius_output,
+			corner_exponent_output,
 			main,
 		],
 	);
@@ -660,36 +691,11 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 /// Builds the UI fragment shader using BESL and compiles it to SPIR-V.
 fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
 	if ghi::implementation::USES_METAL {
-		let shader_source = r#"
-			#include <metal_stdlib>
-			using namespace metal;
-
-			struct UiVertexOut {
-				float4 position [[position]];
-				float4 color;
-				float2 local_position;
-				float2 rect_size;
-				float corner_radius;
-			};
-
-			fragment float4 ui_fragment_main(UiVertexOut in [[stage_in]]) {
-				float2 half_size = in.rect_size * 0.5;
-				float corner_radius = min(in.corner_radius, min(half_size.x, half_size.y));
-				float2 centered_position = in.local_position - half_size;
-				float2 corner_delta = abs(centered_position) - (half_size - float2(corner_radius));
-				float signed_distance = length(max(corner_delta, float2(0.0)))
-					+ min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
-				float edge_width = max(fwidth(signed_distance), 0.5);
-				float alpha = 1.0 - smoothstep(0.0, edge_width, signed_distance);
-				return float4(in.color.rgb, in.color.a * alpha);
-			}
-		"#;
-
 		return context
 			.create_shader(
 				Some("UI Fragment Shader"),
 				ghi::shader::Sources::MTL {
-					source: shader_source,
+					source: UI_FRAGMENT_SHADER_MSL,
 					entry_point: "ui_fragment_main",
 				},
 				ghi::ShaderTypes::Fragment,
@@ -701,25 +707,14 @@ fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::Sh
 	let mut shader_generator = SPIRVShaderGenerator::new();
 	let mut root = ParserNode::root();
 
-	let main_code = r#"
-		vec2 half_size = in_rect_size * 0.5;
-		float corner_radius = min(in_corner_radius, min(half_size.x, half_size.y));
-		vec2 centered_position = in_local_position - half_size;
-		vec2 corner_delta = abs(centered_position) - (half_size - vec2(corner_radius));
-		float signed_distance = length(max(corner_delta, vec2(0.0))) + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
-		float edge_width = max(fwidth(signed_distance), 0.5);
-		float alpha = 1.0 - smoothstep(0.0, edge_width, signed_distance);
-
-		out_color_attachment = vec4(in_color.rgb, in_color.a * alpha);
-	"#
-	.trim();
 	let main = ParserNode::main_function(vec![ParserNode::glsl(
-		main_code,
+		UI_FRAGMENT_SHADER_GLSL_MAIN,
 		&[
 			"in_color",
 			"in_local_position",
 			"in_rect_size",
 			"in_corner_radius",
+			"in_corner_exponent",
 			"out_color_attachment",
 		],
 		&[],
@@ -728,6 +723,7 @@ fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::Sh
 	let input_local_position = ParserNode::input("in_local_position", "vec2f", 1);
 	let input_rect_size = ParserNode::input("in_rect_size", "vec2f", 2);
 	let input_corner_radius = ParserNode::input("in_corner_radius", "f32", 3);
+	let input_corner_exponent = ParserNode::input("in_corner_exponent", "f32", 4);
 	let output_color = ParserNode::output("out_color_attachment", "vec4f", 0);
 
 	let shader_scope = ParserNode::scope(
@@ -737,6 +733,7 @@ fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::Sh
 			input_local_position,
 			input_rect_size,
 			input_corner_radius,
+			input_corner_exponent,
 			output_color,
 			main,
 		],
@@ -764,6 +761,49 @@ fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::Sh
 		)
 		.expect("Failed to create the UI fragment shader. The most likely cause is an incompatible shader interface.")
 }
+
+const UI_FRAGMENT_SHADER_GLSL_MAIN: &str = r#"
+vec2 half_size = in_rect_size * 0.5;
+float corner_radius = min(in_corner_radius, min(half_size.x, half_size.y));
+float corner_exponent = in_corner_exponent;
+vec2 centered_position = in_local_position - half_size;
+vec2 corner_delta = abs(centered_position) - (half_size - vec2(corner_radius));
+vec2 abs_corner = max(corner_delta, vec2(0.0));
+float corner_distance = pow(pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent), 1.0 / corner_exponent);
+float signed_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+float edge_width = max(fwidth(signed_distance), 1.0);
+float coverage = 1.0 - smoothstep(-edge_width, edge_width, signed_distance);
+
+out_color_attachment = vec4(in_color.rgb, in_color.a * coverage);
+"#;
+
+const UI_FRAGMENT_SHADER_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct UiVertexOut {
+	float4 position [[position]];
+	float4 color;
+	float2 local_position;
+	float2 rect_size;
+	float corner_radius;
+	float corner_exponent;
+};
+
+fragment float4 ui_fragment_main(UiVertexOut in [[stage_in]]) {
+	float2 half_size = in.rect_size * 0.5;
+	float corner_radius = min(in.corner_radius, min(half_size.x, half_size.y));
+	float corner_exponent = in.corner_exponent;
+	float2 centered_position = in.local_position - half_size;
+	float2 corner_delta = abs(centered_position) - (half_size - float2(corner_radius));
+	float2 abs_corner = max(corner_delta, float2(0.0));
+	float corner_distance = pow(pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent), 1.0 / corner_exponent);
+	float signed_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+	float edge_width = max(fwidth(signed_distance), 1.0);
+	float coverage = 1.0 - smoothstep(-edge_width, edge_width, signed_distance);
+	return float4(in.color.rgb, in.color.a * coverage);
+}
+"#;
 
 fn create_text_overlay_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
 	crate::rendering::create_shader_from_source(
@@ -878,12 +918,23 @@ mod tests {
 
 	use super::{
 		build_ui_geometry, should_rasterize_text, UiDrawBatch, UiDrawElement, UiDrawList, UiTextDrawElement, MAX_UI_ELEMENTS,
-		MAX_UI_VERTICES_PER_DRAW, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_ELEMENT,
+		MAX_UI_VERTICES_PER_DRAW, UI_FRAGMENT_SHADER_GLSL_MAIN, UI_FRAGMENT_SHADER_MSL, UI_INDICES_PER_ELEMENT,
+		UI_VERTICES_PER_ELEMENT,
 	};
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
 		assert!((actual[1] - expected[1]).abs() < 0.0001);
+	}
+
+	fn draw_element(corner_radius: f32, corner_exponent: f32) -> UiDrawElement {
+		UiDrawElement {
+			position: [0.0, 0.0],
+			size: [50.0, 50.0],
+			color: [1.0, 1.0, 1.0, 1.0],
+			corner_radius,
+			corner_exponent,
+		}
 	}
 
 	#[test]
@@ -897,6 +948,7 @@ mod tests {
 					size: [30.0, 40.0],
 					color: [0.25, 0.5, 0.75, 1.0],
 					corner_radius: 8.0,
+					corner_exponent: 2.0,
 				}],
 				texts: vec![],
 			},
@@ -919,6 +971,133 @@ mod tests {
 		assert_eq!(geometry.vertices[2].local_position, [60.0, 40.0]);
 		assert_eq!(geometry.vertices[0].rect_size, [60.0, 40.0]);
 		assert_eq!(geometry.vertices[0].corner_radius, 8.0);
+		assert_eq!(geometry.vertices[0].corner_exponent, 2.0);
+	}
+
+	#[test]
+	fn scales_corner_radius_to_viewport_pixels() {
+		let frame_allocator = bumpalo::Bump::new();
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![draw_element(6.0, 2.0)],
+				texts: vec![],
+			},
+			Extent::rectangle(200, 300),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.vertices[0].corner_radius, 12.0);
+	}
+
+	#[test]
+	fn clamps_corner_radius_to_half_the_shortest_edge() {
+		let frame_allocator = bumpalo::Bump::new();
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![UiDrawElement {
+					position: [0.0, 0.0],
+					size: [80.0, 20.0],
+					color: [1.0, 1.0, 1.0, 1.0],
+					corner_radius: 80.0,
+					corner_exponent: 2.0,
+				}],
+				texts: vec![],
+			},
+			Extent::rectangle(100, 100),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.vertices[0].corner_radius, 10.0);
+	}
+
+	#[test]
+	fn negative_corner_radius_resolves_to_square_corners() {
+		let frame_allocator = bumpalo::Bump::new();
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![draw_element(-8.0, 2.0)],
+				texts: vec![],
+			},
+			Extent::rectangle(100, 100),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.vertices[0].corner_radius, 0.0);
+	}
+
+	#[test]
+	fn explicit_corner_exponent_is_uploaded_to_vertices() {
+		let frame_allocator = bumpalo::Bump::new();
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![draw_element(8.0, 4.0)],
+				texts: vec![],
+			},
+			Extent::rectangle(100, 100),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.vertices[0].corner_exponent, 4.0);
+	}
+
+	#[test]
+	fn invalid_corner_exponents_resolve_to_round_corners() {
+		for exponent in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.5] {
+			let frame_allocator = bumpalo::Bump::new();
+			let geometry = build_ui_geometry(
+				&UiDrawList {
+					layout_size: [100.0, 100.0],
+					elements: vec![draw_element(8.0, exponent)],
+					texts: vec![],
+				},
+				Extent::rectangle(100, 100),
+				&frame_allocator,
+			);
+
+			assert_eq!(geometry.vertices[0].corner_exponent, 2.0);
+		}
+	}
+
+	#[test]
+	fn high_corner_exponents_are_clamped() {
+		let frame_allocator = bumpalo::Bump::new();
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![draw_element(8.0, 12.0)],
+				texts: vec![],
+			},
+			Extent::rectangle(100, 100),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.vertices[0].corner_exponent, 8.0);
+	}
+
+	#[test]
+	fn rounded_rect_glsl_shader_uses_derivative_anti_aliasing() {
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fwidth(signed_distance)"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("smoothstep(-edge_width, edge_width, signed_distance)"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("in_color.a * coverage"));
+	}
+
+	#[test]
+	fn rounded_rect_msl_shader_uses_derivative_anti_aliasing() {
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("fwidth(signed_distance)"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("smoothstep(-edge_width, edge_width, signed_distance)"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("in.color.a * coverage"));
+	}
+
+	#[test]
+	fn rounded_rect_shaders_use_superellipse_corner_distance() {
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("pow(abs_corner.x, corner_exponent)"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("1.0 / corner_exponent"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("pow(abs_corner.x, corner_exponent)"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("1.0 / corner_exponent"));
 	}
 
 	#[test]
@@ -931,6 +1110,7 @@ mod tests {
 				size: [1.0, 1.0],
 				color: [1.0, 1.0, 1.0, 1.0],
 				corner_radius: 0.0,
+				corner_exponent: 2.0,
 			})
 			.collect();
 
@@ -969,12 +1149,14 @@ mod tests {
 			size: [1.0, 1.0],
 			color: [1.0, 1.0, 1.0, 0.0],
 			corner_radius: 0.0,
+			corner_exponent: 2.0,
 		}));
 		elements.push(UiDrawElement {
 			position: [0.0, 0.0],
 			size: [1.0, 1.0],
 			color: [1.0, 1.0, 1.0, 1.0],
 			corner_radius: 0.0,
+			corner_exponent: 2.0,
 		});
 
 		let geometry = build_ui_geometry(

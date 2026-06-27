@@ -13,7 +13,7 @@ use crate::ui::{
 pub enum Shapes {
 	Triangle { vertices: [Location; 3] },
 	Circle { radius: f32 },
-	Box { half: Scale, radius: f32 },
+	Box { half: Scale, radius: f32, exponent: f32 },
 }
 
 pub trait CustomShape {
@@ -101,10 +101,12 @@ impl Primitive for Primitives {
 			Primitives::Container(container) => Shapes::Box {
 				half: (container.width, container.height),
 				radius: container.corner_radius,
+				exponent: container.corner_exponent,
 			},
 			Primitives::Text(_) => Shapes::Box {
 				half: (Sizing::Absolute(0), Sizing::Absolute(0)),
 				radius: 0.0,
+				exponent: 2.0,
 			},
 			Primitives::Shape(shape) => shape.shape.clone(),
 		}

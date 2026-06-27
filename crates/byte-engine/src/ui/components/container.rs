@@ -14,6 +14,7 @@ pub struct Container {
 	pub width: Sizing,
 	pub height: Sizing,
 	pub corner_radius: f32,
+	pub corner_exponent: f32,
 	max_width: Option<Sizing>,
 	max_height: Option<Sizing>,
 	pub depth: Depth,
@@ -41,6 +42,10 @@ impl Container {
 
 	pub fn corner_radius(self, corner_radius: f32) -> Self {
 		Self { corner_radius, ..self }
+	}
+
+	pub fn corner_exponent(self, corner_exponent: f32) -> Self {
+		Self { corner_exponent, ..self }
 	}
 
 	pub fn min_width(self, min_width: Sizing) -> Self {
@@ -107,6 +112,10 @@ impl Container {
 		self.transform = transform.into();
 	}
 
+	pub fn set_corner_exponent(&mut self, corner_exponent: f32) {
+		self.corner_exponent = corner_exponent;
+	}
+
 	pub fn style_ref(&self) -> &ConcreteStyle {
 		&self.style
 	}
@@ -122,6 +131,7 @@ impl Default for Container {
 			width: Sizing::full(),
 			height: Sizing::full(),
 			corner_radius: 0.0,
+			corner_exponent: 2.0,
 			min_width: None,
 			min_height: None,
 			max_width: None,

@@ -879,18 +879,22 @@ impl<C: 'static> Engine<C> {
 				continue;
 			};
 
-			let layer = &retained_element.element.primitive.style().layer;
-			let color = match &layer.color {
-				Color::Value(rgba) => *rgba,
-				Color::Sample(_) => RGBA::white(),
-			};
+			let style = retained_element.element.primitive.style().clone();
+			let color = style
+				.layers()
+				.first()
+				.map(|layer| match &layer.color {
+					Color::Value(rgba) => *rgba,
+					Color::Sample(_) => RGBA::white(),
+				})
+				.unwrap_or_else(RGBA::white);
 
 			match &retained_element.element.primitive {
 				Primitives::Container(container) => elements.push(RenderElement {
 					id: element.id.get(),
 					position: element.position,
 					size: element.size,
-					color,
+					style,
 					corner_radius: container.corner_radius,
 					corner_exponent: container.corner_exponent,
 				}),
@@ -904,7 +908,7 @@ impl<C: 'static> Engine<C> {
 						id: element.id.get(),
 						position: element.position,
 						size: element.size,
-						color,
+						style,
 						corner_radius,
 						corner_exponent,
 					});
@@ -1279,7 +1283,7 @@ mod tests {
 			Sizing,
 		},
 		spring,
-		style::ConcreteLayer,
+		style::{ConcreteLayer, ConcreteStyle, Layer, LayerKind},
 		Depth,
 	};
 
@@ -1919,7 +1923,41 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		assert_eq!(render.elements[0].color, RGBA::new(0.2, 0.3, 0.4, 1.0));
+		assert_eq!(render.elements[0].style.layers().len(), 1);
+		assert_eq!(render.elements[0].style.layers()[0].kind(), LayerKind::Fill);
+		match Layer::fill(&render.elements[0].style.layers()[0]) {
+			Color::Value(color) => assert_eq!(*color, RGBA::new(0.2, 0.3, 0.4, 1.0)),
+			Color::Sample(_) => panic!("expected value color"),
+		}
+	}
+
+	#[test]
+	fn render_preserves_layered_container_style() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("frame").container(
+					Container::default().style(
+						ConcreteStyle::new()
+							.layer(ConcreteLayer::default().color(RGBA::new(0.2, 0.3, 0.4, 1.0).into()))
+							.layer(
+								ConcreteLayer::default()
+									.color(RGBA::new(0.9, 0.8, 0.7, 1.0).into())
+									.stroke(2.0),
+							),
+					),
+				);
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		assert_eq!(render.elements[0].style.layers().len(), 2);
+		assert_eq!(render.elements[0].style.layers()[0].kind(), LayerKind::Fill);
+		assert_eq!(render.elements[0].style.layers()[1].kind(), LayerKind::Stroke { width: 2.0 });
 	}
 
 	#[test]
@@ -2074,7 +2112,10 @@ mod tests {
 		assert_eq!(second.elements[0].size, Size::new(30, 10));
 
 		let render = engine.render(&mut second);
-		assert_eq!(render.elements[0].color, RGBA::new(0.4, 0.5, 0.6, 1.0));
+		match Layer::fill(&render.elements[0].style.layers()[0]) {
+			Color::Value(color) => assert_eq!(*color, RGBA::new(0.4, 0.5, 0.6, 1.0)),
+			Color::Sample(_) => panic!("expected value color"),
+		}
 	}
 
 	#[test]

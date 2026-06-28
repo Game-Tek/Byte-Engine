@@ -11,7 +11,11 @@ use ghi::{
 use resource_management::shader::{besl::backends::spirv::SPIRVShaderGenerator, generator::ShaderGenerationSettings};
 use utils::{Box, Extent, RGBA};
 
-use super::{element::ElementHandle as _, layout::engine};
+use super::{
+	element::ElementHandle as _,
+	layout::engine,
+	style::{Color, LayerKind},
+};
 use crate::{
 	core::Entity,
 	rendering::{
@@ -38,13 +42,15 @@ const MAX_UI_ELEMENTS: usize = 65_536;
 const MAX_UI_VERTICES: usize = MAX_UI_ELEMENTS * UI_VERTICES_PER_ELEMENT;
 const MAX_UI_INDICES: usize = MAX_UI_ELEMENTS * UI_INDICES_PER_ELEMENT;
 
-const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 6] = [
+const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 8] = [
 	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("LOCAL_POSITION", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("RECT_SIZE", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
 	ghi::pipelines::VertexElement::new("CORNER_RADIUS", ghi::DataTypes::Float, 0),
 	ghi::pipelines::VertexElement::new("CORNER_EXPONENT", ghi::DataTypes::Float, 0),
+	ghi::pipelines::VertexElement::new("LAYER_KIND", ghi::DataTypes::Float, 0),
+	ghi::pipelines::VertexElement::new("STROKE_WIDTH", ghi::DataTypes::Float, 0),
 ];
 #[derive(Debug, Clone, Copy)]
 struct UiDrawElement {
@@ -53,6 +59,8 @@ struct UiDrawElement {
 	color: [f32; 4],
 	corner_radius: f32,
 	corner_exponent: f32,
+	layer_kind: LayerKind,
+	stroke_width: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +98,8 @@ struct UiVertex {
 	color: [f32; 4],
 	corner_radius: f32,
 	corner_exponent: f32,
+	layer_kind: f32,
+	stroke_width: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,21 +134,49 @@ fn resolved_corner_exponent(exponent: f32) -> f32 {
 	}
 }
 
+fn layer_kind_value(kind: LayerKind) -> f32 {
+	match kind {
+		LayerKind::Fill => 0.0,
+		LayerKind::Stroke { .. } => 1.0,
+	}
+}
+
+fn stroke_width(kind: LayerKind) -> f32 {
+	match kind {
+		LayerKind::Fill => 0.0,
+		LayerKind::Stroke { width } if width.is_finite() && width > 0.0 => width,
+		LayerKind::Stroke { .. } => 0.0,
+	}
+}
+
 fn update_from_render(render: &engine::Render) -> UiDrawList {
 	let root_size = render.root().size;
 	let elements = render
 		.elements()
-		.map(|element| {
+		.flat_map(|element| {
 			let position = element.position;
 			let size = element.size;
 
-			UiDrawElement {
-				position: [position.x() as f32, position.y() as f32],
-				size: [size.x() as f32, size.y() as f32],
-				color: element.color.into(),
-				corner_radius: element.corner_radius,
-				corner_exponent: element.corner_exponent,
-			}
+			element.style.layers().iter().filter_map(move |layer| {
+				let color = match &layer.color {
+					Color::Value(rgba) => *rgba,
+					Color::Sample(_) => RGBA::white(),
+				};
+				let stroke_width = stroke_width(layer.kind);
+				if matches!(layer.kind, LayerKind::Stroke { .. }) && stroke_width <= 0.0 {
+					return None;
+				}
+
+				Some(UiDrawElement {
+					position: [position.x() as f32, position.y() as f32],
+					size: [size.x() as f32, size.y() as f32],
+					color: color.into(),
+					corner_radius: element.corner_radius,
+					corner_exponent: element.corner_exponent,
+					layer_kind: layer.kind,
+					stroke_width,
+				})
+			})
 		})
 		.collect();
 	let texts = render
@@ -239,6 +277,11 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 			continue;
 		}
 
+		let stroke_width = element.stroke_width * radius_scale;
+		if matches!(element.layer_kind, LayerKind::Stroke { .. }) && (!stroke_width.is_finite() || stroke_width <= 0.0) {
+			continue;
+		}
+
 		if geometry.vertices.len() + UI_VERTICES_PER_ELEMENT > MAX_UI_VERTICES
 			|| geometry.indices.len() + UI_INDICES_PER_ELEMENT > MAX_UI_INDICES
 		{
@@ -266,6 +309,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 		let color = element.color;
 		let corner_radius = resolved_corner_radius(element.corner_radius * radius_scale, rect_width, rect_height);
 		let corner_exponent = resolved_corner_exponent(element.corner_exponent);
+		let layer_kind = layer_kind_value(element.layer_kind);
 
 		let to_clip_x = |pixel_x: f32| (pixel_x / viewport_width) * 2.0 - 1.0;
 		let to_clip_y = |pixel_y: f32| 1.0 - (pixel_y / viewport_height) * 2.0;
@@ -278,6 +322,8 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				color,
 				corner_radius,
 				corner_exponent,
+				layer_kind,
+				stroke_width,
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y0)],
@@ -286,6 +332,8 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				color,
 				corner_radius,
 				corner_exponent,
+				layer_kind,
+				stroke_width,
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y1)],
@@ -294,6 +342,8 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				color,
 				corner_radius,
 				corner_exponent,
+				layer_kind,
+				stroke_width,
 			},
 			UiVertex {
 				position: [to_clip_x(x0), to_clip_y(y1)],
@@ -302,6 +352,8 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				color,
 				corner_radius,
 				corner_exponent,
+				layer_kind,
+				stroke_width,
 			},
 		]);
 
@@ -570,6 +622,8 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 				float4 color [[attribute(3)]];
 				float corner_radius [[attribute(4)]];
 				float corner_exponent [[attribute(5)]];
+				float layer_kind [[attribute(6)]];
+				float stroke_width [[attribute(7)]];
 			};
 
 			struct UiVertexOut {
@@ -579,6 +633,8 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 				float2 rect_size;
 				float corner_radius;
 				float corner_exponent;
+				float layer_kind;
+				float stroke_width;
 			};
 
 			vertex UiVertexOut ui_vertex_main(UiVertexIn in [[stage_in]]) {
@@ -589,6 +645,8 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 				out.rect_size = in.rect_size;
 				out.corner_radius = in.corner_radius;
 				out.corner_exponent = in.corner_exponent;
+				out.layer_kind = in.layer_kind;
+				out.stroke_width = in.stroke_width;
 				return out;
 			}
 		"#;
@@ -616,6 +674,8 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 		out_rect_size = in_rect_size;
 		out_corner_radius = in_corner_radius;
 		out_corner_exponent = in_corner_exponent;
+		out_layer_kind = in_layer_kind;
+		out_stroke_width = in_stroke_width;
 	"#
 	.trim();
 
@@ -628,11 +688,15 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 			"in_color",
 			"in_corner_radius",
 			"in_corner_exponent",
+			"in_layer_kind",
+			"in_stroke_width",
 			"out_color",
 			"out_local_position",
 			"out_rect_size",
 			"out_corner_radius",
 			"out_corner_exponent",
+			"out_layer_kind",
+			"out_stroke_width",
 		],
 		&[],
 	)]);
@@ -642,11 +706,15 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 	let color_input = ParserNode::input("in_color", "vec4f", 3);
 	let corner_radius_input = ParserNode::input("in_corner_radius", "f32", 4);
 	let corner_exponent_input = ParserNode::input("in_corner_exponent", "f32", 5);
+	let layer_kind_input = ParserNode::input("in_layer_kind", "f32", 6);
+	let stroke_width_input = ParserNode::input("in_stroke_width", "f32", 7);
 	let color_output = ParserNode::output("out_color", "vec4f", 0);
 	let local_position_output = ParserNode::output("out_local_position", "vec2f", 1);
 	let rect_size_output = ParserNode::output("out_rect_size", "vec2f", 2);
 	let corner_radius_output = ParserNode::output("out_corner_radius", "f32", 3);
 	let corner_exponent_output = ParserNode::output("out_corner_exponent", "f32", 4);
+	let layer_kind_output = ParserNode::output("out_layer_kind", "f32", 5);
+	let stroke_width_output = ParserNode::output("out_stroke_width", "f32", 6);
 
 	let shader_scope = ParserNode::scope(
 		"Shader",
@@ -657,11 +725,15 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 			color_input,
 			corner_radius_input,
 			corner_exponent_input,
+			layer_kind_input,
+			stroke_width_input,
 			color_output,
 			local_position_output,
 			rect_size_output,
 			corner_radius_output,
 			corner_exponent_output,
+			layer_kind_output,
+			stroke_width_output,
 			main,
 		],
 	);
@@ -715,6 +787,8 @@ fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::Sh
 			"in_rect_size",
 			"in_corner_radius",
 			"in_corner_exponent",
+			"in_layer_kind",
+			"in_stroke_width",
 			"out_color_attachment",
 		],
 		&[],
@@ -724,6 +798,8 @@ fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::Sh
 	let input_rect_size = ParserNode::input("in_rect_size", "vec2f", 2);
 	let input_corner_radius = ParserNode::input("in_corner_radius", "f32", 3);
 	let input_corner_exponent = ParserNode::input("in_corner_exponent", "f32", 4);
+	let input_layer_kind = ParserNode::input("in_layer_kind", "f32", 5);
+	let input_stroke_width = ParserNode::input("in_stroke_width", "f32", 6);
 	let output_color = ParserNode::output("out_color_attachment", "vec4f", 0);
 
 	let shader_scope = ParserNode::scope(
@@ -734,6 +810,8 @@ fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::Sh
 			input_rect_size,
 			input_corner_radius,
 			input_corner_exponent,
+			input_layer_kind,
+			input_stroke_width,
 			output_color,
 			main,
 		],
@@ -767,12 +845,27 @@ vec2 half_size = in_rect_size * 0.5;
 float corner_radius = min(in_corner_radius, min(half_size.x, half_size.y));
 float corner_exponent = in_corner_exponent;
 vec2 centered_position = in_local_position - half_size;
-vec2 corner_delta = abs(centered_position) - (half_size - vec2(corner_radius));
+vec2 rounded_extent = half_size - vec2(corner_radius);
+vec2 corner_delta = abs(centered_position) - rounded_extent;
 vec2 abs_corner = max(corner_delta, vec2(0.0));
 float corner_distance = pow(pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent), 1.0 / corner_exponent);
-float signed_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
-float edge_width = max(fwidth(signed_distance), 1.0);
-float coverage = 1.0 - smoothstep(-edge_width, edge_width, signed_distance);
+float field_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+float edge_width = max(fwidth(field_distance), 1.0);
+float fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance);
+
+vec2 gradient_sample_x_delta = abs(centered_position + vec2(1.0, 0.0)) - rounded_extent;
+vec2 gradient_sample_x_corner = max(gradient_sample_x_delta, vec2(0.0));
+float gradient_sample_x_distance = pow(pow(gradient_sample_x_corner.x, corner_exponent) + pow(gradient_sample_x_corner.y, corner_exponent), 1.0 / corner_exponent) + min(max(gradient_sample_x_delta.x, gradient_sample_x_delta.y), 0.0) - corner_radius;
+vec2 gradient_sample_y_delta = abs(centered_position + vec2(0.0, 1.0)) - rounded_extent;
+vec2 gradient_sample_y_corner = max(gradient_sample_y_delta, vec2(0.0));
+float gradient_sample_y_distance = pow(pow(gradient_sample_y_corner.x, corner_exponent) + pow(gradient_sample_y_corner.y, corner_exponent), 1.0 / corner_exponent) + min(max(gradient_sample_y_delta.x, gradient_sample_y_delta.y), 0.0) - corner_radius;
+float field_gradient_length = max(length(vec2(gradient_sample_x_distance - field_distance, gradient_sample_y_distance - field_distance)), 0.0001);
+float signed_distance = field_distance / field_gradient_length;
+float corrected_edge_width = max(fwidth(signed_distance), 1.0);
+float inner_signed_distance = signed_distance + in_stroke_width;
+float inner_coverage = 1.0 - smoothstep(-corrected_edge_width, corrected_edge_width, inner_signed_distance);
+float stroke_coverage = max(fill_coverage - inner_coverage, 0.0);
+float coverage = mix(fill_coverage, stroke_coverage, step(0.5, in_layer_kind));
 
 out_color_attachment = vec4(in_color.rgb, in_color.a * coverage);
 "#;
@@ -788,6 +881,8 @@ struct UiVertexOut {
 	float2 rect_size;
 	float corner_radius;
 	float corner_exponent;
+	float layer_kind;
+	float stroke_width;
 };
 
 fragment float4 ui_fragment_main(UiVertexOut in [[stage_in]]) {
@@ -795,12 +890,27 @@ fragment float4 ui_fragment_main(UiVertexOut in [[stage_in]]) {
 	float corner_radius = min(in.corner_radius, min(half_size.x, half_size.y));
 	float corner_exponent = in.corner_exponent;
 	float2 centered_position = in.local_position - half_size;
-	float2 corner_delta = abs(centered_position) - (half_size - float2(corner_radius));
+	float2 rounded_extent = half_size - float2(corner_radius);
+	float2 corner_delta = abs(centered_position) - rounded_extent;
 	float2 abs_corner = max(corner_delta, float2(0.0));
 	float corner_distance = pow(pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent), 1.0 / corner_exponent);
-	float signed_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
-	float edge_width = max(fwidth(signed_distance), 1.0);
-	float coverage = 1.0 - smoothstep(-edge_width, edge_width, signed_distance);
+	float field_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+	float edge_width = max(fwidth(field_distance), 1.0);
+	float fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance);
+
+	float2 gradient_sample_x_delta = abs(centered_position + float2(1.0, 0.0)) - rounded_extent;
+	float2 gradient_sample_x_corner = max(gradient_sample_x_delta, float2(0.0));
+	float gradient_sample_x_distance = pow(pow(gradient_sample_x_corner.x, corner_exponent) + pow(gradient_sample_x_corner.y, corner_exponent), 1.0 / corner_exponent) + min(max(gradient_sample_x_delta.x, gradient_sample_x_delta.y), 0.0) - corner_radius;
+	float2 gradient_sample_y_delta = abs(centered_position + float2(0.0, 1.0)) - rounded_extent;
+	float2 gradient_sample_y_corner = max(gradient_sample_y_delta, float2(0.0));
+	float gradient_sample_y_distance = pow(pow(gradient_sample_y_corner.x, corner_exponent) + pow(gradient_sample_y_corner.y, corner_exponent), 1.0 / corner_exponent) + min(max(gradient_sample_y_delta.x, gradient_sample_y_delta.y), 0.0) - corner_radius;
+	float field_gradient_length = max(length(float2(gradient_sample_x_distance - field_distance, gradient_sample_y_distance - field_distance)), 0.0001);
+	float signed_distance = field_distance / field_gradient_length;
+	float corrected_edge_width = max(fwidth(signed_distance), 1.0);
+	float inner_signed_distance = signed_distance + in.stroke_width;
+	float inner_coverage = 1.0 - smoothstep(-corrected_edge_width, corrected_edge_width, inner_signed_distance);
+	float stroke_coverage = max(fill_coverage - inner_coverage, 0.0);
+	float coverage = mix(fill_coverage, stroke_coverage, step(0.5, in.layer_kind));
 	return float4(in.color.rgb, in.color.a * coverage);
 }
 "#;
@@ -921,6 +1031,7 @@ mod tests {
 		MAX_UI_VERTICES_PER_DRAW, UI_FRAGMENT_SHADER_GLSL_MAIN, UI_FRAGMENT_SHADER_MSL, UI_INDICES_PER_ELEMENT,
 		UI_VERTICES_PER_ELEMENT,
 	};
+	use crate::ui::style::LayerKind;
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
@@ -934,6 +1045,8 @@ mod tests {
 			color: [1.0, 1.0, 1.0, 1.0],
 			corner_radius,
 			corner_exponent,
+			layer_kind: LayerKind::Fill,
+			stroke_width: 0.0,
 		}
 	}
 
@@ -949,6 +1062,8 @@ mod tests {
 					color: [0.25, 0.5, 0.75, 1.0],
 					corner_radius: 8.0,
 					corner_exponent: 2.0,
+					layer_kind: LayerKind::Fill,
+					stroke_width: 0.0,
 				}],
 				texts: vec![],
 			},
@@ -972,6 +1087,8 @@ mod tests {
 		assert_eq!(geometry.vertices[0].rect_size, [60.0, 40.0]);
 		assert_eq!(geometry.vertices[0].corner_radius, 8.0);
 		assert_eq!(geometry.vertices[0].corner_exponent, 2.0);
+		assert_eq!(geometry.vertices[0].layer_kind, 0.0);
+		assert_eq!(geometry.vertices[0].stroke_width, 0.0);
 	}
 
 	#[test]
@@ -1002,6 +1119,8 @@ mod tests {
 					color: [1.0, 1.0, 1.0, 1.0],
 					corner_radius: 80.0,
 					corner_exponent: 2.0,
+					layer_kind: LayerKind::Fill,
+					stroke_width: 0.0,
 				}],
 				texts: vec![],
 			},
@@ -1045,6 +1164,67 @@ mod tests {
 	}
 
 	#[test]
+	fn fill_layer_uploads_fill_kind() {
+		let frame_allocator = bumpalo::Bump::new();
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![draw_element(0.0, 2.0)],
+				texts: vec![],
+			},
+			Extent::rectangle(100, 100),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.vertices[0].layer_kind, 0.0);
+		assert_eq!(geometry.vertices[0].stroke_width, 0.0);
+	}
+
+	#[test]
+	fn stroke_layer_uploads_scaled_stroke_width() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut element = draw_element(0.0, 2.0);
+		element.layer_kind = LayerKind::Stroke { width: 3.0 };
+		element.stroke_width = 3.0;
+
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![element],
+				texts: vec![],
+			},
+			Extent::rectangle(200, 300),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.vertices[0].layer_kind, 1.0);
+		assert_eq!(geometry.vertices[0].stroke_width, 6.0);
+	}
+
+	#[test]
+	fn invalid_stroke_widths_are_skipped() {
+		for width in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+			let frame_allocator = bumpalo::Bump::new();
+			let mut element = draw_element(0.0, 2.0);
+			element.layer_kind = LayerKind::Stroke { width };
+			element.stroke_width = width;
+
+			let geometry = build_ui_geometry(
+				&UiDrawList {
+					layout_size: [100.0, 100.0],
+					elements: vec![element],
+					texts: vec![],
+				},
+				Extent::rectangle(100, 100),
+				&frame_allocator,
+			);
+
+			assert!(geometry.vertices.is_empty());
+			assert!(geometry.indices.is_empty());
+		}
+	}
+
+	#[test]
 	fn invalid_corner_exponents_resolve_to_round_corners() {
 		for exponent in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.5] {
 			let frame_allocator = bumpalo::Bump::new();
@@ -1080,15 +1260,17 @@ mod tests {
 
 	#[test]
 	fn rounded_rect_glsl_shader_uses_derivative_anti_aliasing() {
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fwidth(field_distance)"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("smoothstep(-edge_width, edge_width, field_distance)"));
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fwidth(signed_distance)"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("smoothstep(-edge_width, edge_width, signed_distance)"));
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("in_color.a * coverage"));
 	}
 
 	#[test]
 	fn rounded_rect_msl_shader_uses_derivative_anti_aliasing() {
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("fwidth(field_distance)"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("smoothstep(-edge_width, edge_width, field_distance)"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("fwidth(signed_distance)"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("smoothstep(-edge_width, edge_width, signed_distance)"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("in.color.a * coverage"));
 	}
 
@@ -1098,6 +1280,20 @@ mod tests {
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("1.0 / corner_exponent"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("pow(abs_corner.x, corner_exponent)"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("1.0 / corner_exponent"));
+	}
+
+	#[test]
+	fn rounded_rect_shaders_support_stroke_band_coverage() {
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("field_gradient_length"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("field_distance / field_gradient_length"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("signed_distance + in_stroke_width"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fill_coverage - inner_coverage"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("step(0.5, in_layer_kind)"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("field_gradient_length"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("field_distance / field_gradient_length"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("signed_distance + in.stroke_width"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("fill_coverage - inner_coverage"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("step(0.5, in.layer_kind)"));
 	}
 
 	#[test]
@@ -1111,6 +1307,8 @@ mod tests {
 				color: [1.0, 1.0, 1.0, 1.0],
 				corner_radius: 0.0,
 				corner_exponent: 2.0,
+				layer_kind: LayerKind::Fill,
+				stroke_width: 0.0,
 			})
 			.collect();
 
@@ -1150,6 +1348,8 @@ mod tests {
 			color: [1.0, 1.0, 1.0, 0.0],
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
+			layer_kind: LayerKind::Fill,
+			stroke_width: 0.0,
 		}));
 		elements.push(UiDrawElement {
 			position: [0.0, 0.0],
@@ -1157,6 +1357,8 @@ mod tests {
 			color: [1.0, 1.0, 1.0, 1.0],
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
+			layer_kind: LayerKind::Fill,
+			stroke_width: 0.0,
 		});
 
 		let geometry = build_ui_geometry(

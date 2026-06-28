@@ -17,6 +17,7 @@ use crate::ui::{
 	flow::FlowFunction,
 	font::TextSystem,
 	primitive::{Primitives, Shapes},
+	style::ConcreteStyle,
 };
 
 /// Describes an element layed out for an screen.
@@ -33,7 +34,7 @@ pub(crate) struct RenderElement {
 	pub(crate) id: u32,
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
-	pub(crate) color: RGBA,
+	pub(crate) style: ConcreteStyle,
 	pub(crate) corner_radius: f32,
 	pub(crate) corner_exponent: f32,
 }

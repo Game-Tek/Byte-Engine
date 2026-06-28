@@ -21,6 +21,7 @@ pub mod render_pass;
 pub mod style;
 pub mod timer;
 pub mod transform;
+pub mod visual;
 
 pub use animation::{
 	animate, back_out, ease_in, ease_in_out, ease_out, ease_out_cubic, ease_out_quart, emphasized_out, spring, AnimationDriver,
@@ -33,3 +34,4 @@ pub use layout::Depth;
 pub use primitive::{Key, Primitive};
 pub use timer::{seconds, wait, WaitFuture};
 pub use transform::Transform;
+pub use visual::Visual;

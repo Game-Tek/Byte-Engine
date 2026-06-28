@@ -871,6 +871,7 @@ impl<C: 'static> Engine<C> {
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
 		let mut elements = Vec::new();
 		let mut text_elements = Vec::new();
+		let mut effective_opacities = HashMap::new();
 		let tree = Rc::clone(&self.runtime.borrow().tree);
 		let tree = tree.borrow();
 
@@ -879,6 +880,7 @@ impl<C: 'static> Engine<C> {
 				continue;
 			};
 
+			let opacity = effective_opacity(element.id, &tree, &snapshot.relations, &mut effective_opacities);
 			let style = retained_element.element.primitive.style().clone();
 			let color = style
 				.layers()
@@ -895,6 +897,7 @@ impl<C: 'static> Engine<C> {
 					position: element.position,
 					size: element.size,
 					style,
+					opacity,
 					corner_radius: container.corner_radius,
 					corner_exponent: container.corner_exponent,
 				}),
@@ -909,6 +912,7 @@ impl<C: 'static> Engine<C> {
 						position: element.position,
 						size: element.size,
 						style,
+						opacity,
 						corner_radius,
 						corner_exponent,
 					});
@@ -918,6 +922,7 @@ impl<C: 'static> Engine<C> {
 					position: element.position,
 					size: element.size,
 					color,
+					opacity,
 					font_size: text.settings().font_size,
 					content: text.content().to_string(),
 				}),
@@ -986,6 +991,33 @@ struct KeyWaiter {
 	target: Id,
 	key: Key,
 	waker: Waker,
+}
+
+fn effective_opacity(id: Id, tree: &RetainedTree, relations: &[(Id, Id)], effective_opacities: &mut HashMap<Id, f32>) -> f32 {
+	if let Some(opacity) = effective_opacities.get(&id) {
+		return *opacity;
+	}
+
+	let local_opacity = tree
+		.element(id)
+		.map(|element| sanitize_opacity(element.element.primitive.visual().opacity))
+		.unwrap_or(1.0);
+	let parent_opacity = relations
+		.iter()
+		.find_map(|(parent, child)| (*child == id).then_some(*parent))
+		.map(|parent| effective_opacity(parent, tree, relations, effective_opacities))
+		.unwrap_or(1.0);
+	let opacity = (parent_opacity * local_opacity).clamp(0.0, 1.0);
+	effective_opacities.insert(id, opacity);
+	opacity
+}
+
+fn sanitize_opacity(opacity: f32) -> f32 {
+	if opacity.is_finite() {
+		opacity.clamp(0.0, 1.0)
+	} else {
+		1.0
+	}
 }
 
 pub struct Runtime {
@@ -1961,6 +1993,121 @@ mod tests {
 	}
 
 	#[test]
+	fn render_inherits_parent_opacity() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx
+					.element("frame")
+					.container(Container::default().width(10.into()).height(10.into()).opacity(0.5));
+				frame
+					.element("child")
+					.container(Container::default().width(10.into()).height(10.into()));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let parent = render.elements().find(|element| element.id == 1).unwrap();
+		let child = render.elements().find(|element| element.id == 2).unwrap();
+
+		assert_eq!(parent.opacity, 0.5);
+		assert_eq!(child.opacity, 0.5);
+	}
+
+	#[test]
+	fn render_multiplies_nested_and_local_opacity() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx
+					.element("frame")
+					.container(Container::default().width(10.into()).height(10.into()).opacity(0.5));
+				frame
+					.element("child")
+					.container(Container::default().width(10.into()).height(10.into()).opacity(0.25));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let child = render.elements().find(|element| element.id == 2).unwrap();
+
+		assert_eq!(child.opacity, 0.125);
+	}
+
+	#[test]
+	fn render_inherits_opacity_for_text() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx
+					.element("frame")
+					.container(Container::default().width(10.into()).height(10.into()).opacity(0.5));
+				frame
+					.element("label")
+					.text(Text::new("Hello").style(ConcreteLayer::default().color(RGBA::new(1.0, 1.0, 1.0, 0.8).into())));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let text = render.texts().next().unwrap();
+
+		assert_eq!(text.opacity, 0.5);
+		assert_eq!(text.color, RGBA::new(1.0, 1.0, 1.0, 0.8));
+	}
+
+	#[test]
+	fn render_uses_shape_opacity_from_settings() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("shape").shape(Shape::new(
+					Container::default().width(10.into()).height(10.into()).opacity(0.4),
+				));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		assert_eq!(render.elements[0].opacity, 0.4);
+	}
+
+	#[test]
+	fn render_sanitizes_opacity() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx
+					.element("root")
+					.container(Container::default().width(10.into()).height(10.into()));
+				root.element("negative")
+					.container(Container::default().width(10.into()).height(10.into()).opacity(-1.0));
+				root.element("invalid")
+					.container(Container::default().width(10.into()).height(10.into()).opacity(f32::NAN));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		assert_eq!(render.elements().find(|element| element.id == 2).unwrap().opacity, 0.0);
+		assert_eq!(render.elements().find(|element| element.id == 3).unwrap().opacity, 1.0);
+	}
+
+	#[test]
 	fn render_uses_container_corner_exponent() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -2088,6 +2235,33 @@ mod tests {
 	}
 
 	#[test]
+	fn opacity_does_not_disable_hit_testing() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				let mut button = ctx.element("button").container(Container::default().opacity(0.0));
+
+				loop {
+					button.on(Events::Actuated).await;
+					hits.fetch_add(1, Ordering::SeqCst);
+				}
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.set_cursor_position(Vector2::new(0.0, 0.0));
+		engine.update_click_state(true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
 	fn update_container_changes_later_layout_and_render_style() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -2116,6 +2290,28 @@ mod tests {
 			Color::Value(color) => assert_eq!(*color, RGBA::new(0.4, 0.5, 0.6, 1.0)),
 			Color::Sample(_) => panic!("expected value color"),
 		}
+	}
+
+	#[test]
+	fn update_container_changes_later_render_opacity() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame.render().await;
+				assert!(frame.update_container(|container| {
+					container.set_opacity(0.25);
+				}));
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		assert_eq!(render.elements[0].opacity, 0.25);
 	}
 
 	#[test]

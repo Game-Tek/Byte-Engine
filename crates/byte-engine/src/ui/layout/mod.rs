@@ -35,6 +35,7 @@ pub(crate) struct RenderElement {
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) style: ConcreteStyle,
+	pub(crate) opacity: f32,
 	pub(crate) corner_radius: f32,
 	pub(crate) corner_exponent: f32,
 }
@@ -45,6 +46,7 @@ pub(crate) struct RenderTextElement {
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) color: RGBA,
+	pub(crate) opacity: f32,
 	pub(crate) font_size: f32,
 	pub(crate) content: String,
 }

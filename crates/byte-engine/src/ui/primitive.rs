@@ -3,6 +3,7 @@ use super::{
 	layout::Sizing,
 	style::ConcreteStyle,
 	transform::Transform,
+	visual::Visual,
 };
 use crate::ui::{
 	components::{shape::Shape, text::Text},
@@ -24,6 +25,7 @@ pub trait Primitive {
 	fn shape(&self) -> Shapes;
 	fn style(&self) -> &ConcreteStyle;
 	fn transform(&self) -> &Transform;
+	fn visual(&self) -> &Visual;
 }
 
 // #[derive(Clone)]
@@ -52,6 +54,10 @@ impl Primitive for BasePrimitive {
 
 	fn transform(&self) -> &Transform {
 		&Transform::IDENTITY
+	}
+
+	fn visual(&self) -> &Visual {
+		&Visual::DEFAULT
 	}
 }
 
@@ -130,6 +136,14 @@ impl Primitive for Primitives {
 			Primitives::Container(container) => container.transform_ref(),
 			Primitives::Text(text) => text.transform_ref(),
 			Primitives::Shape(shape) => shape.transform_ref(),
+		}
+	}
+
+	fn visual(&self) -> &Visual {
+		match self {
+			Primitives::Container(container) => container.visual_ref(),
+			Primitives::Text(text) => text.visual_ref(),
+			Primitives::Shape(shape) => shape.visual_ref(),
 		}
 	}
 }

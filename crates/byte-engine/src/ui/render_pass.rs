@@ -158,10 +158,11 @@ fn update_from_render(render: &engine::Render) -> UiDrawList {
 			let size = element.size;
 
 			element.style.layers().iter().filter_map(move |layer| {
-				let color = match &layer.color {
+				let mut color = match &layer.color {
 					Color::Value(rgba) => *rgba,
 					Color::Sample(_) => RGBA::white(),
 				};
+				color.a *= element.opacity;
 				let stroke_width = stroke_width(layer.kind);
 				if matches!(layer.kind, LayerKind::Stroke { .. }) && stroke_width <= 0.0 {
 					return None;
@@ -182,10 +183,12 @@ fn update_from_render(render: &engine::Render) -> UiDrawList {
 	let texts = render
 		.texts()
 		.filter_map(|text| {
+			let mut color = text.color;
+			color.a *= text.opacity;
 			let text = UiTextDrawElement {
 				position: [text.position.x() as f32, text.position.y() as f32],
 				size: [text.size.x() as f32, text.size.y() as f32],
-				color: text.color,
+				color,
 				font_size: text.font_size,
 				text: text.content.clone(),
 			};
@@ -1027,11 +1030,19 @@ mod tests {
 	use utils::{Extent, RGBA};
 
 	use super::{
-		build_ui_geometry, should_rasterize_text, UiDrawBatch, UiDrawElement, UiDrawList, UiTextDrawElement, MAX_UI_ELEMENTS,
-		MAX_UI_VERTICES_PER_DRAW, UI_FRAGMENT_SHADER_GLSL_MAIN, UI_FRAGMENT_SHADER_MSL, UI_INDICES_PER_ELEMENT,
-		UI_VERTICES_PER_ELEMENT,
+		build_ui_geometry, should_rasterize_text, update_from_render, UiDrawBatch, UiDrawElement, UiDrawList,
+		UiTextDrawElement, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_FRAGMENT_SHADER_GLSL_MAIN, UI_FRAGMENT_SHADER_MSL,
+		UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_ELEMENT,
 	};
-	use crate::ui::style::LayerKind;
+	use crate::ui::{
+		flow::Size,
+		layout::{
+			context::{Context, ElementContext},
+			engine::Engine,
+		},
+		style::{ConcreteLayer, ConcreteStyle, LayerKind},
+		Container, Text,
+	};
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
@@ -1394,5 +1405,38 @@ mod tests {
 			font_size: 16.0,
 			text: "Visible".to_string(),
 		}));
+	}
+
+	#[test]
+	fn draw_list_multiplies_effective_opacity_into_layers_and_text() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(
+					Container::default().opacity(0.5).style(
+						ConcreteStyle::new()
+							.layer(ConcreteLayer::default().color(RGBA::new(1.0, 0.0, 0.0, 0.8).into()))
+							.layer(
+								ConcreteLayer::default()
+									.color(RGBA::new(0.0, 1.0, 0.0, 0.6).into())
+									.stroke(2.0),
+							),
+					),
+				);
+				frame
+					.element("label")
+					.text(Text::new("Visible").style(ConcreteLayer::default().color(RGBA::new(1.0, 1.0, 1.0, 0.4).into())));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let draw_list = update_from_render(&render);
+
+		assert_eq!(draw_list.elements[0].color[3], 0.4);
+		assert_eq!(draw_list.elements[1].color[3], 0.3);
+		assert_eq!(draw_list.texts[0].color, RGBA::new(1.0, 1.0, 1.0, 0.2));
 	}
 }

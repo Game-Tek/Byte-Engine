@@ -5,7 +5,7 @@ use super::super::{
 use crate::ui::{
 	flow::{FlowInput, FlowOutput},
 	style::ConcreteStyle,
-	Transform,
+	Transform, Visual,
 };
 
 pub struct Container {
@@ -21,6 +21,7 @@ pub struct Container {
 	pub flow: utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) transform: Transform,
+	pub(crate) visual: Visual,
 }
 
 impl Container {
@@ -104,12 +105,23 @@ impl Container {
 		}
 	}
 
+	pub fn opacity(self, opacity: f32) -> Self {
+		Self {
+			visual: Visual::opacity(opacity),
+			..self
+		}
+	}
+
 	pub fn set_style(&mut self, style: impl Into<ConcreteStyle>) {
 		self.style = style.into();
 	}
 
 	pub fn set_transform(&mut self, transform: impl Into<Transform>) {
 		self.transform = transform.into();
+	}
+
+	pub fn set_opacity(&mut self, opacity: f32) {
+		self.visual.opacity = opacity;
 	}
 
 	pub fn set_corner_exponent(&mut self, corner_exponent: f32) {
@@ -122,6 +134,10 @@ impl Container {
 
 	pub fn transform_ref(&self) -> &Transform {
 		&self.transform
+	}
+
+	pub fn visual_ref(&self) -> &Visual {
+		&self.visual
 	}
 }
 
@@ -140,6 +156,7 @@ impl Default for Container {
 			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow::grid),
 			style: ConcreteStyle::default(),
 			transform: Transform::default(),
+			visual: Visual::default(),
 		}
 	}
 }

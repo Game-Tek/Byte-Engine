@@ -3,8 +3,8 @@ use std::{future::Future, pin::Pin, time::Duration};
 use crate::ui::{
 	components::shape::Shape,
 	element::Id,
-	layout::engine::{EvaluationContext, EventFuture, MountedComponentFuture, RenderFuture},
-	primitive::Events,
+	layout::engine::{EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, RenderFuture},
+	primitive::{Events, Key},
 	timer::{seconds as wait_seconds, wait, WaitFuture},
 	Container, Text,
 };
@@ -28,6 +28,10 @@ pub trait Context<C: 'static = ()>: Sized {
 	}
 
 	fn render(&mut self) -> RenderFuture;
+
+	fn request_focus(&mut self);
+
+	fn release_focus(&mut self);
 
 	fn wait(&mut self, duration: Duration) -> WaitFuture {
 		wait(duration)
@@ -58,4 +62,5 @@ pub trait ElementContext<C: 'static = ()> {
 
 pub trait ContainerContext<C: 'static = ()>: Context<C> {
 	fn on(&mut self, event: Events) -> EventFuture;
+	fn on_key(&mut self, key: Key) -> KeyFuture;
 }

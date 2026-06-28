@@ -77,6 +77,11 @@ pub enum Events {
 	Actuated,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Key {
+	Escape,
+}
+
 pub enum Primitives {
 	Container(Container),
 	Shape(Shape),

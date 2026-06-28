@@ -8,6 +8,8 @@ pub struct Engine<C = ()> {
 	cursor_position: Vector2,
 	is_clicking: bool,
 	clicks: Vec<bool>,
+	key_states: HashMap<Key, bool>,
+	key_presses: VecDeque<Key>,
 	text_system: TextSystem,
 	ctx: Rc<C>,
 	runtime: Rc<RefCell<Runtime>>,
@@ -404,6 +406,14 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 			complete: false,
 		}
 	}
+
+	fn request_focus(&mut self) {
+		self.runtime.borrow_mut().request_focus(self.id);
+	}
+
+	fn release_focus(&mut self) {
+		self.runtime.borrow_mut().release_focus(self.id);
+	}
 }
 
 impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
@@ -473,6 +483,16 @@ impl<C: 'static> super::context::ContainerContext<C> for EvaluationContext<C> {
 			complete: false,
 		}
 	}
+
+	fn on_key(&mut self, key: Key) -> KeyFuture {
+		KeyFuture {
+			runtime: Rc::clone(&self.runtime),
+			task_id: self.task_id,
+			target: self.id,
+			key,
+			complete: false,
+		}
+	}
 }
 
 type BoxedMountedUiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
@@ -502,7 +522,7 @@ impl<F, T, C> MountedComponentFuture<F, T, C> {
 
 		let removed = self.tree.borrow_mut().remove_scope(&scope);
 		if !removed.is_empty() {
-			self.runtime.borrow_mut().remove_events_for_targets(&removed);
+			self.runtime.borrow_mut().remove_targets(&removed);
 		}
 	}
 }
@@ -663,6 +683,42 @@ impl FusedFuture for EventFuture {
 	}
 }
 
+pub struct KeyFuture {
+	runtime: Rc<RefCell<Runtime>>,
+	task_id: TaskId,
+	target: Id,
+	key: Key,
+	complete: bool,
+}
+
+impl Future for KeyFuture {
+	type Output = UiKeyEvent;
+
+	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+		if self.complete {
+			return Poll::Pending;
+		}
+
+		let event = self.runtime.borrow_mut().take_key_event(self.task_id, self.target, self.key);
+
+		if let Some(event) = event {
+			self.complete = true;
+			return Poll::Ready(event);
+		}
+
+		self.runtime
+			.borrow_mut()
+			.wait_for_key(self.task_id, self.target, self.key, cx.waker().clone());
+		Poll::Pending
+	}
+}
+
+impl FusedFuture for KeyFuture {
+	fn is_terminated(&self) -> bool {
+		self.complete
+	}
+}
+
 impl EngineState {
 	fn new() -> Self {
 		Self {
@@ -675,6 +731,10 @@ impl EngineState {
 		self.element_ids.clear();
 		self.element_ids.extend(element_ids);
 		self.cursor = self.cursor.filter(|id| self.element_ids.contains(id));
+	}
+
+	fn contains_element(&self, id: Id) -> bool {
+		self.element_ids.contains(&id)
 	}
 
 	pub(super) fn set_cursor(&mut self, cursor: Option<Id>) -> Option<Id> {
@@ -707,6 +767,8 @@ impl<C: 'static> Engine<C> {
 			cursor_position: Vector2::zero(),
 			is_clicking: false,
 			clicks: Vec::new(),
+			key_states: HashMap::new(),
+			key_presses: VecDeque::new(),
 			text_system: TextSystem::new(),
 			ctx: Rc::new(ctx),
 			runtime: Rc::new(RefCell::new(Runtime::new())),
@@ -741,6 +803,7 @@ impl<C: 'static> Engine<C> {
 
 		let mut snapshot = self.build_snapshot_from_ui_tree(size, frame_allocator);
 		self.route_input_events(&mut snapshot);
+		self.route_key_input_events();
 
 		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
 		snapshot
@@ -785,6 +848,21 @@ impl<C: 'static> Engine<C> {
 						kind: Events::Actuated,
 					});
 				}
+			}
+		}
+	}
+
+	fn route_key_input_events(&mut self) {
+		while let Some(key) = self.key_presses.pop_front() {
+			let target = {
+				let state = self.state.borrow();
+				self.runtime
+					.borrow_mut()
+					.focused_target(|target| state.contains_element(target))
+			};
+
+			if let Some(target) = target {
+				self.runtime.borrow_mut().push_key_event(UiKeyEvent { target, key });
 			}
 		}
 	}
@@ -872,6 +950,13 @@ impl<C: 'static> Engine<C> {
 		self.is_clicking = v;
 		self.clicks.push(v);
 	}
+
+	pub fn update_key_state(&mut self, key: Key, pressed: bool) {
+		let was_pressed = self.key_states.insert(key, pressed).unwrap_or(false);
+		if pressed && !was_pressed {
+			self.key_presses.push_back(key);
+		}
+	}
 }
 
 type BoxedUiFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
@@ -879,6 +964,7 @@ type BoxedUiFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
 struct UiTask {
 	future: Option<BoxedUiFuture>,
 	inbox: VecDeque<UiEvent>,
+	key_inbox: VecDeque<UiKeyEvent>,
 	complete: bool,
 }
 
@@ -891,11 +977,20 @@ struct EventWaiter {
 	waker: Waker,
 }
 
+struct KeyWaiter {
+	task_id: TaskId,
+	target: Id,
+	key: Key,
+	waker: Waker,
+}
+
 pub struct Runtime {
 	tasks: Vec<UiTask>,
 	ready: Arc<Mutex<VecDeque<TaskId>>>,
 	frame_waiters: Vec<Waker>,
 	event_waiters: Vec<EventWaiter>,
+	key_waiters: Vec<KeyWaiter>,
+	focus_stack: Vec<Id>,
 	frame: u64,
 	tree: Rc<RefCell<RetainedTree>>,
 }
@@ -926,6 +1021,8 @@ impl Runtime {
 			ready: Arc::new(Mutex::new(VecDeque::new())),
 			frame_waiters: Vec::new(),
 			event_waiters: Vec::new(),
+			key_waiters: Vec::new(),
+			focus_stack: Vec::new(),
 			frame: 0,
 			tree: Rc::new(RefCell::new(RetainedTree {
 				next_id: 1,
@@ -940,6 +1037,7 @@ impl Runtime {
 		runtime.tasks.push(UiTask {
 			future: Some(Box::pin(async {})),
 			inbox: VecDeque::new(),
+			key_inbox: VecDeque::new(),
 			complete: false,
 		});
 		runtime.ready.lock().push_back(id);
@@ -1018,6 +1116,24 @@ impl Runtime {
 		});
 	}
 
+	fn wait_for_key(&mut self, task_id: TaskId, target: Id, key: Key, waker: Waker) {
+		if let Some(waiter) = self
+			.key_waiters
+			.iter_mut()
+			.find(|waiter| waiter.task_id == task_id && waiter.target == target && waiter.key == key)
+		{
+			waiter.waker = waker;
+			return;
+		}
+
+		self.key_waiters.push(KeyWaiter {
+			task_id,
+			target,
+			key,
+			waker,
+		});
+	}
+
 	fn push_event(&mut self, event: UiEvent) {
 		let mut i = 0;
 		while i < self.event_waiters.len() {
@@ -1037,18 +1153,63 @@ impl Runtime {
 		}
 	}
 
+	fn push_key_event(&mut self, event: UiKeyEvent) {
+		let mut i = 0;
+		while i < self.key_waiters.len() {
+			let waiter = &self.key_waiters[i];
+
+			if waiter.target == event.target && waiter.key == event.key {
+				let waiter = self.key_waiters.swap_remove(i);
+
+				if let Some(task) = self.tasks.get_mut(waiter.task_id) {
+					task.key_inbox.push_back(event);
+				}
+
+				waiter.waker.wake();
+			} else {
+				i += 1;
+			}
+		}
+	}
+
 	fn take_event(&mut self, task_id: TaskId, target: Id, kind: Events) -> Option<UiEvent> {
 		let inbox = &mut self.tasks.get_mut(task_id)?.inbox;
 		let index = inbox.iter().position(|e| e.target == target && e.kind == kind)?;
 		inbox.remove(index)
 	}
 
-	fn remove_events_for_targets(&mut self, targets: &[Id]) {
+	fn take_key_event(&mut self, task_id: TaskId, target: Id, key: Key) -> Option<UiKeyEvent> {
+		let inbox = &mut self.tasks.get_mut(task_id)?.key_inbox;
+		let index = inbox.iter().position(|e| e.target == target && e.key == key)?;
+		inbox.remove(index)
+	}
+
+	fn request_focus(&mut self, target: Id) {
+		self.focus_stack.retain(|focused| *focused != target);
+		self.focus_stack.push(target);
+	}
+
+	fn release_focus(&mut self, target: Id) {
+		self.focus_stack.retain(|focused| *focused != target);
+	}
+
+	fn focused_target(&mut self, is_valid: impl Fn(Id) -> bool) -> Option<Id> {
+		self.focus_stack.retain(|focused| is_valid(*focused));
+		self.focus_stack.last().copied()
+	}
+
+	fn remove_targets(&mut self, targets: &[Id]) {
 		self.event_waiters
 			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
+		self.key_waiters
+			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
+		self.focus_stack
+			.retain(|focused| !targets.iter().any(|target| *target == *focused));
 
 		for task in &mut self.tasks {
 			task.inbox
+				.retain(|event| !targets.iter().any(|target| *target == event.target));
+			task.key_inbox
 				.retain(|event| !targets.iter().any(|target| *target == event.target));
 		}
 	}
@@ -1092,6 +1253,12 @@ impl ElementHandle for VirtualViewport {
 pub struct UiEvent {
 	pub target: Id,
 	pub kind: Events,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiKeyEvent {
+	pub target: Id,
+	pub key: Key,
 }
 
 #[cfg(test)]
@@ -1238,6 +1405,162 @@ mod tests {
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
+		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn focused_key_goes_to_most_recent_focus_target() {
+		let frame_allocator = bumpalo::Bump::new();
+		let first_hits = Arc::new(AtomicUsize::new(0));
+		let second_hits = Arc::new(AtomicUsize::new(0));
+		let first_hits_for_task = Arc::clone(&first_hits);
+		let second_hits_for_task = Arc::clone(&second_hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let first_hits = Arc::clone(&first_hits_for_task);
+			let second_hits = Arc::clone(&second_hits_for_task);
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame.element("first").component(move |ctx| {
+					let first_hits = Arc::clone(&first_hits);
+					Box::pin(async move {
+						let mut first = ctx.element("button").container(Container::default());
+						first.request_focus();
+						first.on_key(Key::Escape).await;
+						first_hits.fetch_add(1, Ordering::SeqCst);
+					})
+				});
+				frame.element("second").component(move |ctx| {
+					let second_hits = Arc::clone(&second_hits);
+					Box::pin(async move {
+						let mut second = ctx.element("button").container(Container::default());
+						second.request_focus();
+						second.on_key(Key::Escape).await;
+						second_hits.fetch_add(1, Ordering::SeqCst);
+					})
+				});
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.update_key_state(Key::Escape, true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(first_hits.load(Ordering::SeqCst), 0);
+		assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn requesting_focus_again_moves_target_without_duplication() {
+		let frame_allocator = bumpalo::Bump::new();
+		let first_hits = Arc::new(AtomicUsize::new(0));
+		let second_hits = Arc::new(AtomicUsize::new(0));
+		let first_hits_for_task = Arc::clone(&first_hits);
+		let second_hits_for_task = Arc::clone(&second_hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let first_hits = Arc::clone(&first_hits_for_task);
+			let second_hits = Arc::clone(&second_hits_for_task);
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				let mut first = frame.element("first").container(Container::default());
+				let mut second = frame.element("second").container(Container::default());
+				first.request_focus();
+				second.request_focus();
+				first.request_focus();
+
+				first.on_key(Key::Escape).await;
+				first_hits.fetch_add(1, Ordering::SeqCst);
+				first.release_focus();
+				ctx.render().await;
+				second.on_key(Key::Escape).await;
+				second_hits.fetch_add(1, Ordering::SeqCst);
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.update_key_state(Key::Escape, true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		engine.update_key_state(Key::Escape, false);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.update_key_state(Key::Escape, true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(first_hits.load(Ordering::SeqCst), 1);
+		assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn releasing_focus_reveals_previous_focus_target() {
+		let frame_allocator = bumpalo::Bump::new();
+		let first_hits = Arc::new(AtomicUsize::new(0));
+		let second_hits = Arc::new(AtomicUsize::new(0));
+		let first_hits_for_task = Arc::clone(&first_hits);
+		let second_hits_for_task = Arc::clone(&second_hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let first_hits = Arc::clone(&first_hits_for_task);
+			let second_hits = Arc::clone(&second_hits_for_task);
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame.element("first").component(move |ctx| {
+					let first_hits = Arc::clone(&first_hits);
+					Box::pin(async move {
+						let mut first = ctx.element("button").container(Container::default());
+						first.request_focus();
+						first.on_key(Key::Escape).await;
+						first_hits.fetch_add(1, Ordering::SeqCst);
+					})
+				});
+				frame.element("second").component(move |ctx| {
+					let second_hits = Arc::clone(&second_hits);
+					Box::pin(async move {
+						let mut second = ctx.element("button").container(Container::default());
+						second.request_focus();
+						second.release_focus();
+						second.on_key(Key::Escape).await;
+						second_hits.fetch_add(1, Ordering::SeqCst);
+					})
+				});
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.update_key_state(Key::Escape, true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(first_hits.load(Ordering::SeqCst), 1);
+		assert_eq!(second_hits.load(Ordering::SeqCst), 0);
+	}
+
+	#[test]
+	fn escape_release_does_not_wake_key_future() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				let mut button = ctx.element("button").container(Container::default());
+				button.request_focus();
+				button.on_key(Key::Escape).await;
+				hits.fetch_add(1, Ordering::SeqCst);
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.update_key_state(Key::Escape, false);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+		engine.update_key_state(Key::Escape, true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
 	}
 
@@ -1394,6 +1717,94 @@ mod tests {
 
 		let after_drop = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		assert_eq!(after_drop.elements.len(), 1);
+	}
+
+	#[test]
+	fn removing_focused_mounted_modal_reveals_previous_focus_target() {
+		let frame_allocator = bumpalo::Bump::new();
+		let background_hits = Arc::new(AtomicUsize::new(0));
+		let background_hits_for_task = Arc::clone(&background_hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let background_hits = Arc::clone(&background_hits_for_task);
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame.element("background").component(move |ctx| {
+					let background_hits = Arc::clone(&background_hits);
+					Box::pin(async move {
+						let mut background = ctx.element("button").container(Container::default());
+						background.request_focus();
+						background.on_key(Key::Escape).await;
+						background_hits.fetch_add(1, Ordering::SeqCst);
+					})
+				});
+
+				let mut modal = frame.element("modal").mount(|ctx| {
+					Box::pin(async move {
+						let mut modal = ctx.element("window").container(Container::default());
+						modal.request_focus();
+						modal.on_key(Key::Escape).await;
+					})
+				});
+
+				utils::r#async::select! {
+					_ = modal => {}
+					_ = ctx.render() => {}
+				}
+			})
+		});
+
+		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(first.elements.len(), 3);
+
+		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(second.elements.len(), 2);
+
+		engine.update_key_state(Key::Escape, true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(background_hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn awaited_modal_can_return_cancelled_from_escape() {
+		#[derive(Debug, PartialEq, Eq)]
+		enum Result {
+			Confirmed,
+			Cancelled,
+		}
+
+		async fn modal(ctx: &mut impl Context) -> Result {
+			let mut window = ctx.element("window").container(Container::default());
+			let mut ok = window.element("ok").container(Container::default());
+			window.request_focus();
+
+			utils::r#async::select! {
+				_ = ok.on(Events::Actuated) => Result::Confirmed,
+				_ = window.on_key(Key::Escape) => Result::Cancelled,
+			}
+		}
+
+		let frame_allocator = bumpalo::Bump::new();
+		let result = Arc::new(StdMutex::new(None));
+		let result_for_task = Arc::clone(&result);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let result = Arc::clone(&result_for_task);
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				let value = frame.element("modal").mount(|ctx| Box::pin(modal(ctx))).await;
+				*result.lock().unwrap() = Some(value);
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.update_key_state(Key::Escape, true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(*result.lock().unwrap(), Some(Result::Cancelled));
 	}
 
 	#[test]
@@ -1793,7 +2204,7 @@ use crate::ui::{
 	components::shape::Shape,
 	font::TextSystem,
 	intersection::build_mouse_click_acceleration,
-	primitive::{Events, Primitive as _, Primitives, Shapes},
+	primitive::{Events, Key, Primitive as _, Primitives, Shapes},
 	style::Color,
 	Container, Text, Transform,
 };

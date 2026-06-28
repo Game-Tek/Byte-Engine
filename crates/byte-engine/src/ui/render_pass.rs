@@ -851,18 +851,20 @@ vec2 centered_position = in_local_position - half_size;
 vec2 rounded_extent = half_size - vec2(corner_radius);
 vec2 corner_delta = abs(centered_position) - rounded_extent;
 vec2 abs_corner = max(corner_delta, vec2(0.0));
-float corner_distance = pow(pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent), 1.0 / corner_exponent);
+float corner_sum = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
+float corner_distance = pow(corner_sum, 1.0 / corner_exponent);
 float field_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
 float edge_width = max(fwidth(field_distance), 1.0);
-float fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance);
+float rounded_shape = step(0.0001, corner_radius);
+float rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance);
+float fill_coverage = mix(1.0, rounded_fill_coverage, rounded_shape);
 
-vec2 gradient_sample_x_delta = abs(centered_position + vec2(1.0, 0.0)) - rounded_extent;
-vec2 gradient_sample_x_corner = max(gradient_sample_x_delta, vec2(0.0));
-float gradient_sample_x_distance = pow(pow(gradient_sample_x_corner.x, corner_exponent) + pow(gradient_sample_x_corner.y, corner_exponent), 1.0 / corner_exponent) + min(max(gradient_sample_x_delta.x, gradient_sample_x_delta.y), 0.0) - corner_radius;
-vec2 gradient_sample_y_delta = abs(centered_position + vec2(0.0, 1.0)) - rounded_extent;
-vec2 gradient_sample_y_corner = max(gradient_sample_y_delta, vec2(0.0));
-float gradient_sample_y_distance = pow(pow(gradient_sample_y_corner.x, corner_exponent) + pow(gradient_sample_y_corner.y, corner_exponent), 1.0 / corner_exponent) + min(max(gradient_sample_y_delta.x, gradient_sample_y_delta.y), 0.0) - corner_radius;
-float field_gradient_length = max(length(vec2(gradient_sample_x_distance - field_distance, gradient_sample_y_distance - field_distance)), 0.0001);
+float corner_gradient_scale = pow(max(corner_sum, 0.0001), (1.0 / corner_exponent) - 1.0);
+vec2 corner_gradient = vec2(
+	pow(abs_corner.x, corner_exponent - 1.0) * corner_gradient_scale,
+	pow(abs_corner.y, corner_exponent - 1.0) * corner_gradient_scale
+);
+float field_gradient_length = mix(1.0, max(length(corner_gradient), 0.0001), step(0.0001, corner_sum));
 float signed_distance = field_distance / field_gradient_length;
 float corrected_edge_width = max(fwidth(signed_distance), 1.0);
 float inner_signed_distance = signed_distance + in_stroke_width;
@@ -896,18 +898,20 @@ fragment float4 ui_fragment_main(UiVertexOut in [[stage_in]]) {
 	float2 rounded_extent = half_size - float2(corner_radius);
 	float2 corner_delta = abs(centered_position) - rounded_extent;
 	float2 abs_corner = max(corner_delta, float2(0.0));
-	float corner_distance = pow(pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent), 1.0 / corner_exponent);
+	float corner_sum = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
+	float corner_distance = pow(corner_sum, 1.0 / corner_exponent);
 	float field_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
 	float edge_width = max(fwidth(field_distance), 1.0);
-	float fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance);
+	float rounded_shape = step(0.0001, corner_radius);
+	float rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance);
+	float fill_coverage = mix(1.0, rounded_fill_coverage, rounded_shape);
 
-	float2 gradient_sample_x_delta = abs(centered_position + float2(1.0, 0.0)) - rounded_extent;
-	float2 gradient_sample_x_corner = max(gradient_sample_x_delta, float2(0.0));
-	float gradient_sample_x_distance = pow(pow(gradient_sample_x_corner.x, corner_exponent) + pow(gradient_sample_x_corner.y, corner_exponent), 1.0 / corner_exponent) + min(max(gradient_sample_x_delta.x, gradient_sample_x_delta.y), 0.0) - corner_radius;
-	float2 gradient_sample_y_delta = abs(centered_position + float2(0.0, 1.0)) - rounded_extent;
-	float2 gradient_sample_y_corner = max(gradient_sample_y_delta, float2(0.0));
-	float gradient_sample_y_distance = pow(pow(gradient_sample_y_corner.x, corner_exponent) + pow(gradient_sample_y_corner.y, corner_exponent), 1.0 / corner_exponent) + min(max(gradient_sample_y_delta.x, gradient_sample_y_delta.y), 0.0) - corner_radius;
-	float field_gradient_length = max(length(float2(gradient_sample_x_distance - field_distance, gradient_sample_y_distance - field_distance)), 0.0001);
+	float corner_gradient_scale = pow(max(corner_sum, 0.0001), (1.0 / corner_exponent) - 1.0);
+	float2 corner_gradient = float2(
+		pow(abs_corner.x, corner_exponent - 1.0) * corner_gradient_scale,
+		pow(abs_corner.y, corner_exponent - 1.0) * corner_gradient_scale
+	);
+	float field_gradient_length = mix(1.0, max(length(corner_gradient), 0.0001), step(0.0001, corner_sum));
 	float signed_distance = field_distance / field_gradient_length;
 	float corrected_edge_width = max(fwidth(signed_distance), 1.0);
 	float inner_signed_distance = signed_distance + in.stroke_width;
@@ -1272,7 +1276,8 @@ mod tests {
 	#[test]
 	fn rounded_rect_glsl_shader_uses_derivative_anti_aliasing() {
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fwidth(field_distance)"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("smoothstep(-edge_width, edge_width, field_distance)"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN
+			.contains("rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance)"));
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fwidth(signed_distance)"));
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("in_color.a * coverage"));
 	}
@@ -1280,9 +1285,18 @@ mod tests {
 	#[test]
 	fn rounded_rect_msl_shader_uses_derivative_anti_aliasing() {
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("fwidth(field_distance)"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("smoothstep(-edge_width, edge_width, field_distance)"));
+		assert!(UI_FRAGMENT_SHADER_MSL
+			.contains("rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance)"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("fwidth(signed_distance)"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("in.color.a * coverage"));
+	}
+
+	#[test]
+	fn square_fill_layers_do_not_antialias_shared_edges() {
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("rounded_shape = step(0.0001, corner_radius)"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fill_coverage = mix(1.0, rounded_fill_coverage, rounded_shape)"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("rounded_shape = step(0.0001, corner_radius)"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("fill_coverage = mix(1.0, rounded_fill_coverage, rounded_shape)"));
 	}
 
 	#[test]
@@ -1296,15 +1310,23 @@ mod tests {
 	#[test]
 	fn rounded_rect_shaders_support_stroke_band_coverage() {
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("field_gradient_length"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("corner_gradient"));
+		assert!(
+			UI_FRAGMENT_SHADER_GLSL_MAIN.contains("mix(1.0, max(length(corner_gradient), 0.0001), step(0.0001, corner_sum))")
+		);
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("field_distance / field_gradient_length"));
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("signed_distance + in_stroke_width"));
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fill_coverage - inner_coverage"));
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("step(0.5, in_layer_kind)"));
+		assert!(!UI_FRAGMENT_SHADER_GLSL_MAIN.contains("gradient_sample"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("field_gradient_length"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("corner_gradient"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("mix(1.0, max(length(corner_gradient), 0.0001), step(0.0001, corner_sum))"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("field_distance / field_gradient_length"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("signed_distance + in.stroke_width"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("fill_coverage - inner_coverage"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("step(0.5, in.layer_kind)"));
+		assert!(!UI_FRAGMENT_SHADER_MSL.contains("gradient_sample"));
 	}
 
 	#[test]

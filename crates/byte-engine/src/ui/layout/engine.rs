@@ -384,6 +384,10 @@ impl<C> EvaluationContext<C> {
 		update(shape);
 		true
 	}
+
+	pub fn geometry(&self) -> Option<Geometry> {
+		self.runtime.borrow().geometry.get(&self.id).copied()
+	}
 }
 
 impl<C: 'static> Context<C> for EvaluationContext<C> {
@@ -405,6 +409,10 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 			frame_seen: None,
 			complete: false,
 		}
+	}
+
+	fn geometry(&self) -> Option<Geometry> {
+		EvaluationContext::geometry(self)
 	}
 
 	fn request_focus(&mut self) {
@@ -828,6 +836,7 @@ impl<C: 'static> Engine<C> {
 		}
 
 		let acceleration = build_mouse_click_acceleration(&elements, frame_allocator);
+		self.runtime.borrow_mut().update_geometry(&elements);
 
 		Snapshot {
 			elements,
@@ -1027,6 +1036,7 @@ pub struct Runtime {
 	event_waiters: Vec<EventWaiter>,
 	key_waiters: Vec<KeyWaiter>,
 	focus_stack: Vec<Id>,
+	geometry: HashMap<Id, Geometry>,
 	frame: u64,
 	tree: Rc<RefCell<RetainedTree>>,
 }
@@ -1059,6 +1069,7 @@ impl Runtime {
 			event_waiters: Vec::new(),
 			key_waiters: Vec::new(),
 			focus_stack: Vec::new(),
+			geometry: HashMap::new(),
 			frame: 0,
 			tree: Rc::new(RefCell::new(RetainedTree {
 				next_id: 1,
@@ -1234,6 +1245,15 @@ impl Runtime {
 		self.focus_stack.last().copied()
 	}
 
+	fn update_geometry(&mut self, elements: &[LayoutElement]) {
+		self.geometry.clear();
+		self.geometry.extend(
+			elements
+				.iter()
+				.map(|element| (element.id, Geometry::new(element.position, element.size))),
+		);
+	}
+
 	fn remove_targets(&mut self, targets: &[Id]) {
 		self.event_waiters
 			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
@@ -1241,6 +1261,7 @@ impl Runtime {
 			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
 		self.focus_stack
 			.retain(|focused| !targets.iter().any(|target| *target == *focused));
+		self.geometry.retain(|id, _| !targets.iter().any(|target| *target == *id));
 
 		for task in &mut self.tasks {
 			task.inbox
@@ -1312,7 +1333,7 @@ mod tests {
 		flow::{self, Location3},
 		layout::{
 			context::{ContainerContext, Context, ElementContext},
-			Sizing,
+			Geometry, Sizing,
 		},
 		spring,
 		style::{ConcreteLayer, ConcreteStyle, Layer, LayerKind},
@@ -1398,6 +1419,78 @@ mod tests {
 
 		assert!(snapshot.elements.is_empty());
 		assert_eq!(engine.render(&mut snapshot).size(), 0);
+	}
+
+	#[test]
+	fn retained_geometry_is_available_after_layout_evaluation() {
+		let frame_allocator = bumpalo::Bump::new();
+		let geometry = Arc::new(StdMutex::new(None::<Geometry>));
+		let geometry_for_task = Arc::clone(&geometry);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let geometry = Arc::clone(&geometry_for_task);
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				let mut button = frame.element("button").container(
+					Container::default()
+						.width(30.into())
+						.height(20.into())
+						.absolute_position(12, 18),
+				);
+
+				assert_eq!(button.geometry(), None);
+				button.render().await;
+				*geometry.lock().unwrap() = button.geometry();
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(*geometry.lock().unwrap(), None);
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(
+			*geometry.lock().unwrap(),
+			Some(Geometry::new(Location3::new(12, 18, 1), Size::new(30, 20)))
+		);
+	}
+
+	#[test]
+	fn retained_geometry_updates_after_property_mutation() {
+		let frame_allocator = bumpalo::Bump::new();
+		let geometry = Arc::new(StdMutex::new(None::<Geometry>));
+		let geometry_for_task = Arc::clone(&geometry);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let geometry = Arc::clone(&geometry_for_task);
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				let mut button = frame.element("button").container(
+					Container::default()
+						.width(30.into())
+						.height(20.into())
+						.absolute_position(12, 18),
+				);
+
+				button.render().await;
+				assert!(button.update_container(|container| {
+					container.width = Sizing::pixels(40);
+					container.set_position((24, 36));
+				}));
+				button.render().await;
+				*geometry.lock().unwrap() = button.geometry();
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(
+			*geometry.lock().unwrap(),
+			Some(Geometry::new(Location3::new(24, 36, 1), Size::new(40, 20)))
+		);
 	}
 
 	#[test]
@@ -2435,7 +2528,7 @@ use super::{
 	flow::{Location3, Size},
 	layout_elements,
 	snapshot::Snapshot,
-	ConcreteElement, IdedElement, LayoutElement, RenderElement, RenderTextElement,
+	ConcreteElement, Geometry, IdedElement, LayoutElement, RenderElement, RenderTextElement,
 };
 use crate::ui::{
 	components::shape::Shape,

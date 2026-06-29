@@ -30,7 +30,7 @@ pub use animation::{
 pub use components::container::Container;
 pub use components::text::Text;
 pub use element::Element;
-pub use layout::Depth;
+pub use layout::{Depth, Geometry, Position};
 pub use primitive::{Key, Primitive};
 pub use timer::{seconds, wait, WaitFuture};
 pub use transform::Transform;

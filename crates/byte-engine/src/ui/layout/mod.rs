@@ -115,7 +115,7 @@ fn layout_elements<'a>(
 		let available_space = if ts.is_root { ctx.root_size } else { ts.available_space };
 		let size = calculate_element_size(&element, available_space, text_system);
 
-		let position = Location3::from((ts.offset.into(), clamp_depth(ts.depth)));
+		let position = location_from_offset(ts.offset, ts.depth);
 
 		let hit_testable = matches!(element.element.primitive, Primitives::Container(_));
 
@@ -173,7 +173,9 @@ fn layout_elements<'a>(
 
 						let child_available_space = if reset_layout { ctx.root_size } else { size };
 						let expected_child_size = calculate_element_size(&child, child_available_space, text_system);
-						let flow_output = if reset_layout {
+						let flow_output = if let Some(position) = absolute_position(child) {
+							FlowOutput::new(position, cursor)
+						} else if reset_layout {
 							FlowOutput::new(Offset::new(0, 0), cursor)
 						} else {
 							flow.call(FlowInput::new(size, cursor, expected_child_size))
@@ -222,6 +224,16 @@ fn layout_elements<'a>(
 		)
 	}
 
+	fn absolute_position(element: &IdedElement) -> Option<Offset> {
+		match &element.element.primitive {
+			Primitives::Container(container) => match container.position {
+				Position::Flow => None,
+				Position::Absolute { x, y } => Some(Offset::new(x, y)),
+			},
+			_ => None,
+		}
+	}
+
 	fn resolve_element_depth(element: &IdedElement, parent_depth: i32, highest_depth: i32) -> i32 {
 		match &element.element.primitive {
 			Primitives::Container(container) => match container.depth {
@@ -234,6 +246,10 @@ fn layout_elements<'a>(
 
 	fn clamp_depth(depth: i32) -> u32 {
 		depth.max(0) as u32
+	}
+
+	fn location_from_offset(offset: Offset, depth: i32) -> Location3 {
+		Location3::new(offset.x().max(0) as u32, offset.y().max(0) as u32, clamp_depth(depth))
 	}
 
 	let root_id = elements
@@ -276,6 +292,72 @@ fn layout_elements<'a>(
 pub enum Depth {
 	Relative(i32),
 	Absolute(i32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Position {
+	Flow,
+	Absolute { x: i32, y: i32 },
+}
+
+impl Position {
+	pub fn flow() -> Self {
+		Self::Flow
+	}
+
+	pub fn absolute(x: i32, y: i32) -> Self {
+		Self::Absolute { x, y }
+	}
+}
+
+impl Default for Position {
+	fn default() -> Self {
+		Self::flow()
+	}
+}
+
+impl From<(i32, i32)> for Position {
+	fn from((x, y): (i32, i32)) -> Self {
+		Self::absolute(x, y)
+	}
+}
+
+impl From<(u32, u32)> for Position {
+	fn from((x, y): (u32, u32)) -> Self {
+		Self::absolute(x.min(i32::MAX as u32) as i32, y.min(i32::MAX as u32) as i32)
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+	pub position: Location3,
+	pub size: Size,
+}
+
+impl Geometry {
+	pub fn new(position: Location3, size: Size) -> Self {
+		Self { position, size }
+	}
+
+	pub fn x(&self) -> u32 {
+		self.position.x()
+	}
+
+	pub fn y(&self) -> u32 {
+		self.position.y()
+	}
+
+	pub fn z(&self) -> u32 {
+		self.position.z()
+	}
+
+	pub fn width(&self) -> u32 {
+		self.size.x()
+	}
+
+	pub fn height(&self) -> u32 {
+		self.size.y()
+	}
 }
 
 impl Depth {
@@ -349,7 +431,7 @@ mod tests {
 		components::container::Container,
 		element::{ElementHandle, Id},
 		flow::{self, Location, Location3, Size},
-		layout::{ConcreteElement, Depth, Sizing},
+		layout::{ConcreteElement, Depth, Position, Sizing},
 		Element,
 	};
 	use super::layout_elements;
@@ -636,6 +718,108 @@ mod tests {
 
 		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
 		assert_eq!(elements[2].position, Location3::new(0, 0, 2));
+	}
+
+	#[test]
+	fn layout_absolute_position_places_child_without_advancing_flow() {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = Container::default().flow(flow::row);
+		let first = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+		let positioned = Container::default()
+			.width(Sizing::Absolute(30))
+			.height(Sizing::Absolute(30))
+			.position(Position::absolute(70, 12));
+		let second = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+
+		let elements = make_elements([root, first, positioned, second]);
+
+		let root = &elements[0];
+		let first = &elements[1];
+		let positioned = &elements[2];
+		let second = &elements[3];
+
+		let relations = [
+			(root.id(), first.id()),
+			(root.id(), positioned.id()),
+			(root.id(), second.id()),
+		];
+
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 100),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
+
+		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
+		assert_eq!(elements[2].position, Location3::new(70, 12, 1));
+		assert_eq!(elements[3].position, Location3::new(20, 0, 1));
+	}
+
+	#[test]
+	fn layout_absolute_depth_uses_absolute_position_in_root_space() {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = Container::default().flow(flow::row);
+		let first = Container::default().width(Sizing::Absolute(20)).height(Sizing::Absolute(20));
+		let dropdown = Container::default()
+			.width(Sizing::Absolute(30))
+			.height(Sizing::Absolute(30))
+			.depth(Depth::absolute(1))
+			.absolute_position(24, 32);
+		let child = Container::default().width(Sizing::Absolute(10)).height(Sizing::Absolute(10));
+
+		let elements = make_elements([root, first, dropdown, child]);
+
+		let root = &elements[0];
+		let first = &elements[1];
+		let dropdown = &elements[2];
+		let child = &elements[3];
+
+		let relations = [
+			(root.id(), first.id()),
+			(root.id(), dropdown.id()),
+			(dropdown.id(), child.id()),
+		];
+
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 100),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
+
+		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
+		assert_eq!(elements[2].position, Location3::new(24, 32, 2));
+		assert_eq!(elements[3].position, Location3::new(24, 32, 3));
+	}
+
+	#[test]
+	fn layout_absolute_position_clamps_negative_coordinates() {
+		let frame_allocator = bumpalo::Bump::new();
+		let root = Container::default();
+		let child = Container::default()
+			.width(Sizing::Absolute(30))
+			.height(Sizing::Absolute(30))
+			.position(Position::absolute(-10, -20));
+
+		let elements = make_elements([root, child]);
+
+		let root = &elements[0];
+		let child = &elements[1];
+
+		let relations = [(root.id(), child.id())];
+
+		let elements = layout_elements(
+			elements,
+			&relations,
+			Size::new(100, 100),
+			&mut TextSystem::new(),
+			&frame_allocator,
+		);
+
+		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
 	}
 
 	#[test]

@@ -1,6 +1,6 @@
 use super::super::{
 	flow::{self, FlowFunction},
-	layout::{Depth, Sizing},
+	layout::{Depth, Position, Sizing},
 };
 use crate::ui::{
 	flow::{FlowInput, FlowOutput},
@@ -18,6 +18,7 @@ pub struct Container {
 	max_width: Option<Sizing>,
 	max_height: Option<Sizing>,
 	pub depth: Depth,
+	pub position: Position,
 	pub flow: utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) transform: Transform,
@@ -84,6 +85,17 @@ impl Container {
 		}
 	}
 
+	pub fn position(self, position: impl Into<Position>) -> Self {
+		Self {
+			position: position.into(),
+			..self
+		}
+	}
+
+	pub fn absolute_position(self, x: i32, y: i32) -> Self {
+		self.position(Position::absolute(x, y))
+	}
+
 	pub fn flow(self, flow: impl FlowFunction + 'static) -> Self {
 		Self {
 			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow),
@@ -120,6 +132,10 @@ impl Container {
 		self.transform = transform.into();
 	}
 
+	pub fn set_position(&mut self, position: impl Into<Position>) {
+		self.position = position.into();
+	}
+
 	pub fn set_opacity(&mut self, opacity: f32) {
 		self.visual.opacity = opacity;
 	}
@@ -153,6 +169,7 @@ impl Default for Container {
 			max_width: None,
 			max_height: None,
 			depth: Depth::default(),
+			position: Position::default(),
 			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow::grid),
 			style: ConcreteStyle::default(),
 			transform: Transform::default(),

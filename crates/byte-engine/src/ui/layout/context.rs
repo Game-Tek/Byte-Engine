@@ -3,7 +3,10 @@ use std::{future::Future, pin::Pin, time::Duration};
 use crate::ui::{
 	components::shape::Shape,
 	element::Id,
-	layout::engine::{EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, RenderFuture},
+	layout::{
+		engine::{EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, RenderFuture},
+		Geometry,
+	},
 	primitive::{Events, Key},
 	timer::{seconds as wait_seconds, wait, WaitFuture},
 	Container, Text,
@@ -28,6 +31,8 @@ pub trait Context<C: 'static = ()>: Sized {
 	}
 
 	fn render(&mut self) -> RenderFuture;
+
+	fn geometry(&self) -> Option<Geometry>;
 
 	fn request_focus(&mut self);
 

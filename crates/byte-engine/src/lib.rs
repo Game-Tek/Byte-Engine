@@ -17,9 +17,11 @@
 #![allow(incomplete_features)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
+#![deny(unsafe_code)]
 #![deny(unused_must_use)]
 #![deny(unused_features)]
 #![deny(rustdoc::broken_intra_doc_links)]
+
 // #![warn(missing_docs)] # Disable now because we are writing a lot of code
 // #![warn(missing_doc_code_examples)] # Disable now because we are writing a lot of code
 

@@ -25,8 +25,10 @@ struct RetainedTree {
 	elements: Vec<IdedElement>,
 	element_indices: HashMap<Id, usize>,
 	relations: Vec<(Id, Id)>,
-	path_counts: HashMap<String, u32>,
-	path_ids: HashMap<String, Id>,
+	children_by_parent: HashMap<Id, Vec<Id>>,
+	parent_by_child: HashMap<Id, Id>,
+	path_counts: HashMap<(Option<Id>, &'static str), u32>,
+	path_ids: HashMap<Vec<PathSegment>, Id>,
 	next_id: u32,
 }
 
@@ -35,60 +37,46 @@ impl RetainedTree {
 		self.path_counts.clear();
 	}
 
-	fn element_path(&mut self, parent_path: &[String], name: &'static str) -> String {
-		let parent = parent_path.join("/");
-		let key = if parent.is_empty() {
-			name.to_string()
-		} else {
-			format!("{parent}/{name}")
-		};
-		let count = self.path_counts.entry(key).or_insert(0);
+	fn element_path(&mut self, parent: Option<Id>, parent_path: &[PathSegment], name: &'static str) -> Vec<PathSegment> {
+		let count = self.path_counts.entry((parent, name)).or_insert(0);
 		*count += 1;
 
-		let mut path = parent_path.to_vec();
-		path.push(format!("{name}#{count}"));
-		path.join("/")
+		let mut path = Vec::with_capacity(parent_path.len() + 1);
+		path.extend_from_slice(parent_path);
+		path.push(PathSegment { name, ordinal: *count });
+		path
 	}
 
-	fn scope_path(&mut self, parent_path: &[String], name: &'static str) -> Vec<String> {
-		self.element_path(parent_path, name)
-			.split('/')
-			.map(ToOwned::to_owned)
-			.collect()
+	fn scope_path(&mut self, parent: Option<Id>, parent_path: &[PathSegment], name: &'static str) -> Vec<PathSegment> {
+		self.element_path(parent, parent_path, name)
 	}
 
-	fn id_for_path(&mut self, path: String) -> Id {
-		if let Some(id) = self.path_ids.get(&path) {
+	fn id_for_path(&mut self, path: &[PathSegment]) -> Id {
+		if let Some(id) = self.path_ids.get(path) {
 			return *id;
 		}
 
 		let id = Id::new(self.next_id).expect("UI id counter must stay non-zero");
 		self.next_id += 1;
-		self.path_ids.insert(path, id);
+		self.path_ids.insert(path.to_vec(), id);
 		id
 	}
 
 	fn add_element(
 		&mut self,
 		parent: Option<Id>,
-		parent_path: &[String],
+		parent_path: &[PathSegment],
 		name: &'static str,
 		element: ConcreteElement,
-	) -> (Id, Vec<String>) {
-		let path_string = self.element_path(parent_path, name);
-		let id = self.id_for_path(path_string.clone());
+	) -> (Id, Vec<PathSegment>) {
+		let path = self.element_path(parent, parent_path, name);
+		let id = self.id_for_path(&path);
 
 		if self.element_indices.contains_key(&id) {
-			return (id, path_string.split('/').map(ToOwned::to_owned).collect());
+			return (id, path);
 		}
 
 		self.element_indices.insert(id, self.elements.len());
-		let path = if path_string.is_empty() {
-			Vec::new()
-		} else {
-			path_string.split('/').map(ToOwned::to_owned).collect()
-		};
-
 		self.elements.push(IdedElement {
 			id,
 			element,
@@ -96,12 +84,20 @@ impl RetainedTree {
 		});
 
 		if let Some(parent) = parent {
-			if !self.relations.iter().any(|relation| *relation == (parent, id)) {
-				self.relations.push((parent, id));
-			}
+			self.add_relation(parent, id);
 		}
 
 		(id, path)
+	}
+
+	fn add_relation(&mut self, parent: Id, child: Id) {
+		if self.parent_by_child.get(&child) == Some(&parent) {
+			return;
+		}
+		if self.parent_by_child.insert(child, parent).is_none() {
+			self.relations.push((parent, child));
+			self.children_by_parent.entry(parent).or_default().push(child);
+		}
 	}
 
 	fn element_mut(&mut self, id: Id) -> Option<&mut IdedElement> {
@@ -114,7 +110,7 @@ impl RetainedTree {
 		self.elements.get(index)
 	}
 
-	fn remove_scope(&mut self, scope: &[String]) -> Vec<Id> {
+	fn remove_scope(&mut self, scope: &[PathSegment]) -> Vec<Id> {
 		if scope.is_empty() {
 			return Vec::new();
 		}
@@ -134,6 +130,15 @@ impl RetainedTree {
 
 		self.relations
 			.retain(|(parent, child)| !removed.contains(parent) && !removed.contains(child));
+		self.parent_by_child
+			.retain(|child, parent| !removed.contains(child) && !removed.contains(parent));
+		self.children_by_parent.retain(|parent, children| {
+			if removed.contains(parent) {
+				return false;
+			}
+			children.retain(|child| !removed.contains(child));
+			!children.is_empty()
+		});
 		self.rebuild_element_indices();
 		removed.into_iter().collect()
 	}
@@ -300,17 +305,14 @@ fn geometry_from_layout_element(element: &LayoutElement) -> Geometry {
 	Geometry::new(element.position, element.size)
 }
 
-fn element_clips<'a>(
-	elements: impl IntoIterator<Item = &'a LayoutElement>,
-	relations: &[(Id, Id)],
-	tree: &RetainedTree,
-) -> HashMap<Id, ClipInfo> {
+fn element_clips<'a>(elements: impl IntoIterator<Item = &'a LayoutElement>, tree: &RetainedTree) -> HashMap<Id, ClipInfo> {
 	let mut clips = HashMap::new();
 
 	for element in elements {
-		let inherited = relations
-			.iter()
-			.find_map(|(parent, child)| (*child == element.id).then_some(*parent))
+		let inherited = tree
+			.parent_by_child
+			.get(&element.id)
+			.copied()
 			.and_then(|parent| clips.get(&parent).map(|clip: &ClipInfo| clip.descendants))
 			.unwrap_or(EffectiveClip::Unbounded);
 		let geometry = geometry_from_layout_element(element);
@@ -333,11 +335,10 @@ fn element_clips<'a>(
 
 fn clipped_layout_elements<'a>(
 	elements: &[LayoutElement],
-	relations: &[(Id, Id)],
 	tree: &RetainedTree,
 	frame_allocator: &'a bumpalo::Bump,
 ) -> Vec<LayoutElement, &'a bumpalo::Bump> {
-	let clips = element_clips(elements, relations, tree);
+	let clips = element_clips(elements, tree);
 	let mut clipped = Vec::with_capacity_in(elements.len(), frame_allocator);
 
 	for element in elements {
@@ -365,18 +366,14 @@ fn clipped_layout_elements<'a>(
 	clipped
 }
 
-fn apply_visual_transforms<'a>(
-	elements: &mut [LayoutElement],
-	relations: &[(Id, Id)],
-	tree: &RetainedTree,
-	frame_allocator: &'a bumpalo::Bump,
-) {
+fn apply_visual_transforms<'a>(elements: &mut [LayoutElement], tree: &RetainedTree, frame_allocator: &'a bumpalo::Bump) {
 	let mut resolved = Vec::with_capacity_in(elements.len(), frame_allocator);
 
 	for element in elements {
-		let parent_transform = relations
-			.iter()
-			.find_map(|(parent, child)| (*child == element.id).then_some(*parent))
+		let parent_transform = tree
+			.parent_by_child
+			.get(&element.id)
+			.copied()
 			.and_then(|parent| {
 				resolved
 					.iter()
@@ -401,7 +398,7 @@ fn apply_visual_transforms<'a>(
 pub struct EvaluationContext<C = ()> {
 	id: Id,
 	parent: Option<Id>,
-	path: Vec<String>,
+	path: Vec<PathSegment>,
 	ctx: Rc<C>,
 	runtime: Rc<RefCell<Runtime>>,
 	tree: Rc<RefCell<RetainedTree>>,
@@ -427,7 +424,7 @@ impl<C> EvaluationContext<C> {
 		tree: Rc<RefCell<RetainedTree>>,
 		task_id: TaskId,
 		id: Id,
-		path: Vec<String>,
+		path: Vec<PathSegment>,
 	) -> Self {
 		Self {
 			id,
@@ -550,7 +547,9 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 		let runtime = Rc::clone(&self.parent.runtime);
 		let tree = Rc::clone(&self.parent.tree);
 		let task_id = Runtime::spawn_placeholder(Rc::clone(&runtime));
-		let path = tree.borrow_mut().scope_path(&self.parent.path, self.name);
+		let path = tree
+			.borrow_mut()
+			.scope_path(Some(self.parent.id), &self.parent.path, self.name);
 		let ctx = EvaluationContext {
 			id: self.parent.id,
 			parent: Some(self.parent.id),
@@ -618,10 +617,10 @@ pub struct MountedComponentFuture<F, T, C = ()> {
 	runtime: Rc<RefCell<Runtime>>,
 	tree: Rc<RefCell<RetainedTree>>,
 	parent: Id,
-	parent_path: Vec<String>,
+	parent_path: Vec<PathSegment>,
 	name: &'static str,
 	task_id: TaskId,
-	scope: Option<Vec<String>>,
+	scope: Option<Vec<PathSegment>>,
 	complete: bool,
 	output: PhantomData<T>,
 }
@@ -655,7 +654,10 @@ where
 			return;
 		};
 
-		let scope = self.tree.borrow_mut().scope_path(&self.parent_path, self.name);
+		let scope = self
+			.tree
+			.borrow_mut()
+			.scope_path(Some(self.parent), &self.parent_path, self.name);
 		let ctx = EvaluationContext {
 			id: self.parent,
 			parent: Some(self.parent),
@@ -931,8 +933,8 @@ impl<C: 'static> Engine<C> {
 			relations.extend_from_slice(&tree.relations);
 
 			let mut elements = layout_elements(&tree.elements, &tree.relations, size, &mut self.text_system, frame_allocator);
-			apply_visual_transforms(&mut elements, &tree.relations, &tree, frame_allocator);
-			let clipped_elements = clipped_layout_elements(&elements, &tree.relations, &tree, frame_allocator);
+			apply_visual_transforms(&mut elements, &tree, frame_allocator);
+			let clipped_elements = clipped_layout_elements(&elements, &tree, frame_allocator);
 
 			(elements, relations, clipped_elements)
 		};
@@ -990,7 +992,7 @@ impl<C: 'static> Engine<C> {
 		let mut effective_opacities = HashMap::new();
 		let tree = Rc::clone(&self.runtime.borrow().tree);
 		let tree = tree.borrow();
-		let clips = element_clips(snapshot.elements.iter(), &snapshot.relations, &tree);
+		let clips = element_clips(snapshot.elements.iter(), &tree);
 
 		for element in &mut snapshot.elements {
 			let Some(retained_element) = tree.element(element.id) else {
@@ -1005,7 +1007,7 @@ impl<C: 'static> Engine<C> {
 			}
 			let clip = clip.as_rect();
 
-			let opacity = effective_opacity(element.id, &tree, &snapshot.relations, &mut effective_opacities);
+			let opacity = effective_opacity(element.id, &tree, &mut effective_opacities);
 			let style = retained_element.element.primitive.style().clone();
 			let color = style
 				.layers()
@@ -1121,7 +1123,7 @@ struct KeyWaiter {
 	waker: Waker,
 }
 
-fn effective_opacity(id: Id, tree: &RetainedTree, relations: &[(Id, Id)], effective_opacities: &mut HashMap<Id, f32>) -> f32 {
+fn effective_opacity(id: Id, tree: &RetainedTree, effective_opacities: &mut HashMap<Id, f32>) -> f32 {
 	if let Some(opacity) = effective_opacities.get(&id) {
 		return *opacity;
 	}
@@ -1130,10 +1132,11 @@ fn effective_opacity(id: Id, tree: &RetainedTree, relations: &[(Id, Id)], effect
 		.element(id)
 		.map(|element| sanitize_opacity(element.element.primitive.visual().opacity))
 		.unwrap_or(1.0);
-	let parent_opacity = relations
-		.iter()
-		.find_map(|(parent, child)| (*child == id).then_some(*parent))
-		.map(|parent| effective_opacity(parent, tree, relations, effective_opacities))
+	let parent_opacity = tree
+		.parent_by_child
+		.get(&id)
+		.copied()
+		.map(|parent| effective_opacity(parent, tree, effective_opacities))
 		.unwrap_or(1.0);
 	let opacity = (parent_opacity * local_opacity).clamp(0.0, 1.0);
 	effective_opacities.insert(id, opacity);
@@ -1221,6 +1224,7 @@ impl Runtime {
 		let mut runtime = runtime.borrow_mut();
 		runtime.frame += 1;
 		runtime.tree.borrow_mut().begin_frame();
+		crate::ui::timer::wake_due_timers(std::time::Instant::now());
 
 		for waker in runtime.frame_waiters.drain(..) {
 			waker.wake();
@@ -1528,6 +1532,82 @@ mod tests {
 		let second_ids = second.elements.iter().map(|element| element.id).collect::<Vec<_>>();
 		assert_eq!(second_ids, first_ids);
 		assert_eq!(second.relations, first.relations);
+	}
+
+	#[test]
+	fn repeated_sibling_names_keep_stable_ids_across_frames() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default().flow(flow::column));
+				for _ in 0..64 {
+					frame.element("item").container(Container::default().size(1.into()));
+				}
+			})
+		});
+
+		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let first_ids = first.elements.iter().map(|element| element.id).collect::<Vec<_>>();
+		assert_eq!(first_ids.len(), 65);
+
+		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let second_ids = second.elements.iter().map(|element| element.id).collect::<Vec<_>>();
+
+		assert_eq!(second_ids, first_ids);
+	}
+
+	#[test]
+	fn mounted_scope_cleanup_removes_structural_path_descendants() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame
+					.element("modal")
+					.mount(|ctx| {
+						Box::pin(async move {
+							ctx.element("body").container(Container::default().size(10.into()));
+							ctx.render().await;
+						})
+					})
+					.await;
+			})
+		});
+
+		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(first.elements.len(), 2);
+
+		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(second.elements.len(), 1);
+	}
+
+	#[test]
+	fn context_wait_wakes_from_runtime_frame_loop() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				ctx.wait(Duration::from_millis(1)).await;
+				hits.fetch_add(1, Ordering::SeqCst);
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+		std::thread::sleep(Duration::from_millis(2));
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(hits.load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
@@ -2805,7 +2885,7 @@ use super::{
 	flow::{Location3, Size},
 	layout_elements,
 	snapshot::Snapshot,
-	ConcreteElement, Geometry, IdedElement, LayoutElement, RenderElement, RenderTextElement,
+	ConcreteElement, Geometry, IdedElement, LayoutElement, PathSegment, RenderElement, RenderTextElement,
 };
 use crate::ui::{
 	components::shape::Shape,

@@ -1,4 +1,5 @@
 use std::{
+	collections::HashMap,
 	fs,
 	path::{Path, PathBuf},
 };
@@ -27,6 +28,7 @@ enum FontState {
 
 pub(crate) struct TextSystem {
 	font_state: FontState,
+	measure_cache: HashMap<u32, HashMap<String, Size>>,
 	reported_unavailable: bool,
 }
 
@@ -61,6 +63,7 @@ impl TextSystem {
 	pub fn new() -> Self {
 		Self {
 			font_state: FontState::Uninitialized,
+			measure_cache: HashMap::new(),
 			reported_unavailable: false,
 		}
 	}
@@ -71,11 +74,20 @@ impl TextSystem {
 		}
 
 		let font_size = font_size.max(1.0);
+		let font_size_key = font_size.to_bits();
+		if let Some(size) = self.measure_cache.get(&font_size_key).and_then(|sizes| sizes.get(text)) {
+			return *size;
+		}
 
-		match self.font() {
+		let size = match self.font() {
 			Some(font) => measure_with_font(font, text, font_size),
 			None => measure_with_fallback(text, font_size),
-		}
+		};
+		self.measure_cache
+			.entry(font_size_key)
+			.or_default()
+			.insert(text.to_owned(), size);
+		size
 	}
 
 	/// Rasterizes a text run into the provided RGBA texture using source-over alpha blending.
@@ -383,7 +395,29 @@ fn font_search_roots() -> Vec<PathBuf> {
 mod tests {
 	use utils::RGBA;
 
-	use super::{blend_glyph, TextClipRect};
+	use super::{blend_glyph, TextClipRect, TextSystem};
+
+	#[test]
+	fn measure_reuses_cached_text_size_for_same_font_size() {
+		let mut text_system = TextSystem::new();
+
+		let first = text_system.measure("Cached", 16.0);
+		let cache_entries = text_system
+			.measure_cache
+			.get(&16.0f32.to_bits())
+			.map(|entries| entries.len())
+			.unwrap_or_default();
+
+		let second = text_system.measure("Cached", 16.0);
+		let second_cache_entries = text_system
+			.measure_cache
+			.get(&16.0f32.to_bits())
+			.map(|entries| entries.len())
+			.unwrap_or_default();
+
+		assert_eq!(second, first);
+		assert_eq!(second_cache_entries, cache_entries);
+	}
 
 	#[test]
 	fn clipped_glyph_reports_no_draw_when_all_pixels_are_outside_clip() {

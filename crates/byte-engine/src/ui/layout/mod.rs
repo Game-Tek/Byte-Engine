@@ -20,6 +20,12 @@ use crate::ui::{
 	style::ConcreteStyle,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PathSegment {
+	pub(crate) name: &'static str,
+	pub(crate) ordinal: u32,
+}
+
 /// Describes an element layed out for an screen.
 pub(crate) struct LayoutElement {
 	pub(crate) id: Id,
@@ -69,12 +75,61 @@ fn random_color_from_id(id: u32) -> RGBA {
 pub struct IdedElement {
 	pub(crate) id: Id,
 	pub(crate) element: ConcreteElement,
-	pub(crate) path: Vec<String>,
+	pub(crate) path: Vec<PathSegment>,
 }
 
 impl ElementHandle for IdedElement {
 	fn id(&self) -> Id {
 		self.id
+	}
+}
+
+pub(crate) struct LayoutGraph {
+	element_indices: std::collections::HashMap<Id, usize>,
+	children_by_parent: std::collections::HashMap<Id, Vec<Id>>,
+	parent_by_child: std::collections::HashMap<Id, Id>,
+	root: Option<Id>,
+}
+
+impl LayoutGraph {
+	pub(crate) fn new(elements: &[IdedElement], relations: &[(Id, Id)]) -> Self {
+		let mut element_indices = std::collections::HashMap::with_capacity(elements.len());
+		for (index, element) in elements.iter().enumerate() {
+			element_indices.insert(element.id, index);
+		}
+
+		let mut children_by_parent = std::collections::HashMap::new();
+		let mut parent_by_child = std::collections::HashMap::with_capacity(relations.len());
+		for &(parent, child) in relations {
+			children_by_parent.entry(parent).or_insert_with(Vec::new).push(child);
+			parent_by_child.insert(child, parent);
+		}
+
+		let root = elements
+			.iter()
+			.find_map(|element| (!parent_by_child.contains_key(&element.id)).then_some(element.id));
+
+		Self {
+			element_indices,
+			children_by_parent,
+			parent_by_child,
+			root,
+		}
+	}
+
+	pub(crate) fn element<'a>(&self, elements: &'a [IdedElement], id: Id) -> Option<&'a IdedElement> {
+		elements.get(*self.element_indices.get(&id)?)
+	}
+
+	pub(crate) fn parent(&self, id: Id) -> Option<Id> {
+		self.parent_by_child.get(&id).copied()
+	}
+
+	pub(crate) fn children(&self, id: Id) -> impl Iterator<Item = Id> + '_ {
+		self.children_by_parent
+			.get(&id)
+			.into_iter()
+			.flat_map(|children| children.iter().copied())
 	}
 }
 
@@ -94,6 +149,8 @@ fn layout_elements<'a>(
 		return lelements;
 	}
 
+	let graph = LayoutGraph::new(elements, relation_map);
+
 	#[derive(Clone, Copy)]
 	struct TraversalState {
 		available_space: Size,
@@ -104,7 +161,8 @@ fn layout_elements<'a>(
 
 	#[derive(Clone, Copy)]
 	struct Context<'a> {
-		relation_map: &'a [(Id, Id)],
+		elements: &'a [IdedElement],
+		graph: &'a LayoutGraph,
 		root_size: Size,
 	}
 
@@ -164,8 +222,8 @@ fn layout_elements<'a>(
 				lelements.push(p);
 
 				for layout_reset_layer in [false, true] {
-					for &(_, child_id) in ctx.relation_map.iter().filter(|&&(parent_id, _)| parent_id == element_id) {
-						let Some(child) = elements.iter().find(|element| element.id == child_id) else {
+					for child_id in ctx.graph.children(element_id) {
+						let Some(child) = ctx.graph.element(ctx.elements, child_id) else {
 							continue;
 						};
 						let reset_layout = resets_layout(child);
@@ -254,19 +312,8 @@ fn layout_elements<'a>(
 		Location3::new(offset.x().max(0) as u32, offset.y().max(0) as u32, clamp_depth(depth))
 	}
 
-	let root_id = elements
-		.iter()
-		.find_map(|element| {
-			let has_parent = relation_map.iter().any(|(_, child_id)| *child_id == element.id);
-			if has_parent {
-				None
-			} else {
-				Some(element.id)
-			}
-		})
-		.expect("Root container not found");
-	let root_index = elements.iter().position(|element| element.id == root_id).unwrap();
-	let root = &elements[root_index];
+	let root_id = graph.root.expect("Root container not found");
+	let root = graph.element(elements, root_id).unwrap();
 	let mut highest_depth = 0;
 
 	layout_element(
@@ -274,7 +321,8 @@ fn layout_elements<'a>(
 		&mut lelements,
 		root,
 		Context {
-			relation_map,
+			elements,
+			graph: &graph,
 			root_size: Size::new(available_space.x(), available_space.y()),
 		},
 		TraversalState {

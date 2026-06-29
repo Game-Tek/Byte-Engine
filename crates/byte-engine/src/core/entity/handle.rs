@@ -81,6 +81,7 @@ fn downcast_inner<F: ?Sized, T>(decoder: &EntityWrapper<F>) -> Option<EntityWrap
 	// SAFETY: This is safe because the pointer orignally came from an Arc
 	// with the same size and alignment since we've checked (via Any) that
 	// the object within is the type being casted to.
+	#[allow(unsafe_code)]
 	Some(unsafe { std::sync::Arc::from_raw(raw) })
 }
 

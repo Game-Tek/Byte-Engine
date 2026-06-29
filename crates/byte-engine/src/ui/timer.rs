@@ -1,7 +1,8 @@
 use std::{
 	future::Future,
 	pin::Pin,
-	task::{Context, Poll},
+	sync::{Mutex, OnceLock},
+	task::{Context, Poll, Waker},
 	time::{Duration, Instant},
 };
 
@@ -27,6 +28,29 @@ pub struct WaitFuture {
 	complete: bool,
 }
 
+struct TimerWaiter {
+	deadline: Instant,
+	waker: Waker,
+}
+
+fn timer_waiters() -> &'static Mutex<Vec<TimerWaiter>> {
+	static WAITERS: OnceLock<Mutex<Vec<TimerWaiter>>> = OnceLock::new();
+	WAITERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub(crate) fn wake_due_timers(now: Instant) {
+	let mut waiters = timer_waiters().lock().expect("UI timer waiter lock poisoned");
+	let mut i = 0;
+	while i < waiters.len() {
+		if waiters[i].deadline <= now {
+			let waiter = waiters.swap_remove(i);
+			waiter.waker.wake();
+		} else {
+			i += 1;
+		}
+	}
+}
+
 impl Future for WaitFuture {
 	type Output = ();
 
@@ -42,13 +66,14 @@ impl Future for WaitFuture {
 		}
 
 		if !self.armed {
-			let waker = cx.waker().clone();
-			let duration = self.deadline.saturating_duration_since(now);
 			self.armed = true;
-			std::thread::spawn(move || {
-				std::thread::sleep(duration);
-				waker.wake();
-			});
+			timer_waiters()
+				.lock()
+				.expect("UI timer waiter lock poisoned")
+				.push(TimerWaiter {
+					deadline: self.deadline,
+					waker: cx.waker().clone(),
+				});
 		}
 
 		Poll::Pending

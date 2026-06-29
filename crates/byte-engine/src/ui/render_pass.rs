@@ -64,7 +64,7 @@ struct UiDrawElement {
 	stroke_width: f32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct UiTextDrawElement {
 	position: [f32; 2],
 	size: [f32; 2],
@@ -164,60 +164,56 @@ fn draw_clip_from_geometry(clip: Option<Geometry>) -> Option<DrawClip> {
 	})
 }
 
-fn update_from_render(render: &engine::Render) -> UiDrawList {
+fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 	let root_size = render.root().size;
-	let elements = render
-		.elements()
-		.flat_map(|element| {
-			let position = element.position;
-			let size = element.size;
 
-			element.style.layers().iter().filter_map(move |layer| {
-				let mut color = match &layer.color {
-					Color::Value(rgba) => *rgba,
-					Color::Sample(_) => RGBA::white(),
-				};
-				color.a *= element.opacity;
-				let stroke_width = stroke_width(layer.kind);
-				if matches!(layer.kind, LayerKind::Stroke { .. }) && stroke_width <= 0.0 {
-					return None;
-				}
+	draw_list.layout_size = [root_size.x() as f32, root_size.y() as f32];
+	draw_list.elements.clear();
+	draw_list.texts.clear();
 
-				Some(UiDrawElement {
-					position: [position.x() as f32, position.y() as f32],
-					size: [size.x() as f32, size.y() as f32],
-					clip: draw_clip_from_geometry(element.clip),
-					color: color.into(),
-					corner_radius: element.corner_radius,
-					corner_exponent: element.corner_exponent,
-					layer_kind: layer.kind,
-					stroke_width,
-				})
-			})
-		})
-		.collect();
-	let texts = render
-		.texts()
-		.filter_map(|text| {
-			let mut color = text.color;
-			color.a *= text.opacity;
-			let text = UiTextDrawElement {
-				position: [text.position.x() as f32, text.position.y() as f32],
-				size: [text.size.x() as f32, text.size.y() as f32],
-				clip: draw_clip_from_geometry(text.clip),
-				color,
-				font_size: text.font_size,
-				text: text.content.clone(),
+	for element in render.elements() {
+		let position = element.position;
+		let size = element.size;
+
+		for layer in element.style.layers() {
+			let mut color = match &layer.color {
+				Color::Value(rgba) => *rgba,
+				Color::Sample(_) => RGBA::white(),
 			};
+			color.a *= element.opacity;
+			let stroke_width = stroke_width(layer.kind);
+			if matches!(layer.kind, LayerKind::Stroke { .. }) && stroke_width <= 0.0 {
+				continue;
+			}
 
-			should_rasterize_text(&text).then_some(text)
-		})
-		.collect();
+			draw_list.elements.push(UiDrawElement {
+				position: [position.x() as f32, position.y() as f32],
+				size: [size.x() as f32, size.y() as f32],
+				clip: draw_clip_from_geometry(element.clip),
+				color: color.into(),
+				corner_radius: element.corner_radius,
+				corner_exponent: element.corner_exponent,
+				layer_kind: layer.kind,
+				stroke_width,
+			});
+		}
+	}
 
-	UiDrawList {
-		layout_size: [root_size.x() as f32, root_size.y() as f32],
-		elements,
-		texts,
+	for text in render.texts() {
+		let mut color = text.color;
+		color.a *= text.opacity;
+		let text = UiTextDrawElement {
+			position: [text.position.x() as f32, text.position.y() as f32],
+			size: [text.size.x() as f32, text.size.y() as f32],
+			clip: draw_clip_from_geometry(text.clip),
+			color,
+			font_size: text.font_size,
+			text: text.content.clone(),
+		};
+
+		if should_rasterize_text(&text) {
+			draw_list.texts.push(text);
+		}
 	}
 }
 
@@ -444,6 +440,7 @@ pub struct UiRenderPass {
 	data: UiDrawList,
 	reported_capacity_limit: bool,
 	text_system: TextSystem,
+	text_overlay_has_been_used: bool,
 }
 
 impl Entity for UiRenderPass {}
@@ -533,11 +530,12 @@ impl UiRenderPass {
 			data: UiDrawList::default(),
 			reported_capacity_limit: false,
 			text_system: TextSystem::new(),
+			text_overlay_has_been_used: false,
 		}
 	}
 
 	pub fn update(&mut self, render: engine::Render) {
-		self.data = update_from_render(&render);
+		update_from_render(&render, &mut self.data);
 	}
 }
 
@@ -582,12 +580,21 @@ impl RenderPass for UiRenderPass {
 			frame.resize_image(self.text_overlay, Extent::rectangle(extent.width(), extent.height()));
 
 			let overlay = frame.get_texture_slice_mut(self.text_overlay);
-			let expected_overlay_size = extent.width() as usize * extent.height() as usize * TEXT_OVERLAY_FORMAT.size();
-			draw_text_overlay = rasterize_text_overlay(&self.data, extent, &mut self.text_system, overlay);
+			let drew_text = rasterize_text_overlay(&self.data, extent, &mut self.text_system, overlay);
 
-			if draw_text_overlay {
+			if drew_text || self.text_overlay_has_been_used {
 				frame.sync_texture(self.text_overlay);
+				draw_text_overlay = true;
 			}
+			self.text_overlay_has_been_used |= drew_text;
+		} else if self.text_overlay_has_been_used && extent.width() > 0 && extent.height() > 0 {
+			frame.resize_image(
+				self.text_overlay,
+				Extent::rectangle(extent.width().max(1), extent.height().max(1)),
+			);
+			frame.get_texture_slice_mut(self.text_overlay).fill(0);
+			frame.sync_texture(self.text_overlay);
+			draw_text_overlay = true;
 		}
 
 		if !has_rectangle_batches && !draw_text_overlay {
@@ -1540,6 +1547,36 @@ mod tests {
 	}
 
 	#[test]
+	fn update_from_render_clears_removed_text_entries() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut draw_list = UiDrawList::default();
+
+		let mut text_engine = Engine::new();
+		text_engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame.element("label").text(Text::new("Option"));
+			})
+		});
+		let mut text_snapshot = text_engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let text_render = text_engine.render(&mut text_snapshot);
+		update_from_render(&text_render, &mut draw_list);
+		assert_eq!(draw_list.texts.len(), 1);
+
+		let mut no_text_engine = Engine::new();
+		no_text_engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("frame").container(Container::default());
+			})
+		});
+		let mut no_text_snapshot = no_text_engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let no_text_render = no_text_engine.render(&mut no_text_snapshot);
+		update_from_render(&no_text_render, &mut draw_list);
+
+		assert!(draw_list.texts.is_empty());
+	}
+
+	#[test]
 	fn draw_list_multiplies_effective_opacity_into_layers_and_text() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -1565,7 +1602,8 @@ mod tests {
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
-		let draw_list = update_from_render(&render);
+		let mut draw_list = UiDrawList::default();
+		update_from_render(&render, &mut draw_list);
 
 		assert_eq!(draw_list.elements[0].color[3], 0.4);
 		assert_eq!(draw_list.elements[1].color[3], 0.3);

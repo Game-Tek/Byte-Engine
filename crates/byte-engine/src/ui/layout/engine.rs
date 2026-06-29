@@ -259,6 +259,112 @@ fn clamp_to_u32(value: f32) -> u32 {
 	}
 }
 
+#[derive(Clone, Copy)]
+enum EffectiveClip {
+	Unbounded,
+	Empty,
+	Rect(Geometry),
+}
+
+#[derive(Clone, Copy)]
+struct ClipInfo {
+	element: EffectiveClip,
+	descendants: EffectiveClip,
+}
+
+impl EffectiveClip {
+	fn apply(self, geometry: Geometry) -> Option<Geometry> {
+		match self {
+			EffectiveClip::Unbounded => Some(geometry),
+			EffectiveClip::Empty => None,
+			EffectiveClip::Rect(clip) => geometry.intersect(clip),
+		}
+	}
+
+	fn clip_descendants(self, geometry: Geometry) -> Self {
+		match self.apply(geometry) {
+			Some(geometry) => EffectiveClip::Rect(geometry),
+			None => EffectiveClip::Empty,
+		}
+	}
+
+	fn as_rect(self) -> Option<Geometry> {
+		match self {
+			EffectiveClip::Rect(geometry) => Some(geometry),
+			EffectiveClip::Unbounded | EffectiveClip::Empty => None,
+		}
+	}
+}
+
+fn geometry_from_layout_element(element: &LayoutElement) -> Geometry {
+	Geometry::new(element.position, element.size)
+}
+
+fn element_clips<'a>(
+	elements: impl IntoIterator<Item = &'a LayoutElement>,
+	relations: &[(Id, Id)],
+	tree: &RetainedTree,
+) -> HashMap<Id, ClipInfo> {
+	let mut clips = HashMap::new();
+
+	for element in elements {
+		let inherited = relations
+			.iter()
+			.find_map(|(parent, child)| (*child == element.id).then_some(*parent))
+			.and_then(|parent| clips.get(&parent).map(|clip: &ClipInfo| clip.descendants))
+			.unwrap_or(EffectiveClip::Unbounded);
+		let geometry = geometry_from_layout_element(element);
+		let descendants = match tree.element(element.id).map(|element| &element.element.primitive) {
+			Some(Primitives::Container(container)) if container.clip => inherited.clip_descendants(geometry),
+			_ => inherited,
+		};
+
+		clips.insert(
+			element.id,
+			ClipInfo {
+				element: inherited,
+				descendants,
+			},
+		);
+	}
+
+	clips
+}
+
+fn clipped_layout_elements<'a>(
+	elements: &[LayoutElement],
+	relations: &[(Id, Id)],
+	tree: &RetainedTree,
+	frame_allocator: &'a bumpalo::Bump,
+) -> Vec<LayoutElement, &'a bumpalo::Bump> {
+	let clips = element_clips(elements, relations, tree);
+	let mut clipped = Vec::with_capacity_in(elements.len(), frame_allocator);
+
+	for element in elements {
+		let Some(geometry) = clips
+			.get(&element.id)
+			.map(|clip| clip.element)
+			.unwrap_or(EffectiveClip::Unbounded)
+			.apply(geometry_from_layout_element(element))
+		else {
+			continue;
+		};
+
+		if geometry.is_empty() {
+			continue;
+		}
+
+		clipped.push(LayoutElement {
+			id: element.id,
+			position: Location3::new(geometry.x(), geometry.y(), element.position.z()),
+			size: geometry.size,
+			hit_testable: element.hit_testable,
+		});
+	}
+
+	clipped
+}
+
 fn apply_visual_transforms<'a>(
 	elements: &mut [LayoutElement],
 	relations: &[(Id, Id)],
@@ -818,7 +924,7 @@ impl<C: 'static> Engine<C> {
 	}
 
 	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
-		let (mut elements, relations) = {
+		let (mut elements, relations, clipped_elements) = {
 			let tree = Rc::clone(&self.runtime.borrow().tree);
 			let tree = tree.borrow();
 			let mut relations = Vec::with_capacity_in(tree.relations.len(), frame_allocator);
@@ -826,8 +932,9 @@ impl<C: 'static> Engine<C> {
 
 			let mut elements = layout_elements(&tree.elements, &tree.relations, size, &mut self.text_system, frame_allocator);
 			apply_visual_transforms(&mut elements, &tree.relations, &tree, frame_allocator);
+			let clipped_elements = clipped_layout_elements(&elements, &tree.relations, &tree, frame_allocator);
 
-			(elements, relations)
+			(elements, relations, clipped_elements)
 		};
 
 		{
@@ -835,7 +942,7 @@ impl<C: 'static> Engine<C> {
 			state.set_element_ids(elements.iter().map(|element| element.id));
 		}
 
-		let acceleration = build_mouse_click_acceleration(&elements, frame_allocator);
+		let acceleration = build_mouse_click_acceleration(&clipped_elements, frame_allocator);
 		self.runtime.borrow_mut().update_geometry(&elements);
 
 		Snapshot {
@@ -883,11 +990,20 @@ impl<C: 'static> Engine<C> {
 		let mut effective_opacities = HashMap::new();
 		let tree = Rc::clone(&self.runtime.borrow().tree);
 		let tree = tree.borrow();
+		let clips = element_clips(snapshot.elements.iter(), &snapshot.relations, &tree);
 
 		for element in &mut snapshot.elements {
 			let Some(retained_element) = tree.element(element.id) else {
 				continue;
 			};
+			let clip = clips
+				.get(&element.id)
+				.map(|clip| clip.element)
+				.unwrap_or(EffectiveClip::Unbounded);
+			if clip.apply(geometry_from_layout_element(element)).is_none() {
+				continue;
+			}
+			let clip = clip.as_rect();
 
 			let opacity = effective_opacity(element.id, &tree, &snapshot.relations, &mut effective_opacities);
 			let style = retained_element.element.primitive.style().clone();
@@ -905,6 +1021,7 @@ impl<C: 'static> Engine<C> {
 					id: element.id.get(),
 					position: element.position,
 					size: element.size,
+					clip,
 					style,
 					opacity,
 					corner_radius: container.corner_radius,
@@ -920,6 +1037,7 @@ impl<C: 'static> Engine<C> {
 						id: element.id.get(),
 						position: element.position,
 						size: element.size,
+						clip,
 						style,
 						opacity,
 						corner_radius,
@@ -930,6 +1048,7 @@ impl<C: 'static> Engine<C> {
 					id: element.id.get(),
 					position: element.position,
 					size: element.size,
+					clip,
 					color,
 					opacity,
 					font_size: text.settings().font_size,
@@ -1422,6 +1541,164 @@ mod tests {
 	}
 
 	#[test]
+	fn default_container_clip_skips_fully_clipped_descendants_in_render() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut parent = root
+					.element("parent")
+					.container(Container::default().width(50.into()).height(50.into()));
+				parent.element("child").container(
+					Container::default()
+						.width(20.into())
+						.height(20.into())
+						.absolute_position(70, 0),
+				);
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let ids = render.elements().map(|element| element.id).collect::<Vec<_>>();
+
+		assert_eq!(ids.len(), 2);
+		assert!(ids.contains(&1));
+		assert!(ids.contains(&2));
+	}
+
+	#[test]
+	fn default_container_clip_is_carried_to_partially_clipped_descendants() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut parent = root
+					.element("parent")
+					.container(Container::default().width(50.into()).height(50.into()));
+				parent.element("child").container(
+					Container::default()
+						.width(30.into())
+						.height(30.into())
+						.absolute_position(35, 10),
+				);
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let child = render.elements().find(|element| element.id == 3).unwrap();
+
+		assert_eq!(child.position, Location3::new(35, 10, 2));
+		assert_eq!(child.size, Size::new(30, 30));
+		assert_eq!(child.clip, Some(Geometry::new(Location3::new(0, 0, 1), Size::new(50, 50))));
+	}
+
+	#[test]
+	fn clip_false_allows_descendant_render_overflow() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut parent = root
+					.element("parent")
+					.container(Container::default().width(50.into()).height(50.into()).clip(false));
+				parent.element("child").container(
+					Container::default()
+						.width(20.into())
+						.height(20.into())
+						.absolute_position(70, 0),
+				);
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let child = render.elements().find(|element| element.id == 3).unwrap();
+
+		assert_eq!(child.position, Location3::new(70, 0, 2));
+		assert_eq!(child.clip, Some(Geometry::new(Location3::new(0, 0, 0), Size::new(100, 100))));
+	}
+
+	#[test]
+	fn clipping_prunes_descendants_from_hit_testing() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut parent = root
+					.element("parent")
+					.container(Container::default().width(50.into()).height(50.into()));
+				let mut child = parent.element("child").container(
+					Container::default()
+						.width(20.into())
+						.height(20.into())
+						.absolute_position(70, 0),
+				);
+
+				loop {
+					child.on(Events::Actuated).await;
+					hits.fetch_add(1, Ordering::SeqCst);
+				}
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.set_cursor_position(Vector2::new(0.5, 0.8));
+		engine.update_click_state(true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(hits.load(Ordering::SeqCst), 0);
+	}
+
+	#[test]
+	fn clip_false_preserves_descendant_hit_testing_overflow() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut parent = root
+					.element("parent")
+					.container(Container::default().width(50.into()).height(50.into()).clip(false));
+				let mut child = parent.element("child").container(
+					Container::default()
+						.width(20.into())
+						.height(20.into())
+						.absolute_position(70, 0),
+				);
+
+				loop {
+					child.on(Events::Actuated).await;
+					hits.fetch_add(1, Ordering::SeqCst);
+				}
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.set_cursor_position(Vector2::new(0.5, 0.8));
+		engine.update_click_state(true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
 	fn retained_geometry_is_available_after_layout_evaluation() {
 		let frame_allocator = bumpalo::Bump::new();
 		let geometry = Arc::new(StdMutex::new(None::<Geometry>));
@@ -1431,7 +1708,7 @@ mod tests {
 		engine.mount(move |ctx| {
 			let geometry = Arc::clone(&geometry_for_task);
 			Box::pin(async move {
-				let mut frame = ctx.element("frame").container(Container::default());
+				let mut frame = ctx.element("frame").container(Container::default().clip(false));
 				let mut button = frame.element("button").container(
 					Container::default()
 						.width(30.into())
@@ -1465,7 +1742,7 @@ mod tests {
 		engine.mount(move |ctx| {
 			let geometry = Arc::clone(&geometry_for_task);
 			Box::pin(async move {
-				let mut frame = ctx.element("frame").container(Container::default());
+				let mut frame = ctx.element("frame").container(Container::default().clip(false));
 				let mut button = frame.element("button").container(
 					Container::default()
 						.width(30.into())
@@ -2019,7 +2296,7 @@ mod tests {
 
 		engine.mount(|ctx| {
 			Box::pin(async move {
-				let mut frame = ctx.element("frame").container(Container::default());
+				let mut frame = ctx.element("frame").container(Container::default().clip(false));
 				frame.element("high").container(Container::default().depth(10));
 				frame.element("low").container(Container::default());
 			})
@@ -2185,7 +2462,7 @@ mod tests {
 			Box::pin(async move {
 				let mut root = ctx
 					.element("root")
-					.container(Container::default().width(10.into()).height(10.into()));
+					.container(Container::default().width(10.into()).height(10.into()).clip(false));
 				root.element("negative")
 					.container(Container::default().width(10.into()).height(10.into()).opacity(-1.0));
 				root.element("invalid")

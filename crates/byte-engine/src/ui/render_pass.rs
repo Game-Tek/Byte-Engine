@@ -13,7 +13,7 @@ use utils::{Box, Extent, RGBA};
 
 use super::{
 	element::ElementHandle as _,
-	layout::engine,
+	layout::{engine, Geometry},
 	style::{Color, LayerKind},
 };
 use crate::{
@@ -56,6 +56,7 @@ const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 8] = [
 struct UiDrawElement {
 	position: [f32; 2],
 	size: [f32; 2],
+	clip: Option<DrawClip>,
 	color: [f32; 4],
 	corner_radius: f32,
 	corner_exponent: f32,
@@ -67,9 +68,16 @@ struct UiDrawElement {
 struct UiTextDrawElement {
 	position: [f32; 2],
 	size: [f32; 2],
+	clip: Option<DrawClip>,
 	color: RGBA,
 	font_size: f32,
 	text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DrawClip {
+	position: [f32; 2],
+	size: [f32; 2],
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +157,13 @@ fn stroke_width(kind: LayerKind) -> f32 {
 	}
 }
 
+fn draw_clip_from_geometry(clip: Option<Geometry>) -> Option<DrawClip> {
+	clip.map(|clip| DrawClip {
+		position: [clip.x() as f32, clip.y() as f32],
+		size: [clip.width() as f32, clip.height() as f32],
+	})
+}
+
 fn update_from_render(render: &engine::Render) -> UiDrawList {
 	let root_size = render.root().size;
 	let elements = render
@@ -171,6 +186,7 @@ fn update_from_render(render: &engine::Render) -> UiDrawList {
 				Some(UiDrawElement {
 					position: [position.x() as f32, position.y() as f32],
 					size: [size.x() as f32, size.y() as f32],
+					clip: draw_clip_from_geometry(element.clip),
 					color: color.into(),
 					corner_radius: element.corner_radius,
 					corner_exponent: element.corner_exponent,
@@ -188,6 +204,7 @@ fn update_from_render(render: &engine::Render) -> UiDrawList {
 			let text = UiTextDrawElement {
 				position: [text.position.x() as f32, text.position.y() as f32],
 				size: [text.size.x() as f32, text.size.y() as f32],
+				clip: draw_clip_from_geometry(text.clip),
 				color,
 				font_size: text.font_size,
 				text: text.content.clone(),
@@ -230,6 +247,13 @@ fn rasterize_text_overlay(draw_list: &UiDrawList, viewport: Extent, text_system:
 			(text.position[1] * sy).round().max(0.0) as u32,
 		);
 		let font_size = (text.font_size * font_scale).max(1.0);
+		let clip = text.clip.and_then(|clip| {
+			let x = (clip.position[0] * sx).round().max(0.0) as u32;
+			let y = (clip.position[1] * sy).round().max(0.0) as u32;
+			let width = (clip.size[0] * sx).round().max(0.0) as u32;
+			let height = (clip.size[1] * sy).round().max(0.0) as u32;
+			(width > 0 && height > 0).then_some(crate::ui::font::TextClipRect::new(x, y, width, height))
+		});
 
 		drew_text |= text_system.rasterize(
 			target,
@@ -239,6 +263,7 @@ fn rasterize_text_overlay(draw_list: &UiDrawList, viewport: Extent, text_system:
 			&text.text,
 			font_size,
 			text.color,
+			clip,
 		);
 	}
 
@@ -305,10 +330,32 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 			batch_index_count = 0;
 		}
 
-		let x0 = element.position[0] * sx;
-		let y0 = element.position[1] * sy;
-		let x1 = x0 + rect_width;
-		let y1 = y0 + rect_height;
+		let original_x0 = element.position[0] * sx;
+		let original_y0 = element.position[1] * sy;
+		let original_x1 = original_x0 + rect_width;
+		let original_y1 = original_y0 + rect_height;
+		let (x0, y0, x1, y1) = match element.clip {
+			Some(clip) => {
+				let clip_x0 = clip.position[0] * sx;
+				let clip_y0 = clip.position[1] * sy;
+				let clip_x1 = clip_x0 + clip.size[0] * sx;
+				let clip_y1 = clip_y0 + clip.size[1] * sy;
+				(
+					original_x0.max(clip_x0),
+					original_y0.max(clip_y0),
+					original_x1.min(clip_x1),
+					original_y1.min(clip_y1),
+				)
+			}
+			None => (original_x0, original_y0, original_x1, original_y1),
+		};
+		if x1 <= x0 || y1 <= y0 {
+			continue;
+		}
+		let local_x0 = x0 - original_x0;
+		let local_y0 = y0 - original_y0;
+		let local_x1 = x1 - original_x0;
+		let local_y1 = y1 - original_y0;
 		let color = element.color;
 		let corner_radius = resolved_corner_radius(element.corner_radius * radius_scale, rect_width, rect_height);
 		let corner_exponent = resolved_corner_exponent(element.corner_exponent);
@@ -320,7 +367,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 		geometry.vertices.extend_from_slice(&[
 			UiVertex {
 				position: [to_clip_x(x0), to_clip_y(y0)],
-				local_position: [0.0, 0.0],
+				local_position: [local_x0, local_y0],
 				rect_size: [rect_width, rect_height],
 				color,
 				corner_radius,
@@ -330,7 +377,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y0)],
-				local_position: [rect_width, 0.0],
+				local_position: [local_x1, local_y0],
 				rect_size: [rect_width, rect_height],
 				color,
 				corner_radius,
@@ -340,7 +387,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y1)],
-				local_position: [rect_width, rect_height],
+				local_position: [local_x1, local_y1],
 				rect_size: [rect_width, rect_height],
 				color,
 				corner_radius,
@@ -350,7 +397,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 			},
 			UiVertex {
 				position: [to_clip_x(x0), to_clip_y(y1)],
-				local_position: [0.0, rect_height],
+				local_position: [local_x0, local_y1],
 				rect_size: [rect_width, rect_height],
 				color,
 				corner_radius,
@@ -1034,7 +1081,7 @@ mod tests {
 	use utils::{Extent, RGBA};
 
 	use super::{
-		build_ui_geometry, should_rasterize_text, update_from_render, UiDrawBatch, UiDrawElement, UiDrawList,
+		build_ui_geometry, should_rasterize_text, update_from_render, DrawClip, UiDrawBatch, UiDrawElement, UiDrawList,
 		UiTextDrawElement, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_FRAGMENT_SHADER_GLSL_MAIN, UI_FRAGMENT_SHADER_MSL,
 		UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_ELEMENT,
 	};
@@ -1057,6 +1104,7 @@ mod tests {
 		UiDrawElement {
 			position: [0.0, 0.0],
 			size: [50.0, 50.0],
+			clip: None,
 			color: [1.0, 1.0, 1.0, 1.0],
 			corner_radius,
 			corner_exponent,
@@ -1074,6 +1122,7 @@ mod tests {
 				elements: vec![UiDrawElement {
 					position: [10.0, 20.0],
 					size: [30.0, 40.0],
+					clip: None,
 					color: [0.25, 0.5, 0.75, 1.0],
 					corner_radius: 8.0,
 					corner_exponent: 2.0,
@@ -1131,6 +1180,7 @@ mod tests {
 				elements: vec![UiDrawElement {
 					position: [0.0, 0.0],
 					size: [80.0, 20.0],
+					clip: None,
 					color: [1.0, 1.0, 1.0, 1.0],
 					corner_radius: 80.0,
 					corner_exponent: 2.0,
@@ -1144,6 +1194,61 @@ mod tests {
 		);
 
 		assert_eq!(geometry.vertices[0].corner_radius, 10.0);
+	}
+
+	#[test]
+	fn clipped_geometry_trims_vertices_but_preserves_local_position() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut element = draw_element(0.0, 2.0);
+		element.position = [20.0, 20.0];
+		element.size = [40.0, 40.0];
+		element.clip = Some(DrawClip {
+			position: [30.0, 10.0],
+			size: [20.0, 30.0],
+		});
+
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![element],
+				texts: vec![],
+			},
+			Extent::rectangle(100, 100),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.vertices.len(), UI_VERTICES_PER_ELEMENT);
+		assert_vec2_close(geometry.vertices[0].local_position, [10.0, 0.0]);
+		assert_vec2_close(geometry.vertices[1].local_position, [30.0, 0.0]);
+		assert_vec2_close(geometry.vertices[2].local_position, [30.0, 20.0]);
+		assert_vec2_close(geometry.vertices[3].local_position, [10.0, 20.0]);
+		assert_vec2_close(geometry.vertices[0].rect_size, [40.0, 40.0]);
+	}
+
+	#[test]
+	fn fully_clipped_geometry_is_skipped_before_capacity_checks() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut element = draw_element(0.0, 2.0);
+		element.position = [20.0, 20.0];
+		element.size = [10.0, 10.0];
+		element.clip = Some(DrawClip {
+			position: [40.0, 40.0],
+			size: [10.0, 10.0],
+		});
+
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![element],
+				texts: vec![],
+			},
+			Extent::rectangle(100, 100),
+			&frame_allocator,
+		);
+
+		assert!(geometry.vertices.is_empty());
+		assert!(geometry.indices.is_empty());
+		assert!(geometry.batches.is_empty());
 	}
 
 	#[test]
@@ -1337,6 +1442,7 @@ mod tests {
 			.map(|_| UiDrawElement {
 				position: [0.0, 0.0],
 				size: [1.0, 1.0],
+				clip: None,
 				color: [1.0, 1.0, 1.0, 1.0],
 				corner_radius: 0.0,
 				corner_exponent: 2.0,
@@ -1378,6 +1484,7 @@ mod tests {
 		elements.extend((0..MAX_UI_ELEMENTS).map(|_| UiDrawElement {
 			position: [0.0, 0.0],
 			size: [1.0, 1.0],
+			clip: None,
 			color: [1.0, 1.0, 1.0, 0.0],
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
@@ -1387,6 +1494,7 @@ mod tests {
 		elements.push(UiDrawElement {
 			position: [0.0, 0.0],
 			size: [1.0, 1.0],
+			clip: None,
 			color: [1.0, 1.0, 1.0, 1.0],
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
@@ -1415,6 +1523,7 @@ mod tests {
 		assert!(!should_rasterize_text(&UiTextDrawElement {
 			position: [0.0, 0.0],
 			size: [32.0, 16.0],
+			clip: None,
 			color: RGBA::new(1.0, 1.0, 1.0, 0.0),
 			font_size: 16.0,
 			text: "Hidden".to_string(),
@@ -1423,6 +1532,7 @@ mod tests {
 		assert!(should_rasterize_text(&UiTextDrawElement {
 			position: [0.0, 0.0],
 			size: [32.0, 16.0],
+			clip: None,
 			color: RGBA::new(1.0, 1.0, 1.0, 1.0),
 			font_size: 16.0,
 			text: "Visible".to_string(),

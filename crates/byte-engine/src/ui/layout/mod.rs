@@ -34,6 +34,7 @@ pub(crate) struct RenderElement {
 	pub(crate) id: u32,
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
+	pub(crate) clip: Option<Geometry>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) opacity: f32,
 	pub(crate) corner_radius: f32,
@@ -45,6 +46,7 @@ pub(crate) struct RenderTextElement {
 	pub(crate) id: u32,
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
+	pub(crate) clip: Option<Geometry>,
 	pub(crate) color: RGBA,
 	pub(crate) opacity: f32,
 	pub(crate) font_size: f32,
@@ -357,6 +359,34 @@ impl Geometry {
 
 	pub fn height(&self) -> u32 {
 		self.size.y()
+	}
+
+	pub fn right(&self) -> u32 {
+		self.x().saturating_add(self.width())
+	}
+
+	pub fn bottom(&self) -> u32 {
+		self.y().saturating_add(self.height())
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.width() == 0 || self.height() == 0
+	}
+
+	pub fn intersect(self, other: Self) -> Option<Self> {
+		let left = self.x().max(other.x());
+		let top = self.y().max(other.y());
+		let right = self.right().min(other.right());
+		let bottom = self.bottom().min(other.bottom());
+
+		if right <= left || bottom <= top {
+			return None;
+		}
+
+		Some(Self::new(
+			Location3::new(left, top, self.z()),
+			Size::new(right - left, bottom - top),
+		))
 	}
 }
 

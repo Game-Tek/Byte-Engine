@@ -19,6 +19,7 @@ pub struct Container {
 	max_height: Option<Sizing>,
 	pub depth: Depth,
 	pub position: Position,
+	pub clip: bool,
 	pub flow: utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) transform: Transform,
@@ -96,6 +97,10 @@ impl Container {
 		self.position(Position::absolute(x, y))
 	}
 
+	pub fn clip(self, enabled: bool) -> Self {
+		Self { clip: enabled, ..self }
+	}
+
 	pub fn flow(self, flow: impl FlowFunction + 'static) -> Self {
 		Self {
 			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow),
@@ -136,6 +141,10 @@ impl Container {
 		self.position = position.into();
 	}
 
+	pub fn set_clip(&mut self, enabled: bool) {
+		self.clip = enabled;
+	}
+
 	pub fn set_opacity(&mut self, opacity: f32) {
 		self.visual.opacity = opacity;
 	}
@@ -170,6 +179,7 @@ impl Default for Container {
 			max_height: None,
 			depth: Depth::default(),
 			position: Position::default(),
+			clip: true,
 			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow::grid),
 			style: ConcreteStyle::default(),
 			transform: Transform::default(),

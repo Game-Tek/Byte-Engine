@@ -30,6 +30,33 @@ pub(crate) struct TextSystem {
 	reported_unavailable: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TextClipRect {
+	x: u32,
+	y: u32,
+	width: u32,
+	height: u32,
+}
+
+impl TextClipRect {
+	pub(crate) fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+		Self { x, y, width, height }
+	}
+
+	fn contains(&self, x: i32, y: i32) -> bool {
+		let Ok(x) = u32::try_from(x) else {
+			return false;
+		};
+		let Ok(y) = u32::try_from(y) else {
+			return false;
+		};
+		let right = self.x.saturating_add(self.width);
+		let bottom = self.y.saturating_add(self.height);
+
+		x >= self.x && x < right && y >= self.y && y < bottom
+	}
+}
+
 impl TextSystem {
 	pub fn new() -> Self {
 		Self {
@@ -61,6 +88,7 @@ impl TextSystem {
 		text: &str,
 		font_size: f32,
 		color: RGBA,
+		clip: Option<TextClipRect>,
 	) -> bool {
 		if text.is_empty() || target_width == 0 || target_height == 0 {
 			return false;
@@ -88,7 +116,7 @@ impl TextSystem {
 			let glyph_y = baseline_y.round() as i32 - metrics.height as i32 - metrics.ymin;
 
 			if metrics.width > 0 && metrics.height > 0 && !bitmap.is_empty() {
-				blend_glyph(
+				drew_anything |= blend_glyph(
 					target,
 					target_width,
 					target_height,
@@ -98,8 +126,8 @@ impl TextSystem {
 					metrics.height,
 					&bitmap,
 					color,
+					clip,
 				);
-				drew_anything = true;
 			}
 
 			pen_x += metrics.advance_width;
@@ -191,11 +219,13 @@ fn blend_glyph(
 	glyph_height: usize,
 	bitmap: &[u8],
 	color: RGBA,
-) {
+	clip: Option<TextClipRect>,
+) -> bool {
 	let source_r = color.r.clamp(0.0, 1.0);
 	let source_g = color.g.clamp(0.0, 1.0);
 	let source_b = color.b.clamp(0.0, 1.0);
 	let source_a = color.a.clamp(0.0, 1.0);
+	let mut drew_anything = false;
 
 	for row in 0..glyph_height {
 		let target_y = glyph_y + row as i32;
@@ -206,6 +236,9 @@ fn blend_glyph(
 		for column in 0..glyph_width {
 			let target_x = glyph_x + column as i32;
 			if target_x < 0 || target_x >= target_width as i32 {
+				continue;
+			}
+			if clip.is_some_and(|clip| !clip.contains(target_x, target_y)) {
 				continue;
 			}
 
@@ -248,8 +281,11 @@ fn blend_glyph(
 			target[pixel_index + 1] = (out_g.clamp(0.0, 1.0) * 255.0).round() as u8;
 			target[pixel_index + 2] = (out_b.clamp(0.0, 1.0) * 255.0).round() as u8;
 			target[pixel_index + 3] = (out_alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+			drew_anything = true;
 		}
 	}
+
+	drew_anything
 }
 
 fn load_system_font() -> Result<LoadedFont, String> {
@@ -341,6 +377,53 @@ fn font_search_roots() -> Vec<PathBuf> {
 	}
 
 	roots
+}
+
+#[cfg(test)]
+mod tests {
+	use utils::RGBA;
+
+	use super::{blend_glyph, TextClipRect};
+
+	#[test]
+	fn clipped_glyph_reports_no_draw_when_all_pixels_are_outside_clip() {
+		let mut target = [0u8; 4];
+		let drew = blend_glyph(
+			&mut target,
+			1,
+			1,
+			0,
+			0,
+			1,
+			1,
+			&[255],
+			RGBA::white(),
+			Some(TextClipRect::new(1, 1, 1, 1)),
+		);
+
+		assert!(!drew);
+		assert_eq!(target, [0, 0, 0, 0]);
+	}
+
+	#[test]
+	fn clipped_glyph_draws_pixels_inside_clip() {
+		let mut target = [0u8; 4];
+		let drew = blend_glyph(
+			&mut target,
+			1,
+			1,
+			0,
+			0,
+			1,
+			1,
+			&[255],
+			RGBA::white(),
+			Some(TextClipRect::new(0, 0, 1, 1)),
+		);
+
+		assert!(drew);
+		assert_eq!(target, [255, 255, 255, 255]);
+	}
 }
 
 fn explicit_font_candidates() -> Vec<PathBuf> {

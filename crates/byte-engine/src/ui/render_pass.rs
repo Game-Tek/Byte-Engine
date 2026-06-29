@@ -13,8 +13,8 @@ use utils::{Box, Extent, RGBA};
 
 use super::{
 	element::ElementHandle as _,
-	layout::{engine, Geometry},
-	style::{Color, LayerKind},
+	layout::{engine, FeatherMask, Geometry},
+	style::{Color, EdgeFeather, LayerKind},
 };
 use crate::{
 	core::Entity,
@@ -42,8 +42,9 @@ const MAX_UI_ELEMENTS: usize = 65_536;
 const MAX_UI_VERTICES: usize = MAX_UI_ELEMENTS * UI_VERTICES_PER_ELEMENT;
 const MAX_UI_INDICES: usize = MAX_UI_ELEMENTS * UI_INDICES_PER_ELEMENT;
 
-const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 8] = [
+const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 13] = [
 	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("PIXEL_POSITION", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("LOCAL_POSITION", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("RECT_SIZE", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
@@ -51,12 +52,17 @@ const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 8] = [
 	ghi::pipelines::VertexElement::new("CORNER_EXPONENT", ghi::DataTypes::Float, 0),
 	ghi::pipelines::VertexElement::new("LAYER_KIND", ghi::DataTypes::Float, 0),
 	ghi::pipelines::VertexElement::new("STROKE_WIDTH", ghi::DataTypes::Float, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_SIZE", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_EDGES", ghi::DataTypes::Float4, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_CORNER", ghi::DataTypes::Float2, 0),
 ];
 #[derive(Debug, Clone, Copy)]
 struct UiDrawElement {
 	position: [f32; 2],
 	size: [f32; 2],
 	clip: Option<DrawClip>,
+	feather_mask: Option<DrawFeatherMask>,
 	color: [f32; 4],
 	corner_radius: f32,
 	corner_exponent: f32,
@@ -69,6 +75,7 @@ struct UiTextDrawElement {
 	position: [f32; 2],
 	size: [f32; 2],
 	clip: Option<DrawClip>,
+	feather_mask: Option<DrawFeatherMask>,
 	color: RGBA,
 	font_size: f32,
 	text: String,
@@ -78,6 +85,14 @@ struct UiTextDrawElement {
 struct DrawClip {
 	position: [f32; 2],
 	size: [f32; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DrawFeatherMask {
+	position: [f32; 2],
+	size: [f32; 2],
+	edges: [f32; 4],
+	corner: [f32; 2],
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +116,7 @@ impl Default for UiDrawList {
 #[derive(Debug, Clone, Copy, Default)]
 struct UiVertex {
 	position: [f32; 2],
+	pixel_position: [f32; 2],
 	local_position: [f32; 2],
 	rect_size: [f32; 2],
 	color: [f32; 4],
@@ -108,6 +124,10 @@ struct UiVertex {
 	corner_exponent: f32,
 	layer_kind: f32,
 	stroke_width: f32,
+	feather_mask_position: [f32; 2],
+	feather_mask_size: [f32; 2],
+	feather_mask_edges: [f32; 4],
+	feather_mask_corner: [f32; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +184,30 @@ fn draw_clip_from_geometry(clip: Option<Geometry>) -> Option<DrawClip> {
 	})
 }
 
+fn draw_feather_mask_from_layout(mask: Option<FeatherMask>) -> Option<DrawFeatherMask> {
+	mask.map(|mask| DrawFeatherMask {
+		position: [mask.geometry.x() as f32, mask.geometry.y() as f32],
+		size: [mask.geometry.width() as f32, mask.geometry.height() as f32],
+		edges: [mask.feather.top, mask.feather.right, mask.feather.bottom, mask.feather.left],
+		corner: [mask.corner_radius, mask.corner_exponent],
+	})
+}
+
+fn scaled_feather_mask(mask: Option<DrawFeatherMask>, sx: f32, sy: f32) -> DrawFeatherMask {
+	mask.map(|mask| DrawFeatherMask {
+		position: [mask.position[0] * sx, mask.position[1] * sy],
+		size: [mask.size[0] * sx, mask.size[1] * sy],
+		edges: [mask.edges[0] * sy, mask.edges[1] * sx, mask.edges[2] * sy, mask.edges[3] * sx],
+		corner: [mask.corner[0] * sx.min(sy), mask.corner[1]],
+	})
+	.unwrap_or(DrawFeatherMask {
+		position: [0.0, 0.0],
+		size: [0.0, 0.0],
+		edges: [0.0, 0.0, 0.0, 0.0],
+		corner: [0.0, 2.0],
+	})
+}
+
 fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 	let root_size = render.root().size;
 
@@ -190,6 +234,7 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 				position: [position.x() as f32, position.y() as f32],
 				size: [size.x() as f32, size.y() as f32],
 				clip: draw_clip_from_geometry(element.clip),
+				feather_mask: draw_feather_mask_from_layout(element.feather_mask),
 				color: color.into(),
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
@@ -206,6 +251,7 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 			position: [text.position.x() as f32, text.position.y() as f32],
 			size: [text.size.x() as f32, text.size.y() as f32],
 			clip: draw_clip_from_geometry(text.clip),
+			feather_mask: draw_feather_mask_from_layout(text.feather_mask),
 			color,
 			font_size: text.font_size,
 			text: text.content.clone(),
@@ -250,6 +296,22 @@ fn rasterize_text_overlay(draw_list: &UiDrawList, viewport: Extent, text_system:
 			let height = (clip.size[1] * sy).round().max(0.0) as u32;
 			(width > 0 && height > 0).then_some(crate::ui::font::TextClipRect::new(x, y, width, height))
 		});
+		let feather_mask = text.feather_mask.and_then(|mask| {
+			let scaled = scaled_feather_mask(Some(mask), sx, sy);
+			let x = scaled.position[0].round().max(0.0) as u32;
+			let y = scaled.position[1].round().max(0.0) as u32;
+			let width = scaled.size[0].round().max(0.0) as u32;
+			let height = scaled.size[1].round().max(0.0) as u32;
+			(width > 0 && height > 0).then_some(crate::ui::font::TextFeatherMask::new(
+				x,
+				y,
+				width,
+				height,
+				EdgeFeather::edges(scaled.edges[0], scaled.edges[1], scaled.edges[2], scaled.edges[3]),
+				scaled.corner[0],
+				scaled.corner[1],
+			))
+		});
 
 		drew_text |= text_system.rasterize(
 			target,
@@ -260,6 +322,7 @@ fn rasterize_text_overlay(draw_list: &UiDrawList, viewport: Extent, text_system:
 			font_size,
 			text.color,
 			clip,
+			feather_mask,
 		);
 	}
 
@@ -356,6 +419,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 		let corner_radius = resolved_corner_radius(element.corner_radius * radius_scale, rect_width, rect_height);
 		let corner_exponent = resolved_corner_exponent(element.corner_exponent);
 		let layer_kind = layer_kind_value(element.layer_kind);
+		let feather_mask = scaled_feather_mask(element.feather_mask, sx, sy);
 
 		let to_clip_x = |pixel_x: f32| (pixel_x / viewport_width) * 2.0 - 1.0;
 		let to_clip_y = |pixel_y: f32| 1.0 - (pixel_y / viewport_height) * 2.0;
@@ -363,6 +427,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 		geometry.vertices.extend_from_slice(&[
 			UiVertex {
 				position: [to_clip_x(x0), to_clip_y(y0)],
+				pixel_position: [x0, y0],
 				local_position: [local_x0, local_y0],
 				rect_size: [rect_width, rect_height],
 				color,
@@ -370,9 +435,14 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				corner_exponent,
 				layer_kind,
 				stroke_width,
+				feather_mask_position: feather_mask.position,
+				feather_mask_size: feather_mask.size,
+				feather_mask_edges: feather_mask.edges,
+				feather_mask_corner: feather_mask.corner,
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y0)],
+				pixel_position: [x1, y0],
 				local_position: [local_x1, local_y0],
 				rect_size: [rect_width, rect_height],
 				color,
@@ -380,9 +450,14 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				corner_exponent,
 				layer_kind,
 				stroke_width,
+				feather_mask_position: feather_mask.position,
+				feather_mask_size: feather_mask.size,
+				feather_mask_edges: feather_mask.edges,
+				feather_mask_corner: feather_mask.corner,
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y1)],
+				pixel_position: [x1, y1],
 				local_position: [local_x1, local_y1],
 				rect_size: [rect_width, rect_height],
 				color,
@@ -390,9 +465,14 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				corner_exponent,
 				layer_kind,
 				stroke_width,
+				feather_mask_position: feather_mask.position,
+				feather_mask_size: feather_mask.size,
+				feather_mask_edges: feather_mask.edges,
+				feather_mask_corner: feather_mask.corner,
 			},
 			UiVertex {
 				position: [to_clip_x(x0), to_clip_y(y1)],
+				pixel_position: [x0, y1],
 				local_position: [local_x0, local_y1],
 				rect_size: [rect_width, rect_height],
 				color,
@@ -400,6 +480,10 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				corner_exponent,
 				layer_kind,
 				stroke_width,
+				feather_mask_position: feather_mask.position,
+				feather_mask_size: feather_mask.size,
+				feather_mask_edges: feather_mask.edges,
+				feather_mask_corner: feather_mask.corner,
 			},
 		]);
 
@@ -674,36 +758,51 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 
 			struct UiVertexIn {
 				float2 position [[attribute(0)]];
-				float2 local_position [[attribute(1)]];
-				float2 rect_size [[attribute(2)]];
-				float4 color [[attribute(3)]];
-				float corner_radius [[attribute(4)]];
-				float corner_exponent [[attribute(5)]];
-				float layer_kind [[attribute(6)]];
-				float stroke_width [[attribute(7)]];
+				float2 pixel_position [[attribute(1)]];
+				float2 local_position [[attribute(2)]];
+				float2 rect_size [[attribute(3)]];
+				float4 color [[attribute(4)]];
+				float corner_radius [[attribute(5)]];
+				float corner_exponent [[attribute(6)]];
+				float layer_kind [[attribute(7)]];
+				float stroke_width [[attribute(8)]];
+				float2 feather_mask_position [[attribute(9)]];
+				float2 feather_mask_size [[attribute(10)]];
+				float4 feather_mask_edges [[attribute(11)]];
+				float2 feather_mask_corner [[attribute(12)]];
 			};
 
 			struct UiVertexOut {
 				float4 position [[position]];
 				float4 color;
+				float2 pixel_position;
 				float2 local_position;
 				float2 rect_size;
 				float corner_radius;
 				float corner_exponent;
 				float layer_kind;
 				float stroke_width;
+				float2 feather_mask_position;
+				float2 feather_mask_size;
+				float4 feather_mask_edges;
+				float2 feather_mask_corner;
 			};
 
 			vertex UiVertexOut ui_vertex_main(UiVertexIn in [[stage_in]]) {
 				UiVertexOut out;
 				out.position = float4(in.position, 0.0, 1.0);
 				out.color = in.color;
+				out.pixel_position = in.pixel_position;
 				out.local_position = in.local_position;
 				out.rect_size = in.rect_size;
 				out.corner_radius = in.corner_radius;
 				out.corner_exponent = in.corner_exponent;
 				out.layer_kind = in.layer_kind;
 				out.stroke_width = in.stroke_width;
+				out.feather_mask_position = in.feather_mask_position;
+				out.feather_mask_size = in.feather_mask_size;
+				out.feather_mask_edges = in.feather_mask_edges;
+				out.feather_mask_corner = in.feather_mask_corner;
 				return out;
 			}
 		"#;
@@ -727,12 +826,17 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 	let main_code = r#"
 		gl_Position = vec4(in_position, 0.0, 1.0);
 		out_color = in_color;
+		out_pixel_position = in_pixel_position;
 		out_local_position = in_local_position;
 		out_rect_size = in_rect_size;
 		out_corner_radius = in_corner_radius;
 		out_corner_exponent = in_corner_exponent;
 		out_layer_kind = in_layer_kind;
 		out_stroke_width = in_stroke_width;
+		out_feather_mask_position = in_feather_mask_position;
+		out_feather_mask_size = in_feather_mask_size;
+		out_feather_mask_edges = in_feather_mask_edges;
+		out_feather_mask_corner = in_feather_mask_corner;
 	"#
 	.trim();
 
@@ -740,6 +844,7 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 		main_code,
 		&[
 			"in_position",
+			"in_pixel_position",
 			"in_local_position",
 			"in_rect_size",
 			"in_color",
@@ -748,35 +853,55 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 			"in_layer_kind",
 			"in_stroke_width",
 			"out_color",
+			"out_pixel_position",
 			"out_local_position",
 			"out_rect_size",
 			"out_corner_radius",
 			"out_corner_exponent",
 			"out_layer_kind",
 			"out_stroke_width",
+			"out_feather_mask_position",
+			"out_feather_mask_size",
+			"out_feather_mask_edges",
+			"out_feather_mask_corner",
+			"in_feather_mask_position",
+			"in_feather_mask_size",
+			"in_feather_mask_edges",
+			"in_feather_mask_corner",
 		],
 		&[],
 	)]);
 	let position_input = ParserNode::input("in_position", "vec2f", 0);
-	let local_position_input = ParserNode::input("in_local_position", "vec2f", 1);
-	let rect_size_input = ParserNode::input("in_rect_size", "vec2f", 2);
-	let color_input = ParserNode::input("in_color", "vec4f", 3);
-	let corner_radius_input = ParserNode::input("in_corner_radius", "f32", 4);
-	let corner_exponent_input = ParserNode::input("in_corner_exponent", "f32", 5);
-	let layer_kind_input = ParserNode::input("in_layer_kind", "f32", 6);
-	let stroke_width_input = ParserNode::input("in_stroke_width", "f32", 7);
+	let pixel_position_input = ParserNode::input("in_pixel_position", "vec2f", 1);
+	let local_position_input = ParserNode::input("in_local_position", "vec2f", 2);
+	let rect_size_input = ParserNode::input("in_rect_size", "vec2f", 3);
+	let color_input = ParserNode::input("in_color", "vec4f", 4);
+	let corner_radius_input = ParserNode::input("in_corner_radius", "f32", 5);
+	let corner_exponent_input = ParserNode::input("in_corner_exponent", "f32", 6);
+	let layer_kind_input = ParserNode::input("in_layer_kind", "f32", 7);
+	let stroke_width_input = ParserNode::input("in_stroke_width", "f32", 8);
+	let feather_mask_position_input = ParserNode::input("in_feather_mask_position", "vec2f", 9);
+	let feather_mask_size_input = ParserNode::input("in_feather_mask_size", "vec2f", 10);
+	let feather_mask_edges_input = ParserNode::input("in_feather_mask_edges", "vec4f", 11);
+	let feather_mask_corner_input = ParserNode::input("in_feather_mask_corner", "vec2f", 12);
 	let color_output = ParserNode::output("out_color", "vec4f", 0);
-	let local_position_output = ParserNode::output("out_local_position", "vec2f", 1);
-	let rect_size_output = ParserNode::output("out_rect_size", "vec2f", 2);
-	let corner_radius_output = ParserNode::output("out_corner_radius", "f32", 3);
-	let corner_exponent_output = ParserNode::output("out_corner_exponent", "f32", 4);
-	let layer_kind_output = ParserNode::output("out_layer_kind", "f32", 5);
-	let stroke_width_output = ParserNode::output("out_stroke_width", "f32", 6);
+	let pixel_position_output = ParserNode::output("out_pixel_position", "vec2f", 1);
+	let local_position_output = ParserNode::output("out_local_position", "vec2f", 2);
+	let rect_size_output = ParserNode::output("out_rect_size", "vec2f", 3);
+	let corner_radius_output = ParserNode::output("out_corner_radius", "f32", 4);
+	let corner_exponent_output = ParserNode::output("out_corner_exponent", "f32", 5);
+	let layer_kind_output = ParserNode::output("out_layer_kind", "f32", 6);
+	let stroke_width_output = ParserNode::output("out_stroke_width", "f32", 7);
+	let feather_mask_position_output = ParserNode::output("out_feather_mask_position", "vec2f", 8);
+	let feather_mask_size_output = ParserNode::output("out_feather_mask_size", "vec2f", 9);
+	let feather_mask_edges_output = ParserNode::output("out_feather_mask_edges", "vec4f", 10);
+	let feather_mask_corner_output = ParserNode::output("out_feather_mask_corner", "vec2f", 11);
 
 	let shader_scope = ParserNode::scope(
 		"Shader",
 		vec![
 			position_input,
+			pixel_position_input,
 			local_position_input,
 			rect_size_input,
 			color_input,
@@ -784,13 +909,22 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 			corner_exponent_input,
 			layer_kind_input,
 			stroke_width_input,
+			feather_mask_position_input,
+			feather_mask_size_input,
+			feather_mask_edges_input,
+			feather_mask_corner_input,
 			color_output,
+			pixel_position_output,
 			local_position_output,
 			rect_size_output,
 			corner_radius_output,
 			corner_exponent_output,
 			layer_kind_output,
 			stroke_width_output,
+			feather_mask_position_output,
+			feather_mask_size_output,
+			feather_mask_edges_output,
+			feather_mask_corner_output,
 			main,
 		],
 	);
@@ -840,35 +974,50 @@ fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::Sh
 		UI_FRAGMENT_SHADER_GLSL_MAIN,
 		&[
 			"in_color",
+			"in_pixel_position",
 			"in_local_position",
 			"in_rect_size",
 			"in_corner_radius",
 			"in_corner_exponent",
 			"in_layer_kind",
 			"in_stroke_width",
+			"in_feather_mask_position",
+			"in_feather_mask_size",
+			"in_feather_mask_edges",
+			"in_feather_mask_corner",
 			"out_color_attachment",
 		],
 		&[],
 	)]);
 	let input_color = ParserNode::input("in_color", "vec4f", 0);
-	let input_local_position = ParserNode::input("in_local_position", "vec2f", 1);
-	let input_rect_size = ParserNode::input("in_rect_size", "vec2f", 2);
-	let input_corner_radius = ParserNode::input("in_corner_radius", "f32", 3);
-	let input_corner_exponent = ParserNode::input("in_corner_exponent", "f32", 4);
-	let input_layer_kind = ParserNode::input("in_layer_kind", "f32", 5);
-	let input_stroke_width = ParserNode::input("in_stroke_width", "f32", 6);
+	let input_pixel_position = ParserNode::input("in_pixel_position", "vec2f", 1);
+	let input_local_position = ParserNode::input("in_local_position", "vec2f", 2);
+	let input_rect_size = ParserNode::input("in_rect_size", "vec2f", 3);
+	let input_corner_radius = ParserNode::input("in_corner_radius", "f32", 4);
+	let input_corner_exponent = ParserNode::input("in_corner_exponent", "f32", 5);
+	let input_layer_kind = ParserNode::input("in_layer_kind", "f32", 6);
+	let input_stroke_width = ParserNode::input("in_stroke_width", "f32", 7);
+	let input_feather_mask_position = ParserNode::input("in_feather_mask_position", "vec2f", 8);
+	let input_feather_mask_size = ParserNode::input("in_feather_mask_size", "vec2f", 9);
+	let input_feather_mask_edges = ParserNode::input("in_feather_mask_edges", "vec4f", 10);
+	let input_feather_mask_corner = ParserNode::input("in_feather_mask_corner", "vec2f", 11);
 	let output_color = ParserNode::output("out_color_attachment", "vec4f", 0);
 
 	let shader_scope = ParserNode::scope(
 		"Shader",
 		vec![
 			input_color,
+			input_pixel_position,
 			input_local_position,
 			input_rect_size,
 			input_corner_radius,
 			input_corner_exponent,
 			input_layer_kind,
 			input_stroke_width,
+			input_feather_mask_position,
+			input_feather_mask_size,
+			input_feather_mask_edges,
+			input_feather_mask_corner,
 			output_color,
 			main,
 		],
@@ -925,8 +1074,26 @@ float inner_signed_distance = signed_distance + in_stroke_width;
 float inner_coverage = 1.0 - smoothstep(-corrected_edge_width, corrected_edge_width, inner_signed_distance);
 float stroke_coverage = max(fill_coverage - inner_coverage, 0.0);
 float coverage = mix(fill_coverage, stroke_coverage, step(0.5, in_layer_kind));
+float feather_top = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.x, 0.0001), in_pixel_position.y - in_feather_mask_position.y), step(0.0001, in_feather_mask_edges.x));
+float feather_right = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.y, 0.0001), in_feather_mask_position.x + in_feather_mask_size.x - in_pixel_position.x), step(0.0001, in_feather_mask_edges.y));
+float feather_bottom = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.z, 0.0001), in_feather_mask_position.y + in_feather_mask_size.y - in_pixel_position.y), step(0.0001, in_feather_mask_edges.z));
+float feather_left = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.w, 0.0001), in_pixel_position.x - in_feather_mask_position.x), step(0.0001, in_feather_mask_edges.w));
+vec2 feather_half_size = in_feather_mask_size * 0.5;
+float feather_corner_radius = min(in_feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
+float feather_corner_exponent = in_feather_mask_corner.y;
+vec2 feather_centered_position = in_pixel_position - in_feather_mask_position - feather_half_size;
+vec2 feather_rounded_extent = feather_half_size - vec2(feather_corner_radius);
+vec2 feather_corner_delta = abs(feather_centered_position) - feather_rounded_extent;
+vec2 feather_abs_corner = max(feather_corner_delta, vec2(0.0));
+float feather_corner_sum = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
+float feather_corner_distance = pow(feather_corner_sum, 1.0 / feather_corner_exponent);
+float feather_field_distance = feather_corner_distance + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
+float feather_mask_enabled = step(0.0001, min(in_feather_mask_size.x, in_feather_mask_size.y));
+float feather_rounded_shape = step(0.0001, feather_corner_radius);
+float feather_shape_coverage = mix(1.0, 1.0 - smoothstep(-1.0, 1.0, feather_field_distance), feather_rounded_shape);
+float feather_coverage = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
 
-out_color_attachment = vec4(in_color.rgb, in_color.a * coverage);
+out_color_attachment = vec4(in_color.rgb, in_color.a * coverage * feather_coverage);
 "#;
 
 const UI_FRAGMENT_SHADER_MSL: &str = r#"
@@ -936,12 +1103,17 @@ using namespace metal;
 struct UiVertexOut {
 	float4 position [[position]];
 	float4 color;
+	float2 pixel_position;
 	float2 local_position;
 	float2 rect_size;
 	float corner_radius;
 	float corner_exponent;
 	float layer_kind;
 	float stroke_width;
+	float2 feather_mask_position;
+	float2 feather_mask_size;
+	float4 feather_mask_edges;
+	float2 feather_mask_corner;
 };
 
 fragment float4 ui_fragment_main(UiVertexOut in [[stage_in]]) {
@@ -972,7 +1144,25 @@ fragment float4 ui_fragment_main(UiVertexOut in [[stage_in]]) {
 	float inner_coverage = 1.0 - smoothstep(-corrected_edge_width, corrected_edge_width, inner_signed_distance);
 	float stroke_coverage = max(fill_coverage - inner_coverage, 0.0);
 	float coverage = mix(fill_coverage, stroke_coverage, step(0.5, in.layer_kind));
-	return float4(in.color.rgb, in.color.a * coverage);
+	float feather_top = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.x, 0.0001), in.pixel_position.y - in.feather_mask_position.y), step(0.0001, in.feather_mask_edges.x));
+	float feather_right = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.y, 0.0001), in.feather_mask_position.x + in.feather_mask_size.x - in.pixel_position.x), step(0.0001, in.feather_mask_edges.y));
+	float feather_bottom = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.z, 0.0001), in.feather_mask_position.y + in.feather_mask_size.y - in.pixel_position.y), step(0.0001, in.feather_mask_edges.z));
+	float feather_left = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.w, 0.0001), in.pixel_position.x - in.feather_mask_position.x), step(0.0001, in.feather_mask_edges.w));
+	float2 feather_half_size = in.feather_mask_size * 0.5;
+	float feather_corner_radius = min(in.feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
+	float feather_corner_exponent = in.feather_mask_corner.y;
+	float2 feather_centered_position = in.pixel_position - in.feather_mask_position - feather_half_size;
+	float2 feather_rounded_extent = feather_half_size - float2(feather_corner_radius);
+	float2 feather_corner_delta = abs(feather_centered_position) - feather_rounded_extent;
+	float2 feather_abs_corner = max(feather_corner_delta, float2(0.0));
+	float feather_corner_sum = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
+	float feather_corner_distance = pow(feather_corner_sum, 1.0 / feather_corner_exponent);
+	float feather_field_distance = feather_corner_distance + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
+	float feather_mask_enabled = step(0.0001, min(in.feather_mask_size.x, in.feather_mask_size.y));
+	float feather_rounded_shape = step(0.0001, feather_corner_radius);
+	float feather_shape_coverage = mix(1.0, 1.0 - smoothstep(-1.0, 1.0, feather_field_distance), feather_rounded_shape);
+	float feather_coverage = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
+	return float4(in.color.rgb, in.color.a * coverage * feather_coverage);
 }
 "#;
 
@@ -1088,9 +1278,9 @@ mod tests {
 	use utils::{Extent, RGBA};
 
 	use super::{
-		build_ui_geometry, should_rasterize_text, update_from_render, DrawClip, UiDrawBatch, UiDrawElement, UiDrawList,
-		UiTextDrawElement, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_FRAGMENT_SHADER_GLSL_MAIN, UI_FRAGMENT_SHADER_MSL,
-		UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_ELEMENT,
+		build_ui_geometry, should_rasterize_text, update_from_render, DrawClip, DrawFeatherMask, UiDrawBatch, UiDrawElement,
+		UiDrawList, UiTextDrawElement, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_FRAGMENT_SHADER_GLSL_MAIN,
+		UI_FRAGMENT_SHADER_MSL, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_ELEMENT,
 	};
 	use crate::ui::{
 		flow::Size,
@@ -1112,6 +1302,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [50.0, 50.0],
 			clip: None,
+			feather_mask: None,
 			color: [1.0, 1.0, 1.0, 1.0],
 			corner_radius,
 			corner_exponent,
@@ -1130,6 +1321,7 @@ mod tests {
 					position: [10.0, 20.0],
 					size: [30.0, 40.0],
 					clip: None,
+					feather_mask: None,
 					color: [0.25, 0.5, 0.75, 1.0],
 					corner_radius: 8.0,
 					corner_exponent: 2.0,
@@ -1188,6 +1380,7 @@ mod tests {
 					position: [0.0, 0.0],
 					size: [80.0, 20.0],
 					clip: None,
+					feather_mask: None,
 					color: [1.0, 1.0, 1.0, 1.0],
 					corner_radius: 80.0,
 					corner_exponent: 2.0,
@@ -1230,6 +1423,33 @@ mod tests {
 		assert_vec2_close(geometry.vertices[2].local_position, [30.0, 20.0]);
 		assert_vec2_close(geometry.vertices[3].local_position, [10.0, 20.0]);
 		assert_vec2_close(geometry.vertices[0].rect_size, [40.0, 40.0]);
+	}
+
+	#[test]
+	fn feather_mask_scales_to_viewport_pixels() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut element = draw_element(0.0, 2.0);
+		element.feather_mask = Some(DrawFeatherMask {
+			position: [10.0, 20.0],
+			size: [30.0, 40.0],
+			edges: [1.0, 2.0, 3.0, 4.0],
+			corner: [5.0, 3.0],
+		});
+
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![element],
+				texts: vec![],
+			},
+			Extent::rectangle(200, 300),
+			&frame_allocator,
+		);
+
+		assert_vec2_close(geometry.vertices[0].feather_mask_position, [20.0, 60.0]);
+		assert_vec2_close(geometry.vertices[0].feather_mask_size, [60.0, 120.0]);
+		assert_eq!(geometry.vertices[0].feather_mask_edges, [3.0, 4.0, 9.0, 8.0]);
+		assert_eq!(geometry.vertices[0].feather_mask_corner, [10.0, 3.0]);
 	}
 
 	#[test]
@@ -1391,7 +1611,7 @@ mod tests {
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN
 			.contains("rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance)"));
 		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fwidth(signed_distance)"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("in_color.a * coverage"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("in_color.a * coverage * feather_coverage"));
 	}
 
 	#[test]
@@ -1400,7 +1620,21 @@ mod tests {
 		assert!(UI_FRAGMENT_SHADER_MSL
 			.contains("rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance)"));
 		assert!(UI_FRAGMENT_SHADER_MSL.contains("fwidth(signed_distance)"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("in.color.a * coverage"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("in.color.a * coverage * feather_coverage"));
+	}
+
+	#[test]
+	fn rounded_rect_shaders_apply_feather_mask_coverage() {
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("feather_top"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("feather_right"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("feather_bottom"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("feather_left"));
+		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("feather_shape_coverage"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("feather_top"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("feather_right"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("feather_bottom"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("feather_left"));
+		assert!(UI_FRAGMENT_SHADER_MSL.contains("feather_shape_coverage"));
 	}
 
 	#[test]
@@ -1450,6 +1684,7 @@ mod tests {
 				position: [0.0, 0.0],
 				size: [1.0, 1.0],
 				clip: None,
+				feather_mask: None,
 				color: [1.0, 1.0, 1.0, 1.0],
 				corner_radius: 0.0,
 				corner_exponent: 2.0,
@@ -1492,6 +1727,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [1.0, 1.0],
 			clip: None,
+			feather_mask: None,
 			color: [1.0, 1.0, 1.0, 0.0],
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
@@ -1502,6 +1738,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [1.0, 1.0],
 			clip: None,
+			feather_mask: None,
 			color: [1.0, 1.0, 1.0, 1.0],
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
@@ -1531,6 +1768,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [32.0, 16.0],
 			clip: None,
+			feather_mask: None,
 			color: RGBA::new(1.0, 1.0, 1.0, 0.0),
 			font_size: 16.0,
 			text: "Hidden".to_string(),
@@ -1540,6 +1778,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [32.0, 16.0],
 			clip: None,
+			feather_mask: None,
 			color: RGBA::new(1.0, 1.0, 1.0, 1.0),
 			font_size: 16.0,
 			text: "Visible".to_string(),

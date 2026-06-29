@@ -277,6 +277,12 @@ struct ClipInfo {
 	descendants: EffectiveClip,
 }
 
+#[derive(Clone, Copy)]
+struct FeatherInfo {
+	element: Option<FeatherMask>,
+	descendants: Option<FeatherMask>,
+}
+
 impl EffectiveClip {
 	fn apply(self, geometry: Geometry) -> Option<Geometry> {
 		match self {
@@ -331,6 +337,49 @@ fn element_clips<'a>(elements: impl IntoIterator<Item = &'a LayoutElement>, tree
 	}
 
 	clips
+}
+
+fn element_feather_masks<'a>(
+	elements: impl IntoIterator<Item = &'a LayoutElement>,
+	tree: &RetainedTree,
+) -> HashMap<Id, FeatherInfo> {
+	let mut masks = HashMap::new();
+
+	for element in elements {
+		let inherited = tree
+			.parent_by_child
+			.get(&element.id)
+			.copied()
+			.and_then(|parent| masks.get(&parent).and_then(|mask: &FeatherInfo| mask.descendants));
+		let descendants = match tree.element(element.id).map(|element| &element.element.primitive) {
+			Some(Primitives::Container(container)) if container.clip => first_layer_feather(container.style.layers())
+				.map(|feather| FeatherMask {
+					geometry: geometry_from_layout_element(element),
+					feather,
+					corner_radius: container.corner_radius,
+					corner_exponent: container.corner_exponent,
+				})
+				.or(inherited),
+			_ => inherited,
+		};
+
+		masks.insert(
+			element.id,
+			FeatherInfo {
+				element: inherited,
+				descendants,
+			},
+		);
+	}
+
+	masks
+}
+
+fn first_layer_feather(layers: &[crate::ui::style::ConcreteLayer]) -> Option<EdgeFeather> {
+	layers
+		.iter()
+		.map(crate::ui::style::Layer::feather)
+		.find(|feather| !feather.is_none())
 }
 
 fn clipped_layout_elements<'a>(
@@ -993,6 +1042,7 @@ impl<C: 'static> Engine<C> {
 		let tree = Rc::clone(&self.runtime.borrow().tree);
 		let tree = tree.borrow();
 		let clips = element_clips(snapshot.elements.iter(), &tree);
+		let feather_masks = element_feather_masks(snapshot.elements.iter(), &tree);
 
 		for element in &mut snapshot.elements {
 			let Some(retained_element) = tree.element(element.id) else {
@@ -1006,6 +1056,7 @@ impl<C: 'static> Engine<C> {
 				continue;
 			}
 			let clip = clip.as_rect();
+			let feather_mask = feather_masks.get(&element.id).and_then(|mask| mask.element);
 
 			let opacity = effective_opacity(element.id, &tree, &mut effective_opacities);
 			let style = retained_element.element.primitive.style().clone();
@@ -1024,6 +1075,7 @@ impl<C: 'static> Engine<C> {
 					position: element.position,
 					size: element.size,
 					clip,
+					feather_mask,
 					style,
 					opacity,
 					corner_radius: container.corner_radius,
@@ -1040,6 +1092,7 @@ impl<C: 'static> Engine<C> {
 						position: element.position,
 						size: element.size,
 						clip,
+						feather_mask,
 						style,
 						opacity,
 						corner_radius,
@@ -1051,6 +1104,7 @@ impl<C: 'static> Engine<C> {
 					position: element.position,
 					size: element.size,
 					clip,
+					feather_mask,
 					color,
 					opacity,
 					font_size: text.settings().font_size,
@@ -1459,7 +1513,7 @@ mod tests {
 			Geometry, Sizing,
 		},
 		spring,
-		style::{ConcreteLayer, ConcreteStyle, Layer, LayerKind},
+		style::{ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind},
 		Depth,
 	};
 
@@ -2443,6 +2497,137 @@ mod tests {
 	}
 
 	#[test]
+	fn feathered_layer_mask_propagates_to_descendant_elements_and_text() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(
+					Container::default().width(50.into()).height(40.into()).style(
+						ConcreteLayer::default()
+							.color(RGBA::white().into())
+							.feather(EdgeFeather::vertical(8.0)),
+					),
+				);
+				frame
+					.element("child")
+					.container(Container::default().width(10.into()).height(10.into()));
+				frame.element("label").text(Text::new("Masked"));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let parent = render.elements().find(|element| element.id == 1).unwrap();
+		let child = render.elements().find(|element| element.id == 2).unwrap();
+		let text = render.texts().find(|text| text.id == 3).unwrap();
+		let expected = FeatherMask {
+			geometry: Geometry::new(Location3::new(0, 0, 0), Size::new(50, 40)),
+			feather: EdgeFeather::vertical(8.0),
+			corner_radius: 0.0,
+			corner_exponent: 2.0,
+		};
+
+		assert_eq!(parent.feather_mask, None);
+		assert_eq!(child.feather_mask, Some(expected));
+		assert_eq!(text.feather_mask, Some(expected));
+	}
+
+	#[test]
+	fn clip_false_prevents_layer_feather_mask_inheritance() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(
+					Container::default()
+						.width(50.into())
+						.height(40.into())
+						.clip(false)
+						.style(ConcreteLayer::default().feather(EdgeFeather::all(8.0))),
+				);
+				frame
+					.element("child")
+					.container(Container::default().width(10.into()).height(10.into()));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let child = render.elements().find(|element| element.id == 2).unwrap();
+
+		assert_eq!(child.feather_mask, None);
+	}
+
+	#[test]
+	fn first_nonzero_feathered_layer_defines_descendant_mask() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(
+					Container::default().width(50.into()).height(40.into()).style(
+						ConcreteStyle::new()
+							.layer(ConcreteLayer::default())
+							.layer(ConcreteLayer::default().feather(EdgeFeather::horizontal(4.0)))
+							.layer(ConcreteLayer::default().feather(EdgeFeather::vertical(9.0))),
+					),
+				);
+				frame
+					.element("child")
+					.container(Container::default().width(10.into()).height(10.into()));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let child = render.elements().find(|element| element.id == 2).unwrap();
+
+		assert_eq!(
+			child.feather_mask,
+			Some(FeatherMask {
+				geometry: Geometry::new(Location3::new(0, 0, 0), Size::new(50, 40)),
+				feather: EdgeFeather::horizontal(4.0),
+				corner_radius: 0.0,
+				corner_exponent: 2.0,
+			})
+		);
+	}
+
+	#[test]
+	fn feathered_layer_mask_preserves_source_container_corner_shape() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(
+					Container::default()
+						.width(50.into())
+						.height(40.into())
+						.corner_radius(8.0)
+						.corner_exponent(4.0)
+						.style(ConcreteLayer::default().feather(EdgeFeather::vertical(8.0))),
+				);
+				frame
+					.element("child")
+					.container(Container::default().width(10.into()).height(10.into()));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let child = render.elements().find(|element| element.id == 2).unwrap();
+		let mask = child.feather_mask.unwrap();
+
+		assert_eq!(mask.corner_radius, 8.0);
+		assert_eq!(mask.corner_exponent, 4.0);
+	}
+
+	#[test]
 	fn render_inherits_parent_opacity() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -2885,13 +3070,13 @@ use super::{
 	flow::{Location3, Size},
 	layout_elements,
 	snapshot::Snapshot,
-	ConcreteElement, Geometry, IdedElement, LayoutElement, PathSegment, RenderElement, RenderTextElement,
+	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderElement, RenderTextElement,
 };
 use crate::ui::{
 	components::shape::Shape,
 	font::TextSystem,
 	intersection::build_mouse_click_acceleration,
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes},
-	style::Color,
+	style::{Color, EdgeFeather, Layer as _},
 	Container, Text, Transform,
 };

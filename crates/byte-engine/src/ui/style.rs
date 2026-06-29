@@ -25,10 +25,69 @@ pub enum LayerKind {
 	Stroke { width: f32 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeFeather {
+	pub top: f32,
+	pub right: f32,
+	pub bottom: f32,
+	pub left: f32,
+}
+
+impl EdgeFeather {
+	pub const fn none() -> Self {
+		Self {
+			top: 0.0,
+			right: 0.0,
+			bottom: 0.0,
+			left: 0.0,
+		}
+	}
+
+	pub fn all(width: f32) -> Self {
+		Self::edges(width, width, width, width)
+	}
+
+	pub fn vertical(width: f32) -> Self {
+		Self::edges(width, 0.0, width, 0.0)
+	}
+
+	pub fn horizontal(width: f32) -> Self {
+		Self::edges(0.0, width, 0.0, width)
+	}
+
+	pub fn edges(top: f32, right: f32, bottom: f32, left: f32) -> Self {
+		Self {
+			top: sanitize_feather_width(top),
+			right: sanitize_feather_width(right),
+			bottom: sanitize_feather_width(bottom),
+			left: sanitize_feather_width(left),
+		}
+	}
+
+	pub fn is_none(self) -> bool {
+		self.top == 0.0 && self.right == 0.0 && self.bottom == 0.0 && self.left == 0.0
+	}
+}
+
+impl Default for EdgeFeather {
+	fn default() -> Self {
+		Self::none()
+	}
+}
+
+fn sanitize_feather_width(width: f32) -> f32 {
+	if width.is_finite() {
+		width.max(0.0)
+	} else {
+		0.0
+	}
+}
+
 pub trait Layer {
 	fn fill(&self) -> &Color;
 	fn mix_mode(&self) -> MixModes;
 	fn kind(&self) -> LayerKind;
+	fn feather(&self) -> EdgeFeather;
 }
 
 #[derive(Clone)]
@@ -69,6 +128,7 @@ impl ConcreteStyle {
 pub struct ConcreteLayer {
 	pub(crate) color: Color,
 	pub(crate) kind: LayerKind,
+	pub(crate) feather: EdgeFeather,
 }
 
 impl ConcreteLayer {
@@ -76,6 +136,7 @@ impl ConcreteLayer {
 		Self {
 			color: Color::Value(RGBA::white()),
 			kind: LayerKind::Fill,
+			feather: EdgeFeather::none(),
 		}
 	}
 
@@ -92,6 +153,15 @@ impl ConcreteLayer {
 	pub fn stroke(mut self, width: f32) -> Self {
 		self.kind = LayerKind::Stroke { width };
 		self
+	}
+
+	pub fn feather(mut self, feather: EdgeFeather) -> Self {
+		self.feather = feather;
+		self
+	}
+
+	pub fn feather_edges(self, top: f32, right: f32, bottom: f32, left: f32) -> Self {
+		self.feather(EdgeFeather::edges(top, right, bottom, left))
 	}
 }
 
@@ -112,6 +182,10 @@ impl Layer for ConcreteLayer {
 
 	fn kind(&self) -> LayerKind {
 		self.kind
+	}
+
+	fn feather(&self) -> EdgeFeather {
+		self.feather
 	}
 }
 
@@ -137,6 +211,7 @@ mod tests {
 
 		assert_eq!(style.layers().len(), 1);
 		assert_eq!(style.layers()[0].kind(), LayerKind::Fill);
+		assert_eq!(Layer::feather(&style.layers()[0]), EdgeFeather::none());
 	}
 
 	#[test]
@@ -157,5 +232,41 @@ mod tests {
 
 		assert_eq!(style.layers().len(), 1);
 		assert_eq!(style.layers()[0].kind(), LayerKind::Stroke { width: 1.0 });
+	}
+
+	#[test]
+	fn edge_feather_constructors_store_per_edge_widths() {
+		assert_eq!(
+			EdgeFeather::edges(1.0, 2.0, 3.0, 4.0),
+			EdgeFeather {
+				top: 1.0,
+				right: 2.0,
+				bottom: 3.0,
+				left: 4.0,
+			}
+		);
+		assert_eq!(EdgeFeather::vertical(6.0), EdgeFeather::edges(6.0, 0.0, 6.0, 0.0));
+		assert_eq!(EdgeFeather::horizontal(7.0), EdgeFeather::edges(0.0, 7.0, 0.0, 7.0));
+		assert_eq!(EdgeFeather::all(8.0), EdgeFeather::edges(8.0, 8.0, 8.0, 8.0));
+	}
+
+	#[test]
+	fn edge_feather_sanitizes_invalid_widths() {
+		assert_eq!(
+			EdgeFeather::edges(-1.0, f32::NAN, f32::INFINITY, 4.0),
+			EdgeFeather {
+				top: 0.0,
+				right: 0.0,
+				bottom: 0.0,
+				left: 4.0,
+			}
+		);
+	}
+
+	#[test]
+	fn concrete_layer_stores_feather() {
+		let layer = ConcreteLayer::default().feather_edges(1.0, 2.0, 3.0, 4.0);
+
+		assert_eq!(Layer::feather(&layer), EdgeFeather::edges(1.0, 2.0, 3.0, 4.0));
 	}
 }

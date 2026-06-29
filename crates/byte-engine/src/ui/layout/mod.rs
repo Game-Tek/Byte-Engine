@@ -17,7 +17,7 @@ use crate::ui::{
 	flow::FlowFunction,
 	font::TextSystem,
 	primitive::{Primitives, Shapes},
-	style::ConcreteStyle,
+	style::{ConcreteStyle, EdgeFeather},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,6 +41,7 @@ pub(crate) struct RenderElement {
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) clip: Option<Geometry>,
+	pub(crate) feather_mask: Option<FeatherMask>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) opacity: f32,
 	pub(crate) corner_radius: f32,
@@ -53,10 +54,19 @@ pub(crate) struct RenderTextElement {
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) clip: Option<Geometry>,
+	pub(crate) feather_mask: Option<FeatherMask>,
 	pub(crate) color: RGBA,
 	pub(crate) opacity: f32,
 	pub(crate) font_size: f32,
 	pub(crate) content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FeatherMask {
+	pub(crate) geometry: Geometry,
+	pub(crate) feather: EdgeFeather,
+	pub(crate) corner_radius: f32,
+	pub(crate) corner_exponent: f32,
 }
 
 fn random_color_from_id(id: u32) -> RGBA {

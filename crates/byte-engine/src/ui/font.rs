@@ -8,6 +8,7 @@ use fontdue::{Font, FontSettings};
 use utils::RGBA;
 
 use super::flow::Size;
+use super::style::EdgeFeather;
 
 const FALLBACK_WIDTH_FACTOR: f32 = 0.6;
 const FALLBACK_ASCENT_FACTOR: f32 = 0.8;
@@ -59,6 +60,106 @@ impl TextClipRect {
 	}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TextFeatherMask {
+	x: u32,
+	y: u32,
+	width: u32,
+	height: u32,
+	feather: EdgeFeather,
+	corner_radius: f32,
+	corner_exponent: f32,
+}
+
+impl TextFeatherMask {
+	pub(crate) fn new(
+		x: u32,
+		y: u32,
+		width: u32,
+		height: u32,
+		feather: EdgeFeather,
+		corner_radius: f32,
+		corner_exponent: f32,
+	) -> Self {
+		Self {
+			x,
+			y,
+			width,
+			height,
+			feather,
+			corner_radius,
+			corner_exponent: sanitize_corner_exponent(corner_exponent),
+		}
+	}
+
+	fn coverage(&self, x: i32, y: i32) -> f32 {
+		let x = x as f32;
+		let y = y as f32;
+		let left = x - self.x as f32;
+		let top = y - self.y as f32;
+		let right = self.x.saturating_add(self.width) as f32 - x;
+		let bottom = self.y.saturating_add(self.height) as f32 - y;
+
+		edge_coverage(top, self.feather.top)
+			* edge_coverage(right, self.feather.right)
+			* edge_coverage(bottom, self.feather.bottom)
+			* edge_coverage(left, self.feather.left)
+			* rounded_rect_coverage(
+				left,
+				top,
+				self.width as f32,
+				self.height as f32,
+				self.corner_radius,
+				self.corner_exponent,
+			)
+	}
+}
+
+fn rounded_rect_coverage(x: f32, y: f32, width: f32, height: f32, corner_radius: f32, corner_exponent: f32) -> f32 {
+	let half_width = width * 0.5;
+	let half_height = height * 0.5;
+	let radius = corner_radius.max(0.0).min(half_width.min(half_height));
+	if radius <= 0.0 {
+		return 1.0;
+	}
+
+	let centered_x = x - half_width;
+	let centered_y = y - half_height;
+	let rounded_extent_x = half_width - radius;
+	let rounded_extent_y = half_height - radius;
+	let corner_delta_x = centered_x.abs() - rounded_extent_x;
+	let corner_delta_y = centered_y.abs() - rounded_extent_y;
+	let abs_corner_x = corner_delta_x.max(0.0);
+	let abs_corner_y = corner_delta_y.max(0.0);
+	let corner_sum = abs_corner_x.powf(corner_exponent) + abs_corner_y.powf(corner_exponent);
+	let corner_distance = corner_sum.powf(1.0 / corner_exponent);
+	let field_distance = corner_distance + corner_delta_x.max(corner_delta_y).min(0.0) - radius;
+
+	(1.0 - smoothstep(-1.0, 1.0, field_distance)).clamp(0.0, 1.0)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+	let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+	t * t * (3.0 - 2.0 * t)
+}
+
+fn sanitize_corner_exponent(exponent: f32) -> f32 {
+	if !exponent.is_finite() || exponent < 1.0 {
+		2.0
+	} else {
+		exponent.clamp(1.0, 8.0)
+	}
+}
+
+fn edge_coverage(distance: f32, feather_width: f32) -> f32 {
+	if feather_width <= 0.0 {
+		1.0
+	} else {
+		let t = (distance / feather_width).clamp(0.0, 1.0);
+		t * t * (3.0 - 2.0 * t)
+	}
+}
+
 impl TextSystem {
 	pub fn new() -> Self {
 		Self {
@@ -101,6 +202,7 @@ impl TextSystem {
 		font_size: f32,
 		color: RGBA,
 		clip: Option<TextClipRect>,
+		feather_mask: Option<TextFeatherMask>,
 	) -> bool {
 		if text.is_empty() || target_width == 0 || target_height == 0 {
 			return false;
@@ -139,6 +241,7 @@ impl TextSystem {
 					&bitmap,
 					color,
 					clip,
+					feather_mask,
 				);
 			}
 
@@ -232,6 +335,7 @@ fn blend_glyph(
 	bitmap: &[u8],
 	color: RGBA,
 	clip: Option<TextClipRect>,
+	feather_mask: Option<TextFeatherMask>,
 ) -> bool {
 	let source_r = color.r.clamp(0.0, 1.0);
 	let source_g = color.g.clamp(0.0, 1.0);
@@ -254,7 +358,8 @@ fn blend_glyph(
 				continue;
 			}
 
-			let coverage = bitmap[row * glyph_width + column] as f32 / 255.0;
+			let coverage = bitmap[row * glyph_width + column] as f32 / 255.0
+				* feather_mask.map(|mask| mask.coverage(target_x, target_y)).unwrap_or(1.0);
 			if coverage <= 0.0 {
 				continue;
 			}
@@ -433,6 +538,7 @@ mod tests {
 			&[255],
 			RGBA::white(),
 			Some(TextClipRect::new(1, 1, 1, 1)),
+			None,
 		);
 
 		assert!(!drew);
@@ -453,10 +559,41 @@ mod tests {
 			&[255],
 			RGBA::white(),
 			Some(TextClipRect::new(0, 0, 1, 1)),
+			None,
 		);
 
 		assert!(drew);
 		assert_eq!(target, [255, 255, 255, 255]);
+	}
+
+	#[test]
+	fn feathered_glyph_reduces_alpha_near_mask_edge() {
+		let mut target = [0u8; 8];
+		let drew = blend_glyph(
+			&mut target,
+			2,
+			1,
+			0,
+			0,
+			2,
+			1,
+			&[255, 255],
+			RGBA::white(),
+			None,
+			Some(super::TextFeatherMask::new(
+				0,
+				0,
+				2,
+				1,
+				super::EdgeFeather::edges(0.0, 0.0, 0.0, 2.0),
+				0.0,
+				2.0,
+			)),
+		);
+
+		assert!(drew);
+		assert_eq!(target[3], 0);
+		assert_eq!(target[7], 128);
 	}
 }
 

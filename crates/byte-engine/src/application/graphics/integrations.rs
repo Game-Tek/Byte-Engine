@@ -156,6 +156,12 @@ pub fn process_default_window_input(
 			input::input_manager::TriggerReference::Name("Mouse.Movement"),
 			input::Value::Vector2(Vector2::new(dx, dy)),
 		),
+		ghi::window::Events::Scroll { dy, .. } => (
+			seat,
+			mouse,
+			input::input_manager::TriggerReference::Name("Mouse.Scroll"),
+			input::Value::Float(dy),
+		),
 		ghi::window::Events::Key { pressed, key, .. } => {
 			let trigger = match key {
 				ghi::window::input::Keys::W => "Keyboard.W",
@@ -214,6 +220,27 @@ mod tests {
 			input::input_manager::TriggerReference::Name("Mouse.Movement")
 		));
 		assert_eq!(result.3, input::Value::Vector2(Vector2::new(0.25, -0.5)));
+	}
+
+	#[test]
+	fn maps_scroll_to_mouse_scroll_trigger() {
+		let mut manager = input_manager();
+		let result = process_default_window_input(
+			&mut manager,
+			ghi::window::Events::Scroll {
+				seat: ghi::window::Seat::stub(),
+				dx: 0.0,
+				dy: -0.75,
+				time: 1,
+			},
+		)
+		.unwrap();
+
+		assert!(matches!(
+			result.2,
+			input::input_manager::TriggerReference::Name("Mouse.Scroll")
+		));
+		assert_eq!(result.3, input::Value::Float(-0.75));
 	}
 
 	#[cfg(feature = "dmx")]

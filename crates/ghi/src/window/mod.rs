@@ -55,6 +55,14 @@ pub enum Events {
 		/// The time at which the event occurred.
 		time: u64,
 	},
+	/// The mouse wheel or touch surface has scrolled.
+	Scroll {
+		seat: Seat,
+		dx: f32,
+		dy: f32,
+		/// The time at which the event occurred.
+		time: u64,
+	},
 }
 
 bitflags::bitflags! {

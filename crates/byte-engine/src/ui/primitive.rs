@@ -81,6 +81,7 @@ impl Shapes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Events {
 	Actuated,
+	Scrolled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

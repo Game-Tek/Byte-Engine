@@ -39,6 +39,7 @@
 - Replace hit-test `Vec<Vec<usize>>` buckets with contiguous candidate storage plus per-cell ranges.
 - Return references or compact handles for UI primitive shapes instead of cloning them.
 - Drive multiple animations concurrently using a single animation driver.
+- Make sure only components awaiting input events are notified of input events.
 
 ## Physics
 

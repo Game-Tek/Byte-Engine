@@ -335,6 +335,19 @@ impl WindowLike for Window {
 						button: MouseKeys::Middle,
 					});
 				}
+				NSEventType::ScrollWheel => {
+					let dx = event.scrollingDeltaX() as f32;
+					let dy = event.scrollingDeltaY() as f32;
+
+					if dx != 0.0 || dy != 0.0 {
+						events.push(Events::Scroll {
+							seat: Seat::stub(),
+							dx,
+							dy,
+							time,
+						});
+					}
+				}
 				NSEventType::KeyDown | NSEventType::KeyUp => {
 					let pressed = event.r#type() == NSEventType::KeyDown;
 

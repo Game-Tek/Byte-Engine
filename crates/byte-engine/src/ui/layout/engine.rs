@@ -8,6 +8,7 @@ pub struct Engine<C = ()> {
 	cursor_position: Vector2,
 	is_clicking: bool,
 	clicks: Vec<bool>,
+	scrolls: Vec<Vector2>,
 	key_states: HashMap<Key, bool>,
 	key_presses: VecDeque<Key>,
 	text_system: TextSystem,
@@ -932,6 +933,7 @@ impl<C: 'static> Engine<C> {
 			cursor_position: Vector2::zero(),
 			is_clicking: false,
 			clicks: Vec::new(),
+			scrolls: Vec::new(),
 			key_states: HashMap::new(),
 			key_presses: VecDeque::new(),
 			text_system: TextSystem::new(),
@@ -1013,9 +1015,32 @@ impl<C: 'static> Engine<C> {
 					self.runtime.borrow_mut().push_event(UiEvent {
 						target,
 						kind: Events::Actuated,
+						delta: None,
 					});
 				}
 			}
+		}
+
+		while let Some(delta) = self.scrolls.pop() {
+			if let Some(target) = snapshot.click(self.cursor_position) {
+				self.route_scroll_event(target, delta);
+			}
+		}
+	}
+
+	fn route_scroll_event(&mut self, target: Id, delta: Vector2) {
+		let runtime = Rc::clone(&self.runtime);
+		let tree = Rc::clone(&runtime.borrow().tree);
+		let tree = tree.borrow();
+		let mut current = Some(target);
+
+		while let Some(target) = current {
+			runtime.borrow_mut().push_event(UiEvent {
+				target,
+				kind: Events::Scrolled,
+				delta: Some(delta),
+			});
+			current = tree.parent_by_child.get(&target).copied();
 		}
 	}
 
@@ -1142,6 +1167,10 @@ impl<C: 'static> Engine<C> {
 	pub fn update_click_state(&mut self, v: bool) {
 		self.is_clicking = v;
 		self.clicks.push(v);
+	}
+
+	pub fn update_scroll_state(&mut self, delta: Vector2) {
+		self.scrolls.push(delta);
 	}
 
 	pub fn update_key_state(&mut self, key: Key, pressed: bool) {
@@ -1483,10 +1512,11 @@ impl ElementHandle for VirtualViewport {
 	}
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UiEvent {
 	pub target: Id,
 	pub kind: Events,
+	pub delta: Option<Vector2>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1559,6 +1589,31 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn scroll_event_bubbles_from_hovered_child_to_parent() {
+		let frame_allocator = bumpalo::Bump::new();
+		let received = Arc::new(StdMutex::new(None));
+		let received_for_task = Arc::clone(&received);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let received = Arc::clone(&received_for_task);
+			Box::pin(async move {
+				let mut parent = ctx.element("parent").container(Container::default());
+				parent.element("child").container(Container::default());
+				let event = parent.on(Events::Scrolled).await;
+				*received.lock().unwrap() = event.delta;
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.set_cursor_position(Vector2::zero());
+		engine.update_scroll_state(Vector2::new(0.0, -1.0));
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(*received.lock().unwrap(), Some(Vector2::new(0.0, -1.0)));
 	}
 
 	#[test]

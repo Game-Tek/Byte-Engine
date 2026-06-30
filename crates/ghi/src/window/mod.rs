@@ -31,6 +31,8 @@ pub enum Events {
 	Close,
 	/// A key has been pressed or released.
 	Key { seat: Seat, pressed: bool, key: input::Keys },
+	/// A text character has been entered.
+	Character { seat: Seat, character: char },
 	/// A mouse button has been pressed or released.
 	Button {
 		seat: Seat,

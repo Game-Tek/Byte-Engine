@@ -358,6 +358,17 @@ impl WindowLike for Window {
 							key,
 						});
 					}
+
+					if pressed && accepts_text_input(event.modifierFlags()) {
+						if let Some(characters) = event.characters() {
+							for character in characters.to_string().chars().filter(|character| !character.is_control()) {
+								events.push(Events::Character {
+									seat: Seat::stub(),
+									character,
+								});
+							}
+						}
+					}
 				}
 				NSEventType::FlagsChanged => {
 					if let Some(key) = modifier_keycode_to_key(event.keyCode()) {
@@ -396,6 +407,10 @@ impl WindowLike for Window {
 			view: self.window.contentView().unwrap().retain(),
 		}
 	}
+}
+
+fn accepts_text_input(flags: NSEventModifierFlags) -> bool {
+	!flags.intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control)
 }
 
 #[derive(Debug, Default, Clone, Copy)]

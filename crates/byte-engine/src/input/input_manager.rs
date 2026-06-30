@@ -927,6 +927,30 @@ mod tests {
 	}
 
 	#[test]
+	fn unicode_action_emits_character_events() {
+		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
+		let device_class_handle = register_keyboard_device_class(&mut input_manager);
+		let device = input_manager.create_device(&device_class_handle);
+		let seat = SeatHandle::stub();
+
+		let action = Action::new(
+			"KeyboardCharacter",
+			&[ActionBindingDescription::new("Keyboard.Character")],
+			Types::Unicode,
+		);
+		let handle = factory.create(action);
+		update_input_manager(&mut input_manager);
+
+		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Character"), 'é'.into());
+		update_input_manager(&mut input_manager);
+
+		let event = Listener::read(&mut event_listener).expect("expected character action event");
+		assert_eq!(event.handle(), handle);
+		assert_eq!(event.value(), Value::Unicode('é'));
+		assert!(Listener::read(&mut event_listener).is_none());
+	}
+
+	#[test]
 	fn record_int_input_source_actions() {
 		let mut input_manager = build_input_manager();
 

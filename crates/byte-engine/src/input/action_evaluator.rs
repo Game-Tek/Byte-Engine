@@ -43,6 +43,10 @@ pub(super) fn resolve_action_value(
 			Value::Float(value) => Some(Value::Bool(value != 0.0)),
 			_ => unsupported_conversion(),
 		},
+		Types::Unicode => match record.value {
+			Value::Unicode(value) => Some(Value::Unicode(value)),
+			_ => unsupported_conversion(),
+		},
 		Types::Float => resolve_float(action, mapping, record, values, frame_allocator).map(Value::Float),
 		Types::Vector2 => resolve_vector2(action, record, values, frame_allocator).map(Value::Vector2),
 		Types::Vector3 => resolve_vector3(action, mapping, record, values, frame_allocator).map(Value::Vector3),

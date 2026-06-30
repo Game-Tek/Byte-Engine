@@ -11,6 +11,7 @@ pub struct Engine<C = ()> {
 	scrolls: Vec<Vector2>,
 	key_states: HashMap<Key, bool>,
 	key_presses: VecDeque<Key>,
+	text_edits: VecDeque<TextEdit>,
 	text_system: TextSystem,
 	ctx: Rc<C>,
 	runtime: Rc<RefCell<Runtime>>,
@@ -525,6 +526,19 @@ impl<C> EvaluationContext<C> {
 		true
 	}
 
+	pub fn update_text_field(&mut self, update: impl FnOnce(&mut TextField)) -> bool {
+		let mut tree = self.tree.borrow_mut();
+		let Some(element) = tree.element_mut(self.id) else {
+			return false;
+		};
+		let Primitives::TextField(text_field) = &mut element.element.primitive else {
+			return false;
+		};
+
+		update(text_field);
+		true
+	}
+
 	pub fn update_shape(&mut self, update: impl FnOnce(&mut Shape)) -> bool {
 		let mut tree = self.tree.borrow_mut();
 		let Some(element) = tree.element_mut(self.id) else {
@@ -584,6 +598,10 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 
 	fn text(self, text: Text) -> EvaluationContext<C> {
 		self.parent.add_element(self.name, ConcreteElement::text(text))
+	}
+
+	fn text_field(self, text_field: TextField) -> EvaluationContext<C> {
+		self.parent.add_element(self.name, ConcreteElement::text_field(text_field))
 	}
 
 	fn shape(self, shape: Shape) -> EvaluationContext<C> {
@@ -653,6 +671,15 @@ impl<C: 'static> super::context::ContainerContext<C> for EvaluationContext<C> {
 			task_id: self.task_id,
 			target: self.id,
 			key,
+			complete: false,
+		}
+	}
+
+	fn on_text_edit(&mut self) -> TextEditFuture {
+		TextEditFuture {
+			runtime: Rc::clone(&self.runtime),
+			task_id: self.task_id,
+			target: self.id,
 			complete: false,
 		}
 	}
@@ -885,6 +912,41 @@ impl FusedFuture for KeyFuture {
 	}
 }
 
+pub struct TextEditFuture {
+	runtime: Rc<RefCell<Runtime>>,
+	task_id: TaskId,
+	target: Id,
+	complete: bool,
+}
+
+impl Future for TextEditFuture {
+	type Output = UiTextEditEvent;
+
+	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+		if self.complete {
+			return Poll::Pending;
+		}
+
+		let event = self.runtime.borrow_mut().take_text_edit_event(self.task_id, self.target);
+
+		if let Some(event) = event {
+			self.complete = true;
+			return Poll::Ready(event);
+		}
+
+		self.runtime
+			.borrow_mut()
+			.wait_for_text_edit(self.task_id, self.target, cx.waker().clone());
+		Poll::Pending
+	}
+}
+
+impl FusedFuture for TextEditFuture {
+	fn is_terminated(&self) -> bool {
+		self.complete
+	}
+}
+
 impl EngineState {
 	fn new() -> Self {
 		Self {
@@ -936,6 +998,7 @@ impl<C: 'static> Engine<C> {
 			scrolls: Vec::new(),
 			key_states: HashMap::new(),
 			key_presses: VecDeque::new(),
+			text_edits: VecDeque::new(),
 			text_system: TextSystem::new(),
 			ctx: Rc::new(ctx),
 			runtime: Rc::new(RefCell::new(Runtime::new())),
@@ -971,6 +1034,7 @@ impl<C: 'static> Engine<C> {
 		let mut snapshot = self.build_snapshot_from_ui_tree(size, frame_allocator);
 		self.route_input_events(&mut snapshot);
 		self.route_key_input_events();
+		self.route_text_edit_events();
 
 		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
 		snapshot
@@ -1059,6 +1123,23 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
+	fn route_text_edit_events(&mut self) {
+		while let Some(edit) = self.text_edits.pop_front() {
+			let target = {
+				let state = self.state.borrow();
+				self.runtime
+					.borrow_mut()
+					.focused_target(|target| state.contains_element(target))
+			};
+
+			if let Some(target) = target {
+				self.runtime
+					.borrow_mut()
+					.push_text_edit_event(UiTextEditEvent { target, edit });
+			}
+		}
+	}
+
 	/// Renders the given snapshot into a [`Render`] object.
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
 		let mut elements = Vec::new();
@@ -1135,6 +1216,17 @@ impl<C: 'static> Engine<C> {
 					font_size: text.settings().font_size,
 					content: text.content().to_string(),
 				}),
+				Primitives::TextField(text_field) => text_elements.push(RenderTextElement {
+					id: element.id.get(),
+					position: element.position,
+					size: element.size,
+					clip,
+					feather_mask,
+					color,
+					opacity,
+					font_size: text_field.settings().font_size,
+					content: text_field.content().to_string(),
+				}),
 			}
 		}
 
@@ -1179,6 +1271,34 @@ impl<C: 'static> Engine<C> {
 			self.key_presses.push_back(key);
 		}
 	}
+
+	pub fn input_character(&mut self, character: char) {
+		if character != '\0' {
+			self.text_edits.push_back(TextEdit::Inserted(character));
+		}
+	}
+
+	pub fn delete_text_backward(&mut self) {
+		if let Some(character) = self.focused_text_field_last_char() {
+			self.text_edits.push_back(TextEdit::Deleted(character));
+		}
+	}
+
+	fn focused_text_field_last_char(&mut self) -> Option<char> {
+		let target = {
+			let state = self.state.borrow();
+			self.runtime
+				.borrow_mut()
+				.focused_target(|target| state.contains_element(target))?
+		};
+		let runtime = self.runtime.borrow();
+		let tree = runtime.tree.borrow();
+		let element = tree.element(target)?;
+		let Primitives::TextField(text_field) = &element.element.primitive else {
+			return None;
+		};
+		text_field.content().chars().last()
+	}
 }
 
 type BoxedUiFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
@@ -1187,6 +1307,7 @@ struct UiTask {
 	future: Option<BoxedUiFuture>,
 	inbox: VecDeque<UiEvent>,
 	key_inbox: VecDeque<UiKeyEvent>,
+	text_edit_inbox: VecDeque<UiTextEditEvent>,
 	complete: bool,
 }
 
@@ -1203,6 +1324,12 @@ struct KeyWaiter {
 	task_id: TaskId,
 	target: Id,
 	key: Key,
+	waker: Waker,
+}
+
+struct TextEditWaiter {
+	task_id: TaskId,
+	target: Id,
 	waker: Waker,
 }
 
@@ -1240,6 +1367,7 @@ pub struct Runtime {
 	frame_waiters: Vec<Waker>,
 	event_waiters: Vec<EventWaiter>,
 	key_waiters: Vec<KeyWaiter>,
+	text_edit_waiters: Vec<TextEditWaiter>,
 	focus_stack: Vec<Id>,
 	geometry: HashMap<Id, Geometry>,
 	frame: u64,
@@ -1273,6 +1401,7 @@ impl Runtime {
 			frame_waiters: Vec::new(),
 			event_waiters: Vec::new(),
 			key_waiters: Vec::new(),
+			text_edit_waiters: Vec::new(),
 			focus_stack: Vec::new(),
 			geometry: HashMap::new(),
 			frame: 0,
@@ -1290,6 +1419,7 @@ impl Runtime {
 			future: Some(Box::pin(async {})),
 			inbox: VecDeque::new(),
 			key_inbox: VecDeque::new(),
+			text_edit_inbox: VecDeque::new(),
 			complete: false,
 		});
 		runtime.ready.lock().push_back(id);
@@ -1387,6 +1517,19 @@ impl Runtime {
 		});
 	}
 
+	fn wait_for_text_edit(&mut self, task_id: TaskId, target: Id, waker: Waker) {
+		if let Some(waiter) = self
+			.text_edit_waiters
+			.iter_mut()
+			.find(|waiter| waiter.task_id == task_id && waiter.target == target)
+		{
+			waiter.waker = waker;
+			return;
+		}
+
+		self.text_edit_waiters.push(TextEditWaiter { task_id, target, waker });
+	}
+
 	fn push_event(&mut self, event: UiEvent) {
 		let mut i = 0;
 		while i < self.event_waiters.len() {
@@ -1425,6 +1568,25 @@ impl Runtime {
 		}
 	}
 
+	fn push_text_edit_event(&mut self, event: UiTextEditEvent) {
+		let mut i = 0;
+		while i < self.text_edit_waiters.len() {
+			let waiter = &self.text_edit_waiters[i];
+
+			if waiter.target == event.target {
+				let waiter = self.text_edit_waiters.swap_remove(i);
+
+				if let Some(task) = self.tasks.get_mut(waiter.task_id) {
+					task.text_edit_inbox.push_back(event);
+				}
+
+				waiter.waker.wake();
+			} else {
+				i += 1;
+			}
+		}
+	}
+
 	fn take_event(&mut self, task_id: TaskId, target: Id, kind: Events) -> Option<UiEvent> {
 		let inbox = &mut self.tasks.get_mut(task_id)?.inbox;
 		let index = inbox.iter().position(|e| e.target == target && e.kind == kind)?;
@@ -1434,6 +1596,12 @@ impl Runtime {
 	fn take_key_event(&mut self, task_id: TaskId, target: Id, key: Key) -> Option<UiKeyEvent> {
 		let inbox = &mut self.tasks.get_mut(task_id)?.key_inbox;
 		let index = inbox.iter().position(|e| e.target == target && e.key == key)?;
+		inbox.remove(index)
+	}
+
+	fn take_text_edit_event(&mut self, task_id: TaskId, target: Id) -> Option<UiTextEditEvent> {
+		let inbox = &mut self.tasks.get_mut(task_id)?.text_edit_inbox;
+		let index = inbox.iter().position(|e| e.target == target)?;
 		inbox.remove(index)
 	}
 
@@ -1465,6 +1633,8 @@ impl Runtime {
 			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
 		self.key_waiters
 			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
+		self.text_edit_waiters
+			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
 		self.focus_stack
 			.retain(|focused| !targets.iter().any(|target| *target == *focused));
 		self.geometry.retain(|id, _| !targets.iter().any(|target| *target == *id));
@@ -1473,6 +1643,8 @@ impl Runtime {
 			task.inbox
 				.retain(|event| !targets.iter().any(|target| *target == event.target));
 			task.key_inbox
+				.retain(|event| !targets.iter().any(|target| *target == event.target));
+			task.text_edit_inbox
 				.retain(|event| !targets.iter().any(|target| *target == event.target));
 		}
 	}
@@ -1525,6 +1697,12 @@ pub struct UiKeyEvent {
 	pub key: Key,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiTextEditEvent {
+	pub target: Id,
+	pub edit: TextEdit,
+}
+
 #[cfg(test)]
 mod tests {
 	use std::sync::{
@@ -1536,12 +1714,13 @@ mod tests {
 	use super::*;
 	use crate::ui::{
 		animate,
-		components::{container::Container, shape::Shape},
+		components::{container::Container, shape::Shape, text_field::TextField},
 		flow::{self, Location3},
 		layout::{
 			context::{ContainerContext, Context, ElementContext},
 			Geometry, Sizing,
 		},
+		primitive::TextEdit,
 		spring,
 		style::{ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind},
 		Depth,
@@ -3028,6 +3207,146 @@ mod tests {
 	}
 
 	#[test]
+	fn text_edit_applies_to_app_owned_string() {
+		let mut content = String::from("Hi");
+
+		TextEdit::Inserted('é').apply_to(&mut content);
+		assert_eq!(content, "Hié");
+
+		TextEdit::Deleted('é').apply_to(&mut content);
+		assert_eq!(content, "Hi");
+
+		TextEdit::Deleted('x').apply_to(&mut content);
+		assert_eq!(content, "Hi");
+	}
+
+	#[test]
+	fn text_field_renders_visible_content() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("field").text_field(TextField::new("Hello"));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let text = render.texts().next().unwrap();
+
+		assert_eq!(text.content, "Hello");
+		assert!(text.size.x() > 0);
+		assert!(render.texts().nth(1).is_none());
+	}
+
+	#[test]
+	fn focused_text_field_receives_inserted_text_edit() {
+		let frame_allocator = bumpalo::Bump::new();
+		let received = Arc::new(StdMutex::new(None));
+		let received_for_task = Arc::clone(&received);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let received = Arc::clone(&received_for_task);
+			Box::pin(async move {
+				let mut field = ctx.element("field").text_field(TextField::new(""));
+				field.request_focus();
+				let event = field.on_text_edit().await;
+				*received.lock().unwrap() = Some(event.edit);
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.input_character('a');
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(*received.lock().unwrap(), Some(TextEdit::Inserted('a')));
+	}
+
+	#[test]
+	fn unfocused_text_field_does_not_receive_inserted_text_edit() {
+		let frame_allocator = bumpalo::Bump::new();
+		let received = Arc::new(StdMutex::new(None));
+		let received_for_task = Arc::clone(&received);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let received = Arc::clone(&received_for_task);
+			Box::pin(async move {
+				let mut field = ctx.element("field").text_field(TextField::new(""));
+				let event = field.on_text_edit().await;
+				*received.lock().unwrap() = Some(event.edit);
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.input_character('a');
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(*received.lock().unwrap(), None);
+	}
+
+	#[test]
+	fn focused_text_field_delete_emits_deleted_last_character() {
+		let frame_allocator = bumpalo::Bump::new();
+		let received = Arc::new(StdMutex::new(None));
+		let received_for_task = Arc::clone(&received);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let received = Arc::clone(&received_for_task);
+			Box::pin(async move {
+				let mut field = ctx.element("field").text_field(TextField::new("Hié"));
+				field.request_focus();
+				let event = field.on_text_edit().await;
+				*received.lock().unwrap() = Some(event.edit);
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.delete_text_backward();
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(*received.lock().unwrap(), Some(TextEdit::Deleted('é')));
+	}
+
+	#[test]
+	fn app_owned_string_update_changes_later_text_field_render() {
+		let frame_allocator = bumpalo::Bump::new();
+		let content = Arc::new(StdMutex::new(String::from("a")));
+		let content_for_task = Arc::clone(&content);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let content = Arc::clone(&content_for_task);
+			Box::pin(async move {
+				let initial = content.lock().unwrap().clone();
+				let mut field = ctx.element("field").text_field(TextField::new(initial));
+				field.request_focus();
+				let event = field.on_text_edit().await;
+				{
+					let mut content = content.lock().unwrap();
+					event.edit.apply_to(&mut content);
+					let updated = content.clone();
+					assert!(field.update_text_field(|field| field.set_content(updated)));
+				}
+				field.render().await;
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.input_character('b');
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let text = render.texts().next().unwrap();
+
+		assert_eq!(*content.lock().unwrap(), "ab");
+		assert_eq!(text.content, "ab");
+	}
+
+	#[test]
 	fn animate_updates_existing_retained_element_across_frames() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -3128,10 +3447,10 @@ use super::{
 	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderElement, RenderTextElement,
 };
 use crate::ui::{
-	components::shape::Shape,
+	components::{shape::Shape, text_field::TextField},
 	font::TextSystem,
 	intersection::build_mouse_click_acceleration,
-	primitive::{Events, Key, Primitive as _, Primitives, Shapes},
+	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},
 	style::{Color, EdgeFeather, Layer as _},
 	Container, Text, Transform,
 };

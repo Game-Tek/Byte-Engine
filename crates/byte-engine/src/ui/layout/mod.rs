@@ -187,7 +187,7 @@ fn layout_elements<'a>(
 
 		let position = location_from_offset(ts.offset, ts.depth);
 
-		let hit_testable = matches!(element.element.primitive, Primitives::Container(_));
+		let hit_testable = matches!(element.element.primitive, Primitives::Container(_) | Primitives::TextField(_));
 
 		LayoutElement {
 			id: element.id,
@@ -207,6 +207,7 @@ fn layout_elements<'a>(
 			.bbox(available_space),
 			Primitives::Shape(shape) => shape.shape.bbox(available_space),
 			Primitives::Text(text) => text_system.measure(text.content(), text.settings().font_size),
+			Primitives::TextField(text_field) => text_system.measure(text_field.content(), text_field.settings().font_size),
 		}
 	}
 
@@ -280,7 +281,7 @@ fn layout_elements<'a>(
 				lelements.push(p);
 				size
 			}
-			Primitives::Text(_) => {
+			Primitives::Text(_) | Primitives::TextField(_) => {
 				lelements.push(p);
 				size
 			}

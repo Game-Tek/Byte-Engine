@@ -1,10 +1,10 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
 use crate::ui::{
-	components::shape::Shape,
+	components::{shape::Shape, text_field::TextField},
 	element::Id,
 	layout::{
-		engine::{EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, RenderFuture},
+		engine::{EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, RenderFuture, TextEditFuture},
 		Geometry,
 	},
 	primitive::{Events, Key},
@@ -24,6 +24,10 @@ pub trait Context<C: 'static = ()>: Sized {
 
 	fn text(&mut self, text: Text) -> EvaluationContext<C> {
 		self.element("text").text(text)
+	}
+
+	fn text_field(&mut self, text_field: TextField) -> EvaluationContext<C> {
+		self.element("text_field").text_field(text_field)
 	}
 
 	fn shape(&mut self, shape: Shape) -> EvaluationContext<C> {
@@ -55,6 +59,7 @@ pub struct ElementSlot<'a, C: 'static = ()> {
 pub trait ElementContext<C: 'static = ()> {
 	fn container(self, element: Container) -> EvaluationContext<C>;
 	fn text(self, text: Text) -> EvaluationContext<C>;
+	fn text_field(self, text_field: TextField) -> EvaluationContext<C>;
 	fn shape(self, shape: Shape) -> EvaluationContext<C>;
 	fn component<F>(self, component: F)
 	where
@@ -68,4 +73,5 @@ pub trait ElementContext<C: 'static = ()> {
 pub trait ContainerContext<C: 'static = ()>: Context<C> {
 	fn on(&mut self, event: Events) -> EventFuture;
 	fn on_key(&mut self, key: Key) -> KeyFuture;
+	fn on_text_edit(&mut self) -> TextEditFuture;
 }

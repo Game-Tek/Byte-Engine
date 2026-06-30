@@ -72,11 +72,16 @@ pub fn register_keyboard_device_class(input_manager: &mut InputManager) -> Devic
 	input_manager.register_trigger(&keyboard_device_class_handle, "Right", TriggerDescription::<bool>::default());
 
 	input_manager.register_trigger(&keyboard_device_class_handle, "Escape", TriggerDescription::<bool>::default());
+	input_manager.register_trigger(
+		&keyboard_device_class_handle,
+		"Backspace",
+		TriggerDescription::<bool>::default(),
+	);
 
 	input_manager.register_trigger(
 		&keyboard_device_class_handle,
 		"Character",
-		TriggerDescription::new('\0', '\0', '\0', 'Z'),
+		TriggerDescription::<char>::default(),
 	);
 
 	keyboard_device_class_handle

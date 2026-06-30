@@ -170,6 +170,7 @@ pub fn process_default_window_input(
 				ghi::window::input::Keys::D => "Keyboard.D",
 				ghi::window::input::Keys::Space => "Keyboard.Space",
 				ghi::window::input::Keys::Escape => "Keyboard.Escape",
+				ghi::window::input::Keys::Backspace => "Keyboard.Backspace",
 				_ => return None,
 			};
 			(
@@ -179,6 +180,12 @@ pub fn process_default_window_input(
 				input::Value::Bool(pressed),
 			)
 		}
+		ghi::window::Events::Character { character, .. } => (
+			seat,
+			keyboard,
+			input::input_manager::TriggerReference::Name("Keyboard.Character"),
+			input::Value::Unicode(character),
+		),
 		_ => return None,
 	};
 
@@ -241,6 +248,45 @@ mod tests {
 			input::input_manager::TriggerReference::Name("Mouse.Scroll")
 		));
 		assert_eq!(result.3, input::Value::Float(-0.75));
+	}
+
+	#[test]
+	fn maps_backspace_to_keyboard_backspace_trigger() {
+		let mut manager = input_manager();
+		let result = process_default_window_input(
+			&mut manager,
+			ghi::window::Events::Key {
+				seat: ghi::window::Seat::stub(),
+				pressed: true,
+				key: ghi::window::input::Keys::Backspace,
+			},
+		)
+		.unwrap();
+
+		assert!(matches!(
+			result.2,
+			input::input_manager::TriggerReference::Name("Keyboard.Backspace")
+		));
+		assert_eq!(result.3, input::Value::Bool(true));
+	}
+
+	#[test]
+	fn maps_character_to_keyboard_character_trigger() {
+		let mut manager = input_manager();
+		let result = process_default_window_input(
+			&mut manager,
+			ghi::window::Events::Character {
+				seat: ghi::window::Seat::stub(),
+				character: 'é',
+			},
+		)
+		.unwrap();
+
+		assert!(matches!(
+			result.2,
+			input::input_manager::TriggerReference::Name("Keyboard.Character")
+		));
+		assert_eq!(result.3, input::Value::Unicode('é'));
 	}
 
 	#[cfg(feature = "dmx")]

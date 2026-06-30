@@ -28,10 +28,10 @@ pub use animation::{
 	BackOut, Easing, Spring,
 };
 pub use components::container::Container;
-pub use components::text::Text;
+pub use components::{text::Text, text_field::TextField};
 pub use element::Element;
 pub use layout::{Depth, Geometry, Position};
-pub use primitive::{Key, Primitive};
+pub use primitive::{Key, Primitive, TextEdit};
 pub use timer::{seconds, wait, WaitFuture};
 pub use transform::Transform;
 pub use visual::Visual;

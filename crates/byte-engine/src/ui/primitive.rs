@@ -6,7 +6,7 @@ use super::{
 	visual::Visual,
 };
 use crate::ui::{
-	components::{shape::Shape, text::Text},
+	components::{shape::Shape, text::Text, text_field::TextField},
 	Container,
 };
 
@@ -87,12 +87,33 @@ pub enum Events {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Key {
 	Escape,
+	Backspace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextEdit {
+	Inserted(char),
+	Deleted(char),
+}
+
+impl TextEdit {
+	pub fn apply_to(self, content: &mut String) {
+		match self {
+			Self::Inserted(character) => content.push(character),
+			Self::Deleted(character) => {
+				if content.ends_with(character) {
+					content.pop();
+				}
+			}
+		}
+	}
 }
 
 pub enum Primitives {
 	Container(Container),
 	Shape(Shape),
 	Text(Text),
+	TextField(TextField),
 }
 
 impl From<Container> for Primitives {
@@ -107,6 +128,12 @@ impl From<Text> for Primitives {
 	}
 }
 
+impl From<TextField> for Primitives {
+	fn from(text_field: TextField) -> Self {
+		Primitives::TextField(text_field)
+	}
+}
+
 impl Primitive for Primitives {
 	fn shape(&self) -> Shapes {
 		match self {
@@ -115,7 +142,7 @@ impl Primitive for Primitives {
 				radius: container.corner_radius,
 				exponent: container.corner_exponent,
 			},
-			Primitives::Text(_) => Shapes::Box {
+			Primitives::Text(_) | Primitives::TextField(_) => Shapes::Box {
 				half: (Sizing::Absolute(0), Sizing::Absolute(0)),
 				radius: 0.0,
 				exponent: 2.0,
@@ -128,6 +155,7 @@ impl Primitive for Primitives {
 		match self {
 			Primitives::Container(container) => container.style_ref(),
 			Primitives::Text(text) => text.style_ref(),
+			Primitives::TextField(text_field) => text_field.style_ref(),
 			Primitives::Shape(shape) => shape.style_ref(),
 		}
 	}
@@ -136,6 +164,7 @@ impl Primitive for Primitives {
 		match self {
 			Primitives::Container(container) => container.transform_ref(),
 			Primitives::Text(text) => text.transform_ref(),
+			Primitives::TextField(text_field) => text_field.transform_ref(),
 			Primitives::Shape(shape) => shape.transform_ref(),
 		}
 	}
@@ -144,6 +173,7 @@ impl Primitive for Primitives {
 		match self {
 			Primitives::Container(container) => container.visual_ref(),
 			Primitives::Text(text) => text.visual_ref(),
+			Primitives::TextField(text_field) => text_field.visual_ref(),
 			Primitives::Shape(shape) => shape.visual_ref(),
 		}
 	}

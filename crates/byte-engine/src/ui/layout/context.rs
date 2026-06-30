@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
 use crate::ui::{
-	components::{image::Image, shape::Shape, text_field::TextField},
+	components::{curve::Curve, image::Image, shape::Shape, text_field::TextField},
 	element::Id,
 	layout::{
 		engine::{
@@ -34,6 +34,10 @@ pub trait Context<C: 'static = ()>: Sized {
 
 	fn shape(&mut self, shape: Shape) -> EvaluationContext<C> {
 		self.element("shape").shape(shape)
+	}
+
+	fn curve(&mut self, curve: Curve) -> EvaluationContext<C> {
+		self.element("curve").curve(curve)
 	}
 
 	fn image(&mut self, image: Image) -> EvaluationContext<C> {
@@ -69,6 +73,7 @@ pub trait ElementContext<C: 'static = ()> {
 	fn text(self, text: Text) -> EvaluationContext<C>;
 	fn text_field(self, text_field: TextField) -> EvaluationContext<C>;
 	fn shape(self, shape: Shape) -> EvaluationContext<C>;
+	fn curve(self, curve: Curve) -> EvaluationContext<C>;
 	fn image(self, image: Image) -> EvaluationContext<C>;
 	fn component<F>(self, component: F)
 	where

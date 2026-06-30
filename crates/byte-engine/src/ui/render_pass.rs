@@ -26,7 +26,10 @@ use crate::{
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 		Sink,
 	},
-	ui::font::TextSystem,
+	ui::{
+		components::curve::{CurvePoint, CurveSegment},
+		font::TextSystem,
+	},
 };
 
 const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16UNORM;
@@ -44,11 +47,15 @@ const UI_IMAGE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBi
 
 const UI_VERTICES_PER_ELEMENT: usize = 4;
 const UI_INDICES_PER_ELEMENT: usize = 6;
+const UI_VERTICES_PER_CURVE_SPAN: usize = 4;
+const UI_INDICES_PER_CURVE_SPAN: usize = 6;
 const MAX_UI_VERTICES_PER_DRAW: usize = u16::MAX as usize + 1;
 const MAX_UI_ELEMENTS: usize = 65_536;
 const MAX_UI_IMAGES: usize = MAX_UI_ELEMENTS;
 const MAX_UI_VERTICES: usize = MAX_UI_ELEMENTS * UI_VERTICES_PER_ELEMENT;
 const MAX_UI_INDICES: usize = MAX_UI_ELEMENTS * UI_INDICES_PER_ELEMENT;
+const CURVE_FLATTEN_TOLERANCE_PIXELS: f32 = 0.35;
+const CURVE_AA_WIDTH_PIXELS: f32 = 1.0;
 
 const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 13] = [
 	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
@@ -109,6 +116,19 @@ struct UiImageDrawElement {
 	opacity: f32,
 }
 
+#[derive(Debug, Clone)]
+struct UiCurveDrawElement {
+	depth: u32,
+	order: u32,
+	position: [f32; 2],
+	size: [f32; 2],
+	clip: Option<DrawClip>,
+	feather_mask: Option<DrawFeatherMask>,
+	color: [f32; 4],
+	stroke_width: f32,
+	segments: Vec<CurveSegment>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DrawClip {
 	position: [f32; 2],
@@ -127,6 +147,7 @@ struct DrawFeatherMask {
 struct UiDrawList {
 	layout_size: [f32; 2],
 	elements: Vec<UiDrawElement>,
+	curves: Vec<UiCurveDrawElement>,
 	images: Vec<UiImageDrawElement>,
 	texts: Vec<UiTextDrawElement>,
 }
@@ -136,6 +157,7 @@ impl Default for UiDrawList {
 		Self {
 			layout_size: [1.0, 1.0],
 			elements: Vec::new(),
+			curves: Vec::new(),
 			images: Vec::new(),
 			texts: Vec::new(),
 		}
@@ -182,6 +204,34 @@ struct UiImageVertex {
 	feather_mask_corner: [f32; 2],
 }
 
+const UI_CURVE_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 10] = [
+	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("PIXEL_POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("SEGMENT_FROM", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("SEGMENT_TO", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
+	ghi::pipelines::VertexElement::new("HALF_WIDTH", ghi::DataTypes::Float, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_SIZE", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_EDGES", ghi::DataTypes::Float4, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_CORNER", ghi::DataTypes::Float2, 0),
+];
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct UiCurveVertex {
+	position: [f32; 2],
+	pixel_position: [f32; 2],
+	segment_from: [f32; 2],
+	segment_to: [f32; 2],
+	color: [f32; 4],
+	half_width: f32,
+	feather_mask_position: [f32; 2],
+	feather_mask_size: [f32; 2],
+	feather_mask_edges: [f32; 4],
+	feather_mask_corner: [f32; 2],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UiDrawBatch {
 	depth: u32,
@@ -203,6 +253,15 @@ struct UiImageDrawBatch {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UiCurveDrawBatch {
+	depth: u32,
+	order: u32,
+	index_count: u32,
+	first_index: u32,
+	vertex_offset: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UiPreparedImageBatch {
 	descriptor_set: ghi::DescriptorSetHandle,
 	batch: UiImageDrawBatch,
@@ -218,6 +277,7 @@ struct UiPreparedTextBatch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiPreparedBatch {
 	Rect(UiDrawBatch),
+	Curve(UiCurveDrawBatch),
 	Image(UiPreparedImageBatch),
 	Text(UiPreparedTextBatch),
 }
@@ -226,6 +286,7 @@ impl UiPreparedBatch {
 	fn depth(self) -> u32 {
 		match self {
 			Self::Rect(batch) => batch.depth,
+			Self::Curve(batch) => batch.depth,
 			Self::Image(batch) => batch.batch.depth,
 			Self::Text(batch) => batch.depth,
 		}
@@ -234,6 +295,7 @@ impl UiPreparedBatch {
 	fn order(self) -> u32 {
 		match self {
 			Self::Rect(batch) => batch.order,
+			Self::Curve(batch) => batch.order,
 			Self::Image(batch) => batch.batch.order,
 			Self::Text(batch) => batch.order,
 		}
@@ -257,6 +319,14 @@ struct UiImageGeometry<'a> {
 	vertices: Vec<UiImageVertex, &'a bumpalo::Bump>,
 	indices: Vec<u16, &'a bumpalo::Bump>,
 	batches: Vec<UiImageDrawBatch, &'a bumpalo::Bump>,
+	truncated: bool,
+}
+
+#[derive(Debug)]
+struct UiCurveGeometry<'a> {
+	vertices: Vec<UiCurveVertex, &'a bumpalo::Bump>,
+	indices: Vec<u16, &'a bumpalo::Bump>,
+	batches: Vec<UiCurveDrawBatch, &'a bumpalo::Bump>,
 	truncated: bool,
 }
 
@@ -340,6 +410,7 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 
 	draw_list.layout_size = [root_size.x() as f32, root_size.y() as f32];
 	draw_list.elements.clear();
+	draw_list.curves.clear();
 	draw_list.images.clear();
 	draw_list.texts.clear();
 
@@ -370,6 +441,39 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 				corner_exponent: element.corner_exponent,
 				layer_kind: layer.kind,
 				stroke_width,
+			});
+		}
+	}
+
+	for curve in render.curves() {
+		let position = curve.position;
+		let size = curve.size;
+
+		for layer in curve.style.layers() {
+			let stroke_width = stroke_width(layer.kind);
+			if !matches!(layer.kind, LayerKind::Stroke { .. }) || stroke_width <= 0.0 {
+				continue;
+			}
+
+			let mut color = match &layer.color {
+				Color::Value(rgba) => *rgba,
+				Color::Sample(_) => RGBA::white(),
+			};
+			color.a *= curve.opacity;
+			if color.a <= 0.0 {
+				continue;
+			}
+
+			draw_list.curves.push(UiCurveDrawElement {
+				depth: position.z(),
+				order: curve.id,
+				position: [position.x() as f32, position.y() as f32],
+				size: [size.x() as f32, size.y() as f32],
+				clip: draw_clip_from_geometry(curve.clip),
+				feather_mask: draw_feather_mask_from_layout(curve.feather_mask),
+				color: color.into(),
+				stroke_width,
+				segments: curve.segments.clone(),
 			});
 		}
 	}
@@ -689,6 +793,311 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 	geometry
 }
 
+fn build_ui_curve_geometry<'a>(
+	draw_list: &UiDrawList,
+	viewport: Extent,
+	frame_allocator: &'a bumpalo::Bump,
+) -> UiCurveGeometry<'a> {
+	let viewport_width = viewport.width().max(1) as f32;
+	let viewport_height = viewport.height().max(1) as f32;
+	let sx = viewport_width / draw_list.layout_size[0].max(1.0);
+	let sy = viewport_height / draw_list.layout_size[1].max(1.0);
+	let stroke_scale = sx.min(sy);
+
+	let mut geometry = UiCurveGeometry {
+		vertices: Vec::with_capacity_in(
+			draw_list.curves.len().min(MAX_UI_ELEMENTS) * UI_VERTICES_PER_CURVE_SPAN,
+			frame_allocator,
+		),
+		indices: Vec::with_capacity_in(
+			draw_list.curves.len().min(MAX_UI_ELEMENTS) * UI_INDICES_PER_CURVE_SPAN,
+			frame_allocator,
+		),
+		batches: Vec::new_in(frame_allocator),
+		truncated: false,
+	};
+
+	let to_clip_x = |pixel_x: f32| (pixel_x / viewport_width) * 2.0 - 1.0;
+	let to_clip_y = |pixel_y: f32| 1.0 - (pixel_y / viewport_height) * 2.0;
+	let mut points = Vec::new_in(frame_allocator);
+
+	for curve in &draw_list.curves {
+		let stroke_width = curve.stroke_width * stroke_scale;
+		if curve.color[3] <= 0.0 || !stroke_width.is_finite() || stroke_width <= 0.0 {
+			continue;
+		}
+
+		let half_width = stroke_width * 0.5;
+		let expansion = half_width + CURVE_AA_WIDTH_PIXELS;
+		let feather_mask = scaled_feather_mask(curve.feather_mask, sx, sy);
+		let first_index = geometry.indices.len();
+		let vertex_offset = geometry.vertices.len();
+		let mut emitted_indices = 0usize;
+
+		for segment in &curve.segments {
+			points.clear();
+			flatten_curve_segment(segment, curve.position, sx, sy, CURVE_FLATTEN_TOLERANCE_PIXELS, &mut points);
+
+			for span in points.windows(2) {
+				let mut from = span[0];
+				let mut to = span[1];
+				if !clip_curve_span(&mut from, &mut to, curve.clip, sx, sy) {
+					continue;
+				}
+				let dx = to.x - from.x;
+				let dy = to.y - from.y;
+				let length = dx.hypot(dy);
+				if !length.is_finite() || length <= 0.0001 {
+					continue;
+				}
+
+				if geometry.vertices.len() + UI_VERTICES_PER_CURVE_SPAN > MAX_UI_VERTICES
+					|| geometry.indices.len() + UI_INDICES_PER_CURVE_SPAN > MAX_UI_INDICES
+				{
+					geometry.truncated = true;
+					break;
+				}
+
+				let tangent = [dx / length, dy / length];
+				let normal = [-tangent[1], tangent[0]];
+				let corners = [
+					[
+						from.x - tangent[0] * expansion - normal[0] * expansion,
+						from.y - tangent[1] * expansion - normal[1] * expansion,
+					],
+					[
+						to.x + tangent[0] * expansion - normal[0] * expansion,
+						to.y + tangent[1] * expansion - normal[1] * expansion,
+					],
+					[
+						to.x + tangent[0] * expansion + normal[0] * expansion,
+						to.y + tangent[1] * expansion + normal[1] * expansion,
+					],
+					[
+						from.x - tangent[0] * expansion + normal[0] * expansion,
+						from.y - tangent[1] * expansion + normal[1] * expansion,
+					],
+				];
+
+				let base_vertex = (geometry.vertices.len() - vertex_offset) as u16;
+				for corner in corners {
+					geometry.vertices.push(UiCurveVertex {
+						position: [to_clip_x(corner[0]), to_clip_y(corner[1])],
+						pixel_position: corner,
+						segment_from: [from.x, from.y],
+						segment_to: [to.x, to.y],
+						color: curve.color,
+						half_width,
+						feather_mask_position: feather_mask.position,
+						feather_mask_size: feather_mask.size,
+						feather_mask_edges: feather_mask.edges,
+						feather_mask_corner: feather_mask.corner,
+					});
+				}
+				geometry.indices.extend_from_slice(&[
+					base_vertex,
+					base_vertex + 1,
+					base_vertex + 2,
+					base_vertex + 2,
+					base_vertex + 3,
+					base_vertex,
+				]);
+				emitted_indices += UI_INDICES_PER_CURVE_SPAN;
+			}
+
+			if geometry.truncated {
+				break;
+			}
+		}
+
+		if emitted_indices > 0 {
+			geometry.batches.push(UiCurveDrawBatch {
+				depth: curve.depth,
+				order: curve.order,
+				index_count: emitted_indices as u32,
+				first_index: first_index as u32,
+				vertex_offset: vertex_offset as i32,
+			});
+		}
+
+		if geometry.truncated {
+			break;
+		}
+	}
+
+	geometry
+}
+
+fn flatten_curve_segment<'a>(
+	segment: &CurveSegment,
+	origin: [f32; 2],
+	sx: f32,
+	sy: f32,
+	tolerance: f32,
+	points: &mut Vec<CurvePoint, &'a bumpalo::Bump>,
+) {
+	match *segment {
+		CurveSegment::Line { from, to } => {
+			push_scaled_point(points, from, origin, sx, sy);
+			push_scaled_point(points, to, origin, sx, sy);
+		}
+		CurveSegment::Quadratic { from, control, to } => {
+			let from = scaled_curve_point(from, origin, sx, sy);
+			let control = scaled_curve_point(control, origin, sx, sy);
+			let to = scaled_curve_point(to, origin, sx, sy);
+			if from.is_finite() && control.is_finite() && to.is_finite() {
+				points.push(from);
+				flatten_quadratic(from, control, to, tolerance, 0, points);
+			}
+		}
+		CurveSegment::Cubic {
+			from,
+			control0,
+			control1,
+			to,
+		} => {
+			let from = scaled_curve_point(from, origin, sx, sy);
+			let control0 = scaled_curve_point(control0, origin, sx, sy);
+			let control1 = scaled_curve_point(control1, origin, sx, sy);
+			let to = scaled_curve_point(to, origin, sx, sy);
+			if from.is_finite() && control0.is_finite() && control1.is_finite() && to.is_finite() {
+				points.push(from);
+				flatten_cubic(from, control0, control1, to, tolerance, 0, points);
+			}
+		}
+	}
+}
+
+fn push_scaled_point<'a>(
+	points: &mut Vec<CurvePoint, &'a bumpalo::Bump>,
+	point: CurvePoint,
+	origin: [f32; 2],
+	sx: f32,
+	sy: f32,
+) {
+	let point = scaled_curve_point(point, origin, sx, sy);
+	if point.is_finite() {
+		points.push(point);
+	}
+}
+
+fn scaled_curve_point(point: CurvePoint, origin: [f32; 2], sx: f32, sy: f32) -> CurvePoint {
+	CurvePoint::new((origin[0] + point.x) * sx, (origin[1] + point.y) * sy)
+}
+
+fn flatten_quadratic<'a>(
+	from: CurvePoint,
+	control: CurvePoint,
+	to: CurvePoint,
+	tolerance: f32,
+	depth: u32,
+	points: &mut Vec<CurvePoint, &'a bumpalo::Bump>,
+) {
+	if depth >= 12 || point_line_distance(control, from, to) <= tolerance {
+		points.push(to);
+		return;
+	}
+
+	let from_control = midpoint(from, control);
+	let control_to = midpoint(control, to);
+	let mid = midpoint(from_control, control_to);
+	flatten_quadratic(from, from_control, mid, tolerance, depth + 1, points);
+	flatten_quadratic(mid, control_to, to, tolerance, depth + 1, points);
+}
+
+fn flatten_cubic<'a>(
+	from: CurvePoint,
+	control0: CurvePoint,
+	control1: CurvePoint,
+	to: CurvePoint,
+	tolerance: f32,
+	depth: u32,
+	points: &mut Vec<CurvePoint, &'a bumpalo::Bump>,
+) {
+	if depth >= 12 || point_line_distance(control0, from, to).max(point_line_distance(control1, from, to)) <= tolerance {
+		points.push(to);
+		return;
+	}
+
+	let p01 = midpoint(from, control0);
+	let p12 = midpoint(control0, control1);
+	let p23 = midpoint(control1, to);
+	let p012 = midpoint(p01, p12);
+	let p123 = midpoint(p12, p23);
+	let mid = midpoint(p012, p123);
+	flatten_cubic(from, p01, p012, mid, tolerance, depth + 1, points);
+	flatten_cubic(mid, p123, p23, to, tolerance, depth + 1, points);
+}
+
+fn midpoint(a: CurvePoint, b: CurvePoint) -> CurvePoint {
+	CurvePoint::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
+}
+
+fn point_line_distance(point: CurvePoint, from: CurvePoint, to: CurvePoint) -> f32 {
+	let dx = to.x - from.x;
+	let dy = to.y - from.y;
+	let length = dx.hypot(dy);
+	if length <= 0.0001 {
+		return (point.x - from.x).hypot(point.y - from.y);
+	}
+	((point.x - from.x) * dy - (point.y - from.y) * dx).abs() / length
+}
+
+fn clip_curve_span(from: &mut CurvePoint, to: &mut CurvePoint, clip: Option<DrawClip>, sx: f32, sy: f32) -> bool {
+	let Some(clip) = clip else {
+		return true;
+	};
+
+	let x_min = clip.position[0] * sx;
+	let y_min = clip.position[1] * sy;
+	let x_max = x_min + clip.size[0] * sx;
+	let y_max = y_min + clip.size[1] * sy;
+	let dx = to.x - from.x;
+	let dy = to.y - from.y;
+	let mut t0 = 0.0;
+	let mut t1 = 1.0;
+
+	if !clip_line_axis(-dx, from.x - x_min, &mut t0, &mut t1)
+		|| !clip_line_axis(dx, x_max - from.x, &mut t0, &mut t1)
+		|| !clip_line_axis(-dy, from.y - y_min, &mut t0, &mut t1)
+		|| !clip_line_axis(dy, y_max - from.y, &mut t0, &mut t1)
+	{
+		return false;
+	}
+
+	let original_from = *from;
+	if t1 < 1.0 {
+		*to = CurvePoint::new(original_from.x + dx * t1, original_from.y + dy * t1);
+	}
+	if t0 > 0.0 {
+		*from = CurvePoint::new(original_from.x + dx * t0, original_from.y + dy * t0);
+	}
+	true
+}
+
+fn clip_line_axis(p: f32, q: f32, t0: &mut f32, t1: &mut f32) -> bool {
+	if p == 0.0 {
+		return q >= 0.0;
+	}
+	let r = q / p;
+	if p < 0.0 {
+		if r > *t1 {
+			return false;
+		}
+		if r > *t0 {
+			*t0 = r;
+		}
+	} else {
+		if r < *t0 {
+			return false;
+		}
+		if r < *t1 {
+			*t1 = r;
+		}
+	}
+	true
+}
+
 fn build_ui_image_geometry<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
@@ -819,6 +1228,9 @@ pub struct UiRenderPass {
 	pipeline: ghi::PipelineHandle,
 	vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
 	index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
+	curve_pipeline: ghi::PipelineHandle,
+	curve_vertex_buffer: ghi::BufferHandle<[UiCurveVertex; MAX_UI_VERTICES]>,
+	curve_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
 	image_pipeline: ghi::PipelineHandle,
 	image_vertex_buffer: ghi::BufferHandle<[UiImageVertex; MAX_UI_VERTICES]>,
 	image_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
@@ -873,6 +1285,29 @@ impl UiRenderPass {
 		let index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Index)
 				.name("UI Indices")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let curve_vertex_shader = create_curve_vertex_shader(context);
+		let curve_fragment_shader = create_curve_fragment_shader(context);
+		let curve_shaders = [
+			ghi::ShaderParameter::new(&curve_vertex_shader, ghi::ShaderTypes::Vertex),
+			ghi::ShaderParameter::new(&curve_fragment_shader, ghi::ShaderTypes::Fragment),
+		];
+		let curve_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+			&[],
+			&[],
+			&UI_CURVE_VERTEX_LAYOUT,
+			&curve_shaders,
+			&attachments,
+		));
+		let curve_vertex_buffer: ghi::BufferHandle<[UiCurveVertex; MAX_UI_VERTICES]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Vertex)
+				.name("UI Curve Vertices")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let curve_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Index)
+				.name("UI Curve Indices")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let text_descriptor_set_template = context.create_descriptor_set_template(Some("UI Text"), &[TEXT_OVERLAY_BINDING]);
@@ -935,6 +1370,9 @@ impl UiRenderPass {
 			pipeline,
 			vertex_buffer,
 			index_buffer,
+			curve_pipeline,
+			curve_vertex_buffer,
+			curve_index_buffer,
 			image_pipeline,
 			image_vertex_buffer,
 			image_index_buffer,
@@ -1060,16 +1498,18 @@ impl RenderPass for UiRenderPass {
 	) -> Option<RenderPassReturn<'a>> {
 		let extent = sink.extent();
 		let geometry = build_ui_geometry(&self.data, extent, frame_allocator);
+		let curve_geometry = build_ui_curve_geometry(&self.data, extent, frame_allocator);
 		let image_geometry = build_ui_image_geometry(&self.data, extent, frame_allocator);
 		let has_rectangle_batches = !geometry.batches.is_empty();
+		let has_curve_batches = !curve_geometry.batches.is_empty();
 		let has_image_batches = !image_geometry.batches.is_empty();
 
-		if (geometry.truncated || image_geometry.truncated) && !self.reported_capacity_limit {
+		if (geometry.truncated || curve_geometry.truncated || image_geometry.truncated) && !self.reported_capacity_limit {
 			log::warn!(
 				"UI geometry capacity exceeded. The most likely cause is that the UI contains more than {MAX_UI_ELEMENTS} drawable elements in a single frame."
 			);
 			self.reported_capacity_limit = true;
-		} else if !geometry.truncated && !image_geometry.truncated {
+		} else if !geometry.truncated && !curve_geometry.truncated && !image_geometry.truncated {
 			self.reported_capacity_limit = false;
 		}
 
@@ -1081,6 +1521,16 @@ impl RenderPass for UiRenderPass {
 			let index_buffer_slice = frame.get_mut_buffer_slice(self.index_buffer);
 			index_buffer_slice[..geometry.indices.len()].copy_from_slice(&geometry.indices);
 			frame.sync_buffer(self.index_buffer);
+		}
+
+		if has_curve_batches {
+			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.curve_vertex_buffer);
+			vertex_buffer_slice[..curve_geometry.vertices.len()].copy_from_slice(&curve_geometry.vertices);
+			frame.sync_buffer(self.curve_vertex_buffer);
+
+			let index_buffer_slice = frame.get_mut_buffer_slice(self.curve_index_buffer);
+			index_buffer_slice[..curve_geometry.indices.len()].copy_from_slice(&curve_geometry.indices);
+			frame.sync_buffer(self.curve_index_buffer);
 		}
 
 		if has_image_batches {
@@ -1152,10 +1602,11 @@ impl RenderPass for UiRenderPass {
 		}
 
 		let mut prepared_batches = Vec::with_capacity_in(
-			geometry.batches.len() + prepared_image_batches.len() + prepared_text_batches.len(),
+			geometry.batches.len() + curve_geometry.batches.len() + prepared_image_batches.len() + prepared_text_batches.len(),
 			frame_allocator,
 		);
 		prepared_batches.extend(geometry.batches.iter().copied().map(UiPreparedBatch::Rect));
+		prepared_batches.extend(curve_geometry.batches.iter().copied().map(UiPreparedBatch::Curve));
 		prepared_batches.extend(prepared_image_batches.iter().copied().map(UiPreparedBatch::Image));
 		prepared_batches.extend(prepared_text_batches.iter().copied().map(UiPreparedBatch::Text));
 		sort_prepared_batches(&mut prepared_batches);
@@ -1167,6 +1618,9 @@ impl RenderPass for UiRenderPass {
 		let pipeline = self.pipeline;
 		let vertex_buffer = self.vertex_buffer;
 		let index_buffer = self.index_buffer;
+		let curve_pipeline = self.curve_pipeline;
+		let curve_vertex_buffer = self.curve_vertex_buffer;
+		let curve_index_buffer = self.curve_index_buffer;
 		let image_pipeline = self.image_pipeline;
 		let image_vertex_buffer = self.image_vertex_buffer;
 		let image_index_buffer = self.image_index_buffer;
@@ -1203,6 +1657,24 @@ impl RenderPass for UiRenderPass {
 
 										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
 										let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
+										command_buffer.draw_indexed(
+											batch.index_count,
+											1,
+											batch.first_index,
+											batch.vertex_offset,
+											0,
+										);
+										command_buffer.end_render_pass();
+									}
+									UiPreparedBatch::Curve(batch) => {
+										command_buffer.bind_vertex_buffers(&[curve_vertex_buffer.into()]);
+										command_buffer.bind_index_buffer(
+											&(Into::<ghi::BufferDescriptor>::into(curve_index_buffer)
+												.index_type(ghi::DataTypes::U16)),
+										);
+
+										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
+										let command_buffer = command_buffer.bind_raster_pipeline(curve_pipeline);
 										command_buffer.draw_indexed(
 											batch.index_count,
 											1,
@@ -1665,6 +2137,227 @@ fragment float4 ui_fragment_main(UiVertexOut in [[stage_in]]) {
 }
 "#;
 
+fn create_curve_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
+	crate::rendering::create_shader_from_source(
+		context,
+		Some("UI Curve Vertex Shader"),
+		ghi::shader::ShaderSource::Platform {
+			glsl: UI_CURVE_VERTEX_SHADER_GLSL,
+			msl: UI_CURVE_VERTEX_SHADER_MSL,
+			msl_entry_point: "ui_curve_vertex_main",
+		},
+		ghi::ShaderTypes::Vertex,
+		[],
+	)
+	.expect("Failed to create the UI curve vertex shader. The most likely cause is an incompatible shader interface.")
+}
+
+fn create_curve_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
+	crate::rendering::create_shader_from_source(
+		context,
+		Some("UI Curve Fragment Shader"),
+		ghi::shader::ShaderSource::Platform {
+			glsl: UI_CURVE_FRAGMENT_SHADER_GLSL,
+			msl: UI_CURVE_FRAGMENT_SHADER_MSL,
+			msl_entry_point: "ui_curve_fragment_main",
+		},
+		ghi::ShaderTypes::Fragment,
+		[],
+	)
+	.expect("Failed to create the UI curve fragment shader. The most likely cause is an incompatible shader interface.")
+}
+
+const UI_CURVE_VERTEX_SHADER_GLSL: &str = r#"
+#version 450
+
+layout(location = 0) in vec2 in_position;
+layout(location = 1) in vec2 in_pixel_position;
+layout(location = 2) in vec2 in_segment_from;
+layout(location = 3) in vec2 in_segment_to;
+layout(location = 4) in vec4 in_color;
+layout(location = 5) in float in_half_width;
+layout(location = 6) in vec2 in_feather_mask_position;
+layout(location = 7) in vec2 in_feather_mask_size;
+layout(location = 8) in vec4 in_feather_mask_edges;
+layout(location = 9) in vec2 in_feather_mask_corner;
+
+layout(location = 0) out vec2 out_pixel_position;
+layout(location = 1) out vec2 out_segment_from;
+layout(location = 2) out vec2 out_segment_to;
+layout(location = 3) out vec4 out_color;
+layout(location = 4) out float out_half_width;
+layout(location = 5) out vec2 out_feather_mask_position;
+layout(location = 6) out vec2 out_feather_mask_size;
+layout(location = 7) out vec4 out_feather_mask_edges;
+layout(location = 8) out vec2 out_feather_mask_corner;
+
+void main() {
+	gl_Position = vec4(in_position, 0.0, 1.0);
+	out_pixel_position = in_pixel_position;
+	out_segment_from = in_segment_from;
+	out_segment_to = in_segment_to;
+	out_color = in_color;
+	out_half_width = in_half_width;
+	out_feather_mask_position = in_feather_mask_position;
+	out_feather_mask_size = in_feather_mask_size;
+	out_feather_mask_edges = in_feather_mask_edges;
+	out_feather_mask_corner = in_feather_mask_corner;
+}
+"#;
+
+const UI_CURVE_FRAGMENT_SHADER_GLSL: &str = r#"
+#version 450
+
+layout(location = 0) in vec2 in_pixel_position;
+layout(location = 1) in vec2 in_segment_from;
+layout(location = 2) in vec2 in_segment_to;
+layout(location = 3) in vec4 in_color;
+layout(location = 4) in float in_half_width;
+layout(location = 5) in vec2 in_feather_mask_position;
+layout(location = 6) in vec2 in_feather_mask_size;
+layout(location = 7) in vec4 in_feather_mask_edges;
+layout(location = 8) in vec2 in_feather_mask_corner;
+
+layout(location = 0) out vec4 out_color_attachment;
+
+void main() {
+	vec2 segment = in_segment_to - in_segment_from;
+	float length_squared = max(dot(segment, segment), 0.0001);
+	float segment_length = sqrt(length_squared);
+	vec2 tangent = segment / segment_length;
+	vec2 normal = vec2(-tangent.y, tangent.x);
+	vec2 center = (in_segment_from + in_segment_to) * 0.5;
+	vec2 relative_position = in_pixel_position - center;
+	vec2 strip_distance = abs(vec2(dot(relative_position, tangent), dot(relative_position, normal))) - vec2(segment_length * 0.5, in_half_width);
+	float outside_distance = length(max(strip_distance, vec2(0.0)));
+	float inside_distance = min(max(strip_distance.x, strip_distance.y), 0.0);
+	float signed_distance = outside_distance + inside_distance;
+	float edge_width = max(fwidth(signed_distance), 1.0);
+	float coverage = 1.0 - smoothstep(-edge_width, edge_width, signed_distance);
+
+	float feather_top = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.x, 0.0001), in_pixel_position.y - in_feather_mask_position.y), step(0.0001, in_feather_mask_edges.x));
+	float feather_right = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.y, 0.0001), in_feather_mask_position.x + in_feather_mask_size.x - in_pixel_position.x), step(0.0001, in_feather_mask_edges.y));
+	float feather_bottom = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.z, 0.0001), in_feather_mask_position.y + in_feather_mask_size.y - in_pixel_position.y), step(0.0001, in_feather_mask_edges.z));
+	float feather_left = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.w, 0.0001), in_pixel_position.x - in_feather_mask_position.x), step(0.0001, in_feather_mask_edges.w));
+	vec2 feather_half_size = in_feather_mask_size * 0.5;
+	float feather_corner_radius = min(in_feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
+	float feather_corner_exponent = in_feather_mask_corner.y;
+	vec2 feather_centered_position = in_pixel_position - in_feather_mask_position - feather_half_size;
+	vec2 feather_rounded_extent = feather_half_size - vec2(feather_corner_radius);
+	vec2 feather_corner_delta = abs(feather_centered_position) - feather_rounded_extent;
+	vec2 feather_abs_corner = max(feather_corner_delta, vec2(0.0));
+	float feather_corner_sum = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
+	float feather_corner_distance = pow(feather_corner_sum, 1.0 / feather_corner_exponent);
+	float feather_field_distance = feather_corner_distance + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
+	float feather_mask_enabled = step(0.0001, min(in_feather_mask_size.x, in_feather_mask_size.y));
+	float feather_rounded_shape = step(0.0001, feather_corner_radius);
+	float feather_shape_coverage = mix(1.0, 1.0 - smoothstep(-1.0, 1.0, feather_field_distance), feather_rounded_shape);
+	float feather_coverage = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
+
+	out_color_attachment = vec4(in_color.rgb, in_color.a * coverage * feather_coverage);
+}
+"#;
+
+const UI_CURVE_VERTEX_SHADER_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct UiCurveVertexIn {
+	float2 position [[attribute(0)]];
+	float2 pixel_position [[attribute(1)]];
+	float2 segment_from [[attribute(2)]];
+	float2 segment_to [[attribute(3)]];
+	float4 color [[attribute(4)]];
+	float half_width [[attribute(5)]];
+	float2 feather_mask_position [[attribute(6)]];
+	float2 feather_mask_size [[attribute(7)]];
+	float4 feather_mask_edges [[attribute(8)]];
+	float2 feather_mask_corner [[attribute(9)]];
+};
+
+struct UiCurveVertexOut {
+	float4 position [[position]];
+	float2 pixel_position;
+	float2 segment_from;
+	float2 segment_to;
+	float4 color;
+	float half_width;
+	float2 feather_mask_position;
+	float2 feather_mask_size;
+	float4 feather_mask_edges;
+	float2 feather_mask_corner;
+};
+
+vertex UiCurveVertexOut ui_curve_vertex_main(UiCurveVertexIn in [[stage_in]]) {
+	UiCurveVertexOut out;
+	out.position = float4(in.position, 0.0, 1.0);
+	out.pixel_position = in.pixel_position;
+	out.segment_from = in.segment_from;
+	out.segment_to = in.segment_to;
+	out.color = in.color;
+	out.half_width = in.half_width;
+	out.feather_mask_position = in.feather_mask_position;
+	out.feather_mask_size = in.feather_mask_size;
+	out.feather_mask_edges = in.feather_mask_edges;
+	out.feather_mask_corner = in.feather_mask_corner;
+	return out;
+}
+"#;
+
+const UI_CURVE_FRAGMENT_SHADER_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct UiCurveVertexOut {
+	float4 position [[position]];
+	float2 pixel_position;
+	float2 segment_from;
+	float2 segment_to;
+	float4 color;
+	float half_width;
+	float2 feather_mask_position;
+	float2 feather_mask_size;
+	float4 feather_mask_edges;
+	float2 feather_mask_corner;
+};
+
+fragment float4 ui_curve_fragment_main(UiCurveVertexOut in [[stage_in]]) {
+	float2 segment = in.segment_to - in.segment_from;
+	float length_squared = max(dot(segment, segment), 0.0001);
+	float segment_length = sqrt(length_squared);
+	float2 tangent = segment / segment_length;
+	float2 normal = float2(-tangent.y, tangent.x);
+	float2 center = (in.segment_from + in.segment_to) * 0.5;
+	float2 relative_position = in.pixel_position - center;
+	float2 strip_distance = abs(float2(dot(relative_position, tangent), dot(relative_position, normal))) - float2(segment_length * 0.5, in.half_width);
+	float outside_distance = length(max(strip_distance, float2(0.0)));
+	float inside_distance = min(max(strip_distance.x, strip_distance.y), 0.0);
+	float signed_distance = outside_distance + inside_distance;
+	float edge_width = max(fwidth(signed_distance), 1.0);
+	float coverage = 1.0 - smoothstep(-edge_width, edge_width, signed_distance);
+
+	float feather_top = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.x, 0.0001), in.pixel_position.y - in.feather_mask_position.y), step(0.0001, in.feather_mask_edges.x));
+	float feather_right = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.y, 0.0001), in.feather_mask_position.x + in.feather_mask_size.x - in.pixel_position.x), step(0.0001, in.feather_mask_edges.y));
+	float feather_bottom = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.z, 0.0001), in.feather_mask_position.y + in.feather_mask_size.y - in.pixel_position.y), step(0.0001, in.feather_mask_edges.z));
+	float feather_left = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.w, 0.0001), in.pixel_position.x - in.feather_mask_position.x), step(0.0001, in.feather_mask_edges.w));
+	float2 feather_half_size = in.feather_mask_size * 0.5;
+	float feather_corner_radius = min(in.feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
+	float feather_corner_exponent = in.feather_mask_corner.y;
+	float2 feather_centered_position = in.pixel_position - in.feather_mask_position - feather_half_size;
+	float2 feather_rounded_extent = feather_half_size - float2(feather_corner_radius);
+	float2 feather_corner_delta = abs(feather_centered_position) - feather_rounded_extent;
+	float2 feather_abs_corner = max(feather_corner_delta, float2(0.0));
+	float feather_corner_sum = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
+	float feather_corner_distance = pow(feather_corner_sum, 1.0 / feather_corner_exponent);
+	float feather_field_distance = feather_corner_distance + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
+	float feather_mask_enabled = step(0.0001, min(in.feather_mask_size.x, in.feather_mask_size.y));
+	float feather_rounded_shape = step(0.0001, feather_corner_radius);
+	float feather_shape_coverage = mix(1.0, 1.0 - smoothstep(-1.0, 1.0, feather_field_distance), feather_rounded_shape);
+	float feather_coverage = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
+	return float4(in.color.rgb, in.color.a * coverage * feather_coverage);
+}
+"#;
+
 fn create_text_overlay_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
 	crate::rendering::create_shader_from_source(
 		context,
@@ -1960,13 +2653,17 @@ mod tests {
 	use utils::{Extent, RGBA};
 
 	use super::{
-		build_ui_geometry, build_ui_image_geometry, should_draw_image, should_rasterize_text, update_from_render, DrawClip,
-		DrawFeatherMask, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiTextDrawElement, MAX_UI_ELEMENTS,
-		MAX_UI_VERTICES_PER_DRAW, UI_FRAGMENT_SHADER_GLSL_MAIN, UI_FRAGMENT_SHADER_MSL, UI_INDICES_PER_ELEMENT,
-		UI_VERTICES_PER_ELEMENT,
+		build_ui_curve_geometry, build_ui_geometry, build_ui_image_geometry, flatten_curve_segment, should_draw_image,
+		should_rasterize_text, update_from_render, DrawClip, DrawFeatherMask, UiCurveDrawElement, UiDrawBatch, UiDrawElement,
+		UiDrawList, UiImageDrawElement, UiTextDrawElement, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW,
+		UI_CURVE_FRAGMENT_SHADER_GLSL, UI_CURVE_FRAGMENT_SHADER_MSL, UI_FRAGMENT_SHADER_GLSL_MAIN, UI_FRAGMENT_SHADER_MSL,
+		UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_CURVE_SPAN, UI_VERTICES_PER_ELEMENT,
 	};
 	use crate::ui::{
-		components::image::Image,
+		components::{
+			curve::{CurvePoint, CurveSegment},
+			image::Image,
+		},
 		flow::Size,
 		layout::{
 			context::{Context, ElementContext},
@@ -2001,6 +2698,24 @@ mod tests {
 		vec![255; width as usize * height as usize * 4]
 	}
 
+	fn triangle_area(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
+		(b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+	}
+
+	fn curve_element(segments: Vec<CurveSegment>) -> UiCurveDrawElement {
+		UiCurveDrawElement {
+			depth: 0,
+			order: 0,
+			position: [0.0, 0.0],
+			size: [100.0, 100.0],
+			clip: None,
+			feather_mask: None,
+			color: [1.0, 1.0, 1.0, 1.0],
+			stroke_width: 4.0,
+			segments,
+		}
+	}
+
 	#[test]
 	fn builds_a_single_batched_quad() {
 		let frame_allocator = bumpalo::Bump::new();
@@ -2020,6 +2735,7 @@ mod tests {
 					layer_kind: LayerKind::Fill,
 					stroke_width: 0.0,
 				}],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2083,6 +2799,7 @@ mod tests {
 						stroke_width: 0.0,
 					},
 				],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2102,6 +2819,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![draw_element(6.0, 2.0)],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2131,6 +2849,7 @@ mod tests {
 					layer_kind: LayerKind::Fill,
 					stroke_width: 0.0,
 				}],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2156,6 +2875,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![element],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2186,6 +2906,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![element],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2214,6 +2935,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![element],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2233,6 +2955,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![draw_element(-8.0, 2.0)],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2250,6 +2973,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![draw_element(8.0, 4.0)],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2267,6 +2991,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![draw_element(0.0, 2.0)],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2289,6 +3014,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![element],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2312,6 +3038,7 @@ mod tests {
 				&UiDrawList {
 					layout_size: [100.0, 100.0],
 					elements: vec![element],
+					curves: Vec::new(),
 					images: Vec::new(),
 					texts: vec![],
 				},
@@ -2325,6 +3052,233 @@ mod tests {
 	}
 
 	#[test]
+	fn line_curve_segment_flattens_to_one_span() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut points = Vec::new_in(&frame_allocator);
+		flatten_curve_segment(
+			&CurveSegment::Line {
+				from: CurvePoint::new(1.0, 2.0),
+				to: CurvePoint::new(5.0, 6.0),
+			},
+			[10.0, 20.0],
+			2.0,
+			3.0,
+			0.35,
+			&mut points,
+		);
+
+		assert_eq!(points.len(), 2);
+		assert_eq!(points[0], CurvePoint::new(22.0, 66.0));
+		assert_eq!(points[1], CurvePoint::new(30.0, 78.0));
+	}
+
+	#[test]
+	fn quadratic_and_cubic_curves_flatten_adaptively() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut quadratic = Vec::new_in(&frame_allocator);
+		flatten_curve_segment(
+			&CurveSegment::Quadratic {
+				from: CurvePoint::new(0.0, 0.0),
+				control: CurvePoint::new(50.0, 100.0),
+				to: CurvePoint::new(100.0, 0.0),
+			},
+			[0.0, 0.0],
+			1.0,
+			1.0,
+			0.35,
+			&mut quadratic,
+		);
+
+		let mut cubic = Vec::new_in(&frame_allocator);
+		flatten_curve_segment(
+			&CurveSegment::Cubic {
+				from: CurvePoint::new(0.0, 0.0),
+				control0: CurvePoint::new(20.0, 100.0),
+				control1: CurvePoint::new(80.0, -100.0),
+				to: CurvePoint::new(100.0, 0.0),
+			},
+			[0.0, 0.0],
+			1.0,
+			1.0,
+			0.35,
+			&mut cubic,
+		);
+
+		assert!(quadratic.len() > 2);
+		assert!(cubic.len() > 2);
+		assert_eq!(quadratic[0], CurvePoint::new(0.0, 0.0));
+		assert_eq!(quadratic[quadratic.len() - 1], CurvePoint::new(100.0, 0.0));
+		assert_eq!(cubic[0], CurvePoint::new(0.0, 0.0));
+		assert_eq!(cubic[cubic.len() - 1], CurvePoint::new(100.0, 0.0));
+	}
+
+	#[test]
+	fn curve_geometry_builds_anti_aliased_span_quad() {
+		let frame_allocator = bumpalo::Bump::new();
+		let geometry = build_ui_curve_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: Vec::new(),
+				curves: vec![curve_element(vec![CurveSegment::Line {
+					from: CurvePoint::new(10.0, 20.0),
+					to: CurvePoint::new(30.0, 20.0),
+				}])],
+				images: Vec::new(),
+				texts: Vec::new(),
+			},
+			Extent::rectangle(200, 100),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.vertices.len(), UI_VERTICES_PER_CURVE_SPAN);
+		assert_eq!(geometry.indices.len(), UI_INDICES_PER_CURVE_SPAN);
+		assert_eq!(geometry.batches.len(), 1);
+		assert_eq!(geometry.vertices[0].segment_from, [20.0, 20.0]);
+		assert_eq!(geometry.vertices[0].segment_to, [60.0, 20.0]);
+		assert_eq!(geometry.vertices[0].half_width, 2.0);
+		assert!(geometry.vertices[0].pixel_position[0] < 20.0);
+		assert!(geometry.vertices[0].pixel_position[1] < 20.0);
+	}
+
+	#[test]
+	fn curve_quad_winding_matches_rectangle_winding() {
+		let frame_allocator = bumpalo::Bump::new();
+		let rect_geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![draw_element(0.0, 2.0)],
+				curves: Vec::new(),
+				images: Vec::new(),
+				texts: Vec::new(),
+			},
+			Extent::rectangle(100, 100),
+			&frame_allocator,
+		);
+		let curve_geometry = build_ui_curve_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: Vec::new(),
+				curves: vec![curve_element(vec![CurveSegment::Line {
+					from: CurvePoint::new(10.0, 20.0),
+					to: CurvePoint::new(30.0, 20.0),
+				}])],
+				images: Vec::new(),
+				texts: Vec::new(),
+			},
+			Extent::rectangle(100, 100),
+			&frame_allocator,
+		);
+
+		let rect_area = triangle_area(
+			rect_geometry.vertices[0].position,
+			rect_geometry.vertices[1].position,
+			rect_geometry.vertices[2].position,
+		);
+		let curve_area = triangle_area(
+			curve_geometry.vertices[0].position,
+			curve_geometry.vertices[1].position,
+			curve_geometry.vertices[2].position,
+		);
+
+		assert!(rect_area < 0.0);
+		assert!(curve_area < 0.0);
+	}
+
+	#[test]
+	fn curve_geometry_clips_partially_visible_spans() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut curve = curve_element(vec![CurveSegment::Line {
+			from: CurvePoint::new(0.0, 10.0),
+			to: CurvePoint::new(100.0, 10.0),
+		}]);
+		curve.clip = Some(DrawClip {
+			position: [25.0, 0.0],
+			size: [50.0, 20.0],
+		});
+		let geometry = build_ui_curve_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: Vec::new(),
+				curves: vec![curve],
+				images: Vec::new(),
+				texts: Vec::new(),
+			},
+			Extent::rectangle(100, 100),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.vertices[0].segment_from, [25.0, 10.0]);
+		assert_eq!(geometry.vertices[0].segment_to, [75.0, 10.0]);
+	}
+
+	#[test]
+	fn curve_geometry_skips_invalid_or_non_positive_strokes() {
+		for width in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+			let frame_allocator = bumpalo::Bump::new();
+			let mut curve = curve_element(vec![CurveSegment::Line {
+				from: CurvePoint::new(0.0, 0.0),
+				to: CurvePoint::new(10.0, 0.0),
+			}]);
+			curve.stroke_width = width;
+			let geometry = build_ui_curve_geometry(
+				&UiDrawList {
+					layout_size: [100.0, 100.0],
+					elements: Vec::new(),
+					curves: vec![curve],
+					images: Vec::new(),
+					texts: Vec::new(),
+				},
+				Extent::rectangle(100, 100),
+				&frame_allocator,
+			);
+
+			assert!(geometry.vertices.is_empty());
+			assert!(geometry.indices.is_empty());
+		}
+	}
+
+	#[test]
+	fn curve_geometry_reports_capacity_truncation() {
+		let frame_allocator = bumpalo::Bump::new();
+		let curves = (0..=MAX_UI_ELEMENTS)
+			.map(|_| {
+				curve_element(vec![CurveSegment::Line {
+					from: CurvePoint::new(0.0, 0.0),
+					to: CurvePoint::new(1.0, 0.0),
+				}])
+			})
+			.collect();
+		let geometry = build_ui_curve_geometry(
+			&UiDrawList {
+				layout_size: [1.0, 1.0],
+				elements: Vec::new(),
+				curves,
+				images: Vec::new(),
+				texts: Vec::new(),
+			},
+			Extent::rectangle(1, 1),
+			&frame_allocator,
+		);
+
+		assert!(geometry.truncated);
+		assert_eq!(geometry.vertices.len(), MAX_UI_ELEMENTS * UI_VERTICES_PER_CURVE_SPAN);
+	}
+
+	#[test]
+	fn curve_shaders_use_derivative_antialiasing_and_feather_masks() {
+		assert!(UI_CURVE_FRAGMENT_SHADER_GLSL.contains("fwidth(signed_distance)"));
+		assert!(UI_CURVE_FRAGMENT_SHADER_GLSL.contains("strip_distance"));
+		assert!(!UI_CURVE_FRAGMENT_SHADER_GLSL.contains("clamp(dot(in_pixel_position"));
+		assert!(UI_CURVE_FRAGMENT_SHADER_GLSL.contains("coverage * feather_coverage"));
+		assert!(UI_CURVE_FRAGMENT_SHADER_GLSL.contains("feather_shape_coverage"));
+		assert!(UI_CURVE_FRAGMENT_SHADER_MSL.contains("fwidth(signed_distance)"));
+		assert!(UI_CURVE_FRAGMENT_SHADER_MSL.contains("strip_distance"));
+		assert!(!UI_CURVE_FRAGMENT_SHADER_MSL.contains("clamp(dot(in.pixel_position"));
+		assert!(UI_CURVE_FRAGMENT_SHADER_MSL.contains("coverage * feather_coverage"));
+		assert!(UI_CURVE_FRAGMENT_SHADER_MSL.contains("feather_shape_coverage"));
+	}
+
+	#[test]
 	fn invalid_corner_exponents_resolve_to_round_corners() {
 		for exponent in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.5] {
 			let frame_allocator = bumpalo::Bump::new();
@@ -2332,6 +3286,7 @@ mod tests {
 				&UiDrawList {
 					layout_size: [100.0, 100.0],
 					elements: vec![draw_element(8.0, exponent)],
+					curves: Vec::new(),
 					images: Vec::new(),
 					texts: vec![],
 				},
@@ -2350,6 +3305,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![draw_element(8.0, 12.0)],
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2454,6 +3410,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [1.0, 1.0],
 				elements,
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2512,6 +3469,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [1.0, 1.0],
 				elements,
+				curves: Vec::new(),
 				images: Vec::new(),
 				texts: vec![],
 			},
@@ -2675,6 +3633,7 @@ mod tests {
 		let draw_list = UiDrawList {
 			layout_size: [100.0, 100.0],
 			elements: Vec::new(),
+			curves: Vec::new(),
 			images: vec![UiImageDrawElement {
 				depth: 7,
 				order: 0,
@@ -2727,6 +3686,7 @@ mod tests {
 		let draw_list = UiDrawList {
 			layout_size: [100.0, 100.0],
 			elements: Vec::new(),
+			curves: Vec::new(),
 			images: vec![hidden],
 			texts: Vec::new(),
 		};

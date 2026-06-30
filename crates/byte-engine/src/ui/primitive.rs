@@ -6,7 +6,7 @@ use super::{
 	visual::Visual,
 };
 use crate::ui::{
-	components::{image::Image, shape::Shape, text::Text, text_field::TextField},
+	components::{curve::Curve, image::Image, shape::Shape, text::Text, text_field::TextField},
 	Container,
 };
 
@@ -112,6 +112,7 @@ impl TextEdit {
 pub enum Primitives {
 	Container(Container),
 	Shape(Shape),
+	Curve(Curve),
 	Image(Image),
 	Text(Text),
 	TextField(TextField),
@@ -160,6 +161,11 @@ impl Primitive for Primitives {
 				exponent: 2.0,
 			},
 			Primitives::Shape(shape) => shape.shape.clone(),
+			Primitives::Curve(_) => Shapes::Box {
+				half: (Sizing::Absolute(0), Sizing::Absolute(0)),
+				radius: 0.0,
+				exponent: 2.0,
+			},
 		}
 	}
 
@@ -170,6 +176,7 @@ impl Primitive for Primitives {
 			Primitives::Text(text) => text.style_ref(),
 			Primitives::TextField(text_field) => text_field.style_ref(),
 			Primitives::Shape(shape) => shape.style_ref(),
+			Primitives::Curve(curve) => curve.style_ref(),
 		}
 	}
 
@@ -180,6 +187,7 @@ impl Primitive for Primitives {
 			Primitives::Text(text) => text.transform_ref(),
 			Primitives::TextField(text_field) => text_field.transform_ref(),
 			Primitives::Shape(shape) => shape.transform_ref(),
+			Primitives::Curve(curve) => curve.transform_ref(),
 		}
 	}
 
@@ -190,6 +198,7 @@ impl Primitive for Primitives {
 			Primitives::Text(text) => text.visual_ref(),
 			Primitives::TextField(text_field) => text_field.visual_ref(),
 			Primitives::Shape(shape) => shape.visual_ref(),
+			Primitives::Curve(curve) => curve.visual_ref(),
 		}
 	}
 }

@@ -661,6 +661,10 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 		self.parent.add_element(self.name, ConcreteElement::shape(shape))
 	}
 
+	fn curve(self, curve: Curve) -> EvaluationContext<C> {
+		self.parent.add_element(self.name, ConcreteElement::curve(curve))
+	}
+
 	fn image(self, image: Image) -> EvaluationContext<C> {
 		self.parent.add_element(self.name, ConcreteElement::image(image))
 	}
@@ -1208,6 +1212,7 @@ impl<C: 'static> Engine<C> {
 	/// Renders the given snapshot into a [`Render`] object.
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
 		let mut elements = Vec::new();
+		let mut curve_elements = Vec::new();
 		let mut image_elements = Vec::new();
 		let mut text_elements = Vec::new();
 		let mut effective_opacities = HashMap::new();
@@ -1271,6 +1276,16 @@ impl<C: 'static> Engine<C> {
 						corner_exponent,
 					});
 				}
+				Primitives::Curve(curve) => curve_elements.push(RenderCurveElement {
+					id: element.id.get(),
+					position: element.position,
+					size: element.size,
+					clip,
+					feather_mask,
+					style,
+					opacity,
+					segments: curve.path().segments().to_vec(),
+				}),
 				Primitives::Image(image) => image_elements.push(RenderImageElement {
 					id: element.id.get(),
 					image_id: image.id(),
@@ -1310,11 +1325,13 @@ impl<C: 'static> Engine<C> {
 		}
 
 		elements.sort_by_key(|element| element.position.z());
+		curve_elements.sort_by_key(|element| element.position.z());
 		image_elements.sort_by_key(|element| element.position.z());
 		text_elements.sort_by_key(|element| element.position.z());
 
 		Render {
 			elements,
+			curve_elements,
 			image_elements,
 			text_elements,
 			relations: snapshot.relations.to_vec(),
@@ -1737,6 +1754,7 @@ impl Runtime {
 #[derive(Clone)]
 pub struct Render {
 	elements: Vec<RenderElement>,
+	curve_elements: Vec<RenderCurveElement>,
 	image_elements: Vec<RenderImageElement>,
 	text_elements: Vec<RenderTextElement>,
 	relations: Vec<(Id, Id)>,
@@ -1748,7 +1766,7 @@ impl Render {
 	}
 
 	pub(crate) fn size(&self) -> usize {
-		self.elements.len() + self.image_elements.len() + self.text_elements.len()
+		self.elements.len() + self.curve_elements.len() + self.image_elements.len() + self.text_elements.len()
 	}
 
 	pub(crate) fn elements(&self) -> impl Iterator<Item = &RenderElement> {
@@ -1757,6 +1775,10 @@ impl Render {
 
 	pub(crate) fn texts(&self) -> impl Iterator<Item = &RenderTextElement> {
 		self.text_elements.iter()
+	}
+
+	pub(crate) fn curves(&self) -> impl Iterator<Item = &RenderCurveElement> {
+		self.curve_elements.iter()
 	}
 
 	pub(crate) fn images(&self) -> impl Iterator<Item = &RenderImageElement> {
@@ -1802,7 +1824,7 @@ mod tests {
 	use super::*;
 	use crate::ui::{
 		animate,
-		components::{container::Container, shape::Shape, text_field::TextField},
+		components::{container::Container, curve::CurvePath, shape::Shape, text_field::TextField},
 		flow::{self, Location3},
 		layout::{
 			context::{ContainerContext, Context, ElementContext},
@@ -3629,6 +3651,39 @@ mod tests {
 	}
 
 	#[test]
+	fn centered_flow_overlays_full_size_curve_children() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx
+					.element("frame")
+					.container(Container::default().width(100.into()).height(50.into()).flow(flow::center));
+				frame.element("first").curve(Curve::new(
+					CurvePath::new(100.into(), 50.into()).line((0.0, 10.0), (100.0, 10.0)),
+				));
+				frame
+					.element("second")
+					.curve(Curve::new(CurvePath::new(100.into(), 50.into()).quadratic(
+						(0.0, 40.0),
+						(50.0, 0.0),
+						(100.0, 40.0),
+					)));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(200, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let curves: std::vec::Vec<_> = render.curves().collect();
+
+		assert_eq!(curves.len(), 2);
+		assert_eq!(curves[0].position, curves[1].position);
+		assert_eq!(curves[0].size, Size::new(100, 50));
+		assert_eq!(curves[1].size, Size::new(100, 50));
+	}
+
+	#[test]
 	fn animate_updates_existing_retained_element_across_frames() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -3726,11 +3781,11 @@ use super::{
 	flow::{Location3, Size},
 	layout_elements,
 	snapshot::Snapshot,
-	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderElement, RenderImageElement,
-	RenderTextElement,
+	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderCurveElement, RenderElement,
+	RenderImageElement, RenderTextElement,
 };
 use crate::ui::{
-	components::{image::Image, shape::Shape, text_field::TextField},
+	components::{curve::Curve, image::Image, shape::Shape, text_field::TextField},
 	font::TextSystem,
 	intersection::build_mouse_click_acceleration,
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},

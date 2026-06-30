@@ -13,6 +13,7 @@ use super::{
 	Primitive,
 };
 use crate::ui::{
+	components::curve::CurveSegment,
 	element::ConcreteElement,
 	flow::FlowFunction,
 	font::TextSystem,
@@ -74,6 +75,18 @@ pub(crate) struct RenderImageElement {
 	pub(crate) clip: Option<Geometry>,
 	pub(crate) feather_mask: Option<FeatherMask>,
 	pub(crate) opacity: f32,
+}
+
+#[derive(Clone)]
+pub(crate) struct RenderCurveElement {
+	pub(crate) id: u32,
+	pub(crate) position: Location3,
+	pub(crate) size: Size,
+	pub(crate) clip: Option<Geometry>,
+	pub(crate) feather_mask: Option<FeatherMask>,
+	pub(crate) style: ConcreteStyle,
+	pub(crate) opacity: f32,
+	pub(crate) segments: Vec<CurveSegment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -221,6 +234,7 @@ fn layout_elements<'a>(
 			}
 			.bbox(available_space),
 			Primitives::Shape(shape) => shape.shape.bbox(available_space),
+			Primitives::Curve(curve) => curve.path().size(available_space),
 			Primitives::Image(image) => Shapes::Box {
 				half: (image.width, image.height),
 				radius: 0.0,
@@ -298,7 +312,7 @@ fn layout_elements<'a>(
 
 				size
 			}
-			Primitives::Shape(shape) => {
+			Primitives::Shape(_) | Primitives::Curve(_) => {
 				lelements.push(p);
 				size
 			}

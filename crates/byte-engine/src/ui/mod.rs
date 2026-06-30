@@ -28,7 +28,12 @@ pub use animation::{
 	BackOut, Easing, Spring,
 };
 pub use components::container::Container;
-pub use components::{image::Image, text::Text, text_field::TextField};
+pub use components::{
+	curve::{Curve, CurvePath, CurvePoint, CurveSegment},
+	image::Image,
+	text::Text,
+	text_field::TextField,
+};
 pub use element::Element;
 pub use layout::{Depth, Geometry, Position};
 pub use primitive::{Key, Primitive, TextEdit};

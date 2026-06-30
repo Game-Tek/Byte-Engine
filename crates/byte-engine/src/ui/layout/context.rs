@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
 use crate::ui::{
-	components::{shape::Shape, text_field::TextField},
+	components::{image::Image, shape::Shape, text_field::TextField},
 	element::Id,
 	layout::{
 		engine::{EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, RenderFuture, TextEditFuture},
@@ -34,6 +34,10 @@ pub trait Context<C: 'static = ()>: Sized {
 		self.element("shape").shape(shape)
 	}
 
+	fn image(&mut self, image: Image) -> EvaluationContext<C> {
+		self.element("image").image(image)
+	}
+
 	fn render(&mut self) -> RenderFuture;
 
 	fn geometry(&self) -> Option<Geometry>;
@@ -61,6 +65,7 @@ pub trait ElementContext<C: 'static = ()> {
 	fn text(self, text: Text) -> EvaluationContext<C>;
 	fn text_field(self, text_field: TextField) -> EvaluationContext<C>;
 	fn shape(self, shape: Shape) -> EvaluationContext<C>;
+	fn image(self, image: Image) -> EvaluationContext<C>;
 	fn component<F>(self, component: F)
 	where
 		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> UiFuture<'ctx> + 'static;

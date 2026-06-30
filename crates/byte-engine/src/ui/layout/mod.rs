@@ -61,6 +61,21 @@ pub(crate) struct RenderTextElement {
 	pub(crate) content: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct RenderImageElement {
+	pub(crate) id: u32,
+	pub(crate) image_id: u64,
+	pub(crate) version: u64,
+	pub(crate) source_width: u32,
+	pub(crate) source_height: u32,
+	pub(crate) pixels: std::sync::Arc<[u8]>,
+	pub(crate) position: Location3,
+	pub(crate) size: Size,
+	pub(crate) clip: Option<Geometry>,
+	pub(crate) feather_mask: Option<FeatherMask>,
+	pub(crate) opacity: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FeatherMask {
 	pub(crate) geometry: Geometry,
@@ -206,6 +221,12 @@ fn layout_elements<'a>(
 			}
 			.bbox(available_space),
 			Primitives::Shape(shape) => shape.shape.bbox(available_space),
+			Primitives::Image(image) => Shapes::Box {
+				half: (image.width, image.height),
+				radius: 0.0,
+				exponent: 2.0,
+			}
+			.bbox(available_space),
 			Primitives::Text(text) => text_system.measure(text.content(), text.settings().font_size),
 			Primitives::TextField(text_field) => text_system.measure(text_field.content(), text_field.settings().font_size),
 		}
@@ -281,7 +302,7 @@ fn layout_elements<'a>(
 				lelements.push(p);
 				size
 			}
-			Primitives::Text(_) | Primitives::TextField(_) => {
+			Primitives::Image(_) | Primitives::Text(_) | Primitives::TextField(_) => {
 				lelements.push(p);
 				size
 			}

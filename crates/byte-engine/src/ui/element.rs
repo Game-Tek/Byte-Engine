@@ -10,7 +10,7 @@ use super::{
 	primitive::{BasePrimitive, Primitive},
 };
 use crate::ui::{
-	components::{shape::Shape, text::Text, text_field::TextField},
+	components::{image::Image, shape::Shape, text::Text, text_field::TextField},
 	flow::{Offset, Size},
 	primitive::{Primitives, Shapes},
 	Container,
@@ -45,6 +45,12 @@ impl ConcreteElement {
 
 	pub fn shape(shape: Shape) -> Self {
 		let primitive = Primitives::Shape(shape);
+
+		Self { primitive }
+	}
+
+	pub fn image(image: Image) -> Self {
+		let primitive = Primitives::Image(image);
 
 		Self { primitive }
 	}

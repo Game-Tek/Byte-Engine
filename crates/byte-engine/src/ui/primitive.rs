@@ -6,7 +6,7 @@ use super::{
 	visual::Visual,
 };
 use crate::ui::{
-	components::{shape::Shape, text::Text, text_field::TextField},
+	components::{image::Image, shape::Shape, text::Text, text_field::TextField},
 	Container,
 };
 
@@ -112,6 +112,7 @@ impl TextEdit {
 pub enum Primitives {
 	Container(Container),
 	Shape(Shape),
+	Image(Image),
 	Text(Text),
 	TextField(TextField),
 }
@@ -125,6 +126,12 @@ impl From<Container> for Primitives {
 impl From<Text> for Primitives {
 	fn from(text: Text) -> Self {
 		Primitives::Text(text)
+	}
+}
+
+impl From<Image> for Primitives {
+	fn from(image: Image) -> Self {
+		Primitives::Image(image)
 	}
 }
 
@@ -142,6 +149,11 @@ impl Primitive for Primitives {
 				radius: container.corner_radius,
 				exponent: container.corner_exponent,
 			},
+			Primitives::Image(image) => Shapes::Box {
+				half: (image.width, image.height),
+				radius: 0.0,
+				exponent: 2.0,
+			},
 			Primitives::Text(_) | Primitives::TextField(_) => Shapes::Box {
 				half: (Sizing::Absolute(0), Sizing::Absolute(0)),
 				radius: 0.0,
@@ -154,6 +166,7 @@ impl Primitive for Primitives {
 	fn style(&self) -> &ConcreteStyle {
 		match self {
 			Primitives::Container(container) => container.style_ref(),
+			Primitives::Image(image) => image.style_ref(),
 			Primitives::Text(text) => text.style_ref(),
 			Primitives::TextField(text_field) => text_field.style_ref(),
 			Primitives::Shape(shape) => shape.style_ref(),
@@ -163,6 +176,7 @@ impl Primitive for Primitives {
 	fn transform(&self) -> &Transform {
 		match self {
 			Primitives::Container(container) => container.transform_ref(),
+			Primitives::Image(image) => image.transform_ref(),
 			Primitives::Text(text) => text.transform_ref(),
 			Primitives::TextField(text_field) => text_field.transform_ref(),
 			Primitives::Shape(shape) => shape.transform_ref(),
@@ -172,6 +186,7 @@ impl Primitive for Primitives {
 	fn visual(&self) -> &Visual {
 		match self {
 			Primitives::Container(container) => container.visual_ref(),
+			Primitives::Image(image) => image.visual_ref(),
 			Primitives::Text(text) => text.visual_ref(),
 			Primitives::TextField(text_field) => text_field.visual_ref(),
 			Primitives::Shape(shape) => shape.visual_ref(),

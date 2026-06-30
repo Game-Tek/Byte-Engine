@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::Arc};
+
 use besl::ParserNode;
 use ghi::{
 	command_buffer::{
@@ -34,11 +36,17 @@ const TEXT_OVERLAY_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorS
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::FRAGMENT,
 );
+const UI_IMAGE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	0,
+	ghi::descriptors::DescriptorType::CombinedImageSampler,
+	ghi::Stages::FRAGMENT,
+);
 
 const UI_VERTICES_PER_ELEMENT: usize = 4;
 const UI_INDICES_PER_ELEMENT: usize = 6;
 const MAX_UI_VERTICES_PER_DRAW: usize = u16::MAX as usize + 1;
 const MAX_UI_ELEMENTS: usize = 65_536;
+const MAX_UI_IMAGES: usize = MAX_UI_ELEMENTS;
 const MAX_UI_VERTICES: usize = MAX_UI_ELEMENTS * UI_VERTICES_PER_ELEMENT;
 const MAX_UI_INDICES: usize = MAX_UI_ELEMENTS * UI_INDICES_PER_ELEMENT;
 
@@ -81,6 +89,20 @@ struct UiTextDrawElement {
 	text: String,
 }
 
+#[derive(Debug, Clone)]
+struct UiImageDrawElement {
+	image_id: u64,
+	version: u64,
+	source_width: u32,
+	source_height: u32,
+	pixels: Arc<[u8]>,
+	position: [f32; 2],
+	size: [f32; 2],
+	clip: Option<DrawClip>,
+	feather_mask: Option<DrawFeatherMask>,
+	opacity: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DrawClip {
 	position: [f32; 2],
@@ -99,6 +121,7 @@ struct DrawFeatherMask {
 struct UiDrawList {
 	layout_size: [f32; 2],
 	elements: Vec<UiDrawElement>,
+	images: Vec<UiImageDrawElement>,
 	texts: Vec<UiTextDrawElement>,
 }
 
@@ -107,6 +130,7 @@ impl Default for UiDrawList {
 		Self {
 			layout_size: [1.0, 1.0],
 			elements: Vec::new(),
+			images: Vec::new(),
 			texts: Vec::new(),
 		}
 	}
@@ -130,11 +154,48 @@ struct UiVertex {
 	feather_mask_corner: [f32; 2],
 }
 
+const UI_IMAGE_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 7] = [
+	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("UV", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("OPACITY", ghi::DataTypes::Float, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_SIZE", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_EDGES", ghi::DataTypes::Float4, 0),
+	ghi::pipelines::VertexElement::new("FEATHER_MASK_CORNER", ghi::DataTypes::Float2, 0),
+];
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct UiImageVertex {
+	position: [f32; 2],
+	uv: [f32; 2],
+	opacity: f32,
+	feather_mask_position: [f32; 2],
+	feather_mask_size: [f32; 2],
+	feather_mask_edges: [f32; 4],
+	feather_mask_corner: [f32; 2],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UiDrawBatch {
 	index_count: u32,
 	first_index: u32,
 	vertex_offset: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UiImageDrawBatch {
+	image_id: u64,
+	version: u64,
+	index_count: u32,
+	first_index: u32,
+	vertex_offset: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UiPreparedImageBatch {
+	descriptor_set: ghi::DescriptorSetHandle,
+	batch: UiImageDrawBatch,
 }
 
 #[derive(Debug)]
@@ -143,6 +204,21 @@ struct UiGeometry<'a> {
 	indices: Vec<u16, &'a bumpalo::Bump>,
 	batches: Vec<UiDrawBatch, &'a bumpalo::Bump>,
 	truncated: bool,
+}
+
+#[derive(Debug)]
+struct UiImageGeometry<'a> {
+	vertices: Vec<UiImageVertex, &'a bumpalo::Bump>,
+	indices: Vec<u16, &'a bumpalo::Bump>,
+	batches: Vec<UiImageDrawBatch, &'a bumpalo::Bump>,
+	truncated: bool,
+}
+
+struct UiImageTexture {
+	version: u64,
+	extent: (u32, u32),
+	image: ghi::BaseImageHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
 }
 
 // Whether text rasterization should be ommitted if text is empty, 0 sized in any dimension or if fully transparent
@@ -213,6 +289,7 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 
 	draw_list.layout_size = [root_size.x() as f32, root_size.y() as f32];
 	draw_list.elements.clear();
+	draw_list.images.clear();
 	draw_list.texts.clear();
 
 	for element in render.elements() {
@@ -244,6 +321,21 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 		}
 	}
 
+	for image in render.images() {
+		draw_list.images.push(UiImageDrawElement {
+			image_id: image.image_id,
+			version: image.version,
+			source_width: image.source_width,
+			source_height: image.source_height,
+			pixels: Arc::clone(&image.pixels),
+			position: [image.position.x() as f32, image.position.y() as f32],
+			size: [image.size.x() as f32, image.size.y() as f32],
+			clip: draw_clip_from_geometry(image.clip),
+			feather_mask: draw_feather_mask_from_layout(image.feather_mask),
+			opacity: image.opacity,
+		});
+	}
+
 	for text in render.texts() {
 		let mut color = text.color;
 		color.a *= text.opacity;
@@ -261,6 +353,15 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 			draw_list.texts.push(text);
 		}
 	}
+}
+
+fn should_draw_image(image: &UiImageDrawElement) -> bool {
+	image.source_width > 0
+		&& image.source_height > 0
+		&& image.pixels.len() == image.source_width as usize * image.source_height as usize * 4
+		&& image.size[0] > 0.0
+		&& image.size[1] > 0.0
+		&& image.opacity > 0.0
 }
 
 /// Rasterizes all visible text elements into the UI overlay texture for the current viewport.
@@ -512,11 +613,140 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 	geometry
 }
 
+fn build_ui_image_geometry<'a>(
+	draw_list: &UiDrawList,
+	viewport: Extent,
+	frame_allocator: &'a bumpalo::Bump,
+) -> UiImageGeometry<'a> {
+	let viewport_width = viewport.width().max(1) as f32;
+	let viewport_height = viewport.height().max(1) as f32;
+	let sx = viewport_width / draw_list.layout_size[0].max(1.0);
+	let sy = viewport_height / draw_list.layout_size[1].max(1.0);
+
+	let mut geometry = UiImageGeometry {
+		vertices: Vec::with_capacity_in(
+			draw_list.images.len().min(MAX_UI_IMAGES) * UI_VERTICES_PER_ELEMENT,
+			frame_allocator,
+		),
+		indices: Vec::with_capacity_in(
+			draw_list.images.len().min(MAX_UI_IMAGES) * UI_INDICES_PER_ELEMENT,
+			frame_allocator,
+		),
+		batches: Vec::new_in(frame_allocator),
+		truncated: false,
+	};
+
+	for image in &draw_list.images {
+		if !should_draw_image(image) {
+			continue;
+		}
+
+		if geometry.vertices.len() + UI_VERTICES_PER_ELEMENT > MAX_UI_VERTICES
+			|| geometry.indices.len() + UI_INDICES_PER_ELEMENT > MAX_UI_INDICES
+		{
+			geometry.truncated = true;
+			break;
+		}
+
+		let rect_width = image.size[0] * sx;
+		let rect_height = image.size[1] * sy;
+		let original_x0 = image.position[0] * sx;
+		let original_y0 = image.position[1] * sy;
+		let original_x1 = original_x0 + rect_width;
+		let original_y1 = original_y0 + rect_height;
+		let (x0, y0, x1, y1) = match image.clip {
+			Some(clip) => {
+				let clip_x0 = clip.position[0] * sx;
+				let clip_y0 = clip.position[1] * sy;
+				let clip_x1 = clip_x0 + clip.size[0] * sx;
+				let clip_y1 = clip_y0 + clip.size[1] * sy;
+				(
+					original_x0.max(clip_x0),
+					original_y0.max(clip_y0),
+					original_x1.min(clip_x1),
+					original_y1.min(clip_y1),
+				)
+			}
+			None => (original_x0, original_y0, original_x1, original_y1),
+		};
+		if x1 <= x0 || y1 <= y0 || rect_width <= 0.0 || rect_height <= 0.0 {
+			continue;
+		}
+
+		let u0 = ((x0 - original_x0) / rect_width).clamp(0.0, 1.0);
+		let v0 = ((y0 - original_y0) / rect_height).clamp(0.0, 1.0);
+		let u1 = ((x1 - original_x0) / rect_width).clamp(0.0, 1.0);
+		let v1 = ((y1 - original_y0) / rect_height).clamp(0.0, 1.0);
+		let feather_mask = scaled_feather_mask(image.feather_mask, sx, sy);
+
+		let to_clip_x = |pixel_x: f32| (pixel_x / viewport_width) * 2.0 - 1.0;
+		let to_clip_y = |pixel_y: f32| 1.0 - (pixel_y / viewport_height) * 2.0;
+
+		let first_index = geometry.indices.len();
+		let vertex_offset = geometry.vertices.len();
+		geometry.vertices.extend_from_slice(&[
+			UiImageVertex {
+				position: [to_clip_x(x0), to_clip_y(y0)],
+				uv: [u0, v0],
+				opacity: image.opacity,
+				feather_mask_position: feather_mask.position,
+				feather_mask_size: feather_mask.size,
+				feather_mask_edges: feather_mask.edges,
+				feather_mask_corner: feather_mask.corner,
+			},
+			UiImageVertex {
+				position: [to_clip_x(x1), to_clip_y(y0)],
+				uv: [u1, v0],
+				opacity: image.opacity,
+				feather_mask_position: feather_mask.position,
+				feather_mask_size: feather_mask.size,
+				feather_mask_edges: feather_mask.edges,
+				feather_mask_corner: feather_mask.corner,
+			},
+			UiImageVertex {
+				position: [to_clip_x(x1), to_clip_y(y1)],
+				uv: [u1, v1],
+				opacity: image.opacity,
+				feather_mask_position: feather_mask.position,
+				feather_mask_size: feather_mask.size,
+				feather_mask_edges: feather_mask.edges,
+				feather_mask_corner: feather_mask.corner,
+			},
+			UiImageVertex {
+				position: [to_clip_x(x0), to_clip_y(y1)],
+				uv: [u0, v1],
+				opacity: image.opacity,
+				feather_mask_position: feather_mask.position,
+				feather_mask_size: feather_mask.size,
+				feather_mask_edges: feather_mask.edges,
+				feather_mask_corner: feather_mask.corner,
+			},
+		]);
+
+		geometry.indices.extend_from_slice(&[0, 1, 2, 2, 3, 0]);
+		geometry.batches.push(UiImageDrawBatch {
+			image_id: image.image_id,
+			version: image.version,
+			index_count: UI_INDICES_PER_ELEMENT as u32,
+			first_index: first_index as u32,
+			vertex_offset: vertex_offset as i32,
+		});
+	}
+
+	geometry
+}
+
 /// The `UiRenderPass` struct centralizes batched UI rectangle rendering and text overlay compositing for the main render target.
 pub struct UiRenderPass {
 	pipeline: ghi::PipelineHandle,
 	vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
 	index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
+	image_pipeline: ghi::PipelineHandle,
+	image_vertex_buffer: ghi::BufferHandle<[UiImageVertex; MAX_UI_VERTICES]>,
+	image_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
+	image_descriptor_set_template: ghi::DescriptorSetTemplateHandle,
+	image_sampler: ghi::SamplerHandle,
+	image_textures: HashMap<u64, UiImageTexture>,
 	text_pipeline: ghi::PipelineHandle,
 	text_descriptor_set: ghi::DescriptorSetHandle,
 	text_overlay: ghi::BaseImageHandle,
@@ -568,6 +798,36 @@ impl UiRenderPass {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let text_descriptor_set_template = context.create_descriptor_set_template(Some("UI Text"), &[TEXT_OVERLAY_BINDING]);
+		let image_descriptor_set_template = context.create_descriptor_set_template(Some("UI Image"), &[UI_IMAGE_BINDING]);
+		let image_vertex_shader = create_image_vertex_shader(context);
+		let image_fragment_shader = create_image_fragment_shader(context);
+		let image_shaders = [
+			ghi::ShaderParameter::new(&image_vertex_shader, ghi::ShaderTypes::Vertex),
+			ghi::ShaderParameter::new(&image_fragment_shader, ghi::ShaderTypes::Fragment),
+		];
+		let image_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+			&[image_descriptor_set_template],
+			&[],
+			&UI_IMAGE_VERTEX_LAYOUT,
+			&image_shaders,
+			&attachments,
+		));
+		let image_vertex_buffer: ghi::BufferHandle<[UiImageVertex; MAX_UI_VERTICES]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Vertex)
+				.name("UI Image Vertices")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let image_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Index)
+				.name("UI Image Indices")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let image_sampler = context.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Linear)
+				.mip_map_mode(ghi::FilteringModes::Linear)
+				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
+		);
 		let text_vertex_shader = create_text_overlay_vertex_shader(context);
 		let text_fragment_shader = create_text_overlay_fragment_shader(context);
 		let text_shaders = [
@@ -607,6 +867,12 @@ impl UiRenderPass {
 			pipeline,
 			vertex_buffer,
 			index_buffer,
+			image_pipeline,
+			image_vertex_buffer,
+			image_index_buffer,
+			image_descriptor_set_template,
+			image_sampler,
+			image_textures: HashMap::new(),
 			text_pipeline,
 			text_descriptor_set,
 			text_overlay: text_overlay.into(),
@@ -616,6 +882,58 @@ impl UiRenderPass {
 			text_system: TextSystem::new(),
 			text_overlay_has_been_used: false,
 		}
+	}
+
+	fn ensure_image_texture(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		image: &UiImageDrawElement,
+	) -> Option<ghi::DescriptorSetHandle> {
+		if !should_draw_image(image) {
+			return None;
+		}
+
+		let needs_create = !self.image_textures.contains_key(&image.image_id);
+		if needs_create {
+			let texture = frame.build_image(
+				ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
+					.name("UI Image")
+					.extent(Extent::rectangle(image.source_width, image.source_height))
+					.device_accesses(ghi::DeviceAccesses::HostToDevice),
+			);
+			let texture: ghi::BaseImageHandle = texture.into();
+			let descriptor_set = frame.create_descriptor_set(Some("UI Image"), &self.image_descriptor_set_template);
+			frame.create_descriptor_binding(
+				descriptor_set,
+				ghi::BindingConstructor::combined_image_sampler(
+					&UI_IMAGE_BINDING,
+					texture,
+					self.image_sampler,
+					ghi::Layouts::Read,
+				),
+			);
+			self.image_textures.insert(
+				image.image_id,
+				UiImageTexture {
+					version: u64::MAX,
+					extent: (0, 0),
+					image: texture,
+					descriptor_set,
+				},
+			);
+		}
+
+		let texture = self.image_textures.get_mut(&image.image_id)?;
+		if texture.version != image.version || texture.extent != (image.source_width, image.source_height) {
+			frame.resize_image(texture.image, Extent::rectangle(image.source_width, image.source_height));
+			let texture_slice = frame.get_texture_slice_mut(texture.image);
+			texture_slice[..image.pixels.len()].copy_from_slice(&image.pixels);
+			frame.sync_texture(texture.image);
+			texture.version = image.version;
+			texture.extent = (image.source_width, image.source_height);
+		}
+
+		Some(texture.descriptor_set)
 	}
 
 	pub fn update(&mut self, render: engine::Render) {
@@ -632,14 +950,16 @@ impl RenderPass for UiRenderPass {
 	) -> Option<RenderPassReturn<'a>> {
 		let extent = sink.extent();
 		let geometry = build_ui_geometry(&self.data, extent, frame_allocator);
+		let image_geometry = build_ui_image_geometry(&self.data, extent, frame_allocator);
 		let has_rectangle_batches = !geometry.batches.is_empty();
+		let has_image_batches = !image_geometry.batches.is_empty();
 
-		if geometry.truncated && !self.reported_capacity_limit {
+		if (geometry.truncated || image_geometry.truncated) && !self.reported_capacity_limit {
 			log::warn!(
 				"UI geometry capacity exceeded. The most likely cause is that the UI contains more than {MAX_UI_ELEMENTS} drawable elements in a single frame."
 			);
 			self.reported_capacity_limit = true;
-		} else if !geometry.truncated {
+		} else if !geometry.truncated && !image_geometry.truncated {
 			self.reported_capacity_limit = false;
 		}
 
@@ -651,6 +971,36 @@ impl RenderPass for UiRenderPass {
 			let index_buffer_slice = frame.get_mut_buffer_slice(self.index_buffer);
 			index_buffer_slice[..geometry.indices.len()].copy_from_slice(&geometry.indices);
 			frame.sync_buffer(self.index_buffer);
+		}
+
+		if has_image_batches {
+			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.image_vertex_buffer);
+			vertex_buffer_slice[..image_geometry.vertices.len()].copy_from_slice(&image_geometry.vertices);
+			frame.sync_buffer(self.image_vertex_buffer);
+
+			let index_buffer_slice = frame.get_mut_buffer_slice(self.image_index_buffer);
+			index_buffer_slice[..image_geometry.indices.len()].copy_from_slice(&image_geometry.indices);
+			frame.sync_buffer(self.image_index_buffer);
+		}
+
+		let mut prepared_image_batches = Vec::new_in(frame_allocator);
+		for batch in &image_geometry.batches {
+			let Some(image) = self
+				.data
+				.images
+				.iter()
+				.find(|image| image.image_id == batch.image_id && image.version == batch.version)
+				.cloned()
+			else {
+				continue;
+			};
+			let Some(descriptor_set) = self.ensure_image_texture(frame, &image) else {
+				continue;
+			};
+			prepared_image_batches.push(UiPreparedImageBatch {
+				descriptor_set,
+				batch: *batch,
+			});
 		}
 
 		let mut draw_text_overlay = false;
@@ -681,17 +1031,21 @@ impl RenderPass for UiRenderPass {
 			draw_text_overlay = true;
 		}
 
-		if !has_rectangle_batches && !draw_text_overlay {
+		if !has_rectangle_batches && prepared_image_batches.is_empty() && !draw_text_overlay {
 			return None;
 		}
 
 		let pipeline = self.pipeline;
 		let vertex_buffer = self.vertex_buffer;
 		let index_buffer = self.index_buffer;
+		let image_pipeline = self.image_pipeline;
+		let image_vertex_buffer = self.image_vertex_buffer;
+		let image_index_buffer = self.image_index_buffer;
 		let text_pipeline = self.text_pipeline;
 		let text_descriptor_set = self.text_descriptor_set;
 		let main_attachment = self.main_attachment;
 		let batches: &'a [UiDrawBatch] = frame_allocator.alloc_slice_copy(&geometry.batches);
+		let image_batches: &'a [UiPreparedImageBatch] = frame_allocator.alloc_slice_copy(&prepared_image_batches);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
@@ -723,6 +1077,37 @@ impl RenderPass for UiRenderPass {
 
 					for batch in batches {
 						command_buffer.draw_indexed(batch.index_count, 1, batch.first_index, batch.vertex_offset, 0);
+					}
+
+					command_buffer.end_render_pass();
+				}
+
+				if !image_batches.is_empty() {
+					let attachments = [ghi::AttachmentInformation::new(
+						main_attachment,
+						ghi::Layouts::RenderTarget,
+						ghi::ClearValue::None,
+						!needs_clear,
+						true,
+					)];
+
+					needs_clear = false;
+
+					command_buffer.bind_vertex_buffers(&[image_vertex_buffer.into()]);
+					command_buffer.bind_index_buffer(&(Into::<ghi::BufferDescriptor>::into(image_index_buffer).index_type(ghi::DataTypes::U16)));
+
+					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
+					let command_buffer = command_buffer.bind_raster_pipeline(image_pipeline);
+
+					for prepared in image_batches {
+						command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
+						command_buffer.draw_indexed(
+							prepared.batch.index_count,
+							1,
+							prepared.batch.first_index,
+							prepared.batch.vertex_offset,
+							0,
+						);
 					}
 
 					command_buffer.end_render_pass();
@@ -1196,6 +1581,189 @@ fn create_text_overlay_fragment_shader(context: &mut ghi::implementation::Contex
 	.expect("Failed to create the UI text overlay fragment shader. The most likely cause is an incompatible shader interface.")
 }
 
+fn create_image_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
+	crate::rendering::create_shader_from_source(
+		context,
+		Some("UI Image Vertex Shader"),
+		ghi::shader::ShaderSource::Platform {
+			glsl: IMAGE_VERTEX_SHADER_GLSL,
+			msl: IMAGE_VERTEX_SHADER_MSL,
+			msl_entry_point: "ui_image_vertex",
+		},
+		ghi::ShaderTypes::Vertex,
+		[],
+	)
+	.expect("Failed to create the UI image vertex shader. The most likely cause is an incompatible shader interface.")
+}
+
+fn create_image_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
+	crate::rendering::create_shader_from_source(
+		context,
+		Some("UI Image Fragment Shader"),
+		ghi::shader::ShaderSource::Platform {
+			glsl: IMAGE_FRAGMENT_SHADER_GLSL,
+			msl: IMAGE_FRAGMENT_SHADER_MSL,
+			msl_entry_point: "ui_image_fragment",
+		},
+		ghi::ShaderTypes::Fragment,
+		[UI_IMAGE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ)],
+	)
+	.expect("Failed to create the UI image fragment shader. The most likely cause is an incompatible shader interface.")
+}
+
+const IMAGE_VERTEX_SHADER_GLSL: &str = r#"
+#version 460
+#pragma shader_stage(vertex)
+
+layout(location = 0) in vec2 in_position;
+layout(location = 1) in vec2 in_uv;
+layout(location = 2) in float in_opacity;
+layout(location = 3) in vec2 in_feather_mask_position;
+layout(location = 4) in vec2 in_feather_mask_size;
+layout(location = 5) in vec4 in_feather_mask_edges;
+layout(location = 6) in vec2 in_feather_mask_corner;
+
+layout(location = 0) out vec2 out_uv;
+layout(location = 1) out float out_opacity;
+layout(location = 2) out vec2 out_feather_mask_position;
+layout(location = 3) out vec2 out_feather_mask_size;
+layout(location = 4) out vec4 out_feather_mask_edges;
+layout(location = 5) out vec2 out_feather_mask_corner;
+
+void main() {
+	gl_Position = vec4(in_position, 0.0, 1.0);
+	out_uv = in_uv;
+	out_opacity = in_opacity;
+	out_feather_mask_position = in_feather_mask_position;
+	out_feather_mask_size = in_feather_mask_size;
+	out_feather_mask_edges = in_feather_mask_edges;
+	out_feather_mask_corner = in_feather_mask_corner;
+}
+"#;
+
+const IMAGE_VERTEX_SHADER_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct ImageVertexIn {
+	float2 position [[attribute(0)]];
+	float2 uv [[attribute(1)]];
+	float opacity [[attribute(2)]];
+	float2 feather_mask_position [[attribute(3)]];
+	float2 feather_mask_size [[attribute(4)]];
+	float4 feather_mask_edges [[attribute(5)]];
+	float2 feather_mask_corner [[attribute(6)]];
+};
+
+struct ImageVertexOut {
+	float4 position [[position]];
+	float2 uv;
+	float opacity;
+	float2 feather_mask_position;
+	float2 feather_mask_size;
+	float4 feather_mask_edges;
+	float2 feather_mask_corner;
+};
+
+vertex ImageVertexOut ui_image_vertex(ImageVertexIn in [[stage_in]]) {
+	ImageVertexOut out;
+	out.position = float4(in.position, 0.0, 1.0);
+	out.uv = in.uv;
+	out.opacity = in.opacity;
+	out.feather_mask_position = in.feather_mask_position;
+	out.feather_mask_size = in.feather_mask_size;
+	out.feather_mask_edges = in.feather_mask_edges;
+	out.feather_mask_corner = in.feather_mask_corner;
+	return out;
+}
+"#;
+
+const IMAGE_FRAGMENT_SHADER_GLSL: &str = r#"
+#version 460
+#pragma shader_stage(fragment)
+
+layout(set = 0, binding = 0) uniform sampler2D image_texture;
+
+layout(location = 0) in vec2 in_uv;
+layout(location = 1) in float in_opacity;
+layout(location = 2) in vec2 in_feather_mask_position;
+layout(location = 3) in vec2 in_feather_mask_size;
+layout(location = 4) in vec4 in_feather_mask_edges;
+layout(location = 5) in vec2 in_feather_mask_corner;
+layout(location = 0) out vec4 out_color_attachment;
+
+void main() {
+	vec2 pixel_position = gl_FragCoord.xy;
+	float feather_top = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.x, 0.0001), pixel_position.y - in_feather_mask_position.y), step(0.0001, in_feather_mask_edges.x));
+	float feather_right = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.y, 0.0001), in_feather_mask_position.x + in_feather_mask_size.x - pixel_position.x), step(0.0001, in_feather_mask_edges.y));
+	float feather_bottom = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.z, 0.0001), in_feather_mask_position.y + in_feather_mask_size.y - pixel_position.y), step(0.0001, in_feather_mask_edges.z));
+	float feather_left = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.w, 0.0001), pixel_position.x - in_feather_mask_position.x), step(0.0001, in_feather_mask_edges.w));
+	vec2 feather_half_size = in_feather_mask_size * 0.5;
+	float feather_corner_radius = min(in_feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
+	float feather_corner_exponent = in_feather_mask_corner.y;
+	vec2 feather_centered_position = pixel_position - in_feather_mask_position - feather_half_size;
+	vec2 feather_rounded_extent = feather_half_size - vec2(feather_corner_radius);
+	vec2 feather_corner_delta = abs(feather_centered_position) - feather_rounded_extent;
+	vec2 feather_abs_corner = max(feather_corner_delta, vec2(0.0));
+	float feather_corner_sum = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
+	float feather_corner_distance = pow(feather_corner_sum, 1.0 / feather_corner_exponent);
+	float feather_field_distance = feather_corner_distance + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
+	float feather_mask_enabled = step(0.0001, min(in_feather_mask_size.x, in_feather_mask_size.y));
+	float feather_rounded_shape = step(0.0001, feather_corner_radius);
+	float feather_shape_coverage = mix(1.0, 1.0 - smoothstep(-1.0, 1.0, feather_field_distance), feather_rounded_shape);
+	float feather_coverage = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
+	vec4 color = texture(image_texture, in_uv);
+	out_color_attachment = vec4(color.rgb, color.a * in_opacity * feather_coverage);
+}
+"#;
+
+const IMAGE_FRAGMENT_SHADER_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct ImageVertexOut {
+	float4 position [[position]];
+	float2 uv;
+	float opacity;
+	float2 feather_mask_position;
+	float2 feather_mask_size;
+	float4 feather_mask_edges;
+	float2 feather_mask_corner;
+};
+
+struct ImageSet0 {
+	texture2d<float> image_texture [[id(0)]];
+	sampler image_sampler [[id(1)]];
+};
+
+fragment float4 ui_image_fragment(
+	ImageVertexOut in [[stage_in]],
+	constant ImageSet0& set0 [[buffer(16)]]
+) {
+	float2 pixel_position = in.position.xy;
+	float feather_top = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.x, 0.0001), pixel_position.y - in.feather_mask_position.y), step(0.0001, in.feather_mask_edges.x));
+	float feather_right = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.y, 0.0001), in.feather_mask_position.x + in.feather_mask_size.x - pixel_position.x), step(0.0001, in.feather_mask_edges.y));
+	float feather_bottom = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.z, 0.0001), in.feather_mask_position.y + in.feather_mask_size.y - pixel_position.y), step(0.0001, in.feather_mask_edges.z));
+	float feather_left = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.w, 0.0001), pixel_position.x - in.feather_mask_position.x), step(0.0001, in.feather_mask_edges.w));
+	float2 feather_half_size = in.feather_mask_size * 0.5;
+	float feather_corner_radius = min(in.feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
+	float feather_corner_exponent = in.feather_mask_corner.y;
+	float2 feather_centered_position = pixel_position - in.feather_mask_position - feather_half_size;
+	float2 feather_rounded_extent = feather_half_size - float2(feather_corner_radius);
+	float2 feather_corner_delta = abs(feather_centered_position) - feather_rounded_extent;
+	float2 feather_abs_corner = max(feather_corner_delta, float2(0.0));
+	float feather_corner_sum = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
+	float feather_corner_distance = pow(feather_corner_sum, 1.0 / feather_corner_exponent);
+	float feather_field_distance = feather_corner_distance + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
+	float feather_mask_enabled = step(0.0001, min(in.feather_mask_size.x, in.feather_mask_size.y));
+	float feather_rounded_shape = step(0.0001, feather_corner_radius);
+	float feather_shape_coverage = mix(1.0, 1.0 - smoothstep(-1.0, 1.0, feather_field_distance), feather_rounded_shape);
+	float feather_coverage = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
+	float4 color = set0.image_texture.sample(set0.image_sampler, in.uv);
+	return float4(color.rgb, color.a * in.opacity * feather_coverage);
+}
+"#;
+
 const TEXT_OVERLAY_VERTEX_SHADER_GLSL: &str = r#"
 #version 460
 #pragma shader_stage(vertex)
@@ -1278,11 +1846,13 @@ mod tests {
 	use utils::{Extent, RGBA};
 
 	use super::{
-		build_ui_geometry, should_rasterize_text, update_from_render, DrawClip, DrawFeatherMask, UiDrawBatch, UiDrawElement,
-		UiDrawList, UiTextDrawElement, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_FRAGMENT_SHADER_GLSL_MAIN,
-		UI_FRAGMENT_SHADER_MSL, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_ELEMENT,
+		build_ui_geometry, build_ui_image_geometry, should_draw_image, should_rasterize_text, update_from_render, DrawClip,
+		DrawFeatherMask, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiTextDrawElement, MAX_UI_ELEMENTS,
+		MAX_UI_VERTICES_PER_DRAW, UI_FRAGMENT_SHADER_GLSL_MAIN, UI_FRAGMENT_SHADER_MSL, UI_INDICES_PER_ELEMENT,
+		UI_VERTICES_PER_ELEMENT,
 	};
 	use crate::ui::{
+		components::image::Image,
 		flow::Size,
 		layout::{
 			context::{Context, ElementContext},
@@ -1311,6 +1881,10 @@ mod tests {
 		}
 	}
 
+	fn image_pixels(width: u32, height: u32) -> Vec<u8> {
+		vec![255; width as usize * height as usize * 4]
+	}
+
 	#[test]
 	fn builds_a_single_batched_quad() {
 		let frame_allocator = bumpalo::Bump::new();
@@ -1328,6 +1902,7 @@ mod tests {
 					layer_kind: LayerKind::Fill,
 					stroke_width: 0.0,
 				}],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(200, 100),
@@ -1361,6 +1936,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![draw_element(6.0, 2.0)],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(200, 300),
@@ -1387,6 +1963,7 @@ mod tests {
 					layer_kind: LayerKind::Fill,
 					stroke_width: 0.0,
 				}],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(100, 100),
@@ -1411,6 +1988,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![element],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(100, 100),
@@ -1440,6 +2018,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![element],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(200, 300),
@@ -1467,6 +2046,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![element],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(100, 100),
@@ -1485,6 +2065,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![draw_element(-8.0, 2.0)],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(100, 100),
@@ -1501,6 +2082,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![draw_element(8.0, 4.0)],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(100, 100),
@@ -1517,6 +2099,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![draw_element(0.0, 2.0)],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(100, 100),
@@ -1538,6 +2121,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![element],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(200, 300),
@@ -1560,6 +2144,7 @@ mod tests {
 				&UiDrawList {
 					layout_size: [100.0, 100.0],
 					elements: vec![element],
+					images: Vec::new(),
 					texts: vec![],
 				},
 				Extent::rectangle(100, 100),
@@ -1579,6 +2164,7 @@ mod tests {
 				&UiDrawList {
 					layout_size: [100.0, 100.0],
 					elements: vec![draw_element(8.0, exponent)],
+					images: Vec::new(),
 					texts: vec![],
 				},
 				Extent::rectangle(100, 100),
@@ -1596,6 +2182,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![draw_element(8.0, 12.0)],
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::rectangle(100, 100),
@@ -1697,6 +2284,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [1.0, 1.0],
 				elements,
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::square(1),
@@ -1750,6 +2338,7 @@ mod tests {
 			&UiDrawList {
 				layout_size: [1.0, 1.0],
 				elements,
+				images: Vec::new(),
 				texts: vec![],
 			},
 			Extent::square(1),
@@ -1816,6 +2405,36 @@ mod tests {
 	}
 
 	#[test]
+	fn update_from_render_clears_removed_image_entries() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut draw_list = UiDrawList::default();
+
+		let mut image_engine = Engine::new();
+		image_engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame.element("preview").image(Image::from_rgba(2, 2, image_pixels(2, 2)));
+			})
+		});
+		let mut image_snapshot = image_engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let image_render = image_engine.render(&mut image_snapshot);
+		update_from_render(&image_render, &mut draw_list);
+		assert_eq!(draw_list.images.len(), 1);
+
+		let mut no_image_engine = Engine::new();
+		no_image_engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("frame").container(Container::default());
+			})
+		});
+		let mut no_image_snapshot = no_image_engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let no_image_render = no_image_engine.render(&mut no_image_snapshot);
+		update_from_render(&no_image_render, &mut draw_list);
+
+		assert!(draw_list.images.is_empty());
+	}
+
+	#[test]
 	fn draw_list_multiplies_effective_opacity_into_layers_and_text() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -1847,5 +2466,91 @@ mod tests {
 		assert_eq!(draw_list.elements[0].color[3], 0.4);
 		assert_eq!(draw_list.elements[1].color[3], 0.3);
 		assert_eq!(draw_list.texts[0].color, RGBA::new(1.0, 1.0, 1.0, 0.2));
+	}
+
+	#[test]
+	fn draw_list_multiplies_effective_opacity_into_images() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default().opacity(0.5));
+				frame
+					.element("preview")
+					.image(Image::from_rgba(4, 4, image_pixels(4, 4)).opacity(0.4));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let mut draw_list = UiDrawList::default();
+		update_from_render(&render, &mut draw_list);
+
+		assert_eq!(draw_list.images.len(), 1);
+		assert!((draw_list.images[0].opacity - 0.2).abs() < 0.0001);
+	}
+
+	#[test]
+	fn image_geometry_trims_uvs_to_clip() {
+		let frame_allocator = bumpalo::Bump::new();
+		let draw_list = UiDrawList {
+			layout_size: [100.0, 100.0],
+			elements: Vec::new(),
+			images: vec![UiImageDrawElement {
+				image_id: 1,
+				version: 0,
+				source_width: 10,
+				source_height: 10,
+				pixels: image_pixels(10, 10).into(),
+				position: [10.0, 20.0],
+				size: [40.0, 20.0],
+				clip: Some(DrawClip {
+					position: [20.0, 25.0],
+					size: [20.0, 10.0],
+				}),
+				feather_mask: None,
+				opacity: 1.0,
+			}],
+			texts: Vec::new(),
+		};
+
+		let geometry = build_ui_image_geometry(&draw_list, Extent::rectangle(100, 100), &frame_allocator);
+
+		assert_eq!(geometry.vertices.len(), UI_VERTICES_PER_ELEMENT);
+		assert_eq!(geometry.indices.len(), UI_INDICES_PER_ELEMENT);
+		assert_eq!(geometry.batches.len(), 1);
+		assert_vec2_close(geometry.vertices[0].uv, [0.25, 0.25]);
+		assert_vec2_close(geometry.vertices[2].uv, [0.75, 0.75]);
+	}
+
+	#[test]
+	fn image_geometry_skips_invalid_or_transparent_images() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hidden = UiImageDrawElement {
+			image_id: 1,
+			version: 0,
+			source_width: 2,
+			source_height: 2,
+			pixels: image_pixels(2, 2).into(),
+			position: [0.0, 0.0],
+			size: [20.0, 20.0],
+			clip: None,
+			feather_mask: None,
+			opacity: 0.0,
+		};
+		assert!(!should_draw_image(&hidden));
+
+		let draw_list = UiDrawList {
+			layout_size: [100.0, 100.0],
+			elements: Vec::new(),
+			images: vec![hidden],
+			texts: Vec::new(),
+		};
+		let geometry = build_ui_image_geometry(&draw_list, Extent::rectangle(100, 100), &frame_allocator);
+
+		assert!(geometry.vertices.is_empty());
+		assert!(geometry.indices.is_empty());
+		assert!(geometry.batches.is_empty());
 	}
 }

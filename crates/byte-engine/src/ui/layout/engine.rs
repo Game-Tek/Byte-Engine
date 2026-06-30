@@ -552,6 +552,19 @@ impl<C> EvaluationContext<C> {
 		true
 	}
 
+	pub fn update_image(&mut self, update: impl FnOnce(&mut Image)) -> bool {
+		let mut tree = self.tree.borrow_mut();
+		let Some(element) = tree.element_mut(self.id) else {
+			return false;
+		};
+		let Primitives::Image(image) = &mut element.element.primitive else {
+			return false;
+		};
+
+		update(image);
+		true
+	}
+
 	pub fn geometry(&self) -> Option<Geometry> {
 		self.runtime.borrow().geometry.get(&self.id).copied()
 	}
@@ -606,6 +619,10 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 
 	fn shape(self, shape: Shape) -> EvaluationContext<C> {
 		self.parent.add_element(self.name, ConcreteElement::shape(shape))
+	}
+
+	fn image(self, image: Image) -> EvaluationContext<C> {
+		self.parent.add_element(self.name, ConcreteElement::image(image))
 	}
 
 	fn component<F>(self, component: F)
@@ -1143,6 +1160,7 @@ impl<C: 'static> Engine<C> {
 	/// Renders the given snapshot into a [`Render`] object.
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
 		let mut elements = Vec::new();
+		let mut image_elements = Vec::new();
 		let mut text_elements = Vec::new();
 		let mut effective_opacities = HashMap::new();
 		let tree = Rc::clone(&self.runtime.borrow().tree);
@@ -1205,6 +1223,19 @@ impl<C: 'static> Engine<C> {
 						corner_exponent,
 					});
 				}
+				Primitives::Image(image) => image_elements.push(RenderImageElement {
+					id: element.id.get(),
+					image_id: image.id(),
+					version: image.version(),
+					source_width: image.width_pixels(),
+					source_height: image.height_pixels(),
+					pixels: std::sync::Arc::from(image.pixels()),
+					position: element.position,
+					size: element.size,
+					clip,
+					feather_mask,
+					opacity,
+				}),
 				Primitives::Text(text) => text_elements.push(RenderTextElement {
 					id: element.id.get(),
 					position: element.position,
@@ -1231,10 +1262,12 @@ impl<C: 'static> Engine<C> {
 		}
 
 		elements.sort_by_key(|element| element.position.z());
+		image_elements.sort_by_key(|element| element.position.z());
 		text_elements.sort_by_key(|element| element.position.z());
 
 		Render {
 			elements,
+			image_elements,
 			text_elements,
 			relations: snapshot.relations.to_vec(),
 		}
@@ -1654,6 +1687,7 @@ impl Runtime {
 #[derive(Clone)]
 pub struct Render {
 	elements: Vec<RenderElement>,
+	image_elements: Vec<RenderImageElement>,
 	text_elements: Vec<RenderTextElement>,
 	relations: Vec<(Id, Id)>,
 }
@@ -1664,7 +1698,7 @@ impl Render {
 	}
 
 	pub(crate) fn size(&self) -> usize {
-		self.elements.len() + self.text_elements.len()
+		self.elements.len() + self.image_elements.len() + self.text_elements.len()
 	}
 
 	pub(crate) fn elements(&self) -> impl Iterator<Item = &RenderElement> {
@@ -1673,6 +1707,10 @@ impl Render {
 
 	pub(crate) fn texts(&self) -> impl Iterator<Item = &RenderTextElement> {
 		self.text_elements.iter()
+	}
+
+	pub(crate) fn images(&self) -> impl Iterator<Item = &RenderImageElement> {
+		self.image_elements.iter()
 	}
 }
 
@@ -3444,10 +3482,11 @@ use super::{
 	flow::{Location3, Size},
 	layout_elements,
 	snapshot::Snapshot,
-	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderElement, RenderTextElement,
+	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderElement, RenderImageElement,
+	RenderTextElement,
 };
 use crate::ui::{
-	components::{shape::Shape, text_field::TextField},
+	components::{image::Image, shape::Shape, text_field::TextField},
 	font::TextSystem,
 	intersection::build_mouse_click_acceleration,
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},

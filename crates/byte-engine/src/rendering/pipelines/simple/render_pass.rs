@@ -15,10 +15,7 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame,
 };
-use resource_management::{
-	asset::bema_asset_handler::ProgramGenerator,
-	shader::{besl::backends::spirv::SPIRVShaderGenerator, generator::ShaderGenerationSettings},
-};
+use resource_management::{asset::bema_asset_handler::ProgramGenerator, shader::generator::ShaderGenerationSettings};
 use utils::{
 	hash::{HashMap, HashMapExt},
 	json::{self, JsonContainerTrait as _, JsonValueTrait as _},

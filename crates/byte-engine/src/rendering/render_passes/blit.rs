@@ -224,9 +224,10 @@ impl RenderPass for SwapchainBlitPass {
 
 #[cfg(test)]
 mod tests {
+	#[cfg(target_os = "linux")]
+	use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
 	use resource_management::shader::{
-		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator,
-		besl::backends::spirv::SPIRVShaderGenerator, generator::ShaderGenerationSettings,
+		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings,
 	};
 	use utils::Extent;
 
@@ -267,6 +268,7 @@ mod tests {
 		assert!(shader.contains("set0.result.write(source_color, coord)"));
 	}
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn swapchain_blit_besl_compiles_to_spirv() {
 		let main_node = create_swapchain_blit_program();

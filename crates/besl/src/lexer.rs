@@ -324,6 +324,11 @@ impl Node {
 			],
 			u32_t.clone(),
 		);
+		let texture_lod_intrinsic = builtin_intrinsic(
+			"texture_lod",
+			vec![("texture", texture_2d.clone()), ("uv", vec2f32.clone())],
+			vec4f32.clone(),
+		);
 
 		let builtins = vec![
 			void,
@@ -346,6 +351,7 @@ impl Node {
 			texture_2d,
 			array_texture_2d,
 			sample_intrinsic,
+			texture_lod_intrinsic,
 			fetch_intrinsic,
 			fetch_u32_intrinsic,
 			dot_intrinsic,

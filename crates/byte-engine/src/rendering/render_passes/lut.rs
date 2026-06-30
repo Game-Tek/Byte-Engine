@@ -381,6 +381,7 @@ mod tests {
 
 	use super::{create_lut_shader_sources, expected_lut_payload_size, write_lut_bytes_to_rgba16f_upload_target};
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn lut_shader_compiles() {
 		let lut = Lut {

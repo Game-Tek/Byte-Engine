@@ -1735,6 +1735,15 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push(')');
 				return;
 			}
+			"texture_lod" => {
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(".sample(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str("_sampler, ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", level(0.0))");
+				return;
+			}
 			_ => {}
 		}
 

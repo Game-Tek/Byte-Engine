@@ -1305,9 +1305,10 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 #[cfg(test)]
 mod tests {
 	use resource_management::asset::bema_asset_handler::ProgramGenerator;
+	#[cfg(target_os = "linux")]
+	use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
 	use resource_management::shader::{
 		besl::backends::msl::MSLShaderGenerator,
-		besl::backends::spirv::SPIRVShaderGenerator,
 		generator::{ShaderGenerationSettings, ShaderGenerator as _},
 	};
 	use utils::json;
@@ -1377,6 +1378,7 @@ mod tests {
 		let _node = besl::lex(shader).unwrap();
 	}
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn material_evaluation_msl_source_compiles_for_metal() {
 		use ghi::{
@@ -1459,6 +1461,7 @@ mod tests {
 		);
 	}
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn material_evaluation_msl_texture_source_compiles_for_metal() {
 		use ghi::{

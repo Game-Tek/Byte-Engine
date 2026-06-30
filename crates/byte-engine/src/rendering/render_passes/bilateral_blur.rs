@@ -34,6 +34,7 @@ pub struct BaseBilateralBlurPass {
 }
 
 impl BaseBilateralBlurPass {
+	#[cfg(target_os = "linux")]
 	fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let shader_storage = render_pass_builder.shader_storage();
 		let context = render_pass_builder.context();

@@ -880,6 +880,7 @@ impl QueueSelection {
 pub(super) mod tests {
 	use std::borrow::Borrow as _;
 
+	#[cfg(target_os = "linux")]
 	use resource_management::shader::glsl_compile as glsl;
 
 	use super::*;
@@ -1227,6 +1228,7 @@ pub(super) mod tests {
 		assert_eq!(format.size(), 1);
 	}
 
+	#[cfg(target_os = "linux")]
 	fn compile_shaders() -> (glsl::CompiledShader, glsl::CompiledShader) {
 		let vertex_shader_code = "
 			#version 450
@@ -1262,6 +1264,7 @@ pub(super) mod tests {
 		(vertex_shader_artifact, fragment_shader_artifact)
 	}
 
+	#[cfg(target_os = "linux")]
 	fn compile_shaders_with_model_matrix() -> (glsl::CompiledShader, glsl::CompiledShader) {
 		let vertex_shader_code = "
 			#version 450
@@ -1310,6 +1313,7 @@ pub(super) mod tests {
 		assert_eq!(dispatch_extent.get_extent(), Extent::new(4, 4, 4));
 	}
 
+	#[cfg(target_os = "linux")]
 	fn check_triangle(pixels: &[RGBAu8], extent: Extent) {
 		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
@@ -1388,6 +1392,7 @@ pub(super) mod tests {
 		);
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn render_triangle(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, false);
 
@@ -1499,6 +1504,7 @@ pub(super) mod tests {
 		check_triangle(pixels, extent);
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn present(renderer: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1921, 1080);
@@ -1613,6 +1619,7 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors())
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn multiframe_present(renderer: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
@@ -1728,6 +1735,7 @@ pub(super) mod tests {
 		}
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn multiframe_rendering(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -1858,6 +1866,7 @@ pub(super) mod tests {
 		}
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn change_frames(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering while changing the amount of frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -1988,6 +1997,7 @@ pub(super) mod tests {
 		}
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn resize(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering while resize the render targets.
 
@@ -2123,6 +2133,7 @@ pub(super) mod tests {
 		}
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn dynamic_data(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -2329,6 +2340,7 @@ pub(super) mod tests {
 		assert!(!device.has_errors())
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn dynamic_textures(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that dynamic textures write to the current frame image instead of always writing to the root image.
 
@@ -2414,6 +2426,7 @@ pub(super) mod tests {
 		}
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn multiframe_resources(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		// TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
@@ -2690,6 +2703,7 @@ pub(super) mod tests {
 		assert!(!device.has_errors());
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn descriptor_sets(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, true);
 
@@ -2939,6 +2953,7 @@ pub(super) mod tests {
 		assert!(!device.has_errors());
 	}
 
+	#[cfg(target_os = "linux")]
 	pub(crate) fn ray_tracing(renderer: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.

@@ -762,6 +762,7 @@ kernel void sky_render_pass(
 
 #[cfg(test)]
 mod tests {
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn sky_shader_compiles() {
 		resource_management::shader::glsl_compile::compile(super::SKY_SHADER, "Sky Render Pass Test").unwrap();

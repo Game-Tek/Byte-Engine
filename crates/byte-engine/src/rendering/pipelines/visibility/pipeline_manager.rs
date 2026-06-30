@@ -1111,7 +1111,6 @@ use resource_management::resources::image::Image as ResourceImage;
 use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
 use resource_management::shader::besl::backends::glsl::GLSLShaderGenerator;
 use resource_management::shader::besl::backends::msl::MSLShaderGenerator;
-use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
 use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
 use resource_management::Reference;

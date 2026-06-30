@@ -84,8 +84,7 @@ impl PipelineManager {
 			&[camera_data_binding_template.clone(), instance_data_binding_template.clone()],
 		);
 
-		let mut spirv_shader_generator = SPIRVShaderGenerator::new();
-		let mut msl_shader_generator = MSLShaderGenerator::new();
+		let mut platform_shader_generator = PlatformShaderGenerator::new();
 
 		let (generated_vertex_shader, generated_vertex_msl) = {
 			let main_code = r#"
@@ -174,18 +173,22 @@ impl PipelineManager {
 
 			let main_node = root_node.get_main().unwrap();
 
-			let generated_spirv = spirv_shader_generator
+			let generated_platform = platform_shader_generator
 				.generate(&ShaderGenerationSettings::vertex(), &main_node)
-				.unwrap();
+				.expect("Failed to generate platform vertex shader.");
 
-			let generated_msl = msl_shader_generator
-				.generate(&ShaderGenerationSettings::vertex(), &main_node)
-				.unwrap();
-
-			(generated_spirv, generated_msl)
+			let binary = generated_platform.binary().to_vec().into_boxed_slice();
+			let extent = generated_platform.extent();
+			let bindings: Vec<resource_management::shader::generator::CompiledShaderBinding> = generated_platform
+				.bindings()
+				.iter()
+				.map(|b| resource_management::shader::generator::CompiledShaderBinding::new(b.set, b.binding, b.read, b.write))
+				.collect();
+			let compiled = resource_management::shader::generator::CompiledShader::new(binary, bindings, extent);
+			(compiled, generated_platform)
 		};
 
-		let (generated_fragment_shader, generated_fragment_msl) = {
+		let (generated_fragment_shader, generated_fragment_platform) = {
 			let main_code = r#"
 			uint instance_index = in_instance_index;
 			// Build the grid from object-space position so it rotates with the rendered mesh.
@@ -233,24 +236,30 @@ impl PipelineManager {
 
 			let main_node = root_node.get_main().unwrap();
 
-			let generated_spirv = spirv_shader_generator
+			let generated_platform = platform_shader_generator
 				.generate(&ShaderGenerationSettings::fragment(), &main_node)
-				.unwrap();
+				.expect("Failed to generate platform fragment shader.");
 
-			let generated_msl = msl_shader_generator
-				.generate(&ShaderGenerationSettings::fragment(), &main_node)
-				.unwrap();
-
-			(generated_spirv, generated_msl)
+			let binary = generated_platform.binary().to_vec().into_boxed_slice();
+			let extent = generated_platform.extent();
+			let bindings: Vec<resource_management::shader::generator::CompiledShaderBinding> = generated_platform
+				.bindings()
+				.iter()
+				.map(|b| resource_management::shader::generator::CompiledShaderBinding::new(b.set, b.binding, b.read, b.write))
+				.collect();
+			let compiled = resource_management::shader::generator::CompiledShader::new(binary, bindings, extent);
+			(compiled, generated_platform)
 		};
 
-		#[cfg(target_vendor = "apple")]
-		let vertex_shader_source = ghi::shader::Sources::MTL {
-			source: &generated_vertex_msl,
-			entry_point: "besl_main",
+		let vertex_shader_source = if let Some(entry_point) = generated_vertex_msl.entry_point() {
+			ghi::shader::Sources::MTLB {
+				binary: generated_vertex_shader.binary(),
+				entry_point,
+				threadgroup_size: generated_vertex_msl.extent(),
+			}
+		} else {
+			ghi::shader::Sources::SPIRV(generated_vertex_shader.binary())
 		};
-		#[cfg(not(target_vendor = "apple"))]
-		let vertex_shader_source = ghi::shader::Sources::SPIRV(generated_vertex_shader.binary());
 
 		let vertex_shader = context
 			.create_shader(
@@ -263,13 +272,15 @@ impl PipelineManager {
 					.map(map_shader_binding_to_shader_binding_descriptor),
 			)
 			.unwrap();
-		#[cfg(target_vendor = "apple")]
-		let fragment_shader_source = ghi::shader::Sources::MTL {
-			source: &generated_fragment_msl,
-			entry_point: "besl_main",
+		let fragment_shader_source = if let Some(entry_point) = generated_fragment_platform.entry_point() {
+			ghi::shader::Sources::MTLB {
+				binary: generated_fragment_shader.binary(),
+				entry_point,
+				threadgroup_size: generated_fragment_platform.extent(),
+			}
+		} else {
+			ghi::shader::Sources::SPIRV(generated_fragment_shader.binary())
 		};
-		#[cfg(not(target_vendor = "apple"))]
-		let fragment_shader_source = ghi::shader::Sources::SPIRV(generated_fragment_shader.binary());
 
 		let fragment_shader = context
 			.create_shader(
@@ -473,10 +484,7 @@ use ghi::{
 use math::{Matrix4, ShaderMatrix4};
 use resource_management::{
 	asset::bema_asset_handler::ProgramGenerator,
-	shader::{
-		besl::backends::msl::MSLShaderGenerator, besl::backends::spirv::SPIRVShaderGenerator,
-		generator::ShaderGenerationSettings,
-	},
+	shader::{besl::backends::platform::PlatformShaderGenerator, generator::ShaderGenerationSettings},
 };
 use utils::{
 	hash::{HashMap, HashMapExt},

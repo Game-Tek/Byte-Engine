@@ -861,7 +861,7 @@ impl<C: 'static> Engine<C> {
 	}
 
 	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
-		let (mut elements, relations, clipped_elements) = {
+		let (elements, relations, clipped_elements) = {
 			let tree = Rc::clone(&self.runtime.borrow().tree);
 			let tree = tree.borrow();
 			let mut relations = Vec::with_capacity_in(tree.relations.len(), frame_allocator);

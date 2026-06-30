@@ -273,10 +273,11 @@ impl RenderPass for AgxToneMapPass {
 
 #[cfg(test)]
 mod tests {
+	#[cfg(target_os = "linux")]
+	use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
 	use resource_management::shader::{
 		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator,
-		besl::backends::spirv::SPIRVShaderGenerator, generator::ShaderGenerationSettings,
-		msl_shader_compiler::MSLShaderCompiler,
+		generator::ShaderGenerationSettings, msl_shader_compiler::MSLShaderCompiler,
 	};
 	use utils::Extent;
 
@@ -321,6 +322,7 @@ mod tests {
 		assert!(shader.contains("set0.result.write("));
 	}
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn agx_tonemap_besl_compiles_to_spirv() {
 		let main_node = create_tone_mapping_program();

@@ -13,7 +13,6 @@ md5 = "0.8.0"
 utils = { path = "../utils" }
 besl = { path = "../besl" }
 
-shaderc = "0.10.1"
 png = "0.18.0"
 rkyv = { version = "0.8.15", features = ["unaligned"] }
 md5 = "0.8.0"
@@ -34,3 +33,6 @@ colored = "3.0.0"
 vorbis_rs = "0.5.5"
 compio = { version = "0.18.0", features = ["fs", "io", "macros"] }
 memmap2 = "0.9.5"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+shaderc = "0.10.1"

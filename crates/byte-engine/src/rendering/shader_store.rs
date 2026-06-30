@@ -178,6 +178,7 @@ fn shader_threadgroup_size(artifact: &ShaderArtifact, workgroup_size: Option<(u3
 fn hash_shader_source_definition(name: &str, definition: &ShaderSourceDefinition<'_>, hasher: &mut DefaultHasher) {
 	with_shader_source(name, definition, |source| {
 		match source {
+			#[cfg(target_os = "linux")]
 			ghi::shader::ShaderSource::Glsl(source) => {
 				hasher.write(b"glsl");
 				hasher.write(source.as_bytes());

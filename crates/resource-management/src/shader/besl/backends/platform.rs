@@ -1,4 +1,4 @@
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(target_os = "linux")]
 use crate::shader::besl::backends::spirv::SPIRVShaderGenerator;
 use crate::shader::generator::{CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator};
 #[cfg(target_vendor = "apple")]
@@ -14,6 +14,8 @@ impl PlatformShaderLanguage {
 	pub const fn current_platform() -> Self {
 		if cfg!(target_vendor = "apple") {
 			Self::Msl
+		} else if cfg!(target_os = "linux") {
+			Self::Glsl
 		} else {
 			Self::Glsl
 		}
@@ -68,6 +70,7 @@ impl GeneratedCompiledPlatformShader {
 /// The `Generator` struct selects the compiled shader backend that matches the current platform.
 pub struct Generator {
 	#[cfg(not(target_vendor = "apple"))]
+	#[cfg(target_os = "linux")]
 	spirv_shader_generator: SPIRVShaderGenerator,
 	#[cfg(target_vendor = "apple")]
 	msl_shader_compiler: MSLShaderCompiler,
@@ -84,7 +87,7 @@ impl Default for Generator {
 impl Generator {
 	pub fn new() -> Self {
 		Self {
-			#[cfg(not(target_vendor = "apple"))]
+			#[cfg(target_os = "linux")]
 			spirv_shader_generator: SPIRVShaderGenerator::new(),
 			#[cfg(target_vendor = "apple")]
 			msl_shader_compiler: MSLShaderCompiler::new(),
@@ -112,7 +115,7 @@ impl Generator {
 		main_function_node: &besl::NodeReference,
 	) -> Result<GeneratedCompiledPlatformShader, String> {
 		match language {
-			#[cfg(not(target_vendor = "apple"))]
+			#[cfg(target_os = "linux")]
 			PlatformShaderLanguage::Glsl => {
 				let (binary, bindings, extent) = self
 					.spirv_shader_generator
@@ -150,7 +153,10 @@ impl Generator {
 
 #[cfg(test)]
 mod tests {
-	use super::{Generator, PlatformShaderLanguage};
+	#[cfg(target_os = "linux")]
+	use super::Generator;
+	use super::PlatformShaderLanguage;
+	#[cfg(target_os = "linux")]
 	use crate::shader::generator::{self, ShaderGenerationSettings};
 
 	#[test]
@@ -162,6 +168,7 @@ mod tests {
 		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Glsl);
 	}
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn generate_uses_current_platform_compiler() {
 		let main = generator::tests::fragment_shader();

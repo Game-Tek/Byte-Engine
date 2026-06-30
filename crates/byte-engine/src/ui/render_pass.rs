@@ -10,7 +10,9 @@ use ghi::{
 	frame::Frame as _,
 	types::Size as _,
 };
-use resource_management::shader::{besl::backends::spirv::SPIRVShaderGenerator, generator::ShaderGenerationSettings};
+#[cfg(target_os = "linux")]
+use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
+use resource_management::shader::generator::ShaderGenerationSettings;
 use utils::{Box, Extent, RGBA};
 
 use super::{
@@ -2346,10 +2348,12 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 			.expect("Failed to create the UI vertex shader. The most likely cause is an incompatible shader interface.");
 	}
 
-	let mut shader_generator = SPIRVShaderGenerator::new();
-	let mut root = ParserNode::root();
+	#[cfg(target_os = "linux")]
+	{
+		let mut shader_generator = SPIRVShaderGenerator::new();
+		let mut root = ParserNode::root();
 
-	let main_code = r#"
+		let main_code = r#"
 		gl_Position = vec4(in_position, 0.0, 1.0);
 		out_color = in_color;
 		out_pixel_position = in_pixel_position;
@@ -2364,117 +2368,124 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 		out_feather_mask_edges = in_feather_mask_edges;
 		out_feather_mask_corner = in_feather_mask_corner;
 	"#
-	.trim();
+		.trim();
 
-	let main = ParserNode::main_function(vec![ParserNode::glsl(
-		main_code,
-		&[
-			"in_position",
-			"in_pixel_position",
-			"in_local_position",
-			"in_rect_size",
-			"in_color",
-			"in_corner_radius",
-			"in_corner_exponent",
-			"in_layer_kind",
-			"in_stroke_width",
-			"out_color",
-			"out_pixel_position",
-			"out_local_position",
-			"out_rect_size",
-			"out_corner_radius",
-			"out_corner_exponent",
-			"out_layer_kind",
-			"out_stroke_width",
-			"out_feather_mask_position",
-			"out_feather_mask_size",
-			"out_feather_mask_edges",
-			"out_feather_mask_corner",
-			"in_feather_mask_position",
-			"in_feather_mask_size",
-			"in_feather_mask_edges",
-			"in_feather_mask_corner",
-		],
-		&[],
-	)]);
-	let position_input = ParserNode::input("in_position", "vec2f", 0);
-	let pixel_position_input = ParserNode::input("in_pixel_position", "vec2f", 1);
-	let local_position_input = ParserNode::input("in_local_position", "vec2f", 2);
-	let rect_size_input = ParserNode::input("in_rect_size", "vec2f", 3);
-	let color_input = ParserNode::input("in_color", "vec4f", 4);
-	let corner_radius_input = ParserNode::input("in_corner_radius", "f32", 5);
-	let corner_exponent_input = ParserNode::input("in_corner_exponent", "f32", 6);
-	let layer_kind_input = ParserNode::input("in_layer_kind", "f32", 7);
-	let stroke_width_input = ParserNode::input("in_stroke_width", "f32", 8);
-	let feather_mask_position_input = ParserNode::input("in_feather_mask_position", "vec2f", 9);
-	let feather_mask_size_input = ParserNode::input("in_feather_mask_size", "vec2f", 10);
-	let feather_mask_edges_input = ParserNode::input("in_feather_mask_edges", "vec4f", 11);
-	let feather_mask_corner_input = ParserNode::input("in_feather_mask_corner", "vec2f", 12);
-	let color_output = ParserNode::output("out_color", "vec4f", 0);
-	let pixel_position_output = ParserNode::output("out_pixel_position", "vec2f", 1);
-	let local_position_output = ParserNode::output("out_local_position", "vec2f", 2);
-	let rect_size_output = ParserNode::output("out_rect_size", "vec2f", 3);
-	let corner_radius_output = ParserNode::output("out_corner_radius", "f32", 4);
-	let corner_exponent_output = ParserNode::output("out_corner_exponent", "f32", 5);
-	let layer_kind_output = ParserNode::output("out_layer_kind", "f32", 6);
-	let stroke_width_output = ParserNode::output("out_stroke_width", "f32", 7);
-	let feather_mask_position_output = ParserNode::output("out_feather_mask_position", "vec2f", 8);
-	let feather_mask_size_output = ParserNode::output("out_feather_mask_size", "vec2f", 9);
-	let feather_mask_edges_output = ParserNode::output("out_feather_mask_edges", "vec4f", 10);
-	let feather_mask_corner_output = ParserNode::output("out_feather_mask_corner", "vec2f", 11);
+		let main = ParserNode::main_function(vec![ParserNode::glsl(
+			main_code,
+			&[
+				"in_position",
+				"in_pixel_position",
+				"in_local_position",
+				"in_rect_size",
+				"in_color",
+				"in_corner_radius",
+				"in_corner_exponent",
+				"in_layer_kind",
+				"in_stroke_width",
+				"out_color",
+				"out_pixel_position",
+				"out_local_position",
+				"out_rect_size",
+				"out_corner_radius",
+				"out_corner_exponent",
+				"out_layer_kind",
+				"out_stroke_width",
+				"out_feather_mask_position",
+				"out_feather_mask_size",
+				"out_feather_mask_edges",
+				"out_feather_mask_corner",
+				"in_feather_mask_position",
+				"in_feather_mask_size",
+				"in_feather_mask_edges",
+				"in_feather_mask_corner",
+			],
+			&[],
+		)]);
+		let position_input = ParserNode::input("in_position", "vec2f", 0);
+		let pixel_position_input = ParserNode::input("in_pixel_position", "vec2f", 1);
+		let local_position_input = ParserNode::input("in_local_position", "vec2f", 2);
+		let rect_size_input = ParserNode::input("in_rect_size", "vec2f", 3);
+		let color_input = ParserNode::input("in_color", "vec4f", 4);
+		let corner_radius_input = ParserNode::input("in_corner_radius", "f32", 5);
+		let corner_exponent_input = ParserNode::input("in_corner_exponent", "f32", 6);
+		let layer_kind_input = ParserNode::input("in_layer_kind", "f32", 7);
+		let stroke_width_input = ParserNode::input("in_stroke_width", "f32", 8);
+		let feather_mask_position_input = ParserNode::input("in_feather_mask_position", "vec2f", 9);
+		let feather_mask_size_input = ParserNode::input("in_feather_mask_size", "vec2f", 10);
+		let feather_mask_edges_input = ParserNode::input("in_feather_mask_edges", "vec4f", 11);
+		let feather_mask_corner_input = ParserNode::input("in_feather_mask_corner", "vec2f", 12);
+		let color_output = ParserNode::output("out_color", "vec4f", 0);
+		let pixel_position_output = ParserNode::output("out_pixel_position", "vec2f", 1);
+		let local_position_output = ParserNode::output("out_local_position", "vec2f", 2);
+		let rect_size_output = ParserNode::output("out_rect_size", "vec2f", 3);
+		let corner_radius_output = ParserNode::output("out_corner_radius", "f32", 4);
+		let corner_exponent_output = ParserNode::output("out_corner_exponent", "f32", 5);
+		let layer_kind_output = ParserNode::output("out_layer_kind", "f32", 6);
+		let stroke_width_output = ParserNode::output("out_stroke_width", "f32", 7);
+		let feather_mask_position_output = ParserNode::output("out_feather_mask_position", "vec2f", 8);
+		let feather_mask_size_output = ParserNode::output("out_feather_mask_size", "vec2f", 9);
+		let feather_mask_edges_output = ParserNode::output("out_feather_mask_edges", "vec4f", 10);
+		let feather_mask_corner_output = ParserNode::output("out_feather_mask_corner", "vec2f", 11);
 
-	let shader_scope = ParserNode::scope(
-		"Shader",
-		vec![
-			position_input,
-			pixel_position_input,
-			local_position_input,
-			rect_size_input,
-			color_input,
-			corner_radius_input,
-			corner_exponent_input,
-			layer_kind_input,
-			stroke_width_input,
-			feather_mask_position_input,
-			feather_mask_size_input,
-			feather_mask_edges_input,
-			feather_mask_corner_input,
-			color_output,
-			pixel_position_output,
-			local_position_output,
-			rect_size_output,
-			corner_radius_output,
-			corner_exponent_output,
-			layer_kind_output,
-			stroke_width_output,
-			feather_mask_position_output,
-			feather_mask_size_output,
-			feather_mask_edges_output,
-			feather_mask_corner_output,
-			main,
-		],
-	);
-	root.add(vec![CommonShaderScope::new(), shader_scope]);
+		let shader_scope = ParserNode::scope(
+			"Shader",
+			vec![
+				position_input,
+				pixel_position_input,
+				local_position_input,
+				rect_size_input,
+				color_input,
+				corner_radius_input,
+				corner_exponent_input,
+				layer_kind_input,
+				stroke_width_input,
+				feather_mask_position_input,
+				feather_mask_size_input,
+				feather_mask_edges_input,
+				feather_mask_corner_input,
+				color_output,
+				pixel_position_output,
+				local_position_output,
+				rect_size_output,
+				corner_radius_output,
+				corner_exponent_output,
+				layer_kind_output,
+				stroke_width_output,
+				feather_mask_position_output,
+				feather_mask_size_output,
+				feather_mask_edges_output,
+				feather_mask_corner_output,
+				main,
+			],
+		);
+		root.add(vec![CommonShaderScope::new(), shader_scope]);
 
-	let root_node = besl::lex(root).expect("Failed to lex the UI vertex shader. The most likely cause is invalid BESL syntax.");
-	let main_node = root_node.get_main().expect(
+		let root_node =
+			besl::lex(root).expect("Failed to lex the UI vertex shader. The most likely cause is invalid BESL syntax.");
+		let main_node = root_node.get_main().expect(
 		"Failed to find the UI vertex entry point. The most likely cause is that the shader main function was not generated.",
 	);
-	let generated = shader_generator
-		.generate(&ShaderGenerationSettings::vertex(), &main_node)
-		.expect("Failed to generate UI vertex shader SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
+		let generated = shader_generator
+			.generate(&ShaderGenerationSettings::vertex(), &main_node)
+			.expect("Failed to generate UI vertex shader SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
 
-	context
-		.create_shader(
-			Some("UI Vertex Shader"),
-			ghi::shader::Sources::SPIRV(generated.binary()),
-			ghi::ShaderTypes::Vertex,
-			generated
-				.bindings()
-				.iter()
-				.map(map_shader_binding_to_shader_binding_descriptor),
-		)
-		.expect("Failed to create the UI vertex shader. The most likely cause is an incompatible shader interface.")
+		context
+			.create_shader(
+				Some("UI Vertex Shader"),
+				ghi::shader::Sources::SPIRV(generated.binary()),
+				ghi::ShaderTypes::Vertex,
+				generated
+					.bindings()
+					.iter()
+					.map(map_shader_binding_to_shader_binding_descriptor),
+			)
+			.expect("Failed to create the UI vertex shader. The most likely cause is an incompatible shader interface.")
+	}
+
+	#[cfg(not(target_os = "linux"))]
+	{
+		unreachable!("UI vertex shader on non-Linux uses the Metal path above.");
+	}
 }
 
 /// Builds the UI fragment shader using BESL and compiles it to SPIR-V.
@@ -2493,83 +2504,91 @@ fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::Sh
 			.expect("Failed to create the UI fragment shader. The most likely cause is an incompatible shader interface.");
 	}
 
-	let mut shader_generator = SPIRVShaderGenerator::new();
-	let mut root = ParserNode::root();
+	#[cfg(target_os = "linux")]
+	{
+		let mut shader_generator = SPIRVShaderGenerator::new();
+		let mut root = ParserNode::root();
 
-	let main = ParserNode::main_function(vec![ParserNode::glsl(
-		UI_FRAGMENT_SHADER_GLSL_MAIN,
-		&[
-			"in_color",
-			"in_pixel_position",
-			"in_local_position",
-			"in_rect_size",
-			"in_corner_radius",
-			"in_corner_exponent",
-			"in_layer_kind",
-			"in_stroke_width",
-			"in_feather_mask_position",
-			"in_feather_mask_size",
-			"in_feather_mask_edges",
-			"in_feather_mask_corner",
-			"out_color_attachment",
-		],
-		&[],
-	)]);
-	let input_color = ParserNode::input("in_color", "vec4f", 0);
-	let input_pixel_position = ParserNode::input("in_pixel_position", "vec2f", 1);
-	let input_local_position = ParserNode::input("in_local_position", "vec2f", 2);
-	let input_rect_size = ParserNode::input("in_rect_size", "vec2f", 3);
-	let input_corner_radius = ParserNode::input("in_corner_radius", "f32", 4);
-	let input_corner_exponent = ParserNode::input("in_corner_exponent", "f32", 5);
-	let input_layer_kind = ParserNode::input("in_layer_kind", "f32", 6);
-	let input_stroke_width = ParserNode::input("in_stroke_width", "f32", 7);
-	let input_feather_mask_position = ParserNode::input("in_feather_mask_position", "vec2f", 8);
-	let input_feather_mask_size = ParserNode::input("in_feather_mask_size", "vec2f", 9);
-	let input_feather_mask_edges = ParserNode::input("in_feather_mask_edges", "vec4f", 10);
-	let input_feather_mask_corner = ParserNode::input("in_feather_mask_corner", "vec2f", 11);
-	let output_color = ParserNode::output("out_color_attachment", "vec4f", 0);
+		let main = ParserNode::main_function(vec![ParserNode::glsl(
+			UI_FRAGMENT_SHADER_GLSL_MAIN,
+			&[
+				"in_color",
+				"in_pixel_position",
+				"in_local_position",
+				"in_rect_size",
+				"in_corner_radius",
+				"in_corner_exponent",
+				"in_layer_kind",
+				"in_stroke_width",
+				"in_feather_mask_position",
+				"in_feather_mask_size",
+				"in_feather_mask_edges",
+				"in_feather_mask_corner",
+				"out_color_attachment",
+			],
+			&[],
+		)]);
+		let input_color = ParserNode::input("in_color", "vec4f", 0);
+		let input_pixel_position = ParserNode::input("in_pixel_position", "vec2f", 1);
+		let input_local_position = ParserNode::input("in_local_position", "vec2f", 2);
+		let input_rect_size = ParserNode::input("in_rect_size", "vec2f", 3);
+		let input_corner_radius = ParserNode::input("in_corner_radius", "f32", 4);
+		let input_corner_exponent = ParserNode::input("in_corner_exponent", "f32", 5);
+		let input_layer_kind = ParserNode::input("in_layer_kind", "f32", 6);
+		let input_stroke_width = ParserNode::input("in_stroke_width", "f32", 7);
+		let input_feather_mask_position = ParserNode::input("in_feather_mask_position", "vec2f", 8);
+		let input_feather_mask_size = ParserNode::input("in_feather_mask_size", "vec2f", 9);
+		let input_feather_mask_edges = ParserNode::input("in_feather_mask_edges", "vec4f", 10);
+		let input_feather_mask_corner = ParserNode::input("in_feather_mask_corner", "vec2f", 11);
+		let output_color = ParserNode::output("out_color_attachment", "vec4f", 0);
 
-	let shader_scope = ParserNode::scope(
-		"Shader",
-		vec![
-			input_color,
-			input_pixel_position,
-			input_local_position,
-			input_rect_size,
-			input_corner_radius,
-			input_corner_exponent,
-			input_layer_kind,
-			input_stroke_width,
-			input_feather_mask_position,
-			input_feather_mask_size,
-			input_feather_mask_edges,
-			input_feather_mask_corner,
-			output_color,
-			main,
-		],
-	);
-	root.add(vec![CommonShaderScope::new(), shader_scope]);
+		let shader_scope = ParserNode::scope(
+			"Shader",
+			vec![
+				input_color,
+				input_pixel_position,
+				input_local_position,
+				input_rect_size,
+				input_corner_radius,
+				input_corner_exponent,
+				input_layer_kind,
+				input_stroke_width,
+				input_feather_mask_position,
+				input_feather_mask_size,
+				input_feather_mask_edges,
+				input_feather_mask_corner,
+				output_color,
+				main,
+			],
+		);
+		root.add(vec![CommonShaderScope::new(), shader_scope]);
 
-	let root_node =
-		besl::lex(root).expect("Failed to lex the UI fragment shader. The most likely cause is invalid BESL syntax.");
-	let main_node = root_node.get_main().expect(
+		let root_node =
+			besl::lex(root).expect("Failed to lex the UI fragment shader. The most likely cause is invalid BESL syntax.");
+		let main_node = root_node.get_main().expect(
 		"Failed to find the UI fragment entry point. The most likely cause is that the shader main function was not generated.",
 	);
-	let generated = shader_generator
-		.generate(&ShaderGenerationSettings::fragment(), &main_node)
-		.expect("Failed to generate UI fragment shader SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
+		let generated = shader_generator
+			.generate(&ShaderGenerationSettings::fragment(), &main_node)
+			.expect("Failed to generate UI fragment shader SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
 
-	context
-		.create_shader(
-			Some("UI Fragment Shader"),
-			ghi::shader::Sources::SPIRV(generated.binary()),
-			ghi::ShaderTypes::Fragment,
-			generated
-				.bindings()
-				.iter()
-				.map(map_shader_binding_to_shader_binding_descriptor),
-		)
-		.expect("Failed to create the UI fragment shader. The most likely cause is an incompatible shader interface.")
+		context
+			.create_shader(
+				Some("UI Fragment Shader"),
+				ghi::shader::Sources::SPIRV(generated.binary()),
+				ghi::ShaderTypes::Fragment,
+				generated
+					.bindings()
+					.iter()
+					.map(map_shader_binding_to_shader_binding_descriptor),
+			)
+			.expect("Failed to create the UI fragment shader. The most likely cause is an incompatible shader interface.")
+	}
+
+	#[cfg(not(target_os = "linux"))]
+	{
+		unreachable!("UI fragment shader on non-Linux uses the Metal path above.");
+	}
 }
 
 const UI_FRAGMENT_SHADER_GLSL_MAIN: &str = r#"

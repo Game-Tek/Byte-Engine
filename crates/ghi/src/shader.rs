@@ -27,6 +27,7 @@ pub enum Sources<'a> {
 #[derive(Clone, Copy)]
 pub enum ShaderSource<'a> {
 	/// GLSL source code to be compiled to SPIR-V for Vulkan backends.
+	#[cfg(target_os = "linux")]
 	Glsl(&'a str),
 	/// MSL source code used directly on Metal.
 	Msl { source: &'a str, entry_point: &'a str },
@@ -77,6 +78,7 @@ impl CompiledShaderSource {
 /// Compiles a platform-specific shader source into the representation expected by a device.
 pub fn compile(name: &str, source: ShaderSource) -> Result<CompiledShaderSource, String> {
 	match source {
+		#[cfg(target_os = "linux")]
 		ShaderSource::Glsl(source) => compile_glsl(name, source),
 		ShaderSource::Hlsl { source, entry_point } => Ok(CompiledShaderSource::HLSL {
 			source: source.to_string(),
@@ -124,9 +126,18 @@ pub fn compile(name: &str, source: ShaderSource) -> Result<CompiledShaderSource,
 	}
 }
 
+#[cfg(target_os = "linux")]
 fn compile_glsl(name: &str, source: &str) -> Result<CompiledShaderSource, String> {
 	resource_management::shader::glsl_compile::compile(source, name)
 		.map(|artifact| CompiledShaderSource::SPIRV(artifact.as_ref().to_vec()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn compile_glsl(_name: &str, _source: &str) -> Result<CompiledShaderSource, String> {
+	Err(
+		"GLSL shader compilation requires a Vulkan backend (Linux only). Use a BESL shader for cross-platform support."
+			.to_string(),
+	)
 }
 
 #[derive(Clone, Copy)]

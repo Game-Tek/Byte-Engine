@@ -162,6 +162,22 @@ impl Generator {
 				string.push(')');
 				return;
 			}
+			"texture_lod" => {
+				string.push_str("textureLod(");
+				self.emit_node_string(string, &arguments[0]);
+				if self.minified {
+					string.push(',');
+				} else {
+					string.push_str(", ");
+				}
+				self.emit_node_string(string, &arguments[1]);
+				if self.minified {
+					string.push_str(",0.0)");
+				} else {
+					string.push_str(", 0.0)");
+				}
+				return;
+			}
 			_ => {}
 		}
 

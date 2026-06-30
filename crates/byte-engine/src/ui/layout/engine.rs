@@ -2105,6 +2105,33 @@ mod tests {
 	}
 
 	#[test]
+	fn clip_false_preserves_absolute_descendant_render_overflow() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx
+					.element("root")
+					.container(Container::default().width(50.into()).height(50.into()).clip(false));
+				root.element("toast").container(
+					Container::default()
+						.width(20.into())
+						.height(20.into())
+						.depth(Depth::absolute(1))
+						.absolute_position(70, 0),
+				);
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		let toast = render.elements().find(|element| element.position.x() == 70).unwrap();
+		assert_eq!(toast.size, Size::new(20, 20));
+	}
+
+	#[test]
 	fn retained_geometry_is_available_after_layout_evaluation() {
 		let frame_allocator = bumpalo::Bump::new();
 		let geometry = Arc::new(StdMutex::new(None::<Geometry>));
@@ -3231,6 +3258,7 @@ mod tests {
 				let mut text = ctx.element("label").text(Text::new("Hello"));
 				text.render().await;
 				assert!(text.update_text(|text| {
+					text.set_content("Updated");
 					text.set_style(ConcreteLayer::default().color(RGBA::new(0.7, 0.8, 0.9, 1.0).into()));
 				}));
 			})
@@ -3241,6 +3269,7 @@ mod tests {
 		let render = engine.render(&mut snapshot);
 		let text = render.texts().next().unwrap();
 
+		assert_eq!(text.content, "Updated");
 		assert_eq!(text.color, RGBA::new(0.7, 0.8, 0.9, 1.0));
 	}
 

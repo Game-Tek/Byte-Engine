@@ -52,6 +52,10 @@ impl Text {
 		self.visual.opacity = opacity;
 	}
 
+	pub fn set_content(&mut self, content: impl Into<String>) {
+		self.content = content.into();
+	}
+
 	pub fn content(&self) -> &str {
 		&self.content
 	}

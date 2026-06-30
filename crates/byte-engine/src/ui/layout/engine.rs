@@ -332,12 +332,17 @@ fn element_clips<'a>(elements: impl IntoIterator<Item = &'a LayoutElement>, tree
 	let mut clips = HashMap::new();
 
 	for element in elements {
-		let inherited = tree
+		let parent_clip = tree
 			.parent_by_child
 			.get(&element.id)
 			.copied()
 			.and_then(|parent| clips.get(&parent).map(|clip: &ClipInfo| clip.descendants))
 			.unwrap_or(EffectiveClip::Unbounded);
+		let inherited = if element_resets_clip(element.id, tree) {
+			EffectiveClip::Unbounded
+		} else {
+			parent_clip
+		};
 		let geometry = geometry_from_layout_element(element);
 		let descendants = match tree.element(element.id).map(|element| &element.element.primitive) {
 			Some(Primitives::Container(container)) if container.clip => inherited.clip_descendants(geometry),
@@ -363,11 +368,16 @@ fn element_feather_masks<'a>(
 	let mut masks = HashMap::new();
 
 	for element in elements {
-		let inherited = tree
+		let parent_mask = tree
 			.parent_by_child
 			.get(&element.id)
 			.copied()
 			.and_then(|parent| masks.get(&parent).and_then(|mask: &FeatherInfo| mask.descendants));
+		let inherited = if element_resets_clip(element.id, tree) {
+			None
+		} else {
+			parent_mask
+		};
 		let descendants = match tree.element(element.id).map(|element| &element.element.primitive) {
 			Some(Primitives::Container(container)) if container.clip => first_layer_feather(container.style.layers())
 				.map(|feather| FeatherMask {
@@ -390,6 +400,13 @@ fn element_feather_masks<'a>(
 	}
 
 	masks
+}
+
+fn element_resets_clip(id: Id, tree: &RetainedTree) -> bool {
+	matches!(
+		tree.element(id).map(|element| &element.element.primitive),
+		Some(Primitives::Container(container)) if matches!(container.depth, Depth::Absolute(_))
+	)
 }
 
 fn first_layer_feather(layers: &[crate::ui::style::ConcreteLayer]) -> Option<EdgeFeather> {
@@ -2230,6 +2247,70 @@ mod tests {
 	}
 
 	#[test]
+	fn absolute_depth_container_escapes_ancestor_clip_in_render() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx
+					.element("root")
+					.container(Container::default().width(50.into()).height(50.into()));
+				root.element("toast").container(
+					Container::default()
+						.width(20.into())
+						.height(20.into())
+						.depth(Depth::absolute(1))
+						.absolute_position(70, 0),
+				);
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		let toast = render.elements().find(|element| element.position.x() == 70).unwrap();
+		assert_eq!(toast.size, Size::new(20, 20));
+		assert_eq!(toast.clip, None);
+	}
+
+	#[test]
+	fn absolute_depth_container_escapes_ancestor_clip_in_hit_testing() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hits = Arc::new(AtomicUsize::new(0));
+		let hits_for_task = Arc::clone(&hits);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let hits = Arc::clone(&hits_for_task);
+			Box::pin(async move {
+				let mut root = ctx
+					.element("root")
+					.container(Container::default().width(50.into()).height(50.into()));
+				let mut toast = root.element("toast").container(
+					Container::default()
+						.width(20.into())
+						.height(20.into())
+						.depth(Depth::absolute(1))
+						.absolute_position(70, 0),
+				);
+
+				loop {
+					toast.on(Events::Actuated).await;
+					hits.fetch_add(1, Ordering::SeqCst);
+				}
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.set_cursor_position(Vector2::new(0.5, 0.8));
+		engine.update_click_state(true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
 	fn retained_geometry_is_available_after_layout_evaluation() {
 		let frame_allocator = bumpalo::Bump::new();
 		let geometry = Arc::new(StdMutex::new(None::<Geometry>));
@@ -2818,6 +2899,42 @@ mod tests {
 		assert_eq!(snapshot.elements[1].position.z(), 1);
 		assert_eq!(snapshot.elements[2].position, Location3::new(0, 0, 2));
 		assert_eq!(snapshot.elements[3].position.z(), 3);
+	}
+
+	#[test]
+	fn awaited_modal_absolute_depth_container_escapes_opener_clip() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut opener = ctx
+					.element("opener")
+					.container(Container::default().width(20.into()).height(20.into()));
+				opener
+					.element("modal")
+					.mount(|ctx| {
+						Box::pin(async move {
+							let mut modal = ctx.element("modal_container").container(
+								Container::default()
+									.width(80.into())
+									.height(30.into())
+									.depth(Depth::absolute(1))
+									.absolute_position(30, 0),
+							);
+							modal.on(Events::Actuated).await;
+						})
+					})
+					.await;
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		let modal = render.elements().find(|element| element.position.x() == 30).unwrap();
+		assert_eq!(modal.size, Size::new(80, 30));
+		assert_eq!(modal.clip, None);
 	}
 
 	#[test]
@@ -3618,5 +3735,5 @@ use crate::ui::{
 	intersection::build_mouse_click_acceleration,
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},
 	style::{Color, EdgeFeather, Layer as _},
-	Container, Text, Transform,
+	Container, Depth, Text, Transform,
 };

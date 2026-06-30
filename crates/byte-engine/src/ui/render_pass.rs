@@ -67,6 +67,8 @@ const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 13] = [
 ];
 #[derive(Debug, Clone, Copy)]
 struct UiDrawElement {
+	depth: u32,
+	order: u32,
 	position: [f32; 2],
 	size: [f32; 2],
 	clip: Option<DrawClip>,
@@ -80,6 +82,8 @@ struct UiDrawElement {
 
 #[derive(Debug, Clone, PartialEq)]
 struct UiTextDrawElement {
+	depth: u32,
+	order: u32,
 	position: [f32; 2],
 	size: [f32; 2],
 	clip: Option<DrawClip>,
@@ -91,6 +95,8 @@ struct UiTextDrawElement {
 
 #[derive(Debug, Clone)]
 struct UiImageDrawElement {
+	depth: u32,
+	order: u32,
 	image_id: u64,
 	version: u64,
 	source_width: u32,
@@ -178,6 +184,8 @@ struct UiImageVertex {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UiDrawBatch {
+	depth: u32,
+	order: u32,
 	index_count: u32,
 	first_index: u32,
 	vertex_offset: i32,
@@ -185,6 +193,8 @@ struct UiDrawBatch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UiImageDrawBatch {
+	depth: u32,
+	order: u32,
 	image_id: u64,
 	version: u64,
 	index_count: u32,
@@ -196,6 +206,42 @@ struct UiImageDrawBatch {
 struct UiPreparedImageBatch {
 	descriptor_set: ghi::DescriptorSetHandle,
 	batch: UiImageDrawBatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UiPreparedTextBatch {
+	depth: u32,
+	order: u32,
+	descriptor_set: ghi::DescriptorSetHandle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiPreparedBatch {
+	Rect(UiDrawBatch),
+	Image(UiPreparedImageBatch),
+	Text(UiPreparedTextBatch),
+}
+
+impl UiPreparedBatch {
+	fn depth(self) -> u32 {
+		match self {
+			Self::Rect(batch) => batch.depth,
+			Self::Image(batch) => batch.batch.depth,
+			Self::Text(batch) => batch.depth,
+		}
+	}
+
+	fn order(self) -> u32 {
+		match self {
+			Self::Rect(batch) => batch.order,
+			Self::Image(batch) => batch.batch.order,
+			Self::Text(batch) => batch.order,
+		}
+	}
+}
+
+fn sort_prepared_batches(batches: &mut [UiPreparedBatch]) {
+	batches.sort_by_key(|batch| (batch.depth(), batch.order()));
 }
 
 #[derive(Debug)]
@@ -217,6 +263,11 @@ struct UiImageGeometry<'a> {
 struct UiImageTexture {
 	version: u64,
 	extent: (u32, u32),
+	image: ghi::BaseImageHandle,
+	descriptor_set: ghi::DescriptorSetHandle,
+}
+
+struct UiTextOverlayTexture {
 	image: ghi::BaseImageHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
 }
@@ -308,6 +359,8 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 			}
 
 			draw_list.elements.push(UiDrawElement {
+				depth: position.z(),
+				order: element.id,
 				position: [position.x() as f32, position.y() as f32],
 				size: [size.x() as f32, size.y() as f32],
 				clip: draw_clip_from_geometry(element.clip),
@@ -323,6 +376,8 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 
 	for image in render.images() {
 		draw_list.images.push(UiImageDrawElement {
+			depth: image.position.z(),
+			order: image.id,
 			image_id: image.image_id,
 			version: image.version,
 			source_width: image.source_width,
@@ -340,6 +395,8 @@ fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 		let mut color = text.color;
 		color.a *= text.opacity;
 		let text = UiTextDrawElement {
+			depth: text.position.z(),
+			order: text.id,
 			position: [text.position.x() as f32, text.position.y() as f32],
 			size: [text.size.x() as f32, text.size.y() as f32],
 			clip: draw_clip_from_geometry(text.clip),
@@ -365,22 +422,28 @@ fn should_draw_image(image: &UiImageDrawElement) -> bool {
 }
 
 /// Rasterizes all visible text elements into the UI overlay texture for the current viewport.
-fn rasterize_text_overlay(draw_list: &UiDrawList, viewport: Extent, text_system: &mut TextSystem, target: &mut [u8]) -> bool {
+fn rasterize_text_overlay(
+	texts: &[UiTextDrawElement],
+	layout_size: [f32; 2],
+	viewport: Extent,
+	text_system: &mut TextSystem,
+	target: &mut [u8],
+) -> bool {
 	let viewport_width = viewport.width().max(1);
 	let viewport_height = viewport.height().max(1);
 
 	target.fill(0);
 
-	if draw_list.texts.is_empty() {
+	if texts.is_empty() {
 		return false;
 	}
 
-	let sx = viewport_width as f32 / draw_list.layout_size[0].max(1.0);
-	let sy = viewport_height as f32 / draw_list.layout_size[1].max(1.0);
+	let sx = viewport_width as f32 / layout_size[0].max(1.0);
+	let sy = viewport_height as f32 / layout_size[1].max(1.0);
 	let font_scale = sx.min(sy);
 	let mut drew_text = false;
 
-	for text in &draw_list.texts {
+	for text in texts {
 		if !should_rasterize_text(text) {
 			continue;
 		}
@@ -455,6 +518,8 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 	let mut batch_vertex_offset = 0usize;
 	let mut batch_vertex_count = 0usize;
 	let mut batch_index_count = 0usize;
+	let mut batch_depth = 0u32;
+	let mut batch_order = 0u32;
 
 	for element in &draw_list.elements {
 		let rect_width = (element.size[0] * sx).max(0.0);
@@ -477,8 +542,12 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 			break;
 		}
 
-		if batch_vertex_count + UI_VERTICES_PER_ELEMENT > MAX_UI_VERTICES_PER_DRAW {
+		if batch_index_count > 0
+			&& (batch_vertex_count + UI_VERTICES_PER_ELEMENT > MAX_UI_VERTICES_PER_DRAW || batch_depth != element.depth)
+		{
 			geometry.batches.push(UiDrawBatch {
+				depth: batch_depth,
+				order: batch_order,
 				index_count: batch_index_count as u32,
 				first_index: batch_first_index as u32,
 				vertex_offset: batch_vertex_offset as i32,
@@ -488,6 +557,11 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 			batch_vertex_offset = geometry.vertices.len();
 			batch_vertex_count = 0;
 			batch_index_count = 0;
+		}
+
+		if batch_index_count == 0 {
+			batch_depth = element.depth;
+			batch_order = element.order;
 		}
 
 		let original_x0 = element.position[0] * sx;
@@ -604,6 +678,8 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 
 	if batch_index_count > 0 {
 		geometry.batches.push(UiDrawBatch {
+			depth: batch_depth,
+			order: batch_order,
 			index_count: batch_index_count as u32,
 			first_index: batch_first_index as u32,
 			vertex_offset: batch_vertex_offset as i32,
@@ -725,6 +801,8 @@ fn build_ui_image_geometry<'a>(
 
 		geometry.indices.extend_from_slice(&[0, 1, 2, 2, 3, 0]);
 		geometry.batches.push(UiImageDrawBatch {
+			depth: image.depth,
+			order: image.order,
 			image_id: image.image_id,
 			version: image.version,
 			index_count: UI_INDICES_PER_ELEMENT as u32,
@@ -748,13 +826,13 @@ pub struct UiRenderPass {
 	image_sampler: ghi::SamplerHandle,
 	image_textures: HashMap<u64, UiImageTexture>,
 	text_pipeline: ghi::PipelineHandle,
-	text_descriptor_set: ghi::DescriptorSetHandle,
-	text_overlay: ghi::BaseImageHandle,
+	text_descriptor_set_template: ghi::DescriptorSetTemplateHandle,
+	text_sampler: ghi::SamplerHandle,
+	text_overlays: Vec<UiTextOverlayTexture>,
 	main_attachment: ghi::BaseImageHandle,
 	data: UiDrawList,
 	reported_capacity_limit: bool,
 	text_system: TextSystem,
-	text_overlay_has_been_used: bool,
 }
 
 impl Entity for UiRenderPass {}
@@ -852,16 +930,6 @@ impl UiRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let text_descriptor_set = context.create_descriptor_set(Some("UI Text"), &text_descriptor_set_template);
-		context.create_descriptor_binding(
-			text_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&TEXT_OVERLAY_BINDING,
-				text_overlay,
-				text_sampler,
-				ghi::Layouts::Read,
-			),
-		);
 
 		Self {
 			pipeline,
@@ -874,13 +942,28 @@ impl UiRenderPass {
 			image_sampler,
 			image_textures: HashMap::new(),
 			text_pipeline,
-			text_descriptor_set,
-			text_overlay: text_overlay.into(),
+			text_descriptor_set_template,
+			text_sampler,
+			text_overlays: vec![UiTextOverlayTexture {
+				image: text_overlay.into(),
+				descriptor_set: {
+					let descriptor_set = context.create_descriptor_set(Some("UI Text"), &text_descriptor_set_template);
+					context.create_descriptor_binding(
+						descriptor_set,
+						ghi::BindingConstructor::combined_image_sampler(
+							&TEXT_OVERLAY_BINDING,
+							text_overlay,
+							text_sampler,
+							ghi::Layouts::Read,
+						),
+					);
+					descriptor_set
+				},
+			}],
 			main_attachment: main_attachment.into(),
 			data: UiDrawList::default(),
 			reported_capacity_limit: false,
 			text_system: TextSystem::new(),
-			text_overlay_has_been_used: false,
 		}
 	}
 
@@ -934,6 +1017,33 @@ impl UiRenderPass {
 		}
 
 		Some(texture.descriptor_set)
+	}
+
+	fn ensure_text_overlay(&mut self, frame: &mut ghi::implementation::Frame, index: usize) -> ghi::DescriptorSetHandle {
+		while self.text_overlays.len() <= index {
+			let text_overlay = frame.build_image(
+				ghi::image::Builder::new(TEXT_OVERLAY_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
+					.name("UI Text Overlay")
+					.device_accesses(ghi::DeviceAccesses::HostToDevice),
+			);
+			let text_overlay: ghi::BaseImageHandle = text_overlay.into();
+			let descriptor_set = frame.create_descriptor_set(Some("UI Text"), &self.text_descriptor_set_template);
+			frame.create_descriptor_binding(
+				descriptor_set,
+				ghi::BindingConstructor::combined_image_sampler(
+					&TEXT_OVERLAY_BINDING,
+					text_overlay,
+					self.text_sampler,
+					ghi::Layouts::Read,
+				),
+			);
+			self.text_overlays.push(UiTextOverlayTexture {
+				image: text_overlay,
+				descriptor_set,
+			});
+		}
+
+		self.text_overlays[index].descriptor_set
 	}
 
 	pub fn update(&mut self, render: engine::Render) {
@@ -1003,35 +1113,54 @@ impl RenderPass for UiRenderPass {
 			});
 		}
 
-		let mut draw_text_overlay = false;
-
+		let mut text_groups = Vec::new();
 		if !self.data.texts.is_empty() {
 			assert!(
 				extent.width() > 0 && extent.height() > 0,
 				"UI text overlay resize requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
 			);
 
-			frame.resize_image(self.text_overlay, Extent::rectangle(extent.width(), extent.height()));
-
-			let overlay = frame.get_texture_slice_mut(self.text_overlay);
-			let drew_text = rasterize_text_overlay(&self.data, extent, &mut self.text_system, overlay);
-
-			if drew_text || self.text_overlay_has_been_used {
-				frame.sync_texture(self.text_overlay);
-				draw_text_overlay = true;
+			for text in self.data.texts.iter().cloned() {
+				if let Some((_, order, texts)) = text_groups
+					.iter_mut()
+					.find(|(depth, ..): &&mut (u32, u32, std::vec::Vec<UiTextDrawElement>)| *depth == text.depth)
+				{
+					*order = (*order).min(text.order);
+					texts.push(text);
+				} else {
+					text_groups.push((text.depth, text.order, vec![text]));
+				}
 			}
-			self.text_overlay_has_been_used |= drew_text;
-		} else if self.text_overlay_has_been_used && extent.width() > 0 && extent.height() > 0 {
-			frame.resize_image(
-				self.text_overlay,
-				Extent::rectangle(extent.width().max(1), extent.height().max(1)),
-			);
-			frame.get_texture_slice_mut(self.text_overlay).fill(0);
-			frame.sync_texture(self.text_overlay);
-			draw_text_overlay = true;
+			text_groups.sort_by_key(|(depth, order, _)| (*depth, *order));
 		}
 
-		if !has_rectangle_batches && prepared_image_batches.is_empty() && !draw_text_overlay {
+		let mut prepared_text_batches = Vec::new_in(frame_allocator);
+		for (index, (depth, order, texts)) in text_groups.iter().enumerate() {
+			let descriptor_set = self.ensure_text_overlay(frame, index);
+			let overlay = self.text_overlays[index].image;
+			frame.resize_image(overlay, Extent::rectangle(extent.width(), extent.height()));
+			let overlay_pixels = frame.get_texture_slice_mut(overlay);
+			let drew_text = rasterize_text_overlay(texts, self.data.layout_size, extent, &mut self.text_system, overlay_pixels);
+			if drew_text {
+				frame.sync_texture(overlay);
+				prepared_text_batches.push(UiPreparedTextBatch {
+					depth: *depth,
+					order: *order,
+					descriptor_set,
+				});
+			}
+		}
+
+		let mut prepared_batches = Vec::with_capacity_in(
+			geometry.batches.len() + prepared_image_batches.len() + prepared_text_batches.len(),
+			frame_allocator,
+		);
+		prepared_batches.extend(geometry.batches.iter().copied().map(UiPreparedBatch::Rect));
+		prepared_batches.extend(prepared_image_batches.iter().copied().map(UiPreparedBatch::Image));
+		prepared_batches.extend(prepared_text_batches.iter().copied().map(UiPreparedBatch::Text));
+		sort_prepared_batches(&mut prepared_batches);
+
+		if prepared_batches.is_empty() {
 			return None;
 		}
 
@@ -1042,93 +1171,78 @@ impl RenderPass for UiRenderPass {
 		let image_vertex_buffer = self.image_vertex_buffer;
 		let image_index_buffer = self.image_index_buffer;
 		let text_pipeline = self.text_pipeline;
-		let text_descriptor_set = self.text_descriptor_set;
 		let main_attachment = self.main_attachment;
-		let batches: &'a [UiDrawBatch] = frame_allocator.alloc_slice_copy(&geometry.batches);
-		let image_batches: &'a [UiPreparedImageBatch] = frame_allocator.alloc_slice_copy(&prepared_image_batches);
+		let batches: &'a [UiPreparedBatch] = frame_allocator.alloc_slice_copy(&prepared_batches);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
 			move |command_buffer, _| {
-				command_buffer.region(|label| label.write_str("UI"), |command_buffer| {
-				assert!(
-					!draw_text_overlay || extent.width() > 0 && extent.height() > 0,
-					"UI text overlay render pass requires a non-zero attachment extent. The most likely cause is that a stale prepared UI pass survived a viewport resize or minimization."
+				command_buffer.region(
+					|label| label.write_str("UI"),
+					|command_buffer| {
+						let mut needs_clear = true;
+
+						if !batches.is_empty() {
+							for batch in batches {
+								let attachments = [ghi::AttachmentInformation::new(
+									main_attachment,
+									ghi::Layouts::RenderTarget,
+									ghi::ClearValue::None,
+									!needs_clear,
+									true,
+								)];
+								needs_clear = false;
+
+								match batch {
+									UiPreparedBatch::Rect(batch) => {
+										command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
+										command_buffer.bind_index_buffer(
+											&(Into::<ghi::BufferDescriptor>::into(index_buffer)
+												.index_type(ghi::DataTypes::U16)),
+										);
+
+										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
+										let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
+										command_buffer.draw_indexed(
+											batch.index_count,
+											1,
+											batch.first_index,
+											batch.vertex_offset,
+											0,
+										);
+										command_buffer.end_render_pass();
+									}
+									UiPreparedBatch::Image(prepared) => {
+										command_buffer.bind_vertex_buffers(&[image_vertex_buffer.into()]);
+										command_buffer.bind_index_buffer(
+											&(Into::<ghi::BufferDescriptor>::into(image_index_buffer)
+												.index_type(ghi::DataTypes::U16)),
+										);
+
+										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
+										let command_buffer = command_buffer.bind_raster_pipeline(image_pipeline);
+										command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
+										command_buffer.draw_indexed(
+											prepared.batch.index_count,
+											1,
+											prepared.batch.first_index,
+											prepared.batch.vertex_offset,
+											0,
+										);
+										command_buffer.end_render_pass();
+									}
+									UiPreparedBatch::Text(prepared) => {
+										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
+										let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
+										command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
+										command_buffer.draw(3, 1, 0, 0);
+										command_buffer.end_render_pass();
+									}
+								}
+							}
+						}
+					},
 				);
-
-				let mut needs_clear = true;
-
-				if !batches.is_empty() {
-					let attachments = [ghi::AttachmentInformation::new(
-						main_attachment,
-						ghi::Layouts::RenderTarget,
-						ghi::ClearValue::None,
-						false,
-						true,
-					)];
-
-					needs_clear = false;
-
-					command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
-					command_buffer.bind_index_buffer(&(Into::<ghi::BufferDescriptor>::into(index_buffer).index_type(ghi::DataTypes::U16)));
-
-					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-					let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
-
-					for batch in batches {
-						command_buffer.draw_indexed(batch.index_count, 1, batch.first_index, batch.vertex_offset, 0);
-					}
-
-					command_buffer.end_render_pass();
-				}
-
-				if !image_batches.is_empty() {
-					let attachments = [ghi::AttachmentInformation::new(
-						main_attachment,
-						ghi::Layouts::RenderTarget,
-						ghi::ClearValue::None,
-						!needs_clear,
-						true,
-					)];
-
-					needs_clear = false;
-
-					command_buffer.bind_vertex_buffers(&[image_vertex_buffer.into()]);
-					command_buffer.bind_index_buffer(&(Into::<ghi::BufferDescriptor>::into(image_index_buffer).index_type(ghi::DataTypes::U16)));
-
-					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-					let command_buffer = command_buffer.bind_raster_pipeline(image_pipeline);
-
-					for prepared in image_batches {
-						command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
-						command_buffer.draw_indexed(
-							prepared.batch.index_count,
-							1,
-							prepared.batch.first_index,
-							prepared.batch.vertex_offset,
-							0,
-						);
-					}
-
-					command_buffer.end_render_pass();
-				}
-
-				if draw_text_overlay {
-					let attachments = [ghi::AttachmentInformation::new(
-						main_attachment,
-						ghi::Layouts::RenderTarget,
-						ghi::ClearValue::None,
-						!needs_clear,
-						true,
-					)];
-
-					let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-					let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
-					command_buffer.bind_descriptor_sets(&[text_descriptor_set]);
-					command_buffer.draw(3, 1, 0, 0);
-					command_buffer.end_render_pass();
-				}
-			});
 			},
 		))
 	}
@@ -1869,6 +1983,8 @@ mod tests {
 
 	fn draw_element(corner_radius: f32, corner_exponent: f32) -> UiDrawElement {
 		UiDrawElement {
+			depth: 0,
+			order: 0,
 			position: [0.0, 0.0],
 			size: [50.0, 50.0],
 			clip: None,
@@ -1892,6 +2008,8 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![UiDrawElement {
+					depth: 0,
+					order: 0,
 					position: [10.0, 20.0],
 					size: [30.0, 40.0],
 					clip: None,
@@ -1914,6 +2032,8 @@ mod tests {
 		assert_eq!(
 			geometry.batches.as_slice(),
 			[UiDrawBatch {
+				depth: 0,
+				order: 0,
 				index_count: UI_INDICES_PER_ELEMENT as u32,
 				first_index: 0,
 				vertex_offset: 0,
@@ -1927,6 +2047,52 @@ mod tests {
 		assert_eq!(geometry.vertices[0].corner_exponent, 2.0);
 		assert_eq!(geometry.vertices[0].layer_kind, 0.0);
 		assert_eq!(geometry.vertices[0].stroke_width, 0.0);
+	}
+
+	#[test]
+	fn rectangle_batches_split_when_depth_changes() {
+		let frame_allocator = bumpalo::Bump::new();
+		let geometry = build_ui_geometry(
+			&UiDrawList {
+				layout_size: [100.0, 100.0],
+				elements: vec![
+					UiDrawElement {
+						depth: 0,
+						order: 0,
+						position: [0.0, 0.0],
+						size: [10.0, 10.0],
+						clip: None,
+						feather_mask: None,
+						color: [1.0, 1.0, 1.0, 1.0],
+						corner_radius: 0.0,
+						corner_exponent: 2.0,
+						layer_kind: LayerKind::Fill,
+						stroke_width: 0.0,
+					},
+					UiDrawElement {
+						depth: 1,
+						order: 1,
+						position: [0.0, 0.0],
+						size: [10.0, 10.0],
+						clip: None,
+						feather_mask: None,
+						color: [1.0, 1.0, 1.0, 1.0],
+						corner_radius: 0.0,
+						corner_exponent: 2.0,
+						layer_kind: LayerKind::Fill,
+						stroke_width: 0.0,
+					},
+				],
+				images: Vec::new(),
+				texts: vec![],
+			},
+			Extent::square(100),
+			&frame_allocator,
+		);
+
+		assert_eq!(geometry.batches.len(), 2);
+		assert_eq!(geometry.batches[0].depth, 0);
+		assert_eq!(geometry.batches[1].depth, 1);
 	}
 
 	#[test]
@@ -1953,6 +2119,8 @@ mod tests {
 			&UiDrawList {
 				layout_size: [100.0, 100.0],
 				elements: vec![UiDrawElement {
+					depth: 0,
+					order: 0,
 					position: [0.0, 0.0],
 					size: [80.0, 20.0],
 					clip: None,
@@ -2268,6 +2436,8 @@ mod tests {
 		let element_count = MAX_UI_VERTICES_PER_DRAW / UI_VERTICES_PER_ELEMENT + 1;
 		let elements = (0..element_count)
 			.map(|_| UiDrawElement {
+				depth: 0,
+				order: 0,
 				position: [0.0, 0.0],
 				size: [1.0, 1.0],
 				clip: None,
@@ -2312,6 +2482,8 @@ mod tests {
 		let mut elements = Vec::with_capacity(MAX_UI_ELEMENTS + 1);
 
 		elements.extend((0..MAX_UI_ELEMENTS).map(|_| UiDrawElement {
+			depth: 0,
+			order: 0,
 			position: [0.0, 0.0],
 			size: [1.0, 1.0],
 			clip: None,
@@ -2323,6 +2495,8 @@ mod tests {
 			stroke_width: 0.0,
 		}));
 		elements.push(UiDrawElement {
+			depth: 0,
+			order: 0,
 			position: [0.0, 0.0],
 			size: [1.0, 1.0],
 			clip: None,
@@ -2354,6 +2528,8 @@ mod tests {
 	#[test]
 	fn skips_zero_alpha_text_before_rasterization() {
 		assert!(!should_rasterize_text(&UiTextDrawElement {
+			depth: 0,
+			order: 0,
 			position: [0.0, 0.0],
 			size: [32.0, 16.0],
 			clip: None,
@@ -2364,6 +2540,8 @@ mod tests {
 		}));
 
 		assert!(should_rasterize_text(&UiTextDrawElement {
+			depth: 0,
+			order: 0,
 			position: [0.0, 0.0],
 			size: [32.0, 16.0],
 			clip: None,
@@ -2498,6 +2676,8 @@ mod tests {
 			layout_size: [100.0, 100.0],
 			elements: Vec::new(),
 			images: vec![UiImageDrawElement {
+				depth: 7,
+				order: 0,
 				image_id: 1,
 				version: 0,
 				source_width: 10,
@@ -2520,6 +2700,7 @@ mod tests {
 		assert_eq!(geometry.vertices.len(), UI_VERTICES_PER_ELEMENT);
 		assert_eq!(geometry.indices.len(), UI_INDICES_PER_ELEMENT);
 		assert_eq!(geometry.batches.len(), 1);
+		assert_eq!(geometry.batches[0].depth, 7);
 		assert_vec2_close(geometry.vertices[0].uv, [0.25, 0.25]);
 		assert_vec2_close(geometry.vertices[2].uv, [0.75, 0.75]);
 	}
@@ -2528,6 +2709,8 @@ mod tests {
 	fn image_geometry_skips_invalid_or_transparent_images() {
 		let frame_allocator = bumpalo::Bump::new();
 		let hidden = UiImageDrawElement {
+			depth: 0,
+			order: 0,
 			image_id: 1,
 			version: 0,
 			source_width: 2,

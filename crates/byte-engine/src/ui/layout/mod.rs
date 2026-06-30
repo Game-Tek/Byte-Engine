@@ -1,7 +1,9 @@
 pub mod context;
 pub mod engine;
 pub mod query;
+mod retained_tree;
 pub mod snapshot;
+mod visual_transform;
 
 use math::{Base as _, Vector2};
 use utils::{Box, RGBA};

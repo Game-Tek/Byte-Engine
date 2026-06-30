@@ -37,250 +37,6 @@ impl Default for PointerState {
 	}
 }
 
-#[derive(Default)]
-struct RetainedTree {
-	elements: Vec<IdedElement>,
-	element_indices: HashMap<Id, usize>,
-	relations: Vec<(Id, Id)>,
-	children_by_parent: HashMap<Id, Vec<Id>>,
-	parent_by_child: HashMap<Id, Id>,
-	path_counts: HashMap<(Option<Id>, &'static str), u32>,
-	path_ids: HashMap<Vec<PathSegment>, Id>,
-	next_id: u32,
-}
-
-impl RetainedTree {
-	fn begin_frame(&mut self) {
-		self.path_counts.clear();
-	}
-
-	fn element_path(&mut self, parent: Option<Id>, parent_path: &[PathSegment], name: &'static str) -> Vec<PathSegment> {
-		let count = self.path_counts.entry((parent, name)).or_insert(0);
-		*count += 1;
-
-		let mut path = Vec::with_capacity(parent_path.len() + 1);
-		path.extend_from_slice(parent_path);
-		path.push(PathSegment { name, ordinal: *count });
-		path
-	}
-
-	fn scope_path(&mut self, parent: Option<Id>, parent_path: &[PathSegment], name: &'static str) -> Vec<PathSegment> {
-		self.element_path(parent, parent_path, name)
-	}
-
-	fn id_for_path(&mut self, path: &[PathSegment]) -> Id {
-		if let Some(id) = self.path_ids.get(path) {
-			return *id;
-		}
-
-		let id = Id::new(self.next_id).expect("UI id counter must stay non-zero");
-		self.next_id += 1;
-		self.path_ids.insert(path.to_vec(), id);
-		id
-	}
-
-	fn add_element(
-		&mut self,
-		parent: Option<Id>,
-		parent_path: &[PathSegment],
-		name: &'static str,
-		element: ConcreteElement,
-	) -> (Id, Vec<PathSegment>) {
-		let path = self.element_path(parent, parent_path, name);
-		let id = self.id_for_path(&path);
-
-		if self.element_indices.contains_key(&id) {
-			return (id, path);
-		}
-
-		self.element_indices.insert(id, self.elements.len());
-		self.elements.push(IdedElement {
-			id,
-			element,
-			path: path.clone(),
-		});
-
-		if let Some(parent) = parent {
-			self.add_relation(parent, id);
-		}
-
-		(id, path)
-	}
-
-	fn add_relation(&mut self, parent: Id, child: Id) {
-		if self.parent_by_child.get(&child) == Some(&parent) {
-			return;
-		}
-		if self.parent_by_child.insert(child, parent).is_none() {
-			self.relations.push((parent, child));
-			self.children_by_parent.entry(parent).or_default().push(child);
-		}
-	}
-
-	fn element_mut(&mut self, id: Id) -> Option<&mut IdedElement> {
-		let index = *self.element_indices.get(&id)?;
-		self.elements.get_mut(index)
-	}
-
-	fn element(&self, id: Id) -> Option<&IdedElement> {
-		let index = *self.element_indices.get(&id)?;
-		self.elements.get(index)
-	}
-
-	fn remove_scope(&mut self, scope: &[PathSegment]) -> Vec<Id> {
-		if scope.is_empty() {
-			return Vec::new();
-		}
-
-		let mut removed = HashSet::new();
-		self.elements.retain(|element| {
-			let should_remove = element.path.starts_with(scope);
-			if should_remove {
-				removed.insert(element.id);
-			}
-			!should_remove
-		});
-
-		if removed.is_empty() {
-			return Vec::new();
-		}
-
-		self.relations
-			.retain(|(parent, child)| !removed.contains(parent) && !removed.contains(child));
-		self.parent_by_child
-			.retain(|child, parent| !removed.contains(child) && !removed.contains(parent));
-		self.children_by_parent.retain(|parent, children| {
-			if removed.contains(parent) {
-				return false;
-			}
-			children.retain(|child| !removed.contains(child));
-			!children.is_empty()
-		});
-		self.rebuild_element_indices();
-		removed.into_iter().collect()
-	}
-
-	fn rebuild_element_indices(&mut self) {
-		self.element_indices.clear();
-		for (index, element) in self.elements.iter().enumerate() {
-			self.element_indices.insert(element.id, index);
-		}
-	}
-}
-
-#[derive(Clone, Copy)]
-struct Affine2 {
-	a: f32,
-	b: f32,
-	c: f32,
-	d: f32,
-	tx: f32,
-	ty: f32,
-}
-
-impl Affine2 {
-	fn identity() -> Self {
-		Self {
-			a: 1.0,
-			b: 0.0,
-			c: 0.0,
-			d: 1.0,
-			tx: 0.0,
-			ty: 0.0,
-		}
-	}
-
-	fn from_transform(transform: Transform, element: &LayoutElement) -> Self {
-		let center_x = element.position.x() as f32 + element.size.x() as f32 * 0.5;
-		let center_y = element.position.y() as f32 + element.size.y() as f32 * 0.5;
-		let scale_x = sanitize_scale(transform.scale_x);
-		let scale_y = sanitize_scale(transform.scale_y);
-
-		Self {
-			a: scale_x,
-			b: 0.0,
-			c: 0.0,
-			d: scale_y,
-			tx: center_x + sanitize_offset(transform.translate_x) - center_x * scale_x,
-			ty: center_y + sanitize_offset(transform.translate_y) - center_y * scale_y,
-		}
-	}
-
-	fn compose(self, rhs: Self) -> Self {
-		Self {
-			a: self.a * rhs.a + self.c * rhs.b,
-			b: self.b * rhs.a + self.d * rhs.b,
-			c: self.a * rhs.c + self.c * rhs.d,
-			d: self.b * rhs.c + self.d * rhs.d,
-			tx: self.a * rhs.tx + self.c * rhs.ty + self.tx,
-			ty: self.b * rhs.tx + self.d * rhs.ty + self.ty,
-		}
-	}
-
-	fn transform_point(self, x: f32, y: f32) -> (f32, f32) {
-		(self.a * x + self.c * y + self.tx, self.b * x + self.d * y + self.ty)
-	}
-
-	fn transform_rect(self, element: &LayoutElement) -> (Location3, Size) {
-		let left = element.position.x() as f32;
-		let top = element.position.y() as f32;
-		let right = left + element.size.x() as f32;
-		let bottom = top + element.size.y() as f32;
-
-		let corners = [
-			self.transform_point(left, top),
-			self.transform_point(right, top),
-			self.transform_point(right, bottom),
-			self.transform_point(left, bottom),
-		];
-
-		let mut min_x = f32::INFINITY;
-		let mut min_y = f32::INFINITY;
-		let mut max_x = f32::NEG_INFINITY;
-		let mut max_y = f32::NEG_INFINITY;
-
-		for (x, y) in corners {
-			min_x = min_x.min(x);
-			min_y = min_y.min(y);
-			max_x = max_x.max(x);
-			max_y = max_y.max(y);
-		}
-
-		let x = clamp_to_u32(min_x.round());
-		let y = clamp_to_u32(min_y.round());
-		let width = clamp_to_u32((max_x - min_x).round());
-		let height = clamp_to_u32((max_y - min_y).round());
-
-		(Location3::new(x, y, element.position.z()), Size::new(width, height))
-	}
-}
-
-fn sanitize_offset(value: f32) -> f32 {
-	if value.is_finite() {
-		value
-	} else {
-		0.0
-	}
-}
-
-fn sanitize_scale(value: f32) -> f32 {
-	if value.is_finite() {
-		value.max(0.0)
-	} else {
-		1.0
-	}
-}
-
-fn clamp_to_u32(value: f32) -> u32 {
-	if !value.is_finite() || value <= 0.0 {
-		0
-	} else if value >= u32::MAX as f32 {
-		u32::MAX
-	} else {
-		value as u32
-	}
-}
-
 #[derive(Clone, Copy)]
 enum EffectiveClip {
 	Unbounded,
@@ -450,18 +206,18 @@ fn clipped_layout_elements<'a>(
 }
 
 fn apply_visual_transforms<'a>(elements: &mut [LayoutElement], tree: &RetainedTree, frame_allocator: &'a bumpalo::Bump) {
-	let mut resolved = Vec::with_capacity_in(elements.len(), frame_allocator);
+	let mut resolved = Vec::with_capacity_in(tree.elements.len(), frame_allocator);
+	for _ in 0..tree.elements.len() {
+		resolved.push(None);
+	}
 
 	for element in elements {
 		let parent_transform = tree
 			.parent_by_child
 			.get(&element.id)
 			.copied()
-			.and_then(|parent| {
-				resolved
-					.iter()
-					.find_map(|(id, transform)| (*id == parent).then_some(*transform))
-			})
+			.and_then(|parent| tree.element_indices.get(&parent).and_then(|index| resolved.get(*index)))
+			.and_then(|transform| *transform)
 			.unwrap_or_else(Affine2::identity);
 
 		let local_transform = tree
@@ -473,7 +229,9 @@ fn apply_visual_transforms<'a>(elements: &mut [LayoutElement], tree: &RetainedTr
 
 		element.position = position;
 		element.size = size;
-		resolved.push((element.id, transform));
+		if let Some(index) = tree.element_indices.get(&element.id).copied() {
+			resolved[index] = Some(transform);
+		}
 	}
 }
 
@@ -1505,10 +1263,7 @@ impl Runtime {
 			geometry: HashMap::new(),
 			pointer: PointerState::default(),
 			frame: 0,
-			tree: Rc::new(RefCell::new(RetainedTree {
-				next_id: 1,
-				..RetainedTree::default()
-			})),
+			tree: Rc::new(RefCell::new(RetainedTree::new())),
 		}
 	}
 
@@ -3780,7 +3535,9 @@ use super::{
 	element::{ElementHandle, Id},
 	flow::{Location3, Size},
 	layout_elements,
+	retained_tree::RetainedTree,
 	snapshot::Snapshot,
+	visual_transform::Affine2,
 	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderCurveElement, RenderElement,
 	RenderImageElement, RenderTextElement,
 };

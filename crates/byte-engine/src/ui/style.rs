@@ -97,11 +97,16 @@ pub struct ConcreteStyle {
 
 impl Default for ConcreteStyle {
 	fn default() -> Self {
-		Self { layers: vec![] }
+		Self {
+			layers: vec![ConcreteLayer::default()],
+		}
 	}
 }
 
 impl ConcreteStyle {
+	/// Creates a new [`ConcreteStyle`] with no layers.
+	///
+	/// Keep in mind that [`ConcreteStyle::default`] will create a [`ConcreteStyle`] with a single default layer, while this will create an empty [`ConcreteStyle`] with no layers, which produces invisible elements.
 	pub fn new() -> Self {
 		Self { layers: Vec::new() }
 	}

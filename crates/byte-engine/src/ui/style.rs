@@ -97,9 +97,7 @@ pub struct ConcreteStyle {
 
 impl Default for ConcreteStyle {
 	fn default() -> Self {
-		Self {
-			layers: vec![ConcreteLayer::default()],
-		}
+		Self { layers: vec![] }
 	}
 }
 

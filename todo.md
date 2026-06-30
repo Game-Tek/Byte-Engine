@@ -177,3 +177,5 @@
 - Keep tests in the new owning submodules instead of retaining large centralized test sections.
 - Avoid creating additional crates until module-level splits show a stable dependency boundary that needs independent compilation or ownership.
 - Prioritize the visibility pipeline refactor first because it combines the greatest file size, dependency breadth, duplicated shader contracts, and constructor complexity.
+
+- Check AGX tonemap pass conversion functions and render target color spaces.

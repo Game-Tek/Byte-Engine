@@ -692,6 +692,13 @@ pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 	renderer.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AgxToneMapPass::new(render_pass_builder)));
 }
 
+pub fn setup_swapchain_blit_render_pass(application: &mut GraphicsApplication) {
+	let renderer = &mut application.renderer;
+
+	renderer
+		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(SwapchainBlitPass::new(render_pass_builder)));
+}
+
 /// Registers a reusable bloom pass that should run before tonemapping.
 pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: BloomPassSettings) {
 	let renderer = &mut application.renderer;
@@ -774,6 +781,7 @@ use crate::{
 		render_passes::{
 			aces::AcesToneMapPass,
 			agx::AgxToneMapPass,
+			blit::SwapchainBlitPass,
 			bloom::{BloomPass, BloomPassSettings},
 			sky::AtmosphereSkyRenderPass,
 		},

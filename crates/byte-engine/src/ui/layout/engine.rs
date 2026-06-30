@@ -22,6 +22,21 @@ pub(super) struct EngineState {
 	cursor: Option<Id>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PointerState {
+	pub position: Vector2,
+	pub pressed: bool,
+}
+
+impl Default for PointerState {
+	fn default() -> Self {
+		Self {
+			position: Vector2::zero(),
+			pressed: false,
+		}
+	}
+}
+
 #[derive(Default)]
 struct RetainedTree {
 	elements: Vec<IdedElement>,
@@ -568,6 +583,10 @@ impl<C> EvaluationContext<C> {
 	pub fn geometry(&self) -> Option<Geometry> {
 		self.runtime.borrow().geometry.get(&self.id).copied()
 	}
+
+	pub fn pointer(&self) -> PointerState {
+		self.runtime.borrow().pointer
+	}
 }
 
 impl<C: 'static> Context<C> for EvaluationContext<C> {
@@ -593,6 +612,10 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 
 	fn geometry(&self) -> Option<Geometry> {
 		EvaluationContext::geometry(self)
+	}
+
+	fn pointer(&self) -> PointerState {
+		EvaluationContext::pointer(self)
 	}
 
 	fn request_focus(&mut self) {
@@ -1045,6 +1068,7 @@ impl<C: 'static> Engine<C> {
 
 	/// Evaluates mounted UI tasks and returns a snapshot of the resulting layout.
 	pub fn evaluate<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
+		self.sync_pointer_state();
 		Runtime::begin_frame(Rc::clone(&self.runtime));
 		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
 
@@ -1087,6 +1111,13 @@ impl<C: 'static> Engine<C> {
 			engine_state: Rc::clone(&self.state),
 			size,
 		}
+	}
+
+	fn sync_pointer_state(&mut self) {
+		self.runtime.borrow_mut().pointer = PointerState {
+			position: self.cursor_position,
+			pressed: self.is_clicking,
+		};
 	}
 
 	fn route_input_events(&mut self, snapshot: &mut Snapshot<'_>) {
@@ -1403,6 +1434,7 @@ pub struct Runtime {
 	text_edit_waiters: Vec<TextEditWaiter>,
 	focus_stack: Vec<Id>,
 	geometry: HashMap<Id, Geometry>,
+	pointer: PointerState,
 	frame: u64,
 	tree: Rc<RefCell<RetainedTree>>,
 }
@@ -1437,6 +1469,7 @@ impl Runtime {
 			text_edit_waiters: Vec::new(),
 			focus_stack: Vec::new(),
 			geometry: HashMap::new(),
+			pointer: PointerState::default(),
 			frame: 0,
 			tree: Rc::new(RefCell::new(RetainedTree {
 				next_id: 1,
@@ -1806,6 +1839,71 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn context_pointer_reflects_engine_pointer_state() {
+		let frame_allocator = bumpalo::Bump::new();
+		let observed = Arc::new(StdMutex::new(None));
+		let observed_for_task = Arc::clone(&observed);
+		let mut engine = Engine::new();
+
+		engine.set_cursor_position(Vector2::new(0.25, -0.5));
+		engine.update_click_state(true);
+		engine.mount(move |ctx| {
+			let observed = Arc::clone(&observed_for_task);
+			Box::pin(async move {
+				*observed.lock().unwrap() = Some(ctx.pointer());
+			})
+		});
+
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(
+			*observed.lock().unwrap(),
+			Some(PointerState {
+				position: Vector2::new(0.25, -0.5),
+				pressed: true,
+			})
+		);
+	}
+
+	#[test]
+	fn context_pointer_updates_across_render_await_frames() {
+		let frame_allocator = bumpalo::Bump::new();
+		let observed = Arc::new(StdMutex::new(Vec::new()));
+		let observed_for_task = Arc::clone(&observed);
+		let mut engine = Engine::new();
+
+		engine.mount(move |ctx| {
+			let observed = Arc::clone(&observed_for_task);
+			Box::pin(async move {
+				observed.lock().unwrap().push(ctx.pointer());
+				ctx.render().await;
+				observed.lock().unwrap().push(ctx.pointer());
+			})
+		});
+
+		engine.set_cursor_position(Vector2::new(-1.0, -1.0));
+		engine.update_click_state(false);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.set_cursor_position(Vector2::new(0.75, 0.5));
+		engine.update_click_state(true);
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+
+		assert_eq!(
+			*observed.lock().unwrap(),
+			vec![
+				PointerState {
+					position: Vector2::new(-1.0, -1.0),
+					pressed: false,
+				},
+				PointerState {
+					position: Vector2::new(0.75, 0.5),
+					pressed: true,
+				},
+			]
+		);
 	}
 
 	#[test]

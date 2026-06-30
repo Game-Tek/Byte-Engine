@@ -4,7 +4,7 @@ use crate::ui::{
 	components::{image::Image, shape::Shape, text_field::TextField},
 	element::Id,
 	layout::{
-		engine::{EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, RenderFuture, TextEditFuture},
+		engine::{EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, PointerState, RenderFuture, TextEditFuture},
 		Geometry,
 	},
 	primitive::{Events, Key},
@@ -41,6 +41,8 @@ pub trait Context<C: 'static = ()>: Sized {
 	fn render(&mut self) -> RenderFuture;
 
 	fn geometry(&self) -> Option<Geometry>;
+
+	fn pointer(&self) -> PointerState;
 
 	fn request_focus(&mut self);
 

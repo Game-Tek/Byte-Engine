@@ -995,6 +995,12 @@ impl<C: 'static> Engine<C> {
 
 			let opacity = effective_opacity(element.id, &tree, &mut effective_opacities);
 			let style = retained_element.element.primitive.style().clone();
+			let backdrop_blur_radius = style
+				.layers()
+				.iter()
+				.find(|layer| matches!(layer.kind(), LayerKind::Fill) && layer.backdrop_blur_radius() > 0.0)
+				.map(|layer| layer.backdrop_blur_radius())
+				.unwrap_or(0.0);
 			let color = style
 				.layers()
 				.first()
@@ -1013,6 +1019,7 @@ impl<C: 'static> Engine<C> {
 					feather_mask,
 					style,
 					opacity,
+					backdrop_blur_radius,
 					corner_radius: container.corner_radius,
 					corner_exponent: container.corner_exponent,
 				}),
@@ -1030,6 +1037,7 @@ impl<C: 'static> Engine<C> {
 						feather_mask,
 						style,
 						opacity,
+						backdrop_blur_radius,
 						corner_radius,
 						corner_exponent,
 					});
@@ -2759,6 +2767,49 @@ mod tests {
 	}
 
 	#[test]
+	fn render_preserves_container_backdrop_blur_radius() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("frame")
+					.container(Container::default().style(ConcreteLayer::default().backdrop_blur(18.0)));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		assert_eq!(render.elements[0].backdrop_blur_radius, 18.0);
+	}
+
+	#[test]
+	fn render_backdrop_blur_does_not_change_opacity_or_clip() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("frame").container(
+					Container::default()
+						.width(20.into())
+						.height(20.into())
+						.opacity(0.5)
+						.style(ConcreteLayer::default().backdrop_blur(12.0)),
+				);
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+
+		assert_eq!(render.elements[0].backdrop_blur_radius, 12.0);
+		assert_eq!(render.elements[0].opacity, 0.5);
+		assert_eq!(render.elements[0].clip, None);
+	}
+
+	#[test]
 	fn render_preserves_layered_container_style() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -3546,6 +3597,6 @@ use crate::ui::{
 	font::TextSystem,
 	intersection::build_mouse_click_acceleration,
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},
-	style::{Color, EdgeFeather, Layer as _},
+	style::{Color, EdgeFeather, Layer as _, LayerKind},
 	Container, Depth, Text, Transform,
 };

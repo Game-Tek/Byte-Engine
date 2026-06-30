@@ -1114,20 +1114,14 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				destination.extent
 			);
 			assert_eq!(
-				copy.source_bytes_per_row,
-				expected_bytes_per_row,
+				copy.source_bytes_per_row, expected_bytes_per_row,
 				"Metal texture copy row pitch mismatch. The most likely cause is that upload preparation and Metal copy recording disagree about BC block row padding. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, compact_bytes_per_image={compact_bytes_per_image}, row_count={row_count}, source_bytes_per_row={}, expected={expected_bytes_per_row}",
-				destination.format,
-				destination.extent,
-				copy.source_bytes_per_row
+				destination.format, destination.extent, copy.source_bytes_per_row
 			);
 			assert_eq!(
-				copy.source_bytes_per_image,
-				expected_bytes_per_image,
+				copy.source_bytes_per_image, expected_bytes_per_image,
 				"Metal texture copy image pitch mismatch. The most likely cause is that upload preparation and Metal copy recording disagree about padded rows per image. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, compact_bytes_per_image={compact_bytes_per_image}, row_count={row_count}, source_bytes_per_image={}, expected={expected_bytes_per_image}",
-				destination.format,
-				destination.extent,
-				copy.source_bytes_per_image
+				destination.format, destination.extent, copy.source_bytes_per_image
 			);
 			let required_source_bytes = copy
 				.source_bytes_per_image
@@ -1198,11 +1192,11 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			.flat_map(|copy| {
 				let source_handle = match copy.source {
 					ImageOrSwapchain::Image(image) => self.get_internal_image_handle(image),
-					ImageOrSwapchain::Swapchain(swapchain) => self.device.swapchains[swapchain.0 as usize].images
-						[self.sequence_index as usize]
-						.expect(
+					ImageOrSwapchain::Swapchain(swapchain) => {
+						self.device.swapchains[swapchain.0 as usize].images[self.sequence_index as usize].expect(
 							"Metal swapchain capture failed. The most likely cause is that no swapchain image was acquired for this frame.",
-						),
+						)
+					}
 				};
 				[
 					Consumption {
@@ -1242,11 +1236,11 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		for copy in copies {
 			let source_handle = match copy.source {
 				ImageOrSwapchain::Image(image) => self.get_internal_image_handle(image),
-				ImageOrSwapchain::Swapchain(swapchain) => self.device.swapchains[swapchain.0 as usize].images
-					[self.sequence_index as usize]
-					.expect(
+				ImageOrSwapchain::Swapchain(swapchain) => {
+					self.device.swapchains[swapchain.0 as usize].images[self.sequence_index as usize].expect(
 						"Metal swapchain capture failed. The most likely cause is that no swapchain image was acquired for this frame.",
-					),
+					)
+				}
 			};
 			let source = self.device.images.resource(source_handle);
 			let destination = self
@@ -1272,20 +1266,14 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				source.extent
 			);
 			assert_eq!(
-				copy.destination_bytes_per_row,
-				expected_bytes_per_row,
+				copy.destination_bytes_per_row, expected_bytes_per_row,
 				"Metal image copy row pitch mismatch. The most likely cause is that readback preparation and Metal copy recording disagree about row padding. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, row_count={row_count}, destination_bytes_per_row={}, expected={expected_bytes_per_row}",
-				source.format,
-				source.extent,
-				copy.destination_bytes_per_row
+				source.format, source.extent, copy.destination_bytes_per_row
 			);
 			assert_eq!(
-				copy.destination_bytes_per_image,
-				expected_bytes_per_image,
+				copy.destination_bytes_per_image, expected_bytes_per_image,
 				"Metal image copy image pitch mismatch. The most likely cause is that readback preparation and Metal copy recording disagree about padded rows per image. format={:?}, extent={:?}, compact_bytes_per_row={compact_bytes_per_row}, row_count={row_count}, destination_bytes_per_image={}, expected={expected_bytes_per_image}",
-				source.format,
-				source.extent,
-				copy.destination_bytes_per_image
+				source.format, source.extent, copy.destination_bytes_per_image
 			);
 			let required_destination_bytes = copy
 				.destination_bytes_per_image

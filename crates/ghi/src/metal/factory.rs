@@ -95,7 +95,9 @@ impl crate::device::Device for Factory {
 	}
 
 	fn create_context(&self) -> Result<Self::Context, &'static str> {
-		Err("Detached Metal factory cannot create a rendering context. The most likely cause is that asynchronous resource construction attempted to become the primary graphics device.")
+		Err(
+			"Detached Metal factory cannot create a rendering context. The most likely cause is that asynchronous resource construction attempted to become the primary graphics device.",
+		)
 	}
 
 	fn create_shader(

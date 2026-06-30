@@ -83,11 +83,20 @@ fn sanitize_feather_width(width: f32) -> f32 {
 	}
 }
 
+fn sanitize_backdrop_blur_radius(radius: f32) -> f32 {
+	if radius.is_finite() {
+		radius.clamp(0.0, 64.0)
+	} else {
+		0.0
+	}
+}
+
 pub trait Layer {
 	fn fill(&self) -> &Color;
 	fn mix_mode(&self) -> MixModes;
 	fn kind(&self) -> LayerKind;
 	fn feather(&self) -> EdgeFeather;
+	fn backdrop_blur_radius(&self) -> f32;
 }
 
 #[derive(Clone)]
@@ -132,6 +141,7 @@ pub struct ConcreteLayer {
 	pub(crate) color: Color,
 	pub(crate) kind: LayerKind,
 	pub(crate) feather: EdgeFeather,
+	pub(crate) backdrop_blur_radius: f32,
 }
 
 impl ConcreteLayer {
@@ -140,6 +150,7 @@ impl ConcreteLayer {
 			color: Color::Value(RGBA::white()),
 			kind: LayerKind::Fill,
 			feather: EdgeFeather::none(),
+			backdrop_blur_radius: 0.0,
 		}
 	}
 
@@ -166,6 +177,15 @@ impl ConcreteLayer {
 	pub fn feather_edges(self, top: f32, right: f32, bottom: f32, left: f32) -> Self {
 		self.feather(EdgeFeather::edges(top, right, bottom, left))
 	}
+
+	pub fn backdrop_blur(mut self, radius: f32) -> Self {
+		self.backdrop_blur_radius = sanitize_backdrop_blur_radius(radius);
+		self
+	}
+
+	pub fn blur(self, radius: f32) -> Self {
+		self.backdrop_blur(radius)
+	}
 }
 
 impl Default for ConcreteLayer {
@@ -189,6 +209,10 @@ impl Layer for ConcreteLayer {
 
 	fn feather(&self) -> EdgeFeather {
 		self.feather
+	}
+
+	fn backdrop_blur_radius(&self) -> f32 {
+		self.backdrop_blur_radius
 	}
 }
 
@@ -215,6 +239,7 @@ mod tests {
 		assert_eq!(style.layers().len(), 1);
 		assert_eq!(style.layers()[0].kind(), LayerKind::Fill);
 		assert_eq!(Layer::feather(&style.layers()[0]), EdgeFeather::none());
+		assert_eq!(style.layers()[0].backdrop_blur_radius(), 0.0);
 	}
 
 	#[test]
@@ -271,5 +296,30 @@ mod tests {
 		let layer = ConcreteLayer::default().feather_edges(1.0, 2.0, 3.0, 4.0);
 
 		assert_eq!(Layer::feather(&layer), EdgeFeather::edges(1.0, 2.0, 3.0, 4.0));
+	}
+
+	#[test]
+	fn backdrop_blur_radius_is_stored() {
+		let layer = ConcreteLayer::default().backdrop_blur(18.0);
+
+		assert_eq!(layer.backdrop_blur_radius(), 18.0);
+	}
+
+	#[test]
+	fn blur_alias_stores_backdrop_blur_radius() {
+		let layer = ConcreteLayer::default().blur(12.0);
+
+		assert_eq!(layer.backdrop_blur_radius(), 12.0);
+	}
+
+	#[test]
+	fn backdrop_blur_radius_sanitizes_invalid_values() {
+		assert_eq!(ConcreteLayer::default().backdrop_blur(-1.0).backdrop_blur_radius(), 0.0);
+		assert_eq!(ConcreteLayer::default().backdrop_blur(f32::NAN).backdrop_blur_radius(), 0.0);
+		assert_eq!(
+			ConcreteLayer::default().backdrop_blur(f32::INFINITY).backdrop_blur_radius(),
+			0.0
+		);
+		assert_eq!(ConcreteLayer::default().backdrop_blur(128.0).backdrop_blur_radius(), 64.0);
 	}
 }

@@ -138,17 +138,18 @@ fn apply_specialization_map_entry(
 
 	match specialization_map_entry.get_type().as_str() {
 		"bool" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::Bool, constant_id) },
+		"i32" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::Int, constant_id) },
 		"u32" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::UInt, constant_id) },
 		"f32" => unsafe { constant_values.setConstantValue_type_atIndex(value, mtl::MTLDataType::Float, constant_id) },
 		"vec2f" => unsafe {
 			constant_values.setConstantValues_type_withRange(value, mtl::MTLDataType::Float, NSRange::new(constant_id, 2))
-		}
+		},
 		"vec3f" => unsafe {
 			constant_values.setConstantValues_type_withRange(value, mtl::MTLDataType::Float, NSRange::new(constant_id, 3))
-		}
+		},
 		"vec4f" => unsafe {
 			constant_values.setConstantValues_type_withRange(value, mtl::MTLDataType::Float, NSRange::new(constant_id, 4))
-		}
+		},
 		_ => panic!(
 			"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
 		),
@@ -1022,6 +1023,14 @@ mod utils {
 			assert_eq!(to_pixel_format(Formats::BC5SNORM), mtl::MTLPixelFormat::BC5_RGSnorm);
 			assert_eq!(to_pixel_format(Formats::BC7), mtl::MTLPixelFormat::BC7_RGBAUnorm);
 			assert_eq!(to_pixel_format(Formats::BC7SRGB), mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB);
+		}
+
+		#[test]
+		fn specialization_map_entry_supports_i32_constants() {
+			let constant_values = mtl::MTLFunctionConstantValues::new();
+			let entry = crate::pipelines::SpecializationMapEntry::new(0, "i32".to_string(), -1i32);
+
+			super::super::apply_specialization_map_entry(&constant_values, &entry);
 		}
 	}
 }

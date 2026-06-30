@@ -47,6 +47,7 @@ pub(crate) struct RenderElement {
 	pub(crate) feather_mask: Option<FeatherMask>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) opacity: f32,
+	pub(crate) backdrop_blur_radius: f32,
 	pub(crate) corner_radius: f32,
 	pub(crate) corner_exponent: f32,
 }

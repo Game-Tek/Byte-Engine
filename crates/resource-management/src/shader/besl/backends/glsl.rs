@@ -192,8 +192,8 @@ impl Generator {
 		}
 
 		match name.as_str() {
-			"max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
-			| "radians" | "inversesqrt" | "smoothstep" | "mix" => {
+			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
+			| "fwidth" | "step" | "radians" | "inversesqrt" | "smoothstep" | "mix" => {
 				string.push_str(name);
 				string.push('(');
 				self.emit_call_arguments(string, arguments);
@@ -838,6 +838,20 @@ mod tests {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "void main(){vec3 albedo=vec3(1.0,0.0,0.0);}");
+	}
+
+	#[test]
+	fn fwidth_intrinsic_lowers_to_glsl() {
+		let program = besl::compile_to_besl("main: fn() -> void { let edge_width: f32 = fwidth(1.0); edge_width; }", None)
+			.expect("Failed to compile fwidth BESL shader");
+		let main = program.get_main().expect("Expected fwidth BESL shader main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::fragment(), &main)
+			.expect("Failed to generate fwidth GLSL shader");
+
+		assert_string_contains!(shader, "fwidth(1.0)");
 	}
 
 	#[test]

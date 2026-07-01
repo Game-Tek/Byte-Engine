@@ -220,6 +220,13 @@ impl Node {
 		let normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone());
 		let scalar_max_intrinsic =
 			builtin_intrinsic("max", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone());
+		let scalar_min_intrinsic =
+			builtin_intrinsic("min", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone());
+		let vec2_max_intrinsic = builtin_intrinsic(
+			"max",
+			vec![("left", vec2f32.clone()), ("right", vec2f32.clone())],
+			vec2f32.clone(),
+		);
 		let max_intrinsic = builtin_intrinsic(
 			"max",
 			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
@@ -249,12 +256,18 @@ impl Node {
 			vec![("value", vec3f32.clone()), ("exponent", vec3f32.clone())],
 			vec3f32.clone(),
 		);
+		let scalar_pow_intrinsic = builtin_intrinsic(
+			"pow",
+			vec![("value", f32_t.clone()), ("exponent", f32_t.clone())],
+			f32_t.clone(),
+		);
 		let reflect_intrinsic = builtin_intrinsic(
 			"reflect",
 			vec![("incident", vec4f32.clone()), ("normal", vec4f32.clone())],
 			vec4f32.clone(),
 		);
 		let abs_intrinsic = builtin_intrinsic("abs", vec![("value", f32_t.clone())], f32_t.clone());
+		let vec2_abs_intrinsic = builtin_intrinsic("abs", vec![("value", vec2f32.clone())], vec2f32.clone());
 		let sqrt_intrinsic = builtin_intrinsic("sqrt", vec![("value", f32_t.clone())], f32_t.clone());
 		let exp_intrinsic = builtin_intrinsic("exp", vec![("value", f32_t.clone())], f32_t.clone());
 		let sin_intrinsic = builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone());
@@ -262,6 +275,7 @@ impl Node {
 		let tan_intrinsic = builtin_intrinsic("tan", vec![("value", f32_t.clone())], f32_t.clone());
 		let round_intrinsic = builtin_intrinsic("round", vec![("value", vec2f32.clone())], vec2f32.clone());
 		let fract_intrinsic = builtin_intrinsic("fract", vec![("value", f32_t.clone())], f32_t.clone());
+		let fwidth_intrinsic = builtin_intrinsic("fwidth", vec![("value", f32_t.clone())], f32_t.clone());
 		let radians_intrinsic = builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone());
 		let inversesqrt_intrinsic = builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone());
 		let f32_from_u32_intrinsic = builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone());
@@ -271,6 +285,7 @@ impl Node {
 			vec![("edge0", f32_t.clone()), ("edge1", f32_t.clone()), ("value", f32_t.clone())],
 			f32_t.clone(),
 		);
+		let step_intrinsic = builtin_intrinsic("step", vec![("edge", f32_t.clone()), ("value", f32_t.clone())], f32_t.clone());
 		let mix_intrinsic = builtin_intrinsic(
 			"mix",
 			vec![("left", f32_t.clone()), ("right", f32_t.clone()), ("factor", f32_t.clone())],
@@ -359,13 +374,17 @@ impl Node {
 			length_intrinsic,
 			normalize_intrinsic,
 			scalar_max_intrinsic,
+			scalar_min_intrinsic,
+			vec2_max_intrinsic,
 			max_intrinsic,
 			scalar_clamp_intrinsic,
 			clamp_intrinsic,
 			log2_intrinsic,
 			pow_intrinsic,
+			scalar_pow_intrinsic,
 			reflect_intrinsic,
 			abs_intrinsic,
+			vec2_abs_intrinsic,
 			sqrt_intrinsic,
 			exp_intrinsic,
 			sin_intrinsic,
@@ -373,11 +392,13 @@ impl Node {
 			tan_intrinsic,
 			round_intrinsic,
 			fract_intrinsic,
+			fwidth_intrinsic,
 			radians_intrinsic,
 			inversesqrt_intrinsic,
 			f32_from_u32_intrinsic,
 			u32_from_f32_intrinsic,
 			smoothstep_intrinsic,
+			step_intrinsic,
 			mix_intrinsic,
 			thread_idx_intrinsic,
 			threadgroup_position_intrinsic,

@@ -1758,8 +1758,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 
 		match name.as_str() {
-			"max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
-			| "smoothstep" | "mix" => {
+			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract"
+			| "fwidth" | "step" | "smoothstep" | "mix" => {
 				string.push_str(name);
 				string.push('(');
 				self.emit_call_arguments(string, arguments);
@@ -2717,6 +2717,20 @@ struct PrimitiveOutput {
 			"fragment FragmentOutput besl_main(FragmentInput in [[stage_in]], bool front_facing [[front_facing]])"
 		);
 		assert_string_contains!(shader, "return FragmentOutput(float4(1.0,0.0,0.0,1.0));");
+	}
+
+	#[test]
+	fn fwidth_intrinsic_lowers_to_msl() {
+		let program = besl::compile_to_besl("main: fn() -> void { let edge_width: f32 = fwidth(1.0); edge_width; }", None)
+			.expect("Failed to compile fwidth BESL shader");
+		let main = program.get_main().expect("Expected fwidth BESL shader main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::fragment(), &main)
+			.expect("Failed to generate fwidth MSL shader");
+
+		assert_string_contains!(shader, "fwidth(1.0)");
 	}
 
 	#[test]

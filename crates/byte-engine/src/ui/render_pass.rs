@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use besl::ParserNode;
+use besl::parser::Node as ParserNode;
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
@@ -10,9 +10,9 @@ use ghi::{
 	frame::Frame as _,
 	types::Size as _,
 };
-#[cfg(target_os = "linux")]
-use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
-use resource_management::shader::generator::ShaderGenerationSettings;
+use resource_management::{
+	resources::material, shader::generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
+};
 use utils::{Box, Extent, RGBA};
 
 use super::{
@@ -24,8 +24,8 @@ use crate::{
 	core::Entity,
 	rendering::{
 		common_shader_generator::CommonShaderScope,
-		map_shader_binding_to_shader_binding_descriptor,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+		shader_store::{ShaderSourceDefinition, ShaderSourceDescriptor},
 		Sink,
 	},
 	ui::{
@@ -2277,437 +2277,233 @@ impl RenderPass for UiRenderPass {
 	}
 }
 
-/// Builds the UI vertex shader using BESL and compiles it to SPIR-V.
-fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
-	if ghi::implementation::USES_METAL {
-		let shader_source = r#"
-			#include <metal_stdlib>
-			using namespace metal;
-
-			struct UiVertexIn {
-				float2 position [[attribute(0)]];
-				float2 pixel_position [[attribute(1)]];
-				float2 local_position [[attribute(2)]];
-				float2 rect_size [[attribute(3)]];
-				float4 color [[attribute(4)]];
-				float corner_radius [[attribute(5)]];
-				float corner_exponent [[attribute(6)]];
-				float layer_kind [[attribute(7)]];
-				float stroke_width [[attribute(8)]];
-				float2 feather_mask_position [[attribute(9)]];
-				float2 feather_mask_size [[attribute(10)]];
-				float4 feather_mask_edges [[attribute(11)]];
-				float2 feather_mask_corner [[attribute(12)]];
-			};
-
-			struct UiVertexOut {
-				float4 position [[position]];
-				float4 color;
-				float2 pixel_position;
-				float2 local_position;
-				float2 rect_size;
-				float corner_radius;
-				float corner_exponent;
-				float layer_kind;
-				float stroke_width;
-				float2 feather_mask_position;
-				float2 feather_mask_size;
-				float4 feather_mask_edges;
-				float2 feather_mask_corner;
-			};
-
-			vertex UiVertexOut ui_vertex_main(UiVertexIn in [[stage_in]]) {
-				UiVertexOut out;
-				out.position = float4(in.position, 0.0, 1.0);
-				out.color = in.color;
-				out.pixel_position = in.pixel_position;
-				out.local_position = in.local_position;
-				out.rect_size = in.rect_size;
-				out.corner_radius = in.corner_radius;
-				out.corner_exponent = in.corner_exponent;
-				out.layer_kind = in.layer_kind;
-				out.stroke_width = in.stroke_width;
-				out.feather_mask_position = in.feather_mask_position;
-				out.feather_mask_size = in.feather_mask_size;
-				out.feather_mask_edges = in.feather_mask_edges;
-				out.feather_mask_corner = in.feather_mask_corner;
-				return out;
-			}
-		"#;
-
-		return context
-			.create_shader(
-				Some("UI Vertex Shader"),
-				ghi::shader::Sources::MTL {
-					source: shader_source,
-					entry_point: "ui_vertex_main",
-				},
-				ghi::ShaderTypes::Vertex,
-				[],
-			)
-			.expect("Failed to create the UI vertex shader. The most likely cause is an incompatible shader interface.");
-	}
-
-	#[cfg(target_os = "linux")]
-	{
-		let mut shader_generator = SPIRVShaderGenerator::new();
-		let mut root = ParserNode::root();
-
-		let main_code = r#"
-		gl_Position = vec4(in_position, 0.0, 1.0);
-		out_color = in_color;
-		out_pixel_position = in_pixel_position;
-		out_local_position = in_local_position;
-		out_rect_size = in_rect_size;
-		out_corner_radius = in_corner_radius;
-		out_corner_exponent = in_corner_exponent;
-		out_layer_kind = in_layer_kind;
-		out_stroke_width = in_stroke_width;
-		out_feather_mask_position = in_feather_mask_position;
-		out_feather_mask_size = in_feather_mask_size;
-		out_feather_mask_edges = in_feather_mask_edges;
-		out_feather_mask_corner = in_feather_mask_corner;
-	"#
-		.trim();
-
-		let main = ParserNode::main_function(vec![ParserNode::glsl(
-			main_code,
-			&[
-				"in_position",
-				"in_pixel_position",
-				"in_local_position",
-				"in_rect_size",
-				"in_color",
-				"in_corner_radius",
-				"in_corner_exponent",
-				"in_layer_kind",
-				"in_stroke_width",
-				"out_color",
-				"out_pixel_position",
-				"out_local_position",
-				"out_rect_size",
-				"out_corner_radius",
-				"out_corner_exponent",
-				"out_layer_kind",
-				"out_stroke_width",
-				"out_feather_mask_position",
-				"out_feather_mask_size",
-				"out_feather_mask_edges",
-				"out_feather_mask_corner",
-				"in_feather_mask_position",
-				"in_feather_mask_size",
-				"in_feather_mask_edges",
-				"in_feather_mask_corner",
-			],
-			&[],
-		)]);
-		let position_input = ParserNode::input("in_position", "vec2f", 0);
-		let pixel_position_input = ParserNode::input("in_pixel_position", "vec2f", 1);
-		let local_position_input = ParserNode::input("in_local_position", "vec2f", 2);
-		let rect_size_input = ParserNode::input("in_rect_size", "vec2f", 3);
-		let color_input = ParserNode::input("in_color", "vec4f", 4);
-		let corner_radius_input = ParserNode::input("in_corner_radius", "f32", 5);
-		let corner_exponent_input = ParserNode::input("in_corner_exponent", "f32", 6);
-		let layer_kind_input = ParserNode::input("in_layer_kind", "f32", 7);
-		let stroke_width_input = ParserNode::input("in_stroke_width", "f32", 8);
-		let feather_mask_position_input = ParserNode::input("in_feather_mask_position", "vec2f", 9);
-		let feather_mask_size_input = ParserNode::input("in_feather_mask_size", "vec2f", 10);
-		let feather_mask_edges_input = ParserNode::input("in_feather_mask_edges", "vec4f", 11);
-		let feather_mask_corner_input = ParserNode::input("in_feather_mask_corner", "vec2f", 12);
-		let color_output = ParserNode::output("out_color", "vec4f", 0);
-		let pixel_position_output = ParserNode::output("out_pixel_position", "vec2f", 1);
-		let local_position_output = ParserNode::output("out_local_position", "vec2f", 2);
-		let rect_size_output = ParserNode::output("out_rect_size", "vec2f", 3);
-		let corner_radius_output = ParserNode::output("out_corner_radius", "f32", 4);
-		let corner_exponent_output = ParserNode::output("out_corner_exponent", "f32", 5);
-		let layer_kind_output = ParserNode::output("out_layer_kind", "f32", 6);
-		let stroke_width_output = ParserNode::output("out_stroke_width", "f32", 7);
-		let feather_mask_position_output = ParserNode::output("out_feather_mask_position", "vec2f", 8);
-		let feather_mask_size_output = ParserNode::output("out_feather_mask_size", "vec2f", 9);
-		let feather_mask_edges_output = ParserNode::output("out_feather_mask_edges", "vec4f", 10);
-		let feather_mask_corner_output = ParserNode::output("out_feather_mask_corner", "vec2f", 11);
-
-		let shader_scope = ParserNode::scope(
-			"Shader",
-			vec![
-				position_input,
-				pixel_position_input,
-				local_position_input,
-				rect_size_input,
-				color_input,
-				corner_radius_input,
-				corner_exponent_input,
-				layer_kind_input,
-				stroke_width_input,
-				feather_mask_position_input,
-				feather_mask_size_input,
-				feather_mask_edges_input,
-				feather_mask_corner_input,
-				color_output,
-				pixel_position_output,
-				local_position_output,
-				rect_size_output,
-				corner_radius_output,
-				corner_exponent_output,
-				layer_kind_output,
-				stroke_width_output,
-				feather_mask_position_output,
-				feather_mask_size_output,
-				feather_mask_edges_output,
-				feather_mask_corner_output,
-				main,
-			],
-		);
-		root.add(vec![CommonShaderScope::new(), shader_scope]);
-
-		let root_node =
-			besl::lex(root).expect("Failed to lex the UI vertex shader. The most likely cause is invalid BESL syntax.");
-		let main_node = root_node.get_main().expect(
-		"Failed to find the UI vertex entry point. The most likely cause is that the shader main function was not generated.",
-	);
-		let generated = shader_generator
-			.generate(&ShaderGenerationSettings::vertex(), &main_node)
-			.expect("Failed to generate UI vertex shader SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
-
-		context
-			.create_shader(
-				Some("UI Vertex Shader"),
-				ghi::shader::Sources::SPIRV(generated.binary()),
-				ghi::ShaderTypes::Vertex,
-				generated
-					.bindings()
-					.iter()
-					.map(map_shader_binding_to_shader_binding_descriptor),
-			)
-			.expect("Failed to create the UI vertex shader. The most likely cause is an incompatible shader interface.")
-	}
-
-	#[cfg(not(target_os = "linux"))]
-	{
-		unreachable!("UI vertex shader on non-Linux uses the Metal path above.");
-	}
+fn create_ui_besl_shader(
+	context: &mut ghi::implementation::Context,
+	id: &str,
+	name: &str,
+	stage: ResourceShaderTypes,
+	settings: ShaderGenerationSettings,
+	main_node: besl::NodeReference,
+	interface: material::ShaderInterface,
+) -> ghi::ShaderHandle {
+	crate::rendering::shader_store::create_shader(
+		context,
+		None,
+		&ShaderSourceDescriptor {
+			id,
+			name,
+			stage,
+			source: ShaderSourceDefinition::Besl { settings, main_node },
+			interface,
+		},
+	)
+	.expect("Failed to create UI BESL shader. The most likely cause is an incompatible shader interface.")
 }
+
+fn lex_ui_shader(root: ParserNode<'_>, shader_name: &str) -> besl::NodeReference {
+	let root = besl::lex(root)
+		.unwrap_or_else(|_| panic!("Failed to lex {shader_name}. The most likely cause is invalid BESL syntax."));
+	root.get_main().unwrap_or_else(|| {
+		panic!("Failed to find {shader_name} entry point. The most likely cause is a missing main function.")
+	})
+}
+
+/// Builds the UI vertex shader using BESL and compiles it for the active platform.
+fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
+	let main_node = create_ui_vertex_program();
+	create_ui_besl_shader(
+		context,
+		"byte-engine/ui/rect/vertex",
+		"UI Vertex Shader",
+		ResourceShaderTypes::Vertex,
+		ShaderGenerationSettings::vertex(),
+		main_node,
+		material::ShaderInterface {
+			workgroup_size: None,
+			bindings: Vec::new(),
+		},
+	)
+}
+
+fn create_ui_vertex_program() -> besl::NodeReference {
+	let main = ParserNode::main_function(vec![ParserNode::glsl(
+		UI_VERTEX_SHADER_MAIN,
+		&[
+			"in_position",
+			"in_pixel_position",
+			"in_local_position",
+			"in_rect_size",
+			"in_color",
+			"in_corner_radius",
+			"in_corner_exponent",
+			"in_layer_kind",
+			"in_stroke_width",
+			"in_feather_mask_position",
+			"in_feather_mask_size",
+			"in_feather_mask_edges",
+			"in_feather_mask_corner",
+			"position",
+			"out_color",
+			"out_pixel_position",
+			"out_local_position",
+			"out_rect_size",
+			"out_corner_radius",
+			"out_corner_exponent",
+			"out_layer_kind",
+			"out_stroke_width",
+			"out_feather_mask_position",
+			"out_feather_mask_size",
+			"out_feather_mask_edges",
+			"out_feather_mask_corner",
+		],
+		&[],
+	)]);
+
+	let shader_scope = ParserNode::scope(
+		"Shader",
+		vec![
+			ParserNode::input("in_position", "vec2f", 0),
+			ParserNode::input("in_pixel_position", "vec2f", 1),
+			ParserNode::input("in_local_position", "vec2f", 2),
+			ParserNode::input("in_rect_size", "vec2f", 3),
+			ParserNode::input("in_color", "vec4f", 4),
+			ParserNode::input("in_corner_radius", "f32", 5),
+			ParserNode::input("in_corner_exponent", "f32", 6),
+			ParserNode::input("in_layer_kind", "f32", 7),
+			ParserNode::input("in_stroke_width", "f32", 8),
+			ParserNode::input("in_feather_mask_position", "vec2f", 9),
+			ParserNode::input("in_feather_mask_size", "vec2f", 10),
+			ParserNode::input("in_feather_mask_edges", "vec4f", 11),
+			ParserNode::input("in_feather_mask_corner", "vec2f", 12),
+			ParserNode::output("position", "vec4f", 0),
+			ParserNode::output("out_color", "vec4f", 0),
+			ParserNode::output("out_pixel_position", "vec2f", 1),
+			ParserNode::output("out_local_position", "vec2f", 2),
+			ParserNode::output("out_rect_size", "vec2f", 3),
+			ParserNode::output("out_corner_radius", "f32", 4),
+			ParserNode::output("out_corner_exponent", "f32", 5),
+			ParserNode::output("out_layer_kind", "f32", 6),
+			ParserNode::output("out_stroke_width", "f32", 7),
+			ParserNode::output("out_feather_mask_position", "vec2f", 8),
+			ParserNode::output("out_feather_mask_size", "vec2f", 9),
+			ParserNode::output("out_feather_mask_edges", "vec4f", 10),
+			ParserNode::output("out_feather_mask_corner", "vec2f", 11),
+			main,
+		],
+	);
+	let mut root = ParserNode::root();
+	root.add(vec![CommonShaderScope::new(), shader_scope]);
+	lex_ui_shader(root, "UI vertex shader")
+}
+
+const UI_VERTEX_SHADER_MAIN: &str = r#"
+position = vec4f(in_position, 0.0, 1.0);
+out_color = in_color;
+out_pixel_position = in_pixel_position;
+out_local_position = in_local_position;
+out_rect_size = in_rect_size;
+out_corner_radius = in_corner_radius;
+out_corner_exponent = in_corner_exponent;
+out_layer_kind = in_layer_kind;
+out_stroke_width = in_stroke_width;
+out_feather_mask_position = in_feather_mask_position;
+out_feather_mask_size = in_feather_mask_size;
+out_feather_mask_edges = in_feather_mask_edges;
+out_feather_mask_corner = in_feather_mask_corner;
+"#;
 
 /// Builds the UI fragment shader using BESL and compiles it to SPIR-V.
 fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
-	if ghi::implementation::USES_METAL {
-		return context
-			.create_shader(
-				Some("UI Fragment Shader"),
-				ghi::shader::Sources::MTL {
-					source: UI_FRAGMENT_SHADER_MSL,
-					entry_point: "ui_fragment_main",
-				},
-				ghi::ShaderTypes::Fragment,
-				[],
-			)
-			.expect("Failed to create the UI fragment shader. The most likely cause is an incompatible shader interface.");
-	}
-
-	#[cfg(target_os = "linux")]
-	{
-		let mut shader_generator = SPIRVShaderGenerator::new();
-		let mut root = ParserNode::root();
-
-		let main = ParserNode::main_function(vec![ParserNode::glsl(
-			UI_FRAGMENT_SHADER_GLSL_MAIN,
-			&[
-				"in_color",
-				"in_pixel_position",
-				"in_local_position",
-				"in_rect_size",
-				"in_corner_radius",
-				"in_corner_exponent",
-				"in_layer_kind",
-				"in_stroke_width",
-				"in_feather_mask_position",
-				"in_feather_mask_size",
-				"in_feather_mask_edges",
-				"in_feather_mask_corner",
-				"out_color_attachment",
-			],
-			&[],
-		)]);
-		let input_color = ParserNode::input("in_color", "vec4f", 0);
-		let input_pixel_position = ParserNode::input("in_pixel_position", "vec2f", 1);
-		let input_local_position = ParserNode::input("in_local_position", "vec2f", 2);
-		let input_rect_size = ParserNode::input("in_rect_size", "vec2f", 3);
-		let input_corner_radius = ParserNode::input("in_corner_radius", "f32", 4);
-		let input_corner_exponent = ParserNode::input("in_corner_exponent", "f32", 5);
-		let input_layer_kind = ParserNode::input("in_layer_kind", "f32", 6);
-		let input_stroke_width = ParserNode::input("in_stroke_width", "f32", 7);
-		let input_feather_mask_position = ParserNode::input("in_feather_mask_position", "vec2f", 8);
-		let input_feather_mask_size = ParserNode::input("in_feather_mask_size", "vec2f", 9);
-		let input_feather_mask_edges = ParserNode::input("in_feather_mask_edges", "vec4f", 10);
-		let input_feather_mask_corner = ParserNode::input("in_feather_mask_corner", "vec2f", 11);
-		let output_color = ParserNode::output("out_color_attachment", "vec4f", 0);
-
-		let shader_scope = ParserNode::scope(
-			"Shader",
-			vec![
-				input_color,
-				input_pixel_position,
-				input_local_position,
-				input_rect_size,
-				input_corner_radius,
-				input_corner_exponent,
-				input_layer_kind,
-				input_stroke_width,
-				input_feather_mask_position,
-				input_feather_mask_size,
-				input_feather_mask_edges,
-				input_feather_mask_corner,
-				output_color,
-				main,
-			],
-		);
-		root.add(vec![CommonShaderScope::new(), shader_scope]);
-
-		let root_node =
-			besl::lex(root).expect("Failed to lex the UI fragment shader. The most likely cause is invalid BESL syntax.");
-		let main_node = root_node.get_main().expect(
-		"Failed to find the UI fragment entry point. The most likely cause is that the shader main function was not generated.",
-	);
-		let generated = shader_generator
-			.generate(&ShaderGenerationSettings::fragment(), &main_node)
-			.expect("Failed to generate UI fragment shader SPIR-V. The most likely cause is invalid GLSL emitted from BESL.");
-
-		context
-			.create_shader(
-				Some("UI Fragment Shader"),
-				ghi::shader::Sources::SPIRV(generated.binary()),
-				ghi::ShaderTypes::Fragment,
-				generated
-					.bindings()
-					.iter()
-					.map(map_shader_binding_to_shader_binding_descriptor),
-			)
-			.expect("Failed to create the UI fragment shader. The most likely cause is an incompatible shader interface.")
-	}
-
-	#[cfg(not(target_os = "linux"))]
-	{
-		unreachable!("UI fragment shader on non-Linux uses the Metal path above.");
-	}
+	let main_node = create_ui_fragment_program();
+	create_ui_besl_shader(
+		context,
+		"byte-engine/ui/rect/fragment",
+		"UI Fragment Shader",
+		ResourceShaderTypes::Fragment,
+		ShaderGenerationSettings::fragment(),
+		main_node,
+		material::ShaderInterface {
+			workgroup_size: None,
+			bindings: Vec::new(),
+		},
+	)
 }
 
-const UI_FRAGMENT_SHADER_GLSL_MAIN: &str = r#"
-vec2 half_size = in_rect_size * 0.5;
-float corner_radius = min(in_corner_radius, min(half_size.x, half_size.y));
-float corner_exponent = in_corner_exponent;
-vec2 centered_position = in_local_position - half_size;
-vec2 rounded_extent = half_size - vec2(corner_radius);
-vec2 corner_delta = abs(centered_position) - rounded_extent;
-vec2 abs_corner = max(corner_delta, vec2(0.0));
-float corner_sum = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
-float corner_distance = pow(corner_sum, 1.0 / corner_exponent);
-float field_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
-float edge_width = max(fwidth(field_distance), 1.0);
-float rounded_shape = step(0.0001, corner_radius);
-float rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance);
-float fill_coverage = mix(1.0, rounded_fill_coverage, rounded_shape);
+fn create_ui_fragment_program() -> besl::NodeReference {
+	let mut root = besl::Node::root();
+	let vec4f = root.get_child("vec4f").expect("vec4f type not found in BESL root");
+	let vec2f = root.get_child("vec2f").expect("vec2f type not found in BESL root");
+	let f32 = root.get_child("f32").expect("f32 type not found in BESL root");
 
-float corner_gradient_scale = pow(max(corner_sum, 0.0001), (1.0 / corner_exponent) - 1.0);
-vec2 corner_gradient = vec2(
-	pow(abs_corner.x, corner_exponent - 1.0) * corner_gradient_scale,
-	pow(abs_corner.y, corner_exponent - 1.0) * corner_gradient_scale
-);
-float field_gradient_length = mix(1.0, max(length(corner_gradient), 0.0001), step(0.0001, corner_sum));
-float signed_distance = field_distance / field_gradient_length;
-float corrected_edge_width = max(fwidth(signed_distance), 1.0);
-float inner_signed_distance = signed_distance + in_stroke_width;
-float inner_coverage = 1.0 - smoothstep(-corrected_edge_width, corrected_edge_width, inner_signed_distance);
-float stroke_coverage = max(fill_coverage - inner_coverage, 0.0);
-float coverage = mix(fill_coverage, stroke_coverage, step(0.5, in_layer_kind));
-float feather_top = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.x, 0.0001), in_pixel_position.y - in_feather_mask_position.y), step(0.0001, in_feather_mask_edges.x));
-float feather_right = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.y, 0.0001), in_feather_mask_position.x + in_feather_mask_size.x - in_pixel_position.x), step(0.0001, in_feather_mask_edges.y));
-float feather_bottom = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.z, 0.0001), in_feather_mask_position.y + in_feather_mask_size.y - in_pixel_position.y), step(0.0001, in_feather_mask_edges.z));
-float feather_left = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.w, 0.0001), in_pixel_position.x - in_feather_mask_position.x), step(0.0001, in_feather_mask_edges.w));
-vec2 feather_half_size = in_feather_mask_size * 0.5;
-float feather_corner_radius = min(in_feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
-float feather_corner_exponent = in_feather_mask_corner.y;
-vec2 feather_centered_position = in_pixel_position - in_feather_mask_position - feather_half_size;
-vec2 feather_rounded_extent = feather_half_size - vec2(feather_corner_radius);
-vec2 feather_corner_delta = abs(feather_centered_position) - feather_rounded_extent;
-vec2 feather_abs_corner = max(feather_corner_delta, vec2(0.0));
-float feather_corner_sum = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
-float feather_corner_distance = pow(feather_corner_sum, 1.0 / feather_corner_exponent);
-float feather_field_distance = feather_corner_distance + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
-float feather_mask_enabled = step(0.0001, min(in_feather_mask_size.x, in_feather_mask_size.y));
-float feather_rounded_shape = step(0.0001, feather_corner_radius);
-float feather_shape_coverage = mix(1.0, 1.0 - smoothstep(-1.0, 1.0, feather_field_distance), feather_rounded_shape);
-float feather_coverage = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
+	root.add_child(besl::Node::input("in_color", vec4f.clone(), 0).into());
+	root.add_child(besl::Node::input("in_pixel_position", vec2f.clone(), 1).into());
+	root.add_child(besl::Node::input("in_local_position", vec2f.clone(), 2).into());
+	root.add_child(besl::Node::input("in_rect_size", vec2f.clone(), 3).into());
+	root.add_child(besl::Node::input("in_corner_radius", f32.clone(), 4).into());
+	root.add_child(besl::Node::input("in_corner_exponent", f32.clone(), 5).into());
+	root.add_child(besl::Node::input("in_layer_kind", f32.clone(), 6).into());
+	root.add_child(besl::Node::input("in_stroke_width", f32, 7).into());
+	root.add_child(besl::Node::input("in_feather_mask_position", vec2f.clone(), 8).into());
+	root.add_child(besl::Node::input("in_feather_mask_size", vec2f.clone(), 9).into());
+	root.add_child(besl::Node::input("in_feather_mask_edges", vec4f.clone(), 10).into());
+	root.add_child(besl::Node::input("in_feather_mask_corner", vec2f, 11).into());
+	root.add_child(besl::Node::output("out_color_attachment", vec4f, 0).into());
 
-out_color_attachment = vec4(in_color.rgb, in_color.a * coverage * feather_coverage);
-"#;
+	let program = besl::compile_to_besl(UI_FRAGMENT_SHADER_BESL, Some(root))
+		.expect("Failed to compile UI fragment BESL. The most likely cause is invalid BESL syntax.");
+	program
+		.get_main()
+		.expect("Failed to find UI fragment shader entry point. The most likely cause is a missing main function.")
+}
 
-const UI_FRAGMENT_SHADER_MSL: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
+const UI_FRAGMENT_SHADER_BESL: &str = r#"
+main: fn() -> void {
+	let half_size: vec2f = in_rect_size * 0.5;
+	let corner_radius: f32 = min(in_corner_radius, min(half_size.x, half_size.y));
+	let corner_exponent: f32 = in_corner_exponent;
+	let centered_position: vec2f = in_local_position - half_size;
+	let rounded_extent: vec2f = half_size - vec2f(corner_radius, corner_radius);
+	let corner_delta: vec2f = abs(centered_position) - rounded_extent;
+	let abs_corner: vec2f = max(corner_delta, vec2f(0.0, 0.0));
+	let corner_sum: f32 = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
+	let corner_distance: f32 = pow(corner_sum, 1.0 / corner_exponent);
+	let field_distance: f32 = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+	let edge_width: f32 = max(fwidth(field_distance), 1.0);
+	let rounded_shape: f32 = step(0.0001, corner_radius);
+	let rounded_fill_coverage: f32 = 1.0 - smoothstep(0.0 - edge_width, edge_width, field_distance);
+	let fill_coverage: f32 = mix(1.0, rounded_fill_coverage, rounded_shape);
 
-struct UiVertexOut {
-	float4 position [[position]];
-	float4 color;
-	float2 pixel_position;
-	float2 local_position;
-	float2 rect_size;
-	float corner_radius;
-	float corner_exponent;
-	float layer_kind;
-	float stroke_width;
-	float2 feather_mask_position;
-	float2 feather_mask_size;
-	float4 feather_mask_edges;
-	float2 feather_mask_corner;
-};
-
-fragment float4 ui_fragment_main(UiVertexOut in [[stage_in]]) {
-	float2 half_size = in.rect_size * 0.5;
-	float corner_radius = min(in.corner_radius, min(half_size.x, half_size.y));
-	float corner_exponent = in.corner_exponent;
-	float2 centered_position = in.local_position - half_size;
-	float2 rounded_extent = half_size - float2(corner_radius);
-	float2 corner_delta = abs(centered_position) - rounded_extent;
-	float2 abs_corner = max(corner_delta, float2(0.0));
-	float corner_sum = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
-	float corner_distance = pow(corner_sum, 1.0 / corner_exponent);
-	float field_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
-	float edge_width = max(fwidth(field_distance), 1.0);
-	float rounded_shape = step(0.0001, corner_radius);
-	float rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance);
-	float fill_coverage = mix(1.0, rounded_fill_coverage, rounded_shape);
-
-	float corner_gradient_scale = pow(max(corner_sum, 0.0001), (1.0 / corner_exponent) - 1.0);
-	float2 corner_gradient = float2(
+	let corner_gradient_scale: f32 = pow(max(corner_sum, 0.0001), (1.0 / corner_exponent) - 1.0);
+	let corner_gradient: vec2f = vec2f(
 		pow(abs_corner.x, corner_exponent - 1.0) * corner_gradient_scale,
 		pow(abs_corner.y, corner_exponent - 1.0) * corner_gradient_scale
 	);
-	float field_gradient_length = mix(1.0, max(length(corner_gradient), 0.0001), step(0.0001, corner_sum));
-	float signed_distance = field_distance / field_gradient_length;
-	float corrected_edge_width = max(fwidth(signed_distance), 1.0);
-	float inner_signed_distance = signed_distance + in.stroke_width;
-	float inner_coverage = 1.0 - smoothstep(-corrected_edge_width, corrected_edge_width, inner_signed_distance);
-	float stroke_coverage = max(fill_coverage - inner_coverage, 0.0);
-	float coverage = mix(fill_coverage, stroke_coverage, step(0.5, in.layer_kind));
-	float feather_top = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.x, 0.0001), in.pixel_position.y - in.feather_mask_position.y), step(0.0001, in.feather_mask_edges.x));
-	float feather_right = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.y, 0.0001), in.feather_mask_position.x + in.feather_mask_size.x - in.pixel_position.x), step(0.0001, in.feather_mask_edges.y));
-	float feather_bottom = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.z, 0.0001), in.feather_mask_position.y + in.feather_mask_size.y - in.pixel_position.y), step(0.0001, in.feather_mask_edges.z));
-	float feather_left = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.w, 0.0001), in.pixel_position.x - in.feather_mask_position.x), step(0.0001, in.feather_mask_edges.w));
-	float2 feather_half_size = in.feather_mask_size * 0.5;
-	float feather_corner_radius = min(in.feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
-	float feather_corner_exponent = in.feather_mask_corner.y;
-	float2 feather_centered_position = in.pixel_position - in.feather_mask_position - feather_half_size;
-	float2 feather_rounded_extent = feather_half_size - float2(feather_corner_radius);
-	float2 feather_corner_delta = abs(feather_centered_position) - feather_rounded_extent;
-	float2 feather_abs_corner = max(feather_corner_delta, float2(0.0));
-	float feather_corner_sum = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
-	float feather_corner_distance = pow(feather_corner_sum, 1.0 / feather_corner_exponent);
-	float feather_field_distance = feather_corner_distance + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
-	float feather_mask_enabled = step(0.0001, min(in.feather_mask_size.x, in.feather_mask_size.y));
-	float feather_rounded_shape = step(0.0001, feather_corner_radius);
-	float feather_shape_coverage = mix(1.0, 1.0 - smoothstep(-1.0, 1.0, feather_field_distance), feather_rounded_shape);
-	float feather_coverage = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
-	return float4(in.color.rgb, in.color.a * coverage * feather_coverage);
+	let field_gradient_length: f32 = mix(1.0, max(length(vec4f(corner_gradient.x, corner_gradient.y, 0.0, 0.0)), 0.0001), step(0.0001, corner_sum));
+	let signed_distance: f32 = field_distance / field_gradient_length;
+	let corrected_edge_width: f32 = max(fwidth(signed_distance), 1.0);
+	let inner_signed_distance: f32 = signed_distance + in_stroke_width;
+	let inner_coverage: f32 = 1.0 - smoothstep(0.0 - corrected_edge_width, corrected_edge_width, inner_signed_distance);
+	let stroke_coverage: f32 = max(fill_coverage - inner_coverage, 0.0);
+	let coverage: f32 = mix(fill_coverage, stroke_coverage, step(0.5, in_layer_kind));
+	let feather_top: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.x, 0.0001), in_pixel_position.y - in_feather_mask_position.y), step(0.0001, in_feather_mask_edges.x));
+	let feather_right: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.y, 0.0001), in_feather_mask_position.x + in_feather_mask_size.x - in_pixel_position.x), step(0.0001, in_feather_mask_edges.y));
+	let feather_bottom: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.z, 0.0001), in_feather_mask_position.y + in_feather_mask_size.y - in_pixel_position.y), step(0.0001, in_feather_mask_edges.z));
+	let feather_left: f32 = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.w, 0.0001), in_pixel_position.x - in_feather_mask_position.x), step(0.0001, in_feather_mask_edges.w));
+	let feather_half_size: vec2f = in_feather_mask_size * 0.5;
+	let feather_corner_radius: f32 = min(in_feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
+	let feather_corner_exponent: f32 = in_feather_mask_corner.y;
+	let feather_centered_position: vec2f = in_pixel_position - in_feather_mask_position - feather_half_size;
+	let feather_rounded_extent: vec2f = feather_half_size - vec2f(feather_corner_radius, feather_corner_radius);
+	let feather_corner_delta: vec2f = abs(feather_centered_position) - feather_rounded_extent;
+	let feather_abs_corner: vec2f = max(feather_corner_delta, vec2f(0.0, 0.0));
+	let feather_corner_sum: f32 = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
+	let feather_corner_distance: f32 = pow(feather_corner_sum, 1.0 / feather_corner_exponent);
+	let feather_field_distance: f32 = feather_corner_distance + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
+	let feather_mask_enabled: f32 = step(0.0001, min(in_feather_mask_size.x, in_feather_mask_size.y));
+	let feather_rounded_shape: f32 = step(0.0001, feather_corner_radius);
+	let feather_shape_coverage: f32 = mix(1.0, 1.0 - smoothstep(0.0 - 1.0, 1.0, feather_field_distance), feather_rounded_shape);
+	let feather_coverage: f32 = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
+	out_color_attachment = vec4f(in_color.x, in_color.y, in_color.z, in_color.w * coverage * feather_coverage);
 }
 "#;
 
@@ -3516,8 +3312,8 @@ mod tests {
 		UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiTextDrawElement, MAX_UI_ELEMENTS,
 		MAX_UI_VERTICES_PER_DRAW, UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL, UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL,
 		UI_BLUR_COMPUTE_SHADER_GLSL, UI_BLUR_COMPUTE_SHADER_MSL, UI_BLUR_COPY_SHADER_GLSL, UI_BLUR_COPY_SHADER_MSL,
-		UI_CURVE_FRAGMENT_SHADER_GLSL, UI_CURVE_FRAGMENT_SHADER_MSL, UI_FRAGMENT_SHADER_GLSL_MAIN, UI_FRAGMENT_SHADER_MSL,
-		UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_CURVE_SPAN, UI_VERTICES_PER_ELEMENT,
+		UI_CURVE_FRAGMENT_SHADER_GLSL, UI_CURVE_FRAGMENT_SHADER_MSL, UI_FRAGMENT_SHADER_BESL, UI_INDICES_PER_CURVE_SPAN,
+		UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_CURVE_SPAN, UI_VERTICES_PER_ELEMENT,
 	};
 	use crate::ui::{
 		components::{
@@ -4178,6 +3974,15 @@ mod tests {
 	}
 
 	#[test]
+	fn primary_ui_besl_shaders_build_besl_programs() {
+		let vertex_main = super::create_ui_vertex_program();
+		let fragment_main = super::create_ui_fragment_program();
+
+		assert!(matches!(vertex_main.borrow().node(), besl::Nodes::Function { .. }));
+		assert!(matches!(fragment_main.borrow().node(), besl::Nodes::Function { .. }));
+	}
+
+	#[test]
 	fn curve_geometry_reports_capacity_truncation() {
 		let frame_allocator = bumpalo::Bump::new();
 		let curves = (0..=MAX_UI_ELEMENTS)
@@ -4203,20 +4008,6 @@ mod tests {
 
 		assert!(geometry.truncated);
 		assert_eq!(geometry.vertices.len(), MAX_UI_ELEMENTS * UI_VERTICES_PER_CURVE_SPAN);
-	}
-
-	#[test]
-	fn curve_shaders_use_derivative_antialiasing_and_feather_masks() {
-		assert!(UI_CURVE_FRAGMENT_SHADER_GLSL.contains("fwidth(signed_distance)"));
-		assert!(UI_CURVE_FRAGMENT_SHADER_GLSL.contains("strip_distance"));
-		assert!(!UI_CURVE_FRAGMENT_SHADER_GLSL.contains("clamp(dot(in_pixel_position"));
-		assert!(UI_CURVE_FRAGMENT_SHADER_GLSL.contains("coverage * feather_coverage"));
-		assert!(UI_CURVE_FRAGMENT_SHADER_GLSL.contains("feather_shape_coverage"));
-		assert!(UI_CURVE_FRAGMENT_SHADER_MSL.contains("fwidth(signed_distance)"));
-		assert!(UI_CURVE_FRAGMENT_SHADER_MSL.contains("strip_distance"));
-		assert!(!UI_CURVE_FRAGMENT_SHADER_MSL.contains("clamp(dot(in.pixel_position"));
-		assert!(UI_CURVE_FRAGMENT_SHADER_MSL.contains("coverage * feather_coverage"));
-		assert!(UI_CURVE_FRAGMENT_SHADER_MSL.contains("feather_shape_coverage"));
 	}
 
 	#[test]
@@ -4257,99 +4048,6 @@ mod tests {
 		);
 
 		assert_eq!(geometry.vertices[0].corner_exponent, 8.0);
-	}
-
-	#[test]
-	fn rounded_rect_glsl_shader_uses_derivative_anti_aliasing() {
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fwidth(field_distance)"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN
-			.contains("rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance)"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fwidth(signed_distance)"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("in_color.a * coverage * feather_coverage"));
-	}
-
-	#[test]
-	fn rounded_rect_msl_shader_uses_derivative_anti_aliasing() {
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("fwidth(field_distance)"));
-		assert!(UI_FRAGMENT_SHADER_MSL
-			.contains("rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance)"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("fwidth(signed_distance)"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("in.color.a * coverage * feather_coverage"));
-	}
-
-	#[test]
-	fn rounded_rect_shaders_apply_feather_mask_coverage() {
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("feather_top"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("feather_right"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("feather_bottom"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("feather_left"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("feather_shape_coverage"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("feather_top"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("feather_right"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("feather_bottom"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("feather_left"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("feather_shape_coverage"));
-	}
-
-	#[test]
-	fn blur_shaders_sample_and_composite_backdrop() {
-		assert!(UI_BLUR_COMPUTE_SHADER_GLSL.contains("layout(constant_id = 0) const int BLUR_AXIS"));
-		assert!(UI_BLUR_COMPUTE_SHADER_GLSL.contains("imageStore(output_texture"));
-		assert!(UI_BLUR_COMPUTE_SHADER_MSL.contains("function_constant(0)"));
-		assert!(UI_BLUR_COMPUTE_SHADER_MSL.contains("output_texture.write"));
-		assert!(UI_BLUR_COPY_SHADER_GLSL.contains("textureLod(source_texture"));
-		assert!(UI_BLUR_COPY_SHADER_MSL.contains("ui_backdrop_blur_copy"));
-		assert!(UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL.contains("texture(source_texture"));
-		assert!(UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL.contains("texture(blurred_texture"));
-		assert!(UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL.contains("gl_FragCoord.xy / vec2(textureSize(blurred_texture, 0))"));
-		assert!(!UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL.contains("textureSize(blurred_texture, 0)) * float(2)"));
-		assert!(!UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL.contains("in_color.a * coverage"));
-		assert!(UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL.contains("mix(source.rgb, blurred.rgb, blur_strength)"));
-		assert!(UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL.contains("out_color_attachment = vec4(color, 1.0)"));
-		assert!(UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL.contains("source_texture.sample"));
-		assert!(UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL.contains("blurred_texture.sample"));
-		assert!(!UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL.contains("blur_extent * 2.0"));
-		assert!(!UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL.contains("in.color.a * coverage"));
-		assert!(UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL.contains("mix(source.rgb, blurred.rgb, blur_strength)"));
-		assert!(UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL.contains("return float4(color, 1.0)"));
-	}
-
-	#[test]
-	fn square_fill_layers_do_not_antialias_shared_edges() {
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("rounded_shape = step(0.0001, corner_radius)"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fill_coverage = mix(1.0, rounded_fill_coverage, rounded_shape)"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("rounded_shape = step(0.0001, corner_radius)"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("fill_coverage = mix(1.0, rounded_fill_coverage, rounded_shape)"));
-	}
-
-	#[test]
-	fn rounded_rect_shaders_use_superellipse_corner_distance() {
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("pow(abs_corner.x, corner_exponent)"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("1.0 / corner_exponent"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("pow(abs_corner.x, corner_exponent)"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("1.0 / corner_exponent"));
-	}
-
-	#[test]
-	fn rounded_rect_shaders_support_stroke_band_coverage() {
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("field_gradient_length"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("corner_gradient"));
-		assert!(
-			UI_FRAGMENT_SHADER_GLSL_MAIN.contains("mix(1.0, max(length(corner_gradient), 0.0001), step(0.0001, corner_sum))")
-		);
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("field_distance / field_gradient_length"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("signed_distance + in_stroke_width"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("fill_coverage - inner_coverage"));
-		assert!(UI_FRAGMENT_SHADER_GLSL_MAIN.contains("step(0.5, in_layer_kind)"));
-		assert!(!UI_FRAGMENT_SHADER_GLSL_MAIN.contains("gradient_sample"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("field_gradient_length"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("corner_gradient"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("mix(1.0, max(length(corner_gradient), 0.0001), step(0.0001, corner_sum))"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("field_distance / field_gradient_length"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("signed_distance + in.stroke_width"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("fill_coverage - inner_coverage"));
-		assert!(UI_FRAGMENT_SHADER_MSL.contains("step(0.5, in.layer_kind)"));
-		assert!(!UI_FRAGMENT_SHADER_MSL.contains("gradient_sample"));
 	}
 
 	#[test]

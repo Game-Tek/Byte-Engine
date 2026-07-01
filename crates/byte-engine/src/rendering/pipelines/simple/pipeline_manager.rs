@@ -126,10 +126,18 @@ impl PipelineManager {
 
 			create_besl_shader(
 				context,
+				"byte-engine/rendering/simple/vertex",
 				"Vertex Shader",
-				ghi::ShaderTypes::Vertex,
-				&ShaderGenerationSettings::vertex(),
-				&main_node,
+				ResourceShaderTypes::Vertex,
+				ShaderGenerationSettings::vertex(),
+				main_node,
+				material::ShaderInterface {
+					workgroup_size: None,
+					bindings: vec![
+						material::Binding::new(0, 0, true, false),
+						material::Binding::new(0, 1, true, false),
+					],
+				},
 			)
 		};
 
@@ -204,10 +212,15 @@ impl PipelineManager {
 
 			create_besl_shader(
 				context,
+				"byte-engine/rendering/simple/fragment",
 				"Fragment Shader",
-				ghi::ShaderTypes::Fragment,
-				&ShaderGenerationSettings::fragment(),
-				&main_node,
+				ResourceShaderTypes::Fragment,
+				ShaderGenerationSettings::fragment(),
+				main_node,
+				material::ShaderInterface {
+					workgroup_size: None,
+					bindings: Vec::new(),
+				},
 			)
 		};
 
@@ -380,48 +393,50 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 
 fn create_besl_shader(
 	context: &mut ghi::implementation::Context,
+	id: &str,
 	name: &str,
-	stage: ghi::ShaderTypes,
-	settings: &ShaderGenerationSettings,
-	main_node: &besl::NodeReference,
+	stage: ResourceShaderTypes,
+	settings: ShaderGenerationSettings,
+	main_node: besl::NodeReference,
+	interface: material::ShaderInterface,
 ) -> ghi::ShaderHandle {
-	let glsl = GLSLShaderGenerator::new()
-		.generate(settings, main_node)
-		.expect("Failed to generate simple pipeline GLSL. The most likely cause is invalid BESL lowering.");
-	let msl = MSLShaderGenerator::new()
-		.generate(settings, main_node)
-		.expect("Failed to generate simple pipeline MSL. The most likely cause is invalid BESL lowering.");
-	let evaluation = ProgramEvaluation::from_main(main_node)
-		.expect("Failed to evaluate simple pipeline shader bindings. The most likely cause is invalid BESL shader structure.");
-	let binding_descriptors = evaluation.bindings().iter().map(|binding| {
-		let binding = resource_management::shader::generator::CompiledShaderBinding::new(
-			binding.set,
-			binding.binding,
-			binding.read,
-			binding.write,
-		);
-		map_shader_binding_to_shader_binding_descriptor(&binding)
-	});
-
-	let compiled = ghi::shader::compile(
-		name,
-		ghi::shader::ShaderSource::Platform {
-			glsl: &glsl,
-			msl: &msl,
-			msl_entry_point: "besl_main",
+	crate::rendering::shader_store::create_shader(
+		context,
+		None,
+		&crate::rendering::shader_store::ShaderSourceDescriptor {
+			id,
+			name,
+			stage,
+			source: crate::rendering::shader_store::ShaderSourceDefinition::Besl { settings, main_node },
+			interface,
 		},
 	)
-	.expect("Failed to compile simple pipeline shader. The most likely cause is invalid generated shader source.");
-
-	context
-		.create_shader(Some(name), compiled.as_source(), stage, binding_descriptors)
-		.expect("Failed to create simple pipeline shader. The most likely cause is an incompatible shader interface.")
+	.expect("Failed to create simple pipeline BESL shader. The most likely cause is an incompatible shader interface.")
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub(super) struct InstanceShaderData {
 	instance_transform: ShaderMatrix4,
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn simple_pipeline_uses_shader_store_for_besl_generation() {
+		let source = include_str!("pipeline_manager.rs");
+		let production_source = source
+			.split("#[cfg(test)]")
+			.next()
+			.expect("Expected production source before tests");
+
+		assert!(!production_source.contains("GLSLShaderGenerator"));
+		assert!(!production_source.contains("MSLShaderGenerator"));
+		assert!(!production_source.contains("SPIRVShaderGenerator"));
+		assert!(!production_source.contains("ProgramEvaluation"));
+		assert!(!production_source.contains("ShaderSource::Platform"));
+		assert!(production_source.contains("ShaderSourceDefinition::Besl"));
+	}
 }
 
 use std::{
@@ -440,11 +455,8 @@ use ghi::{
 };
 use math::{Matrix4, ShaderMatrix4};
 use resource_management::{
-	asset::bema_asset_handler::ProgramGenerator,
-	shader::{
-		besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator, evaluation::ProgramEvaluation},
-		generator::ShaderGenerationSettings,
-	},
+	asset::bema_asset_handler::ProgramGenerator, resources::material, shader::generator::ShaderGenerationSettings,
+	types::ShaderTypes as ResourceShaderTypes,
 };
 use utils::{
 	hash::{HashMap, HashMapExt},
@@ -465,7 +477,7 @@ use crate::{
 	rendering::Camera,
 	rendering::{
 		lights::{Light, Lights},
-		make_perspective_view_from_camera, map_shader_binding_to_shader_binding_descriptor,
+		make_perspective_view_from_camera,
 		pipelines::simple::{render_pass, CameraShaderData, RenderPass},
 		render_pass::{FramePrepare, RenderPassBuilder, RenderPassReturn},
 		renderable::mesh::MeshSource,

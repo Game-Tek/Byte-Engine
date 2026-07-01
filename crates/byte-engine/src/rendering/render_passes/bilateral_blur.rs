@@ -44,6 +44,8 @@ impl BaseBilateralBlurPass {
 			&[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING],
 		);
 
+		// This pass still uses GLSL as a temporary backend-specific bridge because
+		// the shader depends on specialization constants and fixed-size arrays.
 		let shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,

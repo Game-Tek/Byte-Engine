@@ -12,6 +12,26 @@ pub struct CommonShaderScope {}
 
 pub struct CommonShaderGenerator {}
 
+fn member<'a>(name: impl Into<std::borrow::Cow<'a, str>>) -> besl::parser::Node<'a> {
+	besl::parser::Node::member_expression(name)
+}
+
+fn call<'a>(name: &'a str, parameters: Vec<besl::parser::Node<'a>>) -> besl::parser::Node<'a> {
+	besl::parser::Node::call(name, parameters)
+}
+
+fn literal<'a>(value: impl Into<std::borrow::Cow<'a, str>>) -> besl::parser::Node<'a> {
+	besl::parser::Node::literal_expression(value)
+}
+
+fn op<'a>(name: &'a str, left: besl::parser::Node<'a>, right: besl::parser::Node<'a>) -> besl::parser::Node<'a> {
+	besl::parser::Node::operator(name, left, right)
+}
+
+fn return_expr<'a>(value: besl::parser::Node<'a>) -> besl::parser::Node<'a> {
+	besl::parser::Node::return_value(value)
+}
+
 impl Default for CommonShaderGenerator {
 	fn default() -> Self {
 		Self::new()
@@ -43,19 +63,19 @@ impl CommonShaderScope {
 			"vec2f_squared_length",
 			vec![Node::parameter("v", "vec2f")],
 			"f32",
-			vec![Node::glsl("return dot(v, v)", &[], &[])],
+			vec![return_expr(call("dot", vec![member("v"), member("v")]))],
 		);
 		let square_vec3 = Node::function(
 			"vec3f_squared_length",
 			vec![Node::parameter("v", "vec3f")],
 			"f32",
-			vec![Node::glsl("return dot(v, v)", &[], &[])],
+			vec![return_expr(call("dot", vec![member("v"), member("v")]))],
 		);
 		let square_vec4 = Node::function(
 			"vec4f_squared_length",
 			vec![Node::parameter("v", "vec4f")],
 			"f32",
-			vec![Node::glsl("return dot(v, v)", &[], &[])],
+			vec![return_expr(call("dot", vec![member("v"), member("v")]))],
 		);
 
 		let min_diff = Node::function(
@@ -152,7 +172,14 @@ impl CommonShaderScope {
 			"sin_from_tan",
 			vec![Node::parameter("x", "f32")],
 			"f32",
-			vec![Node::glsl("return x * inversesqrt(x*x + 1.0)", &[], &[])],
+			vec![return_expr(op(
+				"*",
+				member("x"),
+				call(
+					"inversesqrt",
+					vec![op("+", op("*", member("x"), member("x")), literal("1.0"))],
+				),
+			))],
 		);
 		let tangent = Node::function(
 			"tangent",
@@ -176,11 +203,16 @@ impl CommonShaderScope {
 				Node::parameter("pb", "vec3f"),
 			],
 			"vec3f",
-			vec![Node::glsl(
-				"return normalize(cross(min_diff(p, pr, pl), min_diff(p, pt, pb)))",
-				&["min_diff"],
-				&[],
-			)],
+			vec![return_expr(call(
+				"normalize",
+				vec![call(
+					"cross",
+					vec![
+						call("min_diff", vec![member("p"), member("pr"), member("pl")]),
+						call("min_diff", vec![member("p"), member("pt"), member("pb")]),
+					],
+				)],
+			))],
 		);
 
 		let make_perpendicular_vector = Node::function(

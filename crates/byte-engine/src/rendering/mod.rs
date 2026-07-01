@@ -53,7 +53,7 @@ pub use view::View;
 
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(
-	b: &resource_management::shader::besl::backends::spirv::Binding,
+	b: &resource_management::shader::generator::CompiledShaderBinding,
 ) -> ghi::shader::BindingDescriptor {
 	ghi::shader::BindingDescriptor::new(
 		b.set,

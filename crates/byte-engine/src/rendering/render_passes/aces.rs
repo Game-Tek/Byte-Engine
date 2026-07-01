@@ -5,7 +5,9 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	FrameKey,
 };
-use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};
+use resource_management::{
+	resources::material, shader::generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
+};
 use utils::{Box, Extent};
 
 use crate::core::Entity;
@@ -13,6 +15,7 @@ use crate::{
 	core::EntityHandle,
 	rendering::{
 		render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn},
+		shader_store::{ShaderSourceDefinition, ShaderSourceDescriptor},
 		view::View,
 		Sink,
 	},
@@ -58,15 +61,14 @@ impl BaseAcesToneMapPass {
 
 fn create_tone_mapping_shader(render_pass_builder: &mut RenderPassBuilder<'_>) -> ghi::ShaderHandle {
 	render_pass_builder
-		.create_shader(&crate::rendering::shader_store::ShaderSourceDescriptor {
+		.create_shader(&ShaderSourceDescriptor {
 			id: "byte-engine/rendering/aces/tone-mapping",
 			name: "ACES Tone Mapping Compute Shader",
 			stage: ResourceShaderTypes::Compute,
-			source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
-				glsl: TONE_MAPPING_SHADER,
-				msl: TONE_MAPPING_SHADER_MSL,
-				msl_entry_point: "aces_tonemap",
-			}),
+			source: ShaderSourceDefinition::Besl {
+				settings: ShaderGenerationSettings::compute(Extent::square(32)).name("ACES Tonemapping".to_string()),
+				main_node: create_tone_mapping_program(),
+			},
 			interface: material::ShaderInterface {
 				workgroup_size: Some((32, 32, 1)),
 				bindings: vec![
@@ -76,6 +78,42 @@ fn create_tone_mapping_shader(render_pass_builder: &mut RenderPassBuilder<'_>) -
 			},
 		})
 		.expect("Failed to create ACES tone mapping shader. The most likely cause is an incompatible shader interface.")
+}
+
+fn create_tone_mapping_program() -> besl::NodeReference {
+	let mut root = besl::Node::root();
+	root.add_child(
+		besl::Node::binding(
+			"source",
+			besl::BindingTypes::Image {
+				format: "rgba16".to_string(),
+			},
+			0,
+			0,
+			true,
+			false,
+		)
+		.into(),
+	);
+	root.add_child(
+		besl::Node::binding(
+			"result",
+			besl::BindingTypes::Image {
+				format: "unknown".to_string(),
+			},
+			0,
+			1,
+			false,
+			true,
+		)
+		.into(),
+	);
+
+	let program = besl::compile_to_besl(TONE_MAPPING_SHADER, Some(root))
+		.expect("Failed to lex the ACES tone mapping shader. The most likely cause is invalid BESL syntax.");
+	program.get_main().expect(
+		"Failed to find the ACES tone mapping entry point. The most likely cause is that the BESL program did not define main.",
+	)
 }
 
 pub struct AcesToneMapPass {
@@ -141,93 +179,70 @@ impl RenderPass for AcesToneMapPass {
 	}
 }
 
-const TONE_MAPPING_SHADER_MSL: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
-
-// besl-threadgroup-size: 32, 32, 1
-
-struct ToneMapSet0 {
-	texture2d<float, access::read> source [[id(0)]];
-	texture2d<float, access::write> result [[id(1)]];
-};
-
-float3 aces_narkowicz(float3 x) {
-	constant float a = 2.51;
-	constant float b = 0.03;
-	constant float c = 2.43;
-	constant float d = 0.59;
-	constant float e = 0.14;
-	return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+const TONE_MAPPING_SHADER: &str = r#"
+aces_narkowicz: fn(color: vec3f) -> vec3f {
+	let a: f32 = 2.51;
+	let b: f32 = 0.03;
+	let c: f32 = 2.43;
+	let d: f32 = 0.59;
+	let e: f32 = 0.14;
+	return clamp((color * (color * a + vec3f(b, b, b))) / (color * (color * c + vec3f(d, d, d)) + vec3f(e, e, e)), vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
 }
 
-kernel void aces_tonemap(
-	uint2 gid [[thread_position_in_grid]],
-	constant ToneMapSet0& set0 [[buffer(16)]]
-) {
-	if (gid.x >= set0.source.get_width() || gid.y >= set0.source.get_height()) {
-		return;
+main: fn() -> void {
+	let coord: vec2u = thread_id();
+	let source_color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let result_color: vec3f = vec3f(0.0, 0.0, 0.0);
+
+	guard_image_bounds(source, coord);
+	source_color = image_load(source, coord);
+	result_color = aces_narkowicz(vec3f(source_color.x, source_color.y, source_color.z));
+	result_color = pow(result_color, vec3f(1.0 / 2.2, 1.0 / 2.2, 1.0 / 2.2));
+	write(result, coord, vec4f(result_color.x, result_color.y, result_color.z, 1.0));
+}
+"#;
+
+#[cfg(test)]
+mod tests {
+	use resource_management::shader::{
+		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings,
+	};
+	use utils::Extent;
+
+	use super::{create_tone_mapping_program, TONE_MAPPING_SHADER};
+
+	#[test]
+	fn aces_tonemap_besl_parses() {
+		besl::parse(TONE_MAPPING_SHADER)
+			.expect("Failed to parse the ACES BESL shader. The most likely cause is invalid BESL source syntax.");
 	}
 
-	float4 source_color = set0.source.read(gid);
-	float3 result_color = aces_narkowicz(source_color.rgb);
-	result_color = pow(result_color, float3(1.0 / 2.2));
-	set0.result.write(float4(result_color, 1.0), gid);
+	#[test]
+	fn aces_tonemap_besl_generates_glsl() {
+		let main_node = create_tone_mapping_program();
+		let shader = GLSLShaderGenerator::new()
+			.generate(
+				&ShaderGenerationSettings::compute(Extent::square(32)).name("ACES Tonemapping Test".to_string()),
+				&main_node,
+			)
+			.expect("Failed to generate the ACES BESL shader GLSL. The most likely cause is invalid BESL lowering.");
+
+		assert!(shader.contains("imageLoad(source, ivec2(coord))"));
+		assert!(shader.contains("imageStore(result, ivec2(coord)"));
+	}
+
+	#[test]
+	fn aces_tonemap_besl_generates_msl() {
+		let main_node = create_tone_mapping_program();
+		let shader = MSLShaderGenerator::new()
+			.generate(
+				&ShaderGenerationSettings::compute(Extent::square(32)).name("ACES Tonemapping Test".to_string()),
+				&main_node,
+			)
+			.expect("Failed to generate the ACES BESL shader MSL. The most likely cause is invalid BESL lowering.");
+
+		assert!(shader.contains("kernel void besl_main"));
+		assert!(shader.contains("set0.source.read(coord)"));
+		assert!(shader.contains("set0.result.write("));
+	}
 }
-"#;
-
-const TONE_MAPPING_SHADER: &str = r#"
-#version 450
-#pragma shader_stage(compute)
-
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_buffer_reference2: enable
-#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
-
-layout(set=0, binding=0, rgba16) uniform readonly image2D source;
-layout(set=0, binding=1) uniform writeonly image2D result;
-
-vec3 ACESNarkowicz(vec3 x) {
-	const float a = 2.51;
-	const float b = 0.03;
-	const float c = 2.43;
-	const float d = 0.59;
-	const float e = 0.14;
-	return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
-}
-
-const mat3 ACES_INPUT_MAT = mat3(
-	vec3( 0.59719,  0.35458,  0.04823),
-	vec3( 0.07600,  0.90834,  0.01566),
-	vec3( 0.02840,  0.13383,  0.83777)
-);
-
-const mat3 ACES_OUTPUT_MAT = mat3(
-	vec3( 1.60475, -0.53108, -0.07367),
-	vec3(-0.10208,  1.10813, -0.00605),
-	vec3(-0.00327, -0.07276,  1.07602)
-);
-
-vec3 RRTAndODTFit(vec3 v) {
-	vec3 a = v * (v + 0.0245786) - 0.000090537;
-	vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
-	return a / b;
-}
-
-vec3 ACESFitted(vec3 x) {
-	return clamp(ACES_OUTPUT_MAT * RRTAndODTFit(ACES_INPUT_MAT * x), 0.0, 1.0);
-}
-
-layout(local_size_x=32, local_size_y=32) in;
-void main() {
-	if (gl_GlobalInvocationID.x >= imageSize(source).x || gl_GlobalInvocationID.y >= imageSize(source).y) { return; }
-
-	vec4 source_color = imageLoad(source, ivec2(gl_GlobalInvocationID.xy));
-
-	vec3 result_color = ACESNarkowicz(source_color.rgb);
-
-	result_color = pow(result_color, vec3(1.0 / 2.2));
-
-	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(result_color, 1.0));
-}
-"#;

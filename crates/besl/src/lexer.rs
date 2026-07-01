@@ -212,13 +212,20 @@ impl Node {
 			vec![("left", vec4f32.clone()), ("right", vec4f32.clone())],
 			f32_t.clone(),
 		);
+		let vec3_dot_intrinsic = builtin_intrinsic(
+			"dot",
+			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
+			f32_t.clone(),
+		);
 		let cross_intrinsic = builtin_intrinsic(
 			"cross",
 			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
 			vec3f32.clone(),
 		);
 		let length_intrinsic = builtin_intrinsic("length", vec![("value", vec4f32.clone())], f32_t.clone());
+		let vec3_length_intrinsic = builtin_intrinsic("length", vec![("value", vec3f32.clone())], f32_t.clone());
 		let normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone());
+		let vec3_normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec3f32.clone())], vec3f32.clone());
 		let scalar_max_intrinsic =
 			builtin_intrinsic("max", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone());
 		let scalar_min_intrinsic =
@@ -271,6 +278,7 @@ impl Node {
 		let vec2_abs_intrinsic = builtin_intrinsic("abs", vec![("value", vec2f32.clone())], vec2f32.clone());
 		let sqrt_intrinsic = builtin_intrinsic("sqrt", vec![("value", f32_t.clone())], f32_t.clone());
 		let exp_intrinsic = builtin_intrinsic("exp", vec![("value", f32_t.clone())], f32_t.clone());
+		let vec3_exp_intrinsic = builtin_intrinsic("exp", vec![("value", vec3f32.clone())], vec3f32.clone());
 		let sin_intrinsic = builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone());
 		let cos_intrinsic = builtin_intrinsic("cos", vec![("value", f32_t.clone())], f32_t.clone());
 		let tan_intrinsic = builtin_intrinsic("tan", vec![("value", f32_t.clone())], f32_t.clone());
@@ -378,9 +386,12 @@ impl Node {
 			fetch_intrinsic,
 			fetch_u32_intrinsic,
 			dot_intrinsic,
+			vec3_dot_intrinsic,
 			cross_intrinsic,
 			length_intrinsic,
+			vec3_length_intrinsic,
 			normalize_intrinsic,
+			vec3_normalize_intrinsic,
 			scalar_max_intrinsic,
 			scalar_min_intrinsic,
 			vec2_max_intrinsic,
@@ -395,6 +406,7 @@ impl Node {
 			vec2_abs_intrinsic,
 			sqrt_intrinsic,
 			exp_intrinsic,
+			vec3_exp_intrinsic,
 			sin_intrinsic,
 			cos_intrinsic,
 			tan_intrinsic,

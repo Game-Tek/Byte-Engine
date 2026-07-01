@@ -4,13 +4,16 @@ use ghi::{
 	frame::Frame as _,
 };
 use math::{mat::MatInverse as _, ShaderMatrix4, Vector3, Vector4};
-use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};
+use resource_management::{
+	resources::material, shader::generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
+};
 use utils::{Box, Extent};
 
 use crate::{
 	core::Entity,
 	rendering::{
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+		shader_store::{ShaderSourceDefinition, ShaderSourceDescriptor},
 		Sink,
 	},
 };
@@ -186,15 +189,15 @@ fn create_sky_shader(
 	crate::rendering::shader_store::create_shader(
 		context,
 		shader_storage,
-		&crate::rendering::shader_store::ShaderSourceDescriptor {
+		&ShaderSourceDescriptor {
 			id: "byte-engine/rendering/sky",
 			name: "Sky Render Pass Compute Shader",
 			stage: ResourceShaderTypes::Compute,
-			source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
-				glsl: SKY_SHADER,
-				msl: SKY_SHADER_MSL,
-				msl_entry_point: "sky_render_pass",
-			}),
+			source: ShaderSourceDefinition::Besl {
+				settings: ShaderGenerationSettings::compute(Extent::new(8, 8, 1))
+					.name("Sky Render Pass Compute Shader".to_string()),
+				main_node: create_sky_program(),
+			},
 			interface: material::ShaderInterface {
 				workgroup_size: Some((8, 8, 1)),
 				bindings: vec![
@@ -206,6 +209,61 @@ fn create_sky_shader(
 		},
 	)
 	.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.")
+}
+
+fn create_sky_program() -> besl::NodeReference {
+	let mut root = besl::Node::root();
+	let vec4f = root.get_child("vec4f").expect("vec4f type not found in BESL root");
+	let mat4f = root.get_child("mat4f").expect("mat4f type not found in BESL root");
+
+	root.add_child(
+		besl::Node::binding(
+			"depth_texture",
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			0,
+			0,
+			true,
+			false,
+		)
+		.into(),
+	);
+	root.add_child(
+		besl::Node::binding(
+			"main_texture",
+			besl::BindingTypes::Image { format: String::new() },
+			0,
+			1,
+			false,
+			true,
+		)
+		.into(),
+	);
+	root.add_child(
+		besl::Node::binding(
+			"parameters",
+			besl::BindingTypes::Buffer {
+				members: vec![
+					besl::Node::member("inverse_view_projection", mat4f).into(),
+					besl::Node::member("camera_position", vec4f.clone()).into(),
+					besl::Node::member("sun_direction", vec4f.clone()).into(),
+					besl::Node::member("planet_center", vec4f.clone()).into(),
+					besl::Node::member("atmosphere", vec4f.clone()).into(),
+					besl::Node::member("misc", vec4f).into(),
+				],
+			},
+			0,
+			2,
+			true,
+			false,
+		)
+		.into(),
+	);
+
+	let program = besl::compile_to_besl(SKY_SHADER_BESL, Some(root))
+		.expect("Failed to compile the sky BESL shader. The most likely cause is invalid BESL syntax.");
+	program
+		.get_main()
+		.expect("Failed to find the sky BESL entry point. The most likely cause is that the BESL program did not define main.")
 }
 
 impl RenderPass for AtmosphereSkyRenderPass {
@@ -237,574 +295,209 @@ impl RenderPass for AtmosphereSkyRenderPass {
 	}
 }
 
-const SKY_SHADER: &str = r#"
-#version 460 core
-#pragma shader_stage(compute)
-
-#extension GL_EXT_shader_image_load_formatted:enable
-#extension GL_EXT_scalar_block_layout: enable
-
-layout(row_major) uniform;
-layout(row_major) buffer;
-
-layout(set=0, binding=0) uniform sampler2D depth_texture;
-layout(set=0, binding=1) uniform image2D main_texture;
-
-struct SkyParameters {
-	mat4 inverse_view_projection;
-	vec4 camera_position;
-	vec4 sun_direction;
-	vec4 planet_center;
-	vec4 atmosphere;
-	vec4 misc;
-};
-
-layout(set=0, binding=2, scalar) readonly buffer SkyParametersBuffer {
-	SkyParameters parameters;
-};
-
-layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
-
-const float PI = 3.14159265359;
-// These loops are nested per sky pixel, so keep both counts conservative.
-const int VIEW_SAMPLE_COUNT = 16;
-const int LIGHT_SAMPLE_COUNT = 4;
-
-const vec3 BETA_RAYLEIGH = vec3(5.802e-6, 13.558e-6, 33.100e-6);
-const vec3 BETA_MIE = vec3(3.996e-6);
-const vec3 BETA_OZONE = vec3(0.650e-6, 1.881e-6, 0.085e-6);
-
-vec3 get_camera_position(SkyParameters sky_parameters) {
-	return sky_parameters.camera_position.xyz;
+const SKY_SHADER_BESL: &str = r#"
+get_camera_position: fn () -> vec3f {
+	return vec3f(parameters.camera_position.x, parameters.camera_position.y, parameters.camera_position.z);
 }
 
-vec3 get_sun_direction(SkyParameters sky_parameters) {
-	return sky_parameters.sun_direction.xyz;
+get_sun_direction: fn () -> vec3f {
+	return vec3f(parameters.sun_direction.x, parameters.sun_direction.y, parameters.sun_direction.z);
 }
 
-vec3 get_planet_center(SkyParameters sky_parameters) {
-	return sky_parameters.planet_center.xyz;
+get_planet_center: fn () -> vec3f {
+	return vec3f(parameters.planet_center.x, parameters.planet_center.y, parameters.planet_center.z);
 }
 
-float get_ground_radius(SkyParameters sky_parameters) {
-	return sky_parameters.atmosphere.x;
-}
+get_ground_radius: fn () -> f32 { return parameters.atmosphere.x; }
+get_atmosphere_radius: fn () -> f32 { return parameters.atmosphere.y; }
+get_rayleigh_scale_height: fn () -> f32 { return parameters.atmosphere.z; }
+get_mie_scale_height: fn () -> f32 { return parameters.atmosphere.w; }
+get_mie_g: fn () -> f32 { return parameters.sun_direction.w; }
+get_sun_intensity: fn () -> f32 { return parameters.camera_position.w; }
+get_sun_angular_radius: fn () -> f32 { return parameters.planet_center.w; }
+get_ozone_strength: fn () -> f32 { return parameters.misc.x; }
 
-float get_atmosphere_radius(SkyParameters sky_parameters) {
-	return sky_parameters.atmosphere.y;
-}
-
-float get_rayleigh_scale_height(SkyParameters sky_parameters) {
-	return sky_parameters.atmosphere.z;
-}
-
-float get_mie_scale_height(SkyParameters sky_parameters) {
-	return sky_parameters.atmosphere.w;
-}
-
-float get_mie_g(SkyParameters sky_parameters) {
-	return sky_parameters.sun_direction.w;
-}
-
-float get_sun_intensity(SkyParameters sky_parameters) {
-	return sky_parameters.camera_position.w;
-}
-
-float get_sun_angular_radius(SkyParameters sky_parameters) {
-	return sky_parameters.planet_center.w;
-}
-
-float get_ozone_strength(SkyParameters sky_parameters) {
-	return sky_parameters.misc.x;
-}
-
-bool should_skip_below_horizon(SkyParameters sky_parameters) {
-	return sky_parameters.misc.y > 0.5;
-}
-
-bool ray_sphere_intersection(vec3 origin, vec3 direction, vec3 center, float radius, out float t_min, out float t_max) {
-	vec3 oc = origin - center;
-	float b = dot(oc, direction);
-	float c = dot(oc, oc) - radius * radius;
-	float discriminant = b * b - c;
-
-	if (discriminant < 0.0) {
-		return false;
-	}
-
-	float root = sqrt(discriminant);
-	t_min = -b - root;
-	t_max = -b + root;
-	return true;
-}
-
-vec3 density_profile(SkyParameters sky_parameters, vec3 sample_position) {
-	float altitude = length(sample_position - get_planet_center(sky_parameters)) - get_ground_radius(sky_parameters);
-
-	if (altitude < 0.0) {
-		return vec3(0.0);
-	}
-
-	float rayleigh = exp(-altitude / get_rayleigh_scale_height(sky_parameters));
-	float mie = exp(-altitude / get_mie_scale_height(sky_parameters));
-	float ozone = max(0.0, 1.0 - abs(altitude - 25000.0) / 15000.0) * get_ozone_strength(sky_parameters);
-
-	return vec3(rayleigh, mie, ozone);
-}
-
-vec3 extinction_from_density(vec3 density) {
-	return density.x * BETA_RAYLEIGH + density.y * BETA_MIE + density.z * BETA_OZONE;
-}
-
-float interleaved_gradient_noise(ivec2 pixel) {
-	return fract(52.9829189 * fract(0.06711056 * float(pixel.x) + 0.00583715 * float(pixel.y)));
-}
-
-float sample_distribution(float u) {
-	u = clamp(u, 0.0, 1.0);
-	return u * u;
-}
-
-float phase_rayleigh(float cosine_theta) {
-	return (3.0 / (16.0 * PI)) * (1.0 + cosine_theta * cosine_theta);
-}
-
-float phase_mie(float cosine_theta, float g) {
-	float g2 = g * g;
-	float denominator = 1.0 + g2 - 2.0 * g * cosine_theta;
-	float denominator_sqrt = sqrt(max(1e-4, denominator));
-	return (3.0 / (8.0 * PI)) * ((1.0 - g2) * (1.0 + cosine_theta * cosine_theta)) /
-		((2.0 + g2) * max(1e-4, denominator * denominator_sqrt));
-}
-
-vec3 march_transmittance(SkyParameters sky_parameters, vec3 origin, vec3 direction) {
-	float t_min;
-	float t_max;
-
-	if (!ray_sphere_intersection(origin, direction, get_planet_center(sky_parameters), get_atmosphere_radius(sky_parameters), t_min, t_max)) {
-		return vec3(1.0);
-	}
-
-	t_min = max(0.0, t_min);
-	float distance_through_atmosphere = t_max - t_min;
-	vec3 optical_depth = vec3(0.0);
-
-	float ground_t_min;
-	float ground_t_max;
-	if (ray_sphere_intersection(origin, direction, get_planet_center(sky_parameters), get_ground_radius(sky_parameters), ground_t_min, ground_t_max) && ground_t_max > 0.0) {
-		return vec3(0.0);
-	}
-
-	for (int i = 0; i < LIGHT_SAMPLE_COUNT; ++i) {
-		float t0 = t_min + distance_through_atmosphere * sample_distribution(float(i) / float(LIGHT_SAMPLE_COUNT));
-		float t1 = t_min + distance_through_atmosphere * sample_distribution(float(i + 1) / float(LIGHT_SAMPLE_COUNT));
-		float t = 0.5 * (t0 + t1);
-		float step_size = t1 - t0;
-		vec3 sample_position = origin + direction * t;
-		vec3 density = density_profile(sky_parameters, sample_position);
-		optical_depth += density * step_size;
-	}
-
-	return exp(-extinction_from_density(optical_depth));
-}
-
-vec3 integrate_atmosphere(SkyParameters sky_parameters, ivec2 pixel, vec3 origin, vec3 direction) {
-	float atmosphere_t_min;
-	float atmosphere_t_max;
-
-	if (!ray_sphere_intersection(origin, direction, get_planet_center(sky_parameters), get_atmosphere_radius(sky_parameters), atmosphere_t_min, atmosphere_t_max)) {
-		return vec3(0.0);
-	}
-
-	atmosphere_t_min = max(0.0, atmosphere_t_min);
-	float distance_through_atmosphere = atmosphere_t_max - atmosphere_t_min;
-	vec3 optical_depth = vec3(0.0);
-	vec3 luminance = vec3(0.0);
-	vec3 sun_direction = get_sun_direction(sky_parameters);
-	float cosine_theta = dot(direction, sun_direction);
-	float phase_r = phase_rayleigh(cosine_theta);
-	float phase_m = phase_mie(cosine_theta, get_mie_g(sky_parameters));
-	float jitter = interleaved_gradient_noise(pixel);
-
-	for (int i = 0; i < VIEW_SAMPLE_COUNT; ++i) {
-		float t0 = atmosphere_t_min + distance_through_atmosphere * sample_distribution(float(i) / float(VIEW_SAMPLE_COUNT));
-		float t1 = atmosphere_t_min + distance_through_atmosphere * sample_distribution(float(i + 1) / float(VIEW_SAMPLE_COUNT));
-		float t = mix(t0, t1, jitter);
-		float step_size = t1 - t0;
-		vec3 sample_position = origin + direction * t;
-		vec3 density = density_profile(sky_parameters, sample_position);
-		optical_depth += density * step_size;
-
-		vec3 transmittance_to_camera = exp(-extinction_from_density(optical_depth));
-		vec3 transmittance_to_sun = march_transmittance(sky_parameters, sample_position, sun_direction);
-		vec3 scattering =
-			density.x * BETA_RAYLEIGH * phase_r +
-			density.y * BETA_MIE * phase_m;
-
-		luminance += transmittance_to_camera * transmittance_to_sun * scattering * step_size;
-	}
-
-	float sun_disk = smoothstep(cos(get_sun_angular_radius(sky_parameters) * 1.4), cos(get_sun_angular_radius(sky_parameters)), cosine_theta);
-	vec3 sun_radiance = vec3(0.0);
-	if (sun_disk > 0.0) {
-		vec3 sun_transmittance = march_transmittance(sky_parameters, origin, sun_direction);
-		sun_radiance = sun_disk * sun_transmittance * vec3(20.0, 18.0, 16.0);
-	}
-
-	vec3 color = luminance * get_sun_intensity(sky_parameters) + sun_radiance;
-	return color / (vec3(1.0) + color);
-}
-
-vec3 reconstruct_view_direction(SkyParameters sky_parameters, ivec2 pixel, ivec2 extent) {
-	vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(extent);
-	vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-	vec4 world = sky_parameters.inverse_view_projection * vec4(ndc, 0.0, 1.0);
-	return normalize(world.xyz / world.w - get_camera_position(sky_parameters));
-}
-
-bool is_below_horizon(SkyParameters sky_parameters, vec3 origin, vec3 direction) {
-	vec3 local_up = normalize(origin - get_planet_center(sky_parameters));
-	return dot(direction, local_up) < 0.0;
-}
-
-void main() {
-	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-	ivec2 extent = imageSize(main_texture);
-
-	if (pixel.x >= extent.x || pixel.y >= extent.y) {
-		return;
-	}
-
-	vec2 depth_uv = (vec2(pixel) + vec2(0.5)) / vec2(extent);
-	float depth = textureLod(depth_texture, depth_uv, 0.0).r;
-	if (depth > 1e-6) {
-		return;
-	}
-
-	SkyParameters sky_parameters = parameters;
-	vec3 direction = reconstruct_view_direction(sky_parameters, pixel, extent);
-	if (should_skip_below_horizon(sky_parameters) && is_below_horizon(sky_parameters, get_camera_position(sky_parameters), direction)) {
-		return;
-	}
-
-	vec3 sky = integrate_atmosphere(sky_parameters, pixel, get_camera_position(sky_parameters), direction);
-
-imageStore(main_texture, pixel, vec4(sky, 1.0));
-}
-"#;
-
-const SKY_SHADER_MSL: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
-
-// besl-threadgroup-size: 8, 8, 1
-
-struct SkyParameters {
-	float4x4 inverse_view_projection;
-	float4 camera_position;
-	float4 sun_direction;
-	float4 planet_center;
-	float4 atmosphere;
-	float4 misc;
-};
-
-struct SkySet0 {
-	texture2d<float> depth_texture [[id(0)]];
-	sampler depth_texture_sampler [[id(1)]];
-	texture2d<float, access::write> main_texture [[id(2)]];
-	device SkyParameters* parameters [[id(3)]];
-};
-
-constant float PI = 3.14159265359;
-// These loops are nested per sky pixel, so keep both counts conservative.
-constant int VIEW_SAMPLE_COUNT = 16;
-constant int LIGHT_SAMPLE_COUNT = 4;
-
-constant float3 BETA_RAYLEIGH = float3(5.802e-6, 13.558e-6, 33.100e-6);
-constant float3 BETA_MIE = float3(3.996e-6);
-constant float3 BETA_OZONE = float3(0.650e-6, 1.881e-6, 0.085e-6);
-
-float3 get_camera_position(const device SkyParameters& parameters) {
-	return parameters.camera_position.xyz;
-}
-
-float3 get_sun_direction(const device SkyParameters& parameters) {
-	return parameters.sun_direction.xyz;
-}
-
-float3 get_planet_center(const device SkyParameters& parameters) {
-	return parameters.planet_center.xyz;
-}
-
-float get_ground_radius(const device SkyParameters& parameters) {
-	return parameters.atmosphere.x;
-}
-
-float get_atmosphere_radius(const device SkyParameters& parameters) {
-	return parameters.atmosphere.y;
-}
-
-float get_rayleigh_scale_height(const device SkyParameters& parameters) {
-	return parameters.atmosphere.z;
-}
-
-float get_mie_scale_height(const device SkyParameters& parameters) {
-	return parameters.atmosphere.w;
-}
-
-float get_mie_g(const device SkyParameters& parameters) {
-	return parameters.sun_direction.w;
-}
-
-float get_sun_intensity(const device SkyParameters& parameters) {
-	return parameters.camera_position.w;
-}
-
-float get_sun_angular_radius(const device SkyParameters& parameters) {
-	return parameters.planet_center.w;
-}
-
-float get_ozone_strength(const device SkyParameters& parameters) {
-	return parameters.misc.x;
-}
-
-bool should_skip_below_horizon(const device SkyParameters& parameters) {
+should_skip_below_horizon: fn () -> bool {
 	return parameters.misc.y > 0.5;
 }
 
-bool ray_sphere_intersection(float3 origin, float3 direction, float3 center, float radius, thread float& t_min, thread float& t_max) {
-	float3 oc = origin - center;
-	float b = dot(oc, direction);
-	float c = dot(oc, oc) - radius * radius;
-	float discriminant = b * b - c;
-
-	if (discriminant < 0.0) {
-		return false;
-	}
-
-	float root = sqrt(discriminant);
-	t_min = -b - root;
-	t_max = -b + root;
-	return true;
+ray_sphere_discriminant: fn(origin: vec3f, direction: vec3f, center: vec3f, radius: f32) -> f32 {
+	let oc: vec3f = origin - center;
+	let b: f32 = dot(oc, direction);
+	let c: f32 = dot(oc, oc) - radius * radius;
+	return b * b - c;
 }
 
-float3 density_profile(const device SkyParameters& parameters, float3 sample_position) {
-	float altitude = length(sample_position - get_planet_center(parameters)) - get_ground_radius(parameters);
+ray_sphere_t_min: fn(origin: vec3f, direction: vec3f, center: vec3f, radius: f32) -> f32 {
+	let oc: vec3f = origin - center;
+	let b: f32 = dot(oc, direction);
+	let discriminant: f32 = ray_sphere_discriminant(origin, direction, center, radius);
+	return (0.0 - b) - sqrt(discriminant);
+}
 
+ray_sphere_t_max: fn(origin: vec3f, direction: vec3f, center: vec3f, radius: f32) -> f32 {
+	let oc: vec3f = origin - center;
+	let b: f32 = dot(oc, direction);
+	let discriminant: f32 = ray_sphere_discriminant(origin, direction, center, radius);
+	return (0.0 - b) + sqrt(discriminant);
+}
+
+density_profile: fn(sample_position: vec3f) -> vec3f {
+	let altitude: f32 = length(sample_position - get_planet_center()) - get_ground_radius();
 	if (altitude < 0.0) {
-		return float3(0.0);
+		return vec3f(0.0, 0.0, 0.0);
 	}
-
-	float rayleigh = exp(-altitude / get_rayleigh_scale_height(parameters));
-	float mie = exp(-altitude / get_mie_scale_height(parameters));
-	float ozone = max(0.0, 1.0 - abs(altitude - 25000.0) / 15000.0) * get_ozone_strength(parameters);
-
-	return float3(rayleigh, mie, ozone);
+	let rayleigh: f32 = exp((0.0 - altitude) / get_rayleigh_scale_height());
+	let mie: f32 = exp((0.0 - altitude) / get_mie_scale_height());
+	let ozone: f32 = max(0.0, 1.0 - abs(altitude - 25000.0) / 15000.0) * get_ozone_strength();
+	return vec3f(rayleigh, mie, ozone);
 }
 
-float3 extinction_from_density(float3 density) {
-	return density.x * BETA_RAYLEIGH + density.y * BETA_MIE + density.z * BETA_OZONE;
+extinction_from_density: fn(density: vec3f) -> vec3f {
+	let beta_rayleigh: vec3f = vec3f(0.000005802, 0.000013558, 0.000033100);
+	let beta_mie: vec3f = vec3f(0.000003996, 0.000003996, 0.000003996);
+	let beta_ozone: vec3f = vec3f(0.000000650, 0.000001881, 0.000000085);
+	return density.x * beta_rayleigh + density.y * beta_mie + density.z * beta_ozone;
 }
 
-float interleaved_gradient_noise(int2 pixel) {
-	return fract(52.9829189 * fract(0.06711056 * float(pixel.x) + 0.00583715 * float(pixel.y)));
+interleaved_gradient_noise: fn(pixel: vec2u) -> f32 {
+	return fract(52.9829189 * fract(0.06711056 * f32(pixel.x) + 0.00583715 * f32(pixel.y)));
 }
 
-float sample_distribution(float u) {
-	u = clamp(u, 0.0, 1.0);
-	return u * u;
+sample_distribution: fn(u: f32) -> f32 {
+	let clamped: f32 = clamp(u, 0.0, 1.0);
+	return clamped * clamped;
 }
 
-float phase_rayleigh(float cosine_theta) {
-	return (3.0 / (16.0 * PI)) * (1.0 + cosine_theta * cosine_theta);
+phase_rayleigh: fn(cosine_theta: f32) -> f32 {
+	let pi: f32 = 3.14159265359;
+	return (3.0 / (16.0 * pi)) * (1.0 + cosine_theta * cosine_theta);
 }
 
-float phase_mie(float cosine_theta, float g) {
-	float g2 = g * g;
-	float denominator = 1.0 + g2 - 2.0 * g * cosine_theta;
-	float denominator_sqrt = sqrt(max(1e-4, denominator));
-	return (3.0 / (8.0 * PI)) * ((1.0 - g2) * (1.0 + cosine_theta * cosine_theta)) /
-		((2.0 + g2) * max(1e-4, denominator * denominator_sqrt));
+phase_mie: fn(cosine_theta: f32, g: f32) -> f32 {
+	let pi: f32 = 3.14159265359;
+	let g2: f32 = g * g;
+	let denominator: f32 = 1.0 + g2 - 2.0 * g * cosine_theta;
+	let denominator_sqrt: f32 = sqrt(max(0.0001, denominator));
+	return (3.0 / (8.0 * pi)) * ((1.0 - g2) * (1.0 + cosine_theta * cosine_theta)) / ((2.0 + g2) * max(0.0001, denominator * denominator_sqrt));
 }
 
-float3 march_transmittance(const device SkyParameters& parameters, float3 origin, float3 direction) {
-	float t_min;
-	float t_max;
-
-	if (!ray_sphere_intersection(origin, direction, get_planet_center(parameters), get_atmosphere_radius(parameters), t_min, t_max)) {
-		return float3(1.0);
+march_transmittance: fn(origin: vec3f, direction: vec3f) -> vec3f {
+	let atmosphere_discriminant: f32 = ray_sphere_discriminant(origin, direction, get_planet_center(), get_atmosphere_radius());
+	if (atmosphere_discriminant < 0.0) {
+		return vec3f(1.0, 1.0, 1.0);
 	}
-
-	t_min = max(0.0, t_min);
-	float distance_through_atmosphere = t_max - t_min;
-	float3 optical_depth = float3(0.0);
-
-	float ground_t_min;
-	float ground_t_max;
-	if (ray_sphere_intersection(
-		origin,
-		direction,
-		get_planet_center(parameters),
-		get_ground_radius(parameters),
-		ground_t_min,
-		ground_t_max
-	) && ground_t_max > 0.0) {
-		return float3(0.0);
+	let t_min: f32 = max(0.0, ray_sphere_t_min(origin, direction, get_planet_center(), get_atmosphere_radius()));
+	let t_max: f32 = ray_sphere_t_max(origin, direction, get_planet_center(), get_atmosphere_radius());
+	let ground_discriminant: f32 = ray_sphere_discriminant(origin, direction, get_planet_center(), get_ground_radius());
+	if (ground_discriminant >= 0.0) {
+		let ground_t_max: f32 = ray_sphere_t_max(origin, direction, get_planet_center(), get_ground_radius());
+		if (ground_t_max > 0.0) {
+			return vec3f(0.0, 0.0, 0.0);
+		}
 	}
-
-	for (int i = 0; i < LIGHT_SAMPLE_COUNT; ++i) {
-		float t0 = t_min + distance_through_atmosphere * sample_distribution(float(i) / float(LIGHT_SAMPLE_COUNT));
-		float t1 = t_min + distance_through_atmosphere * sample_distribution(float(i + 1) / float(LIGHT_SAMPLE_COUNT));
-		float t = 0.5 * (t0 + t1);
-		float step_size = t1 - t0;
-		float3 sample_position = origin + direction * t;
-		float3 density = density_profile(parameters, sample_position);
-		optical_depth += density * step_size;
+	let distance_through_atmosphere: f32 = t_max - t_min;
+	let optical_depth: vec3f = vec3f(0.0, 0.0, 0.0);
+	for (let i: u32 = 0; i < 4; i = i + 1) {
+		let t0: f32 = t_min + distance_through_atmosphere * sample_distribution(f32(i) / 4.0);
+		let t1: f32 = t_min + distance_through_atmosphere * sample_distribution(f32(i + 1) / 4.0);
+		let t: f32 = 0.5 * (t0 + t1);
+		let step_size: f32 = t1 - t0;
+		let sample_position: vec3f = origin + direction * t;
+		let density: vec3f = density_profile(sample_position);
+		optical_depth = optical_depth + density * step_size;
 	}
-
-	return exp(-extinction_from_density(optical_depth));
+	return exp(vec3f(0.0, 0.0, 0.0) - extinction_from_density(optical_depth));
 }
 
-float3 integrate_atmosphere(const device SkyParameters& parameters, int2 pixel, float3 origin, float3 direction) {
-	float atmosphere_t_min;
-	float atmosphere_t_max;
-
-	if (!ray_sphere_intersection(
-		origin,
-		direction,
-		get_planet_center(parameters),
-		get_atmosphere_radius(parameters),
-		atmosphere_t_min,
-		atmosphere_t_max
-	)) {
-		return float3(0.0);
+integrate_atmosphere: fn(pixel: vec2u, origin: vec3f, direction: vec3f) -> vec3f {
+	let atmosphere_discriminant: f32 = ray_sphere_discriminant(origin, direction, get_planet_center(), get_atmosphere_radius());
+	if (atmosphere_discriminant < 0.0) {
+		return vec3f(0.0, 0.0, 0.0);
 	}
-
-	atmosphere_t_min = max(0.0, atmosphere_t_min);
-	float distance_through_atmosphere = atmosphere_t_max - atmosphere_t_min;
-	float3 optical_depth = float3(0.0);
-	float3 luminance = float3(0.0);
-	float3 sun_direction = get_sun_direction(parameters);
-	float cosine_theta = dot(direction, sun_direction);
-	float phase_r = phase_rayleigh(cosine_theta);
-	float phase_m = phase_mie(cosine_theta, get_mie_g(parameters));
-	float jitter = interleaved_gradient_noise(pixel);
-
-	for (int i = 0; i < VIEW_SAMPLE_COUNT; ++i) {
-		float t0 = atmosphere_t_min + distance_through_atmosphere * sample_distribution(float(i) / float(VIEW_SAMPLE_COUNT));
-		float t1 = atmosphere_t_min + distance_through_atmosphere * sample_distribution(float(i + 1) / float(VIEW_SAMPLE_COUNT));
-		float t = mix(t0, t1, jitter);
-		float step_size = t1 - t0;
-		float3 sample_position = origin + direction * t;
-		float3 density = density_profile(parameters, sample_position);
-		optical_depth += density * step_size;
-
-		float3 transmittance_to_camera = exp(-extinction_from_density(optical_depth));
-		float3 transmittance_to_sun = march_transmittance(parameters, sample_position, sun_direction);
-		float3 scattering =
-			density.x * BETA_RAYLEIGH * phase_r +
-			density.y * BETA_MIE * phase_m;
-
-		luminance += transmittance_to_camera * transmittance_to_sun * scattering * step_size;
+	let atmosphere_t_min: f32 = max(0.0, ray_sphere_t_min(origin, direction, get_planet_center(), get_atmosphere_radius()));
+	let atmosphere_t_max: f32 = ray_sphere_t_max(origin, direction, get_planet_center(), get_atmosphere_radius());
+	let distance_through_atmosphere: f32 = atmosphere_t_max - atmosphere_t_min;
+	let optical_depth: vec3f = vec3f(0.0, 0.0, 0.0);
+	let luminance: vec3f = vec3f(0.0, 0.0, 0.0);
+	let sun_direction: vec3f = get_sun_direction();
+	let cosine_theta: f32 = dot(direction, sun_direction);
+	let phase_r: f32 = phase_rayleigh(cosine_theta);
+	let phase_m: f32 = phase_mie(cosine_theta, get_mie_g());
+	let jitter: f32 = interleaved_gradient_noise(pixel);
+	for (let i: u32 = 0; i < 16; i = i + 1) {
+		let t0: f32 = atmosphere_t_min + distance_through_atmosphere * sample_distribution(f32(i) / 16.0);
+		let t1: f32 = atmosphere_t_min + distance_through_atmosphere * sample_distribution(f32(i + 1) / 16.0);
+		let t: f32 = mix(t0, t1, jitter);
+		let step_size: f32 = t1 - t0;
+		let sample_position: vec3f = origin + direction * t;
+		let density: vec3f = density_profile(sample_position);
+		optical_depth = optical_depth + density * step_size;
+		let transmittance_to_camera: vec3f = exp(vec3f(0.0, 0.0, 0.0) - extinction_from_density(optical_depth));
+		let transmittance_to_sun: vec3f = march_transmittance(sample_position, sun_direction);
+		let beta_rayleigh: vec3f = vec3f(0.000005802, 0.000013558, 0.000033100);
+		let beta_mie: vec3f = vec3f(0.000003996, 0.000003996, 0.000003996);
+		let scattering: vec3f = density.x * beta_rayleigh * phase_r + density.y * beta_mie * phase_m;
+		luminance = luminance + transmittance_to_camera * transmittance_to_sun * scattering * step_size;
 	}
-
-	float sun_disk = smoothstep(cos(get_sun_angular_radius(parameters) * 1.4), cos(get_sun_angular_radius(parameters)), cosine_theta);
-	float3 sun_radiance = float3(0.0);
+	let sun_disk: f32 = smoothstep(cos(get_sun_angular_radius() * 1.4), cos(get_sun_angular_radius()), cosine_theta);
+	let sun_radiance: vec3f = vec3f(0.0, 0.0, 0.0);
 	if (sun_disk > 0.0) {
-		float3 sun_transmittance = march_transmittance(parameters, origin, sun_direction);
-		sun_radiance = sun_disk * sun_transmittance * float3(20.0, 18.0, 16.0);
+		let sun_transmittance: vec3f = march_transmittance(origin, sun_direction);
+		sun_radiance = sun_disk * sun_transmittance * vec3f(20.0, 18.0, 16.0);
 	}
-
-	float3 color = luminance * get_sun_intensity(parameters) + sun_radiance;
-	return color / (float3(1.0) + color);
+	let color: vec3f = luminance * get_sun_intensity() + sun_radiance;
+	return color / (vec3f(1.0, 1.0, 1.0) + color);
 }
 
-float3 reconstruct_view_direction(const device SkyParameters& parameters, int2 pixel, int2 extent) {
-	float2 uv = (float2(pixel) + float2(0.5)) / float2(extent);
-	float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-	float4 world = parameters.inverse_view_projection * float4(ndc, 0.0, 1.0);
-	return normalize(world.xyz / world.w - get_camera_position(parameters));
+reconstruct_view_direction: fn(pixel: vec2u, extent: vec2u) -> vec3f {
+	let uv: vec2f = (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
+	let ndc: vec2f = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+	let world: vec4f = parameters.inverse_view_projection * vec4f(ndc.x, ndc.y, 0.0, 1.0);
+	return normalize(vec3f(world.x / world.w, world.y / world.w, world.z / world.w) - get_camera_position());
 }
 
-bool is_below_horizon(const device SkyParameters& parameters, float3 origin, float3 direction) {
-	float3 local_up = normalize(origin - get_planet_center(parameters));
+is_below_horizon: fn(origin: vec3f, direction: vec3f) -> bool {
+	let local_up: vec3f = normalize(origin - get_planet_center());
 	return dot(direction, local_up) < 0.0;
 }
 
-kernel void sky_render_pass(
-	uint2 gid [[thread_position_in_grid]],
-	constant SkySet0& set0 [[buffer(16)]]
-) {
-	int2 pixel = int2(gid);
-	int2 extent = int2(set0.main_texture.get_width(), set0.main_texture.get_height());
-
-	if (pixel.x >= extent.x || pixel.y >= extent.y) {
+main: fn () -> void {
+	let pixel: vec2u = thread_id();
+	guard_image_bounds(main_texture, pixel);
+	let extent: vec2u = image_size(main_texture);
+	let depth_uv: vec2f = (vec2f(f32(pixel.x), f32(pixel.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
+	let depth: f32 = texture_lod(depth_texture, depth_uv).x;
+	if (depth > 0.000001) {
 		return;
 	}
-
-	float2 depth_uv = (float2(pixel) + 0.5) / float2(extent);
-	float depth = set0.depth_texture.sample(set0.depth_texture_sampler, depth_uv, level(0.0)).r;
-	if (depth > 1e-6) {
-		return;
+	let direction: vec3f = reconstruct_view_direction(pixel, extent);
+	if (should_skip_below_horizon()) {
+		if (is_below_horizon(get_camera_position(), direction)) {
+			return;
+		}
 	}
-
-	const device SkyParameters& parameters = *set0.parameters;
-	float3 direction = reconstruct_view_direction(parameters, pixel, extent);
-	if (should_skip_below_horizon(parameters) && is_below_horizon(parameters, get_camera_position(parameters), direction)) {
-		return;
-	}
-
-	float3 sky = integrate_atmosphere(parameters, pixel, get_camera_position(parameters), direction);
-
-	set0.main_texture.write(float4(sky, 1.0), gid);
+	let sky: vec3f = integrate_atmosphere(pixel, get_camera_position(), direction);
+	write(main_texture, pixel, vec4f(sky.x, sky.y, sky.z, 1.0));
 }
 "#;
 
 #[cfg(test)]
 mod tests {
-	#[cfg(target_os = "linux")]
-	#[test]
-	fn sky_shader_compiles() {
-		resource_management::shader::glsl_compile::compile(super::SKY_SHADER, "Sky Render Pass Test").unwrap();
-	}
+	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
+	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
+	use utils::Extent;
 
 	#[test]
-	fn sky_msl_shader_compiles_for_metal() {
-		use ghi::{
-			context::ContextCreate as _,
-			device::{Device as _, Features},
-		};
+	fn sky_besl_shader_lowers_to_platform_sources() {
+		let main_node = super::create_sky_program();
+		let settings = ShaderGenerationSettings::compute(Extent::new(8, 8, 1)).name("Sky Render Pass Test".to_string());
 
-		if !ghi::implementation::USES_METAL {
-			return;
-		}
-
-		let mut instance =
-			ghi::implementation::Instance::new(Features::new()).expect("Expected a Metal instance for the sky shader test");
-		let mut queue = None;
-		let mut context = instance
-			.create_device(
-				Features::new(),
-				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
-			)
-			.expect("Expected a Metal device for the sky shader test")
-			.create_context()
-			.expect("Expected a Metal context for the sky shader test");
-
-		let shader_handle = context.create_shader(
-			Some("Sky Render Pass Compute Shader"),
-			ghi::shader::Sources::MTL {
-				source: super::SKY_SHADER_MSL,
-				entry_point: "sky_render_pass",
-			},
-			ghi::ShaderTypes::Compute,
-			[
-				super::SKY_DEPTH_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				super::SKY_MAIN_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-				super::SKY_PARAMETERS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			],
-		);
-
-		assert!(shader_handle.is_ok(), "Expected the sky MSL source to compile for Metal");
+		GLSLShaderGenerator::new()
+			.generate(&settings, &main_node)
+			.expect("Failed to lower sky BESL shader to GLSL.");
+		MSLShaderGenerator::new()
+			.generate(&settings, &main_node)
+			.expect("Failed to lower sky BESL shader to MSL.");
 	}
 }

@@ -4,8 +4,9 @@ use ghi::{
 	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	context::{Context as _, ContextCreate as _},
 };
-use math::Vector2;
-use resource_management::{resources::material, types::ShaderTypes as ResourceShaderTypes};
+use resource_management::{
+	resources::material, shader::generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
+};
 use utils::{Box, Extent};
 
 use crate::rendering::{
@@ -34,7 +35,6 @@ pub struct BaseBilateralBlurPass {
 }
 
 impl BaseBilateralBlurPass {
-	#[cfg(target_os = "linux")]
 	fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let shader_storage = render_pass_builder.shader_storage();
 		let context = render_pass_builder.context();
@@ -44,42 +44,31 @@ impl BaseBilateralBlurPass {
 			&[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING],
 		);
 
-		// This pass still uses GLSL as a temporary backend-specific bridge because
-		// the shader depends on specialization constants and fixed-size arrays.
-		let shader = crate::rendering::shader_store::create_shader(
+		let shader_x = create_bilateral_blur_shader(
 			context,
 			shader_storage,
-			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/rendering/bilateral-blur",
-				name: "SSGI Blur",
-				stage: ResourceShaderTypes::Compute,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Glsl(
-					BLUR_SHADER,
-				)),
-				interface: material::ShaderInterface {
-					workgroup_size: Some((128, 1, 1)),
-					bindings: vec![
-						material::Binding::new(0, 0, true, false),
-						material::Binding::new(0, 1, true, false),
-						material::Binding::new(0, 2, false, true),
-					],
-				},
-			},
+			"byte-engine/rendering/bilateral-blur/x",
+			"SSGI Blur X",
+			(1.0, 0.0),
 		)
-		.expect("Failed to create the SSGI blur shader.");
+		.expect("Failed to create the X SSGI blur shader. The most likely cause is invalid bilateral blur BESL.");
+		let shader_y = create_bilateral_blur_shader(
+			context,
+			shader_storage,
+			"byte-engine/rendering/bilateral-blur/y",
+			"SSGI Blur Y",
+			(0.0, 1.0),
+		)
+		.expect("Failed to create the Y SSGI blur shader. The most likely cause is invalid bilateral blur BESL.");
 		let pipeline_x = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_template],
 			&[],
-			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
-				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(1f32, 0f32)),
-			]),
+			ghi::ShaderParameter::new(&shader_x, ghi::ShaderTypes::Compute),
 		));
 		let pipeline_y = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_template],
 			&[],
-			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
-				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(0f32, 1f32)),
-			]),
+			ghi::ShaderParameter::new(&shader_y, ghi::ShaderTypes::Compute),
 		));
 
 		Self {
@@ -210,100 +199,178 @@ impl RenderPass for BilateralBlurPass {
 	}
 }
 
-const BLUR_SHADER: &str = r#"
-#version 460 core
-#pragma shader_stage(compute)
+fn create_bilateral_blur_shader(
+	context: &mut ghi::implementation::Context,
+	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
+	id: &str,
+	name: &str,
+	direction: (f32, f32),
+) -> Result<ghi::ShaderHandle, String> {
+	let source = bilateral_blur_besl_source(direction);
+	let main_node = build_bilateral_blur_program(&source);
 
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_shader_explicit_arithmetic_types: enable
-
-layout(row_major) uniform; layout(row_major) buffer;
-
-layout(set=0, binding=0) uniform sampler2D depth;
-layout(set=0, binding=1) uniform sampler2D source;
-layout(set=0, binding=2) uniform writeonly image2D result;
-
-layout(constant_id=0) const float DIRECTION_X = 1;
-layout(constant_id=1) const float DIRECTION_Y = 0;
-const vec2 DIRECTION = vec2(DIRECTION_X, DIRECTION_Y);
-
-const uint32_t M = 16;
-const uint32_t SAMPLE_COUNT = M + 1;
-
-const float OFFSETS[17] = float[17](
-    -15.153610827558811,
-    -13.184471765481433,
-    -11.219917592867032,
-    -9.260003189282239,
-    -7.304547036499911,
-    -5.353083811756559,
-    -3.4048471718931532,
-    -1.4588111840004858,
-    0.48624268466894843,
-    2.431625915613778,
-    4.378621204796657,
-    6.328357272092126,
-    8.281739853232981,
-    10.239385576926011,
-    12.201613265873693,
-    14.1684792568739,
-    16
-);
-
-const float WEIGHTS[17] = float[17](
-    6.531899156556559e-7,
-    0.000014791298968627152,
-    0.00021720986764341157,
-    0.0020706559053401204,
-    0.012826757713634169,
-    0.05167714650813829,
-    0.13552110360479683,
-    0.23148784424126953,
-    0.25764630768379954,
-    0.18686497997661272,
-    0.0882961181645837,
-    0.027166770533840135,
-    0.0054386298156352516,
-    0.0007078187356988374,
-    0.00005983099317322662,
-    0.0000032814299066650715,
-    1.0033704349693544e-7
-);
-
-float linearize_depth(float reversedDepth) {
-    return (0.1 * 100.0) / (100.0 + reversedDepth * (0.1 - 100.0));
+	crate::rendering::shader_store::create_shader(
+		context,
+		shader_storage,
+		&crate::rendering::shader_store::ShaderSourceDescriptor {
+			id,
+			name,
+			stage: ResourceShaderTypes::Compute,
+			source: crate::rendering::shader_store::ShaderSourceDefinition::Besl {
+				settings: ShaderGenerationSettings::compute(Extent::new(128, 1, 1)).name(name.to_string()),
+				main_node,
+			},
+			interface: material::ShaderInterface {
+				workgroup_size: Some((128, 1, 1)),
+				bindings: vec![
+					material::Binding::new(0, 0, true, false),
+					material::Binding::new(0, 1, true, false),
+					material::Binding::new(0, 2, false, true),
+				],
+			},
+		},
+	)
 }
 
-float gaussian_depth(float centerDepth, float sampleDepth) {
-    float depthDiff = linearize_depth(centerDepth) - linearize_depth(sampleDepth);
-	if (abs(depthDiff) > 0.001) { return 0.0; } else { return 1.0; }
-    float adjustedDepthDiff = abs(depthDiff);
+fn build_bilateral_blur_program(source: &str) -> besl::NodeReference {
+	let mut root = besl::Node::root();
+	root.add_child(
+		besl::Node::binding(
+			"depth",
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			0,
+			0,
+			true,
+			false,
+		)
+		.into(),
+	);
+	root.add_child(
+		besl::Node::binding(
+			"source",
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			0,
+			1,
+			true,
+			false,
+		)
+		.into(),
+	);
+	root.add_child(
+		besl::Node::binding(
+			"result",
+			besl::BindingTypes::Image { format: String::new() },
+			0,
+			2,
+			false,
+			true,
+		)
+		.into(),
+	);
 
-    return exp(-adjustedDepthDiff * adjustedDepthDiff / (2.0 * 0.0005 * 0.0005));
+	let program = besl::compile_to_besl(source, Some(root))
+		.expect("Failed to compile bilateral blur BESL. The most likely cause is invalid BESL syntax.");
+	program.get_main().expect(
+		"Failed to find the bilateral blur BESL entry point. The most likely cause is that the BESL program did not define main.",
+	)
 }
 
-// The sourceTexture to be blurred MUST use linear filtering!
-vec4 blur(in sampler2D sourceTexture, vec2 blurDirection, vec2 uv)
-{
-    vec4 result = vec4(0.0);
-	float center_center = texture(depth, uv).r;
-    for (int i = 0; i < SAMPLE_COUNT; ++i) {
-        vec2 offset = blurDirection * OFFSETS[i] / vec2(textureSize(sourceTexture, 0));
-		float depth_sample = texture(depth, uv + offset).r;
-		float weight = WEIGHTS[i] * gaussian_depth(center_center, depth_sample);
-		result += texture(source, uv + offset) * weight;
-    }
-    return result;
+fn bilateral_blur_besl_source(direction: (f32, f32)) -> String {
+	let mut source = String::from(
+		r#"main: fn () -> void {
+	let coord: vec2u = thread_id();
+	guard_image_bounds(result, coord);
+	let result_size_u: vec2u = image_size(result);
+	let source_size_u: vec2u = texture_size(source);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size_u.x), f32(result_size_u.y));
+	let source_size: vec2f = vec2f(f32(source_size_u.x), f32(source_size_u.y));
+	let center_depth: f32 = texture_lod(depth, uv).x;
+	let center_linear_depth: f32 = (0.1 * 100.0) / (100.0 + center_depth * (0.1 - 100.0));
+	let color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+"#,
+	);
+
+	// BESL does not yet expose constant arrays or loops, so keep the fixed blur
+	// kernel data in Rust and emit the platform-agnostic taps explicitly.
+	for (index, (offset, weight)) in BLUR_TAPS.iter().enumerate() {
+		let offset_expression = if *offset < 0.0 {
+			format!("0.0 - {:.17}", offset.abs())
+		} else {
+			format!("{:.17}", offset)
+		};
+		source.push_str(&format!(
+			"\tlet offset_{index}: vec2f = vec2f({:.17}, {:.17}) * ({offset_expression}) / source_size;\n",
+			direction.0, direction.1
+		));
+		source.push_str(&format!(
+			"\tlet sample_depth_{index}: f32 = texture_lod(depth, uv + offset_{index}).x;\n"
+		));
+		source.push_str(&format!(
+			"\tlet sample_linear_depth_{index}: f32 = (0.1 * 100.0) / (100.0 + sample_depth_{index} * (0.1 - 100.0));\n"
+		));
+		source.push_str(&format!(
+			"\tlet depth_diff_{index}: f32 = center_linear_depth - sample_linear_depth_{index};\n"
+		));
+		source.push_str(&format!(
+			"\tlet weight_{index}: f32 = {:.17} * (1.0 - step(0.001, abs(depth_diff_{index})));\n",
+			weight
+		));
+		source.push_str(&format!(
+			"\tcolor = color + texture_lod(source, uv + offset_{index}) * weight_{index};\n"
+		));
+	}
+
+	source.push_str(
+		r#"
+	write(result, coord, vec4f(color.x, color.x, color.x, 1.0));
+}
+"#,
+	);
+	source
 }
 
-layout(local_size_x=128) in;
-void main() {
-	if (gl_GlobalInvocationID.x >= imageSize(result).x || gl_GlobalInvocationID.y >= imageSize(result).y) { return; }
+const BLUR_TAPS: [(f32, f32); 17] = [
+	(-15.153610827558811, 6.531899156556559e-7),
+	(-13.184471765481433, 0.000014791298968627152),
+	(-11.219917592867032, 0.00021720986764341157),
+	(-9.260003189282239, 0.0020706559053401204),
+	(-7.304547036499911, 0.012826757713634169),
+	(-5.353083811756559, 0.05167714650813829),
+	(-3.4048471718931532, 0.13552110360479683),
+	(-1.4588111840004858, 0.23148784424126953),
+	(0.48624268466894843, 0.25764630768379954),
+	(2.431625915613778, 0.18686497997661272),
+	(4.378621204796657, 0.0882961181645837),
+	(6.328357272092126, 0.027166770533840135),
+	(8.281739853232981, 0.0054386298156352516),
+	(10.239385576926011, 0.0007078187356988374),
+	(12.201613265873693, 0.00005983099317322662),
+	(14.1684792568739, 0.0000032814299066650715),
+	(16.0, 1.0033704349693544e-7),
+];
 
-	uvec2 texel = uvec2(gl_GlobalInvocationID.xy);
-	vec2 uv = (vec2(texel) + vec2(0.5)) / vec2(imageSize(result).xy);
+#[cfg(test)]
+mod tests {
+	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
+	use resource_management::shader::generator::ShaderGenerator as _;
 
-	float value = blur(source, DIRECTION, uv).r;
+	use super::*;
 
-	imageStore(result, ivec2(gl_GlobalInvocationID.xy), vec4(vec3(value), 1.0));
-}"#;
+	#[test]
+	fn bilateral_blur_besl_lowers_for_both_axes() {
+		for (name, direction) in [("x", (1.0, 0.0)), ("y", (0.0, 1.0))] {
+			let source = bilateral_blur_besl_source(direction);
+			besl::parse(&source).expect("Generated bilateral blur source should parse before lexing.");
+			let main_node = build_bilateral_blur_program(&source);
+			let settings =
+				ShaderGenerationSettings::compute(Extent::new(128, 1, 1)).name(format!("Bilateral Blur {name} Test"));
+
+			GLSLShaderGenerator::new()
+				.generate(&settings, &main_node)
+				.expect("Failed to lower bilateral blur BESL to GLSL.");
+			MSLShaderGenerator::new()
+				.generate(&settings, &main_node)
+				.expect("Failed to lower bilateral blur BESL to MSL.");
+		}
+	}
+}

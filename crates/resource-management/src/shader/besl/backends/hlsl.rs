@@ -175,6 +175,7 @@ impl Generator {
 			"u32" => "uint32_t",
 			"i32" => "int32_t",
 			"Texture2D" => "Texture2D",
+			"Texture3D" => "Texture3D",
 			"ArrayTexture2D" => "Texture2DArray",
 			_ => source,
 		}
@@ -444,6 +445,7 @@ impl Generator {
 					besl::BindingTypes::CombinedImageSampler { format } => {
 						// HLSL separates textures and samplers, but for combined sampler we use Texture2D
 						let texture_type = match format.as_str() {
+							"Texture3D" => "Texture3D",
 							"ArrayTexture2D" => "Texture2DArray",
 							_ => "Texture2D",
 						};

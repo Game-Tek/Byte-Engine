@@ -85,6 +85,7 @@ impl Generator {
 			"u32" => "uint32_t",
 			"i32" => "int32_t",
 			"Texture2D" => "in sampler2D",
+			"Texture3D" => "in sampler3D",
 			"ArrayTexture2D" => "in sampler2DArray",
 			_ => source,
 		}
@@ -552,6 +553,7 @@ impl Generator {
 						_ => "uniform image2D",
 					},
 					besl::BindingTypes::CombinedImageSampler { format } => match format.as_str() {
+						"Texture3D" => "uniform sampler3D",
 						"ArrayTexture2D" => "uniform sampler2DArray",
 						"r8ui" | "r16ui" | "r32ui" => "uniform usampler2D",
 						_ => "uniform sampler2D",

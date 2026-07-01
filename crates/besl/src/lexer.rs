@@ -190,6 +190,7 @@ impl Node {
 		);
 
 		let texture_2d = primitive_type("Texture2D");
+		let texture_3d = primitive_type("Texture3D");
 		let array_texture_2d = primitive_type("ArrayTexture2D");
 		let sample_intrinsic = builtin_intrinsic(
 			"sample",
@@ -344,6 +345,11 @@ impl Node {
 			vec![("texture", texture_2d.clone()), ("uv", vec2f32.clone())],
 			vec4f32.clone(),
 		);
+		let texture_lod_3d_intrinsic = builtin_intrinsic(
+			"texture_lod",
+			vec![("texture", texture_3d.clone()), ("uv", vec3f32.clone())],
+			vec4f32.clone(),
+		);
 
 		let builtins = vec![
 			void,
@@ -364,9 +370,11 @@ impl Node {
 			mat4f32,
 			mat4x3f32,
 			texture_2d,
+			texture_3d,
 			array_texture_2d,
 			sample_intrinsic,
 			texture_lod_intrinsic,
+			texture_lod_3d_intrinsic,
 			fetch_intrinsic,
 			fetch_u32_intrinsic,
 			dot_intrinsic,

@@ -41,8 +41,7 @@ impl LutRenderPass {
 			&[LUT_SOURCE_BINDING, LUT_TEXTURE_BINDING, LUT_OUTPUT_BINDING],
 		);
 
-		let (lut_glsl, lut_msl) = create_lut_shader_sources(&lut_metadata);
-		let shader = create_lut_shader(context, shader_storage, &lut_glsl, &lut_msl);
+		let shader = create_lut_shader(context, shader_storage, &lut_metadata);
 		let pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[descriptor_set_layout],
 			&[],
@@ -142,9 +141,11 @@ impl RenderPass for LutRenderPass {
 fn create_lut_shader(
 	context: &mut ghi::implementation::Context,
 	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
-	glsl: &str,
-	msl: &str,
+	lut: &Lut,
 ) -> ghi::ShaderHandle {
+	let source = create_lut_shader_source(lut);
+	let main_node = create_lut_program(&source);
+
 	crate::rendering::shader_store::create_shader(
 		context,
 		shader_storage,
@@ -152,11 +153,11 @@ fn create_lut_shader(
 			id: "byte-engine/rendering/lut/apply",
 			name: "LUT Render Pass Compute Shader",
 			stage: ResourceShaderTypes::Compute,
-			source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
-				glsl,
-				msl,
-				msl_entry_point: "lut_apply",
-			}),
+			source: crate::rendering::shader_store::ShaderSourceDefinition::Besl {
+				settings: ShaderGenerationSettings::compute(Extent::new(8, 8, 1))
+					.name("LUT Render Pass Compute Shader".to_string()),
+				main_node,
+			},
 			interface: material::ShaderInterface {
 				workgroup_size: Some((8, 8, 1)),
 				bindings: vec![
@@ -170,8 +171,53 @@ fn create_lut_shader(
 	.expect("Failed to create LUT render shader. The most likely cause is an incompatible shader interface.")
 }
 
-/// Generates both the GLSL and MSL LUT shader sources with the injected LUT domain constants baked in.
-fn create_lut_shader_sources(lut: &Lut) -> (String, String) {
+fn create_lut_program(source: &str) -> besl::NodeReference {
+	let mut root = besl::Node::root();
+	root.add_child(
+		besl::Node::binding(
+			"source_texture",
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			0,
+			0,
+			true,
+			false,
+		)
+		.into(),
+	);
+	root.add_child(
+		besl::Node::binding(
+			"lut_texture",
+			besl::BindingTypes::CombinedImageSampler {
+				format: "Texture3D".to_string(),
+			},
+			0,
+			1,
+			true,
+			false,
+		)
+		.into(),
+	);
+	root.add_child(
+		besl::Node::binding(
+			"result_texture",
+			besl::BindingTypes::Image { format: String::new() },
+			0,
+			2,
+			false,
+			true,
+		)
+		.into(),
+	);
+
+	let program = besl::compile_to_besl(source, Some(root))
+		.expect("Failed to compile the LUT BESL shader. The most likely cause is invalid BESL syntax.");
+	program
+		.get_main()
+		.expect("Failed to find the LUT BESL entry point. The most likely cause is that the BESL program did not define main.")
+}
+
+/// Generates the LUT BESL shader source with the injected LUT domain constants baked in.
+fn create_lut_shader_source(lut: &Lut) -> String {
 	let domain_scale = lut
 		.domain_min
 		.into_iter()
@@ -182,46 +228,25 @@ fn create_lut_shader_sources(lut: &Lut) -> (String, String) {
 	let lut_texel_scale = (lut_size - 1.0) / lut_size;
 	let lut_texel_offset = 0.5 / lut_size;
 
-	let glsl = format!(
+	format!(
 		r#"
-#version 460 core
-#pragma shader_stage(compute)
-
-#extension GL_EXT_scalar_block_layout: enable
-#extension GL_EXT_shader_image_load_formatted: enable
-
-layout(row_major) uniform;
-layout(row_major) buffer;
-
-layout(set=0, binding=0) uniform sampler2D source_texture;
-layout(set=0, binding=1) uniform sampler3D lut_texture;
-layout(set=0, binding=2) uniform image2D result_texture;
-
-const vec3 LUT_DOMAIN_MIN = vec3({:.9}, {:.9}, {:.9});
-const vec3 LUT_DOMAIN_SCALE = vec3({:.9}, {:.9}, {:.9});
-const float LUT_TEXEL_SCALE = {:.9};
-const float LUT_TEXEL_OFFSET = {:.9};
-
-layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
-
-vec3 apply_lut(vec3 color) {{
-	vec3 normalized = clamp((color - LUT_DOMAIN_MIN) * LUT_DOMAIN_SCALE, vec3(0.0), vec3(1.0));
-	vec3 lut_uv = normalized * LUT_TEXEL_SCALE + LUT_TEXEL_OFFSET;
-	return textureLod(lut_texture, lut_uv, 0.0).rgb;
+apply_lut: fn(color: vec3f) -> vec3f {{
+	let domain_min: vec3f = vec3f({:.9}, {:.9}, {:.9});
+	let domain_scale: vec3f = vec3f({:.9}, {:.9}, {:.9});
+	let normalized: vec3f = clamp((color - domain_min) * domain_scale, vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
+	let lut_uv: vec3f = normalized * {:.9} + vec3f({:.9}, {:.9}, {:.9});
+	let sampled: vec4f = texture_lod(lut_texture, lut_uv);
+	return vec3f(sampled.x, sampled.y, sampled.z);
 }}
 
-void main() {{
-	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-	ivec2 extent = imageSize(result_texture);
-
-	if (pixel.x >= extent.x || pixel.y >= extent.y) {{
-		return;
-	}}
-
-	vec2 uv = (vec2(pixel) + 0.5) / vec2(extent);
-	vec4 source_color = textureLod(source_texture, uv, 0.0);
-	vec3 result_color = apply_lut(source_color.rgb);
-	imageStore(result_texture, pixel, vec4(result_color, source_color.a));
+main: fn () -> void {{
+	let coord: vec2u = thread_id();
+	guard_image_bounds(result_texture, coord);
+	let extent: vec2u = image_size(result_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
+	let source_color: vec4f = texture_lod(source_texture, uv);
+	let result_color: vec3f = apply_lut(vec3f(source_color.x, source_color.y, source_color.z));
+	write(result_texture, coord, vec4f(result_color.x, result_color.y, result_color.z, source_color.w));
 }}
 "#,
 		lut.domain_min[0],
@@ -231,58 +256,10 @@ void main() {{
 		domain_scale[1],
 		domain_scale[2],
 		lut_texel_scale,
+		lut_texel_offset,
+		lut_texel_offset,
 		lut_texel_offset
-	);
-
-	let msl = format!(
-		r#"
-		#include <metal_stdlib>
-		using namespace metal;
-
-		struct LutSet0 {{
-			texture2d<float> source [[id(0)]];
-			sampler source_sampler [[id(1)]];
-			texture3d<float> lut_texture [[id(2)]];
-			sampler lut_texture_sampler [[id(3)]];
-			texture2d<float, access::write> result [[id(4)]];
-		}};
-
-		constant float3 LUT_DOMAIN_MIN = float3({:.9}, {:.9}, {:.9});
-		constant float3 LUT_DOMAIN_SCALE = float3({:.9}, {:.9}, {:.9});
-		constant float LUT_TEXEL_SCALE = {:.9};
-		constant float LUT_TEXEL_OFFSET = {:.9};
-
-		float3 apply_lut(float3 color, const constant LutSet0& set0) {{
-			float3 normalized = clamp((color - LUT_DOMAIN_MIN) * LUT_DOMAIN_SCALE, float3(0.0), float3(1.0));
-			float3 lut_uv = normalized * LUT_TEXEL_SCALE + LUT_TEXEL_OFFSET;
-			return set0.lut_texture.sample(set0.lut_texture_sampler, lut_uv, level(0.0)).rgb;
-		}}
-
-		kernel void lut_apply(
-			uint2 gid [[thread_position_in_grid]],
-			constant LutSet0& set0 [[buffer(16)]]
-		) {{
-			if (gid.x >= set0.result.get_width() || gid.y >= set0.result.get_height()) {{
-				return;
-			}}
-
-			float2 uv = (float2(gid) + 0.5) / float2(set0.result.get_width(), set0.result.get_height());
-			float4 source_color = set0.source.sample(set0.source_sampler, uv, level(0.0));
-			float3 result_color = apply_lut(source_color.rgb, set0);
-			set0.result.write(float4(result_color, source_color.a), gid);
-		}}
-	"#,
-		lut.domain_min[0],
-		lut.domain_min[1],
-		lut.domain_min[2],
-		domain_scale[0],
-		domain_scale[1],
-		domain_scale[2],
-		lut_texel_scale,
-		lut_texel_offset
-	);
-
-	(glsl, msl)
+	)
 }
 
 /// Reads the baked LUT payload from the resource reference into owned bytes.
@@ -378,12 +355,16 @@ pub struct LutRenderPassSettings {
 mod tests {
 	use half::f16;
 	use resource_management::resources::lut::{Lut, LutKind};
+	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
+	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
+	use utils::Extent;
 
-	use super::{create_lut_shader_sources, expected_lut_payload_size, write_lut_bytes_to_rgba16f_upload_target};
+	use super::{
+		create_lut_program, create_lut_shader_source, expected_lut_payload_size, write_lut_bytes_to_rgba16f_upload_target,
+	};
 
-	#[cfg(target_os = "linux")]
 	#[test]
-	fn lut_shader_compiles() {
+	fn lut_besl_shader_lowers_to_platform_sources() {
 		let lut = Lut {
 			kind: LutKind::ThreeDimensional,
 			size: 16,
@@ -391,9 +372,16 @@ mod tests {
 			domain_max: [1.0, 1.0, 1.0],
 		};
 
-		let (glsl_source, _msl_source) = create_lut_shader_sources(&lut);
+		let source = create_lut_shader_source(&lut);
+		let main_node = create_lut_program(&source);
+		let settings = ShaderGenerationSettings::compute(Extent::new(8, 8, 1)).name("LUT Render Pass Test".to_string());
 
-		resource_management::shader::glsl_compile::compile(&glsl_source, "LUT Render Pass Test").unwrap();
+		GLSLShaderGenerator::new()
+			.generate(&settings, &main_node)
+			.expect("Failed to lower LUT BESL shader to GLSL.");
+		MSLShaderGenerator::new()
+			.generate(&settings, &main_node)
+			.expect("Failed to lower LUT BESL shader to MSL.");
 	}
 
 	#[test]
@@ -487,6 +475,7 @@ use resource_management::{
 	resource::ReadTargetsMut,
 	resources::lut::{Lut, LutKind},
 	resources::material,
+	shader::generator::ShaderGenerationSettings,
 	types::ShaderTypes as ResourceShaderTypes,
 	Reference,
 };

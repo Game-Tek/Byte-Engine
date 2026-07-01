@@ -15,41 +15,6 @@ pub struct PipelineManager {
 const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
 	[ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float3, 0)];
 
-const SIMPLE_FRAGMENT_MSL: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
-
-struct VertexOutput {
-	float4 position [[position]];
-	uint out_instance_index [[flat]] [[user(locn0)]];
-	float3 out_local_position [[user(locn1)]];
-};
-
-static float4 debug_color(uint index) {
-	const float3 palette[8] = {
-		float3(0.90, 0.20, 0.20),
-		float3(0.20, 0.70, 0.95),
-		float3(0.35, 0.85, 0.35),
-		float3(0.95, 0.75, 0.20),
-		float3(0.75, 0.35, 0.95),
-		float3(0.95, 0.45, 0.20),
-		float3(0.25, 0.90, 0.75),
-		float3(0.85, 0.85, 0.90),
-	};
-	return float4(palette[index % 8], 1.0);
-}
-
-fragment float4 besl_main(VertexOutput in [[stage_in]]) {
-	// Build the grid from object-space position so it rotates with the rendered mesh.
-	float3 local_grid = abs(fract(in.out_local_position * 4.0 + 0.5) - 0.5);
-	float grid_distance = min(local_grid.x, min(local_grid.y, local_grid.z));
-	float grid_line = 1.0 - smoothstep(0.015, 0.035, grid_distance);
-	float3 base_color = debug_color(in.out_instance_index).rgb;
-	float3 grid_color = mix(base_color, float3(1.0), grid_line * 0.45);
-	return float4(grid_color, 1.0);
-}
-"#;
-
 impl PipelineManager {
 	pub fn new(context: &mut ghi::implementation::Context) -> Self {
 		let vertex_positions_buffer = context.build_buffer(
@@ -84,40 +49,25 @@ impl PipelineManager {
 			&[camera_data_binding_template.clone(), instance_data_binding_template.clone()],
 		);
 
-		let mut platform_shader_generator = PlatformShaderGenerator::new();
-
-		let (generated_vertex_shader, generated_vertex_msl) = {
+		let vertex_shader = {
 			let main_code = r#"
 			Camera camera = cameras.cameras[0];
-			uint instance_index = gl_InstanceIndex;
+			u32 instance_index = instance_id;
 			Instance instance = instances.instances[instance_index];
 
-			gl_Position = camera.view_projection * instance.transform * vec4(in_position, 1.0);
+			position = camera.view_projection * instance.transform * vec4f(in_position, 1.0);
 			out_instance_index = instance_index;
 			out_local_position = in_position;
 			"#
 			.trim();
-			let main_msl = r#"
-			VertexOutput out;
-			Camera camera = set0.cameras->cameras[0];
-			Instance instance = set0.instances->instances[instance_index];
 
-			out.position = camera.view_projection * instance.transform * float4(in.in_position, 1.0);
-			out.out_instance_index = instance_index;
-			out.out_local_position = in.in_position;
-			return out;
-			"#
-			.trim();
-
-			let main = besl::ParserNode::main_function(vec![besl::ParserNode::raw_code(
-				Some(main_code.into()),
-				None,
-				Some(main_msl.into()),
+			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(
+				main_code,
 				&[
 					"cameras",
 					"instances",
-					"push_constant",
 					"in_position",
+					"position",
 					"out_instance_index",
 					"out_local_position",
 				],
@@ -125,8 +75,6 @@ impl PipelineManager {
 			)]);
 
 			let mut root = besl::ParserNode::root();
-
-			let push_constant = ParserNode::push_constant(vec![ParserNode::member("instance_index", "u32")]);
 
 			let camera = ParserNode::r#struct("Camera", vec![ParserNode::member("view_projection", "mat4f")]);
 			let instance = ParserNode::r#struct("Instance", vec![ParserNode::member("transform", "mat4f")]);
@@ -149,6 +97,8 @@ impl PipelineManager {
 			);
 
 			let position_input = ParserNode::input("in_position", "vec3f", 0);
+			let vertex_instance_id = ParserNode::input("instance_id", "u32", 1);
+			let position_output = ParserNode::output("position", "vec4f", 0);
 			let instance_index_output = ParserNode::output("out_instance_index", "u32", 0);
 			let local_position_output = ParserNode::output("out_local_position", "vec3f", 1);
 
@@ -160,9 +110,10 @@ impl PipelineManager {
 					cameras_binding,
 					instances_binding,
 					position_input,
+					vertex_instance_id,
+					position_output,
 					instance_index_output,
 					local_position_output,
-					push_constant,
 					main,
 				],
 			);
@@ -173,22 +124,16 @@ impl PipelineManager {
 
 			let main_node = root_node.get_main().unwrap();
 
-			let generated_platform = platform_shader_generator
-				.generate(&ShaderGenerationSettings::vertex(), &main_node)
-				.expect("Failed to generate platform vertex shader.");
-
-			let binary = generated_platform.binary().to_vec().into_boxed_slice();
-			let extent = generated_platform.extent();
-			let bindings: Vec<resource_management::shader::generator::CompiledShaderBinding> = generated_platform
-				.bindings()
-				.iter()
-				.map(|b| resource_management::shader::generator::CompiledShaderBinding::new(b.set, b.binding, b.read, b.write))
-				.collect();
-			let compiled = resource_management::shader::generator::CompiledShader::new(binary, bindings, extent);
-			(compiled, generated_platform)
+			create_besl_shader(
+				context,
+				"Vertex Shader",
+				ghi::ShaderTypes::Vertex,
+				&ShaderGenerationSettings::vertex(),
+				&main_node,
+			)
 		};
 
-		let (generated_fragment_shader, generated_fragment_platform) = {
+		let fragment_shader = {
 			let main_code = r#"
 			uint instance_index = in_instance_index;
 			// Build the grid from object-space position so it rotates with the rendered mesh.
@@ -210,11 +155,32 @@ impl PipelineManager {
 			out_albedo = vec4(grid_color, 1.0);
 			"#
 			.trim();
+			let main_msl = r#"
+			uint instance_index = in.in_instance_index;
+			// Build the grid from object-space position so it rotates with the rendered mesh.
+			float3 local_grid = abs(fract(in.in_local_position * 4.0 + 0.5) - 0.5);
+			float grid_distance = min(local_grid.x, min(local_grid.y, local_grid.z));
+			float grid_line = 1.0 - smoothstep(0.015, 0.035, grid_distance);
+			float3 palette[8] = {
+				float3(0.90, 0.20, 0.20),
+				float3(0.20, 0.70, 0.95),
+				float3(0.35, 0.85, 0.35),
+				float3(0.95, 0.75, 0.20),
+				float3(0.75, 0.35, 0.95),
+				float3(0.95, 0.45, 0.20),
+				float3(0.25, 0.90, 0.75),
+				float3(0.85, 0.85, 0.90)
+			};
+			float3 base_color = palette[instance_index % 8];
+			float3 grid_color = mix(base_color, float3(1.0), grid_line * 0.45);
+			out.out_albedo = float4(grid_color, 1.0);
+			"#
+			.trim();
 
 			let main = besl::ParserNode::main_function(vec![besl::ParserNode::raw_code(
 				Some(main_code.into()),
 				None,
-				Some(format!("// besl-full-source\n{SIMPLE_FRAGMENT_MSL}").into()),
+				Some(main_msl.into()),
 				&["in_instance_index", "in_local_position", "out_albedo"],
 				&[],
 			)]);
@@ -236,63 +202,14 @@ impl PipelineManager {
 
 			let main_node = root_node.get_main().unwrap();
 
-			let generated_platform = platform_shader_generator
-				.generate(&ShaderGenerationSettings::fragment(), &main_node)
-				.expect("Failed to generate platform fragment shader.");
-
-			let binary = generated_platform.binary().to_vec().into_boxed_slice();
-			let extent = generated_platform.extent();
-			let bindings: Vec<resource_management::shader::generator::CompiledShaderBinding> = generated_platform
-				.bindings()
-				.iter()
-				.map(|b| resource_management::shader::generator::CompiledShaderBinding::new(b.set, b.binding, b.read, b.write))
-				.collect();
-			let compiled = resource_management::shader::generator::CompiledShader::new(binary, bindings, extent);
-			(compiled, generated_platform)
-		};
-
-		let vertex_shader_source = if let Some(entry_point) = generated_vertex_msl.entry_point() {
-			ghi::shader::Sources::MTLB {
-				binary: generated_vertex_shader.binary(),
-				entry_point,
-				threadgroup_size: generated_vertex_msl.extent(),
-			}
-		} else {
-			ghi::shader::Sources::SPIRV(generated_vertex_shader.binary())
-		};
-
-		let vertex_shader = context
-			.create_shader(
-				Some("Vertex Shader"),
-				vertex_shader_source,
-				ghi::ShaderTypes::Vertex,
-				generated_vertex_shader
-					.bindings()
-					.iter()
-					.map(map_shader_binding_to_shader_binding_descriptor),
-			)
-			.unwrap();
-		let fragment_shader_source = if let Some(entry_point) = generated_fragment_platform.entry_point() {
-			ghi::shader::Sources::MTLB {
-				binary: generated_fragment_shader.binary(),
-				entry_point,
-				threadgroup_size: generated_fragment_platform.extent(),
-			}
-		} else {
-			ghi::shader::Sources::SPIRV(generated_fragment_shader.binary())
-		};
-
-		let fragment_shader = context
-			.create_shader(
-				Some("Fragment Shader"),
-				fragment_shader_source,
+			create_besl_shader(
+				context,
+				"Fragment Shader",
 				ghi::ShaderTypes::Fragment,
-				generated_fragment_shader
-					.bindings()
-					.iter()
-					.map(map_shader_binding_to_shader_binding_descriptor),
+				&ShaderGenerationSettings::fragment(),
+				&main_node,
 			)
-			.unwrap();
+		};
 
 		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[descriptor_set_template],
@@ -461,6 +378,46 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 	}
 }
 
+fn create_besl_shader(
+	context: &mut ghi::implementation::Context,
+	name: &str,
+	stage: ghi::ShaderTypes,
+	settings: &ShaderGenerationSettings,
+	main_node: &besl::NodeReference,
+) -> ghi::ShaderHandle {
+	let glsl = GLSLShaderGenerator::new()
+		.generate(settings, main_node)
+		.expect("Failed to generate simple pipeline GLSL. The most likely cause is invalid BESL lowering.");
+	let msl = MSLShaderGenerator::new()
+		.generate(settings, main_node)
+		.expect("Failed to generate simple pipeline MSL. The most likely cause is invalid BESL lowering.");
+	let evaluation = ProgramEvaluation::from_main(main_node)
+		.expect("Failed to evaluate simple pipeline shader bindings. The most likely cause is invalid BESL shader structure.");
+	let binding_descriptors = evaluation.bindings().iter().map(|binding| {
+		let binding = resource_management::shader::generator::CompiledShaderBinding::new(
+			binding.set,
+			binding.binding,
+			binding.read,
+			binding.write,
+		);
+		map_shader_binding_to_shader_binding_descriptor(&binding)
+	});
+
+	let compiled = ghi::shader::compile(
+		name,
+		ghi::shader::ShaderSource::Platform {
+			glsl: &glsl,
+			msl: &msl,
+			msl_entry_point: "besl_main",
+		},
+	)
+	.expect("Failed to compile simple pipeline shader. The most likely cause is invalid generated shader source.");
+
+	context
+		.create_shader(Some(name), compiled.as_source(), stage, binding_descriptors)
+		.expect("Failed to create simple pipeline shader. The most likely cause is an incompatible shader interface.")
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub(super) struct InstanceShaderData {
@@ -484,7 +441,10 @@ use ghi::{
 use math::{Matrix4, ShaderMatrix4};
 use resource_management::{
 	asset::bema_asset_handler::ProgramGenerator,
-	shader::{besl::backends::platform::PlatformShaderGenerator, generator::ShaderGenerationSettings},
+	shader::{
+		besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator, evaluation::ProgramEvaluation},
+		generator::ShaderGenerationSettings,
+	},
 };
 use utils::{
 	hash::{HashMap, HashMapExt},

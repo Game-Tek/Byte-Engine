@@ -10,7 +10,7 @@ use super::{
 	asset_manager::AssetManager,
 	ResourceId,
 };
-use crate::shader::besl::backends::platform::PlatformShaderGenerator;
+use crate::shader::besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage};
 use crate::{
 	asset,
 	r#async::{spawn_cpu_task, BoxedFuture},
@@ -319,12 +319,20 @@ pub(crate) fn compile_shader_program(
 			.collect(),
 	};
 
-	let artifact = if let Some(entry_point) = shader_program.entry_point() {
-		ShaderArtifact::Mtlb {
-			entry_point: entry_point.to_string(),
-		}
-	} else {
-		ShaderArtifact::Spirv
+	let artifact = match PlatformShaderLanguage::current_platform() {
+		PlatformShaderLanguage::Hlsl => ShaderArtifact::Hlsl {
+			entry_point: shader_program
+				.entry_point()
+				.unwrap_or(PlatformShaderLanguage::Hlsl.entry_point())
+				.to_string(),
+		},
+		PlatformShaderLanguage::Msl => ShaderArtifact::Mtlb {
+			entry_point: shader_program
+				.entry_point()
+				.unwrap_or(PlatformShaderLanguage::Msl.entry_point())
+				.to_string(),
+		},
+		PlatformShaderLanguage::Glsl => ShaderArtifact::Spirv,
 	};
 
 	let shader = Shader {

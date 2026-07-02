@@ -7,7 +7,9 @@ pub mod shader_generator;
 
 pub use pipeline_manager::VisibilityPipelineManager;
 use resource_management::shader::{
-	besl::backends::{glsl::GLSLShaderGenerator, msl::MSLShaderGenerator, platform::PlatformShaderLanguage},
+	besl::backends::{
+		glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator, platform::PlatformShaderLanguage,
+	},
 	generator::ShaderGenerationSettings,
 };
 use utils::Extent;
@@ -164,6 +166,7 @@ fn generate_shader_source_for_language(
 ) -> Result<String, ()> {
 	match language {
 		PlatformShaderLanguage::Glsl => GLSLShaderGenerator::new().generate(settings, main_node),
+		PlatformShaderLanguage::Hlsl => HLSLShaderGenerator::new().generate(settings, main_node),
 		PlatformShaderLanguage::Msl => MSLShaderGenerator::new().generate(settings, main_node),
 	}
 }

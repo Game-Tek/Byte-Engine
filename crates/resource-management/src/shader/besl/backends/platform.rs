@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 use crate::shader::besl::backends::spirv::SPIRVShaderGenerator;
+#[cfg(target_os = "windows")]
+use crate::shader::besl::{backends::hlsl::HLSLShaderGenerator, evaluation::ProgramEvaluation};
 use crate::shader::generator::{CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator};
 #[cfg(target_vendor = "apple")]
 use crate::shader::msl_shader_compiler::MSLShaderCompiler;
@@ -7,6 +9,7 @@ use crate::shader::msl_shader_compiler::MSLShaderCompiler;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlatformShaderLanguage {
 	Glsl,
+	Hlsl,
 	Msl,
 }
 
@@ -14,6 +17,8 @@ impl PlatformShaderLanguage {
 	pub const fn current_platform() -> Self {
 		if cfg!(target_vendor = "apple") {
 			Self::Msl
+		} else if cfg!(target_os = "windows") {
+			Self::Hlsl
 		} else if cfg!(target_os = "linux") {
 			Self::Glsl
 		} else {
@@ -24,6 +29,7 @@ impl PlatformShaderLanguage {
 	pub const fn entry_point(self) -> &'static str {
 		match self {
 			Self::Glsl => "main",
+			Self::Hlsl => "besl_main",
 			Self::Msl => "besl_main",
 		}
 	}
@@ -34,6 +40,10 @@ impl PlatformShaderLanguage {
 
 	pub const fn is_msl(self) -> bool {
 		matches!(self, Self::Msl)
+	}
+
+	pub const fn is_hlsl(self) -> bool {
+		matches!(self, Self::Hlsl)
 	}
 }
 
@@ -72,6 +82,8 @@ pub struct Generator {
 	#[cfg(not(target_vendor = "apple"))]
 	#[cfg(target_os = "linux")]
 	spirv_shader_generator: SPIRVShaderGenerator,
+	#[cfg(target_os = "windows")]
+	hlsl_shader_generator: HLSLShaderGenerator,
 	#[cfg(target_vendor = "apple")]
 	msl_shader_compiler: MSLShaderCompiler,
 }
@@ -89,6 +101,8 @@ impl Generator {
 		Self {
 			#[cfg(target_os = "linux")]
 			spirv_shader_generator: SPIRVShaderGenerator::new(),
+			#[cfg(target_os = "windows")]
+			hlsl_shader_generator: HLSLShaderGenerator::new(),
 			#[cfg(target_vendor = "apple")]
 			msl_shader_compiler: MSLShaderCompiler::new(),
 		}
@@ -143,6 +157,32 @@ impl Generator {
 					entry_point: Some(PlatformShaderLanguage::Msl.entry_point()),
 				})
 			}
+			#[cfg(target_os = "windows")]
+			PlatformShaderLanguage::Hlsl => {
+				let source = self.hlsl_shader_generator.generate(shader_generation_settings, main_function_node).map_err(|_| {
+					"Failed to generate HLSL shader source. The most likely cause is that the BESL program uses unsupported HLSL constructs."
+						.to_string()
+				})?;
+				let evaluation = ProgramEvaluation::from_main(main_function_node)?;
+				Ok(GeneratedCompiledPlatformShader {
+					binary: source.into_bytes().into_boxed_slice(),
+					bindings: evaluation
+						.into_bindings()
+						.into_iter()
+						.map(|binding| CompiledShaderBinding {
+							set: binding.set,
+							binding: binding.binding,
+							read: binding.read,
+							write: binding.write,
+						})
+						.collect(),
+					extent: match shader_generation_settings.stage {
+						crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
+						_ => None,
+					},
+					entry_point: Some(PlatformShaderLanguage::Hlsl.entry_point()),
+				})
+			}
 			_ => Err(
 				"Unsupported platform shader language. The most likely cause is that this compiler backend is gated off for the current target platform."
 					.to_string(),
@@ -153,10 +193,8 @@ impl Generator {
 
 #[cfg(test)]
 mod tests {
-	#[cfg(target_os = "linux")]
 	use super::Generator;
 	use super::PlatformShaderLanguage;
-	#[cfg(target_os = "linux")]
 	use crate::shader::generator::{self, ShaderGenerationSettings};
 
 	#[test]
@@ -164,7 +202,10 @@ mod tests {
 		#[cfg(target_vendor = "apple")]
 		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Msl);
 
-		#[cfg(not(target_vendor = "apple"))]
+		#[cfg(all(not(target_vendor = "apple"), target_os = "windows"))]
+		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Hlsl);
+
+		#[cfg(all(not(target_vendor = "apple"), target_os = "linux"))]
 		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Glsl);
 	}
 
@@ -183,6 +224,19 @@ mod tests {
 		} else {
 			assert_eq!(generated.entry_point(), None);
 		}
+		assert!(!generated.binary().is_empty());
+	}
+
+	#[cfg(target_os = "windows")]
+	#[test]
+	fn generate_uses_hlsl_on_windows() {
+		let main = generator::tests::fragment_shader();
+		let settings = ShaderGenerationSettings::fragment();
+		let mut generator = Generator::new();
+		let generated = generator.generate(&settings, &main).expect("Failed to generate HLSL shader");
+
+		assert_eq!(generated.entry_point(), Some(PlatformShaderLanguage::Hlsl.entry_point()));
+		assert!(std::str::from_utf8(generated.binary()).is_ok());
 		assert!(!generated.binary().is_empty());
 	}
 }

@@ -909,9 +909,10 @@ impl Device {
 			if binding.binding == binding_index
 				&& std::mem::discriminant(&binding.descriptor_type) == std::mem::discriminant(&descriptor_type)
 			{
-				return Some(slot + array_element.min(binding.descriptor_count.saturating_sub(1)));
+				let descriptor_count = Self::descriptor_count_for_heap(binding, sampler_heap);
+				return Some(slot + array_element.min(descriptor_count.saturating_sub(1)));
 			}
-			slot += binding.descriptor_count.max(1);
+			slot += Self::descriptor_count_for_heap(binding, sampler_heap);
 		}
 		None
 	}
@@ -938,6 +939,99 @@ impl Device {
 		let stride = unsafe { self.device.GetDescriptorHandleIncrementSize(heap_type) } as u64;
 		handle.ptr = handle.ptr.saturating_add(slot as u64 * stride);
 		handle
+	}
+
+	fn descriptor_heap_descriptor_count_for_set(&self, set_handle: DescriptorSetHandle, sampler_heap: bool) -> u32 {
+		self.descriptor_sets
+			.get(set_handle.0 as usize)
+			.map(|set| self.descriptor_heap_descriptor_count(set.template, sampler_heap))
+			.unwrap_or(0)
+	}
+
+	fn stage_descriptor_heap_for_sets(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		sets: &[DescriptorSetHandle],
+		sampler_heap: bool,
+	) -> Option<StagedDescriptorHeap> {
+		let heap_type = if sampler_heap {
+			D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
+		} else {
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
+		};
+		let mut set_offsets = Vec::with_capacity(sets.len());
+		let mut descriptor_count = 0u32;
+
+		for &set_handle in sets {
+			let count = self.descriptor_heap_descriptor_count_for_set(set_handle, sampler_heap);
+			if count == 0 {
+				set_offsets.push(None);
+			} else {
+				set_offsets.push(Some(descriptor_count));
+				descriptor_count = descriptor_count.saturating_add(count);
+			}
+		}
+
+		if descriptor_count == 0 {
+			return None;
+		}
+
+		let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
+			Type: heap_type,
+			NumDescriptors: descriptor_count,
+			Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+			NodeMask: 0,
+		};
+		let heap = match unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc) } {
+			Ok(heap) => heap,
+			Err(error) => {
+				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+				self.log_dx12_error(format!(
+					"Failed to create staged DX12 descriptor heap. Sampler heap: {sampler_heap}. Descriptor count: {descriptor_count}. Error: {error:?}. Device removed reason: {removed_reason:?}"
+				));
+				return None;
+			}
+		};
+
+		let stride = unsafe { self.device.GetDescriptorHandleIncrementSize(heap_type) } as usize;
+		let destination_start = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
+
+		for (set_index, &set_handle) in sets.iter().enumerate() {
+			let Some(destination_offset) = set_offsets.get(set_index).and_then(|offset| *offset) else {
+				continue;
+			};
+			let Some(set) = self.descriptor_sets.get(set_handle.0 as usize) else {
+				continue;
+			};
+			let source_heap = if sampler_heap {
+				set.sampler_heap.as_ref()
+			} else {
+				set.cbv_srv_uav_heap.as_ref()
+			};
+			let Some(source_heap) = source_heap else {
+				continue;
+			};
+			let count = self.descriptor_heap_descriptor_count_for_set(set_handle, sampler_heap);
+			if count == 0 {
+				continue;
+			}
+
+			let source = unsafe { source_heap.GetCPUDescriptorHandleForHeapStart() };
+			let mut destination = destination_start;
+			destination.ptr = destination
+				.ptr
+				.saturating_add(destination_offset as usize * stride);
+			unsafe {
+				self.device
+					.CopyDescriptorsSimple(count, destination, source, heap_type);
+			}
+		}
+
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+			command_buffer.staged_descriptor_heaps.push(heap.clone());
+		}
+
+		Some(StagedDescriptorHeap { heap, set_offsets })
 	}
 
 	fn descriptor_range_type(descriptor_type: DescriptorType, sampler_heap: bool) -> Option<D3D12_DESCRIPTOR_RANGE_TYPE> {
@@ -1782,6 +1876,7 @@ impl Device {
 			queue_handle,
 			allocator,
 			command_list,
+			staged_descriptor_heaps: Vec::new(),
 			is_open: false,
 		});
 
@@ -2940,7 +3035,7 @@ impl Device {
 	) -> (ImageHandle, Formats) {
 		self.get_swapchain_image(swapchain_handle, uses);
 		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-		let image_index = swapchain.acquired_image_indices[sequence_index as usize] as usize;
+		let image_index = sequence_index as usize;
 		(
 			swapchain.images[image_index].or(swapchain.images[0]).expect(
 				"Missing DX12 swapchain proxy image. The most likely cause is that swapchain image access did not create the proxy image.",
@@ -3051,6 +3146,7 @@ impl Device {
 			let _ = unsafe { command_list.Close() };
 			command_buffer.is_open = false;
 		}
+		command_buffer.staged_descriptor_heaps.clear();
 		let _ = unsafe { allocator.Reset() };
 		let _ = unsafe { command_list.Reset(allocator, None) };
 		command_buffer.is_open = true;
@@ -3797,18 +3893,13 @@ impl Device {
 			return;
 		};
 
-		let cbv_srv_uav_heap = sets
-			.iter()
-			.filter_map(|set| self.descriptor_sets.get(set.0 as usize))
-			.find_map(|set| set.cbv_srv_uav_heap.clone());
-		let sampler_heap = sets
-			.iter()
-			.filter_map(|set| self.descriptor_sets.get(set.0 as usize))
-			.find_map(|set| set.sampler_heap.clone());
+		let cbv_srv_uav_heap = self.stage_descriptor_heap_for_sets(command_buffer_handle, sets, false);
+		let sampler_heap = self.stage_descriptor_heap_for_sets(command_buffer_handle, sets, true);
 
-		let heaps = [cbv_srv_uav_heap, sampler_heap]
+		let heaps = [cbv_srv_uav_heap.as_ref(), sampler_heap.as_ref()]
 			.into_iter()
 			.flatten()
+			.map(|staged| staged.heap.clone())
 			.map(Some)
 			.collect::<Vec<_>>();
 		if heaps.is_empty() {
@@ -3836,21 +3927,26 @@ impl Device {
 			return;
 		};
 		for (root_parameter_index, table) in root_tables.iter().enumerate() {
-			let set = sets
-				.get(table.set_index)
-				.and_then(|set_handle| self.descriptor_sets.get(set_handle.0 as usize));
-			let heap = if table.sampler_heap {
-				set.and_then(|set| set.sampler_heap.as_ref())
+			let staged_heap = if table.sampler_heap {
+				sampler_heap.as_ref()
 			} else {
-				set.and_then(|set| set.cbv_srv_uav_heap.as_ref())
+				cbv_srv_uav_heap.as_ref()
 			};
-			if let Some(heap) = heap {
+			if let Some(staged_heap) = staged_heap {
+				let Some(set_offset) = staged_heap
+					.set_offsets
+					.get(table.set_index)
+					.and_then(|offset| *offset)
+				else {
+					continue;
+				};
+				let heap_slot = set_offset.saturating_add(table.heap_slot);
 				let heap_type = if table.sampler_heap {
 					D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
 				} else {
 					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
 				};
-				let handle = self.descriptor_gpu_handle(heap, heap_type, table.heap_slot);
+				let handle = self.descriptor_gpu_handle(&staged_heap.heap, heap_type, heap_slot);
 				unsafe {
 					match pipeline.kind {
 						PipelineKind::Compute | PipelineKind::RayTracing => {
@@ -3867,7 +3963,7 @@ impl Device {
 					set_index: table.set_index,
 					binding_index: table.binding_index,
 					sampler_heap: table.sampler_heap,
-					heap_slot: table.heap_slot,
+					heap_slot,
 				});
 			}
 		}
@@ -4006,7 +4102,7 @@ impl Device {
 		for present_key in present_keys {
 			let Some((source_image, proxy_uses)) =
 				self.swapchains.get(present_key.swapchain.0 as usize).and_then(|swapchain| {
-					let image_index = (present_key.image_index as usize).min(swapchain.images.len().saturating_sub(1));
+					let image_index = (present_key.sequence_index as usize).min(swapchain.images.len().saturating_sub(1));
 					swapchain.images[image_index]
 						.or(swapchain.images[0])
 						.map(|image| (image, swapchain.proxy_uses[image_index]))
@@ -5453,8 +5549,8 @@ impl Device {
 	}
 
 	/// Resolves per-frame descriptor resources, falling back to single-resource handles for DX12.
-	fn resolve_descriptor_for_frame(&self, descriptor: WriteData, frame_index: usize, frame_offset: Option<i32>) -> WriteData {
-		let _sequence_index = self.frame_index_with_offset(frame_index, frame_offset, self.frames as usize);
+	fn resolve_descriptor_for_frame(&mut self, descriptor: WriteData, frame_index: usize, frame_offset: Option<i32>) -> WriteData {
+		let sequence_index = self.frame_index_with_offset(frame_index, frame_offset, self.frames as usize);
 
 		match descriptor {
 			WriteData::Buffer { handle, size } => WriteData::Buffer { handle, size },
@@ -5470,6 +5566,15 @@ impl Device {
 				layout,
 				layer,
 			},
+			WriteData::Swapchain(handle) => {
+				let image = self
+					.get_swapchain_image_for_sequence(handle, Uses::Storage, sequence_index as u8)
+					.0;
+				WriteData::Image {
+					handle: image.into(),
+					layout: crate::Layouts::General,
+				}
+			}
 			_ => descriptor,
 		}
 	}
@@ -6170,6 +6275,7 @@ impl Device {
 			Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
 			Flags: flags,
 		};
+		let optimized_clear_value = Self::optimized_image_clear_value(format, flags);
 
 		let mut resource = None;
 		let result = unsafe {
@@ -6178,7 +6284,7 @@ impl Device {
 				D3D12_HEAP_FLAG_NONE,
 				&resource_desc,
 				D3D12_RESOURCE_STATE_COMMON,
-				None,
+				optimized_clear_value.as_ref().map(|clear_value| clear_value as *const _),
 				&mut resource,
 			)
 		};
@@ -6209,6 +6315,19 @@ impl Device {
 			flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 		}
 		flags
+	}
+
+	fn optimized_image_clear_value(format: Formats, flags: D3D12_RESOURCE_FLAGS) -> Option<D3D12_CLEAR_VALUE> {
+		if flags.contains(D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) && format == Formats::Depth32 {
+			return Some(D3D12_CLEAR_VALUE {
+				Format: DXGI_FORMAT_D32_FLOAT,
+				Anonymous: D3D12_CLEAR_VALUE_0 {
+					DepthStencil: D3D12_DEPTH_STENCIL_VALUE { Depth: 0.0, Stencil: 0 },
+				},
+			});
+		}
+
+		None
 	}
 
 	fn dxgi_format(format: Formats) -> Option<DXGI_FORMAT> {
@@ -6301,6 +6420,7 @@ struct CommandBuffer {
 	queue_handle: QueueHandle,
 	allocator: Option<ID3D12CommandAllocator>,
 	command_list: Option<ID3D12GraphicsCommandList>,
+	staged_descriptor_heaps: Vec<ID3D12DescriptorHeap>,
 	is_open: bool,
 }
 
@@ -6416,6 +6536,11 @@ struct RootDescriptorTable {
 	binding_index: u32,
 	sampler_heap: bool,
 	heap_slot: u32,
+}
+
+struct StagedDescriptorHeap {
+	heap: ID3D12DescriptorHeap,
+	set_offsets: Vec<Option<u32>>,
 }
 
 #[derive(Clone, Copy)]
@@ -6879,12 +7004,13 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_BUFFER_SRV_FLAG_NONE, D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAG_NONE,
 	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS,
 	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0, D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH,
-	D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAGS,
-	D3D12_COMMAND_SIGNATURE_DESC, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC,
-	D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE,
-	D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_FRONT, D3D12_CULL_MODE_NONE,
-	D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_STENCIL_DESC,
-	D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+	D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMMAND_LIST_TYPE,
+	D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAGS, D3D12_COMMAND_SIGNATURE_DESC, D3D12_COMPARISON_FUNC_ALWAYS,
+	D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+	D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_BACK,
+	D3D12_CULL_MODE_FRONT, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+	D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_STENCIL_VALUE, D3D12_DEPTH_WRITE_MASK_ZERO,
+	D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
 	D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
 	D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
 	D3D12_DESCRIPTOR_RANGE_TYPE, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,

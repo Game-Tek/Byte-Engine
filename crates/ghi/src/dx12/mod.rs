@@ -1404,6 +1404,89 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn descriptor_tables_stage_multiple_sets_into_one_native_heap() {
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let base_bindings = [crate::DescriptorSetBindingTemplate::storage_buffer(
+			1,
+			crate::Stages::COMPUTE,
+		)];
+		let visibility_bindings = [
+			crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE),
+			crate::DescriptorSetBindingTemplate::storage_image(7, crate::Stages::COMPUTE),
+		];
+		let base_template = device.create_descriptor_set_template(None, &base_bindings);
+		let visibility_template = device.create_descriptor_set_template(None, &visibility_bindings);
+		let base_set = device.create_descriptor_set(None, &base_template);
+		let visibility_set = device.create_descriptor_set(None, &visibility_template);
+		let base_buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let visibility_buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let visibility_image = device.build_image(
+			crate::image::Builder::new(crate::Formats::U32, crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.create_descriptor_binding(
+			base_set,
+			crate::BindingConstructor::buffer(&base_bindings[0], base_buffer.into()),
+		);
+		device.create_descriptor_binding(
+			visibility_set,
+			crate::BindingConstructor::buffer(&visibility_bindings[0], visibility_buffer.into()),
+		);
+		device.create_descriptor_binding(
+			visibility_set,
+			crate::BindingConstructor::image(&visibility_bindings[1], visibility_image),
+		);
+
+		let shader = device
+			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[base_template, visibility_template],
+			&[],
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, _queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommonCommandBufferMode::bind_compute_pipeline(&mut recording, pipeline)
+			.bind_descriptor_sets(&[base_set, visibility_set]);
+		drop(recording);
+
+		let records = device.descriptor_table_bind_records();
+		assert_eq!(device.descriptor_heap_bind_count(), 1);
+		assert_eq!(records.len(), 3);
+		assert_eq!(
+			records,
+			&[
+				crate::dx12::context::DescriptorTableBindRecord {
+					root_parameter_index: 0,
+					set_index: 0,
+					binding_index: 1,
+					sampler_heap: false,
+					heap_slot: 0,
+				},
+				crate::dx12::context::DescriptorTableBindRecord {
+					root_parameter_index: 1,
+					set_index: 1,
+					binding_index: 0,
+					sampler_heap: false,
+					heap_slot: 1,
+				},
+				crate::dx12::context::DescriptorTableBindRecord {
+					root_parameter_index: 2,
+					set_index: 1,
+					binding_index: 7,
+					sampler_heap: false,
+					heap_slot: 2,
+				},
+			]
+		);
+	}
+
+	#[test]
 	fn storage_images_create_native_uav_descriptors() {
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::storage_image(0, crate::Stages::COMPUTE);

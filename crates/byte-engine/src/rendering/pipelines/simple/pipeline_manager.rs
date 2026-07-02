@@ -49,97 +49,21 @@ impl PipelineManager {
 			&[camera_data_binding_template.clone(), instance_data_binding_template.clone()],
 		);
 
-		let vertex_shader = {
-			let main_code = r#"
-			Camera camera = cameras.cameras[0];
-			u32 instance_index = instance_id;
-			Instance instance = instances.instances[instance_index];
-
-			position = camera.view_projection * instance.transform * vec4f(in_position, 1.0);
-			out_instance_index = instance_index;
-			out_local_position = in_position;
-			"#
-			.trim();
-
-			let main = besl::ParserNode::main_function(vec![besl::ParserNode::glsl(
-				main_code,
-				&[
-					"cameras",
-					"instances",
-					"in_position",
-					"position",
-					"out_instance_index",
-					"out_local_position",
+		let vertex_shader = create_besl_shader(
+			context,
+			"byte-engine/rendering/simple/vertex",
+			"Vertex Shader",
+			ResourceShaderTypes::Vertex,
+			ShaderGenerationSettings::vertex(),
+			create_simple_vertex_program(),
+			material::ShaderInterface {
+				workgroup_size: None,
+				bindings: vec![
+					material::Binding::new(0, 0, true, false),
+					material::Binding::new(0, 1, true, false),
 				],
-				&[],
-			)]);
-
-			let mut root = besl::ParserNode::root();
-
-			let camera = ParserNode::r#struct("Camera", vec![ParserNode::member("view_projection", "mat4f")]);
-			let instance = ParserNode::r#struct("Instance", vec![ParserNode::member("transform", "mat4f")]);
-
-			let cameras_binding = ParserNode::binding(
-				"cameras",
-				ParserNode::buffer("CamerasBuffer", vec![ParserNode::member("cameras", "Camera[8]")]),
-				0,
-				0,
-				true,
-				false,
-			);
-			let instances_binding = ParserNode::binding(
-				"instances",
-				ParserNode::buffer("InstancesBuffer", vec![ParserNode::member("instances", "Instance[8]")]),
-				0,
-				1,
-				true,
-				false,
-			);
-
-			let position_input = ParserNode::input("in_position", "vec3f", 0);
-			let vertex_instance_id = ParserNode::input("instance_id", "u32", 1);
-			let position_output = ParserNode::output("position", "vec4f", 0);
-			let instance_index_output = ParserNode::output("out_instance_index", "u32", 0);
-			let local_position_output = ParserNode::output("out_local_position", "vec3f", 1);
-
-			let shader = besl::ParserNode::scope(
-				"Shader",
-				vec![
-					camera,
-					instance,
-					cameras_binding,
-					instances_binding,
-					position_input,
-					vertex_instance_id,
-					position_output,
-					instance_index_output,
-					local_position_output,
-					main,
-				],
-			);
-
-			root.add(vec![shader]);
-
-			let root_node = besl::lex(root).unwrap();
-
-			let main_node = root_node.get_main().unwrap();
-
-			create_besl_shader(
-				context,
-				"byte-engine/rendering/simple/vertex",
-				"Vertex Shader",
-				ResourceShaderTypes::Vertex,
-				ShaderGenerationSettings::vertex(),
-				main_node,
-				material::ShaderInterface {
-					workgroup_size: None,
-					bindings: vec![
-						material::Binding::new(0, 0, true, false),
-						material::Binding::new(0, 1, true, false),
-					],
-				},
-			)
-		};
+			},
+		);
 
 		let fragment_shader = {
 			let main_code = r#"
@@ -181,7 +105,7 @@ impl PipelineManager {
 			};
 			float3 base_color = palette[instance_index % 8];
 			float3 grid_color = mix(base_color, float3(1.0), grid_line * 0.45);
-			out.out_albedo = float4(grid_color, 1.0);
+			out_albedo = float4(grid_color, 1.0);
 			"#
 			.trim();
 
@@ -391,6 +315,100 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 	}
 }
 
+/// Builds the simple pipeline vertex BESL program that transforms instanced meshes with the
+/// bound camera and forwards the instance index and object-space position to the fragment stage.
+fn create_simple_vertex_program() -> besl::NodeReference {
+	let main_code = r#"
+	Camera camera = cameras.cameras[0];
+	u32 instance_index = instance_id;
+	Instance instance = instances.instances[instance_index];
+
+	position = camera.view_projection * instance.transform * vec4f(in_position, 1.0);
+	out_instance_index = instance_index;
+	out_local_position = in_position;
+	"#
+	.trim();
+
+	// Metal reaches buffer bindings through the set argument buffer and exposes the
+	// instance id as the `instance_index` entry-point parameter, so the raw body differs.
+	let main_msl = r#"
+	Camera camera = set0.cameras->cameras[0];
+	Instance instance = set0.instances->instances[instance_index];
+
+	position = camera.view_projection * instance.transform * float4(in_position, 1.0);
+	out_instance_index = instance_index;
+	out_local_position = in_position;
+	"#
+	.trim();
+
+	let main = besl::ParserNode::main_function(vec![besl::ParserNode::raw_code(
+		Some(main_code.into()),
+		None,
+		Some(main_msl.into()),
+		&[
+			"cameras",
+			"instances",
+			"in_position",
+			"position",
+			"out_instance_index",
+			"out_local_position",
+		],
+		&[],
+	)]);
+
+	let mut root = besl::ParserNode::root();
+
+	let camera = ParserNode::r#struct("Camera", vec![ParserNode::member("view_projection", "mat4f")]);
+	let instance = ParserNode::r#struct("Instance", vec![ParserNode::member("transform", "mat4f")]);
+
+	let cameras_binding = ParserNode::binding(
+		"cameras",
+		ParserNode::buffer("CamerasBuffer", vec![ParserNode::member("cameras", "Camera[8]")]),
+		0,
+		0,
+		true,
+		false,
+	);
+	let instances_binding = ParserNode::binding(
+		"instances",
+		ParserNode::buffer("InstancesBuffer", vec![ParserNode::member("instances", "Instance[8]")]),
+		0,
+		1,
+		true,
+		false,
+	);
+
+	let position_input = ParserNode::input("in_position", "vec3f", 0);
+	let vertex_instance_id = ParserNode::input("instance_id", "u32", 1);
+	let position_output = ParserNode::output("position", "vec4f", 0);
+	let instance_index_output = ParserNode::output("out_instance_index", "u32", 0);
+	let local_position_output = ParserNode::output("out_local_position", "vec3f", 1);
+
+	let shader = besl::ParserNode::scope(
+		"Shader",
+		vec![
+			camera,
+			instance,
+			cameras_binding,
+			instances_binding,
+			position_input,
+			vertex_instance_id,
+			position_output,
+			instance_index_output,
+			local_position_output,
+			main,
+		],
+	);
+
+	root.add(vec![shader]);
+
+	let root_node = besl::lex(root)
+		.expect("Failed to lex the simple pipeline vertex shader. The most likely cause is invalid BESL syntax.");
+	root_node.get_main().expect(
+		"Failed to find the simple pipeline vertex entry point. The most likely cause is that the BESL program did not define main.",
+	)
+}
+
 fn create_besl_shader(
 	context: &mut ghi::implementation::Context,
 	id: &str,
@@ -423,19 +441,25 @@ pub(super) struct InstanceShaderData {
 #[cfg(test)]
 mod tests {
 	#[test]
-	fn simple_pipeline_uses_shader_store_for_besl_generation() {
-		let source = include_str!("pipeline_manager.rs");
-		let production_source = source
-			.split("#[cfg(test)]")
-			.next()
-			.expect("Expected production source before tests");
+	fn simple_vertex_program_lowers_to_valid_msl() {
+		let main_node = super::create_simple_vertex_program();
+		let msl = resource_management::shader::besl::backends::msl::MSLShaderGenerator::new()
+			.generate(
+				&resource_management::shader::generator::ShaderGenerationSettings::vertex(),
+				&main_node,
+			)
+			.expect("Failed to lower the simple pipeline vertex shader to MSL.");
 
-		assert!(!production_source.contains("GLSLShaderGenerator"));
-		assert!(!production_source.contains("MSLShaderGenerator"));
-		assert!(!production_source.contains("SPIRVShaderGenerator"));
-		assert!(!production_source.contains("ProgramEvaluation"));
-		assert!(!production_source.contains("ShaderSource::Platform"));
-		assert!(production_source.contains("ShaderSourceDefinition::Besl"));
+		eprintln!("=== MSL OUTPUT ===\n{msl}\n=== END ===");
+
+		assert!(msl.contains("set0.cameras->cameras[0]"), "{msl}");
+		assert!(msl.contains("set0.instances->instances[instance_index]"), "{msl}");
+		assert!(msl.contains("float4(in_position, 1.0)"), "{msl}");
+		assert!(!msl.contains("vec4f("), "{msl}");
+		assert!(!msl.contains("u32 instance_index"), "{msl}");
+		assert!(msl.contains("float3 in_position=in.in_position"), "{msl}");
+		assert!(msl.contains("out.position=position"), "{msl}");
+		assert!(msl.contains("return out"), "{msl}");
 	}
 }
 

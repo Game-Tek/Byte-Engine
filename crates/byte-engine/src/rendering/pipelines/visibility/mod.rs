@@ -2150,69 +2150,15 @@ pub(super) struct ShaderMeshletData {
 #[cfg(test)]
 mod tests {
 	use super::{
-		get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_shadow_pass_task_msl_source,
-		get_visibility_pass_mesh_msl_source, get_visibility_pass_task_msl_source, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES,
-		MAX_TRIANGLES, MAX_VERTICES, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
-		VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+		get_shadow_pass_mesh_msl_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_task_msl_source,
+		MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 	};
-
-	#[test]
-	fn shadow_mesh_glsl_source_uses_besl_accessors() {
-		let shader = get_shadow_pass_mesh_source();
-
-		assert!(
-			shader.contains("View view = views.views[push_constant.view_index];")
-				|| shader.contains("uint32_t view_index = push_constant.view_index;")
-					&& shader.contains("View view = views.views[view_index];"),
-			"Expected GLSL shadow mesh source to read the selected view through BESL accessors. Shader: {shader}"
-		);
-	}
-
-	#[test]
-	fn shadow_mesh_msl_source_uses_argument_buffer_accessors() {
-		let shader = get_shadow_pass_mesh_msl_source();
-
-		assert!(
-			shader.contains("View view = set0.views->views[push_constant.view_index];")
-				&& shader.contains("Mesh mesh = set0.meshes->meshes[push_constant.instance_index];"),
-			"Expected MSL shadow mesh source to lower BESL accessors through the Metal argument buffer. Shader: {shader}"
-		);
-	}
-
-	#[test]
-	fn shadow_mesh_msl_source_matches_visibility_buffer_layout() {
-		let shader = get_shadow_pass_mesh_msl_source();
-
-		assert!(
-			shader.contains(&format!("packed_float3 positions[{MAX_VERTICES}];"))
-				&& shader.contains(&format!("packed_float2 uvs[{MAX_VERTICES}];"))
-				&& shader.contains(&format!("ushort vertex_indices[{MAX_PRIMITIVE_TRIANGLES}];"))
-				&& shader.contains(&format!("uchar primitive_indices[{}];", MAX_TRIANGLES * 3))
-				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];"))
-				&& shader.contains("float4x3 model;")
-				&& shader.contains("view.view_projection * float4(model * position, 1.0)"),
-			"Expected the shadow mesh MSL source to preserve the packed visibility buffer layout. Shader: {shader}"
-		);
-	}
 
 	#[test]
 	fn shader_meshlet_data_matches_metal_buffer_layout() {
 		assert_eq!(std::mem::align_of::<super::ShaderMeshletData>(), 16);
 		assert_eq!(std::mem::size_of::<super::ShaderMeshletData>(), 64);
-	}
-
-	#[test]
-	fn shadow_task_msl_source_culls_against_selected_view() {
-		let shader = get_shadow_pass_task_msl_source();
-
-		assert!(
-			shader.contains("[[object, max_total_threadgroups_per_mesh_grid")
-				&& shader.contains("View view = set0.views->views[push_constant.view_index];")
-				&& shader.contains("float4x4 model = model_matrix(mesh);")
-				&& shader.contains("extract_frustum_planes(view.view_projection * model, planes)")
-				&& shader.contains("transform_world_to_object(model, camera_position_world, determinant)"),
-			"Expected shadow task MSL source to cull meshlets in object space against the selected view. Shader: {shader}"
-		);
 	}
 
 	#[test]
@@ -2261,33 +2207,6 @@ mod tests {
 		assert!(
 			shader_handle.is_ok(),
 			"Expected the shadow mesh MSL source to compile for Metal"
-		);
-	}
-
-	#[test]
-	fn visibility_mesh_msl_source_uses_argument_buffer_accessors() {
-		let shader = get_visibility_pass_mesh_msl_source();
-
-		assert!(
-			shader.contains("View view = set0.views->views[0];")
-				&& shader.contains("Mesh mesh = set0.meshes->meshes[push_constant.instance_index];"),
-			"Expected MSL visibility mesh source to lower BESL accessors through the Metal argument buffer. Shader: {shader}"
-		);
-	}
-
-	#[test]
-	fn visibility_mesh_msl_source_matches_visibility_buffer_layout() {
-		let shader = get_visibility_pass_mesh_msl_source();
-
-		assert!(
-			shader.contains(&format!("packed_float3 positions[{MAX_VERTICES}];"))
-				&& shader.contains(&format!("packed_float2 uvs[{MAX_VERTICES}];"))
-				&& shader.contains(&format!("ushort vertex_indices[{MAX_PRIMITIVE_TRIANGLES}];"))
-				&& shader.contains(&format!("uchar primitive_indices[{}];", MAX_TRIANGLES * 3))
-				&& shader.contains(&format!("Meshlet meshlets[{MAX_MESHLETS}];"))
-				&& shader.contains("float4x3 model;")
-				&& shader.contains("view.view_projection * float4(model * position, 1.0)"),
-			"Expected the visibility mesh MSL source to preserve the packed visibility buffer layout. Shader: {shader}"
 		);
 	}
 

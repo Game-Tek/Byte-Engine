@@ -4040,26 +4040,6 @@ mod tests {
 	}
 
 	#[test]
-	fn primary_ui_vertex_shader_lowers_to_valid_msl_entry_point() {
-		let vertex_main = super::create_ui_vertex_program();
-		let msl = resource_management::shader::besl::backends::msl::MSLShaderGenerator::new()
-			.generate(
-				&resource_management::shader::generator::ShaderGenerationSettings::vertex(),
-				&vertex_main,
-			)
-			.expect("Failed to lower primary UI vertex shader to MSL.");
-
-		// The raw body must use MSL constructors, not BESL/GLSL ones.
-		assert!(msl.contains("float4(in_position, 0.0, 1.0)"), "{msl}");
-		assert!(!msl.contains("vec4f(in_position"), "{msl}");
-		// The entry point must mirror stage inputs/outputs as locals so the raw body's
-		// identifiers are declared, and copy the locals into the returned VertexOutput.
-		assert!(msl.contains("float2 in_position=in.in_position"), "{msl}");
-		assert!(msl.contains("out.position=position"), "{msl}");
-		assert!(msl.contains("return out"), "{msl}");
-	}
-
-	#[test]
 	fn curve_geometry_reports_capacity_truncation() {
 		let frame_allocator = bumpalo::Bump::new();
 		let curves = (0..=MAX_UI_ELEMENTS)

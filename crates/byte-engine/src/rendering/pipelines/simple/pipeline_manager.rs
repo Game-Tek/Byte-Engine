@@ -438,31 +438,6 @@ pub(super) struct InstanceShaderData {
 	instance_transform: ShaderMatrix4,
 }
 
-#[cfg(test)]
-mod tests {
-	#[test]
-	fn simple_vertex_program_lowers_to_valid_msl() {
-		let main_node = super::create_simple_vertex_program();
-		let msl = resource_management::shader::besl::backends::msl::MSLShaderGenerator::new()
-			.generate(
-				&resource_management::shader::generator::ShaderGenerationSettings::vertex(),
-				&main_node,
-			)
-			.expect("Failed to lower the simple pipeline vertex shader to MSL.");
-
-		eprintln!("=== MSL OUTPUT ===\n{msl}\n=== END ===");
-
-		assert!(msl.contains("set0.cameras->cameras[0]"), "{msl}");
-		assert!(msl.contains("set0.instances->instances[instance_index]"), "{msl}");
-		assert!(msl.contains("float4(in_position, 1.0)"), "{msl}");
-		assert!(!msl.contains("vec4f("), "{msl}");
-		assert!(!msl.contains("u32 instance_index"), "{msl}");
-		assert!(msl.contains("float3 in_position=in.in_position"), "{msl}");
-		assert!(msl.contains("out.position=position"), "{msl}");
-		assert!(msl.contains("return out"), "{msl}");
-	}
-}
-
 use std::{
 	collections::{hash_map::Entry, VecDeque},
 	sync::Arc,

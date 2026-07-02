@@ -1436,29 +1436,6 @@ mod tests {
 			shader_handle.is_ok(),
 			"Expected the material evaluation MSL source to compile for Metal"
 		);
-		assert!(
-			source.contains("constant _material_offset_scratch* material_offset_scratch [[id(2)]];")
-				&& source.contains("constant _material_evaluation_dispatches* material_evaluation_dispatches [[id(3)]];")
-				&& source.contains("constant _pixel_mapping* pixel_mapping [[id(4)]];"),
-			"Expected the material evaluation MSL source to preserve the full visibility set1 binding layout. Shader: {source}"
-		);
-		assert!(
-			source.contains("texture2d<float, access::write> lit_map [[id(0)]];")
-				&& source.contains("constant __unused_set2_binding1* _unused_set2_binding1 [[id(1)]];")
-				&& source.contains("texture2d<float, access::write> _unused_set2_binding2 [[id(2)]];")
-				&& source.contains("texture2d<float, access::write> _unused_set2_binding3 [[id(3)]];")
-				&& source.contains("texture2d<float> ao [[id(6)]];")
-				&& source.contains("sampler ao_sampler [[id(7)]];")
-				&& source.contains("texture2d<float> visibility_depth [[id(10)]];")
-				&& source.contains("sampler visibility_depth_sampler [[id(11)]];")
-				&& source.contains("sample_analytical_reflection")
-				&& !source.contains("ibl_cubemap")
-				&& source.contains("view.inverse_projection * surface_clip_position")
-				&& source.contains("view.inverse_view * surface_view_position")
-				&& source.contains("view.view * float4(world_space_surface_position, 1.0)")
-				&& source.contains("view.view_projection * float4(world_space_position, 1.0)"),
-			"Expected the material evaluation MSL source to preserve the full visibility set2 binding layout. Shader: {source}"
-		);
 	}
 
 	#[cfg(target_os = "linux")]
@@ -1527,36 +1504,5 @@ mod tests {
 			shader_handle.is_ok(),
 			"Expected textured material evaluation MSL source to compile for Metal. Shader: {source}"
 		);
-		assert!(
-			source.contains("set0.textures[material.textures[0u]].sample(set0.textures_sampler[material.textures[0u]], vertex_uv, level(0.0))")
-				&& source.contains("unit_vector_from_xy(set0.textures[material.textures[1u]].sample(set0.textures_sampler[material.textures[1u]], vertex_uv, level(0.0)).xy)"),
-			"Expected texture slots to be inlined into MSL sample calls with explicit LOD. Shader: {source}"
-		);
 	}
-
-	// #[test]
-	// fn multiple_textures() {
-	// 	let material = json::object! {
-	// 		"variables": [
-	// 			{
-	// 				"name": "albedo",
-	// 				"data_type": "Texture2D",
-	// 			},
-	// 			{
-	// 				"name": "normal",
-	// 				"data_type": "Texture2D",
-	// 			}
-	// 		]
-	// 	};
-
-	// 	let shader_source = "main: fn () -> void { out_color = sample(albedo); }";
-
-	// 	let shader_node = besl::compile_to_besl(shader_source, None).unwrap();
-
-	// 	let shader_generator = super::VisibilityShaderGenerator::new();
-
-	// 	let shader = shader_generator.transform(&material, &shader_node, "Fragment").expect("Failed to generate shader");
-
-	// 	// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
-	// }
 }

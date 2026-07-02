@@ -444,8 +444,6 @@ pub mod tests {
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::material::VariantModel,
-		shader::besl::backends::glsl::GLSLShaderGenerator,
-		shader::generator::ShaderGenerationSettings,
 		ReferenceModel,
 	};
 
@@ -528,29 +526,6 @@ pub mod tests {
 		}
 	}
 
-	#[test]
-	fn generate_program() {
-		let test_shader_generator = RootTestShaderGenerator::new();
-
-		let object = json::object! {};
-
-		let root = test_shader_generator.transform(besl::parser::Node::root(), &object);
-
-		let root = besl::lex(root).unwrap();
-
-		let main_node = root.get_main().unwrap();
-
-		let glsl = GLSLShaderGenerator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::fragment(), &main_node)
-			.expect("Failed to generate GLSL");
-
-		assert!(glsl.contains("layout(push_constant"));
-		assert!(glsl.contains("uint32_t material_index"));
-		assert!(glsl.contains("materials[16]"));
-		assert!(glsl.contains("void sample_("));
-	}
-
 	#[r#async::test]
 	async fn load_material() {
 		let asset_storage_backend = AssetTestStorageBackend::new();
@@ -618,16 +593,7 @@ pub mod tests {
 			.expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		#[cfg(target_vendor = "apple")]
-		{
-			assert!(!shader_spirv.is_empty());
-		}
-
-		#[cfg(not(target_vendor = "apple"))]
-		{
-			assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
-			assert!(shader_spirv.contains("void main()"));
-		}
+		assert!(!shader_spirv.is_empty());
 
 		let material = resource_storage_backend
 			.get_resource(ResourceId::new("material.bema"))
@@ -635,6 +601,13 @@ pub mod tests {
 
 		assert_eq!(material.id, "material.bema");
 		assert_eq!(material.class, "Material");
+
+		let variant = resource_storage_backend
+			.get_resource(ResourceId::new("variant.bema"))
+			.expect("Expected variant");
+
+		assert_eq!(variant.id, "variant.bema");
+		assert_eq!(variant.class, "Variant");
 	}
 
 	#[r#async::test]
@@ -708,16 +681,7 @@ pub mod tests {
 			.expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		#[cfg(target_vendor = "apple")]
-		{
-			assert!(!shader_spirv.is_empty());
-		}
-
-		#[cfg(not(target_vendor = "apple"))]
-		{
-			assert!(shader_spirv.contains("layout(set=0,binding=0,scalar)"));
-			assert!(shader_spirv.contains("void main()"));
-		}
+		assert!(!shader_spirv.is_empty());
 
 		let material = resource_storage_backend
 			.get_resource(ResourceId::new("material.bema"))

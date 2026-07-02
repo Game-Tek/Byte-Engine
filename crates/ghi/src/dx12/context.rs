@@ -136,7 +136,24 @@ impl Device {
 			**handle = Some(QueueHandle(index));
 		}
 
-		Ok(Self {
+		Ok(Self::from_native_parts(
+			device,
+			settings,
+			info_queue,
+			debug_log_function,
+			queue_storage,
+		))
+	}
+
+	/// Creates an empty DX12 context over an already-selected native device and queues.
+	fn from_native_parts(
+		device: ID3D12Device,
+		settings: Features,
+		info_queue: Option<ID3D12InfoQueue>,
+		debug_log_function: fn(&str),
+		queues: Vec<StoredQueue>,
+	) -> Self {
+		Self {
 			device,
 			settings,
 			info_queue,
@@ -145,7 +162,7 @@ impl Device {
 			debugger: RenderDebugger::new(),
 			frames: 2,
 
-			queues: queue_storage,
+			queues,
 			command_buffers: Vec::new(),
 			buffers: Vec::new(),
 			dynamic_buffers: Vec::new(),
@@ -231,7 +248,7 @@ impl Device {
 			texture_readback_resolve_count: 0,
 			debug_region_begin_count: Cell::new(0),
 			debug_region_end_count: Cell::new(0),
-		})
+		}
 	}
 
 	#[cfg(debug_assertions)]
@@ -6180,6 +6197,7 @@ impl Device {
 pub(crate) type Binding = DescriptorSetBinding;
 const DYNAMIC_BUFFER_HANDLE_FLAG: u64 = 1 << 63;
 
+#[derive(Clone)]
 pub(crate) struct StoredQueue {
 	queue: ID3D12CommandQueue,
 	queue_type: D3D12_COMMAND_LIST_TYPE,
@@ -6500,7 +6518,13 @@ impl crate::device::Device for Device {
 	}
 
 	fn create_context(&self) -> Result<Self::Context, &'static str> {
-		Err("DX12 device contexts are created by the instance device path. The most likely cause is that generic detached-device code attempted to clone the live DX12 device.")
+		Ok(Device::from_native_parts(
+			self.device.clone(),
+			self.settings,
+			self.info_queue.clone(),
+			self.debug_log_function,
+			self.queues.clone(),
+		))
 	}
 
 	fn create_shader(

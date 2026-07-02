@@ -221,6 +221,7 @@ pub struct ShaderInterface {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum ShaderArtifact {
 	Spirv,
+	Hlsl { entry_point: String },
 	Msl { entry_point: String },
 	Mtlb { entry_point: String },
 }

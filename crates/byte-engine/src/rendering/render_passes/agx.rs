@@ -275,9 +275,10 @@ impl RenderPass for AgxToneMapPass {
 mod tests {
 	#[cfg(target_os = "linux")]
 	use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
+	#[cfg(target_os = "macos")]
+	use resource_management::shader::msl_shader_compiler::MSLShaderCompiler;
 	use resource_management::shader::{
-		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator,
-		generator::ShaderGenerationSettings, msl_shader_compiler::MSLShaderCompiler,
+		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings,
 	};
 	use utils::Extent;
 

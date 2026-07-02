@@ -9,10 +9,14 @@ pub mod queue;
 pub use self::command_buffer::*;
 pub use self::context::*;
 pub use self::device::*;
+pub use self::factory::*;
 pub use self::frame::*;
 pub use self::instance::*;
 pub use self::queue::*;
 mod utils;
+
+/// The `Context` type alias exposes the live DX12 device through the cross-backend context name.
+pub type Context = self::context::Device;
 
 #[cfg(test)]
 mod tests {
@@ -75,36 +79,42 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn render_triangle() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::render_triangle(&mut device, queue_handle);
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn multiframe_rendering() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::multiframe_rendering(&mut device, queue_handle);
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn change_frames() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::change_frames(&mut device, queue_handle);
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn resize() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::resize(&mut device, queue_handle);
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn dynamic_data() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::dynamic_data(&mut device, queue_handle);
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn dynamic_textures() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::dynamic_textures(&mut device, queue_handle);
@@ -287,6 +297,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn descriptor_sets() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::descriptor_sets(&mut device, queue_handle);
@@ -1439,6 +1450,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn multiframe_resources() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::multiframe_resources(&mut device, queue_handle);

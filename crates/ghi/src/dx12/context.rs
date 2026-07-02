@@ -709,7 +709,7 @@ impl Device {
 			});
 
 			if let Some(previous) = previous {
-				self.descriptor_sets[previous.0 as usize].next = Some(handle);
+				self.descriptor_sets[previous.0 as usize].next = Some(crate::descriptors::DescriptorSetHandle(handle.0));
 			}
 
 			previous = Some(handle);
@@ -755,7 +755,7 @@ impl Device {
 			);
 			self.update_descriptor_for_binding(binding_handle, descriptor, binding_constructor.array_element);
 
-			next = Some(binding_handle);
+			next = Some(crate::binding::DescriptorSetBindingHandle(binding_handle.0));
 		}
 
 		// DX12 uses descriptor heaps and root signatures, so descriptor set bindings are stored but not bound yet.
@@ -2814,8 +2814,8 @@ impl Device {
 		SwapchainHandle((self.swapchains.len() - 1) as u64)
 	}
 
-	pub fn create_factory(&mut self) -> Option<crate::implementation::Factory> {
-		Some(crate::implementation::Factory::default())
+	pub fn create_factory(&mut self) -> Option<crate::dx12::factory::Factory> {
+		Some(crate::dx12::factory::Factory::default())
 	}
 
 	pub fn get_swapchain_image(&mut self, swapchain_handle: SwapchainHandle, uses: Uses) -> (ImageHandle, Formats) {
@@ -5322,7 +5322,7 @@ impl Device {
 				break;
 			};
 			handles.push(handle);
-			current = set.next;
+			current = set.next.map(|handle| DescriptorSetHandle(handle.0));
 		}
 
 		handles
@@ -5356,7 +5356,7 @@ impl Device {
 				break;
 			};
 			handles.push(handle);
-			current = binding.next;
+			current = binding.next.map(|handle| DescriptorSetBindingHandle(handle.0));
 		}
 
 		handles
@@ -6304,7 +6304,7 @@ struct DescriptorSetTemplate {
 }
 
 pub(crate) struct DescriptorSet {
-	pub(crate) next: Option<DescriptorSetHandle>,
+	pub(crate) next: Option<crate::descriptors::DescriptorSetHandle>,
 	template: DescriptorSetTemplateHandle,
 	bindings: Vec<DescriptorSetBindingHandle>,
 	cbv_srv_uav_heap: Option<ID3D12DescriptorHeap>,
@@ -6312,7 +6312,7 @@ pub(crate) struct DescriptorSet {
 }
 
 pub(crate) struct DescriptorSetBinding {
-	pub(crate) next: Option<DescriptorSetBindingHandle>,
+	pub(crate) next: Option<crate::binding::DescriptorSetBindingHandle>,
 	descriptor_set: DescriptorSetHandle,
 	descriptor_type: DescriptorType,
 	binding_index: u32,
@@ -6443,7 +6443,7 @@ pub(crate) struct Swapchain {
 }
 
 pub(crate) struct Synchronizer {
-	pub(crate) next: Option<SynchronizerHandle>,
+	pub(crate) next: Option<crate::synchronizer::SynchronizerHandle>,
 	fence: ID3D12Fence,
 	value: u64,
 }
@@ -6499,8 +6499,8 @@ impl crate::device::Device for Device {
 		Device::has_errors(self)
 	}
 
-	fn create_context(self) -> Result<Self::Context, &'static str> {
-		Ok(self)
+	fn create_context(&self) -> Result<Self::Context, &'static str> {
+		Err("DX12 device contexts are created by the instance device path. The most likely cause is that generic detached-device code attempted to clone the live DX12 device.")
 	}
 
 	fn create_shader(

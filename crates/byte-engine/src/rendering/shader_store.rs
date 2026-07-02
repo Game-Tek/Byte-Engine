@@ -99,11 +99,18 @@ fn with_shader_source<T>(
 					"Failed to generate {name} MSL. The most likely cause is an unsupported BESL construct in the Metal transpiler."
 				)
 			})?;
+			let hlsl_source = HLSLShaderGenerator::new().generate(settings, main_node).map_err(|_| {
+				format!(
+					"Failed to generate {name} HLSL. The most likely cause is an unsupported BESL construct in the HLSL transpiler."
+				)
+			})?;
 
-			use_source(ghi::shader::ShaderSource::Platform {
+			use_source(ghi::shader::ShaderSource::PlatformNative {
 				glsl: &glsl_source,
 				msl: &msl_source,
 				msl_entry_point: "besl_main",
+				hlsl: &hlsl_source,
+				hlsl_entry_point: "besl_main",
 			})
 		}
 	}
@@ -126,12 +133,19 @@ fn bake_shader(descriptor: &ShaderSourceDescriptor<'_>, source_hash: u64) -> Res
 	let (artifact, bytes) = match compiled {
 		ghi::shader::CompiledShaderSource::SPIRV(bytes) => (ShaderArtifact::Spirv, bytes),
 		ghi::shader::CompiledShaderSource::HLSL { source, entry_point } => {
-			todo!("Handle HLSL shader baking");
+			(ShaderArtifact::Hlsl { entry_point }, source.into_bytes())
 		}
 		ghi::shader::CompiledShaderSource::MTL { source, entry_point } => {
-			let bytes =
-				resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, descriptor.name)?;
-			(ShaderArtifact::Mtlb { entry_point }, bytes.into_vec())
+			#[cfg(target_os = "macos")]
+			{
+				let bytes =
+					resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(&source, descriptor.name)?;
+				(ShaderArtifact::Mtlb { entry_point }, bytes.into_vec())
+			}
+			#[cfg(not(target_os = "macos"))]
+			{
+				(ShaderArtifact::Msl { entry_point }, source.into_bytes())
+			}
 		}
 	};
 
@@ -154,6 +168,12 @@ fn shader_artifact_source<'a>(
 ) -> Result<ghi::shader::Sources<'a>, String> {
 	match artifact {
 		ShaderArtifact::Spirv => Ok(ghi::shader::Sources::SPIRV(bytes)),
+		ShaderArtifact::Hlsl { entry_point } => Ok(ghi::shader::Sources::HLSL {
+			source: std::str::from_utf8(bytes).map_err(|_| {
+				"Failed to read baked HLSL shader. The most likely cause is invalid UTF-8 shader bytes.".to_string()
+			})?,
+			entry_point,
+		}),
 		ShaderArtifact::Msl { entry_point } => Ok(ghi::shader::Sources::MTL {
 			source: std::str::from_utf8(bytes).map_err(|_| {
 				"Failed to read baked MSL shader. The most likely cause is invalid UTF-8 shader bytes.".to_string()
@@ -183,8 +203,10 @@ fn hash_shader_source_definition(name: &str, definition: &ShaderSourceDefinition
 				hasher.write(b"glsl");
 				hasher.write(source.as_bytes());
 			}
-			ghi::shader::ShaderSource::Hlsl { .. } => {
-				todo!("implement hash shader source for hlsl");
+			ghi::shader::ShaderSource::Hlsl { source, entry_point } => {
+				hasher.write(b"hlsl");
+				hasher.write(source.as_bytes());
+				hasher.write(entry_point.as_bytes());
 			}
 			ghi::shader::ShaderSource::Msl { source, entry_point } => {
 				hasher.write(b"msl");
@@ -201,8 +223,19 @@ fn hash_shader_source_definition(name: &str, definition: &ShaderSourceDefinition
 				hasher.write(msl.as_bytes());
 				hasher.write(msl_entry_point.as_bytes());
 			}
-			ghi::shader::ShaderSource::PlatformNative { .. } => {
-				todo!("implement whatever this is. damned clankers");
+			ghi::shader::ShaderSource::PlatformNative {
+				glsl,
+				msl,
+				msl_entry_point,
+				hlsl,
+				hlsl_entry_point,
+			} => {
+				hasher.write(b"platform-native");
+				hasher.write(glsl.as_bytes());
+				hasher.write(msl.as_bytes());
+				hasher.write(msl_entry_point.as_bytes());
+				hasher.write(hlsl.as_bytes());
+				hasher.write(hlsl_entry_point.as_bytes());
 			}
 		}
 		Ok(())
@@ -271,7 +304,7 @@ use resource_management::{
 	resource::{ReadStorageBackend as _, StorageBackend},
 	resources::material::{Binding, Shader, ShaderArtifact, ShaderInterface},
 	shader::{
-		besl::backends::{glsl::GLSLShaderGenerator, msl::MSLShaderGenerator},
+		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
 		generator::ShaderGenerationSettings,
 	},
 	types::ShaderTypes,

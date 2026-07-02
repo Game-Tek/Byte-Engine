@@ -78,6 +78,12 @@ pub struct FactorySampler {
 	pub(crate) max_lod: f32,
 }
 
+/// The `Image` type alias preserves the detached image name used by backend-specific factory paths.
+pub type Image = FactoryImage;
+
+/// The `Sampler` type alias preserves the detached sampler name used by backend-specific factory paths.
+pub type Sampler = FactorySampler;
+
 impl Default for Factory {
 	fn default() -> Self {
 		Self { shaders: Vec::new() }
@@ -96,7 +102,7 @@ impl crate::device::Device for Factory {
 		false
 	}
 
-	fn create_context(self) -> Result<Self::Context, &'static str> {
+	fn create_context(&self) -> Result<Self::Context, &'static str> {
 		Err("Detached DX12 device cannot create a rendering context. The most likely cause is that asynchronous resource construction attempted to become the primary graphics device.")
 	}
 

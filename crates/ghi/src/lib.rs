@@ -43,7 +43,7 @@ pub mod implementation {
 	pub const USES_METAL: bool = cfg!(target_os = "macos");
 
 	#[cfg(target_os = "windows")]
-	use crate::dx12::*;
+	pub use crate::dx12::*;
 	#[cfg(target_os = "macos")]
 	pub use crate::metal::*;
 	#[cfg(target_os = "linux")]
@@ -105,7 +105,7 @@ pub(crate) enum PrivateHandles {
 	Buffer(buffer::BufferHandle),
 	Synchronizer(synchronizer::SynchronizerHandle),
 	Swapchain(swapchain::SwapchainHandle),
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(target_os = "linux")]
 	VkBuffer(ash::vk::Buffer),
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),

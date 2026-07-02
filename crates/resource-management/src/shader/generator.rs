@@ -255,10 +255,10 @@ pub(crate) fn operator_token(operator: &besl::Operators) -> &'static str {
 	}
 }
 
-pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> bool {
+	pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> bool {
 	matches!(
 		name,
-		"void"
+		"void" | "bool"
 			| "vec2u16"
 			| "vec2u" | "vec2i"
 			| "vec2f" | "vec3f"

@@ -560,12 +560,6 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_fragment_entry_point(string, main_function_node, &nodes.inputs, &nodes.outputs, &binding_sets);
 	}
 
-	fn has_msl_raw_statement_in(statements: &[besl::NodeReference]) -> bool {
-		statements.iter().any(
-			|statement| matches!(statement.borrow().node(), besl::Nodes::Raw { msl: Some(source), .. } if !source.is_empty()),
-		)
-	}
-
 	fn emit_raster_input_locals(
 		&mut self,
 		string: &mut String,
@@ -662,30 +656,26 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		formatting.push_block_start(string);
 
-		if Self::has_msl_raw_statement_in(statements) {
-			self.emit_statement_block(string, statements, 1);
-		} else {
-			// Mirror BESL global stage inputs and outputs through local variables so ordinary BESL
-			// assignments lower to a valid Metal entry point without raw source snippets.
-			self.emit_raster_input_locals(
-				string,
-				inputs,
-				"in",
-				&[("vertex_id", "vertex_id"), ("instance_id", "instance_index")],
-				1,
-			);
-			formatting.push_indentation(string, 1);
-			string.push_str("VertexOutput out");
-			formatting.push_statement_end(string);
-			self.emit_raster_output_locals(string, outputs, 1);
+		// Mirror BESL global stage inputs and outputs through local variables so both ordinary BESL
+		// assignments and raw statement snippets lower to a valid Metal entry point.
+		self.emit_raster_input_locals(
+			string,
+			inputs,
+			"in",
+			&[("vertex_id", "vertex_id"), ("instance_id", "instance_index")],
+			1,
+		);
+		formatting.push_indentation(string, 1);
+		string.push_str("VertexOutput out");
+		formatting.push_statement_end(string);
+		self.emit_raster_output_locals(string, outputs, 1);
 
-			self.emit_statement_block(string, statements, 1);
+		self.emit_statement_block(string, statements, 1);
 
-			self.emit_raster_output_assignments(string, outputs, "out", 1);
-			formatting.push_indentation(string, 1);
-			string.push_str("return out");
-			formatting.push_statement_end(string);
-		}
+		self.emit_raster_output_assignments(string, outputs, "out", 1);
+		formatting.push_indentation(string, 1);
+		string.push_str("return out");
+		formatting.push_statement_end(string);
 
 		self.emit_block_end(string);
 	}

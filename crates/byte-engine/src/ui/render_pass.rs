@@ -2326,8 +2326,10 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 }
 
 fn create_ui_vertex_program() -> besl::NodeReference {
-	let main = ParserNode::main_function(vec![ParserNode::glsl(
-		UI_VERTEX_SHADER_MAIN,
+	let main = ParserNode::main_function(vec![ParserNode::raw_code(
+		Some(UI_VERTEX_SHADER_MAIN.into()),
+		None,
+		Some(UI_VERTEX_SHADER_MAIN_MSL.into()),
 		&[
 			"in_position",
 			"in_pixel_position",
@@ -2398,6 +2400,22 @@ fn create_ui_vertex_program() -> besl::NodeReference {
 
 const UI_VERTEX_SHADER_MAIN: &str = r#"
 position = vec4f(in_position, 0.0, 1.0);
+out_color = in_color;
+out_pixel_position = in_pixel_position;
+out_local_position = in_local_position;
+out_rect_size = in_rect_size;
+out_corner_radius = in_corner_radius;
+out_corner_exponent = in_corner_exponent;
+out_layer_kind = in_layer_kind;
+out_stroke_width = in_stroke_width;
+out_feather_mask_position = in_feather_mask_position;
+out_feather_mask_size = in_feather_mask_size;
+out_feather_mask_edges = in_feather_mask_edges;
+out_feather_mask_corner = in_feather_mask_corner;
+"#;
+
+const UI_VERTEX_SHADER_MAIN_MSL: &str = r#"
+position = float4(in_position, 0.0, 1.0);
 out_color = in_color;
 out_pixel_position = in_pixel_position;
 out_local_position = in_local_position;
@@ -3015,20 +3033,22 @@ const UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
 
+// This struct consumes the BESL-generated UI vertex shader outputs, which are bound by
+// [[user(locnN)]] location, so each field must carry the matching location attribute.
 struct UiVertexOut {
 	float4 position [[position]];
-	float4 color;
-	float2 pixel_position;
-	float2 local_position;
-	float2 rect_size;
-	float corner_radius;
-	float corner_exponent;
-	float layer_kind;
-	float stroke_width;
-	float2 feather_mask_position;
-	float2 feather_mask_size;
-	float4 feather_mask_edges;
-	float2 feather_mask_corner;
+	float4 color [[user(locn0)]];
+	float2 pixel_position [[user(locn1)]];
+	float2 local_position [[user(locn2)]];
+	float2 rect_size [[user(locn3)]];
+	float corner_radius [[user(locn4)]];
+	float corner_exponent [[user(locn5)]];
+	float layer_kind [[user(locn6)]];
+	float stroke_width [[user(locn7)]];
+	float2 feather_mask_position [[user(locn8)]];
+	float2 feather_mask_size [[user(locn9)]];
+	float4 feather_mask_edges [[user(locn10)]];
+	float2 feather_mask_corner [[user(locn11)]];
 };
 
 struct BlurCompositeSet0 {
@@ -3980,6 +4000,63 @@ mod tests {
 
 		assert!(matches!(vertex_main.borrow().node(), besl::Nodes::Function { .. }));
 		assert!(matches!(fragment_main.borrow().node(), besl::Nodes::Function { .. }));
+	}
+
+	#[test]
+	fn blur_composite_msl_fragment_inputs_match_besl_vertex_output_locations() {
+		let vertex_main = super::create_ui_vertex_program();
+		let vertex_msl = resource_management::shader::besl::backends::msl::MSLShaderGenerator::new()
+			.generate(
+				&resource_management::shader::generator::ShaderGenerationSettings::vertex(),
+				&vertex_main,
+			)
+			.expect("Failed to lower primary UI vertex shader to MSL.");
+
+		// The blur composite fragment consumes the BESL vertex outputs, so every varying it
+		// declares must bind to the same [[user(locnN)]] slot the vertex shader writes.
+		for (field, location) in [
+			("color", 0),
+			("pixel_position", 1),
+			("local_position", 2),
+			("rect_size", 3),
+			("corner_radius", 4),
+			("corner_exponent", 5),
+			("layer_kind", 6),
+			("stroke_width", 7),
+			("feather_mask_position", 8),
+			("feather_mask_size", 9),
+			("feather_mask_edges", 10),
+			("feather_mask_corner", 11),
+		] {
+			assert!(
+				super::UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL.contains(&format!("{field} [[user(locn{location})]]")),
+				"Blur composite fragment field `{field}` must bind to user(locn{location})"
+			);
+			assert!(
+				vertex_msl.contains(&format!("out_{field} [[user(locn{location})]]")),
+				"BESL vertex output `out_{field}` must bind to user(locn{location})"
+			);
+		}
+	}
+
+	#[test]
+	fn primary_ui_vertex_shader_lowers_to_valid_msl_entry_point() {
+		let vertex_main = super::create_ui_vertex_program();
+		let msl = resource_management::shader::besl::backends::msl::MSLShaderGenerator::new()
+			.generate(
+				&resource_management::shader::generator::ShaderGenerationSettings::vertex(),
+				&vertex_main,
+			)
+			.expect("Failed to lower primary UI vertex shader to MSL.");
+
+		// The raw body must use MSL constructors, not BESL/GLSL ones.
+		assert!(msl.contains("float4(in_position, 0.0, 1.0)"), "{msl}");
+		assert!(!msl.contains("vec4f(in_position"), "{msl}");
+		// The entry point must mirror stage inputs/outputs as locals so the raw body's
+		// identifiers are declared, and copy the locals into the returned VertexOutput.
+		assert!(msl.contains("float2 in_position=in.in_position"), "{msl}");
+		assert!(msl.contains("out.position=position"), "{msl}");
+		assert!(msl.contains("return out"), "{msl}");
 	}
 
 	#[test]

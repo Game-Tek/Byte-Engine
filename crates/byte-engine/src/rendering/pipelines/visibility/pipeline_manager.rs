@@ -56,7 +56,8 @@ impl VisibilityPipelineManager {
 
 		let bindings = [
 			LIT_BINDING_TEMPLATE,
-			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE),
+			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
+				.buffer_read_only(true),
 			UNUSED_SET2_BINDING2_TEMPLATE,
 			ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
 			LIGHTING_DATA_BINDING_TEMPLATE,
@@ -1067,9 +1068,11 @@ const LIT_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 const UNUSED_SET2_BINDING2_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 const LIGHTING_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
+		.buffer_read_only(true);
 const MATERIALS_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(5, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(5, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
+		.buffer_read_only(true);
 const AO_MAP_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	10,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,

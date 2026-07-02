@@ -487,6 +487,10 @@ pub struct DescriptorSetBindingTemplate {
 	pub(crate) immutable_samplers: Option<Vec<SamplerHandle>>,
 	/// The texture view type expected by this binding when it references textures.
 	pub(crate) texture_view_type: TextureViewTypes,
+	/// The structured element byte stride expected by this binding when it references buffers.
+	pub(crate) buffer_stride: u32,
+	/// Whether a storage-buffer binding is read-only and should use SRV-style binding on APIs that distinguish it.
+	pub(crate) buffer_read_only: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -572,6 +576,8 @@ impl DescriptorSetBindingTemplate {
 			stages,
 			immutable_samplers: None,
 			texture_view_type: TextureViewTypes::Texture2D,
+			buffer_stride: 4,
+			buffer_read_only: false,
 		}
 	}
 
@@ -583,11 +589,23 @@ impl DescriptorSetBindingTemplate {
 			stages,
 			immutable_samplers: None,
 			texture_view_type: TextureViewTypes::Texture2D,
+			buffer_stride: 4,
+			buffer_read_only: false,
 		}
 	}
 
 	pub const fn texture_view_type(mut self, texture_view_type: TextureViewTypes) -> Self {
 		self.texture_view_type = texture_view_type;
+		self
+	}
+
+	pub const fn buffer_stride(mut self, buffer_stride: u32) -> Self {
+		self.buffer_stride = buffer_stride;
+		self
+	}
+
+	pub const fn buffer_read_only(mut self, buffer_read_only: bool) -> Self {
+		self.buffer_read_only = buffer_read_only;
 		self
 	}
 
@@ -663,6 +681,8 @@ impl DescriptorSetBindingTemplate {
 			stages,
 			immutable_samplers: samplers,
 			texture_view_type: TextureViewTypes::Texture2D,
+			buffer_stride: 4,
+			buffer_read_only: false,
 		}
 	}
 

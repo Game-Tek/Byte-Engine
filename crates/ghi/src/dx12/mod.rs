@@ -1406,10 +1406,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	#[test]
 	fn descriptor_tables_stage_multiple_sets_into_one_native_heap() {
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
-		let base_bindings = [crate::DescriptorSetBindingTemplate::storage_buffer(
-			1,
-			crate::Stages::COMPUTE,
-		)];
+		let base_bindings = [crate::DescriptorSetBindingTemplate::storage_buffer(1, crate::Stages::COMPUTE)];
 		let visibility_bindings = [
 			crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE),
 			crate::DescriptorSetBindingTemplate::storage_image(7, crate::Stages::COMPUTE),
@@ -1425,8 +1422,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
 		let visibility_image = device.build_image(
-			crate::image::Builder::new(crate::Formats::U32, crate::Uses::Storage)
-				.extent(::utils::Extent::rectangle(1, 1)),
+			crate::image::Builder::new(crate::Formats::U32, crate::Uses::Storage).extent(::utils::Extent::rectangle(1, 1)),
 		);
 		device.create_descriptor_binding(
 			base_set,
@@ -1502,6 +1498,51 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		assert_eq!(device.descriptor_write_count(), 2);
 		assert_eq!(device.image_srv_descriptor_write_count(), 0);
 		assert_eq!(device.image_uav_descriptor_write_count(), 2);
+	}
+
+	#[test]
+	fn storage_image_descriptor_binding_transitions_render_target_to_uav() {
+		use windows::Win32::Graphics::Direct3D12::{D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
+
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let binding = crate::DescriptorSetBindingTemplate::storage_image(7, crate::Stages::COMPUTE);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::U32, crate::Uses::RenderTarget | crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.create_descriptor_binding(set, crate::BindingConstructor::image(&binding, image));
+
+		let command_buffer = device.create_command_buffer(None, _queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let attachment = crate::AttachmentInformation::new(
+			image,
+			crate::Layouts::RenderTarget,
+			crate::ClearValue::Integer(u32::MAX, 0, 0, 0),
+			false,
+			true,
+		);
+		crate::command_buffer::CommandBufferRecording::start_render_pass(
+			&mut recording,
+			::utils::Extent::rectangle(1, 1),
+			&[attachment],
+		)
+		.end_render_pass();
+		drop(recording);
+		assert_eq!(
+			device.tracked_image_resource_state(image),
+			Some(D3D12_RESOURCE_STATE_RENDER_TARGET)
+		);
+
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_descriptor_sets(&[set]);
+		drop(recording);
+
+		assert_eq!(
+			device.tracked_image_resource_state(image),
+			Some(D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+		);
 	}
 
 	#[test]

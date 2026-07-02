@@ -258,7 +258,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		self.device
 			.flush_pending_descriptor_texture_syncs(self.command_buffer, sets, self.sequence_index());
 		self.device
-			.bind_descriptor_heaps_and_tables(self.command_buffer, self.bound_pipeline, sets);
+			.bind_descriptor_heaps_and_tables(self.command_buffer, self.bound_pipeline, sets, self.sequence_index());
 		self
 	}
 

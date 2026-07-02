@@ -767,20 +767,22 @@ impl Generator {
 				name,
 				set,
 				binding,
-				read: _,
-				write: _,
+				read,
+				write,
 				r#type,
 				count,
 				..
 			} => {
 				// HLSL uses the binding as the register index and the descriptor set as the register space.
 				let register_index = *binding;
+				let read_only = *read && !*write;
+				let buffer_type = if read_only { "StructuredBuffer" } else { "RWStructuredBuffer" };
+				let register_type = if read_only { "t" } else { "u" };
 
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
 						if let Some((member_name, element_type)) = Self::hlsl_flattened_array_member(members) {
-							// BESL buffer bindings map to the engine StorageBuffer descriptor, which DX12 exposes as UAV.
-							string.push_str("RWStructuredBuffer");
+							string.push_str(buffer_type);
 							string.push('<');
 							string.push_str(Self::translate_type(&element_type));
 							string.push_str("> ");
@@ -790,7 +792,7 @@ impl Generator {
 								string.push_str(count.to_string().as_str());
 								string.push(']');
 							}
-							string.push_str(&format!(" : register(u{}, space{});", register_index, set));
+							string.push_str(&format!(" : register({}{}, space{});", register_type, register_index, set));
 							if !self.minified {
 								string.push('\n');
 							}
@@ -798,7 +800,6 @@ impl Generator {
 							return;
 						}
 
-						// BESL buffer bindings map to the engine StorageBuffer descriptor, which DX12 exposes as UAV.
 						self.emit_named_struct_start(string, &format!("_{name}"));
 
 						for member in members.iter() {
@@ -813,7 +814,7 @@ impl Generator {
 							string.push_str("};\n");
 						}
 
-						string.push_str(&format!("RWStructuredBuffer<_{name}> "));
+						string.push_str(&format!("{buffer_type}<_{name}> "));
 						string.push_str(name);
 
 						if let Some(count) = count {
@@ -822,7 +823,7 @@ impl Generator {
 							string.push(']');
 						}
 
-						string.push_str(&format!(" : register(u{}, space{});", register_index, set));
+						string.push_str(&format!(" : register({}{}, space{});", register_type, register_index, set));
 						if !self.minified {
 							string.push('\n');
 						}
@@ -1549,7 +1550,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "RWStructuredBuffer<Item> item_data : register(u0, space0);");
+		assert_string_contains!(shader, "StructuredBuffer<Item> item_data : register(t0, space0);");
 		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> counter_buffer : register(u1, space0);");
 		assert_string_contains!(shader, "uint2 extent;output_image.GetDimensions(extent.x, extent.y);");
 		assert_string_contains!(shader, "float noise=frac(1.25);");
@@ -1558,7 +1559,7 @@ mod tests {
 		assert_string_contains!(shader, "output_image[coord] = float4(1.0,1.0,1.0,1.0);");
 		assert_string_contains!(shader, "counter_buffer[item_index] = 2;");
 		assert_string_does_not_contain!(shader, "fract(");
-		assert_string_does_not_contain!(shader, "item_data : register(t0");
+		assert_string_does_not_contain!(shader, "item_data : register(u0");
 		assert_string_does_not_contain!(shader, "item_data.items");
 		assert_string_does_not_contain!(shader, "_besl_atomic_store");
 	}
@@ -1625,7 +1626,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> meshes : register(u0, space0);");
+		assert_string_contains!(shader, "StructuredBuffer<uint32_t> meshes : register(t0, space0);");
 		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> counter : register(u1, space0);");
 		assert_string_contains!(shader, "uint32_t instance_index=meshes[0];");
 		assert_string_contains!(shader, "counter[instance_index]=(counter[instance_index]+1);");
@@ -1727,7 +1728,7 @@ mod tests {
 
 		assert_string_contains!(shader, "[numthreads(8, 8, 1)]void besl_main(");
 		assert_string_contains!(shader, "uint32_t item_index=index_image[coord];");
-		assert_string_contains!(shader, "RWStructuredBuffer<Item> item_data : register(u0, space0);");
+		assert_string_contains!(shader, "StructuredBuffer<Item> item_data : register(t0, space0);");
 		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> counter_buffer : register(u1, space0);");
 		assert_string_contains!(shader, "uint32_t counter_index=item_data[item_index].counter_index;");
 		assert_string_contains!(shader, "InterlockedAdd(counter_buffer[counter_index], 1);");
@@ -1811,7 +1812,7 @@ mod tests {
 			shader,
 			"struct _parameters{float4x4 inverse_view_projection;float4 sun_direction;};"
 		);
-		assert_string_contains!(shader, "RWStructuredBuffer<_parameters> parameters : register(u2, space0);");
+		assert_string_contains!(shader, "StructuredBuffer<_parameters> parameters : register(t2, space0);");
 		assert_string_contains!(
 			shader,
 			"float4 texel=depth_texture.SampleLevel(depth_texture_sampler, uv, 0.0);"
@@ -1904,7 +1905,7 @@ mod tests {
 			.expect("Expected push-constant shader source to generate HLSL");
 
 		assert_string_contains!(shader, "ConstantBuffer<PushConstant> push_constant : register(b0, space3);");
-		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> values : register(u7, space2);");
+		assert_string_contains!(shader, "StructuredBuffer<uint32_t> values : register(t7, space2);");
 		assert_string_does_not_contain!(shader, "vk::push_constant");
 	}
 

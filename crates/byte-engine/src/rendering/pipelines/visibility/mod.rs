@@ -29,7 +29,8 @@ pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descripto
 		.union(ghi::Stages::FRAGMENT)
 		.union(ghi::Stages::RAYGEN)
 		.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_read_only(true);
 pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	1,
 	ghi::descriptors::DescriptorType::StorageBuffer,
@@ -37,37 +38,45 @@ pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descriptor
 		.union(ghi::Stages::MESH)
 		.union(ghi::Stages::FRAGMENT)
 		.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_stride(72)
+.buffer_read_only(true);
 pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	2,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_read_only(true);
 pub const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	3,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_read_only(true);
 pub const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	5,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_read_only(true);
 pub const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	6,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_read_only(true);
 pub const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	7,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_read_only(true);
 pub const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	8,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::TASK.union(ghi::Stages::MESH).union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_read_only(true);
 pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
 	9,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
@@ -83,9 +92,11 @@ pub const MATERIAL_OFFSET_BINDING: ghi::DescriptorSetBindingTemplate =
 pub const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 pub const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
+		.buffer_stride(16);
 pub const MATERIAL_XY_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
+		.buffer_stride(8);
 pub const TRIANGLE_INDEX_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(6, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate =
@@ -637,16 +648,16 @@ struct Meshlet {{
 }};
 
 ConstantBuffer<PushConstant> push_constant : register(b0, space1);
-RWStructuredBuffer<uint> views : register(u0, space0);
-RWStructuredBuffer<uint> meshes : register(u1, space0);
-RWStructuredBuffer<uint> vertex_positions : register(u2, space0);
-RWStructuredBuffer<uint> vertex_normals : register(u3, space0);
-RWStructuredBuffer<uint> vertex_uvs : register(u5, space0);
-RWStructuredBuffer<uint> vertex_indices : register(u6, space0);
-RWStructuredBuffer<uint> primitive_indices : register(u7, space0);
-RWStructuredBuffer<uint> meshlets : register(u8, space0);
+StructuredBuffer<uint> views : register(t0, space0);
+StructuredBuffer<uint> meshes : register(t1, space0);
+StructuredBuffer<uint> vertex_positions : register(t2, space0);
+StructuredBuffer<uint> vertex_normals : register(t3, space0);
+StructuredBuffer<uint> vertex_uvs : register(t5, space0);
+StructuredBuffer<uint> vertex_indices : register(t6, space0);
+StructuredBuffer<uint> primitive_indices : register(t7, space0);
+StructuredBuffer<uint> meshlets : register(t8, space0);
 
-float4 load_float4(RWStructuredBuffer<uint> buffer, uint offset) {{
+float4 load_float4(StructuredBuffer<uint> buffer, uint offset) {{
 	return float4(
 		asfloat(buffer[offset + 0]),
 		asfloat(buffer[offset + 1]),
@@ -655,7 +666,7 @@ float4 load_float4(RWStructuredBuffer<uint> buffer, uint offset) {{
 	);
 }}
 
-float3 load_float3(RWStructuredBuffer<uint> buffer, uint offset) {{
+float3 load_float3(StructuredBuffer<uint> buffer, uint offset) {{
 	return float3(
 		asfloat(buffer[offset + 0]),
 		asfloat(buffer[offset + 1]),
@@ -663,13 +674,13 @@ float3 load_float3(RWStructuredBuffer<uint> buffer, uint offset) {{
 	);
 }}
 
-uint load_u16(RWStructuredBuffer<uint> buffer, uint index) {{
+uint load_u16(StructuredBuffer<uint> buffer, uint index) {{
 	uint word = buffer[index >> 1];
 	uint shift = (index & 1) * 16;
 	return (word >> shift) & 0xffffu;
 }}
 
-uint load_u8(RWStructuredBuffer<uint> buffer, uint index) {{
+uint load_u8(StructuredBuffer<uint> buffer, uint index) {{
 	uint word = buffer[index >> 2];
 	uint shift = (index & 3) * 8;
 	return (word >> shift) & 0xffu;

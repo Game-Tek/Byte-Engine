@@ -556,6 +556,10 @@ pub fn get_visibility_pass_mesh_msl_source() -> String {
 	build_mesh_pass_msl_source("\tuint instance_index;", "0")
 }
 
+pub fn get_visibility_pass_mesh_hlsl_source() -> String {
+	build_mesh_pass_hlsl_source("uint instance_index;", "0")
+}
+
 pub fn get_visibility_pass_task_msl_source() -> String {
 	build_mesh_culling_task_msl_source("\tuint instance_index;", "0")
 }
@@ -583,8 +587,175 @@ pub fn get_shadow_pass_mesh_msl_source() -> String {
 	build_mesh_pass_msl_source("\tuint instance_index;\n\tuint view_index;", "push_constant.view_index")
 }
 
+pub fn get_shadow_pass_mesh_hlsl_source() -> String {
+	build_mesh_pass_hlsl_source("uint instance_index;\nuint view_index;", "push_constant.view_index")
+}
+
 pub fn get_shadow_pass_task_msl_source() -> String {
 	build_mesh_culling_task_msl_source("\tuint instance_index;\n\tuint view_index;", "push_constant.view_index")
+}
+
+fn build_mesh_pass_hlsl_source(push_constant_fields: &str, view_lookup: &str) -> String {
+	format!(
+		r#"
+struct PushConstant {{
+{push_constant_fields}
+}};
+
+struct MeshVertex {{
+	float4 position : SV_Position;
+}};
+
+struct MeshPrimitive {{
+	uint instance_index : INSTANCE_INDEX;
+	uint primitive_index : PRIMITIVE_INDEX;
+}};
+
+struct Mesh {{
+	float4 row0;
+	float4 row1;
+	float4 row2;
+	uint material_index;
+	uint base_vertex_index;
+	uint base_primitive_index;
+	uint base_triangle_index;
+	uint base_meshlet_index;
+	uint meshlet_count;
+}};
+
+struct Meshlet {{
+	uint primitive_offset;
+	uint triangle_offset;
+	uint primitive_count;
+	uint triangle_count;
+	float4 center_radius;
+	float4 cone_apex_cutoff;
+	float4 cone_axis;
+}};
+
+ConstantBuffer<PushConstant> push_constant : register(b0, space1);
+RWStructuredBuffer<uint> views : register(u0, space0);
+RWStructuredBuffer<uint> meshes : register(u1, space0);
+RWStructuredBuffer<uint> vertex_positions : register(u2, space0);
+RWStructuredBuffer<uint> vertex_normals : register(u3, space0);
+RWStructuredBuffer<uint> vertex_uvs : register(u5, space0);
+RWStructuredBuffer<uint> vertex_indices : register(u6, space0);
+RWStructuredBuffer<uint> primitive_indices : register(u7, space0);
+RWStructuredBuffer<uint> meshlets : register(u8, space0);
+
+float4 load_float4(RWStructuredBuffer<uint> buffer, uint offset) {{
+	return float4(
+		asfloat(buffer[offset + 0]),
+		asfloat(buffer[offset + 1]),
+		asfloat(buffer[offset + 2]),
+		asfloat(buffer[offset + 3])
+	);
+}}
+
+float3 load_float3(RWStructuredBuffer<uint> buffer, uint offset) {{
+	return float3(
+		asfloat(buffer[offset + 0]),
+		asfloat(buffer[offset + 1]),
+		asfloat(buffer[offset + 2])
+	);
+}}
+
+uint load_u16(RWStructuredBuffer<uint> buffer, uint index) {{
+	uint word = buffer[index >> 1];
+	uint shift = (index & 1) * 16;
+	return (word >> shift) & 0xffffu;
+}}
+
+uint load_u8(RWStructuredBuffer<uint> buffer, uint index) {{
+	uint word = buffer[index >> 2];
+	uint shift = (index & 3) * 8;
+	return (word >> shift) & 0xffu;
+}}
+
+float4x4 load_view_projection(uint view_index) {{
+	uint base = view_index * 100u + 32u;
+	return float4x4(
+		load_float4(views, base + 0u),
+		load_float4(views, base + 4u),
+		load_float4(views, base + 8u),
+		load_float4(views, base + 12u)
+	);
+}}
+
+Mesh load_mesh(uint mesh_index) {{
+	uint base = mesh_index * 18u;
+	Mesh mesh;
+	mesh.row0 = load_float4(meshes, base + 0u);
+	mesh.row1 = load_float4(meshes, base + 4u);
+	mesh.row2 = load_float4(meshes, base + 8u);
+	mesh.material_index = meshes[base + 12u];
+	mesh.base_vertex_index = meshes[base + 13u];
+	mesh.base_primitive_index = meshes[base + 14u];
+	mesh.base_triangle_index = meshes[base + 15u];
+	mesh.base_meshlet_index = meshes[base + 16u];
+	mesh.meshlet_count = meshes[base + 17u];
+	return mesh;
+}}
+
+Meshlet load_meshlet(uint meshlet_index) {{
+	uint base = meshlet_index * 16u;
+	Meshlet meshlet;
+	meshlet.primitive_offset = meshlets[base + 0u];
+	meshlet.triangle_offset = meshlets[base + 1u];
+	meshlet.primitive_count = meshlets[base + 2u];
+	meshlet.triangle_count = meshlets[base + 3u];
+	meshlet.center_radius = load_float4(meshlets, base + 4u);
+	meshlet.cone_apex_cutoff = load_float4(meshlets, base + 8u);
+	meshlet.cone_axis = load_float4(meshlets, base + 12u);
+	return meshlet;
+}}
+
+float4 transform_position(Mesh mesh, float3 position) {{
+	return float4(
+		dot(mesh.row0.xyz, position) + mesh.row0.w,
+		dot(mesh.row1.xyz, position) + mesh.row1.w,
+		dot(mesh.row2.xyz, position) + mesh.row2.w,
+		1.0f
+	);
+}}
+
+[numthreads(128, 1, 1)]
+[outputtopology("triangle")]
+void main(
+	uint3 group_id : SV_GroupID,
+	uint thread_index : SV_GroupIndex,
+	out vertices MeshVertex vertices[64],
+	out indices uint3 triangles[126],
+	out primitives MeshPrimitive primitives[126]
+) {{
+	Mesh mesh = load_mesh(push_constant.instance_index);
+	uint meshlet_index = mesh.base_meshlet_index + group_id.x;
+	Meshlet meshlet = load_meshlet(meshlet_index);
+	float4x4 view_projection = load_view_projection({view_lookup});
+
+	SetMeshOutputCounts(meshlet.primitive_count, meshlet.triangle_count);
+
+	if (thread_index < meshlet.primitive_count) {{
+		uint vertex_index = mesh.base_vertex_index + load_u16(vertex_indices, mesh.base_primitive_index + meshlet.primitive_offset + thread_index);
+		float3 position = load_float3(vertex_positions, vertex_index * 3u);
+		vertices[thread_index].position = mul(view_projection, transform_position(mesh, position));
+	}}
+
+	if (thread_index < meshlet.triangle_count) {{
+		uint triangle_base_index = mesh.base_triangle_index + meshlet.triangle_offset + thread_index;
+		triangles[thread_index] = uint3(
+			load_u8(primitive_indices, triangle_base_index * 3u + 0u),
+			load_u8(primitive_indices, triangle_base_index * 3u + 1u),
+			load_u8(primitive_indices, triangle_base_index * 3u + 2u)
+		);
+		primitives[thread_index].instance_index = push_constant.instance_index;
+		primitives[thread_index].primitive_index = (meshlet_index << 8) | (thread_index & 255u);
+	}}
+}}
+"#,
+		push_constant_fields = push_constant_fields,
+		view_lookup = view_lookup,
+	)
 }
 
 pub const VISIBILITY_PASS_FRAGMENT_SOURCE_MSL: &str = r#"
@@ -637,6 +808,25 @@ layout(location=1) out uint out_instance_id;
 void main() {
 	out_primitive_index = in_primitive_index;
 	out_instance_id = in_instance_index;
+}
+"#;
+
+pub const VISIBILITY_PASS_FRAGMENT_SOURCE_HLSL: &str = r#"
+struct FragmentInput {
+	uint instance_index : INSTANCE_INDEX;
+	uint primitive_index : PRIMITIVE_INDEX;
+};
+
+struct FragmentOutput {
+	uint primitive_index : SV_Target0;
+	uint instance_id : SV_Target1;
+};
+
+FragmentOutput main(FragmentInput input) {
+	FragmentOutput output;
+	output.primitive_index = input.primitive_index;
+	output.instance_id = input.instance_index;
+	return output;
 }
 "#;
 

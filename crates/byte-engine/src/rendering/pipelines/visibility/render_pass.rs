@@ -12,15 +12,16 @@ use utils::{Box, Extent, RGBA};
 use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
 use crate::rendering::pipelines::visibility::{
 	get_gtao_bitfield_blur_x_shader, get_gtao_bitfield_shader, get_gtao_blur_shader, get_gtao_shader,
-	get_material_count_shader, get_material_offset_shader, get_pixel_mapping_shader, get_shadow_pass_mesh_msl_source,
-	get_shadow_pass_mesh_source, get_shadow_pass_task_msl_source, get_visibility_pass_mesh_msl_source,
-	get_visibility_pass_mesh_source, get_visibility_pass_task_msl_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING,
-	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
-	MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES,
-	MAX_VERTICES, MESHLET_CULLING_TASK_GROUP_SIZE, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
-	SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING,
-	VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
-	VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
+	get_material_count_shader, get_material_offset_shader, get_pixel_mapping_shader, get_shadow_pass_mesh_hlsl_source,
+	get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_shadow_pass_task_msl_source,
+	get_visibility_pass_mesh_hlsl_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source,
+	get_visibility_pass_task_msl_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
+	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS,
+	MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
+	MESHLET_CULLING_TASK_GROUP_SIZE, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
+	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
+	VISIBILITY_PASS_FRAGMENT_SOURCE_HLSL, VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
@@ -109,6 +110,7 @@ impl VisibilityPass {
 
 		let visibility_mesh_glsl = get_visibility_pass_mesh_source();
 		let visibility_mesh_msl = get_visibility_pass_mesh_msl_source();
+		let visibility_mesh_hlsl = get_visibility_pass_mesh_hlsl_source();
 		let visibility_pass_mesh_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
@@ -116,11 +118,15 @@ impl VisibilityPass {
 				id: "byte-engine/rendering/visibility/visibility-mesh",
 				name: "Visibility Pass Mesh Shader",
 				stage: ResourceShaderTypes::Mesh,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
-					glsl: &visibility_mesh_glsl,
-					msl: &visibility_mesh_msl,
-					msl_entry_point: "besl_main",
-				}),
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(
+					ghi::shader::ShaderSource::PlatformNative {
+						glsl: &visibility_mesh_glsl,
+						msl: &visibility_mesh_msl,
+						msl_entry_point: "besl_main",
+						hlsl: &visibility_mesh_hlsl,
+						hlsl_entry_point: "main",
+					},
+				),
 				interface: material::ShaderInterface {
 					workgroup_size: None,
 					bindings: vec![
@@ -145,11 +151,15 @@ impl VisibilityPass {
 				id: "byte-engine/rendering/visibility/visibility-fragment",
 				name: "Visibility Pass Fragment Shader",
 				stage: ResourceShaderTypes::Fragment,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
-					glsl: VISIBILITY_PASS_FRAGMENT_SOURCE,
-					msl: VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
-					msl_entry_point: "visibility_fragment_main",
-				}),
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(
+					ghi::shader::ShaderSource::PlatformNative {
+						glsl: VISIBILITY_PASS_FRAGMENT_SOURCE,
+						msl: VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
+						msl_entry_point: "visibility_fragment_main",
+						hlsl: VISIBILITY_PASS_FRAGMENT_SOURCE_HLSL,
+						hlsl_entry_point: "main",
+					},
+				),
 				interface: material::ShaderInterface {
 					workgroup_size: None,
 					bindings: vec![],
@@ -314,6 +324,7 @@ impl ShadowPass {
 
 		let shadow_mesh_glsl = get_shadow_pass_mesh_source();
 		let shadow_mesh_msl = get_shadow_pass_mesh_msl_source();
+		let shadow_mesh_hlsl = get_shadow_pass_mesh_hlsl_source();
 		let shadow_pass_mesh_shader = crate::rendering::shader_store::create_shader(
 			context,
 			shader_storage,
@@ -321,11 +332,15 @@ impl ShadowPass {
 				id: "byte-engine/rendering/visibility/shadow-mesh",
 				name: "Shadow Pass Mesh Shader",
 				stage: ResourceShaderTypes::Mesh,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Platform {
-					glsl: &shadow_mesh_glsl,
-					msl: &shadow_mesh_msl,
-					msl_entry_point: "besl_main",
-				}),
+				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(
+					ghi::shader::ShaderSource::PlatformNative {
+						glsl: &shadow_mesh_glsl,
+						msl: &shadow_mesh_msl,
+						msl_entry_point: "besl_main",
+						hlsl: &shadow_mesh_hlsl,
+						hlsl_entry_point: "main",
+					},
+				),
 				interface: material::ShaderInterface {
 					workgroup_size: None,
 					bindings: vec![

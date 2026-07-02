@@ -417,7 +417,7 @@ impl Device {
 			Sources::DXIL(bytes) => (None, Some(bytes.to_vec()), None),
 			Sources::HLSL { source, entry_point } => (
 				None,
-				Some(Self::compile_hlsl(source, entry_point, stage, &[])?),
+				Some(self.compile_hlsl(source, entry_point, stage, &[])?),
 				Some(HlslSource {
 					source: source.to_string(),
 					entry_point: entry_point.to_string(),
@@ -439,13 +439,14 @@ impl Device {
 	}
 
 	fn compile_hlsl(
+		&self,
 		source: &str,
 		entry_point: &str,
 		stage: ShaderTypes,
 		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Result<Vec<u8>, ()> {
 		if let Some(target) = Self::dxc_target(stage) {
-			return Self::compile_hlsl_with_dxc(source, entry_point, target, specialization_map);
+			return self.compile_hlsl_with_dxc(source, entry_point, target, specialization_map);
 		}
 		let target = match stage {
 			ShaderTypes::Vertex => "vs_5_0",
@@ -486,9 +487,22 @@ impl Device {
 				&mut shader,
 				Some(&mut errors),
 			)
-			.map_err(|_| ())?;
+			.map_err(|error| {
+				self.log_hlsl_compile_error(
+					source,
+					entry_point.to_str().unwrap_or("<invalid-entry-point>"),
+					target.to_str().unwrap_or("<invalid-target>"),
+					&format!("{error:?}"),
+				);
+			})?;
 		}
 		let Some(shader) = shader else {
+			self.log_hlsl_compile_error(
+				source,
+				entry_point.to_str().unwrap_or("<invalid-entry-point>"),
+				target.to_str().unwrap_or("<invalid-target>"),
+				"D3DCompile returned no shader bytecode.",
+			);
 			return Err(());
 		};
 		let bytecode = unsafe { std::slice::from_raw_parts(shader.GetBufferPointer().cast::<u8>(), shader.GetBufferSize()) };
@@ -497,6 +511,8 @@ impl Device {
 
 	fn dxc_target(stage: ShaderTypes) -> Option<&'static str> {
 		match stage {
+			// BESL HLSL uses SM6-oriented syntax and intrinsics, so compute must go through DXC.
+			ShaderTypes::Compute => Some("cs_6_0"),
 			ShaderTypes::Mesh => Some("ms_6_5"),
 			ShaderTypes::RayGen
 			| ShaderTypes::Miss
@@ -508,12 +524,20 @@ impl Device {
 	}
 
 	fn compile_hlsl_with_dxc(
+		&self,
 		source: &str,
 		entry_point: &str,
 		target: &str,
 		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Result<Vec<u8>, ()> {
-		let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|_| ())?;
+		let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|error| {
+			self.log_hlsl_compile_error(
+				source,
+				entry_point,
+				target,
+				&format!("Failed to create DXC compiler: {error:?}"),
+			);
+		})?;
 		let source_buffer = DxcBuffer {
 			Ptr: source.as_ptr().cast(),
 			Size: source.len(),
@@ -539,18 +563,56 @@ impl Device {
 		let result = unsafe {
 			compiler.Compile::<Option<&IDxcIncludeHandler>, IDxcResult>(&source_buffer, Some(arguments.as_slice()), None)
 		}
-		.map_err(|_| ())?;
-		let status = unsafe { result.GetStatus() }.map_err(|_| ())?;
+		.map_err(|error| {
+			self.log_hlsl_compile_error(source, entry_point, target, &format!("DXC compile call failed: {error:?}"));
+		})?;
+		let status = unsafe { result.GetStatus() }.map_err(|error| {
+			self.log_hlsl_compile_error(source, entry_point, target, &format!("Failed to read DXC status: {error:?}"));
+		})?;
 		if status.is_err() {
+			self.log_hlsl_compile_error(source, entry_point, target, &Self::dxc_error_output(&result));
 			return Err(());
 		}
 		let mut object = None;
-		unsafe { result.GetOutput::<IDxcBlob>(DXC_OUT_OBJECT, std::ptr::null_mut(), &mut object) }.map_err(|_| ())?;
+		unsafe { result.GetOutput::<IDxcBlob>(DXC_OUT_OBJECT, std::ptr::null_mut(), &mut object) }.map_err(|error| {
+			self.log_hlsl_compile_error(
+				source,
+				entry_point,
+				target,
+				&format!("Failed to read DXC object output: {error:?}"),
+			);
+		})?;
 		let Some(object) = object else {
+			self.log_hlsl_compile_error(source, entry_point, target, "DXC returned no object bytecode.");
 			return Err(());
 		};
 		let bytecode = unsafe { std::slice::from_raw_parts(object.GetBufferPointer().cast::<u8>(), object.GetBufferSize()) };
 		Ok(bytecode.to_vec())
+	}
+
+	fn dxc_error_output(result: &IDxcResult) -> String {
+		let mut errors = None;
+		if unsafe { result.GetOutput::<IDxcBlob>(DXC_OUT_ERRORS, std::ptr::null_mut(), &mut errors) }.is_err() {
+			return "DXC compilation failed and error output could not be read.".to_string();
+		}
+
+		let Some(errors) = errors else {
+			return "DXC compilation failed with no error output.".to_string();
+		};
+
+		let bytes = unsafe { std::slice::from_raw_parts(errors.GetBufferPointer().cast::<u8>(), errors.GetBufferSize()) };
+		let message = String::from_utf8_lossy(bytes).trim().to_string();
+		if message.is_empty() {
+			"DXC compilation failed with empty error output.".to_string()
+		} else {
+			message
+		}
+	}
+
+	fn log_hlsl_compile_error(&self, source: &str, entry_point: &str, target: &str, reason: &str) {
+		self.log_dx12_error(format!(
+			"Failed to compile DX12 HLSL shader. Entry point: {entry_point}. Target: {target}. Reason: {reason}\n--- HLSL source ---\n{source}\n--- End HLSL source ---"
+		));
 	}
 
 	fn wide_argument(argument: &str) -> Vec<u16> {
@@ -1371,8 +1433,9 @@ impl Device {
 		let shader = self.shaders.get(parameter.handle.0 as usize)?;
 		if let Some(target) = dxc_target {
 			if let Some(hlsl) = shader.hlsl.as_ref() {
-				let dxil =
-					Self::compile_hlsl_with_dxc(&hlsl.source, &hlsl.entry_point, target, parameter.specialization_map).ok();
+				let dxil = self
+					.compile_hlsl_with_dxc(&hlsl.source, &hlsl.entry_point, target, parameter.specialization_map)
+					.ok();
 				if dxil.is_some() && !parameter.specialization_map.is_empty() {
 					self.hlsl_specialization_compile_count += 1;
 				}
@@ -1380,7 +1443,9 @@ impl Device {
 			}
 		} else if !parameter.specialization_map.is_empty() {
 			if let Some(hlsl) = shader.hlsl.as_ref() {
-				let dxil = Self::compile_hlsl(&hlsl.source, &hlsl.entry_point, stage, parameter.specialization_map).ok();
+				let dxil = self
+					.compile_hlsl(&hlsl.source, &hlsl.entry_point, stage, parameter.specialization_map)
+					.ok();
 				if dxil.is_some() {
 					self.hlsl_specialization_compile_count += 1;
 				}
@@ -1477,13 +1542,14 @@ impl Device {
 		let shader = self.shaders.get(shader_parameter.handle.0 as usize)?;
 		let dxil = if !shader_parameter.specialization_map.is_empty() {
 			if let Some(hlsl) = shader.hlsl.as_ref() {
-				let dxil = Self::compile_hlsl(
-					&hlsl.source,
-					&hlsl.entry_point,
-					shader_parameter.stage,
-					shader_parameter.specialization_map,
-				)
-				.ok();
+				let dxil = self
+					.compile_hlsl(
+						&hlsl.source,
+						&hlsl.entry_point,
+						shader_parameter.stage,
+						shader_parameter.specialization_map,
+					)
+					.ok();
 				if dxil.is_some() {
 					self.hlsl_specialization_compile_count += 1;
 				}
@@ -6798,7 +6864,7 @@ use windows::core::{BOOL, PCSTR, PCWSTR};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::Dxc::{
 	CLSID_DxcCompiler, DxcBuffer, DxcCreateInstance, IDxcBlob, IDxcCompiler3, IDxcIncludeHandler, IDxcResult, DXC_CP_UTF8,
-	DXC_OUT_OBJECT,
+	DXC_OUT_ERRORS, DXC_OUT_OBJECT,
 };
 use windows::Win32::Graphics::Direct3D::{
 	Fxc::D3DCompile, ID3DInclude, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_12_0, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,

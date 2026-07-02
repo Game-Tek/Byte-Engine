@@ -393,6 +393,8 @@ pub(crate) trait NodeEmitter {
 	) {
 	}
 
+	fn emit_function_attributes(&mut self, _string: &mut String, _node: &besl::NodeReference, _name: &str) {}
+
 	fn emit_function_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
 		let formatting = ShaderFormatting::new(self.minified());
 		emit_statement_block(string, formatting, statements, indent, |string, statement| {
@@ -434,6 +436,7 @@ pub(crate) trait NodeEmitter {
 		params: &[besl::NodeReference],
 	) {
 		let formatting = ShaderFormatting::new(self.minified());
+		self.emit_function_attributes(string, this_node, name);
 		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
 		string.push(' ');
 		string.push_str(name);

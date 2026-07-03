@@ -36,7 +36,7 @@ pub trait Application {
 /// established composition pattern.
 pub struct BaseApplication {
 	name: String,
-	parameters: HashSet<Parameter>,
+	parameters: Vec<Parameter>,
 	pub(crate) frame_allocator: bumpalo::Bump,
 }
 
@@ -44,26 +44,25 @@ impl Application for BaseApplication {
 	fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
 		env_logger::init();
 
-		let parameters = parameters.to_vec();
+		let mut parameters = parameters.to_vec();
+		for (key, value) in std::env::vars().filter(|(key, _)| key.as_str().starts_with("BE_")) {
+			upsert_parameter(
+				&mut parameters,
+				Parameter::new_string(
+					key.trim_start_matches("BE_").to_string().replace('_', "-").to_lowercase(),
+					value,
+				),
+			);
+		}
 
-		let environment_variables = std::env::vars()
-			.filter(|(k, v)| k.as_str().starts_with("BE_"))
-			.map(|(k, v)| Parameter::new_string(k.trim_start_matches("BE_").to_string().replace('_', "-").to_lowercase(), v))
-			.collect::<Vec<Parameter>>();
 		// Take all arguments that have the form `--name=value` and convert them to parameters.
-		let arguments = std::env::args()
-			.filter(|a| a.starts_with("--"))
-			.map(|a| parse_argument(&a))
-			.try_collect::<Vec<Parameter>>()
-			.unwrap();
-
-		let mut parameter_set: HashSet<Parameter> = parameters.into_iter().collect();
-		parameter_set.extend(environment_variables);
-		parameter_set.extend(arguments);
+		for argument in std::env::args().filter(|argument| argument.starts_with("--")) {
+			upsert_parameter(&mut parameters, parse_argument(&argument).unwrap());
+		}
 
 		let application = BaseApplication {
 			name: String::from(name),
-			parameters: parameter_set,
+			parameters,
 			frame_allocator: bumpalo::Bump::with_capacity(1024 * 1024 * 32), // TODO: take this from parameters
 		};
 
@@ -117,6 +116,15 @@ impl Parameters for BaseApplication {
 	}
 }
 
+/// Replaces a previous parameter with the same name so later sources have deterministic precedence.
+fn upsert_parameter(parameters: &mut Vec<Parameter>, parameter: Parameter) {
+	if let Some(existing) = parameters.iter_mut().find(|existing| existing.name == parameter.name) {
+		*existing = parameter;
+	} else {
+		parameters.push(parameter);
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -127,9 +135,17 @@ mod tests {
 
 		assert!(app.get_name() == "Test");
 	}
-}
 
-use std::collections::HashSet;
+	#[test]
+	fn upsert_parameter_replaces_value_with_same_name() {
+		let mut parameters = vec![Parameter::new("render.debug.extended", "true")];
+
+		upsert_parameter(&mut parameters, Parameter::new("render.debug.extended", "false"));
+
+		assert_eq!(parameters.len(), 1);
+		assert_eq!(parameters[0].value(), "false");
+	}
+}
 
 use log::{info, trace};
 

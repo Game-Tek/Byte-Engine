@@ -252,6 +252,41 @@ mod tests {
 	}
 
 	#[test]
+	fn frame_recording_without_implicit_sync_leaves_pending_texture_uploads_queued() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let image = device.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let transfer_command_buffer = device.create_command_buffer(None, queue_handle);
+		let render_command_buffer = device.create_command_buffer(None, queue_handle);
+
+		device
+			.texture_slice_mut_for_sequence(image.into(), 0)
+			.copy_from_slice(&[9, 10, 11, 12]);
+		device.queue_texture_sync_for_sequence(image.into(), 0);
+
+		{
+			let mut frame = device.start_frame(0, synchronizer);
+			let recording = frame.create_command_buffer_recording_without_implicit_sync(transfer_command_buffer);
+			drop(recording);
+			drop(frame);
+		}
+
+		assert_eq!(device.upload_resource_count(), 0);
+
+		{
+			let mut frame = device.start_frame(0, synchronizer);
+			let recording = frame.create_command_buffer_recording(render_command_buffer);
+			drop(recording);
+			drop(frame);
+		}
+
+		assert_eq!(device.upload_resource_count(), 1);
+	}
+
+	#[test]
 	fn bind_descriptor_sets_flushes_pending_sampled_texture_upload() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::FRAGMENT);
@@ -438,6 +473,144 @@ mod tests {
 		assert_eq!(device.descriptor_write_count(), 3);
 		assert_eq!(device.image_srv_descriptor_write_count(), 1);
 		assert_eq!(device.image_uav_descriptor_write_count(), 0);
+	}
+
+	#[test]
+	fn hlsl_structured_buffer_stride_inference_matches_shader_struct_layout() {
+		let source = r#"
+struct View {
+	float4x4 view;
+	float4x4 projection;
+	float4x4 view_projection;
+	float4x4 inverse_view;
+	float4x4 inverse_projection;
+	float4x4 inverse_view_projection;
+	float2 fov;
+	float near;
+	float far;
+};
+StructuredBuffer<View> views : register(t0, space0);
+StructuredBuffer<uint> indices : register(t6, space0);
+RWStructuredBuffer<uint4> dispatches : register(u3, space1);
+"#;
+
+		let strides = Device::hlsl_structured_buffer_strides(source);
+
+		assert_eq!(strides.get(&(0, 0)), Some(&400));
+		assert_eq!(strides.get(&(0, 6)), Some(&4));
+		assert_eq!(strides.get(&(1, 3)), Some(&16));
+	}
+
+	#[test]
+	fn hlsl_pipeline_creation_updates_existing_descriptor_binding_buffer_stride() {
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let binding = crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE).buffer_read_only(true);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let buffer = device.build_buffer::<[u32; 100]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&binding, buffer.into()));
+
+		assert_eq!(device.descriptor_binding_buffer_stride(set, 0), Some(4));
+
+		let shader_source = r#"
+struct View {
+	float4x4 view;
+	float4x4 projection;
+	float4x4 view_projection;
+	float4x4 inverse_view;
+	float4x4 inverse_projection;
+	float4x4 inverse_view_projection;
+	float2 fov;
+	float near;
+	float far;
+};
+StructuredBuffer<View> views : register(t0, space0);
+[numthreads(1, 1, 1)]
+void main() {
+	View view = views[0];
+	uint sink = asuint(view.near);
+}
+"#;
+		let Ok(shader) = device.create_shader(
+			Some("structured stride inference"),
+			crate::shader::Sources::HLSL {
+				source: shader_source,
+				entry_point: "main",
+			},
+			crate::ShaderTypes::Compute,
+			[binding.into_shader_binding_descriptor(0, crate::AccessPolicies::READ)],
+		) else {
+			return;
+		};
+
+		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[template],
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		assert_eq!(device.descriptor_binding_buffer_stride(set, 0), Some(400));
+	}
+
+	#[test]
+	fn hlsl_pipeline_creation_updates_later_descriptor_binding_buffer_stride() {
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let bindings = [
+			crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::COMPUTE),
+			crate::DescriptorSetBindingTemplate::storage_image(1, crate::Stages::COMPUTE),
+			crate::DescriptorSetBindingTemplate::storage_buffer(2, crate::Stages::COMPUTE).buffer_read_only(true),
+		];
+		let template = device.create_descriptor_set_template(None, &bindings);
+
+		let shader_source = r#"
+struct _parameters {
+	float4x4 inverse_view_projection;
+	float4 camera_position;
+	float4 sun_direction;
+	float4 planet_center;
+	float4 atmosphere;
+	float4 misc;
+};
+StructuredBuffer<_parameters> parameters : register(t2, space0);
+RWTexture2D<float4> main_texture : register(u1, space0);
+Texture2D<float4> depth_texture : register(t0, space0);
+SamplerState depth_texture_sampler : register(s0, space0);
+[numthreads(1, 1, 1)]
+void main() {
+	main_texture[uint2(0, 0)] = parameters[0].camera_position;
+}
+"#;
+		let Ok(shader) = device.create_shader(
+			Some("sky structured stride inference"),
+			crate::shader::Sources::HLSL {
+				source: shader_source,
+				entry_point: "main",
+			},
+			crate::ShaderTypes::Compute,
+			[
+				bindings[0].into_shader_binding_descriptor(0, crate::AccessPolicies::READ),
+				bindings[1].into_shader_binding_descriptor(0, crate::AccessPolicies::WRITE),
+				bindings[2].into_shader_binding_descriptor(0, crate::AccessPolicies::READ),
+			],
+		) else {
+			return;
+		};
+
+		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[template],
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		let set = device.create_descriptor_set(None, &template);
+		let buffer = device.build_buffer::<[u32; 36]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&bindings[2], buffer.into()));
+
+		assert_eq!(device.descriptor_binding_buffer_stride(set, 2), Some(144));
 	}
 
 	#[test]
@@ -1889,6 +2062,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		crate::command_buffer::CommandBufferRecording::write_image_data(&mut recording, image.into(), data);
 		let copies = crate::command_buffer::CommandBufferRecording::transfer_textures(&mut recording, &[image.into()]);
 		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(device.get_image_data(copies[0]), &pixel);
 		assert_eq!(device.readback_resource_count(), 1);
@@ -1917,6 +2091,38 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 		device.wait_for_synchronizer(synchronizer);
 		assert_eq!(device.synchronizer_value(synchronizer), Some(1));
+		assert_eq!(device.native_command_list_execute_count(), 1);
+		assert_eq!(device.empty_command_list_skip_count(), 0);
+	}
+
+	#[test]
+	fn empty_command_buffer_execute_skips_native_command_list_submission() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let recording = device.create_command_buffer_recording(command_buffer);
+
+		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+
+		assert_eq!(device.synchronizer_value(synchronizer), Some(1));
+		assert_eq!(device.empty_command_list_skip_count(), 1);
+		assert_eq!(device.native_command_list_execute_count(), 0);
+	}
+
+	#[test]
+	fn queue_execute_without_recordings_completes_frame_without_native_submission() {
+		use crate::context::Context as _;
+		use crate::queue::Queue as _;
+
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let synchronizer = device.create_synchronizer(None, false);
+		let frame = crate::queue::FrameRequest { index: 0, synchronizer };
+
+		device.queue(queue_handle).execute(Some(frame), &[], synchronizer, |_| []);
+
+		assert_eq!(device.synchronizer_value(synchronizer), Some(1));
+		assert_eq!(device.empty_command_list_skip_count(), 0);
+		assert_eq!(device.native_command_list_execute_count(), 0);
 	}
 
 	#[test]
@@ -1938,19 +2144,24 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
-	fn clear_device_only_buffer_records_gpu_copy() {
+	fn clear_device_only_buffer_records_native_uav_clear() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceOnly),
+			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
 		);
+		let upload_resource_count = device.upload_resource_count();
+		*device.get_mut_buffer_slice(buffer) = [1, 2, 3, 4];
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
 		drop(recording);
 
+		assert_eq!(*device.get_buffer_slice(buffer), [1, 2, 3, 4]);
 		assert_eq!(device.buffer_clear_count(), 1);
-		assert_eq!(device.buffer_is_in_common_state(buffer.into()), Some(true));
+		assert_eq!(device.upload_resource_count(), upload_resource_count);
+		assert_eq!(device.buffer_is_in_common_state(buffer.into()), Some(false));
 	}
 
 	#[test]

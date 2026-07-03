@@ -20,7 +20,6 @@ pub struct CommandBufferRecording<'a> {
 	active_render_target: Option<BaseImageHandle>,
 	active_extent: Option<Extent>,
 	push_constants: Vec<u8>,
-	bound_descriptor_sets: Vec<DescriptorSetHandle>,
 }
 
 impl<'a> CommandBufferRecording<'a> {
@@ -38,7 +37,6 @@ impl<'a> CommandBufferRecording<'a> {
 			active_render_target: None,
 			active_extent: None,
 			push_constants: Vec::new(),
-			bound_descriptor_sets: Vec::new(),
 		}
 	}
 
@@ -102,27 +100,11 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.bind_render_targets_native(self.command_buffer, attachments, sequence_index);
 		self.device.set_render_area_native(self.command_buffer, extent);
 
-		for attachment in attachments {
-			let image = match attachment.target {
-				ImageOrSwapchain::Image(image) => image,
-				ImageOrSwapchain::Swapchain(swapchain) => self
-					.device
-					.get_swapchain_image_for_sequence(swapchain, crate::Uses::RenderTarget, sequence_index)
-					.0
-					.into(),
-			};
-
-			if !attachment.load {
-				self.device.clear_image_for_sequence(image, attachment.clear, sequence_index);
-			}
-		}
-
 		self
 	}
 
 	fn clear_images(&mut self, _textures: &[(BaseImageHandle, ClearValue)]) {
 		for &(image, clear) in _textures {
-			self.device.clear_image_for_sequence(image, clear, self.sequence_index());
 			self.device
 				.record_image_clear(self.command_buffer, crate::ImageHandle(image), clear, self.sequence_index());
 		}
@@ -267,8 +249,6 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 
 impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self {
-		self.bound_descriptor_sets.clear();
-		self.bound_descriptor_sets.extend_from_slice(sets);
 		self.device
 			.flush_pending_descriptor_texture_syncs(self.command_buffer, sets, self.sequence_index());
 		self.device
@@ -356,8 +336,6 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 	fn dispatch(&mut self, dispatch: DispatchExtent) {
 		self.device
 			.dispatch_compute_native(self.command_buffer, self.bound_pipeline, dispatch);
-		self.device
-			.emulate_compute_dispatch(&self.bound_descriptor_sets, self.sequence_index(), &self.push_constants);
 	}
 
 	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 4]; N]>, entry_index: usize) {

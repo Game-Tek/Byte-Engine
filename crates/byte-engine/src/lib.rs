@@ -8,7 +8,6 @@
 	unsize,
 	slice_pattern,
 	trait_alias,
-	iterator_try_collect,
 	iter_collect_into,
 	allocator_api
 )]

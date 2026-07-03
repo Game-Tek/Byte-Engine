@@ -256,11 +256,7 @@ impl GraphicsApplication {
 		}
 
 		if close {
-			let _ = self.application_events.0.send(Events::Close);
-			self.threads.drain(..).for_each(|t| {
-				let _ = t.join();
-			});
-			self.close();
+			self.close_workers_and_record_stats();
 			return None;
 		}
 
@@ -339,7 +335,21 @@ impl GraphicsApplication {
 			}
 		}
 
-		(!close).then_some(result)
+		if close {
+			self.close_workers_and_record_stats();
+			None
+		} else {
+			Some(result)
+		}
+	}
+
+	/// Stops worker threads before recording final debug run stats.
+	fn close_workers_and_record_stats(&mut self) {
+		let _ = self.application_events.0.send(Events::Close);
+		self.threads.drain(..).for_each(|thread| {
+			let _ = thread.join();
+		});
+		self.close();
 	}
 
 	/// Flags the application for closing.
@@ -524,6 +534,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 						resource_manager.signal_completed_frame(completed_frame);
 					}
 
+					if !resource_manager.drain_pending_upload_work() {
+						std::thread::sleep(NO_WORK_SLEEP_DURATION);
+						started_frame_count += 1;
+						continue;
+					}
+
 					let mut frame = started_frame.frame;
 					let frame_key = frame.key();
 
@@ -535,7 +551,11 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 					let prepared_uploads =
 						resource_manager.prepare_uploads(&mut transfer_recording, upload_buffer.into(), &mut slice);
 
-					transfer_recording.execute(transfer_finished_synchronizer);
+					if prepared_uploads.recorded_work {
+						transfer_recording.execute(transfer_finished_synchronizer);
+					} else {
+						drop(transfer_recording);
+					}
 
 					resource_manager.track_submitted_uploads(frame_key, prepared_uploads.completions);
 

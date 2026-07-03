@@ -562,6 +562,14 @@ impl VisibilityPipelineResourceManagerWorker {
 			.push_back(SubmittedUploadBatch { frame_key, completions });
 	}
 
+	/// Drains worker inputs and reports whether queued work needs a transfer recording.
+	pub(crate) fn drain_pending_upload_work(&mut self) -> bool {
+		self.drain_commands();
+		self.resource_manager
+			.drain_pipeline_completions(self.settings.max_pipeline_adoptions_per_frame);
+		self.has_pending_upload_work()
+	}
+
 	/// Records pending mesh and texture uploads into the transfer command buffer.
 	pub(crate) fn prepare_uploads<'buffer>(
 		&mut self,
@@ -569,10 +577,13 @@ impl VisibilityPipelineResourceManagerWorker {
 		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: &mut utils::BufferAllocator<'buffer>,
 	) -> TransferUploadPrepareResult {
-		self.drain_commands();
-		self.resource_manager
-			.drain_pipeline_completions(self.settings.max_pipeline_adoptions_per_frame);
+		self.drain_pending_upload_work();
 		self.record_uploads(transfer, staging_data_buffer, slice)
+	}
+
+	/// Reports whether upload queues contain work that needs GPU transfer recording.
+	fn has_pending_upload_work(&self) -> bool {
+		!self.pending_mesh_uploads.is_empty() || !self.pending_texture_uploads.is_empty()
 	}
 
 	/// Drains render-thread commands into worker-owned state.

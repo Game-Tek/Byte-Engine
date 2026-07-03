@@ -1,0 +1,138 @@
+---
+title: Input Handling
+description: How input devices, seats, triggers, and actions fit together.
+icon: Gamepad2
+---
+
+Byte Engine input is built around actions.
+
+Physical input is recorded as device trigger values.
+The input manager resolves those values into application-level actions such as `Move`, `Lookaround`, `RightHand`, `View`, or `Exit`.
+Applications then listen for action events instead of checking raw keys and buttons everywhere.
+
+This keeps app code oriented around intent.
+`Keyboard.W`, `Keyboard.S`, `Gamepad.LeftStick`, and a VR controller axis can all contribute to the same movement action without changing the movement system.
+
+## The concepts
+
+### Device classes
+
+A device class describes the layout shared by a category of hardware.
+The standard setup registers classes such as `Mouse`, `Keyboard`, and `Gamepad`.
+
+Each class has triggers:
+
+- `Mouse.Position`, `Mouse.Movement`, `Mouse.LeftButton`, `Mouse.Scroll`
+- `Keyboard.W`, `Keyboard.Space`, `Keyboard.Backspace`, `Keyboard.Character`
+- `Gamepad.LeftStick`, `Gamepad.RightStick`, `Gamepad.X`, `Gamepad.RightTrigger`
+
+Device classes are declarations.
+They say which named inputs exist and what value type each input produces.
+
+### Devices
+
+A device is a concrete instance of a class.
+One keyboard and two gamepads are three devices, even though the gamepads share one device class.
+
+The default graphics setup creates one mouse, one keyboard, and one gamepad device after registering the standard classes.
+Custom integrations can register their own classes and create devices directly through `InputManager`.
+
+### Seats
+
+A seat identifies the player or user context associated with input.
+The current default window integration uses `SeatHandle::stub()` until platform seats are wired through end to end.
+
+The reason seats exist is future-facing but important: the same physical style of input can belong to different users.
+Input state is stored by seat, device, and trigger, so local multiplayer, split-screen, remote control, or editor/game focus can be represented without changing the action model.
+
+### Triggers
+
+A trigger is a named value on a device class.
+It can be boolean, float, unicode, vector, quaternion, color, or another supported input value type.
+
+Window events are translated into trigger records.
+For example, a key press becomes a boolean value for `Keyboard.W`, mouse motion becomes a `Vector2` value for `Mouse.Movement`, and typed text becomes a unicode value for `Keyboard.Character`.
+
+Records are queued first.
+They become current input state on the next input update, where the latest value per seat, device, and trigger is kept.
+
+### Actions
+
+An action is the application-facing input concept.
+It has:
+
+- a name
+- an output type
+- one or more trigger bindings
+- optional value mappings
+- a tick policy
+
+For movement, keyboard keys can map to direction vectors, and the resolved action value can be a single `Vector3`.
+For lookaround, mouse position and a gamepad stick can both contribute to the same direction-like action.
+
+Actions are created through the application action factory.
+The input manager listens for those creation messages, resolves trigger names to handles, and starts emitting action events.
+
+## How actions are built
+
+The usual flow is:
+
+1. Register device classes and triggers.
+2. Create concrete devices for those classes.
+3. Create application actions with trigger bindings.
+4. Translate platform events into trigger records.
+5. Update the input manager.
+6. Listen for action events in application or engine systems.
+
+Most headed applications use `setup_default_input` for the first two steps and `process_default_window_input` for platform window events.
+That default path installs the standard mouse, keyboard, and gamepad names used by action bindings.
+
+## Value mapping
+
+Bindings can map a trigger value into the action's output type.
+
+For movement, boolean key triggers can map to direction vectors.
+When multiple movement keys are active, the input resolver combines the active mappings and normalizes the result.
+This is why diagonal keyboard movement can be represented as one stable movement vector instead of separate key checks.
+
+For lookaround, `Function::Sphere` can map a 2D input into a 3D direction.
+The app receives a direction-like action value and does not need to care whether it came from mouse position or a stick.
+
+## Tick policy
+
+Actions can emit with different policies:
+
+- `OnChange`: emit when input changes
+- `WhileActive`: emit every frame while the resolved value is non-default
+- `Always`: emit every frame after the action has a known value
+
+Movement usually uses `WhileActive` so holding a key or stick keeps producing movement events.
+Discrete actions such as fire, view toggle, or exit usually use the default change-based behavior.
+
+## Reading actions
+
+Applications normally create one listener from the input event channel and filter it by action handle.
+Those filtered streams can then be read inside the application tick loop or by any system that owns input-driven behavior.
+
+This is the same message pattern used elsewhere in the engine.
+Input systems publish action events, and gameplay/application code consumes the actions it understands.
+Raw devices stay behind the input manager.
+
+## Practical guidance
+
+Name actions after intent, not hardware.
+Use `Move`, `Lookaround`, `Fire`, or `Confirm` rather than `WKey` or `LeftMouseButton`.
+
+Put hardware names in bindings.
+That is where `Keyboard.W`, `Mouse.LeftButton`, and `Gamepad.X` belong.
+
+Choose the output type that downstream code wants to read.
+Movement code usually wants a vector.
+Text input wants unicode and editing actions.
+Buttons and toggles usually want booleans.
+
+Use seats even when there is only one player.
+The default seat keeps the API shape consistent, and code written against seats will be easier to extend later.
+
+Keep action payloads small.
+Input is hot-path code, so prefer compact values and local state over allocating per-binding structures in the app loop.

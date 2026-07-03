@@ -1,0 +1,120 @@
+---
+title: Actor Pattern
+description: How Byte Engine uses message passing to keep systems decoupled.
+icon: MessagesSquare
+---
+
+Byte Engine uses actor-style boundaries between systems.
+
+This does not mean every object is a fully independent actor with its own scheduler.
+It means systems own their own state, receive messages that describe what changed, and publish messages for other systems to react to.
+The important rule is simple: if another system needs to know something happened, send a small message instead of handing it direct mutable access.
+
+## What counts as an actor?
+
+In engine terms, an actor is any system that owns a piece of state and communicates through a channel-like boundary.
+
+Common examples:
+
+- the input manager owns device, trigger, and action state
+- the world owns gameplay, physics, transform, and deletion coordination
+- render systems mirror cameras, lights, meshes, and transforms they care about
+- audio workers consume generator creation messages
+- application code can act as a small system when it listens to events and sends updates
+
+The boundary matters more than the label.
+A system should be able to say, "these messages are my inputs, these messages are my outputs, and this is the state I own."
+
+## Message sending
+
+The core pieces users will encounter in API docs are:
+
+- `DefaultChannel<T>`: publishes messages of one type
+- `DefaultListener<T>`: reads pending messages
+- `FilteredListener`: reads only messages that match a predicate
+- `Factory<T>`: creates entities and broadcasts `CreateMessage<T>` with a stable handle
+- `DeleteMessage`: broadcasts deletion intent
+
+Creation usually goes through a factory because systems need a stable handle for the same logical entity.
+Mutation usually goes through a typed update message, such as `TransformationUpdate`.
+Deletion goes through a deletion channel so every interested system can drop its own mirrored state.
+
+The application does not need to know which renderer, physics system, inspector, or gameplay system is listening.
+It only needs to publish the event.
+
+## Why this shape helps
+
+### Easy debugging
+
+Messages give the engine observable seams.
+When camera movement is wrong, you can inspect the input action event, the local movement integration, and the outgoing `TransformationUpdate` separately.
+When objects are not deleted, you can put the breakpoint on `DeleteMessage::new` or on the delete-channel listener rather than stepping through every world subsystem.
+
+Small messages also make logging useful.
+An action name, handle, seat, device, and value are enough to explain most input behavior without dumping whole engine state.
+
+### Easy multithreading
+
+Message boundaries make thread ownership explicit.
+A worker can own its internal state and consume messages from the main application instead of sharing mutable structures with it.
+The audio setup follows this shape: application code creates generators, the audio worker observes those creations, and rendering audio stays inside the audio system.
+
+This does not make every message free to send across every thread automatically.
+The useful property is architectural: when a system is ready to move to a worker thread, its communication boundary is already shaped like a queue of explicit inputs.
+
+### System decoupling
+
+Factories and channels let systems mirror only what they need.
+Creating a body can notify physics.
+Deriving a renderable from the same handle can notify rendering.
+Sending a transform update can inform physics, rendering, gameplay helpers, and debugging tools without the sender knowing that list.
+
+This keeps feature code narrow.
+A camera controller can publish transform updates without knowing how rendering consumes them.
+A gameplay rule can publish deletion intent without knowing how physics or rendering release their mirrored state.
+Application code does not need to become an integration layer for every engine subsystem.
+
+### Better data access patterns
+
+The pattern encourages each system to keep its own read-friendly representation of data.
+Physics can store bodies in the shape it needs for simulation.
+Rendering can store GPU-facing renderables.
+Application code can keep local camera velocity, direction, and game-specific state close to the loop that updates it.
+
+Handles connect those representations without requiring one global mutable object graph.
+Messages then describe how the representations should stay in sync.
+
+### Reduced allocations
+
+Message passing can reduce allocation pressure when messages stay small and specific.
+Instead of cloning whole objects or rebuilding cross-system state every frame, the engine can pass handles, compact value updates, or short event payloads.
+
+The current input path follows the same principle during update: records are compacted to the latest value per source, action values are resolved from current state, and temporary per-frame work can use frame scratch allocation.
+
+The practical guidance is to send intent and deltas:
+
+- send "this handle has this transform"
+- send "this action resolved to this value"
+- send "this handle should be deleted"
+
+Avoid messages that smuggle large ownership graphs across systems unless that is the actual domain event.
+
+## Choosing the right message
+
+Use a factory when a system creates something other systems need to mirror.
+Use a typed channel when existing state changes.
+Use a deletion message when systems should independently release their mirrored state.
+Use a filtered listener when one consumer only cares about part of a broader event stream.
+
+That small set of choices covers most of the pattern used by engine subsystems and normal application code.
+
+## Practical guidance
+
+Prefer messages that name the domain event, not the implementation detail.
+`TransformationUpdate` is clearer than a generic "world changed" event because listeners can understand the payload without knowing the sender.
+
+Keep ownership local.
+If a system owns a cache, buffer, physics body, or render resource, let it update that data from messages instead of exposing mutable access to other systems.
+
+Keep the payload compact.
+Stable handles, typed values, and small structs are easier to debug, cheaper to clone for listeners, and friendlier to future worker-thread boundaries.

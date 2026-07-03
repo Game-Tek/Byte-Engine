@@ -482,6 +482,8 @@ impl VisibilityPipelineManager {
 			});
 			active_index += 1;
 		}
+		// The active mesh table is frame-local dynamic data; flush the current frame resource after rebuilding it.
+		frame.sync_buffer(self.scene.meshes_data_buffer);
 
 		log::debug!(
 			"Visibility active primitives rebuilt: render_entities={}, active={}, skipped_missing_material={}, active_meshlets={}",
@@ -1037,9 +1039,10 @@ pub struct MeshPrimitive {
 #[cfg(test)]
 mod tests {
 	use super::ShaderMesh;
+	use crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE;
 
 	#[test]
-	fn shader_mesh_matches_metal_buffer_layout() {
+	fn shader_mesh_matches_gpu_buffer_layout() {
 		#[cfg(target_os = "macos")]
 		let (expected_size, expected_material_offset) = (96, 64);
 		#[cfg(not(target_os = "macos"))]
@@ -1048,12 +1051,17 @@ mod tests {
 		assert_eq!(
 			std::mem::size_of::<ShaderMesh>(),
 			expected_size,
-			"Unexpected Visibility shader mesh size. The most likely cause is that the CPU-side mesh buffer layout drifted from the Metal shader struct alignment."
+			"Unexpected Visibility shader mesh size. The most likely cause is that the CPU-side mesh buffer layout drifted from the shader struct array stride."
+		);
+		assert_eq!(
+			std::mem::size_of::<ShaderMesh>() as u32,
+			MESH_DATA_BUFFER_STRIDE,
+			"Unexpected Visibility shader mesh binding stride. The most likely cause is that the descriptor stride no longer matches the CPU-side mesh buffer layout."
 		);
 		assert_eq!(
 			std::mem::align_of::<ShaderMesh>(),
 			16,
-			"Unexpected Visibility shader mesh alignment. The most likely cause is that the CPU-side mesh buffer no longer matches Metal's 16-byte struct alignment."
+			"Unexpected Visibility shader mesh alignment. The most likely cause is that the CPU-side mesh buffer no longer matches the shader struct alignment."
 		);
 		assert_eq!(
 			std::mem::offset_of!(ShaderMesh, material_index),

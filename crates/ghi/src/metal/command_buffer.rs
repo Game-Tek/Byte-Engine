@@ -1447,6 +1447,10 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		blit_encoder.endEncoding();
 	}
 
+	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
+		CommandBufferRecording::sync_buffer(self, buffer_handle);
+	}
+
 	fn execute(self, _synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 		self.finish(_synchronizer);
 	}

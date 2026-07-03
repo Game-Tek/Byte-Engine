@@ -3137,6 +3137,36 @@ impl Device {
 		Some(unsafe { std::slice::from_raw_parts(data, size).to_vec() })
 	}
 
+	/// Returns bytes currently visible through a host-mapped DX12 buffer resource.
+	#[cfg(test)]
+	pub(crate) fn buffer_mapped_bytes_for_sequence(
+		&mut self,
+		buffer: BaseBufferHandle,
+		size: usize,
+		sequence_index: u8,
+	) -> Option<Vec<u8>> {
+		self.ensure_buffer_frame_storage(buffer, sequence_index);
+		let buffer_data = self.buffer(buffer)?;
+		if size > buffer_data.size {
+			return None;
+		}
+		let mapped = if sequence_index == 0 {
+			buffer_data.mapped
+		} else {
+			buffer_data
+				.frame_resources
+				.as_ref()
+				.and_then(|resources| resources.get(sequence_index as usize))
+				.and_then(|resource| resource.as_ref())
+				.map(|resource| resource.mapped)
+				.unwrap_or(buffer_data.mapped)
+		};
+		if mapped.is_null() {
+			return None;
+		}
+		Some(unsafe { std::slice::from_raw_parts(mapped, size).to_vec() })
+	}
+
 	pub(crate) fn image_is_in_common_state(&self, image: ImageHandle) -> Option<bool> {
 		self.images
 			.get(image.0 .0 as usize)
@@ -8190,7 +8220,9 @@ impl Device {
 		let buffer_handle = buffer_handle.into();
 		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
 		if let Some(buffer) = self.buffer(buffer_handle) {
-			if sequence_index == 0 {
+			// Static buffers share one host-mapped resource across all frame sequences.
+			// Transfer recordings may run on sequence 1, so do not gate their flushes on sequence 0.
+			if sequence_index == 0 || buffer.frame_resources.is_none() {
 				Self::sync_buffer_storage(buffer);
 				return;
 			}

@@ -32,6 +32,8 @@ pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descripto
 )
 .buffer_stride(400)
 .buffer_read_only(true);
+// ShaderMesh array stride includes tail padding from the CPU matrix alignment; shader Mesh structs carry matching padding.
+pub const MESH_DATA_BUFFER_STRIDE: u32 = if cfg!(target_os = "macos") { 96 } else { 80 };
 pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	1,
 	ghi::descriptors::DescriptorType::StorageBuffer,
@@ -40,7 +42,7 @@ pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descriptor
 		.union(ghi::Stages::FRAGMENT)
 		.union(ghi::Stages::COMPUTE),
 )
-.buffer_stride(72)
+.buffer_stride(MESH_DATA_BUFFER_STRIDE)
 .buffer_read_only(true);
 pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	2,
@@ -238,6 +240,8 @@ struct Mesh {{
 	uint base_triangle_index;
 	uint base_meshlet_index;
 	uint meshlet_count;
+	uint padding0;
+	uint padding1;
 }};
 
 struct Meshlet {{
@@ -447,6 +451,8 @@ struct Mesh {{
 	uint base_triangle_index;
 	uint base_meshlet_index;
 	uint meshlet_count;
+	uint padding0;
+	uint padding1;
 }};
 
 struct Meshlet {{
@@ -617,6 +623,8 @@ pub fn get_shadow_pass_task_msl_source() -> String {
 fn build_mesh_pass_hlsl_source(push_constant_fields: &str, view_lookup: &str) -> String {
 	format!(
 		r#"
+#pragma pack_matrix(row_major)
+
 struct PushConstant {{
 {push_constant_fields}
 }};
@@ -631,15 +639,15 @@ struct MeshPrimitive {{
 }};
 
 struct Mesh {{
-	float4 row0;
-	float4 row1;
-	float4 row2;
+	float4x3 model;
 	uint material_index;
 	uint base_vertex_index;
 	uint base_primitive_index;
 	uint base_triangle_index;
 	uint base_meshlet_index;
 	uint meshlet_count;
+	uint padding0;
+	uint padding1;
 }};
 
 struct Meshlet {{
@@ -716,12 +724,8 @@ Meshlet load_meshlet(uint meshlet_index) {{
 }}
 
 float4 transform_position(Mesh mesh, float3 position) {{
-	return float4(
-		dot(mesh.row0.xyz, position) + mesh.row0.w,
-		dot(mesh.row1.xyz, position) + mesh.row1.w,
-		dot(mesh.row2.xyz, position) + mesh.row2.w,
-		1.0f
-	);
+	// ShaderMatrix4x3 uploads four float3 affine rows; HLSL multiplies a float4 position by float4x3 to recover world space.
+	return float4(mul(float4(position, 1.0f), mesh.model), 1.0f);
 }}
 
 [numthreads(128, 1, 1)]
@@ -978,6 +982,8 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 				besl::Node::member("base_triangle_index", u32_t.clone()).into(),
 				besl::Node::member("base_meshlet_index", u32_t.clone()).into(),
 				besl::Node::member("meshlet_count", u32_t.clone()).into(),
+				besl::Node::member("padding0", u32_t.clone()).into(),
+				besl::Node::member("padding1", u32_t.clone()).into(),
 			],
 		)
 		.into(),
@@ -2345,15 +2351,86 @@ pub(super) struct ShaderMeshletData {
 #[cfg(test)]
 mod tests {
 	use super::{
-		get_shadow_pass_mesh_msl_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_task_msl_source,
-		MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+		get_shadow_pass_mesh_msl_source, get_visibility_pass_mesh_hlsl_source, get_visibility_pass_mesh_msl_source,
+		get_visibility_pass_task_msl_source, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+		VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 	};
 
 	#[test]
 	fn shader_meshlet_data_matches_metal_buffer_layout() {
 		assert_eq!(std::mem::align_of::<super::ShaderMeshletData>(), 16);
 		assert_eq!(std::mem::size_of::<super::ShaderMeshletData>(), 64);
+	}
+
+	#[test]
+	fn visibility_mesh_hlsl_uses_shader_matrix4x3_layout() {
+		let source = get_visibility_pass_mesh_hlsl_source();
+
+		assert!(
+			source.contains("#pragma pack_matrix(row_major)"),
+			"Expected DX12 visibility mesh HLSL to use row-major matrix storage. The most likely cause is that ShaderMatrix4x3 bytes are being interpreted as column-major float4x3 columns."
+		);
+		assert!(
+			source.contains("float4x3 model;"),
+			"Expected DX12 visibility mesh HLSL to read ShaderMatrix4x3 as four packed float3 affine rows. The most likely cause is that the shader-side mesh layout drifted from the CPU upload layout."
+		);
+		assert!(
+			source.contains("return float4(mul(float4(position, 1.0f), mesh.model), 1.0f);"),
+			"Expected DX12 visibility mesh HLSL to multiply model-space positions by the packed float4x3 model. The most likely cause is that the model transform was decoded as three float4 rows."
+		);
+		assert!(
+			!source.contains("float4 row0;") && !source.contains("float4 row1;") && !source.contains("float4 row2;"),
+			"Expected DX12 visibility mesh HLSL to avoid the obsolete three-float4 model layout. The most likely cause is that the shader is decoding ShaderMatrix4x3 with the wrong row stride."
+		);
+	}
+
+	#[test]
+	fn visibility_mesh_hlsl_source_compiles_for_dx12() {
+		use ghi::{
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+		};
+
+		if !ghi::implementation::USES_DX12 {
+			return;
+		}
+
+		let shader = get_visibility_pass_mesh_hlsl_source();
+		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
+			.expect("Expected a DX12 instance for the visibility mesh shader test");
+		let mut queue = None;
+		let mut context = instance
+			.create_device(
+				ghi::device::Features::new(),
+				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
+			)
+			.expect("Expected a DX12 device for the visibility mesh shader test")
+			.create_context()
+			.expect("Expected a DX12 context");
+
+		let shader_handle = context.create_shader(
+			Some("Visibility Pass Mesh Shader Layout Test"),
+			ghi::shader::Sources::HLSL {
+				source: shader.as_str(),
+				entry_point: "main",
+			},
+			ghi::ShaderTypes::Mesh,
+			[
+				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			],
+		);
+
+		assert!(
+			shader_handle.is_ok(),
+			"Expected the visibility mesh HLSL source to compile for DX12"
+		);
 	}
 
 	#[test]

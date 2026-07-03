@@ -93,6 +93,8 @@ impl VisibilityShaderScope {
 				Node::member("base_triangle_index", "u32"),
 				Node::member("base_meshlet_index", "u32"),
 				Node::member("meshlet_count", "u32"),
+				Node::member("padding0", "u32"),
+				Node::member("padding1", "u32"),
 			],
 		);
 		let view_struct = Node::r#struct(
@@ -275,7 +277,10 @@ impl VisibilityShaderScope {
 						.into(),
 				),
 				Some(
-					"return mesh.base_vertex_index + vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */"
+					"/* DX12 views packed u16 meshlet indices through 32-bit structured-buffer words. */
+					uint packed_vertex_index = mesh.base_primitive_index + meshlet.primitive_offset + primitive_index;
+					uint packed_vertex_word = vertex_indices[packed_vertex_index >> 1u];
+					return mesh.base_vertex_index + ((packed_vertex_word >> ((packed_vertex_index & 1u) * 16u)) & 0xffffu); /* Indices in the buffer are relative to each mesh/primitives */"
 						.into(),
 				),
 				Some(
@@ -1153,10 +1158,15 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		Mesh mesh = meshes[instance_index];
 		Material material = materials[push_constant.material_id];
 
+		// DX12 exposes the tightly packed u8 primitive index buffer as 32-bit words.
+		uint primitive_indices_base = (mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3u;
+		uint primitive_indices_word0 = primitive_indices[primitive_indices_base >> 2u];
+		uint primitive_indices_word1 = primitive_indices[(primitive_indices_base + 1u) >> 2u];
+		uint primitive_indices_word2 = primitive_indices[(primitive_indices_base + 2u) >> 2u];
 		uint primitive_indices_local[3] = {
-			primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 0],
-			primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 1],
-			primitive_indices[(mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3 + 2]
+			(primitive_indices_word0 >> ((primitive_indices_base & 3u) * 8u)) & 0xffu,
+			(primitive_indices_word1 >> (((primitive_indices_base + 1u) & 3u) * 8u)) & 0xffu,
+			(primitive_indices_word2 >> (((primitive_indices_base + 2u) & 3u) * 8u)) & 0xffu
 		};
 
 		uint vertex_indices_local[3] = {
@@ -1752,6 +1762,31 @@ mod tests {
 		assert!(
 			source.contains("textures[material.textures[base_color]].SampleLevel(textures_sampler, vertex_uv, 0.0)"),
 			"Expected HLSL material evaluation source to use native HLSL texture sampling. Source: {source}"
+		);
+		assert!(
+			source
+				.contains("uint packed_vertex_index = mesh.base_primitive_index + meshlet.primitive_offset + primitive_index;"),
+			"Expected HLSL material evaluation source to unpack packed u16 vertex indices. Source: {source}"
+		);
+		assert!(
+			source.contains(
+				"return mesh.base_vertex_index + ((packed_vertex_word >> ((packed_vertex_index & 1u) * 16u)) & 0xffffu);"
+			),
+			"Expected HLSL material evaluation source to extract u16 values from 32-bit words. Source: {source}"
+		);
+		assert!(
+			source.contains(
+				"uint primitive_indices_base = (mesh.base_triangle_index + meshlet.triangle_offset + meshlet_triangle_index) * 3u;"
+			),
+			"Expected HLSL material evaluation source to unpack packed u8 primitive indices. Source: {source}"
+		);
+		assert!(
+			source.contains("(primitive_indices_word0 >> ((primitive_indices_base & 3u) * 8u)) & 0xffu"),
+			"Expected HLSL material evaluation source to extract u8 values from 32-bit words. Source: {source}"
+		);
+		assert!(
+			!source.contains("primitive_indices[(mesh.base_triangle_index"),
+			"Expected HLSL material evaluation source to avoid direct logical indexing of packed primitive indices. Source: {source}"
 		);
 	}
 

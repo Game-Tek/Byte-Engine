@@ -62,6 +62,23 @@ impl CommandBufferRecording<'_> {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
+	/// Records a staging-to-buffer upload on this command buffer.
+	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
+		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
+		let buffer = self.device.buffers.resource(buffer_handle);
+		let Some(staging_handle) = buffer.staging else {
+			return;
+		};
+
+		self.sync_buffers(std::iter::once(BufferCopy::new(
+			staging_handle,
+			0,
+			buffer_handle,
+			0,
+			buffer.size,
+		)));
+	}
+
 	pub(crate) fn new(
 		device: &'_ mut Context,
 		command_buffer: graphics_hardware_interface::CommandBufferHandle,
@@ -1680,6 +1697,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Read,
 		}))(self);
+	}
+
+	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
+		CommandBufferRecording::sync_buffer(self, buffer_handle);
 	}
 
 	fn clear_buffers(&mut self, buffer_handles: &[graphics_hardware_interface::BaseBufferHandle]) {

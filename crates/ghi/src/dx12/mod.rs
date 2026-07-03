@@ -1923,6 +1923,103 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn command_recording_sync_buffer_flushes_host_visible_resource() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let buffer = device.build_buffer::<[u8; 8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostOnly),
+		);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		*recording.get_mut_buffer_slice(buffer) = [9, 8, 7, 6, 5, 4, 3, 2];
+		crate::command_buffer::CommandBufferRecording::sync_buffer(&mut recording, buffer);
+		drop(recording);
+
+		assert_eq!(
+			device.buffer_mapped_bytes_for_sequence(buffer.into(), 8, 0).unwrap(),
+			vec![9, 8, 7, 6, 5, 4, 3, 2]
+		);
+	}
+
+	#[test]
+	fn command_recording_sync_buffer_flushes_dynamic_frame_resource() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		device.set_frames_in_flight(2);
+		let synchronizer = device.create_synchronizer(None, false);
+		let buffer = device.build_dynamic_buffer::<[u8; 8]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		{
+			let mut frame = device.start_frame(1, synchronizer);
+			*frame.get_mut_dynamic_buffer_slice(buffer) = [1, 3, 5, 7, 9, 11, 13, 15];
+			let mut recording = frame.create_command_buffer_recording_without_implicit_sync(command_buffer);
+			crate::command_buffer::CommandBufferRecording::sync_buffer(&mut recording, buffer);
+			drop(recording);
+		}
+
+		assert_eq!(
+			device.buffer_mapped_bytes_for_sequence(buffer.into(), 8, 1).unwrap(),
+			vec![1, 3, 5, 7, 9, 11, 13, 15]
+		);
+	}
+
+	#[test]
+	fn command_recording_sync_buffer_flushes_static_resource_for_nonzero_sequence() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		device.set_frames_in_flight(2);
+		let synchronizer = device.create_synchronizer(None, false);
+		let buffer = device.build_buffer::<[u8; 8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostOnly),
+		);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		{
+			let mut frame = device.start_frame(1, synchronizer);
+			let mut recording = frame.create_command_buffer_recording_without_implicit_sync(command_buffer);
+			*recording.get_mut_buffer_slice(buffer) = [2, 4, 6, 8, 10, 12, 14, 16];
+			crate::command_buffer::CommandBufferRecording::sync_buffer(&mut recording, buffer);
+			drop(recording);
+		}
+
+		assert_eq!(
+			device.buffer_mapped_bytes_for_sequence(buffer.into(), 8, 1).unwrap(),
+			vec![2, 4, 6, 8, 10, 12, 14, 16]
+		);
+	}
+
+	#[test]
+	fn copy_to_static_host_visible_buffer_flushes_destination_for_nonzero_sequence() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		device.set_frames_in_flight(2);
+		let synchronizer = device.create_synchronizer(None, false);
+		let source = device.build_buffer::<[u8; 8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostOnly),
+		);
+		let destination = device.build_buffer::<[u8; 8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		{
+			let mut frame = device.start_frame(1, synchronizer);
+			let mut recording = frame.create_command_buffer_recording_without_implicit_sync(command_buffer);
+			*recording.get_mut_buffer_slice(source) = [21, 22, 23, 24, 25, 26, 27, 28];
+			crate::command_buffer::CommandBufferRecording::copy_buffers(
+				&mut recording,
+				&[crate::BufferCopyDescriptor::new(source.into(), 1, destination.into(), 2, 5)],
+			);
+			drop(recording);
+		}
+
+		assert_eq!(
+			device.buffer_mapped_bytes_for_sequence(destination.into(), 8, 1).unwrap(),
+			vec![0, 0, 22, 23, 24, 25, 26, 0]
+		);
+	}
+
+	#[test]
 	fn copy_to_device_only_buffer_records_gpu_copy() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let source = device.build_buffer::<[u8; 8]>(

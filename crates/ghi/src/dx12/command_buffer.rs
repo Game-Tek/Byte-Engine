@@ -156,6 +156,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		);
 	}
 
+	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
+		self.device.sync_buffer_for_sequence(buffer_handle, self.sequence_index());
+	}
+
 	fn transfer_textures(&mut self, texture_handles: &[BaseImageHandle]) -> Vec<TextureCopyHandle> {
 		texture_handles
 			.iter()

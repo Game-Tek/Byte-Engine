@@ -559,6 +559,9 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 						resource_manager.prepare_uploads(&mut transfer_recording, upload_buffer.into(), &mut slice);
 
 					if prepared_uploads.recorded_work {
+						// The transfer worker writes into GHI CPU shadow memory while recording.
+						// Flush the upload buffer before the submitted copy commands read it.
+						transfer_recording.sync_buffer(upload_buffer);
 						transfer_recording.execute(transfer_finished_synchronizer);
 					} else {
 						drop(transfer_recording);

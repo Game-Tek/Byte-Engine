@@ -1,0 +1,20 @@
+---
+title: Windows
+description: How to set up Windows for Byte Engine applications.
+icon: Monitor
+---
+
+## Windows
+
+### Visual Studio Build Tools
+
+Install the Visual Studio Build Tools with the MSVC C++ toolchain and Windows SDK before building on Windows. Byte's Windows backends use Win32, Direct3D 12, DXGI, and DXC APIs from the Windows SDK.
+
+### x64 AVX2 Cargo Config
+
+On x64 Windows, applications that depend on Byte Engine should enable AVX2 explicitly instead of using `target-cpu=native`. Add this to the application's `.cargo/config.toml`.
+
+```toml
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+avx2"]
+```

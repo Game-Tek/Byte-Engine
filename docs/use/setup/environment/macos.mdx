@@ -1,11 +1,12 @@
 ---
 title: macOS
 description: How to set up macOS for Byte Engine applications.
+icon: Apple
 ---
 
-# macOS Setup
+## macOS
 
-## Xcode SDK
+### Xcode SDK
 
 Install Apple's command line tools before building on macOS. Byte's macOS backends use the platform SDK frameworks directly, including Metal, AppKit, QuartzCore, Foundation, and Core Audio.
 
@@ -21,19 +22,10 @@ sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 sudo xcodebuild -license accept
 ```
 
-## Homebrew Packages
+### Homebrew Packages
 
 Install the native build tools used by Byte's Rust dependencies.
 
 ```bash
 brew install cmake pkg-config
-```
-
-## Application Cargo Config
-
-Applications that depend on Byte Engine need a Cargo config that preserves Homebrew's dynamic library path at runtime. Add this to the application's `.cargo/config.toml`.
-
-```toml
-[build]
-rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-Wl,-rpath,/opt/homebrew/lib"]
 ```

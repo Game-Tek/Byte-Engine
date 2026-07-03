@@ -1,11 +1,12 @@
 ---
 title: Linux
 description: How to set up Linux for Byte Engine applications.
+icon: Terminal
 ---
 
-# Linux Setup
+## Linux
 
-## System Packages
+### System Packages
 
 Install the native build, windowing, audio, and Vulkan packages used by Byte's Linux backend.
 
@@ -13,13 +14,22 @@ Install the native build, windowing, audio, and Vulkan packages used by Byte's L
 sudo apt install -y cmake libwayland-dev libasound2-dev libx11-xcb-dev libvulkan-dev vulkan-tools vulkan-validationlayers
 ```
 
-## Mold
+### x64 AVX2 Cargo Config
+
+On x64 Linux, applications that depend on Byte Engine should enable AVX2 explicitly instead of using `target-cpu=native`. Add this to the application's `.cargo/config.toml`.
+
+```toml
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+avx2"]
+```
+
+### Mold
 
 [Mold](https://github.com/rui314/mold) is a fast linker. It is not required by Byte, but we recommend it for improved iteration speed on Linux.
 
 Install steps, including Rust setup, are outlined in its repository.
 
-## RenderDoc
+### RenderDoc
 
 RenderDoc is optional, but useful when debugging graphics captures.
 

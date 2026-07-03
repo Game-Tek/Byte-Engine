@@ -34,6 +34,7 @@ pub struct Renderer {
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 	pending_swapchain_captures: SmallVec<[SwapchainCapture; 16]>,
+	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 
 	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
 	pipeline_manager_resources_by_sink: SmallVec<[(PipelineManagerId, SinkId, Vec<(String, ghi::AccessPolicies)>); 64]>,
@@ -45,6 +46,7 @@ pub struct Renderer {
 
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
+	defer_first_frame_sink_setup: bool,
 }
 
 impl Renderer {
@@ -55,6 +57,8 @@ impl Renderer {
 	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
 	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics context. Defaults to true.
+	/// - `render.startup.defer-sink-setup`: Presents the first window frame before constructing sink render pipelines.
+	///   Defaults to false.
 	pub fn new(parameters: &dyn Parameters) -> Self {
 		let settings = Settings::new();
 
@@ -81,6 +85,10 @@ impl Renderer {
 		} else {
 			settings
 		};
+		let defer_first_frame_sink_setup = parameters
+			.get_parameter("render.startup.defer-sink-setup")
+			.map(|parameter| parameter.as_bool_simple())
+			.unwrap_or(false);
 
 		let mut features = ghi::device::Features::new()
 			.validation(settings.validation)
@@ -172,6 +180,7 @@ impl Renderer {
 			render_passes_by_sink: SmallVec::with_capacity(32),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 			pending_swapchain_captures: SmallVec::with_capacity(16),
+			pending_sink_initializations: SmallVec::with_capacity(16),
 
 			pipeline_managers: SmallVec::with_capacity(8),
 			pipeline_manager_resources_by_sink: SmallVec::with_capacity(64),
@@ -181,6 +190,7 @@ impl Renderer {
 
 			render_command_buffer,
 			render_finished_synchronizer,
+			defer_first_frame_sink_setup,
 		}
 	}
 
@@ -193,6 +203,10 @@ impl Renderer {
 				.map(|(sink_id, _)| (*sink_id, self.windows[*sink_id].1))
 				.collect();
 			for (sink_id, swapchain) in sink_swapchains {
+				if self.pending_sink_initializations.contains(&sink_id) {
+					continue;
+				}
+
 				let mut rpb = RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
 
 				pipeline_manager.create_sink(sink_id, &mut rpb);
@@ -211,6 +225,45 @@ impl Renderer {
 		}
 
 		self.pipeline_managers.push(Box::new(pipeline_manager));
+	}
+
+	fn initialize_scene_sink(&mut self, sink_id: SinkId) {
+		let swapchain = self.windows[sink_id].1;
+
+		{
+			let Renderer {
+				context,
+				render_targets,
+				pipeline_managers,
+				pipeline_manager_resources_by_sink,
+				..
+			} = self;
+
+			for (pipeline_manager_id, sm) in pipeline_managers.iter_mut().enumerate() {
+				let mut rpb = RenderPassBuilder::new(context, render_targets, sink_id, swapchain);
+
+				sm.create_sink(sink_id, &mut rpb);
+				let consumed_resources = rpb
+					.consumed_resources
+					.iter()
+					.map(|(name, access)| ((*name).to_string(), *access))
+					.collect();
+				pipeline_manager_resources_by_sink.push((pipeline_manager_id, sink_id, consumed_resources));
+
+				if rpb.consumed_resources.is_empty() {
+					log::debug!("No resources consumed by scene manager");
+				}
+			}
+		}
+
+		self.add_post_scene_render_passes_for_sink(sink_id);
+	}
+
+	fn initialize_pending_sink_resources(&mut self) {
+		let pending_sink_initializations = std::mem::take(&mut self.pending_sink_initializations);
+		for sink_id in pending_sink_initializations {
+			self.initialize_scene_sink(sink_id);
+		}
 	}
 
 	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, sink_id: SinkId) {
@@ -303,6 +356,9 @@ impl Renderer {
 			log::debug!("No swapchains available to present to. Skipping rendering!");
 			return;
 		};
+		if self.started_frame_count > 0 && !self.pending_sink_initializations.is_empty() {
+			self.initialize_pending_sink_resources();
+		}
 
 		self.context.start_frame_capture();
 
@@ -560,32 +616,16 @@ impl Renderer {
 					false
 				};
 
-				if sink_has_camera {
-					let pipeline_managers = self.pipeline_managers.iter_mut().enumerate();
-
-					for (pipeline_manager_id, sm) in pipeline_managers {
-						let mut rpb =
-							RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain_handle);
-
-						sm.create_sink(sink_id, &mut rpb);
-						let consumed_resources = rpb
-							.consumed_resources
-							.iter()
-							.map(|(name, access)| ((*name).to_string(), *access))
-							.collect();
-						self.pipeline_manager_resources_by_sink
-							.push((pipeline_manager_id, sink_id, consumed_resources));
-
-						if rpb.consumed_resources.is_empty() {
-							log::debug!("No resources consumed by scene manager");
-						}
-					}
-				}
-
 				self.windows.push((window, swapchain_handle));
 
 				if sink_has_camera {
-					self.add_post_scene_render_passes_for_sink(sink_id);
+					if self.defer_first_frame_sink_setup && self.started_frame_count == 0 {
+						// The native window and swapchain can be presented before scene pipelines are created; this keeps
+						// first-paint latency independent of shader and PSO warmup.
+						self.pending_sink_initializations.push(sink_id);
+					} else {
+						self.initialize_scene_sink(sink_id);
+					}
 				}
 			}
 			Err(msg) => {

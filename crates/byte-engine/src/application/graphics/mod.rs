@@ -81,9 +81,9 @@ impl Application for GraphicsApplication {
 
 			input::InputManager::new(action_listener, event_channel)
 		};
-		let gamepad_system = input::gamepad::GamepadSystem::new()
-			.map_err(|error| log::warn!("{}", error))
-			.ok();
+		// HID initialization and first enumeration can block startup on Windows, so gamepads are initialized after
+		// the first frame has reached the screen.
+		let gamepad_system = None;
 
 		let renderer = rendering::renderer::Renderer::new(&application);
 
@@ -221,36 +221,43 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::process_gamepad_events");
 			let _enter = span.enter();
-			if let Some(gamepad_system) = &mut self.gamepad_system {
-				let (new_devices, events) = gamepad_system.poll();
+			if self.tick_count > 0 && self.gamepad_system.is_none() {
+				self.gamepad_system = input::gamepad::GamepadSystem::new()
+					.map_err(|error| log::warn!("{}", error))
+					.ok();
+			}
+			if self.tick_count > 0 {
+				if let Some(gamepad_system) = &mut self.gamepad_system {
+					let (new_devices, events) = gamepad_system.poll();
 
-				if let Some(gamepad_device_class_handle) = self.gamepad_device_class_handle {
-					for (path, kind, device) in new_devices {
-						// Each physical HID device gets its own input-system device so actions can
-						// preserve player/device identity instead of collapsing into one gamepad.
-						let device_handle = self.input_system.create_device(&gamepad_device_class_handle);
-						gamepad_system.add_device(path, kind, device, device_handle);
+					if let Some(gamepad_device_class_handle) = self.gamepad_device_class_handle {
+						for (path, kind, device) in new_devices {
+							// Each physical HID device gets its own input-system device so actions can
+							// preserve player/device identity instead of collapsing into one gamepad.
+							let device_handle = self.input_system.create_device(&gamepad_device_class_handle);
+							gamepad_system.add_device(path, kind, device, device_handle);
+						}
+					} else if !new_devices.is_empty() {
+						log::warn!(
+							"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called."
+						);
 					}
-				} else if !new_devices.is_empty() {
-					log::warn!(
-						"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called."
-					);
-				}
 
-				for event in events {
-					log::debug!(
-						target: "byte_engine::input::events",
-						"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
-						event.device_handle(),
-						event.trigger(),
-						event.value()
-					);
-					self.input_system.record_trigger_value_for_device(
-						input::SeatHandle::stub(),
-						event.device_handle(),
-						event.trigger(),
-						event.value(),
-					);
+					for event in events {
+						log::debug!(
+							target: "byte_engine::input::events",
+							"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
+							event.device_handle(),
+							event.trigger(),
+							event.value()
+						);
+						self.input_system.record_trigger_value_for_device(
+							input::SeatHandle::stub(),
+							event.device_handle(),
+							event.trigger(),
+							event.value(),
+						);
+					}
 				}
 			}
 		}

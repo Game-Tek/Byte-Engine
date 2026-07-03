@@ -555,6 +555,45 @@ void main() {
 	}
 
 	#[test]
+	fn hlsl_pipeline_creation_preserves_explicit_descriptor_binding_buffer_stride() {
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let binding = crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE)
+			.buffer_stride(400)
+			.buffer_read_only(true);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let buffer = device.build_buffer::<[u32; 100]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&binding, buffer.into()));
+
+		let shader_source = r#"
+StructuredBuffer<uint> views : register(t0, space0);
+[numthreads(1, 1, 1)]
+void main() {}
+"#;
+		let Ok(shader) = device.create_shader(
+			Some("explicit structured stride"),
+			crate::shader::Sources::HLSL {
+				source: shader_source,
+				entry_point: "main",
+			},
+			crate::ShaderTypes::Compute,
+			[binding.into_shader_binding_descriptor(0, crate::AccessPolicies::READ)],
+		) else {
+			return;
+		};
+
+		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[template],
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		assert_eq!(device.descriptor_binding_buffer_stride(set, 0), Some(400));
+	}
+
+	#[test]
 	fn hlsl_pipeline_creation_updates_later_descriptor_binding_buffer_stride() {
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
 		let bindings = [

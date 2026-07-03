@@ -30,6 +30,7 @@ pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descripto
 		.union(ghi::Stages::RAYGEN)
 		.union(ghi::Stages::COMPUTE),
 )
+.buffer_stride(400)
 .buffer_read_only(true);
 pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	1,
@@ -46,18 +47,21 @@ pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Des
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 )
+.buffer_stride(12)
 .buffer_read_only(true);
 pub const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	3,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 )
+.buffer_stride(12)
 .buffer_read_only(true);
 pub const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	5,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 )
+.buffer_stride(8)
 .buffer_read_only(true);
 pub const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	6,
@@ -76,6 +80,7 @@ pub const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descrip
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::TASK.union(ghi::Stages::MESH).union(ghi::Stages::COMPUTE),
 )
+.buffer_stride(64)
 .buffer_read_only(true);
 pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
 	9,
@@ -647,15 +652,27 @@ struct Meshlet {{
 	float4 cone_axis;
 }};
 
+struct View {{
+	float4x4 view;
+	float4x4 projection;
+	float4x4 view_projection;
+	float4x4 inverse_view;
+	float4x4 inverse_projection;
+	float4x4 inverse_view_projection;
+	float2 fov;
+	float near;
+	float far;
+}};
+
 ConstantBuffer<PushConstant> push_constant : register(b0, space1);
-StructuredBuffer<uint> views : register(t0, space0);
-StructuredBuffer<uint> meshes : register(t1, space0);
-StructuredBuffer<uint> vertex_positions : register(t2, space0);
-StructuredBuffer<uint> vertex_normals : register(t3, space0);
-StructuredBuffer<uint> vertex_uvs : register(t5, space0);
+StructuredBuffer<View> views : register(t0, space0);
+StructuredBuffer<Mesh> meshes : register(t1, space0);
+StructuredBuffer<float3> vertex_positions : register(t2, space0);
+StructuredBuffer<float3> vertex_normals : register(t3, space0);
+StructuredBuffer<float2> vertex_uvs : register(t5, space0);
 StructuredBuffer<uint> vertex_indices : register(t6, space0);
 StructuredBuffer<uint> primitive_indices : register(t7, space0);
-StructuredBuffer<uint> meshlets : register(t8, space0);
+StructuredBuffer<Meshlet> meshlets : register(t8, space0);
 
 float4 load_float4(StructuredBuffer<uint> buffer, uint offset) {{
 	return float4(
@@ -687,41 +704,15 @@ uint load_u8(StructuredBuffer<uint> buffer, uint index) {{
 }}
 
 float4x4 load_view_projection(uint view_index) {{
-	uint base = view_index * 100u + 32u;
-	return float4x4(
-		load_float4(views, base + 0u),
-		load_float4(views, base + 4u),
-		load_float4(views, base + 8u),
-		load_float4(views, base + 12u)
-	);
+	return views[view_index].view_projection;
 }}
 
 Mesh load_mesh(uint mesh_index) {{
-	uint base = mesh_index * 18u;
-	Mesh mesh;
-	mesh.row0 = load_float4(meshes, base + 0u);
-	mesh.row1 = load_float4(meshes, base + 4u);
-	mesh.row2 = load_float4(meshes, base + 8u);
-	mesh.material_index = meshes[base + 12u];
-	mesh.base_vertex_index = meshes[base + 13u];
-	mesh.base_primitive_index = meshes[base + 14u];
-	mesh.base_triangle_index = meshes[base + 15u];
-	mesh.base_meshlet_index = meshes[base + 16u];
-	mesh.meshlet_count = meshes[base + 17u];
-	return mesh;
+	return meshes[mesh_index];
 }}
 
 Meshlet load_meshlet(uint meshlet_index) {{
-	uint base = meshlet_index * 16u;
-	Meshlet meshlet;
-	meshlet.primitive_offset = meshlets[base + 0u];
-	meshlet.triangle_offset = meshlets[base + 1u];
-	meshlet.primitive_count = meshlets[base + 2u];
-	meshlet.triangle_count = meshlets[base + 3u];
-	meshlet.center_radius = load_float4(meshlets, base + 4u);
-	meshlet.cone_apex_cutoff = load_float4(meshlets, base + 8u);
-	meshlet.cone_axis = load_float4(meshlets, base + 12u);
-	return meshlet;
+	return meshlets[meshlet_index];
 }}
 
 float4 transform_position(Mesh mesh, float3 position) {{
@@ -751,7 +742,7 @@ void main(
 
 	if (thread_index < meshlet.primitive_count) {{
 		uint vertex_index = mesh.base_vertex_index + load_u16(vertex_indices, mesh.base_primitive_index + meshlet.primitive_offset + thread_index);
-		float3 position = load_float3(vertex_positions, vertex_index * 3u);
+		float3 position = vertex_positions[vertex_index];
 		vertices[thread_index].position = mul(view_projection, transform_position(mesh, position));
 	}}
 

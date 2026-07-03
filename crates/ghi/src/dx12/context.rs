@@ -560,25 +560,37 @@ impl Device {
 			Size: source.len(),
 			Encoding: DXC_CP_UTF8.0,
 		};
-		let debug_source_path = Self::shader_debug_hlsl_path(name, entry_point, target)
-			.map(|path| path.to_string_lossy().into_owned())
-			.unwrap_or_else(|| {
-				format!(
-					"{}.{}.{}.hlsl",
-					Self::sanitize_shader_debug_name(name.unwrap_or("shader")),
-					Self::sanitize_shader_debug_name(entry_point),
-					Self::sanitize_shader_debug_name(target)
-				)
-			});
-		let mut argument_storage = vec![
-			Self::wide_argument(&debug_source_path),
-			Self::wide_argument("-E"),
-			Self::wide_argument(entry_point),
-			Self::wide_argument("-T"),
-			Self::wide_argument(target),
-			Self::wide_argument("-Zi"),
-			Self::wide_argument("-Qembed_debug"),
-		];
+		let mut argument_storage = Vec::with_capacity(10 + specialization_map.len() * 2);
+		let debug_artifacts_enabled = self.hlsl_debug_artifacts_enabled();
+		let dxil_cache_path = (!debug_artifacts_enabled)
+			.then(|| Self::hlsl_dxil_cache_path(source, entry_point, target, specialization_map))
+			.flatten();
+		if let Some(cache_path) = &dxil_cache_path {
+			if let Ok(bytecode) = std::fs::read(cache_path) {
+				return Ok(bytecode);
+			}
+		}
+		if debug_artifacts_enabled {
+			let debug_source_path = Self::shader_debug_hlsl_path(name, entry_point, target)
+				.map(|path| path.to_string_lossy().into_owned())
+				.unwrap_or_else(|| {
+					format!(
+						"{}.{}.{}.hlsl",
+						Self::sanitize_shader_debug_name(name.unwrap_or("shader")),
+						Self::sanitize_shader_debug_name(entry_point),
+						Self::sanitize_shader_debug_name(target)
+					)
+				});
+			argument_storage.push(Self::wide_argument(&debug_source_path));
+		}
+		argument_storage.push(Self::wide_argument("-E"));
+		argument_storage.push(Self::wide_argument(entry_point));
+		argument_storage.push(Self::wide_argument("-T"));
+		argument_storage.push(Self::wide_argument(target));
+		if debug_artifacts_enabled {
+			argument_storage.push(Self::wide_argument("-Zi"));
+			argument_storage.push(Self::wide_argument("-Qembed_debug"));
+		}
 		let (macro_names, macro_values) = Self::hlsl_specialization_macro_storage(specialization_map)?;
 		for (name, value) in macro_names.iter().zip(macro_values.iter()) {
 			let name = name.to_str().map_err(|_| ())?;
@@ -616,9 +628,73 @@ impl Device {
 			self.log_hlsl_compile_error(source, entry_point, target, "DXC returned no object bytecode.");
 			return Err(());
 		};
-		self.write_shader_debug_files(name, entry_point, target, source, &result);
+		if debug_artifacts_enabled {
+			self.write_shader_debug_files(name, entry_point, target, source, &result);
+		}
 		let bytecode = unsafe { std::slice::from_raw_parts(object.GetBufferPointer().cast::<u8>(), object.GetBufferSize()) };
-		Ok(bytecode.to_vec())
+		let bytecode = bytecode.to_vec();
+		if let Some(cache_path) = &dxil_cache_path {
+			Self::write_hlsl_dxil_cache(cache_path, bytecode.as_slice());
+		}
+		Ok(bytecode)
+	}
+
+	fn hlsl_debug_artifacts_enabled(&self) -> bool {
+		// Shader PDBs are valuable when the DX12 debug layer is active, but they make normal startup pay filesystem and
+		// embedded-debug compilation costs for every generated shader.
+		self.settings.validation || self.settings.gpu_validation
+	}
+
+	fn hlsl_dxil_cache_path(
+		source: &str,
+		entry_point: &str,
+		target: &str,
+		specialization_map: &[pipelines::SpecializationMapEntry],
+	) -> Option<std::path::PathBuf> {
+		let mut hash = Self::fnv64(b"byte-engine-dx12-dxil-cache-v1");
+		Self::fnv64_update_text(&mut hash, source);
+		Self::fnv64_update_text(&mut hash, entry_point);
+		Self::fnv64_update_text(&mut hash, target);
+		for entry in specialization_map {
+			Self::fnv64_update_text(&mut hash, entry.get_type().as_str());
+			Self::fnv64_update(&mut hash, &entry.get_constant_id().to_le_bytes());
+			Self::fnv64_update(&mut hash, entry.get_data());
+		}
+
+		let mut path = std::env::current_exe().ok()?;
+		path.pop();
+		path.push("shader-dxil-cache");
+		path.push(format!("{hash:016x}.dxil"));
+		Some(path)
+	}
+
+	fn write_hlsl_dxil_cache(path: &std::path::Path, bytecode: &[u8]) {
+		let Some(directory) = path.parent() else {
+			return;
+		};
+		if std::fs::create_dir_all(directory).is_err() {
+			return;
+		}
+		// Best-effort cache writes keep shader compilation correctness independent of filesystem availability.
+		let _ = std::fs::write(path, bytecode);
+	}
+
+	fn fnv64(bytes: &[u8]) -> u64 {
+		let mut hash = 0xcbf29ce484222325;
+		Self::fnv64_update(&mut hash, bytes);
+		hash
+	}
+
+	fn fnv64_update_text(hash: &mut u64, text: &str) {
+		Self::fnv64_update(hash, &(text.len() as u64).to_le_bytes());
+		Self::fnv64_update(hash, text.as_bytes());
+	}
+
+	fn fnv64_update(hash: &mut u64, bytes: &[u8]) {
+		for byte in bytes {
+			*hash ^= u64::from(*byte);
+			*hash = hash.wrapping_mul(0x100000001b3);
+		}
 	}
 
 	fn write_shader_debug_files(&self, name: Option<&str>, entry_point: &str, target: &str, source: &str, result: &IDxcResult) {
@@ -1199,6 +1275,11 @@ impl Device {
 						DescriptorType::UniformBuffer | DescriptorType::StorageBuffer
 					) && binding.buffer_stride != stride
 				{
+					// Public stride metadata is authoritative once it has been set away from the default scalar layout.
+					// Inference only fills in typed HLSL buffers that still carry the default 4-byte element stride.
+					if binding.buffer_stride != 4 || stride == 4 {
+						continue;
+					}
 					binding.buffer_stride = stride;
 					changed = true;
 				}
@@ -1693,6 +1774,43 @@ impl Device {
 		let offset = arena.used;
 		arena.used = arena.used.saturating_add(descriptor_count);
 		Some((arena.heap.clone(), offset))
+	}
+
+	/// Binds the command buffer's active staged descriptor heaps after transient descriptor writes.
+	fn bind_active_staged_descriptor_heaps(&mut self, command_buffer_handle: CommandBufferHandle) {
+		let Some(command_list) = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.and_then(|command_buffer| command_buffer.command_list.clone())
+		else {
+			return;
+		};
+		let Some(command_buffer) = self.command_buffers.get(command_buffer_handle.0 as usize) else {
+			return;
+		};
+
+		let mut heaps = [None, None];
+		let mut heap_count = 0usize;
+		if let Some(arena) = command_buffer
+			.cbv_srv_uav_staging_heap
+			.as_ref()
+			.filter(|arena| arena.used > 0)
+		{
+			heaps[heap_count] = Some(arena.heap.clone());
+			heap_count += 1;
+		}
+		if let Some(arena) = command_buffer.sampler_staging_heap.as_ref().filter(|arena| arena.used > 0) {
+			heaps[heap_count] = Some(arena.heap.clone());
+			heap_count += 1;
+		}
+		if heap_count == 0 {
+			return;
+		}
+
+		unsafe {
+			command_list.SetDescriptorHeaps(&heaps[..heap_count]);
+		}
+		self.descriptor_heap_bind_count += 1;
 	}
 
 	fn stage_descriptor_heap_for_sets(
@@ -5550,7 +5668,7 @@ impl Device {
 				);
 				self.device
 					.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
-				command_list.SetDescriptorHeaps(&[Some(heap)]);
+				self.bind_active_staged_descriptor_heaps(command_buffer_handle);
 				command_list.ClearUnorderedAccessViewUint(gpu_handle, cpu_handle, &destination, &[0, 0, 0, 0], &[]);
 			}
 			self.mark_command_buffer_work(command_buffer_handle);
@@ -6412,7 +6530,7 @@ impl Device {
 			);
 			self.device
 				.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
-			command_list.SetDescriptorHeaps(&[Some(heap)]);
+			self.bind_active_staged_descriptor_heaps(command_buffer_handle);
 			match clear {
 				crate::ClearValue::Integer(r, g, b, a) => {
 					command_list.ClearUnorderedAccessViewUint(gpu_handle, cpu_handle, &destination, &[r, g, b, a], &[]);
@@ -7044,6 +7162,31 @@ impl Device {
 			_ => {}
 		}
 		self.dirty_descriptor_sets.insert(descriptor_set_handle);
+		self.materialize_descriptor_base_image_resource(descriptor_set_handle, descriptor);
+	}
+
+	/// Creates the base dynamic image resource when frame zero first records an image descriptor.
+	fn materialize_descriptor_base_image_resource(
+		&mut self,
+		descriptor_set_handle: DescriptorSetHandle,
+		descriptor: WriteData,
+	) {
+		if self.descriptor_set_sequence_index(descriptor_set_handle) != 0 {
+			return;
+		}
+		let image_handle = match descriptor {
+			WriteData::Image { handle, .. } => handle,
+			WriteData::CombinedImageSampler { image_handle, .. } => image_handle,
+			_ => return,
+		};
+		let Some(image) = self.images.get(image_handle.0 as usize) else {
+			return;
+		};
+		if image.frame_resources.is_none() {
+			return;
+		}
+		// Dynamic buffers keep sequence zero as the base resource; dynamic images need the same descriptor-visible anchor.
+		let _ = self.ensure_image_resource_for_sequence(image_handle, 0);
 	}
 
 	/// Clears stale reverse mappings before a descriptor binding element is replaced.

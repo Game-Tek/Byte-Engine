@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use utils::Extent;
 
 use crate::{
@@ -17,6 +18,8 @@ pub struct CommandBufferRecording<'a> {
 	frame_key: Option<crate::FrameKey>,
 	bound_pipeline_layout: Option<PipelineLayoutHandle>,
 	bound_pipeline: Option<PipelineHandle>,
+	bound_descriptor_sets: SmallVec<[DescriptorSetHandle; 8]>,
+	descriptor_tables_dirty: bool,
 	active_render_target: Option<BaseImageHandle>,
 	active_extent: Option<Extent>,
 	push_constants: Vec<u8>,
@@ -34,6 +37,8 @@ impl<'a> CommandBufferRecording<'a> {
 			frame_key,
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
+			bound_descriptor_sets: SmallVec::new(),
+			descriptor_tables_dirty: false,
 			active_render_target: None,
 			active_extent: None,
 			push_constants: Vec::new(),
@@ -46,6 +51,25 @@ impl<'a> CommandBufferRecording<'a> {
 
 	fn sequence_index(&self) -> u8 {
 		self.frame_key.map(|frame_key| frame_key.sequence_index).unwrap_or(0)
+	}
+
+	/// Rebinds descriptor tables when an intervening command changed the active DX12 descriptor heap.
+	fn refresh_descriptor_tables_if_dirty(&mut self) {
+		if !self.descriptor_tables_dirty || self.bound_descriptor_sets.is_empty() {
+			return;
+		}
+		self.device.flush_pending_descriptor_texture_syncs(
+			self.command_buffer,
+			&self.bound_descriptor_sets,
+			self.sequence_index(),
+		);
+		self.device.bind_descriptor_heaps_and_tables(
+			self.command_buffer,
+			self.bound_pipeline,
+			&self.bound_descriptor_sets,
+			self.sequence_index(),
+		);
+		self.descriptor_tables_dirty = false;
 	}
 
 	pub(crate) fn record_present_preparation(&mut self, present_keys: &[crate::PresentKey]) {
@@ -108,11 +132,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			self.device
 				.record_image_clear(self.command_buffer, crate::ImageHandle(image), clear, self.sequence_index());
 		}
+		self.descriptor_tables_dirty = true;
 	}
 
 	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]) {
 		self.device
 			.clear_buffers(self.command_buffer, buffer_handles, self.sequence_index());
+		self.descriptor_tables_dirty = true;
 	}
 
 	fn copy_buffers(&mut self, copies: &[BufferCopyDescriptor]) {
@@ -231,11 +257,13 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	}
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]) {
+		self.refresh_descriptor_tables_if_dirty();
 		self.device
 			.bind_vertex_buffers_native(self.command_buffer, buffer_descriptors, self.sequence_index());
 	}
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor) {
+		self.refresh_descriptor_tables_if_dirty();
 		self.device
 			.bind_index_buffer_native(self.command_buffer, buffer_descriptor, self.sequence_index());
 	}
@@ -249,10 +277,13 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 
 impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self {
+		self.bound_descriptor_sets.clear();
+		self.bound_descriptor_sets.extend_from_slice(sets);
 		self.device
 			.flush_pending_descriptor_texture_syncs(self.command_buffer, sets, self.sequence_index());
 		self.device
 			.bind_descriptor_heaps_and_tables(self.command_buffer, self.bound_pipeline, sets, self.sequence_index());
+		self.descriptor_tables_dirty = false;
 		self
 	}
 
@@ -275,6 +306,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 
 impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	fn draw_mesh(&mut self, _mesh_handle: &MeshHandle) {
+		self.refresh_descriptor_tables_if_dirty();
 		self.device.draw_mesh_native(self.command_buffer, *_mesh_handle);
 
 		let Some(target) = self.active_render_target else {
@@ -299,6 +331,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	}
 
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
+		self.refresh_descriptor_tables_if_dirty();
 		self.device.draw_native(
 			self.command_buffer,
 			vertex_count,
@@ -316,6 +349,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		vertex_offset: i32,
 		first_instance: u32,
 	) {
+		self.refresh_descriptor_tables_if_dirty();
 		self.device.draw_indexed_native(
 			self.command_buffer,
 			index_count,
@@ -327,6 +361,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
+		self.refresh_descriptor_tables_if_dirty();
 		self.device
 			.dispatch_meshes_native(self.command_buffer, self.bound_pipeline, x, y, z);
 	}
@@ -334,11 +369,13 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 
 impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 	fn dispatch(&mut self, dispatch: DispatchExtent) {
+		self.refresh_descriptor_tables_if_dirty();
 		self.device
 			.dispatch_compute_native(self.command_buffer, self.bound_pipeline, dispatch);
 	}
 
 	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 4]; N]>, entry_index: usize) {
+		self.refresh_descriptor_tables_if_dirty();
 		self.device
 			.dispatch_compute_indirect_native(self.command_buffer, buffer, entry_index);
 	}
@@ -346,6 +383,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 
 impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32) {
+		self.refresh_descriptor_tables_if_dirty();
 		self.device.trace_rays_native(
 			self.command_buffer,
 			self.bound_pipeline,

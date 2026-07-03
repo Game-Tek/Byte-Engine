@@ -63,16 +63,22 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	}
 
 	fn build_top_level_acceleration_structure(&mut self, _acceleration_structure_build: &TopLevelAccelerationStructureBuild) {
-		self.device
-			.record_top_level_acceleration_structure_build(self.command_buffer, _acceleration_structure_build);
+		self.device.record_top_level_acceleration_structure_build(
+			self.command_buffer,
+			_acceleration_structure_build,
+			self.sequence_index(),
+		);
 	}
 
 	fn build_bottom_level_acceleration_structures(
 		&mut self,
 		_acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild],
 	) {
-		self.device
-			.record_bottom_level_acceleration_structure_builds(self.command_buffer, _acceleration_structure_builds);
+		self.device.record_bottom_level_acceleration_structure_builds(
+			self.command_buffer,
+			_acceleration_structure_builds,
+			self.sequence_index(),
+		);
 	}
 
 	fn start_render_pass(
@@ -108,8 +114,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 			if !attachment.load {
 				self.device.clear_image_for_sequence(image, attachment.clear, sequence_index);
-				self.device
-					.record_image_clear(self.command_buffer, crate::ImageHandle(image), attachment.clear);
 			}
 		}
 
@@ -120,16 +124,17 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		for &(image, clear) in _textures {
 			self.device.clear_image_for_sequence(image, clear, self.sequence_index());
 			self.device
-				.record_image_clear(self.command_buffer, crate::ImageHandle(image), clear);
+				.record_image_clear(self.command_buffer, crate::ImageHandle(image), clear, self.sequence_index());
 		}
 	}
 
 	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]) {
-		self.device.clear_buffers(self.command_buffer, buffer_handles);
+		self.device
+			.clear_buffers(self.command_buffer, buffer_handles, self.sequence_index());
 	}
 
 	fn copy_buffers(&mut self, copies: &[BufferCopyDescriptor]) {
-		self.device.copy_buffers(self.command_buffer, copies);
+		self.device.copy_buffers(self.command_buffer, copies, self.sequence_index());
 	}
 
 	fn copy_buffer_to_images(&mut self, copies: &[BufferImageCopyDescriptor]) {
@@ -151,8 +156,12 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				let copy = self
 					.device
 					.copy_image_to_cpu_for_sequence(crate::ImageHandle(*handle), self.sequence_index());
-				self.device
-					.record_image_readback_for_copy(self.command_buffer, crate::ImageHandle(*handle), copy);
+				self.device.record_image_readback_for_copy(
+					self.command_buffer,
+					crate::ImageHandle(*handle),
+					copy,
+					self.sequence_index(),
+				);
 				copy
 			})
 			.collect()
@@ -161,8 +170,12 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	fn write_image_data(&mut self, image_handle: BaseImageHandle, data: &[RGBAu8]) {
 		self.device
 			.write_image_data_for_sequence(crate::ImageHandle(image_handle), data, self.sequence_index());
-		self.device
-			.record_image_data_write(self.command_buffer, crate::ImageHandle(image_handle), data);
+		self.device.record_image_data_write(
+			self.command_buffer,
+			crate::ImageHandle(image_handle),
+			data,
+			self.sequence_index(),
+		);
 	}
 
 	fn blit_image(
@@ -237,11 +250,12 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]) {
 		self.device
-			.bind_vertex_buffers_native(self.command_buffer, buffer_descriptors);
+			.bind_vertex_buffers_native(self.command_buffer, buffer_descriptors, self.sequence_index());
 	}
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor) {
-		self.device.bind_index_buffer_native(self.command_buffer, buffer_descriptor);
+		self.device
+			.bind_index_buffer_native(self.command_buffer, buffer_descriptor, self.sequence_index());
 	}
 
 	fn end_render_pass(&mut self) {
@@ -354,7 +368,14 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 
 impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32) {
-		self.device
-			.trace_rays_native(self.command_buffer, self.bound_pipeline, binding_tables, x, y, z);
+		self.device.trace_rays_native(
+			self.command_buffer,
+			self.bound_pipeline,
+			binding_tables,
+			x,
+			y,
+			z,
+			self.sequence_index(),
+		);
 	}
 }

@@ -124,7 +124,9 @@ mod tests {
 	fn texture_slice_mut_updates_static_image_storage() {
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
 		let image = device.build_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
+				.extent(::utils::Extent::rectangle(1, 1))
+				.device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
 
 		device.get_texture_slice_mut(image).copy_from_slice(&[3, 4, 5, 6]);
@@ -207,6 +209,49 @@ mod tests {
 	}
 
 	#[test]
+	fn frame_recording_flushes_only_current_sequence_texture_uploads() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let image = device.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer_0 = device.create_command_buffer(None, queue_handle);
+		let command_buffer_1 = device.create_command_buffer(None, queue_handle);
+
+		device
+			.texture_slice_mut_for_sequence(image.into(), 0)
+			.copy_from_slice(&[1, 2, 3, 4]);
+		device
+			.texture_slice_mut_for_sequence(image.into(), 1)
+			.copy_from_slice(&[5, 6, 7, 8]);
+		device.queue_texture_sync_for_sequence(image.into(), 0);
+		device.queue_texture_sync_for_sequence(image.into(), 1);
+
+		{
+			let mut frame = device.start_frame(1, synchronizer);
+			let recording = frame.create_command_buffer_recording(command_buffer_1);
+			drop(recording);
+			drop(frame);
+		}
+
+		assert_eq!(device.upload_resource_count(), 1);
+		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 1);
+		assert_eq!(device.get_image_data(copy), &[5, 6, 7, 8]);
+
+		{
+			let mut frame = device.start_frame(0, synchronizer);
+			let recording = frame.create_command_buffer_recording(command_buffer_0);
+			drop(recording);
+			drop(frame);
+		}
+
+		assert_eq!(device.upload_resource_count(), 2);
+		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 0);
+		assert_eq!(device.get_image_data(copy), &[1, 2, 3, 4]);
+	}
+
+	#[test]
 	fn bind_descriptor_sets_flushes_pending_sampled_texture_upload() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::FRAGMENT);
@@ -260,7 +305,7 @@ mod tests {
 
 	#[test]
 	fn combined_image_sampler_array_writes_preserve_frame_offset() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler_array(0, crate::Stages::FRAGMENT, 2);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -285,15 +330,56 @@ mod tests {
 
 		assert_eq!(device.descriptor_sequence_index(set, 0, 0), Some(1));
 		assert_eq!(device.descriptor_sequence_index(set, 1, 0), Some(0));
-		assert_eq!(device.descriptor_write_count(), descriptor_write_count + 4);
+		assert_eq!(device.descriptor_write_count(), descriptor_write_count);
+		assert_eq!(device.image_srv_descriptor_write_count(), image_srv_descriptor_write_count);
+		assert_eq!(
+			device.sampler_descriptor_write_records().len(),
+			sampler_descriptor_write_count
+		);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps(command_buffer, &[set]);
+
+		assert_eq!(device.descriptor_write_count(), descriptor_write_count + 2);
 		assert_eq!(
 			device.image_srv_descriptor_write_count(),
-			image_srv_descriptor_write_count + 2
+			image_srv_descriptor_write_count + 1
 		);
 		assert_eq!(
 			device.sampler_descriptor_write_records().len(),
-			sampler_descriptor_write_count + 2
+			sampler_descriptor_write_count + 1
 		);
+	}
+
+	#[test]
+	fn dynamic_image_descriptors_materialize_per_frame_resources() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let binding = crate::DescriptorSetBindingTemplate::sampled_image(0, crate::Stages::FRAGMENT);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let image = device.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		);
+
+		device.create_descriptor_binding(set, crate::BindingConstructor::image(&binding, image));
+
+		assert_eq!(
+			device.image_frame_resource_state(crate::ImageHandle(image.into()), 0),
+			Some(true)
+		);
+		assert_eq!(
+			device.image_frame_resource_state(crate::ImageHandle(image.into()), 1),
+			Some(false)
+		);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps_and_tables(command_buffer, None, &[set], 1);
+
+		assert_eq!(
+			device.image_frame_resource_state(crate::ImageHandle(image.into()), 1),
+			Some(true)
+		);
+		assert_eq!(device.image_srv_descriptor_write_count(), 1);
 	}
 
 	#[test]
@@ -320,7 +406,7 @@ mod tests {
 
 	#[test]
 	fn descriptor_sets_create_native_heaps() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let bindings = [
 			crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE),
 			crate::DescriptorSetBindingTemplate::combined_image_sampler(1, crate::Stages::FRAGMENT),
@@ -342,8 +428,15 @@ mod tests {
 		);
 
 		assert_eq!(device.descriptor_set_has_native_heaps(set), Some((true, true)));
-		assert_eq!(device.descriptor_write_count(), 6);
-		assert_eq!(device.image_srv_descriptor_write_count(), 2);
+		assert_eq!(device.descriptor_write_count(), 0);
+		assert_eq!(device.image_srv_descriptor_write_count(), 0);
+		assert_eq!(device.image_uav_descriptor_write_count(), 0);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps(command_buffer, &[set]);
+
+		assert_eq!(device.descriptor_write_count(), 3);
+		assert_eq!(device.image_srv_descriptor_write_count(), 1);
 		assert_eq!(device.image_uav_descriptor_write_count(), 0);
 	}
 
@@ -1484,7 +1577,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn storage_images_create_native_uav_descriptors() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::storage_image(0, crate::Stages::COMPUTE);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -1495,9 +1588,16 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 		device.create_descriptor_binding(set, crate::BindingConstructor::image(&binding, image));
 
-		assert_eq!(device.descriptor_write_count(), 2);
+		assert_eq!(device.descriptor_write_count(), 0);
 		assert_eq!(device.image_srv_descriptor_write_count(), 0);
-		assert_eq!(device.image_uav_descriptor_write_count(), 2);
+		assert_eq!(device.image_uav_descriptor_write_count(), 0);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps(command_buffer, &[set]);
+
+		assert_eq!(device.descriptor_write_count(), 1);
+		assert_eq!(device.image_srv_descriptor_write_count(), 0);
+		assert_eq!(device.image_uav_descriptor_write_count(), 1);
 	}
 
 	#[test]
@@ -1547,7 +1647,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn samplers_create_native_descriptors_from_builder_state() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::sampler(0, crate::Stages::FRAGMENT);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -1565,7 +1665,13 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		device.create_descriptor_binding(set, crate::BindingConstructor::sampler(&binding, sampler));
 
 		let records = device.sampler_descriptor_write_records();
-		assert_eq!(records.len(), 2);
+		assert_eq!(records.len(), 0);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps(command_buffer, &[set]);
+
+		let records = device.sampler_descriptor_write_records();
+		assert_eq!(records.len(), 1);
 		assert_eq!(records[0].filter.0, 469);
 		assert_eq!(records[0].address_mode.0, 2);
 		assert_eq!(records[0].max_anisotropy, 12);
@@ -1894,6 +2000,50 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn dynamic_buffer_descriptors_materialize_per_frame_resources() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let binding = crate::DescriptorSetBindingTemplate::uniform_buffer(0, crate::Stages::VERTEX);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let buffer = device.build_dynamic_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		);
+
+		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&binding, buffer.into()));
+
+		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 0), Some(true));
+		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(false));
+		assert_eq!(device.descriptor_write_count(), 0);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps_and_tables(command_buffer, None, &[set], 1);
+
+		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(true));
+		assert_eq!(device.descriptor_write_count(), 1);
+	}
+
+	#[test]
+	fn dynamic_buffer_writes_are_sequence_local() {
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let buffer = device.build_dynamic_buffer::<[u32; 2]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		);
+
+		*device.dynamic_buffer_slice_mut(buffer, 1) = [5, 9];
+		device.sync_buffer_for_sequence(buffer, 1);
+
+		assert_eq!(
+			device.buffer_bytes_for_sequence(buffer.into(), std::mem::size_of::<[u32; 2]>(), 0),
+			Some(vec![0, 0, 0, 0, 0, 0, 0, 0])
+		);
+		assert_eq!(
+			device.buffer_bytes_for_sequence(buffer.into(), std::mem::size_of::<[u32; 2]>(), 1),
+			Some(vec![5, 0, 0, 0, 9, 0, 0, 0])
+		);
+		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(true));
+	}
+
+	#[test]
 	fn acceleration_structures_allocate_device_resources() {
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
 		let top_level = device.create_top_level_acceleration_structure(Some("top"), 3);
@@ -1916,7 +2066,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn acceleration_structure_descriptors_create_native_srv() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::acceleration_structure(0, crate::Stages::RAYGEN);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -1924,8 +2074,14 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 		device.create_descriptor_binding(set, crate::BindingConstructor::acceleration_structure(&binding, top_level));
 
-		assert_eq!(device.descriptor_write_count(), 2);
-		assert_eq!(device.acceleration_structure_descriptor_write_count(), 2);
+		assert_eq!(device.descriptor_write_count(), 0);
+		assert_eq!(device.acceleration_structure_descriptor_write_count(), 0);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps(command_buffer, &[set]);
+
+		assert_eq!(device.descriptor_write_count(), 1);
+		assert_eq!(device.acceleration_structure_descriptor_write_count(), 1);
 	}
 
 	#[test]

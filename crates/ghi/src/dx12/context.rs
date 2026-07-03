@@ -19,7 +19,8 @@ pub struct Device {
 	descriptor_bindings: Vec<DescriptorSetBinding>,
 	descriptors: HashMap<DescriptorSetHandle, HashMap<u32, HashMap<u32, WriteData>>>,
 	resource_to_descriptor: HashMap<PrivateHandles, HashSet<(DescriptorSetBindingHandle, u32)>>,
-	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32), HashSet<PrivateHandles>>,
+	descriptor_set_to_resource: HashMap<(DescriptorSetHandle, u32, u32), HashSet<PrivateHandles>>,
+	dirty_descriptor_sets: HashSet<DescriptorSetHandle>,
 	pipeline_layouts: Vec<PipelineLayout>,
 	pipeline_root_signatures: Vec<Option<ID3D12RootSignature>>,
 	pipeline_root_tables: Vec<Vec<RootDescriptorTable>>,
@@ -174,6 +175,7 @@ impl Device {
 			descriptors: HashMap::default(),
 			resource_to_descriptor: HashMap::default(),
 			descriptor_set_to_resource: HashMap::default(),
+			dirty_descriptor_sets: HashSet::default(),
 			pipeline_layouts: Vec::new(),
 			pipeline_root_signatures: Vec::new(),
 			pipeline_root_tables: Vec::new(),
@@ -356,6 +358,14 @@ impl Device {
 			};
 			let data = image.data.clone().unwrap_or_default();
 			frame_data.resize(self.frames as usize, data);
+			if let Some(frame_resources) = image.frame_resources.as_mut() {
+				frame_resources.resize(self.frames as usize, None);
+			}
+		}
+		for buffer in &mut self.dynamic_buffers {
+			if let Some(frame_resources) = buffer.frame_resources.as_mut() {
+				frame_resources.resize_with(self.frames as usize, || None);
+			}
 		}
 	}
 
@@ -1348,6 +1358,7 @@ impl Device {
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		sets: &[DescriptorSetHandle],
+		sequence_index: u8,
 		sampler_heap: bool,
 	) -> Option<StagedDescriptorHeap> {
 		let heap_type = if sampler_heap {
@@ -1358,7 +1369,10 @@ impl Device {
 		let mut set_offsets = Vec::with_capacity(sets.len());
 		let mut descriptor_count = 0u32;
 
-		for &set_handle in sets {
+		for &root_set_handle in sets {
+			let set_handle = self
+				.descriptor_set_for_sequence(root_set_handle, sequence_index)
+				.unwrap_or(root_set_handle);
 			let count = self.descriptor_heap_descriptor_count_for_set(set_handle, sampler_heap);
 			if count == 0 {
 				set_offsets.push(None);
@@ -1383,10 +1397,14 @@ impl Device {
 		let stride = unsafe { self.device.GetDescriptorHandleIncrementSize(heap_type) } as usize;
 		let destination_start = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
 
-		for (set_index, &set_handle) in sets.iter().enumerate() {
+		for (set_index, &root_set_handle) in sets.iter().enumerate() {
+			let set_handle = self
+				.descriptor_set_for_sequence(root_set_handle, sequence_index)
+				.unwrap_or(root_set_handle);
 			let Some(destination_offset) = set_offsets.get(set_index).and_then(|offset| *offset) else {
 				continue;
 			};
+			self.materialize_descriptor_set(set_handle);
 			let Some(set) = self.descriptor_sets.get(set_handle.0 as usize) else {
 				continue;
 			};
@@ -2322,6 +2340,12 @@ impl Device {
 			.unwrap_or(0)
 	}
 
+	fn buffer_address_for_sequence(&mut self, buffer_handle: BaseBufferHandle, sequence_index: u8) -> u64 {
+		self.buffer_resource_for_sequence(buffer_handle, sequence_index)
+			.map(|resource| unsafe { resource.GetGPUVirtualAddress() })
+			.unwrap_or(0)
+	}
+
 	pub fn get_buffer_slice<T: Copy>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
 		let buffer = self
 			.buffer(buffer_handle.into())
@@ -2396,6 +2420,17 @@ impl Device {
 			builder.resource_uses,
 			builder.array_layers.map(|v| v.get()).unwrap_or(1),
 		);
+		let frame_resources = if builder.use_case == UseCases::DYNAMIC {
+			let mut resources = vec![None; self.frames as usize];
+			if let Some(first_resource) = resource.clone() {
+				if let Some(slot) = resources.first_mut() {
+					*slot = Some(first_resource);
+				}
+			}
+			Some(resources)
+		} else {
+			None
+		};
 
 		self.images.push(Image {
 			extent: builder.extent,
@@ -2406,6 +2441,7 @@ impl Device {
 			resource,
 			data,
 			frame_data,
+			frame_resources,
 		});
 
 		ImageHandle(crate::BaseImageHandle((self.images.len() - 1) as u64))
@@ -2417,8 +2453,80 @@ impl Device {
 			.map(|image| (image.extent, image.resource.is_some()))
 	}
 
+	pub(crate) fn image_frame_resource_state(&self, image: ImageHandle, sequence_index: u8) -> Option<bool> {
+		self.images.get(image.0 .0 as usize).map(|image| {
+			image
+				.frame_resources
+				.as_ref()
+				.and_then(|resources| resources.get(sequence_index as usize))
+				.and_then(|resource| resource.as_ref())
+				.is_some()
+		})
+	}
+
 	pub(crate) fn tracked_image_resource_state(&self, image: ImageHandle) -> Option<D3D12_RESOURCE_STATES> {
 		self.image_states.get(&image.0 .0).copied()
+	}
+
+	/// Returns the native texture for a frame, creating deferred dynamic image resources on first use.
+	fn ensure_image_resource_for_sequence(
+		&mut self,
+		image_handle: crate::BaseImageHandle,
+		sequence_index: u8,
+	) -> Option<ID3D12Resource> {
+		let (extent, format, uses, array_layers, dynamic) = {
+			let image = self.images.get(image_handle.0 as usize)?;
+			(
+				image.extent,
+				image.format,
+				image.uses,
+				image.array_layers,
+				image.frame_resources.is_some(),
+			)
+		};
+		if !dynamic {
+			return self
+				.images
+				.get(image_handle.0 as usize)
+				.and_then(|image| image.resource.clone());
+		}
+
+		let frame_index = sequence_index as usize;
+		let needs_resource = self
+			.images
+			.get(image_handle.0 as usize)
+			.and_then(|image| image.frame_resources.as_ref())
+			.and_then(|resources| resources.get(frame_index))
+			.and_then(Clone::clone)
+			.is_none();
+
+		if needs_resource {
+			let resource = self.create_image_resource(extent, format, uses, array_layers);
+			let image = self.images.get_mut(image_handle.0 as usize)?;
+			if let Some(resources) = image.frame_resources.as_mut() {
+				if resources.len() <= frame_index {
+					resources.resize(frame_index + 1, None);
+				}
+				resources[frame_index] = resource.clone();
+			}
+		}
+
+		self.images
+			.get(image_handle.0 as usize)
+			.and_then(|image| image.frame_resources.as_ref())
+			.and_then(|resources| resources.get(frame_index))
+			.and_then(Clone::clone)
+	}
+
+	fn image_resource_for_sequence(&self, image_handle: crate::BaseImageHandle, sequence_index: u8) -> Option<ID3D12Resource> {
+		let image = self.images.get(image_handle.0 as usize)?;
+		if let Some(resources) = image.frame_resources.as_ref() {
+			return resources
+				.get(sequence_index as usize)
+				.and_then(Clone::clone)
+				.or_else(|| resources.first().and_then(Clone::clone));
+		}
+		image.resource.clone()
 	}
 
 	pub(crate) fn buffer_resource_state(
@@ -2432,6 +2540,21 @@ impl Device {
 				buffer.resource.is_some(),
 				!buffer.mapped.is_null(),
 			)
+		})
+	}
+
+	pub(crate) fn buffer_frame_resource_state(&self, buffer: BaseBufferHandle, sequence_index: u8) -> Option<bool> {
+		self.buffer(buffer).map(|buffer| {
+			if sequence_index == 0 {
+				return buffer.resource.is_some();
+			}
+			buffer
+				.frame_resources
+				.as_ref()
+				.and_then(|resources| resources.get(sequence_index as usize))
+				.and_then(|resource| resource.as_ref())
+				.and_then(|resource| resource.resource.as_ref())
+				.is_some()
 		})
 	}
 
@@ -2485,6 +2608,19 @@ impl Device {
 			return None;
 		}
 		Some(unsafe { std::slice::from_raw_parts(buffer_data.data, size).to_vec() })
+	}
+
+	pub(crate) fn buffer_bytes_for_sequence(
+		&self,
+		buffer: BaseBufferHandle,
+		size: usize,
+		sequence_index: u8,
+	) -> Option<Vec<u8>> {
+		let (data, buffer_size) = self.buffer_storage_parts_for_sequence(buffer, sequence_index)?;
+		if size > buffer_size {
+			return None;
+		}
+		Some(unsafe { std::slice::from_raw_parts(data, size).to_vec() })
 	}
 
 	pub(crate) fn image_is_in_common_state(&self, image: ImageHandle) -> Option<bool> {
@@ -3004,6 +3140,7 @@ impl Device {
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		build: &crate::rt::TopLevelAccelerationStructureBuild,
+		sequence_index: u8,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -3021,11 +3158,7 @@ impl Device {
 		if acceleration_structure.resource.is_none() {
 			return;
 		}
-		let Some(scratch_resource) = self
-			.buffers
-			.get(build.scratch_buffer.buffer.0 as usize)
-			.and_then(|buffer| buffer.resource.clone())
-		else {
+		let Some(scratch_resource) = self.buffer_resource_for_sequence(build.scratch_buffer.buffer, sequence_index) else {
 			return;
 		};
 
@@ -3039,11 +3172,7 @@ impl Device {
 		}
 		match build.description {
 			crate::rt::TopLevelAccelerationStructureBuildDescriptions::Instance { instances_buffer, .. } => {
-				if let Some(instance_resource) = self
-					.buffers
-					.get(instances_buffer.0 as usize)
-					.and_then(|buffer| buffer.resource.clone())
-				{
+				if let Some(instance_resource) = self.buffer_resource_for_sequence(instances_buffer, sequence_index) {
 					unsafe {
 						self.transition_tracked_buffer(
 							&command_list,
@@ -3055,7 +3184,7 @@ impl Device {
 				}
 			}
 		}
-		self.encode_top_level_acceleration_structure_build(&command_list, build);
+		self.encode_top_level_acceleration_structure_build(&command_list, build, sequence_index);
 		self.top_level_acceleration_structure_build_record_count += 1;
 	}
 
@@ -3063,6 +3192,7 @@ impl Device {
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		builds: &[crate::rt::BottomLevelAccelerationStructureBuild],
+		sequence_index: u8,
 	) {
 		for build in builds {
 			if self
@@ -3073,10 +3203,10 @@ impl Device {
 			{
 				continue;
 			}
-			if !self.prepare_bottom_level_build_inputs(command_buffer_handle, build) {
+			if !self.prepare_bottom_level_build_inputs(command_buffer_handle, build, sequence_index) {
 				continue;
 			}
-			self.encode_bottom_level_acceleration_structure_build(command_buffer_handle, build);
+			self.encode_bottom_level_acceleration_structure_build(command_buffer_handle, build, sequence_index);
 			self.bottom_level_acceleration_structure_build_record_count += 1;
 		}
 	}
@@ -3085,6 +3215,7 @@ impl Device {
 		&mut self,
 		command_list: &ID3D12GraphicsCommandList,
 		build: &crate::rt::TopLevelAccelerationStructureBuild,
+		sequence_index: u8,
 	) {
 		let Some(command_list) = command_list.cast::<ID3D12GraphicsCommandList4>().ok() else {
 			return;
@@ -3105,7 +3236,8 @@ impl Device {
 		else {
 			return;
 		};
-		let scratch = self.get_buffer_address(build.scratch_buffer.buffer) + build.scratch_buffer.offset as u64;
+		let scratch =
+			self.buffer_address_for_sequence(build.scratch_buffer.buffer, sequence_index) + build.scratch_buffer.offset as u64;
 		if destination == 0 || scratch == 0 {
 			return;
 		}
@@ -3113,7 +3245,7 @@ impl Device {
 			instances_buffer,
 			instance_count,
 		} = build.description;
-		let instances = self.get_buffer_address(instances_buffer);
+		let instances = self.buffer_address_for_sequence(instances_buffer, sequence_index);
 		if instances == 0 {
 			return;
 		}
@@ -3141,6 +3273,7 @@ impl Device {
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		build: &crate::rt::BottomLevelAccelerationStructureBuild,
+		sequence_index: u8,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -3166,8 +3299,9 @@ impl Device {
 		else {
 			return;
 		};
-		let scratch = self.get_buffer_address(build.scratch_buffer.buffer) + build.scratch_buffer.offset as u64;
-		let Some(geometry) = self.bottom_level_geometry_desc(&build.description) else {
+		let scratch =
+			self.buffer_address_for_sequence(build.scratch_buffer.buffer, sequence_index) + build.scratch_buffer.offset as u64;
+		let Some(geometry) = self.bottom_level_geometry_desc(&build.description, sequence_index) else {
 			return;
 		};
 		if destination == 0 || scratch == 0 {
@@ -3194,8 +3328,9 @@ impl Device {
 	}
 
 	fn bottom_level_geometry_desc(
-		&self,
+		&mut self,
 		description: &crate::rt::BottomLevelAccelerationStructureBuildDescriptions,
+		sequence_index: u8,
 	) -> Option<D3D12_RAYTRACING_GEOMETRY_DESC> {
 		match description {
 			crate::rt::BottomLevelAccelerationStructureBuildDescriptions::Mesh {
@@ -3215,10 +3350,10 @@ impl Device {
 					DataTypes::U32 => DXGI_FORMAT_R32_UINT,
 					_ => return None,
 				};
-				let vertex_address =
-					self.get_buffer_address(vertex_buffer.buffer_offset.buffer) + vertex_buffer.buffer_offset.offset as u64;
-				let index_address =
-					self.get_buffer_address(index_buffer.buffer_offset.buffer) + index_buffer.buffer_offset.offset as u64;
+				let vertex_address = self.buffer_address_for_sequence(vertex_buffer.buffer_offset.buffer, sequence_index)
+					+ vertex_buffer.buffer_offset.offset as u64;
+				let index_address = self.buffer_address_for_sequence(index_buffer.buffer_offset.buffer, sequence_index)
+					+ index_buffer.buffer_offset.offset as u64;
 				if vertex_address == 0 || index_address == 0 {
 					return None;
 				}
@@ -3246,7 +3381,7 @@ impl Device {
 				transform_count,
 				..
 			} => {
-				let address = self.get_buffer_address(*aabb_buffer);
+				let address = self.buffer_address_for_sequence(*aabb_buffer, sequence_index);
 				if address == 0 {
 					return None;
 				}
@@ -3272,6 +3407,7 @@ impl Device {
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		build: &crate::rt::BottomLevelAccelerationStructureBuild,
+		sequence_index: u8,
 	) -> bool {
 		let Some(command_list) = self
 			.command_buffers
@@ -3280,11 +3416,7 @@ impl Device {
 		else {
 			return false;
 		};
-		let Some(scratch_resource) = self
-			.buffers
-			.get(build.scratch_buffer.buffer.0 as usize)
-			.and_then(|buffer| buffer.resource.clone())
-		else {
+		let Some(scratch_resource) = self.buffer_resource_for_sequence(build.scratch_buffer.buffer, sequence_index) else {
 			return false;
 		};
 		unsafe {
@@ -3297,11 +3429,7 @@ impl Device {
 		}
 
 		let mut transition_input = |buffer_handle: BaseBufferHandle| {
-			let Some(resource) = self
-				.buffers
-				.get(buffer_handle.0 as usize)
-				.and_then(|buffer| buffer.resource.clone())
-			else {
+			let Some(resource) = self.buffer_resource_for_sequence(buffer_handle, sequence_index) else {
 				return false;
 			};
 			unsafe {
@@ -3475,16 +3603,20 @@ impl Device {
 	}
 
 	pub fn resize_buffer<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>, size: usize) {
-		// Resizes CPU-side buffer storage while discarding previous contents.
+		// Resizes CPU-side buffer storage while discarding previous per-frame contents.
 		let buffer_handle: BaseBufferHandle = buffer_handle.into();
-		let buffer = self
-			.buffer_mut(buffer_handle)
-			.expect("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
-		if buffer.size >= size {
+		let (current_size, current_layout, current_data, current_access) = {
+			let buffer = self.buffer(buffer_handle).expect(
+				"Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.",
+			);
+			(buffer.size, buffer.layout, buffer.data, buffer.access)
+		};
+
+		if current_size >= size {
 			return;
 		}
 
-		let layout = Layout::from_size_align(size, buffer.layout.align()).unwrap();
+		let layout = Layout::from_size_align(size, current_layout.align()).unwrap();
 		let data = if layout.size() == 0 {
 			std::ptr::NonNull::<u8>::dangling().as_ptr()
 		} else {
@@ -3494,15 +3626,28 @@ impl Device {
 			panic!("Failed to resize buffer storage. The most likely cause is that the system is out of memory.");
 		}
 
-		if buffer.layout.size() != 0 && !buffer.data.is_null() {
+		if current_layout.size() != 0 && !current_data.is_null() {
 			unsafe {
-				alloc::dealloc(buffer.data, buffer.layout);
+				alloc::dealloc(current_data, current_layout);
 			}
 		}
 
+		let frame_count = self.frames as usize;
+		let (resource, mapped, heap_kind) = self.create_buffer_resource(size, current_access);
+		let buffer = self
+			.buffer_mut(buffer_handle)
+			.expect("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
 		buffer.data = data;
 		buffer.layout = layout;
 		buffer.size = size;
+		buffer.resource = resource;
+		buffer.mapped = mapped;
+		buffer.heap_kind = heap_kind;
+		if let Some(frame_resources) = buffer.frame_resources.as_mut() {
+			frame_resources.clear();
+			frame_resources.resize_with(frame_count, || None);
+		}
+		self.mark_descriptors_for_resource_dirty(PrivateHandles::Buffer(crate::buffer::BufferHandle(buffer_handle.0)));
 	}
 
 	pub fn start_frame_capture(&mut self) {
@@ -3772,6 +3917,7 @@ impl Device {
 		x: u32,
 		y: u32,
 		z: u32,
+		sequence_index: u8,
 	) {
 		let Some(pipeline_handle) = pipeline_handle else {
 			return;
@@ -3786,17 +3932,17 @@ impl Device {
 		if self.command_buffers.get(command_buffer_handle.0 as usize).is_none() {
 			return;
 		}
-		let Some(raygen) = self.ray_generation_shader_record(binding_tables.raygen) else {
+		let Some(raygen) = self.ray_generation_shader_record(binding_tables.raygen, sequence_index) else {
 			return;
 		};
-		let Some(miss) = self.shader_table_range(binding_tables.miss) else {
+		let Some(miss) = self.shader_table_range(binding_tables.miss, sequence_index) else {
 			return;
 		};
-		let Some(hit) = self.shader_table_range(binding_tables.hit) else {
+		let Some(hit) = self.shader_table_range(binding_tables.hit, sequence_index) else {
 			return;
 		};
 		let callable = if let Some(callable) = binding_tables.callable {
-			let Some(callable) = self.shader_table_range(callable) else {
+			let Some(callable) = self.shader_table_range(callable, sequence_index) else {
 				return;
 			};
 			callable
@@ -3828,23 +3974,31 @@ impl Device {
 		self.trace_rays_record_count += 1;
 	}
 
-	fn ray_generation_shader_record(&self, range: BufferStridedRange) -> Option<D3D12_GPU_VIRTUAL_ADDRESS_RANGE> {
+	fn ray_generation_shader_record(
+		&mut self,
+		range: BufferStridedRange,
+		sequence_index: u8,
+	) -> Option<D3D12_GPU_VIRTUAL_ADDRESS_RANGE> {
 		Some(D3D12_GPU_VIRTUAL_ADDRESS_RANGE {
-			StartAddress: self.shader_table_address(&range)?,
+			StartAddress: self.shader_table_address(&range, sequence_index)?,
 			SizeInBytes: range.size as u64,
 		})
 	}
 
-	fn shader_table_range(&self, range: BufferStridedRange) -> Option<D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE> {
+	fn shader_table_range(
+		&mut self,
+		range: BufferStridedRange,
+		sequence_index: u8,
+	) -> Option<D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE> {
 		Some(D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE {
-			StartAddress: self.shader_table_address(&range)?,
+			StartAddress: self.shader_table_address(&range, sequence_index)?,
 			SizeInBytes: range.size as u64,
 			StrideInBytes: range.stride as u64,
 		})
 	}
 
-	fn shader_table_address(&self, range: &BufferStridedRange) -> Option<u64> {
-		let address = self.get_buffer_address(range.buffer_offset.buffer);
+	fn shader_table_address(&mut self, range: &BufferStridedRange, sequence_index: u8) -> Option<u64> {
+		let address = self.buffer_address_for_sequence(range.buffer_offset.buffer, sequence_index);
 		if address == 0 {
 			return None;
 		}
@@ -3856,6 +4010,7 @@ impl Device {
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		buffer_descriptors: &[BufferDescriptor],
+		sequence_index: u8,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -3867,10 +4022,10 @@ impl Device {
 
 		let mut views = Vec::with_capacity(buffer_descriptors.len());
 		for buffer_descriptor in buffer_descriptors {
-			let Some(buffer) = self.buffer(buffer_descriptor.buffer) else {
+			let Some(resource) = self.buffer_resource_for_sequence(buffer_descriptor.buffer, sequence_index) else {
 				continue;
 			};
-			let Some(resource) = buffer.resource.clone() else {
+			let Some(buffer) = self.buffer(buffer_descriptor.buffer) else {
 				continue;
 			};
 			let size_in_bytes = buffer.size.saturating_sub(buffer_descriptor.offset).min(u32::MAX as usize) as u32;
@@ -3904,6 +4059,7 @@ impl Device {
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		buffer_descriptor: &BufferDescriptor,
+		sequence_index: u8,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -3912,10 +4068,10 @@ impl Device {
 		else {
 			return;
 		};
-		let Some(buffer) = self.buffer(buffer_descriptor.buffer) else {
+		let Some(resource) = self.buffer_resource_for_sequence(buffer_descriptor.buffer, sequence_index) else {
 			return;
 		};
-		let Some(resource) = buffer.resource.clone() else {
+		let Some(buffer) = self.buffer(buffer_descriptor.buffer) else {
 			return;
 		};
 		let format = match buffer_descriptor.index_type {
@@ -4079,10 +4235,10 @@ impl Device {
 		for attachment in attachments {
 			if self.attachment_format(attachment) == Formats::Depth32 {
 				let image_handle = self.attachment_image_handle(attachment, sequence_index);
-				let Some(image) = self.images.get(image_handle.0 as usize) else {
+				let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
 					continue;
 				};
-				let Some(resource) = image.resource.clone() else {
+				let Some(image) = self.images.get(image_handle.0 as usize) else {
 					continue;
 				};
 				depth_resource = Some((
@@ -4310,10 +4466,10 @@ impl Device {
 		}
 
 		for (buffer, state) in buffers {
-			let Some((resource, heap_kind)) = self
-				.buffer(buffer)
-				.and_then(|buffer| buffer.resource.clone().map(|resource| (resource, buffer.heap_kind)))
-			else {
+			let Some(resource) = self.buffer_resource_for_sequence(buffer, sequence_index) else {
+				continue;
+			};
+			let Some(heap_kind) = self.buffer_heap_kind_for_sequence(buffer, sequence_index) else {
 				continue;
 			};
 			if heap_kind != BufferHeapKind::Default {
@@ -4326,7 +4482,7 @@ impl Device {
 
 		for (image, state) in images {
 			self.flush_pending_texture_syncs(command_buffer_handle, Some(image));
-			let Some(resource) = self.images.get(image.0 as usize).and_then(|image| image.resource.clone()) else {
+			let Some(resource) = self.ensure_image_resource_for_sequence(image, sequence_index) else {
 				continue;
 			};
 			unsafe {
@@ -4350,26 +4506,25 @@ impl Device {
 			return;
 		};
 
-		let sequence_sets = sets
-			.iter()
-			.map(|set| self.descriptor_set_for_sequence(*set, sequence_index).unwrap_or(*set))
-			.collect::<Vec<_>>();
+		let cbv_srv_uav_heap = self.stage_descriptor_heap_for_sets(command_buffer_handle, sets, sequence_index, false);
+		let sampler_heap = self.stage_descriptor_heap_for_sets(command_buffer_handle, sets, sequence_index, true);
 
-		let cbv_srv_uav_heap = self.stage_descriptor_heap_for_sets(command_buffer_handle, &sequence_sets, false);
-		let sampler_heap = self.stage_descriptor_heap_for_sets(command_buffer_handle, &sequence_sets, true);
-
-		let heaps = [cbv_srv_uav_heap.as_ref(), sampler_heap.as_ref()]
-			.into_iter()
-			.flatten()
-			.map(|staged| staged.heap.clone())
-			.map(Some)
-			.collect::<Vec<_>>();
-		if heaps.is_empty() {
+		let mut heaps = [None, None];
+		let mut heap_count = 0usize;
+		if let Some(staged) = cbv_srv_uav_heap.as_ref() {
+			heaps[heap_count] = Some(staged.heap.clone());
+			heap_count += 1;
+		}
+		if let Some(staged) = sampler_heap.as_ref() {
+			heaps[heap_count] = Some(staged.heap.clone());
+			heap_count += 1;
+		}
+		if heap_count == 0 {
 			return;
 		}
 
 		unsafe {
-			command_list.SetDescriptorHeaps(&heaps);
+			command_list.SetDescriptorHeaps(&heaps[..heap_count]);
 		}
 		self.descriptor_heap_bind_count += 1;
 
@@ -4648,48 +4803,57 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn copy_buffers(&mut self, command_buffer_handle: CommandBufferHandle, copies: &[crate::BufferCopyDescriptor]) {
+	pub(crate) fn copy_buffers(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		copies: &[crate::BufferCopyDescriptor],
+		sequence_index: u8,
+	) {
 		for copy in copies {
-			self.copy_buffer_shadow(copy);
-			self.record_buffer_copy(command_buffer_handle, copy);
+			self.copy_buffer_shadow(copy, sequence_index);
+			self.record_buffer_copy(command_buffer_handle, copy, sequence_index);
 		}
 	}
 
-	pub(crate) fn clear_buffers(&mut self, command_buffer_handle: CommandBufferHandle, buffer_handles: &[BaseBufferHandle]) {
+	pub(crate) fn clear_buffers(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		buffer_handles: &[BaseBufferHandle],
+		sequence_index: u8,
+	) {
 		for &buffer_handle in buffer_handles {
-			Self::clear_buffer_shadow_in_storage(&mut self.buffers, buffer_handle);
-			Self::clear_buffer_shadow_in_storage(&mut self.dynamic_buffers, buffer_handle);
-			self.record_buffer_clear(command_buffer_handle, buffer_handle);
+			self.clear_buffer_shadow(buffer_handle, sequence_index);
+			self.record_buffer_clear(command_buffer_handle, buffer_handle, sequence_index);
 		}
 	}
 
-	fn clear_buffer_shadow_in_storage(storage: &mut [Buffer], buffer_handle: BaseBufferHandle) {
-		let Some(buffer) = storage.get(buffer_handle.0 as usize) else {
+	fn clear_buffer_shadow(&mut self, buffer_handle: BaseBufferHandle, sequence_index: u8) {
+		let Some((data, size)) = self.buffer_storage_parts_mut_for_sequence(buffer_handle, sequence_index) else {
 			return;
 		};
-		if buffer.size == 0 {
+		if size == 0 {
 			return;
 		}
 
 		unsafe {
-			std::ptr::write_bytes(buffer.data, 0, buffer.size);
+			std::ptr::write_bytes(data, 0, size);
 		}
-		Self::sync_buffer_storage(buffer);
+		self.sync_buffer_for_sequence(buffer_handle, sequence_index);
 	}
 
-	fn copy_buffer_shadow(&mut self, copy: &crate::BufferCopyDescriptor) {
+	fn copy_buffer_shadow(&mut self, copy: &crate::BufferCopyDescriptor, sequence_index: u8) {
 		// Resolve handles through `buffer` instead of indexing storage directly. Dynamic buffer handles carry
 		// `DYNAMIC_BUFFER_HANDLE_FLAG`, so the raw handle value is not always a valid index into `buffers`.
-		let Some(source) = self.buffer(copy.source_buffer) else {
+		let Some(source) = self.buffer_storage_parts_for_sequence(copy.source_buffer, sequence_index) else {
 			return;
 		};
-		let Some(destination) = self.buffer(copy.destination_buffer) else {
+		let Some(destination) = self.buffer_storage_parts_mut_for_sequence(copy.destination_buffer, sequence_index) else {
 			return;
 		};
 
 		let source_end = copy.source_offset.saturating_add(copy.size);
 		let destination_end = copy.destination_offset.saturating_add(copy.size);
-		if source_end > source.size || destination_end > destination.size {
+		if source_end > source.1 || destination_end > destination.1 {
 			panic!(
 				"Failed to copy DX12 buffer data from {:?} offset {} to {:?} offset {} for {} bytes. The most likely cause is that the requested source or destination range is outside the buffer allocation. Source size: {} bytes. Destination size: {} bytes.",
 				copy.source_buffer,
@@ -4697,8 +4861,8 @@ impl Device {
 				copy.destination_buffer,
 				copy.destination_offset,
 				copy.size,
-				source.size,
-				destination.size
+				source.1,
+				destination.1
 			);
 		}
 		if copy.size == 0 {
@@ -4706,16 +4870,19 @@ impl Device {
 		}
 
 		unsafe {
-			let source = source.data.add(copy.source_offset);
-			let destination = destination.data.add(copy.destination_offset);
+			let source = source.0.add(copy.source_offset);
+			let destination = destination.0.add(copy.destination_offset);
 			std::ptr::copy(source, destination, copy.size);
 		}
-		if let Some(destination) = self.buffer(copy.destination_buffer) {
-			Self::sync_buffer_storage(destination);
-		}
+		self.sync_buffer_for_sequence(copy.destination_buffer, sequence_index);
 	}
 
-	fn record_buffer_copy(&mut self, command_buffer_handle: CommandBufferHandle, copy: &crate::BufferCopyDescriptor) {
+	fn record_buffer_copy(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		copy: &crate::BufferCopyDescriptor,
+		sequence_index: u8,
+	) {
 		let Some(command_list) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -4723,10 +4890,10 @@ impl Device {
 		else {
 			return;
 		};
-		let Some(source) = self.copy_buffer_info(copy.source_buffer) else {
+		let Some(source) = self.copy_buffer_info_for_sequence(copy.source_buffer, sequence_index) else {
 			return;
 		};
-		let Some(destination) = self.copy_buffer_info(copy.destination_buffer) else {
+		let Some(destination) = self.copy_buffer_info_for_sequence(copy.destination_buffer, sequence_index) else {
 			return;
 		};
 		if destination.access.intersects(DeviceAccesses::CpuWrite) {
@@ -4792,7 +4959,12 @@ impl Device {
 		self.buffer_copy_count += 1;
 	}
 
-	fn record_buffer_clear(&mut self, command_buffer_handle: CommandBufferHandle, buffer_handle: BaseBufferHandle) {
+	fn record_buffer_clear(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		buffer_handle: BaseBufferHandle,
+		sequence_index: u8,
+	) {
 		let Some(command_list) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
@@ -4800,18 +4972,15 @@ impl Device {
 		else {
 			return;
 		};
-		let Some(destination_buffer) = self.buffer(buffer_handle) else {
+		let Some(destination_buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {
 			return;
 		};
 		let destination_size = destination_buffer.size;
 		let destination_access = destination_buffer.access;
-		let destination = destination_buffer.resource.clone();
+		let destination = destination_buffer.resource;
 		if destination_size == 0 || destination_access.intersects(DeviceAccesses::CpuWrite) {
 			return;
 		}
-		let Some(destination) = destination else {
-			return;
-		};
 		let (Some(upload), mapped, _) = self.create_buffer_resource(destination_size, DeviceAccesses::HostToDevice) else {
 			return;
 		};
@@ -4829,14 +4998,16 @@ impl Device {
 		self.buffer_clear_count += 1;
 	}
 
-	fn copy_buffer_info(&self, buffer_handle: BaseBufferHandle) -> Option<BufferCopyInfo> {
-		self.buffer(buffer_handle).and_then(|buffer| {
-			buffer.resource.clone().map(|resource| BufferCopyInfo {
-				resource,
-				access: buffer.access,
-				heap_kind: buffer.heap_kind,
-				size: buffer.size,
-			})
+	fn copy_buffer_info_for_sequence(&mut self, buffer_handle: BaseBufferHandle, sequence_index: u8) -> Option<BufferCopyInfo> {
+		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
+		let resource = self.buffer_resource_for_sequence(buffer_handle, sequence_index)?;
+		let heap_kind = self.buffer_heap_kind_for_sequence(buffer_handle, sequence_index)?;
+		let buffer = self.buffer(buffer_handle)?;
+		Some(BufferCopyInfo {
+			resource,
+			access: buffer.access,
+			heap_kind,
+			size: buffer.size,
 		})
 	}
 
@@ -4848,7 +5019,7 @@ impl Device {
 	) {
 		for copy in copies {
 			self.copy_buffer_to_image(copy, sequence_index);
-			self.record_buffer_to_image_copy(command_buffer_handle, copy);
+			self.record_buffer_to_image_copy(command_buffer_handle, copy, sequence_index);
 		}
 	}
 
@@ -4871,12 +5042,14 @@ impl Device {
 		} else {
 			copy.source_bytes_per_image
 		};
-		let source_bytes = self.buffer_range(copy.source_buffer, copy.source_offset, image_stride * extent.depth() as usize);
+		let depth = extent.depth().max(1) as usize;
+		let source_bytes =
+			self.buffer_range_for_sequence(copy.source_buffer, copy.source_offset, image_stride * depth, sequence_index);
 		let Some(destination) = self.image_data_mut_for_sequence(copy.destination_image, sequence_index) else {
 			return;
 		};
 
-		for layer in 0..extent.depth() as usize {
+		for layer in 0..depth {
 			for y in 0..row_count {
 				let source_start = layer * image_stride + y * row_stride;
 				let source_end = source_start + row_bytes;
@@ -4896,6 +5069,7 @@ impl Device {
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		copy: &crate::BufferImageCopyDescriptor,
+		sequence_index: u8,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -4904,11 +5078,12 @@ impl Device {
 		else {
 			return;
 		};
+		let destination = self.ensure_image_resource_for_sequence(copy.destination_image, sequence_index);
 		let Some(image) = self.images.get(copy.destination_image.0 as usize) else {
 			return;
 		};
 		let (Some(destination), Some(format), Some((row_bytes, row_count, _))) = (
-			image.resource.clone(),
+			destination,
 			Self::dxgi_format(image.format),
 			utils::texture_copy_layout(image.format, image.extent),
 		) else {
@@ -4926,10 +5101,11 @@ impl Device {
 		} else {
 			copy.source_bytes_per_image
 		};
-		let source_bytes = self.buffer_range(
+		let source_bytes = self.buffer_range_for_sequence(
 			copy.source_buffer,
 			copy.source_offset,
-			source_image_pitch * extent.depth() as usize,
+			source_image_pitch * extent.depth().max(1) as usize,
+			sequence_index,
 		);
 		self.record_image_upload(
 			&command_list,
@@ -4948,6 +5124,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		image_handle: ImageHandle,
 		data: &[RGBAu8],
+		sequence_index: u8,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -4956,11 +5133,12 @@ impl Device {
 		else {
 			return;
 		};
+		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
 		let Some(image) = self.images.get(image_handle.0 .0 as usize) else {
 			return;
 		};
 		let (Some(destination), Some(format), Some((source_row_pitch, ..))) = (
-			image.resource.clone(),
+			destination,
 			Self::dxgi_format(image.format),
 			utils::texture_copy_layout(image.format, image.extent),
 		) else {
@@ -5000,6 +5178,21 @@ impl Device {
 		}
 	}
 
+	pub(crate) fn flush_pending_texture_syncs_for_sequence(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		sequence_filter: u8,
+	) {
+		let pending = std::mem::take(&mut self.pending_texture_syncs);
+		for (image_handle, sequence_index) in pending {
+			if sequence_index != sequence_filter {
+				self.pending_texture_syncs.push((image_handle, sequence_index));
+				continue;
+			}
+			self.record_image_storage_upload(command_buffer_handle, ImageHandle(image_handle), sequence_index);
+		}
+	}
+
 	fn record_image_storage_upload(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -5013,11 +5206,12 @@ impl Device {
 		else {
 			return;
 		};
+		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
 		let Some(image) = self.images.get(image_handle.0 .0 as usize) else {
 			return;
 		};
 		let (Some(destination), Some(format), Some((source_row_pitch, ..))) = (
-			image.resource.clone(),
+			destination,
 			Self::dxgi_format(image.format),
 			utils::texture_copy_layout(image.format, image.extent),
 		) else {
@@ -5074,8 +5268,9 @@ impl Device {
 		else {
 			return;
 		};
+		let depth = extent.depth().max(1) as usize;
 		let upload_row_pitch = Self::align_up(row_bytes, 256);
-		let upload_size = upload_row_pitch * row_count * extent.depth() as usize;
+		let upload_size = upload_row_pitch * row_count * depth;
 		let (Some(upload), mapped, _) = self.create_buffer_resource(upload_size, DeviceAccesses::HostToDevice) else {
 			return;
 		};
@@ -5085,7 +5280,7 @@ impl Device {
 
 		unsafe {
 			std::ptr::write_bytes(mapped, 0, upload_size);
-			for layer in 0..extent.depth() as usize {
+			for layer in 0..depth {
 				for y in 0..row_count {
 					let source_start = layer * source_image_pitch + y * source_row_pitch;
 					let source_end = source_start + row_bytes;
@@ -5112,7 +5307,7 @@ impl Device {
 						Format: format,
 						Width: extent.width(),
 						Height: extent.height(),
-						Depth: extent.depth() as u32,
+						Depth: depth as u32,
 						RowPitch: upload_row_pitch as u32,
 					},
 				},
@@ -5205,12 +5400,18 @@ impl Device {
 		(value + alignment - 1) / alignment * alignment
 	}
 
-	fn buffer_range(&self, buffer_handle: BaseBufferHandle, offset: usize, size: usize) -> Vec<u8> {
-		let Some(buffer) = self.buffer(buffer_handle) else {
+	fn buffer_range_for_sequence(
+		&self,
+		buffer_handle: BaseBufferHandle,
+		offset: usize,
+		size: usize,
+		sequence_index: u8,
+	) -> Vec<u8> {
+		let Some((data, buffer_size)) = self.buffer_storage_parts_for_sequence(buffer_handle, sequence_index) else {
 			return Vec::new();
 		};
 		let end = offset.saturating_add(size);
-		if end > buffer.size {
+		if end > buffer_size {
 			panic!(
 				"Failed to read DX12 buffer data. The most likely cause is that the requested range is outside the buffer allocation."
 			);
@@ -5219,7 +5420,7 @@ impl Device {
 			return Vec::new();
 		}
 
-		unsafe { std::slice::from_raw_parts(buffer.data.add(offset), size).to_vec() }
+		unsafe { std::slice::from_raw_parts(data.add(offset), size).to_vec() }
 	}
 
 	pub(crate) fn copy_image_to_cpu(&mut self, image_handle: ImageHandle) -> TextureCopyHandle {
@@ -5245,7 +5446,7 @@ impl Device {
 	}
 
 	pub(crate) fn record_image_readback(&mut self, command_buffer_handle: CommandBufferHandle, image_handle: ImageHandle) {
-		self.record_image_readback_internal(command_buffer_handle, image_handle, None);
+		self.record_image_readback_internal(command_buffer_handle, image_handle, None, 0);
 	}
 
 	pub(crate) fn record_image_readback_for_copy(
@@ -5253,8 +5454,9 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		image_handle: ImageHandle,
 		texture_copy: TextureCopyHandle,
+		sequence_index: u8,
 	) {
-		self.record_image_readback_internal(command_buffer_handle, image_handle, Some(texture_copy));
+		self.record_image_readback_internal(command_buffer_handle, image_handle, Some(texture_copy), sequence_index);
 	}
 
 	fn record_image_readback_internal(
@@ -5262,6 +5464,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		image_handle: ImageHandle,
 		mut texture_copy: Option<TextureCopyHandle>,
+		sequence_index: u8,
 	) {
 		if !self.gpu_uploaded_images.contains(&image_handle.0) {
 			texture_copy = None;
@@ -5273,11 +5476,12 @@ impl Device {
 		else {
 			return;
 		};
+		let source = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
 		let Some(image) = self.images.get(image_handle.0 .0 as usize) else {
 			return;
 		};
 		let (Some(source), Some(format), Some((row_bytes, row_count, _))) = (
-			image.resource.clone(),
+			source,
 			Self::dxgi_format(image.format),
 			utils::texture_copy_layout(image.format, image.extent),
 		) else {
@@ -5285,8 +5489,9 @@ impl Device {
 		};
 
 		let extent = image.extent;
+		let depth = extent.depth().max(1) as usize;
 		let readback_row_pitch = Self::align_up(row_bytes, 256);
-		let readback_size = readback_row_pitch * row_count * extent.depth() as usize;
+		let readback_size = readback_row_pitch * row_count * depth;
 		let (Some(readback), ..) = self.create_buffer_resource(readback_size, DeviceAccesses::DeviceToHost) else {
 			return;
 		};
@@ -5306,7 +5511,7 @@ impl Device {
 						Format: format,
 						Width: extent.width(),
 						Height: extent.height(),
-						Depth: extent.depth() as u32,
+						Depth: depth as u32,
 						RowPitch: readback_row_pitch as u32,
 					},
 				},
@@ -5334,7 +5539,7 @@ impl Device {
 			row_pitch: readback_row_pitch,
 			row_bytes,
 			height: row_count,
-			depth: extent.depth() as usize,
+			depth,
 			size: readback_size,
 		});
 		self.readback_resources.push(readback);
@@ -5488,8 +5693,7 @@ impl Device {
 	) -> Option<(Option<crate::BaseImageHandle>, ID3D12Resource, bool)> {
 		match attachment.target {
 			ImageOrSwapchain::Image(image_handle) => {
-				let image = self.images.get(image_handle.0 as usize)?;
-				let resource = image.resource.clone()?;
+				let resource = self.ensure_image_resource_for_sequence(image_handle, sequence_index)?;
 				Some((Some(image_handle), resource, false))
 			}
 			ImageOrSwapchain::Swapchain(swapchain_handle) => {
@@ -5550,6 +5754,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		image_handle: ImageHandle,
 		clear: crate::ClearValue,
+		sequence_index: u8,
 	) {
 		let Some(command_list) = self
 			.command_buffers
@@ -5558,11 +5763,12 @@ impl Device {
 		else {
 			return;
 		};
+		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
 		let Some(image) = self.images.get(image_handle.0 .0 as usize) else {
 			return;
 		};
 		let (Some(destination), Some(format), Some(bytes_per_pixel)) = (
-			image.resource.clone(),
+			destination,
 			Self::dxgi_format(image.format),
 			utils::bytes_per_pixel(image.format),
 		) else {
@@ -5574,7 +5780,7 @@ impl Device {
 
 		let extent = image.extent;
 		let color = Self::clear_color_bytes(clear);
-		let pixel_count = extent.width() as usize * extent.height() as usize * extent.depth() as usize;
+		let pixel_count = extent.width() as usize * extent.height() as usize * extent.depth().max(1) as usize;
 		let mut source_bytes = vec![0u8; pixel_count * bytes_per_pixel];
 		for pixel in source_bytes.chunks_exact_mut(bytes_per_pixel) {
 			pixel.copy_from_slice(&color);
@@ -5861,11 +6067,16 @@ impl Device {
 		}
 	}
 
-	pub(crate) fn dynamic_buffer_slice_mut<'a, T: Copy>(&'a self, buffer_handle: DynamicBufferHandle<T>) -> &'a mut T {
-		let buffer = self
-			.buffer(buffer_handle.into())
-			.expect("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
-		unsafe { &mut *(buffer.data as *mut T) }
+	pub(crate) fn dynamic_buffer_slice_mut<'a, T: Copy>(
+		&'a mut self,
+		buffer_handle: DynamicBufferHandle<T>,
+		sequence_index: u8,
+	) -> &'a mut T {
+		let handle = buffer_handle.into();
+		let Some((data, _)) = self.buffer_storage_parts_mut_for_sequence(handle, sequence_index) else {
+			panic!("Missing DX12 dynamic buffer. The most likely cause is that the buffer handle came from another device.");
+		};
+		unsafe { &mut *(data as *mut T) }
 	}
 
 	pub(crate) fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent) {
@@ -5889,7 +6100,7 @@ impl Device {
 			let data = image.data.clone().unwrap_or_default();
 			*frame_data = vec![data; self.frames as usize];
 		}
-		self.refresh_native_descriptors_for_resource(PrivateHandles::Image(crate::image::ImageHandle(image_handle.0 .0)));
+		self.mark_descriptors_for_resource_dirty(PrivateHandles::Image(crate::image::ImageHandle(image_handle.0 .0)));
 	}
 
 	pub(crate) fn swapchain_extent(&mut self, swapchain_handle: SwapchainHandle) -> Extent {
@@ -6048,10 +6259,31 @@ impl Device {
 		descriptor_set: DescriptorSetHandle,
 		sequence_index: u8,
 	) -> Option<DescriptorSetHandle> {
-		self.collect_descriptor_set_handles(descriptor_set)
-			.get(sequence_index as usize)
-			.copied()
-			.or(Some(descriptor_set))
+		let mut current = Some(descriptor_set);
+		for _ in 0..sequence_index {
+			let handle = current?;
+			let set = self.descriptor_sets.get(handle.0 as usize)?;
+			current = set.next.map(|handle| DescriptorSetHandle(handle.0));
+		}
+		current.or(Some(descriptor_set))
+	}
+
+	fn descriptor_set_sequence_index(&self, descriptor_set: DescriptorSetHandle) -> usize {
+		for root_index in 0..self.descriptor_sets.len() {
+			let mut sequence_index = 0;
+			let mut current = Some(DescriptorSetHandle(root_index as u64));
+			while let Some(handle) = current {
+				if handle == descriptor_set {
+					return sequence_index;
+				}
+				let Some(set) = self.descriptor_sets.get(handle.0 as usize) else {
+					break;
+				};
+				current = set.next.map(|handle| DescriptorSetHandle(handle.0));
+				sequence_index += 1;
+			}
+		}
+		0
 	}
 
 	fn descriptor_image(
@@ -6073,10 +6305,19 @@ impl Device {
 		descriptor_set: DescriptorSetHandle,
 		binding_index: u32,
 	) -> Option<&DescriptorSetBinding> {
+		let handle = self.descriptor_binding_handle_for_binding(descriptor_set, binding_index)?;
+		self.descriptor_bindings.get(handle.0 as usize)
+	}
+
+	fn descriptor_binding_handle_for_binding(
+		&self,
+		descriptor_set: DescriptorSetHandle,
+		binding_index: u32,
+	) -> Option<DescriptorSetBindingHandle> {
 		let set = self.descriptor_sets.get(descriptor_set.0 as usize)?;
 		set.bindings.iter().find_map(|handle| {
 			let binding = self.descriptor_bindings.get(handle.0 as usize)?;
-			(binding.binding_index == binding_index).then_some(binding)
+			(binding.binding_index == binding_index).then_some(*handle)
 		})
 	}
 
@@ -6149,13 +6390,15 @@ impl Device {
 		let descriptor_set_handle = binding.descriptor_set;
 		let binding_index = binding.binding_index;
 
+		self.clear_descriptor_tracking(descriptor_set_handle, binding_handle, binding_index, array_element);
+
 		let bindings = self.descriptors.entry(descriptor_set_handle).or_default();
 		let arrays = bindings.entry(binding_index).or_default();
 		arrays.insert(array_element, descriptor);
 
 		let mut record_resource = |resource: PrivateHandles| {
 			self.descriptor_set_to_resource
-				.entry((descriptor_set_handle, binding_index))
+				.entry((descriptor_set_handle, binding_index, array_element))
 				.or_default()
 				.insert(resource);
 			self.resource_to_descriptor
@@ -6176,10 +6419,36 @@ impl Device {
 			}
 			_ => {}
 		}
-		self.write_native_descriptor(binding_handle, descriptor, array_element);
+		self.dirty_descriptor_sets.insert(descriptor_set_handle);
 	}
 
-	fn refresh_native_descriptors_for_resource(&mut self, resource: PrivateHandles) {
+	/// Clears stale reverse mappings before a descriptor binding element is replaced.
+	fn clear_descriptor_tracking(
+		&mut self,
+		descriptor_set_handle: DescriptorSetHandle,
+		binding_handle: DescriptorSetBindingHandle,
+		binding_index: u32,
+		array_element: u32,
+	) {
+		let key = (descriptor_set_handle, binding_index, array_element);
+		let Some(resources) = self.descriptor_set_to_resource.remove(&key) else {
+			return;
+		};
+
+		for resource in resources {
+			let remove_resource = if let Some(bindings) = self.resource_to_descriptor.get_mut(&resource) {
+				bindings.remove(&(binding_handle, array_element));
+				bindings.is_empty()
+			} else {
+				false
+			};
+			if remove_resource {
+				self.resource_to_descriptor.remove(&resource);
+			}
+		}
+	}
+
+	fn mark_descriptors_for_resource_dirty(&mut self, resource: PrivateHandles) {
 		let Some(bindings) = self.resource_to_descriptor.get(&resource).cloned() else {
 			return;
 		};
@@ -6187,13 +6456,37 @@ impl Device {
 			let Some(binding) = self.descriptor_bindings.get(binding_handle.0 as usize) else {
 				continue;
 			};
-			let Some(descriptor) = self
+			if self
 				.descriptors
 				.get(&binding.descriptor_set)
 				.and_then(|bindings| bindings.get(&binding.binding_index))
 				.and_then(|array_elements| array_elements.get(&array_element))
-				.copied()
-			else {
+				.is_some()
+			{
+				self.dirty_descriptor_sets.insert(binding.descriptor_set);
+			}
+		}
+	}
+
+	/// Rewrites native DX12 descriptors for a dirty per-frame descriptor set before it is bound.
+	fn materialize_descriptor_set(&mut self, descriptor_set_handle: DescriptorSetHandle) {
+		if !self.dirty_descriptor_sets.remove(&descriptor_set_handle) {
+			return;
+		}
+		let writes = self
+			.descriptors
+			.get(&descriptor_set_handle)
+			.into_iter()
+			.flat_map(|bindings| bindings.iter())
+			.flat_map(|(binding_index, array_elements)| {
+				array_elements
+					.iter()
+					.map(move |(array_element, descriptor)| (*binding_index, *array_element, *descriptor))
+			})
+			.collect::<SmallVec<[(u32, u32, WriteData); 16]>>();
+
+		for (binding_index, array_element, descriptor) in writes {
+			let Some(binding_handle) = self.descriptor_binding_handle_for_binding(descriptor_set_handle, binding_index) else {
 				continue;
 			};
 			self.write_native_descriptor(binding_handle, descriptor, array_element);
@@ -6212,6 +6505,9 @@ impl Device {
 		let descriptor_set_handle = binding.descriptor_set;
 		let descriptor_type = binding.descriptor_type;
 		let binding_index = binding.binding_index;
+		let buffer_read_only = binding.buffer_read_only;
+		let structured_buffer_stride = Self::structured_buffer_stride(binding);
+		let sequence_index = self.descriptor_set_sequence_index(descriptor_set_handle);
 		let Some(set) = self.descriptor_sets.get(descriptor_set_handle.0 as usize) else {
 			return;
 		};
@@ -6229,25 +6525,29 @@ impl Device {
 					return;
 				};
 				let cpu_handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
+				let Some(resource) = self.buffer_resource_for_sequence(handle, sequence_index as u8) else {
+					return;
+				};
 				let Some(buffer) = self.buffer(handle) else {
 					return;
 				};
-				let Some(resource) = buffer.resource.as_ref() else {
-					return;
-				};
+				let buffer_size = buffer.size;
+				let heap_kind = self
+					.buffer_heap_kind_for_sequence(handle, sequence_index as u8)
+					.unwrap_or(buffer.heap_kind);
 				match descriptor_type {
 					DescriptorType::UniformBuffer => {
 						let desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
 							BufferLocation: unsafe { resource.GetGPUVirtualAddress() },
-							SizeInBytes: Self::align_up(buffer.size.max(1), 256) as u32,
+							SizeInBytes: Self::align_up(buffer_size.max(1), 256) as u32,
 						};
 						unsafe {
 							self.device.CreateConstantBufferView(Some(&desc), cpu_handle);
 						}
 					}
 					DescriptorType::StorageBuffer => {
-						let stride = Self::structured_buffer_stride(binding);
-						if binding.buffer_read_only {
+						let stride = structured_buffer_stride;
+						if buffer_read_only {
 							let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
 								Format: DXGI_FORMAT_UNKNOWN,
 								ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
@@ -6255,14 +6555,14 @@ impl Device {
 								Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
 									Buffer: D3D12_BUFFER_SRV {
 										FirstElement: 0,
-										NumElements: (buffer.size / stride as usize).max(1) as u32,
+										NumElements: (buffer_size / stride as usize).max(1) as u32,
 										StructureByteStride: stride,
 										Flags: D3D12_BUFFER_SRV_FLAG_NONE,
 									},
 								},
 							};
 							unsafe {
-								self.device.CreateShaderResourceView(resource, Some(&desc), cpu_handle);
+								self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
 							}
 						} else {
 							let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
@@ -6271,7 +6571,7 @@ impl Device {
 								Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
 									Buffer: D3D12_BUFFER_UAV {
 										FirstElement: 0,
-										NumElements: (buffer.size / stride as usize).max(1) as u32,
+										NumElements: (buffer_size / stride as usize).max(1) as u32,
 										StructureByteStride: stride,
 										CounterOffsetInBytes: 0,
 										Flags: D3D12_BUFFER_UAV_FLAG_NONE,
@@ -6279,9 +6579,9 @@ impl Device {
 								},
 							};
 							unsafe {
-								if buffer.heap_kind == BufferHeapKind::Default {
+								if heap_kind == BufferHeapKind::Default {
 									self.device.CreateUnorderedAccessView(
-										resource,
+										&resource,
 										None::<&ID3D12Resource>,
 										Some(&desc),
 										cpu_handle,
@@ -6298,7 +6598,7 @@ impl Device {
 						}
 					}
 					_ => {
-						let stride = Self::structured_buffer_stride(binding);
+						let stride = structured_buffer_stride;
 						let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
 							Format: DXGI_FORMAT_UNKNOWN,
 							ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
@@ -6306,14 +6606,14 @@ impl Device {
 							Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
 								Buffer: D3D12_BUFFER_SRV {
 									FirstElement: 0,
-									NumElements: (buffer.size / stride as usize).max(1) as u32,
+									NumElements: (buffer_size / stride as usize).max(1) as u32,
 									StructureByteStride: stride,
 									Flags: D3D12_BUFFER_SRV_FLAG_NONE,
 								},
 							},
 						};
 						unsafe {
-							self.device.CreateShaderResourceView(resource, Some(&desc), cpu_handle);
+							self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
 						}
 					}
 				}
@@ -6326,6 +6626,7 @@ impl Device {
 					binding_index,
 					array_element,
 					handle,
+					sequence_index as u8,
 					cbv_srv_uav_heap.as_ref(),
 				);
 			}
@@ -6340,6 +6641,7 @@ impl Device {
 					binding_index,
 					array_element,
 					image_handle,
+					sequence_index as u8,
 					cbv_srv_uav_heap.as_ref(),
 				);
 				self.write_native_sampler_descriptor(
@@ -6435,6 +6737,7 @@ impl Device {
 		binding_index: u32,
 		array_element: u32,
 		image_handle: crate::BaseImageHandle,
+		sequence_index: u8,
 		heap: Option<&ID3D12DescriptorHeap>,
 	) {
 		let Some(heap) = heap else {
@@ -6444,10 +6747,10 @@ impl Device {
 			return;
 		};
 		let cpu_handle = self.descriptor_cpu_handle(heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, slot);
-		let Some(image) = self.images.get(image_handle.0 as usize) else {
+		let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
 			return;
 		};
-		let Some(resource) = image.resource.clone() else {
+		let Some(image) = self.images.get(image_handle.0 as usize) else {
 			return;
 		};
 		let Some(format) = Self::dxgi_shader_resource_format(image.format) else {
@@ -6641,6 +6944,10 @@ impl Device {
 		}
 
 		let (resource, mapped, heap_kind) = self.create_buffer_resource(layout.size(), device_accesses);
+		let frame_resources = match storage_kind {
+			BufferStorage::Static => None,
+			BufferStorage::Dynamic => Some((0..self.frames as usize).map(|_| None).collect()),
+		};
 		let buffer = Buffer {
 			data,
 			layout,
@@ -6650,6 +6957,7 @@ impl Device {
 			resource,
 			mapped,
 			heap_kind,
+			frame_resources,
 		};
 
 		let storage = match storage_kind {
@@ -6687,6 +6995,127 @@ impl Device {
 			self.dynamic_buffers.get_mut(index)
 		} else {
 			self.buffers.get_mut(index)
+		}
+	}
+
+	fn ensure_buffer_frame_storage(&mut self, buffer_handle: BaseBufferHandle, sequence_index: u8) {
+		let (_, dynamic) = Self::buffer_index(buffer_handle);
+		if !dynamic || sequence_index == 0 {
+			return;
+		}
+
+		let (layout, access) = match self.buffer(buffer_handle) {
+			Some(buffer) if buffer.frame_resources.is_some() => (buffer.layout, buffer.access),
+			_ => return,
+		};
+		let frame_index = sequence_index as usize;
+		let needs_storage = self
+			.buffer(buffer_handle)
+			.and_then(|buffer| buffer.frame_resources.as_ref())
+			.and_then(|resources| resources.get(frame_index))
+			.and_then(|resource| resource.as_ref())
+			.is_none();
+		if !needs_storage {
+			return;
+		}
+
+		let frame_storage = self.create_buffer_frame_storage(layout, access);
+		let Some(buffer) = self.buffer_mut(buffer_handle) else {
+			return;
+		};
+		let Some(resources) = buffer.frame_resources.as_mut() else {
+			return;
+		};
+		if resources.len() <= frame_index {
+			resources.resize_with(frame_index + 1, || None);
+		}
+		resources[frame_index] = Some(frame_storage);
+	}
+
+	fn buffer_resource_for_sequence(&mut self, buffer_handle: BaseBufferHandle, sequence_index: u8) -> Option<ID3D12Resource> {
+		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
+		let buffer = self.buffer(buffer_handle)?;
+		if sequence_index == 0 {
+			return buffer.resource.clone();
+		}
+		buffer
+			.frame_resources
+			.as_ref()
+			.and_then(|resources| resources.get(sequence_index as usize))
+			.and_then(|resource| resource.as_ref())
+			.and_then(|resource| resource.resource.clone())
+			.or_else(|| buffer.resource.clone())
+	}
+
+	fn buffer_heap_kind_for_sequence(&self, buffer_handle: BaseBufferHandle, sequence_index: u8) -> Option<BufferHeapKind> {
+		let buffer = self.buffer(buffer_handle)?;
+		if sequence_index == 0 {
+			return Some(buffer.heap_kind);
+		}
+		buffer
+			.frame_resources
+			.as_ref()
+			.and_then(|resources| resources.get(sequence_index as usize))
+			.and_then(|resource| resource.as_ref())
+			.map(|resource| resource.heap_kind)
+			.or(Some(buffer.heap_kind))
+	}
+
+	fn buffer_storage_parts_for_sequence(
+		&self,
+		buffer_handle: BaseBufferHandle,
+		sequence_index: u8,
+	) -> Option<(*const u8, usize)> {
+		let buffer = self.buffer(buffer_handle)?;
+		if sequence_index == 0 {
+			return Some((buffer.data.cast_const(), buffer.size));
+		}
+		buffer
+			.frame_resources
+			.as_ref()
+			.and_then(|resources| resources.get(sequence_index as usize))
+			.and_then(|resource| resource.as_ref())
+			.map(|resource| (resource.data.cast_const(), buffer.size))
+			.or(Some((buffer.data.cast_const(), buffer.size)))
+	}
+
+	fn buffer_storage_parts_mut_for_sequence(
+		&mut self,
+		buffer_handle: BaseBufferHandle,
+		sequence_index: u8,
+	) -> Option<(*mut u8, usize)> {
+		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
+		let buffer = self.buffer_mut(buffer_handle)?;
+		if sequence_index == 0 {
+			return Some((buffer.data, buffer.size));
+		}
+		let size = buffer.size;
+		buffer
+			.frame_resources
+			.as_mut()
+			.and_then(|resources| resources.get_mut(sequence_index as usize))
+			.and_then(|resource| resource.as_mut())
+			.map(|resource| (resource.data, size))
+			.or(Some((buffer.data, size)))
+	}
+
+	fn create_buffer_frame_storage(&self, layout: Layout, access: DeviceAccesses) -> BufferFrameStorage {
+		let data = if layout.size() == 0 {
+			std::ptr::NonNull::<u8>::dangling().as_ptr()
+		} else {
+			unsafe { alloc::alloc_zeroed(layout) }
+		};
+		if layout.size() != 0 && data.is_null() {
+			panic!("Failed to allocate buffer storage. The most likely cause is that the system is out of memory.");
+		}
+
+		let (resource, mapped, heap_kind) = self.create_buffer_resource(layout.size(), access);
+		BufferFrameStorage {
+			data,
+			layout,
+			resource,
+			mapped,
+			heap_kind,
 		}
 	}
 
@@ -6948,10 +7377,36 @@ impl Device {
 		}
 	}
 
+	fn sync_buffer_frame_storage(frame_storage: &BufferFrameStorage, size: usize, access: DeviceAccesses) {
+		if frame_storage.mapped.is_null() || size == 0 || !access.intersects(DeviceAccesses::CpuWrite) {
+			return;
+		}
+
+		unsafe {
+			std::ptr::copy_nonoverlapping(frame_storage.data, frame_storage.mapped, size);
+		}
+	}
+
 	pub(crate) fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
+		self.sync_buffer_for_sequence(buffer_handle, 0);
+	}
+
+	pub(crate) fn sync_buffer_for_sequence(&mut self, buffer_handle: impl Into<BaseBufferHandle>, sequence_index: u8) {
 		let buffer_handle = buffer_handle.into();
+		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
 		if let Some(buffer) = self.buffer(buffer_handle) {
-			Self::sync_buffer_storage(buffer);
+			if sequence_index == 0 {
+				Self::sync_buffer_storage(buffer);
+				return;
+			}
+			if let Some(frame_storage) = buffer
+				.frame_resources
+				.as_ref()
+				.and_then(|resources| resources.get(sequence_index as usize))
+				.and_then(|resource| resource.as_ref())
+			{
+				Self::sync_buffer_frame_storage(frame_storage, buffer.size, buffer.access);
+			}
 		}
 	}
 }
@@ -7018,6 +7473,16 @@ pub(crate) struct Buffer {
 	resource: Option<ID3D12Resource>,
 	mapped: *mut u8,
 	heap_kind: BufferHeapKind,
+	frame_resources: Option<Vec<Option<BufferFrameStorage>>>,
+}
+
+/// The `BufferFrameStorage` struct provides lazy frame-local backing storage for dynamic DX12 buffers.
+struct BufferFrameStorage {
+	data: *mut u8,
+	layout: Layout,
+	resource: Option<ID3D12Resource>,
+	mapped: *mut u8,
+	heap_kind: BufferHeapKind,
 }
 
 enum BufferStorage {
@@ -7067,6 +7532,24 @@ impl Drop for Buffer {
 	}
 }
 
+impl Drop for BufferFrameStorage {
+	fn drop(&mut self) {
+		if let Some(resource) = self.resource.as_ref() {
+			unsafe {
+				resource.Unmap(0, None);
+			}
+		}
+		if self.layout.size() == 0 {
+			return;
+		}
+		if !self.data.is_null() {
+			unsafe {
+				alloc::dealloc(self.data, self.layout);
+			}
+		}
+	}
+}
+
 pub(crate) struct Image {
 	extent: Extent,
 	format: Formats,
@@ -7076,6 +7559,7 @@ pub(crate) struct Image {
 	resource: Option<ID3D12Resource>,
 	data: Option<Vec<u8>>,
 	frame_data: Option<Vec<Vec<u8>>>,
+	frame_resources: Option<Vec<Option<ID3D12Resource>>>,
 }
 
 struct Sampler {
@@ -7573,6 +8057,7 @@ use std::{
 
 use ::utils::hash::{HashMap, HashSet};
 use ::utils::Extent;
+use smallvec::SmallVec;
 use windows::core::{BOOL, PCSTR, PCWSTR};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::Dxc::{

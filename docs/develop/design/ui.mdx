@@ -1,0 +1,47 @@
+---
+title: UI Module
+description: A short orientation to the early retained UI module.
+icon: PanelTop
+---
+
+The UI module is still incipient, but its direction is clear: Byte Engine is building a retained, async-friendly UI layer that can live inside the engine render loop.
+
+The current surface is centered on async component functions that receive a layout `Context`.
+Those functions create elements through stable named slots, wait for events, and can mount child components that return values to their caller.
+The runtime keeps retained state between evaluations so application code does not have to rebuild every interaction from scratch.
+
+## Main pieces
+
+- `layout::engine::Engine` evaluates retained UI and produces render data.
+- `Context` and `ContainerContext` are the component-facing construction and event APIs.
+- `Container`, `Text`, `TextField`, `Image`, `Curve`, and `Shape` are the current built-in primitives.
+- `UiRenderPass` turns evaluated UI render data into GPU draw work.
+- `ConcreteStyle`, `ConcreteLayer`, `Transform`, and `Visual` hold styling, animation-oriented transforms, and opacity.
+
+The layout layer is intentionally small.
+Containers own sizing, positioning, flow, clipping, style, and visual data.
+Flow functions such as row, column, grid, and centered variants place children.
+Transforms are best treated as animation and presentation state, while position and sizing describe stable layout.
+
+## Events and focus
+
+UI events are exposed as futures.
+A component can wait for pointer-style events, keys, text edits, timers, or render ticks.
+Text input is app-owned: `TextField` emits edit deltas such as inserted and deleted characters, and application state decides how to apply them.
+
+Focus is explicit.
+Components can request or release focus, and focused elements are the ones that should receive key and text-edit events.
+
+## Current limitations
+
+The module is not a full widget toolkit yet.
+It is better understood as a retained primitive layer plus async interaction model.
+Higher-level widgets should stay small and should prefer normal composition over new runtime machinery.
+
+When adding UI features, keep the existing route in mind:
+
+- build or update a primitive
+- let layout evaluate geometry, clipping, and retained identity
+- let `UiRenderPass` consume the render data
+
+That path keeps UI code testable and avoids coupling application widgets directly to renderer resource ownership.

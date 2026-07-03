@@ -10,6 +10,6 @@ export const Route = createFileRoute('/api/search')({
 	server: {
 		handlers: {
 			GET: async ({ request }) => server.GET(request),
-		}
-	}
+		},
+	},
 });

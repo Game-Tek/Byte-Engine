@@ -1,84 +1,121 @@
+//! Application-facing action declarations.
+//!
+//! Actions decouple gameplay concepts from physical controls. Create an
+//! [`Action`] with bindings such as `Keyboard.W` or `Gamepad.LeftStick`, then
+//! submit it through the action factory owned by
+//! [`crate::application::graphics::GraphicsApplication`]. The standard trigger
+//! names are defined by [`crate::input::utils`].
+
 use math::{Quaternion, Vector2, Vector3};
 use utils::RGBA;
 
-use crate::core::{property::Property, Entity, EntityHandle};
-
+use super::TriggerHandle;
+use super::{input_manager::TriggerReference, Function, TickPolicy, Types, Value};
+use crate::core::{Entity, EntityHandle};
 use crate::input::ValueMapping;
 
-use super::TriggerHandle;
-use super::{input_manager::TriggerReference, Function, Types, Value};
-
-trait ActionLike: Entity {
+trait ActionLike {
 	fn get_bindings(&self) -> &[ActionBindingDescription];
 	fn get_inputs(&self) -> &[TriggerMapping];
 }
 
-pub struct Action<T: InputValue> {
+#[derive(Clone)]
+/// The [`Action`] struct describes an application-level input value and the
+/// physical trigger bindings that can produce it.
+pub struct Action {
 	pub(crate) name: &'static str,
 	pub(crate) bindings: Vec<ActionBindingDescription>,
 	pub(crate) inputs: Vec<TriggerMapping>,
-	pub(crate) value: Property<T>,
+	pub(crate) r#type: Types,
+	pub(crate) tick_policy: TickPolicy,
 }
 
-impl <T: InputValue> Entity for Action<T> {}
-
-impl <T: InputValue> ActionLike for Action<T> {
-	fn get_bindings(&self) -> &[ActionBindingDescription] { &self.bindings }
-	fn get_inputs(&self) -> &[TriggerMapping] { &self.inputs }
+impl ActionLike for Action {
+	fn get_bindings(&self) -> &[ActionBindingDescription] {
+		&self.bindings
+	}
+	fn get_inputs(&self) -> &[TriggerMapping] {
+		&self.inputs
+	}
 }
 
-/// This trait allows us to extract the `Types` from a generic type as a convenience to clients and also allows us to constrain generic types to only those that are valid for input values.
+/// The [`InputValue`] trait marks typed values supported by the input runtime.
+///
+/// It is primarily used with [`crate::input::input_trigger::TriggerDescription`]
+/// and should only be implemented when a matching [`Value`] representation
+/// exists.
 pub trait InputValue: Default + Clone + Copy + 'static {
 	fn get_type() -> Types;
 }
 
 impl InputValue for bool {
-	fn get_type() -> Types { Types::Bool }
+	fn get_type() -> Types {
+		Types::Boolean
+	}
 }
 
 impl InputValue for i32 {
-	fn get_type() -> Types { Types::Int }
+	fn get_type() -> Types {
+		Types::Int
+	}
 }
 
 impl InputValue for char {
-	fn get_type() -> Types { Types::Unicode }
+	fn get_type() -> Types {
+		Types::Unicode
+	}
 }
 
 impl InputValue for f32 {
-	fn get_type() -> Types { Types::Float }
+	fn get_type() -> Types {
+		Types::Float
+	}
 }
 
 impl InputValue for Vector2 {
-	fn get_type() -> Types { Types::Vector2 }
+	fn get_type() -> Types {
+		Types::Vector2
+	}
 }
 
 impl InputValue for Vector3 {
-	fn get_type() -> Types { Types::Vector3 }
+	fn get_type() -> Types {
+		Types::Vector3
+	}
 }
 
 impl InputValue for Quaternion {
-	fn get_type() -> Types { Types::Quaternion }
+	fn get_type() -> Types {
+		Types::Quaternion
+	}
 }
 
 impl InputValue for RGBA {
-	fn get_type() -> Types { Types::Rgba }
+	fn get_type() -> Types {
+		Types::Rgba
+	}
 }
 
-impl <T: InputValue + Clone + 'static> Action<T> {
-	pub fn new(name: &'static str, bindings: &[ActionBindingDescription]) -> Action<T> {
+impl Action {
+	pub fn new(name: &'static str, bindings: &[ActionBindingDescription], r#type: Types) -> Action {
 		Action {
 			name,
 			bindings: bindings.to_vec(),
-			value: Property::default(),
 			inputs: Vec::new(),
+			r#type,
+			tick_policy: TickPolicy::default(),
 		}
 	}
 
-	pub fn value(&self) -> &Property<T> { &self.value }
-	pub fn value_mut(&mut self) -> &mut Property<T> { &mut self.value }
+	/// Sets the tick policy for this action, controlling how frequently it emits events.
+	pub fn tick_policy(mut self, tick_policy: TickPolicy) -> Self {
+		self.tick_policy = tick_policy;
+		self
+	}
 }
 
-/// An action binding description is a description of how an input source is mapped to a value for an action.
+/// The [`ActionBindingDescription`] struct connects a named or handled trigger to
+/// one contribution to an [`Action`].
 #[derive(Copy, Clone, Debug)]
 pub struct ActionBindingDescription {
 	pub(crate) input_source: TriggerReference,
@@ -99,7 +136,8 @@ impl ActionBindingDescription {
 	}
 }
 
-/// A trigger mapping is a mapping of an input trigger to a value for an action.
+/// The [`TriggerMapping`] struct is the resolved form of an action binding used by
+/// the evaluator after trigger registration.
 #[derive(Copy, Clone, Debug)]
 pub struct TriggerMapping {
 	/// The handle to the trigger that this mapping is for.
@@ -111,5 +149,6 @@ pub struct TriggerMapping {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-/// Handle to an input event.
+/// The [`ActionHandle`] struct identifies an action registered with an
+/// [`crate::input::InputManager`].
 pub struct ActionHandle(pub(super) u32);

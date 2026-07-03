@@ -1,83 +1,203 @@
+use smallvec::SmallVec;
 use utils::Extent;
 
-use crate::{AttachmentInformation, BaseBufferHandle, BindingTables, BottomLevelAccelerationStructureBuild, BufferDescriptor, BufferHandle, ClearValue, DescriptorSetHandle, DispatchExtent, ImageHandle, Layouts, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, RGBAu8, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureBuild};
+use crate::{
+	rt, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
+	BufferImageCopyDescriptor, ClearValue, DescriptorSetHandle, DispatchExtent, FrameKey, ImageBufferCopyDescriptor, Layouts,
+	MeshHandle, PipelineHandle, RGBAu8, SynchronizerHandle, TextureCopyHandle,
+};
 
-pub trait CommandBufferRecordable where Self: Sized {
-	fn sync_buffers(&mut self);
-	fn sync_textures(&mut self,);
+/// The `DebugLabelWriter` struct exists so command-buffer implementations can provide temporary label storage without forcing callers to allocate strings.
+pub struct DebugLabelWriter {
+	bytes: SmallVec<[u8; 128]>,
+}
 
-	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &TopLevelAccelerationStructureBuild);
-	fn build_bottom_level_acceleration_structures(&mut self, acceleration_structure_builds: &[BottomLevelAccelerationStructureBuild]);
+impl DebugLabelWriter {
+	/// Creates an empty label writer with inline storage for common debug-label sizes.
+	pub fn new() -> Self {
+		Self { bytes: SmallVec::new() }
+	}
+
+	/// Returns the written label as UTF-8 text.
+	pub fn as_str(&self) -> &str {
+		std::str::from_utf8(&self.bytes).expect("Invalid debug label. The label writer most likely received non UTF-8 bytes.")
+	}
+
+	/// Writes text into the label buffer.
+	pub fn write_str(&mut self, s: &str) -> std::fmt::Result {
+		self.bytes.extend_from_slice(s.as_bytes());
+		Ok(())
+	}
+
+	/// Appends a null terminator so the label can be passed to C APIs.
+	pub fn null_terminate(&mut self) {
+		self.bytes.push(0);
+	}
+
+	/// Returns the written bytes for backend-specific native API calls.
+	pub fn as_bytes(&self) -> &[u8] {
+		&self.bytes
+	}
+}
+
+impl Default for DebugLabelWriter {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl std::fmt::Write for DebugLabelWriter {
+	fn write_str(&mut self, s: &str) -> std::fmt::Result {
+		self.write_str(s)
+	}
+}
+
+pub trait CommandBuffer {
+	/// Starts recording commands into an existing command buffer.
+	fn create_command_buffer_recording(&mut self) -> impl CommandBufferRecording + CommonCommandBufferMode;
+}
+
+/// The `CommandBufferRecording` trait captures backend command encoding so GPU work can be recorded before submission.
+pub trait CommandBufferRecording
+where
+	Self: Sized,
+{
+	/// Returns the frame key that scoped this command-buffer recording.
+	fn frame_key(&self) -> FrameKey;
+
+	/// Records a build for one top-level acceleration structure.
+	fn build_top_level_acceleration_structure(&mut self, acceleration_structure_build: &rt::TopLevelAccelerationStructureBuild);
+	/// Records builds for one or more bottom-level acceleration structures.
+	fn build_bottom_level_acceleration_structures(
+		&mut self,
+		acceleration_structure_builds: &[rt::BottomLevelAccelerationStructureBuild],
+	);
 
 	/// Starts a render pass on the GPU.
 	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
-	fn start_render_pass(&mut self, extent: Extent, attachments: &[AttachmentInformation]) -> &mut impl RasterizationRenderPassMode;
+	fn start_render_pass(
+		&mut self,
+		extent: Extent,
+		attachments: &[AttachmentInformation],
+	) -> &mut impl RasterizationRenderPassMode;
 
-	fn clear_images(&mut self, textures: &[(ImageHandle, ClearValue)]);
+	/// Clears the provided images to their requested values.
+	fn clear_images(&mut self, textures: &[(BaseImageHandle, ClearValue)]);
+	/// Clears the provided buffers before later GPU work consumes them.
 	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]);
 
-	fn transfer_textures(&mut self, texture_handles: &[ImageHandle]) -> Vec<TextureCopyHandle>;
+	/// Copies byte ranges between buffers.
+	fn copy_buffers(&mut self, copies: &[BufferCopyDescriptor]);
+	/// Copies buffer byte ranges into images.
+	fn copy_buffer_to_images(&mut self, copies: &[BufferImageCopyDescriptor]);
+	/// Copies images into buffer byte ranges.
+	fn copy_images_to_buffer(&mut self, copies: &[ImageBufferCopyDescriptor]);
+
+	/// Records copies that make image data available to the CPU.
+	fn transfer_textures(&mut self, texture_handles: &[BaseImageHandle]) -> Vec<TextureCopyHandle>;
 
 	/// Copies image data from a CPU accessible buffer to a GPU accessible image.
-	fn write_image_data(&mut self, image_handle: ImageHandle, data: &[RGBAu8]);
+	fn write_image_data(&mut self, image_handle: BaseImageHandle, data: &[RGBAu8]);
 
-	fn blit_image(&mut self, source_image: ImageHandle, source_layout: Layouts, destination_image: ImageHandle, destination_layout: Layouts);
+	/// Records an image blit between two images and layouts.
+	fn blit_image(
+		&mut self,
+		source_image: BaseImageHandle,
+		source_layout: Layouts,
+		destination_image: BaseImageHandle,
+		destination_layout: Layouts,
+	);
 
-	fn copy_to_swapchain(&mut self, source_texture_handle: ImageHandle, present_image_index: PresentKey ,swapchain_handle: SwapchainHandle);
-
-	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]);
-
-	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
-
-	fn execute(self, wait_for_synchronizer_handles: &[SynchronizerHandle], signal_synchronizer_handles: &[SynchronizerHandle], presentations: &[PresentKey], execution_synchronizer_handle: SynchronizerHandle);
+	/// Submits the recorded commands for execution.
+	fn execute(self, synchronizer: SynchronizerHandle);
 }
 
+/// The `CommonCommandBufferMode` trait exposes commands that stay valid across multiple command-buffer recording states.
 pub trait CommonCommandBufferMode {
-	fn bind_pipeline_layout(&mut self, pipeline_layout: PipelineLayoutHandle) -> &mut impl BoundPipelineLayoutMode;
+	/// Binds a compute pipeline so subsequent commands can dispatch compute work.
+	fn bind_compute_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundComputePipelineMode;
+	/// Binds a ray-tracing pipeline so subsequent commands can trace rays.
+	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode;
 
-	fn start_region(&self, name: &str);
+	/// Starts a named GPU debug region.
+	fn start_region(&self, write_label: impl FnOnce(&mut DebugLabelWriter) -> std::fmt::Result);
 
+	/// Ends the current GPU debug region.
 	fn end_region(&self);
 
 	/// Starts a debug region on the GPU and executes the closure.
-	fn region(&mut self, name: &str, f: impl FnOnce(&mut Self));
+	fn region(&mut self, write_label: impl FnOnce(&mut DebugLabelWriter) -> std::fmt::Result, f: impl FnOnce(&mut Self));
 }
 
+/// The `RasterizationRenderPassMode` trait represents the recording state inside an active raster render pass.
 pub trait RasterizationRenderPassMode: CommonCommandBufferMode {
+	/// Binds a raster pipeline for subsequent draw commands in the render pass.
+	fn bind_raster_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRasterizationPipelineMode;
+
+	/// Binds vertex buffers for subsequent draw commands.
+	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]);
+
+	/// Binds the index buffer for subsequent indexed draw commands.
+	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
+
 	/// Ends a render pass on the GPU.
 	fn end_render_pass(&mut self);
 }
 
+/// The `BoundPipelineLayoutMode` trait represents a recording state where pipeline layout resources can be bound.
 pub trait BoundPipelineLayoutMode: CommonCommandBufferMode {
-	/// Binds a raster pipeline to the GPU.
-	fn bind_raster_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRasterizationPipelineMode;
-	fn bind_compute_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundComputePipelineMode;
-	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode;
-
 	/// Binds a decriptor set on the GPU.
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self;
 
-	/// Writes to the push constant register.
-	fn write_to_push_constant(&mut self, offset: u32, data: &[u8]);
-
-	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T) where [(); std::mem::size_of::<T>()]: Sized;
+	/// Write data to the push constant register
+	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
+	where
+		[(); std::mem::size_of::<T>()]: Sized;
 }
 
+/// The `BoundRasterizationPipelineMode` trait represents a render-pass recording state with a raster pipeline bound for draw commands.
 pub trait BoundRasterizationPipelineMode: BoundPipelineLayoutMode + RasterizationRenderPassMode {
 	/// Draws a render system mesh.
 	fn draw_mesh(&mut self, mesh_handle: &MeshHandle);
 
-	fn draw_indexed(&mut self, index_count: u32, instance_count: u32, first_index: u32, vertex_offset: i32, first_instance: u32);
+	/// Records a non-indexed draw call.
+	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32);
 
+	/// Records an indexed draw call.
+	fn draw_indexed(
+		&mut self,
+		index_count: u32,
+		instance_count: u32,
+		first_index: u32,
+		vertex_offset: i32,
+		first_instance: u32,
+	);
+
+	/// Dispatches mesh shading workgroups.
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
 }
 
-pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecordable {
+/// The `BoundComputePipelineMode` trait represents a recording state with a compute pipeline bound for dispatch commands.
+pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecording {
+	/// Dispatches compute workgroups.
 	fn dispatch(&mut self, dispatch: DispatchExtent);
 
-	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[(u32, u32, u32); N]>, entry_index: usize);
+	/// Dispatches compute workgroups using parameters stored in a buffer.
+	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 4]; N]>, entry_index: usize);
 }
 
-pub trait BoundRayTracingPipelineMode: BoundPipelineLayoutMode + CommandBufferRecordable {
-	fn trace_rays(&mut self, binding_tables: BindingTables, x: u32, y: u32, z: u32);
+/// The `BoundRayTracingPipelineMode` trait represents a recording state with a ray-tracing pipeline bound for ray dispatch.
+pub trait BoundRayTracingPipelineMode: BoundPipelineLayoutMode + CommandBufferRecording {
+	/// Traces rays using the currently bound ray-tracing pipeline.
+	fn trace_rays(&mut self, binding_tables: rt::BindingTables, x: u32, y: u32, z: u32);
+}
+
+/// Enumerates the types of command buffers that can be created.
+pub enum CommandBufferType {
+	/// A command buffer that can perform graphics operations. Draws, blits, presentations, etc.
+	GRAPHICS,
+	/// A command buffer that can perform compute operations. Dispatches, etc.
+	COMPUTE,
+	/// A command buffer that is optimized for transfer operations. Copies, etc.
+	TRANSFER,
 }

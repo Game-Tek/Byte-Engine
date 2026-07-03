@@ -1,371 +1,637 @@
-use std::{
-	borrow::BorrowMut, io::Write, ops::{Deref, DerefMut}, rc::Rc, sync::Arc
-};
+//! Frame orchestration and ownership of graphics hardware resources.
+//!
+//! Applications register windows, pipeline managers, and post-scene
+//! [`crate::rendering::RenderPass`] values with [`Renderer`]. The graphics
+//! application owns frame timing and calls the renderer in lifecycle order.
 
-use ghi::{command_buffer::{BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecordable as _, RasterizationRenderPassMode as _}, device::Device as _, frame::Frame as _, raster_pipeline, vulkan::command_buffer};
-use resource_management::resource::resource_manager::ResourceManager;
-use utils::{hash::{HashMap, HashMapExt}, sync::RwLock, Extent, RGBA};
-
-use crate::{
-	core::{
-		entity::EntityBuilder, listener::{CreateEvent, Listener}, Entity, EntityHandle
-	}, rendering::window::Window
-};
-
-use super::{render_pass::{RenderPass, RenderPassBuilder}, texture_manager::TextureManager,};
-
-/// The `Renderer` class centralizes the management of the rendering tasks and state.
-/// It manages the creation of a Graphics Hardware Interfacec device and orchestrates render passes.
+/// The [`Renderer`] struct owns graphics queues, render targets, scene pipelines,
+/// and per-sink render passes.
+///
+/// Prefer the setup helpers in [`crate::application::graphics`] unless building
+/// a custom headed runtime.
 pub struct Renderer {
-	instance: ghi::Instance,
-	device: ghi::Device,
+	/// The GHI context where all rendering resources and operations are performed.
+	context: ghi::implementation::Context,
+	/// The GHI device that is used for rendering.
+	device: Arc<ghi::implementation::Device>,
+	/// The GHI instance that manages devices.
+	instance: ghi::implementation::Instance,
 
 	started_frame_count: usize,
 
 	frame_queue_depth: usize,
 
-	windows: Vec<(ghi::Window, ghi::SwapchainHandle)>,
+	/// A list of display windows and their associated swapchains.
+	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
+	/// A list of sink indices and their associated camera handles.
+	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
+	/// A list of cameras and their associated handles.
+	cameras: SmallVec<[(Handle, Camera); 16]>,
+
+	render_targets: RenderTargets,
+
+	render_passes: SmallVec<[Box<dyn RenderPass>; 64]>,
+	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
+	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
+	pending_swapchain_captures: SmallVec<[SwapchainCapture; 16]>,
+
+	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
+	pipeline_manager_resources_by_sink: SmallVec<[(PipelineManagerId, SinkId, Vec<(String, ghi::AccessPolicies)>); 64]>,
+
+	/// The GHI queue where graphics commands are submitted. The main rendering operations occur on this queue.
+	graphics_queue_handle: ghi::QueueHandle,
+	/// The GHI queue where transfer commands are submitted. Async transfer operations occur on this queue.
+	pub transfer_queue_handle: ghi::QueueHandle,
 
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
-
-	root_render_pass: RwLock<RootRenderPass>,
-
-	extent: Extent,
 }
 
 impl Renderer {
-	pub fn new(resource_manager_handle: EntityHandle<ResourceManager>, settings: Settings) -> Self {
-		let features = ghi::Features::new()
+	/// Creates a new renderer. Accepts a paramters interface.
+	///
+	/// # Paramters
+	/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
+	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
+	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
+	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics context. Defaults to true.
+	pub fn new(parameters: &dyn Parameters) -> Self {
+		let settings = Settings::new();
+
+		let settings = if let Some(param) = parameters.get_parameter("render.debug") {
+			settings.validation(param.as_bool_simple())
+		} else {
+			settings
+		};
+
+		let settings = if let Some(param) = parameters.get_parameter("render.debug.dump") {
+			settings.api_dump(param.as_bool_simple())
+		} else {
+			settings
+		};
+
+		let settings = if let Some(param) = parameters.get_parameter("render.debug.extended") {
+			settings.extended_validation(param.as_bool_simple())
+		} else {
+			settings
+		};
+
+		let settings = if let Some(param) = parameters.get_parameter("render.ghi.features.mesh-shading") {
+			settings.mesh_shading(param.as_bool_simple())
+		} else {
+			settings
+		};
+
+		let mut features = ghi::device::Features::new()
 			.validation(settings.validation)
 			.api_dump(settings.api_dump)
 			.gpu_validation(settings.extended_validation)
 			.debug_log_function(|message| {
-				log::error!("{}\n{}", message, std::backtrace::Backtrace::force_capture());
+				let backtrace = std::backtrace::Backtrace::force_capture().to_string();
+				let manifest_dir = env!("CARGO_MANIFEST_DIR");
+				let workspace_root = manifest_dir
+					.rsplit_once("/crates/")
+					.map(|(root, _)| root)
+					.unwrap_or(manifest_dir);
+
+				let mut filtered = String::new();
+				for line in backtrace.lines() {
+					if line.contains(workspace_root) {
+						filtered.push_str(line);
+						filtered.push('\n');
+					}
+				}
+
+				if filtered.trim().is_empty() {
+					log::error!("{}\n{}", message, backtrace);
+				} else {
+					log::error!("{}\n{}", message, filtered.trim_end());
+				}
 			})
 			.geometry_shader(false)
-			.mesh_shading(settings.mesh_shading)
-		;
+			.mesh_shading(settings.mesh_shading);
 
-		let mut instance = ghi::Instance::new(features.clone()).unwrap();
+		let mut instance = match ghi::implementation::Instance::new(features) {
+			Ok(instance) => instance,
+			Err(error) if settings.validation => {
+				log::warn!(
+					"Renderer validation was requested but could not be enabled: {error} Falling back to renderer validation disabled."
+				);
+				features = features.validation(false).gpu_validation(false).api_dump(false);
+				ghi::implementation::Instance::new(features).unwrap()
+			}
+			Err(error) => panic!("Failed to create GHI instance: {error}"),
+		};
 
-		let mut queue_handle = None;
+		let mut graphics_queue_handle = None;
+		let mut transfer_queue_handle = None;
 
-		let mut device = instance.create_device(features.clone(), &mut [(ghi::QueueSelection::new(ghi::CommandBufferType::GRAPHICS), &mut queue_handle)]).unwrap();
+		let device = instance
+			.create_device(
+				features,
+				&mut [
+					(
+						ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER),
+						&mut graphics_queue_handle,
+					),
+					(
+						ghi::QueueSelection::new(ghi::types::WorkloadTypes::TRANSFER),
+						&mut transfer_queue_handle,
+					),
+				],
+			)
+			.unwrap();
+		let mut context = device.create_context().unwrap();
+		let frame_queue_depth = 2;
+		context.set_frames_in_flight(frame_queue_depth);
 
-		let queue_handle = queue_handle.unwrap();
+		let graphics_queue_handle = graphics_queue_handle.unwrap();
+		let transfer_queue_handle = transfer_queue_handle.unwrap();
 
-		let extent = Extent::square(0); // Initialize extent to 0 to allocate memory lazily.
-
-		let result = device.create_image(
-			Some("result"),
-			extent,
-			ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized),
-			ghi::Uses::Storage | ghi::Uses::TransferDestination | ghi::Uses::TransferSource,
-			ghi::DeviceAccesses::DeviceOnly,
-			ghi::UseCases::DYNAMIC,
-			None,
-		);
-		let main = device.create_image(
-			Some("main"),
-			extent,
-			ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized),
-			ghi::Uses::Storage | ghi::Uses::TransferSource | ghi::Uses::BlitDestination | ghi::Uses::RenderTarget,
-			ghi::DeviceAccesses::DeviceOnly,
-			ghi::UseCases::DYNAMIC,
-			None,
-		);
-		let depth = device.create_image(
-			Some("depth"),
-			extent,
-			ghi::Formats::Depth32,
-			ghi::Uses::RenderTarget | ghi::Uses::Image,
-			ghi::DeviceAccesses::DeviceOnly,
-			ghi::UseCases::DYNAMIC,
-			None,
-		);
-
-		let render_command_buffer = device.create_command_buffer(Some("Render"), queue_handle);
-		let render_finished_synchronizer = device.create_synchronizer(Some("Render Finisished"), true);
-
-		let texture_manager = Arc::new(RwLock::new(TextureManager::new()));
-
-		let mut root_render_pass = RootRenderPass::new();
-
-		root_render_pass.add_image("main".to_string(), main, ghi::Formats::RGBA16(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
-		root_render_pass.add_image("depth".to_string(), depth, ghi::Formats::Depth32, ghi::Layouts::RenderTarget);
-		root_render_pass.add_image("result".to_string(), result, ghi::Formats::RGBA8(ghi::Encodings::UnsignedNormalized), ghi::Layouts::RenderTarget);
+		let render_command_buffer = context
+			.queue_reference(graphics_queue_handle)
+			.create_command_buffer(Some("Render"));
+		let render_finished_synchronizer = context.create_synchronizer(Some("Render Finisished"), true);
 
 		Renderer {
+			context,
+			device: Arc::new(device),
 			instance,
-			device,
 
 			started_frame_count: 0,
 
-			frame_queue_depth: 2,
+			frame_queue_depth: frame_queue_depth as usize,
 
-			windows: Vec::with_capacity(16),
+			windows: SmallVec::with_capacity(16),
+			sink_cameras: SmallVec::with_capacity(16),
+			cameras: SmallVec::with_capacity(16),
+
+			render_targets: RenderTargets::new(),
+
+			render_passes: SmallVec::with_capacity(64),
+			render_passes_by_sink: SmallVec::with_capacity(32),
+			post_scene_render_pass_factories: SmallVec::with_capacity(16),
+			pending_swapchain_captures: SmallVec::with_capacity(16),
+
+			pipeline_managers: SmallVec::with_capacity(8),
+			pipeline_manager_resources_by_sink: SmallVec::with_capacity(64),
+
+			graphics_queue_handle,
+			transfer_queue_handle,
 
 			render_command_buffer,
 			render_finished_synchronizer,
-
-			root_render_pass: RwLock::new(root_render_pass),
-
-			extent,
 		}
 	}
 
-	pub fn add_render_pass<T: RenderPass + Entity + 'static>(&mut self, creator: impl FnOnce(&mut RenderPassBuilder<'_>) -> EntityHandle<T>) {
-		let read_attachments = T::get_read_attachments();
+	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
+		let pipeline_manager_id = self.pipeline_managers.len();
+		{
+			let sink_swapchains: SmallVec<[(SinkId, ghi::SwapchainHandle); 16]> = self
+				.sink_cameras
+				.iter()
+				.map(|(sink_id, _)| (*sink_id, self.windows[*sink_id].1))
+				.collect();
+			for (sink_id, swapchain) in sink_swapchains {
+				let mut rpb = RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
 
-		let mut root_render_pass = self.root_render_pass.write();
+				pipeline_manager.create_sink(sink_id, &mut rpb);
+				let consumed_resources = rpb
+					.consumed_resources
+					.iter()
+					.map(|(name, access)| ((*name).to_string(), *access))
+					.collect();
+				self.pipeline_manager_resources_by_sink
+					.push((pipeline_manager_id, sink_id, consumed_resources));
 
-		if !read_attachments.iter().all(|a| root_render_pass.does_target_exist(a)) {
-			return;
+				if rpb.consumed_resources.is_empty() {
+					log::debug!("No resources consumed by scene manager");
+				}
+			}
 		}
 
-		let mut render_pass_builder = RenderPassBuilder::new(&mut self.device);
-
-		let main_image = root_render_pass.images.get("main").unwrap().clone();
-		let depth_image = root_render_pass.images.get("depth").unwrap().clone();
-		let result_image = root_render_pass.images.get("result").unwrap().clone();
-
-		render_pass_builder.images.insert("main".to_string(), (main_image.0, main_image.1, 0));
-		render_pass_builder.images.insert("depth".to_string(), (depth_image.0, depth_image.1, 0));
-		render_pass_builder.images.insert("result".to_string(), (result_image.0, result_image.1, 0));
-
-		let render_pass = creator(&mut render_pass_builder,);
-
-		root_render_pass.add_render_pass(render_pass, render_pass_builder);
+		self.pipeline_managers.push(Box::new(pipeline_manager));
 	}
 
-	pub fn update_windows(&mut self) -> impl Iterator<Item = ghi::WindowIterator> {
-		self.windows.iter_mut().map(|(window, _)| {
-			window.poll()
-		})
+	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, sink_id: SinkId) {
+		let render_pass_id = self.render_passes.len();
+		self.render_passes.push(render_pass);
+		self.render_passes_by_sink.push((render_pass_id, sink_id));
+	}
+
+	/// Registers a render pass factory that will be instantiated for every current and future sink.
+	pub fn add_post_scene_render_pass_for_all_sinks<F>(&mut self, render_pass_factory: F)
+	where
+		F: for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass> + 'static,
+	{
+		let render_pass_factory: Box<RenderPassFactory> = Box::new(render_pass_factory);
+		let sink_ids: SmallVec<[usize; 16]> = self.sink_cameras.iter().map(|(sink_id, _)| *sink_id).collect();
+
+		for sink_id in sink_ids {
+			let render_pass = {
+				let swapchain = self.windows[sink_id].1;
+				let mut render_pass_builder =
+					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				render_pass_factory(&mut render_pass_builder)
+			};
+
+			self.add_render_pass(render_pass, sink_id);
+		}
+
+		self.post_scene_render_pass_factories.push(render_pass_factory);
+	}
+
+	/// Instantiates all registered post-scene render pass factories for a given sink.
+	fn add_post_scene_render_passes_for_sink(&mut self, sink_id: SinkId) {
+		let mut render_passes_for_sink: SmallVec<[Box<dyn RenderPass>; 16]> = SmallVec::new();
+
+		let swapchain = self.windows[sink_id].1;
+
+		for render_pass_factory in &self.post_scene_render_pass_factories {
+			let render_pass = {
+				let mut render_pass_builder =
+					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				render_pass_factory(&mut render_pass_builder)
+			};
+
+			render_passes_for_sink.push(render_pass);
+		}
+
+		for render_pass in render_passes_for_sink {
+			self.add_render_pass(render_pass, sink_id);
+		}
+	}
+
+	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::window::Events> + 'a> + 'a {
+		self.windows.iter_mut().map(|(window, _)| window.poll())
+	}
+
+	/// Schedules copying a sink's swapchain image into a buffer during the next prepared frame.
+	pub fn capture_swapchain_to_buffer(
+		&mut self,
+		sink_id: SinkId,
+		destination_buffer: impl Into<ghi::BaseBufferHandle>,
+		destination_offset: usize,
+		destination_bytes_per_row: usize,
+		destination_bytes_per_image: usize,
+	) {
+		self.pending_swapchain_captures.push(SwapchainCapture {
+			sink_id,
+			destination_buffer: destination_buffer.into(),
+			destination_offset,
+			destination_bytes_per_row,
+			destination_bytes_per_image,
+		});
 	}
 
 	/// This function prepares a frame by invoking multiple render passes.
 	/// If no swapchains are available no rendering/execution will be performed.
 	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
-	pub fn prepare(&'_ mut self) -> Option<RenderMessage<'_>> {
-		let Some(&swapchain_handle) = self.windows.first().map(|(_, s)| s) else {
-			log::warn!("No swapchain available to present to. Skipping rendering!");
-			return None;
+	pub fn prepare(
+		&'_ mut self,
+		transforms_listener: &mut impl Listener<TransformationUpdate>,
+		frame_allocator: &bumpalo::Bump,
+	) {
+		let span = debug_span!(
+			"Renderer::prepare",
+			frame = self.started_frame_count,
+			windows = self.windows.len()
+		);
+		let _enter = span.enter();
+
+		let Some(_) = self.windows.first() else {
+			log::debug!("No swapchains available to present to. Skipping rendering!");
+			return;
 		};
 
-		let device = &mut self.device;
+		self.context.start_frame_capture();
 
-		device.start_frame_capture();
+		{
+			let span = debug_span!("Renderer::update_camera_transforms");
+			let _enter = span.enter();
+			while let Some(message) = transforms_listener.read() {
+				let handle = *message.handle();
 
-		let mut frame = device.start_frame(self.started_frame_count as u32, self.render_finished_synchronizer);
-
-		self.started_frame_count += 1;
-
-		let (present_key, extent) = frame.acquire_swapchain_image(swapchain_handle);
-
-		if extent.width() >= 65535 || extent.height() >= 65535 {
-			log::warn!("The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.", extent);
-			return None;
-		}
-
-		let root_render_pass = self.root_render_pass.read();
-
-		if extent != self.extent {
-			for image in root_render_pass.targets() {
-				frame.resize_image(*image, extent);
-			}
-
-			self.extent = extent;
-		}
-
-		let execute = root_render_pass.prepare(&mut frame, extent);
-
-		let result = root_render_pass.get_target("result").unwrap();
-
-		RenderMessage::new(frame, self.render_command_buffer, self.render_finished_synchronizer, result, swapchain_handle, present_key, execute).into()
-	}
-}
-
-pub struct RenderMessage<'a> {
-	frame: ghi::Frame<'a>,
-	command_buffer: ghi::CommandBufferHandle,
-	synchronizer: ghi::SynchronizerHandle,
-	swapchain_handle: ghi::SwapchainHandle,
-	result_target: ghi::ImageHandle,
-	present_key: ghi::PresentKey,
-	execute: Box<dyn FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync>,
-}
-
-impl <'a> RenderMessage<'a> {
-	fn new(
-		frame: ghi::Frame<'a>,
-		command_buffer: ghi::CommandBufferHandle,
-		synchronizer: ghi::SynchronizerHandle,
-		result_target: ghi::ImageHandle,
-		swapchain_handle: ghi::SwapchainHandle,
-		present_key: ghi::PresentKey,
-		execute: impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync + 'static,
-	) -> Self {
-		Self {
-			frame,
-			command_buffer,
-			synchronizer,
-			swapchain_handle,
-			result_target,
-			present_key,
-			execute: Box::new(execute),
-		}
-	}
-
-	pub fn render(self) {
-		let mut frame = self.frame;
-		let present_key = self.present_key;
-		let swapchain_handle = self.swapchain_handle;
-		let command_buffer = self.command_buffer;
-		let synchronizer = self.synchronizer;
-		let result = self.result_target;
-		let execute = self.execute;
-
-		let mut command_buffer_recording = frame.create_command_buffer_recording(
-			command_buffer,
-		);
-
-		command_buffer_recording.sync_buffers(); // Copy/sync all dirty buffers to the GPU.
-		command_buffer_recording.sync_textures(); // Copy/sync all dirty textures to the GPU.
-
-		execute(&mut command_buffer_recording);
-
-		command_buffer_recording.copy_to_swapchain(result, present_key, swapchain_handle);
-
-		command_buffer_recording.execute(
-			&[],
-			&[],
-			&[present_key],
-			synchronizer,
-		);
-	}
-}
-
-impl Entity for Renderer {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self)
-			.listen_to::<CreateEvent<Window>>()
-	}
-}
-
-impl Listener<CreateEvent<Window>> for Renderer {
-	fn handle(&mut self, event: &CreateEvent<Window>) {
-		let handle = event.handle();
-		let window = handle.read();
-
-		let name = window.name();
-		let extent = window.extent();
-
-		let window = ghi::Window::new_with_params(name, extent, "main_window");
-
-		if let Some(window) = window {
-			let os_handles = window.get_os_handles();
-
-			let device = &mut self.device;
-
-			let swapchain_handle = device.bind_to_window(
-				&os_handles,
-				ghi::PresentationModes::Mailbox,
-				extent,
-			);
-
-			self.windows.push((window, swapchain_handle));
-		} else {
-			log::error!("Failed to create GHI window");
-		}
-	}
-}
-
-struct RootRenderPass {
-	render_passes: Vec<(EntityHandle<dyn RenderPass>, Vec<String>)>,
-	images: HashMap<String, (ghi::ImageHandle, ghi::Formats, ghi::Layouts,)>,
-	order: Vec<usize>,
-}
-
-impl RootRenderPass {
-	pub fn new() -> Self {
-		Self {
-			render_passes: Vec::with_capacity(32),
-			images: HashMap::new(),
-			order: Vec::with_capacity(32),
-		}
-	}
-
-	fn create(render_pass_builder: &mut RenderPassBuilder) -> EntityBuilder<'static, Self> where Self: Sized {
-		Self::new().into()
-	}
-
-	fn add_image(&mut self, name: String, image: ghi::ImageHandle, format: ghi::Formats, layout: ghi::Layouts) {
-		self.images.insert(name, (image, format, layout));
-	}
-
-	fn add_render_pass(&mut self, render_pass: EntityHandle<dyn RenderPass>, render_pass_builder: RenderPassBuilder) {
-		let index = self.render_passes.len();
-		self.render_passes.push((render_pass, render_pass_builder.consumed_resources.iter().map(|e| e.0.to_string()).collect()));
-		self.order.push(index);
-	}
-
-	/// This function prepares every render pass for rendering.
-	/// Usually the preparation step involves writing to buffers, culling drawables, determining what to draw and whether to even draw at all.
-	/// Individual render pass prepare's can optionally return render pass execution functions which decide if a render pass gets executed.
-	/// This can be because the render pass may be disabled or because some other internal conditions are not satisfied.
-	fn prepare(&self, frame: &mut ghi::Frame, extent: Extent) -> impl FnOnce(&mut ghi::CommandBufferRecording) + Send + Sync {
-		let commands = self.order.iter().map(|index| {
-			let (render_pass, consumed) = &self.render_passes[*index];
-			let attachments = consumed.iter().map(|c| {
-				let (image, format, layout) = self.images.get(c).unwrap();
-				ghi::AttachmentInformation::new(*image, *format, *layout, ghi::ClearValue::Color(RGBA::black()), false, true)
-			}).collect::<Vec<_>>();
-
-			let command = render_pass.get_mut(|e| {
-				e.prepare(frame, extent)
-			});
-
-			(attachments, command)
-		}).collect::<Vec<_>>();
-
-		move |c: &mut ghi::CommandBufferRecording<'_>| {
-			for (attachments, command) in commands {
-				if let Some(command) = command {
-					command(c, &attachments);
+				if let Some(camera) = self
+					.cameras
+					.iter_mut()
+					.find_map(|(h, camera)| if handle == *h { Some(camera) } else { None })
+				{
+					camera.set_position(message.transform().get_position());
+					camera.set_orientation(message.transform().get_orientation());
 				}
 			}
 		}
+
+		let mut queue = self.context.queue(self.graphics_queue_handle);
+		let frame = ghi::queue::FrameRequest {
+			index: self.started_frame_count as u32,
+			synchronizer: self.render_finished_synchronizer,
+		};
+
+		self.started_frame_count += 1;
+
+		let command_buffer = self.render_command_buffer;
+		let synchronizer = self.render_finished_synchronizer;
+		let wait_for = &[];
+		let windows = &self.windows;
+		let sink_cameras = &self.sink_cameras;
+		let cameras = &self.cameras;
+		let render_targets = &self.render_targets;
+		let pipeline_managers = &mut self.pipeline_managers;
+		let pipeline_manager_resources_by_sink = &self.pipeline_manager_resources_by_sink;
+		let render_passes = &mut self.render_passes;
+		let render_passes_by_sink = &self.render_passes_by_sink;
+		let pending_swapchain_captures = self.pending_swapchain_captures.drain(..).collect::<SmallVec<[_; 16]>>();
+		let frame_allocator = frame_allocator;
+
+		{
+			let span = debug_span!("Renderer::queue_execute");
+			let _enter = span.enter();
+			queue.execute(Some(frame), wait_for, synchronizer, |execution| {
+				let completed_graphics_frame = execution.completed_frame();
+
+				let (sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies) = {
+					let span = debug_span!("Renderer::prepare_frame_work");
+					let _enter = span.enter();
+					let frame = execution.frame().expect(
+					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
+				);
+					let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = {
+						let span = debug_span!("Renderer::acquire_swapchains", count = windows.len());
+						let _enter = span.enter();
+						windows
+							.iter()
+							.map(|(_window, swapchain)| {
+								let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
+
+								if extent.width() == 0 || extent.height() == 0 {
+									log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
+									return None;
+								}
+
+								if extent.width() >= 65535 || extent.height() >= 65535 {
+									log::warn!(
+										"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
+										extent
+									);
+									return None;
+								}
+
+								Some((present_key, extent, *swapchain))
+							})
+							.collect()
+					};
+
+					let mut sinks: SmallVec<[Sink; 16]> = SmallVec::new();
+
+					{
+						let span = debug_span!("Renderer::build_sinks", cameras = cameras.len());
+						let _enter = span.enter();
+						for (sink_id, camera_handle) in sink_cameras.iter() {
+							let Some((_present_key, extent, _swapchain)) = swapchains[*sink_id] else {
+								continue;
+							};
+
+							let Some(camera) = cameras
+								.iter()
+								.find_map(|(handle, camera)| if handle == camera_handle { Some(camera) } else { None })
+							else {
+								continue;
+							};
+
+							let view = make_perspective_view_from_camera(camera, extent);
+							sinks.push(Sink::new(view, extent, *sink_id));
+						}
+					}
+
+					{
+						let span = debug_span!("Renderer::resize_render_targets", sinks = sinks.len());
+						let _enter = span.enter();
+						for sink in &sinks {
+							// Get images for the current sink and render pass and resize them to window extent
+							let images = render_targets.get_images_for_sink(sink.index());
+
+							// Resize images to window extent
+							for &image in images {
+								frame.resize_image(image, sink.extent());
+							}
+						}
+					}
+
+					let pipeline_managers = pipeline_managers.iter_mut().enumerate();
+
+					let pipeline_manager_commands: SmallVec<[(PipelineManagerId, Vec<RenderPassReturn<'_>>); 16]> = {
+						let span = debug_span!("Renderer::prepare_pipeline_managers");
+						let _enter = span.enter();
+						pipeline_managers
+							.filter_map(|(pipeline_manager_id, sm)| {
+								sm.prepare(frame, &sinks, frame_allocator).map(|commands| (pipeline_manager_id, commands))
+							})
+							.collect()
+					};
+
+					// A list of render pass commands and their corresponding pass/sink indices.
+					let render_pass_commands: SmallVec<[(RenderPassReturn, RenderPassId, SinkId); 64]> = {
+						let span = debug_span!("Renderer::prepare_render_passes");
+						let _enter = span.enter();
+						render_passes_by_sink
+							.iter()
+							.filter_map(|(render_pass_id, sink_id)| {
+								if let Some(render_pass) = render_passes.get_mut(*render_pass_id) {
+									if let Some(sink) = sinks.iter().find(|sink| sink.index() == *sink_id) {
+										if let Some(command) = render_pass.prepare(frame, sink, frame_allocator) {
+											return Some((command, *render_pass_id, sink.index()));
+										}
+									}
+								}
+								None
+							})
+							.collect()
+					};
+
+					let present_keys = swapchains
+						.iter()
+						.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
+						.collect::<SmallVec<[ghi::PresentKey; 16]>>();
+
+					let swapchain_capture_copies = {
+						let span = debug_span!("Renderer::prepare_swapchain_captures", captures = pending_swapchain_captures.len());
+						let _enter = span.enter();
+						pending_swapchain_captures
+							.iter()
+							.filter_map(|capture| {
+								let Some(Some((_present_key, _extent, swapchain))) = swapchains.get(capture.sink_id) else {
+									return None;
+								};
+
+								Some(ghi::ImageBufferCopyDescriptor::swapchain(
+									*swapchain,
+									capture.destination_buffer,
+									capture.destination_offset,
+									capture.destination_bytes_per_row,
+									capture.destination_bytes_per_image,
+								))
+							})
+							.collect::<SmallVec<[ghi::ImageBufferCopyDescriptor; 16]>>()
+					};
+
+					(sinks, pipeline_manager_commands, render_pass_commands, present_keys, swapchain_capture_copies)
+				};
+
+				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
+					let span = debug_span!("Renderer::record_commands", sinks = sinks.len());
+					let _enter = span.enter();
+					{
+						let span = debug_span!("Renderer::record_pipeline_manager_commands");
+						let _enter = span.enter();
+						for (pipeline_manager_id, commands) in pipeline_manager_commands {
+							for (command, sink) in commands.into_iter().zip(sinks.iter()) {
+								let attachment_infos = render_targets.get_attachment_infos_for_resources(
+									sink.index(),
+									pipeline_manager_resources_by_sink
+										.iter()
+										.find_map(|(id, sink_id, resources)| {
+											(*id == pipeline_manager_id && *sink_id == sink.index()).then_some(resources.as_slice())
+										})
+										.unwrap_or(&[]),
+								);
+
+								command(&mut *command_buffer_recording, &attachment_infos);
+							}
+						}
+					}
+
+					{
+						let span = debug_span!("Renderer::record_render_pass_commands");
+						let _enter = span.enter();
+						for (command, _render_pass_id, sink) in render_pass_commands {
+							let attachment_infos = render_targets.get_attachment_infos(sink);
+							command(&mut *command_buffer_recording, &attachment_infos);
+						}
+					}
+
+					if !swapchain_capture_copies.is_empty() {
+						let span = debug_span!("Renderer::record_swapchain_captures", captures = swapchain_capture_copies.len());
+						let _enter = span.enter();
+						command_buffer_recording.copy_images_to_buffer(&swapchain_capture_copies);
+					}
+				});
+
+				present_keys
+			});
+		}
 	}
 
-	fn does_target_exist(&self, name: &str) -> bool {
-		self.images.contains_key(name)
+	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
+		&mut self.context
 	}
 
-	fn targets(&self) -> impl Iterator<Item = &ghi::ImageHandle> {
-		self.images.values().map(|(image, _, _)| image)
+	pub fn create_window(&mut self, window: Window) {
+		let name = window.name();
+		let extent = window.extent();
+		let camera = window.camera();
+
+		let features = if window.features().contains(window::Features::DECORATIONS) {
+			ghi::window::Features::DECORATIONS
+		} else {
+			ghi::window::Features::empty()
+		};
+
+		let window = ghi::Window::new_with_params(name, extent, "main_window", features);
+
+		match window {
+			Ok(window) => {
+				let os_handles = window.os_handles();
+
+				let swapchain_handle = self.context.bind_to_window(
+					&os_handles,
+					ghi::PresentationModes::FIFO,
+					extent,
+					ghi::Uses::RenderTarget | ghi::Uses::Storage,
+				);
+
+				let sink_id = self.windows.len();
+
+				let sink_has_camera = if let Some(camera) = camera {
+					self.sink_cameras.push((sink_id, *camera));
+					true
+				} else {
+					false
+				};
+
+				if sink_has_camera {
+					let pipeline_managers = self.pipeline_managers.iter_mut().enumerate();
+
+					for (pipeline_manager_id, sm) in pipeline_managers {
+						let mut rpb =
+							RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain_handle);
+
+						sm.create_sink(sink_id, &mut rpb);
+						let consumed_resources = rpb
+							.consumed_resources
+							.iter()
+							.map(|(name, access)| ((*name).to_string(), *access))
+							.collect();
+						self.pipeline_manager_resources_by_sink
+							.push((pipeline_manager_id, sink_id, consumed_resources));
+
+						if rpb.consumed_resources.is_empty() {
+							log::debug!("No resources consumed by scene manager");
+						}
+					}
+				}
+
+				self.windows.push((window, swapchain_handle));
+
+				if sink_has_camera {
+					self.add_post_scene_render_passes_for_sink(sink_id);
+				}
+			}
+			Err(msg) => {
+				log::error!("Failed to create GHI window: {}", msg);
+			}
+		}
 	}
 
-	fn get_target(&self, name: &str) -> Option<ghi::ImageHandle> {
-		self.images.get(name).map(|(image, _, _)| *image)
+	pub fn create_camera(&mut self, handle: Handle, camera: Camera) {
+		if let Some((_, existing_camera)) = self
+			.cameras
+			.iter_mut()
+			.find(|(existing_handle, _)| *existing_handle == handle)
+		{
+			*existing_camera = camera;
+			return;
+		}
+
+		self.cameras.push((handle, camera));
 	}
 }
 
 struct Attachment {
 	name: String,
-	image: ghi::ImageHandle,
+	image: ghi::BaseImageHandle,
+}
+
+/// The `SwapchainCapture` struct exists to defer one swapchain-to-buffer capture request until the next frame.
+#[derive(Clone, Copy)]
+struct SwapchainCapture {
+	sink_id: SinkId,
+	destination_buffer: ghi::BaseBufferHandle,
+	destination_offset: usize,
+	destination_bytes_per_row: usize,
+	destination_bytes_per_image: usize,
 }
 
 /// This struct holds the settings to configure a `Renderer` during it's creation.
 pub struct Settings {
-	/// Controls whether validation layers will be enabled or not on the GHI device.
+	/// Controls whether validation layers will be enabled or not on the GHI context.
 	validation: bool,
 	/// Controls whether to enable or not writing out the parameters sent to the underlaying graphics API. Depends on `validation` being enabled.
 	api_dump: bool,
 	/// Controls wheter to enable or not some extra (bbut expensive) validation for the graphics API. This can include GPU validation. Depends on `validation` being enabled.
 	extended_validation: bool,
-	/// Controls whether to enable or not mesh shading on the GHI device.
+	/// Controls whether to enable or not mesh shading on the GHI context.
 	mesh_shading: bool,
 }
 
@@ -403,3 +669,346 @@ impl Settings {
 		self
 	}
 }
+
+pub struct RenderTargets {
+	images: Vec<(ghi::BaseImageHandle, ghi::Formats)>,
+	/// Maps a sink-scoped name to an image index.
+	by_name: Vec<(usize, String, usize)>,
+	/// Maps sink indices to image indices and access policies, making attachments.
+	by_sink_index: Vec<(usize, (usize, ghi::AccessPolicies))>,
+}
+
+impl Default for RenderTargets {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl RenderTargets {
+	pub fn new() -> Self {
+		Self {
+			images: Vec::with_capacity(32),
+			by_name: Vec::with_capacity(32),
+			by_sink_index: Vec::with_capacity(32),
+		}
+	}
+
+	pub fn alias(&mut self, sink_id: usize, orig: &str, alias: &str) {
+		if let Some(index) = self.get_image_index(orig, sink_id) {
+			self.by_name.push((sink_id, alias.to_string(), index));
+		}
+	}
+
+	/// Inserts a new render target image, associated to a sink index.
+	/// Returns the index of the image in the internal storage.
+	pub fn insert(&mut self, name: String, sink_id: usize, image: ghi::BaseImageHandle, format: ghi::Formats) -> usize {
+		if self.get_image_index(&name, sink_id).is_some() {
+			panic!(
+				"Render target image '{name}' already exists for sink {sink_id}. The most likely cause is that two render pipeline setup paths create the same named target."
+			);
+		};
+
+		if self.get_attachment_index(&name, sink_id).is_some() {
+			panic!(
+				"Render target image '{name}' is already registered as an attachment for sink {sink_id}. The most likely cause is that a target was manually added to the attachment list before insertion."
+			);
+		}
+
+		let index = self.images.len();
+		self.images.push((image, format));
+		self.by_name.push((sink_id, name, index));
+		self.by_sink_index.push((sink_id, (index, ghi::AccessPolicies::WRITE)));
+
+		index
+	}
+
+	pub fn read_from(&mut self, name: &str, sink_id: usize) {
+		if self.get_attachment_index(name, sink_id).is_some() {
+			return;
+		}
+
+		let Some(index) = self.get_image_index(name, sink_id) else {
+			log::warn!(
+				"Render target image '{name}' does not exist for sink {sink_id}; read attachment was not registered. The most likely cause is that a render pass was added before the pipeline that creates this target."
+			);
+			return;
+		};
+
+		self.by_sink_index.push((sink_id, (index, ghi::AccessPolicies::READ)));
+	}
+
+	pub fn write_to(&mut self, name: &str, sink_id: usize) {
+		if self.get_attachment_index(name, sink_id).is_some() {
+			return;
+		}
+
+		let Some(index) = self.get_image_index(name, sink_id) else {
+			log::warn!(
+				"Render target image '{name}' does not exist for sink {sink_id}; write attachment was not registered. The most likely cause is that a render pass was added before the pipeline that creates this target."
+			);
+			return;
+		};
+
+		self.by_sink_index.push((sink_id, (index, ghi::AccessPolicies::WRITE)));
+	}
+
+	pub fn get(&self, name: &str, sink_id: usize) -> Option<&(ghi::BaseImageHandle, ghi::Formats)> {
+		self.get_image_index(name, sink_id).and_then(|index| self.images.get(index))
+	}
+
+	pub fn get_attachment_infos(&self, sink_id: usize) -> Vec<ghi::AttachmentInformation> {
+		let attachments = self
+			.by_sink_index
+			.iter()
+			.filter_map(|(v, (i, ap))| {
+				if *v == sink_id {
+					let (image, format) = self.images.get(*i)?;
+					Some((image, format, ap))
+				} else {
+					None
+				}
+			})
+			.filter(|(_, _, access)| access.intersects(ghi::AccessPolicies::WRITE))
+			.map(|(image, format, access)| {
+				let load = access.intersects(ghi::AccessPolicies::READ);
+				let store = access.intersects(ghi::AccessPolicies::WRITE);
+				let clear_value = if load {
+					ghi::ClearValue::None
+				} else {
+					ghi::ClearValue::Color(RGBA::black())
+				};
+
+				ghi::AttachmentInformation::new(*image, ghi::Layouts::RenderTarget, clear_value, load, store)
+				// TODO: contionally pass format
+			});
+
+		attachments.collect()
+	}
+
+	pub fn get_attachment_infos_for_resources(
+		&self,
+		sink_id: usize,
+		resources: &[(String, ghi::AccessPolicies)],
+	) -> Vec<ghi::AttachmentInformation> {
+		let mut accesses_by_name = HashMap::new();
+		for (name, access) in resources {
+			accesses_by_name
+				.entry(name.as_str())
+				.and_modify(|existing| *existing |= *access)
+				.or_insert(*access);
+		}
+
+		accesses_by_name
+			.into_iter()
+			.filter_map(|(name, access)| {
+				if !access.intersects(ghi::AccessPolicies::WRITE) {
+					return None;
+				}
+
+				let (image, _format) = self.get(name, sink_id)?;
+				let load = access.intersects(ghi::AccessPolicies::READ);
+				let clear_value = if load {
+					ghi::ClearValue::None
+				} else {
+					ghi::ClearValue::Color(RGBA::black())
+				};
+
+				Some(ghi::AttachmentInformation::new(
+					*image,
+					ghi::Layouts::RenderTarget,
+					clear_value,
+					load,
+					true,
+				))
+			})
+			.collect()
+	}
+
+	fn get_image(&self, name: &str, sink_id: usize) -> &ghi::BaseImageHandle {
+		let index = self.get_attachment_index(name, sink_id).unwrap();
+		&self.images.get(index).unwrap().0
+	}
+
+	fn get_image_index(&self, name: &str, sink_id: usize) -> Option<usize> {
+		self.by_name
+			.iter()
+			.rev()
+			.find(|(sink, n, _)| *sink == sink_id && n == name)
+			.map(|(_, _, i)| *i)
+	}
+
+	fn get_attachment_index(&self, name: &str, sink_id: usize) -> Option<usize> {
+		let image_index = self.get_image_index(name, sink_id)?;
+
+		self.by_sink_index
+			.iter()
+			.find_map(|(v, (i, _))| if *v == sink_id && *i == image_index { Some(*i) } else { None })
+	}
+
+	fn get_images_for_sink(&self, index: usize) -> impl Iterator<Item = &ghi::BaseImageHandle> {
+		self.by_sink_index.iter().filter_map(move |(v, (i, _))| {
+			if *v != index {
+				return None;
+			}
+
+			self.images.get(*i).map(|(image, _)| image)
+		})
+	}
+}
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_render_targets_new() {
+		let rt = RenderTargets::new();
+		assert!(rt.images.is_empty());
+		assert!(rt.by_name.is_empty());
+		assert!(rt.by_sink_index.is_empty());
+	}
+
+	#[test]
+	fn test_insert_and_get() {
+		let mut rt = RenderTargets::new();
+		let image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
+		let format = ghi::Formats::RGBA8UNORM;
+		let index = rt.insert("test".to_string(), 0, image, format);
+		assert_eq!(index, 0);
+		let retrieved = rt.get("test", 0);
+		assert!(retrieved.is_some());
+		assert_eq!(rt.get("nonexistent", 0), None);
+	}
+
+	#[test]
+	fn test_insert_multiple() {
+		let mut rt = RenderTargets::new();
+		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
+		let format1 = ghi::Formats::RGBA8UNORM;
+		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
+		let format2 = ghi::Formats::Depth32;
+
+		rt.insert("color".to_string(), 0, image1, format1);
+		rt.insert("depth".to_string(), 0, image2, format2);
+
+		assert!(rt.get("color", 0).is_some());
+		assert!(rt.get("depth", 0).is_some());
+	}
+
+	#[test]
+	fn test_get_attachment_infos() {
+		let mut rt = RenderTargets::new();
+		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
+		let format1 = ghi::Formats::RGBA8UNORM;
+		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
+		let format2 = ghi::Formats::Depth32;
+
+		rt.insert("color".to_string(), 0, image1, format1);
+		rt.insert("depth".to_string(), 0, image2, format2);
+		rt.insert(
+			"other".to_string(),
+			1,
+			unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(3) },
+			ghi::Formats::RGBA16UNORM,
+		);
+
+		let attachments = rt.get_attachment_infos(0);
+		assert_eq!(attachments.len(), 2);
+
+		let attachments_view1 = rt.get_attachment_infos(1);
+		assert_eq!(attachments_view1.len(), 1);
+	}
+
+	#[test]
+	fn test_get_attachment_infos_empty_view() {
+		let rt = RenderTargets::new();
+		let attachments = rt.get_attachment_infos(0);
+		assert!(attachments.is_empty());
+	}
+
+	#[test]
+	fn test_alias_overrides_previous_mapping() {
+		let mut rt = RenderTargets::new();
+		let first_image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
+		let second_image = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
+
+		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM);
+		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM);
+		rt.alias(0, "first", "main");
+		rt.alias(0, "second", "main");
+
+		let (image, _) = rt.get("main", 0).expect("main alias should resolve");
+		assert_eq!(*image, second_image);
+	}
+
+	#[test]
+	fn test_insert_same_name_for_different_sinks() {
+		let mut rt = RenderTargets::new();
+		let image1 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(1) };
+		let image2 = unsafe { std::mem::transmute::<u64, ghi::BaseImageHandle>(2) };
+
+		rt.insert("main".to_string(), 0, image1, ghi::Formats::RGBA16UNORM);
+		rt.insert("main".to_string(), 1, image2, ghi::Formats::RGBA16UNORM);
+
+		let (sink0_image, _) = rt.get("main", 0).expect("sink 0 main should resolve");
+		let (sink1_image, _) = rt.get("main", 1).expect("sink 1 main should resolve");
+		assert_eq!(*sink0_image, image1);
+		assert_eq!(*sink1_image, image2);
+	}
+}
+
+type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
+
+type SinkId = usize;
+/// A `RenderPass` represents a specific rendering task that can be performed on the scene, defined by a render pass factory.
+type RenderPassId = usize;
+type PipelineManagerId = usize;
+
+use std::{
+	io::Write,
+	ops::{Deref, DerefMut},
+	rc::Rc,
+	sync::Arc,
+};
+
+use ghi::{
+	command_buffer::{
+		BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording,
+		RasterizationRenderPassMode as _,
+	},
+	context::{Context as _, ContextCreate as _},
+	device::Device as _,
+	frame::Frame as _,
+	queue::{Queue as _, QueueExecution as _},
+};
+use math::direction_from_orientation;
+use resource_management::resource::resource_manager::ResourceManager;
+use smallvec::SmallVec;
+use tracing::debug_span;
+use utils::Box;
+use utils::{
+	hash::{HashMap, HashMapExt},
+	sync::RwLock,
+	Extent, RGBA,
+};
+
+use super::render_pass::{RenderPass, RenderPassBuilder};
+use crate::{
+	application::parameters::Parameters,
+	core::{
+		channel::{Channel, DefaultChannel},
+		factory::Handle,
+		listener::Listener,
+		Entity, EntityHandle,
+	},
+	gameplay::transform::TransformationUpdate,
+	rendering::{
+		make_perspective_view_from_camera,
+		pipeline_manager::PipelineManager,
+		render_pass::{FramePrepare, RenderPassReturn},
+		window::{self, Window},
+		Camera, Sink, View,
+	},
+	space::{Orientable as _, Positionable as _},
+};

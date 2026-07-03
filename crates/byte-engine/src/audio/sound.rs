@@ -8,9 +8,7 @@ pub struct Sound {
 impl Sound {
 	/// Create a new sound object.
 	pub fn new(asset: String) -> Self {
-		Sound {
-			asset,
-		}
+		Sound { asset }
 	}
 }
 

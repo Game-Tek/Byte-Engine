@@ -7,6 +7,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "types": ["vite/client"],
     "isolatedModules": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
@@ -15,7 +16,9 @@
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@/.source": [".source"],
+      "@/.source/*": [".source/*"]
     },
     "noEmit": true
   }

@@ -3,24 +3,35 @@ name = "ghi"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-rust-version = "1.73.0"
+rust-version.workspace = true
 
 [dependencies]
 utils = { path = "../utils" }
 
-ash = { version = "0.38.0", features=['linked'] }
 bitflags = "2.9.0"
-renderdoc = "0.12.1"
 smallvec = "1.15.1"
 
-[dev-dependencies]
-resource-management = { path = "../resource-management" }
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+renderdoc = "0.12.1"
+
+[dependencies.resource-management]
+path = "../resource-management"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61.1", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "System", "Win32_System_LibraryLoader", "Win32_UI_Input", "Win32_Devices_HumanInterfaceDevice"] }
+windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "System", "Win32_System_LibraryLoader", "Win32_UI_Input", "Win32_Devices_HumanInterfaceDevice", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D_Dxc"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 xcb = { version = "1.6.0", features=['xtest'] }
-wayland-client = "0.31.8"
+wayland-client = "0.31.12"
+wayland-backend = { version = "0.3.12", features = ['client_system'] }
 wayland-protocols = { version = "0.32.6", features = ['client', 'unstable'] }
-wayland-backend = { version = "0.3.8", features = ["client_system"] }
+ash = { version = "0.38.0", features=['linked'] }
+xkbcommon = "0.9.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = { version = "0.3.1", features = ["block2"] }
+objc2 = "0.6.3"
+objc2-foundation = "0.3.2"
+objc2-app-kit = { version = "0.3.2", features = ["objc2-core-foundation"] }
+objc2-quartz-core = "0.3.2"
+objc2-metal = { version = "0.3.2", features = ["MTLFunctionConstantValues", "MTLDataType", "MTLLibrary", "dispatch2"] }

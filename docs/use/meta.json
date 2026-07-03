@@ -1,5 +1,7 @@
 {
 	"title": "Byte Engine",
 	"description": "Use Byte Engine to develop",
+	"icon": "Gamepad2",
+	"pages": ["index", "---Setup---", "setup", "---Build---", "sample-project"],
 	"root": true
 }

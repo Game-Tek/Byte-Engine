@@ -1,4 +1,7 @@
-use std::{borrow::Borrow, fmt::{Debug, Write}};
+use std::{
+	borrow::Borrow,
+	fmt::{Debug, Write},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,9 +16,29 @@ impl From<&str> for ResourceId {
 	}
 }
 
-impl Into<[u8; 16]> for ResourceId {
-	fn into(self) -> [u8; 16] {
-		self.0
+impl ResourceId {
+	pub fn from_uid_hex(value: &str) -> Option<Self> {
+		if value.len() != 32 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+			return None;
+		}
+
+		let mut bytes = [0; 16];
+		for (index, byte) in bytes.iter_mut().enumerate() {
+			let start = index * 2;
+			*byte = u8::from_str_radix(&value[start..start + 2], 16).ok()?;
+		}
+
+		Some(Self(bytes))
+	}
+
+	pub fn to_hex(self) -> String {
+		self.into()
+	}
+}
+
+impl From<ResourceId> for [u8; 16] {
+	fn from(val: ResourceId) -> Self {
+		val.0
 	}
 }
 
@@ -31,10 +54,10 @@ impl Borrow<[u8; 16]> for &ResourceId {
 	}
 }
 
-impl Into<String> for ResourceId {
-	fn into(self) -> String {
+impl From<ResourceId> for String {
+	fn from(val: ResourceId) -> Self {
 		let mut s = String::with_capacity(32);
-		for byte in &self.0 {
+		for byte in &val.0 {
 			write!(s, "{:02x}", byte).unwrap();
 		}
 		s

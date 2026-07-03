@@ -1,6 +1,11 @@
-use crate::{asset::{asset_manager::AssetManager, ResourceId}, Reference, ReferenceModel, Resource, SerializableResource, Solver};
-
-use super::{storage_backend::Query, StorageBackend};
+use super::{
+	storage_backend::{Query, QueryError, QueryPage},
+	StorageBackend,
+};
+use crate::{
+	asset::{asset_manager::AssetManager, ResourceId},
+	Model, Reference, ReferenceModel, Resource, SerializableResource, Solver,
+};
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
@@ -37,42 +42,68 @@ impl ResourceManager {
 		self.storage_backend.as_ref()
 	}
 
-	/// Tries to load the information/metadata for a resource (and it's dependencies).\
+	/// Tries to load the information/metadata for a resource (and its dependencies).\
 	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
 	/// The result of this function can be later fed into `load()` which will load the binary data.
-	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Result<Reference<T>, &'static str> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, SerializableResource: TryInto<ReferenceModel<T::Model>> {
+	///
+	/// Call this to start the process of loading a resource.
+	/// If successful, this will return a [`Reference`] to the resource.
+	/// This `Reference` can be used to load the binary data of the resource and consult its metadata.
+	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Result<Reference<T>, &'static str>
+	where
+		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,
+		SerializableResource: TryInto<ReferenceModel<T::Model>>,
+	{
 		let storage_backend = self.get_storage_backend();
 
 		let reference_model: ReferenceModel<T::Model> = if let Some(result) = storage_backend.read(ResourceId::new(id)) {
 			let (resource, _) = result;
 			resource.into()
 		} else if let Some(asset_manager) = &self.asset_manager {
-			asset_manager.load(id, storage_backend).map_err(|_| "Failed to load asset")?
-		} else {
-            return Err("Resource does not exists and an asset manager is not available");
-        };
+			let runtime = compio::runtime::Runtime::new().unwrap();
 
-		let reference: Reference<T> = reference_model.solve(self.get_storage_backend()).map_err(|_| "Failed to solve reference")?;
+			runtime
+				.block_on(asset_manager.bake_if_not_exists(id, storage_backend))
+				.map_err(|_| "Failed to load asset. The asset manager could not bake the resource.")?
+		} else {
+			return Err("Resource does not exists and an asset manager is not available");
+		};
+
+		let reference: Reference<T> = reference_model
+			.solve(self.get_storage_backend())
+			.map_err(Into::<&'static str>::into)?;
 
 		Ok(reference)
 	}
 
-	pub fn query<'a, T: Resource + 'a>(&'a self) -> Vec<Reference<T>> where ReferenceModel<T::Model>: Solver<'a, Reference<T>>, SerializableResource: Into<ReferenceModel<T::Model>> {
-		self.get_storage_backend().query(Query::new().classes(&["Material"])).unwrap().into_iter().map(|e| { let r: ReferenceModel<T::Model> = e.0.into(); let r: Reference<T> = r.solve(self.get_storage_backend()).unwrap(); r }).collect()
+	pub fn query<'a, T: Resource + 'a>(&'a self, query: Query) -> Result<QueryPage<Reference<T>>, QueryError>
+	where
+		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,
+		SerializableResource: Into<ReferenceModel<T::Model>>,
+	{
+		let page = self.get_storage_backend().query(Query {
+			class: T::Model::get_class().to_string(),
+			..query
+		})?;
+
+		Ok(QueryPage {
+			items: page
+				.items
+				.into_iter()
+				.map(|e| {
+					let r: ReferenceModel<T::Model> = e.0.into();
+					let r: Reference<T> = r.solve(self.get_storage_backend()).unwrap();
+					r
+				})
+				.collect(),
+			cursor: page.cursor,
+		})
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use crate::{Model, Resource};
-
-	struct MyResourceHandler {}
-
-	impl MyResourceHandler {
-		pub fn new() -> Self {
-			MyResourceHandler {}
-		}
-	}
 
 	impl Resource for () {
 		fn get_class(&self) -> &'static str {

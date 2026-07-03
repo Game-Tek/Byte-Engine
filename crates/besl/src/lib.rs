@@ -1,28 +1,71 @@
-//! This module contains all code related to the parsing of the BESL language and the generation of the JSPD.
+//! The `besl` crate gathers the parsing, lexing, tokenization, and VM support that turn BESL source into executable program data.
 
-mod tokenizer;
-pub mod parser;
 pub mod lexer;
+pub mod parser;
+mod tokenizer;
+pub mod vm;
 
+pub use besl_derive::BeslStruct;
 pub use lexer::Expressions;
-pub use lexer::Operators;
 pub use lexer::Node;
 pub use lexer::Nodes;
+pub use lexer::Operators;
 
-pub use crate::lexer::NodeReference;
 pub use crate::lexer::BindingTypes;
+pub use crate::lexer::NodeReference;
 
 /// Useful type alias for the parser's node type.
-pub type ParserNode = parser::Node;
+pub type ParserNode<'a> = parser::Node<'a>;
+
+/// The `BeslStructDefinition` trait exposes a Rust struct as a BESL parser struct definition.
+pub trait BeslStructDefinition {
+	fn besl_struct_node() -> ParserNode<'static>;
+
+	fn besl_definition(&self) -> ParserNode<'static> {
+		Self::besl_struct_node()
+	}
+}
+
+/// Builds a BESL parser struct node from Rust-style struct syntax.
+#[macro_export]
+macro_rules! besl_struct_node {
+	(struct $name:ident { $($body:tt)* }) => {{
+		let mut fields = Vec::new();
+		$crate::besl_struct_node!(@fields fields [] $($body)*);
+
+		$crate::ParserNode::r#struct(
+			stringify!($name),
+			fields,
+		)
+	}};
+	(@fields $fields:ident [] ) => {};
+	(@fields $fields:ident [$($field:tt)+] ) => {
+		$crate::besl_struct_node!(@emit $fields [$($field)+]);
+	};
+	(@fields $fields:ident [$($field:tt)*] , $($rest:tt)*) => {
+		$crate::besl_struct_node!(@emit $fields [$($field)*]);
+		$crate::besl_struct_node!(@fields $fields [] $($rest)*);
+	};
+	(@fields $fields:ident [$($field:tt)*] $next:tt $($rest:tt)*) => {
+		$crate::besl_struct_node!(@fields $fields [$($field)* $next] $($rest)*);
+	};
+	(@emit $fields:ident []) => {};
+	(@emit $fields:ident [$field:ident : $($field_type:tt)+]) => {
+		{
+			let field_type = stringify!($($field_type)+).replace(' ', "");
+			$fields.push($crate::ParserNode::member(stringify!($field), &field_type));
+		}
+	};
+}
 
 /// Parses BESL source code.
 /// It first tokenizes the input then feeds it to the parser to build a syntax tree.
 /// The syntax tree is just another representation of the source code.
 /// It is missing the final transformation step, which is the lexing step.
 /// The returned node is the root of the syntax tree.
-pub fn parse(source: &str) -> Result<parser::Node, CompilationError> {
+pub fn parse<'a>(source: &'a str) -> Result<parser::Node<'a>, CompilationError> {
 	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Tokenization)?;
-	let parser_root_node = parser::parse(tokens).map_err(|_e| CompilationError::Parsing)?;
+	let parser_root_node = parser::parse(&tokens).map_err(CompilationError::Parsing)?;
 
 	Ok(parser_root_node)
 }
@@ -33,7 +76,7 @@ pub fn parse(source: &str) -> Result<parser::Node, CompilationError> {
 /// This step is the final transformation step.
 /// The returned node is the root of the lexed syntax tree.
 pub fn lex(node: parser::Node) -> Result<NodeReference, CompilationError> {
-	let besl = lexer::lex(node).map_err(|e| CompilationError::Lex(e))?;
+	let besl = lexer::lex(node).map_err(CompilationError::Lex)?;
 
 	Ok(besl)
 }
@@ -45,17 +88,16 @@ pub fn lex(node: parser::Node) -> Result<NodeReference, CompilationError> {
 /// * `source` - The source code to compile.
 /// * `parent` - An optional reference to a parent Scope node where the source code will be compiled into.
 pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReference, CompilationError> {
-	if source.split_whitespace().next() == None {
+	if source.split_whitespace().next().is_none() {
 		return Ok(lexer::Node::scope("".to_string()).into());
 	}
 
-	let tokens = tokenizer::tokenize(source).map_err(|_e| CompilationError::Undefined)?;
-	let parser_root_node = parser::parse(tokens).map_err(|_e| CompilationError::Undefined)?;
+	let parser_root_node = parse(source)?;
 
-	let besl = if let Some(parent)  = parent {
-		lexer::lex_with_root(parent, parser_root_node).map_err(|_e| CompilationError::Undefined)?
+	let besl = if let Some(parent) = parent {
+		lexer::lex_with_root(parent, parser_root_node).map_err(CompilationError::Lex)?
 	} else {
-		lexer::lex(parser_root_node).map_err(|_e| CompilationError::Undefined)?
+		lexer::lex(parser_root_node).map_err(CompilationError::Lex)?
 	};
 
 	Ok(besl)
@@ -65,6 +107,44 @@ pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReferen
 pub enum CompilationError {
 	Undefined,
 	Tokenization,
-	Parsing,
+	Parsing(parser::ParsingFailReasons),
 	Lex(lexer::LexError),
+}
+
+#[cfg(test)]
+mod tests {
+	use crate::parser::Nodes;
+
+	#[test]
+	fn besl_struct_node_macro_builds_a_struct_node() {
+		let mut node = crate::besl_struct_node!(struct Light {
+			position: vec3f,
+			color: vec3f,
+			indices: u32[3],
+		});
+
+		match node.node_mut() {
+			Nodes::Struct { name, fields } => {
+				assert_eq!(*name, "Light");
+				assert_eq!(fields.len(), 3);
+
+				match fields[0].node_mut() {
+					Nodes::Member { name, r#type } => {
+						assert_eq!(*name, "position");
+						assert_eq!(r#type, "vec3f");
+					}
+					_ => panic!("Expected member node."),
+				}
+
+				match fields[2].node_mut() {
+					Nodes::Member { name, r#type } => {
+						assert_eq!(*name, "indices");
+						assert_eq!(r#type, "u32[3]");
+					}
+					_ => panic!("Expected member node."),
+				}
+			}
+			_ => panic!("Expected struct node."),
+		}
+	}
 }

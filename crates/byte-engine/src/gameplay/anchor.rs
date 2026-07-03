@@ -2,28 +2,21 @@
 
 use math::Vector3;
 
-use crate::core::listener::{CreateEvent, Listener};
-use crate::core::{entity::EntityBuilder, Entity, EntityHandle};
+use super::{object::Object, transform::Transform};
+use crate::core::listener::Listener;
+use crate::core::{Entity, EntityHandle};
+use crate::space::Positionable;
 
-use super::{object::Object, Positionable, Transform};
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum Anchorage {
 	/// The object is attached to the anchor.
+	#[default]
 	Default,
 	/// The anchorage is offset from the anchor.
-	Offset {
-		offset: Transform,
-	},
+	Offset { offset: Transform },
 }
 
-impl Default for Anchorage {
-	fn default() -> Self {
-		Anchorage::Default
-	}
-}
-
-pub trait Anchoring: Positionable + Entity {
+pub trait Anchoring: Positionable {
 	fn children(&self) -> Vec<(EntityHandle<dyn Positionable>, Anchorage)>;
 }
 
@@ -57,7 +50,12 @@ impl Anchor {
 
 	/// Attaches a child to the anchor.
 	pub fn attach_with_offset(&mut self, child: EntityHandle<dyn Positionable>, offset: Vector3) {
-		self.children.push((child, Anchorage::Offset { offset: Transform::from_position(offset) }));
+		self.children.push((
+			child,
+			Anchorage::Offset {
+				offset: Transform::from_position(offset),
+			},
+		));
 	}
 
 	/// Attaches a child to the anchor.
@@ -71,7 +69,7 @@ impl Positionable for Anchor {
 		self.transform.set_position(position);
 	}
 
-	fn get_position(&self) -> Vector3 {
+	fn position(&self) -> Vector3 {
 		self.transform.get_position()
 	}
 }
@@ -82,44 +80,38 @@ impl Anchoring for Anchor {
 	}
 }
 
+#[derive(Clone)]
 pub struct AnchorSystem {
 	anchors: Vec<EntityHandle<dyn Anchoring>>,
 }
 
-impl Entity for AnchorSystem {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).listen_to::<CreateEvent<dyn Anchoring>>()
+impl Default for AnchorSystem {
+	fn default() -> Self {
+		Self::new()
 	}
 }
 
 impl AnchorSystem {
 	pub fn new() -> AnchorSystem {
-		AnchorSystem { anchors: Vec::with_capacity(1024) }
+		AnchorSystem {
+			anchors: Vec::with_capacity(1024),
+		}
 	}
 
-	pub fn update(&self,) {
+	pub fn update(&self) {
 		for anchor in &self.anchors {
-			let anchor = anchor.read();
-
 			let children = anchor.children();
 
 			for (child, anchorage) in children {
-				let mut child = child.write();
-
 				match anchorage {
-					Anchorage::Default => {},
+					Anchorage::Default => {
+						// child.set_position(anchor.position());
+					}
 					Anchorage::Offset { offset } => {
-						child.set_position(anchor.get_position() + offset.get_position());
-					},
+						// child.set_position(anchor.position() + offset.get_position());
+					}
 				}
 			}
 		}
-	}
-}
-
-impl Listener<CreateEvent<dyn Anchoring>> for AnchorSystem {
-	fn handle(&mut self, event: &CreateEvent<dyn Anchoring>) {
-		let handle = event.handle();
-		self.anchors.push(handle.clone());
 	}
 }

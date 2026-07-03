@@ -1,6 +1,7 @@
 ---
 title: Material Assets
 description: How to load and use materials and shaders in Byte Engine.
+icon: Palette
 ---
 
 This document intends to describe the process of loading user declared shaders and materials and transforming them into usable resources.
@@ -41,9 +42,9 @@ Materials can also reference other materials as their parent to inherit all thei
 }
 ```
 
-This concept is utilized by the engine to try and make optimizations, since the shader is the same but only the values change this can be seen as the same pipeline but
-different values fed by uniforms per instance. <br/>Note that this particular optimization should not relied upon since the engine may decide to increase shader/pipeline permutation if
-it sees these values can be replaced statically.
+The engine can use this relationship for optimization. If the shader is the same and only variable values change, the engine can treat the variants as the same pipeline with different per-instance uniform values.
+
+Do not rely on that optimization as a stable behavior. The engine may increase shader or pipeline permutations when static replacement would produce better runtime code.
 
 ## Pipeline
 
@@ -116,3 +117,5 @@ Generated materials are tagged by render model.
 Variables are also defined/extracted from the code.
 
 ### Generation
+
+Generation details are not complete yet. This section will describe how material declarations become render-model-specific shader code and metadata.

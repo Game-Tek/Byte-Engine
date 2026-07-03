@@ -1,30 +1,21 @@
 import react from '@vitejs/plugin-react';
 import { tanstackStart } from '@tanstack/react-start/plugin/vite';
 import { defineConfig } from 'vite';
-import tsConfigPaths from 'vite-tsconfig-paths';
 import tailwindcss from '@tailwindcss/vite';
-import { cloudflare } from '@cloudflare/vite-plugin';
 import mdx from 'fumadocs-mdx/vite';
+import { cloudflare } from '@cloudflare/vite-plugin';
 
 export default defineConfig({
 	server: {
 		port: 3000,
 	},
-	// resolve: {
-	// 	alias: {
-	// 		'react-dom/server': 'react-dom/server.node'
-	// 	}
-	// },
-	// optimizeDeps: {
-	// 	include: ['react-dom/server']
-	// },
+	resolve: {
+		tsconfigPaths: true,
+	},
 	plugins: [
 		mdx(await import('./source.config')),
 		tailwindcss(),
-		cloudflare(process.env.ENV === 'production' ? { viteEnvironment: { name: "ssr" } } : undefined),
-		tsConfigPaths({
-			projects: ['./tsconfig.json'],
-		}),
+		cloudflare({ viteEnvironment: { name: "ssr" } }),
 		tanstackStart({
 			prerender: {
 				enabled: true,

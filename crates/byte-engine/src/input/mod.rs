@@ -1,31 +1,51 @@
+//! Device-independent input actions and device registration.
+//!
+//! Typical headed applications call
+//! [`crate::application::graphics::setup_default_input`], translate window
+//! events with
+//! [`crate::application::graphics::process_default_window_input`], and create
+//! application-level [`Action`] values through the graphics application's action
+//! factory. Use [`utils`] when registering the standard mouse, keyboard, or
+//! gamepad classes in a custom application.
+//!
+//! [`InputManager`] owns device and action state. [`Value`] is the erased value
+//! passed through that runtime; typed action declarations use
+//! [`action::InputValue`] to constrain supported value types.
+
 use super::utils::RGBA;
+use crate::core::factory::Handle;
 
+mod action_evaluator;
+pub(crate) mod gamepad;
 pub mod input_manager;
+mod records;
 
-pub mod device_class;
-pub mod device;
-pub mod input_trigger;
 pub mod action;
+pub mod device;
+pub mod device_class;
+pub mod input_trigger;
+mod seat;
 pub mod utils;
 
 pub use action::Action;
 pub use action::ActionBindingDescription;
-
+pub use action::ActionHandle;
+pub use device::DeviceHandle;
 pub use input_manager::InputManager;
 pub use input_trigger::TriggerHandle;
-pub use device::DeviceHandle;
-pub use action::ActionHandle;
 use math::Quaternion;
 use math::Vector2;
 use math::Vector3;
+pub use seat::SeatHandle;
 
 use self::action::InputValue;
 
-/// Enumerates the different types of types of values the input manager can handle.
+/// The [`Types`] enum identifies the value representation accepted by input
+/// triggers and actions.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Types {
 	/// A boolean value.
-	Bool,
+	Boolean,
 	/// A unicode character.
 	Unicode,
 	/// A floating point value.
@@ -43,8 +63,8 @@ pub enum Types {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-/// A simple "typeless" container for several underlying types.
-/// Can be used to store any of these types, but will be usually used to traffic record and input event values.
+/// The [`Value`] enum carries device and action values through the non-generic
+/// input runtime.
 pub enum Value {
 	/// A boolean value.
 	Bool(bool),
@@ -64,33 +84,33 @@ pub enum Value {
 	Quaternion(Quaternion),
 }
 
-impl Into<Value> for bool {
-	fn into(self) -> Value {
-		Value::Bool(self)
+impl From<bool> for Value {
+	fn from(val: bool) -> Self {
+		Value::Bool(val)
 	}
 }
 
-impl Into<Value> for char {
-	fn into(self) -> Value {
-		Value::Unicode(self)
+impl From<char> for Value {
+	fn from(val: char) -> Self {
+		Value::Unicode(val)
 	}
 }
 
-impl Into<Value> for f32 {
-	fn into(self) -> Value {
-		Value::Float(self)
+impl From<f32> for Value {
+	fn from(val: f32) -> Self {
+		Value::Float(val)
 	}
 }
 
-impl Into<Value> for i32 {
-	fn into(self) -> Value {
-		Value::Int(self)
+impl From<i32> for Value {
+	fn from(val: i32) -> Self {
+		Value::Int(val)
 	}
 }
 
-impl Into<Value> for RGBA {
-	fn into(self) -> Value {
-		Value::Rgba(self)
+impl From<RGBA> for Value {
+	fn from(val: RGBA) -> Self {
+		Value::Rgba(val)
 	}
 }
 
@@ -106,16 +126,34 @@ impl Into<Value> for Vector3 {
 	}
 }
 
-impl Into<Value> for Quaternion {
-	fn into(self) -> Value {
-		Value::Quaternion(self)
+impl From<Quaternion> for Value {
+	fn from(val: Quaternion) -> Self {
+		Value::Quaternion(val)
 	}
 }
 
-impl Into<Types> for Value {
-	fn into(self) -> Types {
+impl Value {
+	/// Returns `true` if this value is equal to the default value for its type.
+	///
+	/// Used by `TickPolicy::WhileActive` to determine whether to emit events.
+	pub fn is_default(&self) -> bool {
 		match self {
-			Value::Bool(_) => Types::Bool,
+			Value::Bool(v) => !v,
+			Value::Unicode(v) => *v == '\0',
+			Value::Float(v) => *v == 0.0,
+			Value::Int(v) => *v == 0,
+			Value::Rgba(v) => v.r == 0.0 && v.g == 0.0 && v.b == 0.0 && v.a == 0.0,
+			Value::Vector2(v) => v.x == 0.0 && v.y == 0.0,
+			Value::Vector3(v) => v.x == 0.0 && v.y == 0.0 && v.z == 0.0,
+			Value::Quaternion(v) => *v == Quaternion::identity(),
+		}
+	}
+}
+
+impl From<Value> for Types {
+	fn from(val: Value) -> Self {
+		match val {
+			Value::Bool(_) => Types::Boolean,
 			Value::Unicode(_) => Types::Unicode,
 			Value::Float(_) => Types::Float,
 			Value::Int(_) => Types::Int,
@@ -130,7 +168,7 @@ impl Into<Types> for Value {
 impl Types {
 	pub fn default_value(&self) -> Value {
 		match self {
-			Types::Bool => Value::Bool(false),
+			Types::Boolean => Value::Bool(false),
 			Types::Unicode => Value::Unicode('\0'),
 			Types::Float => Value::Float(0.0),
 			Types::Int => Value::Int(0),
@@ -152,6 +190,22 @@ pub enum Function {
 	Sphere,
 }
 
+/// The `TickPolicy` enum controls how frequently an action emits events through the event channel.
+///
+/// This allows applications to choose between event-driven and poll-driven input handling
+/// on a per-action basis.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum TickPolicy {
+	/// Emit events only when a trigger value actually changes. This is the default behavior.
+	#[default]
+	OnChange,
+	/// Emit events every frame while the action's resolved value is non-default
+	/// (e.g. while a key is held, while a stick is displaced from center).
+	WhileActive,
+	/// Emit events every frame unconditionally, regardless of the action's current value.
+	Always,
+}
+
 pub trait Extract<T: InputValue> {
 	fn extract(&self) -> T;
 }
@@ -160,7 +214,7 @@ impl Extract<bool> for Value {
 	fn extract(&self) -> bool {
 		match self {
 			Value::Bool(value) => *value,
-			_ => panic!("Wrong type")
+			_ => panic!("Wrong type"),
 		}
 	}
 }
@@ -169,7 +223,7 @@ impl Extract<Vector2> for Value {
 	fn extract(&self) -> Vector2 {
 		match self {
 			Value::Vector2(value) => *value,
-			_ => panic!("Wrong type")
+			_ => panic!("Wrong type"),
 		}
 	}
 }
@@ -178,7 +232,7 @@ impl Extract<Vector3> for Value {
 	fn extract(&self) -> Vector3 {
 		match self {
 			Value::Vector3(value) => *value,
-			_ => panic!("Wrong type")
+			_ => panic!("Wrong type"),
 		}
 	}
 }
@@ -195,7 +249,10 @@ pub struct ValueMapping {
 
 impl ValueMapping {
 	pub fn new<V: Into<Value>>(function: Function, value: V) -> Self {
-		Self { function, value: value.into() }
+		Self {
+			function,
+			value: value.into(),
+		}
 	}
 
 	pub fn function(mut self, function: Function) -> Self {
@@ -209,9 +266,9 @@ impl ValueMapping {
 	}
 }
 
-impl Into<ValueMapping> for bool {
-	fn into(self) -> ValueMapping {
-		ValueMapping::new(Function::Linear, self)
+impl From<bool> for ValueMapping {
+	fn from(val: bool) -> Self {
+		ValueMapping::new(Function::Linear, val)
 	}
 }
 
@@ -227,20 +284,52 @@ impl Into<ValueMapping> for Vector3 {
 	}
 }
 
-impl Into<ValueMapping> for Quaternion {
-	fn into(self) -> ValueMapping {
-		ValueMapping::new(Function::Linear, self)
+impl From<Quaternion> for ValueMapping {
+	fn from(val: Quaternion) -> Self {
+		ValueMapping::new(Function::Linear, val)
 	}
 }
 
-impl Into<ValueMapping> for f32 {
-	fn into(self) -> ValueMapping {
-		ValueMapping::new(Function::Linear, self)
+impl From<f32> for ValueMapping {
+	fn from(val: f32) -> Self {
+		ValueMapping::new(Function::Linear, val)
 	}
 }
 
-impl Into<ValueMapping> for Value {
-	fn into(self) -> ValueMapping {
-		ValueMapping::new(Function::Linear, self)
+impl From<Value> for ValueMapping {
+	fn from(val: Value) -> Self {
+		ValueMapping::new(Function::Linear, val)
+	}
+}
+
+#[derive(Clone, Debug)]
+pub struct ActionEvent {
+	/// The seat that triggered the action event.
+	seat_handle: SeatHandle,
+	/// The handle of the action that triggered the event.
+	handle: Handle,
+	/// The value of the action that triggered the event.
+	value: Value,
+}
+
+impl ActionEvent {
+	pub fn new(seat_handle: SeatHandle, handle: Handle, value: Value) -> Self {
+		Self {
+			seat_handle,
+			handle,
+			value,
+		}
+	}
+
+	pub fn seat_handle(&self) -> SeatHandle {
+		self.seat_handle
+	}
+
+	pub fn handle(&self) -> Handle {
+		self.handle
+	}
+
+	pub fn value(&self) -> Value {
+		self.value
 	}
 }

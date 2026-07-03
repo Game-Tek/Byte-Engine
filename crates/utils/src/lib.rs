@@ -1,3 +1,4 @@
+#![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
 pub type BoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
@@ -7,16 +8,18 @@ pub type SendBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Outp
 pub mod sync;
 
 pub mod r#async;
-pub mod stale_map;
 pub mod bit_array;
+pub mod copy_fn;
+pub mod stable_vec;
+pub mod stale_map;
 
 use std::ops::Div;
 
 pub type Box<T> = smallbox::SmallBox<T, [u8; 32]>;
-
-pub use sonic_rs as json;
-
+pub use copy_fn::{InlineCopyFn, InlineCopyFnError, RefCall1, RefCall2, RefCall3};
 pub use gxhash as hash;
+pub use sonic_rs as json;
+pub use stable_vec::{StableVec, StableVecHandle};
 pub struct BufferAllocator<'a> {
 	buffer: &'a mut [u8],
 	offset: usize,
@@ -24,17 +27,34 @@ pub struct BufferAllocator<'a> {
 
 impl<'a> BufferAllocator<'a> {
 	pub fn new(buffer: &'a mut [u8]) -> Self {
-		Self {
-			buffer,
-			offset: 0,
-		}
+		Self { buffer, offset: 0 }
 	}
 
 	pub fn take(&mut self, size: usize) -> &'a mut [u8] {
+		self.take_with_offset(size).1
+	}
+
+	pub fn take_with_offset(&mut self, size: usize) -> (usize, &'a mut [u8]) {
+		let offset = self.offset;
 		let buffer = &mut self.buffer[self.offset..][..size];
 		self.offset += size;
 		// SAFETY: We know that the buffer is valid for the lifetime of the splitter.
-		unsafe { std::mem::transmute(buffer) }
+		(offset, unsafe { std::mem::transmute::<&mut [u8], &'a mut [u8]>(buffer) })
+	}
+
+	pub fn take_with_offset_aligned(&mut self, size: usize, alignment: usize) -> (usize, &'a mut [u8]) {
+		self.offset = self.offset.next_multiple_of(alignment.max(1));
+		self.take_with_offset(size)
+	}
+
+	pub fn remaining_aligned(&self, alignment: usize) -> usize {
+		self.buffer
+			.len()
+			.saturating_sub(self.offset.next_multiple_of(alignment.max(1)))
+	}
+
+	pub fn remaining(&self) -> usize {
+		self.buffer.len().saturating_sub(self.offset)
 	}
 }
 
@@ -65,18 +85,14 @@ pub struct Extent {
 
 impl Extent {
 	pub fn new(width: u32, height: u32, depth: u32) -> Self {
-		Self {
-			width,
-			height,
-			depth,
-		}
+		Self { width, height, depth }
 	}
 
 	pub fn line(width: u32) -> Self {
 		Self {
 			width,
-			height: 1,
-			depth: 1,
+			height: 0,
+			depth: 0,
 		}
 	}
 
@@ -84,24 +100,16 @@ impl Extent {
 		Self {
 			width: size,
 			height: size,
-			depth: 1,
+			depth: 0,
 		}
 	}
 
 	pub fn rectangle(width: u32, height: u32) -> Self {
-		Self {
-			width,
-			height,
-			depth: 1,
-		}
+		Self { width, height, depth: 0 }
 	}
 
 	pub fn cube(width: u32, height: u32, depth: u32) -> Self {
-		Self {
-			width,
-			height,
-			depth,
-		}
+		Self { width, height, depth }
 	}
 
 	pub fn as_tuple(&self) -> (u32, u32, u32) {
@@ -113,14 +121,41 @@ impl Extent {
 	}
 
 	#[inline]
-	pub fn width(&self) -> u32 { self.width }
+	pub fn width(&self) -> u32 {
+		self.width
+	}
 	#[inline]
-	pub fn height(&self) -> u32 { self.height }
+	pub fn height(&self) -> u32 {
+		self.height
+	}
 	#[inline]
-	pub fn depth(&self) -> u32 { self.depth }
+	pub fn depth(&self) -> u32 {
+		self.depth
+	}
 
 	pub fn aspect_ratio(&self) -> f32 {
 		(self.width as f32) / (self.height as f32)
+	}
+
+	pub fn dimensions(&self) -> u32 {
+		match self {
+			Extent {
+				width: 1..,
+				height: 1,
+				depth: 1,
+			} => 1,
+			Extent {
+				width: 1..,
+				height: 1..,
+				depth: 1,
+			} => 2,
+			Extent {
+				width: 1..,
+				height: 1..,
+				depth: 1..,
+			} => 3,
+			_ => 0,
+		}
 	}
 }
 
@@ -154,6 +189,32 @@ pub struct RGBA {
 	pub a: f32,
 }
 
+impl std::ops::Mul for RGBA {
+	type Output = Self;
+
+	fn mul(self, rhs: Self) -> Self::Output {
+		Self {
+			r: self.r * rhs.r,
+			g: self.g * rhs.g,
+			b: self.b * rhs.b,
+			a: self.a * rhs.a,
+		}
+	}
+}
+
+impl std::ops::Mul<f32> for RGBA {
+	type Output = Self;
+
+	fn mul(self, rhs: f32) -> Self::Output {
+		Self {
+			r: self.r * rhs,
+			g: self.g * rhs,
+			b: self.b * rhs,
+			a: self.a * rhs,
+		}
+	}
+}
+
 impl std::hash::Hash for RGBA {
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
 		self.r.to_bits().hash(state);
@@ -164,16 +225,47 @@ impl std::hash::Hash for RGBA {
 }
 
 impl RGBA {
-	pub fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
+	pub const fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
 		Self { r, g, b, a }
 	}
-	pub fn black() -> Self { Self { r: 0.0, g: 0.0, b: 0.0, a: 1.0, } }
-	pub fn white() -> Self { Self { r: 1.0, g: 1.0, b: 1.0, a: 1.0, } }
+
+	pub fn black() -> Self {
+		Self {
+			r: 0.0,
+			g: 0.0,
+			b: 0.0,
+			a: 1.0,
+		}
+	}
+
+	pub fn white() -> Self {
+		Self {
+			r: 1.0,
+			g: 1.0,
+			b: 1.0,
+			a: 1.0,
+		}
+	}
+
+	pub fn transparent() -> Self {
+		Self {
+			r: 0.0,
+			g: 0.0,
+			b: 0.0,
+			a: 0.0,
+		}
+	}
 }
 
 impl Default for RGBA {
 	fn default() -> Self {
 		Self::black()
+	}
+}
+
+impl From<RGBA> for [f32; 4] {
+	fn from(val: RGBA) -> Self {
+		[val.r, val.g, val.b, val.a]
 	}
 }
 
@@ -183,28 +275,36 @@ pub fn insert_return_length<T>(collection: &mut Vec<T>, value: T) -> usize {
 	length
 }
 
+pub fn as_byte_slice<T>(slice: &[T]) -> &[u8] {
+	unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
+}
+
+pub fn as_byte_slice_mut<T>(slice: &mut [T]) -> &mut [u8] {
+	unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
+}
+
 #[cfg(test)]
 mod tests {
 	#[test]
 	fn test_partition() {
 		let input = [];
 		let expected: Vec<(usize, &[usize])> = vec![];
-		assert_eq!(super::partition(&input,|x| *x,), expected);
+		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [0];
 		let expected: Vec<(usize, &[usize])> = vec![(0, &[0])];
-		assert_eq!(super::partition(&input,|x| *x,), expected);
+		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [0, 1];
 		let expected: Vec<(usize, &[usize])> = vec![(0, &[0, 1])];
-		assert_eq!(super::partition(&input,|x| *x,), expected);
+		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [0, 2];
 		let expected: Vec<(usize, &[usize])> = vec![(0, &[0]), (2, &[2])];
-		assert_eq!(super::partition(&input,|x| *x,), expected);
+		assert_eq!(super::partition(&input, |x| *x,), expected);
 
 		let input = [1, 2, 3, 5, 6, 7, 9, 10, 11];
 		let expected: Vec<(usize, &[usize])> = vec![(1, &[1, 2, 3]), (5, &[5, 6, 7]), (9, &[9, 10, 11])];
-		assert_eq!(super::partition(&input,|x| *x,), expected);
+		assert_eq!(super::partition(&input, |x| *x,), expected);
 	}
 }

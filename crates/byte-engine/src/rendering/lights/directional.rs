@@ -1,8 +1,11 @@
 use math::Vector3;
 
-use crate::{core::{Entity, EntityHandle}, inspector::Inspectable, rendering::lights::{Light, LightClasses}};
-
 use super::super::cct;
+use crate::{
+	core::{Entity, EntityHandle},
+	inspector::Inspectable,
+	rendering::lights::{Light, LightClasses},
+};
 
 /// The `DirectionalLight` struct represents a directional light source in a scene.
 ///
@@ -25,12 +28,6 @@ impl DirectionalLight {
 impl Light for DirectionalLight {
 	fn class(&self) -> LightClasses {
 		LightClasses::Directional
-	}
-}
-
-impl Entity for DirectionalLight {
-	fn builder(self) -> crate::core::entity::EntityBuilder<'static, Self> where Self: Sized {
-    	crate::core::entity::EntityBuilder::new(self).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Inspectable>).r#as(|h| h as EntityHandle<dyn Light>)
 	}
 }
 

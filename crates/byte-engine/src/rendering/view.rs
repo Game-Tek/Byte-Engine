@@ -1,6 +1,12 @@
-use math::{look_down, mat::{MatInverse as _, MatTranslate as _}, orthographic_matrix, plane::Plane, projection_matrix, Base as _, Matrix4, Vector3, Vector4};
+use math::{
+	look_down,
+	mat::{MatInverse as _, MatTranslate as _},
+	orthographic_matrix,
+	plane::Plane,
+	projection_matrix, Base as _, Matrix4, Vector3, Vector4,
+};
 
-use crate::gameplay::Transform;
+use crate::gameplay::transform::Transform;
 
 /// A view represents a viewport into the world. It can be used to render a scene from a specific perspective.
 /// It's used to represent cameras, lights, and other objects that can be used to render a scene.
@@ -28,7 +34,16 @@ impl View {
 		}
 	}
 
-	pub fn new_orthographic(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32, position: Vector3, rotation: Vector3) -> Self {
+	pub fn new_orthographic(
+		left: f32,
+		right: f32,
+		bottom: f32,
+		top: f32,
+		near: f32,
+		far: f32,
+		position: Vector3,
+		rotation: Vector3,
+	) -> Self {
 		Self {
 			projection: orthographic_matrix(left, right, bottom, top, near, far),
 			view: look_down(rotation) * Matrix4::from_translation(-position),
@@ -121,7 +136,7 @@ impl View {
 			corners[i] = corner / corner.w;
 		}
 
-		return corners;
+		corners
 	}
 
 	/// Returns the frustum planes of the view, in world space.
@@ -164,6 +179,29 @@ mod tests {
 		assert_eq!(corners[5], Vector4::new(0.1, -0.1, 0.1, 1.0));
 		assert_eq!(corners[6], Vector4::new(-0.1, 0.1, 0.1, 1.0));
 		assert_eq!(corners[7], Vector4::new(0.1, 0.1, 0.1, 1.0));
+	}
+
+	#[test]
+	fn test_orthographic_view_frustum_corners() {
+		let view = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
+
+		let corners = view.get_frustum_corners();
+
+		for (corner, expected) in corners.into_iter().zip([
+			Vector4::new(-1.0, -1.0, 100.0, 1.0),
+			Vector4::new(1.0, -1.0, 100.0, 1.0),
+			Vector4::new(-1.0, 1.0, 100.0, 1.0),
+			Vector4::new(1.0, 1.0, 100.0, 1.0),
+			Vector4::new(-1.0, -1.0, 0.1, 1.0),
+			Vector4::new(1.0, -1.0, 0.1, 1.0),
+			Vector4::new(-1.0, 1.0, 0.1, 1.0),
+			Vector4::new(1.0, 1.0, 0.1, 1.0),
+		]) {
+			assert_float_eq!(corner.x, expected.x, "Orthographic corner x");
+			assert_float_eq!(corner.y, expected.y, "Orthographic corner y");
+			assert_float_eq!(corner.z, expected.z, "Orthographic corner z");
+			assert_float_eq!(corner.w, expected.w, "Orthographic corner w");
+		}
 	}
 
 	#[test]

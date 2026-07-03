@@ -1,17 +1,23 @@
 use utils::bit_array::BitArray;
 
-use super::PacketInfo;
+use crate::PacketInfo;
 
 /// The packet history is the number of (last) packets that we keep track of.
 const PACKET_HISTORY: usize = 1024;
 
 /// Local is a state tracking structure to keep track of the state of the communication with a remote.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Local {
 	// The sequence is a 16-bit number that is incremented for each packet sent.
 	sequence: u16,
 	packet_data: BitArray<PACKET_HISTORY>,
 	sequence_buffer: [u16; PACKET_HISTORY],
+}
+
+impl Default for Local {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl Local {
@@ -32,10 +38,12 @@ impl Local {
 		sequence
 	}
 
-	pub(crate) fn get_packet_data(&self, sequence: u16) -> Option<PacketInfo> {
+	pub fn get_packet_data(&self, sequence: u16) -> Option<PacketInfo> {
 		let index = (sequence % PACKET_HISTORY as u16) as usize;
 		if self.sequence_buffer[index] == sequence {
-			Some(PacketInfo { acked: self.packet_data.get(index) })
+			Some(PacketInfo {
+				acked: self.packet_data.get(index),
+			})
 		} else {
 			None
 		}
@@ -60,7 +68,12 @@ impl Local {
 
 	/// Returns the unacknowledged packets of this [`Local`]. These are the packets that have been sent but have not been acknowledged by the remote.
 	pub fn unacknowledged_packets(&self) -> Vec<u16> {
-		self.sequence_buffer.iter().enumerate().filter(|(i, &sequence)| sequence != u16::MAX && !self.packet_data.get(*i)).map(|(_, &e)| e).collect()
+		self.sequence_buffer
+			.iter()
+			.enumerate()
+			.filter(|(i, &sequence)| sequence != u16::MAX && !self.packet_data.get(*i))
+			.map(|(_, &e)| e)
+			.collect()
 	}
 }
 
@@ -79,8 +92,8 @@ mod tests {
 		let packet_info = local.get_packet_data(0);
 		assert_eq!(packet_info, Some(PacketInfo { acked: true }));
 
-		for i in 1..1024 {
-			let packet_header = local.get_sequence_number();
+		for _i in 1..1024 {
+			let _packet_header = local.get_sequence_number();
 		}
 
 		local.get_sequence_number();
@@ -126,7 +139,7 @@ mod tests {
 	fn test_packet_acknowledgement() {
 		let mut local = Local::new();
 
-		for i in 0..32 {
+		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 
@@ -138,7 +151,7 @@ mod tests {
 
 		assert_eq!(local.unacknowledged_packets(), Vec::<u16>::new());
 
-		for i in 0..32 {
+		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 
@@ -161,7 +174,7 @@ mod tests {
 	fn test_sparse_packet_acknowledgement() {
 		let mut local = Local::new();
 
-		for i in 0..32 {
+		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 
@@ -171,15 +184,24 @@ mod tests {
 
 		local.acknowledge_packet(2);
 
-		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>());
+		assert_eq!(
+			local.unacknowledged_packets(),
+			(1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>()
+		);
 
 		local.acknowledge_packet(4);
 
-		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).filter(|&i| i != 2 && i != 4).collect::<Vec<_>>());
+		assert_eq!(
+			local.unacknowledged_packets(),
+			(1u16..32u16).filter(|&i| i != 2 && i != 4).collect::<Vec<_>>()
+		);
 
 		local.acknowledge_packet(1);
 
-		assert_eq!(local.unacknowledged_packets(), (3u16..32u16).filter(|&i| i != 4).collect::<Vec<_>>());
+		assert_eq!(
+			local.unacknowledged_packets(),
+			(3u16..32u16).filter(|&i| i != 4).collect::<Vec<_>>()
+		);
 
 		local.acknowledge_packet(3);
 
@@ -190,7 +212,7 @@ mod tests {
 	fn test_acknowledge_packets() {
 		let mut local = Local::new();
 
-		for i in 0..32 {
+		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 
@@ -204,7 +226,10 @@ mod tests {
 
 		local.acknowledge_packets(2, 0b101);
 
-		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>());
+		assert_eq!(
+			local.unacknowledged_packets(),
+			(1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>()
+		);
 	}
 
 	#[test]

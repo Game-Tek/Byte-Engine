@@ -1,17 +1,32 @@
-use math::Vector3;
+use math::{magnitude, magnitude_squared, mat::MatNew3 as _, Base, Matrix3, Vector3};
 
-use crate::{core::Entity, gameplay::Positionable, physics::{collider::Collider, CollisionEvent}};
+use crate::{
+	core::Entity,
+	physics::collider::Collider,
+	space::{Positionable, Transformable},
+};
 
-pub trait Body: Collider + Positionable + Entity {
-	fn on_collision(&mut self) -> Option<&mut CollisionEvent>;
+/// The [`Body`] trait exposes the simulation properties required by a physics
+/// world.
+///
+/// Implement it on transformable gameplay entities and submit their
+/// [`crate::core::EntityHandle`] through
+/// [`crate::gameplay::world::DefaultWorld::body_factory_mut`].
+pub trait Body: Collider + Transformable {
+	fn body_type(&self) -> BodyTypes;
 
-	fn get_body_type(&self) -> BodyTypes;
-
-	fn get_velocity(&self) -> Vector3;
+	fn velocity(&self) -> Vector3;
 
 	/// Returns the mass of the body in kilograms.
-	fn get_mass(&self) -> f32 {
+	/// Default implementation returns 1 kilogram.
+	fn mass(&self) -> f32 {
 		1f32
+	}
+
+	/// Returns the center of mass of the body in body space.
+	/// Default implementation returns the origin.
+	fn center_of_mass(&self) -> Vector3 {
+		Vector3::new(0.0, 0.0, 0.0)
 	}
 }
 

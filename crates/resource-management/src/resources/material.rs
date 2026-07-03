@@ -1,6 +1,12 @@
 use serde::Serialize;
 
-use crate::{resource, resources::image::Image, solver::SolveErrors, types::{AlphaMode, ShaderTypes}, Model, Reference, ReferenceModel, Resource, Solver};
+use crate::{
+	resource,
+	resources::image::Image,
+	solver::SolveErrors,
+	types::{AlphaMode, ShaderTypes},
+	Model, Reference, ReferenceModel, Resource, Solver,
+};
 
 #[derive(Debug, Serialize)]
 pub struct Material {
@@ -15,7 +21,7 @@ pub struct Material {
 	pub parameters: Vec<Parameter>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct MaterialModel {
 	pub(crate) double_sided: bool,
 	pub(crate) alpha_mode: AlphaMode,
@@ -40,30 +46,54 @@ impl Material {
 	pub fn shaders_mut(&mut self) -> &mut [Reference<Shader>] {
 		&mut self.shaders
 	}
+
+	pub fn alpha_mode(&self) -> &AlphaMode {
+		&self.alpha_mode
+	}
 }
 
 impl Resource for Material {
-	fn get_class(&self) -> &'static str { "Material" }
+	fn get_class(&self) -> &'static str {
+		"Material"
+	}
 
 	type Model = MaterialModel;
 }
 
 impl Model for MaterialModel {
-	fn get_class() -> &'static str { "Material" }
+	fn get_class() -> &'static str {
+		"Material"
+	}
 }
 
-impl <'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
+impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Material>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or_else(|| SolveErrors::StorageError)?;
-		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-		Ok(Reference::from_model(self, Material {
+		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
+		let MaterialModel {
 			double_sided,
 			alpha_mode,
-			shaders: shaders.into_iter().map(|s| s.solve(storage_backend)).collect::<Result<Vec<_>, _>>()?,
+			shaders,
 			model,
-			parameters: parameters.into_iter().map(|p| p.solve(storage_backend)).collect::<Result<Vec<_>, _>>()?,
-		}, reader))
+			parameters,
+		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+		Ok(Reference::from_model(
+			self,
+			Material {
+				double_sided,
+				alpha_mode,
+				shaders: shaders
+					.into_iter()
+					.map(|s| s.solve(storage_backend))
+					.collect::<Result<Vec<_>, _>>()?,
+				model,
+				parameters: parameters
+					.into_iter()
+					.map(|p| p.solve(storage_backend))
+					.collect::<Result<Vec<_>, _>>()?,
+			},
+			reader,
+		))
 	}
 }
 
@@ -89,14 +119,14 @@ pub struct VariantVariable {
 	pub value: Value,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct VariantVariableModel {
 	pub name: String,
 	pub r#type: String,
 	pub value: ValueModel,
 }
 
-impl <'de> Solver<'de, VariantVariable> for VariantVariableModel {
+impl<'de> Solver<'de, VariantVariable> for VariantVariableModel {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<VariantVariable, SolveErrors> {
 		Ok(VariantVariable {
 			name: self.name,
@@ -119,12 +149,14 @@ pub struct Variant {
 }
 
 impl Resource for Variant {
-	fn get_class(&self) -> &'static str { "Variant" }
+	fn get_class(&self) -> &'static str {
+		"Variant"
+	}
 
 	type Model = VariantModel;
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct VariantModel {
 	pub material: ReferenceModel<MaterialModel>,
 	pub variables: Vec<VariantVariableModel>,
@@ -132,23 +164,36 @@ pub struct VariantModel {
 }
 
 impl Model for VariantModel {
-	fn get_class() -> &'static str { "Variant" }
-}
-
-impl <'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Variant>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or_else(|| SolveErrors::StorageError)?;
-		let VariantModel { material, variables, alpha_mode } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-		Ok(Reference::from_model(self, Variant {
-			material: material.solve(storage_backend)?,
-			variables: variables.into_iter().map(|v| v.solve(storage_backend)).collect::<Result<Vec<_>, _>>()?,
-			alpha_mode,
-		}, reader))
+	fn get_class() -> &'static str {
+		"Variant"
 	}
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+impl<'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
+	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Variant>, SolveErrors> {
+		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
+		let VariantModel {
+			material,
+			variables,
+			alpha_mode,
+		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+		Ok(Reference::from_model(
+			self,
+			Variant {
+				material: material.solve(storage_backend)?,
+				variables: variables
+					.into_iter()
+					.map(|v| v.solve(storage_backend))
+					.collect::<Result<Vec<_>, _>>()?,
+				alpha_mode,
+			},
+			reader,
+		))
+	}
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Binding {
 	pub set: u32,
 	pub binding: u32,
@@ -167,17 +212,26 @@ impl Binding {
 	}
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ShaderInterface {
 	pub workgroup_size: Option<(u32, u32, u32)>,
 	pub bindings: Vec<Binding>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum ShaderArtifact {
+	Spirv,
+	Msl { entry_point: String },
+	Mtlb { entry_point: String },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Shader {
 	pub id: String,
 	pub stage: ShaderTypes,
 	pub interface: ShaderInterface,
+	pub artifact: ShaderArtifact,
+	pub source_hash: u64,
 }
 
 impl Shader {
@@ -187,29 +241,45 @@ impl Shader {
 }
 
 impl Resource for Shader {
-	fn get_class(&self) -> &'static str { "Shader" }
+	fn get_class(&self) -> &'static str {
+		"Shader"
+	}
 
 	type Model = Shader;
 }
 
 impl Model for Shader {
-	fn get_class() -> &'static str { "Shader" }
-}
-
-impl <'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Shader>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or_else(|| SolveErrors::StorageError)?;
-		let Shader { id, stage, interface } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-		Ok(Reference::from_model(self, Shader {
-			id,
-			stage,
-			interface,
-		}, reader))
+	fn get_class() -> &'static str {
+		"Shader"
 	}
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+impl<'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
+	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Shader>, SolveErrors> {
+		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
+		let Shader {
+			id,
+			stage,
+			interface,
+			artifact,
+			source_hash,
+		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+		Ok(Reference::from_model(
+			self,
+			Shader {
+				id,
+				stage,
+				interface,
+				artifact,
+				source_hash,
+			},
+			reader,
+		))
+	}
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct RenderModel {
 	/// The name of the model.
 	pub name: String,
@@ -225,7 +295,7 @@ pub enum Value {
 	Image(Reference<Image>),
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum ValueModel {
 	Scalar(f32),
 	Vector3([f32; 3]),
@@ -240,14 +310,14 @@ pub struct Parameter {
 	pub value: Value,
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ParameterModel {
 	pub r#type: String,
 	pub name: String,
 	pub value: ValueModel,
 }
 
-impl <'de> Solver<'de, Parameter> for ParameterModel {
+impl<'de> Solver<'de, Parameter> for ParameterModel {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Parameter, SolveErrors> {
 		Ok(Parameter {
 			r#type: self.r#type.clone(),

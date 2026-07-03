@@ -1,27 +1,27 @@
-pub mod plane;
-pub mod sphere;
 pub mod cube;
+pub mod plane;
+pub mod ray;
+pub mod sphere;
 
 pub mod collision;
 
-pub use maths_rs::Vec2f as Vector2;
-pub use maths_rs::Vec3f as Vector3;
-pub use maths_rs::Vec4f as Vector4;
-
+pub use maths_rs::cross;
+pub use maths_rs::dot;
+pub use maths_rs::length;
+pub use maths_rs::mag as magnitude;
+pub use maths_rs::mag2 as magnitude_squared;
+pub use maths_rs::mat;
+pub use maths_rs::normalize;
+pub use maths_rs::num::Base;
+pub use maths_rs::num::Number;
+pub use maths_rs::vec::Magnitude;
+pub use maths_rs::vec::VecN;
 pub use maths_rs::Mat3f as Matrix3;
 pub use maths_rs::Mat4f as Matrix4;
 pub use maths_rs::Quatf as Quaternion;
-
-pub use maths_rs::normalize as normalize;
-
-pub use maths_rs::mat;
-pub use maths_rs::num::Base;
-pub use maths_rs::vec::VecN;
-
-pub use maths_rs::mag2 as magnitude_squared;
-pub use maths_rs::mag as magnitude;
-pub use maths_rs::length as length;
-pub use maths_rs::dot as dot;
+pub use maths_rs::Vec2f as Vector2;
+pub use maths_rs::Vec3f as Vector3;
+pub use maths_rs::Vec4f as Vector4;
 
 #[macro_use]
 pub mod macros {
@@ -78,7 +78,60 @@ pub mod macros {
 	}
 }
 
-use maths_rs::mat::MatNew4;
+use maths_rs::mat::{MatNew4, MatTranspose as _};
+
+/// The `ShaderMatrix4` struct preserves the CPU-to-GPU matrix layout expected by the active graphics backend.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShaderMatrix4(pub [f32; 16]);
+
+/// The `ShaderMatrix4x3` struct preserves affine CPU-to-GPU matrix layout for model transforms that do not need the final homogeneous row.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg(target_os = "macos")]
+pub struct ShaderMatrix4x3(pub [f32; 16]);
+
+/// The `ShaderMatrix4x3` struct preserves affine CPU-to-GPU matrix layout for model transforms that do not need the final homogeneous row.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg(not(target_os = "macos"))]
+pub struct ShaderMatrix4x3(pub [f32; 12]);
+
+impl From<Matrix4> for ShaderMatrix4 {
+	fn from(mut value: Matrix4) -> Self {
+		#[cfg(target_os = "macos")]
+		{
+			value = value.transpose();
+		}
+
+		Self([
+			value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7], value[8], value[9], value[10],
+			value[11], value[12], value[13], value[14], value[15],
+		])
+	}
+}
+
+impl From<Matrix4> for ShaderMatrix4x3 {
+	fn from(mut value: Matrix4) -> Self {
+		value = value.transpose();
+		let value = [
+			value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7], value[8], value[9], value[10],
+			value[11], value[12], value[13], value[14], value[15],
+		];
+
+		#[cfg(target_os = "macos")]
+		return Self([
+			value[0], value[1], value[2], 0.0, value[4], value[5], value[6], 0.0, value[8], value[9], value[10], 0.0,
+			value[12], value[13], value[14], 0.0,
+		]);
+
+		#[cfg(not(target_os = "macos"))]
+		Self([
+			value[0], value[1], value[2], value[4], value[5], value[6], value[8], value[9], value[10], value[12], value[13],
+			value[14],
+		])
+	}
+}
 
 /// Calculates the direction to move in a plane from a direction(absolute) vector and a head/camera relative direction vector
 pub fn plane_navigation(direction: Vector3, command: Vector3) -> Vector3 {
@@ -103,30 +156,30 @@ pub fn projection_matrix(fov: f32, aspect_ratio: f32, near_plane: f32, far_plane
 	let b = (near_plane * far_plane) / far_minus_near;
 
 	maths_rs::Mat4f::from((
-		maths_rs::Vec4f::from((w,		0f32, 		0f32, 		0f32)),
-		maths_rs::Vec4f::from((0f32, 	h,			0f32, 		0f32)),
-		maths_rs::Vec4f::from((0f32, 	0f32, 		a, 			b	)),
-		maths_rs::Vec4f::from((0f32,	0f32, 		1f32,		0f32)),
+		maths_rs::Vec4f::from((w, 0f32, 0f32, 0f32)),
+		maths_rs::Vec4f::from((0f32, h, 0f32, 0f32)),
+		maths_rs::Vec4f::from((0f32, 0f32, a, b)),
+		maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
 	))
 }
 
 pub fn orthographic_matrix_centered(width: f32, height: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
-	let near_minus_far = near_plane - far_plane;
+	let far_minus_near = far_plane - near_plane;
 	maths_rs::Mat4f::from((
-		maths_rs::Vec4f::from((2f32 / width, 	0f32, 			0f32,					0f32					   )),
-		maths_rs::Vec4f::from((0f32, 			2f32 / height,	0f32,					0f32					   )),
-		maths_rs::Vec4f::from((0f32, 			0f32, 			1f32 / near_minus_far,  near_plane / near_minus_far)),
-		maths_rs::Vec4f::from((0f32,			0f32, 			0f32,					1f32					   )),
+		maths_rs::Vec4f::from((2f32 / width, 0f32, 0f32, 0f32)),
+		maths_rs::Vec4f::from((0f32, 2f32 / height, 0f32, 0f32)),
+		maths_rs::Vec4f::from((0f32, 0f32, -1f32 / far_minus_near, far_plane / far_minus_near)),
+		maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
 	))
 }
 
 pub fn orthographic_matrix(left: f32, right: f32, bottom: f32, top: f32, near_plane: f32, far_plane: f32) -> maths_rs::Mat4f {
-	let near_minus_far = near_plane - far_plane;
+	let far_minus_near = far_plane - near_plane;
 	maths_rs::Mat4f::from((
-		maths_rs::Vec4f::from((2f32 / (right - left), 	0f32, 					0f32,					-(right + left) / (right - left)	)),
-		maths_rs::Vec4f::from((0f32, 					2f32 / (top - bottom),	0f32,					-(top + bottom) / (top - bottom)	)),
-		maths_rs::Vec4f::from((0f32, 					0f32, 					1f32 / near_minus_far,  near_plane / near_minus_far		)),
-		maths_rs::Vec4f::from((0f32,					0f32, 					0f32,					1f32							)),
+		maths_rs::Vec4f::from((2f32 / (right - left), 0f32, 0f32, -(right + left) / (right - left))),
+		maths_rs::Vec4f::from((0f32, 2f32 / (top - bottom), 0f32, -(top + bottom) / (top - bottom))),
+		maths_rs::Vec4f::from((0f32, 0f32, -1f32 / far_minus_near, far_plane / far_minus_near)),
+		maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
 	))
 }
 
@@ -140,8 +193,11 @@ pub fn from_normal(normal: Vector3) -> maths_rs::Mat4f {
 	let z_basis = normal;
 
 	if are_colinear(normal, Vector3::new(0f32, 1f32, 0f32)) {
-		x_basis = maths_rs::normalize(maths_rs::cross(crate::Vector3::new(0f32, 0f32, 1f32), maths_rs::normalize(normal)));
-		y_basis = maths_rs::normalize(maths_rs::cross(x_basis, maths_rs::normalize(normal)));
+		x_basis = maths_rs::normalize(maths_rs::cross(
+			maths_rs::normalize(normal),
+			crate::Vector3::new(0f32, 0f32, 1f32),
+		));
+		y_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), x_basis));
 	} else {
 		x_basis = maths_rs::normalize(maths_rs::cross(Vector3::new(0f32, 1f32, 0f32), maths_rs::normalize(normal)));
 		y_basis = maths_rs::normalize(maths_rs::cross(maths_rs::normalize(normal), x_basis));
@@ -166,44 +222,104 @@ pub fn from_rotation(axis: Vector3, theta: f32) -> maths_rs::Mat4f {
 	let z = axis.z;
 
 	maths_rs::Mat4f::new(
-		c + x * x * one_minus_c,    x * y * one_minus_c - z * s, x * z * one_minus_c + y * s, 0.0,
-		y * x * one_minus_c + z * s, c + y * y * one_minus_c,    y * z * one_minus_c - x * s, 0.0,
-		z * x * one_minus_c - y * s, z * y * one_minus_c + x * s, c + z * z * one_minus_c,    0.0,
-		0.0,                        0.0,                        0.0,                        1.0
+		c + x * x * one_minus_c,
+		x * y * one_minus_c - z * s,
+		x * z * one_minus_c + y * s,
+		0.0,
+		y * x * one_minus_c + z * s,
+		c + y * y * one_minus_c,
+		y * z * one_minus_c - x * s,
+		0.0,
+		z * x * one_minus_c - y * s,
+		z * y * one_minus_c + x * s,
+		c + z * z * one_minus_c,
+		0.0,
+		0.0,
+		0.0,
+		0.0,
+		1.0,
 	)
+}
+
+pub fn orientation_from_direction(direction: Vector3) -> Quaternion {
+	// normalize input direction
+	let dir = normalize(direction);
+
+	// base forward vector (+Z)
+	let forward = Vector3::new(0.0, 0.0, 1.0);
+
+	// handle parallel and anti-parallel cases
+	let dot = dot(forward, dir);
+	if dot > 0.9999 {
+		return Quaternion::identity();
+	} else if dot < -0.9999 {
+		// rotate 180 degrees around any perpendicular axis (X is fine if not parallel)
+		return Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), std::f32::consts::PI);
+	}
+
+	// rotation axis is perpendicular to both vectors
+	let axis = normalize(cross(forward, dir));
+
+	// rotation angle is arccos of the dot product
+	let angle = dot.acos();
+
+	Quaternion::from_axis_angle(axis, angle)
+}
+
+pub fn direction_from_orientation(orientation: Quaternion) -> Vector3 {
+	// Rotate the base forward vector (0, 0, 1) by the quaternion
+	let forward = Vector3::new(0.0, 0.0, 1.0);
+	let rotated_forward = orientation * forward;
+	normalize(rotated_forward)
 }
 
 /// Left handed row major 4x4 matrix inverse
 pub fn inverse(m: maths_rs::Mat4f) -> maths_rs::Mat4f {
 	let mut inv = maths_rs::Mat4f::default();
 
-	inv[0] = m[5]  * m[10] * m[15] - m[5]  * m[11] * m[14] - m[9]  * m[6]  * m[15] + m[9]  * m[7]  * m[14] + m[13] * m[6]  * m[11] - m[13] * m[7]  * m[10];
-    inv[4] = -m[4]  * m[10] * m[15] + m[4]  * m[11] * m[14] + m[8]  * m[6]  * m[15] - m[8]  * m[7]  * m[14] - m[12] * m[6]  * m[11] + m[12] * m[7]  * m[10];
-    inv[8] = m[4]  * m[9] * m[15] - m[4]  * m[11] * m[13] - m[8]  * m[5] * m[15] + m[8]  * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
-    inv[12] = -m[4]  * m[9] * m[14] + m[4]  * m[10] * m[13] + m[8]  * m[5] * m[14] - m[8]  * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
-    inv[1] = -m[1]  * m[10] * m[15] + m[1]  * m[11] * m[14] + m[9]  * m[2] * m[15] - m[9]  * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
-    inv[5] = m[0]  * m[10] * m[15] - m[0]  * m[11] * m[14] - m[8]  * m[2] * m[15] + m[8]  * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
-    inv[9] = -m[0]  * m[9] * m[15] + m[0]  * m[11] * m[13] + m[8]  * m[1] * m[15] - m[8]  * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
-    inv[13] = m[0]  * m[9] * m[14] - m[0]  * m[10] * m[13] - m[8]  * m[1] * m[14] + m[8]  * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
-    inv[2] = m[1]  * m[6] * m[15] - m[1]  * m[7] * m[14] - m[5]  * m[2] * m[15] + m[5]  * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
-    inv[6] = -m[0]  * m[6] * m[15] + m[0]  * m[7] * m[14] + m[4]  * m[2] * m[15] - m[4]  * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
-    inv[10] = m[0]  * m[5] * m[15] - m[0]  * m[7] * m[13] - m[4]  * m[1] * m[15] + m[4]  * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
-    inv[14] = -m[0]  * m[5] * m[14] + m[0]  * m[6] * m[13] + m[4]  * m[1] * m[14] - m[4]  * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
-    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
-    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
-    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
-    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+	inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11]
+		- m[13] * m[7] * m[10];
+	inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11]
+		+ m[12] * m[7] * m[10];
+	inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11]
+		- m[12] * m[7] * m[9];
+	inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10]
+		+ m[12] * m[6] * m[9];
+	inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11]
+		+ m[13] * m[3] * m[10];
+	inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11]
+		- m[12] * m[3] * m[10];
+	inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11]
+		+ m[12] * m[3] * m[9];
+	inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10]
+		- m[12] * m[2] * m[9];
+	inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7]
+		- m[13] * m[3] * m[6];
+	inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7]
+		+ m[12] * m[3] * m[6];
+	inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7]
+		- m[12] * m[3] * m[5];
+	inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6]
+		+ m[12] * m[2] * m[5];
+	inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7]
+		+ m[9] * m[3] * m[6];
+	inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7]
+		- m[8] * m[3] * m[6];
+	inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7]
+		+ m[8] * m[3] * m[5];
+	inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6]
+		- m[8] * m[2] * m[5];
 
-    let det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+	let det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
 
-    if det == 0f32 {
-        panic!("Matrix is not invertible");
+	if det == 0f32 {
+		panic!("Matrix is not invertible");
 	}
 
-    let det = 1.0 / det;
+	let det = 1.0 / det;
 
-    for i in 0..16 {
-        inv[i] = inv[i] * det;
+	for i in 0..16 {
+		inv[i] *= det;
 	}
 
 	inv
@@ -233,41 +349,67 @@ mod tests {
 		assert_vec3f_near!(vec1, vec2);
 	}
 
-	use maths_rs::mat::MatInverse;
+	use maths_rs::mat::{MatInverse, MatNew4};
+
+	use crate::orientation_from_direction;
 
 	#[test]
 	fn test_from_normal() {
 		let value = super::from_normal(crate::Vector3::new(0f32, 0f32, 1f32));
-		assert_eq!(value, maths_rs::Mat4f::from((
-			maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-		)));
+		assert_eq!(
+			value,
+			maths_rs::Mat4f::from((
+				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
+			))
+		);
 
 		let value = super::from_normal(crate::Vector3::new(0f32, 1f32, 0f32));
-			assert_eq!(value, maths_rs::Mat4f::from((
-			maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-		)));
+		assert_eq!(
+			value,
+			maths_rs::Mat4f::from((
+				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
+			))
+		);
 
 		let value = super::from_normal(crate::Vector3::new(1f32, 0f32, 0f32));
-		assert_eq!(value, maths_rs::Mat4f::from((
-			maths_rs::Vec4f::from((0f32, 0f32, -1f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-		)));
+		assert_eq!(
+			value,
+			maths_rs::Mat4f::from((
+				maths_rs::Vec4f::from((0f32, 0f32, -1f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
+			))
+		);
 
 		let value = super::from_normal(crate::Vector3::new(-1f32, 0f32, 0f32));
-		assert_eq!(value, maths_rs::Mat4f::from((
-			maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((-1f32, 0f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-		)));
+		assert_eq!(
+			value,
+			maths_rs::Mat4f::from((
+				maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((-1f32, 0f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
+			))
+		);
+	}
+
+	#[test]
+	fn test_from_normal_preserves_handedness_for_vertical_vectors() {
+		for normal in [crate::Vector3::new(0.0, 1.0, 0.0), crate::Vector3::new(0.0, -1.0, 0.0)] {
+			let basis = super::from_normal(normal);
+			let x = crate::Vector3::new(basis[0], basis[1], basis[2]);
+			let y = crate::Vector3::new(basis[4], basis[5], basis[6]);
+			let z = crate::Vector3::new(basis[8], basis[9], basis[10]);
+
+			assert!(maths_rs::dot(maths_rs::cross(x, y), z) > 0.0);
+		}
 	}
 
 	#[test]
@@ -279,12 +421,15 @@ mod tests {
 			maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
 		));
 		let value = super::inverse(value);
-		assert_eq!(value, maths_rs::Mat4f::from((
-			maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-		)));
+		assert_eq!(
+			value,
+			maths_rs::Mat4f::from((
+				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
+			))
+		);
 
 		let value = maths_rs::Mat4f::from((
 			maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
@@ -293,12 +438,15 @@ mod tests {
 			maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
 		));
 		let value = super::inverse(value);
-		assert_eq!(value, maths_rs::Mat4f::from((
-			maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0.5f32, 0f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 1f32 / 3f32, 0f32)),
-			maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
-		)));
+		assert_eq!(
+			value,
+			maths_rs::Mat4f::from((
+				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0.5f32, 0f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, 1f32 / 3f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
+			))
+		);
 
 		let nearly_equal = |a: f32, b: f32| (a - b).abs() < 0.0001f32;
 
@@ -310,21 +458,95 @@ mod tests {
 		));
 		let value = value.inverse();
 
-		assert!(nearly_equal(value[0], -212f32/507.0f32));
-		assert!(nearly_equal(value[1], 55f32/338f32));
-		assert!(nearly_equal(value[2], 157f32/3042f32));
-		assert!(nearly_equal(value[3], 53f32/3042f32));
-		assert!(nearly_equal(value[4], 103f32/507f32));
-		assert!(nearly_equal(value[5], -61f32/338f32));
-		assert!(nearly_equal(value[6], 127f32/3042f32));
-		assert!(nearly_equal(value[7], 101f32/3042f32));
-		assert!(nearly_equal(value[8], 79f32/507f32));
-		assert!(nearly_equal(value[9], 9f32/338f32));
-		assert!(nearly_equal(value[10], -257f32/3042f32));
-		assert!(nearly_equal(value[11], 107f32/3042f32));
-		assert!(nearly_equal(value[12], 23f32/169f32));
-		assert!(nearly_equal(value[13], 5f32/169f32));
-		assert!(nearly_equal(value[14], 5f32/169f32));
-		assert!(nearly_equal(value[15], -8f32/169f32));
+		assert!(nearly_equal(value[0], -212f32 / 507.0f32));
+		assert!(nearly_equal(value[1], 55f32 / 338f32));
+		assert!(nearly_equal(value[2], 157f32 / 3042f32));
+		assert!(nearly_equal(value[3], 53f32 / 3042f32));
+		assert!(nearly_equal(value[4], 103f32 / 507f32));
+		assert!(nearly_equal(value[5], -61f32 / 338f32));
+		assert!(nearly_equal(value[6], 127f32 / 3042f32));
+		assert!(nearly_equal(value[7], 101f32 / 3042f32));
+		assert!(nearly_equal(value[8], 79f32 / 507f32));
+		assert!(nearly_equal(value[9], 9f32 / 338f32));
+		assert!(nearly_equal(value[10], -257f32 / 3042f32));
+		assert!(nearly_equal(value[11], 107f32 / 3042f32));
+		assert!(nearly_equal(value[12], 23f32 / 169f32));
+		assert!(nearly_equal(value[13], 5f32 / 169f32));
+		assert!(nearly_equal(value[14], 5f32 / 169f32));
+		assert!(nearly_equal(value[15], -8f32 / 169f32));
+	}
+
+	#[test]
+	fn test_orientation_from_direction() {
+		let dir = maths_rs::Vec3f::from((0f32, 0f32, 1f32));
+		let quaternion = orientation_from_direction(dir);
+		let s = quaternion.as_slice();
+
+		let nearly_equal = |a: f32, b: f32| (a - b).abs() < 0.0001f32;
+
+		assert!(nearly_equal(s[0], 0f32));
+		assert!(nearly_equal(s[1], 0f32));
+		assert!(nearly_equal(s[2], 0f32));
+		assert!(nearly_equal(s[3], 1f32));
+	}
+
+	#[test]
+	fn shader_matrix4_matches_platform_upload_layout() {
+		let matrix = crate::Matrix4::new(
+			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+		);
+		let shader_matrix = crate::ShaderMatrix4::from(matrix);
+
+		#[cfg(target_os = "macos")]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 5.0, 9.0, 13.0, 2.0, 6.0, 10.0, 14.0, 3.0, 7.0, 11.0, 15.0, 4.0, 8.0, 12.0, 16.0]
+		);
+
+		#[cfg(not(target_os = "macos"))]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]
+		);
+	}
+
+	#[test]
+	fn shader_matrix4x3_preserves_affine_upload_layout() {
+		let matrix = crate::Matrix4::new(
+			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+		);
+		let shader_matrix = crate::ShaderMatrix4x3::from(matrix);
+
+		#[cfg(target_os = "macos")]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 5.0, 9.0, 0.0, 2.0, 6.0, 10.0, 0.0, 3.0, 7.0, 11.0, 0.0, 4.0, 8.0, 12.0, 0.0]
+		);
+
+		#[cfg(not(target_os = "macos"))]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 5.0, 9.0, 2.0, 6.0, 10.0, 3.0, 7.0, 11.0, 4.0, 8.0, 12.0]
+		);
+	}
+
+	#[test]
+	fn shader_matrix4x3_uploads_translation_in_fourth_column() {
+		use crate::mat::MatTranslate as _;
+
+		let matrix = crate::Matrix4::from_translation(crate::Vector3::new(10.0, 20.0, 30.0));
+		let shader_matrix = crate::ShaderMatrix4x3::from(matrix);
+
+		#[cfg(target_os = "macos")]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0, 20.0, 30.0, 0.0]
+		);
+
+		#[cfg(not(target_os = "macos"))]
+		assert_eq!(
+			shader_matrix.0,
+			[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0]
+		);
 	}
 }

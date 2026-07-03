@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use resource_management::asset::material_asset_handler::ProgramGenerator;
+use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use utils::json;
 
 use crate::besl::lexer;
@@ -8,10 +8,34 @@ use crate::besl::lexer;
 ///
 /// # Functions
 /// - `get_view_space_position_from_depth(depth_map: Texture2D, coords: vec2u, inverse_projection_matrix: mat4f) -> vec3f`
-pub struct CommonShaderScope {
+pub struct CommonShaderScope {}
+
+pub struct CommonShaderGenerator {}
+
+fn member<'a>(name: impl Into<std::borrow::Cow<'a, str>>) -> besl::parser::Node<'a> {
+	besl::parser::Node::member_expression(name)
 }
 
-pub struct CommonShaderGenerator {
+fn call<'a>(name: &'a str, parameters: Vec<besl::parser::Node<'a>>) -> besl::parser::Node<'a> {
+	besl::parser::Node::call(name, parameters)
+}
+
+fn literal<'a>(value: impl Into<std::borrow::Cow<'a, str>>) -> besl::parser::Node<'a> {
+	besl::parser::Node::literal_expression(value)
+}
+
+fn op<'a>(name: &'a str, left: besl::parser::Node<'a>, right: besl::parser::Node<'a>) -> besl::parser::Node<'a> {
+	besl::parser::Node::operator(name, left, right)
+}
+
+fn return_expr<'a>(value: besl::parser::Node<'a>) -> besl::parser::Node<'a> {
+	besl::parser::Node::return_value(value)
+}
+
+impl Default for CommonShaderGenerator {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl CommonShaderGenerator {
@@ -21,65 +45,233 @@ impl CommonShaderGenerator {
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
-	fn transform(&self, mut root: besl::parser::Node, _: &json::Object) -> besl::parser::Node {
+	fn transform<'a>(&self, root: besl::parser::Node<'a>, _: &json::Object) -> besl::parser::Node<'a> {
 		root
 	}
 }
 
 impl CommonShaderScope {
-	pub fn new() -> besl::parser::Node {
+	pub fn new<'a>() -> besl::parser::Node<'a> {
 		use besl::parser::Node;
 
-		let uv_derivatives_struct = Node::r#struct("UVDerivatives", vec![Node::member("du", "vec3f"), Node::member("dv", "vec3f")]);
+		let uv_derivatives_struct = Node::r#struct(
+			"UVDerivatives",
+			vec![Node::member("du", "vec3f"), Node::member("dv", "vec3f")],
+		);
 
-		let square_vec2 = Node::function("vec2f_squared_length", vec![Node::parameter("v", "vec2f")], "f32", vec![Node::glsl("return dot(v, v)", &[], Vec::new())]);
-		let square_vec3 = Node::function("vec3f_squared_length", vec![Node::parameter("v", "vec3f")], "f32", vec![Node::glsl("return dot(v, v)", &[], Vec::new())]);
-		let square_vec4 = Node::function("vec4f_squared_length", vec![Node::parameter("v", "vec4f")], "f32", vec![Node::glsl("return dot(v, v)", &[], Vec::new())]);
+		let square_vec2 = Node::function(
+			"vec2f_squared_length",
+			vec![Node::parameter("v", "vec2f")],
+			"f32",
+			vec![return_expr(call("dot", vec![member("v"), member("v")]))],
+		);
+		let square_vec3 = Node::function(
+			"vec3f_squared_length",
+			vec![Node::parameter("v", "vec3f")],
+			"f32",
+			vec![return_expr(call("dot", vec![member("v"), member("v")]))],
+		);
+		let square_vec4 = Node::function(
+			"vec4f_squared_length",
+			vec![Node::parameter("v", "vec4f")],
+			"f32",
+			vec![return_expr(call("dot", vec![member("v"), member("v")]))],
+		);
 
-		let min_diff = Node::function("min_diff", vec![Node::parameter("p", "vec3f"), Node::parameter("a", "vec3f"), Node::parameter("b", "vec3f")], "vec3f", vec![Node::glsl("vec3 ap = a - p; vec3 bp = p - b; return (vec3f_squared_length(ap) < vec3f_squared_length(bp)) ? ap : bp;", &["vec3f_squared_length"], Vec::new())]);
+		let min_diff = Node::function(
+			"min_diff",
+			vec![
+				Node::parameter("p", "vec3f"),
+				Node::parameter("a", "vec3f"),
+				Node::parameter("b", "vec3f"),
+			],
+			"vec3f",
+			vec![Node::glsl(
+				"vec3 ap = a - p; vec3 bp = p - b; return (vec3f_squared_length(ap) < vec3f_squared_length(bp)) ? ap : bp;",
+				&["vec3f_squared_length"],
+				&[],
+			)],
+		);
 
-		let interleaved_gradient_noise = Node::function("interleaved_gradient_noise", vec![Node::parameter("pixel_x", "u32"), Node::parameter("pixel_y", "u32"), Node::parameter("frame", "u32")], "f32", vec![Node::glsl("frame = frame % 64; /* need to periodically reset frame to avoid numerical issues */ float x = float(pixel_x) + 5.588238f * float(frame); float y = float(pixel_y) + 5.588238f * float(frame); return mod(52.9829189f * mod(0.06711056f * x + 0.00583715f * y, 1.0f), 1.0f);", &[], Vec::new())]);
+		let interleaved_gradient_noise = Node::function(
+			"interleaved_gradient_noise",
+			vec![
+				Node::parameter("pixel_x", "u32"),
+				Node::parameter("pixel_y", "u32"),
+				Node::parameter("frame", "u32"),
+			],
+			"f32",
+			vec![Node::glsl(
+				"frame = frame % 64; /* need to periodically reset frame to avoid numerical issues */ float x = float(pixel_x) + 5.588238f * float(frame); float y = float(pixel_y) + 5.588238f * float(frame); return mod(52.9829189f * mod(0.06711056f * x + 0.00583715f * y, 1.0f), 1.0f);",
+				&[],
+				&[],
+			)],
+		);
 
-		let make_world_space_position_from_depth = Node::function("make_world_space_position_from_depth", vec![Node::parameter("depth", "f32"), Node::parameter("uv", "vec2f"), Node::parameter("inverse_projection_matrix", "mat4f"), Node::parameter("inverse_view_matrix", "mat4f")], "vec3f", vec![Node::glsl("
+		let make_world_space_position_from_depth = Node::function(
+			"make_world_space_position_from_depth",
+			vec![
+				Node::parameter("depth", "f32"),
+				Node::parameter("uv", "vec2f"),
+				Node::parameter("inverse_projection_matrix", "mat4f"),
+				Node::parameter("inverse_view_matrix", "mat4f"),
+			],
+			"vec3f",
+			vec![Node::glsl(
+				"
 		vec4 clip_space = vec4(uv * 2.0 - 1.0, depth, 1.0);
 		vec4 view_space = inverse_projection_matrix * clip_space;
 		view_space /= view_space.w;
 		vec4 world_space = inverse_view_matrix * view_space;
-		return world_space.xyz;", &[], Vec::new())]);
+		return world_space.xyz;",
+				&[],
+				&[],
+			)],
+		);
 
-		let get_world_space_position_from_depth = Node::function("get_world_space_position_from_depth", vec![Node::parameter("depth_map", "Texture2D"), Node::parameter("coords", "vec2u"), Node::parameter("inverse_projection_matrix", "mat4f"), Node::parameter("inverse_view_matrix", "mat4f")], "vec3f", vec![Node::glsl("
+		let get_world_space_position_from_depth = Node::function(
+			"get_world_space_position_from_depth",
+			vec![
+				Node::parameter("depth_map", "Texture2D"),
+				Node::parameter("coords", "vec2u"),
+				Node::parameter("inverse_projection_matrix", "mat4f"),
+				Node::parameter("inverse_view_matrix", "mat4f"),
+			],
+			"vec3f",
+			vec![Node::glsl(
+				"
 		float depth_value = texelFetch(depth_map, ivec2(coords), 0).r;
 		vec2 uv = (vec2(coords) + vec2(0.5)) / vec2(textureSize(depth_map, 0).xy);
-		return make_world_space_position_from_depth(depth_value, uv, inverse_projection_matrix, inverse_view_matrix);", &["make_world_space_position_from_depth"], Vec::new())]);
+		return make_world_space_position_from_depth(depth_value, uv, inverse_projection_matrix, inverse_view_matrix);",
+				&["make_world_space_position_from_depth"],
+				&[],
+			)],
+		);
 
-		let get_view_space_position_from_depth = Node::function("get_view_space_position_from_depth", vec![Node::parameter("depth_map", "Texture2D"), Node::parameter("uv", "vec2f"), Node::parameter("inverse_projection_matrix", "mat4f")], "vec3f", vec![Node::glsl("
+		let get_view_space_position_from_depth = Node::function(
+			"get_view_space_position_from_depth",
+			vec![
+				Node::parameter("depth_map", "Texture2D"),
+				Node::parameter("uv", "vec2f"),
+				Node::parameter("inverse_projection_matrix", "mat4f"),
+			],
+			"vec3f",
+			vec![Node::glsl(
+				"
 		float depth_value = texture(depth_map, uv).r;
 		vec4 clip_space = vec4(uv * 2.0 - 1.0, depth_value, 1.0);
 		vec4 view_space = inverse_projection_matrix * clip_space;
 		view_space /= view_space.w;
-		return view_space.xyz;", &[], Vec::new())]);
+		return view_space.xyz;",
+				&[],
+				&[],
+			)],
+		);
 
-		let sin_from_tan = Node::function("sin_from_tan", vec![Node::parameter("x", "f32")], "f32", vec![Node::glsl("return x * inversesqrt(x*x + 1.0)", &[], Vec::new())]);
-		let tangent = Node::function("tangent", vec![Node::parameter("p", "vec3f"), Node::parameter("s", "vec3f")], "f32", vec![Node::glsl("return (p.z - s.z) * inversesqrt(dot(s.xy - p.xy, s.xy - p.xy))", &[], Vec::new())]);
+		let sin_from_tan = Node::function(
+			"sin_from_tan",
+			vec![Node::parameter("x", "f32")],
+			"f32",
+			vec![return_expr(op(
+				"*",
+				member("x"),
+				call(
+					"inversesqrt",
+					vec![op("+", op("*", member("x"), member("x")), literal("1.0"))],
+				),
+			))],
+		);
+		let tangent = Node::function(
+			"tangent",
+			vec![Node::parameter("p", "vec3f"), Node::parameter("s", "vec3f")],
+			"f32",
+			vec![Node::glsl(
+				"return (p.z - s.z) * inversesqrt(dot(s.xy - p.xy, s.xy - p.xy))",
+				&[],
+				&[],
+			)],
+		);
 
 		// Calculates an approximate normal from 5 positions.
-		let make_normal_from_positions = Node::function("make_normal_from_positions", vec![Node::parameter("p", "vec3f"), Node::parameter("pr", "vec3f"), Node::parameter("pl", "vec3f"), Node::parameter("pt", "vec3f"), Node::parameter("pb", "vec3f")], "vec3f", vec![Node::glsl("return normalize(cross(min_diff(p, pr, pl), min_diff(p, pt, pb)))", &["min_diff"], Vec::new())]);
+		let make_normal_from_positions = Node::function(
+			"make_normal_from_positions",
+			vec![
+				Node::parameter("p", "vec3f"),
+				Node::parameter("pr", "vec3f"),
+				Node::parameter("pl", "vec3f"),
+				Node::parameter("pt", "vec3f"),
+				Node::parameter("pb", "vec3f"),
+			],
+			"vec3f",
+			vec![return_expr(call(
+				"normalize",
+				vec![call(
+					"cross",
+					vec![
+						call("min_diff", vec![member("p"), member("pr"), member("pl")]),
+						call("min_diff", vec![member("p"), member("pt"), member("pb")]),
+					],
+				)],
+			))],
+		);
 
-		let make_perpendicular_vector = Node::function("make_perpendicular_vector", vec![Node::parameter("v", "vec3f")], "vec3f", vec![Node::glsl("return normalize(abs(v.x) > abs(v.z) ? vec3(-v.y, v.x, 0.0) : vec3(0.0, -v.z, v.y));", &[], Vec::new())]);
+		let make_perpendicular_vector = Node::function(
+			"make_perpendicular_vector",
+			vec![Node::parameter("v", "vec3f")],
+			"vec3f",
+			vec![Node::glsl(
+				"return normalize(abs(v.x) > abs(v.z) ? vec3(-v.y, v.x, 0.0) : vec3(0.0, -v.z, v.y));",
+				&[],
+				&[],
+			)],
+		);
 
 		// Should we add .5 to the coordinates before dividing by the extent?
-		let snap_uv = Node::function("snap_uv", vec![Node::parameter("uv", "vec2f"), Node::parameter("extent", "vec2u")], "vec2f", vec![Node::glsl("return round(uv * vec2(extent)) * (1.0f / vec2(extent))", &[], Vec::new())]);
+		let snap_uv = Node::function(
+			"snap_uv",
+			vec![Node::parameter("uv", "vec2f"), Node::parameter("extent", "vec2u")],
+			"vec2f",
+			vec![Node::glsl(
+				"return round(uv * vec2(extent)) * (1.0f / vec2(extent))",
+				&[],
+				&[],
+			)],
+		);
 
 		// Get a cosine-weighted random vector centered around a specified normal direction.
-		let make_cosine_hemisphere_sample = Node::function("make_cosine_hemisphere_sample", vec![Node::parameter("rand_1", "f32"), Node::parameter("rand_2", "f32"), Node::parameter("hit_normal", "vec3f")], "vec3f", vec![Node::glsl("
+		let make_cosine_hemisphere_sample = Node::function(
+			"make_cosine_hemisphere_sample",
+			vec![
+				Node::parameter("rand_1", "f32"),
+				Node::parameter("rand_2", "f32"),
+				Node::parameter("hit_normal", "vec3f"),
+			],
+			"vec3f",
+			vec![Node::glsl(
+				"
 		vec2 randVal = vec2(rand_1, rand_2);
 		vec3 bitangent = make_perpendicular_vector(hit_normal);
 		vec3 tangent = cross(bitangent, hit_normal);
 		float r = sqrt(randVal.x);
 		float phi = 2.0f * PI * randVal.y;
-		return normalize(tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + hit_normal.xyz * sqrt(max(0.0, 1.0f - randVal.x)));", &["make_perpendicular_vector"], Vec::new())]);
+		return normalize(tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + hit_normal.xyz * sqrt(max(0.0, 1.0f - randVal.x)));",
+				&["make_perpendicular_vector"],
+				&[],
+			)],
+		);
 
-		let make_normal_from_depth_map = Node::function("make_normal_from_depth_map", vec![Node::parameter("depth_map", "Texture2D"), Node::parameter("coord", "vec2i"), Node::parameter("extent", "vec2u"), Node::parameter("inverse_projection", "mat4f"), Node::parameter("inverse_view", "mat4f")], "vec3f", vec![Node::glsl("
+		let make_normal_from_depth_map = Node::function(
+			"make_normal_from_depth_map",
+			vec![
+				Node::parameter("depth_map", "Texture2D"),
+				Node::parameter("coord", "vec2i"),
+				Node::parameter("extent", "vec2u"),
+				Node::parameter("inverse_projection", "mat4f"),
+				Node::parameter("inverse_view", "mat4f"),
+			],
+			"vec3f",
+			vec![Node::glsl(
+				"
 		float c_depth = texelFetch(depth_map, coord, 0).r;
 
 		if (c_depth == 0.0) { return vec3(0.0); }
@@ -95,23 +287,245 @@ impl CommonShaderScope {
 		vec3 t_pos = make_world_space_position_from_depth(t_depth, make_uv(coord + ivec2(0, -1), extent), inverse_projection, inverse_view);
 		vec3 b_pos = make_world_space_position_from_depth(b_depth, make_uv(coord + ivec2(0, 1), extent), inverse_projection, inverse_view);
 
-		return make_normal_from_positions(c_pos, l_pos, r_pos, t_pos, b_pos);", &["make_world_space_position_from_depth", "make_uv", "make_normal_from_positions"], Vec::new())]);
+		return make_normal_from_positions(c_pos, l_pos, r_pos, t_pos, b_pos);",
+				&["make_world_space_position_from_depth", "make_uv", "make_normal_from_positions"],
+				&[],
+			)],
+		);
 
-		let make_uv = Node::function("make_uv", vec![Node::parameter("coordinates", "vec2i"), Node::parameter("extent", "vec2u")], "vec2f", vec![Node::glsl("return (vec2(coordinates) + 0.5f) / vec2(extent);", &[], Vec::new())]);
-		let rotate_directions = Node::function("rotate_directions", vec![Node::parameter("dir", "vec2f"), Node::parameter("cos_sin", "vec2f")], "vec2f", vec![Node::glsl("return vec2(dir.x*cos_sin.x - dir.y*cos_sin.y,dir.x*cos_sin.y + dir.y*cos_sin.x)", &[], Vec::new())]);
+		let make_uv = Node::function(
+			"make_uv",
+			vec![Node::parameter("coordinates", "vec2i"), Node::parameter("extent", "vec2u")],
+			"vec2f",
+			vec![Node::glsl("return (vec2(coordinates) + 0.5f) / vec2(extent);", &[], &[])],
+		);
+		let rotate_directions = Node::function(
+			"rotate_directions",
+			vec![Node::parameter("dir", "vec2f"), Node::parameter("cos_sin", "vec2f")],
+			"vec2f",
+			vec![Node::glsl(
+				"return vec2(dir.x*cos_sin.x - dir.y*cos_sin.y,dir.x*cos_sin.y + dir.y*cos_sin.x)",
+				&[],
+				&[],
+			)],
+		);
 
-		let distribution_ggx = Node::function("distribution_ggx", vec![Node::member("n", "vec3f"), Node::member("h", "vec3f"), Node::member("roughness", "f32")], "f32", vec![Node::glsl("float a = roughness*roughness; float a2 = a*a; float n_dot_h = max(dot(n, h), 0.0); float denom = ((n_dot_h*n_dot_h) * (a2 - 1.0) + 1.0); denom = PI * denom * denom; return a2 / denom;", &[], Vec::new())]);
-		let geometry_schlick_ggx = Node::function("geometry_schlick_ggx", vec![Node::member("n_dot_v", "f32"), Node::member("roughness", "f32")], "f32", vec![Node::glsl("float r = (roughness + 1.0); float k = (r*r) / 8.0; return n_dot_v / (n_dot_v * (1.0 - k) + k);", &[], Vec::new())]);
-		let geometry_smith = Node::function("geometry_smith", vec![Node::member("n", "vec3f"), Node::member("v", "vec3f"), Node::member("l", "vec3f"), Node::member("roughness", "f32")], "f32", vec![Node::glsl("return geometry_schlick_ggx(max(dot(n, v), 0.0), roughness) * geometry_schlick_ggx(max(dot(n, l), 0.0), roughness);", &["geometry_schlick_ggx"], Vec::new())]);
-		let fresnel_schlick = Node::function("fresnel_schlick", vec![Node::member("cos_theta", "f32"), Node::member("f0", "vec3f")], "vec3f", vec![Node::glsl("return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);", &[], Vec::new())]);
+		let distribution_ggx = Node::function(
+			"distribution_ggx",
+			vec![
+				Node::member("n", "vec3f"),
+				Node::member("h", "vec3f"),
+				Node::member("roughness", "f32"),
+			],
+			"f32",
+			vec![Node::raw_code(
+				Some(
+					"float a = roughness*roughness; float a2 = a*a; float n_dot_h = max(dot(n, h), 0.0); float denom = ((n_dot_h*n_dot_h) * (a2 - 1.0) + 1.0); denom = PI * denom * denom; return a2 / denom;"
+						.into(),
+				),
+				None,
+				Some(
+					"float a = roughness * roughness; float a2 = a * a; float n_dot_h = max(dot(n, h), 0.0); float denom = ((n_dot_h * n_dot_h) * (a2 - 1.0) + 1.0); denom = PI * denom * denom; return a2 / denom;"
+						.into(),
+				),
+				&[],
+				&[],
+			)],
+		);
+		let geometry_schlick_ggx = Node::function(
+			"geometry_schlick_ggx",
+			vec![Node::member("n_dot_v", "f32"), Node::member("roughness", "f32")],
+			"f32",
+			vec![Node::raw_code(
+				Some("float r = (roughness + 1.0); float k = (r*r) / 8.0; return n_dot_v / (n_dot_v * (1.0 - k) + k);".into()),
+				None,
+				Some(
+					"float r = (roughness + 1.0); float k = (r * r) / 8.0; return n_dot_v / (n_dot_v * (1.0 - k) + k);".into(),
+				),
+				&[],
+				&[],
+			)],
+		);
+		let geometry_smith = Node::function(
+			"geometry_smith",
+			vec![
+				Node::member("n", "vec3f"),
+				Node::member("v", "vec3f"),
+				Node::member("l", "vec3f"),
+				Node::member("roughness", "f32"),
+			],
+			"f32",
+			vec![Node::glsl(
+				"return geometry_schlick_ggx(max(dot(n, v), 0.0), roughness) * geometry_schlick_ggx(max(dot(n, l), 0.0), roughness);",
+				&["geometry_schlick_ggx"],
+				&[],
+			)],
+		);
+		let fresnel_schlick = Node::function(
+			"fresnel_schlick",
+			vec![Node::member("cos_theta", "f32"), Node::member("f0", "vec3f")],
+			"vec3f",
+			vec![Node::raw_code(
+				Some("return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into()),
+				None,
+				Some("return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into()),
+				&[],
+				&[],
+			)],
+		);
+		let fresnel_schlick_roughness = Node::function(
+			"fresnel_schlick_roughness",
+			vec![
+				Node::member("cos_theta", "f32"),
+				Node::member("f0", "vec3f"),
+				Node::member("roughness", "f32"),
+			],
+			"vec3f",
+			vec![Node::raw_code(
+				Some("return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into()),
+				None,
+				Some(
+					"return f0 + (max(float3(1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into(),
+				),
+				&[],
+				&[],
+			)],
+		);
 
-		let barycentric_deriv = Node::r#struct("BarycentricDeriv", vec![Node::member("lambda", "vec3f"), Node::member("ddx", "vec3f"), Node::member("ddy", "vec3f")]);
+		let barycentric_deriv = Node::r#struct(
+			"BarycentricDeriv",
+			vec![
+				Node::member("lambda", "vec3f"),
+				Node::member("ddx", "vec3f"),
+				Node::member("ddy", "vec3f"),
+			],
+		);
 
-		let calculate_full_bary = Node::function("calculate_full_bary", vec![Node::member("pt0", "vec4f"), Node::member("pt1", "vec4f"), Node::member("pt2", "vec4f"), Node::member("pixelNdc", "vec2f"), Node::member("winSize", "vec2f")], "BarycentricDeriv", vec![Node::glsl("BarycentricDeriv ret = BarycentricDeriv(vec3(0), vec3(0), vec3(0)); vec3 invW = 1.0 / vec3(pt0.w, pt1.w, pt2.w); vec2 ndc0 = pt0.xy * invW.x; vec2 ndc1 = pt1.xy * invW.y; vec2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(mat2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = vec3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = vec3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, vec3(1)); float ddySum = dot(ret.ddy, vec3(1)); vec2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0    + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0    + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum  *= (2.0 / winSize.x); ddySum  *= (2.0 / winSize.y);  float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum);  ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;", &[], Vec::new())]);
-		let interpolate_vec3f_with_deriv = Node::function("interpolate_vec3f_with_deriv", vec![Node::member("interp", "vec3f"), Node::member("v0", "vec3f"), Node::member("v1", "vec3f"), Node::member("v2", "vec3f")], "vec3f", vec![Node::glsl("return vec3(dot(vec3(v0.x, v1.x, v2.x), interp), dot(vec3(v0.y, v1.y, v2.y), interp), dot(vec3(v0.z, v1.z, v2.z), interp));", &[], Vec::new())]);
-		let interpolate_vec2f_with_deriv = Node::function("interpolate_vec2f_with_deriv", vec![Node::member("interp", "vec3f"), Node::member("v0", "vec2f"), Node::member("v1", "vec2f"), Node::member("v2", "vec2f")], "vec2f", vec![Node::glsl("return vec2(dot(vec3(v0.x, v1.x, v2.x), interp), dot(vec3(v0.y, v1.y, v2.y), interp));", &[], Vec::new())]);
+		let calculate_full_bary = Node::function(
+			"calculate_full_bary",
+			vec![
+				Node::member("pt0", "vec4f"),
+				Node::member("pt1", "vec4f"),
+				Node::member("pt2", "vec4f"),
+				Node::member("pixelNdc", "vec2f"),
+				Node::member("winSize", "vec2f"),
+			],
+			"BarycentricDeriv",
+			vec![Node::raw_code(
+				Some(
+					"BarycentricDeriv ret = BarycentricDeriv(vec3(0), vec3(0), vec3(0)); vec3 invW = 1.0 / vec3(pt0.w, pt1.w, pt2.w); vec2 ndc0 = pt0.xy * invW.x; vec2 ndc1 = pt1.xy * invW.y; vec2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(mat2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = vec3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = vec3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, vec3(1)); float ddySum = dot(ret.ddy, vec3(1)); vec2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0    + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0    + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum  *= (2.0 / winSize.x); ddySum  *= (2.0 / winSize.y);  float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum);  ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;"
+						.into(),
+				),
+				None,
+				Some(
+					"BarycentricDeriv ret; ret.lambda = float3(0); ret.ddx = float3(0); ret.ddy = float3(0); float3 invW = 1.0 / float3(pt0.w, pt1.w, pt2.w); float2 ndc0 = pt0.xy * invW.x; float2 ndc1 = pt1.xy * invW.y; float2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(float2x2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = float3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = float3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, float3(1)); float ddySum = dot(ret.ddy, float3(1)); float2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0 + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0 + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum *= (2.0 / winSize.x); ddySum *= (2.0 / winSize.y); float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum); ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;"
+						.into(),
+				),
+				&[],
+				&[],
+			)],
+		);
 
-		let unit_vector_from_xy = Node::function("unit_vector_from_xy", vec![Node::member("v", "vec2f")], "vec3f", vec![Node::glsl("v = v * 2.0f - 1.0f; return normalize(vec3(v, sqrt(max(0.0f, 1.0f - v.x * v.x - v.y * v.y))));", &[], Vec::new())]);
+		let calculate_barycentric_from_position = Node::function(
+			"calculate_barycentric_from_position",
+			vec![
+				Node::member("point", "vec3f"),
+				Node::member("v0", "vec3f"),
+				Node::member("v1", "vec3f"),
+				Node::member("v2", "vec3f"),
+			],
+			"vec3f",
+			vec![Node::raw_code(
+				Some(
+					"vec3 edge0 = v1 - v0; vec3 edge1 = v2 - v0; vec3 point_delta = point - v0; float d00 = dot(edge0, edge0); float d01 = dot(edge0, edge1); float d11 = dot(edge1, edge1); float d20 = dot(point_delta, edge0); float d21 = dot(point_delta, edge1); float denom = d00 * d11 - d01 * d01; if (abs(denom) <= 1e-8) { return vec3(1.0, 0.0, 0.0); } float bary1 = (d11 * d20 - d01 * d21) / denom; float bary2 = (d00 * d21 - d01 * d20) / denom; return vec3(1.0 - bary1 - bary2, bary1, bary2);"
+						.into(),
+				),
+				None,
+				Some(
+					"float3 edge0 = v1 - v0; float3 edge1 = v2 - v0; float3 point_delta = point - v0; float d00 = dot(edge0, edge0); float d01 = dot(edge0, edge1); float d11 = dot(edge1, edge1); float d20 = dot(point_delta, edge0); float d21 = dot(point_delta, edge1); float denom = d00 * d11 - d01 * d01; if (abs(denom) <= 1e-8) { return float3(1.0, 0.0, 0.0); } float bary1 = (d11 * d20 - d01 * d21) / denom; float bary2 = (d00 * d21 - d01 * d20) / denom; return float3(1.0 - bary1 - bary2, bary1, bary2);"
+						.into(),
+				),
+				&[],
+				&[],
+			)],
+		);
+
+		let make_raster_ndc_from_pixel_coordinates = Node::function(
+			"make_raster_ndc_from_pixel_coordinates",
+			vec![
+				Node::member("pixel_coordinates", "vec2i"),
+				Node::member("image_extent", "vec2i"),
+			],
+			"vec2f",
+			vec![Node::raw_code(
+				Some(
+					"vec2 normalized_xy = (vec2(pixel_coordinates) + vec2(0.5)) / vec2(image_extent);
+				return vec2(normalized_xy.x * 2.0 - 1.0, 1.0 - normalized_xy.y * 2.0);"
+						.into(),
+				),
+				None,
+				Some(
+					"float2 normalized_xy = (float2(pixel_coordinates) + float2(0.5)) / float2(image_extent);
+				return float2(normalized_xy.x * 2.0 - 1.0, 1.0 - normalized_xy.y * 2.0);"
+						.into(),
+				),
+				&[],
+				&[],
+			)],
+		);
+		let interpolate_vec3f_with_deriv = Node::function(
+			"interpolate_vec3f_with_deriv",
+			vec![
+				Node::member("interp", "vec3f"),
+				Node::member("v0", "vec3f"),
+				Node::member("v1", "vec3f"),
+				Node::member("v2", "vec3f"),
+			],
+			"vec3f",
+			vec![Node::raw_code(
+				Some(
+					"return vec3(dot(vec3(v0.x, v1.x, v2.x), interp), dot(vec3(v0.y, v1.y, v2.y), interp), dot(vec3(v0.z, v1.z, v2.z), interp));"
+						.into(),
+				),
+				None,
+				Some(
+					"return float3(dot(float3(v0.x, v1.x, v2.x), interp), dot(float3(v0.y, v1.y, v2.y), interp), dot(float3(v0.z, v1.z, v2.z), interp));"
+						.into(),
+				),
+				&[],
+				&[],
+			)],
+		);
+		let interpolate_vec2f_with_deriv = Node::function(
+			"interpolate_vec2f_with_deriv",
+			vec![
+				Node::member("interp", "vec3f"),
+				Node::member("v0", "vec2f"),
+				Node::member("v1", "vec2f"),
+				Node::member("v2", "vec2f"),
+			],
+			"vec2f",
+			vec![Node::raw_code(
+				Some("return vec2(dot(vec3(v0.x, v1.x, v2.x), interp), dot(vec3(v0.y, v1.y, v2.y), interp));".into()),
+				None,
+				Some("return float2(dot(float3(v0.x, v1.x, v2.x), interp), dot(float3(v0.y, v1.y, v2.y), interp));".into()),
+				&[],
+				&[],
+			)],
+		);
+
+		let unit_vector_from_xy = Node::function(
+			"unit_vector_from_xy",
+			vec![Node::member("v", "vec2f")],
+			"vec3f",
+			vec![Node::raw_code(
+				Some("v = v * 2.0f - 1.0f; return normalize(vec3(v, sqrt(max(0.0f, 1.0f - v.x * v.x - v.y * v.y))));".into()),
+				None,
+				Some("v = v * 2.0f - 1.0f; return normalize(float3(v, sqrt(max(0.0f, 1.0f - v.x * v.x - v.y * v.y))));".into()),
+				&[],
+				&[],
+			)],
+		);
 
 		let code = "vec4 colors[16] = vec4[16](
 			vec4(0.16863, 0.40392, 0.77647, 1),
@@ -132,44 +546,51 @@ impl CommonShaderScope {
 			vec4(0.69804, 0.16078, 0.39216, 1)
 		);
 
-		return colors[i % 16];".trim();
+		return colors[i % 16];"
+			.trim();
 
-		let get_debug_color = besl::parser::Node::function("get_debug_color", vec![besl::parser::Node::parameter("i", "u32")], "vec4f", vec![besl::parser::Node::glsl(code, &[], Vec::new())]);
+		let get_debug_color = besl::parser::Node::function(
+			"get_debug_color",
+			vec![besl::parser::Node::parameter("i", "u32")],
+			"vec4f",
+			vec![besl::parser::Node::glsl(code, &[], &[])],
+		);
 
-		Node::scope("Common", vec![
-			uv_derivatives_struct,
-
-			distribution_ggx,
-			geometry_schlick_ggx,
-			geometry_smith,
-			fresnel_schlick,
-			barycentric_deriv,
-			calculate_full_bary,
-			interpolate_vec3f_with_deriv,
-			interpolate_vec2f_with_deriv,
-			unit_vector_from_xy,
-			sin_from_tan,
-			snap_uv,
-			tangent,
-
-			square_vec2,
-			square_vec3,
-			square_vec4,
-
-			min_diff,
-			interleaved_gradient_noise,
-			make_perpendicular_vector,
-			make_cosine_hemisphere_sample,
-			make_uv,
-			make_world_space_position_from_depth,
-			get_world_space_position_from_depth,
-			get_view_space_position_from_depth,
-			make_normal_from_positions,
-			rotate_directions,
-
-			make_normal_from_depth_map,
-
-			get_debug_color,
-		])
+		Node::scope(
+			"Common",
+			vec![
+				uv_derivatives_struct,
+				distribution_ggx,
+				geometry_schlick_ggx,
+				geometry_smith,
+				fresnel_schlick,
+				fresnel_schlick_roughness,
+				barycentric_deriv,
+				calculate_full_bary,
+				calculate_barycentric_from_position,
+				make_raster_ndc_from_pixel_coordinates,
+				interpolate_vec3f_with_deriv,
+				interpolate_vec2f_with_deriv,
+				unit_vector_from_xy,
+				sin_from_tan,
+				snap_uv,
+				tangent,
+				square_vec2,
+				square_vec3,
+				square_vec4,
+				min_diff,
+				interleaved_gradient_noise,
+				make_perpendicular_vector,
+				make_cosine_hemisphere_sample,
+				make_uv,
+				make_world_space_position_from_depth,
+				get_world_space_position_from_depth,
+				get_view_space_position_from_depth,
+				make_normal_from_positions,
+				rotate_directions,
+				make_normal_from_depth_map,
+				get_debug_color,
+			],
+		)
 	}
 }

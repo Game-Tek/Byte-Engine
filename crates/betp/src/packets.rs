@@ -9,9 +9,12 @@ pub trait Packet: Sized {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 /// The types of packet supported by the protocol.
 pub enum PacketType {
+	/// A default packet type. Should not be used.
+	#[default]
+	Default = 0,
 	/// A connection request packet. Sent by the client to request a connection to the server.
 	ConnectionRequest = 1,
 	/// A challenge packet. Sent by the server to challenge the client.
@@ -25,7 +28,7 @@ pub enum PacketType {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 /// The header of a BETP packet.
 /// The header contains the protocol id and the type of the packet.
 pub struct PacketHeader {
@@ -39,7 +42,7 @@ pub struct PacketHeader {
 impl PacketHeader {
 	pub fn new(r#type: PacketType) -> Self {
 		Self {
-			protocol_id: [b'B', b'E', b'T', b'P'],
+			protocol_id: *b"BETP",
 			r#type,
 		}
 	}
@@ -54,7 +57,7 @@ impl PacketHeader {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 /// A connection request packet.
 pub struct ConnectionRequestPacket {
 	header: PacketHeader,
@@ -84,8 +87,14 @@ impl Packet for ConnectionRequestPacket {
 	}
 }
 
+impl From<ConnectionRequestPacket> for Packets {
+	fn from(val: ConnectionRequestPacket) -> Self {
+		Packets::ConnectionRequest(val)
+	}
+}
+
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 /// A challenge packet.
 pub struct ChallengePacket {
 	header: PacketHeader,
@@ -121,8 +130,14 @@ impl Packet for ChallengePacket {
 	}
 }
 
+impl From<ChallengePacket> for Packets {
+	fn from(val: ChallengePacket) -> Self {
+		Packets::Challenge(val)
+	}
+}
+
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 /// A challenge response packet.
 pub struct ChallengeResponsePacket {
 	header: PacketHeader,
@@ -148,8 +163,14 @@ impl Packet for ChallengeResponsePacket {
 	}
 }
 
+impl From<ChallengeResponsePacket> for Packets {
+	fn from(val: ChallengeResponsePacket) -> Self {
+		Packets::ChallengeResponse(val)
+	}
+}
+
 #[repr(C)]
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 /// The status of a connection.
 pub struct ConnectionStatus {
 	/// The sequence number of the packet. An incrementing number that is used to order the packets.
@@ -182,7 +203,7 @@ pub struct DataPacket<const S: usize> {
 	pub data: [u8; S],
 }
 
-impl <const S: usize> DataPacket<S> {
+impl<const S: usize> DataPacket<S> {
 	pub fn new(connection_id: u64, connection_status: ConnectionStatus, data: [u8; S]) -> Self {
 		Self {
 			header: PacketHeader::new(PacketType::Data),
@@ -201,7 +222,7 @@ impl <const S: usize> DataPacket<S> {
 	}
 }
 
-impl <const S: usize> Packet for DataPacket<S> {
+impl<const S: usize> Packet for DataPacket<S> {
 	fn packet_type(&self) -> PacketType {
 		self.header.r#type
 	}
@@ -211,8 +232,19 @@ impl <const S: usize> Packet for DataPacket<S> {
 	}
 }
 
+impl<const S: usize> Default for DataPacket<S> {
+	fn default() -> Self {
+		Self {
+			header: PacketHeader::default(),
+			connection_id: 0,
+			connection_status: ConnectionStatus::default(),
+			data: [0; S],
+		}
+	}
+}
+
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 /// A disconnect packet.
 pub struct DisconnectPacket {
 	header: PacketHeader,
@@ -242,8 +274,14 @@ impl Packet for DisconnectPacket {
 	}
 }
 
+impl From<DisconnectPacket> for Packets {
+	fn from(val: DisconnectPacket) -> Self {
+		Packets::Disconnect(val)
+	}
+}
+
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 /// Represents all the possible BETP packets.
 pub enum Packets {
 	ConnectionRequest(ConnectionRequestPacket),

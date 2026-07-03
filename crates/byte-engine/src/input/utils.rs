@@ -6,17 +6,39 @@ use super::{device_class::DeviceClassHandle, input_trigger::TriggerDescription, 
 /// This is the standard Byte-Engine mouse device definition.
 ///
 /// # Triggers
-/// - `Position`: The position of the mouse. This is a 2D vector. In the range of -1 to 1, relative to the window.
+/// - `Position`: The absolute position of the mouse. This is a 2D vector. In the range of -1 to 1, relative to the window.
+/// - `Movement`: The relative movement of the mouse. This is a 2D vector. The value is normalized by the window size.
 /// - `LeftButton`: The state of the left mouse button. This is a boolean.
 /// - `RightButton`: The state of the right mouse button. This is a boolean.
 /// - `Scroll`: The scroll wheel of the mouse. This is a float. The value is the amount of scroll in the Y direction. The range is -1 to 1.
 pub fn register_mouse_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 	let mouse_device_class_handle = input_manager.register_device_class("Mouse");
 
-	input_manager.register_trigger(&mouse_device_class_handle, "Position", TriggerDescription::<Vector2>::default());
-	input_manager.register_trigger(&mouse_device_class_handle, "LeftButton", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&mouse_device_class_handle, "RightButton", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&mouse_device_class_handle, "Scroll", TriggerDescription::new(0f32, 0f32, -1f32, 1f32));
+	input_manager.register_trigger(
+		&mouse_device_class_handle,
+		"Position",
+		TriggerDescription::<Vector2>::default(),
+	);
+	input_manager.register_trigger(
+		&mouse_device_class_handle,
+		"Movement",
+		TriggerDescription::<Vector2>::default(),
+	);
+	input_manager.register_trigger(
+		&mouse_device_class_handle,
+		"LeftButton",
+		TriggerDescription::<bool>::default(),
+	);
+	input_manager.register_trigger(
+		&mouse_device_class_handle,
+		"RightButton",
+		TriggerDescription::<bool>::default(),
+	);
+	input_manager.register_trigger(
+		&mouse_device_class_handle,
+		"Scroll",
+		TriggerDescription::new(0f32, 0f32, -1f32, 1f32),
+	);
 
 	mouse_device_class_handle
 }
@@ -50,8 +72,17 @@ pub fn register_keyboard_device_class(input_manager: &mut InputManager) -> Devic
 	input_manager.register_trigger(&keyboard_device_class_handle, "Right", TriggerDescription::<bool>::default());
 
 	input_manager.register_trigger(&keyboard_device_class_handle, "Escape", TriggerDescription::<bool>::default());
+	input_manager.register_trigger(
+		&keyboard_device_class_handle,
+		"Backspace",
+		TriggerDescription::<bool>::default(),
+	);
 
-	input_manager.register_trigger(&keyboard_device_class_handle, "Character", TriggerDescription::new('\0', '\0', '\0', 'Z'));
+	input_manager.register_trigger(
+		&keyboard_device_class_handle,
+		"Character",
+		TriggerDescription::<char>::default(),
+	);
 
 	keyboard_device_class_handle
 }
@@ -64,14 +95,83 @@ pub fn register_keyboard_device_class(input_manager: &mut InputManager) -> Devic
 /// - `RightStick`: The position of the right stick. This is a 2D vector. In the range of -1 to 1.
 /// - `LeftTrigger`: The state of the left trigger. This is a float. The range is 0 to 1.
 /// - `RightTrigger`: The state of the right trigger. This is a float. The range is 0 to 1.
+/// - `A`, `B`, `X`, `Y`: The face buttons. These are booleans.
+/// - `LeftBumper`, `RightBumper`: The shoulder buttons. These are booleans.
+/// - `LeftStickButton`, `RightStickButton`: The stick click buttons. These are booleans.
+/// - `Select`, `Start`, `Guide`: The menu buttons. These are booleans.
+/// - `DPadUp`, `DPadDown`, `DPadLeft`, `DPadRight`: The directional pad buttons. These are booleans.
 pub fn register_gamepad_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 	let gamepad_device_class_handle = input_manager.register_device_class("Gamepad");
 
-	input_manager.register_trigger(&gamepad_device_class_handle, "LeftStick", TriggerDescription::<Vector2>::default());
-	input_manager.register_trigger(&gamepad_device_class_handle, "RightStick", TriggerDescription::<Vector2>::default());
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"LeftStick",
+		TriggerDescription::<Vector2>::default(),
+	);
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"RightStick",
+		TriggerDescription::<Vector2>::default(),
+	);
 
-	input_manager.register_trigger(&gamepad_device_class_handle, "LeftTrigger", TriggerDescription::<f32>::default());
-	input_manager.register_trigger(&gamepad_device_class_handle, "RightTrigger", TriggerDescription::<f32>::default());
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"LeftTrigger",
+		TriggerDescription::<f32>::default(),
+	);
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"RightTrigger",
+		TriggerDescription::<f32>::default(),
+	);
+
+	input_manager.register_trigger(&gamepad_device_class_handle, "A", TriggerDescription::<bool>::default());
+	input_manager.register_trigger(&gamepad_device_class_handle, "B", TriggerDescription::<bool>::default());
+	input_manager.register_trigger(&gamepad_device_class_handle, "X", TriggerDescription::<bool>::default());
+	input_manager.register_trigger(&gamepad_device_class_handle, "Y", TriggerDescription::<bool>::default());
+
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"LeftBumper",
+		TriggerDescription::<bool>::default(),
+	);
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"RightBumper",
+		TriggerDescription::<bool>::default(),
+	);
+
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"LeftStickButton",
+		TriggerDescription::<bool>::default(),
+	);
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"RightStickButton",
+		TriggerDescription::<bool>::default(),
+	);
+
+	input_manager.register_trigger(&gamepad_device_class_handle, "Select", TriggerDescription::<bool>::default());
+	input_manager.register_trigger(&gamepad_device_class_handle, "Start", TriggerDescription::<bool>::default());
+	input_manager.register_trigger(&gamepad_device_class_handle, "Guide", TriggerDescription::<bool>::default());
+
+	input_manager.register_trigger(&gamepad_device_class_handle, "DPadUp", TriggerDescription::<bool>::default());
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"DPadDown",
+		TriggerDescription::<bool>::default(),
+	);
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"DPadLeft",
+		TriggerDescription::<bool>::default(),
+	);
+	input_manager.register_trigger(
+		&gamepad_device_class_handle,
+		"DPadRight",
+		TriggerDescription::<bool>::default(),
+	);
 
 	gamepad_device_class_handle
 }

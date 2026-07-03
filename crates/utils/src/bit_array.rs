@@ -1,13 +1,26 @@
-#[derive(Clone, Copy)]
-pub struct BitArray<const N: usize> where [u8; N / 8]: {
+#[derive(Debug, Clone, Copy)]
+pub struct BitArray<const N: usize>
+where
+	[u8; N / 8]:,
+{
 	data: [u8; N / 8],
 }
 
-impl<const N: usize> BitArray<N> where [u8; N / 8]: {
+impl<const N: usize> Default for BitArray<N>
+where
+	[u8; N / 8]:,
+{
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl<const N: usize> BitArray<N>
+where
+	[u8; N / 8]:,
+{
 	pub fn new() -> Self {
-		Self {
-			data: [0; N / 8],
-		}
+		Self { data: [0; N / 8] }
 	}
 
 	pub fn set(&mut self, index: usize, value: bool) {

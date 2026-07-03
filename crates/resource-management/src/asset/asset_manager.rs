@@ -1,6 +1,11 @@
-use crate::{asset::ResourceId, resource::StorageBackend as ResourceStorageBackend, Description, Model, ProcessedAsset, ReferenceModel};
+use std::alloc::{Allocator, Global};
 
 use super::{asset_handler::AssetHandler, StorageBackend};
+use crate::{
+	asset::{asset_handler::LoadErrors, ResourceId},
+	resource::StorageBackend as ResourceStorageBackend,
+	Model, ReferenceModel,
+};
 
 pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AssetHandler>>,
@@ -10,16 +15,19 @@ pub struct AssetManager {
 /// Enumeration of the possible messages that can be returned when loading an asset.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoadMessages {
+	/// The asset was not found in the storage backend.
 	NoAsset,
+	/// An IO error occurred while loading the asset.
 	IO,
 	/// The URL was missing in the asset JSON.
 	NoURL,
 	/// No asset handler was found for the asset.
 	NoAssetHandler,
-	FailedToBake {
-	    asset: String,
-        error: String,
-    },
+	/// The asset could not be baked by the backend.
+	/// Either it failed or an indirect asset failed to bake/load.
+	FailedToBake { asset: String, error: LoadErrors },
+	/// The asset could not be stored in the resource storage backend.
+	FailedToStore { asset: String, error: String },
 }
 
 impl AssetManager {
@@ -38,53 +46,26 @@ impl AssetManager {
 		self.storage_backend.as_ref()
 	}
 
-	/// Load a source asset from a JSON asset description.
-	pub fn bake<'a>(&self, id: &str, resource_storage_backend: &dyn ResourceStorageBackend) -> Result<(), LoadMessages> {
-		let id = ResourceId::new(id);
-
-		let asset_handler = match self.asset_handlers.iter().find(|handler| handler.can_handle(id.get_extension())) {
-            Some(handler) => handler,
-            None => {
-                log::warn!("No asset handler found for asset: {:#?}", id);
-                return Err(LoadMessages::NoAssetHandler);
-            }
-        };
-
-		let start_time = std::time::Instant::now();
-
-		let asset = match asset_handler.load(self, resource_storage_backend, self.storage_backend.as_ref(), id) {
-            Ok(asset) => asset,
-            Err(error) => {
-                log::error!("Failed to load asset: {:#?}", error);
-                return Err(LoadMessages::NoAsset);
-            }
-        };
-
-		let dependencies = asset.requested_assets();
-
-		log::trace!("Baking '{:#?}' asset{}{}{}", id, if dependencies.is_empty() { "" } else { " => [" }, dependencies.join(", "), if dependencies.is_empty() { "" } else { "]" });
-
-		let bake_result = asset.load(self, resource_storage_backend, self.storage_backend.as_ref(), id);
-
-		match bake_result {
-            Ok(_) => {
-		        log::trace!("Baked '{:#?}' resource in {:#?}", id, start_time.elapsed());
-            },
-            Err(error) => {
-                log::error!("Failed to bake asset: {:#?}", error);
-                return Err(LoadMessages::NoAsset);
-            }
-        }
-
-		Ok(())
+	/// Call this to bake an asset identified by it's URL.
+	/// Does not check if the asset already exists in the resource storage backend.
+	pub async fn bake<'a>(&self, id: &str, resource_storage_backend: &dyn ResourceStorageBackend) -> Result<(), LoadMessages> {
+		self.bake_in(id, resource_storage_backend, &Global).await
 	}
 
-	/// Generates a resource from a loaded asset.
-	/// Does nothing if the resource already exists (with a matching hash).
-	pub fn load<'a, M: Model + for <'de> serde::Deserialize<'de>>(&self, id: &str, resource_storage_backend: &dyn ResourceStorageBackend) -> Result<ReferenceModel<M>, LoadMessages> {
+	/// Bakes an asset while using the provided allocator for generation-time buffers.
+	pub async fn bake_in<'a>(
+		&self,
+		id: &str,
+		resource_storage_backend: &dyn ResourceStorageBackend,
+		allocator: &dyn Allocator,
+	) -> Result<(), LoadMessages> {
 		let id = ResourceId::new(id);
 
-		let asset_handler = match self.asset_handlers.iter().find(|handler| handler.can_handle(id.get_extension())) {
+		let asset_handler = match self
+			.asset_handlers
+			.iter()
+			.find(|handler| handler.can_handle(id.get_extension()))
+		{
 			Some(handler) => handler,
 			None => {
 				log::warn!("No asset handler found for asset: {:#?}", id);
@@ -92,48 +73,76 @@ impl AssetManager {
 			}
 		};
 
-		let asset_loader = match asset_handler.load(self, resource_storage_backend, self.storage_backend.as_ref(), id) {
-			Ok(asset) => asset,
+		let start_time = std::time::Instant::now();
+
+		let (resource, buffer) = match asset_handler
+			.bake(self, resource_storage_backend, self.storage_backend.as_ref(), id, allocator)
+			.await
+		{
+			Ok(baked_asset) => baked_asset,
 			Err(error) => {
-				log::error!("Failed to load asset: {:#?}", error);
-				return Err(LoadMessages::NoAsset);
+				log::error!("Failed to bake asset: {:#?}", error);
+				return Err(LoadMessages::FailedToBake {
+					asset: id.to_string(),
+					error,
+				});
 			}
 		};
 
-		asset_loader.load(self, resource_storage_backend, self.storage_backend.as_ref(), id).or_else(|error| {
-			log::error!("Failed to load asset: {:#?}", error);
-			Err(LoadMessages::NoAsset)
-		})?;
+		if resource_storage_backend.store_in(resource, &buffer, allocator).is_err() {
+			return Err(LoadMessages::FailedToStore {
+				asset: id.to_string(),
+				error: format!("Failed to bake asset {:#?}", id),
+			});
+		}
 
-        if let Some(result) = resource_storage_backend.read(id) {
+		log::trace!("Baked '{:#?}' resource in {:#?}", id, start_time.elapsed());
+
+		Ok(())
+	}
+
+	/// Call this to bake an asset identified by it's URL, if it does not already exist in the resource storage backend.
+	/// Does nothing if the resource already exists (with a matching hash).
+	pub async fn bake_if_not_exists<'a, M: Model>(
+		&self,
+		id: &str,
+		resource_storage_backend: &dyn ResourceStorageBackend,
+	) -> Result<ReferenceModel<M>, LoadMessages> {
+		let id = ResourceId::new(id);
+
+		if resource_storage_backend.read(id).is_none() {
+			self.bake(id.as_ref(), resource_storage_backend).await?;
+		}
+
+		if let Some(result) = resource_storage_backend.read(id) {
 			let (resource, _) = result;
 			let resource: ReferenceModel<M> = resource.into();
 			return Ok(resource);
 		}
 
-		Err(LoadMessages::FailedToBake { asset: id.to_string(), error: format!("{:#?}", id) })
+		Err(LoadMessages::NoAsset)
 	}
 
-	/// Generates a resource from a description and data.
-	/// Does nothing if the resource already exists (with a matching hash).
-	pub fn produce<'a, D: Description>(&self, id: ResourceId<'_>, resource_type: &str, description: &D, data: Box<[u8]>, resource_storage_backend: &dyn ResourceStorageBackend) -> ProcessedAsset {
-		let asset_handler = self.asset_handlers.iter().find(|asset_handler| asset_handler.can_handle(resource_type)).expect("No asset handler found for class");
+	/// Bakes an asset with the provided allocator if the resource does not already exist.
+	pub async fn bake_if_not_exists_in<'a, M: Model>(
+		&self,
+		id: &str,
+		resource_storage_backend: &dyn ResourceStorageBackend,
+		allocator: &dyn Allocator,
+	) -> Result<ReferenceModel<M>, LoadMessages> {
+		let id = ResourceId::new(id);
 
-		let start_time = std::time::Instant::now();
+		if resource_storage_backend.read(id).is_none() {
+			self.bake_in(id.as_ref(), resource_storage_backend, allocator).await?;
+		}
 
-		let (resource, buffer) = match asset_handler.produce(id, description, data) {
-			Ok(x) => x,
-			Err(error) => {
-				log::error!("Failed to produce resource: {}", error);
-				panic!("Failed to produce resource");
-			}
-		};
+		if let Some(result) = resource_storage_backend.read(id) {
+			let (resource, _) = result;
+			let resource: ReferenceModel<M> = resource.into();
+			return Ok(resource);
+		}
 
-		log::trace!("Baked '{:#?}' resource in {:#?}", id, start_time.elapsed());
-
-		resource_storage_backend.store(&resource, &buffer).unwrap();
-
-		resource
+		Err(LoadMessages::NoAsset)
 	}
 }
 
@@ -141,24 +150,23 @@ impl AssetManager {
 pub mod tests {
 	use utils::json;
 
-	use crate::asset::{self, asset_handler::{Asset, LoadErrors}, storage_backend::tests::TestStorageBackend};
-
 	use super::*;
+	use crate::{
+		asset::{asset_handler::LoadErrors, storage_backend::tests::TestStorageBackend},
+		r#async::BoxedFuture,
+		Model, ProcessedAsset,
+	};
 
-	struct TestAsset {}
+	#[derive(serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+	struct TestResource {}
 
-	impl Asset for TestAsset {
-		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn ResourceStorageBackend, _: &'a dyn asset::StorageBackend, _: ResourceId<'a>) -> Result<(), String> {
-            Ok(())
+	impl Model for TestResource {
+		fn get_class() -> &'static str {
+			"TestResource"
 		}
-		fn requested_assets(&self) -> Vec<String> {
-		    vec!["example".to_string()]
-		}
-    }
-
-	struct TestAssetHandler {
-
 	}
+
+	struct TestAssetHandler {}
 
 	impl TestAssetHandler {
 		fn new() -> TestAssetHandler {
@@ -166,21 +174,26 @@ pub mod tests {
 		}
 	}
 
-	struct TestDescription {}
-
 	impl AssetHandler for TestAssetHandler {
-	    fn can_handle(&self, id: &str) -> bool {
-            id == "example"
-        }
+		fn can_handle(&self, id: &str) -> bool {
+			id == "example"
+		}
 
-		fn load<'a>(&'a self, _: &'a AssetManager, _: &'a dyn ResourceStorageBackend, _: &'a dyn StorageBackend, id: ResourceId<'a>,) -> Result<Box<dyn Asset>, LoadErrors> {
-			let res = if id.get_base().as_ref() == "example" {
-				Ok(Box::new(TestAsset {}) as Box<dyn Asset>)
-			} else {
-				Err(LoadErrors::AssetCouldNotBeLoaded)
-			};
-
-			res
+		fn bake<'a>(
+			&'a self,
+			_: &'a AssetManager,
+			_: &'a dyn ResourceStorageBackend,
+			_: &'a dyn StorageBackend,
+			id: ResourceId<'a>,
+			_: &'a dyn std::alloc::Allocator,
+		) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
+			Box::pin(async move {
+				if id.get_base().as_ref() == "example" {
+					Ok((ProcessedAsset::new(id, TestResource {}), Vec::new().into_boxed_slice()))
+				} else {
+					Err(LoadErrors::AssetCouldNotBeLoaded)
+				}
+			})
 		}
 	}
 
@@ -223,7 +236,7 @@ pub mod tests {
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_handler() {
 		let storage_backend = TestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(storage_backend);
+		let _asset_manager = AssetManager::new(storage_backend);
 
 		let _: json::Value = json::from_str(r#"{"url": "http://example.com"}"#).unwrap();
 
@@ -234,7 +247,7 @@ pub mod tests {
 	#[ignore = "Need to solve DI"]
 	fn test_load_no_asset_url() {
 		let storage_backend = TestStorageBackend::new();
-		let mut asset_manager = AssetManager::new(storage_backend);
+		let _asset_manager = AssetManager::new(storage_backend);
 
 		let _: json::Value = json::from_str(r#"{}"#).unwrap();
 

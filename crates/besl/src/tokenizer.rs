@@ -1,73 +1,79 @@
-use std::marker::PhantomData;
+//! The `tokenizer` module splits BESL source text into the token stream that the parser consumes.
 
 pub struct Tokens<'a> {
 	/// The tokens in the stream.
-	pub(crate) tokens: Vec<String>,
-	_lifetime: PhantomData<&'a str>,
+	pub(crate) tokens: Vec<&'a str>,
 }
 
 /// Tokenize consumes a string and returns a stream of tokens.
 pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
-	let interrupt = |c: char| -> bool {
-		c.is_whitespace()
-	};
+	let interrupt = |c: char| -> bool { c.is_whitespace() };
 
-	let can_sequence_continue = |sequence: &str, c: char| -> bool {
-		if sequence.is_empty() { return true; }
-
-		let last = sequence.chars().last().unwrap();
+	let can_sequence_continue = |last: Option<char>, c: char| -> bool {
+		let Some(last) = last else {
+			return true;
+		};
 
 		if last.is_alphabetic() {
 			c.is_alphanumeric() || c == '_'
 		} else if last.is_numeric() {
-			c.is_numeric() || c == '.' || c.is_alphabetic()
+			c.is_alphanumeric() || c == '.' || c == '_'
 		} else if last == '.' {
 			c.is_numeric()
 		} else if last == '_' {
 			c.is_alphanumeric() || c == '_'
-		} else if last == '-' && c == '>' {
-			true
 		} else {
-			false
+			matches!(
+				(last, c),
+				('-', '>')
+					| ('=', '=') | ('!', '=')
+					| ('<', '=') | ('>', '=')
+					| ('<', '<') | ('>', '>')
+					| ('&', '&') | ('|', '|')
+			)
 		}
 	};
 
 	let mut tokens = Vec::new();
-	let mut chars = source.chars();
-	let mut iterator = chars.next();
+	let mut chars = source.char_indices().peekable();
+	let mut token_start: Option<usize> = None;
+	let mut token_last: Option<char> = None;
 
-	'outer: loop {
-		let mut token = String::new();
-
-		'inner: loop {
-			match iterator {
-				Some(c) => {
-					if interrupt(c) {
-						iterator = chars.next();
-						break 'inner;
-					} else if can_sequence_continue(&token, c) {
-						token.push(c);
-						iterator = chars.next();
-					} else {
-						break 'inner;
-					}
-				},
-				None => {
-					if !token.is_empty() {
-						tokens.push(token);
-					}
-
-					break 'outer;
-				},
+	while let Some((idx, c)) = chars.peek().copied() {
+		if interrupt(c) {
+			if let Some(start) = token_start {
+				tokens.push(&source[start..idx]);
+				token_start = None;
+				token_last = None;
 			}
+			chars.next();
+			continue;
 		}
 
-		if token.len() > 0 {
-			tokens.push(token);
+		match token_start {
+			None => {
+				token_start = Some(idx);
+				token_last = Some(c);
+				chars.next();
+			}
+			Some(start) => {
+				if can_sequence_continue(token_last, c) {
+					token_last = Some(c);
+					chars.next();
+				} else {
+					tokens.push(&source[start..idx]);
+					token_start = None;
+					token_last = None;
+				}
+			}
 		}
 	}
 
-	Ok(Tokens { tokens, _lifetime: PhantomData })
+	if let Some(start) = token_start {
+		tokens.push(&source[start..]);
+	}
+
+	Ok(Tokens { tokens })
 }
 
 #[cfg(test)]
@@ -78,21 +84,89 @@ mod tests {
 	fn test_function() {
 		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }";
 		let tokens = tokenize(source).unwrap();
-		assert_eq!(tokens.tokens, vec!["fn", "main", "(", ")", "->", "void", "{", "gl_Position", "=", "vec4", "(", "0.0", ",", "0.0", ",", "0.0", ",", "1.0", ")", ";", "}"]);
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"fn",
+				"main",
+				"(",
+				")",
+				"->",
+				"void",
+				"{",
+				"gl_Position",
+				"=",
+				"vec4",
+				"(",
+				"0.0",
+				",",
+				"0.0",
+				",",
+				"0.0",
+				",",
+				"1.0",
+				")",
+				";",
+				"}"
+			]
+		);
 	}
 
 	#[test]
 	fn test_operators() {
 		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0) * 2.0; }";
 		let tokens = tokenize(source).unwrap();
-		assert_eq!(tokens.tokens, vec!["fn", "main", "(", ")", "->", "void", "{", "gl_Position", "=", "vec4", "(", "0.0", ",", "0.0", ",", "0.0", ",", "1.0", ")", "*", "2.0", ";", "}"]);
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"fn",
+				"main",
+				"(",
+				")",
+				"->",
+				"void",
+				"{",
+				"gl_Position",
+				"=",
+				"vec4",
+				"(",
+				"0.0",
+				",",
+				"0.0",
+				",",
+				"0.0",
+				",",
+				"1.0",
+				")",
+				"*",
+				"2.0",
+				";",
+				"}"
+			]
+		);
+	}
+
+	#[test]
+	fn test_bitwise_operators() {
+		let source = "fn main() -> void { value = 1 << 8 | 2 & 255; }";
+		let tokens = tokenize(source).unwrap();
+		assert_eq!(
+			tokens.tokens,
+			vec!["fn", "main", "(", ")", "->", "void", "{", "value", "=", "1", "<<", "8", "|", "2", "&", "255", ";", "}"]
+		);
 	}
 
 	#[test]
 	fn test_struct() {
 		let source = "struct Light { position: vec3f, color: vec3f, data: Data<int>, array: [u8; 4] };";
 		let tokens = tokenize(source).unwrap();
-		assert_eq!(tokens.tokens, vec!["struct", "Light", "{", "position", ":", "vec3f", ",", "color", ":", "vec3f", ",", "data", ":", "Data", "<", "int", ">", ",", "array", ":", "[", "u8", ";", "4", "]", "}", ";"]);
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"struct", "Light", "{", "position", ":", "vec3f", ",", "color", ":", "vec3f", ",", "data", ":", "Data", "<",
+				"int", ">", ",", "array", ":", "[", "u8", ";", "4", "]", "}", ";"
+			]
+		);
 	}
 
 	#[test]
@@ -100,5 +174,31 @@ mod tests {
 		let source = "color: In<vec4f>;";
 		let tokens = tokenize(source).unwrap();
 		assert_eq!(tokens.tokens, vec!["color", ":", "In", "<", "vec4f", ">", ";"]);
+	}
+
+	#[test]
+	fn test_for_loop() {
+		let source = "main: fn () -> void { for (let i: u32 = 0; i < 4; i = i + 1) { value = value + i; } }";
+		let tokens = tokenize(source).unwrap();
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"main", ":", "fn", "(", ")", "->", "void", "{", "for", "(", "let", "i", ":", "u32", "=", "0", ";", "i", "<",
+				"4", ";", "i", "=", "i", "+", "1", ")", "{", "value", "=", "value", "+", "i", ";", "}", "}"
+			]
+		);
+	}
+
+	#[test]
+	fn test_comparison_and_logical_operators() {
+		let source = "main: fn () -> void { if (a >= b || c != d && e <= f && g > h) { continue; } }";
+		let tokens = tokenize(source).unwrap();
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"main", ":", "fn", "(", ")", "->", "void", "{", "if", "(", "a", ">=", "b", "||", "c", "!=", "d", "&&", "e",
+				"<=", "f", "&&", "g", ">", "h", ")", "{", "continue", ";", "}", "}"
+			]
+		);
 	}
 }

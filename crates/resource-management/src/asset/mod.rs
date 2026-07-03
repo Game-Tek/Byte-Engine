@@ -1,34 +1,50 @@
 //! This module contains the asset management system.
 //! This system is responsible for loading assets from different sources (network, local, etc.) and generating the resources from them.
+//! Each assert is a file in a specific format, and the asset handlers are responsible for parsing the file and generating the resources from it.
 
-use utils::{json, sync::{File, Read}};
+use std::{alloc::Allocator, io::ErrorKind};
 
-pub mod asset_manager;
+use utils::json;
+
 pub mod asset_handler;
+pub mod asset_manager;
+mod audio_utils;
 
-pub mod audio_asset_handler;
-pub mod material_asset_handler;
-pub mod image_asset_handler;
-pub mod mesh_asset_handler;
+pub mod bema_asset_handler;
+pub mod gltf_asset_handler;
+pub mod lut_asset_handler;
+pub mod ogg_asset_handler;
+pub mod png_asset_handler;
+pub mod wav_asset_handler;
 
 pub type BEADType = json::Value;
 
-pub mod storage_backend;
 pub mod resource_id;
+pub mod storage_backend;
 
 pub use resource_id::ResourceId;
-pub use storage_backend::StorageBackend;
 pub use storage_backend::FileStorageBackend;
+pub use storage_backend::{AssetStorageBytes, StorageBackend};
 
-/// Loads an asset from source.\
+use crate::r#async::read;
+use crate::resource::reader::MappedFileBacking;
+
+/// Loads an asset from source asynchronously.\
 /// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
 /// If the asset is not found it will return None.
-pub fn read_asset_from_source<'a>(url: ResourceId<'a>, base_path: Option<&'a std::path::Path>) -> Result<(Box<[u8]>, Option<BEADType>, String), ()> {
-    let base = url.get_base();
-	let resource_origin = if base.as_ref().starts_with("http://") || base.as_ref().starts_with("https://") { "network" } else { "local" };
-	let mut source_bytes;
-	let format;
-	let spec;
+pub async fn read_asset_from_source<'a>(
+	url: ResourceId<'a>,
+	base_path: Option<&'a std::path::Path>,
+	allocator: &'a dyn Allocator,
+) -> Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()> {
+	let base = url.get_base();
+
+	let resource_origin = if base.as_ref().starts_with("http://") || base.as_ref().starts_with("https://") {
+		"network"
+	} else {
+		"local"
+	};
+
 	match resource_origin {
 		// "network" => {
 		// 	let request = if let Ok(request) = ureq::get(base.as_ref()).call() { request } else { return Err(()); };
@@ -45,40 +61,51 @@ pub fn read_asset_from_source<'a>(url: ResourceId<'a>, base_path: Option<&'a std
 			let path = base_path.unwrap_or(std::path::Path::new(""));
 
 			let path = path.join(base.as_ref());
+			let spec_path = path.with_added_extension("bead");
+			let format = path.extension().and_then(|e| e.to_str()).ok_or(())?.to_string();
 
-			let file = File::open(&path);
-			let mut file = file.or(Err(()))?;
+			let spec = read_asset_spec(&spec_path);
+			let source_bytes = read_asset_bytes(&path, allocator);
 
-			spec = {
-				// Append ".bead" to the file name to check for a resource file
-				let spec_path = path.with_added_extension("bead");
-				let file = File::open(spec_path).ok();
-				if let Some(mut file) = file {
-					let mut spec_bytes = Vec::with_capacity(file.metadata().unwrap().len() as usize);
-					if let Err(_) = file.read_to_end(&mut spec_bytes) {
-						return Err(());
-					}
-					let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-					let spec: json::Value = json::from_str(spec).or(Err(()))?;
-					Some(spec)
-				} else {
-					None
-				}
-			};
+			let (spec, source_bytes) = std::future::join!(spec, source_bytes).await;
 
-			format = path.extension().unwrap().to_str().unwrap().to_string();
-
-			source_bytes = Vec::with_capacity(file.metadata().unwrap().len() as usize);
-
-			if let Err(_) = file.read_to_end(&mut source_bytes) {
-				return Err(());
-			}
-		},
+			return Ok((source_bytes?, spec?, format));
+		}
 		_ => {
 			// Could not resolve how to get raw resource, return empty bytes
-			return Err(());
+			Err(())
 		}
 	}
+}
 
-	Ok((source_bytes.into(), spec, format))
+async fn read_asset_spec(spec_path: &std::path::Path) -> Result<Option<BEADType>, ()> {
+	// Append ".bead" to the file name to check for a resource file.
+	let spec_bytes = match read(spec_path).await {
+		Ok(bytes) => Some(bytes),
+		Err(err) if err.kind() == ErrorKind::NotFound => None,
+		Err(_) => return Err(()),
+	};
+
+	if let Some(spec_bytes) = spec_bytes {
+		let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
+		let spec: json::Value = json::from_str(spec).or(Err(()))?;
+		Ok(Some(spec))
+	} else {
+		Ok(None)
+	}
+}
+
+async fn read_asset_bytes<'a>(path: &std::path::Path, allocator: &'a dyn Allocator) -> Result<AssetStorageBytes<'a>, ()> {
+	match std::fs::File::open(path)
+		.map_err(|_| ())
+		.and_then(|file| MappedFileBacking::new(&file))
+	{
+		Ok(mapped_file) => Ok(AssetStorageBytes::MappedFile(mapped_file)),
+		Err(_) => {
+			let source_bytes = read(path).await.or(Err(()))?;
+			let mut source_data = Vec::with_capacity_in(source_bytes.len(), allocator);
+			source_data.extend_from_slice(&source_bytes);
+			Ok(AssetStorageBytes::Allocated(source_data.into_boxed_slice()))
+		}
+	}
 }

@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use utils::Extent;
 
-use crate::{DeviceAccesses, Formats, UseCases, Uses};
+use crate::{DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
 
 pub struct Builder<'a> {
 	pub(crate) name: Option<&'a str>,
@@ -17,17 +17,19 @@ pub struct Builder<'a> {
 
 impl<'a> Builder<'a> {
 	/// Creates a new image builder with the given extent, format, and resource uses.
+	/// The default name is None.
+	/// The default extent is (0, 0, 0).
 	/// The default device accesses are GPU read and write.
 	/// The default use case is static.
 	/// The default number of array layers is None.
 	/// The default number of mip levels is 1.
-	pub fn new(extent: Extent, format: Formats, resource_uses: Uses) -> Self {
+	pub fn new(format: Formats, resource_uses: Uses) -> Self {
 		Self {
 			name: None,
-			extent,
+			extent: Extent::cube(0, 0, 0),
 			format,
 			resource_uses,
-			device_accesses: DeviceAccesses::GpuRead | DeviceAccesses::GpuWrite,
+			device_accesses: DeviceAccesses::DeviceOnly,
 			use_case: UseCases::STATIC,
 			mip_levels: 1,
 			array_layers: None,
@@ -36,6 +38,11 @@ impl<'a> Builder<'a> {
 
 	pub fn name(mut self, name: &'a str) -> Self {
 		self.name = Some(name);
+		self
+	}
+
+	pub fn extent(mut self, extent: Extent) -> Self {
+		self.extent = extent;
 		self
 	}
 
@@ -57,5 +64,32 @@ impl<'a> Builder<'a> {
 	pub fn array_layers(mut self, array_layers: Option<NonZeroU32>) -> Self {
 		self.array_layers = array_layers;
 		self
+	}
+
+	pub fn get_name(&self) -> Option<&'a str> {
+		self.name
+	}
+
+	pub fn get_format(&self) -> Formats {
+		self.format
+	}
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct ImageHandle(pub(crate) u64);
+
+impl From<ImageHandle> for PrivateHandles {
+	fn from(val: ImageHandle) -> Self {
+		PrivateHandles::Image(val)
+	}
+}
+
+impl PrivateHandle for ImageHandle {
+	fn new(i: u64) -> Self {
+		Self(i)
+	}
+
+	fn index(&self) -> u64 {
+		self.0
 	}
 }

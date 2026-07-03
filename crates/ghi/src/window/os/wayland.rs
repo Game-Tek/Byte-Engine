@@ -1,0 +1,1179 @@
+use std::{cell::RefCell, collections::VecDeque, ffi::c_void, marker::PhantomData, rc::Rc};
+
+use utils::Extent;
+use wayland_client::{
+	protocol::{
+		wl_callback,
+		wl_compositor::{self, WlCompositor},
+		wl_display, wl_keyboard,
+		wl_output::{self, WlOutput},
+		wl_pointer, wl_region, wl_registry,
+		wl_seat::{self, WlSeat},
+		wl_surface,
+	},
+	Proxy,
+};
+use wayland_protocols::{
+	wp::{
+		pointer_constraints::zv1::client::{zwp_confined_pointer_v1, zwp_locked_pointer_v1, zwp_pointer_constraints_v1},
+		relative_pointer::zv1::client::{
+			zwp_relative_pointer_manager_v1::{self},
+			zwp_relative_pointer_v1,
+		},
+	},
+	xdg::shell::client::{
+		xdg_surface, xdg_toplevel,
+		xdg_wm_base::{self, XdgWmBase},
+	},
+};
+use xkbcommon::xkb::{self, keysyms};
+
+use crate::{
+	window::os::{Features, WindowLike},
+	window::{
+		input::{Keys, MouseKeys},
+		Events, Seat,
+	},
+};
+
+pub struct Window {
+	connection: wayland_client::Connection,
+	event_queue: wayland_client::EventQueue<AppData>,
+	xdg_wm_base: xdg_wm_base::XdgWmBase,
+	surface: wl_surface::WlSurface,
+	xdg_surface: xdg_surface::XdgSurface,
+	xdg_toplevel: xdg_toplevel::XdgToplevel,
+	zwp_pointer_constraints: zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
+	zwp_relative_pointer_manager: zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+
+	requests: VecDeque<Requests>,
+
+	state: WindowState,
+}
+
+/// The `Requests` enum contains requests that need to be queued for processing.
+#[derive(Clone, Debug)]
+enum Requests {
+	/// Request to constrain the pointer to the window's bounds.
+	/// This operation is queued because it requires pointer and keyboard focus or else it will fail.
+	ConstrainPointer,
+	/// Request to lock the pointer to it's current position.
+	/// This operation is queued because it requires pointer and keyboard focus or else it will fail.
+	LockPointer,
+	/// Request to make the pointer invisible.
+	/// This operation is queued because it requires the pointer to be created.
+	HidePointer,
+}
+
+impl WindowLike for Window {
+	fn try_new(name: &str, extent: Extent, id_name: &str, _features: Features) -> Result<Self, String> {
+		let conn = wayland_client::Connection::connect_to_env().map_err(|e| e.to_string())?;
+
+		let mut configuration_event_queue: wayland_client::EventQueue<Configuration> = conn.new_event_queue();
+		let configuration_qh = configuration_event_queue.handle();
+
+		let mut app_event_queue = conn.new_event_queue();
+		let app_event_qh = app_event_queue.handle();
+
+		let display = conn.display();
+
+		let _ = display.get_registry(&configuration_qh, ());
+
+		// Get globals
+		let (compositor, wm_base, zwp_pointer_constraints, zwp_relative_pointer_manager) = {
+			let mut configuration = Configuration {
+				compositor: None,
+				xdg_wm_base: None,
+				wl_seat: None,
+				wl_output: None,
+
+				wl_surface: None,
+				wl_callback: None,
+
+				zwp_pointer_constraints: None,
+				zwp_relative_pointer_manager: None,
+
+				app_data_queue: app_event_qh.clone(),
+			};
+
+			configuration_event_queue
+				.roundtrip(&mut configuration)
+				.map_err(|e| format!("Failed to roundtrip configuration event queue: {}", e))?;
+
+			if let (Some(compositor), Some(wm_base), Some(zwp_pointer_constraints), Some(zwp_relative_pointer_manager)) = (
+				configuration.compositor,
+				configuration.xdg_wm_base,
+				configuration.zwp_pointer_constraints,
+				configuration.zwp_relative_pointer_manager,
+			) {
+				Ok((compositor, wm_base, zwp_pointer_constraints, zwp_relative_pointer_manager))
+			} else {
+				Err("Failed to acquire all required globals".to_string())
+			}
+		}?;
+
+		let surface = compositor.create_surface(&app_event_qh, ());
+
+		let xdg_surface = wm_base.get_xdg_surface(&surface, &app_event_qh, ());
+
+		let toplevel = xdg_surface.get_toplevel(&app_event_qh, ());
+
+		toplevel.set_title(name.to_string());
+		toplevel.set_app_id(id_name.to_string());
+
+		let state = {
+			let mut app_data = AppData {
+				wl_surface: surface.clone(),
+				zwp_pointer_constraints: zwp_pointer_constraints.clone(),
+				zwp_relative_pointer_manager: zwp_relative_pointer_manager.clone(),
+
+				events: VecDeque::with_capacity(64),
+				requests: VecDeque::with_capacity(16),
+
+				state: WindowState::default(),
+			};
+
+			app_event_queue.roundtrip(&mut app_data).unwrap();
+
+			surface.set_buffer_scale(app_data.state.scale as _);
+			xdg_surface.set_window_geometry(0, 0, extent.width() as _, extent.height() as _);
+
+			surface.commit();
+
+			app_data.state
+		};
+
+		let mut requests = VecDeque::with_capacity(16);
+
+		requests.push_back(Requests::ConstrainPointer);
+		// requests.push_back(Requests::LockPointer);
+		// requests.push_back(Requests::HidePointer);
+
+		Ok(Self {
+			connection: conn,
+			event_queue: app_event_queue,
+			xdg_wm_base: wm_base,
+			surface,
+			xdg_surface,
+			xdg_toplevel: toplevel,
+			zwp_pointer_constraints,
+			zwp_relative_pointer_manager,
+			requests,
+
+			state,
+		})
+	}
+
+	fn handles(&self) -> Handles {
+		Handles {
+			display: self.display().id().as_ptr() as _,
+			surface: self.surface().id().as_ptr() as _,
+		}
+	}
+
+	fn show_cursor(&mut self, show: bool) {
+		self.state.should_hide_pointer = !show;
+		self.requests.push_back(Requests::HidePointer);
+	}
+
+	fn confine_cursor(&mut self, confine: bool) {
+		self.state.should_confine_pointer = confine;
+		self.requests.push_back(Requests::ConstrainPointer);
+	}
+
+	fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a {
+		// This implementation first processes all events from the wayland event queue
+		// while producing `Events` which are then handed to an iterator
+		// which is then returned
+
+		let mut app_data = AppData {
+			wl_surface: self.surface.clone(),
+			zwp_pointer_constraints: self.zwp_pointer_constraints.clone(),
+			zwp_relative_pointer_manager: self.zwp_relative_pointer_manager.clone(),
+
+			events: VecDeque::with_capacity(64),
+			requests: self.requests.clone(),
+
+			state: self.state.clone(),
+		};
+
+		let event_queue = &mut self.event_queue;
+
+		event_queue.dispatch_pending(&mut app_data).unwrap();
+
+		// Copy updated state back to window
+		self.state = app_data.state;
+		self.requests = app_data.requests;
+
+		WindowIterator {
+			events: app_data.events,
+			_phantom: PhantomData,
+		}
+	}
+}
+
+impl Window {
+	pub fn display(&self) -> wl_display::WlDisplay {
+		self.connection.display()
+	}
+
+	pub fn surface(&self) -> wl_surface::WlSurface {
+		self.surface.clone()
+	}
+}
+
+/// The `WindowIterator` struct is used to iterate over `Events` produced by the `poll` method.
+/// Wayland events are first processed in the `poll` method which then copies it's own event list to the iterator.
+pub struct WindowIterator<'a> {
+	events: VecDeque<Events>,
+	_phantom: PhantomData<&'a ()>,
+}
+
+impl<'a> Iterator for WindowIterator<'a> {
+	type Item = Events;
+
+	fn next(&mut self) -> Option<Events> {
+		self.events.pop_front()
+	}
+}
+
+impl Drop for Window {
+	fn drop(&mut self) {
+		if let Some(confined_pointer) = self.state.confined_pointer.take() {
+			confined_pointer.destroy();
+		}
+		if let Some(locked_pointer) = self.state.locked_pointer.take() {
+			locked_pointer.destroy();
+		}
+
+		self.xdg_toplevel.destroy();
+		self.xdg_surface.destroy();
+		self.surface.destroy();
+		self.xdg_wm_base.destroy();
+	}
+}
+
+pub struct Handles {
+	pub display: *mut c_void,
+	pub surface: *mut c_void,
+}
+
+/// The `Configuration` struct holds the necessary Wayland objects and data for creating a window.
+/// This struct is handed to the `WlRegistry` binding to initialize the Wayland connection.
+#[derive(Debug)]
+struct Configuration {
+	compositor: Option<WlCompositor>,
+	xdg_wm_base: Option<XdgWmBase>,
+	wl_seat: Option<WlSeat>,
+	wl_output: Option<WlOutput>,
+	wl_surface: Option<wl_surface::WlSurface>,
+	wl_callback: Option<wl_callback::WlCallback>,
+	zwp_pointer_constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
+	zwp_relative_pointer_manager: Option<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1>,
+
+	app_data_queue: wayland_client::QueueHandle<AppData>,
+}
+
+/// The `AppData` struct holds the necessary Wayland objects and state to process events and requests for an already created window.
+#[derive(Debug)]
+struct AppData {
+	wl_surface: wl_surface::WlSurface,
+	zwp_pointer_constraints: zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
+	zwp_relative_pointer_manager: zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+
+	state: WindowState,
+
+	events: VecDeque<Events>,
+	requests: VecDeque<Requests>,
+}
+
+/// The `WindowState` struct holds the most recent tracked state of the Wayland window.
+/// The properties reported by the event queue are used to update the window state.
+#[derive(Debug, Clone)]
+struct WindowState {
+	/// The scale factor of the window.
+	scale: u32,
+	/// The extent of the window.
+	extent: Option<Extent>,
+	/// The extent of the monitor.
+	monitor_extent: Option<Extent>,
+	/// The focused pointer
+	focused_pointer: Option<wl_pointer::WlPointer>,
+	/// The focused keyboard
+	focused_keyboard: Option<wl_keyboard::WlKeyboard>,
+	/// Whether the pointer should remain confined to the window surface.
+	should_confine_pointer: bool,
+	/// Whether the compositor currently reports the pointer as confined.
+	pointer_is_confined: bool,
+	/// Whether the pointer should remain hidden.
+	should_hide_pointer: bool,
+	/// Whether the pointer is currently hidden.
+	pointer_is_hidden: bool,
+	/// Whether the pointer should remain locked.
+	should_lock_pointer: bool,
+	/// Whether the compositor currently reports the pointer as locked.
+	pointer_is_locked: bool,
+	/// The active confined pointer handle, if one is currently set.
+	confined_pointer: Option<zwp_confined_pointer_v1::ZwpConfinedPointerV1>,
+	/// The active locked pointer handle, if one is currently set.
+	locked_pointer: Option<zwp_locked_pointer_v1::ZwpLockedPointerV1>,
+	/// The XKB state for translating keycodes into keysyms.
+	keyboard_state: Option<Rc<RefCell<KeyboardState>>>,
+}
+
+impl Default for WindowState {
+	fn default() -> Self {
+		Self {
+			scale: 1,
+			extent: None,
+			monitor_extent: None,
+			focused_pointer: None,
+			focused_keyboard: None,
+			should_confine_pointer: false,
+			pointer_is_confined: false,
+			should_hide_pointer: false,
+			pointer_is_hidden: false,
+			should_lock_pointer: false,
+			pointer_is_locked: false,
+			confined_pointer: None,
+			locked_pointer: None,
+			keyboard_state: None,
+		}
+	}
+}
+
+/// The `KeyboardState` struct manages the XKB context, keymap, and state.
+struct KeyboardState {
+	context: xkb::Context,
+	keymap: xkb::Keymap,
+	state: xkb::State,
+}
+
+impl std::fmt::Debug for KeyboardState {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("KeyboardState").finish()
+	}
+}
+
+fn keysym_to_key(keysym: xkb::Keysym) -> Option<Keys> {
+	let key = match keysym.raw() {
+		keysyms::KEY_a | keysyms::KEY_A => Keys::A,
+		keysyms::KEY_b | keysyms::KEY_B => Keys::B,
+		keysyms::KEY_c | keysyms::KEY_C => Keys::C,
+		keysyms::KEY_d | keysyms::KEY_D => Keys::D,
+		keysyms::KEY_e | keysyms::KEY_E => Keys::E,
+		keysyms::KEY_f | keysyms::KEY_F => Keys::F,
+		keysyms::KEY_g | keysyms::KEY_G => Keys::G,
+		keysyms::KEY_h | keysyms::KEY_H => Keys::H,
+		keysyms::KEY_i | keysyms::KEY_I => Keys::I,
+		keysyms::KEY_j | keysyms::KEY_J => Keys::J,
+		keysyms::KEY_k | keysyms::KEY_K => Keys::K,
+		keysyms::KEY_l | keysyms::KEY_L => Keys::L,
+		keysyms::KEY_m | keysyms::KEY_M => Keys::M,
+		keysyms::KEY_n | keysyms::KEY_N => Keys::N,
+		keysyms::KEY_o | keysyms::KEY_O => Keys::O,
+		keysyms::KEY_p | keysyms::KEY_P => Keys::P,
+		keysyms::KEY_q | keysyms::KEY_Q => Keys::Q,
+		keysyms::KEY_r | keysyms::KEY_R => Keys::R,
+		keysyms::KEY_s | keysyms::KEY_S => Keys::S,
+		keysyms::KEY_t | keysyms::KEY_T => Keys::T,
+		keysyms::KEY_u | keysyms::KEY_U => Keys::U,
+		keysyms::KEY_v | keysyms::KEY_V => Keys::V,
+		keysyms::KEY_w | keysyms::KEY_W => Keys::W,
+		keysyms::KEY_x | keysyms::KEY_X => Keys::X,
+		keysyms::KEY_y | keysyms::KEY_Y => Keys::Y,
+		keysyms::KEY_z | keysyms::KEY_Z => Keys::Z,
+		keysyms::KEY_0 => Keys::Num0,
+		keysyms::KEY_1 => Keys::Num1,
+		keysyms::KEY_2 => Keys::Num2,
+		keysyms::KEY_3 => Keys::Num3,
+		keysyms::KEY_4 => Keys::Num4,
+		keysyms::KEY_5 => Keys::Num5,
+		keysyms::KEY_6 => Keys::Num6,
+		keysyms::KEY_7 => Keys::Num7,
+		keysyms::KEY_8 => Keys::Num8,
+		keysyms::KEY_9 => Keys::Num9,
+		keysyms::KEY_KP_0 => Keys::NumPad0,
+		keysyms::KEY_KP_1 => Keys::NumPad1,
+		keysyms::KEY_KP_2 => Keys::NumPad2,
+		keysyms::KEY_KP_3 => Keys::NumPad3,
+		keysyms::KEY_KP_4 => Keys::NumPad4,
+		keysyms::KEY_KP_5 => Keys::NumPad5,
+		keysyms::KEY_KP_6 => Keys::NumPad6,
+		keysyms::KEY_KP_7 => Keys::NumPad7,
+		keysyms::KEY_KP_8 => Keys::NumPad8,
+		keysyms::KEY_KP_9 => Keys::NumPad9,
+		keysyms::KEY_KP_Add => Keys::NumPadAdd,
+		keysyms::KEY_KP_Subtract => Keys::NumPadSubtract,
+		keysyms::KEY_KP_Multiply => Keys::NumPadMultiply,
+		keysyms::KEY_KP_Divide => Keys::NumPadDivide,
+		keysyms::KEY_KP_Decimal => Keys::NumPadDecimal,
+		keysyms::KEY_KP_Enter => Keys::NumPadEnter,
+		keysyms::KEY_BackSpace => Keys::Backspace,
+		keysyms::KEY_Tab => Keys::Tab,
+		keysyms::KEY_Return => Keys::Enter,
+		keysyms::KEY_Shift_L => Keys::ShiftLeft,
+		keysyms::KEY_Shift_R => Keys::ShiftRight,
+		keysyms::KEY_Control_L => Keys::ControlLeft,
+		keysyms::KEY_Control_R => Keys::ControlRight,
+		keysyms::KEY_Alt_L => Keys::AltLeft,
+		keysyms::KEY_Alt_R => Keys::AltRight,
+		keysyms::KEY_Menu => Keys::Menu,
+		keysyms::KEY_space => Keys::Space,
+		keysyms::KEY_Insert => Keys::Insert,
+		keysyms::KEY_Delete => Keys::Delete,
+		keysyms::KEY_Home => Keys::Home,
+		keysyms::KEY_End => Keys::End,
+		keysyms::KEY_Page_Up => Keys::PageUp,
+		keysyms::KEY_Page_Down => Keys::PageDown,
+		keysyms::KEY_Up => Keys::ArrowUp,
+		keysyms::KEY_Down => Keys::ArrowDown,
+		keysyms::KEY_Left => Keys::ArrowLeft,
+		keysyms::KEY_Right => Keys::ArrowRight,
+		keysyms::KEY_Escape => Keys::Escape,
+		keysyms::KEY_F1 => Keys::F1,
+		keysyms::KEY_F2 => Keys::F2,
+		keysyms::KEY_F3 => Keys::F3,
+		keysyms::KEY_F4 => Keys::F4,
+		keysyms::KEY_F5 => Keys::F5,
+		keysyms::KEY_F6 => Keys::F6,
+		keysyms::KEY_F7 => Keys::F7,
+		keysyms::KEY_F8 => Keys::F8,
+		keysyms::KEY_F9 => Keys::F9,
+		keysyms::KEY_F10 => Keys::F10,
+		keysyms::KEY_F11 => Keys::F11,
+		keysyms::KEY_F12 => Keys::F12,
+		keysyms::KEY_Num_Lock => Keys::NumLock,
+		keysyms::KEY_Scroll_Lock => Keys::ScrollLock,
+		keysyms::KEY_Caps_Lock => Keys::CapsLock,
+		keysyms::KEY_Print => Keys::PrintScreen,
+		_ => return None,
+	};
+
+	Some(key)
+}
+
+impl AppData {
+	fn process_requests(&mut self, qh: &wayland_client::QueueHandle<Self>) {
+		let surface = &self.wl_surface;
+
+		self.requests.retain(|e| match e {
+			Requests::ConstrainPointer => {
+				if !self.state.should_confine_pointer {
+					if let Some(confined_pointer) = self.state.confined_pointer.take() {
+						confined_pointer.destroy();
+					}
+
+					self.state.pointer_is_confined = false;
+
+					return false;
+				}
+
+				if self.state.should_lock_pointer {
+					if let Some(confined_pointer) = self.state.confined_pointer.take() {
+						confined_pointer.destroy();
+					}
+
+					self.state.pointer_is_confined = false;
+
+					return false;
+				}
+
+				if self.state.pointer_is_confined {
+					return false;
+				}
+
+				let focused_pointer = self.state.focused_pointer.clone();
+				let focused_keyboard = self.state.focused_keyboard.clone();
+
+				if let (Some(pointer), Some(_)) = (focused_pointer, focused_keyboard) {
+					if let Some(confined_pointer) = self.state.confined_pointer.take() {
+						confined_pointer.destroy();
+					}
+
+					let confined_pointer = self.zwp_pointer_constraints.confine_pointer(
+						surface,
+						&pointer,
+						None,
+						zwp_pointer_constraints_v1::Lifetime::Persistent,
+						&qh,
+						(),
+					);
+					self.state.confined_pointer = Some(confined_pointer);
+					self.state.pointer_is_confined = false;
+
+					surface.commit();
+
+					false
+				} else {
+					true
+				}
+			}
+			Requests::LockPointer => {
+				if !self.state.should_lock_pointer {
+					if let Some(locked_pointer) = self.state.locked_pointer.take() {
+						locked_pointer.destroy();
+					}
+
+					self.state.pointer_is_locked = false;
+
+					return false;
+				}
+
+				if self.state.pointer_is_locked {
+					return false;
+				}
+
+				let focused_pointer = self.state.focused_pointer.clone();
+				let focused_keyboard = self.state.focused_keyboard.clone();
+
+				if let (Some(pointer), Some(_)) = (focused_pointer, focused_keyboard) {
+					if let Some(locked_pointer) = self.state.locked_pointer.take() {
+						locked_pointer.destroy();
+					}
+
+					if let Some(confined_pointer) = self.state.confined_pointer.take() {
+						confined_pointer.destroy();
+					}
+
+					self.state.pointer_is_confined = false;
+
+					let locked_pointer = self.zwp_pointer_constraints.lock_pointer(
+						surface,
+						&pointer,
+						None,
+						zwp_pointer_constraints_v1::Lifetime::Persistent,
+						&qh,
+						(),
+					);
+					self.state.locked_pointer = Some(locked_pointer);
+					self.state.pointer_is_locked = false;
+
+					surface.commit();
+
+					false
+				} else {
+					true
+				}
+			}
+			Requests::HidePointer => {
+				if !self.state.should_hide_pointer {
+					self.state.pointer_is_hidden = false;
+					return false;
+				}
+
+				if let Some(pointer) = &self.state.focused_pointer {
+					pointer.set_cursor(0, None, 0, 0);
+					self.state.pointer_is_hidden = true;
+
+					surface.commit();
+
+					false
+				} else {
+					true
+				}
+			}
+		});
+	}
+}
+
+impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry, ()> for Configuration {
+	fn event(
+		this: &mut Self,
+		registry: &wl_registry::WlRegistry,
+		event: wl_registry::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<Configuration>,
+	) {
+		let qh = &this.app_data_queue;
+
+		match event {
+			wayland_client::protocol::wl_registry::Event::Global {
+				name,
+				interface,
+				version,
+			} => match interface.as_str() {
+				"wl_compositor" => {
+					this.compositor = Some(registry.bind(name, version, qh, ()));
+				}
+				"xdg_wm_base" => {
+					this.xdg_wm_base = Some(registry.bind(name, version, qh, ()));
+				}
+				"wl_seat" => {
+					this.wl_seat = Some(registry.bind(name, version, qh, ()));
+				}
+				"wl_output" => {
+					this.wl_output = Some(registry.bind(name, version, qh, ()));
+				}
+				"wl_surface" => {
+					this.wl_surface = Some(registry.bind(name, version, qh, ()));
+				}
+				"wl_callback" => {
+					this.wl_callback = Some(registry.bind(name, version, qh, ()));
+				}
+				"zwp_relative_pointer_manager_v1" => {
+					this.zwp_relative_pointer_manager = Some(registry.bind(name, version, qh, ()));
+				}
+				"zwp_pointer_constraints_v1" => {
+					this.zwp_pointer_constraints = Some(registry.bind(name, version, qh, ()));
+				}
+				_ => {}
+			},
+			wayland_client::protocol::wl_registry::Event::GlobalRemove { .. } => {}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<wl_region::WlRegion, ()> for AppData {
+	fn event(
+		_: &mut Self,
+		_: &wl_region::WlRegion,
+		event: wl_region::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<wl_callback::WlCallback, ()> for AppData {
+	fn event(
+		_: &mut Self,
+		_: &wl_callback::WlCallback,
+		event: wl_callback::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			wl_callback::Event::Done { .. } => {}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<wl_compositor::WlCompositor, ()> for AppData {
+	fn event(
+		_: &mut Self,
+		_: &wl_compositor::WlCompositor,
+		event: wl_compositor::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<wayland_client::protocol::wl_surface::WlSurface, ()> for AppData {
+	fn event(
+		this: &mut Self,
+		surface: &wl_surface::WlSurface,
+		event: wl_surface::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			wayland_client::protocol::wl_surface::Event::Enter { .. } => {}
+			wayland_client::protocol::wl_surface::Event::Leave { .. } => {
+				this.state.extent = None;
+			}
+			wayland_client::protocol::wl_surface::Event::PreferredBufferScale { factor } => {
+				this.state.scale = this.state.scale.max(factor as _);
+				surface.set_buffer_scale(factor);
+				surface.commit();
+			}
+			wayland_client::protocol::wl_surface::Event::PreferredBufferTransform { .. } => {}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<xdg_wm_base::XdgWmBase, ()> for AppData {
+	fn event(
+		_: &mut Self,
+		s: &xdg_wm_base::XdgWmBase,
+		event: xdg_wm_base::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			xdg_wm_base::Event::Ping { serial } => {
+				s.pong(serial);
+			}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<xdg_surface::XdgSurface, ()> for AppData {
+	fn event(
+		_: &mut Self,
+		s: &xdg_surface::XdgSurface,
+		event: xdg_surface::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			xdg_surface::Event::Configure { serial } => {
+				s.ack_configure(serial);
+			}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
+	fn event(
+		this: &mut Self,
+		_: &xdg_toplevel::XdgToplevel,
+		event: xdg_toplevel::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			xdg_toplevel::Event::WmCapabilities { .. } => {}
+			xdg_toplevel::Event::ConfigureBounds { .. } => {
+				// Suggested size
+			}
+			xdg_toplevel::Event::Configure { width, height, .. } => {
+				if width != 0 && height != 0 {
+					let extent = Extent::rectangle(
+						(width * (this.state.scale as i32)) as u32,
+						(height * (this.state.scale as i32)) as u32,
+					);
+					this.state.extent = Some(extent);
+				}
+			}
+			xdg_toplevel::Event::Close => {
+				this.events.push_back(Events::Close);
+			}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<wl_seat::WlSeat, ()> for AppData {
+	fn event(
+		this: &mut Self,
+		s: &wl_seat::WlSeat,
+		event: wl_seat::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		qh: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			wl_seat::Event::Capabilities { capabilities } => {
+				let capabilities = capabilities.into_result().unwrap();
+
+				if capabilities.contains(wl_seat::Capability::Pointer) {
+					let pointer = s.get_pointer(qh, ());
+
+					this.zwp_relative_pointer_manager.get_relative_pointer(&pointer, qh, ());
+				}
+
+				if capabilities.contains(wl_seat::Capability::Keyboard) {
+					let _ = s.get_keyboard(qh, ());
+				}
+			}
+			wl_seat::Event::Name { .. } => {}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<wl_pointer::WlPointer, ()> for AppData {
+	fn event(
+		this: &mut Self,
+		pointer: &wl_pointer::WlPointer,
+		event: wl_pointer::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		qh: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			wl_pointer::Event::Enter { .. } => {
+				this.state.focused_pointer = Some(pointer.clone());
+				this.state.pointer_is_hidden = false;
+
+				if this.state.should_hide_pointer
+					&& !this.requests.iter().any(|request| matches!(request, Requests::HidePointer))
+				{
+					this.requests.push_back(Requests::HidePointer);
+				}
+
+				if this.state.should_lock_pointer
+					&& !this.requests.iter().any(|request| matches!(request, Requests::LockPointer))
+				{
+					this.requests.push_back(Requests::LockPointer);
+				}
+
+				this.process_requests(qh);
+			}
+			wl_pointer::Event::Leave { .. } => {
+				if let Some(focused_pointer) = &this.state.focused_pointer {
+					if focused_pointer == pointer {
+						this.state.focused_pointer = None;
+						this.state.pointer_is_confined = false;
+						this.state.pointer_is_hidden = false;
+						this.state.pointer_is_locked = false;
+					}
+				}
+
+				this.process_requests(qh);
+			}
+			wl_pointer::Event::Button { button, state, .. } => {
+				let pressed = state.into_result().unwrap() == wl_pointer::ButtonState::Pressed;
+
+				let button = match button {
+					272 => MouseKeys::Left,
+					2 => MouseKeys::Middle,
+					273 => MouseKeys::Right,
+					4 => MouseKeys::ScrollUp,
+					5 => MouseKeys::ScrollDown,
+					_ => return,
+				};
+
+				this.events.push_back(Events::Button {
+					seat: Seat::stub(),
+					pressed,
+					button,
+				});
+			}
+			wl_pointer::Event::Axis { axis, value, .. } => {
+				let _ = match axis.into_result().unwrap() {
+					wl_pointer::Axis::VerticalScroll => MouseKeys::ScrollUp,
+					wl_pointer::Axis::HorizontalScroll => MouseKeys::ScrollDown,
+					_ => return,
+				};
+
+				let _ = value > 0.0;
+			}
+			wl_pointer::Event::Motion {
+				time,
+				surface_x,
+				surface_y,
+			} => {
+				if let Some(extent) = this.state.extent {
+					let x = surface_x as f32 * this.state.scale as f32;
+					let y = surface_y as f32 * this.state.scale as f32;
+
+					let width = extent.width() as f32;
+					let height = extent.height() as f32;
+
+					let half_width = width / 2.0;
+					let half_height = height / 2.0;
+
+					let x = (x - half_width) / half_width;
+					let y = (half_height - y) / half_height;
+
+					this.events.push_back(Events::MousePosition {
+						seat: Seat::stub(),
+						x,
+						y,
+						time: time as u64,
+					});
+				}
+			}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
+	fn event(
+		this: &mut Self,
+		keyboard: &wl_keyboard::WlKeyboard,
+		event: wl_keyboard::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		qh: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			wl_keyboard::Event::Key { key, state, .. } => {
+				let pressed = state.into_result().unwrap() == wl_keyboard::KeyState::Pressed;
+				let keycode = xkb::Keycode::new(key + 8);
+
+				let keyboard_state = match this.state.keyboard_state.as_ref() {
+					Some(keyboard_state) => keyboard_state,
+					None => return,
+				};
+
+				let mut keyboard_state = keyboard_state.borrow_mut();
+				let direction = if pressed {
+					xkb::KeyDirection::Down
+				} else {
+					xkb::KeyDirection::Up
+				};
+
+				keyboard_state.state.update_key(keycode, direction);
+
+				if let Some(key) = keysym_to_key(keyboard_state.state.key_get_one_sym(keycode)) {
+					this.events.push_back(Events::Key {
+						seat: Seat::stub(),
+						pressed,
+						key,
+					});
+				}
+			}
+			wl_keyboard::Event::Keymap { format, fd, size } => {
+				let format = match format.into_result() {
+					Ok(format) => format,
+					Err(_) => return,
+				};
+
+				if format != wl_keyboard::KeymapFormat::XkbV1 {
+					return;
+				}
+
+				let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+
+				let keymap = match unsafe {
+					xkb::Keymap::new_from_fd(&context, fd, size as usize, xkb::KEYMAP_FORMAT_TEXT_V1, xkb::COMPILE_NO_FLAGS)
+				} {
+					Ok(Some(keymap)) => keymap,
+					Ok(None) => return,
+					Err(_) => return,
+				};
+
+				let state = xkb::State::new(&keymap);
+
+				this.state.keyboard_state = Some(Rc::new(RefCell::new(KeyboardState { context, keymap, state })));
+			}
+			wl_keyboard::Event::Enter { .. } => {
+				this.state.focused_keyboard = Some(keyboard.clone());
+
+				this.process_requests(qh);
+			}
+			wl_keyboard::Event::Leave { .. } => {
+				if let Some(focused_keyboard) = &this.state.focused_keyboard {
+					if focused_keyboard == keyboard {
+						this.state.focused_keyboard = None;
+						this.state.pointer_is_confined = false;
+						this.state.pointer_is_locked = false;
+					}
+				}
+
+				this.process_requests(qh);
+			}
+			wl_keyboard::Event::Modifiers {
+				mods_depressed,
+				mods_latched,
+				mods_locked,
+				group,
+				..
+			} => {
+				let keyboard_state = match this.state.keyboard_state.as_ref() {
+					Some(keyboard_state) => keyboard_state,
+					None => return,
+				};
+
+				let mut keyboard_state = keyboard_state.borrow_mut();
+				keyboard_state
+					.state
+					.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+			}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<wl_output::WlOutput, ()> for AppData {
+	fn event(
+		this: &mut Self,
+		_: &wl_output::WlOutput,
+		event: wl_output::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			wl_output::Event::Scale { factor } => {
+				this.state.scale = this.state.scale.max(factor as _);
+			}
+			wl_output::Event::Geometry { .. } => {}
+			wl_output::Event::Mode { width, height, .. } => {
+				this.state.monitor_extent = Some(Extent::rectangle(width as _, height as _));
+			}
+			wl_output::Event::Description { .. } => {}
+			wl_output::Event::Name { .. } => {}
+			wl_output::Event::Done => {}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1, ()> for AppData {
+	fn event(
+		_: &mut Self,
+		_: &zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+		event: zwp_relative_pointer_manager_v1::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()> for AppData {
+	fn event(
+		this: &mut Self,
+		_: &zwp_relative_pointer_v1::ZwpRelativePointerV1,
+		event: zwp_relative_pointer_v1::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			zwp_relative_pointer_v1::Event::RelativeMotion {
+				utime_lo,
+				utime_hi,
+				dx_unaccel,
+				dy_unaccel,
+				..
+			} => {
+				this.events.push_back(Events::MouseMove {
+					seat: Seat::stub(),
+					dx: dx_unaccel as f32,
+					dy: dy_unaccel as f32,
+					time: (utime_hi as u64) << 32 | utime_lo as u64,
+				});
+			}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1, ()> for AppData {
+	fn event(
+		_: &mut Self,
+		_: &zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
+		event: zwp_pointer_constraints_v1::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		_: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<zwp_confined_pointer_v1::ZwpConfinedPointerV1, ()> for AppData {
+	fn event(
+		this: &mut Self,
+		confined_pointer: &zwp_confined_pointer_v1::ZwpConfinedPointerV1,
+		event: zwp_confined_pointer_v1::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		qh: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			zwp_confined_pointer_v1::Event::Confined => {
+				this.state.confined_pointer = Some(confined_pointer.clone());
+				this.state.pointer_is_confined = true;
+				println!("Pointer is confined");
+			}
+			zwp_confined_pointer_v1::Event::Unconfined => {
+				this.state.pointer_is_confined = false;
+
+				if this.state.confined_pointer.as_ref().is_some_and(|p| p == confined_pointer) {
+					if let Some(confined_pointer) = this.state.confined_pointer.take() {
+						confined_pointer.destroy();
+					}
+				} else {
+					confined_pointer.destroy();
+				}
+
+				if this.state.should_confine_pointer
+					&& !this
+						.requests
+						.iter()
+						.any(|request| matches!(request, Requests::ConstrainPointer))
+				{
+					this.requests.push_back(Requests::ConstrainPointer);
+					this.process_requests(qh);
+				}
+
+				println!("Pointer is unconfined");
+			}
+			_ => {}
+		}
+	}
+}
+
+impl wayland_client::Dispatch<zwp_locked_pointer_v1::ZwpLockedPointerV1, ()> for AppData {
+	fn event(
+		this: &mut Self,
+		locked_pointer: &zwp_locked_pointer_v1::ZwpLockedPointerV1,
+		event: zwp_locked_pointer_v1::Event,
+		_: &(),
+		_: &wayland_client::Connection,
+		qh: &wayland_client::QueueHandle<AppData>,
+	) {
+		match event {
+			zwp_locked_pointer_v1::Event::Locked => {
+				this.state.locked_pointer = Some(locked_pointer.clone());
+				this.state.pointer_is_locked = true;
+				println!("Pointer is locked");
+			}
+			zwp_locked_pointer_v1::Event::Unlocked => {
+				this.state.pointer_is_locked = false;
+
+				if this.state.locked_pointer.as_ref().is_some_and(|p| p == locked_pointer) {
+					if let Some(locked_pointer) = this.state.locked_pointer.take() {
+						locked_pointer.destroy();
+					}
+				} else {
+					locked_pointer.destroy();
+				}
+
+				if this.state.should_lock_pointer
+					&& !this.requests.iter().any(|request| matches!(request, Requests::LockPointer))
+				{
+					this.requests.push_back(Requests::LockPointer);
+					this.process_requests(qh);
+				}
+
+				println!("Pointer is unlocked");
+			}
+			_ => {}
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_wayland_window() {
+		// Only run this test if we are on a Wayland session
+		if std::env::vars().find(|(key, _)| key == "WAYLAND_DISPLAY").is_some()
+			&& std::env::vars()
+				.find(|(key, value)| key == "XDG_SESSION_TYPE" && value == "wayland")
+				.is_some()
+		{
+			let _ = Window::try_new(
+				"My Test Wayland Window",
+				Extent::rectangle(1920, 1080),
+				"my_test_wayland_window.byte_engine",
+				Features::default(),
+			);
+		}
+	}
+}

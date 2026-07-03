@@ -27,14 +27,9 @@ pub struct TriggerDescription<T: InputValue> {
 	max: T,
 }
 
-impl <T: InputValue> TriggerDescription<T> {
+impl<T: InputValue> TriggerDescription<T> {
 	pub fn new(default: T, rest: T, min: T, max: T) -> Self {
-		TriggerDescription {
-			default,
-			rest,
-			min,
-			max,
-		}
+		TriggerDescription { default, rest, min, max }
 	}
 }
 
@@ -64,25 +59,45 @@ impl Default for TriggerDescription<i32> {
 
 impl Default for TriggerDescription<RGBA> {
 	fn default() -> Self {
-		TriggerDescription::new(RGBA::new(0f32, 0f32, 0f32, 1f32), RGBA::new(0f32, 0f32, 0f32, 1f32), RGBA::new(0f32, 0f32, 0f32, 1f32), RGBA::new(1f32, 1f32, 1f32, 1f32))
+		TriggerDescription::new(
+			RGBA::new(0f32, 0f32, 0f32, 1f32),
+			RGBA::new(0f32, 0f32, 0f32, 1f32),
+			RGBA::new(0f32, 0f32, 0f32, 1f32),
+			RGBA::new(1f32, 1f32, 1f32, 1f32),
+		)
 	}
 }
 
 impl Default for TriggerDescription<Vector2> {
 	fn default() -> Self {
-		TriggerDescription::new(Vector2::new(0f32, 0f32), Vector2::new(0f32, 0f32), Vector2::new(-1f32, -1f32), Vector2::new(1f32, 1f32))
+		TriggerDescription::new(
+			Vector2::new(0f32, 0f32),
+			Vector2::new(0f32, 0f32),
+			Vector2::new(-1f32, -1f32),
+			Vector2::new(1f32, 1f32),
+		)
 	}
 }
 
 impl Default for TriggerDescription<Vector3> {
 	fn default() -> Self {
-		TriggerDescription::new(Vector3::new(0f32, 0f32, 0f32), Vector3::new(0f32, 0f32, 0f32), Vector3::new(-1f32, -1f32, -1f32), Vector3::new(1f32, 1f32, 1f32))
+		TriggerDescription::new(
+			Vector3::new(0f32, 0f32, 0f32),
+			Vector3::new(0f32, 0f32, 0f32),
+			Vector3::new(-1f32, -1f32, -1f32),
+			Vector3::new(1f32, 1f32, 1f32),
+		)
 	}
 }
 
 impl Default for TriggerDescription<Quaternion> {
 	fn default() -> Self {
-		TriggerDescription::new(Quaternion::identity(), Quaternion::identity(), Quaternion::identity(), Quaternion::identity())
+		TriggerDescription::new(
+			Quaternion::identity(),
+			Quaternion::identity(),
+			Quaternion::identity(),
+			Quaternion::identity(),
+		)
 	}
 }
 

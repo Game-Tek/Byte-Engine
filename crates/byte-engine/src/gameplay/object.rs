@@ -1,102 +1,142 @@
-use std::future::join;
+use std::{future::join, sync::Arc};
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "headed")]
 use math::Matrix4;
 use math::Vector3;
 use utils::BoxedFuture;
 
-use crate::{core::{entity::{get_entity_trait_for_type, EntityBuilder, EntityTrait}, Entity, EntityHandle}, physics::{self, body::{Body, BodyTypes}, collider::{Collider, CollisionShapes}, CollisionEvent}, rendering::mesh::{MeshGenerator, MeshSource}};
-
-#[cfg(not(feature = "headless"))]
-use crate::rendering::mesh::{self};
-
-use super::{Positionable, Transform, Transformable};
+use super::transform::Transform;
+#[cfg(feature = "headed")]
+use crate::rendering::{
+	mesh::{self},
+	renderable::mesh::MeshSource,
+};
+use crate::{
+	core::{Entity, EntityHandle},
+	physics::{
+		self,
+		body::{Body, BodyTypes},
+		collider::{Collider, Shapes},
+	},
+	rendering::{
+		mesh::generator::{MeshGenerator, SphereMeshGenerator},
+		RenderableMesh,
+	},
+	space::Transformable,
+};
 
 /// An object represents a physical entity in the game world.
 /// It has physics and is rendered as a mesh.
+#[derive(Clone)]
 pub struct Object {
 	source: MeshSource,
 	transform: Transform,
 	velocity: Vector3,
-	collision: CollisionEvent,
 	body_type: BodyTypes,
+	collider: Shapes,
+	friction: f32,
 }
 
 impl Object {
-	pub fn new<'a>(resource_id: &'static str, transform: Transform, body_type: BodyTypes, velocity: Vector3) -> EntityBuilder<'a, Self> {
-		EntityBuilder::new_from_closure_with_parent(move |parent| {
-			Object {
-				source: MeshSource::Resource(resource_id),
-				transform,
-				velocity,
-				collision: CollisionEvent{},
-				body_type,
-			}
-		}).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>).r#as(|h| h as EntityHandle<dyn mesh::RenderEntity>)
+	pub fn new<'a>(resource_id: &'static str, transform: Transform, body_type: BodyTypes, velocity: Vector3) -> Self {
+		Object {
+			source: MeshSource::Resource(resource_id),
+			transform,
+			velocity,
+			body_type,
+			collider: Shapes::Sphere { radius: 1.0 },
+			friction: 0.5,
+		}
 	}
 
-	pub fn new_generated(mesh: Box<dyn MeshGenerator>) -> Self {
+	pub fn sphere(radius: f32) -> Self {
+		Object {
+			source: MeshSource::Generated(Arc::new(SphereMeshGenerator::from_radius(radius))),
+			transform: Transform::default(),
+			velocity: Vector3::default(),
+			body_type: BodyTypes::Dynamic,
+			collider: Shapes::Sphere { radius },
+			friction: 0.5,
+		}
+	}
+
+	pub fn r#box(size: Vector3) -> Self {
+		Object {
+			source: MeshSource::Generated(Arc::new(mesh::generator::BoxMeshGenerator::from_size(size))),
+			transform: Transform::default(),
+			velocity: Vector3::default(),
+			body_type: BodyTypes::Dynamic,
+			collider: Shapes::Cube { size },
+			friction: 0.5,
+		}
+	}
+
+	pub fn from_mesh_source(mesh_source: MeshSource) -> Self {
+		Object {
+			source: mesh_source,
+			transform: Transform::default(),
+			velocity: Vector3::default(),
+			body_type: BodyTypes::Dynamic,
+			collider: Shapes::Sphere { radius: 1.0 },
+			friction: 0.5,
+		}
+	}
+
+	pub fn new_generated(mesh: Arc<dyn MeshGenerator>) -> Self {
 		Object {
 			source: MeshSource::Generated(mesh),
 			transform: Transform::default(),
 			velocity: Vector3::default(),
-			collision: CollisionEvent{},
 			body_type: BodyTypes::Dynamic,
-		}
-	}
-
-	pub fn new_sphere(radius: f32) -> Self {
-		Object {
-			source: MeshSource::Generated(Box::new(mesh::SphereMeshGenerator::new(radius))),
-			transform: Transform::default(),
-			velocity: Vector3::default(),
-			collision: CollisionEvent{},
-			body_type: BodyTypes::Dynamic,
+			collider: Shapes::Sphere { radius: 1.0 },
+			friction: 0.5,
 		}
 	}
 
 	pub fn get_transform_mut(&mut self) -> &mut Transform {
 		&mut self.transform
 	}
-}
 
-impl Entity for Object {
-	fn builder(self) -> EntityBuilder<'static, Self> where Self: Sized {
-		EntityBuilder::new(self).r#as(|h| h).r#as(|h| h as EntityHandle<dyn Body>).r#as(|h| h as EntityHandle<dyn mesh::RenderEntity>)
+	pub fn body_type_mut(&mut self) -> &mut BodyTypes {
+		&mut self.body_type
+	}
+
+	pub fn set_velocity(&mut self, velocity: Vector3) {
+		self.velocity = velocity;
 	}
 }
 
-impl Positionable for Object {
-	fn get_position(&self) -> Vector3 { self.transform.position }
-	fn set_position(&mut self, position: Vector3) { self.transform.position = position; }
-}
-
 impl Transformable for Object {
-	fn get_transform(&self) -> &Transform { &self.transform }
-	fn get_transform_mut(&mut self) -> &mut Transform { &mut self.transform }
+	fn transform(&self) -> &Transform {
+		&self.transform
+	}
+	fn transform_mut(&mut self) -> &mut Transform {
+		&mut self.transform
+	}
 }
 
 impl Collider for Object {
-	fn shape(&self) -> CollisionShapes {
-		CollisionShapes::Sphere {
-			radius: 0.1,
-		}
+	fn shape(&self) -> Shapes {
+		self.collider.clone()
+	}
+
+	fn friction(&self) -> f32 {
+		self.friction
 	}
 }
 
 impl Body for Object {
-	fn on_collision(&mut self) -> Option<&mut CollisionEvent> { Some(&mut self.collision) }
-	fn get_velocity(&self) -> Vector3 { self.velocity }
-	fn get_body_type(&self) -> BodyTypes { self.body_type }
-	fn get_mass(&self) -> f32 {
-    	1f32
+	fn velocity(&self) -> Vector3 {
+		self.velocity
+	}
+	fn body_type(&self) -> BodyTypes {
+		self.body_type
 	}
 }
 
-#[cfg(not(feature = "headless"))]
-impl mesh::RenderEntity for Object {
-	fn get_transform(&self) -> Matrix4 { (&self.transform).into() }
-	fn get_mesh(&self) -> &mesh::MeshSource {
+#[cfg(feature = "headed")]
+impl RenderableMesh for Object {
+	fn get_mesh(&self) -> &MeshSource {
 		&self.source
 	}
 }

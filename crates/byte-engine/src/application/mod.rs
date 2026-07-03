@@ -1,16 +1,29 @@
+//! Application lifecycle and composition.
+//!
+//! Use [`BaseApplication`] when building a custom runtime that only needs parameter
+//! handling and frame-local storage. Headed applications should start with
+//! [`graphics::GraphicsApplication`] and choose either
+//! [`graphics::default_setup`] or individual graphics setup functions.
+//!
+//! The `triangle` example demonstrates the standard setup path, while the
+//! `window` example demonstrates selecting only one setup component.
+
 use std::time::Duration;
 
 pub mod application;
+pub mod parameters;
+pub mod thread;
+pub mod tracy;
 pub use application::{Application, BaseApplication};
+pub use tracy::{setup_tracy, TracySetupError};
+pub use trotcast::Channel as Sender;
+pub use trotcast::Receiver;
 
-#[cfg(not(feature = "headless"))]
-pub mod graphics_application;
+#[cfg(feature = "headed")]
+pub mod graphics;
 
-#[cfg(not(feature = "headless"))]
-pub use graphics_application::GraphicsApplication;
-
-/// [`Time`] is used to query information about time from an application.
-/// Is contains the elapsed time since the application started and the time since the last tick.
+/// The [`Time`] struct provides frame timing to application systems without exposing
+/// the lifecycle clock owned by the application.
 #[derive(Debug, Clone, Copy)]
 pub struct Time {
 	elapsed: Duration,
@@ -18,6 +31,10 @@ pub struct Time {
 }
 
 impl Time {
+	pub fn new(elapsed: Duration, delta: Duration) -> Self {
+		Self { elapsed, delta }
+	}
+
 	pub fn elapsed(&self) -> Duration {
 		self.elapsed
 	}
@@ -27,15 +44,20 @@ impl Time {
 	}
 }
 
-/// A parameter for applications.
+/// The [`Parameter`] struct represents one application configuration value from
+/// code, the environment, or command-line arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Parameter {
-	name: String, value: String,
+	name: String,
+	value: String,
 }
 
 impl Parameter {
 	pub fn new(name: &str, value: &str) -> Self {
-		Parameter { name: name.into(), value: value.into() }
+		Parameter {
+			name: name.into(),
+			value: value.into(),
+		}
 	}
 
 	pub fn new_string(name: String, value: String) -> Self {
@@ -63,9 +85,17 @@ impl Parameter {
 	pub fn as_bool_simple(&self) -> bool {
 		self.as_bool().unwrap_or(false)
 	}
+
+	pub fn name(&self) -> &str {
+		&self.name
+	}
+
+	pub fn value(&self) -> &str {
+		&self.value
+	}
 }
 
-/// Event that can be sent to an application. Mostly used to control the application life cycle.
+/// The [`Events`] enum defines messages shared with application-owned worker threads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Events {
 	/// Request the application to close.

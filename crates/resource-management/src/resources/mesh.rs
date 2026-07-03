@@ -1,4 +1,10 @@
-use crate::{resource, resources::material::{Variant, VariantModel}, solver::SolveErrors, types::{IndexStreamTypes, QuantizationSchemes, Stream, Streams, VertexComponent, VertexSemantics}, Model, Reference, ReferenceModel, Resource, Solver};
+use crate::{
+	resource,
+	resources::material::{Variant, VariantModel},
+	solver::SolveErrors,
+	types::{IndexStreamTypes, QuantizationSchemes, Stream, Streams, VertexComponent, VertexSemantics},
+	Model, Reference, ReferenceModel, Resource, Solver,
+};
 
 #[derive(Debug, serde::Serialize)]
 pub struct Primitive {
@@ -9,7 +15,7 @@ pub struct Primitive {
 	pub vertex_count: u32,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct PrimitiveModel {
 	pub material: ReferenceModel<VariantModel>,
 	pub streams: Vec<Stream>,
@@ -19,13 +25,19 @@ pub struct PrimitiveModel {
 }
 
 impl Primitive {
+	pub fn stream(&self, stream_type: Streams) -> Option<&Stream> {
+		self.streams.iter().find(|stream| stream.stream_type == stream_type)
+	}
+
 	pub fn meshlet_stream(&self) -> Option<&Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Meshlets)
+		self.stream(Streams::Meshlets)
 	}
 }
 
 impl Resource for Primitive {
-	fn get_class(&self) -> &'static str { "Primitive" }
+	fn get_class(&self) -> &'static str {
+		"Primitive"
+	}
 
 	type Model = PrimitiveModel;
 }
@@ -36,9 +48,15 @@ impl Model for PrimitiveModel {
 	}
 }
 
-impl <'de> Solver<'de, Primitive> for PrimitiveModel {
+impl<'de> Solver<'de, Primitive> for PrimitiveModel {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Primitive, SolveErrors> {
-		let PrimitiveModel { material, streams, quantization, bounding_box, vertex_count } = self;
+		let PrimitiveModel {
+			material,
+			streams,
+			quantization,
+			bounding_box,
+			vertex_count,
+		} = self;
 
 		Ok(Primitive {
 			material: material.solve(storage_backend)?,
@@ -55,7 +73,7 @@ pub struct SubMesh {
 	pub primitives: Vec<Primitive>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct SubMeshModel {
 	pub primitives: Vec<PrimitiveModel>,
 }
@@ -74,44 +92,60 @@ pub struct Mesh {
 }
 
 impl Mesh {
+	pub fn primitives(&self) -> impl Iterator<Item = &Primitive> {
+		self.primitives.iter()
+	}
+
+	pub fn stream(&self, stream_type: Streams) -> Option<&Stream> {
+		self.streams.iter().find(|stream| stream.stream_type == stream_type)
+	}
+
+	pub fn vertex_stream(&self, semantic: VertexSemantics) -> Option<&Stream> {
+		self.stream(Streams::Vertices(semantic))
+	}
+
+	pub fn index_stream(&self, stream_type: IndexStreamTypes) -> Option<&Stream> {
+		self.stream(Streams::Indices(stream_type))
+	}
+
 	pub fn position_stream(&self) -> Option<Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::Position)).cloned()
+		self.vertex_stream(VertexSemantics::Position).cloned()
 	}
 
 	pub fn normal_stream(&self) -> Option<Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::Normal)).cloned()
+		self.vertex_stream(VertexSemantics::Normal).cloned()
 	}
 
 	pub fn tangent_stream(&self) -> Option<Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::Tangent)).cloned()
+		self.vertex_stream(VertexSemantics::Tangent).cloned()
 	}
 
 	pub fn bi_tangent_stream(&self) -> Option<Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::BiTangent)).cloned()
+		self.vertex_stream(VertexSemantics::BiTangent).cloned()
 	}
 
 	pub fn uv_stream(&self) -> Option<Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::UV)).cloned()
+		self.vertex_stream(VertexSemantics::UV).cloned()
 	}
 
 	pub fn color_stream(&self) -> Option<&Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Vertices(VertexSemantics::Color))
+		self.vertex_stream(VertexSemantics::Color)
 	}
 
 	pub fn triangle_indices_stream(&self) -> Option<Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Indices(IndexStreamTypes::Triangles)).cloned()
+		self.index_stream(IndexStreamTypes::Triangles).cloned()
 	}
 
 	pub fn vertex_indices_stream(&self) -> Option<Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Indices(IndexStreamTypes::Vertices)).cloned()
+		self.index_stream(IndexStreamTypes::Vertices).cloned()
 	}
 
 	pub fn meshlet_indices_stream(&self) -> Option<Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Indices(IndexStreamTypes::Meshlets)).cloned()
+		self.index_stream(IndexStreamTypes::Meshlets).cloned()
 	}
 
 	pub fn meshlets_stream(&self) -> Option<Stream> {
-		self.streams.iter().find(|s| s.stream_type == Streams::Meshlets).cloned()
+		self.stream(Streams::Meshlets).cloned()
 	}
 
 	pub fn vertex_count(&self) -> usize {
@@ -128,12 +162,14 @@ impl Mesh {
 }
 
 impl Resource for Mesh {
-	fn get_class(&self) -> &'static str { "Mesh" }
+	fn get_class(&self) -> &'static str {
+		"Mesh"
+	}
 
 	type Model = MeshModel;
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct MeshModel {
 	pub vertex_components: Vec<VertexComponent>,
 	pub streams: Vec<Stream>,
@@ -146,15 +182,26 @@ impl Model for MeshModel {
 	}
 }
 
-impl <'de> Solver<'de, Reference<Mesh>> for ReferenceModel<MeshModel> {
+impl<'de> Solver<'de, Reference<Mesh>> for ReferenceModel<MeshModel> {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Mesh>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or_else(|| SolveErrors::StorageError)?;
-		let MeshModel { vertex_components, streams, primitives } = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-		Ok(Reference::from_model(self, Mesh {
+		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
+		let MeshModel {
 			vertex_components,
 			streams,
-			primitives: primitives.into_iter().map(|p| p.solve(storage_backend)).collect::<Result<Vec<_>, _>>()?,
-		}, reader))
+			primitives,
+		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+
+		Ok(Reference::from_model(
+			self,
+			Mesh {
+				vertex_components,
+				streams,
+				primitives: primitives
+					.into_iter()
+					.map(|p| p.solve(storage_backend))
+					.collect::<Result<Vec<_>, _>>()?,
+			},
+			reader,
+		))
 	}
 }

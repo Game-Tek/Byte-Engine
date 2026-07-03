@@ -3,25 +3,42 @@ name = "byte-engine"
 version = "0.1.0"
 edition = "2021"
 
+rust-version.workspace = true
 [features]
-headless = []
-server = ["headless"]
+default = ["headed", "network"]
+headed = ["dep:ahi", "dep:ghi", "dep:besl"]
+network = ["client"]
+client = ["dep:betp"]
+dmx = ["dep:artnet_protocol"]
+tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 
 [dependencies]
 utils = { path = "../utils" }
-ghi = { path = "../ghi" }
-ahi = { path = "../ahi" }
-besl = { path = "../besl" }
+ghi = { path = "../ghi", optional = true }
+ahi = { path = "../ahi", optional = true }
+besl = { path = "../besl", optional = true }
 resource-management = { path = "../resource-management" }
 math = { path = "../math" }
+betp = { path = "../betp", optional = true }
 
-serde_json = "1.0.140"
-dual_quaternion = "0.2.0"
+dual_quaternion = "0.3.0"
 serde = "1.0.219"
 log = "0.4.26"
-simple_logger = "5.0.0"
+env_logger = "0.11.10"
 colored = "3.0.0"
 downcast-rs = "2.0.1"
 oxhttp = { version = "0.3.1", default-features = false, features = ["server"] }
 tracing = { version = "0.1.41" }
+tracing-log = { version = "0.2.0", optional = true }
 tracing-subscriber = { version = "0.3.20", features = ["fmt"] }
+tracing-tracy = { version = "0.11.4", optional = true }
+smallvec = "1.15.1"
+hidapi = "2.6.1"
+trotcast = "0.5.0"
+ctrlc = "3.5.1"
+mid = "5.0.1"
+fontdue = "0.9.3"
+artnet_protocol = { version = "0.4.4", optional = true }
+half = "2.4.1"
+bitflags = "2.11.1"
+bumpalo = { version = "3", features = ["allocator_api"] }

@@ -1,24 +1,42 @@
-use crate::core::{Entity, property::{SinkProperty, DerivedProperty}};
+//! Retained UI components, layout evaluation, styling, and rendering.
+//!
+//! Implement [`Component`] to describe a UI tree and evaluate it with
+//! [`layout::engine::Engine`]. Components create [`Container`], [`Text`], and
+//! other [`Primitive`] values through the layout context. Send the resulting
+//! [`layout::engine::Render`] data to [`render_pass::UiRenderPass`] when
+//! integrating UI into a graphics application.
 
-pub mod render_model;
+use crate::core::Entity;
+
+pub mod animation;
+pub mod components;
+pub mod control_flow;
+pub mod element;
+pub mod flow;
+pub(crate) mod font;
+pub mod intersection;
 pub mod layout;
+pub mod primitive;
+pub mod render_pass;
+pub mod style;
+pub mod timer;
+pub mod transform;
+pub mod visual;
 
-pub trait Text {
-}
-
-pub struct TextComponent {
-	text: SinkProperty<String>,
-}
-
-impl TextComponent {
-	pub fn new(property: &mut DerivedProperty<usize, String>) -> Self {
-		Self {
-			text: SinkProperty::from_derived(property),
-		}
-	}
-}
-
-impl Text for TextComponent {
-}
-
-impl Entity for TextComponent {}
+pub use animation::{
+	animate, back_out, ease_in, ease_in_out, ease_out, ease_out_cubic, ease_out_quart, emphasized_out, spring, AnimationDriver,
+	BackOut, Easing, Spring,
+};
+pub use components::container::Container;
+pub use components::{
+	curve::{Curve, CurvePath, CurvePoint, CurveSegment},
+	image::Image,
+	text::Text,
+	text_field::TextField,
+};
+pub use element::Element;
+pub use layout::{Depth, Geometry, Position};
+pub use primitive::{Key, Primitive, TextEdit};
+pub use timer::{seconds, wait, WaitFuture};
+pub use transform::Transform;
+pub use visual::Visual;

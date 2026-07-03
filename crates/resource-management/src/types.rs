@@ -1,6 +1,8 @@
 // Audio
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Clone, Copy)]
+#[derive(
+	Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Clone, Copy,
+)]
 pub enum BitDepths {
 	Eight,
 	Sixteen,
@@ -19,7 +21,7 @@ impl From<BitDepths> for usize {
 	}
 }
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
 pub enum AlphaMode {
 	Opaque,
 	Mask(f32),
@@ -27,7 +29,9 @@ pub enum AlphaMode {
 }
 
 /// Enumerates the types of shaders that can be created.
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
+#[derive(
+	Clone, Copy, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, PartialEq, Eq,
+)]
 pub enum ShaderTypes {
 	/// A vertex shader.
 	Vertex,
@@ -47,7 +51,9 @@ pub enum ShaderTypes {
 
 // Mesh
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+	Clone, Copy, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
+)]
 pub enum VertexSemantics {
 	Position,
 	Normal,
@@ -55,9 +61,11 @@ pub enum VertexSemantics {
 	BiTangent,
 	UV,
 	Color,
+	Joints,
+	Weights,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum IntegralTypes {
 	U8,
 	I8,
@@ -70,28 +78,32 @@ pub enum IntegralTypes {
 	F64,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+	Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
+)]
 pub struct VertexComponent {
 	pub semantic: VertexSemantics,
 	pub format: String,
 	pub channel: u32,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum QuantizationSchemes {
 	Quantization,
 	Octahedral,
 	OctahedralQuantization,
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+	Clone, Copy, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
+)]
 pub enum IndexStreamTypes {
 	Vertices,
 	Meshlets,
 	Triangles,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct IndexStream {
 	pub stream_type: IndexStreamTypes,
 	pub offset: usize,
@@ -99,7 +111,7 @@ pub struct IndexStream {
 	pub data_type: IntegralTypes,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Stream {
 	pub stream_type: Streams,
 	pub offset: usize,
@@ -111,17 +123,19 @@ impl Stream {
 	/// Returns the number of logical elements (not bytes) in the stream.
 	pub fn count(&self) -> usize {
 		self.size / self.stride
-	}	
+	}
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(
+	Clone, Copy, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
+)]
 pub enum Streams {
 	Vertices(VertexSemantics),
 	Indices(IndexStreamTypes),
 	Meshlets,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct MeshletStream {
 	pub offset: usize,
 	pub count: u32,
@@ -140,6 +154,8 @@ impl Size for VertexSemantics {
 			VertexSemantics::BiTangent => 3 * 4,
 			VertexSemantics::UV => 2 * 4,
 			VertexSemantics::Color => 4 * 4,
+			VertexSemantics::Joints => 4 * 2,
+			VertexSemantics::Weights => 4 * 4,
 		}
 	}
 }
@@ -174,19 +190,25 @@ impl Size for IntegralTypes {
 
 // Image
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+	Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub enum Gamma {
 	Linear,
 	SRGB,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+	Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub enum Formats {
 	BC5,
+	BC5SNORM,
 	RG8,
 	RGB8,
 	RGBA8,
 	BC7,
 	RGB16,
 	RGBA16,
+	BC7SRGB,
 }

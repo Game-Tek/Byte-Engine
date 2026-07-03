@@ -1,4 +1,4 @@
-use crate::{device::Device, FilteringModes, SamplerAddressingModes, SamplerHandle, SamplingReductionModes};
+use crate::{FilteringModes, SamplerAddressingModes, SamplingReductionModes};
 
 pub struct Builder {
 	pub(crate) filtering_mode: FilteringModes,
@@ -67,8 +67,7 @@ impl Builder {
 		self.max_lod = max_lod;
 		self
 	}
-
-	pub fn build(self, device: &mut crate::Device) -> SamplerHandle {
-		device.create_sampler(self.filtering_mode, self.reduction_mode, self.mip_map_mode, self.addressing_mode, self.anisotropy, self.min_lod, self.max_lod)
-	}
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct SamplerHandle(pub(crate) u64);

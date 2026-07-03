@@ -1,0 +1,73 @@
+---
+title: .bema Files
+description: Material and variant declarations in Byte Engine.
+icon: SwatchBook
+---
+
+`.bema` files declare materials and material variants.
+
+A material describes shader stages, render-domain information, and named parameters.
+A variant references a parent material and supplies parameter values for a concrete material instance.
+
+The `.bema` handler produces stored resources:
+
+- `Material` resources for root material files
+- `Variant` resources for variant files
+- `Shader` resources for referenced shader source files
+- dependent `Image` resources when material parameters reference textures
+
+## Material files
+
+A root material file has no `parent`.
+It declares a domain, shader stages, and variables.
+
+```json
+{
+	"domain": "World",
+	"type": "Surface",
+	"shaders": {
+		"Fragment": "shaders/material.besl"
+	},
+	"variables": [
+		{
+			"name": "color",
+			"data_type": "vec4f",
+			"type": "Static",
+			"value": "Purple"
+		}
+	]
+}
+```
+
+During baking, the handler loads each shader source, parses BESL, lets the active render pipeline transform the program, compiles the result, and stores a shader resource.
+The material resource then stores references to those generated shader resources and the resolved parameter models.
+
+## Variant files
+
+A variant file has a `parent`.
+It points to the material it specializes.
+
+```json
+{
+	"parent": "materials/base.bema",
+	"variables": [
+		{
+			"name": "color",
+			"value": "Red"
+		}
+	],
+	"transparency": "Opaque"
+}
+```
+
+Variants inherit the parameter list from the parent material and replace the values supplied in the file.
+The current handler supports scalar, vector color values, and texture references for material variables.
+
+## Values
+
+The current value resolver is intentionally small.
+Named colors such as `Red`, `Green`, `Blue`, `Purple`, `White`, and `Black` can become `vec3f` or `vec4f` values.
+`Texture2D` values are baked as image resources and stored as references.
+
+This format should be treated as a declaration format, not runtime data.
+Runtime systems should consume the processed `Material`, `Variant`, `Shader`, and `Image` resources.

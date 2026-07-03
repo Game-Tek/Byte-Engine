@@ -15,7 +15,7 @@ export default defineConfig({
 	plugins: [
 		mdx(await import('./source.config')),
 		tailwindcss(),
-		// cloudflare({ viteEnvironment: { name: "ssr" } }),
+		cloudflare({ viteEnvironment: { name: "ssr" } }),
 		tanstackStart({
 			prerender: {
 				enabled: true,

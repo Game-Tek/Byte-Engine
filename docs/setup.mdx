@@ -11,17 +11,47 @@ Byte depends on a few external tools to work properly. You will need to install 
 
 ## Required
 
-### Linux packages
+### Rust(up)
 
-```bash
-sudo apt install -y libwayland-dev libasound2-dev libx11-xcb-dev libudev-dev libvulkan-dev vulkan-tools vulkan-validationlayers
-```
-
-#### Rust(up)
-Byte is written in Rust. You will need to install Rust to be able to compile and run Byte.
+Byte is written in Rust. Install Rust with `rustup`; the repository pins the required nightly toolchain in `rust-toolchain.toml`, so Cargo will download and use that toolchain when you build inside the checkout.
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### macOS packages
+
+Install Apple's command line tools before building on macOS. Byte's macOS backends use the platform SDK frameworks directly, including Metal, AppKit, QuartzCore, Foundation, and Core Audio.
+
+```bash
+xcode-select --install
+xcrun --show-sdk-path
+```
+
+If you already have the full Xcode app installed, select it explicitly so `xcrun`, `clang`, and the Metal SDK resolve from the same developer directory.
+
+```bash
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -license accept
+```
+
+Byte also builds native shader tooling through Rust crates that expect CMake and a C/C++ toolchain. The Xcode SDK provides the compiler and Apple frameworks; Homebrew is the simplest way to install the remaining build tools.
+
+```bash
+brew install cmake pkg-config
+```
+
+Applications that depend on Byte Engine also need a Cargo config that preserves Homebrew's dynamic library path at runtime. Add this to the application's `.cargo/config.toml`.
+
+```toml
+[build]
+rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-Wl,-rpath,/opt/homebrew/lib"]
+```
+
+### Linux packages
+
+```bash
+sudo apt install -y cmake libwayland-dev libasound2-dev libx11-xcb-dev libudev-dev libvulkan-dev vulkan-tools vulkan-validationlayers
 ```
 
 ---
@@ -35,7 +65,7 @@ Install steps, including Rust setup, are outlined in it's repository.
 
 ### RenderDoc
 RenderDoc is a graphics debugger. It is not required to run Byte, but it is useful for debugging during graphics development.
-Byte has an integration with RenderDoc to facilitate debugging.
+Byte has a RenderDoc integration on non-macOS platforms.
 
 
 ```bash

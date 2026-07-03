@@ -6,11 +6,38 @@ icon: Database
 
 This section describes how asset processing and resource loading are approached in the engine, from development-time asset loading to runtime resource handling.
 
+Byte Engine separates source files from runtime-ready data.
+The source file is an asset.
+The processed result is a resource.
+The resource manager is the boundary that decides whether a resource can be read directly from cache or whether an asset should be processed first.
+
 Some terminology to keep in mind:
 
 - **Asset**: A user-provided file that describes something you want to consume in your application, such as JPEG, PNG, glTF, or JSON.
 - **Resource**: An asset that has been processed by the engine. It contains metadata such as binary size, format, hash, and resource-specific information like texture extent or mesh vertex description.
 - **URL**: A reference to an asset or resource. The asset extension must not be named. The URL can be a filesystem path relative to the `/assets` folder or an internet URL.
+
+Current notes:
+
+- [Assets](/docs/develop/design/resource-management/assets)
+- [Resources](/docs/develop/design/resource-management/resources)
+- [.bema material files](/docs/develop/design/resource-management/bema)
+- [BELD tool](/docs/develop/design/resource-management/beld)
+- [Debug loading](/docs/develop/design/resource-management/debug-loading)
+
+## Pipeline
+
+The usual pipeline is:
+
+1. An application requests a resource by ID.
+2. The resource storage backend checks whether a processed resource already exists.
+3. If the resource is missing and an `AssetManager` is installed, an asset handler bakes the source asset.
+4. The processed resource metadata is serialized into storage.
+5. The processed binary payload is stored beside the metadata.
+6. The request returns a typed `Reference<T>` that can load bytes and resolve dependencies.
+
+This means high-level systems can ask for typed resources such as images, meshes, materials, variants, or shaders.
+They do not need to know whether the data was pre-baked by BELD or lazily produced during a debugging run.
 
 ## Runtime binary reads
 

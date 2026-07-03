@@ -3,9 +3,46 @@ title: Assets
 icon: Boxes
 ---
 
-Assets are loaded in the following manner:
+Assets are source files.
+They are authored by users, tools, or DCC applications and are not assumed to be in the best shape for runtime use.
 
-- `get()` is called by a user on the resource manager.
-- The resource manager checks if the resource is already cached/processed.
-- If it is cached, the resource document is fetched with its dependencies. Dependencies are resolved recursively so child resources are loaded before their parents.
-- If it is not cached, the resource manager invokes resource handlers so they can process the asset when needed.
+Examples:
+
+- PNG textures
+- glTF or GLB models
+- WAV and OGG audio
+- LUT files
+- `.bema` material and variant declarations
+- BESL shader source files referenced by materials
+
+Asset IDs are written as resource-style paths.
+The file extension is part of the ID when selecting an asset handler, and a fragment can identify a sub-asset when a container format exposes many resources.
+For example, a glTF asset can produce a mesh resource, material resources, image resources, and generated shader resources.
+
+## Asset handlers
+
+An `AssetHandler` knows how to bake one family of source files.
+The asset manager keeps a list of handlers and selects one based on the asset type or extension.
+
+The standard graphics setup installs handlers for common engine formats:
+
+- PNG images
+- glTF and GLB meshes and embedded images
+- `.bema` materials and variants
+- LUT assets
+- WAV and OGG audio
+
+Handlers return a `ProcessedAsset` plus binary payload bytes.
+The processed asset is the typed metadata.
+The payload is the byte buffer that consumers will later upload, stream, decode, or play.
+
+## Processing
+
+Asset processing is where source data becomes engine data.
+
+Image processing decodes pixels, infers semantics from names such as albedo, normal, roughness, or emissive, chooses gamma, and can convert to GPU-friendly formats.
+Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, and associates primitives with material variants.
+Material processing compiles shader source and stores reflection metadata such as bindings and workgroup size.
+
+The result is intentionally more explicit than the source asset.
+A renderer should not have to reopen a PNG to discover its dimensions, or parse a glTF again to find vertex streams.

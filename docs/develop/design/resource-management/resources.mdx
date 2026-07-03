@@ -1,0 +1,56 @@
+---
+title: Resources
+description: Runtime-ready data produced from assets.
+icon: PackageCheck
+---
+
+Resources are processed data.
+They are what runtime systems request, inspect, query, and load.
+
+A stored resource has two parts:
+
+- metadata, stored as an archived `SerializableResource`
+- binary payload bytes, stored as resource data
+
+The metadata contains the public ID, hashed UID, resource class, binary size, content hash, serialized typed model, optional stream descriptions, and queryable properties.
+The binary payload contains the actual bytes consumed by a renderer, audio system, or other runtime system.
+
+## Typed references
+
+`ResourceManager::request<T>()` returns a typed `Reference<T>`.
+The reference contains the typed resource metadata and a reader for the payload.
+
+This split is important:
+
+- metadata can be inspected without loading the whole binary payload
+- dependencies can be resolved recursively before bytes are uploaded
+- callers can choose how payload bytes are read
+
+For example, a material reference resolves shader references and parameter resources.
+A mesh reference resolves primitive materials and exposes stream descriptions for packed vertex and index data.
+
+## Storage
+
+The Redb storage backend stores metadata in `resources.db` and stores payload files beside the database.
+Resource URLs are converted into stable resource IDs for storage lookup.
+The backend also maintains class and property indexes so BELD and editor tools can query resources without scanning and deserializing everything.
+
+Every model exposes at least a `name` queryable property by default.
+Specific models can add more queryable properties as editor and tooling needs grow.
+
+## Streams
+
+Some resources contain multiple logical byte ranges in one payload.
+Meshes are the common example: positions, normals, UVs, triangle indices, meshlet data, and other streams can live in one packed buffer.
+
+`StreamDescription` names those byte ranges.
+When a caller wants selected streams, it can provide stream read targets instead of reading the whole payload into one buffer.
+
+## Loading bytes
+
+The default load path requests backing storage from the reader.
+For file-backed resources, that can be a mapped file.
+Callers that need ownership or preallocated memory can still use explicit buffers, boxed buffers, or stream targets.
+
+Use the default target when the consumer can borrow the backing storage directly.
+Use explicit targets when the consumer needs a specific allocation, lifetime, or stream layout.

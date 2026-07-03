@@ -1,0 +1,59 @@
+---
+title: Debug Loading
+description: How resources are loaded and processed during debugging builds.
+icon: Bug
+---
+
+Debug builds can process assets on demand.
+
+When a `ResourceManager` has an `AssetManager` installed, a missing resource can be baked from its source asset during `request()`.
+This keeps the development loop short: change an asset, run the application, and let the engine produce the resource when it is first needed.
+
+In release-style workflows, resources should already be baked.
+The runtime path can then read processed resources from storage without depending on source assets or asset processors.
+
+## Request flow
+
+The request path is:
+
+1. The caller asks the resource manager for a typed resource ID.
+2. The storage backend tries to read the processed resource.
+3. If the resource exists, metadata is deserialized into a typed reference model.
+4. If the resource is missing and an asset manager exists, the asset manager bakes the source asset.
+5. The baked resource is stored, read back, and solved into a typed `Reference<T>`.
+6. The caller loads payload bytes when it is ready.
+
+Solving is recursive.
+A material can resolve shaders and parameter resources.
+A mesh can resolve material variants.
+The caller receives a resource tree that is already connected through typed references.
+
+## Cache invalidation
+
+The Redb storage backend writes a `.resource-management-version` marker in the resources directory.
+That marker is derived from the resource-management code hash.
+When the signature changes, the backend deletes stale resources so old processed data does not silently survive processor changes.
+
+This is intentionally conservative.
+Debugging builds should prefer a correct fresh bake over a confusing stale cache.
+
+## Allocation shape
+
+The bake path accepts an allocator for generation-time buffers.
+BELD uses one arena per asset task.
+Several handlers keep decode and processing work inside the same task because allocator-backed source bytes cannot safely cross arbitrary thread boundaries.
+
+The goal is to make asset processing practical during development without turning every decode or import step into long-lived heap churn.
+
+## What to watch
+
+Lazy processing is convenient, but it can hide work in the first frame that touches an asset.
+Use BELD when startup time, deterministic packaging, or editor feedback matters.
+
+If a resource fails to load in a debug build, check these in order:
+
+- the source asset path and extension
+- whether the correct asset handler is installed
+- whether dependent assets can also be baked
+- whether the resources directory was invalidated and rebuilt
+- whether the requested resource type matches the resource class stored in the cache

@@ -1,0 +1,27 @@
+---
+title: Environment Setup
+description: Common setup steps for Byte Engine applications.
+icon: Settings
+---
+
+# Environment Setup
+
+Byte depends on a few external tools to work properly. Start with the common steps on this page, then follow the platform-specific guide for the operating system you use.
+
+## Required
+
+### Rust(up)
+
+Byte is written in Rust. Install Rust with `rustup`; the repository pins the required nightly toolchain in `rust-toolchain.toml`, so Cargo will download and use that toolchain when you build inside the checkout.
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### Platform Setup
+
+Byte Engine requires different setup steps on each supported platform. Install the platform-specific SDK, compiler, and package dependencies before building an application that depends on Byte Engine.
+
+- [macOS setup](/docs/use/setup/environment/macos)
+- [Linux setup](/docs/use/setup/environment/linux)
+- [Windows setup](/docs/use/setup/environment/windows)

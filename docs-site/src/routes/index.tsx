@@ -1,24 +1,21 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
-import { HomeLayout } from 'fumadocs-ui/layouts/home';
-import { baseOptions } from '@/lib/layout.shared';
+import { createFileRoute } from '@tanstack/react-router';
+import {
+	DocsPageContent,
+	loadDocsPage,
+	preloadDocsContent,
+} from '@/lib/docs-page';
 
 export const Route = createFileRoute('/')({
 	component: Home,
+	loader: async () => {
+		const data = await loadDocsPage({ data: [] });
+		await preloadDocsContent(data.path);
+		return data;
+	},
 });
 
 function Home() {
-	return (
-		<HomeLayout {...baseOptions()} className="text-center py-32 justify-center">
-			<h1 className="font-medium text-xl mb-4">Byte Engine Docs</h1>
-			<Link
-				to="/docs/$"
-				params={{
-					_splat: '',
-				}}
-				className="px-3 py-2 rounded-lg bg-fd-primary text-fd-primary-foreground font-medium text-sm mx-auto"
-			>
-				Open Docs
-			</Link>
-		</HomeLayout>
-	);
+	const data = Route.useLoaderData();
+
+	return <DocsPageContent data={data} />;
 }

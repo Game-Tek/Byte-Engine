@@ -1,0 +1,57 @@
+---
+title: BELD Tool
+description: The command-line tool for baking, inspecting, and querying resources.
+icon: TerminalSquare
+---
+
+BELD is the command-line interface for working with Byte Engine resources.
+
+It reads source assets from an assets directory and writes processed resources to a resources directory.
+By default those paths are `assets` and `resources`, but both are configurable.
+
+```bash
+beld --source assets --destination resources bake mesh.glb material.bema
+```
+
+## Commands
+
+`beld bake` processes one or more asset IDs into resources.
+The bake command installs the standard asset handlers and runs work concurrently.
+Each asset gets a local arena for decode-time and processing-time allocations so large temporary buffers can be released after that asset finishes.
+
+`beld list` prints stored resource IDs.
+
+`beld inspect` prints metadata for a resource ID or UID.
+Use `--format json` when editor tooling or scripts need structured output.
+
+`beld query` filters resources by class and indexed properties.
+The first equality predicate can use the property index, and paged results print a cursor when more results are available.
+
+`beld delete` removes resources by ID.
+
+`beld clear` and `beld wipe` remove the resources directory and recreate it.
+
+## Query examples
+
+```bash
+beld query Material
+beld query Image name=textures/hero_albedo.png
+beld query Variant --limit 20
+beld inspect material.bema --format json
+```
+
+The query system currently supports string equality predicates over queryable properties.
+Every resource model gets a `name` property by default.
+
+## When to use it
+
+Use BELD when you want deterministic, explicit resource output:
+
+- preparing assets before a release build
+- inspecting what an asset produced
+- checking shader reflection metadata
+- rebuilding resources after changing processors
+- deleting stale resources while debugging asset import
+
+During development, applications can also lazily bake assets at request time.
+BELD is still useful because it gives you a direct, scriptable view of the same resource storage.

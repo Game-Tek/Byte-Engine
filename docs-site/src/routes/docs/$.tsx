@@ -4,7 +4,6 @@ import { createServerFn } from '@tanstack/react-start';
 import { source } from '@/lib/source';
 import type * as PageTree from 'fumadocs-core/page-tree';
 import { useMemo } from 'react';
-import { docs } from '@/.source';
 import {
 	DocsBody,
 	DocsDescription,
@@ -12,7 +11,7 @@ import {
 	DocsTitle,
 } from 'fumadocs-ui/page';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
-import { createClientLoader } from 'fumadocs-mdx/runtime/vite';
+import browserCollections from '@/.source/browser';
 import { baseOptions } from '@/lib/layout.shared';
 
 export const Route = createFileRoute('/docs/$')({
@@ -28,7 +27,7 @@ export const Route = createFileRoute('/docs/$')({
 const loader = createServerFn({
 	method: 'GET',
 })
-	.inputValidator((slugs: string[]) => slugs)
+	.validator((slugs: string[]) => slugs)
 	.handler(async ({ data: slugs }) => {
 		const page = source.getPage(slugs);
 		if (!page) throw notFound();
@@ -39,7 +38,7 @@ const loader = createServerFn({
 		};
 	});
 
-const clientLoader = createClientLoader(docs.doc, {
+const clientLoader = browserCollections.docs.createClientLoader({
 	id: 'docs',
 	component({ toc, frontmatter, default: MDX }) {
 		return (

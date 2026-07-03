@@ -25,8 +25,10 @@ mod tests {
 	use super::*;
 	use crate::command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-		RasterizationRenderPassMode as _,
+		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	};
+	use crate::context::Context as _;
+	use crate::queue::{Queue as _, QueueExecution as _};
 
 	static DX12_DEBUG_TEST_LOGS: AtomicU64 = AtomicU64::new(0);
 
@@ -1189,6 +1191,71 @@ void main() {
 		assert_eq!(&pixels[bottom_left..bottom_left + 4], &[0, 0, 255, 255]);
 		let bottom_right = ((extent.width() * extent.height() - 1) * 4) as usize;
 		assert_eq!(&pixels[bottom_right..bottom_right + 4], &[0, 255, 0, 255]);
+	}
+
+	#[test]
+	fn present_storage_swapchain_copies_proxy_to_backbuffer() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let extent = ::utils::Extent::rectangle(4, 4);
+		let window =
+			crate::window::Window::new("DX12 Storage Present Proxy Test", extent).expect("Failed to create DX12 test window.");
+		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::Storage);
+		let binding = crate::DescriptorSetBindingTemplate::storage_image(0, crate::Stages::COMPUTE);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		device.create_descriptor_binding(set, crate::BindingConstructor::swapchain(&binding, swapchain));
+		let shader = device
+			.create_shader(
+				Some("storage swapchain present"),
+				crate::shader::Sources::HLSL {
+					source: "
+						RWTexture2D<float4> output_texture : register(u0, space0);
+						[numthreads(1, 1, 1)]
+						void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
+							output_texture[dispatch_thread_id.xy] = float4(1.0, 0.25, 0.5, 1.0);
+						}
+					",
+					entry_point: "main",
+				},
+				crate::ShaderTypes::Compute,
+				[binding.into_shader_binding_descriptor(0, crate::AccessPolicies::WRITE)],
+			)
+			.expect("Failed to compile DX12 storage swapchain present shader.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[template],
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
+		let command_buffer = device.create_command_buffer(Some("storage swapchain present"), queue_handle);
+		let synchronizer = device.create_synchronizer(None, true);
+		let mut captured_present_key = None;
+
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest {
+				index: 0,
+				synchronizer,
+			}),
+			&[],
+			synchronizer,
+			|execution| {
+				let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
+				captured_present_key = Some(present_key);
+				let present_keys = [present_key];
+				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
+					command_buffer_recording
+						.bind_compute_pipeline(pipeline)
+						.bind_descriptor_sets(&[set])
+						.dispatch(crate::DispatchExtent::new(extent, ::utils::Extent::square(1)));
+				});
+				present_keys
+			},
+		);
+
+		device.wait_for_synchronizer(synchronizer);
+		captured_present_key.expect("Missing acquired present key.");
+
+		assert_eq!(device.texture_copy_count(), 1);
 	}
 
 	#[test]

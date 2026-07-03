@@ -5367,10 +5367,8 @@ impl Device {
 			if !proxy_uses.intersects(Uses::Storage) {
 				continue;
 			}
-			let Some(source_resource) = self
-				.images
-				.get(source_image.0 .0 as usize)
-				.and_then(|image| image.resource.clone())
+			let Some(source_resource) =
+				self.ensure_image_resource_for_sequence(source_image.0, present_key.sequence_index)
 			else {
 				continue;
 			};

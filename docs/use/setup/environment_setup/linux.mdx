@@ -1,0 +1,28 @@
+---
+title: Linux
+description: How to set up Linux for Byte Engine applications.
+---
+
+# Linux Setup
+
+## System Packages
+
+Install the native build, windowing, audio, and Vulkan packages used by Byte's Linux backend.
+
+```bash
+sudo apt install -y cmake libwayland-dev libasound2-dev libx11-xcb-dev libvulkan-dev vulkan-tools vulkan-validationlayers
+```
+
+## Mold
+
+[Mold](https://github.com/rui314/mold) is a fast linker. It is not required by Byte, but we recommend it for improved iteration speed on Linux.
+
+Install steps, including Rust setup, are outlined in its repository.
+
+## RenderDoc
+
+RenderDoc is optional, but useful when debugging graphics captures.
+
+```bash
+sudo apt install renderdoc
+```

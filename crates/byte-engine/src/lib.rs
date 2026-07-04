@@ -1,17 +1,22 @@
 //! # Byte-Engine
-//! Byte-Engine is a Rust powered game engine. It is designed to be efficient, fast and easy to use; with simple, composable patterns
+//!
+//! Byte-Engine is a composable Rust game engine for applications that need
+//! graphics, input, audio, physics, and retained UI in one runtime.
+//!
+//! Headed applications usually start with `GraphicsApplication` and `default_setup`.
+//! Lower-level users can compose [`application::BaseApplication`], factories,
+//! channels, render passes, and UI layout pieces directly.
+//!
+//! ```no_run
+//! use byte_engine::application::{Application, Parameter};
+//! use byte_engine::application::graphics::{default_setup, GraphicsApplication};
+//!
+//! let mut application = GraphicsApplication::new("example", &[] as &[Parameter]);
+//! default_setup(&mut application);
+//! ```
 
-#![feature(
-	const_trait_impl,
-	future_join,
-	coerce_unsized,
-	unsize,
-	slice_pattern,
-	trait_alias,
-	iterator_try_collect,
-	iter_collect_into,
-	allocator_api
-)]
+#![feature(const_trait_impl, coerce_unsized, unsize, iterator_try_collect, iter_collect_into)]
+#![cfg_attr(feature = "headed", feature(allocator_api, future_join, slice_pattern, trait_alias))]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(dead_code)]
 #![allow(incomplete_features)]
@@ -27,6 +32,7 @@
 
 #[cfg(feature = "headed")]
 extern crate ahi;
+#[cfg(feature = "headed")]
 extern crate besl;
 #[cfg(feature = "headed")]
 extern crate ghi;
@@ -46,6 +52,7 @@ pub mod ui;
 pub mod constants;
 
 pub mod gameplay;
+#[cfg(feature = "network")]
 pub mod network;
 pub mod physics;
 #[cfg(feature = "headed")]

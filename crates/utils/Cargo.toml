@@ -1,9 +1,20 @@
 [package]
-name = "utils"
+name = "byte-engine-utils"
 version = "0.1.0"
 edition = "2021"
+authors = ["Facundo Villa <facundovilla961@gmail.com>"]
+description = "Shared allocation, async, synchronization, collection, and geometry utilities for Byte-Engine."
 license = "MIT"
+repository = "https://github.com/Game-Tek/Byte-Engine"
+homepage = "https://github.com/Game-Tek/Byte-Engine"
+documentation = "https://docs.rs/byte-engine-utils"
+readme = "../../README.md"
+keywords = ["byte-engine", "utilities", "async", "collections"]
+categories = ["game-development", "data-structures"]
 rust-version.workspace = true
+
+[lib]
+name = "utils"
 
 [dependencies]
 futures = { version = "0.3.31", features = ["alloc", "std", "async-await"], default-features = false }

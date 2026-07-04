@@ -1,17 +1,28 @@
 [package]
-name = "resource-management"
+name = "byte-engine-resource-management"
 version = "0.1.0"
 edition = "2021"
+authors = ["Facundo Villa <facundovilla961@gmail.com>"]
+description = "Asset, resource, shader, and storage management for Byte-Engine."
 license = "MIT"
+repository = "https://github.com/Game-Tek/Byte-Engine"
+homepage = "https://github.com/Game-Tek/Byte-Engine"
+documentation = "https://docs.rs/byte-engine-resource-management"
+readme = "../../README.md"
+keywords = ["byte-engine", "assets", "resources", "shaders"]
+categories = ["game-development", "rendering"]
 rust-version.workspace = true
 build = "build.rs"
+
+[lib]
+name = "resource_management"
 
 [build-dependencies]
 md5 = "0.8.0"
 
 [dependencies]
-utils = { path = "../utils" }
-besl = { path = "../besl" }
+utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }
+besl = { package = "byte-engine-besl", path = "../besl", version = "0.1.0" }
 
 png = "0.18.0"
 rkyv = { version = "0.8.15", features = ["unaligned"] }

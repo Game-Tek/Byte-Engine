@@ -1,8 +1,13 @@
+#[doc(hidden)]
 pub mod gpu_vertex_data_manager;
 pub mod pipeline_manager;
+#[doc(hidden)]
 pub mod render_pass;
+#[doc(hidden)]
 pub mod resource_manager;
+#[doc(hidden)]
 pub mod scene_manager;
+#[doc(hidden)]
 pub mod shader_generator;
 
 pub use pipeline_manager::VisibilityPipelineManager;
@@ -19,7 +24,7 @@ use crate::rendering::{
 
 /* BASE */
 /// Binding to access the views which may be used to render the scene.
-pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+pub(crate) const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	0,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::TASK
@@ -28,7 +33,7 @@ pub const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descripto
 		.union(ghi::Stages::RAYGEN)
 		.union(ghi::Stages::COMPUTE),
 );
-pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+pub(crate) const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	1,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::TASK
@@ -36,37 +41,37 @@ pub const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Descriptor
 		.union(ghi::Stages::FRAGMENT)
 		.union(ghi::Stages::COMPUTE),
 );
-pub const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+pub(crate) const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	2,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
-pub const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+pub(crate) const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	3,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
-pub const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+pub(crate) const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	5,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
-pub const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+pub(crate) const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	6,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
-pub const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+pub(crate) const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	7,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 );
-pub const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+pub(crate) const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	8,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::TASK.union(ghi::Stages::MESH).union(ghi::Stages::COMPUTE),
 );
-pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
+pub(crate) const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
 	9,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
 	ghi::Stages::COMPUTE,
@@ -74,33 +79,33 @@ pub const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorS
 );
 
 /* Visibility */
-pub const MATERIAL_COUNT_BINDING: ghi::DescriptorSetBindingTemplate =
+pub(crate) const MATERIAL_COUNT_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_OFFSET_BINDING: ghi::DescriptorSetBindingTemplate =
+pub(crate) const MATERIAL_OFFSET_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::DescriptorSetBindingTemplate =
+pub(crate) const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::DescriptorSetBindingTemplate =
+pub(crate) const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const MATERIAL_XY_BINDING: ghi::DescriptorSetBindingTemplate =
+pub(crate) const MATERIAL_XY_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub const TRIANGLE_INDEX_BINDING: ghi::DescriptorSetBindingTemplate =
+pub(crate) const TRIANGLE_INDEX_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(6, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate =
+pub(crate) const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(7, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 /* Material Evaluation */
-pub const OUT_LIT: ghi::DescriptorSetBindingTemplate =
+pub(crate) const OUT_LIT: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const CAMERA: ghi::DescriptorSetBindingTemplate =
+pub(crate) const CAMERA: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const LIGHTING_DATA: ghi::DescriptorSetBindingTemplate =
+pub(crate) const LIGHTING_DATA: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const MATERIALS: ghi::DescriptorSetBindingTemplate =
+pub(crate) const MATERIALS: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(5, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const AO: ghi::DescriptorSetBindingTemplate =
+pub(crate) const AO: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(10, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate =
+pub(crate) const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(11, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 const VERTEX_COUNT: u32 = 64;
@@ -119,8 +124,8 @@ const MAX_TRIANGLES: usize = 65536 * 4;
 const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
 const MAX_VERTICES: usize = 65536 * 4;
 pub(crate) const MAX_PIXEL_MAPPING_ENTRIES: usize = 3840 * 2160;
-pub const SHADOW_CASCADE_COUNT: usize = 4;
-pub const SHADOW_MAP_RESOLUTION: u32 = 2048;
+pub(crate) const SHADOW_CASCADE_COUNT: usize = 4;
+pub(crate) const SHADOW_MAP_RESOLUTION: u32 = 2048;
 
 const MESH_OUTPUT_TYPES_MSL: &str = r#"
 struct VertexOutput {
@@ -587,7 +592,7 @@ pub fn get_shadow_pass_task_msl_source() -> String {
 	build_mesh_culling_task_msl_source("\tuint instance_index;\n\tuint view_index;", "push_constant.view_index")
 }
 
-pub const VISIBILITY_PASS_FRAGMENT_SOURCE_MSL: &str = r#"
+pub(crate) const VISIBILITY_PASS_FRAGMENT_SOURCE_MSL: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
 
@@ -618,7 +623,7 @@ fragment FragmentOutput visibility_fragment_main(FragmentIn in [[stage_in]]) {
 }
 "#;
 
-pub const VISIBILITY_PASS_FRAGMENT_SOURCE: &str = r#"
+pub(crate) const VISIBILITY_PASS_FRAGMENT_SOURCE: &str = r#"
 #version 450
 #pragma shader_stage(fragment)
 

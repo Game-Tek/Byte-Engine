@@ -2,9 +2,8 @@
 //!
 //! Actions decouple gameplay concepts from physical controls. Create an
 //! [`Action`] with bindings such as `Keyboard.W` or `Gamepad.LeftStick`, then
-//! submit it through the action factory owned by
-//! [`crate::application::graphics::GraphicsApplication`]. The standard trigger
-//! names are defined by [`crate::input::utils`].
+//! submit it through the headed graphics application's action factory. The
+//! standard trigger names are defined by [`crate::input::utils`].
 
 use math::{Quaternion, Vector2, Vector3};
 use utils::RGBA;

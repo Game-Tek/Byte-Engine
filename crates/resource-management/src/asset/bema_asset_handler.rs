@@ -447,6 +447,8 @@ pub mod tests {
 		ReferenceModel,
 	};
 
+	static BEMA_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 	pub struct RootTestShaderGenerator {}
 
 	impl RootTestShaderGenerator {
@@ -528,14 +530,17 @@ pub mod tests {
 
 	#[r#async::test]
 	async fn load_material() {
+		// BEMA shader generation uses shared compiler state, so these bake tests
+		// must not compile material shaders concurrently.
+		let _guard = BEMA_TEST_LOCK.lock().unwrap();
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		let material_json = r#"{
 			"domain": "World",
-			"type": "Surface",
-			"shaders": {
-				"Compute": "fragment.besl"
-			},
+				"type": "Surface",
+				"shaders": {
+					"Compute": "load_material_fragment.besl"
+				},
 			"variables": [
 				{
 					"name": "color",
@@ -546,13 +551,13 @@ pub mod tests {
 			]
 		}"#;
 
-		asset_storage_backend.add_file("material.bema", material_json.as_bytes());
+		asset_storage_backend.add_file("load_material.bema", material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
 			materials;
 		}";
 
-		asset_storage_backend.add_file("fragment.besl", shader_file.as_bytes());
+		asset_storage_backend.add_file("load_material_fragment.besl", shader_file.as_bytes());
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
@@ -568,7 +573,7 @@ pub mod tests {
 				&asset_manager,
 				&resource_storage_backend,
 				asset_manager.get_storage_backend(),
-				ResourceId::new("material.bema"),
+				ResourceId::new("load_material.bema"),
 				&std::alloc::Global,
 			)
 			.await
@@ -582,44 +587,40 @@ pub mod tests {
 		assert_eq!(generated_resources.len(), 2);
 
 		let shader = resource_storage_backend
-			.get_resource(ResourceId::new("fragment.besl"))
+			.get_resource(ResourceId::new("load_material_fragment.besl"))
 			.expect("Expected shader");
 
-		assert_eq!(shader.id, "fragment.besl");
+		assert_eq!(shader.id, "load_material_fragment.besl");
 		assert_eq!(shader.class, "Shader");
 
 		let shader_spirv = resource_storage_backend
-			.get_resource_data_by_name(ResourceId::new("fragment.besl"))
+			.get_resource_data_by_name(ResourceId::new("load_material_fragment.besl"))
 			.expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
 		assert!(!shader_spirv.is_empty());
 
 		let material = resource_storage_backend
-			.get_resource(ResourceId::new("material.bema"))
+			.get_resource(ResourceId::new("load_material.bema"))
 			.expect("Expected material");
 
-		assert_eq!(material.id, "material.bema");
+		assert_eq!(material.id, "load_material.bema");
 		assert_eq!(material.class, "Material");
-
-		let variant = resource_storage_backend
-			.get_resource(ResourceId::new("variant.bema"))
-			.expect("Expected variant");
-
-		assert_eq!(variant.id, "variant.bema");
-		assert_eq!(variant.class, "Variant");
 	}
 
 	#[r#async::test]
 	async fn load_variant() {
+		// BEMA shader generation uses shared compiler state, so these bake tests
+		// must not compile material shaders concurrently.
+		let _guard = BEMA_TEST_LOCK.lock().unwrap();
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		let material_json = r#"{
 			"domain": "World",
-			"type": "Surface",
-			"shaders": {
-				"Compute": "fragment.besl"
-			},
+				"type": "Surface",
+				"shaders": {
+					"Compute": "load_variant_fragment.besl"
+				},
 			"variables": [
 				{
 					"name": "color",
@@ -630,16 +631,16 @@ pub mod tests {
 			]
 		}"#;
 
-		asset_storage_backend.add_file("material.bema", material_json.as_bytes());
+		asset_storage_backend.add_file("load_variant_material.bema", material_json.as_bytes());
 
 		let shader_file = "main: fn () -> void {
 			materials;
 		}";
 
-		asset_storage_backend.add_file("fragment.besl", shader_file.as_bytes());
+		asset_storage_backend.add_file("load_variant_fragment.besl", shader_file.as_bytes());
 
 		let variant_json = r#"{
-			"parent": "material.bema",
+			"parent": "load_variant_material.bema",
 			"variables": [
 				{
 					"name": "color",
@@ -648,7 +649,7 @@ pub mod tests {
 			]
 		}"#;
 
-		asset_storage_backend.add_file("variant.bema", variant_json.as_bytes());
+		asset_storage_backend.add_file("load_variant.bema", variant_json.as_bytes());
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
@@ -662,7 +663,7 @@ pub mod tests {
 		asset_manager.add_asset_handler(asset_handler);
 
 		let _: ReferenceModel<VariantModel> = asset_manager
-			.bake_if_not_exists("variant.bema", &resource_storage_backend)
+			.bake_if_not_exists("load_variant.bema", &resource_storage_backend)
 			.await
 			.expect("Failed to load material");
 
@@ -670,31 +671,31 @@ pub mod tests {
 		assert_eq!(generated_resources.len(), 3);
 
 		let shader = resource_storage_backend
-			.get_resource(ResourceId::new("fragment.besl"))
+			.get_resource(ResourceId::new("load_variant_fragment.besl"))
 			.expect("Expected shader");
 
-		assert_eq!(shader.id, "fragment.besl");
+		assert_eq!(shader.id, "load_variant_fragment.besl");
 		assert_eq!(shader.class, "Shader");
 
 		let shader_spirv = resource_storage_backend
-			.get_resource_data_by_name(ResourceId::new("fragment.besl"))
+			.get_resource_data_by_name(ResourceId::new("load_variant_fragment.besl"))
 			.expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
 		assert!(!shader_spirv.is_empty());
 
 		let material = resource_storage_backend
-			.get_resource(ResourceId::new("material.bema"))
+			.get_resource(ResourceId::new("load_variant_material.bema"))
 			.expect("Expected material");
 
-		assert_eq!(material.id, "material.bema");
+		assert_eq!(material.id, "load_variant_material.bema");
 		assert_eq!(material.class, "Material");
 
 		let variant = resource_storage_backend
-			.get_resource(ResourceId::new("variant.bema"))
+			.get_resource(ResourceId::new("load_variant.bema"))
 			.expect("Expected variant");
 
-		assert_eq!(variant.id, "variant.bema");
+		assert_eq!(variant.id, "load_variant.bema");
 		assert_eq!(variant.class, "Variant");
 	}
 }

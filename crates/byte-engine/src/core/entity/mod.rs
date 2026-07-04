@@ -2,8 +2,7 @@
 //!
 //! Convert concrete values into [`EntityHandle`] when several systems need
 //! stable access to the same object. Trait-object handles are used by
-//! [`crate::gameplay::world::DefaultWorld`] for physics bodies and renderable
-//! meshes.
+//! the headed default world for physics bodies and renderable meshes.
 
 pub mod container;
 pub mod handle;

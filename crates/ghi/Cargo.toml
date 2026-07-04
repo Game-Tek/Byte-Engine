@@ -1,12 +1,23 @@
 [package]
-name = "ghi"
+name = "byte-engine-ghi"
 version = "0.1.0"
 edition = "2021"
+authors = ["Facundo Villa <facundovilla961@gmail.com>"]
+description = "Graphics hardware interface layer used by Byte-Engine."
 license = "MIT"
+repository = "https://github.com/Game-Tek/Byte-Engine"
+homepage = "https://github.com/Game-Tek/Byte-Engine"
+documentation = "https://docs.rs/byte-engine-ghi"
+readme = "../../README.md"
+keywords = ["byte-engine", "graphics", "gpu", "rendering"]
+categories = ["graphics", "rendering", "game-development"]
 rust-version.workspace = true
 
+[lib]
+name = "ghi"
+
 [dependencies]
-utils = { path = "../utils" }
+utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }
 
 bitflags = "2.9.0"
 smallvec = "1.15.1"
@@ -15,7 +26,9 @@ smallvec = "1.15.1"
 renderdoc = "0.12.1"
 
 [dependencies.resource-management]
+package = "byte-engine-resource-management"
 path = "../resource-management"
+version = "0.1.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "System", "Win32_System_LibraryLoader", "Win32_UI_Input", "Win32_Devices_HumanInterfaceDevice", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D_Dxc"] }

@@ -13,7 +13,7 @@ jobs:
   build-test:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [blacksmith-32vcpu-ubuntu-2404, blacksmith-32vcpu-windows-2025, blacksmith-12vcpu-macos-latest]
         profile: [dev, release]
         feature: [headed, network]
         include:

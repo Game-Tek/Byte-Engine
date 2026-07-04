@@ -8,8 +8,8 @@ use math::{
 
 use crate::gameplay::transform::Transform;
 
-/// A view represents a viewport into the world. It can be used to render a scene from a specific perspective.
-/// It's used to represent cameras, lights, and other objects that can be used to render a scene.
+/// The `View` struct exists as the projection and orientation package shared by
+/// cameras, lights, render sinks, and shader setup.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View {
 	projection: Matrix4,
@@ -22,7 +22,7 @@ pub struct View {
 }
 
 impl View {
-	/// Creates a new view with the given parameters.
+	/// Creates a perspective view for camera-style scene rendering.
 	pub fn new_perspective(fov: f32, aspect_ratio: f32, near: f32, far: f32, position: Vector3, rotation: Vector3) -> Self {
 		Self {
 			projection: projection_matrix(fov, aspect_ratio, near, far),
@@ -34,6 +34,7 @@ impl View {
 		}
 	}
 
+	/// Creates an orthographic view for light, editor, or flat scene rendering.
 	pub fn new_orthographic(
 		left: f32,
 		right: f32,
@@ -54,6 +55,7 @@ impl View {
 		}
 	}
 
+	/// Creates a view that shares this projection but uses a caller-provided view matrix.
 	pub fn from_view(&self, view: Matrix4) -> Self {
 		Self {
 			projection: self.projection,
@@ -97,26 +99,32 @@ impl View {
 		self.projection * self.view
 	}
 
+	/// Returns the horizontal field of view derived from the vertical field of view.
 	pub fn x_fov(&self) -> f32 {
 		self.y_fov * self.aspect_ratio
 	}
 
+	/// Returns the vertical field of view used by perspective projections.
 	pub fn y_fov(&self) -> f32 {
 		self.y_fov
 	}
 
+	/// Returns the near clipping plane distance.
 	pub fn near(&self) -> f32 {
 		self.near
 	}
 
+	/// Returns the far clipping plane distance.
 	pub fn far(&self) -> f32 {
 		self.far
 	}
 
+	/// Returns the horizontal and vertical fields of view.
 	pub fn fov(&self) -> [f32; 2] {
 		[self.x_fov(), self.y_fov()]
 	}
 
+	/// Returns the width-to-height aspect ratio used by perspective projections.
 	pub fn aspect_ratio(&self) -> f32 {
 		self.aspect_ratio
 	}

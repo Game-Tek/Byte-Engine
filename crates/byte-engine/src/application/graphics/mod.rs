@@ -162,10 +162,12 @@ impl Application for GraphicsApplication {
 }
 
 impl GraphicsApplication {
+	/// Returns frame-local storage for temporary allocations during the current tick.
 	pub fn frame_allocator(&self) -> &bumpalo::Bump {
 		&self.application.frame_allocator
 	}
 
+	/// Runs one graphics tick and lets application code update state before rendering.
 	pub fn tick_with<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, f: F) -> Option<R> {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
@@ -357,66 +359,81 @@ impl GraphicsApplication {
 		);
 	}
 
+	/// Returns the input manager that owns devices, triggers, and action state.
 	pub fn input_system(&self) -> &input::InputManager {
 		&self.input_system
 	}
 
+	/// Returns the renderer used by setup functions and advanced render integrations.
 	pub fn renderer(&self) -> &Renderer {
 		&self.renderer
 	}
 
+	/// Returns the factory used to request new windows.
 	pub fn window_factory(&self) -> &Factory<Window> {
 		&self.window_factory.0
 	}
 
+	/// Returns mutable access to the factory used to request new windows.
 	pub fn window_factory_mut(&mut self) -> &mut Factory<Window> {
 		&mut self.window_factory.0
 	}
 
+	/// Returns the factory used to register input actions.
 	pub fn action_factory(&self) -> &Factory<Action> {
 		&self.action_factory
 	}
 
+	/// Returns mutable access to the factory used to register input actions.
 	pub fn action_factory_mut(&mut self) -> &mut Factory<Action> {
 		&mut self.action_factory
 	}
 
+	/// Returns the factory used to create additional worlds.
 	pub fn world_factory(&self) -> &Factory<DefaultWorld> {
 		&self.world_factory
 	}
 
+	/// Returns mutable access to the factory used to create additional worlds.
 	pub fn world_factory_mut(&mut self) -> &mut Factory<DefaultWorld> {
 		&mut self.world_factory
 	}
 
+	/// Returns the default world updated by the graphics application loop.
 	pub fn world(&self) -> &DefaultWorld {
 		&self.world
 	}
 
+	/// Returns mutable access to the default world updated by the graphics application loop.
 	pub fn world_mut(&mut self) -> &mut DefaultWorld {
 		&mut self.world
 	}
 
+	/// Returns the audio generator factory used by default audio setup.
 	pub fn generator_factory(&self) -> &Factory<Arc<dyn Generator>> {
 		&self.generator_factory
 	}
 
+	/// Returns mutable access to the audio generator factory used by default audio setup.
 	pub fn generator_factory_mut(&mut self) -> &mut Factory<Arc<dyn Generator>> {
 		&mut self.generator_factory
 	}
 
+	/// Runs ticks until the application is closed.
 	pub fn do_loop(&mut self) {
 		while !self.close {
 			self.tick();
 		}
 	}
 
+	/// Runs ticks with an application callback until the application is closed.
 	pub fn do_loop_with<F: FnOnce(&mut Self, Time) + Copy>(&mut self, f: F) {
 		while !self.close {
 			self.tick_with(f);
 		}
 	}
 
+	/// Returns the resource manager shared by rendering and asset setup.
 	pub fn resource_manager(&self) -> &ResourceManager {
 		&self.resource_manager
 	}
@@ -428,6 +445,7 @@ impl Parameters for GraphicsApplication {
 	}
 }
 
+/// Installs the simple scene pipeline for debugging and prototype rendering.
 pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	let listener = application.world().renderable_factory().listener();
 	let delete_listener = application.world().delete_channel().listener();
@@ -486,6 +504,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 	renderer.add_pipeline_manager(sm);
 }
 
+/// Installs the visibility-buffer PBR scene pipeline and its async upload worker.
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
 	let application_resource_manager = application.resource_manager.clone();
 	let renderer = &mut application.renderer;
@@ -650,6 +669,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	}
 }
 
+/// Installs the retained UI render pass fed by UI render messages.
 pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultListener<CreateMessage<Render>>) {
 	let renderer = &mut application.renderer;
 	let ui_channel = ui.clone_channel();
@@ -683,6 +703,7 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 	});
 }
 
+/// Installs the AGX tonemapping pass for post-scene color mapping.
 pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 	let renderable_mesh_factory = application.world().renderable_factory();
 	let listener = renderable_mesh_factory.listener();
@@ -692,6 +713,7 @@ pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 	renderer.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AgxToneMapPass::new(render_pass_builder)));
 }
 
+/// Installs the final swapchain blit pass that presents rendered sinks.
 pub fn setup_swapchain_blit_render_pass(application: &mut GraphicsApplication) {
 	let renderer = &mut application.renderer;
 
@@ -708,6 +730,7 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 	});
 }
 
+/// Installs the atmosphere sky pass used as a post-scene background.
 pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
 	let renderer = &mut application.renderer;
 

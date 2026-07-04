@@ -4,19 +4,19 @@
 //! concrete instances of those classes; triggers are named values on a class.
 //! Actions map one or more triggers into application concepts such as movement.
 //!
-//! Most applications receive an [`InputManager`] through
-//! [`crate::application::graphics::GraphicsApplication`] and install the
-//! standard layouts with [`crate::application::graphics::setup_default_input`].
-//! Custom runtimes construct it from an action factory listener and an action
-//! event channel, then register classes before creating devices.
+//! Most headed applications receive an [`InputManager`] through
+//! `GraphicsApplication` and install the standard layouts with
+//! `setup_default_input`. Custom runtimes construct it from an action factory
+//! listener and an action event channel, then register classes before creating
+//! devices.
 
 /// The [`InputManager`] struct owns input topology, current values, and action
 /// evaluation state.
 ///
 /// Feed platform records into this type before calling its update path. For the
 /// standard headed integration, use
-/// [`crate::application::graphics::process_default_window_input`] rather than
-/// duplicating the mouse and keyboard trigger-name mapping.
+/// `process_default_window_input` rather than duplicating the mouse and keyboard
+/// trigger-name mapping.
 pub struct InputManager {
 	device_classes: Vec<DeviceClass>,
 	triggers: Vec<Trigger>,

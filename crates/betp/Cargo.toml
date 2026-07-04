@@ -1,11 +1,22 @@
 [package]
-name = "betp"
+name = "byte-engine-betp"
 version = "0.1.0"
 edition = "2021"
+authors = ["Facundo Villa <facundovilla961@gmail.com>"]
+description = "Byte-Engine transport protocol primitives for local and remote sessions."
 license = "MIT"
+repository = "https://github.com/Game-Tek/Byte-Engine"
+homepage = "https://github.com/Game-Tek/Byte-Engine"
+documentation = "https://docs.rs/byte-engine-betp"
+readme = "../../README.md"
+keywords = ["byte-engine", "networking", "protocol", "transport"]
+categories = ["network-programming", "game-development"]
 rust-version.workspace = true
 
+[lib]
+name = "betp"
+
 [dependencies]
-utils = { path = "../utils" }
+utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }
 
 tinyvec	 = "1.10.0"

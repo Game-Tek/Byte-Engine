@@ -15,22 +15,27 @@ pub struct Sink {
 }
 
 impl Sink {
+	/// Creates a sink for render passes that target a specific view and extent.
 	pub fn new(view: View, extent: Extent, index: usize) -> Self {
 		Self { view, extent, index }
 	}
 
+	/// Returns the camera or light view used by this render target.
 	pub fn view(&self) -> View {
 		self.view
 	}
 
+	/// Returns the pixel extent available to render passes for this sink.
 	pub fn extent(&self) -> Extent {
 		self.extent
 	}
 
+	/// Returns the combined projection and view matrix for shader setup.
 	pub fn view_projection(&self) -> Matrix4 {
 		self.view.view_projection()
 	}
 
+	/// Returns the renderer-local sink index.
 	pub fn index(&self) -> usize {
 		self.index
 	}

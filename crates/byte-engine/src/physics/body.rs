@@ -10,8 +10,7 @@ use crate::{
 /// world.
 ///
 /// Implement it on transformable gameplay entities and submit their
-/// [`crate::core::EntityHandle`] through
-/// [`crate::gameplay::world::DefaultWorld::body_factory_mut`].
+/// [`crate::core::EntityHandle`] through the default world's body factory.
 pub trait Body: Collider + Transformable {
 	fn body_type(&self) -> BodyTypes;
 

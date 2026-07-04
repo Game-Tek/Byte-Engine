@@ -1,24 +1,33 @@
 use std::ops::Add;
 
-#[derive(Clone, Copy)]
+/// The `Offset` struct represents signed screen-space movement during UI layout.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Offset(i32, i32);
+
+/// The `Location` struct represents an absolute two-dimensional UI position.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Location(u32, u32);
+
+/// The `Location3` struct represents an absolute UI position with depth ordering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Location3(u32, u32, u32);
+
+/// The `Size` struct represents two-dimensional UI extent in logical pixels.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Size(u32, u32);
 
-/// The `FlowInput` struct carries the parent space and cursor needed to place children.
-#[derive(Clone, Copy)]
+/// The `FlowInput` struct exists to pass parent space, cursor, and child size
+/// into reusable layout flow functions.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FlowInput {
 	parent_size: Size,
 	cursor: Offset,
 	child_size: Size,
 }
 
-/// The `FlowOutput` struct carries the positioned child offset and the next cursor.
-#[derive(Clone, Copy)]
+/// The `FlowOutput` struct exists to return a child's offset and the next cursor
+/// from reusable layout flow functions.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FlowOutput {
 	child_offset: Offset,
 	next_cursor: Offset,

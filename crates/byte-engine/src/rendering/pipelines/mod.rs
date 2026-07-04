@@ -4,5 +4,10 @@
 //! the main material, lighting, and visibility-buffer pipeline configured by
 //! [`crate::application::graphics::setup_pbr_visibility_shading_render_pipeline`].
 
+#[doc(hidden)]
 pub mod simple;
+#[doc(hidden)]
 pub mod visibility;
+
+pub use simple::{SimplePipelineManager, SimpleRenderPass};
+pub use visibility::VisibilityPipelineManager;

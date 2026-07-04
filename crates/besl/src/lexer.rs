@@ -3086,7 +3086,7 @@ main: fn () -> void {
 				Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
 					Nodes::Intrinsic { name, r#return, .. } => {
 						assert_eq!(name, "normalize");
-						assert_type(&r#return.borrow(), "vec4f");
+						assert_type(&r#return.borrow(), "vec3f");
 					}
 					_ => panic!("Expected intrinsic"),
 				},

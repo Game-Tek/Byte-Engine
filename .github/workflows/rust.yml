@@ -17,13 +17,13 @@ jobs:
         profile: [dev, release]
         feature: [headed, network]
         include:
-          - os: ubuntu-latest
+          - os: blacksmith-32vcpu-ubuntu-2404
             platform: linux
             rustflags: "-C target-feature=+aes,+sse2"
-          - os: windows-latest
+          - os: blacksmith-32vcpu-windows-2025
             platform: windows
             rustflags: "-C target-feature=+aes,+sse2"
-          - os: macos-latest
+          - os: blacksmith-12vcpu-macos-latest
             platform: macos
             rustflags: "-C target-feature=+aes,+neon"
     runs-on: ${{ matrix.os }}

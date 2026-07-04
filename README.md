@@ -1,5 +1,7 @@
 # Byte-Engine
 
+📚 **Docs:** <https://byte-engine.0x44491229.dev/docs>
+
 Byte-Engine is a composable Rust game engine for applications that need graphics,
 input, audio, physics, resources, networking, and retained UI in one runtime.
 
@@ -8,27 +10,28 @@ use the public `byte-engine` facade for normal applications, or work with the
 lower-level crates when you need direct access to rendering, audio, resources,
 shader processing, transport, math, or utilities.
 
+> [!WARNING]
 > **Status:** Byte-Engine is early and API-breaking changes are expected. The
 > workspace is preparing its first public package flow, so source checkout usage
 > is currently the most reliable path.
 
-## Highlights
+## ✨ Highlights
 
-- Platform graphics paths for Vulkan/Linux, Metal/macOS, and Direct3D 12/Windows.
-- Platform audio interfaces for Linux, macOS, and Windows.
-- Action-based input so application code listens for intent like `Move`, `Fire`,
+- 🖼️ Platform graphics paths for Vulkan/Linux, Metal/macOS, and Direct3D 12/Windows.
+- 🔊 Platform audio interfaces for Linux, macOS, and Windows.
+- 🎮 Action-based input so application code listens for intent like `Move`, `Fire`,
   or `Confirm` instead of raw device buttons everywhere.
-- Actor-style system boundaries built around compact messages, factories,
+- 📨 Actor-style system boundaries built around compact messages, factories,
   handles, and listeners.
-- Asset pipeline that separates authored assets from runtime-ready resources.
-- `beld`, a workspace CLI for baking, listing, querying, inspecting, and deleting
+- 📦 Asset pipeline that separates authored assets from runtime-ready resources.
+- 🛠️ `beld`, a workspace CLI for baking, listing, querying, inspecting, and deleting
   resources.
-- BESL, the Byte Engine Shader Language, for shader parsing, reflection, material
+- 🧪 BESL, the Byte Engine Shader Language, for shader parsing, reflection, material
   integration, and backend shader generation.
-- Early retained, async-friendly UI primitives that run inside the engine render
+- 🧩 Early retained, async-friendly UI primitives that run inside the engine render
   loop.
 
-## Requirements
+## ✅ Requirements
 
 Byte-Engine currently targets nightly Rust and uses unstable language features.
 The repository pins the toolchain in [`rust-toolchain.toml`](rust-toolchain.toml):
@@ -51,13 +54,13 @@ Platform requirements:
 Hardware expectations include a GPU suitable for the active backend, AVX2 on x64
 platforms, and at least 4 GB of RAM. See the full setup docs for details:
 
-- [Requirements](docs/requirements.mdx)
-- [Environment setup](docs/use/setup/environment/index.mdx)
-- [macOS setup](docs/use/setup/environment/macos.mdx)
-- [Linux setup](docs/use/setup/environment/linux.mdx)
-- [Windows setup](docs/use/setup/environment/windows.mdx)
+- [Requirements](https://byte-engine.0x44491229.dev/docs/requirements)
+- [Environment setup](https://byte-engine.0x44491229.dev/docs/use/setup/environment)
+- [macOS setup](https://byte-engine.0x44491229.dev/docs/use/setup/environment/macos)
+- [Linux setup](https://byte-engine.0x44491229.dev/docs/use/setup/environment/linux)
+- [Windows setup](https://byte-engine.0x44491229.dev/docs/use/setup/environment/windows)
 
-## Quick start from source
+## 🚀 Quick start from source
 
 ```sh
 git clone https://github.com/Game-Tek/Byte-Engine.git
@@ -80,7 +83,7 @@ cargo run -p byte-engine --example triangle
 Most smoke examples set `kill-after=60`, so they exit automatically after about a
 minute.
 
-## Minimal headed application
+## 🧱 Minimal headed application
 
 ```rust
 use byte_engine::application::{Application, Parameter};
@@ -115,7 +118,7 @@ For local development, a path dependency is usually faster:
 byte-engine = { path = "../Byte-Engine/crates/byte-engine" }
 ```
 
-## Workspace map
+## 🗺️ Workspace map
 
 | Path | Purpose |
 | --- | --- |
@@ -136,7 +139,7 @@ The crates are published under the `byte-engine-*` namespace where needed so
 crates.io can resolve internal layers independently. Rust import names stay short
 inside the codebase, such as `ghi`, `ahi`, `besl`, `math`, and `utils`.
 
-## Examples
+## 🎯 Examples
 
 Examples live in [`crates/byte-engine/examples`](crates/byte-engine/examples).
 Run them from the workspace root:
@@ -157,7 +160,7 @@ Useful starting points:
 | `sound` | Audio synthesizer smoke path. |
 | `replication` | Early networking/replication smoke path. |
 
-## Asset and resource workflow
+## 📦 Asset and resource workflow
 
 Byte-Engine separates authored files from runtime-ready resources:
 
@@ -177,10 +180,10 @@ cargo run -p beld -- --destination resources inspect texture.png
 cargo run -p beld -- --destination resources query Material group=opaque --format json
 ```
 
-See [Asset and resource management](docs/develop/design/resource-management/index.mdx)
+See [Asset and resource management](https://byte-engine.0x44491229.dev/docs/develop/design/resource-management)
 for the design notes.
 
-## BESL: Byte Engine Shader Language
+## 🧪 BESL: Byte Engine Shader Language
 
 BESL is Byte-Engine's shader language. It exists so shader code can participate
 in material processing, resource reflection, render-model code generation, and
@@ -206,26 +209,26 @@ main: fn () -> void {
 ```
 
 Backend coverage is still evolving, but the project already contains GLSL, MSL,
-HLSL, and platform-generator paths. See the [BESL reference](docs/reference/besl.mdx)
+HLSL, and platform-generator paths. See the [BESL reference](https://byte-engine.0x44491229.dev/docs/reference/besl)
 for more details.
 
-## Architecture notes worth reading
+## 🏗️ Architecture notes worth reading
 
 The repository contains design docs that explain the engine direction and are
 useful before making larger changes:
 
-- [Actor pattern](docs/develop/design/actor-pattern.mdx): message-passing system
+- [Actor pattern](https://byte-engine.0x44491229.dev/docs/develop/design/actor-pattern): message-passing system
   boundaries, factories, handles, and listeners.
-- [Input handling](docs/develop/design/input-handling.mdx): device triggers,
+- [Input handling](https://byte-engine.0x44491229.dev/docs/develop/design/input-handling): device triggers,
   seats, actions, value mappings, and tick policies.
-- [Rendering](docs/develop/design/rendering/index.mdx): render orchestrators,
+- [Rendering](https://byte-engine.0x44491229.dev/docs/develop/design/rendering): render orchestrators,
   render systems, render domains, and render models.
-- [UI module](docs/develop/design/ui.mdx): retained async component primitives
+- [UI module](https://byte-engine.0x44491229.dev/docs/develop/design/ui): retained async component primitives
   and UI render flow.
-- [Resource management](docs/develop/design/resource-management/index.mdx): asset
+- [Resource management](https://byte-engine.0x44491229.dev/docs/develop/design/resource-management): asset
   baking, resource storage, runtime reads, and `beld`.
 
-## Development commands
+## 🧰 Development commands
 
 Common checks from the workspace root:
 
@@ -240,14 +243,15 @@ cargo doc -p byte-engine --no-deps
 Publishing-specific verification and crate order are documented in
 [`PUBLISHING.md`](PUBLISHING.md).
 
-## Documentation and links
+## 🔗 Documentation and links
 
 - API documentation: <https://docs.rs/byte-engine>
 - Repository: <https://github.com/Game-Tek/Byte-Engine>
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md)
 - Publishing notes: [`PUBLISHING.md`](PUBLISHING.md)
+- User documentation: <https://byte-engine.0x44491229.dev/docs>
 - Documentation source: [`docs`](docs)
 
-## License
+## 📄 License
 
 Byte-Engine is licensed under the [MIT license](LICENSE).

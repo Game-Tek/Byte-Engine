@@ -133,12 +133,20 @@ impl WindowLike for Window {
 				state: WindowState::default(),
 			};
 
-			app_event_queue.roundtrip(&mut app_data).unwrap();
+			app_event_queue
+				.roundtrip(&mut app_data)
+				.map_err(|e| format!("Failed to initialize Wayland app event queue: {}", e))?;
 
 			surface.set_buffer_scale(app_data.state.scale as _);
 			xdg_surface.set_window_geometry(0, 0, extent.width() as _, extent.height() as _);
 
 			surface.commit();
+
+			while !app_data.state.configured {
+				app_event_queue
+					.blocking_dispatch(&mut app_data)
+					.map_err(|e| format!("Failed to wait for initial Wayland surface configuration: {}", e))?;
+			}
 
 			app_data.state
 		};
@@ -297,6 +305,8 @@ struct WindowState {
 	extent: Option<Extent>,
 	/// The extent of the monitor.
 	monitor_extent: Option<Extent>,
+	/// Whether the initial xdg_surface configuration has been acknowledged.
+	configured: bool,
 	/// The focused pointer
 	focused_pointer: Option<wl_pointer::WlPointer>,
 	/// The focused keyboard
@@ -327,6 +337,7 @@ impl Default for WindowState {
 			scale: 1,
 			extent: None,
 			monitor_extent: None,
+			configured: false,
 			focused_pointer: None,
 			focused_keyboard: None,
 			should_confine_pointer: false,
@@ -717,7 +728,7 @@ impl wayland_client::Dispatch<xdg_wm_base::XdgWmBase, ()> for AppData {
 
 impl wayland_client::Dispatch<xdg_surface::XdgSurface, ()> for AppData {
 	fn event(
-		_: &mut Self,
+		this: &mut Self,
 		s: &xdg_surface::XdgSurface,
 		event: xdg_surface::Event,
 		_: &(),
@@ -727,6 +738,7 @@ impl wayland_client::Dispatch<xdg_surface::XdgSurface, ()> for AppData {
 		match event {
 			xdg_surface::Event::Configure { serial } => {
 				s.ack_configure(serial);
+				this.state.configured = true;
 			}
 			_ => {}
 		}

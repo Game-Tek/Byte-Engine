@@ -19,6 +19,7 @@ jobs:
         include:
           - os: blacksmith-32vcpu-ubuntu-2404
             platform: linux
+            rustflags: "-C target-feature=+aes,+sse2"
           - os: blacksmith-32vcpu-windows-2025
             platform: windows
             rustflags: "-C target-feature=+aes,+sse2"

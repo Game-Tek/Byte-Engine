@@ -37,9 +37,14 @@ extern crate besl;
 #[cfg(feature = "headed")]
 extern crate ghi;
 extern crate resource_management;
-extern crate utils;
+extern crate utils as engine_utils;
 
 pub use math;
+
+/// The `utils` module provides engine utility types through the main `byte_engine` crate API.
+pub mod utils {
+	pub use crate::engine_utils::*;
+}
 
 pub mod application;
 #[cfg(feature = "headed")]

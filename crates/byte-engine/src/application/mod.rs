@@ -2,8 +2,8 @@
 //!
 //! Use [`BaseApplication`] when building a custom runtime that only needs parameter
 //! handling and frame-local storage. Headed applications should start with
-//! [`graphics::GraphicsApplication`] and choose either
-//! [`graphics::default_setup`] or individual graphics setup functions.
+//! `GraphicsApplication` and choose either `default_setup` or individual
+//! graphics setup functions.
 //!
 //! The `triangle` example demonstrates the standard setup path, while the
 //! `window` example demonstrates selecting only one setup component.
@@ -11,8 +11,10 @@
 use std::time::Duration;
 
 pub mod application;
+#[doc(hidden)]
 pub mod parameters;
 pub mod thread;
+#[doc(hidden)]
 pub mod tracy;
 pub use application::{Application, BaseApplication};
 pub use tracy::{setup_tracy, TracySetupError};
@@ -31,14 +33,17 @@ pub struct Time {
 }
 
 impl Time {
+	/// Creates frame timing data for systems that run inside an application tick.
 	pub fn new(elapsed: Duration, delta: Duration) -> Self {
 		Self { elapsed, delta }
 	}
 
+	/// Returns the total time since the application started.
 	pub fn elapsed(&self) -> Duration {
 		self.elapsed
 	}
 
+	/// Returns the time since the previous application tick.
 	pub fn delta(&self) -> Duration {
 		self.delta
 	}
@@ -53,6 +58,7 @@ pub struct Parameter {
 }
 
 impl Parameter {
+	/// Creates a parameter from borrowed name and value strings.
 	pub fn new(name: &str, value: &str) -> Self {
 		Parameter {
 			name: name.into(),
@@ -60,10 +66,12 @@ impl Parameter {
 		}
 	}
 
+	/// Creates a parameter from owned name and value strings.
 	pub fn new_string(name: String, value: String) -> Self {
 		Parameter { name, value }
 	}
 
+	/// Returns whether this parameter has the requested name.
 	pub fn is(&self, name: &str) -> bool {
 		self.name == name
 	}
@@ -86,10 +94,12 @@ impl Parameter {
 		self.as_bool().unwrap_or(false)
 	}
 
+	/// Returns the parameter name used by application configuration lookup.
 	pub fn name(&self) -> &str {
 		&self.name
 	}
 
+	/// Returns the raw parameter value before caller-specific parsing.
 	pub fn value(&self) -> &str {
 		&self.value
 	}

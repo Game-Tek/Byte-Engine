@@ -1,12 +1,10 @@
 //! Device-independent input actions and device registration.
 //!
-//! Typical headed applications call
-//! [`crate::application::graphics::setup_default_input`], translate window
-//! events with
-//! [`crate::application::graphics::process_default_window_input`], and create
-//! application-level [`Action`] values through the graphics application's action
-//! factory. Use [`utils`] when registering the standard mouse, keyboard, or
-//! gamepad classes in a custom application.
+//! Typical headed applications call `setup_default_input`, translate window
+//! events with `process_default_window_input`, and create application-level
+//! [`Action`] values through the graphics application's action factory. Use
+//! [`utils`] when registering the standard mouse, keyboard, or gamepad classes
+//! in a custom application.
 //!
 //! [`InputManager`] owns device and action state. [`Value`] is the erased value
 //! passed through that runtime; typed action declarations use
@@ -17,14 +15,20 @@ use crate::core::factory::Handle;
 
 mod action_evaluator;
 pub(crate) mod gamepad;
+#[doc(hidden)]
 pub mod input_manager;
 mod records;
 
+#[doc(hidden)]
 pub mod action;
+#[doc(hidden)]
 pub mod device;
+#[doc(hidden)]
 pub mod device_class;
+#[doc(hidden)]
 pub mod input_trigger;
 mod seat;
+#[doc(hidden)]
 pub mod utils;
 
 pub use action::Action;
@@ -114,15 +118,15 @@ impl From<RGBA> for Value {
 	}
 }
 
-impl Into<Value> for Vector2 {
-	fn into(self) -> Value {
-		Value::Vector2(self)
+impl From<Vector2> for Value {
+	fn from(val: Vector2) -> Self {
+		Value::Vector2(val)
 	}
 }
 
-impl Into<Value> for Vector3 {
-	fn into(self) -> Value {
-		Value::Vector3(self)
+impl From<Vector3> for Value {
+	fn from(val: Vector3) -> Self {
+		Value::Vector3(val)
 	}
 }
 
@@ -166,6 +170,7 @@ impl From<Value> for Types {
 }
 
 impl Types {
+	/// Returns the neutral value used before a trigger or action produces input.
 	pub fn default_value(&self) -> Value {
 		match self {
 			Types::Boolean => Value::Bool(false),
@@ -180,11 +185,15 @@ impl Types {
 	}
 }
 
-#[derive(Copy, Clone, Debug)]
-/// Enumerates the different functions that can be applied to an input event.
+/// The `Function` enum identifies how an input value is transformed before it
+/// reaches an action.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Function {
+	/// Treats the mapped input as an on/off value.
 	Boolean,
+	/// Converts the mapped input to a boolean using a threshold.
 	Threshold,
+	/// Passes the mapped value through without curve-specific remapping.
 	Linear,
 	/// Maps a 2D point to a 3D point on a sphere.
 	Sphere,
@@ -206,7 +215,10 @@ pub enum TickPolicy {
 	Always,
 }
 
+/// The `Extract` trait exists to recover typed values from the input runtime's
+/// erased [`Value`] representation.
 pub trait Extract<T: InputValue> {
+	/// Returns the stored value as the requested input type.
 	fn extract(&self) -> T;
 }
 
@@ -237,17 +249,19 @@ impl Extract<Vector3> for Value {
 	}
 }
 
-/// The `ValueMapping` struct represents a how an input event value is mapped.
-/// It allows for the transformation of input values using various functions.
+/// The `ValueMapping` struct exists to bind a trigger value to the transform
+/// used before action evaluation.
 ///
-/// Blanket implementations for `Into<ValueMapping>` exist for all types that implement `Into<Value>`. This implementations create a mapping with no transformation of the value.
-#[derive(Copy, Clone, Debug)]
+/// `From` implementations for values use [`Function::Linear`] as the default
+/// transform, so callers can pass plain values when no custom mapping is needed.
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ValueMapping {
 	pub(crate) function: Function,
 	pub(crate) value: Value,
 }
 
 impl ValueMapping {
+	/// Creates a mapping from a transform function and a compatible input value.
 	pub fn new<V: Into<Value>>(function: Function, value: V) -> Self {
 		Self {
 			function,
@@ -255,11 +269,13 @@ impl ValueMapping {
 		}
 	}
 
+	/// Replaces the transform function used by this mapping.
 	pub fn function(mut self, function: Function) -> Self {
 		self.function = function;
 		self
 	}
 
+	/// Replaces the input value used by this mapping.
 	pub fn value(mut self, value: Value) -> Self {
 		self.value = value;
 		self
@@ -272,15 +288,15 @@ impl From<bool> for ValueMapping {
 	}
 }
 
-impl Into<ValueMapping> for Vector2 {
-	fn into(self) -> ValueMapping {
-		ValueMapping::new(Function::Linear, self)
+impl From<Vector2> for ValueMapping {
+	fn from(val: Vector2) -> Self {
+		ValueMapping::new(Function::Linear, val)
 	}
 }
 
-impl Into<ValueMapping> for Vector3 {
-	fn into(self) -> ValueMapping {
-		ValueMapping::new(Function::Linear, self)
+impl From<Vector3> for ValueMapping {
+	fn from(val: Vector3) -> Self {
+		ValueMapping::new(Function::Linear, val)
 	}
 }
 
@@ -303,6 +319,7 @@ impl From<Value> for ValueMapping {
 }
 
 #[derive(Clone, Debug)]
+/// The `ActionEvent` struct carries resolved action input to application code.
 pub struct ActionEvent {
 	/// The seat that triggered the action event.
 	seat_handle: SeatHandle,
@@ -313,6 +330,7 @@ pub struct ActionEvent {
 }
 
 impl ActionEvent {
+	/// Creates an action event for dispatch through the input event channel.
 	pub fn new(seat_handle: SeatHandle, handle: Handle, value: Value) -> Self {
 		Self {
 			seat_handle,
@@ -321,14 +339,17 @@ impl ActionEvent {
 		}
 	}
 
+	/// Returns the seat that produced the action value.
 	pub fn seat_handle(&self) -> SeatHandle {
 		self.seat_handle
 	}
 
+	/// Returns the action handle associated with the event.
 	pub fn handle(&self) -> Handle {
 		self.handle
 	}
 
+	/// Returns the resolved action value.
 	pub fn value(&self) -> Value {
 		self.value
 	}

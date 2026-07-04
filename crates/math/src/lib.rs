@@ -371,7 +371,7 @@ mod tests {
 			value,
 			maths_rs::Mat4f::from((
 				maths_rs::Vec4f::from((1f32, 0f32, 0f32, 0f32)),
-				maths_rs::Vec4f::from((0f32, 0f32, 1f32, 0f32)),
+				maths_rs::Vec4f::from((0f32, 0f32, -1f32, 0f32)),
 				maths_rs::Vec4f::from((0f32, 1f32, 0f32, 0f32)),
 				maths_rs::Vec4f::from((0f32, 0f32, 0f32, 1f32)),
 			))

@@ -40,9 +40,9 @@ impl MeshSource {
 	}
 }
 
-impl Into<MeshSource> for Arc<dyn MeshGenerator> {
-	fn into(self) -> MeshSource {
-		MeshSource::Generated(self)
+impl From<Arc<dyn MeshGenerator>> for MeshSource {
+	fn from(generator: Arc<dyn MeshGenerator>) -> Self {
+		MeshSource::Generated(generator)
 	}
 }
 

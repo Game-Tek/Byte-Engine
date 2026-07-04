@@ -2,13 +2,14 @@
 name = "beld"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 rust-version.workspace = true
 [dependencies]
 byte-engine = { path = "../byte-engine" }
-besl = { path = "../besl" }
-utils = { path = "../utils" }
-resource-management = { path = "../resource-management" }
+besl = { package = "byte-engine-besl", path = "../besl", version = "0.1.0" }
+utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }
+resource-management = { package = "byte-engine-resource-management", path = "../resource-management", version = "0.1.0" }
 
 bumpalo = { version = "3.20.0", features = ["allocator_api"] }
 clap = { version = "4.5.32", features = ["derive"] }

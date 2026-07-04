@@ -1,9 +1,8 @@
 //! Built-in rigid-body world implementation.
 //!
-//! This world consumes body creation and deletion messages from
-//! [`crate::gameplay::world::DefaultWorld`] and publishes resulting transform
-//! updates back to gameplay. Applications normally use it through that world
-//! rather than constructing it independently.
+//! This world consumes body creation and deletion messages and publishes
+//! resulting transform updates back to gameplay. Applications normally use it
+//! through the headed default world rather than constructing it independently.
 
 #[derive(Clone)]
 /// The [`World`] struct owns Dynabit simulation state and synchronizes it with

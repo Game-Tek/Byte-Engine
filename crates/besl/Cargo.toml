@@ -1,10 +1,21 @@
 [package]
-name = "besl"
+name = "byte-engine-besl"
 version = "0.1.0"
 edition = "2021"
+authors = ["Facundo Villa <facundovilla961@gmail.com>"]
+description = "Byte-Engine shader language parser, lexer, and derive integration."
 license = "MIT"
+repository = "https://github.com/Game-Tek/Byte-Engine"
+homepage = "https://github.com/Game-Tek/Byte-Engine"
+documentation = "https://docs.rs/byte-engine-besl"
+readme = "../../README.md"
+keywords = ["byte-engine", "shader", "language", "parser"]
+categories = ["parser-implementations", "game-development"]
 rust-version.workspace = true
 
+[lib]
+name = "besl"
+
 [dependencies]
-besl-derive = { path = "../besl-derive" }
+besl-derive = { package = "byte-engine-besl-derive", path = "../besl-derive", version = "0.1.0" }
 colored = "3.0.0"

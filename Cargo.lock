@@ -22,16 +22,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ahi"
-version = "0.1.0"
-dependencies = [
- "alsa",
- "objc2-audio-toolbox",
- "objc2-core-audio-types",
- "windows",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -175,40 +165,15 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 name = "beld"
 version = "0.1.0"
 dependencies = [
- "besl",
  "bumpalo",
  "byte-engine",
+ "byte-engine-besl",
+ "byte-engine-resource-management",
+ "byte-engine-utils",
  "clap",
  "log",
- "resource-management",
  "serde_json",
  "simple_logger",
- "utils",
-]
-
-[[package]]
-name = "besl"
-version = "0.1.0"
-dependencies = [
- "besl-derive",
- "colored",
-]
-
-[[package]]
-name = "besl-derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "betp"
-version = "0.1.0"
-dependencies = [
- "tinyvec",
- "utils",
 ]
 
 [[package]]
@@ -251,26 +216,27 @@ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 name = "byte-engine"
 version = "0.1.0"
 dependencies = [
- "ahi",
  "artnet_protocol",
- "besl",
- "betp",
  "bitflags 2.11.1",
  "bumpalo",
+ "byte-engine-ahi",
+ "byte-engine-besl",
+ "byte-engine-betp",
+ "byte-engine-ghi",
+ "byte-engine-math",
+ "byte-engine-resource-management",
+ "byte-engine-utils",
  "colored",
  "ctrlc",
  "downcast-rs 2.0.2",
  "dual_quaternion",
  "env_logger",
  "fontdue",
- "ghi",
  "half",
  "hidapi",
  "log",
- "math",
  "mid",
  "oxhttp",
- "resource-management",
  "serde",
  "smallvec",
  "tracing",
@@ -278,7 +244,111 @@ dependencies = [
  "tracing-subscriber",
  "tracing-tracy",
  "trotcast",
- "utils",
+]
+
+[[package]]
+name = "byte-engine-ahi"
+version = "0.1.0"
+dependencies = [
+ "alsa",
+ "objc2-audio-toolbox",
+ "objc2-core-audio-types",
+ "windows",
+]
+
+[[package]]
+name = "byte-engine-besl"
+version = "0.1.0"
+dependencies = [
+ "byte-engine-besl-derive",
+ "colored",
+]
+
+[[package]]
+name = "byte-engine-besl-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "byte-engine-betp"
+version = "0.1.0"
+dependencies = [
+ "byte-engine-utils",
+ "tinyvec",
+]
+
+[[package]]
+name = "byte-engine-ghi"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "bitflags 2.11.1",
+ "byte-engine-resource-management",
+ "byte-engine-utils",
+ "dispatch2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-metal",
+ "objc2-quartz-core",
+ "renderdoc",
+ "smallvec",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "windows",
+ "xcb",
+ "xkbcommon",
+]
+
+[[package]]
+name = "byte-engine-math"
+version = "0.1.0"
+dependencies = [
+ "maths-rs",
+]
+
+[[package]]
+name = "byte-engine-resource-management"
+version = "0.1.0"
+dependencies = [
+ "byte-engine-besl",
+ "byte-engine-utils",
+ "colored",
+ "compio",
+ "downcast-rs 2.0.2",
+ "gltf",
+ "gxhash",
+ "image",
+ "intel_tex_2",
+ "libdeflater",
+ "log",
+ "maths-rs",
+ "md5",
+ "memmap2",
+ "meshopt",
+ "png",
+ "redb",
+ "rkyv",
+ "serde",
+ "serde_json",
+ "shaderc",
+ "vorbis_rs",
+]
+
+[[package]]
+name = "byte-engine-utils"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "gxhash",
+ "parking_lot",
+ "smallbox",
+ "sonic-rs",
 ]
 
 [[package]]
@@ -944,30 +1014,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ghi"
-version = "0.1.0"
-dependencies = [
- "ash",
- "bitflags 2.11.1",
- "dispatch2",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "objc2-metal",
- "objc2-quartz-core",
- "renderdoc",
- "resource-management",
- "smallvec",
- "utils",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "windows",
- "xcb",
- "xkbcommon",
-]
-
-[[package]]
 name = "gltf"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1305,13 +1351,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
-]
-
-[[package]]
-name = "math"
-version = "0.1.0"
-dependencies = [
- "maths-rs",
 ]
 
 [[package]]
@@ -2056,34 +2095,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
-name = "resource-management"
-version = "0.1.0"
-dependencies = [
- "besl",
- "colored",
- "compio",
- "downcast-rs 2.0.2",
- "gltf",
- "gxhash",
- "image",
- "intel_tex_2",
- "libdeflater",
- "log",
- "maths-rs",
- "md5",
- "memmap2",
- "meshopt",
- "png",
- "redb",
- "rkyv",
- "serde",
- "serde_json",
- "shaderc",
- "utils",
- "vorbis_rs",
-]
-
-[[package]]
 name = "rkyv"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2645,17 +2656,6 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
-
-[[package]]
-name = "utils"
-version = "0.1.0"
-dependencies = [
- "futures",
- "gxhash",
- "parking_lot",
- "smallbox",
- "sonic-rs",
-]
 
 [[package]]
 name = "uuid"

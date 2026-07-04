@@ -2,7 +2,7 @@
 
 use math::Vector3;
 
-use super::{object::Object, transform::Transform};
+use super::transform::Transform;
 use crate::core::listener::Listener;
 use crate::core::{Entity, EntityHandle};
 use crate::space::Positionable;

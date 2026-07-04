@@ -14,42 +14,66 @@ use ghi::context::ContextCreate as _;
 
 use crate::space::Positionable as _;
 
+#[doc(hidden)]
 pub mod common_shader_generator;
 
+#[doc(hidden)]
 pub mod lights;
+#[doc(hidden)]
 pub mod window;
 
+/// Camera state used to derive scene views.
 pub mod camera;
+#[doc(hidden)]
 pub mod mesh;
 
+#[doc(hidden)]
 pub mod renderable;
 
+#[doc(hidden)]
 pub mod cct;
 
+#[doc(hidden)]
 pub mod pipeline_manager;
+#[doc(hidden)]
 pub mod world_render_domain;
 
+#[doc(hidden)]
 pub mod renderer;
 
+#[doc(hidden)]
 pub mod framebuffer;
+#[doc(hidden)]
 pub mod render_pass;
+#[doc(hidden)]
 pub mod render_passes;
+#[doc(hidden)]
 pub mod shader_store;
 
+#[doc(hidden)]
 pub mod pipelines;
 
+/// Per-output render target state passed to render passes.
 pub mod sink;
+/// Projection and view matrix construction for cameras and lights.
 pub mod view;
 
+#[doc(hidden)]
 pub mod csm;
 
+#[doc(hidden)]
 pub mod utils;
 
 pub use camera::Camera;
-pub use render_pass::RenderPass;
+pub use lights::{DirectionalLight, Light, LightClasses, Lights, PointLight};
+pub use pipeline_manager::PipelineManager;
+pub use pipelines::{SimplePipelineManager, SimpleRenderPass, VisibilityPipelineManager};
+pub use render_pass::{FramePrepare, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassReturn, RenderToResult};
 pub use renderable::mesh::RenderableMesh;
+pub use renderer::{RenderTargets, Renderer, Settings};
 pub use sink::Sink;
 pub use view::View;
+pub use window::{Features, Window};
 
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(
@@ -70,6 +94,11 @@ pub fn map_shader_binding_to_shader_binding_descriptor(
 	)
 }
 
+/// Compiles shader source and creates a GHI shader handle for render pipeline setup.
+///
+/// Returns an error when shader compilation or GHI shader creation fails. The
+/// most likely cause is invalid shader source or a binding interface that does
+/// not match the selected shader stage.
 pub fn create_shader_from_source(
 	context: &mut ghi::implementation::Context,
 	name: Option<&str>,
@@ -83,6 +112,7 @@ pub fn create_shader_from_source(
 		.map_err(|_| "Failed to create shader. The most likely cause is an incompatible shader interface.".to_string())
 }
 
+/// Builds a perspective [`View`] from a scene camera and render target extent.
 pub fn make_perspective_view_from_camera(camera: &Camera, extent: Extent) -> View {
 	let (camera_position, camera_orientation, fov_y) = (camera.position(), camera.get_direction(), camera.get_fov());
 

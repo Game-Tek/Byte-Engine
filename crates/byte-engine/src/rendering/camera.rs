@@ -7,6 +7,8 @@ use crate::space::orientable::Orientable;
 use crate::space::{Positionable, Transformable};
 
 #[derive(Clone, Debug)]
+/// The `Camera` struct exists as the scene-owned view source for render sinks and
+/// inspection tools.
 pub struct Camera {
 	position: Vector3,
 	orientation: Quaternion,
@@ -23,6 +25,7 @@ impl Default for Camera {
 }
 
 impl Camera {
+	/// Creates a camera with a centered position and default perspective settings.
 	pub fn new() -> Self {
 		Self {
 			position: Vector3::new(0.0, 0.0, 0.0),
@@ -54,14 +57,17 @@ impl Camera {
 		self.focus_distance
 	}
 
+	/// Sets the world-space direction used to build render views from this camera.
 	pub fn set_direction(&mut self, direction: Vector3) {
 		self.orientation = Quaternion::from_axis_angle(direction, 0.0);
 	}
 
+	/// Sets the vertical field of view used by perspective rendering.
 	pub fn set_fov(&mut self, fov: f32) {
 		self.fov = fov;
 	}
 
+	/// Returns the world-space direction used when creating a [`crate::rendering::View`].
 	pub fn get_direction(&self) -> Vector3 {
 		self.orientation * FORWARD
 	}

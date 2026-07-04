@@ -2,8 +2,8 @@
 //!
 //! Implement [`Application`] for a new top-level runtime, or compose
 //! [`BaseApplication`] into it to reuse parameter precedence, logging setup, and
-//! frame-local allocation. [`crate::application::graphics::GraphicsApplication`]
-//! is the main example of that composition.
+//! frame-local allocation. `GraphicsApplication` is the main headed example of
+//! that composition.
 
 //use utils::hash::HashSet; // Triggers address sanitation error
 
@@ -11,9 +11,8 @@
 /// Byte-Engine runtime.
 ///
 /// Applications are intended to be singletons that own engine-wide state. Most
-/// headed programs should use
-/// [`crate::application::graphics::GraphicsApplication`] instead of implementing
-/// this trait directly.
+/// headed programs should use `GraphicsApplication` instead of implementing this
+/// trait directly.
 ///
 /// Parameters passed to [`Application::new`] may be overridden by `BE_*`
 /// environment variables and then by `--name=value` command-line arguments.
@@ -32,8 +31,7 @@ pub trait Application {
 /// frame-local storage for application implementations.
 ///
 /// Embed it in a specialized application rather than using it as a complete game
-/// loop. See [`crate::application::graphics::GraphicsApplication`] for the
-/// established composition pattern.
+/// loop. `GraphicsApplication` uses the established headed composition pattern.
 pub struct BaseApplication {
 	name: String,
 	parameters: Vec<Parameter>,

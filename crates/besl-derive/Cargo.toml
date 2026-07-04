@@ -1,11 +1,20 @@
 [package]
-name = "besl-derive"
+name = "byte-engine-besl-derive"
 version = "0.1.0"
 edition = "2021"
+authors = ["Facundo Villa <facundovilla961@gmail.com>"]
+description = "Derive macros for Byte-Engine shader language structures."
 license = "MIT"
+repository = "https://github.com/Game-Tek/Byte-Engine"
+homepage = "https://github.com/Game-Tek/Byte-Engine"
+documentation = "https://docs.rs/byte-engine-besl-derive"
+readme = "../../README.md"
+keywords = ["byte-engine", "shader", "derive", "macro"]
+categories = ["development-tools::procedural-macro-helpers", "game-development"]
 rust-version.workspace = true
 
 [lib]
+name = "besl_derive"
 proc-macro = true
 
 [dependencies]

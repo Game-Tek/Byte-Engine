@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -C target-cpu=native # Byte requires vector extensions
 
 jobs:
   build-test:
@@ -18,13 +17,18 @@ jobs:
         profile: [dev, release]
         feature: [headed, network]
         include:
-          - os: ubuntu-latest
+          - os: blacksmith-32vcpu-ubuntu-2404
             platform: linux
           - os: blacksmith-32vcpu-windows-2025
             platform: windows
-          - os: macos-latest
+            rustflags: "-C target-feature=+aes,+sse2"
+          - os: blacksmith-12vcpu-macos-latest
             platform: macos
+            rustflags: "-C target-feature=+aes,+neon"
     runs-on: ${{ matrix.os }}
+    env:
+      # gxhash validates cfg(target_feature), so each runner gets the matching baseline explicitly.
+      RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
     - uses: actions/checkout@v4
     - name: Cache Cargo dependencies

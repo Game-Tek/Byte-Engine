@@ -9,8 +9,10 @@ internal layers independently.
 
 ## Status
 
-Byte-Engine currently targets nightly Rust. The workspace uses unstable language
-features and declares its supported Rust version in the workspace manifest.
+Byte-Engine currently targets nightly Rust. Building the engine requires a
+nightly toolchain from 2026-06-01 or more recent. The workspace uses unstable
+language features and declares its supported Rust version in the workspace
+manifest.
 
 ## Documentation
 

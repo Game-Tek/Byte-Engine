@@ -25,7 +25,7 @@ utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }
 besl = { package = "byte-engine-besl", path = "../besl", version = "0.1.0" }
 
 png = "0.18.0"
-rkyv = { version = "0.8.15", features = ["unaligned"] }
+rkyv = { version = "0.8.16", features = ["unaligned"] }
 md5 = "0.8.0"
 redb = "3.1.0"
 intel_tex_2 = "0.5.0"

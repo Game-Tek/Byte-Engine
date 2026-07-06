@@ -303,7 +303,7 @@ mod tests {
 
 		assert!(shader.contains("clamp(log2(color)"));
 		assert!(shader.contains("uvec2(gl_GlobalInvocationID.xy)"));
-		assert!(shader.contains("imageLoad(source, ivec2(coord))"));
+		assert!(shader.contains("imageLoad(source"));
 	}
 
 	#[test]

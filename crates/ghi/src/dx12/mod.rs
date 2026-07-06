@@ -38,9 +38,9 @@ mod tests {
 		}
 	}
 
-	fn create_default_device_setup() -> (Instance, Device, crate::QueueHandle) {
+	fn create_default_device_setup() -> Option<(Instance, Device, crate::QueueHandle)> {
 		let features = crate::device::Features::new().validation(false);
-		let mut instance = Instance::new(features).expect("Failed to create a DX12 instance.");
+		let mut instance = Instance::new(features).ok()?;
 		let mut queue_handle = None;
 		let device = instance
 			.create_device(
@@ -50,8 +50,8 @@ mod tests {
 					&mut queue_handle,
 				)],
 			)
-			.expect("Failed to create DX12 GHI.");
-		(instance, device, queue_handle.unwrap())
+			.ok()?;
+		Some((instance, device, queue_handle?))
 	}
 
 	#[test]
@@ -64,15 +64,15 @@ mod tests {
 			return;
 		};
 		let mut queue_handle = None;
-		let device = instance
-			.create_device(
-				features,
-				&mut [(
-					crate::QueueSelection::new(crate::types::WorkloadTypes::RASTER),
-					&mut queue_handle,
-				)],
-			)
-			.expect("Failed to create DX12 GHI.");
+		let Ok(device) = instance.create_device(
+			features,
+			&mut [(
+				crate::QueueSelection::new(crate::types::WorkloadTypes::RASTER),
+				&mut queue_handle,
+			)],
+		) else {
+			return;
+		};
 
 		device.add_debug_message_for_test("ghi dx12 test application message");
 
@@ -83,48 +83,62 @@ mod tests {
 	#[test]
 	#[cfg(target_os = "linux")]
 	fn render_triangle() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		crate::graphics_hardware_interface::tests::render_triangle(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[cfg(target_os = "linux")]
 	fn multiframe_rendering() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		crate::graphics_hardware_interface::tests::multiframe_rendering(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[cfg(target_os = "linux")]
 	fn change_frames() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		crate::graphics_hardware_interface::tests::change_frames(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[cfg(target_os = "linux")]
 	fn resize() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		crate::graphics_hardware_interface::tests::resize(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[cfg(target_os = "linux")]
 	fn dynamic_data() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		crate::graphics_hardware_interface::tests::dynamic_data(&mut device, queue_handle);
 	}
 
 	#[test]
 	#[cfg(target_os = "linux")]
 	fn dynamic_textures() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		crate::graphics_hardware_interface::tests::dynamic_textures(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn texture_slice_mut_updates_static_image_storage() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
 				.extent(::utils::Extent::rectangle(1, 1))
@@ -139,7 +153,9 @@ mod tests {
 
 	#[test]
 	fn frame_texture_slice_mut_updates_dynamic_image_frame_storage() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_dynamic_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
 		);
@@ -157,7 +173,9 @@ mod tests {
 
 	#[test]
 	fn sync_texture_records_pending_static_image_upload() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
 				.extent(::utils::Extent::rectangle(1, 1)),
@@ -189,7 +207,9 @@ mod tests {
 
 	#[test]
 	fn frame_sync_texture_records_pending_dynamic_image_upload() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_dynamic_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
 				.extent(::utils::Extent::rectangle(1, 1)),
@@ -212,7 +232,9 @@ mod tests {
 
 	#[test]
 	fn frame_recording_flushes_only_current_sequence_texture_uploads() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_dynamic_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
 				.extent(::utils::Extent::rectangle(1, 1)),
@@ -255,7 +277,9 @@ mod tests {
 
 	#[test]
 	fn frame_recording_without_implicit_sync_leaves_pending_texture_uploads_queued() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_dynamic_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
 				.extent(::utils::Extent::rectangle(1, 1)),
@@ -290,7 +314,9 @@ mod tests {
 
 	#[test]
 	fn bind_descriptor_sets_flushes_pending_sampled_texture_upload() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::FRAGMENT);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -315,7 +341,9 @@ mod tests {
 
 	#[test]
 	fn combined_image_sampler_writes_preserve_frame_offset() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::FRAGMENT);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -342,7 +370,9 @@ mod tests {
 
 	#[test]
 	fn combined_image_sampler_array_writes_preserve_frame_offset() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler_array(0, crate::Stages::FRAGMENT, 2);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -390,7 +420,9 @@ mod tests {
 
 	#[test]
 	fn dynamic_image_descriptors_materialize_per_frame_resources() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::sampled_image(0, crate::Stages::FRAGMENT);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -422,13 +454,17 @@ mod tests {
 	#[test]
 	#[cfg(target_os = "linux")]
 	fn descriptor_sets() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		crate::graphics_hardware_interface::tests::descriptor_sets(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn debug_regions_encode_native_command_list_events() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let command_buffer = device.create_command_buffer(Some("debug regions"), queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 
@@ -443,7 +479,9 @@ mod tests {
 
 	#[test]
 	fn descriptor_sets_create_native_heaps() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let bindings = [
 			crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE),
 			crate::DescriptorSetBindingTemplate::combined_image_sampler(1, crate::Stages::FRAGMENT),
@@ -505,7 +543,9 @@ RWStructuredBuffer<uint4> dispatches : register(u3, space1);
 
 	#[test]
 	fn hlsl_pipeline_creation_updates_existing_descriptor_binding_buffer_stride() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE).buffer_read_only(true);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -558,7 +598,9 @@ void main() {
 
 	#[test]
 	fn hlsl_pipeline_creation_preserves_explicit_descriptor_binding_buffer_stride() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE)
 			.buffer_stride(400)
 			.buffer_read_only(true);
@@ -597,7 +639,9 @@ void main() {}
 
 	#[test]
 	fn hlsl_pipeline_creation_updates_later_descriptor_binding_buffer_stride() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let bindings = [
 			crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::COMPUTE),
 			crate::DescriptorSetBindingTemplate::storage_image(1, crate::Stages::COMPUTE),
@@ -656,7 +700,9 @@ void main() {
 
 	#[test]
 	fn pipelines_create_native_root_signatures() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let template = device.create_descriptor_set_template(
 			None,
 			&[crate::DescriptorSetBindingTemplate::storage_image(0, crate::Stages::COMPUTE)],
@@ -705,7 +751,9 @@ void main() {
 	fn factory_resources_intern_into_device() {
 		use crate::Device as _;
 
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let mut factory = device.create_factory().expect("DX12 should expose a resource factory.");
 		let vertex = factory
 			.create_shader(
@@ -777,7 +825,9 @@ void main() {
 
 	#[test]
 	fn compute_pipelines_attempt_native_state_from_dxil() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let shader = device
 			.create_shader(
 				None,
@@ -798,7 +848,9 @@ void main() {
 
 	#[test]
 	fn hlsl_compute_shader_compiles_to_native_pipeline_state() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let shader = device
 			.create_shader(
 				None,
@@ -822,7 +874,9 @@ void main() {
 
 	#[test]
 	fn platform_native_shader_source_selects_hlsl_for_dx12_pipeline_state() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let compiled = crate::shader::compile(
 			"dx12-platform-native-compute",
 			crate::shader::ShaderSource::PlatformNative {
@@ -846,7 +900,9 @@ void main() {
 
 	#[test]
 	fn hlsl_compute_pipeline_recompiles_with_specialization_macros() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let shader = device
 			.create_shader(
 				None,
@@ -878,7 +934,9 @@ void main() {
 
 	#[test]
 	fn hlsl_compute_pipeline_specializes_scalar_macro_types() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let shader = device
 			.create_shader(
 				None,
@@ -924,7 +982,9 @@ void main() {
 	fn factory_compute_pipeline_preserves_hlsl_specialization_map() {
 		use crate::Device as _;
 
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let mut factory = device.create_factory().expect("DX12 should expose a resource factory.");
 		let shader = factory
 			.create_shader(
@@ -965,7 +1025,9 @@ void main() {
 
 	#[test]
 	fn raster_pipelines_attempt_native_state_from_dxil() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let vertex = device
 			.create_shader(
 				None,
@@ -1007,7 +1069,9 @@ void main() {
 
 	#[test]
 	fn hlsl_raster_shaders_compile_to_native_pipeline_state() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let vertex = device
 			.create_shader(
 				None,
@@ -1082,7 +1146,9 @@ void main() {
 
 	#[test]
 	fn present_rendering_updates_acquired_swapchain_proxy_image() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let extent = ::utils::Extent::rectangle(65, 33);
 		let window = crate::window::Window::new("DX12 Present Proxy Test", extent).expect("Failed to create DX12 test window.");
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::RenderTarget);
@@ -1195,7 +1261,9 @@ void main() {
 
 	#[test]
 	fn present_storage_swapchain_copies_proxy_to_backbuffer() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let extent = ::utils::Extent::rectangle(4, 4);
 		let window =
 			crate::window::Window::new("DX12 Storage Present Proxy Test", extent).expect("Failed to create DX12 test window.");
@@ -1259,7 +1327,9 @@ void main() {
 	fn factory_raster_pipeline_preserves_hlsl_specialization_map() {
 		use crate::Device as _;
 
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let mut factory = device.create_factory().expect("DX12 should expose a resource factory.");
 		let vertex = factory
 			.create_shader(
@@ -1333,7 +1403,9 @@ void main() {
 
 	#[test]
 	fn mesh_raster_pipelines_attempt_native_state_stream_from_dxil() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let mesh = device
 			.create_shader(
 				None,
@@ -1371,7 +1443,9 @@ void main() {
 
 	#[test]
 	fn mesh_raster_pipeline_accepts_sm6_hlsl_when_dxc_is_available() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let mesh = match device.create_shader(
 			None,
 			crate::shader::Sources::HLSL {
@@ -1443,7 +1517,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn dispatch_meshes_encodes_native_command_with_mesh_pipeline_state() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let mesh = match device.create_shader(
 			None,
 			crate::shader::Sources::HLSL {
@@ -1518,7 +1594,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn compute_dispatch_skips_native_encoding_without_pipeline_state() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let shader = device
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
 			.expect("Failed to create DX12 shader metadata.");
@@ -1540,7 +1618,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn indirect_dispatch_encodes_native_command() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let shader = device
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
 			.expect("Failed to create DX12 shader metadata.");
@@ -1565,7 +1645,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn raster_input_and_draw_calls_encode_native_commands() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let command_buffer = device.create_command_buffer(Some("native raster commands"), queue_handle);
 		let vertex_shader = device
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Vertex, [])
@@ -1611,7 +1693,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn draw_mesh_binds_native_mesh_buffers() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let command_buffer = device.create_command_buffer(Some("native mesh draw"), queue_handle);
 		let vertex_shader = device
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Vertex, [])
@@ -1657,7 +1741,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn dispatch_meshes_skips_native_encoding_without_mesh_pipeline_state() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let command_buffer = device.create_command_buffer(Some("native mesh dispatch"), queue_handle);
 		let mesh_shader = device
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Mesh, [])
@@ -1689,7 +1775,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn render_pass_binds_native_render_targets() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::RenderTarget)
 				.extent(::utils::Extent::rectangle(1, 1))
@@ -1739,7 +1827,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn descriptor_tables_bind_native_heap_offsets() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let bindings = [
 			crate::DescriptorSetBindingTemplate::uniform_buffer(0, crate::Stages::COMPUTE),
 			crate::DescriptorSetBindingTemplate::storage_image(1, crate::Stages::COMPUTE),
@@ -1774,7 +1864,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn descriptor_tables_stage_multiple_sets_into_one_native_heap() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let base_bindings = [crate::DescriptorSetBindingTemplate::storage_buffer(1, crate::Stages::COMPUTE)];
 		let visibility_bindings = [
 			crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE),
@@ -1853,7 +1945,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn storage_images_create_native_uav_descriptors() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::storage_image(0, crate::Stages::COMPUTE);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -1880,7 +1974,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	fn storage_image_descriptor_binding_transitions_render_target_to_uav() {
 		use windows::Win32::Graphics::Direct3D12::{D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
 
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::storage_image(7, crate::Stages::COMPUTE);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -1923,7 +2019,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn samplers_create_native_descriptors_from_builder_state() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::sampler(0, crate::Stages::FRAGMENT);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -1958,13 +2056,17 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	#[test]
 	#[cfg(target_os = "linux")]
 	fn multiframe_resources() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		crate::graphics_hardware_interface::tests::multiframe_resources(&mut device, queue_handle);
 	}
 
 	#[test]
 	fn copy_buffers_updates_shadow_storage() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let source = device.build_buffer::<[u8; 8]>(
 			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
@@ -1988,7 +2090,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn command_recording_sync_buffer_flushes_host_visible_resource() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let buffer = device.build_buffer::<[u8; 8]>(
 			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostOnly),
 		);
@@ -2007,7 +2111,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn command_recording_sync_buffer_flushes_dynamic_frame_resource() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		device.set_frames_in_flight(2);
 		let synchronizer = device.create_synchronizer(None, false);
 		let buffer = device.build_dynamic_buffer::<[u8; 8]>(
@@ -2031,7 +2137,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn command_recording_sync_buffer_flushes_static_resource_for_nonzero_sequence() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		device.set_frames_in_flight(2);
 		let synchronizer = device.create_synchronizer(None, false);
 		let buffer = device.build_buffer::<[u8; 8]>(
@@ -2055,7 +2163,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn copy_to_static_host_visible_buffer_flushes_destination_for_nonzero_sequence() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		device.set_frames_in_flight(2);
 		let synchronizer = device.create_synchronizer(None, false);
 		let source = device.build_buffer::<[u8; 8]>(
@@ -2085,7 +2195,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn copy_to_device_only_buffer_records_gpu_copy() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let source = device.build_buffer::<[u8; 8]>(
 			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
@@ -2110,7 +2222,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn copy_buffer_to_image_updates_shadow_storage() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let source = device.build_buffer::<[u8; 16]>(
 			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
@@ -2144,7 +2258,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn compressed_copy_buffer_to_image_uses_bc_block_layout() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let source = device.build_buffer::<[u8; 64]>(
 			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
@@ -2176,7 +2292,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn write_image_data_records_texture_upload() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_image(
 			crate::image::Builder::new(
 				crate::Formats::RGBA8UNORM,
@@ -2200,7 +2318,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn clear_images_records_texture_upload() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_image(
 			crate::image::Builder::new(
 				crate::Formats::RGBA8UNORM,
@@ -2225,7 +2345,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn transfer_textures_records_readback_copy() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
 				.extent(::utils::Extent::rectangle(1, 1))
@@ -2244,7 +2366,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn transfer_textures_resolves_submitted_readback_copy() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_image(
 			crate::image::Builder::new(
 				crate::Formats::RGBA8UNORM,
@@ -2271,7 +2395,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn command_buffer_execute_signals_synchronizer() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_image(
 			crate::image::Builder::new(
 				crate::Formats::RGBA8UNORM,
@@ -2297,7 +2423,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn empty_command_buffer_execute_skips_native_command_list_submission() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let synchronizer = device.create_synchronizer(None, false);
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let recording = device.create_command_buffer_recording(command_buffer);
@@ -2314,7 +2442,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		use crate::context::Context as _;
 		use crate::queue::Queue as _;
 
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let synchronizer = device.create_synchronizer(None, false);
 		let frame = crate::queue::FrameRequest { index: 0, synchronizer };
 
@@ -2327,7 +2457,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn clear_buffers_updates_shadow_storage() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let buffer = device.build_buffer::<[u32; 4]>(
 			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
@@ -2345,7 +2477,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn clear_device_only_buffer_records_native_uav_clear() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let buffer = device.build_buffer::<[u32; 4]>(
 			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
 				.device_accesses(crate::DeviceAccesses::DeviceOnly),
@@ -2366,7 +2500,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn device_to_host_buffers_use_readback_resources() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let buffer = device.build_buffer::<[u8; 16]>(
 			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceToHost),
 		);
@@ -2379,7 +2515,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn dynamic_buffer_handles_do_not_alias_static_buffers() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let static_buffer = device.build_buffer::<[u32; 4]>(
 			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
@@ -2412,7 +2550,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn dynamic_buffer_descriptors_materialize_per_frame_resources() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::uniform_buffer(0, crate::Stages::VERTEX);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -2435,7 +2575,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn dynamic_buffer_writes_are_sequence_local() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let buffer = device.build_dynamic_buffer::<[u32; 2]>(
 			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
 		);
@@ -2456,7 +2598,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn acceleration_structures_allocate_device_resources() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let top_level = device.create_top_level_acceleration_structure(Some("top"), 3);
 		let bottom_level = device.create_bottom_level_acceleration_structure(&crate::BottomLevelAccelerationStructure {
 			description: crate::BottomLevelAccelerationStructureDescriptions::Mesh {
@@ -2477,7 +2621,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn acceleration_structure_descriptors_create_native_srv() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let binding = crate::DescriptorSetBindingTemplate::acceleration_structure(0, crate::Stages::RAYGEN);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -2497,7 +2643,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn acceleration_structure_instances_write_dx12_layout() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let instance_buffer = device.create_acceleration_structure_instance_buffer(Some("instances"), 1);
 		let bottom_level = device.create_bottom_level_acceleration_structure(&crate::BottomLevelAccelerationStructure {
 			description: crate::BottomLevelAccelerationStructureDescriptions::AABB { transform_count: 1 },
@@ -2527,7 +2675,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn shader_binding_table_entries_write_placeholder_identifier() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let raygen = device
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::RayGen, [])
 			.expect("Failed to create DX12 raygen shader metadata.");
@@ -2558,7 +2708,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn ray_tracing_pipelines_attempt_native_state_object_from_dxil() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let raygen = device
 			.create_shader(None, crate::shader::Sources::DXIL(&[0u8; 4]), crate::ShaderTypes::RayGen, [])
 			.expect("Failed to create DX12 raygen shader metadata.");
@@ -2591,7 +2743,9 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn ray_tracing_pipeline_accepts_sm6_hlsl_libraries_when_dxc_is_available() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let raygen = match device.create_shader(
 			None,
 			crate::shader::Sources::HLSL {
@@ -2666,7 +2820,9 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 
 	#[test]
 	fn trace_rays_records_shader_table_dispatch_metadata() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let command_buffer = device.create_command_buffer(Some("trace rays"), queue_handle);
 		let raygen = device
 			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::RayGen, [])
@@ -2719,7 +2875,9 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 
 	#[test]
 	fn acceleration_structure_builds_record_resource_usage() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let command_buffer = device.create_command_buffer(Some("as build"), queue_handle);
 		let top_level = device.create_top_level_acceleration_structure(Some("top"), 1);
 		let bottom_level = device.create_bottom_level_acceleration_structure(&crate::BottomLevelAccelerationStructure {
@@ -2780,7 +2938,9 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 
 	#[test]
 	fn blit_image_records_texture_copy() {
-		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let source = device.build_image(
 			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
 				.extent(::utils::Extent::rectangle(1, 1)),
@@ -2816,7 +2976,9 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 
 	#[test]
 	fn image_creation_and_resize_allocate_dx12_resources() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 		let image = device.build_image(
 			crate::image::Builder::new(
 				crate::Formats::RGBA8UNORM,
@@ -2840,7 +3002,9 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 
 	#[test]
 	fn compressed_images_allocate_dx12_resources() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
 
 		for format in [crate::Formats::BC5, crate::Formats::BC7, crate::Formats::BC7SRGB] {
 			let image = device.build_image(

@@ -5,6 +5,8 @@
 #![allow(private_interfaces)]
 #![feature(generic_const_exprs)]
 
+#![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to, extend_one, str_as_str))]
+
 pub mod window;
 
 pub mod frame_resources;

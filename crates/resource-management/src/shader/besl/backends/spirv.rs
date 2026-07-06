@@ -36,7 +36,7 @@ mod compilation {
 			&mut self,
 			shader_compilation_settings: &ShaderGenerationSettings,
 			main_function_node: &besl::NodeReference,
-		) -> Result<GeneratedShader, String> {
+		) -> Result<CompiledShader, String> {
 			let glsl_shader = self
 				.glsl_shader_generator
 				.generate(shader_compilation_settings, main_function_node)

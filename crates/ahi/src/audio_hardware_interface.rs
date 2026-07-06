@@ -49,6 +49,38 @@ impl Streams<'_> {
 	}
 }
 
+/// Playback failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioPlayError {
+	/// The backend could not recover the hardware stream after an audio device error.
+	RecoveryFailed,
+	/// The backend could not start the hardware stream after audio data was queued.
+	StartFailed,
+	/// The requested audio format is not supported by the active backend.
+	UnsupportedFormat,
+}
+
+impl std::fmt::Display for AudioPlayError {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::RecoveryFailed => write!(
+				formatter,
+				"Audio stream recovery failed. The most likely cause is that the audio device entered an unrecoverable error state."
+			),
+			Self::StartFailed => write!(
+				formatter,
+				"Audio stream start failed. The most likely cause is that the audio device rejected the configured playback stream."
+			),
+			Self::UnsupportedFormat => write!(
+				formatter,
+				"Audio playback format is unsupported. The most likely cause is that the requested channel count or bit depth is unavailable on this backend."
+			),
+		}
+	}
+}
+
+impl std::error::Error for AudioPlayError {}
+
 pub trait Mono16BitBufferPlayFunction = FnOnce(Mono16Bit);
 pub trait Stereo16BitBufferPlayFunction = FnOnce(Stereo16Bit);
 pub trait MonoFloat32BufferPlayFunction = FnOnce(MonoFloat32);
@@ -85,7 +117,7 @@ pub trait AudioHardwareInterface {
 	/// This function takes a `WritePlayFunction` typed function object as argument that writes client audio data into a hardware buffer.
 	///
 	/// Returns the number of frames played.
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()>;
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError>;
 
 	/// Notifies the hardware that playback has been paused.
 	/// This may be used to improve performance by reducing CPU usage.

@@ -183,7 +183,7 @@ fn swap_16_bit_png_samples(buffer: &mut [u8]) {
 	}
 }
 
-fn zeroed_vec_in<'a>(len: usize, allocator: &'a dyn Allocator) -> Vec<u8, &'a dyn Allocator> {
+fn zeroed_vec_in(len: usize, allocator: &dyn Allocator) -> Vec<u8, &dyn Allocator> {
 	let mut output = Vec::with_capacity_in(len, allocator);
 	output.resize(len, 0);
 	output

@@ -34,9 +34,9 @@ pub(crate) const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::De
 		.union(ghi::Stages::FRAGMENT)
 		.union(ghi::Stages::RAYGEN)
 		.union(ghi::Stages::COMPUTE),
-	)
-	.buffer_stride(400)
-	.buffer_read_only(true);
+)
+.buffer_stride(400)
+.buffer_read_only(true);
 // ShaderMesh array stride includes tail padding from the CPU matrix alignment; shader Mesh structs carry matching padding.
 pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = if cfg!(target_os = "macos") { 96 } else { 80 };
 pub(crate) const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
@@ -46,9 +46,9 @@ pub(crate) const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Des
 		.union(ghi::Stages::MESH)
 		.union(ghi::Stages::FRAGMENT)
 		.union(ghi::Stages::COMPUTE),
-	)
-	.buffer_stride(MESH_DATA_BUFFER_STRIDE)
-	.buffer_read_only(true);
+)
+.buffer_stride(MESH_DATA_BUFFER_STRIDE)
+.buffer_read_only(true);
 pub(crate) const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	2,
 	ghi::descriptors::DescriptorType::StorageBuffer,

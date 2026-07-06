@@ -15,11 +15,11 @@ pub trait Client {
 
 	/// Sends a data packet.
 	/// The actual message won't be sent until update is called.
-	fn send(&mut self, reliable: bool, data: [u8; 1024]) -> Result<(), ()>;
+	fn send(&mut self, reliable: bool, data: [u8; 1024]) -> Result<(), Errors>;
 
 	/// Initiates a voluntary disconnect from the server.
 	/// The actual message won't be sent until update is called.
-	fn disconnect(&mut self) -> Result<(), ()>;
+	fn disconnect(&mut self) -> Result<(), Errors>;
 
 	/// Reads new messages and send pending ones to the server.
 	/// This is the only method that performs I/O operations.

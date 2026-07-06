@@ -205,7 +205,7 @@ fn clipped_layout_elements<'a>(
 	clipped
 }
 
-fn apply_visual_transforms<'a>(elements: &mut [LayoutElement], tree: &RetainedTree, frame_allocator: &'a bumpalo::Bump) {
+fn apply_visual_transforms(elements: &mut [LayoutElement], tree: &RetainedTree, frame_allocator: &bumpalo::Bump) {
 	let mut resolved = Vec::with_capacity_in(tree.elements.len(), frame_allocator);
 	for _ in 0..tree.elements.len() {
 		resolved.push(None);
@@ -1492,23 +1492,16 @@ impl Runtime {
 	}
 
 	fn remove_targets(&mut self, targets: &[Id]) {
-		self.event_waiters
-			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
-		self.key_waiters
-			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
-		self.text_edit_waiters
-			.retain(|waiter| !targets.iter().any(|target| *target == waiter.target));
-		self.focus_stack
-			.retain(|focused| !targets.iter().any(|target| *target == *focused));
-		self.geometry.retain(|id, _| !targets.iter().any(|target| *target == *id));
+		self.event_waiters.retain(|waiter| !targets.contains(&waiter.target));
+		self.key_waiters.retain(|waiter| !targets.contains(&waiter.target));
+		self.text_edit_waiters.retain(|waiter| !targets.contains(&waiter.target));
+		self.focus_stack.retain(|focused| !targets.contains(focused));
+		self.geometry.retain(|id, _| !targets.contains(id));
 
 		for task in &mut self.tasks {
-			task.inbox
-				.retain(|event| !targets.iter().any(|target| *target == event.target));
-			task.key_inbox
-				.retain(|event| !targets.iter().any(|target| *target == event.target));
-			task.text_edit_inbox
-				.retain(|event| !targets.iter().any(|target| *target == event.target));
+			task.inbox.retain(|event| !targets.contains(&event.target));
+			task.key_inbox.retain(|event| !targets.contains(&event.target));
+			task.text_edit_inbox.retain(|event| !targets.contains(&event.target));
 		}
 	}
 }

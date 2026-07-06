@@ -482,6 +482,7 @@ struct ExecutableFunction {
 
 impl ExecutableProgram {
 	/// Compiles a lexed BESL program into a runnable VM program.
+	#[allow(clippy::mutable_key_type)]
 	pub fn compile(program: NodeReference) -> Result<Self, VmError> {
 		reject_raw_code_nodes(&program)?;
 
@@ -502,6 +503,7 @@ impl ExecutableProgram {
 		}
 
 		let function_nodes = collect_functions(&program, &main);
+		// NodeReference hashing is pointer-identity based, so function lookup is stable even though nodes are RefCell-backed.
 		let mut function_ids = HashMap::new();
 		for (index, function) in function_nodes.iter().enumerate() {
 			function_ids.insert(function.clone(), index);
@@ -1082,6 +1084,7 @@ struct Compiler {
 }
 
 impl Compiler {
+	#[allow(clippy::mutable_key_type)]
 	fn compile_function(
 		function: &NodeReference,
 		function_ids: &HashMap<NodeReference, usize>,

@@ -678,7 +678,7 @@ impl Generator {
 				string.push(' ');
 				string.push_str(name);
 				string.push('=');
-				string.push_str(&format!("{}({})", &type_name, members.join(",")));
+				string.push_str(&format!("{}({})", type_name, members.join(",")));
 				string.push(';');
 				if !self.minified {
 					string.push('\n');
@@ -933,11 +933,8 @@ impl Generator {
 		}
 
 		// Local size for mesh shaders. Compute local size is a function attribute in HLSL.
-		match compilation_settings.stage {
-			Stages::Mesh { .. } => {
-				// Already added above in mesh-specific section
-			}
-			_ => {}
+		if let Stages::Mesh { .. } = compilation_settings.stage {
+			// Already added above in mesh-specific section
 		}
 
 		// Matrix layout

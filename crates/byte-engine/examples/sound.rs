@@ -3,6 +3,8 @@
 //! It does not check if the sound is rendered correctly, or if the application
 //! is working correctly.
 
+#![allow(clippy::no_effect)]
+
 use byte_engine::{
 	application::{Application, Parameter},
 	audio::synthesizer::Synthesizer,

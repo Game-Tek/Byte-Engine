@@ -282,6 +282,8 @@ impl From<DisconnectPacket> for Packets {
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Debug)]
+// Keep data packets inline so packet construction and retry paths do not allocate per packet.
+#[allow(clippy::large_enum_variant)]
 /// Represents all the possible BETP packets.
 pub enum Packets {
 	ConnectionRequest(ConnectionRequestPacket),

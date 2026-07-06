@@ -62,7 +62,7 @@ fi
 success "Package manager updated."
 
 # List of dependencies to install
-DEPENDENCIES=("cmake" "libwayland-dev" "libasound2-dev" "libx11-xcb-dev" "libvulkan-dev" "vulkan-tools" "vulkan-validationlayers")
+DEPENDENCIES=("cmake" "libwayland-dev" "libasound2-dev" "libx11-xcb-dev" "libxkbcommon-dev" "libvulkan-dev" "vulkan-tools" "vulkan-validationlayers")
 
 # Check and install dependencies
 for dep in "${DEPENDENCIES[@]}"; do

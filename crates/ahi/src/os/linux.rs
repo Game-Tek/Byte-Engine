@@ -1,4 +1,4 @@
-use crate::audio_hardware_interface::{HardwareParameters, Streams, WritePlayFunction};
+use crate::audio_hardware_interface::{AudioPlayError, HardwareParameters, Streams, WritePlayFunction};
 
 pub struct Device {
 	pcm: alsa::pcm::PCM,
@@ -63,7 +63,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		hwp.get_period_size().ok().unwrap() as usize
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {
 		let pcm = &self.pcm;
 
 		let available_frames = match pcm.avail_update() {
@@ -73,7 +73,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 				return if pcm.try_recover(error, true).is_ok() {
 					Ok(0)
 				} else {
-					Err(())
+					Err(AudioPlayError::RecoveryFailed)
 				};
 			}
 		};
@@ -88,7 +88,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 
 		match self.parameters.bit_depth {
 			16 => {
-				let io = pcm.io_i16().or(Err(()))?;
+				let io = pcm.io_i16().map_err(|_| AudioPlayError::UnsupportedFormat)?;
 
 				let frames = match access {
 					alsa::pcm::Access::MMapInterleaved => {
@@ -119,22 +119,22 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 								return if pcm.try_recover(error, true).is_ok() {
 									Ok(0)
 								} else {
-									Err(())
+									Err(AudioPlayError::RecoveryFailed)
 								};
 							}
 						}
 					}
-					_ => return Err(()),
+					_ => return Err(AudioPlayError::UnsupportedFormat),
 				};
 
 				if frames > 0 && pcm.state() == alsa::pcm::State::Prepared {
-					pcm.start().or(Err(()))?;
+					pcm.start().map_err(|_| AudioPlayError::StartFailed)?;
 				}
 
 				Ok(frames)
 			}
 			32 => {
-				let io = pcm.io_f32().or(Err(()))?;
+				let io = pcm.io_f32().map_err(|_| AudioPlayError::UnsupportedFormat)?;
 
 				let frames = match access {
 					alsa::pcm::Access::MMapInterleaved => {
@@ -165,21 +165,21 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 								return if pcm.try_recover(error, true).is_ok() {
 									Ok(0)
 								} else {
-									Err(())
+									Err(AudioPlayError::RecoveryFailed)
 								};
 							}
 						}
 					}
-					_ => return Err(()),
+					_ => return Err(AudioPlayError::UnsupportedFormat),
 				};
 
 				if frames > 0 && pcm.state() == alsa::pcm::State::Prepared {
-					pcm.start().or(Err(()))?;
+					pcm.start().map_err(|_| AudioPlayError::StartFailed)?;
 				}
 
 				Ok(frames)
 			}
-			_ => Err(()),
+			_ => Err(AudioPlayError::UnsupportedFormat),
 		}
 	}
 

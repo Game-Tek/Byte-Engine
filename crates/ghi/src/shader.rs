@@ -166,7 +166,7 @@ mod tests {
 		let compiled = compile(
 			"platform-native",
 			ShaderSource::PlatformNative {
-				glsl: "#version 450\nvoid main() {}",
+				glsl: "#version 450\n#pragma shader_stage(compute)\nlayout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;\nvoid main() {}",
 				msl: "kernel void main0() {}",
 				msl_entry_point: "main0",
 				hlsl: "[numthreads(1, 1, 1)] void main() {}",

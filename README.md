@@ -51,6 +51,8 @@ Platform requirements:
 | macOS | Xcode command line tools or full Xcode, plus CMake and `pkg-config` |
 | Windows | Visual Studio Build Tools with the MSVC C++ toolchain and Windows SDK |
 
+On Linux, run `bash install_dependencies.sh` from the repository root to install the same dependency set used by CI and devcontainers.
+
 Hardware expectations include a GPU suitable for the active backend, AVX2 on x64
 platforms, and at least 4 GB of RAM. See the full setup docs for details:
 

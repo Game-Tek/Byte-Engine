@@ -48,10 +48,7 @@ jobs:
       uses: rui314/setup-mold@v1
     - name: Install Linux dependencies
       if: matrix.platform == 'linux'
-      run: |
-        sudo add-apt-repository ppa:kisak/kisak-mesa
-        sudo apt-get update
-        sudo apt-get install -y libasound2-dev pkg-config libx11-dev libxcb1-dev libxrandr-dev libxi-dev libgl1-mesa-dev libudev-dev libxkbcommon-dev mesa-vulkan-drivers libvulkan1 vulkan-tools vulkan-validationlayers
+      run: bash install_dependencies.sh
     - name: Install Vulkan SDK
       if: matrix.platform == 'linux' && matrix.feature == 'headed'
       uses: humbletim/setup-vulkan-sdk@v1.2.1

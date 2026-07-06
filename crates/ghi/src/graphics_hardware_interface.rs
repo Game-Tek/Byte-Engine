@@ -898,30 +898,12 @@ impl QueueSelection {
 
 #[cfg(test)]
 pub(super) mod tests {
-	use std::borrow::Borrow as _;
 
 	#[cfg(target_os = "linux")]
 	use resource_management::shader::glsl_compile as glsl;
 
 	use super::*;
-	use crate::{
-		command_buffer::{
-			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-			BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
-			RasterizationRenderPassMode as _,
-		},
-		frame::Frame as _,
-		pipelines::{self, raster::AttachmentDescriptor, PushConstantRange, ShaderParameter, VertexElement},
-		queue::{FrameRequest, Queue as _, QueueExecution as _},
-		rt::{
-			BindingTables, BottomLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuildDescriptions,
-			TopLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuildDescriptions,
-		},
-		shader::Sources,
-		window::Window,
-		BufferDescriptor, BufferStridedRange, ChannelBitSize, ChannelLayout, DeviceAccesses, FilteringModes,
-		SamplerAddressingModes, SamplingReductionModes, ShaderTypes, Size as _, UseCases, Uses,
-	};
+	use crate::{ChannelBitSize, ChannelLayout, Size as _};
 
 	#[test]
 	fn test_formats_encoding() {

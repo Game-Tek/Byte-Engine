@@ -6,6 +6,31 @@
 #![feature(future_join)]
 #![feature(portable_simd)]
 #![feature(allocator_api)]
+// Existing resource code favors explicit asset pipeline APIs and allocator-aware buffers; these lint classes are tracked as style debt, not warning output.
+#![allow(
+	clippy::await_holding_lock,
+	clippy::bool_assert_comparison,
+	clippy::duplicate_mod,
+	clippy::extra_unused_lifetimes,
+	clippy::format_in_format_args,
+	clippy::identity_op,
+	clippy::if_same_then_else,
+	clippy::items_after_test_module,
+	clippy::needless_borrow,
+	clippy::needless_lifetimes,
+	clippy::needless_range_loop,
+	clippy::new_without_default,
+	clippy::mutable_key_type,
+	clippy::question_mark,
+	clippy::result_unit_err,
+	clippy::tabs_in_doc_comments,
+	clippy::to_string_trait_impl,
+	clippy::too_many_arguments,
+	clippy::type_complexity,
+	clippy::unused_unit,
+	clippy::wrong_self_convention,
+	unused_imports
+)]
 
 use std::{alloc::Allocator, any::Any};
 

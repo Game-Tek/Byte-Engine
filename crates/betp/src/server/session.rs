@@ -3,6 +3,7 @@ use crate::{
 	packet_buffer::PacketBuffer,
 	packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets},
 	remote::Remote,
+	server::PacketHandlingResults,
 };
 
 /// The Session holds the state for a connection to this server..
@@ -18,13 +19,13 @@ impl Session {
 	/// Creates a client<->server session that manages the connection state.
 	/// The session is initiated is the `Initial` state.
 	/// Must call `connect` to establish a connection.
-	pub fn new() -> Result<Self, ()> {
-		Ok(Self {
+	pub fn new() -> Self {
+		Self {
 			local: Local::new(),
 			remote: Remote::new(),
 			state: State::Initial,
 			timeout: std::time::Duration::from_secs(5),
-		})
+		}
 	}
 
 	pub fn connect(&mut self, salt: u64) {
@@ -33,7 +34,11 @@ impl Session {
 		}
 	}
 
-	pub fn update(&mut self, packets: &[Packets], current_time: std::time::Instant) -> Result<Vec<Packets>, ()> {
+	pub fn update(
+		&mut self,
+		packets: &[Packets],
+		current_time: std::time::Instant,
+	) -> Result<Vec<Packets>, PacketHandlingResults> {
 		match &mut self.state {
 			State::Initial => Ok(Vec::new()),
 			State::InitiatingConnection { salt } => {
@@ -50,7 +55,7 @@ impl Session {
 
 							return Ok(vec![ChallengeResponsePacket::new(id).into()]);
 						} else {
-							return Err(());
+							return Err(PacketHandlingResults::UnhandleablePacket);
 						}
 					}
 				}
@@ -163,6 +168,14 @@ impl Session {
 	}
 }
 
+impl Default for Session {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+// Keep the packet buffer inline: this state is copied as protocol state, and boxing it would add an allocation to every connection.
+#[allow(clippy::large_enum_variant)]
 /// The different states a session can be in.
 /// Used to manage the connection lifecycle.
 #[derive(Debug, Clone, Copy)]
@@ -203,7 +216,7 @@ mod tests {
 
 	#[test]
 	fn test_session_start() {
-		let mut session = Session::new().expect("Failed to connect to server.");
+		let mut session = Session::new();
 
 		let res = session.update(&[], std::time::Instant::now());
 
@@ -212,7 +225,7 @@ mod tests {
 
 	#[test]
 	fn test_establish_connection() {
-		let mut session = Session::new().expect("Failed to connect to server.");
+		let mut session = Session::new();
 
 		session.connect(0);
 
@@ -231,7 +244,7 @@ mod tests {
 
 	#[test]
 	fn test_connect_with_unresponsive_server() {
-		let mut session = Session::new().expect("Failed to connect to server.");
+		let mut session = Session::new();
 
 		session.connect(0);
 

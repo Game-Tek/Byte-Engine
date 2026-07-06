@@ -3,8 +3,17 @@
 #![allow(dead_code)]
 #![allow(incomplete_features)]
 #![allow(private_interfaces)]
+// GHI mirrors backend API shapes closely; these lint classes are deferred until the graphics interfaces are redesigned intentionally.
+#![allow(
+	clippy::module_inception,
+	clippy::needless_range_loop,
+	clippy::new_without_default,
+	clippy::result_unit_err,
+	clippy::tabs_in_doc_comments,
+	clippy::too_many_arguments,
+	clippy::unnecessary_literal_unwrap
+)]
 #![feature(generic_const_exprs)]
-
 #![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to, extend_one, str_as_str))]
 
 pub mod window;

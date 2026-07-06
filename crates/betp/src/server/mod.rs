@@ -1,10 +1,10 @@
 //! The server module contains all code related to the server side of the implmentation of the BETP.
 //! The server is the authoritative entity which manages connections to clients and maintains the state of the game.
 
-pub mod server;
+pub mod interface;
 pub mod session;
 
-pub use server::Server;
+pub use interface::{ConnectionResults, PacketHandlingResults, Server, Settings};
 pub use session::Session;
 
 /// Events that can occur on the server.

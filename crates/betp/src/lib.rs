@@ -52,6 +52,38 @@ pub use server::Server;
 
 use crate::packets::{ConnectionStatus, Packet, PacketHeader, PacketType, Packets};
 
+/// Packet header parsing failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PacketReadError {
+	/// The packet header bytes could not be read from the source buffer.
+	ShortHeader,
+	/// The header protocol id does not match BETP.
+	WrongProtocol,
+	/// The packet type byte does not map to a supported BETP packet type.
+	UnknownPacketType,
+}
+
+impl std::fmt::Display for PacketReadError {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::ShortHeader => write!(
+				formatter,
+				"Packet header is incomplete. The most likely cause is that the input buffer is shorter than the BETP header."
+			),
+			Self::WrongProtocol => write!(
+				formatter,
+				"Packet protocol id is invalid. The most likely cause is that the input buffer does not contain a BETP packet."
+			),
+			Self::UnknownPacketType => write!(
+				formatter,
+				"Packet type is unknown. The most likely cause is that the input buffer contains malformed or unsupported BETP data."
+			),
+		}
+	}
+}
+
+impl std::error::Error for PacketReadError {}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// [`PacketInfo`] contains information about a packet.
 /// - `acked`: A boolean that indicates if the packet has been acknowledged.
@@ -116,22 +148,32 @@ pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 	Some(())
 }
 
-pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, ()> {
+pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, PacketReadError> {
 	let mut cursor = std::io::Cursor::new(buffer);
 
 	let mut protocol_id = [0u8; 4];
 
-	cursor.read_exact(&mut protocol_id).map_err(|_| ())?;
+	cursor
+		.read_exact(&mut protocol_id)
+		.map_err(|_| PacketReadError::ShortHeader)?;
 
 	if protocol_id != *b"BETP" {
-		return Err(());
+		return Err(PacketReadError::WrongProtocol);
 	}
 
 	let mut r#type = [0u8; 1];
 
-	cursor.read_exact(&mut r#type).map_err(|_| ())?;
+	cursor.read_exact(&mut r#type).map_err(|_| PacketReadError::ShortHeader)?;
 
-	let r#type = unsafe { std::mem::transmute::<u8, PacketType>(r#type[0]) };
+	let r#type = match r#type[0] {
+		0 => PacketType::Default,
+		1 => PacketType::ConnectionRequest,
+		2 => PacketType::Challenge,
+		3 => PacketType::ChallengeResponse,
+		4 => PacketType::Data,
+		5 => PacketType::Disconnect,
+		_ => return Err(PacketReadError::UnknownPacketType),
+	};
 
 	Ok(PacketHeader { protocol_id, r#type })
 }

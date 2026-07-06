@@ -20,12 +20,12 @@ impl Session {
 	/// Creates a client<->server session that manages the connection state.
 	/// The session is initiated is the `Initial` state.
 	/// Must call `connect` to establish a connection.
-	pub fn new() -> Result<Self, ()> {
-		Ok(Self {
+	pub fn new() -> Self {
+		Self {
 			local: Local::new(),
 			remote: Remote::new(),
 			state: State::Initial,
-		})
+		}
 	}
 
 	pub fn connect(&mut self, salt: u64) {
@@ -141,6 +141,14 @@ impl Session {
 	}
 }
 
+impl Default for Session {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+// Keep the packet buffer inline: this state is hot-path protocol storage, and boxing it would add an allocation to every connection.
+#[allow(clippy::large_enum_variant)]
 /// `State` represents the current state of the client session. It is a state machine that transitions through various stages of the connection lifecycle.
 pub enum State {
 	/// The initial state of the session before any connection attempts have been made. The client could idle in this state or attempt to initiate a connection.
@@ -176,7 +184,7 @@ mod tests {
 
 	#[test]
 	fn test_session_start() {
-		let mut session = Session::new().expect("Failed to connect to server.");
+		let mut session = Session::new();
 
 		let res = session.update(&[]);
 
@@ -185,7 +193,7 @@ mod tests {
 
 	#[test]
 	fn test_establish_connection() {
-		let mut session = Session::new().expect("Failed to connect to server.");
+		let mut session = Session::new();
 
 		session.connect(0);
 
@@ -204,7 +212,7 @@ mod tests {
 
 	#[test]
 	fn test_connect_with_unresponsive_server() {
-		let mut session = Session::new().expect("Failed to connect to server.");
+		let mut session = Session::new();
 
 		session.connect(0);
 

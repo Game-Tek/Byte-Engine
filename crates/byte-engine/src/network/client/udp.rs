@@ -16,7 +16,7 @@ impl Client {
 
 		let socket = std::net::UdpSocket::bind(server_address).map_err(|_| ())?;
 
-		let session = Session::new()?;
+		let session = Session::new();
 
 		Ok(Self { socket, session })
 	}
@@ -53,7 +53,7 @@ impl betp::Client for Client {
 		Ok(())
 	}
 
-	fn send(&mut self, reliable: bool, data: [u8; 1024]) -> Result<(), ()> {
+	fn send(&mut self, reliable: bool, data: [u8; 1024]) -> Result<(), betp::client::Errors> {
 		let sesion = &mut self.session;
 
 		sesion.send(reliable, data);
@@ -61,7 +61,7 @@ impl betp::Client for Client {
 		Ok(())
 	}
 
-	fn disconnect(&mut self) -> Result<(), ()> {
+	fn disconnect(&mut self) -> Result<(), betp::client::Errors> {
 		self.session.disconnect();
 
 		Ok(())

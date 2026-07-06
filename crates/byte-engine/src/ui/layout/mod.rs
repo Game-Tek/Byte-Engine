@@ -216,7 +216,7 @@ fn layout_elements<'a>(
 		text_system: &mut TextSystem,
 	) -> LayoutElement {
 		let available_space = if ts.is_root { ctx.root_size } else { ts.available_space };
-		let size = calculate_element_size(&element, available_space, text_system);
+		let size = calculate_element_size(element, available_space, text_system);
 
 		let position = location_from_offset(ts.offset, ts.depth);
 
@@ -283,7 +283,7 @@ fn layout_elements<'a>(
 						}
 
 						let child_available_space = if reset_layout { ctx.root_size } else { size };
-						let expected_child_size = calculate_element_size(&child, child_available_space, text_system);
+						let expected_child_size = calculate_element_size(child, child_available_space, text_system);
 						let flow_output = if let Some(position) = absolute_position(child) {
 							FlowOutput::new(position, cursor)
 						} else if reset_layout {

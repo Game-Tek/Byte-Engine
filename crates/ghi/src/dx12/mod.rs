@@ -1232,10 +1232,7 @@ void main() {
 		let mut captured_present_key = None;
 
 		device.queue(queue_handle).execute(
-			Some(crate::queue::FrameRequest {
-				index: 0,
-				synchronizer,
-			}),
+			Some(crate::queue::FrameRequest { index: 0, synchronizer }),
 			&[],
 			synchronizer,
 			|execution| {

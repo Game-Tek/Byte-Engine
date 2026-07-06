@@ -1184,13 +1184,13 @@ fn build_ui_curve_geometry<'a>(
 	geometry
 }
 
-fn flatten_curve_segment<'a>(
+fn flatten_curve_segment(
 	segment: &CurveSegment,
 	origin: [f32; 2],
 	sx: f32,
 	sy: f32,
 	tolerance: f32,
-	points: &mut Vec<CurvePoint, &'a bumpalo::Bump>,
+	points: &mut Vec<CurvePoint, &bumpalo::Bump>,
 ) {
 	match *segment {
 		CurveSegment::Line { from, to } => {
@@ -1224,13 +1224,7 @@ fn flatten_curve_segment<'a>(
 	}
 }
 
-fn push_scaled_point<'a>(
-	points: &mut Vec<CurvePoint, &'a bumpalo::Bump>,
-	point: CurvePoint,
-	origin: [f32; 2],
-	sx: f32,
-	sy: f32,
-) {
+fn push_scaled_point(points: &mut Vec<CurvePoint, &bumpalo::Bump>, point: CurvePoint, origin: [f32; 2], sx: f32, sy: f32) {
 	let point = scaled_curve_point(point, origin, sx, sy);
 	if point.is_finite() {
 		points.push(point);
@@ -1241,13 +1235,13 @@ fn scaled_curve_point(point: CurvePoint, origin: [f32; 2], sx: f32, sy: f32) -> 
 	CurvePoint::new((origin[0] + point.x) * sx, (origin[1] + point.y) * sy)
 }
 
-fn flatten_quadratic<'a>(
+fn flatten_quadratic(
 	from: CurvePoint,
 	control: CurvePoint,
 	to: CurvePoint,
 	tolerance: f32,
 	depth: u32,
-	points: &mut Vec<CurvePoint, &'a bumpalo::Bump>,
+	points: &mut Vec<CurvePoint, &bumpalo::Bump>,
 ) {
 	if depth >= 12 || point_line_distance(control, from, to) <= tolerance {
 		points.push(to);
@@ -1261,14 +1255,14 @@ fn flatten_quadratic<'a>(
 	flatten_quadratic(mid, control_to, to, tolerance, depth + 1, points);
 }
 
-fn flatten_cubic<'a>(
+fn flatten_cubic(
 	from: CurvePoint,
 	control0: CurvePoint,
 	control1: CurvePoint,
 	to: CurvePoint,
 	tolerance: f32,
 	depth: u32,
-	points: &mut Vec<CurvePoint, &'a bumpalo::Bump>,
+	points: &mut Vec<CurvePoint, &bumpalo::Bump>,
 ) {
 	if depth >= 12 || point_line_distance(control0, from, to).max(point_line_distance(control1, from, to)) <= tolerance {
 		points.push(to);

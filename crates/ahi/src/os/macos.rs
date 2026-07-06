@@ -17,7 +17,7 @@ use objc2_core_audio_types::{
 	AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp,
 };
 
-use crate::audio_hardware_interface::{HardwareParameters, Streams, WritePlayFunction};
+use crate::audio_hardware_interface::{AudioPlayError, HardwareParameters, Streams, WritePlayFunction};
 
 const DEFAULT_PERIOD_SIZE: usize = 1024;
 const RING_PERIOD_COUNT: usize = 4;
@@ -192,7 +192,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		self.callback_state.ring.wait_for_available_write(required_bytes);
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {
 		let max_bytes = self.period_size * self.bytes_per_frame;
 		let bytes_per_frame = self.bytes_per_frame;
 		let params = self.parameters;
@@ -244,7 +244,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 			let start_status = unsafe { AudioOutputUnitStart(self.audio_unit) };
 			if start_status != 0 {
 				self.started.store(false, Ordering::Release);
-				return Err(());
+				return Err(AudioPlayError::StartFailed);
 			}
 		}
 

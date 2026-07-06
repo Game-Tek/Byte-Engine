@@ -14,7 +14,7 @@ use windows::Win32::{
 	System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED},
 };
 
-use crate::audio_hardware_interface::{HardwareParameters, Streams, WritePlayFunction};
+use crate::audio_hardware_interface::{AudioPlayError, HardwareParameters, Streams, WritePlayFunction};
 
 pub struct Device {
 	device: IMMDevice,
@@ -166,7 +166,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		period_size as usize
 	}
 
-	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, ()> {
+	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {
 		let buffer_size = unsafe { self.client.GetBufferSize().unwrap() };
 		let padding = unsafe { self.client.GetCurrentPadding().unwrap() };
 

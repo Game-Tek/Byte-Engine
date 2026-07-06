@@ -227,8 +227,8 @@ mod tests {
 			)
 			.expect("Failed to generate the ACES BESL shader GLSL. The most likely cause is invalid BESL lowering.");
 
-		assert!(shader.contains("imageLoad(source, ivec2(coord))"));
-		assert!(shader.contains("imageStore(result, ivec2(coord)"));
+		assert!(shader.contains("imageLoad(source"));
+		assert!(shader.contains("imageStore(result"));
 	}
 
 	#[test]

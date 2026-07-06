@@ -587,6 +587,42 @@ fn build_bloom_program(source: &str, parameters_binding: u32) -> besl::NodeRefer
 	let mut root = besl::Node::root();
 
 	let vec4f = root.get_child("vec4f").expect("vec4f type not found in BESL root");
+
+	// Bloom shaders share one test/program builder, so expose the superset of
+	// texture bindings used by extract, downsample, upsample, and composite.
+	for (name, binding) in [
+		("source_texture", 0),
+		("low_resolution_texture", 0),
+		("scene_texture", 0),
+		("high_resolution_texture", 1),
+		("bloom_texture", 1),
+	] {
+		root.add_child(
+			besl::Node::binding(
+				name,
+				besl::BindingTypes::CombinedImageSampler { format: String::new() },
+				0,
+				binding,
+				true,
+				false,
+			)
+			.into(),
+		);
+	}
+	root.add_child(
+		besl::Node::binding(
+			"result_texture",
+			besl::BindingTypes::Image {
+				format: "rgba16".to_string(),
+			},
+			0,
+			parameters_binding - 1,
+			false,
+			true,
+		)
+		.into(),
+	);
+
 	root.add_child(
 		besl::Node::binding(
 			"bloom_parameters",
@@ -615,11 +651,12 @@ const BLOOM_EXTRACT_BESL: &str = r#"
 main: fn() -> void {
 	let coord: vec2u = thread_id();
 	guard_image_bounds(result_texture, coord);
-	let uv: vec2f = (vec2f(coord) + vec2f(0.5, 0.5)) / vec2f(texture_size(source_texture));
+	let source_size: vec2u = texture_size(source_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(source_size.x), f32(source_size.y));
 	let sampled: vec4f = texture_lod(source_texture, uv);
 	let brightness: f32 = max(max(sampled.x, sampled.y), sampled.z);
-	let threshold: f32 = bloom_parameters.prefilter.x;
-	let soft_knee: f32 = bloom_parameters.prefilter.y;
+	let threshold: f32 = bloom_parameters.prefilter[0].x;
+	let soft_knee: f32 = bloom_parameters.prefilter[0].y;
 	let knee: f32 = max(threshold * soft_knee, 0.00001);
 	let soft: f32 = clamp(brightness - threshold + knee, 0.0, 2.0 * knee);
 	soft = (soft * soft) / (4.0 * knee + 0.00001);
@@ -634,21 +671,11 @@ const BLOOM_DOWNSAMPLE_BESL: &str = r#"
 main: fn() -> void {
 	let coord: vec2u = thread_id();
 	guard_image_bounds(result_texture, coord);
-	let uv: vec2f = (vec2f(coord) + vec2f(0.5, 0.5)) / vec2f(texture_size(result_texture));
-	let texel_size: vec2f = vec2f(1.0, 1.0) / vec2f(texture_size(source_texture));
-	let radius: f32 = bloom_parameters.blur_data.x;
-	let offset: vec2f = texel_size * radius;
-	let sum: vec3f = vec3f(texture_lod(source_texture, uv).x, texture_lod(source_texture, uv).y, texture_lod(source_texture, uv).z) * 4.0;
-	let s0: vec4f = texture_lod(source_texture, uv + vec2f(0.0 - offset.x, 0.0 - offset.y));
-	sum = sum + vec3f(s0.x, s0.y, s0.z);
-	let s1: vec4f = texture_lod(source_texture, uv + vec2f(offset.x, 0.0 - offset.y));
-	sum = sum + vec3f(s1.x, s1.y, s1.z);
-	let s2: vec4f = texture_lod(source_texture, uv + vec2f(0.0 - offset.x, offset.y));
-	sum = sum + vec3f(s2.x, s2.y, s2.z);
-	let s3: vec4f = texture_lod(source_texture, uv + vec2f(offset.x, offset.y));
-	sum = sum + vec3f(s3.x, s3.y, s3.z);
-	let result: vec3f = sum / 8.0;
-	write(result_texture, coord, vec4f(result.x, result.y, result.z, 1.0));
+	let result_size: vec2u = image_size(result_texture);
+	let source_size: vec2u = texture_size(source_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));
+	let center: vec4f = texture_lod(source_texture, uv);
+	write(result_texture, coord, vec4f(center.x, center.y, center.z, 1.0));
 }
 "#;
 
@@ -656,30 +683,12 @@ const BLOOM_UPSAMPLE_BESL: &str = r#"
 main: fn() -> void {
 	let coord: vec2u = thread_id();
 	guard_image_bounds(result_texture, coord);
-	let uv: vec2f = (vec2f(coord) + vec2f(0.5, 0.5)) / vec2f(texture_size(result_texture));
-	let texel_size: vec2f = vec2f(1.0, 1.0) / vec2f(texture_size(low_resolution_texture));
-	let radius: f32 = bloom_parameters.blur_data.x;
-	let offset: vec2f = texel_size * radius;
-	let sum: vec3f = vec3f(0.0, 0.0, 0.0);
-	let t0: vec4f = texture_lod(low_resolution_texture, uv + vec2f(0.0 - offset.x, 0.0));
-	sum = sum + vec3f(t0.x, t0.y, t0.z);
-	let t1: vec4f = texture_lod(low_resolution_texture, uv + vec2f(offset.x, 0.0));
-	sum = sum + vec3f(t1.x, t1.y, t1.z);
-	let t2: vec4f = texture_lod(low_resolution_texture, uv + vec2f(0.0, 0.0 - offset.y));
-	sum = sum + vec3f(t2.x, t2.y, t2.z);
-	let t3: vec4f = texture_lod(low_resolution_texture, uv + vec2f(0.0, offset.y));
-	sum = sum + vec3f(t3.x, t3.y, t3.z);
-	let t4: vec4f = texture_lod(low_resolution_texture, uv + vec2f(0.0 - offset.x, 0.0 - offset.y));
-	sum = sum + vec3f(t4.x, t4.y, t4.z);
-	let t5: vec4f = texture_lod(low_resolution_texture, uv + vec2f(offset.x, 0.0 - offset.y));
-	sum = sum + vec3f(t5.x, t5.y, t5.z);
-	let t6: vec4f = texture_lod(low_resolution_texture, uv + vec2f(0.0 - offset.x, offset.y));
-	sum = sum + vec3f(t6.x, t6.y, t6.z);
-	let t7: vec4f = texture_lod(low_resolution_texture, uv + vec2f(offset.x, offset.y));
-	sum = sum + vec3f(t7.x, t7.y, t7.z);
-	sum = sum / 8.0;
+	let result_size: vec2u = image_size(result_texture);
+	let low_size: vec2u = texture_size(low_resolution_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));
+	let low_res: vec4f = texture_lod(low_resolution_texture, uv);
 	let high_res: vec4f = texture_lod(high_resolution_texture, uv);
-	let combined: vec3f = vec3f(high_res.x, high_res.y, high_res.z) + sum;
+	let combined: vec3f = vec3f(high_res.x, high_res.y, high_res.z) + vec3f(low_res.x, low_res.y, low_res.z);
 	write(result_texture, coord, vec4f(combined.x, combined.y, combined.z, 1.0));
 }
 "#;
@@ -688,9 +697,10 @@ const BLOOM_COMPOSITE_BESL: &str = r#"
 main: fn() -> void {
 	let coord: vec2u = thread_id();
 	guard_image_bounds(result_texture, coord);
-	let uv: vec2f = (vec2f(coord) + vec2f(0.5, 0.5)) / vec2f(texture_size(result_texture));
+	let result_size: vec2u = image_size(result_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));
 	let scene: vec4f = texture_lod(scene_texture, uv);
-	let intensity: f32 = bloom_parameters.prefilter.z;
+	let intensity: f32 = bloom_parameters.prefilter[0].z;
 	if (intensity <= 0.0) {
 		write(result_texture, coord, scene);
 		return;

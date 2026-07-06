@@ -257,7 +257,7 @@ impl Device {
 		}
 	}
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	pub fn has_errors(&self) -> bool {
 		self.drain_debug_messages();
 		self.debug_log_count.load(Ordering::Relaxed) > 0
@@ -8604,7 +8604,7 @@ impl crate::device::Device for Device {
 	type Image = crate::dx12::factory::FactoryImage;
 	type Sampler = crate::dx12::factory::FactorySampler;
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		Device::has_errors(self)
 	}
@@ -8749,7 +8749,7 @@ impl crate::context::Context for Device {
 	type QueueReference<'a> = super::queue::QueueReference<'a>;
 	type CommandBuffer<'a> = CommandBufferReference<'a>;
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		Device::has_errors(self)
 	}

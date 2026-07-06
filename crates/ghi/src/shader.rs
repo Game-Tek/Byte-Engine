@@ -98,8 +98,10 @@ pub fn compile(name: &str, source: ShaderSource) -> Result<CompiledShaderSource,
 					source: msl.to_string(),
 					entry_point: msl_entry_point.to_string(),
 				})
-			} else {
+			} else if crate::implementation::USES_VULKAN {
 				compile_glsl(name, glsl)
+			} else {
+				Err("Platform shader source does not include a native backend for this OS. The most likely cause is using GLSL/MSL-only source on DX12.".to_string())
 			}
 		}
 		ShaderSource::PlatformNative {
@@ -119,8 +121,10 @@ pub fn compile(name: &str, source: ShaderSource) -> Result<CompiledShaderSource,
 					source: msl.to_string(),
 					entry_point: msl_entry_point.to_string(),
 				})
-			} else {
+			} else if crate::implementation::USES_VULKAN {
 				compile_glsl(name, glsl)
+			} else {
+				Err("Platform-native shader source does not include a supported backend for this OS. The most likely cause is compiling on an unsupported operating system.".to_string())
 			}
 		}
 	}

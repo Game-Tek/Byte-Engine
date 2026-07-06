@@ -26,7 +26,8 @@ const SKY_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetB
 const SKY_MAIN_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 const SKY_PARAMETERS_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
+		.buffer_read_only(true);
 
 /// The `AtmosphereSkyRenderPassSettings` struct configures the physical atmosphere and sun parameters for the sky pass.
 #[derive(Clone, Copy, Debug)]

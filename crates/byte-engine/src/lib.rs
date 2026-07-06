@@ -15,7 +15,7 @@
 //! default_setup(&mut application);
 //! ```
 
-#![feature(const_trait_impl, coerce_unsized, unsize, iterator_try_collect, iter_collect_into)]
+#![feature(const_trait_impl, coerce_unsized, unsize, iter_collect_into)]
 #![cfg_attr(feature = "headed", feature(allocator_api, future_join, slice_pattern, trait_alias))]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(dead_code)]
@@ -37,9 +37,14 @@ extern crate besl;
 #[cfg(feature = "headed")]
 extern crate ghi;
 extern crate resource_management;
-extern crate utils;
+extern crate utils as engine_utils;
 
 pub use math;
+
+/// The `utils` module provides engine utility types through the main `byte_engine` crate API.
+pub mod utils {
+	pub use crate::engine_utils::*;
+}
 
 pub mod application;
 #[cfg(feature = "headed")]

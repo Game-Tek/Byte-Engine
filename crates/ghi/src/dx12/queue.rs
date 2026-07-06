@@ -97,6 +97,7 @@ impl crate::queue::Queue for Queue {
 		for &wait_synchronizer in _wait_for {
 			device.wait_for_synchronizer(wait_synchronizer);
 		}
+		let frame_sequence_index = frame.as_ref().map(|frame| (frame.index % device.frames as u32) as u8);
 		let frame = frame.map(|frame| {
 			let frames = device.frames;
 			crate::queue::StartedFrame::new(
@@ -109,18 +110,30 @@ impl crate::queue::Queue for Queue {
 		let mut execution = Execution {
 			frame,
 			completed_frame,
-			command_buffers: Vec::new(),
+			command_buffers: smallvec::SmallVec::new(),
 		};
 		let present_keys = execute(&mut execution);
-		let present_keys: Vec<PresentKey> = present_keys.as_ref().to_vec();
+		let should_complete_empty_frame = execution.frame.is_some() && execution.command_buffers.is_empty();
 		let command_buffers = std::mem::take(&mut execution.command_buffers);
 		drop(execution);
+		if command_buffers.is_empty() {
+			if should_complete_empty_frame {
+				if let Some(sequence_index) = frame_sequence_index {
+					unsafe {
+						device_pointer
+							.as_mut()
+							.complete_synchronizer_for_sequence_from_cpu(_synchronizer, sequence_index);
+					}
+				}
+			}
+			return;
+		}
 		for command_buffer in command_buffers {
 			unsafe {
 				device_pointer.as_mut().submit_command_buffer(command_buffer, _synchronizer);
 			}
 		}
-		for present_key in &present_keys {
+		for present_key in present_keys.as_ref() {
 			unsafe {
 				device_pointer.as_mut().present_swapchain(*present_key);
 			}
@@ -162,6 +175,7 @@ impl crate::queue::Queue for QueueReference<'_> {
 			self.device.wait_for_synchronizer(wait_synchronizer);
 		}
 		let frames = self.device.frames;
+		let frame_sequence_index = frame.as_ref().map(|frame| (frame.index % frames as u32) as u8);
 		let frame = frame.map(|frame| {
 			crate::queue::StartedFrame::new(
 				self.device.start_frame(frame.index, frame.synchronizer),
@@ -173,18 +187,30 @@ impl crate::queue::Queue for QueueReference<'_> {
 		let mut execution = Execution {
 			frame,
 			completed_frame,
-			command_buffers: Vec::new(),
+			command_buffers: smallvec::SmallVec::new(),
 		};
 		let present_keys = execute(&mut execution);
-		let present_keys: Vec<PresentKey> = present_keys.as_ref().to_vec();
+		let should_complete_empty_frame = execution.frame.is_some() && execution.command_buffers.is_empty();
 		let command_buffers = std::mem::take(&mut execution.command_buffers);
 		drop(execution);
+		if command_buffers.is_empty() {
+			if should_complete_empty_frame {
+				if let Some(sequence_index) = frame_sequence_index {
+					unsafe {
+						device_pointer
+							.as_mut()
+							.complete_synchronizer_for_sequence_from_cpu(_synchronizer, sequence_index);
+					}
+				}
+			}
+			return;
+		}
 		for command_buffer in command_buffers {
 			unsafe {
 				device_pointer.as_mut().submit_command_buffer(command_buffer, _synchronizer);
 			}
 		}
-		for present_key in &present_keys {
+		for present_key in present_keys.as_ref() {
 			unsafe {
 				device_pointer.as_mut().present_swapchain(*present_key);
 			}

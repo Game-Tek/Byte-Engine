@@ -12,7 +12,9 @@ pub mod shader_generator;
 
 pub use pipeline_manager::VisibilityPipelineManager;
 use resource_management::shader::{
-	besl::backends::{glsl::GLSLShaderGenerator, msl::MSLShaderGenerator, platform::PlatformShaderLanguage},
+	besl::backends::{
+		glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator, platform::PlatformShaderLanguage,
+	},
 	generator::ShaderGenerationSettings,
 };
 use utils::Extent;
@@ -32,7 +34,11 @@ pub(crate) const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::De
 		.union(ghi::Stages::FRAGMENT)
 		.union(ghi::Stages::RAYGEN)
 		.union(ghi::Stages::COMPUTE),
-);
+	)
+	.buffer_stride(400)
+	.buffer_read_only(true);
+// ShaderMesh array stride includes tail padding from the CPU matrix alignment; shader Mesh structs carry matching padding.
+pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = if cfg!(target_os = "macos") { 96 } else { 80 };
 pub(crate) const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	1,
 	ghi::descriptors::DescriptorType::StorageBuffer,
@@ -40,37 +46,49 @@ pub(crate) const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::Des
 		.union(ghi::Stages::MESH)
 		.union(ghi::Stages::FRAGMENT)
 		.union(ghi::Stages::COMPUTE),
-);
+	)
+	.buffer_stride(MESH_DATA_BUFFER_STRIDE)
+	.buffer_read_only(true);
 pub(crate) const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	2,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_stride(12)
+.buffer_read_only(true);
 pub(crate) const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	3,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_stride(12)
+.buffer_read_only(true);
 pub(crate) const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	5,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_stride(8)
+.buffer_read_only(true);
 pub(crate) const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	6,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_read_only(true);
 pub(crate) const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	7,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_read_only(true);
 pub(crate) const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	8,
 	ghi::descriptors::DescriptorType::StorageBuffer,
 	ghi::Stages::TASK.union(ghi::Stages::MESH).union(ghi::Stages::COMPUTE),
-);
+)
+.buffer_stride(64)
+.buffer_read_only(true);
 pub(crate) const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
 	9,
 	ghi::descriptors::DescriptorType::CombinedImageSampler,
@@ -86,9 +104,11 @@ pub(crate) const MATERIAL_OFFSET_BINDING: ghi::DescriptorSetBindingTemplate =
 pub(crate) const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 pub(crate) const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
+		.buffer_stride(16);
 pub(crate) const MATERIAL_XY_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
+	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
+		.buffer_stride(8);
 pub(crate) const TRIANGLE_INDEX_BINDING: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(6, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 pub(crate) const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate =
@@ -169,6 +189,7 @@ fn generate_shader_source_for_language(
 ) -> Result<String, ()> {
 	match language {
 		PlatformShaderLanguage::Glsl => GLSLShaderGenerator::new().generate(settings, main_node),
+		PlatformShaderLanguage::Hlsl => HLSLShaderGenerator::new().generate(settings, main_node),
 		PlatformShaderLanguage::Msl => MSLShaderGenerator::new().generate(settings, main_node),
 	}
 }
@@ -224,6 +245,8 @@ struct Mesh {{
 	uint base_triangle_index;
 	uint base_meshlet_index;
 	uint meshlet_count;
+	uint padding0;
+	uint padding1;
 }};
 
 struct Meshlet {{
@@ -433,6 +456,8 @@ struct Mesh {{
 	uint base_triangle_index;
 	uint base_meshlet_index;
 	uint meshlet_count;
+	uint padding0;
+	uint padding1;
 }};
 
 struct Meshlet {{
@@ -561,6 +586,10 @@ pub fn get_visibility_pass_mesh_msl_source() -> String {
 	build_mesh_pass_msl_source("\tuint instance_index;", "0")
 }
 
+pub fn get_visibility_pass_mesh_hlsl_source() -> String {
+	build_mesh_pass_hlsl_source("uint instance_index;", "0")
+}
+
 pub fn get_visibility_pass_task_msl_source() -> String {
 	build_mesh_culling_task_msl_source("\tuint instance_index;", "0")
 }
@@ -588,8 +617,159 @@ pub fn get_shadow_pass_mesh_msl_source() -> String {
 	build_mesh_pass_msl_source("\tuint instance_index;\n\tuint view_index;", "push_constant.view_index")
 }
 
+pub fn get_shadow_pass_mesh_hlsl_source() -> String {
+	build_mesh_pass_hlsl_source("uint instance_index;\nuint view_index;", "push_constant.view_index")
+}
+
 pub fn get_shadow_pass_task_msl_source() -> String {
 	build_mesh_culling_task_msl_source("\tuint instance_index;\n\tuint view_index;", "push_constant.view_index")
+}
+
+fn build_mesh_pass_hlsl_source(push_constant_fields: &str, view_lookup: &str) -> String {
+	format!(
+		r#"
+#pragma pack_matrix(row_major)
+
+struct PushConstant {{
+{push_constant_fields}
+}};
+
+struct MeshVertex {{
+	float4 position : SV_Position;
+}};
+
+struct MeshPrimitive {{
+	uint instance_index : INSTANCE_INDEX;
+	uint primitive_index : PRIMITIVE_INDEX;
+}};
+
+struct Mesh {{
+	float4x3 model;
+	uint material_index;
+	uint base_vertex_index;
+	uint base_primitive_index;
+	uint base_triangle_index;
+	uint base_meshlet_index;
+	uint meshlet_count;
+	uint padding0;
+	uint padding1;
+}};
+
+struct Meshlet {{
+	uint primitive_offset;
+	uint triangle_offset;
+	uint primitive_count;
+	uint triangle_count;
+	float4 center_radius;
+	float4 cone_apex_cutoff;
+	float4 cone_axis;
+}};
+
+struct View {{
+	float4x4 view;
+	float4x4 projection;
+	float4x4 view_projection;
+	float4x4 inverse_view;
+	float4x4 inverse_projection;
+	float4x4 inverse_view_projection;
+	float2 fov;
+	float near;
+	float far;
+}};
+
+ConstantBuffer<PushConstant> push_constant : register(b0, space1);
+StructuredBuffer<View> views : register(t0, space0);
+StructuredBuffer<Mesh> meshes : register(t1, space0);
+StructuredBuffer<float3> vertex_positions : register(t2, space0);
+StructuredBuffer<float3> vertex_normals : register(t3, space0);
+StructuredBuffer<float2> vertex_uvs : register(t5, space0);
+StructuredBuffer<uint> vertex_indices : register(t6, space0);
+StructuredBuffer<uint> primitive_indices : register(t7, space0);
+StructuredBuffer<Meshlet> meshlets : register(t8, space0);
+
+float4 load_float4(StructuredBuffer<uint> buffer, uint offset) {{
+	return float4(
+		asfloat(buffer[offset + 0]),
+		asfloat(buffer[offset + 1]),
+		asfloat(buffer[offset + 2]),
+		asfloat(buffer[offset + 3])
+	);
+}}
+
+float3 load_float3(StructuredBuffer<uint> buffer, uint offset) {{
+	return float3(
+		asfloat(buffer[offset + 0]),
+		asfloat(buffer[offset + 1]),
+		asfloat(buffer[offset + 2])
+	);
+}}
+
+uint load_u16(StructuredBuffer<uint> buffer, uint index) {{
+	uint word = buffer[index >> 1];
+	uint shift = (index & 1) * 16;
+	return (word >> shift) & 0xffffu;
+}}
+
+uint load_u8(StructuredBuffer<uint> buffer, uint index) {{
+	uint word = buffer[index >> 2];
+	uint shift = (index & 3) * 8;
+	return (word >> shift) & 0xffu;
+}}
+
+float4x4 load_view_projection(uint view_index) {{
+	return views[view_index].view_projection;
+}}
+
+Mesh load_mesh(uint mesh_index) {{
+	return meshes[mesh_index];
+}}
+
+Meshlet load_meshlet(uint meshlet_index) {{
+	return meshlets[meshlet_index];
+}}
+
+float4 transform_position(Mesh mesh, float3 position) {{
+	// ShaderMatrix4x3 uploads four float3 affine rows; HLSL multiplies a float4 position by float4x3 to recover world space.
+	return float4(mul(float4(position, 1.0f), mesh.model), 1.0f);
+}}
+
+[numthreads(128, 1, 1)]
+[outputtopology("triangle")]
+void main(
+	uint3 group_id : SV_GroupID,
+	uint thread_index : SV_GroupIndex,
+	out vertices MeshVertex vertices[64],
+	out indices uint3 triangles[126],
+	out primitives MeshPrimitive primitives[126]
+) {{
+	Mesh mesh = load_mesh(push_constant.instance_index);
+	uint meshlet_index = mesh.base_meshlet_index + group_id.x;
+	Meshlet meshlet = load_meshlet(meshlet_index);
+	float4x4 view_projection = load_view_projection({view_lookup});
+
+	SetMeshOutputCounts(meshlet.primitive_count, meshlet.triangle_count);
+
+	if (thread_index < meshlet.primitive_count) {{
+		uint vertex_index = mesh.base_vertex_index + load_u16(vertex_indices, mesh.base_primitive_index + meshlet.primitive_offset + thread_index);
+		float3 position = vertex_positions[vertex_index];
+		vertices[thread_index].position = mul(view_projection, transform_position(mesh, position));
+	}}
+
+	if (thread_index < meshlet.triangle_count) {{
+		uint triangle_base_index = mesh.base_triangle_index + meshlet.triangle_offset + thread_index;
+		triangles[thread_index] = uint3(
+			load_u8(primitive_indices, triangle_base_index * 3u + 0u),
+			load_u8(primitive_indices, triangle_base_index * 3u + 1u),
+			load_u8(primitive_indices, triangle_base_index * 3u + 2u)
+		);
+		primitives[thread_index].instance_index = push_constant.instance_index;
+		primitives[thread_index].primitive_index = (meshlet_index << 8) | (thread_index & 255u);
+	}}
+}}
+"#,
+		push_constant_fields = push_constant_fields,
+		view_lookup = view_lookup,
+	)
 }
 
 pub(crate) const VISIBILITY_PASS_FRAGMENT_SOURCE_MSL: &str = r#"
@@ -642,6 +822,25 @@ layout(location=1) out uint out_instance_id;
 void main() {
 	out_primitive_index = in_primitive_index;
 	out_instance_id = in_instance_index;
+}
+"#;
+
+pub const VISIBILITY_PASS_FRAGMENT_SOURCE_HLSL: &str = r#"
+struct FragmentInput {
+	uint instance_index : INSTANCE_INDEX;
+	uint primitive_index : PRIMITIVE_INDEX;
+};
+
+struct FragmentOutput {
+	uint primitive_index : SV_Target0;
+	uint instance_id : SV_Target1;
+};
+
+FragmentOutput main(FragmentInput input) {
+	FragmentOutput output;
+	output.primitive_index = input.primitive_index;
+	output.instance_id = input.instance_index;
+	return output;
 }
 "#;
 
@@ -788,6 +987,8 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 				besl::Node::member("base_triangle_index", u32_t.clone()).into(),
 				besl::Node::member("base_meshlet_index", u32_t.clone()).into(),
 				besl::Node::member("meshlet_count", u32_t.clone()).into(),
+				besl::Node::member("padding0", u32_t.clone()).into(),
+				besl::Node::member("padding1", u32_t.clone()).into(),
 			],
 		)
 		.into(),
@@ -2155,15 +2356,86 @@ pub(super) struct ShaderMeshletData {
 #[cfg(test)]
 mod tests {
 	use super::{
-		get_shadow_pass_mesh_msl_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_task_msl_source,
-		MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+		get_shadow_pass_mesh_msl_source, get_visibility_pass_mesh_hlsl_source, get_visibility_pass_mesh_msl_source,
+		get_visibility_pass_task_msl_source, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
+		VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 	};
 
 	#[test]
 	fn shader_meshlet_data_matches_metal_buffer_layout() {
 		assert_eq!(std::mem::align_of::<super::ShaderMeshletData>(), 16);
 		assert_eq!(std::mem::size_of::<super::ShaderMeshletData>(), 64);
+	}
+
+	#[test]
+	fn visibility_mesh_hlsl_uses_shader_matrix4x3_layout() {
+		let source = get_visibility_pass_mesh_hlsl_source();
+
+		assert!(
+			source.contains("#pragma pack_matrix(row_major)"),
+			"Expected DX12 visibility mesh HLSL to use row-major matrix storage. The most likely cause is that ShaderMatrix4x3 bytes are being interpreted as column-major float4x3 columns."
+		);
+		assert!(
+			source.contains("float4x3 model;"),
+			"Expected DX12 visibility mesh HLSL to read ShaderMatrix4x3 as four packed float3 affine rows. The most likely cause is that the shader-side mesh layout drifted from the CPU upload layout."
+		);
+		assert!(
+			source.contains("return float4(mul(float4(position, 1.0f), mesh.model), 1.0f);"),
+			"Expected DX12 visibility mesh HLSL to multiply model-space positions by the packed float4x3 model. The most likely cause is that the model transform was decoded as three float4 rows."
+		);
+		assert!(
+			!source.contains("float4 row0;") && !source.contains("float4 row1;") && !source.contains("float4 row2;"),
+			"Expected DX12 visibility mesh HLSL to avoid the obsolete three-float4 model layout. The most likely cause is that the shader is decoding ShaderMatrix4x3 with the wrong row stride."
+		);
+	}
+
+	#[test]
+	fn visibility_mesh_hlsl_source_compiles_for_dx12() {
+		use ghi::{
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+		};
+
+		if !ghi::implementation::USES_DX12 {
+			return;
+		}
+
+		let shader = get_visibility_pass_mesh_hlsl_source();
+		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
+			.expect("Expected a DX12 instance for the visibility mesh shader test");
+		let mut queue = None;
+		let mut context = instance
+			.create_device(
+				ghi::device::Features::new(),
+				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
+			)
+			.expect("Expected a DX12 device for the visibility mesh shader test")
+			.create_context()
+			.expect("Expected a DX12 context");
+
+		let shader_handle = context.create_shader(
+			Some("Visibility Pass Mesh Shader Layout Test"),
+			ghi::shader::Sources::HLSL {
+				source: shader.as_str(),
+				entry_point: "main",
+			},
+			ghi::ShaderTypes::Mesh,
+			[
+				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+			],
+		);
+
+		assert!(
+			shader_handle.is_ok(),
+			"Expected the visibility mesh HLSL source to compile for DX12"
+		);
 	}
 
 	#[test]

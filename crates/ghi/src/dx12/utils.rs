@@ -19,7 +19,7 @@ pub(crate) fn texture_copy_layout(format: Formats, extent: Extent) -> Option<(us
 
 pub(crate) fn texture_copy_size(format: Formats, extent: Extent) -> Option<usize> {
 	let (_, _, bytes_per_image) = texture_copy_layout(format, extent)?;
-	Some(bytes_per_image * extent.depth() as usize)
+	Some(bytes_per_image * extent.depth().max(1) as usize)
 }
 
 pub(crate) fn bytes_per_pixel(format: Formats) -> Option<usize> {

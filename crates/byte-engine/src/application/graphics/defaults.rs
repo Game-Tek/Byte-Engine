@@ -30,7 +30,7 @@ use crate::{
 /// Installs the standard assets, input devices, audio worker, visibility
 /// rendering pipeline, and window.
 pub fn default_setup(application: &mut GraphicsApplication) {
-	let generator = VisibilityShaderGenerator::new(false, false, false, false, false, false, true, false);
+	let generator = VisibilityShaderGenerator::new(false, false, false, false, false, false, true, true);
 	setup_default_resource_and_asset_management(application, generator);
 	setup_default_input(application);
 	setup_default_audio(application);

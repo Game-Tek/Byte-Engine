@@ -23,7 +23,7 @@ use windows::{
 	},
 };
 
-use crate::{
+use crate::window::{
 	input::{Keys, MouseKeys},
 	os::WindowLike,
 	Events, Features, Seat,

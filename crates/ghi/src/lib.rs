@@ -5,6 +5,8 @@
 #![allow(private_interfaces)]
 #![feature(generic_const_exprs)]
 
+#![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to, extend_one, str_as_str))]
+
 pub mod window;
 
 pub mod frame_resources;
@@ -18,10 +20,6 @@ pub mod factory;
 pub mod dx12;
 #[cfg(target_os = "macos")]
 pub mod metal;
-#[cfg(not(target_os = "macos"))]
-pub mod metal {
-	pub mod context {}
-}
 #[cfg(target_os = "linux")]
 pub mod vulkan;
 
@@ -41,9 +39,10 @@ pub use crate::window::Window;
 pub mod implementation {
 	pub const USES_DX12: bool = cfg!(target_os = "windows");
 	pub const USES_METAL: bool = cfg!(target_os = "macos");
+	pub const USES_VULKAN: bool = cfg!(target_os = "linux");
 
 	#[cfg(target_os = "windows")]
-	use crate::dx12::*;
+	pub use crate::dx12::*;
 	#[cfg(target_os = "macos")]
 	pub use crate::metal::*;
 	#[cfg(target_os = "linux")]
@@ -105,7 +104,7 @@ pub(crate) enum PrivateHandles {
 	Buffer(buffer::BufferHandle),
 	Synchronizer(synchronizer::SynchronizerHandle),
 	Swapchain(swapchain::SwapchainHandle),
-	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	#[cfg(target_os = "linux")]
 	VkBuffer(ash::vk::Buffer),
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),

@@ -92,6 +92,8 @@ where
 	fn copy_buffer_to_images(&mut self, copies: &[BufferImageCopyDescriptor]);
 	/// Copies images into buffer byte ranges.
 	fn copy_images_to_buffer(&mut self, copies: &[ImageBufferCopyDescriptor]);
+	/// Synchronizes CPU-written buffer data before later commands read it.
+	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
 
 	/// Records copies that make image data available to the CPU.
 	fn transfer_textures(&mut self, texture_handles: &[BaseImageHandle]) -> Vec<TextureCopyHandle>;

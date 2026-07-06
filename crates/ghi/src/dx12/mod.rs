@@ -9,10 +9,14 @@ pub mod queue;
 pub use self::command_buffer::*;
 pub use self::context::*;
 pub use self::device::*;
+pub use self::factory::*;
 pub use self::frame::*;
 pub use self::instance::*;
 pub use self::queue::*;
 mod utils;
+
+/// The `Context` type alias exposes the live DX12 device through the cross-backend context name.
+pub type Context = self::context::Device;
 
 #[cfg(test)]
 mod tests {
@@ -21,8 +25,10 @@ mod tests {
 	use super::*;
 	use crate::command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-		RasterizationRenderPassMode as _,
+		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	};
+	use crate::context::Context as _;
+	use crate::queue::{Queue as _, QueueExecution as _};
 
 	static DX12_DEBUG_TEST_LOGS: AtomicU64 = AtomicU64::new(0);
 
@@ -75,36 +81,42 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn render_triangle() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::render_triangle(&mut device, queue_handle);
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn multiframe_rendering() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::multiframe_rendering(&mut device, queue_handle);
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn change_frames() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::change_frames(&mut device, queue_handle);
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn resize() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::resize(&mut device, queue_handle);
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn dynamic_data() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::dynamic_data(&mut device, queue_handle);
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn dynamic_textures() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::dynamic_textures(&mut device, queue_handle);
@@ -114,7 +126,9 @@ mod tests {
 	fn texture_slice_mut_updates_static_image_storage() {
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
 		let image = device.build_image(
-			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image)
+				.extent(::utils::Extent::rectangle(1, 1))
+				.device_accesses(crate::DeviceAccesses::HostToDevice),
 		);
 
 		device.get_texture_slice_mut(image).copy_from_slice(&[3, 4, 5, 6]);
@@ -197,6 +211,84 @@ mod tests {
 	}
 
 	#[test]
+	fn frame_recording_flushes_only_current_sequence_texture_uploads() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let image = device.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer_0 = device.create_command_buffer(None, queue_handle);
+		let command_buffer_1 = device.create_command_buffer(None, queue_handle);
+
+		device
+			.texture_slice_mut_for_sequence(image.into(), 0)
+			.copy_from_slice(&[1, 2, 3, 4]);
+		device
+			.texture_slice_mut_for_sequence(image.into(), 1)
+			.copy_from_slice(&[5, 6, 7, 8]);
+		device.queue_texture_sync_for_sequence(image.into(), 0);
+		device.queue_texture_sync_for_sequence(image.into(), 1);
+
+		{
+			let mut frame = device.start_frame(1, synchronizer);
+			let recording = frame.create_command_buffer_recording(command_buffer_1);
+			drop(recording);
+			drop(frame);
+		}
+
+		assert_eq!(device.upload_resource_count(), 1);
+		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 1);
+		assert_eq!(device.get_image_data(copy), &[5, 6, 7, 8]);
+
+		{
+			let mut frame = device.start_frame(0, synchronizer);
+			let recording = frame.create_command_buffer_recording(command_buffer_0);
+			drop(recording);
+			drop(frame);
+		}
+
+		assert_eq!(device.upload_resource_count(), 2);
+		let copy = device.copy_image_to_cpu_for_sequence(crate::ImageHandle(image.into()), 0);
+		assert_eq!(device.get_image_data(copy), &[1, 2, 3, 4]);
+	}
+
+	#[test]
+	fn frame_recording_without_implicit_sync_leaves_pending_texture_uploads_queued() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let image = device.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image | crate::Uses::TransferSource)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let transfer_command_buffer = device.create_command_buffer(None, queue_handle);
+		let render_command_buffer = device.create_command_buffer(None, queue_handle);
+
+		device
+			.texture_slice_mut_for_sequence(image.into(), 0)
+			.copy_from_slice(&[9, 10, 11, 12]);
+		device.queue_texture_sync_for_sequence(image.into(), 0);
+
+		{
+			let mut frame = device.start_frame(0, synchronizer);
+			let recording = frame.create_command_buffer_recording_without_implicit_sync(transfer_command_buffer);
+			drop(recording);
+			drop(frame);
+		}
+
+		assert_eq!(device.upload_resource_count(), 0);
+
+		{
+			let mut frame = device.start_frame(0, synchronizer);
+			let recording = frame.create_command_buffer_recording(render_command_buffer);
+			drop(recording);
+			drop(frame);
+		}
+
+		assert_eq!(device.upload_resource_count(), 1);
+	}
+
+	#[test]
 	fn bind_descriptor_sets_flushes_pending_sampled_texture_upload() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::FRAGMENT);
@@ -250,7 +342,7 @@ mod tests {
 
 	#[test]
 	fn combined_image_sampler_array_writes_preserve_frame_offset() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler_array(0, crate::Stages::FRAGMENT, 2);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -275,18 +367,60 @@ mod tests {
 
 		assert_eq!(device.descriptor_sequence_index(set, 0, 0), Some(1));
 		assert_eq!(device.descriptor_sequence_index(set, 1, 0), Some(0));
-		assert_eq!(device.descriptor_write_count(), descriptor_write_count + 4);
+		assert_eq!(device.descriptor_write_count(), descriptor_write_count);
+		assert_eq!(device.image_srv_descriptor_write_count(), image_srv_descriptor_write_count);
+		assert_eq!(
+			device.sampler_descriptor_write_records().len(),
+			sampler_descriptor_write_count
+		);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps(command_buffer, &[set]);
+
+		assert_eq!(device.descriptor_write_count(), descriptor_write_count + 2);
 		assert_eq!(
 			device.image_srv_descriptor_write_count(),
-			image_srv_descriptor_write_count + 2
+			image_srv_descriptor_write_count + 1
 		);
 		assert_eq!(
 			device.sampler_descriptor_write_records().len(),
-			sampler_descriptor_write_count + 2
+			sampler_descriptor_write_count + 1
 		);
 	}
 
 	#[test]
+	fn dynamic_image_descriptors_materialize_per_frame_resources() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let binding = crate::DescriptorSetBindingTemplate::sampled_image(0, crate::Stages::FRAGMENT);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let image = device.build_dynamic_image(
+			crate::image::Builder::new(crate::Formats::RGBA8UNORM, crate::Uses::Image).extent(::utils::Extent::rectangle(1, 1)),
+		);
+
+		device.create_descriptor_binding(set, crate::BindingConstructor::image(&binding, image));
+
+		assert_eq!(
+			device.image_frame_resource_state(crate::ImageHandle(image.into()), 0),
+			Some(true)
+		);
+		assert_eq!(
+			device.image_frame_resource_state(crate::ImageHandle(image.into()), 1),
+			Some(false)
+		);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps_and_tables(command_buffer, None, &[set], 1);
+
+		assert_eq!(
+			device.image_frame_resource_state(crate::ImageHandle(image.into()), 1),
+			Some(true)
+		);
+		assert_eq!(device.image_srv_descriptor_write_count(), 1);
+	}
+
+	#[test]
+	#[cfg(target_os = "linux")]
 	fn descriptor_sets() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::descriptor_sets(&mut device, queue_handle);
@@ -309,7 +443,7 @@ mod tests {
 
 	#[test]
 	fn descriptor_sets_create_native_heaps() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let bindings = [
 			crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE),
 			crate::DescriptorSetBindingTemplate::combined_image_sampler(1, crate::Stages::FRAGMENT),
@@ -331,9 +465,193 @@ mod tests {
 		);
 
 		assert_eq!(device.descriptor_set_has_native_heaps(set), Some((true, true)));
-		assert_eq!(device.descriptor_write_count(), 6);
-		assert_eq!(device.image_srv_descriptor_write_count(), 2);
+		assert_eq!(device.descriptor_write_count(), 0);
+		assert_eq!(device.image_srv_descriptor_write_count(), 0);
 		assert_eq!(device.image_uav_descriptor_write_count(), 0);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps(command_buffer, &[set]);
+
+		assert_eq!(device.descriptor_write_count(), 3);
+		assert_eq!(device.image_srv_descriptor_write_count(), 1);
+		assert_eq!(device.image_uav_descriptor_write_count(), 0);
+	}
+
+	#[test]
+	fn hlsl_structured_buffer_stride_inference_matches_shader_struct_layout() {
+		let source = r#"
+struct View {
+	float4x4 view;
+	float4x4 projection;
+	float4x4 view_projection;
+	float4x4 inverse_view;
+	float4x4 inverse_projection;
+	float4x4 inverse_view_projection;
+	float2 fov;
+	float near;
+	float far;
+};
+StructuredBuffer<View> views : register(t0, space0);
+StructuredBuffer<uint> indices : register(t6, space0);
+RWStructuredBuffer<uint4> dispatches : register(u3, space1);
+"#;
+
+		let strides = Device::hlsl_structured_buffer_strides(source);
+
+		assert_eq!(strides.get(&(0, 0)), Some(&400));
+		assert_eq!(strides.get(&(0, 6)), Some(&4));
+		assert_eq!(strides.get(&(1, 3)), Some(&16));
+	}
+
+	#[test]
+	fn hlsl_pipeline_creation_updates_existing_descriptor_binding_buffer_stride() {
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let binding = crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE).buffer_read_only(true);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let buffer = device.build_buffer::<[u32; 100]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&binding, buffer.into()));
+
+		assert_eq!(device.descriptor_binding_buffer_stride(set, 0), Some(4));
+
+		let shader_source = r#"
+struct View {
+	float4x4 view;
+	float4x4 projection;
+	float4x4 view_projection;
+	float4x4 inverse_view;
+	float4x4 inverse_projection;
+	float4x4 inverse_view_projection;
+	float2 fov;
+	float near;
+	float far;
+};
+StructuredBuffer<View> views : register(t0, space0);
+[numthreads(1, 1, 1)]
+void main() {
+	View view = views[0];
+	uint sink = asuint(view.near);
+}
+"#;
+		let Ok(shader) = device.create_shader(
+			Some("structured stride inference"),
+			crate::shader::Sources::HLSL {
+				source: shader_source,
+				entry_point: "main",
+			},
+			crate::ShaderTypes::Compute,
+			[binding.into_shader_binding_descriptor(0, crate::AccessPolicies::READ)],
+		) else {
+			return;
+		};
+
+		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[template],
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		assert_eq!(device.descriptor_binding_buffer_stride(set, 0), Some(400));
+	}
+
+	#[test]
+	fn hlsl_pipeline_creation_preserves_explicit_descriptor_binding_buffer_stride() {
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let binding = crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE)
+			.buffer_stride(400)
+			.buffer_read_only(true);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let buffer = device.build_buffer::<[u32; 100]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&binding, buffer.into()));
+
+		let shader_source = r#"
+StructuredBuffer<uint> views : register(t0, space0);
+[numthreads(1, 1, 1)]
+void main() {}
+"#;
+		let Ok(shader) = device.create_shader(
+			Some("explicit structured stride"),
+			crate::shader::Sources::HLSL {
+				source: shader_source,
+				entry_point: "main",
+			},
+			crate::ShaderTypes::Compute,
+			[binding.into_shader_binding_descriptor(0, crate::AccessPolicies::READ)],
+		) else {
+			return;
+		};
+
+		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[template],
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		assert_eq!(device.descriptor_binding_buffer_stride(set, 0), Some(400));
+	}
+
+	#[test]
+	fn hlsl_pipeline_creation_updates_later_descriptor_binding_buffer_stride() {
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let bindings = [
+			crate::DescriptorSetBindingTemplate::combined_image_sampler(0, crate::Stages::COMPUTE),
+			crate::DescriptorSetBindingTemplate::storage_image(1, crate::Stages::COMPUTE),
+			crate::DescriptorSetBindingTemplate::storage_buffer(2, crate::Stages::COMPUTE).buffer_read_only(true),
+		];
+		let template = device.create_descriptor_set_template(None, &bindings);
+
+		let shader_source = r#"
+struct _parameters {
+	float4x4 inverse_view_projection;
+	float4 camera_position;
+	float4 sun_direction;
+	float4 planet_center;
+	float4 atmosphere;
+	float4 misc;
+};
+StructuredBuffer<_parameters> parameters : register(t2, space0);
+RWTexture2D<float4> main_texture : register(u1, space0);
+Texture2D<float4> depth_texture : register(t0, space0);
+SamplerState depth_texture_sampler : register(s0, space0);
+[numthreads(1, 1, 1)]
+void main() {
+	main_texture[uint2(0, 0)] = parameters[0].camera_position;
+}
+"#;
+		let Ok(shader) = device.create_shader(
+			Some("sky structured stride inference"),
+			crate::shader::Sources::HLSL {
+				source: shader_source,
+				entry_point: "main",
+			},
+			crate::ShaderTypes::Compute,
+			[
+				bindings[0].into_shader_binding_descriptor(0, crate::AccessPolicies::READ),
+				bindings[1].into_shader_binding_descriptor(0, crate::AccessPolicies::WRITE),
+				bindings[2].into_shader_binding_descriptor(0, crate::AccessPolicies::READ),
+			],
+		) else {
+			return;
+		};
+
+		device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[template],
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+
+		let set = device.create_descriptor_set(None, &template);
+		let buffer = device.build_buffer::<[u32; 36]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&bindings[2], buffer.into()));
+
+		assert_eq!(device.descriptor_binding_buffer_stride(set, 2), Some(144));
 	}
 
 	#[test]
@@ -876,6 +1194,71 @@ mod tests {
 	}
 
 	#[test]
+	fn present_storage_swapchain_copies_proxy_to_backbuffer() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let extent = ::utils::Extent::rectangle(4, 4);
+		let window =
+			crate::window::Window::new("DX12 Storage Present Proxy Test", extent).expect("Failed to create DX12 test window.");
+		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::Storage);
+		let binding = crate::DescriptorSetBindingTemplate::storage_image(0, crate::Stages::COMPUTE);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		device.create_descriptor_binding(set, crate::BindingConstructor::swapchain(&binding, swapchain));
+		let shader = device
+			.create_shader(
+				Some("storage swapchain present"),
+				crate::shader::Sources::HLSL {
+					source: "
+						RWTexture2D<float4> output_texture : register(u0, space0);
+						[numthreads(1, 1, 1)]
+						void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
+							output_texture[dispatch_thread_id.xy] = float4(1.0, 0.25, 0.5, 1.0);
+						}
+					",
+					entry_point: "main",
+				},
+				crate::ShaderTypes::Compute,
+				[binding.into_shader_binding_descriptor(0, crate::AccessPolicies::WRITE)],
+			)
+			.expect("Failed to compile DX12 storage swapchain present shader.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[template],
+			&[],
+			crate::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		assert_eq!(device.pipeline_has_native_state(pipeline), Some(true));
+		let command_buffer = device.create_command_buffer(Some("storage swapchain present"), queue_handle);
+		let synchronizer = device.create_synchronizer(None, true);
+		let mut captured_present_key = None;
+
+		device.queue(queue_handle).execute(
+			Some(crate::queue::FrameRequest {
+				index: 0,
+				synchronizer,
+			}),
+			&[],
+			synchronizer,
+			|execution| {
+				let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
+				captured_present_key = Some(present_key);
+				let present_keys = [present_key];
+				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
+					command_buffer_recording
+						.bind_compute_pipeline(pipeline)
+						.bind_descriptor_sets(&[set])
+						.dispatch(crate::DispatchExtent::new(extent, ::utils::Extent::square(1)));
+				});
+				present_keys
+			},
+		);
+
+		device.wait_for_synchronizer(synchronizer);
+		captured_present_key.expect("Missing acquired present key.");
+
+		assert_eq!(device.texture_copy_count(), 1);
+	}
+
+	#[test]
 	fn factory_raster_pipeline_preserves_hlsl_specialization_map() {
 		use crate::Device as _;
 
@@ -1393,8 +1776,87 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
-	fn storage_images_create_native_uav_descriptors() {
+	fn descriptor_tables_stage_multiple_sets_into_one_native_heap() {
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let base_bindings = [crate::DescriptorSetBindingTemplate::storage_buffer(1, crate::Stages::COMPUTE)];
+		let visibility_bindings = [
+			crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE),
+			crate::DescriptorSetBindingTemplate::storage_image(7, crate::Stages::COMPUTE),
+		];
+		let base_template = device.create_descriptor_set_template(None, &base_bindings);
+		let visibility_template = device.create_descriptor_set_template(None, &visibility_bindings);
+		let base_set = device.create_descriptor_set(None, &base_template);
+		let visibility_set = device.create_descriptor_set(None, &visibility_template);
+		let base_buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let visibility_buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let visibility_image = device.build_image(
+			crate::image::Builder::new(crate::Formats::U32, crate::Uses::Storage).extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.create_descriptor_binding(
+			base_set,
+			crate::BindingConstructor::buffer(&base_bindings[0], base_buffer.into()),
+		);
+		device.create_descriptor_binding(
+			visibility_set,
+			crate::BindingConstructor::buffer(&visibility_bindings[0], visibility_buffer.into()),
+		);
+		device.create_descriptor_binding(
+			visibility_set,
+			crate::BindingConstructor::image(&visibility_bindings[1], visibility_image),
+		);
+
+		let shader = device
+			.create_shader(None, crate::shader::Sources::SPIRV(&[]), crate::ShaderTypes::Compute, [])
+			.expect("Failed to create DX12 shader metadata.");
+		let pipeline = device.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[base_template, visibility_template],
+			&[],
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let command_buffer = device.create_command_buffer(None, _queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		crate::command_buffer::CommonCommandBufferMode::bind_compute_pipeline(&mut recording, pipeline)
+			.bind_descriptor_sets(&[base_set, visibility_set]);
+		drop(recording);
+
+		let records = device.descriptor_table_bind_records();
+		assert_eq!(device.descriptor_heap_bind_count(), 1);
+		assert_eq!(records.len(), 3);
+		assert_eq!(
+			records,
+			&[
+				crate::dx12::context::DescriptorTableBindRecord {
+					root_parameter_index: 0,
+					set_index: 0,
+					binding_index: 1,
+					sampler_heap: false,
+					heap_slot: 0,
+				},
+				crate::dx12::context::DescriptorTableBindRecord {
+					root_parameter_index: 1,
+					set_index: 1,
+					binding_index: 0,
+					sampler_heap: false,
+					heap_slot: 1,
+				},
+				crate::dx12::context::DescriptorTableBindRecord {
+					root_parameter_index: 2,
+					set_index: 1,
+					binding_index: 7,
+					sampler_heap: false,
+					heap_slot: 2,
+				},
+			]
+		);
+	}
+
+	#[test]
+	fn storage_images_create_native_uav_descriptors() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::storage_image(0, crate::Stages::COMPUTE);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -1405,14 +1867,66 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 		device.create_descriptor_binding(set, crate::BindingConstructor::image(&binding, image));
 
-		assert_eq!(device.descriptor_write_count(), 2);
+		assert_eq!(device.descriptor_write_count(), 0);
 		assert_eq!(device.image_srv_descriptor_write_count(), 0);
-		assert_eq!(device.image_uav_descriptor_write_count(), 2);
+		assert_eq!(device.image_uav_descriptor_write_count(), 0);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps(command_buffer, &[set]);
+
+		assert_eq!(device.descriptor_write_count(), 1);
+		assert_eq!(device.image_srv_descriptor_write_count(), 0);
+		assert_eq!(device.image_uav_descriptor_write_count(), 1);
+	}
+
+	#[test]
+	fn storage_image_descriptor_binding_transitions_render_target_to_uav() {
+		use windows::Win32::Graphics::Direct3D12::{D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
+
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let binding = crate::DescriptorSetBindingTemplate::storage_image(7, crate::Stages::COMPUTE);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let image = device.build_image(
+			crate::image::Builder::new(crate::Formats::U32, crate::Uses::RenderTarget | crate::Uses::Storage)
+				.extent(::utils::Extent::rectangle(1, 1)),
+		);
+		device.create_descriptor_binding(set, crate::BindingConstructor::image(&binding, image));
+
+		let command_buffer = device.create_command_buffer(None, _queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let attachment = crate::AttachmentInformation::new(
+			image,
+			crate::Layouts::RenderTarget,
+			crate::ClearValue::Integer(u32::MAX, 0, 0, 0),
+			false,
+			true,
+		);
+		crate::command_buffer::CommandBufferRecording::start_render_pass(
+			&mut recording,
+			::utils::Extent::rectangle(1, 1),
+			&[attachment],
+		)
+		.end_render_pass();
+		drop(recording);
+		assert_eq!(
+			device.tracked_image_resource_state(image),
+			Some(D3D12_RESOURCE_STATE_RENDER_TARGET)
+		);
+
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_descriptor_sets(&[set]);
+		drop(recording);
+
+		assert_eq!(
+			device.tracked_image_resource_state(image),
+			Some(D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+		);
 	}
 
 	#[test]
 	fn samplers_create_native_descriptors_from_builder_state() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::sampler(0, crate::Stages::FRAGMENT);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -1430,7 +1944,13 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		device.create_descriptor_binding(set, crate::BindingConstructor::sampler(&binding, sampler));
 
 		let records = device.sampler_descriptor_write_records();
-		assert_eq!(records.len(), 2);
+		assert_eq!(records.len(), 0);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps(command_buffer, &[set]);
+
+		let records = device.sampler_descriptor_write_records();
+		assert_eq!(records.len(), 1);
 		assert_eq!(records[0].filter.0, 469);
 		assert_eq!(records[0].address_mode.0, 2);
 		assert_eq!(records[0].max_anisotropy, 12);
@@ -1439,6 +1959,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	#[cfg(target_os = "linux")]
 	fn multiframe_resources() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		crate::graphics_hardware_interface::tests::multiframe_resources(&mut device, queue_handle);
@@ -1466,6 +1987,103 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		drop(recording);
 
 		assert_eq!(*device.get_buffer_slice(destination), [0, 3, 4, 5, 6, 0, 0, 0]);
+	}
+
+	#[test]
+	fn command_recording_sync_buffer_flushes_host_visible_resource() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let buffer = device.build_buffer::<[u8; 8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostOnly),
+		);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		*recording.get_mut_buffer_slice(buffer) = [9, 8, 7, 6, 5, 4, 3, 2];
+		crate::command_buffer::CommandBufferRecording::sync_buffer(&mut recording, buffer);
+		drop(recording);
+
+		assert_eq!(
+			device.buffer_mapped_bytes_for_sequence(buffer.into(), 8, 0).unwrap(),
+			vec![9, 8, 7, 6, 5, 4, 3, 2]
+		);
+	}
+
+	#[test]
+	fn command_recording_sync_buffer_flushes_dynamic_frame_resource() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		device.set_frames_in_flight(2);
+		let synchronizer = device.create_synchronizer(None, false);
+		let buffer = device.build_dynamic_buffer::<[u8; 8]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		{
+			let mut frame = device.start_frame(1, synchronizer);
+			*frame.get_mut_dynamic_buffer_slice(buffer) = [1, 3, 5, 7, 9, 11, 13, 15];
+			let mut recording = frame.create_command_buffer_recording_without_implicit_sync(command_buffer);
+			crate::command_buffer::CommandBufferRecording::sync_buffer(&mut recording, buffer);
+			drop(recording);
+		}
+
+		assert_eq!(
+			device.buffer_mapped_bytes_for_sequence(buffer.into(), 8, 1).unwrap(),
+			vec![1, 3, 5, 7, 9, 11, 13, 15]
+		);
+	}
+
+	#[test]
+	fn command_recording_sync_buffer_flushes_static_resource_for_nonzero_sequence() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		device.set_frames_in_flight(2);
+		let synchronizer = device.create_synchronizer(None, false);
+		let buffer = device.build_buffer::<[u8; 8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostOnly),
+		);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		{
+			let mut frame = device.start_frame(1, synchronizer);
+			let mut recording = frame.create_command_buffer_recording_without_implicit_sync(command_buffer);
+			*recording.get_mut_buffer_slice(buffer) = [2, 4, 6, 8, 10, 12, 14, 16];
+			crate::command_buffer::CommandBufferRecording::sync_buffer(&mut recording, buffer);
+			drop(recording);
+		}
+
+		assert_eq!(
+			device.buffer_mapped_bytes_for_sequence(buffer.into(), 8, 1).unwrap(),
+			vec![2, 4, 6, 8, 10, 12, 14, 16]
+		);
+	}
+
+	#[test]
+	fn copy_to_static_host_visible_buffer_flushes_destination_for_nonzero_sequence() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		device.set_frames_in_flight(2);
+		let synchronizer = device.create_synchronizer(None, false);
+		let source = device.build_buffer::<[u8; 8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferSource).device_accesses(crate::DeviceAccesses::HostOnly),
+		);
+		let destination = device.build_buffer::<[u8; 8]>(
+			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::HostToDevice),
+		);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		{
+			let mut frame = device.start_frame(1, synchronizer);
+			let mut recording = frame.create_command_buffer_recording_without_implicit_sync(command_buffer);
+			*recording.get_mut_buffer_slice(source) = [21, 22, 23, 24, 25, 26, 27, 28];
+			crate::command_buffer::CommandBufferRecording::copy_buffers(
+				&mut recording,
+				&[crate::BufferCopyDescriptor::new(source.into(), 1, destination.into(), 2, 5)],
+			);
+			drop(recording);
+		}
+
+		assert_eq!(
+			device.buffer_mapped_bytes_for_sequence(destination.into(), 8, 1).unwrap(),
+			vec![0, 0, 22, 23, 24, 25, 26, 0]
+		);
 	}
 
 	#[test]
@@ -1647,6 +2265,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		crate::command_buffer::CommandBufferRecording::write_image_data(&mut recording, image.into(), data);
 		let copies = crate::command_buffer::CommandBufferRecording::transfer_textures(&mut recording, &[image.into()]);
 		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(device.get_image_data(copies[0]), &pixel);
 		assert_eq!(device.readback_resource_count(), 1);
@@ -1675,6 +2294,38 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 		device.wait_for_synchronizer(synchronizer);
 		assert_eq!(device.synchronizer_value(synchronizer), Some(1));
+		assert_eq!(device.native_command_list_execute_count(), 1);
+		assert_eq!(device.empty_command_list_skip_count(), 0);
+	}
+
+	#[test]
+	fn empty_command_buffer_execute_skips_native_command_list_submission() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let recording = device.create_command_buffer_recording(command_buffer);
+
+		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+
+		assert_eq!(device.synchronizer_value(synchronizer), Some(1));
+		assert_eq!(device.empty_command_list_skip_count(), 1);
+		assert_eq!(device.native_command_list_execute_count(), 0);
+	}
+
+	#[test]
+	fn queue_execute_without_recordings_completes_frame_without_native_submission() {
+		use crate::context::Context as _;
+		use crate::queue::Queue as _;
+
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let synchronizer = device.create_synchronizer(None, false);
+		let frame = crate::queue::FrameRequest { index: 0, synchronizer };
+
+		device.queue(queue_handle).execute(Some(frame), &[], synchronizer, |_| []);
+
+		assert_eq!(device.synchronizer_value(synchronizer), Some(1));
+		assert_eq!(device.empty_command_list_skip_count(), 0);
+		assert_eq!(device.native_command_list_execute_count(), 0);
 	}
 
 	#[test]
@@ -1696,19 +2347,24 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
-	fn clear_device_only_buffer_records_gpu_copy() {
+	fn clear_device_only_buffer_records_native_uav_clear() {
 		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let buffer = device.build_buffer::<[u32; 4]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination).device_accesses(crate::DeviceAccesses::DeviceOnly),
+			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
 		);
+		let upload_resource_count = device.upload_resource_count();
+		*device.get_mut_buffer_slice(buffer) = [1, 2, 3, 4];
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
 		drop(recording);
 
+		assert_eq!(*device.get_buffer_slice(buffer), [1, 2, 3, 4]);
 		assert_eq!(device.buffer_clear_count(), 1);
-		assert_eq!(device.buffer_is_in_common_state(buffer.into()), Some(true));
+		assert_eq!(device.upload_resource_count(), upload_resource_count);
+		assert_eq!(device.buffer_is_in_common_state(buffer.into()), Some(false));
 	}
 
 	#[test]
@@ -1758,6 +2414,50 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn dynamic_buffer_descriptors_materialize_per_frame_resources() {
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
+		let binding = crate::DescriptorSetBindingTemplate::uniform_buffer(0, crate::Stages::VERTEX);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let buffer = device.build_dynamic_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		);
+
+		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&binding, buffer.into()));
+
+		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 0), Some(true));
+		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(false));
+		assert_eq!(device.descriptor_write_count(), 0);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps_and_tables(command_buffer, None, &[set], 1);
+
+		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(true));
+		assert_eq!(device.descriptor_write_count(), 1);
+	}
+
+	#[test]
+	fn dynamic_buffer_writes_are_sequence_local() {
+		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let buffer = device.build_dynamic_buffer::<[u32; 2]>(
+			crate::buffer::Builder::new(crate::Uses::Uniform).device_accesses(crate::DeviceAccesses::CpuWrite),
+		);
+
+		*device.dynamic_buffer_slice_mut(buffer, 1) = [5, 9];
+		device.sync_buffer_for_sequence(buffer, 1);
+
+		assert_eq!(
+			device.buffer_bytes_for_sequence(buffer.into(), std::mem::size_of::<[u32; 2]>(), 0),
+			Some(vec![0, 0, 0, 0, 0, 0, 0, 0])
+		);
+		assert_eq!(
+			device.buffer_bytes_for_sequence(buffer.into(), std::mem::size_of::<[u32; 2]>(), 1),
+			Some(vec![5, 0, 0, 0, 9, 0, 0, 0])
+		);
+		assert_eq!(device.buffer_frame_resource_state(buffer.into(), 1), Some(true));
+	}
+
+	#[test]
 	fn acceleration_structures_allocate_device_resources() {
 		let (_instance, mut device, _queue_handle) = create_default_device_setup();
 		let top_level = device.create_top_level_acceleration_structure(Some("top"), 3);
@@ -1780,7 +2480,7 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn acceleration_structure_descriptors_create_native_srv() {
-		let (_instance, mut device, _queue_handle) = create_default_device_setup();
+		let (_instance, mut device, queue_handle) = create_default_device_setup();
 		let binding = crate::DescriptorSetBindingTemplate::acceleration_structure(0, crate::Stages::RAYGEN);
 		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
 		let set = device.create_descriptor_set(None, &template);
@@ -1788,8 +2488,14 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 		device.create_descriptor_binding(set, crate::BindingConstructor::acceleration_structure(&binding, top_level));
 
-		assert_eq!(device.descriptor_write_count(), 2);
-		assert_eq!(device.acceleration_structure_descriptor_write_count(), 2);
+		assert_eq!(device.descriptor_write_count(), 0);
+		assert_eq!(device.acceleration_structure_descriptor_write_count(), 0);
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		device.bind_descriptor_heaps(command_buffer, &[set]);
+
+		assert_eq!(device.descriptor_write_count(), 1);
+		assert_eq!(device.acceleration_structure_descriptor_write_count(), 1);
 	}
 
 	#[test]

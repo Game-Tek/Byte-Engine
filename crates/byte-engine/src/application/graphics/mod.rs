@@ -81,9 +81,9 @@ impl Application for GraphicsApplication {
 
 			input::InputManager::new(action_listener, event_channel)
 		};
-		let gamepad_system = input::gamepad::GamepadSystem::new()
-			.map_err(|error| log::warn!("{}", error))
-			.ok();
+		// HID initialization and first enumeration can block startup on Windows, so gamepads are initialized after
+		// the first frame has reached the screen.
+		let gamepad_system = None;
 
 		let renderer = rendering::renderer::Renderer::new(&application);
 
@@ -223,46 +223,49 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::process_gamepad_events");
 			let _enter = span.enter();
-			if let Some(gamepad_system) = &mut self.gamepad_system {
-				let (new_devices, events) = gamepad_system.poll();
+			if self.tick_count > 0 && self.gamepad_system.is_none() {
+				self.gamepad_system = input::gamepad::GamepadSystem::new()
+					.map_err(|error| log::warn!("{}", error))
+					.ok();
+			}
+			if self.tick_count > 0 {
+				if let Some(gamepad_system) = &mut self.gamepad_system {
+					let (new_devices, events) = gamepad_system.poll();
 
-				if let Some(gamepad_device_class_handle) = self.gamepad_device_class_handle {
-					for (path, kind, device) in new_devices {
-						// Each physical HID device gets its own input-system device so actions can
-						// preserve player/device identity instead of collapsing into one gamepad.
-						let device_handle = self.input_system.create_device(&gamepad_device_class_handle);
-						gamepad_system.add_device(path, kind, device, device_handle);
+					if let Some(gamepad_device_class_handle) = self.gamepad_device_class_handle {
+						for (path, kind, device) in new_devices {
+							// Each physical HID device gets its own input-system device so actions can
+							// preserve player/device identity instead of collapsing into one gamepad.
+							let device_handle = self.input_system.create_device(&gamepad_device_class_handle);
+							gamepad_system.add_device(path, kind, device, device_handle);
+						}
+					} else if !new_devices.is_empty() {
+						log::warn!(
+							"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called."
+						);
 					}
-				} else if !new_devices.is_empty() {
-					log::warn!(
-						"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called."
-					);
-				}
 
-				for event in events {
-					log::debug!(
-						target: "byte_engine::input::events",
-						"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
-						event.device_handle(),
-						event.trigger(),
-						event.value()
-					);
-					self.input_system.record_trigger_value_for_device(
-						input::SeatHandle::stub(),
-						event.device_handle(),
-						event.trigger(),
-						event.value(),
-					);
+					for event in events {
+						log::debug!(
+							target: "byte_engine::input::events",
+							"Forwarding HID gamepad event: device={:?}, trigger={:?}, value={:?}",
+							event.device_handle(),
+							event.trigger(),
+							event.value()
+						);
+						self.input_system.record_trigger_value_for_device(
+							input::SeatHandle::stub(),
+							event.device_handle(),
+							event.trigger(),
+							event.value(),
+						);
+					}
 				}
 			}
 		}
 
 		if close {
-			let _ = self.application_events.0.send(Events::Close);
-			self.threads.drain(..).for_each(|t| {
-				let _ = t.join();
-			});
-			self.close();
+			self.close_workers_and_record_stats();
 			return None;
 		}
 
@@ -341,7 +344,21 @@ impl GraphicsApplication {
 			}
 		}
 
-		(!close).then_some(result)
+		if close {
+			self.close_workers_and_record_stats();
+			None
+		} else {
+			Some(result)
+		}
+	}
+
+	/// Stops worker threads before recording final debug run stats.
+	fn close_workers_and_record_stats(&mut self) {
+		let _ = self.application_events.0.send(Events::Close);
+		self.threads.drain(..).for_each(|thread| {
+			let _ = thread.join();
+		});
+		self.close();
 	}
 
 	/// Flags the application for closing.
@@ -543,6 +560,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 						resource_manager.signal_completed_frame(completed_frame);
 					}
 
+					if !resource_manager.drain_pending_upload_work() {
+						std::thread::sleep(NO_WORK_SLEEP_DURATION);
+						started_frame_count += 1;
+						continue;
+					}
+
 					let mut frame = started_frame.frame;
 					let frame_key = frame.key();
 
@@ -554,7 +577,14 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 					let prepared_uploads =
 						resource_manager.prepare_uploads(&mut transfer_recording, upload_buffer.into(), &mut slice);
 
-					transfer_recording.execute(transfer_finished_synchronizer);
+					if prepared_uploads.recorded_work {
+						// The transfer worker writes into GHI CPU shadow memory while recording.
+						// Flush the upload buffer before the submitted copy commands read it.
+						transfer_recording.sync_buffer(upload_buffer);
+						transfer_recording.execute(transfer_finished_synchronizer);
+					} else {
+						drop(transfer_recording);
+					}
 
 					resource_manager.track_submitted_uploads(frame_key, prepared_uploads.completions);
 

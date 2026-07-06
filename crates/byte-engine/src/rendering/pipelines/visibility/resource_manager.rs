@@ -562,6 +562,14 @@ impl VisibilityPipelineResourceManagerWorker {
 			.push_back(SubmittedUploadBatch { frame_key, completions });
 	}
 
+	/// Drains worker inputs and reports whether queued work needs a transfer recording.
+	pub(crate) fn drain_pending_upload_work(&mut self) -> bool {
+		self.drain_commands();
+		self.resource_manager
+			.drain_pipeline_completions(self.settings.max_pipeline_adoptions_per_frame);
+		self.has_pending_upload_work()
+	}
+
 	/// Records pending mesh and texture uploads into the transfer command buffer.
 	pub(crate) fn prepare_uploads<'buffer>(
 		&mut self,
@@ -569,10 +577,13 @@ impl VisibilityPipelineResourceManagerWorker {
 		staging_data_buffer: ghi::BaseBufferHandle,
 		slice: &mut utils::BufferAllocator<'buffer>,
 	) -> TransferUploadPrepareResult {
-		self.drain_commands();
-		self.resource_manager
-			.drain_pipeline_completions(self.settings.max_pipeline_adoptions_per_frame);
+		self.drain_pending_upload_work();
 		self.record_uploads(transfer, staging_data_buffer, slice)
+	}
+
+	/// Reports whether upload queues contain work that needs GPU transfer recording.
+	fn has_pending_upload_work(&self) -> bool {
+		!self.pending_mesh_uploads.is_empty() || !self.pending_texture_uploads.is_empty()
 	}
 
 	/// Drains render-thread commands into worker-owned state.
@@ -918,6 +929,10 @@ enum PipelineStatus {
 }
 
 enum OwnedShaderSource {
+	HLSL {
+		source: String,
+		entry_point: String,
+	},
 	MTLB {
 		binary: ResourceReaderBacking,
 		entry_point: String,
@@ -933,6 +948,7 @@ enum OwnedShaderSource {
 impl OwnedShaderSource {
 	fn sources(&self) -> ghi::shader::Sources<'_> {
 		match self {
+			OwnedShaderSource::HLSL { source, entry_point } => ghi::shader::Sources::HLSL { source, entry_point },
 			OwnedShaderSource::MTLB {
 				binary,
 				entry_point,
@@ -1105,21 +1121,44 @@ impl VisibilityPipelineResourceManager {
 		let stage = Self::map_shader_type(shader.resource().stage);
 		let shader_backing = Self::load_shader_backing(shader)?;
 
+		let source = match &shader.resource().artifact {
+			ShaderArtifact::Hlsl { entry_point } => OwnedShaderSource::HLSL {
+				source: std::str::from_utf8(shader_backing.as_slice())
+					.map_err(|_| {
+						log::error!(
+							"Failed to load HLSL shader {}. The most likely cause is invalid UTF-8 shader bytes.",
+							shader.id()
+						);
+					})?
+					.to_string(),
+				entry_point: entry_point.clone(),
+			},
+			ShaderArtifact::Msl { entry_point } => OwnedShaderSource::MTL {
+				source: std::str::from_utf8(shader_backing.as_slice())
+					.map_err(|_| {
+						log::error!(
+							"Failed to load MSL shader {}. The most likely cause is invalid UTF-8 shader bytes.",
+							shader.id()
+						);
+					})?
+					.to_string(),
+				entry_point: entry_point.clone(),
+			},
+			ShaderArtifact::Mtlb { entry_point } => OwnedShaderSource::MTLB {
+				binary: shader_backing,
+				entry_point: entry_point.clone(),
+				threadgroup_size: shader
+					.resource()
+					.interface
+					.workgroup_size
+					.map(|(width, height, depth)| Extent::new(width, height, depth)),
+			},
+			ShaderArtifact::Spirv => OwnedShaderSource::SPIRV(shader_backing),
+		};
+
 		let shader_request = Arc::new(OwnedShader {
 			name: Some(shader.id().to_string()),
-			source: if ghi::implementation::USES_METAL {
-				OwnedShaderSource::MTLB {
-					binary: shader_backing,
-					entry_point: "besl_main".to_string(),
-					threadgroup_size: shader
-						.resource()
-						.interface
-						.workgroup_size
-						.map(|(width, height, depth)| Extent::new(width, height, depth)),
-				}
-			} else {
-				OwnedShaderSource::SPIRV(shader_backing)
-			},
+			source,
 			stage,
 			binding_descriptors,
 		});
@@ -1452,7 +1491,6 @@ use std::time::Duration;
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
-use ghi::metal::context;
 use ghi::Device as _;
 use ghi::{
 	command_buffer::{
@@ -1465,7 +1503,9 @@ use resource_management::resource::reader::ResourceReaderBacking;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resource::{ReadTargets, ReadTargetsMut};
 use resource_management::resources::image::Image as ResourceImage;
-use resource_management::resources::material::{Material as ResourceMaterial, Shader, Value, Variant as ResourceVariant};
+use resource_management::resources::material::{
+	Material as ResourceMaterial, Shader, ShaderArtifact, Value, Variant as ResourceVariant,
+};
 use resource_management::resources::mesh::Mesh as ResourceMesh;
 use resource_management::types::ShaderTypes;
 use resource_management::Reference;

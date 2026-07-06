@@ -113,7 +113,8 @@ impl Frame<'_> {
 	}
 
 	pub fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
-		self.device.sync_buffer(buffer_handle);
+		self.device
+			.sync_buffer_for_sequence(buffer_handle, self.frame_key.sequence_index);
 	}
 
 	pub fn get_texture_slice_mut(&self, texture_handle: BaseImageHandle) -> &'static mut [u8] {
@@ -130,8 +131,9 @@ impl Frame<'_> {
 		self.device.write(descriptor_set_writes);
 	}
 
-	pub fn get_mut_dynamic_buffer_slice<'a, T: Copy>(&'a self, buffer_handle: DynamicBufferHandle<T>) -> &'a mut T {
-		self.device.dynamic_buffer_slice_mut(buffer_handle)
+	pub fn get_mut_dynamic_buffer_slice<'a, T: Copy>(&'a mut self, buffer_handle: DynamicBufferHandle<T>) -> &'a mut T {
+		self.device
+			.dynamic_buffer_slice_mut(buffer_handle, self.frame_key.sequence_index)
 	}
 
 	pub fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent) {
@@ -142,7 +144,19 @@ impl Frame<'_> {
 		&'a mut self,
 		command_buffer_handle: CommandBufferHandle,
 	) -> super::CommandBufferRecording<'a> {
-		self.device.begin_command_buffer(command_buffer_handle);
+		self.device
+			.begin_command_buffer(command_buffer_handle, self.frame_key.sequence_index);
+		self.device
+			.flush_pending_texture_syncs_for_sequence(command_buffer_handle, self.frame_key.sequence_index);
+		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
+	}
+
+	pub fn create_command_buffer_recording_without_implicit_sync<'a>(
+		&'a mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> super::CommandBufferRecording<'a> {
+		self.device
+			.begin_command_buffer(command_buffer_handle, self.frame_key.sequence_index);
 		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
 	}
 
@@ -207,6 +221,13 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		command_buffer_handle: CommandBufferHandle,
 	) -> Self::CBR<'record> {
 		Frame::create_command_buffer_recording(self, command_buffer_handle)
+	}
+
+	fn create_command_buffer_recording_without_implicit_sync<'record>(
+		&'record mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> Self::CBR<'record> {
+		Frame::create_command_buffer_recording_without_implicit_sync(self, command_buffer_handle)
 	}
 
 	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent) {

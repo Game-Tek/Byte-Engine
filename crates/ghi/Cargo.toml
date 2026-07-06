@@ -22,9 +22,6 @@ utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }
 bitflags = "2.9.0"
 smallvec = "1.15.1"
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-renderdoc = "0.12.1"
-
 [dependencies.resource-management]
 package = "byte-engine-resource-management"
 path = "../resource-management"
@@ -34,6 +31,7 @@ version = "0.1.0"
 windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "System", "Win32_System_LibraryLoader", "Win32_UI_Input", "Win32_Devices_HumanInterfaceDevice", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D_Dxc"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+renderdoc = "0.12.1"
 xcb = { version = "1.6.0", features=['xtest'] }
 wayland-client = "0.31.12"
 wayland-backend = { version = "0.3.12", features = ['client_system'] }

@@ -323,7 +323,10 @@ impl CommonShaderScope {
 					"float a = roughness*roughness; float a2 = a*a; float n_dot_h = max(dot(n, h), 0.0); float denom = ((n_dot_h*n_dot_h) * (a2 - 1.0) + 1.0); denom = PI * denom * denom; return a2 / denom;"
 						.into(),
 				),
-				None,
+				Some(
+					"float a = roughness * roughness; float a2 = a * a; float n_dot_h = max(dot(n, h), 0.0); float denom = ((n_dot_h * n_dot_h) * (a2 - 1.0) + 1.0); denom = PI * denom * denom; return a2 / denom;"
+						.into(),
+				),
 				Some(
 					"float a = roughness * roughness; float a2 = a * a; float n_dot_h = max(dot(n, h), 0.0); float denom = ((n_dot_h * n_dot_h) * (a2 - 1.0) + 1.0); denom = PI * denom * denom; return a2 / denom;"
 						.into(),
@@ -338,7 +341,9 @@ impl CommonShaderScope {
 			"f32",
 			vec![Node::raw_code(
 				Some("float r = (roughness + 1.0); float k = (r*r) / 8.0; return n_dot_v / (n_dot_v * (1.0 - k) + k);".into()),
-				None,
+				Some(
+					"float r = (roughness + 1.0); float k = (r * r) / 8.0; return n_dot_v / (n_dot_v * (1.0 - k) + k);".into(),
+				),
 				Some(
 					"float r = (roughness + 1.0); float k = (r * r) / 8.0; return n_dot_v / (n_dot_v * (1.0 - k) + k);".into(),
 				),
@@ -367,7 +372,7 @@ impl CommonShaderScope {
 			"vec3f",
 			vec![Node::raw_code(
 				Some("return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into()),
-				None,
+				Some("return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into()),
 				Some("return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into()),
 				&[],
 				&[],
@@ -383,9 +388,11 @@ impl CommonShaderScope {
 			"vec3f",
 			vec![Node::raw_code(
 				Some("return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into()),
-				None,
 				Some(
-					"return f0 + (max(float3(1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into(),
+					"return f0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into(),
+				),
+				Some(
+					"return f0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);".into(),
 				),
 				&[],
 				&[],
@@ -416,9 +423,12 @@ impl CommonShaderScope {
 					"BarycentricDeriv ret = BarycentricDeriv(vec3(0), vec3(0), vec3(0)); vec3 invW = 1.0 / vec3(pt0.w, pt1.w, pt2.w); vec2 ndc0 = pt0.xy * invW.x; vec2 ndc1 = pt1.xy * invW.y; vec2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(mat2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = vec3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = vec3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, vec3(1)); float ddySum = dot(ret.ddy, vec3(1)); vec2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0    + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0    + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum  *= (2.0 / winSize.x); ddySum  *= (2.0 / winSize.y);  float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum);  ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;"
 						.into(),
 				),
-				None,
 				Some(
-					"BarycentricDeriv ret; ret.lambda = float3(0); ret.ddx = float3(0); ret.ddy = float3(0); float3 invW = 1.0 / float3(pt0.w, pt1.w, pt2.w); float2 ndc0 = pt0.xy * invW.x; float2 ndc1 = pt1.xy * invW.y; float2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(float2x2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = float3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = float3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, float3(1)); float ddySum = dot(ret.ddy, float3(1)); float2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0 + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0 + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum *= (2.0 / winSize.x); ddySum *= (2.0 / winSize.y); float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum); ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;"
+					"BarycentricDeriv ret; ret.lambda = float3(0.0, 0.0, 0.0); ret.ddx = float3(0.0, 0.0, 0.0); ret.ddy = float3(0.0, 0.0, 0.0); float3 invW = 1.0 / float3(pt0.w, pt1.w, pt2.w); float2 ndc0 = pt0.xy * invW.x; float2 ndc1 = pt1.xy * invW.y; float2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(float2x2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = float3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = float3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, float3(1.0, 1.0, 1.0)); float ddySum = dot(ret.ddy, float3(1.0, 1.0, 1.0)); float2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0 + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0 + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum *= (2.0 / winSize.x); ddySum *= (2.0 / winSize.y); float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum); ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;"
+						.into(),
+				),
+				Some(
+					"BarycentricDeriv ret; ret.lambda = float3(0.0, 0.0, 0.0); ret.ddx = float3(0.0, 0.0, 0.0); ret.ddy = float3(0.0, 0.0, 0.0); float3 invW = 1.0 / float3(pt0.w, pt1.w, pt2.w); float2 ndc0 = pt0.xy * invW.x; float2 ndc1 = pt1.xy * invW.y; float2 ndc2 = pt2.xy * invW.z; float invDet = 1.0 / determinant(float2x2(ndc2 - ndc1, ndc0 - ndc1)); ret.ddx = float3(ndc1.y - ndc2.y, ndc2.y - ndc0.y, ndc0.y - ndc1.y) * invDet * invW; ret.ddy = float3(ndc2.x - ndc1.x, ndc0.x - ndc2.x, ndc1.x - ndc0.x) * invDet * invW; float ddxSum = dot(ret.ddx, float3(1.0, 1.0, 1.0)); float ddySum = dot(ret.ddy, float3(1.0, 1.0, 1.0)); float2 deltaVec = pixelNdc - ndc0; float interpInvW = invW.x + deltaVec.x * ddxSum + deltaVec.y * ddySum; float interpW = 1.0 / interpInvW; ret.lambda.x = interpW * (invW.x + deltaVec.x * ret.ddx.x + deltaVec.y * ret.ddy.x); ret.lambda.y = interpW * (0.0 + deltaVec.x * ret.ddx.y + deltaVec.y * ret.ddy.y); ret.lambda.z = interpW * (0.0 + deltaVec.x * ret.ddx.z + deltaVec.y * ret.ddy.z); ret.ddx *= (2.0 / winSize.x); ret.ddy *= (2.0 / winSize.y); ddxSum *= (2.0 / winSize.x); ddySum *= (2.0 / winSize.y); float interpW_ddx = 1.0 / (interpInvW + ddxSum); float interpW_ddy = 1.0 / (interpInvW + ddySum); ret.ddx = interpW_ddx * (ret.lambda * interpInvW + ret.ddx) - ret.lambda; ret.ddy = interpW_ddy * (ret.lambda * interpInvW + ret.ddy) - ret.lambda; return ret;"
 						.into(),
 				),
 				&[],
@@ -429,7 +439,7 @@ impl CommonShaderScope {
 		let calculate_barycentric_from_position = Node::function(
 			"calculate_barycentric_from_position",
 			vec![
-				Node::member("point", "vec3f"),
+				Node::member("position", "vec3f"),
 				Node::member("v0", "vec3f"),
 				Node::member("v1", "vec3f"),
 				Node::member("v2", "vec3f"),
@@ -437,12 +447,15 @@ impl CommonShaderScope {
 			"vec3f",
 			vec![Node::raw_code(
 				Some(
-					"vec3 edge0 = v1 - v0; vec3 edge1 = v2 - v0; vec3 point_delta = point - v0; float d00 = dot(edge0, edge0); float d01 = dot(edge0, edge1); float d11 = dot(edge1, edge1); float d20 = dot(point_delta, edge0); float d21 = dot(point_delta, edge1); float denom = d00 * d11 - d01 * d01; if (abs(denom) <= 1e-8) { return vec3(1.0, 0.0, 0.0); } float bary1 = (d11 * d20 - d01 * d21) / denom; float bary2 = (d00 * d21 - d01 * d20) / denom; return vec3(1.0 - bary1 - bary2, bary1, bary2);"
+					"vec3 edge0 = v1 - v0; vec3 edge1 = v2 - v0; vec3 point_delta = position - v0; float d00 = dot(edge0, edge0); float d01 = dot(edge0, edge1); float d11 = dot(edge1, edge1); float d20 = dot(point_delta, edge0); float d21 = dot(point_delta, edge1); float denom = d00 * d11 - d01 * d01; if (abs(denom) <= 1e-8) { return vec3(1.0, 0.0, 0.0); } float bary1 = (d11 * d20 - d01 * d21) / denom; float bary2 = (d00 * d21 - d01 * d20) / denom; return vec3(1.0 - bary1 - bary2, bary1, bary2);"
 						.into(),
 				),
-				None,
 				Some(
-					"float3 edge0 = v1 - v0; float3 edge1 = v2 - v0; float3 point_delta = point - v0; float d00 = dot(edge0, edge0); float d01 = dot(edge0, edge1); float d11 = dot(edge1, edge1); float d20 = dot(point_delta, edge0); float d21 = dot(point_delta, edge1); float denom = d00 * d11 - d01 * d01; if (abs(denom) <= 1e-8) { return float3(1.0, 0.0, 0.0); } float bary1 = (d11 * d20 - d01 * d21) / denom; float bary2 = (d00 * d21 - d01 * d20) / denom; return float3(1.0 - bary1 - bary2, bary1, bary2);"
+					"float3 edge0 = v1 - v0; float3 edge1 = v2 - v0; float3 point_delta = position - v0; float d00 = dot(edge0, edge0); float d01 = dot(edge0, edge1); float d11 = dot(edge1, edge1); float d20 = dot(point_delta, edge0); float d21 = dot(point_delta, edge1); float denom = d00 * d11 - d01 * d01; if (abs(denom) <= 1e-8) { return float3(1.0, 0.0, 0.0); } float bary1 = (d11 * d20 - d01 * d21) / denom; float bary2 = (d00 * d21 - d01 * d20) / denom; return float3(1.0 - bary1 - bary2, bary1, bary2);"
+						.into(),
+				),
+				Some(
+					"float3 edge0 = v1 - v0; float3 edge1 = v2 - v0; float3 point_delta = position - v0; float d00 = dot(edge0, edge0); float d01 = dot(edge0, edge1); float d11 = dot(edge1, edge1); float d20 = dot(point_delta, edge0); float d21 = dot(point_delta, edge1); float denom = d00 * d11 - d01 * d01; if (abs(denom) <= 1e-8) { return float3(1.0, 0.0, 0.0); } float bary1 = (d11 * d20 - d01 * d21) / denom; float bary2 = (d00 * d21 - d01 * d20) / denom; return float3(1.0 - bary1 - bary2, bary1, bary2);"
 						.into(),
 				),
 				&[],
@@ -463,9 +476,13 @@ impl CommonShaderScope {
 				return vec2(normalized_xy.x * 2.0 - 1.0, 1.0 - normalized_xy.y * 2.0);"
 						.into(),
 				),
-				None,
 				Some(
-					"float2 normalized_xy = (float2(pixel_coordinates) + float2(0.5)) / float2(image_extent);
+					"float2 normalized_xy = (float2(pixel_coordinates) + float2(0.5, 0.5)) / float2(image_extent);
+				return float2(normalized_xy.x * 2.0 - 1.0, 1.0 - normalized_xy.y * 2.0);"
+						.into(),
+				),
+				Some(
+					"float2 normalized_xy = (float2(pixel_coordinates) + float2(0.5, 0.5)) / float2(image_extent);
 				return float2(normalized_xy.x * 2.0 - 1.0, 1.0 - normalized_xy.y * 2.0);"
 						.into(),
 				),
@@ -487,7 +504,10 @@ impl CommonShaderScope {
 					"return vec3(dot(vec3(v0.x, v1.x, v2.x), interp), dot(vec3(v0.y, v1.y, v2.y), interp), dot(vec3(v0.z, v1.z, v2.z), interp));"
 						.into(),
 				),
-				None,
+				Some(
+					"return float3(dot(float3(v0.x, v1.x, v2.x), interp), dot(float3(v0.y, v1.y, v2.y), interp), dot(float3(v0.z, v1.z, v2.z), interp));"
+						.into(),
+				),
 				Some(
 					"return float3(dot(float3(v0.x, v1.x, v2.x), interp), dot(float3(v0.y, v1.y, v2.y), interp), dot(float3(v0.z, v1.z, v2.z), interp));"
 						.into(),
@@ -507,7 +527,7 @@ impl CommonShaderScope {
 			"vec2f",
 			vec![Node::raw_code(
 				Some("return vec2(dot(vec3(v0.x, v1.x, v2.x), interp), dot(vec3(v0.y, v1.y, v2.y), interp));".into()),
-				None,
+				Some("return float2(dot(float3(v0.x, v1.x, v2.x), interp), dot(float3(v0.y, v1.y, v2.y), interp));".into()),
 				Some("return float2(dot(float3(v0.x, v1.x, v2.x), interp), dot(float3(v0.y, v1.y, v2.y), interp));".into()),
 				&[],
 				&[],
@@ -520,7 +540,7 @@ impl CommonShaderScope {
 			"vec3f",
 			vec![Node::raw_code(
 				Some("v = v * 2.0f - 1.0f; return normalize(vec3(v, sqrt(max(0.0f, 1.0f - v.x * v.x - v.y * v.y))));".into()),
-				None,
+				Some("v = v * 2.0f - 1.0f; return normalize(float3(v, sqrt(max(0.0f, 1.0f - v.x * v.x - v.y * v.y))));".into()),
 				Some("v = v * 2.0f - 1.0f; return normalize(float3(v, sqrt(max(0.0f, 1.0f - v.x * v.x - v.y * v.y))));".into()),
 				&[],
 				&[],

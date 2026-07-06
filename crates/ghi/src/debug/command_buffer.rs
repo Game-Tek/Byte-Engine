@@ -59,6 +59,8 @@ impl<'a> CommandBufferRecording<'a> {
 
 	pub fn copy_images_to_buffer(&mut self, _copies: &[ImageBufferCopyDescriptor]) {}
 
+	pub fn sync_buffer(&mut self, _buffer_handle: impl Into<BaseBufferHandle>) {}
+
 	pub fn transfer_textures(
 		&mut self,
 		_texture_handles: &[graphics_hardware_interface::BaseImageHandle],

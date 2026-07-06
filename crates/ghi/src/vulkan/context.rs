@@ -2548,7 +2548,7 @@ impl crate::context::Context for Context {
 	where
 		Self: 'a;
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		self.device.has_errors()
 	}

@@ -97,7 +97,7 @@ impl crate::device::Device for Factory {
 	type Image = FactoryImage;
 	type Sampler = FactorySampler;
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		false
 	}

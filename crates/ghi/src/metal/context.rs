@@ -1043,7 +1043,7 @@ impl Context {
 }
 
 impl Context {
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	pub fn has_errors(&self) -> bool {
 		false
 	}
@@ -2424,7 +2424,7 @@ impl crate::context::Context for Context {
 	type QueueReference<'a> = crate::metal::queue::QueueReference<'a>;
 	type CommandBuffer<'a> = crate::metal::CommandBuffer<'a>;
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		Context::has_errors(self)
 	}

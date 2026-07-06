@@ -16,7 +16,7 @@ where
 	type Sampler;
 
 	/// Returns whether the underlying API has encountered any errors. Used during tests to assert whether the validation layers have caught any errors.
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool;
 
 	/// Creates a new rendering context that operates on this device.

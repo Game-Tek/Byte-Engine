@@ -42,7 +42,7 @@ impl crate::device::Device for Device {
 	type Image = crate::metal::factory::FactoryImage;
 	type Sampler = crate::metal::factory::FactorySampler;
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		false
 	}

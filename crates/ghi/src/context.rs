@@ -24,7 +24,7 @@ pub trait Context: ContextCreate {
 		Self: 'a;
 
 	/// Returns whether the underlying API has encountered any errors.
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool;
 
 	/// Returns whether the GPU device supports BC block-compressed texture

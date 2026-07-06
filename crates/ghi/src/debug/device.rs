@@ -22,7 +22,7 @@ impl Device {
 		Device {}
 	}
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	pub fn has_errors(&self) -> bool {
 		false
 	}

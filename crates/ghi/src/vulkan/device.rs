@@ -809,13 +809,13 @@ impl InnerDevice {
 		}
 	}
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	fn get_log_count(&self) -> u64 {
 		use std::sync::atomic::Ordering;
 		unsafe { &(*self.debug_data) }.error_count.load(Ordering::SeqCst)
 	}
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	pub(crate) fn has_errors(&self) -> bool {
 		self.get_log_count() > 0
 	}
@@ -879,7 +879,7 @@ impl crate::device::Device for Device {
 	type Image = FactoryImage;
 	type Sampler = FactorySampler;
 
-	#[cfg(debug_assertions)]
+	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		self.inner.as_ref().is_some_and(InnerDevice::has_errors)
 	}

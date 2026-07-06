@@ -423,6 +423,58 @@ mod tests {
 	}
 
 	#[test]
+	fn descriptor_arrays_keep_declared_dx12_slot_count() {
+		let Some((_instance, mut device, _queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let binding = crate::DescriptorSetBindingTemplate::combined_image_sampler_array(0, crate::Stages::COMPUTE, 1024);
+		let template = device.create_descriptor_set_template(None, &[binding]);
+
+		assert_eq!(device.descriptor_heap_descriptor_count_for_template(template, false), 1024);
+		assert_eq!(device.descriptor_heap_descriptor_count_for_template(template, true), 1);
+		assert_eq!(
+			device.descriptor_heap_slot_for_test(
+				template,
+				crate::descriptors::DescriptorType::CombinedImageSampler,
+				0,
+				1023,
+				false,
+			),
+			Some(1023)
+		);
+		assert_eq!(
+			device.descriptor_heap_slot_for_test(
+				template,
+				crate::descriptors::DescriptorType::CombinedImageSampler,
+				0,
+				1024,
+				false,
+			),
+			None
+		);
+		assert_eq!(
+			device.descriptor_heap_slot_for_test(
+				template,
+				crate::descriptors::DescriptorType::CombinedImageSampler,
+				0,
+				0,
+				true,
+			),
+			Some(0)
+		);
+		assert_eq!(
+			device.descriptor_heap_slot_for_test(
+				template,
+				crate::descriptors::DescriptorType::CombinedImageSampler,
+				0,
+				1,
+				true,
+			),
+			None
+		);
+	}
+
+	#[test]
 	fn dynamic_image_descriptors_materialize_per_frame_resources() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;

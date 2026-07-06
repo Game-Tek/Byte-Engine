@@ -1044,10 +1044,11 @@ impl Device {
 			.unwrap_or(0)
 	}
 
-	fn descriptor_count_for_heap(binding: &DescriptorSetBindingTemplate, _sampler_heap: bool) -> u32 {
-		// Keep DX12 descriptor ranges conservative until descriptor indexing support is queried and handled.
-		// Large bindless-style ranges can be invalid on lower resource binding tiers and can remove the device.
-		binding.descriptor_count.max(1).min(16)
+	fn descriptor_count_for_heap(binding: &DescriptorSetBindingTemplate, sampler_heap: bool) -> u32 {
+		if sampler_heap && matches!(binding.descriptor_type, DescriptorType::CombinedImageSampler) {
+			return 1;
+		}
+		binding.descriptor_count.max(1)
 	}
 
 	fn create_descriptor_heap(
@@ -1660,11 +1661,32 @@ impl Device {
 				&& std::mem::discriminant(&binding.descriptor_type) == std::mem::discriminant(&descriptor_type)
 			{
 				let descriptor_count = Self::descriptor_count_for_heap(binding, sampler_heap);
-				return Some(slot + array_element.min(descriptor_count.saturating_sub(1)));
+				return (array_element < descriptor_count).then_some(slot + array_element);
 			}
 			slot += Self::descriptor_count_for_heap(binding, sampler_heap);
 		}
 		None
+	}
+
+	#[cfg(test)]
+	pub(crate) fn descriptor_heap_descriptor_count_for_template(
+		&self,
+		template_handle: DescriptorSetTemplateHandle,
+		sampler_heap: bool,
+	) -> u32 {
+		self.descriptor_heap_descriptor_count(template_handle, sampler_heap)
+	}
+
+	#[cfg(test)]
+	pub(crate) fn descriptor_heap_slot_for_test(
+		&self,
+		template_handle: DescriptorSetTemplateHandle,
+		descriptor_type: DescriptorType,
+		binding_index: u32,
+		array_element: u32,
+		sampler_heap: bool,
+	) -> Option<u32> {
+		self.descriptor_heap_slot(template_handle, descriptor_type, binding_index, array_element, sampler_heap)
 	}
 
 	fn descriptor_cpu_handle(

@@ -1722,6 +1722,35 @@ impl Device {
 		}
 	}
 
+	fn create_transient_cpu_descriptor_heap(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
+		descriptor_count: u32,
+	) -> Option<ID3D12DescriptorHeap> {
+		let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
+			Type: heap_type,
+			NumDescriptors: descriptor_count,
+			Flags: Default::default(),
+			NodeMask: 0,
+		};
+		let heap = match unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc) } {
+			Ok(heap) => heap,
+			Err(error) => {
+				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+				self.log_dx12_error(format!(
+					"Failed to create transient CPU DX12 descriptor heap. Heap type: {:?}. Descriptor count: {descriptor_count}. Error: {error:?}. Device removed reason: {removed_reason:?}",
+					heap_type
+				));
+				return None;
+			}
+		};
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
+			command_buffer.staged_descriptor_heaps.push(heap.clone());
+		}
+		Some(heap)
+	}
+
 	fn reserve_staged_descriptor_range(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -2142,10 +2171,21 @@ impl Device {
 
 		let mut render_targets = [D3D12_RENDER_TARGET_BLEND_DESC::default(); 8];
 		let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
-		for (index, attachment) in builder.render_targets.iter().take(8).enumerate() {
-			render_targets[index] = Self::render_target_blend_desc(attachment.blend);
-			rtv_formats[index] = Self::dxgi_format(attachment.format)?;
+		let mut render_target_count = 0usize;
+		let mut depth_stencil_format = DXGI_FORMAT_UNKNOWN;
+		for attachment in builder.render_targets.iter() {
+			if attachment.format == Formats::Depth32 {
+				depth_stencil_format = DXGI_FORMAT_D32_FLOAT;
+				continue;
+			}
+			if render_target_count >= rtv_formats.len() {
+				break;
+			}
+			render_targets[render_target_count] = Self::render_target_blend_desc(attachment.blend);
+			rtv_formats[render_target_count] = Self::dxgi_format(attachment.format)?;
+			render_target_count += 1;
 		}
+		let has_depth_attachment = depth_stencil_format != DXGI_FORMAT_UNKNOWN;
 
 		self.graphics_pipeline_state_create_attempt_count += 1;
 		let desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
@@ -2164,7 +2204,7 @@ impl Device {
 			StreamOutput: Default::default(),
 			BlendState: D3D12_BLEND_DESC {
 				AlphaToCoverageEnable: BOOL(0),
-				IndependentBlendEnable: BOOL((builder.render_targets.len() > 1) as i32),
+				IndependentBlendEnable: BOOL((render_target_count > 1) as i32),
 				RenderTarget: render_targets,
 			},
 			SampleMask: u32::MAX,
@@ -2185,9 +2225,17 @@ impl Device {
 				ConservativeRaster: D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
 			},
 			DepthStencilState: D3D12_DEPTH_STENCIL_DESC {
-				DepthEnable: BOOL(0),
-				DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
-				DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+				DepthEnable: BOOL(has_depth_attachment as i32),
+				DepthWriteMask: if has_depth_attachment {
+					D3D12_DEPTH_WRITE_MASK_ALL
+				} else {
+					D3D12_DEPTH_WRITE_MASK_ZERO
+				},
+				DepthFunc: if has_depth_attachment {
+					D3D12_COMPARISON_FUNC_GREATER_EQUAL
+				} else {
+					D3D12_COMPARISON_FUNC_ALWAYS
+				},
 				StencilEnable: BOOL(0),
 				StencilReadMask: 0xff,
 				StencilWriteMask: 0xff,
@@ -2204,9 +2252,9 @@ impl Device {
 			},
 			IBStripCutValue: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
 			PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-			NumRenderTargets: builder.render_targets.len().min(8) as u32,
+			NumRenderTargets: render_target_count as u32,
 			RTVFormats: rtv_formats,
-			DSVFormat: DXGI_FORMAT_UNKNOWN,
+			DSVFormat: depth_stencil_format,
 			SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
 			NodeMask: 0,
 			CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
@@ -2254,10 +2302,21 @@ impl Device {
 
 		let mut render_targets = [Self::render_target_blend_desc(pipelines::raster::BlendMode::None); 8];
 		let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
-		for (index, attachment) in builder.render_targets.iter().take(8).enumerate() {
-			render_targets[index] = Self::render_target_blend_desc(attachment.blend);
-			rtv_formats[index] = Self::dxgi_format(attachment.format)?;
+		let mut render_target_count = 0usize;
+		let mut depth_stencil_format = DXGI_FORMAT_UNKNOWN;
+		for attachment in builder.render_targets.iter() {
+			if attachment.format == Formats::Depth32 {
+				depth_stencil_format = DXGI_FORMAT_D32_FLOAT;
+				continue;
+			}
+			if render_target_count >= rtv_formats.len() {
+				break;
+			}
+			render_targets[render_target_count] = Self::render_target_blend_desc(attachment.blend);
+			rtv_formats[render_target_count] = Self::dxgi_format(attachment.format)?;
+			render_target_count += 1;
 		}
+		let has_depth_attachment = depth_stencil_format != DXGI_FORMAT_UNKNOWN;
 
 		self.graphics_pipeline_state_create_attempt_count += 1;
 		let mut stream = MeshPipelineStateStream {
@@ -2283,7 +2342,7 @@ impl Device {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND,
 				value: D3D12_BLEND_DESC {
 					AlphaToCoverageEnable: BOOL(0),
-					IndependentBlendEnable: BOOL((builder.render_targets.len() > 1) as i32),
+					IndependentBlendEnable: BOOL((render_target_count > 1) as i32),
 					RenderTarget: render_targets,
 				},
 			},
@@ -2313,9 +2372,17 @@ impl Device {
 			depth_stencil: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL,
 				value: D3D12_DEPTH_STENCIL_DESC {
-					DepthEnable: BOOL(0),
-					DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
-					DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+					DepthEnable: BOOL(has_depth_attachment as i32),
+					DepthWriteMask: if has_depth_attachment {
+						D3D12_DEPTH_WRITE_MASK_ALL
+					} else {
+						D3D12_DEPTH_WRITE_MASK_ZERO
+					},
+					DepthFunc: if has_depth_attachment {
+						D3D12_COMPARISON_FUNC_GREATER_EQUAL
+					} else {
+						D3D12_COMPARISON_FUNC_ALWAYS
+					},
 					StencilEnable: BOOL(0),
 					StencilReadMask: 0xff,
 					StencilWriteMask: 0xff,
@@ -2325,13 +2392,13 @@ impl Device {
 			},
 			depth_stencil_format: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT,
-				value: DXGI_FORMAT_UNKNOWN,
+				value: depth_stencil_format,
 			},
 			render_targets: PipelineStateStreamSubobject {
 				subobject_type: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS,
 				value: D3D12_RT_FORMAT_ARRAY {
 					RTFormats: rtv_formats,
-					NumRenderTargets: builder.render_targets.len().min(8) as u32,
+					NumRenderTargets: render_target_count as u32,
 				},
 			},
 			sample_desc: PipelineStateStreamSubobject {
@@ -2785,6 +2852,7 @@ impl Device {
 			is_open: false,
 			recorded_work: false,
 			sequence_index: 0,
+			last_submission: None,
 		});
 
 		CommandBufferHandle((self.command_buffers.len() - 1) as u64)
@@ -4283,6 +4351,14 @@ impl Device {
 	}
 
 	pub(crate) fn begin_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle, sequence_index: u8) {
+		if let Some((synchronizer_handle, previous_sequence_index)) = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.and_then(|command_buffer| command_buffer.last_submission)
+		{
+			self.wait_for_synchronizer_sequence(synchronizer_handle, previous_sequence_index);
+		}
+
 		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) else {
 			return;
 		};
@@ -4304,6 +4380,7 @@ impl Device {
 		}
 		command_buffer.recorded_work = false;
 		command_buffer.sequence_index = sequence_index;
+		command_buffer.last_submission = None;
 		let _ = unsafe { allocator.Reset() };
 		let _ = unsafe { command_list.Reset(allocator, None) };
 		command_buffer.is_open = true;
@@ -4852,7 +4929,8 @@ impl Device {
 		let mut target_resources = Vec::new();
 		let mut depth_resource = None;
 		for attachment in attachments {
-			if self.attachment_format(attachment) == Formats::Depth32 {
+			let format = self.attachment_format(attachment);
+			if format == Formats::Depth32 {
 				let image_handle = self.attachment_image_handle(attachment, sequence_index);
 				self.set_image_optimized_clear_value(image_handle, attachment.clear);
 				let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
@@ -4882,6 +4960,7 @@ impl Device {
 			target_resources.push((
 				image_handle,
 				resource,
+				format,
 				attachment.load,
 				attachment.clear,
 				swapchain_backbuffer,
@@ -4907,7 +4986,8 @@ impl Device {
 				unsafe { self.device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) } as usize;
 			let start = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
 
-			for (slot, (image_handle, resource, load, clear, swapchain_backbuffer)) in target_resources.into_iter().enumerate()
+			for (slot, (image_handle, resource, format, load, clear, swapchain_backbuffer)) in
+				target_resources.into_iter().enumerate()
 			{
 				let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
 					ptr: start.ptr + slot * descriptor_size,
@@ -4934,9 +5014,33 @@ impl Device {
 					self.swapchain_backbuffer_bind_count += 1;
 				}
 				if !load {
-					let color = Self::clear_color_f32(clear);
-					unsafe {
-						command_list.ClearRenderTargetView(handle, &color, None);
+					if matches!(clear, ClearValue::Integer(..)) && format == Formats::U32 {
+						if let Some(image_handle) = image_handle {
+							self.record_image_clear(
+								command_buffer_handle,
+								crate::ImageHandle(image_handle),
+								clear,
+								sequence_index,
+							);
+							unsafe {
+								self.transition_tracked_image(
+									&command_list,
+									image_handle,
+									&resource,
+									D3D12_RESOURCE_STATE_RENDER_TARGET,
+								);
+							}
+						} else {
+							let color = Self::clear_color_f32(clear);
+							unsafe {
+								command_list.ClearRenderTargetView(handle, &color, None);
+							}
+						}
+					} else {
+						let color = Self::clear_color_f32(clear);
+						unsafe {
+							command_list.ClearRenderTargetView(handle, &color, None);
+						}
 					}
 					self.mark_command_buffer_work(command_buffer_handle);
 					self.render_target_clear_count += 1;
@@ -5337,6 +5441,9 @@ impl Device {
 			queue.queue.ExecuteCommandLists(&command_lists);
 		}
 		self.native_command_list_execute_count += 1;
+		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_index) {
+			command_buffer.last_submission = Some((synchronizer_handle, sequence_index));
+		}
 		self.signal_synchronizer_for_sequence(queue_handle, synchronizer_handle, sequence_index);
 	}
 
@@ -5682,7 +5789,13 @@ impl Device {
 			let Some((heap, descriptor_offset)) = self.reserve_staged_descriptor_range(command_buffer_handle, false, 1) else {
 				return;
 			};
+			let Some(cpu_heap) =
+				self.create_transient_cpu_descriptor_heap(command_buffer_handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)
+			else {
+				return;
+			};
 			let cpu_handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
+			let cpu_read_handle = self.descriptor_cpu_handle(&cpu_heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 0);
 			let gpu_handle = self.descriptor_gpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
 			let desc = Self::raw_buffer_clear_uav_desc(destination_size);
 
@@ -5695,8 +5808,10 @@ impl Device {
 				);
 				self.device
 					.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
+				self.device
+					.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_read_handle);
 				self.bind_active_staged_descriptor_heaps(command_buffer_handle);
-				command_list.ClearUnorderedAccessViewUint(gpu_handle, cpu_handle, &destination, &[0, 0, 0, 0], &[]);
+				command_list.ClearUnorderedAccessViewUint(gpu_handle, cpu_read_handle, &destination, &[0, 0, 0, 0], &[]);
 			}
 			self.mark_command_buffer_work(command_buffer_handle);
 			self.buffer_clear_count += 1;
@@ -6544,7 +6659,23 @@ impl Device {
 			);
 			return;
 		};
+		let Some(cpu_heap) =
+			self.create_transient_cpu_descriptor_heap(command_buffer_handle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1)
+		else {
+			self.record_image_clear_upload_fallback(
+				command_buffer_handle,
+				&command_list,
+				image_handle.0,
+				destination,
+				image_format,
+				extent,
+				clear,
+				sequence_index,
+			);
+			return;
+		};
 		let cpu_handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
+		let cpu_read_handle = self.descriptor_cpu_handle(&cpu_heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 0);
 		let gpu_handle = self.descriptor_gpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor_offset);
 		let desc = Self::texture_uav_desc(format, array_layers);
 
@@ -6557,15 +6688,17 @@ impl Device {
 			);
 			self.device
 				.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
+			self.device
+				.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_read_handle);
 			self.bind_active_staged_descriptor_heaps(command_buffer_handle);
 			match clear {
 				crate::ClearValue::Integer(r, g, b, a) => {
-					command_list.ClearUnorderedAccessViewUint(gpu_handle, cpu_handle, &destination, &[r, g, b, a], &[]);
+					command_list.ClearUnorderedAccessViewUint(gpu_handle, cpu_read_handle, &destination, &[r, g, b, a], &[]);
 				}
 				crate::ClearValue::Color(color) => {
 					command_list.ClearUnorderedAccessViewFloat(
 						gpu_handle,
-						cpu_handle,
+						cpu_read_handle,
 						&destination,
 						&[color.r, color.g, color.b, color.a],
 						&[],
@@ -6574,7 +6707,7 @@ impl Device {
 				crate::ClearValue::None => {
 					command_list.ClearUnorderedAccessViewFloat(
 						gpu_handle,
-						cpu_handle,
+						cpu_read_handle,
 						&destination,
 						&[0.0, 0.0, 0.0, 0.0],
 						&[],
@@ -6585,6 +6718,7 @@ impl Device {
 		}
 
 		self.mark_command_buffer_work(command_buffer_handle);
+		self.gpu_uploaded_images.insert(image_handle.0);
 	}
 
 	/// Records the legacy upload-backed clear path for textures that cannot be cleared through a DX12 UAV descriptor.
@@ -6943,6 +7077,10 @@ impl Device {
 
 		let result = unsafe { swapchain.swapchain.Present(sync_interval, DXGI_PRESENT(0)) };
 		if result.is_err() {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			self.log_dx12_error(format!(
+				"Failed to present DX12 swapchain. HRESULT: {result:?}. Device removed reason: {removed_reason:?}"
+			));
 			panic!(
 				"Failed to present the DXGI swapchain. The most likely cause is that the device was removed or the swapchain became invalid."
 			);
@@ -8282,6 +8420,7 @@ struct CommandBuffer {
 	is_open: bool,
 	recorded_work: bool,
 	sequence_index: u8,
+	last_submission: Option<(SynchronizerHandle, u8)>,
 }
 
 struct DescriptorHeapArena {
@@ -8626,23 +8765,33 @@ impl crate::device::Device for Device {
 		_stage: ShaderTypes,
 		_shader_binding_descriptors: impl IntoIterator<Item = BindingDescriptor>,
 	) -> Result<ShaderHandle, ()> {
-		panic!("DX12 detached shader creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+		panic!(
+			"DX12 detached shader creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
+		)
 	}
 
 	fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		panic!("DX12 detached raster pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+		panic!(
+			"DX12 detached raster pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
+		)
 	}
 
 	fn create_compute_pipeline(&mut self, _builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {
-		panic!("DX12 detached compute pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+		panic!(
+			"DX12 detached compute pipeline creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
+		)
 	}
 
 	fn build_image(&mut self, _builder: crate::image::Builder) -> Self::Image {
-		panic!("DX12 detached image creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+		panic!(
+			"DX12 detached image creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
+		)
 	}
 
 	fn build_sampler(&mut self, _builder: crate::sampler::Builder) -> Self::Sampler {
-		panic!("DX12 detached sampler creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait.")
+		panic!(
+			"DX12 detached sampler creation requires a detached device. The most likely cause is using the primary device after moving resource creation into the Device trait."
+		)
 	}
 }
 
@@ -8907,13 +9056,14 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS,
 	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0, D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH,
 	D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_QUEUE_DESC,
-	D3D12_COMMAND_QUEUE_FLAGS, D3D12_COMMAND_SIGNATURE_DESC, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_NEVER,
-	D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CONSTANT_BUFFER_VIEW_DESC,
-	D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_FRONT,
-	D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_STENCIL_DESC,
-	D3D12_DEPTH_STENCIL_VALUE, D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0, D3D12_DEPTH_WRITE_MASK_ZERO,
-	D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-	D3D12_DESCRIPTOR_HEAP_TYPE_DSV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE,
+	D3D12_COMMAND_QUEUE_FLAGS, D3D12_COMMAND_SIGNATURE_DESC, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_GREATER_EQUAL,
+	D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+	D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_BACK,
+	D3D12_CULL_MODE_FRONT, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DEPTH_STENCILOP_DESC,
+	D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_STENCIL_VALUE, D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0,
+	D3D12_DEPTH_WRITE_MASK_ALL, D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_DESC,
+	D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+	D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE,
 	D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND, D3D12_DESCRIPTOR_RANGE_TYPE, D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
 	D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
 	D3D12_DISPATCH_RAYS_DESC, D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE,

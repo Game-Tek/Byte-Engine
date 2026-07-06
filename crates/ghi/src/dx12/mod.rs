@@ -40,6 +40,10 @@ mod tests {
 
 	fn create_default_device_setup() -> Option<(Instance, Device, crate::QueueHandle)> {
 		let features = crate::device::Features::new().validation(false);
+		create_device_setup_with_features(features)
+	}
+
+	fn create_device_setup_with_features(features: crate::device::Features) -> Option<(Instance, Device, crate::QueueHandle)> {
 		let mut instance = Instance::new(features).ok()?;
 		let mut queue_handle = None;
 		let device = instance
@@ -2018,6 +2022,45 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn render_pass_clears_u32_render_targets_with_integer_values() {
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+			return;
+		};
+		let image = device.build_image(
+			crate::image::Builder::new(
+				crate::Formats::U32,
+				crate::Uses::RenderTarget | crate::Uses::Storage | crate::Uses::TransferSource,
+			)
+			.extent(::utils::Extent::rectangle(1, 1))
+			.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		let attachment = crate::AttachmentInformation::new(
+			image,
+			crate::Layouts::RenderTarget,
+			crate::ClearValue::Integer(u32::MAX, 0, 0, 0),
+			false,
+			true,
+		);
+		crate::command_buffer::CommandBufferRecording::start_render_pass(
+			&mut recording,
+			::utils::Extent::rectangle(1, 1),
+			&[attachment],
+		)
+		.end_render_pass();
+		let copies = crate::command_buffer::CommandBufferRecording::transfer_textures(&mut recording, &[image.into()]);
+		crate::command_buffer::CommandBufferRecording::execute(recording, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
+
+		assert_eq!(device.get_image_data(copies[0]), &[0xff, 0xff, 0xff, 0xff]);
+		assert_eq!(device.render_target_clear_count(), 1);
+		assert!(!device.has_errors());
+	}
+
+	#[test]
 	fn samplers_create_native_descriptors_from_builder_state() {
 		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
 			return;
@@ -2477,7 +2520,8 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 
 	#[test]
 	fn clear_device_only_buffer_records_native_uav_clear() {
-		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
 			return;
 		};
 		let buffer = device.build_buffer::<[u32; 4]>(
@@ -2486,16 +2530,45 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		);
 		let upload_resource_count = device.upload_resource_count();
 		*device.get_mut_buffer_slice(buffer) = [1, 2, 3, 4];
+		let synchronizer = device.create_synchronizer(None, false);
 
 		let command_buffer = device.create_command_buffer(None, queue_handle);
 		let mut recording = device.create_command_buffer_recording(command_buffer);
 		crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
 		drop(recording);
+		device.submit_command_buffer(command_buffer, synchronizer);
+		device.wait_for_synchronizer(synchronizer);
 
 		assert_eq!(*device.get_buffer_slice(buffer), [1, 2, 3, 4]);
 		assert_eq!(device.buffer_clear_count(), 1);
 		assert_eq!(device.upload_resource_count(), upload_resource_count);
 		assert_eq!(device.buffer_is_in_common_state(buffer.into()), Some(false));
+		assert!(!device.has_errors());
+	}
+
+	#[test]
+	fn reusing_command_buffer_waits_for_previous_submission_before_allocator_reset() {
+		let features = crate::device::Features::new().validation(true);
+		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {
+			return;
+		};
+		let buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage | crate::Uses::TransferDestination)
+				.device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		let synchronizer = device.create_synchronizer(None, false);
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+
+		for _ in 0..2 {
+			let mut recording = device.create_command_buffer_recording(command_buffer);
+			crate::command_buffer::CommandBufferRecording::clear_buffers(&mut recording, &[buffer.into()]);
+			drop(recording);
+			device.submit_command_buffer(command_buffer, synchronizer);
+		}
+		device.wait_for_synchronizer(synchronizer);
+
+		assert_eq!(device.buffer_clear_count(), 2);
+		assert!(!device.has_errors());
 	}
 
 	#[test]

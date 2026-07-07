@@ -1038,7 +1038,7 @@ pub struct MeshPrimitive {
 
 #[cfg(test)]
 mod tests {
-	use super::ShaderMesh;
+	use super::{LightData, LightingData, ShaderMesh};
 	use crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE;
 
 	#[test]
@@ -1069,6 +1069,33 @@ mod tests {
 			"Unexpected Visibility shader mesh material offset. The most likely cause is that the CPU-side mesh fields no longer match the shader struct."
 		);
 	}
+
+	#[test]
+	fn lighting_data_matches_gpu_buffer_layout() {
+		assert_eq!(
+			std::mem::size_of::<LightData>(),
+			80,
+			"Unexpected visibility LightData size. The most likely cause is that the CPU light buffer layout drifted from the generated shader struct."
+		);
+		assert_eq!(
+			std::mem::align_of::<LightData>(),
+			16,
+			"Unexpected visibility LightData alignment. The most likely cause is that ShaderVec3 padding changed."
+		);
+		assert_eq!(std::mem::offset_of!(LightData, position), 0);
+		assert_eq!(std::mem::offset_of!(LightData, color), 16);
+		assert_eq!(std::mem::offset_of!(LightData, light_type), 32);
+		assert_eq!(std::mem::offset_of!(LightData, cascades), 36);
+
+		assert_eq!(
+			std::mem::size_of::<LightingData>(),
+			1296,
+			"Unexpected visibility LightingData size. The most likely cause is that the CPU lighting buffer no longer matches the shader struct array stride."
+		);
+		assert_eq!(std::mem::align_of::<LightingData>(), 16);
+		assert_eq!(std::mem::offset_of!(LightingData, count), 0);
+		assert_eq!(std::mem::offset_of!(LightingData, lights), 16);
+	}
 }
 
 const LIT_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
@@ -1077,9 +1104,11 @@ const UNUSED_SET2_BINDING2_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 const LIGHTING_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
+		.buffer_stride(std::mem::size_of::<LightingData>() as u32)
 		.buffer_read_only(true);
 const MATERIALS_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
 	ghi::DescriptorSetBindingTemplate::new(5, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
+		.buffer_stride(std::mem::size_of::<MaterialData>() as u32)
 		.buffer_read_only(true);
 const AO_MAP_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	10,

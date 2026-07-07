@@ -86,6 +86,7 @@ pub struct Device {
 	primitive_topology_set_count: usize,
 	swapchain_backbuffer_bind_count: usize,
 	swapchain_present_transition_count: usize,
+	uav_barrier_count: usize,
 	acceleration_structure_resource_count: usize,
 	native_acceleration_structure_resource_count: usize,
 	acceleration_structure_instance_write_count: usize,
@@ -243,6 +244,7 @@ impl Device {
 			primitive_topology_set_count: 0,
 			swapchain_backbuffer_bind_count: 0,
 			swapchain_present_transition_count: 0,
+			uav_barrier_count: 0,
 			acceleration_structure_resource_count: 0,
 			native_acceleration_structure_resource_count: 0,
 			acceleration_structure_instance_write_count: 0,
@@ -3464,6 +3466,10 @@ impl Device {
 		self.swapchain_present_transition_count
 	}
 
+	pub(crate) fn uav_barrier_count(&self) -> usize {
+		self.uav_barrier_count
+	}
+
 	pub(crate) fn acceleration_structure_resource_count(&self) -> usize {
 		self.acceleration_structure_resource_count
 	}
@@ -5834,8 +5840,10 @@ impl Device {
 					.CreateUnorderedAccessView(&destination, None::<&ID3D12Resource>, Some(&desc), cpu_read_handle);
 				self.bind_active_staged_descriptor_heaps(command_buffer_handle);
 				command_list.ClearUnorderedAccessViewUint(gpu_handle, cpu_read_handle, &destination, &[0, 0, 0, 0], &[]);
+				Self::unordered_access_barrier(&command_list, &destination);
 			}
 			self.mark_command_buffer_work(command_buffer_handle);
+			self.uav_barrier_count += 1;
 			self.buffer_clear_count += 1;
 			return;
 		}
@@ -6225,6 +6233,19 @@ impl Device {
 		command_list.ResourceBarrier(&[barrier]);
 	}
 
+	unsafe fn unordered_access_barrier(command_list: &ID3D12GraphicsCommandList, resource: &ID3D12Resource) {
+		let barrier = D3D12_RESOURCE_BARRIER {
+			Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+			Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+			Anonymous: D3D12_RESOURCE_BARRIER_0 {
+				UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+					pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
+				}),
+			},
+		};
+		command_list.ResourceBarrier(&[barrier]);
+	}
+
 	unsafe fn transition_tracked_buffer(
 		&mut self,
 		command_list: &ID3D12GraphicsCommandList,
@@ -6238,6 +6259,10 @@ impl Device {
 			.copied()
 			.unwrap_or(D3D12_RESOURCE_STATE_COMMON);
 		if before == after {
+			if after == D3D12_RESOURCE_STATE_UNORDERED_ACCESS {
+				Self::unordered_access_barrier(command_list, resource);
+				self.uav_barrier_count += 1;
+			}
 			return;
 		}
 		Self::transition_resource(command_list, resource, before, after);
@@ -6257,6 +6282,10 @@ impl Device {
 			.copied()
 			.unwrap_or(D3D12_RESOURCE_STATE_COMMON);
 		if before == after {
+			if after == D3D12_RESOURCE_STATE_UNORDERED_ACCESS {
+				Self::unordered_access_barrier(command_list, resource);
+				self.uav_barrier_count += 1;
+			}
 			return;
 		}
 		Self::transition_resource(command_list, resource, before, after);
@@ -6737,9 +6766,11 @@ impl Device {
 				}
 				crate::ClearValue::Depth(_) => {}
 			}
+			Self::unordered_access_barrier(&command_list, &destination);
 		}
 
 		self.mark_command_buffer_work(command_buffer_handle);
+		self.uav_barrier_count += 1;
 		self.gpu_uploaded_images.insert(image_handle.0);
 	}
 
@@ -9117,8 +9148,8 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RAYTRACING_INSTANCE_DESC, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE, D3D12_RAYTRACING_PIPELINE_CONFIG,
 	D3D12_RAYTRACING_SHADER_CONFIG, D3D12_RAYTRACING_TIER_NOT_SUPPORTED, D3D12_RENDER_TARGET_BLEND_DESC,
 	D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-	D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_DESC,
-	D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAGS,
+	D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_TYPE_UAV,
+	D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAGS,
 	D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
 	D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_NONE,
 	D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATE_COMMON,
@@ -9127,9 +9158,9 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PRESENT,
 	D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, D3D12_RESOURCE_STATE_RENDER_TARGET,
 	D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_TRANSITION_BARRIER,
-	D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
-	D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_SIGNATURE_DESC,
-	D3D12_ROOT_SIGNATURE_FLAGS, D3D12_RT_FORMAT_ARRAY, D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE,
+	D3D12_RESOURCE_UAV_BARRIER, D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER,
+	D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+	D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAGS, D3D12_RT_FORMAT_ARRAY, D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE,
 	D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
 	D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
 	D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_SRV_DIMENSION_TEXTURE2DARRAY, D3D12_SRV_DIMENSION_TEXTURE3D, D3D12_STATE_OBJECT_DESC,

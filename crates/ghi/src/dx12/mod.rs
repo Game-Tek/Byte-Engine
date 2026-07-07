@@ -2074,6 +2074,28 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 	}
 
 	#[test]
+	fn uav_buffer_rebind_without_state_change_emits_uav_barrier() {
+		let Some((_instance, mut device, queue_handle)) = create_default_device_setup() else {
+			return;
+		};
+		let binding = crate::DescriptorSetBindingTemplate::storage_buffer(0, crate::Stages::COMPUTE);
+		let template = device.create_descriptor_set_template(None, &[binding.clone()]);
+		let set = device.create_descriptor_set(None, &template);
+		let buffer = device.build_buffer::<[u32; 4]>(
+			crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::DeviceOnly),
+		);
+		device.create_descriptor_binding(set, crate::BindingConstructor::buffer(&binding, buffer.into()));
+
+		let command_buffer = device.create_command_buffer(None, queue_handle);
+		let mut recording = device.create_command_buffer_recording(command_buffer);
+		recording.bind_descriptor_sets(&[set]);
+		recording.bind_descriptor_sets(&[set]);
+		drop(recording);
+
+		assert_eq!(device.uav_barrier_count(), 1);
+	}
+
+	#[test]
 	fn render_pass_clears_u32_render_targets_with_integer_values() {
 		let features = crate::device::Features::new().validation(true);
 		let Some((_instance, mut device, queue_handle)) = create_device_setup_with_features(features) else {

@@ -1,11 +1,12 @@
 //! This module contains logic for rendering cascaded shadow maps.
 
 use math::{length, mat::MatTranslate as _, normalize, Base as _, Matrix4, Vector3, Vector4};
+use smallvec::SmallVec;
 
 use super::view::View;
 
 /// Returns the camera-space near and far distance for each shadow cascade.
-pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) -> Vec<(f32, f32)> {
+pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) -> impl Iterator<Item = (f32, f32)> + ExactSizeIterator {
 	let near = camera_view.near();
 	let far = camera_view.far();
 	let range = far - near;
@@ -13,7 +14,7 @@ pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) 
 	let mut cascade_near = near;
 
 	(0..num_cascades)
-		.map(|index| {
+		.map(move |index| {
 			let p = (index + 1) as f32 / num_cascades as f32;
 			let log = near * ratio.powf(p);
 			let uniform = near + range * p;
@@ -22,7 +23,6 @@ pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) 
 			cascade_near = cascade_far;
 			cascade_range
 		})
-		.collect()
 }
 
 /// Returns the views for cascaded shadow mapping.
@@ -31,13 +31,13 @@ pub fn make_csm_views(
 	light_direction: Vector3,
 	num_cascades: usize,
 	shadow_map_resolution: u32,
-) -> Vec<View> {
+) -> impl Iterator<Item = View> + ExactSizeIterator {
 	let light_direction = normalize(light_direction);
 	let camera_far = camera_view.far();
 
 	make_cascade_split_ranges(camera_view, num_cascades)
 		.into_iter()
-		.map(|(cascade_near, cascade_far)| {
+		.map(move |(cascade_near, cascade_far)| {
 			let camera_view = camera_view.from_from_z_planes(cascade_near, cascade_far);
 			let camera_frustum_corners = camera_view.get_frustum_corners();
 			let center = camera_frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
@@ -59,7 +59,6 @@ pub fn make_csm_views(
 
 			snap_shadow_view_to_texels(light_view, center, radius, shadow_map_resolution)
 		})
-		.collect()
 }
 
 /// Expands the cascade sphere to a stable size that changes only in texel-sized steps.
@@ -179,7 +178,7 @@ mod tests {
 
 		// Test surface points at various depths inside each cascade.
 		for (cascade_idx, ((cascade_near, cascade_far), cascade_view)) in
-			cascade_ranges.iter().zip(cascade_views.iter()).enumerate()
+			cascade_ranges.zip(cascade_views).enumerate()
 		{
 			// Pick a surface point at the midpoint depth of this cascade, on the camera's z-axis.
 			let mid_depth = (cascade_near + cascade_far) / 2.0;
@@ -230,7 +229,7 @@ mod tests {
 		for light_dir in &light_directions {
 			let cascade_views = super::make_csm_views(camera_view, *light_dir, 4, 2048);
 
-			for (i, view) in cascade_views.iter().enumerate() {
+			for (i, view) in cascade_views.enumerate() {
 				let m = view.view();
 
 				// Check that the 3x3 rotation part is orthonormal.

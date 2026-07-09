@@ -39,6 +39,8 @@ pub struct GraphicsApplication {
 
 	world_factory: Factory<DefaultWorld>,
 	world: DefaultWorld,
+	cameras_listener: DefaultListener<crate::core::factory::CreateMessage<Camera>>,
+	renderer_transforms_listener: DefaultListener<TransformationUpdate>,
 
 	input_system: input::InputManager,
 	gamepad_system: Option<input::gamepad::GamepadSystem>,
@@ -112,6 +114,8 @@ impl Application for GraphicsApplication {
 		let window_factory_listener = window_factory.listener();
 
 		let world = DefaultWorld::new();
+		let cameras_listener = world.camera_factory().listener();
+		let renderer_transforms_listener = world.transforms_channel().listener();
 
 		GraphicsApplication {
 			application,
@@ -125,6 +129,8 @@ impl Application for GraphicsApplication {
 
 			world_factory: Factory::new(),
 			world,
+			cameras_listener,
+			renderer_transforms_listener,
 
 			input_system,
 			gamepad_system,
@@ -277,10 +283,7 @@ impl GraphicsApplication {
 			self.input_system.update(&self.application.frame_allocator);
 		}
 
-		let mut cameras_listener = self.world.camera_factory().listener();
-		let mut renderer_transforms_listener = self.world.transforms_channel().listener();
 		let mut physics_transforms_listener = self.world.transforms_channel().listener();
-		let light_listener = self.world.light_factory().listener();
 
 		let result = {
 			let span = debug_span!("GraphicsApplication::user_tick");
@@ -297,8 +300,7 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::prepare_renderer_state");
 			let _enter = span.enter();
-			let mut camera_messages = self.world.camera_factory_mut().drain_created_before_listener();
-			camera_messages.extend(cameras_listener.to_vec());
+			let camera_messages = self.world.camera_factory_mut().drain_created_before_listener();
 
 			let window_listener = &mut self.window_factory.1;
 
@@ -309,13 +311,17 @@ impl GraphicsApplication {
 			for message in camera_messages {
 				self.renderer.create_camera(*message.handle(), message.into_data());
 			}
+
+			while let Some(message) = self.cameras_listener.read() {
+				self.renderer.create_camera(*message.handle(), message.into_data());
+			}
 		}
 
 		{
 			let span = debug_span!("GraphicsApplication::render_frame");
 			let _enter = span.enter();
 			let frame_allocator = &self.application.frame_allocator;
-			self.renderer.prepare(&mut renderer_transforms_listener, frame_allocator);
+			self.renderer.prepare(&mut self.renderer_transforms_listener, frame_allocator);
 		}
 
 		{
@@ -483,7 +489,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
 			frame_allocator: &'a bumpalo::Bump,
-		) -> Option<Vec<rendering::render_pass::RenderPassReturn<'a>>> {
+		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
 			while let Some(message) = self.mesh_receiver.read() {
 				let handle = *message.handle();
 
@@ -651,7 +657,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
 			frame_allocator: &'a bumpalo::Bump,
-		) -> Option<Vec<rendering::render_pass::RenderPassReturn<'a>>> {
+		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
 			self.request_pending_lights();
 			self.request_pending_meshes();
 
@@ -845,7 +851,7 @@ use crate::{
 use crate::{
 	gameplay::anchor::AnchorSystem,
 	input, physics,
-	rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window},
+	rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window, Camera},
 };
 mod defaults;
 mod integrations;

@@ -52,6 +52,7 @@ where
 /// - `gpu_validation`: Whether to enable on GPU validation. This can provide more extensive validation at the expense of performance. Default is `false`.
 /// - `api_dump`: Whether to enable API dump. This will print all API calls to the console. Default is `false`.
 /// - `ray_tracing`: Whether to enable ray tracing. This will enable ray tracing features in the API. Default is `false`.
+/// - `debug_labels`: Whether to assign API object labels and command debug groups. Default is `false`.
 /// - `debug_log_function`: A function to log debug messages. If none is provided, `println!` will be used. Default is `None`.
 /// - `gpu`: The GPU to use. If `None`, the most appropriate(as defined during device creation) available GPU will be used. Default is `None`.
 /// - `sparse`: Whether to enable sparse resources. This can provide more efficient memory usage. Default is `false`.
@@ -63,6 +64,7 @@ pub struct Features {
 	pub(crate) gpu_validation: bool,
 	pub(crate) api_dump: bool,
 	pub(crate) ray_tracing: bool,
+	pub(crate) debug_labels: bool,
 	pub(crate) debug_log_function: Option<fn(&str)>,
 	pub(crate) gpu: Option<&'static str>,
 	pub(crate) sparse: bool,
@@ -83,6 +85,7 @@ impl Features {
 			gpu_validation: false,
 			api_dump: false,
 			ray_tracing: false,
+			debug_labels: false,
 			debug_log_function: None,
 			gpu: None,
 			sparse: false,
@@ -108,6 +111,11 @@ impl Features {
 
 	pub fn ray_tracing(mut self, ray_tracing: bool) -> Self {
 		self.ray_tracing = ray_tracing;
+		self
+	}
+
+	pub fn debug_labels(mut self, debug_labels: bool) -> Self {
+		self.debug_labels = debug_labels;
 		self
 	}
 

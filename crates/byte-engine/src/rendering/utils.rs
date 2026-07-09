@@ -210,6 +210,60 @@ impl<I> MeshBuffersStats<I> {
 		}
 	}
 
+	pub fn get_instance_batches_in<'a>(&self, allocator: &'a bumpalo::Bump) -> Vec<InstanceBatch, &'a bumpalo::Bump> {
+		let mut batches = Vec::with_capacity_in(self.instances.len(), allocator);
+		let mut current_batch: Option<(usize, InstanceBatch)> = None;
+
+		for instance_id in 0..self.instances.slots_len() {
+			let Some((mesh_id, _)) = self.instances.get_slot(instance_id) else {
+				if let Some((_, batch)) = current_batch.take() {
+					batches.push(batch);
+				}
+				continue;
+			};
+
+			let mesh = &self.meshes.get(mesh_id).unwrap();
+			match &mut current_batch {
+				Some((current_mesh_id, batch)) if current_mesh_id == mesh_id => {
+					batch.instance_count += 1;
+				}
+				Some(_) => {
+					let (_, batch) = current_batch
+						.replace((
+							*mesh_id,
+							InstanceBatch {
+								index_count: mesh.index_count,
+								instance_count: 1,
+								base_vertex: mesh.base_vertex,
+								base_index: mesh.base_index,
+								base_instance: instance_id,
+							},
+						))
+						.unwrap();
+					batches.push(batch);
+				}
+				None => {
+					current_batch = Some((
+						*mesh_id,
+						InstanceBatch {
+							index_count: mesh.index_count,
+							instance_count: 1,
+							base_vertex: mesh.base_vertex,
+							base_index: mesh.base_index,
+							base_instance: instance_id,
+						},
+					));
+				}
+			}
+		}
+
+		if let Some((_, batch)) = current_batch {
+			batches.push(batch);
+		}
+
+		batches
+	}
+
 	pub fn vertex_offset(&self) -> usize {
 		self.vertex_count
 	}

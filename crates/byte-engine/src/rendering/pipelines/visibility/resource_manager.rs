@@ -21,6 +21,8 @@ pub(crate) struct VisibilityPipelineResourceManager {
 	work_completions: Sender<VisibilityResourceCompletion>,
 }
 
+type CompletionList = SmallVec<[VisibilityResourceCompletion; 16]>;
+
 impl VisibilityPipelineResourceManager {
 	pub(crate) fn spawn(
 		context: &mut ghi::implementation::Context,
@@ -307,25 +309,22 @@ impl VisibilityPipelineResourceManager {
 
 	/// Reserves a bindless texture slot and reports whether the slot was newly created.
 	fn reserve_texture_slot(&mut self, texture_id: &str) -> (u32, bool) {
-		let texture_id = texture_id.to_string();
-
-		match self.images_by_resource.entry(texture_id) {
-			Entry::Occupied(v) => (*v.get() as u32, false),
-			Entry::Vacant(v) => {
-				let idx = self.images.len() as u32;
-
-				if idx as usize >= 1024 {
-					panic!(
-						"Visibility texture limit exceeded. The most likely cause is that the scene created more texture variants than the visibility pipeline supports."
-					);
-				}
-
-				self.images.push(ResourceStates::pending(()));
-				v.insert(idx as usize);
-
-				(idx, true)
-			}
+		if let Some(index) = self.images_by_resource.get(texture_id) {
+			return (*index as u32, false);
 		}
+
+		let idx = self.images.len() as u32;
+
+		if idx as usize >= 1024 {
+			panic!(
+				"Visibility texture limit exceeded. The most likely cause is that the scene created more texture variants than the visibility pipeline supports."
+			);
+		}
+
+		self.images.push(ResourceStates::pending(()));
+		self.images_by_resource.insert(texture_id.to_string(), idx as usize);
+
+		(idx, true)
 	}
 
 	/// Reserves a material slot for a mesh primitive.
@@ -339,25 +338,23 @@ impl VisibilityPipelineResourceManager {
 
 	/// Reserves a material slot and reports whether the slot was newly created.
 	fn reserve_material_slot(&mut self, material_id: &str) -> (u32, bool) {
-		let material_id = material_id.to_string();
-
-		match self.material_by_name.entry(material_id.clone()) {
-			Entry::Occupied(v) => (*v.get() as u32, false),
-			Entry::Vacant(v) => {
-				let idx = self.materials.len() as u32;
-
-				if idx as usize >= MAX_MATERIALS {
-					panic!(
-						"Visibility material limit exceeded. The most likely cause is that the scene created more material variants than the visibility pipeline supports."
-					);
-				}
-
-				self.materials.push(ResourceStates::pending(material_id));
-				v.insert(idx as usize);
-
-				(idx, true)
-			}
+		if let Some(index) = self.material_by_name.get(material_id) {
+			return (*index as u32, false);
 		}
+
+		let idx = self.materials.len() as u32;
+
+		if idx as usize >= MAX_MATERIALS {
+			panic!(
+				"Visibility material limit exceeded. The most likely cause is that the scene created more material variants than the visibility pipeline supports."
+			);
+		}
+
+		let material_id = material_id.to_string();
+		self.materials.push(ResourceStates::pending(material_id.clone()));
+		self.material_by_name.insert(material_id, idx as usize);
+
+		(idx, true)
 	}
 
 	/// Records a mesh source upload and returns render-facing mesh metadata for scene resolution.
@@ -505,8 +502,8 @@ impl VisibilityPipelineResourceManagerClient {
 	}
 
 	/// Drains completed resource work without blocking the render thread.
-	pub(crate) fn drain_completions(&mut self) -> Vec<VisibilityResourceCompletion> {
-		let mut completions = Vec::new();
+	pub(crate) fn drain_completions(&mut self) -> CompletionList {
+		let mut completions = CompletionList::new();
 		while let Ok(completion) = self.completions.try_recv() {
 			completions.push(completion);
 		}
@@ -553,7 +550,7 @@ impl VisibilityPipelineResourceManagerWorker {
 	}
 
 	/// Tracks resources handled by a submitted transfer frame.
-	pub(crate) fn track_submitted_uploads(&mut self, frame_key: ghi::FrameKey, completions: Vec<VisibilityResourceCompletion>) {
+	pub(crate) fn track_submitted_uploads(&mut self, frame_key: ghi::FrameKey, completions: CompletionList) {
 		if completions.is_empty() {
 			return;
 		}
@@ -622,7 +619,7 @@ impl VisibilityPipelineResourceManagerWorker {
 		slice: &mut utils::BufferAllocator<'buffer>,
 	) -> TransferUploadPrepareResult {
 		let mut recorded_work = false;
-		let mut completions = Vec::new();
+		let mut completions = CompletionList::new();
 		const TEXTURE_UPLOAD_ALIGNMENT: usize = 256;
 
 		while let Some((key, source)) = self.pending_mesh_uploads.pop_front() {
@@ -690,13 +687,13 @@ impl VisibilityPipelineResourceManagerWorker {
 /// The `TransferUploadPrepareResult` struct tracks transfer work and resources handled by a recording.
 pub(crate) struct TransferUploadPrepareResult {
 	pub(crate) recorded_work: bool,
-	pub(crate) completions: Vec<VisibilityResourceCompletion>,
+	pub(crate) completions: CompletionList,
 }
 
 /// The `SubmittedUploadBatch` struct holds resource completions until a transfer frame is complete.
 struct SubmittedUploadBatch {
 	frame_key: ghi::FrameKey,
-	completions: Vec<VisibilityResourceCompletion>,
+	completions: CompletionList,
 }
 
 #[derive(PartialEq, Eq)]
@@ -1482,7 +1479,6 @@ impl Default for Settings {
 	}
 }
 
-use std::collections::hash_map::Entry;
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -1509,6 +1505,7 @@ use resource_management::resources::material::{
 use resource_management::resources::mesh::Mesh as ResourceMesh;
 use resource_management::types::ShaderTypes;
 use resource_management::Reference;
+use smallvec::SmallVec;
 use utils::hash::{HashMap, HashMapExt};
 use utils::stale_map::{Entry as StaleEntry, StaleHashMap};
 use utils::sync::RwLock;

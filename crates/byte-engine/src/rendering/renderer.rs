@@ -56,6 +56,7 @@ impl Renderer {
 	/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
 	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
+	/// - `render.debug.labels`: Enables graphics API object labels and command debug groups. Defaults to `render.debug`.
 	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics context. Defaults to true.
 	/// - `render.startup.defer-sink-setup`: Presents the first window frame before constructing sink render pipelines.
 	///   Defaults to false.
@@ -80,6 +81,13 @@ impl Renderer {
 			settings
 		};
 
+		let settings = if let Some(param) = parameters.get_parameter("render.debug.labels") {
+			settings.debug_labels(param.as_bool_simple())
+		} else {
+			let validation = settings.validation;
+			settings.debug_labels(validation)
+		};
+
 		let settings = if let Some(param) = parameters.get_parameter("render.ghi.features.mesh-shading") {
 			settings.mesh_shading(param.as_bool_simple())
 		} else {
@@ -94,6 +102,7 @@ impl Renderer {
 			.validation(settings.validation)
 			.api_dump(settings.api_dump)
 			.gpu_validation(settings.extended_validation)
+			.debug_labels(settings.debug_labels)
 			.debug_log_function(|message| {
 				let backtrace = std::backtrace::Backtrace::force_capture().to_string();
 				let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -125,7 +134,11 @@ impl Renderer {
 				log::warn!(
 					"Renderer validation was requested but could not be enabled: {error} Falling back to renderer validation disabled."
 				);
-				features = features.validation(false).gpu_validation(false).api_dump(false);
+				features = features
+					.validation(false)
+					.gpu_validation(false)
+					.api_dump(false)
+					.debug_labels(false);
 				ghi::implementation::Instance::new(features).unwrap()
 			}
 			Err(error) => panic!("Failed to create GHI instance: {error}"),
@@ -477,7 +490,7 @@ impl Renderer {
 
 					let pipeline_managers = pipeline_managers.iter_mut().enumerate();
 
-					let pipeline_manager_commands: SmallVec<[(PipelineManagerId, Vec<RenderPassReturn<'_>>); 16]> = {
+					let pipeline_manager_commands: SmallVec<[(PipelineManagerId, SmallVec<[RenderPassReturn<'_>; 16]>); 16]> = {
 						let span = debug_span!("Renderer::prepare_pipeline_managers");
 						let _enter = span.enter();
 						pipeline_managers
@@ -671,6 +684,8 @@ pub struct Settings {
 	api_dump: bool,
 	/// Controls wheter to enable or not some extra (bbut expensive) validation for the graphics API. This can include GPU validation. Depends on `validation` being enabled.
 	extended_validation: bool,
+	/// Controls whether graphics API object labels and command debug groups are emitted.
+	debug_labels: bool,
 	/// Controls whether to enable or not mesh shading on the GHI context.
 	mesh_shading: bool,
 }
@@ -685,6 +700,7 @@ impl Settings {
 			validation: cfg!(debug_assertions),
 			api_dump: false,
 			extended_validation: false,
+			debug_labels: cfg!(debug_assertions),
 			mesh_shading: true,
 		}
 	}
@@ -701,6 +717,11 @@ impl Settings {
 
 	pub fn extended_validation(mut self, value: bool) -> Self {
 		self.extended_validation = value;
+		self
+	}
+
+	pub fn debug_labels(mut self, value: bool) -> Self {
+		self.debug_labels = value;
 		self
 	}
 
@@ -796,7 +817,7 @@ impl RenderTargets {
 		self.get_image_index(name, sink_id).and_then(|index| self.images.get(index))
 	}
 
-	pub fn get_attachment_infos(&self, sink_id: usize) -> Vec<ghi::AttachmentInformation> {
+	pub fn get_attachment_infos(&self, sink_id: usize) -> SmallVec<[ghi::AttachmentInformation; 8]> {
 		let attachments = self
 			.by_sink_index
 			.iter()
@@ -829,13 +850,17 @@ impl RenderTargets {
 		&self,
 		sink_id: usize,
 		resources: &[(String, ghi::AccessPolicies)],
-	) -> Vec<ghi::AttachmentInformation> {
-		let mut accesses_by_name = HashMap::new();
+	) -> SmallVec<[ghi::AttachmentInformation; 8]> {
+		let mut accesses_by_name = SmallVec::<[(&str, ghi::AccessPolicies); 8]>::new();
 		for (name, access) in resources {
-			accesses_by_name
-				.entry(name.as_str())
-				.and_modify(|existing| *existing |= *access)
-				.or_insert(*access);
+			if let Some((_, existing)) = accesses_by_name
+				.iter_mut()
+				.find(|(existing_name, _)| *existing_name == name.as_str())
+			{
+				*existing |= *access;
+			} else {
+				accesses_by_name.push((name.as_str(), *access));
+			}
 		}
 
 		accesses_by_name

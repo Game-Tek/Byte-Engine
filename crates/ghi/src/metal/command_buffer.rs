@@ -3,16 +3,14 @@ use std::{
 	ptr::NonNull,
 };
 
-use ::utils::{
-	hash::{HashMap, HashSet},
-	Extent,
-};
+use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
 	MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder,
 	MTLTexture,
 };
+use smallvec::SmallVec;
 
 use super::*;
 use crate::metal::swapchain::Swapchain;
@@ -95,10 +93,11 @@ fn replace_texture_from_bytes(
 	for slice in 0..array_layers as usize {
 		let offset = slice * bytes_per_image;
 		let end = offset + bytes_per_image;
-		utils::debug_compressed_upload(format, 0, slice, extent, bytes_per_row, bytes_per_image, offset);
+
 		let Some(slice_bytes) = bytes.get(offset..end) else {
 			break;
 		};
+
 		let staging_ptr = NonNull::new(slice_bytes.as_ptr() as *mut std::ffi::c_void)
 			.expect("Texture staging pointer was null. The most likely cause is a zero-sized texture.");
 
@@ -136,6 +135,7 @@ fn encode_texture_clear(
 	format: crate::Formats,
 	array_layers: u32,
 	clear_value: graphics_hardware_interface::ClearValue,
+	debug_labels: bool,
 ) {
 	let rpd = mtl::MTLRenderPassDescriptor::new();
 	if array_layers > 1 {
@@ -160,7 +160,7 @@ fn encode_texture_clear(
 		"Metal render command encoder creation failed. The most likely cause is that the command buffer could not start an image clear pass.",
 	);
 	#[cfg(debug_assertions)]
-	{
+	if debug_labels {
 		let label = NSString::from_str("Image Clear");
 		encoder.setLabel(Some(&label));
 	}
@@ -178,6 +178,7 @@ pub(super) struct RecordingDevice<'a> {
 	pub(super) pipelines: &'a [Pipeline],
 	pub(super) swapchains: &'a [Swapchain],
 	pub(super) next_texture_copy_handle: &'a Cell<u64>,
+	pub(super) debug_labels: bool,
 }
 
 /// The `RecordingCommit` struct carries recording results back into the owning device after encoding ends.
@@ -191,6 +192,7 @@ pub(super) struct RecordingCommit<'a> {
 	pub(super) texture_copies: &'a mut Vec<Vec<u8>>,
 }
 
+// TODO: use frame allocator for this
 pub struct CommandBufferRecording<'a> {
 	device: RecordingDevice<'a>,
 	commit: Option<RecordingCommit<'a>>,
@@ -200,32 +202,34 @@ pub struct CommandBufferRecording<'a> {
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	#[cfg(debug_assertions)]
 	debug_regions: RefCell<Vec<String>>,
-	state_updates: HashMap<PrivateHandles, TransitionState>,
-	compute_written_resources: HashSet<PrivateHandles>,
+	state_updates: SmallVec<[(PrivateHandles, TransitionState); 256]>,
+	compute_written_resources: SmallVec<[PrivateHandles; 64]>,
 	pending_compute_barrier_scope: mtl::MTLBarrierScope,
-	texture_copies: Vec<(graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
+	texture_copies: SmallVec<[(graphics_hardware_interface::TextureCopyHandle, Vec<u8>); 4]>,
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	bound_descriptor_set_handles: Vec<(u32, DescriptorSetHandle)>,
-	bound_vertex_buffers: Vec<(graphics_hardware_interface::BaseBufferHandle, usize)>,
+	bound_descriptor_set_handles: SmallVec<[(u32, DescriptorSetHandle); 4]>,
+	bound_vertex_buffers: SmallVec<[(graphics_hardware_interface::BaseBufferHandle, usize); 8]>,
 	bound_vertex_layout: Option<VertexLayoutHandle>,
 	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
-	push_constant_data: Vec<u8>,
+	push_constant_data: SmallVec<[u8; 128]>,
 	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLComputeCommandEncoder>>>,
 	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTLRenderCommandEncoder>>>,
-	drawables: Vec<(
-		graphics_hardware_interface::SwapchainHandle,
-		Retained<ProtocolObject<dyn CAMetalDrawable>>,
-	)>,
+	drawables: SmallVec<
+		[(
+			graphics_hardware_interface::SwapchainHandle,
+			Retained<ProtocolObject<dyn CAMetalDrawable>>,
+		); 4],
+	>,
 	_autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 }
 
 pub struct FinishedCommandBuffer<'a> {
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	pub(crate) command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
-	pub(crate) state_updates: HashMap<PrivateHandles, TransitionState>,
-	pub(crate) texture_copies: Vec<(graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
+	pub(crate) state_updates: SmallVec<[(PrivateHandles, TransitionState); 256]>,
+	pub(crate) texture_copies: SmallVec<[(graphics_hardware_interface::TextureCopyHandle, Vec<u8>); 4]>,
 	pub(crate) _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -345,7 +349,7 @@ impl<'a> CommandBufferRecording<'a> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Buffer Upload");
 			blit_encoder.setLabel(Some(&label));
 		}
@@ -369,10 +373,12 @@ impl<'a> CommandBufferRecording<'a> {
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
-		drawables: Vec<(
-			graphics_hardware_interface::SwapchainHandle,
-			Retained<ProtocolObject<dyn CAMetalDrawable>>,
-		)>,
+		drawables: SmallVec<
+			[(
+				graphics_hardware_interface::SwapchainHandle,
+				Retained<ProtocolObject<dyn CAMetalDrawable>>,
+			); 4],
+		>,
 		autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 	) -> Self {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
@@ -386,19 +392,19 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer,
 			#[cfg(debug_assertions)]
 			debug_regions: RefCell::new(Vec::new()),
-			state_updates: HashMap::default(),
-			compute_written_resources: HashSet::default(),
+			state_updates: SmallVec::new(),
+			compute_written_resources: SmallVec::new(),
 			pending_compute_barrier_scope: mtl::MTLBarrierScope(0),
-			texture_copies: Vec::new(),
+			texture_copies: SmallVec::new(),
 			drawables,
 			active_pipeline_layout: None,
 			bound_pipeline_layout: None,
 			bound_pipeline: None,
-			bound_descriptor_set_handles: Vec::new(),
-			bound_vertex_buffers: Vec::new(),
+			bound_descriptor_set_handles: SmallVec::new(),
+			bound_vertex_buffers: SmallVec::new(),
 			bound_vertex_layout: None,
 			bound_index_buffer: None,
-			push_constant_data: Vec::new(),
+			push_constant_data: SmallVec::new(),
 			active_compute_encoder: None,
 			active_render_encoder: None,
 			_autorelease_pool: autorelease_pool,
@@ -432,15 +438,18 @@ impl<'a> CommandBufferRecording<'a> {
 	fn refresh_active_encoder_labels(&self) {
 		if let Some(encoder) = self.active_compute_encoder.as_ref() {
 			#[cfg(debug_assertions)]
-			{
+			if self.device.debug_labels {
 				let label = self.current_encoder_label("Compute Pass");
 				encoder.setLabel(Some(&label));
 			}
 		}
 
 		if let Some(encoder) = self.active_render_encoder.as_ref() {
-			let label = self.current_encoder_label("Render Pass");
-			encoder.setLabel(Some(&label));
+			#[cfg(debug_assertions)]
+			if self.device.debug_labels {
+				let label = self.current_encoder_label("Render Pass");
+				encoder.setLabel(Some(&label));
+			}
 		}
 	}
 
@@ -454,7 +463,7 @@ impl<'a> CommandBufferRecording<'a> {
 				"Metal compute command encoder creation failed. The most likely cause is that the command buffer could not start a compute pass.",
 			);
 			#[cfg(debug_assertions)]
-			{
+			if self.device.debug_labels {
 				let label = self.current_encoder_label("Compute Pass");
 				encoder.setLabel(Some(&label));
 			}
@@ -475,12 +484,12 @@ impl<'a> CommandBufferRecording<'a> {
 	fn consume_resources(&mut self, consumptions: impl IntoIterator<Item = Consumption>) {
 		for consumption in consumptions {
 			self.schedule_compute_barrier_for_consumption(&consumption);
-			self.state_updates.insert(
+			self.state_updates.push((
 				consumption.handle,
 				TransitionState {
 					layout: consumption.layout,
 				},
-			);
+			));
 		}
 	}
 
@@ -522,13 +531,13 @@ impl<'a> CommandBufferRecording<'a> {
 		self.compute_written_resources.clear();
 	}
 
-	fn bound_descriptor_resource_consumptions(&self) -> Vec<Consumption> {
+	fn bound_descriptor_resource_consumptions(&self) -> SmallVec<[Consumption; 128]> {
 		let Some(bound_pipeline_handle) = self.bound_pipeline else {
-			return Vec::new();
+			return SmallVec::new();
 		};
 
 		let pipeline = &self.device.pipelines[bound_pipeline_handle.0 as usize];
-		let mut consumptions = Vec::with_capacity(pipeline.resource_access.len());
+		let mut consumptions = SmallVec::new();
 
 		for &((set_index, binding_index), (stages, access)) in &pipeline.resource_access {
 			let Some(&(_, descriptor_set_handle)) = self.bound_descriptor_set_handles.get(set_index as usize) else {
@@ -577,7 +586,9 @@ impl<'a> CommandBufferRecording<'a> {
 			if consumption.stages.intersects(crate::Stages::COMPUTE)
 				&& consumption.access.intersects(crate::AccessPolicies::WRITE)
 			{
-				self.compute_written_resources.insert(consumption.handle);
+				if !self.compute_written_resources.contains(&consumption.handle) {
+					self.compute_written_resources.push(consumption.handle);
+				}
 			}
 		}
 	}
@@ -822,7 +833,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					(attachment, drawable.1.texture(), crate::Formats::BGRAu8, 1) // TODO: get actual format
 				}
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 
 		// let consumptions = attachments
 		// 	.filter_map(|(attachment, _, _)| Some(Consumption {
@@ -878,7 +889,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		let rce = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).unwrap();
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Render Pass");
 			rce.setLabel(Some(&label));
 		}
@@ -920,7 +931,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -941,6 +952,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				image.format,
 				image.array_layers,
 				*clear_value,
+				self.device.debug_labels,
 			);
 		}
 	}
@@ -954,7 +966,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::WRITE,
 				layout: crate::Layouts::Transfer,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -969,7 +981,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Buffer Clear");
 			blit_encoder.setLabel(Some(&label));
 		}
@@ -1001,7 +1013,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					},
 				]
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -1016,7 +1028,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Buffer Copy");
 			blit_encoder.setLabel(Some(&label));
 		}
@@ -1064,7 +1076,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					},
 				]
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -1079,7 +1091,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Buffer Image Copy");
 			blit_encoder.setLabel(Some(&label));
 		}
@@ -1140,22 +1152,16 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				destination.format,
 				destination.extent
 			);
+
 			flush_managed_buffer_range(source, copy.source_offset, required_source_bytes - copy.source_offset);
+
 			let mut source_size = utils::texture_copy_size(destination.format, destination.extent);
 			source_size.depth = 1;
 			let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 
 			for slice in 0..destination.array_layers as usize {
 				let source_offset = copy.source_offset + slice * copy.source_bytes_per_image;
-				utils::debug_compressed_upload(
-					destination.format,
-					0,
-					slice,
-					destination.extent,
-					copy.source_bytes_per_row,
-					copy.source_bytes_per_image,
-					source_offset,
-				);
+
 				unsafe {
 					blit_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 						source.buffer.as_ref(),
@@ -1182,7 +1188,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Read,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 	}
 
@@ -1213,7 +1219,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					},
 				]
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		if let Some(encoder) = self.active_compute_encoder.take() {
@@ -1228,7 +1234,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let label = self.current_encoder_label("Image Buffer Copy");
 			blit_encoder.setLabel(Some(&label));
 		}
@@ -1329,7 +1335,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Transfer,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 	}
 
@@ -1345,7 +1351,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::Transfer,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		texture_handles
@@ -1388,7 +1394,13 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let extent = image.extent;
 		let array_layers = image.array_layers;
 
-		replace_texture_from_bytes(texture.as_ref(), format, extent, array_layers, bytes);
+		replace_texture_from_bytes(
+			texture.as_ref(),
+			format,
+			extent,
+			array_layers,
+			bytes,
+		);
 
 		self.consume_resources([Consumption {
 			handle: PrivateHandles::Image(image_handle),
@@ -1438,7 +1450,9 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		blit_encoder.setLabel(Some(&NSString::from_str("Blit Pass")));
+		if self.device.debug_labels {
+			blit_encoder.setLabel(Some(&NSString::from_str("Blit Pass")));
+		}
 
 		unsafe {
 			blit_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
@@ -1493,7 +1507,7 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 		#[cfg(debug_assertions)]
 		let write_label = _write_label;
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			let mut label = crate::command_buffer::DebugLabelWriter::new();
 			write_label(&mut label).expect("Invalid debug label. The label closure most likely failed while formatting.");
 			let name = label.as_str();
@@ -1515,7 +1529,7 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 
 	fn end_region(&self) {
 		#[cfg(debug_assertions)]
-		{
+		if self.device.debug_labels {
 			if let Some(encoder) = self.active_compute_encoder.as_ref() {
 				encoder.popDebugGroup();
 			}
@@ -1604,7 +1618,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 				access: crate::AccessPolicies::READ,
 				layout: crate::Layouts::General,
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
 		self.apply_bound_vertex_buffers();
@@ -1669,14 +1683,13 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		let bound_pipeline = self.bound_pipeline.expect(
 			"No pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
 		);
-		let pipeline = self.device.pipelines[bound_pipeline.0 as usize].clone();
 
 		for &(set_index, descriptor_set_handle) in &self.bound_descriptor_set_handles {
 			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
 			let descriptor_set_layout = &self.device.descriptor_sets_layouts[descriptor_set.descriptor_set_layout.0 as usize];
 			let binding_index = ARGUMENT_BUFFER_BINDING_BASE + set_index;
 
-			match &pipeline.pipeline {
+			match &self.device.pipelines[bound_pipeline.0 as usize].pipeline {
 				PipelineState::Raster(_) => {
 					if let Some(encoder) = self.active_render_encoder.as_ref() {
 						if descriptor_set_layout

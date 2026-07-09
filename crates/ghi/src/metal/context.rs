@@ -57,8 +57,10 @@ impl Context {
 		let command_buffer = queue.commandBufferWithDescriptor(&descriptor).expect(error_message);
 
 		#[cfg(debug_assertions)]
-		if let Some(label) = label {
-			command_buffer.setLabel(Some(&NSString::from_str(label)));
+		if self.settings.debug_labels {
+			if let Some(label) = label {
+				command_buffer.setLabel(Some(&NSString::from_str(label)));
+			}
 		}
 
 		command_buffer
@@ -181,10 +183,12 @@ impl Context {
 		};
 
 		#[cfg(debug_assertions)]
-		if let Some(name) = name.as_deref() {
-			buffer.setLabel(Some(&NSString::from_str(name)));
-			if let Some(staging) = staging.as_ref() {
-				staging.setLabel(Some(&NSString::from_str(&format!("{name}_staging"))));
+		if self.settings.debug_labels {
+			if let Some(name) = name.as_deref() {
+				buffer.setLabel(Some(&NSString::from_str(name)));
+				if let Some(staging) = staging.as_ref() {
+					staging.setLabel(Some(&NSString::from_str(&format!("{name}_staging"))));
+				}
 			}
 		}
 
@@ -265,8 +269,10 @@ impl Context {
 			.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
 
 		#[cfg(debug_assertions)]
-		if let Some(name) = name.as_deref() {
-			texture.setLabel(Some(&NSString::from_str(name)));
+		if self.settings.debug_labels {
+			if let Some(name) = name.as_deref() {
+				texture.setLabel(Some(&NSString::from_str(name)));
+			}
 		}
 
 		let staging = utils::texture_upload_layout(format, extent).map(|(_, _, bytes_per_image)| {
@@ -335,7 +341,7 @@ impl Context {
 		for slice in 0..array_layers as usize {
 			let source_offset = slice * bytes_per_image;
 			let destination_offset = slice * aligned_bytes_per_image;
-			utils::debug_compressed_upload(format, 0, slice, extent, bytes_per_row, bytes_per_image, source_offset);
+
 			let Some(source_bytes) = staging.get(source_offset..source_offset + bytes_per_image) else {
 				break;
 			};
@@ -376,22 +382,15 @@ impl Context {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		blit_encoder.setLabel(Some(&NSString::from_str("Texture Upload")));
+		if self.settings.debug_labels {
+			blit_encoder.setLabel(Some(&NSString::from_str("Texture Upload")));
+		}
 
 		let mut source_size = utils::texture_copy_size(format, extent);
 		source_size.depth = 1;
 		let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 
 		for slice in 0..array_layers as usize {
-			utils::debug_compressed_upload(
-				format,
-				0,
-				slice,
-				extent,
-				aligned_bytes_per_row,
-				aligned_bytes_per_image,
-				slice * aligned_bytes_per_image,
-			);
 			unsafe {
 				blit_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 					upload_buffer.as_ref(),
@@ -853,29 +852,19 @@ impl Context {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		extent: Extent,
 	) {
-		let image_handles = self.swapchains[swapchain_handle.0 as usize]
-			.images
-			.into_iter()
-			.flatten()
-			.collect::<Vec<_>>();
+		let image_handles = self.swapchains[swapchain_handle.0 as usize].images;
 
-		for image_handle in image_handles {
-			let (name, current_extent, format, uses, access, array_layers) = {
+		for image_handle in image_handles.into_iter().flatten() {
+			let (current_extent, format, uses, access, array_layers) = {
 				let image = self.images.resource(image_handle);
-				(
-					image.name.clone(),
-					image.extent,
-					image.format,
-					image.uses,
-					image.access,
-					image.array_layers,
-				)
+				(image.extent, image.format, image.uses, image.access, image.array_layers)
 			};
 
 			if current_extent == extent {
 				continue;
 			}
 
+			let name = self.images.resource(image_handle).name.clone();
 			let replacement = self.create_image_resource(name.as_deref(), extent, format, uses, access, array_layers);
 			*self.images.resource_mut(image_handle) = replacement;
 			self.rewrite_descriptors_for_handle(PrivateHandles::Image(image_handle));
@@ -883,8 +872,8 @@ impl Context {
 	}
 
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
-		let mut tasks = self.tasks.split_off(0);
-		let mut deferred_frame_tasks = Vec::new();
+		let mut tasks = std::mem::take(&mut self.tasks);
+		let mut deferred_frame_tasks = SmallVec::<[Task; 16]>::new(); // TODO: use frame allocator
 
 		tasks.retain(|task| {
 			if let Some(frame) = task.frame() {
@@ -1686,7 +1675,9 @@ impl Context {
 		let raster_pipeline_state = if let Some(mesh_function) = mesh_function.as_ref() {
 			let descriptor = mtl::MTLMeshRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
-			descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+			if self.settings.debug_labels {
+				descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+			}
 			unsafe {
 				descriptor.setObjectFunction(object_function.as_ref().map(|function| function.as_ref()));
 				descriptor.setMeshFunction(Some(mesh_function.as_ref()));
@@ -1711,7 +1702,9 @@ impl Context {
 		} else if let Some(vertex_function) = vertex_function.as_ref() {
 			let descriptor = mtl::MTLRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
-			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+			if self.settings.debug_labels {
+				descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+			}
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
 			descriptor.setVertexDescriptor(Some(&self.vertex_layouts[vertex_layout.0 as usize].vertex_descriptor));
@@ -1882,7 +1875,8 @@ impl Context {
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
 		let (queue_handle, command_buffer_name) = {
 			let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
-			(command_buffer.queue_handle, command_buffer.name.clone())
+			let name = self.settings.debug_labels.then(|| command_buffer.name.clone()).flatten();
+			(command_buffer.queue_handle, name)
 		};
 
 		// Uploads committed on the same Metal queue are ordered before this command buffer without a CPU wait.
@@ -1905,6 +1899,7 @@ impl Context {
 			pipelines: &self.pipelines,
 			swapchains: &self.swapchains,
 			next_texture_copy_handle: &self.next_texture_copy_handle,
+			debug_labels: self.settings.debug_labels,
 		};
 		let commit = super::command_buffer::RecordingCommit {
 			states: &mut self.states,
@@ -1918,7 +1913,7 @@ impl Context {
 			command_buffer_handle,
 			mtl_command_buffer,
 			frame_key,
-			Vec::new(),
+			SmallVec::new(),
 			autorelease_pool,
 		)
 	}
@@ -2072,7 +2067,9 @@ impl Context {
 			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		#[cfg(debug_assertions)]
-		blit_encoder.setLabel(Some(&NSString::from_str("Buffer Upload")));
+		if self.settings.debug_labels {
+			blit_encoder.setLabel(Some(&NSString::from_str("Buffer Upload")));
+		}
 
 		unsafe {
 			blit_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
@@ -2688,6 +2685,7 @@ use objc2_metal::{
 	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
 	MTLLibrary, MTLResource,
 };
+use smallvec::SmallVec;
 
 use super::*;
 use crate::implementation::device::submit_metal_command_buffer;

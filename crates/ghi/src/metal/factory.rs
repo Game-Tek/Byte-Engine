@@ -234,7 +234,9 @@ impl crate::device::Device for Factory {
 		let raster_pipeline_state = if let Some(mesh_function) = mesh_function.as_ref() {
 			let descriptor = MTLMeshRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
-			descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+			if self.settings.debug_labels {
+				descriptor.setLabel(Some(&NSString::from_str("mesh_pipeline")));
+			}
 			unsafe {
 				descriptor.setObjectFunction(object_function.as_ref().map(|function| function.as_ref()));
 				descriptor.setMeshFunction(Some(mesh_function.as_ref()));
@@ -255,7 +257,9 @@ impl crate::device::Device for Factory {
 		} else if let Some(vertex_function) = vertex_function.as_ref() {
 			let descriptor = MTLRenderPipelineDescriptor::new();
 			#[cfg(debug_assertions)]
-			descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+			if self.settings.debug_labels {
+				descriptor.setLabel(Some(&NSString::from_str("raster_pipeline")));
+			}
 			descriptor.setVertexFunction(Some(vertex_function.as_ref()));
 			descriptor.setFragmentFunction(fragment_function.as_ref().map(|function| function.as_ref()));
 			descriptor.setVertexDescriptor(vertex_layout.as_ref().map(|layout| layout.vertex_descriptor.as_ref()));
@@ -384,8 +388,10 @@ impl crate::device::Device for Factory {
 			.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
 
 		#[cfg(debug_assertions)]
-		if let Some(name) = builder.name {
-			texture.setLabel(Some(&NSString::from_str(name)));
+		if self.settings.debug_labels {
+			if let Some(name) = builder.name {
+				texture.setLabel(Some(&NSString::from_str(name)));
+			}
 		}
 
 		Image {

@@ -1023,21 +1023,19 @@ impl MaterialEvaluationPass {
 		}
 	}
 
-	fn prepare(
-		&self,
+	fn prepare<'a>(
+		&'a self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
-		opaque_materials: &[(String, u32, ghi::PipelineHandle)],
-		transparent_materials: &[(String, u32, ghi::PipelineHandle)],
-	) -> impl RenderPassFunction {
+		opaque_materials: &'a [(String, u32, ghi::PipelineHandle)],
+		transparent_materials: &'a [(String, u32, ghi::PipelineHandle)],
+	) -> impl RenderPassFunction + 'a {
 		let lit = self.lit;
 		let ao_map = self.ao_map;
 		let base_descriptor_set = self.base_descriptor_set;
 		let material_evaluation_dispatches = self.material_evaluation_dispatches;
 		let visibility_descriptor_set = self.visibility_descriptor_set;
 		let material_evaluation_descriptor_set = self.descriptor_set;
-		let opaque_materials = opaque_materials.to_vec();
-		let transparent_materials = transparent_materials.to_vec();
 		let extent = sink.extent();
 
 		frame.resize_image(ao_map, extent);
@@ -1056,7 +1054,7 @@ impl MaterialEvaluationPass {
 
 			c.start_region(|label| label.write_str("Opaque"));
 
-			for (name, index, pipeline) in &opaque_materials {
+			for (name, index, pipeline) in opaque_materials {
 				c.start_region(|label| label.write_str(name));
 				let c = c.bind_compute_pipeline(*pipeline);
 				c.bind_descriptor_sets(&[
@@ -1073,7 +1071,7 @@ impl MaterialEvaluationPass {
 
 			c.start_region(|label| label.write_str("Transparent"));
 
-			for (name, index, pipeline) in &transparent_materials {
+			for (name, index, pipeline) in transparent_materials {
 				// TODO: sort by distance to camera
 				c.start_region(|label| label.write_str(name));
 				let c = c.bind_compute_pipeline(*pipeline);
@@ -1203,14 +1201,14 @@ impl VisibilityPipelineRenderPass {
 	}
 
 	pub(super) fn prepare<'a>(
-		&self,
+		&'a self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		instances: &'a [Instance],
-		opaque_materials: &[(String, u32, ghi::PipelineHandle)],
-		transparent_materials: &[(String, u32, ghi::PipelineHandle)],
+		opaque_materials: &'a [(String, u32, ghi::PipelineHandle)],
+		transparent_materials: &'a [(String, u32, ghi::PipelineHandle)],
 		shadow_enabled: bool,
-	) -> impl RenderPassFunction + use<'a> {
+	) -> impl RenderPassFunction + 'a {
 		let shadow_pass = self.shadow_pass.prepare(frame, instances, shadow_enabled);
 		let visibility_pass = self.visibility_pass.prepare(frame, sink, instances);
 		let material_count_pass = self.material_count_pass.prepare(frame, sink);

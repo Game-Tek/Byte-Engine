@@ -270,10 +270,9 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<Vec<RenderPassReturn<'a>>> {
-		let instance_batches = self.mesh_buffers_stats.get_instance_batches();
-
-		let instance_batches = instance_batches.iter().into_vec();
+	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
+		let instance_batches = self.mesh_buffers_stats.get_instance_batches_in(frame_allocator);
+		let instance_batches = frame_allocator.alloc_slice_copy(&instance_batches);
 
 		let commands = sinks
 			.iter()
@@ -286,10 +285,10 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 			.map(|(sink, sink_state)| {
 				crate::rendering::render_pass::allocate_render_command(
 					frame_allocator,
-					sink_state.prepare(frame, sink, self, &instance_batches),
+					sink_state.prepare(frame, sink, self, instance_batches),
 				)
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 16]>>();
 
 		Some(commands)
 	}
@@ -457,6 +456,7 @@ use resource_management::{
 	asset::bema_asset_handler::ProgramGenerator, resources::material, shader::generator::ShaderGenerationSettings,
 	types::ShaderTypes as ResourceShaderTypes,
 };
+use smallvec::SmallVec;
 use utils::{
 	hash::{HashMap, HashMapExt},
 	json::{self, JsonContainerTrait as _, JsonValueTrait as _},

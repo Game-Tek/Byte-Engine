@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use utils::Box;
 
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
@@ -31,7 +32,7 @@ impl RenderPass for SerialRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let mut commands: Vec<RenderPassReturn<'a>> = Vec::new();
+		let mut commands: SmallVec<[RenderPassReturn<'a>; 16]> = SmallVec::new();
 
 		for render_pass in &mut self.render_passes {
 			if let Some(command) = render_pass.prepare(frame, sink, frame_allocator) {

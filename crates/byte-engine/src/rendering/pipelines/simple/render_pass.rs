@@ -82,13 +82,13 @@ impl RenderPass {
 impl Entity for RenderPass {}
 
 impl RenderPass {
-	pub(super) fn prepare(
+	pub(super) fn prepare<'a>(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		sm: &PipelineManager,
-		instance_batches: &[InstanceBatch],
-	) -> impl RenderPassFunction {
+		instance_batches: &'a [InstanceBatch],
+	) -> impl RenderPassFunction + 'a {
 		let camera_data_buffer = sm.camera_data_buffer;
 
 		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(camera_data_buffer);
@@ -103,7 +103,6 @@ impl RenderPass {
 		let descriptor_set = self.descriptor_set;
 
 		let extent = sink.extent();
-		let instance_batches = instance_batches.to_vec();
 
 		move |c, t| {
 			c.bind_vertex_buffers(&[vertex_buffer.into()]);
@@ -114,7 +113,7 @@ impl RenderPass {
 			let c = c.bind_raster_pipeline(pipeline);
 			c.bind_descriptor_sets(&[descriptor_set]);
 
-			for batch in &instance_batches {
+			for batch in instance_batches.iter() {
 				c.write_push_constant(0, batch.base_instance() as u32);
 				c.draw_indexed(
 					batch.index_count() as u32,

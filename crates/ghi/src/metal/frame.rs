@@ -3,6 +3,7 @@ use objc2_foundation::NSString;
 use objc2_metal::MTLBlitCommandEncoder;
 use objc2_metal::MTLCommandBuffer;
 use objc2_metal::MTLCommandEncoder;
+use smallvec::SmallVec;
 
 use super::*;
 use crate::image::ImageHandle;
@@ -20,7 +21,7 @@ use crate::SwapchainHandle;
 /// released before the autorelease pool drains, so `_autorelease_pool` is declared last.
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
-	drawables: Vec<(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>)>,
+	drawables: SmallVec<[(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>); 4]>,
 	device: &'a mut context::Context,
 	_autorelease_pool: Retained<NSAutoreleasePool>,
 }
@@ -30,7 +31,7 @@ impl<'a> Frame<'a> {
 		let pool = unsafe { NSAutoreleasePool::new() };
 		Self {
 			frame_key,
-			drawables: Vec::with_capacity(4),
+			drawables: SmallVec::new(),
 			device,
 			_autorelease_pool: pool,
 		}
@@ -224,7 +225,12 @@ impl Frame<'_> {
 			texture_copies,
 			_marker,
 		} = cbr;
-		let mut present_drawables = Vec::with_capacity(present_keys.len());
+		let mut present_drawables = SmallVec::<
+			[(
+				graphics_hardware_interface::PresentKey,
+				Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+			); 4],
+		>::new();
 
 		for &present_key in present_keys {
 			let drawable = self
@@ -240,7 +246,9 @@ impl Frame<'_> {
 				"Metal blit command encoder creation failed. The most likely cause is that the command buffer could not start the swapchain resolve pass.",
 			);
 			#[cfg(debug_assertions)]
-			blit_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
+			if self.device.settings.debug_labels {
+				blit_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
+			}
 
 			for (present_key, drawable) in &present_drawables {
 				let Some(drawable) = drawable else {

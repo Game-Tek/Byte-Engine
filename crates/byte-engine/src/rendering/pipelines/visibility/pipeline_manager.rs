@@ -577,7 +577,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<Vec<RenderPassReturn<'a>>> {
+	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
 		self.adopt_resource_completions(frame);
 		self.rebuild_active_instances(frame);
 
@@ -635,7 +635,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				.map(|sink_state| (sink, &sink_state.render_pass))
 		});
 
-		let commands: Vec<RenderPassReturn<'a>> = sink_x_rp
+		let commands: SmallVec<[RenderPassReturn<'a>; 16]> = sink_x_rp
 			.map(|(v, r)| {
 				crate::rendering::render_pass::allocate_render_command(
 					frame_allocator,
@@ -649,7 +649,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					),
 				)
 			})
-			.collect::<Vec<_>>();
+			.collect::<SmallVec<[_; 16]>>();
 
 		log::debug!(
 			"Visibility prepare summary: sinks={}, sink_states={}, commands={}, requested_meshes={}, loaded_meshes={}, pending_renderables={}, render_entities={}, active_primitives={}, opaque_materials={}, transparent_materials={}, shadow_enabled={}",
@@ -1125,6 +1125,7 @@ use resource_management::shader::besl::backends::msl::MSLShaderGenerator;
 use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator};
 use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
 use resource_management::Reference;
+use smallvec::SmallVec;
 use utils::hash::{HashMap, HashMapExt};
 use utils::json::{self, object};
 use utils::sync::{Rc, RwLock};

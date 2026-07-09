@@ -50,6 +50,7 @@ impl Instance {
 			gpu_validation: settings.gpu_validation || self.settings.gpu_validation,
 			api_dump: settings.api_dump || self.settings.api_dump,
 			ray_tracing: settings.ray_tracing || self.settings.ray_tracing,
+			debug_labels: settings.debug_labels || self.settings.debug_labels,
 			debug_log_function: settings.debug_log_function.or(self.settings.debug_log_function),
 			gpu: settings.gpu.or(self.settings.gpu),
 			sparse: settings.sparse || self.settings.sparse,

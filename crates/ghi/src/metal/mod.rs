@@ -13,6 +13,7 @@ use objc2_app_kit::NSView;
 use objc2_foundation::{NSRange, NSSize};
 use objc2_metal as mtl;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
+use smallvec::SmallVec;
 
 use crate::binding::DescriptorSetBindingHandle;
 use crate::buffer::BufferHandle;
@@ -62,7 +63,7 @@ pub(super) struct TopLevelAccelerationStructureHandle(pub(super) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct BottomLevelAccelerationStructureHandle(pub(super) u64);
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) struct Consumption {
 	pub(super) handle: PrivateHandles,
 	pub(super) stages: crate::Stages,
@@ -844,33 +845,6 @@ mod utils {
 		format.bc_bytes_per_block().is_some()
 	}
 
-	#[cfg(debug_assertions)]
-	pub(crate) fn debug_compressed_upload(
-		format: Formats,
-		mip_index: usize,
-		slice_index: usize,
-		extent: Extent,
-		bytes_per_row: usize,
-		bytes_per_image: usize,
-		source_offset: usize,
-	) {
-		let Some(layout) = format.bc_layout(extent.width(), extent.height()) else {
-			return;
-		};
-		let expected_next_offset = source_offset + bytes_per_image;
-
-		eprintln!(
-			"Metal compressed texture upload: format={format:?}, mip={mip_index}, slice={slice_index}, width={}, height={}, blocks_w={}, blocks_h={}, bytes_per_block={}, bytes_per_row={bytes_per_row}, bytes_per_image={bytes_per_image}, compact_bytes_per_row={}, compact_bytes_per_image={}, source_offset={source_offset}, expected_next_offset={expected_next_offset}",
-			extent.width().max(1),
-			extent.height().max(1),
-			layout.blocks_w,
-			layout.blocks_h,
-			layout.bytes_per_block,
-			layout.bytes_per_row,
-			layout.bytes_per_image,
-		);
-	}
-
 	pub(crate) fn data_type_size(format: crate::DataTypes) -> usize {
 		match format {
 			crate::DataTypes::Float => std::mem::size_of::<f32>(),
@@ -983,6 +957,7 @@ mod utils {
 
 	#[cfg(not(debug_assertions))]
 	pub(crate) fn debug_compressed_upload(
+		_enabled: bool,
 		_format: Formats,
 		_mip_index: usize,
 		_slice_index: usize,
@@ -1062,7 +1037,7 @@ pub mod queue {
 	pub struct Execution<'a> {
 		frame: Option<super::Frame<'a>>,
 		completed_frame: Option<graphics_hardware_interface::FrameKey>,
-		command_buffers: Vec<super::FinishedCommandBuffer<'static>>,
+		command_buffers: SmallVec<[super::FinishedCommandBuffer<'static>; 4]>,
 	}
 
 	impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
@@ -1138,7 +1113,7 @@ pub mod queue {
 			let mut execution = Execution {
 				frame,
 				completed_frame,
-				command_buffers: Vec::new(),
+				command_buffers: SmallVec::new(),
 			};
 			let present_keys = execute(&mut execution);
 
@@ -1188,7 +1163,7 @@ pub mod queue {
 			let mut execution = Execution {
 				frame,
 				completed_frame,
-				command_buffers: Vec::new(),
+				command_buffers: SmallVec::new(),
 			};
 			let present_keys = execute(&mut execution);
 
@@ -1285,7 +1260,7 @@ pub mod synchronizer {
 	pub(crate) struct Synchronizer {
 		pub next: Option<SynchronizerHandle>,
 		signaled: Cell<bool>,
-		workloads: RefCell<Vec<Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>>>,
+		workloads: RefCell<SmallVec<[Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>; 4]>>,
 	}
 
 	impl Synchronizer {
@@ -1293,7 +1268,7 @@ pub mod synchronizer {
 			Self {
 				next: None,
 				signaled: Cell::new(signaled),
-				workloads: RefCell::new(Vec::new()),
+				workloads: RefCell::new(SmallVec::new()),
 			}
 		}
 

@@ -270,7 +270,7 @@ impl InputManager {
 							function: Some(input_event.mapping.function),
 						})
 					})
-					.collect::<Vec<_>>(),
+					.collect(),
 				handle: Some(handle),
 				tick_policy,
 			};
@@ -407,7 +407,7 @@ impl InputManager {
 						function: Some(input_event.mapping.function),
 					})
 				})
-				.collect::<Vec<_>>(),
+				.collect(),
 			handle: None,
 			tick_policy,
 		};

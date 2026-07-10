@@ -138,31 +138,31 @@ mod tests {
 			local.get_sequence_number();
 		}
 
-		assert_eq!(local.unacknowledged_packets(), 0u16..32u16);
+		assert!(local.unacknowledged_packets().eq(0u16..32u16));
 
 		for i in 0..32 {
 			local.acknowledge_packet(i);
 		}
 
-		assert_eq!(local.unacknowledged_packets(), ..);
+		assert!(local.unacknowledged_packets().next().is_none());
 
 		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 
-		assert_eq!(local.unacknowledged_packets(), 32u16..64u16);
+		assert!(local.unacknowledged_packets().eq(32u16..64u16));
 
 		for i in 0..32 {
 			local.acknowledge_packet(i);
 		}
 
-		assert_eq!(local.unacknowledged_packets(), 32u16..64u16);
+		assert!(local.unacknowledged_packets().eq(32u16..64u16));
 
 		for i in 32..64 {
 			local.acknowledge_packet(i);
 		}
 
-		assert_eq!(local.unacknowledged_packets(), ..);
+		assert!(local.unacknowledged_packets().next().is_none());
 	}
 
 	#[test]
@@ -175,32 +175,23 @@ mod tests {
 
 		local.acknowledge_packet(0);
 
-		assert_eq!(local.unacknowledged_packets(), 1u16..32u16);
+		assert!(local.unacknowledged_packets().eq(1u16..32u16));
 
 		local.acknowledge_packet(2);
 
-		assert_eq!(
-			local.unacknowledged_packets(),
-			(1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>()
-		);
+		assert!(local.unacknowledged_packets().eq((1u16..32u16).filter(|&i| i != 2)));
 
 		local.acknowledge_packet(4);
 
-		assert_eq!(
-			local.unacknowledged_packets(),
-			(1u16..32u16).filter(|&i| i != 2 && i != 4).collect::<Vec<_>>()
-		);
+		assert!(local.unacknowledged_packets().eq((1u16..32u16).filter(|&i| i != 2 && i != 4)));
 
 		local.acknowledge_packet(1);
 
-		assert_eq!(
-			local.unacknowledged_packets(),
-			(3u16..32u16).filter(|&i| i != 4).collect::<Vec<_>>()
-		);
+		assert!(local.unacknowledged_packets().eq((3u16..32u16).filter(|&i| i != 4)));
 
 		local.acknowledge_packet(3);
 
-		assert_eq!(local.unacknowledged_packets(), (5u16..32u16).collect::<Vec<_>>());
+		assert!(local.unacknowledged_packets().eq(5u16..32u16));
 	}
 
 	#[test]
@@ -213,18 +204,15 @@ mod tests {
 
 		local.acknowledge_packets(0, 0b0);
 
-		assert_eq!(local.unacknowledged_packets(), (0u16..32u16).collect::<Vec<_>>());
+		assert!(local.unacknowledged_packets().eq(0u16..32u16));
 
 		local.acknowledge_packets(0, 0b1);
 
-		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).collect::<Vec<_>>());
+		assert!(local.unacknowledged_packets().eq(1u16..32u16));
 
 		local.acknowledge_packets(2, 0b101);
 
-		assert_eq!(
-			local.unacknowledged_packets(),
-			(1u16..32u16).filter(|&i| i != 2).collect::<Vec<_>>()
-		);
+		assert!(local.unacknowledged_packets().eq((1u16..32u16).filter(|&i| i != 2)));
 	}
 
 	#[test]

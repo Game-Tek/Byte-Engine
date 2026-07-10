@@ -103,4 +103,4 @@ pub struct TriggerHandle(pub(super) u32);
 use math::{Quaternion, Vector2, Vector3};
 use utils::RGBA;
 
-use super::{Types, Value, action::InputValue, device_class::DeviceClassHandle};
+use super::{action::InputValue, device_class::DeviceClassHandle, Types, Value};

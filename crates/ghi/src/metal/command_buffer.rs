@@ -1394,13 +1394,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let extent = image.extent;
 		let array_layers = image.array_layers;
 
-		replace_texture_from_bytes(
-			texture.as_ref(),
-			format,
-			extent,
-			array_layers,
-			bytes,
-		);
+		replace_texture_from_bytes(texture.as_ref(), format, extent, array_layers, bytes);
 
 		self.consume_resources([Consumption {
 			handle: PrivateHandles::Image(image_handle),

@@ -1,14 +1,6 @@
 //! Client module for the Byte-Engine networking library.
 //! The client is the entity that connects to a server and participates in the game.
 
-use crate::{
-	client::Errors,
-	local::Local,
-	packet_buffer::PacketBuffer,
-	packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets},
-	remote::Remote,
-};
-
 /// The client is the entity that connects to a server and participates in the game.
 pub struct Session {
 	local: Local,
@@ -237,3 +229,11 @@ mod tests {
 		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
 	}
 }
+
+use crate::{
+	client::Errors,
+	local::Local,
+	packet_buffer::PacketBuffer,
+	packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets},
+	remote::Remote,
+};

@@ -1,11 +1,3 @@
-use crate::{
-	local::Local,
-	packet_buffer::PacketBuffer,
-	packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets},
-	remote::Remote,
-	server::PacketHandlingResults,
-};
-
 /// The Session holds the state for a connection to this server..
 #[derive(Debug, Clone, Copy)]
 pub struct Session {
@@ -269,3 +261,11 @@ mod tests {
 		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
 	}
 }
+
+use crate::{
+	local::Local,
+	packet_buffer::PacketBuffer,
+	packets::{ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packets},
+	remote::Remote,
+	server::PacketHandlingResults,
+};

@@ -18,4 +18,4 @@ pub struct DeviceHandle(pub(super) u32);
 
 use utils::hash::HashMap;
 
-use super::{TriggerHandle, device_class::DeviceClassHandle};
+use super::{device_class::DeviceClassHandle, TriggerHandle};

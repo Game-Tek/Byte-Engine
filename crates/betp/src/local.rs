@@ -1,7 +1,3 @@
-use utils::bit_array::BitArray;
-
-use crate::PacketInfo;
-
 /// The packet history is the number of (last) packets that we keep track of.
 const PACKET_HISTORY: usize = 1024;
 
@@ -67,13 +63,12 @@ impl Local {
 	}
 
 	/// Returns the unacknowledged packets of this [`Local`]. These are the packets that have been sent but have not been acknowledged by the remote.
-	pub fn unacknowledged_packets(&self) -> Vec<u16> {
+	pub fn unacknowledged_packets(&self) -> impl Iterator<Item = u16> + '_ {
 		self.sequence_buffer
 			.iter()
 			.enumerate()
 			.filter(|(i, &sequence)| sequence != u16::MAX && !self.packet_data.get(*i))
 			.map(|(_, &e)| e)
-			.collect()
 	}
 }
 
@@ -143,31 +138,31 @@ mod tests {
 			local.get_sequence_number();
 		}
 
-		assert_eq!(local.unacknowledged_packets(), (0u16..32u16).collect::<Vec<_>>());
+		assert_eq!(local.unacknowledged_packets(), 0u16..32u16);
 
 		for i in 0..32 {
 			local.acknowledge_packet(i);
 		}
 
-		assert_eq!(local.unacknowledged_packets(), Vec::<u16>::new());
+		assert_eq!(local.unacknowledged_packets(), ..);
 
 		for _i in 0..32 {
 			local.get_sequence_number();
 		}
 
-		assert_eq!(local.unacknowledged_packets(), (32u16..64u16).collect::<Vec<_>>());
+		assert_eq!(local.unacknowledged_packets(), 32u16..64u16);
 
 		for i in 0..32 {
 			local.acknowledge_packet(i);
 		}
 
-		assert_eq!(local.unacknowledged_packets(), (32u16..64u16).collect::<Vec<_>>());
+		assert_eq!(local.unacknowledged_packets(), 32u16..64u16);
 
 		for i in 32..64 {
 			local.acknowledge_packet(i);
 		}
 
-		assert_eq!(local.unacknowledged_packets(), Vec::<u16>::new());
+		assert_eq!(local.unacknowledged_packets(), ..);
 	}
 
 	#[test]
@@ -180,7 +175,7 @@ mod tests {
 
 		local.acknowledge_packet(0);
 
-		assert_eq!(local.unacknowledged_packets(), (1u16..32u16).collect::<Vec<_>>());
+		assert_eq!(local.unacknowledged_packets(), 1u16..32u16);
 
 		local.acknowledge_packet(2);
 
@@ -239,3 +234,7 @@ mod tests {
 		local.acknowledge_packet(0);
 	}
 }
+
+use utils::bit_array::BitArray;
+
+use crate::PacketInfo;

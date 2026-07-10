@@ -1,7 +1,3 @@
-use tinyvec::ArrayVec;
-
-use crate::packets::DataPacket;
-
 /// A buffered packet.
 #[derive(Debug, Clone, Copy)]
 struct BufferedPacket<const S: usize> {
@@ -287,3 +283,7 @@ mod tests {
 		assert!(sequences.contains(&2));
 	}
 }
+
+use tinyvec::ArrayVec;
+
+use crate::packets::DataPacket;

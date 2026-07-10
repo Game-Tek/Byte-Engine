@@ -715,4 +715,4 @@ use hidapi::{HidApi, HidDevice};
 use log::{debug, warn};
 use math::Vector2;
 
-use super::{DeviceHandle, Value, input_manager::TriggerReference};
+use super::{input_manager::TriggerReference, DeviceHandle, Value};

@@ -43,14 +43,10 @@ mod packet_buffer;
 
 pub mod packets;
 
-use std::io::{Read as _, Write};
-
 pub use client::Client;
 pub use local::Local;
 pub use remote::Remote;
 pub use server::Server;
-
-use crate::packets::{ConnectionStatus, Packet, PacketHeader, PacketType, Packets};
 
 /// Packet header parsing failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,3 +173,7 @@ pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, PacketReadError
 
 	Ok(PacketHeader { protocol_id, r#type })
 }
+
+use std::io::{Read as _, Write};
+
+use crate::packets::{ConnectionStatus, Packet, PacketHeader, PacketType, Packets};

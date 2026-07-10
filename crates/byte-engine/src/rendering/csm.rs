@@ -6,23 +6,25 @@ use smallvec::SmallVec;
 use super::view::View;
 
 /// Returns the camera-space near and far distance for each shadow cascade.
-pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) -> impl Iterator<Item = (f32, f32)> + ExactSizeIterator {
+pub(crate) fn make_cascade_split_ranges(
+	camera_view: View,
+	num_cascades: usize,
+) -> impl Iterator<Item = (f32, f32)> + ExactSizeIterator {
 	let near = camera_view.near();
 	let far = camera_view.far();
 	let range = far - near;
 	let ratio = far / near;
 	let mut cascade_near = near;
 
-	(0..num_cascades)
-		.map(move |index| {
-			let p = (index + 1) as f32 / num_cascades as f32;
-			let log = near * ratio.powf(p);
-			let uniform = near + range * p;
-			let cascade_far = 0.95f32 * (log - uniform) + uniform;
-			let cascade_range = (cascade_near, cascade_far);
-			cascade_near = cascade_far;
-			cascade_range
-		})
+	(0..num_cascades).map(move |index| {
+		let p = (index + 1) as f32 / num_cascades as f32;
+		let log = near * ratio.powf(p);
+		let uniform = near + range * p;
+		let cascade_far = 0.95f32 * (log - uniform) + uniform;
+		let cascade_range = (cascade_near, cascade_far);
+		cascade_near = cascade_far;
+		cascade_range
+	})
 }
 
 /// Returns the views for cascaded shadow mapping.
@@ -177,9 +179,7 @@ mod tests {
 		let cascade_ranges = super::make_cascade_split_ranges(camera_view, num_cascades);
 
 		// Test surface points at various depths inside each cascade.
-		for (cascade_idx, ((cascade_near, cascade_far), cascade_view)) in
-			cascade_ranges.zip(cascade_views).enumerate()
-		{
+		for (cascade_idx, ((cascade_near, cascade_far), cascade_view)) in cascade_ranges.zip(cascade_views).enumerate() {
 			// Pick a surface point at the midpoint depth of this cascade, on the camera's z-axis.
 			let mid_depth = (cascade_near + cascade_far) / 2.0;
 			let surface_point = math::Vector4::new(0.0, 0.0, mid_depth, 1.0);

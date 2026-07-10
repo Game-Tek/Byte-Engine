@@ -1,5 +1,3 @@
-use crate::server::Events;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionResults {
 	ServerFull,
@@ -47,3 +45,5 @@ pub trait Server {
 	/// Disconnect a particular client.
 	fn disconnect_client(&mut self, connection_id: u64);
 }
+
+use crate::server::Events;

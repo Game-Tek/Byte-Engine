@@ -163,21 +163,19 @@ fn active_boolean_mappings<'a>(
 		.count();
 
 	let mut mappings = action.trigger_mappings.iter();
-	let stack = frame_allocator.alloc_slice_fill_with(active_count, |_| {
-		loop {
-			let mapping = mappings
-				.next()
-				.expect("active boolean record count must match the action mapping scan");
-			let Some(candidate) = values
-				.get(&(record.seat_handle, record.device_handle, mapping.trigger_handle))
-				.copied()
-			else {
-				continue;
-			};
+	let stack = frame_allocator.alloc_slice_fill_with(active_count, |_| loop {
+		let mapping = mappings
+			.next()
+			.expect("active boolean record count must match the action mapping scan");
+		let Some(candidate) = values
+			.get(&(record.seat_handle, record.device_handle, mapping.trigger_handle))
+			.copied()
+		else {
+			continue;
+		};
 
-			if matches!(candidate.value, Value::Bool(true)) {
-				break (*mapping, candidate);
-			}
+		if matches!(candidate.value, Value::Bool(true)) {
+			break (*mapping, candidate);
 		}
 	});
 
@@ -193,7 +191,7 @@ fn unsupported_conversion<T>() -> Option<T> {
 use std::collections::HashMap;
 use std::f32::consts::PI;
 
-use math::{Base, Vector2, Vector3, normalize};
+use math::{normalize, Base, Vector2, Vector3};
 use smallvec::SmallVec;
 
 use super::action::TriggerMapping;

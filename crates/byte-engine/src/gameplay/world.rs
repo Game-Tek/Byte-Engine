@@ -66,9 +66,15 @@ impl DefaultWorld {
 		}
 	}
 
-	pub fn update(&mut self, time: Time, transforms_rx: &mut impl Listener<TransformationUpdate>, allocator: &mut bumpalo::Bump) {
+	pub fn update(
+		&mut self,
+		time: Time,
+		transforms_rx: &mut impl Listener<TransformationUpdate>,
+		allocator: &mut bumpalo::Bump,
+	) {
 		self.anchor_system.update();
-		self.physics_system.update(time, transforms_rx, &mut self.transforms, allocator);
+		self.physics_system
+			.update(time, transforms_rx, &mut self.transforms, allocator);
 	}
 
 	pub fn flush_deletions(&mut self) {

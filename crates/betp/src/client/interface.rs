@@ -1,8 +1,6 @@
 //! Client module for the Byte-Engine networking library.
 //! The client is the entity that connects to a server and participates in the game.
 
-use crate::client::Errors;
-
 /// The client trait describes a connection to the server.
 /// The client obeys the BETP.
 /// For more information on how to operate a connection look to the `Session` implementation.
@@ -26,3 +24,5 @@ pub trait Client {
 	/// Must be called periodically to keep the connection alive and process incoming messages.
 	fn update(&mut self) -> Result<(), Errors>;
 }
+
+use crate::client::Errors;

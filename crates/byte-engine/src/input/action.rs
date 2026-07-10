@@ -149,6 +149,6 @@ use smallvec::SmallVec;
 use utils::RGBA;
 
 use super::TriggerHandle;
-use super::{Function, TickPolicy, Types, Value, input_manager::TriggerReference};
+use super::{input_manager::TriggerReference, Function, TickPolicy, Types, Value};
 use crate::core::{Entity, EntityHandle};
 use crate::input::ValueMapping;

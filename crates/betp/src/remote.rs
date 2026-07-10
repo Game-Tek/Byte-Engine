@@ -1,9 +1,5 @@
 //! Remote is a state tracking structure to keep track of the state of the communication with a remote.
 
-use utils::bit_array::BitArray;
-
-use super::{sequence_greater_than, PacketInfo};
-
 /// The packet history is the number of (last) packets that we keep track of.
 const PACKET_HISTORY: usize = 1024;
 
@@ -183,3 +179,7 @@ mod tests {
 		assert_eq!(remote.get_ack_bitfield(), 1 << 0);
 	}
 }
+
+use utils::bit_array::BitArray;
+
+use super::{sequence_greater_than, PacketInfo};

@@ -1,14 +1,3 @@
-use std::{
-	collections::{HashMap, HashSet},
-	time::{Duration, Instant},
-};
-
-use hidapi::{HidApi, HidDevice};
-use log::{debug, warn};
-use math::Vector2;
-
-use super::{input_manager::TriggerReference, DeviceHandle, Value};
-
 const STICK_EPSILON: f32 = 0.001;
 const TRIGGER_EPSILON: f32 = 0.001;
 
@@ -213,7 +202,10 @@ impl GamepadDevice {
 				Ok(0) => break,
 				Ok(size) => size,
 				Err(error) => {
-					warn!("Failed to read HID input report. The most likely cause is that the device disconnected unexpectedly: {}", error);
+					warn!(
+						"Failed to read HID input report. The most likely cause is that the device disconnected unexpectedly: {}",
+						error
+					);
 					break;
 				}
 			};
@@ -713,3 +705,14 @@ fn normalize_axis_i16(value: i16) -> f32 {
 fn normalize_trigger_u8(value: u8) -> f32 {
 	(value as f32) / 255.0
 }
+
+use std::{
+	collections::{HashMap, HashSet},
+	time::{Duration, Instant},
+};
+
+use hidapi::{HidApi, HidDevice};
+use log::{debug, warn};
+use math::Vector2;
+
+use super::{DeviceHandle, Value, input_manager::TriggerReference};

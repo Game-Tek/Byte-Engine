@@ -10,6 +10,9 @@
 //! listener and an action event channel, then register classes before creating
 //! devices.
 
+/// The synthetic device reserved for actions triggered without physical input.
+const MANUAL_ACTION_DEVICE: DeviceHandle = DeviceHandle(u32::MAX);
+
 /// The [`InputManager`] struct owns input topology, current values, and action
 /// evaluation state.
 ///
@@ -27,6 +30,7 @@ pub struct InputManager {
 	trigger_values: HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
 	/// Stores the last value of an action relative to the seat and device it belongs to.
 	action_values: HashMap<(SeatHandle, DeviceHandle, ActionHandle), Value>,
+	pending_manual_actions: Vec<(SeatHandle, ActionHandle, Value)>,
 	action_listener: DefaultListener<CreateMessage<Action>>,
 	event_channel: DefaultChannel<ActionEvent>,
 }
@@ -42,6 +46,7 @@ impl InputManager {
 			actions: Vec::new(),
 			trigger_values: HashMap::with_capacity(512),
 			action_values: HashMap::with_capacity(64),
+			pending_manual_actions: Vec::new(),
 			action_listener,
 			event_channel,
 		}
@@ -138,6 +143,10 @@ impl InputManager {
 			Some(device) => device.index + 1,
 			None => 0,
 		};
+		assert_ne!(
+			index, MANUAL_ACTION_DEVICE.0,
+			"Physical device index exhausted reserved manual action handle"
+		);
 
 		let device = Device {
 			device_class_handle: *device_class_handle,
@@ -331,6 +340,19 @@ impl InputManager {
 			}
 		}
 
+		// Manual actions enter the same state table as physical actions, using the
+		// reserved device because they do not originate from a concrete device.
+		for (seat_handle, action_handle, value) in self.pending_manual_actions.drain(..) {
+			self.action_values
+				.insert((seat_handle, MANUAL_ACTION_DEVICE, action_handle), value);
+
+			if let Some(action) = self.actions.get(action_handle.0 as usize) {
+				if let Some(handle) = action.handle {
+					self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
+				}
+			}
+		}
+
 		// Phase B: Tick-based emission for WhileActive and Always actions.
 		// Iterates all actions and emits events based on their tick policy using the
 		// most recently resolved value. Only emits for devices that have previously
@@ -376,6 +398,34 @@ impl InputManager {
 				}
 			}
 		}
+	}
+
+	/// Queues an action value for emission during the next [`Self::update`] call.
+	pub fn trigger_action(
+		&mut self,
+		seat_handle: SeatHandle,
+		action_handle: ActionHandle,
+		value: Value,
+	) -> Result<(), InputActionError> {
+		let action = self
+			.actions
+			.get(action_handle.0 as usize)
+			.ok_or(InputActionError::UnknownAction(action_handle))?;
+		let actual_type = value.into();
+		if action.r#type != actual_type {
+			return Err(InputActionError::TypeMismatch {
+				expected: action.r#type,
+				actual: actual_type,
+			});
+		}
+
+		self.pending_manual_actions.push((seat_handle, action_handle, value));
+		Ok(())
+	}
+
+	/// Returns the synthetic device used by [`Self::trigger_action`].
+	pub fn manual_action_device_handle() -> DeviceHandle {
+		MANUAL_ACTION_DEVICE
 	}
 
 	pub fn create_action(
@@ -532,6 +582,15 @@ impl InputManager {
 	}
 }
 
+/// The `InputActionError` enum describes why a manual action could not be queued.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputActionError {
+	/// The requested action handle is not registered with the manager.
+	UnknownAction(ActionHandle),
+	/// The supplied value type does not match the action declaration.
+	TypeMismatch { expected: Types, actual: Types },
+}
+
 #[derive(Copy, Clone, Debug)]
 /// A trigger reference is a way to reference an input trigger.
 /// It can be referenced by it's name or by it's handle.
@@ -554,9 +613,9 @@ mod tests {
 	use super::*;
 	use crate::input::ActionBindingDescription;
 	use crate::input::{
+		ValueMapping,
 		input_trigger::TriggerDescription,
 		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
-		ValueMapping,
 	};
 
 	fn declare_vr_headset_input_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
@@ -1234,6 +1293,70 @@ mod tests {
 	}
 
 	#[test]
+	fn manual_action_is_queued_and_updates_synthetic_state() {
+		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
+		let seat = SeatHandle(7);
+		let action = Action::new("Manual", &[], Types::Float);
+		let event_handle = factory.create(action);
+		update_input_manager(&mut input_manager);
+		let action_handle = ActionHandle(0);
+
+		input_manager.trigger_action(seat, action_handle, Value::Float(3.5)).unwrap();
+		assert!(Listener::read(&mut event_listener).is_none());
+		update_input_manager(&mut input_manager);
+
+		let event = Listener::read(&mut event_listener).expect("expected manual action event");
+		assert_eq!(event.seat_handle(), seat);
+		assert_eq!(event.handle(), event_handle);
+		assert_eq!(event.value(), Value::Float(3.5));
+		assert_eq!(
+			input_manager
+				.get_action_state(seat, action_handle, InputManager::manual_action_device_handle())
+				.value,
+			Value::Float(3.5)
+		);
+	}
+
+	#[test]
+	fn manual_action_rejects_unknown_handles_and_wrong_values() {
+		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
+		factory.create(Action::new("Manual", &[], Types::Float));
+		update_input_manager(&mut input_manager);
+
+		assert!(matches!(
+			input_manager.trigger_action(SeatHandle::stub(), ActionHandle(99), Value::Float(1.0)),
+			Err(InputActionError::UnknownAction(ActionHandle(99)))
+		));
+		assert!(matches!(
+			input_manager.trigger_action(SeatHandle::stub(), ActionHandle(0), Value::Bool(true)),
+			Err(InputActionError::TypeMismatch {
+				expected: Types::Float,
+				actual: Types::Boolean
+			})
+		));
+		update_input_manager(&mut input_manager);
+		assert!(Listener::read(&mut event_listener).is_none());
+	}
+
+	#[test]
+	fn manual_actions_preserve_queue_order() {
+		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
+		factory.create(Action::new("Manual", &[], Types::Int));
+		update_input_manager(&mut input_manager);
+
+		input_manager
+			.trigger_action(SeatHandle::stub(), ActionHandle(0), Value::Int(1))
+			.unwrap();
+		input_manager
+			.trigger_action(SeatHandle::stub(), ActionHandle(0), Value::Int(2))
+			.unwrap();
+		update_input_manager(&mut input_manager);
+
+		assert_eq!(Listener::read(&mut event_listener).unwrap().value(), Value::Int(1));
+		assert_eq!(Listener::read(&mut event_listener).unwrap().value(), Value::Int(2));
+	}
+
+	#[test]
 	fn test_tick_policy_while_active_emits_while_non_default() {
 		let (mut input_manager, mut factory, mut event_listener) = build_input_manager_with_factory();
 		let device_class_handle = register_keyboard_device_class(&mut input_manager);
@@ -1333,26 +1456,26 @@ use std::{collections::HashMap, default};
 use log::warn;
 use math::{Base, Vector2, Vector3};
 use serde::de;
-use utils::{insert_return_length, RGBA};
+use utils::{RGBA, insert_return_length};
 
 pub use super::action_evaluator::InputEventState;
 use super::{
+	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types,
+	Value,
 	action::{InputValue, TriggerMapping},
-	action_evaluator::{resolve_action_value, InputAction},
+	action_evaluator::{InputAction, resolve_action_value},
 	device::Device,
 	device_class::{DeviceClass, DeviceClassHandle},
 	input_trigger::{Trigger, TriggerDescription},
-	records::{compact_latest_by_source, compare_source_then_time, Record},
-	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types,
-	Value,
+	records::{Record, compact_latest_by_source, compare_source_then_time},
 };
 use crate::{
 	core::{
+		Entity, EntityHandle,
 		channel::{Channel as _, DefaultChannel},
 		factory::{CreateMessage, Factory},
 		listener::{DefaultListener, Listener},
 		message::Message,
-		Entity, EntityHandle,
 	},
 	input::ActionEvent,
 };

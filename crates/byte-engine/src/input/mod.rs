@@ -35,6 +35,7 @@ pub use action::Action;
 pub use action::ActionBindingDescription;
 pub use action::ActionHandle;
 pub use device::DeviceHandle;
+pub use input_manager::InputActionError;
 pub use input_manager::InputManager;
 pub use input_trigger::TriggerHandle;
 use math::Quaternion;

@@ -5,15 +5,6 @@
 //! submit it through the headed graphics application's action factory. The
 //! standard trigger names are defined by [`crate::input::utils`].
 
-use math::{Quaternion, Vector2, Vector3};
-use smallvec::SmallVec;
-use utils::RGBA;
-
-use super::TriggerHandle;
-use super::{input_manager::TriggerReference, Function, TickPolicy, Types, Value};
-use crate::core::{Entity, EntityHandle};
-use crate::input::ValueMapping;
-
 trait ActionLike {
 	fn get_bindings(&self) -> &[ActionBindingDescription];
 	fn get_inputs(&self) -> &[TriggerMapping];
@@ -148,7 +139,16 @@ pub struct TriggerMapping {
 	pub(crate) function: Option<Function>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 /// The [`ActionHandle`] struct identifies an action registered with an
 /// [`crate::input::InputManager`].
 pub struct ActionHandle(pub(super) u32);
+
+use math::{Quaternion, Vector2, Vector3};
+use smallvec::SmallVec;
+use utils::RGBA;
+
+use super::TriggerHandle;
+use super::{Function, TickPolicy, Types, Value, input_manager::TriggerReference};
+use crate::core::{Entity, EntityHandle};
+use crate::input::ValueMapping;

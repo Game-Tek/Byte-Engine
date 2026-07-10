@@ -1,8 +1,3 @@
-use math::{Quaternion, Vector2, Vector3};
-use utils::RGBA;
-
-use super::{action::InputValue, device_class::DeviceClassHandle, Types, Value};
-
 /// An input trigger is a source of input on a device class/type. Such as the UP key on a keyboard or the left trigger on a gamepad.
 pub(super) struct Trigger {
 	/// The device class the input source is associated with.
@@ -104,3 +99,8 @@ impl Default for TriggerDescription<Quaternion> {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 /// Handle to an input trigger.
 pub struct TriggerHandle(pub(super) u32);
+
+use math::{Quaternion, Vector2, Vector3};
+use utils::RGBA;
+
+use super::{Types, Value, action::InputValue, device_class::DeviceClassHandle};

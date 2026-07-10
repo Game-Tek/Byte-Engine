@@ -4,10 +4,6 @@
 //! using one class definition. Create devices through
 //! [`crate::input::InputManager`] after registering their class.
 
-use utils::hash::HashMap;
-
-use super::{device_class::DeviceClassHandle, TriggerHandle};
-
 /// The [`Device`] struct stores one concrete instance of a registered device
 /// class.
 pub(super) struct Device {
@@ -19,3 +15,7 @@ pub(super) struct Device {
 /// The [`DeviceHandle`] struct identifies the device whose trigger or action state
 /// is being read or updated.
 pub struct DeviceHandle(pub(super) u32);
+
+use utils::hash::HashMap;
+
+use super::{TriggerHandle, device_class::DeviceClassHandle};

@@ -1,7 +1,3 @@
-use math::Vector2;
-
-use super::{device_class::DeviceClassHandle, input_trigger::TriggerDescription, InputManager};
-
 /// Registers a mouse device class with the input manager.
 /// This is the standard Byte-Engine mouse device definition.
 ///
@@ -175,3 +171,7 @@ pub fn register_gamepad_device_class(input_manager: &mut InputManager) -> Device
 
 	gamepad_device_class_handle
 }
+
+use math::Vector2;
+
+use super::{InputManager, device_class::DeviceClassHandle, input_trigger::TriggerDescription};

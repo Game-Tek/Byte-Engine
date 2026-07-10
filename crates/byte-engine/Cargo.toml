@@ -50,4 +50,4 @@ fontdue = "0.9.3"
 artnet_protocol = { version = "0.4.4", optional = true }
 half = "2.4.1"
 bitflags = "2.11.1"
-bumpalo = { version = "3", features = ["allocator_api"] }
+bumpalo = { version = "3", features = ["allocator_api", "collections"] }

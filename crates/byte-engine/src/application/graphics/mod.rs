@@ -294,7 +294,7 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::update_world");
 			let _enter = span.enter();
-			self.world.update(time, &mut physics_transforms_listener);
+			self.world.update(time, &mut physics_transforms_listener, &mut self.application.frame_allocator);
 		}
 
 		{

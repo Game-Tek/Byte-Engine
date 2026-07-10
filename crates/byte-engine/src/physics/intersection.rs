@@ -1,4 +1,5 @@
 use math::{dot, normalize, Base, Vector3};
+use smallvec::SmallVec;
 
 use crate::physics::{
 	dynabit::{body::PhysicsBody, contact::Pair},
@@ -38,10 +39,10 @@ impl PartialOrd for PseudoBody {
 	}
 }
 
-pub fn sort_bodies_bounds<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> Vec<PseudoBody> {
+pub fn sort_bodies_bounds<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> SmallVec<[PseudoBody; 32]> {
 	let axis = normalize(Vector3::one());
 
-	let mut pseudo_bodies = Vec::with_capacity(bodies.size_hint().0 * 2);
+	let mut pseudo_bodies = SmallVec::with_capacity(bodies.size_hint().0 * 2);
 
 	for (i, body) in bodies {
 		let bounds = body.bounds(); // TODO: bounds() does not adjust by orientation
@@ -70,8 +71,8 @@ pub fn sort_bodies_bounds<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBo
 	pseudo_bodies
 }
 
-pub fn build_pairs(pseudo_bodies: &[PseudoBody]) -> Vec<Pair> {
-	let mut pairs = Vec::new();
+pub fn build_pairs(pseudo_bodies: &[PseudoBody]) -> SmallVec<[Pair; 32]> {
+	let mut pairs = SmallVec::new();
 
 	for a in pseudo_bodies.iter() {
 		if !a.is_min {
@@ -98,12 +99,12 @@ pub fn build_pairs(pseudo_bodies: &[PseudoBody]) -> Vec<Pair> {
 	pairs
 }
 
-pub fn sweep_and_prune_1d<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> Vec<Pair> {
+pub fn sweep_and_prune_1d<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> SmallVec<[Pair; 32]> {
 	let e = sort_bodies_bounds(bodies, dt);
 
 	build_pairs(&e)
 }
 
-pub fn broadphase<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> Vec<Pair> {
+pub fn broadphase<'a>(bodies: impl Iterator<Item = (usize, &'a PhysicsBody)>, dt: f32) -> SmallVec<[Pair; 32]> {
 	sweep_and_prune_1d(bodies, dt)
 }

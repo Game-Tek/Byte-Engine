@@ -5,6 +5,8 @@
 //! application updates this world and attaches its listeners to render
 //! pipelines.
 
+use std::alloc::Allocator;
+
 use crate::{
 	application::Time,
 	core::{
@@ -64,9 +66,9 @@ impl DefaultWorld {
 		}
 	}
 
-	pub fn update(&mut self, time: Time, transforms_rx: &mut impl Listener<TransformationUpdate>) {
+	pub fn update(&mut self, time: Time, transforms_rx: &mut impl Listener<TransformationUpdate>, allocator: &mut bumpalo::Bump) {
 		self.anchor_system.update();
-		self.physics_system.update(time, transforms_rx, &mut self.transforms);
+		self.physics_system.update(time, transforms_rx, &mut self.transforms, allocator);
 	}
 
 	pub fn flush_deletions(&mut self) {

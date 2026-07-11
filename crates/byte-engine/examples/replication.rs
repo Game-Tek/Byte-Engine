@@ -1,28 +1,54 @@
 //! This is a smoke test that creates a replicated environments.
 
+use std::time::Instant;
+
 use byte_engine::{
 	application::{Application, Parameter},
 	core::factory::Factory,
 	gameplay::world::DefaultWorld,
-	network::Replicable,
+	network::{channel::ChannelClient as Client, channel::ChannelServer as Server, Replicable},
 	space::Positionable,
 };
 use math::Vector3;
+use serde::{Deserialize, Serialize};
 
 fn main() {
-	let mut app = byte_engine::application::graphics::GraphicsApplication::new(
-		"Replication Test",
-		&[
-			Parameter::new("kill-after", "60"),
-			Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
-		],
-	);
+	// let mut server_app = byte_engine::application::graphics::GraphicsApplication::new(
+	// 	"Server",
+	// 	&[
+	// 		Parameter::new("kill-after", "60"),
+	// 		Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
+	// 	],
+	// );
 
-	// space_handle.spawn(Cube::new(Vector3::new(0.5f32, 0.5f32, 0.5f32)).builder());
+	// let mut client_a_app = byte_engine::application::graphics::GraphicsApplication::new(
+	// 	"Client A",
+	// 	&[
+	// 		Parameter::new("kill-after", "60"),
+	// 		Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
+	// 	],
+	// );
 
-	let world = DefaultWorld::new();
+	// let mut client_b_app = byte_engine::application::graphics::GraphicsApplication::new(
+	// 	"Client B",
+	// 	&[
+	// 		Parameter::new("kill-after", "60"),
+	// 		Parameter::new("render.ghi.features.mesh-shading", "false"), // Many devices don't support this feature and it is not necessary for this test.
+	// 	],
+	// );
 
-	let _world_handle = app.world_factory_mut().create(world);
+	let mut server = Server::new();
+	let mut client_a = server.client();
+	let mut client_b = server.client();
+
+	client_a.connect(Instant::now());
+	client_b.connect(Instant::now());
+
+	let mut update = || {
+		client_a.update().unwrap();
+		client_b.update().unwrap();
+		server.update(Instant::now()).unwrap();
+	};
 
 	let mut replicable_factory = Factory::new();
 
@@ -32,9 +58,35 @@ fn main() {
 
 	replicable_factory.create(a);
 
-	// TODO: test replication
+	update();
+	update();
+	update();
 
-	app.do_loop();
+	let mut data = [0u8; 1024];
+	data[0] = Commands::Spawn as u8;
+
+	client_a.send(true, data).unwrap();
+
+	client_a.update().unwrap();
+	client_b.update().unwrap();
+	server.update(Instant::now()).unwrap();
+
+	for packet in server.drain_received() {
+		let command: Commands = unsafe { std::mem::transmute(packet[0]) };
+
+		match command {
+			Commands::Spawn => {
+				println!("Requested spawn");
+			}
+			_ => {}
+		}
+	}
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum Commands {
+	Spawn,
 }
 
 #[derive(Clone)]

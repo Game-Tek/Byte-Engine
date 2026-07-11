@@ -105,13 +105,13 @@ impl Session {
 	/// Messages can be flagged as realiable for them to be retried if sending them fails.
 	/// Data packets sent whilw the session is not in the `Connected` state will be discarded.
 	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
-		match self.state {
-			State::Connected { id, mut packet_buffer } => {
+		match &mut self.state {
+			State::Connected { id, packet_buffer } => {
 				let sequence_number = self.local.get_sequence_number();
 				let ack = self.remote.get_ack();
 				let ack_bitfield = self.remote.get_ack_bitfield();
-				let packet = DataPacket::new(id, ConnectionStatus::new(sequence_number, ack, ack_bitfield), data);
-				packet_buffer.add(packet, id, reliable);
+				let packet = DataPacket::new(*id, ConnectionStatus::new(sequence_number, ack, ack_bitfield), data);
+				packet_buffer.add(packet, *id, reliable);
 			}
 			_ => {
 				println!("Discarding packet as connection is not yet established")

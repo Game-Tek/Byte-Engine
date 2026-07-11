@@ -151,6 +151,10 @@ impl ChallengeResponsePacket {
 			connection_id,
 		}
 	}
+
+	pub fn get_connection_id(&self) -> u64 {
+		self.connection_id
+	}
 }
 
 impl Packet for ChallengeResponsePacket {

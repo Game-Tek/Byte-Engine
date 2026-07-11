@@ -36,7 +36,7 @@ pub mod channel {
 			client.send(true, [7; 1024]).unwrap();
 			client.update().unwrap();
 			server.update(Instant::now()).unwrap();
-			assert_eq!(server.drain_received().next(), Some([7; 1024]));
+			assert_eq!(server.drain_received().next().map(|e| e.data), Some([7; 1024]));
 
 			server.send(true, [9; 1024]);
 			server.update(Instant::now()).unwrap();

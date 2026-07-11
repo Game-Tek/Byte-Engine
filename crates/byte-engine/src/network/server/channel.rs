@@ -1,22 +1,10 @@
 //! In-memory server transport for deterministic replication tests.
 
-use std::{
-	sync::mpsc::{Receiver, Sender, TryRecvError},
-	time::Instant,
-};
-
-use betp::{
-	packets::{ChallengePacket, Packets},
-	server::{ConnectionResults, Events, Session},
-};
-
-use crate::network::client::ChannelClient;
-
 /// The `ChannelServer` struct provides an engine server endpoint backed by
 /// isolated in-process channels for each client.
 pub struct ChannelServer {
 	clients: Vec<ChannelConnection>,
-	received: Vec<[u8; 1024]>,
+	received: Vec<DataPacket<1024>>,
 }
 
 /// Each channel client needs independent handshake and BETP sequence state.
@@ -70,6 +58,7 @@ impl ChannelServer {
 		for client in &mut self.clients {
 			// Drain only this client's endpoint so packets cannot cross handshakes.
 			let mut packets = Vec::new();
+
 			loop {
 				match client.incoming.try_recv() {
 					Ok(packet) => packets.push(packet),
@@ -98,7 +87,7 @@ impl ChannelServer {
 						client.pending_connection_id = None;
 						events.push(Events::ClientConnected { id });
 					}
-					Packets::Data(packet) => self.received.push(packet.data),
+					Packets::Data(packet) => self.received.push(*packet),
 					_ => {}
 				}
 			}
@@ -126,7 +115,7 @@ impl ChannelServer {
 	}
 
 	/// Removes and returns every application payload received since the last drain.
-	pub fn drain_received(&mut self) -> impl Iterator<Item = [u8; 1024]> + '_ {
+	pub fn drain_received(&mut self) -> impl Iterator<Item = DataPacket<1024>> + '_ {
 		self.received.drain(..)
 	}
 
@@ -144,3 +133,14 @@ impl Default for ChannelServer {
 		Self::new()
 	}
 }
+
+use std::{
+	sync::mpsc::{Receiver, Sender, TryRecvError},
+	time::Instant,
+};
+
+use betp::{
+	packets::{ChallengePacket, DataPacket, Packets}, server::{ConnectionResults, Events, Session},
+};
+
+use crate::network::client::ChannelClient;

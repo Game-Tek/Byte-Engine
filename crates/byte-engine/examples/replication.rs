@@ -65,14 +65,14 @@ fn main() {
 	let mut data = [0u8; 1024];
 	data[0] = Commands::Spawn as u8;
 
-	client_a.send(true, data).unwrap();
+	server.send(true, data);
 
 	client_a.update().unwrap();
 	client_b.update().unwrap();
 	server.update(Instant::now()).unwrap();
 
 	for packet in server.drain_received() {
-		let command: Commands = unsafe { std::mem::transmute(packet[0]) };
+		let command: Commands = unsafe { std::mem::transmute(packet.data[0]) };
 
 		match command {
 			Commands::Spawn => {

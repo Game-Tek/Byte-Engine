@@ -1501,11 +1501,20 @@ fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Fe
 
 			statements.push(expression);
 		} else {
-			if **iterator.clone().peekable().peek().unwrap() == "}" {
+			// A failed statement parser at EOF means the function body was truncated.
+			let Some(token) = iterator.clone().next().copied() else {
+				return Err(ParsingFailReasons::BadSyntax {
+					message: format!(
+						"Function `{}` is missing a closing `}}`. The source most likely ended before the function body was complete.",
+						name
+					),
+				});
+			};
+
+			if token == "}" {
 				iterator.next();
 				break;
 			} else {
-				let token = iterator.clone().peekable().peek().copied().copied().unwrap_or("<eof>");
 				return Err(ParsingFailReasons::BadSyntax {
 					message: format!("Expected a }} after function {} declaration, found `{}`.", name, token),
 				});
@@ -2518,5 +2527,12 @@ process_meshlet: fn (instance_index: u32, matrix: mat4f) -> void {
 		let node = parse(&tokens).expect("Failed to parse");
 		let func = &node["process_meshlet"];
 		assert!(matches!(&func.node, Nodes::Function { .. }));
+	}
+
+	#[test]
+	fn truncated_function_returns_an_error() {
+		let tokens = tokenize("main: fn () -> void {").expect("Failed to tokenize");
+
+		assert!(matches!(parse(&tokens), Err(ParsingFailReasons::BadSyntax { .. })));
 	}
 }

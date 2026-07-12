@@ -1,0 +1,6 @@
+main: fn () -> void {
+	let direction: vec3f = normalize(vec3f(3.0, 4.0, 0.0));
+	let strength: f32 = dot(direction, vec3f(1.0, 0.0, 0.0));
+	let maximum: f32 = max(strength, 1.0);
+	let clamped: f32 = clamp(maximum, 0.0, 1.0);
+}

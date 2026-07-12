@@ -1,0 +1,12 @@
+Vertex: struct {
+	position: vec3f,
+	normal: vec3f,
+}
+
+add: fn (left: f32, right: f32) -> f32 {
+	return left + right;
+}
+
+main: fn () -> void {
+	let value: f32 = add(3.0, 4.5);
+}

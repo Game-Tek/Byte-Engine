@@ -3,10 +3,8 @@
 use std::time::Instant;
 
 use byte_engine::{
-	application::{Application, Parameter},
 	core::factory::Factory,
-	gameplay::world::DefaultWorld,
-	network::{channel::ChannelClient as Client, channel::ChannelServer as Server, Replicable},
+	network::{channel::ChannelServer as Server, Replicable},
 	space::Positionable,
 };
 use math::Vector3;
@@ -72,13 +70,8 @@ fn main() {
 	server.update(Instant::now()).unwrap();
 
 	for packet in server.drain_received() {
-		let command: Commands = unsafe { std::mem::transmute(packet.data[0]) };
-
-		match command {
-			Commands::Spawn => {
-				println!("Requested spawn");
-			}
-			_ => {}
+		if packet.data[0] == Commands::Spawn as u8 {
+			println!("Requested spawn");
 		}
 	}
 }

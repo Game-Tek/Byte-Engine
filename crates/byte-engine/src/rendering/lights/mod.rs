@@ -14,13 +14,14 @@ pub use directional::DirectionalLight as Directional;
 pub use point::PointLight;
 pub use point::PointLight as Point;
 
-/// The [`Light`] trait identifies the rendering class of a light implementation.
+/// The `Light` trait exists to identify the shader and storage class of a scene light.
 pub trait Light {
 	fn class(&self) -> LightClasses;
 }
 
 /// The [`LightClasses`] enum identifies the shader and storage layout required by
 /// a light.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LightClasses {
 	Directional,
 	Point,
@@ -43,5 +44,40 @@ impl From<PointLight> for Lights {
 impl From<DirectionalLight> for Lights {
 	fn from(val: DirectionalLight) -> Self {
 		Lights::Direction(val)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use math::Vector3;
+
+	use super::*;
+	use crate::{inspector::Inspectable, rendering::cct};
+
+	#[test]
+	fn concrete_lights_preserve_spatial_state_temperature_color_and_class() {
+		let point = PointLight::new(Vector3::new(1.0, 2.0, 3.0), 2_500.0);
+		let directional = DirectionalLight::new(Vector3::new(-1.0, -2.0, -3.0), 10_000.0);
+
+		assert_eq!(point.position, Vector3::new(1.0, 2.0, 3.0));
+		assert_eq!(point.color, cct::rgb_from_temperature(2_500.0));
+		assert_eq!(point.class(), LightClasses::Point);
+		assert!(point.as_string().contains("PointLight"));
+
+		assert_eq!(directional.direction, Vector3::new(-1.0, -2.0, -3.0));
+		assert_eq!(directional.color, cct::rgb_from_temperature(10_000.0));
+		assert_eq!(directional.class(), LightClasses::Directional);
+		assert!(directional.as_string().contains("DirectionalLight"));
+	}
+
+	#[test]
+	fn erased_light_conversion_preserves_the_concrete_variant_and_payload() {
+		let point = PointLight::new(Vector3::new(1.0, 0.0, 0.0), 6_600.0);
+		let directional = DirectionalLight::new(Vector3::new(0.0, -1.0, 0.0), 5_000.0);
+
+		assert!(
+			matches!(Lights::from(point), Lights::Point(light) if light.position == point.position && light.color == point.color)
+		);
+		assert!(matches!(Lights::from(directional.clone()), Lights::Direction(light) if light == directional));
 	}
 }

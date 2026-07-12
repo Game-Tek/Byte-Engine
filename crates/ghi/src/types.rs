@@ -793,6 +793,59 @@ mod tests {
 		assert_eq!(Formats::BC7.bc_layout(8, 4).unwrap().bytes_per_image, 32);
 		assert_eq!(Formats::RGBA8UNORM.bc_layout(8, 4), None);
 	}
+
+	#[test]
+	fn shader_stage_conversion_is_one_to_one() {
+		let cases = [
+			(ShaderTypes::Vertex, Stages::VERTEX),
+			(ShaderTypes::Fragment, Stages::FRAGMENT),
+			(ShaderTypes::Compute, Stages::COMPUTE),
+			(ShaderTypes::Task, Stages::TASK),
+			(ShaderTypes::Mesh, Stages::MESH),
+			(ShaderTypes::RayGen, Stages::RAYGEN),
+			(ShaderTypes::ClosestHit, Stages::CLOSEST_HIT),
+			(ShaderTypes::AnyHit, Stages::ANY_HIT),
+			(ShaderTypes::Intersection, Stages::INTERSECTION),
+			(ShaderTypes::Miss, Stages::MISS),
+			(ShaderTypes::Callable, Stages::CALLABLE),
+		];
+		for (shader, expected_stage) in cases {
+			assert_eq!(Stages::from(shader), expected_stage);
+		}
+	}
+
+	#[test]
+	fn primitive_data_type_sizes_match_gpu_scalar_widths() {
+		let cases = [
+			(DataTypes::Float, 4),
+			(DataTypes::Float2, 8),
+			(DataTypes::Float3, 12),
+			(DataTypes::Float4, 16),
+			(DataTypes::U8, 1),
+			(DataTypes::U16, 2),
+			(DataTypes::U32, 4),
+			(DataTypes::Int, 4),
+			(DataTypes::Int2, 8),
+			(DataTypes::Int3, 12),
+			(DataTypes::Int4, 16),
+			(DataTypes::UInt, 4),
+			(DataTypes::UInt2, 8),
+			(DataTypes::UInt3, 12),
+			(DataTypes::UInt4, 16),
+		];
+		for (data_type, expected_size) in cases {
+			assert_eq!(data_type.size(), expected_size);
+		}
+	}
+
+	#[test]
+	fn access_and_use_aliases_preserve_backend_bit_contracts() {
+		assert_eq!(AccessPolicies::READ_WRITE, AccessPolicies::READ | AccessPolicies::WRITE);
+		assert_eq!(DeviceAccesses::DeviceOnly, DeviceAccesses::GpuRead | DeviceAccesses::GpuWrite);
+		assert_eq!(DeviceAccesses::HostOnly, DeviceAccesses::CpuRead | DeviceAccesses::CpuWrite);
+		assert_eq!(Uses::BlitSource, Uses::TransferSource);
+		assert_eq!(Uses::BlitDestination, Uses::TransferDestination);
+	}
 }
 
 impl<T: Copy> From<BufferHandle<T>> for BufferDescriptor {

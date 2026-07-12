@@ -1,11 +1,9 @@
 use utils::Extent;
 
-use crate::{
-	core::{factory::Handle, Entity, EntityHandle},
-	rendering::Camera,
-};
+use crate::core::{factory::Handle, Entity};
 
 #[derive(Clone)]
+/// The `Window` struct exists to configure a named render surface and its attached camera.
 pub struct Window {
 	name: String,
 	extent: Extent,
@@ -70,5 +68,39 @@ bitflags::bitflags! {
 	pub struct Features : u32 {
 		/// The window has decorations (title bar, border, etc.).
 		const DECORATIONS = 0b0001;
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::{core::factory::Factory, rendering::Camera};
+
+	#[test]
+	fn feature_builders_compose_and_remove_only_requested_flags() {
+		let window = Window::new("Main", Extent::rectangle(1_920, 1_080));
+		assert_eq!(window.name(), "Main");
+		assert_eq!(window.extent(), Extent::rectangle(1_920, 1_080));
+		assert!(window.features().is_empty());
+
+		let decorated = window.with_feature(Features::DECORATIONS);
+		assert!(decorated.features().contains(Features::DECORATIONS));
+		let undecorated = decorated.without_feature(Features::DECORATIONS);
+		assert!(undecorated.features().is_empty());
+
+		let replaced = undecorated.with_features(Features::DECORATIONS);
+		assert_eq!(replaced.features(), Features::DECORATIONS);
+	}
+
+	#[test]
+	fn camera_attachment_preserves_the_factory_identity_across_clones() {
+		let mut factory = Factory::new();
+		let camera = factory.create(Camera::new());
+		let mut window = Window::new("View", Extent::rectangle(800, 600));
+
+		assert!(window.camera().is_none());
+		window.attach(camera);
+		assert_eq!(window.camera(), Some(&camera));
+		assert_eq!(window.clone().camera(), Some(&camera));
 	}
 }

@@ -201,17 +201,17 @@ fn hash_shader_source_definition(name: &str, definition: &ShaderSourceDefinition
 			#[cfg(target_os = "linux")]
 			ghi::shader::ShaderSource::Glsl(source) => {
 				hasher.write(b"glsl");
-				hasher.write(source.as_bytes());
+				hash_text(hasher, source);
 			}
 			ghi::shader::ShaderSource::Hlsl { source, entry_point } => {
 				hasher.write(b"hlsl");
-				hasher.write(source.as_bytes());
-				hasher.write(entry_point.as_bytes());
+				hash_text(hasher, source);
+				hash_text(hasher, entry_point);
 			}
 			ghi::shader::ShaderSource::Msl { source, entry_point } => {
 				hasher.write(b"msl");
-				hasher.write(source.as_bytes());
-				hasher.write(entry_point.as_bytes());
+				hash_text(hasher, source);
+				hash_text(hasher, entry_point);
 			}
 			ghi::shader::ShaderSource::Platform {
 				glsl,
@@ -219,9 +219,9 @@ fn hash_shader_source_definition(name: &str, definition: &ShaderSourceDefinition
 				msl_entry_point,
 			} => {
 				hasher.write(b"platform");
-				hasher.write(glsl.as_bytes());
-				hasher.write(msl.as_bytes());
-				hasher.write(msl_entry_point.as_bytes());
+				hash_text(hasher, glsl);
+				hash_text(hasher, msl);
+				hash_text(hasher, msl_entry_point);
 			}
 			ghi::shader::ShaderSource::PlatformNative {
 				glsl,
@@ -231,11 +231,11 @@ fn hash_shader_source_definition(name: &str, definition: &ShaderSourceDefinition
 				hlsl_entry_point,
 			} => {
 				hasher.write(b"platform-native");
-				hasher.write(glsl.as_bytes());
-				hasher.write(msl.as_bytes());
-				hasher.write(msl_entry_point.as_bytes());
-				hasher.write(hlsl.as_bytes());
-				hasher.write(hlsl_entry_point.as_bytes());
+				hash_text(hasher, glsl);
+				hash_text(hasher, msl);
+				hash_text(hasher, msl_entry_point);
+				hash_text(hasher, hlsl);
+				hash_text(hasher, hlsl_entry_point);
 			}
 		}
 		Ok(())
@@ -243,41 +243,69 @@ fn hash_shader_source_definition(name: &str, definition: &ShaderSourceDefinition
 	.expect("Failed to hash shader source. The most likely cause is invalid generated shader source.");
 }
 
+fn hash_text(hasher: &mut DefaultHasher, value: &str) {
+	// Length prefixes prevent distinct field partitions from producing the same
+	// byte stream without allocating a temporary serialization.
+	hasher.write_u64(value.len() as u64);
+	hasher.write(value.as_bytes());
+}
+
 fn hash_shader_source(descriptor: &ShaderSourceDescriptor<'_>) -> u64 {
 	let mut hasher = DefaultHasher::new();
-	hasher.write(b"shader-store-mtlb-v1");
-	hasher.write(descriptor.id.as_bytes());
-	hasher.write(descriptor.name.as_bytes());
-	hasher.write(format!("{:?}", descriptor.stage).as_bytes());
+	hasher.write(b"shader-store-mtlb-v2");
+	hash_text(&mut hasher, descriptor.id);
+	hash_text(&mut hasher, descriptor.name);
+	hasher.write_u8(shader_type_tag(descriptor.stage));
 	hash_shader_source_definition(descriptor.name, &descriptor.source, &mut hasher);
+	hasher.write_u64(descriptor.interface.bindings.len() as u64);
 	for binding in &descriptor.interface.bindings {
 		hasher.write_u32(binding.set);
 		hasher.write_u32(binding.binding);
 		hasher.write_u8(binding.read as u8);
 		hasher.write_u8(binding.write as u8);
 	}
-	if let Some((width, height, depth)) = descriptor.interface.workgroup_size {
-		hasher.write_u32(width);
-		hasher.write_u32(height);
-		hasher.write_u32(depth);
+	match descriptor.interface.workgroup_size {
+		Some((width, height, depth)) => {
+			hasher.write_u8(1);
+			hasher.write_u32(width);
+			hasher.write_u32(height);
+			hasher.write_u32(depth);
+		}
+		None => hasher.write_u8(0),
 	}
 	hasher.finish()
 }
 
+fn shader_type_tag(shader_type: ShaderTypes) -> u8 {
+	match shader_type {
+		ShaderTypes::Vertex => 0,
+		ShaderTypes::Fragment => 1,
+		ShaderTypes::Compute => 2,
+		ShaderTypes::Task => 3,
+		ShaderTypes::Mesh => 4,
+		ShaderTypes::RayGen => 5,
+		ShaderTypes::ClosestHit => 6,
+		ShaderTypes::AnyHit => 7,
+		ShaderTypes::Intersection => 8,
+		ShaderTypes::Miss => 9,
+		ShaderTypes::Callable => 10,
+	}
+}
+
 fn binding_to_descriptor(binding: &Binding) -> ghi::shader::BindingDescriptor {
-	ghi::shader::BindingDescriptor::new(
-		binding.set,
-		binding.binding,
-		if binding.read {
-			ghi::AccessPolicies::READ
-		} else {
-			ghi::AccessPolicies::empty()
-		} | if binding.write {
-			ghi::AccessPolicies::WRITE
-		} else {
-			ghi::AccessPolicies::empty()
-		},
-	)
+	ghi::shader::BindingDescriptor::new(binding.set, binding.binding, binding_access_policy(binding))
+}
+
+fn binding_access_policy(binding: &Binding) -> ghi::AccessPolicies {
+	(if binding.read {
+		ghi::AccessPolicies::READ
+	} else {
+		ghi::AccessPolicies::empty()
+	}) | if binding.write {
+		ghi::AccessPolicies::WRITE
+	} else {
+		ghi::AccessPolicies::empty()
+	}
 }
 
 fn shader_type_to_ghi(shader_type: ShaderTypes) -> ghi::ShaderTypes {
@@ -311,3 +339,243 @@ use resource_management::{
 	ProcessedAsset, Reference, ReferenceModel, Solver,
 };
 use utils::Extent;
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn inline_descriptor<'a>(
+		id: &'a str,
+		name: &'a str,
+		source: &'a str,
+		entry_point: &'a str,
+		stage: ShaderTypes,
+		interface: ShaderInterface,
+	) -> ShaderSourceDescriptor<'a> {
+		ShaderSourceDescriptor {
+			id,
+			name,
+			stage,
+			source: ShaderSourceDefinition::Inline(ghi::shader::ShaderSource::Msl { source, entry_point }),
+			interface,
+		}
+	}
+
+	fn interface(workgroup_size: Option<(u32, u32, u32)>, bindings: Vec<Binding>) -> ShaderInterface {
+		ShaderInterface {
+			workgroup_size,
+			bindings,
+		}
+	}
+
+	#[test]
+	fn source_hash_is_stable_and_covers_every_persisted_input() {
+		let base = inline_descriptor(
+			"shader/id",
+			"Shader Name",
+			"kernel void main0() {}",
+			"main0",
+			ShaderTypes::Compute,
+			interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+		);
+		let duplicate = inline_descriptor(
+			"shader/id",
+			"Shader Name",
+			"kernel void main0() {}",
+			"main0",
+			ShaderTypes::Compute,
+			interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+		);
+		let base_hash = hash_shader_source(&base);
+		assert_eq!(hash_shader_source(&duplicate), base_hash);
+
+		let changed = [
+			inline_descriptor(
+				"shader/other",
+				"Shader Name",
+				"kernel void main0() {}",
+				"main0",
+				ShaderTypes::Compute,
+				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+			),
+			inline_descriptor(
+				"shader/id",
+				"Other Name",
+				"kernel void main0() {}",
+				"main0",
+				ShaderTypes::Compute,
+				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+			),
+			inline_descriptor(
+				"shader/id",
+				"Shader Name",
+				"kernel void changed() {}",
+				"main0",
+				ShaderTypes::Compute,
+				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+			),
+			inline_descriptor(
+				"shader/id",
+				"Shader Name",
+				"kernel void main0() {}",
+				"other",
+				ShaderTypes::Compute,
+				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+			),
+			inline_descriptor(
+				"shader/id",
+				"Shader Name",
+				"kernel void main0() {}",
+				"main0",
+				ShaderTypes::Fragment,
+				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+			),
+			inline_descriptor(
+				"shader/id",
+				"Shader Name",
+				"kernel void main0() {}",
+				"main0",
+				ShaderTypes::Compute,
+				interface(Some((4, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+			),
+			inline_descriptor(
+				"shader/id",
+				"Shader Name",
+				"kernel void main0() {}",
+				"main0",
+				ShaderTypes::Compute,
+				interface(Some((8, 4, 2)), vec![Binding::new(1, 3, true, false)]),
+			),
+			inline_descriptor(
+				"shader/id",
+				"Shader Name",
+				"kernel void main0() {}",
+				"main0",
+				ShaderTypes::Compute,
+				interface(Some((8, 4, 2)), vec![Binding::new(0, 4, true, false)]),
+			),
+			inline_descriptor(
+				"shader/id",
+				"Shader Name",
+				"kernel void main0() {}",
+				"main0",
+				ShaderTypes::Compute,
+				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, false, true)]),
+			),
+		];
+
+		for descriptor in &changed {
+			assert_ne!(hash_shader_source(descriptor), base_hash);
+		}
+
+		let partitioned_left = inline_descriptor("ab", "c", "de", "f", ShaderTypes::Compute, interface(None, Vec::new()));
+		let partitioned_right = inline_descriptor("a", "bc", "d", "ef", ShaderTypes::Compute, interface(None, Vec::new()));
+		assert_ne!(hash_shader_source(&partitioned_left), hash_shader_source(&partitioned_right));
+	}
+
+	#[test]
+	fn every_shader_stage_has_a_unique_hash_tag_and_matching_ghi_stage() {
+		let mappings = [
+			(ShaderTypes::Vertex, ghi::Stages::VERTEX),
+			(ShaderTypes::Fragment, ghi::Stages::FRAGMENT),
+			(ShaderTypes::Compute, ghi::Stages::COMPUTE),
+			(ShaderTypes::Task, ghi::Stages::TASK),
+			(ShaderTypes::Mesh, ghi::Stages::MESH),
+			(ShaderTypes::RayGen, ghi::Stages::RAYGEN),
+			(ShaderTypes::ClosestHit, ghi::Stages::CLOSEST_HIT),
+			(ShaderTypes::AnyHit, ghi::Stages::ANY_HIT),
+			(ShaderTypes::Intersection, ghi::Stages::INTERSECTION),
+			(ShaderTypes::Miss, ghi::Stages::MISS),
+			(ShaderTypes::Callable, ghi::Stages::CALLABLE),
+		];
+		let mut tags = mappings.iter().map(|(stage, _)| shader_type_tag(*stage)).collect::<Vec<_>>();
+		tags.sort_unstable();
+		tags.dedup();
+		assert_eq!(tags.len(), mappings.len());
+
+		for (resource_stage, expected) in mappings {
+			assert_eq!(ghi::Stages::from(shader_type_to_ghi(resource_stage)), expected);
+		}
+	}
+
+	#[test]
+	fn binding_access_flags_preserve_all_read_write_combinations() {
+		assert_eq!(
+			binding_access_policy(&Binding::new(0, 0, false, false)),
+			ghi::AccessPolicies::empty()
+		);
+		assert_eq!(
+			binding_access_policy(&Binding::new(0, 0, true, false)),
+			ghi::AccessPolicies::READ
+		);
+		assert_eq!(
+			binding_access_policy(&Binding::new(0, 0, false, true)),
+			ghi::AccessPolicies::WRITE
+		);
+		assert_eq!(
+			binding_access_policy(&Binding::new(0, 0, true, true)),
+			ghi::AccessPolicies::READ_WRITE
+		);
+	}
+
+	#[test]
+	fn baked_artifacts_reconstruct_the_expected_backend_source() {
+		let binary = [1, 2, 3, 4];
+		assert!(matches!(
+			shader_artifact_source(&ShaderArtifact::Spirv, Some((8, 4, 2)), &binary).expect("SPIR-V source"),
+			ghi::shader::Sources::SPIRV(bytes) if bytes == binary
+		));
+
+		let hlsl = ShaderArtifact::Hlsl {
+			entry_point: "compute_main".to_string(),
+		};
+		assert!(matches!(
+			shader_artifact_source(&hlsl, None, b"[numthreads(1, 1, 1)] void compute_main() {}").expect("HLSL source"),
+			ghi::shader::Sources::HLSL { source, entry_point }
+				if source.contains("numthreads") && entry_point == "compute_main"
+		));
+
+		let msl = ShaderArtifact::Msl {
+			entry_point: "main0".to_string(),
+		};
+		assert!(matches!(
+			shader_artifact_source(&msl, None, b"kernel void main0() {}").expect("MSL source"),
+			ghi::shader::Sources::MTL { source, entry_point }
+				if source == "kernel void main0() {}" && entry_point == "main0"
+		));
+
+		let mtlb = ShaderArtifact::Mtlb {
+			entry_point: "main0".to_string(),
+		};
+		assert!(matches!(
+			shader_artifact_source(&mtlb, Some((8, 4, 2)), &binary).expect("metallib source"),
+			ghi::shader::Sources::MTLB {
+				binary: bytes,
+				entry_point: "main0",
+				threadgroup_size: Some(extent),
+			} if bytes == binary && extent == Extent::new(8, 4, 2)
+		));
+	}
+
+	#[test]
+	fn text_artifacts_reject_invalid_utf8_with_actionable_errors() {
+		let invalid = [0xFF];
+		let hlsl = ShaderArtifact::Hlsl {
+			entry_point: "main".to_string(),
+		};
+		let msl = ShaderArtifact::Msl {
+			entry_point: "main".to_string(),
+		};
+
+		let hlsl_error = match shader_artifact_source(&hlsl, None, &invalid) {
+			Err(error) => error,
+			Ok(_) => panic!("invalid HLSL bytes must fail"),
+		};
+		let msl_error = match shader_artifact_source(&msl, None, &invalid) {
+			Err(error) => error,
+			Ok(_) => panic!("invalid MSL bytes must fail"),
+		};
+		assert!(hlsl_error.contains("most likely cause"));
+		assert!(msl_error.contains("most likely cause"));
+	}
+}

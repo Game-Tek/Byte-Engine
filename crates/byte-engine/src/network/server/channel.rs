@@ -59,11 +59,8 @@ impl ChannelServer {
 			// Drain only this client's endpoint so packets cannot cross handshakes.
 			let mut packets = Vec::new();
 
-			loop {
-				match client.incoming.try_recv() {
-					Ok(packet) => packets.push(packet),
-					Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-				}
+			while let Ok(packet) = client.incoming.try_recv() {
+				packets.push(packet);
 			}
 
 			for packet in &packets {
@@ -140,7 +137,8 @@ use std::{
 };
 
 use betp::{
-	packets::{ChallengePacket, DataPacket, Packets}, server::{ConnectionResults, Events, Session},
+	packets::{ChallengePacket, DataPacket, Packets},
+	server::{ConnectionResults, Events, Session},
 };
 
 use crate::network::client::ChannelClient;

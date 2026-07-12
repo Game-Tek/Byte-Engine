@@ -151,3 +151,101 @@ fn parse_color_choice(args: impl IntoIterator<Item = String>) -> clap::ColorChoi
 
 	clap::ColorChoice::Auto
 }
+
+#[cfg(test)]
+mod tests {
+	use clap::Parser as _;
+
+	use super::{parse_color_choice, Cli, Commands, InspectFormat, QueryFormat};
+
+	fn args(values: &[&str]) -> Vec<String> {
+		values.iter().map(|value| (*value).to_string()).collect()
+	}
+
+	#[test]
+	fn color_pre_scan_supports_split_and_equals_forms() {
+		assert_eq!(
+			parse_color_choice(args(&["beld", "--color", "always", "list"])),
+			clap::ColorChoice::Always
+		);
+		assert_eq!(
+			parse_color_choice(args(&["beld", "list", "--color=never"])),
+			clap::ColorChoice::Never
+		);
+		assert_eq!(
+			parse_color_choice(args(&["beld", "--color=auto", "list"])),
+			clap::ColorChoice::Auto
+		);
+	}
+
+	#[test]
+	fn color_pre_scan_ignores_missing_and_invalid_values() {
+		assert_eq!(parse_color_choice(args(&["beld", "--color"])), clap::ColorChoice::Auto);
+		assert_eq!(
+			parse_color_choice(args(&["beld", "--color=rainbow", "list"])),
+			clap::ColorChoice::Auto
+		);
+		assert_eq!(parse_color_choice(args(&["beld", "list"])), clap::ColorChoice::Auto);
+	}
+
+	#[test]
+	fn cli_defaults_paths_and_parses_query_contract() {
+		let cli = Cli::try_parse_from([
+			"beld",
+			"query",
+			"Material",
+			"name=hero",
+			"group=opaque",
+			"--limit",
+			"25",
+			"--format",
+			"json",
+		])
+		.unwrap();
+
+		assert_eq!(cli.source, "assets");
+		assert_eq!(cli.destination, "resources");
+		match cli.command {
+			Commands::Query {
+				class,
+				properties,
+				limit,
+				cursor,
+				format,
+			} => {
+				assert_eq!(class, "Material");
+				assert_eq!(properties, ["name=hero", "group=opaque"]);
+				assert_eq!(limit, Some(25));
+				assert_eq!(cursor, None);
+				assert!(matches!(format, QueryFormat::Json));
+			}
+			_ => panic!("Expected query command. The most likely cause is a CLI subcommand parsing regression."),
+		}
+	}
+
+	#[test]
+	fn cli_honors_global_paths_and_inspect_format() {
+		let cli = Cli::try_parse_from([
+			"beld",
+			"--source",
+			"input",
+			"--destination",
+			"output",
+			"inspect",
+			"mesh#0",
+			"--format",
+			"json",
+		])
+		.unwrap();
+
+		assert_eq!(cli.source, "input");
+		assert_eq!(cli.destination, "output");
+		assert!(matches!(
+			cli.command,
+			Commands::Inspect {
+				id,
+				format: InspectFormat::Json
+			} if id == "mesh#0"
+		));
+	}
+}

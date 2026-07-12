@@ -1053,6 +1053,78 @@ pub(super) mod tests {
 	}
 
 	#[test]
+	fn descriptor_write_constructors_preserve_binding_array_and_frame_semantics() {
+		let binding = DescriptorSetBindingHandle(1);
+		let buffer = BaseBufferHandle(2);
+		let image = ImageHandle(BaseImageHandle(3));
+		let sampler = SamplerHandle(4);
+		let acceleration_structure = TopLevelAccelerationStructureHandle(5);
+
+		let buffer_write = descriptors::Write::buffer(binding, buffer);
+		assert_eq!(buffer_write.binding_handle, binding);
+		assert_eq!(buffer_write.array_element, 0);
+		assert_eq!(buffer_write.frame_offset, None);
+		assert!(matches!(
+			buffer_write.descriptor,
+			descriptors::WriteData::Buffer {
+				handle,
+				size: Ranges::Whole
+			} if handle == buffer
+		));
+
+		let image_write = descriptors::Write::image_with_frame(binding, image, Layouts::General, -1);
+		assert_eq!(image_write.frame_offset, Some(-1));
+		assert!(matches!(
+			image_write.descriptor,
+			descriptors::WriteData::Image {
+				handle,
+				layout: Layouts::General
+			} if handle == BaseImageHandle(3)
+		));
+
+		let array_write =
+			descriptors::Write::combined_image_sampler_array_with_frame(binding, image, sampler, Layouts::Read, 7, 2);
+		assert_eq!(array_write.array_element, 7);
+		assert_eq!(array_write.frame_offset, Some(2));
+		assert!(matches!(
+			array_write.descriptor,
+			descriptors::WriteData::CombinedImageSampler {
+				image_handle,
+				sampler_handle,
+				layout: Layouts::Read,
+				layer: None,
+			} if image_handle == BaseImageHandle(3) && sampler_handle == sampler
+		));
+
+		let sampler_write = descriptors::Write::sampler(binding, sampler);
+		assert!(matches!(sampler_write.descriptor, descriptors::WriteData::Sampler(value) if value == sampler));
+		let acceleration_write = descriptors::Write::acceleration_structure(binding, acceleration_structure);
+		assert!(matches!(
+			acceleration_write.descriptor,
+			descriptors::WriteData::AccelerationStructure { handle } if handle == acceleration_structure
+		));
+	}
+
+	#[test]
+	fn descriptor_write_variants_without_frame_offsets_remain_frame_invariant() {
+		let binding = DescriptorSetBindingHandle(8);
+		let image = ImageHandle(BaseImageHandle(9));
+		let sampler = SamplerHandle(10);
+
+		let image_write = descriptors::Write::image(binding, image, Layouts::Read);
+		let combined = descriptors::Write::combined_image_sampler(binding, image, sampler, Layouts::Read);
+		let array = descriptors::Write::combined_image_sampler_array(binding, image, sampler, Layouts::Read, 3);
+		let custom = descriptors::Write::new(binding, descriptors::WriteData::StaticSamplers);
+
+		assert_eq!(image_write.frame_offset, None);
+		assert_eq!(combined.frame_offset, None);
+		assert_eq!(array.frame_offset, None);
+		assert_eq!(array.array_element, 3);
+		assert_eq!(custom.binding_handle, binding);
+		assert!(matches!(custom.descriptor, descriptors::WriteData::StaticSamplers));
+	}
+
+	#[test]
 	fn typed_descriptor_set_binding_templates() {
 		let stages = Stages::COMPUTE;
 

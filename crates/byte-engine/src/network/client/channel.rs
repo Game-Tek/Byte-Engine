@@ -46,11 +46,8 @@ impl ChannelClient {
 	/// Advances the protocol without blocking on the channel.
 	pub fn update(&mut self) -> Result<(), Errors> {
 		let mut packets = Vec::new();
-		loop {
-			match self.incoming.try_recv() {
-				Ok(packet) => packets.push(packet),
-				Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-			}
+		while let Ok(packet) = self.incoming.try_recv() {
+			packets.push(packet);
 		}
 
 		for packet in &packets {

@@ -93,3 +93,52 @@ impl PrivateHandle for ImageHandle {
 		self.0
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use std::num::NonZeroU32;
+
+	use utils::Extent;
+
+	use super::{Builder, ImageHandle};
+	use crate::{DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
+
+	#[test]
+	fn builder_defaults_are_valid_for_a_single_static_image() {
+		let builder = Builder::new(Formats::RGBA8UNORM, Uses::Image);
+		assert_eq!(builder.get_name(), None);
+		assert_eq!(builder.get_format(), Formats::RGBA8UNORM);
+		assert_eq!(builder.extent, Extent::cube(0, 0, 0));
+		assert_eq!(builder.resource_uses, Uses::Image);
+		assert_eq!(builder.device_accesses, DeviceAccesses::DeviceOnly);
+		assert_eq!(builder.use_case, UseCases::STATIC);
+		assert_eq!(builder.mip_levels, 1);
+		assert_eq!(builder.array_layers, None);
+	}
+
+	#[test]
+	fn builder_preserves_all_explicit_image_constraints() {
+		let builder = Builder::new(Formats::BC7, Uses::Image | Uses::TransferDestination)
+			.name("albedo")
+			.extent(Extent::rectangle(64, 32))
+			.device_accesses(DeviceAccesses::HostToDevice)
+			.use_case(UseCases::DYNAMIC)
+			.mip_levels(7)
+			.array_layers(NonZeroU32::new(6));
+
+		assert_eq!(builder.get_name(), Some("albedo"));
+		assert_eq!(builder.extent, Extent::rectangle(64, 32));
+		assert_eq!(builder.resource_uses, Uses::Image | Uses::TransferDestination);
+		assert_eq!(builder.device_accesses, DeviceAccesses::HostToDevice);
+		assert_eq!(builder.use_case, UseCases::DYNAMIC);
+		assert_eq!(builder.mip_levels, 7);
+		assert_eq!(builder.array_layers, NonZeroU32::new(6));
+	}
+
+	#[test]
+	fn private_image_handle_round_trips_index_and_variant() {
+		let handle = ImageHandle::new(9);
+		assert_eq!(handle.index(), 9);
+		assert!(matches!(PrivateHandles::from(handle), PrivateHandles::Image(value) if value == handle));
+	}
+}

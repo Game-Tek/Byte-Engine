@@ -41,10 +41,10 @@ impl Streams<'_> {
 
 	pub fn frames(&self) -> usize {
 		match self {
-			Self::Mono16Bit(buf) => buf.len() / 2,
-			Self::Stereo16Bit(buf) => buf.len() / 2 / 2,
-			Self::MonoFloat32(buf) => buf.len() / 4,
-			Self::StereoFloat32(buf) => buf.len() / 4 / 2,
+			Self::Mono16Bit(buf) => buf.len(),
+			Self::Stereo16Bit(buf) => buf.len(),
+			Self::MonoFloat32(buf) => buf.len(),
+			Self::StereoFloat32(buf) => buf.len(),
 		}
 	}
 }
@@ -194,5 +194,62 @@ mod tests {
 		assert_eq!(params.sample_rate, 48000);
 		assert_eq!(params.channels, 2);
 		assert_eq!(params.bit_depth, 16);
+	}
+
+	#[test]
+	fn stream_frame_count_uses_typed_samples_not_byte_width() {
+		let mut mono_i16 = [1i16, 2, 3];
+		let mut stereo_i16 = [(1i16, 2i16), (3, 4), (5, 6)];
+		let mut mono_f32 = [1.0f32, 2.0, 3.0];
+		let mut stereo_f32 = [(1.0f32, 2.0f32), (3.0, 4.0), (5.0, 6.0)];
+
+		assert_eq!(Streams::Mono16Bit(&mut mono_i16).frames(), 3);
+		assert_eq!(Streams::Stereo16Bit(&mut stereo_i16).frames(), 3);
+		assert_eq!(Streams::MonoFloat32(&mut mono_f32).frames(), 3);
+		assert_eq!(Streams::StereoFloat32(&mut stereo_f32).frames(), 3);
+	}
+
+	#[test]
+	fn zero_silences_every_supported_stream_format() {
+		let mut mono_i16 = [1i16, -2, 3];
+		let mut stereo_i16 = [(1i16, -2i16), (3, -4)];
+		let mut mono_f32 = [1.0f32, -2.0, 3.0];
+		let mut stereo_f32 = [(1.0f32, -2.0f32), (3.0, -4.0)];
+
+		Streams::Mono16Bit(&mut mono_i16).zero();
+		Streams::Stereo16Bit(&mut stereo_i16).zero();
+		Streams::MonoFloat32(&mut mono_f32).zero();
+		Streams::StereoFloat32(&mut stereo_f32).zero();
+
+		assert_eq!(mono_i16, [0; 3]);
+		assert_eq!(stereo_i16, [(0, 0); 2]);
+		assert_eq!(mono_f32, [0.0; 3]);
+		assert_eq!(stereo_f32, [(0.0, 0.0); 2]);
+	}
+
+	#[test]
+	fn hardware_parameter_builders_are_independent() {
+		let defaults = HardwareParameters::default();
+		let configured = defaults.sample_rate(96_000).channels(1).bit_depth(32);
+
+		assert_eq!(defaults.get_sample_rate(), 48_000);
+		assert_eq!(defaults.get_channels(), 2);
+		assert_eq!(defaults.get_bit_depth(), 16);
+		assert_eq!(configured.get_sample_rate(), 96_000);
+		assert_eq!(configured.get_channels(), 1);
+		assert_eq!(configured.get_bit_depth(), 32);
+	}
+
+	#[test]
+	fn playback_errors_include_failure_and_likely_cause() {
+		for error in [
+			AudioPlayError::RecoveryFailed,
+			AudioPlayError::StartFailed,
+			AudioPlayError::UnsupportedFormat,
+		] {
+			let message = error.to_string();
+			assert!(message.contains("failed") || message.contains("unsupported"));
+			assert!(message.contains("most likely cause"));
+		}
 	}
 }

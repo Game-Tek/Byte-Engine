@@ -15,3 +15,14 @@ impl Sound {
 impl Entity for Sound {}
 
 impl Source for Sound {}
+
+#[cfg(test)]
+mod tests {
+	use super::Sound;
+
+	#[test]
+	fn sound_retains_the_exact_asset_identifier() {
+		let sound = Sound::new("audio/ambience.ogg#loop".into());
+		assert_eq!(sound.asset, "audio/ambience.ogg#loop");
+	}
+}

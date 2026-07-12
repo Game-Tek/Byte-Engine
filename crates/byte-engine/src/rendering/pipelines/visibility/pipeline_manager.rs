@@ -608,12 +608,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			if let Some((_, light_direction)) = shadow_light {
 				for (cascade_index, (cascade_view, cascade_far)) in
 					csm::make_csm_views(main_view, light_direction, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION)
-						.into_iter()
-						.zip(
-							csm::make_cascade_split_ranges(main_view, SHADOW_CASCADE_COUNT)
-								.into_iter()
-								.map(|(_, far)| far),
-						)
+						.zip(csm::make_cascade_split_ranges(main_view, SHADOW_CASCADE_COUNT).map(|(_, far)| far))
 						.enumerate()
 				{
 					let mut cascade_view_data = Self::make_shader_view_data(cascade_view);

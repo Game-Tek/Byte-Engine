@@ -35,8 +35,43 @@ impl<T: ProgramGenerator + ?Sized> ProgramGenerator for Arc<T> {
 	}
 }
 
+/// The `ShaderCompiler` trait isolates BEMA resource orchestration from platform shader toolchains.
+trait ShaderCompiler: Send + Sync {
+	fn compile(
+		&self,
+		generator: &dyn ProgramGenerator,
+		name: &str,
+		shader_code: &str,
+		format: &str,
+		domain: &str,
+		material: &json::Object,
+		shader_json: &json::Value,
+		stage: &str,
+	) -> Result<(Shader, Box<[u8]>), ()>;
+}
+
+/// The `PlatformShaderCompiler` struct routes production BEMA shaders through the active platform compiler.
+struct PlatformShaderCompiler;
+
+impl ShaderCompiler for PlatformShaderCompiler {
+	fn compile(
+		&self,
+		generator: &dyn ProgramGenerator,
+		name: &str,
+		shader_code: &str,
+		format: &str,
+		domain: &str,
+		material: &json::Object,
+		shader_json: &json::Value,
+		stage: &str,
+	) -> Result<(Shader, Box<[u8]>), ()> {
+		compile_shader(generator, name, shader_code, format, domain, material, shader_json, stage)
+	}
+}
+
 pub struct BEMAAssetHandler {
 	generator: Option<Arc<dyn ProgramGenerator>>,
+	compiler: Arc<dyn ShaderCompiler>,
 }
 
 impl Default for BEMAAssetHandler {
@@ -47,7 +82,10 @@ impl Default for BEMAAssetHandler {
 
 impl BEMAAssetHandler {
 	pub fn new() -> BEMAAssetHandler {
-		BEMAAssetHandler { generator: None }
+		BEMAAssetHandler {
+			generator: None,
+			compiler: Arc::new(PlatformShaderCompiler),
+		}
 	}
 
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
@@ -105,6 +143,7 @@ impl AssetHandler for BEMAAssetHandler {
 				let mut shaders = Vec::with_capacity(asset_shaders.len());
 				for (s_type, shader_json) in asset_shaders.iter() {
 					let shader = transform_shader(
+						self.compiler.clone(),
 						generator.clone(),
 						storage_backend,
 						asset_storage_backend,
@@ -348,6 +387,7 @@ pub(crate) fn compile_shader_program(
 
 /// Loads and compiles a shader definition into a stored resource.
 async fn transform_shader(
+	compiler: Arc<dyn ShaderCompiler>,
 	generator: Arc<dyn ProgramGenerator>,
 	storage_backend: &dyn resource::StorageBackend,
 	asset_storage_backend: &dyn asset::StorageBackend,
@@ -377,7 +417,7 @@ async fn transform_shader(
 	let shader_json = shader_json.clone();
 
 	let (shader, result_shader_bytes) = spawn_cpu_task(move || {
-		compile_shader(
+		compiler.compile(
 			generator.as_ref(),
 			&name,
 			&shader_code,
@@ -441,6 +481,8 @@ async fn resolve_value(
 
 #[cfg(test)]
 pub mod tests {
+	use std::sync::Arc;
+
 	use utils::json;
 
 	use super::ProgramGenerator;
@@ -455,7 +497,45 @@ pub mod tests {
 		ReferenceModel,
 	};
 
-	static BEMA_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+	struct TestShaderCompiler;
+
+	impl super::ShaderCompiler for TestShaderCompiler {
+		fn compile(
+			&self,
+			_generator: &dyn ProgramGenerator,
+			name: &str,
+			_shader_code: &str,
+			format: &str,
+			_domain: &str,
+			_material: &json::Object,
+			_shader_json: &json::Value,
+			stage: &str,
+		) -> Result<(crate::resources::material::Shader, Box<[u8]>), ()> {
+			assert_eq!(format, "besl");
+			let stage = match stage {
+				"Vertex" => crate::types::ShaderTypes::Vertex,
+				"Fragment" => crate::types::ShaderTypes::Fragment,
+				"Compute" => crate::types::ShaderTypes::Compute,
+				_ => return Err(()),
+			};
+
+			Ok((
+				crate::resources::material::Shader {
+					id: name.to_string(),
+					stage,
+					interface: crate::resources::material::ShaderInterface {
+						workgroup_size: Some((128, 0, 0)),
+						bindings: vec![crate::resources::material::Binding::new(0, 0, true, false)],
+					},
+					artifact: crate::resources::material::ShaderArtifact::Msl {
+						entry_point: "test_main".to_string(),
+					},
+					source_hash: 42,
+				},
+				b"compiled-test-shader".to_vec().into_boxed_slice(),
+			))
+		}
+	}
 
 	pub struct RootTestShaderGenerator {}
 
@@ -538,9 +618,6 @@ pub mod tests {
 
 	#[r#async::test]
 	async fn load_material() {
-		// BEMA shader generation uses shared compiler state, so these bake tests
-		// must not compile material shaders concurrently.
-		let _guard = BEMA_TEST_LOCK.lock().unwrap();
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		let material_json = r#"{
@@ -571,6 +648,7 @@ pub mod tests {
 
 		let asset_manager = AssetManager::new(asset_storage_backend);
 		let mut asset_handler = BEMAAssetHandler::new();
+		asset_handler.compiler = Arc::new(TestShaderCompiler);
 
 		let shader_generator = RootTestShaderGenerator::new();
 
@@ -606,7 +684,17 @@ pub mod tests {
 			.expect("Expected shader data");
 		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
 
-		assert!(!shader_spirv.is_empty());
+		assert_eq!(shader_spirv, "compiled-test-shader");
+		let shader_model: crate::resources::material::Shader = crate::from_slice(&shader.resource).unwrap();
+		assert_eq!(shader_model.id, "load_material_fragment.besl");
+		assert!(matches!(shader_model.stage, crate::types::ShaderTypes::Compute));
+		assert_eq!(shader_model.interface.workgroup_size, Some((128, 0, 0)));
+		assert_eq!(shader_model.interface.bindings.len(), 1);
+		assert_eq!(shader_model.source_hash, 42);
+		assert!(matches!(
+			shader_model.artifact,
+			crate::resources::material::ShaderArtifact::Msl { ref entry_point } if entry_point == "test_main"
+		));
 
 		let material = resource_storage_backend
 			.get_resource(ResourceId::new("load_material.bema"))
@@ -618,9 +706,6 @@ pub mod tests {
 
 	#[r#async::test]
 	async fn load_variant() {
-		// BEMA shader generation uses shared compiler state, so these bake tests
-		// must not compile material shaders concurrently.
-		let _guard = BEMA_TEST_LOCK.lock().unwrap();
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		let material_json = r#"{
@@ -663,6 +748,7 @@ pub mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend);
 		let mut asset_handler = BEMAAssetHandler::new();
+		asset_handler.compiler = Arc::new(TestShaderCompiler);
 
 		let shader_generator = RootTestShaderGenerator::new();
 

@@ -11,7 +11,6 @@ use resource_management::{
 	types::BitDepths,
 	Reference,
 };
-use smallvec::SmallVec;
 use utils::Box as Boxy;
 
 use super::{
@@ -168,40 +167,18 @@ impl DefaultAudioSystem {
 }
 
 fn render_sources(
-	audio_resources: &HashMap<String, (Audio, Vec<i16>)>,
+	_audio_resources: &HashMap<String, (Audio, Vec<i16>)>,
 	sources: &[Source],
 	sample_rate: u32,
 	buffer: &mut [f32],
 ) {
-	let mut to_destroy: SmallVec<[usize; 16]> = SmallVec::with_capacity(16);
-
 	let settings = PlaybackSettings { sample_rate };
 
-	for (idx, playing_sound) in sources.iter().enumerate() {
+	for playing_sound in sources {
 		let current_sample = playing_sound.current_sample;
-		let gain = playing_sound.gain;
-
-		let play_sound = |url: &str| {
-			let (audio, audio_data) = audio_resources.get(url).unwrap();
-
-			if current_sample >= audio.sample_count {
-				return;
-			}
-
-			let current_sample = current_sample.min(audio.sample_count);
-
-			let audio_data = &audio_data[current_sample as usize..];
-
-			for (b, s) in buffer.iter_mut().zip(audio_data.iter()) {
-				*b += i16_to_f32(*s) * gain;
-			}
-		};
 
 		let state = PlaybackState { current_sample };
-
-		if playing_sound.generator.render(settings, state, buffer).is_none() {
-			to_destroy.push(idx);
-		}
+		let _ = playing_sound.generator.render(settings, state, buffer);
 	}
 }
 
@@ -324,4 +301,80 @@ fn i16_to_f32(sample: i16) -> f32 {
 
 fn f32_to_i16(sample: f32) -> i16 {
 	(sample * 32768.0) as i16
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		collections::HashMap,
+		sync::{Arc, Mutex},
+	};
+
+	use super::{f32_to_i16, i16_to_f32, render_sources, Source};
+	use crate::audio::generator::{Generator, PlaybackSettings, PlaybackState};
+
+	struct ConstantGenerator {
+		value: f32,
+		observed: Arc<Mutex<Vec<(u32, u32)>>>,
+	}
+
+	impl Generator for ConstantGenerator {
+		fn render<'a>(&self, settings: PlaybackSettings, state: PlaybackState, buffer: &'a mut [f32]) -> Option<&'a [f32]> {
+			self.observed
+				.lock()
+				.unwrap()
+				.push((settings.sample_rate, state.current_sample));
+			for sample in buffer.iter_mut() {
+				*sample += self.value;
+			}
+			Some(buffer)
+		}
+
+		fn done(&self, _settings: PlaybackSettings, _state: PlaybackState) -> bool {
+			false
+		}
+	}
+
+	#[test]
+	fn pcm_conversion_preserves_zero_endpoints_and_monotonic_order() {
+		assert_eq!(i16_to_f32(i16::MIN), -1.0);
+		assert_eq!(i16_to_f32(0), 0.0);
+		assert!(i16_to_f32(i16::MAX) < 1.0);
+		assert_eq!(f32_to_i16(-1.0), i16::MIN);
+		assert_eq!(f32_to_i16(0.0), 0);
+		assert_eq!(f32_to_i16(1.0), i16::MAX);
+
+		let samples = [-1.0, -0.5, 0.0, 0.5, 1.0];
+		for pair in samples.windows(2) {
+			assert!(f32_to_i16(pair[0]) < f32_to_i16(pair[1]));
+		}
+	}
+
+	#[test]
+	fn render_sources_mixes_all_generators_and_forwards_timeline_state() {
+		let observed = Arc::new(Mutex::new(Vec::new()));
+		let sources = [
+			Source {
+				generator: Arc::new(ConstantGenerator {
+					value: 0.25,
+					observed: observed.clone(),
+				}),
+				current_sample: 128,
+				gain: 1.0,
+			},
+			Source {
+				generator: Arc::new(ConstantGenerator {
+					value: -0.1,
+					observed: observed.clone(),
+				}),
+				current_sample: 256,
+				gain: 1.0,
+			},
+		];
+		let mut buffer = [0.5; 4];
+
+		render_sources(&HashMap::new(), &sources, 48_000, &mut buffer);
+		assert_eq!(buffer, [0.65; 4]);
+		assert_eq!(*observed.lock().unwrap(), [(48_000, 128), (48_000, 256)]);
+	}
 }

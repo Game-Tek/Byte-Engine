@@ -150,3 +150,71 @@ where
 		self.read()
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use std::collections::VecDeque;
+
+	use super::Listener;
+	use crate::core::channel::{Channel, DefaultChannel};
+
+	#[test]
+	fn each_listener_observes_the_same_order_without_consuming_for_others() {
+		let channel = DefaultChannel::new();
+		let mut first = channel.listener();
+		let mut second = channel.listener();
+
+		for value in [1, 2, 3] {
+			channel.send(value);
+		}
+
+		assert_eq!(first.to_vec(), [1, 2, 3]);
+		assert_eq!(second.to_vec(), [1, 2, 3]);
+	}
+
+	#[test]
+	fn filtered_listener_drains_rejected_messages_and_preserves_match_order() {
+		let channel = DefaultChannel::new();
+		let listener = channel.listener();
+		let mut even = listener.filtered(|value| value % 2 == 0);
+
+		for value in 1..=6 {
+			channel.send(value);
+		}
+
+		assert_eq!(even.by_ref().collect::<Vec<_>>(), [2, 4, 6]);
+		assert_eq!(even.read(), None);
+	}
+
+	#[test]
+	fn listener_cloned_after_messages_starts_at_the_current_tail() {
+		let channel = DefaultChannel::new();
+		let mut original = channel.listener();
+		channel.send(1);
+		let mut late = original.new_listener();
+		channel.send(2);
+
+		assert_eq!(original.to_vec(), [1, 2]);
+		assert_eq!(late.to_vec(), [2]);
+	}
+
+	#[test]
+	fn collection_listeners_have_explicit_stack_and_queue_ordering() {
+		let mut stack = vec![1, 2, 3];
+		let mut queue = VecDeque::from([1, 2, 3]);
+
+		assert_eq!(stack.to_vec(), [3, 2, 1]);
+		assert_eq!(queue.to_vec(), [1, 2, 3]);
+	}
+
+	#[test]
+	fn cloned_channel_publishes_into_the_same_broadcast_stream() {
+		let channel = DefaultChannel::with_expected_listeners(2);
+		let listener = channel.listener();
+		let cloned_channel = listener.clone_channel();
+		let mut observer = listener.new_listener();
+
+		cloned_channel.send("from clone");
+		assert_eq!(observer.read(), Some("from clone"));
+	}
+}

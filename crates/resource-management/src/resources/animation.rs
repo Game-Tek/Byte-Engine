@@ -119,3 +119,69 @@ impl From<gltf::animation::Property> for AnimationPath {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::{AnimationChannel, AnimationModel, AnimationPath, AnimationSampler, Interpolation, SamplerOutput};
+	use crate::{resource::storage_backend::tests::TestStorageBackend, Solver};
+
+	#[test]
+	fn gltf_animation_enums_map_without_losing_semantics() {
+		assert_eq!(
+			Interpolation::from(gltf::animation::Interpolation::Linear),
+			Interpolation::Linear
+		);
+		assert_eq!(Interpolation::from(gltf::animation::Interpolation::Step), Interpolation::Step);
+		assert_eq!(
+			Interpolation::from(gltf::animation::Interpolation::CubicSpline),
+			Interpolation::CubicSpline
+		);
+
+		assert_eq!(
+			AnimationPath::from(gltf::animation::Property::Translation),
+			AnimationPath::Translation
+		);
+		assert_eq!(
+			AnimationPath::from(gltf::animation::Property::Rotation),
+			AnimationPath::Rotation
+		);
+		assert_eq!(AnimationPath::from(gltf::animation::Property::Scale), AnimationPath::Scale);
+		assert_eq!(
+			AnimationPath::from(gltf::animation::Property::MorphTargetWeights),
+			AnimationPath::Weights
+		);
+	}
+
+	#[test]
+	fn solving_animation_preserves_timing_channels_and_sampler_payload() {
+		let model = AnimationModel {
+			name: Some("walk".into()),
+			samplers: vec![AnimationSampler {
+				interpolation: Interpolation::Linear,
+				input_times: vec![0.0, 0.5, 1.0],
+				output_values: SamplerOutput::Translation(vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0]]),
+			}],
+			channels: vec![AnimationChannel {
+				sampler_index: 0,
+				target_node: 7,
+				target_path: AnimationPath::Translation,
+			}],
+			duration: 1.0,
+		};
+
+		let animation = model
+			.solve(&TestStorageBackend::new())
+			.expect("animation solving is storage-independent");
+		assert_eq!(animation.name.as_deref(), Some("walk"));
+		assert_eq!(animation.duration, 1.0);
+		assert_eq!(animation.channels.len(), 1);
+		assert_eq!(animation.channels[0].sampler_index, 0);
+		assert_eq!(animation.channels[0].target_node, 7);
+		assert_eq!(animation.channels[0].target_path, AnimationPath::Translation);
+		assert_eq!(animation.samplers[0].input_times, [0.0, 0.5, 1.0]);
+		match &animation.samplers[0].output_values {
+			SamplerOutput::Translation(values) => assert_eq!(values, &[[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0]]),
+			_ => panic!("Animation sampler type changed. The most likely cause is a lossy animation-model conversion."),
+		}
+	}
+}

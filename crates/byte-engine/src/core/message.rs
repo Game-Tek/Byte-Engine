@@ -23,3 +23,19 @@ impl DeleteMessage {
 }
 
 impl Message for DeleteMessage {}
+
+#[cfg(test)]
+mod tests {
+	use super::DeleteMessage;
+	use crate::core::factory::Factory;
+
+	#[test]
+	fn delete_message_preserves_the_exact_factory_handle() {
+		let mut factory = Factory::new();
+		let handle = factory.create("entity");
+		let message = DeleteMessage::new(handle);
+
+		assert_eq!(message.handle(), &handle);
+		assert_eq!(message.into_handle(), handle);
+	}
+}

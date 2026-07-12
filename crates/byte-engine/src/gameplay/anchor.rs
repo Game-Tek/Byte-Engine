@@ -115,3 +115,56 @@ impl AnchorSystem {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use math::Vector3;
+
+	use super::{Anchor, Anchorage, Anchoring};
+	use crate::{core::EntityHandle, gameplay::Transform, space::Positionable};
+
+	struct Point(Vector3);
+
+	impl Positionable for Point {
+		fn position(&self) -> Vector3 {
+			self.0
+		}
+
+		fn set_position(&mut self, position: Vector3) {
+			self.0 = position;
+		}
+	}
+
+	#[test]
+	fn anchor_position_and_transform_mutation_share_the_same_state() {
+		let mut anchor = Anchor::new(Transform::from_position(Vector3::new(1.0, 2.0, 3.0)));
+		assert_eq!(anchor.position(), Vector3::new(1.0, 2.0, 3.0));
+
+		anchor.set_position(Vector3::new(4.0, 5.0, 6.0));
+		assert_eq!(anchor.transform().get_position(), Vector3::new(4.0, 5.0, 6.0));
+		anchor.transform_mut().set_position(Vector3::new(7.0, 8.0, 9.0));
+		assert_eq!(anchor.position(), Vector3::new(7.0, 8.0, 9.0));
+	}
+
+	#[test]
+	fn attachment_order_identity_and_offsets_are_preserved() {
+		let first_concrete = EntityHandle::from(Point(Vector3::new(1.0, 0.0, 0.0)));
+		let second_concrete = EntityHandle::from(Point(Vector3::new(2.0, 0.0, 0.0)));
+		let first: EntityHandle<dyn Positionable> = first_concrete.clone();
+		let second: EntityHandle<dyn Positionable> = second_concrete.clone();
+		let mut anchor = Anchor::new(Transform::default());
+
+		anchor.attach(first.clone());
+		anchor.attach_with_offset(second.clone(), Vector3::new(3.0, 4.0, 5.0));
+		let children = anchor.children();
+
+		assert_eq!(children.len(), 2);
+		assert!(children[0].0 == first);
+		assert!(matches!(children[0].1, Anchorage::Default));
+		assert!(children[1].0 == second);
+		assert!(matches!(
+			&children[1].1,
+			Anchorage::Offset { offset } if offset.get_position() == Vector3::new(3.0, 4.0, 5.0)
+		));
+	}
+}

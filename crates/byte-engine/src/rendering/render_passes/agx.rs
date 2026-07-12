@@ -340,6 +340,7 @@ mod tests {
 
 	#[cfg(target_os = "macos")]
 	#[test]
+	#[ignore = "requires the optional Apple Metal Toolchain"]
 	fn agx_tonemap_besl_compiles_to_metal() {
 		let main_node = create_tone_mapping_program();
 

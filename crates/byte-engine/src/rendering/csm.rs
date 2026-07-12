@@ -6,10 +6,7 @@ use smallvec::SmallVec;
 use super::view::View;
 
 /// Returns the camera-space near and far distance for each shadow cascade.
-pub(crate) fn make_cascade_split_ranges(
-	camera_view: View,
-	num_cascades: usize,
-) -> impl Iterator<Item = (f32, f32)> + ExactSizeIterator {
+pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) -> impl ExactSizeIterator<Item = (f32, f32)> {
 	let near = camera_view.near();
 	let far = camera_view.far();
 	let range = far - near;
@@ -33,34 +30,32 @@ pub fn make_csm_views(
 	light_direction: Vector3,
 	num_cascades: usize,
 	shadow_map_resolution: u32,
-) -> impl Iterator<Item = View> + ExactSizeIterator {
+) -> impl ExactSizeIterator<Item = View> {
 	let light_direction = normalize(light_direction);
 	let camera_far = camera_view.far();
 
-	make_cascade_split_ranges(camera_view, num_cascades)
-		.into_iter()
-		.map(move |(cascade_near, cascade_far)| {
-			let camera_view = camera_view.from_from_z_planes(cascade_near, cascade_far);
-			let camera_frustum_corners = camera_view.get_frustum_corners();
-			let center = camera_frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
-			let radius = stabilize_cascade_radius(center, &camera_frustum_corners, shadow_map_resolution);
-			let center: Vector3 = center.into();
+	make_cascade_split_ranges(camera_view, num_cascades).map(move |(cascade_near, cascade_far)| {
+		let camera_view = camera_view.from_from_z_planes(cascade_near, cascade_far);
+		let camera_frustum_corners = camera_view.get_frustum_corners();
+		let center = camera_frustum_corners.iter().fold(Vector4::zero(), |acc, x| acc + *x) / 8.0;
+		let radius = stabilize_cascade_radius(center, &camera_frustum_corners, shadow_map_resolution);
+		let center: Vector3 = center.into();
 
-			let light_view = {
-				// Extend the depth range behind the bounding sphere to capture
-				// shadow casters between the light source and the camera frustum.
-				// Without this, nearby cascades may miss tall/distant casters,
-				// causing shadows to phase in and out as objects cross cascade boundaries.
-				let back_extension = camera_far;
-				let depth = 2.0 * radius + back_extension;
+		let light_view = {
+			// Extend the depth range behind the bounding sphere to capture
+			// shadow casters between the light source and the camera frustum.
+			// Without this, nearby cascades may miss tall/distant casters,
+			// causing shadows to phase in and out as objects cross cascade boundaries.
+			let back_extension = camera_far;
+			let depth = 2.0 * radius + back_extension;
 
-				let from = center - light_direction * (radius + back_extension);
+			let from = center - light_direction * (radius + back_extension);
 
-				View::new_orthographic(-radius, radius, -radius, radius, 0f32, depth, from, light_direction)
-			};
+			View::new_orthographic(-radius, radius, -radius, radius, 0f32, depth, from, light_direction)
+		};
 
-			snap_shadow_view_to_texels(light_view, center, radius, shadow_map_resolution)
-		})
+		snap_shadow_view_to_texels(light_view, center, radius, shadow_map_resolution)
+	})
 }
 
 /// Expands the cascade sphere to a stable size that changes only in texel-sized steps.
@@ -144,7 +139,6 @@ mod tests {
 	fn shadow_view_keeps_cascade_center_in_front_of_the_light() {
 		let camera_view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());
 		let shadow_view = super::make_csm_views(camera_view, Vector3::unit_z(), 1, 2048)
-			.into_iter()
 			.next()
 			.expect("A shadow cascade view should be generated");
 
@@ -289,7 +283,6 @@ mod tests {
 		let light_direction = math::normalize(Vector3::new(0.5, -1.0, 0.3));
 		let resolution = 1024;
 		let shadow_view = super::make_csm_views(camera_view, light_direction, 1, resolution)
-			.into_iter()
 			.next()
 			.expect("A shadow cascade view should be generated");
 		let frustum_corners = camera_view.get_frustum_corners();

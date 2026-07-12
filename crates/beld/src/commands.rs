@@ -468,3 +468,88 @@ pub fn delete(destination_path: String, ids: Vec<String>) -> Result<(), i32> {
 		Err(1)
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use std::time::{SystemTime, UNIX_EPOCH};
+
+	use resource_management::{
+		resource::storage_backend::{QueryCursor, QueryError},
+		QueryableProperty, QueryableValue,
+	};
+	use serde_json::json;
+
+	use super::{
+		decode_hex, decode_query_cursor, encode_hex, encode_query_cursor, parse_query_property, query_error_message,
+		queryable_properties_json, wipe,
+	};
+
+	#[test]
+	fn query_property_parser_splits_once_and_rejects_missing_halves() {
+		assert_eq!(parse_query_property("name=hero"), Ok(("name", "hero")));
+		assert_eq!(parse_query_property("expression=a=b"), Ok(("expression", "a=b")));
+		assert_eq!(parse_query_property("name"), Err(1));
+		assert_eq!(parse_query_property("=value"), Err(1));
+		assert_eq!(parse_query_property("name="), Err(1));
+	}
+
+	#[test]
+	fn hex_codec_round_trips_all_byte_values_and_accepts_uppercase() {
+		let bytes: Vec<u8> = (u8::MIN..=u8::MAX).collect();
+		let encoded = encode_hex(&bytes);
+		assert_eq!(encoded.len(), bytes.len() * 2);
+		assert_eq!(decode_hex(&encoded), Some(bytes.clone()));
+		assert_eq!(decode_hex(&encoded.to_uppercase()), Some(bytes));
+		assert_eq!(decode_hex("0"), None);
+		assert_eq!(decode_hex("gg"), None);
+	}
+
+	#[test]
+	fn query_cursor_codec_is_lossless_and_rejects_non_cursor_json() {
+		let cursor = QueryCursor::new(vec![0, 1, 2, 0xfe, 0xff]);
+		let encoded = encode_query_cursor(&cursor);
+		assert_eq!(decode_query_cursor(&encoded), Ok(cursor));
+		assert_eq!(decode_query_cursor("not-hex"), Err(1));
+		assert_eq!(decode_query_cursor(&encode_hex(br#"{"wrong":true}"#)), Err(1));
+	}
+
+	#[test]
+	fn query_properties_convert_to_json_without_losing_names_or_values() {
+		let properties = [
+			QueryableProperty {
+				name: "name".into(),
+				value: QueryableValue::String("hero".into()),
+			},
+			QueryableProperty {
+				name: "group".into(),
+				value: QueryableValue::String("opaque".into()),
+			},
+		];
+		assert_eq!(
+			queryable_properties_json(&properties),
+			json!({"name": "hero", "group": "opaque"})
+		);
+	}
+
+	#[test]
+	fn query_errors_keep_distinct_actionable_causes() {
+		assert!(query_error_message(QueryError::InvalidCursor).contains("cursor is invalid"));
+		assert!(query_error_message(QueryError::StorageFailure).contains("database could not be read"));
+	}
+
+	#[test]
+	fn wipe_removes_old_contents_and_recreates_empty_destination() {
+		let path = std::env::temp_dir().join(format!(
+			"beld-wipe-test-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		));
+		std::fs::create_dir_all(path.join("nested")).unwrap();
+		std::fs::write(path.join("nested/old.resource"), b"old").unwrap();
+
+		wipe(path.to_string_lossy().into_owned()).unwrap();
+		assert!(path.is_dir());
+		assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+		std::fs::remove_dir(path).unwrap();
+	}
+}

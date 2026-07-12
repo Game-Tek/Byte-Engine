@@ -56,7 +56,7 @@ impl Default for GamepadState {
 	}
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GamepadKind {
 	DualShock4,
 	DualSense,
@@ -227,67 +227,76 @@ impl GamepadDevice {
 	}
 
 	fn emit_changes(&mut self, state: GamepadState) -> Vec<GamepadEvent> {
-		let mut events = Vec::new();
-
-		if !self.initialized {
-			// The first HID report is the physical device's current state. Treat it as
-			// baseline so neutral axes or held buttons do not replay as startup input.
-			self.state = state;
-			self.initialized = true;
-			return events;
-		}
-
-		if (self.state.left_stick.x - state.left_stick.x).abs() > STICK_EPSILON
-			|| (self.state.left_stick.y - state.left_stick.y).abs() > STICK_EPSILON
-		{
-			events.push(GamepadEvent::new(
-				self.device_handle,
-				TriggerReference::Name("Gamepad.LeftStick"),
-				Value::Vector2(state.left_stick),
-			));
-		}
-
-		if (self.state.right_stick.x - state.right_stick.x).abs() > STICK_EPSILON
-			|| (self.state.right_stick.y - state.right_stick.y).abs() > STICK_EPSILON
-		{
-			events.push(GamepadEvent::new(
-				self.device_handle,
-				TriggerReference::Name("Gamepad.RightStick"),
-				Value::Vector2(state.right_stick),
-			));
-		}
-
-		if (self.state.left_trigger - state.left_trigger).abs() > TRIGGER_EPSILON {
-			events.push(GamepadEvent::new(
-				self.device_handle,
-				TriggerReference::Name("Gamepad.LeftTrigger"),
-				Value::Float(state.left_trigger),
-			));
-		}
-
-		if (self.state.right_trigger - state.right_trigger).abs() > TRIGGER_EPSILON {
-			events.push(GamepadEvent::new(
-				self.device_handle,
-				TriggerReference::Name("Gamepad.RightTrigger"),
-				Value::Float(state.right_trigger),
-			));
-		}
-
-		for (mask, name) in BUTTON_TRIGGERS {
-			let previous = (self.state.buttons & mask) != 0;
-			let current = (state.buttons & mask) != 0;
-			if previous != current {
-				events.push(GamepadEvent::new(
-					self.device_handle,
-					TriggerReference::Name(name),
-					Value::Bool(current),
-				));
-			}
-		}
-
-		self.state = state;
-		events
+		transition_gamepad_state(self.device_handle, &mut self.state, &mut self.initialized, state)
 	}
+}
+
+fn transition_gamepad_state(
+	device_handle: DeviceHandle,
+	previous: &mut GamepadState,
+	initialized: &mut bool,
+	state: GamepadState,
+) -> Vec<GamepadEvent> {
+	let mut events = Vec::new();
+
+	if !*initialized {
+		// The first HID report is the physical device's current state. Treat it as
+		// baseline so neutral axes or held buttons do not replay as startup input.
+		*previous = state;
+		*initialized = true;
+		return events;
+	}
+
+	if (previous.left_stick.x - state.left_stick.x).abs() > STICK_EPSILON
+		|| (previous.left_stick.y - state.left_stick.y).abs() > STICK_EPSILON
+	{
+		events.push(GamepadEvent::new(
+			device_handle,
+			TriggerReference::Name("Gamepad.LeftStick"),
+			Value::Vector2(state.left_stick),
+		));
+	}
+
+	if (previous.right_stick.x - state.right_stick.x).abs() > STICK_EPSILON
+		|| (previous.right_stick.y - state.right_stick.y).abs() > STICK_EPSILON
+	{
+		events.push(GamepadEvent::new(
+			device_handle,
+			TriggerReference::Name("Gamepad.RightStick"),
+			Value::Vector2(state.right_stick),
+		));
+	}
+
+	if (previous.left_trigger - state.left_trigger).abs() > TRIGGER_EPSILON {
+		events.push(GamepadEvent::new(
+			device_handle,
+			TriggerReference::Name("Gamepad.LeftTrigger"),
+			Value::Float(state.left_trigger),
+		));
+	}
+
+	if (previous.right_trigger - state.right_trigger).abs() > TRIGGER_EPSILON {
+		events.push(GamepadEvent::new(
+			device_handle,
+			TriggerReference::Name("Gamepad.RightTrigger"),
+			Value::Float(state.right_trigger),
+		));
+	}
+
+	for (mask, name) in BUTTON_TRIGGERS {
+		let was_pressed = (previous.buttons & mask) != 0;
+		let current = (state.buttons & mask) != 0;
+		if was_pressed != current {
+			events.push(GamepadEvent::new(
+				device_handle,
+				TriggerReference::Name(name),
+				Value::Bool(current),
+			));
+		}
+	}
+
+	*previous = state;
+	events
 }
 
 pub(crate) struct GamepadEvent {
@@ -333,16 +342,23 @@ fn classify_gamepad(
 		},
 		0x045E => Some(GamepadKind::Xbox),
 		_ => {
-			let product = product_string.unwrap_or_default().to_lowercase();
-			if product.contains("xbox") {
+			let product = product_string.unwrap_or_default();
+			if contains_ascii_case_insensitive(product, "xbox") {
 				Some(GamepadKind::Xbox)
-			} else if product.contains("joystick") || (usage_page == 0x01 && usage == 0x04) {
+			} else if contains_ascii_case_insensitive(product, "joystick") || (usage_page == 0x01 && usage == 0x04) {
 				Some(GamepadKind::GenericJoystick)
 			} else {
 				None
 			}
 		}
 	}
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+	haystack
+		.as_bytes()
+		.windows(needle.len())
+		.any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 fn parse_dualshock4(report: &[u8]) -> Option<GamepadState> {
@@ -454,11 +470,11 @@ fn parse_generic_joystick(report: &[u8]) -> Option<GamepadState> {
 
 	let (hat, raw_buttons) = if report.len() >= 7 {
 		let packed_hat_buttons = report[4];
-		let buttons = u16::from_le_bytes([packed_hat_buttons >> 4, report[5]]);
+		let buttons = u16::from_le_bytes([packed_hat_buttons, report[5]]);
 		(Some(packed_hat_buttons & 0x0F), buttons)
 	} else {
 		let packed_hat_buttons = report[2];
-		let buttons = u16::from_le_bytes([packed_hat_buttons >> 4, report.get(3).copied().unwrap_or_default()]);
+		let buttons = u16::from_le_bytes([packed_hat_buttons, report.get(3).copied().unwrap_or_default()]);
 		(Some(packed_hat_buttons & 0x0F), buttons)
 	};
 	let mut mask = 0u32;
@@ -716,3 +732,204 @@ use log::{debug, warn};
 use math::Vector2;
 
 use super::{input_manager::TriggerReference, DeviceHandle, Value};
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn assert_float_near(actual: f32, expected: f32) {
+		assert!((actual - expected).abs() < 0.000_01, "expected {expected}, got {actual}");
+	}
+
+	fn assert_states_equal(actual: GamepadState, expected: GamepadState) {
+		assert_float_near(actual.left_stick.x, expected.left_stick.x);
+		assert_float_near(actual.left_stick.y, expected.left_stick.y);
+		assert_float_near(actual.right_stick.x, expected.right_stick.x);
+		assert_float_near(actual.right_stick.y, expected.right_stick.y);
+		assert_float_near(actual.left_trigger, expected.left_trigger);
+		assert_float_near(actual.right_trigger, expected.right_trigger);
+		assert_eq!(actual.buttons, expected.buttons);
+	}
+
+	#[test]
+	fn classifies_known_controllers_without_case_sensitive_product_names() {
+		assert_eq!(classify_gamepad(0x054C, 0x05C4, None, 0, 0), Some(GamepadKind::DualShock4));
+		assert_eq!(classify_gamepad(0x054C, 0x0CE6, None, 0, 0), Some(GamepadKind::DualSense));
+		assert_eq!(classify_gamepad(0x045E, 0, None, 0, 0), Some(GamepadKind::Xbox));
+		assert_eq!(
+			classify_gamepad(0, 0, Some("Wireless XBOX Controller"), 0, 0),
+			Some(GamepadKind::Xbox)
+		);
+		assert_eq!(
+			classify_gamepad(0, 0, Some("Arcade JoYsTiCk"), 0, 0),
+			Some(GamepadKind::GenericJoystick)
+		);
+		assert_eq!(classify_gamepad(0, 0, None, 0x01, 0x04), Some(GamepadKind::GenericJoystick));
+		assert_eq!(classify_gamepad(0x054C, 0xFFFF, Some("joystick"), 0x01, 0x04), None);
+		assert_eq!(classify_gamepad(0, 0, Some("Keyboard"), 0x01, 0x06), None);
+	}
+
+	#[test]
+	fn axis_and_trigger_normalization_preserves_endpoints_and_order() {
+		assert_eq!(normalize_axis_u8(0), -1.0);
+		assert_eq!(normalize_axis_u8(128), 0.0);
+		assert_eq!(normalize_axis_u8(u8::MAX), 1.0);
+
+		let mut previous = -1.0;
+		for value in u8::MIN..=u8::MAX {
+			let normalized = normalize_axis_u8(value);
+			assert!((-1.0..=1.0).contains(&normalized));
+			assert!(normalized >= previous);
+			previous = normalized;
+		}
+
+		assert_eq!(normalize_axis_i16(i16::MIN), -1.0);
+		assert_eq!(normalize_axis_i16(0), 0.0);
+		assert_eq!(normalize_axis_i16(i16::MAX), 1.0);
+		assert_eq!(normalize_trigger_u8(0), 0.0);
+		assert_eq!(normalize_trigger_u8(u8::MAX), 1.0);
+	}
+
+	#[test]
+	fn sony_reports_decode_axes_triggers_buttons_and_transport_prefixes() {
+		let payload = [0, 255, 255, 0, 0xF1, 0xF3, 0x01, 0, 255];
+		let expected_buttons =
+			BUTTON_A
+				| BUTTON_B | BUTTON_X
+				| BUTTON_Y | BUTTON_LEFT_BUMPER
+				| BUTTON_RIGHT_BUMPER
+				| BUTTON_SELECT
+				| BUTTON_START
+				| BUTTON_LEFT_STICK
+				| BUTTON_RIGHT_STICK
+				| BUTTON_GUIDE
+				| BUTTON_DPAD_UP
+				| BUTTON_DPAD_RIGHT;
+
+		let raw = parse_dualshock4(&payload).expect("valid raw DualShock report");
+		assert_eq!(raw.left_stick, Vector2::new(-1.0, -1.0));
+		assert_eq!(raw.right_stick, Vector2::new(1.0, 1.0));
+		assert_eq!(raw.left_trigger, 0.0);
+		assert_eq!(raw.right_trigger, 1.0);
+		assert_eq!(raw.buttons, expected_buttons);
+
+		let usb = [0x01].into_iter().chain(payload).collect::<Vec<_>>();
+		let bluetooth = [0x11, 0x80].into_iter().chain(payload).collect::<Vec<_>>();
+		assert_states_equal(parse_dualshock4(&usb).expect("valid USB report"), raw);
+		assert_states_equal(parse_dualshock4(&bluetooth).expect("valid Bluetooth report"), raw);
+
+		let dualsense_usb = [0x01].into_iter().chain(payload).collect::<Vec<_>>();
+		let dualsense_bluetooth = [0x31, 0x02].into_iter().chain(payload).collect::<Vec<_>>();
+		assert_states_equal(parse_dualsense(&dualsense_usb).expect("valid USB report"), raw);
+		assert_states_equal(parse_dualsense(&dualsense_bluetooth).expect("valid Bluetooth report"), raw);
+	}
+
+	#[test]
+	fn xbox_reports_decode_little_endian_axes_and_button_mask() {
+		let mut payload = [0u8; 14];
+		payload[2..4].copy_from_slice(&u16::MAX.to_le_bytes());
+		payload[4] = 0;
+		payload[5] = u8::MAX;
+		payload[6..8].copy_from_slice(&i16::MIN.to_le_bytes());
+		payload[8..10].copy_from_slice(&i16::MAX.to_le_bytes());
+		payload[10..12].copy_from_slice(&i16::MAX.to_le_bytes());
+		payload[12..14].copy_from_slice(&i16::MIN.to_le_bytes());
+
+		let raw = parse_xbox(&payload).expect("valid Xbox report");
+		assert_eq!(raw.left_stick, Vector2::new(-1.0, -1.0));
+		assert_eq!(raw.right_stick, Vector2::new(1.0, 1.0));
+		assert_eq!(raw.left_trigger, 0.0);
+		assert_eq!(raw.right_trigger, 1.0);
+		assert_eq!(
+			raw.buttons,
+			BUTTON_TRIGGERS.iter().fold(0, |buttons, (mask, _)| buttons | mask)
+		);
+
+		let prefixed = [0x01].into_iter().chain(payload).collect::<Vec<_>>();
+		assert_states_equal(parse_xbox(&prefixed).expect("valid prefixed Xbox report"), raw);
+	}
+
+	#[test]
+	fn generic_reports_keep_packed_buttons_aligned_and_decode_active_low_x() {
+		// The low nibble is the hat, the high nibble starts the contiguous button mask,
+		// and bit 14 is the active-low X input used by AppleUserHIDDevice.
+		let released_x = [0, 255, 128, 128, 0x11, 0x40, 0];
+		let state = parse_generic_joystick(&released_x).expect("valid generic report");
+		assert_eq!(state.left_stick, Vector2::new(-1.0, -1.0));
+		assert_eq!(state.right_stick, Vector2::new(0.0, 0.0));
+		assert_eq!(state.buttons, BUTTON_A | BUTTON_DPAD_UP | BUTTON_DPAD_RIGHT);
+
+		let mut pressed_x = released_x;
+		pressed_x[5] &= !0x40;
+		let state = parse_generic_joystick(&pressed_x).expect("valid generic report");
+		assert_eq!(state.buttons, BUTTON_A | BUTTON_X | BUTTON_DPAD_UP | BUTTON_DPAD_RIGHT);
+
+		let prefixed = [0x07].into_iter().chain(released_x).collect::<Vec<_>>();
+		assert_states_equal(
+			parse_generic_joystick(&prefixed).expect("valid report-id report"),
+			parse_generic_joystick(&released_x).unwrap(),
+		);
+	}
+
+	#[test]
+	fn parsers_reject_reports_without_their_required_payload() {
+		assert!(parse_dualshock4(&[0; 8]).is_none());
+		assert!(parse_dualsense(&[0; 8]).is_none());
+		assert!(parse_generic_joystick(&[0; 4]).is_none());
+		assert!(parse_xbox(&[0; 13]).is_none());
+	}
+
+	#[test]
+	fn state_transitions_suppress_baselines_and_noise_but_emit_each_meaningful_delta() {
+		let device = DeviceHandle(7);
+		let mut previous = GamepadState::default();
+		let mut initialized = false;
+		let baseline = GamepadState {
+			buttons: BUTTON_A,
+			..GamepadState::default()
+		};
+
+		assert!(transition_gamepad_state(device, &mut previous, &mut initialized, baseline).is_empty());
+		assert!(initialized);
+		assert_eq!(previous.buttons, BUTTON_A);
+
+		let noise = GamepadState {
+			left_stick: Vector2::new(STICK_EPSILON, 0.0),
+			left_trigger: TRIGGER_EPSILON,
+			buttons: BUTTON_A,
+			..GamepadState::default()
+		};
+		assert!(transition_gamepad_state(device, &mut previous, &mut initialized, noise).is_empty());
+
+		let changed = GamepadState {
+			left_stick: Vector2::new(0.5, -0.25),
+			right_stick: Vector2::new(-0.75, 1.0),
+			left_trigger: 0.25,
+			right_trigger: 1.0,
+			buttons: BUTTON_B,
+		};
+		let events = transition_gamepad_state(device, &mut previous, &mut initialized, changed);
+
+		assert_eq!(events.len(), 6);
+		assert!(events.iter().all(|event| event.device_handle() == device));
+		let observed = events
+			.iter()
+			.map(|event| match event.trigger() {
+				TriggerReference::Name(name) => (name, event.value()),
+				TriggerReference::Handle(_) => panic!("gamepad transitions use named triggers"),
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(
+			observed,
+			[
+				("Gamepad.LeftStick", Value::Vector2(changed.left_stick)),
+				("Gamepad.RightStick", Value::Vector2(changed.right_stick)),
+				("Gamepad.LeftTrigger", Value::Float(changed.left_trigger)),
+				("Gamepad.RightTrigger", Value::Float(changed.right_trigger)),
+				("Gamepad.A", Value::Bool(false)),
+				("Gamepad.B", Value::Bool(true)),
+			]
+		);
+		assert_states_equal(previous, changed);
+	}
+}

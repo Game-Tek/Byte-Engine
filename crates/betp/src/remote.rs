@@ -50,26 +50,36 @@ impl Remote {
 	/// Acknowledges a packet with the given sequence number. This means that the remote has received the packet.
 	pub fn acknowledge_packet(&mut self, sequence: u16) {
 		let index = (sequence % PACKET_HISTORY as u16) as usize;
-		let window_shift = sequence.max(self.ack) - self.ack;
+		let is_newer = sequence_greater_than(sequence, self.ack);
 
-		// If the packet sequence is more recent, we update the remote sequence number.
-		if sequence_greater_than(sequence, self.ack) {
-			// Under ridiculously high packet loss (99%) old sequence buffer entries might stick around from before the previous sequence number wrap at 65535 and break the ack logic.
-			// The solution to this problem is to walk between the previous highest insert sequence and the new insert sequence (if it is more recent) and clear those entries in the sequence buffer to 0xFFFF.
-			for i in self.ack..sequence {
-				let index = (i % PACKET_HISTORY as u16) as usize;
-				self.receive_sequence_buffer[index] = u16::MAX;
+		if is_newer {
+			let previous_ack = self.ack;
+			let advance = sequence.wrapping_sub(previous_ack);
+
+			// Only retained history can affect future lookups. Limiting cleanup to that window prevents a large sequence jump from causing work proportional to the 16-bit sequence space.
+			let entries_to_clear = usize::from(advance).min(PACKET_HISTORY);
+			for offset in 1..=entries_to_clear {
+				let cleared_sequence = previous_ack.wrapping_add(offset as u16);
+				let cleared_index = (cleared_sequence % PACKET_HISTORY as u16) as usize;
+				self.receive_sequence_buffer[cleared_index] = u16::MAX;
 			}
 
-			self.receive_sequence_buffer[index] = sequence;
-
 			self.ack = sequence;
+			self.ack_bitfield = self.ack_bitfield.checked_shl(u32::from(advance)).unwrap_or(0) | 1;
+		} else {
+			let distance = self.ack.wrapping_sub(sequence);
+
+			// Packets older than the acknowledgement bitfield cannot contribute to the wire acknowledgement state.
+			if distance < u32::BITS as u16 {
+				self.ack_bitfield |= 1 << distance;
+			}
 		}
 
-		self.packet_data.set(index, true);
-
-		self.ack_bitfield =
-			self.ack_bitfield.checked_shl(window_shift as u32).unwrap_or(0) | (1 << ((self.ack - sequence) % u32::BITS as u16));
+		let history_distance = self.ack.wrapping_sub(sequence);
+		if is_newer || usize::from(history_distance) < PACKET_HISTORY {
+			self.receive_sequence_buffer[index] = sequence;
+			self.packet_data.set(index, true);
+		}
 	}
 
 	pub fn get_ack(&self) -> u16 {
@@ -177,6 +187,31 @@ mod tests {
 
 		assert_eq!(remote.get_ack(), 64);
 		assert_eq!(remote.get_ack_bitfield(), 1 << 0);
+	}
+
+	#[test]
+	fn acknowledgement_wraps_without_overflow() {
+		let mut remote = Remote::new();
+
+		remote.acknowledge_packet(u16::MAX);
+
+		assert_eq!(remote.get_ack(), 0);
+		assert_eq!(remote.get_ack_bitfield(), 0b10);
+		assert_eq!(remote.get_packet_data(u16::MAX), Some(PacketInfo { acked: true }));
+	}
+
+	#[test]
+	fn advancing_across_wrap_preserves_recent_history() {
+		let mut remote = Remote::new();
+
+		remote.acknowledge_packet(32_767);
+		remote.acknowledge_packet(u16::MAX);
+		remote.acknowledge_packet(0);
+
+		assert_eq!(remote.get_ack(), 0);
+		assert_eq!(remote.get_ack_bitfield(), 0b11);
+		assert_eq!(remote.get_packet_data(u16::MAX), Some(PacketInfo { acked: true }));
+		assert_eq!(remote.get_packet_data(0), Some(PacketInfo { acked: true }));
 	}
 }
 

@@ -1,0 +1,42 @@
+[package]
+name = "byte-engine-betp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1.4", features = ["derive"] }
+betp = { package = "byte-engine-betp", path = ".." }
+libfuzzer-sys = "0.4"
+
+# Keep fuzz-only dependencies and profiles outside the engine workspace.
+[workspace]
+members = ["."]
+
+# Arithmetic failures must remain visible in the optimized builds used by libFuzzer.
+[profile.release]
+overflow-checks = true
+
+[[bin]]
+name = "decode_packet"
+path = "fuzz_targets/decode_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_session"
+path = "fuzz_targets/client_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "server_session"
+path = "fuzz_targets/server_session.rs"
+test = false
+doc = false
+bench = false

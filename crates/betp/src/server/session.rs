@@ -81,32 +81,26 @@ impl Session {
 				last_seen,
 			} => {
 				let id = *id;
+				let mut received_authenticated_data = false;
 
 				for packet in packets {
 					match packet {
-						Packets::Data(data_packet) => {
-							if id == data_packet.get_connection_id() {
-								// Validate connection ID
-								self.remote.acknowledge_packet(data_packet.get_connection_status().sequence);
-								packet_buffer.remove(data_packet.get_connection_status().sequence);
-							} else {
-								println!("This client received a data packet with an incorrect connection id");
-							}
+						Packets::Data(data_packet) if id == data_packet.get_connection_id() => {
+							// Only packets for this session may mutate acknowledgement state or keep the connection alive.
+							self.remote.acknowledge_packet(data_packet.get_connection_status().sequence);
+							packet_buffer.remove(data_packet.get_connection_status().sequence);
+							received_authenticated_data = true;
 						}
-						Packets::Disconnect(disconnect_packet) => {
-							if id == disconnect_packet.get_connection_id() {
-								// Validate connection ID
-								self.state = State::Disconnecting { id };
-								return Ok(Vec::new());
-							} else {
-								println!("This client received a disconnect packet with an incorrect connection id");
-							}
+						Packets::Disconnect(disconnect_packet) if id == disconnect_packet.get_connection_id() => {
+							*last_seen = current_time;
+							self.state = State::Disconnecting { id };
+							return Ok(Vec::new());
 						}
 						_ => {}
 					}
 				}
 
-				if !packets.is_empty() {
+				if received_authenticated_data {
 					*last_seen = current_time;
 				}
 
@@ -212,7 +206,7 @@ pub enum State {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::packets::ChallengePacket;
+	use crate::packets::{ChallengePacket, DisconnectPacket};
 
 	#[test]
 	fn test_session_start() {
@@ -267,6 +261,40 @@ mod tests {
 		let res = session.update(&[], std::time::Instant::now());
 
 		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
+	}
+
+	#[test]
+	fn unauthenticated_packets_do_not_refresh_connection_timeout() {
+		let start = std::time::Instant::now();
+		let mut session = Session::new();
+		session.accept(7, start);
+
+		let wrong_data = Packets::Data(DataPacket::new(8, ConnectionStatus::new(u16::MAX, 0, 0), [0; 1024]));
+		let wrong_disconnect = DisconnectPacket::new(8).into();
+		let irrelevant_challenge = ChallengePacket::new(1, 2).into();
+		session
+			.update(
+				&[wrong_data, wrong_disconnect, irrelevant_challenge],
+				start + std::time::Duration::from_secs(4),
+			)
+			.unwrap();
+
+		session.update(&[], start + std::time::Duration::from_secs(6)).unwrap();
+
+		assert!(!session.is_connected());
+	}
+
+	#[test]
+	fn matching_data_refreshes_connection_timeout() {
+		let start = std::time::Instant::now();
+		let mut session = Session::new();
+		session.accept(7, start);
+
+		let data = Packets::Data(DataPacket::new(7, ConnectionStatus::new(u16::MAX, 0, 0), [0; 1024]));
+		session.update(&[data], start + std::time::Duration::from_secs(4)).unwrap();
+		session.update(&[], start + std::time::Duration::from_secs(6)).unwrap();
+
+		assert!(session.is_connected());
 	}
 }
 

@@ -102,7 +102,8 @@ impl<const N: usize, const S: usize> PacketBuffer<N, S> {
 			.filter_map(|packet| packet.as_mut())
 			.map(|packet| {
 				let _ = packet.connection_id;
-				packet.try_count += 1;
+				// A peer can withhold acknowledgements indefinitely, so retry bookkeeping must remain safe after any number of updates.
+				packet.try_count = packet.try_count.saturating_add(1);
 				packet.packet
 			})
 			.collect()
@@ -281,6 +282,18 @@ mod tests {
 			.collect();
 		assert!(sequences.contains(&1));
 		assert!(sequences.contains(&2));
+	}
+
+	#[test]
+	fn test_retry_count_saturates_when_acknowledgements_never_arrive() {
+		let mut buffer = PacketBuffer::<1, 8>::new();
+		buffer.add(make_packet::<8>(1, 1), 1, true);
+
+		for _ in 0..usize::from(u8::MAX) + 16 {
+			assert_eq!(buffer.gather_unsent_packets_for_retry().len(), 1);
+		}
+
+		assert_eq!(buffer.buffer[0].unwrap().try_count, u8::MAX);
 	}
 }
 

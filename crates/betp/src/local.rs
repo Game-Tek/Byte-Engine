@@ -56,7 +56,7 @@ impl Local {
 	pub fn acknowledge_packets(&mut self, ack: u16, ack_bitfield: u32) {
 		for i in 0..u32::BITS {
 			if (ack_bitfield >> i) & 1 == 1 {
-				let sequence = ack - i as u16;
+				let sequence = ack.wrapping_sub(i as u16);
 				self.acknowledge_packet(sequence);
 			}
 		}
@@ -220,6 +220,18 @@ mod tests {
 		let mut local = Local::new();
 
 		local.acknowledge_packet(0);
+	}
+
+	#[test]
+	fn acknowledgement_bitfield_wraps_before_sequence_zero() {
+		let mut local = Local::new();
+		local.get_sequence_number();
+
+		local.acknowledge_packets(0, 1 << 31);
+		assert_eq!(local.get_packet_data(0), Some(PacketInfo { acked: false }));
+
+		local.acknowledge_packets(0, (1 << 31) | 1);
+		assert_eq!(local.get_packet_data(0), Some(PacketInfo { acked: true }));
 	}
 }
 

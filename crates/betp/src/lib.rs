@@ -49,7 +49,7 @@ pub use local::Local;
 pub use remote::Remote;
 pub use server::Server;
 
-/// Packet header parsing failed.
+/// Packet decoding failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PacketReadError {
 	/// The packet header bytes could not be read from the source buffer.
@@ -58,6 +58,10 @@ pub enum PacketReadError {
 	WrongProtocol,
 	/// The packet type byte does not map to a supported BETP packet type.
 	UnknownPacketType,
+	/// The reserved default packet type cannot appear as a complete wire packet.
+	ReservedPacketType,
+	/// The packet length does not match the fixed wire size for its packet type.
+	InvalidPacketLength { expected: usize, actual: usize },
 }
 
 impl std::fmt::Display for PacketReadError {
@@ -74,6 +78,14 @@ impl std::fmt::Display for PacketReadError {
 			Self::UnknownPacketType => write!(
 				formatter,
 				"Packet type is unknown. The most likely cause is that the input buffer contains malformed or unsupported BETP data."
+			),
+			Self::ReservedPacketType => write!(
+				formatter,
+				"Packet type is reserved. The most likely cause is that the default packet type was sent as a complete BETP packet."
+			),
+			Self::InvalidPacketLength { expected, actual } => write!(
+				formatter,
+				"Packet length is invalid: expected {expected} bytes but received {actual}. The most likely cause is that the packet body is truncated or contains trailing bytes."
 			),
 		}
 	}
@@ -96,6 +108,9 @@ pub(crate) fn sequence_greater_than(s1: u16, s2: u16) -> bool {
 
 const PACKET_HEADER_SIZE: usize = 5;
 const CONNECTION_STATUS_SIZE: usize = 8;
+const CONNECTION_PACKET_SIZE: usize = PACKET_HEADER_SIZE + 8;
+const CHALLENGE_PACKET_SIZE: usize = PACKET_HEADER_SIZE + 16;
+const DATA_PACKET_SIZE: usize = PACKET_HEADER_SIZE + 8 + CONNECTION_STATUS_SIZE + 1024;
 
 fn write_bytes(buffer: &mut [u8], offset: &mut usize, bytes: &[u8]) -> Option<()> {
 	let end = offset.checked_add(bytes.len())?;
@@ -193,15 +208,88 @@ pub fn read_packet_header(buffer: &[u8]) -> Result<PacketHeader, PacketReadError
 	Ok(PacketHeader { protocol_id, r#type })
 }
 
+/// Reads one fixed-width field without indexing outside the source packet.
+fn read_field<const N: usize>(buffer: &[u8], offset: &mut usize) -> Option<[u8; N]> {
+	let end = offset.checked_add(N)?;
+	let field = buffer.get(*offset..end)?.try_into().ok()?;
+	*offset = end;
+	Some(field)
+}
+
+/// Decodes one complete BETP datagram into its typed packet representation.
+///
+/// BETP packets use exact, type-specific wire lengths. Truncated packets and
+/// packets with trailing bytes are rejected before any body field is read.
+pub fn read_packet(buffer: &[u8]) -> Result<Packets, PacketReadError> {
+	let header = read_packet_header(buffer)?;
+	let expected = match header.r#type {
+		PacketType::Default => return Err(PacketReadError::ReservedPacketType),
+		PacketType::ConnectionRequest | PacketType::ChallengeResponse | PacketType::Disconnect => CONNECTION_PACKET_SIZE,
+		PacketType::Challenge => CHALLENGE_PACKET_SIZE,
+		PacketType::Data => DATA_PACKET_SIZE,
+	};
+
+	if buffer.len() != expected {
+		return Err(PacketReadError::InvalidPacketLength {
+			expected,
+			actual: buffer.len(),
+		});
+	}
+
+	let invalid_length = || PacketReadError::InvalidPacketLength {
+		expected,
+		actual: buffer.len(),
+	};
+	let mut offset = PACKET_HEADER_SIZE;
+
+	match header.r#type {
+		PacketType::Default => Err(PacketReadError::ReservedPacketType),
+		PacketType::ConnectionRequest => {
+			let client_salt = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			Ok(ConnectionRequestPacket::new(client_salt).into())
+		}
+		PacketType::Challenge => {
+			let client_salt = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			let server_salt = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			Ok(ChallengePacket::new(client_salt, server_salt).into())
+		}
+		PacketType::ChallengeResponse => {
+			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			Ok(ChallengeResponsePacket::new(connection_id).into())
+		}
+		PacketType::Data => {
+			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			let sequence = u16::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			let ack = u16::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			let ack_bitfield = u32::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			let data = read_field(buffer, &mut offset).ok_or_else(invalid_length)?;
+
+			Ok(Packets::Data(DataPacket::new(
+				connection_id,
+				ConnectionStatus::new(sequence, ack, ack_bitfield),
+				data,
+			)))
+		}
+		PacketType::Disconnect => {
+			let connection_id = u64::from_le_bytes(read_field(buffer, &mut offset).ok_or_else(invalid_length)?);
+			Ok(DisconnectPacket::new(connection_id).into())
+		}
+	}
+}
+
 use std::io::Read as _;
 
-use crate::packets::{ConnectionStatus, Packet, PacketHeader, PacketType, Packets};
+use crate::packets::{
+	ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket, Packet,
+	PacketHeader, PacketType, Packets,
+};
 
 #[cfg(test)]
 mod tests {
 	use super::{
-		read_packet_header, sequence_greater_than, write_connection_status, write_packet, write_packet_header, PacketReadError,
-		CONNECTION_STATUS_SIZE, PACKET_HEADER_SIZE,
+		read_packet, read_packet_header, sequence_greater_than, write_connection_status, write_packet, write_packet_header,
+		PacketReadError, CHALLENGE_PACKET_SIZE, CONNECTION_PACKET_SIZE, CONNECTION_STATUS_SIZE, DATA_PACKET_SIZE,
+		PACKET_HEADER_SIZE,
 	};
 	use crate::packets::{
 		ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket,
@@ -236,11 +324,98 @@ mod tests {
 			PacketReadError::ShortHeader,
 			PacketReadError::WrongProtocol,
 			PacketReadError::UnknownPacketType,
+			PacketReadError::ReservedPacketType,
+			PacketReadError::InvalidPacketLength {
+				expected: CONNECTION_PACKET_SIZE,
+				actual: PACKET_HEADER_SIZE,
+			},
 		] {
 			let message = error.to_string();
 			assert!(message.contains("most likely cause"));
 			assert!(message.ends_with('.'));
 		}
+	}
+
+	fn assert_packet_round_trip(packet: Packets, expected: Packets, packet_size: usize) {
+		let mut bytes = [0u8; DATA_PACKET_SIZE];
+		write_packet(&mut bytes[..packet_size], packet).expect("the exact packet capacity must serialize");
+
+		assert_eq!(read_packet(&bytes[..packet_size]), Ok(expected));
+	}
+
+	#[test]
+	fn every_packet_variant_round_trips_through_the_canonical_wire_format() {
+		assert_eq!(CONNECTION_PACKET_SIZE, 13);
+		assert_eq!(CHALLENGE_PACKET_SIZE, 21);
+		assert_eq!(DATA_PACKET_SIZE, 1045);
+
+		assert_packet_round_trip(
+			ConnectionRequestPacket::new(0x0102_0304_0506_0708).into(),
+			ConnectionRequestPacket::new(0x0102_0304_0506_0708).into(),
+			CONNECTION_PACKET_SIZE,
+		);
+		assert_packet_round_trip(
+			ChallengePacket::new(0x1112_1314_1516_1718, 0x2122_2324_2526_2728).into(),
+			ChallengePacket::new(0x1112_1314_1516_1718, 0x2122_2324_2526_2728).into(),
+			CHALLENGE_PACKET_SIZE,
+		);
+		assert_packet_round_trip(
+			ChallengeResponsePacket::new(0x3132_3334_3536_3738).into(),
+			ChallengeResponsePacket::new(0x3132_3334_3536_3738).into(),
+			CONNECTION_PACKET_SIZE,
+		);
+
+		let status = ConnectionStatus::new(0x4142, 0x4344, 0x4546_4748);
+		assert_packet_round_trip(
+			Packets::Data(DataPacket::new(0x5152_5354_5556_5758, status, [0xA5; 1024])),
+			Packets::Data(DataPacket::new(0x5152_5354_5556_5758, status, [0xA5; 1024])),
+			DATA_PACKET_SIZE,
+		);
+		assert_packet_round_trip(
+			DisconnectPacket::new(0x6162_6364_6566_6768).into(),
+			DisconnectPacket::new(0x6162_6364_6566_6768).into(),
+			CONNECTION_PACKET_SIZE,
+		);
+	}
+
+	fn assert_noncanonical_lengths_are_rejected(packet: Packets, packet_size: usize) {
+		let mut bytes = [0u8; DATA_PACKET_SIZE + 1];
+		write_packet(&mut bytes[..packet_size], packet).expect("the exact packet capacity must serialize");
+
+		assert_eq!(
+			read_packet(&bytes[..packet_size - 1]),
+			Err(PacketReadError::InvalidPacketLength {
+				expected: packet_size,
+				actual: packet_size - 1,
+			})
+		);
+		assert_eq!(
+			read_packet(&bytes[..packet_size + 1]),
+			Err(PacketReadError::InvalidPacketLength {
+				expected: packet_size,
+				actual: packet_size + 1,
+			})
+		);
+	}
+
+	#[test]
+	fn packet_bodies_require_the_exact_length_for_their_type() {
+		assert_noncanonical_lengths_are_rejected(ConnectionRequestPacket::new(1).into(), CONNECTION_PACKET_SIZE);
+		assert_noncanonical_lengths_are_rejected(ChallengePacket::new(2, 3).into(), CHALLENGE_PACKET_SIZE);
+		assert_noncanonical_lengths_are_rejected(ChallengeResponsePacket::new(4).into(), CONNECTION_PACKET_SIZE);
+		assert_noncanonical_lengths_are_rejected(
+			Packets::Data(DataPacket::new(5, ConnectionStatus::new(6, 7, 8), [9; 1024])),
+			DATA_PACKET_SIZE,
+		);
+		assert_noncanonical_lengths_are_rejected(DisconnectPacket::new(10).into(), CONNECTION_PACKET_SIZE);
+	}
+
+	#[test]
+	fn complete_packet_decoding_rejects_malformed_headers_and_the_reserved_type() {
+		assert_eq!(read_packet(b"BET"), Err(PacketReadError::ShortHeader));
+		assert_eq!(read_packet(b"NOPE\x01\0\0\0\0\0\0\0\0"), Err(PacketReadError::WrongProtocol));
+		assert_eq!(read_packet(b"BETP\xff"), Err(PacketReadError::UnknownPacketType));
+		assert_eq!(read_packet(b"BETP\x00"), Err(PacketReadError::ReservedPacketType));
 	}
 
 	#[test]

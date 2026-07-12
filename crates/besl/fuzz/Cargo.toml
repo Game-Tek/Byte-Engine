@@ -28,3 +28,10 @@ path = "fuzz_targets/compile.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "grammar_compile"
+path = "fuzz_targets/grammar_compile.rs"
+test = false
+doc = false
+bench = false

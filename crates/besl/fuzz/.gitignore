@@ -6,7 +6,10 @@ coverage
 corpus/*
 !corpus/parse/
 !corpus/compile/
+!corpus/grammar_compile/
 corpus/parse/*
 corpus/compile/*
+corpus/grammar_compile/*
 !corpus/parse/*.besl
 !corpus/compile/*.besl
+!corpus/grammar_compile/*.seed

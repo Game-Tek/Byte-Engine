@@ -1,0 +1,278 @@
+//! Private instruction and operator types shared by lowering and execution.
+
+use super::{DescriptorSlot, Value, ValueType};
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Instruction {
+	LoadLiteral {
+		register: usize,
+		value: Value,
+	},
+	Construct {
+		register: usize,
+		value_type: ValueType,
+		components: Vec<usize>,
+	},
+	Extract {
+		register: usize,
+		source: usize,
+		index: usize,
+		value_type: ValueType,
+	},
+	ExtractDynamic {
+		register: usize,
+		source: usize,
+		index: usize,
+		count: usize,
+		value_type: ValueType,
+	},
+	Arithmetic {
+		register: usize,
+		operator: ArithmeticOperator,
+		left: usize,
+		right: usize,
+	},
+	Compare {
+		register: usize,
+		operator: ComparisonOperator,
+		left: usize,
+		right: usize,
+	},
+	JumpIfZero {
+		register: usize,
+		target: usize,
+	},
+	Jump {
+		target: usize,
+	},
+	DotProduct {
+		register: usize,
+		left: usize,
+		right: usize,
+	},
+	CrossProduct {
+		register: usize,
+		left: usize,
+		right: usize,
+	},
+	Length {
+		register: usize,
+		value: usize,
+	},
+	Normalize {
+		register: usize,
+		value: usize,
+	},
+	Reflect {
+		register: usize,
+		incident: usize,
+		normal: usize,
+	},
+	UnaryScalar {
+		register: usize,
+		operator: ScalarUnaryOperator,
+		value: usize,
+	},
+	BinaryScalar {
+		register: usize,
+		operator: ScalarBinaryOperator,
+		left: usize,
+		right: usize,
+	},
+	TernaryScalar {
+		register: usize,
+		operator: ScalarTernaryOperator,
+		first: usize,
+		second: usize,
+		third: usize,
+	},
+	ThreadIdx {
+		register: usize,
+	},
+	ThreadId {
+		register: usize,
+	},
+	ThreadgroupPosition {
+		register: usize,
+	},
+	SetMeshOutputCounts {
+		vertex_count: usize,
+		primitive_count: usize,
+	},
+	SetMeshVertexPosition {
+		index: usize,
+		position: usize,
+	},
+	SetMeshTriangle {
+		index: usize,
+		triangle: usize,
+	},
+	LoadLocal {
+		register: usize,
+		local: usize,
+	},
+	StoreLocal {
+		local: usize,
+		register: usize,
+	},
+	LoadBuffer {
+		register: usize,
+		slot: DescriptorSlot,
+		offset: usize,
+		value_type: ValueType,
+	},
+	LoadBufferIndexed {
+		register: usize,
+		slot: DescriptorSlot,
+		offset: usize,
+		stride: usize,
+		count: usize,
+		index: usize,
+		value_type: ValueType,
+	},
+	FetchTexture {
+		register: usize,
+		slot: DescriptorSlot,
+		coord: usize,
+	},
+	FetchTextureU32 {
+		register: usize,
+		slot: DescriptorSlot,
+		coord: usize,
+	},
+	SampleTexture {
+		register: usize,
+		slot: DescriptorSlot,
+		uv: usize,
+	},
+	SampleTexture3D {
+		register: usize,
+		slot: DescriptorSlot,
+		uvw: usize,
+	},
+	TextureSize {
+		register: usize,
+		slot: DescriptorSlot,
+	},
+	ImageSize {
+		register: usize,
+		slot: DescriptorSlot,
+	},
+	LoadImage {
+		register: usize,
+		slot: DescriptorSlot,
+		coord: usize,
+	},
+	LoadImageU32 {
+		register: usize,
+		slot: DescriptorSlot,
+		coord: usize,
+	},
+	GuardImageBounds {
+		slot: DescriptorSlot,
+		coord: usize,
+	},
+	ImageAtomicOr {
+		register: usize,
+		slot: DescriptorSlot,
+		coord: usize,
+		value: usize,
+	},
+	WriteImage {
+		slot: DescriptorSlot,
+		coord: usize,
+		value: usize,
+	},
+	StoreBuffer {
+		slot: DescriptorSlot,
+		offset: usize,
+		value_type: ValueType,
+		register: usize,
+	},
+	StoreBufferIndexed {
+		slot: DescriptorSlot,
+		offset: usize,
+		stride: usize,
+		count: usize,
+		index: usize,
+		value_type: ValueType,
+		register: usize,
+	},
+	AtomicAddBuffer {
+		register: usize,
+		slot: DescriptorSlot,
+		offset: usize,
+		stride: usize,
+		count: usize,
+		index: Option<usize>,
+		value: usize,
+	},
+	Call {
+		register: Option<usize>,
+		function: usize,
+		arguments: Vec<usize>,
+	},
+	Return {
+		register: Option<usize>,
+	},
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ArithmeticOperator {
+	Add,
+	Subtract,
+	Multiply,
+	Divide,
+	Modulo,
+	ShiftLeft,
+	ShiftRight,
+	BitwiseAnd,
+	BitwiseOr,
+	LogicalAnd,
+	LogicalOr,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ComparisonOperator {
+	Equal,
+	NotEqual,
+	LessThan,
+	GreaterThan,
+	LessThanOrEqual,
+	GreaterThanOrEqual,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ScalarUnaryOperator {
+	Abs,
+	Sqrt,
+	Exp,
+	Sin,
+	Cos,
+	Tan,
+	Round,
+	Fract,
+	Radians,
+	InverseSqrt,
+	Log2,
+	Fwidth,
+	FromU32ToF32,
+	FromF32ToU32,
+	FromU8ToU32,
+	FromU16ToU32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ScalarBinaryOperator {
+	Min,
+	Max,
+	Pow,
+	Step,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ScalarTernaryOperator {
+	Smoothstep,
+	Mix,
+	Clamp,
+}

@@ -1,0 +1,28 @@
+[package]
+name = "byte-engine-network-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+betp = { package = "byte-engine-betp", path = "../../betp" }
+byte-engine = { path = "..", default-features = false, features = ["network"] }
+libfuzzer-sys = "0.4"
+
+# Keep fuzz-only dependencies and profiles outside the engine workspace.
+[workspace]
+members = ["."]
+
+# Arithmetic failures must remain visible in the optimized builds used by libFuzzer.
+[profile.release]
+overflow-checks = true
+
+[[bin]]
+name = "raw_datagram"
+path = "fuzz_targets/raw_datagram.rs"
+test = false
+doc = false
+bench = false

@@ -65,88 +65,18 @@ impl PipelineManager {
 			},
 		);
 
-		let fragment_shader = {
-			let main_code = r#"
-			uint instance_index = in_instance_index;
-			// Build the grid from object-space position so it rotates with the rendered mesh.
-			vec3 local_grid = abs(fract(in_local_position * 4.0 + 0.5) - 0.5);
-			float grid_distance = min(local_grid.x, min(local_grid.y, local_grid.z));
-			float grid_line = 1.0 - smoothstep(0.015, 0.035, grid_distance);
-			vec3 palette[8] = vec3[](
-				vec3(0.90, 0.20, 0.20),
-				vec3(0.20, 0.70, 0.95),
-				vec3(0.35, 0.85, 0.35),
-				vec3(0.95, 0.75, 0.20),
-				vec3(0.75, 0.35, 0.95),
-				vec3(0.95, 0.45, 0.20),
-				vec3(0.25, 0.90, 0.75),
-				vec3(0.85, 0.85, 0.90)
-			);
-			vec3 base_color = palette[instance_index % 8];
-			vec3 grid_color = mix(base_color, vec3(1.0), grid_line * 0.45);
-			out_albedo = vec4(grid_color, 1.0);
-			"#
-			.trim();
-			let main_msl = r#"
-			uint instance_index = in.in_instance_index;
-			// Build the grid from object-space position so it rotates with the rendered mesh.
-			float3 local_grid = abs(fract(in.in_local_position * 4.0 + 0.5) - 0.5);
-			float grid_distance = min(local_grid.x, min(local_grid.y, local_grid.z));
-			float grid_line = 1.0 - smoothstep(0.015, 0.035, grid_distance);
-			float3 palette[8] = {
-				float3(0.90, 0.20, 0.20),
-				float3(0.20, 0.70, 0.95),
-				float3(0.35, 0.85, 0.35),
-				float3(0.95, 0.75, 0.20),
-				float3(0.75, 0.35, 0.95),
-				float3(0.95, 0.45, 0.20),
-				float3(0.25, 0.90, 0.75),
-				float3(0.85, 0.85, 0.90)
-			};
-			float3 base_color = palette[instance_index % 8];
-			float3 grid_color = mix(base_color, float3(1.0), grid_line * 0.45);
-			out_albedo = float4(grid_color, 1.0);
-			"#
-			.trim();
-
-			let main = besl::ParserNode::main_function(vec![besl::ParserNode::raw_code(
-				Some(main_code.into()),
-				None,
-				Some(main_msl.into()),
-				&["in_instance_index", "in_local_position", "out_albedo"],
-				&[],
-			)]);
-
-			let mut root = besl::ParserNode::root();
-
-			let instance_index_input = ParserNode::input("in_instance_index", "u32", 0);
-			let local_position_input = ParserNode::input("in_local_position", "vec3f", 1);
-			let albedo_output = ParserNode::output("out_albedo", "vec4f", 0);
-
-			let shader = besl::ParserNode::scope(
-				"Shader",
-				vec![instance_index_input, local_position_input, albedo_output, main],
-			);
-
-			root.add(vec![shader]);
-
-			let root_node = besl::lex(root).unwrap();
-
-			let main_node = root_node.get_main().unwrap();
-
-			create_besl_shader(
-				context,
-				"byte-engine/rendering/simple/fragment",
-				"Fragment Shader",
-				ResourceShaderTypes::Fragment,
-				ShaderGenerationSettings::fragment(),
-				main_node,
-				material::ShaderInterface {
-					workgroup_size: None,
-					bindings: Vec::new(),
-				},
-			)
-		};
+		let fragment_shader = create_besl_shader(
+			context,
+			"byte-engine/rendering/simple/fragment",
+			"Fragment Shader",
+			ResourceShaderTypes::Fragment,
+			ShaderGenerationSettings::fragment(),
+			create_simple_fragment_program(),
+			material::ShaderInterface {
+				workgroup_size: None,
+				bindings: Vec::new(),
+			},
+		);
 
 		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[descriptor_set_template],
@@ -314,99 +244,115 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 	}
 }
 
+/// Builds the simple pipeline fragment BESL program used to visualize object-space grid lines.
+fn create_simple_fragment_program() -> besl::NodeReference {
+	let mut root = besl::Node::root();
+	let u32_type = root.get_child("u32").expect("u32 type not found in BESL root");
+	let vec3f_type = root.get_child("vec3f").expect("vec3f type not found in BESL root");
+	let vec4f_type = root.get_child("vec4f").expect("vec4f type not found in BESL root");
+
+	root.add_children(vec![
+		besl::Node::input("in_instance_index", u32_type, 0).into(),
+		besl::Node::input("in_local_position", vec3f_type, 1).into(),
+		besl::Node::output("out_albedo", vec4f_type, 0).into(),
+	]);
+
+	let program = besl::compile_to_besl(SIMPLE_FRAGMENT_SHADER_BESL, Some(root))
+		.expect("Failed to compile the simple fragment BESL shader. The most likely cause is invalid BESL syntax.");
+	program.get_main().expect(
+		"Failed to find the simple fragment entry point. The most likely cause is that the BESL program did not define main.",
+	)
+}
+
+const SIMPLE_FRAGMENT_SHADER_BESL: &str = r#"
+palette_color: fn(index: u32) -> vec3f {
+	let color: vec3f = vec3f(0.90, 0.20, 0.20);
+	if (index == 1) { color = vec3f(0.20, 0.70, 0.95); }
+	if (index == 2) { color = vec3f(0.35, 0.85, 0.35); }
+	if (index == 3) { color = vec3f(0.95, 0.75, 0.20); }
+	if (index == 4) { color = vec3f(0.75, 0.35, 0.95); }
+	if (index == 5) { color = vec3f(0.95, 0.45, 0.20); }
+	if (index == 6) { color = vec3f(0.25, 0.90, 0.75); }
+	if (index == 7) { color = vec3f(0.85, 0.85, 0.90); }
+	return color;
+}
+
+main: fn () -> void {
+	let instance_index: u32 = in_instance_index;
+	let local_grid: vec3f = vec3f(
+		abs(fract(in_local_position.x * 4.0 + 0.5) - 0.5),
+		abs(fract(in_local_position.y * 4.0 + 0.5) - 0.5),
+		abs(fract(in_local_position.z * 4.0 + 0.5) - 0.5)
+	);
+	let grid_distance: f32 = min(local_grid.x, min(local_grid.y, local_grid.z));
+	let grid_line: f32 = 1.0 - smoothstep(0.015, 0.035, grid_distance);
+	let base_color: vec3f = palette_color(instance_index % 8);
+	let grid_color: vec3f = base_color + (vec3f(1.0, 1.0, 1.0) - base_color) * (grid_line * 0.45);
+	out_albedo = vec4f(grid_color.x, grid_color.y, grid_color.z, 1.0);
+}
+"#;
+
 /// Builds the simple pipeline vertex BESL program that transforms instanced meshes with the
 /// bound camera and forwards the instance index and object-space position to the fragment stage.
 fn create_simple_vertex_program() -> besl::NodeReference {
-	let main_code = r#"
-	Camera camera = cameras.cameras[0];
-	u32 instance_index = instance_id;
-	Instance instance = instances.instances[instance_index];
+	let mut root = besl::Node::root();
+	let mat4f = root.get_child("mat4f").expect("mat4f type not found in BESL root");
+	let vec3f = root.get_child("vec3f").expect("vec3f type not found in BESL root");
+	let vec4f = root.get_child("vec4f").expect("vec4f type not found in BESL root");
+	let u32_type = root.get_child("u32").expect("u32 type not found in BESL root");
 
-	position = camera.view_projection * instance.transform * vec4f(in_position, 1.0);
-	out_instance_index = instance_index;
-	out_local_position = in_position;
-	"#
-	.trim();
+	let camera = root
+		.add_child(besl::Node::r#struct("Camera", vec![besl::Node::member("view_projection", mat4f.clone()).into()]).into());
+	let instance = root.add_child(besl::Node::r#struct("Instance", vec![besl::Node::member("transform", mat4f).into()]).into());
 
-	// Metal reaches buffer bindings through the set argument buffer and exposes the
-	// instance id as the `instance_index` entry-point parameter, so the raw body differs.
-	let main_msl = r#"
-	Camera camera = set0.cameras->cameras[0];
-	Instance instance = set0.instances->instances[instance_index];
-
-	position = camera.view_projection * instance.transform * float4(in_position, 1.0);
-	out_instance_index = instance_index;
-	out_local_position = in_position;
-	"#
-	.trim();
-
-	let main = besl::ParserNode::main_function(vec![besl::ParserNode::raw_code(
-		Some(main_code.into()),
-		None,
-		Some(main_msl.into()),
-		&[
+	root.add_children(vec![
+		besl::Node::binding(
 			"cameras",
+			besl::BindingTypes::Buffer {
+				members: vec![besl::Node::array("cameras", camera, 8)],
+			},
+			0,
+			0,
+			true,
+			false,
+		)
+		.into(),
+		besl::Node::binding(
 			"instances",
-			"in_position",
-			"position",
-			"out_instance_index",
-			"out_local_position",
-		],
-		&[],
-	)]);
+			besl::BindingTypes::Buffer {
+				members: vec![besl::Node::array("instances", instance, 8)],
+			},
+			0,
+			1,
+			true,
+			false,
+		)
+		.into(),
+		besl::Node::input("in_position", vec3f.clone(), 0).into(),
+		besl::Node::input("instance_id", u32_type.clone(), 1).into(),
+		besl::Node::output("position", vec4f, 0).into(),
+		besl::Node::output("out_instance_index", u32_type, 0).into(),
+		besl::Node::output("out_local_position", vec3f, 1).into(),
+	]);
 
-	let mut root = besl::ParserNode::root();
-
-	let camera = ParserNode::r#struct("Camera", vec![ParserNode::member("view_projection", "mat4f")]);
-	let instance = ParserNode::r#struct("Instance", vec![ParserNode::member("transform", "mat4f")]);
-
-	let cameras_binding = ParserNode::binding(
-		"cameras",
-		ParserNode::buffer("CamerasBuffer", vec![ParserNode::member("cameras", "Camera[8]")]),
-		0,
-		0,
-		true,
-		false,
-	);
-	let instances_binding = ParserNode::binding(
-		"instances",
-		ParserNode::buffer("InstancesBuffer", vec![ParserNode::member("instances", "Instance[8]")]),
-		0,
-		1,
-		true,
-		false,
-	);
-
-	let position_input = ParserNode::input("in_position", "vec3f", 0);
-	let vertex_instance_id = ParserNode::input("instance_id", "u32", 1);
-	let position_output = ParserNode::output("position", "vec4f", 0);
-	let instance_index_output = ParserNode::output("out_instance_index", "u32", 0);
-	let local_position_output = ParserNode::output("out_local_position", "vec3f", 1);
-
-	let shader = besl::ParserNode::scope(
-		"Shader",
-		vec![
-			camera,
-			instance,
-			cameras_binding,
-			instances_binding,
-			position_input,
-			vertex_instance_id,
-			position_output,
-			instance_index_output,
-			local_position_output,
-			main,
-		],
-	);
-
-	root.add(vec![shader]);
-
-	let root_node = besl::lex(root)
+	// Direct field reads keep the executable VM representation allocation-free while preserving the GPU buffer layout.
+	let root_node = besl::compile_to_besl(SIMPLE_VERTEX_SHADER_BESL, Some(root))
 		.expect("Failed to lex the simple pipeline vertex shader. The most likely cause is invalid BESL syntax.");
 	root_node.get_main().expect(
 		"Failed to find the simple pipeline vertex entry point. The most likely cause is that the BESL program did not define main.",
 	)
 }
+
+const SIMPLE_VERTEX_SHADER_BESL: &str = r#"
+main: fn () -> void {
+	let instance_index: u32 = instance_id;
+	position = cameras.cameras[0].view_projection
+		* instances.instances[instance_index].transform
+		* vec4f(in_position.x, in_position.y, in_position.z, 1.0);
+	out_instance_index = instance_index;
+	out_local_position = in_position;
+}
+"#;
 
 fn create_besl_shader(
 	context: &mut ghi::implementation::Context,
@@ -442,7 +388,6 @@ use std::{
 	sync::Arc,
 };
 
-use besl::ParserNode;
 use ghi::{
 	command_buffer::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
@@ -485,3 +430,224 @@ use crate::{
 		RenderableMesh, Sink,
 	},
 };
+
+#[cfg(test)]
+mod tests {
+	use besl::vm::{
+		builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Value,
+	};
+	use resource_management::shader::{
+		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
+		generator::{ShaderGenerationSettings, ShaderGenerator as _},
+	};
+
+	use super::{create_simple_fragment_program, create_simple_vertex_program};
+
+	const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+
+	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
+		for (actual, expected) in actual.into_iter().zip(expected) {
+			assert!((actual - expected).abs() < 0.0001, "Expected {expected}, found {actual}");
+		}
+	}
+
+	/// Executes the production simple fragment shader for one instance and object-space position.
+	fn run_fragment(instance_index: u32, local_position: [f32; 3]) -> [f32; 4] {
+		let executable = ExecutableProgram::compile(create_simple_fragment_program()).expect(
+			"Failed to compile simple fragment shader for the BESL VM. The most likely cause is missing VM shader support.",
+		);
+		let mut instance = Buffer::new(executable.input_layout(0).expect("Expected instance input layout").clone());
+		let mut position = Buffer::new(executable.input_layout(1).expect("Expected position input layout").clone());
+		let mut output = Buffer::new(executable.output_layout(0).expect("Expected albedo output layout").clone());
+		instance
+			.write("in_instance_index", Value::U32(instance_index))
+			.expect("Failed to seed the instance index. The most likely cause is a simple fragment interface type mismatch.");
+		position
+			.write("in_local_position", Value::Vec3F(local_position))
+			.expect("Failed to seed the local position. The most likely cause is a simple fragment interface type mismatch.");
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(input_slot(0), &mut instance);
+			descriptors.bind_buffer(input_slot(1), &mut position);
+			descriptors.bind_buffer(output_slot(0), &mut output);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Failed to execute simple fragment shader. The most likely cause is incomplete BESL VM support.");
+		}
+
+		match output.read("out_albedo").expect("Expected simple fragment albedo output") {
+			Value::Vec4F(color) => color,
+			value => panic!(
+				"Invalid simple fragment output `{value:?}`. The most likely cause is a BESL VM interface type mismatch."
+			),
+		}
+	}
+
+	/// Verifies the production vertex program applies indexed transforms and preserves its varyings.
+	#[test]
+	fn simple_vertex_besl_vm_transforms_and_forwards_inputs() {
+		let executable = ExecutableProgram::compile(create_simple_vertex_program()).expect(
+			"Failed to compile simple vertex shader for the BESL VM. The most likely cause is missing VM shader support.",
+		);
+		let mut cameras = Buffer::new(
+			executable
+				.buffer_layout(DescriptorSlot::new(0, 0))
+				.expect("Expected camera buffer layout")
+				.clone(),
+		);
+		let mut instances = Buffer::new(
+			executable
+				.buffer_layout(DescriptorSlot::new(0, 1))
+				.expect("Expected instance buffer layout")
+				.clone(),
+		);
+		let mut input_position = Buffer::new(executable.input_layout(0).expect("Expected vertex position input").clone());
+		let mut input_instance = Buffer::new(executable.input_layout(1).expect("Expected vertex instance input").clone());
+		let mut output_position = Buffer::new(
+			executable
+				.builtin_position_layout()
+				.expect("Expected builtin position output")
+				.clone(),
+		);
+		let mut output_instance = Buffer::new(executable.output_layout(0).expect("Expected instance varying output").clone());
+		let mut output_local = Buffer::new(
+			executable
+				.output_layout(1)
+				.expect("Expected local-position varying output")
+				.clone(),
+		);
+
+		cameras
+			.write_indexed_field("cameras", 0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
+			.expect("Failed to seed camera matrix. The most likely cause is a struct buffer layout mismatch.");
+		let translated = [
+			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0, 20.0, 30.0, 1.0,
+		];
+		instances
+			.write_indexed_field("instances", 3, "transform", Value::Mat4F(translated))
+			.expect("Failed to seed instance transform. The most likely cause is a struct buffer layout mismatch.");
+		input_position
+			.write("in_position", Value::Vec3F([1.0, 2.0, 3.0]))
+			.expect("Failed to seed vertex position. The most likely cause is an interface type mismatch.");
+		input_instance
+			.write("instance_id", Value::U32(3))
+			.expect("Failed to seed instance ID. The most likely cause is an interface type mismatch.");
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(DescriptorSlot::new(0, 0), &mut cameras);
+			descriptors.bind_buffer(DescriptorSlot::new(0, 1), &mut instances);
+			descriptors.bind_buffer(input_slot(0), &mut input_position);
+			descriptors.bind_buffer(input_slot(1), &mut input_instance);
+			descriptors.bind_buffer(builtin_position_slot(), &mut output_position);
+			descriptors.bind_buffer(output_slot(0), &mut output_instance);
+			descriptors.bind_buffer(output_slot(1), &mut output_local);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Failed to execute simple vertex shader. The most likely cause is incomplete BESL VM support.");
+		}
+
+		assert_eq!(
+			output_position.read("position").expect("Expected transformed position"),
+			Value::Vec4F([11.0, 22.0, 33.0, 1.0])
+		);
+		assert_eq!(
+			output_instance.read("out_instance_index").expect("Expected instance varying"),
+			Value::U32(3)
+		);
+		assert_eq!(
+			output_local
+				.read("out_local_position")
+				.expect("Expected local position varying"),
+			Value::Vec3F([1.0, 2.0, 3.0])
+		);
+	}
+
+	/// Verifies palette selection, grid blending, and wrapped instance indices in the VM.
+	#[test]
+	fn simple_fragment_besl_vm_produces_palette_and_grid_colors() {
+		assert_vec4_close(run_fragment(0, [0.125; 3]), [0.9, 0.2, 0.2, 1.0]);
+		assert_vec4_close(run_fragment(0, [0.0; 3]), [0.945, 0.56, 0.56, 1.0]);
+		assert_vec4_close(run_fragment(8, [0.125; 3]), [0.9, 0.2, 0.2, 1.0]);
+	}
+
+	/// Verifies both portable simple shaders remain accepted by every production source backend.
+	#[test]
+	fn simple_besl_shaders_lower_to_every_source_backend() {
+		for (program, settings) in [
+			(create_simple_vertex_program(), ShaderGenerationSettings::vertex()),
+			(create_simple_fragment_program(), ShaderGenerationSettings::fragment()),
+		] {
+			GLSLShaderGenerator::new()
+				.generate(&settings, &program)
+				.expect("Failed to lower a simple BESL shader to GLSL. The most likely cause is unsupported portable syntax.");
+			HLSLShaderGenerator::new()
+				.generate(&settings, &program)
+				.expect("Failed to lower a simple BESL shader to HLSL. The most likely cause is unsupported portable syntax.");
+			MSLShaderGenerator::new()
+				.generate(&settings, &program)
+				.expect("Failed to lower a simple BESL shader to MSL. The most likely cause is unsupported portable syntax.");
+		}
+	}
+
+	/// Verifies both production simple shaders remain valid after MSL raster-interface lowering.
+	#[test]
+	fn simple_besl_shaders_compile_to_metal() {
+		use ghi::{
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+		};
+
+		let vertex_source = MSLShaderGenerator::new()
+			.generate(&ShaderGenerationSettings::vertex(), &create_simple_vertex_program())
+			.expect("Failed to lower the simple vertex shader to MSL. The most likely cause is unsupported portable syntax.");
+		let fragment_source = MSLShaderGenerator::new()
+			.generate(&ShaderGenerationSettings::fragment(), &create_simple_fragment_program())
+			.expect("Failed to lower the simple fragment shader to MSL. The most likely cause is unsupported portable syntax.");
+
+		if ghi::implementation::USES_METAL {
+			let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
+				.expect("Failed to create a Metal instance. The most likely cause is unavailable Metal device support.");
+			let mut queue = None;
+			let mut context = instance
+				.create_device(
+					ghi::device::Features::new(),
+					&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
+				)
+				.expect("Failed to create a Metal device. The most likely cause is unavailable graphics queue support.")
+				.create_context()
+				.expect("Failed to create a Metal context. The most likely cause is unavailable Metal command support.");
+
+			for (name, source, stage) in [
+				("Simple Vertex Shader", vertex_source.as_str(), ghi::ShaderTypes::Vertex),
+				("Simple Fragment Shader", fragment_source.as_str(), ghi::ShaderTypes::Fragment),
+			] {
+				context
+					.create_shader(
+						Some(name),
+						ghi::shader::Sources::MTL {
+							source,
+							entry_point: "besl_main",
+						},
+						stage,
+						Vec::<ghi::shader::BindingDescriptor>::new(),
+					)
+					.unwrap_or_else(|_| {
+						panic!(
+							"Failed to compile `{name}` as MSL. The most likely cause is invalid raster-interface lowering. Shader: {source}"
+						)
+					});
+			}
+		}
+
+		assert!(
+			vertex_source.contains("set0.cameras->cameras[0].view_projection"),
+			"Generated MSL does not qualify the camera binding through its argument buffer. The most likely cause is missing raster binding context. Shader: {vertex_source}"
+		);
+		assert!(
+			vertex_source.contains("set0.instances->instances["),
+			"Generated MSL does not qualify the instance binding through its argument buffer. The most likely cause is missing raster binding context. Shader: {vertex_source}"
+		);
+	}
+}

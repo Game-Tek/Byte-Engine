@@ -50,6 +50,9 @@ pub mod render_passes;
 #[doc(hidden)]
 pub mod shader_store;
 
+#[cfg(test)]
+pub(crate) mod shader_vm_test;
+
 #[doc(hidden)]
 pub mod pipelines;
 

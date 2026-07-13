@@ -353,6 +353,7 @@ pub struct LutRenderPassSettings {
 
 #[cfg(test)]
 mod tests {
+	use besl::vm::{DescriptorBindings, DescriptorSlot, Texture};
 	use half::f16;
 	use resource_management::resources::lut::{Lut, LutKind};
 	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
@@ -362,6 +363,46 @@ mod tests {
 	use super::{
 		create_lut_program, create_lut_shader_source, expected_lut_payload_size, write_lut_bytes_to_rgba16f_upload_target,
 	};
+	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
+
+	/// Verifies identity trilinear interpolation, domain clamping, and alpha preservation through the VM.
+	#[test]
+	fn lut_besl_vm_trilinearly_applies_identity_lut_and_domain_clamping() {
+		let lut = Lut {
+			kind: LutKind::ThreeDimensional,
+			size: 2,
+			domain_min: [0.0, 0.0, 0.0],
+			domain_max: [1.0, 1.0, 1.0],
+		};
+		let source_code = create_lut_shader_source(&lut);
+		let program = crate::rendering::shader_vm_test::compile(create_lut_program(&source_code));
+		let mut source = texture_2d(3, 1, &[[0.5, 0.5, 0.5, 0.4], [-1.0, 0.25, 0.75, 0.2], [2.0, 0.75, -2.0, 0.8]]);
+		let mut identity_lut = Texture::new_3d(2, 2, 2)
+			.expect("Failed to create a VM 3D texture. The most likely cause is an invalid LUT fixture extent.");
+		// Each corner stores its normalized coordinate, so interpolation must reproduce any in-domain input color.
+		for z in 0..2 {
+			for y in 0..2 {
+				for x in 0..2 {
+					identity_lut
+						.write_3d([x, y, z], [x as f32, y as f32, z as f32, 1.0])
+						.expect("Failed to initialize the VM LUT. The most likely cause is an invalid fixture coordinate.");
+				}
+			}
+		}
+		let mut result = empty_image(3, 1);
+
+		for x in 0..3 {
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut source);
+			descriptors.bind_texture(DescriptorSlot::new(0, 1), &mut identity_lut);
+			descriptors.bind_image(DescriptorSlot::new(0, 2), &mut result);
+			run_at(&program, &mut descriptors, [x, 0]);
+		}
+
+		assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.5, 0.5, 0.4], 1e-6);
+		assert_rgba_close(rgba(&result, [1, 0]), [0.0, 0.25, 0.75, 0.2], 1e-6);
+		assert_rgba_close(rgba(&result, [2, 0]), [1.0, 0.75, 0.0, 0.8], 1e-6);
+	}
 
 	#[test]
 	fn lut_besl_shader_lowers_to_platform_sources() {

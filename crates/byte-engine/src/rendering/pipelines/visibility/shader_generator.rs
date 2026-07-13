@@ -34,6 +34,22 @@ fn material_texture_array_type() -> &'static str {
 		.as_ref()
 }
 
+/// Parses one reusable BESL helper function from an isolated source scope.
+fn parse_besl_function(source: &'static str, function_name: &str) -> besl::parser::Node<'static> {
+	let mut root = besl::parse(source).unwrap_or_else(|_| {
+		panic!(
+			"Failed to parse `{function_name}`. The most likely cause is invalid BESL syntax in the visibility shader module."
+		)
+	});
+
+	match root.node_mut() {
+		besl::parser::Nodes::Scope { children, .. } if children.len() == 1 => children.remove(0),
+		_ => panic!(
+			"Invalid `{function_name}` helper scope. The most likely cause is that its BESL source defines more than one top-level element."
+		),
+	}
+}
+
 pub struct VisibilityShaderScope {}
 
 pub struct VisibilityShaderGenerator {
@@ -263,34 +279,26 @@ impl VisibilityShaderScope {
 		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
 		let instance_index = Node::binding("instance_index_render_target", Node::image("r32ui"), 1, 7, true, false);
 
-		let compute_vertex_index = Node::function(
-			"compute_vertex_index",
-			vec![
-				Node::parameter("mesh", "Mesh"),
-				Node::parameter("meshlet", "Meshlet"),
-				Node::parameter("primitive_index", "u32"),
-			],
-			"u32",
-			vec![Node::raw_code(
-				Some(
-					"return mesh.base_vertex_index + vertex_indices.vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */"
-						.into(),
+		let compute_vertex_index = {
+			let mut root = besl::parse(
+				r#"
+				compute_vertex_index: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> u32 {
+					let relative_index: u16 = vertex_indices.vertex_indices[
+						mesh.base_primitive_index + meshlet.primitive_offset + primitive_index
+					];
+					return mesh.base_vertex_index + u16_to_u32(relative_index);
+				}
+				"#,
+			)
+			.expect("Expected compute_vertex_index source to parse");
+
+			match root.node_mut() {
+				besl::parser::Nodes::Scope { children, .. } => children.remove(0),
+				_ => panic!(
+					"Expected compute_vertex_index source to parse into a scope. The most likely cause is invalid BESL syntax in the visibility shader module."
 				),
-				Some(
-					"/* DX12 views packed u16 meshlet indices through 32-bit structured-buffer words. */
-					uint packed_vertex_index = mesh.base_primitive_index + meshlet.primitive_offset + primitive_index;
-					uint packed_vertex_word = vertex_indices[packed_vertex_index >> 1u];
-					return mesh.base_vertex_index + ((packed_vertex_word >> ((packed_vertex_index & 1u) * 16u)) & 0xffffu); /* Indices in the buffer are relative to each mesh/primitives */"
-						.into(),
-				),
-				Some(
-					"return mesh.base_vertex_index + set0.vertex_indices->vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]; /* Indices in the buffer are relative to each mesh/primitives */"
-						.into(),
-				),
-				&["vertex_indices"],
-				&[],
-			)],
-		);
+			}
+		};
 		let compute_vertex_position = {
 			let mut root = besl::parse(
 				r#"
@@ -320,9 +328,9 @@ impl VisibilityShaderScope {
 				compute_triangle: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec3u {
 					let triangle_base_index: u32 = mesh.base_triangle_index + meshlet.triangle_offset + primitive_index;
 					return vec3u(
-						primitive_indices.primitive_indices[triangle_base_index * 3 + 0],
-						primitive_indices.primitive_indices[triangle_base_index * 3 + 1],
-						primitive_indices.primitive_indices[triangle_base_index * 3 + 2]
+						u8_to_u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 0]),
+						u8_to_u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 1]),
+						u8_to_u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 2])
 					);
 				}
 				"#,
@@ -344,41 +352,15 @@ impl VisibilityShaderScope {
 		);
 		let out_instance_index = Node::output_array("out_instance_index", "u32", 0, 126);
 		let out_primitive_index = Node::output_array("out_primitive_index", "u32", 1, 126);
-		let u8_to_u32 = Node::function(
-			"u8_to_u32",
-			vec![Node::parameter("value", "u8")],
-			"u32",
-			vec![Node::raw_code(
-				Some("return uint(value);".into()),
-				Some("return uint(value);".into()),
-				Some("return uint(value);".into()),
-				&[],
-				&[],
-			)],
-		);
-		let u16_to_u32 = Node::function(
-			"u16_to_u32",
-			vec![Node::parameter("value", "u16")],
-			"u32",
-			vec![Node::raw_code(
-				Some("return uint(value);".into()),
-				Some("return uint(value);".into()),
-				Some("return uint(value);".into()),
-				&[],
-				&[],
-			)],
-		);
-		let extend_vec3f = Node::function(
+		let u8_to_u32 = parse_besl_function("u8_to_u32: fn (value: u8) -> u32 { return u32(value); }", "u8_to_u32");
+		let u16_to_u32 = parse_besl_function("u16_to_u32: fn (value: u16) -> u32 { return u32(value); }", "u16_to_u32");
+		let extend_vec3f = parse_besl_function(
+			r#"
+			extend_vec3f: fn (value: vec3f, w: f32) -> vec4f {
+				return vec4f(value.x, value.y, value.z, w);
+			}
+			"#,
 			"extend_vec3f",
-			vec![Node::parameter("value", "vec3f"), Node::parameter("w", "f32")],
-			"vec4f",
-			vec![Node::raw_code(
-				Some("return vec4(value, w);".into()),
-				Some("return float4(value, w);".into()),
-				Some("return float4(value, w);".into()),
-				&[],
-				&[],
-			)],
 		);
 		let process_meshlet = {
 			let mut process_meshlet = besl::parse(
@@ -470,7 +452,7 @@ impl VisibilityShaderScope {
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 
 		let sample_function = Node::intrinsic(
-			"sample",
+			"sample_material",
 			Node::parameter("smplr", "u32"),
 			Node::sentence(vec![
 				Node::raw_code(
@@ -915,9 +897,9 @@ impl VisibilityShaderScope {
 				pixel_mapping,
 				triangle_index,
 				instance_index,
-				compute_vertex_index,
 				u8_to_u32,
 				u16_to_u32,
+				compute_vertex_index,
 				extend_vec3f,
 				compute_vertex_position,
 				compute_triangle,
@@ -1631,9 +1613,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 #[cfg(test)]
 mod tests {
 	use resource_management::asset::bema_asset_handler::ProgramGenerator;
+	use resource_management::shader::besl::backends::glsl::GLSLShaderGenerator;
 	use resource_management::shader::besl::backends::hlsl::HLSLShaderGenerator;
-	#[cfg(target_os = "linux")]
-	use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
 	use resource_management::shader::{
 		besl::backends::msl::MSLShaderGenerator,
 		generator::{ShaderGenerationSettings, ShaderGenerator as _},
@@ -1642,7 +1623,6 @@ mod tests {
 	use utils::Extent;
 
 	use crate::besl;
-	use crate::rendering::map_shader_binding_to_shader_binding_descriptor;
 
 	#[test]
 	fn write_to_albedo() {
@@ -1686,8 +1666,9 @@ mod tests {
 		// shaderc::Compiler::new().unwrap().compile_into_spirv(shader.as_str(), shaderc::ShaderKind::Compute, "shader.glsl", "main", None).unwrap();
 	}
 
+	/// Verifies material texture variables reach GLSL as literal visibility texture slots.
 	#[test]
-	fn texture_variable_transform_uses_literal_slot_expression() {
+	fn texture_variable_transform_and_glsl_use_literal_slot_expression() {
 		let material = json::object! {
 			"variables": [
 				{
@@ -1696,13 +1677,21 @@ mod tests {
 				}
 			]
 		};
-		let shader_source = "main: fn () -> void { albedo = sample(base_color); }";
+		let shader_source = "main: fn () -> void { albedo = sample_material(base_color); }";
 		let shader_node = besl::parse(shader_source).unwrap();
 		let shader_generator = super::VisibilityShaderGenerator::new(true, true, true, true, true, true, true, true);
 
 		let shader = shader_generator.transform(shader_node, &material);
 
-		let _node = besl::lex(shader).unwrap();
+		let root = besl::lex(shader).unwrap();
+		let main_node = root.get_main().unwrap();
+		let settings = ShaderGenerationSettings::compute(Extent::line(128));
+		let source = GLSLShaderGenerator::new().generate(&settings, &main_node).unwrap();
+
+		assert!(
+			source.contains("texture(textures[nonuniformEXT(material.textures[0u])], vertex_uv)"),
+			"Generated GLSL does not sample the substituted material texture slot. The most likely cause is that visibility sampling bypassed literal slot lowering. Shader: {source}"
+		);
 	}
 
 	#[test]
@@ -1719,7 +1708,7 @@ mod tests {
 				}
 			]
 		};
-		let shader_source = "main: fn () -> void { albedo = sample(base_color); normal = sample_normal(normal_map); }";
+		let shader_source = "main: fn () -> void { albedo = sample_material(base_color); normal = sample_normal(normal_map); }";
 		let shader_node = besl::parse(shader_source).unwrap();
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 		let shader = shader_generator.transform(shader_node, &material);
@@ -1764,14 +1753,14 @@ mod tests {
 			"Expected HLSL material evaluation source to use native HLSL texture sampling. Source: {source}"
 		);
 		assert!(
-			source
-				.contains("uint packed_vertex_index = mesh.base_primitive_index + meshlet.primitive_offset + primitive_index;"),
+			source.contains(
+				"uint relative_index = ((vertex_indices[((mesh.base_primitive_index + meshlet.primitive_offset) + primitive_index) / 2u]"
+			),
 			"Expected HLSL material evaluation source to unpack packed u16 vertex indices. Source: {source}"
 		);
 		assert!(
-			source.contains(
-				"return mesh.base_vertex_index + ((packed_vertex_word >> ((packed_vertex_index & 1u) * 16u)) & 0xffffu);"
-			),
+			source.contains("(((mesh.base_primitive_index + meshlet.primitive_offset) + primitive_index) % 2u) * 16u")
+				&& source.contains("return mesh.base_vertex_index + u16_to_u32(relative_index);"),
 			"Expected HLSL material evaluation source to extract u16 values from 32-bit words. Source: {source}"
 		);
 		assert!(
@@ -1790,17 +1779,13 @@ mod tests {
 		);
 	}
 
-	#[cfg(target_os = "linux")]
+	/// Verifies the generated material evaluation source remains acceptable to the Metal compiler.
 	#[test]
 	fn material_evaluation_msl_source_compiles_for_metal() {
 		use ghi::{
 			context::{Context as _, ContextCreate as _},
 			device::Device as _,
 		};
-
-		if !ghi::implementation::USES_METAL {
-			return;
-		}
 
 		let material = json::object! {
 			"variables": []
@@ -1815,12 +1800,10 @@ mod tests {
 		let settings = ShaderGenerationSettings::compute(Extent::line(128));
 		let mut source_generator = MSLShaderGenerator::new();
 		let source = source_generator.generate(&settings, &main_node).unwrap();
-		let reflected_shader = SPIRVShaderGenerator::new().generate(&settings, &main_node).unwrap();
-		let bindings = reflected_shader
-			.bindings()
-			.iter()
-			.map(map_shader_binding_to_shader_binding_descriptor)
-			.collect::<Vec<_>>();
+
+		if !ghi::implementation::USES_METAL {
+			return;
+		}
 
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
 			.expect("Expected a Metal instance for the material evaluation shader test");
@@ -1841,7 +1824,7 @@ mod tests {
 				entry_point: "besl_main",
 			},
 			ghi::ShaderTypes::Compute,
-			bindings,
+			Vec::<ghi::shader::BindingDescriptor>::new(),
 		);
 
 		assert!(
@@ -1850,17 +1833,13 @@ mod tests {
 		);
 	}
 
-	#[cfg(target_os = "linux")]
+	/// Verifies textured material slot arguments are substituted before generated MSL reaches Metal.
 	#[test]
 	fn material_evaluation_msl_texture_source_compiles_for_metal() {
 		use ghi::{
 			context::{Context as _, ContextCreate as _},
 			device::Device as _,
 		};
-
-		if !ghi::implementation::USES_METAL {
-			return;
-		}
 
 		let material = json::object! {
 			"variables": [
@@ -1874,7 +1853,7 @@ mod tests {
 				}
 			]
 		};
-		let shader_source = "main: fn () -> void { albedo = sample(base_color); normal = sample_normal(normal_map); }";
+		let shader_source = "main: fn () -> void { albedo = sample_material(base_color); normal = sample_normal(normal_map); }";
 		let shader_node = besl::parse(shader_source).unwrap();
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 		let shader = shader_generator.transform(shader_node, &material);
@@ -1883,12 +1862,26 @@ mod tests {
 		let settings = ShaderGenerationSettings::compute(Extent::line(128));
 		let mut source_generator = MSLShaderGenerator::new();
 		let source = source_generator.generate(&settings, &main_node).unwrap();
-		let reflected_shader = SPIRVShaderGenerator::new().generate(&settings, &main_node).unwrap();
-		let bindings = reflected_shader
-			.bindings()
-			.iter()
-			.map(map_shader_binding_to_shader_binding_descriptor)
-			.collect::<Vec<_>>();
+		assert!(
+			!source.contains("smplr"),
+			"Generated MSL contains the private sampling helper parameter `smplr`. The most likely cause is that a raw intrinsic fragment bypassed argument substitution. Shader: {source}"
+		);
+		assert!(
+			source.contains(
+				"set0.textures[material.textures[0u]].sample(set0.textures_sampler[material.textures[0u]], vertex_uv, level(0.0))"
+			),
+			"Generated MSL does not use the albedo slot for both the texture and sampler. The most likely cause is incomplete material slot substitution. Shader: {source}"
+		);
+		assert!(
+			source.contains(
+				"set0.textures[material.textures[1u]].sample(set0.textures_sampler[material.textures[1u]], vertex_uv, level(0.0)).xy"
+			),
+			"Generated MSL does not use the normal slot for both the texture and sampler. The most likely cause is incomplete normal slot substitution. Shader: {source}"
+		);
+
+		if !ghi::implementation::USES_METAL {
+			return;
+		}
 
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
 			.expect("Expected a Metal instance for the textured material evaluation shader test");
@@ -1909,7 +1902,7 @@ mod tests {
 				entry_point: "besl_main",
 			},
 			ghi::ShaderTypes::Compute,
-			bindings,
+			Vec::<ghi::shader::BindingDescriptor>::new(),
 		);
 
 		assert!(

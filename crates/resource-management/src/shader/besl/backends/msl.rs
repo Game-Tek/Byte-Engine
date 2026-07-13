@@ -17,6 +17,7 @@ pub struct Generator<A: Allocator + Clone = Global> {
 	compute_binding_mode: ComputeBindingMode,
 	in_compute_body: bool,
 	compute_stage_context: Option<ComputeStageContext<A>>,
+	raster_stage_context: Option<RasterStageContext<A>>,
 	mesh_stage_context: Option<MeshStageContext<A>>,
 	in_buffer_binding_struct: bool,
 }
@@ -41,6 +42,12 @@ struct MeshStageContext<A: Allocator + Clone> {
 struct ComputeStageContext<A: Allocator + Clone> {
 	binding_sets: Vec<u32, A>,
 	has_push_constant: bool,
+}
+
+/// The `RasterStageContext` struct carries argument-buffer sets into binding-dependent raster helpers.
+#[derive(Clone, Debug)]
+struct RasterStageContext<A: Allocator + Clone> {
+	binding_sets: Vec<u32, A>,
 }
 
 struct ClassifiedNodes<'a, A: Allocator + Clone> {
@@ -70,6 +77,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			compute_binding_mode: ComputeBindingMode::ArgumentBuffers,
 			in_compute_body: false,
 			compute_stage_context: None,
+			raster_stage_context: None,
 			mesh_stage_context: None,
 			in_buffer_binding_struct: false,
 		}
@@ -89,10 +97,12 @@ impl<A: Allocator + Clone> Generator<A> {
 		&self.allocator
 	}
 
-	fn function_requires_compute_context(&self, function_node: &besl::NodeReference) -> bool {
-		fn node_requires_compute_context<A: Allocator + Clone>(
+	/// Detects whether a function's reachable AST needs backend resource parameters.
+	fn function_requires_resource_context(&self, function_node: &besl::NodeReference, include_push_constant: bool) -> bool {
+		fn node_requires_resource_context<A: Allocator + Clone>(
 			node: &besl::NodeReference,
 			visited: &mut Vec<besl::NodeReference, A>,
+			include_push_constant: bool,
 		) -> bool {
 			if visited.iter().any(|visited_node| visited_node == node) {
 				return false;
@@ -101,27 +111,30 @@ impl<A: Allocator + Clone> Generator<A> {
 			visited.push(node.clone());
 
 			let result = match node.borrow().node() {
-				besl::Nodes::Binding { .. } | besl::Nodes::PushConstant { .. } => true,
-				besl::Nodes::Scope { children, .. } => {
-					children.iter().any(|child| node_requires_compute_context(child, visited))
-				}
+				besl::Nodes::Binding { .. } => true,
+				besl::Nodes::PushConstant { .. } => include_push_constant,
+				besl::Nodes::Scope { children, .. } => children
+					.iter()
+					.any(|child| node_requires_resource_context(child, visited, include_push_constant)),
 				besl::Nodes::Function {
 					params,
 					return_type,
 					statements,
 					..
 				} => {
-					params.iter().any(|param| node_requires_compute_context(param, visited))
-						|| node_requires_compute_context(return_type, visited)
+					params
+						.iter()
+						.any(|param| node_requires_resource_context(param, visited, include_push_constant))
+						|| node_requires_resource_context(return_type, visited, include_push_constant)
 						|| statements
 							.iter()
-							.any(|statement| node_requires_compute_context(statement, visited))
+							.any(|statement| node_requires_resource_context(statement, visited, include_push_constant))
 				}
 				besl::Nodes::Conditional { condition, statements } => {
-					node_requires_compute_context(condition, visited)
+					node_requires_resource_context(condition, visited, include_push_constant)
 						|| statements
 							.iter()
-							.any(|statement| node_requires_compute_context(statement, visited))
+							.any(|statement| node_requires_resource_context(statement, visited, include_push_constant))
 				}
 				besl::Nodes::ForLoop {
 					initializer,
@@ -129,46 +142,60 @@ impl<A: Allocator + Clone> Generator<A> {
 					update,
 					statements,
 				} => {
-					node_requires_compute_context(initializer, visited)
-						|| node_requires_compute_context(condition, visited)
-						|| node_requires_compute_context(update, visited)
+					node_requires_resource_context(initializer, visited, include_push_constant)
+						|| node_requires_resource_context(condition, visited, include_push_constant)
+						|| node_requires_resource_context(update, visited, include_push_constant)
 						|| statements
 							.iter()
-							.any(|statement| node_requires_compute_context(statement, visited))
+							.any(|statement| node_requires_resource_context(statement, visited, include_push_constant))
 				}
-				besl::Nodes::Struct { fields, .. } => fields.iter().any(|field| node_requires_compute_context(field, visited)),
+				besl::Nodes::Struct { fields, .. } => fields
+					.iter()
+					.any(|field| node_requires_resource_context(field, visited, include_push_constant)),
 				besl::Nodes::Raw { input, output, .. } => {
-					input.iter().any(|input| node_requires_compute_context(input, visited))
-						|| output.iter().any(|output| node_requires_compute_context(output, visited))
+					input
+						.iter()
+						.any(|input| node_requires_resource_context(input, visited, include_push_constant))
+						|| output
+							.iter()
+							.any(|output| node_requires_resource_context(output, visited, include_push_constant))
 				}
 				besl::Nodes::Parameter { r#type, .. }
 				| besl::Nodes::Member { r#type, .. }
 				| besl::Nodes::Specialization { r#type, .. }
 				| besl::Nodes::Input { format: r#type, .. }
-				| besl::Nodes::Output { format: r#type, .. } => node_requires_compute_context(r#type, visited),
+				| besl::Nodes::Output { format: r#type, .. } => node_requires_resource_context(r#type, visited, include_push_constant),
 				besl::Nodes::Expression(expression) => match expression {
 					besl::Expressions::Operator { left, right, .. } => {
-						node_requires_compute_context(left, visited) || node_requires_compute_context(right, visited)
+						node_requires_resource_context(left, visited, include_push_constant)
+							|| node_requires_resource_context(right, visited, include_push_constant)
 					}
 					besl::Expressions::FunctionCall {
 						function, parameters, ..
 					} => {
-						node_requires_compute_context(function, visited)
+						node_requires_resource_context(function, visited, include_push_constant)
 							|| parameters
 								.iter()
-								.any(|parameter| node_requires_compute_context(parameter, visited))
+								.any(|parameter| node_requires_resource_context(parameter, visited, include_push_constant))
 					}
-					besl::Expressions::IntrinsicCall { elements, .. } | besl::Expressions::Expression { elements } => {
-						elements.iter().any(|element| node_requires_compute_context(element, visited))
+					besl::Expressions::IntrinsicCall { elements, .. } | besl::Expressions::Expression { elements } => elements
+						.iter()
+						.any(|element| node_requires_resource_context(element, visited, include_push_constant)),
+					besl::Expressions::Macro { body, .. } => {
+						node_requires_resource_context(body, visited, include_push_constant)
 					}
-					besl::Expressions::Macro { body, .. } => node_requires_compute_context(body, visited),
-					besl::Expressions::Member { source, .. } => node_requires_compute_context(source, visited),
-					besl::Expressions::VariableDeclaration { r#type, .. } => node_requires_compute_context(r#type, visited),
+					besl::Expressions::Member { source, .. } => {
+						node_requires_resource_context(source, visited, include_push_constant)
+					}
+					besl::Expressions::VariableDeclaration { r#type, .. } => {
+						node_requires_resource_context(r#type, visited, include_push_constant)
+					}
 					besl::Expressions::Return { value } => value
 						.as_ref()
-						.is_some_and(|value| node_requires_compute_context(value, visited)),
+						.is_some_and(|value| node_requires_resource_context(value, visited, include_push_constant)),
 					besl::Expressions::Accessor { left, right } => {
-						node_requires_compute_context(left, visited) || node_requires_compute_context(right, visited)
+						node_requires_resource_context(left, visited, include_push_constant)
+							|| node_requires_resource_context(right, visited, include_push_constant)
 					}
 					besl::Expressions::Literal { .. } | besl::Expressions::Continue => false,
 				},
@@ -179,7 +206,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			result
 		}
 
-		node_requires_compute_context(function_node, &mut Vec::new_in(self.allocator.clone()))
+		node_requires_resource_context(function_node, &mut Vec::new_in(self.allocator.clone()), include_push_constant)
 	}
 }
 
@@ -384,6 +411,9 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		self.emit_vertex_input_struct(string, &nodes.inputs);
 		self.emit_vertex_output_struct(string, &nodes.outputs);
+		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
+			binding_sets: self.collect_binding_set_ids(&binding_sets),
+		});
 
 		for node in nodes.functions.iter().rev() {
 			self.emit_function_prototype(string, node);
@@ -394,6 +424,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 
 		self.emit_vertex_entry_point(string, main_function_node, &nodes.inputs, &nodes.outputs, &binding_sets);
+		self.raster_stage_context = previous_raster_stage_context;
 	}
 
 	fn emit_vertex_input_struct(&mut self, string: &mut String, inputs: &[&besl::NodeReference]) {
@@ -548,6 +579,9 @@ impl<A: Allocator + Clone> Generator<A> {
 		if !nodes.outputs.is_empty() {
 			self.emit_fragment_output_struct(string, &nodes.outputs);
 		}
+		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
+			binding_sets: self.collect_binding_set_ids(&binding_sets),
+		});
 
 		for node in nodes.functions.iter().rev() {
 			self.emit_function_prototype(string, node);
@@ -558,6 +592,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 
 		self.emit_fragment_entry_point(string, main_function_node, &nodes.inputs, &nodes.outputs, &binding_sets);
+		self.raster_stage_context = previous_raster_stage_context;
 	}
 
 	fn emit_raster_input_locals(
@@ -574,12 +609,19 @@ impl<A: Allocator + Clone> Generator<A> {
 			let besl::Nodes::Input { name, format, .. } = input.node() else {
 				continue;
 			};
+			let builtin_value = builtin_values
+				.iter()
+				.find_map(|(builtin_name, value)| (builtin_name == name).then_some(*value));
+			// Builtin entry-point parameters already use their BESL names and need no local mirror.
+			if builtin_value == Some(name.as_str()) {
+				continue;
+			}
 			formatting.push_indentation(string, indent);
 			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
 			string.push_str(name);
 			string.push('=');
-			if let Some((_, value)) = builtin_values.iter().find(|(builtin_name, _)| builtin_name == name) {
+			if let Some(value) = builtin_value {
 				string.push_str(value);
 			} else {
 				string.push_str(input_name);
@@ -648,7 +690,21 @@ impl<A: Allocator + Clone> Generator<A> {
 		};
 		let formatting = ShaderFormatting::new(self.minified);
 
-		string.push_str("vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint vertex_id [[vertex_id]], uint instance_index [[instance_id]]");
+		string.push_str("vertex VertexOutput besl_main(VertexInput in [[stage_in]]");
+		if inputs
+			.iter()
+			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == "vertex_id"))
+		{
+			self.emit_separator(string);
+			string.push_str("uint vertex_id [[vertex_id]]");
+		}
+		if inputs
+			.iter()
+			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == "instance_id"))
+		{
+			self.emit_separator(string);
+			string.push_str("uint instance_id [[instance_id]]");
+		}
 		for &set in binding_sets.keys() {
 			self.emit_separator(string);
 			self.emit_argument_buffer_parameter(string, set);
@@ -662,7 +718,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			string,
 			inputs,
 			"in",
-			&[("vertex_id", "vertex_id"), ("instance_id", "instance_index")],
+			&[("vertex_id", "vertex_id"), ("instance_id", "instance_id")],
 			1,
 		);
 		formatting.push_indentation(string, 1);
@@ -706,7 +762,14 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		string.push_str("fragment ");
 		string.push_str(&entry_return_type);
-		string.push_str(" besl_main(FragmentInput in [[stage_in]], bool front_facing [[front_facing]]");
+		string.push_str(" besl_main(FragmentInput in [[stage_in]]");
+		if inputs
+			.iter()
+			.any(|input| matches!(input.borrow().node(), besl::Nodes::Input { name, .. } if name == "front_facing"))
+		{
+			self.emit_separator(string);
+			string.push_str("bool front_facing [[front_facing]]");
+		}
 		for &set in binding_sets.keys() {
 			self.emit_separator(string);
 			self.emit_argument_buffer_parameter(string, set);
@@ -1347,6 +1410,14 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
+	/// Qualifies a raster resource through the argument buffer supplied to its entry point or helper.
+	fn emit_raster_binding_reference(&self, string: &mut String, set: u32, name: &str) {
+		string.push_str("set");
+		let _ = write!(string, "{set}");
+		string.push('.');
+		string.push_str(name);
+	}
+
 	fn emit_mesh_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool) {
 		let Some(mesh_stage_context) = &self.mesh_stage_context else {
 			return;
@@ -1460,6 +1531,24 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
+	/// Adds argument-buffer parameters to raster helpers that access BESL bindings.
+	fn emit_raster_hidden_parameters(&self, string: &mut String, mut has_previous_parameter: bool) {
+		let Some(raster_stage_context) = &self.raster_stage_context else {
+			return;
+		};
+
+		for &set in &raster_stage_context.binding_sets {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("constant _set");
+			let _ = write!(string, "{set}");
+			string.push_str("& set");
+			let _ = write!(string, "{set}");
+			has_previous_parameter = true;
+		}
+	}
+
 	fn emit_compute_hidden_call_arguments(&self, string: &mut String, has_previous_parameter: bool) {
 		if self.mesh_stage_context.is_some() {
 			self.emit_mesh_hidden_call_arguments(string, has_previous_parameter);
@@ -1498,6 +1587,22 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
+	/// Forwards entry-point argument buffers to binding-dependent raster helpers.
+	fn emit_raster_hidden_call_arguments(&self, string: &mut String, mut has_previous_parameter: bool) {
+		let Some(raster_stage_context) = &self.raster_stage_context else {
+			return;
+		};
+
+		for &set in &raster_stage_context.binding_sets {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("set");
+			let _ = write!(string, "{set}");
+			has_previous_parameter = true;
+		}
+	}
+
 	fn emit_function_prototype(&mut self, string: &mut String, function_node: &besl::NodeReference) {
 		let node = RefCell::borrow(function_node);
 		let besl::Nodes::Function {
@@ -1520,8 +1625,10 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_node_string(string, param)
 		});
 
-		if self.in_compute_body && self.function_requires_compute_context(function_node) {
+		if self.in_compute_body && self.function_requires_resource_context(function_node, true) {
 			self.emit_compute_hidden_parameters(string, !params.is_empty());
+		} else if self.raster_stage_context.is_some() && self.function_requires_resource_context(function_node, false) {
+			self.emit_raster_hidden_parameters(string, !params.is_empty());
 		}
 
 		string.push(')');
@@ -1718,7 +1825,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		};
 
 		match name.as_str() {
-			"sample" => {
+			"sample_material" => {
 				self.emit_visibility_texture_sample(string, &arguments[0], false);
 				return;
 			}
@@ -2246,8 +2353,11 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		name: &str,
 		has_previous_parameter: bool,
 	) {
-		if self.in_compute_body && self.function_requires_compute_context(node) {
+		if self.in_compute_body && self.function_requires_resource_context(node, true) {
 			self.emit_compute_hidden_parameters(string, has_previous_parameter);
+		} else if self.raster_stage_context.is_some() && name != "main" && self.function_requires_resource_context(node, false)
+		{
+			self.emit_raster_hidden_parameters(string, has_previous_parameter);
 		}
 		if self.mesh_stage_context.is_some() && name == "main" {
 			self.emit_mesh_hidden_parameters(string, has_previous_parameter);
@@ -2263,15 +2373,20 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		has_previous_argument: bool,
 	) {
 		let function_node = RefCell::borrow(function);
-		if self.in_compute_body
-			&& matches!(function_node.node(), besl::Nodes::Function { name, .. } if name != "main")
-			&& self.function_requires_compute_context(function)
-		{
-			self.emit_compute_hidden_call_arguments(string, has_previous_argument);
+		if matches!(function_node.node(), besl::Nodes::Function { name, .. } if name != "main") {
+			if self.in_compute_body && self.function_requires_resource_context(function, true) {
+				self.emit_compute_hidden_call_arguments(string, has_previous_argument);
+			} else if self.raster_stage_context.is_some() && self.function_requires_resource_context(function, false) {
+				self.emit_raster_hidden_call_arguments(string, has_previous_argument);
+			}
 		}
 	}
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
 		if let besl::Nodes::Binding { set, .. } = source.borrow().node() {
+			if self.raster_stage_context.is_some() {
+				self.emit_raster_binding_reference(string, *set, name);
+				return true;
+			}
 			if self.in_compute_body || self.mesh_stage_context.is_some() {
 				self.emit_compute_binding_reference(string, *set, name);
 				return true;
@@ -2636,10 +2751,7 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "struct VertexInput{float3 color [[attribute(0)]];};");
-		assert_string_contains!(
-			shader,
-			"vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint vertex_id [[vertex_id]], uint instance_index [[instance_id]])"
-		);
+		assert_string_contains!(shader, "vertex VertexOutput besl_main(VertexInput in [[stage_in]])");
 		assert_string_contains!(shader, "float3 color=in.color;");
 		assert_string_contains!(shader, "color;return out;");
 	}
@@ -2657,10 +2769,7 @@ struct PrimitiveOutput {
 			shader,
 			"struct VertexOutput{float4 position [[position]];float3 color [[user(locn0)]];};"
 		);
-		assert_string_contains!(
-			shader,
-			"vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint vertex_id [[vertex_id]], uint instance_index [[instance_id]])"
-		);
+		assert_string_contains!(shader, "vertex VertexOutput besl_main(VertexInput in [[stage_in]])");
 		assert_string_contains!(shader, "float3 color;color;out.color=color;return out;");
 	}
 
@@ -2679,9 +2788,9 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "struct VertexInput{};");
-		assert_string_contains!(shader, "uint vertex_id [[vertex_id]], uint instance_index [[instance_id]]");
-		assert_string_contains!(shader, "uint vertex_id=vertex_id;");
-		assert_string_contains!(shader, "uint instance_id=instance_index;");
+		assert_string_contains!(shader, "uint vertex_id [[vertex_id]],uint instance_id [[instance_id]]");
+		assert!(!shader.contains("uint vertex_id=vertex_id;"));
+		assert!(!shader.contains("uint instance_id=instance_id;"));
 	}
 
 	#[test]
@@ -2705,10 +2814,7 @@ struct PrimitiveOutput {
 
 		assert_string_contains!(shader, "struct FragmentInput{};");
 		assert_string_contains!(shader, "struct FragmentOutput{float4 color;};");
-		assert_string_contains!(
-			shader,
-			"fragment FragmentOutput besl_main(FragmentInput in [[stage_in]], bool front_facing [[front_facing]])"
-		);
+		assert_string_contains!(shader, "fragment FragmentOutput besl_main(FragmentInput in [[stage_in]])");
 		assert_string_contains!(shader, "return FragmentOutput(float4(1.0,0.0,0.0,1.0));");
 	}
 
@@ -2753,7 +2859,7 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "uint stencil [[stencil]];");
 		assert_string_contains!(shader, "uint sample_mask [[sample_mask]];");
 		assert_string_contains!(shader, "bool front_facing [[front_facing]]");
-		assert_string_contains!(shader, "bool front_facing=front_facing;");
+		assert!(!shader.contains("bool front_facing=front_facing;"));
 	}
 
 	#[test]
@@ -2805,7 +2911,8 @@ struct PrimitiveOutput {
 			Some("".into()),
 			None,
 			Some(
-				"VertexOutput out; out.position = set0.cameras->cameras[0].view_projection * float4(in.position, 1.0); out.out_instance_index = instance_index; return out;".into(),
+				"position = set0.cameras->cameras[0].view_projection * float4(in_position, 1.0); out_instance_index = 0u;"
+					.into(),
 			),
 			&["cameras", "in_position", "out_instance_index"],
 			&[],
@@ -2836,9 +2943,64 @@ struct PrimitiveOutput {
 		);
 		assert_string_contains!(
 			shader,
-			"vertex VertexOutput besl_main(VertexInput in [[stage_in]], uint vertex_id [[vertex_id]], uint instance_index [[instance_id]],constant _set0& set0 [[buffer(16)]])"
+			"vertex VertexOutput besl_main(VertexInput in [[stage_in]],constant _set0& set0 [[buffer(16)]])"
 		);
+		assert_string_contains!(shader, "position = set0.cameras->cameras[0].view_projection");
 		assert_string_contains!(shader, "return out;");
+	}
+
+	/// Verifies raster helpers retain binding access when lowered outside the Metal entry point.
+	#[test]
+	fn raster_helpers_receive_argument_buffer_context() {
+		let mut root = besl::Node::root();
+		let mat4f = root.get_child("mat4f").expect("Expected mat4f type");
+		let vec3f = root.get_child("vec3f").expect("Expected vec3f type");
+		let vec4f = root.get_child("vec4f").expect("Expected vec4f type");
+		let camera =
+			root.add_child(besl::Node::r#struct("Camera", vec![besl::Node::member("view_projection", mat4f).into()]).into());
+		root.add_children(vec![
+			besl::Node::binding(
+				"cameras",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("cameras", camera, 1)],
+				},
+				0,
+				0,
+				true,
+				false,
+			)
+			.into(),
+			besl::Node::input("in_position", vec3f, 0).into(),
+			besl::Node::output("position", vec4f, 0).into(),
+		]);
+
+		let program = besl::compile_to_besl(
+			r#"
+			camera_matrix: fn () -> mat4f {
+				return cameras.cameras[0].view_projection;
+			}
+			main: fn () -> void {
+				position = camera_matrix() * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
+			}
+			"#,
+			Some(root),
+		)
+		.expect("Failed to compile the raster helper fixture. The most likely cause is invalid BESL syntax.");
+		let main = program.get_main().expect("Expected raster helper fixture main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate raster helper MSL. The most likely cause is missing raster resource context.");
+
+		assert_string_contains!(shader, "float4x4 camera_matrix(constant _set0& set0);");
+		assert_string_contains!(
+			shader,
+			"float4x4 camera_matrix(constant _set0& set0){return set0.cameras->cameras[0].view_projection;}"
+		);
+		assert_string_contains!(
+			shader,
+			"position=(camera_matrix(set0)*float4(in_position.x,in_position.y,in_position.z,1.0));"
+		);
 	}
 
 	#[test]

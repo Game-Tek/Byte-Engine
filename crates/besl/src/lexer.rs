@@ -52,6 +52,11 @@ impl NodeReference {
 		self.borrow().get_children()
 	}
 
+	/// Returns the stable pointer identity used to deduplicate linked semantic nodes without borrowing their contents.
+	pub(crate) fn identity(&self) -> usize {
+		Rc::as_ptr(&self.0) as usize
+	}
+
 	/// Returns the main function of the program.
 	pub fn get_main(&self) -> Option<NodeReference> {
 		if let Some(m) = self.get_descendant("main") {
@@ -288,6 +293,9 @@ impl Node {
 		let radians_intrinsic = builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone());
 		let inversesqrt_intrinsic = builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone());
 		let f32_from_u32_intrinsic = builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone());
+		let u32_from_u32_intrinsic = builtin_intrinsic("u32", vec![("value", u32_t.clone())], u32_t.clone());
+		let u32_from_u8_intrinsic = builtin_intrinsic("u32", vec![("value", u8_t.clone())], u32_t.clone());
+		let u32_from_u16_intrinsic = builtin_intrinsic("u32", vec![("value", u16_t.clone())], u32_t.clone());
 		let u32_from_f32_intrinsic = builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone());
 		let smoothstep_intrinsic = builtin_intrinsic(
 			"smoothstep",
@@ -416,6 +424,9 @@ impl Node {
 			radians_intrinsic,
 			inversesqrt_intrinsic,
 			f32_from_u32_intrinsic,
+			u32_from_u32_intrinsic,
+			u32_from_u8_intrinsic,
+			u32_from_u16_intrinsic,
 			u32_from_f32_intrinsic,
 			smoothstep_intrinsic,
 			step_intrinsic,
@@ -1278,6 +1289,25 @@ fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReferenc
 }
 
 fn resolve_member(chain: &[NodeReference], name: &str) -> Result<NodeReference, LexError> {
+	// After the left side of an accessor has resolved a buffer binding, the next identifier
+	// belongs to that buffer's member namespace even when the binding and member share a name.
+	if let Some(left) = chain.last() {
+		let source = match left.borrow().node() {
+			Nodes::Expression(Expressions::Member { source, .. }) => Some(source.clone()),
+			_ => None,
+		};
+		if let Some(source) = source {
+			if let Nodes::Binding {
+				r#type: BindingTypes::Buffer { members },
+				..
+			} = source.borrow().node()
+			{
+				if let Some(member) = find_named_child(members, name) {
+					return Ok(member);
+				}
+			}
+		}
+	}
 	get_reference(chain, name).ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })
 }
 
@@ -1336,13 +1366,12 @@ fn find_descendant(node: &NodeReference, child_name: &str, mode: DescendantSearc
 	let prefer_descendants_before_self = mode == DescendantSearch::NonIntrinsic
 		&& matches!(
 			node.borrow().node(),
-			Nodes::Binding { .. }
-				| Nodes::PushConstant { .. }
+			Nodes::PushConstant { .. }
 				| Nodes::Member { .. }
 				| Nodes::Parameter { .. }
 				| Nodes::Input { .. }
 				| Nodes::Output { .. }
-				| Nodes::Expression(Expressions::Member { .. } | Expressions::VariableDeclaration { .. })
+				| Nodes::Expression(Expressions::Member { .. })
 		);
 
 	if !prefer_descendants_before_self && node.borrow().get_name() == Some(child_name) {
@@ -1466,6 +1495,8 @@ fn find_in_function_expression(
 
 fn find_in_expression(expression: &Expressions, child_name: &str, mode: DescendantSearch) -> Option<NodeReference> {
 	match expression {
+		// Only assignment declarations on the left enter the surrounding lexical scope.
+		Expressions::Operator { left, .. } if mode == DescendantSearch::NonIntrinsic => find_descendant(left, child_name, mode),
 		Expressions::Operator { left, right, .. } => {
 			find_descendant(left, child_name, mode).or_else(|| find_descendant(right, child_name, mode))
 		}
@@ -2005,6 +2036,7 @@ fn expression_matches_type(expression: &NodeReference, expected_type: &NodeRefer
 
 fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {
 	match expression.borrow().node() {
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => infer_expression_type(&elements[0]),
 		Nodes::Expression(Expressions::Literal { value }) => infer_literal_type(value),
 		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
 		Nodes::Expression(Expressions::Member { source, .. }) => infer_member_type(source),
@@ -2029,7 +2061,7 @@ fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {
 
 fn infer_literal_type(value: &str) -> Option<NodeReference> {
 	let root = Node::root();
-	if value.contains('.') {
+	if value.contains(['.', 'e', 'E']) {
 		root.get_child("f32")
 	} else {
 		root.get_child("u32")
@@ -2083,7 +2115,6 @@ fn resolve_call_target(chain: &[NodeReference], name: &str, parameters: &[NodeRe
 	if let Ok(r#type) = resolve_type(chain, name) {
 		return Ok(r#type);
 	}
-
 	Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters)
 }
 
@@ -3470,6 +3501,22 @@ main: fn () -> void {
 				_ => panic!("Expected assignment"),
 			}
 		}
+	}
+
+	/// Verifies mesh index helpers can widen packed byte and word values through portable BESL.
+	#[test]
+	fn lex_u32_widening_intrinsic_overloads() {
+		let script = r#"
+		main: fn () -> void {
+			let byte: u8 = 7;
+			let word: u16 = 513;
+			let byte_wide: u32 = u32(byte);
+			let word_wide: u32 = u32(word);
+		}
+		"#;
+
+		crate::compile_to_besl(script, None)
+			.expect("Failed to resolve u32 widening calls. The most likely cause is a missing narrow-integer overload.");
 	}
 
 	#[test]

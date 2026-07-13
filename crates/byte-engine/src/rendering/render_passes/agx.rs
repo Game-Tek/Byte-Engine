@@ -273,6 +273,7 @@ impl RenderPass for AgxToneMapPass {
 
 #[cfg(test)]
 mod tests {
+	use besl::vm::{DescriptorBindings, DescriptorSlot};
 	#[cfg(target_os = "linux")]
 	use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
 	#[cfg(target_os = "macos")]
@@ -283,6 +284,43 @@ mod tests {
 	use utils::Extent;
 
 	use super::{create_tone_mapping_program, TONE_MAPPING_SHADER};
+	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
+
+	/// Executes the compiled AGX program for one source color.
+	fn run_agx_vm(program: &besl::vm::ExecutableProgram, source_color: [f32; 4]) -> [f32; 4] {
+		let mut source = texture_2d(1, 1, &[source_color]);
+		let mut result = empty_image(1, 1);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_image(DescriptorSlot::new(0, 0), &mut source);
+		descriptors.bind_image(DescriptorSlot::new(0, 1), &mut result);
+		run_at(program, &mut descriptors, [0, 0]);
+		drop(descriptors);
+		rgba(&result, [0, 0])
+	}
+
+	/// Verifies reference colors, channel ordering, and bounded output through the VM.
+	#[test]
+	fn agx_tonemap_besl_vm_produces_bounded_reference_colors() {
+		let program = crate::rendering::shader_vm_test::compile(create_tone_mapping_program());
+
+		assert_rgba_close(run_agx_vm(&program, [0.0, 0.0, 0.0, 0.25]), [0.0, 0.0, 0.0, 1.0], 1e-6);
+		assert_rgba_close(
+			run_agx_vm(&program, [1.0, 1.0, 1.0, 0.25]),
+			[0.5902294, 0.5901361, 0.5901023, 1.0],
+			2e-5,
+		);
+
+		let warm = run_agx_vm(&program, [1.0, 0.5, 0.25, 0.0]);
+		assert!(
+			warm[0] > warm[1] && warm[1] > warm[2],
+			"Invalid AGX channel ordering. The most likely cause is an incorrect color-space transform: {warm:?}"
+		);
+		assert!(
+			warm.iter()
+				.all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel)),
+			"Invalid AGX VM output. The most likely cause is unstable tone-mapping arithmetic: {warm:?}"
+		);
+	}
 
 	#[test]
 	fn agx_tonemap_besl_parses() {

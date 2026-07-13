@@ -153,7 +153,7 @@ impl Generator {
 		};
 
 		match name.as_str() {
-			"sample" => {
+			"sample_material" => {
 				self.emit_visibility_texture_sample(string, &arguments[0], false);
 				return;
 			}

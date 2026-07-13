@@ -206,7 +206,7 @@ fn texture_sample_expression(texture: BrdfTexture) -> besl::parser::Node<'static
 	// The visibility material transform maps each generated Texture2D variable to a per-material slot.
 	// Keep the BRDF graph independent from final bindless descriptor indices by referring to the generated variable name.
 	besl::parser::Node::call(
-		"sample",
+		"sample_material",
 		vec![besl::parser::Node::member_expression(texture_slot_name(texture.image_index))],
 	)
 }
@@ -417,6 +417,8 @@ impl std::error::Error for BrdfShaderGenerationError {}
 
 #[cfg(test)]
 mod tests {
+	use besl::vm::{output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value};
+
 	use super::*;
 	use crate::pbr::{BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfTexture};
 
@@ -431,6 +433,264 @@ mod tests {
 		let program = generate_solid_brdf_program(&material).expect("material should generate");
 
 		assert_main_assignment_order(&program, &["albedo", "metalness", "roughness", "normal"]);
+	}
+
+	/// Verifies the constant-material generator produces the expected BRDF values when executed.
+	#[test]
+	fn constant_material_besl_program_runs_in_the_vm() {
+		let material = test_material(
+			BrdfValue::Vector4([0.2, 0.3, 0.4, 0.9]),
+			BrdfValue::Scalar(0.7),
+			BrdfValue::Scalar(0.8),
+		);
+		let mut program = generate_solid_brdf_program(&material)
+			.expect("Failed to generate constant material BESL. The most likely cause is an invalid BRDF material graph.");
+		program.add(vec![
+			besl::parser::Node::output("albedo", "vec4f", 0),
+			besl::parser::Node::output("metalness", "f32", 1),
+			besl::parser::Node::output("roughness", "f32", 2),
+			besl::parser::Node::output("normal", "vec3f", 3),
+		]);
+		let program = besl::lex(program)
+			.expect("Failed to lex constant material BESL. The most likely cause is an invalid generated material program.");
+		let executable = ExecutableProgram::compile(program)
+			.expect("Failed to compile constant material BESL for the VM. The most likely cause is missing VM shader support.");
+		let mut outputs: [Buffer; 4] = std::array::from_fn(|location| {
+			Buffer::new(
+				executable
+					.output_layout(location as u8)
+					.expect("Missing material output layout. The most likely cause is an unresolved generated assignment.")
+					.clone(),
+			)
+		});
+		{
+			let mut descriptors = DescriptorBindings::new();
+			for (location, output) in outputs.iter_mut().enumerate() {
+				descriptors.bind_buffer(output_slot(location as u8), output);
+			}
+			executable
+				.run_main(&mut descriptors)
+				.expect("Failed to execute constant material BESL. The most likely cause is incomplete BESL VM support.");
+		}
+
+		assert_eq!(
+			outputs[0].read("albedo").expect("Expected albedo output"),
+			Value::Vec4F([0.2, 0.3, 0.4, 0.9])
+		);
+		assert_eq!(
+			outputs[1].read("metalness").expect("Expected metalness output"),
+			Value::F32(0.7)
+		);
+		assert_eq!(
+			outputs[2].read("roughness").expect("Expected roughness output"),
+			Value::F32(0.8)
+		);
+		assert_eq!(
+			outputs[3].read("normal").expect("Expected normal output"),
+			Value::Vec3F([0.0, 0.0, 1.0])
+		);
+	}
+
+	/// Verifies the textured-material generator samples every BRDF image role and extracts packed channels when executed.
+	#[test]
+	fn textured_material_besl_program_runs_in_the_vm() {
+		let mut builder = BrdfMaterialBuilder::new();
+		let base_color = builder.texture(BrdfTexture {
+			image_index: 3,
+			texcoord_channel: 0,
+		});
+		let metallic_roughness = builder.texture(BrdfTexture {
+			image_index: 4,
+			texcoord_channel: 0,
+		});
+		let metallic = builder.extract_channel(metallic_roughness, BrdfChannel::Blue);
+		let roughness = builder.extract_channel(metallic_roughness, BrdfChannel::Green);
+		let normal_source = builder.texture(BrdfTexture {
+			image_index: 5,
+			texcoord_channel: 0,
+		});
+		let normal = builder.add(BrdfNode::NormalMap {
+			source: normal_source,
+			scale: 1.0,
+		});
+		let occlusion_source = builder.texture(BrdfTexture {
+			image_index: 6,
+			texcoord_channel: 0,
+		});
+		let occlusion = builder.add(BrdfNode::Occlusion {
+			source: occlusion_source,
+			strength: 1.0,
+		});
+		let emission_source = builder.texture(BrdfTexture {
+			image_index: 7,
+			texcoord_channel: 0,
+		});
+		let emission = builder.add(BrdfNode::Emission { color: emission_source });
+		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
+			base_color,
+			metallic,
+			roughness,
+			normal: Some(normal),
+			occlusion: Some(occlusion),
+			emission: Some(emission),
+		}));
+		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let mut program = generate_textured_brdf_program(&material)
+			.expect("Failed to generate textured material BESL. The most likely cause is an invalid BRDF material graph.");
+		// Production resolves these logical material slots through a bindless table; the VM adapter maps the same slots to fixed descriptors.
+		let mut helpers = besl::parse(
+			r#"
+			sample_material: fn (slot: u32) -> vec4f {
+				if (slot == 3) { return sample(base_color_texture, vec2f(0.5, 0.5)); }
+				if (slot == 4) { return sample(metallic_roughness_texture, vec2f(0.5, 0.5)); }
+				if (slot == 6) { return sample(occlusion_texture, vec2f(0.5, 0.5)); }
+				return sample(emission_texture, vec2f(0.5, 0.5));
+			}
+
+			sample_normal: fn (slot: u32) -> vec3f {
+				let encoded: vec4f = sample(normal_texture, vec2f(0.5, 0.5));
+				return vec3f(encoded.x, encoded.y, encoded.z);
+			}
+			"#,
+		)
+		.expect("Failed to parse the material sampling adapter. The most likely cause is invalid BESL test syntax.");
+		let helper_functions = match helpers.node_mut() {
+			besl::parser::Nodes::Scope { children, .. } => std::mem::take(children),
+			_ => panic!("Invalid material sampling adapter. The most likely cause is an unexpected BESL parser root."),
+		};
+		program.add(vec![
+			besl::parser::Node::binding(
+				"base_color_texture",
+				besl::parser::Node::combined_image_sampler(),
+				0,
+				3,
+				true,
+				false,
+			),
+			besl::parser::Node::binding(
+				"metallic_roughness_texture",
+				besl::parser::Node::combined_image_sampler(),
+				0,
+				4,
+				true,
+				false,
+			),
+			besl::parser::Node::binding(
+				"normal_texture",
+				besl::parser::Node::combined_image_sampler(),
+				0,
+				5,
+				true,
+				false,
+			),
+			besl::parser::Node::binding(
+				"occlusion_texture",
+				besl::parser::Node::combined_image_sampler(),
+				0,
+				6,
+				true,
+				false,
+			),
+			besl::parser::Node::binding(
+				"emission_texture",
+				besl::parser::Node::combined_image_sampler(),
+				0,
+				7,
+				true,
+				false,
+			),
+			besl::parser::Node::constant("gltf_texture_3", "u32", besl::parser::Node::literal_expression("3")),
+			besl::parser::Node::constant("gltf_texture_4", "u32", besl::parser::Node::literal_expression("4")),
+			besl::parser::Node::constant("gltf_texture_5", "u32", besl::parser::Node::literal_expression("5")),
+			besl::parser::Node::constant("gltf_texture_6", "u32", besl::parser::Node::literal_expression("6")),
+			besl::parser::Node::constant("gltf_texture_7", "u32", besl::parser::Node::literal_expression("7")),
+		]);
+		program.add(helper_functions);
+		program.add(vec![
+			besl::parser::Node::output("albedo", "vec4f", 0),
+			besl::parser::Node::output("metalness", "f32", 1),
+			besl::parser::Node::output("roughness", "f32", 2),
+			besl::parser::Node::output("normal", "vec3f", 3),
+			besl::parser::Node::output("occlusion", "f32", 4),
+			besl::parser::Node::output("emission", "vec3f", 5),
+		]);
+		let program = besl::lex(program)
+			.expect("Failed to lex textured material BESL. The most likely cause is an invalid generated material program.");
+		let executable = ExecutableProgram::compile(program)
+			.expect("Failed to compile textured material BESL for the VM. The most likely cause is missing VM shader support.");
+		let mut outputs: [Buffer; 6] = std::array::from_fn(|location| {
+			Buffer::new(
+				executable
+					.output_layout(location as u8)
+					.expect("Missing textured material output layout. The most likely cause is an unresolved assignment.")
+					.clone(),
+			)
+		});
+		let mut base_color_texture = Texture::new(1, 1)
+			.expect("Failed to create the base-color texture. The most likely cause is an invalid test extent.");
+		base_color_texture
+			.write([0, 0], [0.2, 0.4, 0.6, 0.8])
+			.expect("Failed to seed the base-color texture. The most likely cause is an invalid texel coordinate.");
+		let mut metallic_roughness_texture = Texture::new(1, 1)
+			.expect("Failed to create the metallic-roughness texture. The most likely cause is an invalid test extent.");
+		metallic_roughness_texture
+			.write([0, 0], [1.0, 0.35, 0.7, 1.0])
+			.expect("Failed to seed the metallic-roughness texture. The most likely cause is an invalid texel coordinate.");
+		let mut normal_texture =
+			Texture::new(1, 1).expect("Failed to create the normal texture. The most likely cause is an invalid test extent.");
+		normal_texture
+			.write([0, 0], [0.1, 0.2, 0.97, 1.0])
+			.expect("Failed to seed the normal texture. The most likely cause is an invalid texel coordinate.");
+		let mut occlusion_texture = Texture::new(1, 1)
+			.expect("Failed to create the occlusion texture. The most likely cause is an invalid test extent.");
+		occlusion_texture
+			.write([0, 0], [0.45, 1.0, 1.0, 1.0])
+			.expect("Failed to seed the occlusion texture. The most likely cause is an invalid texel coordinate.");
+		let mut emission_texture = Texture::new(1, 1)
+			.expect("Failed to create the emission texture. The most likely cause is an invalid test extent.");
+		emission_texture
+			.write([0, 0], [0.8, 0.3, 0.1, 1.0])
+			.expect("Failed to seed the emission texture. The most likely cause is an invalid texel coordinate.");
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(DescriptorSlot::new(0, 3), &mut base_color_texture);
+			descriptors.bind_texture(DescriptorSlot::new(0, 4), &mut metallic_roughness_texture);
+			descriptors.bind_texture(DescriptorSlot::new(0, 5), &mut normal_texture);
+			descriptors.bind_texture(DescriptorSlot::new(0, 6), &mut occlusion_texture);
+			descriptors.bind_texture(DescriptorSlot::new(0, 7), &mut emission_texture);
+			for (location, output) in outputs.iter_mut().enumerate() {
+				descriptors.bind_buffer(output_slot(location as u8), output);
+			}
+			executable
+				.run_main(&mut descriptors)
+				.expect("Failed to execute textured material BESL. The most likely cause is incomplete BESL VM support.");
+		}
+
+		assert_eq!(
+			outputs[0].read("albedo").expect("Expected albedo output"),
+			Value::Vec4F([0.2, 0.4, 0.6, 0.8])
+		);
+		assert_eq!(
+			outputs[1].read("metalness").expect("Expected metalness output"),
+			Value::F32(0.7)
+		);
+		assert_eq!(
+			outputs[2].read("roughness").expect("Expected roughness output"),
+			Value::F32(0.35)
+		);
+		assert_eq!(
+			outputs[3].read("normal").expect("Expected normal output"),
+			Value::Vec3F([0.1, 0.2, 0.97])
+		);
+		assert_eq!(
+			outputs[4].read("occlusion").expect("Expected occlusion output"),
+			Value::F32(0.45)
+		);
+		assert_eq!(
+			outputs[5].read("emission").expect("Expected emission output"),
+			Value::Vec3F([0.8, 0.3, 0.1])
+		);
 	}
 
 	#[test]
@@ -557,13 +817,17 @@ mod tests {
 			&program,
 			&["albedo", "metalness", "roughness", "normal", "occlusion", "emission"],
 		);
-		assert_sample_call(assignment_right(main_statement(&program, 0)), "sample", "gltf_texture_3");
+		assert_sample_call(
+			assignment_right(main_statement(&program, 0)),
+			"sample_material",
+			"gltf_texture_3",
+		);
 
 		let metallic_source = assert_accessor_channel(assignment_right(main_statement(&program, 1)), "z");
-		assert_sample_call(metallic_source, "sample", "gltf_texture_4");
+		assert_sample_call(metallic_source, "sample_material", "gltf_texture_4");
 
 		let roughness_source = assert_accessor_channel(assignment_right(main_statement(&program, 2)), "y");
-		assert_sample_call(roughness_source, "sample", "gltf_texture_4");
+		assert_sample_call(roughness_source, "sample_material", "gltf_texture_4");
 
 		assert_sample_call(
 			assignment_right(main_statement(&program, 3)),
@@ -572,14 +836,14 @@ mod tests {
 		);
 
 		let occlusion_source = assert_accessor_channel(assignment_right(main_statement(&program, 4)), "x");
-		assert_sample_call(occlusion_source, "sample", "gltf_texture_6");
+		assert_sample_call(occlusion_source, "sample_material", "gltf_texture_6");
 
 		let emission = assignment_right(main_statement(&program, 5));
 		let parameters = assert_call(emission, "vec3f");
 		assert_eq!(parameters.len(), 3);
 		for (parameter, channel) in parameters.iter().zip(["x", "y", "z"]) {
 			let source = assert_accessor_channel(parameter, channel);
-			assert_sample_call(source, "sample", "gltf_texture_7");
+			assert_sample_call(source, "sample_material", "gltf_texture_7");
 		}
 	}
 

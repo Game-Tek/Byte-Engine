@@ -1,6 +1,6 @@
 //! The `vm` module executes lexed BESL programs against CPU-side resources for testing and host-side evaluation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::lexer::{BindingTypes, Expressions, NodeReference, Nodes, Operators};
 
@@ -26,6 +26,8 @@ impl DescriptorSlot {
 }
 
 const PUSH_CONSTANT_SLOT: DescriptorSlot = DescriptorSlot::new(u32::MAX, u32::MAX);
+const DYNAMIC_RESOURCE_SET: u32 = u32::MAX - 4;
+const BUILTIN_POSITION_INTERFACE_SET: u32 = u32::MAX - 3;
 const INPUT_INTERFACE_SET: u32 = u32::MAX - 2;
 const OUTPUT_INTERFACE_SET: u32 = u32::MAX - 1;
 
@@ -37,14 +39,29 @@ pub const fn output_slot(location: u8) -> DescriptorSlot {
 	DescriptorSlot::new(OUTPUT_INTERFACE_SET, location as u32)
 }
 
-/// The `ValueType` enum stores the scalar BESL value kinds that the first VM pass can execute.
+/// Returns the interface slot reserved for the vertex position builtin.
+pub const fn builtin_position_slot() -> DescriptorSlot {
+	DescriptorSlot::new(BUILTIN_POSITION_INTERFACE_SET, 0)
+}
+
+fn dynamic_resource_slot(register: usize) -> DescriptorSlot {
+	DescriptorSlot::new(
+		DYNAMIC_RESOURCE_SET,
+		u32::try_from(register).expect("VM register indices fit in a descriptor slot"),
+	)
+}
+
+/// The `ValueType` enum describes portable BESL values and resource handles used by VM layouts and registers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ValueType {
+	Bool,
 	U8,
 	U16,
 	U32,
 	I32,
 	F32,
+	Vec2U16,
+	Vec2I,
 	Vec3U,
 	Vec2U,
 	Vec4U,
@@ -53,30 +70,46 @@ pub enum ValueType {
 	Vec4F,
 	Mat4F,
 	Mat4x3F,
+	Texture2D,
+	Texture3D,
+	ArrayTexture2D,
+	Struct {
+		name: String,
+		fields: Vec<BufferMemberLayout>,
+		size: usize,
+	},
 }
 
 impl ValueType {
 	pub const fn size(&self) -> usize {
 		match self {
+			ValueType::Bool => 1,
 			ValueType::U8 => 1,
 			ValueType::U16 => 2,
 			ValueType::U32 | ValueType::I32 | ValueType::F32 => 4,
+			ValueType::Vec2U16 => 4,
+			ValueType::Vec2I => 8,
 			ValueType::Vec2U | ValueType::Vec2F => 8,
 			ValueType::Vec3U => 12,
 			ValueType::Vec4U | ValueType::Vec4F => 16,
 			ValueType::Vec3F => 12,
 			ValueType::Mat4F => 64,
 			ValueType::Mat4x3F => 48,
+			ValueType::Texture2D | ValueType::Texture3D | ValueType::ArrayTexture2D => 0,
+			ValueType::Struct { size, .. } => *size,
 		}
 	}
 
-	fn name(&self) -> &'static str {
+	fn name(&self) -> &str {
 		match self {
+			ValueType::Bool => "bool",
 			ValueType::U8 => "u8",
 			ValueType::U16 => "u16",
 			ValueType::U32 => "u32",
 			ValueType::I32 => "i32",
 			ValueType::F32 => "f32",
+			ValueType::Vec2U16 => "vec2u16",
+			ValueType::Vec2I => "vec2i",
 			ValueType::Vec3U => "vec3u",
 			ValueType::Vec2U => "vec2u",
 			ValueType::Vec4U => "vec4u",
@@ -85,6 +118,17 @@ impl ValueType {
 			ValueType::Vec4F => "vec4f",
 			ValueType::Mat4F => "mat4f",
 			ValueType::Mat4x3F => "mat4x3f",
+			ValueType::Texture2D => "Texture2D",
+			ValueType::Texture3D => "Texture3D",
+			ValueType::ArrayTexture2D => "ArrayTexture2D",
+			ValueType::Struct { name, .. } => name,
+		}
+	}
+
+	fn field(&self, name: &str) -> Option<&BufferMemberLayout> {
+		match self {
+			ValueType::Struct { fields, .. } => fields.iter().find(|field| field.name() == name),
+			_ => None,
 		}
 	}
 }
@@ -113,6 +157,16 @@ impl BufferMemberLayout {
 
 	pub const fn count(&self) -> usize {
 		self.count
+	}
+
+	fn element_offset(&self, index: usize) -> Result<usize, VmError> {
+		if index >= self.count {
+			return Err(VmError::BufferArrayIndexOutOfBounds {
+				index,
+				count: self.count,
+			});
+		}
+		Ok(self.offset + self.value_type.size() * index)
 	}
 }
 
@@ -181,6 +235,31 @@ impl Buffer {
 		self.read_value(member.offset, &member.value_type)
 	}
 
+	/// Reads one array element from a VM buffer member.
+	pub fn read_indexed(&self, member_name: &str, index: usize) -> Result<Value, VmError> {
+		let member = self.member_layout(member_name)?;
+		let offset = member.element_offset(index)?;
+		self.read_value(offset, member.value_type())
+	}
+
+	/// Reads one field from a struct-valued VM buffer member.
+	pub fn read_field(&self, member_name: &str, field_name: &str) -> Result<Value, VmError> {
+		self.read_indexed_field(member_name, 0, field_name)
+	}
+
+	/// Reads one field from a struct array element in a VM buffer member.
+	pub fn read_indexed_field(&self, member_name: &str, index: usize, field_name: &str) -> Result<Value, VmError> {
+		let member = self.member_layout(member_name)?;
+		let field = member
+			.value_type()
+			.field(field_name)
+			.ok_or_else(|| VmError::UnknownBufferMember {
+				member: format!("{}.{}", member_name, field_name),
+			})?;
+		let offset = member.element_offset(index)? + field.offset();
+		self.read_value(offset, field.value_type())
+	}
+
 	/// Writes a VM value into the buffer layout by member name.
 	pub fn write(&mut self, member_name: &str, value: Value) -> Result<(), VmError> {
 		let (offset, value_type) = {
@@ -193,6 +272,41 @@ impl Buffer {
 			(member.offset, member.value_type.clone())
 		};
 
+		self.write_value(offset, &value_type, &value)
+	}
+
+	/// Writes one array element in a VM buffer member.
+	pub fn write_indexed(&mut self, member_name: &str, index: usize, value: Value) -> Result<(), VmError> {
+		let (offset, value_type) = {
+			let member = self.member_layout(member_name)?;
+			(member.element_offset(index)?, member.value_type().clone())
+		};
+		self.write_value(offset, &value_type, &value)
+	}
+
+	/// Writes one field in a struct-valued VM buffer member.
+	pub fn write_field(&mut self, member_name: &str, field_name: &str, value: Value) -> Result<(), VmError> {
+		self.write_indexed_field(member_name, 0, field_name, value)
+	}
+
+	/// Writes one field in a struct array element in a VM buffer member.
+	pub fn write_indexed_field(
+		&mut self,
+		member_name: &str,
+		index: usize,
+		field_name: &str,
+		value: Value,
+	) -> Result<(), VmError> {
+		let (offset, value_type) = {
+			let member = self.member_layout(member_name)?;
+			let field = member
+				.value_type()
+				.field(field_name)
+				.ok_or_else(|| VmError::UnknownBufferMember {
+					member: format!("{}.{}", member_name, field_name),
+				})?;
+			(member.element_offset(index)? + field.offset(), field.value_type().clone())
+		};
 		self.write_value(offset, &value_type, &value)
 	}
 
@@ -211,11 +325,14 @@ impl Buffer {
 		let bytes = self.read_bytes(offset, value_type.size())?;
 
 		let value = match value_type {
+			ValueType::Bool => ScalarValue::Bool(bytes[0] != 0),
 			ValueType::U8 => ScalarValue::U8(bytes[0]),
 			ValueType::U16 => ScalarValue::U16(u16::from_ne_bytes(bytes.try_into().expect("Invalid u16 byte count"))),
 			ValueType::U32 => ScalarValue::U32(u32::from_ne_bytes(bytes.try_into().expect("Invalid u32 byte count"))),
 			ValueType::I32 => ScalarValue::I32(i32::from_ne_bytes(bytes.try_into().expect("Invalid i32 byte count"))),
 			ValueType::F32 => ScalarValue::F32(f32::from_ne_bytes(bytes.try_into().expect("Invalid f32 byte count"))),
+			ValueType::Vec2U16 => ScalarValue::Vec2U16(read_u16_array::<2>(bytes)?),
+			ValueType::Vec2I => ScalarValue::Vec2I(read_i32_array::<2>(bytes)?),
 			ValueType::Vec2U => ScalarValue::Vec2U(read_u32_array::<2>(bytes)?),
 			ValueType::Vec3U => ScalarValue::Vec3U(read_u32_array::<3>(bytes)?),
 			ValueType::Vec4U => ScalarValue::Vec4U(read_u32_array::<4>(bytes)?),
@@ -224,36 +341,67 @@ impl Buffer {
 			ValueType::Vec4F => ScalarValue::Vec4F(read_f32_array::<4>(bytes)?),
 			ValueType::Mat4F => ScalarValue::Mat4F(read_f32_array::<16>(bytes)?),
 			ValueType::Mat4x3F => ScalarValue::Mat4x3F(read_f32_array::<12>(bytes)?),
+			ValueType::Texture2D | ValueType::Texture3D | ValueType::ArrayTexture2D => {
+				return Err(VmError::UnsupportedBufferLayout {
+					message: "Resource handles cannot be stored in CPU buffer memory".to_string(),
+				});
+			}
+			ValueType::Struct { fields, .. } => {
+				let mut values = Vec::with_capacity(fields.len());
+				for field in fields {
+					values.push(self.read_value(offset + field.offset(), field.value_type())?);
+				}
+				ScalarValue::Struct {
+					value_type: value_type.clone(),
+					fields: values,
+				}
+			}
 		};
 
 		Ok(value)
 	}
 
 	fn write_value(&mut self, offset: usize, value_type: &ValueType, value: &ScalarValue) -> Result<(), VmError> {
-		if value_type != &value.value_type() {
+		if !value.matches_type(value_type) {
 			return Err(VmError::TypeMismatch {
 				expected: value_type.name().to_string(),
 				found: value.value_type().name().to_string(),
 			});
 		}
 
-		let bytes = match value {
-			ScalarValue::U8(value) => value.to_ne_bytes().to_vec(),
-			ScalarValue::U16(value) => value.to_ne_bytes().to_vec(),
-			ScalarValue::U32(value) => value.to_ne_bytes().to_vec(),
-			ScalarValue::I32(value) => value.to_ne_bytes().to_vec(),
-			ScalarValue::F32(value) => value.to_ne_bytes().to_vec(),
-			ScalarValue::Vec2U(value) => write_u32_slice(value),
-			ScalarValue::Vec3U(value) => write_u32_slice(value),
-			ScalarValue::Vec4U(value) => write_u32_slice(value),
-			ScalarValue::Vec2F(value) => write_f32_slice(value),
-			ScalarValue::Vec3F(value) => write_f32_slice(value),
-			ScalarValue::Vec4F(value) => write_f32_slice(value),
-			ScalarValue::Mat4F(value) => write_f32_slice(value),
-			ScalarValue::Mat4x3F(value) => write_f32_slice(value),
-		};
-
-		self.write_bytes(offset, &bytes)
+		match value {
+			ScalarValue::Bool(value) => self.write_bytes(offset, &[u8::from(*value)]),
+			ScalarValue::U8(value) => self.write_bytes(offset, &value.to_ne_bytes()),
+			ScalarValue::U16(value) => self.write_bytes(offset, &value.to_ne_bytes()),
+			ScalarValue::U32(value) => self.write_bytes(offset, &value.to_ne_bytes()),
+			ScalarValue::I32(value) => self.write_bytes(offset, &value.to_ne_bytes()),
+			ScalarValue::F32(value) => self.write_bytes(offset, &value.to_ne_bytes()),
+			ScalarValue::Vec2U16(value) => write_u16_slice(self, offset, value),
+			ScalarValue::Vec2I(value) => write_i32_slice(self, offset, value),
+			ScalarValue::Vec2U(value) => write_u32_slice(self, offset, value),
+			ScalarValue::Vec3U(value) => write_u32_slice(self, offset, value),
+			ScalarValue::Vec4U(value) => write_u32_slice(self, offset, value),
+			ScalarValue::Vec2F(value) => write_f32_slice(self, offset, value),
+			ScalarValue::Vec3F(value) => write_f32_slice(self, offset, value),
+			ScalarValue::Vec4F(value) => write_f32_slice(self, offset, value),
+			ScalarValue::Mat4F(value) => write_f32_slice(self, offset, value),
+			ScalarValue::Mat4x3F(value) => write_f32_slice(self, offset, value),
+			ScalarValue::Resource { .. } => Err(VmError::UnsupportedBufferLayout {
+				message: "Resource handles cannot be written into CPU buffer memory".to_string(),
+			}),
+			ScalarValue::Struct { fields, .. } => {
+				let ValueType::Struct {
+					fields: field_layouts, ..
+				} = value_type
+				else {
+					unreachable!("Struct values are validated before writing")
+				};
+				for (field, field_layout) in fields.iter().zip(field_layouts) {
+					self.write_value(offset + field_layout.offset(), field_layout.value_type(), field)?;
+				}
+				Ok(())
+			}
+		}
 	}
 
 	fn read_bytes(&self, offset: usize, size: usize) -> Result<&[u8], VmError> {
@@ -287,76 +435,149 @@ impl Buffer {
 	}
 }
 
-/// The `Texture` struct stores a CPU texture that the VM can fetch or bilinearly sample.
+/// The `Texture` struct provides deterministic CPU texels for shader sampling, image access, and atomic assertions.
 #[derive(Debug)]
 pub struct Texture {
 	width: u32,
 	height: u32,
+	depth: u32,
 	texels: Vec<[f32; 4]>,
+	u32_texels: Vec<u32>,
 }
 
 impl Texture {
 	pub fn new(width: u32, height: u32) -> Result<Self, VmError> {
-		if width == 0 || height == 0 {
-			return Err(VmError::InvalidTextureDimensions { width, height });
+		Self::new_3d(width, height, 1)
+	}
+
+	/// Creates a CPU texture with three-dimensional addressing for VM texture tests.
+	pub fn new_3d(width: u32, height: u32, depth: u32) -> Result<Self, VmError> {
+		if width == 0 || height == 0 || depth == 0 {
+			return Err(VmError::InvalidTextureDimensions { width, height, depth });
 		}
 
-		let texel_count = (width as usize) * (height as usize);
+		let texel_count = (width as usize) * (height as usize) * (depth as usize);
 		Ok(Self {
 			width,
 			height,
+			depth,
 			texels: vec![[0.0, 0.0, 0.0, 0.0]; texel_count],
+			u32_texels: vec![0; texel_count],
 		})
 	}
 
 	pub fn write(&mut self, coord: [u32; 2], value: [f32; 4]) -> Result<(), VmError> {
+		let index = self.texel_index([coord[0], coord[1], 0])?;
+		self.texels[index] = value;
+		Ok(())
+	}
+
+	/// Writes one texel in a three-dimensional CPU texture.
+	pub fn write_3d(&mut self, coord: [u32; 3], value: [f32; 4]) -> Result<(), VmError> {
 		let index = self.texel_index(coord)?;
 		self.texels[index] = value;
 		Ok(())
 	}
 
+	/// Writes one unsigned integer texel for integer image and atomic tests.
+	pub fn write_u32(&mut self, coord: [u32; 2], value: u32) -> Result<(), VmError> {
+		let index = self.texel_index([coord[0], coord[1], 0])?;
+		self.u32_texels[index] = value;
+		self.texels[index] = [value as f32, 0.0, 0.0, 1.0];
+		Ok(())
+	}
+
 	/// Fetches one texel without interpolation.
 	pub fn fetch(&self, coord: [u32; 2]) -> Result<Value, VmError> {
-		Ok(Value::Vec4F(self.fetch_texel(coord)?))
+		Ok(Value::Vec4F(self.fetch_texel([coord[0], coord[1], 0])?))
+	}
+
+	/// Fetches one unsigned integer texel without interpolation.
+	pub fn fetch_u32(&self, coord: [u32; 2]) -> Result<Value, VmError> {
+		let index = self.texel_index([coord[0], coord[1], 0])?;
+		Ok(Value::U32(self.u32_texels[index]))
 	}
 
 	/// Samples one texel using bilinear interpolation in normalized UV space.
 	pub fn sample(&self, uv: [f32; 2]) -> Result<Value, VmError> {
-		let max_x = self.width.saturating_sub(1) as f32;
-		let max_y = self.height.saturating_sub(1) as f32;
-		let x = uv[0].clamp(0.0, 1.0) * max_x;
-		let y = uv[1].clamp(0.0, 1.0) * max_y;
+		let (x0, x1, tx) = normalized_linear_axis(uv[0], self.width);
+		let (y0, y1, ty) = normalized_linear_axis(uv[1], self.height);
 
-		let x0 = x.floor() as u32;
-		let y0 = y.floor() as u32;
-		let x1 = x.ceil() as u32;
-		let y1 = y.ceil() as u32;
-		let tx = x - x0 as f32;
-		let ty = y - y0 as f32;
-
-		let top = lerp_rgba(self.fetch_texel([x0, y0])?, self.fetch_texel([x1, y0])?, tx);
-		let bottom = lerp_rgba(self.fetch_texel([x0, y1])?, self.fetch_texel([x1, y1])?, tx);
+		let top = lerp_rgba(self.fetch_texel([x0, y0, 0])?, self.fetch_texel([x1, y0, 0])?, tx);
+		let bottom = lerp_rgba(self.fetch_texel([x0, y1, 0])?, self.fetch_texel([x1, y1, 0])?, tx);
 
 		Ok(Value::Vec4F(lerp_rgba(top, bottom, ty)))
 	}
 
-	fn fetch_texel(&self, coord: [u32; 2]) -> Result<[f32; 4], VmError> {
+	/// Samples a three-dimensional texture using trilinear interpolation.
+	pub fn sample_3d(&self, uvw: [f32; 3]) -> Result<Value, VmError> {
+		let x = normalized_linear_axis(uvw[0], self.width);
+		let y = normalized_linear_axis(uvw[1], self.height);
+		let z = normalized_linear_axis(uvw[2], self.depth);
+		let low = [x.0, y.0, z.0];
+		let high = [x.1, y.1, z.1];
+		let factor = [x.2, y.2, z.2];
+		let low_plane = lerp_rgba(
+			lerp_rgba(
+				self.fetch_texel([low[0], low[1], low[2]])?,
+				self.fetch_texel([high[0], low[1], low[2]])?,
+				factor[0],
+			),
+			lerp_rgba(
+				self.fetch_texel([low[0], high[1], low[2]])?,
+				self.fetch_texel([high[0], high[1], low[2]])?,
+				factor[0],
+			),
+			factor[1],
+		);
+		let high_plane = lerp_rgba(
+			lerp_rgba(
+				self.fetch_texel([low[0], low[1], high[2]])?,
+				self.fetch_texel([high[0], low[1], high[2]])?,
+				factor[0],
+			),
+			lerp_rgba(
+				self.fetch_texel([low[0], high[1], high[2]])?,
+				self.fetch_texel([high[0], high[1], high[2]])?,
+				factor[0],
+			),
+			factor[1],
+		);
+		Ok(Value::Vec4F(lerp_rgba(low_plane, high_plane, factor[2])))
+	}
+
+	fn fetch_texel(&self, coord: [u32; 3]) -> Result<[f32; 4], VmError> {
 		let index = self.texel_index(coord)?;
 		Ok(self.texels[index])
 	}
 
-	fn texel_index(&self, coord: [u32; 2]) -> Result<usize, VmError> {
-		let [x, y] = coord;
-		if x >= self.width || y >= self.height {
+	fn texel_index(&self, coord: [u32; 3]) -> Result<usize, VmError> {
+		let [x, y, z] = coord;
+		if x >= self.width || y >= self.height || z >= self.depth {
 			return Err(VmError::TextureAccessOutOfBounds {
 				x,
 				y,
+				z,
 				width: self.width,
 				height: self.height,
+				depth: self.depth,
 			});
 		}
 
-		Ok((y as usize) * (self.width as usize) + (x as usize))
+		Ok(((z as usize) * self.height as usize + y as usize) * self.width as usize + x as usize)
+	}
+
+	fn contains_2d(&self, coord: [u32; 2]) -> bool {
+		coord[0] < self.width && coord[1] < self.height
+	}
+
+	fn atomic_or(&mut self, coord: [u32; 2], value: u32) -> Result<u32, VmError> {
+		let index = self.texel_index([coord[0], coord[1], 0])?;
+		let previous = self.u32_texels[index];
+		let updated = previous | value;
+		self.u32_texels[index] = updated;
+		self.texels[index] = [updated as f32, 0.0, 0.0, 1.0];
+		Ok(previous)
 	}
 }
 
@@ -366,10 +587,54 @@ enum DescriptorBinding<'a> {
 	Image(&'a mut Texture),
 }
 
+/// The `MeshOutputs` struct captures mesh-stage topology and positions for VM assertions.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MeshOutputs {
+	vertex_count: u32,
+	primitive_count: u32,
+	vertex_positions: Vec<[f32; 4]>,
+	triangles: Vec<[u32; 3]>,
+}
+
+impl MeshOutputs {
+	/// Creates an empty capture that can be bound before a mesh shader invocation.
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	/// Returns the vertex count declared by the most recent mesh invocation.
+	pub const fn vertex_count(&self) -> u32 {
+		self.vertex_count
+	}
+
+	/// Returns the primitive count declared by the most recent mesh invocation.
+	pub const fn primitive_count(&self) -> u32 {
+		self.primitive_count
+	}
+
+	/// Returns one captured mesh vertex position when the shader wrote that declared slot.
+	pub fn vertex_position(&self, index: usize) -> Option<[f32; 4]> {
+		self.vertex_positions.get(index).copied()
+	}
+
+	/// Returns one captured mesh triangle when the shader wrote that declared slot.
+	pub fn triangle(&self, index: usize) -> Option<[u32; 3]> {
+		self.triangles.get(index).copied()
+	}
+
+	fn set_counts(&mut self, vertex_count: u32, primitive_count: u32) {
+		self.vertex_count = vertex_count;
+		self.primitive_count = primitive_count;
+		self.vertex_positions.resize(vertex_count as usize, [0.0; 4]);
+		self.triangles.resize(primitive_count as usize, [0; 3]);
+	}
+}
+
 /// The `DescriptorBindings` struct stores the mutable resources that a compiled BESL VM program can access.
 pub struct DescriptorBindings<'a> {
 	bindings: HashMap<DescriptorSlot, DescriptorBinding<'a>>,
 	push_constant: Option<&'a mut Buffer>,
+	mesh_outputs: Option<&'a mut MeshOutputs>,
 }
 
 impl<'a> Default for DescriptorBindings<'a> {
@@ -383,6 +648,7 @@ impl<'a> DescriptorBindings<'a> {
 		Self {
 			bindings: HashMap::new(),
 			push_constant: None,
+			mesh_outputs: None,
 		}
 	}
 
@@ -400,6 +666,11 @@ impl<'a> DescriptorBindings<'a> {
 
 	pub fn bind_push_constant(&mut self, push_constant: &'a mut Buffer) {
 		self.push_constant = Some(push_constant);
+	}
+
+	/// Binds the capture used by mesh output-count, position, and triangle intrinsics.
+	pub fn bind_mesh_outputs(&mut self, mesh_outputs: &'a mut MeshOutputs) {
+		self.mesh_outputs = Some(mesh_outputs);
 	}
 
 	fn buffer_mut(&mut self, slot: DescriptorSlot) -> Result<&mut Buffer, VmError> {
@@ -460,8 +731,153 @@ impl<'a> DescriptorBindings<'a> {
 		self.push_constant.as_deref_mut().ok_or(VmError::MissingPushConstant)
 	}
 
-	fn thread_idx(&self) -> u32 {
-		0
+	fn mesh_outputs_mut(&mut self) -> Result<&mut MeshOutputs, VmError> {
+		self.mesh_outputs.as_deref_mut().ok_or(VmError::MissingMeshOutputs)
+	}
+}
+
+/// The `SpecializationValues` struct supplies host-selected values for BESL specialization declarations.
+#[derive(Clone, Debug, Default)]
+pub struct SpecializationValues {
+	values: HashMap<String, Value>,
+}
+
+impl SpecializationValues {
+	/// Creates an empty specialization map for programs that use only defaults or no specializations.
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	/// Supplies one named specialization value before compiling an executable program.
+	pub fn set(&mut self, name: impl Into<String>, value: Value) -> Option<Value> {
+		self.values.insert(name.into(), value)
+	}
+
+	/// Returns a previously supplied specialization value by declaration name.
+	pub fn get(&self, name: &str) -> Option<&Value> {
+		self.values.get(name)
+	}
+}
+
+/// The `ExecutionConfig` struct bounds a VM invocation and supplies its shader-visible thread coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionConfig {
+	instruction_limit: usize,
+	call_depth_limit: usize,
+	thread_id: [u32; 2],
+	thread_idx: u32,
+	threadgroup_position: u32,
+}
+
+impl Default for ExecutionConfig {
+	fn default() -> Self {
+		Self {
+			instruction_limit: 1_000_000,
+			call_depth_limit: 64,
+			thread_id: [0, 0],
+			thread_idx: 0,
+			threadgroup_position: 0,
+		}
+	}
+}
+
+impl ExecutionConfig {
+	/// Creates an invocation config with an explicit instruction budget and default coordinates.
+	pub fn new(instruction_limit: usize) -> Self {
+		Self {
+			instruction_limit,
+			..Self::default()
+		}
+	}
+
+	/// Returns the maximum number of instructions shared by the invocation's call tree.
+	pub const fn instruction_limit(&self) -> usize {
+		self.instruction_limit
+	}
+
+	/// Returns the maximum nested BESL function-call depth.
+	pub const fn call_depth_limit(&self) -> usize {
+		self.call_depth_limit
+	}
+
+	/// Returns the two-dimensional compute invocation coordinate.
+	pub const fn thread_id(&self) -> [u32; 2] {
+		self.thread_id
+	}
+
+	/// Returns the mesh or workgroup-local invocation index.
+	pub const fn thread_idx(&self) -> u32 {
+		self.thread_idx
+	}
+
+	/// Returns the mesh workgroup position visible to the shader.
+	pub const fn threadgroup_position(&self) -> u32 {
+		self.threadgroup_position
+	}
+
+	/// Selects an explicit nested function-call limit for this invocation.
+	pub fn with_call_depth_limit(mut self, limit: usize) -> Self {
+		self.call_depth_limit = limit;
+		self
+	}
+
+	/// Selects the two-dimensional compute invocation coordinate.
+	pub fn with_thread_id(mut self, thread_id: [u32; 2]) -> Self {
+		self.thread_id = thread_id;
+		self
+	}
+
+	/// Selects the mesh or workgroup-local invocation index.
+	pub fn with_thread_idx(mut self, thread_idx: u32) -> Self {
+		self.thread_idx = thread_idx;
+		self
+	}
+
+	/// Selects the mesh workgroup position visible to the shader.
+	pub fn with_threadgroup_position(mut self, position: u32) -> Self {
+		self.threadgroup_position = position;
+		self
+	}
+}
+
+/// The `ExecutionState` struct shares invocation limits and coordinates across nested VM calls.
+struct ExecutionState<'a> {
+	config: &'a ExecutionConfig,
+	remaining_instructions: usize,
+	call_depth: usize,
+}
+
+impl<'a> ExecutionState<'a> {
+	fn new(config: &'a ExecutionConfig) -> Self {
+		Self {
+			config,
+			remaining_instructions: config.instruction_limit(),
+			call_depth: 0,
+		}
+	}
+
+	fn consume_instruction(&mut self) -> Result<(), VmError> {
+		if self.remaining_instructions == 0 {
+			return Err(VmError::InstructionLimitExceeded {
+				limit: self.config.instruction_limit(),
+			});
+		}
+		self.remaining_instructions -= 1;
+		Ok(())
+	}
+
+	fn enter_call(&mut self) -> Result<(), VmError> {
+		if self.call_depth >= self.config.call_depth_limit() {
+			return Err(VmError::CallDepthLimitExceeded {
+				limit: self.config.call_depth_limit(),
+			});
+		}
+		self.call_depth += 1;
+		Ok(())
+	}
+
+	fn leave_call(&mut self) {
+		self.call_depth -= 1;
 	}
 }
 
@@ -472,6 +888,7 @@ pub struct ExecutableProgram {
 	main_function: usize,
 }
 
+/// The `ExecutableFunction` struct isolates one compiled BESL call target for bounded VM execution.
 struct ExecutableFunction {
 	instructions: Vec<Instruction>,
 	local_types: Vec<ValueType>,
@@ -484,8 +901,15 @@ impl ExecutableProgram {
 	/// Compiles a lexed BESL program into a runnable VM program.
 	#[allow(clippy::mutable_key_type)]
 	pub fn compile(program: NodeReference) -> Result<Self, VmError> {
-		reject_raw_code_nodes(&program)?;
+		Self::compile_with_specializations(program, &SpecializationValues::new())
+	}
 
+	/// Compiles a lexed BESL program using host-provided specialization values.
+	#[allow(clippy::mutable_key_type)]
+	pub fn compile_with_specializations(
+		program: NodeReference,
+		specializations: &SpecializationValues,
+	) -> Result<Self, VmError> {
 		let main = resolve_main_function(&program)?;
 		let main_signature = extract_function_signature(&main)?;
 		if !main_signature.params.is_empty() {
@@ -502,7 +926,10 @@ impl ExecutableProgram {
 			});
 		}
 
-		let function_nodes = collect_functions(&program, &main);
+		let function_nodes = collect_functions(&main);
+		for function in &function_nodes {
+			reject_raw_code_nodes(function)?;
+		}
 		// NodeReference hashing is pointer-identity based, so function lookup is stable even though nodes are RefCell-backed.
 		let mut function_ids = HashMap::new();
 		for (index, function) in function_nodes.iter().enumerate() {
@@ -512,7 +939,12 @@ impl ExecutableProgram {
 		let mut descriptor_layouts = HashMap::new();
 		let mut functions = Vec::with_capacity(function_nodes.len());
 		for function in &function_nodes {
-			functions.push(Compiler::compile_function(function, &function_ids, &mut descriptor_layouts)?);
+			functions.push(Compiler::compile_function(
+				function,
+				&function_ids,
+				&mut descriptor_layouts,
+				specializations,
+			)?);
 		}
 
 		Ok(Self {
@@ -551,9 +983,23 @@ impl ExecutableProgram {
 		self.buffer_layout(output_slot(location))
 	}
 
+	pub fn builtin_position_layout(&self) -> Option<&BufferLayout> {
+		self.buffer_layout(builtin_position_slot())
+	}
+
 	/// Executes the compiled `main` function using the currently bound descriptor resources.
 	pub fn run_main(&self, descriptors: &mut DescriptorBindings<'_>) -> Result<(), VmError> {
-		let return_value = self.execute_function(self.main_function, &[], descriptors)?;
+		self.run_main_with_config(descriptors, &ExecutionConfig::default())
+	}
+
+	/// Executes `main` with explicit execution limits and shader invocation coordinates.
+	pub fn run_main_with_config(
+		&self,
+		descriptors: &mut DescriptorBindings<'_>,
+		config: &ExecutionConfig,
+	) -> Result<(), VmError> {
+		let mut state = ExecutionState::new(config);
+		let return_value = self.execute_function(self.main_function, &[], descriptors, &mut state)?;
 		if return_value.is_some() {
 			return Err(VmError::UnsupportedMainSignature {
 				message: "Main functions must not return a value".to_string(),
@@ -567,6 +1013,21 @@ impl ExecutableProgram {
 		function_index: usize,
 		arguments: &[ScalarValue],
 		descriptors: &mut DescriptorBindings<'_>,
+		state: &mut ExecutionState<'_>,
+	) -> Result<Option<ScalarValue>, VmError> {
+		state.enter_call()?;
+		let result = self.execute_function_inner(function_index, arguments, descriptors, state);
+		state.leave_call();
+		result
+	}
+
+	/// Runs one function body while the caller maintains the shared execution limits.
+	fn execute_function_inner(
+		&self,
+		function_index: usize,
+		arguments: &[ScalarValue],
+		descriptors: &mut DescriptorBindings<'_>,
+		state: &mut ExecutionState<'_>,
 	) -> Result<Option<ScalarValue>, VmError> {
 		let function = self
 			.functions
@@ -589,6 +1050,7 @@ impl ExecutableProgram {
 
 		let mut instruction_index = 0usize;
 		while instruction_index < function.instructions.len() {
+			state.consume_instruction()?;
 			let instruction = &function.instructions[instruction_index];
 			match instruction {
 				Instruction::LoadLiteral { register, value } => {
@@ -604,6 +1066,29 @@ impl ExecutableProgram {
 						.map(|component| read_register(&registers, *component))
 						.collect::<Result<Vec<_>, _>>()?;
 					registers[*register] = Some(construct_value(value_type, &values)?);
+				}
+				Instruction::Extract {
+					register,
+					source,
+					index,
+					value_type,
+				} => {
+					let source = read_register(&registers, *source)?;
+					registers[*register] = Some(extract_value(&source, *index, value_type)?);
+				}
+				Instruction::ExtractDynamic {
+					register,
+					source,
+					index,
+					count,
+					value_type,
+				} => {
+					let source = read_register(&registers, *source)?;
+					let index = expect_u32(read_register(&registers, *index)?)? as usize;
+					if index >= *count {
+						return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
+					}
+					registers[*register] = Some(extract_value(&source, index, value_type)?);
 				}
 				Instruction::Arithmetic {
 					register,
@@ -676,6 +1161,16 @@ impl ExecutableProgram {
 					let value = read_register(&registers, *value)?;
 					registers[*register] = Some(apply_scalar_unary(*operator, &value)?);
 				}
+				Instruction::BinaryScalar {
+					register,
+					operator,
+					left,
+					right,
+				} => {
+					let left = read_register(&registers, *left)?;
+					let right = read_register(&registers, *right)?;
+					registers[*register] = Some(apply_scalar_binary(*operator, &left, &right)?);
+				}
 				Instruction::TernaryScalar {
 					register,
 					operator,
@@ -689,7 +1184,60 @@ impl ExecutableProgram {
 					registers[*register] = Some(apply_scalar_ternary(*operator, &first, &second, &third)?);
 				}
 				Instruction::ThreadIdx { register } => {
-					registers[*register] = Some(ScalarValue::U32(descriptors.thread_idx()));
+					registers[*register] = Some(ScalarValue::U32(state.config.thread_idx()));
+				}
+				Instruction::ThreadId { register } => {
+					registers[*register] = Some(ScalarValue::Vec2U(state.config.thread_id()));
+				}
+				Instruction::ThreadgroupPosition { register } => {
+					registers[*register] = Some(ScalarValue::U32(state.config.threadgroup_position()));
+				}
+				Instruction::SetMeshOutputCounts {
+					vertex_count,
+					primitive_count,
+				} => {
+					let vertex_count = expect_u32(read_register(&registers, *vertex_count)?)?;
+					let primitive_count = expect_u32(read_register(&registers, *primitive_count)?)?;
+					descriptors.mesh_outputs_mut()?.set_counts(vertex_count, primitive_count);
+				}
+				Instruction::SetMeshVertexPosition { index, position } => {
+					let index = expect_u32(read_register(&registers, *index)?)? as usize;
+					let position = read_register(&registers, *position)?;
+					let Value::Vec4F(position) = position else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::Vec4F.name().to_string(),
+							found: position.value_type().name().to_string(),
+						});
+					};
+					let outputs = descriptors.mesh_outputs_mut()?;
+					let count = outputs.vertex_positions.len();
+					let destination = outputs
+						.vertex_positions
+						.get_mut(index)
+						.ok_or(VmError::MeshOutputIndexOutOfBounds {
+							kind: "vertex",
+							index,
+							count,
+						})?;
+					*destination = position;
+				}
+				Instruction::SetMeshTriangle { index, triangle } => {
+					let index = expect_u32(read_register(&registers, *index)?)? as usize;
+					let triangle = read_register(&registers, *triangle)?;
+					let Value::Vec3U(triangle) = triangle else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::Vec3U.name().to_string(),
+							found: triangle.value_type().name().to_string(),
+						});
+					};
+					let outputs = descriptors.mesh_outputs_mut()?;
+					let count = outputs.triangles.len();
+					let destination = outputs.triangles.get_mut(index).ok_or(VmError::MeshOutputIndexOutOfBounds {
+						kind: "primitive",
+						index,
+						count,
+					})?;
+					*destination = triangle;
 				}
 				Instruction::LoadLocal { register, local } => {
 					let value = locals
@@ -745,7 +1293,19 @@ impl ExecutableProgram {
 						});
 					};
 
-					registers[*register] = Some(descriptors.texture_mut(*slot)?.fetch(coord)?);
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					registers[*register] = Some(descriptors.texture_mut(slot)?.fetch(coord)?);
+				}
+				Instruction::FetchTextureU32 { register, slot, coord } => {
+					let coord = read_register(&registers, *coord)?;
+					let Value::Vec2U(coord) = coord else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::Vec2U.name().to_string(),
+							found: coord.value_type().name().to_string(),
+						});
+					};
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_u32(coord)?);
 				}
 				Instruction::SampleTexture { register, slot, uv } => {
 					let uv = read_register(&registers, *uv)?;
@@ -756,15 +1316,58 @@ impl ExecutableProgram {
 						});
 					};
 
-					registers[*register] = Some(descriptors.texture_mut(*slot)?.sample(uv)?);
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					registers[*register] = Some(descriptors.texture_mut(slot)?.sample(uv)?);
+				}
+				Instruction::SampleTexture3D { register, slot, uvw } => {
+					let uvw = read_register(&registers, *uvw)?;
+					let Value::Vec3F(uvw) = uvw else {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::Vec3F.name().to_string(),
+							found: uvw.value_type().name().to_string(),
+						});
+					};
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					registers[*register] = Some(descriptors.texture_mut(slot)?.sample_3d(uvw)?);
 				}
 				Instruction::TextureSize { register, slot } => {
-					let texture = descriptors.texture_mut(*slot)?;
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					let texture = descriptors.texture_mut(slot)?;
 					registers[*register] = Some(Value::Vec2U([texture.width, texture.height]));
 				}
 				Instruction::ImageSize { register, slot } => {
-					let image = descriptors.image_mut(*slot)?;
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					let image = descriptors.image_mut(slot)?;
 					registers[*register] = Some(Value::Vec2U([image.width, image.height]));
+				}
+				Instruction::LoadImage { register, slot, coord } => {
+					let coord = expect_vec2u(read_register(&registers, *coord)?)?;
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					registers[*register] = Some(descriptors.image_mut(slot)?.fetch(coord)?);
+				}
+				Instruction::LoadImageU32 { register, slot, coord } => {
+					let coord = expect_vec2u(read_register(&registers, *coord)?)?;
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					registers[*register] = Some(descriptors.image_mut(slot)?.fetch_u32(coord)?);
+				}
+				Instruction::GuardImageBounds { slot, coord } => {
+					let coord = expect_vec2u(read_register(&registers, *coord)?)?;
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					if !descriptors.image_mut(slot)?.contains_2d(coord) {
+						return Ok(None);
+					}
+				}
+				Instruction::ImageAtomicOr {
+					register,
+					slot,
+					coord,
+					value,
+				} => {
+					let coord = expect_vec2u(read_register(&registers, *coord)?)?;
+					let value = expect_u32(read_register(&registers, *value)?)?;
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					let previous = descriptors.image_mut(slot)?.atomic_or(coord, value)?;
+					registers[*register] = Some(Value::U32(previous));
 				}
 				Instruction::WriteImage { slot, coord, value } => {
 					let coord = read_register(&registers, *coord)?;
@@ -783,7 +1386,8 @@ impl ExecutableProgram {
 						});
 					};
 
-					descriptors.image_mut(*slot)?.write(coord, value)?;
+					let slot = resolve_resource_slot(*slot, &registers)?;
+					descriptors.image_mut(slot)?.write(coord, value)?;
 				}
 				Instruction::StoreBuffer {
 					slot,
@@ -809,6 +1413,26 @@ impl ExecutableProgram {
 						.buffer_mut(*slot)?
 						.write_value(*offset + *stride * index, value_type, &value)?;
 				}
+				Instruction::AtomicAddBuffer {
+					register,
+					slot,
+					offset,
+					stride,
+					count,
+					index,
+					value,
+				} => {
+					let index = match index {
+						Some(index) => read_buffer_array_index(&registers, *index, *count)?,
+						None => 0,
+					};
+					let value = expect_u32(read_register(&registers, *value)?)?;
+					let buffer = descriptors.buffer_mut(*slot)?;
+					let address = *offset + *stride * index;
+					let previous = expect_u32(buffer.read_value(address, &ValueType::U32)?)?;
+					buffer.write_value(address, &ValueType::U32, &Value::U32(previous.wrapping_add(value)))?;
+					registers[*register] = Some(Value::U32(previous));
+				}
 				Instruction::Call {
 					register,
 					function,
@@ -818,7 +1442,7 @@ impl ExecutableProgram {
 						.iter()
 						.map(|argument| read_register(&registers, *argument))
 						.collect::<Result<Vec<_>, _>>()?;
-					let value = self.execute_function(*function, &arguments, descriptors)?;
+					let value = self.execute_function(*function, &arguments, descriptors, state)?;
 					registers[*register] = value;
 				}
 				Instruction::Return { register } => {
@@ -847,11 +1471,14 @@ impl ExecutableProgram {
 /// The `Value` enum stores the VM values that can move between registers, locals, and buffers.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
+	Bool(bool),
 	U8(u8),
 	U16(u16),
 	U32(u32),
 	I32(i32),
 	F32(f32),
+	Vec2U16([u16; 2]),
+	Vec2I([i32; 2]),
 	Vec2U([u32; 2]),
 	Vec3U([u32; 3]),
 	Vec4U([u32; 4]),
@@ -860,16 +1487,21 @@ pub enum Value {
 	Vec4F([f32; 4]),
 	Mat4F([f32; 16]),
 	Mat4x3F([f32; 12]),
+	Resource { slot: DescriptorSlot, value_type: ValueType },
+	Struct { value_type: ValueType, fields: Vec<Value> },
 }
 
 impl Value {
 	fn value_type(&self) -> ValueType {
 		match self {
+			Value::Bool(_) => ValueType::Bool,
 			Value::U8(_) => ValueType::U8,
 			Value::U16(_) => ValueType::U16,
 			Value::U32(_) => ValueType::U32,
 			Value::I32(_) => ValueType::I32,
 			Value::F32(_) => ValueType::F32,
+			Value::Vec2U16(_) => ValueType::Vec2U16,
+			Value::Vec2I(_) => ValueType::Vec2I,
 			Value::Vec2U(_) => ValueType::Vec2U,
 			Value::Vec3U(_) => ValueType::Vec3U,
 			Value::Vec4U(_) => ValueType::Vec4U,
@@ -878,6 +1510,27 @@ impl Value {
 			Value::Vec4F(_) => ValueType::Vec4F,
 			Value::Mat4F(_) => ValueType::Mat4F,
 			Value::Mat4x3F(_) => ValueType::Mat4x3F,
+			Value::Resource { value_type, .. } => value_type.clone(),
+			Value::Struct { value_type, .. } => value_type.clone(),
+		}
+	}
+
+	fn matches_type(&self, expected: &ValueType) -> bool {
+		match (self, expected) {
+			(
+				Value::Struct { value_type, fields },
+				ValueType::Struct {
+					fields: expected_fields, ..
+				},
+			) => {
+				value_type == expected
+					&& fields.len() == expected_fields.len()
+					&& fields
+						.iter()
+						.zip(expected_fields)
+						.all(|(field, expected_field)| field.matches_type(expected_field.value_type()))
+			}
+			_ => self.value_type() == *expected,
 		}
 	}
 }
@@ -894,6 +1547,19 @@ enum Instruction {
 		register: usize,
 		value_type: ValueType,
 		components: Vec<usize>,
+	},
+	Extract {
+		register: usize,
+		source: usize,
+		index: usize,
+		value_type: ValueType,
+	},
+	ExtractDynamic {
+		register: usize,
+		source: usize,
+		index: usize,
+		count: usize,
+		value_type: ValueType,
 	},
 	Arithmetic {
 		register: usize,
@@ -947,6 +1613,12 @@ enum Instruction {
 		operator: ScalarUnaryOperator,
 		value: usize,
 	},
+	BinaryScalar {
+		register: usize,
+		operator: ScalarBinaryOperator,
+		left: usize,
+		right: usize,
+	},
 	TernaryScalar {
 		register: usize,
 		operator: ScalarTernaryOperator,
@@ -956,6 +1628,24 @@ enum Instruction {
 	},
 	ThreadIdx {
 		register: usize,
+	},
+	ThreadId {
+		register: usize,
+	},
+	ThreadgroupPosition {
+		register: usize,
+	},
+	SetMeshOutputCounts {
+		vertex_count: usize,
+		primitive_count: usize,
+	},
+	SetMeshVertexPosition {
+		index: usize,
+		position: usize,
+	},
+	SetMeshTriangle {
+		index: usize,
+		triangle: usize,
 	},
 	LoadLocal {
 		register: usize,
@@ -985,10 +1675,20 @@ enum Instruction {
 		slot: DescriptorSlot,
 		coord: usize,
 	},
+	FetchTextureU32 {
+		register: usize,
+		slot: DescriptorSlot,
+		coord: usize,
+	},
 	SampleTexture {
 		register: usize,
 		slot: DescriptorSlot,
 		uv: usize,
+	},
+	SampleTexture3D {
+		register: usize,
+		slot: DescriptorSlot,
+		uvw: usize,
 	},
 	TextureSize {
 		register: usize,
@@ -997,6 +1697,26 @@ enum Instruction {
 	ImageSize {
 		register: usize,
 		slot: DescriptorSlot,
+	},
+	LoadImage {
+		register: usize,
+		slot: DescriptorSlot,
+		coord: usize,
+	},
+	LoadImageU32 {
+		register: usize,
+		slot: DescriptorSlot,
+		coord: usize,
+	},
+	GuardImageBounds {
+		slot: DescriptorSlot,
+		coord: usize,
+	},
+	ImageAtomicOr {
+		register: usize,
+		slot: DescriptorSlot,
+		coord: usize,
+		value: usize,
 	},
 	WriteImage {
 		slot: DescriptorSlot,
@@ -1018,6 +1738,15 @@ enum Instruction {
 		value_type: ValueType,
 		register: usize,
 	},
+	AtomicAddBuffer {
+		register: usize,
+		slot: DescriptorSlot,
+		offset: usize,
+		stride: usize,
+		count: usize,
+		index: Option<usize>,
+		value: usize,
+	},
 	Call {
 		register: usize,
 		function: usize,
@@ -1035,6 +1764,12 @@ enum ArithmeticOperator {
 	Multiply,
 	Divide,
 	Modulo,
+	ShiftLeft,
+	ShiftRight,
+	BitwiseAnd,
+	BitwiseOr,
+	LogicalAnd,
+	LogicalOr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1059,20 +1794,33 @@ enum ScalarUnaryOperator {
 	Fract,
 	Radians,
 	InverseSqrt,
+	Log2,
+	Fwidth,
 	FromU32ToF32,
 	FromF32ToU32,
+	FromU8ToU32,
+	FromU16ToU32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScalarBinaryOperator {
+	Min,
+	Max,
+	Pow,
+	Step,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScalarTernaryOperator {
 	Smoothstep,
 	Mix,
-	Max,
 	Clamp,
 }
 
-struct Compiler {
+/// The `Compiler` struct lowers one BESL function into bounded register-machine instructions.
+struct Compiler<'a> {
 	function_ids: HashMap<NodeReference, usize>,
+	specializations: &'a SpecializationValues,
 	instructions: Vec<Instruction>,
 	local_types: Vec<ValueType>,
 	locals_by_reference: HashMap<NodeReference, usize>,
@@ -1083,16 +1831,18 @@ struct Compiler {
 	loop_continue_patches: Vec<Vec<usize>>,
 }
 
-impl Compiler {
+impl<'a> Compiler<'a> {
 	#[allow(clippy::mutable_key_type)]
 	fn compile_function(
 		function: &NodeReference,
 		function_ids: &HashMap<NodeReference, usize>,
 		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		specializations: &'a SpecializationValues,
 	) -> Result<ExecutableFunction, VmError> {
 		let signature = extract_function_signature(function)?;
 		let mut compiler = Self {
 			function_ids: function_ids.clone(),
+			specializations,
 			instructions: Vec::new(),
 			local_types: Vec::new(),
 			locals_by_reference: HashMap::new(),
@@ -1201,6 +1951,7 @@ impl Compiler {
 				drop(borrowed);
 				self.compile_intrinsic_call_statement(&intrinsic, &arguments, descriptor_layouts)
 			}
+			Nodes::Raw { .. } => Ok(()),
 			Nodes::Expression(Expressions::Member { .. }) | Nodes::Expression(Expressions::Accessor { .. }) => Ok(()),
 			Nodes::Expression(other) => Err(VmError::UnsupportedStatement {
 				message: format!("Unsupported statement expression: {:?}", other),
@@ -1219,7 +1970,7 @@ impl Compiler {
 		statements: &[NodeReference],
 		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
-		let condition_register = self.compile_value_expression(condition, &ValueType::U32, descriptor_layouts)?;
+		let condition_register = self.compile_value_expression(condition, &ValueType::Bool, descriptor_layouts)?;
 		let jump_if_zero_index = self.instructions.len();
 		self.instructions.push(Instruction::JumpIfZero {
 			register: condition_register,
@@ -1250,7 +2001,7 @@ impl Compiler {
 		self.compile_statement(initializer, descriptor_layouts)?;
 
 		let condition_start = self.instructions.len();
-		let condition_register = self.compile_value_expression(condition, &ValueType::U32, descriptor_layouts)?;
+		let condition_register = self.compile_value_expression(condition, &ValueType::Bool, descriptor_layouts)?;
 		let jump_if_zero_index = self.instructions.len();
 		self.instructions.push(Instruction::JumpIfZero {
 			register: condition_register,
@@ -1333,7 +2084,11 @@ impl Compiler {
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
 
-				let target = self.resolve_memory_access(&left, RequiredAccess::Write, descriptor_layouts)?;
+				let target = if accessor_references_output(&left) {
+					self.resolve_output_array_access(&left, descriptor_layouts)?
+				} else {
+					self.resolve_memory_access(&left, RequiredAccess::Write, descriptor_layouts)?
+				};
 				let register = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
 				if let Some(index) = target.index {
 					self.instructions.push(Instruction::StoreBufferIndexed {
@@ -1391,7 +2146,7 @@ impl Compiler {
 			}
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 				let comparison = comparison_operator(operator);
-				let operator = if comparison.is_none() {
+				let arithmetic = if comparison.is_none() {
 					Some(arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
 						message: format!("Unsupported value operator: {:?}", operator),
 					})?)
@@ -1402,36 +2157,32 @@ impl Compiler {
 				let right = right.clone();
 				drop(borrowed);
 
-				let comparison_expected_type = if comparison.is_some() {
+				let operand_hint = if comparison.is_some() {
 					&ValueType::U32
+				} else if matches!(
+					arithmetic,
+					Some(ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr)
+				) {
+					&ValueType::Bool
 				} else {
 					expected_type
 				};
-				let left_type = self.infer_expression_type(&left, comparison_expected_type, descriptor_layouts)?;
-				let right_type = self.infer_expression_type(&right, comparison_expected_type, descriptor_layouts)?;
-				let (left_expected_type, right_expected_type) = if left_type == *expected_type && right_type == *expected_type {
-					(expected_type.clone(), expected_type.clone())
-				} else if comparison.is_some() && left_type == right_type {
-					(left_type.clone(), right_type.clone())
-				} else if supports_scalar_broadcast(expected_type)
-					&& left_type == ValueType::F32
-					&& right_type == *expected_type
-				{
-					(ValueType::F32, expected_type.clone())
-				} else if supports_scalar_broadcast(expected_type)
-					&& left_type == *expected_type
-					&& right_type == ValueType::F32
-				{
-					(expected_type.clone(), ValueType::F32)
+				let left_type = self.infer_expression_type(&left, operand_hint, descriptor_layouts)?;
+				let right_type = self.infer_expression_type(&right, operand_hint, descriptor_layouts)?;
+				let result_type = if comparison.is_some() {
+					ValueType::Bool
 				} else {
+					binary_result_type(arithmetic.expect("Expected arithmetic operator"), &left_type, &right_type)?
+				};
+				if &result_type != expected_type {
 					return Err(VmError::TypeMismatch {
 						expected: expected_type.name().to_string(),
-						found: format!("{} and {}", left_type.name(), right_type.name()),
+						found: result_type.name().to_string(),
 					});
-				};
+				}
 
-				let left = self.compile_value_expression(&left, &left_expected_type, descriptor_layouts)?;
-				let right = self.compile_value_expression(&right, &right_expected_type, descriptor_layouts)?;
+				let left = self.compile_value_expression(&left, &left_type, descriptor_layouts)?;
+				let right = self.compile_value_expression(&right, &right_type, descriptor_layouts)?;
 				let register = self.allocate_register();
 				if let Some(operator) = comparison {
 					if operator == ComparisonOperator::LessThan {
@@ -1447,7 +2198,7 @@ impl Compiler {
 				} else {
 					self.instructions.push(Instruction::Arithmetic {
 						register,
-						operator: operator.expect("Expected arithmetic operator"),
+						operator: arithmetic.expect("Expected arithmetic operator"),
 						left,
 						right,
 					});
@@ -1479,7 +2230,7 @@ impl Compiler {
 					let register = self.allocate_register();
 					self.instructions.push(Instruction::LoadLocal { register, local });
 					Ok(register)
-				} else {
+				} else if matches!(source.borrow().node(), Nodes::Input { .. }) {
 					let target = self.resolve_input_access(expression, descriptor_layouts)?;
 					if &target.value_type != expected_type {
 						return Err(VmError::TypeMismatch {
@@ -1496,39 +2247,91 @@ impl Compiler {
 						value_type: target.value_type,
 					});
 					Ok(register)
+				} else if is_resource_type(expected_type) && matches!(source.borrow().node(), Nodes::Binding { .. }) {
+					let (slot, layout) = {
+						let source_ref = source.borrow();
+						let Nodes::Binding {
+							set, binding, r#type, ..
+						} = source_ref.node()
+						else {
+							unreachable!("Resource sources are checked before compiling the handle")
+						};
+						let layout = match r#type {
+							BindingTypes::CombinedImageSampler { .. } => DescriptorLayout::Texture,
+							BindingTypes::Image { .. } => DescriptorLayout::Image,
+							BindingTypes::Buffer { .. } => {
+								return Err(VmError::TypeMismatch {
+									expected: expected_type.name().to_string(),
+									found: "buffer".to_string(),
+								});
+							}
+						};
+						(DescriptorSlot::new(*set, *binding), layout)
+					};
+					match descriptor_layouts.get(&slot) {
+						Some(existing) if existing != &layout => {
+							return Err(VmError::UnsupportedDescriptor {
+								slot,
+								message: "Descriptor slot was reused with a different resource type".to_string(),
+							});
+						}
+						Some(_) => {}
+						None => {
+							descriptor_layouts.insert(slot, layout);
+						}
+					}
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::LoadLiteral {
+						register,
+						value: Value::Resource {
+							slot,
+							value_type: expected_type.clone(),
+						},
+					});
+					Ok(register)
+				} else {
+					let source_value = {
+						let source_ref = source.borrow();
+						match source_ref.node() {
+							Nodes::Specialization { name, r#type } => {
+								let declared_type = resolve_value_type(r#type)?;
+								let value = self
+									.specializations
+									.get(name)
+									.ok_or_else(|| VmError::MissingSpecialization { name: name.clone() })?;
+								if !value.matches_type(&declared_type) {
+									return Err(VmError::TypeMismatch {
+										expected: declared_type.name().to_string(),
+										found: value.value_type().name().to_string(),
+									});
+								}
+								Some(Ok(value.clone()))
+							}
+							Nodes::Const { value, .. } | Nodes::Literal { value, .. } => {
+								let value = value.clone();
+								drop(source_ref);
+								return self.compile_value_expression(&value, expected_type, descriptor_layouts);
+							}
+							_ => None,
+						}
+					};
+					let value = source_value.ok_or_else(|| VmError::UnsupportedExpression {
+						message: format!("Unsupported member source: {}", describe_node(source.borrow().node())),
+					})??;
+					if !value.matches_type(expected_type) {
+						return Err(VmError::TypeMismatch {
+							expected: expected_type.name().to_string(),
+							found: value.value_type().name().to_string(),
+						});
+					}
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::LoadLiteral { register, value });
+					Ok(register)
 				}
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(borrowed);
-
-				let target = self.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?;
-				if &target.value_type != expected_type {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: target.value_type.name().to_string(),
-					});
-				}
-
-				let register = self.allocate_register();
-				if let Some(index) = target.index {
-					self.instructions.push(Instruction::LoadBufferIndexed {
-						register,
-						slot: target.slot,
-						offset: target.offset,
-						stride: target.stride,
-						count: target.count,
-						index,
-						value_type: target.value_type,
-					});
-				} else {
-					self.instructions.push(Instruction::LoadBuffer {
-						register,
-						slot: target.slot,
-						offset: target.offset,
-						value_type: target.value_type,
-					});
-				}
-				Ok(register)
+				self.compile_accessor_expression(expression, expected_type, descriptor_layouts)
 			}
 			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported value expression: {:?}", other),
@@ -1537,6 +2340,114 @@ impl Compiler {
 				message: format!("Unsupported value node: {}", describe_node(node)),
 			}),
 		}
+	}
+
+	/// Compiles either a buffer access chain or a projection from a temporary aggregate value.
+	fn compile_accessor_expression(
+		&mut self,
+		expression: &NodeReference,
+		expected_type: &ValueType,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<usize, VmError> {
+		if accessor_references_buffer(expression) {
+			let target = self.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?;
+			if &target.value_type != expected_type {
+				return Err(VmError::TypeMismatch {
+					expected: expected_type.name().to_string(),
+					found: target.value_type.name().to_string(),
+				});
+			}
+			let register = self.allocate_register();
+			if let Some(index) = target.index {
+				self.instructions.push(Instruction::LoadBufferIndexed {
+					register,
+					slot: target.slot,
+					offset: target.offset,
+					stride: target.stride,
+					count: target.count,
+					index,
+					value_type: target.value_type,
+				});
+			} else {
+				self.instructions.push(Instruction::LoadBuffer {
+					register,
+					slot: target.slot,
+					offset: target.offset,
+					value_type: target.value_type,
+				});
+			}
+			return Ok(register);
+		}
+		let (left, right) = {
+			let borrowed = expression.borrow();
+			let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
+				return Err(VmError::UnsupportedExpression {
+					message: "Expected an aggregate accessor".to_string(),
+				});
+			};
+			(left.clone(), right.clone())
+		};
+		let left_type = self.infer_expression_type(&left, expected_type, descriptor_layouts)?;
+		if let Ok(member_name) = extract_member_name(&right) {
+			let (index, result_type) = aggregate_member(&left_type, &member_name)?;
+			if &result_type != expected_type {
+				return Err(VmError::TypeMismatch {
+					expected: expected_type.name().to_string(),
+					found: result_type.name().to_string(),
+				});
+			}
+			let source = self.compile_value_expression(&left, &left_type, descriptor_layouts)?;
+			let register = self.allocate_register();
+			self.instructions.push(Instruction::Extract {
+				register,
+				source,
+				index,
+				value_type: result_type,
+			});
+			return Ok(register);
+		}
+
+		let (result_type, count) = array_element_type(&left_type)?;
+		if &result_type != expected_type {
+			return Err(VmError::TypeMismatch {
+				expected: expected_type.name().to_string(),
+				found: result_type.name().to_string(),
+			});
+		}
+		let source = self.compile_value_expression(&left, &left_type, descriptor_layouts)?;
+		let index = self.compile_value_expression(&right, &ValueType::U32, descriptor_layouts)?;
+		let register = self.allocate_register();
+		self.instructions.push(Instruction::ExtractDynamic {
+			register,
+			source,
+			index,
+			count,
+			value_type: result_type,
+		});
+		Ok(register)
+	}
+
+	fn compile_resolved_buffer_load(&mut self, target: ResolvedBufferAccess) -> Result<usize, VmError> {
+		let register = self.allocate_register();
+		if let Some(index) = target.index {
+			self.instructions.push(Instruction::LoadBufferIndexed {
+				register,
+				slot: target.slot,
+				offset: target.offset,
+				stride: target.stride,
+				count: target.count,
+				index,
+				value_type: target.value_type,
+			});
+		} else {
+			self.instructions.push(Instruction::LoadBuffer {
+				register,
+				slot: target.slot,
+				offset: target.offset,
+				value_type: target.value_type,
+			});
+		}
+		Ok(register)
 	}
 
 	fn compile_intrinsic_call_expression(
@@ -1579,6 +2490,37 @@ impl Compiler {
 				self.instructions.push(Instruction::SampleTexture { register, slot, uv });
 				Ok(register)
 			}
+			"texture_lod" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
+				let coord_type = self.infer_expression_type(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;
+				let coord = self.compile_value_expression(&arguments[1], &coord_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				match coord_type {
+					ValueType::Vec2F => self.instructions.push(Instruction::SampleTexture {
+						register,
+						slot,
+						uv: coord,
+					}),
+					ValueType::Vec3F => self.instructions.push(Instruction::SampleTexture3D {
+						register,
+						slot,
+						uvw: coord,
+					}),
+					other => {
+						return Err(VmError::TypeMismatch {
+							expected: "vec2f or vec3f".to_string(),
+							found: other.name().to_string(),
+						});
+					}
+				}
+				Ok(register)
+			}
 			"fetch" => {
 				if arguments.len() != 2 {
 					return Err(VmError::CallArgumentMismatch {
@@ -1591,6 +2533,92 @@ impl Compiler {
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::FetchTexture { register, slot, coord });
+				Ok(register)
+			}
+			"fetch_u32" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::FetchTextureU32 { register, slot, coord });
+				Ok(register)
+			}
+			"image_load" | "image_load_u32" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
+				let register = self.allocate_register();
+				if name == "image_load" {
+					self.instructions.push(Instruction::LoadImage { register, slot, coord });
+				} else {
+					self.instructions.push(Instruction::LoadImageU32 { register, slot, coord });
+				}
+				Ok(register)
+			}
+			"image_atomic_or" => {
+				if arguments.len() != 3 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 3,
+						found: arguments.len(),
+					});
+				}
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::ImageAtomicOr {
+					register,
+					slot,
+					coord,
+					value,
+				});
+				Ok(register)
+			}
+			"atomic_load" => {
+				if arguments.len() != 1 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 1,
+						found: arguments.len(),
+					});
+				}
+				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
+				self.compile_resolved_buffer_load(target)
+			}
+			"atomic_add" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
+				if target.value_type != ValueType::U32 {
+					return Err(VmError::TypeMismatch {
+						expected: ValueType::U32.name().to_string(),
+						found: target.value_type.name().to_string(),
+					});
+				}
+				let value = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::AtomicAddBuffer {
+					register,
+					slot: target.slot,
+					offset: target.offset,
+					stride: target.stride,
+					count: target.count,
+					index: target.index,
+					value,
+				});
 				Ok(register)
 			}
 			"texture_size" => {
@@ -1743,7 +2771,8 @@ impl Compiler {
 				});
 				Ok(register)
 			}
-			"abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "fract" | "radians" | "inversesqrt" => {
+			"abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract" | "radians" | "inversesqrt" | "log2"
+			| "fwidth" => {
 				if arguments.len() != 1 {
 					return Err(VmError::CallArgumentMismatch {
 						expected: 1,
@@ -1751,7 +2780,7 @@ impl Compiler {
 					});
 				}
 
-				let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[0], &return_type, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::UnaryScalar {
 					register,
@@ -1762,9 +2791,12 @@ impl Compiler {
 						"sin" => ScalarUnaryOperator::Sin,
 						"cos" => ScalarUnaryOperator::Cos,
 						"tan" => ScalarUnaryOperator::Tan,
+						"round" => ScalarUnaryOperator::Round,
 						"fract" => ScalarUnaryOperator::Fract,
 						"radians" => ScalarUnaryOperator::Radians,
 						"inversesqrt" => ScalarUnaryOperator::InverseSqrt,
+						"log2" => ScalarUnaryOperator::Log2,
+						"fwidth" => ScalarUnaryOperator::Fwidth,
 						_ => unreachable!("Expected scalar unary intrinsic"),
 					},
 					value,
@@ -1808,17 +2840,57 @@ impl Compiler {
 					});
 				}
 
-				let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+				let source_type = self.infer_expression_type(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+				if source_type == ValueType::U32 {
+					return self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts);
+				}
+				let operator = match source_type {
+					ValueType::U8 => ScalarUnaryOperator::FromU8ToU32,
+					ValueType::U16 => ScalarUnaryOperator::FromU16ToU32,
+					ValueType::F32 => ScalarUnaryOperator::FromF32ToU32,
+					ref other => {
+						return Err(VmError::TypeMismatch {
+							expected: "u8, u16, or f32".to_string(),
+							found: other.name().to_string(),
+						});
+					}
+				};
+				let value = self.compile_value_expression(&arguments[0], &source_type, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::UnaryScalar {
 					register,
-					operator: ScalarUnaryOperator::FromF32ToU32,
+					operator,
 					value,
 				});
 				Ok(register)
 			}
-			"smoothstep" | "mix" | "max" | "clamp" => {
-				let expected_argument_count = if name == "max" { 2 } else { 3 };
+			"min" | "max" | "pow" | "step" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+				let argument_type = if name == "step" { ValueType::F32 } else { return_type.clone() };
+				let left = self.compile_value_expression(&arguments[0], &argument_type, descriptor_layouts)?;
+				let right = self.compile_value_expression(&arguments[1], &argument_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::BinaryScalar {
+					register,
+					operator: match name.as_str() {
+						"min" => ScalarBinaryOperator::Min,
+						"max" => ScalarBinaryOperator::Max,
+						"pow" => ScalarBinaryOperator::Pow,
+						"step" => ScalarBinaryOperator::Step,
+						_ => unreachable!("Expected binary intrinsic"),
+					},
+					left,
+					right,
+				});
+				Ok(register)
+			}
+			"smoothstep" | "mix" | "clamp" => {
+				let expected_argument_count = 3;
 				if arguments.len() != expected_argument_count {
 					return Err(VmError::CallArgumentMismatch {
 						expected: expected_argument_count,
@@ -1826,20 +2898,20 @@ impl Compiler {
 					});
 				}
 
-				let first = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
-				let second = self.compile_value_expression(&arguments[1], &ValueType::F32, descriptor_layouts)?;
-				let third = if name == "max" {
-					second
+				let argument_type = if name == "clamp" {
+					return_type.clone()
 				} else {
-					self.compile_value_expression(&arguments[2], &ValueType::F32, descriptor_layouts)?
+					ValueType::F32
 				};
+				let first = self.compile_value_expression(&arguments[0], &argument_type, descriptor_layouts)?;
+				let second = self.compile_value_expression(&arguments[1], &argument_type, descriptor_layouts)?;
+				let third = self.compile_value_expression(&arguments[2], &argument_type, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::TernaryScalar {
 					register,
 					operator: match name.as_str() {
 						"smoothstep" => ScalarTernaryOperator::Smoothstep,
 						"mix" => ScalarTernaryOperator::Mix,
-						"max" => ScalarTernaryOperator::Max,
 						"clamp" => ScalarTernaryOperator::Clamp,
 						_ => unreachable!("Expected scalar ternary intrinsic"),
 					},
@@ -1848,29 +2920,6 @@ impl Compiler {
 					third,
 				});
 				Ok(register)
-			}
-			"round" => {
-				if arguments.len() != 1 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 1,
-						found: arguments.len(),
-					});
-				}
-
-				if expected_type == &ValueType::F32 {
-					let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
-					let register = self.allocate_register();
-					self.instructions.push(Instruction::UnaryScalar {
-						register,
-						operator: ScalarUnaryOperator::Round,
-						value,
-					});
-					Ok(register)
-				} else {
-					Err(VmError::UnsupportedExpression {
-						message: "`round` VM support is currently limited to scalar f32".to_string(),
-					})
-				}
 			}
 			"thread_idx" => {
 				if !arguments.is_empty() {
@@ -1882,6 +2931,28 @@ impl Compiler {
 
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::ThreadIdx { register });
+				Ok(register)
+			}
+			"thread_id" => {
+				if !arguments.is_empty() {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 0,
+						found: arguments.len(),
+					});
+				}
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::ThreadId { register });
+				Ok(register)
+			}
+			"threadgroup_position" => {
+				if !arguments.is_empty() {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 0,
+						found: arguments.len(),
+					});
+				}
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::ThreadgroupPosition { register });
 				Ok(register)
 			}
 			_ => Err(VmError::UnsupportedExpression {
@@ -1975,28 +3046,56 @@ impl Compiler {
 			});
 		}
 
-		if fields.len() != parameters.len() {
-			return Err(VmError::UnsupportedExpression {
-				message: format!(
-					"Constructor for `{}` expected {} parameters, but found {}",
-					expected_type.name(),
-					fields.len(),
-					parameters.len()
-				),
-			});
-		}
-
 		let mut components = Vec::with_capacity(parameters.len());
-		for (field, parameter) in fields.iter().zip(parameters) {
-			let field_type = match field.borrow().node() {
-				Nodes::Member { r#type, .. } => resolve_value_type(r#type)?,
-				node => {
-					return Err(VmError::UnsupportedExpression {
-						message: format!("Expected a constructor field, but found {}", describe_node(node)),
+		if matches!(
+			constructor_type,
+			ValueType::Struct { .. } | ValueType::Mat4F | ValueType::Mat4x3F
+		) {
+			if fields.len() != parameters.len() {
+				return Err(VmError::UnsupportedExpression {
+					message: format!(
+						"Constructor for `{}` expected {} parameters, but found {}",
+						expected_type.name(),
+						fields.len(),
+						parameters.len()
+					),
+				});
+			}
+			for (field, parameter) in fields.iter().zip(parameters) {
+				let field_type = match field.borrow().node() {
+					Nodes::Member { r#type, .. } => resolve_value_type(r#type)?,
+					node => {
+						return Err(VmError::UnsupportedExpression {
+							message: format!("Expected a constructor field, but found {}", describe_node(node)),
+						});
+					}
+				};
+				components.push(self.compile_value_expression(parameter, &field_type, descriptor_layouts)?);
+			}
+		} else {
+			let scalar_type = vector_scalar_type(&constructor_type).ok_or_else(|| VmError::UnsupportedExpression {
+				message: format!("`{}` is not a flattenable vector constructor", constructor_type.name()),
+			})?;
+			for parameter in parameters {
+				// Packed u16 constructors accept ordinary u32 coordinate arithmetic and
+				// apply the shader backend's narrowing conversion per component.
+				let parameter_hint = if constructor_type == ValueType::Vec2U16 {
+					ValueType::U32
+				} else {
+					scalar_type.clone()
+				};
+				let parameter_type = self.infer_expression_type(parameter, &parameter_hint, descriptor_layouts)?;
+				let parameter_scalar = vector_scalar_type(&parameter_type).unwrap_or_else(|| parameter_type.clone());
+				let compatible = parameter_scalar == scalar_type
+					|| (constructor_type == ValueType::Vec2U16 && parameter_scalar == ValueType::U32);
+				if !compatible {
+					return Err(VmError::TypeMismatch {
+						expected: scalar_type.name().to_string(),
+						found: parameter_type.name().to_string(),
 					});
 				}
-			};
-			components.push(self.compile_value_expression(parameter, &field_type, descriptor_layouts)?);
+				components.push(self.compile_value_expression(parameter, &parameter_type, descriptor_layouts)?);
+			}
 		}
 
 		let register = self.allocate_register();
@@ -2021,8 +3120,10 @@ impl Compiler {
 				drop(borrowed);
 				self.infer_expression_type(&inner, expected_type, descriptor_layouts)
 			}
-			Nodes::Expression(Expressions::Literal { .. }) => {
-				if supports_scalar_broadcast(expected_type) {
+			Nodes::Expression(Expressions::Literal { value }) => {
+				// Decimal and scientific notation remain floating-point when comparisons
+				// do not otherwise provide an operand type.
+				if value.contains(['.', 'e', 'E']) || supports_scalar_broadcast(expected_type) {
 					Ok(ValueType::F32)
 				} else {
 					Ok(expected_type.clone())
@@ -2037,15 +3138,28 @@ impl Compiler {
 						.get(local)
 						.cloned()
 						.ok_or(VmError::UninitializedLocal { local })
-				} else {
+				} else if matches!(source.borrow().node(), Nodes::Input { .. }) {
 					Ok(self.resolve_input_access(expression, descriptor_layouts)?.value_type)
+				} else {
+					resolve_referenced_value_type(&source)
 				}
 			}
-			Nodes::Expression(Expressions::Accessor { .. }) => {
+			Nodes::Expression(Expressions::Accessor { left, right }) => {
+				let left = left.clone();
+				let right = right.clone();
 				drop(borrowed);
-				Ok(self
-					.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?
-					.value_type)
+				if accessor_references_buffer(expression) {
+					Ok(self
+						.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?
+						.value_type)
+				} else {
+					let left_type = self.infer_expression_type(&left, expected_type, descriptor_layouts)?;
+					if let Ok(member_name) = extract_member_name(&right) {
+						Ok(aggregate_member(&left_type, &member_name)?.1)
+					} else {
+						Ok(array_element_type(&left_type)?.0)
+					}
+				}
 			}
 			Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => {
 				let intrinsic = intrinsic.clone();
@@ -2053,11 +3167,22 @@ impl Compiler {
 				resolve_callable_return_type(&intrinsic)
 			}
 			Nodes::Expression(Expressions::FunctionCall { function, .. }) => resolve_callable_return_type(function),
-			Nodes::Expression(Expressions::Operator { operator, .. }) => {
+			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 				if comparison_operator(operator).is_some() {
-					Ok(ValueType::U32)
+					Ok(ValueType::Bool)
 				} else {
-					Ok(expected_type.clone())
+					let operator = arithmetic_operator(operator).ok_or_else(|| VmError::UnsupportedExpression {
+						message: format!("Unsupported value operator: {:?}", operator),
+					})?;
+					if matches!(operator, ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr) {
+						return Ok(ValueType::Bool);
+					}
+					let left = left.clone();
+					let right = right.clone();
+					drop(borrowed);
+					let left_type = self.infer_expression_type(&left, expected_type, descriptor_layouts)?;
+					let right_type = self.infer_expression_type(&right, expected_type, descriptor_layouts)?;
+					binary_result_type(operator, &left_type, &right_type)
 				}
 			}
 			Nodes::Expression(Expressions::Continue) => Err(VmError::UnsupportedExpression {
@@ -2099,7 +3224,12 @@ impl Compiler {
 		access: RequiredAccess,
 		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
 	) -> Result<ResolvedBufferAccess, VmError> {
-		let (binding, member_name, index_expression) = extract_buffer_member_access(expression)?;
+		let (binding, selectors) = extract_access_chain(expression)?;
+		let Some(AccessSelector::Member(member_name)) = selectors.first() else {
+			return Err(VmError::UnsupportedExpression {
+				message: "Buffer access must select a named member first".to_string(),
+			});
+		};
 
 		let binding_ref = binding.borrow();
 		let (slot, layout) = match binding_ref.node() {
@@ -2176,33 +3306,56 @@ impl Compiler {
 			}
 		}
 
-		let member = layout.member(&member_name).ok_or_else(|| VmError::UnknownBufferMember {
+		let member = layout.member(member_name).ok_or_else(|| VmError::UnknownBufferMember {
 			member: member_name.clone(),
 		})?;
-		if member.count() == 1 && index_expression.is_some() {
-			return Err(VmError::UnsupportedExpression {
-				message: format!("Buffer member `{}` is not an array and cannot be indexed", member_name),
-			});
+		let mut offset = member.offset();
+		let mut current_stride = member.value_type().size();
+		let mut current_count = member.count();
+		let mut value_type = member.value_type().clone();
+		let mut index = None;
+		let mut indexed_stride = current_stride;
+		let mut indexed_count = current_count;
+		for selector in selectors.iter().skip(1) {
+			match selector {
+				AccessSelector::Index(index_expression) => {
+					if index.is_some() {
+						return Err(VmError::UnsupportedExpression {
+							message: format!("Buffer member `{}` cannot use more than one dynamic index", member_name),
+						});
+					}
+					indexed_stride = current_stride;
+					indexed_count = current_count;
+					index = Some(self.compile_value_expression(index_expression, &ValueType::U32, descriptor_layouts)?);
+					current_count = 1;
+				}
+				AccessSelector::Member(field_name) => {
+					if current_count > 1 {
+						return Err(VmError::UnsupportedExpression {
+							message: format!("Buffer member `{}` is an array and requires an element index", member_name),
+						});
+					}
+					let (field_offset, field_type, field_count) = aggregate_member_layout(&value_type, field_name)?;
+					offset += field_offset;
+					value_type = field_type;
+					current_stride = value_type.size();
+					current_count = field_count;
+				}
+			}
 		}
-		if member.count() > 1 && index_expression.is_none() {
+		if current_count > 1 {
 			return Err(VmError::UnsupportedExpression {
 				message: format!("Buffer member `{}` is an array and requires an element index", member_name),
 			});
 		}
-		let index = match index_expression {
-			Some(index_expression) => {
-				Some(self.compile_value_expression(&index_expression, &ValueType::U32, descriptor_layouts)?)
-			}
-			None => None,
-		};
 
 		Ok(ResolvedBufferAccess {
 			slot,
-			offset: member.offset,
-			stride: member.value_type.size(),
-			count: member.count(),
+			offset,
+			stride: indexed_stride,
+			count: indexed_count,
 			index,
-			value_type: member.value_type.clone(),
+			value_type,
 		})
 	}
 
@@ -2212,7 +3365,23 @@ impl Compiler {
 		access: RequiredAccess,
 		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
 	) -> Result<DescriptorSlot, VmError> {
-		let binding = extract_binding_reference(expression)?;
+		let binding = match extract_binding_reference(expression) {
+			Ok(binding) => binding,
+			Err(_) => {
+				let value_type = self.infer_expression_type(expression, &ValueType::Texture2D, descriptor_layouts)?;
+				if !matches!(
+					value_type,
+					ValueType::Texture2D | ValueType::Texture3D | ValueType::ArrayTexture2D
+				) {
+					return Err(VmError::TypeMismatch {
+						expected: "texture resource".to_string(),
+						found: value_type.name().to_string(),
+					});
+				}
+				let register = self.compile_value_expression(expression, &value_type, descriptor_layouts)?;
+				return Ok(dynamic_resource_slot(register));
+			}
+		};
 
 		let binding_ref = binding.borrow();
 		let slot = match binding_ref.node() {
@@ -2278,7 +3447,20 @@ impl Compiler {
 		access: RequiredAccess,
 		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
 	) -> Result<DescriptorSlot, VmError> {
-		let binding = extract_binding_reference(expression)?;
+		let binding = match extract_binding_reference(expression) {
+			Ok(binding) => binding,
+			Err(_) => {
+				let value_type = self.infer_expression_type(expression, &ValueType::Texture2D, descriptor_layouts)?;
+				if value_type != ValueType::Texture2D {
+					return Err(VmError::TypeMismatch {
+						expected: ValueType::Texture2D.name().to_string(),
+						found: value_type.name().to_string(),
+					});
+				}
+				let register = self.compile_value_expression(expression, &value_type, descriptor_layouts)?;
+				return Ok(dynamic_resource_slot(register));
+			}
+		};
 
 		let binding_ref = binding.borrow();
 		let slot = match binding_ref.node() {
@@ -2357,7 +3539,10 @@ impl Compiler {
 		let source_ref = source.borrow();
 		let (slot, layout) = match source_ref.node() {
 			Nodes::Output {
-				name, format, location, ..
+				name,
+				format,
+				location,
+				count,
 			} => {
 				if name != &output_name {
 					return Err(VmError::UnsupportedExpression {
@@ -2366,16 +3551,21 @@ impl Compiler {
 				}
 
 				let value_type = resolve_value_type(format)?;
+				let count = count.map(std::num::NonZeroUsize::get).unwrap_or(1);
 				(
-					output_slot(*location),
+					if output_name == "position" {
+						builtin_position_slot()
+					} else {
+						output_slot(*location)
+					},
 					BufferLayout {
 						members: vec![BufferMemberLayout {
 							name: output_name.clone(),
 							offset: 0,
 							value_type: value_type.clone(),
-							count: 1,
+							count,
 						}],
-						size: value_type.size(),
+						size: value_type.size() * count,
 					},
 				)
 			}
@@ -2403,11 +3593,31 @@ impl Compiler {
 		Ok(ResolvedBufferAccess {
 			slot,
 			offset: 0,
-			stride: layout.size(),
-			count: 1,
+			stride: layout.members()[0].value_type().size(),
+			count: layout.members()[0].count(),
 			index: None,
 			value_type: layout.members()[0].value_type().clone(),
 		})
+	}
+
+	/// Resolves one dynamically indexed mesh output-array write.
+	fn resolve_output_array_access(
+		&mut self,
+		expression: &NodeReference,
+		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+	) -> Result<ResolvedBufferAccess, VmError> {
+		let (left, index_expression) = {
+			let borrowed = expression.borrow();
+			let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
+				return Err(VmError::UnsupportedAssignmentTarget {
+					message: "Expected an indexed output array".to_string(),
+				});
+			};
+			(left.clone(), right.clone())
+		};
+		let mut target = self.resolve_output_access(&left, descriptor_layouts)?;
+		target.index = Some(self.compile_value_expression(&index_expression, &ValueType::U32, descriptor_layouts)?);
+		Ok(target)
 	}
 
 	fn resolve_input_access(
@@ -2569,6 +3779,45 @@ impl Compiler {
 		drop(intrinsic_ref);
 
 		match name.as_str() {
+			"set_mesh_output_counts" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+				let vertex_count = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let primitive_count = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+				self.instructions.push(Instruction::SetMeshOutputCounts {
+					vertex_count,
+					primitive_count,
+				});
+				Ok(())
+			}
+			"set_mesh_vertex_position" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+				let index = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let position = self.compile_value_expression(&arguments[1], &ValueType::Vec4F, descriptor_layouts)?;
+				self.instructions.push(Instruction::SetMeshVertexPosition { index, position });
+				Ok(())
+			}
+			"set_mesh_triangle" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+				let index = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let triangle = self.compile_value_expression(&arguments[1], &ValueType::Vec3U, descriptor_layouts)?;
+				self.instructions.push(Instruction::SetMeshTriangle { index, triangle });
+				Ok(())
+			}
 			"write" => {
 				if arguments.len() != 3 {
 					return Err(VmError::CallArgumentMismatch {
@@ -2583,6 +3832,57 @@ impl Compiler {
 				self.instructions.push(Instruction::WriteImage { slot, coord, value });
 				Ok(())
 			}
+			"guard_image_bounds" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any, descriptor_layouts)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
+				self.instructions.push(Instruction::GuardImageBounds { slot, coord });
+				Ok(())
+			}
+			"atomic_store" => {
+				if arguments.len() != 2 {
+					return Err(VmError::CallArgumentMismatch {
+						expected: 2,
+						found: arguments.len(),
+					});
+				}
+				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
+				if target.value_type != ValueType::U32 {
+					return Err(VmError::TypeMismatch {
+						expected: ValueType::U32.name().to_string(),
+						found: target.value_type.name().to_string(),
+					});
+				}
+				let register = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+				if let Some(index) = target.index {
+					self.instructions.push(Instruction::StoreBufferIndexed {
+						slot: target.slot,
+						offset: target.offset,
+						stride: target.stride,
+						count: target.count,
+						index,
+						value_type: ValueType::U32,
+						register,
+					});
+				} else {
+					self.instructions.push(Instruction::StoreBuffer {
+						slot: target.slot,
+						offset: target.offset,
+						value_type: ValueType::U32,
+						register,
+					});
+				}
+				Ok(())
+			}
+			"atomic_add" | "image_atomic_or" => {
+				self.compile_intrinsic_call_expression(intrinsic, arguments, &ValueType::U32, descriptor_layouts)?;
+				Ok(())
+			}
 			_ => Err(VmError::UnsupportedStatement {
 				message: format!("Unsupported intrinsic statement `{}`", name),
 			}),
@@ -2590,6 +3890,7 @@ impl Compiler {
 	}
 }
 
+/// The `ResolvedBufferAccess` struct carries a validated packed-memory target into instruction lowering.
 struct ResolvedBufferAccess {
 	slot: DescriptorSlot,
 	offset: usize,
@@ -2599,11 +3900,13 @@ struct ResolvedBufferAccess {
 	value_type: ValueType,
 }
 
+/// The `FunctionParameter` struct links one lexical parameter identity to its portable VM value type.
 struct FunctionParameter {
 	node: NodeReference,
 	value_type: ValueType,
 }
 
+/// The `FunctionSignature` struct supplies parameter, return, and body information while lowering function calls.
 struct FunctionSignature {
 	params: Vec<FunctionParameter>,
 	return_type: Option<ValueType>,
@@ -2614,6 +3917,7 @@ struct FunctionSignature {
 enum RequiredAccess {
 	Read,
 	Write,
+	Any,
 }
 
 fn resolve_main_function(program: &NodeReference) -> Result<NodeReference, VmError> {
@@ -2632,37 +3936,116 @@ fn resolve_main_function(program: &NodeReference) -> Result<NodeReference, VmErr
 	program.get_main().ok_or(VmError::MissingMainFunction)
 }
 
-fn collect_functions(program: &NodeReference, main: &NodeReference) -> Vec<NodeReference> {
+fn collect_functions(main: &NodeReference) -> Vec<NodeReference> {
 	let mut functions = Vec::new();
-	if let Some(children) = program.get_children() {
-		for child in children {
-			if matches!(child.borrow().node(), Nodes::Function { .. }) {
-				functions.push(child);
+	let mut seen = HashSet::new();
+	collect_reachable_function(main, &mut seen, &mut functions);
+	functions
+}
+
+/// Adds one function and every function referenced by its executable expressions.
+fn collect_reachable_function(function: &NodeReference, seen: &mut HashSet<usize>, functions: &mut Vec<NodeReference>) {
+	if !seen.insert(function.identity()) {
+		return;
+	}
+	functions.push(function.clone());
+	let statements = match function.borrow().node() {
+		Nodes::Function { statements, .. } => statements.clone(),
+		_ => return,
+	};
+	for statement in statements {
+		collect_function_references(&statement, seen, functions);
+	}
+}
+
+fn collect_function_references(node: &NodeReference, seen: &mut HashSet<usize>, functions: &mut Vec<NodeReference>) {
+	let (called_function, children) = {
+		let borrowed = node.borrow();
+		match borrowed.node() {
+			Nodes::Conditional { condition, statements } => {
+				let mut children = Vec::with_capacity(statements.len() + 1);
+				children.push(condition.clone());
+				children.extend(statements.iter().cloned());
+				(None, children)
 			}
+			Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				let mut children = Vec::with_capacity(statements.len() + 3);
+				children.extend([initializer.clone(), condition.clone(), update.clone()]);
+				children.extend(statements.iter().cloned());
+				(None, children)
+			}
+			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
+				(Some(function.clone()), parameters.clone())
+			}
+			Nodes::Expression(Expressions::IntrinsicCall { arguments, .. }) => (None, arguments.clone()),
+			Nodes::Expression(Expressions::Operator { left, right, .. })
+			| Nodes::Expression(Expressions::Accessor { left, right }) => (None, vec![left.clone(), right.clone()]),
+			Nodes::Expression(Expressions::Expression { elements }) => (None, elements.clone()),
+			Nodes::Expression(Expressions::Return { value }) => (None, value.iter().cloned().collect()),
+			Nodes::Const { value, .. } | Nodes::Literal { value, .. } => (None, vec![value.clone()]),
+			_ => (None, Vec::new()),
+		}
+	};
+	if let Some(function) = called_function {
+		if matches!(function.borrow().node(), Nodes::Function { .. }) {
+			collect_reachable_function(&function, seen, functions);
 		}
 	}
-
-	if functions.is_empty() {
-		functions.push(main.clone());
+	for child in children {
+		collect_function_references(&child, seen, functions);
 	}
-
-	functions
 }
 
 fn reject_raw_code_nodes(node: &NodeReference) -> Result<(), VmError> {
 	let children = {
 		let borrowed = node.borrow();
-		if matches!(borrowed.node(), Nodes::Raw { .. }) {
-			return Err(VmError::UnsupportedRawCode);
+		match borrowed.node() {
+			Nodes::Raw { glsl, hlsl, msl, .. } => {
+				let has_code = [glsl.as_deref(), hlsl.as_deref(), msl.as_deref()]
+					.into_iter()
+					.flatten()
+					.any(|code| !code.trim().is_empty());
+				if has_code {
+					return Err(VmError::UnsupportedRawCode);
+				}
+				Vec::new()
+			}
+			Nodes::Function { statements, .. } => statements.clone(),
+			Nodes::Conditional { condition, statements } => {
+				let mut children = Vec::with_capacity(statements.len() + 1);
+				children.push(condition.clone());
+				children.extend(statements.iter().cloned());
+				children
+			}
+			Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				let mut children = Vec::with_capacity(statements.len() + 3);
+				children.extend([initializer.clone(), condition.clone(), update.clone()]);
+				children.extend(statements.iter().cloned());
+				children
+			}
+			Nodes::Expression(Expressions::FunctionCall { parameters, .. }) => parameters.clone(),
+			Nodes::Expression(Expressions::IntrinsicCall { arguments, .. }) => arguments.clone(),
+			Nodes::Expression(Expressions::Operator { left, right, .. })
+			| Nodes::Expression(Expressions::Accessor { left, right }) => vec![left.clone(), right.clone()],
+			Nodes::Expression(Expressions::Expression { elements }) => elements.clone(),
+			Nodes::Expression(Expressions::Return { value }) => value.iter().cloned().collect(),
+			Nodes::Const { value, .. } | Nodes::Literal { value, .. } => vec![value.clone()],
+			_ => Vec::new(),
 		}
-
-		borrowed.get_children()
 	};
 
-	if let Some(children) = children {
-		for child in children {
-			reject_raw_code_nodes(&child)?;
-		}
+	for child in children {
+		reject_raw_code_nodes(&child)?;
 	}
 
 	Ok(())
@@ -2746,11 +4129,15 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		.unwrap_or_else(|| "unknown".to_string());
 
 	match type_name.as_str() {
+		"bool" => Ok(ValueType::Bool),
 		"u8" => Ok(ValueType::U8),
 		"u16" => Ok(ValueType::U16),
 		"u32" => Ok(ValueType::U32),
 		"i32" => Ok(ValueType::I32),
 		"f32" => Ok(ValueType::F32),
+		"atomicu32" => Ok(ValueType::U32),
+		"vec2u16" => Ok(ValueType::Vec2U16),
+		"vec2i" => Ok(ValueType::Vec2I),
 		"vec2u" => Ok(ValueType::Vec2U),
 		"vec3u" => Ok(ValueType::Vec3U),
 		"vec4u" => Ok(ValueType::Vec4U),
@@ -2759,15 +4146,43 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"vec4f" => Ok(ValueType::Vec4F),
 		"mat4f" => Ok(ValueType::Mat4F),
 		"mat4x3f" => Ok(ValueType::Mat4x3F),
-		_ => Err(VmError::UnsupportedType { type_name }),
+		"Texture2D" => Ok(ValueType::Texture2D),
+		"Texture3D" => Ok(ValueType::Texture3D),
+		"ArrayTexture2D" => Ok(ValueType::ArrayTexture2D),
+		_ => {
+			let fields = match node.borrow().node() {
+				Nodes::Struct { fields, .. } => fields.clone(),
+				_ => return Err(VmError::UnsupportedType { type_name }),
+			};
+			let (fields, size) = compile_member_layouts(&fields)?;
+			Ok(ValueType::Struct {
+				name: type_name,
+				fields,
+				size,
+			})
+		}
 	}
 }
 
+fn is_resource_type(value_type: &ValueType) -> bool {
+	matches!(
+		value_type,
+		ValueType::Texture2D | ValueType::Texture3D | ValueType::ArrayTexture2D
+	)
+}
+
 fn compile_buffer_layout(members: &[NodeReference]) -> Result<BufferLayout, VmError> {
+	let (compiled_members, offset) = compile_member_layouts(members)?;
+
+	Ok(BufferLayout {
+		members: compiled_members,
+		size: offset,
+	})
+}
+
+fn compile_member_layouts(members: &[NodeReference]) -> Result<(Vec<BufferMemberLayout>, usize), VmError> {
 	let mut offset = 0;
 	let mut compiled_members = Vec::with_capacity(members.len());
-
-	// Pack the supported scalar buffer members into the VM's CPU layout.
 	for member in members {
 		let member = member.borrow();
 		match member.node() {
@@ -2789,34 +4204,91 @@ fn compile_buffer_layout(members: &[NodeReference]) -> Result<BufferLayout, VmEr
 			}
 		}
 	}
-
-	Ok(BufferLayout {
-		members: compiled_members,
-		size: offset,
-	})
+	Ok((compiled_members, offset))
 }
 
-fn extract_buffer_member_access(expression: &NodeReference) -> Result<(NodeReference, String, Option<NodeReference>), VmError> {
+enum AccessSelector {
+	Member(String),
+	Index(NodeReference),
+}
+
+fn extract_access_chain(expression: &NodeReference) -> Result<(NodeReference, Vec<AccessSelector>), VmError> {
 	let borrowed = expression.borrow();
 	match borrowed.node() {
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			let inner = elements[0].clone();
+			drop(borrowed);
+			extract_access_chain(&inner)
+		}
 		Nodes::Expression(Expressions::Accessor { left, right }) => {
-			if is_buffer_member_selector(right) {
-				let binding = extract_binding_reference(left)?;
-				let member_name = extract_member_name(right)?;
-				Ok((binding, member_name, None))
+			let left = left.clone();
+			let selector = match right.borrow().node() {
+				Nodes::Expression(Expressions::Member { name, .. }) => AccessSelector::Member(name.clone()),
+				_ => AccessSelector::Index(right.clone()),
+			};
+			drop(borrowed);
+			let (binding, mut selectors) = extract_access_chain(&left)?;
+			selectors.push(selector);
+			Ok((binding, selectors))
+		}
+		Nodes::Expression(Expressions::Member { source, .. }) => {
+			let source = source.clone();
+			drop(borrowed);
+			if matches!(source.borrow().node(), Nodes::Binding { .. } | Nodes::PushConstant { .. }) {
+				Ok((source, Vec::new()))
 			} else {
-				let (binding, member_name, index) = extract_buffer_member_access(left)?;
-				if index.is_some() {
-					return Err(VmError::UnsupportedExpression {
-						message: "Nested array indexing is not supported".to_string(),
-					});
-				}
-				Ok((binding, member_name, Some(right.clone())))
+				Err(VmError::UnsupportedExpression {
+					message: "Accessor is not rooted in a buffer binding".to_string(),
+				})
 			}
 		}
-		node => Err(VmError::UnsupportedExpression {
-			message: format!("Expected a buffer member accessor, but found {}", describe_node(node)),
+		Nodes::Binding { .. } | Nodes::PushConstant { .. } => Ok((expression.clone(), Vec::new())),
+		Nodes::Expression(expression) => Err(VmError::UnsupportedExpression {
+			message: format!(
+				"Expected a buffer accessor, but found {}",
+				match expression {
+					Expressions::Return { .. } => "return",
+					Expressions::Continue => "continue",
+					Expressions::Member { .. } => "member",
+					Expressions::Expression { .. } => "multi-element expression group",
+					Expressions::Literal { .. } => "literal",
+					Expressions::FunctionCall { .. } => "function call",
+					Expressions::IntrinsicCall { .. } => "intrinsic call",
+					Expressions::Operator { .. } => "operator",
+					Expressions::VariableDeclaration { .. } => "variable declaration",
+					Expressions::Accessor { .. } => "accessor",
+					Expressions::Macro { .. } => "macro",
+				}
+			),
 		}),
+		node => Err(VmError::UnsupportedExpression {
+			message: format!("Expected a buffer accessor, but found {}", describe_node(node)),
+		}),
+	}
+}
+
+fn accessor_references_buffer(expression: &NodeReference) -> bool {
+	extract_access_chain(expression)
+		.ok()
+		.is_some_and(|(binding, _)| matches!(binding.borrow().node(), Nodes::Binding { .. } | Nodes::PushConstant { .. }))
+}
+
+fn accessor_references_output(expression: &NodeReference) -> bool {
+	let borrowed = expression.borrow();
+	match borrowed.node() {
+		Nodes::Expression(Expressions::Accessor { left, .. }) => output_member_references_interface(left),
+		_ => false,
+	}
+}
+
+fn output_member_references_interface(expression: &NodeReference) -> bool {
+	let borrowed = expression.borrow();
+	match borrowed.node() {
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			output_member_references_interface(&elements[0])
+		}
+		Nodes::Expression(Expressions::Member { source, .. }) => matches!(source.borrow().node(), Nodes::Output { .. }),
+		_ => false,
 	}
 }
 
@@ -2860,23 +4332,106 @@ fn extract_member_name(expression: &NodeReference) -> Result<String, VmError> {
 	}
 }
 
-fn is_buffer_member_selector(expression: &NodeReference) -> bool {
-	let borrowed = expression.borrow();
-	let source = match borrowed.node() {
-		Nodes::Expression(Expressions::Member { source, .. }) => source.clone(),
-		_ => return false,
+fn aggregate_member(value_type: &ValueType, member_name: &str) -> Result<(usize, ValueType), VmError> {
+	match value_type {
+		ValueType::Struct { fields, .. } => fields
+			.iter()
+			.enumerate()
+			.find(|(_, field)| field.name() == member_name)
+			.map(|(index, field)| (index, field.value_type().clone()))
+			.ok_or_else(|| VmError::UnknownBufferMember {
+				member: member_name.to_string(),
+			}),
+		ValueType::Vec2U16 | ValueType::Vec2I | ValueType::Vec2U | ValueType::Vec2F => {
+			vector_member(value_type, member_name, 2)
+		}
+		ValueType::Vec3U | ValueType::Vec3F => vector_member(value_type, member_name, 3),
+		ValueType::Vec4U | ValueType::Vec4F => vector_member(value_type, member_name, 4),
+		ValueType::Mat4F => matrix_member(member_name, ValueType::Vec4F),
+		ValueType::Mat4x3F => matrix_member(member_name, ValueType::Vec3F),
+		_ => Err(VmError::UnsupportedExpression {
+			message: format!("`{}` has no selectable members", value_type.name()),
+		}),
+	}
+}
+
+fn array_element_type(value_type: &ValueType) -> Result<(ValueType, usize), VmError> {
+	let ValueType::Struct { fields, .. } = value_type else {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("`{}` cannot be indexed as an aggregate value", value_type.name()),
+		});
 	};
-	drop(borrowed);
+	let first = fields.first().ok_or_else(|| VmError::UnsupportedExpression {
+		message: "Cannot index an empty aggregate value".to_string(),
+	})?;
+	if fields.iter().enumerate().any(|(index, field)| {
+		field
+			.name()
+			.strip_prefix("value_")
+			.and_then(|suffix| suffix.parse::<usize>().ok())
+			!= Some(index)
+			|| field.value_type() != first.value_type()
+	}) {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("`{}` is a struct, not an indexable array value", value_type.name()),
+		});
+	}
+	Ok((first.value_type().clone(), fields.len()))
+}
 
-	let is_selector = matches!(
-		source.borrow().node(),
-		Nodes::Binding { .. }
-			| Nodes::PushConstant { .. }
-			| Nodes::Member { .. }
-			| Nodes::Expression(Expressions::Accessor { .. })
-	);
+fn aggregate_member_layout(value_type: &ValueType, member_name: &str) -> Result<(usize, ValueType, usize), VmError> {
+	let (index, field_type) = aggregate_member(value_type, member_name)?;
+	let offset = match value_type {
+		ValueType::Struct { fields, .. } => fields[index].offset(),
+		ValueType::Mat4F | ValueType::Mat4x3F => index * field_type.size(),
+		_ => index * field_type.size(),
+	};
+	let count = match value_type {
+		ValueType::Struct { fields, .. } => fields[index].count(),
+		_ => 1,
+	};
+	Ok((offset, field_type, count))
+}
 
-	is_selector
+fn vector_member(value_type: &ValueType, member_name: &str, component_count: usize) -> Result<(usize, ValueType), VmError> {
+	let index = component_index(member_name)
+		.filter(|index| *index < component_count)
+		.ok_or_else(|| VmError::UnsupportedExpression {
+			message: format!("`{}` is not a component of `{}`", member_name, value_type.name()),
+		})?;
+	let scalar = vector_scalar_type(value_type).expect("Vector types have scalar components");
+	Ok((index, scalar))
+}
+
+fn matrix_member(member_name: &str, column_type: ValueType) -> Result<(usize, ValueType), VmError> {
+	let index = component_index(member_name).ok_or_else(|| VmError::UnsupportedExpression {
+		message: format!("`{}` is not a matrix column", member_name),
+	})?;
+	Ok((index, column_type))
+}
+
+fn component_index(name: &str) -> Option<usize> {
+	match name {
+		"x" | "r" => Some(0),
+		"y" | "g" => Some(1),
+		"z" | "b" => Some(2),
+		"w" | "a" => Some(3),
+		_ => None,
+	}
+}
+
+fn resolve_referenced_value_type(source: &NodeReference) -> Result<ValueType, VmError> {
+	match source.borrow().node() {
+		Nodes::Member { r#type, .. }
+		| Nodes::Parameter { r#type, .. }
+		| Nodes::Specialization { r#type, .. }
+		| Nodes::Const { r#type, .. } => resolve_value_type(r#type),
+		Nodes::Input { format, .. } | Nodes::Output { format, .. } => resolve_value_type(format),
+		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => resolve_value_type(r#type),
+		node => Err(VmError::UnsupportedExpression {
+			message: format!("Cannot resolve a value type from {}", describe_node(node)),
+		}),
+	}
 }
 
 fn describe_node(node: &Nodes) -> &'static str {
@@ -2904,6 +4459,16 @@ fn describe_node(node: &Nodes) -> &'static str {
 
 fn parse_literal(value: &str, value_type: &ValueType) -> Result<ScalarValue, VmError> {
 	let parsed = match value_type {
+		ValueType::Bool => match value {
+			"true" => ScalarValue::Bool(true),
+			"false" => ScalarValue::Bool(false),
+			_ => {
+				return Err(VmError::InvalidLiteral {
+					value: value.to_string(),
+					value_type: value_type.name().to_string(),
+				});
+			}
+		},
 		ValueType::U8 => value
 			.parse::<u8>()
 			.map(ScalarValue::U8)
@@ -2932,7 +4497,7 @@ fn parse_literal(value: &str, value_type: &ValueType) -> Result<ScalarValue, VmE
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
 			})?,
-		ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => {
+		ValueType::Vec2U16 | ValueType::Vec2I | ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => {
 			return Err(VmError::InvalidLiteral {
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
@@ -2945,7 +4510,15 @@ fn parse_literal(value: &str, value_type: &ValueType) -> Result<ScalarValue, VmE
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
 			})?,
-		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F | ValueType::Mat4F | ValueType::Mat4x3F => {
+		ValueType::Vec2F
+		| ValueType::Vec3F
+		| ValueType::Vec4F
+		| ValueType::Mat4F
+		| ValueType::Mat4x3F
+		| ValueType::Texture2D
+		| ValueType::Texture3D
+		| ValueType::ArrayTexture2D
+		| ValueType::Struct { .. } => {
 			return Err(VmError::InvalidLiteral {
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
@@ -2958,51 +4531,32 @@ fn parse_literal(value: &str, value_type: &ValueType) -> Result<ScalarValue, VmE
 
 fn construct_value(value_type: &ValueType, components: &[ScalarValue]) -> Result<ScalarValue, VmError> {
 	match value_type {
+		ValueType::Vec2U16 => Ok(ScalarValue::Vec2U16(extract_u16_components::<2>(components)?)),
+		ValueType::Vec2I => Ok(ScalarValue::Vec2I(extract_i32_components::<2>(components)?)),
 		ValueType::Vec2U => Ok(ScalarValue::Vec2U(extract_u32_components::<2>(components)?)),
 		ValueType::Vec3U => Ok(ScalarValue::Vec3U(extract_u32_components::<3>(components)?)),
 		ValueType::Vec4U => Ok(ScalarValue::Vec4U(extract_u32_components::<4>(components)?)),
 		ValueType::Vec2F => Ok(ScalarValue::Vec2F(extract_f32_components::<2>(components)?)),
 		ValueType::Vec3F => Ok(ScalarValue::Vec3F(extract_f32_components::<3>(components)?)),
 		ValueType::Vec4F => Ok(ScalarValue::Vec4F(extract_f32_components::<4>(components)?)),
-		ValueType::Mat4F => {
-			if components.len() != 4 {
-				return Err(VmError::UnsupportedExpression {
-					message: format!("Constructor for `{}` expected 4 vec4f parameters", value_type.name()),
+		ValueType::Mat4F => Ok(ScalarValue::Mat4F(extract_f32_components::<16>(components)?)),
+		ValueType::Mat4x3F => Ok(ScalarValue::Mat4x3F(extract_f32_components::<12>(components)?)),
+		ValueType::Struct { fields, .. } => {
+			if fields.len() != components.len()
+				|| !components
+					.iter()
+					.zip(fields)
+					.all(|(component, field)| component.matches_type(field.value_type()))
+			{
+				return Err(VmError::TypeMismatch {
+					expected: value_type.name().to_string(),
+					found: "constructor fields".to_string(),
 				});
 			}
-
-			let mut values = [0.0; 16];
-			for (index, component) in components.iter().enumerate() {
-				let ScalarValue::Vec4F(component) = component else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec4F.name().to_string(),
-						found: component.value_type().name().to_string(),
-					});
-				};
-				values[index * 4..(index + 1) * 4].copy_from_slice(component);
-			}
-
-			Ok(ScalarValue::Mat4F(values))
-		}
-		ValueType::Mat4x3F => {
-			if components.len() != 4 {
-				return Err(VmError::UnsupportedExpression {
-					message: format!("Constructor for `{}` expected 4 vec3f parameters", value_type.name()),
-				});
-			}
-
-			let mut values = [0.0; 12];
-			for (index, component) in components.iter().enumerate() {
-				let ScalarValue::Vec3F(component) = component else {
-					return Err(VmError::TypeMismatch {
-						expected: ValueType::Vec3F.name().to_string(),
-						found: component.value_type().name().to_string(),
-					});
-				};
-				values[index * 3..(index + 1) * 3].copy_from_slice(component);
-			}
-
-			Ok(ScalarValue::Mat4x3F(values))
+			Ok(ScalarValue::Struct {
+				value_type: value_type.clone(),
+				fields: components.to_vec(),
+			})
 		}
 		_ => Err(VmError::UnsupportedExpression {
 			message: format!("`{}` is not a constructor-backed VM value type", value_type.name()),
@@ -3011,44 +4565,153 @@ fn construct_value(value_type: &ValueType, components: &[ScalarValue]) -> Result
 }
 
 fn extract_f32_components<const N: usize>(components: &[ScalarValue]) -> Result<[f32; N], VmError> {
-	if components.len() != N {
-		return Err(VmError::UnsupportedExpression {
-			message: format!("Expected {} constructor parameters, but found {}", N, components.len()),
-		});
-	}
-
 	let mut values = [0.0; N];
-	for (index, component) in components.iter().enumerate() {
-		let ScalarValue::F32(component) = component else {
-			return Err(VmError::TypeMismatch {
-				expected: ValueType::F32.name().to_string(),
-				found: component.value_type().name().to_string(),
-			});
+	let mut index = 0;
+	for component in components {
+		let slice: &[f32] = match component {
+			ScalarValue::F32(value) => std::slice::from_ref(value),
+			ScalarValue::Vec2F(value) => value,
+			ScalarValue::Vec3F(value) => value,
+			ScalarValue::Vec4F(value) => value,
+			ScalarValue::Mat4F(value) => value,
+			ScalarValue::Mat4x3F(value) => value,
+			_ => {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::F32.name().to_string(),
+					found: component.value_type().name().to_string(),
+				});
+			}
 		};
-		values[index] = *component;
+		if index + slice.len() > N {
+			return Err(VmError::UnsupportedExpression {
+				message: format!("Constructor provides more than {} f32 components", N),
+			});
+		}
+		values[index..index + slice.len()].copy_from_slice(slice);
+		index += slice.len();
+	}
+	if index != N {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Constructor expected {} f32 components, but found {}", N, index),
+		});
 	}
 
 	Ok(values)
 }
 
 fn extract_u32_components<const N: usize>(components: &[ScalarValue]) -> Result<[u32; N], VmError> {
-	if components.len() != N {
+	let mut values = [0; N];
+	let mut index = 0;
+	for component in components {
+		let slice: &[u32] = match component {
+			ScalarValue::U32(value) => std::slice::from_ref(value),
+			ScalarValue::Vec2U(value) => value,
+			ScalarValue::Vec3U(value) => value,
+			ScalarValue::Vec4U(value) => value,
+			_ => {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::U32.name().to_string(),
+					found: component.value_type().name().to_string(),
+				});
+			}
+		};
+		if index + slice.len() > N {
+			return Err(VmError::UnsupportedExpression {
+				message: format!("Constructor provides more than {} u32 components", N),
+			});
+		}
+		values[index..index + slice.len()].copy_from_slice(slice);
+		index += slice.len();
+	}
+	if index != N {
 		return Err(VmError::UnsupportedExpression {
-			message: format!("Expected {} constructor parameters, but found {}", N, components.len()),
+			message: format!("Constructor expected {} u32 components, but found {}", N, index),
 		});
 	}
 
-	let mut values = [0; N];
-	for (index, component) in components.iter().enumerate() {
-		let ScalarValue::U32(component) = component else {
-			return Err(VmError::TypeMismatch {
-				expected: ValueType::U32.name().to_string(),
-				found: component.value_type().name().to_string(),
-			});
-		};
-		values[index] = *component;
-	}
+	Ok(values)
+}
 
+fn extract_u16_components<const N: usize>(components: &[ScalarValue]) -> Result<[u16; N], VmError> {
+	let mut values = [0; N];
+	let mut index = 0;
+	for component in components {
+		let component_count = match component {
+			ScalarValue::U16(value) => {
+				if index < N {
+					values[index] = *value;
+				}
+				1
+			}
+			ScalarValue::U32(value) => {
+				if index < N {
+					values[index] = *value as u16;
+				}
+				1
+			}
+			ScalarValue::Vec2U16(value) => {
+				if index + value.len() <= N {
+					values[index..index + value.len()].copy_from_slice(value);
+				}
+				value.len()
+			}
+			ScalarValue::Vec2U(value) => {
+				if index + value.len() <= N {
+					for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
+						*destination = *source as u16;
+					}
+				}
+				value.len()
+			}
+			_ => {
+				return Err(VmError::TypeMismatch {
+					expected: "u16 or u32".to_string(),
+					found: component.value_type().name().to_string(),
+				});
+			}
+		};
+		if index + component_count > N {
+			return Err(VmError::UnsupportedExpression {
+				message: format!("Constructor provides more than {} u16 components", N),
+			});
+		}
+		index += component_count;
+	}
+	if index != N {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Constructor expected {} u16 components, but found {}", N, index),
+		});
+	}
+	Ok(values)
+}
+
+fn extract_i32_components<const N: usize>(components: &[ScalarValue]) -> Result<[i32; N], VmError> {
+	let mut values = [0; N];
+	let mut index = 0;
+	for component in components {
+		let slice: &[i32] = match component {
+			ScalarValue::I32(value) => std::slice::from_ref(value),
+			ScalarValue::Vec2I(value) => value,
+			_ => {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::I32.name().to_string(),
+					found: component.value_type().name().to_string(),
+				});
+			}
+		};
+		if index + slice.len() > N {
+			return Err(VmError::UnsupportedExpression {
+				message: format!("Constructor provides more than {} i32 components", N),
+			});
+		}
+		values[index..index + slice.len()].copy_from_slice(slice);
+		index += slice.len();
+	}
+	if index != N {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Constructor expected {} i32 components, but found {}", N, index),
+		});
+	}
 	Ok(values)
 }
 
@@ -3080,20 +4743,58 @@ fn read_u32_array<const N: usize>(bytes: &[u8]) -> Result<[u32; N], VmError> {
 	Ok(values)
 }
 
-fn write_f32_slice(values: &[f32]) -> Vec<u8> {
-	let mut bytes = Vec::with_capacity(values.len() * 4);
-	for value in values {
-		bytes.extend_from_slice(&value.to_ne_bytes());
+fn read_u16_array<const N: usize>(bytes: &[u8]) -> Result<[u16; N], VmError> {
+	if bytes.len() != N * 2 {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Expected {} bytes for {} u16 values, but found {}", N * 2, N, bytes.len()),
+		});
 	}
-	bytes
+	let mut values = [0; N];
+	for (index, chunk) in bytes.chunks_exact(2).enumerate() {
+		values[index] = u16::from_ne_bytes(chunk.try_into().expect("Invalid u16 byte count"));
+	}
+	Ok(values)
 }
 
-fn write_u32_slice(values: &[u32]) -> Vec<u8> {
-	let mut bytes = Vec::with_capacity(values.len() * 4);
-	for value in values {
-		bytes.extend_from_slice(&value.to_ne_bytes());
+fn read_i32_array<const N: usize>(bytes: &[u8]) -> Result<[i32; N], VmError> {
+	if bytes.len() != N * 4 {
+		return Err(VmError::UnsupportedExpression {
+			message: format!("Expected {} bytes for {} i32 values, but found {}", N * 4, N, bytes.len()),
+		});
 	}
-	bytes
+	let mut values = [0; N];
+	for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+		values[index] = i32::from_ne_bytes(chunk.try_into().expect("Invalid i32 byte count"));
+	}
+	Ok(values)
+}
+
+fn write_f32_slice(buffer: &mut Buffer, offset: usize, values: &[f32]) -> Result<(), VmError> {
+	for (index, value) in values.iter().enumerate() {
+		buffer.write_bytes(offset + index * 4, &value.to_ne_bytes())?;
+	}
+	Ok(())
+}
+
+fn write_u32_slice(buffer: &mut Buffer, offset: usize, values: &[u32]) -> Result<(), VmError> {
+	for (index, value) in values.iter().enumerate() {
+		buffer.write_bytes(offset + index * 4, &value.to_ne_bytes())?;
+	}
+	Ok(())
+}
+
+fn write_u16_slice(buffer: &mut Buffer, offset: usize, values: &[u16]) -> Result<(), VmError> {
+	for (index, value) in values.iter().enumerate() {
+		buffer.write_bytes(offset + index * 2, &value.to_ne_bytes())?;
+	}
+	Ok(())
+}
+
+fn write_i32_slice(buffer: &mut Buffer, offset: usize, values: &[i32]) -> Result<(), VmError> {
+	for (index, value) in values.iter().enumerate() {
+		buffer.write_bytes(offset + index * 4, &value.to_ne_bytes())?;
+	}
+	Ok(())
 }
 
 fn lerp_rgba(left: [f32; 4], right: [f32; 4], factor: f32) -> [f32; 4] {
@@ -3104,6 +4805,18 @@ fn lerp_rgba(left: [f32; 4], right: [f32; 4], factor: f32) -> [f32; 4] {
 	value
 }
 
+fn normalized_linear_axis(uv: f32, size: u32) -> (u32, u32, f32) {
+	let coordinate = uv.clamp(0.0, 1.0) * size as f32 - 0.5;
+	let low = coordinate.floor();
+	let high = low + 1.0;
+	let maximum = size.saturating_sub(1) as f32;
+	(
+		low.clamp(0.0, maximum) as u32,
+		high.clamp(0.0, maximum) as u32,
+		coordinate - low,
+	)
+}
+
 fn arithmetic_operator(operator: &Operators) -> Option<ArithmeticOperator> {
 	match operator {
 		Operators::Plus => Some(ArithmeticOperator::Add),
@@ -3111,20 +4824,47 @@ fn arithmetic_operator(operator: &Operators) -> Option<ArithmeticOperator> {
 		Operators::Multiply => Some(ArithmeticOperator::Multiply),
 		Operators::Divide => Some(ArithmeticOperator::Divide),
 		Operators::Modulo => Some(ArithmeticOperator::Modulo),
-		Operators::ShiftLeft
-		| Operators::ShiftRight
-		| Operators::BitwiseAnd
-		| Operators::BitwiseOr
-		| Operators::Assignment
+		Operators::ShiftLeft => Some(ArithmeticOperator::ShiftLeft),
+		Operators::ShiftRight => Some(ArithmeticOperator::ShiftRight),
+		Operators::BitwiseAnd => Some(ArithmeticOperator::BitwiseAnd),
+		Operators::BitwiseOr => Some(ArithmeticOperator::BitwiseOr),
+		Operators::LogicalAnd => Some(ArithmeticOperator::LogicalAnd),
+		Operators::LogicalOr => Some(ArithmeticOperator::LogicalOr),
+		Operators::Assignment
 		| Operators::Equality
 		| Operators::LessThan
 		| Operators::Inequality
 		| Operators::GreaterThan
 		| Operators::LessThanOrEqual
-		| Operators::GreaterThanOrEqual
-		| Operators::LogicalAnd
-		| Operators::LogicalOr => None,
+		| Operators::GreaterThanOrEqual => None,
 	}
+}
+
+fn binary_result_type(operator: ArithmeticOperator, left: &ValueType, right: &ValueType) -> Result<ValueType, VmError> {
+	if matches!(operator, ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr) {
+		return Ok(ValueType::Bool);
+	}
+	if operator == ArithmeticOperator::Multiply {
+		match (left, right) {
+			(ValueType::Mat4F, ValueType::Vec4F) => return Ok(ValueType::Vec4F),
+			(ValueType::Mat4F, ValueType::Mat4F) => return Ok(ValueType::Mat4F),
+			(ValueType::Mat4x3F, ValueType::Vec4F) => return Ok(ValueType::Vec3F),
+			_ => {}
+		}
+	}
+	if left == right {
+		return Ok(left.clone());
+	}
+	if supports_scalar_broadcast(left) && right == &ValueType::F32 {
+		return Ok(left.clone());
+	}
+	if left == &ValueType::F32 && supports_scalar_broadcast(right) {
+		return Ok(right.clone());
+	}
+	Err(VmError::TypeMismatch {
+		expected: left.name().to_string(),
+		found: right.name().to_string(),
+	})
 }
 
 fn comparison_operator(operator: &Operators) -> Option<ComparisonOperator> {
@@ -3147,6 +4887,29 @@ fn supports_scalar_broadcast(value_type: &ValueType) -> bool {
 }
 
 fn apply_arithmetic(operator: ArithmeticOperator, left: &ScalarValue, right: &ScalarValue) -> Result<ScalarValue, VmError> {
+	if matches!(operator, ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr) {
+		let left = !is_zero_value(left)?;
+		let right = !is_zero_value(right)?;
+		return Ok(ScalarValue::Bool(match operator {
+			ArithmeticOperator::LogicalAnd => left && right,
+			ArithmeticOperator::LogicalOr => left || right,
+			_ => unreachable!("Logical operators are handled before arithmetic"),
+		}));
+	}
+	if operator == ArithmeticOperator::Multiply {
+		match (left, right) {
+			(ScalarValue::Mat4F(matrix), ScalarValue::Vec4F(vector)) => {
+				return Ok(ScalarValue::Vec4F(multiply_mat4_vec4(*matrix, *vector)));
+			}
+			(ScalarValue::Mat4F(left), ScalarValue::Mat4F(right)) => {
+				return Ok(ScalarValue::Mat4F(multiply_mat4(*left, *right)));
+			}
+			(ScalarValue::Mat4x3F(matrix), ScalarValue::Vec4F(vector)) => {
+				return Ok(ScalarValue::Vec3F(multiply_mat4x3_vec4(*matrix, *vector)));
+			}
+			_ => {}
+		}
+	}
 	match (left, right) {
 		(ScalarValue::U8(left), ScalarValue::U8(right)) => {
 			apply_integer_arithmetic(*left, *right, operator).map(ScalarValue::U8)
@@ -3162,6 +4925,21 @@ fn apply_arithmetic(operator: ArithmeticOperator, left: &ScalarValue, right: &Sc
 		}
 		(ScalarValue::F32(left), ScalarValue::F32(right)) => {
 			apply_float_arithmetic(*left, *right, operator).map(ScalarValue::F32)
+		}
+		(ScalarValue::Vec2U16(left), ScalarValue::Vec2U16(right)) => {
+			apply_integer_array_arithmetic::<u16, 2>(*left, *right, operator).map(ScalarValue::Vec2U16)
+		}
+		(ScalarValue::Vec2I(left), ScalarValue::Vec2I(right)) => {
+			apply_integer_array_arithmetic::<i32, 2>(*left, *right, operator).map(ScalarValue::Vec2I)
+		}
+		(ScalarValue::Vec2U(left), ScalarValue::Vec2U(right)) => {
+			apply_integer_array_arithmetic::<u32, 2>(*left, *right, operator).map(ScalarValue::Vec2U)
+		}
+		(ScalarValue::Vec3U(left), ScalarValue::Vec3U(right)) => {
+			apply_integer_array_arithmetic::<u32, 3>(*left, *right, operator).map(ScalarValue::Vec3U)
+		}
+		(ScalarValue::Vec4U(left), ScalarValue::Vec4U(right)) => {
+			apply_integer_array_arithmetic::<u32, 4>(*left, *right, operator).map(ScalarValue::Vec4U)
 		}
 		(ScalarValue::Vec2F(left), ScalarValue::Vec2F(right)) => {
 			apply_float_array_arithmetic::<2>(*left, *right, operator).map(ScalarValue::Vec2F)
@@ -3217,9 +4995,9 @@ fn apply_arithmetic(operator: ArithmeticOperator, left: &ScalarValue, right: &Sc
 
 fn apply_less_than(left: &ScalarValue, right: &ScalarValue) -> Result<ScalarValue, VmError> {
 	match (left, right) {
-		(ScalarValue::U32(left), ScalarValue::U32(right)) => Ok(ScalarValue::U32(u32::from(left < right))),
-		(ScalarValue::I32(left), ScalarValue::I32(right)) => Ok(ScalarValue::U32(u32::from(left < right))),
-		(ScalarValue::F32(left), ScalarValue::F32(right)) => Ok(ScalarValue::U32(u32::from(left < right))),
+		(ScalarValue::U32(left), ScalarValue::U32(right)) => Ok(ScalarValue::Bool(left < right)),
+		(ScalarValue::I32(left), ScalarValue::I32(right)) => Ok(ScalarValue::Bool(left < right)),
+		(ScalarValue::F32(left), ScalarValue::F32(right)) => Ok(ScalarValue::Bool(left < right)),
 		(left, right) => Err(VmError::TypeMismatch {
 			expected: left.value_type().name().to_string(),
 			found: right.value_type().name().to_string(),
@@ -3229,30 +5007,40 @@ fn apply_less_than(left: &ScalarValue, right: &ScalarValue) -> Result<ScalarValu
 
 fn apply_comparison(operator: ComparisonOperator, left: &ScalarValue, right: &ScalarValue) -> Result<ScalarValue, VmError> {
 	match (left, right) {
-		(ScalarValue::U32(left), ScalarValue::U32(right)) => Ok(ScalarValue::U32(u32::from(match operator {
+		(ScalarValue::Bool(left), ScalarValue::Bool(right)) => Ok(ScalarValue::Bool(match operator {
+			ComparisonOperator::Equal => left == right,
+			ComparisonOperator::NotEqual => left != right,
+			_ => {
+				return Err(VmError::TypeMismatch {
+					expected: "equality comparison for bool".to_string(),
+					found: format!("{:?}", operator),
+				});
+			}
+		})),
+		(ScalarValue::U32(left), ScalarValue::U32(right)) => Ok(ScalarValue::Bool(match operator {
 			ComparisonOperator::Equal => left == right,
 			ComparisonOperator::NotEqual => left != right,
 			ComparisonOperator::LessThan => left < right,
 			ComparisonOperator::GreaterThan => left > right,
 			ComparisonOperator::LessThanOrEqual => left <= right,
 			ComparisonOperator::GreaterThanOrEqual => left >= right,
-		}))),
-		(ScalarValue::I32(left), ScalarValue::I32(right)) => Ok(ScalarValue::U32(u32::from(match operator {
+		})),
+		(ScalarValue::I32(left), ScalarValue::I32(right)) => Ok(ScalarValue::Bool(match operator {
 			ComparisonOperator::Equal => left == right,
 			ComparisonOperator::NotEqual => left != right,
 			ComparisonOperator::LessThan => left < right,
 			ComparisonOperator::GreaterThan => left > right,
 			ComparisonOperator::LessThanOrEqual => left <= right,
 			ComparisonOperator::GreaterThanOrEqual => left >= right,
-		}))),
-		(ScalarValue::F32(left), ScalarValue::F32(right)) => Ok(ScalarValue::U32(u32::from(match operator {
+		})),
+		(ScalarValue::F32(left), ScalarValue::F32(right)) => Ok(ScalarValue::Bool(match operator {
 			ComparisonOperator::Equal => left == right,
 			ComparisonOperator::NotEqual => left != right,
 			ComparisonOperator::LessThan => left < right,
 			ComparisonOperator::GreaterThan => left > right,
 			ComparisonOperator::LessThanOrEqual => left <= right,
 			ComparisonOperator::GreaterThanOrEqual => left >= right,
-		}))),
+		})),
 		(left, right) => Err(VmError::TypeMismatch {
 			expected: left.value_type().name().to_string(),
 			found: right.value_type().name().to_string(),
@@ -3262,6 +5050,7 @@ fn apply_comparison(operator: ComparisonOperator, left: &ScalarValue, right: &Sc
 
 fn is_zero_value(value: &ScalarValue) -> Result<bool, VmError> {
 	match value {
+		ScalarValue::Bool(value) => Ok(!*value),
 		ScalarValue::U32(value) => Ok(*value == 0),
 		ScalarValue::I32(value) => Ok(*value == 0),
 		ScalarValue::F32(value) => Ok(*value == 0.0),
@@ -3272,29 +5061,50 @@ fn is_zero_value(value: &ScalarValue) -> Result<bool, VmError> {
 	}
 }
 
-fn apply_integer_arithmetic<T>(left: T, right: T, operator: ArithmeticOperator) -> Result<T, VmError>
-where
-	T: Copy
-		+ std::ops::Add<Output = T>
-		+ std::ops::Sub<Output = T>
-		+ std::ops::Mul<Output = T>
-		+ std::ops::Div<Output = T>
-		+ std::ops::Rem<Output = T>
-		+ PartialEq
-		+ Default,
-{
+/// The `VmInteger` trait keeps integer instruction semantics consistent across BESL scalar widths.
+trait VmInteger: Copy + PartialEq + Default {
+	fn wrapping_add(self, right: Self) -> Self;
+	fn wrapping_sub(self, right: Self) -> Self;
+	fn wrapping_mul(self, right: Self) -> Self;
+	fn wrapping_div(self, right: Self) -> Self;
+	fn wrapping_rem(self, right: Self) -> Self;
+	fn wrapping_shl(self, right: Self) -> Self;
+	fn wrapping_shr(self, right: Self) -> Self;
+	fn bitand(self, right: Self) -> Self;
+	fn bitor(self, right: Self) -> Self;
+}
+
+macro_rules! impl_vm_integer {
+	($($type:ty),+ $(,)?) => {
+		$(impl VmInteger for $type {
+			fn wrapping_add(self, right: Self) -> Self { self.wrapping_add(right) }
+			fn wrapping_sub(self, right: Self) -> Self { self.wrapping_sub(right) }
+			fn wrapping_mul(self, right: Self) -> Self { self.wrapping_mul(right) }
+			fn wrapping_div(self, right: Self) -> Self { self.wrapping_div(right) }
+			fn wrapping_rem(self, right: Self) -> Self { self.wrapping_rem(right) }
+			fn wrapping_shl(self, right: Self) -> Self { self.wrapping_shl(right as u32) }
+			fn wrapping_shr(self, right: Self) -> Self { self.wrapping_shr(right as u32) }
+			fn bitand(self, right: Self) -> Self { self & right }
+			fn bitor(self, right: Self) -> Self { self | right }
+		})+
+	};
+}
+
+impl_vm_integer!(u8, u16, u32, i32);
+
+fn apply_integer_arithmetic<T: VmInteger>(left: T, right: T, operator: ArithmeticOperator) -> Result<T, VmError> {
 	let zero = T::default();
 	match operator {
-		ArithmeticOperator::Add => Ok(left + right),
-		ArithmeticOperator::Subtract => Ok(left - right),
-		ArithmeticOperator::Multiply => Ok(left * right),
+		ArithmeticOperator::Add => Ok(left.wrapping_add(right)),
+		ArithmeticOperator::Subtract => Ok(left.wrapping_sub(right)),
+		ArithmeticOperator::Multiply => Ok(left.wrapping_mul(right)),
 		ArithmeticOperator::Divide => {
 			if right == zero {
 				return Err(VmError::ArithmeticError {
 					message: "Division by zero".to_string(),
 				});
 			}
-			Ok(left / right)
+			Ok(left.wrapping_div(right))
 		}
 		ArithmeticOperator::Modulo => {
 			if right == zero {
@@ -3302,9 +5112,28 @@ where
 					message: "Modulo by zero".to_string(),
 				});
 			}
-			Ok(left % right)
+			Ok(left.wrapping_rem(right))
+		}
+		ArithmeticOperator::ShiftLeft => Ok(left.wrapping_shl(right)),
+		ArithmeticOperator::ShiftRight => Ok(left.wrapping_shr(right)),
+		ArithmeticOperator::BitwiseAnd => Ok(left.bitand(right)),
+		ArithmeticOperator::BitwiseOr => Ok(left.bitor(right)),
+		ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr => {
+			unreachable!("Logical operations are evaluated before integer arithmetic")
 		}
 	}
+}
+
+fn apply_integer_array_arithmetic<T: VmInteger, const N: usize>(
+	left: [T; N],
+	right: [T; N],
+	operator: ArithmeticOperator,
+) -> Result<[T; N], VmError> {
+	let mut values = [T::default(); N];
+	for index in 0..N {
+		values[index] = apply_integer_arithmetic(left[index], right[index], operator)?;
+	}
+	Ok(values)
 }
 
 fn apply_float_arithmetic(left: f32, right: f32, operator: ArithmeticOperator) -> Result<f32, VmError> {
@@ -3314,6 +5143,15 @@ fn apply_float_arithmetic(left: f32, right: f32, operator: ArithmeticOperator) -
 		ArithmeticOperator::Multiply => Ok(left * right),
 		ArithmeticOperator::Divide => Ok(left / right),
 		ArithmeticOperator::Modulo => Ok(left % right),
+		ArithmeticOperator::ShiftLeft
+		| ArithmeticOperator::ShiftRight
+		| ArithmeticOperator::BitwiseAnd
+		| ArithmeticOperator::BitwiseOr
+		| ArithmeticOperator::LogicalAnd
+		| ArithmeticOperator::LogicalOr => Err(VmError::TypeMismatch {
+			expected: "integer operands".to_string(),
+			found: ValueType::F32.name().to_string(),
+		}),
 	}
 }
 
@@ -3439,17 +5277,28 @@ fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &ScalarValue) -> Res
 
 			return Ok(ScalarValue::U32(*value as u32));
 		}
+		ScalarUnaryOperator::FromU8ToU32 => {
+			let ScalarValue::U8(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::U8.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+			return Ok(ScalarValue::U32(u32::from(*value)));
+		}
+		ScalarUnaryOperator::FromU16ToU32 => {
+			let ScalarValue::U16(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::U16.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+			return Ok(ScalarValue::U32(u32::from(*value)));
+		}
 		_ => {}
 	}
 
-	let ScalarValue::F32(value) = value else {
-		return Err(VmError::TypeMismatch {
-			expected: ValueType::F32.name().to_string(),
-			found: value.value_type().name().to_string(),
-		});
-	};
-
-	let result = match operator {
+	map_float_value(value, |value| match operator {
 		ScalarUnaryOperator::Abs => value.abs(),
 		ScalarUnaryOperator::Sqrt => value.sqrt(),
 		ScalarUnaryOperator::Exp => value.exp(),
@@ -3457,15 +5306,60 @@ fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &ScalarValue) -> Res
 		ScalarUnaryOperator::Cos => value.cos(),
 		ScalarUnaryOperator::Tan => value.tan(),
 		ScalarUnaryOperator::Round => value.round(),
-		ScalarUnaryOperator::Fract => value.fract(),
+		ScalarUnaryOperator::Fract => value - value.floor(),
 		ScalarUnaryOperator::Radians => value.to_radians(),
 		ScalarUnaryOperator::InverseSqrt => 1.0 / value.sqrt(),
-		ScalarUnaryOperator::FromU32ToF32 | ScalarUnaryOperator::FromF32ToU32 => {
-			unreachable!("conversion operators return early")
-		}
-	};
+		ScalarUnaryOperator::Log2 => value.log2(),
+		ScalarUnaryOperator::Fwidth => 0.0,
+		ScalarUnaryOperator::FromU32ToF32
+		| ScalarUnaryOperator::FromF32ToU32
+		| ScalarUnaryOperator::FromU8ToU32
+		| ScalarUnaryOperator::FromU16ToU32 => unreachable!("conversion operators return early"),
+	})
+}
 
-	Ok(ScalarValue::F32(result))
+fn map_float_value(value: &ScalarValue, map: impl Fn(f32) -> f32) -> Result<ScalarValue, VmError> {
+	match value {
+		ScalarValue::F32(value) => Ok(ScalarValue::F32(map(*value))),
+		ScalarValue::Vec2F(value) => Ok(ScalarValue::Vec2F(value.map(&map))),
+		ScalarValue::Vec3F(value) => Ok(ScalarValue::Vec3F(value.map(&map))),
+		ScalarValue::Vec4F(value) => Ok(ScalarValue::Vec4F(value.map(&map))),
+		value => Err(VmError::TypeMismatch {
+			expected: "f32 or float vector".to_string(),
+			found: value.value_type().name().to_string(),
+		}),
+	}
+}
+
+fn apply_scalar_binary(
+	operator: ScalarBinaryOperator,
+	left: &ScalarValue,
+	right: &ScalarValue,
+) -> Result<ScalarValue, VmError> {
+	fn apply(operator: ScalarBinaryOperator, left: f32, right: f32) -> f32 {
+		match operator {
+			ScalarBinaryOperator::Min => left.min(right),
+			ScalarBinaryOperator::Max => left.max(right),
+			ScalarBinaryOperator::Pow => left.powf(right),
+			ScalarBinaryOperator::Step => f32::from(right >= left),
+		}
+	}
+	match (left, right) {
+		(ScalarValue::F32(left), ScalarValue::F32(right)) => Ok(ScalarValue::F32(apply(operator, *left, *right))),
+		(ScalarValue::Vec2F(left), ScalarValue::Vec2F(right)) => Ok(ScalarValue::Vec2F(std::array::from_fn(|index| {
+			apply(operator, left[index], right[index])
+		}))),
+		(ScalarValue::Vec3F(left), ScalarValue::Vec3F(right)) => Ok(ScalarValue::Vec3F(std::array::from_fn(|index| {
+			apply(operator, left[index], right[index])
+		}))),
+		(ScalarValue::Vec4F(left), ScalarValue::Vec4F(right)) => Ok(ScalarValue::Vec4F(std::array::from_fn(|index| {
+			apply(operator, left[index], right[index])
+		}))),
+		(left, right) => Err(VmError::TypeMismatch {
+			expected: left.value_type().name().to_string(),
+			found: right.value_type().name().to_string(),
+		}),
+	}
 }
 
 fn apply_scalar_ternary(
@@ -3474,29 +5368,123 @@ fn apply_scalar_ternary(
 	second: &ScalarValue,
 	third: &ScalarValue,
 ) -> Result<ScalarValue, VmError> {
-	let (ScalarValue::F32(first), ScalarValue::F32(second), ScalarValue::F32(third)) = (first, second, third) else {
+	fn apply(operator: ScalarTernaryOperator, first: f32, second: f32, third: f32) -> f32 {
+		match operator {
+			ScalarTernaryOperator::Mix => first + (second - first) * third,
+			ScalarTernaryOperator::Clamp => first.clamp(second, third),
+			ScalarTernaryOperator::Smoothstep => {
+				let t = ((third - first) / (second - first)).clamp(0.0, 1.0);
+				t * t * (3.0 - 2.0 * t)
+			}
+		}
+	}
+	match (first, second, third) {
+		(ScalarValue::F32(first), ScalarValue::F32(second), ScalarValue::F32(third)) => {
+			Ok(ScalarValue::F32(apply(operator, *first, *second, *third)))
+		}
+		(ScalarValue::Vec2F(first), ScalarValue::Vec2F(second), ScalarValue::Vec2F(third)) => {
+			Ok(ScalarValue::Vec2F(std::array::from_fn(|index| {
+				apply(operator, first[index], second[index], third[index])
+			})))
+		}
+		(ScalarValue::Vec3F(first), ScalarValue::Vec3F(second), ScalarValue::Vec3F(third)) => {
+			Ok(ScalarValue::Vec3F(std::array::from_fn(|index| {
+				apply(operator, first[index], second[index], third[index])
+			})))
+		}
+		(ScalarValue::Vec4F(first), ScalarValue::Vec4F(second), ScalarValue::Vec4F(third)) => {
+			Ok(ScalarValue::Vec4F(std::array::from_fn(|index| {
+				apply(operator, first[index], second[index], third[index])
+			})))
+		}
+		_ => Err(VmError::TypeMismatch {
+			expected: first.value_type().name().to_string(),
+			found: format!("{}, {}", second.value_type().name(), third.value_type().name()),
+		}),
+	}
+}
+
+fn extract_value(value: &ScalarValue, index: usize, expected_type: &ValueType) -> Result<ScalarValue, VmError> {
+	let extracted = match value {
+		ScalarValue::Vec2U16(value) => value.get(index).copied().map(ScalarValue::U16),
+		ScalarValue::Vec2I(value) => value.get(index).copied().map(ScalarValue::I32),
+		ScalarValue::Vec2U(value) => value.get(index).copied().map(ScalarValue::U32),
+		ScalarValue::Vec3U(value) => value.get(index).copied().map(ScalarValue::U32),
+		ScalarValue::Vec4U(value) => value.get(index).copied().map(ScalarValue::U32),
+		ScalarValue::Vec2F(value) => value.get(index).copied().map(ScalarValue::F32),
+		ScalarValue::Vec3F(value) => value.get(index).copied().map(ScalarValue::F32),
+		ScalarValue::Vec4F(value) => value.get(index).copied().map(ScalarValue::F32),
+		ScalarValue::Mat4F(value) if index < 4 => Some(ScalarValue::Vec4F(
+			value[index * 4..index * 4 + 4].try_into().expect("Matrix column size"),
+		)),
+		ScalarValue::Mat4x3F(value) if index < 4 => Some(ScalarValue::Vec3F(
+			value[index * 3..index * 3 + 3].try_into().expect("Matrix column size"),
+		)),
+		ScalarValue::Struct { fields, .. } => fields.get(index).cloned(),
+		_ => None,
+	}
+	.ok_or_else(|| VmError::UnsupportedExpression {
+		message: format!("Member index {} is invalid for `{}`", index, value.value_type().name()),
+	})?;
+	if !extracted.matches_type(expected_type) {
 		return Err(VmError::TypeMismatch {
-			expected: ValueType::F32.name().to_string(),
-			found: format!(
-				"{}, {}, {}",
-				first.value_type().name(),
-				second.value_type().name(),
-				third.value_type().name()
-			),
+			expected: expected_type.name().to_string(),
+			found: extracted.value_type().name().to_string(),
+		});
+	}
+	Ok(extracted)
+}
+
+fn vector_scalar_type(value_type: &ValueType) -> Option<ValueType> {
+	match value_type {
+		ValueType::Vec2U16 => Some(ValueType::U16),
+		ValueType::Vec2I => Some(ValueType::I32),
+		ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => Some(ValueType::U32),
+		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F => Some(ValueType::F32),
+		_ => None,
+	}
+}
+
+fn multiply_mat4_vec4(matrix: [f32; 16], vector: [f32; 4]) -> [f32; 4] {
+	std::array::from_fn(|row| (0..4).map(|column| matrix[column * 4 + row] * vector[column]).sum())
+}
+
+fn multiply_mat4(left: [f32; 16], right: [f32; 16]) -> [f32; 16] {
+	let mut value = [0.0; 16];
+	for column in 0..4 {
+		let product = multiply_mat4_vec4(
+			left,
+			right[column * 4..column * 4 + 4]
+				.try_into()
+				.expect("Matrix columns contain four values"),
+		);
+		value[column * 4..column * 4 + 4].copy_from_slice(&product);
+	}
+	value
+}
+
+fn multiply_mat4x3_vec4(matrix: [f32; 12], vector: [f32; 4]) -> [f32; 3] {
+	std::array::from_fn(|row| (0..4).map(|column| matrix[column * 3 + row] * vector[column]).sum())
+}
+
+fn expect_vec2u(value: ScalarValue) -> Result<[u32; 2], VmError> {
+	let ScalarValue::Vec2U(value) = value else {
+		return Err(VmError::TypeMismatch {
+			expected: ValueType::Vec2U.name().to_string(),
+			found: value.value_type().name().to_string(),
 		});
 	};
+	Ok(value)
+}
 
-	let result = match operator {
-		ScalarTernaryOperator::Mix => first + (second - first) * third,
-		ScalarTernaryOperator::Max => first.max(*second),
-		ScalarTernaryOperator::Clamp => first.clamp(*second, *third),
-		ScalarTernaryOperator::Smoothstep => {
-			let t = ((third - first) / (second - first)).clamp(0.0, 1.0);
-			t * t * (3.0 - 2.0 * t)
-		}
+fn expect_u32(value: ScalarValue) -> Result<u32, VmError> {
+	let ScalarValue::U32(value) = value else {
+		return Err(VmError::TypeMismatch {
+			expected: ValueType::U32.name().to_string(),
+			found: value.value_type().name().to_string(),
+		});
 	};
-
-	Ok(ScalarValue::F32(result))
+	Ok(value)
 }
 
 fn dot_product<const N: usize>(left: [f32; N], right: [f32; N]) -> f32 {
@@ -3531,22 +5519,10 @@ fn normalize_vector<const N: usize>(value: [f32; N]) -> Result<[f32; N], VmError
 }
 
 fn reflect_vector<const N: usize>(incident: [f32; N], normal: [f32; N]) -> Result<[f32; N], VmError> {
-	let normal_length = dot_product(normal, normal).sqrt();
-	if normal_length == 0.0 {
-		return Err(VmError::ArithmeticError {
-			message: "Cannot reflect around a zero-length normal".to_string(),
-		});
-	}
-
-	let mut normalized_normal = [0.0; N];
-	for index in 0..N {
-		normalized_normal[index] = normal[index] / normal_length;
-	}
-
-	let scale = 2.0 * dot_product(incident, normalized_normal);
+	let scale = 2.0 * dot_product(incident, normal);
 	let mut reflected = [0.0; N];
 	for index in 0..N {
-		reflected[index] = incident[index] - scale * normalized_normal[index];
+		reflected[index] = incident[index] - scale * normal[index];
 	}
 	Ok(reflected)
 }
@@ -3556,6 +5532,19 @@ fn read_register(registers: &[Option<ScalarValue>], register: usize) -> Result<S
 		.get(register)
 		.and_then(Option::clone)
 		.ok_or(VmError::UninitializedRegister { register })
+}
+
+fn resolve_resource_slot(slot: DescriptorSlot, registers: &[Option<ScalarValue>]) -> Result<DescriptorSlot, VmError> {
+	if slot.set() != DYNAMIC_RESOURCE_SET {
+		return Ok(slot);
+	}
+	match read_register(registers, slot.binding() as usize)? {
+		Value::Resource { slot, .. } => Ok(slot),
+		value => Err(VmError::TypeMismatch {
+			expected: "resource handle".to_string(),
+			found: value.value_type().name().to_string(),
+		}),
+	}
 }
 
 fn read_buffer_array_index(registers: &[Option<ScalarValue>], register: usize, count: usize) -> Result<usize, VmError> {
@@ -3616,6 +5605,21 @@ pub enum VmError {
 		slot: DescriptorSlot,
 	},
 	MissingPushConstant,
+	MissingMeshOutputs,
+	MeshOutputIndexOutOfBounds {
+		kind: &'static str,
+		index: usize,
+		count: usize,
+	},
+	MissingSpecialization {
+		name: String,
+	},
+	InstructionLimitExceeded {
+		limit: usize,
+	},
+	CallDepthLimitExceeded {
+		limit: usize,
+	},
 	CallArgumentMismatch {
 		expected: usize,
 		found: usize,
@@ -3632,12 +5636,15 @@ pub enum VmError {
 	TextureAccessOutOfBounds {
 		x: u32,
 		y: u32,
+		z: u32,
 		width: u32,
 		height: u32,
+		depth: u32,
 	},
 	InvalidTextureDimensions {
 		width: u32,
 		height: u32,
+		depth: u32,
 	},
 	InvalidLiteral {
 		value: String,
@@ -3669,7 +5676,7 @@ impl std::fmt::Display for VmError {
 			}
 			VmError::UnsupportedRawCode => write!(
 				f,
-				"Raw code blocks are not supported. The most likely cause is that the BESL AST contains GLSL or HLSL raw code that the VM cannot execute."
+				"Raw code blocks are not supported. The most likely cause is that a reachable BESL function contains non-empty platform shader code with no portable VM semantics."
 			),
 			VmError::UnsupportedMainSignature { message } => write!(
 				f,
@@ -3678,32 +5685,32 @@ impl std::fmt::Display for VmError {
 			),
 			VmError::UnsupportedType { type_name } => write!(
 				f,
-				"Unsupported type `{}`. The most likely cause is that the VM currently only supports scalar buffer and local value types.",
+				"Unsupported type `{}`. The most likely cause is that the BESL type has no portable VM value or resource representation.",
 				type_name
 			),
 			VmError::UnsupportedStatement { message } => write!(
 				f,
-				"Unsupported statement. {}. The most likely cause is that the VM currently only supports assignments, plain member access, and `return`.",
+				"Unsupported statement. {}. The most likely cause is that this statement form has not been lowered into VM control-flow or side-effect instructions.",
 				message
 			),
 			VmError::UnsupportedAssignmentTarget { message } => write!(
 				f,
-				"Unsupported assignment target. {}. The most likely cause is that the VM can currently assign only to local declarations or buffer members.",
+				"Unsupported assignment target. {}. The most likely cause is that the target is not a writable local, buffer member, output, or image operation.",
 				message
 			),
 			VmError::UnsupportedExpression { message } => write!(
 				f,
-				"Unsupported expression. {}. The most likely cause is that the VM currently only supports literals, local reads, and buffer member reads.",
+				"Unsupported expression. {}. The most likely cause is that this BESL syntax or operand-type combination has no VM lowering yet.",
 				message
 			),
 			VmError::UnsupportedBufferLayout { message } => write!(
 				f,
-				"Unsupported buffer layout. {}. The most likely cause is that the VM currently only supports packed scalar buffer members.",
+				"Unsupported buffer layout. {}. The most likely cause is that a member cannot be represented in the VM's packed CPU buffer layout.",
 				message
 			),
 			VmError::UnsupportedDescriptor { slot, message } => write!(
 				f,
-				"Unsupported descriptor at set {} binding {}. {}. The most likely cause is that the VM currently only supports buffer descriptors with stable layouts.",
+				"Unsupported descriptor at set {} binding {}. {}. The most likely cause is a descriptor-kind mismatch, incompatible reused slot, or unsupported resource access.",
 				slot.set(),
 				slot.binding(),
 				message
@@ -3738,6 +5745,29 @@ impl std::fmt::Display for VmError {
 				f,
 				"Missing push constant binding. The most likely cause is that the BESL program reads `push_constant` but the host did not bind any push constant data before execution."
 			),
+			VmError::MissingMeshOutputs => write!(
+				f,
+				"Missing mesh output capture. The most likely cause is that the BESL mesh shader ran without binding `MeshOutputs`."
+			),
+			VmError::MeshOutputIndexOutOfBounds { kind, index, count } => write!(
+				f,
+				"Mesh {kind} output index {index} exceeds {count} declared outputs. The most likely cause is that the shader wrote beyond the counts supplied to `set_mesh_output_counts`."
+			),
+			VmError::MissingSpecialization { name } => write!(
+				f,
+				"Missing specialization `{}`. The most likely cause is that the host did not provide a value for a specialization used by the BESL program.",
+				name
+			),
+			VmError::InstructionLimitExceeded { limit } => write!(
+				f,
+				"VM instruction limit {} exceeded. The most likely cause is that the BESL program contains an unbounded loop or needs a larger explicit execution budget.",
+				limit
+			),
+			VmError::CallDepthLimitExceeded { limit } => write!(
+				f,
+				"VM call-depth limit {} exceeded. The most likely cause is that the BESL program recurses without reaching a base case.",
+				limit
+			),
 			VmError::CallArgumentMismatch { expected, found } => write!(
 				f,
 				"Function call argument mismatch: expected {} arguments but found {}. The most likely cause is that the BESL function call does not match the declared parameter list.",
@@ -3757,15 +5787,22 @@ impl std::fmt::Display for VmError {
 				"Buffer array index {} is out of bounds for {} elements. The most likely cause is that the BESL program indexed a buffer array member outside its declared length.",
 				index, count
 			),
-			VmError::TextureAccessOutOfBounds { x, y, width, height } => write!(
+			VmError::TextureAccessOutOfBounds {
+				x,
+				y,
+				z,
+				width,
+				height,
+				depth,
+			} => write!(
 				f,
-				"Texture access out of bounds at ({}, {}) in a {}x{} texture. The most likely cause is that the BESL program fetched a texel outside the bound texture dimensions.",
-				x, y, width, height
+				"Texture access out of bounds at ({}, {}, {}) in a {}x{}x{} texture. The most likely cause is that the BESL program fetched a texel outside the bound texture dimensions.",
+				x, y, z, width, height, depth
 			),
-			VmError::InvalidTextureDimensions { width, height } => write!(
+			VmError::InvalidTextureDimensions { width, height, depth } => write!(
 				f,
-				"Invalid texture dimensions {}x{}. The most likely cause is that the host created a texture with zero width or height.",
-				width, height
+				"Invalid texture dimensions {}x{}x{}. The most likely cause is that the host created a texture with a zero dimension.",
+				width, height, depth
 			),
 			VmError::InvalidLiteral { value, value_type } => write!(
 				f,
@@ -3801,7 +5838,8 @@ impl std::error::Error for VmError {}
 #[cfg(test)]
 mod tests {
 	use super::{
-		input_slot, output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value, VmError,
+		input_slot, output_slot, reflect_vector, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram,
+		ExecutionConfig, MeshOutputs, SpecializationValues, Texture, Value, VmError,
 	};
 	use crate::{compile_to_besl, BindingTypes, Expressions, Node, NodeReference, Operators};
 
@@ -5389,5 +7427,187 @@ mod tests {
 		let values = read_f32s(&buffer, 2);
 		assert!((values[0] - 2.5).abs() < 1e-6);
 		assert!((values[1] - 1.0).abs() < 1e-6);
+	}
+
+	#[test]
+	fn execution_limit_stops_an_infinite_loop() {
+		let executable = compile_test_program(
+			r#"
+			main: fn () -> void {
+				for (let i: u32 = 0; i >= 0; i = i + 1) {
+					i = i;
+				}
+			}
+			"#,
+			None,
+		);
+		let mut descriptors = DescriptorBindings::new();
+		let error = executable
+			.run_main_with_config(&mut descriptors, &ExecutionConfig::new(32))
+			.expect_err("An infinite loop must exhaust its explicit instruction budget");
+		assert_eq!(error, VmError::InstructionLimitExceeded { limit: 32 });
+	}
+
+	#[test]
+	fn reflect_preserves_the_exact_non_unit_normal_semantics() {
+		assert_eq!(
+			reflect_vector([1.0, 2.0], [2.0, 0.0]).expect("Reflect is defined for every finite normal"),
+			[-7.0, 2.0]
+		);
+	}
+
+	#[test]
+	fn texture_descriptor_handles_flow_through_function_parameters() {
+		let script = r#"
+		read_source: fn (source: Texture2D) -> vec4f {
+			return fetch(source, vec2u(0, 0));
+		}
+		main: fn () -> void {
+			result.color = read_source(source_texture);
+		}
+		"#;
+		let mut root = Node::root();
+		let vec4f = root.get_child("vec4f").expect("Expected vec4f");
+		root.add_children(vec![
+			Node::binding(
+				"source_texture",
+				BindingTypes::CombinedImageSampler { format: String::new() },
+				0,
+				30,
+				true,
+				false,
+			)
+			.into(),
+			Node::binding(
+				"result",
+				BindingTypes::Buffer {
+					members: vec![Node::member("color", vec4f).into()],
+				},
+				0,
+				31,
+				true,
+				true,
+			)
+			.into(),
+		]);
+		let executable = compile_test_program(script, Some(root));
+		let mut texture = Texture::new(1, 1).expect("Expected texture");
+		texture.write([0, 0], [0.25, 0.5, 0.75, 1.0]).expect("Expected texel write");
+		let mut result = buffer_for_slot(&executable, DescriptorSlot::new(0, 31));
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(DescriptorSlot::new(0, 30), &mut texture);
+			descriptors.bind_buffer(DescriptorSlot::new(0, 31), &mut result);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Expected descriptor-handle execution");
+		}
+		assert_eq!(
+			result.read("color").expect("Expected color"),
+			Value::Vec4F([0.25, 0.5, 0.75, 1.0])
+		);
+	}
+
+	#[test]
+	fn dynamic_const_array_indices_select_runtime_elements() {
+		let script = r#"
+		WEIGHTS: const f32[3] = f32[3](0.25, 0.5, 0.75);
+		main: fn () -> void {
+			let index: u32 = 2;
+			result.value = WEIGHTS[index];
+		}
+		"#;
+		let mut root = Node::root();
+		let f32_type = root.get_child("f32").expect("Expected f32");
+		root.add_child(
+			Node::binding(
+				"result",
+				BindingTypes::Buffer {
+					members: vec![Node::member("value", f32_type).into()],
+				},
+				0,
+				32,
+				true,
+				true,
+			)
+			.into(),
+		);
+		let executable = compile_test_program(script, Some(root));
+		let mut result = buffer_for_slot(&executable, DescriptorSlot::new(0, 32));
+		run_with_buffer(&executable, DescriptorSlot::new(0, 32), &mut result);
+		assert_eq!(result.read("value").expect("Expected selected weight"), Value::F32(0.75));
+	}
+
+	#[test]
+	fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
+		let script = r#"
+		main: fn () -> void {
+			set_mesh_output_counts(1, 1);
+			set_mesh_vertex_position(0, vec4f(1.0, 2.0, 3.0, 1.0));
+			set_mesh_triangle(0, vec3u(0, 0, 0));
+			out_index[0] = 17;
+		}
+		"#;
+		let mut root = Node::root();
+		let u32_type = root.get_child("u32").expect("Expected u32");
+		root.add_child(Node::output_array("out_index", u32_type, 0, 1).into());
+		let executable = compile_test_program(script, Some(root));
+		let mut output = interface_buffer_for_output(&executable, 0);
+		let mut mesh_outputs = MeshOutputs::new();
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(output_slot(0), &mut output);
+			descriptors.bind_mesh_outputs(&mut mesh_outputs);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Expected mesh capture execution");
+		}
+		assert_eq!(mesh_outputs.vertex_count(), 1);
+		assert_eq!(mesh_outputs.primitive_count(), 1);
+		assert_eq!(mesh_outputs.vertex_position(0), Some([1.0, 2.0, 3.0, 1.0]));
+		assert_eq!(mesh_outputs.triangle(0), Some([0, 0, 0]));
+		assert_eq!(
+			output.read_indexed("out_index", 0).expect("Expected indexed output"),
+			Value::U32(17)
+		);
+	}
+
+	#[test]
+	fn specialization_values_select_x_and_y_components() {
+		for (axis, expected) in [([1.0, 0.0], 1.0), ([0.0, 1.0], 2.0)] {
+			let script = r#"
+			main: fn () -> void {
+				result.value = axis.x + axis.y * 2.0;
+			}
+			"#;
+			let mut root = Node::root();
+			let vec2f = root.get_child("vec2f").expect("Expected vec2f");
+			let f32_type = root.get_child("f32").expect("Expected f32");
+			root.add_children(vec![
+				Node::specialization("axis", vec2f).into(),
+				Node::binding(
+					"result",
+					BindingTypes::Buffer {
+						members: vec![Node::member("value", f32_type).into()],
+					},
+					0,
+					33,
+					true,
+					true,
+				)
+				.into(),
+			]);
+			let program = compile_to_besl(script, Some(root)).expect("Expected lexed specialization program");
+			let mut specializations = SpecializationValues::new();
+			specializations.set("axis", Value::Vec2F(axis));
+			let executable = ExecutableProgram::compile_with_specializations(program, &specializations)
+				.expect("Expected specialized executable");
+			let mut result = buffer_for_slot(&executable, DescriptorSlot::new(0, 33));
+			run_with_buffer(&executable, DescriptorSlot::new(0, 33), &mut result);
+			assert_eq!(
+				result.read("value").expect("Expected specialization result"),
+				Value::F32(expected)
+			);
+		}
 	}
 }

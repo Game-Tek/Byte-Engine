@@ -713,7 +713,106 @@ main: fn() -> void {
 
 #[cfg(test)]
 mod tests {
+	use besl::vm::{DescriptorBindings, DescriptorSlot, Value};
+
 	use super::*;
+	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
+
+	/// Verifies threshold rejection and soft-knee extraction through the production bloom program.
+	#[test]
+	fn bloom_extract_besl_vm_applies_threshold_and_soft_knee() {
+		let program = crate::rendering::shader_vm_test::compile(build_bloom_program(BLOOM_EXTRACT_BESL, 2));
+		let parameter_slot = DescriptorSlot::new(0, 2);
+		let mut parameters = buffer(&program, parameter_slot);
+		parameters
+			.write_indexed("prefilter", 0, Value::Vec4F([1.0, 0.5, 0.0, 0.0]))
+			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
+
+		for (source_color, expected) in [
+			([0.25, 0.2, 0.1, 0.25], [0.0, 0.0, 0.0, 1.0]),
+			([2.0, 1.0, 0.5, 0.25], [1.0, 0.5, 0.25, 1.0]),
+		] {
+			let mut source = texture_2d(1, 1, &[source_color]);
+			let mut result = empty_image(1, 1);
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut source);
+			descriptors.bind_image(DescriptorSlot::new(0, 1), &mut result);
+			descriptors.bind_buffer(parameter_slot, &mut parameters);
+			run_at(&program, &mut descriptors, [0, 0]);
+			drop(descriptors);
+
+			assert_rgba_close(rgba(&result, [0, 0]), expected, 1e-5);
+		}
+	}
+
+	/// Verifies that downsampling reads the bilinear center of the source texture.
+	#[test]
+	fn bloom_downsample_besl_vm_samples_the_source_center() {
+		let program = crate::rendering::shader_vm_test::compile(build_bloom_program(BLOOM_DOWNSAMPLE_BESL, 2));
+		let mut source = texture_2d(
+			2,
+			2,
+			&[
+				[0.0, 0.0, 0.0, 0.0],
+				[1.0, 0.0, 0.0, 0.0],
+				[0.0, 1.0, 0.0, 0.0],
+				[0.0, 0.0, 1.0, 0.0],
+			],
+		);
+		let mut result = empty_image(1, 1);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut source);
+		descriptors.bind_image(DescriptorSlot::new(0, 1), &mut result);
+		run_at(&program, &mut descriptors, [0, 0]);
+		drop(descriptors);
+
+		assert_rgba_close(rgba(&result, [0, 0]), [0.25, 0.25, 0.25, 1.0], 1e-6);
+	}
+
+	/// Verifies that upsampling combines both production pyramid inputs.
+	#[test]
+	fn bloom_upsample_besl_vm_combines_both_levels() {
+		let program = crate::rendering::shader_vm_test::compile(build_bloom_program(BLOOM_UPSAMPLE_BESL, 3));
+		let mut low = texture_2d(1, 1, &[[0.1, 0.2, 0.3, 0.0]]);
+		let mut high = texture_2d(1, 1, &[[0.4, 0.5, 0.6, 0.0]]);
+		let mut result = empty_image(1, 1);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut low);
+		descriptors.bind_texture(DescriptorSlot::new(0, 1), &mut high);
+		descriptors.bind_image(DescriptorSlot::new(0, 2), &mut result);
+		run_at(&program, &mut descriptors, [0, 0]);
+		drop(descriptors);
+
+		assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.7, 0.9, 1.0], 1e-6);
+	}
+
+	/// Verifies additive bloom and the zero-intensity passthrough branch.
+	#[test]
+	fn bloom_composite_besl_vm_preserves_zero_intensity_and_adds_positive_bloom() {
+		let program = crate::rendering::shader_vm_test::compile(build_bloom_program(BLOOM_COMPOSITE_BESL, 3));
+		let parameter_slot = DescriptorSlot::new(0, 3);
+		let scene_color = [0.2, 0.3, 0.4, 0.6];
+		let bloom_color = [0.5, 0.25, 0.125, 0.0];
+
+		for (intensity, expected) in [(0.0, scene_color), (2.0, [1.2, 0.8, 0.65, 1.0])] {
+			let mut scene = texture_2d(1, 1, &[scene_color]);
+			let mut bloom = texture_2d(1, 1, &[bloom_color]);
+			let mut result = empty_image(1, 1);
+			let mut parameters = buffer(&program, parameter_slot);
+			parameters
+				.write_indexed("prefilter", 0, Value::Vec4F([0.0, 0.0, intensity, 0.0]))
+				.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut scene);
+			descriptors.bind_texture(DescriptorSlot::new(0, 1), &mut bloom);
+			descriptors.bind_image(DescriptorSlot::new(0, 2), &mut result);
+			descriptors.bind_buffer(parameter_slot, &mut parameters);
+			run_at(&program, &mut descriptors, [0, 0]);
+			drop(descriptors);
+
+			assert_rgba_close(rgba(&result, [0, 0]), expected, 1e-6);
+		}
+	}
 
 	#[cfg(target_os = "linux")]
 	#[test]

@@ -485,9 +485,106 @@ main: fn () -> void {
 
 #[cfg(test)]
 mod tests {
+	use besl::vm::{DescriptorBindings, DescriptorSlot, Value};
+	use math::{mat::MatInverse as _, ShaderMatrix4, Vector3};
 	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
 	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
 	use utils::Extent;
+
+	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
+
+	/// Verifies foreground preservation and a finite default atmosphere result through the VM.
+	#[test]
+	fn sky_besl_vm_preserves_foreground_and_renders_a_bounded_default_background() {
+		let program = crate::rendering::shader_vm_test::compile(super::create_sky_program());
+		let sentinel = [0.2, 0.3, 0.4, 0.5];
+		let mut foreground_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
+		let mut foreground_target = texture_2d(1, 1, &[sentinel]);
+		let mut foreground_descriptors = DescriptorBindings::new();
+		foreground_descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut foreground_depth);
+		foreground_descriptors.bind_image(DescriptorSlot::new(0, 1), &mut foreground_target);
+		run_at(&program, &mut foreground_descriptors, [0, 0]);
+		drop(foreground_descriptors);
+		assert_rgba_close(rgba(&foreground_target, [0, 0]), sentinel, 0.0);
+
+		let settings = super::AtmosphereSkyRenderPassSettings::default();
+		let view = crate::rendering::View::new_perspective(
+			60.0,
+			1.0,
+			0.1,
+			100.0,
+			Vector3::new(0.0, 0.0, 0.0),
+			Vector3::new(0.0, 0.0, 1.0),
+		);
+		let inverse_view_projection = ShaderMatrix4::from(view.view_projection().inverse()).0;
+		let sun_direction = math::normalize(settings.sun_direction);
+		let parameter_slot = DescriptorSlot::new(0, 2);
+		let mut parameters = buffer(&program, parameter_slot);
+		// Mirror the production upload field-for-field so the VM validates the real atmosphere parameter contract.
+		for (name, value) in [
+			("camera_position", [0.0, 0.0, 0.0, settings.sun_intensity]),
+			(
+				"sun_direction",
+				[sun_direction.x, sun_direction.y, sun_direction.z, settings.mie_anisotropy],
+			),
+			(
+				"planet_center",
+				[
+					settings.planet_center.x,
+					settings.planet_center.y,
+					settings.planet_center.z,
+					settings.sun_angular_radius,
+				],
+			),
+			(
+				"atmosphere",
+				[
+					settings.ground_radius,
+					settings.atmosphere_radius,
+					settings.rayleigh_scale_height,
+					settings.mie_scale_height,
+				],
+			),
+			(
+				"misc",
+				[
+					settings.ozone_strength,
+					if settings.skip_below_horizon { 1.0 } else { 0.0 },
+					0.0,
+					0.0,
+				],
+			),
+		] {
+			parameters
+				.write(name, Value::Vec4F(value))
+				.expect("Failed to initialize sky parameters. The most likely cause is a changed production buffer layout.");
+		}
+		parameters
+			.write("inverse_view_projection", Value::Mat4F(inverse_view_projection))
+			.expect("Failed to initialize the sky matrix. The most likely cause is a changed production buffer layout.");
+
+		let mut background_depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
+		let mut background_target = empty_image(1, 1);
+		let mut background_descriptors = DescriptorBindings::new();
+		background_descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut background_depth);
+		background_descriptors.bind_image(DescriptorSlot::new(0, 1), &mut background_target);
+		background_descriptors.bind_buffer(parameter_slot, &mut parameters);
+		run_at(&program, &mut background_descriptors, [0, 0]);
+		drop(background_descriptors);
+
+		let background = rgba(&background_target, [0, 0]);
+		assert!(
+			background[..3]
+				.iter()
+				.all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel)),
+			"Invalid sky VM output. The most likely cause is unstable atmosphere integration: {background:?}"
+		);
+		assert!(
+			background[..3].iter().any(|channel| *channel > 0.0),
+			"Empty sky VM output. The most likely cause is an invalid view ray or atmosphere intersection: {background:?}"
+		);
+		assert_rgba_close([0.0, 0.0, 0.0, background[3]], [0.0, 0.0, 0.0, 1.0], 1e-6);
+	}
 
 	#[test]
 	fn sky_besl_shader_lowers_to_platform_sources() {

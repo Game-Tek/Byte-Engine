@@ -204,12 +204,49 @@ main: fn() -> void {
 
 #[cfg(test)]
 mod tests {
+	use besl::vm::{DescriptorBindings, DescriptorSlot};
 	use resource_management::shader::{
 		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings,
 	};
 	use utils::Extent;
 
 	use super::{create_tone_mapping_program, TONE_MAPPING_SHADER};
+	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
+
+	/// Executes the compiled ACES program for one source color.
+	fn run_aces_vm(program: &besl::vm::ExecutableProgram, source_color: [f32; 4]) -> [f32; 4] {
+		let mut source = texture_2d(1, 1, &[source_color]);
+		let mut result = empty_image(1, 1);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_image(DescriptorSlot::new(0, 0), &mut source);
+		descriptors.bind_image(DescriptorSlot::new(0, 1), &mut result);
+		run_at(program, &mut descriptors, [0, 0]);
+		drop(descriptors);
+		rgba(&result, [0, 0])
+	}
+
+	/// Verifies reference colors and bounded high-dynamic-range behavior through the VM.
+	#[test]
+	fn aces_tonemap_besl_vm_produces_bounded_reference_colors() {
+		let program = crate::rendering::shader_vm_test::compile(create_tone_mapping_program());
+
+		assert_rgba_close(run_aces_vm(&program, [0.0, 0.0, 0.0, 0.25]), [0.0, 0.0, 0.0, 1.0], 1e-6);
+		assert_rgba_close(
+			run_aces_vm(&program, [1.0, 1.0, 1.0, 0.25]),
+			[0.9054924, 0.9054924, 0.9054924, 1.0],
+			1e-5,
+		);
+
+		for input in [0.18, 4.0, 16.0] {
+			let output = run_aces_vm(&program, [input, input, input, 0.0]);
+			assert!(
+				output[..3]
+					.iter()
+					.all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel)),
+				"Invalid ACES VM output. The most likely cause is unstable tone-mapping arithmetic: {output:?}"
+			);
+		}
+	}
 
 	#[test]
 	fn aces_tonemap_besl_parses() {

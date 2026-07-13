@@ -17,10 +17,12 @@ pub struct Generator {
 	current_push_constant_space: u32,
 }
 
+/// The `HlslBufferBindingSource` struct preserves the binding metadata needed while flattening BESL buffers for HLSL.
 struct HlslBufferBindingSource {
 	name: String,
 	write: bool,
 	flattened_member: Option<String>,
+	flattened_element_type: Option<String>,
 }
 
 impl ShaderGenerator for Generator {}
@@ -67,23 +69,35 @@ impl Generator {
 				r#type: besl::BindingTypes::Buffer { members },
 				write,
 				..
-			} => Some(HlslBufferBindingSource {
-				name: name.to_string(),
-				write: *write,
-				flattened_member: Self::hlsl_flattened_array_member(members).map(|(name, _)| name),
-			}),
+			} => {
+				let (flattened_member, flattened_element_type) = Self::hlsl_flattened_array_member(members)
+					.map_or((None, None), |(name, element_type)| (Some(name), Some(element_type)));
+				Some(HlslBufferBindingSource {
+					name: name.to_string(),
+					write: *write,
+					flattened_member,
+					flattened_element_type,
+				})
+			}
 			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => Self::hlsl_buffer_binding_source(source),
 			_ => None,
 		}
 	}
 
-	fn hlsl_buffer_member_target(member: &besl::NodeReference) -> Option<(String, String, bool)> {
+	/// Recovers the underlying HLSL buffer and flattened-field metadata for an indexed BESL member expression.
+	fn hlsl_buffer_member_target(member: &besl::NodeReference) -> Option<(String, String, bool, Option<String>, bool)> {
 		let member = member.borrow();
-		let besl::Nodes::Expression(besl::Expressions::Member { name, source }) = member.node() else {
-			return None;
+		let (name, source) = match member.node() {
+			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => (name.to_string(), source.clone()),
+			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
+				// Lexed buffer-member access can retain its dot operation as an accessor, so recover both sides before indexing it.
+				(Self::hlsl_member_name(right)?, left.clone())
+			}
+			_ => return None,
 		};
-		let binding = Self::hlsl_buffer_binding_source(source)?;
-		Some((binding.name, name.to_string(), binding.write))
+		let binding = Self::hlsl_buffer_binding_source(&source)?;
+		let flattened = binding.flattened_member.as_deref() == Some(name.as_str());
+		Some((binding.name, name, binding.write, binding.flattened_element_type, flattened))
 	}
 
 	fn hlsl_buffer_member_type(source: &besl::NodeReference, member_name: &str) -> Option<String> {
@@ -1136,11 +1150,30 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		if let Some((binding_name, field_name, write)) = Self::hlsl_buffer_member_target(left) {
-			if field_name == binding_name {
-				string.push_str(&field_name);
+		if let Some((binding_name, field_name, write, element_type, flattened)) = Self::hlsl_buffer_member_target(left) {
+			if !write && matches!(element_type.as_deref(), Some("u8" | "u16")) {
+				let (word_index, bit_offset, element_mask) = if element_type.as_deref() == Some("u8") {
+					(") / 4u] >> (((", ") % 4u) * 8u)) & ", "0xffu")
+				} else {
+					(") / 2u] >> (((", ") % 2u) * 16u)) & ", "0xffffu")
+				};
+
+				// DX12 exposes packed narrow-index buffers as 32-bit structured words, so recover the logical element here.
+				string.push_str("((");
+				string.push_str(&binding_name);
+				string.push_str("[(");
+				self.emit_node_string(string, right);
+				string.push_str(word_index);
+				self.emit_node_string(string, right);
+				string.push_str(bit_offset);
+				string.push_str(element_mask);
+				string.push(')');
+				return;
+			}
+
+			if field_name == binding_name || flattened {
+				string.push_str(&binding_name);
 			} else {
-				let _ = write;
 				// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
 				string.push_str(&binding_name);
 				string.push_str("[0].");
@@ -1630,6 +1663,54 @@ mod tests {
 		assert_string_does_not_contain!(shader, "meshes.meshes");
 		assert_string_does_not_contain!(shader, "counter.count");
 		assert_string_does_not_contain!(shader, "struct _counter");
+	}
+
+	/// Verifies logical narrow indices are recovered from the packed words exposed by DX12.
+	#[test]
+	fn packed_narrow_buffer_elements_are_extracted_from_u32_words() {
+		let script = r#"
+		main: fn () -> void {
+			let vertex_index: u16 = vertex_indices.vertex_indices[3];
+			let primitive_index: u8 = primitive_indices.primitive_indices[5];
+		}
+		"#;
+		let mut root = besl::Node::root();
+		let u8_type = root.get_child("u8").expect("Expected u8 type");
+		let u16_type = root.get_child("u16").expect("Expected u16 type");
+		root.add_children(vec![
+			besl::Node::binding(
+				"vertex_indices",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("vertex_indices", u16_type, 8)],
+				},
+				0,
+				0,
+				true,
+				false,
+			)
+			.into(),
+			besl::Node::binding(
+				"primitive_indices",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("primitive_indices", u8_type, 8)],
+				},
+				0,
+				1,
+				true,
+				false,
+			)
+			.into(),
+		]);
+		let main = besl::compile_to_besl(script, Some(root))
+			.expect("Failed to compile packed narrow-buffer BESL. The most likely cause is invalid test source.")
+			.get_main()
+			.expect("Expected packed narrow-buffer main function");
+		let shader = Generator::new()
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Failed to generate HLSL for packed narrow buffers. The most likely cause is unsupported buffer access.");
+
+		assert_string_contains!(shader, "vertex_indices[(3) / 2u] >> (((3) % 2u) * 16u)) & 0xffffu");
+		assert_string_contains!(shader, "primitive_indices[(5) / 4u] >> (((5) % 4u) * 8u)) & 0xffu");
 	}
 
 	#[test]

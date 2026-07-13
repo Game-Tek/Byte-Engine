@@ -23,7 +23,6 @@ use super::{
 use crate::{
 	core::Entity,
 	rendering::{
-		common_shader_generator::CommonShaderScope,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 		shader_store::{ShaderSourceDefinition, ShaderSourceDescriptor},
 		Sink,
@@ -2294,6 +2293,7 @@ fn create_ui_besl_shader(
 	.expect("Failed to create UI BESL shader. The most likely cause is an incompatible shader interface.")
 }
 
+/// Lexes a complete UI shader scope and returns the entry point consumed by render pipeline creation.
 fn lex_ui_shader(root: ParserNode<'_>, shader_name: &str) -> besl::NodeReference {
 	let root = besl::lex(root)
 		.unwrap_or_else(|_| panic!("Failed to lex {shader_name}. The most likely cause is invalid BESL syntax."));
@@ -2319,41 +2319,38 @@ fn create_vertex_shader(context: &mut ghi::implementation::Context) -> ghi::Shad
 	)
 }
 
+/// Builds the portable UI rectangle vertex program shared by VM tests and production backends.
 fn create_ui_vertex_program() -> besl::NodeReference {
-	let main = ParserNode::main_function(vec![ParserNode::raw_code(
-		Some(UI_VERTEX_SHADER_MAIN.into()),
-		None,
-		Some(UI_VERTEX_SHADER_MAIN_MSL.into()),
-		&[
-			"in_position",
-			"in_pixel_position",
-			"in_local_position",
-			"in_rect_size",
-			"in_color",
-			"in_corner_radius",
-			"in_corner_exponent",
-			"in_layer_kind",
-			"in_stroke_width",
-			"in_feather_mask_position",
-			"in_feather_mask_size",
-			"in_feather_mask_edges",
-			"in_feather_mask_corner",
+	let member = ParserNode::member_expression;
+	let forward = |output: &'static str, input: &'static str| ParserNode::member_assignment(output, member(input));
+
+	// Express the portable vertex plumbing as BESL nodes so the VM and every backend execute the same program.
+	let main = ParserNode::main_function(vec![
+		ParserNode::member_assignment(
 			"position",
-			"out_color",
-			"out_pixel_position",
-			"out_local_position",
-			"out_rect_size",
-			"out_corner_radius",
-			"out_corner_exponent",
-			"out_layer_kind",
-			"out_stroke_width",
-			"out_feather_mask_position",
-			"out_feather_mask_size",
-			"out_feather_mask_edges",
-			"out_feather_mask_corner",
-		],
-		&[],
-	)]);
+			ParserNode::call(
+				"vec4f",
+				vec![
+					ParserNode::accessor(member("in_position"), member("x")),
+					ParserNode::accessor(member("in_position"), member("y")),
+					ParserNode::literal_expression("0.0"),
+					ParserNode::literal_expression("1.0"),
+				],
+			),
+		),
+		forward("out_color", "in_color"),
+		forward("out_pixel_position", "in_pixel_position"),
+		forward("out_local_position", "in_local_position"),
+		forward("out_rect_size", "in_rect_size"),
+		forward("out_corner_radius", "in_corner_radius"),
+		forward("out_corner_exponent", "in_corner_exponent"),
+		forward("out_layer_kind", "in_layer_kind"),
+		forward("out_stroke_width", "in_stroke_width"),
+		forward("out_feather_mask_position", "in_feather_mask_position"),
+		forward("out_feather_mask_size", "in_feather_mask_size"),
+		forward("out_feather_mask_edges", "in_feather_mask_edges"),
+		forward("out_feather_mask_corner", "in_feather_mask_corner"),
+	]);
 
 	let shader_scope = ParserNode::scope(
 		"Shader",
@@ -2388,41 +2385,9 @@ fn create_ui_vertex_program() -> besl::NodeReference {
 		],
 	);
 	let mut root = ParserNode::root();
-	root.add(vec![CommonShaderScope::new(), shader_scope]);
+	root.add(vec![shader_scope]);
 	lex_ui_shader(root, "UI vertex shader")
 }
-
-const UI_VERTEX_SHADER_MAIN: &str = r#"
-position = vec4f(in_position, 0.0, 1.0);
-out_color = in_color;
-out_pixel_position = in_pixel_position;
-out_local_position = in_local_position;
-out_rect_size = in_rect_size;
-out_corner_radius = in_corner_radius;
-out_corner_exponent = in_corner_exponent;
-out_layer_kind = in_layer_kind;
-out_stroke_width = in_stroke_width;
-out_feather_mask_position = in_feather_mask_position;
-out_feather_mask_size = in_feather_mask_size;
-out_feather_mask_edges = in_feather_mask_edges;
-out_feather_mask_corner = in_feather_mask_corner;
-"#;
-
-const UI_VERTEX_SHADER_MAIN_MSL: &str = r#"
-position = float4(in_position, 0.0, 1.0);
-out_color = in_color;
-out_pixel_position = in_pixel_position;
-out_local_position = in_local_position;
-out_rect_size = in_rect_size;
-out_corner_radius = in_corner_radius;
-out_corner_exponent = in_corner_exponent;
-out_layer_kind = in_layer_kind;
-out_stroke_width = in_stroke_width;
-out_feather_mask_position = in_feather_mask_position;
-out_feather_mask_size = in_feather_mask_size;
-out_feather_mask_edges = in_feather_mask_edges;
-out_feather_mask_corner = in_feather_mask_corner;
-"#;
 
 /// Builds the UI fragment shader using BESL and compiles it to SPIR-V.
 fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
@@ -2441,6 +2406,7 @@ fn create_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::Sh
 	)
 }
 
+/// Builds the portable UI rectangle fragment program shared by VM tests and production backends.
 fn create_ui_fragment_program() -> besl::NodeReference {
 	let mut root = besl::Node::root();
 	let vec4f = root.get_child("vec4f").expect("vec4f type not found in BESL root");
@@ -3318,6 +3284,8 @@ fragment float4 ui_text_overlay_fragment(
 
 #[cfg(test)]
 mod tests {
+	use besl::vm::{builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, ExecutableProgram, Value};
+	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
 	use utils::{Extent, RGBA};
 
 	use super::{
@@ -3346,6 +3314,123 @@ mod tests {
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
 		assert!((actual[1] - expected[1]).abs() < 0.0001);
+	}
+
+	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
+		for (actual, expected) in actual.into_iter().zip(expected) {
+			assert!((actual - expected).abs() < 0.0001, "Expected {expected}, found {actual}");
+		}
+	}
+
+	/// The `UiFragmentVmInputs` struct provides one deterministic fragment invocation to the BESL VM tests.
+	struct UiFragmentVmInputs {
+		color: [f32; 4],
+		pixel_position: [f32; 2],
+		local_position: [f32; 2],
+		rect_size: [f32; 2],
+		corner_radius: f32,
+		corner_exponent: f32,
+		layer_kind: f32,
+		stroke_width: f32,
+		feather_mask_position: [f32; 2],
+		feather_mask_size: [f32; 2],
+		feather_mask_edges: [f32; 4],
+		feather_mask_corner: [f32; 2],
+	}
+
+	impl Default for UiFragmentVmInputs {
+		/// Provides a centered fill invocation whose output should preserve the input color.
+		fn default() -> Self {
+			Self {
+				color: [0.2, 0.4, 0.6, 0.8],
+				pixel_position: [50.0, 50.0],
+				local_position: [50.0, 50.0],
+				rect_size: [100.0, 100.0],
+				corner_radius: 12.0,
+				corner_exponent: 2.0,
+				layer_kind: 0.0,
+				stroke_width: 0.0,
+				feather_mask_position: [0.0, 0.0],
+				feather_mask_size: [0.0, 0.0],
+				feather_mask_edges: [0.0; 4],
+				feather_mask_corner: [0.0, 2.0],
+			}
+		}
+	}
+
+	/// Executes the production UI fragment shader for one set of interpolated inputs.
+	fn run_ui_fragment_vm(values: UiFragmentVmInputs) -> [f32; 4] {
+		let executable = ExecutableProgram::compile(super::create_ui_fragment_program()).expect(
+			"Failed to compile UI fragment shader for the BESL VM. The most likely cause is missing VM shader support.",
+		);
+		let mut inputs: [Buffer; 12] = std::array::from_fn(|location| {
+			Buffer::new(
+				executable
+					.input_layout(location as u8)
+					.expect("Missing UI fragment input layout. The most likely cause is an unused or unresolved shader input.")
+					.clone(),
+			)
+		});
+		let input_values = [
+			Value::Vec4F(values.color),
+			Value::Vec2F(values.pixel_position),
+			Value::Vec2F(values.local_position),
+			Value::Vec2F(values.rect_size),
+			Value::F32(values.corner_radius),
+			Value::F32(values.corner_exponent),
+			Value::F32(values.layer_kind),
+			Value::F32(values.stroke_width),
+			Value::Vec2F(values.feather_mask_position),
+			Value::Vec2F(values.feather_mask_size),
+			Value::Vec4F(values.feather_mask_edges),
+			Value::Vec2F(values.feather_mask_corner),
+		];
+		let input_names = [
+			"in_color",
+			"in_pixel_position",
+			"in_local_position",
+			"in_rect_size",
+			"in_corner_radius",
+			"in_corner_exponent",
+			"in_layer_kind",
+			"in_stroke_width",
+			"in_feather_mask_position",
+			"in_feather_mask_size",
+			"in_feather_mask_edges",
+			"in_feather_mask_corner",
+		];
+		for ((input, name), value) in inputs.iter_mut().zip(input_names).zip(input_values) {
+			input
+				.write(name, value)
+				.expect("Failed to seed a UI fragment VM input. The most likely cause is an interface type mismatch.");
+		}
+
+		let mut output = Buffer::new(
+			executable
+				.output_layout(0)
+				.expect("Missing UI fragment output layout. The most likely cause is an unresolved shader output.")
+				.clone(),
+		);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			for (location, input) in inputs.iter_mut().enumerate() {
+				descriptors.bind_buffer(input_slot(location as u8), input);
+			}
+			descriptors.bind_buffer(output_slot(0), &mut output);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Failed to execute UI fragment shader. The most likely cause is incomplete BESL VM support.");
+		}
+
+		match output
+			.read("out_color_attachment")
+			.expect("Failed to read UI fragment output. The most likely cause is an interface layout mismatch.")
+		{
+			Value::Vec4F(color) => color,
+			value => panic!(
+				"Invalid UI fragment output type `{value:?}`. The most likely cause is a BESL VM interface type mismatch."
+			),
+		}
 	}
 
 	fn draw_element(corner_radius: f32, corner_exponent: f32) -> UiDrawElement {
@@ -3994,6 +4079,203 @@ mod tests {
 
 		assert!(matches!(vertex_main.borrow().node(), besl::Nodes::Function { .. }));
 		assert!(matches!(fragment_main.borrow().node(), besl::Nodes::Function { .. }));
+	}
+
+	/// Verifies the primary portable UI shaders remain accepted by every source backend.
+	#[test]
+	fn primary_ui_besl_shaders_lower_to_every_source_backend() {
+		for (program, settings) in [
+			(super::create_ui_vertex_program(), ShaderGenerationSettings::vertex()),
+			(super::create_ui_fragment_program(), ShaderGenerationSettings::fragment()),
+		] {
+			resource_management::shader::besl::backends::glsl::GLSLShaderGenerator::new()
+				.generate(&settings, &program)
+				.expect(
+					"Failed to lower a primary UI BESL shader to GLSL. The most likely cause is unsupported portable syntax.",
+				);
+			resource_management::shader::besl::backends::hlsl::HLSLShaderGenerator::new()
+				.generate(&settings, &program)
+				.expect(
+					"Failed to lower a primary UI BESL shader to HLSL. The most likely cause is unsupported portable syntax.",
+				);
+			resource_management::shader::besl::backends::msl::MSLShaderGenerator::new()
+				.generate(&settings, &program)
+				.expect(
+					"Failed to lower a primary UI BESL shader to MSL. The most likely cause is unsupported portable syntax.",
+				);
+		}
+	}
+
+	/// Verifies the production UI vertex shader preserves every geometry and styling varying.
+	#[test]
+	fn ui_vertex_besl_vm_forwards_position_and_varyings() {
+		let executable = ExecutableProgram::compile(super::create_ui_vertex_program())
+			.expect("Failed to compile UI vertex shader for the BESL VM. The most likely cause is missing VM shader support.");
+		let mut inputs: [Buffer; 13] = std::array::from_fn(|location| {
+			Buffer::new(
+				executable
+					.input_layout(location as u8)
+					.expect("Missing UI vertex input layout. The most likely cause is an unresolved shader input.")
+					.clone(),
+			)
+		});
+		let input_names = [
+			"in_position",
+			"in_pixel_position",
+			"in_local_position",
+			"in_rect_size",
+			"in_color",
+			"in_corner_radius",
+			"in_corner_exponent",
+			"in_layer_kind",
+			"in_stroke_width",
+			"in_feather_mask_position",
+			"in_feather_mask_size",
+			"in_feather_mask_edges",
+			"in_feather_mask_corner",
+		];
+		let input_values = [
+			Value::Vec2F([0.25, -0.75]),
+			Value::Vec2F([10.0, 20.0]),
+			Value::Vec2F([3.0, 4.0]),
+			Value::Vec2F([100.0, 80.0]),
+			Value::Vec4F([0.1, 0.2, 0.3, 0.4]),
+			Value::F32(12.0),
+			Value::F32(3.0),
+			Value::F32(1.0),
+			Value::F32(2.5),
+			Value::Vec2F([5.0, 6.0]),
+			Value::Vec2F([70.0, 60.0]),
+			Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
+			Value::Vec2F([9.0, 2.0]),
+		];
+		for ((input, name), value) in inputs.iter_mut().zip(input_names).zip(input_values) {
+			input
+				.write(name, value)
+				.expect("Failed to seed a UI vertex VM input. The most likely cause is an interface type mismatch.");
+		}
+
+		let mut position = Buffer::new(
+			executable
+				.builtin_position_layout()
+				.expect("Missing UI vertex position layout. The most likely cause is an unresolved position output.")
+				.clone(),
+		);
+		let mut outputs: [Buffer; 12] = std::array::from_fn(|location| {
+			Buffer::new(
+				executable
+					.output_layout(location as u8)
+					.expect("Missing UI vertex varying layout. The most likely cause is an unresolved shader output.")
+					.clone(),
+			)
+		});
+		{
+			let mut descriptors = DescriptorBindings::new();
+			for (location, input) in inputs.iter_mut().enumerate() {
+				descriptors.bind_buffer(input_slot(location as u8), input);
+			}
+			descriptors.bind_buffer(builtin_position_slot(), &mut position);
+			for (location, output) in outputs.iter_mut().enumerate() {
+				descriptors.bind_buffer(output_slot(location as u8), output);
+			}
+			executable
+				.run_main(&mut descriptors)
+				.expect("Failed to execute UI vertex shader. The most likely cause is incomplete BESL VM support.");
+		}
+
+		assert_eq!(
+			position.read("position").expect("Expected position output"),
+			Value::Vec4F([0.25, -0.75, 0.0, 1.0])
+		);
+		for ((output, name), expected) in outputs
+			.iter()
+			.zip([
+				"out_color",
+				"out_pixel_position",
+				"out_local_position",
+				"out_rect_size",
+				"out_corner_radius",
+				"out_corner_exponent",
+				"out_layer_kind",
+				"out_stroke_width",
+				"out_feather_mask_position",
+				"out_feather_mask_size",
+				"out_feather_mask_edges",
+				"out_feather_mask_corner",
+			])
+			.zip([
+				Value::Vec4F([0.1, 0.2, 0.3, 0.4]),
+				Value::Vec2F([10.0, 20.0]),
+				Value::Vec2F([3.0, 4.0]),
+				Value::Vec2F([100.0, 80.0]),
+				Value::F32(12.0),
+				Value::F32(3.0),
+				Value::F32(1.0),
+				Value::F32(2.5),
+				Value::Vec2F([5.0, 6.0]),
+				Value::Vec2F([70.0, 60.0]),
+				Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
+				Value::Vec2F([9.0, 2.0]),
+			]) {
+			assert_eq!(output.read(name).expect("Expected UI vertex varying output"), expected);
+		}
+	}
+
+	/// Verifies a centered fill fragment retains its source color.
+	#[test]
+	fn ui_fragment_besl_vm_preserves_centered_fill_color() {
+		let expected = UiFragmentVmInputs::default().color;
+		assert_vec4_close(run_ui_fragment_vm(UiFragmentVmInputs::default()), expected);
+	}
+
+	/// Verifies rounded-corner coverage rejects a fragment outside the rounded boundary.
+	#[test]
+	fn ui_fragment_besl_vm_rejects_rounded_corner_exterior() {
+		let output = run_ui_fragment_vm(UiFragmentVmInputs {
+			local_position: [0.0, 0.0],
+			corner_radius: 20.0,
+			..Default::default()
+		});
+
+		assert!(
+			output[3] < 0.001,
+			"Expected rounded corner alpha near zero, found {}",
+			output[3]
+		);
+	}
+
+	/// Verifies stroke coverage removes fragments that lie inside the hollow center.
+	#[test]
+	fn ui_fragment_besl_vm_stroke_excludes_the_center() {
+		let output = run_ui_fragment_vm(UiFragmentVmInputs {
+			layer_kind: 1.0,
+			stroke_width: 3.0,
+			..Default::default()
+		});
+
+		assert!(
+			output[3] < 0.001,
+			"Expected stroke center alpha near zero, found {}",
+			output[3]
+		);
+	}
+
+	/// Verifies the feather mask suppresses fragments outside its clipped region.
+	#[test]
+	fn ui_fragment_besl_vm_feather_mask_suppresses_outside_pixels() {
+		let output = run_ui_fragment_vm(UiFragmentVmInputs {
+			pixel_position: [10.0, 10.0],
+			feather_mask_position: [25.0, 25.0],
+			feather_mask_size: [50.0, 50.0],
+			feather_mask_edges: [5.0; 4],
+			..Default::default()
+		});
+
+		assert!(
+			output[3] < 0.001,
+			"Expected feathered pixel alpha near zero, found {}",
+			output[3]
+		);
 	}
 
 	#[test]

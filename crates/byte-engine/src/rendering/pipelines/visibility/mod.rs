@@ -1406,9 +1406,8 @@ fn build_gtao_program() -> besl::NodeReference {
 		let coord: vec2u = thread_id();
 		guard_image_bounds(ao_output, coord);
 		let extent: vec2u = image_size(ao_output);
-		let view: View = views.views[0];
-		let inverse_projection: mat4f = view.inverse_projection;
-		let view_fov: vec2f = view.fov;
+		let inverse_projection: mat4f = views.views[0].inverse_projection;
+		let view_fov: vec2f = views.views[0].fov;
 
 		let center_depth: f32 = fetch(visibility_depth, coord).x;
 		if (center_depth == 0.0) {
@@ -1455,6 +1454,7 @@ fn build_gtao_program() -> besl::NodeReference {
 }
 
 fn build_gtao_bitfield_program() -> besl::NodeReference {
+	// The pass dispatches full-resolution pixels even though each destination texel packs 32 horizontal samples.
 	let source = r#"
 	GTAO_RADIUS: const f32 = 1.0;
 	GTAO_BIAS: const f32 = 0.05;
@@ -1644,21 +1644,25 @@ fn build_gtao_bitfield_program() -> besl::NodeReference {
 
 	main: fn () -> void {
 		let coord: vec2u = thread_id();
-		guard_image_bounds(ao_output, coord);
-		let extent: vec2u = image_size(ao_output);
-		let view: View = views.views[0];
-		let inverse_projection: mat4f = view.inverse_projection;
-		let view_fov: vec2f = view.fov;
+		let extent: vec2u = texture_size(visibility_depth);
+		if (coord.x >= extent.x) {
+			return;
+		}
+		if (coord.y >= extent.y) {
+			return;
+		}
+		let inverse_projection: mat4f = views.views[0].inverse_projection;
+		let view_fov: vec2f = views.views[0].fov;
 
 		let center_depth: f32 = fetch(visibility_depth, coord).x;
 		if (center_depth == 0.0) {
 			return;
 		}
 
-		let uv: vec2f = make_uv(coord, vec2u(extent.x * GTAO_PACKED_WORD_BITS, extent.y));
+		let uv: vec2f = make_uv(coord, extent);
 		let center_position: vec3f = reconstruct_view_space_position(uv, center_depth, inverse_projection);
-		let normal: vec3f = reconstruct_normal(coord, vec2u(extent.x * GTAO_PACKED_WORD_BITS, extent.y), center_position, visibility_depth, inverse_projection);
-		let radii: vec3f = compute_radii(center_position, vec2u(extent.x * GTAO_PACKED_WORD_BITS, extent.y), view_fov);
+		let normal: vec3f = reconstruct_normal(coord, extent, center_position, visibility_depth, inverse_projection);
+		let radii: vec3f = compute_radii(center_position, extent, view_fov);
 		let rotation: f32 = interleaved_gradient_noise(coord) * GTAO_PI;
 		let occlusion: f32 = 0.0;
 
@@ -1673,7 +1677,7 @@ fn build_gtao_bitfield_program() -> besl::NodeReference {
 				direction,
 				radii.x,
 				radii.y,
-				vec2u(extent.x * GTAO_PACKED_WORD_BITS, extent.y),
+				extent,
 				interleaved_gradient_noise(noise_coord),
 				visibility_depth,
 				inverse_projection
@@ -1869,8 +1873,7 @@ fn build_gtao_bitfield_blur_x_program() -> besl::NodeReference {
 		guard_image_bounds(ao_output, coord);
 		let extent: vec2u = image_size(ao_output);
 		let full_extent: vec2u = vec2u(extent.x * GTAO_PACKED_WORD_BITS, extent.y);
-		let view: View = views.views[0];
-		let inverse_projection: mat4f = view.inverse_projection;
+		let inverse_projection: mat4f = views.views[0].inverse_projection;
 
 		let center_depth: f32 = fetch(visibility_depth, coord).x;
 		if (center_depth == 0.0) {
@@ -2355,11 +2358,553 @@ pub(super) struct ShaderMeshletData {
 
 #[cfg(test)]
 mod tests {
-	use super::{
-		get_shadow_pass_mesh_msl_source, get_visibility_pass_mesh_hlsl_source, get_visibility_pass_mesh_msl_source,
-		get_visibility_pass_task_msl_source, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING,
-		VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	use besl::vm::{
+		output_slot, DescriptorBindings, DescriptorSlot, ExecutableProgram, ExecutionConfig, MeshOutputs, SpecializationValues,
+		Texture, Value,
 	};
+
+	use super::{
+		build_gtao_bitfield_blur_x_program, build_gtao_bitfield_program, build_gtao_blur_program, build_gtao_program,
+		build_material_count_program, build_material_offset_program, build_mesh_program_from_source,
+		build_pixel_mapping_program, get_shadow_pass_mesh_msl_source, get_visibility_pass_mesh_hlsl_source,
+		get_visibility_pass_mesh_msl_source, get_visibility_pass_task_msl_source, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
+		PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING,
+		VIEWS_DATA_BINDING,
+	};
+	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
+
+	const VIEWS_SLOT: DescriptorSlot = DescriptorSlot::new(0, 0);
+	const MESH_DATA_SLOT: DescriptorSlot = DescriptorSlot::new(0, 1);
+	const MATERIAL_COUNT_SLOT: DescriptorSlot = DescriptorSlot::new(1, 0);
+	const MATERIAL_OFFSET_SLOT: DescriptorSlot = DescriptorSlot::new(1, 1);
+	const MATERIAL_OFFSET_SCRATCH_SLOT: DescriptorSlot = DescriptorSlot::new(1, 2);
+	const MATERIAL_DISPATCH_SLOT: DescriptorSlot = DescriptorSlot::new(1, 3);
+	const PIXEL_MAPPING_SLOT: DescriptorSlot = DescriptorSlot::new(1, 4);
+	const INSTANCE_INDEX_SLOT: DescriptorSlot = DescriptorSlot::new(1, 7);
+	const VERTEX_POSITIONS_SLOT: DescriptorSlot = DescriptorSlot::new(0, 2);
+	const VERTEX_INDICES_SLOT: DescriptorSlot = DescriptorSlot::new(0, 6);
+	const PRIMITIVE_INDICES_SLOT: DescriptorSlot = DescriptorSlot::new(0, 7);
+	const MESHLETS_SLOT: DescriptorSlot = DescriptorSlot::new(0, 8);
+	const FIXTURE_INSTANCE_INDEX: usize = 3;
+	const FIXTURE_MESHLET_INDEX: usize = 5;
+	const MESH_TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
+
+	/// Returns a column-major identity matrix in the BESL VM representation.
+	fn identity_matrix() -> [f32; 16] {
+		[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+	}
+
+	/// Builds the exact production visibility mesh main for VM execution.
+	fn visibility_mesh_program() -> besl::NodeReference {
+		build_mesh_program_from_source(
+			r#"
+		main: fn () -> void {
+			let view: View = views.views[0];
+			process_meshlet(push_constant.instance_index, view.view_projection);
+		}
+		"#,
+			besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]),
+		)
+	}
+
+	/// Builds the exact production shadow mesh main for VM execution.
+	fn shadow_mesh_program() -> besl::NodeReference {
+		build_mesh_program_from_source(
+			r#"
+		main: fn () -> void {
+			let view_index: u32 = push_constant.view_index;
+			let view: View = views.views[view_index];
+			process_meshlet(push_constant.instance_index, view.view_projection);
+		}
+		"#,
+			besl::parser::Node::push_constant(vec![
+				besl::parser::Node::member("instance_index", "u32"),
+				besl::parser::Node::member("view_index", "u32"),
+			]),
+		)
+	}
+
+	/// Creates one identity-transformed triangle meshlet in the production visibility buffer layouts.
+	fn mesh_triangle_buffers(
+		program: &ExecutableProgram,
+	) -> (
+		besl::vm::Buffer,
+		besl::vm::Buffer,
+		besl::vm::Buffer,
+		besl::vm::Buffer,
+		besl::vm::Buffer,
+		besl::vm::Buffer,
+	) {
+		let mut views = buffer(program, VIEWS_SLOT);
+		views
+			.write_indexed_field("views", 0, "view_projection", Value::Mat4F(identity_matrix()))
+			.expect("Failed to initialize the mesh view. The most likely cause is a drifted View layout.");
+
+		let mut meshes = buffer(program, MESH_DATA_SLOT);
+		meshes
+			.write_indexed_field(
+				"meshes",
+				FIXTURE_INSTANCE_INDEX,
+				"model",
+				Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]),
+			)
+			.expect("Failed to initialize the mesh model matrix. The most likely cause is a drifted Mesh layout.");
+		for (field, value) in [
+			("base_vertex_index", 0),
+			("base_primitive_index", 0),
+			("base_triangle_index", 0),
+			("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
+			("meshlet_count", 1),
+		] {
+			meshes
+				.write_indexed_field("meshes", FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
+				.expect("Failed to initialize a mesh offset. The most likely cause is a drifted Mesh layout.");
+		}
+
+		let mut positions = buffer(program, VERTEX_POSITIONS_SLOT);
+		for (index, position) in [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]].into_iter().enumerate() {
+			positions
+				.write_indexed("positions", index, Value::Vec3F(position))
+				.expect("Failed to initialize a mesh vertex. The most likely cause is a drifted position layout.");
+		}
+
+		let mut vertex_indices = buffer(program, VERTEX_INDICES_SLOT);
+		let mut primitive_indices = buffer(program, PRIMITIVE_INDICES_SLOT);
+		for (index, value) in [0, 1, 2].into_iter().enumerate() {
+			vertex_indices
+				.write_indexed("vertex_indices", index, Value::U16(value))
+				.expect("Failed to initialize a vertex index. The most likely cause is a drifted index layout.");
+			primitive_indices
+				.write_indexed("primitive_indices", index, Value::U8(value as u8))
+				.expect("Failed to initialize a triangle index. The most likely cause is a drifted primitive layout.");
+		}
+
+		let mut meshlets = buffer(program, MESHLETS_SLOT);
+		for (field, value) in [
+			("primitive_offset", 0),
+			("triangle_offset", 0),
+			("primitive_count", 3),
+			("triangle_count", 1),
+		] {
+			meshlets
+				.write_indexed_field("meshlets", FIXTURE_MESHLET_INDEX, field, Value::U32(value))
+				.expect("Failed to initialize a meshlet field. The most likely cause is a drifted Meshlet layout.");
+		}
+
+		(views, meshes, positions, vertex_indices, primitive_indices, meshlets)
+	}
+
+	/// Executes one production mesh main and verifies its complete one-triangle output contract.
+	fn assert_identity_triangle_mesh_program(program: besl::NodeReference, has_view_index: bool) {
+		let program = crate::rendering::shader_vm_test::compile(program);
+		let (mut views, mut meshes, mut positions, mut vertex_indices, mut primitive_indices, mut meshlets) =
+			mesh_triangle_buffers(&program);
+		let push_constant_layout = program
+			.push_constant_layout()
+			.expect(
+				"Missing mesh push constant layout. The most likely cause is that the production mesh main no longer uses it.",
+			)
+			.clone();
+		let mut push_constant = besl::vm::Buffer::new(push_constant_layout);
+		push_constant
+			.write("instance_index", Value::U32(FIXTURE_INSTANCE_INDEX as u32))
+			.expect("Failed to initialize the mesh instance index. The most likely cause is a drifted push constant layout.");
+		if has_view_index {
+			push_constant
+				.write("view_index", Value::U32(0))
+				.expect("Failed to initialize the shadow view index. The most likely cause is a drifted push constant layout.");
+		}
+
+		let mut out_instance_indices = buffer(&program, output_slot(0));
+		let mut out_primitive_indices = buffer(&program, output_slot(1));
+		let mut mesh_outputs = MeshOutputs::new();
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+			descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
+			descriptors.bind_buffer(VERTEX_POSITIONS_SLOT, &mut positions);
+			descriptors.bind_buffer(VERTEX_INDICES_SLOT, &mut vertex_indices);
+			descriptors.bind_buffer(PRIMITIVE_INDICES_SLOT, &mut primitive_indices);
+			descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
+			descriptors.bind_buffer(output_slot(0), &mut out_instance_indices);
+			descriptors.bind_buffer(output_slot(1), &mut out_primitive_indices);
+			descriptors.bind_push_constant(&mut push_constant);
+			descriptors.bind_mesh_outputs(&mut mesh_outputs);
+
+			// Mesh invocations share their capture just as lanes in one production mesh workgroup share output arrays.
+			for thread_idx in 0..3 {
+				let config = ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+					.with_call_depth_limit(128)
+					.with_thread_idx(thread_idx)
+					.with_threadgroup_position(0);
+				program.run_main_with_config(&mut descriptors, &config).expect(
+					"Failed to execute a production mesh shader with the BESL VM. The most likely cause is missing mesh intrinsic support or an invalid fixture binding.",
+				);
+			}
+		}
+
+		assert_eq!(mesh_outputs.vertex_count(), 3);
+		assert_eq!(mesh_outputs.primitive_count(), 1);
+		for (index, expected) in [[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]]
+			.into_iter()
+			.enumerate()
+		{
+			let actual = mesh_outputs
+				.vertex_position(index)
+				.expect("Missing mesh vertex output. The most likely cause is that a mesh invocation did not write its lane.");
+			assert_rgba_close(actual, expected, 0.00001);
+		}
+		assert_eq!(mesh_outputs.triangle(0), Some([0, 1, 2]));
+		assert_eq!(
+			read_u32(&out_instance_indices, "out_instance_index", 0),
+			FIXTURE_INSTANCE_INDEX as u32
+		);
+		assert_eq!(
+			read_u32(&out_primitive_indices, "out_primitive_index", 0),
+			(FIXTURE_MESHLET_INDEX as u32) << 8
+		);
+	}
+
+	/// Verifies visibility mesh output geometry and metadata through the BESL VM.
+	#[test]
+	fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
+		assert_identity_triangle_mesh_program(visibility_mesh_program(), false);
+	}
+
+	/// Verifies shadow mesh output geometry and metadata through the BESL VM.
+	#[test]
+	fn shadow_mesh_main_emits_identity_triangle_and_metadata() {
+		assert_identity_triangle_mesh_program(shadow_mesh_program(), true);
+	}
+
+	/// Creates the minimum camera data shared by the GTAO shader fixtures.
+	fn gtao_views(program: &ExecutableProgram) -> besl::vm::Buffer {
+		let mut views = buffer(program, VIEWS_SLOT);
+		views
+			.write_indexed_field("views", 0, "inverse_projection", Value::Mat4F(identity_matrix()))
+			.expect("Failed to initialize the GTAO inverse projection. The most likely cause is a drifted View layout.");
+		views
+			.write_indexed_field("views", 0, "fov", Value::Vec2F([60.0, 60.0]))
+			.expect("Failed to initialize the GTAO field of view. The most likely cause is a drifted View layout.");
+		views
+	}
+
+	/// Reads one unsigned scalar from an indexed visibility buffer member.
+	fn read_u32(buffer: &besl::vm::Buffer, member: &str, index: usize) -> u32 {
+		match buffer
+			.read_indexed(member, index)
+			.expect("Failed to read a VM u32 array element. The most likely cause is a drifted visibility buffer layout.")
+		{
+			Value::U32(value) => value,
+			value => panic!(
+				"Unexpected visibility buffer value: {value:?}. The most likely cause is a drifted material buffer type."
+			),
+		}
+	}
+
+	/// Reads one dispatch tuple from an indexed visibility buffer member.
+	fn read_vec4u(buffer: &besl::vm::Buffer, member: &str, index: usize) -> [u32; 4] {
+		match buffer
+			.read_indexed(member, index)
+			.expect("Failed to read a VM vec4u array element. The most likely cause is a drifted visibility buffer layout.")
+		{
+			Value::Vec4U(value) => value,
+			value => panic!(
+				"Unexpected visibility dispatch value: {value:?}. The most likely cause is a drifted dispatch buffer type."
+			),
+		}
+	}
+
+	/// Reads one packed pixel coordinate from the visibility mapping buffer.
+	fn read_vec2u16(buffer: &besl::vm::Buffer, member: &str, index: usize) -> [u16; 2] {
+		match buffer
+			.read_indexed(member, index)
+			.expect("Failed to read a VM vec2u16 array element. The most likely cause is a drifted pixel mapping layout.")
+		{
+			Value::Vec2U16(value) => value,
+			value => panic!(
+				"Unexpected visibility pixel mapping value: {value:?}. The most likely cause is a drifted mapping buffer type."
+			),
+		}
+	}
+
+	/// Exercises the production material prepasses as one stateful VM pipeline.
+	#[test]
+	fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
+		let material_count_program = crate::rendering::shader_vm_test::compile(build_material_count_program());
+		let material_offset_program = crate::rendering::shader_vm_test::compile(build_material_offset_program());
+		let pixel_mapping_program = crate::rendering::shader_vm_test::compile(build_pixel_mapping_program());
+
+		// Three visible instances span two materials; the fourth texel is the renderer's empty-pixel sentinel.
+		let mut mesh_data = buffer(&material_count_program, MESH_DATA_SLOT);
+		for (mesh_index, material_index) in [(0, 2), (1, 5), (2, 2)] {
+			mesh_data
+				.write_indexed_field("meshes", mesh_index, "material_index", Value::U32(material_index))
+				.expect("Failed to initialize a VM mesh. The most likely cause is a drifted Mesh buffer layout.");
+		}
+
+		let mut instance_indices = Texture::new(2, 2)
+			.expect("Failed to create the visibility index fixture. The most likely cause is an invalid test extent.");
+		for (coordinate, instance_index) in [([0, 0], 0), ([1, 0], 1), ([0, 1], u32::MAX), ([1, 1], 2)] {
+			instance_indices
+				.write_u32(coordinate, instance_index)
+				.expect("Failed to initialize a visibility index texel. The most likely cause is an invalid coordinate.");
+		}
+
+		let mut material_counts = buffer(&material_count_program, MATERIAL_COUNT_SLOT);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(MESH_DATA_SLOT, &mut mesh_data);
+			descriptors.bind_buffer(MATERIAL_COUNT_SLOT, &mut material_counts);
+			descriptors.bind_image(INSTANCE_INDEX_SLOT, &mut instance_indices);
+			for coordinate in [[0, 0], [1, 0], [0, 1], [1, 1]] {
+				run_at(&material_count_program, &mut descriptors, coordinate);
+			}
+		}
+
+		assert_eq!(read_u32(&material_counts, "material_count", 2), 2);
+		assert_eq!(read_u32(&material_counts, "material_count", 5), 1);
+		assert_eq!(read_u32(&material_counts, "material_count", 0), 0);
+
+		// The offset pass converts sparse counts into exclusive offsets and one indirect dispatch tuple per material.
+		let mut material_offsets = buffer(&material_offset_program, MATERIAL_OFFSET_SLOT);
+		let mut material_offset_scratch = buffer(&material_offset_program, MATERIAL_OFFSET_SCRATCH_SLOT);
+		let mut material_dispatches = buffer(&material_offset_program, MATERIAL_DISPATCH_SLOT);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(MATERIAL_COUNT_SLOT, &mut material_counts);
+			descriptors.bind_buffer(MATERIAL_OFFSET_SLOT, &mut material_offsets);
+			descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, &mut material_offset_scratch);
+			descriptors.bind_buffer(MATERIAL_DISPATCH_SLOT, &mut material_dispatches);
+			run_at(&material_offset_program, &mut descriptors, [0, 0]);
+		}
+
+		assert_eq!(read_u32(&material_offsets, "material_offset", 2), 0);
+		assert_eq!(read_u32(&material_offsets, "material_offset", 5), 2);
+		assert_eq!(read_u32(&material_offsets, "material_offset", 6), 3);
+		assert_eq!(
+			read_vec4u(&material_dispatches, "material_evaluation_dispatches", 0),
+			[0, 1, 1, 0]
+		);
+		assert_eq!(
+			read_vec4u(&material_dispatches, "material_evaluation_dispatches", 2),
+			[1, 1, 1, 0]
+		);
+		assert_eq!(
+			read_vec4u(&material_dispatches, "material_evaluation_dispatches", 5),
+			[1, 1, 1, 0]
+		);
+
+		// Mapping reuses the scratch offsets as atomic cursors and stores one-based coordinates for later zero-sentinel checks.
+		let mut pixel_mapping = buffer(&pixel_mapping_program, PIXEL_MAPPING_SLOT);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(MESH_DATA_SLOT, &mut mesh_data);
+			descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, &mut material_offset_scratch);
+			descriptors.bind_buffer(PIXEL_MAPPING_SLOT, &mut pixel_mapping);
+			descriptors.bind_image(INSTANCE_INDEX_SLOT, &mut instance_indices);
+			for coordinate in [[0, 0], [1, 0], [0, 1], [1, 1]] {
+				run_at(&pixel_mapping_program, &mut descriptors, coordinate);
+			}
+		}
+
+		assert_eq!(read_vec2u16(&pixel_mapping, "pixel_mapping", 0), [1, 1]);
+		assert_eq!(read_vec2u16(&pixel_mapping, "pixel_mapping", 1), [2, 2]);
+		assert_eq!(read_vec2u16(&pixel_mapping, "pixel_mapping", 2), [2, 1]);
+		assert_eq!(read_u32(&material_offset_scratch, "material_offset_scratch", 2), 2);
+		assert_eq!(read_u32(&material_offset_scratch, "material_offset_scratch", 5), 3);
+	}
+
+	/// Executes the standard GTAO shader with one deterministic depth fixture.
+	fn run_gtao_fixture(
+		program: &ExecutableProgram,
+		width: u32,
+		height: u32,
+		depth_texels: &[[f32; 4]],
+		coordinate: [u32; 2],
+	) -> [f32; 4] {
+		let mut views = gtao_views(program);
+		let mut depth = texture_2d(width, height, depth_texels);
+		let mut output = empty_image(width, height);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+			descriptors.bind_texture(DescriptorSlot::new(1, 0), &mut depth);
+			descriptors.bind_image(DescriptorSlot::new(1, 1), &mut output);
+			run_at(program, &mut descriptors, coordinate);
+		}
+		rgba(&output, coordinate)
+	}
+
+	/// Verifies the standard GTAO shader's background contract and bounded foreground output.
+	#[test]
+	fn gtao_writes_white_for_background_and_bounded_finite_foreground() {
+		let program = crate::rendering::shader_vm_test::compile(build_gtao_program());
+		let background = run_gtao_fixture(&program, 1, 1, &[[0.0, 0.0, 0.0, 1.0]], [0, 0]);
+		assert_rgba_close(background, [1.0, 1.0, 1.0, 1.0], 0.00001);
+
+		// A recessed center surrounded by nearer depth exercises reconstruction, normal estimation, and the bounded AO integral.
+		let mut foreground = [[0.35, 0.0, 0.0, 1.0]; 25];
+		foreground[12] = [0.75, 0.0, 0.0, 1.0];
+		let foreground = run_gtao_fixture(&program, 5, 5, &foreground, [2, 2]);
+		for channel in foreground[..3].iter().copied() {
+			assert!(channel.is_finite() && (0.0..=1.0).contains(&channel));
+		}
+		assert_eq!(foreground[3], 1.0);
+	}
+
+	/// Reads one unsigned integer texel from a VM image fixture.
+	fn fetch_u32(texture: &Texture, coordinate: [u32; 2]) -> u32 {
+		match texture
+			.fetch_u32(coordinate)
+			.expect("Failed to read an integer VM image. The most likely cause is an invalid assertion coordinate.")
+		{
+			Value::U32(value) => value,
+			value => panic!(
+				"Unexpected integer image value: {value:?}. The most likely cause is a drifted integer image representation."
+			),
+		}
+	}
+
+	/// Verifies background rejection and the packed foreground-bit convention.
+	#[test]
+	fn gtao_bitfield_skips_background_and_sets_the_foreground_pixel_bit() {
+		let program = crate::rendering::shader_vm_test::compile(build_gtao_bitfield_program());
+
+		let mut background_views = gtao_views(&program);
+		let mut background_depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
+		let mut background_bits = Texture::new(1, 1)
+			.expect("Failed to create the GTAO bitfield fixture. The most likely cause is an invalid test extent.");
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut background_views);
+			descriptors.bind_texture(DescriptorSlot::new(1, 0), &mut background_depth);
+			descriptors.bind_image(DescriptorSlot::new(1, 1), &mut background_bits);
+			run_at(&program, &mut descriptors, [0, 0]);
+		}
+		assert_eq!(fetch_u32(&background_bits, [0, 0]), 0);
+
+		// Coordinate (13, 28) has low deterministic quantization noise and occupies bit 13 of the first packed word.
+		let mut foreground_texels = [[0.35, 0.0, 0.0, 1.0]; 96 * 96];
+		// A flat local patch keeps the reconstructed normal stable while the nearer surrounding depths occlude farther steps.
+		for y in 27..=29 {
+			for x in 12..=14 {
+				foreground_texels[y * 96 + x] = [0.85, 0.0, 0.0, 1.0];
+			}
+		}
+		let mut foreground_views = gtao_views(&program);
+		let mut foreground_depth = texture_2d(96, 96, &foreground_texels);
+		let mut foreground_bits = Texture::new(3, 96)
+			.expect("Failed to create the GTAO bitfield output. The most likely cause is an invalid test extent.");
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut foreground_views);
+			descriptors.bind_texture(DescriptorSlot::new(1, 0), &mut foreground_depth);
+			descriptors.bind_image(DescriptorSlot::new(1, 1), &mut foreground_bits);
+			run_at(&program, &mut descriptors, [13, 28]);
+		}
+		assert_eq!(fetch_u32(&foreground_bits, [0, 28]) & (1 << 13), 1 << 13);
+	}
+
+	/// Runs the bitfield decoder with a uniform packed AO word.
+	fn run_bitfield_blur_fixture(program: &ExecutableProgram, packed_bits: u32) -> [f32; 4] {
+		let mut views = gtao_views(program);
+		let mut depth = texture_2d(32, 1, &[[0.5, 0.0, 0.0, 1.0]; 32]);
+		let mut source = Texture::new(1, 1)
+			.expect("Failed to create a packed GTAO fixture. The most likely cause is an invalid test extent.");
+		source
+			.write_u32([0, 0], packed_bits)
+			.expect("Failed to initialize packed GTAO bits. The most likely cause is an invalid fixture coordinate.");
+		let mut output = empty_image(1, 1);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+			descriptors.bind_texture(DescriptorSlot::new(1, 0), &mut depth);
+			descriptors.bind_texture(DescriptorSlot::new(1, 1), &mut source);
+			descriptors.bind_image(DescriptorSlot::new(1, 2), &mut output);
+			run_at(program, &mut descriptors, [0, 0]);
+		}
+		rgba(&output, [0, 0])
+	}
+
+	/// Verifies that packed binary AO values decode to the expected continuous endpoints.
+	#[test]
+	fn gtao_bitfield_blur_decodes_clear_and_set_words_to_opposite_endpoints() {
+		let program = crate::rendering::shader_vm_test::compile(build_gtao_bitfield_blur_x_program());
+		assert_rgba_close(run_bitfield_blur_fixture(&program, 0), [1.0, 0.0, 0.0, 1.0], 0.00001);
+		assert_rgba_close(run_bitfield_blur_fixture(&program, u32::MAX), [0.0, 0.0, 0.0, 1.0], 0.00001);
+	}
+
+	/// Compiles the generic GTAO blur with a host-selected axis specialization.
+	fn compile_gtao_blur(direction: [f32; 2]) -> ExecutableProgram {
+		let mut specializations = SpecializationValues::new();
+		specializations.set("blur_direction", Value::Vec2F(direction));
+		ExecutableProgram::compile_with_specializations(build_gtao_blur_program(), &specializations).expect(
+			"Failed to compile the GTAO blur shader with the BESL VM. The most likely cause is missing specialization or VM support.",
+		)
+	}
+
+	/// Runs one generic GTAO blur invocation for a selected specialization direction.
+	fn run_gtao_blur_fixture(
+		program: &ExecutableProgram,
+		width: u32,
+		height: u32,
+		depth_texels: &[[f32; 4]],
+		ao_texels: &[[f32; 4]],
+		coordinate: [u32; 2],
+	) -> [f32; 4] {
+		let mut views = gtao_views(program);
+		let mut depth = texture_2d(width, height, depth_texels);
+		let mut ao = texture_2d(width, height, ao_texels);
+		let mut output = empty_image(width, height);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+			descriptors.bind_texture(DescriptorSlot::new(1, 0), &mut depth);
+			descriptors.bind_texture(DescriptorSlot::new(1, 1), &mut ao);
+			descriptors.bind_image(DescriptorSlot::new(1, 2), &mut output);
+			run_at(program, &mut descriptors, coordinate);
+		}
+		rgba(&output, coordinate)
+	}
+
+	/// Verifies specialization-controlled blur direction without disturbing uniform input.
+	#[test]
+	fn gtao_blur_preserves_uniform_ao_and_obeys_x_y_specializations() {
+		let blur_x = compile_gtao_blur([1.0, 0.0]);
+		let blur_y = compile_gtao_blur([0.0, 1.0]);
+		let depth = [[0.5, 0.0, 0.0, 1.0]; 25];
+		let uniform_ao = [[0.37, 0.0, 0.0, 1.0]; 25];
+		assert_rgba_close(
+			run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &uniform_ao, [2, 2]),
+			[0.37, 0.0, 0.0, 1.0],
+			0.00001,
+		);
+		assert_rgba_close(
+			run_gtao_blur_fixture(&blur_y, 5, 5, &depth, &uniform_ao, [2, 2]),
+			[0.37, 0.0, 0.0, 1.0],
+			0.00001,
+		);
+
+		// Horizontal variation is smoothed by the X specialization, while every Y sample still observes the center column.
+		let directional_ao: [[f32; 4]; 25] = std::array::from_fn(|index| {
+			if index % 5 == 2 {
+				[1.0, 0.0, 0.0, 1.0]
+			} else {
+				[0.0, 0.0, 0.0, 1.0]
+			}
+		});
+		let horizontal = run_gtao_blur_fixture(&blur_x, 5, 5, &depth, &directional_ao, [2, 2]);
+		let vertical = run_gtao_blur_fixture(&blur_y, 5, 5, &depth, &directional_ao, [2, 2]);
+		assert!(
+			horizontal[0] < 0.8,
+			"Expected X blur to mix neighboring columns, found {horizontal:?}"
+		);
+		assert!(
+			(vertical[0] - 1.0).abs() < 0.00001,
+			"Expected Y blur to preserve the center column, found {vertical:?}"
+		);
+	}
 
 	#[test]
 	fn shader_meshlet_data_matches_metal_buffer_layout() {

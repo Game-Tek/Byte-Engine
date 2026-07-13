@@ -224,6 +224,7 @@ impl RenderPass for SwapchainBlitPass {
 
 #[cfg(test)]
 mod tests {
+	use besl::vm::{DescriptorBindings, DescriptorSlot};
 	#[cfg(target_os = "linux")]
 	use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
 	use resource_management::shader::{
@@ -232,6 +233,45 @@ mod tests {
 	use utils::Extent;
 
 	use super::{create_swapchain_blit_program, SWAPCHAIN_BLIT_SHADER};
+	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
+
+	/// Verifies exact production blits and the dispatch guard through the VM.
+	#[test]
+	fn swapchain_blit_besl_vm_copies_pixels_and_ignores_out_of_bounds_invocations() {
+		let program = crate::rendering::shader_vm_test::compile(create_swapchain_blit_program());
+		let expected = [
+			[0.1, 0.2, 0.3, 0.4],
+			[0.5, 0.6, 0.7, 0.8],
+			[0.9, 0.8, 0.7, 0.6],
+			[0.4, 0.3, 0.2, 0.1],
+		];
+		let mut source = texture_2d(2, 2, &expected);
+		let mut result = empty_image(2, 2);
+
+		for y in 0..2 {
+			for x in 0..2 {
+				let mut descriptors = DescriptorBindings::new();
+				descriptors.bind_image(DescriptorSlot::new(0, 0), &mut source);
+				descriptors.bind_image(DescriptorSlot::new(0, 1), &mut result);
+				run_at(&program, &mut descriptors, [x, y]);
+			}
+		}
+
+		for (index, expected) in expected.into_iter().enumerate() {
+			assert_rgba_close(rgba(&result, [(index % 2) as u32, (index / 2) as u32]), expected, 0.0);
+		}
+
+		// Dispatch rounding may produce excess invocations, so the production guard must make those invocations true no-ops.
+		for coordinate in [[2, 0], [0, 2]] {
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_image(DescriptorSlot::new(0, 0), &mut source);
+			descriptors.bind_image(DescriptorSlot::new(0, 1), &mut result);
+			run_at(&program, &mut descriptors, coordinate);
+		}
+		for (index, expected) in expected.into_iter().enumerate() {
+			assert_rgba_close(rgba(&result, [(index % 2) as u32, (index / 2) as u32]), expected, 0.0);
+		}
+	}
 
 	#[test]
 	fn swapchain_blit_besl_parses() {

@@ -86,9 +86,11 @@ impl Session {
 				for packet in packets {
 					match packet {
 						Packets::Data(data_packet) if id == data_packet.get_connection_id() => {
-							// Only packets for this session may mutate acknowledgement state or keep the connection alive.
-							self.remote.acknowledge_packet(data_packet.get_connection_status().sequence);
-							packet_buffer.remove(data_packet.get_connection_status().sequence);
+							let status = data_packet.get_connection_status();
+							// Only packets for this session may mutate receive ordering, acknowledgement state, or liveness.
+							self.remote.acknowledge_packet(status.sequence);
+							self.local.acknowledge_packets(status.ack, status.ack_bitfield);
+							packet_buffer.acknowledge_packets(status.ack, status.ack_bitfield);
 							received_authenticated_data = true;
 						}
 						Packets::Disconnect(disconnect_packet) if id == disconnect_packet.get_connection_id() => {
@@ -264,6 +266,49 @@ mod tests {
 	}
 
 	#[test]
+	fn initiating_connection_uses_xor_when_salts_have_overlapping_bits() {
+		let now = std::time::Instant::now();
+		let mut session = Session::new();
+		session.connect(7);
+
+		assert_eq!(
+			session.update(&[ChallengePacket::new(7, 3).into()], now),
+			Ok(vec![ChallengeResponsePacket::new(4).into()])
+		);
+	}
+
+	#[test]
+	fn wrong_disconnect_is_ignored_and_matching_disconnect_transitions() {
+		let now = std::time::Instant::now();
+		let mut session = Session::new();
+		session.accept(7, now);
+
+		assert_eq!(session.update(&[DisconnectPacket::new(8).into()], now), Ok(Vec::new()));
+		assert!(session.is_connected());
+		assert_eq!(session.update(&[DisconnectPacket::new(7).into()], now), Ok(Vec::new()));
+		assert!(!session.is_connected());
+		assert_eq!(session.update(&[], now), Ok(vec![DisconnectPacket::new(7).into()]));
+	}
+
+	#[test]
+	fn timeout_boundary_disconnects_only_after_the_configured_duration() {
+		let start = std::time::Instant::now();
+		let mut session = Session::new();
+		session.accept(7, start);
+
+		assert_eq!(session.update(&[], start + std::time::Duration::from_secs(5)), Ok(Vec::new()));
+		assert!(session.is_connected());
+		assert_eq!(
+			session.update(
+				&[],
+				start + std::time::Duration::from_secs(5) + std::time::Duration::from_nanos(1),
+			),
+			Ok(Vec::new())
+		);
+		assert!(!session.is_connected());
+	}
+
+	#[test]
 	fn unauthenticated_packets_do_not_refresh_connection_timeout() {
 		let start = std::time::Instant::now();
 		let mut session = Session::new();
@@ -295,6 +340,23 @@ mod tests {
 		session.update(&[], start + std::time::Duration::from_secs(6)).unwrap();
 
 		assert!(session.is_connected());
+	}
+
+	#[test]
+	fn receive_sequence_cannot_acknowledge_an_unrelated_local_send() {
+		let start = std::time::Instant::now();
+		let mut session = Session::new();
+		session.accept(7, start);
+		session.send(true, [1; 1024]);
+		let first_send = session.update(&[], start).unwrap();
+		assert_eq!(first_send.len(), 1);
+
+		let unrelated_receive = Packets::Data(DataPacket::new(7, ConnectionStatus::new(0, 400, 0), [2; 1024]));
+		let retry = session.update(&[unrelated_receive], start).unwrap();
+		assert_eq!(retry.len(), 1);
+
+		let explicit_ack = Packets::Data(DataPacket::new(7, ConnectionStatus::new(1, 0, 1), [3; 1024]));
+		assert!(session.update(&[explicit_ack], start).unwrap().is_empty());
 	}
 }
 

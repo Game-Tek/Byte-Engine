@@ -14,5 +14,8 @@ flamegraph.svg
 *.profraw
 perf.data
 perf.data.old
-.cargo
+/mutants.out
+/mutants.out.old
+.cargo/*
+!.cargo/mutants.toml
 .DS_Store

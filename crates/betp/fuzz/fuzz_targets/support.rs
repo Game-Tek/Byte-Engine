@@ -3,6 +3,9 @@ use betp::packets::{
 };
 use libfuzzer_sys::arbitrary::Arbitrary;
 
+pub const MAX_SESSION_OUTPUT_PACKETS: usize = 16;
+pub const RETRY_QUIESCENCE_UPDATES: usize = 9;
+
 /// A packet source that combines malformed wire input with valid packets containing arbitrary attacker-controlled fields.
 #[derive(Arbitrary, Debug)]
 pub enum PacketInput {
@@ -61,13 +64,67 @@ impl PacketInput {
 pub enum Operation {
 	Packet(PacketInput),
 	Batch(Vec<PacketInput>),
-	Send { reliable: bool, fill: u8 },
+	Send {
+		reliable: bool,
+		fill: u8,
+	},
 	Tick(u16),
 	AdvanceMilliseconds(u16),
 	Disconnect,
+	CurrentData {
+		sequence: u16,
+		ack: u16,
+		ack_bitfield: u32,
+		fill: u8,
+	},
+	OtherData {
+		sequence: u16,
+		ack: u16,
+		ack_bitfield: u32,
+		fill: u8,
+	},
+	DuplicateCurrentData {
+		sequence: u16,
+		ack: u16,
+		ack_bitfield: u32,
+		fill: u8,
+	},
+	CurrentDisconnect,
+	OtherDisconnect,
 }
 
 /// Decodes at most `limit` packet descriptions so a single batch has bounded work and storage.
 pub fn make_batch(inputs: &[PacketInput], limit: usize) -> Vec<Packets> {
 	inputs.iter().take(limit).filter_map(PacketInput::to_packet).collect()
+}
+
+/// Builds a data packet whose identity is chosen relative to the session by the caller.
+pub fn make_data_packet(connection_id: u64, sequence: u16, ack: u16, ack_bitfield: u32, fill: u8) -> Packets {
+	Packets::Data(DataPacket::new(
+		connection_id,
+		ConnectionStatus::new(sequence, ack, ack_bitfield),
+		[fill; 1024],
+	))
+}
+
+/// Derives an identity that is guaranteed not to equal the active session identity.
+pub fn other_connection_id(connection_id: u64) -> u64 {
+	connection_id ^ 1
+}
+
+/// Checks the bounded-output and session-identity contracts shared by both state machines.
+pub fn observe_session_output(packets: &[Packets], connection_id: &mut Option<u64>) {
+	assert!(packets.len() <= MAX_SESSION_OUTPUT_PACKETS);
+
+	for packet in packets {
+		match packet {
+			Packets::ChallengeResponse(packet) => match connection_id {
+				Some(expected) => assert_eq!(*expected, packet.get_connection_id()),
+				None => *connection_id = Some(packet.get_connection_id()),
+			},
+			Packets::Data(packet) => assert_eq!(Some(packet.get_connection_id()), *connection_id),
+			Packets::Disconnect(packet) => assert_eq!(Some(packet.get_connection_id()), *connection_id),
+			Packets::ConnectionRequest(_) | Packets::Challenge(_) => {}
+		}
+	}
 }

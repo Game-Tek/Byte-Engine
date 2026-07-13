@@ -474,6 +474,9 @@ mod tests {
 		assert!(sequence_greater_than(1, 0));
 		assert!(sequence_greater_than(0, u16::MAX));
 		assert!(!sequence_greater_than(u16::MAX, 0));
+		// The ambiguous half-range is resolved toward the numerically larger value so ordering remains antisymmetric.
+		assert!(sequence_greater_than(32_768, 0));
+		assert!(!sequence_greater_than(0, 32_768));
 
 		for base in [0u16, 1, 1024, 32767, 65534, 65535] {
 			for delta in [1u16, 2, 127, 32767] {

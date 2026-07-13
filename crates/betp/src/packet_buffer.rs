@@ -1,4 +1,7 @@
-/// A buffered packet.
+/// A reliable packet is retired after this many sends so an unresponsive peer cannot retain work indefinitely.
+pub(crate) const MAX_RELIABLE_SEND_ATTEMPTS: u8 = 8;
+
+/// The `BufferedPacket` struct retains the metadata needed to enforce send policy without allocating.
 #[derive(Debug, Clone, Copy)]
 struct BufferedPacket<const S: usize> {
 	/// The packet.
@@ -23,8 +26,7 @@ impl<const S: usize> BufferedPacket<S> {
 	}
 }
 
-/// A packet buffer that holds packets to be sent.
-/// The buffer has a fixed size and will overwrite old packets when full.
+/// The `PacketBuffer` struct bounds queued sends and retry work for one protocol session.
 #[derive(Debug, Clone, Copy)]
 pub struct PacketBuffer<const N: usize, const S: usize> {
 	/// The buffer.
@@ -94,19 +96,37 @@ impl<const N: usize, const S: usize> PacketBuffer<N, S> {
 		}
 	}
 
-	/// Gets the unsent packets in the buffer.
-	/// This is not an idempotent operation as the retry count will be incremented.
+	/// Removes the packets covered by a peer acknowledgement window.
+	pub fn acknowledge_packets(&mut self, ack: u16, ack_bitfield: u32) {
+		for bit in 0..u32::BITS {
+			if (ack_bitfield >> bit) & 1 == 1 {
+				self.remove(ack.wrapping_sub(bit as u16));
+			}
+		}
+	}
+
+	/// Gathers the next bounded batch and retires one-shot or exhausted entries.
 	pub fn gather_unsent_packets_for_retry(&mut self) -> ArrayVec<[DataPacket<S>; N]> {
-		self.buffer
-			.iter_mut()
-			.filter_map(|packet| packet.as_mut())
-			.map(|packet| {
-				let _ = packet.connection_id;
-				// A peer can withhold acknowledgements indefinitely, so retry bookkeeping must remain safe after any number of updates.
-				packet.try_count = packet.try_count.saturating_add(1);
-				packet.packet
-			})
-			.collect()
+		let mut packets = ArrayVec::new();
+
+		for slot in &mut self.buffer {
+			let Some(mut buffered) = *slot else {
+				continue;
+			};
+
+			let _ = buffered.connection_id;
+			buffered.try_count += 1;
+			packets.push(buffered.packet);
+
+			// Unreliable packets are one-shot. Reliable packets remain only while another bounded attempt is allowed.
+			*slot = if buffered.reliable && buffered.try_count < MAX_RELIABLE_SEND_ATTEMPTS {
+				Some(buffered)
+			} else {
+				None
+			};
+		}
+
+		packets
 	}
 }
 
@@ -261,7 +281,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_gather_unsent_packets_increments_try_count() {
+	fn unreliable_packets_are_sent_once_while_reliable_packets_remain_for_retry() {
 		let mut buffer = PacketBuffer::<3, 8>::new();
 
 		buffer.add(make_packet::<8>(1, 1), 1, false);
@@ -271,8 +291,8 @@ mod tests {
 		let second = buffer.gather_unsent_packets_for_retry();
 
 		assert_eq!(first.len(), 2);
-		assert_eq!(second.len(), 2);
-		assert_eq!(buffer.buffer[0].unwrap().try_count, 2);
+		assert_eq!(second.len(), 1);
+		assert!(buffer.buffer[0].is_none());
 		assert_eq!(buffer.buffer[1].unwrap().try_count, 2);
 
 		let sequences: ArrayVec<[u16; 3]> = buffer
@@ -280,20 +300,45 @@ mod tests {
 			.iter()
 			.filter_map(|packet| packet.map(|packet| packet.packet.connection_status.sequence))
 			.collect();
-		assert!(sequences.contains(&1));
+		assert!(!sequences.contains(&1));
 		assert!(sequences.contains(&2));
 	}
 
 	#[test]
-	fn test_retry_count_saturates_when_acknowledgements_never_arrive() {
+	fn reliable_retry_eventually_quiesces_when_acknowledgements_never_arrive() {
 		let mut buffer = PacketBuffer::<1, 8>::new();
 		buffer.add(make_packet::<8>(1, 1), 1, true);
 
-		for _ in 0..usize::from(u8::MAX) + 16 {
+		for _ in 0..MAX_RELIABLE_SEND_ATTEMPTS {
 			assert_eq!(buffer.gather_unsent_packets_for_retry().len(), 1);
 		}
 
-		assert_eq!(buffer.buffer[0].unwrap().try_count, u8::MAX);
+		assert_eq!(buffer.gather_unsent_packets_for_retry().len(), 0);
+		assert!(buffer.buffer[0].is_none());
+	}
+
+	#[test]
+	fn acknowledgement_window_removes_exactly_the_modeled_sequences() {
+		let mut buffer = PacketBuffer::<8, 8>::new();
+		for sequence in [u16::MAX - 1, u16::MAX, 0, 1, 2, 3, 4, 5] {
+			buffer.add(make_packet::<8>(sequence, 1), 1, true);
+		}
+
+		// Relative to ack 2, bits 0, 2, and 4 cover sequences 2, 0, and u16::MAX - 1.
+		buffer.acknowledge_packets(2, 0b1_0101);
+
+		for sequence in [2, 0, u16::MAX - 1] {
+			assert!(buffer
+				.buffer
+				.iter()
+				.all(|entry| { entry.is_none_or(|entry| entry.packet.connection_status.sequence != sequence) }));
+		}
+		for sequence in [u16::MAX, 1, 3, 4, 5] {
+			assert!(buffer
+				.buffer
+				.iter()
+				.any(|entry| { entry.is_some_and(|entry| entry.packet.connection_status.sequence == sequence) }));
+		}
 	}
 }
 

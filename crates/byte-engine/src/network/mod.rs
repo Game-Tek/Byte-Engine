@@ -67,6 +67,10 @@ pub mod channel {
 		}
 	}
 }
+#[cfg(test)]
+mod adverse_tests;
+/// Raw BETP datagram processing for transport adapters and defensive tests.
+pub mod datagram;
 #[doc(hidden)]
 pub mod replicable;
 #[doc(hidden)]

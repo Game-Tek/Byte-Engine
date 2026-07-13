@@ -15,8 +15,8 @@
 //! default_setup(&mut application);
 //! ```
 
-#![feature(const_trait_impl, coerce_unsized, unsize)]
-#![cfg_attr(feature = "headed", feature(allocator_api, future_join, slice_pattern, trait_alias))]
+#![feature(allocator_api, const_trait_impl, coerce_unsized, unsize)]
+#![cfg_attr(feature = "headed", feature(future_join, slice_pattern, trait_alias))]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
 #![allow(dead_code)]
 #![allow(incomplete_features)]

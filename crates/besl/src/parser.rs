@@ -25,6 +25,22 @@ use crate::tokenizer;
 /// It is missing the final transformation step, which is the lexing step.
 pub type NodeReference<'a> = &'a Node<'a>;
 
+/// The `TypeName` enum preserves type structure while the parser still borrows source text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeName<'a> {
+	Named(&'a str),
+	Array { element: Box<TypeName<'a>>, count: u32 },
+}
+
+impl std::fmt::Display for TypeName<'_> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Named(name) => f.write_str(name),
+			Self::Array { element, count } => write!(f, "{element}[{count}]"),
+		}
+	}
+}
+
 /// Generates a syntax tree from BESL source code tokens.
 /// The syntax tree is just another representation of the source code.
 /// It is missing the final transformation step, which is the lexing step.
@@ -219,7 +235,10 @@ impl<'a> Node<'a> {
 
 	pub fn call(name: &'a str, parameters: Vec<Node<'a>>) -> Node<'a> {
 		Node {
-			node: Nodes::Expression(Expressions::Call { name, parameters }),
+			node: Nodes::Expression(Expressions::Call {
+				name: TypeName::Named(name),
+				parameters,
+			}),
 		}
 	}
 
@@ -239,7 +258,10 @@ impl<'a> Node<'a> {
 
 	pub fn variable_declaration(name: &'a str, r#type: &'a str) -> Node<'a> {
 		Node {
-			node: Nodes::Expression(Expressions::VariableDeclaration { name, r#type }),
+			node: Nodes::Expression(Expressions::VariableDeclaration {
+				name,
+				r#type: TypeName::Named(r#type),
+			}),
 		}
 	}
 
@@ -348,6 +370,11 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn constant(name: &'a str, r#type: &'a str, value: Node<'a>) -> Node<'a> {
+		Self::constant_with_type(name, TypeName::Named(r#type), value)
+	}
+
+	/// Builds a constant node while preserving the parsed type structure.
+	fn constant_with_type(name: &'a str, r#type: TypeName<'a>, value: Node<'a>) -> Node<'a> {
 		Node {
 			node: Nodes::Const {
 				name,
@@ -531,7 +558,7 @@ pub enum Nodes<'a> {
 	/// A module-level constant variable declaration. Used to define compile-time constant values.
 	Const {
 		name: &'a str,
-		r#type: &'a str,
+		r#type: TypeName<'a>,
 		value: Box<Node<'a>>,
 	},
 }
@@ -550,7 +577,7 @@ pub enum Expressions<'a> {
 		value: Cow<'a, str>,
 	},
 	Call {
-		name: &'a str,
+		name: TypeName<'a>,
 		parameters: Vec<Node<'a>>,
 	},
 	Operator {
@@ -560,7 +587,7 @@ pub enum Expressions<'a> {
 	},
 	VariableDeclaration {
 		name: &'a str,
-		r#type: &'a str,
+		r#type: TypeName<'a>,
 	},
 	RawCode {
 		glsl: Option<&'a str>,
@@ -585,11 +612,23 @@ pub(super) enum Atoms<'a> {
 	Continue,
 	Accessor,
 	GroupedExpression(Vec<Atoms<'a>>),
-	Member { name: &'a str },
-	Literal { value: &'a str },
-	FunctionCall { name: &'a str, parameters: Vec<Vec<Atoms<'a>>> },
-	Operator { name: &'a str },
-	VariableDeclaration { name: &'a str, r#type: &'a str },
+	Member {
+		name: &'a str,
+	},
+	Literal {
+		value: &'a str,
+	},
+	FunctionCall {
+		name: TypeName<'a>,
+		parameters: Vec<Vec<Atoms<'a>>>,
+	},
+	Operator {
+		name: &'a str,
+	},
+	VariableDeclaration {
+		name: &'a str,
+		r#type: TypeName<'a>,
+	},
 }
 
 #[derive(Debug)]
@@ -830,7 +869,7 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 		},
 		_ => e,
 	})?;
-	let (r#type, mut iterator) = parse_array_type_suffix(iterator, r#type)?;
+	let (r#type, mut iterator) = parse_type_name(iterator, r#type)?;
 
 	iterator.next_str("=").map_err(|e| match e {
 		ParsingFailReasons::NotMine => ParsingFailReasons::BadSyntax {
@@ -869,7 +908,10 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 				Atoms::FunctionCall { name, parameters } => {
 					let parameters = parameters.iter().map(|v| atoms_to_node(v)).collect::<Vec<_>>();
 					Node {
-						node: Nodes::Expression(Expressions::Call { name, parameters }),
+						node: Nodes::Expression(Expressions::Call {
+							name: name.clone(),
+							parameters,
+						}),
 					}
 				}
 				Atoms::Literal { value } => Node {
@@ -887,7 +929,7 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 
 	let value = atoms_to_node(&expressions);
 
-	Ok((Node::constant(name, r#type, value), iterator))
+	Ok((Node::constant_with_type(name, r#type, value), iterator))
 }
 
 fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
@@ -1016,7 +1058,7 @@ fn parse_var_decl<'i, 'a: 'i>(
 		},
 		_ => e,
 	})?;
-	let (variable_type, iterator) = parse_array_type_suffix(iterator, variable_type)?;
+	let (variable_type, iterator) = parse_type_name(iterator, variable_type)?;
 
 	expressions.push(Atoms::VariableDeclaration {
 		name: variable_name,
@@ -1030,20 +1072,30 @@ fn parse_var_decl<'i, 'a: 'i>(
 	Ok(expressions)
 }
 
-fn parse_array_type_suffix<'i, 'a: 'i>(
+/// Parses a source-backed type name and all of its array suffixes.
+fn parse_type_name<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	base_type: &'a str,
-) -> Result<(&'a str, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
-	if iterator.clone().peekable().peek().map(|token| token.as_ref()) != Some("[") {
-		return Ok((base_type, iterator));
+) -> Result<(TypeName<'a>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
+	let mut type_name = TypeName::Named(base_type);
+
+	while iterator.clone().peekable().peek().map(|token| token.as_ref()) == Some("[") {
+		iterator.next_str("[")?;
+		let count = iterator
+			.next_is(|token| token.chars().all(|c| c.is_ascii_digit()))?
+			.parse::<u32>()
+			.map_err(|_| ParsingFailReasons::BadSyntax {
+				message: format!("Invalid array count for type {}", type_name),
+			})?;
+		iterator.next_str("]")?;
+
+		type_name = TypeName::Array {
+			element: Box::new(type_name),
+			count,
+		};
 	}
 
-	iterator.next_str("[")?;
-	let count = iterator.next_is(|token| token.chars().all(|c| c.is_ascii_digit()))?;
-	iterator.next_str("]")?;
-
-	let leaked = format!("{}[{}]", base_type, count).leak();
-	Ok((leaked, iterator))
+	Ok((type_name, iterator))
 }
 
 fn parse_keywords<'i, 'a: 'i>(
@@ -1249,7 +1301,10 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 				let parameters = parameters.iter().map(|v| expression_atoms_to_node(v)).collect::<Vec<_>>();
 
 				Node {
-					node: Nodes::Expression(Expressions::Call { name, parameters }),
+					node: Nodes::Expression(Expressions::Call {
+						name: name.clone(),
+						parameters,
+					}),
 				}
 			}
 			Atoms::Literal { value } => Node {
@@ -1259,7 +1314,10 @@ fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 				node: Nodes::Expression(Expressions::Member { name: (*name).into() }),
 			},
 			Atoms::VariableDeclaration { name, r#type } => Node {
-				node: Nodes::Expression(Expressions::VariableDeclaration { name, r#type }),
+				node: Nodes::Expression(Expressions::VariableDeclaration {
+					name,
+					r#type: r#type.clone(),
+				}),
 			},
 		}
 	} else {
@@ -1351,7 +1409,7 @@ fn parse_function_call<'i, 'a: 'i>(
 	mut expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	let function_name = iterator.next_identifier()?;
-	let (function_name, mut iterator) = parse_array_type_suffix(iterator, function_name)?;
+	let (function_name, mut iterator) = parse_type_name(iterator, function_name)?;
 	iterator.next_str("(")?;
 
 	let mut parameters = vec![];
@@ -1635,6 +1693,10 @@ mod tests {
 	use super::*;
 	use crate::tokenizer::tokenize;
 
+	fn assert_named_type(type_name: &TypeName<'_>, expected: &str) {
+		assert!(matches!(type_name, TypeName::Named(name) if *name == expected));
+	}
+
 	fn print_tree(node: &Node) {
 		match &node.node {
 			Nodes::Scope { name, children } => {
@@ -1724,15 +1786,15 @@ Light: struct {
 			{
 				assert_eq!(*name, "=");
 
-				if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) = var_decl.node {
-					assert_eq!(name, "position");
-					assert_eq!(r#type, "vec4f");
+				if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. }) = &var_decl.node {
+					assert_eq!(*name, "position");
+					assert_named_type(r#type, "vec4f");
 				} else {
 					panic!("Not an variable declaration");
 				}
 
-				if let Nodes::Expression(Expressions::Call { name, parameters }) = &function_call.node {
-					assert_eq!(*name, "vec4");
+				if let Nodes::Expression(Expressions::Call { name, parameters, .. }) = &function_call.node {
+					assert_named_type(name, "vec4");
 					assert_eq!(parameters.len(), 4);
 
 					let x_param = &parameters[0];
@@ -1869,8 +1931,8 @@ main: fn () -> void {
 				{
 					assert_eq!(*name, "*");
 
-					if let Nodes::Expression(Expressions::Call { name, .. }) = vec4.node {
-						assert_eq!(name, "vec4");
+					if let Nodes::Expression(Expressions::Call { name, .. }) = &vec4.node {
+						assert_named_type(name, "vec4");
 					} else {
 						panic!("Not a function call");
 					}
@@ -1916,11 +1978,11 @@ main: fn () -> void {
 			],
 		);
 
-		let Nodes::Expression(Expressions::Call { name, parameters }) = node.node else {
+		let Nodes::Expression(Expressions::Call { name, parameters, .. }) = node.node else {
 			panic!("Expected call expression");
 		};
 
-		assert_eq!(name, "vec4f");
+		assert_named_type(&name, "vec4f");
 		assert_eq!(parameters.len(), 4);
 	}
 
@@ -1933,9 +1995,11 @@ main: fn () -> void {
 		};
 
 		assert_eq!(name, "=");
-		assert!(
-			matches!(left.node, Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) if name == "roughness" && r#type == "f32")
-		);
+		assert!(matches!(
+			left.node,
+			Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. })
+				if name == "roughness" && matches!(r#type, TypeName::Named("f32")),
+		));
 		assert!(matches!(right.node, Nodes::Expression(Expressions::Literal { value }) if value == "0.5"));
 	}
 
@@ -2129,16 +2193,16 @@ main: fn () -> void {
 				if let Nodes::Expression(Expressions::Operator { name, left, right }) = &statement.node {
 					assert_eq!(*name, "=");
 
-					if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) = left.node {
-						assert_eq!(name, "n");
-						assert_eq!(r#type, "f32");
+					if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. }) = &left.node {
+						assert_eq!(*name, "n");
+						assert_named_type(r#type, "f32");
 					} else {
 						panic!("Not a variable declaration");
 					}
 
 					if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
-						if let Nodes::Expression(Expressions::Call { name, parameters }) = &left.node {
-							assert_eq!(*name, "intrinsic");
+						if let Nodes::Expression(Expressions::Call { name, parameters, .. }) = &left.node {
+							assert_named_type(name, "intrinsic");
 							assert_eq!(parameters.len(), 1);
 
 							if let Nodes::Expression(Expressions::Literal { value }) = &parameters[0].node {
@@ -2259,9 +2323,9 @@ PI: const f32 = 3.14;
 
 			let const_node = &node["PI"];
 
-			if let Nodes::Const { name, r#type, value } = &const_node.node {
+			if let Nodes::Const { name, r#type, value, .. } = &const_node.node {
 				assert_eq!(*name, "PI");
-				assert_eq!(*r#type, "f32");
+				assert_named_type(r#type, "f32");
 
 				if let Nodes::Expression(Expressions::Literal { value }) = &value.node {
 					assert_eq!(*value, "3.14");
@@ -2287,9 +2351,9 @@ TAU: const f32 = 3.14 * 2.0;
 
 		let const_node = &node["TAU"];
 
-		if let Nodes::Const { name, r#type, value } = &const_node.node {
+		if let Nodes::Const { name, r#type, value, .. } = &const_node.node {
 			assert_eq!(*name, "TAU");
-			assert_eq!(*r#type, "f32");
+			assert_named_type(r#type, "f32");
 
 			if let Nodes::Expression(Expressions::Operator { name, .. }) = &value.node {
 				assert_eq!(*name, "*");
@@ -2304,7 +2368,7 @@ TAU: const f32 = 3.14 * 2.0;
 	#[test]
 	fn test_parse_const_array() {
 		let source = "
-WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
+		WEIGHTS: const f32 [ 3 ] = f32 [ 3 ](0.5, 0.25, 0.125);
 ";
 
 		let tokens = tokenize(source).expect("Failed to tokenize");
@@ -2314,10 +2378,22 @@ WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
 
 		if let Nodes::Const { name, r#type, value } = &const_node.node {
 			assert_eq!(*name, "WEIGHTS");
-			assert_eq!(*r#type, "f32[3]");
+			assert_eq!(
+				r#type,
+				&TypeName::Array {
+					element: Box::new(TypeName::Named("f32")),
+					count: 3,
+				}
+			);
 
 			if let Nodes::Expression(Expressions::Call { name, parameters }) = &value.node {
-				assert_eq!(*name, "f32[3]");
+				assert_eq!(
+					name,
+					&TypeName::Array {
+						element: Box::new(TypeName::Named("f32")),
+						count: 3,
+					}
+				);
 				assert_eq!(parameters.len(), 3);
 			} else {
 				panic!("Expected an array constructor call, got: {:?}", value.node);
@@ -2325,6 +2401,26 @@ WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
 		} else {
 			panic!("Expected a const node");
 		}
+	}
+
+	#[test]
+	fn parse_nested_array_type_without_flattening() {
+		let tokens = tokenize("f32 [ 3 ] [ 4 ]").expect("Failed to tokenize");
+		let mut tokens = tokens.tokens.iter();
+		let base_type = tokens.next().expect("Expected a base type");
+		let (type_name, mut iterator) = parse_type_name(tokens, base_type).expect("Failed to parse type");
+
+		assert_eq!(
+			type_name,
+			TypeName::Array {
+				element: Box::new(TypeName::Array {
+					element: Box::new(TypeName::Named("f32")),
+					count: 3,
+				}),
+				count: 4,
+			}
+		);
+		assert!(iterator.next().is_none());
 	}
 
 	#[test]

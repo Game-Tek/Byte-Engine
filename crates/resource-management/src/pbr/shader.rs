@@ -975,10 +975,10 @@ mod tests {
 	}
 
 	fn assert_call<'a>(node: &'a besl::parser::Node<'a>, expected_name: &str) -> &'a [besl::parser::Node<'a>] {
-		let besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters }) = node.node() else {
+		let besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters, .. }) = node.node() else {
 			panic!("Expected call expression");
 		};
-		assert_eq!(*name, expected_name);
+		assert!(matches!(name, besl::parser::TypeName::Named(name) if *name == expected_name));
 		parameters
 	}
 
@@ -998,10 +998,10 @@ mod tests {
 	}
 
 	fn assert_vec4_call(node: &besl::parser::Node<'_>, expected: &[&str; 4]) {
-		let besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters }) = node.node() else {
+		let besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters, .. }) = node.node() else {
 			panic!("Expected vec4f call");
 		};
-		assert_eq!(*name, "vec4f");
+		assert!(matches!(name, besl::parser::TypeName::Named(name) if *name == "vec4f"));
 		assert_eq!(parameters.len(), 4);
 
 		for (parameter, expected) in parameters.iter().zip(expected.iter()) {

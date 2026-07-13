@@ -3,6 +3,7 @@
 use std::hash::Hash;
 use std::{
 	cell::RefCell,
+	fmt::Write as _,
 	num::NonZeroUsize,
 	ops::Deref,
 	rc::{Rc, Weak},
@@ -1259,7 +1260,6 @@ fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReferenc
 		let element_type_name = parts.next().ok_or(LexError::Undefined {
 			message: Some("No type name".to_string()),
 		})?;
-		let element_type = resolve_type(chain, element_type_name)?;
 		let count = parts
 			.next()
 			.ok_or(LexError::Undefined {
@@ -1270,17 +1270,8 @@ fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReferenc
 				message: Some("Invalid count".to_string()),
 			})?;
 
-		let array_type = Node::internal_new(Node {
-			node: Nodes::Struct {
-				name: type_name.to_string(),
-				template: Some(element_type.clone()),
-				fields: (0..count)
-					.map(|index| Node::member(&format!("value_{}", index), element_type.clone()).into())
-					.collect(),
-				types: Vec::new(),
-			},
-		});
-		return Ok(array_type);
+		let element_type = parser::TypeName::Named(element_type_name);
+		return resolve_array_type(chain, &element_type, count);
 	}
 
 	get_reference(chain, type_name).ok_or(LexError::ReferenceToUndefinedType {
@@ -1288,6 +1279,57 @@ fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReferenc
 	})
 }
 
+/// Resolves a structural array type and creates its semantic indexed members.
+fn resolve_array_type(
+	chain: &[NodeReference],
+	element_type_name: &parser::TypeName,
+	count: usize,
+) -> Result<NodeReference, LexError> {
+	let mut array_name = String::new();
+	append_type_name(&mut array_name, element_type_name);
+	let _ = write!(array_name, "[{count}]");
+	if let Some(existing) = get_reference(chain, &array_name) {
+		return Ok(existing);
+	}
+
+	let element_type = resolve_type_name(chain, element_type_name)?;
+	let array_type = Node::internal_new(Node {
+		node: Nodes::Struct {
+			name: array_name,
+			template: Some(element_type.clone()),
+			fields: (0..count)
+				.map(|index| Node::member(&format!("value_{index}"), element_type.clone()).into())
+				.collect(),
+			types: Vec::new(),
+		},
+	});
+
+	Ok(array_type)
+}
+
+/// Appends a structural parser type's canonical spelling to an owned name.
+fn append_type_name(name: &mut String, type_name: &parser::TypeName) {
+	match type_name {
+		parser::TypeName::Named(type_name) => name.push_str(type_name),
+		parser::TypeName::Array { element, count } => {
+			append_type_name(name, element);
+			let _ = write!(name, "[{count}]");
+		}
+	}
+}
+
+/// Resolves a parser type without flattening its array structure into source text.
+fn resolve_type_name(chain: &[NodeReference], type_name: &parser::TypeName) -> Result<NodeReference, LexError> {
+	match type_name {
+		parser::TypeName::Named(type_name) => resolve_type(chain, type_name),
+		parser::TypeName::Array { element, count } => {
+			let count = usize::try_from(*count).map_err(|_| LexError::Undefined {
+				message: Some("Invalid count".to_string()),
+			})?;
+			resolve_array_type(chain, element, count)
+		}
+	}
+}
 fn resolve_member(chain: &[NodeReference], name: &str) -> Result<NodeReference, LexError> {
 	// After the left side of an accessor has resolved a buffer binding, the next identifier
 	// belongs to that buffer's member namespace even when the binding and member share a name.
@@ -1941,7 +1983,7 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 				parser::Expressions::VariableDeclaration { name, r#type } => {
 					Node::expression(Expressions::VariableDeclaration {
 						name: name.to_string(),
-						r#type: resolve_type(&chain, r#type)?,
+						r#type: resolve_type_name(&chain, r#type)?,
 					})
 				}
 				parser::Expressions::RawCode {
@@ -1972,7 +2014,7 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 			this
 		}
 		parser::Nodes::Const { name, r#type, value } => {
-			let t = resolve_type(&chain, r#type)?;
+			let t = resolve_type_name(&chain, r#type)?;
 
 			let v = lex_parsed_node(chain.clone(), value)?;
 
@@ -2105,7 +2147,15 @@ fn infer_callable_return_type(callable: &NodeReference) -> Option<NodeReference>
 	}
 }
 
-fn resolve_call_target(chain: &[NodeReference], name: &str, parameters: &[NodeReference]) -> Result<NodeReference, LexError> {
+fn resolve_call_target(
+	chain: &[NodeReference],
+	name: &parser::TypeName,
+	parameters: &[NodeReference],
+) -> Result<NodeReference, LexError> {
+	let parser::TypeName::Named(name) = name else {
+		return resolve_type_name(chain, name);
+	};
+
 	for node in chain.iter().rev() {
 		if let Some(candidate) = resolve_call_target_in_node(node, name, parameters) {
 			return Ok(candidate);

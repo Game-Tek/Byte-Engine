@@ -69,7 +69,39 @@ pub use math;
 
 /// The `utils` module provides engine utility types through the main `byte_engine` crate API.
 pub mod utils {
+	use std::{
+		alloc::{GlobalAlloc, Layout, System},
+		sync::atomic::{AtomicUsize, Ordering},
+	};
+
 	pub use crate::engine_utils::*;
+
+	static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+	/// Use this allocator to track memory allocations made.
+	pub struct CountingAllocator;
+
+	#[allow(unsafe_code)]
+	unsafe impl GlobalAlloc for CountingAllocator {
+		unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+			ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+			unsafe { System.alloc(layout) }
+		}
+
+		unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+			unsafe { System.dealloc(ptr, layout) };
+		}
+
+		unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+			ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+			unsafe { System.realloc(ptr, layout, new_size) }
+		}
+	}
+
+	/// Call this function to get the current allocation count of the global counting allocator.
+	pub fn allocation_count() -> usize {
+		ALLOCATION_COUNT.load(Ordering::Relaxed)
+	}
 }
 
 pub mod application;

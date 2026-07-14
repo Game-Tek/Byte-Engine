@@ -321,11 +321,16 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 		})?;
 
 	if !metal_output.status.success() {
-		let stderr = String::from_utf8_lossy(&metal_output.stderr);
-		return Err(error_with_details(
+		let exit_status = metal_output
+			.status
+			.code()
+			.map_or_else(|| metal_output.status.to_string(), |code| code.to_string());
+		return Err(format_tool_failure(
 			"Failed to compile MSL shader",
 			"The Metal compiler reported an error",
-			&stderr,
+			&exit_status,
+			&metal_output.stdout,
+			&metal_output.stderr,
 		));
 	}
 
@@ -346,11 +351,16 @@ pub fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Result<Bo
 		.map_err(|_| error("Failed to invoke metallib", "The Xcode command line tools may be missing"))?;
 
 	if !metallib_output.status.success() {
-		let stderr = String::from_utf8_lossy(&metallib_output.stderr);
-		return Err(error_with_details(
+		let exit_status = metallib_output
+			.status
+			.code()
+			.map_or_else(|| metallib_output.status.to_string(), |code| code.to_string());
+		return Err(format_tool_failure(
 			"Failed to link Metal library",
 			"The metallib tool reported an error",
-			&stderr,
+			&exit_status,
+			&metallib_output.stdout,
+			&metallib_output.stderr,
 		));
 	}
 
@@ -383,13 +393,62 @@ fn error(message: &str, cause: &str) -> String {
 	format!("{message}. {cause}.")
 }
 
-fn error_with_details(message: &str, cause: &str, details: &str) -> String {
-	let details = details.trim();
-	if details.is_empty() {
-		return error(message, cause);
-	}
+fn format_tool_failure(message: &str, cause: &str, exit_status: &str, stdout: &[u8], stderr: &[u8]) -> String {
+	let stdout = String::from_utf8_lossy(stdout);
+	let stdout = stdout.trim();
+	let stdout = if stdout.is_empty() { "<empty>" } else { stdout };
+	let stderr = String::from_utf8_lossy(stderr);
+	let stderr = stderr.trim();
+	let stderr = if stderr.is_empty() { "<empty>" } else { stderr };
 
-	format!("{message}. {cause}.\n{details}")
+	format!("{message}. {cause}.\nExit status: {exit_status}\nstderr:\n{stderr}\nstdout:\n{stdout}")
 }
 
 pub use Compiler as MSLShaderCompiler;
+
+#[cfg(test)]
+mod tests {
+	use super::format_tool_failure;
+
+	#[test]
+	fn tool_failure_includes_exit_status_and_stderr() {
+		let failure = format_tool_failure(
+			"Failed to compile MSL shader",
+			"The Metal compiler reported an error",
+			"1",
+			b"",
+			b"shader.metal:7:3: error: unknown identifier\n",
+		);
+
+		assert_eq!(
+			failure,
+			"Failed to compile MSL shader. The Metal compiler reported an error.\n\
+Exit status: 1\n\
+stderr:\n\
+shader.metal:7:3: error: unknown identifier\n\
+stdout:\n\
+<empty>"
+		);
+	}
+
+	#[test]
+	fn tool_failure_includes_stdout_when_stderr_is_empty() {
+		let failure = format_tool_failure(
+			"Failed to link Metal library",
+			"The metallib tool reported an error",
+			"2",
+			b"metallib: malformed AIR input\n",
+			b"",
+		);
+
+		assert_eq!(
+			failure,
+			"Failed to link Metal library. The metallib tool reported an error.\n\
+Exit status: 2\n\
+stderr:\n\
+<empty>\n\
+stdout:\n\
+metallib: malformed AIR input"
+		);
+	}
+}

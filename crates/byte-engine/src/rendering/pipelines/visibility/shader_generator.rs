@@ -1613,13 +1613,17 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 #[cfg(test)]
 mod tests {
 	use resource_management::asset::bema_asset_handler::ProgramGenerator;
+	use resource_management::pbr::{
+		generate_textured_brdf_program, BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode,
+		BrdfTexture, BrdfValue,
+	};
 	use resource_management::shader::besl::backends::glsl::GLSLShaderGenerator;
 	use resource_management::shader::besl::backends::hlsl::HLSLShaderGenerator;
 	use resource_management::shader::{
 		besl::backends::msl::MSLShaderGenerator,
 		generator::{ShaderGenerationSettings, ShaderGenerator as _},
 	};
-	use utils::json;
+	use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 	use utils::Extent;
 
 	use crate::besl;

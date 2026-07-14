@@ -123,7 +123,7 @@ impl<T: Resource> std::hash::Hash for Reference<T> {
 	}
 }
 
-#[derive(Clone, Debug, serde::Deserialize, Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Debug, serde::Deserialize, Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 /// `ReferenceModel` is a model for [`Reference`] that can be used to serialize/deserialize references.
 /// `ReferenceModel` has to be turned into a [`Reference`] using `solve()` which will allow loading the resource's binary data and fetching related resources.
 pub struct ReferenceModel<T: Model> {
@@ -136,6 +136,20 @@ pub struct ReferenceModel<T: Model> {
 	#[rkyv(with = rkyv::with::Skip)]
 	phantom: std::marker::PhantomData<T>,
 	streams: Option<Vec<StreamDescription>>,
+}
+
+impl<T: Model> Clone for ReferenceModel<T> {
+	fn clone(&self) -> Self {
+		Self {
+			id: self.id.clone(),
+			hash: self.hash,
+			size: self.size,
+			class: self.class.clone(),
+			resource: self.resource.clone(),
+			phantom: std::marker::PhantomData,
+			streams: self.streams.clone(),
+		}
+	}
 }
 
 impl<T: Model> ReferenceModel<T> {
@@ -206,6 +220,15 @@ mod tests {
 		}
 	}
 
+	#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+	struct NonCloneModel;
+
+	impl Model for NonCloneModel {
+		fn get_class() -> &'static str {
+			"NonClone"
+		}
+	}
+
 	#[derive(Debug)]
 	/// The `DefaultLoadResource` struct gives the reference test a concrete resource type.
 	struct DefaultLoadResource;
@@ -224,6 +247,21 @@ mod tests {
 			std::process::id(),
 			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
 		))
+	}
+
+	#[test]
+	fn reference_model_clone_does_not_require_model_clone() {
+		let original = ReferenceModel::<NonCloneModel>::new("non-clone", 42, 7, &NonCloneModel, None);
+
+		let cloned = original.clone();
+
+		assert_eq!(cloned.id, original.id);
+		assert_eq!(cloned.hash, original.hash);
+		assert_eq!(cloned.size, original.size);
+		assert_eq!(cloned.class, original.class);
+		assert_eq!(cloned.resource, original.resource);
+		assert!(cloned.streams.is_none());
+		assert!(original.streams.is_none());
 	}
 
 	#[test]

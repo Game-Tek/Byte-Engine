@@ -320,12 +320,18 @@ pub(crate) fn compile_shader_program(
 	let root_node = match besl::lex(root) {
 		Ok(e) => e,
 		Err(e) => {
-			log::error!("Error compiling shader: {:#?}", e);
+			log::error!("Error compiling shader '{name}' for stage '{stage}': {e:#?}");
 			return Err(());
 		}
 	};
 
-	let main_node = root_node.get_main().ok_or(())?;
+	let main_node = match root_node.get_main() {
+		Some(main_node) => main_node,
+		None => {
+			log::error!("Error compiling shader '{name}' for stage '{stage}': the generated BESL program has no main function");
+			return Err(());
+		}
+	};
 
 	let settings = match stage {
 		"Vertex" => ShaderGenerationSettings::vertex(),
@@ -334,11 +340,14 @@ pub(crate) fn compile_shader_program(
 		_ => {
 			panic!("Invalid shader stage")
 		}
-	};
+	}
+	.name(name.to_string());
 
-	let shader_program = PlatformShaderGenerator::new().generate(&settings, &main_node).map_err(|e| {
-		log::error!("Error compiling shader: {:#?}", e);
-	})?;
+	let shader_program = PlatformShaderGenerator::new()
+		.generate(&settings, &main_node)
+		.map_err(|error| {
+			log::error!("Error compiling shader '{name}' for stage '{stage}': {error}");
+		})?;
 
 	let stage = match stage {
 		"Vertex" => ShaderTypes::Vertex,

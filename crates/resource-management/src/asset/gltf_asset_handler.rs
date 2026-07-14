@@ -186,8 +186,9 @@ impl AssetHandler for GLTFAssetHandler {
 				})
 			};
 
-			let mut materials_per_primitive = Vec::with_capacity(primitives.len());
-			for primitive in &primitives {
+			let (unique_materials, material_indices_per_primitive) = unique_gltf_materials(&primitives);
+			let mut resolved_materials = Vec::with_capacity(unique_materials.len());
+			for material in unique_materials {
 				let material = material_for_gltf_primitive(
 					asset_manager,
 					storage_backend,
@@ -196,17 +197,18 @@ impl AssetHandler for GLTFAssetHandler {
 					url,
 					&gltf,
 					&buffers,
-					primitive.material(),
+					material,
 					self.generator.clone(),
 					allocator,
 				)
 				.await?;
-				materials_per_primitive.push(material);
+				resolved_materials.push(material);
 			}
 
 			let primitives = flat_mesh_tree
-				.zip(materials_per_primitive)
-				.map(|((primitive, reader, transform), material)| {
+				.zip(material_indices_per_primitive)
+				.map(|((primitive, reader, transform), material_index)| {
+					let material = resolved_materials[material_index].clone();
 					let triangle_indices = reader
 						.read_indices()
 						.ok_or(LoadErrors::FailedToProcess)?
@@ -318,6 +320,28 @@ impl AssetHandler for GLTFAssetHandler {
 	}
 }
 
+fn unique_gltf_materials<'a>(primitives: &[gltf::Primitive<'a>]) -> (Vec<gltf::Material<'a>>, Vec<usize>) {
+	let mut unique_materials = Vec::new();
+	let mut unique_material_indices = HashMap::new();
+	let mut material_indices_per_primitive = Vec::with_capacity(primitives.len());
+
+	for primitive in primitives {
+		let material = primitive.material();
+		let key = material.index();
+		let material_index = if let Some(index) = unique_material_indices.get(&key) {
+			*index
+		} else {
+			let index = unique_materials.len();
+			unique_materials.push(material);
+			unique_material_indices.insert(key, index);
+			index
+		};
+		material_indices_per_primitive.push(material_index);
+	}
+
+	(unique_materials, material_indices_per_primitive)
+}
+
 async fn material_for_gltf_primitive(
 	asset_manager: &AssetManager,
 	storage_backend: &dyn resource::StorageBackend,
@@ -420,7 +444,10 @@ fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gltf::Materia
 	let material_name = material
 		.name()
 		.map(sanitize_material_name)
-		.unwrap_or_else(|| format!("material_{}", material.index().unwrap_or(0)));
+		.unwrap_or_else(|| match material.index() {
+			Some(index) => format!("material_{index}"),
+			None => "material_default".to_string(),
+		});
 	format!("{}#materials/{material_name}", mesh_url.as_ref())
 }
 
@@ -817,7 +844,7 @@ mod tests {
 	use super::{
 		collect_gltf_texture_dependencies, generated_gltf_image_id, generated_image_fragment_index, generated_material_base_id,
 		gltf_vertex_component, has_vertex_component, material_override, normalize_vertex_layouts, sanitize_material_name,
-		GLTFAssetHandler, GltfTextureDependency, TriangleFrontFaceWinding,
+		unique_gltf_materials, GLTFAssetHandler, GltfTextureDependency, TriangleFrontFaceWinding,
 	};
 	use crate::r#async;
 	use crate::{
@@ -882,6 +909,52 @@ mod tests {
 		assert_eq!(gltf_vertex_component(gltf::Semantic::Normals).unwrap().channel, 0);
 		assert_eq!(gltf_vertex_component(gltf::Semantic::TexCoords(0)).unwrap().channel, 0);
 		assert!(gltf_vertex_component(gltf::Semantic::TexCoords(1)).is_none());
+	}
+
+	#[test]
+	fn deduplicates_indexed_and_default_materials_in_primitive_order() {
+		let gltf = gltf::Gltf::from_slice(
+			r#"{
+				"asset":{"version":"2.0"},
+				"buffers":[{"byteLength":36}],
+				"bufferViews":[{"buffer":0,"byteLength":36}],
+				"accessors":[{
+					"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",
+					"min":[0,0,0],"max":[1,1,0]
+				}],
+				"materials":[{},{}],
+				"meshes":[{"primitives":[
+					{"attributes":{"POSITION":0},"material":1},
+					{"attributes":{"POSITION":0}},
+					{"attributes":{"POSITION":0},"material":1},
+					{"attributes":{"POSITION":0},"material":0},
+					{"attributes":{"POSITION":0}},
+					{"attributes":{"POSITION":0},"material":0}
+				]}]
+			}"#
+			.as_bytes(),
+		)
+		.expect("test glTF should parse");
+		let primitives = gltf.meshes().flat_map(|mesh| mesh.primitives()).collect::<Vec<_>>();
+
+		let (materials, material_indices_per_primitive) = unique_gltf_materials(&primitives);
+
+		assert_eq!(
+			materials.iter().map(|material| material.index()).collect::<Vec<_>>(),
+			vec![Some(1), None, Some(0)]
+		);
+		assert_eq!(material_indices_per_primitive, vec![0, 1, 0, 2, 1, 2]);
+		assert_eq!(
+			materials
+				.iter()
+				.map(|material| generated_material_base_id(ResourceId::new("models/drone.glb"), material))
+				.collect::<Vec<_>>(),
+			vec![
+				"models/drone.glb#materials/material_1",
+				"models/drone.glb#materials/material_default",
+				"models/drone.glb#materials/material_0",
+			]
+		);
 	}
 
 	#[test]
@@ -1432,7 +1505,7 @@ mod tests {
 	// }
 }
 
-use std::{path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use maths_rs::{
 	mat::{MatNew4, MatScale},

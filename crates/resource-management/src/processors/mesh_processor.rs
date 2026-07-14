@@ -455,7 +455,7 @@ impl MeshProcessor {
 		append_stream(&mut primitive_streams, packed_blocks, Streams::Meshlets, meshlet_bytes);
 
 		Ok(PrimitiveModel {
-			material: duplicate_reference_model(primitive.material()),
+			material: primitive.material().clone(),
 			streams: primitive_streams,
 			quantization: None,
 			bounding_box: primitive.bounding_box(),
@@ -728,11 +728,6 @@ fn vertex_semantic_order(semantic: VertexSemantics) -> usize {
 		VertexSemantics::Joints => 6,
 		VertexSemantics::Weights => 7,
 	}
-}
-
-fn duplicate_reference_model<T: crate::Model>(reference: &ReferenceModel<T>) -> ReferenceModel<T> {
-	crate::from_slice(&crate::to_vec(reference).expect("Reference model should serialize"))
-		.expect("Reference model should deserialize")
 }
 
 trait IntegralTypeSize {

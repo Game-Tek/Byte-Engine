@@ -1319,18 +1319,14 @@ impl<'a> Compiler<'a> {
 			let scalar_type = vector_scalar_type(&constructor_type).ok_or_else(|| VmError::UnsupportedExpression {
 				message: format!("`{}` is not a flattenable vector constructor", constructor_type.name()),
 			})?;
+			let packed_u16 = constructor_type == ValueType::Vec2U16 || constructor_type == ValueType::Vec4U16;
 			for parameter in parameters {
 				// Packed u16 constructors accept ordinary u32 coordinate arithmetic and
 				// apply the shader backend's narrowing conversion per component.
-				let parameter_hint = if constructor_type == ValueType::Vec2U16 {
-					ValueType::U32
-				} else {
-					scalar_type.clone()
-				};
+				let parameter_hint = if packed_u16 { ValueType::U32 } else { scalar_type.clone() };
 				let parameter_type = self.infer_expression_type(parameter, &parameter_hint, descriptor_layouts)?;
 				let parameter_scalar = vector_scalar_type(&parameter_type).unwrap_or_else(|| parameter_type.clone());
-				let compatible = parameter_scalar == scalar_type
-					|| (constructor_type == ValueType::Vec2U16 && parameter_scalar == ValueType::U32);
+				let compatible = parameter_scalar == scalar_type || packed_u16 && parameter_scalar == ValueType::U32;
 				if !compatible {
 					return Err(VmError::TypeMismatch {
 						expected: scalar_type.name().to_string(),
@@ -2391,6 +2387,7 @@ fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
 		"f32" => Ok(ValueType::F32),
 		"atomicu32" => Ok(ValueType::U32),
 		"vec2u16" => Ok(ValueType::Vec2U16),
+		"vec4u16" => Ok(ValueType::Vec4U16),
 		"vec2i" => Ok(ValueType::Vec2I),
 		"vec2u" => Ok(ValueType::Vec2U),
 		"vec3u" => Ok(ValueType::Vec3U),
@@ -2624,7 +2621,7 @@ fn aggregate_member(value_type: &ValueType, member_name: &str) -> Result<(usize,
 			vector_member(value_type, member_name, 2)
 		}
 		ValueType::Vec3U | ValueType::Vec3F => vector_member(value_type, member_name, 3),
-		ValueType::Vec4U | ValueType::Vec4F => vector_member(value_type, member_name, 4),
+		ValueType::Vec4U16 | ValueType::Vec4U | ValueType::Vec4F => vector_member(value_type, member_name, 4),
 		ValueType::Mat4F => matrix_member(member_name, ValueType::Vec4F),
 		ValueType::Mat4x3F => matrix_member(member_name, ValueType::Vec3F),
 		_ => Err(VmError::UnsupportedExpression {

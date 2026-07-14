@@ -24,8 +24,9 @@ use crate::{
 	ProcessedAsset, ReferenceModel,
 };
 
+/// The `ProgramGenerator` trait defines renderer-specific shader adaptation before platform compilation.
 pub trait ProgramGenerator: Send + Sync {
-	/// Transforms a program.
+	/// Adapts a parsed material program to the bindings and entry-point contract used by its renderer.
 	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a>;
 }
 
@@ -546,7 +547,17 @@ pub mod tests {
 		}
 	}
 
+	/// The `RootTestShaderGenerator` struct supplies the complete test renderer contract used by BEMA integration tests.
 	pub struct RootTestShaderGenerator {}
+
+	/// The `MinimalTestShaderGenerator` struct isolates importer tests from renderer-specific material shader contracts.
+	pub struct MinimalTestShaderGenerator;
+
+	impl ProgramGenerator for MinimalTestShaderGenerator {
+		fn transform<'a>(&self, _: besl::parser::Node<'a>, _: &'a json::Object) -> besl::parser::Node<'a> {
+			besl::parser::Node::root_with_children(vec![besl::parser::Node::main_function(Vec::new())])
+		}
+	}
 
 	impl RootTestShaderGenerator {
 		pub fn new() -> RootTestShaderGenerator {

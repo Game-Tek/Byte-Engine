@@ -2,6 +2,7 @@
 pub struct Device {
 	device: ID3D12Device,
 	settings: Features,
+	native_16_bit_shader_ops_supported: bool,
 	info_queue: Option<ID3D12InfoQueue>,
 	debug_log_function: fn(&str),
 	debug_log_count: AtomicU64,
@@ -100,6 +101,8 @@ pub struct Device {
 }
 
 impl Device {
+	const NATIVE_16_BIT_SHADER_OPS_UNAVAILABLE: &str = "DX12 native 16-bit shader types are unavailable. The most likely cause is a GPU or driver that does not report Native16BitShaderOpsSupported.";
+
 	/// Creates a DX12 device and initializes command queues for the requested queue types.
 	pub fn new(settings: Features, queues: &mut [(QueueSelection, &mut Option<QueueHandle>)]) -> Result<Self, &'static str> {
 		let adapter: Option<&IUnknown> = None;
@@ -156,9 +159,11 @@ impl Device {
 		debug_log_function: fn(&str),
 		queues: Vec<StoredQueue>,
 	) -> Self {
+		let native_16_bit_shader_ops_supported = Self::query_native_16_bit_shader_ops_support(&device);
 		Self {
 			device,
 			settings,
+			native_16_bit_shader_ops_supported,
 			info_queue,
 			debug_log_function,
 			debug_log_count: AtomicU64::new(0),
@@ -461,7 +466,7 @@ impl Device {
 		stage: ShaderTypes,
 		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Result<Vec<u8>, ()> {
-		if let Some(target) = Self::dxc_target(stage) {
+		if let Some(target) = Self::dxc_target(stage, Self::hlsl_uses_native_16_bit_types(source)) {
 			return self.compile_hlsl_with_dxc(name, source, entry_point, target, specialization_map);
 		}
 		let target = match stage {
@@ -525,18 +530,63 @@ impl Device {
 		Ok(bytecode.to_vec())
 	}
 
-	fn dxc_target(stage: ShaderTypes) -> Option<&'static str> {
-		match stage {
+	/// Selects a DXC profile when the shader stage or native-width source requires DXIL compilation.
+	fn dxc_target(stage: ShaderTypes, native_16_bit_types: bool) -> Option<&'static str> {
+		match (stage, native_16_bit_types) {
+			// Native 16-bit scalar and vector storage requires Shader Model 6.2 or newer.
+			(ShaderTypes::Vertex, true) => Some("vs_6_2"),
+			(ShaderTypes::Fragment, true) => Some("ps_6_2"),
+			(ShaderTypes::Compute, true) => Some("cs_6_2"),
 			// BESL HLSL uses SM6-oriented syntax and intrinsics, so compute must go through DXC.
-			ShaderTypes::Compute => Some("cs_6_0"),
-			ShaderTypes::Mesh => Some("ms_6_5"),
-			ShaderTypes::RayGen
-			| ShaderTypes::Miss
-			| ShaderTypes::ClosestHit
-			| ShaderTypes::AnyHit
-			| ShaderTypes::Intersection => Some("lib_6_3"),
+			(ShaderTypes::Compute, false) => Some("cs_6_0"),
+			(ShaderTypes::Mesh, _) => Some("ms_6_5"),
+			(
+				ShaderTypes::RayGen
+				| ShaderTypes::Miss
+				| ShaderTypes::ClosestHit
+				| ShaderTypes::AnyHit
+				| ShaderTypes::Intersection,
+				_,
+			) => Some("lib_6_3"),
 			_ => None,
 		}
+	}
+
+	/// Reports whether HLSL source uses an explicit native-width 16-bit scalar or vector type.
+	fn hlsl_uses_native_16_bit_types(source: &str) -> bool {
+		source
+			.split(|character: char| character != '_' && !character.is_ascii_alphanumeric())
+			.any(|token| {
+				["uint16_t", "int16_t", "float16_t"].iter().any(|&native_type| {
+					let Some(suffix) = token.strip_prefix(native_type) else {
+						return false;
+					};
+
+					// Match only native scalar, vector, or matrix spellings instead of similarly prefixed identifiers.
+					matches!(suffix.as_bytes(), [] | [b'1'..=b'4'] | [b'1'..=b'4', b'x', b'1'..=b'4'])
+				})
+			})
+	}
+
+	/// Selects the minimum DXC target that can represent native 16-bit source types.
+	pub(crate) fn dxc_target_for_source<'a>(target: &'a str, source: &str) -> &'a str {
+		if !Self::hlsl_uses_native_16_bit_types(source) {
+			return target;
+		}
+
+		// Native 16-bit types require Shader Model 6.2, including explicit DXC recompiles for mesh fragment shaders.
+		match target {
+			"vs_6_0" | "vs_6_1" => "vs_6_2",
+			"ps_6_0" | "ps_6_1" => "ps_6_2",
+			"cs_6_0" | "cs_6_1" => "cs_6_2",
+			"lib_6_0" | "lib_6_1" => "lib_6_2",
+			_ => target,
+		}
+	}
+
+	/// Returns the user-facing failure when native 16-bit source exceeds the device capability.
+	pub(crate) fn native_16_bit_support_error(source: &str, supported: bool) -> Option<&'static str> {
+		(Self::hlsl_uses_native_16_bit_types(source) && !supported).then_some(Self::NATIVE_16_BIT_SHADER_OPS_UNAVAILABLE)
 	}
 
 	fn compile_hlsl_with_dxc(
@@ -547,6 +597,11 @@ impl Device {
 		target: &str,
 		specialization_map: &[pipelines::SpecializationMapEntry],
 	) -> Result<Vec<u8>, ()> {
+		let target = Self::dxc_target_for_source(target, source);
+		if let Some(error) = Self::native_16_bit_support_error(source, self.native_16_bit_shader_ops_supported) {
+			self.log_dx12_error(error);
+			return Err(());
+		}
 		let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|error| {
 			self.log_hlsl_compile_error(
 				source,
@@ -587,6 +642,10 @@ impl Device {
 		argument_storage.push(Self::wide_argument(entry_point));
 		argument_storage.push(Self::wide_argument("-T"));
 		argument_storage.push(Self::wide_argument(target));
+		if Self::hlsl_uses_native_16_bit_types(source) {
+			// DXC only exposes native-width 16-bit arithmetic and storage types when this option is explicit.
+			argument_storage.push(Self::wide_argument("-enable-16bit-types"));
+		}
 		if debug_artifacts_enabled {
 			argument_storage.push(Self::wide_argument("-Zi"));
 			argument_storage.push(Self::wide_argument("-Qembed_debug"));
@@ -3276,6 +3335,24 @@ impl Device {
 		self.pipelines
 			.get(pipeline.0 as usize)
 			.map(|pipeline| pipeline.ray_tracing_shader_identifiers.len())
+	}
+
+	/// Queries native 16-bit shader support once so pipeline compilation can use a stable capability.
+	fn query_native_16_bit_shader_ops_support(device: &ID3D12Device) -> bool {
+		let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
+		let result = unsafe {
+			device.CheckFeatureSupport(
+				D3D12_FEATURE_D3D12_OPTIONS4,
+				(&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS4).cast(),
+				std::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS4>() as u32,
+			)
+		};
+		result.is_ok() && options.Native16BitShaderOpsSupported.as_bool()
+	}
+
+	/// Reports the cached native 16-bit shader capability for backend policy decisions.
+	pub(crate) fn supports_native_16_bit_shader_ops(&self) -> bool {
+		self.native_16_bit_shader_ops_supported
 	}
 
 	pub(crate) fn supports_native_ray_tracing(&self) -> bool {
@@ -8918,25 +8995,26 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
 	D3D12_DISPATCH_RAYS_DESC, D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_DIMENSION_TEXTURE2DARRAY, D3D12_DSV_FLAG_NONE,
 	D3D12_DXIL_LIBRARY_DESC, D3D12_ELEMENTS_LAYOUT_ARRAY, D3D12_EXPORT_DESC, D3D12_EXPORT_FLAG_NONE,
-	D3D12_FEATURE_D3D12_OPTIONS5, D3D12_FEATURE_D3D12_OPTIONS7, D3D12_FEATURE_DATA_D3D12_OPTIONS5,
-	D3D12_FEATURE_DATA_D3D12_OPTIONS7, D3D12_FENCE_FLAGS, D3D12_FILL_MODE_SOLID, D3D12_FILTER, D3D12_FILTER_ANISOTROPIC,
-	D3D12_FILTER_MAXIMUM_ANISOTROPIC, D3D12_FILTER_MINIMUM_ANISOTROPIC, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
-	D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE, D3D12_GPU_VIRTUAL_ADDRESS_RANGE,
-	D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE, D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE,
-	D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD, D3D12_HIT_GROUP_DESC,
-	D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE, D3D12_HIT_GROUP_TYPE_TRIANGLES, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
-	D3D12_INDEX_BUFFER_VIEW, D3D12_INDIRECT_ARGUMENT_DESC, D3D12_INDIRECT_ARGUMENT_DESC_0,
-	D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC,
-	D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_MEMORY_POOL_UNKNOWN, D3D12_MESH_SHADER_TIER_NOT_SUPPORTED,
-	D3D12_MESSAGE, D3D12_MESSAGE_SEVERITY_CORRUPTION, D3D12_MESSAGE_SEVERITY_ERROR, D3D12_PIPELINE_STATE_FLAGS,
-	D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PIPELINE_STATE_STREAM_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE,
-	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK,
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RANGE, D3D12_RASTERIZER_DESC,
+	D3D12_FEATURE_D3D12_OPTIONS4, D3D12_FEATURE_D3D12_OPTIONS5, D3D12_FEATURE_D3D12_OPTIONS7,
+	D3D12_FEATURE_DATA_D3D12_OPTIONS4, D3D12_FEATURE_DATA_D3D12_OPTIONS5, D3D12_FEATURE_DATA_D3D12_OPTIONS7, D3D12_FENCE_FLAGS,
+	D3D12_FILL_MODE_SOLID, D3D12_FILTER, D3D12_FILTER_ANISOTROPIC, D3D12_FILTER_MAXIMUM_ANISOTROPIC,
+	D3D12_FILTER_MINIMUM_ANISOTROPIC, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_GPU_DESCRIPTOR_HANDLE,
+	D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE, D3D12_GPU_VIRTUAL_ADDRESS_RANGE, D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE,
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
+	D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD, D3D12_HIT_GROUP_DESC, D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE,
+	D3D12_HIT_GROUP_TYPE_TRIANGLES, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW,
+	D3D12_INDIRECT_ARGUMENT_DESC, D3D12_INDIRECT_ARGUMENT_DESC_0, D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
+	D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP,
+	D3D12_MEMORY_POOL_UNKNOWN, D3D12_MESH_SHADER_TIER_NOT_SUPPORTED, D3D12_MESSAGE, D3D12_MESSAGE_SEVERITY_CORRUPTION,
+	D3D12_MESSAGE_SEVERITY_ERROR, D3D12_PIPELINE_STATE_FLAGS, D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PIPELINE_STATE_STREAM_DESC,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC,
+	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK, D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+	D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RANGE, D3D12_RASTERIZER_DESC,
 	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV,
 	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL,
 	D3D12_RAYTRACING_GEOMETRY_AABBS_DESC, D3D12_RAYTRACING_GEOMETRY_DESC, D3D12_RAYTRACING_GEOMETRY_DESC_0,

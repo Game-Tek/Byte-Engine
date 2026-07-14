@@ -4,13 +4,15 @@ use crate::shader::generator::{
 	ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
 };
 
-/// Shader generator.
+/// The `Generator` struct exists to produce GLSL source for Vulkan-backed shader pipelines.
 ///
 /// # Parameters
 ///
-/// - *minified*: Controls wheter the shader string output is minified. Is `true` by default in release builds.
+/// - *minified*: Controls whether the shader string output is minified. Is `true` by default in release builds.
 pub struct Generator {
 	minified: bool,
+	current_stage_interpolates_inputs: bool,
+	current_stage_interpolates_outputs: bool,
 }
 
 impl ShaderGenerator for Generator {}
@@ -20,6 +22,8 @@ impl Generator {
 	pub fn new() -> Self {
 		Generator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
+			current_stage_interpolates_inputs: false,
+			current_stage_interpolates_outputs: false,
 		}
 	}
 
@@ -49,6 +53,10 @@ impl Generator {
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
+		// Only fragment inputs and raster-producing outputs participate in interpolation.
+		self.current_stage_interpolates_inputs = matches!(shader_compilation_settings.stage, Stages::Fragment);
+		self.current_stage_interpolates_outputs =
+			matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Mesh { .. });
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "GLSL");
 
@@ -71,6 +79,7 @@ impl Generator {
 			"vec2u" => "uvec2",
 			"vec2i" => "ivec2",
 			"vec2u16" => "u16vec2",
+			"vec4u16" => "u16vec4",
 			"vec3u" => "uvec3",
 			"vec4u" => "uvec4",
 			"vec3f" => "vec3",
@@ -89,6 +98,22 @@ impl Generator {
 			"ArrayTexture2D" => "in sampler2DArray",
 			_ => source,
 		}
+	}
+
+	/// Reports whether a backend type needs non-interpolated raster-stage I/O.
+	fn is_integer_type(type_name: &str) -> bool {
+		matches!(
+			type_name,
+			"int8_t"
+				| "uint8_t" | "int16_t"
+				| "uint16_t" | "int"
+				| "int32_t" | "uint"
+				| "uint32_t" | "int64_t"
+				| "uint64_t" | "ivec2"
+				| "uvec2" | "uvec3"
+				| "uvec4" | "u16vec2"
+				| "u16vec4"
+		)
 	}
 
 	fn emit_visibility_texture_sample(&mut self, string: &mut String, slot: &besl::NodeReference, xy_only: bool) {
@@ -487,20 +512,14 @@ impl Generator {
 			besl::Nodes::Input { name, location, format } => {
 				let format = format.borrow();
 				let type_name = Self::translate_type(format.get_name().unwrap());
-				let is_flat = type_name == "int8_t"
-					|| type_name == "uint8_t"
-					|| type_name == "int16_t"
-					|| type_name == "uint16_t"
-					|| type_name == "int"
-					|| type_name == "int32_t"
-					|| type_name == "uint"
-					|| type_name == "uint32_t"
-					|| type_name == "int64_t"
-					|| type_name == "uint64_t";
 				string.push_str(&format!(
 					"layout(location={}){space_char}{}in {} {};{break_char}",
 					location,
-					if is_flat { format!("flat{space_char}") } else { String::new() },
+					if self.current_stage_interpolates_inputs && Self::is_integer_type(type_name) {
+						"flat "
+					} else {
+						""
+					},
 					type_name,
 					name
 				));
@@ -511,20 +530,22 @@ impl Generator {
 				format,
 				count,
 			} => {
+				let format = format.borrow();
+				let type_name = Self::translate_type(format.get_name().unwrap());
 				if let Some(count) = count {
 					string.push_str(&format!(
 						"layout(location={}){space_char}perprimitiveEXT out {} {}[{}];{break_char}",
-						location,
-						Self::translate_type(format.borrow().get_name().unwrap()),
-						name,
-						count
+						location, type_name, name, count
 					));
 				} else {
+					let qualifier = if self.current_stage_interpolates_outputs && Self::is_integer_type(type_name) {
+						"flat "
+					} else {
+						""
+					};
 					string.push_str(&format!(
-						"layout(location={}){space_char}out {} {};{break_char}",
-						location,
-						Self::translate_type(format.borrow().get_name().unwrap()),
-						name
+						"layout(location={}){space_char}{qualifier}out {} {};{break_char}",
+						location, type_name, name
 					));
 				}
 			}
@@ -780,6 +801,18 @@ mod tests {
 	}
 
 	#[test]
+	fn vec4u16_uses_the_native_glsl_packed_vector_type() {
+		let main = generator::tests::vec4u16_binding();
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected vec4u16 GLSL generation");
+
+		assert_string_contains!(shader, "u16vec4 value;");
+		assert!(!shader.contains("struct vec4u16"));
+	}
+
+	#[test]
 	fn same_named_buffer_members_lower_to_glsl() {
 		let main = generator::tests::same_named_buffer_member_access();
 
@@ -828,6 +861,24 @@ mod tests {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "layout(location=0)out vec3 color;void main(){color;}");
+	}
+
+	#[test]
+	fn packed_integer_vector_stage_io_uses_flat_only_across_rasterization() {
+		let main = generator::tests::packed_u16_stage_io();
+		let vertex_shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Expected packed integer vertex GLSL generation");
+		let fragment_shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::fragment(), &main)
+			.expect("Expected packed integer fragment GLSL generation");
+
+		assert_string_contains!(vertex_shader, "layout(location=0)in u16vec2 packed_input;");
+		assert_string_contains!(vertex_shader, "layout(location=1)flat out u16vec4 packed_output;");
+		assert_string_contains!(fragment_shader, "layout(location=0)flat in u16vec2 packed_input;");
+		assert_string_contains!(fragment_shader, "layout(location=1)out u16vec4 packed_output;");
 	}
 
 	#[test]

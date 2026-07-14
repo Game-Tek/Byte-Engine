@@ -310,6 +310,7 @@ dependencies = [
 name = "byte-engine-resource-management"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "byte-engine-besl",
  "byte-engine-utils",
  "colored",
@@ -332,6 +333,7 @@ dependencies = [
  "serde_json",
  "shaderc",
  "ufbx",
+ "urlencoding",
  "vorbis_rs",
 ]
 

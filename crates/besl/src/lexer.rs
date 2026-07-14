@@ -153,6 +153,15 @@ impl Node {
 		let f32_t = primitive_type("f32");
 
 		let vec2u16 = record_type("vec2u16", [("x", u16_t.clone()), ("y", u16_t.clone())]);
+		let vec4u16 = record_type(
+			"vec4u16",
+			[
+				("x", u16_t.clone()),
+				("y", u16_t.clone()),
+				("z", u16_t.clone()),
+				("w", u16_t.clone()),
+			],
+		);
 		let vec2u32 = record_type("vec2u", [("x", u32_t.clone()), ("y", u32_t.clone())]);
 		let vec2i32 = record_type("vec2i", [("x", i32_t.clone()), ("y", i32_t.clone())]);
 		let vec2f32 = record_type("vec2f", [("x", f32_t.clone()), ("y", f32_t.clone())]);
@@ -377,6 +386,7 @@ impl Node {
 			i32_t,
 			f32_t,
 			vec2u16,
+			vec4u16,
 			vec2u32,
 			vec2i32,
 			vec2f32,

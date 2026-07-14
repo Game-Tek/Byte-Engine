@@ -200,6 +200,7 @@ impl GPUVertexDataManager {
 				vertex_components,
 				streams,
 				primitives,
+				..
 			},
 			..
 		} = resource_request;

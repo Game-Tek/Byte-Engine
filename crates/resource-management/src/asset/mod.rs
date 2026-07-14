@@ -63,7 +63,11 @@ pub async fn read_asset_from_source<'a>(
 
 			let path = path.join(base.as_ref());
 			let spec_path = path.with_added_extension("bead");
-			let format = path.extension().and_then(|e| e.to_str()).ok_or(())?.to_string();
+			let format = path
+				.extension()
+				.and_then(|extension| extension.to_str())
+				.unwrap_or_default()
+				.to_string();
 
 			let spec = read_asset_spec(&spec_path);
 			let source_bytes = read_asset_bytes(&path, allocator);

@@ -30,7 +30,7 @@ pub(super) fn parse_literal(value: &str, value_type: &ValueType) -> Result<Value
 			value: value.to_string(),
 			value_type: value_type.name().to_string(),
 		})?,
-		ValueType::Vec2U16 | ValueType::Vec2I | ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => {
+		ValueType::Vec2U16 | ValueType::Vec4U16 | ValueType::Vec2I | ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => {
 			return Err(VmError::InvalidLiteral {
 				value: value.to_string(),
 				value_type: value_type.name().to_string(),
@@ -62,6 +62,7 @@ pub(super) fn parse_literal(value: &str, value_type: &ValueType) -> Result<Value
 pub(super) fn construct_value(value_type: &ValueType, components: &[Value]) -> Result<Value, VmError> {
 	match value_type {
 		ValueType::Vec2U16 => Ok(Value::Vec2U16(extract_u16_components::<2>(components)?)),
+		ValueType::Vec4U16 => Ok(Value::Vec4U16(extract_u16_components::<4>(components)?)),
 		ValueType::Vec2I => Ok(Value::Vec2I(extract_i32_components::<2>(components)?)),
 		ValueType::Vec2U => Ok(Value::Vec2U(extract_u32_components::<2>(components)?)),
 		ValueType::Vec3U => Ok(Value::Vec3U(extract_u32_components::<3>(components)?)),
@@ -185,7 +186,29 @@ pub(super) fn extract_u16_components<const N: usize>(components: &[Value]) -> Re
 				}
 				value.len()
 			}
+			Value::Vec4U16(value) => {
+				if index + value.len() <= N {
+					values[index..index + value.len()].copy_from_slice(value);
+				}
+				value.len()
+			}
 			Value::Vec2U(value) => {
+				if index + value.len() <= N {
+					for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
+						*destination = *source as u16;
+					}
+				}
+				value.len()
+			}
+			Value::Vec3U(value) => {
+				if index + value.len() <= N {
+					for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
+						*destination = *source as u16;
+					}
+				}
+				value.len()
+			}
+			Value::Vec4U(value) => {
 				if index + value.len() <= N {
 					for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
 						*destination = *source as u16;
@@ -452,6 +475,9 @@ pub(super) fn apply_arithmetic(operator: ArithmeticOperator, left: &Value, right
 		(Value::F32(left), Value::F32(right)) => apply_float_arithmetic(*left, *right, operator).map(Value::F32),
 		(Value::Vec2U16(left), Value::Vec2U16(right)) => {
 			apply_integer_array_arithmetic::<u16, 2>(*left, *right, operator).map(Value::Vec2U16)
+		}
+		(Value::Vec4U16(left), Value::Vec4U16(right)) => {
+			apply_integer_array_arithmetic::<u16, 4>(*left, *right, operator).map(Value::Vec4U16)
 		}
 		(Value::Vec2I(left), Value::Vec2I(right)) => {
 			apply_integer_array_arithmetic::<i32, 2>(*left, *right, operator).map(Value::Vec2I)
@@ -889,6 +915,7 @@ pub(super) fn apply_scalar_ternary(
 pub(super) fn extract_value(value: &Value, index: usize, expected_type: &ValueType) -> Result<Value, VmError> {
 	let extracted = match value {
 		Value::Vec2U16(value) => value.get(index).copied().map(Value::U16),
+		Value::Vec4U16(value) => value.get(index).copied().map(Value::U16),
 		Value::Vec2I(value) => value.get(index).copied().map(Value::I32),
 		Value::Vec2U(value) => value.get(index).copied().map(Value::U32),
 		Value::Vec3U(value) => value.get(index).copied().map(Value::U32),
@@ -920,6 +947,7 @@ pub(super) fn extract_value(value: &Value, index: usize, expected_type: &ValueTy
 pub(super) fn vector_scalar_type(value_type: &ValueType) -> Option<ValueType> {
 	match value_type {
 		ValueType::Vec2U16 => Some(ValueType::U16),
+		ValueType::Vec4U16 => Some(ValueType::U16),
 		ValueType::Vec2I => Some(ValueType::I32),
 		ValueType::Vec2U | ValueType::Vec3U | ValueType::Vec4U => Some(ValueType::U32),
 		ValueType::Vec2F | ValueType::Vec3F | ValueType::Vec4F => Some(ValueType::F32),

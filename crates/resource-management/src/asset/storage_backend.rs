@@ -157,7 +157,11 @@ pub mod tests {
 					}
 				};
 
-				let format = path.extension().and_then(|e| e.to_str()).ok_or(())?.to_string();
+				let format = path
+					.extension()
+					.and_then(|extension| extension.to_str())
+					.unwrap_or_default()
+					.to_string();
 
 				let source_bytes = read(&path).await.or(Err(()))?;
 
@@ -204,7 +208,11 @@ pub mod tests {
 					}
 				};
 
-				let format = path.extension().and_then(|e| e.to_str()).ok_or(())?.to_string();
+				let format = path
+					.extension()
+					.and_then(|extension| extension.to_str())
+					.unwrap_or_default()
+					.to_string();
 
 				let source_bytes = read(&path).await.or(Err(()))?;
 
@@ -239,6 +247,27 @@ pub mod tests {
 		assert_eq!(bytes.as_slice(), expected);
 		assert!(spec.is_none());
 		assert_eq!(format, "bin");
+
+		fs::remove_dir_all(directory).unwrap();
+	}
+
+	#[crate::r#async::test]
+	async fn file_storage_backend_resolves_extensionless_dependency_bytes() {
+		let directory = temporary_asset_directory();
+		fs::create_dir_all(&directory).unwrap();
+		let path = directory.join("skeleton");
+		let expected = b"buffer-bytes";
+		fs::write(&path, expected).unwrap();
+
+		let storage_backend = FileStorageBackend::new(directory.clone());
+		let (bytes, spec, format) = storage_backend
+			.resolve(ResourceId::new("skeleton"))
+			.await
+			.expect("extensionless dependency should resolve");
+
+		assert_eq!(bytes.as_slice(), expected);
+		assert!(spec.is_none());
+		assert_eq!(format, "");
 
 		fs::remove_dir_all(directory).unwrap();
 	}

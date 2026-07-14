@@ -11,6 +11,7 @@ use crate::{
 		lut::Lut,
 		material::{MaterialModel, Shader, VariantModel},
 		mesh::{MeshModel, PrimitiveModel},
+		skeleton::SkeletonModel,
 	},
 	QueryableValue, SerializableResource,
 };
@@ -79,6 +80,7 @@ fn inspect_resource_section(resource: &SerializableResource) -> Result<(Value, b
 		"Mesh" => deserialize_resource::<MeshModel>(resource)?,
 		"Primitive" => deserialize_resource::<PrimitiveModel>(resource)?,
 		"Shader" => deserialize_resource::<Shader>(resource)?,
+		"Skeleton" => deserialize_resource::<SkeletonModel>(resource)?,
 		"Variant" => deserialize_resource::<VariantModel>(resource)?,
 		class => {
 			return Ok((

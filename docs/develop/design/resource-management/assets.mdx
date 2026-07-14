@@ -18,7 +18,7 @@ Examples:
 
 Asset IDs are written as resource-style paths.
 The file extension is part of the ID when selecting an asset handler, and a fragment can identify a sub-asset when a container format exposes many resources.
-For example, a glTF asset can produce a mesh resource, material resources, image resources, and generated shader resources.
+For example, a glTF asset can produce mesh, skeleton, animation, material, image, and generated shader resources.
 
 ## Asset handlers
 
@@ -28,8 +28,8 @@ The asset manager keeps a list of handlers and selects one based on the asset ty
 The standard graphics setup installs handlers for common engine formats:
 
 - PNG images
-- glTF and GLB meshes and embedded images
-- FBX meshes and provisional animation clips
+- glTF and GLB meshes, embedded images, skeletons, and skeletal animation clips
+- FBX meshes, skeletons, and skeletal animation clips
 - `.bema` materials and variants
 - LUT assets
 - WAV and OGG audio
@@ -43,27 +43,55 @@ The payload is the byte buffer that consumers will later upload, stream, decode,
 Asset processing is where source data becomes engine data.
 
 Image processing decodes pixels, infers semantics from names such as albedo, normal, roughness, or emissive, chooses gamma, and can convert to GPU-friendly formats.
-Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, and associates primitives with material variants.
+Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
 Material processing compiles shader source and stores reflection metadata such as bindings and workgroup size.
+
+## Skeletal model resources
+
+glTF, GLB, and FBX use one import-neutral skeletal representation.
+A `Skeleton` stores transform nodes in parent-before-child order and preserves each node's rest-local translation, rotation, and scale.
+An `Animation` stores sparse translation, rotation, and scale curves against those dense node indices and references the skeleton it was authored for.
+Missing curves deliberately fall back to the skeleton's rest pose, which gives a future CPU animation graph a stable pose to sample and blend.
+
+A mesh with skins or node animation references the same skeleton, and each primitive retains its dense transform-node index.
+This lets a future graph apply rigid node motion without reconstructing source-file node ownership.
+Skinned meshes additionally store one skin binding per imported mesh instance.
+Each binding maps the palette-local indices in the `Vertex.Joints` stream to skeleton nodes and pairs them with adjusted inverse-bind matrices.
+The adjusted matrices account for the bind-pose transform already flattened into imported vertices, so a CPU-generated global pose can write a GPU palette as `global_joint * adjusted_inverse_bind` without reopening the source file.
+Rigid primitives have no skin binding, and mixed rigid/skinned source files retain primitive-local joint and weight stream offsets.
+FBX vertices without authored cluster weights use a mesh-node fallback palette entry, so they continue following animated mesh ancestors instead of freezing in bind space.
+
+Container fragments address the generated subresources consistently:
+
+- `character.glb#skeleton` or `character.fbx#skeleton` selects the transform hierarchy.
+- `character.glb#animation` or `character.fbx#animation` selects the first clip.
+- `character.glb#animations/0` selects a clip by zero-based index.
+- `character.glb#animations/Walk` selects a clip by exact name.
+
+The importers normalize weights to a fixed four-influence vertex format.
+FBX matrix-linear and rigid skins are supported; files that require multiple layered skin deformers or dual-quaternion skinning are rejected instead of being approximated silently.
+glTF morph-weight channels are not part of the skeletal clip representation and a selected clip containing them is rejected explicitly.
+Animated rigid or skinned mesh nodes must have an invertible bind transform because their vertices are stored in flattened bind space.
+The importers reject zero-scale bind transforms rather than irreversibly discarding geometry that a later animation would make visible.
+
+The CPU animation graph and renderer palette upload do not exist yet.
+Loading these resources therefore preserves everything needed for pose evaluation and GPU skinning, but does not animate a rendered mesh by itself.
 
 ## FBX resources
 
 An FBX asset ID without a fragment bakes every polygon-mesh instance into one `Mesh` resource.
-The importer normalizes axes and authored units, triangulates polygon faces, preserves material parts, transforms instance geometry, and emits position, normal, tangent-frame, color, UV, and provisional skin streams when the source provides them.
+The importer normalizes axes and authored units, triangulates polygon faces, preserves material parts, transforms instance geometry, and emits position, normal, tangent-frame, color, UV, joint, and weight streams when the source provides them.
 Meshes without authored UVs receive a zero-filled UV stream because the visibility renderer requires that stream even for untextured materials.
 
 FBX material names can be mapped to existing variants in a sibling `.fbx.bead` file, using the same `asset.<material-name>.asset` shape as other model overrides.
 Without an override, the importer generates a material variant from constant base color, opacity, metalness, roughness, emission, and double-sided values.
 FBX material texture maps are not imported yet.
 
-Animation loading is intentionally provisional while the engine has no animation playback system.
-It exposes baked node translation, rotation, and scale tracks through the existing `AnimationModel` resource:
+FBX animation stacks are baked through the format's pivot, layer, and rotation-order rules before becoming engine curves:
 
 - `character.fbx#animation` selects the first animation stack.
 - `character.fbx#animations/0` selects a stack by zero-based index.
 - `character.fbx#animations/Walk` selects a stack by exact name.
-
-These resources preserve animation data for future runtime integration; loading one does not currently animate or skin a rendered mesh.
 
 The result is intentionally more explicit than the source asset.
 A renderer should not have to reopen a PNG to discover its dimensions, or parse a glTF again to find vertex streams.

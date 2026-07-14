@@ -364,6 +364,49 @@ fn executable_program_evaluates_vec4f_scalar_broadcast_arithmetic() {
 }
 
 #[test]
+fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_access() {
+	let script = r#"
+	main: fn () -> void {
+		let left: vec4u16 = vec4u16(1, 2, 3, 4);
+		let right: vec4u16 = vec4u16(4, 3, 2, 1);
+		buff.value = left + right;
+		buff.last = buff.value.w;
+	}
+	"#;
+
+	let mut root = Node::root();
+	let vec4u16_type = root.get_child("vec4u16").expect("Expected vec4u16");
+	let u16_type = root.get_child("u16").expect("Expected u16");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![
+					Node::member("value", vec4u16_type).into(),
+					Node::member("last", u16_type).into(),
+				],
+			},
+			0,
+			30,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let slot = DescriptorSlot::new(0, 30);
+	let layout = executable.buffer_layout(slot).expect("Expected vec4u16 buffer layout");
+	assert_eq!(layout.member("value").unwrap().value_type().size(), 8);
+	assert_eq!(layout.member("last").unwrap().offset(), 8);
+	let mut buffer = Buffer::new(layout.clone());
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	assert_eq!(buffer.read("value").unwrap(), Value::Vec4U16([5, 5, 5, 5]));
+	assert_eq!(buffer.read("last").unwrap(), Value::U16(5));
+}
+
+#[test]
 fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffer_member() {
 	let script = r#"
 	main: fn () -> void {

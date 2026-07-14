@@ -13,6 +13,8 @@ use crate::shader::generator::{
 pub struct Generator {
 	minified: bool,
 	current_stage_is_compute: bool,
+	current_stage_interpolates_inputs: bool,
+	current_stage_interpolates_outputs: bool,
 	current_compute_local_size: Option<utils::Extent>,
 	current_push_constant_space: u32,
 }
@@ -33,6 +35,8 @@ impl Generator {
 		Generator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 			current_stage_is_compute: false,
+			current_stage_interpolates_inputs: false,
+			current_stage_interpolates_outputs: false,
 			current_compute_local_size: None,
 			current_push_constant_space: 0,
 		}
@@ -540,6 +544,10 @@ impl Generator {
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
 		self.current_stage_is_compute = matches!(shader_compilation_settings.stage, Stages::Compute { .. });
+		// Only fragment inputs and raster-producing outputs participate in interpolation.
+		self.current_stage_interpolates_inputs = matches!(shader_compilation_settings.stage, Stages::Fragment);
+		self.current_stage_interpolates_outputs =
+			matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Mesh { .. });
 		self.current_compute_local_size = match shader_compilation_settings.stage {
 			Stages::Compute { local_size } => Some(local_size),
 			_ => None,
@@ -565,7 +573,8 @@ impl Generator {
 			"vec2f" => "float2",
 			"vec2u" => "uint2",
 			"vec2i" => "int2",
-			"vec2u16" => "uint2",
+			"vec2u16" => "uint16_t2",
+			"vec4u16" => "uint16_t4",
 			"vec3u" => "uint3",
 			"vec4u" => "uint4",
 			"vec3f" => "float3",
@@ -587,6 +596,22 @@ impl Generator {
 		}
 	}
 
+	/// Reports whether a backend type needs non-interpolated raster-stage I/O.
+	fn is_integer_type(type_name: &str) -> bool {
+		matches!(
+			type_name,
+			"int8_t"
+				| "uint8_t" | "int16_t"
+				| "uint16_t" | "int"
+				| "int32_t" | "uint"
+				| "uint32_t" | "int64_t"
+				| "uint64_t" | "int2"
+				| "uint2" | "uint3"
+				| "uint4" | "uint16_t2"
+				| "uint16_t4"
+		)
+	}
+
 	// This function appends to the `string` parameter the string representation of the node.
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
@@ -596,7 +621,6 @@ impl Generator {
 		let formatting = ShaderFormatting::new(self.minified);
 
 		let break_char = formatting.break_str();
-		let space_char = formatting.space_str();
 
 		match node.node() {
 			besl::Nodes::Null => {}
@@ -725,24 +749,14 @@ impl Generator {
 			besl::Nodes::Input { name, location, format } => {
 				let format = format.borrow();
 				let type_name = Self::translate_type(format.get_name().unwrap());
-				let is_flat = type_name == "int8_t"
-					|| type_name == "uint8_t"
-					|| type_name == "int16_t"
-					|| type_name == "uint16_t"
-					|| type_name == "int"
-					|| type_name == "int32_t"
-					|| type_name == "uint"
-					|| type_name == "uint32_t"
-					|| type_name == "int64_t"
-					|| type_name == "uint64_t";
 
 				// HLSL uses semantics like TEXCOORD0, TEXCOORD1, etc.
 				string.push_str(&format!(
 					"{}{} {} : TEXCOORD{};{break_char}",
-					if is_flat {
-						format!("nointerpolation{space_char}")
+					if self.current_stage_interpolates_inputs && Self::is_integer_type(type_name) {
+						"nointerpolation "
 					} else {
-						String::new()
+						""
 					},
 					type_name,
 					name,
@@ -758,11 +772,18 @@ impl Generator {
 				if count.is_some() {
 					return;
 				}
+				let format = format.borrow();
+				let type_name = Self::translate_type(format.get_name().unwrap());
 
 				// HLSL uses SV_Target0, SV_Target1, etc. for render targets
 				string.push_str(&format!(
-					"{} {} : SV_Target{};{break_char}",
-					Self::translate_type(format.borrow().get_name().unwrap()),
+					"{}{} {} : SV_Target{};{break_char}",
+					if self.current_stage_interpolates_outputs && Self::is_integer_type(type_name) {
+						"nointerpolation "
+					} else {
+						""
+					},
+					type_name,
 					name,
 					location
 				));
@@ -1263,6 +1284,30 @@ mod tests {
 	}
 
 	#[test]
+	fn vec4u16_uses_the_native_eight_byte_hlsl_vector_type() {
+		let main = generator::tests::vec4u16_binding();
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected vec4u16 HLSL generation");
+
+		assert_string_contains!(shader, "uint16_t4 value;");
+		assert_string_does_not_contain!(shader, "struct vec4u16");
+	}
+
+	#[test]
+	fn vec2u16_array_uses_the_native_four_byte_hlsl_vector_type() {
+		let main = generator::tests::vec2u16_array_binding();
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected vec2u16 HLSL generation");
+
+		assert_string_contains!(shader, "RWStructuredBuffer<uint16_t2> buff : register(u0, space0);");
+		assert_string_does_not_contain!(shader, "RWStructuredBuffer<uint2> buff");
+	}
+
+	#[test]
 	fn array_texture_binding_declares_single_hlsl_template_argument() {
 		let mut root =
 			besl::parse("main: fn () -> void { shadow_map; }").expect("Expected array texture binding shader source to parse");
@@ -1329,6 +1374,26 @@ mod tests {
 
 		assert_string_contains!(shader, "float3 color : SV_Target0;");
 		assert_string_contains!(shader, "void besl_main(){color;}");
+	}
+
+	#[test]
+	fn packed_integer_vector_stage_io_uses_nointerpolation_only_across_rasterization() {
+		let main = generator::tests::packed_u16_stage_io();
+		let vertex_shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Expected packed integer vertex HLSL generation");
+		let fragment_shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::fragment(), &main)
+			.expect("Expected packed integer fragment HLSL generation");
+
+		assert_string_contains!(vertex_shader, "uint16_t2 packed_input : TEXCOORD0;");
+		assert_string_contains!(vertex_shader, "nointerpolation uint16_t4 packed_output : SV_Target1;");
+		assert_string_contains!(fragment_shader, "nointerpolation uint16_t2 packed_input : TEXCOORD0;");
+		assert_string_contains!(fragment_shader, "uint16_t4 packed_output : SV_Target1;");
+		assert_string_does_not_contain!(vertex_shader, "nointerpolation uint16_t2 packed_input");
+		assert_string_does_not_contain!(fragment_shader, "nointerpolation uint16_t4 packed_output");
 	}
 
 	#[test]

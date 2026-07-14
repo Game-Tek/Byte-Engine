@@ -529,9 +529,14 @@ struct View {
 	float near;
 	float far;
 };
+struct SkinInfluences {
+	uint16_t4 joints;
+};
 StructuredBuffer<View> views : register(t0, space0);
 StructuredBuffer<uint> indices : register(t6, space0);
 RWStructuredBuffer<uint4> dispatches : register(u3, space1);
+StructuredBuffer<SkinInfluences> skin_influences : register(t4, space2);
+StructuredBuffer<uint16_t2> packed_pairs : register(t5, space2);
 "#;
 
 		let strides = Device::hlsl_structured_buffer_strides(source);
@@ -539,6 +544,22 @@ RWStructuredBuffer<uint4> dispatches : register(u3, space1);
 		assert_eq!(strides.get(&(0, 0)), Some(&400));
 		assert_eq!(strides.get(&(0, 6)), Some(&4));
 		assert_eq!(strides.get(&(1, 3)), Some(&16));
+		assert_eq!(strides.get(&(2, 4)), Some(&8));
+		assert_eq!(strides.get(&(2, 5)), Some(&4));
+	}
+
+	#[test]
+	fn native_16_bit_hlsl_requires_capability_and_only_upgrades_affected_shader_targets() {
+		let error = Device::native_16_bit_support_error("uint16_t4 joints;", false);
+		assert_eq!(
+			error,
+			Some("DX12 native 16-bit shader types are unavailable. The most likely cause is a GPU or driver that does not report Native16BitShaderOpsSupported.")
+		);
+		assert_eq!(Device::native_16_bit_support_error("uint16_t4 joints;", true), None);
+		assert_eq!(Device::native_16_bit_support_error("uint4 joints;", false), None);
+		assert_eq!(Device::native_16_bit_support_error("float uint16_texture;", false), None);
+		assert_eq!(Device::dxc_target_for_source("ps_6_0", "float4 color;"), "ps_6_0");
+		assert_eq!(Device::dxc_target_for_source("ps_6_0", "uint16_t4 joints;"), "ps_6_2");
 	}
 
 	#[test]

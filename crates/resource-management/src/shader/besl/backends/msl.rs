@@ -811,7 +811,7 @@ impl<A: Allocator + Clone> Generator<A> {
 	fn is_integer_type(name: &str) -> bool {
 		matches!(
 			name,
-			"u8" | "u16" | "u32" | "i32" | "vec2u" | "vec2u16" | "vec2i" | "vec3u" | "vec4u"
+			"u8" | "u16" | "u32" | "i32" | "vec2u" | "vec2u16" | "vec4u16" | "vec2i" | "vec3u" | "vec4u"
 		)
 	}
 
@@ -1136,11 +1136,13 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	fn translate_buffer_member_type(source: &str) -> &str {
-		// Metal storage buffers need packed vector arrays when the CPU data is tightly packed.
-		// Keep regular struct members on the standard floatN types so only buffer layout changes.
+		// Metal storage buffers need packed vectors when the CPU data is tightly packed.
+		// Float vectors retain the existing array-only policy, while u16 vectors must also stay packed inside mixed structs.
 		match source {
 			"vec2f" => "packed_float2",
 			"vec3f" => "packed_float3",
+			"vec2u16" => "packed_ushort2",
+			"vec4u16" => "packed_ushort4",
 			_ => Self::translate_type(source),
 		}
 	}
@@ -1741,6 +1743,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			"vec2u" => "uint2",
 			"vec2i" => "int2",
 			"vec2u16" => "ushort2",
+			"vec4u16" => "ushort4",
 			"vec3u" => "uint3",
 			"vec4u" => "uint4",
 			"vec3f" => "float3",
@@ -2087,7 +2090,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
-					if self.in_buffer_binding_struct && count.is_some() {
+					if self.in_buffer_binding_struct && (count.is_some() || matches!(type_name, "vec2u16" | "vec4u16")) {
 						string.push_str(Self::translate_buffer_member_type(type_name));
 					} else if type_name.contains('[') {
 						Self::emit_type_name(string, type_name);
@@ -2449,6 +2452,39 @@ mod tests {
 		assert_string_contains!(shader, "texture2d<float> texture [[texture(100)]];");
 		assert_string_contains!(shader, "sampler texture_sampler [[sampler(100)]];");
 		assert_string_contains!(shader, "void main(){buff;image;texture;}");
+	}
+
+	#[test]
+	fn vec4u16_uses_the_native_msl_packed_storage_vector_type() {
+		let main = generator::tests::vec4u16_binding();
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected vec4u16 MSL generation");
+
+		assert_string_contains!(shader, "struct _buff{packed_ushort4 value;};");
+		assert!(!shader.contains("struct vec4u16"));
+	}
+
+	#[test]
+	fn packed_u16_storage_vectors_preserve_tight_array_and_mixed_struct_layouts() {
+		let vec2_array = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::vec2u16_array_binding(),
+			)
+			.expect("Expected vec2u16 MSL generation");
+		let mixed_vec4 = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&generator::tests::mixed_vec4u16_binding(),
+			)
+			.expect("Expected mixed vec4u16 MSL generation");
+
+		assert_string_contains!(vec2_array, "struct _buff{packed_ushort2 values[2];};");
+		assert_string_contains!(mixed_vec4, "struct _buff{packed_ushort4 value;ushort tail;};");
 	}
 
 	#[test]

@@ -260,6 +260,7 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 		name,
 		"void"
 			| "bool" | "vec2u16"
+			| "vec4u16"
 			| "vec2u" | "vec2i"
 			| "vec2f" | "vec3f"
 			| "vec4f" | "mat2f"
@@ -670,6 +671,98 @@ pub mod tests {
 
 		let main = RefCell::borrow(&script_node).get_child("main").unwrap();
 
+		main
+	}
+
+	/// Builds a buffer access that verifies packed four-component u16 vectors remain intrinsic backend types.
+	pub fn vec4u16_binding() -> besl::NodeReference {
+		let script = "main: fn () -> void { buff.value; }";
+		let mut root_node = besl::Node::root();
+		let vec4u16_type = root_node.get_child("vec4u16").expect("Expected vec4u16 type");
+		root_node.add_child(
+			besl::Node::binding(
+				"buff",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::member("value", vec4u16_type).into()],
+				},
+				0,
+				0,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected vec4u16 shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		main
+	}
+
+	/// Builds a flattened vec2u16 array binding used to verify native-width backend storage strides.
+	pub fn vec2u16_array_binding() -> besl::NodeReference {
+		let script = "main: fn () -> void { buff.values[1]; }";
+		let mut root_node = besl::Node::root();
+		let vec2u16_type = root_node.get_child("vec2u16").expect("Expected vec2u16 type");
+		root_node.add_child(
+			besl::Node::binding(
+				"buff",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::array("values", vec2u16_type, 2)],
+				},
+				0,
+				0,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected vec2u16 array shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		main
+	}
+
+	/// Builds mixed packed-u16 storage members used to verify backend alignment against the VM layout.
+	pub fn mixed_vec4u16_binding() -> besl::NodeReference {
+		let script = "main: fn () -> void { buff.value; buff.tail; }";
+		let mut root_node = besl::Node::root();
+		let vec4u16_type = root_node.get_child("vec4u16").expect("Expected vec4u16 type");
+		let u16_type = root_node.get_child("u16").expect("Expected u16 type");
+		root_node.add_child(
+			besl::Node::binding(
+				"buff",
+				besl::BindingTypes::Buffer {
+					members: vec![
+						besl::Node::member("value", vec4u16_type).into(),
+						besl::Node::member("tail", u16_type).into(),
+					],
+				},
+				0,
+				0,
+				true,
+				true,
+			)
+			.into(),
+		);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected mixed vec4u16 shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+		main
+	}
+
+	/// Builds packed integer vector inputs and outputs used to verify interpolation qualifiers.
+	pub fn packed_u16_stage_io() -> besl::NodeReference {
+		let script = "main: fn () -> void { packed_input; packed_output; }";
+		let mut root_node = besl::Node::root();
+		let vec2u16_type = root_node.get_child("vec2u16").expect("Expected vec2u16 type");
+		let vec4u16_type = root_node.get_child("vec4u16").expect("Expected vec4u16 type");
+		root_node.add_children(vec![
+			besl::Node::input("packed_input", vec2u16_type, 0).into(),
+			besl::Node::output("packed_output", vec4u16_type, 1).into(),
+		]);
+
+		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected packed stage I/O shader to compile");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
 		main
 	}
 

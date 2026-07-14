@@ -91,13 +91,11 @@ mod tests {
 			for expected in ["Vertex.Position", "Vertex.Normal", "Vertex.UV"] {
 				assert!(streams.iter().any(|stream| stream.name() == expected));
 			}
-			assert_eq!(
-				resource_storage
-					.list()
-					.expect("Resource list is unreadable. The most likely cause is a test storage failure.")
-					.len(),
-				4
-			);
+			let resources = resource_storage
+				.list()
+				.expect("Resource list is unreadable. The most likely cause is a test storage failure.");
+			assert_eq!(resources.len(), 5);
+			assert!(resources.iter().any(|resource| resource == "triangle_move.fbx#skeleton"));
 
 			drop(resource_storage);
 			std::fs::remove_dir_all(root)

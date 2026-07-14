@@ -72,7 +72,7 @@ impl<'a> ResourceId<'a> {
 		let mut split = self.full.split('#');
 		let url = split.next().unwrap();
 		let path = std::path::Path::new(url);
-		path.extension().unwrap().to_str().unwrap()
+		path.extension().and_then(|extension| extension.to_str()).unwrap_or_default()
 	}
 
 	pub fn get_fragment(&self) -> Option<ResourceIdFragment<'a>> {
@@ -156,5 +156,10 @@ pub mod tests {
 		assert_eq!(get_fragment("name.extension#"), None);
 		assert_eq!(get_fragment("#fragment"), None);
 		assert_eq!(get_fragment("name.extension#fragment").unwrap(), "fragment");
+	}
+
+	#[test]
+	fn extensionless_resource_ids_report_an_empty_format_without_panicking() {
+		assert_eq!(super::ResourceId::new("buffers/skeleton").get_extension(), "");
 	}
 }

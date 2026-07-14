@@ -10,7 +10,7 @@ It reads source assets from an assets directory and writes processed resources t
 By default those paths are `assets` and `resources`, but both are configurable.
 
 ```bash
-beld --source assets --destination resources bake mesh.glb material.bema
+beld --source assets --destination resources bake mesh.glb character.fbx material.bema
 ```
 
 ## Commands
@@ -18,6 +18,11 @@ beld --source assets --destination resources bake mesh.glb material.bema
 `beld bake` processes one or more asset IDs into resources.
 The bake command installs the standard asset handlers and runs work concurrently.
 Each asset gets a local arena for decode-time and processing-time allocations so large temporary buffers can be released after that asset finishes.
+Quote FBX animation IDs so the shell does not treat their fragment as a comment:
+
+```bash
+beld --source assets --destination resources bake 'character.fbx#animations/Walk'
+```
 
 `beld list` prints stored resource IDs.
 

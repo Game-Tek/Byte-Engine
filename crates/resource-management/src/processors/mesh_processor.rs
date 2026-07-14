@@ -1,3 +1,5 @@
+use std::alloc::{Allocator, Global};
+
 use crate::{
 	resources::{
 		material::VariantModel,
@@ -109,32 +111,38 @@ pub trait MeshSource {
 }
 
 /// The `OwnedMeshSource` struct stores normalized mesh data before the mesh processor packs it into resource streams.
-#[derive(Debug, Default)]
-pub struct OwnedMeshSource {
-	vertex_layout: Vec<VertexComponent>,
-	primitives: Vec<OwnedMeshPrimitive>,
+#[derive(Debug)]
+pub struct OwnedMeshSource<A: Allocator = Global> {
+	vertex_layout: Vec<VertexComponent, A>,
+	primitives: Vec<OwnedMeshPrimitive<A>, A>,
 }
 
-impl OwnedMeshSource {
-	pub fn new(vertex_layout: Vec<VertexComponent>, primitives: Vec<OwnedMeshPrimitive>) -> Self {
+impl<A: Allocator> OwnedMeshSource<A> {
+	pub fn new(vertex_layout: Vec<VertexComponent, A>, primitives: Vec<OwnedMeshPrimitive<A>, A>) -> Self {
 		Self {
 			vertex_layout,
 			primitives,
 		}
 	}
 
-	pub fn vertex_layout_mut(&mut self) -> &mut Vec<VertexComponent> {
+	pub fn vertex_layout_mut(&mut self) -> &mut Vec<VertexComponent, A> {
 		&mut self.vertex_layout
 	}
 
-	pub fn primitives_mut(&mut self) -> &mut Vec<OwnedMeshPrimitive> {
+	pub fn primitives_mut(&mut self) -> &mut Vec<OwnedMeshPrimitive<A>, A> {
 		&mut self.primitives
 	}
 }
 
-impl MeshSource for OwnedMeshSource {
+impl Default for OwnedMeshSource {
+	fn default() -> Self {
+		Self::new(Vec::new(), Vec::new())
+	}
+}
+
+impl<A: Allocator> MeshSource for OwnedMeshSource<A> {
 	type Primitive<'a>
-		= &'a OwnedMeshPrimitive
+		= &'a OwnedMeshPrimitive<A>
 	where
 		Self: 'a;
 
@@ -153,34 +161,48 @@ impl MeshSource for OwnedMeshSource {
 
 /// The `OwnedMeshPrimitive` struct stores a primitive in a processor-friendly owned representation.
 #[derive(Debug)]
-pub struct OwnedMeshPrimitive {
+pub struct OwnedMeshPrimitive<A: Allocator = Global> {
 	material: ReferenceModel<VariantModel>,
 	bounding_box: [[f32; 3]; 2],
-	attributes: Vec<OwnedMeshAttribute>,
-	triangle_indices: Vec<u32>,
+	attributes: Vec<OwnedMeshAttribute<A>, A>,
+	triangle_indices: Vec<u32, A>,
 }
 
 impl OwnedMeshPrimitive {
 	pub fn new(material: ReferenceModel<VariantModel>, bounding_box: [[f32; 3]; 2], triangle_indices: Vec<u32>) -> Self {
+		Self::new_in(material, bounding_box, triangle_indices, Global)
+	}
+}
+
+impl<A: Allocator + Clone> OwnedMeshPrimitive<A> {
+	/// Creates processor staging storage with allocator-backed index and attribute buffers.
+	pub fn new_in(
+		material: ReferenceModel<VariantModel>,
+		bounding_box: [[f32; 3]; 2],
+		triangle_indices: Vec<u32, A>,
+		allocator: A,
+	) -> Self {
 		Self {
 			material,
 			bounding_box,
-			attributes: Vec::new(),
+			attributes: Vec::with_capacity_in(8, allocator),
 			triangle_indices,
 		}
 	}
+}
 
-	pub fn with_attribute(mut self, attribute: OwnedMeshAttribute) -> Self {
+impl<A: Allocator> OwnedMeshPrimitive<A> {
+	pub fn with_attribute(mut self, attribute: OwnedMeshAttribute<A>) -> Self {
 		self.attributes.push(attribute);
 		self
 	}
 
-	pub fn add_attribute(&mut self, attribute: OwnedMeshAttribute) {
+	pub fn add_attribute(&mut self, attribute: OwnedMeshAttribute<A>) {
 		self.attributes.push(attribute);
 	}
 }
 
-impl MeshPrimitiveSource for &OwnedMeshPrimitive {
+impl<A: Allocator> MeshPrimitiveSource for &OwnedMeshPrimitive<A> {
 	fn material(&self) -> &ReferenceModel<VariantModel> {
 		&self.material
 	}
@@ -214,14 +236,14 @@ impl MeshPrimitiveSource for &OwnedMeshPrimitive {
 
 /// The `OwnedMeshAttribute` struct stores owned attribute data for a single semantic and channel.
 #[derive(Debug)]
-pub struct OwnedMeshAttribute {
+pub struct OwnedMeshAttribute<A: Allocator = Global> {
 	semantic: VertexSemantics,
 	channel: u32,
-	data: OwnedMeshAttributeData,
+	data: OwnedMeshAttributeData<A>,
 }
 
-impl OwnedMeshAttribute {
-	pub fn new(semantic: VertexSemantics, channel: u32, data: OwnedMeshAttributeData) -> Self {
+impl<A: Allocator> OwnedMeshAttribute<A> {
+	pub fn new(semantic: VertexSemantics, channel: u32, data: OwnedMeshAttributeData<A>) -> Self {
 		Self { semantic, channel, data }
 	}
 
@@ -232,14 +254,14 @@ impl OwnedMeshAttribute {
 
 /// The `OwnedMeshAttributeData` enum stores owned attribute payloads for processor-owned meshes.
 #[derive(Debug)]
-pub enum OwnedMeshAttributeData {
-	F32x2(Vec<[f32; 2]>),
-	F32x3(Vec<[f32; 3]>),
-	F32x4(Vec<[f32; 4]>),
-	U16x4(Vec<[u16; 4]>),
+pub enum OwnedMeshAttributeData<A: Allocator = Global> {
+	F32x2(Vec<[f32; 2], A>),
+	F32x3(Vec<[f32; 3], A>),
+	F32x4(Vec<[f32; 4], A>),
+	U16x4(Vec<[u16; 4], A>),
 }
 
-impl OwnedMeshAttributeData {
+impl<A: Allocator> OwnedMeshAttributeData<A> {
 	fn len(&self) -> usize {
 		match self {
 			OwnedMeshAttributeData::F32x2(values) => values.len(),

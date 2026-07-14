@@ -2456,10 +2456,7 @@ mod tests {
 		engine.mount(move |ctx| {
 			let result = Arc::clone(&result_for_task);
 			Box::pin(async move {
-				let value = ctx
-					.element("modal")
-					.mount(|ctx| Box::pin(modal(ctx)))
-					.await;
+				let value = ctx.element("modal").mount(|ctx| Box::pin(modal(ctx))).await;
 				*result.lock().unwrap() = Some(value);
 			})
 		});
@@ -2642,10 +2639,7 @@ mod tests {
 			let result = Arc::clone(&result_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
-				let value = frame
-					.element("modal")
-					.mount(|ctx| Box::pin(modal(ctx)))
-					.await;
+				let value = frame.element("modal").mount(|ctx| Box::pin(modal(ctx))).await;
 				*result.lock().unwrap() = Some(value);
 			})
 		});

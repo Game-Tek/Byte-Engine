@@ -166,7 +166,7 @@ Useful starting points:
 
 Byte-Engine separates authored files from runtime-ready resources:
 
-- **Assets** are source files such as PNG, JPEG, glTF/GLB, WAV, OGG, LUT files,
+- **Assets** are source files such as PNG, JPEG, glTF/GLB, FBX, WAV, OGG, LUT files,
   `.bema` material declarations, and BESL shader sources.
 - **Resources** are processed engine data with metadata such as format, hash,
   size, image extent, mesh layout, shader reflection data, and binary payloads.
@@ -176,7 +176,7 @@ Byte-Engine separates authored files from runtime-ready resources:
 Use `beld` from the workspace to inspect and manage resources:
 
 ```sh
-cargo run -p beld -- --source assets --destination resources bake texture.png scene.glb
+cargo run -p beld -- --source assets --destination resources bake texture.png scene.glb character.fbx
 cargo run -p beld -- --destination resources list
 cargo run -p beld -- --destination resources inspect texture.png
 cargo run -p beld -- --destination resources query Material group=opaque --format json

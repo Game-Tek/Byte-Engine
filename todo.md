@@ -92,6 +92,7 @@
 - Implement sampled UI colors, the remaining UI layout branch, primitive style access, and non-box bounding boxes.
 - Implement `Positionable` state for gameplay sphere and cube colliders.
 - Implement server-side client entity lifecycle and replace the temporary UDP client identity strategy.
+- Integrate imported FBX clips with runtime node transforms, skeleton palettes, and mesh skinning once the engine animation system exists.
 
 ## Shader behavior
 

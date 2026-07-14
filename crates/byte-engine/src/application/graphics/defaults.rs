@@ -8,6 +8,7 @@
 use resource_management::asset::{
 	asset_manager::AssetManager,
 	bema_asset_handler::{BEMAAssetHandler, ProgramGenerator},
+	fbx_asset_handler::FBXAssetHandler,
 	gltf_asset_handler::GLTFAssetHandler,
 	lut_asset_handler::LUTAssetHandler,
 	ogg_asset_handler::OGGAssetHandler,
@@ -46,7 +47,7 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 		.create(Window::new(application.get_name(), Extent::rectangle(1920, 1080)));
 }
 
-/// Connects the asset directory and standard material, glTF, image, LUT, and
+/// Connects the asset directory and standard material, FBX, glTF, image, LUT, and
 /// audio handlers to the application's resource manager.
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
@@ -65,6 +66,10 @@ pub fn setup_default_resource_and_asset_management(
 	let mut material_asset_handler = BEMAAssetHandler::new();
 	material_asset_handler.set_shader_generator(generator.clone());
 	asset_manager.add_asset_handler(material_asset_handler);
+
+	let mut fbx_asset_handler = FBXAssetHandler::new();
+	fbx_asset_handler.set_shader_generator(generator.clone());
+	asset_manager.add_asset_handler(fbx_asset_handler);
 
 	let mut gltf_asset_handler = GLTFAssetHandler::new();
 	gltf_asset_handler.set_shader_generator(generator);

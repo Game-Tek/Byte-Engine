@@ -10,6 +10,7 @@ Examples:
 
 - PNG textures
 - glTF or GLB models
+- FBX models
 - WAV and OGG audio
 - LUT files
 - `.bema` material and variant declarations
@@ -28,6 +29,7 @@ The standard graphics setup installs handlers for common engine formats:
 
 - PNG images
 - glTF and GLB meshes and embedded images
+- FBX meshes and provisional animation clips
 - `.bema` materials and variants
 - LUT assets
 - WAV and OGG audio
@@ -43,6 +45,25 @@ Asset processing is where source data becomes engine data.
 Image processing decodes pixels, infers semantics from names such as albedo, normal, roughness, or emissive, chooses gamma, and can convert to GPU-friendly formats.
 Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, and associates primitives with material variants.
 Material processing compiles shader source and stores reflection metadata such as bindings and workgroup size.
+
+## FBX resources
+
+An FBX asset ID without a fragment bakes every polygon-mesh instance into one `Mesh` resource.
+The importer normalizes axes and authored units, triangulates polygon faces, preserves material parts, transforms instance geometry, and emits position, normal, tangent-frame, color, UV, and provisional skin streams when the source provides them.
+Meshes without authored UVs receive a zero-filled UV stream because the visibility renderer requires that stream even for untextured materials.
+
+FBX material names can be mapped to existing variants in a sibling `.fbx.bead` file, using the same `asset.<material-name>.asset` shape as other model overrides.
+Without an override, the importer generates a material variant from constant base color, opacity, metalness, roughness, emission, and double-sided values.
+FBX material texture maps are not imported yet.
+
+Animation loading is intentionally provisional while the engine has no animation playback system.
+It exposes baked node translation, rotation, and scale tracks through the existing `AnimationModel` resource:
+
+- `character.fbx#animation` selects the first animation stack.
+- `character.fbx#animations/0` selects a stack by zero-based index.
+- `character.fbx#animations/Walk` selects a stack by exact name.
+
+These resources preserve animation data for future runtime integration; loading one does not currently animate or skin a rendered mesh.
 
 The result is intentionally more explicit than the source asset.
 A renderer should not have to reopen a PNG to discover its dimensions, or parse a glTF again to find vertex streams.

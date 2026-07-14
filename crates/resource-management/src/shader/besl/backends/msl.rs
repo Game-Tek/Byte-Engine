@@ -2384,6 +2384,30 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 			}
 		}
 	}
+	fn emit_function_call(
+		&mut self,
+		string: &mut String,
+		function: &besl::NodeReference,
+		parameters: &[besl::NodeReference],
+	) -> bool {
+		let function_node = function.borrow();
+		let besl::Nodes::Struct {
+			name, template: None, ..
+		} = function_node.node()
+		else {
+			return false;
+		};
+		if crate::shader::generator::is_builtin_struct_type(name, self.supports_atomic_u32()) {
+			return false;
+		}
+
+		// Metal user structs are aggregates, so their portable BESL constructors lower to brace initialization.
+		string.push_str(name);
+		string.push('{');
+		self.emit_call_arguments(string, parameters);
+		string.push('}');
+		true
+	}
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
 		if let besl::Nodes::Binding { set, .. } = source.borrow().node() {
 			if self.raster_stage_context.is_some() {
@@ -2680,6 +2704,35 @@ mod tests {
 	}
 
 	#[test]
+	fn user_struct_constructors_lower_to_aggregate_initialization() {
+		let mut root = besl::Node::root();
+		let vec4f = root.get_child("vec4f").expect("Expected vec4f type");
+		root.add_child(
+			besl::Node::r#struct(
+				"Pair",
+				vec![
+					besl::Node::member("left", vec4f.clone()).into(),
+					besl::Node::member("right", vec4f).into(),
+				],
+			)
+			.into(),
+		);
+		let root = besl::compile_to_besl(
+			"main: fn () -> void { let pair: Pair = Pair(vec4f(1.0, 1.0, 1.0, 1.0), vec4f(2.0, 2.0, 2.0, 2.0)); pair; }",
+			Some(root),
+		)
+		.expect("Expected user struct constructor shader to compile");
+		let main = root.get_main().expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+
+		assert_string_contains!(shader, "Pair pair=Pair{float4(1.0,1.0,1.0,1.0),float4(2.0,2.0,2.0,2.0)};");
+	}
+
+	#[test]
 	fn mesh_stage_uses_mesh_entry_point_and_mesh_push_constants() {
 		let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("instance_index", "u32")]);
 		let mesh_output_types = besl::parser::Node::raw_code(
@@ -2851,7 +2904,7 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "struct FragmentInput{};");
 		assert_string_contains!(shader, "struct FragmentOutput{float4 color;};");
 		assert_string_contains!(shader, "fragment FragmentOutput besl_main(FragmentInput in [[stage_in]])");
-		assert_string_contains!(shader, "return FragmentOutput(float4(1.0,0.0,0.0,1.0));");
+		assert_string_contains!(shader, "return FragmentOutput{float4(1.0,0.0,0.0,1.0)};");
 	}
 
 	#[test]

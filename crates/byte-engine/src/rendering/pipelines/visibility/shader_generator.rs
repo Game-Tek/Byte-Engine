@@ -7,7 +7,8 @@ use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;
 use crate::rendering::pipelines::visibility::{
-	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_PIXEL_MAPPING_ENTRIES,
+	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES,
+	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
 };
 
 fn light_array_type() -> &'static str {
@@ -32,6 +33,36 @@ fn material_texture_array_type() -> &'static str {
 	MATERIAL_TEXTURE_ARRAY_TYPE
 		.get_or_init(|| format!("u32[{MAX_MATERIAL_TEXTURES}]").into_boxed_str())
 		.as_ref()
+}
+
+fn vertex_vec3_array_type() -> &'static str {
+	static ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
+	ARRAY_TYPE.get_or_init(|| format!("vec3f[{MAX_VERTICES}]").into_boxed_str())
+}
+
+fn vertex_vec2_array_type() -> &'static str {
+	static ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
+	ARRAY_TYPE.get_or_init(|| format!("vec2f[{MAX_VERTICES}]").into_boxed_str())
+}
+
+fn skinned_vertex_array_type() -> &'static str {
+	static ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
+	ARRAY_TYPE.get_or_init(|| format!("SkinnedVertex[{MAX_VERTICES}]").into_boxed_str())
+}
+
+fn vertex_index_array_type() -> &'static str {
+	static ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
+	ARRAY_TYPE.get_or_init(|| format!("u16[{MAX_PRIMITIVE_TRIANGLES}]").into_boxed_str())
+}
+
+fn primitive_index_array_type() -> &'static str {
+	static ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
+	ARRAY_TYPE.get_or_init(|| format!("u8[{}]", MAX_TRIANGLES * 3).into_boxed_str())
+}
+
+fn meshlet_array_type() -> &'static str {
+	static ARRAY_TYPE: OnceLock<Box<str>> = OnceLock::new();
+	ARRAY_TYPE.get_or_init(|| format!("Meshlet[{MAX_MESHLETS}]").into_boxed_str())
 }
 
 /// Parses one reusable BESL helper function from an isolated source scope.
@@ -109,9 +140,13 @@ impl VisibilityShaderScope {
 				Node::member("base_triangle_index", "u32"),
 				Node::member("base_meshlet_index", "u32"),
 				Node::member("meshlet_count", "u32"),
+				Node::member("skinned_base_vertex_index", "u32"),
 				Node::member("padding0", "u32"),
-				Node::member("padding1", "u32"),
 			],
+		);
+		let skinned_vertex_struct = Node::r#struct(
+			"SkinnedVertex",
+			vec![Node::member("position", "vec4f"), Node::member("normal", "vec4f")],
 		);
 		let view_struct = Node::r#struct(
 			"View",
@@ -168,7 +203,7 @@ impl VisibilityShaderScope {
 		);
 		let positions = Node::binding(
 			"vertex_positions",
-			Node::buffer("Positions", vec![Node::member("positions", "vec3f[8192]")]),
+			Node::buffer("Positions", vec![Node::member("positions", vertex_vec3_array_type())]),
 			0,
 			2,
 			true,
@@ -176,15 +211,23 @@ impl VisibilityShaderScope {
 		);
 		let normals = Node::binding(
 			"vertex_normals",
-			Node::buffer("Normals", vec![Node::member("normals", "vec3f[8192]")]),
+			Node::buffer("Normals", vec![Node::member("normals", vertex_vec3_array_type())]),
 			0,
 			3,
 			true,
 			false,
 		);
+		let skinned_vertices = Node::binding(
+			"skinned_vertices",
+			Node::buffer("SkinnedVertices", vec![Node::member("vertices", skinned_vertex_array_type())]),
+			0,
+			4,
+			true,
+			false,
+		);
 		let uvs = Node::binding(
 			"vertex_uvs",
-			Node::buffer("UVs", vec![Node::member("uvs", "vec2f[8192]")]),
+			Node::buffer("UVs", vec![Node::member("uvs", vertex_vec2_array_type())]),
 			0,
 			5,
 			true,
@@ -192,7 +235,10 @@ impl VisibilityShaderScope {
 		);
 		let vertex_indices = Node::binding(
 			"vertex_indices",
-			Node::buffer("VertexIndices", vec![Node::member("vertex_indices", "u16[8192]")]),
+			Node::buffer(
+				"VertexIndices",
+				vec![Node::member("vertex_indices", vertex_index_array_type())],
+			),
 			0,
 			6,
 			true,
@@ -200,7 +246,10 @@ impl VisibilityShaderScope {
 		);
 		let primitive_indices = Node::binding(
 			"primitive_indices",
-			Node::buffer("PrimitiveIndices", vec![Node::member("primitive_indices", "u8[8192]")]),
+			Node::buffer(
+				"PrimitiveIndices",
+				vec![Node::member("primitive_indices", primitive_index_array_type())],
+			),
 			0,
 			7,
 			true,
@@ -208,7 +257,7 @@ impl VisibilityShaderScope {
 		);
 		let meshlets = Node::binding(
 			"meshlets",
-			Node::buffer("MeshletsBuffer", vec![Node::member("meshlets", "Meshlet[8192]")]),
+			Node::buffer("MeshletsBuffer", vec![Node::member("meshlets", meshlet_array_type())]),
 			0,
 			8,
 			true,
@@ -300,10 +349,17 @@ impl VisibilityShaderScope {
 			}
 		};
 		let compute_vertex_position = {
+			// Meshlet topology stays immutable; this helper remaps its static index into an instance output range.
 			let mut root = besl::parse(
 				r#"
 				compute_vertex_position: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec4f {
 					let vertex_index: u32 = compute_vertex_index(mesh, meshlet, primitive_index);
+					if (mesh.skinned_base_vertex_index != 4294967295) {
+						let relative_vertex_index: u32 = vertex_index - mesh.base_vertex_index;
+						return skinned_vertices.vertices[
+							mesh.skinned_base_vertex_index + relative_vertex_index
+						].position;
+					}
 					return vec4f(
 						vertex_positions.positions[vertex_index].x,
 						vertex_positions.positions[vertex_index].y,
@@ -873,6 +929,7 @@ impl VisibilityShaderScope {
 				view_struct,
 				views_binding,
 				mesh_struct,
+				skinned_vertex_struct,
 				meshlet_struct,
 				mesh_vertex_output,
 				mesh_primitive_output,
@@ -885,6 +942,7 @@ impl VisibilityShaderScope {
 				meshes,
 				positions,
 				normals,
+				skinned_vertices,
 				uvs,
 				vertex_indices,
 				primitive_indices,
@@ -966,6 +1024,21 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			vec4(vertex_normals.normals[vertex_indices[1]], 0.0),
 			vec4(vertex_normals.normals[vertex_indices[2]], 0.0)
 		);
+
+		// Meshlet topology remains immutable, so remap its static indices into this instance's output range.
+		if (mesh.skinned_base_vertex_index != 4294967295u) {
+			uint skinned_vertex_indices[3] = uint[3](
+				mesh.skinned_base_vertex_index + (vertex_indices[0] - mesh.base_vertex_index),
+				mesh.skinned_base_vertex_index + (vertex_indices[1] - mesh.base_vertex_index),
+				mesh.skinned_base_vertex_index + (vertex_indices[2] - mesh.base_vertex_index)
+			);
+			model_space_vertex_positions[0] = skinned_vertices.vertices[skinned_vertex_indices[0]].position;
+			model_space_vertex_positions[1] = skinned_vertices.vertices[skinned_vertex_indices[1]].position;
+			model_space_vertex_positions[2] = skinned_vertices.vertices[skinned_vertex_indices[2]].position;
+			vertex_normals[0] = skinned_vertices.vertices[skinned_vertex_indices[0]].normal;
+			vertex_normals[1] = skinned_vertices.vertices[skinned_vertex_indices[1]].normal;
+			vertex_normals[2] = skinned_vertices.vertices[skinned_vertex_indices[2]].normal;
+		}
 
 		vec2 vertex_uvs[3] = vec2[3](
 			vertex_uvs.uvs[vertex_indices[0]],
@@ -1065,6 +1138,21 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 				float4(set0.vertex_normals->normals[vertex_indices[1]], 0.0),
 				float4(set0.vertex_normals->normals[vertex_indices[2]], 0.0)
 			};
+
+		// Meshlet topology remains immutable, so remap its static indices into this instance's output range.
+		if (mesh.skinned_base_vertex_index != 4294967295u) {
+			uint skinned_vertex_indices[3] = {
+				mesh.skinned_base_vertex_index + (vertex_indices[0] - mesh.base_vertex_index),
+				mesh.skinned_base_vertex_index + (vertex_indices[1] - mesh.base_vertex_index),
+				mesh.skinned_base_vertex_index + (vertex_indices[2] - mesh.base_vertex_index)
+			};
+			model_space_vertex_positions[0] = set0.skinned_vertices->vertices[skinned_vertex_indices[0]].position;
+			model_space_vertex_positions[1] = set0.skinned_vertices->vertices[skinned_vertex_indices[1]].position;
+			model_space_vertex_positions[2] = set0.skinned_vertices->vertices[skinned_vertex_indices[2]].position;
+			vertex_normals[0] = set0.skinned_vertices->vertices[skinned_vertex_indices[0]].normal;
+			vertex_normals[1] = set0.skinned_vertices->vertices[skinned_vertex_indices[1]].normal;
+			vertex_normals[2] = set0.skinned_vertices->vertices[skinned_vertex_indices[2]].normal;
+		}
 
 		float2 vertex_uvs[3] = {
 			set0.vertex_uvs->uvs[vertex_indices[0]],
@@ -1168,6 +1256,21 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float4(vertex_normals[vertex_indices_local[1]], 0.0),
 			float4(vertex_normals[vertex_indices_local[2]], 0.0)
 		};
+
+		// Meshlet topology remains immutable, so remap its static indices into this instance's output range.
+		if (mesh.skinned_base_vertex_index != 4294967295u) {
+			uint skinned_vertex_indices[3] = {
+				mesh.skinned_base_vertex_index + (vertex_indices_local[0] - mesh.base_vertex_index),
+				mesh.skinned_base_vertex_index + (vertex_indices_local[1] - mesh.base_vertex_index),
+				mesh.skinned_base_vertex_index + (vertex_indices_local[2] - mesh.base_vertex_index)
+			};
+			model_space_vertex_positions[0] = skinned_vertices[skinned_vertex_indices[0]].position;
+			model_space_vertex_positions[1] = skinned_vertices[skinned_vertex_indices[1]].position;
+			model_space_vertex_positions[2] = skinned_vertices[skinned_vertex_indices[2]].position;
+			vertex_normals_local[0] = skinned_vertices[skinned_vertex_indices[0]].normal;
+			vertex_normals_local[1] = skinned_vertices[skinned_vertex_indices[1]].normal;
+			vertex_normals_local[2] = skinned_vertices[skinned_vertex_indices[2]].normal;
+		}
 
 		float2 vertex_uvs_local[3] = {
 			vertex_uvs[vertex_indices_local[0]],
@@ -1561,6 +1664,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 						"vertex_indices",
 						"vertex_positions",
 						"vertex_normals",
+						"skinned_vertices",
 						"triangle_index",
 						"instance_index_render_target",
 						"views",
@@ -1780,6 +1884,58 @@ mod tests {
 		assert!(
 			!source.contains("primitive_indices[(mesh.base_triangle_index"),
 			"Expected HLSL material evaluation source to avoid direct logical indexing of packed primitive indices. Source: {source}"
+		);
+	}
+
+	/// Verifies every material-evaluation backend reconstructs skinned geometry while retaining immutable UV indexing.
+	#[test]
+	fn material_evaluation_backends_select_frame_local_skinned_vertices() {
+		let material = json::object! {
+			"variables": []
+		};
+		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").unwrap();
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = shader_generator.transform(shader_node, &material);
+		let root = besl::lex(shader).unwrap();
+		let main_node = root.get_main().unwrap();
+		let settings = ShaderGenerationSettings::compute(Extent::line(128));
+
+		let glsl = GLSLShaderGenerator::new().generate(&settings, &main_node).unwrap();
+		let hlsl = HLSLShaderGenerator::new().generate(&settings, &main_node).unwrap();
+		let msl = MSLShaderGenerator::new().generate(&settings, &main_node).unwrap();
+
+		for (backend, source) in [("GLSL", &glsl), ("HLSL", &hlsl), ("MSL", &msl)] {
+			assert!(
+				source.contains("mesh.skinned_base_vertex_index != 4294967295u"),
+				"Generated {backend} does not guard frame-local vertex reads with the rigid-mesh sentinel. Shader: {source}"
+			);
+			assert!(
+				source.contains("mesh.skinned_base_vertex_index + (vertex_indices"),
+				"Generated {backend} does not map immutable vertex indices into the frame-local range. Shader: {source}"
+			);
+			assert!(
+				source.contains("SkinnedVertex") && source.contains("skinned_vertices"),
+				"Generated {backend} omits the binding-4 skinned vertex dependency. Shader: {source}"
+			);
+		}
+
+		assert!(
+			glsl.contains("skinned_vertices.vertices[skinned_vertex_indices[0]].position")
+				&& glsl.contains("skinned_vertices.vertices[skinned_vertex_indices[0]].normal")
+				&& glsl.contains("vertex_uvs.uvs[vertex_indices[0]]"),
+			"Generated GLSL does not use deformed position/normal data alongside immutable UV data. Shader: {glsl}"
+		);
+		assert!(
+			hlsl.contains("skinned_vertices[skinned_vertex_indices[0]].position")
+				&& hlsl.contains("skinned_vertices[skinned_vertex_indices[0]].normal")
+				&& hlsl.contains("vertex_uvs[vertex_indices_local[0]]"),
+			"Generated HLSL does not use deformed position/normal data alongside immutable UV data. Shader: {hlsl}"
+		);
+		assert!(
+			msl.contains("set0.skinned_vertices->vertices[skinned_vertex_indices[0]].position")
+				&& msl.contains("set0.skinned_vertices->vertices[skinned_vertex_indices[0]].normal")
+				&& msl.contains("set0.vertex_uvs->uvs[vertex_indices[0]]"),
+			"Generated MSL does not use deformed position/normal data alongside immutable UV data. Shader: {msl}"
 		);
 	}
 

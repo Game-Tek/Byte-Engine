@@ -261,7 +261,8 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 		"void"
 			| "bool" | "vec2u16"
 			| "vec4u16"
-			| "vec2u" | "vec2i"
+			| "vec2u" | "vec3u"
+			| "vec4u" | "vec2i"
 			| "vec2f" | "vec3f"
 			| "vec4f" | "mat2f"
 			| "mat3f" | "mat4f"
@@ -269,6 +270,7 @@ pub(crate) fn is_builtin_struct_type(name: &str, supports_atomic_u32: bool) -> b
 			| "f32" | "u8"
 			| "u16" | "u32"
 			| "i32" | "Texture2D"
+			| "Texture3D"
 			| "ArrayTexture2D"
 			| "VertexOutput"
 			| "PrimitiveOutput"
@@ -411,6 +413,16 @@ pub(crate) trait NodeEmitter {
 	) {
 	}
 
+	/// Gives a backend the opportunity to replace call syntax for callable types such as aggregate structs.
+	fn emit_function_call(
+		&mut self,
+		_string: &mut String,
+		_function: &besl::NodeReference,
+		_parameters: &[besl::NodeReference],
+	) -> bool {
+		false
+	}
+
 	fn emit_expression_member(&mut self, _string: &mut String, _name: &str, _source: &besl::NodeReference) -> bool {
 		false
 	}
@@ -497,6 +509,9 @@ pub(crate) trait NodeEmitter {
 				parameters, function, ..
 			} => {
 				let function_ref = function.clone();
+				if self.emit_function_call(string, &function_ref, parameters) {
+					return;
+				}
 				let function = RefCell::borrow(&function_ref);
 				let name = function.get_name().unwrap();
 				Self::emit_type_name(string, name);

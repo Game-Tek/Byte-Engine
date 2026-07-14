@@ -2595,6 +2595,40 @@ main: fn () -> void {
 	}
 
 	#[test]
+	fn parse_conditional_comparing_a_push_constant_member() {
+		let source = r#"
+main: fn () -> void {
+	let local_vertex_index: u32 = thread_id().x;
+	if (local_vertex_index >= push_constant.vertex_count) {
+		return;
+	}
+}
+"#;
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse push-constant comparison");
+		let func = &node["main"];
+		assert!(matches!(&func.node, Nodes::Function { .. }));
+	}
+
+	#[test]
+	fn parse_grouped_arithmetic_inside_a_conditional() {
+		let source = r#"
+main: fn () -> void {
+	if (total_weight > 0.00000001) {
+		let column0: vec4f = (
+			matrix0.column0 * weights.x
+			+ matrix1.column0 * weights.y
+		) * inverse_total_weight;
+	}
+}
+"#;
+		let tokens = tokenize(source).expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse grouped conditional arithmetic");
+		let func = &node["main"];
+		assert!(matches!(&func.node, Nodes::Function { .. }));
+	}
+
+	#[test]
 	fn parse_process_meshlet() {
 		let source = r#"
 process_meshlet: fn (instance_index: u32, matrix: mat4f) -> void {

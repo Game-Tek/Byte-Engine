@@ -1,5 +1,21 @@
-/// The `VisibilityPipelineManager` struct is the visibility buffer implementation of the world render domain.
-/// It owns the per-scene rendering state and references shared GPU resources via `VisibilitySharedResources`.
+/// The `SkinningPoseCacheEntry` struct preserves one renderable's frame pose for primitives visited out of order.
+#[derive(Clone, Copy)]
+struct SkinningPoseCacheEntry {
+	handle: Handle,
+	matrix_offset: usize,
+	matrix_count: usize,
+	available: bool,
+}
+
+/// The `SkinningPaletteCacheEntry` struct shares one uploaded binding palette across a renderable's primitives.
+#[derive(Clone, Copy)]
+struct SkinningPaletteCacheEntry {
+	handle: Handle,
+	binding: *const SkinBinding,
+	palette_base: u32,
+}
+
+/// The `VisibilityPipelineManager` struct provides the visibility buffer implementation for the world render domain.
 pub struct VisibilityPipelineManager {
 	/// Base descriptor set layout template shared across all scenes and sinks.
 	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
@@ -9,6 +25,16 @@ pub struct VisibilityPipelineManager {
 	material_evaluation_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 	/// Materials data buffer shared across all scenes.
 	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
+	/// Compute resources shared by every sink for frame-local mesh deformation.
+	skinning_pass: SkinningPass,
+	/// Reused caller-facing global pose storage sized to all unique active skinned instances.
+	skinning_pose_scratch: Vec<Matrix4Columns>,
+	/// Reused per-frame index into poses retained in `skinning_pose_scratch`.
+	skinning_pose_cache: Vec<SkinningPoseCacheEntry>,
+	/// Reused palette upload storage prevents per-frame matrix allocations.
+	skinning_palette_scratch: Vec<Matrix4Columns>,
+	/// Reused per-instance palette lookup avoids duplicate uploads when primitive order is noncontiguous.
+	skinning_palette_cache: Vec<SkinningPaletteCacheEntry>,
 	resource_manager: VisibilityPipelineResourceManagerClient,
 	requested_meshes: std::collections::HashSet<VisibilityMeshKey>,
 	pending_renderables: Vec<PendingRenderableInstance>,
@@ -24,11 +50,21 @@ impl VisibilityPipelineManager {
 		context: &mut ghi::implementation::Context,
 		resource_manager: VisibilityPipelineResourceManagerClient,
 	) -> Self {
+		let skinning_pass = SkinningPass::new(
+			context,
+			SkinningSourceBuffers::new(
+				resource_manager.gpu_vertex_data_manager.skinning_rest_positions_buffer.into(),
+				resource_manager.gpu_vertex_data_manager.skinning_rest_normals_buffer.into(),
+				resource_manager.gpu_vertex_data_manager.skinning_joints_buffer.into(),
+				resource_manager.gpu_vertex_data_manager.skinning_weights_buffer.into(),
+			),
+		);
 		let bindings = [
 			VIEWS_DATA_BINDING,
 			MESH_DATA_BINDING,
 			VERTEX_POSITIONS_BINDING,
 			VERTEX_NORMALS_BINDING,
+			SKINNED_VERTICES_BINDING,
 			VERTEX_UV_BINDING,
 			VERTEX_INDICES_BINDING,
 			PRIMITIVE_INDICES_BINDING,
@@ -116,6 +152,10 @@ impl VisibilityPipelineManager {
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&VERTEX_NORMALS_BINDING, vertex_normals_buffer.into()),
 		);
+		let _skinned_vertices_binding = context.create_descriptor_binding(
+			descriptor_set,
+			ghi::BindingConstructor::buffer(&SKINNED_VERTICES_BINDING, skinning_pass.skinned_vertices_buffer().into()),
+		);
 		let _vertex_uv_binding = context.create_descriptor_binding(
 			descriptor_set,
 			ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, vertex_uvs_buffer.into()),
@@ -185,6 +225,11 @@ impl VisibilityPipelineManager {
 			visibility_descriptor_set_layout,
 			material_evaluation_descriptor_set_layout,
 			materials_data_buffer_handle,
+			skinning_pass,
+			skinning_pose_scratch: Vec::new(),
+			skinning_pose_cache: Vec::new(),
+			skinning_palette_scratch: Vec::new(),
+			skinning_palette_cache: Vec::new(),
 			resource_manager,
 			requested_meshes: std::collections::HashSet::new(),
 			pending_renderables: Vec::new(),
@@ -204,6 +249,7 @@ impl VisibilityPipelineManager {
 				render_info: RenderInfo {
 					instances: Vec::new(),
 					active_instances: Vec::new(),
+					skinning_dispatches: Vec::with_capacity(MAX_INSTANCES),
 					opaque_materials: Vec::new(),
 					transparent_materials: Vec::new(),
 				},
@@ -450,14 +496,27 @@ impl VisibilityPipelineManager {
 	/// Rebuilds the active instance list from scene entities whose material pipeline is ready.
 	fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame) {
 		self.scene.render_info.active_instances.clear();
+		self.scene.render_info.skinning_dispatches.clear();
 		let loaded_materials = &self.loaded_materials;
 		let render_entities = &self.scene.render_entities;
 		let active_instances = &mut self.scene.render_info.active_instances;
+		let skinning_dispatches = &mut self.scene.render_info.skinning_dispatches;
+		let pose_scratch = &mut self.skinning_pose_scratch;
+		let pose_cache = &mut self.skinning_pose_cache;
+		let palette_scratch = &mut self.skinning_palette_scratch;
+		let palette_cache = &mut self.skinning_palette_cache;
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_data_buffer);
+		// Frame caches retain capacity but never retain entity or resource pointers beyond this rebuild.
+		pose_scratch.clear();
+		pose_cache.clear();
+		palette_cache.clear();
 
 		let mut active_index = 0;
 		let mut skipped_missing_material = 0usize;
 		let mut active_meshlets = 0u32;
+		let mut deformed_vertex_count = 0usize;
+		let mut pose_matrix_count = 0usize;
+		let mut palette_matrix_count = 0usize;
 		for render_entity in render_entities.iter() {
 			let material_ready = loaded_materials
 				.get(&render_entity.shader_mesh.material_index)
@@ -475,6 +534,70 @@ impl VisibilityPipelineManager {
 
 			let mut shader_mesh = render_entity.shader_mesh;
 			shader_mesh.model = render_entity.entity.transform().get_matrix().into();
+			shader_mesh.skinned_base_vertex_index = u32::MAX;
+
+			if let Some(skinning) = render_entity.skinning.as_ref() {
+				let skeleton_node_count = skinning.skeleton_node_count as usize;
+				let pose = resolve_skinning_pose(
+					pose_cache,
+					pose_scratch,
+					&mut pose_matrix_count,
+					render_entity.handle,
+					skeleton_node_count,
+					|output| render_entity.entity.write_skinning_pose(output),
+				);
+
+				if pose.available && skinning.vertex_count > 0 {
+					let binding_ptr = Arc::as_ptr(&skinning.binding);
+					let palette_base = match cached_skin_palette_base(palette_cache, render_entity.handle, binding_ptr) {
+						Some(palette_base) => Some(palette_base),
+						_ => {
+							let palette_end = palette_matrix_count.checked_add(skinning.binding.len()).expect(
+								"Visibility skin palette count overflowed. The most likely cause is corrupted skin binding metadata.",
+							);
+							if palette_end > MAX_SKINNING_MATRICES {
+								panic!(
+									"Visibility skin palette limit exceeded. The most likely cause is that active animated instances require more joint matrices than the visibility pipeline supports."
+								);
+							}
+							// Grow only to the scene's high-water mark, then reuse this palette storage on later frames.
+							palette_scratch.resize(palette_end, identity_matrix4_columns());
+
+							let palette_base = palette_matrix_count as u32;
+							match skinning.binding.write_matrix_palette(
+								&pose_scratch[pose.matrix_offset..pose.matrix_offset + pose.matrix_count],
+								&mut palette_scratch[palette_matrix_count..palette_end],
+							) {
+								Ok(()) => {
+									palette_matrix_count = palette_end;
+									palette_cache.push(SkinningPaletteCacheEntry {
+										handle: render_entity.handle,
+										binding: binding_ptr,
+										palette_base,
+									});
+									Some(palette_base)
+								}
+								Err(error) => {
+									error!("Visibility skin palette could not be written: {error}");
+									None
+								}
+							}
+						}
+					};
+
+					if let Some(palette_base) = palette_base {
+						// Output is dense per active primitive, so shared meshes never overwrite another instance's pose.
+						shader_mesh.skinned_base_vertex_index =
+							reserve_deformed_vertex_range(&mut deformed_vertex_count, skinning.vertex_count);
+						skinning_dispatches.push(SkinningDispatch::new(
+							skinning.source_vertex_offset,
+							shader_mesh.skinned_base_vertex_index,
+							palette_base,
+							skinning.vertex_count,
+						));
+					}
+				}
+			}
 			mesh_data[active_index] = shader_mesh;
 			active_meshlets += shader_mesh.meshlet_count;
 			active_instances.push(Instance {
@@ -484,13 +607,21 @@ impl VisibilityPipelineManager {
 		}
 		// The active mesh table is frame-local dynamic data; flush the current frame resource after rebuilding it.
 		frame.sync_buffer(self.scene.meshes_data_buffer);
+		if palette_matrix_count > 0 {
+			self.skinning_pass
+				.write_matrix_palette(frame, &palette_scratch[..palette_matrix_count]);
+		}
 
 		log::debug!(
-			"Visibility active primitives rebuilt: render_entities={}, active={}, skipped_missing_material={}, active_meshlets={}",
+			"Visibility active primitives rebuilt: render_entities={}, active={}, skipped_missing_material={}, active_meshlets={}, skinning_dispatches={}, deformed_vertices={}, pose_matrices={}, palette_matrices={}",
 			render_entities.len(),
 			active_instances.len(),
 			skipped_missing_material,
 			active_meshlets,
+			skinning_dispatches.len(),
+			deformed_vertex_count,
+			pose_matrix_count,
+			palette_matrix_count,
 		);
 	}
 
@@ -530,7 +661,17 @@ impl VisibilityPipelineManager {
 						base_triangle_index: mesh.triangle_offset + primitive.triangle_offset,
 						base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
 						meshlet_count: primitive.meshlet_count,
+						skinned_base_vertex_index: u32::MAX,
+						_padding: 0,
 					},
+					skinning: primitive.skin.as_ref().map(|binding| RenderSkin {
+						binding: binding.clone(),
+						source_vertex_offset: primitive.skinning_source_vertex_offset.expect(
+							"Skinned primitive has no GPU source range. The most likely cause is that skin streams were not uploaded with the mesh resource.",
+						),
+						vertex_count: primitive.skinning_vertex_count,
+						skeleton_node_count: mesh.skeleton_node_count,
+					}),
 				});
 				self.scene.render_info.instances.push(Instance {
 					meshlet_count: primitive.meshlet_count,
@@ -569,6 +710,68 @@ impl VisibilityPipelineManager {
 			far: view.far(),
 		}
 	}
+}
+
+/// Finds a pose evaluated earlier in the frame, regardless of primitive ordering.
+fn cached_skinning_pose(cache: &[SkinningPoseCacheEntry], handle: Handle) -> Option<SkinningPoseCacheEntry> {
+	cache.iter().find(|entry| entry.handle == handle).copied()
+}
+
+/// Evaluates and retains one frame pose, or returns the pose already produced for an interleaved primitive.
+fn resolve_skinning_pose(
+	cache: &mut Vec<SkinningPoseCacheEntry>,
+	scratch: &mut Vec<Matrix4Columns>,
+	matrix_cursor: &mut usize,
+	handle: Handle,
+	matrix_count: usize,
+	write_pose: impl FnOnce(&mut [Matrix4Columns]) -> bool,
+) -> SkinningPoseCacheEntry {
+	if let Some(pose) = cached_skinning_pose(cache, handle) {
+		if pose.matrix_count != matrix_count {
+			panic!(
+				"Visibility renderable has conflicting skeleton sizes. The most likely cause is that one renderable instance references primitives from incompatible skeleton resources."
+			);
+		}
+		return pose;
+	}
+
+	let pose_end = matrix_cursor.checked_add(matrix_count).expect(
+		"Visibility skin pose count overflowed. The most likely cause is corrupted skeleton metadata containing an invalid node count.",
+	);
+	// Keep one stable slice per render handle so an interleaved primitive cannot observe a second pose evaluation.
+	scratch.resize(pose_end, identity_matrix4_columns());
+	let pose = SkinningPoseCacheEntry {
+		handle,
+		matrix_offset: *matrix_cursor,
+		matrix_count,
+		available: write_pose(&mut scratch[*matrix_cursor..pose_end]),
+	};
+	*matrix_cursor = pose_end;
+	cache.push(pose);
+	pose
+}
+
+/// Finds a binding already written for one renderable's frame pose, regardless of primitive ordering.
+fn cached_skin_palette_base(cache: &[SkinningPaletteCacheEntry], handle: Handle, binding: *const SkinBinding) -> Option<u32> {
+	cache
+		.iter()
+		.find(|entry| entry.handle == handle && entry.binding == binding)
+		.map(|entry| entry.palette_base)
+}
+
+/// Reserves a non-overlapping frame-local vertex range for one active skinned primitive.
+fn reserve_deformed_vertex_range(cursor: &mut usize, vertex_count: u32) -> u32 {
+	let base = *cursor;
+	let end = base
+		.checked_add(vertex_count as usize)
+		.expect("Visibility deformed vertex count overflowed. The most likely cause is corrupted primitive skinning metadata.");
+	if end > MAX_SKINNED_VERTICES {
+		panic!(
+			"Visibility deformed vertex limit exceeded. The most likely cause is that active animated instances require more frame-local vertex storage than the visibility pipeline supports."
+		);
+	}
+	*cursor = end;
+	base as u32
 }
 
 impl PipelineManager for VisibilityPipelineManager {
@@ -629,14 +832,19 @@ impl PipelineManager for VisibilityPipelineManager {
 				.find(|sink_state| sink_state.id == sink.index())
 				.map(|sink_state| (sink, &sink_state.render_pass))
 		});
+		let skinning_pass = &self.skinning_pass;
+		let skinning_dispatches = self.scene.render_info.skinning_dispatches.as_slice();
 
 		let commands: SmallVec<[RenderPassReturn<'a>; 16]> = sink_x_rp
-			.map(|(v, r)| {
+			.enumerate()
+			.map(|(command_index, (v, r))| {
 				crate::rendering::render_pass::allocate_render_command(
 					frame_allocator,
 					r.prepare(
 						frame,
 						v,
+						(command_index == 0).then_some(skinning_pass),
+						skinning_dispatches,
 						&self.scene.render_info.active_instances,
 						&self.scene.render_info.opaque_materials,
 						&self.scene.render_info.transparent_materials,
@@ -870,6 +1078,9 @@ pub struct ShaderMesh {
 	base_triangle_index: u32,
 	base_meshlet_index: u32,
 	meshlet_count: u32,
+	/// Base vertex in the frame-local deformation buffer, or `u32::MAX` for immutable geometry.
+	skinned_base_vertex_index: u32,
+	_padding: u32,
 }
 
 #[repr(C)]
@@ -960,6 +1171,15 @@ pub struct RenderEntity {
 	handle: Handle,
 	entity: EntityHandle<dyn RenderableMesh>,
 	shader_mesh: ShaderMesh,
+	skinning: Option<RenderSkin>,
+}
+
+/// The `RenderSkin` struct keeps one primitive's immutable skin source and palette mapping beside its scene instance.
+struct RenderSkin {
+	binding: Arc<SkinBinding>,
+	source_vertex_offset: u32,
+	vertex_count: u32,
+	skeleton_node_count: u32,
 }
 
 /// The `PendingRenderableInstance` struct associates a scene renderable with the mesh resource it is waiting for.
@@ -985,6 +1205,7 @@ pub struct Instance {
 pub struct RenderInfo {
 	instances: Vec<Instance>,
 	active_instances: Vec<Instance>,
+	skinning_dispatches: Vec<SkinningDispatch>,
 	opaque_materials: Vec<(String, u32, ghi::PipelineHandle)>,
 	transparent_materials: Vec<(String, u32, ghi::PipelineHandle)>,
 }
@@ -1000,6 +1221,8 @@ pub struct SinkState {
 pub struct MeshData {
 	// (material_id)
 	pub(crate) primitives: Vec<MeshPrimitive>,
+	/// Number of global pose matrices expected from a renderable using this mesh.
+	pub(crate) skeleton_node_count: u32,
 	/// The base position into the vertex buffer
 	pub(crate) vertex_offset: u32,
 	pub(crate) primitive_offset: u32,
@@ -1029,11 +1252,24 @@ pub struct MeshPrimitive {
 	/// The triangle offset.
 	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
 	pub(crate) triangle_offset: u32,
+	/// Base vertex in the compact immutable skinning source buffers.
+	pub(crate) skinning_source_vertex_offset: Option<u32>,
+	/// Number of vertices written by this primitive's compute dispatch.
+	pub(crate) skinning_vertex_count: u32,
+	/// Palette mapping retained after the resource reference leaves the upload worker.
+	pub(crate) skin: Option<Arc<SkinBinding>>,
 }
 
 #[cfg(test)]
 mod tests {
-	use super::ShaderMesh;
+	use std::sync::Arc;
+
+	use resource_management::resources::skeleton::SkinBinding;
+
+	use super::{
+		cached_skin_palette_base, reserve_deformed_vertex_range, resolve_skinning_pose, ShaderMesh, SkinningPaletteCacheEntry,
+	};
+	use crate::core::factory::Factory;
 	use crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE;
 
 	#[test]
@@ -1062,6 +1298,105 @@ mod tests {
 			std::mem::offset_of!(ShaderMesh, material_index),
 			expected_material_offset,
 			"Unexpected Visibility shader mesh material offset. The most likely cause is that the CPU-side mesh fields no longer match the shader struct."
+		);
+		assert_eq!(
+			std::mem::offset_of!(ShaderMesh, skinned_base_vertex_index),
+			expected_material_offset + 24,
+			"Unexpected Visibility skinned vertex offset. The most likely cause is that the CPU-side mesh fields no longer match the visibility and material shader structs."
+		);
+	}
+
+	/// Ensures instances that share immutable source vertices cannot overwrite each other's deformation output.
+	#[test]
+	fn active_skin_instances_receive_non_overlapping_vertex_ranges() {
+		let mut cursor = 0;
+		assert_eq!(reserve_deformed_vertex_range(&mut cursor, 3), 0);
+		assert_eq!(reserve_deformed_vertex_range(&mut cursor, 3), 3);
+		assert_eq!(reserve_deformed_vertex_range(&mut cursor, 5), 6);
+		assert_eq!(cursor, 11);
+	}
+
+	/// Ensures interleaved handles reuse one pose and keep their palettes instance-local.
+	#[test]
+	fn noncontiguous_primitives_reuse_their_frame_skinning_state() {
+		let mut factory = Factory::new();
+		let first_handle = factory.create(());
+		let second_handle = factory.create(());
+		let first_binding = Arc::new(SkinBinding { entries: Vec::new() });
+		let second_binding = Arc::new(SkinBinding { entries: Vec::new() });
+		let mut pose_cache = Vec::new();
+		let mut pose_scratch = Vec::new();
+		let mut pose_matrix_count = 0;
+		let mut pose_write_count = 0;
+		let first_pose = resolve_skinning_pose(
+			&mut pose_cache,
+			&mut pose_scratch,
+			&mut pose_matrix_count,
+			first_handle,
+			3,
+			|output| {
+				pose_write_count += 1;
+				output[0][3][0] = 42.0;
+				true
+			},
+		);
+		let second_pose = resolve_skinning_pose(
+			&mut pose_cache,
+			&mut pose_scratch,
+			&mut pose_matrix_count,
+			second_handle,
+			5,
+			|_| {
+				pose_write_count += 1;
+				false
+			},
+		);
+		let repeated_pose = resolve_skinning_pose(
+			&mut pose_cache,
+			&mut pose_scratch,
+			&mut pose_matrix_count,
+			first_handle,
+			3,
+			|_| {
+				pose_write_count += 1;
+				false
+			},
+		);
+		let palette_cache = vec![
+			SkinningPaletteCacheEntry {
+				handle: first_handle,
+				binding: Arc::as_ptr(&first_binding),
+				palette_base: 7,
+			},
+			SkinningPaletteCacheEntry {
+				handle: first_handle,
+				binding: Arc::as_ptr(&second_binding),
+				palette_base: 11,
+			},
+			SkinningPaletteCacheEntry {
+				handle: second_handle,
+				binding: Arc::as_ptr(&first_binding),
+				palette_base: 17,
+			},
+		];
+
+		assert_eq!(pose_write_count, 2);
+		assert_eq!(pose_matrix_count, 8);
+		assert_eq!(pose_scratch[first_pose.matrix_offset][3][0], 42.0);
+		assert!(!second_pose.available);
+		assert_eq!((repeated_pose.matrix_offset, repeated_pose.matrix_count), (0, 3));
+		assert!(repeated_pose.available);
+		assert_eq!(
+			cached_skin_palette_base(&palette_cache, first_handle, Arc::as_ptr(&first_binding)),
+			Some(7)
+		);
+		assert_eq!(
+			cached_skin_palette_base(&palette_cache, first_handle, Arc::as_ptr(&second_binding)),
+			Some(11)
+		);
+		assert_eq!(
+			cached_skin_palette_base(&palette_cache, second_handle, Arc::as_ptr(&first_binding)),
+			Some(17)
 		);
 	}
 }
@@ -1098,6 +1433,7 @@ use std::cell::RefCell;
 use std::collections::{hash_map::Entry, HashSet};
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use ::core::slice::SlicePattern;
 use ghi::context::{Context as _, ContextCreate as _};
@@ -1115,6 +1451,7 @@ use resource_management::asset::bema_asset_handler::ProgramGenerator;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::image::Image as ResourceImage;
 use resource_management::resources::mesh::{Mesh as ResourceMesh, Primitive};
+use resource_management::resources::skeleton::{identity_matrix4_columns, Matrix4Columns, SkinBinding};
 use resource_management::shader::besl::backends::glsl::GLSLShaderGenerator;
 use resource_management::shader::besl::backends::msl::MSLShaderGenerator;
 use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator};
@@ -1140,13 +1477,16 @@ use crate::rendering::pipelines::visibility::resource_manager::{
 	VisibilityResourceCompletion,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
+use crate::rendering::pipelines::visibility::skinning::{
+	SkinningDispatch, SkinningPass, SkinningSourceBuffers, MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES,
+};
 use crate::rendering::pipelines::visibility::{
 	ShaderMeshletData, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
 	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_BINDLESS_TEXTURES, MAX_INSTANCES,
 	MAX_LIGHTS, MAX_MATERIALS, MAX_MATERIAL_TEXTURES, MAX_MESHLETS, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
 	MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
-	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
-	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	SKINNED_VERTICES_BINDING, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::{FramePrepare, RenderPass, RenderPassBuilder, RenderPassReturn};
 use crate::rendering::renderable::mesh::MeshSource;

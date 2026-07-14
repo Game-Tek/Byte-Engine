@@ -5,6 +5,8 @@
 pub(super) struct GPUVertexDataManager {
 	/// Tracks buffer offsets and counts for various resources.
 	visibility_info: VisibilityInfo,
+	/// Tracks the compact immutable vertex ranges consumed by GPU skinning.
+	skinning_source_vertex_count: u32,
 
 	/// Vertex positions buffer for rendered meshes.
 	pub vertex_positions_buffer: ghi::BufferHandle<[(f32, f32, f32); MAX_VERTICES]>,
@@ -18,6 +20,14 @@ pub(super) struct GPUVertexDataManager {
 	pub primitive_indices_buffer: ghi::BufferHandle<[[u8; 3]; MAX_TRIANGLES]>,
 	/// Handle to the buffer where each meshlet's data is stored.
 	pub meshlets_data_buffer: ghi::BufferHandle<[ShaderMeshletData; MAX_MESHLETS]>,
+	/// Bind-pose positions packed only for primitives that participate in GPU skinning.
+	pub(super) skinning_rest_positions_buffer: ghi::BufferHandle<[[f32; 3]; MAX_VERTICES]>,
+	/// Bind-pose normals packed only for primitives that participate in GPU skinning.
+	pub(super) skinning_rest_normals_buffer: ghi::BufferHandle<[[f32; 3]; MAX_VERTICES]>,
+	/// Four palette-local u16 joint indices packed into eight bytes per skinned vertex.
+	pub(super) skinning_joints_buffer: ghi::BufferHandle<[[u16; 4]; MAX_VERTICES]>,
+	/// Four normalized linear-blend weights packed beside each skinned vertex's joints.
+	pub(super) skinning_weights_buffer: ghi::BufferHandle<[[f32; 4]; MAX_VERTICES]>,
 }
 
 impl GPUVertexDataManager {
@@ -52,15 +62,40 @@ impl GPUVertexDataManager {
 				.name("Visibility Meshlets Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
+		let skinning_rest_positions_buffer = context.build_buffer::<[[f32; 3]; MAX_VERTICES]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Visibility Skinning Rest Positions")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let skinning_rest_normals_buffer = context.build_buffer::<[[f32; 3]; MAX_VERTICES]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Visibility Skinning Rest Normals")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let skinning_joints_buffer = context.build_buffer::<[[u16; 4]; MAX_VERTICES]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Visibility Skinning Joints")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let skinning_weights_buffer = context.build_buffer::<[[f32; 4]; MAX_VERTICES]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Visibility Skinning Weights")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
 
 		Self {
 			visibility_info: VisibilityInfo::default(),
+			skinning_source_vertex_count: 0,
 			vertex_positions_buffer: vertex_positions_buffer_handle,
 			vertex_normals_buffer: vertex_normals_buffer_handle,
 			vertex_uvs_buffer: vertex_uv_buffer_handle,
 			vertex_indices_buffer: vertex_indices_buffer_handle,
 			primitive_indices_buffer: primitive_indices_buffer_handle,
 			meshlets_data_buffer,
+			skinning_rest_positions_buffer,
+			skinning_rest_normals_buffer,
+			skinning_joints_buffer,
+			skinning_weights_buffer,
 		}
 	}
 
@@ -111,6 +146,83 @@ impl GPUVertexDataManager {
 			return None;
 		};
 
+		let has_skinned_primitives = mesh_resource.primitives.iter().any(|primitive| primitive.skin.is_some());
+		let joints_stream = if has_skinned_primitives {
+			let Some(stream) = mesh_resource.vertex_stream(VertexSemantics::Joints).cloned() else {
+				log::error!(
+					"Skinned mesh is missing the joint-index stream. The most likely cause is that the mesh was baked without complete skinning vertex attributes."
+				);
+				return None;
+			};
+			Some(stream)
+		} else {
+			None
+		};
+		let weights_stream = if has_skinned_primitives {
+			let Some(stream) = mesh_resource.vertex_stream(VertexSemantics::Weights).cloned() else {
+				log::error!(
+					"Skinned mesh is missing the vertex-weight stream. The most likely cause is that the mesh was baked without complete skinning vertex attributes."
+				);
+				return None;
+			};
+			Some(stream)
+		} else {
+			None
+		};
+
+		// Validate every source range before recording any copies so malformed resources cannot partially consume compact skinning storage.
+		let mut additional_skinning_vertices = 0usize;
+		for (primitive_index, primitive) in mesh_resource.primitives.iter().enumerate() {
+			if primitive.skin.is_none() {
+				continue;
+			}
+
+			if validate_skinning_primitive_stream(
+				primitive,
+				primitive_index,
+				&positions_stream,
+				VertexSemantics::Position,
+				SKINNING_POSITION_STRIDE,
+			)
+			.is_err() || validate_skinning_primitive_stream(
+				primitive,
+				primitive_index,
+				&normals_stream,
+				VertexSemantics::Normal,
+				SKINNING_NORMAL_STRIDE,
+			)
+			.is_err() || validate_skinning_primitive_stream(
+				primitive,
+				primitive_index,
+				joints_stream
+					.as_ref()
+					.expect("A skinned mesh has a validated joint-index aggregate stream."),
+				VertexSemantics::Joints,
+				SKINNING_JOINTS_STRIDE,
+			)
+			.is_err() || validate_skinning_primitive_stream(
+				primitive,
+				primitive_index,
+				weights_stream
+					.as_ref()
+					.expect("A skinned mesh has a validated vertex-weight aggregate stream."),
+				VertexSemantics::Weights,
+				SKINNING_WEIGHTS_STRIDE,
+			)
+			.is_err()
+			{
+				return None;
+			}
+
+			let Some(updated_count) = additional_skinning_vertices.checked_add(primitive.vertex_count as usize) else {
+				log::error!(
+					"Skinned mesh vertex count is too large. The most likely cause is corrupted primitive metadata containing an overflowing vertex count."
+				);
+				return None;
+			};
+			additional_skinning_vertices = updated_count;
+		}
+
 		assert_eq!(meshlet_indices_stream.stride, 1, "Meshlet index stream is not u8");
 		assert_eq!(vertex_indices_stream.stride, 2, "Vertex index stream is not u16");
 		assert_eq!(
@@ -132,25 +244,60 @@ impl GPUVertexDataManager {
 		let triangle_offset = self.visibility_info.triangle_count as usize;
 
 		self.ensure_geometry_capacity(vertex_count, primitive_count, triangle_count, total_meshlet_count);
+		self.ensure_skinning_source_capacity(additional_skinning_vertices);
 
 		let mut meshlet_stream_buffer = vec![0u8; meshlets_stream.size];
 
-		let (vertex_positions_staging_offset, vertex_positions_buffer) = slice.take_with_offset(positions_stream.size);
-		let (vertex_normals_staging_offset, vertex_normals_buffer) = slice.take_with_offset(normals_stream.size);
+		// Mesh uploads can follow byte-packed index data, so sources reused by GPU skinning begin on transfer-compatible boundaries.
+		let (vertex_positions_staging_offset, vertex_positions_buffer) =
+			slice.take_with_offset_aligned(positions_stream.size, std::mem::align_of::<f32>());
+		let (vertex_normals_staging_offset, vertex_normals_buffer) =
+			slice.take_with_offset_aligned(normals_stream.size, std::mem::align_of::<f32>());
 		let (vertex_uv_staging_offset, vertex_uv_buffer) = slice.take_with_offset(uvs_stream.size);
 		let (vertex_indices_staging_offset, vertex_indices_buffer) = slice.take_with_offset(vertex_indices_stream.size);
 		let (primitive_indices_staging_offset, primitive_indices_buffer) = slice.take_with_offset(meshlet_indices_stream.size);
+		let skinning_staging = match (&joints_stream, &weights_stream) {
+			(Some(joints_stream), Some(weights_stream)) => {
+				let (joints_offset, joints_buffer) =
+					slice.take_with_offset_aligned(joints_stream.size, std::mem::align_of::<u32>());
+				let (weights_offset, weights_buffer) =
+					slice.take_with_offset_aligned(weights_stream.size, std::mem::align_of::<f32>());
+				Some((joints_offset, joints_buffer, weights_offset, weights_buffer))
+			}
+			_ => None,
+		};
+		let skinning_staging_offsets = skinning_staging
+			.as_ref()
+			.map(|(joints_offset, _, weights_offset, _)| (*joints_offset, *weights_offset));
 
 		let mut buffer_allocator = utils::BufferAllocator::new(&mut meshlet_stream_buffer);
 
-		let streams = vec![
-			resource_management::stream::StreamMut::new("Vertex.Position", vertex_positions_buffer),
-			resource_management::stream::StreamMut::new("Vertex.Normal", vertex_normals_buffer),
-			resource_management::stream::StreamMut::new("Vertex.UV", vertex_uv_buffer),
-			resource_management::stream::StreamMut::new("VertexIndices", vertex_indices_buffer),
-			resource_management::stream::StreamMut::new("MeshletIndices", primitive_indices_buffer),
-			resource_management::stream::StreamMut::new("Meshlets", buffer_allocator.take(meshlets_stream.size)),
-		];
+		let mut streams = Vec::with_capacity(if has_skinned_primitives { 8 } else { 6 });
+		streams.push(resource_management::stream::StreamMut::new(
+			"Vertex.Position",
+			vertex_positions_buffer,
+		));
+		streams.push(resource_management::stream::StreamMut::new(
+			"Vertex.Normal",
+			vertex_normals_buffer,
+		));
+		streams.push(resource_management::stream::StreamMut::new("Vertex.UV", vertex_uv_buffer));
+		streams.push(resource_management::stream::StreamMut::new(
+			"VertexIndices",
+			vertex_indices_buffer,
+		));
+		streams.push(resource_management::stream::StreamMut::new(
+			"MeshletIndices",
+			primitive_indices_buffer,
+		));
+		streams.push(resource_management::stream::StreamMut::new(
+			"Meshlets",
+			buffer_allocator.take(meshlets_stream.size),
+		));
+		if let Some((_, joints_buffer, _, weights_buffer)) = skinning_staging {
+			streams.push(resource_management::stream::StreamMut::new("Vertex.Joints", joints_buffer));
+			streams.push(resource_management::stream::StreamMut::new("Vertex.Weights", weights_buffer));
+		}
 
 		let Ok(load_target) = resource_request.load(streams.into()) else {
 			log::warn!("Failed to load mesh data");
@@ -196,12 +343,7 @@ impl GPUVertexDataManager {
 		]);
 
 		let Reference {
-			resource: Mesh {
-				vertex_components,
-				streams,
-				primitives,
-				..
-			},
+			resource: Mesh { primitives, .. },
 			..
 		} = resource_request;
 
@@ -214,8 +356,15 @@ impl GPUVertexDataManager {
 			})
 			.collect::<Vec<_>>();
 
+		let skinning_rest_positions_buffer = self.skinning_rest_positions_buffer;
+		let skinning_rest_normals_buffer = self.skinning_rest_normals_buffer;
+		let skinning_joints_buffer = self.skinning_joints_buffer;
+		let skinning_weights_buffer = self.skinning_weights_buffer;
+		let skinning_source_start = self.skinning_source_vertex_count;
+		let mut skinning_source_vertex_cursor = skinning_source_start;
+
 		let meshlets_per_primitive = primitives
-			.iter_mut()
+			.iter()
 			.zip(vcps.iter())
 			.scan(
 				(0, 0, 0),
@@ -224,6 +373,65 @@ impl GPUVertexDataManager {
 					let primitive_offset = *mesh_primitive_counter;
 					let triangle_offset = *mesh_triangle_counter;
 					let meshlet_offset = *mesh_meshlet_counter;
+
+					let (skinning_source_vertex_offset, skinning_vertex_count) = if primitive.skin.is_some() {
+						let position_stream = primitive
+							.stream(Streams::Vertices(VertexSemantics::Position))
+							.expect("Skinned primitive position metadata was validated before recording copies.");
+						let normal_stream = primitive
+							.stream(Streams::Vertices(VertexSemantics::Normal))
+							.expect("Skinned primitive normal metadata was validated before recording copies.");
+						let joints_stream = primitive
+							.stream(Streams::Vertices(VertexSemantics::Joints))
+							.expect("Skinned primitive joint metadata was validated before recording copies.");
+						let weights_stream = primitive
+							.stream(Streams::Vertices(VertexSemantics::Weights))
+							.expect("Skinned primitive weight metadata was validated before recording copies.");
+						let (joints_staging_offset, weights_staging_offset) = skinning_staging_offsets
+							.expect("Skinned primitive staging streams were allocated before loading the resource.");
+
+						let source_vertex_offset = skinning_source_vertex_cursor;
+						let destination_vertex_offset = source_vertex_offset as usize;
+
+						// A shared compact vertex index addresses all four immutable inputs, avoiding per-stream remapping in the compute pass.
+						c.copy_buffers(&[
+							ghi::BufferCopyDescriptor::new(
+								staging_data_buffer,
+								vertex_positions_staging_offset + position_stream.offset,
+								skinning_rest_positions_buffer.into(),
+								destination_vertex_offset * SKINNING_POSITION_STRIDE,
+								position_stream.size,
+							),
+							ghi::BufferCopyDescriptor::new(
+								staging_data_buffer,
+								vertex_normals_staging_offset + normal_stream.offset,
+								skinning_rest_normals_buffer.into(),
+								destination_vertex_offset * SKINNING_NORMAL_STRIDE,
+								normal_stream.size,
+							),
+							ghi::BufferCopyDescriptor::new(
+								staging_data_buffer,
+								joints_staging_offset + joints_stream.offset,
+								skinning_joints_buffer.into(),
+								destination_vertex_offset * SKINNING_JOINTS_STRIDE,
+								joints_stream.size,
+							),
+							ghi::BufferCopyDescriptor::new(
+								staging_data_buffer,
+								weights_staging_offset + weights_stream.offset,
+								skinning_weights_buffer.into(),
+								destination_vertex_offset * SKINNING_WEIGHTS_STRIDE,
+								weights_stream.size,
+							),
+						]);
+
+						skinning_source_vertex_cursor = skinning_source_vertex_cursor
+							.checked_add(primitive.vertex_count)
+							.expect("Validated skinning source vertex counts fit in the compact buffer cursor.");
+						(Some(source_vertex_offset), primitive.vertex_count)
+					} else {
+						(None, 0)
+					};
 
 					let meshlets = if let Some(stream) = primitive.meshlet_stream() {
 						let m = load_target.stream("Meshlets").unwrap();
@@ -274,19 +482,21 @@ impl GPUVertexDataManager {
 							vertex_offset,
 							primitive_offset,
 							triangle_offset,
+							skinning_source_vertex_offset,
+							skinning_vertex_count,
 						},
 						meshlets,
-						primitive,
 					)
 						.into()
 				},
 			)
 			.collect::<Vec<_>>();
 
-		let meshlets_per_primitive = meshlets_per_primitive
-			.into_iter()
-			.map(|(mp, meshlets, primitive)| (mp, meshlets))
-			.collect::<Vec<_>>();
+		debug_assert_eq!(
+			skinning_source_vertex_cursor - skinning_source_start,
+			additional_skinning_vertices as u32
+		);
+		self.skinning_source_vertex_count = skinning_source_vertex_cursor;
 
 		let meshlets_data = meshlets_per_primitive
 			.iter()
@@ -461,6 +671,8 @@ impl GPUVertexDataManager {
 				vertex_offset: 0,
 				primitive_offset: 0,
 				triangle_offset: 0,
+				skinning_source_vertex_offset: None,
+				skinning_vertex_count: 0,
 			}],
 		};
 
@@ -653,9 +865,94 @@ impl GPUVertexDataManager {
 			);
 		}
 	}
+
+	/// Rejects uploads that cannot fit in the compact immutable skinning source buffers.
+	fn ensure_skinning_source_capacity(&self, additional_vertices: usize) {
+		let Some(total_vertices) = (self.skinning_source_vertex_count as usize).checked_add(additional_vertices) else {
+			panic!(
+				"Visibility skinning source vertex count overflowed. The most likely cause is corrupted mesh metadata containing an invalid vertex count."
+			);
+		};
+		if total_vertices > MAX_VERTICES {
+			panic!(
+				"Visibility skinning source buffer limit exceeded. The most likely cause is that the scene contains more skinned vertex data than the visibility pipeline supports."
+			);
+		}
+	}
 }
 
 const RESOURCE_MESHLET_STRIDE: usize = 52;
+const SKINNING_POSITION_STRIDE: usize = std::mem::size_of::<[f32; 3]>();
+const SKINNING_NORMAL_STRIDE: usize = std::mem::size_of::<[f32; 3]>();
+const SKINNING_JOINTS_STRIDE: usize = std::mem::size_of::<[u16; 4]>();
+const SKINNING_WEIGHTS_STRIDE: usize = std::mem::size_of::<[f32; 4]>();
+
+const _: () = {
+	assert!(SKINNING_POSITION_STRIDE == 12);
+	assert!(SKINNING_NORMAL_STRIDE == 12);
+	assert!(SKINNING_JOINTS_STRIDE == 8);
+	assert!(SKINNING_WEIGHTS_STRIDE == 16);
+};
+
+/// Validates a primitive-local skinning stream against its loaded aggregate stream.
+fn validate_skinning_primitive_stream(
+	primitive: &ResourcePrimitive,
+	primitive_index: usize,
+	aggregate_stream: &ResourceStream,
+	semantic: VertexSemantics,
+	expected_stride: usize,
+) -> Result<(), ()> {
+	if aggregate_stream.stride != expected_stride || !aggregate_stream.size.is_multiple_of(expected_stride) {
+		log::error!(
+			"Skinned mesh {semantic:?} stream has invalid aggregate metadata. The most likely cause is that the mesh was baked with an incompatible vertex format; expected stride {expected_stride}, found stride {} and size {}.",
+			aggregate_stream.stride,
+			aggregate_stream.size
+		);
+		return Err(());
+	}
+
+	let Some(primitive_stream) = primitive.stream(Streams::Vertices(semantic)) else {
+		log::error!(
+			"Skinned primitive {primitive_index} is missing its {semantic:?} stream. The most likely cause is that the mesh was baked without complete per-primitive skinning metadata."
+		);
+		return Err(());
+	};
+
+	let Some(expected_size) = (primitive.vertex_count as usize).checked_mul(expected_stride) else {
+		log::error!(
+			"Skinned primitive {primitive_index} has invalid {semantic:?} stream metadata. The most likely cause is an overflowing vertex count in the baked mesh."
+		);
+		return Err(());
+	};
+	if primitive_stream.stride != expected_stride
+		|| primitive_stream.size != expected_size
+		|| !primitive_stream.offset.is_multiple_of(expected_stride)
+	{
+		log::error!(
+			"Skinned primitive {primitive_index} has invalid {semantic:?} stream metadata. The most likely cause is that its offset, stride, or byte size does not match its {} vertices; expected vertex-aligned offset, stride {expected_stride}, and size {expected_size}, found offset {}, stride {}, and size {}.",
+			primitive.vertex_count,
+			primitive_stream.offset,
+			primitive_stream.stride,
+			primitive_stream.size
+		);
+		return Err(());
+	}
+
+	let Some(stream_end) = primitive_stream.offset.checked_add(primitive_stream.size) else {
+		log::error!(
+			"Skinned primitive {primitive_index} has an invalid {semantic:?} stream range. The most likely cause is an overflowing byte offset in the baked mesh."
+		);
+		return Err(());
+	};
+	if stream_end > aggregate_stream.size {
+		log::error!(
+			"Skinned primitive {primitive_index} has an out-of-bounds {semantic:?} stream range. The most likely cause is that its primitive-local range does not refer to the baked aggregate stream."
+		);
+		return Err(());
+	}
+
+	Ok(())
+}
 
 /// The `ResourceMeshletData` struct carries meshlet metadata decoded from the packed resource stream.
 #[derive(Clone, Copy)]
@@ -722,6 +1019,7 @@ pub struct MeshData {
 	pub acceleration_structure: Option<ghi::BottomLevelAccelerationStructureHandle>,
 }
 
+/// The `MeshPrimitive` struct locates one primitive's geometry and optional skinning inputs in visibility buffers.
 #[derive(Debug, Clone)]
 pub struct MeshPrimitive {
 	/// The meshlet count.
@@ -738,12 +1036,20 @@ pub struct MeshPrimitive {
 	/// The triangle offset.
 	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
 	pub triangle_offset: u32,
+	/// The first vertex in the compact immutable skinning source buffers, when this primitive is skinned.
+	pub skinning_source_vertex_offset: Option<u32>,
+	/// The number of vertices the skinning compute pass writes for this primitive.
+	pub skinning_vertex_count: u32,
 }
 
 use std::collections::hash_map::Entry;
 
 use ghi::{command_buffer::CommandBufferRecording as _, context::ContextCreate as _};
-use resource_management::{resources::mesh::Mesh, Reference};
+use resource_management::{
+	resources::mesh::{Mesh, Primitive as ResourcePrimitive},
+	types::{Stream as ResourceStream, Streams, VertexSemantics},
+	Reference,
+};
 use utils::as_byte_slice;
 
 use crate::rendering::{

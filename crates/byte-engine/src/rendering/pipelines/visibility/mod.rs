@@ -9,6 +9,7 @@ pub mod resource_manager;
 pub mod scene_manager;
 #[doc(hidden)]
 pub mod shader_generator;
+pub(crate) mod skinning;
 
 pub use pipeline_manager::VisibilityPipelineManager;
 use resource_management::shader::{
@@ -62,6 +63,13 @@ pub(crate) const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi
 	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
 )
 .buffer_stride(12)
+.buffer_read_only(true);
+pub(crate) const SKINNED_VERTICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
+	4,
+	ghi::descriptors::DescriptorType::StorageBuffer,
+	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+)
+.buffer_stride(32)
 .buffer_read_only(true);
 pub(crate) const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
 	5,
@@ -245,8 +253,8 @@ struct Mesh {{
 	uint base_triangle_index;
 	uint base_meshlet_index;
 	uint meshlet_count;
+	uint skinned_base_vertex_index;
 	uint padding0;
-	uint padding1;
 }};
 
 struct Meshlet {{
@@ -283,6 +291,15 @@ struct _vertex_normals {{
 	packed_float3 normals[1];
 }};
 
+struct SkinnedVertex {{
+	float4 position;
+	float4 normal;
+}};
+
+struct _skinned_vertices {{
+	SkinnedVertex vertices[1];
+}};
+
 struct _vertex_uvs {{
 	packed_float2 uvs[1];
 }};
@@ -300,10 +317,11 @@ struct _set0 {{
 	constant _meshes* meshes [[id(1)]];
 	constant _vertex_positions* vertex_positions [[id(2)]];
 	constant _vertex_normals* vertex_normals [[id(3)]];
-	constant _vertex_uvs* vertex_uvs [[id(4)]];
-	constant _vertex_indices* vertex_indices [[id(5)]];
-	constant _primitive_indices* primitive_indices [[id(6)]];
-	constant _meshlets* meshlets [[id(7)]];
+	device const _skinned_vertices* skinned_vertices [[id(4)]];
+	constant _vertex_uvs* vertex_uvs [[id(5)]];
+	constant _vertex_indices* vertex_indices [[id(6)]];
+	constant _primitive_indices* primitive_indices [[id(7)]];
+	constant _meshlets* meshlets [[id(8)]];
 }};
 
 static void extract_frustum_planes(float4x4 matrix, thread float4* planes) {{
@@ -403,7 +421,8 @@ void besl_task_main(
 		uint meshlet_index = mesh.base_meshlet_index + meshlet_thread_index;
 		Meshlet meshlet = set0.meshlets->meshlets[meshlet_index];
 
-		if (meshlet_is_visible(mesh, meshlet, view)) {{
+		// Bind-pose meshlet bounds are not conservative for animation, so posed instances skip task culling.
+		if (mesh.skinned_base_vertex_index != 0xffffffffu || meshlet_is_visible(mesh, meshlet, view)) {{
 			uint payload_index = atomic_fetch_add_explicit(&visible_count, 1u, memory_order_relaxed);
 			payload.meshlet_indices[payload_index] = meshlet_index;
 		}}
@@ -456,8 +475,8 @@ struct Mesh {{
 	uint base_triangle_index;
 	uint base_meshlet_index;
 	uint meshlet_count;
+	uint skinned_base_vertex_index;
 	uint padding0;
-	uint padding1;
 }};
 
 struct Meshlet {{
@@ -490,6 +509,15 @@ struct _vertex_normals {{
 	packed_float3 normals[{max_vertices}];
 }};
 
+struct SkinnedVertex {{
+	float4 position;
+	float4 normal;
+}};
+
+struct _skinned_vertices {{
+	SkinnedVertex vertices[{max_vertices}];
+}};
+
 struct _vertex_uvs {{
 	packed_float2 uvs[{max_vertices}];
 }};
@@ -511,10 +539,11 @@ struct _set0 {{
 	constant _meshes* meshes [[id(1)]];
 	constant _vertex_positions* vertex_positions [[id(2)]];
 	constant _vertex_normals* vertex_normals [[id(3)]];
-	constant _vertex_uvs* vertex_uvs [[id(4)]];
-	constant _vertex_indices* vertex_indices [[id(5)]];
-	constant _primitive_indices* primitive_indices [[id(6)]];
-	constant _meshlets* meshlets [[id(7)]];
+	device const _skinned_vertices* skinned_vertices [[id(4)]];
+	constant _vertex_uvs* vertex_uvs [[id(5)]];
+	constant _vertex_indices* vertex_indices [[id(6)]];
+	constant _primitive_indices* primitive_indices [[id(7)]];
+	constant _meshlets* meshlets [[id(8)]];
 }};
 
 [[mesh]] void besl_main(
@@ -537,9 +566,13 @@ struct _set0 {{
 	}}
 
 	if (primitive_index < uint(meshlet.primitive_count)) {{
-		uint vertex_index = mesh.base_vertex_index
-			+ uint(set0.vertex_indices->vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]);
-		float4 position = float4(float3(set0.vertex_positions->positions[vertex_index]), 1.0);
+		uint relative_vertex_index = uint(set0.vertex_indices->vertex_indices[
+			mesh.base_primitive_index + meshlet.primitive_offset + primitive_index
+		]);
+		uint vertex_index = mesh.base_vertex_index + relative_vertex_index;
+		float4 position = mesh.skinned_base_vertex_index == 0xffffffffu
+			? float4(float3(set0.vertex_positions->positions[vertex_index]), 1.0)
+			: set0.skinned_vertices->vertices[mesh.skinned_base_vertex_index + relative_vertex_index].position;
 		out_mesh.set_vertex(primitive_index, VertexOutput{{ .position = view.view_projection * float4(model * position, 1.0) }});
 	}}
 
@@ -643,6 +676,11 @@ struct MeshPrimitive {{
 	uint primitive_index : PRIMITIVE_INDEX;
 }};
 
+struct SkinnedVertex {{
+	float4 position;
+	float4 normal;
+}};
+
 struct Mesh {{
 	float4x3 model;
 	uint material_index;
@@ -651,8 +689,8 @@ struct Mesh {{
 	uint base_triangle_index;
 	uint base_meshlet_index;
 	uint meshlet_count;
+	uint skinned_base_vertex_index;
 	uint padding0;
-	uint padding1;
 }};
 
 struct Meshlet {{
@@ -682,6 +720,7 @@ StructuredBuffer<View> views : register(t0, space0);
 StructuredBuffer<Mesh> meshes : register(t1, space0);
 StructuredBuffer<float3> vertex_positions : register(t2, space0);
 StructuredBuffer<float3> vertex_normals : register(t3, space0);
+StructuredBuffer<SkinnedVertex> skinned_vertices : register(t4, space0);
 StructuredBuffer<float2> vertex_uvs : register(t5, space0);
 StructuredBuffer<uint> vertex_indices : register(t6, space0);
 StructuredBuffer<uint> primitive_indices : register(t7, space0);
@@ -750,8 +789,11 @@ void main(
 	SetMeshOutputCounts(meshlet.primitive_count, meshlet.triangle_count);
 
 	if (thread_index < meshlet.primitive_count) {{
-		uint vertex_index = mesh.base_vertex_index + load_u16(vertex_indices, mesh.base_primitive_index + meshlet.primitive_offset + thread_index);
-		float3 position = vertex_positions[vertex_index];
+		uint relative_vertex_index = load_u16(vertex_indices, mesh.base_primitive_index + meshlet.primitive_offset + thread_index);
+		uint vertex_index = mesh.base_vertex_index + relative_vertex_index;
+		float3 position = mesh.skinned_base_vertex_index == 0xffffffffu
+			? vertex_positions[vertex_index]
+			: skinned_vertices[mesh.skinned_base_vertex_index + relative_vertex_index].position.xyz;
 		vertices[thread_index].position = mul(view_projection, transform_position(mesh, position));
 	}}
 
@@ -987,8 +1029,8 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 				besl::Node::member("base_triangle_index", u32_t.clone()).into(),
 				besl::Node::member("base_meshlet_index", u32_t.clone()).into(),
 				besl::Node::member("meshlet_count", u32_t.clone()).into(),
+				besl::Node::member("skinned_base_vertex_index", u32_t.clone()).into(),
 				besl::Node::member("padding0", u32_t.clone()).into(),
-				besl::Node::member("padding1", u32_t.clone()).into(),
 			],
 		)
 		.into(),
@@ -2368,8 +2410,8 @@ mod tests {
 		build_material_count_program, build_material_offset_program, build_mesh_program_from_source,
 		build_pixel_mapping_program, get_shadow_pass_mesh_msl_source, get_visibility_pass_mesh_hlsl_source,
 		get_visibility_pass_mesh_msl_source, get_visibility_pass_task_msl_source, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
-		PRIMITIVE_INDICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING,
-		VIEWS_DATA_BINDING,
+		PRIMITIVE_INDICES_BINDING, SKINNED_VERTICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 	};
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
@@ -2382,6 +2424,7 @@ mod tests {
 	const PIXEL_MAPPING_SLOT: DescriptorSlot = DescriptorSlot::new(1, 4);
 	const INSTANCE_INDEX_SLOT: DescriptorSlot = DescriptorSlot::new(1, 7);
 	const VERTEX_POSITIONS_SLOT: DescriptorSlot = DescriptorSlot::new(0, 2);
+	const SKINNED_VERTICES_SLOT: DescriptorSlot = DescriptorSlot::new(0, 4);
 	const VERTEX_INDICES_SLOT: DescriptorSlot = DescriptorSlot::new(0, 6);
 	const PRIMITIVE_INDICES_SLOT: DescriptorSlot = DescriptorSlot::new(0, 7);
 	const MESHLETS_SLOT: DescriptorSlot = DescriptorSlot::new(0, 8);
@@ -2434,6 +2477,7 @@ mod tests {
 		besl::vm::Buffer,
 		besl::vm::Buffer,
 		besl::vm::Buffer,
+		besl::vm::Buffer,
 	) {
 		let mut views = buffer(program, VIEWS_SLOT);
 		views
@@ -2455,6 +2499,7 @@ mod tests {
 			("base_triangle_index", 0),
 			("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
 			("meshlet_count", 1),
+			("skinned_base_vertex_index", u32::MAX),
 		] {
 			meshes
 				.write_indexed_field("meshes", FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
@@ -2467,6 +2512,7 @@ mod tests {
 				.write_indexed("positions", index, Value::Vec3F(position))
 				.expect("Failed to initialize a mesh vertex. The most likely cause is a drifted position layout.");
 		}
+		let skinned_vertices = buffer(program, SKINNED_VERTICES_SLOT);
 
 		let mut vertex_indices = buffer(program, VERTEX_INDICES_SLOT);
 		let mut primitive_indices = buffer(program, PRIMITIVE_INDICES_SLOT);
@@ -2491,14 +2537,51 @@ mod tests {
 				.expect("Failed to initialize a meshlet field. The most likely cause is a drifted Meshlet layout.");
 		}
 
-		(views, meshes, positions, vertex_indices, primitive_indices, meshlets)
+		(
+			views,
+			meshes,
+			positions,
+			skinned_vertices,
+			vertex_indices,
+			primitive_indices,
+			meshlets,
+		)
 	}
 
 	/// Executes one production mesh main and verifies its complete one-triangle output contract.
-	fn assert_identity_triangle_mesh_program(program: besl::NodeReference, has_view_index: bool) {
+	fn assert_triangle_mesh_program(
+		program: besl::NodeReference,
+		has_view_index: bool,
+		skinned_positions: Option<[[f32; 4]; 3]>,
+	) {
 		let program = crate::rendering::shader_vm_test::compile(program);
-		let (mut views, mut meshes, mut positions, mut vertex_indices, mut primitive_indices, mut meshlets) =
-			mesh_triangle_buffers(&program);
+		let (
+			mut views,
+			mut meshes,
+			mut positions,
+			mut skinned_vertices,
+			mut vertex_indices,
+			mut primitive_indices,
+			mut meshlets,
+		) = mesh_triangle_buffers(&program);
+		if let Some(skinned_positions) = skinned_positions {
+			const SKINNED_BASE_VERTEX: usize = 7;
+			meshes
+				.write_indexed_field(
+					"meshes",
+					FIXTURE_INSTANCE_INDEX,
+					"skinned_base_vertex_index",
+					Value::U32(SKINNED_BASE_VERTEX as u32),
+				)
+				.expect("Failed to select skinned mesh vertices. The most likely cause is a drifted Mesh layout.");
+			for (index, position) in skinned_positions.into_iter().enumerate() {
+				skinned_vertices
+					.write_indexed_field("vertices", SKINNED_BASE_VERTEX + index, "position", Value::Vec4F(position))
+					.expect(
+						"Failed to initialize a skinned mesh vertex. The most likely cause is a drifted SkinnedVertex layout.",
+					);
+			}
+		}
 		let push_constant_layout = program
 			.push_constant_layout()
 			.expect(
@@ -2523,6 +2606,7 @@ mod tests {
 			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 			descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
 			descriptors.bind_buffer(VERTEX_POSITIONS_SLOT, &mut positions);
+			descriptors.bind_buffer(SKINNED_VERTICES_SLOT, &mut skinned_vertices);
 			descriptors.bind_buffer(VERTEX_INDICES_SLOT, &mut vertex_indices);
 			descriptors.bind_buffer(PRIMITIVE_INDICES_SLOT, &mut primitive_indices);
 			descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
@@ -2545,10 +2629,9 @@ mod tests {
 
 		assert_eq!(mesh_outputs.vertex_count(), 3);
 		assert_eq!(mesh_outputs.primitive_count(), 1);
-		for (index, expected) in [[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]]
-			.into_iter()
-			.enumerate()
-		{
+		let expected_positions =
+			skinned_positions.unwrap_or([[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]]);
+		for (index, expected) in expected_positions.into_iter().enumerate() {
 			let actual = mesh_outputs
 				.vertex_position(index)
 				.expect("Missing mesh vertex output. The most likely cause is that a mesh invocation did not write its lane.");
@@ -2568,13 +2651,23 @@ mod tests {
 	/// Verifies visibility mesh output geometry and metadata through the BESL VM.
 	#[test]
 	fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
-		assert_identity_triangle_mesh_program(visibility_mesh_program(), false);
+		assert_triangle_mesh_program(visibility_mesh_program(), false, None);
+	}
+
+	/// Verifies that posed instances source raster positions from their frame-local deformation range.
+	#[test]
+	fn visibility_mesh_main_reads_skinned_positions() {
+		assert_triangle_mesh_program(
+			visibility_mesh_program(),
+			false,
+			Some([[2.0, 3.0, 4.0, 1.0], [5.0, 6.0, 7.0, 1.0], [8.0, 9.0, 10.0, 1.0]]),
+		);
 	}
 
 	/// Verifies shadow mesh output geometry and metadata through the BESL VM.
 	#[test]
 	fn shadow_mesh_main_emits_identity_triangle_and_metadata() {
-		assert_identity_triangle_mesh_program(shadow_mesh_program(), true);
+		assert_triangle_mesh_program(shadow_mesh_program(), true, None);
 	}
 
 	/// Creates the minimum camera data shared by the GTAO shader fixtures.
@@ -2970,6 +3063,7 @@ mod tests {
 				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				SKINNED_VERTICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -3019,6 +3113,7 @@ mod tests {
 				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				SKINNED_VERTICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
@@ -3112,6 +3207,7 @@ mod tests {
 				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				SKINNED_VERTICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
 				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),

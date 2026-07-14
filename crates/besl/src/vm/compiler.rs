@@ -302,6 +302,9 @@ impl<'a> Compiler<'a> {
 						.ok_or(VmError::UninitializedLocal { local })?;
 					let register = self.compile_value_expression(&right, &value_type, descriptor_layouts)?;
 					self.instructions.push(Instruction::StoreLocal { local, register });
+					// Later references resolve to the most recent assignment, so every assignment must remain an alias for the local slot.
+					self.locals_by_reference.insert(statement.clone(), local);
+					self.locals_by_reference.insert(left, local);
 					Ok(())
 				} else {
 					let target = self.resolve_output_access(&left, descriptor_layouts)?;
@@ -425,8 +428,9 @@ impl<'a> Compiler<'a> {
 				self.instructions.push(Instruction::LoadLiteral { register, value });
 				Ok(register)
 			}
-			Nodes::Expression(Expressions::Member { source, .. }) => {
+			Nodes::Expression(Expressions::Member { source, name }) => {
 				let source = source.clone();
+				let member_name = name.clone();
 				drop(borrowed);
 
 				if let Some(local) = self.locals_by_reference.get(&source).copied() {
@@ -527,7 +531,10 @@ impl<'a> Compiler<'a> {
 						}
 					};
 					let value = source_value.ok_or_else(|| VmError::UnsupportedExpression {
-						message: format!("Unsupported member source: {}", describe_node(source.borrow().node())),
+						message: format!(
+							"Unsupported source for member `{member_name}`. The member resolves to a {} node that the VM cannot load.",
+							describe_node(source.borrow().node())
+						),
 					})??;
 					if !value.matches_type(expected_type) {
 						return Err(VmError::TypeMismatch {

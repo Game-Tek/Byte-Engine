@@ -72,7 +72,7 @@ pub use lights::{DirectionalLight, Light, LightClasses, Lights, PointLight};
 pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, SimpleRenderPass, VisibilityPipelineManager};
 pub use render_pass::{FramePrepare, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassReturn, RenderToResult};
-pub use renderable::mesh::RenderableMesh;
+pub use renderable::mesh::{RenderableMesh, SkinningMatrix};
 pub use renderer::{RenderTargets, Renderer, Settings};
 pub use sink::Sink;
 pub use view::View;

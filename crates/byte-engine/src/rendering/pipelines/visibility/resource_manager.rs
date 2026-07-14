@@ -404,25 +404,49 @@ impl VisibilityPipelineResourceManager {
 			.ok_or(())?;
 
 		let resource = resource.resource();
+		// One shared binding per resource skin lets primitives of the same instance reuse an uploaded palette.
+		let skin_bindings = resource.skins.iter().cloned().map(Arc::new).collect::<Vec<_>>();
 		let primitives = resource
 			.primitives
 			.iter()
 			.zip(mesh.primitives.iter())
-			.map(|(resource_primitive, primitive)| {
+			.enumerate()
+			.map(|(primitive_index, (resource_primitive, primitive))| {
 				let material_index = self.request_material(&resource_primitive.material.id);
-				crate::rendering::pipelines::visibility::pipeline_manager::MeshPrimitive {
+				let skin = match resource_primitive.skin {
+					Some(skin_index) => {
+						let Some(binding) = skin_bindings.get(skin_index as usize) else {
+							log::error!(
+								"Visibility mesh skin index is invalid for primitive {primitive_index}: {skin_index}. The most likely cause is that mesh validation was bypassed or the resource data is corrupted."
+							);
+							return Err(());
+						};
+						Some(binding.clone())
+					}
+					None => None,
+				};
+
+				Ok(crate::rendering::pipelines::visibility::pipeline_manager::MeshPrimitive {
 					material_index,
 					meshlet_count: primitive.meshlet_count,
 					meshlet_offset: primitive.meshlet_offset,
 					vertex_offset: primitive.vertex_offset,
 					primitive_offset: primitive.primitive_offset,
 					triangle_offset: primitive.triangle_offset,
-				}
+					skinning_source_vertex_offset: primitive.skinning_source_vertex_offset,
+					skinning_vertex_count: primitive.skinning_vertex_count,
+					skin,
+				})
 			})
-			.collect::<Vec<_>>();
+			.collect::<Result<Vec<_>, ()>>()?;
 
 		Ok(crate::rendering::pipelines::visibility::pipeline_manager::MeshData {
 			primitives,
+			skeleton_node_count: resource
+				.skeleton
+				.as_ref()
+				.map(|skeleton| skeleton.resource().nodes.len() as u32)
+				.unwrap_or(0),
 			vertex_offset: mesh.vertex_offset,
 			primitive_offset: mesh.primitive_offset,
 			triangle_offset: mesh.triangle_offset,
@@ -448,12 +472,16 @@ impl VisibilityPipelineResourceManager {
 					vertex_offset: primitive.vertex_offset,
 					primitive_offset: primitive.primitive_offset,
 					triangle_offset: primitive.triangle_offset,
+					skinning_source_vertex_offset: primitive.skinning_source_vertex_offset,
+					skinning_vertex_count: primitive.skinning_vertex_count,
+					skin: None,
 				},
 			)
 			.collect();
 
 		Ok(crate::rendering::pipelines::visibility::pipeline_manager::MeshData {
 			primitives,
+			skeleton_node_count: 0,
 			vertex_offset: mesh.vertex_offset,
 			primitive_offset: mesh.primitive_offset,
 			triangle_offset: mesh.triangle_offset,

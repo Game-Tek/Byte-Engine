@@ -16,10 +16,21 @@ use crate::{
 	space::Transformable,
 };
 
-/// The [`RenderableMesh`] trait exposes geometry and transform state to scene
-/// pipeline managers.
+/// One column-major transform in the layout consumed by visibility skinning.
+pub type SkinningMatrix = [[f32; 4]; 4];
+
+/// The [`RenderableMesh`] trait supplies geometry, transform state, and optional poses to scene pipeline managers.
 pub trait RenderableMesh: Transformable {
 	fn get_mesh(&self) -> &MeshSource;
+
+	/// Writes one global transform per skeleton node when this instance has an evaluated pose.
+	///
+	/// Implementations should fill the complete slice and return `true`. Returning `false`
+	/// keeps the instance on its resource's undeformed vertex data. Interior mutability may be
+	/// used by animation systems that evaluate poses independently of rendering.
+	fn write_skinning_pose(&self, _global_matrices: &mut [SkinningMatrix]) -> bool {
+		false
+	}
 }
 
 #[derive(Clone)]

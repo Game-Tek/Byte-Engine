@@ -9,7 +9,7 @@ pub struct Tokens<'a> {
 pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 	let interrupt = |c: char| -> bool { c.is_whitespace() };
 
-	let can_sequence_continue = |last: Option<char>, c: char| -> bool {
+	let can_sequence_continue = |token: &str, last: Option<char>, c: char| -> bool {
 		let Some(last) = last else {
 			return true;
 		};
@@ -17,7 +17,7 @@ pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 		if last.is_alphabetic() {
 			c.is_alphanumeric() || c == '_'
 		} else if last.is_numeric() {
-			c.is_alphanumeric() || c == '.' || c == '_'
+			c.is_alphanumeric() || c == '_' || c == '.' && token.chars().all(|character| character.is_ascii_digit())
 		} else if last == '.' {
 			c.is_numeric()
 		} else if last == '_' {
@@ -40,6 +40,21 @@ pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 	let mut token_last: Option<char> = None;
 
 	while let Some((idx, c)) = chars.peek().copied() {
+		if c == '/' && chars.clone().nth(1).is_some_and(|(_, next)| next == '/') {
+			if let Some(start) = token_start {
+				tokens.push(&source[start..idx]);
+				token_start = None;
+				token_last = None;
+			}
+			// Line comments are discarded before punctuation tokenization so their contents remain entirely opaque.
+			for (_, comment_character) in chars.by_ref() {
+				if comment_character == '\n' {
+					break;
+				}
+			}
+			continue;
+		}
+
 		if interrupt(c) {
 			if let Some(start) = token_start {
 				tokens.push(&source[start..idx]);
@@ -57,7 +72,7 @@ pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 				chars.next();
 			}
 			Some(start) => {
-				if can_sequence_continue(token_last, c) {
+				if can_sequence_continue(&source[start..idx], token_last, c) {
 					token_last = Some(c);
 					chars.next();
 				} else {
@@ -200,5 +215,24 @@ mod tests {
 				"<=", "f", "&&", "g", ">", "h", ")", "{", "continue", ";", "}", "}"
 			]
 		);
+	}
+
+	#[test]
+	fn line_comments_are_ignored_without_consuming_adjacent_tokens() {
+		let source = "main: fn () -> void { value = 1;// punctuation: } / *\nvalue = value + 2; } // eof comment";
+		let tokens = tokenize(source).unwrap();
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"main", ":", "fn", "(", ")", "->", "void", "{", "value", "=", "1", ";", "value", "=", "value", "+", "2", ";",
+				"}"
+			]
+		);
+	}
+
+	#[test]
+	fn numeric_identifier_suffix_does_not_consume_member_accessor() {
+		let tokens = tokenize("matrix0.column0 + 1.25").unwrap();
+		assert_eq!(tokens.tokens, vec!["matrix0", ".", "column0", "+", "1.25"]);
 	}
 }

@@ -10,6 +10,7 @@ use resource_management::{resource::StorageBackend, resources::material, types::
 use utils::{Box, Extent, RGBA};
 
 use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
+use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, SkinningPass};
 use crate::rendering::pipelines::visibility::{
 	get_gtao_bitfield_blur_x_shader, get_gtao_bitfield_shader, get_gtao_blur_shader, get_gtao_shader,
 	get_material_count_shader, get_material_offset_shader, get_pixel_mapping_shader, get_shadow_pass_mesh_hlsl_source,
@@ -134,6 +135,7 @@ impl VisibilityPass {
 						material::Binding::new(0, 1, true, false),
 						material::Binding::new(0, 2, true, false),
 						material::Binding::new(0, 3, true, false),
+						material::Binding::new(0, 4, true, false),
 						material::Binding::new(0, 5, true, false),
 						material::Binding::new(0, 6, true, false),
 						material::Binding::new(0, 7, true, false),
@@ -348,6 +350,7 @@ impl ShadowPass {
 						material::Binding::new(0, 1, true, false),
 						material::Binding::new(0, 2, true, false),
 						material::Binding::new(0, 3, true, false),
+						material::Binding::new(0, 4, true, false),
 						material::Binding::new(0, 5, true, false),
 						material::Binding::new(0, 6, true, false),
 						material::Binding::new(0, 7, true, false),
@@ -1204,6 +1207,8 @@ impl VisibilityPipelineRenderPass {
 		&'a self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
+		skinning_pass: Option<&'a SkinningPass>,
+		skinning_dispatches: &'a [SkinningDispatch],
 		instances: &'a [Instance],
 		opaque_materials: &'a [(String, u32, ghi::PipelineHandle)],
 		transparent_materials: &'a [(String, u32, ghi::PipelineHandle)],
@@ -1234,6 +1239,9 @@ impl VisibilityPipelineRenderPass {
 			);
 			c.start_region(|label| label.write_str("Visibility Render Model"));
 
+			if let Some(skinning_pass) = skinning_pass {
+				skinning_pass.record(c, skinning_dispatches);
+			}
 			shadow_pass(c, t);
 			visibility_pass(c, t);
 			material_count_pass(c, t);

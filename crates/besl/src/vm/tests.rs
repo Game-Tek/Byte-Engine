@@ -130,6 +130,40 @@ fn executable_program_reads_locals_before_writing_to_a_bound_buffer_member() {
 }
 
 #[test]
+fn executable_program_reads_a_vector_member_after_local_reassignment() {
+	let script = r#"
+	main: fn () -> void {
+		let value: vec4f = vec4f(1.0, 2.0, 3.0, 4.0);
+		value = vec4f(5.0, 6.0, 7.0, 8.0);
+		buff.value = value.y;
+	}
+	"#;
+
+	let mut root = Node::root();
+	let float_type = root.get_child("f32").expect("Expected f32");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![Node::member("value", float_type).into()],
+			},
+			0,
+			0,
+			false,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let slot = DescriptorSlot::new(0, 0);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 6.0);
+}
+
+#[test]
 fn executable_program_reads_a_bound_buffer_inside_main() {
 	let script = r#"
 	main: fn () -> void {

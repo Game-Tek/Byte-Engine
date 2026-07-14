@@ -17,6 +17,24 @@ pub struct Engine<C = ()> {
 	runtime: Rc<RefCell<Runtime>>,
 }
 
+impl<C> Drop for Engine<C> {
+	fn drop(&mut self) {
+		// Detach tasks before dropping them because mounted-future cleanup may
+		// re-enter the runtime to remove its retained scope.
+		let tasks = {
+			let mut runtime = self.runtime.borrow_mut();
+			runtime.ready.lock().clear();
+			runtime.frame_waiters.clear();
+			runtime.event_waiters.clear();
+			runtime.key_waiters.clear();
+			runtime.text_edit_waiters.clear();
+			std::mem::take(&mut runtime.tasks)
+		};
+
+		drop(tasks);
+	}
+}
+
 pub(super) struct EngineState {
 	element_ids: HashSet<Id>,
 	cursor: Option<Id>,
@@ -447,8 +465,12 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 			task_id,
 		};
 
-		let ctx = Box::leak(Box::new(ctx));
-		let future = component(ctx);
+		// The runtime owns the context through this outer future; the component's
+		// borrowed future never escapes the scope in which that context is alive.
+		let future = Box::pin(async move {
+			let mut ctx = ctx;
+			component(&mut ctx).await;
+		});
 		Runtime::replace_task_future(runtime, task_id, future);
 	}
 
@@ -564,8 +586,11 @@ where
 			task_id: self.task_id,
 		};
 
-		let ctx = Box::leak(Box::new(ctx));
-		let future = component(ctx);
+		// Keep the context and its borrowing component future in one owned future.
+		let future = Box::pin(async move {
+			let mut ctx = ctx;
+			component(&mut ctx).await
+		});
 		self.scope = Some(scope);
 		self.future = Some(future);
 	}
@@ -840,8 +865,11 @@ impl<C: 'static> Engine<C> {
 		let tree = Rc::clone(&runtime.borrow().tree);
 		let task_id = Runtime::spawn_placeholder(Rc::clone(&runtime));
 		let ctx = EvaluationContext::new_root(Rc::clone(&self.ctx), Rc::clone(&runtime), tree, task_id);
-		let ctx = Box::leak(Box::new(ctx));
-		let future = root(ctx);
+		// Store an owning future while preserving the borrowed component interface.
+		let future = Box::pin(async move {
+			let mut ctx = ctx;
+			root(&mut ctx).await;
+		});
 		Runtime::replace_task_future(runtime, task_id, future);
 	}
 
@@ -1591,6 +1619,26 @@ mod tests {
 		style::{ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind},
 		Depth,
 	};
+
+	/// The `DropCounter` struct verifies that engine-owned UI context is released with the engine.
+	struct DropCounter(Arc<AtomicUsize>);
+
+	impl Drop for DropCounter {
+		fn drop(&mut self) {
+			self.0.fetch_add(1, Ordering::Relaxed);
+		}
+	}
+
+	#[test]
+	fn dropping_engine_releases_mounted_context() {
+		let drops = Arc::new(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(DropCounter(Arc::clone(&drops)));
+
+		engine.mount(|_ctx| Box::pin(async {}));
+		drop(engine);
+
+		assert_eq!(drops.load(Ordering::Relaxed), 1);
+	}
 
 	#[test]
 	fn mounted_task_retains_markup_without_render_loop() {
@@ -2408,7 +2456,10 @@ mod tests {
 		engine.mount(move |ctx| {
 			let result = Arc::clone(&result_for_task);
 			Box::pin(async move {
-				let value = ctx.element("modal").mount(|ctx| Box::pin(modal(ctx))).await;
+				let value = ctx
+					.element("modal")
+					.mount(|ctx| Box::pin(modal(ctx)))
+					.await;
 				*result.lock().unwrap() = Some(value);
 			})
 		});
@@ -2591,7 +2642,10 @@ mod tests {
 			let result = Arc::clone(&result_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
-				let value = frame.element("modal").mount(|ctx| Box::pin(modal(ctx))).await;
+				let value = frame
+					.element("modal")
+					.mount(|ctx| Box::pin(modal(ctx)))
+					.await;
 				*result.lock().unwrap() = Some(value);
 			})
 		});

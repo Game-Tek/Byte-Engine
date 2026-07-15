@@ -12,15 +12,15 @@ pub enum LoadErrors {
 }
 
 /// The `AssetHandler` trait defines how to load assets of a given type.
-pub trait AssetHandler: Send + Sync {
+pub trait AssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool;
 
-	fn bake<'a>(
+	async fn bake<'a>(
 		&'a self,
 		asset_manager: &'a AssetManager,
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
 		allocator: &'a dyn Allocator,
-	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>>;
+	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors>;
 }

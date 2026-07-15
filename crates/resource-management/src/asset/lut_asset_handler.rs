@@ -101,35 +101,33 @@ impl AssetHandler for LUTAssetHandler {
 		r#type == "lut"
 	}
 
-	fn bake<'a>(
+	async fn bake<'a>(
 		&'a self,
 		_: &'a AssetManager,
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
 		allocator: &'a dyn std::alloc::Allocator,
-	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
-		Box::pin(async move {
-			if let Some(dt) = storage_backend.get_type(url) {
-				if !self.can_handle(dt) {
-					return Err(LoadErrors::UnsupportedType);
-				}
-			}
-
-			let (data, _, dt) = asset_storage_backend
-				.resolve_in(url, allocator)
-				.await
-				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-
-			if !self.can_handle(&dt) {
+	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
+		if let Some(dt) = storage_backend.get_type(url) {
+			if !self.can_handle(dt) {
 				return Err(LoadErrors::UnsupportedType);
 			}
+		}
 
-			// The source bytes borrow the bake allocator, so parsing stays in this task.
-			let parsed = Self::parse_lut(&data).map_err(|_| LoadErrors::FailedToProcess)?;
+		let (data, _, dt) = asset_storage_backend
+			.resolve_in(url, allocator)
+			.await
+			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
-			process_lut(url, parsed.description, parsed.entries)
-		})
+		if !self.can_handle(&dt) {
+			return Err(LoadErrors::UnsupportedType);
+		}
+
+		// The source bytes borrow the bake allocator, so parsing stays in this task.
+		let parsed = Self::parse_lut(&data).map_err(|_| LoadErrors::FailedToProcess)?;
+
+		process_lut(url, parsed.description, parsed.entries)
 	}
 }
 

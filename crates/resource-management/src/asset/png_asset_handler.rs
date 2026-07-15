@@ -50,80 +50,78 @@ impl AssetHandler for PNGAssetHandler {
 		r#type == "png" || r#type == "Image" || r#type == "image/png"
 	}
 
-	fn bake<'a>(
+	async fn bake<'a>(
 		&'a self,
 		_: &'a AssetManager,
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
 		allocator: &'a dyn std::alloc::Allocator,
-	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
-		Box::pin(async move {
-			if let Some(dt) = storage_backend.get_type(url) {
-				if !self.can_handle(dt) {
+	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
+		if let Some(dt) = storage_backend.get_type(url) {
+			if !self.can_handle(dt) {
+				return Err(LoadErrors::UnsupportedType);
+			}
+		}
+
+		let (data, _, dt) = asset_storage_backend
+			.resolve_in(url, allocator)
+			.await
+			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+
+		let semantic = guess_semantic_from_name(url.get_base());
+		let transformations = self.transformations;
+
+		// Arena-backed source bytes borrow the bake allocator, so decoding stays in this task.
+		let decoded = {
+			let mut buffer;
+			let extent;
+			let gamma: Gamma;
+			let format;
+
+			match dt.as_str() {
+				"png" | "image/png" => {
+					let cursor = std::io::Cursor::new(data);
+					let mut decoder = png::Decoder::new(cursor);
+					decoder.set_transformations(transformations);
+					let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
+
+					let Some(size) = reader.output_buffer_size() else {
+						return Err(LoadErrors::FailedToProcess);
+					};
+
+					buffer = zeroed_vec_in(size, allocator);
+
+					let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
+					buffer.truncate(info.buffer_size());
+
+					extent = Extent::rectangle(info.width, info.height);
+					gamma = png_gamma(reader.info(), semantic);
+					(buffer, format) = normalize_png_buffer(buffer, info.color_type, info.bit_depth, extent, allocator)?;
+				}
+				_ => {
 					return Err(LoadErrors::UnsupportedType);
 				}
 			}
 
-			let (data, _, dt) = asset_storage_backend
-				.resolve_in(url, allocator)
-				.await
-				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+			let description = ImageDescription {
+				format,
+				extent,
+				semantic,
+				gamma,
+				generate_mipmaps: false,
+			};
 
-			let semantic = guess_semantic_from_name(url.get_base());
-			let transformations = self.transformations;
+			Ok(DecodedImage {
+				data: buffer.into(),
+				description,
+			})
+		}?;
 
-			// Arena-backed source bytes borrow the bake allocator, so decoding stays in this task.
-			let decoded = {
-				let mut buffer;
-				let extent;
-				let gamma: Gamma;
-				let format;
+		let DecodedImage { data, description } = decoded;
 
-				match dt.as_str() {
-					"png" | "image/png" => {
-						let cursor = std::io::Cursor::new(data);
-						let mut decoder = png::Decoder::new(cursor);
-						decoder.set_transformations(transformations);
-						let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
-
-						let Some(size) = reader.output_buffer_size() else {
-							return Err(LoadErrors::FailedToProcess);
-						};
-
-						buffer = zeroed_vec_in(size, allocator);
-
-						let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
-						buffer.truncate(info.buffer_size());
-
-						extent = Extent::rectangle(info.width, info.height);
-						gamma = png_gamma(reader.info(), semantic);
-						(buffer, format) = normalize_png_buffer(buffer, info.color_type, info.bit_depth, extent, allocator)?;
-					}
-					_ => {
-						return Err(LoadErrors::UnsupportedType);
-					}
-				}
-
-				let description = ImageDescription {
-					format,
-					extent,
-					semantic,
-					gamma,
-					generate_mipmaps: false,
-				};
-
-				Ok(DecodedImage {
-					data: buffer.into(),
-					description,
-				})
-			}?;
-
-			let DecodedImage { data, description } = decoded;
-
-			let (asset, data) = process_image_in(url, description, data, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
-			Ok((asset, data.to_vec().into_boxed_slice()))
-		})
+		let (asset, data) = process_image_in(url, description, data, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
+		Ok((asset, data.to_vec().into_boxed_slice()))
 	}
 }
 

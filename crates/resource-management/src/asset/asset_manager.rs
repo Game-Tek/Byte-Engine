@@ -2,13 +2,27 @@ use std::alloc::{Allocator, Global};
 
 use super::{asset_handler::AssetHandler, StorageBackend};
 use crate::{
-	asset::{asset_handler::LoadErrors, ResourceId},
-	resource::StorageBackend as ResourceStorageBackend,
-	Model, ReferenceModel,
+	asset::{self, asset_handler::LoadErrors, ResourceId},
+	r#async::BoxedFuture,
+	resource::{self, StorageBackend as ResourceStorageBackend},
+	Model, ProcessedAsset, ReferenceModel,
 };
 
+trait AbstractAssetHandler: Send + Sync {
+	fn can_handle(&self, r#type: &str) -> bool;
+
+	fn bake<'a>(
+		&'a self,
+		asset_manager: &'a AssetManager,
+		storage_backend: &'a dyn resource::StorageBackend,
+		asset_storage_backend: &'a dyn asset::StorageBackend,
+		url: ResourceId<'a>,
+		allocator: &'a dyn Allocator,
+	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>>;
+}
+
 pub struct AssetManager {
-	asset_handlers: Vec<Box<dyn AssetHandler>>,
+	asset_handlers: Vec<Box<dyn AbstractAssetHandler>>,
 	storage_backend: Box<dyn StorageBackend>,
 }
 
@@ -38,8 +52,30 @@ impl AssetManager {
 		}
 	}
 
-	pub fn add_asset_handler<T: AssetHandler + 'static>(&mut self, asset_handler: T) {
-		self.asset_handlers.push(Box::new(asset_handler));
+	pub fn add_asset_handler<T: AssetHandler + Send + Sync + 'static>(&mut self, asset_handler: T) {
+		struct AssetHandlerWrapper<T: AssetHandler + Send + Sync>(T);
+
+		impl<T: AssetHandler + Send + Sync> AbstractAssetHandler for AssetHandlerWrapper<T> {
+			fn can_handle(&self, r#type: &str) -> bool {
+				self.0.can_handle(r#type)
+			}
+
+			fn bake<'a>(
+				&'a self,
+				asset_manager: &'a AssetManager,
+				storage_backend: &'a dyn resource::StorageBackend,
+				asset_storage_backend: &'a dyn asset::StorageBackend,
+				url: ResourceId<'a>,
+				allocator: &'a dyn Allocator,
+			) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
+				Box::pin(
+					self.0
+						.bake(asset_manager, storage_backend, asset_storage_backend, url, allocator),
+				)
+			}
+		}
+
+		self.asset_handlers.push(Box::new(AssetHandlerWrapper(asset_handler)));
 	}
 
 	pub fn get_storage_backend(&self) -> &dyn StorageBackend {
@@ -179,21 +215,19 @@ pub mod tests {
 			id == "example"
 		}
 
-		fn bake<'a>(
+		async fn bake<'a>(
 			&'a self,
 			_: &'a AssetManager,
 			_: &'a dyn ResourceStorageBackend,
 			_: &'a dyn StorageBackend,
 			id: ResourceId<'a>,
 			_: &'a dyn std::alloc::Allocator,
-		) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
-			Box::pin(async move {
-				if id.get_base().as_ref() == "example" {
-					Ok((ProcessedAsset::new(id, TestResource {}), Vec::new().into_boxed_slice()))
-				} else {
-					Err(LoadErrors::AssetCouldNotBeLoaded)
-				}
-			})
+		) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
+			if id.get_base().as_ref() == "example" {
+				Ok((ProcessedAsset::new(id, TestResource {}), Vec::new().into_boxed_slice()))
+			} else {
+				Err(LoadErrors::AssetCouldNotBeLoaded)
+			}
 		}
 	}
 

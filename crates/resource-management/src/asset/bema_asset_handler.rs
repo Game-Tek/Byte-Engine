@@ -99,182 +99,180 @@ impl AssetHandler for BEMAAssetHandler {
 		r#type == "bema"
 	}
 
-	fn bake<'a>(
+	async fn bake<'a>(
 		&'a self,
 		asset_manager: &'a AssetManager,
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
 		allocator: &'a dyn std::alloc::Allocator,
-	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
-		Box::pin(async move {
-			if let Some(dt) = storage_backend.get_type(url) {
-				if dt != "bema" {
-					return Err(LoadErrors::UnsupportedType);
-				}
-			}
-
-			let (data, _, at) = asset_storage_backend
-				.resolve_in(url, allocator)
-				.await
-				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-
-			if at != "bema" {
+	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
+		if let Some(dt) = storage_backend.get_type(url) {
+			if dt != "bema" {
 				return Err(LoadErrors::UnsupportedType);
 			}
+		}
 
-			let asset: json::Value = json::from_str(std::str::from_utf8(&data).map_err(|_| LoadErrors::FailedToProcess)?)
+		let (data, _, at) = asset_storage_backend
+			.resolve_in(url, allocator)
+			.await
+			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+
+		if at != "bema" {
+			return Err(LoadErrors::UnsupportedType);
+		}
+
+		let asset: json::Value = json::from_str(std::str::from_utf8(&data).map_err(|_| LoadErrors::FailedToProcess)?)
+			.map_err(|_| LoadErrors::FailedToProcess)?;
+
+		let is_material = asset.get("parent").is_none();
+
+		if is_material {
+			let asset_object = asset.as_object().ok_or(LoadErrors::FailedToProcess)?;
+			let material_domain = asset["domain"].as_str().ok_or(LoadErrors::FailedToProcess)?;
+
+			let generator = self.generator.clone().ok_or(LoadErrors::FailedToProcess)?;
+
+			let asset_shaders = match asset["shaders"].as_object() {
+				Some(v) => v,
+				None => {
+					return Err(LoadErrors::FailedToProcess);
+				}
+			};
+
+			let mut shaders = Vec::with_capacity(asset_shaders.len());
+			for (s_type, shader_json) in asset_shaders.iter() {
+				let shader = transform_shader(
+					self.compiler.clone(),
+					generator.clone(),
+					storage_backend,
+					asset_storage_backend,
+					material_domain,
+					asset_object,
+					shader_json,
+					s_type,
+					allocator,
+				)
+				.await
+				.map_err(|_| LoadErrors::FailedToProcess)?;
+				shaders.push(shader);
+			}
+
+			let asset_variables = match asset["variables"].as_array() {
+				Some(v) => v,
+				None => {
+					return Err(LoadErrors::FailedToProcess);
+				}
+			};
+
+			let mut values = Vec::with_capacity(asset_variables.len());
+			for v in asset_variables.iter() {
+				let data_type = v["data_type"].as_str().unwrap().to_string();
+				let value = v["value"].as_str().unwrap().to_string();
+
+				let value = resolve_value(asset_manager, storage_backend, &data_type, &value)
+					.await
+					.map_err(|_| LoadErrors::FailedToProcess)?;
+				values.push(value);
+			}
+
+			let parameters = asset_variables
+				.iter()
+				.zip(values)
+				.map(|(v, value)| {
+					let name = v["name"].as_str().unwrap().to_string();
+					let data_type = v["data_type"].as_str().unwrap().to_string();
+
+					ParameterModel {
+						name,
+						r#type: data_type.clone(),
+						value,
+					}
+				})
+				.collect();
+
+			let resource = MaterialModel {
+				double_sided: false,
+				alpha_mode: AlphaMode::Opaque,
+				model: RenderModel {
+					name: "Visibility".to_string(),
+					pass: "MaterialEvaluation".to_string(),
+				},
+				shaders: shaders.into_iter().map(|(s, _)| s).collect(),
+				parameters,
+			};
+
+			let resource = ProcessedAsset::new(url, resource);
+
+			Ok((resource, Vec::new().into_boxed_slice()))
+		} else {
+			let parent_material_url = asset["parent"].as_str().unwrap();
+
+			let material = asset_manager
+				.bake_if_not_exists(parent_material_url, storage_backend)
+				.await
 				.map_err(|_| LoadErrors::FailedToProcess)?;
 
-			let is_material = asset.get("parent").is_none();
+			let material_repr: MaterialModel = crate::from_slice(&material.resource).unwrap();
 
-			if is_material {
-				let asset_object = asset.as_object().ok_or(LoadErrors::FailedToProcess)?;
-				let material_domain = asset["domain"].as_str().ok_or(LoadErrors::FailedToProcess)?;
-
-				let generator = self.generator.clone().ok_or(LoadErrors::FailedToProcess)?;
-
-				let asset_shaders = match asset["shaders"].as_object() {
-					Some(v) => v,
-					None => {
-						return Err(LoadErrors::FailedToProcess);
-					}
-				};
-
-				let mut shaders = Vec::with_capacity(asset_shaders.len());
-				for (s_type, shader_json) in asset_shaders.iter() {
-					let shader = transform_shader(
-						self.compiler.clone(),
-						generator.clone(),
-						storage_backend,
-						asset_storage_backend,
-						material_domain,
-						asset_object,
-						shader_json,
-						s_type,
-						allocator,
-					)
-					.await
-					.map_err(|_| LoadErrors::FailedToProcess)?;
-					shaders.push(shader);
-				}
-
-				let asset_variables = match asset["variables"].as_array() {
-					Some(v) => v,
-					None => {
-						return Err(LoadErrors::FailedToProcess);
-					}
-				};
-
-				let mut values = Vec::with_capacity(asset_variables.len());
-				for v in asset_variables.iter() {
-					let data_type = v["data_type"].as_str().unwrap().to_string();
-					let value = v["value"].as_str().unwrap().to_string();
-
-					let value = resolve_value(asset_manager, storage_backend, &data_type, &value)
-						.await
-						.map_err(|_| LoadErrors::FailedToProcess)?;
-					values.push(value);
-				}
-
-				let parameters = asset_variables
-					.iter()
-					.zip(values)
-					.map(|(v, value)| {
-						let name = v["name"].as_str().unwrap().to_string();
-						let data_type = v["data_type"].as_str().unwrap().to_string();
-
-						ParameterModel {
-							name,
-							r#type: data_type.clone(),
-							value,
-						}
-					})
-					.collect();
-
-				let resource = MaterialModel {
-					double_sided: false,
-					alpha_mode: AlphaMode::Opaque,
-					model: RenderModel {
-						name: "Visibility".to_string(),
-						pass: "MaterialEvaluation".to_string(),
-					},
-					shaders: shaders.into_iter().map(|(s, _)| s).collect(),
-					parameters,
-				};
-
-				let resource = ProcessedAsset::new(url, resource);
-
-				Ok((resource, Vec::new().into_boxed_slice()))
-			} else {
-				let parent_material_url = asset["parent"].as_str().unwrap();
-
-				let material = asset_manager
-					.bake_if_not_exists(parent_material_url, storage_backend)
-					.await
-					.map_err(|_| LoadErrors::FailedToProcess)?;
-
-				let material_repr: MaterialModel = crate::from_slice(&material.resource).unwrap();
-
-				let mut values = Vec::with_capacity(material_repr.parameters.len());
-				for v in material_repr.parameters.iter() {
-					let value = match asset["variables"].as_array() {
-						Some(variables) => match variables.iter().find(|v2| v2["name"].as_str().unwrap() == v.name) {
-							Some(v) => v["value"].as_str().unwrap().to_string(),
-							None => {
-								return Err(LoadErrors::FailedToProcess);
-							}
-						},
+			let mut values = Vec::with_capacity(material_repr.parameters.len());
+			for v in material_repr.parameters.iter() {
+				let value = match asset["variables"].as_array() {
+					Some(variables) => match variables.iter().find(|v2| v2["name"].as_str().unwrap() == v.name) {
+						Some(v) => v["value"].as_str().unwrap().to_string(),
 						None => {
 							return Err(LoadErrors::FailedToProcess);
 						}
-					};
-
-					let resolved = resolve_value(asset_manager, storage_backend, &v.r#type, &value)
-						.await
-						.map_err(|_| LoadErrors::FailedToProcess)?;
-					values.push(resolved);
-				}
-
-				let variables = material_repr
-					.parameters
-					.iter()
-					.zip(values)
-					.map(|(v, value)| VariantVariableModel {
-						value,
-						name: v.name.clone(),
-						r#type: v.r#type.clone(),
-					})
-					.collect();
-
-				let alpha_mode = match asset.get("transparency").map(|e| e.as_ref()) {
-					Some(json::ValueRef::Bool(v)) => {
-						if v {
-							AlphaMode::Blend
-						} else {
-							AlphaMode::Opaque
-						}
-					}
-					Some(json::ValueRef::String(s)) => match s {
-						"Opaque" => AlphaMode::Opaque,
-						"Blend" => AlphaMode::Blend,
-						_ => AlphaMode::Opaque,
 					},
-					_ => AlphaMode::Opaque,
+					None => {
+						return Err(LoadErrors::FailedToProcess);
+					}
 				};
 
-				let resource = ProcessedAsset::new(
-					url,
-					VariantModel {
-						material,
-						variables,
-						alpha_mode,
-					},
-				);
-
-				Ok((resource, Vec::new().into_boxed_slice()))
+				let resolved = resolve_value(asset_manager, storage_backend, &v.r#type, &value)
+					.await
+					.map_err(|_| LoadErrors::FailedToProcess)?;
+				values.push(resolved);
 			}
-		})
+
+			let variables = material_repr
+				.parameters
+				.iter()
+				.zip(values)
+				.map(|(v, value)| VariantVariableModel {
+					value,
+					name: v.name.clone(),
+					r#type: v.r#type.clone(),
+				})
+				.collect();
+
+			let alpha_mode = match asset.get("transparency").map(|e| e.as_ref()) {
+				Some(json::ValueRef::Bool(v)) => {
+					if v {
+						AlphaMode::Blend
+					} else {
+						AlphaMode::Opaque
+					}
+				}
+				Some(json::ValueRef::String(s)) => match s {
+					"Opaque" => AlphaMode::Opaque,
+					"Blend" => AlphaMode::Blend,
+					_ => AlphaMode::Opaque,
+				},
+				_ => AlphaMode::Opaque,
+			};
+
+			let resource = ProcessedAsset::new(
+				url,
+				VariantModel {
+					material,
+					variables,
+					alpha_mode,
+				},
+			);
+
+			Ok((resource, Vec::new().into_boxed_slice()))
+		}
 	}
 }
 

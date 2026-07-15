@@ -140,37 +140,35 @@ impl AssetHandler for WAVAssetHandler {
 		r#type == "wav"
 	}
 
-	fn bake<'a>(
+	async fn bake<'a>(
 		&'a self,
 		_: &'a AssetManager,
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
 		allocator: &'a dyn std::alloc::Allocator,
-	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
-		Box::pin(async move {
-			if let Some(dt) = storage_backend.get_type(url) {
-				if !self.can_handle(dt) {
-					return Err(LoadErrors::UnsupportedType);
-				}
-			}
-
-			let (data, _, dt) = asset_storage_backend
-				.resolve_in(url, allocator)
-				.await
-				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-
-			if !self.can_handle(&dt) {
+	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
+		if let Some(dt) = storage_backend.get_type(url) {
+			if !self.can_handle(dt) {
 				return Err(LoadErrors::UnsupportedType);
 			}
+		}
 
-			let (audio_resource, pcm_data) = Self::decode_wav(&data).map_err(|_| LoadErrors::FailedToProcess)?;
-			let mut output = Vec::with_capacity_in(pcm_data.len(), allocator);
-			output.extend_from_slice(pcm_data);
+		let (data, _, dt) = asset_storage_backend
+			.resolve_in(url, allocator)
+			.await
+			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
 
-			let (asset, data) = process_audio_in(url, audio_resource, output.into_boxed_slice())?;
-			Ok((asset, data.to_vec().into_boxed_slice()))
-		})
+		if !self.can_handle(&dt) {
+			return Err(LoadErrors::UnsupportedType);
+		}
+
+		let (audio_resource, pcm_data) = Self::decode_wav(&data).map_err(|_| LoadErrors::FailedToProcess)?;
+		let mut output = Vec::with_capacity_in(pcm_data.len(), allocator);
+		output.extend_from_slice(pcm_data);
+
+		let (asset, data) = process_audio_in(url, audio_resource, output.into_boxed_slice())?;
+		Ok((asset, data.to_vec().into_boxed_slice()))
 	}
 }
 

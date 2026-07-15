@@ -84,113 +84,109 @@ impl AssetHandler for FBXAssetHandler {
 		r#type.eq_ignore_ascii_case("fbx")
 	}
 
-	fn bake<'a>(
+	async fn bake<'a>(
 		&'a self,
 		asset_manager: &'a AssetManager,
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
 		allocator: &'a dyn Allocator,
-	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
-		Box::pin(async move {
-			if let Some(resource_type) = storage_backend.get_type(url) {
-				if !self.can_handle(resource_type) {
-					return Err(LoadErrors::UnsupportedType);
-				}
-			}
-
-			// Resolve the container base so animation fragments never become part of the source filename.
-			let base = url.get_base();
-			let source_id = ResourceId::new(base.as_ref());
-			let (data, spec, source_type) = asset_storage_backend
-				.resolve_in(source_id, allocator)
-				.await
-				.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
-			if !self.can_handle(&source_type) {
+	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
+		if let Some(resource_type) = storage_backend.get_type(url) {
+			if !self.can_handle(resource_type) {
 				return Err(LoadErrors::UnsupportedType);
 			}
+		}
 
-			let scene = load_fbx_scene(&data, base.as_ref()).map_err(|error| {
-				log::error!("Failed to import FBX asset '{}': {error}", url.as_ref());
-				LoadErrors::FailedToProcess
-			})?;
+		// Resolve the container base so animation fragments never become part of the source filename.
+		let base = url.get_base();
+		let source_id = ResourceId::new(base.as_ref());
+		let (data, spec, source_type) = asset_storage_backend
+			.resolve_in(source_id, allocator)
+			.await
+			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		if !self.can_handle(&source_type) {
+			return Err(LoadErrors::UnsupportedType);
+		}
 
-			if let Some(fragment) = url.get_fragment() {
-				let imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
-					log::error!("Failed to import FBX skeleton '{}': {error}", url.as_ref());
-					LoadErrors::FailedToProcess
-				})?;
-				if fragment.as_ref() == SKELETON_FRAGMENT {
-					return Ok((
-						ProcessedAsset::new(url, imported_skeleton.model),
-						Vec::new().into_boxed_slice(),
-					));
-				}
+		let scene = load_fbx_scene(&data, base.as_ref()).map_err(|error| {
+			log::error!("Failed to import FBX asset '{}': {error}", url.as_ref());
+			LoadErrors::FailedToProcess
+		})?;
 
-				let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
-				let skeleton = store_model::<SkeletonModel>(storage_backend, &skeleton_id, imported_skeleton.model, &[])?;
-				let animation =
-					import_fbx_animation(&scene, fragment.as_ref(), skeleton, &imported_skeleton.source_to_skeleton).map_err(
-						|error| {
-							log::error!("Failed to import FBX animation '{}': {error}", url.as_ref());
-							LoadErrors::FailedToProcess
-						},
-					)?;
-				return Ok((ProcessedAsset::new(url, animation), Vec::new().into_boxed_slice()));
-			}
-			let imported_skeleton = (scene.meshes.iter().any(|mesh| !mesh.skin_deformers.is_empty())
-				|| !scene.anim_stacks.is_empty())
-			.then(|| import_fbx_skeleton(&scene))
-			.transpose()
-			.map_err(|error| {
+		if let Some(fragment) = url.get_fragment() {
+			let imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
 				log::error!("Failed to import FBX skeleton '{}': {error}", url.as_ref());
 				LoadErrors::FailedToProcess
 			})?;
-			let (skeleton, source_to_skeleton) = if let Some(imported) = imported_skeleton {
-				let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
-				(
-					Some(store_model::<SkeletonModel>(
-						storage_backend,
-						&skeleton_id,
-						imported.model,
-						&[],
-					)?),
-					imported.source_to_skeleton,
-				)
-			} else {
-				(None, Vec::new())
-			};
+			if fragment.as_ref() == SKELETON_FRAGMENT {
+				return Ok((
+					ProcessedAsset::new(url, imported_skeleton.model),
+					Vec::new().into_boxed_slice(),
+				));
+			}
 
-			let materials = resolve_fbx_materials(
-				asset_manager,
-				storage_backend,
-				spec.as_ref(),
-				source_id,
-				&scene,
-				self.generator.clone(),
-				allocator,
-			)
-			.await?;
-			let source = import_fbx_meshes(&scene, &materials, skeleton, &source_to_skeleton, allocator).map_err(|error| {
-				log::error!("Failed to import FBX mesh '{}': {error}", url.as_ref());
-				LoadErrors::FailedToProcess
-			})?;
-			let mesh = MeshProcessor::new()
-				.with_triangle_front_face_winding(self.triangle_front_face_winding)
-				.process_owned(source)
+			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
+			let skeleton = store_model::<SkeletonModel>(storage_backend, &skeleton_id, imported_skeleton.model, &[])?;
+			let animation = import_fbx_animation(&scene, fragment.as_ref(), skeleton, &imported_skeleton.source_to_skeleton)
 				.map_err(|error| {
-					log::error!(
-						"Failed to process FBX mesh '{}'. The most likely cause is unsupported or malformed mesh data: {error}",
-						url.as_ref()
-					);
+					log::error!("Failed to import FBX animation '{}': {error}", url.as_ref());
 					LoadErrors::FailedToProcess
 				})?;
+			return Ok((ProcessedAsset::new(url, animation), Vec::new().into_boxed_slice()));
+		}
+		let imported_skeleton = (scene.meshes.iter().any(|mesh| !mesh.skin_deformers.is_empty())
+			|| !scene.anim_stacks.is_empty())
+		.then(|| import_fbx_skeleton(&scene))
+		.transpose()
+		.map_err(|error| {
+			log::error!("Failed to import FBX skeleton '{}': {error}", url.as_ref());
+			LoadErrors::FailedToProcess
+		})?;
+		let (skeleton, source_to_skeleton) = if let Some(imported) = imported_skeleton {
+			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
+			(
+				Some(store_model::<SkeletonModel>(
+					storage_backend,
+					&skeleton_id,
+					imported.model,
+					&[],
+				)?),
+				imported.source_to_skeleton,
+			)
+		} else {
+			(None, Vec::new())
+		};
 
-			Ok((
-				ProcessedAsset::new(url, mesh.mesh).with_streams(mesh.stream_descriptions),
-				mesh.buffer,
-			))
-		})
+		let materials = resolve_fbx_materials(
+			asset_manager,
+			storage_backend,
+			spec.as_ref(),
+			source_id,
+			&scene,
+			self.generator.clone(),
+			allocator,
+		)
+		.await?;
+		let source = import_fbx_meshes(&scene, &materials, skeleton, &source_to_skeleton, allocator).map_err(|error| {
+			log::error!("Failed to import FBX mesh '{}': {error}", url.as_ref());
+			LoadErrors::FailedToProcess
+		})?;
+		let mesh = MeshProcessor::new()
+			.with_triangle_front_face_winding(self.triangle_front_face_winding)
+			.process_owned(source)
+			.map_err(|error| {
+				log::error!(
+					"Failed to process FBX mesh '{}'. The most likely cause is unsupported or malformed mesh data: {error}",
+					url.as_ref()
+				);
+				LoadErrors::FailedToProcess
+			})?;
+
+		Ok((
+			ProcessedAsset::new(url, mesh.mesh).with_streams(mesh.stream_descriptions),
+			mesh.buffer,
+		))
 	}
 }
 

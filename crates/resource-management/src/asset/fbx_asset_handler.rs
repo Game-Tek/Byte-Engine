@@ -1030,6 +1030,7 @@ fn import_fbx_meshes<'a>(
 	let mut scratch = Vec::with_capacity_in(estimates.scratch, allocator);
 	let mut corners = Vec::with_capacity_in(estimates.corners, allocator);
 	let mut remap = Vec::with_capacity_in(estimates.remap, allocator);
+	let mut culled_polygons = FbxCulledPolygonCounts::default();
 	let skin_capacity = scene
 		.nodes
 		.iter()
@@ -1074,7 +1075,11 @@ fn import_fbx_meshes<'a>(
 				if !is_visible_polygon_face(mesh, face_index) {
 					continue;
 				}
-				append_triangulated_face(mesh, face, &mut scratch, &mut corners)?;
+				if append_triangulated_face(mesh, face, &mut scratch, &mut corners)?
+					== TriangulatedFaceAppendResult::CulledDegenerate
+				{
+					culled_polygons.record(face.num_indices);
+				}
 			}
 			import_fbx_material_corners(
 				&context,
@@ -1103,7 +1108,11 @@ fn import_fbx_meshes<'a>(
 					if face.num_indices < 3 || mesh.face_hole.get(face_index as usize).copied().unwrap_or(false) {
 						continue;
 					}
-					append_triangulated_face(mesh, face, &mut scratch, &mut corners)?;
+					if append_triangulated_face(mesh, face, &mut scratch, &mut corners)?
+						== TriangulatedFaceAppendResult::CulledDegenerate
+					{
+						culled_polygons.record(face.num_indices);
+					}
 				}
 				import_fbx_material_corners(
 					&context,
@@ -1119,6 +1128,7 @@ fn import_fbx_meshes<'a>(
 			}
 		}
 	}
+	culled_polygons.log();
 
 	if primitives.is_empty() {
 		return Err(FbxImportError::NoMesh);
@@ -1157,20 +1167,101 @@ fn import_fbx_material_corners<'a>(
 	Ok(())
 }
 
+/// Tracks whether a source face contributed triangles or was rejected as malformed geometry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TriangulatedFaceAppendResult {
+	Appended,
+	CulledDegenerate,
+}
+
+/// The `FbxCulledPolygonCounts` struct accumulates concise import diagnostics without logging once per malformed face.
+#[derive(Default)]
+struct FbxCulledPolygonCounts {
+	triangles: usize,
+	quads: usize,
+	polygons: usize,
+}
+
+impl FbxCulledPolygonCounts {
+	/// Records one source polygon by its authored corner count for the final import summary.
+	fn record(&mut self, corner_count: u32) {
+		match corner_count {
+			3 => self.triangles += 1,
+			4 => self.quads += 1,
+			_ => self.polygons += 1,
+		}
+	}
+
+	/// Logs the malformed geometry summary after the importer has processed every mesh instance.
+	fn log(&self) {
+		if self.triangles + self.quads + self.polygons == 0 {
+			return;
+		}
+		log::info!(
+			"Culled degenerate FBX geometry: {} triangle(s), {} quad(s), and {} other polygon(s). The most likely cause is repeated or collinear vertex positions, which produce zero-area triangles and undefined normal data.",
+			self.triangles,
+			self.quads,
+			self.polygons,
+		);
+	}
+}
+
 /// Appends a triangulated face into caller-owned scratch and corner storage.
 fn append_triangulated_face<A: Allocator>(
 	mesh: &ufbx::Mesh,
 	face: ufbx::Face,
 	scratch: &mut [u32],
 	corners: &mut Vec<u32, A>,
-) -> Result<(), FbxImportError> {
+) -> Result<TriangulatedFaceAppendResult, FbxImportError> {
 	let triangle_count = mesh.triangulate_face(scratch, face) as usize;
 	let index_count = triangle_count.saturating_mul(3);
 	if index_count > scratch.len() {
 		return Err(FbxImportError::TriangulationOverflow);
 	}
-	corners.extend_from_slice(&scratch[..index_count]);
-	Ok(())
+	let triangles = &scratch[..index_count];
+	// Retained triangles may share malformed corner normals with a degenerate sibling, so discard the source polygon as a unit.
+	for triangle in triangles.chunks_exact(3) {
+		if is_degenerate_fbx_triangle(mesh, triangle)? {
+			return Ok(TriangulatedFaceAppendResult::CulledDegenerate);
+		}
+	}
+	corners.extend_from_slice(triangles);
+	Ok(TriangulatedFaceAppendResult::Appended)
+}
+
+/// Rejects zero-area triangles before their undefined shading directions reach vertex attribute import.
+fn is_degenerate_fbx_triangle(mesh: &ufbx::Mesh, triangle: &[u32]) -> Result<bool, FbxImportError> {
+	let mut positions = [ufbx::Vec3::default(); 3];
+	for (position, &corner) in positions.iter_mut().zip(triangle) {
+		let position_index = mesh
+			.vertex_position
+			.indices
+			.get(corner as usize)
+			.ok_or(FbxImportError::InvalidCornerIndex)?;
+		*position = *mesh
+			.vertex_position
+			.values
+			.get(*position_index as usize)
+			.ok_or(FbxImportError::InvalidCornerIndex)?;
+	}
+
+	// Authored zero-area faces are already degenerate in mesh-local space, so avoid repeated per-instance transforms here.
+	let first_edge = [
+		positions[1].x - positions[0].x,
+		positions[1].y - positions[0].y,
+		positions[1].z - positions[0].z,
+	];
+	let second_edge = [
+		positions[2].x - positions[0].x,
+		positions[2].y - positions[0].y,
+		positions[2].z - positions[0].z,
+	];
+	let area = [
+		first_edge[1] * second_edge[2] - first_edge[2] * second_edge[1],
+		first_edge[2] * second_edge[0] - first_edge[0] * second_edge[2],
+		first_edge[0] * second_edge[1] - first_edge[1] * second_edge[0],
+	];
+	Ok(area == [0.0; 3])
 }
 
 /// The `RemappedCorners` struct carries one u16-compatible primitive's source-corner lookup and local indices.
@@ -1801,6 +1892,7 @@ mod tests {
 	};
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("test_data/triangle_move_ascii.fbx");
+	const DEGENERATE_QUAD_FBX: &[u8] = include_bytes!("test_data/degenerate_quad_ascii.fbx");
 	const MATERIAL_FACTORS_FBX: &[u8] = include_bytes!("test_data/material_factors_ascii.fbx");
 	const SKINNED_TRIANGLE_FBX: &[u8] = include_bytes!("test_data/skinned_triangle_ascii.fbx");
 
@@ -1847,6 +1939,26 @@ mod tests {
 		assert!((bounds[1][0] - 0.01).abs() < 1.0e-6);
 		assert!((bounds[1][1] - 0.01).abs() < 1.0e-6);
 		assert_eq!(bounds[1][2], 0.0);
+	}
+
+	#[test]
+	fn discards_degenerate_polygons_without_rejecting_valid_mesh_geometry() {
+		let scene = load_fbx_scene(DEGENERATE_QUAD_FBX, "degenerate_quad.fbx").expect("fixture FBX should parse");
+		let materials = ResolvedFbxMaterials {
+			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
+		};
+		let source = import_fbx_meshes(&scene, &materials, None, &[], &Global)
+			.expect("degenerate polygons should be discarded without rejecting valid geometry");
+		let primitive = source.primitive(0).expect("valid triangle should remain");
+
+		let Some(MeshAttributeData::F32x3(positions)) = primitive.attribute(VertexSemantics::Position, 0) else {
+			panic!("FBX fixture should contain f32 position data");
+		};
+		let Some(MeshIndexData::U32(indices)) = primitive.indices(IndexStreamTypes::Triangles) else {
+			panic!("FBX fixture should contain triangle indices");
+		};
+		assert_eq!(positions.len(), 3);
+		assert_eq!(indices.len(), 3);
 	}
 
 	#[test]

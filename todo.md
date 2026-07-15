@@ -92,7 +92,7 @@
 - Implement sampled UI colors, the remaining UI layout branch, primitive style access, and non-box bounding boxes.
 - Implement `Positionable` state for gameplay sphere and cube colliders.
 - Implement server-side client entity lifecycle and replace the temporary UDP client identity strategy.
-- Build the CPU animation graph, evaluate imported glTF and FBX clips into the `RenderableMesh::write_skinning_pose` hook, apply retained rigid primitive nodes, and provide animation-safe bounds so posed meshlet culling can be re-enabled.
+- Build the CPU animation graph, evaluate imported glTF and FBX clips into `VisibilitySceneManager::write_skinned_pose`, apply retained rigid primitive nodes, and provide animation-safe bounds so posed meshlet culling can be re-enabled.
 
 ## Shader behavior
 

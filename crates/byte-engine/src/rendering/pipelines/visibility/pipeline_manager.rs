@@ -1,12 +1,3 @@
-/// The `SkinningPoseCacheEntry` struct preserves one renderable's frame pose for primitives visited out of order.
-#[derive(Clone, Copy)]
-struct SkinningPoseCacheEntry {
-	handle: Handle,
-	matrix_offset: usize,
-	matrix_count: usize,
-	available: bool,
-}
-
 /// The `SkinningPaletteCacheEntry` struct shares one uploaded binding palette across a renderable's primitives.
 #[derive(Clone, Copy)]
 struct SkinningPaletteCacheEntry {
@@ -27,10 +18,6 @@ pub struct VisibilityPipelineManager {
 	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
 	/// Compute resources shared by every sink for frame-local mesh deformation.
 	skinning_pass: SkinningPass,
-	/// Reused caller-facing global pose storage sized to all unique active skinned instances.
-	skinning_pose_scratch: Vec<Matrix4Columns>,
-	/// Reused per-frame index into poses retained in `skinning_pose_scratch`.
-	skinning_pose_cache: Vec<SkinningPoseCacheEntry>,
 	/// Reused palette upload storage prevents per-frame matrix allocations.
 	skinning_palette_scratch: Vec<Matrix4Columns>,
 	/// Reused per-instance palette lookup avoids duplicate uploads when primitive order is noncontiguous.
@@ -226,8 +213,6 @@ impl VisibilityPipelineManager {
 			material_evaluation_descriptor_set_layout,
 			materials_data_buffer_handle,
 			skinning_pass,
-			skinning_pose_scratch: Vec::new(),
-			skinning_pose_cache: Vec::new(),
 			skinning_palette_scratch: Vec::new(),
 			skinning_palette_cache: Vec::new(),
 			resource_manager,
@@ -239,6 +224,7 @@ impl VisibilityPipelineManager {
 			loaded_pipelines: HashMap::new(),
 			scene: VisibilitySceneManager {
 				render_entities: StableVec::new(),
+				skinning_poses: HashMap::new(),
 				views_data_buffer_handle,
 				descriptor_set,
 				textures_binding,
@@ -298,19 +284,7 @@ impl VisibilityPipelineManager {
 	pub(crate) fn remove_mesh(&mut self, handle: Handle) {
 		self.pending_renderables
 			.retain(|pending_renderable| pending_renderable.handle != handle);
-
-		let render_entity_handles = self
-			.scene
-			.render_entities
-			.handled_iter()
-			.filter_map(|(render_entity_handle, render_entity)| {
-				(render_entity.handle == handle).then_some(render_entity_handle)
-			})
-			.collect::<Vec<_>>();
-
-		for render_entity_handle in render_entity_handles {
-			self.scene.render_entities.remove(render_entity_handle);
-		}
+		self.scene.remove_renderable(handle);
 	}
 
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
@@ -501,14 +475,11 @@ impl VisibilityPipelineManager {
 		let render_entities = &self.scene.render_entities;
 		let active_instances = &mut self.scene.render_info.active_instances;
 		let skinning_dispatches = &mut self.scene.render_info.skinning_dispatches;
-		let pose_scratch = &mut self.skinning_pose_scratch;
-		let pose_cache = &mut self.skinning_pose_cache;
+		let skinning_poses = &self.scene.skinning_poses;
 		let palette_scratch = &mut self.skinning_palette_scratch;
 		let palette_cache = &mut self.skinning_palette_cache;
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_data_buffer);
 		// Frame caches retain capacity but never retain entity or resource pointers beyond this rebuild.
-		pose_scratch.clear();
-		pose_cache.clear();
 		palette_cache.clear();
 
 		let mut active_index = 0;
@@ -538,16 +509,17 @@ impl VisibilityPipelineManager {
 
 			if let Some(skinning) = render_entity.skinning.as_ref() {
 				let skeleton_node_count = skinning.skeleton_node_count as usize;
-				let pose = resolve_skinning_pose(
-					pose_cache,
-					pose_scratch,
-					&mut pose_matrix_count,
-					render_entity.handle,
-					skeleton_node_count,
-					|output| render_entity.entity.write_skinning_pose(output),
-				);
+				let pose = skinning_poses.get(&render_entity.handle);
+				if let Some(pose) = pose {
+					assert_eq!(
+						pose.len(),
+						skeleton_node_count,
+						"Visibility skin pose has the wrong matrix count. The most likely cause is that the pose was written for a different skeleton."
+					);
+					pose_matrix_count += pose.len();
+				}
 
-				if pose.available && skinning.vertex_count > 0 {
+				if let Some(pose) = pose.filter(|_| skinning.vertex_count > 0) {
 					let binding_ptr = Arc::as_ptr(&skinning.binding);
 					let palette_base = match cached_skin_palette_base(palette_cache, render_entity.handle, binding_ptr) {
 						Some(palette_base) => Some(palette_base),
@@ -564,10 +536,10 @@ impl VisibilityPipelineManager {
 							palette_scratch.resize(palette_end, identity_matrix4_columns());
 
 							let palette_base = palette_matrix_count as u32;
-							match skinning.binding.write_matrix_palette(
-								&pose_scratch[pose.matrix_offset..pose.matrix_offset + pose.matrix_count],
-								&mut palette_scratch[palette_matrix_count..palette_end],
-							) {
+							match skinning
+								.binding
+								.write_matrix_palette(pose, &mut palette_scratch[palette_matrix_count..palette_end])
+							{
 								Ok(()) => {
 									palette_matrix_count = palette_end;
 									palette_cache.push(SkinningPaletteCacheEntry {
@@ -710,45 +682,6 @@ impl VisibilityPipelineManager {
 			far: view.far(),
 		}
 	}
-}
-
-/// Finds a pose evaluated earlier in the frame, regardless of primitive ordering.
-fn cached_skinning_pose(cache: &[SkinningPoseCacheEntry], handle: Handle) -> Option<SkinningPoseCacheEntry> {
-	cache.iter().find(|entry| entry.handle == handle).copied()
-}
-
-/// Evaluates and retains one frame pose, or returns the pose already produced for an interleaved primitive.
-fn resolve_skinning_pose(
-	cache: &mut Vec<SkinningPoseCacheEntry>,
-	scratch: &mut Vec<Matrix4Columns>,
-	matrix_cursor: &mut usize,
-	handle: Handle,
-	matrix_count: usize,
-	write_pose: impl FnOnce(&mut [Matrix4Columns]) -> bool,
-) -> SkinningPoseCacheEntry {
-	if let Some(pose) = cached_skinning_pose(cache, handle) {
-		if pose.matrix_count != matrix_count {
-			panic!(
-				"Visibility renderable has conflicting skeleton sizes. The most likely cause is that one renderable instance references primitives from incompatible skeleton resources."
-			);
-		}
-		return pose;
-	}
-
-	let pose_end = matrix_cursor.checked_add(matrix_count).expect(
-		"Visibility skin pose count overflowed. The most likely cause is corrupted skeleton metadata containing an invalid node count.",
-	);
-	// Keep one stable slice per render handle so an interleaved primitive cannot observe a second pose evaluation.
-	scratch.resize(pose_end, identity_matrix4_columns());
-	let pose = SkinningPoseCacheEntry {
-		handle,
-		matrix_offset: *matrix_cursor,
-		matrix_count,
-		available: write_pose(&mut scratch[*matrix_cursor..pose_end]),
-	};
-	*matrix_cursor = pose_end;
-	cache.push(pose);
-	pose
 }
 
 /// Finds a binding already written for one renderable's frame pose, regardless of primitive ordering.
@@ -1168,7 +1101,7 @@ struct PendingMeshData {
 
 /// The `RenderEntity` struct preserves the mesh readiness dependency for a renderable instance.
 pub struct RenderEntity {
-	handle: Handle,
+	pub(crate) handle: Handle,
 	entity: EntityHandle<dyn RenderableMesh>,
 	shader_mesh: ShaderMesh,
 	skinning: Option<RenderSkin>,
@@ -1266,9 +1199,7 @@ mod tests {
 
 	use resource_management::resources::skeleton::SkinBinding;
 
-	use super::{
-		cached_skin_palette_base, reserve_deformed_vertex_range, resolve_skinning_pose, ShaderMesh, SkinningPaletteCacheEntry,
-	};
+	use super::{cached_skin_palette_base, reserve_deformed_vertex_range, ShaderMesh, SkinningPaletteCacheEntry};
 	use crate::core::factory::Factory;
 	use crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE;
 
@@ -1316,52 +1247,14 @@ mod tests {
 		assert_eq!(cursor, 11);
 	}
 
-	/// Ensures interleaved handles reuse one pose and keep their palettes instance-local.
+	/// Ensures interleaved handles keep their palettes instance-local.
 	#[test]
-	fn noncontiguous_primitives_reuse_their_frame_skinning_state() {
+	fn noncontiguous_primitives_reuse_their_frame_skinning_palette() {
 		let mut factory = Factory::new();
 		let first_handle = factory.create(());
 		let second_handle = factory.create(());
 		let first_binding = Arc::new(SkinBinding { entries: Vec::new() });
 		let second_binding = Arc::new(SkinBinding { entries: Vec::new() });
-		let mut pose_cache = Vec::new();
-		let mut pose_scratch = Vec::new();
-		let mut pose_matrix_count = 0;
-		let mut pose_write_count = 0;
-		let first_pose = resolve_skinning_pose(
-			&mut pose_cache,
-			&mut pose_scratch,
-			&mut pose_matrix_count,
-			first_handle,
-			3,
-			|output| {
-				pose_write_count += 1;
-				output[0][3][0] = 42.0;
-				true
-			},
-		);
-		let second_pose = resolve_skinning_pose(
-			&mut pose_cache,
-			&mut pose_scratch,
-			&mut pose_matrix_count,
-			second_handle,
-			5,
-			|_| {
-				pose_write_count += 1;
-				false
-			},
-		);
-		let repeated_pose = resolve_skinning_pose(
-			&mut pose_cache,
-			&mut pose_scratch,
-			&mut pose_matrix_count,
-			first_handle,
-			3,
-			|_| {
-				pose_write_count += 1;
-				false
-			},
-		);
 		let palette_cache = vec![
 			SkinningPaletteCacheEntry {
 				handle: first_handle,
@@ -1380,12 +1273,6 @@ mod tests {
 			},
 		];
 
-		assert_eq!(pose_write_count, 2);
-		assert_eq!(pose_matrix_count, 8);
-		assert_eq!(pose_scratch[first_pose.matrix_offset][3][0], 42.0);
-		assert!(!second_pose.available);
-		assert_eq!((repeated_pose.matrix_offset, repeated_pose.matrix_count), (0, 3));
-		assert!(repeated_pose.available);
 		assert_eq!(
 			cached_skin_palette_base(&palette_cache, first_handle, Arc::as_ptr(&first_binding)),
 			Some(7)

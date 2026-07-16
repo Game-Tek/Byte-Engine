@@ -2,7 +2,7 @@ use crate::{
 	resource,
 	resources::skeleton::{Skeleton, SkeletonModel},
 	solver::SolveErrors,
-	Model, Reference, ReferenceModel, Resource, Solver,
+	Reference, ReferenceModel, Solver,
 };
 
 /// Describes translation and scale keyframes in a representation ready for CPU pose evaluation.
@@ -147,15 +147,7 @@ pub struct AnimationModel {
 	pub tracks: Vec<NodeTrack>,
 }
 
-impl Resource for Animation {
-	type Model = AnimationModel;
-}
-
-impl Model for AnimationModel {
-	fn get_class() -> &'static str {
-		"Animation"
-	}
-}
+super::impl_resource_model!(Animation, AnimationModel, "Animation");
 
 impl<'de> Solver<'de, Animation> for AnimationModel {
 	/// Resolves the target skeleton and rejects clip data that a CPU graph could not evaluate deterministically.

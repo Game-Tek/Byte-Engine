@@ -100,18 +100,3 @@ impl ResourceManager {
 		})
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use crate::{Model, Resource};
-
-	impl Resource for () {
-		type Model = ();
-	}
-
-	impl Model for () {
-		fn get_class() -> &'static str {
-			"MyResource"
-		}
-	}
-}

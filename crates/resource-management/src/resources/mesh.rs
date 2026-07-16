@@ -4,7 +4,7 @@ use crate::{
 	resources::skeleton::{Skeleton, SkeletonModel, SkinBinding, SkinJoint},
 	solver::SolveErrors,
 	types::{IndexStreamTypes, QuantizationSchemes, Stream, Streams, VertexComponent, VertexSemantics},
-	Model, Reference, ReferenceModel, Resource, Solver,
+	Reference, ReferenceModel, Solver,
 };
 
 /// The `Primitive` struct supplies one renderable geometry range and its skeletal bindings to runtime rendering.
@@ -41,15 +41,7 @@ impl Primitive {
 	}
 }
 
-impl Resource for Primitive {
-	type Model = PrimitiveModel;
-}
-
-impl Model for PrimitiveModel {
-	fn get_class() -> &'static str {
-		"Primitive"
-	}
-}
+super::impl_resource_model!(Primitive, PrimitiveModel, "Primitive");
 
 impl<'de> Solver<'de, Primitive> for PrimitiveModel {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Primitive, SolveErrors> {
@@ -102,6 +94,15 @@ pub struct Mesh {
 	pub primitives: Vec<Primitive>,
 }
 
+// Named stream accessors remain part of the public API while sharing one exact cloned lookup implementation.
+macro_rules! cloned_stream_accessor {
+	($name:ident, $stream_type:expr) => {
+		pub fn $name(&self) -> Option<Stream> {
+			self.stream($stream_type).cloned()
+		}
+	};
+}
+
 impl Mesh {
 	pub fn primitives(&self) -> impl Iterator<Item = &Primitive> {
 		self.primitives.iter()
@@ -119,45 +120,20 @@ impl Mesh {
 		self.stream(Streams::Indices(stream_type))
 	}
 
-	pub fn position_stream(&self) -> Option<Stream> {
-		self.vertex_stream(VertexSemantics::Position).cloned()
-	}
-
-	pub fn normal_stream(&self) -> Option<Stream> {
-		self.vertex_stream(VertexSemantics::Normal).cloned()
-	}
-
-	pub fn tangent_stream(&self) -> Option<Stream> {
-		self.vertex_stream(VertexSemantics::Tangent).cloned()
-	}
-
-	pub fn bi_tangent_stream(&self) -> Option<Stream> {
-		self.vertex_stream(VertexSemantics::BiTangent).cloned()
-	}
-
-	pub fn uv_stream(&self) -> Option<Stream> {
-		self.vertex_stream(VertexSemantics::UV).cloned()
-	}
+	cloned_stream_accessor!(position_stream, Streams::Vertices(VertexSemantics::Position));
+	cloned_stream_accessor!(normal_stream, Streams::Vertices(VertexSemantics::Normal));
+	cloned_stream_accessor!(tangent_stream, Streams::Vertices(VertexSemantics::Tangent));
+	cloned_stream_accessor!(bi_tangent_stream, Streams::Vertices(VertexSemantics::BiTangent));
+	cloned_stream_accessor!(uv_stream, Streams::Vertices(VertexSemantics::UV));
 
 	pub fn color_stream(&self) -> Option<&Stream> {
 		self.vertex_stream(VertexSemantics::Color)
 	}
 
-	pub fn triangle_indices_stream(&self) -> Option<Stream> {
-		self.index_stream(IndexStreamTypes::Triangles).cloned()
-	}
-
-	pub fn vertex_indices_stream(&self) -> Option<Stream> {
-		self.index_stream(IndexStreamTypes::Vertices).cloned()
-	}
-
-	pub fn meshlet_indices_stream(&self) -> Option<Stream> {
-		self.index_stream(IndexStreamTypes::Meshlets).cloned()
-	}
-
-	pub fn meshlets_stream(&self) -> Option<Stream> {
-		self.stream(Streams::Meshlets).cloned()
-	}
+	cloned_stream_accessor!(triangle_indices_stream, Streams::Indices(IndexStreamTypes::Triangles));
+	cloned_stream_accessor!(vertex_indices_stream, Streams::Indices(IndexStreamTypes::Vertices));
+	cloned_stream_accessor!(meshlet_indices_stream, Streams::Indices(IndexStreamTypes::Meshlets));
+	cloned_stream_accessor!(meshlets_stream, Streams::Meshlets);
 
 	pub fn vertex_count(&self) -> usize {
 		self.primitives.iter().map(|p| p.vertex_count as usize).sum()
@@ -172,10 +148,6 @@ impl Mesh {
 	}
 }
 
-impl Resource for Mesh {
-	type Model = MeshModel;
-}
-
 /// The `MeshModel` struct preserves processed geometry and skeletal bindings for storage and later runtime solving.
 #[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct MeshModel {
@@ -186,11 +158,7 @@ pub struct MeshModel {
 	pub primitives: Vec<PrimitiveModel>,
 }
 
-impl Model for MeshModel {
-	fn get_class() -> &'static str {
-		"Mesh"
-	}
-}
+super::impl_resource_model!(Mesh, MeshModel, "Mesh");
 
 impl<'de> Solver<'de, Reference<Mesh>> for ReferenceModel<MeshModel> {
 	/// Resolves mesh dependencies only after confirming its skin tables are safe for CPU pose and GPU palette workflows.

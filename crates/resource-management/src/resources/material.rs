@@ -5,7 +5,7 @@ use crate::{
 	resources::image::Image,
 	solver::SolveErrors,
 	types::{AlphaMode, ShaderTypes},
-	Model, Reference, ReferenceModel, Resource, Solver,
+	Reference, ReferenceModel, Solver,
 };
 
 #[derive(Debug, Serialize)]
@@ -52,15 +52,7 @@ impl Material {
 	}
 }
 
-impl Resource for Material {
-	type Model = MaterialModel;
-}
-
-impl Model for MaterialModel {
-	fn get_class() -> &'static str {
-		"Material"
-	}
-}
+super::impl_resource_model!(Material, MaterialModel, "Material");
 
 impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Material>, SolveErrors> {
@@ -144,22 +136,13 @@ pub struct Variant {
 	pub alpha_mode: AlphaMode,
 }
 
-impl Resource for Variant {
-	type Model = VariantModel;
-}
-
 #[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct VariantModel {
 	pub material: ReferenceModel<MaterialModel>,
 	pub variables: Vec<VariantVariableModel>,
 	pub alpha_mode: AlphaMode,
 }
-
-impl Model for VariantModel {
-	fn get_class() -> &'static str {
-		"Variant"
-	}
-}
+super::impl_resource_model!(Variant, VariantModel, "Variant");
 
 impl<'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Variant>, SolveErrors> {
@@ -233,40 +216,7 @@ impl Shader {
 	}
 }
 
-impl Resource for Shader {
-	type Model = Shader;
-}
-
-impl Model for Shader {
-	fn get_class() -> &'static str {
-		"Shader"
-	}
-}
-
-impl<'de> Solver<'de, Reference<Shader>> for ReferenceModel<Shader> {
-	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Reference<Shader>, SolveErrors> {
-		let (gr, reader) = storage_backend.read(self.id()).ok_or(SolveErrors::StorageError)?;
-		let Shader {
-			id,
-			stage,
-			interface,
-			artifact,
-			source_hash,
-		} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
-
-		Ok(Reference::from_model(
-			self,
-			Shader {
-				id,
-				stage,
-				interface,
-				artifact,
-				source_hash,
-			},
-			reader,
-		))
-	}
-}
+super::impl_direct_resource!(Shader, "Shader");
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct RenderModel {
@@ -309,8 +259,8 @@ pub struct ParameterModel {
 impl<'de> Solver<'de, Parameter> for ParameterModel {
 	fn solve(self, storage_backend: &dyn resource::ReadStorageBackend) -> Result<Parameter, SolveErrors> {
 		Ok(Parameter {
-			r#type: self.r#type.clone(),
-			name: self.name.clone(),
+			r#type: self.r#type,
+			name: self.name,
 			value: match self.value {
 				ValueModel::Scalar(scalar) => Value::Scalar(scalar),
 				ValueModel::Vector3(vector) => Value::Vector3(vector),

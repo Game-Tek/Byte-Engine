@@ -44,14 +44,7 @@ pub fn process_image<'a>(
 	description: ImageDescription,
 	buffer: Box<[u8]>,
 ) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-	let (resource, buffer, streams) = produce_image_in(&description, buffer, Global)?;
-	let asset = ProcessedAsset::new(id, resource);
-	let asset = if let Some(streams) = streams {
-		asset.with_streams(streams)
-	} else {
-		asset
-	};
-	Ok((asset, buffer))
+	process_image_in(id, description, buffer, Global)
 }
 
 /// Processes image pixels using the provided allocator for transient and output buffers.

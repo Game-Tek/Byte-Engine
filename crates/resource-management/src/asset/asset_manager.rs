@@ -144,19 +144,7 @@ impl AssetManager {
 		id: &str,
 		resource_storage_backend: &dyn ResourceStorageBackend,
 	) -> Result<ReferenceModel<M>, LoadMessages> {
-		let id = ResourceId::new(id);
-
-		if resource_storage_backend.read(id).is_none() {
-			self.bake(id.as_ref(), resource_storage_backend).await?;
-		}
-
-		if let Some(result) = resource_storage_backend.read(id) {
-			let (resource, _) = result;
-			let resource: ReferenceModel<M> = resource.into();
-			return Ok(resource);
-		}
-
-		Err(LoadMessages::NoAsset)
+		self.bake_if_not_exists_in(id, resource_storage_backend, &Global).await
 	}
 
 	/// Bakes an asset with the provided allocator if the resource does not already exist.

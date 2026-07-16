@@ -4,16 +4,7 @@ use super::{
 	audio_utils::{bit_depth_from_bits_per_sample, sample_count_from_pcm_len},
 	ResourceId,
 };
-use crate::{
-	asset, processors::audio_processor::process_audio_in, r#async::BoxedFuture, resource, resources::audio::Audio,
-	ProcessedAsset,
-};
-
-impl Default for WAVAssetHandler {
-	fn default() -> Self {
-		Self::new()
-	}
-}
+use crate::{asset, processors::audio_processor::process_audio_in, resource, resources::audio::Audio, ProcessedAsset};
 
 impl WAVAssetHandler {
 	/// Parses a WAV buffer into audio metadata and a borrowed PCM payload.
@@ -128,11 +119,12 @@ impl WAVAssetHandler {
 	}
 
 	pub fn new() -> WAVAssetHandler {
-		WAVAssetHandler {}
+		Self::default()
 	}
 }
 
 /// The `WAVAssetHandler` struct exists to load WAV audio assets into engine audio resources.
+#[derive(Default)]
 pub struct WAVAssetHandler {}
 
 impl AssetHandler for WAVAssetHandler {

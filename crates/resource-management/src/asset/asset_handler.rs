@@ -1,7 +1,7 @@
 use std::alloc::Allocator;
 
 use super::{asset_manager::AssetManager, ResourceId};
-use crate::{asset, r#async::BoxedFuture, resource, ProcessedAsset};
+use crate::{asset, resource, ProcessedAsset};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoadErrors {

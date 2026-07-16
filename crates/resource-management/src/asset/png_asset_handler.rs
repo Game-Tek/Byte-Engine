@@ -10,7 +10,6 @@ use super::{
 use crate::{
 	asset,
 	processors::image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription},
-	r#async::BoxedFuture,
 	resource,
 	types::{Formats, Gamma},
 	ProcessedAsset,

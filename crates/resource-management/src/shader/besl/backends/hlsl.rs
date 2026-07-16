@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 
 use crate::shader::generator::{
-	emit_comma_separated_nodes, operator_token, ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting,
-	ShaderGenerationSettings, ShaderGenerator, Stages,
+	emit_comma_separated_nodes, ordered_shader_nodes, MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings,
+	ShaderGenerator, Stages,
 };
 
 /// The `Generator` struct exists to produce HLSL source for DirectX-backed shader pipelines.
@@ -642,18 +642,6 @@ impl Generator {
 				if *operator == besl::Operators::Assignment && self.emit_atomic_add_assignment(string, left, right) => {}
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
-			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
-				if *operator == besl::Operators::Multiply
-					&& (Self::is_matrix_type(Self::node_type_name(left))
-						|| Self::is_matrix_type(Self::node_type_name(right))) =>
-			{
-				// HLSL matrix-vector multiplication is best expressed through mul so row-major operands type-check.
-				string.push_str("mul(");
-				self.emit_node_string(string, left);
-				string.push_str(", ");
-				self.emit_node_string(string, right);
-				string.push(')');
-			}
 			besl::Nodes::PushConstant { members } => {
 				// DX12 root constants are exposed to HLSL as a constant buffer in the space after descriptor sets.
 				if self.minified {
@@ -788,8 +776,6 @@ impl Generator {
 					location
 				));
 			}
-			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
-				if *operator == besl::Operators::Assignment && self.emit_atomic_add_assignment(string, left, right) => {}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
 			besl::Nodes::Conditional { condition, statements } => self.emit_conditional_node(string, condition, statements),
 			besl::Nodes::ForLoop {
@@ -1053,7 +1039,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		string.push_str(name);
 		true
 	}
-	fn emit_expression_node(&mut self, string: &mut String, expression: &besl::Expressions) {
+	fn emit_expression_override(&mut self, string: &mut String, expression: &besl::Expressions) -> bool {
 		if let besl::Expressions::Operator { operator, left, right } = expression {
 			if *operator == besl::Operators::Multiply
 				&& (Self::is_matrix_type(Self::node_type_name(left)) || Self::is_matrix_type(Self::node_type_name(right)))
@@ -1064,7 +1050,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				string.push_str(", ");
 				self.emit_node_string(string, right);
 				string.push(')');
-				return;
+				return true;
 			}
 			if *operator == besl::Operators::Multiply {
 				let left_name = left.borrow().get_name().map(str::to_string);
@@ -1075,7 +1061,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 					string.push_str(", ");
 					self.emit_node_string(string, right);
 					string.push(')');
-					return;
+					return true;
 				}
 				let mut left_operand = String::new();
 				self.emit_node_string(&mut left_operand, left);
@@ -1086,77 +1072,12 @@ impl crate::shader::generator::NodeEmitter for Generator {
 					string.push_str(", ");
 					self.emit_node_string(string, right);
 					string.push(')');
-					return;
+					return true;
 				}
 			}
 		}
 
-		let formatting = ShaderFormatting::new(self.minified);
-		match expression {
-			besl::Expressions::Operator { operator, left, right } => {
-				self.emit_wrapped_expression(string, left);
-				let operator = operator_token(operator);
-				if self.minified {
-					string.push_str(operator)
-				} else {
-					string.push(' ');
-					string.push_str(operator);
-					string.push(' ');
-				}
-				self.emit_wrapped_expression(string, right);
-			}
-			besl::Expressions::FunctionCall {
-				parameters, function, ..
-			} => {
-				let function_ref = function.clone();
-				let function = RefCell::borrow(&function_ref);
-				let name = function.get_name().unwrap();
-				Self::emit_type_name(string, name);
-				string.push('(');
-				emit_comma_separated_nodes(string, formatting, parameters, |string, parameter| {
-					self.emit_node(string, parameter)
-				});
-				self.emit_function_call_extra_arguments(string, &function_ref, !parameters.is_empty());
-				string.push(')');
-			}
-			besl::Expressions::IntrinsicCall {
-				intrinsic,
-				arguments,
-				elements,
-			} => {
-				self.emit_intrinsic_call(string, intrinsic, arguments, elements);
-			}
-			besl::Expressions::Expression { elements } => {
-				for element in elements {
-					self.emit_node(string, element);
-				}
-			}
-			besl::Expressions::Macro { .. } => {}
-			besl::Expressions::Member { name, source, .. } => {
-				if self.emit_expression_member(string, name, source) {
-					return;
-				}
-				match source.borrow().node() {
-					besl::Nodes::Literal { value, .. } => self.emit_node(string, value),
-					_ => string.push_str(name),
-				}
-			}
-			besl::Expressions::VariableDeclaration { name, r#type } => {
-				Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
-				string.push(' ');
-				string.push_str(name);
-			}
-			besl::Expressions::Literal { value } => string.push_str(value),
-			besl::Expressions::Return { value } => {
-				string.push_str("return");
-				if let Some(value) = value {
-					string.push(' ');
-					self.emit_node(string, value);
-				}
-			}
-			besl::Expressions::Continue => string.push_str("continue"),
-			besl::Expressions::Accessor { left, right } => self.emit_accessor_expression(string, left, right),
-		}
+		false
 	}
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
 		if let (Some(binding), Some(field_name)) = (Self::hlsl_buffer_binding_source(left), Self::hlsl_member_name(right)) {

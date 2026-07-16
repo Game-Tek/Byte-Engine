@@ -13,7 +13,7 @@ use super::{
 use crate::shader::besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage};
 use crate::{
 	asset,
-	r#async::{spawn_cpu_task, BoxedFuture},
+	r#async::spawn_cpu_task,
 	resource,
 	resources::material::{
 		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderArtifact, ShaderInterface, ValueModel, VariantModel,

@@ -584,16 +584,7 @@ macro_rules! descriptor_template_constructors {
 
 impl DescriptorSetBindingTemplate {
 	pub const fn new(binding: u32, descriptor_type: DescriptorType, stages: Stages) -> Self {
-		Self {
-			binding,
-			descriptor_type,
-			descriptor_count: 1,
-			stages,
-			immutable_samplers: None,
-			texture_view_type: TextureViewTypes::Texture2D,
-			buffer_stride: 4,
-			buffer_read_only: false,
-		}
+		Self::new_array(binding, descriptor_type, stages, 1)
 	}
 
 	pub const fn new_array(binding: u32, descriptor_type: DescriptorType, stages: Stages, count: u32) -> Self {
@@ -636,16 +627,9 @@ impl DescriptorSetBindingTemplate {
 	}
 
 	pub fn new_with_immutable_samplers(binding: u32, stages: Stages, samplers: Option<Vec<SamplerHandle>>) -> Self {
-		Self {
-			binding,
-			descriptor_type: DescriptorType::Sampler,
-			descriptor_count: 1,
-			stages,
-			immutable_samplers: samplers,
-			texture_view_type: TextureViewTypes::Texture2D,
-			buffer_stride: 4,
-			buffer_read_only: false,
-		}
+		let mut template = Self::sampler(binding, stages);
+		template.immutable_samplers = samplers;
+		template
 	}
 
 	pub fn into_shader_binding_descriptor(&self, set: u32, access_policies: AccessPolicies) -> BindingDescriptor {
@@ -668,52 +652,44 @@ pub struct BindingConstructor<'a> {
 }
 
 impl<'a> BindingConstructor<'a> {
-	pub fn buffer(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, buffer_handle: BaseBufferHandle) -> Self {
+	fn new(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, descriptor: descriptors::WriteData) -> Self {
 		Self {
 			descriptor_set_binding_template,
 			array_element: 0,
-			descriptor: descriptors::WriteData::Buffer {
-				handle: buffer_handle,
-				size: Ranges::Whole,
-			},
+			descriptor,
 			frame_offset: None,
 		}
+	}
+
+	pub fn buffer(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, buffer_handle: BaseBufferHandle) -> Self {
+		Self::new(descriptor_set_binding_template, descriptors::WriteData::buffer(buffer_handle))
 	}
 
 	pub fn image(
 		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
 		image_handle: impl Into<BaseImageHandle>,
 	) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::Image {
-				handle: image_handle.into(),
-				layout: crate::Layouts::General,
-			},
-			frame_offset: None,
-		}
+			descriptors::WriteData::image(image_handle, crate::Layouts::General),
+		)
 	}
 
 	pub fn swapchain(
 		descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
 		swapchain_handle: SwapchainHandle,
 	) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::Swapchain(swapchain_handle),
-			frame_offset: None,
-		}
+			descriptors::WriteData::Swapchain(swapchain_handle),
+		)
 	}
 
 	pub fn sampler(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate, sampler_handle: SamplerHandle) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::Sampler(sampler_handle),
-			frame_offset: None,
-		}
+			descriptors::WriteData::Sampler(sampler_handle),
+		)
 	}
 
 	pub fn combined_image_sampler(
@@ -722,26 +698,17 @@ impl<'a> BindingConstructor<'a> {
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 	) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::CombinedImageSampler {
-				image_handle: image_handle.into(),
-				sampler_handle,
-				layout,
-				layer: None,
-			},
-			frame_offset: None,
-		}
+			descriptors::WriteData::combined_image_sampler(image_handle, sampler_handle, layout, None),
+		)
 	}
 
 	pub fn combined_image_sampler_array(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::CombinedImageSamplerArray,
-			frame_offset: None,
-		}
+			descriptors::WriteData::CombinedImageSamplerArray,
+		)
 	}
 
 	pub fn combined_image_sampler_layer(
@@ -751,40 +718,24 @@ impl<'a> BindingConstructor<'a> {
 		layout: Layouts,
 		layer_index: u32,
 	) -> Self {
-		Self {
+		Self::new(
 			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::CombinedImageSampler {
-				image_handle: image_handle.into(),
-				sampler_handle,
-				layout,
-				layer: Some(layer_index),
-			},
-			frame_offset: None,
-		}
+			descriptors::WriteData::combined_image_sampler(image_handle, sampler_handle, layout, Some(layer_index)),
+		)
 	}
 
 	pub fn sampler_with_immutable_samplers(descriptor_set_binding_template: &'a DescriptorSetBindingTemplate) -> Self {
-		Self {
-			descriptor_set_binding_template,
-			array_element: 0,
-			descriptor: descriptors::WriteData::StaticSamplers,
-			frame_offset: None,
-		}
+		Self::new(descriptor_set_binding_template, descriptors::WriteData::StaticSamplers)
 	}
 
 	pub fn acceleration_structure(
 		bindings: &'a DescriptorSetBindingTemplate,
 		top_level_acceleration_structure: TopLevelAccelerationStructureHandle,
 	) -> Self {
-		BindingConstructor {
-			descriptor_set_binding_template: bindings,
-			array_element: 0,
-			descriptor: descriptors::WriteData::AccelerationStructure {
-				handle: top_level_acceleration_structure,
-			},
-			frame_offset: None,
-		}
+		Self::new(
+			bindings,
+			descriptors::WriteData::acceleration_structure(top_level_acceleration_structure),
+		)
 	}
 
 	pub fn frame(mut self, frame_offset: i8) -> Self {
@@ -976,30 +927,34 @@ pub(super) mod tests {
 				D::AccelerationStructure,
 			),
 		];
-		let assert_template = |template: &Template, binding: u32, count: u32, descriptor_type: D| {
-			assert_eq!(template.binding, binding);
-			assert_eq!(
-				std::mem::discriminant(&template.descriptor_type),
-				std::mem::discriminant(&descriptor_type)
-			);
-			assert_eq!(template.descriptor_count, count);
-			assert_eq!(template.stages, stages);
-			assert!(template.immutable_samplers.is_none());
-			assert!(matches!(template.texture_view_type, TextureViewTypes::Texture2D));
-			assert_eq!(template.buffer_stride, 4);
-			assert!(!template.buffer_read_only);
-		};
+		let assert_template =
+			|template: &Template, binding: u32, count: u32, descriptor_type: D, samplers: Option<&[SamplerHandle]>| {
+				assert_eq!(template.binding, binding);
+				assert_eq!(
+					std::mem::discriminant(&template.descriptor_type),
+					std::mem::discriminant(&descriptor_type)
+				);
+				assert_eq!(template.descriptor_count, count);
+				assert_eq!(template.stages, stages);
+				assert_eq!(template.immutable_samplers.as_deref(), samplers);
+				assert!(matches!(template.texture_view_type, TextureViewTypes::Texture2D));
+				assert_eq!(template.buffer_stride, 4);
+				assert!(!template.buffer_read_only);
+			};
 
 		for (index, (single, array, descriptor_type)) in cases.into_iter().enumerate() {
 			let single = single(index as u32, stages);
 			let array = array(index as u32 + 8, stages, index as u32 + 2);
-			assert_template(&single, index as u32, 1, descriptor_type);
-			assert_template(&array, index as u32 + 8, index as u32 + 2, descriptor_type);
+			assert_template(&single, index as u32, 1, descriptor_type, None);
+			assert_template(&array, index as u32 + 8, index as u32 + 2, descriptor_type, None);
 		}
+
+		let immutable = Template::new_with_immutable_samplers(16, stages, Some(vec![SamplerHandle(19), SamplerHandle(20)]));
+		assert_template(&immutable, 16, 1, D::Sampler, Some(&[SamplerHandle(19), SamplerHandle(20)]));
 	}
 
 	#[test]
-	fn binding_constructor_layout_updates_combined_image_sampler() {
+	fn binding_constructors_preserve_defaults_and_combined_image_details() {
 		let template = DescriptorSetBindingTemplate::combined_image_sampler(0, Stages::FRAGMENT);
 		let constructor = BindingConstructor::combined_image_sampler(
 			&template,
@@ -1009,13 +964,42 @@ pub(super) mod tests {
 		)
 		.layout(Layouts::General);
 
+		assert!(std::ptr::eq(constructor.descriptor_set_binding_template, &template));
+		assert_eq!(constructor.array_element, 0);
+		assert_eq!(constructor.frame_offset, None);
 		assert!(matches!(
 			constructor.descriptor,
 			descriptors::WriteData::CombinedImageSampler {
+				image_handle: BaseImageHandle(3),
+				sampler_handle: SamplerHandle(4),
 				layout: Layouts::General,
-				..
+				layer: None,
 			}
 		));
+
+		let layer = BindingConstructor::combined_image_sampler_layer(
+			&template,
+			ImageHandle(BaseImageHandle(5)),
+			SamplerHandle(6),
+			Layouts::Read,
+			7,
+		);
+		assert_eq!(layer.array_element, 0);
+		assert_eq!(layer.frame_offset, None);
+		assert!(matches!(
+			layer.descriptor,
+			descriptors::WriteData::CombinedImageSampler {
+				image_handle: BaseImageHandle(5),
+				sampler_handle: SamplerHandle(6),
+				layout: Layouts::Read,
+				layer: Some(7),
+			}
+		));
+
+		let static_samplers = BindingConstructor::sampler_with_immutable_samplers(&template).frame(-1);
+		assert_eq!(static_samplers.array_element, 0);
+		assert_eq!(static_samplers.frame_offset, Some(-1));
+		assert!(matches!(static_samplers.descriptor, descriptors::WriteData::StaticSamplers));
 	}
 
 	#[test]

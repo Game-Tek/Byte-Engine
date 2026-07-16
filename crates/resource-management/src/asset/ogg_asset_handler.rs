@@ -5,8 +5,7 @@ use super::{
 	ResourceId,
 };
 use crate::{
-	asset, processors::audio_processor::process_audio_in, r#async::BoxedFuture, resource, resources::audio::Audio,
-	types::BitDepths, ProcessedAsset,
+	asset, processors::audio_processor::process_audio_in, resource, resources::audio::Audio, types::BitDepths, ProcessedAsset,
 };
 
 impl Default for OGGAssetHandler {

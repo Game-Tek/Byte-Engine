@@ -154,15 +154,7 @@ impl<T: Model> Clone for ReferenceModel<T> {
 
 impl<T: Model> ReferenceModel<T> {
 	pub fn new(id: &str, hash: u64, size: usize, resource: &T, streams: Option<Vec<StreamDescription>>) -> Self {
-		ReferenceModel {
-			id: id.to_string(),
-			hash,
-			size,
-			class: T::get_class().to_string(),
-			resource: to_vec(resource).unwrap(),
-			phantom: std::marker::PhantomData,
-			streams,
-		}
+		Self::new_serialized(id, hash, size, to_vec(resource).unwrap(), streams)
 	}
 
 	pub fn new_serialized(

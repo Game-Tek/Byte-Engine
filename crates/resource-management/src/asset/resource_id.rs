@@ -80,63 +80,42 @@ impl<'a> ResourceId<'a> {
 	}
 }
 
-impl Debug for ResourceId<'_> {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(self.full)
-	}
+// All resource-ID views expose their borrowed component through the same formatting and conversion contract.
+macro_rules! impl_resource_id_view {
+	($view:ident, $field:ident) => {
+		impl Debug for $view<'_> {
+			fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				formatter.write_str(self.$field)
+			}
+		}
+
+		impl ToString for $view<'_> {
+			fn to_string(&self) -> String {
+				self.$field.to_string()
+			}
+		}
+
+		impl AsRef<str> for $view<'_> {
+			fn as_ref(&self) -> &str {
+				self.$field
+			}
+		}
+	};
 }
 
-impl ToString for ResourceId<'_> {
-	fn to_string(&self) -> String {
-		self.full.to_string()
-	}
-}
-
-impl AsRef<str> for ResourceId<'_> {
-	fn as_ref(&self) -> &str {
-		self.full
-	}
-}
-
-impl Debug for ResourceIdBase<'_> {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(self.base)
-	}
-}
-
-impl ToString for ResourceIdBase<'_> {
-	fn to_string(&self) -> String {
-		self.base.to_string()
-	}
-}
-
-impl AsRef<str> for ResourceIdBase<'_> {
-	fn as_ref(&self) -> &str {
-		self.base
-	}
-}
-
-impl Debug for ResourceIdFragment<'_> {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(self.fragment)
-	}
-}
-
-impl ToString for ResourceIdFragment<'_> {
-	fn to_string(&self) -> String {
-		self.fragment.to_string()
-	}
-}
-
-impl AsRef<str> for ResourceIdFragment<'_> {
-	fn as_ref(&self) -> &str {
-		self.fragment
-	}
-}
+impl_resource_id_view!(ResourceId, full);
+impl_resource_id_view!(ResourceIdBase, base);
+impl_resource_id_view!(ResourceIdFragment, fragment);
 
 #[cfg(test)]
 pub mod tests {
-	use super::{get_base, get_fragment};
+	use super::{get_base, get_fragment, ResourceId};
+
+	fn assert_text_view(view: &(impl AsRef<str> + std::fmt::Debug + ToString), expected: &str) {
+		assert_eq!(view.as_ref(), expected);
+		assert_eq!(view.to_string(), expected);
+		assert_eq!(format!("{view:?}"), expected);
+	}
 
 	#[test]
 	fn test_base_url_parse() {
@@ -161,5 +140,13 @@ pub mod tests {
 	#[test]
 	fn extensionless_resource_ids_report_an_empty_format_without_panicking() {
 		assert_eq!(super::ResourceId::new("buffers/skeleton").get_extension(), "");
+	}
+
+	#[test]
+	fn resource_id_views_preserve_their_exact_text_across_public_conversions() {
+		let id = ResourceId::new("meshes/Box.gltf#texture");
+		assert_text_view(&id, "meshes/Box.gltf#texture");
+		assert_text_view(&id.get_base(), "meshes/Box.gltf");
+		assert_text_view(&id.get_fragment().unwrap(), "texture");
 	}
 }

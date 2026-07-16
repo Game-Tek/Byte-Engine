@@ -9,7 +9,10 @@ use std::{
 
 pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledShaderBinding as Binding};
 use crate::shader::{
-	besl::backends::msl::MSLShaderGenerator,
+	besl::{
+		backends::msl::MSLShaderGenerator,
+		evaluation::{collect_bindings, BindingRecord, IntrinsicBindingTraversalOrder},
+	},
 	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
 };
 
@@ -20,6 +23,16 @@ pub struct Compiler<A: Allocator + Clone = Global> {
 }
 
 impl<A: Allocator + Clone> ShaderGenerator for Compiler<A> {}
+
+impl BindingRecord for CompiledShaderBinding {
+	fn from_usage(set: u32, binding: u32, read: bool, write: bool) -> Self {
+		Self::new(set, binding, read, write)
+	}
+
+	fn usage(&self) -> (u32, u32, bool, bool) {
+		(self.set, self.binding, self.read, self.write)
+	}
+}
 
 impl Default for Compiler<Global> {
 	fn default() -> Self {
@@ -68,8 +81,6 @@ impl<A: Allocator + Clone> Compiler<A> {
 
 		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name)?;
 
-		let mut bindings = Vec::with_capacity(16);
-
 		{
 			let node_borrow = RefCell::borrow(main_function_node);
 			let node_ref = node_borrow.node();
@@ -82,15 +93,10 @@ impl<A: Allocator + Clone> Compiler<A> {
 			}
 		}
 
-		self.build_graph(&mut bindings, main_function_node);
-
-		bindings.sort_by(|a, b| {
-			if a.set == b.set {
-				a.binding.cmp(&b.binding)
-			} else {
-				a.set.cmp(&b.set)
-			}
-		});
+		let bindings = collect_bindings::<CompiledShaderBinding>(
+			main_function_node,
+			IntrinsicBindingTraversalOrder::ElementsBeforeDefinition,
+		);
 
 		Ok(CompiledShader::new(
 			binary,
@@ -100,141 +106,6 @@ impl<A: Allocator + Clone> Compiler<A> {
 				_ => None,
 			},
 		))
-	}
-
-	fn build_graph(&mut self, bindings: &mut Vec<CompiledShaderBinding>, node: &besl::NodeReference) {
-		let node_borrow = RefCell::borrow(node);
-		let node_ref = node_borrow.node();
-
-		match node_ref {
-			besl::Nodes::Function { statements, .. } => {
-				for statement in statements {
-					self.build_graph(bindings, statement);
-				}
-			}
-			besl::Nodes::Conditional { condition, statements } => {
-				self.build_graph(bindings, condition);
-				for statement in statements {
-					self.build_graph(bindings, statement);
-				}
-			}
-			besl::Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => {
-				self.build_graph(bindings, initializer);
-				self.build_graph(bindings, condition);
-				self.build_graph(bindings, update);
-				for statement in statements {
-					self.build_graph(bindings, statement);
-				}
-			}
-			besl::Nodes::Expression(expresions) => {
-				match expresions {
-					besl::Expressions::FunctionCall { parameters, function } => {
-						self.build_graph(bindings, function);
-						for parameter in parameters {
-							self.build_graph(bindings, parameter);
-						}
-					}
-					besl::Expressions::Accessor { left, right } => {
-						self.build_graph(bindings, left);
-						self.build_graph(bindings, right);
-					}
-					besl::Expressions::Expression { elements } => {
-						for element in elements {
-							self.build_graph(bindings, element);
-						}
-					}
-					besl::Expressions::IntrinsicCall { intrinsic, elements, .. } => {
-						for element in elements {
-							self.build_graph(bindings, element);
-						}
-						self.build_graph(bindings, intrinsic);
-					}
-					besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => {
-						// Do nothing
-					}
-					besl::Expressions::Macro { body, .. } => {
-						self.build_graph(bindings, body);
-					}
-					besl::Expressions::Member { source, .. } => {
-						self.build_graph(bindings, source);
-					}
-					besl::Expressions::Operator { left, right, .. } => {
-						self.build_graph(bindings, left);
-						self.build_graph(bindings, right);
-					}
-					besl::Expressions::VariableDeclaration { r#type, .. } => {
-						self.build_graph(bindings, r#type);
-					}
-				}
-			}
-			besl::Nodes::Binding {
-				set,
-				binding,
-				read,
-				write,
-				..
-			} => {
-				if bindings.iter().find(|b| b.binding == *binding && b.set == *set).is_none() {
-					bindings.push(CompiledShaderBinding::new(*set, *binding, *read, *write));
-				}
-			}
-			besl::Nodes::Raw { input, output, .. } => {
-				for input in input {
-					self.build_graph(bindings, input);
-				}
-				for output in output {
-					self.build_graph(bindings, output);
-				}
-			}
-			besl::Nodes::Struct { fields, .. } => {
-				for member in fields {
-					self.build_graph(bindings, member);
-				}
-			}
-			besl::Nodes::Intrinsic { elements, r#return, .. } => {
-				for element in elements {
-					self.build_graph(bindings, element);
-				}
-				self.build_graph(bindings, r#return);
-			}
-			besl::Nodes::Literal { value, .. } => {
-				self.build_graph(bindings, value);
-			}
-			besl::Nodes::Member { r#type, .. } => {
-				self.build_graph(bindings, r#type);
-			}
-			besl::Nodes::Input { format, .. } | besl::Nodes::Output { format, .. } => {
-				self.build_graph(bindings, format);
-			}
-			besl::Nodes::Null => {
-				// Do nothing
-			}
-			besl::Nodes::Parameter { r#type, .. } => {
-				self.build_graph(bindings, r#type);
-			}
-			besl::Nodes::PushConstant { members } => {
-				for member in members {
-					self.build_graph(bindings, member);
-				}
-			}
-			besl::Nodes::Scope { children, .. } => {
-				for child in children {
-					self.build_graph(bindings, child);
-				}
-			}
-			besl::Nodes::Specialization { r#type, .. } => {
-				self.build_graph(bindings, r#type);
-			}
-			besl::Nodes::Const { r#type, value, .. } => {
-				self.build_graph(bindings, r#type);
-				self.build_graph(bindings, value);
-			}
-		}
 	}
 }
 
@@ -408,7 +279,57 @@ pub use Compiler as MSLShaderCompiler;
 
 #[cfg(test)]
 mod tests {
-	use super::format_tool_failure;
+	use super::{format_tool_failure, CompiledShaderBinding};
+	use crate::shader::besl::evaluation::{collect_bindings, BindingRecord, BindingUsage, IntrinsicBindingTraversalOrder};
+
+	fn binding(name: &str, set: u32, binding: u32, read: bool, write: bool) -> besl::NodeReference {
+		besl::Node::binding(
+			name,
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			set,
+			binding,
+			read,
+			write,
+		)
+		.into()
+	}
+
+	fn usage<T: BindingRecord>(bindings: &[T]) -> Vec<(u32, u32, bool, bool)> {
+		bindings.iter().map(BindingRecord::usage).collect()
+	}
+
+	#[test]
+	fn binding_collector_preserves_msl_intrinsic_order_and_first_wins_access() {
+		let root = besl::Node::root();
+		let void_type = root.get_child("void").expect("Expected the built-in void type");
+		let intrinsic: besl::NodeReference = besl::Node::intrinsic(
+			"binding_order_fixture",
+			vec![
+				binding("definition_first", 0, 0, true, false),
+				binding("definition_only", 1, 2, true, true),
+			],
+			void_type.clone(),
+		)
+		.into();
+		// Conflicting duplicate slots make traversal order and first-wins behavior observable without compiling MSL.
+		let call = besl::Node::expression(besl::Expressions::IntrinsicCall {
+			intrinsic,
+			arguments: Vec::new(),
+			elements: vec![
+				binding("element_first", 0, 0, false, true),
+				binding("element_duplicate", 0, 0, true, true),
+			],
+		})
+		.into();
+		let main: besl::NodeReference = besl::Node::function("main", Vec::new(), void_type, vec![call]).into();
+
+		let compiled =
+			collect_bindings::<CompiledShaderBinding>(&main, IntrinsicBindingTraversalOrder::ElementsBeforeDefinition);
+		assert_eq!(usage(&compiled), vec![(0, 0, false, true), (1, 2, true, true)]);
+
+		let evaluated = collect_bindings::<BindingUsage>(&main, IntrinsicBindingTraversalOrder::DefinitionBeforeElements);
+		assert_eq!(usage(&evaluated), vec![(0, 0, true, false), (1, 2, true, true)]);
+	}
 
 	#[test]
 	fn tool_failure_includes_exit_status_and_stderr() {

@@ -293,6 +293,21 @@ impl Formats {
 		Some(bc_layout(width, height, self.bc_bytes_per_block()?))
 	}
 
+	/// Returns compact row bytes, row count, and image bytes for one texture level.
+	pub fn compact_copy_layout(&self, width: u32, height: u32) -> (usize, usize, usize) {
+		if let Some(layout) = self.bc_layout(width, height) {
+			return (
+				layout.bytes_per_row as usize,
+				layout.blocks_h as usize,
+				layout.bytes_per_image as usize,
+			);
+		}
+
+		let bytes_per_row = width as usize * self.size();
+		let row_count = height as usize;
+		(bytes_per_row, row_count, bytes_per_row * row_count)
+	}
+
 	/// Returns the encoding of the format.
 	pub fn encoding(&self) -> Option<Encodings> {
 		match self {
@@ -538,6 +553,12 @@ impl DataTypes {
 			DataTypes::UInt3 => std::mem::size_of::<u32>() * 3,
 			DataTypes::UInt4 => std::mem::size_of::<u32>() * 4,
 		}
+	}
+}
+
+impl Size for DataTypes {
+	fn size(&self) -> usize {
+		(*self).size()
 	}
 }
 
@@ -795,6 +816,23 @@ mod tests {
 	}
 
 	#[test]
+	fn compact_copy_layout_preserves_texel_rows_and_bc_block_rows() {
+		let cases = [
+			(Formats::RGBA8UNORM, 5, 7, (20, 7, 140)),
+			(Formats::RGB16UNORM, 5, 7, (30, 7, 210)),
+			(Formats::RGBu11u11u10, 5, 7, (20, 7, 140)),
+			(Formats::Depth32, 5, 7, (20, 7, 140)),
+			(Formats::BC7, 5, 7, (32, 2, 64)),
+			(Formats::RGBA8UNORM, 0, 0, (0, 0, 0)),
+			(Formats::BC7, 0, 0, (16, 1, 16)),
+		];
+
+		for (format, width, height, expected) in cases {
+			assert_eq!(format.compact_copy_layout(width, height), expected);
+		}
+	}
+
+	#[test]
 	fn shader_stage_conversion_is_one_to_one() {
 		let cases = [
 			(ShaderTypes::Vertex, Stages::VERTEX),
@@ -835,6 +873,7 @@ mod tests {
 		];
 		for (data_type, expected_size) in cases {
 			assert_eq!(data_type.size(), expected_size);
+			assert_eq!(Size::size(&data_type), expected_size);
 		}
 	}
 

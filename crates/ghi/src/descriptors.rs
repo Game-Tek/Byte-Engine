@@ -28,6 +28,40 @@ pub enum WriteData {
 	CombinedImageSamplerArray,
 }
 
+impl WriteData {
+	pub(crate) fn buffer(handle: BaseBufferHandle) -> Self {
+		Self::Buffer {
+			handle,
+			size: Ranges::Whole,
+		}
+	}
+
+	pub(crate) fn image(handle: impl Into<BaseImageHandle>, layout: Layouts) -> Self {
+		Self::Image {
+			handle: handle.into(),
+			layout,
+		}
+	}
+
+	pub(crate) fn combined_image_sampler(
+		image_handle: impl Into<BaseImageHandle>,
+		sampler_handle: SamplerHandle,
+		layout: Layouts,
+		layer: Option<u32>,
+	) -> Self {
+		Self::CombinedImageSampler {
+			image_handle: image_handle.into(),
+			sampler_handle,
+			layout,
+			layer,
+		}
+	}
+
+	pub(crate) fn acceleration_structure(handle: TopLevelAccelerationStructureHandle) -> Self {
+		Self::AccelerationStructure { handle }
+	}
+}
+
 /// Stores the information of a descriptor set write.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Write {
@@ -50,13 +84,7 @@ impl Write {
 	}
 
 	pub fn buffer(binding_handle: DescriptorSetBindingHandle, buffer_handle: BaseBufferHandle) -> Write {
-		Self::new(
-			binding_handle,
-			WriteData::Buffer {
-				handle: buffer_handle,
-				size: Ranges::Whole,
-			},
-		)
+		Self::new(binding_handle, WriteData::buffer(buffer_handle))
 	}
 
 	pub fn image(
@@ -64,13 +92,7 @@ impl Write {
 		image_handle: impl Into<BaseImageHandle>,
 		layout: Layouts,
 	) -> Write {
-		Self::new(
-			binding_handle,
-			WriteData::Image {
-				handle: image_handle.into(),
-				layout,
-			},
-		)
+		Self::new(binding_handle, WriteData::image(image_handle, layout))
 	}
 
 	pub fn image_with_frame(
@@ -94,12 +116,7 @@ impl Write {
 	) -> Write {
 		Self::new(
 			binding_handle,
-			WriteData::CombinedImageSampler {
-				image_handle: image_handle.into(),
-				sampler_handle,
-				layout,
-				layer: None,
-			},
+			WriteData::combined_image_sampler(image_handle, sampler_handle, layout, None),
 		)
 	}
 
@@ -142,9 +159,7 @@ impl Write {
 	) -> Write {
 		Self::new(
 			binding_handle,
-			WriteData::AccelerationStructure {
-				handle: acceleration_structure_handle,
-			},
+			WriteData::acceleration_structure(acceleration_structure_handle),
 		)
 	}
 

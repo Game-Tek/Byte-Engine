@@ -1076,7 +1076,7 @@ impl Context {
 				.newBufferWithBytes_length_options(index_ptr, indices.len() as _, options)
 		}
 		.expect("Metal index buffer creation failed. The most likely cause is that the device is out of memory.");
-		let vertex_size = utils::vertex_layout_size(vertex_layout);
+		let vertex_size = vertex_layout.iter().map(|element| element.format.size()).sum();
 		let max_binding = vertex_layout
 			.iter()
 			.map(|element| element.binding)
@@ -1087,7 +1087,7 @@ impl Context {
 		let mut source_offset = 0usize;
 
 		for element in vertex_layout {
-			let element_size = utils::data_type_size(element.format);
+			let element_size = element.format.size();
 			let binding = element.binding as usize;
 			let destination_offset = binding_spans[binding]
 				.last()
@@ -1493,7 +1493,7 @@ impl Context {
 				attribute.setBufferIndex(element.binding as _);
 			}
 
-			binding_offsets[element.binding as usize] += utils::data_type_size(element.format);
+			binding_offsets[element.binding as usize] += element.format.size();
 		}
 
 		for (binding, stride) in strides.iter().copied().enumerate() {

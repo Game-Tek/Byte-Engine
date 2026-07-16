@@ -490,7 +490,16 @@ pub(crate) trait NodeEmitter {
 		));
 	}
 
+	/// Gives a backend the opportunity to replace expression syntax before portable lowering.
+	fn emit_expression_override(&mut self, _string: &mut String, _expression: &besl::Expressions) -> bool {
+		false
+	}
+
 	fn emit_expression_node(&mut self, string: &mut String, expression: &besl::Expressions) {
+		if self.emit_expression_override(string, expression) {
+			return;
+		}
+
 		let formatting = ShaderFormatting::new(self.minified());
 		match expression {
 			besl::Expressions::Operator { operator, left, right } => {

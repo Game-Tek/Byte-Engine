@@ -93,30 +93,22 @@ impl<'a> ReadTargetsMut<'a> {
 
 	/// Sets the byte offset into the source resource data to start reading from.
 	/// Only applies to `Box` and `Buffer` variants; `Streams` carry their own per-stream offset.
-	pub fn with_offset(self, offset: usize) -> Self {
-		match self {
-			ReadTargetsMut::Box { buffer, size, .. } => ReadTargetsMut::Box { buffer, offset, size },
-			ReadTargetsMut::Buffer { buffer, size, .. } => ReadTargetsMut::Buffer { buffer, offset, size },
-			other => other,
+	pub fn with_offset(mut self, offset: usize) -> Self {
+		match &mut self {
+			ReadTargetsMut::Box { offset: target, .. } | ReadTargetsMut::Buffer { offset: target, .. } => *target = offset,
+			_ => {}
 		}
+		self
 	}
 
 	/// Sets the number of bytes to read from the source.
 	/// Only applies to `Box` and `Buffer` variants; `Streams` carry their own per-stream size.
-	pub fn with_size(self, size: usize) -> Self {
-		match self {
-			ReadTargetsMut::Box { buffer, offset, .. } => ReadTargetsMut::Box {
-				buffer,
-				offset,
-				size: Some(size),
-			},
-			ReadTargetsMut::Buffer { buffer, offset, .. } => ReadTargetsMut::Buffer {
-				buffer,
-				offset,
-				size: Some(size),
-			},
-			other => other,
+	pub fn with_size(mut self, size: usize) -> Self {
+		match &mut self {
+			ReadTargetsMut::Box { size: target, .. } | ReadTargetsMut::Buffer { size: target, .. } => *target = Some(size),
+			_ => {}
 		}
+		self
 	}
 
 	/// Returns a reference to a buffer if the data was read into a buffer.

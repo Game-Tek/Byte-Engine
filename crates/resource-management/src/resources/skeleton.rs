@@ -1,4 +1,4 @@
-use crate::{resource, solver::SolveErrors, Model, Reference, ReferenceModel, Resource, Solver};
+use crate::{resource, solver::SolveErrors, Reference, ReferenceModel, Solver};
 
 /// Stores a four-by-four matrix as four column vectors.
 pub type Matrix4Columns = [[f32; 4]; 4];
@@ -259,15 +259,7 @@ pub struct SkeletonModel {
 	pub nodes: Vec<SkeletonNode>,
 }
 
-impl Resource for Skeleton {
-	type Model = SkeletonModel;
-}
-
-impl Model for SkeletonModel {
-	fn get_class() -> &'static str {
-		"Skeleton"
-	}
-}
+super::impl_resource_model!(Skeleton, SkeletonModel, "Skeleton");
 
 impl<'de> Solver<'de, Skeleton> for SkeletonModel {
 	fn solve(self, _storage_backend: &dyn resource::ReadStorageBackend) -> Result<Skeleton, SolveErrors> {

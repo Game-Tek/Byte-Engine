@@ -9,6 +9,34 @@ pub struct BindingUsage {
 	pub write: bool,
 }
 
+/// The `BindingRecord` trait exists to keep binding discovery independent from evaluated and compiled metadata representations.
+pub(crate) trait BindingRecord: Sized {
+	fn from_usage(set: u32, binding: u32, read: bool, write: bool) -> Self;
+	fn usage(&self) -> (u32, u32, bool, bool);
+}
+
+impl BindingRecord for BindingUsage {
+	fn from_usage(set: u32, binding: u32, read: bool, write: bool) -> Self {
+		Self {
+			set,
+			binding,
+			read,
+			write,
+		}
+	}
+
+	fn usage(&self) -> (u32, u32, bool, bool) {
+		(self.set, self.binding, self.read, self.write)
+	}
+}
+
+/// Controls which intrinsic source wins when malformed programs reuse a descriptor slot with different access metadata.
+#[derive(Clone, Copy)]
+pub(crate) enum IntrinsicBindingTraversalOrder {
+	DefinitionBeforeElements,
+	ElementsBeforeDefinition,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpacityEvaluation {
 	Opaque,
@@ -55,16 +83,7 @@ impl ProgramEvaluation {
 			}
 		}
 
-		let mut bindings = Vec::with_capacity(16);
-		build_bindings(&mut bindings, main_function_node);
-
-		bindings.sort_by(|a, b| {
-			if a.set == b.set {
-				a.binding.cmp(&b.binding)
-			} else {
-				a.set.cmp(&b.set)
-			}
-		});
+		let bindings = collect_bindings(main_function_node, IntrinsicBindingTraversalOrder::DefinitionBeforeElements);
 
 		let opacity = evaluate_opacity(main_function_node);
 
@@ -84,20 +103,39 @@ impl ProgramEvaluation {
 	}
 }
 
-fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference) {
+/// Collects sorted, first-wins binding metadata using the requested intrinsic traversal order.
+pub(crate) fn collect_bindings<T: BindingRecord>(
+	node: &besl::NodeReference,
+	intrinsic_order: IntrinsicBindingTraversalOrder,
+) -> Vec<T> {
+	let mut bindings: Vec<T> = Vec::with_capacity(16);
+	build_bindings(&mut bindings, node, intrinsic_order);
+	bindings.sort_by(|a, b| {
+		let (a_set, a_binding, ..) = a.usage();
+		let (b_set, b_binding, ..) = b.usage();
+		a_set.cmp(&b_set).then_with(|| a_binding.cmp(&b_binding))
+	});
+	bindings
+}
+
+fn build_bindings<T: BindingRecord>(
+	bindings: &mut Vec<T>,
+	node: &besl::NodeReference,
+	intrinsic_order: IntrinsicBindingTraversalOrder,
+) {
 	let node_borrow = RefCell::borrow(node);
 	let node_ref = node_borrow.node();
 
 	match node_ref {
 		besl::Nodes::Function { statements, .. } => {
 			for statement in statements {
-				build_bindings(bindings, statement);
+				build_bindings(bindings, statement, intrinsic_order);
 			}
 		}
 		besl::Nodes::Conditional { condition, statements } => {
-			build_bindings(bindings, condition);
+			build_bindings(bindings, condition, intrinsic_order);
 			for statement in statements {
-				build_bindings(bindings, statement);
+				build_bindings(bindings, statement, intrinsic_order);
 			}
 		}
 		besl::Nodes::ForLoop {
@@ -106,45 +144,54 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference) 
 			update,
 			statements,
 		} => {
-			build_bindings(bindings, initializer);
-			build_bindings(bindings, condition);
-			build_bindings(bindings, update);
+			build_bindings(bindings, initializer, intrinsic_order);
+			build_bindings(bindings, condition, intrinsic_order);
+			build_bindings(bindings, update, intrinsic_order);
 			for statement in statements {
-				build_bindings(bindings, statement);
+				build_bindings(bindings, statement, intrinsic_order);
 			}
 		}
 		besl::Nodes::Expression(expression) => match expression {
 			besl::Expressions::FunctionCall {
 				function: callable,
 				parameters: arguments,
-			}
-			| besl::Expressions::IntrinsicCall {
-				intrinsic: callable,
-				elements: arguments,
-				..
 			} => {
-				build_bindings(bindings, callable);
+				build_bindings(bindings, callable, intrinsic_order);
 				for argument in arguments {
-					build_bindings(bindings, argument);
+					build_bindings(bindings, argument, intrinsic_order);
 				}
 			}
+			besl::Expressions::IntrinsicCall { intrinsic, elements, .. } => match intrinsic_order {
+				IntrinsicBindingTraversalOrder::DefinitionBeforeElements => {
+					build_bindings(bindings, intrinsic, intrinsic_order);
+					for element in elements {
+						build_bindings(bindings, element, intrinsic_order);
+					}
+				}
+				IntrinsicBindingTraversalOrder::ElementsBeforeDefinition => {
+					for element in elements {
+						build_bindings(bindings, element, intrinsic_order);
+					}
+					build_bindings(bindings, intrinsic, intrinsic_order);
+				}
+			},
 			besl::Expressions::Accessor { left, right } | besl::Expressions::Operator { left, right, .. } => {
-				build_bindings(bindings, left);
-				build_bindings(bindings, right);
+				build_bindings(bindings, left, intrinsic_order);
+				build_bindings(bindings, right, intrinsic_order);
 			}
 			besl::Expressions::Expression { elements } => {
 				for element in elements {
-					build_bindings(bindings, element);
+					build_bindings(bindings, element, intrinsic_order);
 				}
 			}
 			besl::Expressions::Macro { body, .. } => {
-				build_bindings(bindings, body);
+				build_bindings(bindings, body, intrinsic_order);
 			}
 			besl::Expressions::Member { source, .. } => {
-				build_bindings(bindings, source);
+				build_bindings(bindings, source, intrinsic_order);
 			}
 			besl::Expressions::VariableDeclaration { r#type, .. } => {
-				build_bindings(bindings, r#type);
+				build_bindings(bindings, r#type, intrinsic_order);
 			}
 			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => {}
 		},
@@ -155,46 +202,44 @@ fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference) 
 			write,
 			..
 		} => {
-			if bindings.iter().find(|b| b.binding == *binding && b.set == *set).is_none() {
-				bindings.push(BindingUsage {
-					binding: *binding,
-					set: *set,
-					read: *read,
-					write: *write,
-				});
+			if !bindings.iter().any(|record| {
+				let (record_set, record_binding, ..) = record.usage();
+				record_binding == *binding && record_set == *set
+			}) {
+				bindings.push(T::from_usage(*set, *binding, *read, *write));
 			}
 		}
 		besl::Nodes::Raw { input, output, .. } => {
 			for reference in input.iter().chain(output.iter()) {
-				build_bindings(bindings, reference);
+				build_bindings(bindings, reference, intrinsic_order);
 			}
 		}
 		besl::Nodes::Intrinsic { elements, r#return, .. } => {
 			for element in elements {
-				build_bindings(bindings, element);
+				build_bindings(bindings, element, intrinsic_order);
 			}
-			build_bindings(bindings, r#return);
+			build_bindings(bindings, r#return, intrinsic_order);
 		}
 		besl::Nodes::Literal { value: nested, .. }
 		| besl::Nodes::Member { r#type: nested, .. }
 		| besl::Nodes::Parameter { r#type: nested, .. }
 		| besl::Nodes::Specialization { r#type: nested, .. } => {
-			build_bindings(bindings, nested);
+			build_bindings(bindings, nested, intrinsic_order);
 		}
 		besl::Nodes::Input { format, .. } | besl::Nodes::Output { format, .. } => {
-			build_bindings(bindings, format);
+			build_bindings(bindings, format, intrinsic_order);
 		}
 		besl::Nodes::Struct { fields: nested, .. }
 		| besl::Nodes::PushConstant { members: nested }
 		| besl::Nodes::Scope { children: nested, .. } => {
 			for child in nested {
-				build_bindings(bindings, child);
+				build_bindings(bindings, child, intrinsic_order);
 			}
 		}
 		besl::Nodes::Null => {}
 		besl::Nodes::Const { r#type, value, .. } => {
-			build_bindings(bindings, r#type);
-			build_bindings(bindings, value);
+			build_bindings(bindings, r#type, intrinsic_order);
+			build_bindings(bindings, value, intrinsic_order);
 		}
 	}
 }

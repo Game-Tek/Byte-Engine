@@ -1268,7 +1268,8 @@ impl VisibilityPipelineResourceManager {
 
 /// Builds row-padded upload data compatible with the transfer command buffer image copy path.
 fn make_texture_upload(format: ghi::Formats, extent: Extent, source: &[u8]) -> Option<TextureUpload> {
-	let (source_bytes_per_row, row_count, compact_bytes_per_image) = texture_upload_layout(format, extent)?;
+	let (source_bytes_per_row, row_count, compact_bytes_per_image) =
+		format.compact_copy_layout(extent.width().max(1), extent.height().max(1));
 	if source.len() < compact_bytes_per_image {
 		return None;
 	}
@@ -1350,27 +1351,6 @@ pub(crate) fn default_material_sampler_builder() -> ghi::sampler::Builder {
 		.max_lod(0f32)
 }
 
-/// Computes the compact source layout for one mip of the given texture format.
-fn texture_upload_layout(format: ghi::Formats, extent: Extent) -> Option<(usize, usize, usize)> {
-	let width = extent.width().max(1) as usize;
-	let height = extent.height().max(1) as usize;
-
-	match format {
-		ghi::Formats::BC5 | ghi::Formats::BC5SNORM | ghi::Formats::BC7 | ghi::Formats::BC7SRGB => {
-			let layout = format.bc_layout(width as u32, height as u32)?;
-			Some((
-				layout.bytes_per_row as usize,
-				layout.blocks_h as usize,
-				layout.bytes_per_image as usize,
-			))
-		}
-		_ => {
-			let bytes_per_row = width * format.size();
-			Some((bytes_per_row, height, bytes_per_row * height))
-		}
-	}
-}
-
 /// Converts a worker panic into a useful error reason for async pipeline diagnostics.
 fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
 	if let Some(message) = payload.downcast_ref::<&str>() {
@@ -1389,7 +1369,7 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn bc_texture_upload_pads_between_block_rows_without_changing_row_contents() {
+	fn texture_upload_preserves_minimum_extent_and_bc_row_contents() {
 		let extent = Extent::rectangle(5, 7);
 		let compact_row = 2 * 16;
 		let source = (0..(compact_row * 2)).map(|value| value as u8).collect::<Vec<_>>();
@@ -1401,6 +1381,11 @@ mod tests {
 		assert_eq!(&upload.data[0..compact_row], &source[0..compact_row]);
 		assert!(upload.data[compact_row..256].iter().all(|byte| *byte == 0));
 		assert_eq!(&upload.data[256..256 + compact_row], &source[compact_row..compact_row * 2]);
+
+		let zero_extent = make_texture_upload(ghi::Formats::RGBA8UNORM, Extent::rectangle(0, 0), &[1, 2, 3, 4]).unwrap();
+		assert_eq!(zero_extent.source_bytes_per_row, 256);
+		assert_eq!(zero_extent.source_bytes_per_image, 256);
+		assert_eq!(&zero_extent.data[..4], &[1, 2, 3, 4]);
 	}
 }
 

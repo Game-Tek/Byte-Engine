@@ -6,7 +6,6 @@ use super::{
 use crate::{
 	asset,
 	processors::lut_processor::{process_lut, LutDescription},
-	r#async::BoxedFuture,
 	resource,
 	resources::lut::LutKind,
 	ProcessedAsset,
@@ -19,17 +18,12 @@ struct ParsedLut {
 }
 
 /// The `LUTAssetHandler` struct bakes text lookup-table assets into LUT resources.
+#[derive(Default)]
 pub struct LUTAssetHandler {}
-
-impl Default for LUTAssetHandler {
-	fn default() -> Self {
-		Self::new()
-	}
-}
 
 impl LUTAssetHandler {
 	pub fn new() -> LUTAssetHandler {
-		LUTAssetHandler {}
+		Self::default()
 	}
 
 	/// Parses the textual LUT description into normalized metadata and sample entries.

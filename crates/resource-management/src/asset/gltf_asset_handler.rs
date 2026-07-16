@@ -30,23 +30,15 @@ fn select_unfragmented_gltf_resource(
 }
 
 /// The `GLTFAssetHandler` struct provides the glTF boundary used to bake renderable meshes, skeletal clips, materials, and images.
+#[derive(Default)]
 pub struct GLTFAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
 	generator: Option<Arc<dyn ProgramGenerator>>,
 }
 
-impl Default for GLTFAssetHandler {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
 impl GLTFAssetHandler {
 	pub fn new() -> GLTFAssetHandler {
-		GLTFAssetHandler {
-			triangle_front_face_winding: TriangleFrontFaceWinding::Clockwise,
-			generator: None,
-		}
+		Self::default()
 	}
 
 	pub fn triangle_front_face_winding(&self) -> TriangleFrontFaceWinding {
@@ -1426,38 +1418,6 @@ fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gltf::Materia
 			None => "material_default".to_string(),
 		});
 	format!("{}#materials/{material_name}", mesh_url.as_ref())
-}
-
-fn sanitize_material_name(name: &str) -> String {
-	let sanitized = name
-		.chars()
-		.map(|c| {
-			if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-				c
-			} else {
-				'_'
-			}
-		})
-		.collect::<String>();
-
-	if sanitized.is_empty() {
-		"material".to_string()
-	} else {
-		sanitized
-	}
-}
-
-fn store_model<M: crate::Model>(
-	storage_backend: &dyn resource::StorageBackend,
-	id: &str,
-	model: M,
-	data: &[u8],
-) -> Result<ReferenceModel<M>, LoadErrors> {
-	let resource = ProcessedAsset::new(ResourceId::new(id), model);
-	storage_backend
-		.store(resource, data)
-		.map(|resource| resource.into())
-		.map_err(|_| LoadErrors::FailedToProcess)
 }
 
 /// The `GltfTextureDependency` struct records a glTF image required by a generated material variant.
@@ -3078,7 +3038,7 @@ use super::{
 	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
 	bema_asset_handler::{compile_shader_program, ProgramGenerator},
-	container_default_resource, ContainerDefaultResource, ResourceId,
+	container_default_resource, sanitize_material_name, store_model, ContainerDefaultResource, ResourceId,
 };
 pub use crate::processors::mesh_processor::TriangleFrontFaceWinding;
 use crate::{
@@ -3091,7 +3051,7 @@ use crate::{
 		image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription, Semantic},
 		mesh_processor::{MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource},
 	},
-	r#async::{spawn_cpu_task, BoxedFuture},
+	r#async::spawn_cpu_task,
 	resource,
 	resources::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},

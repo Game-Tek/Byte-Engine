@@ -189,7 +189,7 @@ fn build_vertex_layout(vertex_elements: &[crate::pipelines::VertexElement]) -> V
 			attribute.setBufferIndex(element.binding as _);
 		}
 
-		binding_offsets[element.binding as usize] += utils::data_type_size(element.format);
+		binding_offsets[element.binding as usize] += element.format.size();
 	}
 
 	for (binding, stride) in strides.iter().copied().enumerate() {
@@ -793,44 +793,8 @@ mod utils {
 		}
 	}
 
-	pub(crate) fn bytes_per_pixel(format: Formats) -> Option<usize> {
-		let channel_bytes = match format.channel_bit_size() {
-			crate::ChannelBitSize::Bits8 => 1,
-			crate::ChannelBitSize::Bits16 => 2,
-			crate::ChannelBitSize::Bits32 => 4,
-			crate::ChannelBitSize::Bits11_11_10 => 4,
-			crate::ChannelBitSize::Compressed => return None,
-		};
-
-		let channels = match format.channel_layout() {
-			crate::ChannelLayout::R => 1,
-			crate::ChannelLayout::RG => 2,
-			crate::ChannelLayout::RGB => 3,
-			crate::ChannelLayout::RGBA => 4,
-			crate::ChannelLayout::BGRA => 4,
-			crate::ChannelLayout::Depth => 1,
-			crate::ChannelLayout::Packed => 1,
-			crate::ChannelLayout::BC => return None,
-		};
-
-		Some(channel_bytes * channels)
-	}
-
 	pub(crate) fn texture_upload_layout(format: Formats, extent: Extent) -> Option<(usize, usize, usize)> {
-		let width = extent.width().max(1) as usize;
-		let height = extent.height().max(1) as usize;
-
-		if let Some(layout) = format.bc_layout(width as u32, height as u32) {
-			Some((
-				layout.bytes_per_row as usize,
-				layout.blocks_h as usize,
-				layout.bytes_per_image as usize,
-			))
-		} else {
-			let bytes_per_pixel = bytes_per_pixel(format)?;
-			let bytes_per_row = width * bytes_per_pixel;
-			Some((bytes_per_row, height, bytes_per_row * height))
-		}
+		Some(format.compact_copy_layout(extent.width().max(1), extent.height().max(1)))
 	}
 
 	pub(crate) fn texture_copy_size(_format: Formats, extent: Extent) -> mtl::MTLSize {
@@ -843,26 +807,6 @@ mod utils {
 
 	pub(crate) fn is_block_compressed(format: Formats) -> bool {
 		format.bc_bytes_per_block().is_some()
-	}
-
-	pub(crate) fn data_type_size(format: crate::DataTypes) -> usize {
-		match format {
-			crate::DataTypes::Float => std::mem::size_of::<f32>(),
-			crate::DataTypes::Float2 => std::mem::size_of::<f32>() * 2,
-			crate::DataTypes::Float3 => std::mem::size_of::<f32>() * 3,
-			crate::DataTypes::Float4 => std::mem::size_of::<f32>() * 4,
-			crate::DataTypes::U8 => std::mem::size_of::<u8>(),
-			crate::DataTypes::U16 => std::mem::size_of::<u16>(),
-			crate::DataTypes::U32 => std::mem::size_of::<u32>(),
-			crate::DataTypes::Int => std::mem::size_of::<i32>(),
-			crate::DataTypes::Int2 => std::mem::size_of::<i32>() * 2,
-			crate::DataTypes::Int3 => std::mem::size_of::<i32>() * 3,
-			crate::DataTypes::Int4 => std::mem::size_of::<i32>() * 4,
-			crate::DataTypes::UInt => std::mem::size_of::<u32>(),
-			crate::DataTypes::UInt2 => std::mem::size_of::<u32>() * 2,
-			crate::DataTypes::UInt3 => std::mem::size_of::<u32>() * 3,
-			crate::DataTypes::UInt4 => std::mem::size_of::<u32>() * 4,
-		}
 	}
 
 	pub(crate) fn vertex_format(format: crate::DataTypes) -> mtl::MTLVertexFormat {
@@ -882,10 +826,6 @@ mod utils {
 			crate::DataTypes::UInt3 => mtl::MTLVertexFormat::UInt3,
 			crate::DataTypes::UInt4 => mtl::MTLVertexFormat::UInt4,
 		}
-	}
-
-	pub(crate) fn vertex_layout_size(layout: &[crate::pipelines::VertexElement<'_>]) -> usize {
-		layout.iter().map(|element| data_type_size(element.format)).sum()
 	}
 
 	pub(crate) fn load_action(load: bool) -> mtl::MTLLoadAction {
@@ -973,7 +913,7 @@ mod utils {
 		use super::*;
 
 		#[test]
-		fn bc_upload_layout_uses_block_rows_for_non_multiple_of_four_extent() {
+		fn upload_layout_preserves_bc_block_rows_and_minimum_extent() {
 			let extent = Extent::rectangle(5, 7);
 
 			let (bytes_per_row, row_count, bytes_per_image) = texture_upload_layout(Formats::BC7, extent).unwrap();
@@ -981,6 +921,10 @@ mod utils {
 			assert_eq!(bytes_per_row, 2 * 16);
 			assert_eq!(row_count, 2);
 			assert_eq!(bytes_per_image, 2 * 2 * 16);
+			assert_eq!(
+				texture_upload_layout(Formats::RGBA8UNORM, Extent::rectangle(0, 0)),
+				Some((4, 1, 4))
+			);
 		}
 
 		#[test]

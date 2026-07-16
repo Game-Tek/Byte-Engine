@@ -11,7 +11,7 @@ use super::{
 	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
 	bema_asset_handler::{compile_shader_program, ProgramGenerator},
-	container_default_resource, ContainerDefaultResource, ResourceId,
+	container_default_resource, sanitize_material_name, store_model, ContainerDefaultResource, ResourceId,
 };
 use crate::{
 	asset,
@@ -20,7 +20,7 @@ use crate::{
 		MeshProcessor, OwnedMeshAttribute, OwnedMeshAttributeData, OwnedMeshPrimitive, OwnedMeshSource,
 		TriangleFrontFaceWinding,
 	},
-	r#async::{spawn_cpu_task, BoxedFuture},
+	r#async::spawn_cpu_task,
 	resource,
 	resources::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
@@ -66,24 +66,16 @@ fn select_unfragmented_fbx_resource(
 }
 
 /// The `FBXAssetHandler` struct provides the authored-FBX import path used to bake meshes, skeletons, and animation clips.
+#[derive(Default)]
 pub struct FBXAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
 	generator: Option<Arc<dyn ProgramGenerator>>,
 }
 
-impl Default for FBXAssetHandler {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
 impl FBXAssetHandler {
 	/// Creates an FBX importer using the engine's clockwise mesh-processing convention.
 	pub fn new() -> Self {
-		Self {
-			triangle_front_face_winding: TriangleFrontFaceWinding::Clockwise,
-			generator: None,
-		}
+		Self::default()
 	}
 
 	/// Returns the winding convention that will be forwarded to mesh processing.
@@ -644,19 +636,6 @@ async fn generate_fbx_material(
 	store_model::<VariantModel>(storage_backend, &variant_id, variant, &[])
 }
 
-/// Stores one generated model and returns the serialized reference used by its parent resource.
-fn store_model<M: crate::Model>(
-	storage_backend: &dyn resource::StorageBackend,
-	id: &str,
-	model: M,
-	data: &[u8],
-) -> Result<ReferenceModel<M>, LoadErrors> {
-	storage_backend
-		.store(ProcessedAsset::new(ResourceId::new(id), model), data)
-		.map(Into::into)
-		.map_err(|_| LoadErrors::FailedToProcess)
-}
-
 /// Converts ufbx's normalized PBR values into the engine's solid metallic-roughness graph.
 fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr::BrdfMaterialDescription {
 	let mut builder = BrdfMaterialBuilder::new();
@@ -791,7 +770,7 @@ fn generated_fbx_material_base_id(mesh_url: ResourceId<'_>, key: MaterialKey, ma
 	};
 	let name = material
 		.and_then(|material| non_empty_name(&material.element.name))
-		.map(|name| sanitize_name(&name))
+		.map(|name| sanitize_material_name(&name))
 		.unwrap_or_else(|| "material".to_string());
 	format!("{}#materials/{index}_{name}", mesh_url.as_ref())
 }
@@ -1748,25 +1727,6 @@ fn finite_f32(value: f64, context: &'static str) -> Result<f32, FbxImportError> 
 /// Copies authored names only when they contain a useful resource label.
 fn non_empty_name(name: &ufbx::String) -> Option<String> {
 	(!name.is_empty()).then(|| name.as_ref().to_string())
-}
-
-/// Converts authored material names into stable resource-ID path components.
-fn sanitize_name(name: &str) -> String {
-	let sanitized = name
-		.chars()
-		.map(|character| {
-			if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
-				character
-			} else {
-				'_'
-			}
-		})
-		.collect::<String>();
-	if sanitized.is_empty() {
-		"material".to_string()
-	} else {
-		sanitized
-	}
 }
 
 #[derive(Debug, PartialEq, Eq)]

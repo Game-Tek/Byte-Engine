@@ -346,12 +346,7 @@ pub enum OwnedMeshAttributeData<A: Allocator = Global> {
 
 impl<A: Allocator> OwnedMeshAttributeData<A> {
 	fn len(&self) -> usize {
-		match self {
-			OwnedMeshAttributeData::F32x2(values) => values.len(),
-			OwnedMeshAttributeData::F32x3(values) => values.len(),
-			OwnedMeshAttributeData::F32x4(values) => values.len(),
-			OwnedMeshAttributeData::U16x4(values) => values.len(),
-		}
+		self.borrow().len()
 	}
 
 	fn borrow(&self) -> MeshAttributeData<'_> {
@@ -1151,14 +1146,7 @@ pub fn orient_triangle_indices_for_front_face(mut indices: Vec<u32>, winding: Tr
 
 fn stream_stride(stream_type: Streams) -> usize {
 	match stream_type {
-		Streams::Vertices(VertexSemantics::Position) => 12,
-		Streams::Vertices(VertexSemantics::Normal) => 12,
-		Streams::Vertices(VertexSemantics::Tangent) => 16,
-		Streams::Vertices(VertexSemantics::BiTangent) => 12,
-		Streams::Vertices(VertexSemantics::UV) => 8,
-		Streams::Vertices(VertexSemantics::Color) => 16,
-		Streams::Vertices(VertexSemantics::Joints) => 8,
-		Streams::Vertices(VertexSemantics::Weights) => 16,
+		Streams::Vertices(semantic) => semantic.size(),
 		Streams::Indices(IndexStreamTypes::Vertices) => IntegralTypes::U16.size(),
 		Streams::Indices(IndexStreamTypes::Triangles) => IntegralTypes::U16.size(),
 		Streams::Indices(IndexStreamTypes::Meshlets) => IntegralTypes::U8.size(),

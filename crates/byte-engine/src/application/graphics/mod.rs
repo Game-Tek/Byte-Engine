@@ -612,6 +612,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		mesh_receiver: DefaultListener<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
 		mesh_delete_receiver: DefaultListener<DeleteMessage>,
 		pending_meshes: VecDeque<CreateMessage<EntityHandle<dyn RenderableMesh>>>,
+		pose_receiver: DefaultListener<UpdatePose>,
 		visibility_pipeline_manager: VisibilityPipelineManager,
 	}
 
@@ -650,6 +651,14 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 				self.visibility_pipeline_manager.remove_mesh(message.into_handle());
 			}
 		}
+
+		/// Applies application-authored skeleton poses to the visibility scene.
+		fn process_pose_updates(&mut self) {
+			while let Some(message) = self.pose_receiver.read() {
+				self.visibility_pipeline_manager
+					.update_pose(message.handle(), message.global_matrices());
+			}
+		}
 	}
 
 	impl PipelineManager for CustomPipelineManager {
@@ -661,6 +670,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
 			self.request_pending_lights();
 			self.request_pending_meshes();
+			self.process_pose_updates();
 
 			self.process_deletions();
 
@@ -689,6 +699,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			.collect::<VecDeque<_>>();
 		let mesh_receiver = application.world().renderable_factory().listener();
 		let mesh_delete_receiver = application.world().delete_channel().listener();
+		let pose_receiver = application.world().poses_channel().listener();
 
 		let renderer = &mut application.renderer;
 
@@ -700,6 +711,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 			mesh_receiver,
 			mesh_delete_receiver,
 			pending_meshes,
+			pose_receiver,
 		};
 
 		renderer.add_pipeline_manager(sm);
@@ -845,7 +857,7 @@ use crate::{
 			bloom::{BloomPass, BloomPassSettings},
 			sky::AtmosphereSkyRenderPass,
 		},
-		renderable, renderer, RenderableMesh,
+		renderable, renderer, RenderableMesh, UpdatePose,
 	},
 	ui::{layout::engine::Render, render_pass::UiRenderPass},
 };

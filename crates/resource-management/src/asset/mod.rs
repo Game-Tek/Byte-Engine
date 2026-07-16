@@ -4,7 +4,7 @@
 
 use std::{alloc::Allocator, io::ErrorKind};
 
-use utils::json;
+use utils::{json, json::JsonValueTrait};
 
 pub mod asset_handler;
 pub mod asset_manager;
@@ -19,6 +19,52 @@ pub mod png_asset_handler;
 pub mod wav_asset_handler;
 
 pub type BEADType = json::Value;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The `ContainerDefaultResource` enum represents an explicit BEAD choice for an unfragmented container asset.
+pub(crate) enum ContainerDefaultResource {
+	Mesh,
+	Animation,
+}
+
+/// Reads the optional unfragmented resource choice shared by FBX and glTF BEAD manifests.
+pub(crate) fn container_default_resource(spec: Option<&BEADType>) -> Result<Option<ContainerDefaultResource>, String> {
+	let Some(value) = spec.and_then(|spec| spec.get("default_resource")) else {
+		return Ok(None);
+	};
+	let Some(value) = value.as_str() else {
+		return Err("`default_resource` must be the string `mesh` or `animation`".to_string());
+	};
+
+	if value.eq_ignore_ascii_case("mesh") {
+		Ok(Some(ContainerDefaultResource::Mesh))
+	} else if value.eq_ignore_ascii_case("animation") {
+		Ok(Some(ContainerDefaultResource::Animation))
+	} else {
+		Err(format!(
+			"`default_resource` is '{value}', but only `mesh` and `animation` are supported; skeletons require an explicit fragment"
+		))
+	}
+}
+
+#[cfg(test)]
+mod container_default_resource_tests {
+	use super::{container_default_resource, ContainerDefaultResource};
+
+	#[test]
+	fn bead_default_resource_accepts_mesh_and_animation_but_never_skeleton() {
+		for (value, expected) in [
+			("mesh", ContainerDefaultResource::Mesh),
+			("Animation", ContainerDefaultResource::Animation),
+		] {
+			let spec = utils::json::from_str(&format!(r#"{{ "default_resource": "{value}" }}"#)).unwrap();
+			assert_eq!(container_default_resource(Some(&spec)), Ok(Some(expected)));
+		}
+
+		let skeleton = utils::json::from_str(r#"{ "default_resource": "skeleton" }"#).unwrap();
+		assert!(container_default_resource(Some(&skeleton)).is_err());
+	}
+}
 
 pub mod resource_id;
 pub mod storage_backend;

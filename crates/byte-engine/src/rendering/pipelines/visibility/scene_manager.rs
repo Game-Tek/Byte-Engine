@@ -2,7 +2,7 @@ pub struct VisibilitySceneManager {
 	/// Render entities registered in the scene.
 	pub(crate) render_entities: StableVec<RenderEntity>,
 	/// Retained global poses keyed by the renderable handle used by this scene.
-	pub(crate) skinning_poses: HashMap<Handle, Vec<crate::rendering::SkinningMatrix>>,
+	pub(crate) skinning_poses: HashMap<Handle, Vec<Matrix4Columns>>,
 	/// Shared views data buffer used by every visibility sink.
 	pub(crate) views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
 	/// Shared base descriptor set used by every visibility pass.
@@ -29,10 +29,10 @@ impl VisibilitySceneManager {
 	///
 	/// Rewriting an existing pose reuses its allocation when the skeleton size is unchanged. A
 	/// pose remains active until it is replaced or the corresponding renderable is removed.
-	pub fn write_skinned_pose(&mut self, handle: Handle, global_matrices: &[crate::rendering::SkinningMatrix]) {
+	pub fn write_skinned_pose(&mut self, handle: Handle, global_matrices: &[Matrix4]) {
 		let pose = self.skinning_poses.entry(handle).or_default();
 		pose.clear();
-		pose.extend_from_slice(global_matrices);
+		pose.extend(global_matrices.iter().map(matrix4_to_columns));
 	}
 
 	/// Removes all scene state owned by the renderable identified by `handle`.
@@ -98,13 +98,49 @@ impl VisibilitySceneManager {
 	}
 }
 
+/// Converts a gameplay matrix into the column-major representation consumed by skin palette evaluation.
+// TODO: isn't this already covered by another function?
+fn matrix4_to_columns(matrix: &Matrix4) -> Matrix4Columns {
+	[
+		[matrix[(0, 0)], matrix[(1, 0)], matrix[(2, 0)], matrix[(3, 0)]],
+		[matrix[(0, 1)], matrix[(1, 1)], matrix[(2, 1)], matrix[(3, 1)]],
+		[matrix[(0, 2)], matrix[(1, 2)], matrix[(2, 2)], matrix[(3, 2)]],
+		[matrix[(0, 3)], matrix[(1, 3)], matrix[(2, 3)], matrix[(3, 3)]],
+	]
+}
+
+#[cfg(test)]
+mod tests {
+	use math::{mat::MatNew4 as _, Matrix4};
+
+	use super::matrix4_to_columns;
+
+	#[test]
+	fn pose_write_conversion_preserves_matrix_majorness() {
+		let matrix = Matrix4::new(
+			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+		);
+
+		assert_eq!(
+			matrix4_to_columns(&matrix),
+			[
+				[1.0, 5.0, 9.0, 13.0],
+				[2.0, 6.0, 10.0, 14.0],
+				[3.0, 7.0, 11.0, 15.0],
+				[4.0, 8.0, 12.0, 16.0],
+			]
+		);
+	}
+}
+
 use ghi::BufferHandle;
 use ghi::DescriptorSetBindingHandle;
 use ghi::DescriptorSetHandle;
 use ghi::DynamicBufferHandle;
 use ghi::Frame as _;
 use log::warn;
-use math::mat::MatInverse as _;
+use math::{mat::MatInverse as _, Matrix4};
+use resource_management::resources::skeleton::Matrix4Columns;
 use utils::{hash::HashMap, StableVec};
 
 use crate::core::factory::Handle;

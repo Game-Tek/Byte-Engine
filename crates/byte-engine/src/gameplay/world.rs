@@ -18,7 +18,7 @@ use crate::{
 	},
 	gameplay::{anchor::AnchorSystem, transform::TransformationUpdate},
 	physics::{self, dynabit},
-	rendering::{lights::Lights, Camera, RenderableMesh},
+	rendering::{lights::Lights, Camera, RenderableMesh, UpdatePose},
 };
 
 #[derive(Clone)]
@@ -28,6 +28,7 @@ pub struct DefaultWorld {
 	body_factory: Factory<EntityHandle<dyn physics::Body>>,
 	transforms: DefaultChannel<TransformationUpdate>,
 	deletes: DefaultChannel<DeleteMessage>,
+	poses: DefaultChannel<UpdatePose>,
 	cameras: Factory<Camera>,
 	renderable_factory: Factory<EntityHandle<dyn RenderableMesh>>,
 	light_factory: Factory<Lights>,
@@ -57,6 +58,7 @@ impl DefaultWorld {
 			body_factory,
 			transforms,
 			deletes,
+			poses: DefaultChannel::new(),
 			cameras,
 			renderable_factory,
 			light_factory: Factory::new(),
@@ -103,6 +105,14 @@ impl DefaultWorld {
 
 	pub fn delete_channel_mut(&mut self) -> &mut DefaultChannel<DeleteMessage> {
 		&mut self.deletes
+	}
+
+	pub fn poses_channel(&self) -> &DefaultChannel<UpdatePose> {
+		&self.poses
+	}
+
+	pub fn poses_channel_mut(&mut self) -> &mut DefaultChannel<UpdatePose> {
+		&mut self.poses
 	}
 
 	pub fn renderable_factory(&self) -> &Factory<EntityHandle<dyn RenderableMesh>> {

@@ -3,6 +3,32 @@ const ANIMATION_FRAGMENT_PREFIX: &str = "animations/";
 const SKELETON_FRAGMENT: &str = "skeleton";
 const MAX_SKIN_JOINTS: usize = u16::MAX as usize + 1;
 
+fn select_unfragmented_gltf_resource(
+	gltf: &gltf::Gltf,
+	spec: Option<&asset::BEADType>,
+) -> Result<ContainerDefaultResource, String> {
+	let selected = container_default_resource(spec)?;
+	let animation_count = gltf.animations().len();
+	if let Some(selected) = selected {
+		if selected == ContainerDefaultResource::Animation && animation_count != 1 {
+			return Err(format!(
+				"BEAD selects animation, but the glTF contains {animation_count} clips; use an explicit animation fragment"
+			));
+		}
+		return Ok(selected);
+	}
+
+	if gltf.meshes().next().is_some() {
+		return Ok(ContainerDefaultResource::Mesh);
+	}
+	if animation_count == 1 {
+		return Ok(ContainerDefaultResource::Animation);
+	}
+	Err(format!(
+		"the glTF contains no mesh and {animation_count} animation clips; use an explicit fragment"
+	))
+}
+
 /// The `GLTFAssetHandler` struct provides the glTF boundary used to bake renderable meshes, skeletal clips, materials, and images.
 pub struct GLTFAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
@@ -90,10 +116,28 @@ impl AssetHandler for GLTFAssetHandler {
 			return Ok((ProcessedAsset::new(url, graph.skeleton), Vec::new().into_boxed_slice()));
 		}
 
-		let required_buffers = url
+		let default_resource = if url.get_fragment().is_none() {
+			Some(select_unfragmented_gltf_resource(&gltf, spec.as_ref()).map_err(|error| {
+				log::error!(
+					"Failed to select the default glTF resource '{}': {error}. The most likely cause is an ambiguous container without an explicit fragment or BEAD override.",
+					url.as_ref()
+				);
+				LoadErrors::FailedToProcess
+			})?)
+		} else {
+			None
+		};
+
+		let animation_fragment = url
 			.get_fragment()
 			.filter(|fragment| is_gltf_animation_fragment(fragment.as_ref()))
-			.map(|fragment| required_gltf_animation_buffers(&gltf, fragment.as_ref()))
+			.map(|fragment| fragment.as_ref().to_string())
+			.or_else(|| {
+				(default_resource == Some(ContainerDefaultResource::Animation)).then(|| DEFAULT_ANIMATION_FRAGMENT.to_string())
+			});
+		let required_buffers = animation_fragment
+			.as_deref()
+			.map(|fragment| required_gltf_animation_buffers(&gltf, fragment))
 			.transpose()
 			.map_err(|error| {
 				log::error!("Failed to select glTF animation '{}': {error}", url.as_ref());
@@ -131,7 +175,27 @@ impl AssetHandler for GLTFAssetHandler {
 			return process_gltf_image(url, image, semantic, allocator);
 		}
 
+		if default_resource == Some(ContainerDefaultResource::Animation) {
+			let graph = import_gltf_node_graph(&gltf).map_err(|error| {
+				log::error!("Failed to import default glTF animation skeleton '{}': {error}", url.as_ref());
+				LoadErrors::FailedToProcess
+			})?;
+
+			let skeleton_id = generated_gltf_skeleton_id(source_id);
+			let skeleton = store_model::<SkeletonModel>(storage_backend, &skeleton_id, graph.skeleton, &[])?;
+
+			let animation =
+				import_gltf_animation(&gltf, &buffers, DEFAULT_ANIMATION_FRAGMENT, &graph.source_to_dense, skeleton).map_err(
+					|error| {
+						log::error!("Failed to import default glTF animation '{}': {error}", url.as_ref());
+						LoadErrors::FailedToProcess
+					},
+				)?;
+			return Ok((ProcessedAsset::new(url, animation), Vec::new().into_boxed_slice()));
+		}
+
 		let spec = spec.as_ref();
+
 		let graph = import_gltf_node_graph(&gltf).map_err(|error| {
 			log::error!("Failed to import glTF node hierarchy '{}': {error}", url.as_ref());
 			LoadErrors::FailedToProcess
@@ -148,6 +212,7 @@ impl AssetHandler for GLTFAssetHandler {
 				})
 			})
 			.collect::<Vec<Vec<VertexComponent>>>();
+
 		let vertex_layout =
 			include_skin_vertex_layout(normalize_vertex_layouts(&vertex_layouts), &vertex_layouts).map_err(|error| {
 				log::error!("Failed to import glTF vertex layout '{}': {error}", url.as_ref());
@@ -178,6 +243,7 @@ impl AssetHandler for GLTFAssetHandler {
 
 		let mut skin_bindings = Vec::new();
 		let mut skin_binding_by_node = HashMap::new();
+
 		for (node, _) in &flat_tree {
 			if node.mesh().is_none() || node.skin().is_none() || skin_binding_by_node.contains_key(&node.index()) {
 				continue;
@@ -190,6 +256,7 @@ impl AssetHandler for GLTFAssetHandler {
 			skin_bindings.push(binding);
 			skin_binding_by_node.insert(node.index(), binding_index);
 		}
+
 		let retain_skeleton = !skin_bindings.is_empty() || gltf.animations().next().is_some();
 
 		let primitives_and_transform = flat_tree
@@ -380,9 +447,11 @@ impl AssetHandler for GLTFAssetHandler {
 			.collect::<Result<Vec<_>, _>>()?;
 
 		let mut mesh_source = OwnedMeshSource::new(vertex_layout, primitives).with_skins(skin_bindings);
+
 		if let Some(skeleton) = skeleton {
 			mesh_source = mesh_source.with_skeleton(skeleton);
 		}
+
 		let mesh = MeshProcessor::new()
 			.with_triangle_front_face_winding(self.triangle_front_face_winding)
 			.process_owned(mesh_source)
@@ -1848,10 +1917,10 @@ mod tests {
 		collect_gltf_texture_dependencies, generated_gltf_image_id, generated_image_fragment_index, generated_material_base_id,
 		gltf_normal_transform, gltf_primitive_transform_node, gltf_transform_orientation, gltf_vertex_component,
 		has_vertex_component, import_gltf_animation, import_gltf_node_graph, import_gltf_skin_binding, import_gltf_vertex_skin,
-		load_gltf_buffers, material_override, normalize_vertex_layouts, sanitize_material_name, transform_gltf_tangent,
-		transform_gltf_unit_direction, unique_gltf_materials, validate_gltf_flattened_animation_transform,
-		validate_gltf_skin_attribute_sets, GLTFAssetHandler, GltfSkeletalImportError, GltfTextureDependency,
-		TriangleFrontFaceWinding,
+		load_gltf_buffers, material_override, normalize_vertex_layouts, sanitize_material_name,
+		select_unfragmented_gltf_resource, transform_gltf_tangent, transform_gltf_unit_direction, unique_gltf_materials,
+		validate_gltf_flattened_animation_transform, validate_gltf_skin_attribute_sets, GLTFAssetHandler,
+		GltfSkeletalImportError, GltfTextureDependency, TriangleFrontFaceWinding,
 	};
 	use crate::r#async;
 	use crate::{
@@ -1864,7 +1933,7 @@ mod tests {
 			},
 			png_asset_handler::PNGAssetHandler,
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
-			ResourceId,
+			ContainerDefaultResource, ResourceId,
 		},
 		pbr::{BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
 		processors::{image_processor::Semantic, mesh_processor::orient_triangle_indices_for_front_face},
@@ -1993,6 +2062,53 @@ mod tests {
 		glb
 	}
 
+	/// Builds a one-clip GLB with a node hierarchy but no renderable mesh geometry.
+	fn generated_animation_only_glb() -> Vec<u8> {
+		let mut binary = Vec::new();
+		let times = append_fixture_f32(&mut binary, &[0.0, 1.0]);
+		let translations = append_fixture_f32(&mut binary, &[0.0, 0.0, 0.0, 2.0, 0.0, 0.0]);
+		let document = serde_json::json!({
+			"asset": { "version": "2.0" },
+			"scene": 0,
+			"scenes": [{ "nodes": [0] }],
+			"nodes": [{ "name": "AnimatedRoot" }],
+			"animations": [{
+				"name": "MoveX",
+				"samplers": [{ "input": 0, "output": 1, "interpolation": "LINEAR" }],
+				"channels": [{ "sampler": 0, "target": { "node": 0, "path": "translation" } }]
+			}],
+			"buffers": [{ "byteLength": binary.len() }],
+			"bufferViews": [
+				{ "buffer": 0, "byteOffset": times.0, "byteLength": times.1 },
+				{ "buffer": 0, "byteOffset": translations.0, "byteLength": translations.1 }
+			],
+			"accessors": [
+				{ "bufferView": 0, "componentType": 5126, "count": 2, "type": "SCALAR", "min": [0.0], "max": [1.0] },
+				{ "bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC3" }
+			]
+		});
+		let mut json = serde_json::to_vec(&document).expect("fixture JSON should serialize");
+		while !json.len().is_multiple_of(4) {
+			json.push(b' ');
+		}
+		while !binary.len().is_multiple_of(4) {
+			binary.push(0);
+		}
+
+		let total_length = 12 + 8 + json.len() + 8 + binary.len();
+		let mut glb = Vec::with_capacity(total_length);
+		glb.extend_from_slice(b"glTF");
+		glb.extend_from_slice(&2u32.to_le_bytes());
+		glb.extend_from_slice(&(total_length as u32).to_le_bytes());
+		glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+		glb.extend_from_slice(b"JSON");
+		glb.extend_from_slice(&json);
+		glb.extend_from_slice(&(binary.len() as u32).to_le_bytes());
+		glb.extend_from_slice(b"BIN\0");
+		glb.extend_from_slice(&binary);
+		glb
+	}
+
 	/// Parses the generated GLB through the same glTF reader utilities used by the importer.
 	fn parse_skeletal_fixture() -> (gltf::Gltf, Vec<gltf::buffer::Data>) {
 		let gltf = gltf::Gltf::from_slice(&generated_skeletal_glb()).expect("generated skeletal GLB should parse");
@@ -2026,6 +2142,15 @@ mod tests {
 		);
 		assert_eq!(graph.skeleton.nodes[0].rest_local.translation, [0.0, 0.0, -1.0]);
 		assert_eq!(graph.skeleton.nodes[1].rest_local.translation, [0.0, 0.0, -2.0]);
+	}
+
+	#[test]
+	fn unfragmented_glb_with_geometry_remains_mesh_first() {
+		let gltf = gltf::Gltf::from_slice(&generated_skeletal_glb()).unwrap();
+		assert_eq!(
+			select_unfragmented_gltf_resource(&gltf, None),
+			Ok(ContainerDefaultResource::Mesh)
+		);
 	}
 
 	#[test]
@@ -2167,6 +2292,44 @@ mod tests {
 		assert_eq!(animation.duration, 2.0);
 		assert_eq!(animation.tracks.len(), 1);
 		assert_eq!(animation.skeleton.id().as_ref(), "generated_skeletal.glb#skeleton");
+	}
+
+	#[r#async::test]
+	async fn bakes_unfragmented_animation_only_glb_as_animation() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file("animation_only.glb", &generated_animation_only_glb());
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(GLTFAssetHandler::new());
+
+		asset_manager
+			.bake("animation_only.glb", &resource_storage_backend)
+			.await
+			.expect("an unfragmented animation-only GLB should bake as Animation");
+		let animation = resource_storage_backend
+			.get_resource(ResourceId::new("animation_only.glb"))
+			.expect("the bare GLB Animation resource should be stored");
+		let animation = crate::from_slice::<AnimationModel>(&animation.resource).unwrap();
+
+		assert_eq!(animation.name.as_deref(), Some("MoveX"));
+		assert_eq!(animation.skeleton.id().as_ref(), "animation_only.glb#skeleton");
+	}
+
+	#[r#async::test]
+	async fn bead_can_make_a_single_clip_glb_with_geometry_default_to_animation() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file("generated_skeletal.glb", &generated_skeletal_glb());
+		asset_storage_backend.add_file("generated_skeletal.glb.bead", br#"{ "default_resource": "animation" }"#);
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(GLTFAssetHandler::new());
+
+		let animation: ReferenceModel<AnimationModel> = asset_manager
+			.bake_if_not_exists("generated_skeletal.glb", &resource_storage_backend)
+			.await
+			.expect("the BEAD default should override mesh-first glTF dispatch");
+
+		assert_eq!(animation.class(), "Animation");
 	}
 
 	#[r#async::test]
@@ -2915,7 +3078,7 @@ use super::{
 	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
 	bema_asset_handler::{compile_shader_program, ProgramGenerator},
-	ResourceId,
+	container_default_resource, ContainerDefaultResource, ResourceId,
 };
 pub use crate::processors::mesh_processor::TriangleFrontFaceWinding;
 use crate::{

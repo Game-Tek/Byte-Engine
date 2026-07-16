@@ -173,6 +173,86 @@ pub struct Skeleton {
 	pub nodes: Vec<SkeletonNode>,
 }
 
+#[derive(Clone, Debug)]
+/// The `SkeletonPoseMap` struct preserves a reusable source-to-target node mapping for compatible animation-pack rigs.
+pub struct SkeletonPoseMap {
+	target_by_source: Vec<Option<usize>>,
+}
+
+impl SkeletonPoseMap {
+	/// Builds a mapping from stable authored node names while leaving target-only helpers on their rest pose.
+	pub fn by_name(source: &Skeleton, target: &Skeleton) -> Self {
+		let mut target_by_name = std::collections::HashMap::with_capacity(target.nodes.len());
+		for (index, node) in target.nodes.iter().enumerate() {
+			let Some(name) = node.name.as_deref() else {
+				continue;
+			};
+			target_by_name
+				.entry(name)
+				.and_modify(|target| *target = None)
+				.or_insert(Some(index));
+		}
+		Self {
+			target_by_source: source
+				.nodes
+				.iter()
+				.map(|node| {
+					node.name
+						.as_deref()
+						.and_then(|name| target_by_name.get(name).copied().flatten())
+				})
+				.collect(),
+		}
+	}
+
+	pub fn target_node(&self, source_node: usize) -> Option<usize> {
+		self.target_by_source.get(source_node).copied().flatten()
+	}
+
+	/// Writes a complete target-local pose without allocating after caller storage reaches the target skeleton size.
+	pub fn write_target_local_pose(
+		&self,
+		source_pose: &[LocalTransform],
+		target: &Skeleton,
+		output: &mut Vec<LocalTransform>,
+	) -> Result<(), SkeletonPoseMapError> {
+		if source_pose.len() != self.target_by_source.len() {
+			return Err(SkeletonPoseMapError::SourcePoseLength {
+				expected: self.target_by_source.len(),
+				actual: source_pose.len(),
+			});
+		}
+
+		output.clear();
+		output.extend(target.nodes.iter().map(|node| node.rest_local));
+		for (source, target) in source_pose.iter().zip(&self.target_by_source) {
+			if let Some(target) = target {
+				output[*target] = *source;
+			}
+		}
+		Ok(())
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The `SkeletonPoseMapError` enum reports incompatible pose storage supplied to a retained skeleton mapping.
+pub enum SkeletonPoseMapError {
+	SourcePoseLength { expected: usize, actual: usize },
+}
+
+impl std::fmt::Display for SkeletonPoseMapError {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::SourcePoseLength { expected, actual } => write!(
+				formatter,
+				"Source pose has the wrong node count. The most likely cause is that the pose map was built for {expected} nodes but received {actual}."
+			),
+		}
+	}
+}
+
+impl std::error::Error for SkeletonPoseMapError {}
+
 /// The `SkeletonModel` struct preserves a serializable skeleton hierarchy for resource storage and clip references.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct SkeletonModel {
@@ -279,8 +359,8 @@ fn validate_node(
 #[cfg(test)]
 mod tests {
 	use super::{
-		identity_matrix4_columns, LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint,
-		SkinPaletteEntry, SkinPaletteError,
+		identity_matrix4_columns, LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkeletonPoseMap, SkinBinding,
+		SkinJoint, SkinPaletteEntry, SkinPaletteError,
 	};
 	use crate::{resource::storage_backend::tests::TestStorageBackend, Solver};
 
@@ -363,6 +443,61 @@ mod tests {
 
 			assert!(model.solve(&TestStorageBackend::new()).is_err());
 		}
+	}
+
+	#[test]
+	fn pose_map_matches_named_nodes_and_preserves_target_only_helpers() {
+		let source = Skeleton {
+			nodes: vec![
+				SkeletonNode {
+					name: Some("Hips".into()),
+					parent: None,
+					rest_local: LocalTransform::identity(),
+				},
+				SkeletonNode {
+					name: Some("Spine".into()),
+					parent: Some(0),
+					rest_local: LocalTransform::identity(),
+				},
+			],
+		};
+		let helper_rest = LocalTransform {
+			translation: [3.0, 0.0, 0.0],
+			..LocalTransform::identity()
+		};
+		let target = Skeleton {
+			nodes: vec![
+				SkeletonNode {
+					name: Some("IKRoot".into()),
+					parent: None,
+					rest_local: helper_rest,
+				},
+				SkeletonNode {
+					name: Some("Hips".into()),
+					parent: None,
+					rest_local: LocalTransform::identity(),
+				},
+				SkeletonNode {
+					name: Some("Spine".into()),
+					parent: Some(1),
+					rest_local: LocalTransform::identity(),
+				},
+			],
+		};
+		let animated_hips = LocalTransform {
+			translation: [0.0, 4.0, 0.0],
+			..LocalTransform::identity()
+		};
+		let map = SkeletonPoseMap::by_name(&source, &target);
+		let mut output = Vec::new();
+
+		map.write_target_local_pose(&[animated_hips, LocalTransform::identity()], &target, &mut output)
+			.unwrap();
+
+		assert_eq!(map.target_node(0), Some(1));
+		assert_eq!(map.target_node(1), Some(2));
+		assert_eq!(output[0], helper_rest);
+		assert_eq!(output[1], animated_hips);
 	}
 
 	#[test]

@@ -16,9 +16,6 @@ use crate::{
 	space::Transformable,
 };
 
-/// One column-major transform in the layout consumed by visibility skinning.
-pub type SkinningMatrix = [[f32; 4]; 4];
-
 /// The [`RenderableMesh`] trait supplies geometry and transform state to scene pipeline managers.
 pub trait RenderableMesh: Transformable {
 	fn get_mesh(&self) -> &MeshSource;

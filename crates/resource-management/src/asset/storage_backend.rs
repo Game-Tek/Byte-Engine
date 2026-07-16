@@ -120,8 +120,17 @@ pub mod tests {
 	impl StorageBackend for TestStorageBackend {
 		fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>> {
 			Box::pin(async move {
-				if let Some(data) = self.0.lock().unwrap().get(url.as_ref()).cloned() {
-					return Ok((AssetStorageBytes::Owned(data), None, url.get_extension().to_string()));
+				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
+				if let Some(data) = mocked_data {
+					let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
+					let spec_data = self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned();
+					let spec = if let Some(spec_data) = spec_data {
+						let spec = std::str::from_utf8(&spec_data).or(Err(()))?;
+						Some(json::from_str(spec).or(Err(()))?)
+					} else {
+						None
+					};
+					return Ok((AssetStorageBytes::Owned(data), spec, url.get_extension().to_string()));
 				}
 
 				// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()
@@ -171,8 +180,17 @@ pub mod tests {
 
 		fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>> {
 			Box::pin(async move {
-				if let Some(data) = self.0.lock().unwrap().get(url.as_ref()).cloned() {
-					return Ok((super::move_bytes_in(data, allocator), None, url.get_extension().to_string()));
+				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
+				if let Some(data) = mocked_data {
+					let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
+					let spec_data = self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned();
+					let spec = if let Some(spec_data) = spec_data {
+						let spec = std::str::from_utf8(&spec_data).or(Err(()))?;
+						Some(json::from_str(spec).or(Err(()))?)
+					} else {
+						None
+					};
+					return Ok((super::move_bytes_in(data, allocator), spec, url.get_extension().to_string()));
 				}
 
 				// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()

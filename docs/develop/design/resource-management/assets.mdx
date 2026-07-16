@@ -68,18 +68,28 @@ Container fragments address the generated subresources consistently:
 - `character.glb#animations/0` selects a clip by zero-based index.
 - `character.glb#animations/Walk` selects a clip by exact name.
 
+Without a fragment, FBX and glTF containers use a content-only default that is identical in debug baking and BELD:
+
+- A container with any mesh bakes as `Mesh`.
+- A container without meshes and with exactly one animation bakes as `Animation` and stores its dependency as `#skeleton`.
+- Containers with neither an uncontested mesh nor a single animation require an explicit fragment.
+
+A sibling BEAD manifest can override the first two choices with `"default_resource": "mesh"` or
+`"default_resource": "animation"`. An animation override still requires exactly one clip. Skeleton resources never
+become the unfragmented default and must always be requested through `#skeleton`.
+
 The importers normalize weights to a fixed four-influence vertex format.
 FBX matrix-linear and rigid skins are supported; files that require multiple layered skin deformers or dual-quaternion skinning are rejected instead of being approximated silently.
 glTF morph-weight channels are not part of the skeletal clip representation and a selected clip containing them is rejected explicitly.
 Animated rigid or skinned mesh nodes must have an invertible bind transform because their vertices are stored in flattened bind space.
 The importers reject zero-scale bind transforms rather than irreversibly discarding geometry that a later animation would make visible.
 
-The CPU animation graph and renderer palette upload do not exist yet.
-Loading these resources therefore preserves everything needed for pose evaluation and GPU skinning, but does not animate a rendered mesh by itself.
+A general-purpose CPU animation graph does not exist yet. The visibility renderer accepts complete global poses and uploads
+their derived skin palettes, while applications such as `model_viewer` currently provide provisional clip sampling.
 
 ## FBX resources
 
-An FBX asset ID without a fragment bakes every polygon-mesh instance into one `Mesh` resource.
+An FBX asset ID that defaults to a mesh bakes every polygon-mesh instance into one `Mesh` resource.
 The importer normalizes axes and authored units, triangulates polygon faces, preserves material parts, transforms instance geometry, and emits position, normal, tangent-frame, color, UV, joint, and weight streams when the source provides them.
 Meshes without authored UVs receive a zero-filled UV stream because the visibility renderer requires that stream even for untextured materials.
 

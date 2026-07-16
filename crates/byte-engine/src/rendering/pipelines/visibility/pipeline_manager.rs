@@ -33,6 +33,11 @@ pub struct VisibilityPipelineManager {
 }
 
 impl VisibilityPipelineManager {
+	/// Retains a renderable's global skeleton pose for palette generation during frame preparation.
+	pub fn update_pose(&mut self, handle: Handle, global_matrices: &[math::Matrix4]) {
+		self.scene.write_skinned_pose(handle, global_matrices);
+	}
+
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		resource_manager: VisibilityPipelineResourceManagerClient,

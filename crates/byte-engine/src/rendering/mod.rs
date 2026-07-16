@@ -35,6 +35,7 @@ pub mod cct;
 
 #[doc(hidden)]
 pub mod pipeline_manager;
+mod pose;
 #[doc(hidden)]
 pub mod world_render_domain;
 
@@ -71,8 +72,9 @@ pub use camera::Camera;
 pub use lights::{DirectionalLight, Light, LightClasses, Lights, PointLight};
 pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, SimpleRenderPass, VisibilityPipelineManager};
+pub use pose::UpdatePose;
 pub use render_pass::{FramePrepare, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassReturn, RenderToResult};
-pub use renderable::mesh::{RenderableMesh, SkinningMatrix};
+pub use renderable::mesh::RenderableMesh;
 pub use renderer::{RenderTargets, Renderer, Settings};
 pub use sink::Sink;
 pub use view::View;

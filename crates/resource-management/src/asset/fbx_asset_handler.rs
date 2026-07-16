@@ -11,7 +11,7 @@ use super::{
 	asset_handler::{AssetHandler, LoadErrors},
 	asset_manager::AssetManager,
 	bema_asset_handler::{compile_shader_program, ProgramGenerator},
-	ResourceId,
+	container_default_resource, ContainerDefaultResource, ResourceId,
 };
 use crate::{
 	asset,
@@ -35,6 +35,35 @@ const DEFAULT_ANIMATION_FRAGMENT: &str = "animation";
 const ANIMATION_FRAGMENT_PREFIX: &str = "animations/";
 const SKELETON_FRAGMENT: &str = "skeleton";
 const MAX_PRIMITIVE_VERTICES: usize = u16::MAX as usize + 1;
+
+fn select_unfragmented_fbx_resource(
+	scene: &ufbx::Scene,
+	spec: Option<&asset::BEADType>,
+) -> Result<ContainerDefaultResource, String> {
+	let selected = container_default_resource(spec)?;
+	if let Some(selected) = selected {
+		if selected == ContainerDefaultResource::Animation && scene.anim_stacks.len() != 1 {
+			return Err(format!(
+				"BEAD selects animation, but the FBX contains {} animation stacks; use an explicit animation fragment",
+				scene.anim_stacks.len()
+			));
+		}
+		return Ok(selected);
+	}
+
+	if !scene.meshes.is_empty() {
+		return Ok(ContainerDefaultResource::Mesh);
+	}
+
+	if scene.anim_stacks.len() == 1 {
+		return Ok(ContainerDefaultResource::Animation);
+	}
+
+	Err(format!(
+		"the FBX contains no mesh and {} animation stacks; use an explicit fragment",
+		scene.anim_stacks.len()
+	))
+}
 
 /// The `FBXAssetHandler` struct provides the authored-FBX import path used to bake meshes, skeletons, and animation clips.
 pub struct FBXAssetHandler {
@@ -135,6 +164,38 @@ impl AssetHandler for FBXAssetHandler {
 				})?;
 			return Ok((ProcessedAsset::new(url, animation), Vec::new().into_boxed_slice()));
 		}
+
+		let default_resource = select_unfragmented_fbx_resource(&scene, spec.as_ref()).map_err(|error| {
+			log::error!(
+				"Failed to select the default FBX resource '{}': {error}. The most likely cause is an ambiguous container without an explicit fragment or BEAD override.",
+				url.as_ref()
+			);
+			LoadErrors::FailedToProcess
+		})?;
+
+		if default_resource == ContainerDefaultResource::Animation {
+			let imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
+				log::error!("Failed to import FBX animation skeleton '{}': {error}", url.as_ref());
+				LoadErrors::FailedToProcess
+			})?;
+
+			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
+			let skeleton = store_model::<SkeletonModel>(storage_backend, &skeleton_id, imported_skeleton.model, &[])?;
+
+			let animation = import_fbx_animation(
+				&scene,
+				DEFAULT_ANIMATION_FRAGMENT,
+				skeleton,
+				&imported_skeleton.source_to_skeleton,
+			)
+			.map_err(|error| {
+				log::error!("Failed to import default FBX animation '{}': {error}", url.as_ref());
+				LoadErrors::FailedToProcess
+			})?;
+
+			return Ok((ProcessedAsset::new(url, animation), Vec::new().into_boxed_slice()));
+		}
+
 		let imported_skeleton = (scene.meshes.iter().any(|mesh| !mesh.skin_deformers.is_empty())
 			|| !scene.anim_stacks.is_empty())
 		.then(|| import_fbx_skeleton(&scene))
@@ -1864,12 +1925,13 @@ mod tests {
 	use super::{
 		fbx_brdf_material, finite_material_component, finite_material_product, import_fbx_animation, import_fbx_meshes,
 		import_fbx_skeleton, import_fbx_skin_binding, load_fbx_scene, matrix_to_columns, remap_triangle_corners,
-		select_fbx_skin, skin_weights, FBXAssetHandler, FbxImportError, MaterialKey, ResolvedFbxMaterials,
+		select_fbx_skin, select_unfragmented_fbx_resource, skin_weights, FBXAssetHandler, FbxImportError, MaterialKey,
+		ResolvedFbxMaterials,
 	};
 	use crate::{
 		asset::{
 			asset_handler::AssetHandler, asset_manager::AssetManager, bema_asset_handler::tests::MinimalTestShaderGenerator,
-			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
+			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ContainerDefaultResource,
 		},
 		pbr::{BrdfAlphaMode, BrdfMaterialDescription, BrdfNode, BrdfValue},
 		processors::mesh_processor::{
@@ -1888,6 +1950,7 @@ mod tests {
 	};
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("test_data/triangle_move_ascii.fbx");
+	const ANIMATION_ONLY_FBX: &[u8] = include_bytes!("test_data/animation_only_ascii.fbx");
 	const DEGENERATE_QUAD_FBX: &[u8] = include_bytes!("test_data/degenerate_quad_ascii.fbx");
 	const MATERIAL_FACTORS_FBX: &[u8] = include_bytes!("test_data/material_factors_ascii.fbx");
 	const SKINNED_TRIANGLE_FBX: &[u8] = include_bytes!("test_data/skinned_triangle_ascii.fbx");
@@ -1900,6 +1963,15 @@ mod tests {
 		assert!(handler.can_handle("FBX"));
 		assert!(!handler.can_handle("glb"));
 		assert_eq!(handler.triangle_front_face_winding(), TriangleFrontFaceWinding::Clockwise);
+	}
+
+	#[test]
+	fn unfragmented_fbx_with_geometry_remains_mesh_first() {
+		let scene = load_fbx_scene(TRIANGLE_MOVE_FBX, "triangle_move.fbx").unwrap();
+		assert_eq!(
+			select_unfragmented_fbx_resource(&scene, None),
+			Ok(ContainerDefaultResource::Mesh)
+		);
 	}
 
 	#[test]
@@ -2323,6 +2395,47 @@ mod tests {
 
 		assert_eq!(animation.class(), "Animation");
 		assert_eq!(animation.id().as_ref(), "triangle_move.fbx#animations/MoveX");
+	}
+
+	#[r#async::test]
+	async fn asset_manager_bakes_unfragmented_animation_only_fbx_as_animation() {
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("animation_only.fbx", ANIMATION_ONLY_FBX);
+		let resource_storage = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage);
+		asset_manager.add_asset_handler(FBXAssetHandler::new());
+
+		asset_manager
+			.bake("animation_only.fbx", &resource_storage)
+			.await
+			.expect("an unfragmented animation-only FBX should bake as Animation");
+
+		let animation = resource_storage
+			.get_resource(crate::asset::ResourceId::new("animation_only.fbx"))
+			.expect("the bare FBX Animation resource should be stored");
+
+		assert_eq!(animation.class, "Animation");
+
+		let animation = crate::from_slice::<AnimationModel>(&animation.resource).unwrap();
+
+		assert_eq!(animation.skeleton.id().as_ref(), "animation_only.fbx#skeleton");
+	}
+
+	#[r#async::test]
+	async fn bead_can_make_a_single_clip_fbx_with_geometry_default_to_animation() {
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("triangle_move.fbx", TRIANGLE_MOVE_FBX);
+		asset_storage.add_file("triangle_move.fbx.bead", br#"{ "default_resource": "animation" }"#);
+		let resource_storage = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage);
+		asset_manager.add_asset_handler(FBXAssetHandler::new());
+
+		let animation: ReferenceModel<AnimationModel> = asset_manager
+			.bake_if_not_exists("triangle_move.fbx", &resource_storage)
+			.await
+			.expect("the BEAD default should override mesh-first FBX dispatch");
+
+		assert_eq!(animation.class(), "Animation");
 	}
 
 	#[r#async::test]

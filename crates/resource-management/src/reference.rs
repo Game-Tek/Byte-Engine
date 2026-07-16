@@ -235,10 +235,6 @@ mod tests {
 
 	impl Resource for DefaultLoadResource {
 		type Model = DefaultLoadModel;
-
-		fn get_class(&self) -> &'static str {
-			DefaultLoadModel::get_class()
-		}
 	}
 
 	fn temporary_file_path() -> PathBuf {
@@ -278,6 +274,7 @@ mod tests {
 		let model = ReferenceModel::<DefaultLoadModel>::new("default-load", 0, expected.len(), &DefaultLoadModel, None);
 		let reader = Box::new(FileResourceReader::new(fs::File::open(&path).unwrap()));
 		let mut reference = Reference::from_model(model, DefaultLoadResource, reader);
+		assert_eq!(reference.resource.get_class(), DefaultLoadModel::get_class());
 		let target = ReadTargetsMut::from(&reference);
 		let result = reference.load(target).unwrap();
 

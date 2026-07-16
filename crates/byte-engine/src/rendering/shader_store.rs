@@ -292,7 +292,7 @@ fn shader_type_tag(shader_type: ShaderTypes) -> u8 {
 	}
 }
 
-fn binding_to_descriptor(binding: &Binding) -> ghi::shader::BindingDescriptor {
+pub(crate) fn binding_to_descriptor(binding: &Binding) -> ghi::shader::BindingDescriptor {
 	ghi::shader::BindingDescriptor::new(binding.set, binding.binding, binding_access_policy(binding))
 }
 
@@ -308,7 +308,7 @@ fn binding_access_policy(binding: &Binding) -> ghi::AccessPolicies {
 	}
 }
 
-fn shader_type_to_ghi(shader_type: ShaderTypes) -> ghi::ShaderTypes {
+pub(crate) fn shader_type_to_ghi(shader_type: ShaderTypes) -> ghi::ShaderTypes {
 	match shader_type {
 		ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
 		ShaderTypes::Fragment => ghi::ShaderTypes::Fragment,

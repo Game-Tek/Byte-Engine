@@ -22,10 +22,6 @@ fn default_mip_count() -> u32 {
 }
 
 impl Resource for Image {
-	fn get_class(&self) -> &'static str {
-		"Image"
-	}
-
 	type Model = Image;
 }
 

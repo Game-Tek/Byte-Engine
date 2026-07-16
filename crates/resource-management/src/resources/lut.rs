@@ -28,10 +28,6 @@ pub struct Lut {
 }
 
 impl Resource for Lut {
-	fn get_class(&self) -> &'static str {
-		"Lut"
-	}
-
 	type Model = Lut;
 }
 

@@ -149,10 +149,6 @@ pub struct AnimationModel {
 
 impl Resource for Animation {
 	type Model = AnimationModel;
-
-	fn get_class(&self) -> &'static str {
-		"Animation"
-	}
 }
 
 impl Model for AnimationModel {

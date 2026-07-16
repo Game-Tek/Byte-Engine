@@ -42,10 +42,6 @@ impl Primitive {
 }
 
 impl Resource for Primitive {
-	fn get_class(&self) -> &'static str {
-		"Primitive"
-	}
-
 	type Model = PrimitiveModel;
 }
 
@@ -177,10 +173,6 @@ impl Mesh {
 }
 
 impl Resource for Mesh {
-	fn get_class(&self) -> &'static str {
-		"Mesh"
-	}
-
 	type Model = MeshModel;
 }
 

@@ -294,17 +294,18 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn glsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		make_raw_code(Some(code.into()), None, None, input, output)
+		Self::raw_code(Some(code.into()), None, None, input, output)
 	}
 
 	pub fn hlsl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		make_raw_code(None, Some(code.into()), None, input, output)
+		Self::raw_code(None, Some(code.into()), None, input, output)
 	}
 
 	pub fn msl(code: impl Into<Cow<'a, str>>, input: &'a [&'a str], output: &'a [&'a str]) -> Node<'a> {
-		make_raw_code(None, None, Some(code.into()), input, output)
+		Self::raw_code(None, None, Some(code.into()), input, output)
 	}
 
+	/// Builds parser raw code with explicit backend sources and interface names.
 	pub fn raw_code(
 		glsl: Option<Cow<'a, str>>,
 		hlsl: Option<Cow<'a, str>>,
@@ -312,7 +313,15 @@ impl<'a> Node<'a> {
 		input: &'a [&'a str],
 		output: &'a [&'a str],
 	) -> Node<'a> {
-		make_raw_code(glsl, hlsl, msl, input, output)
+		Node {
+			node: Nodes::RawCode {
+				glsl,
+				hlsl,
+				msl,
+				input,
+				output,
+			},
+		}
 	}
 
 	pub fn literal(name: &'a str, body: Node<'a>) -> Node<'a> {
@@ -682,24 +691,6 @@ fn make_function<'a>(name: &'a str, params: Vec<Node<'a>>, return_type: &'a str,
 			params,
 			return_type,
 			statements,
-		},
-	}
-}
-
-fn make_raw_code<'a>(
-	glsl: Option<Cow<'a, str>>,
-	hlsl: Option<Cow<'a, str>>,
-	msl: Option<Cow<'a, str>>,
-	input: &'a [&'a str],
-	output: &'a [&'a str],
-) -> Node<'a> {
-	Node {
-		node: Nodes::RawCode {
-			glsl,
-			hlsl,
-			msl,
-			input,
-			output,
 		},
 	}
 }
@@ -1600,61 +1591,24 @@ impl<'a> Index<&str> for Node<'a> {
 	type Output = Node<'a>;
 
 	fn index(&self, index: &str) -> &Self::Output {
-		match &self.node {
-			Nodes::Scope { children, .. } => {
-				for child in children {
-					match child.node {
-						Nodes::Scope {
-							name: child_name,
-							children: _,
-						} => {
-							if child_name == index {
-								return child;
-							}
-						}
-						Nodes::Struct {
-							name: child_name,
-							fields: _,
-						} => {
-							if child_name == index {
-								return child;
-							}
-						}
-						Nodes::Member {
-							name: child_name,
-							r#type: _,
-						} => {
-							if child_name == index {
-								return child;
-							}
-						}
-						Nodes::Function { name: child_name, .. } => {
-							if child_name == index {
-								return child;
-							}
-						}
-						Nodes::Const { name: child_name, .. } if child_name == index => {
-							return child;
-						}
-						_ => {}
-					}
-				}
-			}
-			Nodes::Struct { fields, .. } => {
-				for field in fields {
-					if let Nodes::Member { name: child_name, .. } = field.node {
-						if child_name == index {
-							return field;
-						}
-					}
-				}
-			}
-			_ => {
-				panic!("Cannot search  in these");
-			}
-		}
+		let child = match &self.node {
+			Nodes::Scope { children, .. } => children.iter().find(|child| {
+				matches!(
+					child.node(),
+					Nodes::Scope { .. }
+						| Nodes::Struct { .. }
+						| Nodes::Member { .. }
+						| Nodes::Function { .. }
+						| Nodes::Const { .. }
+				) && child.name() == Some(index)
+			}),
+			Nodes::Struct { fields, .. } => fields
+				.iter()
+				.find(|field| matches!(field.node(), Nodes::Member { .. }) && field.name() == Some(index)),
+			_ => panic!("Cannot search  in these"),
+		};
 
-		panic!("Not found");
+		child.unwrap_or_else(|| panic!("Not found"))
 	}
 }
 

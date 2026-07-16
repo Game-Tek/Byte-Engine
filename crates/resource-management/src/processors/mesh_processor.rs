@@ -6,7 +6,7 @@ use crate::{
 		mesh::{MeshModel, PrimitiveModel},
 		skeleton::{SkeletonModel, SkinBinding, SkinJoint},
 	},
-	types::{IndexStreamTypes, IntegralTypes, Stream, Streams, VertexComponent, VertexSemantics},
+	types::{IndexStreamTypes, IntegralTypes, Size, Stream, Streams, VertexComponent, VertexSemantics},
 	ReferenceModel, StreamDescription,
 };
 
@@ -1213,26 +1213,6 @@ fn vertex_semantic_order(semantic: VertexSemantics) -> usize {
 		VertexSemantics::Color => 5,
 		VertexSemantics::Joints => 6,
 		VertexSemantics::Weights => 7,
-	}
-}
-
-trait IntegralTypeSize {
-	fn size(self) -> usize;
-}
-
-impl IntegralTypeSize for IntegralTypes {
-	fn size(self) -> usize {
-		match self {
-			IntegralTypes::U8 => 1,
-			IntegralTypes::I8 => 1,
-			IntegralTypes::U16 => 2,
-			IntegralTypes::I16 => 2,
-			IntegralTypes::U32 => 4,
-			IntegralTypes::I32 => 4,
-			IntegralTypes::F16 => 2,
-			IntegralTypes::F32 => 4,
-			IntegralTypes::F64 => 8,
-		}
 	}
 }
 

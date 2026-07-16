@@ -51,6 +51,15 @@ pub(super) fn compile(program: NodeReference, specializations: &SpecializationVa
 	})
 }
 
+/// Rejects malformed linked calls before any argument is indexed or lowered.
+fn require_argument_count(arguments: &[NodeReference], expected: usize) -> Result<(), VmError> {
+	let found = arguments.len();
+	if found != expected {
+		return Err(VmError::CallArgumentMismatch { expected, found });
+	}
+	Ok(())
+}
+
 /// The `Compiler` struct lowers one BESL function into bounded register-machine instructions.
 struct Compiler<'a> {
 	function_ids: &'a HashMap<NodeReference, usize>,
@@ -727,12 +736,7 @@ impl<'a> Compiler<'a> {
 
 		match name.as_str() {
 			"sample" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;
@@ -741,12 +745,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"texture_lod" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let coord_type = self.infer_expression_type(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;
 				let coord = self.compile_value_expression(&arguments[1], &coord_type, descriptor_layouts)?;
@@ -772,12 +771,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"fetch" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
@@ -786,12 +780,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"fetch_u32" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
 				let register = self.allocate_register();
@@ -799,12 +788,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"image_load" | "image_load_u32" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
 				let register = self.allocate_register();
@@ -816,12 +800,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"image_atomic_or" => {
-				if arguments.len() != 3 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 3,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 3)?;
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
 				let value = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
@@ -835,22 +814,12 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"atomic_load" => {
-				if arguments.len() != 1 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 1,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 1)?;
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				self.compile_resolved_buffer_load(target, descriptor_layouts)
 			}
 			"atomic_add" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
 				if target.value_type != ValueType::U32 {
 					return Err(VmError::TypeMismatch {
@@ -873,12 +842,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"texture_size" => {
-				if arguments.len() != 1 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 1,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 1)?;
 
 				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				let register = self.allocate_register();
@@ -886,12 +850,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"image_size" => {
-				if arguments.len() != 1 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 1,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 1)?;
 
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any, descriptor_layouts)?;
 				let register = self.allocate_register();
@@ -899,12 +858,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"dot" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 
 				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
 					.into_iter()
@@ -924,12 +878,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"cross" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 
 				let left = self.compile_value_expression(&arguments[0], &ValueType::Vec3F, descriptor_layouts)?;
 				let right = self.compile_value_expression(&arguments[1], &ValueType::Vec3F, descriptor_layouts)?;
@@ -938,12 +887,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"length" => {
-				if arguments.len() != 1 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 1,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 1)?;
 
 				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
 					.into_iter()
@@ -960,12 +904,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"normalize" => {
-				if arguments.len() != 1 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 1,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 1)?;
 
 				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
 					.into_iter()
@@ -988,12 +927,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"reflect" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 
 				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
 					.into_iter()
@@ -1024,12 +958,7 @@ impl<'a> Compiler<'a> {
 			}
 			"abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "round" | "fract" | "radians" | "inversesqrt" | "log2"
 			| "fwidth" => {
-				if arguments.len() != 1 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 1,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 1)?;
 
 				let value = self.compile_value_expression(&arguments[0], &return_type, descriptor_layouts)?;
 				let register = self.allocate_register();
@@ -1055,12 +984,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"f32" => {
-				if arguments.len() != 1 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 1,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 1)?;
 				if expected_type != &ValueType::F32 {
 					return Err(VmError::TypeMismatch {
 						expected: expected_type.name().to_string(),
@@ -1078,12 +1002,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"u32" => {
-				if arguments.len() != 1 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 1,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 1)?;
 				if expected_type != &ValueType::U32 {
 					return Err(VmError::TypeMismatch {
 						expected: expected_type.name().to_string(),
@@ -1116,12 +1035,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"min" | "max" | "pow" | "step" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 				let argument_type = if name == "step" { ValueType::F32 } else { return_type.clone() };
 				let left = self.compile_value_expression(&arguments[0], &argument_type, descriptor_layouts)?;
 				let right = self.compile_value_expression(&arguments[1], &argument_type, descriptor_layouts)?;
@@ -1141,13 +1055,7 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"smoothstep" | "mix" | "clamp" => {
-				let expected_argument_count = 3;
-				if arguments.len() != expected_argument_count {
-					return Err(VmError::CallArgumentMismatch {
-						expected: expected_argument_count,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 3)?;
 
 				let argument_type = if name == "clamp" {
 					return_type.clone()
@@ -1173,35 +1081,20 @@ impl<'a> Compiler<'a> {
 				Ok(register)
 			}
 			"thread_idx" => {
-				if !arguments.is_empty() {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 0,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 0)?;
 
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::ThreadIdx { register });
 				Ok(register)
 			}
 			"thread_id" => {
-				if !arguments.is_empty() {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 0,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 0)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::ThreadId { register });
 				Ok(register)
 			}
 			"threadgroup_position" => {
-				if !arguments.is_empty() {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 0,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 0)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::ThreadgroupPosition { register });
 				Ok(register)
@@ -1246,12 +1139,7 @@ impl<'a> Compiler<'a> {
 						found: return_type.name().to_string(),
 					});
 				}
-				if parameters.len() != signature.params.len() {
-					return Err(VmError::CallArgumentMismatch {
-						expected: signature.params.len(),
-						found: parameters.len(),
-					});
-				}
+				require_argument_count(parameters, signature.params.len())?;
 
 				let mut arguments = Vec::with_capacity(parameters.len());
 				for (parameter, signature_parameter) in parameters.iter().zip(&signature.params) {
@@ -1905,12 +1793,7 @@ impl<'a> Compiler<'a> {
 			Nodes::Function { .. } => {
 				let signature = extract_function_signature(function)?;
 				drop(function_ref);
-				if parameters.len() != signature.params.len() {
-					return Err(VmError::CallArgumentMismatch {
-						expected: signature.params.len(),
-						found: parameters.len(),
-					});
-				}
+				require_argument_count(parameters, signature.params.len())?;
 				let mut arguments = Vec::with_capacity(parameters.len());
 				for (parameter, signature_parameter) in parameters.iter().zip(&signature.params) {
 					arguments.push(self.compile_value_expression(
@@ -1982,12 +1865,7 @@ impl<'a> Compiler<'a> {
 
 		match name.as_str() {
 			"set_mesh_output_counts" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 				let vertex_count = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
 				let primitive_count = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
 				self.instructions.push(Instruction::SetMeshOutputCounts {
@@ -1997,36 +1875,21 @@ impl<'a> Compiler<'a> {
 				Ok(())
 			}
 			"set_mesh_vertex_position" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 				let index = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
 				let position = self.compile_value_expression(&arguments[1], &ValueType::Vec4F, descriptor_layouts)?;
 				self.instructions.push(Instruction::SetMeshVertexPosition { index, position });
 				Ok(())
 			}
 			"set_mesh_triangle" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 				let index = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
 				let triangle = self.compile_value_expression(&arguments[1], &ValueType::Vec3U, descriptor_layouts)?;
 				self.instructions.push(Instruction::SetMeshTriangle { index, triangle });
 				Ok(())
 			}
 			"write" => {
-				if arguments.len() != 3 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 3,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 3)?;
 
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
@@ -2035,24 +1898,14 @@ impl<'a> Compiler<'a> {
 				Ok(())
 			}
 			"guard_image_bounds" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any, descriptor_layouts)?;
 				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
 				self.instructions.push(Instruction::GuardImageBounds { slot, coord });
 				Ok(())
 			}
 			"atomic_store" => {
-				if arguments.len() != 2 {
-					return Err(VmError::CallArgumentMismatch {
-						expected: 2,
-						found: arguments.len(),
-					});
-				}
+				require_argument_count(arguments, 2)?;
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
 				if target.value_type != ValueType::U32 {
 					return Err(VmError::TypeMismatch {

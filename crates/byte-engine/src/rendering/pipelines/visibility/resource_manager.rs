@@ -1099,22 +1099,6 @@ impl VisibilityPipelineResourceManager {
 
 	pub(crate) fn drain_pipeline_completions(&mut self, _max_results: usize) {}
 
-	fn map_shader_type(stage: ShaderTypes) -> ghi::ShaderTypes {
-		match stage {
-			ShaderTypes::AnyHit => ghi::ShaderTypes::AnyHit,
-			ShaderTypes::ClosestHit => ghi::ShaderTypes::ClosestHit,
-			ShaderTypes::Compute => ghi::ShaderTypes::Compute,
-			ShaderTypes::Fragment => ghi::ShaderTypes::Fragment,
-			ShaderTypes::Intersection => ghi::ShaderTypes::Intersection,
-			ShaderTypes::Mesh => ghi::ShaderTypes::Mesh,
-			ShaderTypes::Miss => ghi::ShaderTypes::Miss,
-			ShaderTypes::RayGen => ghi::ShaderTypes::RayGen,
-			ShaderTypes::Callable => ghi::ShaderTypes::Callable,
-			ShaderTypes::Task => ghi::ShaderTypes::Task,
-			ShaderTypes::Vertex => ghi::ShaderTypes::Vertex,
-		}
-	}
-
 	/// Loads shader backing once so sync and async pipeline creation can reuse the same payload.
 	fn load_cached_shader_request(&self, shader: &mut Reference<Shader>) -> Result<Arc<OwnedShader>, ()> {
 		if let StaleEntry::Fresh(shader_request) = self.shader_requests.read().entry(&shader.id, shader.get_hash()) {
@@ -1126,24 +1110,10 @@ impl VisibilityPipelineResourceManager {
 			.interface
 			.bindings
 			.iter()
-			.map(|binding| {
-				ghi::shader::BindingDescriptor::new(
-					binding.set,
-					binding.binding,
-					if binding.read {
-						ghi::AccessPolicies::READ
-					} else {
-						ghi::AccessPolicies::empty()
-					} | if binding.write {
-						ghi::AccessPolicies::WRITE
-					} else {
-						ghi::AccessPolicies::empty()
-					},
-				)
-			})
+			.map(crate::rendering::shader_store::binding_to_descriptor)
 			.collect::<Vec<_>>();
 
-		let stage = Self::map_shader_type(shader.resource().stage);
+		let stage = crate::rendering::shader_store::shader_type_to_ghi(shader.resource().stage);
 		let shader_backing = Self::load_shader_backing(shader)?;
 
 		let source = match &shader.resource().artifact {

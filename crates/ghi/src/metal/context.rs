@@ -1195,19 +1195,7 @@ impl Context {
 			}
 		};
 
-		let stages = match stage {
-			crate::ShaderTypes::Vertex => crate::Stages::VERTEX,
-			crate::ShaderTypes::Fragment => crate::Stages::FRAGMENT,
-			crate::ShaderTypes::Compute => crate::Stages::COMPUTE,
-			crate::ShaderTypes::RayGen => crate::Stages::RAYGEN,
-			crate::ShaderTypes::Intersection => crate::Stages::INTERSECTION,
-			crate::ShaderTypes::AnyHit => crate::Stages::ANY_HIT,
-			crate::ShaderTypes::ClosestHit => crate::Stages::CLOSEST_HIT,
-			crate::ShaderTypes::Miss => crate::Stages::MISS,
-			crate::ShaderTypes::Callable => crate::Stages::CALLABLE,
-			crate::ShaderTypes::Task => crate::Stages::TASK,
-			crate::ShaderTypes::Mesh => crate::Stages::MESH,
-		};
+		let stages = stage.into();
 
 		self.shaders.push(Shader {
 			name: crate::debug_name(name),

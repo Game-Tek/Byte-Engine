@@ -207,253 +207,196 @@ impl Node {
 		let texture_2d = primitive_type("Texture2D");
 		let texture_3d = primitive_type("Texture3D");
 		let array_texture_2d = primitive_type("ArrayTexture2D");
-		let sample_intrinsic = builtin_intrinsic(
-			"sample",
-			vec![("texture_sampler", texture_2d.clone()), ("uv", vec2f32.clone())],
-			vec4f32.clone(),
-		);
-		let fetch_intrinsic = builtin_intrinsic(
-			"fetch",
-			vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
-			vec4f32.clone(),
-		);
-		let fetch_u32_intrinsic = builtin_intrinsic(
-			"fetch_u32",
-			vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
-			u32_t.clone(),
-		);
-		let dot_intrinsic = builtin_intrinsic(
-			"dot",
-			vec![("left", vec4f32.clone()), ("right", vec4f32.clone())],
-			f32_t.clone(),
-		);
-		let vec3_dot_intrinsic = builtin_intrinsic(
-			"dot",
-			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
-			f32_t.clone(),
-		);
-		let cross_intrinsic = builtin_intrinsic(
-			"cross",
-			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
-			vec3f32.clone(),
-		);
-		let length_intrinsic = builtin_intrinsic("length", vec![("value", vec4f32.clone())], f32_t.clone());
-		let vec3_length_intrinsic = builtin_intrinsic("length", vec![("value", vec3f32.clone())], f32_t.clone());
-		let normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone());
-		let vec3_normalize_intrinsic = builtin_intrinsic("normalize", vec![("value", vec3f32.clone())], vec3f32.clone());
-		let scalar_max_intrinsic =
-			builtin_intrinsic("max", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone());
-		let scalar_min_intrinsic =
-			builtin_intrinsic("min", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone());
-		let vec2_max_intrinsic = builtin_intrinsic(
-			"max",
-			vec![("left", vec2f32.clone()), ("right", vec2f32.clone())],
-			vec2f32.clone(),
-		);
-		let max_intrinsic = builtin_intrinsic(
-			"max",
-			vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
-			vec3f32.clone(),
-		);
-		let scalar_clamp_intrinsic = builtin_intrinsic(
-			"clamp",
-			vec![
-				("value", f32_t.clone()),
-				("minimum", f32_t.clone()),
-				("maximum", f32_t.clone()),
-			],
-			f32_t.clone(),
-		);
-		let clamp_intrinsic = builtin_intrinsic(
-			"clamp",
-			vec![
-				("value", vec3f32.clone()),
-				("minimum", vec3f32.clone()),
-				("maximum", vec3f32.clone()),
-			],
-			vec3f32.clone(),
-		);
-		let log2_intrinsic = builtin_intrinsic("log2", vec![("value", vec3f32.clone())], vec3f32.clone());
-		let pow_intrinsic = builtin_intrinsic(
-			"pow",
-			vec![("value", vec3f32.clone()), ("exponent", vec3f32.clone())],
-			vec3f32.clone(),
-		);
-		let scalar_pow_intrinsic = builtin_intrinsic(
-			"pow",
-			vec![("value", f32_t.clone()), ("exponent", f32_t.clone())],
-			f32_t.clone(),
-		);
-		let reflect_intrinsic = builtin_intrinsic(
-			"reflect",
-			vec![("incident", vec4f32.clone()), ("normal", vec4f32.clone())],
-			vec4f32.clone(),
-		);
-		let abs_intrinsic = builtin_intrinsic("abs", vec![("value", f32_t.clone())], f32_t.clone());
-		let vec2_abs_intrinsic = builtin_intrinsic("abs", vec![("value", vec2f32.clone())], vec2f32.clone());
-		let sqrt_intrinsic = builtin_intrinsic("sqrt", vec![("value", f32_t.clone())], f32_t.clone());
-		let exp_intrinsic = builtin_intrinsic("exp", vec![("value", f32_t.clone())], f32_t.clone());
-		let vec3_exp_intrinsic = builtin_intrinsic("exp", vec![("value", vec3f32.clone())], vec3f32.clone());
-		let sin_intrinsic = builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone());
-		let cos_intrinsic = builtin_intrinsic("cos", vec![("value", f32_t.clone())], f32_t.clone());
-		let tan_intrinsic = builtin_intrinsic("tan", vec![("value", f32_t.clone())], f32_t.clone());
-		let round_intrinsic = builtin_intrinsic("round", vec![("value", vec2f32.clone())], vec2f32.clone());
-		let fract_intrinsic = builtin_intrinsic("fract", vec![("value", f32_t.clone())], f32_t.clone());
-		let fwidth_intrinsic = builtin_intrinsic("fwidth", vec![("value", f32_t.clone())], f32_t.clone());
-		let radians_intrinsic = builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone());
-		let inversesqrt_intrinsic = builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone());
-		let f32_from_u32_intrinsic = builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone());
-		let u32_from_u32_intrinsic = builtin_intrinsic("u32", vec![("value", u32_t.clone())], u32_t.clone());
-		let u32_from_u8_intrinsic = builtin_intrinsic("u32", vec![("value", u8_t.clone())], u32_t.clone());
-		let u32_from_u16_intrinsic = builtin_intrinsic("u32", vec![("value", u16_t.clone())], u32_t.clone());
-		let u32_from_f32_intrinsic = builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone());
-		let smoothstep_intrinsic = builtin_intrinsic(
-			"smoothstep",
-			vec![("edge0", f32_t.clone()), ("edge1", f32_t.clone()), ("value", f32_t.clone())],
-			f32_t.clone(),
-		);
-		let step_intrinsic = builtin_intrinsic("step", vec![("edge", f32_t.clone()), ("value", f32_t.clone())], f32_t.clone());
-		let mix_intrinsic = builtin_intrinsic(
-			"mix",
-			vec![("left", f32_t.clone()), ("right", f32_t.clone()), ("factor", f32_t.clone())],
-			f32_t.clone(),
-		);
-		let thread_idx_intrinsic = builtin_intrinsic("thread_idx", vec![], u32_t.clone());
-		let threadgroup_position_intrinsic = builtin_intrinsic("threadgroup_position", vec![], u32_t.clone());
-		let thread_id_intrinsic = builtin_intrinsic("thread_id", vec![], vec2u32.clone());
-		let set_mesh_output_counts_intrinsic = builtin_intrinsic(
-			"set_mesh_output_counts",
-			vec![("vertex_count", u32_t.clone()), ("primitive_count", u32_t.clone())],
-			void.clone(),
-		);
-		let set_mesh_vertex_position_intrinsic = builtin_intrinsic(
-			"set_mesh_vertex_position",
-			vec![("vertex_index", u32_t.clone()), ("position", vec4f32.clone())],
-			void.clone(),
-		);
-		let set_mesh_triangle_intrinsic = builtin_intrinsic(
-			"set_mesh_triangle",
-			vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32.clone())],
-			void.clone(),
-		);
-		let image_load_intrinsic = builtin_intrinsic(
-			"image_load",
-			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
-			vec4f32.clone(),
-		);
-		let texture_size_intrinsic = builtin_intrinsic("texture_size", vec![("texture", texture_2d.clone())], vec2u32.clone());
-		let image_size_intrinsic = builtin_intrinsic("image_size", vec![("image", texture_2d.clone())], vec2u32.clone());
-		let guard_image_bounds_intrinsic = builtin_intrinsic(
-			"guard_image_bounds",
-			vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
-			void.clone(),
-		);
-		let write_intrinsic = builtin_intrinsic(
-			"write",
-			vec![
-				("image", texture_2d.clone()),
-				("coord", vec2u32.clone()),
-				("value", vec4f32.clone()),
-			],
-			void.clone(),
-		);
-		let image_atomic_or_intrinsic = builtin_intrinsic(
-			"image_atomic_or",
-			vec![
-				("image", texture_2d.clone()),
-				("coord", vec2u32.clone()),
-				("value", u32_t.clone()),
-			],
-			u32_t.clone(),
-		);
-		let texture_lod_intrinsic = builtin_intrinsic(
-			"texture_lod",
-			vec![("texture", texture_2d.clone()), ("uv", vec2f32.clone())],
-			vec4f32.clone(),
-		);
-		let texture_lod_3d_intrinsic = builtin_intrinsic(
-			"texture_lod",
-			vec![("texture", texture_3d.clone()), ("uv", vec3f32.clone())],
-			vec4f32.clone(),
-		);
 
 		let builtins = vec![
-			void,
+			void.clone(),
 			bool_t,
-			u8_t,
-			u16_t,
-			u32_t,
+			u8_t.clone(),
+			u16_t.clone(),
+			u32_t.clone(),
 			i32_t,
-			f32_t,
+			f32_t.clone(),
 			vec2u16,
 			vec4u16,
-			vec2u32,
+			vec2u32.clone(),
 			vec2i32,
-			vec2f32,
-			vec3u32,
-			vec3f32,
+			vec2f32.clone(),
+			vec3u32.clone(),
+			vec3f32.clone(),
 			vec4u32,
-			vec4f32,
+			vec4f32.clone(),
 			mat4f32,
 			mat4x3f32,
-			texture_2d,
-			texture_3d,
+			texture_2d.clone(),
+			texture_3d.clone(),
 			array_texture_2d,
-			sample_intrinsic,
-			texture_lod_intrinsic,
-			texture_lod_3d_intrinsic,
-			fetch_intrinsic,
-			fetch_u32_intrinsic,
-			dot_intrinsic,
-			vec3_dot_intrinsic,
-			cross_intrinsic,
-			length_intrinsic,
-			vec3_length_intrinsic,
-			normalize_intrinsic,
-			vec3_normalize_intrinsic,
-			scalar_max_intrinsic,
-			scalar_min_intrinsic,
-			vec2_max_intrinsic,
-			max_intrinsic,
-			scalar_clamp_intrinsic,
-			clamp_intrinsic,
-			log2_intrinsic,
-			pow_intrinsic,
-			scalar_pow_intrinsic,
-			reflect_intrinsic,
-			abs_intrinsic,
-			vec2_abs_intrinsic,
-			sqrt_intrinsic,
-			exp_intrinsic,
-			vec3_exp_intrinsic,
-			sin_intrinsic,
-			cos_intrinsic,
-			tan_intrinsic,
-			round_intrinsic,
-			fract_intrinsic,
-			fwidth_intrinsic,
-			radians_intrinsic,
-			inversesqrt_intrinsic,
-			f32_from_u32_intrinsic,
-			u32_from_u32_intrinsic,
-			u32_from_u8_intrinsic,
-			u32_from_u16_intrinsic,
-			u32_from_f32_intrinsic,
-			smoothstep_intrinsic,
-			step_intrinsic,
-			mix_intrinsic,
-			thread_idx_intrinsic,
-			threadgroup_position_intrinsic,
-			thread_id_intrinsic,
-			set_mesh_output_counts_intrinsic,
-			set_mesh_vertex_position_intrinsic,
-			set_mesh_triangle_intrinsic,
-			image_load_intrinsic,
-			texture_size_intrinsic,
-			image_size_intrinsic,
-			guard_image_bounds_intrinsic,
-			write_intrinsic,
-			image_atomic_or_intrinsic,
+			builtin_intrinsic(
+				"sample",
+				vec![("texture_sampler", texture_2d.clone()), ("uv", vec2f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"texture_lod",
+				vec![("texture", texture_2d.clone()), ("uv", vec2f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"texture_lod",
+				vec![("texture", texture_3d.clone()), ("uv", vec3f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"fetch",
+				vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"fetch_u32",
+				vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
+				u32_t.clone(),
+			),
+			builtin_intrinsic(
+				"dot",
+				vec![("left", vec4f32.clone()), ("right", vec4f32.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"dot",
+				vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"cross",
+				vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
+				vec3f32.clone(),
+			),
+			builtin_intrinsic("length", vec![("value", vec4f32.clone())], f32_t.clone()),
+			builtin_intrinsic("length", vec![("value", vec3f32.clone())], f32_t.clone()),
+			builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone()),
+			builtin_intrinsic("normalize", vec![("value", vec3f32.clone())], vec3f32.clone()),
+			builtin_intrinsic("max", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("min", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic(
+				"max",
+				vec![("left", vec2f32.clone()), ("right", vec2f32.clone())],
+				vec2f32.clone(),
+			),
+			builtin_intrinsic(
+				"max",
+				vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
+				vec3f32.clone(),
+			),
+			builtin_intrinsic(
+				"clamp",
+				vec![
+					("value", f32_t.clone()),
+					("minimum", f32_t.clone()),
+					("maximum", f32_t.clone()),
+				],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"clamp",
+				vec![
+					("value", vec3f32.clone()),
+					("minimum", vec3f32.clone()),
+					("maximum", vec3f32.clone()),
+				],
+				vec3f32.clone(),
+			),
+			builtin_intrinsic("log2", vec![("value", vec3f32.clone())], vec3f32.clone()),
+			builtin_intrinsic(
+				"pow",
+				vec![("value", vec3f32.clone()), ("exponent", vec3f32.clone())],
+				vec3f32.clone(),
+			),
+			builtin_intrinsic(
+				"pow",
+				vec![("value", f32_t.clone()), ("exponent", f32_t.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic(
+				"reflect",
+				vec![("incident", vec4f32.clone()), ("normal", vec4f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic("abs", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("abs", vec![("value", vec2f32.clone())], vec2f32.clone()),
+			builtin_intrinsic("sqrt", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("exp", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("exp", vec![("value", vec3f32.clone())], vec3f32.clone()),
+			builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("cos", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("tan", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("round", vec![("value", vec2f32.clone())], vec2f32.clone()),
+			builtin_intrinsic("fract", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("fwidth", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", u32_t.clone())], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", u8_t.clone())], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", u16_t.clone())], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone()),
+			builtin_intrinsic(
+				"smoothstep",
+				vec![("edge0", f32_t.clone()), ("edge1", f32_t.clone()), ("value", f32_t.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic("step", vec![("edge", f32_t.clone()), ("value", f32_t.clone())], f32_t.clone()),
+			builtin_intrinsic(
+				"mix",
+				vec![("left", f32_t.clone()), ("right", f32_t.clone()), ("factor", f32_t.clone())],
+				f32_t.clone(),
+			),
+			builtin_intrinsic("thread_idx", vec![], u32_t.clone()),
+			builtin_intrinsic("threadgroup_position", vec![], u32_t.clone()),
+			builtin_intrinsic("thread_id", vec![], vec2u32.clone()),
+			builtin_intrinsic(
+				"set_mesh_output_counts",
+				vec![("vertex_count", u32_t.clone()), ("primitive_count", u32_t.clone())],
+				void.clone(),
+			),
+			builtin_intrinsic(
+				"set_mesh_vertex_position",
+				vec![("vertex_index", u32_t.clone()), ("position", vec4f32.clone())],
+				void.clone(),
+			),
+			builtin_intrinsic(
+				"set_mesh_triangle",
+				vec![("primitive_index", u32_t.clone()), ("triangle", vec3u32.clone())],
+				void.clone(),
+			),
+			builtin_intrinsic(
+				"image_load",
+				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic("texture_size", vec![("texture", texture_2d.clone())], vec2u32.clone()),
+			builtin_intrinsic("image_size", vec![("image", texture_2d.clone())], vec2u32.clone()),
+			builtin_intrinsic(
+				"guard_image_bounds",
+				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
+				void.clone(),
+			),
+			builtin_intrinsic(
+				"write",
+				vec![
+					("image", texture_2d.clone()),
+					("coord", vec2u32.clone()),
+					("value", vec4f32.clone()),
+				],
+				void.clone(),
+			),
+			builtin_intrinsic(
+				"image_atomic_or",
+				vec![
+					("image", texture_2d.clone()),
+					("coord", vec2u32.clone()),
+					("value", u32_t.clone()),
+				],
+				u32_t.clone(),
+			),
 		];
 
 		let mut root = Node::scope("root".to_string());
@@ -559,41 +502,18 @@ impl Node {
 	}
 
 	pub fn glsl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
-		Node {
-			node: Nodes::Raw {
-				glsl: Some(code),
-				hlsl: None,
-				msl: None,
-				input: inputs,
-				output: outputs,
-			},
-		}
+		Self::raw(Some(code), None, None, inputs, outputs)
 	}
 
 	pub fn hlsl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
-		Node {
-			node: Nodes::Raw {
-				glsl: None,
-				hlsl: Some(code),
-				msl: None,
-				input: inputs,
-				output: outputs,
-			},
-		}
+		Self::raw(None, Some(code), None, inputs, outputs)
 	}
 
 	pub fn msl(code: String, inputs: Vec<NodeReference>, outputs: Vec<NodeReference>) -> Node {
-		Node {
-			node: Nodes::Raw {
-				glsl: None,
-				hlsl: None,
-				msl: Some(code),
-				input: inputs,
-				output: outputs,
-			},
-		}
+		Self::raw(None, None, Some(code), inputs, outputs)
 	}
 
+	/// Builds linked raw code with explicit backend sources and interface nodes.
 	pub fn raw(
 		glsl: Option<String>,
 		hlsl: Option<String>,
@@ -2282,6 +2202,35 @@ mod tests {
 			_ => {
 				panic!("Expected type");
 			}
+		}
+	}
+
+	#[test]
+	fn raw_code_constructors_select_only_the_requested_backend() {
+		const EXPECTED: [(Option<&str>, Option<&str>, Option<&str>); 3] =
+			[(Some("g"), None, None), (None, Some("h"), None), (None, None, Some("m"))];
+
+		let parser_nodes = [
+			parser::Node::glsl("g", &[], &[]),
+			parser::Node::hlsl("h", &[], &[]),
+			parser::Node::msl("m", &[], &[]),
+		];
+		let linked_nodes = [
+			Node::glsl("g".into(), Vec::new(), Vec::new()),
+			Node::hlsl("h".into(), Vec::new(), Vec::new()),
+			Node::msl("m".into(), Vec::new(), Vec::new()),
+		];
+
+		for ((parser_node, linked_node), expected) in parser_nodes.into_iter().zip(linked_nodes).zip(EXPECTED) {
+			let parser::Nodes::RawCode { glsl, hlsl, msl, .. } = parser_node.node() else {
+				panic!("Expected parser raw-code node. The constructor returned a different node variant.");
+			};
+			assert_eq!((glsl.as_deref(), hlsl.as_deref(), msl.as_deref()), expected);
+
+			let Nodes::Raw { glsl, hlsl, msl, .. } = linked_node.node() else {
+				panic!("Expected linked raw-code node. The constructor returned a different node variant.");
+			};
+			assert_eq!((glsl.as_deref(), hlsl.as_deref(), msl.as_deref()), expected);
 		}
 	}
 

@@ -1,5 +1,5 @@
 use besl::vm::{Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Value, VmError};
-use besl::{compile_to_besl, BindingTypes, Expressions, Node, Nodes};
+use besl::{compile_to_besl, BindingTypes, Expressions, Node, Nodes, Operators};
 
 #[test]
 fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
@@ -169,6 +169,57 @@ fn function_arity_is_validated_before_arguments_are_lowered() {
 		Err(error) => error,
 	};
 	assert_eq!(error, VmError::CallArgumentMismatch { expected: 1, found: 2 });
+}
+
+#[test]
+fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
+	let expression_error = {
+		let mut root = Node::root();
+		let f32_type = root.get_child("f32").expect("Expected f32 type");
+		let void_type = root.get_child("void").expect("Expected void type");
+		let intrinsic = root.add_child(Node::intrinsic("f32", Vec::new(), f32_type.clone()).into());
+		let invalid_argument = Node::expression(Expressions::Continue).into();
+		let extra_argument = Node::expression(Expressions::Literal { value: "1".to_string() }).into();
+		let call = Node::expression(Expressions::IntrinsicCall {
+			intrinsic,
+			arguments: vec![invalid_argument, extra_argument],
+			elements: Vec::new(),
+		})
+		.into();
+		let declaration = Node::expression(Expressions::VariableDeclaration {
+			name: "value".to_string(),
+			r#type: f32_type,
+		})
+		.into();
+		let assignment = Node::expression(Expressions::Operator {
+			operator: Operators::Assignment,
+			left: declaration,
+			right: call,
+		})
+		.into();
+		root.add_child(Node::function("main", Vec::new(), void_type, vec![assignment]).into());
+
+		// Lowering the first argument would report `continue` as an unsupported value expression.
+		compile_error(ExecutableProgram::compile(root.into()))
+	};
+	assert_eq!(expression_error, VmError::CallArgumentMismatch { expected: 1, found: 2 });
+
+	let statement_error = {
+		let mut root = Node::root();
+		let void_type = root.get_child("void").expect("Expected void type");
+		let intrinsic = root.add_child(Node::intrinsic("write", Vec::new(), void_type.clone()).into());
+		let call = Node::expression(Expressions::IntrinsicCall {
+			intrinsic,
+			arguments: Vec::new(),
+			elements: Vec::new(),
+		})
+		.into();
+		root.add_child(Node::function("main", Vec::new(), void_type, vec![call]).into());
+
+		// Indexing the image argument before validation would panic for this empty call.
+		compile_error(ExecutableProgram::compile(root.into()))
+	};
+	assert_eq!(statement_error, VmError::CallArgumentMismatch { expected: 3, found: 0 });
 }
 
 #[test]

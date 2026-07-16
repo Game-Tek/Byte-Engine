@@ -106,10 +106,6 @@ mod tests {
 	use crate::{Model, Resource};
 
 	impl Resource for () {
-		fn get_class(&self) -> &'static str {
-			"MyResource"
-		}
-
 		type Model = ();
 	}
 

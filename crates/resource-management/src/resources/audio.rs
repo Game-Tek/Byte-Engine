@@ -9,10 +9,6 @@ pub struct Audio {
 }
 
 impl Resource for Audio {
-	fn get_class(&self) -> &'static str {
-		"Audio"
-	}
-
 	type Model = Audio;
 }
 

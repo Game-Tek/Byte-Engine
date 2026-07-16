@@ -261,10 +261,6 @@ pub struct SkeletonModel {
 
 impl Resource for Skeleton {
 	type Model = SkeletonModel;
-
-	fn get_class(&self) -> &'static str {
-		"Skeleton"
-	}
 }
 
 impl Model for SkeletonModel {

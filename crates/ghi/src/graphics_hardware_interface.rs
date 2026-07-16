@@ -567,6 +567,21 @@ pub type SamplerDescriptorSetBindingTemplate = TypedDescriptorSetBindingTemplate
 pub type AccelerationStructureDescriptorSetBindingTemplate =
 	TypedDescriptorSetBindingTemplate<AccelerationStructureDescriptorBinding>;
 
+// Generates paired convenience constructors so each single/array pair shares one descriptor type.
+macro_rules! descriptor_template_constructors {
+	($( $single:ident, $array:ident => $descriptor_type:ident; )+) => {
+		$(
+			pub const fn $single(binding: u32, stages: Stages) -> Self {
+				Self::new(binding, DescriptorType::$descriptor_type, stages)
+			}
+
+			pub const fn $array(binding: u32, stages: Stages, count: u32) -> Self {
+				Self::new_array(binding, DescriptorType::$descriptor_type, stages, count)
+			}
+		)+
+	};
+}
+
 impl DescriptorSetBindingTemplate {
 	pub const fn new(binding: u32, descriptor_type: DescriptorType, stages: Stages) -> Self {
 		Self {
@@ -609,68 +624,15 @@ impl DescriptorSetBindingTemplate {
 		self
 	}
 
-	pub const fn uniform_buffer(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::UniformBuffer, stages)
-	}
-
-	pub const fn uniform_buffer_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::UniformBuffer, stages, count)
-	}
-
-	pub const fn storage_buffer(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::StorageBuffer, stages)
-	}
-
-	pub const fn storage_buffer_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::StorageBuffer, stages, count)
-	}
-
-	pub const fn sampled_image(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::SampledImage, stages)
-	}
-
-	pub const fn sampled_image_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::SampledImage, stages, count)
-	}
-
-	pub const fn combined_image_sampler(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::CombinedImageSampler, stages)
-	}
-
-	pub const fn combined_image_sampler_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::CombinedImageSampler, stages, count)
-	}
-
-	pub const fn storage_image(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::StorageImage, stages)
-	}
-
-	pub const fn storage_image_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::StorageImage, stages, count)
-	}
-
-	pub const fn input_attachment(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::InputAttachment, stages)
-	}
-
-	pub const fn input_attachment_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::InputAttachment, stages, count)
-	}
-
-	pub const fn sampler(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::Sampler, stages)
-	}
-
-	pub const fn sampler_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::Sampler, stages, count)
-	}
-
-	pub const fn acceleration_structure(binding: u32, stages: Stages) -> Self {
-		Self::new(binding, DescriptorType::AccelerationStructure, stages)
-	}
-
-	pub const fn acceleration_structure_array(binding: u32, stages: Stages, count: u32) -> Self {
-		Self::new_array(binding, DescriptorType::AccelerationStructure, stages, count)
+	descriptor_template_constructors! {
+		uniform_buffer, uniform_buffer_array => UniformBuffer;
+		storage_buffer, storage_buffer_array => StorageBuffer;
+		sampled_image, sampled_image_array => SampledImage;
+		combined_image_sampler, combined_image_sampler_array => CombinedImageSampler;
+		storage_image, storage_image_array => StorageImage;
+		input_attachment, input_attachment_array => InputAttachment;
+		sampler, sampler_array => Sampler;
+		acceleration_structure, acceleration_structure_array => AccelerationStructure;
 	}
 
 	pub fn new_with_immutable_samplers(binding: u32, stages: Stages, samplers: Option<Vec<SamplerHandle>>) -> Self {
@@ -985,51 +947,55 @@ pub(super) mod tests {
 
 	#[test]
 	fn descriptor_set_binding_template_type_specific_variants() {
+		use super::DescriptorType as D;
+
+		type Template = super::DescriptorSetBindingTemplate;
+		type SingleConstructor = fn(u32, Stages) -> Template;
+		type ArrayConstructor = fn(u32, Stages, u32) -> Template;
+
 		let stages = Stages::COMPUTE;
-
-		let templates = [
-			DescriptorSetBindingTemplate::uniform_buffer(0, stages),
-			DescriptorSetBindingTemplate::storage_buffer(1, stages),
-			DescriptorSetBindingTemplate::sampled_image(2, stages),
-			DescriptorSetBindingTemplate::combined_image_sampler(3, stages),
-			DescriptorSetBindingTemplate::storage_image(4, stages),
-			DescriptorSetBindingTemplate::input_attachment(5, stages),
-			DescriptorSetBindingTemplate::sampler(6, stages),
-			DescriptorSetBindingTemplate::acceleration_structure(7, stages),
+		let cases: [(SingleConstructor, ArrayConstructor, D); 8] = [
+			(Template::uniform_buffer, Template::uniform_buffer_array, D::UniformBuffer),
+			(Template::storage_buffer, Template::storage_buffer_array, D::StorageBuffer),
+			(Template::sampled_image, Template::sampled_image_array, D::SampledImage),
+			(
+				Template::combined_image_sampler,
+				Template::combined_image_sampler_array,
+				D::CombinedImageSampler,
+			),
+			(Template::storage_image, Template::storage_image_array, D::StorageImage),
+			(
+				Template::input_attachment,
+				Template::input_attachment_array,
+				D::InputAttachment,
+			),
+			(Template::sampler, Template::sampler_array, D::Sampler),
+			(
+				Template::acceleration_structure,
+				Template::acceleration_structure_array,
+				D::AccelerationStructure,
+			),
 		];
+		let assert_template = |template: &Template, binding: u32, count: u32, descriptor_type: D| {
+			assert_eq!(template.binding, binding);
+			assert_eq!(
+				std::mem::discriminant(&template.descriptor_type),
+				std::mem::discriminant(&descriptor_type)
+			);
+			assert_eq!(template.descriptor_count, count);
+			assert_eq!(template.stages, stages);
+			assert!(template.immutable_samplers.is_none());
+			assert!(matches!(template.texture_view_type, TextureViewTypes::Texture2D));
+			assert_eq!(template.buffer_stride, 4);
+			assert!(!template.buffer_read_only);
+		};
 
-		assert!(matches!(templates[0].descriptor_type, DescriptorType::UniformBuffer));
-		assert!(matches!(templates[1].descriptor_type, DescriptorType::StorageBuffer));
-		assert!(matches!(templates[2].descriptor_type, DescriptorType::SampledImage));
-		assert!(matches!(templates[3].descriptor_type, DescriptorType::CombinedImageSampler));
-		assert!(matches!(templates[4].descriptor_type, DescriptorType::StorageImage));
-		assert!(matches!(templates[5].descriptor_type, DescriptorType::InputAttachment));
-		assert!(matches!(templates[6].descriptor_type, DescriptorType::Sampler));
-		assert!(matches!(templates[7].descriptor_type, DescriptorType::AccelerationStructure));
-
-		for template in templates {
-			assert_eq!(template.descriptor_count, 1);
+		for (index, (single, array, descriptor_type)) in cases.into_iter().enumerate() {
+			let single = single(index as u32, stages);
+			let array = array(index as u32 + 8, stages, index as u32 + 2);
+			assert_template(&single, index as u32, 1, descriptor_type);
+			assert_template(&array, index as u32 + 8, index as u32 + 2, descriptor_type);
 		}
-
-		let array_templates = [
-			DescriptorSetBindingTemplate::uniform_buffer_array(8, stages, 2),
-			DescriptorSetBindingTemplate::storage_buffer_array(9, stages, 3),
-			DescriptorSetBindingTemplate::sampled_image_array(10, stages, 4),
-			DescriptorSetBindingTemplate::combined_image_sampler_array(11, stages, 5),
-			DescriptorSetBindingTemplate::storage_image_array(12, stages, 6),
-			DescriptorSetBindingTemplate::input_attachment_array(13, stages, 7),
-			DescriptorSetBindingTemplate::sampler_array(14, stages, 8),
-			DescriptorSetBindingTemplate::acceleration_structure_array(15, stages, 9),
-		];
-
-		assert_eq!(array_templates[0].descriptor_count, 2);
-		assert_eq!(array_templates[1].descriptor_count, 3);
-		assert_eq!(array_templates[2].descriptor_count, 4);
-		assert_eq!(array_templates[3].descriptor_count, 5);
-		assert_eq!(array_templates[4].descriptor_count, 6);
-		assert_eq!(array_templates[5].descriptor_count, 7);
-		assert_eq!(array_templates[6].descriptor_count, 8);
-		assert_eq!(array_templates[7].descriptor_count, 9);
 	}
 
 	#[test]

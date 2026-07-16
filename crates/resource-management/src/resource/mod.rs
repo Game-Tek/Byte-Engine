@@ -26,7 +26,9 @@ pub trait Resource: Send + Sync {
 	/// Returns the resource class (EJ: "Texture", "Mesh", "Material", etc.)
 	/// This is used to identify the resource type. Needs to be meaningful and will be a public constant.
 	/// Is needed by the deserialize function.
-	fn get_class(&self) -> &'static str;
+	fn get_class(&self) -> &'static str {
+		<Self::Model as Model>::get_class()
+	}
 
 	fn queryable_properties(&self, id: &str) -> Vec<crate::QueryableProperty> {
 		vec![crate::QueryableProperty {

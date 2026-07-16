@@ -53,10 +53,6 @@ impl Material {
 }
 
 impl Resource for Material {
-	fn get_class(&self) -> &'static str {
-		"Material"
-	}
-
 	type Model = MaterialModel;
 }
 
@@ -149,10 +145,6 @@ pub struct Variant {
 }
 
 impl Resource for Variant {
-	fn get_class(&self) -> &'static str {
-		"Variant"
-	}
-
 	type Model = VariantModel;
 }
 
@@ -242,10 +234,6 @@ impl Shader {
 }
 
 impl Resource for Shader {
-	fn get_class(&self) -> &'static str {
-		"Shader"
-	}
-
 	type Model = Shader;
 }
 

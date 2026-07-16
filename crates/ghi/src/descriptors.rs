@@ -50,15 +50,13 @@ impl Write {
 	}
 
 	pub fn buffer(binding_handle: DescriptorSetBindingHandle, buffer_handle: BaseBufferHandle) -> Write {
-		Write {
+		Self::new(
 			binding_handle,
-			array_element: 0,
-			descriptor: WriteData::Buffer {
+			WriteData::Buffer {
 				handle: buffer_handle,
 				size: Ranges::Whole,
 			},
-			frame_offset: None,
-		}
+		)
 	}
 
 	pub fn image(
@@ -66,15 +64,13 @@ impl Write {
 		image_handle: impl Into<BaseImageHandle>,
 		layout: Layouts,
 	) -> Write {
-		Write {
+		Self::new(
 			binding_handle,
-			array_element: 0,
-			descriptor: WriteData::Image {
+			WriteData::Image {
 				handle: image_handle.into(),
 				layout,
 			},
-			frame_offset: None,
-		}
+		)
 	}
 
 	pub fn image_with_frame(
@@ -83,24 +79,11 @@ impl Write {
 		layout: Layouts,
 		frame_offset: i32,
 	) -> Write {
-		Write {
-			binding_handle,
-			array_element: 0,
-			descriptor: WriteData::Image {
-				handle: image_handle.into(),
-				layout,
-			},
-			frame_offset: Some(frame_offset),
-		}
+		Self::image(binding_handle, image_handle, layout).with_frame_offset(frame_offset)
 	}
 
 	pub fn sampler(binding_handle: DescriptorSetBindingHandle, sampler_handle: SamplerHandle) -> Write {
-		Write {
-			binding_handle,
-			array_element: 0,
-			descriptor: WriteData::Sampler(sampler_handle),
-			frame_offset: None,
-		}
+		Self::new(binding_handle, WriteData::Sampler(sampler_handle))
 	}
 
 	pub fn combined_image_sampler(
@@ -109,17 +92,15 @@ impl Write {
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 	) -> Write {
-		Write {
+		Self::new(
 			binding_handle,
-			array_element: 0,
-			descriptor: WriteData::CombinedImageSampler {
+			WriteData::CombinedImageSampler {
 				image_handle: image_handle.into(),
 				sampler_handle,
 				layout,
 				layer: None,
 			},
-			frame_offset: None,
-		}
+		)
 	}
 
 	pub fn combined_image_sampler_with_frame(
@@ -129,17 +110,7 @@ impl Write {
 		layout: Layouts,
 		frame_offset: i32,
 	) -> Write {
-		Write {
-			binding_handle,
-			array_element: 0,
-			descriptor: WriteData::CombinedImageSampler {
-				image_handle: image_handle.into(),
-				sampler_handle,
-				layout,
-				layer: None,
-			},
-			frame_offset: Some(frame_offset),
-		}
+		Self::combined_image_sampler(binding_handle, image_handle, sampler_handle, layout).with_frame_offset(frame_offset)
 	}
 
 	pub fn combined_image_sampler_array(
@@ -149,17 +120,7 @@ impl Write {
 		layout: Layouts,
 		index: u32,
 	) -> Write {
-		Write {
-			binding_handle,
-			array_element: index,
-			descriptor: WriteData::CombinedImageSampler {
-				image_handle: image_handle.into(),
-				sampler_handle,
-				layout,
-				layer: None,
-			},
-			frame_offset: None,
-		}
+		Self::combined_image_sampler(binding_handle, image_handle, sampler_handle, layout).with_array_element(index)
 	}
 
 	pub fn combined_image_sampler_array_with_frame(
@@ -170,31 +131,31 @@ impl Write {
 		index: u32,
 		frame_offset: i32,
 	) -> Write {
-		Write {
-			binding_handle,
-			array_element: index,
-			descriptor: WriteData::CombinedImageSampler {
-				image_handle: image_handle.into(),
-				sampler_handle,
-				layout,
-				layer: None,
-			},
-			frame_offset: Some(frame_offset),
-		}
+		Self::combined_image_sampler(binding_handle, image_handle, sampler_handle, layout)
+			.with_array_element(index)
+			.with_frame_offset(frame_offset)
 	}
 
 	pub fn acceleration_structure(
 		binding_handle: DescriptorSetBindingHandle,
 		acceleration_structure_handle: TopLevelAccelerationStructureHandle,
 	) -> Write {
-		Write {
+		Self::new(
 			binding_handle,
-			array_element: 0,
-			descriptor: WriteData::AccelerationStructure {
+			WriteData::AccelerationStructure {
 				handle: acceleration_structure_handle,
 			},
-			frame_offset: None,
-		}
+		)
+	}
+
+	fn with_array_element(mut self, array_element: u32) -> Self {
+		self.array_element = array_element;
+		self
+	}
+
+	fn with_frame_offset(mut self, frame_offset: i32) -> Self {
+		self.frame_offset = Some(frame_offset);
+		self
 	}
 }
 

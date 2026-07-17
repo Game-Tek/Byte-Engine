@@ -1,8 +1,3 @@
-use crate::{
-	shader::ResourceSlot, BaseBufferHandle, BaseImageHandle, DescriptorSet, DescriptorSetHandle as PublicDescriptorSetHandle,
-	HandleLike, Layouts, Next, Ranges, SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
-};
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum WriteData {
 	Buffer {
@@ -246,3 +241,7 @@ impl HandleLike for DescriptorSetHandle {
 		&collection[self.0 as usize]
 	}
 }
+
+use crate::{
+	BaseBufferHandle, BaseImageHandle, DescriptorSet, DescriptorSetHandle as PublicDescriptorSetHandle, HandleLike, Layouts, Next, Ranges, SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle, shader::ResourceSlot,
+};

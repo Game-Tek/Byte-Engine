@@ -1,88 +1,57 @@
 use std::borrow::Borrow as _;
 
-use ghi::{
-	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-	context::{Context as _, ContextCreate as _},
-};
-use resource_management::{
-	resources::material, shader::generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
-};
-use utils::{Box, Extent};
+use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _};
+use utils::Extent;
 
 use crate::rendering::{
-	render_pass::{FramePrepare, RenderPassBuilder, RenderPassReturn},
+	render_pass::{simple_compute, RenderPassBuilder, RenderPassReturn},
 	RenderPass, Sink,
 };
 
-const BLUR_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-);
-const BLUR_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	1,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-);
-const BLUR_RESULT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-
 #[derive(Clone)]
 pub struct BaseBilateralBlurPass {
-	pipeline_x: ghi::PipelineHandle,
-	pipeline_y: ghi::PipelineHandle,
-	descriptor_set_template: ghi::DescriptorSetTemplateHandle,
+	pipeline_x: simple_compute::Pipeline,
+	pipeline_y: simple_compute::Pipeline,
 }
 
 impl BaseBilateralBlurPass {
 	fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let shader_storage = render_pass_builder.shader_storage();
-		let context = render_pass_builder.context();
-
-		let descriptor_set_template = context.create_descriptor_set_template(
-			Some("SSGI Blur"),
-			&[BLUR_DEPTH_BINDING, BLUR_SOURCE_BINDING, BLUR_RESULT_BINDING],
-		);
-
-		let shader_x = create_bilateral_blur_shader(
-			context,
-			shader_storage,
-			"byte-engine/rendering/bilateral-blur/x",
-			"SSGI Blur X",
-			(1.0, 0.0),
+		let source_x = bilateral_blur_besl_source((1.0, 0.0));
+		let pipeline_x = simple_compute::Pipeline::compile(
+			render_pass_builder,
+			simple_compute::Descriptor::new(
+				"Bilateral Blur",
+				"byte-engine/rendering/bilateral-blur/x",
+				"SSGI Blur X",
+				build_bilateral_blur_program(&source_x),
+				Extent::line(128),
+			)
+			.layout_name("SSGI Blur"),
 		)
 		.expect("Failed to create the X SSGI blur shader. The most likely cause is invalid bilateral blur BESL.");
-		let shader_y = create_bilateral_blur_shader(
-			context,
-			shader_storage,
-			"byte-engine/rendering/bilateral-blur/y",
-			"SSGI Blur Y",
-			(0.0, 1.0),
-		)
-		.expect("Failed to create the Y SSGI blur shader. The most likely cause is invalid bilateral blur BESL.");
-		let pipeline_x = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[descriptor_set_template],
-			&[],
-			ghi::ShaderParameter::new(&shader_x, ghi::ShaderTypes::Compute),
-		));
-		let pipeline_y = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[descriptor_set_template],
-			&[],
-			ghi::ShaderParameter::new(&shader_y, ghi::ShaderTypes::Compute),
-		));
 
-		Self {
-			pipeline_x,
-			pipeline_y,
-			descriptor_set_template,
-		}
+		let source_y = bilateral_blur_besl_source((0.0, 1.0));
+		let pipeline_y = pipeline_x
+			.compile_variant(
+				render_pass_builder,
+				simple_compute::Descriptor::new(
+					"Bilateral Blur",
+					"byte-engine/rendering/bilateral-blur/y",
+					"SSGI Blur Y",
+					build_bilateral_blur_program(&source_y),
+					Extent::line(128),
+				)
+				.layout_name("SSGI Blur"),
+			)
+			.expect("Failed to create the Y SSGI blur shader. The most likely cause is invalid bilateral blur BESL.");
+
+		Self { pipeline_x, pipeline_y }
 	}
 }
 
 struct BilateralBlurPass {
-	render_pass: BaseBilateralBlurPass,
-	descriptor_set_x: ghi::DescriptorSetHandle,
-	descriptor_set_y: ghi::DescriptorSetHandle,
+	pass_x: simple_compute::Pass,
+	pass_y: simple_compute::Pass,
 }
 
 impl BilateralBlurPass {
@@ -95,12 +64,6 @@ impl BilateralBlurPass {
 		let depth_image: ghi::BaseImageHandle = (*read_depth.borrow()).into();
 
 		let context = render_pass_builder.context();
-
-		let descriptor_set_template = render_pass.descriptor_set_template;
-
-		let descriptor_set_x = context.create_descriptor_set(Some("X SSGI Blur"), &descriptor_set_template);
-		let descriptor_set_y = context.create_descriptor_set(Some("Y SSGI Blur"), &descriptor_set_template);
-
 		let x_blur_map = context.build_image(ghi::image::Builder::new(
 			ghi::Formats::RGB16UNORM,
 			ghi::Uses::Image | ghi::Uses::Storage,
@@ -109,7 +72,6 @@ impl BilateralBlurPass {
 			ghi::Formats::RGB16UNORM,
 			ghi::Uses::Image | ghi::Uses::Storage,
 		));
-
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
@@ -117,71 +79,58 @@ impl BilateralBlurPass {
 				.mip_map_mode(ghi::FilteringModes::Linear),
 		);
 
-		context.create_descriptor_binding(
-			descriptor_set_x,
-			ghi::BindingConstructor::combined_image_sampler(
-				&BLUR_DEPTH_BINDING,
-				depth_image,
-				depth_sampler,
-				ghi::Layouts::Read,
-			),
-		);
-		context.create_descriptor_binding(
-			descriptor_set_x,
-			ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, source, sampler, ghi::Layouts::Read),
-		);
-		context.create_descriptor_binding(
-			descriptor_set_x,
-			ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, x_blur_map),
-		);
+		let pass_x = render_pass
+			.pipeline_x
+			.bind(
+				render_pass_builder,
+				"X SSGI Blur",
+				&[
+					simple_compute::Resource::combined_image_sampler(
+						"depth",
+						depth_image,
+						depth_sampler,
+						ghi::Layouts::Read,
+					),
+					simple_compute::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
+					simple_compute::Resource::image("result", x_blur_map),
+				],
+			)
+			.expect(
+				"Failed to bind X SSGI blur resources. The most likely cause is a mismatch between the BESL bindings and pass resources.",
+			);
+		let pass_y = render_pass
+			.pipeline_y
+			.bind(
+				render_pass_builder,
+				"Y SSGI Blur",
+				&[
+					simple_compute::Resource::combined_image_sampler(
+						"depth",
+						depth_image,
+						depth_sampler,
+						ghi::Layouts::Read,
+					),
+					simple_compute::Resource::combined_image_sampler("source", x_blur_map, sampler, ghi::Layouts::Read),
+					simple_compute::Resource::image("result", y_blur_map),
+				],
+			)
+			.expect(
+				"Failed to bind Y SSGI blur resources. The most likely cause is a mismatch between the BESL bindings and pass resources.",
+			);
 
-		context.create_descriptor_binding(
-			descriptor_set_y,
-			ghi::BindingConstructor::combined_image_sampler(
-				&BLUR_DEPTH_BINDING,
-				depth_image,
-				depth_sampler,
-				ghi::Layouts::Read,
-			),
-		);
-		context.create_descriptor_binding(
-			descriptor_set_y,
-			ghi::BindingConstructor::combined_image_sampler(&BLUR_SOURCE_BINDING, x_blur_map, sampler, ghi::Layouts::Read),
-		);
-		context.create_descriptor_binding(
-			descriptor_set_y,
-			ghi::BindingConstructor::image(&BLUR_RESULT_BINDING, y_blur_map),
-		);
-
-		BilateralBlurPass {
-			render_pass: render_pass.clone(),
-			descriptor_set_x,
-			descriptor_set_y,
-		}
+		Self { pass_x, pass_y }
 	}
 }
 
 impl RenderPass for BilateralBlurPass {
 	fn prepare<'a>(
 		&mut self,
-		frame: &mut ghi::implementation::Frame,
+		_frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let execute_in_axis = |command_buffer: &mut ghi::implementation::CommandBufferRecording,
-		                       pipeline: ghi::PipelineHandle,
-		                       descriptor_set: ghi::DescriptorSetHandle,
-		                       extent: Extent| {
-			let c = command_buffer.bind_compute_pipeline(pipeline);
-			c.bind_descriptor_sets(&[descriptor_set]);
-			c.dispatch(ghi::DispatchExtent::new(extent, Extent::line(128)));
-		};
-
-		let pipeline_x = self.render_pass.pipeline_x;
-		let pipeline_y = self.render_pass.pipeline_y;
-		let descriptor_set_x = self.descriptor_set_x;
-		let descriptor_set_y = self.descriptor_set_y;
-
+		let pass_x = self.pass_x;
+		let pass_y = self.pass_y;
 		let extent = sink.extent();
 
 		Some(crate::rendering::render_pass::allocate_render_command(
@@ -190,8 +139,8 @@ impl RenderPass for BilateralBlurPass {
 				command_buffer.region(
 					|label| label.write_str("Bilateral Blur"),
 					|command_buffer| {
-						execute_in_axis(command_buffer, pipeline_x, descriptor_set_x, extent);
-						execute_in_axis(command_buffer, pipeline_y, descriptor_set_y, extent);
+						pass_x.record(command_buffer, extent);
+						pass_y.record(command_buffer, extent);
 					},
 				);
 			},
@@ -199,80 +148,26 @@ impl RenderPass for BilateralBlurPass {
 	}
 }
 
-fn create_bilateral_blur_shader(
-	context: &mut ghi::implementation::Context,
-	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
-	id: &str,
-	name: &str,
-	direction: (f32, f32),
-) -> Result<ghi::ShaderHandle, String> {
-	let source = bilateral_blur_besl_source(direction);
-	let main_node = build_bilateral_blur_program(&source);
-
-	crate::rendering::shader_store::create_shader(
-		context,
-		shader_storage,
-		&crate::rendering::shader_store::ShaderSourceDescriptor {
-			id,
-			name,
-			stage: ResourceShaderTypes::Compute,
-			source: crate::rendering::shader_store::ShaderSourceDefinition::Besl {
-				settings: ShaderGenerationSettings::compute(Extent::new(128, 1, 1)).name(name.to_string()),
-				main_node,
-			},
-			interface: material::ShaderInterface {
-				workgroup_size: Some((128, 1, 1)),
-				bindings: vec![
-					material::Binding::new(0, 0, true, false),
-					material::Binding::new(0, 1, true, false),
-					material::Binding::new(0, 2, false, true),
-				],
-			},
-		},
-	)
-}
-
 fn build_bilateral_blur_program(source: &str) -> besl::NodeReference {
-	let mut root = besl::Node::root();
-	root.add_child(
-		besl::Node::binding(
-			"depth",
-			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			0,
-			0,
-			true,
-			false,
-		)
-		.into(),
+	let mut program = simple_compute::Program::new();
+	program.binding(
+		"depth",
+		besl::BindingTypes::CombinedImageSampler { format: String::new() },
+		0,
+		true,
+		false,
 	);
-	root.add_child(
-		besl::Node::binding(
-			"source",
-			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			0,
-			1,
-			true,
-			false,
-		)
-		.into(),
+	program.binding(
+		"source",
+		besl::BindingTypes::CombinedImageSampler { format: String::new() },
+		1,
+		true,
+		false,
 	);
-	root.add_child(
-		besl::Node::binding(
-			"result",
-			besl::BindingTypes::Image { format: String::new() },
-			0,
-			2,
-			false,
-			true,
-		)
-		.into(),
-	);
-
-	let program = besl::compile_to_besl(source, Some(root))
-		.expect("Failed to compile bilateral blur BESL. The most likely cause is invalid BESL syntax.");
-	program.get_main().expect(
-		"Failed to find the bilateral blur BESL entry point. The most likely cause is that the BESL program did not define main.",
-	)
+	program.binding("result", besl::BindingTypes::Image { format: String::new() }, 2, false, true);
+	program
+		.compile(source)
+		.expect("Failed to compile bilateral blur BESL. The most likely cause is invalid BESL syntax.")
 }
 
 fn bilateral_blur_besl_source(direction: (f32, f32)) -> String {
@@ -353,7 +248,7 @@ const BLUR_TAPS: [(f32, f32); 17] = [
 mod tests {
 	use besl::vm::{DescriptorBindings, DescriptorSlot};
 	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
-	use resource_management::shader::generator::ShaderGenerator as _;
+	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};

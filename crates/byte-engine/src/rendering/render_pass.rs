@@ -5,24 +5,9 @@
 //! can track access policies and named render targets. Existing implementations
 //! live in [`crate::rendering::render_passes`].
 
-use std::{borrow::Borrow, rc::Rc, sync::Arc};
+pub mod simple_compute;
 
-use ghi::{
-	command_buffer::{
-		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
-	},
-	context::{Context as _, ContextCreate as _},
-};
-use utils::{
-	hash::{HashMap, HashMapExt},
-	sync::RwLock,
-	Box, Extent,
-};
-
-use crate::{
-	core::EntityHandle,
-	rendering::{renderer::RenderTargets, shader_store::ShaderSourceDescriptor, Sink},
-};
+use crate::rendering::{renderer::RenderTargets, shader_store::ShaderSourceDescriptor, Sink};
 
 pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording, &[ghi::AttachmentInformation]);
 

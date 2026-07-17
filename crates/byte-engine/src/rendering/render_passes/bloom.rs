@@ -1,60 +1,17 @@
 use ghi::{
-	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
+	command_buffer::CommonCommandBufferMode as _,
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
-};
-use resource_management::{
-	resources::material, shader::generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
 };
 use utils::{Box, Extent};
 
 use crate::{
 	core::Entity,
 	rendering::{
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
+		render_pass::{simple_compute, RenderPass, RenderPassBuilder, RenderPassReturn},
 		Sink,
 	},
 };
-
-const EXTRACT_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-);
-const EXTRACT_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const EXTRACT_PARAMETERS_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-
-const UPSAMPLE_LOW_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-);
-const UPSAMPLE_HIGH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	1,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-);
-const UPSAMPLE_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const UPSAMPLE_PARAMETERS_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-
-const COMPOSITE_SCENE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-);
-const COMPOSITE_BLOOM_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	1,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-);
-const COMPOSITE_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const COMPOSITE_PARAMETERS_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
 
 const MAX_BLOOM_LEVELS: u32 = 6;
 
@@ -99,14 +56,10 @@ struct BloomShaderData {
 pub struct BloomPass {
 	settings: BloomPassSettings,
 	parameters: ghi::DynamicBufferHandle<BloomShaderData>,
-	extract_pipeline: ghi::PipelineHandle,
-	downsample_pipeline: ghi::PipelineHandle,
-	upsample_pipeline: ghi::PipelineHandle,
-	composite_pipeline: ghi::PipelineHandle,
-	extract_descriptor_set: ghi::DescriptorSetHandle,
-	downsample_descriptor_sets: Vec<ghi::DescriptorSetHandle>,
-	upsample_descriptor_sets: Vec<ghi::DescriptorSetHandle>,
-	composite_descriptor_set: ghi::DescriptorSetHandle,
+	extract_pass: simple_compute::Pass,
+	downsample_passes: Vec<simple_compute::Pass>,
+	upsample_passes: Vec<simple_compute::Pass>,
+	composite_pass: simple_compute::Pass,
 	downsample_images: Vec<ghi::DynamicImageHandle>,
 	upsample_images: Vec<ghi::DynamicImageHandle>,
 }
@@ -128,7 +81,6 @@ impl BloomPass {
 		);
 		render_pass_builder.alias("Bloom Output", "main");
 
-		let shader_storage = render_pass_builder.shader_storage();
 		let context = render_pass_builder.context();
 		let level_count = settings.resolved_level_count();
 		let downsample_images = (0..level_count)
@@ -175,159 +127,169 @@ impl BloomPass {
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
 
-		let extract_descriptor_set_layout = context.create_descriptor_set_template(
-			Some("Bloom Extract Descriptor Set Layout"),
-			&[EXTRACT_SOURCE_BINDING, EXTRACT_OUTPUT_BINDING, EXTRACT_PARAMETERS_BINDING],
+		let extract_pipeline = simple_compute::Pipeline::compile(
+			render_pass_builder,
+			bloom_pipeline_descriptor(
+				"Bloom Extract",
+				"byte-engine/rendering/bloom/extract",
+				"Bloom Extract Shader",
+				"Bloom Extract Descriptor Set Layout",
+				BLOOM_EXTRACT_BESL,
+				2,
+			),
+		)
+		.expect(
+			"Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.",
 		);
-		let upsample_descriptor_set_layout = context.create_descriptor_set_template(
-			Some("Bloom Upsample Descriptor Set Layout"),
-			&[
-				UPSAMPLE_LOW_BINDING,
-				UPSAMPLE_HIGH_BINDING,
-				UPSAMPLE_OUTPUT_BINDING,
-				UPSAMPLE_PARAMETERS_BINDING,
-			],
+		let downsample_pipeline = extract_pipeline
+			.compile_variant(
+				render_pass_builder,
+				bloom_pipeline_descriptor(
+					"Bloom Downsample",
+					"byte-engine/rendering/bloom/downsample",
+					"Bloom Downsample Shader",
+					"Bloom Extract Descriptor Set Layout",
+					BLOOM_DOWNSAMPLE_BESL,
+					2,
+				),
+			)
+			.expect(
+				"Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
+			);
+		let upsample_pipeline = simple_compute::Pipeline::compile(
+			render_pass_builder,
+			bloom_pipeline_descriptor(
+				"Bloom Upsample",
+				"byte-engine/rendering/bloom/upsample",
+				"Bloom Upsample Shader",
+				"Bloom Upsample Descriptor Set Layout",
+				BLOOM_UPSAMPLE_BESL,
+				3,
+			),
+		)
+		.expect(
+			"Failed to create bloom upsample shader. The most likely cause is an incompatible bloom upsample shader interface.",
 		);
-		let composite_descriptor_set_layout = context.create_descriptor_set_template(
-			Some("Bloom Composite Descriptor Set Layout"),
-			&[
-				COMPOSITE_SCENE_BINDING,
-				COMPOSITE_BLOOM_BINDING,
-				COMPOSITE_OUTPUT_BINDING,
-				COMPOSITE_PARAMETERS_BINDING,
-			],
+		let composite_pipeline = simple_compute::Pipeline::compile(
+			render_pass_builder,
+			bloom_pipeline_descriptor(
+				"Bloom Composite",
+				"byte-engine/rendering/bloom/composite",
+				"Bloom Composite Shader",
+				"Bloom Composite Descriptor Set Layout",
+				BLOOM_COMPOSITE_BESL,
+				3,
+			),
+		)
+		.expect(
+			"Failed to create bloom composite shader. The most likely cause is an incompatible bloom composite shader interface.",
 		);
 
-		let extract_pipeline = create_extract_pipeline(context, shader_storage, extract_descriptor_set_layout);
-		let downsample_pipeline = create_downsample_pipeline(context, shader_storage, extract_descriptor_set_layout);
-		let upsample_pipeline = create_upsample_pipeline(context, shader_storage, upsample_descriptor_set_layout);
-		let composite_pipeline = create_composite_pipeline(context, shader_storage, composite_descriptor_set_layout);
+		let extract_pass = extract_pipeline
+			.bind(
+				render_pass_builder,
+				"Bloom Extract Descriptor Set",
+				&[
+					simple_compute::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
+					simple_compute::Resource::image("result_texture", downsample_images[0]),
+					simple_compute::Resource::buffer("bloom_parameters", parameters),
+				],
+			)
+			.expect("Failed to bind bloom extract resources. The most likely cause is a changed BESL binding contract.");
 
-		let extract_descriptor_set =
-			context.create_descriptor_set(Some("Bloom Extract Descriptor Set"), &extract_descriptor_set_layout);
-		let _ = context.create_descriptor_binding(
-			extract_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(&EXTRACT_SOURCE_BINDING, source, sampler, ghi::Layouts::Read),
-		);
-		let _ = context.create_descriptor_binding(
-			extract_descriptor_set,
-			ghi::BindingConstructor::image(&EXTRACT_OUTPUT_BINDING, downsample_images[0]),
-		);
-		let _ = context.create_descriptor_binding(
-			extract_descriptor_set,
-			ghi::BindingConstructor::buffer(&EXTRACT_PARAMETERS_BINDING, parameters.into()),
-		);
-
-		let downsample_descriptor_sets = (1..level_count)
+		let downsample_passes = (1..level_count)
 			.map(|index| {
-				let descriptor_set =
-					context.create_descriptor_set(Some("Bloom Downsample Descriptor Set"), &extract_descriptor_set_layout);
-				let _ = context.create_descriptor_binding(
-					descriptor_set,
-					ghi::BindingConstructor::combined_image_sampler(
-						&EXTRACT_SOURCE_BINDING,
-						downsample_images[index - 1],
-						sampler,
-						ghi::Layouts::Read,
-					),
-				);
-				let _ = context.create_descriptor_binding(
-					descriptor_set,
-					ghi::BindingConstructor::image(&EXTRACT_OUTPUT_BINDING, downsample_images[index]),
-				);
-				let _ = context.create_descriptor_binding(
-					descriptor_set,
-					ghi::BindingConstructor::buffer(&EXTRACT_PARAMETERS_BINDING, parameters.into()),
-				);
-				descriptor_set
+				downsample_pipeline
+					.bind(
+						render_pass_builder,
+						"Bloom Downsample Descriptor Set",
+						&[
+							simple_compute::Resource::combined_image_sampler(
+								"source_texture",
+								downsample_images[index - 1],
+								sampler,
+								ghi::Layouts::Read,
+							),
+							simple_compute::Resource::image("result_texture", downsample_images[index]),
+							simple_compute::Resource::buffer("bloom_parameters", parameters),
+						],
+					)
+					.expect(
+						"Failed to bind bloom downsample resources. The most likely cause is a changed BESL binding contract.",
+					)
 			})
 			.collect::<Vec<_>>();
 
-		let upsample_descriptor_sets = (0..level_count.saturating_sub(1))
-			.rev()
-			.map(|level| {
-				let descriptor_set =
-					context.create_descriptor_set(Some("Bloom Upsample Descriptor Set"), &upsample_descriptor_set_layout);
-				let low_resolution_source: ghi::BaseImageHandle = if level == level_count - 2 {
-					downsample_images[level + 1].into()
-				} else {
-					upsample_images[level + 1].into()
-				};
-				let _ = context.create_descriptor_binding(
-					descriptor_set,
-					ghi::BindingConstructor::combined_image_sampler(
-						&UPSAMPLE_LOW_BINDING,
-						low_resolution_source,
-						sampler,
-						ghi::Layouts::Read,
-					),
-				);
-				let _ = context.create_descriptor_binding(
-					descriptor_set,
-					ghi::BindingConstructor::combined_image_sampler(
-						&UPSAMPLE_HIGH_BINDING,
-						downsample_images[level],
-						sampler,
-						ghi::Layouts::Read,
-					),
-				);
-				let _ = context.create_descriptor_binding(
-					descriptor_set,
-					ghi::BindingConstructor::image(&UPSAMPLE_OUTPUT_BINDING, upsample_images[level]),
-				);
-				let _ = context.create_descriptor_binding(
-					descriptor_set,
-					ghi::BindingConstructor::buffer(&UPSAMPLE_PARAMETERS_BINDING, parameters.into()),
-				);
-				descriptor_set
-			})
-			.collect::<Vec<_>>();
+		let upsample_passes =
+			(0..level_count.saturating_sub(1))
+				.rev()
+				.map(|level| {
+					let low_resolution_source: ghi::BaseImageHandle = if level == level_count - 2 {
+						downsample_images[level + 1].into()
+					} else {
+						upsample_images[level + 1].into()
+					};
+					upsample_pipeline
+					.bind(
+						render_pass_builder,
+						"Bloom Upsample Descriptor Set",
+						&[
+							simple_compute::Resource::combined_image_sampler(
+								"low_resolution_texture",
+								low_resolution_source,
+								sampler,
+								ghi::Layouts::Read,
+							),
+							simple_compute::Resource::combined_image_sampler(
+								"high_resolution_texture",
+								downsample_images[level],
+								sampler,
+								ghi::Layouts::Read,
+							),
+							simple_compute::Resource::image("result_texture", upsample_images[level]),
+							// Keep the radius buffer ready; named extras become active as soon as BESL references the binding.
+							simple_compute::Resource::planned_buffer("bloom_parameters", parameters),
+						],
+					)
+					.expect("Failed to bind bloom upsample resources. The most likely cause is a changed BESL binding contract.")
+				})
+				.collect::<Vec<_>>();
 
 		let bloom_source: ghi::BaseImageHandle = if level_count == 1 {
 			downsample_images[0].into()
 		} else {
 			upsample_images[0].into()
 		};
-		let composite_descriptor_set =
-			context.create_descriptor_set(Some("Bloom Composite Descriptor Set"), &composite_descriptor_set_layout);
-		let _ = context.create_descriptor_binding(
-			composite_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&COMPOSITE_SCENE_BINDING,
-				bloom_source,
-				sampler,
-				ghi::Layouts::Read,
-			),
-		);
-		let _ = context.create_descriptor_binding(
-			composite_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&COMPOSITE_BLOOM_BINDING,
-				bloom_source,
-				sampler,
-				ghi::Layouts::Read,
-			),
-		);
-		let _ = context.create_descriptor_binding(
-			composite_descriptor_set,
-			ghi::BindingConstructor::image(&COMPOSITE_OUTPUT_BINDING, output),
-		);
-		let _ = context.create_descriptor_binding(
-			composite_descriptor_set,
-			ghi::BindingConstructor::buffer(&COMPOSITE_PARAMETERS_BINDING, parameters.into()),
-		);
+		let composite_pass = composite_pipeline
+			.bind(
+				render_pass_builder,
+				"Bloom Composite Descriptor Set",
+				&[
+					simple_compute::Resource::combined_image_sampler(
+						"scene_texture",
+						bloom_source,
+						sampler,
+						ghi::Layouts::Read,
+					),
+					simple_compute::Resource::combined_image_sampler(
+						"bloom_texture",
+						bloom_source,
+						sampler,
+						ghi::Layouts::Read,
+					),
+					simple_compute::Resource::image("result_texture", output),
+					simple_compute::Resource::buffer("bloom_parameters", parameters),
+				],
+			)
+			.expect("Failed to bind bloom composite resources. The most likely cause is a changed BESL binding contract.");
 
 		Self {
 			settings,
 			parameters,
-			extract_pipeline,
-			downsample_pipeline,
-			upsample_pipeline,
-			composite_pipeline,
-			extract_descriptor_set,
-			downsample_descriptor_sets,
-			upsample_descriptor_sets,
-			composite_descriptor_set,
+			extract_pass,
+			downsample_passes,
+			upsample_passes,
+			composite_pass,
 			downsample_images,
 			upsample_images,
 		}
@@ -371,14 +333,10 @@ impl RenderPass for BloomPass {
 		self.resize_images(frame, extent);
 		self.write_parameters(frame, if bloom_enabled { 1.0 } else { 0.0 });
 
-		let extract_pipeline = self.extract_pipeline;
-		let downsample_pipeline = self.downsample_pipeline;
-		let upsample_pipeline = self.upsample_pipeline;
-		let composite_pipeline = self.composite_pipeline;
-		let extract_descriptor_set = self.extract_descriptor_set;
-		let downsample_descriptor_sets = self.downsample_descriptor_sets.clone();
-		let upsample_descriptor_sets = self.upsample_descriptor_sets.clone();
-		let composite_descriptor_set = self.composite_descriptor_set;
+		let extract_pass = self.extract_pass;
+		let downsample_passes = frame_allocator.alloc_slice_copy(&self.downsample_passes);
+		let upsample_passes = frame_allocator.alloc_slice_copy(&self.upsample_passes);
+		let composite_pass = self.composite_pass;
 		let level_count = self.downsample_images.len();
 
 		Some(crate::rendering::render_pass::allocate_render_command(
@@ -388,34 +346,20 @@ impl RenderPass for BloomPass {
 					|label| label.write_str("Bloom"),
 					|command_buffer| {
 						if bloom_enabled {
-							let extract = command_buffer.bind_compute_pipeline(extract_pipeline);
-							extract.bind_descriptor_sets(&[extract_descriptor_set]);
-							extract.dispatch(ghi::DispatchExtent::new(bloom_extent(extent, 0), bloom_dispatch_extent()));
+							extract_pass.record(command_buffer, bloom_extent(extent, 0));
 
-							for (index, descriptor_set) in downsample_descriptor_sets.iter().enumerate() {
-								let downsample = command_buffer.bind_compute_pipeline(downsample_pipeline);
-								downsample.bind_descriptor_sets(&[*descriptor_set]);
-								downsample.dispatch(ghi::DispatchExtent::new(
-									bloom_extent(extent, index + 1),
-									bloom_dispatch_extent(),
-								));
+							for (index, pass) in downsample_passes.iter().enumerate() {
+								pass.record(command_buffer, bloom_extent(extent, index + 1));
 							}
 
 							if level_count > 1 {
-								for (level, descriptor_set) in (0..level_count - 1).rev().zip(upsample_descriptor_sets.iter()) {
-									let upsample = command_buffer.bind_compute_pipeline(upsample_pipeline);
-									upsample.bind_descriptor_sets(&[*descriptor_set]);
-									upsample.dispatch(ghi::DispatchExtent::new(
-										bloom_extent(extent, level),
-										bloom_dispatch_extent(),
-									));
+								for (level, pass) in (0..level_count - 1).rev().zip(upsample_passes.iter()) {
+									pass.record(command_buffer, bloom_extent(extent, level));
 								}
 							}
 						}
 
-						let composite = command_buffer.bind_compute_pipeline(composite_pipeline);
-						composite.bind_descriptor_sets(&[composite_descriptor_set]);
-						composite.dispatch(ghi::DispatchExtent::new(extent, bloom_dispatch_extent()));
+						composite_pass.record(command_buffer, extent);
 					},
 				);
 			},
@@ -435,158 +379,27 @@ fn bloom_extent(extent: Extent, level: usize) -> Extent {
 	)
 }
 
-fn create_extract_pipeline(
-	context: &mut ghi::implementation::Context,
-	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
-	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-) -> ghi::PipelineHandle {
-	let shader = crate::rendering::shader_store::create_shader(
-		context,
-		shader_storage,
-		&besl_bloom_shader_descriptor(
-			"byte-engine/rendering/bloom/extract",
-			"Bloom Extract Shader",
-			BLOOM_EXTRACT_BESL,
-			2,
-			vec![
-				material::Binding::new(0, 0, true, false),
-				material::Binding::new(0, 1, false, true),
-				material::Binding::new(0, 2, true, false),
-			],
-		),
-	)
-	.expect("Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.");
-
-	context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-		&[descriptor_set_layout],
-		&[],
-		ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-	))
-}
-
-fn create_downsample_pipeline(
-	context: &mut ghi::implementation::Context,
-	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
-	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-) -> ghi::PipelineHandle {
-	let shader = crate::rendering::shader_store::create_shader(
-		context,
-		shader_storage,
-		&besl_bloom_shader_descriptor(
-			"byte-engine/rendering/bloom/downsample",
-			"Bloom Downsample Shader",
-			BLOOM_DOWNSAMPLE_BESL,
-			2,
-			vec![
-				material::Binding::new(0, 0, true, false),
-				material::Binding::new(0, 1, false, true),
-				material::Binding::new(0, 2, true, false),
-			],
-		),
-	)
-	.expect(
-		"Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
-	);
-
-	context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-		&[descriptor_set_layout],
-		&[],
-		ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-	))
-}
-
-fn create_upsample_pipeline(
-	context: &mut ghi::implementation::Context,
-	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
-	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-) -> ghi::PipelineHandle {
-	let shader = crate::rendering::shader_store::create_shader(
-		context,
-		shader_storage,
-		&besl_bloom_shader_descriptor(
-			"byte-engine/rendering/bloom/upsample",
-			"Bloom Upsample Shader",
-			BLOOM_UPSAMPLE_BESL,
-			3,
-			vec![
-				material::Binding::new(0, 0, true, false),
-				material::Binding::new(0, 1, true, false),
-				material::Binding::new(0, 2, false, true),
-				material::Binding::new(0, 3, true, false),
-			],
-		),
-	)
-	.expect(
-		"Failed to create bloom upsample shader. The most likely cause is an incompatible bloom upsample shader interface.",
-	);
-
-	context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-		&[descriptor_set_layout],
-		&[],
-		ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-	))
-}
-
-fn create_composite_pipeline(
-	context: &mut ghi::implementation::Context,
-	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
-	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-) -> ghi::PipelineHandle {
-	let shader = crate::rendering::shader_store::create_shader(
-		context,
-		shader_storage,
-		&besl_bloom_shader_descriptor(
-			"byte-engine/rendering/bloom/composite",
-			"Bloom Composite Shader",
-			BLOOM_COMPOSITE_BESL,
-			3,
-			vec![
-				material::Binding::new(0, 0, true, false),
-				material::Binding::new(0, 1, true, false),
-				material::Binding::new(0, 2, false, true),
-				material::Binding::new(0, 3, true, false),
-			],
-		),
-	)
-	.expect(
-		"Failed to create bloom composite shader. The most likely cause is an incompatible bloom composite shader interface.",
-	);
-
-	context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-		&[descriptor_set_layout],
-		&[],
-		ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-	))
-}
-
-fn besl_bloom_shader_descriptor<'a>(
+fn bloom_pipeline_descriptor<'a>(
+	label: &'static str,
 	id: &'a str,
 	name: &'a str,
-	source: &'a str,
+	layout_name: &'a str,
+	source: &str,
 	parameters_binding: u32,
-	bindings: Vec<material::Binding>,
-) -> crate::rendering::shader_store::ShaderSourceDescriptor<'a> {
-	let main_node = build_bloom_program(source, parameters_binding);
-
-	crate::rendering::shader_store::ShaderSourceDescriptor {
+) -> simple_compute::Descriptor<'a> {
+	simple_compute::Descriptor::new(
+		label,
 		id,
 		name,
-		stage: ResourceShaderTypes::Compute,
-		source: crate::rendering::shader_store::ShaderSourceDefinition::Besl {
-			settings: ShaderGenerationSettings::compute(Extent::new(8, 8, 1)).name(name.to_string()),
-			main_node,
-		},
-		interface: material::ShaderInterface {
-			workgroup_size: Some((8, 8, 1)),
-			bindings,
-		},
-	}
+		build_bloom_program(source, parameters_binding),
+		bloom_dispatch_extent(),
+	)
+	.layout_name(layout_name)
 }
 
 fn build_bloom_program(source: &str, parameters_binding: u32) -> besl::NodeReference {
-	let mut root = besl::Node::root();
-
-	let vec4f = root.get_child("vec4f").expect("vec4f type not found in BESL root");
+	let mut program = simple_compute::Program::new();
+	let vec4f = program.type_node("vec4f").expect("vec4f type not found in BESL root");
 
 	// Bloom shaders share one test/program builder, so expose the superset of
 	// texture bindings used by extract, downsample, upsample, and composite.
@@ -597,54 +410,38 @@ fn build_bloom_program(source: &str, parameters_binding: u32) -> besl::NodeRefer
 		("high_resolution_texture", 1),
 		("bloom_texture", 1),
 	] {
-		root.add_child(
-			besl::Node::binding(
-				name,
-				besl::BindingTypes::CombinedImageSampler { format: String::new() },
-				0,
-				binding,
-				true,
-				false,
-			)
-			.into(),
+		program.binding(
+			name,
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			binding,
+			true,
+			false,
 		);
 	}
-	root.add_child(
-		besl::Node::binding(
-			"result_texture",
-			besl::BindingTypes::Image {
-				format: "rgba16".to_string(),
-			},
-			0,
-			parameters_binding - 1,
-			false,
-			true,
-		)
-		.into(),
+	program.binding(
+		"result_texture",
+		besl::BindingTypes::Image {
+			format: "rgba16".to_string(),
+		},
+		parameters_binding - 1,
+		false,
+		true,
 	);
-
-	root.add_child(
-		besl::Node::binding(
-			"bloom_parameters",
-			besl::BindingTypes::Buffer {
-				members: vec![
-					besl::Node::array("prefilter", vec4f.clone(), 1),
-					besl::Node::array("blur_data", vec4f, 1),
-				],
-			},
-			0,
-			parameters_binding,
-			true,
-			false,
-		)
-		.into(),
+	program.binding(
+		"bloom_parameters",
+		besl::BindingTypes::Buffer {
+			members: vec![
+				besl::Node::array("prefilter", vec4f.clone(), 1),
+				besl::Node::array("blur_data", vec4f, 1),
+			],
+		},
+		parameters_binding,
+		true,
+		false,
 	);
-
-	let program = besl::compile_to_besl(source, Some(root))
-		.expect("Failed to compile bloom BESL shader. The most likely cause is invalid BESL syntax.");
-	program.get_main().expect(
-		"Failed to find the bloom BESL entry point. The most likely cause is that the BESL program did not define main.",
-	)
+	program
+		.compile(source)
+		.expect("Failed to compile bloom BESL shader. The most likely cause is invalid BESL syntax.")
 }
 
 const BLOOM_EXTRACT_BESL: &str = r#"

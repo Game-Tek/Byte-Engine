@@ -11,7 +11,7 @@ pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledSh
 use crate::shader::{
 	besl::{
 		backends::msl::MSLShaderGenerator,
-		evaluation::{collect_bindings, BindingRecord, IntrinsicBindingTraversalOrder},
+		evaluation::{collect_bindings, BindingKind, BindingRecord, IntrinsicBindingTraversalOrder},
 	},
 	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
 };
@@ -25,7 +25,7 @@ pub struct Compiler<A: Allocator + Clone = Global> {
 impl<A: Allocator + Clone> ShaderGenerator for Compiler<A> {}
 
 impl BindingRecord for CompiledShaderBinding {
-	fn from_usage(set: u32, binding: u32, read: bool, write: bool) -> Self {
+	fn from_usage(_name: &str, _kind: BindingKind, _count: u32, set: u32, binding: u32, read: bool, write: bool) -> Self {
 		Self::new(set, binding, read, write)
 	}
 

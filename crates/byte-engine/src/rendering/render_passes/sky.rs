@@ -1,33 +1,17 @@
 use ghi::{
-	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 };
 use math::{mat::MatInverse as _, ShaderMatrix4, Vector3, Vector4};
-use resource_management::{
-	resources::material, shader::generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
-};
-use utils::{Box, Extent};
+use utils::Extent;
 
 use crate::{
 	core::Entity,
 	rendering::{
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-		shader_store::{ShaderSourceDefinition, ShaderSourceDescriptor},
+		render_pass::{simple_compute, RenderPass, RenderPassBuilder, RenderPassReturn},
 		Sink,
 	},
 };
-
-const SKY_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-);
-const SKY_MAIN_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const SKY_PARAMETERS_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
-		.buffer_read_only(true);
 
 /// The `AtmosphereSkyRenderPassSettings` struct configures the physical atmosphere and sun parameters for the sky pass.
 #[derive(Clone, Copy, Debug)]
@@ -76,8 +60,7 @@ struct SkyShaderData {
 
 /// The `AtmosphereSkyRenderPass` struct renders an atmosphere-only sky into the main color target wherever depth remains at infinity.
 pub struct AtmosphereSkyRenderPass {
-	pipeline: ghi::PipelineHandle,
-	descriptor_set: ghi::DescriptorSetHandle,
+	pass: simple_compute::Pass,
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
 	settings: AtmosphereSkyRenderPassSettings,
 }
@@ -94,50 +77,43 @@ impl AtmosphereSkyRenderPass {
 	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: AtmosphereSkyRenderPassSettings) -> Self {
 		let depth = render_pass_builder.read_from("depth");
 		let main = render_pass_builder.render_to("main");
-
-		let shader_storage = render_pass_builder.shader_storage();
-		let context = render_pass_builder.context();
-
-		let descriptor_set_template = context.create_descriptor_set_template(
-			Some("Sky Render Pass Descriptor Set"),
-			&[SKY_DEPTH_BINDING, SKY_MAIN_BINDING, SKY_PARAMETERS_BINDING],
-		);
-
-		let shader = create_sky_shader(context, shader_storage);
-
-		let pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[descriptor_set_template],
-			&[],
-			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-		));
-
-		let parameters = context.build_dynamic_buffer(
+		let pipeline = simple_compute::Pipeline::compile(
+			render_pass_builder,
+			simple_compute::Descriptor::new(
+				"Sky",
+				"byte-engine/rendering/sky",
+				"Sky Render Pass Compute Shader",
+				create_sky_program(),
+				Extent::new(8, 8, 1),
+			)
+			.layout_name("Sky Render Pass Descriptor Set"),
+		)
+		.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.");
+		let parameters = render_pass_builder.context().build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Sky Render Pass Parameters")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-
-		let sampler = context.build_sampler(
+		let sampler = render_pass_builder.context().build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-
-		let descriptor_set = context.create_descriptor_set(Some("Sky Render Pass Descriptor Set"), &descriptor_set_template);
-		let _ = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(&SKY_DEPTH_BINDING, depth, sampler, ghi::Layouts::Read),
-		);
-		let _ = context.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::image(&SKY_MAIN_BINDING, main));
-		let _ = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&SKY_PARAMETERS_BINDING, parameters.into()),
-		);
+		let pass = pipeline
+			.bind(
+				render_pass_builder,
+				"Sky Render Pass Descriptor Set",
+				&[
+					simple_compute::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
+					simple_compute::Resource::image("main_texture", main),
+					simple_compute::Resource::buffer("parameters", parameters),
+				],
+			)
+			.expect("Failed to bind the sky resources. The most likely cause is a changed BESL binding contract.");
 
 		Self {
-			pipeline,
-			descriptor_set,
+			pass,
 			parameters,
 			settings,
 		}
@@ -183,88 +159,43 @@ impl AtmosphereSkyRenderPass {
 	}
 }
 
-fn create_sky_shader(
-	context: &mut ghi::implementation::Context,
-	shader_storage: Option<&dyn resource_management::resource::StorageBackend>,
-) -> ghi::ShaderHandle {
-	crate::rendering::shader_store::create_shader(
-		context,
-		shader_storage,
-		&ShaderSourceDescriptor {
-			id: "byte-engine/rendering/sky",
-			name: "Sky Render Pass Compute Shader",
-			stage: ResourceShaderTypes::Compute,
-			source: ShaderSourceDefinition::Besl {
-				settings: ShaderGenerationSettings::compute(Extent::new(8, 8, 1))
-					.name("Sky Render Pass Compute Shader".to_string()),
-				main_node: create_sky_program(),
-			},
-			interface: material::ShaderInterface {
-				workgroup_size: Some((8, 8, 1)),
-				bindings: vec![
-					material::Binding::new(0, 0, true, false),
-					material::Binding::new(0, 1, false, true),
-					material::Binding::new(0, 2, true, false),
-				],
-			},
-		},
-	)
-	.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.")
-}
-
 fn create_sky_program() -> besl::NodeReference {
-	let mut root = besl::Node::root();
-	let vec4f = root.get_child("vec4f").expect("vec4f type not found in BESL root");
-	let mat4f = root.get_child("mat4f").expect("mat4f type not found in BESL root");
-
-	root.add_child(
-		besl::Node::binding(
-			"depth_texture",
-			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			0,
-			0,
-			true,
-			false,
-		)
-		.into(),
+	let mut program = simple_compute::Program::new();
+	let vec4f = program.type_node("vec4f").expect("vec4f type not found in BESL root");
+	let mat4f = program.type_node("mat4f").expect("mat4f type not found in BESL root");
+	program.binding(
+		"depth_texture",
+		besl::BindingTypes::CombinedImageSampler { format: String::new() },
+		0,
+		true,
+		false,
 	);
-	root.add_child(
-		besl::Node::binding(
-			"main_texture",
-			besl::BindingTypes::Image { format: String::new() },
-			0,
-			1,
-			false,
-			true,
-		)
-		.into(),
+	program.binding(
+		"main_texture",
+		besl::BindingTypes::Image { format: String::new() },
+		1,
+		false,
+		true,
 	);
-	root.add_child(
-		besl::Node::binding(
-			"parameters",
-			besl::BindingTypes::Buffer {
-				members: vec![
-					besl::Node::member("inverse_view_projection", mat4f).into(),
-					besl::Node::member("camera_position", vec4f.clone()).into(),
-					besl::Node::member("sun_direction", vec4f.clone()).into(),
-					besl::Node::member("planet_center", vec4f.clone()).into(),
-					besl::Node::member("atmosphere", vec4f.clone()).into(),
-					besl::Node::member("misc", vec4f).into(),
-				],
-			},
-			0,
-			2,
-			true,
-			false,
-		)
-		.into(),
+	program.binding(
+		"parameters",
+		besl::BindingTypes::Buffer {
+			members: vec![
+				besl::Node::member("inverse_view_projection", mat4f).into(),
+				besl::Node::member("camera_position", vec4f.clone()).into(),
+				besl::Node::member("sun_direction", vec4f.clone()).into(),
+				besl::Node::member("planet_center", vec4f.clone()).into(),
+				besl::Node::member("atmosphere", vec4f.clone()).into(),
+				besl::Node::member("misc", vec4f).into(),
+			],
+		},
+		2,
+		true,
+		false,
 	);
-
-	let program = besl::compile_to_besl(SKY_SHADER_BESL, Some(root))
-		.expect("Failed to compile the sky BESL shader. The most likely cause is invalid BESL syntax.");
 	program
-		.get_main()
-		.expect("Failed to find the sky BESL entry point. The most likely cause is that the BESL program did not define main.")
+		.compile(SKY_SHADER_BESL)
+		.expect("Failed to compile the sky BESL shader. The most likely cause is invalid BESL syntax.")
 }
 
 impl RenderPass for AtmosphereSkyRenderPass {
@@ -275,24 +206,7 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		self.write_parameters(frame, sink);
-
-		let pipeline = self.pipeline;
-		let descriptor_set = self.descriptor_set;
-		let extent = sink.extent();
-
-		Some(crate::rendering::render_pass::allocate_render_command(
-			frame_allocator,
-			move |command_buffer, _| {
-				command_buffer.region(
-					|label| label.write_str("Sky"),
-					|command_buffer| {
-						let pipeline = command_buffer.bind_compute_pipeline(pipeline);
-						pipeline.bind_descriptor_sets(&[descriptor_set]);
-						pipeline.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
-					},
-				);
-			},
-		))
+		self.pass.prepare(frame, sink, frame_allocator)
 	}
 }
 

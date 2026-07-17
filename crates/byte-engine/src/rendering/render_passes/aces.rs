@@ -14,14 +14,12 @@ const CONFIGURATION: tone_map::Configuration = tone_map::Configuration {
 	source: TONE_MAPPING_SHADER,
 	shader_error: "Failed to create ACES tone mapping shader. The most likely cause is an incompatible shader interface.",
 	syntax_error: "Failed to lex the ACES tone mapping shader. The most likely cause is invalid BESL syntax.",
-	entry_point_error:
-		"Failed to find the ACES tone mapping entry point. The most likely cause is that the BESL program did not define main.",
 };
 
 /// The `BaseAcesToneMapPass` struct provides shared ACES compute pipeline state to per-view passes.
 #[derive(Clone)]
 pub struct BaseAcesToneMapPass {
-	pipeline: tone_map::Pipeline,
+	pipeline: crate::rendering::render_pass::simple_compute::Pipeline,
 }
 
 impl Entity for BaseAcesToneMapPass {}
@@ -29,7 +27,7 @@ impl Entity for BaseAcesToneMapPass {}
 impl BaseAcesToneMapPass {
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		Self {
-			pipeline: tone_map::Pipeline::new(render_pass_builder, &CONFIGURATION),
+			pipeline: tone_map::create_pipeline(render_pass_builder, &CONFIGURATION),
 		}
 	}
 }
@@ -40,19 +38,14 @@ fn create_tone_mapping_program() -> besl::NodeReference {
 
 /// The `AcesToneMapPass` struct provides one view with ACES tonemapping descriptor bindings.
 pub struct AcesToneMapPass {
-	render_pass: BaseAcesToneMapPass,
-	descriptor_set: ghi::DescriptorSetHandle,
+	render_pass: crate::rendering::render_pass::simple_compute::Pass,
 }
 
 impl AcesToneMapPass {
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let render_pass = BaseAcesToneMapPass::new(render_pass_builder);
-		let descriptor_set = tone_map::create_descriptor_set(render_pass_builder, &render_pass.pipeline, &CONFIGURATION);
-
-		AcesToneMapPass {
-			render_pass,
-			descriptor_set,
-		}
+		let base = BaseAcesToneMapPass::new(render_pass_builder);
+		let render_pass = tone_map::create_pass(render_pass_builder, &base.pipeline, &CONFIGURATION);
+		AcesToneMapPass { render_pass }
 	}
 }
 
@@ -61,11 +54,11 @@ impl Entity for AcesToneMapPass {}
 impl RenderPass for AcesToneMapPass {
 	fn prepare<'a>(
 		&mut self,
-		_frame: &mut ghi::implementation::Frame,
+		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		tone_map::prepare(self.render_pass.pipeline.pipeline, self.descriptor_set, sink, frame_allocator)
+		self.render_pass.prepare(frame, sink, frame_allocator)
 	}
 }
 

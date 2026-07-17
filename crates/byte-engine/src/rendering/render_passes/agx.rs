@@ -14,14 +14,12 @@ const CONFIGURATION: tone_map::Configuration = tone_map::Configuration {
 	source: TONE_MAPPING_SHADER,
 	shader_error: "Failed to create AGX tone mapping shader",
 	syntax_error: "Failed to lex the AGX tone mapping shader. The most likely cause is invalid BESL syntax.",
-	entry_point_error:
-		"Failed to find the AGX tone mapping entry point. The most likely cause is that the BESL program did not define main.",
 };
 
 /// The `BaseAgxToneMapPass` struct defines the shared GPU state required for AGX tonemapping.
 #[derive(Clone)]
 pub struct BaseAgxToneMapPass {
-	pipeline: tone_map::Pipeline,
+	pipeline: crate::rendering::render_pass::simple_compute::Pipeline,
 }
 
 impl Entity for BaseAgxToneMapPass {}
@@ -30,7 +28,7 @@ impl BaseAgxToneMapPass {
 	/// Creates the shared AGX compute pipeline resources used by per-view tonemap passes.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		Self {
-			pipeline: tone_map::Pipeline::new(render_pass_builder, &CONFIGURATION),
+			pipeline: tone_map::create_pipeline(render_pass_builder, &CONFIGURATION),
 		}
 	}
 }
@@ -130,20 +128,15 @@ main: fn() -> void {
 
 /// The `AgxToneMapPass` struct defines a per-view AGX tonemapping pass instance.
 pub struct AgxToneMapPass {
-	render_pass: BaseAgxToneMapPass,
-	descriptor_set: ghi::DescriptorSetHandle,
+	render_pass: crate::rendering::render_pass::simple_compute::Pass,
 }
 
 impl AgxToneMapPass {
 	/// Creates the per-view descriptor bindings for the AGX tonemap pass.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let render_pass = BaseAgxToneMapPass::new(render_pass_builder);
-		let descriptor_set = tone_map::create_descriptor_set(render_pass_builder, &render_pass.pipeline, &CONFIGURATION);
-
-		AgxToneMapPass {
-			render_pass,
-			descriptor_set,
-		}
+		let base = BaseAgxToneMapPass::new(render_pass_builder);
+		let render_pass = tone_map::create_pass(render_pass_builder, &base.pipeline, &CONFIGURATION);
+		AgxToneMapPass { render_pass }
 	}
 }
 
@@ -152,11 +145,11 @@ impl Entity for AgxToneMapPass {}
 impl RenderPass for AgxToneMapPass {
 	fn prepare<'a>(
 		&mut self,
-		_frame: &mut ghi::implementation::Frame,
+		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		tone_map::prepare(self.render_pass.pipeline.pipeline, self.descriptor_set, sink, frame_allocator)
+		self.render_pass.prepare(frame, sink, frame_allocator)
 	}
 }
 

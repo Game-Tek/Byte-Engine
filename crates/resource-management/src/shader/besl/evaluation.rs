@@ -1,23 +1,45 @@
 use std::{cell::RefCell, collections::HashSet};
 
 /// The `BindingUsage` struct describes a used binding in a BESL program.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BindingUsage {
+	pub name: String,
+	pub kind: BindingKind,
+	pub count: u32,
 	pub set: u32,
 	pub binding: u32,
 	pub read: bool,
 	pub write: bool,
 }
 
+/// Identifies the descriptor category declared by a BESL binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingKind {
+	Buffer,
+	CombinedImageSampler { view: TextureView },
+	Image,
+}
+
+/// Identifies the texture shape required by a BESL sampled-image binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextureView {
+	Texture2D,
+	Texture2DArray,
+	Texture3D,
+}
+
 /// The `BindingRecord` trait exists to keep binding discovery independent from evaluated and compiled metadata representations.
 pub(crate) trait BindingRecord: Sized {
-	fn from_usage(set: u32, binding: u32, read: bool, write: bool) -> Self;
+	fn from_usage(name: &str, kind: BindingKind, count: u32, set: u32, binding: u32, read: bool, write: bool) -> Self;
 	fn usage(&self) -> (u32, u32, bool, bool);
 }
 
 impl BindingRecord for BindingUsage {
-	fn from_usage(set: u32, binding: u32, read: bool, write: bool) -> Self {
+	fn from_usage(name: &str, kind: BindingKind, count: u32, set: u32, binding: u32, read: bool, write: bool) -> Self {
 		Self {
+			name: name.to_string(),
+			kind,
+			count,
 			set,
 			binding,
 			read,
@@ -196,17 +218,38 @@ fn build_bindings<T: BindingRecord>(
 			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => {}
 		},
 		besl::Nodes::Binding {
+			name,
 			set,
 			binding,
 			read,
 			write,
-			..
+			r#type,
+			count,
 		} => {
 			if !bindings.iter().any(|record| {
 				let (record_set, record_binding, ..) = record.usage();
 				record_binding == *binding && record_set == *set
 			}) {
-				bindings.push(T::from_usage(*set, *binding, *read, *write));
+				let kind = match r#type {
+					besl::BindingTypes::Buffer { .. } => BindingKind::Buffer,
+					besl::BindingTypes::CombinedImageSampler { format } => BindingKind::CombinedImageSampler {
+						view: match format.as_str() {
+							"Texture3D" => TextureView::Texture3D,
+							"ArrayTexture2D" => TextureView::Texture2DArray,
+							_ => TextureView::Texture2D,
+						},
+					},
+					besl::BindingTypes::Image { .. } => BindingKind::Image,
+				};
+				bindings.push(T::from_usage(
+					name,
+					kind,
+					count.map_or(1, |count| count.get() as u32),
+					*set,
+					*binding,
+					*read,
+					*write,
+				));
 			}
 		}
 		besl::Nodes::Raw { input, output, .. } => {
@@ -670,31 +713,79 @@ mod tests {
 	use crate::shader::generator;
 
 	#[test]
-	fn bindings_from_main() {
+	fn binding_metadata_is_sorted_and_classified() {
 		let main = generator::tests::bindings();
 
 		let evaluation = ProgramEvaluation::from_main(&main).expect("Failed to evaluate program");
-		let bindings = evaluation.bindings();
+		let bindings = evaluation
+			.bindings()
+			.iter()
+			.map(|binding| {
+				(
+					binding.name.as_str(),
+					binding.kind,
+					binding.count,
+					binding.set,
+					binding.binding,
+					binding.read,
+					binding.write,
+				)
+			})
+			.collect::<Vec<_>>();
 
-		assert_eq!(bindings.len(), 3);
+		assert_eq!(
+			bindings,
+			vec![
+				("buff", BindingKind::Buffer, 1, 0, 0, true, true),
+				("image", BindingKind::Image, 1, 0, 1, false, true),
+				(
+					"texture",
+					BindingKind::CombinedImageSampler {
+						view: TextureView::Texture2D,
+					},
+					1,
+					1,
+					0,
+					true,
+					false,
+				),
+			]
+		);
+	}
 
-		let buffer_binding = &bindings[0];
-		assert_eq!(buffer_binding.binding, 0);
-		assert_eq!(buffer_binding.set, 0);
-		assert_eq!(buffer_binding.read, true);
-		assert_eq!(buffer_binding.write, true);
+	#[test]
+	fn sampled_texture_shapes_and_descriptor_counts_are_preserved() {
+		let root = besl::Node::root();
+		let void = root.get_child("void").expect("Expected the built-in void type");
+		let main: besl::NodeReference = besl::Node::function(
+			"main",
+			Vec::new(),
+			void,
+			vec![besl::Node::binding_array(
+				"volumes",
+				besl::BindingTypes::CombinedImageSampler {
+					format: "Texture3D".to_string(),
+				},
+				0,
+				0,
+				true,
+				false,
+				3,
+			)
+			.into()],
+		)
+		.into();
 
-		let image_binding = &bindings[1];
-		assert_eq!(image_binding.binding, 1);
-		assert_eq!(image_binding.set, 0);
-		assert_eq!(image_binding.read, false);
-		assert_eq!(image_binding.write, true);
-
-		let texture_binding = &bindings[2];
-		assert_eq!(texture_binding.binding, 0);
-		assert_eq!(texture_binding.set, 1);
-		assert_eq!(texture_binding.read, true);
-		assert_eq!(texture_binding.write, false);
+		let bindings = ProgramEvaluation::from_main(&main)
+			.expect("Expected sampled binding metadata to evaluate")
+			.into_bindings();
+		assert_eq!(bindings[0].count, 3);
+		assert_eq!(
+			bindings[0].kind,
+			BindingKind::CombinedImageSampler {
+				view: TextureView::Texture3D
+			}
+		);
 	}
 
 	#[test]

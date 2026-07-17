@@ -1,19 +1,10 @@
-use ghi::{
-	command_buffer::{
-		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
-	},
-	context::{Context as _, ContextCreate as _},
-};
-use resource_management::{
-	resources::material, shader::generator::ShaderGenerationSettings, types::ShaderTypes as ResourceShaderTypes,
-};
-use utils::{Box, Extent};
+use ghi::command_buffer::{CommandBufferRecording as _, CommonCommandBufferMode as _};
+use utils::Extent;
 
 use crate::{
 	core::Entity,
 	rendering::{
-		render_pass::{FramePrepare, RenderPassBuilder, RenderPassReturn},
-		shader_store::{ShaderSourceDefinition, ShaderSourceDescriptor},
+		render_pass::{simple_compute, RenderPassBuilder, RenderPassReturn},
 		RenderPass, Sink,
 	},
 };
@@ -58,95 +49,54 @@ impl RenderPass for BlitPass {
 
 #[derive(Clone)]
 pub struct BaseSwapchainBlitPass {
-	pipeline: ghi::PipelineHandle,
-	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
+	pipeline: simple_compute::Pipeline,
 }
-
-const SOURCE_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const DESTINATION_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
 
 impl Entity for BaseSwapchainBlitPass {}
 
 impl BaseSwapchainBlitPass {
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
-		let descriptor_set_layout = render_pass_builder.context().create_descriptor_set_template(
-			Some("Swapchain Blit Pass Set Layout"),
-			&[SOURCE_BINDING_TEMPLATE, DESTINATION_BINDING_TEMPLATE],
-		);
+		let pipeline = simple_compute::Pipeline::compile(
+			render_pass_builder,
+			simple_compute::Descriptor::new(
+				"Swapchain Blit",
+				"byte-engine/rendering/blit/swapchain",
+				"Swapchain Blit Compute Shader",
+				create_swapchain_blit_program(),
+				Extent::square(32),
+			)
+			.generation_name("Swapchain Blit")
+			.layout_name("Swapchain Blit Pass Set Layout"),
+		)
+		.expect("Failed to create swapchain blit shader");
 
-		let shader = create_swapchain_blit_shader(render_pass_builder);
-		let pipeline = render_pass_builder
-			.context()
-			.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-				&[descriptor_set_layout],
-				&[],
-				ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-			));
-
-		Self {
-			pipeline,
-			descriptor_set_layout,
-		}
+		Self { pipeline }
 	}
 }
 
-fn create_swapchain_blit_shader(render_pass_builder: &mut RenderPassBuilder<'_>) -> ghi::ShaderHandle {
-	render_pass_builder
-		.create_shader(&ShaderSourceDescriptor {
-			id: "byte-engine/rendering/blit/swapchain",
-			name: "Swapchain Blit Compute Shader",
-			stage: ResourceShaderTypes::Compute,
-			source: ShaderSourceDefinition::Besl {
-				settings: ShaderGenerationSettings::compute(Extent::square(32)).name("Swapchain Blit".to_string()),
-				main_node: create_swapchain_blit_program(),
-			},
-			interface: material::ShaderInterface {
-				workgroup_size: Some((32, 32, 1)),
-				bindings: vec![
-					material::Binding::new(0, 0, true, false),
-					material::Binding::new(0, 1, false, true),
-				],
-			},
-		})
-		.expect("Failed to create swapchain blit shader")
-}
-
 fn create_swapchain_blit_program() -> besl::NodeReference {
-	let mut root = besl::Node::root();
-	root.add_child(
-		besl::Node::binding(
-			"source",
-			besl::BindingTypes::Image {
-				format: "rgba16".to_string(),
-			},
-			0,
-			0,
-			true,
-			false,
-		)
-		.into(),
+	let mut program = simple_compute::Program::new();
+	program.binding(
+		"source",
+		besl::BindingTypes::Image {
+			format: "rgba16".to_string(),
+		},
+		0,
+		true,
+		false,
 	);
-	root.add_child(
-		besl::Node::binding(
-			"result",
-			besl::BindingTypes::Image {
-				format: "unknown".to_string(),
-			},
-			0,
-			1,
-			false,
-			true,
-		)
-		.into(),
+	program.binding(
+		"result",
+		besl::BindingTypes::Image {
+			format: "unknown".to_string(),
+		},
+		1,
+		false,
+		true,
 	);
-
-	let program = besl::compile_to_besl(SWAPCHAIN_BLIT_SHADER, Some(root))
-		.expect("Failed to lex the swapchain blit shader. The most likely cause is invalid BESL syntax.");
-	program.get_main().expect(
-		"Failed to find the swapchain blit entry point. The most likely cause is that the BESL program did not define main.",
-	)
+	program
+		.compile(SWAPCHAIN_BLIT_SHADER)
+		.expect("Failed to compile the swapchain blit shader. The most likely cause is invalid BESL syntax.")
 }
 
 const SWAPCHAIN_BLIT_SHADER: &str = r#"
@@ -161,35 +111,30 @@ main: fn() -> void {
 "#;
 
 pub struct SwapchainBlitPass {
-	render_pass: BaseSwapchainBlitPass,
-	descriptor_set: ghi::DescriptorSetHandle,
+	render_pass: simple_compute::Pass,
 }
 
 impl SwapchainBlitPass {
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let render_pass = BaseSwapchainBlitPass::new(render_pass_builder);
+		let base = BaseSwapchainBlitPass::new(render_pass_builder);
 
 		let read_from_main = render_pass_builder.read_from("main");
 		let render_to_swapchain = render_pass_builder.render_to_swapchain();
+		let render_pass = base
+			.pipeline
+			.bind(
+				render_pass_builder,
+				"Swapchain Blit Pass Descriptor Set",
+				&[
+					simple_compute::Resource::image("source", read_from_main),
+					simple_compute::Resource::swapchain("result", render_to_swapchain),
+				],
+			)
+			.expect(
+				"Failed to bind swapchain blit resources. The most likely cause is a mismatch between the BESL bindings and pass resources.",
+			);
 
-		let context = render_pass_builder.context();
-
-		let descriptor_set =
-			context.create_descriptor_set(Some("Swapchain Blit Pass Descriptor Set"), &render_pass.descriptor_set_layout);
-
-		context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::image(&SOURCE_BINDING_TEMPLATE, read_from_main),
-		);
-		context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::swapchain(&DESTINATION_BINDING_TEMPLATE, render_to_swapchain),
-		);
-
-		Self {
-			render_pass,
-			descriptor_set,
-		}
+		Self { render_pass }
 	}
 }
 
@@ -202,23 +147,7 @@ impl RenderPass for SwapchainBlitPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		let pipeline = self.render_pass.pipeline;
-		let descriptor_set = self.descriptor_set;
-		let extent = sink.extent();
-
-		Some(crate::rendering::render_pass::allocate_render_command(
-			frame_allocator,
-			move |command_buffer, _| {
-				command_buffer.region(
-					|label| label.write_str("Swapchain Blit"),
-					|command_buffer| {
-						let r = command_buffer.bind_compute_pipeline(pipeline);
-						r.bind_descriptor_sets(&[descriptor_set]);
-						r.dispatch(ghi::DispatchExtent::new(extent, Extent::square(32)));
-					},
-				);
-			},
-		))
+		self.render_pass.prepare(frame, sink, frame_allocator)
 	}
 }
 

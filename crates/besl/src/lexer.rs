@@ -2366,40 +2366,6 @@ main: fn () -> void {
 	}
 
 	#[test]
-	#[ignore]
-	fn lex_member() {
-		let source = "
-color: In<vec4f>;
-";
-
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
-		let node = lex(node).expect("Failed to lex");
-		let node = node.borrow();
-
-		match node.node() {
-			Nodes::Scope { name, children, .. } => {
-				assert_eq!(name, "root");
-
-				let color = children[0].borrow();
-
-				match color.node() {
-					Nodes::Member { name, r#type, .. } => {
-						assert_eq!(name, "color");
-						assert_type(&r#type.borrow(), "In<vec4f>");
-					}
-					_ => {
-						panic!("Expected feature");
-					}
-				}
-			}
-			_ => {
-				panic!("Expected scope");
-			}
-		}
-	}
-
-	#[test]
 	fn parse_script() {
 		let script = r#"
 		used: fn () -> void {

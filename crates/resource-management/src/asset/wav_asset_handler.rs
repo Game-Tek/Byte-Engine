@@ -171,7 +171,6 @@ mod tests {
 		r#async, resource,
 		resources::audio::Audio,
 		types::BitDepths,
-		AssetHandler,
 	};
 
 	fn chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
@@ -204,6 +203,18 @@ mod tests {
 		fmt.extend_from_slice(&44_100u32.to_le_bytes());
 		fmt.extend_from_slice(&176_400u32.to_le_bytes());
 		fmt.extend_from_slice(&4u16.to_le_bytes());
+		fmt.extend_from_slice(&16u16.to_le_bytes());
+		fmt
+	}
+
+	/// Builds the format chunk for a mono 48 kHz, 16-bit PCM fixture.
+	fn mono_pcm_fmt() -> Vec<u8> {
+		let mut fmt = Vec::new();
+		fmt.extend_from_slice(&1u16.to_le_bytes());
+		fmt.extend_from_slice(&1u16.to_le_bytes());
+		fmt.extend_from_slice(&48_000u32.to_le_bytes());
+		fmt.extend_from_slice(&96_000u32.to_le_bytes());
+		fmt.extend_from_slice(&2u16.to_le_bytes());
 		fmt.extend_from_slice(&16u16.to_le_bytes());
 		fmt
 	}
@@ -248,42 +259,36 @@ mod tests {
 	}
 
 	#[r#async::test]
-	#[ignore = "Test uses data not pushed to the repository"]
-	async fn test_audio_asset_handler() {
-		let audio_asset_handler = WAVAssetHandler::new();
-
+	async fn asset_manager_bakes_generated_wav() {
+		let pcm = [0x00, 0x80, 0xff, 0x7f];
+		let wav = riff(&[chunk(b"fmt ", &mono_pcm_fmt()), chunk(b"data", &pcm)]);
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-		let asset_manager = AssetManager::new(asset_storage_backend.clone());
+		asset_storage_backend.add_file("generated.wav", &wav);
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(WAVAssetHandler::new());
 
-		let url = ResourceId::new("gun.wav");
-
-		let (resource, data) = audio_asset_handler
-			.bake(
-				&asset_manager,
-				&resource_storage_backend,
-				&asset_storage_backend,
-				url,
-				&std::alloc::Global,
-			)
+		asset_manager
+			.bake("generated.wav", &resource_storage_backend)
 			.await
-			.expect("Audio asset handler failed to load asset");
+			.expect("generated WAV should bake");
 
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
-			.expect("Audio asset failed to store");
+		let resource = resource_storage_backend
+			.get_resource(ResourceId::new("generated.wav"))
+			.expect("baked WAV resource should be stored");
 
-		let generated_resources = resource_storage_backend.get_resources();
-
-		assert_eq!(generated_resources.len(), 1);
-
-		let resource = &generated_resources[0];
-
-		assert_eq!(resource.id, "gun.wav");
 		assert_eq!(resource.class, "Audio");
 		let resource: Audio = crate::from_slice(&resource.resource).unwrap();
 		assert_eq!(resource.bit_depth, BitDepths::Sixteen);
 		assert_eq!(resource.channel_count, 1);
-		assert_eq!(resource.sample_rate, 48000);
-		assert_eq!(resource.sample_count, 152456 / 1 / (16 / 8));
+		assert_eq!(resource.sample_rate, 48_000);
+		assert_eq!(resource.sample_count, 2);
+		assert_eq!(
+			resource_storage_backend
+				.get_resource_data_by_name(ResourceId::new("generated.wav"))
+				.expect("baked WAV samples should be stored")
+				.as_ref(),
+			pcm
+		);
 	}
 }

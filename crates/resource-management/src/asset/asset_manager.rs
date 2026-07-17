@@ -172,12 +172,11 @@ impl AssetManager {
 
 #[cfg(test)]
 pub mod tests {
-	use utils::json;
-
 	use super::*;
 	use crate::{
 		asset::{asset_handler::LoadErrors, storage_backend::tests::TestStorageBackend},
-		r#async::BoxedFuture,
+		r#async::{self, BoxedFuture},
+		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		Model, ProcessedAsset,
 	};
 
@@ -200,7 +199,7 @@ pub mod tests {
 
 	impl AssetHandler for TestAssetHandler {
 		fn can_handle(&self, id: &str) -> bool {
-			id == "example"
+			id == "test"
 		}
 
 		async fn bake<'a>(
@@ -211,7 +210,7 @@ pub mod tests {
 			id: ResourceId<'a>,
 			_: &'a dyn std::alloc::Allocator,
 		) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-			if id.get_base().as_ref() == "example" {
+			if id.get_base().as_ref() == "example.test" {
 				Ok((ProcessedAsset::new(id, TestResource {}), Vec::new().into_boxed_slice()))
 			} else {
 				Err(LoadErrors::AssetCouldNotBeLoaded)
@@ -239,40 +238,32 @@ pub mod tests {
 		asset_manager.add_asset_handler(test_asset_handler);
 	}
 
-	#[test]
-	#[ignore = "Need to solve DI"]
-	fn test_load_with_asset_manager() {
+	#[r#async::test]
+	async fn test_bake_with_asset_manager() {
 		let storage_backend = TestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
 		let mut asset_manager = AssetManager::new(storage_backend);
+		asset_manager.add_asset_handler(TestAssetHandler::new());
 
-		let test_asset_handler = TestAssetHandler::new();
+		asset_manager
+			.bake("example.test", &resource_storage_backend)
+			.await
+			.expect("registered asset handler should bake its resource");
 
-		asset_manager.add_asset_handler(test_asset_handler);
-
-		let _: json::Value = json::from_str(r#"{"url": "http://example.com"}"#).unwrap();
-
-		// assert_eq!(smol::block_on(asset_manager.load("example", &json)), Ok(()));
+		let resource = resource_storage_backend
+			.get_resource(ResourceId::new("example.test"))
+			.expect("baked resource should be stored");
+		assert_eq!(resource.class, "TestResource");
 	}
 
-	#[test]
-	#[ignore = "Need to solve DI"]
-	fn test_load_no_asset_handler() {
+	#[r#async::test]
+	async fn test_bake_no_asset_handler() {
 		let storage_backend = TestStorageBackend::new();
-		let _asset_manager = AssetManager::new(storage_backend);
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let asset_manager = AssetManager::new(storage_backend);
 
-		let _: json::Value = json::from_str(r#"{"url": "http://example.com"}"#).unwrap();
+		let result = asset_manager.bake("example.unknown", &resource_storage_backend).await;
 
-		// assert_eq!(smol::block_on(asset_manager.load("example", &json)), Err(LoadMessages::NoAssetHandler));
-	}
-
-	#[test]
-	#[ignore = "Need to solve DI"]
-	fn test_load_no_asset_url() {
-		let storage_backend = TestStorageBackend::new();
-		let _asset_manager = AssetManager::new(storage_backend);
-
-		let _: json::Value = json::from_str(r#"{}"#).unwrap();
-
-		// assert_eq!(smol::block_on(asset_manager.load("example", &json)), Err(LoadMessages::NoURL));
+		assert_eq!(result, Err(LoadMessages::NoAssetHandler));
 	}
 }

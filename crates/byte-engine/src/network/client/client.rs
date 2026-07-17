@@ -16,7 +16,9 @@ pub struct Client {
 impl Client {
 	pub fn new(server_address: SocketAddr) -> Result<Client, String> {
 		Ok(Client {
-			client: udp::Client::new(server_address).map_err(|_| "Failed to initilize BETP client.".to_string())?,
+			client: udp::Client::new(server_address).map_err(|error| {
+				format!("Failed to initialize BETP client. The most likely cause is a UDP setup error: {error}")
+			})?,
 		})
 	}
 

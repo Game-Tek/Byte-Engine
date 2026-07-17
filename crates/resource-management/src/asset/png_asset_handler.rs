@@ -232,6 +232,8 @@ mod tests {
 			self, asset_handler::AssetHandler, asset_manager::AssetManager, png_asset_handler::PNGAssetHandler, ResourceId,
 		},
 		r#async, resource,
+		resources::image::Image,
+		types::Formats,
 	};
 
 	#[r#async::test]
@@ -269,25 +271,48 @@ mod tests {
 		assert_eq!(resource.class, "Image");
 	}
 
-	// #[test]
-	// #[ignore]
-	// fn load_16_bit_normal_image() {
-	// 	let asset_manager = AssetManager::new("../assets".into(),);
-	// 	let asset_handler = ImageAssetHandler::new();
+	/// Encodes a small RGB16 normal map so the PNG decoder sees real 16-bit file data.
+	fn generated_rgb16_normal_png() -> Vec<u8> {
+		let mut png = Vec::new();
+		{
+			let mut encoder = png::Encoder::new(&mut png, 4, 4);
+			encoder.set_color(png::ColorType::Rgb);
+			encoder.set_depth(png::BitDepth::Sixteen);
+			let mut writer = encoder.write_header().expect("generated PNG header should encode");
+			let normal = [0x80, 0x00, 0x80, 0x00, 0xff, 0xff];
+			let pixels = normal.repeat(16);
+			writer.write_image_data(&pixels).expect("generated PNG pixels should encode");
+		}
+		png
+	}
 
-	// 	let url = "Revolver_Normal.png";
+	#[r#async::test]
+	async fn asset_manager_bakes_generated_16_bit_normal_png() {
+		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
+		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
+		asset_storage_backend.add_file("generated_normal.png", &generated_rgb16_normal_png());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(PNGAssetHandler::new());
 
-	// 	let storage_backend = asset_manager.get_test_storage_backend();
+		asset_manager
+			.bake("generated_normal.png", &resource_storage_backend)
+			.await
+			.expect("generated 16-bit PNG should bake");
 
-	// 	let _ = smol::block_on(asset_handler.load(&asset_manager, storage_backend, &url,)).expect("Image asset handler did not handle asset");
+		let resource = resource_storage_backend
+			.get_resource(ResourceId::new("generated_normal.png"))
+			.expect("baked PNG resource should be stored");
+		let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
 
-	// 	let generated_resources = storage_backend.get_resources();
-
-	// 	assert_eq!(generated_resources.len(), 1);
-
-	// 	let resource = &generated_resources[0];
-
-	// 	assert_eq!(resource.id, url);
-	// 	assert_eq!(resource.class, "Image");
-	// }
+		assert_eq!(resource.class, "Image");
+		assert_eq!(image.extent, [4, 4, 0]);
+		assert_eq!(image.format, Formats::BC5);
+		assert_eq!(
+			resource_storage_backend
+				.get_resource_data_by_name(ResourceId::new("generated_normal.png"))
+				.expect("baked PNG data should be stored")
+				.len(),
+			16
+		);
+	}
 }

@@ -1885,21 +1885,15 @@ mod tests {
 	use crate::r#async;
 	use crate::{
 		asset::{
-			asset_handler::AssetHandler,
-			asset_manager::AssetManager,
-			bema_asset_handler::{
-				tests::{MinimalTestShaderGenerator, RootTestShaderGenerator},
-				BEMAAssetHandler,
-			},
-			png_asset_handler::PNGAssetHandler,
-			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
-			ContainerDefaultResource, ResourceId,
+			asset_handler::AssetHandler, asset_manager::AssetManager, bema_asset_handler::tests::MinimalTestShaderGenerator,
+			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend, ContainerDefaultResource, ResourceId,
 		},
 		pbr::{BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
 		processors::{image_processor::Semantic, mesh_processor::orient_triangle_indices_for_front_face},
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
 			animation::{AnimationModel, QuaternionCurve, Vector3Curve},
+			image::Image,
 			mesh::MeshModel,
 			skeleton::{SkeletonModel, SkinJoint},
 		},
@@ -1921,6 +1915,90 @@ mod tests {
 	fn append_fixture_f32(binary: &mut Vec<u8>, values: &[f32]) -> (usize, usize) {
 		let bytes = values.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
 		append_fixture_bytes(binary, &bytes)
+	}
+
+	/// Builds a minimal indexed triangle document and its binary vertex/index payload.
+	fn generated_triangle_gltf() -> (serde_json::Value, Vec<u8>) {
+		let mut binary = Vec::new();
+		let positions = append_fixture_f32(&mut binary, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+		let indices = append_fixture_bytes(&mut binary, &[0, 0, 1, 0, 2, 0]);
+		let document = serde_json::json!({
+			"asset": { "version": "2.0" },
+			"scene": 0,
+			"scenes": [{ "nodes": [0] }],
+			"nodes": [{ "name": "Triangle", "mesh": 0 }],
+			"meshes": [{
+				"primitives": [{ "attributes": { "POSITION": 0 }, "indices": 1 }]
+			}],
+			"buffers": [{ "byteLength": binary.len() }],
+			"bufferViews": [
+				{ "buffer": 0, "byteOffset": positions.0, "byteLength": positions.1, "target": 34962 },
+				{ "buffer": 0, "byteOffset": indices.0, "byteLength": indices.1, "target": 34963 }
+			],
+			"accessors": [
+				{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] },
+				{ "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+			]
+		});
+		(document, binary)
+	}
+
+	/// Packages generated JSON and binary data into a valid GLB container.
+	fn package_fixture_glb(document: &serde_json::Value, mut binary: Vec<u8>) -> Vec<u8> {
+		let mut json = serde_json::to_vec(document).expect("fixture JSON should serialize");
+		while !json.len().is_multiple_of(4) {
+			json.push(b' ');
+		}
+		while !binary.len().is_multiple_of(4) {
+			binary.push(0);
+		}
+
+		let total_length = 12 + 8 + json.len() + 8 + binary.len();
+		let mut glb = Vec::with_capacity(total_length);
+		glb.extend_from_slice(b"glTF");
+		glb.extend_from_slice(&2u32.to_le_bytes());
+		glb.extend_from_slice(&(total_length as u32).to_le_bytes());
+		glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+		glb.extend_from_slice(b"JSON");
+		glb.extend_from_slice(&json);
+		glb.extend_from_slice(&(binary.len() as u32).to_le_bytes());
+		glb.extend_from_slice(b"BIN\0");
+		glb.extend_from_slice(&binary);
+		glb
+	}
+
+	/// Encodes the tiny image embedded in the textured GLB fixture.
+	fn generated_rgba8_png() -> Vec<u8> {
+		let mut png = Vec::new();
+		{
+			let mut encoder = png::Encoder::new(&mut png, 4, 4);
+			encoder.set_color(png::ColorType::Rgba);
+			encoder.set_depth(png::BitDepth::Eight);
+			let mut writer = encoder.write_header().expect("generated PNG header should encode");
+			writer
+				.write_image_data(&[255, 64, 32, 255].repeat(16))
+				.expect("generated PNG pixels should encode");
+		}
+		png
+	}
+
+	/// Builds a triangle GLB with one material and one PNG stored in its binary chunk.
+	fn generated_textured_triangle_glb() -> Vec<u8> {
+		let (mut document, mut binary) = generated_triangle_gltf();
+		let image = append_fixture_bytes(&mut binary, &generated_rgba8_png());
+		document["buffers"][0]["byteLength"] = binary.len().into();
+		document["bufferViews"]
+			.as_array_mut()
+			.expect("fixture buffer views should be an array")
+			.push(serde_json::json!({ "buffer": 0, "byteOffset": image.0, "byteLength": image.1 }));
+		document["images"] = serde_json::json!([{ "name": "Test Texture", "bufferView": 2, "mimeType": "image/png" }]);
+		document["textures"] = serde_json::json!([{ "source": 0 }]);
+		document["materials"] = serde_json::json!([{
+			"name": "Test Material",
+			"pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } }
+		}]);
+		document["meshes"][0]["primitives"][0]["material"] = 0.into();
+		package_fixture_glb(&document, binary)
 	}
 
 	/// Builds a self-contained GLB that exercises hierarchy remapping, mixed instancing, two influence sets, and pose curves.
@@ -2644,385 +2722,89 @@ mod tests {
 	}
 
 	#[r#async::test]
-	#[ignore = "Test uses data not pushed to the repository"]
-	async fn load_gltf() {
+	async fn bakes_skeleton_from_minimal_glb_bytes() {
+		let (document, binary) = generated_triangle_gltf();
 		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		asset_storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
-		asset_storage_backend.add_file(
-			"Box.bema",
-			r#"{
-			"domain": "World",
-			"type": "Surface",
-			"shaders": {
-				"Compute": "shader.besl"
-			},
-			"variables": []
-		}"#
-			.as_bytes(),
-		);
-		asset_storage_backend.add_file(
-			"Texture.bema",
-			r#"{
-			"parent": "Box.bema",
-			"variables": []
-		}"#
-			.as_bytes(),
-		);
-		asset_storage_backend.add_file(
-			"Box.glb.bead",
-			r#"{"asset": {"Texture": {"asset": "Texture.bema" }}}"#.as_bytes(),
-		);
-
+		asset_storage_backend.add_file("triangle.glb", &package_fixture_glb(&document, binary));
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-
 		let mut asset_manager = AssetManager::new(asset_storage_backend);
-
-		let asset_handler = GLTFAssetHandler::new();
-		asset_manager.add_asset_handler({
-			let mut material_asset_handler = BEMAAssetHandler::new();
-			let shader_generator = RootTestShaderGenerator::new();
-			material_asset_handler.set_shader_generator(shader_generator);
-			material_asset_handler
-		});
-
-		asset_manager.add_asset_handler(asset_handler);
-
-		let url = "Box.glb";
-
-		let mesh: ReferenceModel<MeshModel> = asset_manager
-			.bake_if_not_exists(url, &resource_storage_backend)
-			.await
-			.expect("Failed to parse asset");
-
-		let generated_resources = resource_storage_backend.get_resources();
-
-		assert_eq!(generated_resources.len(), 4);
-
-		assert_eq!(mesh.id().as_ref(), url);
-		assert_eq!(mesh.class(), "Mesh");
-
-		// TODO: ASSERT BINARY DATA
-	}
-
-	#[r#async::test]
-	#[ignore = "Test uses data not pushed to the repository"]
-	async fn load_gltf_with_bin() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		asset_storage_backend.add_file("shader.besl", "main: fn () -> void {}".as_bytes());
-		asset_storage_backend.add_file(
-			"Material.bema",
-			r#"{
-			"domain": "World",
-			"type": "Surface",
-			"shaders": {
-				"Compute": "shader.besl"
-			},
-			"variables": []
-		}"#
-			.as_bytes(),
-		);
-		asset_storage_backend.add_file(
-			"Suzanne.bema",
-			r#"{
-			"parent": "Material.bema",
-			"variables": []
-		}"#
-			.as_bytes(),
-		);
-		asset_storage_backend.add_file(
-			"Suzanne.gltf.bead",
-			r#"{"asset": {"Suzanne": {"asset": "Suzanne.bema" }}}"#.as_bytes(),
-		);
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
-
-		asset_manager.add_asset_handler({
-			let mut material_asset_handler = BEMAAssetHandler::new();
-			let shader_generator = RootTestShaderGenerator::new();
-			material_asset_handler.set_shader_generator(shader_generator);
-			material_asset_handler
-		});
-
-		let asset_handler = GLTFAssetHandler::new();
-
-		asset_manager.add_asset_handler(asset_handler);
-
-		let url = "Suzanne.gltf";
-
-		let mesh: ReferenceModel<MeshModel> = asset_manager
-			.bake_if_not_exists(url, &resource_storage_backend)
-			.await
-			.expect("Failed to parse asset");
-
-		let generated_resources = resource_storage_backend.get_resources();
-
-		assert_eq!(generated_resources.len(), 4);
-
-		let url = ResourceId::new(url);
-
-		assert_eq!(mesh.id(), url);
-		assert_eq!(mesh.class(), "Mesh");
-
-		// TODO: ASSERT BINARY DATA
-
-		// let vertex_count = resource.resource.as_document().unwrap().get_i64("vertex_count").unwrap() as usize;
-
-		// assert_eq!(vertex_count, 11808);
-		let vertex_count = 11808;
-
-		let buffer = resource_storage_backend.get_resource_data_by_name(url).unwrap();
-
-		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const [f32; 3], vertex_count) };
-
-		assert_eq!(vertex_positions.len(), 11808);
-
-		assert_eq!(vertex_positions[0], [0.492188f32, 0.185547f32, -0.720703f32]);
-		assert_eq!(vertex_positions[1], [0.472656f32, 0.243042f32, -0.751221f32]);
-		assert_eq!(vertex_positions[2], [0.463867f32, 0.198242f32, -0.753418f32]);
-
-		let vertex_normals =
-			unsafe { std::slice::from_raw_parts((buffer.as_ptr() as *const [f32; 3]).add(11808), vertex_count) };
-
-		assert_eq!(vertex_normals.len(), 11808);
-
-		assert_eq!(vertex_normals[0], [0.703351f32, -0.228379f32, -0.673156f32]);
-		assert_eq!(vertex_normals[1], [0.818977f32, -0.001884f32, -0.573824f32]);
-		assert_eq!(vertex_normals[2], [0.776439f32, -0.262265f32, -0.573027f32]);
-
-		// let triangle_indices = unsafe { std::slice::from_raw_parts(buffer.as_ptr().add(triangle_index_stream.offset) as *const u16, triangle_index_stream.count as usize) };
-
-		// assert_eq!(triangle_indices[0..3], [0, 1, 2]);
-		// assert_eq!(triangle_indices[3935 * 3..3936 * 3], [11805, 11806, 11807]);
-	}
-
-	#[r#async::test]
-	#[ignore = "Test uses data not pushed to the repository"]
-	async fn load_glb() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		asset_storage_backend.add_file("shaders/pbr.besl", "main: fn () -> void {}".as_bytes());
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend);
-
-		// storage_backend.add_file("PBR.bema", r#"{
-		// 	"domain": "World",
-		// 	"type": "Surface",
-		// 	"shaders": {
-		// 		"Compute": "shader.besl"
-		// 	},
-		// 	"variables": [
-		// 		{
-		// 			"name": "color",
-		// 			"data_type": "Texture2D",
-		// 			"value": "Revolver.glb#Revolver_Base_color"
-		// 		},
-		// 		{
-		// 			"name": "normalll",
-		// 			"data_type": "Texture2D",
-		// 			"value": "Revolver.glb#Revolver_Normal_OpenGL"
-		// 		},
-		// 		{
-		// 			"name": "metallic_roughness",
-		// 			"data_type": "Texture2D",
-		// 			"value": "Revolver.glb#Revolver_Metallic-Revolver_Roughness"
-		// 		}
-		// 	]
-		// }"#.as_bytes());
-		// storage_backend.add_file("Revolver.bema", r#"{
-		// 	"parent": "PBR.bema",
-		// 	"variables": [
-		// 		{
-		// 			"name": "color",
-		// 			"value": "Revolver.glb#Revolver_Base_color"
-		// 		},
-		// 		{
-		// 			"name": "normalll",
-		// 			"value": "Revolver.glb#Revolver_Normal_OpenGL"
-		// 		},
-		// 		{
-		// 			"name": "metallic_roughness",
-		// 			"value": "Revolver.glb#Revolver_Metallic-Revolver_Roughness"
-		// 		}
-		// 	]
-		// }"#.as_bytes());
-		// storage_backend.add_file("Material.001.bema", r#"{
-		// 	"parent": "PBR.bema",
-		// 	"variables": [
-		// 		{
-		// 			"name": "color",
-		// 			"value": "Revolver.glb#Material.001_Base_color"
-		// 		},
-		// 		{
-		// 			"name": "normalll",
-		// 			"value": "Revolver.glb#Material.001_Normal_OpenGL"
-		// 		},
-		// 		{
-		// 			"name": "metallic_roughness",
-		// 			"value": "Revolver.glb#Material.001_Metallic-Material.001_Roughness"
-		// 		}
-		// 	]
-		// }"#.as_bytes());
-		// storage_backend.add_file("RedDotScopeLens.bema", r#"{
-		// 	"parent": "PBR.bema",
-		// 	"variables": [
-		// 		{
-		// 			"name": "color",
-		// 			"value": "Revolver.glb#RedDotScopeLens_Base_color"
-		// 		},
-		// 		{
-		// 			"name": "normalll",
-		// 			"value": "Revolver.glb#RedDotScopeLens_Normal_OpenGL"
-		// 		},
-		// 		{
-		// 			"name": "metallic_roughness",
-		// 			"value": "Revolver.glb#RedDotScopeLens_Metallic-RedDotScopeLens_Roughness"
-		// 		}
-		// 	]
-		// }"#.as_bytes());
-		// storage_backend.add_file("RedDotScopeDot.bema", r#"{
-		// 	"parent": "PBR.bema",
-		// 	"variables": [
-		// 		{
-		// 			"name": "color",
-		// 			"value": "Revolver.glb#RedDotScopeDot_Base_color-RedDotScopeDot_Opacity.png"
-		// 		},
-		// 		{
-		// 			"name": "normalll",
-		// 			"value": "Revolver.glb#RedDotScopeDot_Normal_OpenGL"
-		// 		},
-		// 		{
-		// 			"name": "metallic_roughness",
-		// 			"value": "Revolver.glb#RedDotScopeDot_Metallic.png-RedDotScopeDot_Roughness.png"
-		// 		},
-		// 		{
-		// 			"name": "emissive",
-		// 			"value": "Revolver.glb#RedDotScopeDot_Emissive"
-		// 		}
-		// 	]
-		// }"#.as_bytes());
-		// storage_backend.add_file("FlashLight.bema", r#"{
-		// 	"parent": "PBR.bema",
-		// 	"variables": [
-		// 		{
-		// 			"name": "color",
-		// 			"value": "Revolver.glb#FlashLight_Base_color"
-		// 		},
-		// 		{
-		// 			"name": "normalll",
-		// 			"value": "Revolver.glb#FlashLight_Normal_OpenGL"
-		// 		},
-		// 		{
-		// 			"name": "metallic_roughness",
-		// 			"value": "Revolver.glb#FlashLight_Metallic-FlashLight_Roughness"
-		// 		},
-		// 		{
-		// 			"name": "emissive",
-		// 			"value": "Revolver.glb#FlashLight_Emissive"
-		// 		}
-		// 	]
-		// }"#.as_bytes());
-		// storage_backend.add_file("Revolver.glb.bead", r#"{
-		// 	"asset": {
-		// 		"Revolver": {
-		// 			"asset": "Revolver.bema"
-		// 		},
-		// 		"Material.001": {
-		// 			"asset": "Material.001.bema"
-		// 		},
-		// 		"RedDotScopeLens": {
-		// 			"asset": "RedDotScopeLens.bema"
-		// 		},
-		// 		"RedDotScopeDot": {
-		// 			"asset": "RedDotScopeDot.bema"
-		// 		},
-		// 		"FlashLight": {
-		// 			"asset": "FlashLight.bema"
-		// 		}
-		// 	}
-		// }"#.as_bytes());
-
-		asset_manager.add_asset_handler({
-			let mut material_asset_handler = BEMAAssetHandler::new();
-			let shader_generator = RootTestShaderGenerator::new();
-			material_asset_handler.set_shader_generator(shader_generator);
-			material_asset_handler
-		});
-		asset_manager.add_asset_handler(PNGAssetHandler::new());
 		asset_manager.add_asset_handler(GLTFAssetHandler::new());
-		let _asset_handler = GLTFAssetHandler::new();
 
-		let url = "Revolver.glb";
-
-		let _mesh: ReferenceModel<MeshModel> = asset_manager
-			.bake_if_not_exists(&url, &resource_storage_backend)
+		let skeleton: ReferenceModel<SkeletonModel> = asset_manager
+			.bake_if_not_exists("triangle.glb#skeleton", &resource_storage_backend)
 			.await
-			.unwrap();
+			.expect("generated triangle GLB skeleton should bake");
+		let skeleton =
+			crate::from_slice::<SkeletonModel>(&skeleton.resource).expect("generated GLB skeleton should deserialize");
 
-		let url = ResourceId::new(url);
-
-		let buffer = resource_storage_backend.get_resource_data_by_name(url).unwrap();
-
-		// let vertex_count = resource.resource.as_document().unwrap().get_i64("vertex_count").unwrap() as usize;
-		let vertex_count = 27022;
-
-		assert_eq!(vertex_count, 27022);
-
-		let vertex_positions = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const [f32; 3], vertex_count) };
-
-		assert_eq!(vertex_positions.len(), 27022);
-
-		// assert_eq!(vertex_positions[0], [-0.00322f32, -0.00197f32, -0.00322f32]);
-		// assert_eq!(vertex_positions[1], [-0.00174f32, -0.00197f32, -0.00420f32]);
-		// assert_eq!(vertex_positions[2], [0.00000f32, -0.00197f32, -0.00455f32]);
-
-		assert_eq!(vertex_positions[27019], [-0.112022735, -0.0056253895, 0.013142529]);
-		assert_eq!(vertex_positions[27020], [-0.112022735, -0.0056253895, 0.013142529]);
-		assert_eq!(vertex_positions[27021], [-0.112022735, -0.0056253895, 0.013142529]);
+		assert_eq!(skeleton.nodes.len(), 1);
+		assert_eq!(skeleton.nodes[0].name.as_deref(), Some("Triangle"));
 	}
 
 	#[r#async::test]
-	#[ignore = "Test uses data not pushed to the repository"]
-	async fn load_glb_image() {
+	async fn loads_minimal_gltf_external_bin_from_in_memory_bytes() {
+		let (mut document, binary) = generated_triangle_gltf();
+		document["buffers"][0]["uri"] = "triangle.bin".into();
+		let document = serde_json::to_vec(&document).expect("generated glTF JSON should serialize");
 		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file("models/triangle.bin", &binary);
+		let gltf = gltf::Gltf::from_slice(&document).expect("generated external-buffer glTF should parse");
+
+		let buffers = load_gltf_buffers(
+			&asset_storage_backend,
+			ResourceId::new("models/triangle.gltf"),
+			&gltf,
+			None,
+			None,
+			&std::alloc::Global,
+		)
+		.await
+		.expect("generated external binary should load");
+
+		assert_eq!(buffers.len(), 1);
+		assert_eq!(&buffers[0].0[..binary.len()], binary.as_slice());
+	}
+
+	#[r#async::test]
+	async fn bakes_named_image_fragment_from_minimal_glb() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file("named_image.glb", &generated_textured_triangle_glb());
 		let resource_storage_backend = ResourceTestStorageBackend::new();
-
 		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(GLTFAssetHandler::new());
 
-		let asset_handler = GLTFAssetHandler::new();
-
-		let image_asset_handler = PNGAssetHandler::new();
-
-		asset_manager.add_asset_handler(image_asset_handler);
-
-		let url = ResourceId::new("Revolver.glb#Revolver_Metallic-Revolver_Roughness");
-
-		let (resource, data) = asset_handler
-			.bake(
-				&asset_manager,
-				&resource_storage_backend,
-				asset_manager.get_storage_backend(),
-				url,
-				&std::alloc::Global,
-			)
+		asset_manager
+			.bake("named_image.glb#Test Texture", &resource_storage_backend)
 			.await
-			.expect("Image asset handler did not handle asset");
-
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
-			.expect("Image asset handler did not store asset");
-
-		let _ = resource_storage_backend.get_resource_data_by_name(url).unwrap();
-
-		let generated_resources = resource_storage_backend.get_resources();
-
-		let resource = &generated_resources[0];
+			.expect("named image fragment should bake");
+		let resource = resource_storage_backend
+			.get_resource(ResourceId::new("named_image.glb#Test Texture"))
+			.expect("named GLB image fragment should be stored");
+		let image: Image = crate::from_slice(&resource.resource).expect("named image metadata should deserialize");
 
 		assert_eq!(resource.class, "Image");
+		assert_eq!(image.extent, [4, 4, 1]);
+	}
+
+	#[r#async::test]
+	async fn bakes_image_fragment_from_minimal_glb() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		asset_storage_backend.add_file("image.glb", &generated_textured_triangle_glb());
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(GLTFAssetHandler::new());
+
+		asset_manager
+			.bake("image.glb#images/0_Test_Texture", &resource_storage_backend)
+			.await
+			.expect("generated GLB image fragment should bake");
+		let resource = resource_storage_backend
+			.get_resource(ResourceId::new("image.glb#images/0_Test_Texture"))
+			.expect("baked GLB image fragment should be stored");
+		let image: Image = crate::from_slice(&resource.resource).expect("GLB image metadata should deserialize");
+
+		assert_eq!(resource.class, "Image");
+		assert_eq!(image.extent, [4, 4, 1]);
 	}
 }
 

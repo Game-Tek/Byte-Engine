@@ -7,13 +7,9 @@ pub struct VisibilitySceneManager {
 	pub(crate) views_data_buffer_handle: ghi::DynamicBufferHandle<[ShaderViewData; 8]>,
 	/// Shared base descriptor set used by every visibility pass.
 	pub(crate) descriptor_set: ghi::DescriptorSetHandle,
-	/// Bindless texture binding on the shared base descriptor set.
-	pub(crate) textures_binding: ghi::DescriptorSetBindingHandle,
 	/// Per-instance mesh data buffer holding transforms and material indices for this scene.
 	pub(crate) meshes_data_buffer:
 		ghi::DynamicBufferHandle<[ShaderMesh; crate::rendering::pipelines::visibility::MAX_INSTANCES]>, // Using crate::rendering::pipelines::visibility::MAX_INSTANCES to avoid hardcoding MAX_INSTANCES if not exported
-	/// Unused domain-level material evaluation descriptor set kept while material evaluation remains per sink.
-	pub(crate) material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
 	/// Buffer containing lighting data for this scene.
 	pub(crate) light_data_buffer: ghi::BufferHandle<LightingData>,
 	/// Lights in the scene.
@@ -134,7 +130,6 @@ mod tests {
 }
 
 use ghi::BufferHandle;
-use ghi::DescriptorSetBindingHandle;
 use ghi::DescriptorSetHandle;
 use ghi::DynamicBufferHandle;
 use ghi::Frame as _;

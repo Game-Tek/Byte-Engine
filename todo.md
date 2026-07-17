@@ -9,6 +9,7 @@
 - Make Linux audio pause tolerate devices without ALSA pause support, make Windows format negotiation return an error instead of panicking, and implement or document Windows pause behavior.
 - Rebuild Metal dynamic resources correctly when swapchain frame counts change in `crates/ghi/src/metal/context.rs`.
 - Support Vulkan frame-count reductions and replace unimplemented internal-handle translation with explicit handling or a recoverable error.
+- Migrate the Vulkan and DX12 GHI backends from legacy descriptor templates to retained flat `ResourceSlot` writes and pipeline-derived native layouts.
 - Fix the macOS `NSWindow canBecomeKeyWindow` warning.
 - Define texture usage semantics for resources consumed by multiple unknown render passes.
 - Remove completed audio sources instead of retaining and revisiting them in `crates/byte-engine/src/audio/audio_system.rs`.
@@ -57,8 +58,6 @@
 
 - Batch pending Metal buffer and texture uploads into one transfer command buffer and blit encoder.
 - Avoid cloning Metal texture staging data and pipeline state during upload and descriptor binding.
-- Use actual descriptor access when making Metal argument-buffer resources resident.
-- Precompute Metal descriptor-set stage visibility and merge duplicate descriptor-encoding paths.
 - Simplify Metal frame-chain handle deduplication if frame counts grow beyond the current small fixed count.
 
 # P1 - Bake and asset performance
@@ -97,7 +96,7 @@
 ## Shader behavior
 
 - Add and conditionally emit `perprimitiveEXT` qualifiers.
-- Implement Metal interpolation, push-constant, and argument-buffer mapping without hardcoded backend conventions.
+- Implement Metal interpolation and metadata-driven push-constant mapping without hardcoded backend conventions.
 
 # P2 - BESL architecture
 

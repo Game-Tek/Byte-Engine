@@ -26,15 +26,44 @@ const RESOURCE_PROPERTY_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> =
 	redb::TableDefinition::new("resource-property-index");
 const RESOURCE_MANAGEMENT_CODE_HASH: &str = env!("RESOURCE_MANAGEMENT_CODE_HASH");
 const RESOURCE_MANAGEMENT_SIGNATURE_FILE: &str = ".resource-management-version";
+const RESOURCE_PRODUCER_SIGNATURE_FILE: &str = ".resource-producer-version";
 
+fn read_resource_cache_signature(base_path: &Path, signature_file: &str) -> Option<String> {
+	std::fs::read_to_string(base_path.join(signature_file))
+		.ok()
+		.map(|signature| signature.trim().to_string())
+}
+
+/// Writes one cache-owner signature beside the resource database.
+fn write_resource_cache_signature(base_path: &Path, signature_file: &str, signature: &str) {
+	std::fs::write(base_path.join(signature_file), signature).unwrap_or_else(|error| {
+		panic!(
+			"Failed to write resource cache signature file '{}'. The most likely cause is that the resources directory '{}' is not writable. Error: {}",
+			signature_file,
+			base_path.display(),
+			error
+		)
+	});
+}
+
+/// Removes every persisted value after a cache owner reports an incompatible signature.
+fn reset_resource_cache(base_path: &Path) {
+	std::fs::remove_dir_all(base_path).unwrap_or_else(|error| {
+		panic!(
+			"Failed to delete stale resources directory. The most likely cause is that another process is still using files inside '{}'. Error: {}",
+			base_path.display(),
+			error
+		)
+	});
+
+	std::fs::create_dir_all(base_path).unwrap();
+}
+
+/// Synchronizes the resource-management implementation marker shared by every database opener.
 fn sync_resource_management_signature(base_path: &Path) {
 	std::fs::create_dir_all(base_path).unwrap();
 
-	let signature_path = base_path.join(RESOURCE_MANAGEMENT_SIGNATURE_FILE);
-	let database_path = base_path.join("resources.db");
-	let stored_signature = std::fs::read_to_string(&signature_path)
-		.ok()
-		.map(|signature| signature.trim().to_string());
+	let stored_signature = read_resource_cache_signature(base_path, RESOURCE_MANAGEMENT_SIGNATURE_FILE);
 
 	if stored_signature.as_deref() == Some(RESOURCE_MANAGEMENT_CODE_HASH) {
 		return;
@@ -47,40 +76,46 @@ fn sync_resource_management_signature(base_path: &Path) {
 			stored_signature,
 			RESOURCE_MANAGEMENT_CODE_HASH
 		);
-
-		std::fs::remove_dir_all(base_path).unwrap_or_else(|error| {
-			panic!(
-				"Failed to delete stale resources directory. The most likely cause is that another process is still using files inside '{}'. Error: {}",
-				base_path.display(),
-				error
-			)
-		});
-
-		std::fs::create_dir_all(base_path).unwrap();
-	} else if database_path.exists() {
+		reset_resource_cache(base_path);
+	} else if base_path.join("resources.db").exists() {
 		log::info!(
 			"Deleting resources at '{}' because the resource-management signature marker is missing.",
 			base_path.display()
 		);
-
-		std::fs::remove_dir_all(base_path).unwrap_or_else(|error| {
-			panic!(
-				"Failed to delete stale resources directory. The most likely cause is that another process is still using files inside '{}'. Error: {}",
-				base_path.display(),
-				error
-			)
-		});
-
-		std::fs::create_dir_all(base_path).unwrap();
+		reset_resource_cache(base_path);
 	}
 
-	std::fs::write(&signature_path, RESOURCE_MANAGEMENT_CODE_HASH).unwrap_or_else(|error| {
-		panic!(
-			"Failed to write the resource-management signature file. The most likely cause is that the resources directory '{}' is not writable. Error: {}",
+	write_resource_cache_signature(base_path, RESOURCE_MANAGEMENT_SIGNATURE_FILE, RESOURCE_MANAGEMENT_CODE_HASH);
+}
+
+/// Synchronizes an optional producer marker without changing the marker expected by plain BELD and release openers.
+fn sync_resource_producer_signature(base_path: &Path, expected_signature: &str) {
+	std::fs::create_dir_all(base_path).unwrap();
+
+	let stored_signature = read_resource_cache_signature(base_path, RESOURCE_PRODUCER_SIGNATURE_FILE);
+	if stored_signature.as_deref() == Some(expected_signature) {
+		return;
+	}
+
+	if let Some(stored_signature) = stored_signature {
+		log::info!(
+			"Deleting resources at '{}' because the resource producer signature changed from '{}' to '{}'.",
 			base_path.display(),
-			error
-		)
-	});
+			stored_signature,
+			expected_signature
+		);
+		reset_resource_cache(base_path);
+	} else if base_path.join("resources.db").exists() {
+		log::info!(
+			"Deleting resources at '{}' because the resource producer signature marker is missing.",
+			base_path.display()
+		);
+		reset_resource_cache(base_path);
+	}
+
+	// Producer invalidation removes the shared marker too, so restore both markers before the database is reopened.
+	write_resource_cache_signature(base_path, RESOURCE_MANAGEMENT_SIGNATURE_FILE, RESOURCE_MANAGEMENT_CODE_HASH);
+	write_resource_cache_signature(base_path, RESOURCE_PRODUCER_SIGNATURE_FILE, expected_signature);
 }
 
 fn resource_key_hex(key: [u8; 16]) -> String {
@@ -155,6 +190,19 @@ fn insert_indexes(
 
 impl RedbStorageBackend {
 	pub fn new(base_path: std::path::PathBuf) -> Self {
+		Self::new_with_optional_producer_signature(base_path, None)
+	}
+
+	/// Opens a resource database whose persisted values also depend on an external resource producer.
+	///
+	/// Runtime asset pipelines use this constructor so changing their generated resource ABI invalidates values baked by
+	/// the previous producer implementation.
+	pub fn new_with_producer_signature(base_path: std::path::PathBuf, producer_signature: &str) -> Self {
+		Self::new_with_optional_producer_signature(base_path, Some(producer_signature))
+	}
+
+	/// Opens the database after synchronizing its shared and optional producer-specific cache owners.
+	fn new_with_optional_producer_signature(base_path: std::path::PathBuf, producer_signature: Option<&str>) -> Self {
 		let mut memory_only = false;
 
 		if cfg!(test) {
@@ -165,6 +213,9 @@ impl RedbStorageBackend {
 
 		let db_res = if !memory_only {
 			sync_resource_management_signature(&base_path);
+			if let Some(producer_signature) = producer_signature {
+				sync_resource_producer_signature(&base_path, producer_signature);
+			}
 			redb::Database::create(base_path.join("resources.db"))
 		} else {
 			log::info!("Using memory database instead of file database.");
@@ -508,7 +559,10 @@ impl StorageBackend for RedbStorageBackend {}
 mod tests {
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
-	use super::RedbStorageBackend;
+	use super::{
+		sync_resource_management_signature, sync_resource_producer_signature, RedbStorageBackend,
+		RESOURCE_MANAGEMENT_CODE_HASH, RESOURCE_MANAGEMENT_SIGNATURE_FILE, RESOURCE_PRODUCER_SIGNATURE_FILE,
+	};
 	use crate::{
 		resource::storage_backend::{Query, QueryCursor, QueryError, ReadStorageBackend, WriteStorageBackend},
 		Model, ProcessedAsset,
@@ -576,6 +630,52 @@ mod tests {
 			NEXT_BACKEND_ID.fetch_add(1, Ordering::Relaxed)
 		);
 		RedbStorageBackend::new(std::env::temp_dir().join(unique))
+	}
+
+	#[test]
+	fn producer_signature_invalidates_stale_values_without_plain_marker_ping_pong() {
+		static NEXT_SIGNATURE_TEST_ID: AtomicUsize = AtomicUsize::new(0);
+
+		let resources_path = std::env::temp_dir().join(format!(
+			"byte-engine-resource-signature-tests-{}-{}",
+			std::process::id(),
+			NEXT_SIGNATURE_TEST_ID.fetch_add(1, Ordering::Relaxed)
+		));
+		let retained_resource = resources_path.join("retained-resource");
+
+		// An existing plain cache has no producer marker and must be invalidated once when debug first opens it.
+		sync_resource_management_signature(&resources_path);
+		std::fs::write(resources_path.join("resources.db"), b"old database").unwrap();
+		std::fs::write(&retained_resource, b"persisted resource").unwrap();
+		sync_resource_producer_signature(&resources_path, "producer-a");
+		assert!(!retained_resource.exists());
+
+		std::fs::write(&retained_resource, b"compatible resource").unwrap();
+		// Plain BELD/release opens intentionally ignore the separate producer marker and must not erase a debug cache.
+		sync_resource_management_signature(&resources_path);
+		assert!(retained_resource.exists());
+		assert_eq!(
+			std::fs::read_to_string(resources_path.join(RESOURCE_PRODUCER_SIGNATURE_FILE)).unwrap(),
+			"producer-a"
+		);
+
+		// Reopening with the same producer also retains values.
+		sync_resource_producer_signature(&resources_path, "producer-a");
+		assert!(retained_resource.exists());
+
+		// A different producer can emit a different shader/resource ABI, so none of its predecessor's values are reusable.
+		sync_resource_producer_signature(&resources_path, "producer-b");
+		assert!(!retained_resource.exists());
+		assert_eq!(
+			std::fs::read_to_string(resources_path.join(RESOURCE_MANAGEMENT_SIGNATURE_FILE)).unwrap(),
+			RESOURCE_MANAGEMENT_CODE_HASH
+		);
+		assert_eq!(
+			std::fs::read_to_string(resources_path.join(RESOURCE_PRODUCER_SIGNATURE_FILE)).unwrap(),
+			"producer-b"
+		);
+
+		std::fs::remove_dir_all(resources_path).unwrap();
 	}
 
 	fn store_mock<T: Model>(backend: &RedbStorageBackend, id: &str, resource: T) {

@@ -127,7 +127,7 @@ impl Frame<'_> {
 		self.device.pending_image_syncs.push_back(handle);
 	}
 
-	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
 	}
 
@@ -189,21 +189,6 @@ impl Frame<'_> {
 		};
 
 		self.drawables.push((swapchain_handle, drawable));
-
-		let swapchain_handle = crate::swapchain::SwapchainHandle(swapchain_handle.0);
-
-		if let Some(descriptors) = self.device.resource_to_descriptor.get(&swapchain_handle.into()) {
-			for (binding_handle, ..) in descriptors {
-				self.device.encode_binding(
-					*binding_handle,
-					Descriptor::Swapchain {
-						handle: swapchain_handle,
-					},
-					self.frame_key.sequence_index,
-					0,
-				);
-			}
-		}
 
 		(present_key, extent)
 	}
@@ -314,7 +299,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.pending_image_syncs.push_back(handle);
 	}
 
-	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::Write]) {
+	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
 	}
 
@@ -372,34 +357,14 @@ impl<'a> crate::context::ContextCreate for Frame<'a> {
 		name: Option<&str>,
 		shader_source_type: crate::shader::Sources,
 		stage: crate::ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<crate::ShaderHandle, ()> {
 		self.device
-			.create_shader(name, shader_source_type, stage, shader_binding_descriptors)
+			.create_shader(name, shader_source_type, stage, shader_resource_descriptors)
 	}
 
-	fn create_descriptor_set_template(
-		&mut self,
-		name: Option<&str>,
-		binding_templates: &[crate::DescriptorSetBindingTemplate],
-	) -> crate::DescriptorSetTemplateHandle {
-		self.device.create_descriptor_set_template(name, binding_templates)
-	}
-
-	fn create_descriptor_set(
-		&mut self,
-		name: Option<&str>,
-		descriptor_set_template_handle: &crate::DescriptorSetTemplateHandle,
-	) -> crate::DescriptorSetHandle {
-		self.device.create_descriptor_set(name, descriptor_set_template_handle)
-	}
-
-	fn create_descriptor_binding(
-		&mut self,
-		descriptor_set: crate::DescriptorSetHandle,
-		binding_constructor: crate::BindingConstructor,
-	) -> crate::DescriptorSetBindingHandle {
-		self.device.create_descriptor_binding(descriptor_set, binding_constructor)
+	fn create_descriptor_set(&mut self, name: Option<&str>) -> crate::DescriptorSetHandle {
+		self.device.create_descriptor_set(name)
 	}
 
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> crate::PipelineHandle {

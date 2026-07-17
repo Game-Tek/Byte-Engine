@@ -27,25 +27,31 @@ use crate::rendering::pipelines::visibility::{
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
 
-const GTAO_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
+const GTAO_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1033),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
 );
-const GTAO_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const GTAO_BLUR_DEPTH_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
+const GTAO_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1034),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
 );
-const GTAO_BLUR_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	1,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
+const GTAO_BLUR_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1033),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
 );
-const GTAO_BLUR_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+const GTAO_BLUR_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1034),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
+const GTAO_BLUR_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1035),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
+);
 
 const GTAO_USE_BITFIELD_BINARY_IMPL: bool = false;
 const GTAO_PACKED_WORD_BITS: u32 = 32;
@@ -70,7 +76,6 @@ impl VisibilityPass {
 	pub fn new(
 		context: &mut ghi::implementation::Context,
 		shader_storage: Option<&dyn StorageBackend>,
-		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
@@ -96,9 +101,9 @@ impl VisibilityPass {
 						interface: material::ShaderInterface {
 							workgroup_size: None,
 							bindings: vec![
-								material::Binding::new(0, 0, true, false),
-								material::Binding::new(0, 1, true, false),
-								material::Binding::new(0, 8, true, false),
+								material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+								material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
+								material::Binding::new(8, material::BindingKind::StorageBuffer, 1, true, false),
 							],
 						},
 					},
@@ -131,15 +136,15 @@ impl VisibilityPass {
 				interface: material::ShaderInterface {
 					workgroup_size: None,
 					bindings: vec![
-						material::Binding::new(0, 0, true, false),
-						material::Binding::new(0, 1, true, false),
-						material::Binding::new(0, 2, true, false),
-						material::Binding::new(0, 3, true, false),
-						material::Binding::new(0, 4, true, false),
-						material::Binding::new(0, 5, true, false),
-						material::Binding::new(0, 6, true, false),
-						material::Binding::new(0, 7, true, false),
-						material::Binding::new(0, 8, true, false),
+						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(2, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(3, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(4, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(5, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(6, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(7, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(8, material::BindingKind::StorageBuffer, 1, true, false),
 					],
 				},
 			},
@@ -195,7 +200,6 @@ impl VisibilityPass {
 		];
 
 		let visibility_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[base_descriptor_set_layout],
 			&[ghi::pipelines::PushConstantRange::new(0, 4)],
 			&vertex_layout,
 			&visibility_pass_shaders,
@@ -287,7 +291,6 @@ impl ShadowPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
 		shader_storage: Option<&dyn StorageBackend>,
-		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		shadow_map: ghi::BaseImageHandle,
 	) -> Self {
@@ -311,9 +314,9 @@ impl ShadowPass {
 						interface: material::ShaderInterface {
 							workgroup_size: None,
 							bindings: vec![
-								material::Binding::new(0, 0, true, false),
-								material::Binding::new(0, 1, true, false),
-								material::Binding::new(0, 8, true, false),
+								material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+								material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
+								material::Binding::new(8, material::BindingKind::StorageBuffer, 1, true, false),
 							],
 						},
 					},
@@ -346,15 +349,15 @@ impl ShadowPass {
 				interface: material::ShaderInterface {
 					workgroup_size: None,
 					bindings: vec![
-						material::Binding::new(0, 0, true, false),
-						material::Binding::new(0, 1, true, false),
-						material::Binding::new(0, 2, true, false),
-						material::Binding::new(0, 3, true, false),
-						material::Binding::new(0, 4, true, false),
-						material::Binding::new(0, 5, true, false),
-						material::Binding::new(0, 6, true, false),
-						material::Binding::new(0, 7, true, false),
-						material::Binding::new(0, 8, true, false),
+						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(2, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(3, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(4, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(5, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(6, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(7, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(8, material::BindingKind::StorageBuffer, 1, true, false),
 					],
 				},
 			},
@@ -374,7 +377,6 @@ impl ShadowPass {
 		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_mesh_shader, ghi::ShaderTypes::Mesh));
 
 		let shadow_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[base_descriptor_set_layout],
 			&[ghi::pipelines::PushConstantRange::new(0, 8)],
 			&vertex_layout,
 			&shadow_pass_shaders,
@@ -467,8 +469,6 @@ impl MaterialCountPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
 		shader_storage: Option<&dyn StorageBackend>,
-		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
@@ -484,9 +484,9 @@ impl MaterialCountPass {
 				interface: material::ShaderInterface {
 					workgroup_size: Some((32, 32, 1)),
 					bindings: vec![
-						material::Binding::new(0, 1, true, false),
-						material::Binding::new(1, 0, true, true),
-						material::Binding::new(1, 7, true, false),
+						material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(1033, material::BindingKind::StorageBuffer, 1, true, true),
+						material::Binding::new(1040, material::BindingKind::StorageImage, 1, true, false),
 					],
 				},
 			},
@@ -494,7 +494,6 @@ impl MaterialCountPass {
 		.expect("Failed to create shader");
 
 		let material_count_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[base_descriptor_set_layout, visibility_descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&material_count_shader, ghi::ShaderTypes::Compute),
 		));
@@ -547,12 +546,23 @@ pub struct MaterialOffsetPass {
 	material_offset_pipeline: ghi::PipelineHandle,
 }
 
+/// Builds the retained flat resource contract shared by the production pass and its execution test.
+fn material_offset_shader_interface() -> material::ShaderInterface {
+	material::ShaderInterface {
+		workgroup_size: Some((1, 1, 1)),
+		bindings: vec![
+			material::Binding::new(1033, material::BindingKind::StorageBuffer, 1, true, false),
+			material::Binding::new(1034, material::BindingKind::StorageBuffer, 1, false, true),
+			material::Binding::new(1035, material::BindingKind::StorageBuffer, 1, false, true),
+			material::Binding::new(1036, material::BindingKind::StorageBuffer, 1, false, true),
+		],
+	}
+}
+
 impl MaterialOffsetPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
 		shader_storage: Option<&dyn StorageBackend>,
-		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
@@ -567,21 +577,12 @@ impl MaterialOffsetPass {
 				name: "Material Offset Pass Compute Shader",
 				stage: ResourceShaderTypes::Compute,
 				source: get_material_offset_shader(),
-				interface: material::ShaderInterface {
-					workgroup_size: Some((1, 1, 1)),
-					bindings: vec![
-						material::Binding::new(1, 0, true, false),
-						material::Binding::new(1, 1, false, true),
-						material::Binding::new(1, 2, false, true),
-						material::Binding::new(1, 3, false, true),
-					],
-				},
+				interface: material_offset_shader_interface(),
 			},
 		)
 		.expect("Failed to create shader");
 
 		let material_offset_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[base_descriptor_set_layout, visibility_descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&material_offset_shader, ghi::ShaderTypes::Compute),
 		));
@@ -641,8 +642,6 @@ impl PixelMappingPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
 		shader_storage: Option<&dyn StorageBackend>,
-		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
 		material_xy: ghi::BufferHandle<[(u16, u16); MAX_PIXEL_MAPPING_ENTRIES]>,
@@ -658,10 +657,10 @@ impl PixelMappingPass {
 				interface: material::ShaderInterface {
 					workgroup_size: Some((32, 32, 1)),
 					bindings: vec![
-						material::Binding::new(0, 1, true, false),
-						material::Binding::new(1, 2, true, true),
-						material::Binding::new(1, 7, true, false),
-						material::Binding::new(1, 4, false, true),
+						material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(1035, material::BindingKind::StorageBuffer, 1, true, true),
+						material::Binding::new(1040, material::BindingKind::StorageImage, 1, true, false),
+						material::Binding::new(1037, material::BindingKind::StorageBuffer, 1, false, true),
 					],
 				},
 			},
@@ -669,7 +668,6 @@ impl PixelMappingPass {
 		.expect("Failed to create shader");
 
 		let pixel_mapping_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[base_descriptor_set_layout, visibility_descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&pixel_mapping_shader, ghi::ShaderTypes::Compute),
 		));
@@ -731,22 +729,13 @@ impl GtaoPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
 		shader_storage: Option<&dyn StorageBackend>,
-		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		depth: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
 	) -> Self {
-		let descriptor_set_layout =
-			context.create_descriptor_set_template(Some("GTAO Descriptor Set"), &[GTAO_DEPTH_BINDING, GTAO_OUTPUT_BINDING]);
-		let gtao_descriptor_set = context.create_descriptor_set(Some("GTAO Descriptor Set"), &descriptor_set_layout);
-		let blur_descriptor_set_layout = context.create_descriptor_set_template(
-			Some("GTAO Blur Descriptor Set"),
-			&[GTAO_BLUR_DEPTH_BINDING, GTAO_BLUR_SOURCE_BINDING, GTAO_BLUR_OUTPUT_BINDING],
-		);
-		let blur_descriptor_set_x =
-			context.create_descriptor_set(Some("GTAO Blur X Descriptor Set"), &blur_descriptor_set_layout);
-		let blur_descriptor_set_y =
-			context.create_descriptor_set(Some("GTAO Blur Y Descriptor Set"), &blur_descriptor_set_layout);
+		let gtao_descriptor_set = context.create_descriptor_set(Some("GTAO Descriptor Set"));
+		let blur_descriptor_set_x = context.create_descriptor_set(Some("GTAO Blur X Descriptor Set"));
+		let blur_descriptor_set_y = context.create_descriptor_set(Some("GTAO Blur Y Descriptor Set"));
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
@@ -782,54 +771,61 @@ impl GtaoPass {
 		let gtao_output = packed_ao_map.map(|e| e.into()).unwrap_or(ao_map);
 		let blur_source_x = packed_ao_map.map(|e| e.into()).unwrap_or(ao_map);
 
-		let _ = context.create_descriptor_binding(
-			gtao_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(&GTAO_DEPTH_BINDING, depth, depth_sampler, ghi::Layouts::Read),
-		);
-		let _ = context.create_descriptor_binding(
-			gtao_descriptor_set,
-			ghi::BindingConstructor::image(&GTAO_OUTPUT_BINDING, gtao_output),
-		);
-		let _ = context.create_descriptor_binding(
-			blur_descriptor_set_x,
-			ghi::BindingConstructor::combined_image_sampler(&GTAO_BLUR_DEPTH_BINDING, depth, depth_sampler, ghi::Layouts::Read),
-		);
-		let _ = context.create_descriptor_binding(
-			blur_descriptor_set_x,
-			ghi::BindingConstructor::combined_image_sampler(
-				&GTAO_BLUR_SOURCE_BINDING,
+		context.write(&[
+			ghi::DescriptorWrite::combined_image_sampler(
+				gtao_descriptor_set,
+				GTAO_DEPTH_BINDING.slot(),
+				depth,
+				depth_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::image(
+				gtao_descriptor_set,
+				GTAO_OUTPUT_BINDING.slot(),
+				gtao_output,
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_descriptor_set_x,
+				GTAO_BLUR_DEPTH_BINDING.slot(),
+				depth,
+				depth_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_descriptor_set_x,
+				GTAO_BLUR_SOURCE_BINDING.slot(),
 				blur_source_x,
 				ao_sampler,
 				ghi::Layouts::Read,
 			),
-		);
-		let _ = context.create_descriptor_binding(
-			blur_descriptor_set_x,
-			ghi::BindingConstructor::image(&GTAO_BLUR_OUTPUT_BINDING, temp_ao_map),
-		);
-		let _ = context.create_descriptor_binding(
-			blur_descriptor_set_y,
-			ghi::BindingConstructor::combined_image_sampler(&GTAO_BLUR_DEPTH_BINDING, depth, depth_sampler, ghi::Layouts::Read),
-		);
-		let _ = context.create_descriptor_binding(
-			blur_descriptor_set_y,
-			ghi::BindingConstructor::combined_image_sampler(
-				&GTAO_BLUR_SOURCE_BINDING,
+			ghi::DescriptorWrite::image(
+				blur_descriptor_set_x,
+				GTAO_BLUR_OUTPUT_BINDING.slot(),
+				temp_ao_map,
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_descriptor_set_y,
+				GTAO_BLUR_DEPTH_BINDING.slot(),
+				depth,
+				depth_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_descriptor_set_y,
+				GTAO_BLUR_SOURCE_BINDING.slot(),
 				temp_ao_map,
 				ao_sampler,
 				ghi::Layouts::Read,
 			),
-		);
-		let _ = context.create_descriptor_binding(
-			blur_descriptor_set_y,
-			ghi::BindingConstructor::image(&GTAO_BLUR_OUTPUT_BINDING, ao_map),
-		);
-
-		let gtao_shader_bindings = [
-			VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			GTAO_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-			GTAO_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-		];
+			ghi::DescriptorWrite::image(
+				blur_descriptor_set_y,
+				GTAO_BLUR_OUTPUT_BINDING.slot(),
+				ao_map,
+				ghi::Layouts::General,
+			),
+		]);
 		let gtao_shader_data = if GTAO_USE_BITFIELD_BINARY_IMPL {
 			get_gtao_bitfield_shader()
 		} else {
@@ -846,9 +842,17 @@ impl GtaoPass {
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![
-						material::Binding::new(0, 0, true, false),
-						material::Binding::new(1, 0, true, false),
-						material::Binding::new(1, 1, false, true),
+						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(
+							1033,
+							material::BindingKind::CombinedImageSampler {
+								view: material::TextureView::Texture2D,
+							},
+							1,
+							true,
+							false,
+						),
+						material::Binding::new(1034, material::BindingKind::StorageImage, 1, false, true),
 					],
 				},
 			},
@@ -856,17 +860,10 @@ impl GtaoPass {
 		.expect("Failed to create shader");
 
 		let gtao_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[base_descriptor_set_layout, descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&gtao_shader, ghi::ShaderTypes::Compute),
 		));
 
-		let blur_shader_bindings = [
-			VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			GTAO_BLUR_DEPTH_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-			GTAO_BLUR_SOURCE_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::READ),
-			GTAO_BLUR_OUTPUT_BINDING.into_shader_binding_descriptor(1, ghi::AccessPolicies::WRITE),
-		];
 		let blur_x_shader_data = if GTAO_USE_BITFIELD_BINARY_IMPL {
 			get_gtao_bitfield_blur_x_shader()
 		} else {
@@ -883,10 +880,26 @@ impl GtaoPass {
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![
-						material::Binding::new(0, 0, true, false),
-						material::Binding::new(1, 0, true, false),
-						material::Binding::new(1, 1, true, false),
-						material::Binding::new(1, 2, false, true),
+						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(
+							1033,
+							material::BindingKind::CombinedImageSampler {
+								view: material::TextureView::Texture2D,
+							},
+							1,
+							true,
+							false,
+						),
+						material::Binding::new(
+							1034,
+							material::BindingKind::CombinedImageSampler {
+								view: material::TextureView::Texture2D,
+							},
+							1,
+							true,
+							false,
+						),
+						material::Binding::new(1035, material::BindingKind::StorageImage, 1, false, true),
 					],
 				},
 			},
@@ -904,10 +917,26 @@ impl GtaoPass {
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![
-						material::Binding::new(0, 0, true, false),
-						material::Binding::new(1, 0, true, false),
-						material::Binding::new(1, 1, true, false),
-						material::Binding::new(1, 2, false, true),
+						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(
+							1033,
+							material::BindingKind::CombinedImageSampler {
+								view: material::TextureView::Texture2D,
+							},
+							1,
+							true,
+							false,
+						),
+						material::Binding::new(
+							1034,
+							material::BindingKind::CombinedImageSampler {
+								view: material::TextureView::Texture2D,
+							},
+							1,
+							true,
+							false,
+						),
+						material::Binding::new(1035, material::BindingKind::StorageImage, 1, false, true),
 					],
 				},
 			},
@@ -915,14 +944,12 @@ impl GtaoPass {
 		.expect("Failed to create shader");
 
 		let blur_pipeline_x = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[base_descriptor_set_layout, blur_descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&blur_x_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
 				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(1.0f32, 0.0f32)),
 			]),
 		));
 		let blur_pipeline_y = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[base_descriptor_set_layout, blur_descriptor_set_layout],
 			&[],
 			ghi::ShaderParameter::new(&blur_y_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
 				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(0.0f32, 1.0f32)),
@@ -1109,8 +1136,6 @@ impl VisibilityPipelineRenderPass {
 	pub fn new(
 		context: &mut ghi::implementation::Context,
 		shader_storage: Option<&dyn StorageBackend>,
-		base_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-		visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
@@ -1126,17 +1151,10 @@ impl VisibilityPipelineRenderPass {
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
 	) -> Self {
-		let shadow_pass = ShadowPass::new(
-			context,
-			shader_storage,
-			base_descriptor_set_layout,
-			base_descriptor_set,
-			shadow_map,
-		);
+		let shadow_pass = ShadowPass::new(context, shader_storage, base_descriptor_set, shadow_map);
 		let visibility_pass = VisibilityPass::new(
 			context,
 			shader_storage,
-			base_descriptor_set_layout,
 			base_descriptor_set,
 			primitive_index,
 			instance_id,
@@ -1145,8 +1163,6 @@ impl VisibilityPipelineRenderPass {
 		let material_count_pass = MaterialCountPass::new(
 			context,
 			shader_storage,
-			base_descriptor_set_layout,
-			visibility_descriptor_set_layout,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_count_buffer,
@@ -1154,8 +1170,6 @@ impl VisibilityPipelineRenderPass {
 		let material_offset_pass = MaterialOffsetPass::new(
 			context,
 			shader_storage,
-			base_descriptor_set_layout,
-			visibility_descriptor_set_layout,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_offset_buffer,
@@ -1165,20 +1179,11 @@ impl VisibilityPipelineRenderPass {
 		let pixel_mapping_pass = PixelMappingPass::new(
 			context,
 			shader_storage,
-			base_descriptor_set_layout,
-			visibility_descriptor_set_layout,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_xy,
 		);
-		let gtao_pass = GtaoPass::new(
-			context,
-			shader_storage,
-			base_descriptor_set_layout,
-			base_descriptor_set,
-			depth,
-			ao_map,
-		);
+		let gtao_pass = GtaoPass::new(context, shader_storage, base_descriptor_set, depth, ao_map);
 
 		let material_evaluation_dispatches = material_offset_pass.material_evaluation_dispatches;
 
@@ -1281,35 +1286,109 @@ mod tests {
 		)
 	}
 
+	/// Executes the production offset shader through retained flat Metal bindings and verifies its indirect tuple.
 	#[test]
-	fn material_offset_shader_compiles() {
-		let Some(mut context) = create_test_context() else {
-			return;
+	fn material_offset_shader_writes_indirect_dispatch_on_metal() {
+		use ghi::{
+			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
+			context::{Context as _, ContextCreate as _},
+			device::Device as _,
+			queue::{FrameRequest, Queue as _, QueueExecution as _},
 		};
 
-		let shader_handle = crate::rendering::shader_store::create_shader(
+		if !ghi::implementation::USES_METAL {
+			return;
+		}
+
+		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
+			.expect("Expected a Metal instance for the material offset execution test");
+		let mut queue_handle = None;
+		let mut context = instance
+			.create_device(
+				ghi::device::Features::new(),
+				&mut [(
+					ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE),
+					&mut queue_handle,
+				)],
+			)
+			.expect("Expected a Metal device for the material offset execution test")
+			.create_context()
+			.expect("Expected a Metal context for the material offset execution test");
+		let queue_handle = queue_handle.expect(
+			"Missing Metal compute queue. The most likely cause is that device selection did not return the requested queue.",
+		);
+
+		let shader = crate::rendering::shader_store::create_shader(
 			&mut context,
 			None,
 			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/tests/visibility/material-offset",
-				name: "Material Offset Pass Compute Shader",
+				id: "byte-engine/tests/visibility/material-offset-execution",
+				name: "Material Offset Execution Compute Shader",
 				stage: ResourceShaderTypes::Compute,
 				source: super::get_material_offset_shader(),
-				interface: material::ShaderInterface {
-					workgroup_size: Some((1, 1, 1)),
-					bindings: vec![
-						material::Binding::new(1, 0, true, false),
-						material::Binding::new(1, 1, false, true),
-						material::Binding::new(1, 2, false, true),
-						material::Binding::new(1, 3, false, true),
-					],
-				},
+				interface: super::material_offset_shader_interface(),
+			},
+		)
+		.expect("Expected the material offset execution shader to compile for Metal");
+		let pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[],
+			ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
+		));
+
+		let counts = context.build_buffer::<[u32; super::MAX_MATERIALS]>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("Material Offset Test Counts")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let counts_slice = context.get_mut_buffer_slice(counts);
+		counts_slice.fill(0);
+		counts_slice[0] = 1;
+		let host_visible_output = || {
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.device_accesses(ghi::DeviceAccesses::CpuWrite | ghi::DeviceAccesses::GpuWrite)
+		};
+		let offsets =
+			context.build_buffer::<[u32; super::MAX_MATERIALS]>(host_visible_output().name("Material Offset Test Offsets"));
+		let scratch =
+			context.build_buffer::<[u32; super::MAX_MATERIALS]>(host_visible_output().name("Material Offset Test Scratch"));
+		let dispatches = context
+			.build_buffer::<[[u32; 4]; super::MAX_MATERIALS]>(host_visible_output().name("Material Offset Test Dispatches"));
+
+		let descriptor_set = context.create_descriptor_set(Some("Material Offset Execution Set"));
+		context.write(&[
+			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(1033), counts.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(1034), offsets.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(1035), scratch.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(1036), dispatches.into()),
+		]);
+
+		let command_buffer = context
+			.queue(queue_handle)
+			.create_command_buffer(Some("Material Offset Execution Test"));
+		let signal = context.create_synchronizer(Some("Material Offset Execution Test Signal"), true);
+		context.queue(queue_handle).execute(
+			Some(FrameRequest {
+				index: 0,
+				synchronizer: signal,
+			}),
+			&[],
+			signal,
+			|execution| {
+				execution.record(command_buffer, |recording| {
+					recording
+						.bind_compute_pipeline(pipeline)
+						.bind_descriptor_sets(&[descriptor_set])
+						.dispatch(ghi::DispatchExtent::new(utils::Extent::line(1), utils::Extent::line(1)));
+				});
+				[]
 			},
 		);
+		context.wait();
 
-		assert!(
-			shader_handle.is_ok(),
-			"Expected the material offset BESL shader descriptor to compile for the active backend"
+		assert_eq!(
+			context.get_buffer_slice(dispatches)[0],
+			[1, 1, 1, 0],
+			"Material offset dispatch stayed empty. The most likely cause is that generated MSL and retained flat resource IDs disagree.",
 		);
 	}
 
@@ -1335,9 +1414,17 @@ mod tests {
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![
-						material::Binding::new(0, 0, true, false),
-						material::Binding::new(1, 0, true, false),
-						material::Binding::new(1, 1, false, true),
+						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(
+							1033,
+							material::BindingKind::CombinedImageSampler {
+								view: material::TextureView::Texture2D,
+							},
+							1,
+							true,
+							false,
+						),
+						material::Binding::new(1034, material::BindingKind::StorageImage, 1, false, true),
 					],
 				},
 			},
@@ -1371,10 +1458,26 @@ mod tests {
 				interface: material::ShaderInterface {
 					workgroup_size: Some((8, 8, 1)),
 					bindings: vec![
-						material::Binding::new(0, 0, true, false),
-						material::Binding::new(1, 0, true, false),
-						material::Binding::new(1, 1, true, false),
-						material::Binding::new(1, 2, false, true),
+						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(
+							1033,
+							material::BindingKind::CombinedImageSampler {
+								view: material::TextureView::Texture2D,
+							},
+							1,
+							true,
+							false,
+						),
+						material::Binding::new(
+							1034,
+							material::BindingKind::CombinedImageSampler {
+								view: material::TextureView::Texture2D,
+							},
+							1,
+							true,
+							false,
+						),
+						material::Binding::new(1035, material::BindingKind::StorageImage, 1, false, true),
 					],
 				},
 			},

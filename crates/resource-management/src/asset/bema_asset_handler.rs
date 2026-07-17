@@ -362,7 +362,7 @@ pub(crate) fn compile_shader_program(
 		bindings: shader_program
 			.bindings()
 			.iter()
-			.map(|b| Binding::new(b.set, b.binding, b.read, b.write))
+			.map(|b| Binding::new(b.slot, b.kind, b.count, b.read, b.write))
 			.collect(),
 	};
 
@@ -533,7 +533,13 @@ pub mod tests {
 					stage,
 					interface: crate::resources::material::ShaderInterface {
 						workgroup_size: Some((128, 0, 0)),
-						bindings: vec![crate::resources::material::Binding::new(0, 0, true, false)],
+						bindings: vec![crate::resources::material::Binding::new(
+							0,
+							crate::resources::material::BindingKind::StorageBuffer,
+							1,
+							true,
+							false,
+						)],
 					},
 					artifact: crate::resources::material::ShaderArtifact::Msl {
 						entry_point: "test_main".to_string(),
@@ -591,7 +597,6 @@ pub mod tests {
 			let binding = besl::parser::Node::binding(
 				"materials",
 				besl::parser::Node::buffer("Materials", vec![besl::parser::Node::member("materials", "Material[16]")]),
-				0,
 				0,
 				true,
 				false,

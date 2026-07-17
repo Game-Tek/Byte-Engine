@@ -1,6 +1,6 @@
 //! Error types and diagnostics for VM compilation and execution.
 
-use super::DescriptorSlot;
+use super::ResourceSlot;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum VmError {
@@ -25,15 +25,15 @@ pub enum VmError {
 		message: String,
 	},
 	UnsupportedDescriptor {
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		message: String,
 	},
 	DescriptorAccessDenied {
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		access: &'static str,
 	},
 	DescriptorTypeMismatch {
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		expected: &'static str,
 		found: &'static str,
 	},
@@ -41,7 +41,7 @@ pub enum VmError {
 		member: String,
 	},
 	UnboundDescriptor {
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 	},
 	MissingPushConstant,
 	MissingMeshOutputs,
@@ -163,23 +163,20 @@ impl std::fmt::Display for VmError {
 			),
 			VmError::UnsupportedDescriptor { slot, message } => write!(
 				f,
-				"Unsupported descriptor at set {} binding {}. {}. The most likely cause is a descriptor-kind mismatch, incompatible reused slot, or unsupported resource access.",
-				slot.set(),
-				slot.binding(),
+				"Unsupported resource at slot {}. {}. The most likely cause is a resource-kind mismatch, incompatible reused slot, or unsupported resource access.",
+				slot.slot(),
 				message
 			),
 			VmError::DescriptorAccessDenied { slot, access } => write!(
 				f,
-				"Descriptor access denied at set {} binding {}. The most likely cause is that the BESL binding was not declared with `{}` access.",
-				slot.set(),
-				slot.binding(),
+				"Resource access denied at slot {}. The most likely cause is that the BESL resource was not declared with `{}` access.",
+				slot.slot(),
 				access
 			),
 			VmError::DescriptorTypeMismatch { slot, expected, found } => write!(
 				f,
-				"Descriptor type mismatch at set {} binding {}: expected `{}` but found `{}`. The most likely cause is that the host bound a different resource kind than the compiled BESL program requires.",
-				slot.set(),
-				slot.binding(),
+				"Resource type mismatch at slot {}: expected `{}` but found `{}`. The most likely cause is that the host bound a different resource kind than the compiled BESL program requires.",
+				slot.slot(),
 				expected,
 				found
 			),
@@ -190,9 +187,8 @@ impl std::fmt::Display for VmError {
 			),
 			VmError::UnboundDescriptor { slot } => write!(
 				f,
-				"Unbound descriptor at set {} binding {}. The most likely cause is that no resource was bound into the descriptor slot before execution.",
-				slot.set(),
-				slot.binding()
+				"Unbound resource at slot {}. The most likely cause is that no resource was bound into the slot before execution.",
+				slot.slot()
 			),
 			VmError::MissingPushConstant => write!(
 				f,

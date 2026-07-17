@@ -16,7 +16,6 @@ pub struct Generator {
 	current_stage_interpolates_inputs: bool,
 	current_stage_interpolates_outputs: bool,
 	current_compute_local_size: Option<utils::Extent>,
-	current_push_constant_space: u32,
 }
 
 /// The `HlslBufferBindingSource` struct preserves the binding metadata needed while flattening BESL buffers for HLSL.
@@ -38,7 +37,6 @@ impl Generator {
 			current_stage_interpolates_inputs: false,
 			current_stage_interpolates_outputs: false,
 			current_compute_local_size: None,
-			current_push_constant_space: 0,
 		}
 	}
 
@@ -206,17 +204,6 @@ impl Generator {
 	fn hlsl_array_type(source: &str) -> Option<(&str, &str)> {
 		let (element_type, count) = source.split_once('[')?;
 		Some((element_type, count.trim_end_matches(']')))
-	}
-
-	fn push_constant_space(order: &[besl::NodeReference]) -> u32 {
-		order
-			.iter()
-			.filter_map(|node| match node.borrow().node() {
-				besl::Nodes::Binding { set, .. } => Some(*set),
-				_ => None,
-			})
-			.max()
-			.map_or(0, |set| set + 1)
 	}
 
 	fn atomic_add_arguments(expression: &besl::NodeReference) -> Option<Vec<besl::NodeReference>> {
@@ -554,7 +541,6 @@ impl Generator {
 		};
 		let mut string = String::with_capacity(2048);
 		let order = ordered_shader_nodes(main_function_node, "HLSL");
-		self.current_push_constant_space = Self::push_constant_space(&order);
 
 		self.generate_hlsl_header_block(&mut string, shader_compilation_settings);
 
@@ -643,7 +629,7 @@ impl Generator {
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
 			besl::Nodes::PushConstant { members } => {
-				// DX12 root constants are exposed to HLSL as a constant buffer in the space after descriptor sets.
+				// Root constants use the constant-buffer namespace, while flat resources use t/u/s registers in space 0.
 				if self.minified {
 					string.push_str("struct PushConstant{");
 				} else {
@@ -658,14 +644,10 @@ impl Generator {
 				}
 
 				if self.minified {
-					string.push_str("};ConstantBuffer<PushConstant> push_constant : register(b0, space");
-					string.push_str(&self.current_push_constant_space.to_string());
-					string.push_str(");");
+					string.push_str("};ConstantBuffer<PushConstant> push_constant : register(b0, space0);");
 				} else {
 					string.push_str("};\n");
-					string.push_str("ConstantBuffer<PushConstant> push_constant : register(b0, space");
-					string.push_str(&self.current_push_constant_space.to_string());
-					string.push_str(");\n");
+					string.push_str("ConstantBuffer<PushConstant> push_constant : register(b0, space0);\n");
 				}
 			}
 			besl::Nodes::Specialization { name, r#type } => {
@@ -786,16 +768,15 @@ impl Generator {
 			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
 			besl::Nodes::Binding {
 				name,
-				set,
-				binding,
+				slot,
 				read,
 				write,
 				r#type,
 				count,
 				..
 			} => {
-				// HLSL uses the binding as the register index and the descriptor set as the register space.
-				let register_index = *binding;
+				// HLSL preserves the flat slot in the matching register namespace and always uses space 0.
+				let register_index = *slot;
 				let read_only = *read && !*write;
 				let buffer_type = if read_only { "StructuredBuffer" } else { "RWStructuredBuffer" };
 				let register_type = if read_only { "t" } else { "u" };
@@ -813,7 +794,7 @@ impl Generator {
 								string.push_str(count.to_string().as_str());
 								string.push(']');
 							}
-							string.push_str(&format!(" : register({}{}, space{});", register_type, register_index, set));
+							string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
 							if !self.minified {
 								string.push('\n');
 							}
@@ -844,7 +825,7 @@ impl Generator {
 							string.push(']');
 						}
 
-						string.push_str(&format!(" : register({}{}, space{});", register_type, register_index, set));
+						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
 						if !self.minified {
 							string.push('\n');
 						}
@@ -866,7 +847,7 @@ impl Generator {
 							string.push(']');
 						}
 
-						string.push_str(&format!(" : register(u{}, space{});", register_index, set));
+						string.push_str(&format!(" : register(u{register_index}, space0);"));
 						if !self.minified {
 							string.push('\n');
 						}
@@ -893,7 +874,7 @@ impl Generator {
 							string.push(']');
 						}
 
-						string.push_str(&format!(" : register(t{}, space{});", register_index, set));
+						string.push_str(&format!(" : register(t{register_index}, space0);"));
 						if !self.minified {
 							string.push('\n');
 						}
@@ -902,7 +883,7 @@ impl Generator {
 						string.push_str("SamplerState ");
 						string.push_str(name);
 						string.push_str("_sampler");
-						string.push_str(&format!(" : register(s{}, space{});", register_index, set));
+						string.push_str(&format!(" : register(s{register_index}, space0);"));
 						if !self.minified {
 							string.push('\n');
 						}
@@ -1197,8 +1178,8 @@ mod tests {
 		assert_string_contains!(shader, "RWTexture2D<float4> image : register(u1, space0);");
 
 		// Check for Texture2D and SamplerState (combined image sampler)
-		assert_string_contains!(shader, "Texture2D<float4> texture : register(t0, space1);");
-		assert_string_contains!(shader, "SamplerState texture_sampler : register(s0, space1);");
+		assert_string_contains!(shader, "Texture2D<float4> texture : register(t2, space0);");
+		assert_string_contains!(shader, "SamplerState texture_sampler : register(s2, space0);");
 
 		// Check main function
 		assert_string_contains!(shader, "void besl_main(){buff;image;texture;}");
@@ -1235,7 +1216,6 @@ mod tests {
 		root.add(vec![besl::parser::Node::binding(
 			"shadow_map",
 			besl::parser::Node::combined_array_image_sampler(),
-			2,
 			11,
 			true,
 			false,
@@ -1250,7 +1230,7 @@ mod tests {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected array texture binding shader source to generate HLSL");
 
-		assert_string_contains!(shader, "Texture2DArray<float4> shadow_map : register(t11, space2);");
+		assert_string_contains!(shader, "Texture2DArray<float4> shadow_map : register(t11, space0);");
 		assert_string_does_not_contain!(shader, "Texture2DArray<float4><float4>");
 	}
 
@@ -1344,7 +1324,6 @@ mod tests {
 				"texture",
 				besl::BindingTypes::CombinedImageSampler { format: String::new() },
 				0,
-				0,
 				true,
 				false,
 			)
@@ -1387,7 +1366,6 @@ mod tests {
 					format: "r32ui".to_string(),
 				},
 				0,
-				0,
 				true,
 				true,
 			)
@@ -1395,7 +1373,6 @@ mod tests {
 			besl::Node::binding(
 				"color_image",
 				besl::BindingTypes::Image { format: String::new() },
-				0,
 				1,
 				true,
 				false,
@@ -1491,7 +1468,6 @@ mod tests {
 					members: vec![besl::Node::array("items", item, 8)],
 				},
 				0,
-				0,
 				true,
 				false,
 			)
@@ -1501,7 +1477,6 @@ mod tests {
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("count", atomic_u32.clone(), 8)],
 				},
-				0,
 				1,
 				true,
 				true,
@@ -1510,7 +1485,6 @@ mod tests {
 			besl::Node::binding(
 				"output_image",
 				besl::BindingTypes::Image { format: String::new() },
-				0,
 				2,
 				true,
 				true,
@@ -1616,7 +1590,6 @@ mod tests {
 					members: vec![besl::Node::array("meshes", u32_type.clone(), 2)],
 				},
 				0,
-				0,
 				true,
 				false,
 			)
@@ -1626,7 +1599,6 @@ mod tests {
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("count", u32_type, 2)],
 				},
-				0,
 				1,
 				false,
 				true,
@@ -1670,7 +1642,6 @@ mod tests {
 					members: vec![besl::Node::array("vertex_indices", u16_type, 8)],
 				},
 				0,
-				0,
 				true,
 				false,
 			)
@@ -1680,7 +1651,6 @@ mod tests {
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("primitive_indices", u8_type, 8)],
 				},
-				0,
 				1,
 				true,
 				false,
@@ -1724,7 +1694,6 @@ mod tests {
 					members: vec![besl::Node::array("items", item, 8)],
 				},
 				0,
-				0,
 				true,
 				false,
 			)
@@ -1734,7 +1703,6 @@ mod tests {
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("count", atomic_u32.clone(), 8)],
 				},
-				0,
 				1,
 				true,
 				true,
@@ -1745,7 +1713,6 @@ mod tests {
 				besl::BindingTypes::Image {
 					format: "r32ui".to_string(),
 				},
-				0,
 				2,
 				true,
 				false,
@@ -1829,7 +1796,6 @@ mod tests {
 				"depth_texture",
 				besl::BindingTypes::CombinedImageSampler { format: String::new() },
 				0,
-				0,
 				true,
 				false,
 			)
@@ -1842,7 +1808,6 @@ mod tests {
 						besl::Node::member("sun_direction", vec4f.clone()).into(),
 					],
 				},
-				0,
 				2,
 				true,
 				false,
@@ -1937,7 +1902,7 @@ mod tests {
 	}
 
 	#[test]
-	fn push_constant_space_follows_descriptor_sets() {
+	fn push_constants_and_flat_resources_use_space_zero() {
 		let script = r#"
 		main: fn () -> void {
 			push_constant;
@@ -1954,7 +1919,6 @@ mod tests {
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("items", u32_type, 4)],
 				},
-				2,
 				7,
 				true,
 				false,
@@ -1968,8 +1932,8 @@ mod tests {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected push-constant shader source to generate HLSL");
 
-		assert_string_contains!(shader, "ConstantBuffer<PushConstant> push_constant : register(b0, space3);");
-		assert_string_contains!(shader, "StructuredBuffer<uint32_t> values : register(t7, space2);");
+		assert_string_contains!(shader, "ConstantBuffer<PushConstant> push_constant : register(b0, space0);");
+		assert_string_contains!(shader, "StructuredBuffer<uint32_t> values : register(t7, space0);");
 		assert_string_does_not_contain!(shader, "vk::push_constant");
 	}
 

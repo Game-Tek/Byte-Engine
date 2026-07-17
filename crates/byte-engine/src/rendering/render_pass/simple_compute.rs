@@ -1,4 +1,4 @@
-//! Reusable construction for single-set BESL compute render passes.
+//! Reusable construction for flat-resource BESL compute render passes.
 
 use std::sync::Arc;
 
@@ -16,6 +16,7 @@ use resource_management::{
 	},
 	types::ShaderTypes as ResourceShaderTypes,
 };
+use smallvec::SmallVec;
 use utils::Extent;
 
 use super::{allocate_render_command, RenderPass, RenderPassBuilder, RenderPassReturn};
@@ -68,7 +69,7 @@ impl<'a> Descriptor<'a> {
 	}
 }
 
-/// The `Program` struct provides the set-zero binding vocabulary shared by simple BESL compute passes.
+/// The `Program` struct provides the flat resource vocabulary shared by simple BESL compute passes.
 pub struct Program(besl::Node);
 
 impl Default for Program {
@@ -87,9 +88,9 @@ impl Program {
 		self.0.get_child(name)
 	}
 
-	/// Adds one set-zero resource declaration to the program.
+	/// Adds one flat resource declaration to the program.
 	pub fn binding(&mut self, name: &str, kind: besl::BindingTypes, slot: u32, read: bool, write: bool) {
-		self.0.add_child(besl::Node::binding(name, kind, 0, slot, read, write).into());
+		self.0.add_child(besl::Node::binding(name, kind, slot, read, write).into());
 	}
 
 	/// Compiles the supplied body and returns its main entry point.
@@ -104,11 +105,10 @@ impl Program {
 	}
 }
 
-/// The `Pipeline` struct provides reusable single-set compute state to sink-specific descriptor bindings.
+/// The `Pipeline` struct provides reusable compute state to sink-specific retained resource sets.
 #[derive(Clone)]
 pub struct Pipeline {
 	handle: ghi::PipelineHandle,
-	descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 	label: &'static str,
 	workgroup: Extent,
 	bindings: Arc<[BindingUsage]>,
@@ -146,16 +146,13 @@ impl Pipeline {
 		} = descriptor;
 		let bindings = ProgramEvaluation::from_main(&main_node)?.into_bindings();
 		validate_binding_schema(&bindings)?;
-		let (descriptor_set_template, binding_schema) = if let Some(shared_layout) = shared_layout {
+		let binding_schema = if let Some(shared_layout) = shared_layout {
 			validate_shared_schema(&shared_layout.bindings, &bindings)?;
-			(shared_layout.descriptor_set_template, shared_layout.bindings.clone())
+			shared_layout.bindings.clone()
 		} else {
-			let templates = bindings.iter().map(descriptor_template).collect::<Vec<_>>();
-			let template = render_pass_builder
-				.context()
-				.create_descriptor_set_template(Some(layout_name), &templates);
-			(template, bindings.into())
+			bindings.into()
 		};
+		let _ = layout_name;
 		let shader = render_pass_builder.create_shader(&ShaderSourceDescriptor {
 			id: shader_id,
 			name: shader_name,
@@ -168,21 +165,19 @@ impl Pipeline {
 				workgroup_size: Some(normalized_workgroup(workgroup)),
 				bindings: binding_schema
 					.iter()
-					.map(|usage| material::Binding::new(usage.set, usage.binding, usage.read, usage.write))
+					.map(|usage| material::Binding::new(usage.slot, usage.kind, usage.count, usage.read, usage.write))
 					.collect(),
 			},
 		})?;
 		let handle = render_pass_builder
 			.context()
 			.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-				&[descriptor_set_template],
 				&[],
 				ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
 			));
 
 		Ok(Self {
 			handle,
-			descriptor_set_template,
 			label,
 			workgroup,
 			bindings: binding_schema,
@@ -199,15 +194,15 @@ impl Pipeline {
 		validate_resources(&self.bindings, resources)?;
 
 		let context = render_pass_builder.context();
-		let descriptor_set = context.create_descriptor_set(Some(descriptor_set_name), &self.descriptor_set_template);
+		let descriptor_set = context.create_descriptor_set(Some(descriptor_set_name));
+		let mut writes = SmallVec::<[ghi::DescriptorWrite; 8]>::with_capacity(self.bindings.len());
 		for binding in self.bindings.iter() {
 			let resource = resources.iter().find(|resource| resource.name() == binding.name).expect(
 				"Validated compute resource disappeared. The most likely cause is inconsistent named-resource validation.",
 			);
-			let template = descriptor_template(binding);
-			let constructor = resource.constructor(&template);
-			let _ = context.create_descriptor_binding(descriptor_set, constructor);
+			writes.push(resource.descriptor_write(descriptor_set, ghi::ResourceSlot::new(binding.slot)));
 		}
+		context.write(&writes);
 
 		Ok(Pass {
 			pipeline: self.handle,
@@ -268,20 +263,20 @@ impl<'a> Resource<'a> {
 	fn matches(&self, binding: BindingKind) -> bool {
 		matches!(
 			(binding, self),
-			(BindingKind::Buffer, Self::Buffer(..) | Self::PlannedBuffer(..))
-				| (BindingKind::Image, Self::Image(..) | Self::Swapchain(..))
+			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
+				| (BindingKind::StorageImage, Self::Image(..) | Self::Swapchain(..))
 				| (BindingKind::CombinedImageSampler { .. }, Self::CombinedImageSampler(..))
 		)
 	}
 
-	fn constructor<'b>(&self, template: &'b ghi::DescriptorSetBindingTemplate) -> ghi::BindingConstructor<'b> {
+	fn descriptor_write(&self, set: ghi::DescriptorSetHandle, slot: ghi::ResourceSlot) -> ghi::DescriptorWrite {
 		match *self {
-			Self::Buffer(_, buffer) | Self::PlannedBuffer(_, buffer) => ghi::BindingConstructor::buffer(template, buffer),
-			Self::Image(_, image) => ghi::BindingConstructor::image(template, image),
+			Self::Buffer(_, buffer) | Self::PlannedBuffer(_, buffer) => ghi::DescriptorWrite::buffer(set, slot, buffer),
+			Self::Image(_, image) => ghi::DescriptorWrite::image(set, slot, image, ghi::Layouts::General),
 			Self::CombinedImageSampler(_, image, sampler, layout) => {
-				ghi::BindingConstructor::combined_image_sampler(template, image, sampler, layout)
+				ghi::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, layout)
 			}
-			Self::Swapchain(_, swapchain) => ghi::BindingConstructor::swapchain(template, swapchain),
+			Self::Swapchain(_, swapchain) => ghi::DescriptorWrite::swapchain(set, slot, swapchain),
 		}
 	}
 
@@ -331,18 +326,6 @@ fn normalized_workgroup(workgroup: Extent) -> (u32, u32, u32) {
 	(workgroup.width().max(1), workgroup.height().max(1), workgroup.depth().max(1))
 }
 
-fn descriptor_template(binding: &BindingUsage) -> ghi::DescriptorSetBindingTemplate {
-	match binding.kind {
-		BindingKind::Buffer => ghi::DescriptorSetBindingTemplate::storage_buffer(binding.binding, ghi::Stages::COMPUTE)
-			.buffer_read_only(binding.read && !binding.write),
-		BindingKind::CombinedImageSampler { view } => {
-			ghi::DescriptorSetBindingTemplate::combined_image_sampler(binding.binding, ghi::Stages::COMPUTE)
-				.texture_view_type(texture_view(view))
-		}
-		BindingKind::Image => ghi::DescriptorSetBindingTemplate::storage_image(binding.binding, ghi::Stages::COMPUTE),
-	}
-}
-
 fn texture_view(view: TextureView) -> ghi::TextureViewTypes {
 	match view {
 		TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
@@ -353,11 +336,6 @@ fn texture_view(view: TextureView) -> ghi::TextureViewTypes {
 
 fn validate_binding_schema(bindings: &[BindingUsage]) -> Result<(), &'static str> {
 	for (index, binding) in bindings.iter().enumerate() {
-		if binding.set != 0 {
-			return Err(
-				"Unsupported descriptor set in simple compute pass. The most likely cause is that the BESL shader uses more than set 0.",
-			);
-		}
 		if binding.count != 1 {
 			return Err("Descriptor arrays are unsupported in simple compute passes. The most likely cause is that the BESL shader requires multiple resources for one binding.");
 		}
@@ -428,8 +406,7 @@ mod tests {
 			name: name.to_string(),
 			kind,
 			count: 1,
-			set: 0,
-			binding: slot,
+			slot,
 			read,
 			write,
 		}
@@ -438,7 +415,7 @@ mod tests {
 	#[test]
 	fn named_resources_validate_complete_type_safe_order_independent_sets() {
 		let bindings = [
-			binding("parameters", BindingKind::Buffer, 0, true, false),
+			binding("parameters", BindingKind::StorageBuffer, 0, true, false),
 			binding(
 				"source",
 				BindingKind::CombinedImageSampler {
@@ -448,7 +425,7 @@ mod tests {
 				true,
 				false,
 			),
-			binding("result", BindingKind::Image, 2, false, true),
+			binding("result", BindingKind::StorageImage, 2, false, true),
 		];
 		let mut device = ghi::debug::Device::new();
 		let buffer = device.create_acceleration_structure_instance_buffer(None, 1);
@@ -466,7 +443,7 @@ mod tests {
 		assert!(bindings[0].read && !bindings[0].write);
 		assert!(validate_shared_schema(&bindings, &[bindings[0].clone(), bindings[2].clone()]).is_ok());
 		let incompatible = BindingUsage {
-			kind: BindingKind::Image,
+			kind: BindingKind::StorageImage,
 			..bindings[0].clone()
 		};
 		assert!(validate_shared_schema(&bindings, &[incompatible]).is_err());

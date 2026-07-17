@@ -54,26 +54,15 @@ const VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 1] =
 impl RenderPass {
 	pub fn new(
 		context: &mut ghi::implementation::Context,
-		descriptor_set_layout: &ghi::DescriptorSetTemplateHandle,
 		camera_data_buffer: ghi::BaseBufferHandle,
 		instance_data_buffer: ghi::BaseBufferHandle,
 		index: usize,
 	) -> Self {
-		let camera_data_binding_template =
-			ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
-		let instance_data_binding_template =
-			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
-
-		let descriptor_set = context.create_descriptor_set(None, descriptor_set_layout);
-
-		context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&camera_data_binding_template, camera_data_buffer),
-		);
-		context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&instance_data_binding_template, instance_data_buffer),
-		);
+		let descriptor_set = context.create_descriptor_set(None);
+		context.write(&[
+			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(0), camera_data_buffer),
+			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(1), instance_data_buffer),
+		]);
 
 		Self { index, descriptor_set }
 	}

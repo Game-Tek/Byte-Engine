@@ -1,6 +1,6 @@
 //! Shared fixtures for executing production rendering shaders through the BESL VM.
 
-use besl::vm::{Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, ExecutionConfig, Texture, Value};
+use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, ResourceSlot, Texture, Value};
 
 const TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
 const TEST_CALL_DEPTH_LIMIT: usize = 128;
@@ -36,7 +36,7 @@ pub(crate) fn empty_image(width: u32, height: u32) -> Texture {
 }
 
 /// Creates a host buffer using the layout discovered while compiling the shader.
-pub(crate) fn buffer(program: &ExecutableProgram, slot: DescriptorSlot) -> Buffer {
+pub(crate) fn buffer(program: &ExecutableProgram, slot: ResourceSlot) -> Buffer {
 	let layout = program
 		.buffer_layout(slot)
 		.expect("Missing VM buffer layout. The most likely cause is that the production shader did not retain the expected binding.")

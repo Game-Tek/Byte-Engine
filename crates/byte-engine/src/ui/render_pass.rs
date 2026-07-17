@@ -35,32 +35,35 @@ use crate::{
 
 const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16UNORM;
 const TEXT_OVERLAY_FORMAT: ghi::Formats = ghi::Formats::RGBA8UNORM;
-const TEXT_OVERLAY_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::FRAGMENT,
+const TEXT_OVERLAY_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(0),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
 );
-const UI_IMAGE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::FRAGMENT,
+const UI_IMAGE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(0),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
 );
-const UI_BLUR_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
+const UI_BLUR_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(0),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
 );
-const UI_BLUR_OUTPUT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const UI_BLUR_COMPOSITE_SOURCE_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::FRAGMENT,
+const UI_BLUR_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
 );
-const UI_BLUR_COMPOSITE_BLURRED_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	1,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::FRAGMENT,
+const UI_BLUR_COMPOSITE_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(0),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
+const UI_BLUR_COMPOSITE_BLURRED_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
 );
 const UI_BLUR_DOWNSCALE: u32 = 1;
 const UI_BLUR_WORKGROUP_SIZE: u32 = 16;
@@ -1483,21 +1486,17 @@ pub struct UiRenderPass {
 	image_pipeline: ghi::PipelineHandle,
 	image_vertex_buffer: ghi::BufferHandle<[UiImageVertex; MAX_UI_VERTICES]>,
 	image_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
-	image_descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 	image_sampler: ghi::SamplerHandle,
 	image_textures: HashMap<u64, UiImageTexture>,
 	text_pipeline: ghi::PipelineHandle,
-	text_descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 	text_sampler: ghi::SamplerHandle,
 	text_overlays: Vec<UiTextOverlayTexture>,
 	blur_copy_pipeline: ghi::PipelineHandle,
 	blur_compute_pipeline_x: ghi::PipelineHandle,
 	blur_compute_pipeline_y: ghi::PipelineHandle,
-	blur_compute_descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 	blur_composite_pipeline: ghi::PipelineHandle,
 	blur_vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
 	blur_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
-	blur_composite_descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 	blur_sampler: ghi::SamplerHandle,
 	blur_full_source_descriptor_set: ghi::DescriptorSetHandle,
 	blur_downsample_descriptor_set: ghi::DescriptorSetHandle,
@@ -1540,7 +1539,6 @@ impl UiRenderPass {
 
 		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[],
-			&[],
 			&UI_VERTEX_LAYOUT,
 			&shaders,
 			&attachments,
@@ -1564,7 +1562,6 @@ impl UiRenderPass {
 		];
 		let curve_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[],
-			&[],
 			&UI_CURVE_VERTEX_LAYOUT,
 			&curve_shaders,
 			&attachments,
@@ -1579,8 +1576,6 @@ impl UiRenderPass {
 				.name("UI Curve Indices")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let text_descriptor_set_template = context.create_descriptor_set_template(Some("UI Text"), &[TEXT_OVERLAY_BINDING]);
-		let image_descriptor_set_template = context.create_descriptor_set_template(Some("UI Image"), &[UI_IMAGE_BINDING]);
 		let image_vertex_shader = create_image_vertex_shader(context);
 		let image_fragment_shader = create_image_fragment_shader(context);
 		let image_shaders = [
@@ -1588,7 +1583,6 @@ impl UiRenderPass {
 			ghi::ShaderParameter::new(&image_fragment_shader, ghi::ShaderTypes::Fragment),
 		];
 		let image_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[image_descriptor_set_template],
 			&[],
 			&UI_IMAGE_VERTEX_LAYOUT,
 			&image_shaders,
@@ -1616,13 +1610,8 @@ impl UiRenderPass {
 			ghi::ShaderParameter::new(&text_vertex_shader, ghi::ShaderTypes::Vertex),
 			ghi::ShaderParameter::new(&text_fragment_shader, ghi::ShaderTypes::Fragment),
 		];
-		let text_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[text_descriptor_set_template],
-			&[],
-			&[],
-			&text_shaders,
-			&attachments,
-		));
+		let text_pipeline =
+			context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(&[], &[], &text_shaders, &attachments));
 		let text_overlay = context.build_dynamic_image(
 			ghi::image::Builder::new(TEXT_OVERLAY_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("UI Text Overlay")
@@ -1634,36 +1623,24 @@ impl UiRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let blur_compute_descriptor_set_template = context.create_descriptor_set_template(
-			Some("UI Backdrop Blur Compute"),
-			&[UI_BLUR_SOURCE_BINDING, UI_BLUR_OUTPUT_BINDING],
-		);
-		let blur_composite_descriptor_set_template = context.create_descriptor_set_template(
-			Some("UI Backdrop Blur Composite"),
-			&[UI_BLUR_COMPOSITE_SOURCE_BINDING, UI_BLUR_COMPOSITE_BLURRED_BINDING],
-		);
 		let blur_copy_shader = create_blur_copy_compute_shader(context);
 		let blur_copy_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[blur_compute_descriptor_set_template],
 			&[],
 			ghi::ShaderParameter::new(&blur_copy_shader, ghi::ShaderTypes::Compute),
 		));
 		let blur_compute_shader = create_blur_compute_shader(context);
 		let blur_compute_pipeline_x = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[blur_compute_descriptor_set_template],
 			&[],
 			ghi::ShaderParameter::new(&blur_compute_shader, ghi::ShaderTypes::Compute)
 				.with_specialization_map(&[ghi::pipelines::SpecializationMapEntry::new(0, "i32".to_string(), 0i32)]),
 		));
 		let blur_compute_pipeline_y = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[blur_compute_descriptor_set_template],
 			&[],
 			ghi::ShaderParameter::new(&blur_compute_shader, ghi::ShaderTypes::Compute)
 				.with_specialization_map(&[ghi::pipelines::SpecializationMapEntry::new(0, "i32".to_string(), 1i32)]),
 		));
 		let blur_composite_shader = create_blur_composite_fragment_shader(context);
 		let blur_composite_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[blur_composite_descriptor_set_template],
 			&[],
 			&UI_VERTEX_LAYOUT,
 			&[
@@ -1709,101 +1686,93 @@ impl UiRenderPass {
 		);
 		let blur_output_image: ghi::BaseImageHandle = blur_output.into();
 		let main_attachment_image: ghi::BaseImageHandle = main_attachment.into();
-		let blur_full_source_descriptor_set =
-			context.create_descriptor_set(Some("UI Backdrop Blur Full Source"), &blur_compute_descriptor_set_template);
-		context.create_descriptor_binding(
-			blur_full_source_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&UI_BLUR_SOURCE_BINDING,
+		let blur_full_source_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Full Source"));
+		let blur_downsample_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Downsample"));
+		let blur_x_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur X"));
+		let blur_feedback_x_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Feedback X"));
+		let blur_y_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Y"));
+		let blur_composite_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Composite"));
+		context.write(&[
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_full_source_descriptor_set,
+				UI_BLUR_SOURCE_BINDING.slot(),
 				main_attachment_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
-		);
-		context.create_descriptor_binding(
-			blur_full_source_descriptor_set,
-			ghi::BindingConstructor::image(&UI_BLUR_OUTPUT_BINDING, blur_composite_source_image),
-		);
-		let blur_downsample_descriptor_set =
-			context.create_descriptor_set(Some("UI Backdrop Blur Downsample"), &blur_compute_descriptor_set_template);
-		context.create_descriptor_binding(
-			blur_downsample_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&UI_BLUR_SOURCE_BINDING,
+			ghi::DescriptorWrite::image(
+				blur_full_source_descriptor_set,
+				UI_BLUR_OUTPUT_BINDING.slot(),
+				blur_composite_source_image,
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_downsample_descriptor_set,
+				UI_BLUR_SOURCE_BINDING.slot(),
 				main_attachment_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
-		);
-		context.create_descriptor_binding(
-			blur_downsample_descriptor_set,
-			ghi::BindingConstructor::image(&UI_BLUR_OUTPUT_BINDING, blur_source_image),
-		);
-		let blur_x_descriptor_set =
-			context.create_descriptor_set(Some("UI Backdrop Blur X"), &blur_compute_descriptor_set_template);
-		context.create_descriptor_binding(
-			blur_x_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&UI_BLUR_SOURCE_BINDING,
+			ghi::DescriptorWrite::image(
+				blur_downsample_descriptor_set,
+				UI_BLUR_OUTPUT_BINDING.slot(),
+				blur_source_image,
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_x_descriptor_set,
+				UI_BLUR_SOURCE_BINDING.slot(),
 				blur_source_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
-		);
-		context.create_descriptor_binding(
-			blur_x_descriptor_set,
-			ghi::BindingConstructor::image(&UI_BLUR_OUTPUT_BINDING, blur_scratch_image),
-		);
-		let blur_feedback_x_descriptor_set =
-			context.create_descriptor_set(Some("UI Backdrop Blur Feedback X"), &blur_compute_descriptor_set_template);
-		context.create_descriptor_binding(
-			blur_feedback_x_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&UI_BLUR_SOURCE_BINDING,
+			ghi::DescriptorWrite::image(
+				blur_x_descriptor_set,
+				UI_BLUR_OUTPUT_BINDING.slot(),
+				blur_scratch_image,
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_feedback_x_descriptor_set,
+				UI_BLUR_SOURCE_BINDING.slot(),
 				blur_output_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
-		);
-		context.create_descriptor_binding(
-			blur_feedback_x_descriptor_set,
-			ghi::BindingConstructor::image(&UI_BLUR_OUTPUT_BINDING, blur_scratch_image),
-		);
-		let blur_y_descriptor_set =
-			context.create_descriptor_set(Some("UI Backdrop Blur Y"), &blur_compute_descriptor_set_template);
-		context.create_descriptor_binding(
-			blur_y_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&UI_BLUR_SOURCE_BINDING,
+			ghi::DescriptorWrite::image(
+				blur_feedback_x_descriptor_set,
+				UI_BLUR_OUTPUT_BINDING.slot(),
+				blur_scratch_image,
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_y_descriptor_set,
+				UI_BLUR_SOURCE_BINDING.slot(),
 				blur_scratch_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
-		);
-		context.create_descriptor_binding(
-			blur_y_descriptor_set,
-			ghi::BindingConstructor::image(&UI_BLUR_OUTPUT_BINDING, blur_output_image),
-		);
-		let blur_composite_descriptor_set =
-			context.create_descriptor_set(Some("UI Backdrop Blur Composite"), &blur_composite_descriptor_set_template);
-		context.create_descriptor_binding(
-			blur_composite_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&UI_BLUR_COMPOSITE_SOURCE_BINDING,
+			ghi::DescriptorWrite::image(
+				blur_y_descriptor_set,
+				UI_BLUR_OUTPUT_BINDING.slot(),
+				blur_output_image,
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_composite_descriptor_set,
+				UI_BLUR_COMPOSITE_SOURCE_BINDING.slot(),
 				blur_composite_source_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
-		);
-		context.create_descriptor_binding(
-			blur_composite_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&UI_BLUR_COMPOSITE_BLURRED_BINDING,
+			ghi::DescriptorWrite::combined_image_sampler(
+				blur_composite_descriptor_set,
+				UI_BLUR_COMPOSITE_BLURRED_BINDING.slot(),
 				blur_output_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
-		);
+		]);
 
 		Self {
 			pipeline,
@@ -1815,36 +1784,30 @@ impl UiRenderPass {
 			image_pipeline,
 			image_vertex_buffer,
 			image_index_buffer,
-			image_descriptor_set_template,
 			image_sampler,
 			image_textures: HashMap::new(),
 			text_pipeline,
-			text_descriptor_set_template,
 			text_sampler,
 			text_overlays: vec![UiTextOverlayTexture {
 				image: text_overlay.into(),
 				descriptor_set: {
-					let descriptor_set = context.create_descriptor_set(Some("UI Text"), &text_descriptor_set_template);
-					context.create_descriptor_binding(
+					let descriptor_set = context.create_descriptor_set(Some("UI Text"));
+					context.write(&[ghi::DescriptorWrite::combined_image_sampler(
 						descriptor_set,
-						ghi::BindingConstructor::combined_image_sampler(
-							&TEXT_OVERLAY_BINDING,
-							text_overlay,
-							text_sampler,
-							ghi::Layouts::Read,
-						),
-					);
+						TEXT_OVERLAY_BINDING.slot(),
+						text_overlay,
+						text_sampler,
+						ghi::Layouts::Read,
+					)]);
 					descriptor_set
 				},
 			}],
 			blur_copy_pipeline,
 			blur_compute_pipeline_x,
 			blur_compute_pipeline_y,
-			blur_compute_descriptor_set_template,
 			blur_composite_pipeline,
 			blur_vertex_buffer,
 			blur_index_buffer,
-			blur_composite_descriptor_set_template,
 			blur_sampler,
 			blur_full_source_descriptor_set,
 			blur_downsample_descriptor_set,
@@ -1881,16 +1844,14 @@ impl UiRenderPass {
 					.device_accesses(ghi::DeviceAccesses::HostToDevice),
 			);
 			let texture: ghi::BaseImageHandle = texture.into();
-			let descriptor_set = frame.create_descriptor_set(Some("UI Image"), &self.image_descriptor_set_template);
-			frame.create_descriptor_binding(
+			let descriptor_set = frame.create_descriptor_set(Some("UI Image"));
+			frame.write(&[ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
-				ghi::BindingConstructor::combined_image_sampler(
-					&UI_IMAGE_BINDING,
-					texture,
-					self.image_sampler,
-					ghi::Layouts::Read,
-				),
-			);
+				UI_IMAGE_BINDING.slot(),
+				texture,
+				self.image_sampler,
+				ghi::Layouts::Read,
+			)]);
 			self.image_textures.insert(
 				image.image_id,
 				UiImageTexture {
@@ -1923,16 +1884,14 @@ impl UiRenderPass {
 					.device_accesses(ghi::DeviceAccesses::HostToDevice),
 			);
 			let text_overlay: ghi::BaseImageHandle = text_overlay.into();
-			let descriptor_set = frame.create_descriptor_set(Some("UI Text"), &self.text_descriptor_set_template);
-			frame.create_descriptor_binding(
+			let descriptor_set = frame.create_descriptor_set(Some("UI Text"));
+			frame.write(&[ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
-				ghi::BindingConstructor::combined_image_sampler(
-					&TEXT_OVERLAY_BINDING,
-					text_overlay,
-					self.text_sampler,
-					ghi::Layouts::Read,
-				),
-			);
+				TEXT_OVERLAY_BINDING.slot(),
+				text_overlay,
+				self.text_sampler,
+				ghi::Layouts::Read,
+			)]);
 			self.text_overlays.push(UiTextOverlayTexture {
 				image: text_overlay,
 				descriptor_set,
@@ -2731,7 +2690,7 @@ fn create_text_overlay_fragment_shader(context: &mut ghi::implementation::Contex
 			msl_entry_point: "ui_text_overlay_fragment",
 		},
 		ghi::ShaderTypes::Fragment,
-		[TEXT_OVERLAY_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ)],
+		[TEXT_OVERLAY_BINDING],
 	)
 	.expect("Failed to create the UI text overlay fragment shader. The most likely cause is an incompatible shader interface.")
 }
@@ -2761,7 +2720,7 @@ fn create_image_fragment_shader(context: &mut ghi::implementation::Context) -> g
 			msl_entry_point: "ui_image_fragment",
 		},
 		ghi::ShaderTypes::Fragment,
-		[UI_IMAGE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ)],
+		[UI_IMAGE_BINDING],
 	)
 	.expect("Failed to create the UI image fragment shader. The most likely cause is an incompatible shader interface.")
 }
@@ -2776,10 +2735,7 @@ fn create_blur_copy_compute_shader(context: &mut ghi::implementation::Context) -
 			msl_entry_point: "ui_backdrop_blur_copy",
 		},
 		ghi::ShaderTypes::Compute,
-		[
-			UI_BLUR_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			UI_BLUR_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-		],
+		[UI_BLUR_SOURCE_BINDING, UI_BLUR_OUTPUT_BINDING],
 	)
 	.expect("Failed to create the UI backdrop blur copy shader. The most likely cause is an incompatible shader interface.")
 }
@@ -2794,10 +2750,7 @@ fn create_blur_compute_shader(context: &mut ghi::implementation::Context) -> ghi
 			msl_entry_point: "ui_backdrop_blur_compute",
 		},
 		ghi::ShaderTypes::Compute,
-		[
-			UI_BLUR_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			UI_BLUR_OUTPUT_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
-		],
+		[UI_BLUR_SOURCE_BINDING, UI_BLUR_OUTPUT_BINDING],
 	)
 	.expect("Failed to create the UI backdrop blur compute shader. The most likely cause is an incompatible shader interface.")
 }
@@ -2812,10 +2765,7 @@ fn create_blur_composite_fragment_shader(context: &mut ghi::implementation::Cont
 			msl_entry_point: "ui_backdrop_blur_composite",
 		},
 		ghi::ShaderTypes::Fragment,
-		[
-			UI_BLUR_COMPOSITE_SOURCE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			UI_BLUR_COMPOSITE_BLURRED_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-		],
+		[UI_BLUR_COMPOSITE_SOURCE_BINDING, UI_BLUR_COMPOSITE_BLURRED_BINDING],
 	)
 	.expect(
 		"Failed to create the UI backdrop blur composite shader. The most likely cause is an incompatible shader interface.",

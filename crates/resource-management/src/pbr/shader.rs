@@ -417,7 +417,7 @@ impl std::error::Error for BrdfShaderGenerationError {}
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture, Value};
+	use besl::vm::{output_slot, Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value};
 
 	use super::*;
 	use crate::pbr::{BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfTexture};
@@ -562,7 +562,6 @@ mod tests {
 			besl::parser::Node::binding(
 				"base_color_texture",
 				besl::parser::Node::combined_image_sampler(),
-				0,
 				3,
 				true,
 				false,
@@ -570,23 +569,14 @@ mod tests {
 			besl::parser::Node::binding(
 				"metallic_roughness_texture",
 				besl::parser::Node::combined_image_sampler(),
-				0,
 				4,
 				true,
 				false,
 			),
-			besl::parser::Node::binding(
-				"normal_texture",
-				besl::parser::Node::combined_image_sampler(),
-				0,
-				5,
-				true,
-				false,
-			),
+			besl::parser::Node::binding("normal_texture", besl::parser::Node::combined_image_sampler(), 5, true, false),
 			besl::parser::Node::binding(
 				"occlusion_texture",
 				besl::parser::Node::combined_image_sampler(),
-				0,
 				6,
 				true,
 				false,
@@ -594,7 +584,6 @@ mod tests {
 			besl::parser::Node::binding(
 				"emission_texture",
 				besl::parser::Node::combined_image_sampler(),
-				0,
 				7,
 				true,
 				false,
@@ -654,11 +643,11 @@ mod tests {
 
 		{
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(DescriptorSlot::new(0, 3), &mut base_color_texture);
-			descriptors.bind_texture(DescriptorSlot::new(0, 4), &mut metallic_roughness_texture);
-			descriptors.bind_texture(DescriptorSlot::new(0, 5), &mut normal_texture);
-			descriptors.bind_texture(DescriptorSlot::new(0, 6), &mut occlusion_texture);
-			descriptors.bind_texture(DescriptorSlot::new(0, 7), &mut emission_texture);
+			descriptors.bind_texture(ResourceSlot::new(3), &mut base_color_texture);
+			descriptors.bind_texture(ResourceSlot::new(4), &mut metallic_roughness_texture);
+			descriptors.bind_texture(ResourceSlot::new(5), &mut normal_texture);
+			descriptors.bind_texture(ResourceSlot::new(6), &mut occlusion_texture);
+			descriptors.bind_texture(ResourceSlot::new(7), &mut emission_texture);
 			for (location, output) in outputs.iter_mut().enumerate() {
 				descriptors.bind_buffer(output_slot(location as u8), output);
 			}

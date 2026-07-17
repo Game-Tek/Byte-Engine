@@ -28,7 +28,7 @@ where
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = shader::ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()>;
 
 	/// Creates a graphics/rasterization pipeline from a builder.

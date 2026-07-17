@@ -168,19 +168,32 @@ impl<'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
 	}
 }
 
+pub use crate::shader::besl::evaluation::{BindingKind, TextureView};
+
+/// The `Binding` struct preserves one flat shader resource requirement in persisted material artifacts.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Binding {
-	pub set: u32,
-	pub binding: u32,
+	pub slot: u32,
+	pub kind: BindingKind,
+	pub count: u32,
 	pub read: bool,
 	pub write: bool,
 }
 
 impl Binding {
-	pub fn new(set: u32, binding: u32, read: bool, write: bool) -> Self {
+	pub fn new(slot: u32, kind: BindingKind, count: u32, read: bool, write: bool) -> Self {
+		assert!(
+			count > 0,
+			"Invalid resource count. The most likely cause is that a shader interface resource was declared with an empty array."
+		);
+		assert!(
+			slot.checked_add(count).is_some(),
+			"Invalid resource slot range. The most likely cause is that a persisted shader resource array extends beyond the flat slot space."
+		);
 		Self {
-			set,
-			binding,
+			slot,
+			kind,
+			count,
 			read,
 			write,
 		}
@@ -275,4 +288,15 @@ impl<'de> Solver<'de, Parameter> for ParameterModel {
 pub enum Property {
 	Factor(Value),
 	Texture(String),
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{Binding, BindingKind};
+
+	#[test]
+	#[should_panic(expected = "Invalid resource slot range")]
+	fn persisted_binding_rejects_flat_slot_overflow() {
+		Binding::new(u32::MAX, BindingKind::StorageBuffer, 1, true, false);
+	}
 }

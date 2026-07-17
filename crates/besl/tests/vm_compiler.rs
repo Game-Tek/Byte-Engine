@@ -1,4 +1,4 @@
-use besl::vm::{Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Value, VmError};
+use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value, VmError};
 use besl::{compile_to_besl, BindingTypes, Expressions, Node, Nodes, Operators};
 
 #[test]
@@ -14,7 +14,6 @@ fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 				members: vec![Node::array("values", u32_type.clone(), 2)],
 			},
 			0,
-			0,
 			true,
 			false,
 		)
@@ -24,7 +23,6 @@ fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("count", atomic_u32_type.clone()).into()],
 			},
-			0,
 			1,
 			true,
 			true,
@@ -35,7 +33,6 @@ fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", u32_type.clone()).into()],
 			},
-			0,
 			2,
 			false,
 			true,
@@ -67,9 +64,9 @@ fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 	let program = compile_to_besl(source, Some(root)).expect("Expected lexed program");
 	let executable = ExecutableProgram::compile(program).expect("Expected executable program");
 
-	let values_slot = DescriptorSlot::new(0, 0);
-	let counter_slot = DescriptorSlot::new(0, 1);
-	let result_slot = DescriptorSlot::new(0, 2);
+	let values_slot = ResourceSlot::new(0);
+	let counter_slot = ResourceSlot::new(1);
+	let result_slot = ResourceSlot::new(2);
 	let mut values = Buffer::new(executable.buffer_layout(values_slot).expect("Expected values layout").clone());
 	let mut counter = Buffer::new(
 		executable
@@ -107,7 +104,6 @@ fn non_void_function_fallthrough_reports_the_missing_return() {
 				members: vec![Node::member("value", u32_type).into()],
 			},
 			0,
-			0,
 			false,
 			true,
 		)
@@ -125,7 +121,7 @@ fn non_void_function_fallthrough_reports_the_missing_return() {
 	"#;
 	let program = compile_to_besl(source, Some(root)).expect("Expected lexed program");
 	let executable = ExecutableProgram::compile(program).expect("Expected executable program");
-	let result_slot = DescriptorSlot::new(0, 0);
+	let result_slot = ResourceSlot::new(0);
 	let mut result = Buffer::new(executable.buffer_layout(result_slot).expect("Expected result layout").clone());
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(result_slot, &mut result);
@@ -233,7 +229,6 @@ fn void_statement_calls_execute_without_a_result_register() {
 				members: vec![Node::member("value", u32_type).into()],
 			},
 			0,
-			0,
 			false,
 			true,
 		)
@@ -252,7 +247,7 @@ fn void_statement_calls_execute_without_a_result_register() {
 	)
 	.expect("Expected lexed void call");
 	let executable = ExecutableProgram::compile(program).expect("Expected void statement call lowering");
-	let slot = DescriptorSlot::new(0, 0);
+	let slot = ResourceSlot::new(0);
 	let mut result = Buffer::new(executable.buffer_layout(slot).expect("Expected result layout").clone());
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot, &mut result);
@@ -271,7 +266,6 @@ fn comparison_literals_inherit_the_typed_operand() {
 				members: vec![Node::member("value", bool_type).into()],
 			},
 			0,
-			0,
 			false,
 			true,
 		)
@@ -289,7 +283,7 @@ fn comparison_literals_inherit_the_typed_operand() {
 	)
 	.expect("Expected lexed comparison");
 	let executable = ExecutableProgram::compile(program).expect("Expected typed comparison lowering");
-	let slot = DescriptorSlot::new(0, 0);
+	let slot = ResourceSlot::new(0);
 	let mut result = Buffer::new(executable.buffer_layout(slot).expect("Expected result layout").clone());
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot, &mut result);
@@ -308,7 +302,6 @@ fn incompatible_typed_comparison_operands_fail_during_compilation() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", bool_type).into()],
 			},
-			0,
 			0,
 			false,
 			true,
@@ -341,14 +334,14 @@ fn atomic_add_requires_read_and_write_descriptor_access() {
 	assert_eq!(
 		compile_error(compile_atomic_add(true, false)),
 		VmError::DescriptorAccessDenied {
-			slot: DescriptorSlot::new(0, 0),
+			slot: ResourceSlot::new(0),
 			access: "write",
 		}
 	);
 	assert_eq!(
 		compile_error(compile_atomic_add(false, true)),
 		VmError::DescriptorAccessDenied {
-			slot: DescriptorSlot::new(0, 0),
+			slot: ResourceSlot::new(0),
 			access: "read",
 		}
 	);
@@ -365,7 +358,6 @@ fn compile_atomic_add(read: bool, write: bool) -> Result<ExecutableProgram, VmEr
 			BindingTypes::Buffer {
 				members: vec![Node::member("count", atomic_u32_type.clone()).into()],
 			},
-			0,
 			0,
 			read,
 			write,

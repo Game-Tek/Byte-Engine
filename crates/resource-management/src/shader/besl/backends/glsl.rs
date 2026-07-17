@@ -559,8 +559,7 @@ impl Generator {
 			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
 			besl::Nodes::Binding {
 				name,
-				set,
-				binding,
+				slot,
 				read,
 				write,
 				r#type,
@@ -581,7 +580,7 @@ impl Generator {
 					},
 				};
 
-				string.push_str(&format!("layout(set={},binding={}", set, binding));
+				string.push_str(&format!("layout(set=0,binding={slot}"));
 
 				match r#type {
 					besl::BindingTypes::Buffer { .. } => {
@@ -793,7 +792,7 @@ mod tests {
 		// We have to split the assertions because the order of the bindings is not guaranteed.
 		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) buffer _buff{float member;}buff;");
 		assert_string_contains!(shader, "layout(set=0,binding=1,r8) writeonly uniform image2D image;");
-		assert_string_contains!(shader, "layout(set=1,binding=0) uniform sampler2D texture;");
+		assert_string_contains!(shader, "layout(set=0,binding=2) uniform sampler2D texture;");
 		assert_string_contains!(shader, "void main(){buff;image;texture;}");
 
 		// Assert that main is the last element in the shader string, which means that the bindings are before it.
@@ -1242,7 +1241,6 @@ mod tests {
 			besl::Node::binding(
 				"texture",
 				besl::BindingTypes::CombinedImageSampler { format: String::new() },
-				0,
 				0,
 				true,
 				false,

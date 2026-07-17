@@ -148,7 +148,7 @@ pub trait RasterizationRenderPassMode: CommonCommandBufferMode {
 
 /// The `BoundPipelineLayoutMode` trait represents a recording state where pipeline layout resources can be bound.
 pub trait BoundPipelineLayoutMode: CommonCommandBufferMode {
-	/// Binds a decriptor set on the GPU.
+	/// Binds retained descriptor-set groups whose flat shader slots do not overlap.
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self;
 
 	/// Write data to the push constant register

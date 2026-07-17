@@ -7,8 +7,8 @@ use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSRange, NSString};
 use objc2_metal::{
-	MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder, MTLRenderCommandEncoder,
-	MTLTexture,
+	MTLArgumentEncoder, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLComputeCommandEncoder,
+	MTLDevice, MTLRenderCommandEncoder, MTLTexture,
 };
 use smallvec::SmallVec;
 
@@ -169,9 +169,11 @@ fn encode_texture_clear(
 
 /// The `RecordingDevice` struct provides command recording with immutable access to backend resources.
 pub(super) struct RecordingDevice<'a> {
+	pub(super) metal_device: &'a ProtocolObject<dyn mtl::MTLDevice>,
 	pub(super) buffers: &'a ResourceCollection<buffer::Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: &'a ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
-	pub(super) descriptor_sets_layouts: &'a [DescriptorSetLayout],
+	pub(super) samplers: &'a [sampler::Sampler],
+	pub(super) acceleration_structures: &'a [AccelerationStructure],
 	pub(super) pipeline_layouts: &'a [PipelineLayout],
 	pub(super) descriptor_sets: &'a [DescriptorSet],
 	pub(super) meshes: &'a [Mesh],
@@ -209,7 +211,7 @@ pub struct CommandBufferRecording<'a> {
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	bound_descriptor_set_handles: SmallVec<[(u32, DescriptorSetHandle); 4]>,
+	bound_descriptor_set_handles: SmallVec<[DescriptorSetHandle; 4]>,
 	bound_vertex_buffers: SmallVec<[(graphics_hardware_interface::BaseBufferHandle, usize); 8]>,
 	bound_vertex_layout: Option<VertexLayoutHandle>,
 	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
@@ -531,29 +533,116 @@ impl<'a> CommandBufferRecording<'a> {
 		self.compute_written_resources.clear();
 	}
 
+	fn descriptors_at_slot(&self, slot: crate::shader::ResourceSlot) -> Option<&HashMap<u32, Descriptor>> {
+		self.bound_descriptor_set_handles
+			.iter()
+			.find_map(|set_handle| self.device.descriptor_sets[set_handle.0 as usize].descriptors.get(&slot))
+	}
+
+	fn descriptor_matches_kind(descriptor: Descriptor, kind: crate::shader::ResourceKind) -> bool {
+		match descriptor {
+			Descriptor::Buffer { .. } => matches!(
+				kind,
+				crate::shader::ResourceKind::UniformBuffer | crate::shader::ResourceKind::StorageBuffer
+			),
+			Descriptor::Image { .. } | Descriptor::Swapchain { .. } => matches!(
+				kind,
+				crate::shader::ResourceKind::SampledImage
+					| crate::shader::ResourceKind::StorageImage
+					| crate::shader::ResourceKind::InputAttachment
+			),
+			Descriptor::CombinedImageSampler { .. } => kind == crate::shader::ResourceKind::CombinedImageSampler,
+			Descriptor::Sampler { .. } => kind == crate::shader::ResourceKind::Sampler,
+			Descriptor::AccelerationStructure { .. } => kind == crate::shader::ResourceKind::AccelerationStructure,
+		}
+	}
+
+	/// Validates the retained set union against the active pipeline without requiring fixed arrays to be fully populated.
+	fn validate_bound_descriptor_sets(&self, layout: &PipelineLayout) {
+		for (left_index, left_handle) in self.bound_descriptor_set_handles.iter().enumerate() {
+			let left = &self.device.descriptor_sets[left_handle.0 as usize];
+			for right_handle in self.bound_descriptor_set_handles.iter().skip(left_index + 1) {
+				let right = &self.device.descriptor_sets[right_handle.0 as usize];
+				assert!(
+					left.descriptors.keys().all(|slot| !right.descriptors.contains_key(slot)),
+					"Overlapping retained descriptor sets. The most likely cause is that two bound sets write the same flat resource slot.",
+				);
+			}
+		}
+
+		for resource in &layout.resources {
+			let descriptor = resource.descriptor;
+			let range_start = descriptor.slot().index();
+			let range_end = resource_range_end(descriptor);
+			for set_handle in &self.bound_descriptor_set_handles {
+				let descriptor_set = &self.device.descriptor_sets[set_handle.0 as usize];
+				assert!(
+					descriptor_set
+						.descriptors
+						.keys()
+						.all(|slot| resource_accepts_retained_slot_key(descriptor, *slot)),
+					"Invalid retained descriptor slot. The most likely cause is that an array element was written as an interior flat slot instead of using array_element at the array's base slot.",
+				);
+			}
+			let owner_count = self
+				.bound_descriptor_set_handles
+				.iter()
+				.filter(|set_handle| {
+					self.device.descriptor_sets[set_handle.0 as usize]
+						.descriptors
+						.keys()
+						.any(|slot| (range_start..range_end).contains(&slot.index()))
+				})
+				.count();
+			assert!(
+				owner_count <= 1,
+				"Overlapping retained descriptor sets. The most likely cause is that two bound sets own slots within the same active shader resource range.",
+			);
+
+			let descriptors = self.descriptors_at_slot(descriptor.slot());
+			if descriptor.count() == 1 {
+				assert!(
+					descriptors.is_some_and(|descriptors| descriptors.contains_key(&0)),
+					"Missing retained descriptor at resource slot {}. The most likely cause is that a scalar pipeline resource was not written before rendering.",
+					descriptor.slot().index(),
+				);
+			}
+
+			if let Some(descriptors) = descriptors {
+				for (&array_element, &value) in descriptors {
+					assert!(
+						array_element < descriptor.count(),
+						"Descriptor array element is out of range. The most likely cause is that a retained write exceeded the shader resource count.",
+					);
+					assert!(
+						Self::descriptor_matches_kind(value, descriptor.kind()),
+						"Descriptor kind mismatch. The most likely cause is that a retained write does not match the active shader resource interface.",
+					);
+				}
+			}
+		}
+	}
+
 	fn bound_descriptor_resource_consumptions(&self) -> SmallVec<[Consumption; 128]> {
 		let Some(bound_pipeline_handle) = self.bound_pipeline else {
 			return SmallVec::new();
 		};
 
 		let pipeline = &self.device.pipelines[bound_pipeline_handle.0 as usize];
+		let layout = &self.device.pipeline_layouts[pipeline.layout.0 as usize];
 		let mut consumptions = SmallVec::new();
 
-		for &((set_index, binding_index), (stages, access)) in &pipeline.resource_access {
-			let Some(&(_, descriptor_set_handle)) = self.bound_descriptor_set_handles.get(set_index as usize) else {
-				continue;
-			};
-			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
-			let Some(descriptors) = descriptor_set.descriptors.get(&binding_index) else {
+		for resource in &layout.resources {
+			let Some(descriptors) = self.descriptors_at_slot(resource.descriptor.slot()) else {
 				continue;
 			};
 
 			for descriptor in descriptors.values().copied() {
-				let (handle, layout) = match descriptor {
+				let (handle, image_layout) = match descriptor {
 					Descriptor::Buffer { buffer, .. } => (PrivateHandles::Buffer(buffer), crate::Layouts::General),
 					Descriptor::Image { image, layout, .. } => (PrivateHandles::Image(image), layout),
 					Descriptor::CombinedImageSampler { image, layout, .. } => (PrivateHandles::Image(image), layout),
-					Descriptor::Sampler { .. } => continue,
+					Descriptor::Sampler { .. } | Descriptor::AccelerationStructure { .. } => continue,
 					Descriptor::Swapchain { handle } => {
 						let swapchain = &self.device.swapchains[handle.0 as usize];
 						if let Some(proxy_image_handle) = swapchain.images[self.sequence_index as usize] {
@@ -566,9 +655,9 @@ impl<'a> CommandBufferRecording<'a> {
 
 				consumptions.push(Consumption {
 					handle,
-					stages,
-					access,
-					layout,
+					stages: resource.stages,
+					access: resource.descriptor.access(),
+					layout: image_layout,
 				});
 			}
 		}
@@ -680,27 +769,22 @@ impl<'a> CommandBufferRecording<'a> {
 }
 
 impl CommandBufferRecording<'_> {
-	/// Converts descriptor visibility to the Metal render stages that can access the argument buffer.
-	fn render_stages_for_descriptor_set_layout(descriptor_set_layout: &DescriptorSetLayout) -> mtl::MTLRenderStages {
-		let descriptor_visibility = descriptor_set_layout
-			.bindings
-			.iter()
-			.fold(crate::Stages::NONE, |visibility, binding| visibility | binding.stages);
+	fn render_stages(stages: crate::Stages) -> mtl::MTLRenderStages {
 		let mut render_stages = mtl::MTLRenderStages(0);
 
-		if descriptor_visibility.intersects(crate::Stages::VERTEX) {
+		if stages.intersects(crate::Stages::VERTEX) {
 			render_stages |= mtl::MTLRenderStages::Vertex;
 		}
 
-		if descriptor_visibility.intersects(crate::Stages::FRAGMENT) {
+		if stages.intersects(crate::Stages::FRAGMENT) {
 			render_stages |= mtl::MTLRenderStages::Fragment;
 		}
 
-		if descriptor_visibility.intersects(crate::Stages::TASK) {
+		if stages.intersects(crate::Stages::TASK) {
 			render_stages |= mtl::MTLRenderStages::Object;
 		}
 
-		if descriptor_visibility.intersects(crate::Stages::MESH) {
+		if stages.intersects(crate::Stages::MESH) {
 			render_stages |= mtl::MTLRenderStages::Mesh;
 		}
 
@@ -716,18 +800,30 @@ impl CommandBufferRecording<'_> {
 		}
 	}
 
-	/// Makes resources referenced through a render argument buffer resident for the active render encoder.
-	fn make_render_descriptor_set_resources_resident(
+	fn metal_resource_usage(access: crate::AccessPolicies) -> mtl::MTLResourceUsage {
+		let mut usage = mtl::MTLResourceUsage(0);
+		if access.intersects(crate::AccessPolicies::READ) {
+			usage |= mtl::MTLResourceUsage::Read;
+		}
+		if access.intersects(crate::AccessPolicies::WRITE) {
+			usage |= mtl::MTLResourceUsage::Write;
+		}
+		usage
+	}
+
+	/// Makes the resources referenced by the flat pipeline interface resident for a render encoder.
+	fn make_render_descriptor_resources_resident(
 		&self,
 		encoder: &ProtocolObject<dyn mtl::MTLRenderCommandEncoder>,
-		descriptor_set: &DescriptorSet,
-		descriptor_set_layout: &DescriptorSetLayout,
+		layout: &PipelineLayout,
 	) {
-		let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
-		let stages = Self::render_stages_for_descriptor_set_layout(descriptor_set_layout);
-
-		for descriptors_at_binding in descriptor_set.descriptors.values() {
-			for descriptor in descriptors_at_binding.values() {
+		for resource in &layout.resources {
+			let Some(descriptors) = self.descriptors_at_slot(resource.descriptor.slot()) else {
+				continue;
+			};
+			let usage = Self::metal_resource_usage(resource.descriptor.access());
+			let stages = Self::render_stages(resource.stages);
+			for descriptor in descriptors.values() {
 				match *descriptor {
 					Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
 						let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(image).texture;
@@ -745,22 +841,30 @@ impl CommandBufferRecording<'_> {
 							encoder.useResource_usage_stages(ProtocolObject::from_ref(tex), usage, stages);
 						}
 					}
+					Descriptor::AccelerationStructure { handle } => {
+						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
+							let structure: &ProtocolObject<dyn mtl::MTLAccelerationStructure> = structure.as_ref();
+							encoder.useResource_usage_stages(ProtocolObject::from_ref(structure), usage, stages);
+						}
+					}
 					Descriptor::Sampler { .. } => {}
 				}
 			}
 		}
 	}
 
-	/// Makes resources referenced through a compute argument buffer resident for the active compute encoder.
-	fn make_compute_descriptor_set_resources_resident(
+	/// Makes the resources referenced by the flat pipeline interface resident for a compute encoder.
+	fn make_compute_descriptor_resources_resident(
 		&self,
 		encoder: &ProtocolObject<dyn mtl::MTLComputeCommandEncoder>,
-		descriptor_set: &DescriptorSet,
+		layout: &PipelineLayout,
 	) {
-		let usage = mtl::MTLResourceUsage(mtl::MTLResourceUsage::Read.0 | mtl::MTLResourceUsage::Write.0);
-
-		for descriptors_at_binding in descriptor_set.descriptors.values() {
-			for descriptor in descriptors_at_binding.values() {
+		for resource in &layout.resources {
+			let Some(descriptors) = self.descriptors_at_slot(resource.descriptor.slot()) else {
+				continue;
+			};
+			let usage = Self::metal_resource_usage(resource.descriptor.access());
+			for descriptor in descriptors.values() {
 				match *descriptor {
 					Descriptor::Image { image, .. } | Descriptor::CombinedImageSampler { image, .. } => {
 						let tex: &ProtocolObject<dyn mtl::MTLTexture> = &self.device.images.resource(image).texture;
@@ -778,10 +882,135 @@ impl CommandBufferRecording<'_> {
 							encoder.useResource_usage(ProtocolObject::from_ref(tex), usage);
 						}
 					}
+					Descriptor::AccelerationStructure { handle } => {
+						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
+							let structure: &ProtocolObject<dyn mtl::MTLAccelerationStructure> = structure.as_ref();
+							encoder.useResource_usage(ProtocolObject::from_ref(structure), usage);
+						}
+					}
 					Descriptor::Sampler { .. } => {}
 				}
 			}
 		}
+	}
+
+	/// Encodes one immutable stage-specific argument buffer from the currently bound retained set union.
+	fn encode_stage_argument_buffer(&self, layout: &StageArgumentLayout) -> Retained<ProtocolObject<dyn mtl::MTLBuffer>> {
+		let argument_buffer = self
+			.device
+			.metal_device
+			.newBufferWithLength_options(layout.encoded_length as _, mtl::MTLResourceOptions::StorageModeShared)
+			.expect("Metal argument buffer allocation failed. The most likely cause is that the device is out of memory.");
+		unsafe {
+			// Metal does not guarantee fresh buffer contents are zeroed. Null all unwritten array elements deterministically.
+			std::ptr::write_bytes(argument_buffer.contents().as_ptr() as *mut u8, 0, layout.encoded_length);
+			layout
+				.argument_encoder
+				.setArgumentBuffer_offset(Some(argument_buffer.as_ref()), 0);
+		}
+
+		for binding in &layout.bindings {
+			let Some(descriptors) = self.descriptors_at_slot(binding.descriptor.slot()) else {
+				continue;
+			};
+
+			for (&array_element, &descriptor) in descriptors {
+				let argument_slot = binding.slot_for_array_element(array_element);
+				match (argument_slot, descriptor) {
+					(DescriptorBindingSlot::Buffer(slot), Descriptor::Buffer { buffer, .. }) => unsafe {
+						let buffer = self.device.buffers.resource(buffer);
+						layout.argument_encoder.setBuffer_offset_atIndex(Some(buffer.buffer.as_ref()), 0, slot as _);
+					},
+					(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, .. }) => unsafe {
+						let image = self.device.images.resource(image);
+						layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+					},
+					(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => unsafe {
+						let proxy = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize].expect(
+							"Missing Metal swapchain proxy. The most likely cause is that a swapchain descriptor was materialized before acquiring its frame image.",
+						);
+						let image = self.device.images.resource(proxy);
+						layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), slot as _);
+					},
+					(DescriptorBindingSlot::Sampler(slot), Descriptor::Sampler { sampler }) => unsafe {
+						let sampler = &self.device.samplers[sampler.0 as usize];
+						layout
+							.argument_encoder
+							.setSamplerState_atIndex(Some(sampler.sampler.as_ref()), slot as _);
+					},
+					(
+						DescriptorBindingSlot::CombinedImageSampler { texture, sampler },
+						Descriptor::CombinedImageSampler {
+							image,
+							sampler: sampler_handle,
+							..
+						},
+					) => unsafe {
+						let image = self.device.images.resource(image);
+						let sampler_state = &self.device.samplers[sampler_handle.0 as usize];
+						layout.argument_encoder.setTexture_atIndex(Some(image.texture.as_ref()), texture as _);
+						layout
+							.argument_encoder
+							.setSamplerState_atIndex(Some(sampler_state.sampler.as_ref()), sampler as _);
+					},
+					(
+						DescriptorBindingSlot::AccelerationStructure(slot),
+						Descriptor::AccelerationStructure { handle },
+					) => {
+						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
+							unsafe {
+								layout
+									.argument_encoder
+									.setAccelerationStructure_atIndex(Some(structure.as_ref()), slot as _);
+							}
+						}
+					}
+					_ => unreachable!(
+						"Validated Metal descriptor kind changed during materialization. The most likely cause is internal descriptor state corruption."
+					),
+				}
+			}
+		}
+
+		argument_buffer
+	}
+
+	/// Returns immutable native argument-buffer snapshots, reusing them while every retained set version is unchanged.
+	fn materialize_argument_buffers(
+		&self,
+		pipeline_handle: graphics_hardware_interface::PipelineHandle,
+	) -> SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>); 5]> {
+		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
+		let key = MaterializationKey {
+			descriptor_sets: self.bound_descriptor_set_handles.clone(),
+			sequence_index: self.sequence_index,
+		};
+		let versions = self
+			.bound_descriptor_set_handles
+			.iter()
+			.map(|handle| self.device.descriptor_sets[handle.0 as usize].version)
+			.collect::<SmallVec<[u64; 4]>>();
+
+		if let Some(materialization) = pipeline.materializations.borrow().get(&key) {
+			if materialization.versions == versions {
+				return materialization.argument_buffers.clone();
+			}
+		}
+
+		let layout = &self.device.pipeline_layouts[pipeline.layout.0 as usize];
+		let argument_buffers = layout
+			.stage_argument_layouts
+			.iter()
+			.map(|stage_layout| (stage_layout.stage, self.encode_stage_argument_buffer(stage_layout)))
+			.collect::<SmallVec<[_; 5]>>();
+		pipeline.materializations.borrow_mut().insert(
+			key,
+			Materialization {
+				versions,
+				argument_buffers: argument_buffers.clone(),
+			},
+		);
+		argument_buffers
 	}
 }
 
@@ -1642,134 +1871,82 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 
 impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 	fn bind_descriptor_sets(&mut self, sets: &[graphics_hardware_interface::DescriptorSetHandle]) -> &mut Self {
-		if sets.is_empty() {
-			return self;
-		}
-
 		let pipeline_layout_handle = self.active_pipeline_layout.expect(
 			"No pipeline layout is active. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
 		);
 		let pipeline_layout = &self.device.pipeline_layouts[pipeline_layout_handle.0 as usize];
 
+		// Binding replaces the complete flat set union; no implicit set index or prior binding survives.
+		self.bound_descriptor_set_handles.clear();
 		for descriptor_set_handle in sets {
 			let descriptor_set_handles = DescriptorSetHandle(descriptor_set_handle.0)
 				.root(self.device.descriptor_sets)
 				.get_all(self.device.descriptor_sets);
 			let descriptor_set_handle =
 				descriptor_set_handles[(self.sequence_index as usize).rem_euclid(descriptor_set_handles.len())];
-			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
-			let set_index = *pipeline_layout
-				.descriptor_set_template_indices
-				.get(&descriptor_set.descriptor_set_layout)
-				.expect(
-					"Descriptor set layout not found in the active Metal pipeline layout. The most likely cause is that a descriptor set incompatible with the currently bound pipeline was bound.",
-				);
-
-			if (set_index as usize) < self.bound_descriptor_set_handles.len() {
-				self.bound_descriptor_set_handles[set_index as usize] = (set_index, descriptor_set_handle);
-				self.bound_descriptor_set_handles.truncate(set_index as usize + 1);
-			} else {
-				assert_eq!(set_index as usize, self.bound_descriptor_set_handles.len());
-				self.bound_descriptor_set_handles.push((set_index, descriptor_set_handle));
-			}
+			self.bound_descriptor_set_handles.push(descriptor_set_handle);
 		}
+		self.validate_bound_descriptor_sets(pipeline_layout);
 
 		let bound_pipeline = self.bound_pipeline.expect(
 			"No pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
 		);
-
-		for &(set_index, descriptor_set_handle) in &self.bound_descriptor_set_handles {
-			let descriptor_set = &self.device.descriptor_sets[descriptor_set_handle.0 as usize];
-			let descriptor_set_layout = &self.device.descriptor_sets_layouts[descriptor_set.descriptor_set_layout.0 as usize];
-			let binding_index = ARGUMENT_BUFFER_BINDING_BASE + set_index;
-
-			match &self.device.pipelines[bound_pipeline.0 as usize].pipeline {
-				PipelineState::Raster(_) => {
-					if let Some(encoder) = self.active_render_encoder.as_ref() {
-						if descriptor_set_layout
-							.bindings
-							.iter()
-							.any(|binding| binding.stages.intersects(crate::Stages::TASK))
-						{
-							unsafe {
+		let argument_buffers = self.materialize_argument_buffers(bound_pipeline);
+		match &self.device.pipelines[bound_pipeline.0 as usize].pipeline {
+			PipelineState::Raster(_) => {
+				if let Some(encoder) = self.active_render_encoder.as_ref() {
+					for (stage, argument_buffer) in &argument_buffers {
+						unsafe {
+							if stage.intersects(crate::Stages::TASK) {
 								encoder.setObjectBuffer_offset_atIndex(
-									Some(descriptor_set.argument_buffer.as_ref()),
+									Some(argument_buffer.as_ref()),
 									0,
-									binding_index as _,
+									ARGUMENT_BUFFER_BINDING_BASE as _,
 								);
 							}
-						}
-
-						if descriptor_set_layout
-							.bindings
-							.iter()
-							.any(|binding| binding.stages.intersects(crate::Stages::MESH))
-						{
-							unsafe {
+							if stage.intersects(crate::Stages::MESH) {
 								encoder.setMeshBuffer_offset_atIndex(
-									Some(descriptor_set.argument_buffer.as_ref()),
+									Some(argument_buffer.as_ref()),
 									0,
-									binding_index as _,
+									ARGUMENT_BUFFER_BINDING_BASE as _,
 								);
 							}
-						}
-
-						if descriptor_set_layout
-							.bindings
-							.iter()
-							.any(|binding| binding.stages.intersects(crate::Stages::VERTEX))
-						{
-							unsafe {
+							if stage.intersects(crate::Stages::VERTEX) {
 								encoder.setVertexBuffer_offset_atIndex(
-									Some(descriptor_set.argument_buffer.as_ref()),
+									Some(argument_buffer.as_ref()),
 									0,
-									binding_index as _,
+									ARGUMENT_BUFFER_BINDING_BASE as _,
 								);
 							}
-						}
-
-						if descriptor_set_layout
-							.bindings
-							.iter()
-							.any(|binding| binding.stages.intersects(crate::Stages::FRAGMENT))
-						{
-							unsafe {
+							if stage.intersects(crate::Stages::FRAGMENT) {
 								encoder.setFragmentBuffer_offset_atIndex(
-									Some(descriptor_set.argument_buffer.as_ref()),
+									Some(argument_buffer.as_ref()),
 									0,
-									binding_index as _,
+									ARGUMENT_BUFFER_BINDING_BASE as _,
 								);
 							}
 						}
-
-						self.make_render_descriptor_set_resources_resident(
-							encoder.as_ref(),
-							descriptor_set,
-							descriptor_set_layout,
-						);
 					}
+					self.make_render_descriptor_resources_resident(encoder.as_ref(), pipeline_layout);
 				}
-				PipelineState::Compute(_) => {
-					if let Some(encoder) = self.active_compute_encoder.as_ref() {
-						if descriptor_set_layout
-							.bindings
-							.iter()
-							.any(|binding| binding.stages.intersects(crate::Stages::COMPUTE))
-						{
+			}
+			PipelineState::Compute(_) => {
+				if let Some(encoder) = self.active_compute_encoder.as_ref() {
+					for (stage, argument_buffer) in &argument_buffers {
+						if stage.intersects(crate::Stages::COMPUTE) {
 							unsafe {
 								encoder.setBuffer_offset_atIndex(
-									Some(descriptor_set.argument_buffer.as_ref()),
+									Some(argument_buffer.as_ref()),
 									0,
-									binding_index as _,
+									ARGUMENT_BUFFER_BINDING_BASE as _,
 								);
 							}
 						}
-
-						self.make_compute_descriptor_set_resources_resident(encoder.as_ref(), descriptor_set);
 					}
+					self.make_compute_descriptor_resources_resident(encoder.as_ref(), pipeline_layout);
 				}
-				PipelineState::RayTracing => {}
 			}
+			PipelineState::RayTracing => {}
 		}
 
 		self.consume_bound_descriptor_resources();

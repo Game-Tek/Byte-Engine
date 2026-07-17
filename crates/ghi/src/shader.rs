@@ -1,6 +1,6 @@
 use utils::Extent;
 
-use crate::AccessPolicies;
+use crate::{AccessPolicies, TextureViewTypes};
 
 /// Possible types of a shader source
 pub enum Sources<'a> {
@@ -144,16 +144,110 @@ fn compile_glsl(_name: &str, _source: &str) -> Result<CompiledShaderSource, Stri
 	)
 }
 
-#[derive(Clone, Copy)]
-pub struct BindingDescriptor {
-	pub(crate) set: u32,
-	pub(crate) binding: u32,
-	pub(crate) access: AccessPolicies,
+/// The `ResourceSlot` struct identifies one resource in a shader's flat resource namespace.
+///
+/// Slots are global to the pipeline interface. Descriptor sets may group resources by lifetime,
+/// but they never introduce another shader-visible coordinate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct ResourceSlot(u32);
+
+impl ResourceSlot {
+	pub const fn new(slot: u32) -> Self {
+		Self(slot)
+	}
+
+	pub const fn index(self) -> u32 {
+		self.0
+	}
 }
 
-impl BindingDescriptor {
-	pub fn new(set: u32, binding: u32, access: AccessPolicies) -> Self {
-		Self { set, binding, access }
+impl From<u32> for ResourceSlot {
+	fn from(slot: u32) -> Self {
+		Self::new(slot)
+	}
+}
+
+/// The `ResourceKind` enum describes the native resource category expected at a flat shader slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ResourceKind {
+	UniformBuffer,
+	StorageBuffer,
+	SampledImage,
+	CombinedImageSampler,
+	StorageImage,
+	InputAttachment,
+	Sampler,
+	AccelerationStructure,
+}
+
+/// The `ShaderResourceDescriptor` struct defines the complete retained-resource contract used to build a pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ShaderResourceDescriptor {
+	pub(crate) slot: ResourceSlot,
+	pub(crate) kind: ResourceKind,
+	pub(crate) count: u32,
+	pub(crate) access: AccessPolicies,
+	pub(crate) texture_view_type: TextureViewTypes,
+	pub(crate) buffer_stride: u32,
+}
+
+impl ShaderResourceDescriptor {
+	pub const fn new(slot: ResourceSlot, kind: ResourceKind, count: u32, access: AccessPolicies) -> Self {
+		assert!(
+			count > 0,
+			"Invalid shader resource count. The most likely cause is that a shader declared an empty resource array."
+		);
+		assert!(
+			slot.index().checked_add(count).is_some(),
+			"Invalid shader resource slot range. The most likely cause is that a resource array extends beyond the flat slot namespace."
+		);
+		Self {
+			slot,
+			kind,
+			count,
+			access,
+			texture_view_type: TextureViewTypes::Texture2D,
+			buffer_stride: 4,
+		}
+	}
+
+	pub const fn single(slot: ResourceSlot, kind: ResourceKind, access: AccessPolicies) -> Self {
+		Self::new(slot, kind, 1, access)
+	}
+
+	pub const fn texture_view_type(mut self, texture_view_type: TextureViewTypes) -> Self {
+		self.texture_view_type = texture_view_type;
+		self
+	}
+
+	pub const fn buffer_stride(mut self, buffer_stride: u32) -> Self {
+		self.buffer_stride = buffer_stride;
+		self
+	}
+
+	pub const fn slot(self) -> ResourceSlot {
+		self.slot
+	}
+
+	pub const fn kind(self) -> ResourceKind {
+		self.kind
+	}
+
+	pub const fn count(self) -> u32 {
+		self.count
+	}
+
+	pub const fn access(self) -> AccessPolicies {
+		self.access
+	}
+
+	pub const fn texture_view(self) -> TextureViewTypes {
+		self.texture_view_type
+	}
+
+	pub const fn buffer_element_stride(self) -> u32 {
+		self.buffer_stride
 	}
 }
 

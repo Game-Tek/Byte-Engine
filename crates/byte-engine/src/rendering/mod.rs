@@ -83,10 +83,18 @@ pub use window::{Features, Window};
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(
 	b: &resource_management::shader::generator::CompiledShaderBinding,
-) -> ghi::shader::BindingDescriptor {
-	ghi::shader::BindingDescriptor::new(
-		b.set,
-		b.binding,
+) -> ghi::ShaderResourceDescriptor {
+	use resource_management::shader::besl::evaluation::{BindingKind, TextureView};
+
+	let kind = match b.kind {
+		BindingKind::StorageBuffer => ghi::ResourceKind::StorageBuffer,
+		BindingKind::CombinedImageSampler { .. } => ghi::ResourceKind::CombinedImageSampler,
+		BindingKind::StorageImage => ghi::ResourceKind::StorageImage,
+	};
+	let descriptor = ghi::ShaderResourceDescriptor::new(
+		ghi::ResourceSlot::new(b.slot),
+		kind,
+		b.count,
 		if b.read {
 			ghi::AccessPolicies::READ
 		} else {
@@ -96,7 +104,16 @@ pub fn map_shader_binding_to_shader_binding_descriptor(
 		} else {
 			ghi::AccessPolicies::empty()
 		},
-	)
+	);
+
+	match b.kind {
+		BindingKind::CombinedImageSampler { view } => descriptor.texture_view_type(match view {
+			TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
+			TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
+			TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
+		}),
+		_ => descriptor,
+	}
 }
 
 /// Compiles shader source and creates a GHI shader handle for render pipeline setup.
@@ -109,11 +126,11 @@ pub fn create_shader_from_source(
 	name: Option<&str>,
 	source: ghi::shader::ShaderSource,
 	stage: ghi::ShaderTypes,
-	binding_descriptors: impl IntoIterator<Item = ghi::shader::BindingDescriptor>,
+	resource_descriptors: impl IntoIterator<Item = ghi::ShaderResourceDescriptor>,
 ) -> Result<ghi::ShaderHandle, String> {
 	let compiled = ghi::shader::compile(name.unwrap_or(""), source)?;
 	context
-		.create_shader(name, compiled.as_source(), stage, binding_descriptors)
+		.create_shader(name, compiled.as_source(), stage, resource_descriptors)
 		.map_err(|_| "Failed to create shader. The most likely cause is an incompatible shader interface.".to_string())
 }
 

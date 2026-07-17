@@ -11,7 +11,7 @@ pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledSh
 use crate::shader::{
 	besl::{
 		backends::msl::MSLShaderGenerator,
-		evaluation::{collect_bindings, BindingKind, BindingRecord, IntrinsicBindingTraversalOrder},
+		evaluation::{collect_bindings, BindingKind, BindingRecord},
 	},
 	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
 };
@@ -25,12 +25,12 @@ pub struct Compiler<A: Allocator + Clone = Global> {
 impl<A: Allocator + Clone> ShaderGenerator for Compiler<A> {}
 
 impl BindingRecord for CompiledShaderBinding {
-	fn from_usage(_name: &str, _kind: BindingKind, _count: u32, set: u32, binding: u32, read: bool, write: bool) -> Self {
-		Self::new(set, binding, read, write)
+	fn from_usage(_name: &str, kind: BindingKind, count: u32, slot: u32, read: bool, write: bool) -> Self {
+		Self::new(slot, kind, count, read, write)
 	}
 
-	fn usage(&self) -> (u32, u32, bool, bool) {
-		(self.set, self.binding, self.read, self.write)
+	fn usage(&self) -> (u32, BindingKind, u32, bool, bool) {
+		(self.slot, self.kind, self.count, self.read, self.write)
 	}
 }
 
@@ -93,10 +93,7 @@ impl<A: Allocator + Clone> Compiler<A> {
 			}
 		}
 
-		let bindings = collect_bindings::<CompiledShaderBinding>(
-			main_function_node,
-			IntrinsicBindingTraversalOrder::ElementsBeforeDefinition,
-		);
+		let bindings = collect_bindings::<CompiledShaderBinding>(main_function_node)?;
 
 		Ok(CompiledShader::new(
 			binary,
@@ -280,55 +277,84 @@ pub use Compiler as MSLShaderCompiler;
 #[cfg(test)]
 mod tests {
 	use super::{format_tool_failure, CompiledShaderBinding};
-	use crate::shader::besl::evaluation::{collect_bindings, BindingRecord, BindingUsage, IntrinsicBindingTraversalOrder};
+	use crate::shader::besl::evaluation::{collect_bindings, BindingRecord, BindingUsage};
 
-	fn binding(name: &str, set: u32, binding: u32, read: bool, write: bool) -> besl::NodeReference {
+	fn binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {
 		besl::Node::binding(
 			name,
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			set,
-			binding,
+			slot,
 			read,
 			write,
 		)
 		.into()
 	}
 
-	fn usage<T: BindingRecord>(bindings: &[T]) -> Vec<(u32, u32, bool, bool)> {
-		bindings.iter().map(BindingRecord::usage).collect()
+	fn usage<T: BindingRecord>(bindings: &[T]) -> Vec<(u32, bool, bool)> {
+		bindings
+			.iter()
+			.map(|binding| {
+				let (slot, _, _, read, write) = binding.usage();
+				(slot, read, write)
+			})
+			.collect()
 	}
 
 	#[test]
-	fn binding_collector_preserves_msl_intrinsic_order_and_first_wins_access() {
+	fn binding_collector_uses_only_instantiated_intrinsic_elements() {
 		let root = besl::Node::root();
 		let void_type = root.get_child("void").expect("Expected the built-in void type");
 		let intrinsic: besl::NodeReference = besl::Node::intrinsic(
 			"binding_order_fixture",
 			vec![
-				binding("definition_first", 0, 0, true, false),
-				binding("definition_only", 1, 2, true, true),
+				binding("definition_first", 0, true, false),
+				binding("definition_only", 2, true, true),
 			],
 			void_type.clone(),
 		)
 		.into();
-		// Conflicting duplicate slots make traversal order and first-wins behavior observable without compiling MSL.
+		// The intrinsic definition is only a template; emitted bindings come from the instantiated elements.
 		let call = besl::Node::expression(besl::Expressions::IntrinsicCall {
 			intrinsic,
 			arguments: Vec::new(),
-			elements: vec![
-				binding("element_first", 0, 0, false, true),
-				binding("element_duplicate", 0, 0, true, true),
-			],
+			elements: vec![binding("instantiated", 100, true, false)],
 		})
 		.into();
 		let main: besl::NodeReference = besl::Node::function("main", Vec::new(), void_type, vec![call]).into();
 
-		let compiled =
-			collect_bindings::<CompiledShaderBinding>(&main, IntrinsicBindingTraversalOrder::ElementsBeforeDefinition);
-		assert_eq!(usage(&compiled), vec![(0, 0, false, true), (1, 2, true, true)]);
+		let compiled = collect_bindings::<CompiledShaderBinding>(&main).expect("Expected instantiated flat resource metadata");
+		assert_eq!(usage(&compiled), vec![(100, true, false)]);
 
-		let evaluated = collect_bindings::<BindingUsage>(&main, IntrinsicBindingTraversalOrder::DefinitionBeforeElements);
-		assert_eq!(usage(&evaluated), vec![(0, 0, true, false), (1, 2, true, true)]);
+		let evaluated = collect_bindings::<BindingUsage>(&main).expect("Expected instantiated flat resource metadata");
+		assert_eq!(usage(&evaluated), vec![(100, true, false)]);
+	}
+
+	#[test]
+	fn binding_collector_deduplicates_shared_binding_references() {
+		let root = besl::Node::root();
+		let void_type = root.get_child("void").expect("Expected the built-in void type");
+		let shared = binding("shared", 3, true, false);
+		let main: besl::NodeReference =
+			besl::Node::function("main", Vec::new(), void_type, vec![shared.clone(), shared]).into();
+
+		let bindings = collect_bindings::<BindingUsage>(&main).expect("Expected one shared flat resource declaration");
+		assert_eq!(usage(&bindings), vec![(3, true, false)]);
+	}
+
+	#[test]
+	fn binding_collector_rejects_distinct_same_slot_declarations() {
+		let root = besl::Node::root();
+		let void_type = root.get_child("void").expect("Expected the built-in void type");
+		let main: besl::NodeReference = besl::Node::function(
+			"main",
+			Vec::new(),
+			void_type,
+			vec![binding("first", 3, true, false), binding("second", 3, false, true)],
+		)
+		.into();
+
+		let error = collect_bindings::<BindingUsage>(&main).expect_err("Expected distinct same-slot declarations to fail");
+		assert!(error.contains("Duplicate resource declaration at slot 3"));
 	}
 
 	#[test]

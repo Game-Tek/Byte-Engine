@@ -281,7 +281,7 @@ pub struct LutRenderPassSettings {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, DescriptorSlot, Texture};
+	use besl::vm::{DescriptorBindings, ResourceSlot, Texture};
 	use half::f16;
 	use resource_management::resources::lut::{Lut, LutKind};
 	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
@@ -321,9 +321,9 @@ mod tests {
 
 		for x in 0..3 {
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut source);
-			descriptors.bind_texture(DescriptorSlot::new(0, 1), &mut identity_lut);
-			descriptors.bind_image(DescriptorSlot::new(0, 2), &mut result);
+			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+			descriptors.bind_texture(ResourceSlot::new(1), &mut identity_lut);
+			descriptors.bind_image(ResourceSlot::new(2), &mut result);
 			run_at(&program, &mut descriptors, [x, 0]);
 		}
 

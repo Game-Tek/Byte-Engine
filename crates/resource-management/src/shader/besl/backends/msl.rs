@@ -16,9 +16,9 @@ pub struct Generator<A: Allocator + Clone = Global> {
 	minified: bool,
 	compute_binding_mode: ComputeBindingMode,
 	in_compute_body: bool,
-	compute_stage_context: Option<ComputeStageContext<A>>,
-	raster_stage_context: Option<RasterStageContext<A>>,
-	mesh_stage_context: Option<MeshStageContext<A>>,
+	compute_stage_context: Option<ComputeStageContext>,
+	raster_stage_context: Option<RasterStageContext>,
+	mesh_stage_context: Option<MeshStageContext>,
 	in_buffer_binding_struct: bool,
 }
 
@@ -31,23 +31,23 @@ pub enum ComputeBindingMode {
 }
 
 #[derive(Clone, Debug)]
-struct MeshStageContext<A: Allocator + Clone> {
-	binding_sets: Vec<u32, A>,
+struct MeshStageContext {
+	has_resources: bool,
 	has_push_constant: bool,
 	maximum_vertices: u32,
 	maximum_primitives: u32,
 }
 
 #[derive(Clone, Debug)]
-struct ComputeStageContext<A: Allocator + Clone> {
-	binding_sets: Vec<u32, A>,
+struct ComputeStageContext {
+	has_resources: bool,
 	has_push_constant: bool,
 }
 
-/// The `RasterStageContext` struct carries argument-buffer sets into binding-dependent raster helpers.
+/// The `RasterStageContext` struct carries the flat argument buffer into binding-dependent raster helpers.
 #[derive(Clone, Debug)]
-struct RasterStageContext<A: Allocator + Clone> {
-	binding_sets: Vec<u32, A>,
+struct RasterStageContext {
+	has_resources: bool,
 }
 
 struct ClassifiedNodes<'a, A: Allocator + Clone> {
@@ -252,6 +252,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
 		let order = ordered_shader_nodes_in(main_function_node, "MSL", self.allocator.clone());
+		Self::validate_reachable_binding_layout(&order)?;
 		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment) {
 			if let Some(source) = Self::find_full_source_passthrough(main_function_node) {
 				return Ok(source);
@@ -311,6 +312,48 @@ impl<A: Allocator + Clone> Generator<A> {
 			.any(|node| matches!(node.borrow().node(), besl::Nodes::Input { .. } | besl::Nodes::Output { .. }))
 	}
 
+	/// Validates logical flat-slot intervals and the packed Metal argument-ID space before source emission.
+	fn validate_reachable_binding_layout(order: &[besl::NodeReference]) -> Result<(), ()> {
+		let mut dense_argument_end = 0u32;
+
+		for (index, binding) in order.iter().enumerate() {
+			let Some((start, end, dense_count)) = Self::binding_layout(binding)? else {
+				continue;
+			};
+
+			dense_argument_end = dense_argument_end.checked_add(dense_count).ok_or(())?;
+
+			// Graph construction already removes repeated references, so any overlapping node here is a distinct declaration.
+			for other in &order[index + 1..] {
+				let Some((other_start, other_end, _)) = Self::binding_layout(other)? else {
+					continue;
+				};
+				if start < other_end && other_start < end {
+					return Err(());
+				}
+			}
+		}
+
+		Ok(())
+	}
+
+	fn binding_layout(binding: &besl::NodeReference) -> Result<Option<(u32, u32, u32)>, ()> {
+		let binding = binding.borrow();
+		let besl::Nodes::Binding { slot, count, r#type, .. } = binding.node() else {
+			return Ok(None);
+		};
+
+		let count = count.map_or(1, |count| count.get());
+		let end = slot.checked_add(count).ok_or(())?;
+		let dense_count = if matches!(r#type, besl::BindingTypes::CombinedImageSampler { .. }) {
+			count.checked_mul(2).ok_or(())?
+		} else {
+			count
+		};
+
+		Ok(Some((*slot, end, dense_count)))
+	}
+
 	fn function_return_type_name(function_node: &besl::NodeReference) -> Option<String> {
 		let node = function_node.borrow();
 		let besl::Nodes::Function { return_type, .. } = node.node() else {
@@ -324,14 +367,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		Self::function_return_type_name(function_node).is_some_and(|name| name != "void")
 	}
 
-	fn emit_argument_buffer_parameter(&self, string: &mut String, set: u32) {
-		string.push_str("constant _set");
-		let _ = write!(string, "{set}");
-		string.push_str("& set");
-		let _ = write!(string, "{set}");
-		string.push_str(" [[buffer(");
-		let _ = write!(string, "{}", 16 + set);
-		string.push_str(")]]");
+	fn emit_argument_buffer_parameter(&self, string: &mut String) {
+		string.push_str("constant _resources& resources [[buffer(16)]]");
 	}
 
 	fn classify_nodes<'a>(&self, order: &'a [besl::NodeReference]) -> ClassifiedNodes<'a, A> {
@@ -368,14 +405,6 @@ impl<A: Allocator + Clone> Generator<A> {
 		nodes
 	}
 
-	fn collect_binding_set_ids(&self, binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference, A>>) -> Vec<u32, A> {
-		let mut ids = Vec::with_capacity_in(binding_sets.len(), self.allocator.clone());
-		for &set in binding_sets.keys() {
-			ids.push(set);
-		}
-		ids
-	}
-
 	fn emit_declarations(&mut self, string: &mut String, nodes: &[&besl::NodeReference]) {
 		for node in nodes {
 			self.emit_node_string(string, node);
@@ -404,15 +433,15 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_declarations(string, &nodes.declarations);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
-		let binding_sets = self.group_bindings_by_set(nodes.bindings.as_slice());
-		for (&set, bindings) in &binding_sets {
-			self.emit_argument_buffer_struct(string, set, bindings);
+		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
+		if !bindings.is_empty() {
+			self.emit_argument_buffer_struct(string, &bindings);
 		}
 
 		self.emit_vertex_input_struct(string, &nodes.inputs);
 		self.emit_vertex_output_struct(string, &nodes.outputs);
 		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
-			binding_sets: self.collect_binding_set_ids(&binding_sets),
+			has_resources: !bindings.is_empty(),
 		});
 
 		for node in nodes.functions.iter().rev() {
@@ -423,7 +452,13 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_node_string(string, node);
 		}
 
-		self.emit_vertex_entry_point(string, main_function_node, &nodes.inputs, &nodes.outputs, &binding_sets);
+		self.emit_vertex_entry_point(
+			string,
+			main_function_node,
+			&nodes.inputs,
+			&nodes.outputs,
+			!bindings.is_empty(),
+		);
 		self.raster_stage_context = previous_raster_stage_context;
 	}
 
@@ -570,9 +605,9 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_declarations(string, &nodes.declarations);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
-		let binding_sets = self.group_bindings_by_set(nodes.bindings.as_slice());
-		for (&set, bindings) in &binding_sets {
-			self.emit_argument_buffer_struct(string, set, bindings);
+		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
+		if !bindings.is_empty() {
+			self.emit_argument_buffer_struct(string, &bindings);
 		}
 
 		self.emit_fragment_input_struct(string, &nodes.inputs);
@@ -580,7 +615,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_fragment_output_struct(string, &nodes.outputs);
 		}
 		let previous_raster_stage_context = self.raster_stage_context.replace(RasterStageContext {
-			binding_sets: self.collect_binding_set_ids(&binding_sets),
+			has_resources: !bindings.is_empty(),
 		});
 
 		for node in nodes.functions.iter().rev() {
@@ -591,7 +626,13 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_node_string(string, node);
 		}
 
-		self.emit_fragment_entry_point(string, main_function_node, &nodes.inputs, &nodes.outputs, &binding_sets);
+		self.emit_fragment_entry_point(
+			string,
+			main_function_node,
+			&nodes.inputs,
+			&nodes.outputs,
+			!bindings.is_empty(),
+		);
 		self.raster_stage_context = previous_raster_stage_context;
 	}
 
@@ -682,7 +723,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 		inputs: &[&besl::NodeReference],
 		outputs: &[&besl::NodeReference],
-		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference, A>>,
+		has_resources: bool,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function { statements, .. } = node.node() else {
@@ -705,9 +746,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_separator(string);
 			string.push_str("uint instance_id [[instance_id]]");
 		}
-		for &set in binding_sets.keys() {
+		if has_resources {
 			self.emit_separator(string);
-			self.emit_argument_buffer_parameter(string, set);
+			self.emit_argument_buffer_parameter(string);
 		}
 
 		formatting.push_block_start(string);
@@ -742,7 +783,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		main_function_node: &besl::NodeReference,
 		inputs: &[&besl::NodeReference],
 		outputs: &[&besl::NodeReference],
-		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference, A>>,
+		has_resources: bool,
 	) {
 		let node = RefCell::borrow(main_function_node);
 		let besl::Nodes::Function {
@@ -770,9 +811,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_separator(string);
 			string.push_str("bool front_facing [[front_facing]]");
 		}
-		for &set in binding_sets.keys() {
+		if has_resources {
 			self.emit_separator(string);
-			self.emit_argument_buffer_parameter(string, set);
+			self.emit_argument_buffer_parameter(string);
 		}
 
 		formatting.push_block_start(string);
@@ -830,9 +871,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		let binding_sets = self.group_bindings_by_set(nodes.bindings.as_slice());
+		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
 		let previous_compute_stage_context = self.compute_stage_context.replace(ComputeStageContext {
-			binding_sets: self.collect_binding_set_ids(&binding_sets),
+			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
 		});
 		let previous_in_compute_body = self.in_compute_body;
@@ -840,10 +881,8 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
-		if matches!(self.compute_binding_mode, ComputeBindingMode::ArgumentBuffers) {
-			for (&set, bindings) in &binding_sets {
-				self.emit_argument_buffer_struct(string, set, bindings);
-			}
+		if matches!(self.compute_binding_mode, ComputeBindingMode::ArgumentBuffers) && !bindings.is_empty() {
+			self.emit_argument_buffer_struct(string, &bindings);
 		}
 
 		for node in nodes.functions.iter().rev() {
@@ -856,7 +895,12 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		match self.compute_binding_mode {
 			ComputeBindingMode::ArgumentBuffers => {
-				self.emit_compute_entry_point_argument_buffers(string, main_function_node, &binding_sets, nodes.push_constant);
+				self.emit_compute_entry_point_argument_buffers(
+					string,
+					main_function_node,
+					!bindings.is_empty(),
+					nodes.push_constant,
+				);
 			}
 			ComputeBindingMode::BareResources => {
 				self.emit_compute_entry_point_bare_resources(
@@ -885,9 +929,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_push_constant_struct(string, push_constant);
 		}
 
-		let binding_sets = self.group_bindings_by_set(nodes.bindings.as_slice());
+		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
 		let previous_mesh_stage_context = self.mesh_stage_context.replace(MeshStageContext {
-			binding_sets: self.collect_binding_set_ids(&binding_sets),
+			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
 			maximum_vertices,
 			maximum_primitives,
@@ -896,8 +940,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_declarations(string, &nodes.inputs);
 		self.emit_buffer_binding_structs(string, &nodes.bindings);
 
-		for (&set, bindings) in &binding_sets {
-			self.emit_argument_buffer_struct(string, set, bindings);
+		if !bindings.is_empty() {
+			self.emit_argument_buffer_struct(string, &bindings);
 		}
 
 		if !Self::has_raw_mesh_output_structs(&nodes.declarations) {
@@ -915,7 +959,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_mesh_entry_point_argument_buffers(
 			string,
 			main_function_node,
-			&binding_sets,
+			!bindings.is_empty(),
 			nodes.push_constant,
 			maximum_vertices,
 			maximum_primitives,
@@ -979,32 +1023,15 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_struct_declaration_end(string);
 	}
 
-	fn group_bindings_by_set<'a>(
-		&self,
-		bindings: &[&'a besl::NodeReference],
-	) -> BTreeMap<u32, Vec<&'a besl::NodeReference, A>> {
-		let mut binding_sets = BTreeMap::<u32, Vec<&besl::NodeReference, A>>::new();
-
-		for binding in bindings {
-			let set = match binding.borrow().node() {
-				besl::Nodes::Binding { set, .. } => *set,
-				_ => continue,
-			};
-
-			binding_sets
-				.entry(set)
-				.or_insert_with(|| Vec::new_in(self.allocator.clone()))
-				.push(*binding);
-		}
-
-		for bindings in binding_sets.values_mut() {
-			bindings.sort_by_key(|binding| match binding.borrow().node() {
-				besl::Nodes::Binding { binding, .. } => *binding,
-				_ => u32::MAX,
-			});
-		}
-
-		binding_sets
+	/// Returns the resources in logical-slot order so Metal argument IDs are packed deterministically.
+	fn sort_bindings_by_slot<'a>(&self, bindings: &[&'a besl::NodeReference]) -> Vec<&'a besl::NodeReference, A> {
+		let mut sorted = Vec::with_capacity_in(bindings.len(), self.allocator.clone());
+		sorted.extend_from_slice(bindings);
+		sorted.sort_by_key(|binding| match binding.borrow().node() {
+			besl::Nodes::Binding { slot, .. } => *slot,
+			_ => u32::MAX,
+		});
+		sorted
 	}
 
 	fn emit_push_constant_struct(&mut self, string: &mut String, push_constant: &besl::NodeReference) {
@@ -1024,8 +1051,8 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_struct_declaration_end(string);
 	}
 
-	fn emit_argument_buffer_struct(&mut self, string: &mut String, set: u32, bindings: &[&besl::NodeReference]) {
-		self.emit_named_struct_start(string, &format!("_set{set}"));
+	fn emit_argument_buffer_struct(&mut self, string: &mut String, bindings: &[&besl::NodeReference]) {
+		self.emit_named_struct_start(string, "_resources");
 
 		let mut next_id = 0u32;
 		for binding in bindings {
@@ -1053,14 +1080,16 @@ impl<A: Allocator + Clone> Generator<A> {
 			string.push_str(" [[id(");
 			let _ = write!(string, "{next_id}");
 			string.push_str(")]]");
-			let descriptor_count = count.map(|count| count.get() as u32).unwrap_or(1);
+			let descriptor_count = count.map(|count| count.get()).unwrap_or(1);
 			if let Some(count) = count {
 				string.push('[');
 				let _ = write!(string, "{count}");
 				string.push(']');
 			}
 			self.emit_statement_end(string);
-			*next_id += descriptor_count;
+			*next_id = next_id.checked_add(descriptor_count).expect(
+				"Invalid dense Metal argument ID range. The most likely cause is that binding validation was bypassed before source emission.",
+			);
 		};
 
 		self.emit_indentation(string, 1);
@@ -1200,7 +1229,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
-		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference, A>>,
+		has_resources: bool,
 		push_constant: Option<&besl::NodeReference>,
 	) {
 		let node = RefCell::borrow(main_function_node);
@@ -1234,9 +1263,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_compute_push_constant_parameter(string, push_constant);
 		}
 
-		for &set in binding_sets.keys() {
+		if has_resources {
 			self.emit_separator(string);
-			self.emit_argument_buffer_parameter(string, set);
+			self.emit_argument_buffer_parameter(string);
 		}
 
 		ShaderFormatting::new(self.minified).push_block_start(string);
@@ -1250,7 +1279,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
-		binding_sets: &BTreeMap<u32, Vec<&besl::NodeReference, A>>,
+		has_resources: bool,
 		push_constant: Option<&besl::NodeReference>,
 		maximum_vertices: u32,
 		maximum_primitives: u32,
@@ -1292,11 +1321,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			has_previous_parameter = true;
 		}
 
-		for &set in binding_sets.keys() {
+		if has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			self.emit_argument_buffer_parameter(string, set);
+			self.emit_argument_buffer_parameter(string);
 			has_previous_parameter = true;
 		}
 
@@ -1337,8 +1366,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		let node = binding_node.borrow();
 		let besl::Nodes::Binding {
 			name,
-			set,
-			binding,
+			slot,
 			read,
 			write,
 			r#type,
@@ -1348,7 +1376,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
-		let index = set * 100 + binding;
+		let index = *slot;
 
 		match r#type {
 			besl::BindingTypes::Buffer { .. } => {
@@ -1392,20 +1420,16 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
-	fn emit_compute_binding_reference(&self, string: &mut String, set: u32, name: &str) {
+	fn emit_compute_binding_reference(&self, string: &mut String, name: &str) {
 		if self.mesh_stage_context.is_some() {
-			string.push_str("set");
-			let _ = write!(string, "{set}");
-			string.push('.');
+			string.push_str("resources.");
 			string.push_str(name);
 			return;
 		}
 
 		match self.compute_binding_mode {
 			ComputeBindingMode::ArgumentBuffers => {
-				string.push_str("set");
-				let _ = write!(string, "{set}");
-				string.push('.');
+				string.push_str("resources.");
 				string.push_str(name);
 			}
 			ComputeBindingMode::BareResources => string.push_str(name),
@@ -1413,10 +1437,8 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	/// Qualifies a raster resource through the argument buffer supplied to its entry point or helper.
-	fn emit_raster_binding_reference(&self, string: &mut String, set: u32, name: &str) {
-		string.push_str("set");
-		let _ = write!(string, "{set}");
-		string.push('.');
+	fn emit_raster_binding_reference(&self, string: &mut String, name: &str) {
+		string.push_str("resources.");
 		string.push_str(name);
 	}
 
@@ -1435,14 +1457,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			has_previous_parameter = true;
 		}
 
-		for &set in &mesh_stage_context.binding_sets {
+		if mesh_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			string.push_str("constant _set");
-			let _ = write!(string, "{set}");
-			string.push_str("& set");
-			let _ = write!(string, "{set}");
+			string.push_str("constant _resources& resources");
 			has_previous_parameter = true;
 		}
 
@@ -1474,12 +1493,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			has_previous_parameter = true;
 		}
 
-		for &set in &mesh_stage_context.binding_sets {
+		if mesh_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			string.push_str("set");
-			let _ = write!(string, "{set}");
+			string.push_str("resources");
 			has_previous_parameter = true;
 		}
 
@@ -1521,33 +1539,25 @@ impl<A: Allocator + Clone> Generator<A> {
 			has_previous_parameter = true;
 		}
 
-		for &set in &compute_stage_context.binding_sets {
+		if compute_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			string.push_str("constant _set");
-			let _ = write!(string, "{set}");
-			string.push_str("& set");
-			let _ = write!(string, "{set}");
-			has_previous_parameter = true;
+			string.push_str("constant _resources& resources");
 		}
 	}
 
 	/// Adds argument-buffer parameters to raster helpers that access BESL bindings.
-	fn emit_raster_hidden_parameters(&self, string: &mut String, mut has_previous_parameter: bool) {
+	fn emit_raster_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool) {
 		let Some(raster_stage_context) = &self.raster_stage_context else {
 			return;
 		};
 
-		for &set in &raster_stage_context.binding_sets {
+		if raster_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			string.push_str("constant _set");
-			let _ = write!(string, "{set}");
-			string.push_str("& set");
-			let _ = write!(string, "{set}");
-			has_previous_parameter = true;
+			string.push_str("constant _resources& resources");
 		}
 	}
 
@@ -1579,29 +1589,25 @@ impl<A: Allocator + Clone> Generator<A> {
 			has_previous_parameter = true;
 		}
 
-		for &set in &compute_stage_context.binding_sets {
+		if compute_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			string.push_str("set");
-			let _ = write!(string, "{set}");
-			has_previous_parameter = true;
+			string.push_str("resources");
 		}
 	}
 
 	/// Forwards entry-point argument buffers to binding-dependent raster helpers.
-	fn emit_raster_hidden_call_arguments(&self, string: &mut String, mut has_previous_parameter: bool) {
+	fn emit_raster_hidden_call_arguments(&self, string: &mut String, has_previous_parameter: bool) {
 		let Some(raster_stage_context) = &self.raster_stage_context else {
 			return;
 		};
 
-		for &set in &raster_stage_context.binding_sets {
+		if raster_stage_context.has_resources {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			string.push_str("set");
-			let _ = write!(string, "{set}");
-			has_previous_parameter = true;
+			string.push_str("resources");
 		}
 	}
 
@@ -1765,9 +1771,9 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	fn emit_visibility_texture_sample(&mut self, string: &mut String, slot: &besl::NodeReference, xy_only: bool) {
-		string.push_str("set0.textures[material.textures[");
+		string.push_str("resources.textures[material.textures[");
 		self.emit_visibility_texture_slot(string, slot);
-		string.push_str("]].sample(set0.textures_sampler[material.textures[");
+		string.push_str("]].sample(resources.textures_sampler[material.textures[");
 		self.emit_visibility_texture_slot(string, slot);
 		string.push_str("]], vertex_uv, level(0.0))");
 		if xy_only {
@@ -2142,8 +2148,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
 			besl::Nodes::Binding {
 				name,
-				set,
-				binding,
+				slot,
 				read,
 				write,
 				r#type,
@@ -2151,11 +2156,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				..
 			} => {
 				if self.in_compute_body || self.mesh_stage_context.is_some() {
-					self.emit_compute_binding_reference(string, *set, name);
+					self.emit_compute_binding_reference(string, name);
 					return;
 				}
 
-				let index = set * 100 + binding;
+				let index = *slot;
 
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
@@ -2409,13 +2414,13 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		true
 	}
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
-		if let besl::Nodes::Binding { set, .. } = source.borrow().node() {
+		if let besl::Nodes::Binding { .. } = source.borrow().node() {
 			if self.raster_stage_context.is_some() {
-				self.emit_raster_binding_reference(string, *set, name);
+				self.emit_raster_binding_reference(string, name);
 				return true;
 			}
 			if self.in_compute_body || self.mesh_stage_context.is_some() {
-				self.emit_compute_binding_reference(string, *set, name);
+				self.emit_compute_binding_reference(string, name);
 				return true;
 			}
 		}
@@ -2461,6 +2466,108 @@ mod tests {
 		};
 	}
 
+	fn sampled_binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {
+		besl::Node::binding(
+			name,
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			slot,
+			read,
+			write,
+		)
+		.into()
+	}
+
+	fn main_with(statements: Vec<besl::NodeReference>) -> besl::NodeReference {
+		let root = besl::Node::root();
+		let void = root.get_child("void").expect("Expected the built-in void type");
+		besl::Node::function("main", Vec::new(), void, statements).into()
+	}
+
+	#[test]
+	fn intrinsic_definition_only_bindings_do_not_shift_dense_argument_ids() {
+		let root = besl::Node::root();
+		let void = root.get_child("void").expect("Expected the built-in void type");
+		let intrinsic: besl::NodeReference = besl::Node::intrinsic(
+			"instantiated_binding_fixture",
+			vec![sampled_binding("definition_only", 0, true, false)],
+			void.clone(),
+		)
+		.into();
+		let call = besl::Node::expression(besl::Expressions::IntrinsicCall {
+			intrinsic,
+			arguments: Vec::new(),
+			elements: vec![sampled_binding("instantiated", 100, true, false)],
+		})
+		.into();
+		let main: besl::NodeReference = besl::Node::function("main", Vec::new(), void, vec![call]).into();
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected instantiated intrinsic binding generation");
+
+		assert_string_contains!(shader, "texture2d<float> instantiated [[id(0)]];");
+		assert_string_contains!(shader, "sampler instantiated_sampler [[id(1)]];");
+		assert!(!shader.contains("definition_only"));
+	}
+
+	#[test]
+	fn distinct_reachable_declarations_cannot_reuse_a_flat_slot() {
+		let main = main_with(vec![
+			sampled_binding("first", 4, true, false),
+			sampled_binding("second", 4, false, true),
+		]);
+
+		assert!(
+			Generator::new()
+				.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+				.is_err(),
+			"Distinct declarations at one flat slot must be rejected before MSL emission"
+		);
+	}
+
+	#[test]
+	fn distinct_reachable_declaration_ranges_cannot_overlap() {
+		let array: besl::NodeReference = besl::Node::binding_array(
+			"array",
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			4,
+			true,
+			false,
+			2,
+		)
+		.into();
+		let main = main_with(vec![array, sampled_binding("interior", 5, true, false)]);
+
+		assert!(
+			Generator::new()
+				.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+				.is_err(),
+			"Intersecting flat slot intervals must be rejected before MSL emission"
+		);
+	}
+
+	#[test]
+	fn dense_metal_argument_id_ranges_cannot_overflow() {
+		let binding: besl::NodeReference = besl::Node::binding_array(
+			"textures",
+			besl::BindingTypes::CombinedImageSampler { format: String::new() },
+			0,
+			true,
+			false,
+			u32::MAX as usize,
+		)
+		.into();
+		let main = main_with(vec![binding]);
+
+		assert!(
+			Generator::new()
+				.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+				.is_err(),
+			"Packed Metal argument IDs must not wrap"
+		);
+	}
+
 	#[test]
 	fn bindings() {
 		let main = generator::tests::bindings();
@@ -2473,8 +2580,8 @@ mod tests {
 		assert_string_contains!(shader, "struct _buff{float member;};");
 		assert_string_contains!(shader, "device _buff* buff [[buffer(0)]];");
 		assert_string_contains!(shader, "texture2d<float, access::write> image [[texture(1)]];");
-		assert_string_contains!(shader, "texture2d<float> texture [[texture(100)]];");
-		assert_string_contains!(shader, "sampler texture_sampler [[sampler(100)]];");
+		assert_string_contains!(shader, "texture2d<float> texture [[texture(2)]];");
+		assert_string_contains!(shader, "sampler texture_sampler [[sampler(2)]];");
 		assert_string_contains!(shader, "void main(){buff;image;texture;}");
 	}
 
@@ -2546,17 +2653,13 @@ mod tests {
 
 		assert_string_contains!(
 			shader,
-			"struct _set0{device _buff* buff [[id(0)]];texture2d<float, access::write> image [[id(1)]];};"
+			"struct _resources{device _buff* buff [[id(0)]];texture2d<float, access::write> image [[id(1)]];texture2d<float> texture [[id(2)]];sampler texture_sampler [[id(3)]];};"
 		);
 		assert_string_contains!(
 			shader,
-			"struct _set1{texture2d<float> texture [[id(0)]];sampler texture_sampler [[id(1)]];};"
+			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],constant _resources& resources [[buffer(16)]])"
 		);
-		assert_string_contains!(
-			shader,
-			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],constant _set0& set0 [[buffer(16)]],constant _set1& set1 [[buffer(17)]])"
-		);
-		assert_string_contains!(shader, "set0.buff;set0.image;set1.texture;");
+		assert_string_contains!(shader, "resources.buff;resources.image;resources.texture;");
 	}
 
 	#[test]
@@ -2572,8 +2675,8 @@ mod tests {
 		assert_string_contains!(shader, "kernel void besl_main(uint2 gid [[thread_position_in_grid]],");
 		assert_string_contains!(shader, "device _buff* buff [[buffer(0)]]");
 		assert_string_contains!(shader, "texture2d<float, access::write> image [[texture(1)]]");
-		assert_string_contains!(shader, "texture2d<float> texture [[texture(100)]]");
-		assert_string_contains!(shader, "sampler texture_sampler [[sampler(100)]]");
+		assert_string_contains!(shader, "texture2d<float> texture [[texture(2)]]");
+		assert_string_contains!(shader, "sampler texture_sampler [[sampler(2)]]");
 		assert_string_contains!(shader, "buff;image;texture;");
 	}
 
@@ -2586,8 +2689,8 @@ mod tests {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "set0.pixel_mapping->pixel_mapping[0]");
-		assert_string_contains!(shader, "set0.meshes->meshes[1]");
+		assert_string_contains!(shader, "resources.pixel_mapping->pixel_mapping[0]");
+		assert_string_contains!(shader, "resources.meshes->meshes[1]");
 	}
 
 	#[test]
@@ -2607,14 +2710,12 @@ mod tests {
 				"positions",
 				besl::parser::Node::buffer("Positions", vec![besl::parser::Node::member("values", "vec3f[8]")]),
 				0,
-				0,
 				true,
 				false,
 			),
 			besl::parser::Node::binding(
 				"uvs",
 				besl::parser::Node::buffer("Uvs", vec![besl::parser::Node::member("values", "vec2f[8]")]),
-				0,
 				1,
 				true,
 				false,
@@ -2992,7 +3093,6 @@ struct PrimitiveOutput {
 			"cameras",
 			besl::parser::Node::buffer("CamerasBuffer", vec![besl::parser::Node::member("cameras", "Camera[8]")]),
 			0,
-			0,
 			true,
 			false,
 		);
@@ -3000,7 +3100,7 @@ struct PrimitiveOutput {
 			Some("".into()),
 			None,
 			Some(
-				"position = set0.cameras->cameras[0].view_projection * float4(in_position, 1.0); out_instance_index = 0u;"
+				"position = resources.cameras->cameras[0].view_projection * float4(in_position, 1.0); out_instance_index = 0u;"
 					.into(),
 			),
 			&["cameras", "in_position", "out_instance_index"],
@@ -3024,7 +3124,7 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "struct _cameras{Camera cameras[8];};");
-		assert_string_contains!(shader, "struct _set0{constant _cameras* cameras [[id(0)]];};");
+		assert_string_contains!(shader, "struct _resources{constant _cameras* cameras [[id(0)]];};");
 		assert_string_contains!(shader, "struct VertexInput{float3 in_position [[attribute(0)]];};");
 		assert_string_contains!(
 			shader,
@@ -3032,9 +3132,9 @@ struct PrimitiveOutput {
 		);
 		assert_string_contains!(
 			shader,
-			"vertex VertexOutput besl_main(VertexInput in [[stage_in]],constant _set0& set0 [[buffer(16)]])"
+			"vertex VertexOutput besl_main(VertexInput in [[stage_in]],constant _resources& resources [[buffer(16)]])"
 		);
-		assert_string_contains!(shader, "position = set0.cameras->cameras[0].view_projection");
+		assert_string_contains!(shader, "position = resources.cameras->cameras[0].view_projection");
 		assert_string_contains!(shader, "return out;");
 	}
 
@@ -3053,7 +3153,6 @@ struct PrimitiveOutput {
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("cameras", camera, 1)],
 				},
-				0,
 				0,
 				true,
 				false,
@@ -3081,14 +3180,14 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate raster helper MSL. The most likely cause is missing raster resource context.");
 
-		assert_string_contains!(shader, "float4x4 camera_matrix(constant _set0& set0);");
+		assert_string_contains!(shader, "float4x4 camera_matrix(constant _resources& resources);");
 		assert_string_contains!(
 			shader,
-			"float4x4 camera_matrix(constant _set0& set0){return set0.cameras->cameras[0].view_projection;}"
+			"float4x4 camera_matrix(constant _resources& resources){return resources.cameras->cameras[0].view_projection;}"
 		);
 		assert_string_contains!(
 			shader,
-			"position=(camera_matrix(set0)*float4(in_position.x,in_position.y,in_position.z,1.0));"
+			"position=(camera_matrix(resources)*float4(in_position.x,in_position.y,in_position.z,1.0));"
 		);
 	}
 
@@ -3107,7 +3206,6 @@ struct PrimitiveOutput {
 				"texture",
 				besl::BindingTypes::CombinedImageSampler { format: String::new() },
 				0,
-				0,
 				true,
 				false,
 			)
@@ -3122,7 +3220,7 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
 
-		assert_string_contains!(shader, "float4 texel=set0.texture.read(coord);");
+		assert_string_contains!(shader, "float4 texel=resources.texture.read(coord);");
 	}
 
 	#[test]
@@ -3501,7 +3599,6 @@ struct PrimitiveOutput {
 			"meshlets",
 			besl::parser::Node::buffer("MeshletBuffer", vec![besl::parser::Node::member("count", "u32")]),
 			0,
-			0,
 			true,
 			false,
 		);
@@ -3568,8 +3665,8 @@ struct PrimitiveOutput {
 
 		assert_string_contains!(shader, "void helper()");
 		assert_string_contains!(shader, "helper();");
-		assert!(!shader.contains("void helper(constant _set0& set0"));
-		assert!(!shader.contains("helper(set0,threadgroup_position,thread_index,out_mesh);"));
+		assert!(!shader.contains("void helper(constant _resources& resources"));
+		assert!(!shader.contains("helper(resources,threadgroup_position,thread_index,out_mesh);"));
 	}
 
 	#[test]
@@ -3702,7 +3799,6 @@ struct PrimitiveOutput {
 use std::{
 	alloc::{Allocator, Global},
 	cell::RefCell,
-	collections::BTreeMap,
 	fmt::Write as _,
 	vec::Vec,
 };

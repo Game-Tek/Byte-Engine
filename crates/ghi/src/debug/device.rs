@@ -2,9 +2,8 @@ use utils::Extent;
 
 use crate::{
 	buffer, image, pipelines::VertexElement, sampler, shader::Sources, window, AllocationHandle, BaseBufferHandle,
-	BindingConstructor, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
-	CommandBufferHandle, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetHandle,
-	DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle, Formats, ImageHandle, MeshHandle, PipelineHandle,
+	BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle,
+	DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, Formats, ImageHandle, MeshHandle, PipelineHandle,
 	PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, SwapchainHandle, SynchronizerHandle,
 	TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
 };
@@ -54,33 +53,13 @@ impl Device {
 		_name: Option<&str>,
 		_shader_source_type: Sources,
 		_stage: ShaderTypes,
-		_shader_binding_descriptors: impl IntoIterator<Item = crate::shader::BindingDescriptor>,
+		_shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()> {
 		Ok(ShaderHandle(0))
 	}
 
-	pub fn create_descriptor_set_template(
-		&mut self,
-		_name: Option<&str>,
-		_binding_templates: &[DescriptorSetBindingTemplate],
-	) -> DescriptorSetTemplateHandle {
-		DescriptorSetTemplateHandle(0)
-	}
-
-	pub fn create_descriptor_set(
-		&mut self,
-		_name: Option<&str>,
-		_descriptor_set_template_handle: &DescriptorSetTemplateHandle,
-	) -> DescriptorSetHandle {
+	pub fn create_descriptor_set(&mut self, _name: Option<&str>) -> DescriptorSetHandle {
 		DescriptorSetHandle(0)
-	}
-
-	pub fn create_descriptor_binding(
-		&mut self,
-		_descriptor_set: DescriptorSetHandle,
-		_binding_constructor: BindingConstructor,
-	) -> DescriptorSetBindingHandle {
-		DescriptorSetBindingHandle(0)
 	}
 
 	pub fn create_raster_pipeline(&mut self, _builder: crate::pipelines::raster::Builder) -> PipelineHandle {
@@ -167,7 +146,7 @@ impl Device {
 		BottomLevelAccelerationStructureHandle(0)
 	}
 
-	pub fn write(&mut self, _descriptor_set_writes: &[crate::descriptors::Write]) {}
+	pub fn write(&mut self, _descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {}
 
 	pub fn write_instance(
 		&mut self,

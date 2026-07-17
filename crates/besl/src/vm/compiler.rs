@@ -79,7 +79,7 @@ impl<'a> Compiler<'a> {
 	fn compile_function(
 		function: &NodeReference,
 		function_ids: &'a HashMap<NodeReference, usize>,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 		specializations: &'a SpecializationValues,
 	) -> Result<ExecutableFunction, VmError> {
 		let signature = extract_function_signature(function)?;
@@ -122,7 +122,7 @@ impl<'a> Compiler<'a> {
 	fn compile_statement(
 		&mut self,
 		statement: &NodeReference,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let borrowed = statement.borrow();
 		let result = match borrowed.node() {
@@ -211,7 +211,7 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		condition: &NodeReference,
 		statements: &[NodeReference],
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let condition_register = self.compile_value_expression(condition, &ValueType::Bool, descriptor_layouts)?;
 		let jump_if_zero_index = self.instructions.len();
@@ -239,7 +239,7 @@ impl<'a> Compiler<'a> {
 		condition: &NodeReference,
 		update: &NodeReference,
 		statements: &[NodeReference],
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		self.compile_statement(initializer, descriptor_layouts)?;
 
@@ -284,7 +284,7 @@ impl<'a> Compiler<'a> {
 		statement: &NodeReference,
 		left: NodeReference,
 		right: NodeReference,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let left_expression = left.borrow();
 
@@ -347,7 +347,7 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		expression: &NodeReference,
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		let borrowed = expression.borrow();
 		match borrowed.node() {
@@ -474,10 +474,7 @@ impl<'a> Compiler<'a> {
 				} else if is_resource_type(expected_type) && matches!(source.borrow().node(), Nodes::Binding { .. }) {
 					let (slot, layout) = {
 						let source_ref = source.borrow();
-						let Nodes::Binding {
-							set, binding, r#type, ..
-						} = source_ref.node()
-						else {
+						let Nodes::Binding { slot, r#type, .. } = source_ref.node() else {
 							unreachable!("Resource sources are checked before compiling the handle")
 						};
 						let layout = match r#type {
@@ -490,7 +487,7 @@ impl<'a> Compiler<'a> {
 								});
 							}
 						};
-						(DescriptorSlot::new(*set, *binding), layout)
+						(ResourceSlot::new(*slot), layout)
 					};
 					match descriptor_layouts.get(&slot) {
 						Some(existing) if existing != &layout => {
@@ -574,7 +571,7 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		expression: &NodeReference,
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		if accessor_references_buffer(expression) {
 			let target = self.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?;
@@ -638,7 +635,7 @@ impl<'a> Compiler<'a> {
 	fn compile_resolved_buffer_load(
 		&mut self,
 		target: ResolvedBufferAccess,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		let target = self.lower_buffer_access(target, descriptor_layouts)?;
 		let register = self.allocate_register();
@@ -667,7 +664,7 @@ impl<'a> Compiler<'a> {
 	fn lower_buffer_access(
 		&mut self,
 		target: ResolvedBufferAccess,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<LoweredBufferAccess, VmError> {
 		let index = match target.index_expression {
 			Some(index_expression) => {
@@ -714,7 +711,7 @@ impl<'a> Compiler<'a> {
 		intrinsic: &NodeReference,
 		arguments: &[NodeReference],
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		let intrinsic_ref = intrinsic.borrow();
 		let (name, return_type) = match intrinsic_ref.node() {
@@ -1110,7 +1107,7 @@ impl<'a> Compiler<'a> {
 		function: &NodeReference,
 		parameters: &[NodeReference],
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		let function_ref = function.borrow();
 		match function_ref.node() {
@@ -1175,7 +1172,7 @@ impl<'a> Compiler<'a> {
 		expected_type: &ValueType,
 		constructor_type: ValueType,
 		fields: &[NodeReference],
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		if &constructor_type != expected_type {
 			return Err(VmError::TypeMismatch {
@@ -1245,7 +1242,7 @@ impl<'a> Compiler<'a> {
 		&self,
 		expression: &NodeReference,
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<ValueType, VmError> {
 		let borrowed = expression.borrow();
 		match borrowed.node() {
@@ -1359,7 +1356,7 @@ impl<'a> Compiler<'a> {
 		&self,
 		expression: &NodeReference,
 		access: RequiredAccess,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<ResolvedBufferAccess, VmError> {
 		let (binding, selectors) = extract_access_chain(expression)?;
 		let Some(AccessSelector::Member(member_name)) = selectors.first() else {
@@ -1371,14 +1368,13 @@ impl<'a> Compiler<'a> {
 		let binding_ref = binding.borrow();
 		let (slot, layout) = match binding_ref.node() {
 			Nodes::Binding {
-				set,
-				binding,
+				slot,
 				read,
 				write,
 				r#type,
 				..
 			} => {
-				let slot = DescriptorSlot::new(*set, *binding);
+				let slot = ResourceSlot::new(*slot);
 				require_descriptor_access(slot, *read, *write, access)?;
 				let layout = match r#type {
 					BindingTypes::Buffer { members } => compile_buffer_layout(members)?,
@@ -1485,8 +1481,8 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		expression: &NodeReference,
 		access: RequiredAccess,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
-	) -> Result<DescriptorSlot, VmError> {
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
+	) -> Result<ResourceSlot, VmError> {
 		let binding = match extract_binding_reference(expression) {
 			Ok(binding) => binding,
 			Err(_) => {
@@ -1508,14 +1504,13 @@ impl<'a> Compiler<'a> {
 		let binding_ref = binding.borrow();
 		let slot = match binding_ref.node() {
 			Nodes::Binding {
-				set,
-				binding,
+				slot,
 				read,
 				write,
 				r#type,
 				..
 			} => {
-				let slot = DescriptorSlot::new(*set, *binding);
+				let slot = ResourceSlot::new(*slot);
 				require_descriptor_access(slot, *read, *write, access)?;
 				match r#type {
 					BindingTypes::CombinedImageSampler { .. } => slot,
@@ -1552,8 +1547,8 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		expression: &NodeReference,
 		access: RequiredAccess,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
-	) -> Result<DescriptorSlot, VmError> {
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
+	) -> Result<ResourceSlot, VmError> {
 		let binding = match extract_binding_reference(expression) {
 			Ok(binding) => binding,
 			Err(_) => {
@@ -1572,14 +1567,13 @@ impl<'a> Compiler<'a> {
 		let binding_ref = binding.borrow();
 		let slot = match binding_ref.node() {
 			Nodes::Binding {
-				set,
-				binding,
+				slot,
 				read,
 				write,
 				r#type,
 				..
 			} => {
-				let slot = DescriptorSlot::new(*set, *binding);
+				let slot = ResourceSlot::new(*slot);
 				require_descriptor_access(slot, *read, *write, access)?;
 				match r#type {
 					BindingTypes::Image { .. } => slot,
@@ -1615,7 +1609,7 @@ impl<'a> Compiler<'a> {
 	fn resolve_output_access(
 		&self,
 		expression: &NodeReference,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<ResolvedBufferAccess, VmError> {
 		let borrowed = expression.borrow();
 		let (source, output_name) = match borrowed.node() {
@@ -1696,7 +1690,7 @@ impl<'a> Compiler<'a> {
 	fn resolve_output_array_access(
 		&self,
 		expression: &NodeReference,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<ResolvedBufferAccess, VmError> {
 		let (left, index_expression) = {
 			let borrowed = expression.borrow();
@@ -1715,7 +1709,7 @@ impl<'a> Compiler<'a> {
 	fn resolve_input_access(
 		&self,
 		expression: &NodeReference,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<ResolvedBufferAccess, VmError> {
 		let borrowed = expression.borrow();
 		let (source, input_name) = match borrowed.node() {
@@ -1786,7 +1780,7 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		function: &NodeReference,
 		parameters: &[NodeReference],
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let function_ref = function.borrow();
 		match function_ref.node() {
@@ -1823,7 +1817,7 @@ impl<'a> Compiler<'a> {
 	fn compile_return_statement(
 		&mut self,
 		value: Option<&NodeReference>,
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		match (self.return_type.clone(), value) {
 			(None, None) => {
@@ -1850,7 +1844,7 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		intrinsic: &NodeReference,
 		arguments: &[NodeReference],
-		descriptor_layouts: &mut HashMap<DescriptorSlot, DescriptorLayout>,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let intrinsic_ref = intrinsic.borrow();
 		let name = match intrinsic_ref.node() {
@@ -1931,7 +1925,7 @@ impl<'a> Compiler<'a> {
 
 /// The `ResolvedBufferAccess` struct carries a validated packed-memory target into instruction lowering.
 struct ResolvedBufferAccess {
-	slot: DescriptorSlot,
+	slot: ResourceSlot,
 	offset: usize,
 	stride: usize,
 	count: usize,
@@ -1941,7 +1935,7 @@ struct ResolvedBufferAccess {
 
 /// The `LoweredBufferAccess` struct carries the single compiled index register used by a memory instruction.
 struct LoweredBufferAccess {
-	slot: DescriptorSlot,
+	slot: ResourceSlot,
 	offset: usize,
 	stride: usize,
 	count: usize,
@@ -1982,7 +1976,7 @@ impl RequiredAccess {
 
 /// Validates one binding's declared access at the shared descriptor-resolution seam.
 fn require_descriptor_access(
-	slot: DescriptorSlot,
+	slot: ResourceSlot,
 	readable: bool,
 	writable: bool,
 	required: RequiredAccess,

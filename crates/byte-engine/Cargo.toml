@@ -13,6 +13,7 @@ keywords = ["game-engine", "graphics", "rendering", "ui", "audio"]
 categories = ["game-engines", "graphics", "rendering"]
 
 rust-version.workspace = true
+build = "build.rs"
 [features]
 default = ["headed", "network"]
 headed = ["dep:ahi", "dep:ghi", "dep:besl"]

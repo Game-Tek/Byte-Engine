@@ -2,7 +2,7 @@ use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
-	context::ContextCreate as _,
+	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 };
 use resource_management::{
@@ -16,37 +16,42 @@ pub(crate) const SKINNING_WORKGROUP_SIZE: u32 = 64;
 pub(crate) const MAX_SKINNED_VERTICES: usize = 65_536 * 4;
 pub(crate) const MAX_SKINNING_MATRICES: usize = 65_536;
 
-pub(crate) const SOURCE_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::storage_buffer(0, ghi::Stages::COMPUTE)
-		.buffer_stride(12)
-		.buffer_read_only(true);
-pub(crate) const SOURCE_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::storage_buffer(1, ghi::Stages::COMPUTE)
-		.buffer_stride(12)
-		.buffer_read_only(true);
-pub(crate) const SOURCE_JOINTS_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::storage_buffer(2, ghi::Stages::COMPUTE)
-		.buffer_stride(8)
-		.buffer_read_only(true);
-pub(crate) const SOURCE_WEIGHTS_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::storage_buffer(3, ghi::Stages::COMPUTE)
-		.buffer_stride(16)
-		.buffer_read_only(true);
-pub(crate) const MATRIX_PALETTE_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::storage_buffer(4, ghi::Stages::COMPUTE)
-		.buffer_stride(64)
-		.buffer_read_only(true);
-pub(crate) const SKINNED_VERTICES_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::storage_buffer(5, ghi::Stages::COMPUTE).buffer_stride(32);
-
-const COMPUTE_BINDINGS: [ghi::DescriptorSetBindingTemplate; 6] = [
-	SOURCE_POSITIONS_BINDING,
-	SOURCE_NORMALS_BINDING,
-	SOURCE_JOINTS_BINDING,
-	SOURCE_WEIGHTS_BINDING,
-	MATRIX_PALETTE_BINDING,
-	SKINNED_VERTICES_BINDING,
-];
+pub(crate) const SOURCE_POSITIONS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(0),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+)
+.buffer_stride(12);
+pub(crate) const SOURCE_NORMALS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+)
+.buffer_stride(12);
+pub(crate) const SOURCE_JOINTS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(2),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+)
+.buffer_stride(8);
+pub(crate) const SOURCE_WEIGHTS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(3),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+)
+.buffer_stride(16);
+pub(crate) const MATRIX_PALETTE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(4),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+)
+.buffer_stride(64);
+pub(crate) const SKINNED_VERTICES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(5),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::WRITE,
+)
+.buffer_stride(32);
 
 /// The `SkinnedVertex` struct provides one aligned position-and-normal record for all visibility rendering stages.
 #[repr(C, align(16))]
@@ -129,19 +134,20 @@ impl SkinningPass {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 
-		let descriptor_set_layout =
-			context.create_descriptor_set_template(Some("Visibility Skinning Compute Layout"), &COMPUTE_BINDINGS);
-		let descriptor_set = context.create_descriptor_set(Some("Visibility Skinning Compute Set"), &descriptor_set_layout);
-		for (binding, buffer) in [
-			(&SOURCE_POSITIONS_BINDING, sources.positions),
-			(&SOURCE_NORMALS_BINDING, sources.normals),
-			(&SOURCE_JOINTS_BINDING, sources.joints),
-			(&SOURCE_WEIGHTS_BINDING, sources.weights),
-			(&MATRIX_PALETTE_BINDING, matrix_palette_buffer.into()),
-			(&SKINNED_VERTICES_BINDING, skinned_vertices_buffer.into()),
-		] {
-			context.create_descriptor_binding(descriptor_set, ghi::BindingConstructor::buffer(binding, buffer));
-		}
+		let descriptor_set = context.create_descriptor_set(Some("Visibility Skinning Compute Set"));
+		let writes = [
+			ghi::DescriptorWrite::buffer(descriptor_set, SOURCE_POSITIONS_BINDING.slot(), sources.positions),
+			ghi::DescriptorWrite::buffer(descriptor_set, SOURCE_NORMALS_BINDING.slot(), sources.normals),
+			ghi::DescriptorWrite::buffer(descriptor_set, SOURCE_JOINTS_BINDING.slot(), sources.joints),
+			ghi::DescriptorWrite::buffer(descriptor_set, SOURCE_WEIGHTS_BINDING.slot(), sources.weights),
+			ghi::DescriptorWrite::buffer(descriptor_set, MATRIX_PALETTE_BINDING.slot(), matrix_palette_buffer.into()),
+			ghi::DescriptorWrite::buffer(
+				descriptor_set,
+				SKINNED_VERTICES_BINDING.slot(),
+				skinned_vertices_buffer.into(),
+			),
+		];
+		context.write(&writes);
 
 		let shader = crate::rendering::shader_store::create_shader(
 			context,
@@ -157,19 +163,18 @@ impl SkinningPass {
 				interface: material::ShaderInterface {
 					workgroup_size: Some((SKINNING_WORKGROUP_SIZE, 1, 1)),
 					bindings: vec![
-						material::Binding::new(0, 0, true, false),
-						material::Binding::new(0, 1, true, false),
-						material::Binding::new(0, 2, true, false),
-						material::Binding::new(0, 3, true, false),
-						material::Binding::new(0, 4, true, false),
-						material::Binding::new(0, 5, false, true),
+						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(2, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(3, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(4, material::BindingKind::StorageBuffer, 1, true, false),
+						material::Binding::new(5, material::BindingKind::StorageBuffer, 1, false, true),
 					],
 				},
 			},
 		)
 		.expect("Failed to create visibility skinning shader. The most likely cause is an incompatible packed buffer layout.");
 		let pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[descriptor_set_layout],
 			&[ghi::pipelines::PushConstantRange::new(
 				0,
 				std::mem::size_of::<SkinningDispatch>() as u32,
@@ -276,7 +281,6 @@ fn build_skinning_program(
 				members: vec![besl::Node::array("values", vec3f_type.clone(), source_vertex_capacity)],
 			},
 			0,
-			0,
 			true,
 			false,
 		)
@@ -286,7 +290,6 @@ fn build_skinning_program(
 			besl::BindingTypes::Buffer {
 				members: vec![besl::Node::array("values", vec3f_type, source_vertex_capacity)],
 			},
-			0,
 			1,
 			true,
 			false,
@@ -297,7 +300,6 @@ fn build_skinning_program(
 			besl::BindingTypes::Buffer {
 				members: vec![besl::Node::array("values", vec4u16_type, source_vertex_capacity)],
 			},
-			0,
 			2,
 			true,
 			false,
@@ -308,7 +310,6 @@ fn build_skinning_program(
 			besl::BindingTypes::Buffer {
 				members: vec![besl::Node::array("values", vec4f_type.clone(), source_vertex_capacity)],
 			},
-			0,
 			3,
 			true,
 			false,
@@ -319,7 +320,6 @@ fn build_skinning_program(
 			besl::BindingTypes::Buffer {
 				members: vec![besl::Node::array("values", skinning_matrix, matrix_capacity)],
 			},
-			0,
 			4,
 			true,
 			false,
@@ -330,7 +330,6 @@ fn build_skinning_program(
 			besl::BindingTypes::Buffer {
 				members: vec![besl::Node::array("values", skinned_vertex, output_vertex_capacity)],
 			},
-			0,
 			5,
 			false,
 			true,
@@ -462,7 +461,7 @@ main: fn () -> void {
 "#;
 #[cfg(test)]
 mod tests {
-	use besl::vm::{Buffer, DescriptorBindings, DescriptorSlot, Value};
+	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
 	use resource_management::shader::{
 		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
 		generator::{ShaderGenerationSettings, ShaderGenerator as _},
@@ -512,12 +511,12 @@ mod tests {
 	#[test]
 	fn skinning_besl_vm_blends_joint_matrices_and_writes_position_and_normal() {
 		let program = compile(build_skinning_program(4, 4, 4));
-		let mut positions = buffer(&program, DescriptorSlot::new(0, 0));
-		let mut normals = buffer(&program, DescriptorSlot::new(0, 1));
-		let mut joints = buffer(&program, DescriptorSlot::new(0, 2));
-		let mut weights = buffer(&program, DescriptorSlot::new(0, 3));
-		let mut palette = buffer(&program, DescriptorSlot::new(0, 4));
-		let mut output = buffer(&program, DescriptorSlot::new(0, 5));
+		let mut positions = buffer(&program, ResourceSlot::new(0));
+		let mut normals = buffer(&program, ResourceSlot::new(1));
+		let mut joints = buffer(&program, ResourceSlot::new(2));
+		let mut weights = buffer(&program, ResourceSlot::new(3));
+		let mut palette = buffer(&program, ResourceSlot::new(4));
+		let mut output = buffer(&program, ResourceSlot::new(5));
 		let mut push_constant = Buffer::new(
 			program
 				.push_constant_layout()
@@ -553,12 +552,12 @@ mod tests {
 
 		{
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(DescriptorSlot::new(0, 0), &mut positions);
-			descriptors.bind_buffer(DescriptorSlot::new(0, 1), &mut normals);
-			descriptors.bind_buffer(DescriptorSlot::new(0, 2), &mut joints);
-			descriptors.bind_buffer(DescriptorSlot::new(0, 3), &mut weights);
-			descriptors.bind_buffer(DescriptorSlot::new(0, 4), &mut palette);
-			descriptors.bind_buffer(DescriptorSlot::new(0, 5), &mut output);
+			descriptors.bind_buffer(ResourceSlot::new(0), &mut positions);
+			descriptors.bind_buffer(ResourceSlot::new(1), &mut normals);
+			descriptors.bind_buffer(ResourceSlot::new(2), &mut joints);
+			descriptors.bind_buffer(ResourceSlot::new(3), &mut weights);
+			descriptors.bind_buffer(ResourceSlot::new(4), &mut palette);
+			descriptors.bind_buffer(ResourceSlot::new(5), &mut output);
 			descriptors.bind_push_constant(&mut push_constant);
 			run_at(&program, &mut descriptors, [0, 0]);
 		}
@@ -629,12 +628,12 @@ mod tests {
 			},
 			ghi::ShaderTypes::Compute,
 			[
-				SOURCE_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				SOURCE_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				SOURCE_JOINTS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				SOURCE_WEIGHTS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MATRIX_PALETTE_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				SKINNED_VERTICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::WRITE),
+				SOURCE_POSITIONS_BINDING,
+				SOURCE_NORMALS_BINDING,
+				SOURCE_JOINTS_BINDING,
+				SOURCE_WEIGHTS_BINDING,
+				MATRIX_PALETTE_BINDING,
+				SKINNED_VERTICES_BINDING,
 			],
 		);
 

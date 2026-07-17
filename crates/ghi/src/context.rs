@@ -5,11 +5,10 @@ use crate::{
 	pipelines::VertexElement,
 	sampler,
 	shader::{self, Sources},
-	window, AllocationHandle, BaseBufferHandle, BindingConstructor, BottomLevelAccelerationStructure,
-	BottomLevelAccelerationStructureHandle, BufferHandle, CommandBufferHandle, DescriptorSetBindingHandle,
-	DescriptorSetBindingTemplate, DescriptorSetHandle, DescriptorSetTemplateHandle, DeviceAccesses, DynamicBufferHandle,
-	DynamicImageHandle, ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle,
-	ShaderTypes, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
+	window, AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle,
+	BufferHandle, CommandBufferHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle,
+	ImageHandle, MeshHandle, PipelineHandle, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes,
+	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses,
 };
 
 /// The `Context` trait identifies objects that own render resources created from a GPU device.
@@ -69,8 +68,10 @@ pub trait Context: ContextCreate {
 	/// Texture must still be synchronized by calling `sync` on a command buffer.
 	fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8]));
 
-	/// Writes descriptor set updates.
-	fn write(&mut self, descriptor_set_writes: &[descriptors::Write]);
+	/// Updates retained descriptor-set state before command recording.
+	///
+	/// Rendering only binds complete retained sets; resource overrides are not recorded per draw.
+	fn write(&mut self, descriptor_set_writes: &[descriptors::DescriptorWrite]);
 
 	/// Writes one top-level acceleration-structure instance into an instance buffer.
 	fn write_instance(
@@ -143,7 +144,7 @@ pub trait ContextCreate {
 	/// * `name` - The name of the shader.
 	/// * `shader_source_type` - The type of the shader source.
 	/// * `stage` - The stage of the shader.
-	/// * `shader_binding_descriptors` - The binding descriptors of the shader.
+	/// * `shader_resource_descriptors` - The flat resource descriptors of the shader.
 	/// # Returns
 	/// The handle of the shader.
 	/// # Errors
@@ -154,34 +155,14 @@ pub trait ContextCreate {
 		name: Option<&str>,
 		shader_source_type: Sources,
 		stage: ShaderTypes,
-		shader_binding_descriptors: impl IntoIterator<Item = shader::BindingDescriptor>,
+		shader_resource_descriptors: impl IntoIterator<Item = shader::ShaderResourceDescriptor>,
 	) -> Result<ShaderHandle, ()>;
 
-	/// Creates a reusable descriptor-set template from binding descriptions.
-	fn create_descriptor_set_template(
-		&mut self,
-		name: Option<&str>,
-		binding_templates: &[DescriptorSetBindingTemplate],
-	) -> DescriptorSetTemplateHandle;
-
-	/// Creates a descriptor set from a descriptor-set template.
-	fn create_descriptor_set(
-		&mut self,
-		name: Option<&str>,
-		descriptor_set_template_handle: &DescriptorSetTemplateHandle,
-	) -> DescriptorSetHandle;
-
-	/// ```rust,ignore
-	///	let views_data_binding = device.create_descriptor_binding(
-	///		descriptor_set,
-	///		ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
-	/// );
-	/// ```
-	fn create_descriptor_binding(
-		&mut self,
-		descriptor_set: DescriptorSetHandle,
-		binding_constructor: BindingConstructor,
-	) -> DescriptorSetBindingHandle;
+	/// Creates an empty retained descriptor set.
+	///
+	/// The set is a lifetime/update grouping only. Its shader-visible slots are established by
+	/// [`Context::write`] calls and validated against the active pipeline when it is bound.
+	fn create_descriptor_set(&mut self, name: Option<&str>) -> DescriptorSetHandle;
 
 	/// Creates a graphics/rasterization pipeline from a builder.
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> PipelineHandle;

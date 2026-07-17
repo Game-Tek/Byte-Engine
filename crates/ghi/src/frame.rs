@@ -32,7 +32,7 @@ where
 	fn sync_texture(&mut self, image_handle: BaseImageHandle);
 
 	/// Writes descriptor set updates during the active frame.
-	fn write(&mut self, descriptor_set_writes: &[descriptors::Write]);
+	fn write(&mut self, descriptor_set_writes: &[descriptors::DescriptorWrite]);
 
 	/// Returns a mutable reference to the dynamic buffer's contents.
 	fn get_mut_dynamic_buffer_slice<T: Copy>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T;

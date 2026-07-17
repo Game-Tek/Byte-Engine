@@ -27,115 +27,107 @@ use crate::rendering::{
 
 /* BASE */
 /// Binding to access the views which may be used to render the scene.
-pub(crate) const VIEWS_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	0,
-	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::TASK
-		.union(ghi::Stages::MESH)
-		.union(ghi::Stages::FRAGMENT)
-		.union(ghi::Stages::RAYGEN)
-		.union(ghi::Stages::COMPUTE),
+pub(crate) const VIEWS_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(0),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
 )
-.buffer_stride(400)
-.buffer_read_only(true);
+.buffer_stride(400);
 // ShaderMesh array stride includes tail padding from the CPU matrix alignment; shader Mesh structs carry matching padding.
 pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = if cfg!(target_os = "macos") { 96 } else { 80 };
-pub(crate) const MESH_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	1,
-	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::TASK
-		.union(ghi::Stages::MESH)
-		.union(ghi::Stages::FRAGMENT)
-		.union(ghi::Stages::COMPUTE),
+pub(crate) const MESH_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
 )
-.buffer_stride(MESH_DATA_BUFFER_STRIDE)
-.buffer_read_only(true);
-pub(crate) const VERTEX_POSITIONS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	2,
-	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+.buffer_stride(MESH_DATA_BUFFER_STRIDE);
+pub(crate) const VERTEX_POSITIONS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(2),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
 )
-.buffer_stride(12)
-.buffer_read_only(true);
-pub(crate) const VERTEX_NORMALS_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	3,
-	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+.buffer_stride(12);
+pub(crate) const VERTEX_NORMALS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(3),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
 )
-.buffer_stride(12)
-.buffer_read_only(true);
-pub(crate) const SKINNED_VERTICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	4,
-	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+.buffer_stride(12);
+pub(crate) const SKINNED_VERTICES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(4),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
 )
-.buffer_stride(32)
-.buffer_read_only(true);
-pub(crate) const VERTEX_UV_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	5,
-	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+.buffer_stride(32);
+pub(crate) const VERTEX_UV_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(5),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
 )
-.buffer_stride(8)
-.buffer_read_only(true);
-pub(crate) const VERTEX_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	6,
-	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
+.buffer_stride(8);
+pub(crate) const VERTEX_INDICES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(6),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+);
+pub(crate) const PRIMITIVE_INDICES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(7),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+);
+pub(crate) const MESHLET_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(8),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
 )
-.buffer_read_only(true);
-pub(crate) const PRIMITIVE_INDICES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	7,
-	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::MESH.union(ghi::Stages::COMPUTE),
-)
-.buffer_read_only(true);
-pub(crate) const MESHLET_DATA_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	8,
-	ghi::descriptors::DescriptorType::StorageBuffer,
-	ghi::Stages::TASK.union(ghi::Stages::MESH).union(ghi::Stages::COMPUTE),
-)
-.buffer_stride(64)
-.buffer_read_only(true);
-pub(crate) const TEXTURES_BINDING: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
-	9,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
+.buffer_stride(64);
+pub(crate) const TEXTURES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::new(
+	ghi::ResourceSlot::new(9),
+	ghi::ResourceKind::CombinedImageSampler,
 	MAX_BINDLESS_TEXTURES as u32,
+	ghi::AccessPolicies::READ,
 );
 
 /* Visibility */
-pub(crate) const MATERIAL_COUNT_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub(crate) const MATERIAL_OFFSET_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub(crate) const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE);
-pub(crate) const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
-		.buffer_stride(16);
-pub(crate) const MATERIAL_XY_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
-		.buffer_stride(8);
-pub(crate) const TRIANGLE_INDEX_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(6, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub(crate) const INSTANCE_ID_BINDING: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(7, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
+pub(crate) const MATERIAL_COUNT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1033),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ.union(ghi::AccessPolicies::WRITE),
+);
+pub(crate) const MATERIAL_OFFSET_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1034),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ.union(ghi::AccessPolicies::WRITE),
+);
+pub(crate) const MATERIAL_OFFSET_SCRATCH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1035),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ.union(ghi::AccessPolicies::WRITE),
+);
+pub(crate) const MATERIAL_EVALUATION_DISPATCHES_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1036),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::WRITE,
+)
+.buffer_stride(16);
+pub(crate) const MATERIAL_XY_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1037),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::WRITE,
+)
+.buffer_stride(8);
+pub(crate) const TRIANGLE_INDEX_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1039),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::READ,
+);
+pub(crate) const INSTANCE_ID_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1040),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::READ,
+);
 
 /* Material Evaluation */
-pub(crate) const OUT_LIT: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub(crate) const CAMERA: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub(crate) const LIGHTING_DATA: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub(crate) const MATERIALS: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(5, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub(crate) const AO: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(10, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-pub(crate) const DEPTH_SHADOW_MAP: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(11, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-
 const VERTEX_COUNT: u32 = 64;
 const TRIANGLE_COUNT: u32 = 126;
 const MESHLET_CULLING_TASK_GROUP_SIZE: u32 = 32;
@@ -315,13 +307,7 @@ struct _primitive_indices {{
 struct _set0 {{
 	constant _views* views [[id(0)]];
 	constant _meshes* meshes [[id(1)]];
-	constant _vertex_positions* vertex_positions [[id(2)]];
-	constant _vertex_normals* vertex_normals [[id(3)]];
-	device const _skinned_vertices* skinned_vertices [[id(4)]];
-	constant _vertex_uvs* vertex_uvs [[id(5)]];
-	constant _vertex_indices* vertex_indices [[id(6)]];
-	constant _primitive_indices* primitive_indices [[id(7)]];
-	constant _meshlets* meshlets [[id(8)]];
+	constant _meshlets* meshlets [[id(2)]];
 }};
 
 static void extract_frustum_planes(float4x4 matrix, thread float4* planes) {{
@@ -715,7 +701,7 @@ struct View {{
 	float far;
 }};
 
-ConstantBuffer<PushConstant> push_constant : register(b0, space1);
+ConstantBuffer<PushConstant> push_constant : register(b0, space0);
 StructuredBuffer<View> views : register(t0, space0);
 StructuredBuffer<Mesh> meshes : register(t1, space0);
 StructuredBuffer<float3> vertex_positions : register(t2, space0);
@@ -901,38 +887,11 @@ pub fn get_material_count_shader() -> ShaderSourceDefinition<'static> {
 	visibility_compute_shader(Extent::square(32), build_material_count_program)
 }
 
-fn preserve_visibility_compute_layout(program: &besl::NodeReference) -> besl::NodeReference {
-	let main = program
-		.get_main()
-		.expect("Missing BESL main function. The most likely cause is invalid visibility shader source.");
-	let inputs = [
-		"views",
-		"mesh_data",
-		"material_count_buffer",
-		"material_offset_buffer",
-		"material_offset_scratch_buffer",
-		"material_evaluation_dispatches",
-		"pixel_mapping_buffer",
-		"triangle_index",
-		"instance_index_render_target",
-	]
-	.into_iter()
-	.filter_map(|name| program.get_descendant(name))
-	.collect();
-
-	// The raw node is intentionally empty. Its inputs keep the complete visibility descriptor layout reachable
-	// so Metal's compact argument-buffer IDs match the descriptor set template even when a shader only touches
-	// a subset of the bindings.
-	main.borrow_mut()
-		.add_child(besl::Node::raw(Some(String::new()), None, Some(String::new()), inputs, Vec::new()).into());
-
-	main
-}
-
 fn compile_visibility_compute_program(source: &str, pixel_mapping_entries: usize) -> besl::NodeReference {
-	let program = besl::compile_to_besl(source, Some(build_visibility_compute_root(pixel_mapping_entries)))
-		.expect("Failed to compile visibility BESL shader. The most likely cause is invalid BESL syntax.");
-	preserve_visibility_compute_layout(&program)
+	besl::compile_to_besl(source, Some(build_visibility_compute_root(pixel_mapping_entries)))
+		.expect("Failed to compile visibility BESL shader. The most likely cause is invalid BESL syntax.")
+		.get_main()
+		.expect("Missing BESL main function. The most likely cause is invalid visibility shader source.")
 }
 
 fn build_material_count_program() -> besl::NodeReference {
@@ -1052,7 +1011,6 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 				members: vec![views_member],
 			},
 			0,
-			0,
 			true,
 			false,
 		)
@@ -1062,7 +1020,6 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 			besl::BindingTypes::Buffer {
 				members: vec![meshes_member.clone()],
 			},
-			0,
 			1,
 			true,
 			false,
@@ -1073,8 +1030,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 			besl::BindingTypes::Buffer {
 				members: vec![material_count_member],
 			},
-			1,
-			0,
+			1033,
 			true,
 			true,
 		)
@@ -1084,8 +1040,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 			besl::BindingTypes::Buffer {
 				members: vec![material_offset_member],
 			},
-			1,
-			1,
+			1034,
 			true,
 			true,
 		)
@@ -1095,8 +1050,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 			besl::BindingTypes::Buffer {
 				members: vec![material_offset_scratch_member.clone()],
 			},
-			1,
-			2,
+			1035,
 			true,
 			true,
 		)
@@ -1106,8 +1060,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 			besl::BindingTypes::Buffer {
 				members: vec![material_evaluation_dispatches_member],
 			},
-			1,
-			3,
+			1036,
 			true,
 			true,
 		)
@@ -1117,8 +1070,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 			besl::BindingTypes::Buffer {
 				members: vec![pixel_mapping_member.clone()],
 			},
-			1,
-			4,
+			1037,
 			false,
 			true,
 		)
@@ -1128,8 +1080,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 			besl::BindingTypes::Image {
 				format: "r32ui".to_string(),
 			},
-			1,
-			6,
+			1039,
 			true,
 			false,
 		)
@@ -1139,8 +1090,7 @@ fn build_visibility_compute_root(pixel_mapping_entries: usize) -> besl::Node {
 			besl::BindingTypes::Image {
 				format: "r32ui".to_string(),
 			},
-			1,
-			7,
+			1040,
 			true,
 			false,
 		)
@@ -2223,7 +2173,6 @@ fn build_gtao_view_buffer_root() -> besl::Node {
 			members: vec![besl::Node::array("views", view_type, 8)],
 		},
 		0,
-		0,
 		true,
 		false,
 	)
@@ -2240,8 +2189,7 @@ fn build_gtao_blur_root() -> besl::Node {
 		besl::Node::binding(
 			"visibility_depth",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			1,
-			0,
+			1033,
 			true,
 			false,
 		)
@@ -2249,8 +2197,7 @@ fn build_gtao_blur_root() -> besl::Node {
 		besl::Node::binding(
 			"ao_source",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			1,
-			1,
+			1034,
 			true,
 			false,
 		)
@@ -2260,8 +2207,7 @@ fn build_gtao_blur_root() -> besl::Node {
 			besl::BindingTypes::Image {
 				format: "r8".to_string(),
 			},
-			1,
-			2,
+			1035,
 			false,
 			true,
 		)
@@ -2279,8 +2225,7 @@ fn build_gtao_bitfield_blur_x_root() -> besl::Node {
 		besl::Node::binding(
 			"visibility_depth",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			1,
-			0,
+			1033,
 			true,
 			false,
 		)
@@ -2290,8 +2235,7 @@ fn build_gtao_bitfield_blur_x_root() -> besl::Node {
 			besl::BindingTypes::CombinedImageSampler {
 				format: "r32ui".to_string(),
 			},
-			1,
-			1,
+			1034,
 			true,
 			false,
 		)
@@ -2301,8 +2245,7 @@ fn build_gtao_bitfield_blur_x_root() -> besl::Node {
 			besl::BindingTypes::Image {
 				format: "r8".to_string(),
 			},
-			1,
-			2,
+			1035,
 			false,
 			true,
 		)
@@ -2319,8 +2262,7 @@ fn build_gtao_root() -> besl::Node {
 		besl::Node::binding(
 			"visibility_depth",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			1,
-			0,
+			1033,
 			true,
 			false,
 		)
@@ -2330,8 +2272,7 @@ fn build_gtao_root() -> besl::Node {
 			besl::BindingTypes::Image {
 				format: "r8".to_string(),
 			},
-			1,
-			1,
+			1034,
 			false,
 			true,
 		)
@@ -2348,8 +2289,7 @@ fn build_gtao_bitfield_root() -> besl::Node {
 		besl::Node::binding(
 			"visibility_depth",
 			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			1,
-			0,
+			1033,
 			true,
 			false,
 		)
@@ -2359,8 +2299,7 @@ fn build_gtao_bitfield_root() -> besl::Node {
 			besl::BindingTypes::Image {
 				format: "r32ui".to_string(),
 			},
-			1,
-			1,
+			1034,
 			true,
 			true,
 		)
@@ -2401,8 +2340,12 @@ pub(super) struct ShaderMeshletData {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{
-		output_slot, DescriptorBindings, DescriptorSlot, ExecutableProgram, ExecutionConfig, MeshOutputs, SpecializationValues,
+		output_slot, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, SpecializationValues,
 		Texture, Value,
+	};
+	use resource_management::shader::{
+		besl::{backends::msl::MSLShaderGenerator, evaluation::ProgramEvaluation},
+		generator::{ShaderGenerationSettings, ShaderGenerator as _},
 	};
 
 	use super::{
@@ -2415,22 +2358,86 @@ mod tests {
 	};
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
-	const VIEWS_SLOT: DescriptorSlot = DescriptorSlot::new(0, 0);
-	const MESH_DATA_SLOT: DescriptorSlot = DescriptorSlot::new(0, 1);
-	const MATERIAL_COUNT_SLOT: DescriptorSlot = DescriptorSlot::new(1, 0);
-	const MATERIAL_OFFSET_SLOT: DescriptorSlot = DescriptorSlot::new(1, 1);
-	const MATERIAL_OFFSET_SCRATCH_SLOT: DescriptorSlot = DescriptorSlot::new(1, 2);
-	const MATERIAL_DISPATCH_SLOT: DescriptorSlot = DescriptorSlot::new(1, 3);
-	const PIXEL_MAPPING_SLOT: DescriptorSlot = DescriptorSlot::new(1, 4);
-	const INSTANCE_INDEX_SLOT: DescriptorSlot = DescriptorSlot::new(1, 7);
-	const VERTEX_POSITIONS_SLOT: DescriptorSlot = DescriptorSlot::new(0, 2);
-	const SKINNED_VERTICES_SLOT: DescriptorSlot = DescriptorSlot::new(0, 4);
-	const VERTEX_INDICES_SLOT: DescriptorSlot = DescriptorSlot::new(0, 6);
-	const PRIMITIVE_INDICES_SLOT: DescriptorSlot = DescriptorSlot::new(0, 7);
-	const MESHLETS_SLOT: DescriptorSlot = DescriptorSlot::new(0, 8);
+	const VIEWS_SLOT: ResourceSlot = ResourceSlot::new(0);
+	const MESH_DATA_SLOT: ResourceSlot = ResourceSlot::new(1);
+	const MATERIAL_COUNT_SLOT: ResourceSlot = ResourceSlot::new(1033);
+	const MATERIAL_OFFSET_SLOT: ResourceSlot = ResourceSlot::new(1034);
+	const MATERIAL_OFFSET_SCRATCH_SLOT: ResourceSlot = ResourceSlot::new(1035);
+	const MATERIAL_DISPATCH_SLOT: ResourceSlot = ResourceSlot::new(1036);
+	const PIXEL_MAPPING_SLOT: ResourceSlot = ResourceSlot::new(1037);
+	const INSTANCE_INDEX_SLOT: ResourceSlot = ResourceSlot::new(1040);
+	const VERTEX_POSITIONS_SLOT: ResourceSlot = ResourceSlot::new(2);
+	const SKINNED_VERTICES_SLOT: ResourceSlot = ResourceSlot::new(4);
+	const VERTEX_INDICES_SLOT: ResourceSlot = ResourceSlot::new(6);
+	const PRIMITIVE_INDICES_SLOT: ResourceSlot = ResourceSlot::new(7);
+	const MESHLETS_SLOT: ResourceSlot = ResourceSlot::new(8);
 	const FIXTURE_INSTANCE_INDEX: usize = 3;
 	const FIXTURE_MESHLET_INDEX: usize = 5;
 	const MESH_TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
+
+	/// Verifies a BESL prepass exposes only its reachable flat resources and assigns the same dense Metal IDs.
+	fn assert_compact_metal_resources(program: besl::NodeReference, workgroup_extent: utils::Extent, expected: &[(u32, &str)]) {
+		let evaluation = ProgramEvaluation::from_main(&program)
+			.expect("Failed to reflect a visibility prepass. The most likely cause is an invalid BESL resource graph.");
+		let reflected = evaluation
+			.bindings()
+			.iter()
+			.map(|binding| (binding.slot, binding.name.as_str()))
+			.collect::<Vec<_>>();
+		assert_eq!(reflected, expected);
+
+		let msl = MSLShaderGenerator::new()
+			.generate(&ShaderGenerationSettings::compute(workgroup_extent), &program)
+			.expect("Failed to generate visibility prepass MSL. The most likely cause is unsupported BESL lowering.");
+		for (dense_id, (_, resource_name)) in expected.iter().enumerate() {
+			let declaration = msl
+				.lines()
+				.find(|line| line.contains(resource_name) && line.contains("[[id("))
+				.unwrap_or_else(|| {
+					panic!(
+						"Missing `{resource_name}` from the Metal argument buffer. The most likely cause is resource reachability drift."
+					)
+				});
+			assert!(
+				declaration.contains(&format!("[[id({dense_id})]]")),
+				"Metal resource `{resource_name}` has the wrong dense ID. The most likely cause is stale descriptor-layout preservation: {declaration}"
+			);
+		}
+	}
+
+	/// Guards the flat resource ABI used before indirect material evaluation dispatches.
+	#[test]
+	fn visibility_material_prepasses_use_compact_per_pipeline_metal_ids() {
+		assert_compact_metal_resources(
+			build_material_count_program(),
+			utils::Extent::square(32),
+			&[
+				(1, "mesh_data"),
+				(1033, "material_count_buffer"),
+				(1040, "instance_index_render_target"),
+			],
+		);
+		assert_compact_metal_resources(
+			build_material_offset_program(),
+			utils::Extent::square(1),
+			&[
+				(1033, "material_count_buffer"),
+				(1034, "material_offset_buffer"),
+				(1035, "material_offset_scratch_buffer"),
+				(1036, "material_evaluation_dispatches"),
+			],
+		);
+		assert_compact_metal_resources(
+			build_pixel_mapping_program(),
+			utils::Extent::square(32),
+			&[
+				(1, "mesh_data"),
+				(1035, "material_offset_scratch_buffer"),
+				(1037, "pixel_mapping_buffer"),
+				(1040, "instance_index_render_target"),
+			],
+		);
+	}
 
 	/// Returns a column-major identity matrix in the BESL VM representation.
 	fn identity_matrix() -> [f32; 16] {
@@ -2822,8 +2829,8 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-			descriptors.bind_texture(DescriptorSlot::new(1, 0), &mut depth);
-			descriptors.bind_image(DescriptorSlot::new(1, 1), &mut output);
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+			descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 			run_at(program, &mut descriptors, coordinate);
 		}
 		rgba(&output, coordinate)
@@ -2871,8 +2878,8 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut background_views);
-			descriptors.bind_texture(DescriptorSlot::new(1, 0), &mut background_depth);
-			descriptors.bind_image(DescriptorSlot::new(1, 1), &mut background_bits);
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut background_depth);
+			descriptors.bind_image(ResourceSlot::new(1034), &mut background_bits);
 			run_at(&program, &mut descriptors, [0, 0]);
 		}
 		assert_eq!(fetch_u32(&background_bits, [0, 0]), 0);
@@ -2892,8 +2899,8 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut foreground_views);
-			descriptors.bind_texture(DescriptorSlot::new(1, 0), &mut foreground_depth);
-			descriptors.bind_image(DescriptorSlot::new(1, 1), &mut foreground_bits);
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut foreground_depth);
+			descriptors.bind_image(ResourceSlot::new(1034), &mut foreground_bits);
 			run_at(&program, &mut descriptors, [13, 28]);
 		}
 		assert_eq!(fetch_u32(&foreground_bits, [0, 28]) & (1 << 13), 1 << 13);
@@ -2912,9 +2919,9 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-			descriptors.bind_texture(DescriptorSlot::new(1, 0), &mut depth);
-			descriptors.bind_texture(DescriptorSlot::new(1, 1), &mut source);
-			descriptors.bind_image(DescriptorSlot::new(1, 2), &mut output);
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+			descriptors.bind_texture(ResourceSlot::new(1034), &mut source);
+			descriptors.bind_image(ResourceSlot::new(1035), &mut output);
 			run_at(program, &mut descriptors, [0, 0]);
 		}
 		rgba(&output, [0, 0])
@@ -2953,9 +2960,9 @@ mod tests {
 		{
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-			descriptors.bind_texture(DescriptorSlot::new(1, 0), &mut depth);
-			descriptors.bind_texture(DescriptorSlot::new(1, 1), &mut ao);
-			descriptors.bind_image(DescriptorSlot::new(1, 2), &mut output);
+			descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+			descriptors.bind_texture(ResourceSlot::new(1034), &mut ao);
+			descriptors.bind_image(ResourceSlot::new(1035), &mut output);
 			run_at(program, &mut descriptors, coordinate);
 		}
 		rgba(&output, coordinate)
@@ -3059,15 +3066,15 @@ mod tests {
 			},
 			ghi::ShaderTypes::Mesh,
 			[
-				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				SKINNED_VERTICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VIEWS_DATA_BINDING,
+				MESH_DATA_BINDING,
+				VERTEX_POSITIONS_BINDING,
+				VERTEX_NORMALS_BINDING,
+				SKINNED_VERTICES_BINDING,
+				VERTEX_UV_BINDING,
+				VERTEX_INDICES_BINDING,
+				PRIMITIVE_INDICES_BINDING,
+				MESHLET_DATA_BINDING,
 			],
 		);
 
@@ -3109,15 +3116,15 @@ mod tests {
 			},
 			ghi::ShaderTypes::Mesh,
 			[
-				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				SKINNED_VERTICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VIEWS_DATA_BINDING,
+				MESH_DATA_BINDING,
+				VERTEX_POSITIONS_BINDING,
+				VERTEX_NORMALS_BINDING,
+				SKINNED_VERTICES_BINDING,
+				VERTEX_UV_BINDING,
+				VERTEX_INDICES_BINDING,
+				PRIMITIVE_INDICES_BINDING,
+				MESHLET_DATA_BINDING,
 			],
 		);
 
@@ -3139,6 +3146,8 @@ mod tests {
 		}
 
 		let shader = get_visibility_pass_task_msl_source();
+		assert!(shader.contains("constant _meshlets* meshlets [[id(2)]];"));
+		assert!(!shader.contains("constant _vertex_positions* vertex_positions [[id(2)]];"));
 		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
 			.expect("Expected a Metal instance for the visibility task shader test");
 		let mut queue = None;
@@ -3158,11 +3167,7 @@ mod tests {
 				entry_point: "besl_task_main",
 			},
 			ghi::ShaderTypes::Task,
-			[
-				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-			],
+			[VIEWS_DATA_BINDING, MESH_DATA_BINDING, MESHLET_DATA_BINDING],
 		);
 
 		assert!(
@@ -3203,15 +3208,15 @@ mod tests {
 			},
 			ghi::ShaderTypes::Mesh,
 			[
-				VIEWS_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESH_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_POSITIONS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_NORMALS_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				SKINNED_VERTICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_UV_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				VERTEX_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				PRIMITIVE_INDICES_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
-				MESHLET_DATA_BINDING.into_shader_binding_descriptor(0, ghi::AccessPolicies::READ),
+				VIEWS_DATA_BINDING,
+				MESH_DATA_BINDING,
+				VERTEX_POSITIONS_BINDING,
+				VERTEX_NORMALS_BINDING,
+				SKINNED_VERTICES_BINDING,
+				VERTEX_UV_BINDING,
+				VERTEX_INDICES_BINDING,
+				PRIMITIVE_INDICES_BINDING,
+				MESHLET_DATA_BINDING,
 			],
 		);
 

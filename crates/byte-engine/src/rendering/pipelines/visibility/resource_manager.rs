@@ -218,10 +218,9 @@ impl VisibilityPipelineResourceManager {
 			);
 			return QueuedMaterialPipeline::default();
 		};
-		let descriptor_set_templates = config.descriptor_set_templates;
 		let push_constant_ranges = config.push_constant_ranges.clone();
 
-		self.queue_material_pipeline(id, &descriptor_set_templates, &push_constant_ranges, material)
+		self.queue_material_pipeline(id, &push_constant_ranges, material)
 	}
 
 	/// Queues a material variant pipeline with the descriptor configuration supplied by the render thread.
@@ -238,16 +237,9 @@ impl VisibilityPipelineResourceManager {
 			);
 			return QueuedMaterialPipeline::default();
 		};
-		let descriptor_set_templates = config.descriptor_set_templates;
 		let push_constant_ranges = config.push_constant_ranges.clone();
 
-		self.queue_material_pipeline_with_specialization(
-			id,
-			&descriptor_set_templates,
-			&push_constant_ranges,
-			material,
-			specialization_map_entries,
-		)
+		self.queue_material_pipeline_with_specialization(id, &push_constant_ranges, material, specialization_map_entries)
 	}
 
 	/// Loads texture bytes and builds detached GPU resources for render-thread adoption.
@@ -891,7 +883,7 @@ impl PendingMaterialPipeline {
 				shader.name.as_deref(),
 				shader.source.sources(),
 				shader.stage,
-				shader.binding_descriptors.iter().copied(),
+				shader.resource_descriptors.iter().copied(),
 			)
 			.map_err(|_| {
 				log::error!(
@@ -903,7 +895,6 @@ impl PendingMaterialPipeline {
 
 		Some(
 			frame.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-				&self.request.descriptor_set_templates,
 				&self.request.push_constant_ranges,
 				ghi::ShaderParameter::new(&shader_handle, shader.stage)
 					.with_specialization_map(&self.request.specialization_map_entries),
@@ -918,22 +909,19 @@ struct QueuedMaterialPipeline {
 	pending_pipeline: Option<PendingMaterialPipeline>,
 }
 
-/// The `MaterialPipelineConfig` struct names the descriptor and push-constant contract for material evaluation pipelines.
+/// The `MaterialPipelineConfig` struct names the push-constant and factory contract for material evaluation pipelines.
 pub(crate) struct MaterialPipelineConfig {
-	descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
 	pipeline_factory: Option<ghi::implementation::Factory>,
 }
 
 impl MaterialPipelineConfig {
-	/// Creates a material pipeline configuration from the visibility descriptor layouts.
+	/// Creates a material pipeline configuration used by the visibility resource worker.
 	pub(crate) fn new(
-		descriptor_set_templates: [ghi::DescriptorSetTemplateHandle; 3],
 		push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
 		pipeline_factory: Option<ghi::implementation::Factory>,
 	) -> Self {
 		Self {
-			descriptor_set_templates,
 			push_constant_ranges,
 			pipeline_factory,
 		}
@@ -994,13 +982,12 @@ struct OwnedShader {
 	name: Option<String>,
 	source: OwnedShaderSource,
 	stage: ghi::ShaderTypes,
-	binding_descriptors: Vec<ghi::shader::BindingDescriptor>,
+	resource_descriptors: Vec<ghi::ShaderResourceDescriptor>,
 }
 
 /// The `ComputePipelineRequest` struct packages the resource data needed to compile a material compute pipeline off-thread.
 struct ComputePipelineRequest {
 	key: String,
-	descriptor_set_templates: Vec<ghi::DescriptorSetTemplateHandle>,
 	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
 	shader: Arc<OwnedShader>,
 	specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
@@ -1029,7 +1016,7 @@ impl VisibilityPipelineResourceManager {
 			shader.name.as_deref(),
 			shader.source.sources(),
 			shader.stage,
-			shader.binding_descriptors.iter().copied(),
+			shader.resource_descriptors.iter().copied(),
 		)
 		.map_err(|_| {
 			format!(
@@ -1039,7 +1026,6 @@ impl VisibilityPipelineResourceManager {
 		})?;
 
 		Ok(device.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&request.descriptor_set_templates,
 			&request.push_constant_ranges,
 			ghi::ShaderParameter::new(&shader_handle, shader.stage)
 				.with_specialization_map(&request.specialization_map_entries),
@@ -1105,7 +1091,7 @@ impl VisibilityPipelineResourceManager {
 			return Ok(Arc::clone(shader_request));
 		}
 
-		let binding_descriptors = shader
+		let resource_descriptors = shader
 			.resource()
 			.interface
 			.bindings
@@ -1155,7 +1141,7 @@ impl VisibilityPipelineResourceManager {
 			name: Some(shader.id().to_string()),
 			source,
 			stage,
-			binding_descriptors,
+			resource_descriptors,
 		});
 
 		self.shader_requests
@@ -1197,24 +1183,16 @@ impl VisibilityPipelineResourceManager {
 	fn queue_material_pipeline(
 		&mut self,
 		resource_id: String,
-		descriptor_set_template_handles: &[ghi::DescriptorSetTemplateHandle],
 		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
 		material: &mut ResourceMaterial,
 	) -> QueuedMaterialPipeline {
-		self.queue_material_pipeline_with_specialization(
-			resource_id,
-			descriptor_set_template_handles,
-			push_constant_ranges,
-			material,
-			Vec::new(),
-		)
+		self.queue_material_pipeline_with_specialization(resource_id, push_constant_ranges, material, Vec::new())
 	}
 
 	/// Queues a material pipeline request with variant specialization constants.
 	fn queue_material_pipeline_with_specialization(
 		&mut self,
 		resource_id: String,
-		descriptor_set_template_handles: &[ghi::DescriptorSetTemplateHandle],
 		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
 		material: &mut ResourceMaterial,
 		specialization_map_entries: Vec<ghi::pipelines::SpecializationMapEntry>,
@@ -1234,7 +1212,6 @@ impl VisibilityPipelineResourceManager {
 		let request = match material.shaders_mut().iter_mut().next() {
 			Some(shader) => self.load_cached_shader_request(shader).map(|shader| ComputePipelineRequest {
 				key: resource_id.clone(),
-				descriptor_set_templates: descriptor_set_template_handles.to_vec(),
 				push_constant_ranges: push_constant_ranges.to_vec(),
 				shader,
 				specialization_map_entries,

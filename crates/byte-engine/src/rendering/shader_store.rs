@@ -18,6 +18,7 @@ pub struct ShaderSourceDescriptor<'a> {
 
 /// Loads a baked shader from storage, or bakes and stores it when the source descriptor changed.
 pub fn upsert_shader(storage_backend: &dyn StorageBackend, descriptor: &ShaderSourceDescriptor<'_>) -> Result<Shader, String> {
+	validate_besl_interface(descriptor)?;
 	let source_hash = hash_shader_source(descriptor);
 	let resource_id = ResourceId::new(descriptor.id);
 
@@ -63,6 +64,7 @@ pub fn create_shader(
 			});
 	}
 
+	validate_besl_interface(descriptor)?;
 	with_shader_source(descriptor.name, &descriptor.source, |source| {
 		crate::rendering::create_shader_from_source(
 			context,
@@ -72,6 +74,35 @@ pub fn create_shader(
 			descriptor.interface.bindings.iter().map(binding_to_descriptor),
 		)
 	})
+}
+
+/// Rejects structural drift between a BESL program's reachable resources and its retained GHI interface.
+fn validate_besl_interface(descriptor: &ShaderSourceDescriptor<'_>) -> Result<(), String> {
+	let ShaderSourceDefinition::Besl { main_node, .. } = &descriptor.source else {
+		return Ok(());
+	};
+
+	let mut declared = descriptor
+		.interface
+		.bindings
+		.iter()
+		.map(|binding| (binding.slot, binding.kind, binding.count))
+		.collect::<Vec<_>>();
+	declared.sort_by_key(|(slot, ..)| *slot);
+	let reflected = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(main_node)?
+		.bindings()
+		.iter()
+		.map(|binding| (binding.slot, binding.kind, binding.count))
+		.collect::<Vec<_>>();
+
+	if declared != reflected {
+		return Err(format!(
+			"BESL shader interface mismatch for '{}'. The most likely cause is stale hand-authored resource metadata or obsolete descriptor-layout preservation. declared={declared:?}, reflected={reflected:?}",
+			descriptor.name,
+		));
+	}
+
+	Ok(())
 }
 
 pub fn create_shader_from_baked_or_inline(
@@ -252,15 +283,28 @@ fn hash_text(hasher: &mut DefaultHasher, value: &str) {
 
 fn hash_shader_source(descriptor: &ShaderSourceDescriptor<'_>) -> u64 {
 	let mut hasher = DefaultHasher::new();
-	hasher.write(b"shader-store-mtlb-v2");
+	// v3 is the intentionally incompatible flat-resource interface schema.
+	hasher.write(b"shader-store-mtlb-v3-flat-resources");
 	hash_text(&mut hasher, descriptor.id);
 	hash_text(&mut hasher, descriptor.name);
 	hasher.write_u8(shader_type_tag(descriptor.stage));
 	hash_shader_source_definition(descriptor.name, &descriptor.source, &mut hasher);
 	hasher.write_u64(descriptor.interface.bindings.len() as u64);
 	for binding in &descriptor.interface.bindings {
-		hasher.write_u32(binding.set);
-		hasher.write_u32(binding.binding);
+		hasher.write_u32(binding.slot);
+		match binding.kind {
+			resource_management::resources::material::BindingKind::StorageBuffer => hasher.write_u8(0),
+			resource_management::resources::material::BindingKind::CombinedImageSampler { view } => {
+				hasher.write_u8(1);
+				hasher.write_u8(match view {
+					resource_management::resources::material::TextureView::Texture2D => 0,
+					resource_management::resources::material::TextureView::Texture2DArray => 1,
+					resource_management::resources::material::TextureView::Texture3D => 2,
+				});
+			}
+			resource_management::resources::material::BindingKind::StorageImage => hasher.write_u8(2),
+		}
+		hasher.write_u32(binding.count);
 		hasher.write_u8(binding.read as u8);
 		hasher.write_u8(binding.write as u8);
 	}
@@ -292,8 +336,29 @@ fn shader_type_tag(shader_type: ShaderTypes) -> u8 {
 	}
 }
 
-pub(crate) fn binding_to_descriptor(binding: &Binding) -> ghi::shader::BindingDescriptor {
-	ghi::shader::BindingDescriptor::new(binding.set, binding.binding, binding_access_policy(binding))
+pub(crate) fn binding_to_descriptor(binding: &Binding) -> ghi::ShaderResourceDescriptor {
+	use resource_management::resources::material::{BindingKind, TextureView};
+
+	let kind = match binding.kind {
+		BindingKind::StorageBuffer => ghi::ResourceKind::StorageBuffer,
+		BindingKind::CombinedImageSampler { .. } => ghi::ResourceKind::CombinedImageSampler,
+		BindingKind::StorageImage => ghi::ResourceKind::StorageImage,
+	};
+	let descriptor = ghi::ShaderResourceDescriptor::new(
+		ghi::ResourceSlot::new(binding.slot),
+		kind,
+		binding.count,
+		binding_access_policy(binding),
+	);
+
+	match binding.kind {
+		BindingKind::CombinedImageSampler { view } => descriptor.texture_view_type(match view {
+			TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
+			TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
+			TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
+		}),
+		_ => descriptor,
+	}
 }
 
 fn binding_access_policy(binding: &Binding) -> ghi::AccessPolicies {
@@ -368,6 +433,34 @@ mod tests {
 		}
 	}
 
+	fn storage_binding(slot: u32, count: u32, read: bool, write: bool) -> Binding {
+		Binding::new(
+			slot,
+			resource_management::resources::material::BindingKind::StorageBuffer,
+			count,
+			read,
+			write,
+		)
+	}
+
+	/// Verifies structural BESL reflection drift is rejected before a backend can materialize incompatible IDs.
+	#[test]
+	fn besl_interface_validation_rejects_missing_reachable_resources() {
+		let descriptor = ShaderSourceDescriptor {
+			id: "shader/material-offset-mismatch",
+			name: "Material Offset Mismatch",
+			stage: ShaderTypes::Compute,
+			source: crate::rendering::pipelines::visibility::get_material_offset_shader(),
+			interface: interface(Some((1, 1, 1)), Vec::new()),
+		};
+
+		let error = validate_besl_interface(&descriptor)
+			.expect_err("Missing flat resources should fail before shader creation or cache lookup");
+		assert!(error.contains("BESL shader interface mismatch"));
+		assert!(error.contains("1033"));
+		assert!(error.contains("1036"));
+	}
+
 	#[test]
 	fn source_hash_is_stable_and_covers_every_persisted_input() {
 		let base = inline_descriptor(
@@ -376,7 +469,7 @@ mod tests {
 			"kernel void main0() {}",
 			"main0",
 			ShaderTypes::Compute,
-			interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+			interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
 		);
 		let duplicate = inline_descriptor(
 			"shader/id",
@@ -384,7 +477,7 @@ mod tests {
 			"kernel void main0() {}",
 			"main0",
 			ShaderTypes::Compute,
-			interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+			interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
 		);
 		let base_hash = hash_shader_source(&base);
 		assert_eq!(hash_shader_source(&duplicate), base_hash);
@@ -396,7 +489,7 @@ mod tests {
 				"kernel void main0() {}",
 				"main0",
 				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
 			),
 			inline_descriptor(
 				"shader/id",
@@ -404,7 +497,7 @@ mod tests {
 				"kernel void main0() {}",
 				"main0",
 				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
 			),
 			inline_descriptor(
 				"shader/id",
@@ -412,7 +505,7 @@ mod tests {
 				"kernel void changed() {}",
 				"main0",
 				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
 			),
 			inline_descriptor(
 				"shader/id",
@@ -420,7 +513,7 @@ mod tests {
 				"kernel void main0() {}",
 				"other",
 				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
 			),
 			inline_descriptor(
 				"shader/id",
@@ -428,7 +521,7 @@ mod tests {
 				"kernel void main0() {}",
 				"main0",
 				ShaderTypes::Fragment,
-				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, true, false)]),
 			),
 			inline_descriptor(
 				"shader/id",
@@ -436,7 +529,7 @@ mod tests {
 				"kernel void main0() {}",
 				"main0",
 				ShaderTypes::Compute,
-				interface(Some((4, 4, 2)), vec![Binding::new(0, 3, true, false)]),
+				interface(Some((4, 4, 2)), vec![storage_binding(3, 1, true, false)]),
 			),
 			inline_descriptor(
 				"shader/id",
@@ -444,7 +537,7 @@ mod tests {
 				"kernel void main0() {}",
 				"main0",
 				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![Binding::new(1, 3, true, false)]),
+				interface(Some((8, 4, 2)), vec![storage_binding(4, 1, true, false)]),
 			),
 			inline_descriptor(
 				"shader/id",
@@ -452,7 +545,7 @@ mod tests {
 				"kernel void main0() {}",
 				"main0",
 				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![Binding::new(0, 4, true, false)]),
+				interface(Some((8, 4, 2)), vec![storage_binding(3, 2, true, false)]),
 			),
 			inline_descriptor(
 				"shader/id",
@@ -460,13 +553,53 @@ mod tests {
 				"kernel void main0() {}",
 				"main0",
 				ShaderTypes::Compute,
-				interface(Some((8, 4, 2)), vec![Binding::new(0, 3, false, true)]),
+				interface(Some((8, 4, 2)), vec![storage_binding(3, 1, false, true)]),
 			),
 		];
 
 		for descriptor in &changed {
 			assert_ne!(hash_shader_source(descriptor), base_hash);
 		}
+
+		let sampled_2d = inline_descriptor(
+			"shader/id",
+			"Shader Name",
+			"kernel void main0() {}",
+			"main0",
+			ShaderTypes::Compute,
+			interface(
+				Some((8, 4, 2)),
+				vec![Binding::new(
+					3,
+					resource_management::resources::material::BindingKind::CombinedImageSampler {
+						view: resource_management::resources::material::TextureView::Texture2D,
+					},
+					1,
+					true,
+					false,
+				)],
+			),
+		);
+		let sampled_3d = inline_descriptor(
+			"shader/id",
+			"Shader Name",
+			"kernel void main0() {}",
+			"main0",
+			ShaderTypes::Compute,
+			interface(
+				Some((8, 4, 2)),
+				vec![Binding::new(
+					3,
+					resource_management::resources::material::BindingKind::CombinedImageSampler {
+						view: resource_management::resources::material::TextureView::Texture3D,
+					},
+					1,
+					true,
+					false,
+				)],
+			),
+		);
+		assert_ne!(hash_shader_source(&sampled_2d), hash_shader_source(&sampled_3d));
 
 		let partitioned_left = inline_descriptor("ab", "c", "de", "f", ShaderTypes::Compute, interface(None, Vec::new()));
 		let partitioned_right = inline_descriptor("a", "bc", "d", "ef", ShaderTypes::Compute, interface(None, Vec::new()));
@@ -501,19 +634,19 @@ mod tests {
 	#[test]
 	fn binding_access_flags_preserve_all_read_write_combinations() {
 		assert_eq!(
-			binding_access_policy(&Binding::new(0, 0, false, false)),
+			binding_access_policy(&storage_binding(0, 1, false, false)),
 			ghi::AccessPolicies::empty()
 		);
 		assert_eq!(
-			binding_access_policy(&Binding::new(0, 0, true, false)),
+			binding_access_policy(&storage_binding(0, 1, true, false)),
 			ghi::AccessPolicies::READ
 		);
 		assert_eq!(
-			binding_access_policy(&Binding::new(0, 0, false, true)),
+			binding_access_policy(&storage_binding(0, 1, false, true)),
 			ghi::AccessPolicies::WRITE
 		);
 		assert_eq!(
-			binding_access_policy(&Binding::new(0, 0, true, true)),
+			binding_access_policy(&storage_binding(0, 1, true, true)),
 			ghi::AccessPolicies::READ_WRITE
 		);
 	}

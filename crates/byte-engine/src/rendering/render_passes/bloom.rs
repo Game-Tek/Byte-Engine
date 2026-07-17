@@ -510,7 +510,7 @@ main: fn() -> void {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, DescriptorSlot, Value};
+	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
@@ -519,7 +519,7 @@ mod tests {
 	#[test]
 	fn bloom_extract_besl_vm_applies_threshold_and_soft_knee() {
 		let program = crate::rendering::shader_vm_test::compile(build_bloom_program(BLOOM_EXTRACT_BESL, 2));
-		let parameter_slot = DescriptorSlot::new(0, 2);
+		let parameter_slot = ResourceSlot::new(2);
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
 			.write_indexed("prefilter", 0, Value::Vec4F([1.0, 0.5, 0.0, 0.0]))
@@ -532,8 +532,8 @@ mod tests {
 			let mut source = texture_2d(1, 1, &[source_color]);
 			let mut result = empty_image(1, 1);
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut source);
-			descriptors.bind_image(DescriptorSlot::new(0, 1), &mut result);
+			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+			descriptors.bind_image(ResourceSlot::new(1), &mut result);
 			descriptors.bind_buffer(parameter_slot, &mut parameters);
 			run_at(&program, &mut descriptors, [0, 0]);
 			drop(descriptors);
@@ -558,8 +558,8 @@ mod tests {
 		);
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut source);
-		descriptors.bind_image(DescriptorSlot::new(0, 1), &mut result);
+		descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+		descriptors.bind_image(ResourceSlot::new(1), &mut result);
 		run_at(&program, &mut descriptors, [0, 0]);
 		drop(descriptors);
 
@@ -574,9 +574,9 @@ mod tests {
 		let mut high = texture_2d(1, 1, &[[0.4, 0.5, 0.6, 0.0]]);
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut low);
-		descriptors.bind_texture(DescriptorSlot::new(0, 1), &mut high);
-		descriptors.bind_image(DescriptorSlot::new(0, 2), &mut result);
+		descriptors.bind_texture(ResourceSlot::new(0), &mut low);
+		descriptors.bind_texture(ResourceSlot::new(1), &mut high);
+		descriptors.bind_image(ResourceSlot::new(2), &mut result);
 		run_at(&program, &mut descriptors, [0, 0]);
 		drop(descriptors);
 
@@ -587,7 +587,7 @@ mod tests {
 	#[test]
 	fn bloom_composite_besl_vm_preserves_zero_intensity_and_adds_positive_bloom() {
 		let program = crate::rendering::shader_vm_test::compile(build_bloom_program(BLOOM_COMPOSITE_BESL, 3));
-		let parameter_slot = DescriptorSlot::new(0, 3);
+		let parameter_slot = ResourceSlot::new(3);
 		let scene_color = [0.2, 0.3, 0.4, 0.6];
 		let bloom_color = [0.5, 0.25, 0.125, 0.0];
 
@@ -600,9 +600,9 @@ mod tests {
 				.write_indexed("prefilter", 0, Value::Vec4F([0.0, 0.0, intensity, 0.0]))
 				.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut scene);
-			descriptors.bind_texture(DescriptorSlot::new(0, 1), &mut bloom);
-			descriptors.bind_image(DescriptorSlot::new(0, 2), &mut result);
+			descriptors.bind_texture(ResourceSlot::new(0), &mut scene);
+			descriptors.bind_texture(ResourceSlot::new(1), &mut bloom);
+			descriptors.bind_image(ResourceSlot::new(2), &mut result);
 			descriptors.bind_buffer(parameter_slot, &mut parameters);
 			run_at(&program, &mut descriptors, [0, 0]);
 			drop(descriptors);

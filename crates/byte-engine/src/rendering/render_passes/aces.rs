@@ -87,7 +87,7 @@ main: fn() -> void {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, DescriptorSlot};
+	use besl::vm::{DescriptorBindings, ResourceSlot};
 	use resource_management::shader::{
 		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings,
 	};
@@ -101,8 +101,8 @@ mod tests {
 		let mut source = texture_2d(1, 1, &[source_color]);
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_image(DescriptorSlot::new(0, 0), &mut source);
-		descriptors.bind_image(DescriptorSlot::new(0, 1), &mut result);
+		descriptors.bind_image(ResourceSlot::new(0), &mut source);
+		descriptors.bind_image(ResourceSlot::new(1), &mut result);
 		run_at(program, &mut descriptors, [0, 0]);
 		drop(descriptors);
 		rgba(&result, [0, 0])
@@ -162,7 +162,7 @@ mod tests {
 			.expect("Failed to generate the ACES BESL shader MSL. The most likely cause is invalid BESL lowering.");
 
 		assert!(shader.contains("kernel void besl_main"));
-		assert!(shader.contains("set0.source.read(coord)"));
-		assert!(shader.contains("set0.result.write("));
+		assert!(shader.contains("resources.source.read(coord)"));
+		assert!(shader.contains("resources.result.write("));
 	}
 }

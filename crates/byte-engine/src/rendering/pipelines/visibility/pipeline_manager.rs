@@ -8,12 +8,6 @@ struct SkinningPaletteCacheEntry {
 
 /// The `VisibilityPipelineManager` struct provides the visibility buffer implementation for the world render domain.
 pub struct VisibilityPipelineManager {
-	/// Base descriptor set layout template shared across all scenes and sinks.
-	descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-	/// Visibility descriptor set layout template.
-	visibility_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
-	/// Material evaluation descriptor set layout template.
-	material_evaluation_descriptor_set_layout: ghi::DescriptorSetTemplateHandle,
 	/// Materials data buffer shared across all scenes.
 	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
 	/// Compute resources shared by every sink for frame-local mesh deformation.
@@ -51,51 +45,11 @@ impl VisibilityPipelineManager {
 				resource_manager.gpu_vertex_data_manager.skinning_weights_buffer.into(),
 			),
 		);
-		let bindings = [
-			VIEWS_DATA_BINDING,
-			MESH_DATA_BINDING,
-			VERTEX_POSITIONS_BINDING,
-			VERTEX_NORMALS_BINDING,
-			SKINNED_VERTICES_BINDING,
-			VERTEX_UV_BINDING,
-			VERTEX_INDICES_BINDING,
-			PRIMITIVE_INDICES_BINDING,
-			MESHLET_DATA_BINDING,
-			TEXTURES_BINDING,
-		];
-		let descriptor_set_layout = context.create_descriptor_set_template(Some("Base Set Layout"), &bindings);
-
-		let bindings = [
-			MATERIAL_COUNT_BINDING,
-			MATERIAL_OFFSET_BINDING,
-			MATERIAL_OFFSET_SCRATCH_BINDING,
-			MATERIAL_EVALUATION_DISPATCHES_BINDING,
-			MATERIAL_XY_BINDING,
-			TRIANGLE_INDEX_BINDING,
-			INSTANCE_ID_BINDING,
-		];
-		let visibility_descriptor_set_layout = context.create_descriptor_set_template(Some("Visibility Set Layout"), &bindings);
-
 		let materials_data_buffer_handle = context.build_buffer::<[MaterialData; MAX_MATERIALS]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
 				.name("Materials Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-
-		let bindings = [
-			LIT_BINDING_TEMPLATE,
-			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
-				.buffer_read_only(true),
-			UNUSED_SET2_BINDING2_TEMPLATE,
-			ghi::DescriptorSetBindingTemplate::new(3, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE),
-			LIGHTING_DATA_BINDING_TEMPLATE,
-			MATERIALS_DATA_BINDING_TEMPLATE,
-			AO_MAP_BINDING_TEMPLATE,
-			SHADOW_MAP_BINDING_TEMPLATE,
-			VISIBILITY_DEPTH_BINDING_TEMPLATE,
-		];
-		let material_evaluation_descriptor_set_layout =
-			context.create_descriptor_set_template(Some("Material Evaluation Set Layout"), &bindings);
 
 		let views_data_buffer_handle = context.build_dynamic_buffer::<[ShaderViewData; 8]>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -109,16 +63,7 @@ impl VisibilityPipelineManager {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let descriptor_set = context.create_descriptor_set(Some("Base Descriptor Set"), &descriptor_set_layout);
-
-		let _views_data_binding = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&VIEWS_DATA_BINDING, views_data_buffer_handle.into()),
-		);
-		let _meshes_data_binding = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&MESH_DATA_BINDING, meshes_data_buffer.into()),
-		);
+		let descriptor_set = context.create_descriptor_set(Some("Base Descriptor Set"));
 		let (
 			vertex_positions_buffer,
 			vertex_normals_buffer,
@@ -136,38 +81,29 @@ impl VisibilityPipelineManager {
 				resource_manager.gpu_vertex_data_manager.meshlets_data_buffer,
 			)
 		};
-		let _vertex_positions_binding = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&VERTEX_POSITIONS_BINDING, vertex_positions_buffer.into()),
-		);
-		let _vertex_normals_binding = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&VERTEX_NORMALS_BINDING, vertex_normals_buffer.into()),
-		);
-		let _skinned_vertices_binding = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&SKINNED_VERTICES_BINDING, skinning_pass.skinned_vertices_buffer().into()),
-		);
-		let _vertex_uv_binding = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&VERTEX_UV_BINDING, vertex_uvs_buffer.into()),
-		);
-		let _vertex_indices_binding = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&VERTEX_INDICES_BINDING, vertex_indices_buffer.into()),
-		);
-		let _primitive_indices_binding = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&PRIMITIVE_INDICES_BINDING, primitive_indices_buffer.into()),
-		);
-		let _meshlets_data_binding = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::buffer(&MESHLET_DATA_BINDING, meshlets_data_buffer.into()),
-		);
-		let textures_binding = context.create_descriptor_binding(
-			descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler_array(&TEXTURES_BINDING),
-		);
+		context.write(&[
+			ghi::DescriptorWrite::buffer(descriptor_set, VIEWS_DATA_BINDING.slot(), views_data_buffer_handle.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, MESH_DATA_BINDING.slot(), meshes_data_buffer.into()),
+			ghi::DescriptorWrite::buffer(
+				descriptor_set,
+				VERTEX_POSITIONS_BINDING.slot(),
+				vertex_positions_buffer.into(),
+			),
+			ghi::DescriptorWrite::buffer(descriptor_set, VERTEX_NORMALS_BINDING.slot(), vertex_normals_buffer.into()),
+			ghi::DescriptorWrite::buffer(
+				descriptor_set,
+				SKINNED_VERTICES_BINDING.slot(),
+				skinning_pass.skinned_vertices_buffer().into(),
+			),
+			ghi::DescriptorWrite::buffer(descriptor_set, VERTEX_UV_BINDING.slot(), vertex_uvs_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, VERTEX_INDICES_BINDING.slot(), vertex_indices_buffer.into()),
+			ghi::DescriptorWrite::buffer(
+				descriptor_set,
+				PRIMITIVE_INDICES_BINDING.slot(),
+				primitive_indices_buffer.into(),
+			),
+			ghi::DescriptorWrite::buffer(descriptor_set, MESHLET_DATA_BINDING.slot(), meshlets_data_buffer.into()),
+		]);
 
 		let light_data_buffer = context.build_buffer::<LightingData>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
@@ -197,25 +133,12 @@ impl VisibilityPipelineManager {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
-		let material_evaluation_descriptor_set = context.create_descriptor_set(
-			Some("Material Evaluation Descriptor Set"),
-			&material_evaluation_descriptor_set_layout,
-		);
-
 		resource_manager.configure_material_pipeline(MaterialPipelineConfig::new(
-			[
-				descriptor_set_layout,
-				visibility_descriptor_set_layout,
-				material_evaluation_descriptor_set_layout,
-			],
 			vec![ghi::pipelines::PushConstantRange::new(0, 4)],
 			context.create_factory(),
 		));
 
 		Self {
-			descriptor_set_layout,
-			visibility_descriptor_set_layout,
-			material_evaluation_descriptor_set_layout,
 			materials_data_buffer_handle,
 			skinning_pass,
 			skinning_palette_scratch: Vec::new(),
@@ -232,9 +155,7 @@ impl VisibilityPipelineManager {
 				skinning_poses: HashMap::new(),
 				views_data_buffer_handle,
 				descriptor_set,
-				textures_binding,
 				meshes_data_buffer,
-				material_evaluation_descriptor_set,
 				light_data_buffer,
 				lights: StableVec::new(),
 				render_info: RenderInfo {
@@ -368,8 +289,9 @@ impl VisibilityPipelineManager {
 		image: ghi::BaseImageHandle,
 		sampler: ghi::SamplerHandle,
 	) {
-		frame.write(&[ghi::descriptors::Write::combined_image_sampler_array(
-			self.scene.textures_binding,
+		frame.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+			self.scene.descriptor_set,
+			TEXTURES_BINDING.slot(),
 			image,
 			sampler,
 			ghi::Layouts::Read,
@@ -830,12 +752,8 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 
 		let context = render_pass_builder.context();
-		let visibility_passes_descriptor_set =
-			context.create_descriptor_set(Some("Visibility Descriptor Set"), &self.visibility_descriptor_set_layout);
-		let material_evaluation_descriptor_set = context.create_descriptor_set(
-			Some("Material Evaluation Descriptor Set"),
-			&self.material_evaluation_descriptor_set_layout,
-		);
+		let visibility_passes_descriptor_set = context.create_descriptor_set(Some("Visibility Descriptor Set"));
+		let material_evaluation_descriptor_set = context.create_descriptor_set(Some("Material Evaluation Descriptor Set"));
 
 		let material_count_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferDestination)
@@ -909,68 +827,82 @@ impl PipelineManager for VisibilityPipelineManager {
 				.max_lod(0f32),
 		);
 
-		let _ = context.create_descriptor_binding(
-			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::image(&LIT_BINDING_TEMPLATE, ghi::BaseImageHandle::from(lit_target)),
-		);
-		let _ = context.create_descriptor_binding(
-			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::buffer(&LIGHTING_DATA_BINDING_TEMPLATE, self.scene.light_data_buffer.into()),
-		);
-		let _ = context.create_descriptor_binding(
-			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::buffer(&MATERIALS_DATA_BINDING_TEMPLATE, self.materials_data_buffer_handle.into()),
-		);
-		let _ = context.create_descriptor_binding(
-			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(&AO_MAP_BINDING_TEMPLATE, ao_map, sampler, ghi::Layouts::Read),
-		);
-		let _ = context.create_descriptor_binding(
-			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&SHADOW_MAP_BINDING_TEMPLATE,
+		context.write(&[
+			ghi::DescriptorWrite::image(
+				material_evaluation_descriptor_set,
+				LIT_BINDING.slot(),
+				ghi::BaseImageHandle::from(lit_target),
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::buffer(
+				material_evaluation_descriptor_set,
+				LIGHTING_DATA_BINDING.slot(),
+				self.scene.light_data_buffer.into(),
+			),
+			ghi::DescriptorWrite::buffer(
+				material_evaluation_descriptor_set,
+				MATERIALS_DATA_BINDING.slot(),
+				self.materials_data_buffer_handle.into(),
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				material_evaluation_descriptor_set,
+				AO_MAP_BINDING.slot(),
+				ao_map,
+				sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				material_evaluation_descriptor_set,
+				SHADOW_MAP_BINDING.slot(),
 				shadow_map,
 				depth_sampler,
 				ghi::Layouts::Read,
 			),
-		);
-		let _ = context.create_descriptor_binding(
-			material_evaluation_descriptor_set,
-			ghi::BindingConstructor::combined_image_sampler(
-				&VISIBILITY_DEPTH_BINDING_TEMPLATE,
+			ghi::DescriptorWrite::combined_image_sampler(
+				material_evaluation_descriptor_set,
+				VISIBILITY_DEPTH_BINDING.slot(),
 				ghi::BaseImageHandle::from(depth_target),
 				visibility_depth_sampler,
 				ghi::Layouts::Read,
 			),
-		);
-		let _ = context.create_descriptor_binding(
-			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::buffer(&MATERIAL_COUNT_BINDING, material_count_buffer.into()),
-		);
-		let _ = context.create_descriptor_binding(
-			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_BINDING, material_offset_buffer.into()),
-		);
-		let _ = context.create_descriptor_binding(
-			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::buffer(&MATERIAL_OFFSET_SCRATCH_BINDING, material_offset_scratch_buffer.into()),
-		);
-		let _ = context.create_descriptor_binding(
-			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::buffer(&MATERIAL_EVALUATION_DISPATCHES_BINDING, material_evaluation_dispatches.into()),
-		);
-		let _ = context.create_descriptor_binding(
-			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::buffer(&MATERIAL_XY_BINDING, material_xy.into()),
-		);
-		let _ = context.create_descriptor_binding(
-			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::image(&TRIANGLE_INDEX_BINDING, ghi::BaseImageHandle::from(primitive_index)),
-		);
-		let _ = context.create_descriptor_binding(
-			visibility_passes_descriptor_set,
-			ghi::BindingConstructor::image(&INSTANCE_ID_BINDING, ghi::BaseImageHandle::from(instance_id)),
-		);
+			ghi::DescriptorWrite::buffer(
+				visibility_passes_descriptor_set,
+				MATERIAL_COUNT_BINDING.slot(),
+				material_count_buffer.into(),
+			),
+			ghi::DescriptorWrite::buffer(
+				visibility_passes_descriptor_set,
+				MATERIAL_OFFSET_BINDING.slot(),
+				material_offset_buffer.into(),
+			),
+			ghi::DescriptorWrite::buffer(
+				visibility_passes_descriptor_set,
+				MATERIAL_OFFSET_SCRATCH_BINDING.slot(),
+				material_offset_scratch_buffer.into(),
+			),
+			ghi::DescriptorWrite::buffer(
+				visibility_passes_descriptor_set,
+				MATERIAL_EVALUATION_DISPATCHES_BINDING.slot(),
+				material_evaluation_dispatches.into(),
+			),
+			ghi::DescriptorWrite::buffer(
+				visibility_passes_descriptor_set,
+				MATERIAL_XY_BINDING.slot(),
+				material_xy.into(),
+			),
+			ghi::DescriptorWrite::image(
+				visibility_passes_descriptor_set,
+				TRIANGLE_INDEX_BINDING.slot(),
+				ghi::BaseImageHandle::from(primitive_index),
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::image(
+				visibility_passes_descriptor_set,
+				INSTANCE_ID_BINDING.slot(),
+				ghi::BaseImageHandle::from(instance_id),
+				ghi::Layouts::General,
+			),
+		]);
 
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
@@ -979,8 +911,6 @@ impl PipelineManager for VisibilityPipelineManager {
 		let render_pass = VisibilityPipelineRenderPass::new(
 			render_pass_builder.context(),
 			shader_storage,
-			self.descriptor_set_layout,
-			self.visibility_descriptor_set_layout,
 			self.scene.descriptor_set,
 			visibility_passes_descriptor_set,
 			material_evaluation_descriptor_set,
@@ -1293,32 +1223,36 @@ mod tests {
 	}
 }
 
-const LIT_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const UNUSED_SET2_BINDING2_TEMPLATE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(2, ghi::descriptors::DescriptorType::StorageImage, ghi::Stages::COMPUTE);
-const LIGHTING_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(4, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
-		.buffer_read_only(true);
-const MATERIALS_DATA_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate =
-	ghi::DescriptorSetBindingTemplate::new(5, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::COMPUTE)
-		.buffer_read_only(true);
-const AO_MAP_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	10,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
+const LIT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1041),
+	ghi::ResourceKind::StorageImage,
+	ghi::AccessPolicies::WRITE,
 );
-const SHADOW_MAP_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new_array(
-	11,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
-	1,
+const LIGHTING_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1045),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+);
+const MATERIALS_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1046),
+	ghi::ResourceKind::StorageBuffer,
+	ghi::AccessPolicies::READ,
+);
+const AO_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1051),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
+const SHADOW_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1052),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
 )
 .texture_view_type(ghi::TextureViewTypes::Texture2DArray);
-const VISIBILITY_DEPTH_BINDING_TEMPLATE: ghi::DescriptorSetBindingTemplate = ghi::DescriptorSetBindingTemplate::new(
-	12,
-	ghi::descriptors::DescriptorType::CombinedImageSampler,
-	ghi::Stages::COMPUTE,
+const VISIBILITY_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1053),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
 );
 use std::borrow::Borrow;
 use std::cell::RefCell;
@@ -1328,15 +1262,12 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use ::core::slice::SlicePattern;
+use ghi::command_buffer::{
+	BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
+	CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+};
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
-use ghi::{
-	command_buffer::{
-		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-		CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
-	},
-	graphics_hardware_interface,
-};
 use log::{error, warn};
 use math::{mat::MatInverse as _, ShaderMatrix4, ShaderMatrix4x3, Vector3};
 use resource_management::asset::bema_asset_handler::ProgramGenerator;

@@ -21,7 +21,7 @@
 pub mod window;
 
 pub mod frame_resources;
-pub mod graphics_hardware_interface;
+mod graphics_hardware_interface;
 pub mod render_debugger;
 
 pub mod debug;
@@ -36,13 +36,18 @@ pub mod vulkan;
 
 pub(crate) use crate::frame_resources::*;
 pub use crate::graphics_hardware_interface::{
-	AllocationHandle, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BindingConstructor,
-	BottomLevelAccelerationStructure, BottomLevelAccelerationStructureDescriptions, BottomLevelAccelerationStructureHandle,
-	BufferHandle, ClearValue, CommandBufferHandle, DescriptorSetBindingHandle, DescriptorSetBindingTemplate,
-	DescriptorSetHandle, DescriptorSetTemplateHandle, DispatchExtent, DynamicBufferHandle, DynamicImageHandle, FrameKey,
-	ImageHandle, ImageOrSwapchain, MeshHandle, PipelineHandle, PipelineLayoutHandle, PresentKey, PresentationModes,
-	QueueHandle, QueueSelection, RGBAu8, SamplerHandle, ShaderHandle, SwapchainHandle, SynchronizerHandle, TextureCopyHandle,
-	TextureViewTypes, TopLevelAccelerationStructureHandle,
+	AllocationHandle, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BottomLevelAccelerationStructure,
+	BottomLevelAccelerationStructureDescriptions, BottomLevelAccelerationStructureHandle, BufferHandle, ClearValue,
+	CommandBufferHandle, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle, DynamicImageHandle, FrameKey, ImageHandle,
+	ImageOrSwapchain, MeshHandle, PipelineHandle, PresentKey, PresentationModes, QueueHandle, QueueSelection, RGBAu8,
+	SamplerHandle, ShaderHandle, SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TextureViewTypes,
+	TopLevelAccelerationStructureHandle,
+};
+// Legacy backend-only handles remain crate-private while the non-Metal backends migrate on their target machines.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) use crate::graphics_hardware_interface::{
+	BindingConstructor, DescriptorSetBindingHandle, DescriptorSetBindingTemplate, DescriptorSetTemplateHandle,
+	PipelineLayoutHandle,
 };
 pub(crate) use crate::graphics_hardware_interface::{MasterHandle, PrivateHandle, Ranges};
 pub use crate::window::Window;
@@ -60,6 +65,7 @@ pub mod implementation {
 	pub use crate::vulkan::*;
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub mod binding;
 pub mod buffer;
 pub mod command_buffer;
@@ -80,10 +86,12 @@ pub mod types;
 mod utils;
 
 pub use context::{Context, ContextCreate};
+pub use descriptors::DescriptorWrite;
 pub use device::Device;
 pub use frame::Frame;
 pub use pipelines::ShaderParameter;
 pub use queue::Queue;
+pub use shader::{ResourceKind, ResourceSlot, ShaderResourceDescriptor};
 use smallvec::SmallVec;
 pub use types::{
 	AccessPolicies, BufferCopyDescriptor, BufferDescriptor, BufferImageCopyDescriptor, BufferStridedRange, ChannelBitSize,
@@ -105,6 +113,7 @@ pub(crate) fn debug_name(_name: Option<&str>) -> Option<String> {
 	None
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) use implementation::Binding;
 pub(crate) use implementation::DescriptorSet;
 pub(crate) use implementation::Synchronizer;

@@ -97,7 +97,7 @@ mod compilation {
 				Box::from(compilation_artifact.as_binary_u8()),
 				bindings
 					.iter()
-					.map(|b| CompiledShaderBinding::new(b.set, b.binding, b.read, b.write))
+					.map(|b| CompiledShaderBinding::new(b.slot, b.kind, b.count, b.read, b.write))
 					.collect(),
 				match shader_compilation_settings.stage {
 					crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
@@ -125,20 +125,17 @@ mod compilation {
 			assert_eq!(bindings.len(), 3);
 
 			let buffer_binding = &bindings[0];
-			assert_eq!(buffer_binding.binding, 0);
-			assert_eq!(buffer_binding.set, 0);
+			assert_eq!(buffer_binding.slot, 0);
 			assert_eq!(buffer_binding.read, true);
 			assert_eq!(buffer_binding.write, true);
 
 			let image_binding = &bindings[1];
-			assert_eq!(image_binding.binding, 1);
-			assert_eq!(image_binding.set, 0);
+			assert_eq!(image_binding.slot, 1);
 			assert_eq!(image_binding.read, false);
 			assert_eq!(image_binding.write, true);
 
 			let texture_binding = &bindings[2];
-			assert_eq!(texture_binding.binding, 0);
-			assert_eq!(texture_binding.set, 1);
+			assert_eq!(texture_binding.slot, 2);
 			assert_eq!(texture_binding.read, true);
 			assert_eq!(texture_binding.write, false);
 		}

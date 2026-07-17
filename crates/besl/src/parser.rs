@@ -129,15 +129,14 @@ impl<'a> Node<'a> {
 		make_function("main", Vec::new(), "void", statements)
 	}
 
-	pub fn binding(name: &'a str, r#type: Node<'a>, set: u32, descriptor: u32, read: bool, write: bool) -> Node<'a> {
-		Self::binding_with_count(name, r#type, set, descriptor, read, write, None)
+	pub fn binding(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
+		Self::binding_with_count(name, r#type, slot, read, write, None)
 	}
 
 	fn binding_with_count(
 		name: &'a str,
 		r#type: Node<'a>,
-		set: u32,
-		descriptor: u32,
+		slot: u32,
 		read: bool,
 		write: bool,
 		count: Option<NonZeroUsize>,
@@ -146,8 +145,7 @@ impl<'a> Node<'a> {
 			node: Nodes::Binding {
 				name,
 				r#type: Box::new(r#type),
-				set,
-				descriptor,
+				slot,
 				read,
 				write,
 				count,
@@ -155,16 +153,11 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn binding_array(
-		name: &'a str,
-		r#type: Node<'a>,
-		set: u32,
-		descriptor: u32,
-		read: bool,
-		write: bool,
-		count: u32,
-	) -> Node<'a> {
-		Self::binding_with_count(name, r#type, set, descriptor, read, write, NonZeroUsize::new(count as usize))
+	pub fn binding_array(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool, count: u32) -> Node<'a> {
+		let count = NonZeroUsize::new(count as usize).expect(
+			"Invalid binding array count. The most likely cause is that a resource array was declared with zero elements.",
+		);
+		Self::binding_with_count(name, r#type, slot, read, write, Some(count))
 	}
 
 	pub fn specialization(name: &'a str, r#type: &'a str) -> Node<'a> {
@@ -506,8 +499,7 @@ pub enum Nodes<'a> {
 	Binding {
 		name: &'a str,
 		r#type: Box<Node<'a>>,
-		set: u32,
-		descriptor: u32,
+		slot: u32,
 		read: bool,
 		write: bool,
 		count: Option<NonZeroUsize>,
@@ -1646,6 +1638,12 @@ pub struct ProgramState {
 mod tests {
 	use super::*;
 	use crate::tokenizer::tokenize;
+
+	#[test]
+	#[should_panic(expected = "Invalid binding array count")]
+	fn binding_array_rejects_zero_elements() {
+		Node::binding_array("textures", Node::combined_image_sampler(), 0, true, false, 0);
+	}
 
 	fn assert_named_type(type_name: &TypeName<'_>, expected: &str) {
 		assert!(matches!(type_name, TypeName::Named(name) if *name == expected));

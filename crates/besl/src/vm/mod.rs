@@ -14,18 +14,17 @@ pub use error::VmError;
 use instruction::*;
 use value::*;
 
-/// The `DescriptorSlot` struct provides a stable lookup key for host resources and VM interface resources.
+/// The `ResourceSlot` struct provides a stable flat lookup key for host resources and VM interface resources.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DescriptorSlot {
-	set: u32,
-	binding: u32,
-	// The kind keeps internal VM namespaces distinct from host descriptors that use the same numeric coordinates.
-	kind: DescriptorSlotKind,
+pub struct ResourceSlot {
+	slot: u32,
+	// The kind keeps internal VM namespaces distinct from host resources that use the same numeric slot.
+	kind: ResourceSlotKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum DescriptorSlotKind {
-	Descriptor,
+enum ResourceSlotKind {
+	Resource,
 	PushConstant,
 	DynamicResource,
 	BuiltinPosition,
@@ -33,56 +32,48 @@ enum DescriptorSlotKind {
 	Output,
 }
 
-impl DescriptorSlot {
-	pub const fn new(set: u32, binding: u32) -> Self {
+impl ResourceSlot {
+	pub const fn new(slot: u32) -> Self {
 		Self {
-			set,
-			binding,
-			kind: DescriptorSlotKind::Descriptor,
+			slot,
+			kind: ResourceSlotKind::Resource,
 		}
 	}
 
-	pub const fn set(&self) -> u32 {
-		self.set
+	pub const fn slot(&self) -> u32 {
+		self.slot
 	}
 
-	pub const fn binding(&self) -> u32 {
-		self.binding
-	}
-
-	const fn virtual_slot(set: u32, binding: u32, kind: DescriptorSlotKind) -> Self {
-		Self { set, binding, kind }
+	const fn virtual_slot(slot: u32, kind: ResourceSlotKind) -> Self {
+		Self { slot, kind }
 	}
 
 	const fn is_dynamic_resource(&self) -> bool {
-		matches!(self.kind, DescriptorSlotKind::DynamicResource)
+		matches!(self.kind, ResourceSlotKind::DynamicResource)
 	}
 }
 
-const PUSH_CONSTANT_SLOT: DescriptorSlot = DescriptorSlot::virtual_slot(u32::MAX, u32::MAX, DescriptorSlotKind::PushConstant);
-const DYNAMIC_RESOURCE_SET: u32 = u32::MAX - 4;
-const BUILTIN_POSITION_INTERFACE_SET: u32 = u32::MAX - 3;
-const INPUT_INTERFACE_SET: u32 = u32::MAX - 2;
-const OUTPUT_INTERFACE_SET: u32 = u32::MAX - 1;
+const PUSH_CONSTANT_SLOT: ResourceSlot = ResourceSlot::virtual_slot(0, ResourceSlotKind::PushConstant);
 
-pub const fn input_slot(location: u8) -> DescriptorSlot {
-	DescriptorSlot::virtual_slot(INPUT_INTERFACE_SET, location as u32, DescriptorSlotKind::Input)
+pub const fn input_slot(location: u8) -> ResourceSlot {
+	ResourceSlot::virtual_slot(location as u32, ResourceSlotKind::Input)
 }
 
-pub const fn output_slot(location: u8) -> DescriptorSlot {
-	DescriptorSlot::virtual_slot(OUTPUT_INTERFACE_SET, location as u32, DescriptorSlotKind::Output)
+pub const fn output_slot(location: u8) -> ResourceSlot {
+	ResourceSlot::virtual_slot(location as u32, ResourceSlotKind::Output)
 }
 
 /// Returns the interface slot reserved for the vertex position builtin.
-pub const fn builtin_position_slot() -> DescriptorSlot {
-	DescriptorSlot::virtual_slot(BUILTIN_POSITION_INTERFACE_SET, 0, DescriptorSlotKind::BuiltinPosition)
+pub const fn builtin_position_slot() -> ResourceSlot {
+	ResourceSlot::virtual_slot(0, ResourceSlotKind::BuiltinPosition)
 }
 
-fn dynamic_resource_slot(register: usize) -> DescriptorSlot {
-	DescriptorSlot::virtual_slot(
-		DYNAMIC_RESOURCE_SET,
-		u32::try_from(register).expect("VM register indices fit in a descriptor slot"),
-		DescriptorSlotKind::DynamicResource,
+fn dynamic_resource_slot(register: usize) -> ResourceSlot {
+	ResourceSlot::virtual_slot(
+		u32::try_from(register).expect(
+			"Invalid VM resource register. The most likely cause is that compilation produced more registers than the flat slot representation can address.",
+		),
+		ResourceSlotKind::DynamicResource,
 	)
 }
 
@@ -697,7 +688,7 @@ impl DescriptorBinding<'_> {
 		}
 	}
 
-	fn type_mismatch(&self, slot: DescriptorSlot, expected: &'static str) -> VmError {
+	fn type_mismatch(&self, slot: ResourceSlot, expected: &'static str) -> VmError {
 		VmError::DescriptorTypeMismatch {
 			slot,
 			expected,
@@ -784,7 +775,7 @@ impl MeshOutputs {
 
 /// The `DescriptorBindings` struct provides invocation-scoped host resources to a compiled BESL program.
 pub struct DescriptorBindings<'a> {
-	bindings: HashMap<DescriptorSlot, DescriptorBinding<'a>>,
+	bindings: HashMap<ResourceSlot, DescriptorBinding<'a>>,
 	push_constant: Option<&'a mut Buffer>,
 	mesh_outputs: Option<&'a mut MeshOutputs>,
 }
@@ -804,15 +795,15 @@ impl<'a> DescriptorBindings<'a> {
 		}
 	}
 
-	pub fn bind_buffer(&mut self, slot: DescriptorSlot, buffer: &'a mut Buffer) {
+	pub fn bind_buffer(&mut self, slot: ResourceSlot, buffer: &'a mut Buffer) {
 		self.bindings.insert(slot, DescriptorBinding::Buffer(buffer));
 	}
 
-	pub fn bind_texture(&mut self, slot: DescriptorSlot, texture: &'a mut Texture) {
+	pub fn bind_texture(&mut self, slot: ResourceSlot, texture: &'a mut Texture) {
 		self.bindings.insert(slot, DescriptorBinding::Texture(texture));
 	}
 
-	pub fn bind_image(&mut self, slot: DescriptorSlot, image: &'a mut Texture) {
+	pub fn bind_image(&mut self, slot: ResourceSlot, image: &'a mut Texture) {
 		self.bindings.insert(slot, DescriptorBinding::Image(image));
 	}
 
@@ -825,7 +816,7 @@ impl<'a> DescriptorBindings<'a> {
 		self.mesh_outputs = Some(mesh_outputs);
 	}
 
-	fn buffer_mut(&mut self, slot: DescriptorSlot) -> Result<&mut Buffer, VmError> {
+	fn buffer_mut(&mut self, slot: ResourceSlot) -> Result<&mut Buffer, VmError> {
 		let descriptor = self.bindings.get_mut(&slot).ok_or(VmError::UnboundDescriptor { slot })?;
 
 		match descriptor {
@@ -834,7 +825,7 @@ impl<'a> DescriptorBindings<'a> {
 		}
 	}
 
-	fn texture_mut(&mut self, slot: DescriptorSlot) -> Result<&mut Texture, VmError> {
+	fn texture_mut(&mut self, slot: ResourceSlot) -> Result<&mut Texture, VmError> {
 		let descriptor = self.bindings.get_mut(&slot).ok_or(VmError::UnboundDescriptor { slot })?;
 
 		match descriptor {
@@ -843,7 +834,7 @@ impl<'a> DescriptorBindings<'a> {
 		}
 	}
 
-	fn image_mut(&mut self, slot: DescriptorSlot) -> Result<&mut Texture, VmError> {
+	fn image_mut(&mut self, slot: ResourceSlot) -> Result<&mut Texture, VmError> {
 		let descriptor = self.bindings.get_mut(&slot).ok_or(VmError::UnboundDescriptor { slot })?;
 
 		match descriptor {
@@ -1034,7 +1025,7 @@ impl<'a> ExecutionState<'a> {
 
 /// The `ExecutableProgram` struct provides a reusable host-side execution form for one lexed BESL program.
 pub struct ExecutableProgram {
-	descriptor_layouts: HashMap<DescriptorSlot, DescriptorLayout>,
+	descriptor_layouts: HashMap<ResourceSlot, DescriptorLayout>,
 	functions: Vec<ExecutableFunction>,
 	main_function: usize,
 }
@@ -1064,11 +1055,11 @@ impl ExecutableProgram {
 		compiler::compile(program, specializations)
 	}
 
-	pub fn descriptor_layout(&self, slot: DescriptorSlot) -> Option<&DescriptorLayout> {
+	pub fn descriptor_layout(&self, slot: ResourceSlot) -> Option<&DescriptorLayout> {
 		self.descriptor_layouts.get(&slot)
 	}
 
-	pub fn buffer_layout(&self, slot: DescriptorSlot) -> Option<&BufferLayout> {
+	pub fn buffer_layout(&self, slot: ResourceSlot) -> Option<&BufferLayout> {
 		match self.descriptor_layouts.get(&slot) {
 			Some(DescriptorLayout::Buffer(layout)) => Some(layout),
 			Some(DescriptorLayout::Texture) => None,
@@ -1118,7 +1109,7 @@ pub enum Value {
 	Vec4F([f32; 4]),
 	Mat4F([f32; 16]),
 	Mat4x3F([f32; 12]),
-	Resource { slot: DescriptorSlot, value_type: ValueType },
+	Resource { slot: ResourceSlot, value_type: ValueType },
 	Struct { value_type: ValueType, fields: Vec<Value> },
 }
 

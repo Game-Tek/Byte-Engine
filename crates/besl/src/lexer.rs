@@ -4,7 +4,7 @@ use std::hash::Hash;
 use std::{
 	cell::RefCell,
 	fmt::Write as _,
-	num::NonZeroUsize,
+	num::{NonZeroU32, NonZeroUsize},
 	ops::Deref,
 	rc::{Rc, Weak},
 };
@@ -541,25 +541,23 @@ impl Node {
 		}
 	}
 
-	pub fn binding(name: &str, r#type: BindingTypes, set: u32, binding: u32, read: bool, write: bool) -> Node {
-		Self::binding_with_count(name, r#type, set, binding, read, write, None)
+	pub fn binding(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool) -> Node {
+		Self::binding_with_count(name, r#type, slot, read, write, None)
 	}
 
 	fn binding_with_count(
 		name: &str,
 		r#type: BindingTypes,
-		set: u32,
-		binding: u32,
+		slot: u32,
 		read: bool,
 		write: bool,
-		count: Option<NonZeroUsize>,
+		count: Option<NonZeroU32>,
 	) -> Node {
 		Node {
 			node: Nodes::Binding {
 				name: name.to_string(),
 				r#type,
-				set,
-				binding,
+				slot,
 				read,
 				write,
 				count,
@@ -567,24 +565,13 @@ impl Node {
 		}
 	}
 
-	pub fn binding_array(
-		name: &str,
-		r#type: BindingTypes,
-		set: u32,
-		binding: u32,
-		read: bool,
-		write: bool,
-		count: usize,
-	) -> Node {
-		Self::binding_with_count(
-			name,
-			r#type,
-			set,
-			binding,
-			read,
-			write,
-			Some(NonZeroUsize::new(count).expect("Invalid count")),
-		)
+	pub fn binding_array(name: &str, r#type: BindingTypes, slot: u32, read: bool, write: bool, count: usize) -> Node {
+		let count = u32::try_from(count)
+			.expect("Invalid binding array count. The most likely cause is that a resource array exceeds u32::MAX elements.");
+		let count = NonZeroU32::new(count).expect(
+			"Invalid binding array count. The most likely cause is that a resource array was declared with zero elements.",
+		);
+		Self::binding_with_count(name, r#type, slot, read, write, Some(count))
 	}
 
 	pub fn push_constant(members: Vec<NodeReference>) -> Node {
@@ -818,12 +805,11 @@ pub enum Nodes {
 	},
 	Binding {
 		name: String,
-		set: u32,
-		binding: u32,
+		slot: u32,
 		read: bool,
 		write: bool,
 		r#type: BindingTypes,
-		count: Option<NonZeroUsize>,
+		count: Option<NonZeroU32>,
 	},
 	PushConstant {
 		members: Vec<NodeReference>,
@@ -998,8 +984,7 @@ impl std::fmt::Debug for Node {
 			}
 			Nodes::Binding {
 				name,
-				set,
-				binding,
+				slot,
 				read,
 				write,
 				r#type,
@@ -1007,8 +992,8 @@ impl std::fmt::Debug for Node {
 			} => {
 				write!(
 					f,
-					"Binding {{ name: {}, set: {}, binding: {}, read: {}, write: {}, type: {:?}, count: {:?} }}",
-					name, set, binding, read, write, r#type, count
+					"Binding {{ name: {}, slot: {}, read: {}, write: {}, type: {:?}, count: {:?} }}",
+					name, slot, read, write, r#type, count
 				)
 			}
 			Nodes::PushConstant { members } => {
@@ -1731,8 +1716,7 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 		parser::Nodes::Binding {
 			name,
 			r#type,
-			set,
-			descriptor,
+			slot,
 			read,
 			write,
 			count,
@@ -1758,9 +1742,9 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 			};
 
 			let this = if let Some(count) = count {
-				Node::binding_array(name, r#type, *set, *descriptor, *read, *write, count.get())
+				Node::binding_array(name, r#type, *slot, *read, *write, count.get())
 			} else {
-				Node::binding(name, r#type, *set, *descriptor, *read, *write)
+				Node::binding(name, r#type, *slot, *read, *write)
 			};
 
 			this.into()
@@ -1782,7 +1766,6 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 					format: format.to_string(),
 				},
 				0,
-				0,
 				false,
 				false,
 			);
@@ -1795,7 +1778,6 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 				BindingTypes::CombinedImageSampler {
 					format: format.to_string(),
 				},
-				0,
 				0,
 				false,
 				false,
@@ -2194,6 +2176,20 @@ mod tests {
 	use super::*;
 	use crate::tokenizer;
 
+	#[cfg(target_pointer_width = "64")]
+	#[test]
+	#[should_panic(expected = "resource array exceeds u32::MAX elements")]
+	fn binding_array_rejects_count_larger_than_flat_metadata() {
+		Node::binding_array(
+			"textures",
+			BindingTypes::CombinedImageSampler { format: String::new() },
+			0,
+			true,
+			false,
+			(u32::MAX as usize) + 1,
+		);
+	}
+
 	fn assert_type(node: &Node, type_name: &str) {
 		match &node.node {
 			Nodes::Struct { name, .. } => {
@@ -2493,7 +2489,6 @@ color: In<vec4f>;
 					members: vec![Node::array("values", float_type, 3)],
 				},
 				0,
-				0,
 				true,
 				false,
 			)
@@ -2548,7 +2543,6 @@ color: In<vec4f>;
 					members: vec![Node::array("meshes", mesh, 4)],
 				},
 				0,
-				0,
 				true,
 				false,
 			)
@@ -2558,7 +2552,6 @@ color: In<vec4f>;
 				BindingTypes::Buffer {
 					members: vec![Node::array("pixel_mapping", u32_type, 4)],
 				},
-				0,
 				1,
 				true,
 				true,
@@ -2864,7 +2857,6 @@ main: fn () -> void {
 				"texture_sampler",
 				BindingTypes::CombinedImageSampler { format: String::new() },
 				0,
-				0,
 				true,
 				false,
 			)
@@ -2874,7 +2866,6 @@ main: fn () -> void {
 			Node::binding(
 				"texture",
 				BindingTypes::CombinedImageSampler { format: String::new() },
-				0,
 				1,
 				true,
 				false,
@@ -2946,7 +2937,6 @@ main: fn () -> void {
 				"texture_sampler",
 				BindingTypes::CombinedImageSampler { format: String::new() },
 				0,
-				0,
 				true,
 				false,
 			)
@@ -2974,7 +2964,6 @@ main: fn () -> void {
 				BindingTypes::Image {
 					format: "rgba8".to_string(),
 				},
-				0,
 				0,
 				false,
 				true,

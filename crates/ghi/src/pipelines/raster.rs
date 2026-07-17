@@ -2,11 +2,10 @@ use std::borrow::Cow;
 
 use crate::{
 	pipelines::{ShaderParameter, VertexElement},
-	DescriptorSetTemplateHandle, Formats,
+	Formats,
 };
 
 pub struct Builder<'a> {
-	pub(crate) descriptor_set_templates: Cow<'a, [DescriptorSetTemplateHandle]>,
 	pub(crate) push_constant_ranges: Cow<'a, [crate::pipelines::PushConstantRange]>,
 	pub(crate) vertex_elements: Cow<'a, [VertexElement<'a>]>,
 	pub(crate) render_targets: Cow<'a, [AttachmentDescriptor]>,
@@ -17,14 +16,12 @@ pub struct Builder<'a> {
 
 impl<'a> Builder<'a> {
 	pub fn new(
-		descriptor_set_templates: &'a [DescriptorSetTemplateHandle],
 		push_constant_ranges: &'a [crate::pipelines::PushConstantRange],
 		vertex_elements: &'a [VertexElement],
 		shaders: &'a [ShaderParameter],
 		render_targets: &'a [AttachmentDescriptor],
 	) -> Self {
 		Self {
-			descriptor_set_templates: Cow::Borrowed(descriptor_set_templates),
 			push_constant_ranges: Cow::Borrowed(push_constant_ranges),
 			vertex_elements: Cow::Borrowed(vertex_elements),
 			shaders: Cow::Borrowed(shaders),
@@ -118,7 +115,7 @@ mod tests {
 
 	#[test]
 	fn builder_defaults_to_clockwise_backface_culling() {
-		let builder = Builder::new(&[], &[], &[], &[], &[]);
+		let builder = Builder::new(&[], &[], &[], &[]);
 
 		assert!(matches!(builder.face_winding, FaceWinding::Clockwise));
 		assert!(matches!(builder.cull_mode, CullMode::Back));

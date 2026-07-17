@@ -1,8 +1,8 @@
 //! Focused regressions for the VM's private instruction and numeric semantics.
 
 use super::{
-	input_slot, output_slot, reflect_vector, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, ExecutionConfig,
-	MeshOutputs, SpecializationValues, Texture, Value, VmError,
+	input_slot, output_slot, reflect_vector, Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs,
+	ResourceSlot, SpecializationValues, Texture, Value, VmError,
 };
 use crate::{compile_to_besl, BindingTypes, Expressions, Node, NodeReference, Operators};
 
@@ -33,7 +33,7 @@ fn compile_test_root_program(root: NodeReference) -> ExecutableProgram {
 	ExecutableProgram::compile(root).expect("Expected runnable program")
 }
 
-fn buffer_for_slot(executable: &ExecutableProgram, slot: DescriptorSlot) -> Buffer {
+fn buffer_for_slot(executable: &ExecutableProgram, slot: ResourceSlot) -> Buffer {
 	let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
 	Buffer::new(layout)
 }
@@ -48,7 +48,7 @@ fn interface_buffer_for_output(executable: &ExecutableProgram, location: u8) -> 
 	Buffer::new(layout)
 }
 
-fn run_with_buffer(executable: &ExecutableProgram, slot: DescriptorSlot, buffer: &mut Buffer) {
+fn run_with_buffer(executable: &ExecutableProgram, slot: ResourceSlot, buffer: &mut Buffer) {
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot, buffer);
 	executable.run_main(&mut descriptors).expect("Expected execution to succeed");
@@ -78,7 +78,6 @@ fn executable_program_runs_main_and_writes_a_bound_buffer_member() {
 				members: vec![Node::member("value", float_type).into()],
 			},
 			0,
-			0,
 			true,
 			true,
 		)
@@ -87,7 +86,7 @@ fn executable_program_runs_main_and_writes_a_bound_buffer_member() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 0);
+	let slot = ResourceSlot::new(0);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -112,7 +111,6 @@ fn executable_program_reads_locals_before_writing_to_a_bound_buffer_member() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", float_type).into()],
 			},
-			1,
 			3,
 			true,
 			true,
@@ -122,7 +120,7 @@ fn executable_program_reads_locals_before_writing_to_a_bound_buffer_member() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(1, 3);
+	let slot = ResourceSlot::new(3);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -148,7 +146,6 @@ fn executable_program_reads_a_vector_member_after_local_reassignment() {
 				members: vec![Node::member("value", float_type).into()],
 			},
 			0,
-			0,
 			false,
 			true,
 		)
@@ -156,7 +153,7 @@ fn executable_program_reads_a_vector_member_after_local_reassignment() {
 	);
 
 	let executable = compile_test_program(script, Some(root));
-	let slot = DescriptorSlot::new(0, 0);
+	let slot = ResourceSlot::new(0);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -181,7 +178,6 @@ fn executable_program_reads_a_bound_buffer_inside_main() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", float_type.clone()).into()],
 			},
-			0,
 			7,
 			true,
 			false,
@@ -195,7 +191,6 @@ fn executable_program_reads_a_bound_buffer_inside_main() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", float_type).into()],
 			},
-			0,
 			8,
 			false,
 			true,
@@ -205,8 +200,8 @@ fn executable_program_reads_a_bound_buffer_inside_main() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let input_slot = DescriptorSlot::new(0, 7);
-	let output_slot = DescriptorSlot::new(0, 8);
+	let input_slot = ResourceSlot::new(7);
+	let output_slot = ResourceSlot::new(8);
 	let mut input = buffer_for_slot(&executable, input_slot);
 	let mut output = buffer_for_slot(&executable, output_slot);
 	input
@@ -241,7 +236,6 @@ fn executable_program_evaluates_addition_before_writing_to_a_bound_buffer_member
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", float_type).into()],
 			},
-			0,
 			1,
 			true,
 			true,
@@ -251,7 +245,7 @@ fn executable_program_evaluates_addition_before_writing_to_a_bound_buffer_member
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 1);
+	let slot = ResourceSlot::new(1);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -345,7 +339,6 @@ fn executable_program_evaluates_vec3f_arithmetic_before_writing_to_a_bound_buffe
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", vec3f_type.clone()).into()],
 			},
-			0,
 			2,
 			true,
 			true,
@@ -355,7 +348,7 @@ fn executable_program_evaluates_vec3f_arithmetic_before_writing_to_a_bound_buffe
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 2);
+	let slot = ResourceSlot::new(2);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -380,7 +373,6 @@ fn executable_program_evaluates_vec4f_scalar_broadcast_arithmetic() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", vec4f_type).into()],
 			},
-			0,
 			3,
 			true,
 			true,
@@ -390,7 +382,7 @@ fn executable_program_evaluates_vec4f_scalar_broadcast_arithmetic() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 3);
+	let slot = ResourceSlot::new(3);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -420,7 +412,6 @@ fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_acc
 					Node::member("last", u16_type).into(),
 				],
 			},
-			0,
 			30,
 			true,
 			true,
@@ -429,7 +420,7 @@ fn executable_program_round_trips_vec4u16_construction_arithmetic_and_member_acc
 	);
 
 	let executable = compile_test_program(script, Some(root));
-	let slot = DescriptorSlot::new(0, 30);
+	let slot = ResourceSlot::new(30);
 	let layout = executable.buffer_layout(slot).expect("Expected vec4u16 buffer layout");
 	assert_eq!(layout.member("value").unwrap().value_type().size(), 8);
 	assert_eq!(layout.member("last").unwrap().offset(), 8);
@@ -469,7 +460,6 @@ fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffe
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", mat4f_type).into()],
 			},
-			0,
 			4,
 			true,
 			true,
@@ -479,7 +469,7 @@ fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffe
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 4);
+	let slot = ResourceSlot::new(4);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -510,7 +500,6 @@ fn executable_program_calls_function_with_parameters_and_return_value() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", float_type).into()],
 			},
-			0,
 			5,
 			true,
 			true,
@@ -520,7 +509,7 @@ fn executable_program_calls_function_with_parameters_and_return_value() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 5);
+	let slot = ResourceSlot::new(5);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -548,7 +537,6 @@ fn executable_program_calls_function_and_returns_vec3f() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", vec3f_type.clone()).into()],
 			},
-			0,
 			6,
 			true,
 			true,
@@ -558,7 +546,7 @@ fn executable_program_calls_function_and_returns_vec3f() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 6);
+	let slot = ResourceSlot::new(6);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -581,7 +569,6 @@ fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
 		Node::binding(
 			"texture",
 			BindingTypes::CombinedImageSampler { format: String::new() },
-			0,
 			7,
 			true,
 			false,
@@ -594,7 +581,6 @@ fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", vec4f_type).into()],
 			},
-			0,
 			8,
 			true,
 			true,
@@ -604,8 +590,8 @@ fn executable_program_fetches_texture_texels_into_a_bound_buffer_member() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let texture_slot = DescriptorSlot::new(0, 7);
-	let buffer_slot = DescriptorSlot::new(0, 8);
+	let texture_slot = ResourceSlot::new(7);
+	let buffer_slot = ResourceSlot::new(8);
 	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
 	let mut buffer = buffer_for_slot(&executable, buffer_slot);
 	write_texture(
@@ -644,7 +630,6 @@ fn executable_program_samples_textures_inside_arithmetic_expressions() {
 		Node::binding(
 			"texture_sampler",
 			BindingTypes::CombinedImageSampler { format: String::new() },
-			0,
 			9,
 			true,
 			false,
@@ -657,7 +642,6 @@ fn executable_program_samples_textures_inside_arithmetic_expressions() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", vec4f_type).into()],
 			},
-			0,
 			10,
 			true,
 			true,
@@ -667,8 +651,8 @@ fn executable_program_samples_textures_inside_arithmetic_expressions() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let texture_slot = DescriptorSlot::new(0, 9);
-	let buffer_slot = DescriptorSlot::new(0, 10);
+	let texture_slot = ResourceSlot::new(9);
+	let buffer_slot = ResourceSlot::new(10);
 	let mut texture = Texture::new(2, 2).expect("Expected texture allocation");
 	let mut buffer = buffer_for_slot(&executable, buffer_slot);
 	write_texture(
@@ -706,7 +690,6 @@ fn executable_program_writes_a_pixel_to_a_bound_image() {
 			BindingTypes::Image {
 				format: "rgba8".to_string(),
 			},
-			0,
 			11,
 			false,
 			true,
@@ -716,7 +699,7 @@ fn executable_program_writes_a_pixel_to_a_bound_image() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let image_slot = DescriptorSlot::new(0, 11);
+	let image_slot = ResourceSlot::new(11);
 	let mut image = Texture::new(2, 2).expect("Expected texture allocation");
 
 	{
@@ -753,7 +736,6 @@ fn executable_program_reads_and_writes_buffer_array_elements() {
 					Node::member("value", float_type).into(),
 				],
 			},
-			0,
 			12,
 			true,
 			true,
@@ -763,7 +745,7 @@ fn executable_program_reads_and_writes_buffer_array_elements() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 12);
+	let slot = ResourceSlot::new(12);
 	let layout = executable.buffer_layout(slot).expect("Expected buffer layout").clone();
 	let mut buffer = Buffer::new(layout.clone());
 	let values_member = layout.member("values").expect("Expected values member");
@@ -797,7 +779,6 @@ fn executable_program_reads_and_writes_same_named_buffer_members() {
 			BindingTypes::Buffer {
 				members: vec![Node::array("meshes", u32_type.clone(), 2)],
 			},
-			0,
 			24,
 			true,
 			false,
@@ -808,7 +789,6 @@ fn executable_program_reads_and_writes_same_named_buffer_members() {
 			BindingTypes::Buffer {
 				members: vec![Node::array("pixel_mapping", u32_type, 2)],
 			},
-			0,
 			25,
 			false,
 			true,
@@ -818,8 +798,8 @@ fn executable_program_reads_and_writes_same_named_buffer_members() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let input_slot = DescriptorSlot::new(0, 24);
-	let output_slot = DescriptorSlot::new(0, 25);
+	let input_slot = ResourceSlot::new(24);
+	let output_slot = ResourceSlot::new(25);
 	let input_layout = executable
 		.buffer_layout(input_slot)
 		.expect("Expected input buffer layout")
@@ -880,7 +860,6 @@ fn executable_program_reads_push_constant_members() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", float_type).into()],
 			},
-			0,
 			14,
 			true,
 			true,
@@ -890,7 +869,7 @@ fn executable_program_reads_push_constant_members() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 14);
+	let slot = ResourceSlot::new(14);
 	let push_constant_layout = executable
 		.push_constant_layout()
 		.expect("Expected push constant layout")
@@ -928,7 +907,6 @@ fn executable_program_requires_bound_push_constant() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", float_type).into()],
 			},
-			0,
 			15,
 			true,
 			true,
@@ -938,7 +916,7 @@ fn executable_program_requires_bound_push_constant() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 15);
+	let slot = ResourceSlot::new(15);
 	let mut buffer = buffer_for_slot(&executable, slot);
 
 	let error = {
@@ -1137,7 +1115,6 @@ fn executable_program_supports_fragment_style_input_attachments() {
 		Node::binding(
 			"input_attachment",
 			BindingTypes::CombinedImageSampler { format: String::new() },
-			0,
 			16,
 			true,
 			false,
@@ -1148,7 +1125,7 @@ fn executable_program_supports_fragment_style_input_attachments() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let input_attachment_slot = DescriptorSlot::new(0, 16);
+	let input_attachment_slot = ResourceSlot::new(16);
 	let mut input_attachment = Texture::new(2, 1).expect("Expected attachment allocation");
 	let mut output = interface_buffer_for_output(&executable, 0);
 	write_texture(
@@ -1187,7 +1164,6 @@ fn executable_program_evaluates_dot_intrinsics() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", float_type).into()],
 			},
-			0,
 			17,
 			true,
 			true,
@@ -1197,7 +1173,7 @@ fn executable_program_evaluates_dot_intrinsics() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 17);
+	let slot = ResourceSlot::new(17);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -1220,7 +1196,6 @@ fn executable_program_evaluates_cross_intrinsics() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", vec3f_type.clone()).into()],
 			},
-			0,
 			18,
 			true,
 			true,
@@ -1230,7 +1205,7 @@ fn executable_program_evaluates_cross_intrinsics() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 18);
+	let slot = ResourceSlot::new(18);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -1253,7 +1228,6 @@ fn executable_program_evaluates_length_intrinsics() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", float_type).into()],
 			},
-			0,
 			19,
 			true,
 			true,
@@ -1263,7 +1237,7 @@ fn executable_program_evaluates_length_intrinsics() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 19);
+	let slot = ResourceSlot::new(19);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -1286,7 +1260,6 @@ fn executable_program_evaluates_normalize_intrinsics() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", vec3f_type.clone()).into()],
 			},
-			0,
 			20,
 			true,
 			true,
@@ -1296,7 +1269,7 @@ fn executable_program_evaluates_normalize_intrinsics() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 20);
+	let slot = ResourceSlot::new(20);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -1315,7 +1288,6 @@ fn executable_program_evaluates_reflect_intrinsics() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", vec3f_type.clone()).into()],
 			},
-			0,
 			21,
 			true,
 			true,
@@ -1393,7 +1365,7 @@ fn executable_program_evaluates_reflect_intrinsics() {
 
 	let executable = compile_test_root_program(root.into());
 
-	let slot = DescriptorSlot::new(0, 21);
+	let slot = ResourceSlot::new(21);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -1416,7 +1388,6 @@ fn executable_program_reads_thread_idx_for_compute_style_workflows() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("thread", u32_type).into()],
 			},
-			0,
 			22,
 			true,
 			true,
@@ -1426,7 +1397,7 @@ fn executable_program_reads_thread_idx_for_compute_style_workflows() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 22);
+	let slot = ResourceSlot::new(22);
 	let mut buffer = buffer_for_slot(&executable, slot);
 
 	{
@@ -1454,7 +1425,6 @@ fn executable_program_reads_thread_idx_for_mesh_style_workflows() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("thread", u32_type).into()],
 			},
-			0,
 			23,
 			true,
 			true,
@@ -1464,7 +1434,7 @@ fn executable_program_reads_thread_idx_for_mesh_style_workflows() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 23);
+	let slot = ResourceSlot::new(23);
 	let mut buffer = buffer_for_slot(&executable, slot);
 
 	{
@@ -1496,7 +1466,6 @@ fn executable_program_executes_for_loops() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("sum", u32_type).into()],
 			},
-			0,
 			24,
 			true,
 			true,
@@ -1506,7 +1475,7 @@ fn executable_program_executes_for_loops() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 24);
+	let slot = ResourceSlot::new(24);
 	let mut buffer = buffer_for_slot(&executable, slot);
 
 	{
@@ -1541,7 +1510,6 @@ fn executable_program_executes_continue_and_comparisons() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("sum", u32_type).into()],
 			},
-			0,
 			25,
 			true,
 			true,
@@ -1551,7 +1519,7 @@ fn executable_program_executes_continue_and_comparisons() {
 
 	let executable = compile_test_program(script, Some(root));
 
-	let slot = DescriptorSlot::new(0, 25);
+	let slot = ResourceSlot::new(25);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -1596,7 +1564,6 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 					Node::member("mix_value", f32_type).into(),
 				],
 			},
-			0,
 			26,
 			true,
 			true,
@@ -1605,7 +1572,7 @@ fn executable_program_evaluates_scalar_math_intrinsics() {
 	);
 
 	let executable = compile_test_program(script, Some(root));
-	let slot = DescriptorSlot::new(0, 26);
+	let slot = ResourceSlot::new(26);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -1643,7 +1610,6 @@ fn executable_program_evaluates_scalar_max_and_clamp() {
 					Node::member("clamp_value", f32_type).into(),
 				],
 			},
-			0,
 			27,
 			true,
 			true,
@@ -1652,7 +1618,7 @@ fn executable_program_evaluates_scalar_max_and_clamp() {
 	);
 
 	let executable = compile_test_program(script, Some(root));
-	let slot = DescriptorSlot::new(0, 27);
+	let slot = ResourceSlot::new(27);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);
 
@@ -1704,7 +1670,6 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 		Node::binding(
 			"source_texture",
 			BindingTypes::CombinedImageSampler { format: String::new() },
-			0,
 			30,
 			true,
 			false,
@@ -1715,7 +1680,6 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("color", vec4f).into()],
 			},
-			0,
 			31,
 			true,
 			true,
@@ -1725,11 +1689,11 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 	let executable = compile_test_program(script, Some(root));
 	let mut texture = Texture::new(1, 1).expect("Expected texture");
 	texture.write([0, 0], [0.25, 0.5, 0.75, 1.0]).expect("Expected texel write");
-	let mut result = buffer_for_slot(&executable, DescriptorSlot::new(0, 31));
+	let mut result = buffer_for_slot(&executable, ResourceSlot::new(31));
 	{
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(DescriptorSlot::new(0, 30), &mut texture);
-		descriptors.bind_buffer(DescriptorSlot::new(0, 31), &mut result);
+		descriptors.bind_texture(ResourceSlot::new(30), &mut texture);
+		descriptors.bind_buffer(ResourceSlot::new(31), &mut result);
 		executable
 			.run_main(&mut descriptors)
 			.expect("Expected descriptor-handle execution");
@@ -1757,7 +1721,6 @@ fn dynamic_const_array_indices_select_runtime_elements() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", f32_type).into()],
 			},
-			0,
 			32,
 			true,
 			true,
@@ -1765,8 +1728,8 @@ fn dynamic_const_array_indices_select_runtime_elements() {
 		.into(),
 	);
 	let executable = compile_test_program(script, Some(root));
-	let mut result = buffer_for_slot(&executable, DescriptorSlot::new(0, 32));
-	run_with_buffer(&executable, DescriptorSlot::new(0, 32), &mut result);
+	let mut result = buffer_for_slot(&executable, ResourceSlot::new(32));
+	run_with_buffer(&executable, ResourceSlot::new(32), &mut result);
 	assert_eq!(result.read("value").expect("Expected selected weight"), Value::F32(0.75));
 }
 
@@ -1880,7 +1843,7 @@ fn mesh_output_counts_respect_execution_limits_before_resizing() {
 
 #[test]
 fn descriptor_binding_errors_report_resource_kinds_consistently() {
-	let slot = DescriptorSlot::new(4, 2);
+	let slot = ResourceSlot::new(2);
 	let mut texture = Texture::new(1, 1).expect("Expected texture");
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_texture(slot, &mut texture);
@@ -1916,7 +1879,6 @@ fn specialization_values_select_x_and_y_components() {
 				BindingTypes::Buffer {
 					members: vec![Node::member("value", f32_type).into()],
 				},
-				0,
 				33,
 				true,
 				true,
@@ -1928,8 +1890,8 @@ fn specialization_values_select_x_and_y_components() {
 		specializations.set("axis", Value::Vec2F(axis));
 		let executable = ExecutableProgram::compile_with_specializations(program, &specializations)
 			.expect("Expected specialized executable");
-		let mut result = buffer_for_slot(&executable, DescriptorSlot::new(0, 33));
-		run_with_buffer(&executable, DescriptorSlot::new(0, 33), &mut result);
+		let mut result = buffer_for_slot(&executable, ResourceSlot::new(33));
+		run_with_buffer(&executable, ResourceSlot::new(33), &mut result);
 		assert_eq!(
 			result.read("value").expect("Expected specialization result"),
 			Value::F32(expected)

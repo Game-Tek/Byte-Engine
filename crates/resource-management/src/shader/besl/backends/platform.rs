@@ -170,8 +170,9 @@ impl Generator {
 						.into_bindings()
 						.into_iter()
 						.map(|binding| CompiledShaderBinding {
-							set: binding.set,
-							binding: binding.binding,
+							slot: binding.slot,
+							kind: binding.kind,
+							count: binding.count,
 							read: binding.read,
 							write: binding.write,
 						})

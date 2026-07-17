@@ -399,7 +399,7 @@ main: fn () -> void {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, DescriptorSlot, Value};
+	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
 	use math::{mat::MatInverse as _, ShaderMatrix4, Vector3};
 	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
 	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
@@ -415,8 +415,8 @@ mod tests {
 		let mut foreground_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
 		let mut foreground_target = texture_2d(1, 1, &[sentinel]);
 		let mut foreground_descriptors = DescriptorBindings::new();
-		foreground_descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut foreground_depth);
-		foreground_descriptors.bind_image(DescriptorSlot::new(0, 1), &mut foreground_target);
+		foreground_descriptors.bind_texture(ResourceSlot::new(0), &mut foreground_depth);
+		foreground_descriptors.bind_image(ResourceSlot::new(1), &mut foreground_target);
 		run_at(&program, &mut foreground_descriptors, [0, 0]);
 		drop(foreground_descriptors);
 		assert_rgba_close(rgba(&foreground_target, [0, 0]), sentinel, 0.0);
@@ -432,7 +432,7 @@ mod tests {
 		);
 		let inverse_view_projection = ShaderMatrix4::from(view.view_projection().inverse()).0;
 		let sun_direction = math::normalize(settings.sun_direction);
-		let parameter_slot = DescriptorSlot::new(0, 2);
+		let parameter_slot = ResourceSlot::new(2);
 		let mut parameters = buffer(&program, parameter_slot);
 		// Mirror the production upload field-for-field so the VM validates the real atmosphere parameter contract.
 		for (name, value) in [
@@ -480,8 +480,8 @@ mod tests {
 		let mut background_depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
 		let mut background_target = empty_image(1, 1);
 		let mut background_descriptors = DescriptorBindings::new();
-		background_descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut background_depth);
-		background_descriptors.bind_image(DescriptorSlot::new(0, 1), &mut background_target);
+		background_descriptors.bind_texture(ResourceSlot::new(0), &mut background_depth);
+		background_descriptors.bind_image(ResourceSlot::new(1), &mut background_target);
 		background_descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_at(&program, &mut background_descriptors, [0, 0]);
 		drop(background_descriptors);

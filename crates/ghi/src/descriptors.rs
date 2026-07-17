@@ -1,10 +1,10 @@
 use crate::{
-	BaseBufferHandle, BaseImageHandle, DescriptorSet, DescriptorSetBindingHandle, HandleLike, Layouts, Next, Ranges,
-	SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
+	shader::ResourceSlot, BaseBufferHandle, BaseImageHandle, DescriptorSet, DescriptorSetHandle as PublicDescriptorSetHandle,
+	HandleLike, Layouts, Next, Ranges, SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum WriteData {
+pub(crate) enum WriteData {
 	Buffer {
 		handle: BaseBufferHandle,
 		size: Ranges,
@@ -62,121 +62,150 @@ impl WriteData {
 	}
 }
 
-/// Stores the information of a descriptor set write.
+/// The `DescriptorWrite` struct records one retained resource update at a flat shader slot.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct Write {
-	pub(super) binding_handle: DescriptorSetBindingHandle,
-	/// The index of the array element to write to in the binding(if the binding is an array).
-	pub(super) array_element: u32,
-	/// Information describing the descriptor.
-	pub(super) descriptor: WriteData,
-	pub(super) frame_offset: Option<i32>,
+pub struct DescriptorWrite {
+	pub(crate) descriptor_set: PublicDescriptorSetHandle,
+	pub(crate) slot: ResourceSlot,
+	/// The index of the array element to update when the resource is an array.
+	pub(crate) array_element: u32,
+	pub(crate) descriptor: WriteData,
+	pub(crate) frame_offset: Option<i32>,
 }
 
-impl Write {
-	pub fn new(binding_handle: DescriptorSetBindingHandle, descriptor: WriteData) -> Write {
-		Write {
-			binding_handle,
+impl DescriptorWrite {
+	pub(crate) fn new(descriptor_set: PublicDescriptorSetHandle, slot: ResourceSlot, descriptor: WriteData) -> Self {
+		Self {
+			descriptor_set,
+			slot,
 			array_element: 0,
 			descriptor,
 			frame_offset: None,
 		}
 	}
 
-	pub fn buffer(binding_handle: DescriptorSetBindingHandle, buffer_handle: BaseBufferHandle) -> Write {
-		Self::new(binding_handle, WriteData::buffer(buffer_handle))
+	pub fn buffer(descriptor_set: PublicDescriptorSetHandle, slot: ResourceSlot, buffer_handle: BaseBufferHandle) -> Self {
+		Self::new(descriptor_set, slot, WriteData::buffer(buffer_handle))
 	}
 
 	pub fn image(
-		binding_handle: DescriptorSetBindingHandle,
+		descriptor_set: PublicDescriptorSetHandle,
+		slot: ResourceSlot,
 		image_handle: impl Into<BaseImageHandle>,
 		layout: Layouts,
-	) -> Write {
-		Self::new(binding_handle, WriteData::image(image_handle, layout))
+	) -> Self {
+		Self::new(descriptor_set, slot, WriteData::image(image_handle, layout))
 	}
 
 	pub fn image_with_frame(
-		binding_handle: DescriptorSetBindingHandle,
+		descriptor_set: PublicDescriptorSetHandle,
+		slot: ResourceSlot,
 		image_handle: impl Into<BaseImageHandle>,
 		layout: Layouts,
 		frame_offset: i32,
-	) -> Write {
-		Self::image(binding_handle, image_handle, layout).with_frame_offset(frame_offset)
+	) -> Self {
+		Self::image(descriptor_set, slot, image_handle, layout).with_frame_offset(frame_offset)
 	}
 
-	pub fn sampler(binding_handle: DescriptorSetBindingHandle, sampler_handle: SamplerHandle) -> Write {
-		Self::new(binding_handle, WriteData::Sampler(sampler_handle))
+	pub fn sampler(descriptor_set: PublicDescriptorSetHandle, slot: ResourceSlot, sampler_handle: SamplerHandle) -> Self {
+		Self::new(descriptor_set, slot, WriteData::Sampler(sampler_handle))
+	}
+
+	pub fn swapchain(descriptor_set: PublicDescriptorSetHandle, slot: ResourceSlot, swapchain_handle: SwapchainHandle) -> Self {
+		Self::new(descriptor_set, slot, WriteData::Swapchain(swapchain_handle))
 	}
 
 	pub fn combined_image_sampler(
-		binding_handle: DescriptorSetBindingHandle,
+		descriptor_set: PublicDescriptorSetHandle,
+		slot: ResourceSlot,
 		image_handle: impl Into<BaseImageHandle>,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
-	) -> Write {
+	) -> Self {
 		Self::new(
-			binding_handle,
+			descriptor_set,
+			slot,
 			WriteData::combined_image_sampler(image_handle, sampler_handle, layout, None),
 		)
 	}
 
 	pub fn combined_image_sampler_with_frame(
-		binding_handle: DescriptorSetBindingHandle,
+		descriptor_set: PublicDescriptorSetHandle,
+		slot: ResourceSlot,
 		image_handle: impl Into<BaseImageHandle>,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 		frame_offset: i32,
-	) -> Write {
-		Self::combined_image_sampler(binding_handle, image_handle, sampler_handle, layout).with_frame_offset(frame_offset)
+	) -> Self {
+		Self::combined_image_sampler(descriptor_set, slot, image_handle, sampler_handle, layout).with_frame_offset(frame_offset)
+	}
+
+	pub fn combined_image_sampler_layer(
+		descriptor_set: PublicDescriptorSetHandle,
+		slot: ResourceSlot,
+		image_handle: impl Into<BaseImageHandle>,
+		sampler_handle: SamplerHandle,
+		layout: Layouts,
+		layer: u32,
+	) -> Self {
+		Self::new(
+			descriptor_set,
+			slot,
+			WriteData::combined_image_sampler(image_handle, sampler_handle, layout, Some(layer)),
+		)
 	}
 
 	pub fn combined_image_sampler_array(
-		binding_handle: DescriptorSetBindingHandle,
+		descriptor_set: PublicDescriptorSetHandle,
+		slot: ResourceSlot,
 		image_handle: impl Into<BaseImageHandle>,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 		index: u32,
-	) -> Write {
-		Self::combined_image_sampler(binding_handle, image_handle, sampler_handle, layout).with_array_element(index)
+	) -> Self {
+		Self::combined_image_sampler(descriptor_set, slot, image_handle, sampler_handle, layout).with_array_element(index)
 	}
 
 	pub fn combined_image_sampler_array_with_frame(
-		binding_handle: DescriptorSetBindingHandle,
+		descriptor_set: PublicDescriptorSetHandle,
+		slot: ResourceSlot,
 		image_handle: impl Into<BaseImageHandle>,
 		sampler_handle: SamplerHandle,
 		layout: Layouts,
 		index: u32,
 		frame_offset: i32,
-	) -> Write {
-		Self::combined_image_sampler(binding_handle, image_handle, sampler_handle, layout)
+	) -> Self {
+		Self::combined_image_sampler(descriptor_set, slot, image_handle, sampler_handle, layout)
 			.with_array_element(index)
 			.with_frame_offset(frame_offset)
 	}
 
 	pub fn acceleration_structure(
-		binding_handle: DescriptorSetBindingHandle,
+		descriptor_set: PublicDescriptorSetHandle,
+		slot: ResourceSlot,
 		acceleration_structure_handle: TopLevelAccelerationStructureHandle,
-	) -> Write {
+	) -> Self {
 		Self::new(
-			binding_handle,
+			descriptor_set,
+			slot,
 			WriteData::acceleration_structure(acceleration_structure_handle),
 		)
 	}
 
-	fn with_array_element(mut self, array_element: u32) -> Self {
+	pub fn with_array_element(mut self, array_element: u32) -> Self {
 		self.array_element = array_element;
 		self
 	}
 
-	fn with_frame_offset(mut self, frame_offset: i32) -> Self {
+	pub fn with_frame_offset(mut self, frame_offset: i32) -> Self {
 		self.frame_offset = Some(frame_offset);
 		self
 	}
 }
 
 #[derive(Clone, Copy)]
-/// Enumerates the available descriptor types.
-pub enum DescriptorType {
+/// Legacy descriptor categories retained internally for the pending Vulkan and DX12 migrations.
+pub(crate) enum DescriptorType {
 	/// A uniform buffer.
 	UniformBuffer,
 	/// A storage buffer.

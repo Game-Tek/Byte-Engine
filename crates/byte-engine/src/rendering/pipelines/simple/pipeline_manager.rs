@@ -7,7 +7,6 @@ pub struct PipelineManager {
 	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[InstanceShaderData; 1024]>,
 	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
 	pub(super) mesh_buffers_stats: MeshBuffersStats<Handle>,
-	pub(super) descriptor_set_template: ghi::DescriptorSetTemplateHandle,
 	pub(super) pipeline: ghi::PipelineHandle,
 	sinks: Vec<RenderPass>,
 }
@@ -39,16 +38,6 @@ impl PipelineManager {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 
-		let camera_data_binding_template =
-			ghi::DescriptorSetBindingTemplate::new(0, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
-		let instance_data_binding_template =
-			ghi::DescriptorSetBindingTemplate::new(1, ghi::descriptors::DescriptorType::StorageBuffer, ghi::Stages::VERTEX);
-
-		let descriptor_set_template = context.create_descriptor_set_template(
-			None,
-			&[camera_data_binding_template.clone(), instance_data_binding_template.clone()],
-		);
-
 		let vertex_shader = create_besl_shader(
 			context,
 			"byte-engine/rendering/simple/vertex",
@@ -59,8 +48,8 @@ impl PipelineManager {
 			material::ShaderInterface {
 				workgroup_size: None,
 				bindings: vec![
-					material::Binding::new(0, 0, true, false),
-					material::Binding::new(0, 1, true, false),
+					material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
+					material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
 				],
 			},
 		);
@@ -79,7 +68,6 @@ impl PipelineManager {
 		);
 
 		let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
-			&[descriptor_set_template],
 			&[ghi::pipelines::PushConstantRange::new(0, 4)],
 			&VERTEX_LAYOUT,
 			&[
@@ -101,7 +89,6 @@ impl PipelineManager {
 			instance_data_buffer,
 			camera_data_buffer,
 
-			descriptor_set_template,
 			pipeline,
 
 			sinks: Vec::with_capacity(4),
@@ -236,7 +223,6 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		);
 		self.sinks.push(RenderPass::new(
 			render_pass_builder.context(),
-			&self.descriptor_set_template,
 			self.camera_data_buffer.into(),
 			self.instance_data_buffer.into(),
 			sink_id,
@@ -312,7 +298,6 @@ fn create_simple_vertex_program() -> besl::NodeReference {
 				members: vec![besl::Node::array("cameras", camera, 8)],
 			},
 			0,
-			0,
 			true,
 			false,
 		)
@@ -322,7 +307,6 @@ fn create_simple_vertex_program() -> besl::NodeReference {
 			besl::BindingTypes::Buffer {
 				members: vec![besl::Node::array("instances", instance, 8)],
 			},
-			0,
 			1,
 			true,
 			false,
@@ -434,7 +418,7 @@ use crate::{
 #[cfg(test)]
 mod tests {
 	use besl::vm::{
-		builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Value,
+		builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value,
 	};
 	use resource_management::shader::{
 		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
@@ -492,13 +476,13 @@ mod tests {
 		);
 		let mut cameras = Buffer::new(
 			executable
-				.buffer_layout(DescriptorSlot::new(0, 0))
+				.buffer_layout(ResourceSlot::new(0))
 				.expect("Expected camera buffer layout")
 				.clone(),
 		);
 		let mut instances = Buffer::new(
 			executable
-				.buffer_layout(DescriptorSlot::new(0, 1))
+				.buffer_layout(ResourceSlot::new(1))
 				.expect("Expected instance buffer layout")
 				.clone(),
 		);
@@ -536,8 +520,8 @@ mod tests {
 
 		{
 			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_buffer(DescriptorSlot::new(0, 0), &mut cameras);
-			descriptors.bind_buffer(DescriptorSlot::new(0, 1), &mut instances);
+			descriptors.bind_buffer(ResourceSlot::new(0), &mut cameras);
+			descriptors.bind_buffer(ResourceSlot::new(1), &mut instances);
 			descriptors.bind_buffer(input_slot(0), &mut input_position);
 			descriptors.bind_buffer(input_slot(1), &mut input_instance);
 			descriptors.bind_buffer(builtin_position_slot(), &mut output_position);
@@ -631,7 +615,7 @@ mod tests {
 							entry_point: "besl_main",
 						},
 						stage,
-						Vec::<ghi::shader::BindingDescriptor>::new(),
+						Vec::<ghi::ShaderResourceDescriptor>::new(),
 					)
 					.unwrap_or_else(|_| {
 						panic!(
@@ -642,11 +626,11 @@ mod tests {
 		}
 
 		assert!(
-			vertex_source.contains("set0.cameras->cameras[0].view_projection"),
+			vertex_source.contains("resources.cameras->cameras[0].view_projection"),
 			"Generated MSL does not qualify the camera binding through its argument buffer. The most likely cause is missing raster binding context. Shader: {vertex_source}"
 		);
 		assert!(
-			vertex_source.contains("set0.instances->instances["),
+			vertex_source.contains("resources.instances->instances["),
 			"Generated MSL does not qualify the instance binding through its argument buffer. The most likely cause is missing raster binding context. Shader: {vertex_source}"
 		);
 	}

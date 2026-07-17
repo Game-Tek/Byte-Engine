@@ -6,22 +6,28 @@ pub struct BindingUsage {
 	pub name: String,
 	pub kind: BindingKind,
 	pub count: u32,
-	pub set: u32,
-	pub binding: u32,
+	pub slot: u32,
 	pub read: bool,
 	pub write: bool,
 }
 
 /// Identifies the descriptor category declared by a BESL binding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+	Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub enum BindingKind {
-	Buffer,
-	CombinedImageSampler { view: TextureView },
-	Image,
+	/// A structured storage buffer. Read-only access does not change the descriptor category.
+	StorageBuffer,
+	CombinedImageSampler {
+		view: TextureView,
+	},
+	StorageImage,
 }
 
 /// Identifies the texture shape required by a BESL sampled-image binding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+	Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub enum TextureView {
 	Texture2D,
 	Texture2DArray,
@@ -30,33 +36,31 @@ pub enum TextureView {
 
 /// The `BindingRecord` trait exists to keep binding discovery independent from evaluated and compiled metadata representations.
 pub(crate) trait BindingRecord: Sized {
-	fn from_usage(name: &str, kind: BindingKind, count: u32, set: u32, binding: u32, read: bool, write: bool) -> Self;
-	fn usage(&self) -> (u32, u32, bool, bool);
+	fn from_usage(name: &str, kind: BindingKind, count: u32, slot: u32, read: bool, write: bool) -> Self;
+	fn usage(&self) -> (u32, BindingKind, u32, bool, bool);
 }
 
 impl BindingRecord for BindingUsage {
-	fn from_usage(name: &str, kind: BindingKind, count: u32, set: u32, binding: u32, read: bool, write: bool) -> Self {
+	fn from_usage(name: &str, kind: BindingKind, count: u32, slot: u32, read: bool, write: bool) -> Self {
 		Self {
 			name: name.to_string(),
 			kind,
 			count,
-			set,
-			binding,
+			slot,
 			read,
 			write,
 		}
 	}
 
-	fn usage(&self) -> (u32, u32, bool, bool) {
-		(self.set, self.binding, self.read, self.write)
+	fn usage(&self) -> (u32, BindingKind, u32, bool, bool) {
+		(self.slot, self.kind, self.count, self.read, self.write)
 	}
 }
 
-/// Controls which intrinsic source wins when malformed programs reuse a descriptor slot with different access metadata.
-#[derive(Clone, Copy)]
-pub(crate) enum IntrinsicBindingTraversalOrder {
-	DefinitionBeforeElements,
-	ElementsBeforeDefinition,
+/// The `BindingCollectionState` struct keeps reflection traversal aligned with graph identity deduplication.
+struct BindingCollectionState {
+	visited: HashSet<besl::NodeReference>,
+	error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +109,7 @@ impl ProgramEvaluation {
 			}
 		}
 
-		let bindings = collect_bindings(main_function_node, IntrinsicBindingTraversalOrder::DefinitionBeforeElements);
+		let bindings = collect_bindings(main_function_node)?;
 
 		let opacity = evaluate_opacity(main_function_node);
 
@@ -125,39 +129,56 @@ impl ProgramEvaluation {
 	}
 }
 
-/// Collects sorted, first-wins binding metadata using the requested intrinsic traversal order.
-pub(crate) fn collect_bindings<T: BindingRecord>(
-	node: &besl::NodeReference,
-	intrinsic_order: IntrinsicBindingTraversalOrder,
-) -> Vec<T> {
+/// Collects sorted binding metadata while sharing repeated references and rejecting distinct slot aliases.
+pub(crate) fn collect_bindings<T: BindingRecord>(node: &besl::NodeReference) -> Result<Vec<T>, String> {
 	let mut bindings: Vec<T> = Vec::with_capacity(16);
-	build_bindings(&mut bindings, node, intrinsic_order);
-	bindings.sort_by(|a, b| {
-		let (a_set, a_binding, ..) = a.usage();
-		let (b_set, b_binding, ..) = b.usage();
-		a_set.cmp(&b_set).then_with(|| a_binding.cmp(&b_binding))
-	});
-	bindings
+	let mut state = BindingCollectionState {
+		visited: HashSet::new(),
+		error: None,
+	};
+	build_bindings(&mut bindings, node, &mut state);
+	if let Some(error) = state.error {
+		return Err(error);
+	}
+
+	bindings.sort_by_key(|binding| binding.usage().0);
+	for (index, binding) in bindings.iter().enumerate() {
+		let (slot, _, count, ..) = binding.usage();
+		let end_slot = slot.checked_add(count).ok_or_else(|| {
+			format!(
+				"Resource slot range overflow at slot {slot}. The most likely cause is that the declared resource range has no representable exclusive end."
+			)
+		})?;
+		if let Some(next) = bindings.get(index + 1) {
+			let (next_slot, ..) = next.usage();
+			if next_slot < end_slot {
+				return Err(format!(
+					"Resource slot ranges overlap at slots {slot} and {next_slot}. The most likely cause is that a resource array reserves a slot used by another declaration."
+				));
+			}
+		}
+	}
+
+	Ok(bindings)
 }
 
-fn build_bindings<T: BindingRecord>(
-	bindings: &mut Vec<T>,
-	node: &besl::NodeReference,
-	intrinsic_order: IntrinsicBindingTraversalOrder,
-) {
+fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeReference, state: &mut BindingCollectionState) {
+	if state.error.is_some() || !state.visited.insert(node.clone()) {
+		return;
+	}
 	let node_borrow = RefCell::borrow(node);
 	let node_ref = node_borrow.node();
 
 	match node_ref {
 		besl::Nodes::Function { statements, .. } => {
 			for statement in statements {
-				build_bindings(bindings, statement, intrinsic_order);
+				build_bindings(bindings, statement, state);
 			}
 		}
 		besl::Nodes::Conditional { condition, statements } => {
-			build_bindings(bindings, condition, intrinsic_order);
+			build_bindings(bindings, condition, state);
 			for statement in statements {
-				build_bindings(bindings, statement, intrinsic_order);
+				build_bindings(bindings, statement, state);
 			}
 		}
 		besl::Nodes::ForLoop {
@@ -166,11 +187,11 @@ fn build_bindings<T: BindingRecord>(
 			update,
 			statements,
 		} => {
-			build_bindings(bindings, initializer, intrinsic_order);
-			build_bindings(bindings, condition, intrinsic_order);
-			build_bindings(bindings, update, intrinsic_order);
+			build_bindings(bindings, initializer, state);
+			build_bindings(bindings, condition, state);
+			build_bindings(bindings, update, state);
 			for statement in statements {
-				build_bindings(bindings, statement, intrinsic_order);
+				build_bindings(bindings, statement, state);
 			}
 		}
 		besl::Nodes::Expression(expression) => match expression {
@@ -178,111 +199,96 @@ fn build_bindings<T: BindingRecord>(
 				function: callable,
 				parameters: arguments,
 			} => {
-				build_bindings(bindings, callable, intrinsic_order);
+				build_bindings(bindings, callable, state);
 				for argument in arguments {
-					build_bindings(bindings, argument, intrinsic_order);
+					build_bindings(bindings, argument, state);
 				}
 			}
-			besl::Expressions::IntrinsicCall { intrinsic, elements, .. } => match intrinsic_order {
-				IntrinsicBindingTraversalOrder::DefinitionBeforeElements => {
-					build_bindings(bindings, intrinsic, intrinsic_order);
-					for element in elements {
-						build_bindings(bindings, element, intrinsic_order);
-					}
+			besl::Expressions::IntrinsicCall { elements, .. } => {
+				// Intrinsic lowering emits the instantiated elements, not the definition template.
+				for element in elements {
+					build_bindings(bindings, element, state);
 				}
-				IntrinsicBindingTraversalOrder::ElementsBeforeDefinition => {
-					for element in elements {
-						build_bindings(bindings, element, intrinsic_order);
-					}
-					build_bindings(bindings, intrinsic, intrinsic_order);
-				}
-			},
+			}
 			besl::Expressions::Accessor { left, right } | besl::Expressions::Operator { left, right, .. } => {
-				build_bindings(bindings, left, intrinsic_order);
-				build_bindings(bindings, right, intrinsic_order);
+				build_bindings(bindings, left, state);
+				build_bindings(bindings, right, state);
 			}
 			besl::Expressions::Expression { elements } => {
 				for element in elements {
-					build_bindings(bindings, element, intrinsic_order);
+					build_bindings(bindings, element, state);
 				}
 			}
 			besl::Expressions::Macro { body, .. } => {
-				build_bindings(bindings, body, intrinsic_order);
+				build_bindings(bindings, body, state);
 			}
 			besl::Expressions::Member { source, .. } => {
-				build_bindings(bindings, source, intrinsic_order);
+				build_bindings(bindings, source, state);
 			}
 			besl::Expressions::VariableDeclaration { r#type, .. } => {
-				build_bindings(bindings, r#type, intrinsic_order);
+				build_bindings(bindings, r#type, state);
 			}
 			besl::Expressions::Return { .. } | besl::Expressions::Literal { .. } | besl::Expressions::Continue => {}
 		},
 		besl::Nodes::Binding {
 			name,
-			set,
-			binding,
+			slot,
 			read,
 			write,
 			r#type,
 			count,
 		} => {
-			if !bindings.iter().any(|record| {
-				let (record_set, record_binding, ..) = record.usage();
-				record_binding == *binding && record_set == *set
-			}) {
-				let kind = match r#type {
-					besl::BindingTypes::Buffer { .. } => BindingKind::Buffer,
-					besl::BindingTypes::CombinedImageSampler { format } => BindingKind::CombinedImageSampler {
-						view: match format.as_str() {
-							"Texture3D" => TextureView::Texture3D,
-							"ArrayTexture2D" => TextureView::Texture2DArray,
-							_ => TextureView::Texture2D,
-						},
+			let kind = match r#type {
+				besl::BindingTypes::Buffer { .. } => BindingKind::StorageBuffer,
+				besl::BindingTypes::CombinedImageSampler { format } => BindingKind::CombinedImageSampler {
+					view: match format.as_str() {
+						"Texture3D" => TextureView::Texture3D,
+						"ArrayTexture2D" => TextureView::Texture2DArray,
+						_ => TextureView::Texture2D,
 					},
-					besl::BindingTypes::Image { .. } => BindingKind::Image,
-				};
-				bindings.push(T::from_usage(
-					name,
-					kind,
-					count.map_or(1, |count| count.get() as u32),
-					*set,
-					*binding,
-					*read,
-					*write,
+				},
+				besl::BindingTypes::Image { .. } => BindingKind::StorageImage,
+			};
+			let count = count.map_or(1, |count| count.get());
+			if bindings.iter().any(|record| record.usage().0 == *slot) {
+				state.error = Some(format!(
+					"Duplicate resource declaration at slot {slot}. The most likely cause is that distinct binding nodes reuse one flat slot instead of sharing the same binding reference."
 				));
+			} else {
+				bindings.push(T::from_usage(name, kind, count, *slot, *read, *write));
 			}
 		}
 		besl::Nodes::Raw { input, output, .. } => {
 			for reference in input.iter().chain(output.iter()) {
-				build_bindings(bindings, reference, intrinsic_order);
+				build_bindings(bindings, reference, state);
 			}
 		}
 		besl::Nodes::Intrinsic { elements, r#return, .. } => {
 			for element in elements {
-				build_bindings(bindings, element, intrinsic_order);
+				build_bindings(bindings, element, state);
 			}
-			build_bindings(bindings, r#return, intrinsic_order);
+			build_bindings(bindings, r#return, state);
 		}
 		besl::Nodes::Literal { value: nested, .. }
 		| besl::Nodes::Member { r#type: nested, .. }
 		| besl::Nodes::Parameter { r#type: nested, .. }
 		| besl::Nodes::Specialization { r#type: nested, .. } => {
-			build_bindings(bindings, nested, intrinsic_order);
+			build_bindings(bindings, nested, state);
 		}
 		besl::Nodes::Input { format, .. } | besl::Nodes::Output { format, .. } => {
-			build_bindings(bindings, format, intrinsic_order);
+			build_bindings(bindings, format, state);
 		}
 		besl::Nodes::Struct { fields: nested, .. }
 		| besl::Nodes::PushConstant { members: nested }
 		| besl::Nodes::Scope { children: nested, .. } => {
 			for child in nested {
-				build_bindings(bindings, child, intrinsic_order);
+				build_bindings(bindings, child, state);
 			}
 		}
 		besl::Nodes::Null => {}
 		besl::Nodes::Const { r#type, value, .. } => {
-			build_bindings(bindings, r#type, intrinsic_order);
-			build_bindings(bindings, value, intrinsic_order);
+			build_bindings(bindings, r#type, state);
+			build_bindings(bindings, value, state);
 		}
 	}
 }
@@ -725,8 +731,7 @@ mod tests {
 					binding.name.as_str(),
 					binding.kind,
 					binding.count,
-					binding.set,
-					binding.binding,
+					binding.slot,
 					binding.read,
 					binding.write,
 				)
@@ -736,16 +741,15 @@ mod tests {
 		assert_eq!(
 			bindings,
 			vec![
-				("buff", BindingKind::Buffer, 1, 0, 0, true, true),
-				("image", BindingKind::Image, 1, 0, 1, false, true),
+				("buff", BindingKind::StorageBuffer, 1, 0, true, true),
+				("image", BindingKind::StorageImage, 1, 1, false, true),
 				(
 					"texture",
 					BindingKind::CombinedImageSampler {
 						view: TextureView::Texture2D,
 					},
 					1,
-					1,
-					0,
+					2,
 					true,
 					false,
 				),
@@ -766,7 +770,6 @@ mod tests {
 				besl::BindingTypes::CombinedImageSampler {
 					format: "Texture3D".to_string(),
 				},
-				0,
 				0,
 				true,
 				false,
@@ -809,7 +812,6 @@ mod tests {
 					members: vec![besl::Node::member("member", float_type).into()],
 				},
 				0,
-				0,
 				true,
 				true,
 			)
@@ -819,7 +821,6 @@ mod tests {
 				besl::BindingTypes::Image {
 					format: "r8".to_string(),
 				},
-				0,
 				1,
 				false,
 				true,
@@ -828,8 +829,7 @@ mod tests {
 			besl::Node::binding(
 				"texture",
 				besl::BindingTypes::CombinedImageSampler { format: "".to_string() },
-				1,
-				0,
+				2,
 				true,
 				false,
 			)

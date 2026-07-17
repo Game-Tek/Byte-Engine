@@ -1,6 +1,6 @@
 //! Private instruction and operator types shared by lowering and execution.
 
-use super::{DescriptorSlot, Value, ValueType};
+use super::{ResourceSlot, Value, ValueType};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Instruction {
@@ -117,13 +117,13 @@ pub(super) enum Instruction {
 	},
 	LoadBuffer {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		offset: usize,
 		value_type: ValueType,
 	},
 	LoadBufferIndexed {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		offset: usize,
 		stride: usize,
 		count: usize,
@@ -132,65 +132,65 @@ pub(super) enum Instruction {
 	},
 	FetchTexture {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		coord: usize,
 	},
 	FetchTextureU32 {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		coord: usize,
 	},
 	SampleTexture {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		uv: usize,
 	},
 	SampleTexture3D {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		uvw: usize,
 	},
 	TextureSize {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 	},
 	ImageSize {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 	},
 	LoadImage {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		coord: usize,
 	},
 	LoadImageU32 {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		coord: usize,
 	},
 	GuardImageBounds {
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		coord: usize,
 	},
 	ImageAtomicOr {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		coord: usize,
 		value: usize,
 	},
 	WriteImage {
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		coord: usize,
 		value: usize,
 	},
 	StoreBuffer {
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		offset: usize,
 		value_type: ValueType,
 		register: usize,
 	},
 	StoreBufferIndexed {
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		offset: usize,
 		stride: usize,
 		count: usize,
@@ -200,7 +200,7 @@ pub(super) enum Instruction {
 	},
 	AtomicAddBuffer {
 		register: usize,
-		slot: DescriptorSlot,
+		slot: ResourceSlot,
 		offset: usize,
 		stride: usize,
 		count: usize,

@@ -4,10 +4,11 @@
 
 use utils::{Extent, RGBA};
 
+#[cfg(all(test, target_os = "linux"))]
+use crate::AccessPolicies;
 use crate::{
 	descriptors::{self, DescriptorType},
-	shader::BindingDescriptor,
-	AccessPolicies, DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,
+	DataTypes, Encodings, Formats, Layouts, Stages, WorkloadTypes,
 };
 
 // HANDLES
@@ -110,6 +111,7 @@ impl MasterHandle for SynchronizerHandle {
 pub struct DescriptorSetTemplateHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// The `DescriptorSetHandle` struct identifies a retained group of flat shader resource writes.
 pub struct DescriptorSetHandle(pub(super) u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -493,7 +495,7 @@ pub struct DescriptorSetBindingTemplate {
 	pub(crate) buffer_read_only: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextureViewTypes {
 	Texture2D,
 	Texture2DArray,
@@ -630,10 +632,6 @@ impl DescriptorSetBindingTemplate {
 		let mut template = Self::sampler(binding, stages);
 		template.immutable_samplers = samplers;
 		template
-	}
-
-	pub fn into_shader_binding_descriptor(&self, set: u32, access_policies: AccessPolicies) -> BindingDescriptor {
-		BindingDescriptor::new(set, self.binding, access_policies)
 	}
 
 	/// Returns the binding index of the descriptor set layout binding.
@@ -897,121 +895,17 @@ pub(super) mod tests {
 	}
 
 	#[test]
-	fn descriptor_set_binding_template_type_specific_variants() {
-		use super::DescriptorType as D;
-
-		type Template = super::DescriptorSetBindingTemplate;
-		type SingleConstructor = fn(u32, Stages) -> Template;
-		type ArrayConstructor = fn(u32, Stages, u32) -> Template;
-
-		let stages = Stages::COMPUTE;
-		let cases: [(SingleConstructor, ArrayConstructor, D); 8] = [
-			(Template::uniform_buffer, Template::uniform_buffer_array, D::UniformBuffer),
-			(Template::storage_buffer, Template::storage_buffer_array, D::StorageBuffer),
-			(Template::sampled_image, Template::sampled_image_array, D::SampledImage),
-			(
-				Template::combined_image_sampler,
-				Template::combined_image_sampler_array,
-				D::CombinedImageSampler,
-			),
-			(Template::storage_image, Template::storage_image_array, D::StorageImage),
-			(
-				Template::input_attachment,
-				Template::input_attachment_array,
-				D::InputAttachment,
-			),
-			(Template::sampler, Template::sampler_array, D::Sampler),
-			(
-				Template::acceleration_structure,
-				Template::acceleration_structure_array,
-				D::AccelerationStructure,
-			),
-		];
-		let assert_template =
-			|template: &Template, binding: u32, count: u32, descriptor_type: D, samplers: Option<&[SamplerHandle]>| {
-				assert_eq!(template.binding, binding);
-				assert_eq!(
-					std::mem::discriminant(&template.descriptor_type),
-					std::mem::discriminant(&descriptor_type)
-				);
-				assert_eq!(template.descriptor_count, count);
-				assert_eq!(template.stages, stages);
-				assert_eq!(template.immutable_samplers.as_deref(), samplers);
-				assert!(matches!(template.texture_view_type, TextureViewTypes::Texture2D));
-				assert_eq!(template.buffer_stride, 4);
-				assert!(!template.buffer_read_only);
-			};
-
-		for (index, (single, array, descriptor_type)) in cases.into_iter().enumerate() {
-			let single = single(index as u32, stages);
-			let array = array(index as u32 + 8, stages, index as u32 + 2);
-			assert_template(&single, index as u32, 1, descriptor_type, None);
-			assert_template(&array, index as u32 + 8, index as u32 + 2, descriptor_type, None);
-		}
-
-		let immutable = Template::new_with_immutable_samplers(16, stages, Some(vec![SamplerHandle(19), SamplerHandle(20)]));
-		assert_template(&immutable, 16, 1, D::Sampler, Some(&[SamplerHandle(19), SamplerHandle(20)]));
-	}
-
-	#[test]
-	fn binding_constructors_preserve_defaults_and_combined_image_details() {
-		let template = DescriptorSetBindingTemplate::combined_image_sampler(0, Stages::FRAGMENT);
-		let constructor = BindingConstructor::combined_image_sampler(
-			&template,
-			ImageHandle(BaseImageHandle(3)),
-			SamplerHandle(4),
-			Layouts::Read,
-		)
-		.layout(Layouts::General);
-
-		assert!(std::ptr::eq(constructor.descriptor_set_binding_template, &template));
-		assert_eq!(constructor.array_element, 0);
-		assert_eq!(constructor.frame_offset, None);
-		assert!(matches!(
-			constructor.descriptor,
-			descriptors::WriteData::CombinedImageSampler {
-				image_handle: BaseImageHandle(3),
-				sampler_handle: SamplerHandle(4),
-				layout: Layouts::General,
-				layer: None,
-			}
-		));
-
-		let layer = BindingConstructor::combined_image_sampler_layer(
-			&template,
-			ImageHandle(BaseImageHandle(5)),
-			SamplerHandle(6),
-			Layouts::Read,
-			7,
-		);
-		assert_eq!(layer.array_element, 0);
-		assert_eq!(layer.frame_offset, None);
-		assert!(matches!(
-			layer.descriptor,
-			descriptors::WriteData::CombinedImageSampler {
-				image_handle: BaseImageHandle(5),
-				sampler_handle: SamplerHandle(6),
-				layout: Layouts::Read,
-				layer: Some(7),
-			}
-		));
-
-		let static_samplers = BindingConstructor::sampler_with_immutable_samplers(&template).frame(-1);
-		assert_eq!(static_samplers.array_element, 0);
-		assert_eq!(static_samplers.frame_offset, Some(-1));
-		assert!(matches!(static_samplers.descriptor, descriptors::WriteData::StaticSamplers));
-	}
-
-	#[test]
-	fn descriptor_write_constructors_preserve_binding_array_and_frame_semantics() {
-		let binding = DescriptorSetBindingHandle(1);
+	fn descriptor_write_constructors_preserve_set_slot_array_and_frame_semantics() {
+		let set = DescriptorSetHandle(1);
+		let slot = crate::shader::ResourceSlot::new(9);
 		let buffer = BaseBufferHandle(2);
 		let image = ImageHandle(BaseImageHandle(3));
 		let sampler = SamplerHandle(4);
 		let acceleration_structure = TopLevelAccelerationStructureHandle(5);
 
-		let buffer_write = descriptors::Write::buffer(binding, buffer);
-		assert_eq!(buffer_write.binding_handle, binding);
+		let buffer_write = descriptors::DescriptorWrite::buffer(set, slot, buffer);
+		assert_eq!(buffer_write.descriptor_set, set);
+		assert_eq!(buffer_write.slot, slot);
 		assert_eq!(buffer_write.array_element, 0);
 		assert_eq!(buffer_write.frame_offset, None);
 		assert!(matches!(
@@ -1022,7 +916,7 @@ pub(super) mod tests {
 			} if handle == buffer
 		));
 
-		let image_write = descriptors::Write::image_with_frame(binding, image, Layouts::General, -1);
+		let image_write = descriptors::DescriptorWrite::image_with_frame(set, slot, image, Layouts::General, -1);
 		assert_eq!(image_write.frame_offset, Some(-1));
 		assert!(matches!(
 			image_write.descriptor,
@@ -1032,8 +926,15 @@ pub(super) mod tests {
 			} if handle == BaseImageHandle(3)
 		));
 
-		let array_write =
-			descriptors::Write::combined_image_sampler_array_with_frame(binding, image, sampler, Layouts::Read, 7, 2);
+		let array_write = descriptors::DescriptorWrite::combined_image_sampler_array_with_frame(
+			set,
+			slot,
+			image,
+			sampler,
+			Layouts::Read,
+			7,
+			2,
+		);
 		assert_eq!(array_write.array_element, 7);
 		assert_eq!(array_write.frame_offset, Some(2));
 		assert!(matches!(
@@ -1046,9 +947,9 @@ pub(super) mod tests {
 			} if image_handle == BaseImageHandle(3) && sampler_handle == sampler
 		));
 
-		let sampler_write = descriptors::Write::sampler(binding, sampler);
+		let sampler_write = descriptors::DescriptorWrite::sampler(set, slot, sampler);
 		assert!(matches!(sampler_write.descriptor, descriptors::WriteData::Sampler(value) if value == sampler));
-		let acceleration_write = descriptors::Write::acceleration_structure(binding, acceleration_structure);
+		let acceleration_write = descriptors::DescriptorWrite::acceleration_structure(set, slot, acceleration_structure);
 		assert!(matches!(
 			acceleration_write.descriptor,
 			descriptors::WriteData::AccelerationStructure { handle } if handle == acceleration_structure
@@ -1057,42 +958,19 @@ pub(super) mod tests {
 
 	#[test]
 	fn descriptor_write_variants_without_frame_offsets_remain_frame_invariant() {
-		let binding = DescriptorSetBindingHandle(8);
+		let set = DescriptorSetHandle(8);
+		let slot = crate::shader::ResourceSlot::new(12);
 		let image = ImageHandle(BaseImageHandle(9));
 		let sampler = SamplerHandle(10);
 
-		let image_write = descriptors::Write::image(binding, image, Layouts::Read);
-		let combined = descriptors::Write::combined_image_sampler(binding, image, sampler, Layouts::Read);
-		let array = descriptors::Write::combined_image_sampler_array(binding, image, sampler, Layouts::Read, 3);
-		let custom = descriptors::Write::new(binding, descriptors::WriteData::StaticSamplers);
+		let image_write = descriptors::DescriptorWrite::image(set, slot, image, Layouts::Read);
+		let combined = descriptors::DescriptorWrite::combined_image_sampler(set, slot, image, sampler, Layouts::Read);
+		let array = descriptors::DescriptorWrite::combined_image_sampler_array(set, slot, image, sampler, Layouts::Read, 3);
 
 		assert_eq!(image_write.frame_offset, None);
 		assert_eq!(combined.frame_offset, None);
 		assert_eq!(array.frame_offset, None);
 		assert_eq!(array.array_element, 3);
-		assert_eq!(custom.binding_handle, binding);
-		assert!(matches!(custom.descriptor, descriptors::WriteData::StaticSamplers));
-	}
-
-	#[test]
-	fn typed_descriptor_set_binding_templates() {
-		let stages = Stages::COMPUTE;
-
-		let storage_buffer = StorageBufferDescriptorSetBindingTemplate::new(0, stages);
-		let storage_image = StorageImageDescriptorSetBindingTemplate::new(1, stages);
-		let storage_buffer_array = StorageBufferDescriptorSetBindingTemplate::new_array(2, stages, 8);
-		let sampler = SamplerDescriptorSetBindingTemplate::new_with_immutable_samplers(3, stages, None);
-
-		assert!(matches!(
-			storage_buffer.as_raw().descriptor_type,
-			DescriptorType::StorageBuffer
-		));
-		assert!(matches!(storage_image.as_raw().descriptor_type, DescriptorType::StorageImage));
-		assert_eq!(storage_buffer_array.as_raw().descriptor_count, 8);
-		assert!(matches!(sampler.as_raw().descriptor_type, DescriptorType::Sampler));
-
-		let raw_template: DescriptorSetBindingTemplate = storage_buffer.into();
-		assert!(matches!(raw_template.descriptor_type, DescriptorType::StorageBuffer));
 	}
 
 	#[test]

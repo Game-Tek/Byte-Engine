@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use besl::vm::{
-	builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, DescriptorSlot, ExecutableProgram, Texture,
+	builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture,
 	Value, VmError,
 };
 use besl::{compile_to_besl, BindingTypes, Node};
@@ -12,22 +12,23 @@ fn compile_program(source: &str, root: Node) -> Result<ExecutableProgram, VmErro
 }
 
 #[test]
-fn real_descriptor_slots_do_not_alias_virtual_interface_slots() {
+fn real_resource_slots_do_not_alias_virtual_interface_slots() {
 	let virtual_slots = [input_slot(3), output_slot(3), builtin_position_slot()];
 	let mut slots = HashSet::new();
 
 	for virtual_slot in virtual_slots {
-		let descriptor_slot = DescriptorSlot::new(virtual_slot.set(), virtual_slot.binding());
+		let descriptor_slot = ResourceSlot::new(virtual_slot.slot());
 		assert_ne!(descriptor_slot, virtual_slot);
 		slots.insert(descriptor_slot);
 		slots.insert(virtual_slot);
 	}
 
-	assert_eq!(slots.len(), 6);
+	// Input and output slot 3 deliberately share one numeric real-resource counterpart.
+	assert_eq!(slots.len(), 5);
 }
 
 #[test]
-fn maximum_descriptor_slot_does_not_alias_push_constants() {
+fn maximum_resource_slot_does_not_alias_push_constants() {
 	let mut root = Node::root();
 	let f32_type = root.get_child("f32").expect("Expected f32 type");
 	root.add_children(vec![
@@ -36,7 +37,6 @@ fn maximum_descriptor_slot_does_not_alias_push_constants() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", f32_type.clone()).into()],
 			},
-			u32::MAX,
 			u32::MAX,
 			true,
 			false,
@@ -48,7 +48,6 @@ fn maximum_descriptor_slot_does_not_alias_push_constants() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", f32_type).into()],
 			},
-			0,
 			0,
 			false,
 			true,
@@ -66,8 +65,8 @@ fn maximum_descriptor_slot_does_not_alias_push_constants() {
 	)
 	.expect("Expected descriptor and push constant layouts to coexist");
 
-	let descriptor_slot = DescriptorSlot::new(u32::MAX, u32::MAX);
-	let result_slot = DescriptorSlot::new(0, 0);
+	let descriptor_slot = ResourceSlot::new(u32::MAX);
+	let result_slot = ResourceSlot::new(0);
 	let mut descriptor = Buffer::new(
 		executable
 			.buffer_layout(descriptor_slot)
@@ -98,18 +97,17 @@ fn maximum_descriptor_slot_does_not_alias_push_constants() {
 }
 
 #[test]
-fn descriptor_using_dynamic_resource_set_remains_a_real_descriptor() {
-	let dynamic_resource_set = u32::MAX - 4;
-	let texture_slot = DescriptorSlot::new(dynamic_resource_set, 0);
-	let result_slot = DescriptorSlot::new(0, 0);
+fn resource_using_dynamic_handle_number_remains_a_real_resource() {
+	let dynamic_resource_slot = u32::MAX - 4;
+	let texture_slot = ResourceSlot::new(dynamic_resource_slot);
+	let result_slot = ResourceSlot::new(0);
 	let mut root = Node::root();
 	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f type");
 	root.add_children(vec![
 		Node::binding(
 			"source",
 			BindingTypes::CombinedImageSampler { format: String::new() },
-			dynamic_resource_set,
-			0,
+			dynamic_resource_slot,
 			true,
 			false,
 		)
@@ -119,7 +117,6 @@ fn descriptor_using_dynamic_resource_set_remains_a_real_descriptor() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("color", vec4f_type).into()],
 			},
-			0,
 			0,
 			false,
 			true,
@@ -164,7 +161,6 @@ fn non_indexed_field_access_rejects_array_members() {
 				members: vec![Node::array("items", item_type, 2)],
 			},
 			0,
-			0,
 			true,
 			false,
 		)
@@ -174,7 +170,6 @@ fn non_indexed_field_access_rejects_array_members() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", u32_type).into()],
 			},
-			0,
 			1,
 			false,
 			true,
@@ -192,7 +187,7 @@ fn non_indexed_field_access_rejects_array_members() {
 	.expect("Expected array-of-struct layout");
 	let mut items = Buffer::new(
 		executable
-			.buffer_layout(DescriptorSlot::new(0, 0))
+			.buffer_layout(ResourceSlot::new(0))
 			.expect("Expected items layout")
 			.clone(),
 	);
@@ -286,7 +281,6 @@ fn nested_array_fields_are_rejected_during_layout_compilation() {
 				members: vec![Node::member("item", item_type).into()],
 			},
 			0,
-			0,
 			true,
 			false,
 		)
@@ -296,7 +290,6 @@ fn nested_array_fields_are_rejected_during_layout_compilation() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", u32_type).into()],
 			},
-			0,
 			1,
 			false,
 			true,
@@ -335,7 +328,6 @@ fn buffer_layout_rejects_overflowing_arrays() {
 				members: vec![Node::array("values", u32_type.clone(), usize::MAX)],
 			},
 			0,
-			0,
 			true,
 			false,
 		)
@@ -345,7 +337,6 @@ fn buffer_layout_rejects_overflowing_arrays() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", u32_type).into()],
 			},
-			0,
 			1,
 			false,
 			true,
@@ -381,7 +372,6 @@ fn buffer_layout_rejects_resource_handle_members() {
 				members: vec![Node::member("resource", texture_type).into()],
 			},
 			0,
-			0,
 			true,
 			false,
 		)
@@ -391,7 +381,6 @@ fn buffer_layout_rejects_resource_handle_members() {
 			BindingTypes::Buffer {
 				members: vec![Node::member("value", u32_type).into()],
 			},
-			0,
 			1,
 			false,
 			true,

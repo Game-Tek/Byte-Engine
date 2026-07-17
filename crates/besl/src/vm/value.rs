@@ -1044,11 +1044,11 @@ pub(super) fn read_register(registers: &[Option<Value>], register: usize) -> Res
 		.ok_or(VmError::UninitializedRegister { register })
 }
 
-pub(super) fn resolve_resource_slot(slot: DescriptorSlot, registers: &[Option<Value>]) -> Result<DescriptorSlot, VmError> {
+pub(super) fn resolve_resource_slot(slot: ResourceSlot, registers: &[Option<Value>]) -> Result<ResourceSlot, VmError> {
 	if !slot.is_dynamic_resource() {
 		return Ok(slot);
 	}
-	match read_register(registers, slot.binding() as usize)? {
+	match read_register(registers, slot.slot() as usize)? {
 		Value::Resource { slot, .. } => Ok(slot),
 		value => Err(VmError::TypeMismatch {
 			expected: "resource handle".to_string(),

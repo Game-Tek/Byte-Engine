@@ -6,25 +6,38 @@ use std::{
 
 use utils::Extent;
 
-use crate::shader::besl::graph::{build_graph_in, topological_sort_in};
+use crate::shader::besl::{
+	evaluation::BindingKind,
+	graph::{build_graph_in, topological_sort_in},
+};
 
 /// Generates a graphics API consumable shader from a BESL shader program definition.
 pub trait Generator {}
 
-/// The `CompiledShaderBinding` struct describes a descriptor binding used by a compiled shader artifact.
-#[derive(Clone, Debug)]
+/// The `CompiledShaderBinding` struct preserves the flat resource interface required to create a backend shader.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompiledShaderBinding {
-	pub binding: u32,
-	pub set: u32,
+	pub slot: u32,
+	pub kind: BindingKind,
+	pub count: u32,
 	pub read: bool,
 	pub write: bool,
 }
 
 impl CompiledShaderBinding {
-	pub fn new(set: u32, binding: u32, read: bool, write: bool) -> Self {
+	pub fn new(slot: u32, kind: BindingKind, count: u32, read: bool, write: bool) -> Self {
+		assert!(
+			count > 0,
+			"Invalid resource count. The most likely cause is that a compiled shader resource was declared with an empty array."
+		);
+		assert!(
+			slot.checked_add(count).is_some(),
+			"Invalid resource slot range. The most likely cause is that a compiled shader resource array extends beyond the flat slot space."
+		);
 		Self {
-			binding,
-			set,
+			slot,
+			kind,
+			count,
 			read,
 			write,
 		}
@@ -644,6 +657,14 @@ pub(crate) trait NodeEmitter {
 pub mod tests {
 	use std::cell::RefCell;
 
+	use crate::shader::besl::evaluation::BindingKind;
+
+	#[test]
+	#[should_panic(expected = "Invalid resource slot range")]
+	fn compiled_shader_binding_rejects_flat_slot_overflow() {
+		super::CompiledShaderBinding::new(u32::MAX, BindingKind::StorageBuffer, 1, true, false);
+	}
+
 	pub fn bindings() -> besl::NodeReference {
 		let script = r#"
 		main: fn () -> void {
@@ -664,7 +685,6 @@ pub mod tests {
 					members: vec![besl::Node::member("member", float_type).into()],
 				},
 				0,
-				0,
 				true,
 				true,
 			)
@@ -674,7 +694,6 @@ pub mod tests {
 				besl::BindingTypes::Image {
 					format: "r8".to_string(),
 				},
-				0,
 				1,
 				false,
 				true,
@@ -683,8 +702,7 @@ pub mod tests {
 			besl::Node::binding(
 				"texture",
 				besl::BindingTypes::CombinedImageSampler { format: "".to_string() },
-				1,
-				0,
+				2,
 				true,
 				false,
 			)
@@ -710,7 +728,6 @@ pub mod tests {
 					members: vec![besl::Node::member("value", vec4u16_type).into()],
 				},
 				0,
-				0,
 				true,
 				true,
 			)
@@ -733,7 +750,6 @@ pub mod tests {
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("values", vec2u16_type, 2)],
 				},
-				0,
 				0,
 				true,
 				true,
@@ -761,7 +777,6 @@ pub mod tests {
 						besl::Node::member("tail", u16_type).into(),
 					],
 				},
-				0,
 				0,
 				true,
 				true,
@@ -807,7 +822,6 @@ pub mod tests {
 					members: vec![besl::Node::array("meshes", u32_type.clone(), 2)],
 				},
 				0,
-				0,
 				true,
 				false,
 			)
@@ -817,7 +831,6 @@ pub mod tests {
 				besl::BindingTypes::Buffer {
 					members: vec![besl::Node::array("pixel_mapping", u32_type, 2)],
 				},
-				0,
 				1,
 				false,
 				true,

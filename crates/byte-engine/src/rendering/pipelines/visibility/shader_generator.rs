@@ -189,14 +189,12 @@ impl VisibilityShaderScope {
 			"views",
 			Node::buffer("ViewsBuffer", vec![Node::member("views", "View[8]")]),
 			0,
-			0,
 			true,
 			false,
 		);
 		let meshes = Node::binding(
 			"meshes",
 			Node::buffer("MeshBuffer", vec![Node::member("meshes", "Mesh[1024]")]),
-			0,
 			1,
 			true,
 			false,
@@ -204,7 +202,6 @@ impl VisibilityShaderScope {
 		let positions = Node::binding(
 			"vertex_positions",
 			Node::buffer("Positions", vec![Node::member("positions", vertex_vec3_array_type())]),
-			0,
 			2,
 			true,
 			false,
@@ -212,7 +209,6 @@ impl VisibilityShaderScope {
 		let normals = Node::binding(
 			"vertex_normals",
 			Node::buffer("Normals", vec![Node::member("normals", vertex_vec3_array_type())]),
-			0,
 			3,
 			true,
 			false,
@@ -220,7 +216,6 @@ impl VisibilityShaderScope {
 		let skinned_vertices = Node::binding(
 			"skinned_vertices",
 			Node::buffer("SkinnedVertices", vec![Node::member("vertices", skinned_vertex_array_type())]),
-			0,
 			4,
 			true,
 			false,
@@ -228,7 +223,6 @@ impl VisibilityShaderScope {
 		let uvs = Node::binding(
 			"vertex_uvs",
 			Node::buffer("UVs", vec![Node::member("uvs", vertex_vec2_array_type())]),
-			0,
 			5,
 			true,
 			false,
@@ -239,7 +233,6 @@ impl VisibilityShaderScope {
 				"VertexIndices",
 				vec![Node::member("vertex_indices", vertex_index_array_type())],
 			),
-			0,
 			6,
 			true,
 			false,
@@ -250,7 +243,6 @@ impl VisibilityShaderScope {
 				"PrimitiveIndices",
 				vec![Node::member("primitive_indices", primitive_index_array_type())],
 			),
-			0,
 			7,
 			true,
 			false,
@@ -258,7 +250,6 @@ impl VisibilityShaderScope {
 		let meshlets = Node::binding(
 			"meshlets",
 			Node::buffer("MeshletsBuffer", vec![Node::member("meshlets", meshlet_array_type())]),
-			0,
 			8,
 			true,
 			false,
@@ -266,7 +257,6 @@ impl VisibilityShaderScope {
 		let textures = Node::binding_array(
 			"textures",
 			Node::combined_image_sampler(),
-			0,
 			9,
 			true,
 			false,
@@ -276,16 +266,14 @@ impl VisibilityShaderScope {
 		let material_count = Node::binding(
 			"material_count",
 			Node::buffer("MaterialCount", vec![Node::member("material_count", "u32[1024]")]),
-			1,
-			0,
+			1033,
 			material_count_read,
 			material_count_write,
 		); // TODO: somehow set read/write properties per shader
 		let material_offset = Node::binding(
 			"material_offset",
 			Node::buffer("MaterialOffset", vec![Node::member("material_offset", "u32[1024]")]),
-			1,
-			1,
+			1034,
 			material_offset_read,
 			material_offset_write,
 		);
@@ -295,8 +283,7 @@ impl VisibilityShaderScope {
 				"MaterialOffsetScratch",
 				vec![Node::member("material_offset_scratch", "u32[1024]")],
 			),
-			1,
-			2,
+			1035,
 			material_offset_scratch_read,
 			material_offset_scratch_write,
 		);
@@ -306,8 +293,7 @@ impl VisibilityShaderScope {
 				"MaterialEvaluationDispatches",
 				vec![Node::member("material_evaluation_dispatches", "vec4u[1024]")],
 			),
-			1,
-			3,
+			1036,
 			material_offset_read,
 			material_offset_write,
 		);
@@ -320,13 +306,12 @@ impl VisibilityShaderScope {
 					&format!("vec2u16[{MAX_PIXEL_MAPPING_ENTRIES}]"),
 				)],
 			),
-			1,
-			4,
+			1037,
 			pixel_mapping_read,
 			pixel_mapping_write,
 		);
-		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1, 6, true, false);
-		let instance_index = Node::binding("instance_index_render_target", Node::image("r32ui"), 1, 7, true, false);
+		let triangle_index = Node::binding("triangle_index", Node::image("r32ui"), 1039, true, false);
+		let instance_index = Node::binding("instance_index_render_target", Node::image("r32ui"), 1040, true, false);
 
 		let compute_vertex_index = {
 			let mut root = besl::parse(
@@ -471,39 +456,27 @@ impl VisibilityShaderScope {
 			}
 		};
 
-		let set2_binding0 = Node::binding("lit_map", Node::image("rgba16"), 2, 0, false, true);
-		let set2_binding1 = Node::binding(
-			"_unused_set2_binding1",
-			Node::buffer("UnusedSet2Binding1", vec![Node::member("padding", "u32")]),
-			2,
-			1,
-			true,
-			false,
-		);
-		let set2_binding2 = Node::binding("_unused_set2_binding2", Node::image("rgba16"), 2, 2, false, true);
-		let set2_binding3 = Node::binding("_unused_set2_binding3", Node::image("rgba16"), 2, 3, false, true);
+		let set2_binding0 = Node::binding("lit_map", Node::image("rgba16"), 1041, false, true);
 		let set2_binding4 = Node::binding(
 			"lighting_data",
 			Node::buffer(
 				"LightingBuffer",
 				vec![Node::member("light_count", "u32"), Node::member("lights", light_array_type())],
 			),
-			2,
-			4,
+			1045,
 			true,
 			false,
 		);
 		let set2_binding5 = Node::binding(
 			"materials",
 			Node::buffer("MaterialBuffer", vec![Node::member("materials", material_array_type())]),
-			2,
-			5,
+			1046,
 			true,
 			false,
 		);
-		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 2, 10, true, false);
-		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 2, 11, true, false);
-		let set2_binding12 = Node::binding("visibility_depth", Node::combined_image_sampler(), 2, 12, true, false);
+		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 1051, true, false);
+		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 1052, true, false);
+		let set2_binding12 = Node::binding("visibility_depth", Node::combined_image_sampler(), 1053, true, false);
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 
@@ -514,7 +487,7 @@ impl VisibilityShaderScope {
 				Node::raw_code(
 					Some("texture(textures[nonuniformEXT(material.textures[".into()),
 					Some("textures[material.textures[".into()),
-					Some("set0.textures[material.textures[".into()),
+					Some("resources.textures[material.textures[".into()),
 					&["textures"],
 					&[],
 				),
@@ -522,7 +495,7 @@ impl VisibilityShaderScope {
 				Node::raw_code(
 					Some("])], vertex_uv)".into()),
 					Some("]].SampleLevel(textures_sampler, vertex_uv, 0.0)".into()),
-					Some("]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv, level(0.0))".into()),
+					Some("]].sample(resources.textures_sampler[material.textures[smplr]], vertex_uv, level(0.0))".into()),
 					&["textures"],
 					&[],
 				),
@@ -538,7 +511,7 @@ impl VisibilityShaderScope {
 					Node::raw_code(
 						Some("unit_vector_from_xy(texture(textures[nonuniformEXT(material.textures[".into()),
 						Some("unit_vector_from_xy(textures[material.textures[".into()),
-						Some("unit_vector_from_xy(set0.textures[material.textures[".into()),
+						Some("unit_vector_from_xy(resources.textures[material.textures[".into()),
 						&["textures", "unit_vector_from_xy"],
 						&[],
 					),
@@ -546,7 +519,9 @@ impl VisibilityShaderScope {
 					Node::raw_code(
 						Some("])], vertex_uv).xy)".into()),
 						Some("]].SampleLevel(textures_sampler, vertex_uv, 0.0).xy)".into()),
-						Some("]].sample(set0.textures_sampler[material.textures[smplr]], vertex_uv, level(0.0)).xy)".into()),
+						Some(
+							"]].sample(resources.textures_sampler[material.textures[smplr]], vertex_uv, level(0.0)).xy)".into(),
+						),
 						&["textures", "unit_vector_from_xy"],
 						&[],
 					),
@@ -679,13 +654,13 @@ impl VisibilityShaderScope {
 			uint cascade_index = 3;
 
 			for (uint i = 0; i < 4; ++i) {
-				if (depth_value < set0.views->views[light.cascades[i]].far) {
+				if (depth_value < resources.views->views[light.cascades[i]].far) {
 					cascade_index = i;
 					break;
 				}
 			}
 
-			View view = set0.views->views[light.cascades[cascade_index]];
+			View view = resources.views->views[light.cascades[cascade_index]];
 
 			float4 surface_light_clip_position = view.view_projection * float4(world_space_position, 1.0);
 			float3 surface_light_ndc_position = surface_light_clip_position.xyz / surface_light_clip_position.w;
@@ -833,9 +808,7 @@ impl VisibilityShaderScope {
 					pcf_offset,
 					gid,
 					push_constant,
-					set0,
-					set1,
-					set2
+					resources
 				);
 			}
 
@@ -963,9 +936,6 @@ impl VisibilityShaderScope {
 				compute_triangle,
 				process_meshlet,
 				set2_binding0,
-				set2_binding1,
-				set2_binding2,
-				set2_binding3,
 				set2_binding4,
 				set2_binding5,
 				set2_binding10,
@@ -1096,47 +1066,47 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		vec3 emission = vec3(0.0)"
 			.trim();
 
-		let a_msl = "if (gid.x >= set1.material_count->material_count[push_constant.material_id]) { return; }
+		let a_msl = "if (gid.x >= resources.material_count->material_count[push_constant.material_id]) { return; }
 
-		uint offset = set1.material_offset->material_offset[push_constant.material_id];
-		uint2 raw_pixel_coordinates = uint2(set1.pixel_mapping->pixel_mapping[offset + gid.x]);
+		uint offset = resources.material_offset->material_offset[push_constant.material_id];
+		uint2 raw_pixel_coordinates = uint2(resources.pixel_mapping->pixel_mapping[offset + gid.x]);
 		if (raw_pixel_coordinates.x == 0u || raw_pixel_coordinates.y == 0u) { return; }
 		int2 pixel_coordinates = int2(raw_pixel_coordinates) - int2(1, 1);
-		int2 image_extent = int2(set1.triangle_index.get_width(), set1.triangle_index.get_height());
+		int2 image_extent = int2(resources.triangle_index.get_width(), resources.triangle_index.get_height());
 		if (pixel_coordinates.x < 0 || pixel_coordinates.y < 0 || pixel_coordinates.x >= image_extent.x || pixel_coordinates.y >= image_extent.y) { return; }
-		uint triangle_meshlet_indices = set1.triangle_index.read(uint2(pixel_coordinates)).x;
-		uint instance_index = set1.instance_index_render_target.read(uint2(pixel_coordinates)).x;
+		uint triangle_meshlet_indices = resources.triangle_index.read(uint2(pixel_coordinates)).x;
+		uint instance_index = resources.instance_index_render_target.read(uint2(pixel_coordinates)).x;
 		uint meshlet_triangle_index = triangle_meshlet_indices & 0xFF;
 		uint meshlet_index = triangle_meshlet_indices >> 8;
 
-		Meshlet meshlet = set0.meshlets->meshlets[meshlet_index];
+		Meshlet meshlet = resources.meshlets->meshlets[meshlet_index];
 
-		Mesh mesh = set0.meshes->meshes[instance_index];
+		Mesh mesh = resources.meshes->meshes[instance_index];
 
-		Material material = set2.materials->materials[push_constant.material_id];
+		Material material = resources.materials->materials[push_constant.material_id];
 
 		uint primitive_indices[3] = {
-			set0.primitive_indices->primitive_indices[(mesh.base_triangle_index + uint(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 0],
-			set0.primitive_indices->primitive_indices[(mesh.base_triangle_index + uint(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 1],
-			set0.primitive_indices->primitive_indices[(mesh.base_triangle_index + uint(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 2]
+			resources.primitive_indices->primitive_indices[(mesh.base_triangle_index + uint(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 0],
+			resources.primitive_indices->primitive_indices[(mesh.base_triangle_index + uint(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 1],
+			resources.primitive_indices->primitive_indices[(mesh.base_triangle_index + uint(meshlet.triangle_offset) + meshlet_triangle_index) * 3 + 2]
 		};
 
 		uint vertex_indices[3] = {
-			compute_vertex_index(mesh, meshlet, primitive_indices[0], gid, push_constant, set0, set1, set2),
-			compute_vertex_index(mesh, meshlet, primitive_indices[1], gid, push_constant, set0, set1, set2),
-			compute_vertex_index(mesh, meshlet, primitive_indices[2], gid, push_constant, set0, set1, set2)
+			compute_vertex_index(mesh, meshlet, primitive_indices[0], gid, push_constant, resources),
+			compute_vertex_index(mesh, meshlet, primitive_indices[1], gid, push_constant, resources),
+			compute_vertex_index(mesh, meshlet, primitive_indices[2], gid, push_constant, resources)
 		};
 
 			float4 model_space_vertex_positions[3] = {
-				float4(set0.vertex_positions->positions[vertex_indices[0]], 1.0),
-				float4(set0.vertex_positions->positions[vertex_indices[1]], 1.0),
-				float4(set0.vertex_positions->positions[vertex_indices[2]], 1.0)
+				float4(resources.vertex_positions->positions[vertex_indices[0]], 1.0),
+				float4(resources.vertex_positions->positions[vertex_indices[1]], 1.0),
+				float4(resources.vertex_positions->positions[vertex_indices[2]], 1.0)
 			};
 
 			float4 vertex_normals[3] = {
-				float4(set0.vertex_normals->normals[vertex_indices[0]], 0.0),
-				float4(set0.vertex_normals->normals[vertex_indices[1]], 0.0),
-				float4(set0.vertex_normals->normals[vertex_indices[2]], 0.0)
+				float4(resources.vertex_normals->normals[vertex_indices[0]], 0.0),
+				float4(resources.vertex_normals->normals[vertex_indices[1]], 0.0),
+				float4(resources.vertex_normals->normals[vertex_indices[2]], 0.0)
 			};
 
 		// Meshlet topology remains immutable, so remap its static indices into this instance's output range.
@@ -1146,25 +1116,25 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 				mesh.skinned_base_vertex_index + (vertex_indices[1] - mesh.base_vertex_index),
 				mesh.skinned_base_vertex_index + (vertex_indices[2] - mesh.base_vertex_index)
 			};
-			model_space_vertex_positions[0] = set0.skinned_vertices->vertices[skinned_vertex_indices[0]].position;
-			model_space_vertex_positions[1] = set0.skinned_vertices->vertices[skinned_vertex_indices[1]].position;
-			model_space_vertex_positions[2] = set0.skinned_vertices->vertices[skinned_vertex_indices[2]].position;
-			vertex_normals[0] = set0.skinned_vertices->vertices[skinned_vertex_indices[0]].normal;
-			vertex_normals[1] = set0.skinned_vertices->vertices[skinned_vertex_indices[1]].normal;
-			vertex_normals[2] = set0.skinned_vertices->vertices[skinned_vertex_indices[2]].normal;
+			model_space_vertex_positions[0] = resources.skinned_vertices->vertices[skinned_vertex_indices[0]].position;
+			model_space_vertex_positions[1] = resources.skinned_vertices->vertices[skinned_vertex_indices[1]].position;
+			model_space_vertex_positions[2] = resources.skinned_vertices->vertices[skinned_vertex_indices[2]].position;
+			vertex_normals[0] = resources.skinned_vertices->vertices[skinned_vertex_indices[0]].normal;
+			vertex_normals[1] = resources.skinned_vertices->vertices[skinned_vertex_indices[1]].normal;
+			vertex_normals[2] = resources.skinned_vertices->vertices[skinned_vertex_indices[2]].normal;
 		}
 
 		float2 vertex_uvs[3] = {
-			set0.vertex_uvs->uvs[vertex_indices[0]],
-			set0.vertex_uvs->uvs[vertex_indices[1]],
-			set0.vertex_uvs->uvs[vertex_indices[2]]
+			resources.vertex_uvs->uvs[vertex_indices[0]],
+			resources.vertex_uvs->uvs[vertex_indices[1]],
+			resources.vertex_uvs->uvs[vertex_indices[2]]
 		};
 
 		float2 normalized_xy = (float2(pixel_coordinates) + float2(0.5)) / float2(image_extent);
 		float2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 
-		View view = set0.views->views[0];
-		float surface_depth = set2.visibility_depth.read(uint2(pixel_coordinates)).x;
+		View view = resources.views->views[0];
+		float surface_depth = resources.visibility_depth.read(uint2(pixel_coordinates)).x;
 		float4 surface_clip_position = float4(nc, surface_depth, 1.0);
 		float4 surface_view_position = view.inverse_projection * surface_clip_position;
 		surface_view_position /= surface_view_position.w;
@@ -1367,14 +1337,14 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float3 diffuse = float3(0.0, 0.0, 0.0);
 		float3 specular = float3(0.0, 0.0, 0.0);
 
-		float ao_factor = set2.ao.sample(set2.ao_sampler, normalized_xy, level(0.0)).r;
+		float ao_factor = resources.ao.sample(resources.ao_sampler, normalized_xy, level(0.0)).r;
 
 		normal = normalize(TBN * normal);
 		float3 F0 = mix(float3(0.04), albedo.xyz, metalness);
 		float NdotV = max(dot(normal, V), 0.0);
 
-		for (uint i = 0; i < set2.lighting_data->light_count; ++i) {
-			Light light = set2.lighting_data->lights[i];
+		for (uint i = 0; i < resources.lighting_data->light_count; ++i) {
+			Light light = resources.lighting_data->lights[i];
 
 			float3 L = float3(0.0);
 
@@ -1393,7 +1363,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 			if (light.type == 68) {
 				float4 view_space_surface_position = view.view * float4(world_space_surface_position, 1.0);
-				float c_occlusion_factor  = sample_shadow(set2.depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal, gid, push_constant, set0, set1, set2);
+				float c_occlusion_factor  = sample_shadow(resources.depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal, gid, push_constant, resources);
 
 				occlusion_factor = c_occlusion_factor;
 
@@ -1450,7 +1420,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		ao_factor *= occlusion;
 		float3 lit = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
 
-		set2.lit_map.write(float4(lit, albedo.a), uint2(pixel_coordinates))
+		resources.lit_map.write(float4(lit, albedo.a), uint2(pixel_coordinates))
 		"
 		.trim();
 
@@ -1696,9 +1666,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 				&[
 					"lighting_data",
 					"lit_map",
-					"_unused_set2_binding1",
-					"_unused_set2_binding2",
-					"_unused_set2_binding3",
 					"sample_shadow",
 					"sample_analytical_reflection",
 					"fresnel_schlick_roughness",
@@ -1724,7 +1691,7 @@ mod tests {
 	use resource_management::shader::besl::backends::glsl::GLSLShaderGenerator;
 	use resource_management::shader::besl::backends::hlsl::HLSLShaderGenerator;
 	use resource_management::shader::{
-		besl::backends::msl::MSLShaderGenerator,
+		besl::{backends::msl::MSLShaderGenerator, evaluation::ProgramEvaluation},
 		generator::{ShaderGenerationSettings, ShaderGenerator as _},
 	};
 	use utils::json::{self, JsonContainerTrait, JsonValueTrait};
@@ -1932,11 +1899,79 @@ mod tests {
 			"Generated HLSL does not use deformed position/normal data alongside immutable UV data. Shader: {hlsl}"
 		);
 		assert!(
-			msl.contains("set0.skinned_vertices->vertices[skinned_vertex_indices[0]].position")
-				&& msl.contains("set0.skinned_vertices->vertices[skinned_vertex_indices[0]].normal")
-				&& msl.contains("set0.vertex_uvs->uvs[vertex_indices[0]]"),
+			msl.contains("resources.skinned_vertices->vertices[skinned_vertex_indices[0]].position")
+				&& msl.contains("resources.skinned_vertices->vertices[skinned_vertex_indices[0]].normal")
+				&& msl.contains("resources.vertex_uvs->uvs[vertex_indices[0]]"),
 			"Generated MSL does not use deformed position/normal data alongside immutable UV data. Shader: {msl}"
 		);
+	}
+
+	/// Ensures every reflected resource has a retained write in the material-evaluation pass.
+	#[test]
+	fn material_evaluation_flat_interface_matches_retained_resource_slots() {
+		let retained_ranges = [
+			(0, 1),
+			(1, 1),
+			(2, 1),
+			(3, 1),
+			(4, 1),
+			(5, 1),
+			(6, 1),
+			(7, 1),
+			(8, 1),
+			(9, 1024),
+			(1033, 1),
+			(1034, 1),
+			(1035, 1),
+			(1036, 1),
+			(1037, 1),
+			(1039, 1),
+			(1040, 1),
+			(1041, 1),
+			(1045, 1),
+			(1046, 1),
+			(1051, 1),
+			(1052, 1),
+			(1053, 1),
+		];
+		let cases = [
+			(
+				json::object! {
+					"variables": []
+				},
+				"main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }",
+			),
+			(
+				json::object! {
+					"variables": [{
+						"name": "base_color",
+						"data_type": "Texture2D"
+					}]
+				},
+				"main: fn () -> void { albedo = sample_material(base_color); }",
+			),
+		];
+
+		for (material, shader_source) in cases {
+			let shader_node = besl::parse(shader_source).unwrap();
+			let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+			let shader = shader_generator.transform(shader_node, &material);
+			let root = besl::lex(shader).unwrap();
+			let main_node = root.get_main().unwrap();
+			let evaluation =
+				ProgramEvaluation::from_main(&main_node).expect("Expected material evaluation reflection to succeed");
+			let unexpected_ranges = evaluation
+				.bindings()
+				.iter()
+				.map(|binding| (binding.slot, binding.count))
+				.filter(|binding| !retained_ranges.contains(binding))
+				.collect::<Vec<_>>();
+
+			assert!(
+				unexpected_ranges.is_empty(),
+				"Material evaluation reflected resources that none of its retained descriptor sets writes: {unexpected_ranges:?}"
+			);
+		}
 	}
 
 	/// Verifies the generated material evaluation source remains acceptable to the Metal compiler.
@@ -1984,7 +2019,7 @@ mod tests {
 				entry_point: "besl_main",
 			},
 			ghi::ShaderTypes::Compute,
-			Vec::<ghi::shader::BindingDescriptor>::new(),
+			Vec::<ghi::ShaderResourceDescriptor>::new(),
 		);
 
 		assert!(
@@ -2028,13 +2063,13 @@ mod tests {
 		);
 		assert!(
 			source.contains(
-				"set0.textures[material.textures[0u]].sample(set0.textures_sampler[material.textures[0u]], vertex_uv, level(0.0))"
+				"resources.textures[material.textures[0u]].sample(resources.textures_sampler[material.textures[0u]], vertex_uv, level(0.0))"
 			),
 			"Generated MSL does not use the albedo slot for both the texture and sampler. The most likely cause is incomplete material slot substitution. Shader: {source}"
 		);
 		assert!(
 			source.contains(
-				"set0.textures[material.textures[1u]].sample(set0.textures_sampler[material.textures[1u]], vertex_uv, level(0.0)).xy"
+				"resources.textures[material.textures[1u]].sample(resources.textures_sampler[material.textures[1u]], vertex_uv, level(0.0)).xy"
 			),
 			"Generated MSL does not use the normal slot for both the texture and sampler. The most likely cause is incomplete normal slot substitution. Shader: {source}"
 		);
@@ -2062,7 +2097,7 @@ mod tests {
 				entry_point: "besl_main",
 			},
 			ghi::ShaderTypes::Compute,
-			Vec::<ghi::shader::BindingDescriptor>::new(),
+			Vec::<ghi::ShaderResourceDescriptor>::new(),
 		);
 
 		assert!(

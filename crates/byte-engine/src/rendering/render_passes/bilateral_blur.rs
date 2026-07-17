@@ -246,7 +246,7 @@ const BLUR_TAPS: [(f32, f32); 17] = [
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, DescriptorSlot};
+	use besl::vm::{DescriptorBindings, ResourceSlot};
 	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
 	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
 
@@ -267,9 +267,9 @@ mod tests {
 		let mut source = texture_2d(extent[0], extent[1], source_texels);
 		let mut result = empty_image(extent[0], extent[1]);
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(DescriptorSlot::new(0, 0), &mut depth);
-		descriptors.bind_texture(DescriptorSlot::new(0, 1), &mut source);
-		descriptors.bind_image(DescriptorSlot::new(0, 2), &mut result);
+		descriptors.bind_texture(ResourceSlot::new(0), &mut depth);
+		descriptors.bind_texture(ResourceSlot::new(1), &mut source);
+		descriptors.bind_image(ResourceSlot::new(2), &mut result);
 		run_at(&program, &mut descriptors, coordinate);
 		drop(descriptors);
 		rgba(&result, coordinate)

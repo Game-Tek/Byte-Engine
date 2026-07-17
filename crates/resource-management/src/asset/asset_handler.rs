@@ -1,4 +1,4 @@
-use std::alloc::Allocator;
+use std::{alloc::Allocator, future::Future};
 
 use super::{asset_manager::AssetManager, ResourceId};
 use crate::{asset, resource, ProcessedAsset};
@@ -15,12 +15,12 @@ pub enum LoadErrors {
 pub trait AssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool;
 
-	async fn bake<'a>(
+	fn bake<'a>(
 		&'a self,
 		asset_manager: &'a AssetManager,
 		storage_backend: &'a dyn resource::StorageBackend,
 		asset_storage_backend: &'a dyn asset::StorageBackend,
 		url: ResourceId<'a>,
 		allocator: &'a dyn Allocator,
-	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors>;
+	) -> impl Future<Output = Result<(ProcessedAsset, Box<[u8]>), LoadErrors>>;
 }

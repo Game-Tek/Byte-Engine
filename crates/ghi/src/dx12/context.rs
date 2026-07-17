@@ -8934,7 +8934,7 @@ impl crate::context::Context for Device {
 		Device::bind_to_window(self, window_os_handles, presentation_mode, fallback_extent, _uses)
 	}
 
-	fn get_image_data<'a>(&'a self, texture_copy_handle: TextureCopyHandle) -> &'a [u8] {
+	fn get_image_data<'a>(&'a mut self, texture_copy_handle: TextureCopyHandle) -> &'a [u8] {
 		Device::get_image_data(self, texture_copy_handle)
 	}
 

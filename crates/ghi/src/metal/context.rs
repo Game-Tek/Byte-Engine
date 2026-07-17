@@ -34,8 +34,6 @@ pub struct Context {
 	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
 	pub(crate) pending_image_syncs: VecDeque<ImageHandle>,
 	pub(crate) tasks: Vec<Task>,
-	pub(crate) texture_copies: Vec<Vec<u8>>,
-	pub(crate) next_texture_copy_handle: Cell<u64>,
 
 	#[cfg(debug_assertions)]
 	pub names: HashMap<graphics_hardware_interface::Handles, String>,
@@ -139,8 +137,6 @@ impl Context {
 			pending_buffer_syncs: VecDeque::new(),
 			pending_image_syncs: VecDeque::new(),
 			tasks: Vec::new(),
-			texture_copies: Vec::new(),
-			next_texture_copy_handle: Cell::new(0),
 
 			#[cfg(debug_assertions)]
 			names: HashMap::default(),
@@ -766,20 +762,6 @@ impl Context {
 
 		tasks.extend(deferred_frame_tasks);
 		self.tasks = tasks;
-	}
-
-	/// Interns texture readbacks produced by detached command-buffer recording.
-	pub(super) fn intern_texture_copies(
-		&mut self,
-		texture_copies: impl IntoIterator<Item = (graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
-	) {
-		for (handle, data) in texture_copies {
-			let index = handle.0 as usize;
-			if index >= self.texture_copies.len() {
-				self.texture_copies.resize_with(index + 1, Vec::new);
-			}
-			self.texture_copies[index] = data;
-		}
 	}
 }
 
@@ -1420,13 +1402,11 @@ impl Context {
 			meshes: &self.meshes,
 			pipelines: &self.pipelines,
 			swapchains: &self.swapchains,
-			next_texture_copy_handle: &self.next_texture_copy_handle,
 			debug_labels: self.settings.debug_labels,
 		};
 		let commit = super::command_buffer::RecordingCommit {
 			states: &mut self.states,
 			synchronizers: &mut self.synchronizers,
-			texture_copies: &mut self.texture_copies,
 		};
 
 		super::CommandBufferRecording::new(
@@ -1848,11 +1828,32 @@ impl Context {
 		handle
 	}
 
-	pub fn get_image_data(&self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
-		self.texture_copies
-			.get(texture_copy_handle.0 as usize)
-			.map(|data| data.as_slice())
-			.unwrap_or(&[])
+	pub fn get_image_data(&mut self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
+		let image = self.images.resource_mut(ImageHandle(texture_copy_handle.0));
+		let Some(staging) = image.staging.as_mut() else {
+			return &[];
+		};
+		let Some((bytes_per_row, ..)) = utils::texture_upload_layout(image.format, image.extent) else {
+			return &[];
+		};
+
+		let data_ptr = NonNull::new(staging.as_mut_ptr() as *mut std::ffi::c_void)
+			.expect("Texture readback buffer was null. The most likely cause is an empty image staging allocation.");
+		let mut region_size = utils::texture_copy_size(image.format, image.extent);
+		region_size.depth = 1;
+		let region = mtl::MTLRegion {
+			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
+			size: region_size,
+		};
+
+		// `transfer_textures` synchronized the managed texture; now refresh its existing compact CPU staging allocation.
+		unsafe {
+			image
+				.texture
+				.getBytes_bytesPerRow_fromRegion_mipmapLevel(data_ptr, bytes_per_row as _, region, 0);
+		}
+
+		staging
 	}
 
 	pub fn create_synchronizer(
@@ -2043,7 +2044,7 @@ impl crate::context::Context for Context {
 		Context::bind_to_window(self, window_os_handles, presentation_mode, fallback_extent, uses)
 	}
 
-	fn get_image_data(&self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
+	fn get_image_data(&mut self, texture_copy_handle: graphics_hardware_interface::TextureCopyHandle) -> &[u8] {
 		Context::get_image_data(self, texture_copy_handle)
 	}
 
@@ -2175,7 +2176,7 @@ impl crate::context::ContextCreate for Context {
 	}
 }
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ptr::NonNull;
 
@@ -2186,6 +2187,7 @@ use objc2::ClassType;
 use objc2_foundation::{NSAutoreleasePool, NSString};
 use objc2_metal::{
 	MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice, MTLLibrary, MTLResource,
+	MTLTexture,
 };
 use smallvec::SmallVec;
 

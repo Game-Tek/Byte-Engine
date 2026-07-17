@@ -1,7 +1,4 @@
-use std::{
-	cell::{Cell, RefCell},
-	ptr::NonNull,
-};
+use std::{cell::RefCell, ptr::NonNull};
 
 use ::utils::{hash::HashMap, Extent};
 use objc2::runtime::ProtocolObject;
@@ -179,7 +176,6 @@ pub(super) struct RecordingDevice<'a> {
 	pub(super) meshes: &'a [Mesh],
 	pub(super) pipelines: &'a [Pipeline],
 	pub(super) swapchains: &'a [Swapchain],
-	pub(super) next_texture_copy_handle: &'a Cell<u64>,
 	pub(super) debug_labels: bool,
 }
 
@@ -191,7 +187,6 @@ pub(super) struct RecordingCommit<'a> {
 		graphics_hardware_interface::SynchronizerHandle,
 		crate::synchronizer::SynchronizerHandle,
 	>,
-	pub(super) texture_copies: &'a mut Vec<Vec<u8>>,
 }
 
 // TODO: use frame allocator for this
@@ -207,7 +202,6 @@ pub struct CommandBufferRecording<'a> {
 	state_updates: SmallVec<[(PrivateHandles, TransitionState); 256]>,
 	compute_written_resources: SmallVec<[PrivateHandles; 64]>,
 	pending_compute_barrier_scope: mtl::MTLBarrierScope,
-	texture_copies: SmallVec<[(graphics_hardware_interface::TextureCopyHandle, Vec<u8>); 4]>,
 	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
@@ -231,7 +225,6 @@ pub struct FinishedCommandBuffer<'a> {
 	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	pub(crate) command_buffer: Retained<ProtocolObject<dyn mtl::MTLCommandBuffer>>,
 	pub(crate) state_updates: SmallVec<[(PrivateHandles, TransitionState); 256]>,
-	pub(crate) texture_copies: SmallVec<[(graphics_hardware_interface::TextureCopyHandle, Vec<u8>); 4]>,
 	pub(crate) _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -249,41 +242,6 @@ impl super::CommandBuffer<'_> {
 	}
 }
 
-impl RecordingDevice<'_> {
-	fn allocate_texture_copy_handle(&self) -> graphics_hardware_interface::TextureCopyHandle {
-		let handle = self.next_texture_copy_handle.get();
-		self.next_texture_copy_handle.set(handle + 1);
-		graphics_hardware_interface::TextureCopyHandle(handle)
-	}
-
-	/// Reads one Metal texture into CPU memory for later interning on the device.
-	fn read_texture_to_cpu(&self, image_handle: ImageHandle) -> Vec<u8> {
-		let image = self.images.resource(image_handle);
-
-		let Some((bytes_per_row, _, size)) = utils::texture_upload_layout(image.format, image.extent) else {
-			return Vec::new();
-		};
-
-		let mut data = vec![0u8; size];
-		let data_ptr = NonNull::new(data.as_mut_ptr() as *mut std::ffi::c_void)
-			.expect("Texture readback buffer was null. The most likely cause is an empty allocation.");
-		let mut region_size = utils::texture_copy_size(image.format, image.extent);
-		region_size.depth = 1;
-		let region = mtl::MTLRegion {
-			origin: mtl::MTLOrigin { x: 0, y: 0, z: 0 },
-			size: region_size,
-		};
-
-		unsafe {
-			image
-				.texture
-				.getBytes_bytesPerRow_fromRegion_mipmapLevel(data_ptr, bytes_per_row as _, region, 0);
-		}
-
-		data
-	}
-}
-
 impl RecordingCommit<'_> {
 	fn synchronizer_for_sequence(
 		&self,
@@ -295,20 +253,6 @@ impl RecordingCommit<'_> {
 			.expect(
 				"Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.",
 			)
-	}
-
-	/// Interns locally recorded texture readbacks into their device-assigned handles.
-	fn intern_texture_copies(
-		&mut self,
-		texture_copies: impl IntoIterator<Item = (graphics_hardware_interface::TextureCopyHandle, Vec<u8>)>,
-	) {
-		for (handle, data) in texture_copies {
-			let index = handle.0 as usize;
-			if index >= self.texture_copies.len() {
-				self.texture_copies.resize_with(index + 1, Vec::new);
-			}
-			self.texture_copies[index] = data;
-		}
 	}
 }
 
@@ -397,7 +341,6 @@ impl<'a> CommandBufferRecording<'a> {
 			state_updates: SmallVec::new(),
 			compute_written_resources: SmallVec::new(),
 			pending_compute_barrier_scope: mtl::MTLBarrierScope(0),
-			texture_copies: SmallVec::new(),
 			drawables,
 			active_pipeline_layout: None,
 			bound_pipeline_layout: None,
@@ -431,7 +374,6 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer_handle: self.command_buffer_handle,
 			command_buffer: self.command_buffer,
 			state_updates: self.state_updates,
-			texture_copies: self.texture_copies,
 			_marker: std::marker::PhantomData,
 		}
 	}
@@ -761,9 +703,8 @@ impl<'a> CommandBufferRecording<'a> {
 
 		device::submit_metal_command_buffer(self.command_buffer.as_ref());
 
-		if let Some(mut commit) = self.commit {
+		if let Some(commit) = self.commit {
 			commit.states.extend(self.state_updates);
-			commit.intern_texture_copies(self.texture_copies);
 		}
 	}
 }
@@ -1583,15 +1524,41 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			.collect::<SmallVec<[_; 8]>>();
 		self.consume_resources(consumptions);
 
-		texture_handles
-			.iter()
-			.map(|handle| {
-				let copy_handle = self.device.allocate_texture_copy_handle();
-				let data = self.device.read_texture_to_cpu(self.get_internal_image_handle(*handle));
-				self.texture_copies.push((copy_handle, data));
-				copy_handle
-			})
-			.collect()
+		if let Some(encoder) = self.active_compute_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		if let Some(encoder) = self.active_render_encoder.take() {
+			encoder.endEncoding();
+		}
+
+		let blit_encoder = self.command_buffer.blitCommandEncoder().expect(
+			"Metal blit command encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
+		);
+		let mut copies = Vec::with_capacity(texture_handles.len());
+
+		for handle in texture_handles {
+			let image_handle = self.get_internal_image_handle(*handle);
+			let image = self.device.images.resource(image_handle);
+			if !image.access.contains(crate::DeviceAccesses::CpuRead) {
+				continue;
+			}
+
+			// Managed Metal textures must be synchronized by the GPU before their compact CPU staging memory is refreshed.
+			if utils::storage_mode_from_access(image.access) == mtl::MTLStorageMode::Managed {
+				for slice in 0..image.array_layers as usize {
+					unsafe {
+						blit_encoder.synchronizeTexture_slice_level(image.texture.as_ref(), slice, 0);
+					}
+				}
+			}
+
+			// Match Vulkan: the copy handle is the internal image whose CPU staging storage receives the readback.
+			copies.push(graphics_hardware_interface::TextureCopyHandle(image_handle.0));
+		}
+
+		blit_encoder.endEncoding();
+		copies
 	}
 
 	fn write_image_data(

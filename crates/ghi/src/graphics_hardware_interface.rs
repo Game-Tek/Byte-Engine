@@ -810,14 +810,7 @@ impl QueueSelection {
 #[cfg(test)]
 pub(super) mod tests {
 
-	#[cfg(target_os = "linux")]
-	use std::borrow::Borrow as _;
-
-	#[cfg(target_os = "linux")]
-	use resource_management::shader::glsl_compile as glsl;
-
 	use super::*;
-	#[cfg(target_os = "linux")]
 	use crate::{
 		command_buffer::{
 			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
@@ -831,7 +824,7 @@ pub(super) mod tests {
 			BindingTables, BottomLevelAccelerationStructureBuild, BottomLevelAccelerationStructureBuildDescriptions,
 			TopLevelAccelerationStructureBuild, TopLevelAccelerationStructureBuildDescriptions,
 		},
-		shader::Sources,
+		shader::{CompiledShaderSource, ShaderSource},
 		BufferDescriptor, BufferStridedRange, DeviceAccesses, FilteringModes, SamplerAddressingModes, SamplingReductionModes,
 		ShaderTypes, UseCases, Uses, Window,
 	};
@@ -1151,8 +1144,7 @@ pub(super) mod tests {
 		assert_eq!(format.size(), 1);
 	}
 
-	#[cfg(target_os = "linux")]
-	fn compile_shaders() -> (glsl::CompiledShader, glsl::CompiledShader) {
+	fn compile_shaders() -> (CompiledShaderSource, CompiledShaderSource) {
 		let vertex_shader_code = "
 			#version 450
 			#pragma shader_stage(vertex)
@@ -1180,15 +1172,74 @@ pub(super) mod tests {
 				out_color = in_color;
 			}
 		";
+		let vertex_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct VertexInput {
+				float3 position [[attribute(0)]];
+				float4 color [[attribute(1)]];
+			};
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			vertex VertexOutput vertex_main(VertexInput input [[stage_in]]) {
+				return VertexOutput { float4(input.position, 1.0), input.color };
+			}
+		"#;
+		let fragment_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			fragment float4 fragment_main(VertexOutput input [[stage_in]]) {
+				return input.color;
+			}
+		"#;
+		let vertex_shader_hlsl = r#"
+			struct VertexInput { float3 position : POSITION; float4 color : COLOR0; };
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			VertexOutput vertex_main(VertexInput input) {
+				VertexOutput output;
+				output.position = float4(input.position, 1.0);
+				output.color = input.color;
+				return output;
+			}
+		"#;
+		let fragment_shader_hlsl = r#"
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			float4 fragment_main(VertexOutput input) : SV_TARGET0 { return input.color; }
+		"#;
 
-		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
-		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
+		let vertex_shader_artifact = crate::shader::compile(
+			"GHI test vertex shader",
+			ShaderSource::PlatformNative {
+				glsl: vertex_shader_code,
+				msl: vertex_shader_msl,
+				msl_entry_point: "vertex_main",
+				hlsl: vertex_shader_hlsl,
+				hlsl_entry_point: "vertex_main",
+			},
+		)
+		.expect("Failed to compile GHI test vertex shader. The most likely cause is invalid native shader source.");
+		let fragment_shader_artifact = crate::shader::compile(
+			"GHI test fragment shader",
+			ShaderSource::PlatformNative {
+				glsl: fragment_shader_code,
+				msl: fragment_shader_msl,
+				msl_entry_point: "fragment_main",
+				hlsl: fragment_shader_hlsl,
+				hlsl_entry_point: "fragment_main",
+			},
+		)
+		.expect("Failed to compile GHI test fragment shader. The most likely cause is invalid native shader source.");
 
 		(vertex_shader_artifact, fragment_shader_artifact)
 	}
 
-	#[cfg(target_os = "linux")]
-	fn compile_shaders_with_model_matrix() -> (glsl::CompiledShader, glsl::CompiledShader) {
+	fn compile_shaders_with_model_matrix() -> (CompiledShaderSource, CompiledShaderSource) {
 		let vertex_shader_code = "
 			#version 450
 			#pragma shader_stage(vertex)
@@ -1220,9 +1271,75 @@ pub(super) mod tests {
 				out_color = in_color;
 			}
 		";
+		let vertex_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct VertexInput {
+				float3 position [[attribute(0)]];
+				float4 color [[attribute(1)]];
+			};
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			vertex VertexOutput vertex_main(
+				VertexInput input [[stage_in]],
+				constant float4x4& model_matrix [[buffer(15)]]) {
+				return VertexOutput { model_matrix * float4(input.position, 1.0), input.color };
+			}
+		"#;
+		let fragment_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			fragment float4 fragment_main(VertexOutput input [[stage_in]]) {
+				return input.color;
+			}
+		"#;
+		let vertex_shader_hlsl = r#"
+			struct VertexInput { float3 position : POSITION; float4 color : COLOR0; };
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			struct PushConstant { float4x4 model_matrix; };
+			ConstantBuffer<PushConstant> push_constant : register(b0, space0);
+			VertexOutput vertex_main(VertexInput input) {
+				VertexOutput output;
+				output.position = mul(push_constant.model_matrix, float4(input.position, 1.0));
+				output.color = input.color;
+				return output;
+			}
+		"#;
+		let fragment_shader_hlsl = r#"
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			float4 fragment_main(VertexOutput input) : SV_TARGET0 { return input.color; }
+		"#;
 
-		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
-		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
+		let vertex_shader_artifact = crate::shader::compile(
+			"GHI model-matrix test vertex shader",
+			ShaderSource::PlatformNative {
+				glsl: vertex_shader_code,
+				msl: vertex_shader_msl,
+				msl_entry_point: "vertex_main",
+				hlsl: vertex_shader_hlsl,
+				hlsl_entry_point: "vertex_main",
+			},
+		)
+		.expect(
+			"Failed to compile GHI model-matrix test vertex shader. The most likely cause is invalid native shader source.",
+		);
+		let fragment_shader_artifact = crate::shader::compile(
+			"GHI model-matrix test fragment shader",
+			ShaderSource::PlatformNative {
+				glsl: fragment_shader_code,
+				msl: fragment_shader_msl,
+				msl_entry_point: "fragment_main",
+				hlsl: fragment_shader_hlsl,
+				hlsl_entry_point: "fragment_main",
+			},
+		)
+		.expect("Failed to compile GHI test fragment shader. The most likely cause is invalid native shader source.");
 
 		(vertex_shader_artifact, fragment_shader_artifact)
 	}
@@ -1236,7 +1353,6 @@ pub(super) mod tests {
 		assert_eq!(dispatch_extent.get_extent(), Extent::new(4, 4, 4));
 	}
 
-	#[cfg(target_os = "linux")]
 	fn check_triangle(pixels: &[RGBAu8], extent: Extent) {
 		assert_eq!(pixels.len(), (extent.width() * extent.height()) as usize);
 
@@ -1315,7 +1431,6 @@ pub(super) mod tests {
 		);
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn render_triangle(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, false);
 
@@ -1341,20 +1456,10 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		// Use and odd width to make sure there is a middle/center pixel
@@ -1370,7 +1475,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -1427,7 +1531,6 @@ pub(super) mod tests {
 		check_triangle(pixels, extent);
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn present(renderer: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1921, 1080);
@@ -1460,26 +1563,15 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = renderer
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = renderer
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		let attachments = [AttachmentDescriptor::new(Formats::BGRAsRGB)];
 
 		let pipeline = renderer.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -1542,7 +1634,6 @@ pub(super) mod tests {
 		assert!(!renderer.has_errors())
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn multiframe_present(renderer: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		// Use and odd width to make sure there is a middle/center pixel
 		let extent = Extent::rectangle(1920, 1080);
@@ -1575,26 +1666,15 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = renderer
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = renderer
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		let attachments = [AttachmentDescriptor::new(Formats::BGRAsRGB)];
 
 		let pipeline = renderer.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -1658,7 +1738,6 @@ pub(super) mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn multiframe_rendering(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -1690,20 +1769,10 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		// Use and odd width to make sure there is a middle/center pixel
@@ -1719,7 +1788,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[PushConstantRange::new(0, 16 * 4)],
 			&vertex_layout,
 			&[
@@ -1789,7 +1857,6 @@ pub(super) mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn change_frames(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering while changing the amount of frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -1818,20 +1885,10 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		let extent = Extent::rectangle(1920, 1080);
@@ -1846,7 +1903,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -1920,7 +1976,6 @@ pub(super) mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn resize(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering while resize the render targets.
 
@@ -1948,20 +2003,10 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
 
 		let vertex_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		let mut extent = Extent::rectangle(1280, 720);
@@ -1976,7 +2021,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -2056,7 +2100,6 @@ pub(super) mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn dynamic_data(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -2085,20 +2128,10 @@ pub(super) mod tests {
 		let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders_with_model_matrix();
 
 		let vertex_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
-				ShaderTypes::Vertex,
-				[],
-			)
+			.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
-			.create_shader(
-				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
-				ShaderTypes::Fragment,
-				[],
-			)
+			.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
 			.expect("Failed to create fragment shader");
 
 		// Use and odd width to make sure there is a middle/center pixel
@@ -2114,7 +2147,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[],
 			&[],
 			&vertex_layout,
 			&[
@@ -2263,7 +2295,6 @@ pub(super) mod tests {
 		assert!(!device.has_errors())
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn dynamic_textures(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that dynamic textures write to the current frame image instead of always writing to the root image.
 
@@ -2349,7 +2380,6 @@ pub(super) mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn multiframe_resources(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		// TODO: test multiframe resources for combined image samplers
 		let compute_shader_string = "
@@ -2369,32 +2399,64 @@ pub(super) mod tests {
 				imageStore(img, ivec2(1, 0), imageLoad(last_frame_img, ivec2(0, 0)));
 			}
 		";
-
-		let compute_shader_artifact = glsl::compile(compute_shader_string, "compute").unwrap();
+		let compute_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct Resources {
+				texture2d<float, access::write> image [[id(0)]];
+				texture2d<float, access::read> last_frame_image [[id(1)]];
+			};
+			kernel void compute_main(
+				uint2 gid [[thread_position_in_grid]],
+				constant Resources& resources [[buffer(16)]],
+				constant float& value [[buffer(15)]]) {
+				resources.image.write(float4(value, value, value, 1.0), uint2(0, 0));
+				resources.image.write(resources.last_frame_image.read(uint2(0, 0)), uint2(1, 0));
+			}
+		"#;
+		let compute_shader_hlsl = r#"
+			RWTexture2D<float4> image : register(u0, space0);
+			RWTexture2D<float4> last_frame_image : register(u1, space0);
+			struct PushConstant { float value; };
+			ConstantBuffer<PushConstant> push_constant : register(b0, space0);
+			[numthreads(1, 1, 1)]
+			void compute_main(uint3 gid : SV_DispatchThreadID) {
+				image[uint2(0, 0)] = float4(push_constant.value.xxx, 1.0);
+				image[uint2(1, 0)] = last_frame_image[uint2(0, 0)];
+			}
+		"#;
+		let compute_shader_artifact = crate::shader::compile(
+			"GHI multiframe resource test compute shader",
+			ShaderSource::PlatformNative {
+				glsl: compute_shader_string,
+				msl: compute_shader_msl,
+				msl_entry_point: "compute_main",
+				hlsl: compute_shader_hlsl,
+				hlsl_entry_point: "compute_main",
+			},
+		)
+		.expect("Failed to compile the multiframe resource shader. The most likely cause is invalid native shader source.");
+		let image_resource = crate::shader::ShaderResourceDescriptor::single(
+			crate::shader::ResourceSlot::new(0),
+			crate::shader::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		);
+		let last_frame_image_resource = crate::shader::ShaderResourceDescriptor::single(
+			crate::shader::ResourceSlot::new(1),
+			crate::shader::ResourceKind::StorageImage,
+			crate::AccessPolicies::READ,
+		);
 
 		let compute_shader = device
 			.create_shader(
 				None,
-				Sources::SPIRV(compute_shader_artifact.borrow().into()),
+				compute_shader_artifact.as_source(),
 				ShaderTypes::Compute,
-				[
-					BindingDescriptor::new(0, 0, AccessPolicies::WRITE),
-					BindingDescriptor::new(0, 1, AccessPolicies::READ),
-				],
+				[image_resource, last_frame_image_resource],
 			)
 			.expect("Failed to create compute shader");
 
-		let image_binding_template = DescriptorSetBindingTemplate::new(0, DescriptorType::StorageImage, Stages::COMPUTE);
-		let last_frame_image_binding_template =
-			DescriptorSetBindingTemplate::new(1, DescriptorType::StorageImage, Stages::COMPUTE);
-
-		let descriptor_set_template = device.create_descriptor_set_template(
-			None,
-			&[image_binding_template.clone(), last_frame_image_binding_template.clone()],
-		);
-
 		let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
-			&[descriptor_set_template],
 			&[PushConstantRange { offset: 0, size: 4 }],
 			ShaderParameter::new(&compute_shader, ShaderTypes::Compute),
 		));
@@ -2407,13 +2469,17 @@ pub(super) mod tests {
 				.use_case(UseCases::DYNAMIC),
 		);
 
-		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_template);
-
-		let _ = device.create_descriptor_binding(descriptor_set, BindingConstructor::image(&image_binding_template, image));
-		let _ = device.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::image(&last_frame_image_binding_template, image).frame(-1),
-		);
+		let descriptor_set = device.create_descriptor_set(None);
+		device.write(&[
+			crate::DescriptorWrite::image(descriptor_set, image_resource.slot(), image, Layouts::General),
+			crate::DescriptorWrite::image_with_frame(
+				descriptor_set,
+				last_frame_image_resource.slot(),
+				image,
+				Layouts::General,
+				-1,
+			),
+		]);
 
 		let command_buffer = device.queue(queue_handle).create_command_buffer(None);
 
@@ -2626,7 +2692,6 @@ pub(super) mod tests {
 		assert!(!device.has_errors());
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn descriptor_sets(device: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		let signal = device.create_synchronizer(None, true);
 
@@ -2683,27 +2748,114 @@ pub(super) mod tests {
 				out_color = texture(sampler2D(tex, smpl), vec2(0, 0));
 			}
 		";
-
-		let vertex_shader_artifact = glsl::compile(vertex_shader_code, "vertex").unwrap();
-		let fragment_shader_artifact = glsl::compile(fragment_shader_code, "fragment").unwrap();
+		let vertex_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct VertexResources { constant float4x4* matrix [[id(0)]]; };
+			struct VertexInput {
+				float3 position [[attribute(0)]];
+				float4 color [[attribute(1)]];
+			};
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			vertex VertexOutput vertex_main(
+				VertexInput input [[stage_in]],
+				constant VertexResources& resources [[buffer(16)]]) {
+				return VertexOutput { resources.matrix[0] * float4(input.position, 1.0), input.color };
+			}
+		"#;
+		let fragment_shader_msl = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+			struct FragmentResources {
+				sampler texture_sampler [[id(0)]];
+				texture2d<float> texture [[id(1)]];
+			};
+			struct VertexOutput {
+				float4 position [[position]];
+				float4 color;
+			};
+			fragment float4 fragment_main(
+				VertexOutput input [[stage_in]],
+				constant FragmentResources& resources [[buffer(16)]]) {
+				return resources.texture.sample(resources.texture_sampler, float2(0.0));
+			}
+		"#;
+		let vertex_shader_hlsl = r#"
+			StructuredBuffer<float4x4> matrices : register(t1, space0);
+			struct VertexInput { float3 position : POSITION; float4 color : COLOR0; };
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			VertexOutput vertex_main(VertexInput input) {
+				VertexOutput output;
+				output.position = mul(matrices[0], float4(input.position, 1.0));
+				output.color = input.color;
+				return output;
+			}
+		"#;
+		let fragment_shader_hlsl = r#"
+			SamplerState texture_sampler : register(s0, space0);
+			Texture2D<float4> texture_image : register(t2, space0);
+			struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
+			float4 fragment_main(VertexOutput input) : SV_TARGET0 {
+				return texture_image.Sample(texture_sampler, float2(0.0, 0.0));
+			}
+		"#;
+		let vertex_shader_artifact = crate::shader::compile(
+			"GHI descriptor test vertex shader",
+			ShaderSource::PlatformNative {
+				glsl: vertex_shader_code,
+				msl: vertex_shader_msl,
+				msl_entry_point: "vertex_main",
+				hlsl: vertex_shader_hlsl,
+				hlsl_entry_point: "vertex_main",
+			},
+		)
+		.expect("Failed to compile the descriptor test vertex shader. The most likely cause is invalid native shader source.");
+		let fragment_shader_artifact = crate::shader::compile(
+			"GHI descriptor test fragment shader",
+			ShaderSource::PlatformNative {
+				glsl: fragment_shader_code,
+				msl: fragment_shader_msl,
+				msl_entry_point: "fragment_main",
+				hlsl: fragment_shader_hlsl,
+				hlsl_entry_point: "fragment_main",
+			},
+		)
+		.expect(
+			"Failed to compile the descriptor test fragment shader. The most likely cause is invalid native shader source.",
+		);
+		let sampler_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(0),
+			crate::ResourceKind::Sampler,
+			crate::AccessPolicies::READ,
+		);
+		let buffer_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(1),
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::READ,
+		);
+		let image_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(2),
+			crate::ResourceKind::SampledImage,
+			crate::AccessPolicies::READ,
+		);
 
 		let vertex_shader = device
 			.create_shader(
 				None,
-				Sources::SPIRV(vertex_shader_artifact.borrow().into()),
+				vertex_shader_artifact.as_source(),
 				ShaderTypes::Vertex,
-				[BindingDescriptor::new(0, 1, AccessPolicies::READ)],
+				[buffer_resource],
 			)
 			.expect("Failed to create vertex shader");
 		let fragment_shader = device
 			.create_shader(
 				None,
-				Sources::SPIRV(fragment_shader_artifact.borrow().into()),
+				fragment_shader_artifact.as_source(),
 				ShaderTypes::Fragment,
-				[
-					BindingDescriptor::new(0, 0, AccessPolicies::READ),
-					BindingDescriptor::new(0, 2, AccessPolicies::READ),
-				],
+				[sampler_resource, image_resource],
 			)
 			.expect("Failed to create fragment shader");
 
@@ -2756,39 +2908,12 @@ pub(super) mod tests {
 				.max_lod(0.0f32),
 		);
 
-		let descriptor_set_layout_handle = device.create_descriptor_set_template(
-			None,
-			&[
-				DescriptorSetBindingTemplate::new_with_immutable_samplers(0, Stages::FRAGMENT, Some(vec![sampler])),
-				DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer, Stages::VERTEX),
-				DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT),
-			],
-		);
-
-		let descriptor_set = device.create_descriptor_set(None, &descriptor_set_layout_handle);
-
-		let _ = device.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::sampler(
-				&DescriptorSetBindingTemplate::new(0, DescriptorType::Sampler, Stages::FRAGMENT),
-				sampler,
-			),
-		);
-		let _ = device.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::buffer(
-				&DescriptorSetBindingTemplate::new(1, DescriptorType::StorageBuffer, Stages::VERTEX),
-				buffer.into(),
-			),
-		);
-		let _ = device.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::image(
-				&DescriptorSetBindingTemplate::new(2, DescriptorType::SampledImage, Stages::FRAGMENT),
-				sampled_texture,
-			)
-			.layout(Layouts::Read),
-		);
+		let descriptor_set = device.create_descriptor_set(None);
+		device.write(&[
+			crate::DescriptorWrite::sampler(descriptor_set, sampler_resource.slot(), sampler),
+			crate::DescriptorWrite::buffer(descriptor_set, buffer_resource.slot(), buffer.into()),
+			crate::DescriptorWrite::image(descriptor_set, image_resource.slot(), sampled_texture, Layouts::Read),
+		]);
 
 		assert!(!device.has_errors());
 
@@ -2805,7 +2930,6 @@ pub(super) mod tests {
 		let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
 
 		let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-			&[descriptor_set_layout_handle],
 			&[],
 			&vertex_layout,
 			&[
@@ -2876,7 +3000,6 @@ pub(super) mod tests {
 		assert!(!device.has_errors());
 	}
 
-	#[cfg(target_os = "linux")]
 	pub(crate) fn ray_tracing(renderer: &mut impl crate::context::Context, queue_handle: QueueHandle) {
 		//! Tests that the render system can perform rendering with multiple frames in flight.
 		//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -3002,40 +3125,84 @@ void main() {
 }
 		";
 
-		let raygen_shader_artifact = glsl::compile(raygen_shader_code, "raygen").unwrap();
-		let closest_hit_shader_artifact = glsl::compile(closest_hit_shader_code, "closest_hit").unwrap();
-		let miss_shader_artifact = glsl::compile(miss_shader_code, "miss").unwrap();
+		// Metal ray tracing execution is still intentionally ignored, but native source keeps this shared test portable.
+		let raygen_shader_artifact = crate::shader::compile(
+			"GHI ray generation test shader",
+			ShaderSource::PlatformNative {
+				glsl: raygen_shader_code,
+				msl: "#include <metal_stdlib>\nusing namespace metal; kernel void raygen_main() {}",
+				msl_entry_point: "raygen_main",
+				hlsl: "[shader(\"raygeneration\")] void raygen_main() {}",
+				hlsl_entry_point: "raygen_main",
+			},
+		)
+		.expect("Failed to compile the ray generation test shader. The most likely cause is invalid native shader source.");
+		let closest_hit_shader_artifact = crate::shader::compile(
+			"GHI closest-hit test shader",
+			ShaderSource::PlatformNative {
+				glsl: closest_hit_shader_code,
+				msl: "#include <metal_stdlib>\nusing namespace metal; kernel void closest_hit_main() {}",
+				msl_entry_point: "closest_hit_main",
+				hlsl: "[shader(\"closesthit\")] void closest_hit_main() {}",
+				hlsl_entry_point: "closest_hit_main",
+			},
+		)
+		.expect("Failed to compile the closest-hit test shader. The most likely cause is invalid native shader source.");
+		let miss_shader_artifact = crate::shader::compile(
+			"GHI miss test shader",
+			ShaderSource::PlatformNative {
+				glsl: miss_shader_code,
+				msl: "#include <metal_stdlib>\nusing namespace metal; kernel void miss_main() {}",
+				msl_entry_point: "miss_main",
+				hlsl: "[shader(\"miss\")] void miss_main() {}",
+				hlsl_entry_point: "miss_main",
+			},
+		)
+		.expect("Failed to compile the miss test shader. The most likely cause is invalid native shader source.");
+		let acceleration_structure_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(0),
+			crate::ResourceKind::AccelerationStructure,
+			crate::AccessPolicies::READ,
+		);
+		let output_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(1),
+			crate::ResourceKind::StorageImage,
+			crate::AccessPolicies::WRITE,
+		);
+		let position_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(2),
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::READ,
+		);
+		let color_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(3),
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::READ,
+		);
+		let index_resource = crate::ShaderResourceDescriptor::single(
+			crate::ResourceSlot::new(4),
+			crate::ResourceKind::StorageBuffer,
+			crate::AccessPolicies::READ,
+		);
 
 		let raygen_shader = renderer
 			.create_shader(
 				None,
-				Sources::SPIRV(raygen_shader_artifact.borrow().into()),
+				raygen_shader_artifact.as_source(),
 				ShaderTypes::RayGen,
-				[
-					BindingDescriptor::new(0, 0, AccessPolicies::READ),
-					BindingDescriptor::new(0, 1, AccessPolicies::WRITE),
-				],
+				[acceleration_structure_resource, output_resource],
 			)
 			.expect("Failed to create raygen shader");
 		let closest_hit_shader = renderer
 			.create_shader(
 				None,
-				Sources::SPIRV(closest_hit_shader_artifact.borrow().into()),
+				closest_hit_shader_artifact.as_source(),
 				ShaderTypes::ClosestHit,
-				[
-					BindingDescriptor::new(0, 2, AccessPolicies::READ),
-					BindingDescriptor::new(0, 3, AccessPolicies::READ),
-					BindingDescriptor::new(0, 4, AccessPolicies::READ),
-				],
+				[position_resource, color_resource, index_resource],
 			)
 			.expect("Failed to create closest hit shader");
 		let miss_shader = renderer
-			.create_shader(
-				None,
-				Sources::SPIRV(miss_shader_artifact.borrow().into()),
-				ShaderTypes::Miss,
-				[],
-			)
+			.create_shader(None, miss_shader_artifact.as_source(), ShaderTypes::Miss, [])
 			.expect("Failed to create miss shader");
 
 		let top_level_acceleration_structure = renderer.create_top_level_acceleration_structure(Some("Top Level"), 1);
@@ -3049,17 +3216,7 @@ void main() {
 				},
 			});
 
-		let bindings = [
-			DescriptorSetBindingTemplate::new(0, DescriptorType::AccelerationStructure, Stages::RAYGEN),
-			DescriptorSetBindingTemplate::new(1, DescriptorType::StorageImage, Stages::RAYGEN),
-			DescriptorSetBindingTemplate::new(2, DescriptorType::StorageBuffer, Stages::CLOSEST_HIT),
-			DescriptorSetBindingTemplate::new(3, DescriptorType::StorageBuffer, Stages::CLOSEST_HIT),
-			DescriptorSetBindingTemplate::new(4, DescriptorType::StorageBuffer, Stages::CLOSEST_HIT),
-		];
-
-		let descriptor_set_layout_handle = renderer.create_descriptor_set_template(None, &bindings);
-
-		let descriptor_set = renderer.create_descriptor_set(None, &descriptor_set_layout_handle);
+		let descriptor_set = renderer.create_descriptor_set(None);
 
 		let render_target = renderer.build_image(
 			crate::image::Builder::new(Formats::RGBA8UNORM, Uses::Storage)
@@ -3068,24 +3225,19 @@ void main() {
 				.use_case(UseCases::DYNAMIC),
 		);
 
-		let _ = renderer.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::acceleration_structure(&bindings[0], top_level_acceleration_structure),
-		);
-		let _ = renderer.create_descriptor_binding(descriptor_set, BindingConstructor::image(&bindings[1], render_target));
-		let _ = renderer.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::buffer(&bindings[2], vertex_positions_buffer.into()),
-		);
-		let _ = renderer.create_descriptor_binding(
-			descriptor_set,
-			BindingConstructor::buffer(&bindings[3], vertex_colors_buffer.into()),
-		);
-		let _ =
-			renderer.create_descriptor_binding(descriptor_set, BindingConstructor::buffer(&bindings[4], index_buffer.into()));
+		renderer.write(&[
+			crate::DescriptorWrite::acceleration_structure(
+				descriptor_set,
+				acceleration_structure_resource.slot(),
+				top_level_acceleration_structure,
+			),
+			crate::DescriptorWrite::image(descriptor_set, output_resource.slot(), render_target, Layouts::General),
+			crate::DescriptorWrite::buffer(descriptor_set, position_resource.slot(), vertex_positions_buffer.into()),
+			crate::DescriptorWrite::buffer(descriptor_set, color_resource.slot(), vertex_colors_buffer.into()),
+			crate::DescriptorWrite::buffer(descriptor_set, index_resource.slot(), index_buffer.into()),
+		]);
 
 		let pipeline = renderer.create_ray_tracing_pipeline(pipelines::ray_tracing::Builder::new(
-			&[descriptor_set_layout_handle],
 			&[],
 			&[
 				ShaderParameter::new(&raygen_shader, ShaderTypes::RayGen),

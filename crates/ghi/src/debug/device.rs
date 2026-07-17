@@ -182,7 +182,7 @@ impl Device {
 		(ImageHandle(crate::BaseImageHandle(0)), Formats::BGRAu8)
 	}
 
-	pub fn get_image_data(&self, _texture_copy_handle: TextureCopyHandle) -> &[u8] {
+	pub fn get_image_data(&mut self, _texture_copy_handle: TextureCopyHandle) -> &[u8] {
 		&[]
 	}
 

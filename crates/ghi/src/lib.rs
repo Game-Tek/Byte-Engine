@@ -63,6 +63,106 @@ pub mod implementation {
 	pub use crate::metal::*;
 	#[cfg(target_os = "linux")]
 	pub use crate::vulkan::*;
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+		use crate::{graphics_hardware_interface, QueueHandle};
+
+		fn create_default_device_setup() -> (Instance, Context, QueueHandle) {
+			let features = crate::device::Features::new().validation(true);
+			create_default_device_setup_with_features(features)
+		}
+
+		fn create_default_device_setup_with_features(features: crate::device::Features) -> (Instance, Context, QueueHandle) {
+			let mut instance = Instance::new(features).expect(
+				"Failed to create the GHI test instance. The most likely cause is that the active backend has no available device.",
+			);
+			let mut queue_handle = None;
+			let device = instance
+				.create_device(
+					features,
+					&mut [(
+						crate::QueueSelection::new(crate::types::WorkloadTypes::RASTER),
+						&mut queue_handle,
+					)],
+				)
+				.expect("Failed to create the GHI test device. The most likely cause is unavailable raster queue support.");
+			let context = crate::device::Device::create_context(&device)
+				.expect("Failed to create the GHI test context. The most likely cause is unavailable backend command support.");
+			(instance, context, queue_handle.unwrap())
+		}
+
+		#[test]
+		fn render_triangle() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::render_triangle(&mut device, queue_handle);
+		}
+
+		#[test]
+		#[ignore = "test is broken because of WSI"]
+		fn render_present() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::present(&mut device, queue_handle);
+		}
+
+		#[test]
+		#[ignore = "test is broken because of WSI"]
+		fn render_multiframe_present() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::multiframe_present(&mut device, queue_handle);
+		}
+
+		#[test]
+		fn render_multiframe() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::multiframe_rendering(&mut device, queue_handle);
+		}
+
+		#[test]
+		fn render_change_frames() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::change_frames(&mut device, queue_handle);
+		}
+
+		#[test]
+		fn render_resize() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::resize(&mut device, queue_handle);
+		}
+
+		#[test]
+		fn render_dynamic_data() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::dynamic_data(&mut device, queue_handle);
+		}
+
+		#[test]
+		fn render_dynamic_textures() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::dynamic_textures(&mut device, queue_handle);
+		}
+
+		#[test]
+		fn render_with_descriptor_sets() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::descriptor_sets(&mut device, queue_handle);
+		}
+
+		#[test]
+		fn render_with_multiframe_resources() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::multiframe_resources(&mut device, queue_handle);
+		}
+
+		#[test]
+		#[ignore = "not working on supporting rt right now"]
+		fn render_with_ray_tracing() {
+			let (_instance, mut device, queue_handle) =
+				create_default_device_setup_with_features(crate::device::Features::new().validation(true).ray_tracing(true));
+			graphics_hardware_interface::tests::ray_tracing(&mut device, queue_handle);
+		}
+	}
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]

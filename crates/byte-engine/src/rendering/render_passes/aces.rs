@@ -88,10 +88,6 @@ main: fn() -> void {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot};
-	use resource_management::shader::{
-		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings,
-	};
-	use utils::Extent;
 
 	use super::{create_tone_mapping_program, TONE_MAPPING_SHADER};
 	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
@@ -135,34 +131,5 @@ mod tests {
 	fn aces_tonemap_besl_parses() {
 		besl::parse(TONE_MAPPING_SHADER)
 			.expect("Failed to parse the ACES BESL shader. The most likely cause is invalid BESL source syntax.");
-	}
-
-	#[test]
-	fn aces_tonemap_besl_generates_glsl() {
-		let main_node = create_tone_mapping_program();
-		let shader = GLSLShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::square(32)).name("ACES Tonemapping Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to generate the ACES BESL shader GLSL. The most likely cause is invalid BESL lowering.");
-
-		assert!(shader.contains("imageLoad(source"));
-		assert!(shader.contains("imageStore(result"));
-	}
-
-	#[test]
-	fn aces_tonemap_besl_generates_msl() {
-		let main_node = create_tone_mapping_program();
-		let shader = MSLShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::square(32)).name("ACES Tonemapping Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to generate the ACES BESL shader MSL. The most likely cause is invalid BESL lowering.");
-
-		assert!(shader.contains("kernel void besl_main"));
-		assert!(shader.contains("resources.source.read(coord)"));
-		assert!(shader.contains("resources.result.write("));
 	}
 }

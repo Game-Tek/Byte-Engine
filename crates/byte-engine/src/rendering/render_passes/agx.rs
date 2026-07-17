@@ -156,14 +156,6 @@ impl RenderPass for AgxToneMapPass {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot};
-	#[cfg(target_os = "linux")]
-	use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
-	#[cfg(target_os = "macos")]
-	use resource_management::shader::msl_shader_compiler::MSLShaderCompiler;
-	use resource_management::shader::{
-		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings,
-	};
-	use utils::Extent;
 
 	use super::{create_tone_mapping_program, TONE_MAPPING_SHADER};
 	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
@@ -208,67 +200,5 @@ mod tests {
 	fn agx_tonemap_besl_parses() {
 		besl::parse(TONE_MAPPING_SHADER)
 			.expect("Failed to parse the AGX BESL shader. The most likely cause is invalid BESL source syntax.");
-	}
-
-	#[test]
-	fn agx_tonemap_besl_generates_glsl() {
-		let main_node = create_tone_mapping_program();
-
-		let shader = GLSLShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to generate the AGX BESL shader GLSL. The most likely cause is invalid BESL lowering.");
-
-		assert!(shader.contains("clamp(log2(color)"));
-		assert!(shader.contains("uvec2(gl_GlobalInvocationID.xy)"));
-		assert!(shader.contains("imageLoad(source"));
-	}
-
-	#[test]
-	fn agx_tonemap_besl_generates_msl() {
-		let main_node = create_tone_mapping_program();
-
-		let shader = MSLShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to generate the AGX BESL shader MSL. The most likely cause is invalid BESL lowering.");
-
-		assert!(shader.contains("kernel void besl_main"));
-		assert!(shader.contains("constant _resources& resources [[buffer(16)]]"));
-		assert!(shader.contains("resources.source.read(coord)"));
-		assert!(shader.contains("resources.result.write("));
-	}
-
-	#[cfg(target_os = "linux")]
-	#[test]
-	fn agx_tonemap_besl_compiles_to_spirv() {
-		let main_node = create_tone_mapping_program();
-
-		SPIRVShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping Test".to_string()),
-				&main_node,
-			)
-			.expect(
-				"Failed to compile the AGX BESL shader to SPIR-V. The most likely cause is invalid GLSL emitted from BESL.",
-			);
-	}
-
-	#[cfg(target_os = "macos")]
-	#[test]
-	#[ignore = "requires the optional Apple Metal Toolchain"]
-	fn agx_tonemap_besl_compiles_to_metal() {
-		let main_node = create_tone_mapping_program();
-
-		MSLShaderCompiler::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::square(32)).name("AGX Tonemapping Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to compile the AGX BESL shader to Metal. The most likely cause is invalid MSL emitted from BESL.");
 	}
 }

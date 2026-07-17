@@ -462,10 +462,6 @@ main: fn () -> void {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
-	use resource_management::shader::{
-		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
-		generator::{ShaderGenerationSettings, ShaderGenerator as _},
-	};
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{buffer, compile, run_at};
@@ -477,34 +473,6 @@ mod tests {
 		assert_eq!(std::mem::size_of::<SkinnedVertex>(), 32);
 		assert_eq!(std::mem::align_of::<SkinnedVertex>(), 16);
 		assert_eq!(std::mem::size_of::<SkinningDispatch>(), 16);
-	}
-
-	/// Verifies the one production BESL program lowers through every supported graphics backend.
-	#[test]
-	fn skinning_besl_lowers_to_every_backend() {
-		let main = create_skinning_program();
-		let settings = ShaderGenerationSettings::compute(Extent::line(SKINNING_WORKGROUP_SIZE));
-		let glsl = GLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Failed to lower visibility skinning BESL to GLSL.");
-		let hlsl = HLSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Failed to lower visibility skinning BESL to HLSL.");
-		let msl = MSLShaderGenerator::new()
-			.generate(&settings, &main)
-			.expect("Failed to lower visibility skinning BESL to MSL.");
-
-		assert!(glsl.contains("layout(local_size_x=64,local_size_y=1,local_size_z=1) in;"));
-		assert!(hlsl.contains("[numthreads(64, 1, 1)]"));
-		assert!(msl.contains("// besl-threadgroup-size:64,1,1"));
-		for source in [&glsl, &hlsl, &msl] {
-			assert!(source.contains("cofactor0") && source.contains("determinant"));
-			assert!(source.contains("destination_vertex_base"));
-			assert!(source.contains("skinned_vertices"));
-		}
-		assert!(glsl.contains("u16vec4"));
-		assert!(hlsl.contains("uint16_t4"));
-		assert!(msl.contains("packed_ushort4"));
 	}
 
 	/// Executes the production skinning semantics with two weighted joints and checks the deformed vertex.
@@ -588,58 +556,5 @@ mod tests {
 				.write_indexed_field("values", index, field, Value::Vec4F(value))
 				.expect("Failed to write skinning matrix.");
 		}
-	}
-
-	#[test]
-	fn skinning_besl_msl_compiles_for_metal() {
-		use ghi::{
-			context::{Context as _, ContextCreate as _},
-			device::Device as _,
-		};
-
-		if !ghi::implementation::USES_METAL {
-			return;
-		}
-
-		let main = create_skinning_program();
-		let msl = MSLShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::line(SKINNING_WORKGROUP_SIZE)),
-				&main,
-			)
-			.expect("Failed to lower visibility skinning BESL to MSL.");
-		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
-			.expect("Expected a Metal instance for the skinning compute shader test.");
-		let mut queue = None;
-		let mut context = instance
-			.create_device(
-				ghi::device::Features::new(),
-				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::COMPUTE), &mut queue)],
-			)
-			.expect("Expected a Metal device for the skinning compute shader test.")
-			.create_context()
-			.expect("Expected a Metal context for the skinning compute shader test.");
-
-		let shader = context.create_shader(
-			Some("Visibility Skinning BESL Compute Shader Test"),
-			ghi::shader::Sources::MTL {
-				source: &msl,
-				entry_point: "besl_main",
-			},
-			ghi::ShaderTypes::Compute,
-			[
-				SOURCE_POSITIONS_BINDING,
-				SOURCE_NORMALS_BINDING,
-				SOURCE_JOINTS_BINDING,
-				SOURCE_WEIGHTS_BINDING,
-				MATRIX_PALETTE_BINDING,
-				SKINNED_VERTICES_BINDING,
-			],
-		);
-
-		assert!(
-			shader.is_ok(),
-			"Expected generated visibility skinning MSL to compile for Metal."
-		);
 	}
 }

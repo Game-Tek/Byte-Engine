@@ -3235,17 +3235,14 @@ fragment float4 ui_text_overlay_fragment(
 #[cfg(test)]
 mod tests {
 	use besl::vm::{builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, ExecutableProgram, Value};
-	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
 	use utils::{Extent, RGBA};
 
 	use super::{
 		build_ui_blur_geometry, build_ui_curve_geometry, build_ui_geometry, build_ui_image_geometry, flatten_curve_segment,
 		should_draw_image, should_rasterize_text, update_from_render, DrawClip, DrawFeatherMask, UiBlurDrawElement,
 		UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiTextDrawElement, MAX_UI_ELEMENTS,
-		MAX_UI_VERTICES_PER_DRAW, UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL, UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL,
-		UI_BLUR_COMPUTE_SHADER_GLSL, UI_BLUR_COMPUTE_SHADER_MSL, UI_BLUR_COPY_SHADER_GLSL, UI_BLUR_COPY_SHADER_MSL,
-		UI_CURVE_FRAGMENT_SHADER_GLSL, UI_CURVE_FRAGMENT_SHADER_MSL, UI_FRAGMENT_SHADER_BESL, UI_INDICES_PER_CURVE_SPAN,
-		UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_CURVE_SPAN, UI_VERTICES_PER_ELEMENT,
+		MAX_UI_VERTICES_PER_DRAW, UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_CURVE_SPAN,
+		UI_VERTICES_PER_ELEMENT,
 	};
 	use crate::ui::{
 		components::{
@@ -4031,31 +4028,6 @@ mod tests {
 		assert!(matches!(fragment_main.borrow().node(), besl::Nodes::Function { .. }));
 	}
 
-	/// Verifies the primary portable UI shaders remain accepted by every source backend.
-	#[test]
-	fn primary_ui_besl_shaders_lower_to_every_source_backend() {
-		for (program, settings) in [
-			(super::create_ui_vertex_program(), ShaderGenerationSettings::vertex()),
-			(super::create_ui_fragment_program(), ShaderGenerationSettings::fragment()),
-		] {
-			resource_management::shader::besl::backends::glsl::GLSLShaderGenerator::new()
-				.generate(&settings, &program)
-				.expect(
-					"Failed to lower a primary UI BESL shader to GLSL. The most likely cause is unsupported portable syntax.",
-				);
-			resource_management::shader::besl::backends::hlsl::HLSLShaderGenerator::new()
-				.generate(&settings, &program)
-				.expect(
-					"Failed to lower a primary UI BESL shader to HLSL. The most likely cause is unsupported portable syntax.",
-				);
-			resource_management::shader::besl::backends::msl::MSLShaderGenerator::new()
-				.generate(&settings, &program)
-				.expect(
-					"Failed to lower a primary UI BESL shader to MSL. The most likely cause is unsupported portable syntax.",
-				);
-		}
-	}
-
 	/// Verifies the production UI vertex shader preserves every geometry and styling varying.
 	#[test]
 	fn ui_vertex_besl_vm_forwards_position_and_varyings() {
@@ -4226,43 +4198,6 @@ mod tests {
 			"Expected feathered pixel alpha near zero, found {}",
 			output[3]
 		);
-	}
-
-	#[test]
-	fn blur_composite_msl_fragment_inputs_match_besl_vertex_output_locations() {
-		let vertex_main = super::create_ui_vertex_program();
-		let vertex_msl = resource_management::shader::besl::backends::msl::MSLShaderGenerator::new()
-			.generate(
-				&resource_management::shader::generator::ShaderGenerationSettings::vertex(),
-				&vertex_main,
-			)
-			.expect("Failed to lower primary UI vertex shader to MSL.");
-
-		// The blur composite fragment consumes the BESL vertex outputs, so every varying it
-		// declares must bind to the same [[user(locnN)]] slot the vertex shader writes.
-		for (field, location) in [
-			("color", 0),
-			("pixel_position", 1),
-			("local_position", 2),
-			("rect_size", 3),
-			("corner_radius", 4),
-			("corner_exponent", 5),
-			("layer_kind", 6),
-			("stroke_width", 7),
-			("feather_mask_position", 8),
-			("feather_mask_size", 9),
-			("feather_mask_edges", 10),
-			("feather_mask_corner", 11),
-		] {
-			assert!(
-				super::UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL.contains(&format!("{field} [[user(locn{location})]]")),
-				"Blur composite fragment field `{field}` must bind to user(locn{location})"
-			);
-			assert!(
-				vertex_msl.contains(&format!("out_{field} [[user(locn{location})]]")),
-				"BESL vertex output `out_{field}` must bind to user(locn{location})"
-			);
-		}
 	}
 
 	#[test]

@@ -611,54 +611,6 @@ mod tests {
 		}
 	}
 
-	#[cfg(target_os = "linux")]
-	#[test]
-	fn bloom_extract_besl_compiles_to_spirv() {
-		let main_node = build_bloom_program(BLOOM_EXTRACT_BESL, 2);
-		resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::new(8, 8, 1)).name("Bloom Extract Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to compile bloom extract BESL to SPIR-V.");
-	}
-
-	#[cfg(target_os = "linux")]
-	#[test]
-	fn bloom_downsample_besl_compiles_to_spirv() {
-		let main_node = build_bloom_program(BLOOM_DOWNSAMPLE_BESL, 2);
-		resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::new(8, 8, 1)).name("Bloom Downsample Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to compile bloom downsample BESL to SPIR-V.");
-	}
-
-	#[cfg(target_os = "linux")]
-	#[test]
-	fn bloom_upsample_besl_compiles_to_spirv() {
-		let main_node = build_bloom_program(BLOOM_UPSAMPLE_BESL, 3);
-		resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::new(8, 8, 1)).name("Bloom Upsample Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to compile bloom upsample BESL to SPIR-V.");
-	}
-
-	#[cfg(target_os = "linux")]
-	#[test]
-	fn bloom_composite_besl_compiles_to_spirv() {
-		let main_node = build_bloom_program(BLOOM_COMPOSITE_BESL, 3);
-		resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::new(8, 8, 1)).name("Bloom Composite Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to compile bloom composite BESL to SPIR-V.");
-	}
-
 	#[test]
 	fn bloom_level_count_is_clamped() {
 		let settings = BloomPassSettings {

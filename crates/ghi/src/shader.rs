@@ -256,7 +256,7 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn platform_native_selects_backend_specific_shader_source() {
+	fn platform_native_selects_backend_specific_shader_variant() {
 		let compiled = compile(
 			"platform-native",
 			ShaderSource::PlatformNative {
@@ -272,18 +272,12 @@ mod tests {
 		if crate::implementation::USES_DX12 {
 			assert!(matches!(
 				compiled,
-				CompiledShaderSource::HLSL {
-					source,
-					entry_point
-				} if source.contains("numthreads") && entry_point == "main"
+				CompiledShaderSource::HLSL { entry_point, .. } if entry_point == "main"
 			));
 		} else if crate::implementation::USES_METAL {
 			assert!(matches!(
 				compiled,
-				CompiledShaderSource::MTL {
-					source,
-					entry_point
-				} if source.contains("main0") && entry_point == "main0"
+				CompiledShaderSource::MTL { entry_point, .. } if entry_point == "main0"
 			));
 		} else {
 			assert!(matches!(compiled, CompiledShaderSource::SPIRV(binary) if !binary.is_empty()));

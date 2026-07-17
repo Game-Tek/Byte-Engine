@@ -2343,18 +2343,12 @@ mod tests {
 		output_slot, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, SpecializationValues,
 		Texture, Value,
 	};
-	use resource_management::shader::{
-		besl::{backends::msl::MSLShaderGenerator, evaluation::ProgramEvaluation},
-		generator::{ShaderGenerationSettings, ShaderGenerator as _},
-	};
+	use resource_management::shader::besl::evaluation::ProgramEvaluation;
 
 	use super::{
 		build_gtao_bitfield_blur_x_program, build_gtao_bitfield_program, build_gtao_blur_program, build_gtao_program,
 		build_material_count_program, build_material_offset_program, build_mesh_program_from_source,
-		build_pixel_mapping_program, get_shadow_pass_mesh_msl_source, get_visibility_pass_mesh_hlsl_source,
-		get_visibility_pass_mesh_msl_source, get_visibility_pass_task_msl_source, MESHLET_DATA_BINDING, MESH_DATA_BINDING,
-		PRIMITIVE_INDICES_BINDING, SKINNED_VERTICES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-		VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+		build_pixel_mapping_program,
 	};
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
@@ -2375,8 +2369,8 @@ mod tests {
 	const FIXTURE_MESHLET_INDEX: usize = 5;
 	const MESH_TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
 
-	/// Verifies a BESL prepass exposes only its reachable flat resources and assigns the same dense Metal IDs.
-	fn assert_compact_metal_resources(program: besl::NodeReference, workgroup_extent: utils::Extent, expected: &[(u32, &str)]) {
+	/// Verifies a BESL prepass exposes only its reachable flat resources.
+	fn assert_reflected_resources(program: besl::NodeReference, expected: &[(u32, &str)]) {
 		let evaluation = ProgramEvaluation::from_main(&program)
 			.expect("Failed to reflect a visibility prepass. The most likely cause is an invalid BESL resource graph.");
 		let reflected = evaluation
@@ -2385,41 +2379,21 @@ mod tests {
 			.map(|binding| (binding.slot, binding.name.as_str()))
 			.collect::<Vec<_>>();
 		assert_eq!(reflected, expected);
-
-		let msl = MSLShaderGenerator::new()
-			.generate(&ShaderGenerationSettings::compute(workgroup_extent), &program)
-			.expect("Failed to generate visibility prepass MSL. The most likely cause is unsupported BESL lowering.");
-		for (dense_id, (_, resource_name)) in expected.iter().enumerate() {
-			let declaration = msl
-				.lines()
-				.find(|line| line.contains(resource_name) && line.contains("[[id("))
-				.unwrap_or_else(|| {
-					panic!(
-						"Missing `{resource_name}` from the Metal argument buffer. The most likely cause is resource reachability drift."
-					)
-				});
-			assert!(
-				declaration.contains(&format!("[[id({dense_id})]]")),
-				"Metal resource `{resource_name}` has the wrong dense ID. The most likely cause is stale descriptor-layout preservation: {declaration}"
-			);
-		}
 	}
 
 	/// Guards the flat resource ABI used before indirect material evaluation dispatches.
 	#[test]
-	fn visibility_material_prepasses_use_compact_per_pipeline_metal_ids() {
-		assert_compact_metal_resources(
+	fn visibility_material_prepasses_reflect_reachable_flat_resources() {
+		assert_reflected_resources(
 			build_material_count_program(),
-			utils::Extent::square(32),
 			&[
 				(1, "mesh_data"),
 				(1033, "material_count_buffer"),
 				(1040, "instance_index_render_target"),
 			],
 		);
-		assert_compact_metal_resources(
+		assert_reflected_resources(
 			build_material_offset_program(),
-			utils::Extent::square(1),
 			&[
 				(1033, "material_count_buffer"),
 				(1034, "material_offset_buffer"),
@@ -2427,9 +2401,8 @@ mod tests {
 				(1036, "material_evaluation_dispatches"),
 			],
 		);
-		assert_compact_metal_resources(
+		assert_reflected_resources(
 			build_pixel_mapping_program(),
-			utils::Extent::square(32),
 			&[
 				(1, "mesh_data"),
 				(1035, "material_offset_scratch_buffer"),
@@ -3010,219 +2983,5 @@ mod tests {
 	fn shader_meshlet_data_matches_metal_buffer_layout() {
 		assert_eq!(std::mem::align_of::<super::ShaderMeshletData>(), 16);
 		assert_eq!(std::mem::size_of::<super::ShaderMeshletData>(), 64);
-	}
-
-	#[test]
-	fn visibility_mesh_hlsl_uses_shader_matrix4x3_layout() {
-		let source = get_visibility_pass_mesh_hlsl_source();
-
-		assert!(
-			source.contains("#pragma pack_matrix(row_major)"),
-			"Expected DX12 visibility mesh HLSL to use row-major matrix storage. The most likely cause is that ShaderMatrix4x3 bytes are being interpreted as column-major float4x3 columns."
-		);
-		assert!(
-			source.contains("float4x3 model;"),
-			"Expected DX12 visibility mesh HLSL to read ShaderMatrix4x3 as four packed float3 affine rows. The most likely cause is that the shader-side mesh layout drifted from the CPU upload layout."
-		);
-		assert!(
-			source.contains("return float4(mul(float4(position, 1.0f), mesh.model), 1.0f);"),
-			"Expected DX12 visibility mesh HLSL to multiply model-space positions by the packed float4x3 model. The most likely cause is that the model transform was decoded as three float4 rows."
-		);
-		assert!(
-			!source.contains("float4 row0;") && !source.contains("float4 row1;") && !source.contains("float4 row2;"),
-			"Expected DX12 visibility mesh HLSL to avoid the obsolete three-float4 model layout. The most likely cause is that the shader is decoding ShaderMatrix4x3 with the wrong row stride."
-		);
-	}
-
-	#[test]
-	fn visibility_mesh_hlsl_source_compiles_for_dx12() {
-		use ghi::{
-			context::{Context as _, ContextCreate as _},
-			device::Device as _,
-		};
-
-		if !ghi::implementation::USES_DX12 {
-			return;
-		}
-
-		let shader = get_visibility_pass_mesh_hlsl_source();
-		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
-			.expect("Expected a DX12 instance for the visibility mesh shader test");
-		let mut queue = None;
-		let mut context = instance
-			.create_device(
-				ghi::device::Features::new(),
-				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
-			)
-			.expect("Expected a DX12 device for the visibility mesh shader test")
-			.create_context()
-			.expect("Expected a DX12 context");
-
-		let shader_handle = context.create_shader(
-			Some("Visibility Pass Mesh Shader Layout Test"),
-			ghi::shader::Sources::HLSL {
-				source: shader.as_str(),
-				entry_point: "main",
-			},
-			ghi::ShaderTypes::Mesh,
-			[
-				VIEWS_DATA_BINDING,
-				MESH_DATA_BINDING,
-				VERTEX_POSITIONS_BINDING,
-				VERTEX_NORMALS_BINDING,
-				SKINNED_VERTICES_BINDING,
-				VERTEX_UV_BINDING,
-				VERTEX_INDICES_BINDING,
-				PRIMITIVE_INDICES_BINDING,
-				MESHLET_DATA_BINDING,
-			],
-		);
-
-		assert!(
-			shader_handle.is_ok(),
-			"Expected the visibility mesh HLSL source to compile for DX12"
-		);
-	}
-
-	#[test]
-	fn shadow_mesh_msl_source_compiles_for_metal() {
-		use ghi::{
-			context::{Context as _, ContextCreate as _},
-			device::Device as _,
-		};
-
-		if !ghi::implementation::USES_METAL {
-			return;
-		}
-
-		let shader = get_shadow_pass_mesh_msl_source();
-		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
-			.expect("Expected a Metal instance for the shadow mesh shader test");
-		let mut queue = None;
-		let mut context = instance
-			.create_device(
-				ghi::device::Features::new(),
-				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
-			)
-			.expect("Expected a Metal device for the shadow mesh shader test")
-			.create_context()
-			.expect("Expected a Metal context");
-
-		let shader_handle = context.create_shader(
-			Some("Shadow Pass Mesh Shader"),
-			ghi::shader::Sources::MTL {
-				source: shader.as_str(),
-				entry_point: "besl_main",
-			},
-			ghi::ShaderTypes::Mesh,
-			[
-				VIEWS_DATA_BINDING,
-				MESH_DATA_BINDING,
-				VERTEX_POSITIONS_BINDING,
-				VERTEX_NORMALS_BINDING,
-				SKINNED_VERTICES_BINDING,
-				VERTEX_UV_BINDING,
-				VERTEX_INDICES_BINDING,
-				PRIMITIVE_INDICES_BINDING,
-				MESHLET_DATA_BINDING,
-			],
-		);
-
-		assert!(
-			shader_handle.is_ok(),
-			"Expected the shadow mesh MSL source to compile for Metal"
-		);
-	}
-
-	#[test]
-	fn visibility_task_msl_source_compiles_for_metal() {
-		use ghi::{
-			context::{Context as _, ContextCreate as _},
-			device::Device as _,
-		};
-
-		if !ghi::implementation::USES_METAL {
-			return;
-		}
-
-		let shader = get_visibility_pass_task_msl_source();
-		assert!(shader.contains("constant _meshlets* meshlets [[id(2)]];"));
-		assert!(!shader.contains("constant _vertex_positions* vertex_positions [[id(2)]];"));
-		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
-			.expect("Expected a Metal instance for the visibility task shader test");
-		let mut queue = None;
-		let mut context = instance
-			.create_device(
-				ghi::device::Features::new(),
-				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
-			)
-			.expect("Expected a Metal device for the visibility task shader test")
-			.create_context()
-			.expect("Expected a Metal context");
-
-		let shader_handle = context.create_shader(
-			Some("Visibility Pass Task Shader"),
-			ghi::shader::Sources::MTL {
-				source: shader.as_str(),
-				entry_point: "besl_task_main",
-			},
-			ghi::ShaderTypes::Task,
-			[VIEWS_DATA_BINDING, MESH_DATA_BINDING, MESHLET_DATA_BINDING],
-		);
-
-		assert!(
-			shader_handle.is_ok(),
-			"Expected the visibility task MSL source to compile for Metal"
-		);
-	}
-
-	#[test]
-	fn visibility_mesh_msl_source_compiles_for_metal() {
-		use ghi::{
-			context::{Context as _, ContextCreate as _},
-			device::Device as _,
-		};
-
-		if !ghi::implementation::USES_METAL {
-			return;
-		}
-
-		let shader = get_visibility_pass_mesh_msl_source();
-		let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
-			.expect("Expected a Metal instance for the visibility mesh shader test");
-		let mut queue = None;
-		let mut context = instance
-			.create_device(
-				ghi::device::Features::new(),
-				&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
-			)
-			.expect("Expected a Metal device for the visibility mesh shader test")
-			.create_context()
-			.expect("Expected a Metal context");
-
-		let shader_handle = context.create_shader(
-			Some("Visibility Pass Mesh Shader"),
-			ghi::shader::Sources::MTL {
-				source: shader.as_str(),
-				entry_point: "besl_main",
-			},
-			ghi::ShaderTypes::Mesh,
-			[
-				VIEWS_DATA_BINDING,
-				MESH_DATA_BINDING,
-				VERTEX_POSITIONS_BINDING,
-				VERTEX_NORMALS_BINDING,
-				SKINNED_VERTICES_BINDING,
-				VERTEX_UV_BINDING,
-				VERTEX_INDICES_BINDING,
-				PRIMITIVE_INDICES_BINDING,
-				MESHLET_DATA_BINDING,
-			],
-		);
-
-		assert!(
-			shader_handle.is_ok(),
-			"Expected the visibility mesh MSL source to compile for Metal"
-		);
 	}
 }

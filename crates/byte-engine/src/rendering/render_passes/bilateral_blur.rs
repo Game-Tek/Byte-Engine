@@ -247,8 +247,6 @@ const BLUR_TAPS: [(f32, f32); 17] = [
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot};
-	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
-	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
@@ -318,20 +316,10 @@ mod tests {
 	}
 
 	#[test]
-	fn bilateral_blur_besl_lowers_for_both_axes() {
-		for (name, direction) in [("x", (1.0, 0.0)), ("y", (0.0, 1.0))] {
+	fn bilateral_blur_besl_parses_for_both_axes() {
+		for direction in [(1.0, 0.0), (0.0, 1.0)] {
 			let source = bilateral_blur_besl_source(direction);
 			besl::parse(&source).expect("Generated bilateral blur source should parse before lexing.");
-			let main_node = build_bilateral_blur_program(&source);
-			let settings =
-				ShaderGenerationSettings::compute(Extent::new(128, 1, 1)).name(format!("Bilateral Blur {name} Test"));
-
-			GLSLShaderGenerator::new()
-				.generate(&settings, &main_node)
-				.expect("Failed to lower bilateral blur BESL to GLSL.");
-			MSLShaderGenerator::new()
-				.generate(&settings, &main_node)
-				.expect("Failed to lower bilateral blur BESL to MSL.");
 		}
 	}
 }

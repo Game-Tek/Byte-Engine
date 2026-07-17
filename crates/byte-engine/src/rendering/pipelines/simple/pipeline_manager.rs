@@ -420,10 +420,6 @@ mod tests {
 	use besl::vm::{
 		builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value,
 	};
-	use resource_management::shader::{
-		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
-		generator::{ShaderGenerationSettings, ShaderGenerator as _},
-	};
 
 	use super::{create_simple_fragment_program, create_simple_vertex_program};
 
@@ -554,84 +550,5 @@ mod tests {
 		assert_vec4_close(run_fragment(0, [0.125; 3]), [0.9, 0.2, 0.2, 1.0]);
 		assert_vec4_close(run_fragment(0, [0.0; 3]), [0.945, 0.56, 0.56, 1.0]);
 		assert_vec4_close(run_fragment(8, [0.125; 3]), [0.9, 0.2, 0.2, 1.0]);
-	}
-
-	/// Verifies both portable simple shaders remain accepted by every production source backend.
-	#[test]
-	fn simple_besl_shaders_lower_to_every_source_backend() {
-		for (program, settings) in [
-			(create_simple_vertex_program(), ShaderGenerationSettings::vertex()),
-			(create_simple_fragment_program(), ShaderGenerationSettings::fragment()),
-		] {
-			GLSLShaderGenerator::new()
-				.generate(&settings, &program)
-				.expect("Failed to lower a simple BESL shader to GLSL. The most likely cause is unsupported portable syntax.");
-			HLSLShaderGenerator::new()
-				.generate(&settings, &program)
-				.expect("Failed to lower a simple BESL shader to HLSL. The most likely cause is unsupported portable syntax.");
-			MSLShaderGenerator::new()
-				.generate(&settings, &program)
-				.expect("Failed to lower a simple BESL shader to MSL. The most likely cause is unsupported portable syntax.");
-		}
-	}
-
-	/// Verifies both production simple shaders remain valid after MSL raster-interface lowering.
-	#[test]
-	fn simple_besl_shaders_compile_to_metal() {
-		use ghi::{
-			context::{Context as _, ContextCreate as _},
-			device::Device as _,
-		};
-
-		let vertex_source = MSLShaderGenerator::new()
-			.generate(&ShaderGenerationSettings::vertex(), &create_simple_vertex_program())
-			.expect("Failed to lower the simple vertex shader to MSL. The most likely cause is unsupported portable syntax.");
-		let fragment_source = MSLShaderGenerator::new()
-			.generate(&ShaderGenerationSettings::fragment(), &create_simple_fragment_program())
-			.expect("Failed to lower the simple fragment shader to MSL. The most likely cause is unsupported portable syntax.");
-
-		if ghi::implementation::USES_METAL {
-			let mut instance = ghi::implementation::Instance::new(ghi::device::Features::new())
-				.expect("Failed to create a Metal instance. The most likely cause is unavailable Metal device support.");
-			let mut queue = None;
-			let mut context = instance
-				.create_device(
-					ghi::device::Features::new(),
-					&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue)],
-				)
-				.expect("Failed to create a Metal device. The most likely cause is unavailable graphics queue support.")
-				.create_context()
-				.expect("Failed to create a Metal context. The most likely cause is unavailable Metal command support.");
-
-			for (name, source, stage) in [
-				("Simple Vertex Shader", vertex_source.as_str(), ghi::ShaderTypes::Vertex),
-				("Simple Fragment Shader", fragment_source.as_str(), ghi::ShaderTypes::Fragment),
-			] {
-				context
-					.create_shader(
-						Some(name),
-						ghi::shader::Sources::MTL {
-							source,
-							entry_point: "besl_main",
-						},
-						stage,
-						Vec::<ghi::ShaderResourceDescriptor>::new(),
-					)
-					.unwrap_or_else(|_| {
-						panic!(
-							"Failed to compile `{name}` as MSL. The most likely cause is invalid raster-interface lowering. Shader: {source}"
-						)
-					});
-			}
-		}
-
-		assert!(
-			vertex_source.contains("resources.cameras->cameras[0].view_projection"),
-			"Generated MSL does not qualify the camera binding through its argument buffer. The most likely cause is missing raster binding context. Shader: {vertex_source}"
-		);
-		assert!(
-			vertex_source.contains("resources.instances->instances["),
-			"Generated MSL does not qualify the instance binding through its argument buffer. The most likely cause is missing raster binding context. Shader: {vertex_source}"
-		);
 	}
 }

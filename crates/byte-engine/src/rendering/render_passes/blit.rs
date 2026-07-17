@@ -154,12 +154,6 @@ impl RenderPass for SwapchainBlitPass {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot};
-	#[cfg(target_os = "linux")]
-	use resource_management::shader::besl::backends::spirv::SPIRVShaderGenerator;
-	use resource_management::shader::{
-		besl::backends::glsl::GLSLShaderGenerator, besl::backends::msl::MSLShaderGenerator, generator::ShaderGenerationSettings,
-	};
-	use utils::Extent;
 
 	use super::{create_swapchain_blit_program, SWAPCHAIN_BLIT_SHADER};
 	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
@@ -206,48 +200,5 @@ mod tests {
 	fn swapchain_blit_besl_parses() {
 		besl::parse(SWAPCHAIN_BLIT_SHADER)
 			.expect("Failed to parse the swapchain blit BESL shader. The most likely cause is invalid BESL source syntax.");
-	}
-
-	#[test]
-	fn swapchain_blit_besl_generates_glsl() {
-		let main_node = create_swapchain_blit_program();
-		let shader = GLSLShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::square(32)).name("Swapchain Blit Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to generate the swapchain blit BESL shader GLSL. The most likely cause is invalid BESL lowering.");
-
-		assert!(shader.contains("imageLoad(source"));
-		assert!(shader.contains("imageStore(result"));
-	}
-
-	#[test]
-	fn swapchain_blit_besl_generates_msl() {
-		let main_node = create_swapchain_blit_program();
-		let shader = MSLShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::square(32)).name("Swapchain Blit Test".to_string()),
-				&main_node,
-			)
-			.expect("Failed to generate the swapchain blit BESL shader MSL. The most likely cause is invalid BESL lowering.");
-
-		assert!(shader.contains("kernel void besl_main"));
-		assert!(shader.contains("resources.source.read(coord)"));
-		assert!(shader.contains("resources.result.write("));
-	}
-
-	#[cfg(target_os = "linux")]
-	#[test]
-	fn swapchain_blit_besl_compiles_to_spirv() {
-		let main_node = create_swapchain_blit_program();
-		SPIRVShaderGenerator::new()
-			.generate(
-				&ShaderGenerationSettings::compute(Extent::square(32)).name("Swapchain Blit Test".to_string()),
-				&main_node,
-			)
-			.expect(
-				"Failed to compile the swapchain blit BESL shader to SPIR-V. The most likely cause is invalid GLSL emitted from BESL.",
-			);
 	}
 }

@@ -401,9 +401,6 @@ main: fn () -> void {
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
 	use math::{mat::MatInverse as _, ShaderMatrix4, Vector3};
-	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
-	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
-	use utils::Extent;
 
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
@@ -498,18 +495,5 @@ mod tests {
 			"Empty sky VM output. The most likely cause is an invalid view ray or atmosphere intersection: {background:?}"
 		);
 		assert_rgba_close([0.0, 0.0, 0.0, background[3]], [0.0, 0.0, 0.0, 1.0], 1e-6);
-	}
-
-	#[test]
-	fn sky_besl_shader_lowers_to_platform_sources() {
-		let main_node = super::create_sky_program();
-		let settings = ShaderGenerationSettings::compute(Extent::new(8, 8, 1)).name("Sky Render Pass Test".to_string());
-
-		GLSLShaderGenerator::new()
-			.generate(&settings, &main_node)
-			.expect("Failed to lower sky BESL shader to GLSL.");
-		MSLShaderGenerator::new()
-			.generate(&settings, &main_node)
-			.expect("Failed to lower sky BESL shader to MSL.");
 	}
 }

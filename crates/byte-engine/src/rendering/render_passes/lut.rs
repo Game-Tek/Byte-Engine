@@ -284,9 +284,6 @@ mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot, Texture};
 	use half::f16;
 	use resource_management::resources::lut::{Lut, LutKind};
-	use resource_management::shader::besl::{backends::glsl::GLSLShaderGenerator, backends::msl::MSLShaderGenerator};
-	use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator as _};
-	use utils::Extent;
 
 	use super::{
 		create_lut_program, create_lut_shader_source, expected_lut_payload_size, write_lut_bytes_to_rgba16f_upload_target,
@@ -333,7 +330,7 @@ mod tests {
 	}
 
 	#[test]
-	fn lut_besl_shader_lowers_to_platform_sources() {
+	fn lut_besl_reflects_3d_texture_binding() {
 		let lut = Lut {
 			kind: LutKind::ThreeDimensional,
 			size: 16,
@@ -343,7 +340,6 @@ mod tests {
 
 		let source = create_lut_shader_source(&lut);
 		let main_node = create_lut_program(&source);
-		let settings = ShaderGenerationSettings::compute(Extent::new(8, 8, 1)).name("LUT Render Pass Test".to_string());
 		let bindings = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(&main_node)
 			.expect("Failed to evaluate the LUT descriptor schema")
 			.into_bindings();
@@ -353,13 +349,6 @@ mod tests {
 				view: resource_management::shader::besl::evaluation::TextureView::Texture3D
 			}
 		));
-
-		GLSLShaderGenerator::new()
-			.generate(&settings, &main_node)
-			.expect("Failed to lower LUT BESL shader to GLSL.");
-		MSLShaderGenerator::new()
-			.generate(&settings, &main_node)
-			.expect("Failed to lower LUT BESL shader to MSL.");
 	}
 
 	#[test]

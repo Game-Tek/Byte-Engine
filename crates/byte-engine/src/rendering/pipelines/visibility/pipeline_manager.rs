@@ -9,7 +9,8 @@ struct SkinningPaletteCacheEntry {
 /// The `EnvironmentTexture` struct retains the image and sampler currently used for visibility reflections.
 #[derive(Clone, Copy)]
 struct EnvironmentTexture {
-	image: ghi::BaseImageHandle,
+	diffuse_image: ghi::BaseImageHandle,
+	specular_images: [ghi::BaseImageHandle; IBL_SPECULAR_LEVEL_COUNT],
 	sampler: ghi::SamplerHandle,
 }
 
@@ -32,8 +33,6 @@ pub struct VisibilityPipelineManager {
 	loaded_pipelines: HashMap<String, ghi::PipelineHandle>,
 	/// Requested environment resource retained until its asynchronous upload completes.
 	environment_resource_id: Option<String>,
-	/// Bindless slot assigned to the requested environment resource.
-	environment_texture_index: Option<u32>,
 	/// Texture bound to material evaluation; starts as a transparent analytical-fallback marker.
 	environment_texture: EnvironmentTexture,
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
@@ -153,7 +152,7 @@ impl VisibilityPipelineManager {
 			context.create_factory(),
 		));
 		if let Some(resource_id) = environment_resource_id.as_ref() {
-			resource_manager.request_image(VisibilityTextureKey::new(resource_id.clone()));
+			resource_manager.request_environment(resource_id.clone());
 		}
 
 		Self {
@@ -169,7 +168,6 @@ impl VisibilityPipelineManager {
 			loaded_textures: HashSet::new(),
 			loaded_pipelines: HashMap::new(),
 			environment_resource_id,
-			environment_texture_index: None,
 			environment_texture,
 			scene: VisibilitySceneManager {
 				render_entities: StableVec::new(),
@@ -274,30 +272,48 @@ impl VisibilityPipelineManager {
 					textures,
 				} => self.adopt_material_completion(frame, id, index, pipeline, pending_pipeline, alpha, textures),
 				VisibilityResourceCompletion::ImageReady {
-					key,
+					key: _,
 					index,
 					image,
 					sampler,
 					upload,
 				} => {
-					if self.environment_resource_id.as_deref() == Some(key.as_str()) {
-						self.environment_texture_index = Some(index);
-					}
 					let image = frame.intern_image(image);
 					let sampler = frame.intern_sampler(sampler);
 					let image = ghi::BaseImageHandle::from(image);
 					self.resource_manager.enqueue_texture_upload(index, image, sampler, upload);
 				}
+				VisibilityResourceCompletion::EnvironmentReady { id, environment } => {
+					if self.environment_resource_id.as_deref() == Some(id.as_str()) {
+						let upload = environment.intern(id, frame);
+						self.resource_manager.enqueue_environment_upload(upload);
+					}
+				}
 				VisibilityResourceCompletion::TextureUploadReady { index, image, sampler } => {
 					log::debug!("Visibility texture upload adopted: index={}", index);
 					self.write_texture_descriptors(frame, index, image, sampler);
-					if self.environment_texture_index == Some(index) {
-						self.environment_texture = EnvironmentTexture { image, sampler };
-						self.write_environment_descriptors(frame);
-						log::debug!("Visibility environment texture adopted: index={}", index);
-					}
 					self.loaded_textures.insert(index);
 					self.rebuild_material_lists();
+				}
+				VisibilityResourceCompletion::EnvironmentUploadReady {
+					id,
+					diffuse_image,
+					specular_images,
+					sampler,
+				} => {
+					if self.environment_resource_id.as_deref() == Some(id.as_str()) {
+						self.environment_texture = EnvironmentTexture {
+							diffuse_image,
+							specular_images,
+							sampler,
+						};
+						self.write_environment_descriptors(frame);
+						log::debug!(
+							"Visibility environment IBL adopted: id={}, specular_levels={}",
+							id,
+							IBL_SPECULAR_LEVEL_COUNT
+						);
+					}
 				}
 				VisibilityResourceCompletion::Failed { key } => {
 					warn!(
@@ -330,13 +346,12 @@ impl VisibilityPipelineManager {
 	/// Writes the current environment into every sink's material-evaluation descriptor set.
 	fn write_environment_descriptors(&self, frame: &mut ghi::implementation::Frame) {
 		for sink_state in &self.scene.sink_states {
-			frame.write(&[ghi::DescriptorWrite::combined_image_sampler(
-				sink_state.render_pass.material_evaluation_descriptor_set(),
-				ENVIRONMENT_BINDING.slot(),
-				self.environment_texture.image,
-				self.environment_texture.sampler,
-				ghi::Layouts::Read,
-			)]);
+			let descriptor_set = sink_state.render_pass.material_evaluation_descriptor_set();
+			frame.write(&[diffuse_environment_descriptor_write(descriptor_set, self.environment_texture)]);
+			frame.write(&specular_environment_descriptor_writes(
+				descriptor_set,
+				self.environment_texture,
+			));
 		}
 	}
 
@@ -652,6 +667,37 @@ impl VisibilityPipelineManager {
 	}
 }
 
+/// Builds the diffuse IBL write shared by context-time sink creation and frame-time environment adoption.
+fn diffuse_environment_descriptor_write(
+	descriptor_set: ghi::DescriptorSetHandle,
+	environment: EnvironmentTexture,
+) -> ghi::DescriptorWrite {
+	ghi::DescriptorWrite::combined_image_sampler(
+		descriptor_set,
+		ENVIRONMENT_BINDING.slot(),
+		environment.diffuse_image,
+		environment.sampler,
+		ghi::Layouts::Read,
+	)
+}
+
+/// Builds one descriptor-array write for every prefiltered roughness level.
+fn specular_environment_descriptor_writes(
+	descriptor_set: ghi::DescriptorSetHandle,
+	environment: EnvironmentTexture,
+) -> [ghi::DescriptorWrite; IBL_SPECULAR_LEVEL_COUNT] {
+	std::array::from_fn(|level| {
+		ghi::DescriptorWrite::combined_image_sampler_array(
+			descriptor_set,
+			SPECULAR_ENVIRONMENT_BINDING.slot(),
+			environment.specular_images[level],
+			environment.sampler,
+			ghi::Layouts::Read,
+			level as u32,
+		)
+	})
+}
+
 /// Creates the transparent marker sampled while no HDR environment is configured or its upload is pending.
 fn create_fallback_environment_texture(context: &mut ghi::implementation::Context) -> EnvironmentTexture {
 	let image = context.build_image(
@@ -675,7 +721,8 @@ fn create_fallback_environment_texture(context: &mut ghi::implementation::Contex
 	);
 
 	EnvironmentTexture {
-		image: image.into(),
+		diffuse_image: image.into(),
+		specular_images: [image.into(); IBL_SPECULAR_LEVEL_COUNT],
 		sampler,
 	}
 }
@@ -934,13 +981,6 @@ impl PipelineManager for VisibilityPipelineManager {
 				visibility_depth_sampler,
 				ghi::Layouts::Read,
 			),
-			ghi::DescriptorWrite::combined_image_sampler(
-				material_evaluation_descriptor_set,
-				ENVIRONMENT_BINDING.slot(),
-				self.environment_texture.image,
-				self.environment_texture.sampler,
-				ghi::Layouts::Read,
-			),
 			ghi::DescriptorWrite::buffer(
 				visibility_passes_descriptor_set,
 				MATERIAL_COUNT_BINDING.slot(),
@@ -979,6 +1019,14 @@ impl PipelineManager for VisibilityPipelineManager {
 				ghi::Layouts::General,
 			),
 		]);
+		context.write(&[diffuse_environment_descriptor_write(
+			material_evaluation_descriptor_set,
+			self.environment_texture,
+		)]);
+		context.write(&specular_environment_descriptor_writes(
+			material_evaluation_descriptor_set,
+			self.environment_texture,
+		));
 
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
@@ -1210,9 +1258,21 @@ mod tests {
 
 	use resource_management::resources::skeleton::SkinBinding;
 
-	use super::{cached_skin_palette_base, reserve_deformed_vertex_range, ShaderMesh, SkinningPaletteCacheEntry};
+	use super::{
+		cached_skin_palette_base, reserve_deformed_vertex_range, ShaderMesh, SkinningPaletteCacheEntry, ENVIRONMENT_BINDING,
+		SPECULAR_ENVIRONMENT_BINDING,
+	};
 	use crate::core::factory::Factory;
+	use crate::rendering::pipelines::visibility::resource_manager::IBL_SPECULAR_LEVEL_COUNT;
 	use crate::rendering::pipelines::visibility::MESH_DATA_BUFFER_STRIDE;
+
+	#[test]
+	fn environment_bindings_retain_diffuse_and_every_specular_level() {
+		assert_eq!(ENVIRONMENT_BINDING.slot().index(), 1054);
+		assert_eq!(ENVIRONMENT_BINDING.count(), 1);
+		assert_eq!(SPECULAR_ENVIRONMENT_BINDING.slot().index(), 1055);
+		assert_eq!(SPECULAR_ENVIRONMENT_BINDING.count(), IBL_SPECULAR_LEVEL_COUNT as u32);
+	}
 
 	#[test]
 	fn shader_mesh_matches_gpu_buffer_layout() {
@@ -1335,6 +1395,12 @@ const ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDe
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 );
+const SPECULAR_ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::new(
+	ghi::ResourceSlot::new(1055),
+	ghi::ResourceKind::CombinedImageSampler,
+	IBL_SPECULAR_LEVEL_COUNT as u32,
+	ghi::AccessPolicies::READ,
+);
 use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::{hash_map::Entry, HashSet};
@@ -1378,7 +1444,7 @@ use crate::rendering::pipelines::visibility::gpu_vertex_data_manager::GPUVertexD
 use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
 use crate::rendering::pipelines::visibility::resource_manager::{
 	MaterialPipelineConfig, PendingMaterialPipeline, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
-	VisibilityResourceCompletion, VisibilityTextureKey,
+	VisibilityResourceCompletion, IBL_SPECULAR_LEVEL_COUNT,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::skinning::{

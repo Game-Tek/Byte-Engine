@@ -21,6 +21,9 @@ pub(crate) struct VisibilityPipelineResourceManager {
 	work_completions: Sender<VisibilityResourceCompletion>,
 }
 
+pub(crate) const IBL_SPECULAR_LEVEL_COUNT: usize =
+	resource_management::resources::image::IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize;
+
 type CompletionList = SmallVec<[VisibilityResourceCompletion; 16]>;
 
 impl VisibilityPipelineResourceManager {
@@ -50,6 +53,7 @@ impl VisibilityPipelineResourceManager {
 				completions: work_completions,
 				pending_mesh_uploads: VecDeque::new(),
 				pending_texture_uploads: VecDeque::new(),
+				pending_environment_uploads: VecDeque::new(),
 				submitted_uploads: VecDeque::new(),
 			},
 		)
@@ -80,6 +84,7 @@ impl VisibilityPipelineResourceManager {
 			VisibilityResourceRequest::Mesh { key: _, source: _ } => {}
 			VisibilityResourceRequest::Material { id } => self.handle_material_request(id),
 			VisibilityResourceRequest::Image { key } => self.handle_image_request(key),
+			VisibilityResourceRequest::Environment { id } => self.handle_environment_request(id),
 			VisibilityResourceRequest::Shutdown => return ResourceWorkerFlow::Stop,
 		}
 
@@ -135,6 +140,22 @@ impl VisibilityPipelineResourceManager {
 		if self.work_completions.send(completion).is_err() {
 			log::error!(
 				"Visibility texture completion failed. The most likely cause is that the render thread stopped receiving worker results."
+			);
+		}
+	}
+
+	/// Loads all baked IBL streams from one parent image without consuming material texture slots.
+	fn handle_environment_request(&mut self, id: String) {
+		let completion = match self.load_environment_with_factory(&id) {
+			Ok(environment) => VisibilityResourceCompletion::EnvironmentReady { id, environment },
+			Err(()) => VisibilityResourceCompletion::Failed {
+				key: VisibilityResourceKey::Environment(id),
+			},
+		};
+
+		if self.work_completions.send(completion).is_err() {
+			log::error!(
+				"Visibility environment completion failed. The most likely cause is that the render thread stopped receiving worker results."
 			);
 		}
 	}
@@ -254,7 +275,8 @@ impl VisibilityPipelineResourceManager {
 		let format = resource_image_format_to_ghi(texture.format);
 		let extent = Extent::from(texture.extent);
 
-		let mut source = vec![0u8; reference.size];
+		// Image resources may append mips or baked IBL streams after the base image; material textures upload only mip zero.
+		let mut source = vec![0u8; compact_image_byte_size(format, extent)];
 		let load_target = reference.load(source.as_mut_slice().into()).map_err(|_| {
 			log::error!(
 				"Visibility texture load failed for {}. The most likely cause is that the texture payload could not be read from storage.",
@@ -296,6 +318,132 @@ impl VisibilityPipelineResourceManager {
 			image,
 			sampler,
 			upload,
+		})
+	}
+
+	/// Loads the diffuse and roughness-prefiltered streams, then creates detached single-mip images for render-thread adoption.
+	fn load_environment_with_factory(&mut self, id: &str) -> Result<FactoryEnvironment, ()> {
+		let mut reference: Reference<ResourceImage> = self.resource_manager.request(id).map_err(|_| {
+			log::error!(
+				"Visibility environment request failed for {}. The most likely cause is that the image resource is missing or the asset database is not loaded.",
+				id
+			);
+		})?;
+		let ibl = reference.resource().ibl.clone().ok_or_else(|| {
+			log::error!(
+				"Visibility environment IBL data is missing for {}. The most likely cause is that the EXR was baked before IBL generation was enabled.",
+				id
+			);
+		})?;
+
+		if ibl.diffuse_irradiance.mip_count != 1
+			|| ibl.prefiltered_specular.mip_count as usize != IBL_SPECULAR_LEVEL_COUNT
+			|| ibl.diffuse_irradiance.gamma != resource_management::types::Gamma::Linear
+			|| ibl.prefiltered_specular.gamma != resource_management::types::Gamma::Linear
+		{
+			log::error!(
+				"Visibility environment IBL metadata is unsupported for {}. The most likely cause is that the baked image does not contain one linear diffuse map and {} linear specular levels.",
+				id,
+				IBL_SPECULAR_LEVEL_COUNT
+			);
+			return Err(());
+		}
+
+		let diffuse_format = resource_image_format_to_ghi(ibl.diffuse_irradiance.format);
+		let specular_format = resource_image_format_to_ghi(ibl.prefiltered_specular.format);
+		let diffuse_extent = Extent::from(ibl.diffuse_irradiance.extent);
+		let specular_extents: [Extent; IBL_SPECULAR_LEVEL_COUNT] =
+			std::array::from_fn(|level| environment_mip_extent(ibl.prefiltered_specular.extent, level as u32));
+		if diffuse_extent.depth().max(1) != 1 || specular_extents.iter().any(|extent| extent.depth().max(1) != 1) {
+			log::error!(
+				"Visibility environment IBL extent is unsupported for {}. The most likely cause is that a baked IBL stream is not a two-dimensional lat-long image.",
+				id
+			);
+			return Err(());
+		}
+
+		let mut diffuse_data = vec![0u8; compact_image_byte_size(diffuse_format, diffuse_extent)];
+		let mut specular_data: [Vec<u8>; IBL_SPECULAR_LEVEL_COUNT] =
+			std::array::from_fn(|level| vec![0u8; compact_image_byte_size(specular_format, specular_extents[level])]);
+		let specular_stream_names: [String; IBL_SPECULAR_LEVEL_COUNT] = std::array::from_fn(|level| {
+			resource_management::resources::image::ibl_prefiltered_specular_stream_name(level as u32)
+		});
+
+		// A single stream read keeps the parent image and all of its baked lighting subresources atomic.
+		let mut streams = Vec::with_capacity(1 + IBL_SPECULAR_LEVEL_COUNT);
+		streams.push(resource_management::stream::StreamMut::new(
+			resource_management::resources::image::IBL_DIFFUSE_IRRADIANCE_STREAM_NAME,
+			diffuse_data.as_mut_slice(),
+		));
+		for (name, data) in specular_stream_names.iter().zip(specular_data.iter_mut()) {
+			streams.push(resource_management::stream::StreamMut::new(name, data.as_mut_slice()));
+		}
+		let loaded = reference.load(streams.into()).map_err(|_| {
+			log::error!(
+				"Visibility environment IBL stream load failed for {}. The most likely cause is that the baked image payload is missing one or more named IBL streams.",
+				id
+			);
+		})?;
+		if !matches!(loaded, ReadTargets::Streams(_)) {
+			log::error!(
+				"Visibility environment IBL load returned an unexpected target for {}. The most likely cause is that the resource reader ignored the requested named streams.",
+				id
+			);
+			return Err(());
+		}
+		drop(loaded);
+
+		let diffuse_upload = make_texture_upload(diffuse_format, diffuse_extent, &diffuse_data).ok_or_else(|| {
+			log::error!(
+				"Visibility diffuse IBL upload preparation failed for {}. The most likely cause is that its stream size does not match its format and extent.",
+				id
+			);
+		})?;
+		let specular_uploads = specular_data
+			.iter()
+			.zip(specular_extents)
+			.map(|(data, extent)| make_texture_upload(specular_format, extent, data))
+			.collect::<Option<Vec<_>>>()
+			.ok_or_else(|| {
+				log::error!(
+					"Visibility specular IBL upload preparation failed for {}. The most likely cause is that a stream size does not match its mip extent.",
+					id
+				);
+			})?;
+		let specular_uploads: [TextureUpload; IBL_SPECULAR_LEVEL_COUNT] = specular_uploads.try_into().map_err(|_| ())?;
+
+		let device = self.factory.as_mut().ok_or_else(|| {
+			log::error!(
+				"Visibility environment creation failed for {}. The most likely cause is that the resource worker was configured without a GPU factory.",
+				id
+			);
+		})?;
+		let diffuse_name = format!("{id} diffuse irradiance");
+		let diffuse_image = device.build_image(
+			ghi::image::Builder::new(diffuse_format, ghi::Uses::Image | ghi::Uses::TransferDestination)
+				.name(&diffuse_name)
+				.extent(diffuse_extent)
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.use_case(ghi::UseCases::STATIC),
+		);
+		let specular_images = std::array::from_fn(|level| {
+			let name = format!("{id} prefiltered specular {level}");
+			device.build_image(
+				ghi::image::Builder::new(specular_format, ghi::Uses::Image | ghi::Uses::TransferDestination)
+					.name(&name)
+					.extent(specular_extents[level])
+					.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+					.use_case(ghi::UseCases::STATIC),
+			)
+		});
+		let sampler = device.build_sampler(default_material_sampler_builder());
+
+		Ok(FactoryEnvironment {
+			diffuse_image,
+			specular_images,
+			sampler,
+			diffuse_upload,
+			specular_uploads,
 		})
 	}
 
@@ -498,6 +646,7 @@ pub(crate) struct VisibilityPipelineResourceManagerWorker {
 	completions: Sender<VisibilityResourceCompletion>,
 	pending_mesh_uploads: VecDeque<(VisibilityMeshKey, MeshSource)>,
 	pending_texture_uploads: VecDeque<(u32, ghi::BaseImageHandle, ghi::SamplerHandle, TextureUpload)>,
+	pending_environment_uploads: VecDeque<PendingEnvironmentUpload>,
 	submitted_uploads: VecDeque<SubmittedUploadBatch>,
 }
 
@@ -519,6 +668,11 @@ impl VisibilityPipelineResourceManagerClient {
 	/// Requests an image resource from the transfer-thread worker.
 	pub(crate) fn request_image(&self, key: VisibilityTextureKey) {
 		self.send(VisibilityTransferCommand::RequestImage { key });
+	}
+
+	/// Requests the baked lighting subresources stored with one environment image.
+	pub(crate) fn request_environment(&self, id: String) {
+		self.send(VisibilityTransferCommand::RequestEnvironment { id });
 	}
 
 	/// Configures material pipeline creation on the transfer-thread worker.
@@ -549,6 +703,11 @@ impl VisibilityPipelineResourceManagerClient {
 			sampler,
 			upload,
 		});
+	}
+
+	/// Enqueues every image in one environment as one transfer-frame completion.
+	pub(crate) fn enqueue_environment_upload(&self, upload: PendingEnvironmentUpload) {
+		self.send(VisibilityTransferCommand::EnqueueEnvironmentUpload { upload });
 	}
 }
 
@@ -605,7 +764,9 @@ impl VisibilityPipelineResourceManagerWorker {
 
 	/// Reports whether upload queues contain work that needs GPU transfer recording.
 	fn has_pending_upload_work(&self) -> bool {
-		!self.pending_mesh_uploads.is_empty() || !self.pending_texture_uploads.is_empty()
+		!self.pending_mesh_uploads.is_empty()
+			|| !self.pending_texture_uploads.is_empty()
+			|| !self.pending_environment_uploads.is_empty()
 	}
 
 	/// Drains render-thread commands into worker-owned state.
@@ -621,6 +782,10 @@ impl VisibilityPipelineResourceManagerWorker {
 				VisibilityTransferCommand::RequestImage { key } => {
 					self.resource_manager.handle_request(VisibilityResourceRequest::Image { key });
 				}
+				VisibilityTransferCommand::RequestEnvironment { id } => {
+					self.resource_manager
+						.handle_request(VisibilityResourceRequest::Environment { id });
+				}
 				VisibilityTransferCommand::EnqueueTextureUpload {
 					index,
 					image,
@@ -628,6 +793,9 @@ impl VisibilityPipelineResourceManagerWorker {
 					upload,
 				} => {
 					self.pending_texture_uploads.push_back((index, image, sampler, upload));
+				}
+				VisibilityTransferCommand::EnqueueEnvironmentUpload { upload } => {
+					self.pending_environment_uploads.push_back(upload);
 				}
 				VisibilityTransferCommand::ConfigureMaterialPipeline(config) => {
 					self.resource_manager.configure_material_pipeline(config);
@@ -705,6 +873,50 @@ impl VisibilityPipelineResourceManagerWorker {
 			recorded_work = true;
 		}
 
+		while let Some(upload) = self.pending_environment_uploads.pop_front() {
+			let upload_size = upload
+				.specular
+				.iter()
+				.try_fold(
+					upload.diffuse.upload.data.len().next_multiple_of(TEXTURE_UPLOAD_ALIGNMENT),
+					|total, image| total.checked_add(image.upload.data.len().next_multiple_of(TEXTURE_UPLOAD_ALIGNMENT)),
+				)
+				.expect(
+					"Visibility environment upload size overflowed. The most likely cause is malformed IBL stream metadata.",
+				);
+			if upload_size > slice.remaining_aligned(TEXTURE_UPLOAD_ALIGNMENT) {
+				self.pending_environment_uploads.push_front(upload);
+				break;
+			}
+
+			let mut copies = SmallVec::<[ghi::BufferImageCopyDescriptor; 9]>::new();
+			copies.push(stage_texture_upload(
+				slice,
+				staging_data_buffer,
+				upload.diffuse.image,
+				&upload.diffuse.upload,
+				TEXTURE_UPLOAD_ALIGNMENT,
+			));
+			for image in &upload.specular {
+				copies.push(stage_texture_upload(
+					slice,
+					staging_data_buffer,
+					image.image,
+					&image.upload,
+					TEXTURE_UPLOAD_ALIGNMENT,
+				));
+			}
+			transfer.copy_buffer_to_images(&copies);
+
+			completions.push(VisibilityResourceCompletion::EnvironmentUploadReady {
+				id: upload.id,
+				diffuse_image: upload.diffuse.image,
+				specular_images: upload.specular.map(|image| image.image),
+				sampler: upload.sampler,
+			});
+			recorded_work = true;
+		}
+
 		TransferUploadPrepareResult {
 			recorded_work,
 			completions,
@@ -735,6 +947,7 @@ pub(crate) enum VisibilityResourceRequest {
 	Mesh { key: VisibilityMeshKey, source: MeshSource },
 	Material { id: String },
 	Image { key: VisibilityTextureKey },
+	Environment { id: String },
 	Shutdown,
 }
 
@@ -763,9 +976,19 @@ pub(crate) enum VisibilityResourceCompletion {
 		sampler: ghi::factory::FactorySampler,
 		upload: TextureUpload,
 	},
+	EnvironmentReady {
+		id: String,
+		environment: FactoryEnvironment,
+	},
 	TextureUploadReady {
 		index: u32,
 		image: ghi::BaseImageHandle,
+		sampler: ghi::SamplerHandle,
+	},
+	EnvironmentUploadReady {
+		id: String,
+		diffuse_image: ghi::BaseImageHandle,
+		specular_images: [ghi::BaseImageHandle; IBL_SPECULAR_LEVEL_COUNT],
 		sampler: ghi::SamplerHandle,
 	},
 	Failed {
@@ -782,11 +1005,17 @@ pub(crate) enum VisibilityTransferCommand {
 	RequestImage {
 		key: VisibilityTextureKey,
 	},
+	RequestEnvironment {
+		id: String,
+	},
 	EnqueueTextureUpload {
 		index: u32,
 		image: ghi::BaseImageHandle,
 		sampler: ghi::SamplerHandle,
 		upload: TextureUpload,
+	},
+	EnqueueEnvironmentUpload {
+		upload: PendingEnvironmentUpload,
 	},
 	ConfigureMaterialPipeline(MaterialPipelineConfig),
 	Shutdown,
@@ -798,6 +1027,7 @@ pub(crate) enum VisibilityResourceKey {
 	Mesh(VisibilityMeshKey),
 	Texture(VisibilityTextureKey),
 	Material(String),
+	Environment(String),
 }
 
 /// The `VisibilityMeshKey` struct identifies a mesh resource or generated mesh across scene instances.
@@ -860,6 +1090,7 @@ impl std::fmt::Display for VisibilityResourceKey {
 			VisibilityResourceKey::Mesh(key) => key.fmt(f),
 			VisibilityResourceKey::Texture(key) => key.fmt(f),
 			VisibilityResourceKey::Material(key) => key.fmt(f),
+			VisibilityResourceKey::Environment(key) => key.fmt(f),
 		}
 	}
 }
@@ -870,6 +1101,62 @@ struct FactoryTexture {
 	image: ghi::implementation::factory::Image,
 	sampler: ghi::implementation::factory::Sampler,
 	upload: TextureUpload,
+}
+
+/// The `FactoryEnvironment` struct keeps one baked IBL set together until the render thread interns its GPU resources.
+pub(crate) struct FactoryEnvironment {
+	diffuse_image: ghi::implementation::factory::Image,
+	specular_images: [ghi::implementation::factory::Image; IBL_SPECULAR_LEVEL_COUNT],
+	sampler: ghi::implementation::factory::Sampler,
+	diffuse_upload: TextureUpload,
+	specular_uploads: [TextureUpload; IBL_SPECULAR_LEVEL_COUNT],
+}
+
+impl FactoryEnvironment {
+	/// Interns all detached resources while preserving the batch that the transfer worker will publish atomically.
+	pub(crate) fn intern(self, id: String, frame: &mut ghi::implementation::Frame) -> PendingEnvironmentUpload {
+		let diffuse_image = ghi::BaseImageHandle::from(frame.intern_image(self.diffuse_image));
+		let specular_images = self
+			.specular_images
+			.map(|image| ghi::BaseImageHandle::from(frame.intern_image(image)));
+		let sampler = frame.intern_sampler(self.sampler);
+		let mut specular_images = specular_images.into_iter();
+		let mut specular_uploads = self.specular_uploads.into_iter();
+		let specular = std::array::from_fn(|_| {
+			PendingEnvironmentImageUpload {
+			image: specular_images.next().expect(
+				"Visibility environment image count changed. The most likely cause is that the fixed IBL array was consumed inconsistently.",
+			),
+			upload: specular_uploads.next().expect(
+				"Visibility environment upload count changed. The most likely cause is that the fixed IBL array was consumed inconsistently.",
+			),
+		}
+		});
+
+		PendingEnvironmentUpload {
+			id,
+			diffuse: PendingEnvironmentImageUpload {
+				image: diffuse_image,
+				upload: self.diffuse_upload,
+			},
+			specular,
+			sampler,
+		}
+	}
+}
+
+/// The `PendingEnvironmentImageUpload` struct pairs one interned IBL image with its row-padded transfer bytes.
+struct PendingEnvironmentImageUpload {
+	image: ghi::BaseImageHandle,
+	upload: TextureUpload,
+}
+
+/// The `PendingEnvironmentUpload` struct keeps a complete environment on one transfer frame and completion boundary.
+pub(crate) struct PendingEnvironmentUpload {
+	id: String,
+	diffuse: PendingEnvironmentImageUpload,
+	specular: [PendingEnvironmentImageUpload; IBL_SPECULAR_LEVEL_COUNT],
+	sampler: ghi::SamplerHandle,
 }
 
 /// The `FactoryMaterial` struct packages material metadata with pending render-thread pipeline state.
@@ -1254,6 +1541,39 @@ impl VisibilityPipelineResourceManager {
 	}
 }
 
+/// Computes the independently uploaded 2D extent for one baked specular roughness level.
+fn environment_mip_extent(base_extent: [u32; 3], level: u32) -> Extent {
+	Extent::new(
+		(base_extent[0] >> level).max(1),
+		(base_extent[1] >> level).max(1),
+		base_extent[2].max(1),
+	)
+}
+
+/// Returns the compact byte count expected for one ordinary single-mip IBL image.
+fn compact_image_byte_size(format: ghi::Formats, extent: Extent) -> usize {
+	format.compact_copy_layout(extent.width().max(1), extent.height().max(1)).2
+}
+
+/// Copies one prepared texture into the shared staging allocation and returns its GPU copy descriptor.
+fn stage_texture_upload(
+	slice: &mut utils::BufferAllocator<'_>,
+	staging_data_buffer: ghi::BaseBufferHandle,
+	image: ghi::BaseImageHandle,
+	upload: &TextureUpload,
+	alignment: usize,
+) -> ghi::BufferImageCopyDescriptor {
+	let (source_offset, source_buffer) = slice.take_with_offset_aligned(upload.data.len(), alignment);
+	source_buffer.copy_from_slice(&upload.data);
+	ghi::BufferImageCopyDescriptor::new(
+		staging_data_buffer,
+		source_offset,
+		upload.source_bytes_per_row,
+		upload.source_bytes_per_image,
+		image,
+	)
+}
+
 /// Builds row-padded upload data compatible with the transfer command buffer image copy path.
 fn make_texture_upload(format: ghi::Formats, extent: Extent, source: &[u8]) -> Option<TextureUpload> {
 	let (source_bytes_per_row, row_count, compact_bytes_per_image) =
@@ -1394,6 +1714,18 @@ mod tests {
 		assert_eq!(upload.source_bytes_per_image, 512);
 		assert_eq!(&upload.data[..compact_row], &source[..compact_row]);
 		assert_eq!(&upload.data[256..256 + compact_row], &source[compact_row..]);
+	}
+
+	#[test]
+	fn environment_specular_levels_are_independent_single_mip_images() {
+		let extents: [Extent; IBL_SPECULAR_LEVEL_COUNT] =
+			std::array::from_fn(|level| environment_mip_extent([1024, 512, 1], level as u32));
+
+		assert_eq!(extents[0], Extent::new(1024, 512, 1));
+		assert_eq!(extents[1], Extent::new(512, 256, 1));
+		assert_eq!(extents[7], Extent::new(8, 4, 1));
+		assert_eq!(compact_image_byte_size(ghi::Formats::RGBA16F, extents[0]), 1024 * 512 * 8);
+		assert_eq!(compact_image_byte_size(ghi::Formats::RGBA16F, extents[7]), 8 * 4 * 8);
 	}
 }
 

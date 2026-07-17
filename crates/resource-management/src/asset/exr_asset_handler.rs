@@ -10,8 +10,9 @@ use super::{
 };
 use crate::{
 	asset,
-	processors::image_processor::{process_image_in, ImageDescription, Semantic},
+	processors::ibl_processor::bake_image_ibl_in,
 	resource,
+	resources::image::Image,
 	types::{Formats, Gamma},
 	ProcessedAsset,
 };
@@ -144,17 +145,17 @@ impl AssetHandler for EXRAssetHandler {
 		let decoded = image.layer_data.channel_data.pixels;
 		let extent = decoded.extent.filter(|_| decoded.valid).ok_or(LoadErrors::FailedToProcess)?;
 
-		let description = ImageDescription {
+		let baked = bake_image_ibl_in(extent, &decoded.data, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
+		let image = Image {
 			format: Formats::RGBA16F,
-			extent,
-			semantic: Semantic::Other,
 			gamma: Gamma::Linear,
-			generate_mipmaps: false,
+			extent: baked.root_extent,
+			mip_count: 1,
+			ibl: Some(baked.ibl),
 		};
-		let (asset, data) = process_image_in(url, description, decoded.data.into_boxed_slice(), allocator)
-			.map_err(|_| LoadErrors::FailedToProcess)?;
+		let asset = ProcessedAsset::new(url, image).with_streams(baked.streams);
 
-		Ok((asset, data.to_vec().into_boxed_slice()))
+		Ok((asset, baked.data.to_vec().into_boxed_slice()))
 	}
 }
 
@@ -227,9 +228,27 @@ mod tests {
 		assert_eq!(image.gamma, Gamma::Linear);
 		assert_eq!(image.extent, [2, 1, 1]);
 		assert_eq!(image.mip_count, 1);
+		let ibl = image.ibl.expect("EXR images must include baked IBL maps");
+		assert_eq!(ibl.diffuse_irradiance.extent, [32, 16, 1]);
+		assert_eq!(ibl.prefiltered_specular.extent, [2, 1, 1]);
+		assert_eq!(ibl.prefiltered_specular.mip_count, 8);
 		assert_eq!(base_values, vec![4.0, 0.5, -0.25, 1.0, 16.0, 2.0, 8.0, 1.0]);
-		assert_eq!(data.len(), 16);
-		assert_eq!(stored.streams().expect("the EXR base level must be described").len(), 1);
+		let streams = stored.streams().expect("the EXR image and IBL maps must be described");
+		assert_eq!(streams.len(), 10);
+		assert_eq!(streams[0].name(), crate::resources::image::IMAGE_BASE_MIP_STREAM_NAME);
+		assert_eq!(streams[0].offset(), 0);
+		assert_eq!(streams[0].size(), 16);
+		assert_eq!(
+			streams[1].name(),
+			crate::resources::image::ibl_prefiltered_specular_stream_name(0)
+		);
+		assert_eq!(streams[1].offset(), 16);
+		assert_eq!(streams[1].size(), 16);
+		assert_eq!(
+			streams.last().unwrap().name(),
+			crate::resources::image::IBL_DIFFUSE_IRRADIANCE_STREAM_NAME
+		);
+		assert_eq!(data.len(), 4_184);
 	}
 
 	#[r#async::test]

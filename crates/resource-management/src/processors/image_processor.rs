@@ -325,6 +325,7 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 			extent: image_resource_extent(output_format, *extent),
 			gamma: *gamma,
 			mip_count,
+			ibl: None,
 		},
 		data,
 		streams,

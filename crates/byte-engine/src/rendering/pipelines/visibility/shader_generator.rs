@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::{cell::RefCell, ops::Deref, rc::Rc, sync::OnceLock};
 
 use besl::{parser::Node, NodeReference};
-use resource_management::asset::bema_asset_handler::ProgramGenerator;
+use resource_management::{asset::bema_asset_handler::ProgramGenerator, resources::image::IBL_PREFILTERED_SPECULAR_MIP_COUNT};
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;
@@ -477,7 +477,15 @@ impl VisibilityShaderScope {
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 1051, true, false);
 		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 1052, true, false);
 		let set2_binding12 = Node::binding("visibility_depth", Node::combined_image_sampler(), 1053, true, false);
-		let environment = Node::binding("environment", Node::combined_image_sampler(), 1054, true, false);
+		let environment_irradiance = Node::binding("environment_irradiance", Node::combined_image_sampler(), 1054, true, false);
+		let environment_specular = Node::binding_array(
+			"environment_specular",
+			Node::combined_image_sampler(),
+			1055,
+			true,
+			false,
+			IBL_PREFILTERED_SPECULAR_MIP_COUNT,
+		);
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 
@@ -896,8 +904,71 @@ impl VisibilityShaderScope {
 				&[],
 			)],
 		);
-		let sample_environment = Node::function(
-			"sample_environment",
+		let sample_environment_irradiance = Node::function(
+			"sample_environment_irradiance",
+			vec![Node::parameter("direction", "vec3f")],
+			"vec3f",
+			vec![Node::raw_code(
+				Some(
+					"
+			float direction_length = length(direction);
+			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
+
+			vec3 dir = direction / direction_length;
+			vec2 environment_uv = vec2(
+				atan(dir.z, dir.x) * 0.15915494309189535 + 0.5,
+				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
+			);
+			float environment_half_texel = 0.5 / float(textureSize(environment_irradiance, 0).y);
+			environment_uv.y = clamp(environment_uv.y, environment_half_texel, 1.0 - environment_half_texel);
+			vec4 environment_sample = textureLod(environment_irradiance, environment_uv, 0.0);
+			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
+			return environment_sample.rgb;"
+						.into(),
+				),
+				Some(
+					"
+			float direction_length = length(direction);
+			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
+
+			float3 dir = direction / direction_length;
+			float2 environment_uv = float2(
+				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
+				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
+			);
+			uint environment_width = 0u;
+			uint environment_height = 0u;
+			environment_irradiance.GetDimensions(environment_width, environment_height);
+			float environment_half_texel = 0.5 / float(environment_height);
+			environment_uv.y = clamp(environment_uv.y, environment_half_texel, 1.0 - environment_half_texel);
+			float4 environment_sample = environment_irradiance.SampleLevel(environment_irradiance_sampler, environment_uv, 0.0);
+			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
+			return environment_sample.rgb;"
+						.into(),
+				),
+				Some(
+					"
+			float direction_length = length(direction);
+			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
+
+			float3 dir = direction / direction_length;
+			float2 environment_uv = float2(
+				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
+				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
+			);
+			float environment_half_texel = 0.5 / float(resources.environment_irradiance.get_height());
+			environment_uv.y = clamp(environment_uv.y, environment_half_texel, 1.0 - environment_half_texel);
+			float4 environment_sample = resources.environment_irradiance.sample(resources.environment_irradiance_sampler, environment_uv, level(0.0));
+			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, 1.0); }
+			return environment_sample.rgb;"
+						.into(),
+				),
+				&["environment_irradiance", "sample_analytical_reflection"],
+				&[],
+			)],
+		);
+		let sample_environment_specular = Node::function(
+			"sample_environment_specular",
 			vec![Node::parameter("direction", "vec3f"), Node::parameter("roughness", "f32")],
 			"vec3f",
 			vec![Node::raw_code(
@@ -911,17 +982,17 @@ impl VisibilityShaderScope {
 				atan(dir.z, dir.x) * 0.15915494309189535 + 0.5,
 				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
 			);
-			vec4 environment_sample = textureLod(environment, environment_uv, 0.0);
-			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
-
-			float roughness_squared = clamp(roughness, 0.0, 1.0) * clamp(roughness, 0.0, 1.0);
-			vec2 blur_offset = vec2(roughness_squared * 0.04, roughness_squared * 0.08);
-			vec3 environment_radiance = environment_sample.rgb * 0.4;
-			environment_radiance += textureLod(environment, vec2(environment_uv.x + blur_offset.x, environment_uv.y), 0.0).rgb * 0.15;
-			environment_radiance += textureLod(environment, vec2(environment_uv.x - blur_offset.x, environment_uv.y), 0.0).rgb * 0.15;
-			environment_radiance += textureLod(environment, vec2(environment_uv.x, clamp(environment_uv.y + blur_offset.y, 0.0, 1.0)), 0.0).rgb * 0.15;
-			environment_radiance += textureLod(environment, vec2(environment_uv.x, clamp(environment_uv.y - blur_offset.y, 0.0, 1.0)), 0.0).rgb * 0.15;
-			return environment_radiance;"
+			float specular_level = clamp(roughness, 0.0, 1.0) * 7.0;
+			uint lower_level = uint(floor(specular_level));
+			uint upper_level = min(lower_level + 1u, 7u);
+			float lower_half_texel = 0.5 / float(textureSize(environment_specular[nonuniformEXT(lower_level)], 0).y);
+			float upper_half_texel = 0.5 / float(textureSize(environment_specular[nonuniformEXT(upper_level)], 0).y);
+			vec2 lower_uv = vec2(environment_uv.x, clamp(environment_uv.y, lower_half_texel, 1.0 - lower_half_texel));
+			vec2 upper_uv = vec2(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
+			vec4 lower_sample = textureLod(environment_specular[nonuniformEXT(lower_level)], lower_uv, 0.0);
+			vec4 upper_sample = textureLod(environment_specular[nonuniformEXT(upper_level)], upper_uv, 0.0);
+			if (lower_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
+			return mix(lower_sample.rgb, upper_sample.rgb, fract(specular_level));"
 						.into(),
 				),
 				Some(
@@ -934,17 +1005,25 @@ impl VisibilityShaderScope {
 				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
 				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
 			);
-			float4 environment_sample = environment.SampleLevel(environment_sampler, environment_uv, 0.0);
-			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
-
-			float roughness_squared = clamp(roughness, 0.0, 1.0) * clamp(roughness, 0.0, 1.0);
-			float2 blur_offset = float2(roughness_squared * 0.04, roughness_squared * 0.08);
-			float3 environment_radiance = environment_sample.rgb * 0.4;
-			environment_radiance += environment.SampleLevel(environment_sampler, float2(environment_uv.x + blur_offset.x, environment_uv.y), 0.0).rgb * 0.15;
-			environment_radiance += environment.SampleLevel(environment_sampler, float2(environment_uv.x - blur_offset.x, environment_uv.y), 0.0).rgb * 0.15;
-			environment_radiance += environment.SampleLevel(environment_sampler, float2(environment_uv.x, clamp(environment_uv.y + blur_offset.y, 0.0, 1.0)), 0.0).rgb * 0.15;
-			environment_radiance += environment.SampleLevel(environment_sampler, float2(environment_uv.x, clamp(environment_uv.y - blur_offset.y, 0.0, 1.0)), 0.0).rgb * 0.15;
-			return environment_radiance;"
+			float specular_level = clamp(roughness, 0.0, 1.0) * 7.0;
+			uint lower_level = uint(floor(specular_level));
+			uint upper_level = min(lower_level + 1u, 7u);
+			uint lower_index = NonUniformResourceIndex(lower_level);
+			uint upper_index = NonUniformResourceIndex(upper_level);
+			uint lower_width = 0u;
+			uint lower_height = 0u;
+			uint upper_width = 0u;
+			uint upper_height = 0u;
+			environment_specular[lower_index].GetDimensions(lower_width, lower_height);
+			environment_specular[upper_index].GetDimensions(upper_width, upper_height);
+			float lower_half_texel = 0.5 / float(lower_height);
+			float upper_half_texel = 0.5 / float(upper_height);
+			float2 lower_uv = float2(environment_uv.x, clamp(environment_uv.y, lower_half_texel, 1.0 - lower_half_texel));
+			float2 upper_uv = float2(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
+			float4 lower_sample = environment_specular[lower_index].SampleLevel(environment_specular_sampler, lower_uv, 0.0);
+			float4 upper_sample = environment_specular[upper_index].SampleLevel(environment_specular_sampler, upper_uv, 0.0);
+			if (lower_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
+			return lerp(lower_sample.rgb, upper_sample.rgb, frac(specular_level));"
 						.into(),
 				),
 				Some(
@@ -957,20 +1036,20 @@ impl VisibilityShaderScope {
 				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
 				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
 			);
-			float4 environment_sample = resources.environment.sample(resources.environment_sampler, environment_uv, level(0.0));
-			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
-
-			float roughness_squared = clamp(roughness, 0.0, 1.0) * clamp(roughness, 0.0, 1.0);
-			float2 blur_offset = float2(roughness_squared * 0.04, roughness_squared * 0.08);
-			float3 environment_radiance = environment_sample.rgb * 0.4;
-			environment_radiance += resources.environment.sample(resources.environment_sampler, float2(environment_uv.x + blur_offset.x, environment_uv.y), level(0.0)).rgb * 0.15;
-			environment_radiance += resources.environment.sample(resources.environment_sampler, float2(environment_uv.x - blur_offset.x, environment_uv.y), level(0.0)).rgb * 0.15;
-			environment_radiance += resources.environment.sample(resources.environment_sampler, float2(environment_uv.x, clamp(environment_uv.y + blur_offset.y, 0.0, 1.0)), level(0.0)).rgb * 0.15;
-			environment_radiance += resources.environment.sample(resources.environment_sampler, float2(environment_uv.x, clamp(environment_uv.y - blur_offset.y, 0.0, 1.0)), level(0.0)).rgb * 0.15;
-			return environment_radiance;"
+			float specular_level = clamp(roughness, 0.0, 1.0) * 7.0;
+			uint lower_level = uint(floor(specular_level));
+			uint upper_level = min(lower_level + 1u, 7u);
+			float lower_half_texel = 0.5 / float(resources.environment_specular[lower_level].get_height());
+			float upper_half_texel = 0.5 / float(resources.environment_specular[upper_level].get_height());
+			float2 lower_uv = float2(environment_uv.x, clamp(environment_uv.y, lower_half_texel, 1.0 - lower_half_texel));
+			float2 upper_uv = float2(environment_uv.x, clamp(environment_uv.y, upper_half_texel, 1.0 - upper_half_texel));
+			float4 lower_sample = resources.environment_specular[lower_level].sample(resources.environment_specular_sampler[lower_level], lower_uv, level(0.0));
+			float4 upper_sample = resources.environment_specular[upper_level].sample(resources.environment_specular_sampler[upper_level], upper_uv, level(0.0));
+			if (lower_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
+			return mix(lower_sample.rgb, upper_sample.rgb, fract(specular_level));"
 						.into(),
 				),
-				&["environment", "sample_analytical_reflection"],
+				&["environment_specular", "sample_analytical_reflection"],
 				&[],
 			)],
 		);
@@ -1020,12 +1099,14 @@ impl VisibilityShaderScope {
 				set2_binding10,
 				set2_binding11,
 				set2_binding12,
-				environment,
+				environment_irradiance,
+				environment_specular,
 				push_constant,
 				sample_function,
 				sample_normal_function,
 				sample_analytical_reflection,
-				sample_environment,
+				sample_environment_irradiance,
+				sample_environment_specular,
 			],
 		)
 	}
@@ -1477,9 +1558,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			specular += local_specular * radiance * NdotL * occlusion_factor;
 		}
 
-		float3 ambient_irradiance = sample_environment(normal, 1.0, gid, push_constant, resources) * 0.35;
+		float3 ambient_irradiance = sample_environment_irradiance(normal, gid, push_constant, resources);
 		float3 reflection_direction = reflect(-V, normal);
-		float3 reflection_radiance = sample_environment(reflection_direction, roughness, gid, push_constant, resources);
+		float3 reflection_radiance = sample_environment_specular(reflection_direction, roughness, gid, push_constant, resources);
 
 		float3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
 		float3 kD_ibl = (float3(1.0) - F_ibl) * (1.0 - metalness);
@@ -1494,7 +1575,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
 			env_brdf = float2(-1.04, 1.04) * a004 + r.zw;
 		}
-		float3 ibl_specular = (F_ibl * env_brdf.x + env_brdf.y) * reflection_radiance;
+		float3 ibl_specular = (F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
 
 		float3 ambient = ibl_diffuse + ibl_specular;
 
@@ -1569,9 +1650,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			specular += local_specular * radiance * NdotL * occlusion_factor;
 		}
 
-		vec3 ambient_irradiance = sample_environment(normal, 1.0) * 0.35;
+		vec3 ambient_irradiance = sample_environment_irradiance(normal);
 		vec3 reflection_direction = reflect(-V, normal);
-		vec3 reflection_radiance = sample_environment(reflection_direction, roughness);
+		vec3 reflection_radiance = sample_environment_specular(reflection_direction, roughness);
 
 		vec3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
 		vec3 kD_ibl = (vec3(1.0) - F_ibl) * (1.0 - metalness);
@@ -1586,7 +1667,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
 			env_brdf = vec2(-1.04, 1.04) * a004 + r.zw;
 		}
-		vec3 ibl_specular = (F_ibl * env_brdf.x + env_brdf.y) * reflection_radiance;
+		vec3 ibl_specular = (F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
 
 		vec3 ambient = ibl_diffuse + ibl_specular;
 
@@ -1660,9 +1741,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			specular += local_specular * radiance * NdotL * occlusion_factor;
 		}
 
-		float3 ambient_irradiance = sample_environment(normal, 1.0) * 0.35;
+		float3 ambient_irradiance = sample_environment_irradiance(normal);
 		float3 reflection_direction = reflect(-V, normal);
-		float3 reflection_radiance = sample_environment(reflection_direction, roughness);
+		float3 reflection_radiance = sample_environment_specular(reflection_direction, roughness);
 
 		float3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
 		float3 kD_ibl = (float3(1.0, 1.0, 1.0) - F_ibl) * (1.0 - metalness);
@@ -1677,7 +1758,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
 			env_brdf = float2(-1.04, 1.04) * a004 + r.zw;
 		}
-		float3 ibl_specular = (F_ibl * env_brdf.x + env_brdf.y) * reflection_radiance;
+		float3 ibl_specular = (F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
 
 		float3 ambient = ibl_diffuse + ibl_specular;
 
@@ -1748,7 +1829,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					"lighting_data",
 					"lit_map",
 					"sample_shadow",
-					"sample_environment",
+					"sample_environment_irradiance",
+					"sample_environment_specular",
 					"fresnel_schlick_roughness",
 				],
 				&[],
@@ -1987,9 +2069,9 @@ mod tests {
 		);
 	}
 
-	/// Verifies material evaluation samples the configured lat-long environment on every backend.
+	/// Verifies material evaluation consumes baked diffuse and roughness-prefiltered lat-long maps on every backend.
 	#[test]
-	fn material_evaluation_backends_sample_lat_long_environment() {
+	fn material_evaluation_backends_sample_baked_environment_ibl() {
 		let material = json::object! {
 			"variables": []
 		};
@@ -2005,50 +2087,52 @@ mod tests {
 		let msl = MSLShaderGenerator::new().generate(&settings, &main_node).unwrap();
 
 		assert!(
-			glsl.contains("textureLod(environment, environment_uv, 0.0)"),
-			"Generated GLSL does not sample the lat-long environment binding. Shader: {glsl}"
+			glsl.contains("textureLod(environment_irradiance, environment_uv, 0.0)")
+				&& glsl.contains("environment_specular[nonuniformEXT(lower_level)]")
+				&& glsl.contains("environment_specular[nonuniformEXT(upper_level)]"),
+			"Generated GLSL does not sample both baked IBL resources. Shader: {glsl}"
 		);
 		assert!(
-			hlsl.contains("environment.SampleLevel(environment_sampler, environment_uv, 0.0)"),
-			"Generated HLSL does not sample the lat-long environment binding. Shader: {hlsl}"
+			hlsl.contains("environment_irradiance.SampleLevel(environment_irradiance_sampler, environment_uv, 0.0)")
+				&& hlsl.contains("environment_specular[lower_index].SampleLevel(environment_specular_sampler")
+				&& hlsl.contains("environment_specular[upper_index].SampleLevel(environment_specular_sampler")
+				&& hlsl.contains("NonUniformResourceIndex(lower_level)"),
+			"Generated HLSL does not sample both baked IBL resources. Shader: {hlsl}"
 		);
 		assert!(
-			msl.contains("resources.environment.sample(resources.environment_sampler, environment_uv, level(0.0))"),
-			"Generated MSL does not sample the lat-long environment binding. Shader: {msl}"
+			msl.contains(
+				"resources.environment_irradiance.sample(resources.environment_irradiance_sampler, environment_uv, level(0.0))"
+			) && msl.contains(
+				"resources.environment_specular[lower_level].sample(resources.environment_specular_sampler[lower_level]"
+			) && msl.contains(
+				"resources.environment_specular[upper_level].sample(resources.environment_specular_sampler[upper_level]"
+			),
+			"Generated MSL does not sample both baked IBL resources. Shader: {msl}"
 		);
 		assert!(
-			msl.contains("sample_environment(normal, 1.0, gid, push_constant, resources)")
-				&& msl.contains("sample_environment(reflection_direction, roughness, gid, push_constant, resources)"),
+			msl.contains("sample_environment_irradiance(normal, gid, push_constant, resources)")
+				&& msl.contains("sample_environment_specular(reflection_direction, roughness, gid, push_constant, resources)"),
 			"Generated MSL material evaluation does not forward its implicit inputs to environment sampling. Shader: {msl}"
-		);
-		assert_eq!(
-			glsl.matches("textureLod(environment,").count(),
-			5,
-			"GLSL environment blur tap count drifted"
-		);
-		assert_eq!(
-			hlsl.matches("environment.SampleLevel(").count(),
-			5,
-			"HLSL environment blur tap count drifted"
-		);
-		assert_eq!(
-			msl.matches("resources.environment.sample(").count(),
-			5,
-			"MSL environment blur tap count drifted"
 		);
 
 		for (backend, source) in [("GLSL", glsl), ("HLSL", hlsl), ("MSL", msl)] {
 			assert!(
 				source.contains("environment_sample.a <= 0.0")
+					&& source.contains("lower_sample.a <= 0.0")
 					&& source.contains("sample_analytical_reflection(direction, roughness)"),
 				"Generated {backend} lost the transparent fallback marker contract. Shader: {source}"
 			);
 			assert!(
-				source.contains("roughness_squared * 0.04")
-					&& source.contains("roughness_squared * 0.08")
-					&& source.contains("environment_uv.x + blur_offset.x")
-					&& source.contains("environment_uv.y + blur_offset.y"),
-				"Generated {backend} does not offset environment samples as roughness increases. Shader: {source}"
+				source.contains("specular_level = clamp(roughness, 0.0, 1.0) * 7.0")
+					&& source.contains("lower_level")
+					&& source.contains("upper_level")
+					&& !source.contains("blur_offset"),
+				"Generated {backend} does not interpolate baked specular roughness levels. Shader: {source}"
+			);
+			assert!(
+				source.contains("ibl_specular = (F0 * env_brdf.x + env_brdf.y) * reflection_radiance")
+					&& !source.contains("ibl_specular = (F_ibl * env_brdf.x + env_brdf.y)"),
+				"Generated {backend} applies the split-sum BRDF fit to view-dependent Fresnel instead of F0. Shader: {source}"
 			);
 		}
 	}
@@ -2081,6 +2165,7 @@ mod tests {
 			(1052, 1),
 			(1053, 1),
 			(1054, 1),
+			(1055, 8),
 		];
 		let cases = [
 			(

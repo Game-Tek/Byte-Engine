@@ -257,9 +257,11 @@ pub(super) enum ScalarUnaryOperator {
 	Log2,
 	Fwidth,
 	FromU32ToF32,
+	FromI32ToF32,
 	FromF32ToU32,
 	FromU8ToU32,
 	FromU16ToU32,
+	FromI32ToU32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

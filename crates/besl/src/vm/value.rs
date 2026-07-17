@@ -787,6 +787,16 @@ pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 
 			return Ok(Value::F32(*value as f32));
 		}
+		ScalarUnaryOperator::FromI32ToF32 => {
+			let Value::I32(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::I32.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+
+			return Ok(Value::F32(*value as f32));
+		}
 		ScalarUnaryOperator::FromF32ToU32 => {
 			let Value::F32(value) = value else {
 				return Err(VmError::TypeMismatch {
@@ -815,6 +825,17 @@ pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 			};
 			return Ok(Value::U32(u32::from(*value)));
 		}
+		ScalarUnaryOperator::FromI32ToU32 => {
+			let Value::I32(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::I32.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+
+			// Signed-to-unsigned shader casts preserve the low 32 bits for negative inputs.
+			return Ok(Value::U32(*value as u32));
+		}
 		_ => {}
 	}
 
@@ -832,9 +853,11 @@ pub(super) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		ScalarUnaryOperator::Log2 => value.log2(),
 		ScalarUnaryOperator::Fwidth => 0.0,
 		ScalarUnaryOperator::FromU32ToF32
+		| ScalarUnaryOperator::FromI32ToF32
 		| ScalarUnaryOperator::FromF32ToU32
 		| ScalarUnaryOperator::FromU8ToU32
-		| ScalarUnaryOperator::FromU16ToU32 => unreachable!("conversion operators return early"),
+		| ScalarUnaryOperator::FromU16ToU32
+		| ScalarUnaryOperator::FromI32ToU32 => unreachable!("conversion operators return early"),
 	})
 }
 

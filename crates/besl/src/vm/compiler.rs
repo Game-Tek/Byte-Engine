@@ -989,11 +989,22 @@ impl<'a> Compiler<'a> {
 					});
 				}
 
-				let value = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let source_type = self.infer_expression_type(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let operator = match source_type {
+					ValueType::U32 => ScalarUnaryOperator::FromU32ToF32,
+					ValueType::I32 => ScalarUnaryOperator::FromI32ToF32,
+					ref other => {
+						return Err(VmError::TypeMismatch {
+							expected: "u32 or i32".to_string(),
+							found: other.name().to_string(),
+						});
+					}
+				};
+				let value = self.compile_value_expression(&arguments[0], &source_type, descriptor_layouts)?;
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::UnaryScalar {
 					register,
-					operator: ScalarUnaryOperator::FromU32ToF32,
+					operator,
 					value,
 				});
 				Ok(register)
@@ -1014,10 +1025,11 @@ impl<'a> Compiler<'a> {
 				let operator = match source_type {
 					ValueType::U8 => ScalarUnaryOperator::FromU8ToU32,
 					ValueType::U16 => ScalarUnaryOperator::FromU16ToU32,
+					ValueType::I32 => ScalarUnaryOperator::FromI32ToU32,
 					ValueType::F32 => ScalarUnaryOperator::FromF32ToU32,
 					ref other => {
 						return Err(VmError::TypeMismatch {
-							expected: "u8, u16, or f32".to_string(),
+							expected: "u8, u16, i32, or f32".to_string(),
 							found: other.name().to_string(),
 						});
 					}

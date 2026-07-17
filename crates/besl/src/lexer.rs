@@ -214,7 +214,7 @@ impl Node {
 			u8_t.clone(),
 			u16_t.clone(),
 			u32_t.clone(),
-			i32_t,
+			i32_t.clone(),
 			f32_t.clone(),
 			vec2u16,
 			vec4u16,
@@ -254,6 +254,11 @@ impl Node {
 				"fetch_u32",
 				vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
 				u32_t.clone(),
+			),
+			builtin_intrinsic(
+				"dot",
+				vec![("left", vec2f32.clone()), ("right", vec2f32.clone())],
+				f32_t.clone(),
 			),
 			builtin_intrinsic(
 				"dot",
@@ -334,9 +339,11 @@ impl Node {
 			builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone()),
+			builtin_intrinsic("f32", vec![("value", i32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", u32_t.clone())], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", u8_t.clone())], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", u16_t.clone())], u32_t.clone()),
+			builtin_intrinsic("u32", vec![("value", i32_t)], u32_t.clone()),
 			builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone()),
 			builtin_intrinsic(
 				"smoothstep",

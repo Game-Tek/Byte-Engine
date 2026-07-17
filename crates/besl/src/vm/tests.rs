@@ -1181,6 +1181,78 @@ fn executable_program_evaluates_dot_intrinsics() {
 }
 
 #[test]
+fn executable_program_evaluates_vec2f_dot_intrinsic() {
+	let script = r#"
+	main: fn () -> void {
+		buff.value = dot(vec2f(2.0, 3.0), vec2f(4.0, 5.0));
+	}
+	"#;
+
+	let mut root = Node::root();
+	let float_type = root.get_child("f32").expect("Expected f32");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![Node::member("value", float_type).into()],
+			},
+			34,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(34);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 23.0);
+}
+
+#[test]
+fn executable_program_converts_i32_to_f32_and_u32() {
+	let script = r#"
+	main: fn () -> void {
+		let signed: i32 = 3 - 7;
+		buff.float_value = f32(signed);
+		buff.unsigned_value = u32(signed);
+	}
+	"#;
+
+	let mut root = Node::root();
+	let f32_type = root.get_child("f32").expect("Expected f32");
+	let u32_type = root.get_child("u32").expect("Expected u32");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![
+					Node::member("float_value", f32_type).into(),
+					Node::member("unsigned_value", u32_type).into(),
+				],
+			},
+			35,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(35);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	assert_eq!(buffer.read("float_value").expect("Expected converted f32"), Value::F32(-4.0));
+	assert_eq!(
+		buffer.read("unsigned_value").expect("Expected converted u32"),
+		Value::U32(u32::MAX - 3)
+	);
+}
+
+#[test]
 fn executable_program_evaluates_cross_intrinsics() {
 	let script = r#"
 	main: fn () -> void {

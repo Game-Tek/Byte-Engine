@@ -6,6 +6,13 @@ struct SkinningPaletteCacheEntry {
 	palette_base: u32,
 }
 
+/// The `EnvironmentTexture` struct retains the image and sampler currently used for visibility reflections.
+#[derive(Clone, Copy)]
+struct EnvironmentTexture {
+	image: ghi::BaseImageHandle,
+	sampler: ghi::SamplerHandle,
+}
+
 /// The `VisibilityPipelineManager` struct provides the visibility buffer implementation for the world render domain.
 pub struct VisibilityPipelineManager {
 	/// Materials data buffer shared across all scenes.
@@ -23,6 +30,12 @@ pub struct VisibilityPipelineManager {
 	loaded_materials: HashMap<u32, RenderDescription>,
 	loaded_textures: HashSet<u32>,
 	loaded_pipelines: HashMap<String, ghi::PipelineHandle>,
+	/// Requested environment resource retained until its asynchronous upload completes.
+	environment_resource_id: Option<String>,
+	/// Bindless slot assigned to the requested environment resource.
+	environment_texture_index: Option<u32>,
+	/// Texture bound to material evaluation; starts as a transparent analytical-fallback marker.
+	environment_texture: EnvironmentTexture,
 	pub(crate) scene: crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager,
 }
 
@@ -35,7 +48,9 @@ impl VisibilityPipelineManager {
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		resource_manager: VisibilityPipelineResourceManagerClient,
+		environment_resource_id: Option<String>,
 	) -> Self {
+		let environment_texture = create_fallback_environment_texture(context);
 		let skinning_pass = SkinningPass::new(
 			context,
 			SkinningSourceBuffers::new(
@@ -137,6 +152,9 @@ impl VisibilityPipelineManager {
 			vec![ghi::pipelines::PushConstantRange::new(0, 4)],
 			context.create_factory(),
 		));
+		if let Some(resource_id) = environment_resource_id.as_ref() {
+			resource_manager.request_image(VisibilityTextureKey::new(resource_id.clone()));
+		}
 
 		Self {
 			materials_data_buffer_handle,
@@ -150,6 +168,9 @@ impl VisibilityPipelineManager {
 			loaded_materials: HashMap::new(),
 			loaded_textures: HashSet::new(),
 			loaded_pipelines: HashMap::new(),
+			environment_resource_id,
+			environment_texture_index: None,
+			environment_texture,
 			scene: VisibilitySceneManager {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::new(),
@@ -259,7 +280,9 @@ impl VisibilityPipelineManager {
 					sampler,
 					upload,
 				} => {
-					let _ = key;
+					if self.environment_resource_id.as_deref() == Some(key.as_str()) {
+						self.environment_texture_index = Some(index);
+					}
 					let image = frame.intern_image(image);
 					let sampler = frame.intern_sampler(sampler);
 					let image = ghi::BaseImageHandle::from(image);
@@ -268,6 +291,11 @@ impl VisibilityPipelineManager {
 				VisibilityResourceCompletion::TextureUploadReady { index, image, sampler } => {
 					log::debug!("Visibility texture upload adopted: index={}", index);
 					self.write_texture_descriptors(frame, index, image, sampler);
+					if self.environment_texture_index == Some(index) {
+						self.environment_texture = EnvironmentTexture { image, sampler };
+						self.write_environment_descriptors(frame);
+						log::debug!("Visibility environment texture adopted: index={}", index);
+					}
 					self.loaded_textures.insert(index);
 					self.rebuild_material_lists();
 				}
@@ -297,6 +325,19 @@ impl VisibilityPipelineManager {
 			ghi::Layouts::Read,
 			index,
 		)]);
+	}
+
+	/// Writes the current environment into every sink's material-evaluation descriptor set.
+	fn write_environment_descriptors(&self, frame: &mut ghi::implementation::Frame) {
+		for sink_state in &self.scene.sink_states {
+			frame.write(&[ghi::DescriptorWrite::combined_image_sampler(
+				sink_state.render_pass.material_evaluation_descriptor_set(),
+				ENVIRONMENT_BINDING.slot(),
+				self.environment_texture.image,
+				self.environment_texture.sampler,
+				ghi::Layouts::Read,
+			)]);
+		}
 	}
 
 	/// Adopts material metadata and writes the material texture table into the GPU material buffer.
@@ -611,6 +652,34 @@ impl VisibilityPipelineManager {
 	}
 }
 
+/// Creates the transparent marker sampled while no HDR environment is configured or its upload is pending.
+fn create_fallback_environment_texture(context: &mut ghi::implementation::Context) -> EnvironmentTexture {
+	let image = context.build_image(
+		ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
+			.name("Visibility Environment Fallback")
+			.extent(Extent::square(1))
+			.device_accesses(ghi::DeviceAccesses::HostToDevice)
+			.use_case(ghi::UseCases::STATIC),
+	);
+	context.get_texture_slice_mut(image).fill(0);
+	context.sync_texture(image);
+
+	let sampler = context.build_sampler(
+		ghi::sampler::Builder::new()
+			.filtering_mode(ghi::FilteringModes::Linear)
+			.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
+			.mip_map_mode(ghi::FilteringModes::Linear)
+			.addressing_mode(ghi::SamplerAddressingModes::Repeat)
+			.min_lod(0.0)
+			.max_lod(0.0),
+	);
+
+	EnvironmentTexture {
+		image: image.into(),
+		sampler,
+	}
+}
+
 /// Finds a binding already written for one renderable's frame pose, regardless of primitive ordering.
 fn cached_skin_palette_base(cache: &[SkinningPaletteCacheEntry], handle: Handle, binding: *const SkinBinding) -> Option<u32> {
 	cache
@@ -863,6 +932,13 @@ impl PipelineManager for VisibilityPipelineManager {
 				VISIBILITY_DEPTH_BINDING.slot(),
 				ghi::BaseImageHandle::from(depth_target),
 				visibility_depth_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				material_evaluation_descriptor_set,
+				ENVIRONMENT_BINDING.slot(),
+				self.environment_texture.image,
+				self.environment_texture.sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::buffer(
@@ -1254,6 +1330,11 @@ const VISIBILITY_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResou
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 );
+const ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+	ghi::ResourceSlot::new(1054),
+	ghi::ResourceKind::CombinedImageSampler,
+	ghi::AccessPolicies::READ,
+);
 use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::{hash_map::Entry, HashSet};
@@ -1297,7 +1378,7 @@ use crate::rendering::pipelines::visibility::gpu_vertex_data_manager::GPUVertexD
 use crate::rendering::pipelines::visibility::render_pass::VisibilityPipelineRenderPass;
 use crate::rendering::pipelines::visibility::resource_manager::{
 	MaterialPipelineConfig, PendingMaterialPipeline, VisibilityMeshKey, VisibilityPipelineResourceManagerClient,
-	VisibilityResourceCompletion,
+	VisibilityResourceCompletion, VisibilityTextureKey,
 };
 use crate::rendering::pipelines::visibility::scene_manager::VisibilitySceneManager;
 use crate::rendering::pipelines::visibility::skinning::{

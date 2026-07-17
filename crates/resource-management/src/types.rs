@@ -215,6 +215,7 @@ pub enum Formats {
 	RGB16,
 	RGBA16,
 	BC7SRGB,
+	RGBA16F,
 }
 
 #[cfg(test)]

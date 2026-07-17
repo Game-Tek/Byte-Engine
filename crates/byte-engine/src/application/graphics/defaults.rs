@@ -8,6 +8,7 @@
 use resource_management::asset::{
 	asset_manager::AssetManager,
 	bema_asset_handler::{BEMAAssetHandler, ProgramGenerator},
+	exr_asset_handler::EXRAssetHandler,
 	fbx_asset_handler::FBXAssetHandler,
 	gltf_asset_handler::GLTFAssetHandler,
 	lut_asset_handler::LUTAssetHandler,
@@ -35,7 +36,7 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 	setup_default_resource_and_asset_management(application, generator);
 	setup_default_input(application);
 	setup_default_audio(application);
-	setup_pbr_visibility_shading_render_pipeline(application);
+	setup_pbr_visibility_shading_render_pipeline(application, None);
 	setup_default_window(application);
 }
 
@@ -75,6 +76,7 @@ pub fn setup_default_resource_and_asset_management(
 	gltf_asset_handler.set_shader_generator(generator);
 	asset_manager.add_asset_handler(gltf_asset_handler);
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
+	asset_manager.add_asset_handler(EXRAssetHandler::new());
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
 	asset_manager.add_asset_handler(OGGAssetHandler::new());

@@ -1133,6 +1133,11 @@ pub struct VisibilityPipelineRenderPass {
 }
 
 impl VisibilityPipelineRenderPass {
+	/// Returns the descriptor set that carries material-evaluation-only resources.
+	pub(super) fn material_evaluation_descriptor_set(&self) -> ghi::DescriptorSetHandle {
+		self.material_evaluation_pass.descriptor_set
+	}
+
 	pub fn new(
 		context: &mut ghi::implementation::Context,
 		shader_storage: Option<&dyn StorageBackend>,

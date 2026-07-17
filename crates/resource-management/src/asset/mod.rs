@@ -11,6 +11,7 @@ pub mod asset_manager;
 mod audio_utils;
 
 pub mod bema_asset_handler;
+pub mod exr_asset_handler;
 pub mod fbx_asset_handler;
 pub mod gltf_asset_handler;
 pub mod lut_asset_handler;

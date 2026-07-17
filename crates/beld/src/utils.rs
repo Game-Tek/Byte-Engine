@@ -1,13 +1,14 @@
 use resource_management::asset::{
-	asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, fbx_asset_handler::FBXAssetHandler,
-	gltf_asset_handler::GLTFAssetHandler, lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler,
-	png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler, StorageBackend,
+	asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, exr_asset_handler::EXRAssetHandler,
+	fbx_asset_handler::FBXAssetHandler, gltf_asset_handler::GLTFAssetHandler, lut_asset_handler::LUTAssetHandler,
+	ogg_asset_handler::OGGAssetHandler, png_asset_handler::PNGAssetHandler, wav_asset_handler::WAVAssetHandler, StorageBackend,
 };
 
 pub fn get_asset_manager<SB: StorageBackend + 'static>(storage_backend: SB) -> AssetManager {
 	let mut asset_manager = AssetManager::new(storage_backend);
 
 	asset_manager.add_asset_handler(PNGAssetHandler::new());
+	asset_manager.add_asset_handler(EXRAssetHandler::new());
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
 	asset_manager.add_asset_handler(OGGAssetHandler::new());

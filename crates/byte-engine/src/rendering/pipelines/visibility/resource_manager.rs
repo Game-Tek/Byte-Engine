@@ -516,6 +516,11 @@ impl VisibilityPipelineResourceManagerClient {
 		self.send(VisibilityTransferCommand::RequestMesh { key, source });
 	}
 
+	/// Requests an image resource from the transfer-thread worker.
+	pub(crate) fn request_image(&self, key: VisibilityTextureKey) {
+		self.send(VisibilityTransferCommand::RequestImage { key });
+	}
+
 	/// Configures material pipeline creation on the transfer-thread worker.
 	pub(crate) fn configure_material_pipeline(&self, config: MaterialPipelineConfig) {
 		self.send(VisibilityTransferCommand::ConfigureMaterialPipeline(config));
@@ -612,6 +617,9 @@ impl VisibilityPipelineResourceManagerWorker {
 					self.pending_mesh_uploads.push_back((key.clone(), source.clone()));
 					self.resource_manager
 						.handle_request(VisibilityResourceRequest::Mesh { key, source });
+				}
+				VisibilityTransferCommand::RequestImage { key } => {
+					self.resource_manager.handle_request(VisibilityResourceRequest::Image { key });
 				}
 				VisibilityTransferCommand::EnqueueTextureUpload {
 					index,
@@ -770,6 +778,9 @@ pub(crate) enum VisibilityTransferCommand {
 	RequestMesh {
 		key: VisibilityMeshKey,
 		source: MeshSource,
+	},
+	RequestImage {
+		key: VisibilityTextureKey,
 	},
 	EnqueueTextureUpload {
 		index: u32,
@@ -1310,6 +1321,7 @@ fn resource_image_format_to_ghi(format: resource_management::types::Formats) -> 
 		resource_management::types::Formats::RGB16 => ghi::Formats::RGB16UNORM,
 		resource_management::types::Formats::RGBA8 => ghi::Formats::RGBA8UNORM,
 		resource_management::types::Formats::RGBA16 => ghi::Formats::RGBA16UNORM,
+		resource_management::types::Formats::RGBA16F => ghi::Formats::RGBA16F,
 		resource_management::types::Formats::BC5 => ghi::Formats::BC5,
 		resource_management::types::Formats::BC5SNORM => ghi::Formats::BC5SNORM,
 		resource_management::types::Formats::BC7 => ghi::Formats::BC7,
@@ -1363,6 +1375,25 @@ mod tests {
 		assert_eq!(zero_extent.source_bytes_per_row, 256);
 		assert_eq!(zero_extent.source_bytes_per_image, 256);
 		assert_eq!(&zero_extent.data[..4], &[1, 2, 3, 4]);
+	}
+
+	/// Ensures half-float HDR pixels reach the transfer buffer without normalization or channel conversion.
+	#[test]
+	fn texture_upload_preserves_rgba16f_environment_rows() {
+		let extent = Extent::rectangle(2, 2);
+		let compact_row = 2 * 8;
+		let source = (0..compact_row * 2).map(|value| value as u8).collect::<Vec<_>>();
+
+		let upload = make_texture_upload(ghi::Formats::RGBA16F, extent, &source).unwrap();
+
+		assert_eq!(
+			resource_image_format_to_ghi(resource_management::types::Formats::RGBA16F),
+			ghi::Formats::RGBA16F
+		);
+		assert_eq!(upload.source_bytes_per_row, 256);
+		assert_eq!(upload.source_bytes_per_image, 512);
+		assert_eq!(&upload.data[..compact_row], &source[..compact_row]);
+		assert_eq!(&upload.data[256..256 + compact_row], &source[compact_row..]);
 	}
 }
 

@@ -537,7 +537,13 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 }
 
 /// Installs the visibility-buffer PBR scene pipeline and its async upload worker.
-pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
+///
+/// `environment_resource_id` selects the optional HDR image used for ambient and specular reflections.
+pub fn setup_pbr_visibility_shading_render_pipeline(
+	application: &mut GraphicsApplication,
+	environment_resource_id: Option<&str>,
+) {
+	let environment_resource_id = environment_resource_id.map(str::to_owned);
 	let application_resource_manager = application.resource_manager.clone();
 	let renderer = &mut application.renderer;
 	let transfer_queue_handle = renderer.transfer_queue_handle;
@@ -712,7 +718,11 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		let renderer = &mut application.renderer;
 
 		let sm = CustomPipelineManager {
-			visibility_pipeline_manager: VisibilityPipelineManager::new(renderer.context_mut(), resource_manager_client),
+			visibility_pipeline_manager: VisibilityPipelineManager::new(
+				renderer.context_mut(),
+				resource_manager_client,
+				environment_resource_id,
+			),
 			light_receiver,
 			light_delete_receiver,
 			pending_lights,

@@ -188,6 +188,7 @@ pub fn determine_image_format(source_format: Formats, compress: bool, semantic: 
 				Formats::RGBA16
 			}
 		}
+		Formats::RGBA16F => Formats::RGBA16F,
 		_ => {
 			panic!("Unsupported format: {:#?}", source_format);
 		}
@@ -276,6 +277,7 @@ fn produce_image_in<A: Allocator + Clone, B: Allocator>(
 		(Formats::RGBA16, Formats::RGBA16) => copy_slice_in(&buffer, allocator.clone()),
 		(Formats::RGBA16, Formats::BC5 | Formats::BC5SNORM) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
 		(Formats::RGBA16, Formats::BC7 | Formats::BC7SRGB) => rgba16_to_rgba8_in(*extent, &buffer, allocator.clone()),
+		(Formats::RGBA16F, Formats::RGBA16F) => copy_slice_in(&buffer, allocator.clone()),
 		_ => {
 			panic!("Unsupported format: {:#?}", format);
 		}
@@ -401,7 +403,7 @@ fn compress_bc_level_in<A: Allocator + Clone>(
 			);
 			move_boxed_slice_in(compressed.into_boxed_slice(), allocator)
 		}
-		Formats::RGB8 | Formats::RGBA8 | Formats::RGB16 | Formats::RGBA16 => {
+		Formats::RGB8 | Formats::RGBA8 | Formats::RGB16 | Formats::RGBA16 | Formats::RGBA16F => {
 			let mut output = Vec::with_capacity_in(data.len(), allocator);
 			output.extend_from_slice(data);
 			output.into_boxed_slice()

@@ -477,6 +477,7 @@ impl VisibilityShaderScope {
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 1051, true, false);
 		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 1052, true, false);
 		let set2_binding12 = Node::binding("visibility_depth", Node::combined_image_sampler(), 1053, true, false);
+		let environment = Node::binding("environment", Node::combined_image_sampler(), 1054, true, false);
 
 		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
 
@@ -838,7 +839,7 @@ impl VisibilityShaderScope {
 			vec3 sky_color = mix(horizon_color, zenith_color, sky_factor * sky_factor);
 			vec3 environment_color = mix(ground_color, sky_color, smoothstep(0.0, 0.08, dir.y));
 
-			// The procedural sun lobe gives glossy materials a visible reflection until real IBL assets exist.
+			// The procedural sun lobe keeps glossy materials visible while the optional HDR environment is unavailable.
 			vec3 sun_direction = normalize(vec3(0.35, 0.85, 0.38));
 			float sun_power = mix(192.0, 8.0, clamp(roughness, 0.0, 1.0));
 			float sun_lobe = pow(max(dot(dir, sun_direction), 0.0), sun_power);
@@ -860,7 +861,7 @@ impl VisibilityShaderScope {
 			float3 sky_color = lerp(horizon_color, zenith_color, sky_factor * sky_factor);
 			float3 environment_color = lerp(ground_color, sky_color, smoothstep(0.0, 0.08, dir.y));
 
-			// The procedural sun lobe gives glossy materials a visible reflection until real IBL assets exist.
+			// The procedural sun lobe keeps glossy materials visible while the optional HDR environment is unavailable.
 			float3 sun_direction = normalize(float3(0.35, 0.85, 0.38));
 			float sun_power = lerp(192.0, 8.0, clamp(roughness, 0.0, 1.0));
 			float sun_lobe = pow(max(dot(dir, sun_direction), 0.0), sun_power);
@@ -882,7 +883,7 @@ impl VisibilityShaderScope {
 			float3 sky_color = mix(horizon_color, zenith_color, sky_factor * sky_factor);
 			float3 environment_color = mix(ground_color, sky_color, smoothstep(0.0, 0.08, dir.y));
 
-			// The procedural sun lobe gives glossy materials a visible reflection until real IBL assets exist.
+			// The procedural sun lobe keeps glossy materials visible while the optional HDR environment is unavailable.
 			float3 sun_direction = normalize(float3(0.35, 0.85, 0.38));
 			float sun_power = mix(192.0, 8.0, clamp(roughness, 0.0, 1.0));
 			float sun_lobe = pow(max(dot(dir, sun_direction), 0.0), sun_power);
@@ -892,6 +893,84 @@ impl VisibilityShaderScope {
 						.into(),
 				),
 				&[],
+				&[],
+			)],
+		);
+		let sample_environment = Node::function(
+			"sample_environment",
+			vec![Node::parameter("direction", "vec3f"), Node::parameter("roughness", "f32")],
+			"vec3f",
+			vec![Node::raw_code(
+				Some(
+					"
+			float direction_length = length(direction);
+			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, roughness); }
+
+			vec3 dir = direction / direction_length;
+			vec2 environment_uv = vec2(
+				atan(dir.z, dir.x) * 0.15915494309189535 + 0.5,
+				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
+			);
+			vec4 environment_sample = textureLod(environment, environment_uv, 0.0);
+			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
+
+			float roughness_squared = clamp(roughness, 0.0, 1.0) * clamp(roughness, 0.0, 1.0);
+			vec2 blur_offset = vec2(roughness_squared * 0.04, roughness_squared * 0.08);
+			vec3 environment_radiance = environment_sample.rgb * 0.4;
+			environment_radiance += textureLod(environment, vec2(environment_uv.x + blur_offset.x, environment_uv.y), 0.0).rgb * 0.15;
+			environment_radiance += textureLod(environment, vec2(environment_uv.x - blur_offset.x, environment_uv.y), 0.0).rgb * 0.15;
+			environment_radiance += textureLod(environment, vec2(environment_uv.x, clamp(environment_uv.y + blur_offset.y, 0.0, 1.0)), 0.0).rgb * 0.15;
+			environment_radiance += textureLod(environment, vec2(environment_uv.x, clamp(environment_uv.y - blur_offset.y, 0.0, 1.0)), 0.0).rgb * 0.15;
+			return environment_radiance;"
+						.into(),
+				),
+				Some(
+					"
+			float direction_length = length(direction);
+			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, roughness); }
+
+			float3 dir = direction / direction_length;
+			float2 environment_uv = float2(
+				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
+				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
+			);
+			float4 environment_sample = environment.SampleLevel(environment_sampler, environment_uv, 0.0);
+			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
+
+			float roughness_squared = clamp(roughness, 0.0, 1.0) * clamp(roughness, 0.0, 1.0);
+			float2 blur_offset = float2(roughness_squared * 0.04, roughness_squared * 0.08);
+			float3 environment_radiance = environment_sample.rgb * 0.4;
+			environment_radiance += environment.SampleLevel(environment_sampler, float2(environment_uv.x + blur_offset.x, environment_uv.y), 0.0).rgb * 0.15;
+			environment_radiance += environment.SampleLevel(environment_sampler, float2(environment_uv.x - blur_offset.x, environment_uv.y), 0.0).rgb * 0.15;
+			environment_radiance += environment.SampleLevel(environment_sampler, float2(environment_uv.x, clamp(environment_uv.y + blur_offset.y, 0.0, 1.0)), 0.0).rgb * 0.15;
+			environment_radiance += environment.SampleLevel(environment_sampler, float2(environment_uv.x, clamp(environment_uv.y - blur_offset.y, 0.0, 1.0)), 0.0).rgb * 0.15;
+			return environment_radiance;"
+						.into(),
+				),
+				Some(
+					"
+			float direction_length = length(direction);
+			if (direction_length <= 0.0) { return sample_analytical_reflection(direction, roughness); }
+
+			float3 dir = direction / direction_length;
+			float2 environment_uv = float2(
+				atan2(dir.z, dir.x) * 0.15915494309189535 + 0.5,
+				0.5 - asin(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907
+			);
+			float4 environment_sample = resources.environment.sample(resources.environment_sampler, environment_uv, level(0.0));
+			if (environment_sample.a <= 0.0) { return sample_analytical_reflection(direction, roughness); }
+
+			float roughness_squared = clamp(roughness, 0.0, 1.0) * clamp(roughness, 0.0, 1.0);
+			float2 blur_offset = float2(roughness_squared * 0.04, roughness_squared * 0.08);
+			float3 environment_radiance = environment_sample.rgb * 0.4;
+			environment_radiance += resources.environment.sample(resources.environment_sampler, float2(environment_uv.x + blur_offset.x, environment_uv.y), level(0.0)).rgb * 0.15;
+			environment_radiance += resources.environment.sample(resources.environment_sampler, float2(environment_uv.x - blur_offset.x, environment_uv.y), level(0.0)).rgb * 0.15;
+			environment_radiance += resources.environment.sample(resources.environment_sampler, float2(environment_uv.x, clamp(environment_uv.y + blur_offset.y, 0.0, 1.0)), level(0.0)).rgb * 0.15;
+			environment_radiance += resources.environment.sample(resources.environment_sampler, float2(environment_uv.x, clamp(environment_uv.y - blur_offset.y, 0.0, 1.0)), level(0.0)).rgb * 0.15;
+			return environment_radiance;"
+						.into(),
+				),
+				&["environment", "sample_analytical_reflection"],
 				&[],
 			)],
 		);
@@ -941,10 +1020,12 @@ impl VisibilityShaderScope {
 				set2_binding10,
 				set2_binding11,
 				set2_binding12,
+				environment,
 				push_constant,
 				sample_function,
 				sample_normal_function,
 				sample_analytical_reflection,
+				sample_environment,
 			],
 		)
 	}
@@ -1396,9 +1477,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			specular += local_specular * radiance * NdotL * occlusion_factor;
 		}
 
-		float3 ambient_irradiance = sample_analytical_reflection(normal, 1.0) * 0.35;
+		float3 ambient_irradiance = sample_environment(normal, 1.0, gid, push_constant, resources) * 0.35;
 		float3 reflection_direction = reflect(-V, normal);
-		float3 reflection_radiance = sample_analytical_reflection(reflection_direction, roughness);
+		float3 reflection_radiance = sample_environment(reflection_direction, roughness, gid, push_constant, resources);
 
 		float3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
 		float3 kD_ibl = (float3(1.0) - F_ibl) * (1.0 - metalness);
@@ -1488,9 +1569,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			specular += local_specular * radiance * NdotL * occlusion_factor;
 		}
 
-		vec3 ambient_irradiance = sample_analytical_reflection(normal, 1.0) * 0.35;
+		vec3 ambient_irradiance = sample_environment(normal, 1.0) * 0.35;
 		vec3 reflection_direction = reflect(-V, normal);
-		vec3 reflection_radiance = sample_analytical_reflection(reflection_direction, roughness);
+		vec3 reflection_radiance = sample_environment(reflection_direction, roughness);
 
 		vec3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
 		vec3 kD_ibl = (vec3(1.0) - F_ibl) * (1.0 - metalness);
@@ -1579,9 +1660,9 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			specular += local_specular * radiance * NdotL * occlusion_factor;
 		}
 
-		float3 ambient_irradiance = sample_analytical_reflection(normal, 1.0) * 0.35;
+		float3 ambient_irradiance = sample_environment(normal, 1.0) * 0.35;
 		float3 reflection_direction = reflect(-V, normal);
-		float3 reflection_radiance = sample_analytical_reflection(reflection_direction, roughness);
+		float3 reflection_radiance = sample_environment(reflection_direction, roughness);
 
 		float3 F_ibl = fresnel_schlick_roughness(NdotV, F0, roughness);
 		float3 kD_ibl = (float3(1.0, 1.0, 1.0) - F_ibl) * (1.0 - metalness);
@@ -1667,7 +1748,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					"lighting_data",
 					"lit_map",
 					"sample_shadow",
-					"sample_analytical_reflection",
+					"sample_environment",
 					"fresnel_schlick_roughness",
 				],
 				&[],
@@ -1906,6 +1987,72 @@ mod tests {
 		);
 	}
 
+	/// Verifies material evaluation samples the configured lat-long environment on every backend.
+	#[test]
+	fn material_evaluation_backends_sample_lat_long_environment() {
+		let material = json::object! {
+			"variables": []
+		};
+		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").unwrap();
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = shader_generator.transform(shader_node, &material);
+		let root = besl::lex(shader).unwrap();
+		let main_node = root.get_main().unwrap();
+		let settings = ShaderGenerationSettings::compute(Extent::line(128));
+
+		let glsl = GLSLShaderGenerator::new().generate(&settings, &main_node).unwrap();
+		let hlsl = HLSLShaderGenerator::new().generate(&settings, &main_node).unwrap();
+		let msl = MSLShaderGenerator::new().generate(&settings, &main_node).unwrap();
+
+		assert!(
+			glsl.contains("textureLod(environment, environment_uv, 0.0)"),
+			"Generated GLSL does not sample the lat-long environment binding. Shader: {glsl}"
+		);
+		assert!(
+			hlsl.contains("environment.SampleLevel(environment_sampler, environment_uv, 0.0)"),
+			"Generated HLSL does not sample the lat-long environment binding. Shader: {hlsl}"
+		);
+		assert!(
+			msl.contains("resources.environment.sample(resources.environment_sampler, environment_uv, level(0.0))"),
+			"Generated MSL does not sample the lat-long environment binding. Shader: {msl}"
+		);
+		assert!(
+			msl.contains("sample_environment(normal, 1.0, gid, push_constant, resources)")
+				&& msl.contains("sample_environment(reflection_direction, roughness, gid, push_constant, resources)"),
+			"Generated MSL material evaluation does not forward its implicit inputs to environment sampling. Shader: {msl}"
+		);
+		assert_eq!(
+			glsl.matches("textureLod(environment,").count(),
+			5,
+			"GLSL environment blur tap count drifted"
+		);
+		assert_eq!(
+			hlsl.matches("environment.SampleLevel(").count(),
+			5,
+			"HLSL environment blur tap count drifted"
+		);
+		assert_eq!(
+			msl.matches("resources.environment.sample(").count(),
+			5,
+			"MSL environment blur tap count drifted"
+		);
+
+		for (backend, source) in [("GLSL", glsl), ("HLSL", hlsl), ("MSL", msl)] {
+			assert!(
+				source.contains("environment_sample.a <= 0.0")
+					&& source.contains("sample_analytical_reflection(direction, roughness)"),
+				"Generated {backend} lost the transparent fallback marker contract. Shader: {source}"
+			);
+			assert!(
+				source.contains("roughness_squared * 0.04")
+					&& source.contains("roughness_squared * 0.08")
+					&& source.contains("environment_uv.x + blur_offset.x")
+					&& source.contains("environment_uv.y + blur_offset.y"),
+				"Generated {backend} does not offset environment samples as roughness increases. Shader: {source}"
+			);
+		}
+	}
+
 	/// Ensures every reflected resource has a retained write in the material-evaluation pass.
 	#[test]
 	fn material_evaluation_flat_interface_matches_retained_resource_slots() {
@@ -1933,6 +2080,7 @@ mod tests {
 			(1051, 1),
 			(1052, 1),
 			(1053, 1),
+			(1054, 1),
 		];
 		let cases = [
 			(

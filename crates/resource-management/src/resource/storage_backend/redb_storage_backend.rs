@@ -16,8 +16,14 @@ use crate::{
 };
 
 pub struct RedbStorageBackend {
-	db: redb::Database,
+	db: RedbDatabase,
 	base_path: std::path::PathBuf,
+}
+
+/// The `RedbDatabase` enum keeps the runtime database read-only while allowing explicit resource producers to write.
+enum RedbDatabase {
+	Writable(redb::Database),
+	ReadOnly(redb::ReadOnlyDatabase),
 }
 
 const RESOURCES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resources");
@@ -190,7 +196,12 @@ fn insert_indexes(
 
 impl RedbStorageBackend {
 	pub fn new(base_path: std::path::PathBuf) -> Self {
-		Self::new_with_optional_producer_signature(base_path, None)
+		Self::new_with_optional_producer_signature(base_path, None, cfg!(not(debug_assertions)))
+	}
+
+	/// Opens a resource database with write access for tools that produce baked resources.
+	pub fn new_writable(base_path: std::path::PathBuf) -> Self {
+		Self::new_with_optional_producer_signature(base_path, None, false)
 	}
 
 	/// Opens a resource database whose persisted values also depend on an external resource producer.
@@ -198,11 +209,15 @@ impl RedbStorageBackend {
 	/// Runtime asset pipelines use this constructor so changing their generated resource ABI invalidates values baked by
 	/// the previous producer implementation.
 	pub fn new_with_producer_signature(base_path: std::path::PathBuf, producer_signature: &str) -> Self {
-		Self::new_with_optional_producer_signature(base_path, Some(producer_signature))
+		Self::new_with_optional_producer_signature(base_path, Some(producer_signature), false)
 	}
 
 	/// Opens the database after synchronizing its shared and optional producer-specific cache owners.
-	fn new_with_optional_producer_signature(base_path: std::path::PathBuf, producer_signature: Option<&str>) -> Self {
+	fn new_with_optional_producer_signature(
+		base_path: std::path::PathBuf,
+		producer_signature: Option<&str>,
+		read_only: bool,
+	) -> Self {
 		let mut memory_only = false;
 
 		if cfg!(test) {
@@ -211,26 +226,34 @@ impl RedbStorageBackend {
 
 		std::fs::create_dir_all(&base_path).unwrap();
 
-		let db_res = if !memory_only {
+		let db = if memory_only {
+			log::info!("Using memory database instead of file database.");
+			RedbDatabase::Writable(
+				redb::Database::builder()
+					.create_with_backend(redb::backends::InMemoryBackend::new())
+					.unwrap_or_else(|_| panic!("Could not create in-memory database")),
+			)
+		} else if read_only {
+			RedbDatabase::ReadOnly(redb::ReadOnlyDatabase::open(base_path.join("resources.db")).unwrap_or_else(|error| {
+				panic!(
+					"Failed to open resources database in read-only mode. The most likely cause is that BELD has not baked the resources or the database is invalid. Error: {}",
+					error
+				)
+			}))
+		} else {
 			sync_resource_management_signature(&base_path);
 			if let Some(producer_signature) = producer_signature {
 				sync_resource_producer_signature(&base_path, producer_signature);
 			}
-			redb::Database::create(base_path.join("resources.db"))
-		} else {
-			log::info!("Using memory database instead of file database.");
-			redb::Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())
+			let db = redb::Database::create(base_path.join("resources.db")).unwrap_or_else(|_| {
+				redb::Database::builder()
+					.create_with_backend(redb::backends::InMemoryBackend::new())
+					.unwrap_or_else(|_| panic!("Could not create in-memory database"))
+			});
+			RedbDatabase::Writable(db)
 		};
 
-		let db = match db_res {
-			Ok(db) => db,
-			Err(_) => match redb::Database::builder().create_with_backend(redb::backends::InMemoryBackend::new()) {
-				Ok(db) => db,
-				Err(_) => panic!("Could not create in-memory database"),
-			},
-		};
-
-		{
+		if let RedbDatabase::Writable(db) = &db {
 			let write = db.begin_write().unwrap();
 			let _ = write.open_table(RESOURCES_TABLE);
 			let _ = write.open_table(RESOURCE_CLASS_INDEX_TABLE);
@@ -241,6 +264,13 @@ impl RedbStorageBackend {
 		RedbStorageBackend { db, base_path }
 	}
 
+	fn begin_read(&self) -> Result<redb::ReadTransaction, redb::TransactionError> {
+		match &self.db {
+			RedbDatabase::Writable(db) => db.begin_read(),
+			RedbDatabase::ReadOnly(db) => db.begin_read(),
+		}
+	}
+
 	fn open_reader(&self, id: [u8; 16]) -> Option<MultiResourceReader> {
 		let file_id = resource_key_hex(id);
 		Some(Box::new(FileResourceReader::new(
@@ -249,7 +279,7 @@ impl RedbStorageBackend {
 	}
 
 	pub fn read_uid(&self, id: ResourceId) -> Option<(SerializableResource, MultiResourceReader)> {
-		let read = self.db.begin_read().unwrap();
+		let read = self.begin_read().unwrap();
 		let table = read.open_table(RESOURCES_TABLE).unwrap();
 
 		if let Some(d) = table.get(&id).unwrap() {
@@ -268,7 +298,7 @@ impl RedbStorageBackend {
 		use_property_index: bool,
 	) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError> {
 		let cursor = query.cursor.as_ref().map(|cursor| cursor.token.as_slice());
-		let read = self.db.begin_read().map_err(|_| QueryError::StorageFailure)?;
+		let read = self.begin_read().map_err(|_| QueryError::StorageFailure)?;
 		let resources_table = read.open_table(RESOURCES_TABLE).map_err(|_| QueryError::StorageFailure)?;
 
 		let mut items = Vec::new();
@@ -378,7 +408,7 @@ impl ReadStorageBackend for RedbStorageBackend {
 	fn list(&self) -> Result<Vec<String>, String> {
 		let mut resources = Vec::new();
 
-		let read = self.db.begin_read().unwrap();
+		let read = self.begin_read().unwrap();
 		let table = read.open_table(RESOURCES_TABLE).unwrap();
 
 		for doc in table.iter().unwrap() {
@@ -391,7 +421,7 @@ impl ReadStorageBackend for RedbStorageBackend {
 	}
 
 	fn read<'s, 'a, 'b>(&'s self, id: asset::ResourceId<'b>) -> Option<(SerializableResource, MultiResourceReader)> {
-		let read = self.db.begin_read().unwrap();
+		let read = self.begin_read().unwrap();
 		let table = read.open_table(RESOURCES_TABLE).unwrap();
 
 		let id = ResourceId::from(id.as_ref());
@@ -426,9 +456,16 @@ impl ReadStorageBackend for RedbStorageBackend {
 
 impl WriteStorageBackend for RedbStorageBackend {
 	fn delete<'a>(&'a self, id: asset::ResourceId<'a>) -> Result<(), String> {
+		let write = match &self.db {
+			RedbDatabase::Writable(db) => db
+				.begin_write()
+				.map_err(|_| "Failed to begin delete transaction".to_string())?,
+			RedbDatabase::ReadOnly(_) => {
+				return Err("Cannot delete from a read-only resources database".to_string());
+			}
+		};
 		let id = ResourceId::from(id.as_ref());
 
-		let write = self.db.begin_write().unwrap();
 		{
 			let mut resources_table = write.open_table(RESOURCES_TABLE).unwrap();
 			let mut class_table = write.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
@@ -457,6 +494,10 @@ impl WriteStorageBackend for RedbStorageBackend {
 		data: &[u8],
 		allocator: &dyn std::alloc::Allocator,
 	) -> Result<SerializableResource, ()> {
+		let write = match &self.db {
+			RedbDatabase::Writable(db) => db.begin_write().map_err(|_| ())?,
+			RedbDatabase::ReadOnly(_) => return Err(()),
+		};
 		let size = data.len();
 
 		let hash = {
@@ -469,8 +510,6 @@ impl WriteStorageBackend for RedbStorageBackend {
 
 		let resource = {
 			let resource = resource.into_serializable(hash, size);
-
-			let write = self.db.begin_write().unwrap();
 
 			{
 				let mut resources_table = write.open_table(RESOURCES_TABLE).unwrap();
@@ -503,9 +542,13 @@ impl WriteStorageBackend for RedbStorageBackend {
 	}
 
 	fn sync(&self, other: &dyn ReadStorageBackend) {
+		let RedbDatabase::Writable(db) = &self.db else {
+			return;
+		};
+
 		if let Some(other) = other.downcast_ref::<RedbStorageBackend>() {
 			{
-				let write = self.db.begin_write().unwrap();
+				let write = db.begin_write().unwrap();
 				write.delete_table(RESOURCES_TABLE).expect("Failed to delete table");
 				write.open_table(RESOURCES_TABLE).expect("Failed to open table");
 				write
@@ -519,12 +562,12 @@ impl WriteStorageBackend for RedbStorageBackend {
 			}
 
 			{
-				let read = other.db.begin_read().unwrap();
+				let read = other.begin_read().unwrap();
 				let source_resources = read.open_table(RESOURCES_TABLE).unwrap();
 				let source_classes = read.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
 				let source_properties = read.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
 
-				let write = self.db.begin_write().unwrap();
+				let write = db.begin_write().unwrap();
 
 				{
 					let mut dest_resources = write.open_table(RESOURCES_TABLE).unwrap();

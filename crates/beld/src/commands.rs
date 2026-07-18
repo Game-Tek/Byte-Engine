@@ -412,7 +412,7 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 
 	let asset_manager = get_asset_manager(storage_backend);
 
-	let storage_backend = RedbStorageBackend::new(destination_path.into());
+	let storage_backend = RedbStorageBackend::new_writable(destination_path.into());
 
 	let executor = resource_management::r#async::Executor::new().map_err(|_| 1)?;
 
@@ -446,7 +446,7 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 }
 
 pub fn delete(destination_path: String, ids: Vec<String>) -> Result<(), i32> {
-	let storage_backend = RedbStorageBackend::new(destination_path.into());
+	let storage_backend = RedbStorageBackend::new_writable(destination_path.into());
 
 	let mut ok = true;
 

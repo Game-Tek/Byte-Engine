@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use resource_management::{
 	asset::{FileStorageBackend, ResourceId},
 	resource::{
@@ -415,6 +417,7 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 	let executor = resource_management::r#async::Executor::new().map_err(|_| 1)?;
 
 	let asset_manager = Arc::new(asset_manager);
+	let resource_count = ids.len();
 
 	let tasks = ids.into_iter().map(async |id| {
 		let asset_manager = asset_manager.clone();
@@ -435,7 +438,9 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 	let tasks = utils::r#async::stream::iter(tasks);
 	let tasks = tasks.buffer_unordered(16).collect::<Vec<_>>();
 
+	let bake_start = Instant::now();
 	executor.block_on(tasks);
+	log::info!("Baked {} resources in {:?}", resource_count, bake_start.elapsed());
 
 	Ok(())
 }

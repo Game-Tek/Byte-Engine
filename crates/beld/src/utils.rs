@@ -18,7 +18,7 @@ pub fn get_asset_manager<SB: StorageBackend + 'static>(storage_backend: SB) -> A
 			// let common_shader_generator = byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new();
 
 			byte_engine::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator::new(
-				false, false, false, false, false, false, true, true,
+				true, true, true, true, true, true, true, true,
 			)
 		});
 		material_asset_handler.set_shader_generator(shader_generator.clone());

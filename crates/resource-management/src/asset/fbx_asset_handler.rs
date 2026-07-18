@@ -8,7 +8,7 @@ use std::{
 use utils::{json, json::JsonValueTrait};
 
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	asset_manager::AssetManager,
 	bema_asset_handler::{compile_shader_program, ProgramGenerator},
 	container_default_resource, sanitize_material_name, store_model, ContainerDefaultResource, ResourceId,
@@ -105,27 +105,18 @@ impl AssetHandler for FBXAssetHandler {
 		r#type.eq_ignore_ascii_case("fbx")
 	}
 
-	async fn bake<'a>(
-		&'a self,
-		asset_manager: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn Allocator,
-	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-		if let Some(resource_type) = storage_backend.get_type(url) {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(resource_type) = context.resource_type(url) {
 			if !self.can_handle(resource_type) {
 				return Err(LoadErrors::UnsupportedType);
 			}
 		}
+		let allocator = context.allocator();
 
 		// Resolve the container base so animation fragments never become part of the source filename.
 		let base = url.get_base();
 		let source_id = ResourceId::new(base.as_ref());
-		let (data, spec, source_type) = asset_storage_backend
-			.resolve_in(source_id, allocator)
-			.await
-			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		let (data, spec, source_type) = context.resolve(source_id).await?;
 		if !self.can_handle(&source_type) {
 			return Err(LoadErrors::UnsupportedType);
 		}
@@ -141,20 +132,17 @@ impl AssetHandler for FBXAssetHandler {
 				LoadErrors::FailedToProcess
 			})?;
 			if fragment.as_ref() == SKELETON_FRAGMENT {
-				return Ok((
-					ProcessedAsset::new(url, imported_skeleton.model),
-					Vec::new().into_boxed_slice(),
-				));
+				return context.store_primary(ProcessedAsset::new(url, imported_skeleton.model), &[]);
 			}
 
 			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
-			let skeleton = store_model::<SkeletonModel>(storage_backend, &skeleton_id, imported_skeleton.model, &[])?;
+			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, imported_skeleton.model, &[])?;
 			let animation = import_fbx_animation(&scene, fragment.as_ref(), skeleton, &imported_skeleton.source_to_skeleton)
 				.map_err(|error| {
 					log::error!("Failed to import FBX animation '{}': {error}", url.as_ref());
 					LoadErrors::FailedToProcess
 				})?;
-			return Ok((ProcessedAsset::new(url, animation), Vec::new().into_boxed_slice()));
+			return context.store_primary(ProcessedAsset::new(url, animation), &[]);
 		}
 
 		let default_resource = select_unfragmented_fbx_resource(&scene, spec.as_ref()).map_err(|error| {
@@ -172,7 +160,7 @@ impl AssetHandler for FBXAssetHandler {
 			})?;
 
 			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
-			let skeleton = store_model::<SkeletonModel>(storage_backend, &skeleton_id, imported_skeleton.model, &[])?;
+			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, imported_skeleton.model, &[])?;
 
 			let animation = import_fbx_animation(
 				&scene,
@@ -185,7 +173,7 @@ impl AssetHandler for FBXAssetHandler {
 				LoadErrors::FailedToProcess
 			})?;
 
-			return Ok((ProcessedAsset::new(url, animation), Vec::new().into_boxed_slice()));
+			return context.store_primary(ProcessedAsset::new(url, animation), &[]);
 		}
 
 		let imported_skeleton = (scene.meshes.iter().any(|mesh| !mesh.skin_deformers.is_empty())
@@ -199,28 +187,14 @@ impl AssetHandler for FBXAssetHandler {
 		let (skeleton, source_to_skeleton) = if let Some(imported) = imported_skeleton {
 			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
 			(
-				Some(store_model::<SkeletonModel>(
-					storage_backend,
-					&skeleton_id,
-					imported.model,
-					&[],
-				)?),
+				Some(store_model::<SkeletonModel>(context, &skeleton_id, imported.model, &[])?),
 				imported.source_to_skeleton,
 			)
 		} else {
 			(None, Vec::new())
 		};
 
-		let materials = resolve_fbx_materials(
-			asset_manager,
-			storage_backend,
-			spec.as_ref(),
-			source_id,
-			&scene,
-			self.generator.clone(),
-			allocator,
-		)
-		.await?;
+		let materials = resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, self.generator.clone()).await?;
 		let source = import_fbx_meshes(&scene, &materials, skeleton, &source_to_skeleton, allocator).map_err(|error| {
 			log::error!("Failed to import FBX mesh '{}': {error}", url.as_ref());
 			LoadErrors::FailedToProcess
@@ -236,10 +210,10 @@ impl AssetHandler for FBXAssetHandler {
 				LoadErrors::FailedToProcess
 			})?;
 
-		Ok((
+		context.store_primary(
 			ProcessedAsset::new(url, mesh.mesh).with_streams(mesh.stream_descriptions),
-			mesh.buffer,
-		))
+			&mesh.buffer,
+		)
 	}
 }
 
@@ -472,14 +446,13 @@ impl ResolvedFbxMaterials {
 
 /// Resolves each used FBX material exactly once, honoring `.fbx.bead` overrides before generating a solid fallback.
 async fn resolve_fbx_materials(
-	asset_manager: &AssetManager,
-	storage_backend: &dyn resource::StorageBackend,
+	context: BakeContext<'_>,
 	spec: Option<&json::Value>,
 	url: ResourceId<'_>,
 	scene: &ufbx::Scene,
 	generator: Option<Arc<dyn ProgramGenerator>>,
-	allocator: &dyn Allocator,
 ) -> Result<ResolvedFbxMaterials, LoadErrors> {
+	let allocator = context.allocator();
 	let keys = used_material_keys(scene, allocator);
 	let mut materials = HashMap::with_capacity(keys.len());
 
@@ -489,12 +462,9 @@ async fn resolve_fbx_materials(
 			MaterialKey::Material(index) => scene.materials.as_ref().get(index as usize).map(AsRef::as_ref),
 		};
 		let resolved = if let Some(override_id) = fbx_material_override(spec, material) {
-			asset_manager
-				.bake_if_not_exists_in::<VariantModel>(&override_id, storage_backend, allocator)
-				.await
-				.map_err(|_| LoadErrors::FailedToProcess)?
+			context.bake_dependency::<VariantModel>(&override_id).await?
 		} else {
-			generate_fbx_material(storage_backend, url, key, material, generator.clone()).await?
+			generate_fbx_material(context, url, key, material, generator.clone()).await?
 		};
 		materials.insert(key, resolved);
 	}
@@ -587,7 +557,7 @@ fn fbx_material_override(spec: Option<&json::Value>, material: Option<&ufbx::Mat
 
 /// Generates the current solid-value subset of an FBX material and stores its shader/material/variant resource chain.
 async fn generate_fbx_material(
-	storage_backend: &dyn resource::StorageBackend,
+	context: BakeContext<'_>,
 	mesh_url: ResourceId<'_>,
 	key: MaterialKey,
 	material: Option<&ufbx::Material>,
@@ -616,7 +586,7 @@ async fn generate_fbx_material(
 	.map_err(|_| LoadErrors::FailedToProcess)?
 	.map_err(|_| LoadErrors::FailedToProcess)?;
 
-	let shader = store_model::<Shader>(storage_backend, &shader_id, shader, &shader_bytes)?;
+	let shader = store_model::<Shader>(context, &shader_id, shader, &shader_bytes)?;
 	let material = MaterialModel {
 		double_sided: brdf.double_sided,
 		alpha_mode: alpha_mode.clone(),
@@ -627,13 +597,13 @@ async fn generate_fbx_material(
 		shaders: vec![shader],
 		parameters: Vec::new(),
 	};
-	let material = store_model::<MaterialModel>(storage_backend, &material_id, material, &[])?;
+	let material = store_model::<MaterialModel>(context, &material_id, material, &[])?;
 	let variant = VariantModel {
 		material,
 		variables: Vec::new(),
 		alpha_mode,
 	};
-	store_model::<VariantModel>(storage_backend, &variant_id, variant, &[])
+	store_model::<VariantModel>(context, &variant_id, variant, &[])
 }
 
 /// Converts ufbx's normalized PBR values into the engine's solid metallic-roughness graph.

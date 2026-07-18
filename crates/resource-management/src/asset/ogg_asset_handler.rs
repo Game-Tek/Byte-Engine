@@ -1,12 +1,9 @@
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	audio_utils::{bytes_per_sample, push_pcm_sample, sample_count_from_pcm_len},
 	ResourceId,
 };
-use crate::{
-	asset, processors::audio_processor::process_audio_in, resource, resources::audio::Audio, types::BitDepths, ProcessedAsset,
-};
+use crate::{processors::audio_processor::process_audio_in, resources::audio::Audio, types::BitDepths};
 
 impl Default for OGGAssetHandler {
 	fn default() -> Self {
@@ -79,24 +76,15 @@ impl AssetHandler for OGGAssetHandler {
 		r#type == "ogg"
 	}
 
-	async fn bake<'a>(
-		&'a self,
-		_: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-		if let Some(dt) = storage_backend.get_type(url) {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(dt) = context.resource_type(url) {
 			if !self.can_handle(dt) {
 				return Err(LoadErrors::UnsupportedType);
 			}
 		}
 
-		let (data, _, dt) = asset_storage_backend
-			.resolve_in(url, allocator)
-			.await
-			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		let (data, _, dt) = context.resolve(url).await?;
+		let allocator = context.allocator();
 
 		if !self.can_handle(&dt) {
 			return Err(LoadErrors::UnsupportedType);
@@ -107,7 +95,7 @@ impl AssetHandler for OGGAssetHandler {
 			Self::decode_ogg(&data, self.bit_depth, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
 
 		let (asset, data) = process_audio_in(url, audio_resource, data)?;
-		Ok((asset, data.to_vec().into_boxed_slice()))
+		context.store_primary(asset, &data)
 	}
 }
 
@@ -123,28 +111,16 @@ mod tests {
 
 	#[r#async::test]
 	async fn test_audio_asset_handler() {
-		let audio_asset_handler = OGGAssetHandler::new();
-
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-		let asset_manager = AssetManager::new(asset_storage_backend.clone());
-
-		let url = ResourceId::new("test-tone.ogg");
 		asset_storage_backend.add_file("test-tone.ogg", &make_test_ogg());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(OGGAssetHandler::new());
 
-		let (resource, data) = audio_asset_handler
-			.bake(
-				&asset_manager,
-				&resource_storage_backend,
-				&asset_storage_backend,
-				url,
-				&std::alloc::Global,
-			)
+		asset_manager
+			.bake("test-tone.ogg", &resource_storage_backend)
 			.await
 			.expect("Audio asset handler failed to load asset");
-
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
-			.expect("Audio asset failed to store");
 
 		let generated_resources = resource_storage_backend.get_resources();
 
@@ -159,6 +135,9 @@ mod tests {
 		assert_eq!(resource.channel_count, 1);
 		assert_eq!(resource.sample_rate, 48_000);
 		assert_eq!(resource.sample_count, 1024);
+		let data = resource_storage_backend
+			.get_resource_data_by_name(ResourceId::new("test-tone.ogg"))
+			.expect("Audio resource data should exist");
 		assert_eq!(data.len(), 1024 * 2);
 	}
 

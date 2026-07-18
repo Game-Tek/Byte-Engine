@@ -1,14 +1,10 @@
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
 };
 use crate::{
-	asset,
 	processors::lut_processor::{process_lut, LutDescription},
-	resource,
 	resources::lut::LutKind,
-	ProcessedAsset,
 };
 
 #[derive(Debug)]
@@ -95,24 +91,14 @@ impl AssetHandler for LUTAssetHandler {
 		r#type == "lut"
 	}
 
-	async fn bake<'a>(
-		&'a self,
-		_: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-		if let Some(dt) = storage_backend.get_type(url) {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(dt) = context.resource_type(url) {
 			if !self.can_handle(dt) {
 				return Err(LoadErrors::UnsupportedType);
 			}
 		}
 
-		let (data, _, dt) = asset_storage_backend
-			.resolve_in(url, allocator)
-			.await
-			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		let (data, _, dt) = context.resolve(url).await?;
 
 		if !self.can_handle(&dt) {
 			return Err(LoadErrors::UnsupportedType);
@@ -121,7 +107,8 @@ impl AssetHandler for LUTAssetHandler {
 		// The source bytes borrow the bake allocator, so parsing stays in this task.
 		let parsed = Self::parse_lut(&data).map_err(|_| LoadErrors::FailedToProcess)?;
 
-		process_lut(url, parsed.description, parsed.entries)
+		let (resource, data) = process_lut(url, parsed.description, parsed.entries)?;
+		context.store_primary(resource, &data)
 	}
 }
 
@@ -265,8 +252,6 @@ mod tests {
 
 	#[r#async::test]
 	async fn bake_lut_asset_generates_lut_resource() {
-		let asset_handler = LUTAssetHandler::new();
-
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		asset_storage_backend.add_file(
 			"grading/neutral.lut",
@@ -284,21 +269,13 @@ mod tests {
 		);
 
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-		let asset_manager = AssetManager::new(asset_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(LUTAssetHandler::new());
 
-		let (resource, data) = asset_handler
-			.bake(
-				&asset_manager,
-				&resource_storage_backend,
-				&asset_storage_backend,
-				ResourceId::new("grading/neutral.lut"),
-				&std::alloc::Global,
-			)
+		asset_manager
+			.bake("grading/neutral.lut", &resource_storage_backend)
 			.await
 			.expect("LUT asset handler should bake the asset");
-
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
-			.expect("LUT resource should store");
 
 		let generated = resource_storage_backend
 			.get_resource(ResourceId::new("grading/neutral.lut"))
@@ -308,6 +285,9 @@ mod tests {
 		assert_eq!(generated.class, "Lut");
 		assert_eq!(lut.kind, LutKind::ThreeDimensional);
 		assert_eq!(lut.size, 2);
+		let data = resource_storage_backend
+			.get_resource_data_by_name(ResourceId::new("grading/neutral.lut"))
+			.expect("LUT resource data should exist");
 		assert_eq!(data.len(), 8 * 3 * std::mem::size_of::<f32>());
 	}
 }

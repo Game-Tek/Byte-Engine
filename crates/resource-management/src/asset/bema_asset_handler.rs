@@ -6,7 +6,7 @@ use utils::{
 };
 
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	asset_manager::AssetManager,
 	ResourceId,
 };
@@ -99,24 +99,13 @@ impl AssetHandler for BEMAAssetHandler {
 		r#type == "bema"
 	}
 
-	async fn bake<'a>(
-		&'a self,
-		asset_manager: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-		if let Some(dt) = storage_backend.get_type(url) {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(dt) = context.resource_type(url) {
 			if dt != "bema" {
 				return Err(LoadErrors::UnsupportedType);
 			}
 		}
-
-		let (data, _, at) = asset_storage_backend
-			.resolve_in(url, allocator)
-			.await
-			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		let (data, _, at) = context.resolve(url).await?;
 
 		if at != "bema" {
 			return Err(LoadErrors::UnsupportedType);
@@ -142,19 +131,16 @@ impl AssetHandler for BEMAAssetHandler {
 
 			let mut shaders = Vec::with_capacity(asset_shaders.len());
 			for (s_type, shader_json) in asset_shaders.iter() {
-				let shader = transform_shader(
+				let shader = compile_and_store_shader(
+					context,
 					self.compiler.clone(),
 					generator.clone(),
-					storage_backend,
-					asset_storage_backend,
 					material_domain,
 					asset_object,
 					shader_json,
 					s_type,
-					allocator,
 				)
-				.await
-				.map_err(|_| LoadErrors::FailedToProcess)?;
+				.await?;
 				shaders.push(shader);
 			}
 
@@ -170,9 +156,7 @@ impl AssetHandler for BEMAAssetHandler {
 				let data_type = v["data_type"].as_str().unwrap().to_string();
 				let value = v["value"].as_str().unwrap().to_string();
 
-				let value = resolve_value(asset_manager, storage_backend, &data_type, &value)
-					.await
-					.map_err(|_| LoadErrors::FailedToProcess)?;
+				let value = resolve_value(context, &data_type, &value).await?;
 				values.push(value);
 			}
 
@@ -198,20 +182,17 @@ impl AssetHandler for BEMAAssetHandler {
 					name: "Visibility".to_string(),
 					pass: "MaterialEvaluation".to_string(),
 				},
-				shaders: shaders.into_iter().map(|(s, _)| s).collect(),
+				shaders,
 				parameters,
 			};
 
 			let resource = ProcessedAsset::new(url, resource);
 
-			Ok((resource, Vec::new().into_boxed_slice()))
+			context.store_primary(resource, &[])
 		} else {
 			let parent_material_url = asset["parent"].as_str().unwrap();
 
-			let material = asset_manager
-				.bake_if_not_exists(parent_material_url, storage_backend)
-				.await
-				.map_err(|_| LoadErrors::FailedToProcess)?;
+			let material = context.bake_dependency(parent_material_url).await?;
 
 			let material_repr: MaterialModel = crate::from_slice(&material.resource).unwrap();
 
@@ -229,9 +210,7 @@ impl AssetHandler for BEMAAssetHandler {
 					}
 				};
 
-				let resolved = resolve_value(asset_manager, storage_backend, &v.r#type, &value)
-					.await
-					.map_err(|_| LoadErrors::FailedToProcess)?;
+				let resolved = resolve_value(context, &v.r#type, &value).await?;
 				values.push(resolved);
 			}
 
@@ -271,7 +250,7 @@ impl AssetHandler for BEMAAssetHandler {
 				},
 			);
 
-			Ok((resource, Vec::new().into_boxed_slice()))
+			context.store_primary(resource, &[])
 		}
 	}
 }
@@ -393,28 +372,22 @@ pub(crate) fn compile_shader_program(
 	Ok((shader, shader_program.into_binary()))
 }
 
-/// Loads and compiles a shader definition into a stored resource.
-async fn transform_shader(
+/// Compiles a shader definition and stores the resulting resource and binary payload.
+async fn compile_and_store_shader(
+	context: BakeContext<'_>,
 	compiler: Arc<dyn ShaderCompiler>,
 	generator: Arc<dyn ProgramGenerator>,
-	storage_backend: &dyn resource::StorageBackend,
-	asset_storage_backend: &dyn asset::StorageBackend,
 	domain: &str,
 	material: &json::Object,
 	shader_json: &json::Value,
 	stage: &str,
-	allocator: &dyn std::alloc::Allocator,
-) -> Result<(ReferenceModel<Shader>, Box<[u8]>), String> {
-	let path = shader_json
-		.as_str()
-		.ok_or("Invalid shader path. The shader entry is missing a file path.".to_string())?;
+) -> Result<ReferenceModel<Shader>, LoadErrors> {
+	let path = shader_json.as_str().ok_or(LoadErrors::FailedToProcess)?;
 	let path = ResourceId::new(path);
-	let (arlp, _, format) = asset_storage_backend.resolve_in(path, allocator).await.or(Err(
-		"Failed to load shader source. The shader file is missing or unreadable.".to_string(),
-	))?;
+	let (arlp, _, format) = context.resolve(path).await?;
 
 	let shader_code = std::str::from_utf8(&arlp)
-		.map_err(|_| "Failed to decode shader source. The shader file is not valid UTF-8.".to_string())?
+		.map_err(|_| LoadErrors::FailedToProcess)?
 		.to_string();
 
 	let material = material.clone();
@@ -437,25 +410,16 @@ async fn transform_shader(
 		)
 	})
 	.await
-	.map_err(|_| "Failed to compile shader. The compilation task was cancelled.".to_string())?
-	.map_err(|_| "Failed to compile shader. The shader source likely contains errors.".to_string())?;
+	.map_err(|_| LoadErrors::FailedToProcess)?
+	.map_err(|_| LoadErrors::FailedToProcess)?;
 
-	let r = storage_backend
-		.store(ProcessedAsset::new(path, shader), &result_shader_bytes)
-		.or(Err(
-			"Failed to store shader resource. The storage backend likely rejected the write.".to_string(),
-		))?;
-
-	Ok((r.into(), result_shader_bytes))
+	context
+		.store_generated(ProcessedAsset::new(path, shader), &result_shader_bytes)
+		.map(Into::into)
 }
 
 /// Resolves a material parameter value based on its type.
-async fn resolve_value(
-	asset_manager: &AssetManager,
-	storage_backend: &dyn resource::StorageBackend,
-	data_type: &str,
-	value: &str,
-) -> Result<ValueModel, String> {
+async fn resolve_value(context: BakeContext<'_>, data_type: &str, value: &str) -> Result<ValueModel, LoadErrors> {
 	let to_color = |name: &str| match name {
 		"Red" => [1f32, 0f32, 0f32, 1f32],
 		"Green" => [0f32, 1f32, 0f32, 1f32],
@@ -477,13 +441,10 @@ async fn resolve_value(
 		}
 		"float" => Ok(ValueModel::Scalar(0f32)),
 		"Texture2D" => {
-			let image = asset_manager
-				.bake_if_not_exists(value, storage_backend)
-				.await
-				.map_err(|_| "Failed to load texture value. The referenced texture asset could not be loaded.".to_string())?;
+			let image = context.bake_dependency(value).await?;
 			Ok(ValueModel::Image(image))
 		}
-		_ => Err("Unknown data type. The material variable type is unsupported.".to_string()),
+		_ => Err(LoadErrors::FailedToProcess),
 	}
 }
 
@@ -669,27 +630,19 @@ pub mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let asset_manager = AssetManager::new(asset_storage_backend);
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
 		let mut asset_handler = BEMAAssetHandler::new();
 		asset_handler.compiler = Arc::new(TestShaderCompiler);
 
 		let shader_generator = RootTestShaderGenerator::new();
 
 		asset_handler.set_shader_generator(shader_generator);
+		asset_manager.add_asset_handler(asset_handler);
 
-		let (resource, data) = asset_handler
-			.bake(
-				&asset_manager,
-				&resource_storage_backend,
-				asset_manager.get_storage_backend(),
-				ResourceId::new("load_material.bema"),
-				&std::alloc::Global,
-			)
+		asset_manager
+			.bake("load_material.bema", &resource_storage_backend)
 			.await
 			.expect("Failed to load material");
-
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
-			.expect("Failed to store material");
 
 		let generated_resources = resource_storage_backend.get_resources();
 

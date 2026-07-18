@@ -64,27 +64,19 @@ impl AssetHandler for GLTFAssetHandler {
 		r#type == "gltf" || r#type == "glb"
 	}
 
-	async fn bake<'a>(
-		&'a self,
-		asset_manager: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-		if let Some(dt) = storage_backend.get_type(url) {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(dt) = context.resource_type(url) {
 			if !self.can_handle(dt) {
 				return Err(LoadErrors::UnsupportedType);
 			}
 		}
+		let asset_storage_backend = context.asset_storage_backend();
+		let allocator = context.allocator();
 
 		// Resolve the container base so generated skeleton and animation fragments never become part of the source filename.
 		let base = url.get_base();
 		let source_id = ResourceId::new(base.as_ref());
-		let (data, spec, dt) = asset_storage_backend
-			.resolve_in(source_id, allocator)
-			.await
-			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		let (data, spec, dt) = context.resolve(source_id).await?;
 
 		let (gltf, binary_blob) = if dt == "glb" {
 			// Arena-backed source bytes borrow the bake allocator, so parsing stays in this task instead of crossing a thread boundary.
@@ -105,7 +97,7 @@ impl AssetHandler for GLTFAssetHandler {
 				log::error!("Failed to import glTF skeleton '{}': {error}", url.as_ref());
 				LoadErrors::FailedToProcess
 			})?;
-			return Ok((ProcessedAsset::new(url, graph.skeleton), Vec::new().into_boxed_slice()));
+			return context.store_primary(ProcessedAsset::new(url, graph.skeleton), &[]);
 		}
 
 		let default_resource = if url.get_fragment().is_none() {
@@ -152,19 +144,20 @@ impl AssetHandler for GLTFAssetHandler {
 					LoadErrors::FailedToProcess
 				})?;
 				let skeleton_id = generated_gltf_skeleton_id(source_id);
-				let skeleton = store_model::<SkeletonModel>(storage_backend, &skeleton_id, graph.skeleton, &[])?;
+				let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[])?;
 				let animation = import_gltf_animation(&gltf, &buffers, fragment.as_ref(), &graph.source_to_dense, skeleton)
 					.map_err(|error| {
 						log::error!("Failed to import glTF animation '{}': {error}", url.as_ref());
 						LoadErrors::FailedToProcess
 					})?;
-				return Ok((ProcessedAsset::new(url, animation), Vec::new().into_boxed_slice()));
+				return context.store_primary(ProcessedAsset::new(url, animation), &[]);
 			}
 
 			let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
 			let image = load_gltf_image_data(asset_storage_backend, url, image, &buffers, allocator).await?;
 			let semantic = guess_semantic_from_name(url.get_base());
-			return process_gltf_image(url, image, semantic, allocator);
+			store_gltf_image(context, url, image, semantic)?;
+			return Ok(());
 		}
 
 		if default_resource == Some(ContainerDefaultResource::Animation) {
@@ -174,7 +167,7 @@ impl AssetHandler for GLTFAssetHandler {
 			})?;
 
 			let skeleton_id = generated_gltf_skeleton_id(source_id);
-			let skeleton = store_model::<SkeletonModel>(storage_backend, &skeleton_id, graph.skeleton, &[])?;
+			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[])?;
 
 			let animation =
 				import_gltf_animation(&gltf, &buffers, DEFAULT_ANIMATION_FRAGMENT, &graph.source_to_dense, skeleton).map_err(
@@ -183,7 +176,7 @@ impl AssetHandler for GLTFAssetHandler {
 						LoadErrors::FailedToProcess
 					},
 				)?;
-			return Ok((ProcessedAsset::new(url, animation), Vec::new().into_boxed_slice()));
+			return context.store_primary(ProcessedAsset::new(url, animation), &[]);
 		}
 
 		let spec = spec.as_ref();
@@ -282,30 +275,14 @@ impl AssetHandler for GLTFAssetHandler {
 			None
 		} else {
 			let skeleton_id = generated_gltf_skeleton_id(source_id);
-			Some(store_model::<SkeletonModel>(
-				storage_backend,
-				&skeleton_id,
-				graph.skeleton,
-				&[],
-			)?)
+			Some(store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[])?)
 		};
 
 		let (unique_materials, material_indices_per_primitive) = unique_gltf_materials(&primitives);
 		let mut resolved_materials = Vec::with_capacity(unique_materials.len());
 		for material in unique_materials {
-			let material = material_for_gltf_primitive(
-				asset_manager,
-				storage_backend,
-				asset_storage_backend,
-				spec,
-				url,
-				&gltf,
-				&buffers,
-				material,
-				self.generator.clone(),
-				allocator,
-			)
-			.await?;
+			let material =
+				material_for_gltf_primitive(context, spec, url, &gltf, &buffers, material, self.generator.clone()).await?;
 			resolved_materials.push(material);
 		}
 
@@ -449,10 +426,10 @@ impl AssetHandler for GLTFAssetHandler {
 			.process_owned(mesh_source)
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 
-		Ok((
+		context.store_primary(
 			ProcessedAsset::new(url, mesh.mesh).with_streams(mesh.stream_descriptions),
-			mesh.buffer,
-		))
+			&mesh.buffer,
+		)
 	}
 }
 
@@ -1312,61 +1289,34 @@ fn unique_gltf_materials<'a>(primitives: &[gltf::Primitive<'a>]) -> (Vec<gltf::M
 }
 
 async fn material_for_gltf_primitive(
-	asset_manager: &AssetManager,
-	storage_backend: &dyn resource::StorageBackend,
-	asset_storage_backend: &dyn asset::StorageBackend,
+	context: BakeContext<'_>,
 	spec: Option<&json::Value>,
 	mesh_url: ResourceId<'_>,
 	gltf: &gltf::Gltf,
 	buffers: &[gltf::buffer::Data],
 	material: gltf::Material<'_>,
 	generator: Option<Arc<dyn ProgramGenerator>>,
-	allocator: &dyn std::alloc::Allocator,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	if let Some(override_asset) = material_override(spec, &material) {
-		return asset_manager
-			.bake_if_not_exists_in::<VariantModel>(&override_asset, storage_backend, allocator)
-			.await
-			.map_err(|_| LoadErrors::FailedToProcess);
+		return context.bake_dependency::<VariantModel>(&override_asset).await;
 	}
 
-	generate_gltf_material_variant(
-		storage_backend,
-		asset_storage_backend,
-		mesh_url,
-		gltf,
-		buffers,
-		material,
-		generator,
-		allocator,
-	)
-	.await
+	generate_gltf_material_variant(context, mesh_url, gltf, buffers, material, generator).await
 }
 
 async fn generate_gltf_material_variant(
-	storage_backend: &dyn resource::StorageBackend,
-	asset_storage_backend: &dyn asset::StorageBackend,
+	context: BakeContext<'_>,
 	mesh_url: ResourceId<'_>,
 	gltf: &gltf::Gltf,
 	buffers: &[gltf::buffer::Data],
 	material: gltf::Material<'_>,
 	generator: Option<Arc<dyn ProgramGenerator>>,
-	allocator: &dyn std::alloc::Allocator,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let generator = generator.ok_or(LoadErrors::FailedToProcess)?;
 	let brdf = brdf_material_from_gltf(&material);
 	let alpha_mode = AlphaMode::from(brdf.alpha_mode);
 	let texture_dependencies = collect_gltf_texture_dependencies(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
-	let texture_variables = store_gltf_texture_dependencies(
-		storage_backend,
-		asset_storage_backend,
-		mesh_url,
-		gltf,
-		buffers,
-		&texture_dependencies,
-		allocator,
-	)
-	.await?;
+	let texture_variables = store_gltf_texture_dependencies(context, mesh_url, gltf, buffers, &texture_dependencies).await?;
 	let program = generate_textured_brdf_program(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
 	let base_id = generated_material_base_id(mesh_url, &material);
 	let shader_id = format!("{base_id}.shader");
@@ -1382,7 +1332,7 @@ async fn generate_gltf_material_variant(
 	.map_err(|_| LoadErrors::FailedToProcess)?
 	.map_err(|_| LoadErrors::FailedToProcess)?;
 
-	let shader = store_model::<Shader>(storage_backend, &shader_id, shader, &shader_bytes)?;
+	let shader = store_model::<Shader>(context, &shader_id, shader, &shader_bytes)?;
 	let material = MaterialModel {
 		double_sided: brdf.double_sided,
 		alpha_mode: alpha_mode.clone(),
@@ -1393,14 +1343,14 @@ async fn generate_gltf_material_variant(
 		shaders: vec![shader],
 		parameters: Vec::new(),
 	};
-	let material = store_model::<MaterialModel>(storage_backend, &material_id, material, &[])?;
+	let material = store_model::<MaterialModel>(context, &material_id, material, &[])?;
 	let variant = VariantModel {
 		material,
 		variables: texture_variables,
 		alpha_mode,
 	};
 
-	store_model::<VariantModel>(storage_backend, &variant_id, variant, &[])
+	store_model::<VariantModel>(context, &variant_id, variant, &[])
 }
 
 fn material_override(spec: Option<&json::Value>, material: &gltf::Material<'_>) -> Option<String> {
@@ -1602,12 +1552,13 @@ fn decode_external_gltf_image(bytes: &[u8]) -> Result<gltf::image::Data, LoadErr
 	})
 }
 
-fn process_gltf_image(
+/// Processes decoded glTF pixels and stores their image metadata and binary payload.
+fn store_gltf_image(
+	context: BakeContext<'_>,
 	id: ResourceId<'_>,
 	image: gltf::image::Data,
 	semantic: Semantic,
-	allocator: &dyn std::alloc::Allocator,
-) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
+) -> Result<crate::SerializableResource, LoadErrors> {
 	let format = gltf_image_format(image.format)?;
 	let image_description = ImageDescription {
 		format,
@@ -1617,8 +1568,8 @@ fn process_gltf_image(
 		generate_mipmaps: false,
 	};
 
-	let (asset, data) = process_image_in(id, image_description, image.pixels.into_boxed_slice(), allocator)?;
-	Ok((asset, data.to_vec().into_boxed_slice()))
+	let (resource, data) = process_image_in(id, image_description, image.pixels.into_boxed_slice(), context.allocator())?;
+	context.store_resource(resource, &data)
 }
 
 fn gltf_image_format(format: gltf::image::Format) -> Result<Formats, LoadErrors> {
@@ -1719,13 +1670,11 @@ fn merge_texture_semantics(left: Semantic, right: Semantic) -> Semantic {
 }
 
 async fn store_gltf_texture_dependencies(
-	storage_backend: &dyn resource::StorageBackend,
-	asset_storage_backend: &dyn asset::StorageBackend,
+	context: BakeContext<'_>,
 	mesh_url: ResourceId<'_>,
 	gltf: &gltf::Gltf,
 	buffers: &[gltf::buffer::Data],
 	dependencies: &[GltfTextureDependency],
-	allocator: &dyn std::alloc::Allocator,
 ) -> Result<Vec<VariantVariableModel>, LoadErrors> {
 	let mut variables = Vec::with_capacity(dependencies.len());
 
@@ -1735,17 +1684,7 @@ async fn store_gltf_texture_dependencies(
 			.find(|image| image.index() == dependency.image_index as usize)
 			.ok_or(LoadErrors::FailedToProcess)?;
 		let id = generated_gltf_image_id(mesh_url, image.index() as u32, image.name());
-		let image_ref = store_gltf_image_resource(
-			storage_backend,
-			asset_storage_backend,
-			mesh_url,
-			&id,
-			image,
-			buffers,
-			dependency.semantic,
-			allocator,
-		)
-		.await?;
+		let image_ref = load_and_store_gltf_image(context, mesh_url, &id, image, buffers, dependency.semantic).await?;
 
 		variables.push(VariantVariableModel {
 			name: generated_texture_variable_name(dependency.image_index),
@@ -1757,22 +1696,18 @@ async fn store_gltf_texture_dependencies(
 	Ok(variables)
 }
 
-async fn store_gltf_image_resource(
-	storage_backend: &dyn resource::StorageBackend,
-	asset_storage_backend: &dyn asset::StorageBackend,
+/// Loads one glTF image dependency and stores its processed resource.
+async fn load_and_store_gltf_image(
+	context: BakeContext<'_>,
 	mesh_url: ResourceId<'_>,
 	id: &str,
 	image: gltf::Image<'_>,
 	buffers: &[gltf::buffer::Data],
 	semantic: Semantic,
-	allocator: &dyn std::alloc::Allocator,
 ) -> Result<ReferenceModel<Image>, LoadErrors> {
-	let image_data = load_gltf_image_data(asset_storage_backend, mesh_url, image, buffers, allocator).await?;
-	let (resource, bytes) = process_gltf_image(ResourceId::new(id), image_data, semantic, allocator)?;
-	storage_backend
-		.store(resource, &bytes)
-		.map(|resource| resource.into())
-		.map_err(|_| LoadErrors::FailedToProcess)
+	let image_data =
+		load_gltf_image_data(context.asset_storage_backend(), mesh_url, image, buffers, context.allocator()).await?;
+	store_gltf_image(context, ResourceId::new(id), image_data, semantic).map(Into::into)
 }
 
 fn generated_material_json(variables: &[VariantVariableModel]) -> json::Object {
@@ -2817,7 +2752,7 @@ use maths_rs::{
 use utils::{json, json::JsonValueTrait, Extent};
 
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	asset_manager::AssetManager,
 	bema_asset_handler::{compile_shader_program, ProgramGenerator},
 	container_default_resource, sanitize_material_name, store_model, ContainerDefaultResource, ResourceId,

@@ -1,6 +1,12 @@
-use std::alloc::{Allocator, Global};
+use std::{
+	alloc::{Allocator, Global},
+	cell::Cell,
+};
 
-use super::{asset_handler::AssetHandler, StorageBackend};
+use super::{
+	asset_handler::{AssetHandler, BakeContext},
+	StorageBackend,
+};
 use crate::{
 	asset::{self, asset_handler::LoadErrors, ResourceId},
 	r#async::BoxedFuture,
@@ -11,14 +17,7 @@ use crate::{
 trait AbstractAssetHandler: Send + Sync {
 	fn can_handle(&self, r#type: &str) -> bool;
 
-	fn bake<'a>(
-		&'a self,
-		asset_manager: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn Allocator,
-	) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>>;
+	fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(), LoadErrors>>;
 }
 
 pub struct AssetManager {
@@ -60,18 +59,8 @@ impl AssetManager {
 				self.0.can_handle(r#type)
 			}
 
-			fn bake<'a>(
-				&'a self,
-				asset_manager: &'a AssetManager,
-				storage_backend: &'a dyn resource::StorageBackend,
-				asset_storage_backend: &'a dyn asset::StorageBackend,
-				url: ResourceId<'a>,
-				allocator: &'a dyn Allocator,
-			) -> BoxedFuture<'a, Result<(ProcessedAsset, Box<[u8]>), LoadErrors>> {
-				Box::pin(
-					self.0
-						.bake(asset_manager, storage_backend, asset_storage_backend, url, allocator),
-				)
+			fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(), LoadErrors>> {
+				Box::pin(self.0.bake(context, url))
 			}
 		}
 
@@ -111,11 +100,33 @@ impl AssetManager {
 
 		let start_time = std::time::Instant::now();
 
-		let (resource, buffer) = match asset_handler
-			.bake(self, resource_storage_backend, self.storage_backend.as_ref(), id, allocator)
-			.await
-		{
-			Ok(baked_asset) => baked_asset,
+		// The shared flag enforces the primary-write contract without rereading potentially expensive storage.
+		let primary_stored = Cell::new(false);
+		let context = BakeContext::new(
+			self,
+			resource_storage_backend,
+			self.storage_backend.as_ref(),
+			allocator,
+			id,
+			&primary_stored,
+		);
+		match asset_handler.bake(context, id).await {
+			Ok(()) if primary_stored.get() => {}
+			Ok(()) => {
+				return Err(LoadMessages::FailedToBake {
+					asset: id.to_string(),
+					error: LoadErrors::PrimaryResourceNotStored,
+				});
+			}
+			Err(LoadErrors::FailedToStore) => {
+				return Err(LoadMessages::FailedToStore {
+					asset: id.to_string(),
+					error: format!(
+						"Failed to store asset {:#?}. The resource storage backend likely rejected the primary resource write.",
+						id
+					),
+				});
+			}
 			Err(error) => {
 				log::error!("Failed to bake asset: {:#?}", error);
 				return Err(LoadMessages::FailedToBake {
@@ -123,13 +134,6 @@ impl AssetManager {
 					error,
 				});
 			}
-		};
-
-		if resource_storage_backend.store_in(resource, &buffer, allocator).is_err() {
-			return Err(LoadMessages::FailedToStore {
-				asset: id.to_string(),
-				error: format!("Failed to bake asset {:#?}", id),
-			});
 		}
 
 		log::trace!("Baked '{:#?}' resource in {:#?}", id, start_time.elapsed());
@@ -202,18 +206,14 @@ pub mod tests {
 			id == "test"
 		}
 
-		async fn bake<'a>(
-			&'a self,
-			_: &'a AssetManager,
-			_: &'a dyn ResourceStorageBackend,
-			_: &'a dyn StorageBackend,
-			id: ResourceId<'a>,
-			_: &'a dyn std::alloc::Allocator,
-		) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-			if id.get_base().as_ref() == "example.test" {
-				Ok((ProcessedAsset::new(id, TestResource {}), Vec::new().into_boxed_slice()))
-			} else {
-				Err(LoadErrors::AssetCouldNotBeLoaded)
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			match id.get_base().as_ref() {
+				"example.test" => context.store_primary(ProcessedAsset::new(id, TestResource {}), &[]),
+				"unstored.test" => Ok(()),
+				"mismatched.test" => {
+					context.store_primary(ProcessedAsset::new(ResourceId::new("other.test"), TestResource {}), &[])
+				}
+				_ => Err(LoadErrors::AssetCouldNotBeLoaded),
 			}
 		}
 	}
@@ -265,5 +265,42 @@ pub mod tests {
 		let result = asset_manager.bake("example.unknown", &resource_storage_backend).await;
 
 		assert_eq!(result, Err(LoadMessages::NoAssetHandler));
+	}
+
+	#[r#async::test]
+	async fn successful_handler_must_store_the_requested_primary_resource() {
+		let storage_backend = TestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(storage_backend);
+		asset_manager.add_asset_handler(TestAssetHandler::new());
+
+		let result = asset_manager.bake("unstored.test", &resource_storage_backend).await;
+
+		assert_eq!(
+			result,
+			Err(LoadMessages::FailedToBake {
+				asset: "unstored.test".to_string(),
+				error: LoadErrors::PrimaryResourceNotStored,
+			})
+		);
+	}
+
+	#[r#async::test]
+	async fn handler_cannot_store_a_different_resource_as_the_primary() {
+		let storage_backend = TestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(storage_backend);
+		asset_manager.add_asset_handler(TestAssetHandler::new());
+
+		let result = asset_manager.bake("mismatched.test", &resource_storage_backend).await;
+
+		assert_eq!(
+			result,
+			Err(LoadMessages::FailedToBake {
+				asset: "mismatched.test".to_string(),
+				error: LoadErrors::PrimaryResourceIdMismatch,
+			})
+		);
+		assert!(resource_storage_backend.get_resources().is_empty());
 	}
 }

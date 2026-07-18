@@ -3,16 +3,12 @@ use std::alloc::Allocator;
 use utils::Extent;
 
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
 };
 use crate::{
-	asset,
 	processors::image_processor::{gamma_from_semantic, guess_semantic_from_name, process_image_in, ImageDescription},
-	resource,
 	types::{Formats, Gamma},
-	ProcessedAsset,
 };
 
 struct DecodedImage<'a> {
@@ -49,24 +45,15 @@ impl AssetHandler for PNGAssetHandler {
 		r#type == "png" || r#type == "Image" || r#type == "image/png"
 	}
 
-	async fn bake<'a>(
-		&'a self,
-		_: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-		if let Some(dt) = storage_backend.get_type(url) {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(dt) = context.resource_type(url) {
 			if !self.can_handle(dt) {
 				return Err(LoadErrors::UnsupportedType);
 			}
 		}
 
-		let (data, _, dt) = asset_storage_backend
-			.resolve_in(url, allocator)
-			.await
-			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		let (data, _, dt) = context.resolve(url).await?;
+		let allocator = context.allocator();
 
 		let semantic = guess_semantic_from_name(url.get_base());
 		let transformations = self.transformations;
@@ -120,7 +107,7 @@ impl AssetHandler for PNGAssetHandler {
 		let DecodedImage { data, description } = decoded;
 
 		let (asset, data) = process_image_in(url, description, data, allocator).map_err(|_| LoadErrors::FailedToProcess)?;
-		Ok((asset, data.to_vec().into_boxed_slice()))
+		context.store_primary(asset, &data)
 	}
 }
 
@@ -239,27 +226,15 @@ mod tests {
 	#[r#async::test]
 	#[ignore = "Test uses data not pushed to the repository"]
 	async fn load_image() {
-		let asset_handler = PNGAssetHandler::new();
-
 		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
 		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-		let asset_manager = AssetManager::new(asset_storage_backend.clone());
+		let mut asset_manager = AssetManager::new(asset_storage_backend);
+		asset_manager.add_asset_handler(PNGAssetHandler::new());
 
-		let url = ResourceId::new("patterned_brick_floor_02_diff_2k.png");
-
-		let (resource, data) = asset_handler
-			.bake(
-				&asset_manager,
-				&resource_storage_backend,
-				&asset_storage_backend,
-				url,
-				&std::alloc::Global,
-			)
+		asset_manager
+			.bake("patterned_brick_floor_02_diff_2k.png", &resource_storage_backend)
 			.await
 			.expect("Image asset handler did not handle asset");
-
-		crate::resource::WriteStorageBackend::store(&resource_storage_backend, resource, &data)
-			.expect("Image asset did not store");
 
 		let generated_resources = resource_storage_backend.get_resources();
 

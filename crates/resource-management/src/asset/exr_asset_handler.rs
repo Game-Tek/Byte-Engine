@@ -4,14 +4,11 @@ use exr::prelude::{f16, ReadChannels as _, ReadImage as _, ReadLayers as _};
 use utils::Extent;
 
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	ResourceId,
 };
 use crate::{
-	asset,
 	processors::ibl_processor::bake_image_ibl_in,
-	resource,
 	resources::image::Image,
 	types::{Formats, Gamma},
 	ProcessedAsset,
@@ -108,24 +105,15 @@ impl AssetHandler for EXRAssetHandler {
 			|| r#type.eq_ignore_ascii_case("image/x-exr")
 	}
 
-	async fn bake<'a>(
-		&'a self,
-		_: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn Allocator,
-	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-		if let Some(data_type) = storage_backend.get_type(url) {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(data_type) = context.resource_type(url) {
 			if !self.can_handle(data_type) {
 				return Err(LoadErrors::UnsupportedType);
 			}
 		}
 
-		let (source, _, data_type) = asset_storage_backend
-			.resolve_in(url, allocator)
-			.await
-			.map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
+		let (source, _, data_type) = context.resolve(url).await?;
+		let allocator = context.allocator();
 		if !self.can_handle(&data_type) {
 			return Err(LoadErrors::UnsupportedType);
 		}
@@ -155,7 +143,7 @@ impl AssetHandler for EXRAssetHandler {
 		};
 		let asset = ProcessedAsset::new(url, image).with_streams(baked.streams);
 
-		Ok((asset, baked.data.to_vec().into_boxed_slice()))
+		context.store_primary(asset, &baked.data)
 	}
 }
 

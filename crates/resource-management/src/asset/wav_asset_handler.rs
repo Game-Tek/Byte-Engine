@@ -1,10 +1,9 @@
 use super::{
-	asset_handler::{AssetHandler, LoadErrors},
-	asset_manager::AssetManager,
+	asset_handler::{AssetHandler, BakeContext, LoadErrors},
 	audio_utils::{bit_depth_from_bits_per_sample, sample_count_from_pcm_len},
 	ResourceId,
 };
-use crate::{asset, processors::audio_processor::process_audio_in, resource, resources::audio::Audio, ProcessedAsset};
+use crate::{processors::audio_processor::process_audio_in, resources::audio::Audio};
 
 impl WAVAssetHandler {
 	/// Parses a WAV buffer into audio metadata and a borrowed PCM payload.
@@ -132,24 +131,15 @@ impl AssetHandler for WAVAssetHandler {
 		r#type == "wav"
 	}
 
-	async fn bake<'a>(
-		&'a self,
-		_: &'a AssetManager,
-		storage_backend: &'a dyn resource::StorageBackend,
-		asset_storage_backend: &'a dyn asset::StorageBackend,
-		url: ResourceId<'a>,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-		if let Some(dt) = storage_backend.get_type(url) {
+	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
+		if let Some(dt) = context.resource_type(url) {
 			if !self.can_handle(dt) {
 				return Err(LoadErrors::UnsupportedType);
 			}
 		}
 
-		let (data, _, dt) = asset_storage_backend
-			.resolve_in(url, allocator)
-			.await
-			.or(Err(LoadErrors::AssetCouldNotBeLoaded))?;
+		let (data, _, dt) = context.resolve(url).await?;
+		let allocator = context.allocator();
 
 		if !self.can_handle(&dt) {
 			return Err(LoadErrors::UnsupportedType);
@@ -160,7 +150,7 @@ impl AssetHandler for WAVAssetHandler {
 		output.extend_from_slice(pcm_data);
 
 		let (asset, data) = process_audio_in(url, audio_resource, output.into_boxed_slice())?;
-		Ok((asset, data.to_vec().into_boxed_slice()))
+		context.store_primary(asset, &data)
 	}
 }
 

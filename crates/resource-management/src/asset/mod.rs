@@ -50,15 +50,14 @@ pub(crate) fn container_default_resource(spec: Option<&BEADType>) -> Result<Opti
 
 /// Stores one generated model and returns the serialized reference used by its parent resource.
 pub(crate) fn store_model<M: crate::Model>(
-	storage_backend: &dyn crate::resource::StorageBackend,
+	context: asset_handler::BakeContext<'_>,
 	id: &str,
 	model: M,
 	data: &[u8],
 ) -> Result<crate::ReferenceModel<M>, asset_handler::LoadErrors> {
-	storage_backend
-		.store(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
+	context
+		.store_generated(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
 		.map(Into::into)
-		.map_err(|_| asset_handler::LoadErrors::FailedToProcess)
 }
 
 /// Converts authored material names into stable resource-ID path components.

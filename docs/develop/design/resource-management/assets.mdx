@@ -34,9 +34,9 @@ The standard graphics setup installs handlers for common engine formats:
 - LUT assets
 - WAV and OGG audio
 
-Handlers return a `ProcessedAsset` plus binary payload bytes.
-The processed asset is the typed metadata.
-The payload is the byte buffer that consumers will later upload, stream, decode, or play.
+Handlers store the requested resource through their `BakeContext` after all generated dependencies are ready.
+The context keeps source resolution, recursive baking, allocator-aware resource writes, and storage errors consistent across formats.
+Each stored resource contains typed metadata plus the binary payload that consumers will later upload, stream, decode, or play.
 
 ## Processing
 

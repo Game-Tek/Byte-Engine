@@ -1,0 +1,33 @@
+---
+title: Install BELD
+description: Install the Byte Engine asset-baking command-line tool from a source checkout.
+icon: Download
+---
+
+BELD is distributed with the Byte Engine source tree. Installing it with Cargo builds an optimized release binary and places it in Cargo's binary directory, normally `~/.cargo/bin`.
+
+From the root of a Byte Engine checkout, run:
+
+```bash
+cargo install --path crates/beld --locked
+```
+
+`--locked` requires Cargo to use the dependency versions recorded in the checkout's `Cargo.lock`. This keeps the installed tool aligned with the engine revision it was built from.
+
+Ensure Cargo's binary directory is on your `PATH`, then confirm the installation:
+
+```bash
+beld --help
+```
+
+Re-run the install command after updating the engine when you want the installed tool to use the new handlers and processors.
+
+## Run without installing
+
+For a one-off invocation, run BELD through the workspace instead:
+
+```bash
+cargo run -p beld -- --help
+```
+
+This is also a useful CI choice because it always uses the BELD source from the checked-out engine revision.

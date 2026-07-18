@@ -1,0 +1,48 @@
+---
+title: Bake Application Resources
+description: Turn an application's source assets into deterministic runtime resources with BELD.
+icon: PackageOpen
+---
+
+Applications should keep source assets and baked runtime resources separate:
+
+```text
+my-app/
+  assets/       # authored source files
+  resources/    # BELD output used by release builds
+  src/
+```
+
+Run BELD from the application directory and pass absolute source and destination directories. Asset IDs remain relative to `assets/`.
+
+```bash
+cd my-app
+
+beld --source "$PWD/assets" --destination "$PWD/resources" \
+  bake scene.glb environment.exr materials/hero.bema
+```
+
+Bake every asset that the release application requests, including environment maps, meshes, materials, audio, and explicitly requested container subresources. Quote an ID containing a fragment so the shell preserves it:
+
+```bash
+beld --source "$PWD/assets" --destination "$PWD/resources" bake \
+  'character.glb#skeleton' \
+  'character.fbx#animations/Walk'
+```
+
+The command writes the resource database and its payload files to `resources/`. These files, rather than the source `assets/` directory, are what a release application reads.
+
+## Check baked output
+
+Inspect the output before packaging:
+
+```bash
+beld --destination "$PWD/resources" list
+beld --destination "$PWD/resources" inspect scene.glb
+```
+
+Run `beld bake` again after changing a source asset or an engine asset processor. Baking requested IDs updates their generated output but does not remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
+
+## Development and release
+
+Debug applications can install an `AssetManager` and bake missing assets on demand. Release applications should instead receive a complete `resources/` directory prepared by BELD. Keeping baking as an explicit pre-package step makes releases reproducible and avoids shipping source assets solely for runtime processing.

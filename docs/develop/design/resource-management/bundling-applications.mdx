@@ -1,0 +1,99 @@
+---
+title: Build and Bundle an Application
+description: Bake resources, build a release binary, and create a macOS application bundle with cargo-bundle.
+icon: Boxes
+---
+
+This guide packages a Byte Engine application as a macOS `.app` using [cargo-bundle](https://github.com/burtonageo/cargo-bundle). Bake resources before bundling; `cargo-bundle` copies files into a bundle but does not process assets itself.
+
+## 1. Install cargo-bundle
+
+```bash
+cargo install cargo-bundle
+```
+
+## 2. Bake the application resources
+
+From the application directory:
+
+```bash
+beld --source "$PWD/assets" --destination "$PWD/resources" \
+  bake scene.glb environment.exr
+```
+
+Keep `resources/` outside Cargo's `target/` directory. It is a deliberate application input to packaging; `target/` is Cargo-owned and may be removed by `cargo clean`.
+
+## 3. Declare the bundle contents
+
+Add bundle metadata to the application's `Cargo.toml`:
+
+```toml
+[package.metadata.bundle]
+name = "My Application"
+identifier = "com.example.my-application"
+resources = ["resources"]
+```
+
+Use a reverse-DNS identifier that you own before distributing the application. The `resources` entry makes cargo-bundle copy the complete baked directory into the application bundle.
+
+## 4. Resolve bundled resources at runtime
+
+`GraphicsApplication` reads the `resources.path` parameter and otherwise defaults to a working-directory-relative `resources/`. A packaged application must instead select the resource directory beside its executable.
+
+For a macOS application bundle, the executable lives in `Contents/MacOS` and cargo-bundle places the resource directory in `Contents/Resources/resources`. Set the default path during application startup:
+
+```rust
+use std::path::PathBuf;
+
+use byte_engine::application::Parameter;
+
+fn default_resources_path() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|executable| {
+            let bundled = executable
+                .parent()?
+                .parent()?
+                .join("Resources")
+                .join("resources");
+            bundled.is_dir().then_some(bundled)
+        })
+        .unwrap_or_else(|| PathBuf::from("resources"))
+}
+
+let resources_path = default_resources_path();
+let app = GraphicsApplication::new(
+    "My Application",
+    &[Parameter::new(
+        "resources.path",
+        resources_path.to_str().expect("resource path must be valid UTF-8"),
+    )],
+);
+```
+
+The fallback keeps a normal `cargo run --release` using the local `resources/` directory. A command-line `--resources.path=/custom/resources` parameter still overrides this default when needed.
+
+## 5. Build the app bundle
+
+```bash
+cargo bundle --release --format osx
+```
+
+The completed app is written to:
+
+```text
+target/release/bundle/osx/My Application.app
+```
+
+Its relevant layout is:
+
+```text
+My Application.app/
+  Contents/
+    MacOS/my-application
+    Resources/resources/
+      resources.db
+      ... baked payload files ...
+```
+
+Copy the `.app` to `/Applications` or drag it there in Finder to install it locally. Code signing and notarization are required before distributing it to other Macs. A DMG is optional distribution packaging layered on top of the `.app`; it is not required to run or install the application.

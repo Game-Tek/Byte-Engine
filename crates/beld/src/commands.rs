@@ -468,16 +468,26 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 /// Recursively finds supported source assets beneath the configured assets directory.
 fn discover_asset_ids(source_path: &Path, asset_manager: &AssetManager) -> Result<Vec<String>, i32> {
 	let mut ids = Vec::new();
-	discover_asset_ids_in(source_path, source_path, asset_manager, &mut ids)?;
+	let canonical_root = std::fs::canonicalize(source_path).map_err(|error| {
+		log::error!(
+			"Failed to resolve assets directory '{}'. The most likely cause is that the directory does not exist or cannot be accessed. Error: {}",
+			source_path.display(),
+			error
+		);
+		1
+	})?;
+	let mut active_directories = std::collections::HashSet::from([canonical_root]);
+	discover_asset_ids_in(source_path, source_path, asset_manager, &mut active_directories, &mut ids)?;
 	ids.sort();
 	Ok(ids)
 }
 
-/// Adds supported regular files from one directory and its child directories to the bake list.
+/// Adds supported files from one directory and its children, following symlinks without revisiting an active ancestor.
 fn discover_asset_ids_in(
 	root_path: &Path,
 	directory: &Path,
 	asset_manager: &AssetManager,
+	active_directories: &mut std::collections::HashSet<std::path::PathBuf>,
 	ids: &mut Vec<String>,
 ) -> Result<(), i32> {
 	let entries = std::fs::read_dir(directory).map_err(|error| {
@@ -498,26 +508,56 @@ fn discover_asset_ids_in(
 			);
 			1
 		})?;
+		// Preserve the logical path used to enter a symlinked directory. Some platforms expose the resolved target path
+		// through `DirEntry::path`, which would otherwise lose the mounted namespace when deriving the asset ID.
+		let path = directory.join(entry.file_name());
 		let file_type = entry.file_type().map_err(|error| {
 			log::error!(
 				"Failed to inspect asset path '{}'. The most likely cause is a filesystem metadata failure. Error: {}",
-				entry.path().display(),
+				path.display(),
 				error
 			);
 			1
 		})?;
 
-		if file_type.is_dir() {
-			discover_asset_ids_in(root_path, &entry.path(), asset_manager, ids)?;
+		let followed_type = if file_type.is_symlink() {
+			std::fs::metadata(&path)
+				.map_err(|error| {
+					log::error!(
+					"Failed to follow asset symlink '{}'. The most likely cause is a broken link or inaccessible target. Error: {}",
+					path.display(),
+					error
+				);
+					1
+				})?
+				.file_type()
+		} else {
+			file_type
+		};
+
+		if followed_type.is_dir() {
+			let canonical_directory = std::fs::canonicalize(&path).map_err(|error| {
+				log::error!(
+					"Failed to resolve asset directory '{}'. The most likely cause is a broken symlink or inaccessible directory. Error: {}",
+					path.display(),
+					error
+				);
+				1
+			})?;
+			if !active_directories.insert(canonical_directory.clone()) {
+				log::warn!("Skipping cyclic asset directory link '{}'.", path.display());
+				continue;
+			}
+			let result = discover_asset_ids_in(root_path, &path, asset_manager, active_directories, ids);
+			active_directories.remove(&canonical_directory);
+			result?;
 			continue;
 		}
 
-		// Symlinks are intentionally skipped so a linked directory cannot create a traversal cycle.
-		if !file_type.is_file() {
+		if !followed_type.is_file() {
 			continue;
 		}
 
-		let path = entry.path();
 		let Some(relative_path) = path.strip_prefix(root_path).ok() else {
 			continue;
 		};
@@ -681,6 +721,41 @@ mod tests {
 
 		assert_eq!(ids, ["nested/deeper/a-first.fbx", "nested/material.bema", "z-last.png"]);
 		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn discovers_assets_through_symlinks_without_following_directory_cycles() {
+		use std::os::unix::fs::symlink;
+
+		let nonce = format!(
+			"{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		);
+		let root = std::env::temp_dir().join(format!("beld-symlink-discovery-test-{nonce}"));
+		let engine_assets = std::env::temp_dir().join(format!("beld-engine-assets-test-{nonce}"));
+		std::fs::create_dir_all(engine_assets.join("shaders")).unwrap();
+		std::fs::create_dir_all(&root).unwrap();
+		std::fs::write(engine_assets.join("shaders/render-pass.bema"), []).unwrap();
+		std::fs::write(engine_assets.join("engine-icon.png"), []).unwrap();
+		symlink(&engine_assets, root.join("byte-engine")).unwrap();
+		symlink(engine_assets.join("engine-icon.png"), root.join("linked-engine-icon.png")).unwrap();
+		symlink(&root, engine_assets.join("cycle-to-application-assets")).unwrap();
+
+		let asset_manager = get_asset_manager(FileStorageBackend::new(root.clone()));
+		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
+
+		assert_eq!(
+			ids,
+			[
+				"byte-engine/engine-icon.png",
+				"byte-engine/shaders/render-pass.bema",
+				"linked-engine-icon.png",
+			]
+		);
+		std::fs::remove_dir_all(root).unwrap();
+		std::fs::remove_dir_all(engine_assets).unwrap();
 	}
 
 	#[test]

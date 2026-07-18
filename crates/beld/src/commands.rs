@@ -577,7 +577,8 @@ fn discover_asset_ids_in(
 			continue;
 		}
 
-		if asset_manager.supports(&id) {
+		let has_sidecar = path.with_added_extension("bead").is_file();
+		if asset_manager.should_discover(&id, has_sidecar) {
 			ids.push(id);
 		}
 	}
@@ -720,6 +721,29 @@ mod tests {
 		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
 
 		assert_eq!(ids, ["nested/deeper/a-first.fbx", "nested/material.bema", "z-last.png"]);
+		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
+	fn standalone_besl_discovery_skips_orphans_and_includes_sources_with_sidecars() {
+		let root = std::env::temp_dir().join(format!(
+			"beld-besl-discovery-test-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		));
+		std::fs::create_dir_all(root.join("rendering")).unwrap();
+		std::fs::write(root.join("rendering/configured.besl"), b"main: fn () -> void {}").unwrap();
+		std::fs::write(
+			root.join("rendering/configured.besl.bead"),
+			br#"{ "stage": "Compute", "workgroup": [8, 8, 1] }"#,
+		)
+		.unwrap();
+		std::fs::write(root.join("rendering/orphan.besl"), b"main: fn () -> void {}").unwrap();
+
+		let asset_manager = get_asset_manager(FileStorageBackend::new(root.clone()));
+		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
+
+		assert_eq!(ids, ["rendering/configured.besl"]);
 		std::fs::remove_dir_all(root).unwrap();
 	}
 

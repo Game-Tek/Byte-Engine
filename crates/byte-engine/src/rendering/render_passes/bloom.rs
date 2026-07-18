@@ -131,40 +131,30 @@ impl BloomPass {
 			render_pass_builder,
 			bloom_pipeline_descriptor(
 				"Bloom Extract",
-				"byte-engine/rendering/bloom/extract",
+				"byte-engine/rendering/bloom/extract.besl",
 				"Bloom Extract Shader",
-				"Bloom Extract Descriptor Set Layout",
-				BLOOM_EXTRACT_BESL,
-				2,
 			),
 		)
 		.expect(
 			"Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.",
 		);
-		let downsample_pipeline = extract_pipeline
-			.compile_variant(
-				render_pass_builder,
-				bloom_pipeline_descriptor(
-					"Bloom Downsample",
-					"byte-engine/rendering/bloom/downsample",
-					"Bloom Downsample Shader",
-					"Bloom Extract Descriptor Set Layout",
-					BLOOM_DOWNSAMPLE_BESL,
-					2,
-				),
-			)
-			.expect(
-				"Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
-			);
+		let downsample_pipeline = simple_compute::Pipeline::compile(
+			render_pass_builder,
+			bloom_pipeline_descriptor(
+				"Bloom Downsample",
+				"byte-engine/rendering/bloom/downsample.besl",
+				"Bloom Downsample Shader",
+			),
+		)
+		.expect(
+			"Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
+		);
 		let upsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			bloom_pipeline_descriptor(
 				"Bloom Upsample",
-				"byte-engine/rendering/bloom/upsample",
+				"byte-engine/rendering/bloom/upsample.besl",
 				"Bloom Upsample Shader",
-				"Bloom Upsample Descriptor Set Layout",
-				BLOOM_UPSAMPLE_BESL,
-				3,
 			),
 		)
 		.expect(
@@ -174,11 +164,8 @@ impl BloomPass {
 			render_pass_builder,
 			bloom_pipeline_descriptor(
 				"Bloom Composite",
-				"byte-engine/rendering/bloom/composite",
+				"byte-engine/rendering/bloom/composite.besl",
 				"Bloom Composite Shader",
-				"Bloom Composite Descriptor Set Layout",
-				BLOOM_COMPOSITE_BESL,
-				3,
 			),
 		)
 		.expect(
@@ -211,7 +198,7 @@ impl BloomPass {
 								ghi::Layouts::Read,
 							),
 							simple_compute::Resource::image("result_texture", downsample_images[index]),
-							simple_compute::Resource::buffer("bloom_parameters", parameters),
+							simple_compute::Resource::planned_buffer("bloom_parameters", parameters),
 						],
 					)
 					.expect(
@@ -367,10 +354,6 @@ impl RenderPass for BloomPass {
 	}
 }
 
-fn bloom_dispatch_extent() -> Extent {
-	Extent::new(8, 8, 1)
-}
-
 fn bloom_extent(extent: Extent, level: usize) -> Extent {
 	let divisor = 1u32 << (level as u32 + 1);
 	Extent::rectangle(
@@ -379,134 +362,9 @@ fn bloom_extent(extent: Extent, level: usize) -> Extent {
 	)
 }
 
-fn bloom_pipeline_descriptor<'a>(
-	label: &'static str,
-	id: &'a str,
-	name: &'a str,
-	layout_name: &'a str,
-	source: &str,
-	parameters_binding: u32,
-) -> simple_compute::Descriptor<'a> {
-	simple_compute::Descriptor::new(
-		label,
-		id,
-		name,
-		build_bloom_program(source, parameters_binding),
-		bloom_dispatch_extent(),
-	)
-	.layout_name(layout_name)
+fn bloom_pipeline_descriptor<'a>(label: &'static str, id: &'a str, name: &'a str) -> simple_compute::Descriptor<'a> {
+	simple_compute::Descriptor::new(label, id, name)
 }
-
-fn build_bloom_program(source: &str, parameters_binding: u32) -> besl::NodeReference {
-	let mut program = simple_compute::Program::new();
-	let vec4f = program.type_node("vec4f").expect("vec4f type not found in BESL root");
-
-	// Bloom shaders share one test/program builder, so expose the superset of
-	// texture bindings used by extract, downsample, upsample, and composite.
-	for (name, binding) in [
-		("source_texture", 0),
-		("low_resolution_texture", 0),
-		("scene_texture", 0),
-		("high_resolution_texture", 1),
-		("bloom_texture", 1),
-	] {
-		program.binding(
-			name,
-			besl::BindingTypes::CombinedImageSampler { format: String::new() },
-			binding,
-			true,
-			false,
-		);
-	}
-	program.binding(
-		"result_texture",
-		besl::BindingTypes::Image {
-			format: "rgba16".to_string(),
-		},
-		parameters_binding - 1,
-		false,
-		true,
-	);
-	program.binding(
-		"bloom_parameters",
-		besl::BindingTypes::Buffer {
-			members: vec![
-				besl::Node::array("prefilter", vec4f.clone(), 1),
-				besl::Node::array("blur_data", vec4f, 1),
-			],
-		},
-		parameters_binding,
-		true,
-		false,
-	);
-	program
-		.compile(source)
-		.expect("Failed to compile bloom BESL shader. The most likely cause is invalid BESL syntax.")
-}
-
-const BLOOM_EXTRACT_BESL: &str = r#"
-main: fn() -> void {
-	let coord: vec2u = thread_id();
-	guard_image_bounds(result_texture, coord);
-	let source_size: vec2u = texture_size(source_texture);
-	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(source_size.x), f32(source_size.y));
-	let sampled: vec4f = texture_lod(source_texture, uv);
-	let brightness: f32 = max(max(sampled.x, sampled.y), sampled.z);
-	let threshold: f32 = bloom_parameters.prefilter[0].x;
-	let soft_knee: f32 = bloom_parameters.prefilter[0].y;
-	let knee: f32 = max(threshold * soft_knee, 0.00001);
-	let soft: f32 = clamp(brightness - threshold + knee, 0.0, 2.0 * knee);
-	soft = (soft * soft) / (4.0 * knee + 0.00001);
-	let contribution: f32 = max(soft, brightness - threshold);
-	contribution = contribution / max(brightness, 0.00001);
-	let bloom_color: vec3f = vec3f(sampled.x * contribution, sampled.y * contribution, sampled.z * contribution);
-	write(result_texture, coord, vec4f(bloom_color.x, bloom_color.y, bloom_color.z, 1.0));
-}
-"#;
-
-const BLOOM_DOWNSAMPLE_BESL: &str = r#"
-main: fn() -> void {
-	let coord: vec2u = thread_id();
-	guard_image_bounds(result_texture, coord);
-	let result_size: vec2u = image_size(result_texture);
-	let source_size: vec2u = texture_size(source_texture);
-	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));
-	let center: vec4f = texture_lod(source_texture, uv);
-	write(result_texture, coord, vec4f(center.x, center.y, center.z, 1.0));
-}
-"#;
-
-const BLOOM_UPSAMPLE_BESL: &str = r#"
-main: fn() -> void {
-	let coord: vec2u = thread_id();
-	guard_image_bounds(result_texture, coord);
-	let result_size: vec2u = image_size(result_texture);
-	let low_size: vec2u = texture_size(low_resolution_texture);
-	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));
-	let low_res: vec4f = texture_lod(low_resolution_texture, uv);
-	let high_res: vec4f = texture_lod(high_resolution_texture, uv);
-	let combined: vec3f = vec3f(high_res.x, high_res.y, high_res.z) + vec3f(low_res.x, low_res.y, low_res.z);
-	write(result_texture, coord, vec4f(combined.x, combined.y, combined.z, 1.0));
-}
-"#;
-
-const BLOOM_COMPOSITE_BESL: &str = r#"
-main: fn() -> void {
-	let coord: vec2u = thread_id();
-	guard_image_bounds(result_texture, coord);
-	let result_size: vec2u = image_size(result_texture);
-	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));
-	let scene: vec4f = texture_lod(scene_texture, uv);
-	let intensity: f32 = bloom_parameters.prefilter[0].z;
-	if (intensity <= 0.0) {
-		write(result_texture, coord, scene);
-		return;
-	}
-	let bloom: vec4f = texture_lod(bloom_texture, uv);
-	let final_color: vec3f = vec3f(scene.x, scene.y, scene.z) + vec3f(bloom.x, bloom.y, bloom.z) * intensity;
-	write(result_texture, coord, vec4f(final_color.x, final_color.y, final_color.z, 1.0));
-}
-"#;
 
 #[cfg(test)]
 mod tests {
@@ -515,10 +373,15 @@ mod tests {
 	use super::*;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
+	const BLOOM_EXTRACT_BESL: &str = include_str!("../../../assets/rendering/bloom/extract.besl");
+	const BLOOM_DOWNSAMPLE_BESL: &str = include_str!("../../../assets/rendering/bloom/downsample.besl");
+	const BLOOM_UPSAMPLE_BESL: &str = include_str!("../../../assets/rendering/bloom/upsample.besl");
+	const BLOOM_COMPOSITE_BESL: &str = include_str!("../../../assets/rendering/bloom/composite.besl");
+
 	/// Verifies threshold rejection and soft-knee extraction through the production bloom program.
 	#[test]
 	fn bloom_extract_besl_vm_applies_threshold_and_soft_knee() {
-		let program = crate::rendering::shader_vm_test::compile(build_bloom_program(BLOOM_EXTRACT_BESL, 2));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_EXTRACT_BESL));
 		let parameter_slot = ResourceSlot::new(2);
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
@@ -545,7 +408,7 @@ mod tests {
 	/// Verifies that downsampling reads the bilinear center of the source texture.
 	#[test]
 	fn bloom_downsample_besl_vm_samples_the_source_center() {
-		let program = crate::rendering::shader_vm_test::compile(build_bloom_program(BLOOM_DOWNSAMPLE_BESL, 2));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_DOWNSAMPLE_BESL));
 		let mut source = texture_2d(
 			2,
 			2,
@@ -569,7 +432,7 @@ mod tests {
 	/// Verifies that upsampling combines both production pyramid inputs.
 	#[test]
 	fn bloom_upsample_besl_vm_combines_both_levels() {
-		let program = crate::rendering::shader_vm_test::compile(build_bloom_program(BLOOM_UPSAMPLE_BESL, 3));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_UPSAMPLE_BESL));
 		let mut low = texture_2d(1, 1, &[[0.1, 0.2, 0.3, 0.0]]);
 		let mut high = texture_2d(1, 1, &[[0.4, 0.5, 0.6, 0.0]]);
 		let mut result = empty_image(1, 1);
@@ -586,7 +449,7 @@ mod tests {
 	/// Verifies additive bloom and the zero-intensity passthrough branch.
 	#[test]
 	fn bloom_composite_besl_vm_preserves_zero_intensity_and_adds_positive_bloom() {
-		let program = crate::rendering::shader_vm_test::compile(build_bloom_program(BLOOM_COMPOSITE_BESL, 3));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_COMPOSITE_BESL));
 		let parameter_slot = ResourceSlot::new(3);
 		let scene_color = [0.2, 0.3, 0.4, 0.6];
 		let bloom_color = [0.5, 0.25, 0.125, 0.0];

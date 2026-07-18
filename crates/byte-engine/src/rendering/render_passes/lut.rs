@@ -1,10 +1,19 @@
 /// The `LutRenderPass` struct applies a baked 3D LUT to the current `main` render target.
 pub struct LutRenderPass {
 	pass: simple_compute::Pass,
+	_parameters: ghi::BufferHandle<LutShaderParameters>,
 	lut: Lut,
 	lut_reference: Option<Reference<Lut>>,
 	lut_image: ghi::ImageHandle,
 	lut_uploaded: bool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LutShaderParameters {
+	domain_min: [f32; 4],
+	domain_scale: [f32; 4],
+	sampling: [f32; 4],
 }
 
 impl Entity for LutRenderPass {}
@@ -32,17 +41,13 @@ impl LutRenderPass {
 		);
 		render_pass_builder.alias("LUT Output", "main");
 
-		let shader_source = create_lut_shader_source(&lut_metadata);
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new(
 				"LUT",
-				"byte-engine/rendering/lut/apply",
+				"byte-engine/rendering/lut/apply.besl",
 				"LUT Render Pass Compute Shader",
-				create_lut_program(&shader_source),
-				Extent::new(8, 8, 1),
-			)
-			.layout_name("LUT Render Pass Descriptor Set"),
+			),
 		)
 		.expect("Failed to create LUT render shader. The most likely cause is an incompatible shader interface.");
 
@@ -67,6 +72,12 @@ impl LutRenderPass {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice)
 				.use_case(ghi::UseCases::STATIC),
 		);
+		let parameters = context.build_buffer::<LutShaderParameters>(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("LUT Parameters")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		*context.get_mut_buffer_slice(parameters) = lut_shader_parameters(&lut_metadata);
 
 		let pass = pipeline
 			.bind(
@@ -81,12 +92,14 @@ impl LutRenderPass {
 					),
 					simple_compute::Resource::combined_image_sampler("lut_texture", lut_image, lut_sampler, ghi::Layouts::Read),
 					simple_compute::Resource::image("result_texture", output),
+					simple_compute::Resource::buffer("parameters", parameters),
 				],
 			)
 			.expect("Failed to bind LUT render resources. The most likely cause is that the BESL bindings changed.");
 
 		Self {
 			pass,
+			_parameters: parameters,
 			lut: lut_metadata,
 			lut_reference: Some(lut),
 			lut_image,
@@ -114,6 +127,16 @@ impl LutRenderPass {
 	}
 }
 
+fn lut_shader_parameters(lut: &Lut) -> LutShaderParameters {
+	let domain_scale: [f32; 3] = std::array::from_fn(|index| 1.0 / (lut.domain_max[index] - lut.domain_min[index]));
+	let lut_size = lut.size as f32;
+	LutShaderParameters {
+		domain_min: [lut.domain_min[0], lut.domain_min[1], lut.domain_min[2], 0.0],
+		domain_scale: [domain_scale[0], domain_scale[1], domain_scale[2], 0.0],
+		sampling: [(lut_size - 1.0) / lut_size, 0.5 / lut_size, 0.0, 0.0],
+	}
+}
+
 impl RenderPass for LutRenderPass {
 	fn prepare<'a>(
 		&mut self,
@@ -125,82 +148,6 @@ impl RenderPass for LutRenderPass {
 
 		self.pass.prepare(frame, sink, frame_allocator)
 	}
-}
-
-fn create_lut_program(source: &str) -> besl::NodeReference {
-	let mut program = simple_compute::Program::new();
-	program.binding(
-		"source_texture",
-		besl::BindingTypes::CombinedImageSampler { format: String::new() },
-		0,
-		true,
-		false,
-	);
-	program.binding(
-		"lut_texture",
-		besl::BindingTypes::CombinedImageSampler {
-			format: "Texture3D".to_string(),
-		},
-		1,
-		true,
-		false,
-	);
-	program.binding(
-		"result_texture",
-		besl::BindingTypes::Image { format: String::new() },
-		2,
-		false,
-		true,
-	);
-	program
-		.compile(source)
-		.expect("Failed to find the LUT BESL entry point. The most likely cause is that the BESL program did not define main.")
-}
-
-/// Generates the LUT BESL shader source with the injected LUT domain constants baked in.
-fn create_lut_shader_source(lut: &Lut) -> String {
-	let domain_scale = lut
-		.domain_min
-		.into_iter()
-		.zip(lut.domain_max)
-		.map(|(minimum, maximum)| 1.0 / (maximum - minimum))
-		.collect::<Vec<_>>();
-	let lut_size = lut.size as f32;
-	let lut_texel_scale = (lut_size - 1.0) / lut_size;
-	let lut_texel_offset = 0.5 / lut_size;
-
-	format!(
-		r#"
-apply_lut: fn(color: vec3f) -> vec3f {{
-	let domain_min: vec3f = vec3f({:.9}, {:.9}, {:.9});
-	let domain_scale: vec3f = vec3f({:.9}, {:.9}, {:.9});
-	let normalized: vec3f = clamp((color - domain_min) * domain_scale, vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
-	let lut_uv: vec3f = normalized * {:.9} + vec3f({:.9}, {:.9}, {:.9});
-	let sampled: vec4f = texture_lod(lut_texture, lut_uv);
-	return vec3f(sampled.x, sampled.y, sampled.z);
-}}
-
-main: fn () -> void {{
-	let coord: vec2u = thread_id();
-	guard_image_bounds(result_texture, coord);
-	let extent: vec2u = image_size(result_texture);
-	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
-	let source_color: vec4f = texture_lod(source_texture, uv);
-	let result_color: vec3f = apply_lut(vec3f(source_color.x, source_color.y, source_color.z));
-	write(result_texture, coord, vec4f(result_color.x, result_color.y, result_color.z, source_color.w));
-}}
-"#,
-		lut.domain_min[0],
-		lut.domain_min[1],
-		lut.domain_min[2],
-		domain_scale[0],
-		domain_scale[1],
-		domain_scale[2],
-		lut_texel_scale,
-		lut_texel_offset,
-		lut_texel_offset,
-		lut_texel_offset
-	)
 }
 
 /// Reads the baked LUT payload from the resource reference into owned bytes.
@@ -281,14 +228,15 @@ pub struct LutRenderPassSettings {
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot, Texture};
+	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
 	use half::f16;
 	use resource_management::resources::lut::{Lut, LutKind};
 
-	use super::{
-		create_lut_program, create_lut_shader_source, expected_lut_payload_size, write_lut_bytes_to_rgba16f_upload_target,
-	};
-	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
+	use super::{expected_lut_payload_size, lut_shader_parameters, write_lut_bytes_to_rgba16f_upload_target};
+	use crate::rendering::render_pass::simple_compute;
+	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
+
+	const LUT_SHADER: &str = include_str!("../../../assets/rendering/lut/apply.besl");
 
 	/// Verifies identity trilinear interpolation, domain clamping, and alpha preservation through the VM.
 	#[test]
@@ -299,8 +247,19 @@ mod tests {
 			domain_min: [0.0, 0.0, 0.0],
 			domain_max: [1.0, 1.0, 1.0],
 		};
-		let source_code = create_lut_shader_source(&lut);
-		let program = crate::rendering::shader_vm_test::compile(create_lut_program(&source_code));
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(LUT_SHADER));
+		let parameter_slot = ResourceSlot::new(3);
+		let shader_parameters = lut_shader_parameters(&lut);
+		let mut parameters = buffer(&program, parameter_slot);
+		for (name, value) in [
+			("domain_min", shader_parameters.domain_min),
+			("domain_scale", shader_parameters.domain_scale),
+			("sampling", shader_parameters.sampling),
+		] {
+			parameters
+				.write(name, Value::Vec4F(value))
+				.expect("Failed to initialize LUT parameters. The most likely cause is a changed canonical buffer layout.");
+		}
 		let mut source = texture_2d(3, 1, &[[0.5, 0.5, 0.5, 0.4], [-1.0, 0.25, 0.75, 0.2], [2.0, 0.75, -2.0, 0.8]]);
 		let mut identity_lut = Texture::new_3d(2, 2, 2)
 			.expect("Failed to create a VM 3D texture. The most likely cause is an invalid LUT fixture extent.");
@@ -321,6 +280,7 @@ mod tests {
 			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
 			descriptors.bind_texture(ResourceSlot::new(1), &mut identity_lut);
 			descriptors.bind_image(ResourceSlot::new(2), &mut result);
+			descriptors.bind_buffer(parameter_slot, &mut parameters);
 			run_at(&program, &mut descriptors, [x, 0]);
 		}
 
@@ -330,25 +290,31 @@ mod tests {
 	}
 
 	#[test]
-	fn lut_besl_reflects_3d_texture_binding() {
-		let lut = Lut {
-			kind: LutKind::ThreeDimensional,
-			size: 16,
-			domain_min: [0.0, 0.0, 0.0],
-			domain_max: [1.0, 1.0, 1.0],
-		};
-
-		let source = create_lut_shader_source(&lut);
-		let main_node = create_lut_program(&source);
+	fn lut_besl_reflects_3d_texture_and_parameter_bindings() {
+		let main_node = simple_compute::compile_test_program(LUT_SHADER);
 		let bindings = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(&main_node)
 			.expect("Failed to evaluate the LUT descriptor schema")
 			.into_bindings();
+		let lut_texture = bindings
+			.iter()
+			.find(|binding| binding.name == "lut_texture")
+			.expect("Canonical LUT shader should retain its 3D texture binding");
 		assert!(matches!(
-			bindings[1].kind,
+			lut_texture.kind,
 			resource_management::shader::besl::evaluation::BindingKind::CombinedImageSampler {
 				view: resource_management::shader::besl::evaluation::TextureView::Texture3D
 			}
 		));
+		let parameters = bindings
+			.iter()
+			.find(|binding| binding.name == "parameters")
+			.unwrap_or_else(|| panic!("Canonical LUT shader should retain its parameter buffer: {bindings:?}"));
+		assert_eq!(parameters.slot, 3);
+		assert!(parameters.read && !parameters.write);
+		assert_eq!(
+			parameters.kind,
+			resource_management::shader::besl::evaluation::BindingKind::StorageBuffer
+		);
 	}
 
 	#[test]

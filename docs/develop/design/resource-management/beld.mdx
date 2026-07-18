@@ -15,7 +15,7 @@ beld --source assets --destination resources bake
 
 ## Commands
 
-`beld bake` processes asset IDs into resources. When no IDs are provided, BELD recursively discovers every source file supported by its registered handlers beneath the source directory. `.bead` sidecars and unknown files are ignored, and discovered IDs are processed in deterministic path order.
+`beld bake` processes asset IDs into resources. When no IDs are provided, BELD recursively discovers every source file supported by its registered handlers beneath the source directory. Discovery follows file and directory symlinks while preserving their logical paths as resource IDs, rejects broken links, and avoids directory cycles. `.bead` sidecars and unknown files are ignored. Standalone `.besl` sources require an adjacent `.besl.bead` to participate in discovery; BESL files used only by materials remain transitive inputs. Discovered IDs are processed in deterministic path order.
 The bake command installs the standard asset handlers and runs work concurrently.
 Each asset gets a local arena for decode-time and processing-time allocations so large temporary buffers can be released after that asset finishes.
 

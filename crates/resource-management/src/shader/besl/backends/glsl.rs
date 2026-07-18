@@ -800,6 +800,46 @@ mod tests {
 	}
 
 	#[test]
+	fn source_storage_image_descriptor_emits_explicit_glsl_format() {
+		let root = besl::compile_to_besl(
+			"image: descriptor<StorageImage<rgba16f>, 4, write>; main: fn () -> void { image; }",
+			None,
+		)
+		.expect("Expected formatted storage image descriptor to compile");
+		let main = RefCell::borrow(&root)
+			.get_child("main")
+			.expect("Expected formatted storage image shader main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected formatted storage image GLSL generation");
+
+		assert_string_contains!(shader, "layout(set=0,binding=4,rgba16f) writeonly uniform image2D image;");
+	}
+
+	#[test]
+	fn source_unformatted_storage_image_descriptor_omits_glsl_format() {
+		let root = besl::compile_to_besl(
+			"image: descriptor<StorageImage, 5, write>; main: fn () -> void { image; }",
+			None,
+		)
+		.expect("Expected unformatted storage image descriptor to compile");
+		let main = RefCell::borrow(&root)
+			.get_child("main")
+			.expect("Expected unformatted storage image shader main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected unformatted storage image GLSL generation");
+
+		assert_string_contains!(shader, "layout(set=0,binding=5) writeonly uniform image2D image;");
+		assert!(
+			!shader.contains("binding=5,"),
+			"Unformatted storage image emitted a dangling GLSL format comma: {shader}"
+		);
+	}
+
+	#[test]
 	fn vec4u16_uses_the_native_glsl_packed_vector_type() {
 		let main = generator::tests::vec4u16_binding();
 		let shader = Generator::new()

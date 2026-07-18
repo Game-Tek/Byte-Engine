@@ -5,35 +5,36 @@
 //! functions individually; the `window` example demonstrates that narrower
 //! composition.
 
+use resource_management::asset::bema_asset_handler::ProgramGenerator;
+#[cfg(debug_assertions)]
 use resource_management::asset::{
-	asset_manager::AssetManager,
-	bema_asset_handler::{BEMAAssetHandler, ProgramGenerator},
-	exr_asset_handler::EXRAssetHandler,
-	fbx_asset_handler::FBXAssetHandler,
-	gltf_asset_handler::GLTFAssetHandler,
-	lut_asset_handler::LUTAssetHandler,
-	ogg_asset_handler::OGGAssetHandler,
-	png_asset_handler::PNGAssetHandler,
-	wav_asset_handler::WAVAssetHandler,
-	FileStorageBackend,
+	asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler, besl_shader_asset_handler::BESLShaderAssetHandler,
+	exr_asset_handler::EXRAssetHandler, fbx_asset_handler::FBXAssetHandler, gltf_asset_handler::GLTFAssetHandler,
+	lut_asset_handler::LUTAssetHandler, ogg_asset_handler::OGGAssetHandler, png_asset_handler::PNGAssetHandler,
+	wav_asset_handler::WAVAssetHandler, FileStorageBackend,
 };
 use tracing::debug_span;
 use utils::Extent;
 
 use super::{setup_pbr_visibility_shading_render_pipeline, GraphicsApplication};
+#[cfg(debug_assertions)]
+use crate::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator;
 use crate::{
 	application::{application::Application, parameters::Parameters as _, thread::Thread, Events},
 	audio::audio_system::{AudioSystem, DefaultAudioSystem},
 	core::listener::Listener as _,
 	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
-	rendering::{pipelines::visibility::shader_generator::VisibilityShaderGenerator, window::Window},
+	rendering::window::Window,
 };
 
 /// Installs the standard assets, input devices, audio worker, visibility
 /// rendering pipeline, and window.
 pub fn default_setup(application: &mut GraphicsApplication) {
-	let generator = VisibilityShaderGenerator::new(false, false, false, false, false, false, true, true);
-	setup_default_resource_and_asset_management(application, generator);
+	#[cfg(debug_assertions)]
+	{
+		let generator = VisibilityShaderGenerator::new(false, false, false, false, false, false, true, true);
+		setup_default_resource_and_asset_management(application, generator);
+	}
 	setup_default_input(application);
 	setup_default_audio(application);
 	setup_pbr_visibility_shading_render_pipeline(application, None);
@@ -48,43 +49,56 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 		.create(Window::new(application.get_name(), Extent::rectangle(1920, 1080)));
 }
 
-/// Connects the asset directory and standard material, FBX, glTF, image, LUT, and
-/// audio handlers to the application's resource manager.
+/// In debug builds, connects the asset directory and standard material, model,
+/// image, audio, and standalone-shader handlers to the resource manager.
+///
+/// Release builds intentionally leave the manager without asset processors and
+/// must receive their complete resource store from BELD.
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
 	generator: impl ProgramGenerator + 'static,
 ) {
-	let generator = std::sync::Arc::new(generator);
-	let assets_path: std::path::PathBuf = application
-		.get_parameter("assets-path")
-		.map(|parameter| parameter.value.clone())
-		.unwrap_or_else(|| "assets".into())
-		.into();
+	#[cfg(not(debug_assertions))]
+	{
+		let _ = (application, generator);
+		return;
+	}
 
-	let storage_backend = FileStorageBackend::new(assets_path);
-	let mut asset_manager = AssetManager::new(storage_backend);
+	#[cfg(debug_assertions)]
+	{
+		let generator = std::sync::Arc::new(generator);
+		let assets_path: std::path::PathBuf = application
+			.get_parameter("assets-path")
+			.map(|parameter| parameter.value.clone())
+			.unwrap_or_else(|| "assets".into())
+			.into();
 
-	let mut material_asset_handler = BEMAAssetHandler::new();
-	material_asset_handler.set_shader_generator(generator.clone());
-	asset_manager.add_asset_handler(material_asset_handler);
+		let storage_backend = FileStorageBackend::new(assets_path);
+		let mut asset_manager = AssetManager::new(storage_backend);
 
-	let mut fbx_asset_handler = FBXAssetHandler::new();
-	fbx_asset_handler.set_shader_generator(generator.clone());
-	asset_manager.add_asset_handler(fbx_asset_handler);
+		let mut material_asset_handler = BEMAAssetHandler::new();
+		material_asset_handler.set_shader_generator(generator.clone());
+		asset_manager.add_asset_handler(material_asset_handler);
 
-	let mut gltf_asset_handler = GLTFAssetHandler::new();
-	gltf_asset_handler.set_shader_generator(generator);
-	asset_manager.add_asset_handler(gltf_asset_handler);
-	asset_manager.add_asset_handler(PNGAssetHandler::new());
-	asset_manager.add_asset_handler(EXRAssetHandler::new());
-	asset_manager.add_asset_handler(LUTAssetHandler::new());
-	asset_manager.add_asset_handler(WAVAssetHandler::new());
-	asset_manager.add_asset_handler(OGGAssetHandler::new());
+		let mut fbx_asset_handler = FBXAssetHandler::new();
+		fbx_asset_handler.set_shader_generator(generator.clone());
+		asset_manager.add_asset_handler(fbx_asset_handler);
 
-	application
-		.resource_manager
-		.try_map_mut(|resource_manager| resource_manager.set_asset_manager(asset_manager))
-		.expect("Failed to set up resource manager. Application cannot run without a resource manager.");
+		let mut gltf_asset_handler = GLTFAssetHandler::new();
+		gltf_asset_handler.set_shader_generator(generator);
+		asset_manager.add_asset_handler(gltf_asset_handler);
+		asset_manager.add_asset_handler(PNGAssetHandler::new());
+		asset_manager.add_asset_handler(EXRAssetHandler::new());
+		asset_manager.add_asset_handler(LUTAssetHandler::new());
+		asset_manager.add_asset_handler(WAVAssetHandler::new());
+		asset_manager.add_asset_handler(OGGAssetHandler::new());
+		asset_manager.add_asset_handler(BESLShaderAssetHandler::new());
+
+		application
+			.resource_manager
+			.try_map_mut(|resource_manager| resource_manager.set_asset_manager(asset_manager))
+			.expect("Failed to set up resource manager. Application cannot run without a resource manager.");
+	}
 }
 
 /// Installs the device classes expected by [`super::process_default_window_input`].

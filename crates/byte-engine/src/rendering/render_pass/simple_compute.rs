@@ -9,100 +9,42 @@ use ghi::{
 	context::ContextCreate as _,
 };
 use resource_management::{
-	resources::material,
-	shader::{
-		besl::evaluation::{BindingKind, BindingUsage, ProgramEvaluation, TextureView},
-		generator::ShaderGenerationSettings,
-	},
+	shader::besl::evaluation::{BindingKind, BindingUsage, TextureView},
 	types::ShaderTypes as ResourceShaderTypes,
 };
 use smallvec::SmallVec;
 use utils::Extent;
 
 use super::{allocate_render_command, RenderPass, RenderPassBuilder, RenderPassReturn};
-use crate::rendering::{
-	shader_store::{ShaderSourceDefinition, ShaderSourceDescriptor},
-	Sink,
-};
+use crate::rendering::Sink;
 
 /// The `Descriptor` struct describes the stable shader and naming contract for one single-set BESL compute pipeline.
 pub struct Descriptor<'a> {
 	label: &'static str,
 	shader_id: &'a str,
 	shader_name: &'a str,
-	generation_name: &'a str,
-	layout_name: &'a str,
-	main_node: besl::NodeReference,
-	workgroup: Extent,
 }
 
 impl<'a> Descriptor<'a> {
-	/// Creates a descriptor whose shader generation and layout names use the supplied human-readable names.
-	pub fn new(
-		label: &'static str,
-		shader_id: &'a str,
-		shader_name: &'a str,
-		main_node: besl::NodeReference,
-		workgroup: Extent,
-	) -> Self {
+	/// Creates a descriptor for one baked shader resource and its human-readable GPU label.
+	pub fn new(label: &'static str, shader_id: &'a str, shader_name: &'a str) -> Self {
 		Self {
 			label,
 			shader_id,
 			shader_name,
-			generation_name: shader_name,
-			layout_name: label,
-			main_node,
-			workgroup,
 		}
 	}
-
-	/// Uses a distinct shader-generation name without changing shader identity.
-	pub fn generation_name(mut self, generation_name: &'a str) -> Self {
-		self.generation_name = generation_name;
-		self
-	}
-
-	/// Uses the existing diagnostic name for the generated descriptor-set layout.
-	pub fn layout_name(mut self, layout_name: &'a str) -> Self {
-		self.layout_name = layout_name;
-		self
-	}
 }
 
-/// The `Program` struct provides the flat resource vocabulary shared by simple BESL compute passes.
-pub struct Program(besl::Node);
-
-impl Default for Program {
-	fn default() -> Self {
-		Self(besl::Node::root())
-	}
-}
-
-impl Program {
-	pub fn new() -> Self {
-		Self::default()
-	}
-
-	/// Returns a built-in BESL type for buffer-member declarations.
-	pub fn type_node(&self, name: &str) -> Option<besl::NodeReference> {
-		self.0.get_child(name)
-	}
-
-	/// Adds one flat resource declaration to the program.
-	pub fn binding(&mut self, name: &str, kind: besl::BindingTypes, slot: u32, read: bool, write: bool) {
-		self.0.add_child(besl::Node::binding(name, kind, slot, read, write).into());
-	}
-
-	/// Compiles the supplied body and returns its main entry point.
-	pub fn compile(self, source: &str) -> Result<besl::NodeReference, String> {
-		let program = besl::compile_to_besl(source, Some(self.0)).map_err(|error| {
-			format!("Simple compute BESL did not compile: {error:?}. The most likely cause is invalid shader syntax.")
-		})?;
-		program.get_main().ok_or_else(|| {
-			"Simple compute entry point is missing. The most likely cause is that the BESL program does not define `main`."
-				.to_string()
-		})
-	}
+/// Compiles one canonical BESL asset and returns its compute entry point for semantic tests.
+#[cfg(test)]
+pub fn compile_test_program(source: &str) -> besl::NodeReference {
+	let program = besl::compile_to_besl(source, None).expect(
+		"Failed to compile a canonical render-pass BESL asset. The most likely cause is invalid source syntax or descriptor declarations.",
+	);
+	program.get_main().expect(
+		"Canonical render-pass entry point is missing. The most likely cause is that the BESL asset does not define `main`.",
+	)
 }
 
 /// The `Pipeline` struct provides reusable compute state to sink-specific retained resource sets.
@@ -115,12 +57,12 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-	/// Compiles the shader and derives its material interface and GHI descriptor layout from the reachable BESL bindings.
+	/// Loads a baked shader and derives its dispatch and binding contracts from the persisted reflected interface.
 	pub fn compile(render_pass_builder: &mut RenderPassBuilder<'_>, descriptor: Descriptor<'_>) -> Result<Self, String> {
 		Self::build(render_pass_builder, descriptor, None)
 	}
 
-	/// Compiles another shader against this pipeline's validated binding layout.
+	/// Loads another baked shader against this pipeline's validated binding layout.
 	pub fn compile_variant(
 		&self,
 		render_pass_builder: &mut RenderPassBuilder<'_>,
@@ -139,12 +81,32 @@ impl Pipeline {
 			label,
 			shader_id,
 			shader_name,
-			generation_name,
-			layout_name,
-			main_node,
-			workgroup,
 		} = descriptor;
-		let bindings = ProgramEvaluation::from_main(&main_node)?.into_bindings();
+		let loaded = render_pass_builder.load_shader(shader_id, shader_name)?;
+		if loaded.stage != ResourceShaderTypes::Compute {
+			return Err(format!(
+				"Render-pass shader '{shader_id}' is not a compute shader. The most likely cause is incorrect .besl.bead stage metadata."
+			));
+		}
+		let (width, height, depth) = loaded.interface.workgroup_size.ok_or_else(|| {
+			format!(
+				"Render-pass shader '{shader_id}' has no compute workgroup size. The most likely cause is missing .besl.bead workgroup metadata."
+			)
+		})?;
+		let workgroup = Extent::new(width, height, depth);
+		let bindings = loaded
+			.interface
+			.bindings
+			.into_iter()
+			.map(|binding| BindingUsage {
+				name: binding.name,
+				kind: binding.kind,
+				count: binding.count,
+				slot: binding.slot,
+				read: binding.read,
+				write: binding.write,
+			})
+			.collect::<Vec<_>>();
 		validate_binding_schema(&bindings)?;
 		let binding_schema = if let Some(shared_layout) = shared_layout {
 			validate_shared_schema(&shared_layout.bindings, &bindings)?;
@@ -152,28 +114,11 @@ impl Pipeline {
 		} else {
 			bindings.into()
 		};
-		let _ = layout_name;
-		let shader = render_pass_builder.create_shader(&ShaderSourceDescriptor {
-			id: shader_id,
-			name: shader_name,
-			stage: ResourceShaderTypes::Compute,
-			source: ShaderSourceDefinition::Besl {
-				settings: ShaderGenerationSettings::compute(workgroup).name(generation_name.to_string()),
-				main_node,
-			},
-			interface: material::ShaderInterface {
-				workgroup_size: Some(normalized_workgroup(workgroup)),
-				bindings: binding_schema
-					.iter()
-					.map(|usage| material::Binding::new(usage.slot, usage.kind, usage.count, usage.read, usage.write))
-					.collect(),
-			},
-		})?;
 		let handle = render_pass_builder
 			.context()
 			.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 				&[],
-				ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
+				ghi::ShaderParameter::new(&loaded.handle, ghi::ShaderTypes::Compute),
 			));
 
 		Ok(Self {
@@ -320,10 +265,6 @@ impl RenderPass for Pass {
 			);
 		}))
 	}
-}
-
-fn normalized_workgroup(workgroup: Extent) -> (u32, u32, u32) {
-	(workgroup.width().max(1), workgroup.height().max(1), workgroup.depth().max(1))
 }
 
 fn texture_view(view: TextureView) -> ghi::TextureViewTypes {

@@ -1,5 +1,4 @@
 use ghi::command_buffer::{CommandBufferRecording as _, CommonCommandBufferMode as _};
-use utils::Extent;
 
 use crate::{
 	core::Entity,
@@ -60,55 +59,15 @@ impl BaseSwapchainBlitPass {
 			render_pass_builder,
 			simple_compute::Descriptor::new(
 				"Swapchain Blit",
-				"byte-engine/rendering/blit/swapchain",
+				"byte-engine/rendering/blit/swapchain.besl",
 				"Swapchain Blit Compute Shader",
-				create_swapchain_blit_program(),
-				Extent::square(32),
-			)
-			.generation_name("Swapchain Blit")
-			.layout_name("Swapchain Blit Pass Set Layout"),
+			),
 		)
 		.expect("Failed to create swapchain blit shader");
 
 		Self { pipeline }
 	}
 }
-
-fn create_swapchain_blit_program() -> besl::NodeReference {
-	let mut program = simple_compute::Program::new();
-	program.binding(
-		"source",
-		besl::BindingTypes::Image {
-			format: "rgba16".to_string(),
-		},
-		0,
-		true,
-		false,
-	);
-	program.binding(
-		"result",
-		besl::BindingTypes::Image {
-			format: "unknown".to_string(),
-		},
-		1,
-		false,
-		true,
-	);
-	program
-		.compile(SWAPCHAIN_BLIT_SHADER)
-		.expect("Failed to compile the swapchain blit shader. The most likely cause is invalid BESL syntax.")
-}
-
-const SWAPCHAIN_BLIT_SHADER: &str = r#"
-main: fn() -> void {
-	let coord: vec2u = thread_id();
-	let source_color: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
-
-	guard_image_bounds(source, coord);
-	source_color = image_load(source, coord);
-	write(result, coord, source_color);
-}
-"#;
 
 pub struct SwapchainBlitPass {
 	render_pass: simple_compute::Pass,
@@ -155,13 +114,15 @@ impl RenderPass for SwapchainBlitPass {
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot};
 
-	use super::{create_swapchain_blit_program, SWAPCHAIN_BLIT_SHADER};
+	use super::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, empty_image, rgba, run_at, texture_2d};
+
+	const SWAPCHAIN_BLIT_SHADER: &str = include_str!("../../../assets/rendering/blit/swapchain.besl");
 
 	/// Verifies exact production blits and the dispatch guard through the VM.
 	#[test]
 	fn swapchain_blit_besl_vm_copies_pixels_and_ignores_out_of_bounds_invocations() {
-		let program = crate::rendering::shader_vm_test::compile(create_swapchain_blit_program());
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SWAPCHAIN_BLIT_SHADER));
 		let expected = [
 			[0.1, 0.2, 0.3, 0.4],
 			[0.5, 0.6, 0.7, 0.8],
@@ -194,11 +155,5 @@ mod tests {
 		for (index, expected) in expected.into_iter().enumerate() {
 			assert_rgba_close(rgba(&result, [(index % 2) as u32, (index / 2) as u32]), expected, 0.0);
 		}
-	}
-
-	#[test]
-	fn swapchain_blit_besl_parses() {
-		besl::parse(SWAPCHAIN_BLIT_SHADER)
-			.expect("Failed to parse the swapchain blit BESL shader. The most likely cause is invalid BESL source syntax.");
 	}
 }

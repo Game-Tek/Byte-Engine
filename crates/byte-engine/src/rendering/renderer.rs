@@ -29,6 +29,7 @@ pub struct Renderer {
 	cameras: SmallVec<[(Handle, Camera); 16]>,
 
 	render_targets: RenderTargets,
+	resource_manager: Option<crate::core::entity::handle::WeakHandle<ResourceManager>>,
 
 	render_passes: SmallVec<[Box<dyn RenderPass>; 64]>,
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
@@ -188,6 +189,7 @@ impl Renderer {
 			cameras: SmallVec::with_capacity(16),
 
 			render_targets: RenderTargets::new(),
+			resource_manager: None,
 
 			render_passes: SmallVec::with_capacity(64),
 			render_passes_by_sink: SmallVec::with_capacity(32),
@@ -207,6 +209,15 @@ impl Renderer {
 		}
 	}
 
+	/// Supplies the externally owned resource manager used by render passes to resolve baked shaders.
+	///
+	/// The renderer retains a weak reference so application setup can still configure the manager
+	/// through its unique handle. The owner must therefore keep `resource_manager` alive for as long
+	/// as render passes may load resources.
+	pub fn set_resource_manager(&mut self, resource_manager: &EntityHandle<ResourceManager>) {
+		self.resource_manager = Some(resource_manager.weak());
+	}
+
 	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
 		let pipeline_manager_id = self.pipeline_managers.len();
 		{
@@ -220,7 +231,14 @@ impl Renderer {
 					continue;
 				}
 
+				let resource_manager = self
+					.resource_manager
+					.as_ref()
+					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut rpb = RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				if let Some(resource_manager) = resource_manager.as_deref() {
+					rpb = rpb.with_shader_resources(resource_manager);
+				}
 
 				pipeline_manager.create_sink(sink_id, &mut rpb);
 				let consumed_resources = rpb
@@ -247,13 +265,20 @@ impl Renderer {
 			let Renderer {
 				context,
 				render_targets,
+				resource_manager,
 				pipeline_managers,
 				pipeline_manager_resources_by_sink,
 				..
 			} = self;
 
 			for (pipeline_manager_id, sm) in pipeline_managers.iter_mut().enumerate() {
+				let resource_manager = resource_manager
+					.as_ref()
+					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut rpb = RenderPassBuilder::new(context, render_targets, sink_id, swapchain);
+				if let Some(resource_manager) = resource_manager.as_deref() {
+					rpb = rpb.with_shader_resources(resource_manager);
+				}
 
 				sm.create_sink(sink_id, &mut rpb);
 				let consumed_resources = rpb
@@ -296,8 +321,15 @@ impl Renderer {
 		for sink_id in sink_ids {
 			let render_pass = {
 				let swapchain = self.windows[sink_id].1;
+				let resource_manager = self
+					.resource_manager
+					.as_ref()
+					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut render_pass_builder =
 					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				if let Some(resource_manager) = resource_manager.as_deref() {
+					render_pass_builder = render_pass_builder.with_shader_resources(resource_manager);
+				}
 				render_pass_factory(&mut render_pass_builder)
 			};
 
@@ -315,8 +347,15 @@ impl Renderer {
 
 		for render_pass_factory in &self.post_scene_render_pass_factories {
 			let render_pass = {
+				let resource_manager = self
+					.resource_manager
+					.as_ref()
+					.and_then(|resource_manager| resource_manager.upgrade());
 				let mut render_pass_builder =
 					RenderPassBuilder::new(&mut self.context, &mut self.render_targets, sink_id, swapchain);
+				if let Some(resource_manager) = resource_manager.as_deref() {
+					render_pass_builder = render_pass_builder.with_shader_resources(resource_manager);
+				}
 				render_pass_factory(&mut render_pass_builder)
 			};
 

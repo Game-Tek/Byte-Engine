@@ -14,7 +14,7 @@ Examples:
 - WAV and OGG audio
 - LUT files
 - `.bema` material and variant declarations
-- BESL shader source files referenced by materials
+- standalone BESL shader source files and BESL files referenced by materials
 
 Asset IDs are written as resource-style paths.
 The file extension is part of the ID when selecting an asset handler, and a fragment can identify a sub-asset when a container format exposes many resources.
@@ -33,6 +33,7 @@ The standard graphics setup installs handlers for common engine formats:
 - `.bema` materials and variants
 - LUT assets
 - WAV and OGG audio
+- standalone `.besl` shaders with `.besl.bead` stage metadata
 
 Handlers store the requested resource through their `BakeContext` after all generated dependencies are ready.
 The context keeps source resolution, recursive baking, allocator-aware resource writes, and storage errors consistent across formats.
@@ -44,7 +45,7 @@ Asset processing is where source data becomes engine data.
 
 Image processing decodes pixels, infers semantics from names such as albedo, normal, roughness, or emissive, chooses gamma, and can convert to GPU-friendly formats.
 Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
-Material processing compiles shader source and stores reflection metadata such as bindings and workgroup size.
+Material and standalone shader processing compile BESL and store reflection metadata such as descriptor names, slots, access, and workgroup size.
 
 ## Skeletal model resources
 

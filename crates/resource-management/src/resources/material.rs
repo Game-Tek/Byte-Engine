@@ -173,6 +173,7 @@ pub use crate::shader::besl::evaluation::{BindingKind, TextureView};
 /// The `Binding` struct preserves one flat shader resource requirement in persisted material artifacts.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Binding {
+	pub name: String,
 	pub slot: u32,
 	pub kind: BindingKind,
 	pub count: u32,
@@ -191,11 +192,20 @@ impl Binding {
 			"Invalid resource slot range. The most likely cause is that a persisted shader resource array extends beyond the flat slot space."
 		);
 		Self {
+			name: String::new(),
 			slot,
 			kind,
 			count,
 			read,
 			write,
+		}
+	}
+
+	/// Associates the authored BESL descriptor name with a validated persisted binding.
+	pub fn named(name: impl Into<String>, slot: u32, kind: BindingKind, count: u32, read: bool, write: bool) -> Self {
+		Self {
+			name: name.into(),
+			..Self::new(slot, kind, count, read, write)
 		}
 	}
 }
@@ -212,6 +222,7 @@ pub enum ShaderArtifact {
 	Hlsl { entry_point: String },
 	Msl { entry_point: String },
 	Mtlb { entry_point: String },
+	Dxil,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -292,11 +303,28 @@ pub enum Property {
 
 #[cfg(test)]
 mod tests {
-	use super::{Binding, BindingKind};
+	use super::{Binding, BindingKind, ShaderArtifact};
+
+	#[test]
+	fn persisted_bindings_keep_named_and_unnamed_construction_distinct() {
+		let unnamed = Binding::new(0, BindingKind::StorageBuffer, 1, true, false);
+		let named = Binding::named("scene", 1, BindingKind::StorageBuffer, 1, true, false);
+
+		assert!(unnamed.name.is_empty());
+		assert_eq!(named.name, "scene");
+	}
 
 	#[test]
 	#[should_panic(expected = "Invalid resource slot range")]
 	fn persisted_binding_rejects_flat_slot_overflow() {
 		Binding::new(u32::MAX, BindingKind::StorageBuffer, 1, true, false);
+	}
+
+	#[test]
+	fn dxil_shader_artifact_round_trips_through_resource_archiving() {
+		let bytes = crate::to_vec(&ShaderArtifact::Dxil).expect("DXIL artifact should serialize");
+		let artifact: ShaderArtifact = crate::from_slice(&bytes).expect("DXIL artifact should deserialize");
+
+		assert!(matches!(artifact, ShaderArtifact::Dxil));
 	}
 }

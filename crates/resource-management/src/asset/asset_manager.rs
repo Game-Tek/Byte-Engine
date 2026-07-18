@@ -16,6 +16,7 @@ use crate::{
 
 trait AbstractAssetHandler: Send + Sync {
 	fn can_handle(&self, r#type: &str) -> bool;
+	fn should_discover(&self, id: ResourceId<'_>, has_sidecar: bool) -> bool;
 
 	fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(), LoadErrors>>;
 }
@@ -59,6 +60,10 @@ impl AssetManager {
 				self.0.can_handle(r#type)
 			}
 
+			fn should_discover(&self, id: ResourceId<'_>, has_sidecar: bool) -> bool {
+				self.0.should_discover(id, has_sidecar)
+			}
+
 			fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(), LoadErrors>> {
 				Box::pin(self.0.bake(context, url))
 			}
@@ -77,6 +82,14 @@ impl AssetManager {
 		self.asset_handlers
 			.iter()
 			.any(|handler| handler.can_handle(id.get_extension()))
+	}
+
+	/// Returns whether recursive discovery should include the given supported source asset.
+	pub fn should_discover(&self, id: &str, has_sidecar: bool) -> bool {
+		let id = ResourceId::new(id);
+		self.asset_handlers
+			.iter()
+			.any(|handler| handler.can_handle(id.get_extension()) && handler.should_discover(id, has_sidecar))
 	}
 
 	/// Call this to bake an asset identified by it's URL.
@@ -255,6 +268,17 @@ pub mod tests {
 		assert!(asset_manager.supports("nested/example.test"));
 		assert!(asset_manager.supports("nested/example.test#fragment"));
 		assert!(!asset_manager.supports("nested/example.unknown"));
+	}
+
+	#[test]
+	fn registered_handlers_are_discoverable_by_default() {
+		let storage_backend = TestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(storage_backend);
+		asset_manager.add_asset_handler(TestAssetHandler::new());
+
+		assert!(asset_manager.should_discover("nested/example.test", false));
+		assert!(asset_manager.should_discover("nested/example.test", true));
+		assert!(!asset_manager.should_discover("nested/example.unknown", true));
 	}
 
 	#[r#async::test]

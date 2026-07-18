@@ -8,10 +8,30 @@ Applications should keep source assets and baked runtime resources separate:
 
 ```text
 my-app/
-  assets/       # authored source files
+  assets/       # authored source files and linked engine assets
+    byte-engine -> ../path/to/byte-engine/assets
   resources/    # BELD output used by release builds
   src/
 ```
+
+Keep the engine-owned shader files in the engine crate and expose them under the application's asset namespace with a directory symlink:
+
+```bash
+ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte-engine
+```
+
+The logical symlink path is retained in resource IDs, so `assets/byte-engine/rendering/sky.besl` becomes `byte-engine/rendering/sky.besl`. BELD follows linked files and directories and detects directory cycles. Broken or inaccessible links fail the bake instead of silently producing an incomplete release resource set.
+
+The engine crate package includes its `assets/` directory. For a registry dependency, vendor the resolved crate source and point the same application symlink at that vendored `assets/` directory; this keeps the link target stable instead of depending on Cargo's registry cache layout:
+
+```bash
+cargo vendor --locked --versioned-dirs vendor
+ln -s ../vendor/byte-engine-0.1.0/assets assets/byte-engine
+```
+
+Use the version Cargo actually placed in `vendor/`. Commit both the vendor directory and symlink, or recreate them in the same bootstrap step in every developer and CI checkout. BELD is not published as a separate crate, so install it from a matching Byte Engine tag, revision, or source checkout when the application consumes Byte Engine from a registry.
+
+On Windows, the checkout must preserve directory symlinks. Enable Developer Mode or otherwise grant link creation permission and make sure Git does not materialize the link as a plain text file. The current automated symlink coverage runs on Unix hosts.
 
 Run BELD from the application directory and pass absolute source and destination directories. Asset IDs remain relative to `assets/`.
 
@@ -22,7 +42,7 @@ beld --source "$PWD/assets" --destination "$PWD/resources" \
   bake
 ```
 
-With no IDs, BELD recursively discovers all supported source assets, including environment maps, meshes, materials, and audio. Unknown files and `.bead` sidecars are skipped:
+With no IDs, BELD recursively discovers all supported source assets, including linked engine shaders, environment maps, meshes, materials, and audio. Unknown files and `.bead` sidecars are skipped. A standalone `.besl` file is discovered only when its adjacent `.besl.bead` exists; this keeps material-internal BESL sources out of the standalone shader pass. Explicitly requesting a `.besl` file without its sidecar fails the bake.
 
 Use explicit IDs when a container fragment is required. Quote an ID containing a fragment so the shell preserves it:
 
@@ -32,7 +52,7 @@ beld --source "$PWD/assets" --destination "$PWD/resources" bake \
   'character.fbx#animations/Walk'
 ```
 
-The command writes the resource database and its payload files to `resources/`. These files, rather than the source `assets/` directory, are what a release application reads.
+The command writes the resource database and its payload files to `resources/`. These files, rather than the source `assets/` directory, are what a release application reads. Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform is not portable.
 
 ## Check baked output
 
@@ -47,4 +67,4 @@ Run `beld bake` again after changing a source asset or an engine asset processor
 
 ## Development and release
 
-Debug applications can install an `AssetManager` and bake missing assets on demand. Release applications should instead receive a complete `resources/` directory prepared by BELD. Keeping baking as an explicit pre-package step makes releases reproducible and avoids shipping source assets solely for runtime processing.
+Debug applications can install an `AssetManager` and bake missing assets on demand. Release applications have no asset-processing fallback: they read the complete `resources/` directory prepared by BELD and fail when a requested shader is absent. Keeping baking as an explicit pre-package step makes releases reproducible and avoids shipping source assets solely for runtime processing.

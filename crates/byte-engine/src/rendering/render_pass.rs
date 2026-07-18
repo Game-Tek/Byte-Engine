@@ -42,6 +42,7 @@ pub struct RenderPassBuilder<'a> {
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	pub(crate) images: &'a mut RenderTargets,
 	shader_storage: Option<&'a dyn resource_management::resource::StorageBackend>,
+	shader_resources: Option<&'a resource_management::resource::resource_manager::ResourceManager>,
 }
 
 impl<'a> RenderPassBuilder<'a> {
@@ -58,11 +59,20 @@ impl<'a> RenderPassBuilder<'a> {
 			consumed_resources: Vec::new(),
 			images,
 			shader_storage: None,
+			shader_resources: None,
 		}
 	}
 
 	pub fn with_shader_storage(mut self, shader_storage: &'a dyn resource_management::resource::StorageBackend) -> Self {
 		self.shader_storage = Some(shader_storage);
+		self
+	}
+
+	pub fn with_shader_resources(
+		mut self,
+		shader_resources: &'a resource_management::resource::resource_manager::ResourceManager,
+	) -> Self {
+		self.shader_resources = Some(shader_resources);
 		self
 	}
 
@@ -117,6 +127,14 @@ impl<'a> RenderPassBuilder<'a> {
 
 	pub fn create_shader(&mut self, descriptor: &ShaderSourceDescriptor<'_>) -> Result<ghi::ShaderHandle, String> {
 		crate::rendering::shader_store::create_shader(self.context, self.shader_storage, descriptor)
+	}
+
+	/// Loads a previously baked shader resource and creates its GHI shader handle.
+	pub fn load_shader(&mut self, id: &str, name: &str) -> Result<crate::rendering::shader_store::LoadedShader, String> {
+		let resource_manager = self.shader_resources.ok_or_else(|| {
+			format!("Failed to load render-pass shader '{id}'. The renderer has no resource manager configured.")
+		})?;
+		crate::rendering::shader_store::load_shader_resource(self.context, resource_manager, id, name)
 	}
 
 	pub(crate) fn shader_storage(&self) -> Option<&'a dyn resource_management::resource::StorageBackend> {

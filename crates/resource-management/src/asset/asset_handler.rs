@@ -113,5 +113,10 @@ impl<'a> BakeContext<'a> {
 pub trait AssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool;
 
+	/// Returns whether recursive asset discovery should include a source handled by this implementation.
+	fn should_discover(&self, _id: ResourceId<'_>, _has_sidecar: bool) -> bool {
+		true
+	}
+
 	fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> impl Future<Output = Result<(), LoadErrors>>;
 }

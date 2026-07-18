@@ -2,10 +2,9 @@ use super::{
 	storage_backend::{Query, QueryError, QueryPage},
 	StorageBackend,
 };
-use crate::{
-	asset::{asset_manager::AssetManager, ResourceId},
-	Model, Reference, ReferenceModel, Resource, SerializableResource, Solver,
-};
+#[cfg(debug_assertions)]
+use crate::asset::asset_manager::AssetManager;
+use crate::{asset::ResourceId, Model, Reference, ReferenceModel, Resource, SerializableResource, Solver};
 
 /// Resource manager.
 /// Handles loading assets or resources from different origins (network, local, etc.).
@@ -17,7 +16,7 @@ use crate::{
 ///
 /// If accessing the filesystem paths will be relative to the assets directory, and assets should omit the extension.
 pub struct ResourceManager {
-	// #[cfg(debug_assertions)]
+	#[cfg(debug_assertions)]
 	asset_manager: Option<AssetManager>,
 
 	storage_backend: Box<dyn StorageBackend>,
@@ -27,6 +26,7 @@ impl ResourceManager {
 	/// Creates a new resource manager.
 	pub fn new<SB: StorageBackend>(storage_backend: SB) -> Self {
 		ResourceManager {
+			#[cfg(debug_assertions)]
 			asset_manager: None,
 			storage_backend: Box::new(storage_backend),
 		}
@@ -34,6 +34,7 @@ impl ResourceManager {
 
 	/// Provide an asset manager to process assets on demand.
 	/// This is useful for loading assets during testing/development without having to bake them.
+	#[cfg(debug_assertions)]
 	pub fn set_asset_manager(&mut self, asset_manager: AssetManager) {
 		self.asset_manager = Some(asset_manager);
 	}
@@ -59,14 +60,22 @@ impl ResourceManager {
 		let reference_model: ReferenceModel<T::Model> = if let Some(result) = storage_backend.read(ResourceId::new(id)) {
 			let (resource, _) = result;
 			resource.into()
-		} else if let Some(asset_manager) = &self.asset_manager {
-			let runtime = compio::runtime::Runtime::new().unwrap();
-
-			runtime
-				.block_on(asset_manager.bake_if_not_exists(id, storage_backend))
-				.map_err(|_| "Failed to load asset. The asset manager could not bake the resource.")?
 		} else {
-			return Err("Resource does not exists and an asset manager is not available");
+			#[cfg(debug_assertions)]
+			{
+				let Some(asset_manager) = &self.asset_manager else {
+					return Err("Resource does not exist and an asset manager is not available");
+				};
+				let runtime = compio::runtime::Runtime::new().unwrap();
+
+				runtime
+					.block_on(asset_manager.bake_if_not_exists(id, storage_backend))
+					.map_err(|_| "Failed to load asset. The asset manager could not bake the resource.")?
+			}
+			#[cfg(not(debug_assertions))]
+			{
+				return Err("Resource does not exist in the baked release resource store");
+			}
 		};
 
 		let reference: Reference<T> = reference_model
@@ -98,5 +107,22 @@ impl ResourceManager {
 				.collect(),
 			cursor: page.cursor,
 		})
+	}
+}
+
+#[cfg(all(test, not(debug_assertions)))]
+mod release_tests {
+	use super::ResourceManager;
+	use crate::{resource::storage_backend::tests::TestStorageBackend, resources::material::Shader};
+
+	#[test]
+	fn missing_release_resource_fails_without_running_asset_processors() {
+		let resource_manager = ResourceManager::new(TestStorageBackend::new());
+		let result = resource_manager.request::<Shader>("missing/render-pass.besl");
+
+		assert!(matches!(
+			result,
+			Err("Resource does not exist in the baked release resource store")
+		));
 	}
 }

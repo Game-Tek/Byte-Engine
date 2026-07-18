@@ -40,6 +40,20 @@ fn read_resource_cache_signature(base_path: &Path, signature_file: &str) -> Opti
 		.map(|signature| signature.trim().to_string())
 }
 
+/// Rejects a release resource store produced by a different resource schema before archived values are read.
+fn validate_resource_management_signature(base_path: &Path) -> Result<(), String> {
+	match read_resource_cache_signature(base_path, RESOURCE_MANAGEMENT_SIGNATURE_FILE) {
+		Some(signature) if signature == RESOURCE_MANAGEMENT_CODE_HASH => Ok(()),
+		Some(signature) => Err(format!(
+			"resource-management signature '{signature}' does not match this engine's expected signature '{RESOURCE_MANAGEMENT_CODE_HASH}'"
+		)),
+		None => Err(format!(
+			"resource-management signature marker '{}' is missing",
+			RESOURCE_MANAGEMENT_SIGNATURE_FILE
+		)),
+	}
+}
+
 /// Writes one cache-owner signature beside the resource database.
 fn write_resource_cache_signature(base_path: &Path, signature_file: &str, signature: &str) {
 	std::fs::write(base_path.join(signature_file), signature).unwrap_or_else(|error| {
@@ -234,6 +248,11 @@ impl RedbStorageBackend {
 					.unwrap_or_else(|_| panic!("Could not create in-memory database")),
 			)
 		} else if read_only {
+			validate_resource_management_signature(&base_path).unwrap_or_else(|error| {
+				panic!(
+					"Failed to open resources database in read-only mode. The baked resources are incompatible or incomplete; rerun BELD with the matching engine revision. Error: {error}"
+				)
+			});
 			RedbDatabase::ReadOnly(redb::ReadOnlyDatabase::open(base_path.join("resources.db")).unwrap_or_else(|error| {
 				panic!(
 					"Failed to open resources database in read-only mode. The most likely cause is that BELD has not baked the resources or the database is invalid. Error: {}",
@@ -603,8 +622,9 @@ mod tests {
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
 	use super::{
-		sync_resource_management_signature, sync_resource_producer_signature, RedbStorageBackend,
-		RESOURCE_MANAGEMENT_CODE_HASH, RESOURCE_MANAGEMENT_SIGNATURE_FILE, RESOURCE_PRODUCER_SIGNATURE_FILE,
+		sync_resource_management_signature, sync_resource_producer_signature, validate_resource_management_signature,
+		RedbStorageBackend, RESOURCE_MANAGEMENT_CODE_HASH, RESOURCE_MANAGEMENT_SIGNATURE_FILE,
+		RESOURCE_PRODUCER_SIGNATURE_FILE,
 	};
 	use crate::{
 		resource::storage_backend::{Query, QueryCursor, QueryError, ReadStorageBackend, WriteStorageBackend},
@@ -673,6 +693,29 @@ mod tests {
 			NEXT_BACKEND_ID.fetch_add(1, Ordering::Relaxed)
 		);
 		RedbStorageBackend::new(std::env::temp_dir().join(unique))
+	}
+
+	#[test]
+	fn read_only_signature_validation_rejects_missing_and_stale_resource_stores() {
+		static NEXT_SIGNATURE_VALIDATION_ID: AtomicUsize = AtomicUsize::new(0);
+		let resources_path = std::env::temp_dir().join(format!(
+			"byte-engine-read-only-signature-tests-{}-{}",
+			std::process::id(),
+			NEXT_SIGNATURE_VALIDATION_ID.fetch_add(1, Ordering::Relaxed)
+		));
+		std::fs::create_dir_all(&resources_path).unwrap();
+
+		assert!(validate_resource_management_signature(&resources_path).is_err());
+		std::fs::write(resources_path.join(RESOURCE_MANAGEMENT_SIGNATURE_FILE), "stale").unwrap();
+		assert!(validate_resource_management_signature(&resources_path).is_err());
+		std::fs::write(
+			resources_path.join(RESOURCE_MANAGEMENT_SIGNATURE_FILE),
+			RESOURCE_MANAGEMENT_CODE_HASH,
+		)
+		.unwrap();
+		assert_eq!(validate_resource_management_signature(&resources_path), Ok(()));
+
+		std::fs::remove_dir_all(resources_path).unwrap();
 	}
 
 	#[test]

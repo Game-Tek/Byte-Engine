@@ -18,8 +18,10 @@ From the application directory:
 
 ```bash
 beld --source "$PWD/assets" --destination "$PWD/resources" \
-  bake scene.glb environment.exr
+  bake
 ```
+
+The zero-ID form includes every recognized application asset and the engine shaders exposed through `assets/byte-engine`. Verify the resulting inventory with `beld --destination "$PWD/resources" list`; a release build does not compile a missing shader on demand.
 
 Keep `resources/` outside Cargo's `target/` directory. It is a deliberate application input to packaging; `target/` is Cargo-owned and may be removed by `cargo clean`.
 

@@ -1,0 +1,11 @@
+source: descriptor<StorageImage<rgba16>, 0, read>;
+result: descriptor<StorageImage, 1, write>;
+
+main: fn() -> void {
+	let coord: vec2u = thread_id();
+	let source_color: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
+
+	guard_image_bounds(source, coord);
+	source_color = image_load(source, coord);
+	write(result, coord, source_color);
+}

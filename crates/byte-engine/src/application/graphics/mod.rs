@@ -81,7 +81,7 @@ impl Application for GraphicsApplication {
 		// Release resource directories are prepared by BELD and keep the resource-management signature it writes today.
 		#[cfg(not(debug_assertions))]
 		let resource_storage = RedbStorageBackend::new(resources_path);
-		let resource_manager = ResourceManager::new(resource_storage);
+		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
 		let action_factory = Factory::new();
 
@@ -95,7 +95,8 @@ impl Application for GraphicsApplication {
 		// the first frame has reached the screen.
 		let gamepad_system = None;
 
-		let renderer = rendering::renderer::Renderer::new(&application);
+		let mut renderer = rendering::renderer::Renderer::new(&application);
+		renderer.set_resource_manager(&resource_manager);
 
 		#[cfg(debug_assertions)]
 		let kill_after = application
@@ -144,7 +145,7 @@ impl Application for GraphicsApplication {
 			gamepad_system,
 			gamepad_device_class_handle: None,
 			renderer,
-			resource_manager: EntityHandle::from(resource_manager),
+			resource_manager,
 
 			threads: SmallVec::new(),
 

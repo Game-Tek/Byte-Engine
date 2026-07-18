@@ -10,13 +10,16 @@ use super::{
 	asset_manager::AssetManager,
 	ResourceId,
 };
-use crate::shader::besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage};
+use crate::shader::{
+	artifact::finalize_platform_shader_artifact,
+	besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
+};
 use crate::{
 	asset,
 	r#async::spawn_cpu_task,
 	resource,
 	resources::material::{
-		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderArtifact, ShaderInterface, ValueModel, VariantModel,
+		Binding, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel, VariantModel,
 		VariantVariableModel,
 	},
 	shader::generator::ShaderGenerationSettings,
@@ -345,21 +348,14 @@ pub(crate) fn compile_shader_program(
 			.collect(),
 	};
 
-	let artifact = match PlatformShaderLanguage::current_platform() {
-		PlatformShaderLanguage::Hlsl => ShaderArtifact::Hlsl {
-			entry_point: shader_program
-				.entry_point()
-				.unwrap_or(PlatformShaderLanguage::Hlsl.entry_point())
-				.to_string(),
-		},
-		PlatformShaderLanguage::Msl => ShaderArtifact::Mtlb {
-			entry_point: shader_program
-				.entry_point()
-				.unwrap_or(PlatformShaderLanguage::Msl.entry_point())
-				.to_string(),
-		},
-		PlatformShaderLanguage::Glsl => ShaderArtifact::Spirv,
-	};
+	let language = PlatformShaderLanguage::current_platform();
+	let entry_point = shader_program.entry_point();
+	let (artifact, payload) =
+		finalize_platform_shader_artifact(language, stage, name, entry_point, shader_program.into_binary()).map_err(
+			|error| {
+				log::error!("Error finalizing shader artifact '{name}' for stage '{stage:?}': {error}");
+			},
+		)?;
 
 	let shader = Shader {
 		id: name.to_string(),
@@ -369,7 +365,7 @@ pub(crate) fn compile_shader_program(
 		source_hash: 0,
 	};
 
-	Ok((shader, shader_program.into_binary()))
+	Ok((shader, payload))
 }
 
 /// Compiles a shader definition and stores the resulting resource and binary payload.

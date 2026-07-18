@@ -342,6 +342,7 @@ dependencies = [
  "ufbx",
  "urlencoding",
  "vorbis_rs",
+ "windows",
 ]
 
 [[package]]

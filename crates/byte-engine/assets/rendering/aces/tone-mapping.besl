@@ -1,0 +1,23 @@
+source: descriptor<StorageImage<rgba16>, 0, read>;
+result: descriptor<StorageImage, 1, write>;
+
+aces_narkowicz: fn(color: vec3f) -> vec3f {
+	let a: f32 = 2.51;
+	let b: f32 = 0.03;
+	let c: f32 = 2.43;
+	let d: f32 = 0.59;
+	let e: f32 = 0.14;
+	return clamp((color * (color * a + vec3f(b, b, b))) / (color * (color * c + vec3f(d, d, d)) + vec3f(e, e, e)), vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
+}
+
+main: fn() -> void {
+	let coord: vec2u = thread_id();
+	let source_color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let result_color: vec3f = vec3f(0.0, 0.0, 0.0);
+
+	guard_image_bounds(source, coord);
+	source_color = image_load(source, coord);
+	result_color = aces_narkowicz(vec3f(source_color.x, source_color.y, source_color.z));
+	result_color = pow(result_color, vec3f(1.0 / 2.2, 1.0 / 2.2, 1.0 / 2.2));
+	write(result, coord, vec4f(result_color.x, result_color.y, result_color.z, 1.0));
+}

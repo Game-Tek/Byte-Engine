@@ -16,6 +16,52 @@ pub struct ShaderSourceDescriptor<'a> {
 	pub interface: ShaderInterface,
 }
 
+/// A baked shader together with the persisted interface needed to build and bind its pipeline.
+pub struct LoadedShader {
+	pub handle: ghi::ShaderHandle,
+	pub stage: ShaderTypes,
+	pub interface: ShaderInterface,
+}
+
+/// Resolves a baked shader through the resource manager and creates its GHI handle.
+pub fn load_shader_resource(
+	context: &mut ghi::implementation::Context,
+	resource_manager: &resource_management::resource::resource_manager::ResourceManager,
+	id: &str,
+	name: &str,
+) -> Result<LoadedShader, String> {
+	let mut shader: Reference<Shader> = resource_manager.request(id).map_err(|error| {
+		format!(
+			"Failed to load baked shader resource '{id}': {error}. The most likely cause is that BELD did not bake the shader or its source asset is unavailable."
+		)
+	})?;
+	let stage = shader.resource.stage;
+	let interface = shader.resource.interface.clone();
+	let artifact = shader.resource.artifact.clone();
+	let backing = shader.consume_reader().into_backing_storage().map_err(|_| {
+		format!("Failed to load baked shader bytes for '{id}'. The most likely cause is an unsupported shader resource reader.")
+	})?;
+	let source = shader_artifact_source(&artifact, interface.workgroup_size, backing.as_slice())?;
+	let handle = context
+		.create_shader(
+			Some(name),
+			source,
+			shader_type_to_ghi(stage),
+			interface.bindings.iter().map(binding_to_descriptor),
+		)
+		.map_err(|_| {
+			format!(
+				"Failed to create baked shader '{id}'. The most likely cause is an incompatible persisted shader interface."
+			)
+		})?;
+
+	Ok(LoadedShader {
+		handle,
+		stage,
+		interface,
+	})
+}
+
 /// Loads a baked shader from storage, or bakes and stores it when the source descriptor changed.
 pub fn upsert_shader(storage_backend: &dyn StorageBackend, descriptor: &ShaderSourceDescriptor<'_>) -> Result<Shader, String> {
 	validate_besl_interface(descriptor)?;
@@ -199,6 +245,7 @@ fn shader_artifact_source<'a>(
 ) -> Result<ghi::shader::Sources<'a>, String> {
 	match artifact {
 		ShaderArtifact::Spirv => Ok(ghi::shader::Sources::SPIRV(bytes)),
+		ShaderArtifact::Dxil => Ok(ghi::shader::Sources::DXIL(bytes)),
 		ShaderArtifact::Hlsl { entry_point } => Ok(ghi::shader::Sources::HLSL {
 			source: std::str::from_utf8(bytes).map_err(|_| {
 				"Failed to read baked HLSL shader. The most likely cause is invalid UTF-8 shader bytes.".to_string()
@@ -657,6 +704,10 @@ mod tests {
 		assert!(matches!(
 			shader_artifact_source(&ShaderArtifact::Spirv, Some((8, 4, 2)), &binary).expect("SPIR-V source"),
 			ghi::shader::Sources::SPIRV(bytes) if bytes == binary
+		));
+		assert!(matches!(
+			shader_artifact_source(&ShaderArtifact::Dxil, Some((8, 4, 2)), &binary).expect("DXIL source"),
+			ghi::shader::Sources::DXIL(bytes) if bytes == binary
 		));
 
 		let hlsl = ShaderArtifact::Hlsl {

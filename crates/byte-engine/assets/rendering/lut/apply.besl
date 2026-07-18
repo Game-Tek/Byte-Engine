@@ -1,0 +1,29 @@
+LutParameters: struct {
+	domain_min: vec4f,
+	domain_scale: vec4f,
+	sampling: vec4f,
+}
+
+source_texture: descriptor<Texture2D, 0, read>;
+lut_texture: descriptor<Texture3D, 1, read>;
+result_texture: descriptor<StorageImage, 2, write>;
+parameters: descriptor<LutParameters, 3, read>;
+
+apply_lut: fn(color: vec3f) -> vec3f {
+	let domain_min: vec3f = vec3f(parameters.domain_min.x, parameters.domain_min.y, parameters.domain_min.z);
+	let domain_scale: vec3f = vec3f(parameters.domain_scale.x, parameters.domain_scale.y, parameters.domain_scale.z);
+	let normalized: vec3f = clamp((color - domain_min) * domain_scale, vec3f(0.0, 0.0, 0.0), vec3f(1.0, 1.0, 1.0));
+	let lut_uv: vec3f = normalized * parameters.sampling.x + vec3f(parameters.sampling.y, parameters.sampling.y, parameters.sampling.y);
+	let sampled: vec4f = texture_lod(lut_texture, lut_uv);
+	return vec3f(sampled.x, sampled.y, sampled.z);
+}
+
+main: fn () -> void {
+	let coord: vec2u = thread_id();
+	guard_image_bounds(result_texture, coord);
+	let extent: vec2u = image_size(result_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(extent.x), f32(extent.y));
+	let source_color: vec4f = texture_lod(source_texture, uv);
+	let result_color: vec3f = apply_lut(vec3f(source_color.x, source_color.y, source_color.z));
+	write(result_texture, coord, vec4f(result_color.x, result_color.y, result_color.z, source_color.w));
+}

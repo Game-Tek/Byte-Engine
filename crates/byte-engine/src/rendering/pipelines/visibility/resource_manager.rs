@@ -1240,6 +1240,7 @@ enum PipelineStatus {
 }
 
 enum OwnedShaderSource {
+	DXIL(ResourceReaderBacking),
 	HLSL {
 		source: String,
 		entry_point: String,
@@ -1259,6 +1260,7 @@ enum OwnedShaderSource {
 impl OwnedShaderSource {
 	fn sources(&self) -> ghi::shader::Sources<'_> {
 		match self {
+			OwnedShaderSource::DXIL(binary) => ghi::shader::Sources::DXIL(binary.as_slice()),
 			OwnedShaderSource::HLSL { source, entry_point } => ghi::shader::Sources::HLSL { source, entry_point },
 			OwnedShaderSource::MTLB {
 				binary,
@@ -1401,6 +1403,7 @@ impl VisibilityPipelineResourceManager {
 		let shader_backing = Self::load_shader_backing(shader)?;
 
 		let source = match &shader.resource().artifact {
+			ShaderArtifact::Dxil => OwnedShaderSource::DXIL(shader_backing),
 			ShaderArtifact::Hlsl { entry_point } => OwnedShaderSource::HLSL {
 				source: std::str::from_utf8(shader_backing.as_slice())
 					.map_err(|_| {
@@ -1676,6 +1679,16 @@ fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn owned_dxil_source_maps_to_native_ghi_bytecode() {
+		let source = OwnedShaderSource::DXIL(ResourceReaderBacking::Buffer(vec![1, 2, 3, 4].into_boxed_slice()));
+
+		assert!(matches!(
+			source.sources(),
+			ghi::shader::Sources::DXIL(bytes) if bytes == [1, 2, 3, 4]
+		));
+	}
 
 	#[test]
 	fn texture_upload_preserves_minimum_extent_and_bc_row_contents() {

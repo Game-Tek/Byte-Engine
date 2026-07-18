@@ -47,7 +47,14 @@ impl std::fmt::Display for TypeName<'_> {
 pub(super) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Node<'a>, ParsingFailReasons> {
 	let mut iterator = tokens.tokens.iter();
 
-	let parsers = [parse_struct, parse_function, parse_macro, parse_const, parse_member];
+	let parsers = [
+		parse_struct,
+		parse_function,
+		parse_macro,
+		parse_const,
+		parse_descriptor,
+		parse_member,
+	];
 
 	let mut children: Vec<Node<'a>> = Vec::with_capacity(64);
 
@@ -67,7 +74,7 @@ pub(super) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Nod
 }
 
 use std::borrow::Cow;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 #[derive(Clone, Debug)]
 pub struct Node<'a> {
@@ -394,6 +401,7 @@ impl<'a> Node<'a> {
 			Nodes::Function { name, .. } => Some(name),
 			Nodes::Conditional { .. } | Nodes::ForLoop { .. } => None,
 			Nodes::Binding { name, .. } => Some(name),
+			Nodes::Descriptor { name, .. } => Some(name),
 			Nodes::Specialization { name, .. } => Some(name),
 			Nodes::Type { name, .. } => Some(name),
 			Nodes::Image { .. } => None,
@@ -503,6 +511,16 @@ pub enum Nodes<'a> {
 		read: bool,
 		write: bool,
 		count: Option<NonZeroUsize>,
+	},
+	/// A flat resource descriptor declared directly in BESL source.
+	Descriptor {
+		name: &'a str,
+		resource_type: &'a str,
+		format: Option<&'a str>,
+		slot: u32,
+		read: bool,
+		write: bool,
+		count: Option<NonZeroU32>,
 	},
 	/// A specialization constant. A specialization constant is a constant that can be set when creating a pipeline at runtime.
 	Specialization {
@@ -915,6 +933,152 @@ fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Featu
 	Ok((Node::constant_with_type(name, r#type, value), iterator))
 }
 
+/// Parses a flat resource descriptor and preserves its source type name for semantic resolution.
+fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	iterator.next_str("descriptor")?;
+
+	let syntax_error = |message: String| ParsingFailReasons::BadSyntax { message };
+	iterator.next_str("<").map_err(|_| {
+		syntax_error(format!(
+			"Expected < after descriptor in resource {}. The most likely cause is that the descriptor arguments are missing.",
+			name
+		))
+	})?;
+	let resource_type = iterator.next_identifier().map_err(|_| {
+		syntax_error(format!(
+			"Expected a resource type in descriptor {}. The most likely cause is that the first descriptor argument is missing.",
+			name
+		))
+	})?;
+	let format = if iterator.clone().next().copied() == Some("<") {
+		iterator.next();
+		let format = iterator.next_identifier().map_err(|_| {
+			syntax_error(format!(
+				"Expected a storage image format in descriptor {}. The most likely cause is that the StorageImage format argument is missing.",
+				name
+			))
+		})?;
+		iterator.next_str(">").map_err(|_| {
+			syntax_error(format!(
+				"Expected > after storage image format in descriptor {}. The most likely cause is that the resource type arguments are malformed.",
+				name
+			))
+		})?;
+		if resource_type != "StorageImage" {
+			return Err(syntax_error(format!(
+				"Resource type {} cannot declare format `{}` in descriptor {}. The most likely cause is that a storage image format was attached to a non-StorageImage resource.",
+				resource_type, format, name
+			)));
+		}
+		Some(format)
+	} else {
+		None
+	};
+	iterator.next_str(",").map_err(|_| {
+		syntax_error(format!(
+			"Expected , after resource type in descriptor {}. The most likely cause is that the descriptor arguments are malformed.",
+			name
+		))
+	})?;
+
+	let slot = iterator
+		.next()
+		.ok_or_else(|| {
+			syntax_error(format!(
+				"Expected a slot in descriptor {}. The most likely cause is that the second descriptor argument is missing.",
+				name
+			))
+		})?
+		.parse::<u32>()
+		.map_err(|_| {
+			syntax_error(format!(
+				"Invalid slot in descriptor {}. The most likely cause is that the slot is not a u32 literal.",
+				name
+			))
+		})?;
+	iterator.next_str(",").map_err(|_| {
+		syntax_error(format!(
+			"Expected , after slot in descriptor {}. The most likely cause is that the descriptor arguments are malformed.",
+			name
+		))
+	})?;
+
+	let access = iterator.next().ok_or_else(|| {
+		syntax_error(format!(
+			"Expected an access mode in descriptor {}. The most likely cause is that the third descriptor argument is missing.",
+			name
+		))
+	})?;
+	let (read, write) = match *access {
+		"read" => (true, false),
+		"write" => (false, true),
+		"read_write" => (true, true),
+		_ => {
+			return Err(syntax_error(format!(
+				"Invalid access mode `{}` in descriptor {}. The most likely cause is that the access is not read, write, or read_write.",
+				access, name
+			)));
+		}
+	};
+
+	let count = if iterator.clone().next().copied() == Some(",") {
+		iterator.next();
+		let count = iterator
+			.next()
+			.ok_or_else(|| {
+				syntax_error(format!(
+					"Expected a resource count in descriptor {}. The most likely cause is that the fourth descriptor argument is missing.",
+					name
+				))
+			})?
+			.parse::<u32>()
+			.map_err(|_| {
+				syntax_error(format!(
+					"Invalid resource count in descriptor {}. The most likely cause is that the count is not a u32 literal.",
+					name
+				))
+			})?;
+		Some(NonZeroU32::new(count).ok_or_else(|| {
+			syntax_error(format!(
+				"Invalid resource count in descriptor {}. The most likely cause is that the resource array was declared with zero elements.",
+				name
+			))
+		})?)
+	} else {
+		None
+	};
+
+	iterator.next_str(">").map_err(|_| {
+		syntax_error(format!(
+			"Expected > after descriptor {} arguments. The most likely cause is that the descriptor declaration is incomplete.",
+			name
+		))
+	})?;
+	iterator.next_str(";").map_err(|_| {
+		syntax_error(format!(
+			"Expected ; after descriptor {}. The most likely cause is that the declaration terminator is missing.",
+			name
+		))
+	})?;
+
+	Ok((
+		Node {
+			node: Nodes::Descriptor {
+				name,
+				resource_type,
+				format,
+				slot,
+				read,
+				write,
+				count,
+			},
+		},
+		iterator,
+	))
+}
+
 fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
@@ -930,6 +1094,13 @@ fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> Feat
 
 	if let Some(&&n) = iterator.clone().peekable().peek() {
 		if n == "<" {
+			if r#type == "descriptor" {
+				return Err(ParsingFailReasons::BadSyntax {
+					message: format!(
+						"Invalid descriptor declaration for {name}. The most likely cause is that required slot or access arguments are missing."
+					),
+				});
+			}
 			iterator.next();
 			r#type.push('<');
 			let next = iterator.next().ok_or(ParsingFailReasons::BadSyntax {
@@ -1591,6 +1762,7 @@ impl<'a> Index<&str> for Node<'a> {
 						| Nodes::Struct { .. }
 						| Nodes::Member { .. }
 						| Nodes::Function { .. }
+						| Nodes::Descriptor { .. }
 						| Nodes::Const { .. }
 				) && child.name() == Some(index)
 			}),
@@ -1643,6 +1815,99 @@ mod tests {
 	#[should_panic(expected = "Invalid binding array count")]
 	fn binding_array_rejects_zero_elements() {
 		Node::binding_array("textures", Node::combined_image_sampler(), 0, true, false, 0);
+	}
+
+	#[test]
+	fn parse_resource_descriptors_with_flat_slots_access_and_count() {
+		let tokens = tokenize(
+			r#"
+				source: descriptor<Texture2D, 3, read>;
+				result: descriptor<StorageImage<rgba16f>, 7, write, 4>;
+				unformatted_result: descriptor<StorageImage, 8, write>;
+				data: descriptor<Data, 11, read_write>;
+				textures: descriptor<Texture2DArray, 20, read, 16>;
+			"#,
+		)
+		.expect("descriptor source should tokenize");
+		let root = parse(&tokens).expect("descriptor source should parse");
+
+		let Nodes::Descriptor {
+			resource_type,
+			slot,
+			read,
+			write,
+			count,
+			..
+		} = root["source"].node()
+		else {
+			panic!("expected source descriptor");
+		};
+		assert_eq!(*resource_type, "Texture2D");
+		assert_eq!(*slot, 3);
+		assert!(*read);
+		assert!(!*write);
+		assert_eq!(*count, None);
+
+		assert!(matches!(
+			root["result"].node(),
+			Nodes::Descriptor {
+				format: Some("rgba16f"),
+				slot: 7,
+				read: false,
+				write: true,
+				count: Some(count),
+				..
+			} if count.get() == 4
+		));
+		assert!(matches!(
+			root["unformatted_result"].node(),
+			Nodes::Descriptor {
+				format: None,
+				slot: 8,
+				..
+			}
+		));
+		assert!(matches!(
+			root["data"].node(),
+			Nodes::Descriptor {
+				resource_type: "Data",
+				slot: 11,
+				read: true,
+				write: true,
+				..
+			}
+		));
+		assert!(matches!(
+			root["textures"].node(),
+			Nodes::Descriptor { resource_type: "Texture2DArray", slot: 20, count: Some(count), .. }
+				if count.get() == 16
+		));
+	}
+
+	#[test]
+	fn descriptor_rejects_invalid_access_count_and_arguments() {
+		for source in [
+			"texture: descriptor<Texture2D, 0, execute>;",
+			"textures: descriptor<Texture2D, 0, read, 0>;",
+			"texture: descriptor<Texture2D>;",
+		] {
+			let tokens = tokenize(source).expect("descriptor source should tokenize");
+			assert!(parse(&tokens).is_err(), "malformed descriptor should be rejected: {source}");
+		}
+	}
+
+	#[test]
+	fn descriptor_rejects_formats_on_non_storage_image_resources() {
+		for source in [
+			"texture: descriptor<Texture2D<rgba16f>, 0, read>;",
+			"data: descriptor<Data<rgba16f>, 0, read>;",
+		] {
+			let tokens = tokenize(source).expect("formatted descriptor source should tokenize");
+			assert!(
+				parse(&tokens).is_err(),
+				"non-storage image descriptor format should be rejected: {source}"
+			);
+		}
 	}
 
 	fn assert_named_type(type_name: &TypeName<'_>, expected: &str) {

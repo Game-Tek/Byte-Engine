@@ -192,6 +192,29 @@ mod tests {
 	}
 
 	#[test]
+	fn resource_descriptors_preserve_flat_arguments() {
+		let tokens = tokenize("textures: descriptor<Texture2D, 5, read, 16>;").unwrap();
+		assert_eq!(
+			tokens.tokens,
+			vec![
+				"textures",
+				":",
+				"descriptor",
+				"<",
+				"Texture2D",
+				",",
+				"5",
+				",",
+				"read",
+				",",
+				"16",
+				">",
+				";"
+			]
+		);
+	}
+
+	#[test]
 	fn test_for_loop() {
 		let source = "main: fn () -> void { for (let i: u32 = 0; i < 4; i = i + 1) { value = value + i; } }";
 		let tokens = tokenize(source).unwrap();

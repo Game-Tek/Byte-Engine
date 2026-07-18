@@ -1201,6 +1201,46 @@ fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReferenc
 	})
 }
 
+/// Resolves a source descriptor's resource type into the existing semantic binding representation.
+fn resolve_descriptor_type(
+	chain: &[NodeReference],
+	resource_type: &str,
+	format: Option<&str>,
+) -> Result<BindingTypes, LexError> {
+	if format.is_some() && resource_type != "StorageImage" {
+		return Err(LexError::Undefined {
+			message: Some(format!(
+				"Resource type {resource_type} cannot declare a storage image format. The most likely cause is that a format was attached to a non-StorageImage descriptor."
+			)),
+		});
+	}
+
+	match resource_type {
+		"Texture2D" => Ok(BindingTypes::CombinedImageSampler { format: String::new() }),
+		"Texture2DArray" => Ok(BindingTypes::CombinedImageSampler {
+			format: "ArrayTexture2D".to_string(),
+		}),
+		"Texture3D" => Ok(BindingTypes::CombinedImageSampler {
+			format: "Texture3D".to_string(),
+		}),
+		"StorageImage" => Ok(BindingTypes::Image {
+			format: format.unwrap_or("unknown").to_string(),
+		}),
+		struct_name => {
+			let r#struct = resolve_type(chain, struct_name)?;
+			let members = match r#struct.borrow().node() {
+				Nodes::Struct { fields, .. } => fields.clone(),
+				_ => {
+					return Err(LexError::ReferenceToUndefinedType {
+						type_name: struct_name.to_string(),
+					});
+				}
+			};
+			Ok(BindingTypes::Buffer { members })
+		}
+	}
+}
+
 /// Resolves a structural array type and creates its semantic indexed members.
 fn resolve_array_type(
 	chain: &[NodeReference],
@@ -1756,6 +1796,23 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 
 			this.into()
 		}
+		parser::Nodes::Descriptor {
+			name,
+			resource_type,
+			format,
+			slot,
+			read,
+			write,
+			count,
+		} => Node::binding_with_count(
+			name,
+			resolve_descriptor_type(&chain, resource_type, *format)?,
+			*slot,
+			*read,
+			*write,
+			*count,
+		)
+		.into(),
 		parser::Nodes::Type { name, members } => {
 			let mut this = Node::r#struct(name, Vec::new());
 
@@ -2194,6 +2251,117 @@ mod tests {
 			true,
 			false,
 			(u32::MAX as usize) + 1,
+		);
+	}
+
+	#[test]
+	fn source_descriptors_lower_to_existing_flat_binding_types() {
+		let source = r#"
+			Data: struct {
+				value: u32,
+				weight: f32,
+			}
+			data: descriptor<Data, 2, read_write>;
+			texture: descriptor<Texture2D, 5, read>;
+			texture_array: descriptor<Texture2DArray, 7, read, 16>;
+			volume: descriptor<Texture3D, 30, read>;
+			result: descriptor<StorageImage<rgba16f>, 31, write>;
+			unformatted_result: descriptor<StorageImage, 32, write>;
+			main: fn () -> void {
+				data.value = data.value;
+			}
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("resource descriptors should lex");
+		let data = root.borrow().get_child("data").expect("data descriptor should exist");
+		assert!(matches!(
+			data.borrow().node(),
+			Nodes::Binding {
+				slot: 2,
+				read: true,
+				write: true,
+				r#type: BindingTypes::Buffer { members },
+				count: None,
+				..
+			} if members.iter().map(|member| member.borrow().get_name().map(str::to_owned)).collect::<Vec<_>>()
+				== vec![Some("value".to_string()), Some("weight".to_string())]
+		));
+
+		let texture = root.borrow().get_child("texture").expect("texture descriptor should exist");
+		assert!(matches!(
+			texture.borrow().node(),
+			Nodes::Binding {
+				slot: 5,
+				read: true,
+				write: false,
+				r#type: BindingTypes::CombinedImageSampler { format },
+				..
+			} if format.is_empty()
+		));
+
+		let texture_array = root
+			.borrow()
+			.get_child("texture_array")
+			.expect("texture array descriptor should exist");
+		assert!(matches!(
+			texture_array.borrow().node(),
+			Nodes::Binding {
+				slot: 7,
+				r#type: BindingTypes::CombinedImageSampler { format },
+				count: Some(count),
+				..
+			} if format == "ArrayTexture2D" && count.get() == 16
+		));
+
+		let volume = root.borrow().get_child("volume").expect("volume descriptor should exist");
+		assert!(matches!(
+			volume.borrow().node(),
+			Nodes::Binding {
+				r#type: BindingTypes::CombinedImageSampler { format },
+				..
+			} if format == "Texture3D"
+		));
+
+		let result = root
+			.borrow()
+			.get_child("result")
+			.expect("storage image descriptor should exist");
+		assert!(matches!(
+			result.borrow().node(),
+			Nodes::Binding {
+				slot: 31,
+				read: false,
+				write: true,
+				r#type: BindingTypes::Image { format },
+				..
+			} if format == "rgba16f"
+		));
+
+		let unformatted_result = root
+			.borrow()
+			.get_child("unformatted_result")
+			.expect("unformatted storage image descriptor should exist");
+		assert!(matches!(
+			unformatted_result.borrow().node(),
+			Nodes::Binding {
+				slot: 32,
+				read: false,
+				write: true,
+				r#type: BindingTypes::Image { format },
+				..
+			} if format == "unknown"
+		));
+	}
+
+	#[test]
+	fn source_buffer_descriptor_requires_a_declared_type() {
+		let tokens = tokenizer::tokenize("data: descriptor<Missing, 0, read>;").expect("descriptor should tokenize");
+		let parsed = parser::parse(&tokens).expect("descriptor should parse");
+		assert_eq!(
+			lex(parsed),
+			Err(LexError::ReferenceToUndefinedType {
+				type_name: "Missing".to_string(),
+			})
 		);
 	}
 

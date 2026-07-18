@@ -72,9 +72,9 @@ enum Commands {
 	},
 	/// Bake assets into resources
 	Bake {
-		/// The IDs of the resources to bake.
+		/// The asset IDs to bake. If omitted, BELD recursively bakes all supported assets under the source directory.
 		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
-		#[clap(value_delimiter = ' ', num_args = 1..)]
+		#[clap(value_delimiter = ' ', num_args = 0..)]
 		ids: Vec<String>,
 	},
 	/// Delete resources
@@ -221,6 +221,15 @@ mod tests {
 			}
 			_ => panic!("Expected query command. The most likely cause is a CLI subcommand parsing regression."),
 		}
+	}
+
+	#[test]
+	fn cli_bake_allows_no_ids_and_still_parses_explicit_ids() {
+		let cli = Cli::try_parse_from(["beld", "bake"]).unwrap();
+		assert!(matches!(cli.command, Commands::Bake { ids } if ids.is_empty()));
+
+		let cli = Cli::try_parse_from(["beld", "bake", "mesh.gltf", "mesh.gltf#skeleton"]).unwrap();
+		assert!(matches!(cli.command, Commands::Bake { ids } if ids == ["mesh.gltf", "mesh.gltf#skeleton"]));
 	}
 
 	#[test]

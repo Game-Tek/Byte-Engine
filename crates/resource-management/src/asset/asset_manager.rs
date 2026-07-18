@@ -71,6 +71,14 @@ impl AssetManager {
 		self.storage_backend.as_ref()
 	}
 
+	/// Returns whether a registered asset handler can bake the given source ID.
+	pub fn supports(&self, id: &str) -> bool {
+		let id = ResourceId::new(id);
+		self.asset_handlers
+			.iter()
+			.any(|handler| handler.can_handle(id.get_extension()))
+	}
+
 	/// Call this to bake an asset identified by it's URL.
 	/// Does not check if the asset already exists in the resource storage backend.
 	pub async fn bake<'a>(&self, id: &str, resource_storage_backend: &dyn ResourceStorageBackend) -> Result<(), LoadMessages> {
@@ -236,6 +244,17 @@ pub mod tests {
 		let test_asset_handler = TestAssetHandler::new();
 
 		asset_manager.add_asset_handler(test_asset_handler);
+	}
+
+	#[test]
+	fn asset_manager_reports_support_for_registered_asset_types() {
+		let storage_backend = TestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(storage_backend);
+		asset_manager.add_asset_handler(TestAssetHandler::new());
+
+		assert!(asset_manager.supports("nested/example.test"));
+		assert!(asset_manager.supports("nested/example.test#fragment"));
+		assert!(!asset_manager.supports("nested/example.unknown"));
 	}
 
 	#[r#async::test]

@@ -1,7 +1,7 @@
-use std::time::Instant;
+use std::{path::Path, time::Instant};
 
 use resource_management::{
-	asset::{FileStorageBackend, ResourceId},
+	asset::{asset_manager::AssetManager, FileStorageBackend, ResourceId},
 	resource::{
 		storage_backend::{Query, QueryCursor, QueryError},
 		ReadStorageBackend, RedbStorageBackend, ResourceId as ResourceUid, WriteStorageBackend,
@@ -403,14 +403,20 @@ fn print_indent(indent: usize) {
 }
 
 pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> Result<(), i32> {
-	if ids.is_empty() {
-		log::info!("No resources to bake.");
-		return Ok(());
-	}
-
-	let storage_backend = FileStorageBackend::new(source_path.into());
+	let source_path = std::path::PathBuf::from(source_path);
+	let storage_backend = FileStorageBackend::new(source_path.clone());
 
 	let asset_manager = get_asset_manager(storage_backend);
+	let ids = if ids.is_empty() {
+		discover_asset_ids(&source_path, &asset_manager)?
+	} else {
+		ids
+	};
+
+	if ids.is_empty() {
+		log::info!("No supported assets found to bake.");
+		return Ok(());
+	}
 
 	let storage_backend = RedbStorageBackend::new_writable(destination_path.into());
 
@@ -428,9 +434,11 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 		match asset_manager.bake_in(&id, &storage_backend, &allocator).await {
 			Ok(_) => {
 				log::info!("Baked resource '{}'", id);
+				true
 			}
 			Err(e) => {
 				log::error!("Failed to bake '{}'. Error: {:#?}", id, e);
+				false
 			}
 		}
 	});
@@ -439,10 +447,115 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 	let tasks = tasks.buffer_unordered(16).collect::<Vec<_>>();
 
 	let bake_start = Instant::now();
-	executor.block_on(tasks);
-	log::info!("Baked {} resources in {:?}", resource_count, bake_start.elapsed());
+	let results = executor.block_on(tasks);
+	let failed_count = results.iter().filter(|result| !**result).count();
+	let successful_count = results.len() - failed_count;
+	log::info!(
+		"Processed {} assets in {:?}: {} succeeded, {} failed",
+		resource_count,
+		bake_start.elapsed(),
+		successful_count,
+		failed_count
+	);
+
+	if failed_count == 0 {
+		Ok(())
+	} else {
+		Err(1)
+	}
+}
+
+/// Recursively finds supported source assets beneath the configured assets directory.
+fn discover_asset_ids(source_path: &Path, asset_manager: &AssetManager) -> Result<Vec<String>, i32> {
+	let mut ids = Vec::new();
+	discover_asset_ids_in(source_path, source_path, asset_manager, &mut ids)?;
+	ids.sort();
+	Ok(ids)
+}
+
+/// Adds supported regular files from one directory and its child directories to the bake list.
+fn discover_asset_ids_in(
+	root_path: &Path,
+	directory: &Path,
+	asset_manager: &AssetManager,
+	ids: &mut Vec<String>,
+) -> Result<(), i32> {
+	let entries = std::fs::read_dir(directory).map_err(|error| {
+		log::error!(
+			"Failed to scan assets directory '{}'. The most likely cause is that the directory cannot be read. Error: {}",
+			directory.display(),
+			error
+		);
+		1
+	})?;
+
+	for entry in entries {
+		let entry = entry.map_err(|error| {
+			log::error!(
+				"Failed to inspect an asset directory entry in '{}'. The most likely cause is a filesystem read failure. Error: {}",
+				directory.display(),
+				error
+			);
+			1
+		})?;
+		let file_type = entry.file_type().map_err(|error| {
+			log::error!(
+				"Failed to inspect asset path '{}'. The most likely cause is a filesystem metadata failure. Error: {}",
+				entry.path().display(),
+				error
+			);
+			1
+		})?;
+
+		if file_type.is_dir() {
+			discover_asset_ids_in(root_path, &entry.path(), asset_manager, ids)?;
+			continue;
+		}
+
+		// Symlinks are intentionally skipped so a linked directory cannot create a traversal cycle.
+		if !file_type.is_file() {
+			continue;
+		}
+
+		let path = entry.path();
+		let Some(relative_path) = path.strip_prefix(root_path).ok() else {
+			continue;
+		};
+		let Some(id) = resource_id_path(relative_path) else {
+			log::warn!(
+				"Skipping asset path '{}'. The most likely cause is a non-UTF-8 path that cannot be represented as a resource ID.",
+				path.display()
+			);
+			continue;
+		};
+
+		if path
+			.extension()
+			.and_then(|extension| extension.to_str())
+			.is_some_and(|extension| extension.eq_ignore_ascii_case("bead"))
+		{
+			continue;
+		}
+
+		if asset_manager.supports(&id) {
+			ids.push(id);
+		}
+	}
 
 	Ok(())
+}
+
+/// Converts a filesystem-relative path into a resource-style ID with `/` separators.
+fn resource_id_path(path: &Path) -> Option<String> {
+	let mut id = String::new();
+	for component in path.components() {
+		let component = component.as_os_str().to_str()?;
+		if !id.is_empty() {
+			id.push('/');
+		}
+		id.push_str(component);
+	}
+	Some(id)
 }
 
 pub fn delete(destination_path: String, ids: Vec<String>) -> Result<(), i32> {
@@ -479,15 +592,22 @@ mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
 
 	use resource_management::{
-		resource::storage_backend::{QueryCursor, QueryError},
+		asset::{FileStorageBackend, ResourceId},
+		resource::{
+			storage_backend::{QueryCursor, QueryError},
+			ReadStorageBackend, RedbStorageBackend,
+		},
 		QueryableProperty, QueryableValue,
 	};
 	use serde_json::json;
 
 	use super::{
-		decode_hex, decode_query_cursor, encode_hex, encode_query_cursor, parse_query_property, query_error_message,
-		queryable_properties_json, wipe,
+		bake, decode_hex, decode_query_cursor, discover_asset_ids, encode_hex, encode_query_cursor, parse_query_property,
+		query_error_message, queryable_properties_json, wipe,
 	};
+	use crate::utils::get_asset_manager;
+
+	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../resource-management/src/asset/test_data/triangle_move_ascii.fbx");
 
 	#[test]
 	fn query_property_parser_splits_once_and_rejects_missing_halves() {
@@ -540,6 +660,54 @@ mod tests {
 	fn query_errors_keep_distinct_actionable_causes() {
 		assert!(query_error_message(QueryError::InvalidCursor).contains("cursor is invalid"));
 		assert!(query_error_message(QueryError::StorageFailure).contains("database could not be read"));
+	}
+
+	#[test]
+	fn discovers_supported_assets_recursively_and_ignores_sidecars_and_unknown_files() {
+		let root = std::env::temp_dir().join(format!(
+			"beld-discovery-test-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		));
+		std::fs::create_dir_all(root.join("nested/deeper")).unwrap();
+		std::fs::write(root.join("z-last.png"), []).unwrap();
+		std::fs::write(root.join("nested/deeper/a-first.fbx"), []).unwrap();
+		std::fs::write(root.join("nested/material.bema"), []).unwrap();
+		std::fs::write(root.join("nested/material.bema.bead"), []).unwrap();
+		std::fs::write(root.join("ignored.txt"), []).unwrap();
+
+		let asset_manager = get_asset_manager(FileStorageBackend::new(root.clone()));
+		let ids = discover_asset_ids(&root, &asset_manager).unwrap();
+
+		assert_eq!(ids, ["nested/deeper/a-first.fbx", "nested/material.bema", "z-last.png"]);
+		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
+	fn default_bake_continues_after_a_failed_asset_and_returns_failure() {
+		let root = std::env::temp_dir().join(format!(
+			"beld-bake-all-test-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		));
+		let assets_path = root.join("assets");
+		let resources_path = root.join("resources");
+		std::fs::create_dir_all(&assets_path).unwrap();
+		std::fs::write(assets_path.join("triangle_move.fbx"), TRIANGLE_MOVE_FBX).unwrap();
+		std::fs::write(assets_path.join("broken.png"), b"not a PNG").unwrap();
+
+		assert_eq!(
+			bake(
+				assets_path.to_string_lossy().into_owned(),
+				resources_path.to_string_lossy().into_owned(),
+				Vec::new(),
+			),
+			Err(1)
+		);
+
+		let resource_storage = RedbStorageBackend::new(resources_path.clone());
+		assert!(resource_storage.read(ResourceId::new("triangle_move.fbx")).is_some());
+		std::fs::remove_dir_all(root).unwrap();
 	}
 
 	#[test]

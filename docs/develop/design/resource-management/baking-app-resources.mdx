@@ -19,10 +19,12 @@ Run BELD from the application directory and pass absolute source and destination
 cd my-app
 
 beld --source "$PWD/assets" --destination "$PWD/resources" \
-  bake scene.glb environment.exr materials/hero.bema
+  bake
 ```
 
-Bake every asset that the release application requests, including environment maps, meshes, materials, audio, and explicitly requested container subresources. Quote an ID containing a fragment so the shell preserves it:
+With no IDs, BELD recursively discovers all supported source assets, including environment maps, meshes, materials, and audio. Unknown files and `.bead` sidecars are skipped:
+
+Use explicit IDs when a container fragment is required. Quote an ID containing a fragment so the shell preserves it:
 
 ```bash
 beld --source "$PWD/assets" --destination "$PWD/resources" bake \

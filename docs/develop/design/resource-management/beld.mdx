@@ -10,14 +10,21 @@ It reads source assets from an assets directory and writes processed resources t
 By default those paths are `assets` and `resources`, but both are configurable.
 
 ```bash
-beld --source assets --destination resources bake mesh.glb character.fbx material.bema
+beld --source assets --destination resources bake
 ```
 
 ## Commands
 
-`beld bake` processes one or more asset IDs into resources.
+`beld bake` processes asset IDs into resources. When no IDs are provided, BELD recursively discovers every source file supported by its registered handlers beneath the source directory. `.bead` sidecars and unknown files are ignored, and discovered IDs are processed in deterministic path order.
 The bake command installs the standard asset handlers and runs work concurrently.
 Each asset gets a local arena for decode-time and processing-time allocations so large temporary buffers can be released after that asset finishes.
+
+To bake only selected assets, provide their IDs explicitly:
+
+```bash
+beld --source assets --destination resources bake mesh.glb character.fbx material.bema
+```
+
 Quote glTF or FBX subresource IDs so the shell does not treat their fragment as a comment:
 
 ```bash
@@ -37,6 +44,8 @@ The first equality predicate can use the property index, and paged results print
 `beld delete` removes resources by ID.
 
 `beld clear` and `beld wipe` remove the resources directory and recreate it.
+
+BELD continues baking after an individual asset fails, but the command exits with status `1` if any selected asset failed. A successful command logs the total elapsed bake time and success/failure counts.
 
 ## Query examples
 

@@ -1,0 +1,4 @@
+{
+  "stage": "Compute",
+  "workgroup": [1, 1, 1]
+}

@@ -20,6 +20,8 @@ pub struct VisibilityPipelineManager {
 	materials_data_buffer_handle: ghi::BufferHandle<[MaterialData; MAX_MATERIALS]>,
 	/// Compute resources shared by every sink for frame-local mesh deformation.
 	skinning_pass: SkinningPass,
+	/// Application-owned baked resources used by the fixed visibility shader set.
+	shader_resources: EntityHandle<ResourceManager>,
 	/// Reused palette upload storage prevents per-frame matrix allocations.
 	skinning_palette_scratch: Vec<Matrix4Columns>,
 	/// Reused per-instance palette lookup avoids duplicate uploads when primitive order is noncontiguous.
@@ -47,11 +49,13 @@ impl VisibilityPipelineManager {
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		resource_manager: VisibilityPipelineResourceManagerClient,
+		shader_resources: EntityHandle<ResourceManager>,
 		environment_resource_id: Option<String>,
 	) -> Self {
 		let environment_texture = create_fallback_environment_texture(context);
 		let skinning_pass = SkinningPass::new(
 			context,
+			&shader_resources,
 			SkinningSourceBuffers::new(
 				resource_manager.gpu_vertex_data_manager.skinning_rest_positions_buffer.into(),
 				resource_manager.gpu_vertex_data_manager.skinning_rest_normals_buffer.into(),
@@ -158,6 +162,7 @@ impl VisibilityPipelineManager {
 		Self {
 			materials_data_buffer_handle,
 			skinning_pass,
+			shader_resources,
 			skinning_palette_scratch: Vec::new(),
 			skinning_palette_cache: Vec::new(),
 			resource_manager,
@@ -1031,10 +1036,9 @@ impl PipelineManager for VisibilityPipelineManager {
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
 
-		let shader_storage = render_pass_builder.shader_storage();
 		let render_pass = VisibilityPipelineRenderPass::new(
 			render_pass_builder.context(),
-			shader_storage,
+			&self.shader_resources,
 			self.scene.descriptor_set,
 			visibility_passes_descriptor_set,
 			material_evaluation_descriptor_set,

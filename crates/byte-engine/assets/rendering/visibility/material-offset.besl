@@ -1,0 +1,36 @@
+MaterialCount: struct {
+	material_count: atomicu32[1024],
+}
+
+MaterialOffset: struct {
+	material_offset: u32[1024],
+}
+
+MaterialOffsetScratch: struct {
+	material_offset_scratch: atomicu32[1024],
+}
+
+MaterialEvaluationDispatches: struct {
+	material_evaluation_dispatches: vec4u[1024],
+}
+
+material_count_buffer: descriptor<MaterialCount, 1033, read_write>;
+material_offset_buffer: descriptor<MaterialOffset, 1034, read_write>;
+material_offset_scratch_buffer: descriptor<MaterialOffsetScratch, 1035, read_write>;
+material_evaluation_dispatches: descriptor<MaterialEvaluationDispatches, 1036, read_write>;
+
+main: fn () -> void {
+	let coord: vec2u = thread_id();
+
+	if (coord.x == 0 && coord.y == 0) {
+		let sum: u32 = 0;
+
+		for (let i: u32 = 0; i < 1024; i = i + 1) {
+			let count: u32 = atomic_load(material_count_buffer.material_count[i]);
+			material_offset_buffer.material_offset[i] = sum;
+			atomic_store(material_offset_scratch_buffer.material_offset_scratch[i], sum);
+			material_evaluation_dispatches.material_evaluation_dispatches[i] = vec4u((count + 127) / 128, 1, 1, 0);
+			sum = sum + count;
+		}
+	}
+}

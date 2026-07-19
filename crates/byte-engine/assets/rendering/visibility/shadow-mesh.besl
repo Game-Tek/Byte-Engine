@@ -1,0 +1,131 @@
+View: struct {
+	view: mat4f,
+	projection: mat4f,
+	view_projection: mat4f,
+	inverse_view: mat4f,
+	inverse_projection: mat4f,
+	inverse_view_projection: mat4f,
+	fov: vec2f,
+	near: f32,
+	far: f32,
+}
+
+Mesh: struct {
+	model: mat4x3f,
+	material_index: u32,
+	base_vertex_index: u32,
+	base_primitive_index: u32,
+	base_triangle_index: u32,
+	base_meshlet_index: u32,
+	meshlet_count: u32,
+	skinned_base_vertex_index: u32,
+	padding0: u32,
+}
+
+Meshlet: struct {
+	primitive_offset: u32,
+	triangle_offset: u32,
+	primitive_count: u32,
+	triangle_count: u32,
+	center_radius: vec4f,
+	cone_apex_cutoff: vec4f,
+	cone_axis: vec4f,
+}
+
+SkinnedVertex: struct {
+	position: vec4f,
+	normal: vec4f,
+}
+
+Views: struct {
+	views: View[8],
+}
+
+Meshes: struct {
+	meshes: Mesh[1024],
+}
+
+VertexPositions: struct {
+	positions: vec3f[262144],
+}
+
+SkinnedVertices: struct {
+	vertices: SkinnedVertex[262144],
+}
+
+VertexIndices: struct {
+	vertex_indices: u16[262144],
+}
+
+PrimitiveIndices: struct {
+	primitive_indices: u8[786432],
+}
+
+Meshlets: struct {
+	meshlets: Meshlet[4096],
+}
+
+views: descriptor<Views, 0, read>;
+meshes: descriptor<Meshes, 1, read>;
+vertex_positions: descriptor<VertexPositions, 2, read>;
+skinned_vertices: descriptor<SkinnedVertices, 4, read>;
+vertex_indices: descriptor<VertexIndices, 6, read>;
+primitive_indices: descriptor<PrimitiveIndices, 7, read>;
+meshlets: descriptor<Meshlets, 8, read>;
+
+meshlet_indices: task_payload<u32, 32>;
+out_instance_index: output<u32, 0, 126>;
+out_primitive_index: output<u32, 1, 126>;
+
+push_constant: push_constant {
+	instance_index: u32,
+	view_index: u32,
+}
+
+main: fn() -> void {
+	let mesh: Mesh = meshes.meshes[push_constant.instance_index];
+	let view: View = views.views[push_constant.view_index];
+	let meshlet_index: u32 = meshlet_indices[threadgroup_position()];
+	let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
+	let primitive_index: u32 = thread_idx();
+
+	if (primitive_index == 0) {
+		set_mesh_output_counts(meshlet.primitive_count, meshlet.triangle_count);
+	}
+
+	if (primitive_index < meshlet.primitive_count) {
+		let relative_vertex_index: u32 = u32(vertex_indices.vertex_indices[
+			mesh.base_primitive_index + meshlet.primitive_offset + primitive_index
+		]);
+		let vertex_index: u32 = mesh.base_vertex_index + relative_vertex_index;
+		let position: vec4f = vec4f(
+			vertex_positions.positions[vertex_index].x,
+			vertex_positions.positions[vertex_index].y,
+			vertex_positions.positions[vertex_index].z,
+			1.0
+		);
+		if (mesh.skinned_base_vertex_index != 4294967295) {
+			position = skinned_vertices.vertices[mesh.skinned_base_vertex_index + relative_vertex_index].position;
+		}
+
+		let world_position: vec3f = mesh.model * position;
+		set_mesh_vertex_position(
+			primitive_index,
+			view.view_projection * vec4f(world_position.x, world_position.y, world_position.z, 1.0)
+		);
+	}
+
+	if (primitive_index < meshlet.triangle_count) {
+		let triangle_base_index: u32 = mesh.base_triangle_index + meshlet.triangle_offset + primitive_index;
+		set_mesh_triangle(
+			primitive_index,
+			vec3u(
+				u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 0]),
+				u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 1]),
+				u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 2])
+			)
+		);
+		out_instance_index[primitive_index] = push_constant.instance_index;
+		out_primitive_index[primitive_index] = (meshlet_index << 8) | (primitive_index & 255);
+	}
+}

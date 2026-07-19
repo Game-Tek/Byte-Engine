@@ -207,6 +207,7 @@ impl Node {
 		let texture_2d = primitive_type("Texture2D");
 		let texture_3d = primitive_type("Texture3D");
 		let array_texture_2d = primitive_type("ArrayTexture2D");
+		let atomic_u32 = primitive_type("atomicu32");
 
 		let builtins = vec![
 			void.clone(),
@@ -230,6 +231,7 @@ impl Node {
 			texture_2d.clone(),
 			texture_3d.clone(),
 			array_texture_2d,
+			atomic_u32.clone(),
 			builtin_intrinsic(
 				"sample",
 				vec![("texture_sampler", texture_2d.clone()), ("uv", vec2f32.clone())],
@@ -358,6 +360,9 @@ impl Node {
 			),
 			builtin_intrinsic("thread_idx", vec![], u32_t.clone()),
 			builtin_intrinsic("threadgroup_position", vec![], u32_t.clone()),
+			builtin_intrinsic("thread_position", vec![], u32_t.clone()),
+			builtin_intrinsic("workgroup_barrier", vec![], void.clone()),
+			builtin_intrinsic("set_task_mesh_output_count", vec![("count", u32_t.clone())], void.clone()),
 			builtin_intrinsic("thread_id", vec![], vec2u32.clone()),
 			builtin_intrinsic(
 				"set_mesh_output_counts",
@@ -378,6 +383,22 @@ impl Node {
 				"image_load",
 				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
 				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"image_load_u32",
+				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone())],
+				u32_t.clone(),
+			),
+			builtin_intrinsic(
+				"atomic_add",
+				vec![("value", atomic_u32.clone()), ("increment", u32_t.clone())],
+				u32_t.clone(),
+			),
+			builtin_intrinsic("atomic_load", vec![("value", atomic_u32.clone())], u32_t.clone()),
+			builtin_intrinsic(
+				"atomic_store",
+				vec![("value", atomic_u32), ("stored", u32_t.clone())],
+				void.clone(),
 			),
 			builtin_intrinsic("texture_size", vec![("texture", texture_2d.clone())], vec2u32.clone()),
 			builtin_intrinsic("image_size", vec![("image", texture_2d.clone())], vec2u32.clone()),
@@ -645,6 +666,28 @@ impl Node {
 		}
 	}
 
+	pub fn task_payload(name: &str, format: NodeReference, count: u32) -> Node {
+		let count = NonZeroUsize::new(count as usize).expect(
+			"Invalid task-payload count. The most likely cause is that a task-payload array was declared with zero elements.",
+		);
+		Node {
+			node: Nodes::TaskPayload {
+				name: name.to_string(),
+				format,
+				count,
+			},
+		}
+	}
+
+	pub fn workgroup(name: &str, format: NodeReference) -> Node {
+		Node {
+			node: Nodes::Workgroup {
+				name: name.to_string(),
+				format,
+			},
+		}
+	}
+
 	pub fn new(node: Nodes) -> Node {
 		Node { node }
 	}
@@ -698,7 +741,10 @@ impl Node {
 			| Nodes::Specialization { name, .. }
 			| Nodes::Literal { name, .. }
 			| Nodes::Const { name, .. } => Some(name),
-			Nodes::Input { name, .. } | Nodes::Output { name, .. } => Some(name),
+			Nodes::Input { name, .. }
+			| Nodes::Output { name, .. }
+			| Nodes::TaskPayload { name, .. }
+			| Nodes::Workgroup { name, .. } => Some(name),
 			Nodes::PushConstant { .. } => Some("push_constant"),
 			Nodes::Expression(Expressions::VariableDeclaration { name, .. } | Expressions::Member { name, .. }) => Some(name),
 			_ => None,
@@ -837,6 +883,15 @@ pub enum Nodes {
 		location: u8,
 		count: Option<NonZeroUsize>,
 	},
+	TaskPayload {
+		name: String,
+		format: NodeReference,
+		count: NonZeroUsize,
+	},
+	Workgroup {
+		name: String,
+		format: NodeReference,
+	},
 	Parameter {
 		name: String,
 		r#type: NodeReference,
@@ -861,7 +916,7 @@ impl Nodes {
 			Nodes::Struct { .. } => false,
 			Nodes::Binding { .. } => false,
 			Nodes::PushConstant { .. } => false,
-			Nodes::Input { .. } | Nodes::Output { .. } => false,
+			Nodes::Input { .. } | Nodes::Output { .. } | Nodes::TaskPayload { .. } | Nodes::Workgroup { .. } => false,
 			Nodes::Specialization { .. } => false,
 			Nodes::Const { .. } => false,
 			Nodes::Literal { .. } => true,
@@ -876,10 +931,23 @@ impl Nodes {
 	}
 
 	pub fn is_indexable(&self) -> bool {
+		fn type_is_indexable(r#type: &NodeReference) -> bool {
+			let r#type = r#type.borrow();
+			matches!(r#type.node(), Nodes::Struct { template: Some(_), .. })
+				|| r#type
+					.get_name()
+					.is_some_and(|name| name.starts_with("vec") || name.starts_with("mat"))
+		}
+
 		match self {
-			Nodes::Member { count, .. } => count.is_some(),
-			Nodes::Output { count, .. } => count.is_some(),
-			Nodes::Const { r#type, .. } => matches!(r#type.borrow().node(), Nodes::Struct { template: Some(_), .. }),
+			Nodes::Member { r#type, count, .. } => count.is_some() || type_is_indexable(r#type),
+			Nodes::Input { format, .. } => type_is_indexable(format),
+			Nodes::Output { format, count, .. } => count.is_some() || type_is_indexable(format),
+			Nodes::TaskPayload { .. } => true,
+			Nodes::Parameter { r#type, .. }
+			| Nodes::Specialization { r#type, .. }
+			| Nodes::Const { r#type, .. }
+			| Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => type_is_indexable(r#type),
 			Nodes::Expression(Expressions::Member { source, .. }) => source.borrow().node().is_indexable(),
 			Nodes::Expression(Expressions::Accessor { right, .. }) => right.borrow().node().is_indexable(),
 			_ => false,
@@ -1053,6 +1121,23 @@ impl std::fmt::Debug for Node {
 					format.0.borrow().get_name().map(|e| e.to_string()),
 					location,
 					count
+				)
+			}
+			Nodes::TaskPayload { name, format, count } => {
+				write!(
+					f,
+					"TaskPayload {{ name: {}, format: {:?}, count: {} }}",
+					name,
+					format.0.borrow().get_name().map(|e| e.to_string()),
+					count
+				)
+			}
+			Nodes::Workgroup { name, format } => {
+				write!(
+					f,
+					"Workgroup {{ name: {}, format: {:?} }}",
+					name,
+					format.0.borrow().get_name().map(|e| e.to_string())
 				)
 			}
 			Nodes::Literal { name, value } => {
@@ -1375,6 +1460,8 @@ fn find_descendant(node: &NodeReference, child_name: &str, mode: DescendantSearc
 				| Nodes::Parameter { .. }
 				| Nodes::Input { .. }
 				| Nodes::Output { .. }
+				| Nodes::TaskPayload { .. }
+				| Nodes::Workgroup { .. }
 				| Nodes::Expression(Expressions::Member { .. })
 		);
 
@@ -1413,7 +1500,10 @@ fn find_descendant(node: &NodeReference, child_name: &str, mode: DescendantSearc
 			r#type: BindingTypes::Buffer { members },
 			..
 		} => find_in_descendants(members, child_name, mode),
-		Nodes::Input { format, .. } | Nodes::Output { format, .. } => find_descendant(format, child_name, mode),
+		Nodes::Input { format, .. }
+		| Nodes::Output { format, .. }
+		| Nodes::TaskPayload { format, .. }
+		| Nodes::Workgroup { format, .. } => find_descendant(format, child_name, mode),
 		_ => None,
 	};
 
@@ -1674,6 +1764,23 @@ fn lex_parsed_node(chain: Vec<NodeReference>, parser_node: &parser::Node) -> Res
 			});
 
 			this.into()
+		}
+		parser::Nodes::TaskPayload { name, format, count } => {
+			let format = resolve_type(&chain, format)?;
+			Node::new(Nodes::TaskPayload {
+				name: name.to_string(),
+				format,
+				count: *count,
+			})
+			.into()
+		}
+		parser::Nodes::Workgroup { name, format } => {
+			let format = resolve_type(&chain, format)?;
+			Node::new(Nodes::Workgroup {
+				name: name.to_string(),
+				format,
+			})
+			.into()
 		}
 		parser::Nodes::Function {
 			name,
@@ -2079,7 +2186,9 @@ fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {
 
 fn infer_literal_type(value: &str) -> Option<NodeReference> {
 	let root = Node::root();
-	if value.contains(['.', 'e', 'E']) {
+	if matches!(value, "true" | "false") {
+		root.get_child("bool")
+	} else if value.contains(['.', 'e', 'E']) {
 		root.get_child("f32")
 	} else {
 		root.get_child("u32")
@@ -2092,6 +2201,8 @@ fn infer_member_type(source: &NodeReference) -> Option<NodeReference> {
 		| Nodes::Parameter { r#type, .. }
 		| Nodes::Input { format: r#type, .. }
 		| Nodes::Output { format: r#type, .. }
+		| Nodes::TaskPayload { format: r#type, .. }
+		| Nodes::Workgroup { format: r#type, .. }
 		| Nodes::Specialization { r#type, .. }
 		| Nodes::Const { r#type, .. } => Some(r#type.clone()),
 		Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
@@ -2351,6 +2462,82 @@ mod tests {
 				..
 			} if format == "unknown"
 		));
+	}
+
+	#[test]
+	fn source_atomic_buffers_and_push_constants_link_without_injected_rust_nodes() {
+		let source = r#"
+			Counters: struct {
+				values: atomicu32[8],
+			}
+			counters: descriptor<Counters, 3, read_write>;
+			push_constant: push_constant {
+				index: u32,
+			}
+			main: fn () -> void {
+				let old: u32 = atomic_add(counters.values[push_constant.index], 1);
+				atomic_store(counters.values[push_constant.index], atomic_load(counters.values[old]));
+			}
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("standalone atomic shader should link");
+		root.get_main().expect("standalone atomic shader should have main");
+		assert!(root.borrow().get_child("push_constant").is_some());
+	}
+
+	#[test]
+	fn source_task_storage_and_stage_interfaces_link_without_injected_rust_nodes() {
+		let source = r#"
+			instance_index: input<u32, 0>;
+			primitive_index: output<u32, 1>;
+			visible_meshlets: task_payload<u32, 32>;
+			visible_count: workgroup<atomicu32>;
+			main: fn () -> void {
+				let position: u32 = thread_position();
+				visible_meshlets[thread_idx()] = position;
+				atomic_store(visible_count, position);
+				workgroup_barrier();
+				set_task_mesh_output_count(atomic_load(visible_count));
+				primitive_index = instance_index;
+			}
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("standalone task shader should link");
+		let payload = root
+			.borrow()
+			.get_child("visible_meshlets")
+			.expect("task payload declaration should be linked");
+		assert!(matches!(
+			payload.borrow().node(),
+			Nodes::TaskPayload { count, format, .. }
+				if count.get() == 32 && format.borrow().get_name() == Some("u32")
+		));
+		assert!(payload.borrow().node().is_indexable());
+
+		let workgroup = root
+			.borrow()
+			.get_child("visible_count")
+			.expect("workgroup declaration should be linked");
+		assert!(matches!(
+			workgroup.borrow().node(),
+			Nodes::Workgroup { format, .. } if format.borrow().get_name() == Some("atomicu32")
+		));
+		assert!(root.get_main().is_some());
+	}
+
+	#[test]
+	fn source_boolean_literals_link_as_bool_values() {
+		let source = r#"
+			main: fn () -> void {
+				let enabled: bool = true;
+				let disabled: bool = false;
+			}
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("boolean literals should link");
+		root.get_main().expect("boolean literal shader should have main");
+		assert_eq!(infer_literal_type("true").unwrap().borrow().get_name(), Some("bool"));
+		assert_eq!(infer_literal_type("false").unwrap().borrow().get_name(), Some("bool"));
 	}
 
 	#[test]

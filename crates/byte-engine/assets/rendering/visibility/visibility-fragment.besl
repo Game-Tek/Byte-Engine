@@ -1,0 +1,9 @@
+in_instance_index: input<u32, 0>;
+in_primitive_index: input<u32, 1>;
+out_primitive_index: output<u32, 0>;
+out_instance_id: output<u32, 1>;
+
+main: fn() -> void {
+	out_primitive_index = in_primitive_index;
+	out_instance_id = in_instance_index;
+}

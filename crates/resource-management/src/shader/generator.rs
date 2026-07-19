@@ -86,7 +86,10 @@ pub enum Stages {
 	Compute {
 		local_size: Extent,
 	},
-	Task,
+	Task {
+		local_size: Extent,
+		maximum_mesh_threadgroups: u32,
+	},
 	Mesh {
 		maximum_vertices: u32,
 		maximum_primitives: u32,
@@ -301,8 +304,15 @@ impl Settings {
 		})
 	}
 
-	pub fn task() -> Settings {
-		Self::from_stage(Stages::Task)
+	pub fn task(local_size: Extent, maximum_mesh_threadgroups: u32) -> Settings {
+		assert!(
+			maximum_mesh_threadgroups > 0,
+			"Invalid task mesh-threadgroup limit. The most likely cause is that a task shader was configured to emit zero mesh threadgroups."
+		);
+		Self::from_stage(Stages::Task {
+			local_size: Self::normalize_local_size(local_size),
+			maximum_mesh_threadgroups,
+		})
 	}
 
 	pub fn mesh(maximum_vertices: u32, maximum_primitives: u32, local_size: Extent) -> Settings {
@@ -657,12 +667,26 @@ pub(crate) trait NodeEmitter {
 pub mod tests {
 	use std::cell::RefCell;
 
+	use utils::Extent;
+
 	use crate::shader::besl::evaluation::BindingKind;
 
 	#[test]
 	#[should_panic(expected = "Invalid resource slot range")]
 	fn compiled_shader_binding_rejects_flat_slot_overflow() {
 		super::CompiledShaderBinding::new(u32::MAX, BindingKind::StorageBuffer, 1, true, false);
+	}
+
+	#[test]
+	fn task_settings_preserve_workgroup_and_mesh_threadgroup_limit() {
+		let settings = super::ShaderGenerationSettings::task(Extent::new(32, 0, 0), 32);
+		assert!(matches!(
+			settings.stage,
+			super::Stages::Task {
+				local_size,
+				maximum_mesh_threadgroups: 32,
+			} if local_size == Extent::new(32, 1, 1)
+		));
 	}
 
 	pub fn bindings() -> besl::NodeReference {

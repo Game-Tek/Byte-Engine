@@ -94,10 +94,7 @@ pub fn setup_default_resource_and_asset_management(
 		asset_manager.add_asset_handler(OGGAssetHandler::new());
 		asset_manager.add_asset_handler(BESLShaderAssetHandler::new());
 
-		application
-			.resource_manager
-			.try_map_mut(|resource_manager| resource_manager.set_asset_manager(asset_manager))
-			.expect("Failed to set up resource manager. Application cannot run without a resource manager.");
+		application.resource_manager.set_asset_manager(asset_manager);
 	}
 }
 

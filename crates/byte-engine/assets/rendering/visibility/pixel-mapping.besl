@@ -1,0 +1,46 @@
+Mesh: struct {
+	model: mat4x3f,
+	material_index: u32,
+	base_vertex_index: u32,
+	base_primitive_index: u32,
+	base_triangle_index: u32,
+	base_meshlet_index: u32,
+	meshlet_count: u32,
+	skinned_base_vertex_index: u32,
+	padding0: u32,
+}
+
+MeshData: struct {
+	meshes: Mesh[1024],
+}
+
+MaterialOffsetScratch: struct {
+	material_offset_scratch: atomicu32[1024],
+}
+
+PixelMapping: struct {
+	pixel_mapping: vec2u16[8294400],
+}
+
+mesh_data: descriptor<MeshData, 1, read>;
+material_offset_scratch_buffer: descriptor<MaterialOffsetScratch, 1035, read_write>;
+pixel_mapping_buffer: descriptor<PixelMapping, 1037, write>;
+instance_index_render_target: descriptor<StorageImage<r32ui>, 1040, read>;
+
+main: fn () -> void {
+	let coord: vec2u = thread_id();
+	guard_image_bounds(instance_index_render_target, coord);
+	let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
+
+	if (pixel_instance_index < 4294967295 && pixel_instance_index < 1024) {
+		let material_index: u32 = mesh_data.meshes[pixel_instance_index].material_index;
+
+		if (material_index < 1024) {
+			let pixel_mapping_index: u32 = atomic_add(material_offset_scratch_buffer.material_offset_scratch[material_index], 1);
+
+			if (pixel_mapping_index < 8294400) {
+				pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x + 1, coord.y + 1);
+			}
+		}
+	}
+}

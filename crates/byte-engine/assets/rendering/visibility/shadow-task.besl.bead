@@ -1,0 +1,5 @@
+{
+  "stage": "Task",
+  "workgroup": [32, 1, 1],
+  "maximum_mesh_threadgroups": 32
+}

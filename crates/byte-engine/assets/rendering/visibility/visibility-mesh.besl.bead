@@ -1,0 +1,6 @@
+{
+  "stage": "Mesh",
+  "workgroup": [128, 1, 1],
+  "maximum_vertices": 64,
+  "maximum_primitives": 126
+}

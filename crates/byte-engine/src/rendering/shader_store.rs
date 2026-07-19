@@ -493,11 +493,24 @@ mod tests {
 	/// Verifies structural BESL reflection drift is rejected before a backend can materialize incompatible IDs.
 	#[test]
 	fn besl_interface_validation_rejects_missing_reachable_resources() {
+		let material_offset = besl::compile_to_besl(
+			include_str!(concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/assets/rendering/visibility/material-offset.besl"
+			)),
+			None,
+		)
+		.expect("Material-offset BESL asset should link")
+		.get_main()
+		.expect("Material-offset BESL asset should declare main");
 		let descriptor = ShaderSourceDescriptor {
 			id: "shader/material-offset-mismatch",
 			name: "Material Offset Mismatch",
 			stage: ShaderTypes::Compute,
-			source: crate::rendering::pipelines::visibility::get_material_offset_shader(),
+			source: ShaderSourceDefinition::Besl {
+				settings: ShaderGenerationSettings::compute(Extent::square(1)),
+				main_node: material_offset,
+			},
 			interface: interface(Some((1, 1, 1)), Vec::new()),
 		};
 

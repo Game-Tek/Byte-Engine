@@ -211,9 +211,9 @@ impl Renderer {
 
 	/// Supplies the externally owned resource manager used by render passes to resolve baked shaders.
 	///
-	/// The renderer retains a weak reference so application setup can still configure the manager
-	/// through its unique handle. The owner must therefore keep `resource_manager` alive for as long
-	/// as render passes may load resources.
+	/// The renderer retains a weak reference so it does not extend application-owned resource lifetimes.
+	/// Debug asset management is installed through the resource manager's one-time initialization seam.
+	/// The owner must keep `resource_manager` alive for as long as render passes may load resources.
 	pub fn set_resource_manager(&mut self, resource_manager: &EntityHandle<ResourceManager>) {
 		self.resource_manager = Some(resource_manager.weak());
 	}

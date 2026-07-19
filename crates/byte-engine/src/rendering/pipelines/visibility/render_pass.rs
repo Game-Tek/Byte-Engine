@@ -5,24 +5,18 @@ use ghi::command_buffer::{
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use ghi::implementation::Frame;
-use math::Vector2;
-use resource_management::{resource::StorageBackend, resources::material, types::ShaderTypes as ResourceShaderTypes};
+use resource_management::{resource::resource_manager::ResourceManager, types::ShaderTypes as ResourceShaderTypes};
 use utils::{Box, Extent, RGBA};
 
 use crate::rendering::pipelines::visibility::pipeline_manager::Instance;
 use crate::rendering::pipelines::visibility::skinning::{SkinningDispatch, SkinningPass};
 use crate::rendering::pipelines::visibility::{
-	get_gtao_bitfield_blur_x_shader, get_gtao_bitfield_shader, get_gtao_blur_shader, get_gtao_shader,
-	get_material_count_shader, get_material_offset_shader, get_pixel_mapping_shader, get_shadow_pass_mesh_hlsl_source,
-	get_shadow_pass_mesh_msl_source, get_shadow_pass_mesh_source, get_shadow_pass_task_msl_source,
-	get_visibility_pass_mesh_hlsl_source, get_visibility_pass_mesh_msl_source, get_visibility_pass_mesh_source,
-	get_visibility_pass_task_msl_source, INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING,
-	MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS,
-	MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
-	MESHLET_CULLING_TASK_GROUP_SIZE, MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT,
-	SHADOW_MAP_RESOLUTION, TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
-	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING, VISIBILITY_PASS_FRAGMENT_SOURCE,
-	VISIBILITY_PASS_FRAGMENT_SOURCE_HLSL, VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
+	INSTANCE_ID_BINDING, MATERIAL_COUNT_BINDING, MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING,
+	MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING, MAX_INSTANCES, MAX_LIGHTS, MAX_MATERIALS, MAX_MESHLETS,
+	MAX_PIXEL_MAPPING_ENTRIES, MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES, MESHLET_CULLING_TASK_GROUP_SIZE,
+	MESHLET_DATA_BINDING, MESH_DATA_BINDING, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
+	TEXTURES_BINDING, TRIANGLE_INDEX_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
+	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{render_pass::RenderPassReturn, RenderPass, Sink};
@@ -53,132 +47,71 @@ const GTAO_BLUR_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResou
 	ghi::AccessPolicies::WRITE,
 );
 
-const GTAO_USE_BITFIELD_BINARY_IMPL: bool = false;
-const GTAO_PACKED_WORD_BITS: u32 = 32;
+/// Loads one fixed visibility shader from the application resource store and verifies its persisted stage contract.
+fn load_visibility_shader(
+	context: &mut ghi::implementation::Context,
+	resources: &ResourceManager,
+	id: &str,
+	name: &str,
+	expected_stage: ResourceShaderTypes,
+) -> ghi::ShaderHandle {
+	let loaded = crate::rendering::shader_store::load_shader_resource(context, resources, id, name)
+		.unwrap_or_else(|error| panic!("Failed to load visibility shader '{id}': {error}"));
+	assert_eq!(
+		loaded.stage, expected_stage,
+		"Visibility shader stage mismatch for '{id}'. The most likely cause is incorrect shader sidecar metadata."
+	);
+	loaded.handle
+}
 
 /// Returns the dispatch grid expected by the active mesh shading path.
 fn mesh_dispatch_count(meshlet_count: u32) -> u32 {
-	if ghi::implementation::USES_METAL {
-		meshlet_count.div_ceil(MESHLET_CULLING_TASK_GROUP_SIZE)
-	} else {
-		meshlet_count
-	}
+	meshlet_count.div_ceil(MESHLET_CULLING_TASK_GROUP_SIZE)
 }
 
 #[derive(Clone)]
-pub struct VisibilityPass {
+pub(crate) struct VisibilityPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	visibility_pass_pipeline: ghi::PipelineHandle,
 	attachments: [ghi::AttachmentInformation; 3],
 }
 
 impl VisibilityPass {
-	pub fn new(
+	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
-		shader_storage: Option<&dyn StorageBackend>,
+		shader_resources: &ResourceManager,
 		descriptor_set: ghi::DescriptorSetHandle,
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
 		depth_target: ghi::BaseImageHandle,
 	) -> Self {
-		let visibility_pass_task_shader = if ghi::implementation::USES_METAL {
-			let visibility_task_shader = get_visibility_pass_task_msl_source();
-
-			Some(
-				crate::rendering::shader_store::create_shader(
-					context,
-					shader_storage,
-					&crate::rendering::shader_store::ShaderSourceDescriptor {
-						id: "byte-engine/rendering/visibility/visibility-task",
-						name: "Visibility Pass Task Shader",
-						stage: ResourceShaderTypes::Task,
-						source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(
-							ghi::shader::ShaderSource::Msl {
-								source: visibility_task_shader.as_str(),
-								entry_point: "besl_task_main",
-							},
-						),
-						interface: material::ShaderInterface {
-							workgroup_size: None,
-							bindings: vec![
-								material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
-								material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
-								material::Binding::new(8, material::BindingKind::StorageBuffer, 1, true, false),
-							],
-						},
-					},
-				)
-				.expect("Failed to create shader"),
-			)
-		} else {
-			None
-		};
-
-		let visibility_mesh_glsl = get_visibility_pass_mesh_source();
-		let visibility_mesh_msl = get_visibility_pass_mesh_msl_source();
-		let visibility_mesh_hlsl = get_visibility_pass_mesh_hlsl_source();
-		let visibility_pass_mesh_shader = crate::rendering::shader_store::create_shader(
+		let visibility_pass_task_shader = load_visibility_shader(
 			context,
-			shader_storage,
-			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/rendering/visibility/visibility-mesh",
-				name: "Visibility Pass Mesh Shader",
-				stage: ResourceShaderTypes::Mesh,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(
-					ghi::shader::ShaderSource::PlatformNative {
-						glsl: &visibility_mesh_glsl,
-						msl: &visibility_mesh_msl,
-						msl_entry_point: "besl_main",
-						hlsl: &visibility_mesh_hlsl,
-						hlsl_entry_point: "main",
-					},
-				),
-				interface: material::ShaderInterface {
-					workgroup_size: None,
-					bindings: vec![
-						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(2, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(3, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(4, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(5, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(6, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(7, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(8, material::BindingKind::StorageBuffer, 1, true, false),
-					],
-				},
-			},
-		)
-		.expect("Failed to create shader");
-
-		let visibility_pass_fragment_shader = crate::rendering::shader_store::create_shader(
+			shader_resources,
+			"byte-engine/rendering/visibility/visibility-task.besl",
+			"Visibility Pass Task Shader",
+			ResourceShaderTypes::Task,
+		);
+		let visibility_pass_mesh_shader = load_visibility_shader(
 			context,
-			shader_storage,
-			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/rendering/visibility/visibility-fragment",
-				name: "Visibility Pass Fragment Shader",
-				stage: ResourceShaderTypes::Fragment,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(
-					ghi::shader::ShaderSource::PlatformNative {
-						glsl: VISIBILITY_PASS_FRAGMENT_SOURCE,
-						msl: VISIBILITY_PASS_FRAGMENT_SOURCE_MSL,
-						msl_entry_point: "visibility_fragment_main",
-						hlsl: VISIBILITY_PASS_FRAGMENT_SOURCE_HLSL,
-						hlsl_entry_point: "main",
-					},
-				),
-				interface: material::ShaderInterface {
-					workgroup_size: None,
-					bindings: vec![],
-				},
-			},
-		)
-		.expect("Failed to create shader");
+			shader_resources,
+			"byte-engine/rendering/visibility/visibility-mesh.besl",
+			"Visibility Pass Mesh Shader",
+			ResourceShaderTypes::Mesh,
+		);
+		let visibility_pass_fragment_shader = load_visibility_shader(
+			context,
+			shader_resources,
+			"byte-engine/rendering/visibility/visibility-fragment.besl",
+			"Visibility Pass Fragment Shader",
+			ResourceShaderTypes::Fragment,
+		);
 
 		let mut visibility_pass_shaders = Vec::with_capacity(3);
-		if let Some(task_shader) = visibility_pass_task_shader.as_ref() {
-			visibility_pass_shaders.push(ghi::ShaderParameter::new(task_shader, ghi::ShaderTypes::Task));
-		}
+		visibility_pass_shaders.push(ghi::ShaderParameter::new(
+			&visibility_pass_task_shader,
+			ghi::ShaderTypes::Task,
+		));
 		visibility_pass_shaders.push(ghi::ShaderParameter::new(
 			&visibility_pass_mesh_shader,
 			ghi::ShaderTypes::Mesh,
@@ -290,79 +223,24 @@ pub struct ShadowPass {
 impl ShadowPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
-		shader_storage: Option<&dyn StorageBackend>,
+		shader_resources: &ResourceManager,
 		descriptor_set: ghi::DescriptorSetHandle,
 		shadow_map: ghi::BaseImageHandle,
 	) -> Self {
-		let shadow_pass_task_shader = if ghi::implementation::USES_METAL {
-			let shadow_task_shader = get_shadow_pass_task_msl_source();
-
-			Some(
-				crate::rendering::shader_store::create_shader(
-					context,
-					shader_storage,
-					&crate::rendering::shader_store::ShaderSourceDescriptor {
-						id: "byte-engine/rendering/visibility/shadow-task",
-						name: "Shadow Pass Task Shader",
-						stage: ResourceShaderTypes::Task,
-						source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(
-							ghi::shader::ShaderSource::Msl {
-								source: shadow_task_shader.as_str(),
-								entry_point: "besl_task_main",
-							},
-						),
-						interface: material::ShaderInterface {
-							workgroup_size: None,
-							bindings: vec![
-								material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
-								material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
-								material::Binding::new(8, material::BindingKind::StorageBuffer, 1, true, false),
-							],
-						},
-					},
-				)
-				.expect("Failed to create shader"),
-			)
-		} else {
-			None
-		};
-
-		let shadow_mesh_glsl = get_shadow_pass_mesh_source();
-		let shadow_mesh_msl = get_shadow_pass_mesh_msl_source();
-		let shadow_mesh_hlsl = get_shadow_pass_mesh_hlsl_source();
-		let shadow_pass_mesh_shader = crate::rendering::shader_store::create_shader(
+		let shadow_pass_task_shader = load_visibility_shader(
 			context,
-			shader_storage,
-			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/rendering/visibility/shadow-mesh",
-				name: "Shadow Pass Mesh Shader",
-				stage: ResourceShaderTypes::Mesh,
-				source: crate::rendering::shader_store::ShaderSourceDefinition::Inline(
-					ghi::shader::ShaderSource::PlatformNative {
-						glsl: &shadow_mesh_glsl,
-						msl: &shadow_mesh_msl,
-						msl_entry_point: "besl_main",
-						hlsl: &shadow_mesh_hlsl,
-						hlsl_entry_point: "main",
-					},
-				),
-				interface: material::ShaderInterface {
-					workgroup_size: None,
-					bindings: vec![
-						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(2, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(3, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(4, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(5, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(6, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(7, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(8, material::BindingKind::StorageBuffer, 1, true, false),
-					],
-				},
-			},
-		)
-		.expect("Failed to create shader");
+			shader_resources,
+			"byte-engine/rendering/visibility/shadow-task.besl",
+			"Shadow Pass Task Shader",
+			ResourceShaderTypes::Task,
+		);
+		let shadow_pass_mesh_shader = load_visibility_shader(
+			context,
+			shader_resources,
+			"byte-engine/rendering/visibility/shadow-mesh.besl",
+			"Shadow Pass Mesh Shader",
+			ResourceShaderTypes::Mesh,
+		);
 
 		let attachments = [ghi::pipelines::raster::AttachmentDescriptor::new(ghi::Formats::Depth32)];
 		let vertex_layout = [
@@ -371,9 +249,7 @@ impl ShadowPass {
 		];
 
 		let mut shadow_pass_shaders = Vec::with_capacity(2);
-		if let Some(task_shader) = shadow_pass_task_shader.as_ref() {
-			shadow_pass_shaders.push(ghi::ShaderParameter::new(task_shader, ghi::ShaderTypes::Task));
-		}
+		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_task_shader, ghi::ShaderTypes::Task));
 		shadow_pass_shaders.push(ghi::ShaderParameter::new(&shadow_pass_mesh_shader, ghi::ShaderTypes::Mesh));
 
 		let shadow_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
@@ -468,30 +344,18 @@ pub struct MaterialCountPass {
 impl MaterialCountPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
-		shader_storage: Option<&dyn StorageBackend>,
+		shader_resources: &ResourceManager,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_count_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 	) -> Self {
-		let material_count_shader = crate::rendering::shader_store::create_shader(
+		let material_count_shader = load_visibility_shader(
 			context,
-			shader_storage,
-			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/rendering/visibility/material-count",
-				name: "Material Count Pass Compute Shader",
-				stage: ResourceShaderTypes::Compute,
-				source: get_material_count_shader(),
-				interface: material::ShaderInterface {
-					workgroup_size: Some((32, 32, 1)),
-					bindings: vec![
-						material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(1033, material::BindingKind::StorageBuffer, 1, true, true),
-						material::Binding::new(1040, material::BindingKind::StorageImage, 1, true, false),
-					],
-				},
-			},
-		)
-		.expect("Failed to create shader");
+			shader_resources,
+			"byte-engine/rendering/visibility/material-count.besl",
+			"Material Count Pass Compute Shader",
+			ResourceShaderTypes::Compute,
+		);
 
 		let material_count_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[],
@@ -546,41 +410,23 @@ pub struct MaterialOffsetPass {
 	material_offset_pipeline: ghi::PipelineHandle,
 }
 
-/// Builds the retained flat resource contract shared by the production pass and its execution test.
-fn material_offset_shader_interface() -> material::ShaderInterface {
-	material::ShaderInterface {
-		workgroup_size: Some((1, 1, 1)),
-		bindings: vec![
-			material::Binding::new(1033, material::BindingKind::StorageBuffer, 1, true, false),
-			material::Binding::new(1034, material::BindingKind::StorageBuffer, 1, false, true),
-			material::Binding::new(1035, material::BindingKind::StorageBuffer, 1, false, true),
-			material::Binding::new(1036, material::BindingKind::StorageBuffer, 1, false, true),
-		],
-	}
-}
-
 impl MaterialOffsetPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
-		shader_storage: Option<&dyn StorageBackend>,
+		shader_resources: &ResourceManager,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_pass_descriptor_set: ghi::DescriptorSetHandle,
 		material_offset_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
 	) -> Self {
-		let material_offset_shader = crate::rendering::shader_store::create_shader(
+		let material_offset_shader = load_visibility_shader(
 			context,
-			shader_storage,
-			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/rendering/visibility/material-offset",
-				name: "Material Offset Pass Compute Shader",
-				stage: ResourceShaderTypes::Compute,
-				source: get_material_offset_shader(),
-				interface: material_offset_shader_interface(),
-			},
-		)
-		.expect("Failed to create shader");
+			shader_resources,
+			"byte-engine/rendering/visibility/material-offset.besl",
+			"Material Offset Pass Compute Shader",
+			ResourceShaderTypes::Compute,
+		);
 
 		let material_offset_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[],
@@ -641,31 +487,18 @@ pub struct PixelMappingPass {
 impl PixelMappingPass {
 	fn new(
 		context: &mut ghi::implementation::Context,
-		shader_storage: Option<&dyn StorageBackend>,
+		shader_resources: &ResourceManager,
 		descriptor_set: ghi::DescriptorSetHandle,
 		visibility_passes_descriptor_set: ghi::DescriptorSetHandle,
 		material_xy: ghi::BufferHandle<[(u16, u16); MAX_PIXEL_MAPPING_ENTRIES]>,
 	) -> Self {
-		let pixel_mapping_shader = crate::rendering::shader_store::create_shader(
+		let pixel_mapping_shader = load_visibility_shader(
 			context,
-			shader_storage,
-			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/rendering/visibility/pixel-mapping",
-				name: "Pixel Mapping Pass Compute Shader",
-				stage: ResourceShaderTypes::Compute,
-				source: get_pixel_mapping_shader(),
-				interface: material::ShaderInterface {
-					workgroup_size: Some((32, 32, 1)),
-					bindings: vec![
-						material::Binding::new(1, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(1035, material::BindingKind::StorageBuffer, 1, true, true),
-						material::Binding::new(1040, material::BindingKind::StorageImage, 1, true, false),
-						material::Binding::new(1037, material::BindingKind::StorageBuffer, 1, false, true),
-					],
-				},
-			},
-		)
-		.expect("Failed to create shader");
+			shader_resources,
+			"byte-engine/rendering/visibility/pixel-mapping.besl",
+			"Pixel Mapping Pass Compute Shader",
+			ResourceShaderTypes::Compute,
+		);
 
 		let pixel_mapping_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[],
@@ -718,17 +551,12 @@ pub struct GtaoPass {
 	blur_pipeline_y: ghi::PipelineHandle,
 	ao_map: ghi::BaseImageHandle,
 	temp_ao_map: ghi::DynamicImageHandle,
-	packed_ao_map: Option<ghi::DynamicImageHandle>,
 }
 
 impl GtaoPass {
-	fn packed_extent(extent: Extent) -> Extent {
-		Extent::rectangle(extent.width().div_ceil(GTAO_PACKED_WORD_BITS), extent.height())
-	}
-
 	fn new(
 		context: &mut ghi::implementation::Context,
-		shader_storage: Option<&dyn StorageBackend>,
+		shader_resources: &ResourceManager,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		depth: ghi::BaseImageHandle,
 		ao_map: ghi::BaseImageHandle,
@@ -758,19 +586,6 @@ impl GtaoPass {
 				.name("GTAO Blur Intermediate")
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let packed_ao_map = GTAO_USE_BITFIELD_BINARY_IMPL.then(|| {
-			context.build_dynamic_image(
-				ghi::image::Builder::new(
-					ghi::Formats::U32,
-					ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::Image,
-				)
-				.name("GTAO Packed AO")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-			)
-		});
-		let gtao_output = packed_ao_map.map(|e| e.into()).unwrap_or(ao_map);
-		let blur_source_x = packed_ao_map.map(|e| e.into()).unwrap_or(ao_map);
-
 		context.write(&[
 			ghi::DescriptorWrite::combined_image_sampler(
 				gtao_descriptor_set,
@@ -779,12 +594,7 @@ impl GtaoPass {
 				depth_sampler,
 				ghi::Layouts::Read,
 			),
-			ghi::DescriptorWrite::image(
-				gtao_descriptor_set,
-				GTAO_OUTPUT_BINDING.slot(),
-				gtao_output,
-				ghi::Layouts::General,
-			),
+			ghi::DescriptorWrite::image(gtao_descriptor_set, GTAO_OUTPUT_BINDING.slot(), ao_map, ghi::Layouts::General),
 			ghi::DescriptorWrite::combined_image_sampler(
 				blur_descriptor_set_x,
 				GTAO_BLUR_DEPTH_BINDING.slot(),
@@ -795,7 +605,7 @@ impl GtaoPass {
 			ghi::DescriptorWrite::combined_image_sampler(
 				blur_descriptor_set_x,
 				GTAO_BLUR_SOURCE_BINDING.slot(),
-				blur_source_x,
+				ao_map,
 				ao_sampler,
 				ghi::Layouts::Read,
 			),
@@ -826,134 +636,41 @@ impl GtaoPass {
 				ghi::Layouts::General,
 			),
 		]);
-		let gtao_shader_data = if GTAO_USE_BITFIELD_BINARY_IMPL {
-			get_gtao_bitfield_shader()
-		} else {
-			get_gtao_shader()
-		};
-		let gtao_shader = crate::rendering::shader_store::create_shader(
+		let gtao_shader = load_visibility_shader(
 			context,
-			shader_storage,
-			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/rendering/visibility/gtao",
-				name: "GTAO Pass Compute Shader",
-				stage: ResourceShaderTypes::Compute,
-				source: gtao_shader_data,
-				interface: material::ShaderInterface {
-					workgroup_size: Some((8, 8, 1)),
-					bindings: vec![
-						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(
-							1033,
-							material::BindingKind::CombinedImageSampler {
-								view: material::TextureView::Texture2D,
-							},
-							1,
-							true,
-							false,
-						),
-						material::Binding::new(1034, material::BindingKind::StorageImage, 1, false, true),
-					],
-				},
-			},
-		)
-		.expect("Failed to create shader");
+			shader_resources,
+			"byte-engine/rendering/visibility/gtao.besl",
+			"GTAO Pass Compute Shader",
+			ResourceShaderTypes::Compute,
+		);
 
 		let gtao_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[],
 			ghi::ShaderParameter::new(&gtao_shader, ghi::ShaderTypes::Compute),
 		));
 
-		let blur_x_shader_data = if GTAO_USE_BITFIELD_BINARY_IMPL {
-			get_gtao_bitfield_blur_x_shader()
-		} else {
-			get_gtao_blur_shader()
-		};
-		let blur_x_shader = crate::rendering::shader_store::create_shader(
+		let blur_x_shader = load_visibility_shader(
 			context,
-			shader_storage,
-			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/rendering/visibility/gtao-blur-x",
-				name: "GTAO Blur X Compute Shader",
-				stage: ResourceShaderTypes::Compute,
-				source: blur_x_shader_data,
-				interface: material::ShaderInterface {
-					workgroup_size: Some((8, 8, 1)),
-					bindings: vec![
-						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(
-							1033,
-							material::BindingKind::CombinedImageSampler {
-								view: material::TextureView::Texture2D,
-							},
-							1,
-							true,
-							false,
-						),
-						material::Binding::new(
-							1034,
-							material::BindingKind::CombinedImageSampler {
-								view: material::TextureView::Texture2D,
-							},
-							1,
-							true,
-							false,
-						),
-						material::Binding::new(1035, material::BindingKind::StorageImage, 1, false, true),
-					],
-				},
-			},
-		)
-		.expect("Failed to create shader");
-		let blur_y_shader_data = get_gtao_blur_shader();
-		let blur_y_shader = crate::rendering::shader_store::create_shader(
+			shader_resources,
+			"byte-engine/rendering/visibility/gtao-blur-x.besl",
+			"GTAO Blur X Compute Shader",
+			ResourceShaderTypes::Compute,
+		);
+		let blur_y_shader = load_visibility_shader(
 			context,
-			shader_storage,
-			&crate::rendering::shader_store::ShaderSourceDescriptor {
-				id: "byte-engine/rendering/visibility/gtao-blur-y",
-				name: "GTAO Blur Y Compute Shader",
-				stage: ResourceShaderTypes::Compute,
-				source: blur_y_shader_data,
-				interface: material::ShaderInterface {
-					workgroup_size: Some((8, 8, 1)),
-					bindings: vec![
-						material::Binding::new(0, material::BindingKind::StorageBuffer, 1, true, false),
-						material::Binding::new(
-							1033,
-							material::BindingKind::CombinedImageSampler {
-								view: material::TextureView::Texture2D,
-							},
-							1,
-							true,
-							false,
-						),
-						material::Binding::new(
-							1034,
-							material::BindingKind::CombinedImageSampler {
-								view: material::TextureView::Texture2D,
-							},
-							1,
-							true,
-							false,
-						),
-						material::Binding::new(1035, material::BindingKind::StorageImage, 1, false, true),
-					],
-				},
-			},
-		)
-		.expect("Failed to create shader");
+			shader_resources,
+			"byte-engine/rendering/visibility/gtao-blur-y.besl",
+			"GTAO Blur Y Compute Shader",
+			ResourceShaderTypes::Compute,
+		);
 
 		let blur_pipeline_x = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[],
-			ghi::ShaderParameter::new(&blur_x_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
-				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(1.0f32, 0.0f32)),
-			]),
+			ghi::ShaderParameter::new(&blur_x_shader, ghi::ShaderTypes::Compute),
 		));
 		let blur_pipeline_y = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
 			&[],
-			ghi::ShaderParameter::new(&blur_y_shader, ghi::ShaderTypes::Compute).with_specialization_map(&[
-				ghi::pipelines::SpecializationMapEntry::new(0, "vec2f".to_string(), Vector2::new(0.0f32, 1.0f32)),
-			]),
+			ghi::ShaderParameter::new(&blur_y_shader, ghi::ShaderTypes::Compute),
 		));
 
 		Self {
@@ -966,7 +683,6 @@ impl GtaoPass {
 			blur_pipeline_y,
 			ao_map,
 			temp_ao_map,
-			packed_ao_map,
 		}
 	}
 
@@ -980,23 +696,14 @@ impl GtaoPass {
 		let blur_pipeline_y = self.blur_pipeline_y;
 		let ao_map = self.ao_map;
 		let temp_ao_map = self.temp_ao_map;
-		let packed_ao_map = self.packed_ao_map;
 		let extent = sink.extent();
 
 		frame.resize_image(ao_map, extent);
 		frame.resize_image(temp_ao_map.into(), extent);
 
-		if let Some(packed_ao_map) = packed_ao_map {
-			frame.resize_image(packed_ao_map.into(), Self::packed_extent(extent));
-		}
-
 		move |c, _| {
 			c.start_region(|label| label.write_str("GTAO"));
-			if let Some(packed_ao_map) = packed_ao_map {
-				c.clear_images(&[(packed_ao_map.into(), ghi::ClearValue::Color(RGBA::black()))]);
-			} else {
-				c.clear_images(&[(ao_map, ghi::ClearValue::Color(RGBA::white()))]);
-			}
+			c.clear_images(&[(ao_map, ghi::ClearValue::Color(RGBA::white()))]);
 
 			{
 				let c = c.bind_compute_pipeline(gtao_pipeline);
@@ -1122,7 +829,7 @@ impl MaterialEvaluationPass {
 	}
 }
 
-pub struct VisibilityPipelineRenderPass {
+pub(crate) struct VisibilityPipelineRenderPass {
 	shadow_pass: ShadowPass,
 	visibility_pass: VisibilityPass,
 	material_count_pass: MaterialCountPass,
@@ -1138,9 +845,9 @@ impl VisibilityPipelineRenderPass {
 		self.material_evaluation_pass.descriptor_set
 	}
 
-	pub fn new(
+	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
-		shader_storage: Option<&dyn StorageBackend>,
+		shader_resources: &ResourceManager,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
@@ -1156,10 +863,10 @@ impl VisibilityPipelineRenderPass {
 		material_offset_scratch_buffer: ghi::BufferHandle<[u32; MAX_MATERIALS]>,
 		material_evaluation_dispatches: ghi::BufferHandle<[[u32; 4]; MAX_MATERIALS]>,
 	) -> Self {
-		let shadow_pass = ShadowPass::new(context, shader_storage, base_descriptor_set, shadow_map);
+		let shadow_pass = ShadowPass::new(context, shader_resources, base_descriptor_set, shadow_map);
 		let visibility_pass = VisibilityPass::new(
 			context,
-			shader_storage,
+			shader_resources,
 			base_descriptor_set,
 			primitive_index,
 			instance_id,
@@ -1167,14 +874,14 @@ impl VisibilityPipelineRenderPass {
 		);
 		let material_count_pass = MaterialCountPass::new(
 			context,
-			shader_storage,
+			shader_resources,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_count_buffer,
 		);
 		let material_offset_pass = MaterialOffsetPass::new(
 			context,
-			shader_storage,
+			shader_resources,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_offset_buffer,
@@ -1183,12 +890,12 @@ impl VisibilityPipelineRenderPass {
 		);
 		let pixel_mapping_pass = PixelMappingPass::new(
 			context,
-			shader_storage,
+			shader_resources,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			material_xy,
 		);
-		let gtao_pass = GtaoPass::new(context, shader_storage, base_descriptor_set, depth, ao_map);
+		let gtao_pass = GtaoPass::new(context, shader_resources, base_descriptor_set, depth, ao_map);
 
 		let material_evaluation_dispatches = material_offset_pass.material_evaluation_dispatches;
 

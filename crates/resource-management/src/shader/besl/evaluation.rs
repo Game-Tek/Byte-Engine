@@ -275,7 +275,10 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 		| besl::Nodes::Specialization { r#type: nested, .. } => {
 			build_bindings(bindings, nested, state);
 		}
-		besl::Nodes::Input { format, .. } | besl::Nodes::Output { format, .. } => {
+		besl::Nodes::Input { format, .. }
+		| besl::Nodes::Output { format, .. }
+		| besl::Nodes::TaskPayload { format, .. }
+		| besl::Nodes::Workgroup { format, .. } => {
 			build_bindings(bindings, format, state);
 		}
 		besl::Nodes::Struct { fields: nested, .. }
@@ -425,6 +428,8 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 		| besl::Nodes::Member { r#type: nested, .. }
 		| besl::Nodes::Input { format: nested, .. }
 		| besl::Nodes::Output { format: nested, .. }
+		| besl::Nodes::TaskPayload { format: nested, .. }
+		| besl::Nodes::Workgroup { format: nested, .. }
 		| besl::Nodes::Specialization { r#type: nested, .. } => {
 			collect_local_output_symbols(nested, local_output_symbols);
 		}
@@ -527,6 +532,8 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 		| besl::Nodes::Member { r#type: nested, .. }
 		| besl::Nodes::Input { format: nested, .. }
 		| besl::Nodes::Output { format: nested, .. }
+		| besl::Nodes::TaskPayload { format: nested, .. }
+		| besl::Nodes::Workgroup { format: nested, .. }
 		| besl::Nodes::Parameter { r#type: nested, .. }
 		| besl::Nodes::Specialization { r#type: nested, .. } => references_non_local_output(nested, local_output_symbols),
 		besl::Nodes::Struct { fields: nested, .. }
@@ -627,6 +634,8 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 		| besl::Nodes::Member { r#type: nested, .. }
 		| besl::Nodes::Input { format: nested, .. }
 		| besl::Nodes::Output { format: nested, .. }
+		| besl::Nodes::TaskPayload { format: nested, .. }
+		| besl::Nodes::Workgroup { format: nested, .. }
 		| besl::Nodes::Parameter { r#type: nested, .. }
 		| besl::Nodes::Specialization { r#type: nested, .. } => {
 			writes_non_opaque_vec4f_to_non_local_output(nested, local_output_symbols)

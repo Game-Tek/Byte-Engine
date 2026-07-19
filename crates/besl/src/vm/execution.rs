@@ -203,6 +203,23 @@ impl ExecutableProgram {
 				Instruction::ThreadgroupPosition { register } => {
 					registers[*register] = Some(Value::U32(state.config.threadgroup_position()));
 				}
+				Instruction::LoadTaskPayload {
+					register,
+					name,
+					index,
+					count,
+					value_type,
+				} => {
+					let index = read_buffer_array_index(&registers, *index, *count)?;
+					let value = descriptors.task_payload_value(name, index)?;
+					if !value.matches_type(value_type) {
+						return Err(VmError::TypeMismatch {
+							expected: value_type.name().to_string(),
+							found: value.value_type().name().to_string(),
+						});
+					}
+					registers[*register] = Some(value);
+				}
 				Instruction::SetMeshOutputCounts {
 					vertex_count,
 					primitive_count,

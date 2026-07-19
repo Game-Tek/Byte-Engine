@@ -95,12 +95,10 @@
 
 # P2 - BESL architecture
 
-- Convert the remaining visibility compute shaders to `ShaderSourceDefinition::Besl`, then remove their generated current-platform plumbing.
-- Add concise BESL compute descriptor helpers and decide how mesh/task shaders express platform-specific overrides.
-- Decide whether the remaining manually authored visibility, material-count, and material-offset shaders should move to BESL.
 - Add explicit interpolation syntax and a generic texture/sampler resource model.
 - Complete MSL lowering for all declared intrinsics and reconcile `fetch_u32`, `image_atomic_or`, and `image_load_u32`.
-- Add 3D compute built-ins, threadgroup memory/barriers, mesh-stage abstractions, and address-space semantics.
+- Add 3D compute built-ins and address-space semantics.
+- Add task-payload, workgroup-storage, and task-dispatch lowering for GLSL and HLSL; the external visibility task shaders currently support Metal only.
 - Add missing control flow, boolean and numeric types, typed textures, matrix shapes, and structured array support.
 - Represent threadgroup size, matrix layout, function constants, and other MSL compile options in shader metadata.
 - Analyze each BESL graph once with visited-node tracking and keyed binding deduplication, sharing results across generation, reflection, and opacity evaluation.

@@ -549,6 +549,11 @@ impl Generator {
 					));
 				}
 			}
+			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {
+				panic!(
+					"GLSL task storage lowering is unsupported. The most likely cause is that a task or mesh BESL shader was sent to the deferred GLSL backend."
+				)
+			}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
 			besl::Nodes::Conditional { condition, statements } => self.emit_conditional_node(string, condition, statements),
 			besl::Nodes::ForLoop {
@@ -666,7 +671,9 @@ impl Generator {
 			Stages::Vertex => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
 			Stages::Fragment => glsl_block.push_str("#pragma shader_stage(fragment)\n"),
 			Stages::Compute { .. } => glsl_block.push_str("#pragma shader_stage(compute)\n"),
-			Stages::Task => glsl_block.push_str("#pragma shader_stage(task)\n"),
+			Stages::Task { .. } => panic!(
+				"GLSL task shader lowering is unsupported. The most likely cause is that a task BESL shader was sent to the deferred GLSL backend."
+			),
 			Stages::Mesh { .. } => glsl_block.push_str("#pragma shader_stage(mesh)\n"),
 		}
 

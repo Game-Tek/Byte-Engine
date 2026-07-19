@@ -1840,6 +1840,36 @@ fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
 }
 
 #[test]
+fn authored_mesh_shader_reads_bound_task_payload_elements() {
+	let executable = compile_test_program(
+		r#"
+		Result: struct {
+			meshlet_index: u32,
+		}
+		result: descriptor<Result, 40, read_write>;
+		visible_meshlets: task_payload<u32, 32>;
+
+		main: fn () -> void {
+			result.meshlet_index = visible_meshlets[threadgroup_position()];
+		}
+		"#,
+		None,
+	);
+	let mut result = buffer_for_slot(&executable, ResourceSlot::new(40));
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(ResourceSlot::new(40), &mut result);
+	descriptors.bind_task_payload("visible_meshlets", [Value::U32(5)]);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected the authored mesh shader to read its bound task payload");
+
+	assert_eq!(
+		result.read("meshlet_index").expect("Expected captured meshlet index"),
+		Value::U32(5)
+	);
+}
+
+#[test]
 fn mesh_output_counts_clear_reused_capture_ranges() {
 	let mut outputs = MeshOutputs::new();
 	outputs.set_counts(2, 2, 2, 2, false).expect("Expected bounded mesh outputs");

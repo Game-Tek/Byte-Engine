@@ -18,6 +18,7 @@ pub struct Generator<A: Allocator + Clone = Global> {
 	in_compute_body: bool,
 	compute_stage_context: Option<ComputeStageContext>,
 	raster_stage_context: Option<RasterStageContext>,
+	task_stage_context: Option<TaskStageContext>,
 	mesh_stage_context: Option<MeshStageContext>,
 	in_buffer_binding_struct: bool,
 }
@@ -34,8 +35,23 @@ pub enum ComputeBindingMode {
 struct MeshStageContext {
 	has_resources: bool,
 	has_push_constant: bool,
+	has_task_payload: bool,
 	maximum_vertices: u32,
 	maximum_primitives: u32,
+}
+
+#[derive(Clone, Debug)]
+struct TaskStageContext {
+	has_resources: bool,
+	has_push_constant: bool,
+	has_task_payload: bool,
+	workgroups: Vec<TaskWorkgroup>,
+}
+
+#[derive(Clone, Debug)]
+struct TaskWorkgroup {
+	name: String,
+	msl_type: String,
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +70,8 @@ struct ClassifiedNodes<'a, A: Allocator + Clone> {
 	bindings: Vec<&'a besl::NodeReference, A>,
 	inputs: Vec<&'a besl::NodeReference, A>,
 	outputs: Vec<&'a besl::NodeReference, A>,
+	task_payloads: Vec<&'a besl::NodeReference, A>,
+	workgroups: Vec<&'a besl::NodeReference, A>,
 	declarations: Vec<&'a besl::NodeReference, A>,
 	functions: Vec<&'a besl::NodeReference, A>,
 	push_constant: Option<&'a besl::NodeReference>,
@@ -78,6 +96,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			in_compute_body: false,
 			compute_stage_context: None,
 			raster_stage_context: None,
+			task_stage_context: None,
 			mesh_stage_context: None,
 			in_buffer_binding_struct: false,
 		}
@@ -112,6 +131,8 @@ impl<A: Allocator + Clone> Generator<A> {
 
 			let result = match node.borrow().node() {
 				besl::Nodes::Binding { .. } => true,
+				besl::Nodes::TaskPayload { .. } => true,
+				besl::Nodes::Workgroup { .. } => false,
 				besl::Nodes::PushConstant { .. } => include_push_constant,
 				besl::Nodes::Scope { children, .. } => children
 					.iter()
@@ -271,6 +292,10 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.generate_fragment_shader(&mut string, &order, main_function_node)
 			}
 			Stages::Compute { .. } => self.generate_compute_shader(&mut string, &order, main_function_node),
+			Stages::Task {
+				maximum_mesh_threadgroups,
+				..
+			} => self.generate_task_shader(&mut string, &order, main_function_node, maximum_mesh_threadgroups),
 			Stages::Mesh {
 				maximum_vertices,
 				maximum_primitives,
@@ -376,6 +401,8 @@ impl<A: Allocator + Clone> Generator<A> {
 			bindings: Vec::new_in(self.allocator.clone()),
 			inputs: Vec::new_in(self.allocator.clone()),
 			outputs: Vec::new_in(self.allocator.clone()),
+			task_payloads: Vec::new_in(self.allocator.clone()),
+			workgroups: Vec::new_in(self.allocator.clone()),
 			declarations: Vec::new_in(self.allocator.clone()),
 			functions: Vec::new_in(self.allocator.clone()),
 			push_constant: None,
@@ -386,6 +413,8 @@ impl<A: Allocator + Clone> Generator<A> {
 				besl::Nodes::Binding { .. } => nodes.bindings.push(node),
 				besl::Nodes::Input { .. } => nodes.inputs.push(node),
 				besl::Nodes::Output { .. } => nodes.outputs.push(node),
+				besl::Nodes::TaskPayload { .. } => nodes.task_payloads.push(node),
+				besl::Nodes::Workgroup { .. } => nodes.workgroups.push(node),
 				besl::Nodes::PushConstant { .. } => {
 					if nodes.push_constant.is_none() {
 						nodes.push_constant = Some(node);
@@ -916,6 +945,71 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.compute_stage_context = previous_compute_stage_context;
 	}
 
+	fn generate_task_shader(
+		&mut self,
+		string: &mut String,
+		order: &[besl::NodeReference],
+		main_function_node: &besl::NodeReference,
+		maximum_mesh_threadgroups: u32,
+	) {
+		let nodes = self.classify_nodes(order);
+		if let Some(push_constant) = nodes.push_constant {
+			self.emit_push_constant_struct(string, push_constant);
+		}
+
+		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
+		let workgroups = nodes
+			.workgroups
+			.iter()
+			.filter_map(|workgroup| {
+				let workgroup = workgroup.borrow();
+				let besl::Nodes::Workgroup { name, format } = workgroup.node() else {
+					return None;
+				};
+				let msl_type = Self::translate_type(format.borrow().get_name().unwrap()).to_string();
+				Some(TaskWorkgroup {
+					name: name.clone(),
+					msl_type,
+				})
+			})
+			.collect();
+		let previous_task_stage_context = self.task_stage_context.replace(TaskStageContext {
+			has_resources: !bindings.is_empty(),
+			has_push_constant: nodes.push_constant.is_some(),
+			has_task_payload: !nodes.task_payloads.is_empty(),
+			workgroups,
+		});
+		let previous_in_compute_body = self.in_compute_body;
+		self.in_compute_body = true;
+
+		self.emit_declarations(string, &nodes.declarations);
+		self.emit_buffer_binding_structs(string, &nodes.bindings);
+		if !bindings.is_empty() {
+			self.emit_argument_buffer_struct(string, &bindings);
+		}
+		self.emit_object_payload_struct(string, &nodes.task_payloads);
+
+		for node in nodes.functions.iter().rev() {
+			self.emit_function_prototype(string, node);
+		}
+		for node in nodes.functions.iter().rev() {
+			self.emit_node_string(string, node);
+		}
+
+		self.emit_task_entry_point(
+			string,
+			main_function_node,
+			!bindings.is_empty(),
+			nodes.push_constant,
+			&nodes.task_payloads,
+			&nodes.workgroups,
+			maximum_mesh_threadgroups,
+		);
+
+		self.in_compute_body = previous_in_compute_body;
+		self.task_stage_context = previous_task_stage_context;
+	}
+
 	fn generate_mesh_shader(
 		&mut self,
 		string: &mut String,
@@ -933,6 +1027,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		let previous_mesh_stage_context = self.mesh_stage_context.replace(MeshStageContext {
 			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
+			has_task_payload: !nodes.task_payloads.is_empty(),
 			maximum_vertices,
 			maximum_primitives,
 		});
@@ -943,6 +1038,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		if !bindings.is_empty() {
 			self.emit_argument_buffer_struct(string, &bindings);
 		}
+		self.emit_object_payload_struct(string, &nodes.task_payloads);
 
 		if !Self::has_raw_mesh_output_structs(&nodes.declarations) {
 			self.emit_mesh_output_structs(string, &nodes.outputs);
@@ -961,6 +1057,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			main_function_node,
 			!bindings.is_empty(),
 			nodes.push_constant,
+			!nodes.task_payloads.is_empty(),
 			maximum_vertices,
 			maximum_primitives,
 		);
@@ -1048,6 +1145,30 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_statement_end(string);
 		}
 
+		self.emit_struct_declaration_end(string);
+	}
+
+	fn emit_object_payload_struct(&mut self, string: &mut String, payloads: &[&besl::NodeReference]) {
+		if payloads.is_empty() {
+			return;
+		}
+
+		self.emit_named_struct_start(string, "ObjectPayload");
+		for payload in payloads {
+			let payload = payload.borrow();
+			let besl::Nodes::TaskPayload { name, format, count } = payload.node() else {
+				continue;
+			};
+
+			self.emit_indentation(string, 1);
+			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+			string.push(' ');
+			string.push_str(name);
+			string.push('[');
+			string.push_str(count.get().to_string().as_str());
+			string.push(']');
+			self.emit_statement_end(string);
+		}
 		self.emit_struct_declaration_end(string);
 	}
 
@@ -1275,12 +1396,97 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_block_end(string);
 	}
 
+	fn emit_task_entry_point(
+		&mut self,
+		string: &mut String,
+		main_function_node: &besl::NodeReference,
+		has_resources: bool,
+		push_constant: Option<&besl::NodeReference>,
+		task_payloads: &[&besl::NodeReference],
+		workgroups: &[&besl::NodeReference],
+		maximum_mesh_threadgroups: u32,
+	) {
+		let node = RefCell::borrow(main_function_node);
+		let besl::Nodes::Function {
+			name,
+			statements,
+			params,
+			..
+		} = node.node()
+		else {
+			return;
+		};
+
+		string.push_str("[[object, max_total_threadgroups_per_mesh_grid(");
+		string.push_str(maximum_mesh_threadgroups.to_string().as_str());
+		string.push_str(")]] void ");
+		if *name == "main" {
+			string.push_str("besl_main");
+		} else {
+			string.push_str(name);
+		}
+		string.push('(');
+
+		let mut has_previous_parameter = false;
+		for param in params {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			self.emit_node_string(string, param);
+			has_previous_parameter = true;
+		}
+
+		if let Some(push_constant) = push_constant {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			self.emit_mesh_push_constant_parameter(string, push_constant);
+			has_previous_parameter = true;
+		}
+		if has_resources {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			self.emit_argument_buffer_parameter(string);
+			has_previous_parameter = true;
+		}
+		if has_previous_parameter {
+			self.emit_separator(string);
+		}
+		string.push_str("uint thread_position [[thread_position_in_grid]]");
+		self.emit_separator(string);
+		string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
+		if !task_payloads.is_empty() {
+			self.emit_separator(string);
+			string.push_str("object_data ObjectPayload& payload [[payload]]");
+		}
+		self.emit_separator(string);
+		string.push_str("mesh_grid_properties mesh_grid");
+
+		ShaderFormatting::new(self.minified).push_block_start(string);
+		for workgroup in workgroups {
+			let workgroup = workgroup.borrow();
+			let besl::Nodes::Workgroup { name, format } = workgroup.node() else {
+				continue;
+			};
+			self.emit_indentation(string, 1);
+			string.push_str("threadgroup ");
+			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+			string.push(' ');
+			string.push_str(name);
+			self.emit_statement_end(string);
+		}
+		self.emit_statement_block(string, statements, 1);
+		self.emit_block_end(string);
+	}
+
 	fn emit_mesh_entry_point_argument_buffers(
 		&mut self,
 		string: &mut String,
 		main_function_node: &besl::NodeReference,
 		has_resources: bool,
 		push_constant: Option<&besl::NodeReference>,
+		has_task_payload: bool,
 		maximum_vertices: u32,
 		maximum_primitives: u32,
 	) {
@@ -1335,6 +1541,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str("uint threadgroup_position [[threadgroup_position_in_grid]]");
 		self.emit_separator(string);
 		string.push_str("uint thread_index [[thread_index_in_threadgroup]]");
+		if has_task_payload {
+			self.emit_separator(string);
+			string.push_str("const object_data ObjectPayload& payload [[payload]]");
+		}
 		self.emit_separator(string);
 		string.push_str(&format!(
 			"metal::mesh<VertexOutput, PrimitiveOutput, {}, {}, topology::triangle> out_mesh",
@@ -1442,6 +1652,103 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str(name);
 	}
 
+	fn emit_task_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool) {
+		let Some(task_stage_context) = &self.task_stage_context else {
+			return;
+		};
+
+		let mut has_previous_parameter = has_previous_parameter;
+		if task_stage_context.has_push_constant {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("constant PushConstant& push_constant");
+			has_previous_parameter = true;
+		}
+		if task_stage_context.has_resources {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("constant _resources& resources");
+			has_previous_parameter = true;
+		}
+		if task_stage_context.has_task_payload {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("object_data ObjectPayload& payload");
+			has_previous_parameter = true;
+		}
+		for parameter in ["uint thread_position", "uint thread_index"] {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str(parameter);
+			has_previous_parameter = true;
+		}
+		for workgroup in &task_stage_context.workgroups {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("threadgroup ");
+			string.push_str(&workgroup.msl_type);
+			string.push_str("& ");
+			string.push_str(&workgroup.name);
+			has_previous_parameter = true;
+		}
+		if has_previous_parameter {
+			self.emit_separator(string);
+		}
+		string.push_str("thread mesh_grid_properties& mesh_grid");
+	}
+
+	fn emit_task_hidden_call_arguments(&self, string: &mut String, has_previous_parameter: bool) {
+		let Some(task_stage_context) = &self.task_stage_context else {
+			return;
+		};
+
+		let mut has_previous_parameter = has_previous_parameter;
+		if task_stage_context.has_push_constant {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("push_constant");
+			has_previous_parameter = true;
+		}
+		if task_stage_context.has_resources {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("resources");
+			has_previous_parameter = true;
+		}
+		if task_stage_context.has_task_payload {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str("payload");
+			has_previous_parameter = true;
+		}
+		for argument in ["thread_position", "thread_index"] {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str(argument);
+			has_previous_parameter = true;
+		}
+		for workgroup in &task_stage_context.workgroups {
+			if has_previous_parameter {
+				self.emit_separator(string);
+			}
+			string.push_str(&workgroup.name);
+			has_previous_parameter = true;
+		}
+		if has_previous_parameter {
+			self.emit_separator(string);
+		}
+		string.push_str("mesh_grid");
+	}
+
 	fn emit_mesh_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool) {
 		let Some(mesh_stage_context) = &self.mesh_stage_context else {
 			return;
@@ -1471,6 +1778,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str("uint threadgroup_position");
 		self.emit_separator(string);
 		string.push_str("uint thread_index");
+		if mesh_stage_context.has_task_payload {
+			self.emit_separator(string);
+			string.push_str("const object_data ObjectPayload& payload");
+		}
 		self.emit_separator(string);
 		string.push_str(&format!(
 			"metal::mesh<VertexOutput, PrimitiveOutput, {}, {}, topology::triangle> out_mesh",
@@ -1507,6 +1818,10 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push_str("threadgroup_position");
 		self.emit_separator(string);
 		string.push_str("thread_index");
+		if mesh_stage_context.has_task_payload {
+			self.emit_separator(string);
+			string.push_str("payload");
+		}
 		self.emit_separator(string);
 		string.push_str("out_mesh");
 	}
@@ -1633,7 +1948,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_node_string(string, param)
 		});
 
-		if self.in_compute_body && self.function_requires_resource_context(function_node, true) {
+		if self.task_stage_context.is_some() {
+			self.emit_task_hidden_parameters(string, !params.is_empty());
+		} else if self.in_compute_body && self.function_requires_resource_context(function_node, true) {
 			self.emit_compute_hidden_parameters(string, !params.is_empty());
 		} else if self.raster_stage_context.is_some() && self.function_requires_resource_context(function_node, false) {
 			self.emit_raster_hidden_parameters(string, !params.is_empty());
@@ -1917,6 +2234,9 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(", memory_order_relaxed)");
 			}
+			"thread_position" => {
+				string.push_str("thread_position");
+			}
 			"thread_id" => {
 				string.push_str("gid");
 			}
@@ -1925,6 +2245,14 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 			"threadgroup_position" => {
 				string.push_str("threadgroup_position");
+			}
+			"workgroup_barrier" => {
+				string.push_str("threadgroup_barrier(mem_flags::mem_threadgroup)");
+			}
+			"set_task_mesh_output_count" => {
+				string.push_str("mesh_grid.set_threadgroups_per_grid(uint3(");
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(", 1, 1))");
 			}
 			"set_mesh_output_counts" => {
 				string.push_str("if(thread_index==0){out_mesh.set_primitive_count(");
@@ -2057,6 +2385,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					));
 				}
 			}
+			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {}
 			besl::Nodes::Specialization { name, r#type } => {
 				let mut members = Vec::new();
 
@@ -2300,7 +2629,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			Stages::Vertex => msl_block.push_str("// #pragma shader_stage(vertex)\n"),
 			Stages::Fragment => msl_block.push_str("// #pragma shader_stage(fragment)\n"),
 			Stages::Compute { .. } => msl_block.push_str("// #pragma shader_stage(compute)\n"),
-			Stages::Task => msl_block.push_str("// #pragma shader_stage(task)\n"),
+			Stages::Task { .. } => msl_block.push_str("// #pragma shader_stage(object)\n"),
 			Stages::Mesh { .. } => msl_block.push_str("// #pragma shader_stage(mesh)\n"),
 		}
 
@@ -2314,7 +2643,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				));
 				msl_block.push_str("// Note: Metal threadgroup sizes are set on the pipeline state.\n");
 			}
-			Stages::Mesh { local_size, .. } => {
+			Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => {
 				msl_block.push_str(&format!(
 					"// besl-threadgroup-size:{},{},{}\n",
 					local_size.width().max(1),
@@ -2361,7 +2690,9 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		name: &str,
 		has_previous_parameter: bool,
 	) {
-		if self.in_compute_body && self.function_requires_resource_context(node, true) {
+		if self.task_stage_context.is_some() && name != "main" {
+			self.emit_task_hidden_parameters(string, has_previous_parameter);
+		} else if self.in_compute_body && self.function_requires_resource_context(node, true) {
 			self.emit_compute_hidden_parameters(string, has_previous_parameter);
 		} else if self.raster_stage_context.is_some() && name != "main" && self.function_requires_resource_context(node, false)
 		{
@@ -2382,7 +2713,9 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 	) {
 		let function_node = RefCell::borrow(function);
 		if matches!(function_node.node(), besl::Nodes::Function { name, .. } if name != "main") {
-			if self.in_compute_body && self.function_requires_resource_context(function, true) {
+			if self.task_stage_context.is_some() {
+				self.emit_task_hidden_call_arguments(string, has_previous_argument);
+			} else if self.in_compute_body && self.function_requires_resource_context(function, true) {
 				self.emit_compute_hidden_call_arguments(string, has_previous_argument);
 			} else if self.raster_stage_context.is_some() && self.function_requires_resource_context(function, false) {
 				self.emit_raster_hidden_call_arguments(string, has_previous_argument);
@@ -2414,15 +2747,27 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		true
 	}
 	fn emit_expression_member(&mut self, string: &mut String, name: &str, source: &besl::NodeReference) -> bool {
-		if let besl::Nodes::Binding { .. } = source.borrow().node() {
-			if self.raster_stage_context.is_some() {
-				self.emit_raster_binding_reference(string, name);
+		match source.borrow().node() {
+			besl::Nodes::Binding { .. } => {
+				if self.raster_stage_context.is_some() {
+					self.emit_raster_binding_reference(string, name);
+					return true;
+				}
+				if self.in_compute_body || self.mesh_stage_context.is_some() {
+					self.emit_compute_binding_reference(string, name);
+					return true;
+				}
+			}
+			besl::Nodes::TaskPayload { .. } => {
+				string.push_str("payload.");
+				string.push_str(name);
 				return true;
 			}
-			if self.in_compute_body || self.mesh_stage_context.is_some() {
-				self.emit_compute_binding_reference(string, name);
+			besl::Nodes::Workgroup { .. } => {
+				string.push_str(name);
 				return true;
 			}
+			_ => {}
 		}
 		false
 	}
@@ -2831,6 +3176,145 @@ mod tests {
 			.expect("Failed to generate shader");
 
 		assert_string_contains!(shader, "Pair pair=Pair{float4(1.0,1.0,1.0,1.0),float4(2.0,2.0,2.0,2.0)};");
+	}
+
+	const TASK_PAYLOAD_FIXTURE_SOURCE: &str = r#"
+		Meshlets: struct {
+			values: u32[32],
+		}
+		meshlets: descriptor<Meshlets, 8, read>;
+		visible_meshlets: task_payload<u32, 32>;
+		visible_count: workgroup<atomicu32>;
+		push_constant: push_constant {
+			base_meshlet: u32,
+		}
+
+		dispatch_visible_meshlets: fn () -> void {
+			let position: u32 = thread_position();
+			let lane: u32 = thread_idx();
+			if (lane == 0) {
+				atomic_store(visible_count, 0);
+			}
+			workgroup_barrier();
+			if (position < 32) {
+				let payload_index: u32 = atomic_add(visible_count, 1);
+				visible_meshlets[payload_index] = meshlets.values[push_constant.base_meshlet + position];
+			}
+			workgroup_barrier();
+			if (lane == 0) {
+				set_task_mesh_output_count(atomic_load(visible_count));
+			}
+		}
+
+		main: fn () -> void {
+			dispatch_visible_meshlets();
+		}
+	"#;
+
+	const MESH_PAYLOAD_FIXTURE_SOURCE: &str = r#"
+		visible_meshlets: task_payload<u32, 32>;
+		out_instance_index: output<u32, 0, 126>;
+		out_primitive_index: output<u32, 1, 126>;
+
+		main: fn () -> void {
+			let lane: u32 = thread_idx();
+			let meshlet_index: u32 = visible_meshlets[threadgroup_position()];
+			set_mesh_output_counts(3, 1);
+			if (lane < 3) {
+				set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
+			}
+			if (lane < 1) {
+				set_mesh_triangle(0, vec3u(0, 1, 2));
+				out_instance_index[0] = meshlet_index;
+				out_primitive_index[0] = meshlet_index;
+			}
+		}
+	"#;
+
+	fn lower_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
+		let root = besl::compile_to_besl(source, None).expect("Expected stage fixture source to link");
+		let main = root.get_main().expect("Expected stage fixture main function");
+		Generator::new()
+			.minified(true)
+			.generate(settings, &main)
+			.expect("Expected stage fixture to lower to MSL")
+	}
+
+	#[test]
+	fn task_stage_lowers_workgroup_storage_payload_and_mesh_dispatch() {
+		let shader = lower_fixture(
+			TASK_PAYLOAD_FIXTURE_SOURCE,
+			&ShaderGenerationSettings::task(utils::Extent::line(32), 32),
+		);
+
+		assert_string_contains!(shader, "// #pragma shader_stage(object)");
+		assert_string_contains!(shader, "// besl-threadgroup-size:32,1,1");
+		assert_string_contains!(shader, "struct ObjectPayload{uint visible_meshlets[32];};");
+		assert_string_contains!(shader, "[[object, max_total_threadgroups_per_mesh_grid(32)]] void besl_main(");
+		assert_string_contains!(shader, "uint thread_position [[thread_position_in_grid]]");
+		assert_string_contains!(shader, "uint thread_index [[thread_index_in_threadgroup]]");
+		assert_string_contains!(shader, "object_data ObjectPayload& payload [[payload]]");
+		assert_string_contains!(shader, "mesh_grid_properties mesh_grid");
+		assert_string_contains!(shader, "threadgroup atomic_uint visible_count;");
+		assert_string_contains!(shader, "threadgroup_barrier(mem_flags::mem_threadgroup)");
+		assert_string_contains!(shader, "payload.visible_meshlets[payload_index]");
+		assert_string_contains!(shader, "mesh_grid.set_threadgroups_per_grid(uint3(");
+	}
+
+	#[test]
+	fn mesh_stage_consumes_the_same_authored_task_payload() {
+		let shader = lower_fixture(
+			MESH_PAYLOAD_FIXTURE_SOURCE,
+			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
+		);
+
+		assert_string_contains!(shader, "struct ObjectPayload{uint visible_meshlets[32];};");
+		assert_string_contains!(shader, "const object_data ObjectPayload& payload [[payload]]");
+		assert_string_contains!(shader, "uint meshlet_index=payload.visible_meshlets[threadgroup_position];");
+		assert_string_contains!(shader, "out_mesh.set_vertex(");
+		assert_string_contains!(shader, "out_mesh.set_index(");
+		assert_string_contains!(shader, "out_mesh.set_primitive(");
+	}
+
+	#[test]
+	fn matrix_and_vector_index_access_uses_msl_subscripts() {
+		let shader = lower_fixture(
+			r#"
+			main: fn() -> void {
+				let matrix: mat4f = mat4f(
+					vec4f(1.0, 0.0, 0.0, 0.0),
+					vec4f(0.0, 1.0, 0.0, 0.0),
+					vec4f(0.0, 0.0, 1.0, 0.0),
+					vec4f(0.0, 0.0, 0.0, 1.0)
+				);
+				let column: vec4f = matrix[0];
+				let element: f32 = column[1];
+				element;
+			}
+			"#,
+			&ShaderGenerationSettings::vertex(),
+		);
+
+		assert_string_contains!(shader, "matrix[0]");
+		assert_string_contains!(shader, "column[1]");
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn generated_task_and_mesh_payload_stages_compile_with_metal() {
+		let task = lower_fixture(
+			TASK_PAYLOAD_FIXTURE_SOURCE,
+			&ShaderGenerationSettings::task(utils::Extent::line(32), 32),
+		);
+		let mesh = lower_fixture(
+			MESH_PAYLOAD_FIXTURE_SOURCE,
+			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
+		);
+
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&task, "besl-task-payload-fixture")
+			.expect("Expected generated task MSL to compile natively");
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&mesh, "besl-mesh-payload-fixture")
+			.expect("Expected generated mesh MSL to compile natively");
 	}
 
 	#[test]
@@ -3774,6 +4258,41 @@ struct PrimitiveOutput {
 
 		assert_string_contains!(shader, "constant float WEIGHTS[3] = {0.5,0.25,0.125};");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
+	}
+
+	#[test]
+	fn source_declared_atomic_images_and_push_constants_lower_to_msl() {
+		let source = r#"
+			Counters: struct {
+				values: atomicu32[8],
+			}
+			counters: descriptor<Counters, 2, read_write>;
+			index_image: descriptor<StorageImage<r32ui>, 4, read>;
+			push_constant: push_constant {
+				base: u32,
+			}
+			main: fn () -> void {
+				let coord: vec2u = thread_id();
+				let index: u32 = image_load_u32(index_image, coord) + push_constant.base;
+				let old: u32 = atomic_add(counters.values[index], 1);
+				atomic_store(counters.values[index], atomic_load(counters.values[old]));
+			}
+		"#;
+
+		let root = besl::compile_to_besl(source, None).expect("Expected standalone atomic source to lex");
+		let main = root.get_main().expect("Expected standalone atomic source main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected standalone atomic source to lower to MSL");
+
+		assert_string_contains!(shader, "atomic_uint values[8]");
+		assert_string_contains!(shader, "texture2d<uint, access::read> index_image");
+		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(15)]]");
+		assert_string_contains!(shader, ".read(coord).x");
+		assert_string_contains!(shader, "atomic_fetch_add_explicit(&");
+		assert_string_contains!(shader, "atomic_load_explicit(&");
+		assert_string_contains!(shader, "atomic_store_explicit(&");
 	}
 
 	#[test]

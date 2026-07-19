@@ -17,7 +17,7 @@ use crate::{asset::ResourceId, Model, Reference, ReferenceModel, Resource, Seria
 /// If accessing the filesystem paths will be relative to the assets directory, and assets should omit the extension.
 pub struct ResourceManager {
 	#[cfg(debug_assertions)]
-	asset_manager: Option<AssetManager>,
+	asset_manager: std::sync::OnceLock<AssetManager>,
 
 	storage_backend: Box<dyn StorageBackend>,
 }
@@ -27,16 +27,29 @@ impl ResourceManager {
 	pub fn new<SB: StorageBackend>(storage_backend: SB) -> Self {
 		ResourceManager {
 			#[cfg(debug_assertions)]
-			asset_manager: None,
+			asset_manager: std::sync::OnceLock::new(),
 			storage_backend: Box::new(storage_backend),
 		}
 	}
 
 	/// Provide an asset manager to process assets on demand.
 	/// This is useful for loading assets during testing/development without having to bake them.
+	///
+	/// # Panics
+	///
+	/// Panics when asset management was already installed on this resource manager.
 	#[cfg(debug_assertions)]
-	pub fn set_asset_manager(&mut self, asset_manager: AssetManager) {
-		self.asset_manager = Some(asset_manager);
+	pub fn set_asset_manager(&self, asset_manager: AssetManager) {
+		assert!(
+			self.try_set_asset_manager(asset_manager).is_ok(),
+			"Failed to set up resource manager. The most likely cause is that asset management was installed more than once."
+		);
+	}
+
+	/// Attempts to install the development asset manager without replacing an existing one.
+	#[cfg(debug_assertions)]
+	pub fn try_set_asset_manager(&self, asset_manager: AssetManager) -> Result<(), AssetManager> {
+		self.asset_manager.set(asset_manager)
 	}
 
 	fn get_storage_backend(&self) -> &dyn StorageBackend {
@@ -63,7 +76,7 @@ impl ResourceManager {
 		} else {
 			#[cfg(debug_assertions)]
 			{
-				let Some(asset_manager) = &self.asset_manager else {
+				let Some(asset_manager) = self.asset_manager.get() else {
 					return Err("Resource does not exist and an asset manager is not available");
 				};
 				let runtime = compio::runtime::Runtime::new().unwrap();
@@ -107,6 +120,29 @@ impl ResourceManager {
 				.collect(),
 			cursor: page.cursor,
 		})
+	}
+}
+
+#[cfg(all(test, debug_assertions))]
+mod debug_tests {
+	use std::sync::Arc;
+
+	use super::ResourceManager;
+	use crate::{
+		asset::{asset_manager::AssetManager, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend},
+		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
+	};
+
+	#[test]
+	fn asset_management_can_be_installed_after_the_resource_manager_is_shared() {
+		let resource_manager = Arc::new(ResourceManager::new(ResourceTestStorageBackend::new()));
+		let renderer_reference = Arc::downgrade(&resource_manager);
+
+		resource_manager.set_asset_manager(AssetManager::new(AssetTestStorageBackend::new()));
+		assert!(renderer_reference.upgrade().is_some());
+		assert!(resource_manager
+			.try_set_asset_manager(AssetManager::new(AssetTestStorageBackend::new()))
+			.is_err());
 	}
 }
 

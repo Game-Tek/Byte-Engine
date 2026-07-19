@@ -13,7 +13,7 @@ use crate::shader::{
 		backends::msl::MSLShaderGenerator,
 		evaluation::{collect_bindings, BindingKind, BindingRecord},
 	},
-	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
+	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator, Stages},
 };
 
 /// The `Compiler` struct exists to compile Metal Shading Language shaders into binary libraries.
@@ -98,11 +98,15 @@ impl<A: Allocator + Clone> Compiler<A> {
 		Ok(CompiledShader::new(
 			binary,
 			bindings,
-			match shader_compilation_settings.stage {
-				crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
-				_ => None,
-			},
+			reflected_workgroup_extent(shader_compilation_settings),
 		))
+	}
+}
+
+fn reflected_workgroup_extent(settings: &ShaderGenerationSettings) -> Option<utils::Extent> {
+	match &settings.stage {
+		Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => Some(*local_size),
+		Stages::Vertex | Stages::Fragment => None,
 	}
 }
 
@@ -276,8 +280,29 @@ pub use Compiler as MSLShaderCompiler;
 
 #[cfg(test)]
 mod tests {
-	use super::{format_tool_failure, CompiledShaderBinding};
+	use utils::Extent;
+
+	use super::{format_tool_failure, reflected_workgroup_extent, CompiledShaderBinding};
 	use crate::shader::besl::evaluation::{collect_bindings, BindingRecord, BindingUsage};
+	use crate::shader::generator::ShaderGenerationSettings;
+
+	#[test]
+	fn workgroup_reflection_includes_compute_task_and_mesh_stages() {
+		let extent = Extent::new(32, 1, 1);
+		assert_eq!(
+			reflected_workgroup_extent(&ShaderGenerationSettings::compute(extent)),
+			Some(extent)
+		);
+		assert_eq!(
+			reflected_workgroup_extent(&ShaderGenerationSettings::task(extent, 32)),
+			Some(extent)
+		);
+		assert_eq!(
+			reflected_workgroup_extent(&ShaderGenerationSettings::mesh(64, 126, extent)),
+			Some(extent)
+		);
+		assert_eq!(reflected_workgroup_extent(&ShaderGenerationSettings::fragment()), None);
+	}
 
 	fn binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {
 		besl::Node::binding(

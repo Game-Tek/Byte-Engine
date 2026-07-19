@@ -52,7 +52,7 @@ beld --source "$PWD/assets" --destination "$PWD/resources" bake \
   'character.fbx#animations/Walk'
 ```
 
-The command writes the resource database and its payload files to `resources/`. These files, rather than the source `assets/` directory, are what a release application reads. Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform is not portable.
+The command writes the resource database and its payload files to `resources/`. These files, rather than the source `assets/` directory, are what a release application reads. Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. The authored shader sources remain BESL; currently only Metal lowers the task-payload features used by the visibility task and mesh stages. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform is not portable.
 
 ## Check baked output
 

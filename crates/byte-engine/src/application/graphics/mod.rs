@@ -546,6 +546,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 ) {
 	let environment_resource_id = environment_resource_id.map(str::to_owned);
 	let application_resource_manager = application.resource_manager.clone();
+	let visibility_shader_resources = application.resource_manager.clone();
 	let renderer = &mut application.renderer;
 	let transfer_queue_handle = renderer.transfer_queue_handle;
 	let context = renderer.context_mut();
@@ -722,6 +723,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			visibility_pipeline_manager: VisibilityPipelineManager::new(
 				renderer.context_mut(),
 				resource_manager_client,
+				visibility_shader_resources,
 				environment_resource_id,
 			),
 			light_receiver,

@@ -131,16 +131,25 @@ Supported operators include:
 
 ## Shader interface declarations
 
-Render-model generators can add interface declarations programmatically, and shader authors may also encounter them in generated BESL.
-
 Inputs and outputs carry a location:
 
 ```rust
-uv: input vec2f location=0
-color: output vec4f location=0
+uv: input<vec2f, 0>;
+color: output<vec4f, 0>;
 ```
 
-Outputs can be arrays when a stage needs multiple values of the same interface shape.
+Outputs can add a positive element count when a mesh stage emits per-primitive values:
+
+```rust
+out_instance_index: output<u32, 0, 126>;
+```
+
+Task and mesh stages share authored payload arrays. Task stages can also declare workgroup-local storage:
+
+```rust
+visible_meshlets: task_payload<u32, 32>;
+visible_count: workgroup<atomicu32>;
+```
 
 Push constants are small uniform values provided outside normal descriptor bindings:
 
@@ -172,13 +181,34 @@ The resource type determines the reflected descriptor shape:
 
 Access is `read`, `write`, or `read_write`. Struct types must be declared before descriptors that reference them. Reflection retains authored names and flat slots for descriptors reachable from `main`.
 
+Storage-buffer counters use `atomicu32` members with `atomic_add`, `atomic_load`, and `atomic_store`. Integer storage images can be read as scalars with `image_load_u32`:
+
+```rust
+Counters: struct {
+	values: atomicu32[1024],
+}
+
+counters: descriptor<Counters, 3, read_write>;
+index_image: descriptor<StorageImage<r32ui>, 4, read>;
+```
+
 Standalone `.besl` assets also require an adjacent `.besl.bead` file. A compute sidecar supplies its stage and workgroup:
 
 ```json
 { "stage": "Compute", "workgroup": [8, 8, 1] }
 ```
 
-`Vertex` and `Fragment` stages omit `workgroup`.
+Task and mesh sidecars additionally supply the limits required by their native pipeline contracts:
+
+```json
+{ "stage": "Task", "workgroup": [32, 1, 1], "maximum_mesh_threadgroups": 32 }
+```
+
+```json
+{ "stage": "Mesh", "workgroup": [128, 1, 1], "maximum_vertices": 64, "maximum_primitives": 126 }
+```
+
+`Vertex` and `Fragment` stages omit `workgroup`. Task-payload and task-dispatch lowering is currently implemented for Metal; the same BESL remains the sole authored source.
 
 ## Raw code escape hatch
 
@@ -193,6 +223,8 @@ Prefer normal BESL when possible so the graph, binding analysis, and backend emi
 Intrinsics are built-in calls that the lexer resolves specially and backend generators lower to platform code.
 Some intrinsics are ordinary math functions.
 Others represent texture, image, compute, atomic, or mesh-stage operations.
+
+Task stages use `thread_position`, `thread_idx`, `workgroup_barrier`, and `set_task_mesh_output_count`. Mesh stages use `threadgroup_position`, `thread_idx`, `set_mesh_output_counts`, `set_mesh_vertex_position`, and `set_mesh_triangle`.
 
 ### Math
 

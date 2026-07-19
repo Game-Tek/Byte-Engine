@@ -45,6 +45,14 @@ pub enum VmError {
 	},
 	MissingPushConstant,
 	MissingMeshOutputs,
+	MissingTaskPayload {
+		name: String,
+	},
+	TaskPayloadIndexOutOfBounds {
+		name: String,
+		index: usize,
+		count: usize,
+	},
 	MeshOutputIndexOutOfBounds {
 		kind: &'static str,
 		index: usize,
@@ -197,6 +205,14 @@ impl std::fmt::Display for VmError {
 			VmError::MissingMeshOutputs => write!(
 				f,
 				"Missing mesh output capture. The most likely cause is that the BESL mesh shader ran without binding `MeshOutputs`."
+			),
+			VmError::MissingTaskPayload { name } => write!(
+				f,
+				"Missing task payload `{name}`. The most likely cause is that the BESL mesh shader read a task-payload array that the host did not bind before execution."
+			),
+			VmError::TaskPayloadIndexOutOfBounds { name, index, count } => write!(
+				f,
+				"Task payload `{name}` index {index} exceeds {count} bound elements. The most likely cause is that the host supplied fewer task-payload values than the mesh shader reads."
 			),
 			VmError::MeshOutputIndexOutOfBounds { kind, index, count } => write!(
 				f,

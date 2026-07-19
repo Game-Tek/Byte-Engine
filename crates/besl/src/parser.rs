@@ -48,11 +48,13 @@ pub(super) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Nod
 	let mut iterator = tokens.tokens.iter();
 
 	let parsers = [
+		parse_push_constant,
 		parse_struct,
 		parse_function,
 		parse_macro,
 		parse_const,
 		parse_descriptor,
+		parse_shader_interface_declaration,
 		parse_member,
 	];
 
@@ -358,6 +360,21 @@ impl<'a> Node<'a> {
 		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize))
 	}
 
+	pub fn task_payload(name: &'a str, format: &'a str, count: u32) -> Node<'a> {
+		let count = NonZeroUsize::new(count as usize).expect(
+			"Invalid task-payload count. The most likely cause is that a task-payload array was declared with zero elements.",
+		);
+		Node {
+			node: Nodes::TaskPayload { name, format, count },
+		}
+	}
+
+	pub fn workgroup(name: &'a str, format: &'a str) -> Node<'a> {
+		Node {
+			node: Nodes::Workgroup { name, format },
+		}
+	}
+
 	pub fn intrinsic(name: &'a str, parameters: Node<'a>, body: Node<'a>, r#return: &'a str) -> Node<'a> {
 		Node {
 			node: Nodes::Intrinsic {
@@ -412,7 +429,10 @@ impl<'a> Node<'a> {
 			Nodes::Literal { name, .. } => Some(name),
 			Nodes::Parameter { name, .. } => Some(name),
 			Nodes::PushConstant { .. } => None,
-			Nodes::Input { name, .. } | Nodes::Output { name, .. } => Some(name),
+			Nodes::Input { name, .. }
+			| Nodes::Output { name, .. }
+			| Nodes::TaskPayload { name, .. }
+			| Nodes::Workgroup { name, .. } => Some(name),
 			Nodes::Const { name, .. } => Some(name),
 			Nodes::Null => None,
 		}
@@ -565,6 +585,17 @@ pub enum Nodes<'a> {
 		format: &'a str,
 		location: u8,
 		count: Option<NonZeroUsize>,
+	},
+	/// An array carried from a task shader invocation group to the mesh work it emits.
+	TaskPayload {
+		name: &'a str,
+		format: &'a str,
+		count: NonZeroUsize,
+	},
+	/// Storage shared by all invocations in one task or compute workgroup.
+	Workgroup {
+		name: &'a str,
+		format: &'a str,
 	},
 	Literal {
 		name: &'a str,
@@ -1079,6 +1110,155 @@ fn parse_descriptor<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> 
 	))
 }
 
+/// Parses stage-interface storage declared directly in BESL source.
+fn parse_shader_interface_declaration<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	let name = iterator.next_identifier()?;
+	iterator.next_str(":")?;
+	let declaration = iterator.next().copied().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
+	if !matches!(declaration, "input" | "output" | "task_payload" | "workgroup") {
+		return Err(ParsingFailReasons::NotMine);
+	}
+
+	let syntax_error = |message: String| ParsingFailReasons::BadSyntax { message };
+	iterator.next_str("<").map_err(|_| {
+		syntax_error(format!(
+			"Expected < after {declaration} in {name}. The most likely cause is that the declaration arguments are missing."
+		))
+	})?;
+	let format = iterator.next_identifier().map_err(|_| {
+		syntax_error(format!(
+			"Expected a type in {declaration} {name}. The most likely cause is that the first declaration argument is missing."
+		))
+	})?;
+
+	let node = match declaration {
+		"input" | "output" => {
+			iterator.next_str(",").map_err(|_| {
+				syntax_error(format!(
+					"Expected , after the type in {declaration} {name}. The most likely cause is that the location is missing."
+				))
+			})?;
+			let location = iterator
+				.next()
+				.ok_or_else(|| {
+					syntax_error(format!(
+						"Expected a location in {declaration} {name}. The most likely cause is that the second declaration argument is missing."
+					))
+				})?
+				.parse::<u8>()
+				.map_err(|_| {
+					syntax_error(format!(
+						"Invalid location in {declaration} {name}. The most likely cause is that the location is not a u8 literal."
+					))
+				})?;
+
+			if declaration == "input" {
+				Node::input(name, format, location)
+			} else if iterator.clone().next().copied() == Some(",") {
+				iterator.next();
+				let count = iterator
+					.next()
+					.ok_or_else(|| {
+						syntax_error(format!(
+							"Expected an element count in output {name}. The most likely cause is that the third declaration argument is missing."
+						))
+					})?
+					.parse::<u32>()
+					.map_err(|_| {
+						syntax_error(format!(
+							"Invalid element count in output {name}. The most likely cause is that the count is not a u32 literal."
+						))
+					})?;
+				if count == 0 {
+					return Err(syntax_error(format!(
+						"Invalid element count in output {name}. The most likely cause is that an output array was declared with zero elements."
+					)));
+				}
+				Node::output_array(name, format, location, count)
+			} else {
+				Node::output(name, format, location)
+			}
+		}
+		"task_payload" => {
+			iterator.next_str(",").map_err(|_| {
+				syntax_error(format!(
+					"Expected , after the type in task_payload {name}. The most likely cause is that the element count is missing."
+				))
+			})?;
+			let count = iterator
+				.next()
+				.ok_or_else(|| {
+					syntax_error(format!(
+						"Expected an element count in task_payload {name}. The most likely cause is that the second declaration argument is missing."
+					))
+				})?
+				.parse::<u32>()
+				.map_err(|_| {
+					syntax_error(format!(
+						"Invalid element count in task_payload {name}. The most likely cause is that the count is not a u32 literal."
+					))
+				})?;
+			if count == 0 {
+				return Err(syntax_error(format!(
+					"Invalid element count in task_payload {name}. The most likely cause is that a task-payload array was declared with zero elements."
+				)));
+			}
+			Node::task_payload(name, format, count)
+		}
+		"workgroup" => Node::workgroup(name, format),
+		_ => unreachable!("Shader interface declaration was validated above."),
+	};
+
+	iterator.next_str(">").map_err(|_| {
+		syntax_error(format!(
+			"Expected > after {declaration} {name} arguments. The most likely cause is that the declaration is incomplete."
+		))
+	})?;
+	iterator.next_str(";").map_err(|_| {
+		syntax_error(format!(
+			"Expected ; after {declaration} {name}. The most likely cause is that the declaration terminator is missing."
+		))
+	})?;
+
+	Ok((node, iterator))
+}
+
+/// Parses the single push-constant block exposed to shader source as `push_constant`.
+fn parse_push_constant<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	iterator.next_str("push_constant")?;
+	iterator.next_str(":")?;
+	iterator.next_str("push_constant")?;
+	iterator.next_str("{").map_err(|_| ParsingFailReasons::BadSyntax {
+		message: "Expected { after push_constant declaration.".to_string(),
+	})?;
+
+	let mut members = Vec::new();
+	loop {
+		let Some(token) = iterator.next().copied() else {
+			return Err(ParsingFailReasons::BadSyntax {
+				message: "Push-constant declaration is missing a closing }.".to_string(),
+			});
+		};
+		if token == "}" {
+			break;
+		}
+		if token == "," {
+			continue;
+		}
+
+		let member_name = token;
+		iterator.next_str(":").map_err(|_| ParsingFailReasons::BadSyntax {
+			message: format!("Expected : after push-constant member {member_name}."),
+		})?;
+		let member_type = iterator.next_identifier().map_err(|_| ParsingFailReasons::BadSyntax {
+			message: format!("Expected a type after push-constant member {member_name}."),
+		})?;
+		members.push(make_member(member_name, member_type));
+	}
+
+	Ok((Node::push_constant(members), iterator))
+}
+
 fn parse_member<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
@@ -1323,15 +1503,15 @@ fn parse_index_accessor<'i, 'a: 'i>(
 	try_execute_expression_parsers(&lexers, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)))
 }
 
-fn is_number_literal(s: &str) -> bool {
-	s.chars().all(|c| c.is_ascii_digit() || c == '.')
+fn is_literal(s: &str) -> bool {
+	matches!(s, "true" | "false") || s.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 fn parse_literal<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	mut expressions: Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let value = iterator.next_is(is_number_literal)?;
+	let value = iterator.next_is(is_literal)?;
 
 	expressions.push(Atoms::Literal { value });
 
@@ -1763,6 +1943,10 @@ impl<'a> Index<&str> for Node<'a> {
 						| Nodes::Member { .. }
 						| Nodes::Function { .. }
 						| Nodes::Descriptor { .. }
+						| Nodes::Input { .. }
+						| Nodes::Output { .. }
+						| Nodes::TaskPayload { .. }
+						| Nodes::Workgroup { .. }
 						| Nodes::Const { .. }
 				) && child.name() == Some(index)
 			}),
@@ -1815,6 +1999,73 @@ mod tests {
 	#[should_panic(expected = "Invalid binding array count")]
 	fn binding_array_rejects_zero_elements() {
 		Node::binding_array("textures", Node::combined_image_sampler(), 0, true, false, 0);
+	}
+
+	#[test]
+	fn parse_stage_interface_and_task_storage_declarations() {
+		let tokens = tokenize(
+			r#"
+				instance_index: input<u32, 0>;
+				primitive_index: output<u32, 1>;
+				meshlet_indices: output<u32, 2, 126>;
+				visible_meshlets: task_payload<u32, 32>;
+				visible_count: workgroup<atomicu32>;
+			"#,
+		)
+		.expect("stage-interface source should tokenize");
+		let root = parse(&tokens).expect("stage-interface source should parse");
+
+		assert!(matches!(
+			root["instance_index"].node(),
+			Nodes::Input {
+				format: "u32",
+				location: 0,
+				..
+			}
+		));
+		assert!(matches!(
+			root["primitive_index"].node(),
+			Nodes::Output {
+				format: "u32",
+				location: 1,
+				count: None,
+				..
+			}
+		));
+		assert!(matches!(
+			root["meshlet_indices"].node(),
+			Nodes::Output {
+				format: "u32",
+				location: 2,
+				count: Some(count),
+				..
+			} if count.get() == 126
+		));
+		assert!(matches!(
+			root["visible_meshlets"].node(),
+			Nodes::TaskPayload {
+				format: "u32",
+				count,
+				..
+			} if count.get() == 32
+		));
+		assert!(matches!(
+			root["visible_count"].node(),
+			Nodes::Workgroup { format: "atomicu32", .. }
+		));
+	}
+
+	#[test]
+	fn stage_interface_declarations_reject_invalid_locations_and_counts() {
+		for source in [
+			"value: input<u32, 256>;",
+			"value: output<u32, 0, 0>;",
+			"value: task_payload<u32, 0>;",
+			"value: workgroup<u32>",
+		] {
+			let tokens = tokenize(source).expect("invalid declaration should still tokenize");
+			assert!(parse(&tokens).is_err(), "expected `{source}` to be rejected");
+		}
 	}
 
 	#[test]
@@ -1881,6 +2132,31 @@ mod tests {
 			root["textures"].node(),
 			Nodes::Descriptor { resource_type: "Texture2DArray", slot: 20, count: Some(count), .. }
 				if count.get() == 16
+		));
+	}
+
+	#[test]
+	fn parse_source_push_constant_block() {
+		let tokens = tokenize(
+			r#"
+				push_constant: push_constant {
+					source_vertex_base: u32,
+					destination_vertex_base: u32,
+					vertex_count: u32,
+				}
+			"#,
+		)
+		.expect("push-constant source should tokenize");
+		let root = parse(&tokens).expect("push-constant source should parse");
+		let Nodes::Scope { children, .. } = root.node() else {
+			panic!("expected root scope");
+		};
+		assert!(matches!(
+			children.as_slice(),
+			[Node {
+				node: Nodes::PushConstant { members },
+				..
+			}] if members.len() == 3
 		));
 	}
 

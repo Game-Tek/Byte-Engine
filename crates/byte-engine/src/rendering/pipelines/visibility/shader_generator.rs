@@ -333,129 +333,7 @@ impl VisibilityShaderScope {
 				),
 			}
 		};
-		let compute_vertex_position = {
-			// Meshlet topology stays immutable; this helper remaps its static index into an instance output range.
-			let mut root = besl::parse(
-				r#"
-				compute_vertex_position: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec4f {
-					let vertex_index: u32 = compute_vertex_index(mesh, meshlet, primitive_index);
-					if (mesh.skinned_base_vertex_index != 4294967295) {
-						let relative_vertex_index: u32 = vertex_index - mesh.base_vertex_index;
-						return skinned_vertices.vertices[
-							mesh.skinned_base_vertex_index + relative_vertex_index
-						].position;
-					}
-					return vec4f(
-						vertex_positions.positions[vertex_index].x,
-						vertex_positions.positions[vertex_index].y,
-						vertex_positions.positions[vertex_index].z,
-						1.0
-					);
-				}
-				"#,
-			)
-			.expect("Expected compute_vertex_position source to parse");
-
-			match root.node_mut() {
-				besl::parser::Nodes::Scope { children, .. } => children.remove(0),
-				_ => panic!(
-					"Expected compute_vertex_position source to parse into a scope. The most likely cause is invalid BESL syntax in the visibility shader module."
-				),
-			}
-		};
-		let compute_triangle = {
-			let mut root = besl::parse(
-				r#"
-				compute_triangle: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec3u {
-					let triangle_base_index: u32 = mesh.base_triangle_index + meshlet.triangle_offset + primitive_index;
-					return vec3u(
-						u8_to_u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 0]),
-						u8_to_u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 1]),
-						u8_to_u32(primitive_indices.primitive_indices[triangle_base_index * 3 + 2])
-					);
-				}
-				"#,
-			)
-			.expect("Expected compute_triangle source to parse");
-
-			match root.node_mut() {
-				besl::parser::Nodes::Scope { children, .. } => children.remove(0),
-				_ => panic!(
-					"Expected compute_triangle source to parse into a scope. The most likely cause is invalid BESL syntax in the visibility shader module."
-				),
-			}
-		};
-
-		let mesh_vertex_output = Node::r#struct("VertexOutput", vec![Node::member("position", "vec4f")]);
-		let mesh_primitive_output = Node::r#struct(
-			"PrimitiveOutput",
-			vec![Node::member("instance_index", "u32"), Node::member("primitive_index", "u32")],
-		);
-		let out_instance_index = Node::output_array("out_instance_index", "u32", 0, 126);
-		let out_primitive_index = Node::output_array("out_primitive_index", "u32", 1, 126);
-		let u8_to_u32 = parse_besl_function("u8_to_u32: fn (value: u8) -> u32 { return u32(value); }", "u8_to_u32");
 		let u16_to_u32 = parse_besl_function("u16_to_u32: fn (value: u16) -> u32 { return u32(value); }", "u16_to_u32");
-		let extend_vec3f = parse_besl_function(
-			r#"
-			extend_vec3f: fn (value: vec3f, w: f32) -> vec4f {
-				return vec4f(value.x, value.y, value.z, w);
-			}
-			"#,
-			"extend_vec3f",
-		);
-		let process_meshlet = {
-			let mut process_meshlet = besl::parse(
-				r#"
-				process_meshlet: fn (instance_index: u32, matrix: mat4f) -> void {
-					let mesh: Mesh = meshes.meshes[instance_index];
-					let meshlet_index: u32 = threadgroup_position() + mesh.base_meshlet_index;
-					let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
-					let primitive_index: u32 = thread_idx();
-
-					set_mesh_output_counts(meshlet.primitive_count, meshlet.triangle_count);
-
-					if (primitive_index < meshlet.primitive_count) {
-						set_mesh_vertex_position(
-							primitive_index,
-							matrix * extend_vec3f(mesh.model * compute_vertex_position(mesh, meshlet, primitive_index), 1.0)
-						);
-					}
-
-					if (primitive_index < meshlet.triangle_count) {
-						set_mesh_triangle(primitive_index, compute_triangle(mesh, meshlet, primitive_index));
-						out_instance_index[primitive_index] = instance_index;
-						out_primitive_index[primitive_index] = meshlet_index << 8 | primitive_index & 255;
-					}
-				}
-				"#,
-			)
-			.expect("Expected process_meshlet source to parse");
-
-			match process_meshlet.node_mut() {
-				besl::parser::Nodes::Scope { children, .. } => {
-					let mut function = children.remove(0);
-
-					if let besl::parser::Nodes::Function { statements, .. } = function.node_mut() {
-						statements.insert(
-							0,
-							Node::raw_code(
-								Some("".into()),
-								Some("".into()),
-								Some("".into()),
-								&["VertexOutput", "PrimitiveOutput"],
-								&[],
-							),
-						);
-					}
-
-					function
-				}
-				_ => panic!(
-					"Expected process_meshlet source to parse into a scope. The most likely cause is invalid BESL syntax in the visibility shader module."
-				),
-			}
-		};
-
 		let set2_binding0 = Node::binding("lit_map", Node::image("rgba16"), 1041, false, true);
 		let set2_binding4 = Node::binding(
 			"lighting_data",
@@ -1062,10 +940,6 @@ impl VisibilityShaderScope {
 				mesh_struct,
 				skinned_vertex_struct,
 				meshlet_struct,
-				mesh_vertex_output,
-				mesh_primitive_output,
-				out_instance_index,
-				out_primitive_index,
 				light_struct,
 				material_struct,
 				sample_shadow_tap,
@@ -1086,13 +960,8 @@ impl VisibilityShaderScope {
 				pixel_mapping,
 				triangle_index,
 				instance_index,
-				u8_to_u32,
 				u16_to_u32,
 				compute_vertex_index,
-				extend_vec3f,
-				compute_vertex_position,
-				compute_triangle,
-				process_meshlet,
 				set2_binding0,
 				set2_binding4,
 				set2_binding5,

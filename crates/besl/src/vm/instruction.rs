@@ -95,6 +95,13 @@ pub(super) enum Instruction {
 	ThreadgroupPosition {
 		register: usize,
 	},
+	LoadTaskPayload {
+		register: usize,
+		name: String,
+		index: usize,
+		count: usize,
+		value_type: ValueType,
+	},
 	SetMeshOutputCounts {
 		vertex_count: usize,
 		primitive_count: usize,

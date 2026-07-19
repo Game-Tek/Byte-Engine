@@ -118,6 +118,9 @@ impl ShaderCompiler for PlatformShaderCompiler {
 struct BESLShaderSettings {
 	stage: ShaderTypes,
 	workgroup_size: Option<(u32, u32, u32)>,
+	maximum_mesh_threadgroups: Option<u32>,
+	maximum_vertices: Option<u32>,
+	maximum_primitives: Option<u32>,
 }
 
 impl BESLShaderSettings {
@@ -130,6 +133,31 @@ impl BESLShaderSettings {
 					"Missing compute workgroup. The most likely cause is that validated BESL shader settings were not preserved.",
 				);
 				ShaderGenerationSettings::compute(Extent::new(width, height, depth))
+			}
+			ShaderTypes::Task => {
+				let (width, height, depth) = self.workgroup_size.expect(
+					"Missing task workgroup. The most likely cause is that validated BESL shader settings were not preserved.",
+				);
+				ShaderGenerationSettings::task(
+					Extent::new(width, height, depth),
+					self.maximum_mesh_threadgroups.expect(
+						"Missing task mesh-threadgroup limit. The most likely cause is that validated BESL shader settings were not preserved.",
+					),
+				)
+			}
+			ShaderTypes::Mesh => {
+				let (width, height, depth) = self.workgroup_size.expect(
+					"Missing mesh workgroup. The most likely cause is that validated BESL shader settings were not preserved.",
+				);
+				ShaderGenerationSettings::mesh(
+					self.maximum_vertices.expect(
+						"Missing mesh vertex limit. The most likely cause is that validated BESL shader settings were not preserved.",
+					),
+					self.maximum_primitives.expect(
+						"Missing mesh primitive limit. The most likely cause is that validated BESL shader settings were not preserved.",
+					),
+					Extent::new(width, height, depth),
+				)
 			}
 			_ => unreachable!(
 				"Unsupported standalone BESL shader stage. The most likely cause is invalid shader settings validation."
@@ -153,34 +181,85 @@ fn parse_shader_settings(spec: Option<&BEADType>) -> Result<BESLShaderSettings, 
 		"Vertex" => ShaderTypes::Vertex,
 		"Fragment" => ShaderTypes::Fragment,
 		"Compute" => ShaderTypes::Compute,
+		"Task" => ShaderTypes::Task,
+		"Mesh" => ShaderTypes::Mesh,
 		stage => {
 			return Err(format!(
-				"Unsupported BESL shader stage '{stage}'. The most likely cause is that `stage` is not `Vertex`, `Fragment`, or `Compute`."
+				"Unsupported BESL shader stage '{stage}'. The most likely cause is that `stage` is not `Vertex`, `Fragment`, `Compute`, `Task`, or `Mesh`."
 			));
 		}
 	};
 
-	let workgroup_size = if stage == ShaderTypes::Compute {
+	let workgroup_size = if matches!(stage, ShaderTypes::Compute | ShaderTypes::Task | ShaderTypes::Mesh) {
 		Some(parse_workgroup_size(spec.get("workgroup").ok_or_else(|| {
-			"Missing compute workgroup. The most likely cause is that `workgroup` is absent from the compute shader's `.besl.bead` file."
-				.to_string()
+			format!(
+				"Missing {stage:?} workgroup. The most likely cause is that `workgroup` is absent from the shader's `.besl.bead` file."
+			)
 		})?)?)
 	} else {
 		None
 	};
 
-	Ok(BESLShaderSettings { stage, workgroup_size })
+	let maximum_mesh_threadgroups = if stage == ShaderTypes::Task {
+		Some(parse_positive_u32_setting(
+			spec,
+			"maximum_mesh_threadgroups",
+			"task mesh-threadgroup limit",
+		)?)
+	} else {
+		None
+	};
+	let maximum_vertices = if stage == ShaderTypes::Mesh {
+		Some(parse_positive_u32_setting(spec, "maximum_vertices", "mesh vertex limit")?)
+	} else {
+		None
+	};
+	let maximum_primitives = if stage == ShaderTypes::Mesh {
+		Some(parse_positive_u32_setting(
+			spec,
+			"maximum_primitives",
+			"mesh primitive limit",
+		)?)
+	} else {
+		None
+	};
+
+	Ok(BESLShaderSettings {
+		stage,
+		workgroup_size,
+		maximum_mesh_threadgroups,
+		maximum_vertices,
+		maximum_primitives,
+	})
 }
 
-/// Validates the three positive dimensions required by a compute shader dispatch contract.
+fn parse_positive_u32_setting(spec: &BEADType, key: &str, description: &str) -> Result<u32, String> {
+	let value = spec
+		.get(key)
+		.and_then(|value| value.as_u64())
+		.and_then(|value| u32::try_from(value).ok())
+		.ok_or_else(|| {
+			format!(
+				"Missing or invalid {description}. The most likely cause is that `{key}` is absent or is not a positive 32-bit integer."
+			)
+		})?;
+	if value == 0 {
+		return Err(format!(
+			"Invalid zero {description}. The most likely cause is that `{key}` was not configured as at least one."
+		));
+	}
+	Ok(value)
+}
+
+/// Validates the three positive dimensions required by a compute, task, or mesh workgroup contract.
 fn parse_workgroup_size(value: &utils::json::Value) -> Result<(u32, u32, u32), String> {
 	let dimensions = value.as_array().ok_or_else(|| {
-		"Invalid compute workgroup. The most likely cause is that `workgroup` is not an array of three positive integers."
+		"Invalid shader workgroup. The most likely cause is that `workgroup` is not an array of three positive integers."
 			.to_string()
 	})?;
 	if dimensions.len() != 3 {
 		return Err(format!(
-			"Invalid compute workgroup length {}. The most likely cause is that `workgroup` does not contain exactly three dimensions.",
+			"Invalid shader workgroup length {}. The most likely cause is that `workgroup` does not contain exactly three dimensions.",
 			dimensions.len()
 		));
 	}
@@ -192,12 +271,12 @@ fn parse_workgroup_size(value: &utils::json::Value) -> Result<(u32, u32, u32), S
 			.and_then(|dimension| u32::try_from(dimension).ok())
 			.ok_or_else(|| {
 				format!(
-				"Invalid compute workgroup dimension {index}. The most likely cause is that the dimension is not a positive 32-bit integer."
+				"Invalid shader workgroup dimension {index}. The most likely cause is that the dimension is not a positive 32-bit integer."
 			)
 			})?;
 		if dimension == 0 {
 			return Err(format!(
-				"Invalid zero compute workgroup dimension {index}. The most likely cause is that every workgroup dimension was not configured as at least one."
+				"Invalid zero shader workgroup dimension {index}. The most likely cause is that every workgroup dimension was not configured as at least one."
 			));
 		}
 		parsed[index] = dimension;
@@ -278,7 +357,7 @@ fn compile_shader(
 		.map(|extent| (extent.width(), extent.height(), extent.depth()));
 	if compiled_workgroup != interface.workgroup_size {
 		return Err(
-			"BESL shader workgroup mismatch. The most likely cause is that the active platform compiler did not preserve the configured compute workgroup."
+			"BESL shader workgroup mismatch. The most likely cause is that the active platform compiler did not preserve the configured compute, task, or mesh workgroup."
 				.to_string(),
 		);
 	}
@@ -303,13 +382,15 @@ fn compile_shader(
 /// Hashes every source-side input that can change a standalone shader resource.
 fn hash_shader_source(id: &str, source: &str, settings: BESLShaderSettings) -> u64 {
 	let mut hasher = DefaultHasher::new();
-	hasher.write(b"standalone-besl-shader-v1");
+	hasher.write(b"standalone-besl-shader-v2");
 	hash_text(&mut hasher, id);
 	hash_text(&mut hasher, source);
 	hasher.write_u8(match settings.stage {
 		ShaderTypes::Vertex => 0,
 		ShaderTypes::Fragment => 1,
 		ShaderTypes::Compute => 2,
+		ShaderTypes::Task => 3,
+		ShaderTypes::Mesh => 4,
 		_ => unreachable!("Unsupported standalone BESL shader stage. The most likely cause is invalid settings validation."),
 	});
 	match settings.workgroup_size {
@@ -321,12 +402,25 @@ fn hash_shader_source(id: &str, source: &str, settings: BESLShaderSettings) -> u
 		}
 		None => hasher.write_u8(0),
 	}
+	hash_optional_u32(&mut hasher, settings.maximum_mesh_threadgroups);
+	hash_optional_u32(&mut hasher, settings.maximum_vertices);
+	hash_optional_u32(&mut hasher, settings.maximum_primitives);
 	hasher.write_u8(match PlatformShaderLanguage::current_platform() {
 		PlatformShaderLanguage::Glsl => 0,
 		PlatformShaderLanguage::Hlsl => 1,
 		PlatformShaderLanguage::Msl => 2,
 	});
 	hasher.finish()
+}
+
+fn hash_optional_u32(hasher: &mut DefaultHasher, value: Option<u32>) {
+	match value {
+		Some(value) => {
+			hasher.write_u8(1);
+			hasher.write_u32(value);
+		}
+		None => hasher.write_u8(0),
+	}
 }
 
 fn hash_text(hasher: &mut DefaultHasher, text: &str) {
@@ -351,6 +445,7 @@ mod tests {
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::material::{Binding, BindingKind, Shader, ShaderArtifact, ShaderInterface, TextureView},
+		shader::generator::Stages,
 		types::ShaderTypes,
 	};
 
@@ -368,6 +463,9 @@ mod tests {
 			assert!(source.contains("main"));
 			assert_eq!(settings.stage, ShaderTypes::Compute);
 			assert_eq!(settings.workgroup_size, Some((8, 8, 1)));
+			assert_eq!(settings.maximum_mesh_threadgroups, None);
+			assert_eq!(settings.maximum_vertices, None);
+			assert_eq!(settings.maximum_primitives, None);
 
 			Ok((
 				Shader {
@@ -444,6 +542,9 @@ mod tests {
 		let settings = BESLShaderSettings {
 			stage: ShaderTypes::Compute,
 			workgroup_size: Some((8, 8, 1)),
+			maximum_mesh_threadgroups: None,
+			maximum_vertices: None,
+			maximum_primitives: None,
 		};
 		assert_eq!(shader.id, "passes/resolve.besl");
 		assert_eq!(shader.stage, ShaderTypes::Compute);
@@ -462,7 +563,7 @@ mod tests {
 	}
 
 	#[test]
-	fn shader_settings_require_compute_workgroups_but_not_graphics_workgroups() {
+	fn shader_settings_require_workgroups_and_stage_specific_mesh_limits() {
 		for (stage, expected) in [("Vertex", ShaderTypes::Vertex), ("Fragment", ShaderTypes::Fragment)] {
 			let spec = utils::json::from_str(&format!(r#"{{ "stage": "{stage}" }}"#)).unwrap();
 			assert_eq!(
@@ -470,6 +571,9 @@ mod tests {
 				Ok(BESLShaderSettings {
 					stage: expected,
 					workgroup_size: None,
+					maximum_mesh_threadgroups: None,
+					maximum_vertices: None,
+					maximum_primitives: None,
 				})
 			);
 		}
@@ -478,6 +582,61 @@ mod tests {
 		assert!(parse_shader_settings(Some(&compute_without_workgroup)).is_err());
 		let zero_workgroup = utils::json::from_str(r#"{ "stage": "Compute", "workgroup": [8, 0, 1] }"#).unwrap();
 		assert!(parse_shader_settings(Some(&zero_workgroup)).is_err());
+
+		let task =
+			utils::json::from_str(r#"{ "stage": "Task", "workgroup": [32, 1, 1], "maximum_mesh_threadgroups": 32 }"#).unwrap();
+		let task = parse_shader_settings(Some(&task)).expect("task sidecar should parse");
+		assert_eq!(
+			task,
+			BESLShaderSettings {
+				stage: ShaderTypes::Task,
+				workgroup_size: Some((32, 1, 1)),
+				maximum_mesh_threadgroups: Some(32),
+				maximum_vertices: None,
+				maximum_primitives: None,
+			}
+		);
+		assert!(matches!(
+			task.generation_settings("task").stage,
+			Stages::Task {
+				local_size,
+				maximum_mesh_threadgroups: 32,
+			} if local_size == utils::Extent::new(32, 1, 1)
+		));
+
+		let mesh = utils::json::from_str(
+			r#"{ "stage": "Mesh", "workgroup": [128, 1, 1], "maximum_vertices": 64, "maximum_primitives": 126 }"#,
+		)
+		.unwrap();
+		let mesh = parse_shader_settings(Some(&mesh)).expect("mesh sidecar should parse");
+		assert_eq!(
+			mesh,
+			BESLShaderSettings {
+				stage: ShaderTypes::Mesh,
+				workgroup_size: Some((128, 1, 1)),
+				maximum_mesh_threadgroups: None,
+				maximum_vertices: Some(64),
+				maximum_primitives: Some(126),
+			}
+		);
+		assert!(matches!(
+			mesh.generation_settings("mesh").stage,
+			Stages::Mesh {
+				maximum_vertices: 64,
+				maximum_primitives: 126,
+				local_size,
+			} if local_size == utils::Extent::new(128, 1, 1)
+		));
+
+		for invalid in [
+			r#"{ "stage": "Task", "workgroup": [32, 1, 1] }"#,
+			r#"{ "stage": "Task", "workgroup": [32, 1, 1], "maximum_mesh_threadgroups": 0 }"#,
+			r#"{ "stage": "Mesh", "workgroup": [128, 1, 1], "maximum_vertices": 64 }"#,
+			r#"{ "stage": "Mesh", "workgroup": [128, 1, 1], "maximum_vertices": 0, "maximum_primitives": 126 }"#,
+		] {
+			let invalid = utils::json::from_str(invalid).unwrap();
+			assert!(parse_shader_settings(Some(&invalid)).is_err());
+		}
 	}
 
 	#[test]
@@ -485,6 +644,9 @@ mod tests {
 		let compute = BESLShaderSettings {
 			stage: ShaderTypes::Compute,
 			workgroup_size: Some((8, 8, 1)),
+			maximum_mesh_threadgroups: None,
+			maximum_vertices: None,
+			maximum_primitives: None,
 		};
 		let changed_workgroup = BESLShaderSettings {
 			workgroup_size: Some((16, 8, 1)),
@@ -493,6 +655,20 @@ mod tests {
 		let fragment = BESLShaderSettings {
 			stage: ShaderTypes::Fragment,
 			workgroup_size: None,
+			maximum_mesh_threadgroups: None,
+			maximum_vertices: None,
+			maximum_primitives: None,
+		};
+		let task = BESLShaderSettings {
+			stage: ShaderTypes::Task,
+			workgroup_size: Some((32, 1, 1)),
+			maximum_mesh_threadgroups: Some(32),
+			maximum_vertices: None,
+			maximum_primitives: None,
+		};
+		let changed_task_limit = BESLShaderSettings {
+			maximum_mesh_threadgroups: Some(16),
+			..task
 		};
 		let base = hash_shader_source("shader.besl", "main: fn () -> void {}", compute);
 
@@ -503,6 +679,10 @@ mod tests {
 			hash_shader_source("shader.besl", "main: fn () -> void {}", changed_workgroup)
 		);
 		assert_ne!(base, hash_shader_source("shader.besl", "main: fn () -> void {}", fragment));
+		assert_ne!(
+			hash_shader_source("task.besl", "main: fn () -> void {}", task),
+			hash_shader_source("task.besl", "main: fn () -> void {}", changed_task_limit)
+		);
 	}
 
 	#[test]
@@ -533,5 +713,34 @@ mod tests {
 				view: TextureView::Texture2DArray
 			}
 		);
+	}
+
+	#[test]
+	fn shader_interface_reflection_preserves_visibility_atomic_and_integer_image_access() {
+		let source = r#"
+			Counters: struct { values: atomicu32[1024], }
+			counters: descriptor<Counters, 1033, read_write>;
+			index_image: descriptor<StorageImage<r32ui>, 1040, read>;
+			main: fn () -> void {
+				let coord: vec2u = thread_id();
+				let index: u32 = image_load_u32(index_image, coord);
+				atomic_add(counters.values[index], 1);
+			}
+		"#;
+		let (_, interface) =
+			prepare_shader(source, Some((32, 32, 1))).expect("visibility atomic descriptors should parse, link, and reflect");
+
+		assert_eq!(interface.workgroup_size, Some((32, 32, 1)));
+		assert_eq!(interface.bindings.len(), 2);
+		assert_eq!(interface.bindings[0].name, "counters");
+		assert_eq!(interface.bindings[0].slot, 1033);
+		assert_eq!(interface.bindings[0].kind, BindingKind::StorageBuffer);
+		assert!(interface.bindings[0].read);
+		assert!(interface.bindings[0].write);
+		assert_eq!(interface.bindings[1].name, "index_image");
+		assert_eq!(interface.bindings[1].slot, 1040);
+		assert_eq!(interface.bindings[1].kind, BindingKind::StorageImage);
+		assert!(interface.bindings[1].read);
+		assert!(!interface.bindings[1].write);
 	}
 }

@@ -573,6 +573,24 @@ impl<'a> Compiler<'a> {
 		expected_type: &ValueType,
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
+		if let Some(target) = resolve_task_payload_access(expression)? {
+			if &target.value_type != expected_type {
+				return Err(VmError::TypeMismatch {
+					expected: expected_type.name().to_string(),
+					found: target.value_type.name().to_string(),
+				});
+			}
+			let index = self.compile_value_expression(&target.index_expression, &ValueType::U32, descriptor_layouts)?;
+			let register = self.allocate_register();
+			self.instructions.push(Instruction::LoadTaskPayload {
+				register,
+				name: target.name,
+				index,
+				count: target.count,
+				value_type: target.value_type,
+			});
+			return Ok(register);
+		}
 		if accessor_references_buffer(expression) {
 			let target = self.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?;
 			if &target.value_type != expected_type {
@@ -1294,7 +1312,9 @@ impl<'a> Compiler<'a> {
 				let left = left.clone();
 				let right = right.clone();
 				drop(borrowed);
-				if accessor_references_buffer(expression) {
+				if let Some(target) = resolve_task_payload_access(expression)? {
+					Ok(target.value_type)
+				} else if accessor_references_buffer(expression) {
 					Ok(self
 						.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?
 						.value_type)
@@ -1955,6 +1975,53 @@ struct LoweredBufferAccess {
 	value_type: ValueType,
 }
 
+struct ResolvedTaskPayloadAccess {
+	name: String,
+	index_expression: NodeReference,
+	count: usize,
+	value_type: ValueType,
+}
+
+fn resolve_task_payload_access(expression: &NodeReference) -> Result<Option<ResolvedTaskPayloadAccess>, VmError> {
+	let (left, index_expression) = {
+		let borrowed = expression.borrow();
+		let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
+			return Ok(None);
+		};
+		(left.clone(), right.clone())
+	};
+
+	let Some(payload) = extract_task_payload_reference(&left) else {
+		return Ok(None);
+	};
+	let payload = payload.borrow();
+	let Nodes::TaskPayload { name, format, count } = payload.node() else {
+		unreachable!("Task-payload references are validated before resolving their layout")
+	};
+	Ok(Some(ResolvedTaskPayloadAccess {
+		name: name.clone(),
+		index_expression,
+		count: count.get(),
+		value_type: resolve_value_type(format)?,
+	}))
+}
+
+fn extract_task_payload_reference(expression: &NodeReference) -> Option<NodeReference> {
+	let borrowed = expression.borrow();
+	match borrowed.node() {
+		Nodes::TaskPayload { .. } => Some(expression.clone()),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			extract_task_payload_reference(&elements[0])
+		}
+		Nodes::Expression(Expressions::Member { source, .. })
+			if matches!(source.borrow().node(), Nodes::TaskPayload { .. }) =>
+		{
+			Some(source.clone())
+		}
+		_ => None,
+	}
+}
+
 /// The `FunctionParameter` struct links one lexical parameter identity to its portable VM value type.
 struct FunctionParameter {
 	node: NodeReference,
@@ -2592,6 +2659,8 @@ fn describe_node(node: &Nodes) -> &'static str {
 		Nodes::Intrinsic { .. } => "intrinsic",
 		Nodes::Input { .. } => "input",
 		Nodes::Output { .. } => "output",
+		Nodes::TaskPayload { .. } => "task payload",
+		Nodes::Workgroup { .. } => "workgroup storage",
 		Nodes::Parameter { .. } => "parameter",
 		Nodes::Literal { .. } => "literal",
 		Nodes::Const { .. } => "const",

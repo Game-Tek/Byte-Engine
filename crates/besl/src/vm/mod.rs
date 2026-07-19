@@ -778,6 +778,7 @@ pub struct DescriptorBindings<'a> {
 	bindings: HashMap<ResourceSlot, DescriptorBinding<'a>>,
 	push_constant: Option<&'a mut Buffer>,
 	mesh_outputs: Option<&'a mut MeshOutputs>,
+	task_payloads: HashMap<String, Vec<Value>>,
 }
 
 impl<'a> Default for DescriptorBindings<'a> {
@@ -792,6 +793,7 @@ impl<'a> DescriptorBindings<'a> {
 			bindings: HashMap::new(),
 			push_constant: None,
 			mesh_outputs: None,
+			task_payloads: HashMap::new(),
 		}
 	}
 
@@ -814,6 +816,13 @@ impl<'a> DescriptorBindings<'a> {
 	/// Binds the capture used by mesh output-count, position, and triangle intrinsics.
 	pub fn bind_mesh_outputs(&mut self, mesh_outputs: &'a mut MeshOutputs) {
 		self.mesh_outputs = Some(mesh_outputs);
+	}
+
+	/// Binds the authored values produced for one named task-payload array before a mesh-stage invocation.
+	///
+	/// Values are copied into invocation-owned storage so callers may use arrays and other temporary iterators.
+	pub fn bind_task_payload(&mut self, name: impl Into<String>, values: impl IntoIterator<Item = Value>) {
+		self.task_payloads.insert(name.into(), values.into_iter().collect());
 	}
 
 	fn buffer_mut(&mut self, slot: ResourceSlot) -> Result<&mut Buffer, VmError> {
@@ -849,6 +858,21 @@ impl<'a> DescriptorBindings<'a> {
 
 	fn mesh_outputs_mut(&mut self) -> Result<&mut MeshOutputs, VmError> {
 		self.mesh_outputs.as_deref_mut().ok_or(VmError::MissingMeshOutputs)
+	}
+
+	fn task_payload_value(&self, name: &str, index: usize) -> Result<Value, VmError> {
+		let values = self
+			.task_payloads
+			.get(name)
+			.ok_or_else(|| VmError::MissingTaskPayload { name: name.to_string() })?;
+		values
+			.get(index)
+			.cloned()
+			.ok_or_else(|| VmError::TaskPayloadIndexOutOfBounds {
+				name: name.to_string(),
+				index,
+				count: values.len(),
+			})
 	}
 }
 

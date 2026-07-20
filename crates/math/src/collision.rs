@@ -2,7 +2,7 @@ use maths_rs::dot;
 
 use crate::{cube::Cube, magnitude_squared, normalize, plane::Plane, ray::Ray, sphere::Sphere, Vector3};
 
-/// Calculates the intersection point of a ray and an axis-aligned bounding box (AABB).
+/// Returns the first intersection time between a ray and an axis-aligned bounding box.
 pub fn ray_aabb_intersection(start: Vector3, direction: Vector3, min: Vector3, max: Vector3) -> Option<f32> {
 	let r = 1.0 / direction;
 
@@ -26,19 +26,17 @@ pub fn ray_aabb_intersection(start: Vector3, direction: Vector3, min: Vector3, m
 	}
 }
 
-/// Checks if a sphere is inside or touching a frustum defined by a set of planes.
+/// Returns whether a sphere is inside, or touches, a frustum.
 ///
-/// The frustum is defined by an array of 6 planes. It is assumed that the
-/// normals of these planes point inwards (towards the interior of the frustum).
+/// The six plane normals must point toward the inside of the frustum.
 ///
 /// # Arguments
-/// * `sphere_center` - The world-space center of the sphere.
-/// * `sphere_radius` - The radius of the sphere. Must be non-negative.
-/// * `frustum_planes` - An array of 6 planes defining the frustum.
+/// * `sphere` - The sphere to test.
+/// * `frustum_planes` - The six planes that define the frustum.
 ///
 /// # Returns
-/// `true` if the sphere is (at least partially) inside or intersecting the frustum,
-/// `false` if the sphere is completely outside any of the frustum planes.
+/// Returns `true` when any part of the sphere is inside the frustum. Returns
+/// `false` when the sphere is completely outside at least one plane.
 pub fn sphere_in_frustum(sphere: &Sphere, frustum_planes: &[Plane; 6]) -> bool {
 	// For a sphere to be visible, it must be on the "inside" or "positive" side
 	// of all frustum planes (or intersecting them).
@@ -59,14 +57,14 @@ pub fn sphere_in_frustum(sphere: &Sphere, frustum_planes: &[Plane; 6]) -> bool {
 pub struct Intersection {
 	pub normal: Vector3,
 	pub depth: f32,
-	/// Contact on A in world space coordinates.
+	/// The contact point on shape A, in world coordinates.
 	pub point_on_a: Vector3,
-	/// Contact on B in world space coordinates.
+	/// The contact point on shape B, in world coordinates.
 	pub point_on_b: Vector3,
 }
 
 impl Intersection {
-	/// Swap the intersection points.
+	/// Returns this intersection with the contact points swapped.
 	pub fn swap(self) -> Intersection {
 		Intersection {
 			normal: self.normal,
@@ -119,9 +117,9 @@ pub struct DynamicIntersection {
 	pub toi: f32,
 	pub normal: Vector3,
 	pub depth: f32,
-	/// Contact on A in world space coordinates.
+	/// The contact point on shape A, in world coordinates.
 	pub point_on_a: Vector3,
-	/// Contact on B in world space coordinates.
+	/// The contact point on shape B, in world coordinates.
 	pub point_on_b: Vector3,
 }
 

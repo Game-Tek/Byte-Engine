@@ -1,4 +1,4 @@
-//! This module contains logic for rendering cascaded shadow maps.
+//! Cascaded shadow-map calculation and rendering support.
 
 use math::{length, mat::MatTranslate as _, normalize, Base as _, Matrix4, Vector3, Vector4};
 use smallvec::SmallVec;
@@ -162,7 +162,7 @@ mod tests {
 
 	/// Verifies that a surface point inside a cascade's camera frustum projects into valid NDC
 	/// range [0,1] for depth and [-1,1] for x/y when transformed by the cascade's light view-projection.
-	/// This simulates the full shadow rendering + sampling pipeline on the CPU to catch projection mismatches.
+	/// Simulates shadow rendering and sampling on the CPU to detect projection mismatches.
 	#[test]
 	fn surface_point_projects_into_valid_shadow_ndc() {
 		let camera_view = View::new_perspective(90.0, 1.0, 0.1, 100.0, Vector3::zero(), Vector3::unit_z());

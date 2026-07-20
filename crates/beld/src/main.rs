@@ -18,12 +18,12 @@ const CLAP_STYLING: Styles = Styles::styled()
 #[derive(Parser)]
 #[command(version, about, long_about = None, color = clap::ColorChoice::Auto, styles = CLAP_STYLING)]
 struct Cli {
-	/// The full path to the assets directory.
+	/// The path to the source assets directory.
 	/// Example: `beld --source assets`
 	#[arg(short, long, default_value = "assets")]
 	source: String,
 
-	/// The full path to the resources directory.
+	/// The path to the baked resources directory.
 	/// Example: `beld --destination resources`
 	#[arg(short, long, default_value = "resources")]
 	destination: String,
@@ -38,13 +38,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-	/// Wipe all resources, same as clear
+	/// Remove all baked resources. This command is the same as `clear`.
 	Wipe {},
-	/// Clear all resources, same as wipe
+	/// Remove all baked resources. This command is the same as `wipe`.
 	Clear {},
-	/// List all resources
+	/// List all baked resources.
 	List {},
-	/// Query resources by class and available indexed properties
+	/// Find resources by class and indexed property values.
 	Query {
 		/// The resource class to query.
 		/// Example: `beld query Material group=opaque tag=hero`
@@ -53,7 +53,7 @@ enum Commands {
 		/// Example: `beld query Material name=materials/hero`
 		#[clap(value_delimiter = ' ', num_args = 0..)]
 		properties: Vec<String>,
-		/// The maximum amount of resources to return.
+		/// The maximum number of resources to return.
 		#[arg(long)]
 		limit: Option<usize>,
 		/// The cursor printed by a previous query page.
@@ -62,22 +62,22 @@ enum Commands {
 		#[arg(long, value_enum, default_value_t = QueryFormat::Human)]
 		format: QueryFormat,
 	},
-	/// Inspect a resource
+	/// Inspect one resource.
 	Inspect {
-		/// The ID or UID of the resource to inspect.
+		/// The resource ID or UID to inspect.
 		/// Example: `beld inspect mesh.gltf#image` or `beld inspect d41d8cd98f00b204e9800998ecf8427e`
 		id: String,
 		#[arg(long, value_enum, default_value_t = InspectFormat::Human)]
 		format: InspectFormat,
 	},
-	/// Bake assets into resources
+	/// Bake source assets into resources.
 	Bake {
 		/// The asset IDs to bake. If omitted, BELD recursively bakes all supported assets under the source directory.
 		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
 		#[clap(value_delimiter = ' ', num_args = 0..)]
 		ids: Vec<String>,
 	},
-	/// Delete resources
+	/// Delete specific resources.
 	Delete {
 		/// The IDs of the resources to delete.
 		/// Example: `beld delete audio.wav mesh.gltf mesh.gltf#image`
@@ -131,7 +131,7 @@ fn main() -> Result<(), i32> {
 	}
 }
 
-/// Pre-scans CLI arguments so help and parser errors can honor `--color` before Clap fully parses the command.
+/// Reads `--color` before the full parse so help and parser errors use the selected color mode.
 fn parse_color_choice(args: impl IntoIterator<Item = String>) -> clap::ColorChoice {
 	let mut args = args.into_iter();
 	while let Some(arg) = args.next() {

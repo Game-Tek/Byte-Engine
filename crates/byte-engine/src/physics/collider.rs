@@ -21,17 +21,17 @@ pub trait Collider: Positionable {
 	}
 }
 
-/// The `CollisionShapes` enum represents the different shapes that a collider can have.
+/// The `Shapes` enum selects the geometry used for collision detection.
 #[derive(Debug, Clone)]
 pub enum Shapes {
-	/// A sphere shaped collider.
+	/// A spherical collider.
 	Sphere {
 		/// The radius of the sphere.
 		radius: f32,
 	},
-	/// A cube shaped collider.
+	/// An axis-aligned box collider.
 	Cube {
-		/// The half-size of the cube
+		/// The box half-extents.
 		size: Vector3,
 	},
 	ConvexHull {
@@ -41,14 +41,12 @@ pub enum Shapes {
 }
 
 impl Shapes {
-	/// Creates a new sphere shaped collider.
-	/// The radius parameter is the radius of the sphere.
+	/// Creates a spherical collider with the specified radius.
 	pub fn sphere(radius: f32) -> Self {
 		Self::Sphere { radius }
 	}
 
-	/// Creates a new cube shaped collider.
-	/// The size parameter is the half-size of the cube.
+	/// Creates an axis-aligned box collider with the specified half-extents.
 	pub fn cube(size: Vector3) -> Self {
 		Self::Cube { size }
 	}
@@ -313,8 +311,7 @@ pub fn find_point_furthest_from_triangle(
 
 /// Builds a stable initial tetrahedron from a point cloud.
 ///
-/// This function checks for "sanity", therefore making slower for cases where we already know the input is invalid.
-/// "unsafe" functions will be built in the future to accelerate this process.
+/// The function validates the point cloud before it builds the hull.
 ///
 /// Returns `None` when the input cannot form a non-degenerate volume.
 pub fn build_tetrahedron(verts: impl Iterator<Item = Vector3> + Clone) -> Option<(Vec<Vector3>, Vec<(usize, usize, usize)>)> {

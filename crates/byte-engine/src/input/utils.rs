@@ -1,12 +1,12 @@
-/// Registers a mouse device class with the input manager.
-/// This is the standard Byte-Engine mouse device definition.
+/// Registers the standard Byte Engine mouse device class.
 ///
 /// # Triggers
-/// - `Position`: The absolute position of the mouse. This is a 2D vector. In the range of -1 to 1, relative to the window.
-/// - `Movement`: The relative movement of the mouse. This is a 2D vector. The value is normalized by the window size.
-/// - `LeftButton`: The state of the left mouse button. This is a boolean.
-/// - `RightButton`: The state of the right mouse button. This is a boolean.
-/// - `Scroll`: The scroll wheel of the mouse. This is a float. The value is the amount of scroll in the Y direction. The range is -1 to 1.
+///
+/// - `Position`: Absolute window-relative position as a 2D vector from -1 to 1.
+/// - `Movement`: Relative movement as a 2D vector normalized by the window size.
+/// - `LeftButton`: State of the left mouse button as a Boolean value.
+/// - `RightButton`: State of the right mouse button as a Boolean value.
+/// - `Scroll`: Vertical scroll amount as a float from -1 to 1.
 pub fn register_mouse_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 	let mouse_device_class_handle = input_manager.register_device_class("Mouse");
 
@@ -39,20 +39,13 @@ pub fn register_mouse_device_class(input_manager: &mut InputManager) -> DeviceCl
 	mouse_device_class_handle
 }
 
-/// Registers a keyboard device class with the input manager.
-/// This is the standard Byte-Engine keyboard device definition.
+/// Registers the standard Byte Engine keyboard device class.
 ///
 /// # Triggers
-/// - `W`: The state of the W key. This is a boolean.
-/// - `S`: The state of the S key. This is a boolean.
-/// - `A`: The state of the A key. This is a boolean.
-/// - `D`: The state of the D key. This is a boolean.
-/// - `Space`: The state of the Space key. This is a boolean.
-/// - `Up`: The state of the Up key. This is a boolean.
-/// - `Down`: The state of the Down key. This is a boolean.
-/// - `Left`: The state of the Left key. This is a boolean.
-/// - `Right`: The state of the Right key. This is a boolean.
-/// - `Character`: The output of the keyboard as text input. This is a char.
+///
+/// The class exposes Boolean triggers for `W`, `S`, `A`, `D`, `Space`, the four
+/// arrow keys, `Escape`, and `Backspace`. The `Character` trigger emits typed
+/// text as a `char`.
 pub fn register_keyboard_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 	let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
 
@@ -83,19 +76,13 @@ pub fn register_keyboard_device_class(input_manager: &mut InputManager) -> Devic
 	keyboard_device_class_handle
 }
 
-/// Registers a gamepad device class with the input manager.
-/// This is the standard Byte-Engine gamepad device definition.
+/// Registers the standard Byte Engine gamepad device class.
 ///
 /// # Triggers
-/// - `LeftStick`: The position of the left stick. This is a 2D vector. In the range of -1 to 1.
-/// - `RightStick`: The position of the right stick. This is a 2D vector. In the range of -1 to 1.
-/// - `LeftTrigger`: The state of the left trigger. This is a float. The range is 0 to 1.
-/// - `RightTrigger`: The state of the right trigger. This is a float. The range is 0 to 1.
-/// - `A`, `B`, `X`, `Y`: The face buttons. These are booleans.
-/// - `LeftBumper`, `RightBumper`: The shoulder buttons. These are booleans.
-/// - `LeftStickButton`, `RightStickButton`: The stick click buttons. These are booleans.
-/// - `Select`, `Start`, `Guide`: The menu buttons. These are booleans.
-/// - `DPadUp`, `DPadDown`, `DPadLeft`, `DPadRight`: The directional pad buttons. These are booleans.
+///
+/// - `LeftStick` and `RightStick`: 2D vectors from -1 to 1.
+/// - `LeftTrigger` and `RightTrigger`: floats from 0 to 1.
+/// - Face, bumper, stick, menu, and directional-pad buttons: Boolean values.
 pub fn register_gamepad_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
 	let gamepad_device_class_handle = input_manager.register_device_class("Gamepad");
 

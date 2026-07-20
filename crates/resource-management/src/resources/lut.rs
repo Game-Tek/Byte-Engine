@@ -1,4 +1,4 @@
-/// The `LutKind` enum describes the lookup-table layout a LUT resource represents.
+/// The `LutKind` enum identifies the sample layout of a lookup-table resource.
 #[derive(
 	Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]

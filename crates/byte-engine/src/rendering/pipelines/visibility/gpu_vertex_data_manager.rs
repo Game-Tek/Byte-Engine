@@ -18,7 +18,7 @@ pub(super) struct GPUVertexDataManager {
 	pub vertex_indices_buffer: ghi::BufferHandle<[u16; MAX_PRIMITIVE_TRIANGLES]>,
 	/// Indices laid out as indices into the `vertex_indices_buffer`
 	pub primitive_indices_buffer: ghi::BufferHandle<[[u8; 3]; MAX_TRIANGLES]>,
-	/// Handle to the buffer where each meshlet's data is stored.
+	/// Buffer that stores the meshlet records.
 	pub meshlets_data_buffer: ghi::BufferHandle<[ShaderMeshletData; MAX_MESHLETS]>,
 	/// Bind-pose positions packed only for primitives that participate in GPU skinning.
 	pub(super) skinning_rest_positions_buffer: ghi::BufferHandle<[[f32; 3]; MAX_VERTICES]>,
@@ -99,9 +99,9 @@ impl GPUVertexDataManager {
 		}
 	}
 
-	/// Writes GPU mesh data for a mesh resource and returns the mesh object.
+	/// Writes a mesh resource to GPU storage and returns its GPU mesh data.
 	/// Does not check if the resource is already loaded.
-	/// Meshes may not be available yet for rendering, this just writes the mesh data to the GPU.
+	/// This operation uploads mesh data but does not make the mesh ready for rendering.
 	pub fn write_gpu_mesh_data_and_return_mesh_object_for_mesh_resource<'slf, 'buffer>(
 		&'slf mut self,
 		c: &mut ghi::implementation::CommandBufferRecording,
@@ -557,11 +557,11 @@ impl GPUVertexDataManager {
 		Some(mesh)
 	}
 
-	/// Writes the mesh data to the GPU and returns the mesh object.
+	/// Writes mesh data to GPU storage and returns its GPU mesh data.
 	///
 	/// # Returns
 	///
-	/// A tuple containing the updated buffer allocator and the mesh data.
+	/// Returns the updated buffer allocator with the uploaded mesh data.
 	pub fn write_gpu_mesh_data_and_return_mesh_object_for_mesh_generator<'slf, 'buffer>(
 		&'slf mut self,
 		generator: &dyn MeshGenerator,
@@ -1003,18 +1003,17 @@ pub struct VisibilityInfo {
 	pub primitives_count: u32,
 }
 
-/// This structure hosts data analogous to the mesh resource's data.
-/// Like the scene manager `MeshData` but only contains data relevant to the geometric properties.
+/// The `MeshData` struct stores the geometry ranges needed after a mesh resource
+/// enters visibility GPU storage.
 #[derive(Debug, Clone)]
 pub struct MeshData {
 	pub primitives: Vec<MeshPrimitive>,
-	/// The base position into the vertex buffer
+	/// Base position in the vertex buffer.
 	pub vertex_offset: u32,
 	pub primitive_offset: u32,
-	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
+	/// Base triangle position in the primitive-index buffer, stored as index / 3.
 	pub triangle_offset: u32,
-	/// The meshlet offset.
-	/// The base position into the meshlets buffer relative to the mesh
+	/// Base position in the meshlet buffer, relative to the mesh.
 	pub meshlet_offset: u32,
 	pub acceleration_structure: Option<ghi::BottomLevelAccelerationStructureHandle>,
 }
@@ -1024,17 +1023,13 @@ pub struct MeshData {
 pub struct MeshPrimitive {
 	/// The meshlet count.
 	pub meshlet_count: u32,
-	/// The meshlet offset.
-	/// The base position into the meshlets buffer relative to the primitive in the mesh
+	/// Base position in the meshlet buffer, relative to the primitive.
 	pub meshlet_offset: u32,
-	/// The vertex offset.
-	/// The base position into the vertex buffer
+	/// Base position in the vertex buffer.
 	pub vertex_offset: u32,
-	/// The primitive indices offset.
-	/// The base position into the primitive indices buffer
+	/// Base position in the primitive-index buffer.
 	pub primitive_offset: u32,
-	/// The triangle offset.
-	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
+	/// Base triangle position in the primitive-index buffer, stored as index / 3.
 	pub triangle_offset: u32,
 	/// The first vertex in the compact immutable skinning source buffers, when this primitive is skinned.
 	pub skinning_source_vertex_offset: Option<u32>,

@@ -4,7 +4,8 @@ description: Install the Byte Engine asset-baking command-line tool from a sourc
 icon: Download
 ---
 
-BELD is distributed with the Byte Engine source tree. Installing it with Cargo builds an optimized release binary and places it in Cargo's binary directory, normally `~/.cargo/bin`.
+Install BELD from the Byte Engine source tree. Cargo builds an optimized binary
+and places it in the Cargo binary directory, usually `~/.cargo/bin`.
 
 From the root of a Byte Engine checkout, run:
 
@@ -14,13 +15,14 @@ cargo install --path crates/beld --locked
 
 `--locked` requires Cargo to use the dependency versions recorded in the checkout's `Cargo.lock`. This keeps the installed tool aligned with the engine revision it was built from.
 
-Ensure Cargo's binary directory is on your `PATH`, then confirm the installation:
+Add Cargo's binary directory to your `PATH`, then confirm the installation:
 
 ```bash
 beld --help
 ```
 
-Re-run the install command after updating the engine when you want the installed tool to use the new handlers and processors.
+Run the install command again after you update Byte Engine to use its new handlers
+and processors.
 
 ## Run without installing
 

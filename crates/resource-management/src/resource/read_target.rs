@@ -1,26 +1,20 @@
-//! Read targets are involved in reading binary data for resources for a client.
-//! The read targets specify whether resource bytes should be read into caller-provided memory, read into
-//! an allocated box, split into streams, or served from reader-owned backing storage.
-//! `ReadTargets` is used for read-only access, while `ReadTargetsMut` is used for mutable access.
+//! Select where a resource reader stores binary data and how clients access the result.
 
 use super::Resource;
 use crate::{resource::reader::ResourceReaderBacking, stream::StreamMut, Reference, Stream};
 
 #[derive(Debug)]
-/// The read targets are used to specify where the binary data should be read into.
-/// `ReadTargets` is used for read-only access and will be handed back to the client once the data was read.
+/// The `ReadTargets` enum provides read-only access to resource data after a read completes.
 pub enum ReadTargets<'a> {
 	Box(Box<[u8]>),
 	Buffer(&'a [u8]),
 	Streams(Vec<Stream<'a>>),
-	/// Reader-owned storage for resource bytes.
-	/// File-backed resources use mapped files when the storage backend supports them.
+	/// Storage owned by the reader, including mapped files when the backend supports them.
 	Backing(ResourceReaderBacking),
 }
 
 impl<'a> ReadTargets<'a> {
-	/// Returns the resource bytes when the read target contains contiguous data.
-	/// This includes caller-provided buffers, allocated boxes, and reader-owned backing storage.
+	/// Returns the resource bytes when this target contains one contiguous buffer.
 	pub fn buffer(&self) -> Option<&[u8]> {
 		match self {
 			ReadTargets::Box(buffer) => Some(buffer),
@@ -53,8 +47,7 @@ impl<'a> From<ReadTargetsMut<'a>> for ReadTargets<'a> {
 }
 
 #[derive(Debug)]
-/// The read targets are used to specify where the binary data should be read into.
-/// `ReadTargetsMut` is used for mutable access and will be provided by the client when the data is to be read.
+/// The `ReadTargetsMut` enum lets callers select where a resource reader writes binary data.
 pub enum ReadTargetsMut<'a> {
 	Box {
 		buffer: Box<[u8]>,
@@ -71,8 +64,7 @@ pub enum ReadTargetsMut<'a> {
 		size: Option<usize>,
 	},
 	Streams(Vec<StreamMut<'a>>),
-	/// Requests reader-owned backing storage for resource bytes.
-	/// This is the default target created from a `Reference` when the caller does not provide a buffer.
+	/// Requests reader-owned storage when the caller does not provide a buffer.
 	BackingStorage,
 }
 
@@ -111,8 +103,7 @@ impl<'a> ReadTargetsMut<'a> {
 		self
 	}
 
-	/// Returns a reference to a buffer if the data was read into a buffer.
-	/// Buffers can be a slice provided by the client or a boxed slice created by the resource manager.
+	/// Returns the buffer for a caller-provided or resource-manager-allocated target.
 	pub fn buffer(&self) -> Option<&[u8]> {
 		match self {
 			ReadTargetsMut::Box { buffer, .. } => Some(buffer),

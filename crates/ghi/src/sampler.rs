@@ -11,9 +11,10 @@ pub struct Builder {
 }
 
 impl Builder {
-	/// Creates a new sampler builder.
+	/// Creates a sampler builder with linear, weighted-average filtering and clamp addressing.
 	///
-	/// Default values:
+	/// # Defaults
+	///
 	/// - `filtering_mode`: `FilteringModes::Linear`
 	/// - `reduction_mode`: `SamplingReductionModes::WeightedAverage`
 	/// - `mip_map_mode`: `FilteringModes::Linear`

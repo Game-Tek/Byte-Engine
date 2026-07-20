@@ -6,7 +6,8 @@ use crate::{
 };
 
 /// The `Frame` trait scopes frame-local GPU work so per-frame resources stay tied to an active frame.
-/// It exists to use Rust's lifetime system to keep frame operations borrowed from the `Device` for only as long as the frame is active.
+/// The frame lifetime keeps operations borrowed from the [`crate::Device`] only
+/// while the frame is active.
 pub trait Frame<'a>
 where
 	Self: Sized + crate::context::ContextCreate,
@@ -43,8 +44,8 @@ where
 	}
 
 	/// Resizes an image to the specified extent.
-	/// Does nothing if the image is already the specified extent.
-	/// May not reallocate if a smaller size is requested.
+	/// This method has no effect when the image already has the requested extent.
+	/// A smaller extent does not always require reallocation.
 	fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent);
 
 	/// Creates a new command buffer recording.
@@ -53,11 +54,10 @@ where
 		command_buffer_handle: CommandBufferHandle,
 	) -> Self::CBR<'record>;
 
-	/// Creates a new command buffer recording without injecting frame-global pending sync work.
+	/// Creates a command-buffer recording without pending frame synchronization work.
 	///
-	/// Use this for command buffers that record explicit transfer or maintenance work. The regular
-	/// frame recording path may prepend pending dynamic-resource uploads, which would make helper
-	/// queues unexpectedly replay render-frame synchronization copies.
+	/// Use this method for explicit transfer or maintenance work. The regular frame
+	/// path can prepend dynamic-resource uploads that helper queues must not replay.
 	fn create_command_buffer_recording_without_implicit_sync<'record>(
 		&'record mut self,
 		command_buffer_handle: CommandBufferHandle,
@@ -65,14 +65,9 @@ where
 		self.create_command_buffer_recording(command_buffer_handle)
 	}
 
-	/// Acquires an image from the swapchain as to have it ready for presentation.
+	/// Acquires a swapchain image for presentation.
 	///
-	/// # Arguments
-	///
-	/// * `frame_handle` - The frame to acquire the image for. If `None` is passed, the image will be acquired for the next frame.
-	///
-	/// # Returns
-	/// A present key for future presentation and the extent of the image.
+	/// Returns a presentation key and the image extent.
 	/// # Errors
 	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent);
 }

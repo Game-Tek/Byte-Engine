@@ -85,7 +85,7 @@ impl From<u32> for Interval {
 	}
 }
 
-/// A task is a unit of work that can be executed by the engine.
+/// The `Task` struct packages a unit of work for engine execution.
 pub struct Task {
 	f: Box<dyn FnMut()>,
 	every: Option<Interval>,
@@ -94,7 +94,7 @@ pub struct Task {
 }
 
 impl Task {
-	/// Creates a new task.
+	/// Creates a task from the provided work item.
 	pub fn new(f: impl Fn() + 'static) -> Self {
 		Task {
 			f: Box::new(f),

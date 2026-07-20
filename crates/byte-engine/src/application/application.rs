@@ -17,13 +17,13 @@
 /// Parameters passed to [`Application::new`] may be overridden by `BE_*`
 /// environment variables and then by `--name=value` command-line arguments.
 pub trait Application {
-	/// Creates a new application with the given name.
+	/// Creates an application with the specified name and configuration parameters.
 	fn new(name: &str, parameters: &[Parameter]) -> Self;
 
 	/// Returns the name of the application.
 	fn get_name(&self) -> &str;
 
-	/// Performs a tick of the application.
+	/// Advances the application by one tick.
 	fn tick(&mut self) -> bool;
 }
 

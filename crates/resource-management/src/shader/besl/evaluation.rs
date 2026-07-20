@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashSet};
 
-/// The `BindingUsage` struct describes a used binding in a BESL program.
+/// The `BindingUsage` struct provides reflection metadata for one binding used by a BESL program.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BindingUsage {
 	pub name: String,
@@ -11,7 +11,7 @@ pub struct BindingUsage {
 	pub write: bool,
 }
 
-/// Identifies the descriptor category declared by a BESL binding.
+/// The `BindingKind` enum identifies the descriptor category declared by a BESL binding.
 #[derive(
 	Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
@@ -24,7 +24,7 @@ pub enum BindingKind {
 	StorageImage,
 }
 
-/// Identifies the texture shape required by a BESL sampled-image binding.
+/// The `TextureView` enum identifies the texture shape required by a BESL sampled-image binding.
 #[derive(
 	Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
@@ -34,7 +34,7 @@ pub enum TextureView {
 	Texture3D,
 }
 
-/// The `BindingRecord` trait exists to keep binding discovery independent from evaluated and compiled metadata representations.
+/// The `BindingRecord` trait keeps binding discovery independent of evaluated and compiled metadata representations.
 pub(crate) trait BindingRecord: Sized {
 	fn from_usage(name: &str, kind: BindingKind, count: u32, slot: u32, read: bool, write: bool) -> Self;
 	fn usage(&self) -> (u32, BindingKind, u32, bool, bool);

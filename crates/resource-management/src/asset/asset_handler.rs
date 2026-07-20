@@ -109,7 +109,7 @@ impl<'a> BakeContext<'a> {
 	}
 }
 
-/// The `AssetHandler` trait exists to extend asset baking with source-format-specific implementations.
+/// The `AssetHandler` trait provides source-format extensions for asset baking.
 pub trait AssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool;
 

@@ -121,7 +121,7 @@ impl SkinBinding {
 	}
 }
 
-/// Reports why a skin binding could not write a complete matrix palette.
+/// The `SkinPaletteError` enum identifies failures while writing a complete skin matrix palette.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SkinPaletteError {
 	OutputLength {

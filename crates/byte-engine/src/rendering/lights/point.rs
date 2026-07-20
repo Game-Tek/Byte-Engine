@@ -7,9 +7,8 @@ use crate::{
 	rendering::lights::{Light, LightClasses},
 };
 
-/// The `PointLight` struct represents a point light source in a scene.
-///
-/// It is used to simulate light that comes from a single point, such as a light bulb.
+/// The `PointLight` struct provides omnidirectional scene lighting from a local
+/// source, such as a light bulb.
 #[derive(Debug, Clone, Copy)]
 pub struct PointLight {
 	pub position: Vector3,

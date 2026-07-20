@@ -1,7 +1,7 @@
-//! This is a smoke test that tries to play a sound on speakers.
-//! It's purpose is to check if an entire application can be created and run.
-//! It does not check if the sound is rendered correctly, or if the application
-//! is working correctly.
+//! Plays a sound through the default audio output as an application startup smoke test.
+//!
+//! This example verifies that the complete application can start and run. It
+//! does not verify the generated audio.
 
 #![allow(clippy::no_effect)]
 

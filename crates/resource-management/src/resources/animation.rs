@@ -5,7 +5,7 @@ use crate::{
 	Reference, ReferenceModel, Solver,
 };
 
-/// Describes translation and scale keyframes in a representation ready for CPU pose evaluation.
+/// The `Vector3Curve` enum provides translation or scale keyframes for CPU pose evaluation.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum Vector3Curve {
 	Step {
@@ -55,7 +55,7 @@ impl Vector3Curve {
 	}
 }
 
-/// Describes rotation keyframes in a representation ready for CPU pose evaluation.
+/// The `QuaternionCurve` enum provides rotation keyframes for CPU pose evaluation.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum QuaternionCurve {
 	Step {

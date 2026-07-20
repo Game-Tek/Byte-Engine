@@ -1,4 +1,4 @@
-/// The packet history is the number of (last) packets that we keep track of.
+/// The number of recently sent packets retained for acknowledgment tracking.
 const PACKET_HISTORY: usize = 1024;
 
 /// The `Local` struct preserves the bounded send history used to interpret peer acknowledgements.
@@ -49,7 +49,7 @@ impl Local {
 		}
 	}
 
-	/// Acknowledges a packet with the given sequence number. This means that the remote has received the packet.
+	/// Records that the remote received the given sequence number.
 	pub fn acknowledge_packet(&mut self, sequence: u16) {
 		let index = (sequence % PACKET_HISTORY as u16) as usize;
 		if self.packet_valid.get(index) && self.sequence_buffer[index] == sequence {
@@ -66,7 +66,7 @@ impl Local {
 		}
 	}
 
-	/// Returns the unacknowledged packets of this [`Local`]. These are the packets that have been sent but have not been acknowledged by the remote.
+	/// Returns sent sequence numbers that the remote has not acknowledged.
 	pub fn unacknowledged_packets(&self) -> impl Iterator<Item = u16> + '_ {
 		self.sequence_buffer
 			.iter()

@@ -1,22 +1,22 @@
 use std::ops::Add;
 
-/// The `Offset` struct represents signed screen-space movement during UI layout.
+/// The `Offset` struct stores signed screen-space movement during UI layout.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Offset(i32, i32);
 
-/// The `Location` struct represents an absolute two-dimensional UI position.
+/// The `Location` struct stores an absolute two-dimensional UI position.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Location(u32, u32);
 
-/// The `Location3` struct represents an absolute UI position with depth ordering.
+/// The `Location3` struct stores an absolute UI position with depth ordering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Location3(u32, u32, u32);
 
-/// The `Size` struct represents two-dimensional UI extent in logical pixels.
+/// The `Size` struct stores a two-dimensional UI extent in logical pixels.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Size(u32, u32);
 
-/// The `FlowInput` struct exists to pass parent space, cursor, and child size
+/// The `FlowInput` struct passes parent space, cursor, and child size
 /// into reusable layout flow functions.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FlowInput {
@@ -25,7 +25,7 @@ pub struct FlowInput {
 	child_size: Size,
 }
 
-/// The `FlowOutput` struct exists to return a child's offset and the next cursor
+/// The `FlowOutput` struct returns a child's offset and the next cursor
 /// from reusable layout flow functions.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FlowOutput {

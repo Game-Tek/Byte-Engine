@@ -4,7 +4,8 @@ use trotcast::Receiver;
 
 use crate::core::channel::DefaultChannel;
 
-/// The `Listener` trait exists to decouple message consumption from transport details.
+/// The `Listener` trait lets consumers receive messages without depending on a
+/// specific transport.
 pub trait Listener<M> {
 	fn read(&mut self) -> Option<M>;
 
@@ -24,7 +25,8 @@ pub trait Listener<M> {
 	}
 }
 
-/// The `ListenerIterator` struct exists to provide iterator semantics for any listener implementation.
+/// The `ListenerIterator` struct adapts a [`Listener`] for use in iterator-based
+/// message processing.
 pub struct ListenerIterator<'a, L: ?Sized, M>
 where
 	L: Listener<M>,
@@ -65,16 +67,17 @@ impl<'a, M> IntoIterator for &'a mut (dyn Listener<M> + 'a) {
 	}
 }
 
-/// The `DefaultListener` struct exists to read messages from a `trotcast` receiver.
-/// We do not allow cloning (directly) since it is easy to forget cloning the receiver does not carry over existing messages.
-/// We provide an explicit method `new_listener` to create a new listener.
+/// The `DefaultListener` struct reads broadcast messages from a `trotcast` receiver.
+///
+/// Use [`Self::new_listener`] to add a consumer. The new listener receives future
+/// messages but does not inherit messages already queued for this listener.
 #[derive(Clone)]
 pub struct DefaultListener<M>(pub(super) Receiver<M>);
 
 impl<M: Clone> DefaultListener<M> {
-	/// Create a new listener from a receiver.
-	/// Equivalent to a clone operation.
-	/// Remember cloning the receiver does not carry over existing messages.
+	/// Creates another listener for future messages on the same channel.
+	///
+	/// The new listener does not receive messages already queued for this listener.
 	pub fn new_listener(&self) -> Self {
 		DefaultListener(self.0.clone())
 	}
@@ -97,7 +100,7 @@ impl<M: Clone> Listener<M> for DefaultListener<M> {
 	}
 }
 
-/// The `FilteredListener` struct exists to compose message predicates over listeners.
+/// The `FilteredListener` struct limits a listener to messages accepted by a predicate.
 pub struct FilteredListener<L, M: Clone, F>(L, F, PhantomData<M>)
 where
 	L: Listener<M>,

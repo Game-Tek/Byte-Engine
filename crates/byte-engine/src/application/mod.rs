@@ -77,9 +77,9 @@ impl Parameter {
 	}
 
 	/// Parses the parameter's value as a bool.
-	/// Some(True) if param equals "true", "TRUE", "1"
-	/// Some(False) if param equals "false", "FALSE", "0"
-	/// Else None
+	///
+	/// Returns `Some(true)` for `true`, `TRUE`, or `1`. Returns `Some(false)` for
+	/// `false`, `FALSE`, or `0`. Returns `None` for all other values.
 	pub fn as_bool(&self) -> Option<bool> {
 		match self.value.as_str() {
 			"true" | "TRUE" | "1" => Some(true),
@@ -88,8 +88,10 @@ impl Parameter {
 		}
 	}
 
-	/// Parses the parameter's value as bool using `as_bool` but return false if it could not be parsed.
-	/// This is provided as a convenience.
+	/// Parses the parameter as a Boolean value and returns `false` if parsing fails.
+	///
+	/// Use [`Self::as_bool`] when the caller must distinguish `false` from an
+	/// invalid value.
 	pub fn as_bool_simple(&self) -> bool {
 		self.as_bool().unwrap_or(false)
 	}
@@ -108,6 +110,6 @@ impl Parameter {
 /// The [`Events`] enum defines messages shared with application-owned worker threads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Events {
-	/// Request the application to close.
+	/// Requests that the application close.
 	Close,
 }

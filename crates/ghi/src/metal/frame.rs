@@ -9,13 +9,10 @@ use super::*;
 use crate::image::ImageHandle;
 use crate::SwapchainHandle;
 
-/// The `Frame` struct represents a single frame's worth of Metal rendering state.
+/// The `Frame` struct scopes Metal rendering state to one frame.
 ///
-/// It owns an `NSAutoreleasePool` that covers the entire frame lifetime. This is
-/// critical because Metal API calls (command buffer creation, encoder creation, etc.)
-/// internally produce autoreleased Objective-C objects. Without a pool spanning the
-/// whole frame, those objects accumulate on non-main threads where no run-loop pool
-/// exists.
+/// Its `NSAutoreleasePool` releases temporary Metal objects at the end of the frame.
+/// Without this pool, objects accumulate on threads that do not have a run-loop pool.
 ///
 /// Field order matters: Rust drops fields in declaration order. The drawables must be
 /// released before the autorelease pool drains, so `_autorelease_pool` is declared last.

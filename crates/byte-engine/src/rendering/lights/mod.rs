@@ -17,7 +17,7 @@ pub use directional::DirectionalLight as Directional;
 pub use point::PointLight;
 pub use point::PointLight as Point;
 
-/// The `Light` trait exists to identify the shader and storage class of a scene light.
+/// The `Light` trait identifies the shader and storage class of a scene light.
 pub trait Light {
 	fn class(&self) -> LightClasses;
 }

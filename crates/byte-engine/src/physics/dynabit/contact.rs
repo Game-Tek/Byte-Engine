@@ -33,7 +33,7 @@ impl Ord for Contact {
 pub struct Side {
 	/// The object handle for this side of the contact.
 	pub(crate) object: usize,
-	/// The point in the world where the contact ocurred.
+	/// The world-space point where the contact occurred.
 	pub(crate) point: Vector3,
 }
 

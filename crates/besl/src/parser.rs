@@ -1,6 +1,6 @@
-//! The `parser` module turns BESL tokens into syntax nodes that preserve source structure before semantic resolution.
+//! Parses BESL tokens into syntax nodes that preserve the source structure.
 //!
-//! # Example beShader
+//! # Example shader
 //!
 //! ```glsl
 //! Light: struct {
@@ -13,16 +13,12 @@
 //! }
 //! ```
 //!
-//! The `parse` function is the entry point.
-//! The parser consumes an stream of tokens and creates nodes with Nodes.
-//! All nodes which have cross references only do so by name.
-//! Those relations are resolved later by the lexer which performs a grammar analysis.
+//! Use [`crate::parse`] as the entry point. The parser records cross-references by name.
+//! The [`crate::lexer`] module resolves those names later.
 
 use crate::tokenizer;
 
-/// Generates a syntax tree from BESL source code tokens.
-/// The syntax tree is just another representation of the source code.
-/// It is missing the final transformation step, which is the lexing step.
+/// A shared syntax node in a parsed BESL tree.
 pub type NodeReference<'a> = &'a Node<'a>;
 
 /// The `TypeName` enum preserves type structure while the parser still borrows source text.
@@ -41,9 +37,7 @@ impl std::fmt::Display for TypeName<'_> {
 	}
 }
 
-/// Generates a syntax tree from BESL source code tokens.
-/// The syntax tree is just another representation of the source code.
-/// It is missing the final transformation step, which is the lexing step.
+/// A weak syntax-node reference used to avoid ownership cycles.
 pub(super) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Node<'a>, ParsingFailReasons> {
 	let mut iterator = tokens.tokens.iter();
 
@@ -488,25 +482,25 @@ impl<'a> Node<'a> {
 
 #[derive(Clone, Debug)]
 pub enum Nodes<'a> {
-	/// A special kind of node. Mostly used for partially implemented features.
+	/// A placeholder for syntax that does not yet have a specialized node.
 	Null,
-	/// Like a Rust module. A logical division/grouping of code.
+	/// A named group of BESL declarations, similar to a Rust module.
 	Scope {
-		/// The scope's name. Used in code when importing or declaring namespaces.
+		/// The name used for imports and namespaces.
 		name: &'a str,
 		children: Vec<Node<'a>>,
 	},
-	/// A struct declaration. A struct is a collection of fields.
+	/// A struct declaration and its fields.
 	Struct {
 		name: &'a str,
 		fields: Vec<Node<'a>>,
 	},
-	/// A member field. Usually used inside a struct.
+	/// A field declared in a struct.
 	Member {
 		name: &'a str,
 		r#type: String,
 	},
-	/// A funcion declaration and definition node.
+	/// A function declaration and body.
 	Function {
 		name: &'a str,
 		params: Vec<Node<'a>>,
@@ -523,7 +517,7 @@ pub enum Nodes<'a> {
 		update: Box<Node<'a>>,
 		statements: Vec<Node<'a>>,
 	},
-	/// A binding declaration. A binding is a resource that can be used in the shader.
+	/// A shader resource binding declaration.
 	Binding {
 		name: &'a str,
 		r#type: Box<Node<'a>>,
@@ -542,16 +536,16 @@ pub enum Nodes<'a> {
 		write: bool,
 		count: Option<NonZeroU32>,
 	},
-	/// A specialization constant. A specialization constant is a constant that can be set when creating a pipeline at runtime.
+	/// A constant selected when the application creates a pipeline.
 	Specialization {
 		name: &'a str,
 		r#type: &'a str,
 	},
-	/// A push constant block. A push constant is a small buffer that can have values pushed during rendering.
+	/// A small constant buffer updated during rendering.
 	PushConstant {
 		members: Vec<Node<'a>>,
 	},
-	/// An abstract type. Usually used to define primitive types such as `f32`.
+	/// An abstract type declaration, such as the declaration for `f32`.
 	Type {
 		name: &'a str,
 		members: Vec<Node<'a>>,
@@ -605,7 +599,7 @@ pub enum Nodes<'a> {
 		name: &'a str,
 		r#type: &'a str,
 	},
-	/// A module-level constant variable declaration. Used to define compile-time constant values.
+	/// A named module-level value known at compile time.
 	Const {
 		name: &'a str,
 		r#type: TypeName<'a>,
@@ -776,16 +770,16 @@ impl Precedence for Atoms<'_> {
 	}
 }
 
-/// Type of the result of a parser.
+/// The result type returned by a syntax parser.
 type FeatureParserResult<'i, 'a> = Result<(Node<'a>, std::slice::Iter<'i, &'a str>), ParsingFailReasons>;
 
-/// A parser is a function that tries to parse a sequence of tokens.
+/// A function that tries to parse a token sequence.
 type FeatureParser<'i, 'a> = fn(std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a>;
 
 type ExpressionParserResult<'i, 'a> = Result<(Vec<Atoms<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons>;
 type ExpressionParser<'i, 'a> = fn(std::slice::Iter<'i, &'a str>, Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a>;
 
-/// Execute a list of parsers on a stream of tokens.
+/// Runs parsers in order until one accepts the token stream.
 fn execute_parsers<'i, 'a: 'i>(
 	parsers: &[FeatureParser<'i, 'a>],
 	mut iterator: std::slice::Iter<'i, &'a str>,
@@ -816,7 +810,7 @@ fn execute_parsers<'i, 'a: 'i>(
 	}) // No parser could handle this syntax.
 }
 
-/// Tries to execute a list of parsers on a stream of tokens. But it's ok if none of them can handle the syntax.
+/// Runs parsers in order and permits every parser to decline the syntax.
 fn try_execute_parsers<'i, 'a: 'i>(
 	parsers: &[FeatureParser<'i, 'a>],
 	iterator: std::slice::Iter<'i, &'a str>,
@@ -830,7 +824,7 @@ fn try_execute_parsers<'i, 'a: 'i>(
 	None
 }
 
-/// Execute a list of parsers on a stream of tokens.
+/// Runs parsers in order until one accepts the token stream.
 fn execute_expression_parsers<'i, 'a: 'i>(
 	parsers: &[ExpressionParser<'i, 'a>],
 	mut iterator: std::slice::Iter<'i, &'a str>,
@@ -862,7 +856,7 @@ fn execute_expression_parsers<'i, 'a: 'i>(
 	}) // No parser could handle this syntax.
 }
 
-/// Tries to execute a list of parsers on a stream of tokens. But it's ok if none of them can handle the syntax.
+/// Runs parsers in order and permits every parser to decline the syntax.
 fn try_execute_expression_parsers<'i, 'a: 'i>(
 	parsers: &[ExpressionParser<'i, 'a>],
 	iterator: std::slice::Iter<'i, &'a str>,

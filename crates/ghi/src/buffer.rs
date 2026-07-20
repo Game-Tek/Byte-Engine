@@ -8,9 +8,9 @@ pub struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-	/// Creates a new buffer builder with the given resource uses.
-	/// The default name is None.
-	/// The default device accesses are GPU read and write.
+	/// Creates a buffer builder with GPU read and write access.
+	///
+	/// The default name is `None`.
 	pub fn new(resource_uses: Uses) -> Self {
 		Self {
 			name: None,

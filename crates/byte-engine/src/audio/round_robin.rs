@@ -1,6 +1,7 @@
 use crate::{audio::source::Source, core::Entity};
 
-/// The `RoundRobin` struct represents a round-robin sample player.
+/// The `RoundRobin` struct cycles through a set of audio assets when callers
+/// request samples.
 pub struct RoundRobin {
 	assets: Vec<String>,
 	index: usize,

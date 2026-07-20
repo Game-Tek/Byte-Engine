@@ -1,4 +1,7 @@
-//! An [`Anchor`] is a object that holds a transformation and can have other objects attached to it.
+//! Parent-child position relationships for gameplay objects.
+//!
+//! Attach positionable objects to an [`Anchor`] when they must follow the same
+//! parent position. Use [`Anchorage::Offset`] to preserve a child-specific offset.
 
 use math::Vector3;
 
@@ -9,10 +12,10 @@ use crate::space::Positionable;
 
 #[derive(Debug, Clone, Default)]
 pub enum Anchorage {
-	/// The object is attached to the anchor.
+	/// Places the child at the anchor position.
 	#[default]
 	Default,
-	/// The anchorage is offset from the anchor.
+	/// Places the child at an offset from the anchor.
 	Offset { offset: Transform },
 }
 
@@ -43,12 +46,12 @@ impl Anchor {
 		&mut self.transform
 	}
 
-	/// Attaches a child to the anchor.
+	/// Attaches a child at the anchor position.
 	pub fn attach(&mut self, child: EntityHandle<dyn Positionable>) {
 		self.children.push((child, Default::default()));
 	}
 
-	/// Attaches a child to the anchor.
+	/// Attaches a child at the specified positional offset.
 	pub fn attach_with_offset(&mut self, child: EntityHandle<dyn Positionable>, offset: Vector3) {
 		self.children.push((
 			child,
@@ -58,7 +61,7 @@ impl Anchor {
 		));
 	}
 
-	/// Attaches a child to the anchor.
+	/// Attaches a child with the specified anchorage policy.
 	pub fn attach_with_anchorage(&mut self, child: EntityHandle<dyn Positionable>, anchorage: Anchorage) {
 		self.children.push((child, anchorage));
 	}

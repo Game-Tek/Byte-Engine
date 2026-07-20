@@ -1,4 +1,4 @@
-//! The `lexer` module resolves parsed BESL syntax into a linked semantic tree that later compilation stages can execute.
+//! Resolves parsed BESL syntax into a linked semantic tree for compilation.
 
 use std::hash::Hash;
 use std::{
@@ -141,8 +141,7 @@ impl Node {
 		NodeReference(Rc::new(RefCell::new(node)))
 	}
 
-	/// Creates a root node which is the parent of all other nodes in a program.
-	/// Only one root node should exist in a program.
+	/// Creates the single root node that owns a program's other nodes.
 	pub fn root() -> Node {
 		let void = primitive_type("void");
 		let bool_t = primitive_type("bool");
@@ -433,7 +432,7 @@ impl Node {
 		root
 	}
 
-	/// Creates a scope node which is a logical container for other nodes.
+	/// Creates a scope that groups child nodes.
 	pub fn scope(name: String) -> Node {
 		Node {
 			// parent: None,
@@ -444,16 +443,7 @@ impl Node {
 		}
 	}
 
-	/// Creates a struct node which is a type definition.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the struct.
-	/// * `fields` - The fields of the struct.
-	///
-	/// # Returns
-	///
-	/// The struct node.
+	/// Creates a named struct definition from its fields.
 	pub fn r#struct(name: &str, fields: Vec<NodeReference>) -> Node {
 		Node {
 			node: Nodes::Struct {
@@ -900,7 +890,7 @@ pub enum Nodes {
 		name: String,
 		value: NodeReference,
 	},
-	/// A module-level constant variable declaration. Stores a named, typed value that is known at compile time.
+	/// A named module-level value known at compile time.
 	Const {
 		name: String,
 		r#type: NodeReference,
@@ -1241,7 +1231,7 @@ enum DescendantSearch {
 	NonIntrinsic,
 }
 
-/// Tries to resolve a reference to a node by visiting the chain of nodes which are the context of the element of the program being lexed.
+/// Resolves a node reference by searching the current lexical scope chain.
 fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
 	for node in chain.iter().rev() {
 		let reference = match node.borrow().node() {

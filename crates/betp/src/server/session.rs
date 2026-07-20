@@ -1,4 +1,4 @@
-/// The Session holds the state for a connection to this server..
+/// The `Session` struct preserves the protocol state for one server-side connection.
 #[derive(Debug, Clone, Copy)]
 pub struct Session {
 	local: Local,
@@ -8,9 +8,9 @@ pub struct Session {
 }
 
 impl Session {
-	/// Creates a client<->server session that manages the connection state.
-	/// The session is initiated is the `Initial` state.
-	/// Must call `connect` to establish a connection.
+	/// Creates an idle session in the [`State::Initial`] state.
+	///
+	/// Call [`Session::connect`] to start a connection.
 	pub fn new() -> Self {
 		Self {
 			local: Local::new(),
@@ -125,9 +125,10 @@ impl Session {
 		}
 	}
 
-	/// Enqueuesdata packets to be sent.
-	/// Messages can be flagged as realiable for them to be retried if sending them fails.
-	/// Data packets sent whilw the session is not in the `Connected` state will be discarded.
+	/// Queues a data packet for transmission.
+	///
+	/// Reliable packets remain queued for retry. The session discards packets that
+	/// are queued before it reaches [`State::Connected`].
 	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
 		match &mut self.state {
 			State::Connected { id, packet_buffer, .. } => {
@@ -143,9 +144,9 @@ impl Session {
 		}
 	}
 
-	/// Returns a disconnect packet to send to the server.
-	/// The client will no longer be able to handle server packets after this.
-	/// The client will need to reconnect to the server to continue.
+	/// Starts a voluntary disconnect from the client.
+	///
+	/// Reconnect the session before you send or receive more data.
 	pub fn disconnect(&mut self) {
 		if let State::Connected { id, .. } = self.state {
 			self.state = State::Disconnecting { id }
@@ -172,24 +173,22 @@ impl Default for Session {
 
 // Keep the packet buffer inline: this state is copied as protocol state, and boxing it would add an allocation to every connection.
 #[allow(clippy::large_enum_variant)]
-/// The different states a session can be in.
-/// Used to manage the connection lifecycle.
+/// The `State` enum identifies the current phase of a server-side session.
 #[derive(Debug, Clone, Copy)]
 pub enum State {
-	/// The initial state of the session.
-	/// No connection has been initiated yet.
+	/// The session is idle and has not started a connection.
 	Initial,
-	/// The session is attempting to initiate a connection.
+	/// The session is waiting for a challenge.
 	InitiatingConnection {
 		/// The client salt used to identify the connection attempt.
 		salt: u64,
 	},
-	/// The session is in the process of connecting.
+	/// The session is waiting for connection confirmation.
 	Connecting {
 		/// The connection ID assigned to this session.
 		id: u64,
 	},
-	/// The session is fully connected.
+	/// The session can send and receive data packets.
 	Connected {
 		/// The established connection ID.
 		id: u64,
@@ -198,7 +197,7 @@ pub enum State {
 		/// The last time a packet was received from the client.
 		last_seen: std::time::Instant,
 	},
-	/// The session is in the process of disconnecting.
+	/// The session is ending the connection.
 	Disconnecting {
 		/// The connection ID being disconnected.
 		id: u64,

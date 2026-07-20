@@ -10,7 +10,7 @@ use super::{
 };
 use crate::ui::intersection::MouseClickAcceleration;
 
-/// Preserves a laid-out UI tree together with interaction state.
+/// The `Snapshot` struct preserves a laid-out UI tree with its interaction state.
 pub struct Snapshot<'a> {
 	pub(super) elements: Vec<LayoutElement, &'a bumpalo::Bump>,
 	pub(super) relations: Vec<(Id, Id), &'a bumpalo::Bump>,

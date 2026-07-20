@@ -1,6 +1,4 @@
-//! Resource manager module.
-//! Handles loading assets or resources from different origins (network, local, etc.).
-//! It also handles caching of resources.
+//! Load, cache, and bake engine resources from local or remote storage.
 
 #![feature(stmt_expr_attributes)]
 #![feature(future_join)]
@@ -72,7 +70,7 @@ pub(crate) type DataStorage = Vec<u8>;
 
 pub type ResourceArchiveError = rkyv::rancor::Error;
 
-/// The `ResourceArchive` trait marks values that can live in the engine resource archive format.
+/// The `ResourceArchive` trait identifies values that the engine can store in its resource archive format.
 pub trait ResourceArchive: Sized + rkyv::Archive + for<'a> rkyv::Serialize<ResourceHighSerializer<'a>> {}
 
 impl<T> ResourceArchive for T where T: rkyv::Archive + for<'a> rkyv::Serialize<ResourceHighSerializer<'a>> {}
@@ -119,16 +117,16 @@ where
 
 // https://www.yosoygames.com.ar/wp/2018/03/vertex-formats-part-1-compression/
 
-/// This is the struct resource handlers should return when processing a resource.
+/// The `ProcessedAsset` struct carries a handler's baked metadata and binary data to resource storage.
 #[derive(Debug, Clone)]
 pub struct ProcessedAsset {
-	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
+	/// The stable, public resource ID.
 	id: String,
-	/// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
+	/// The resource class, such as `Texture`, `Mesh`, or `Material`.
 	class: String,
-	/// List of resources that this resource depends on.
+	/// The resources that this resource depends on.
 	// required_resources: Vec<ProcessedResources>,
-	/// The resource data.
+	/// The serialized resource metadata.
 	// resource: Data,
 	resource: DataStorage,
 	streams: Option<Vec<StreamDescription>>,
@@ -207,7 +205,7 @@ impl From<SerializableResource> for ProcessedAsset {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct StreamDescription {
-	/// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
+	/// The subresource name, such as `Vertex` or `Index`.
 	name: String,
 	/// The subresource size.
 	size: usize,
@@ -239,10 +237,10 @@ impl StreamDescription {
 
 #[derive(Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct SerializableResource {
-	/// The resource id. This is used to identify the resource. Needs to be meaningful and will be a public constant.
+	/// The stable, public resource ID.
 	id: String,
 	hash: u64,
-	/// The resource class (EJ: "Texture", "Mesh", "Material", etc.)
+	/// The resource class, such as `Texture`, `Mesh`, or `Material`.
 	class: String,
 	size: usize,
 	resource: DataStorage,
@@ -310,7 +308,7 @@ impl<M: Model> From<SerializableResource> for ReferenceModel<M> {
 	}
 }
 
-/// Enumaration for all the possible results of a resource load fails.
+/// The `LoadResults` enum identifies failures that can occur while loading a resource.
 #[derive(Debug)]
 pub enum LoadResults {
 	/// No resource could be resolved for the given path.
@@ -334,6 +332,6 @@ pub trait Description: Any + Send + Sync {
 
 #[cfg(test)]
 mod tests {
-	/// Path to the assets folder for the tests.
+	/// The path to the asset fixtures used by tests.
 	pub const ASSETS_PATH: &str = "../../assets";
 }

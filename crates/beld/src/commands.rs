@@ -51,7 +51,7 @@ pub fn list(destination_path: String) -> Result<(), i32> {
 	}
 }
 
-/// Queries the resources database by class and queryable property equality predicates.
+/// Finds resources by class and indexed property values.
 pub fn query(
 	destination_path: String,
 	class: String,
@@ -89,7 +89,7 @@ pub fn query(
 	Ok(())
 }
 
-/// Parses a `name=value` query predicate from the CLI.
+/// Parses one `name=value` property filter from the command line.
 fn parse_query_property(property: &str) -> Result<(&str, &str), i32> {
 	let Some((name, value)) = property.split_once('=') else {
 		log::error!(
@@ -110,7 +110,7 @@ fn parse_query_property(property: &str) -> Result<(&str, &str), i32> {
 	Ok((name, value))
 }
 
-/// Converts storage query failures into user-facing CLI errors.
+/// Returns a concise command-line message for a storage query error.
 fn query_error_message(error: QueryError) -> &'static str {
 	match error {
 		QueryError::InvalidCursor => "Failed to query resources. The most likely cause is that the provided cursor is invalid.",
@@ -185,7 +185,7 @@ fn print_json_query_page(
 	Ok(())
 }
 
-/// Converts queryable properties to JSON without deserializing the resource body.
+/// Converts indexed properties to JSON without reading the resource body.
 fn queryable_properties_json(properties: &[resource_management::QueryableProperty]) -> Value {
 	let properties = properties
 		.iter()
@@ -208,13 +208,13 @@ fn print_queryable_value(value: &QueryableValue) {
 	}
 }
 
-/// Encodes an opaque query cursor as JSON and hex so it is safe to pass through the shell.
+/// Encodes an opaque query cursor as shell-safe hexadecimal JSON.
 fn encode_query_cursor(cursor: &QueryCursor) -> String {
 	let bytes = serde_json::to_vec(cursor).expect("query cursors should serialize");
 	encode_hex(&bytes)
 }
 
-/// Decodes a shell-safe query cursor produced by `encode_query_cursor`.
+/// Decodes a query cursor produced by [`encode_query_cursor`].
 fn decode_query_cursor(cursor: &str) -> Result<QueryCursor, i32> {
 	let bytes = decode_hex(cursor).ok_or_else(|| {
 		log::error!(
@@ -465,7 +465,7 @@ pub fn bake(source_path: String, destination_path: String, ids: Vec<String>) -> 
 	}
 }
 
-/// Recursively finds supported source assets beneath the configured assets directory.
+/// Finds supported source assets in the configured directory and its descendants.
 fn discover_asset_ids(source_path: &Path, asset_manager: &AssetManager) -> Result<Vec<String>, i32> {
 	let mut ids = Vec::new();
 	let canonical_root = std::fs::canonicalize(source_path).map_err(|error| {
@@ -482,7 +482,7 @@ fn discover_asset_ids(source_path: &Path, asset_manager: &AssetManager) -> Resul
 	Ok(ids)
 }
 
-/// Adds supported files from one directory and its children, following symlinks without revisiting an active ancestor.
+/// Adds supported files from a directory tree without revisiting an active symlink ancestor.
 fn discover_asset_ids_in(
 	root_path: &Path,
 	directory: &Path,
@@ -586,7 +586,7 @@ fn discover_asset_ids_in(
 	Ok(())
 }
 
-/// Converts a filesystem-relative path into a resource-style ID with `/` separators.
+/// Converts a relative file path to a resource ID that uses `/` separators.
 fn resource_id_path(path: &Path) -> Option<String> {
 	let mut id = String::new();
 	for component in path.components() {

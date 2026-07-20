@@ -198,8 +198,9 @@ fn evaluate_layout_internal(this: &Box, extent: (u32, u32), pointers: (i32, i32)
 	(root, (pointer_x, pointer_y))
 }
 
-/// Test collisions with the layout boxes.
-/// Returns None if no element was hit, None if the element is zero size, or Some if an element was hit.
+/// Tests a point against the layout boxes.
+///
+/// Returns `None` when no element is hit or the matching element has zero size.
 fn evaluate_hit_test(element: &LayoutBox, x: i32, y: i32) -> Option<&LayoutBox> {
 	let (semi_width, semi_height) = (element.width as i32 / 2, element.height as i32 / 2);
 

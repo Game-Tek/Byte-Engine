@@ -1,9 +1,9 @@
-# docs-site
+# Run the documentation site
 
-This is a Tanstack Start application generated with
+The documentation site is a TanStack Start application generated with
 [Create Fumadocs](https://github.com/fuma-nama/fumadocs).
 
-Run development server:
+To start the development server, run one of these commands:
 
 ```bash
 npm run dev

@@ -4,9 +4,10 @@ description: How to set up macOS for Byte Engine applications.
 icon: Apple
 ---
 
-## macOS
+Set up Apple's SDK and the native build tools before you build Byte Engine on
+macOS.
 
-### Xcode SDK
+## Install the Xcode SDK
 
 Install Apple's command line tools before building on macOS. Byte's macOS backends use the platform SDK frameworks directly, including Metal, AppKit, QuartzCore, Foundation, and Core Audio.
 
@@ -15,14 +16,15 @@ xcode-select --install
 xcrun --show-sdk-path
 ```
 
-If you already have the full Xcode app installed, select it explicitly so `xcrun`, `clang`, and the Metal SDK resolve from the same developer directory.
+If you installed the full Xcode app, select it so `xcrun`, `clang`, and the Metal
+SDK use the same developer directory.
 
 ```bash
 sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 sudo xcodebuild -license accept
 ```
 
-### Homebrew Packages
+## Install Homebrew packages
 
 Install the native build tools used by Byte's Rust dependencies.
 

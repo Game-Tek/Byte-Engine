@@ -1,10 +1,10 @@
 ---
-title: BELD Tool
+title: Use BELD
 description: The command-line tool for baking, inspecting, and querying resources.
 icon: TerminalSquare
 ---
 
-BELD is the command-line interface for working with Byte Engine resources.
+Use BELD to bake, inspect, query, and delete Byte Engine resources.
 
 It reads source assets from an assets directory and writes processed resources to a resources directory.
 By default those paths are `assets` and `resources`, but both are configurable.
@@ -15,9 +15,13 @@ beld --source assets --destination resources bake
 
 ## Commands
 
-`beld bake` processes asset IDs into resources. When no IDs are provided, BELD recursively discovers every source file supported by its registered handlers beneath the source directory. Discovery follows file and directory symlinks while preserving their logical paths as resource IDs, rejects broken links, and avoids directory cycles. `.bead` sidecars and unknown files are ignored. Standalone `.besl` sources require an adjacent `.besl.bead` to participate in discovery; BESL files used only by materials remain transitive inputs. Discovered IDs are processed in deterministic path order.
-The bake command installs the standard asset handlers and runs work concurrently.
-Each asset gets a local arena for decode-time and processing-time allocations so large temporary buffers can be released after that asset finishes.
+`beld bake` processes asset IDs into resources. If you omit the IDs, BELD finds
+every supported source file below the source directory. It follows symlinks,
+preserves their logical paths as resource IDs, rejects broken links, and avoids
+directory cycles. BELD ignores `.bead` sidecars and unknown files. A standalone
+`.besl` source needs an adjacent `.besl.bead` file for discovery. BELD processes
+the discovered IDs in deterministic path order and runs independent asset work
+concurrently.
 
 To bake only selected assets, provide their IDs explicitly:
 
@@ -61,13 +65,13 @@ Every resource model gets a `name` property by default.
 
 ## When to use it
 
-Use BELD when you want deterministic, explicit resource output:
+Use BELD when you need deterministic resource output:
 
-- preparing assets before a release build
-- inspecting what an asset produced
-- checking shader reflection metadata
-- rebuilding resources after changing processors
-- deleting stale resources while debugging asset import
+- Prepare assets before a release build.
+- Inspect the resources that an asset produced.
+- Check shader reflection metadata.
+- Rebuild resources after you change a processor.
+- Delete stale resources while you debug asset import.
 
 During development, applications can also lazily bake assets at request time.
 BELD is still useful because it gives you a direct, scriptable view of the same resource storage.

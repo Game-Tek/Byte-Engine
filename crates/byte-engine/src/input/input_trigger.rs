@@ -1,24 +1,27 @@
-/// An input trigger is a source of input on a device class/type. Such as the UP key on a keyboard or the left trigger on a gamepad.
+/// The `Trigger` struct stores one input source defined by a device class.
+///
+/// A trigger can represent a keyboard key, a gamepad control, or another named
+/// source that produces an input [`Value`].
 pub(super) struct Trigger {
-	/// The device class the input source is associated with.
+	/// The device class that defines this trigger.
 	pub(super) device_class_handle: DeviceClassHandle,
-	/// The name of the input source.
+	/// The trigger name within its device class.
 	pub(super) name: String,
-	/// The type of the input source.
+	/// The value type produced by the trigger.
 	pub(super) r#type: Types,
-	/// The default value the input source will have when it's first registered and no events have been recorded for it.
+	/// The value used until the first input record arrives.
 	pub(super) default: Value,
 }
 
 #[derive(Copy, Clone)]
 pub struct TriggerDescription<T: InputValue> {
-	/// The value the input source will have when it's first registered and no events have been recorded for it.
+	/// The value used until the first input record arrives.
 	pub(super) default: T,
-	/// The value the input source will have when it's released.
+	/// The value used when the control is released.
 	rest: T,
-	/// The minimum value the input source can have.
+	/// The minimum valid value.
 	min: T,
-	/// The maximum value the input source can have.
+	/// The maximum valid value.
 	max: T,
 }
 
@@ -97,7 +100,8 @@ impl Default for TriggerDescription<Quaternion> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-/// Handle to an input trigger.
+/// The `TriggerHandle` struct identifies a trigger registered with an
+/// [`crate::input::InputManager`].
 pub struct TriggerHandle(pub(super) u32);
 
 use math::{Quaternion, Vector2, Vector3};

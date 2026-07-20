@@ -26,19 +26,18 @@ pub struct AssetManager {
 	storage_backend: Box<dyn StorageBackend>,
 }
 
-/// Enumeration of the possible messages that can be returned when loading an asset.
+/// The `LoadMessages` enum identifies failures while an asset is loaded, baked, or stored.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoadMessages {
 	/// The asset was not found in the storage backend.
 	NoAsset,
-	/// An IO error occurred while loading the asset.
+	/// An I/O operation failed while loading the asset.
 	IO,
-	/// The URL was missing in the asset JSON.
+	/// The asset description does not contain a URL.
 	NoURL,
 	/// No asset handler was found for the asset.
 	NoAssetHandler,
-	/// The asset could not be baked by the backend.
-	/// Either it failed or an indirect asset failed to bake/load.
+	/// The asset or one of its dependencies could not be baked or loaded.
 	FailedToBake { asset: String, error: LoadErrors },
 	/// The asset could not be stored in the resource storage backend.
 	FailedToStore { asset: String, error: String },
@@ -92,8 +91,7 @@ impl AssetManager {
 			.any(|handler| handler.can_handle(id.get_extension()) && handler.should_discover(id, has_sidecar))
 	}
 
-	/// Call this to bake an asset identified by it's URL.
-	/// Does not check if the asset already exists in the resource storage backend.
+	/// Bakes the asset at `id` without checking for an existing stored resource.
 	pub async fn bake<'a>(&self, id: &str, resource_storage_backend: &dyn ResourceStorageBackend) -> Result<(), LoadMessages> {
 		self.bake_in(id, resource_storage_backend, &Global).await
 	}
@@ -162,8 +160,7 @@ impl AssetManager {
 		Ok(())
 	}
 
-	/// Call this to bake an asset identified by it's URL, if it does not already exist in the resource storage backend.
-	/// Does nothing if the resource already exists (with a matching hash).
+	/// Returns the stored asset, or bakes it when no resource with a matching hash exists.
 	pub async fn bake_if_not_exists<'a, M: Model>(
 		&self,
 		id: &str,

@@ -1,4 +1,4 @@
-//! `Dynabit` is the default physics engine for the Byte-Engine.
+//! Dynabit, the default Byte Engine physics implementation.
 
 pub mod world;
 

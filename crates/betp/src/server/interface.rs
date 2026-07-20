@@ -16,33 +16,26 @@ pub struct Settings {
 	pub timeout: std::time::Duration,
 }
 
-/// A BETP authoritative server.
+/// The `Server` trait provides application-level control of an authoritative BETP endpoint.
 pub trait Server {
-	/// Runs periodic updates on the server.
-	/// Performs the following tasks:
+	/// Updates connection state and returns events for the application to handle.
 	///
-	/// - Disconnects clients timed out clients.
-	/// - Gathers unacknowledged packets to retry. This will count as a retry attempt.
+	/// This method disconnects timed-out clients and gathers unacknowledged packets
+	/// for retry. Each gathered packet consumes one retry attempt.
 	///
-	/// `current_time` is the current time.
-	///
-	/// Returns a list of packets to send to the clients.
-	///
-	/// Returns an error if the server encountered an error.
-	///
-	/// This function should be called periodically.
+	/// Call this method periodically with the current time.
 	fn update(&mut self, current_time: std::time::Instant) -> Result<Vec<Events>, ConnectionResults>;
 
-	/// Send a message to all connected clients.
+	/// Sends a message to all connected clients.
 	fn send(&mut self, reliable: bool, data: [u8; 1024]);
 
-	/// Send a message to particular client.
+	/// Sends a message to one client.
 	fn send_to_client(&mut self, connection_id: u64, reliable: bool, data: [u8; 1024]);
 
-	/// Disconnect all clients / disconnect self.
+	/// Disconnects all clients and stops the server connection.
 	fn disconnect(&mut self);
 
-	/// Disconnect a particular client.
+	/// Disconnects one client.
 	fn disconnect_client(&mut self, connection_id: u64);
 }
 

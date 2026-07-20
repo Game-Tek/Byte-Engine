@@ -1,7 +1,7 @@
-//! This is a smoke test that tries to render a 2D triangle to a window.
-//! It's purpose is to check if an entire application can be created and run.
-//! It does not check if the triangle is rendered correctly, or if the application
-//! is working correctly.
+//! Renders a 2D triangle as an application startup smoke test.
+//!
+//! This example verifies that the complete application can start and run. It
+//! does not verify the rendered image.
 
 use byte_engine::application::{Application, Parameter};
 

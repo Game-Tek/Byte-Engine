@@ -7,7 +7,7 @@ use super::{context::Context, BufferTransitionState, Handles, TransitionState};
 use crate::frame::Frame as _;
 use crate::vulkan::Frame;
 
-/// The `Queue` struct provides owned access to a Vulkan queue through the GHI queue API.
+/// The `Queue` struct provides owned Vulkan submission through the GHI queue API.
 pub struct Queue {
 	pub(crate) device: std::ptr::NonNull<Context>, // TODO: remove this
 	pub(crate) queue_handle: crate::QueueHandle,
@@ -18,7 +18,7 @@ pub struct Queue {
 
 unsafe impl Send for Queue {}
 
-/// The `QueueReference` struct provides borrowed access to a Vulkan queue while a context remains mutably borrowed.
+/// The `QueueReference` struct provides borrowed Vulkan submission while its context remains borrowed.
 pub struct QueueReference<'a> {
 	pub(crate) device: &'a mut Context,
 	pub(crate) queue_handle: crate::QueueHandle,

@@ -18,7 +18,8 @@ use crate::core::{
 };
 
 #[derive(Clone)]
-/// The `Factory` struct exists to create entity messages while preserving setup-time history for the first system listener.
+/// The `Factory` struct creates values with stable handles and preserves setup-time
+/// messages for the first system listener.
 pub struct Factory<T: Clone + ?Sized> {
 	channel: DefaultChannel<CreateMessage<T>>,
 	created_before_listener: Rc<RefCell<Vec<CreateMessage<T>>>>,

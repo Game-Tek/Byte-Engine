@@ -13,7 +13,7 @@ pub struct BoxMeshGenerator {
 }
 
 impl BoxMeshGenerator {
-	/// Create a new box mesh generator with a default size of 1x1x1.
+	/// Creates a box mesh generator with a default size of 1 by 1 by 1.
 	pub fn new() -> Self {
 		Self {
 			size: Vector3::new(1.0, 1.0, 1.0),

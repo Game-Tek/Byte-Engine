@@ -8,14 +8,14 @@ struct BufferedPacket<const S: usize> {
 	packet: DataPacket<S>,
 	/// The connection the packet is intended for.
 	connection_id: u64,
-	/// The number of tries.
+	/// The number of completed send attempts.
 	try_count: u8,
-	/// Is the packet reliable.
+	/// Whether the session retries the packet.
 	reliable: bool,
 }
 
 impl<const S: usize> BufferedPacket<S> {
-	/// Creates a new buffered packet.
+	/// Stores a packet with no completed send attempts.
 	fn new(packet: DataPacket<S>, connection_id: u64, reliable: bool) -> Self {
 		Self {
 			packet,
@@ -29,19 +29,17 @@ impl<const S: usize> BufferedPacket<S> {
 /// The `PacketBuffer` struct bounds queued sends and retry work for one protocol session.
 #[derive(Debug, Clone, Copy)]
 pub struct PacketBuffer<const N: usize, const S: usize> {
-	/// The buffer.
+	/// Fixed storage for pending packets.
 	buffer: [Option<BufferedPacket<S>>; N],
 }
 
 impl<const N: usize, const S: usize> PacketBuffer<N, S> {
-	/// Creates a new packet buffer.
+	/// Creates an empty packet buffer.
 	pub fn new() -> Self {
 		Self { buffer: [None; N] }
 	}
 
-	/// Adds a packet to the buffer.
-	/// Called when a packet is sent.
-	/// Reliable packets have higher priority.
+	/// Adds a packet and gives reliable packets replacement priority.
 	pub fn add(&mut self, packet: DataPacket<S>, connection_id: u64, reliable: bool) {
 		// Try to find an empty slot in the buffer.
 		for i in 0..N {
@@ -83,8 +81,7 @@ impl<const N: usize, const S: usize> PacketBuffer<N, S> {
 		}
 	}
 
-	/// Removes a packet from the buffer.
-	/// Usually called when a packet is acknowledged.
+	/// Removes the packet with the given sequence number.
 	pub fn remove(&mut self, sequence: u16) {
 		for i in 0..N {
 			if let Some(packet) = self.buffer[i] {

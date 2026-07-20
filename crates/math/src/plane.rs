@@ -2,9 +2,11 @@ use maths_rs::{cross, dot, length, normalize, Vec3f};
 
 use crate::sphere::Sphere;
 
-/// Represents a plane in 3D space, defined by the equation N.x*x + N.y*y + N.z*z + D = 0.
-/// `normal` is (N.x, N.y, N.z) and `distance` is D.
-/// It is assumed that `normal` is a unit vector for distance calculations to be metric.
+/// The `Plane` struct provides a plane for 3D distance and half-space tests.
+///
+/// The plane uses the equation `N.x*x + N.y*y + N.z*z + D = 0`. The `normal`
+/// field stores `N`, and `distance` stores `D`. Use a unit normal when results
+/// must use world-space distance units.
 #[derive(Clone, Copy, Debug)]
 pub struct Plane {
 	pub normal: Vec3f,
@@ -12,7 +14,7 @@ pub struct Plane {
 }
 
 impl Plane {
-	/// Creates a new plane from a normal vector and a distance D.
+	/// Creates a plane from a normal vector and the equation constant `D`.
 	pub fn new(normal: Vec3f, distance: f32) -> Self {
 		let length = length(normal);
 		let normal = normal / length; // Normalize the normal vector
@@ -20,10 +22,9 @@ impl Plane {
 		Self { normal, distance }
 	}
 
-	/// Creates a new plane from three points in 3D space.
-	/// The points should not be collinear.
-	/// The resulting plane's normal will be a unit vector, and the distance will be calculated
-	/// such that the plane equation is satisfied for the first point.
+	/// Creates a plane through three noncollinear points.
+	///
+	/// The returned plane has a unit normal and contains each input point.
 	pub fn from_points(p1: Vec3f, p2: Vec3f, p3: Vec3f) -> Self {
 		let v1 = p2 - p1;
 		let v2 = p3 - p1;
@@ -32,17 +33,16 @@ impl Plane {
 		Self { normal, distance }
 	}
 
-	/// Calculates the signed distance from a point to the plane.
-	/// If the plane's normal is a unit vector, this is the true metric distance.
-	/// A positive value means the point is on the side of the plane the normal points to.
-	/// A negative value means the point is on the opposite side.
-	/// A zero value means the point is on the plane.
+	/// Returns the signed distance from a point to this plane.
+	///
+	/// A positive value is on the normal side, a negative value is on the opposite
+	/// side, and zero is on the plane. The result uses world-space distance units
+	/// when the plane has a unit normal.
 	pub fn signed_distance_to_point(&self, point: Vec3f) -> f32 {
 		dot(self.normal, point) + self.distance
 	}
 
-	/// Check if the sphere is at least partially in the half-space defined by the plane.
-	/// The signed distance to the sphere's center must be greater than or equal to -radius.
+	/// Returns whether any part of a sphere is in this plane's positive half-space.
 	pub fn is_sphere_in_half_space(&self, sphere: &Sphere) -> bool {
 		let dist_to_center = self.signed_distance_to_point(sphere.center);
 		dist_to_center >= -sphere.radius

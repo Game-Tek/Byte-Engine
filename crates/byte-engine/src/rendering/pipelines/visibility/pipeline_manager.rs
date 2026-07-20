@@ -1228,21 +1228,20 @@ pub struct SinkState {
 	render_pass: VisibilityPipelineRenderPass,
 }
 
-/// This structure hosts data analogous to the mesh resource's data.
-/// It stores data relevant to the renderer which allows not to have to access/request the mesh resource.
+/// The `MeshData` struct retains the mesh ranges and skeleton size needed by the
+/// renderer after resource loading.
 #[derive(Debug, Clone)]
 pub struct MeshData {
 	// (material_id)
 	pub(crate) primitives: Vec<MeshPrimitive>,
 	/// Number of global pose matrices expected from a renderable using this mesh.
 	pub(crate) skeleton_node_count: u32,
-	/// The base position into the vertex buffer
+	/// Base position in the vertex buffer.
 	pub(crate) vertex_offset: u32,
 	pub(crate) primitive_offset: u32,
-	/// The base position into the primitive indices buffer, to get the actual index this value has to be multiplied by 3
+	/// Base triangle position in the primitive-index buffer, stored as index / 3.
 	pub(crate) triangle_offset: u32,
-	/// The meshlet offset.
-	/// The base position into the meshlets buffer relative to the mesh
+	/// Base position in the meshlet buffer, relative to the mesh.
 	pub(crate) meshlet_offset: u32,
 	pub(crate) acceleration_structure: Option<ghi::BottomLevelAccelerationStructureHandle>,
 }

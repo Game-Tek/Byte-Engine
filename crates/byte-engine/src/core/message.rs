@@ -3,7 +3,7 @@ use crate::core::{channel::DefaultChannel, factory::Handle, listener::FilteredLi
 pub trait Message {}
 
 #[derive(Debug, Clone)]
-/// The `DeleteMessage` struct exists to broadcast entity removal intent across world systems.
+/// The `DeleteMessage` struct carries an entity removal request across world systems.
 pub struct DeleteMessage {
 	handle: Handle,
 }

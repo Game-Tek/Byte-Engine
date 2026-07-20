@@ -1,24 +1,26 @@
 ---
-title: BESL - Byte Engine Shader Language
-description: An introduction to BESL, the Byte Engine Shader Language, designed for high-performance shader development.
+title: BESL language reference
+description: Write portable Byte Engine shaders with BESL.
 icon: FileCode
 ---
 
 # Byte Engine Shader Language
 
-BESL is Byte Engine's shader language.
-It exists so shader code can participate in the engine material pipeline, resource reflection, render-model code generation, and platform shader generation.
+Use the Byte Engine Shader Language (BESL) to write shader source that works with
+the material pipeline, resource reflection, render-model generation, and platform
+shader generation.
 
-The syntax is Rust-inspired, but BESL is not Rust.
-It is a compact shader description language that is parsed, lexed into a semantic graph, transformed by render-model code, and then emitted for the active graphics backend.
+BESL uses Rust-inspired syntax, but it is a separate language. Byte Engine parses
+the source, resolves it into a semantic graph, applies render-model
+transformations, and emits code for the active graphics backend.
 
-Backend coverage is still evolving.
-The engine has GLSL, MSL, HLSL, and platform-generator paths, but individual features are implemented unevenly across stages and backends.
+Backend coverage is still evolving. Byte Engine can generate GLSL, MSL, and HLSL,
+but some stages and features are not available on every backend.
 
-## File shape
+## Create a BESL file
 
-A BESL source file is a list of declarations.
-Common declarations include structs, constants, resource bindings, interface inputs and outputs, helper functions, and a `main` function.
+A BESL file contains declarations for structs, constants, resource bindings,
+interface inputs and outputs, helper functions, and a `main` function.
 
 ```rust
 VertexInput: struct {
@@ -38,10 +40,10 @@ main: fn () -> void {
 }
 ```
 
-The parser keeps the source structure first.
-The lexer then resolves names, types, members, intrinsics, and references between declarations.
+The parser records the source structure. The lexer then resolves names, types,
+members, intrinsics, and references.
 
-## Declarations
+## Declare program elements
 
 ### Structs
 
@@ -66,7 +68,7 @@ Cluster: struct {
 
 ### Constants
 
-Module-level constants are known at compile time.
+Declare module-level constants for values that are known at compile time.
 
 ```rust
 MAX_LIGHTS: const u32 = 64
@@ -75,7 +77,7 @@ OFFSETS: const u32[4] = u32[4](0, 1, 2, 3)
 
 ### Functions
 
-Functions use `name: fn`.
+Declare a function with `name: fn`.
 
 ```rust
 mod_by_16: fn (x: i32) -> i32 {
@@ -93,7 +95,7 @@ main: fn () -> void {
 
 ### Variables
 
-Local variables use `let`.
+Declare a local variable with `let`.
 
 ```rust
 let color: vec4f = vec4f(1.0, 0.0, 1.0, 1.0);
@@ -106,9 +108,9 @@ output.color = material.color;
 let first: u32 = indices[0];
 ```
 
-## Control flow and operators
+## Control program flow
 
-BESL supports `if`, `for`, `return`, and `continue`.
+Use `if`, `for`, `return`, and `continue` to control program flow.
 
 ```rust
 main: fn () -> void {
@@ -129,29 +131,30 @@ Supported operators include:
 - comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 - logical: `&&`, `||`
 
-## Shader interface declarations
+## Declare a shader interface
 
-Inputs and outputs carry a location:
+Give each input and output a location:
 
 ```rust
 uv: input<vec2f, 0>;
 color: output<vec4f, 0>;
 ```
 
-Outputs can add a positive element count when a mesh stage emits per-primitive values:
+Add a positive element count when a mesh stage emits per-primitive values:
 
 ```rust
 out_instance_index: output<u32, 0, 126>;
 ```
 
-Task and mesh stages share authored payload arrays. Task stages can also declare workgroup-local storage:
+Task and mesh stages can share payload arrays. A task stage can also declare
+workgroup-local storage:
 
 ```rust
 visible_meshlets: task_payload<u32, 32>;
 visible_count: workgroup<atomicu32>;
 ```
 
-Push constants are small uniform values provided outside normal descriptor bindings:
+Use push constants for small uniform values outside normal descriptor bindings:
 
 ```rust
 push_constant: push_constant {
@@ -159,7 +162,8 @@ push_constant: push_constant {
 }
 ```
 
-Descriptors declare resources directly in authored BESL. They use a flat resource slot, an access mode, and an optional positive array count:
+Declare resources with descriptors. Each descriptor has a flat resource slot, an
+access mode, and an optional positive array count:
 
 ```rust
 MaterialData: struct {
@@ -210,19 +214,19 @@ Task and mesh sidecars additionally supply the limits required by their native p
 
 `Vertex` and `Fragment` stages omit `workgroup`. Task-payload and task-dispatch lowering is currently implemented for Metal; the same BESL remains the sole authored source.
 
-## Raw code escape hatch
+## Add raw backend code
 
-BESL supports raw backend code nodes.
-They can carry GLSL, HLSL, or MSL snippets plus declared input and output dependencies.
+BESL can include raw GLSL, HLSL, or MSL snippets with declared input and output
+dependencies.
 
-This is mainly a bridge while higher-level generation catches up.
-Prefer normal BESL when possible so the graph, binding analysis, and backend emitters can understand the program.
+Use raw code only as a bridge for unsupported features. Prefer BESL so the
+semantic graph, binding analysis, and backend emitters can understand the
+program.
 
-## Intrinsics
+## Use intrinsics
 
-Intrinsics are built-in calls that the lexer resolves specially and backend generators lower to platform code.
-Some intrinsics are ordinary math functions.
-Others represent texture, image, compute, atomic, or mesh-stage operations.
+Intrinsics are built-in calls that Byte Engine lowers to platform code. Use them
+for math, texture, image, compute, atomic, and mesh-stage operations.
 
 Task stages use `thread_position`, `thread_idx`, `workgroup_barrier`, and `set_task_mesh_output_count`. Mesh stages use `threadgroup_position`, `thread_idx`, `set_mesh_output_counts`, `set_mesh_vertex_position`, and `set_mesh_triangle`.
 
@@ -330,25 +334,27 @@ Mesh-stage helpers include:
 These are stage-specific.
 They only make sense when the shader generator is producing the matching stage and backend support exists.
 
-## Program evaluation
+## Understand program evaluation
 
-The resource-management shader layer can evaluate a BESL program to extract useful metadata.
+The resource-management shader layer evaluates BESL programs to extract metadata.
 
 Current evaluation includes:
 
 - used descriptors, with authored name, flat slot, resource shape, count, and read/write flags
 - rough opacity classification for material decisions
 
-This is why it is better to express resources and outputs in BESL instead of hiding them in raw backend code.
-The more the graph can see, the more the engine can reflect, validate, and optimize.
+Express resources and outputs in BESL instead of hiding them in raw code. When
+the graph can see a declaration, Byte Engine can reflect, validate, and optimize
+it.
 
-## Practical guidance
+## Follow these guidelines
 
-Keep handwritten BESL small and domain-focused.
-Declare standalone shader resources beside the code that consumes them; render-model generators can still add repetitive material bindings, push constants, and platform details.
+Keep handwritten BESL small and focused on one domain. Put standalone shader
+resources beside the code that consumes them. Render-model generators can add
+repeated material bindings, push constants, and platform details.
 
-Prefer explicit types.
-The parser and lexer are still young, so clear type declarations are easier to diagnose than clever inference-like patterns.
+Prefer explicit types. Clear declarations are easier to diagnose than
+inference-like patterns while the parser and lexer continue to mature.
 
 Use raw backend code only when the normal BESL path cannot express what you need yet.
 Raw snippets are useful, but they reduce what the engine can understand about the shader.

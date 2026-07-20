@@ -8,7 +8,8 @@ struct QueryElement {
 	size: Size,
 }
 
-/// A uniform-grid spatial index for fast mouse click hit-testing.
+/// The `MouseClickAcceleration` struct provides a uniform-grid index for pointer
+/// hit testing.
 pub(crate) struct MouseClickAcceleration<'a> {
 	cell_size: u32,
 	columns: usize,
@@ -84,7 +85,7 @@ impl<'a> MouseClickAcceleration<'a> {
 		}
 	}
 
-	/// Returns the id of the top-most element under the mouse position.
+	/// Returns the ID of the topmost element under the pointer position.
 	pub(crate) fn query(&self, mouse_position: Location) -> Option<u32> {
 		let (x, y) = mouse_position.into();
 		if x >= self.bounds.0 || y >= self.bounds.1 {
@@ -131,7 +132,8 @@ fn point_in_layout_element(element: &QueryElement, point: Location) -> bool {
 	x >= left && x < right && y >= top && y < bottom
 }
 
-/// Builds an acceleration structure from `layout_containers` output for mouse click hit-testing.
+/// Builds an acceleration structure from `layout_containers` output for pointer
+/// hit testing.
 pub(crate) fn build_mouse_click_acceleration<'a>(
 	layout: &[LayoutElement],
 	frame_allocator: &'a bumpalo::Bump,

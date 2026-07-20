@@ -70,7 +70,7 @@ mod tests {
 		assert!(asset_manager.should_discover("byte-engine/render-passes/resolve.besl", true));
 	}
 
-	/// Verifies BELD's production handler registration can bake an FBX mesh and its generated visibility material chain.
+	/// Confirms that the production handlers bake an FBX mesh and its visibility material dependencies.
 	#[test]
 	fn default_asset_manager_bakes_fbx_mesh_and_generated_materials() {
 		let executor =

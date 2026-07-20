@@ -1,10 +1,10 @@
 ---
-title: Bake Application Resources
+title: Bake application resources
 description: Turn an application's source assets into deterministic runtime resources with BELD.
 icon: PackageOpen
 ---
 
-Applications should keep source assets and baked runtime resources separate:
+Keep source assets separate from baked runtime resources:
 
 ```text
 my-app/
@@ -14,7 +14,8 @@ my-app/
   src/
 ```
 
-Keep the engine-owned shader files in the engine crate and expose them under the application's asset namespace with a directory symlink:
+Keep engine-owned shaders in the engine crate. Expose them in your application's
+asset namespace with a directory symlink:
 
 ```bash
 ln -s ../../Byte-Engine/crates/byte-engine/assets assets/byte-engine
@@ -33,7 +34,8 @@ Use the version Cargo actually placed in `vendor/`. Commit both the vendor direc
 
 On Windows, the checkout must preserve directory symlinks. Enable Developer Mode or otherwise grant link creation permission and make sure Git does not materialize the link as a plain text file. The current automated symlink coverage runs on Unix hosts.
 
-Run BELD from the application directory and pass absolute source and destination directories. Asset IDs remain relative to `assets/`.
+Run BELD from your application directory. Pass absolute source and destination
+directories; asset IDs remain relative to `assets/`.
 
 ```bash
 cd my-app
@@ -54,9 +56,9 @@ beld --source "$PWD/assets" --destination "$PWD/resources" bake \
 
 The command writes the resource database and its payload files to `resources/`. These files, rather than the source `assets/` directory, are what a release application reads. Shader payloads are target-native: BELD writes SPIR-V on Linux, DXIL on Windows, and Metal libraries on macOS. The authored shader sources remain BESL; currently only Metal lowers the task-payload features used by the visibility task and mesh stages. Run the matching BELD build on the platform targeted by the packaged application; a resource directory baked for another platform is not portable.
 
-## Check baked output
+## Check the baked output
 
-Inspect the output before packaging:
+Inspect the output before you package the application:
 
 ```bash
 beld --destination "$PWD/resources" list
@@ -65,6 +67,6 @@ beld --destination "$PWD/resources" inspect scene.glb
 
 Run `beld bake` again after changing a source asset or an engine asset processor. Baking requested IDs updates their generated output but does not remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
 
-## Development and release
+## Use resources in development and release
 
 Debug applications can install an `AssetManager` and bake missing assets on demand. Release applications have no asset-processing fallback: they read the complete `resources/` directory prepared by BELD and fail when a requested shader is absent. Keeping baking as an explicit pre-package step makes releases reproducible and avoids shipping source assets solely for runtime processing.

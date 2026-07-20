@@ -5,7 +5,7 @@ use std::{
 	ptr,
 };
 
-/// The `InlineCopyFnError` enum reports why an erased callable could not fit in the inline container.
+/// The `InlineCopyFnError` enum identifies callable layouts that [`InlineCopyFn`] cannot store inline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InlineCopyFnError {
 	CaptureTooLarge { size: usize, max_size: usize },
@@ -59,7 +59,7 @@ impl<const STORAGE_SIZE: usize> InlineStorage<STORAGE_SIZE> {
 	}
 }
 
-/// The `InlineCopyFn` struct stores a small copyable callable inline while hiding its concrete type.
+/// The `InlineCopyFn` struct provides allocation-free type erasure for small, copyable callables.
 #[derive(Debug, Clone, Copy)]
 pub struct InlineCopyFn<Signature, const STORAGE_SIZE: usize = 16> {
 	storage: InlineStorage<STORAGE_SIZE>,
@@ -68,7 +68,7 @@ pub struct InlineCopyFn<Signature, const STORAGE_SIZE: usize = 16> {
 }
 
 impl<Signature, const STORAGE_SIZE: usize> InlineCopyFn<Signature, STORAGE_SIZE> {
-	/// Validates whether a callable can be stored inline.
+	/// Checks whether `F` fits in the inline storage.
 	fn validate<F>() -> Result<(), InlineCopyFnError> {
 		if size_of::<F>() > STORAGE_SIZE {
 			return Err(InlineCopyFnError::CaptureTooLarge {
@@ -180,21 +180,21 @@ impl_inline_copy_fn!(call1, (A0), (arg0));
 impl_inline_copy_fn!(call2, (A0, A1), (arg0, arg1));
 impl_inline_copy_fn!(call3, (A0, A1, A2), (arg0, arg1, arg2));
 
-/// The `RefCall1` trait exposes a shared call interface for inline callables that borrow one argument.
+/// The `RefCall1` trait provides a shared call interface for inline callables that borrow one argument.
 pub trait RefCall1<A0: ?Sized> {
 	type Output;
 
 	fn call(&self, arg0: &A0) -> Self::Output;
 }
 
-/// The `RefCall2` trait exposes a shared call interface for inline callables that borrow two arguments.
+/// The `RefCall2` trait provides a shared call interface for inline callables that borrow two arguments.
 pub trait RefCall2<A0: ?Sized, A1: ?Sized> {
 	type Output;
 
 	fn call(&self, arg0: &A0, arg1: &A1) -> Self::Output;
 }
 
-/// The `RefCall3` trait exposes a shared call interface for inline callables that borrow three arguments.
+/// The `RefCall3` trait provides a shared call interface for inline callables that borrow three arguments.
 pub trait RefCall3<A0: ?Sized, A1: ?Sized, A2: ?Sized> {
 	type Output;
 

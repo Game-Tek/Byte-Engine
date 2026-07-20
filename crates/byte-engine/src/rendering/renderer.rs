@@ -21,11 +21,11 @@ pub struct Renderer {
 
 	frame_queue_depth: usize,
 
-	/// A list of display windows and their associated swapchains.
+	/// Display windows and their swapchains.
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
-	/// A list of sink indices and their associated camera handles.
+	/// Sink indices and their camera handles.
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
-	/// A list of cameras and their associated handles.
+	/// Cameras and their stable handles.
 	cameras: SmallVec<[(Handle, Camera); 16]>,
 
 	render_targets: RenderTargets,
@@ -51,9 +51,9 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	/// Creates a new renderer. Accepts a paramters interface.
+	/// Creates a renderer from application configuration parameters.
 	///
-	/// # Paramters
+	/// # Parameters
 	/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
 	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
 	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
@@ -389,9 +389,10 @@ impl Renderer {
 		});
 	}
 
-	/// This function prepares a frame by invoking multiple render passes.
-	/// If no swapchains are available no rendering/execution will be performed.
-	/// If some swapchain surface is 0 sized along some dimension no rendering/execution will be performed.
+	/// Prepares a frame by invoking the configured render passes.
+	///
+	/// The renderer skips execution when no swapchain is available or when any
+	/// swapchain surface has a zero-sized dimension.
 	pub fn prepare(
 		&'_ mut self,
 		transforms_listener: &mut impl Listener<TransformationUpdate>,
@@ -705,7 +706,8 @@ struct Attachment {
 	image: ghi::BaseImageHandle,
 }
 
-/// The `SwapchainCapture` struct exists to defer one swapchain-to-buffer capture request until the next frame.
+/// The `SwapchainCapture` struct defers one swapchain-to-buffer capture until the
+/// next frame.
 #[derive(Clone, Copy)]
 struct SwapchainCapture {
 	sink_id: SinkId,
@@ -715,22 +717,28 @@ struct SwapchainCapture {
 	destination_bytes_per_image: usize,
 }
 
-/// This struct holds the settings to configure a `Renderer` during it's creation.
+/// The `Settings` struct configures a [`Renderer`] during creation.
 pub struct Settings {
-	/// Controls whether validation layers will be enabled or not on the GHI context.
+	/// Controls whether the GHI context enables validation layers.
 	validation: bool,
-	/// Controls whether to enable or not writing out the parameters sent to the underlaying graphics API. Depends on `validation` being enabled.
+	/// Controls whether the renderer logs parameters sent to the underlying graphics API.
+	///
+	/// This option requires `validation`.
 	api_dump: bool,
-	/// Controls wheter to enable or not some extra (bbut expensive) validation for the graphics API. This can include GPU validation. Depends on `validation` being enabled.
+	/// Controls whether the graphics API performs additional validation, including
+	/// GPU validation.
+	///
+	/// This option can be expensive and requires `validation`.
 	extended_validation: bool,
 	/// Controls whether graphics API object labels and command debug groups are emitted.
 	debug_labels: bool,
-	/// Controls whether to enable or not mesh shading on the GHI context.
+	/// Controls whether the GHI context enables mesh shading.
 	mesh_shading: bool,
 }
 
 impl Settings {
-	/// Creates a new `Settings` struct.
+	/// Creates renderer settings with the engine defaults.
+	///
 	/// - `validation` is true by default in debug builds and false in release.
 	/// - `api_dump` is false by default.
 	/// - `extended_validation` is false by default.
@@ -799,8 +807,7 @@ impl RenderTargets {
 		}
 	}
 
-	/// Inserts a new render target image, associated to a sink index.
-	/// Returns the index of the image in the internal storage.
+	/// Inserts a render-target image for a sink and returns its storage index.
 	pub fn insert(&mut self, name: String, sink_id: usize, image: ghi::BaseImageHandle, format: ghi::Formats) -> usize {
 		if self.get_image_index(&name, sink_id).is_some() {
 			panic!(
@@ -1065,7 +1072,7 @@ mod tests {
 type RenderPassFactory = dyn for<'a> Fn(&'a mut RenderPassBuilder<'a>) -> Box<dyn RenderPass>;
 
 type SinkId = usize;
-/// A `RenderPass` represents a specific rendering task that can be performed on the scene, defined by a render pass factory.
+/// Identifies a render pass created by a render-pass factory.
 type RenderPassId = usize;
 type PipelineManagerId = usize;
 

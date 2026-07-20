@@ -3,7 +3,7 @@ use utils::Extent;
 use crate::core::{factory::Handle, Entity};
 
 #[derive(Clone)]
-/// The `Window` struct exists to configure a named render surface and its attached camera.
+/// The `Window` struct configures a named render surface and its attached camera.
 pub struct Window {
 	name: String,
 	extent: Extent,

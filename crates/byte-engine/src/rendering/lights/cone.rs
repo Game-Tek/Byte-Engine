@@ -7,7 +7,7 @@ use crate::{
 	rendering::lights::{Light, LightClasses},
 };
 
-/// The `ConeLight` struct exists for local light sources constrained to a directed cone.
+/// The `ConeLight` struct provides local lighting constrained to a directed cone.
 ///
 /// Use it for spotlights, flashlights, and other emitters that need a soft transition
 /// between a fully lit inner cone and an unlit outer cone. Cone angles are half angles

@@ -1,13 +1,8 @@
-/// A resource id is composed of up to three parts.
-/// The base, the extension and the fragment.
-///
-/// "meshes/Box.gltf#texture"
-///
-/// "mehses/Box.gltf" is the base
-/// "gltf" is the extension
-/// "texture" is the fragment
-///
-/// Fragments like in HTTP urls, allow referencing subresources, they are useful to address elements in container formats.
+//! Parse resource IDs into a base path, file extension, and optional fragment.
+//!
+//! A fragment identifies a subresource in a container asset. For example,
+//! `meshes/Box.gltf#texture` has the base `meshes/Box.gltf`, the extension
+//! `gltf`, and the fragment `texture`.
 use std::fmt::Debug;
 
 pub(crate) fn get_base(url: &str) -> Option<&str> {
@@ -31,17 +26,11 @@ pub(crate) fn get_fragment(url: &str) -> Option<&str> {
 	}
 }
 
-/// A `ResourceId` encapsulates and provides methods for interacting with a full resource id.
-/// A resource id is composed of up to three parts.
-/// The base, the extension and the fragment.
+/// The `ResourceId` struct provides borrowed access to a full resource ID and its components.
 ///
-/// "meshes/Box.gltf#texture"
-///
-/// "mehses/Box.gltf" is the base
-/// "gltf" is the extension
-/// "texture" is the fragment
-///
-/// Fragments like in HTTP urls, allow referencing subresources, they are useful to address elements in container formats.
+/// For `meshes/Box.gltf#texture`, the base is `meshes/Box.gltf`, the extension
+/// is `gltf`, and the fragment is `texture`. Use fragments to identify
+/// subresources in container formats.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ResourceId<'a> {
 	full: &'a str,

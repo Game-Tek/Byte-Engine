@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-/// A resource ID is a unique identifier for a resource.
+/// The `ResourceId` struct provides the unique identifier used to locate a stored resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ResourceId(pub(crate) [u8; 16]);
 

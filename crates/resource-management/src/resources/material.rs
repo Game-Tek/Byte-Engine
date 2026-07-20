@@ -15,7 +15,7 @@ pub struct Material {
 
 	pub shaders: Vec<Reference<Shader>>,
 
-	/// The render model this material is for.
+	/// The render model that evaluates this material.
 	pub model: RenderModel,
 
 	pub parameters: Vec<Parameter>,
@@ -28,7 +28,7 @@ pub struct MaterialModel {
 
 	pub(crate) shaders: Vec<ReferenceModel<Shader>>,
 
-	/// The render model this material is for.
+	/// The render model that evaluates this material.
 	pub model: RenderModel,
 
 	pub parameters: Vec<ParameterModel>,

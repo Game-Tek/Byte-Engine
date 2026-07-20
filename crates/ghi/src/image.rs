@@ -16,13 +16,10 @@ pub struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-	/// Creates a new image builder with the given extent, format, and resource uses.
-	/// The default name is None.
-	/// The default extent is (0, 0, 0).
-	/// The default device accesses are GPU read and write.
-	/// The default use case is static.
-	/// The default number of array layers is None.
-	/// The default number of mip levels is 1.
+	/// Creates an image builder for the given format and resource uses.
+	///
+	/// The default image is static, has one mip level, and uses GPU-only memory.
+	/// Its name and array-layer count are `None`, and its extent is zero.
 	pub fn new(format: Formats, resource_uses: Uses) -> Self {
 		Self {
 			name: None,

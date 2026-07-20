@@ -74,7 +74,7 @@ where
 	);
 
 	/// Starts a render pass on the GPU.
-	/// A render pass is a particular configuration of render targets which will be used simultaneously to render certain imagery.
+	/// The render pass uses the supplied render targets for subsequent draw commands.
 	fn start_render_pass(
 		&mut self,
 		extent: Extent,
@@ -131,7 +131,7 @@ pub trait CommonCommandBufferMode {
 	fn region(&mut self, write_label: impl FnOnce(&mut DebugLabelWriter) -> std::fmt::Result, f: impl FnOnce(&mut Self));
 }
 
-/// The `RasterizationRenderPassMode` trait represents the recording state inside an active raster render pass.
+/// The `RasterizationRenderPassMode` trait provides commands valid inside an active raster render pass.
 pub trait RasterizationRenderPassMode: CommonCommandBufferMode {
 	/// Binds a raster pipeline for subsequent draw commands in the render pass.
 	fn bind_raster_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRasterizationPipelineMode;
@@ -146,18 +146,18 @@ pub trait RasterizationRenderPassMode: CommonCommandBufferMode {
 	fn end_render_pass(&mut self);
 }
 
-/// The `BoundPipelineLayoutMode` trait represents a recording state where pipeline layout resources can be bound.
+/// The `BoundPipelineLayoutMode` trait provides resource binding for a selected pipeline layout.
 pub trait BoundPipelineLayoutMode: CommonCommandBufferMode {
 	/// Binds retained descriptor-set groups whose flat shader slots do not overlap.
 	fn bind_descriptor_sets(&mut self, sets: &[DescriptorSetHandle]) -> &mut Self;
 
-	/// Write data to the push constant register
+	/// Writes data to the push-constant register.
 	fn write_push_constant<T: Copy + 'static>(&mut self, offset: u32, data: T)
 	where
 		[(); std::mem::size_of::<T>()]: Sized;
 }
 
-/// The `BoundRasterizationPipelineMode` trait represents a render-pass recording state with a raster pipeline bound for draw commands.
+/// The `BoundRasterizationPipelineMode` trait provides draw commands for a bound raster pipeline.
 pub trait BoundRasterizationPipelineMode: BoundPipelineLayoutMode + RasterizationRenderPassMode {
 	/// Draws a render system mesh.
 	fn draw_mesh(&mut self, mesh_handle: &MeshHandle);
@@ -179,7 +179,7 @@ pub trait BoundRasterizationPipelineMode: BoundPipelineLayoutMode + Rasterizatio
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32);
 }
 
-/// The `BoundComputePipelineMode` trait represents a recording state with a compute pipeline bound for dispatch commands.
+/// The `BoundComputePipelineMode` trait provides dispatch commands for a bound compute pipeline.
 pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecording {
 	/// Dispatches compute workgroups.
 	fn dispatch(&mut self, dispatch: DispatchExtent);
@@ -188,18 +188,18 @@ pub trait BoundComputePipelineMode: BoundPipelineLayoutMode + CommandBufferRecor
 	fn indirect_dispatch<const N: usize>(&mut self, buffer: BufferHandle<[[u32; 4]; N]>, entry_index: usize);
 }
 
-/// The `BoundRayTracingPipelineMode` trait represents a recording state with a ray-tracing pipeline bound for ray dispatch.
+/// The `BoundRayTracingPipelineMode` trait provides ray dispatch for a bound ray-tracing pipeline.
 pub trait BoundRayTracingPipelineMode: BoundPipelineLayoutMode + CommandBufferRecording {
 	/// Traces rays using the currently bound ray-tracing pipeline.
 	fn trace_rays(&mut self, binding_tables: rt::BindingTables, x: u32, y: u32, z: u32);
 }
 
-/// Enumerates the types of command buffers that can be created.
+/// A workload supported by a command buffer.
 pub enum CommandBufferType {
-	/// A command buffer that can perform graphics operations. Draws, blits, presentations, etc.
+	/// Graphics work, including drawing, blitting, and presentation.
 	GRAPHICS,
-	/// A command buffer that can perform compute operations. Dispatches, etc.
+	/// Compute dispatch work.
 	COMPUTE,
-	/// A command buffer that is optimized for transfer operations. Copies, etc.
+	/// Transfer work, including buffer and image copies.
 	TRANSFER,
 }

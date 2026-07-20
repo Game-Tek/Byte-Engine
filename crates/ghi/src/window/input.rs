@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, Copy)]
-/// The keys that can be pressed on a keyboard.
+/// A physical keyboard key reported by a window.
 pub enum Keys {
 	/// The A key.
 	A,

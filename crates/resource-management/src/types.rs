@@ -28,7 +28,7 @@ pub enum AlphaMode {
 	Blend,
 }
 
-/// Enumerates the types of shaders that can be created.
+/// The `ShaderTypes` enum identifies the stage for a shader resource.
 #[derive(
 	Clone, Copy, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, PartialEq, Eq,
 )]

@@ -13,7 +13,7 @@ pub struct Intersection {
 	pub(crate) point_on_b: Vector3,
 }
 
-/// The `PseudoBody` struct exists as a sortable one-dimensional bound endpoint
+/// The `PseudoBody` struct provides a sortable one-dimensional bound endpoint
 /// for broad-phase collision candidate generation.
 pub struct PseudoBody {
 	id: usize,

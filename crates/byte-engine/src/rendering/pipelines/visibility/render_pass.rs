@@ -792,7 +792,7 @@ impl GtaoPass {
 pub struct MaterialEvaluationPass {
 	lit: ghi::BaseImageHandle,
 	ao_map: ghi::BaseImageHandle,
-	/// Base layout descriptor set
+	/// Base descriptor set shared by material layouts.
 	base_descriptor_set: ghi::DescriptorSetHandle,
 	/// Visibility passes descriptor set
 	visibility_descriptor_set: ghi::DescriptorSetHandle,

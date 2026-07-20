@@ -22,7 +22,7 @@ pub use macos::Window;
 use crate::window::{Events, Features};
 
 pub trait WindowLike: Sized {
-	/// Create a new window with the given name, extent, and id name.
+	/// Creates a window with the given name, extent, application ID, and features.
 	fn try_new(name: &str, extent: utils::Extent, id_name: &str, features: Features) -> Result<Self, String>;
 
 	fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a;

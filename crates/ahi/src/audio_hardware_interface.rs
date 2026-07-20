@@ -1,35 +1,35 @@
-/// The `Mono16Bit` type represents a reference to a mono (single channel) audio buffer with signed 16-bit samples.
+/// A borrowed mono audio buffer with signed 16-bit samples.
 pub type Mono16Bit<'a> = &'a [i16];
-/// The `Stereo16Bit` type represents a reference to a stereo (two channels) audio buffer with signed 16-bit samples.
+/// A borrowed stereo audio buffer with signed 16-bit samples.
 pub type Stereo16Bit<'a> = &'a [(i16, i16)];
-/// The `MonoFloat32` type represents a reference to a mono (single channel) audio buffer with 32-bit floating-point samples.
+/// A borrowed mono audio buffer with 32-bit floating-point samples.
 pub type MonoFloat32<'a> = &'a [f32];
-/// The `StereoFloat32` type represents a reference to a stereo (two channels) audio buffer with 32-bit floating-point samples.
+/// A borrowed stereo audio buffer with 32-bit floating-point samples.
 pub type StereoFloat32<'a> = &'a [(f32, f32)];
 
-/// The `Mono16Bit` type represents a mutable reference to a mono (single channel) audio buffer with signed 16-bit samples.
+/// A mutably borrowed mono audio buffer with signed 16-bit samples.
 pub type Mono16BitMut<'a> = &'a mut [i16];
-/// The `Stereo16Bit` type represents a mutable reference to a stereo (two channels) audio buffer with signed 16-bit samples.
+/// A mutably borrowed stereo audio buffer with signed 16-bit samples.
 pub type Stereo16BitMut<'a> = &'a mut [(i16, i16)];
-/// The `MonoFloat32` type represents a mutable reference to a mono (single channel) audio buffer with 32-bit floating-point samples.
+/// A mutably borrowed mono audio buffer with 32-bit floating-point samples.
 pub type MonoFloat32Mut<'a> = &'a mut [f32];
-/// The `StereoFloat32` type represents a mutable reference to a stereo (two channels) audio buffer with 32-bit floating-point samples.
+/// A mutably borrowed stereo audio buffer with 32-bit floating-point samples.
 pub type StereoFloat32Mut<'a> = &'a mut [(f32, f32)];
 
-/// The `Streams` enum represents a buffer of audio in different formats.
+/// An audio buffer in a format supported by the active backend.
 pub enum Streams<'a> {
-	/// Represents a mono (single channel) audio buffer with signed 16-bit samples.
+	/// Mono audio with signed 16-bit samples.
 	Mono16Bit(Mono16BitMut<'a>),
-	/// Represents a stereo (two channels) audio buffer with signed 16-bit samples.
+	/// Stereo audio with signed 16-bit samples.
 	Stereo16Bit(Stereo16BitMut<'a>),
-	/// Represents a mono (single channel) audio buffer with 32-bit floating-point samples.
+	/// Mono audio with 32-bit floating-point samples.
 	MonoFloat32(MonoFloat32Mut<'a>),
-	/// Represents a stereo (two channels) audio buffer with 32-bit floating-point samples.
+	/// Stereo audio with 32-bit floating-point samples.
 	StereoFloat32(StereoFloat32Mut<'a>),
 }
 
 impl Streams<'_> {
-	/// The `zero` method fills the buffer with zeros.
+	/// Fills every sample with silence.
 	pub fn zero(&mut self) {
 		match self {
 			Self::Mono16Bit(buf) => buf.fill(0),
@@ -49,7 +49,7 @@ impl Streams<'_> {
 	}
 }
 
-/// Playback failed.
+/// An error that prevents audio playback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioPlayError {
 	/// The backend could not recover the hardware stream after an audio device error.
@@ -86,11 +86,10 @@ pub trait Stereo16BitBufferPlayFunction = FnOnce(Stereo16Bit);
 pub trait MonoFloat32BufferPlayFunction = FnOnce(MonoFloat32);
 pub trait StereoFloat32BufferPlayFunction = FnOnce(StereoFloat32);
 
-/// The `WritePlayFunction` trait represents a function object that writes audio data into a buffer.
-/// This buffer is owned by the hardware and the client writes to it.
+/// The `WritePlayFunction` trait lets clients write audio into a hardware-owned buffer.
 pub trait WritePlayFunction = FnOnce(Streams);
 
-/// The `AudioHardwareInterface` trait provides a common interface for audio hardware.
+/// The `AudioHardwareInterface` trait provides a platform-independent playback boundary.
 pub trait AudioHardwareInterface {
 	fn new(params: HardwareParameters) -> Result<Self, String>
 	where
@@ -112,11 +111,9 @@ pub trait AudioHardwareInterface {
 		std::thread::yield_now();
 	}
 
-	/// Sends audio data to the hardware.
+	/// Writes audio data to a hardware buffer and submits it for playback.
 	///
-	/// This function takes a `WritePlayFunction` typed function object as argument that writes client audio data into a hardware buffer.
-	///
-	/// Returns the number of frames played.
+	/// Returns the number of submitted frames.
 	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError>;
 
 	/// Notifies the hardware that playback has been paused.
@@ -124,7 +121,7 @@ pub trait AudioHardwareInterface {
 	fn pause(&self);
 }
 
-/// The `HardwareParameters` struct represents the parameters for the audio hardware.
+/// The `HardwareParameters` struct configures the format requested from an audio device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HardwareParameters {
 	/// The sample rate of the audio hardware, in Hz.
@@ -136,12 +133,13 @@ pub struct HardwareParameters {
 }
 
 impl HardwareParameters {
-	/// Creates a new `HardwareParameters` instance with default values.
+	/// Creates parameters for 48 kHz, stereo, 16-bit playback.
 	///
-	/// # Default Values
-	/// - Sample Rate: 48000 Hz
+	/// # Defaults
+	///
+	/// - Sample rate: 48,000 Hz
 	/// - Channels: 2
-	/// - Bit Depth: 16
+	/// - Bit depth: 16
 	pub fn new() -> Self {
 		HardwareParameters {
 			sample_rate: 48000,

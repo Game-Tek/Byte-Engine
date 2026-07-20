@@ -16,7 +16,8 @@ pub struct ShaderSourceDescriptor<'a> {
 	pub interface: ShaderInterface,
 }
 
-/// A baked shader together with the persisted interface needed to build and bind its pipeline.
+/// The `LoadedShader` struct keeps a baked shader with the persisted interface
+/// needed to build and bind its pipeline.
 pub struct LoadedShader {
 	pub handle: ghi::ShaderHandle,
 	pub stage: ShaderTypes,

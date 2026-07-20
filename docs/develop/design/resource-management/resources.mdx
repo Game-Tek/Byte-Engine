@@ -4,10 +4,10 @@ description: Runtime-ready data produced from assets.
 icon: PackageCheck
 ---
 
-Resources are processed data.
-They are what runtime systems request, inspect, query, and load.
+Use resources as the runtime-ready data that your systems request, inspect,
+query, and load.
 
-A stored resource has two parts:
+Each stored resource has two parts:
 
 - metadata, stored as an archived `SerializableResource`
 - binary payload bytes, stored as resource data
@@ -20,7 +20,7 @@ The binary payload contains the actual bytes consumed by a renderer, audio syste
 `ResourceManager::request<T>()` returns a typed `Reference<T>`.
 The reference contains the typed resource metadata and a reader for the payload.
 
-This split is important:
+This split lets you:
 
 - metadata can be inspected without loading the whole binary payload
 - dependencies can be resolved recursively before bytes are uploaded
@@ -43,14 +43,14 @@ Specific models can add more queryable properties as editor and tooling needs gr
 Some resources contain multiple logical byte ranges in one payload.
 Meshes are the common example: positions, normals, UVs, triangle indices, meshlet data, and other streams can live in one packed buffer.
 
-`StreamDescription` names those byte ranges.
-When a caller wants selected streams, it can provide stream read targets instead of reading the whole payload into one buffer.
+`StreamDescription` names those byte ranges. Provide stream read targets when you
+need selected streams instead of the complete payload.
 
 ## Loading bytes
 
-The default load path requests backing storage from the reader.
-For file-backed resources, that can be a mapped file.
-Callers that need ownership or preallocated memory can still use explicit buffers, boxed buffers, or stream targets.
+The default load path requests backing storage from the reader. For file-backed
+resources, that storage can be a mapped file. Use an explicit buffer, boxed
+buffer, or stream target when you need ownership or preallocated memory.
 
 Use the default target when the consumer can borrow the backing storage directly.
 Use explicit targets when the consumer needs a specific allocation, lifetime, or stream layout.

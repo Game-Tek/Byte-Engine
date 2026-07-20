@@ -6,7 +6,7 @@ use crate::{
 	space::Positionable,
 };
 
-/// The `Emitter` struct represents an audio source in a three-dimensional space.
+/// The `Emitter` struct connects an audio [`Source`] to a position in the game world.
 pub struct Emitter {
 	position: Vector3,
 	source: EntityHandle<dyn Source>,

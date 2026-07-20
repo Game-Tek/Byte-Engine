@@ -63,7 +63,7 @@ pub struct Line<'a> {
 	pub errors: Vec<LineError<'a>>,
 }
 
-/// Process the output of glslc and return a list of errors.
+/// Returns the compiler errors reported in `glslc` output.
 pub fn process_glslc_error<'a>(shader_name: &str, source_code: &'a str, error_string: &'a str) -> Error<'a> {
 	// Collect (error_line_number, error) pairs
 	let errors = error_string

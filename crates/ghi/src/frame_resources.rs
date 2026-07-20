@@ -1,24 +1,22 @@
 //! Storage for backend resources that may need one private representation per frame in flight.
 //!
-//! A `ResourceCollection` starts each resource chain from a public master handle and stores the
-//! backend-private entries in a contiguous vector. Resources that need distinct per-frame
-//! representations are linked together through each entry's `next` pointer, so looking up the
-//! `n`th frame representation means walking that chain from the master resource.
+//! A `ResourceCollection` starts each resource chain at a public master handle.
+//! It keeps backend-private entries in a contiguous vector. Resources that need
+//! distinct per-frame representations use each entry's `next` pointer. A lookup
+//! walks this chain from the master resource to the requested frame.
 //!
-//! Resources that do not need per-frame duplication stay as a single unchained entry. In that
-//! case every frame lookup resolves to the same first private handle because no `next` link is
-//! present.
+//! A resource that does not need per-frame duplication has one unchained entry.
+//! Every frame lookup for this resource resolves to the first private handle.
 //!
-//! Master handles are the stable public identifiers exposed to the rest of the GHI. Private
-//! handles identify one concrete backend allocation inside this storage, which lets the backend
-//! address the exact per-frame resource instance selected from a master handle's chain.
+//! Master handles are stable public identifiers. Private handles identify concrete
+//! backend allocations and select a frame-specific resource from a master chain.
 
 use std::marker::PhantomData;
 
 use crate::{MasterHandle, PrivateHandle};
 
 #[derive(Debug)]
-/// The `MasterFrameResource` struct stores one backend-private resource and an optional link to the next frame-specific representation.
+/// The `MasterFrameResource` struct links one backend resource to its next frame-specific representation.
 pub(crate) struct MasterFrameResource<T, PH> {
 	next: Option<PH>,
 	resource: T,
@@ -42,7 +40,7 @@ impl<T, PH: Copy> MasterFrameResource<T, PH> {
 }
 
 #[derive(Debug)]
-/// The `ResourceCollection` struct stores master-addressed resources whose private representations may form per-frame chains.
+/// The `ResourceCollection` struct provides master-handle lookup across per-frame resource chains.
 pub(crate) struct ResourceCollection<T, MH, PH> {
 	resources: Vec<MasterFrameResource<T, PH>>,
 	master_handle_type: PhantomData<MH>,
@@ -126,7 +124,7 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 
 	/// Returns the first resource for a master handle without walking any per-frame chain.
 	///
-	/// This is useful for resources that only have a single representation.
+	/// Use this method for a resource with one representation.
 	pub(crate) fn get_single(&self, handle: MH) -> Option<&T> {
 		self.resources.get(handle.index() as usize).map(|r| &r.resource)
 	}
@@ -138,9 +136,9 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 
 	/// Returns the private handle for the requested frame offset within a master's chain.
 	///
-	/// If the chain is shorter than the requested offset, the last available private handle is
-	/// returned. This allows single-entry resources to resolve to the same representation for every
-	/// frame.
+	/// If the chain is shorter than the requested offset, this method returns its
+	/// last private handle. A single-entry resource therefore resolves to the same
+	/// representation for every frame.
 	pub(crate) fn nth_handle(&self, handle: MH, frame_offset: usize) -> Option<PH> {
 		let mut current = PH::new(handle.index());
 

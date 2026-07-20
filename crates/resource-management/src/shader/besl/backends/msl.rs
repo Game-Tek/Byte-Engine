@@ -10,7 +10,7 @@
 ///
 /// # Parameters
 ///
-/// - *minified*: Controls whether the shader string output is minified. Is `true` by default in release builds.
+/// - `minified`: Controls compact shader output. The default is `true` in release builds.
 pub struct Generator<A: Allocator + Clone = Global> {
 	allocator: A,
 	minified: bool,
@@ -80,14 +80,14 @@ struct ClassifiedNodes<'a, A: Allocator + Clone> {
 impl<A: Allocator + Clone> ShaderGenerator for Generator<A> {}
 
 impl Generator<Global> {
-	/// Creates a new Generator.
+	/// Creates an MSL generator with the default formatting mode.
 	pub fn new() -> Self {
 		Self::new_in(Global)
 	}
 }
 
 impl<A: Allocator + Clone> Generator<A> {
-	/// Creates a new Generator with the allocator used for transient generation buffers.
+	/// Creates an MSL generator that uses `allocator` for temporary output buffers.
 	pub fn new_in(allocator: A) -> Self {
 		Generator {
 			allocator,
@@ -236,8 +236,8 @@ impl<A: Allocator + Clone> Generator<A> {
 	///
 	/// # Arguments
 	///
-	/// * `shader_compilation_settings` - The settings for the shader compilation.
-	/// * `main_function_node` - The main function node of the shader.
+	/// * `shader_compilation_settings` - The shader compilation settings.
+	/// * `main_function_node` - The shader's main function node.
 	///
 	/// # Returns
 	///
@@ -2055,8 +2055,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
-	/// Translates BESL intrinsic type names to MSL type names.
-	/// Example: `vec2f` -> `float2`
+	/// Translates BESL intrinsic type names to MSL type names, such as `vec2f` to `float2`.
 	fn translate_type(source: &str) -> &str {
 		match source {
 			"void" => "void",

@@ -1,15 +1,13 @@
-/// Streams represent the data streams in a resource. They are used to load binary data into the resource.
-/// The streams are used to load a select piece of a resource's binary data into memory.
-
+/// The `Stream` struct provides a borrowed view of one named range in a resource's binary data.
 #[derive(Debug)]
 pub struct Stream<'a> {
-	/// The slice of the buffer to load the resource binary data into.
+	/// The selected bytes from the resource data.
 	buffer: &'a [u8],
-	/// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
+	/// The subresource name, such as `Vertex` or `Index`.
 	name: &'a str,
-	/// Byte offset into the source resource data to start reading this stream from.
+	/// The byte offset where this stream starts in the resource data.
 	offset: usize,
-	/// Maximum bytes to read for this stream. Defaults to the full buffer length when `None`.
+	/// The maximum number of bytes to read, or the full buffer length when `None`.
 	size: Option<usize>,
 }
 
@@ -47,14 +45,15 @@ impl<'a> From<StreamMut<'a>> for Stream<'a> {
 }
 
 #[derive(Debug)]
+/// The `StreamMut` struct provides a writable destination for one named resource-data range.
 pub struct StreamMut<'a> {
-	/// The slice of the buffer to load the resource binary data into.
+	/// The buffer that receives the resource data.
 	buffer: &'a mut [u8],
-	/// The subresource tag. This is used to identify the subresource. (EJ: "Vertex", "Index", etc.)
+	/// The subresource name, such as `Vertex` or `Index`.
 	name: &'a str,
-	/// Byte offset into the source resource data to start reading this stream from.
+	/// The byte offset where this stream starts in the resource data.
 	offset: usize,
-	/// Maximum bytes to read for this stream. Defaults to the buffer length when `None`.
+	/// The maximum number of bytes to read, or the full buffer length when `None`.
 	size: Option<usize>,
 }
 
@@ -69,7 +68,7 @@ impl<'a> StreamMut<'a> {
 		}
 	}
 
-	/// Sets the maximum bytes to read for this stream.
+	/// Sets the maximum number of bytes to read into this stream.
 	pub fn with_size(self, size: usize) -> Self {
 		StreamMut {
 			size: Some(size),

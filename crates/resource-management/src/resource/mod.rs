@@ -1,4 +1,4 @@
-//! The resource module contains the resource management system.
+//! Define runtime resources and connect them to storage, readers, and the resource manager.
 
 pub mod resource_manager;
 
@@ -21,11 +21,9 @@ pub use storage_backend::WriteStorageBackend;
 
 use crate::Model;
 
-/// Trait that defines a resource.
+/// The `Resource` trait connects a runtime resource to its serializable model and public class.
 pub trait Resource: Send + Sync {
-	/// Returns the resource class (EJ: "Texture", "Mesh", "Material", etc.)
-	/// This is used to identify the resource type. Needs to be meaningful and will be a public constant.
-	/// Is needed by the deserialize function.
+	/// Returns the stable resource class used for storage and deserialization.
 	fn get_class(&self) -> &'static str {
 		<Self::Model as Model>::get_class()
 	}

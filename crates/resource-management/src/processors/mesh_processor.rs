@@ -17,7 +17,7 @@ const MESHLET_STREAM_STRIDE: usize = 52;
 // Four normalized f32 influences can accumulate a few rounding ULPs across importer conversions.
 const SKIN_WEIGHT_SUM_TOLERANCE: f32 = 1.0e-4;
 
-/// The `TriangleFrontFaceWinding` enum describes which triangle winding should be treated as the mesh front face after processing.
+/// The `TriangleFrontFaceWinding` enum identifies the triangle winding used as the processed mesh front face.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum TriangleFrontFaceWinding {
 	#[default]
@@ -25,7 +25,7 @@ pub enum TriangleFrontFaceWinding {
 	CounterClockwise,
 }
 
-/// The `MeshAttributeData` enum describes borrowed attribute payloads that mesh sources expose to the mesh processor.
+/// The `MeshAttributeData` enum provides borrowed attribute payloads to the mesh processor.
 #[derive(Clone, Copy, Debug)]
 pub enum MeshAttributeData<'a> {
 	F32x2(&'a [[f32; 2]]),
@@ -75,7 +75,7 @@ impl MeshAttributeData<'_> {
 	}
 }
 
-/// The `MeshIndexData` enum describes borrowed index payloads that mesh sources expose to the mesh processor.
+/// The `MeshIndexData` enum provides borrowed index payloads to the mesh processor.
 #[derive(Clone, Copy, Debug)]
 pub enum MeshIndexData<'a> {
 	U32(&'a [u32]),
@@ -89,7 +89,7 @@ impl MeshIndexData<'_> {
 	}
 }
 
-/// The `MeshPrimitiveSource` trait describes a primitive view that gives query-based access to mesh data.
+/// The `MeshPrimitiveSource` trait provides query-based access to one mesh primitive.
 pub trait MeshPrimitiveSource {
 	fn material(&self) -> &ReferenceModel<VariantModel>;
 	fn transform_node(&self) -> Option<u32> {
@@ -104,7 +104,7 @@ pub trait MeshPrimitiveSource {
 	fn indices(&self, stream_type: IndexStreamTypes) -> Option<MeshIndexData<'_>>;
 }
 
-/// The `MeshSource` trait describes a mesh input that the mesh processor can pack into resource streams.
+/// The `MeshSource` trait provides mesh input that the mesh processor can pack into resource streams.
 pub trait MeshSource {
 	type Primitive<'a>: MeshPrimitiveSource
 	where

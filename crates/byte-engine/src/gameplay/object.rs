@@ -25,8 +25,8 @@ use crate::{
 	space::Transformable,
 };
 
-/// An object represents a physical entity in the game world.
-/// It has physics and is rendered as a mesh.
+/// The `Object` struct combines a renderable mesh with a physical body for use
+/// in the default game world.
 #[derive(Clone)]
 pub struct Object {
 	source: MeshSource,

@@ -36,8 +36,8 @@ impl ExecutableProgram {
 
 	/// Executes `main` with explicit execution limits and shader invocation coordinates.
 	///
-	/// Each call represents one invocation. Workgroup barriers preserve local instruction order but do not schedule or await
-	/// peer invocations.
+	/// Each call represents one invocation. Workgroup barriers preserve local
+	/// instruction order but do not schedule or wait for peer invocations.
 	pub fn run_main_with_config(
 		&self,
 		descriptors: &mut DescriptorBindings<'_>,
@@ -63,8 +63,10 @@ impl ExecutableProgram {
 
 	/// Executes every task invocation in one workgroup with synchronized barriers and shared bound state.
 	///
-	/// Configurations run in slice order between barriers, which makes atomic compaction deterministic for VM assertions.
-	/// Barriers inside nested helper functions are rejected because only the `main` frame participates in rendezvous.
+	/// Configurations run in slice order between barriers. This ordering makes
+	/// atomic compaction deterministic for VM assertions. The scheduler rejects
+	/// barriers in nested helper functions because only the `main` frame participates
+	/// in the rendezvous.
 	pub fn run_task_workgroup(
 		&self,
 		descriptors: &mut DescriptorBindings<'_>,

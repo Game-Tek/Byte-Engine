@@ -8,7 +8,7 @@ use math::{
 
 use crate::gameplay::transform::Transform;
 
-/// The `View` struct exists as the projection and orientation package shared by
+/// The `View` struct provides projection and orientation data shared by
 /// cameras, lights, render sinks, and shader setup.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View {
@@ -67,7 +67,7 @@ impl View {
 		}
 	}
 
-	/// Creates a new view with the same variables as the current view, but with the given near and far planes.
+	/// Creates a perspective view with this view's settings and new clipping planes.
 	pub fn from_from_z_planes(&self, near: f32, far: f32) -> Self {
 		Self {
 			projection: projection_matrix(self.y_fov, self.aspect_ratio, near, far),
@@ -79,22 +79,22 @@ impl View {
 		}
 	}
 
-	/// Returns the projection matrix of the view.
+	/// Returns the projection matrix.
 	pub fn projection(&self) -> Matrix4 {
 		self.projection
 	}
 
-	/// Returns the view matrix of the view.
+	/// Returns the view matrix.
 	pub fn view(&self) -> Matrix4 {
 		self.view
 	}
 
-	/// Returns the PV matrix of the view.
+	/// Returns the projection matrix multiplied by the view matrix.
 	pub fn projection_view(&self) -> Matrix4 {
 		self.projection * self.view
 	}
 
-	/// Returns the PV matrix of the view.
+	/// Returns the projection matrix multiplied by the view matrix.
 	pub fn view_projection(&self) -> Matrix4 {
 		self.projection * self.view
 	}
@@ -129,7 +129,7 @@ impl View {
 		self.aspect_ratio
 	}
 
-	/// Returns the frustum corners of the view, in world space.
+	/// Returns the view-frustum corners in world space.
 	pub fn get_frustum_corners(&self) -> [Vector4; 8] {
 		let inv = self.view_projection().inverse();
 
@@ -147,7 +147,7 @@ impl View {
 		corners
 	}
 
-	/// Returns the frustum planes of the view, in world space.
+	/// Returns the view-frustum planes in world space.
 	pub fn get_frustum_planes(&self) -> [Plane; 6] {
 		let pv = self.view_projection();
 

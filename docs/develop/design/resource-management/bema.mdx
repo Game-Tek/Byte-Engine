@@ -1,10 +1,10 @@
 ---
-title: .bema Files
+title: .bema files
 description: Material and variant declarations in Byte Engine.
 icon: SwatchBook
 ---
 
-`.bema` files declare materials and material variants.
+Use `.bema` files to declare materials and material variants.
 
 A material describes shader stages, render-domain information, and named parameters.
 A variant references a parent material and supplies parameter values for a concrete material instance.
@@ -18,8 +18,8 @@ The `.bema` handler produces stored resources:
 
 ## Material files
 
-A root material file has no `parent`.
-It declares a domain, shader stages, and variables.
+A root material has no `parent`. Declare its domain, shader stages, and
+variables:
 
 ```json
 {
@@ -39,13 +39,13 @@ It declares a domain, shader stages, and variables.
 }
 ```
 
-During baking, the handler loads each shader source, parses BESL, lets the active render pipeline transform the program, compiles the result, and stores a shader resource.
-The material resource then stores references to those generated shader resources and the resolved parameter models.
+During baking, the handler loads each shader source, parses BESL, applies the
+active render pipeline, compiles the result, and stores a shader resource. The
+material resource refers to the generated shaders and resolved parameters.
 
 ## Variant files
 
-A variant file has a `parent`.
-It points to the material it specializes.
+A variant has a `parent` that identifies the material it specializes:
 
 ```json
 {
@@ -69,5 +69,5 @@ The current value resolver is intentionally small.
 Named colors such as `Red`, `Green`, `Blue`, `Purple`, `White`, and `Black` can become `vec3f` or `vec4f` values.
 `Texture2D` values are baked as image resources and stored as references.
 
-This format should be treated as a declaration format, not runtime data.
-Runtime systems should consume the processed `Material`, `Variant`, `Shader`, and `Image` resources.
+Treat `.bema` as a declaration format, not runtime data. At runtime, use the
+processed `Material`, `Variant`, `Shader`, and `Image` resources.

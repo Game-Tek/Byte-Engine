@@ -81,10 +81,11 @@ pub struct SubMeshModel {
 
 /// The `Mesh` struct supplies packed geometry, material primitives, and optional skeletal bindings to runtime rendering.
 ///
-/// Indices:
-/// 	- `Vertices`: Each entry is a "pointer" to a vertex in the vertex buffer.
-/// 	- `Meshlets`: Each entry is a "pointer" to an index in the `Vertices` index stream.
-/// 	- `Triangles`: Each entry is a "pointer" to a vertex in the vertex buffer.
+/// The index streams use these meanings:
+///
+/// - `Vertices` entries index the vertex buffer.
+/// - `Meshlets` entries index the `Vertices` stream.
+/// - `Triangles` entries index the vertex buffer.
 #[derive(Debug, serde::Serialize)]
 pub struct Mesh {
 	pub skeleton: Option<Reference<Skeleton>>,

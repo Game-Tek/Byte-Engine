@@ -26,9 +26,9 @@ pub struct InputManager {
 	devices: Vec<Device>,
 	records: Vec<Record>,
 	actions: Vec<InputAction>,
-	/// Stores the last value of a trigger relative to the seat and device it belongs to.
+	/// Stores the latest trigger value for each seat and device.
 	trigger_values: HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
-	/// Stores the last value of an action relative to the seat and device it belongs to.
+	/// Stores the latest action value for each seat and device.
 	action_values: HashMap<(SeatHandle, DeviceHandle, ActionHandle), Value>,
 	pending_manual_actions: Vec<(SeatHandle, ActionHandle, Value)>,
 	action_listener: DefaultListener<CreateMessage<Action>>,
@@ -36,7 +36,7 @@ pub struct InputManager {
 }
 
 impl InputManager {
-	/// Creates a new input manager.
+	/// Creates an input manager connected to action creation and event channels.
 	pub fn new(action_listener: DefaultListener<CreateMessage<Action>>, event_channel: DefaultChannel<ActionEvent>) -> Self {
 		InputManager {
 			device_classes: Vec::new(),
@@ -52,31 +52,19 @@ impl InputManager {
 		}
 	}
 
-	/// Registers a device class/type.
+	/// Registers a named device class, such as `Keyboard`.
 	///
-	/// One example is a keyboard.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the device type. **Should be pascalcase.**
+	/// Use PascalCase for `name` so trigger paths remain consistent.
 	pub fn register_device_class(&mut self, name: &str) -> DeviceClassHandle {
 		let device_class = DeviceClass { name: name.to_string() };
 
 		DeviceClassHandle(insert_return_length(&mut self.device_classes, device_class) as u32)
 	}
 
-	/// Registers an input source on a device class.
+	/// Registers a named trigger on a device class.
 	///
-	/// One example is the UP key on a keyboard.
-	///
-	/// The input source is associated with a device class/type.
-	/// The input source has a default value assigned from the `value_type` param.
-	///
-	/// # Arguments
-	///
-	/// * `device_handle` - The handle of the device.
-	/// * `name` - The name of the input source.
-	/// * `value_type` - The type of the value of the input source.
+	/// `value_type` defines the trigger's initial value and valid Rust type. Use
+	/// the returned [`TriggerHandle`] to bind actions or submit input records.
 	pub fn register_trigger<T>(
 		&mut self,
 		device_handle: &DeviceClassHandle,
@@ -107,16 +95,9 @@ impl InputManager {
 		TriggerHandle(insert_return_length(&mut self.triggers, input_source) as u32)
 	}
 
-	/// Registers an input destination on a device.
+	/// Reserves an output destination on a device class.
 	///
-	/// One example is the rumble motors on a gamepad.
-	///
-	/// The input destination is associated with a device.
-	///
-	/// # Arguments
-	/// * `device_handle` - The handle of the device.
-	/// * `name` - The name of the input destination.
-	/// * `value_type` - The type of the value of the input destination.
+	/// Input destinations represent device feedback, such as gamepad rumble.
 	pub fn register_input_destination<T: InputValue>(
 		&mut self,
 		_device_class_handle: &DeviceClassHandle,
@@ -126,12 +107,10 @@ impl InputManager {
 		TriggerHandle(0)
 	}
 
-	/// Creates an instance of a device class.
-	/// This represents a particular device of a device class. Such as a single controller or a keyboard.
+	/// Creates one concrete device from a registered class.
 	///
-	/// # Arguments
-	///
-	/// * `device_class_handle` - The handle of the device class.
+	/// Call this once for each physical or virtual device, such as each connected
+	/// gamepad.
 	pub fn create_device(&mut self, device_class_handle: &DeviceClassHandle) -> DeviceHandle {
 		let other_device = self
 			.devices
@@ -156,71 +135,10 @@ impl InputManager {
 		DeviceHandle(insert_return_length(&mut self.devices, device) as u32)
 	}
 
-	/// Registers an input event.
+	/// Queues a trigger value for a device and seat.
 	///
-	/// One example is a "move forward" being pressed.
-	///
-	/// - Action:
-	/// 	- Action: Returns the action value.
-	/// 	- Character: Returns a character when the action is pressed.
-	/// 	- Linear: Returns a float value when the action is pressed.
-	/// 	- 2D: Returns a 2D point when the action is pressed.
-	/// 	- 3D: Returns a 3D point when the action is pressed.
-	/// 	- Quaternion: Returns a quaternion when the action is pressed.
-	/// 	- RGBA: Returns a RGBA color when the action is pressed.
-	/// - Character:
-	/// 	- Action: Returns an action value when the character is pressed.
-	/// 	- Character: Returns the character value.
-	/// 	- Linear: Returns a float value when the character is pressed.
-	/// 	- 2D: Returns a 2D point when the character is pressed.
-	/// 	- 3D: Returns a 3D point when the character is pressed.
-	/// 	- Quaternion: Returns a quaternion when the character is pressed.
-	/// 	- RGBA: Returns a RGBA color when the character is pressed.
-	/// - Linear:
-	/// 	- Action: Returns an action value when the float value is reached.
-	/// 	- Character: Returns a character when the float value is reached.
-	/// 	- Linear: Returns the float value.
-	/// 	- 2D: Interpolates between two 2D points based on the range of the float value.
-	/// 	- 3D: Interpolates between two 3D points based on the range of the float value.
-	/// 	- Quaternion: Interpolates between two quaternions based on the range of the float value.
-	/// 	- RGBA: Interpolates between two RGBA colors based on the range of the float value.
-	/// - 2D:
-	/// 	- Action: Returns an action value when the 2D point is reached.
-	/// 	- Character: Returns a character when the 2D point is reached.
-	/// 	- Linear: Returns a float value when the 2D point is reached.
-	/// 	- 2D: Returns the 2D point.
-	/// 	- 3D: Returns a 3D point when the 2D point is reached.
-	/// 	- Quaternion: Returns a quaternion when the 2D point is reached.
-	/// 	- RGBA: Returns a RGBA color when the 2D point is reached.
-	/// - 3D:
-	/// 	- Action: Returns an action value when the 3D point is reached.
-	/// 	- Character: Returns a character when the 3D point is reached.
-	/// 	- Linear: Returns a float value when the 3D point is reached.
-	/// 	- 2D: Returns a 2D point when the 3D point is reached.
-	/// 	- 3D: Returns the 3D point.
-	/// 	- Quaternion: Returns a quaternion when the 3D point is reached.
-	/// 	- RGBA: Returns a RGBA color when the 3D point is reached.
-	/// - Quaternion:
-	/// 	- Action: Returns an action value when the quaternion is reached.
-	/// 	- Character: Returns a character when the quaternion is reached.
-	/// 	- Linear: Returns a float value when the quaternion is reached.
-	/// 	- 2D: Returns a 2D point when the quaternion is reached.
-	/// 	- 3D: Returns a 3D point when the quaternion is reached.
-	/// 	- Quaternion: Returns the quaternion.
-	/// 	- RGBA: Returns a RGBA color when the quaternion is reached.
-	/// - RGBA:
-	/// 	- Action: Returns an action value when the RGBA color is reached.
-	/// 	- Character: Returns a character when the RGBA color is reached.
-	/// 	- Linear: Returns a float value when the RGBA color is reached.
-	/// 	- 2D: Returns a 2D point when the RGBA color is reached.
-	/// 	- 3D: Returns a 3D point when the RGBA color is reached.
-	/// 	- Quaternion: Returns a quaternion when the RGBA color is reached.
-	/// 	- RGBA: Returns the RGBA color.
-
-	/// Records an input trigger value for a device into a queue.
-	/// The new value for the input trigger is not reflected until the next call to `update()`.
-	///
-	/// One example is the UP key on a keyboard being pressed.
+	/// The value becomes visible when [`Self::update`] processes the queue. The
+	/// manager ignores unknown triggers and values with the wrong [`Types`].
 	pub fn record_trigger_value_for_device(
 		&mut self,
 		seat_handle: SeatHandle,
@@ -468,7 +386,7 @@ impl InputManager {
 		handle
 	}
 
-	/// Retrieves all device handles of a given device class identified by name.
+	/// Returns all devices that belong to the named class.
 	pub fn get_devices_by_class_name(&self, class_name: &str) -> Option<Vec<DeviceHandle>> {
 		let device_class_handle = self
 			.device_classes
@@ -484,7 +402,9 @@ impl InputManager {
 		)
 	}
 
-	/// Get the latest processed value for an trigger for a device.
+	/// Returns the latest processed trigger value for a seat and device.
+	///
+	/// Returns the trigger's default value when no matching record exists.
 	pub fn get_trigger_value_for_device(
 		&self,
 		seat_handle: SeatHandle,
@@ -502,7 +422,7 @@ impl InputManager {
 			.unwrap_or(trigger.default))
 	}
 
-	/// Gets the latest processed value of an action for a device.
+	/// Returns the latest resolved action state for a seat and device.
 	pub fn get_action_state(
 		&self,
 		seat_handle: SeatHandle,
@@ -592,13 +512,11 @@ pub enum InputActionError {
 }
 
 #[derive(Copy, Clone, Debug)]
-/// A trigger reference is a way to reference an input trigger.
-/// It can be referenced by it's name or by it's handle.
-/// It's provided as a convenience to the developer.
+/// The `TriggerReference` enum lets callers select a trigger by handle or name.
 pub enum TriggerReference {
-	/// Refer to the input trigger by it's handle.
+	/// Selects a trigger by its registered handle.
 	Handle(TriggerHandle),
-	/// Refer to the input trigger by it's name.
+	/// Selects a trigger by its `DeviceClass.Trigger` name.
 	Name(&'static str),
 }
 

@@ -2,28 +2,27 @@ use utils::Extent;
 
 use crate::{AccessPolicies, TextureViewTypes};
 
-/// Possible types of a shader source
+/// A native shader-source representation accepted by a backend.
 pub enum Sources<'a> {
-	/// SPIR-V binary
+	/// SPIR-V binary.
 	SPIRV(&'a [u8]),
 	/// DirectX Intermediate Language bytecode for DX12 backends.
 	DXIL(&'a [u8]),
 	/// HLSL source and entry-point name for DX12 backends.
 	HLSL { source: &'a str, entry_point: &'a str },
-	/// Compiled Metal library bytes and entry-point name
+	/// Compiled Metal library bytes and entry-point name.
 	MTLB {
 		binary: &'a [u8],
 		entry_point: &'a str,
 		threadgroup_size: Option<Extent>,
 	},
-	/// Metal shading language source and entry-point name
+	/// Metal Shading Language source and entry-point name.
 	MTL { source: &'a str, entry_point: &'a str },
 }
 
-/// The `ShaderSource` enum represents platform-specific shader source for cross-platform compilation.
+/// A platform-specific shader source for cross-platform compilation.
 ///
-/// It exists to let callers express the GLSL and/or MSL variants of a shader in one value and let
-/// [`compile`] pick the correct path for the active backend.
+/// Use [`compile`] to select the source for the active backend.
 #[derive(Clone, Copy)]
 pub enum ShaderSource<'a> {
 	/// GLSL source code to be compiled to SPIR-V for Vulkan backends.
@@ -49,7 +48,7 @@ pub enum ShaderSource<'a> {
 	},
 }
 
-/// The `CompiledShaderSource` enum stores shader source after platform selection and compilation.
+/// A shader source selected and compiled for one backend.
 pub enum CompiledShaderSource {
 	/// SPIR-V binary compiled from GLSL.
 	SPIRV(Vec<u8>),
@@ -168,7 +167,7 @@ impl From<u32> for ResourceSlot {
 	}
 }
 
-/// The `ResourceKind` enum describes the native resource category expected at a flat shader slot.
+/// The native resource category expected at a flat shader slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
 	UniformBuffer,

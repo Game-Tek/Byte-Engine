@@ -1,7 +1,6 @@
-//! Client module for the Byte-Engine networking library.
-//! The client is the entity that connects to a server and participates in the game.
+//! Manages the protocol state for one BETP client connection.
 
-/// The client is the entity that connects to a server and participates in the game.
+/// The `Session` struct preserves the protocol state for one client connection.
 pub struct Session {
 	local: Local,
 	remote: Remote,
@@ -9,9 +8,9 @@ pub struct Session {
 }
 
 impl Session {
-	/// Creates a client<->server session that manages the connection state.
-	/// The session is initiated is the `Initial` state.
-	/// Must call `connect` to establish a connection.
+	/// Creates an idle session in the [`State::Initial`] state.
+	///
+	/// Call [`Session::connect`] to start a connection.
 	pub fn new() -> Self {
 		Self {
 			local: Local::new(),
@@ -103,9 +102,10 @@ impl Session {
 		}
 	}
 
-	/// Enqueuesdata packets to be sent.
-	/// Messages can be flagged as realiable for them to be retried if sending them fails.
-	/// Data packets sent whilw the session is not in the `Connected` state will be discarded.
+	/// Queues a data packet for transmission.
+	///
+	/// Reliable packets remain queued for retry. The session discards packets that
+	/// are queued before it reaches [`State::Connected`].
 	pub fn send(&mut self, reliable: bool, data: [u8; 1024]) {
 		match &mut self.state {
 			State::Connected { id, packet_buffer } => {
@@ -121,9 +121,9 @@ impl Session {
 		}
 	}
 
-	/// Returns a disconnect packet to send to the server.
-	/// The client will no longer be able to handle server packets after this.
-	/// The client will need to reconnect to the server to continue.
+	/// Starts a voluntary disconnect from the server.
+	///
+	/// Reconnect the session before you send or receive more data.
 	pub fn disconnect(&mut self) {
 		if let State::Connected { id, .. } = self.state {
 			self.state = State::Disconnecting { id }
@@ -143,28 +143,28 @@ impl Default for Session {
 
 // Keep the packet buffer inline: this state is hot-path protocol storage, and boxing it would add an allocation to every connection.
 #[allow(clippy::large_enum_variant)]
-/// `State` represents the current state of the client session. It is a state machine that transitions through various stages of the connection lifecycle.
+/// The `State` enum identifies the current phase of a client session.
 pub enum State {
-	/// The initial state of the session before any connection attempts have been made. The client could idle in this state or attempt to initiate a connection.
+	/// The client is idle and can start a connection.
 	Initial,
-	/// The state where the client has initiated a connection request to the server and is awaiting a challenge response.
+	/// The client is waiting for the server's challenge.
 	InitiatingConnection {
 		/// A generated salt value used for the connection request.
 		salt: u64,
 	},
-	/// The state where the client has sent a challenge response and is waiting for the server to confirm the connection.
+	/// The client sent its challenge response and is waiting for confirmation.
 	Connecting {
 		/// The connection ID generated from the challenge response.
 		id: u64,
 	},
-	/// The state where the client is fully connected to the server and can send and receive data packets.
+	/// The client can send and receive data packets.
 	Connected {
 		/// The established connection ID.
 		id: u64,
 		/// The packet buffer that manages sent and acknowledged packets.
 		packet_buffer: PacketBuffer<16, 1024>,
 	},
-	/// The state where the client is in the process of disconnecting from the server.
+	/// The client is ending the connection.
 	Disconnecting {
 		/// The connection ID being disconnected.
 		id: u64,

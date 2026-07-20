@@ -1,23 +1,25 @@
 ---
-title: Input Handling
+title: Input handling
 description: How input devices, seats, triggers, and actions fit together.
 icon: Gamepad2
 ---
 
-Byte Engine input is built around actions.
+Define input as application actions so your gameplay code responds to intent
+instead of specific devices.
 
-Physical input is recorded as device trigger values.
-The input manager resolves those values into application-level actions such as `Move`, `Lookaround`, `RightHand`, `View`, or `Exit`.
-Applications then listen for action events instead of checking raw keys and buttons everywhere.
+Byte Engine records physical input as device-trigger values. The input manager
+resolves those values into actions such as `Move`, `Lookaround`, `RightHand`,
+`View`, or `Exit`. Your application listens for action events instead of checking
+raw keys and buttons throughout the codebase.
 
-This keeps app code oriented around intent.
+This keeps your application code focused on intent.
 `Keyboard.W`, `Keyboard.S`, `Gamepad.LeftStick`, and a VR controller axis can all contribute to the same movement action without changing the movement system.
 
-## The concepts
+## Understand the input model
 
 ### Device classes
 
-A device class describes the layout shared by a category of hardware.
+A device class describes the input layout for a category of hardware.
 The standard setup registers classes such as `Mouse`, `Keyboard`, and `Gamepad`.
 
 Each class has triggers:
@@ -26,8 +28,8 @@ Each class has triggers:
 - `Keyboard.W`, `Keyboard.Space`, `Keyboard.Backspace`, `Keyboard.Character`
 - `Gamepad.LeftStick`, `Gamepad.RightStick`, `Gamepad.X`, `Gamepad.RightTrigger`
 
-Device classes are declarations.
-They say which named inputs exist and what value type each input produces.
+Each device class declares its named inputs and the value type that each input
+produces.
 
 ### Devices
 
@@ -42,7 +44,7 @@ Custom integrations can register their own classes and create devices directly t
 A seat identifies the player or user context associated with input.
 The current default window integration uses `SeatHandle::stub()` until platform seats are wired through end to end.
 
-The reason seats exist is future-facing but important: the same physical style of input can belong to different users.
+Seats let the same type of physical input belong to different users.
 Input state is stored by seat, device, and trigger, so local multiplayer, split-screen, remote control, or editor/game focus can be represented without changing the action model.
 
 ### Triggers
@@ -53,13 +55,12 @@ It can be boolean, float, unicode, vector, quaternion, color, or another support
 Window events are translated into trigger records.
 For example, a key press becomes a boolean value for `Keyboard.W`, mouse motion becomes a `Vector2` value for `Mouse.Movement`, and typed text becomes a unicode value for `Keyboard.Character`.
 
-Records are queued first.
-They become current input state on the next input update, where the latest value per seat, device, and trigger is kept.
+Byte Engine queues records until the next input update. During the update, it
+keeps the latest value for each seat, device, and trigger.
 
 ### Actions
 
-An action is the application-facing input concept.
-It has:
+An action represents input that your application understands. It has:
 
 - a name
 - an output type
@@ -73,9 +74,9 @@ For lookaround, mouse position and a gamepad stick can both contribute to the sa
 Actions are created through the application action factory.
 The input manager listens for those creation messages, resolves trigger names to handles, and starts emitting action events.
 
-## How actions are built
+## Build actions
 
-The usual flow is:
+Follow this flow:
 
 1. Register device classes and triggers.
 2. Create concrete devices for those classes.
@@ -109,10 +110,11 @@ Actions can emit with different policies:
 Movement usually uses `WhileActive` so holding a key or stick keeps producing movement events.
 Discrete actions such as fire, view toggle, or exit usually use the default change-based behavior.
 
-## Reading actions
+## Read actions
 
-Applications normally create one listener from the input event channel and filter it by action handle.
-Those filtered streams can then be read inside the application tick loop or by any system that owns input-driven behavior.
+Create a listener from the input event channel, then filter it by action handle.
+Read the filtered stream in your application tick loop or in the system that owns
+the input-driven behavior.
 
 This is the same message pattern used elsewhere in the engine.
 Input systems publish action events, and gameplay/application code consumes the actions it understands.

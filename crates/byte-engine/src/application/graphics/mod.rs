@@ -16,11 +16,11 @@
 /// functions independently when an application needs explicit composition.
 ///
 /// # Configuration
-/// - `kill-after`: The number of ticks after which the application should be killed. Defaults to None.
-/// - `resources.path`: The path to the resources directory. Defaults to "./resources".
-/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
-/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
-/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
+/// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
+/// - `resources.path`: Selects the resource directory. The default is `./resources`.
+/// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
+/// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
+/// - `render.debug.extended`: Enables extended validation. The default is `false`.
 pub struct GraphicsApplication {
 	application: BaseApplication,
 

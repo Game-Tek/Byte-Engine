@@ -1,12 +1,13 @@
 use crate::{audio::source::Source, core::Entity};
 
-/// A sound object you can spawn to play a sound.
+/// The `Sound` struct identifies an audio asset that can be used as a
+/// [`crate::audio::Source`].
 pub struct Sound {
 	pub(crate) asset: String,
 }
 
 impl Sound {
-	/// Create a new sound object.
+	/// Creates a sound for the specified audio asset.
 	pub fn new(asset: String) -> Self {
 		Sound { asset }
 	}

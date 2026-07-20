@@ -427,7 +427,7 @@ fn import_quaternion_curve(keys: &[ufbx::BakedQuat]) -> Result<Option<Quaternion
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-/// Identifies either the generated fallback material or one ufbx scene material.
+/// The `MaterialKey` enum identifies a generated fallback material or one ufbx scene material.
 enum MaterialKey {
 	Default,
 	Material(u32),
@@ -1173,7 +1173,7 @@ fn import_fbx_material_corners<'a>(
 	Ok(())
 }
 
-/// Tracks whether a source face contributed triangles or was rejected as malformed geometry.
+/// The `TriangulatedFaceAppendResult` enum records whether a source face produced triangles or was malformed.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TriangulatedFaceAppendResult {
 	Appended,
@@ -1700,7 +1700,7 @@ fn non_empty_name(name: &ufbx::String) -> Option<String> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-/// Describes malformed or unsupported FBX content at the importer boundary.
+/// The `FbxImportError` enum identifies malformed or unsupported FBX content at the importer boundary.
 enum FbxImportError {
 	Parse(String),
 	AnimationBake(String),

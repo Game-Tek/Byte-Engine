@@ -1,6 +1,6 @@
-//! The graphics hardware interface implements easy to use rendering functionality.
-//! It provides useful abstractions to interact with the GPU.
-//! It's not tied to any particular render pipeline implementation.
+//! Defines backend-independent handles and resource descriptions for GPU rendering.
+//!
+//! These types do not require a specific render-pipeline architecture.
 
 use utils::{Extent, RGBA};
 
@@ -16,7 +16,7 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct QueueHandle(pub(crate) u64);
 
-/// The `BaseBufferHandle` allows addressing any static buffer irregardless of it's underlying type.
+/// The `BaseBufferHandle` struct identifies a static buffer without exposing its element type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord)]
 pub struct BaseBufferHandle(pub(super) u64);
 
@@ -30,11 +30,11 @@ impl MasterHandle for BaseBufferHandle {
 	}
 }
 
-/// The `BufferHandle` allows addressing a buffer static buffer with a specific underlying type.
+/// The `BufferHandle` struct identifies a static buffer with its element type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct BufferHandle<T>(pub(super) BaseBufferHandle, pub(super) std::marker::PhantomData<T>);
 
-/// The `DynamicBufferHandle` allows addressing a dynamic buffer with a specific underlying type.
+/// The `DynamicBufferHandle` struct identifies a resizable buffer with its element type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct DynamicBufferHandle<T>(pub(super) BaseBufferHandle, pub(super) std::marker::PhantomData<T>);
 
@@ -117,15 +117,15 @@ pub struct DescriptorSetHandle(pub(super) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DescriptorSetBindingHandle(pub(super) u64);
 
-/// Handle to a Pipeline Layout
+/// The `PipelineLayoutHandle` struct identifies a pipeline resource layout.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PipelineLayoutHandle(pub(super) u64);
 
-/// Handle to a Sampler
+/// The `SamplerHandle` struct identifies an image sampler.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SamplerHandle(pub(super) u64);
 
-/// Handle to a Sampler
+/// The `SwapchainHandle` struct identifies a presentation swapchain.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SwapchainHandle(pub(super) u64);
 
@@ -213,17 +213,14 @@ pub(crate) trait PrivateHandle: Copy {
 
 // HANDLES
 
-/// Describes the dimesions of a dispatch operation.
+/// The `DispatchExtent` struct converts invocation dimensions into workgroup counts.
 pub struct DispatchExtent {
 	workgroup_extent: Extent,
 	dispatch_extent: Extent,
 }
 
 impl DispatchExtent {
-	/// Creates a new dispatch extent.
-	/// # Arguments
-	/// * `dispatch_extent` - The extent of the dispatch. (How many threads to have in each dimension).
-	/// * `workgroup_extent` - The extent of the workgroup. (The workgroup extent defined in the shader).
+	/// Creates dispatch dimensions from the invocation count and shader workgroup size.
 	pub fn new(dispatch_extent: Extent, workgroup_extent: Extent) -> Self {
 		Self {
 			workgroup_extent,
@@ -231,9 +228,7 @@ impl DispatchExtent {
 		}
 	}
 
-	/// Returns the extent for a dispatch operation.
-	/// # Returns
-	/// The extent for a dispatch operation, which is the result of dividing the dispatch extent by the workgroup extent, rounded up.
+	/// Returns the workgroup count, rounded up in each dimension.
 	pub fn get_extent(&self) -> Extent {
 		Extent::new(
 			self.dispatch_extent
@@ -368,19 +363,19 @@ impl From<SwapchainHandle> for ImageOrSwapchain {
 }
 
 #[derive(Clone, Copy)]
-/// Stores the information of an attachment.
+/// The `AttachmentInformation` struct configures one render-pass attachment.
 pub struct AttachmentInformation {
 	/// The image view of the attachment.
 	pub(crate) target: ImageOrSwapchain,
-	/// The format of the attachment. If `None`, the format will be determined by the target image.
+	/// The attachment format, or `None` to use the target image's format.
 	pub(crate) format: Option<Formats>,
 	/// The layout of the attachment.
 	pub(crate) layout: Layouts,
 	/// The clear color of the attachment.
 	pub(crate) clear: ClearValue,
-	/// Whether to load the contents of the attchment when starting a render pass.
+	/// Whether the render pass loads the attachment's existing contents.
 	pub(crate) load: bool,
-	/// Whether to store the contents of the attachment when ending a render pass.
+	/// Whether the render pass stores the attachment's final contents.
 	pub(crate) store: bool,
 	/// The image layer index for the attachment.
 	pub(crate) layer: Option<u32>,
@@ -474,24 +469,24 @@ impl DescriptorSetBindingType for AccelerationStructureDescriptorBinding {
 	const DESCRIPTOR_TYPE: DescriptorType = DescriptorType::AccelerationStructure;
 }
 
-/// Stores the information of a descriptor set layout binding.
+/// The `DescriptorSetBindingTemplate` struct defines one resource binding in a retained descriptor set.
 #[derive(Clone)]
 pub struct DescriptorSetBindingTemplate {
-	/// The binding of the descriptor set layout binding.
+	/// The shader-visible binding index.
 	pub(crate) binding: u32,
-	/// The descriptor type of the descriptor set layout binding.
+	/// The resource type expected at the binding.
 	pub(crate) descriptor_type: DescriptorType,
-	/// The number of descriptors in the descriptor set layout binding.
+	/// The number of resources in the binding.
 	pub(crate) descriptor_count: u32,
-	/// The stages the descriptor set layout binding will be used in.
+	/// The shader stages that can access the binding.
 	pub(crate) stages: Stages,
-	/// The immutable samplers of the descriptor set layout binding.
+	/// The immutable samplers assigned to the binding.
 	pub(crate) immutable_samplers: Option<Vec<SamplerHandle>>,
 	/// The texture view type expected by this binding when it references textures.
 	pub(crate) texture_view_type: TextureViewTypes,
 	/// The structured element byte stride expected by this binding when it references buffers.
 	pub(crate) buffer_stride: u32,
-	/// Whether a storage-buffer binding is read-only and should use SRV-style binding on APIs that distinguish it.
+	/// Whether a storage buffer uses read-only binding on APIs that distinguish access.
 	pub(crate) buffer_read_only: bool,
 }
 
@@ -642,9 +637,9 @@ impl DescriptorSetBindingTemplate {
 
 pub struct BindingConstructor<'a> {
 	pub(super) descriptor_set_binding_template: &'a DescriptorSetBindingTemplate,
-	/// The index of the array element to write to in the binding(if the binding is an array).
+	/// The array element to update when the binding is an array.
 	pub(super) array_element: u32,
-	/// Information describing the descriptor.
+	/// The resource update to apply.
 	pub(super) descriptor: descriptors::WriteData,
 	pub(super) frame_offset: Option<i8>,
 }
@@ -760,9 +755,9 @@ impl<'a> BindingConstructor<'a> {
 	}
 }
 
-/// Describes the details of the memory layout of a particular image.
+/// The `ImageSubresourceLayout` struct defines how one image subresource maps to memory.
 pub struct ImageSubresourceLayout {
-	/// The offset inside a memory region where the texture will read it's first texel from.
+	/// The byte offset of the first texel in its memory region.
 	pub offset: usize,
 	/// The size of the texture in bytes.
 	pub size: usize,

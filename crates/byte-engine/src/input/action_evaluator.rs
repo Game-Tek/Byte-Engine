@@ -7,7 +7,7 @@ pub(super) struct InputAction {
 	pub(super) tick_policy: TickPolicy,
 }
 
-/// The `InputEventState` struct represents the latest resolved value of an action for one device.
+/// The `InputEventState` struct stores the latest resolved action value for one device.
 pub struct InputEventState {
 	pub(super) seat_handle: SeatHandle,
 	pub(super) device_handle: DeviceHandle,

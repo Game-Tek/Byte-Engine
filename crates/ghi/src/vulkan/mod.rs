@@ -244,7 +244,7 @@ struct AccelerationStructure {
 }
 
 #[derive(Clone, Copy)]
-/// Stores the information of a memory backed resource.
+/// The `MemoryBackedResourceCreationResult` struct provides a resource and its memory requirements for allocation.
 pub struct MemoryBackedResourceCreationResult<T> {
 	/// The resource.
 	resource: T,
@@ -271,15 +271,15 @@ pub(crate) struct BuildBuffer {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) enum Tasks {
-	/// Delete a Vulkan image. Will be associated to a frame index in `Task`.
+	/// Deletes a Vulkan image at the frame selected by [`Task`].
 	DeleteVulkanImage {
 		handle: vk::Image,
 	},
-	/// Delete a Vulkan image view. Will be associated to a frame index in `Task`.
+	/// Deletes a Vulkan image view at the frame selected by [`Task`].
 	DeleteVulkanImageView {
 		handle: vk::ImageView,
 	},
-	/// Delete a Vulkan buffer. Will be associated to a frame index in `Task`.
+	/// Deletes a Vulkan buffer at the frame selected by [`Task`].
 	DeleteVulkanBuffer {
 		handle: vk::Buffer,
 	},
@@ -301,8 +301,7 @@ pub(crate) enum Tasks {
 	BuildBuffer(BuildBuffer),
 }
 
-/// The `Task` struct represents a deferred task that needs to be executed at a later time.
-/// This is because some tasks need to be executed at a particular time or frame.
+/// The `Task` struct schedules backend work for a required time or frame.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Task {
 	pub(crate) task: Tasks,
@@ -397,7 +396,7 @@ impl DescriptorWrite {
 	}
 }
 
-/// The `StoredQueue` struct stores per-queue device data for internal GPU queue management.
+/// The `StoredQueue` struct provides per-queue device data to internal submission paths.
 #[derive(Clone)]
 pub(super) struct StoredQueue {
 	pub(crate) vk_queue: Arc<Mutex<vk::Queue>>,

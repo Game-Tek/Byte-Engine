@@ -6,15 +6,12 @@ use super::{
 use crate::asset::asset_manager::AssetManager;
 use crate::{asset::ResourceId, Model, Reference, ReferenceModel, Resource, SerializableResource, Solver};
 
-/// Resource manager.
-/// Handles loading assets or resources from different origins (network, local, etc.).
-/// It also handles caching of resources.
+/// The `ResourceManager` struct provides typed resource loading and caching across storage backends.
 ///
-/// Resource can be sourced from the local filesystem or from the network.
-/// When in a debug build it will lazily load resources from source and cache them.
-/// When in a release build it will exclusively load resources from cache.
+/// Debug builds can use an asset manager to bake missing source assets on demand.
+/// Release builds load only resources that already exist in the configured backend.
 ///
-/// If accessing the filesystem paths will be relative to the assets directory, and assets should omit the extension.
+/// File-system paths are relative to the assets directory.
 pub struct ResourceManager {
 	#[cfg(debug_assertions)]
 	asset_manager: std::sync::OnceLock<AssetManager>,
@@ -32,8 +29,7 @@ impl ResourceManager {
 		}
 	}
 
-	/// Provide an asset manager to process assets on demand.
-	/// This is useful for loading assets during testing/development without having to bake them.
+	/// Installs an asset manager that can bake missing assets on demand in debug builds.
 	///
 	/// # Panics
 	///
@@ -56,13 +52,10 @@ impl ResourceManager {
 		self.storage_backend.as_ref()
 	}
 
-	/// Tries to load the information/metadata for a resource (and its dependencies).\
-	/// This is a more advanced version of get() as it allows to use your own buffer and/or apply some transformation to the resources when loading.\
-	/// The result of this function can be later fed into `load()` which will load the binary data.
+	/// Loads resource metadata and dependencies, then returns a deferred binary-data [`Reference`].
 	///
-	/// Call this to start the process of loading a resource.
-	/// If successful, this will return a [`Reference`] to the resource.
-	/// This `Reference` can be used to load the binary data of the resource and consult its metadata.
+	/// Use [`Reference::load`](crate::Reference::load) to load the binary data into
+	/// caller-provided memory or reader-owned storage.
 	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Result<Reference<T>, &'static str>
 	where
 		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,

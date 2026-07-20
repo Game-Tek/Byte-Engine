@@ -1,7 +1,6 @@
-//! This module contains the multiple representations of the packets used by the BETP.
+//! Defines the typed packets used by BETP.
 
-/// The trait that all `BETP` packets must implement.
-/// Provides methods to access common packet information.
+/// The `Packet` trait provides access to the header shared by all BETP packets.
 pub trait Packet: Sized {
 	/// Returns the type of the packet.
 	fn packet_type(&self) -> PacketType;
@@ -10,30 +9,28 @@ pub trait Packet: Sized {
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-/// The types of packet supported by the protocol.
+/// A packet type supported by BETP.
 pub enum PacketType {
-	/// A default packet type. Should not be used.
+	/// A reserved value that must not appear in a complete wire packet.
 	#[default]
 	Default = 0,
-	/// A connection request packet. Sent by the client to request a connection to the server.
+	/// A client request to start a server connection.
 	ConnectionRequest = 1,
-	/// A challenge packet. Sent by the server to challenge the client.
+	/// A server challenge sent during connection negotiation.
 	Challenge,
-	/// A challenge response packet. Sent by the client to respond to the challenge.
+	/// A client's response to a server challenge.
 	ChallengeResponse,
-	/// A data packet. Sent by the client or server to send data.
+	/// Application data sent by either endpoint.
 	Data,
-	/// A connection status packet. Sent by the client or server to update the connection status.
+	/// A request from either endpoint to end the connection.
 	Disconnect,
 }
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
-/// The header of a BETP packet.
-/// The header contains the protocol id and the type of the packet.
+/// The `PacketHeader` struct identifies the protocol and packet type on the wire.
 pub struct PacketHeader {
-	/// The protocol id is a 32-bit number (or 4 chars) that is used to identify the protocol.
-	/// The value of the protocol id is "BETP".
+	/// The four-byte `BETP` protocol identifier.
 	pub protocol_id: [u8; 4],
 	/// The type of the packet.
 	pub r#type: PacketType,
@@ -58,7 +55,7 @@ impl PacketHeader {
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Debug)]
-/// A connection request packet.
+/// The `ConnectionRequestPacket` struct starts client connection negotiation.
 pub struct ConnectionRequestPacket {
 	header: PacketHeader,
 	client_salt: u64,
@@ -95,7 +92,7 @@ impl From<ConnectionRequestPacket> for Packets {
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Debug)]
-/// A challenge packet.
+/// The `ChallengePacket` struct lets a server validate a connection request.
 pub struct ChallengePacket {
 	header: PacketHeader,
 	client_salt: u64,
@@ -138,7 +135,7 @@ impl From<ChallengePacket> for Packets {
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Debug)]
-/// A challenge response packet.
+/// The `ChallengeResponsePacket` struct lets a client answer a server challenge.
 pub struct ChallengeResponsePacket {
 	header: PacketHeader,
 	connection_id: u64,
@@ -175,13 +172,13 @@ impl From<ChallengeResponsePacket> for Packets {
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
-/// The status of a connection.
+/// The `ConnectionStatus` struct carries packet ordering and acknowledgment state.
 pub struct ConnectionStatus {
-	/// The sequence number of the packet. An incrementing number that is used to order the packets.
+	/// The packet's wrapping sequence number.
 	pub sequence: u16,
-	/// The last acknowledged sequence number by the sender.
+	/// The newest sequence number acknowledged by the sender.
 	pub ack: u16,
-	/// A bitfield of the last acknowledged packets by the sender, relative to the ack number.
+	/// Acknowledgments relative to [`ConnectionStatus::ack`].
 	pub ack_bitfield: u32,
 }
 
@@ -197,9 +194,9 @@ impl ConnectionStatus {
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-/// A data packet.
-/// The data packet is used to send application data between the client and the server.
-/// The data packet can be reliable or unreliable. If the packet is reliable, the sender will retry to send the packet until it is acknowledged by the receiver. (Up to a certain number of retries.)
+/// The `DataPacket` struct carries application data and connection status between endpoints.
+///
+/// A session can send the packet once or retry it until the peer acknowledges it.
 pub struct DataPacket<const S: usize> {
 	pub header: PacketHeader,
 	pub connection_id: u64,
@@ -249,7 +246,7 @@ impl<const S: usize> Default for DataPacket<S> {
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Debug)]
-/// A disconnect packet.
+/// The `DisconnectPacket` struct asks an endpoint to end a connection.
 pub struct DisconnectPacket {
 	header: PacketHeader,
 	connection_id: u64,
@@ -288,7 +285,7 @@ impl From<DisconnectPacket> for Packets {
 #[derive(PartialEq, Eq, Debug)]
 // Keep data packets inline so packet construction and retry paths do not allocate per packet.
 #[allow(clippy::large_enum_variant)]
-/// Represents all the possible BETP packets.
+/// A typed BETP packet.
 pub enum Packets {
 	ConnectionRequest(ConnectionRequestPacket),
 	Challenge(ChallengePacket),

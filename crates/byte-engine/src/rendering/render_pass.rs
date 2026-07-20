@@ -11,7 +11,7 @@ use crate::rendering::{renderer::RenderTargets, shader_store::ShaderSourceDescri
 
 pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording, &[ghi::AttachmentInformation]);
 
-/// The type of a frame-allocated function object that writes a render pass to a command buffer.
+/// A frame-allocated command that records one render pass.
 pub type RenderPassReturn<'a> = &'a (dyn RenderPassFunction + Send + Sync + 'a);
 
 /// Allocates a prepared render command in the application frame allocator.
@@ -24,7 +24,7 @@ pub fn allocate_render_command<'a>(
 
 /// The `RenderPass` trait defines a composable rendering step for a prepared sink.
 pub trait RenderPass {
-	/// Evaluates rendering condition and potentially prepares the render pass.
+	/// Prepares the render pass when its rendering condition is active.
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
@@ -84,7 +84,7 @@ impl<'a> RenderPassBuilder<'a> {
 		self.images.get(name, self.sink_id).expect("Image not found").1
 	}
 
-	/// Use `render_to` to get a reference to an image you expect to exist.
+	/// Returns an existing image for writing by this render pass.
 	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
 		self.images.write_to(name, self.sink_id);
@@ -94,7 +94,7 @@ impl<'a> RenderPassBuilder<'a> {
 		RenderToResult { image, format }
 	}
 
-	/// Use `create_render_target` to create a new image and get a reference to it.
+	/// Creates a render-target image and returns it for writing by this render pass.
 	pub fn create_render_target(&mut self, builder: ghi::image::Builder<'a>) -> RenderToResult {
 		self.consumed_resources
 			.push((builder.get_name().unwrap(), ghi::AccessPolicies::WRITE));

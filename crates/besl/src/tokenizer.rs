@@ -1,11 +1,11 @@
-//! The `tokenizer` module splits BESL source text into the token stream that the parser consumes.
+//! Splits BESL source into tokens for [`crate::parser`].
 
 pub struct Tokens<'a> {
 	/// The tokens in the stream.
 	pub(crate) tokens: Vec<&'a str>,
 }
 
-/// Tokenize consumes a string and returns a stream of tokens.
+/// Splits a source string into a token stream.
 pub fn tokenize<'a>(source: &'a str) -> Result<Tokens<'a>, ()> {
 	let interrupt = |c: char| -> bool { c.is_whitespace() };
 

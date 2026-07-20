@@ -1,4 +1,4 @@
-/// The `QueryableValue` enum represents a property value that can be indexed by storage backends.
+/// The `QueryableValue` enum provides storage backends with indexable resource property values.
 #[derive(
 	Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
@@ -6,7 +6,7 @@ pub enum QueryableValue {
 	String(String),
 }
 
-/// The `QueryableProperty` struct represents a storage-visible property for resource queries.
+/// The `QueryableProperty` struct provides a named, indexable value for resource queries.
 #[derive(
 	Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]

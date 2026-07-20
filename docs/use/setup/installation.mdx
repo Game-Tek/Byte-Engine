@@ -1,17 +1,19 @@
 ---
-title: Byte Engine Installation
+title: Install Byte Engine
 description: How to install the Byte Engine on your system.
 icon: Package
 ---
 
-Byte Engine is currently used from source while the public package workflow is still being finalized.
+Use Byte Engine from a source checkout while the public package workflow is in
+development.
 
-For now, add the engine as a dependency from the repository checkout or workspace you are developing against.
+Add the engine as a path or Git dependency from the checkout that you use for
+development.
 
-The intended packaged install command is:
+The future packaged installation command is:
 
 ```bash
 cargo install byte-engine
 ```
 
-If that package is not available in your environment yet, use the source checkout instead.
+If Cargo cannot find the package, continue to use the source checkout.

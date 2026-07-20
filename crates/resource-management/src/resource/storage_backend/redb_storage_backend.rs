@@ -1,7 +1,8 @@
-//! The Redb storage backend provides a way to store and retrieve assets and resources using a Redb database.
-//! This backend stores the resource's metadata/definition in a Redb database and the resource's binary data in a file.
-//! Resource urls are hashed into `ResourceId`s which are the primary key of the database.
-//! Resource metadata is stored in the database by archiving the `SerializableResource` struct into a byte array with rkyv.
+//! Store resource metadata in Redb and binary payloads in companion files.
+//!
+//! The backend hashes resource URLs into [`ResourceId`](crate::asset::ResourceId)
+//! database keys and archives [`SerializableResource`]
+//! metadata with rkyv.
 
 use std::{hash::Hasher, path::Path};
 

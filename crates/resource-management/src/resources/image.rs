@@ -16,7 +16,7 @@ pub fn ibl_prefiltered_specular_stream_name(mip_level: u32) -> String {
 	format!("{IBL_PREFILTERED_SPECULAR_STREAM_PREFIX}[{mip_level}]")
 }
 
-/// The `ImageSubresource` struct describes one independently uploadable image stored in a parent image's binary streams.
+/// The `ImageSubresource` struct provides upload metadata for one image in a parent image's binary streams.
 #[derive(
 	Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, PartialEq, Eq,
 )]

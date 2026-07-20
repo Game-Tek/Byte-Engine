@@ -14,7 +14,7 @@ pub(crate) mod skinning;
 pub use pipeline_manager::VisibilityPipelineManager;
 
 /* BASE */
-/// Binding to access the views which may be used to render the scene.
+/// Shader binding used to access scene views.
 pub(crate) const VIEWS_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(0),
 	ghi::ResourceKind::StorageBuffer,
@@ -139,19 +139,19 @@ pub(crate) const SHADOW_MAP_RESOLUTION: u32 = 2048;
 #[derive(Copy, Clone)]
 #[repr(C, align(16))]
 pub(super) struct ShaderMeshletData {
-	/// Base index into the vertex indices buffer
+	/// Base index into the vertex-index buffer.
 	/// ```glsl
 	/// vertex_index = mesh.base_vertex_index + vertex_indices[meshlet.vertex_offset + gl_LocalInvocationID.x];
 	/// ```
 	primitive_offset: u32,
-	/// Base index into the primitive/triangle indices buffer
-	/// This is stored as index / 3, as the meshlet contains 3 indices per triangle
+	/// Base triangle index into the primitive-index buffer.
+	///
+	/// The stored value divides the raw index by 3 because each triangle has three indices.
 	/// ```glsl
 	/// triangle_index = primitive_indices.primitive_indices[(meshlet.triangle_offset + gl_LocalInvocationID.x) * 3 + 0..2]
 	/// ```
 	triangle_offset: u32,
-	/// The number of primitives in the meshlet
-	/// Primitives are meshlet local indices
+	/// Number of meshlet-local primitives.
 	primitive_count: u32,
 	// The number of triangles in the meshlet
 	triangle_count: u32,

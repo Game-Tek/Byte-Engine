@@ -4,21 +4,22 @@ description: What you need to run and build with Byte Engine.
 icon: Computer
 ---
 
-As part of the goal of being a modern game engine, Byte has moderate requirements.
+Check these requirements before you build Byte Engine.
 
 ## Hardware
 
 - A GPU that supports Vulkan 1.3 or higher
 - A CPU that supports AVX2 or higher on x64 platforms
-- 4GB of RAM
+- 4 GB of RAM
 
 ## Software
 
-Byte Engine requires a nightly Rust toolchain from 2026-06-01 or more recent.
-It also has platform-specific setup requirements:
+Byte Engine requires the nightly Rust toolchain pinned in `rust-toolchain.toml`.
+You also need the development tools for your platform:
 
 - Linux with Vulkan development packages
 - macOS with the Xcode SDK
 - Windows with Visual Studio Build Tools and the Windows SDK
 
-Follow the [environment setup guide](/docs/use/setup/environment) before building an application.
+Follow the [environment setup guide](/docs/use/setup/environment) to install the
+tools and packages for your operating system.

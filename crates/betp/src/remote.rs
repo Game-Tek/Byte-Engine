@@ -1,20 +1,20 @@
-//! Remote is a state tracking structure to keep track of the state of the communication with a remote.
+//! Tracks packets received from a remote BETP endpoint.
 
-/// The packet history is the number of (last) packets that we keep track of.
+/// The number of recently received packets retained for acknowledgment tracking.
 const PACKET_HISTORY: usize = 1024;
 
 /// The `Remote` struct preserves the bounded receive history used to construct wire acknowledgements.
 #[derive(Debug, Clone, Copy)]
 pub struct Remote {
-	/// The ack is the most recent acknoledged sequence number by the remote.
+	/// The newest sequence number received from the remote.
 	ack: u16,
-	/// The ack bitfield is a 32-bit number that represents the last 32 sequence numbers acknowledged by the remote.
+	/// The 32-packet acknowledgment window relative to `ack`.
 	ack_bitfield: u32,
-	/// The packet data is a bit array tracks the ack status of the last 1024 packets.
+	/// The receive status of packets in retained history.
 	packet_data: BitArray<PACKET_HISTORY>,
 	// Validity is tracked independently because every `u16`, including `u16::MAX`, is a valid sequence number.
 	packet_valid: BitArray<PACKET_HISTORY>,
-	/// The receive sequence buffer is a buffer that stores the last 1024 sequence numbers received by the remote.
+	/// The sequence numbers stored in retained history.
 	receive_sequence_buffer: [u16; PACKET_HISTORY],
 }
 
@@ -35,9 +35,7 @@ impl Remote {
 		}
 	}
 
-	/// Returns information about the packet with the given sequence number.
-	/// If the packet is in the history, it returns the information about the packet.
-	/// If the packet is not in the history, it returns None.
+	/// Returns tracking information when the sequence number remains in history.
 	pub fn get_packet_data(&self, sequence: u16) -> Option<PacketInfo> {
 		let index = (sequence % PACKET_HISTORY as u16) as usize;
 		if self.packet_valid.get(index) && self.receive_sequence_buffer[index] == sequence {

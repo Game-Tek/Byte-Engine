@@ -4,36 +4,35 @@ description: Design decisions around rendering in Byte Engine.
 icon: Layers
 ---
 
-This section discusses rendering design decisions, from rendering code structure to rendering algorithms.
+Use these concepts to choose the correct rendering layer before you add a feature
+or algorithm.
 
 ## Actors
 
 ### Render orchestrator
 
-The render orchestrator coordinates the rendering of the different render domains.
-It manages the global render graph.
-It's strictly a piece of the runtime.
+The render orchestrator coordinates the render domains and owns the global render
+graph. Use it only as part of the runtime.
 
 ### Render system
 
-The render system provides easy to use abstractions over the render backend.
-It allows you to create textures, buffers, shaders, etc. and then use them to render things.
-It abstracts details like staging buffers, memory allocation, etc. away from the user.
+Use the render system to create textures, buffers, shaders, and other rendering
+resources without managing backend staging and memory allocation directly.
 
-Each render system is backed by a render backend. The render backend is responsible for creating the actual resources and executing the commands.
-This render backend can be chosen when creating the render system (e.g. Vulkan, OpenGL, DirectX, etc.)
-
-It also belongs to the runtime.
+A render backend creates the native resources and executes commands for a render
+system. Select the supported backend when you create the render system. The
+render system also belongs to the runtime.
 
 ### Render domain
 
-A render domain is a collection of renderables that live in the same space and should be managed by a cohesive rendering technique.
+A render domain groups renderables that share a space and rendering technique.
 
-The render domain is an interface for defining a rendering environment and the guidelines for generating code for that environment.
+Use the render-domain interface to define that environment and its code-generation
+rules.
 
 ### Render model
 
-A render model is an implementation of a render domain.
+A render model implements a render domain with a specific technique.
 
 For example, a `RenderWorld` domain could have render models such as `RenderWorldVisibilityBuffer`, `RenderWorldDeferred`, and `RenderWorldForward`.
-Each one would render the world using different techniques.
+Each model renders the same domain with a different technique.

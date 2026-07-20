@@ -9,7 +9,7 @@ use crate::shader::generator::{
 ///
 /// # Parameters
 ///
-/// - *minified*: Controls whether the shader string output is minified. Is `true` by default in release builds.
+/// - `minified`: Controls compact shader output. The default is `true` in release builds.
 pub struct Generator {
 	minified: bool,
 	current_stage_is_compute: bool,
@@ -29,7 +29,7 @@ struct HlslBufferBindingSource {
 impl ShaderGenerator for Generator {}
 
 impl Generator {
-	/// Creates a new Generator.
+	/// Creates an HLSL generator with the default formatting mode.
 	pub fn new() -> Self {
 		Generator {
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
@@ -515,8 +515,8 @@ impl Generator {
 	///
 	/// # Arguments
 	///
-	/// * `shader_compilation_settings` - The settings for the shader compilation.
-	/// * `main_function_node` - The main function node of the shader.
+	/// * `shader_compilation_settings` - The shader compilation settings.
+	/// * `main_function_node` - The shader's main function node.
 	///
 	/// # Returns
 	///
@@ -551,8 +551,7 @@ impl Generator {
 		Ok(string)
 	}
 
-	/// Translates BESL intrinsic type names to HLSL type names.
-	/// Example: `vec2f` -> `float2`
+	/// Translates BESL intrinsic type names to HLSL type names, such as `vec2f` to `float2`.
 	fn translate_type(source: &str) -> &str {
 		match source {
 			"void" => "void",

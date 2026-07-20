@@ -1,4 +1,4 @@
-//! The G.H.I. module (graphics hardware interface) is responsible for abstracting the access to the graphics hardware.
+//! Use the graphics hardware interface (GHI) to issue rendering work across supported GPU backends.
 
 #![allow(dead_code)]
 #![allow(incomplete_features)]

@@ -80,7 +80,7 @@ impl World {
 		self.update_bodies(dt, transforms_tx);
 	}
 
-	/// Applies all initial impulses to bodies based on forces.
+	/// Applies force-derived impulses to dynamic bodies.
 	pub fn update_velocities(&mut self, dt: MediaTime) {
 		let dt = dt.as_seconds_f32();
 
@@ -100,7 +100,7 @@ impl World {
 		}
 	}
 
-	/// Calculates and solves collisions.
+	/// Detects and resolves collisions for the current time step.
 	pub fn update_collisions(&mut self, dt: MediaTime, allocator: &mut bumpalo::Bump) -> MediaTime {
 		let use_broadphase = true;
 
@@ -136,12 +136,12 @@ impl World {
 		accumulated_time
 	}
 
-	/// Brute-force collision detection for all bodies in the world.
+	/// Detects collisions by testing every body pair.
 	fn detect_collisions(&self, dt: MediaTime) -> impl Iterator<Item = Contact> + '_ {
 		detect_collisions_for_bodies(&self.bodies, dt.as_seconds_f32())
 	}
 
-	/// Collision detection for a subset of body pairs.
+	/// Detects collisions for the specified body pairs.
 	fn detect_collisions_from_pairs<'a>(&'a self, pairs: &'a [Pair], dt: f32) -> impl Iterator<Item = Contact> + 'a {
 		let pairs = pairs.iter().filter_map(|p| {
 			let a = self.bodies.get_slot(p.a)?;
@@ -152,7 +152,7 @@ impl World {
 		detect_collisions_for_body_pairs(pairs, dt)
 	}
 
-	/// Updates bodies' positions and orientation based on their velocities.
+	/// Advances dynamic body transforms from their velocities.
 	pub fn update_bodies(&mut self, dt: MediaTime, transforms_tx: &mut impl Channel<TransformationUpdate>) {
 		for body in self.bodies.iter_mut() {
 			match body.body_type {

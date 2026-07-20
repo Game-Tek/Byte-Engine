@@ -27,7 +27,7 @@ unsafe impl Send for ComputePipeline {}
 /// The `RasterPipeline` struct marks detached Vulkan raster pipelines for future factory support.
 pub struct RasterPipeline;
 
-/// The `FactoryImage` struct stores Vulkan image creation parameters until a context interns them.
+/// The `FactoryImage` struct carries Vulkan image parameters until a context interns them.
 pub struct FactoryImage {
 	pub(crate) name: Option<String>,
 	pub(crate) extent: Extent,
@@ -38,7 +38,7 @@ pub struct FactoryImage {
 	pub(crate) array_layers: Option<NonZeroU32>,
 }
 
-/// The `FactorySampler` struct stores Vulkan sampler creation parameters until a context interns them.
+/// The `FactorySampler` struct carries Vulkan sampler parameters until a context interns them.
 pub struct FactorySampler {
 	pub(crate) filtering_mode: crate::FilteringModes,
 	pub(crate) reduction_mode: crate::SamplingReductionModes,

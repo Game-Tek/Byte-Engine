@@ -7,8 +7,8 @@ use crate::{
 	network::{client::udp, replicable::Importance, Replicable},
 };
 
-/// The `Client` entity represents a client connection for a replicated application setup.
-/// This class handles replication of application entities.
+/// The `Client` struct provides the application-facing connection for a
+/// replicated client.
 pub struct Client {
 	client: udp::Client,
 }

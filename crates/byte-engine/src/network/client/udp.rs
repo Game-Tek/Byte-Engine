@@ -1,4 +1,4 @@
-//! UPD implementation of a BETP client.
+//! UDP transport for a BETP client.
 
 use betp::{client::Session, write_packet};
 
@@ -37,15 +37,16 @@ impl std::error::Error for ClientCreateError {
 	}
 }
 
-/// The client is the entity that connects to a server and participates in the game.
+/// The `Client` struct connects one BETP client session to a UDP server endpoint.
 pub struct Client {
 	session: Session,
 	socket: std::net::UdpSocket,
 }
 
 impl Client {
-	/// Creates a client that will connect to the server at the specified address.
-	/// Must call `connect` to establish a connection.
+	/// Creates a client for the specified server address.
+	///
+	/// Call `connect` before exchanging application data.
 	pub fn new(server_address: std::net::SocketAddr) -> Result<Self, ClientCreateError> {
 		let local_address = local_bind_address(server_address);
 		let socket = std::net::UdpSocket::bind(local_address).map_err(ClientCreateError::Bind)?;

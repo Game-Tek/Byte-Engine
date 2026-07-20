@@ -1,18 +1,18 @@
-//! A hash map that allows for tracking the staleness of values.
+//! Cache values by key and revision, while retaining values from older revisions.
 
 use gxhash::{HashMap, HashMapExt};
 
-/// Possible states of an entry in a `StaleHashMap`.
+/// The `Entry` enum distinguishes current, stale, and missing [`StaleHashMap`] entries.
 pub enum Entry<V> {
-	/// A value for a key exists and the value is up-to-date.
+	/// The value exists and matches the requested revision.
 	Fresh(V),
-	/// A value for a key exists but the value is stale.
+	/// The value exists but belongs to another revision.
 	Stale(V),
-	/// No value for a key exists.
+	/// The key has no value.
 	Empty,
 }
 
-/// A hash map that allows for tracking the staleness of values.
+/// The `StaleHashMap` struct provides revision-aware cache storage without discarding stale values.
 pub struct StaleHashMap<K, H, V>(HashMap<K, (H, V)>);
 
 impl<K: Eq + std::hash::Hash, H: PartialEq, V> Default for StaleHashMap<K, H, V> {
@@ -22,17 +22,17 @@ impl<K: Eq + std::hash::Hash, H: PartialEq, V> Default for StaleHashMap<K, H, V>
 }
 
 impl<K: Eq + std::hash::Hash, H: PartialEq, V> StaleHashMap<K, H, V> {
-	/// Creates a new `StaleHashMap`.
+	/// Creates a map with space for 1,024 entries.
 	pub fn new() -> Self {
 		Self(HashMap::with_capacity(1024))
 	}
 
-	/// Creates a new `StaleHashMap` with the specified capacity.
+	/// Creates a map with space for at least `capacity` entries.
 	pub fn with_capacity(capacity: usize) -> Self {
 		Self(HashMap::with_capacity(capacity))
 	}
 
-	/// Returns a reference to the value only if it is not stale.
+	/// Returns the value when its stored revision matches `hash`.
 	pub fn get(&self, key: &K, hash: H) -> Option<&V> {
 		match self.0.get(key) {
 			Some((old_hash, value)) => {

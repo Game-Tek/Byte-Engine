@@ -1,4 +1,4 @@
-//! This is a smoke test that creates a replicated environments.
+//! Creates connected replication endpoints as a networking smoke test.
 
 use std::time::Instant;
 

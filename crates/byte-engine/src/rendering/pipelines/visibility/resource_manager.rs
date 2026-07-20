@@ -1168,7 +1168,8 @@ struct FactoryMaterial {
 	textures: Vec<Option<(String, u32)>>,
 }
 
-/// A material evaluation pipeline that must be created on the render thread.
+/// The `PendingMaterialPipeline` struct carries a material-evaluation pipeline
+/// request that must be completed on the render thread.
 pub(crate) struct PendingMaterialPipeline {
 	request: ComputePipelineRequest,
 }
@@ -1743,11 +1744,11 @@ mod tests {
 }
 
 pub enum ResourceStates<P, L> {
-	/// The resource is pending handling.
+	/// The resource is waiting to be processed.
 	Pending(P),
-	/// The resource is currently being loaded.
+	/// The resource is loading.
 	Loading(ghi::FrameKey, L),
-	/// The resource has been loaded successfully and is available for use.
+	/// The resource is ready for use.
 	Loaded(L),
 	/// The resource failed to load and should not be retried.
 	Failed,

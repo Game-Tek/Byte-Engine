@@ -4,9 +4,10 @@ description: How to set up Linux for Byte Engine applications.
 icon: Terminal
 ---
 
-## Linux
+Install the native packages and configure AVX2 before you build Byte Engine on
+Linux.
 
-### System Packages
+## Install system packages
 
 Install the native build, windowing, audio, and Vulkan packages used by Byte's Linux backend.
 
@@ -14,24 +15,26 @@ Install the native build, windowing, audio, and Vulkan packages used by Byte's L
 sudo apt install -y cmake libwayland-dev libasound2-dev libx11-xcb-dev libxkbcommon-dev libvulkan-dev vulkan-tools vulkan-validationlayers
 ```
 
-### x64 AVX2 Cargo Config
+## Enable AVX2 on x64
 
-On x64 Linux, applications that depend on Byte Engine should enable AVX2 explicitly instead of using `target-cpu=native`. Add this to the application's `.cargo/config.toml`.
+On x64 Linux, enable AVX2 explicitly instead of using `target-cpu=native`. Add
+this configuration to your application's `.cargo/config.toml`:
 
 ```toml
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+avx2"]
 ```
 
-### Mold
+## Optional: Install Mold
 
-[Mold](https://github.com/rui314/mold) is a fast linker. It is not required by Byte, but we recommend it for improved iteration speed on Linux.
+[Mold](https://github.com/rui314/mold) is an optional linker that can reduce
+build times on Linux.
 
-Install steps, including Rust setup, are outlined in its repository.
+Follow the installation steps in the Mold repository.
 
-### RenderDoc
+## Optional: Install RenderDoc
 
-RenderDoc is optional, but useful when debugging graphics captures.
+Install RenderDoc when you need to capture and inspect rendered frames.
 
 ```bash
 sudo apt install renderdoc

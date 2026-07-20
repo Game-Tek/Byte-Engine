@@ -1,6 +1,7 @@
 use crate::ui::{style::ConcreteStyle, Transform, Visual};
 
-/// A single-line text field primitive whose content is owned by the app.
+/// The `TextField` struct provides a single-line text field whose content remains
+/// owned by the application.
 ///
 /// The field stores the current render snapshot of the app-owned string so it
 /// can participate in layout, rendering, and backward-delete edit routing.
@@ -80,7 +81,8 @@ impl TextField {
 	}
 }
 
-/// Text field settings shared by layout measurement and rendering.
+/// The `TextFieldSettings` struct shares text-field settings between layout
+/// measurement and rendering.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextFieldSettings {
 	pub font_size: f32,

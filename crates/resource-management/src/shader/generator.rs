@@ -11,7 +11,7 @@ use crate::shader::besl::{
 	graph::{build_graph_in, topological_sort_in},
 };
 
-/// Generates a graphics API consumable shader from a BESL shader program definition.
+/// The `Generator` trait provides graphics-API shader generation from a BESL program definition.
 pub trait Generator {}
 
 /// The `CompiledShaderBinding` struct preserves the flat resource interface required to create a backend shader.
@@ -44,7 +44,7 @@ impl CompiledShaderBinding {
 	}
 }
 
-/// The `CompiledShader` struct stores compiled shader bytes and reflection metadata shared by compiler backends.
+/// The `CompiledShader` struct provides compiled bytes and reflection metadata across compiler backends.
 pub struct CompiledShader {
 	binary: Box<[u8]>,
 	bindings: Vec<CompiledShaderBinding>,
@@ -122,7 +122,7 @@ pub struct Settings {
 	pub(crate) name: String,
 }
 
-/// The `ShaderFormatting` struct stores shared string formatting rules for shader generators.
+/// The `ShaderFormatting` struct provides shared text formatting rules for shader generators.
 #[derive(Clone, Copy)]
 pub(crate) struct ShaderFormatting {
 	minified: bool,

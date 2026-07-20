@@ -17,10 +17,11 @@ use crate::{
 	rendering::Camera,
 };
 
-/// This is the HTTP based implementation of the Byte Engine Inspection Protocol.
+/// The `HttpInspectorServer` struct exposes the Byte Engine Inspection Protocol
+/// through an HTTP API.
 ///
-/// This implementation provides a RESTful API for inspecting and managing entities within the Byte Engine application.
-/// It allows clients to retrieve information about entities and update existing entities.
+/// Clients use this server to inspect registered entities and update their
+/// exposed properties.
 pub struct HttpInspectorServer {
 	server: ListeningServer,
 

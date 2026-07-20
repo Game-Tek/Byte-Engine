@@ -1,4 +1,3 @@
-/// The `Source` trait represents an audio source or generator.
-///
-/// Implementations of this trait can be used to play audio or generate audio.
+/// The `Source` trait marks audio values that can be attached to an
+/// [`crate::audio::Emitter`].
 pub trait Source {}

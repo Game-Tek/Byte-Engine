@@ -101,9 +101,7 @@ pub mod tests {
 		tests::ASSETS_PATH,
 	};
 
-	/// A storage backend that can be used for tests.
-	/// It allows you to add files to the storage backend. This way you can test custom files without having to create them on the filesystem.
-	/// For any requested file that was not "mocked" it will try to read the file from the assets directory.
+	/// The `TestStorageBackend` struct provides in-memory source files with an asset-directory fallback for tests.
 	#[derive(Clone)]
 	pub struct TestStorageBackend(Arc<Mutex<HashMap<String, Box<[u8]>>>>);
 

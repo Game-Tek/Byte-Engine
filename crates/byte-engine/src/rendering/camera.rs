@@ -7,7 +7,7 @@ use crate::space::orientable::Orientable;
 use crate::space::{Positionable, Transformable};
 
 #[derive(Clone, Debug)]
-/// The `Camera` struct exists as the scene-owned view source for render sinks and
+/// The `Camera` struct provides scene-owned view settings to render sinks and
 /// inspection tools.
 pub struct Camera {
 	position: Vector3,
@@ -37,22 +37,22 @@ impl Camera {
 		}
 	}
 
-	/// Returns the field of view of the camera
+	/// Returns the camera's vertical field of view.
 	pub fn get_fov(&self) -> f32 {
 		self.fov
 	}
 
-	/// Returns the aspect ratio of the camera
+	/// Returns the camera's width-to-height aspect ratio.
 	fn get_aspect_ratio(&self) -> f32 {
 		self.aspect_ratio
 	}
 
-	/// Returns the aperture of the camera
+	/// Returns the camera aperture.
 	fn get_aperture(&self) -> f32 {
 		self.aperture
 	}
 
-	/// Returns the focus distance of the camera
+	/// Returns the camera focus distance.
 	fn get_focus_distance(&self) -> f32 {
 		self.focus_distance
 	}

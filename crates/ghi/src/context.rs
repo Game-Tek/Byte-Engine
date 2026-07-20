@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// The `Context` trait identifies objects that own render resources created from a GPU device.
-/// Its purpose is to be a "ownership context" that delineates the lifetime of GPU resources.
+/// Implementations use the context lifetime to bound the lifetime of owned GPU resources.
 pub trait Context: ContextCreate {
 	type Queue: crate::queue::Queue;
 	type QueueReference<'a>: crate::queue::Queue
@@ -26,10 +26,9 @@ pub trait Context: ContextCreate {
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool;
 
-	/// Returns whether the GPU device supports BC block-compressed texture
-	/// formats (BC5, BC7). On Apple Silicon this is always true; on Intel
-	/// Macs and iOS Simulator it may be false. Callers should check this
-	/// before creating any BC-compressed images or samplers.
+	/// Returns whether the GPU supports BC5 and BC7 block-compressed textures.
+	///
+	/// Check this value before you create BC-compressed images or samplers.
 	fn supports_bc_texture_compression(&self) -> bool;
 
 	/// Returns an owned queue wrapper that exposes queue-local command submission.
@@ -41,9 +40,9 @@ pub trait Context: ContextCreate {
 	/// Returns a command-buffer wrapper that exposes command-buffer-local recording.
 	fn command_buffer<'a>(&'a mut self, command_buffer_handle: CommandBufferHandle) -> Self::CommandBuffer<'a>;
 
-	/// Updates the number of maximum frames in flight.
-	/// This operation creates extra resources to support the new number of frames in flight.
-	/// > THIS IS AN EXPENSIVE OPERATION
+	/// Changes the maximum number of frames in flight.
+	///
+	/// This expensive operation can create more frame resources.
 	fn set_frames_in_flight(&mut self, frames: u8);
 
 	/// Returns a device accessible address for the provided buffer handle.
@@ -64,8 +63,9 @@ pub trait Context: ContextCreate {
 	/// Flushes or uploads pending writes for the provided image.
 	fn sync_texture(&mut self, image_handle: ImageHandle);
 
-	/// Enables writing to a texture and queues a copy operation for it.
-	/// Texture must still be synchronized by calling `sync` on a command buffer.
+	/// Enables writes to a texture and queues a copy operation.
+	///
+	/// Call `sync` on a command buffer before the GPU uses the texture.
 	fn write_texture(&mut self, texture_handle: ImageHandle, f: impl FnOnce(&mut [u8]));
 
 	/// Updates retained descriptor-set state before command recording.
@@ -139,17 +139,12 @@ pub trait ContextCreate {
 		vertex_layout: &[VertexElement],
 	) -> MeshHandle;
 
-	/// Creates a shader.
-	/// # Arguments
-	/// * `name` - The name of the shader.
-	/// * `shader_source_type` - The type of the shader source.
-	/// * `stage` - The stage of the shader.
-	/// * `shader_resource_descriptors` - The flat resource descriptors of the shader.
-	/// # Returns
-	/// The handle of the shader.
+	/// Creates a shader and returns its handle.
+	///
 	/// # Errors
-	/// Returns an error if the shader source was GLSL source code and could not be compiled.
-	/// Returns an error if the shader source was SPIR-V binary and could not aligned to 4 bytes.
+	///
+	/// Returns an error when GLSL compilation fails or SPIR-V input is not aligned
+	/// to four bytes.
 	fn create_shader(
 		&mut self,
 		name: Option<&str>,
@@ -189,7 +184,7 @@ pub trait ContextCreate {
 
 	/// Creates an image sampler from a builder.
 	///
-	/// Sampler builders are limited on multiple devices so you are encouraged to reuse them.
+	/// Devices can limit their sampler count. Reuse samplers when possible.
 	fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle;
 
 	/// Creates a buffer that stores top-level acceleration-structure instances.

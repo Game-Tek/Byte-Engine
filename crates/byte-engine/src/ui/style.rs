@@ -113,9 +113,10 @@ impl Default for ConcreteStyle {
 }
 
 impl ConcreteStyle {
-	/// Creates a new [`ConcreteStyle`] with no layers.
+	/// Creates a [`ConcreteStyle`] with no layers.
 	///
-	/// Keep in mind that [`ConcreteStyle::default`] will create a [`ConcreteStyle`] with a single default layer, while this will create an empty [`ConcreteStyle`] with no layers, which produces invisible elements.
+	/// This style produces invisible elements. Use [`ConcreteStyle::default`] to
+	/// create a style with one visible default layer.
 	pub fn new() -> Self {
 		Self { layers: Vec::new() }
 	}

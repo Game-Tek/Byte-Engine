@@ -17,25 +17,27 @@ pub trait Body: Collider + Transformable {
 	fn velocity(&self) -> Vector3;
 
 	/// Returns the mass of the body in kilograms.
-	/// Default implementation returns 1 kilogram.
+	///
+	/// The default implementation returns 1 kilogram.
 	fn mass(&self) -> f32 {
 		1f32
 	}
 
 	/// Returns the center of mass of the body in body space.
-	/// Default implementation returns the origin.
+	///
+	/// The default implementation returns the origin.
 	fn center_of_mass(&self) -> Vector3 {
 		Vector3::new(0.0, 0.0, 0.0)
 	}
 }
 
-/// The type of body that an entity is.
+/// The `BodyTypes` enum selects how a physics body responds to forces and collisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyTypes {
-	/// Static bodies are not affected by forces or collisions.
+	/// Ignores forces and collisions.
 	Static,
-	/// Kinematic bodies are not affected by forces, but are affected by collisions.
+	/// Ignores forces but participates in collisions.
 	Kinematic,
-	/// Dynamic bodies are affected by forces and collisions.
+	/// Responds to forces and collisions.
 	Dynamic,
 }

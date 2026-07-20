@@ -253,7 +253,8 @@ fn apply_visual_transforms(elements: &mut [LayoutElement], tree: &RetainedTree, 
 	}
 }
 
-/// Context owned by a mounted async UI task.
+/// The `EvaluationContext` struct keeps the context owned by a mounted asynchronous
+/// UI task.
 pub struct EvaluationContext<C = ()> {
 	id: Id,
 	parent: Option<Id>,
@@ -995,7 +996,7 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
-	/// Renders the given snapshot into a [`Render`] object.
+	/// Converts the specified snapshot into render data.
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
 		let mut elements = Vec::new();
 		let mut curve_elements = Vec::new();

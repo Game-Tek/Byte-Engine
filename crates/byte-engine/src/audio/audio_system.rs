@@ -36,12 +36,12 @@ pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
 	fn play<'a>(&'a mut self, audio_asset_url: &'a str) -> ();
 
-	/// Renders audio indefinitely.
+	/// Renders audio until the audio system stops.
 	fn render(&mut self) {
 		while self.render_available() {}
 	}
 
-	/// Processes audio data and sends it to the audio hardware interface.
+	/// Processes audio data and submits it to the audio hardware interface.
 	fn render_available(&mut self) -> bool;
 }
 
@@ -283,7 +283,7 @@ impl AudioSystem for DefaultAudioSystem {
 	}
 }
 
-/// The `Channel` struct represents a channel in the audio system.
+/// The `Channel` struct reserves state for one audio mix channel.
 struct Channel {
 	samples: Box<[i16]>,
 	gain: f32,

@@ -229,7 +229,7 @@ impl Drop for WindowIterator<'_> {
 	}
 }
 
-/// Represents the state of the window, can be used to store additional data if needed.
+/// The `WindowState` struct preserves Win32 state associated with a window procedure.
 #[derive(Debug, Clone, Default)]
 struct State {
 	use_raw_mouse: bool,

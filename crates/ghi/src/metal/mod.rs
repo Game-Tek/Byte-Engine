@@ -88,7 +88,7 @@ pub(super) struct MetalConsumption {
 const MAX_FRAMES_IN_FLIGHT: usize = 3;
 const MAX_SWAPCHAIN_IMAGES: usize = 8;
 
-/// Returns the current/old drawable size, the new drawable size, and the scale factor.
+/// Returns the previous drawable size, new drawable size, and scale factor.
 fn get_layer_sizes(layer: &CAMetalLayer, view: &NSView) -> (NSSize, NSSize, f64) {
 	let logical_size = view.frame().size;
 	let drawable_size = view.convertSizeToBacking(logical_size);
@@ -332,7 +332,7 @@ pub(crate) struct StageArgumentBinding {
 	argument_slots: ArgumentBindingSlots,
 }
 
-/// The `ArgumentSlotRange` struct stores a compact base and count for one dense native argument-ID run.
+/// The `ArgumentSlotRange` struct identifies one dense run of native argument IDs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ArgumentSlotRange {
 	base: u32,
@@ -1080,7 +1080,7 @@ pub(crate) struct AccelerationStructure {
 }
 
 #[derive(Clone, Copy)]
-/// The `MemoryBackedResourceCreationResult` struct stores the information of a memory backed resource.
+/// The `MemoryBackedResourceCreationResult` struct provides a resource and its memory requirements for allocation.
 pub struct MemoryBackedResourceCreationResult<T> {
 	/// The resource.
 	resource: T,
@@ -1104,11 +1104,11 @@ struct BuildBuffer {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) enum Tasks {
-	/// Delete a Metal texture. Will be associated to a frame index in `Task`.
+	/// Deletes a Metal texture at the frame selected by [`Task`].
 	DeleteMetalTexture {
 		handle: ImageHandle,
 	},
-	/// Delete a Metal buffer. Will be associated to a frame index in `Task`.
+	/// Deletes a Metal buffer at the frame selected by [`Task`].
 	DeleteMetalBuffer {
 		handle: BufferHandle,
 	},
@@ -1132,8 +1132,7 @@ pub(crate) enum Tasks {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-/// The `Task` struct represents a deferred task that needs to be executed at a later time.
-/// This is because some tasks need to be executed at a particular time or frame.
+/// The `Task` struct schedules backend work for a required time or frame.
 pub(crate) struct Task {
 	pub(crate) task: Tasks,
 	pub(crate) frame: Option<u8>,
@@ -1695,7 +1694,7 @@ pub mod descriptor_set {
 	use super::*;
 	use crate::descriptors::DescriptorSetHandle;
 
-	/// The `DescriptorSet` struct stores the Metal descriptor state for one frame.
+	/// The `DescriptorSet` struct provides Metal descriptor state for one frame.
 	#[derive(Clone)]
 	pub(crate) struct DescriptorSet {
 		pub next: Option<DescriptorSetHandle>,

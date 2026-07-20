@@ -9,12 +9,11 @@ use crate::{
 };
 
 #[derive(Debug)]
-/// Represents a resource reference and can be use to embed to access related resources when loading.
+/// The `Reference` struct provides metadata, runtime state, and deferred binary data for a loaded resource.
 ///
-/// The `Reference` can be used to consult the memory requirements of the resource to, for example, pre-allocate/reserve memory destined for the resource.
-///
-/// The `Reference` can contain a `reader` that provides the backing store for the resource's binary data.
-/// This `reader` usually comes assigned from a call to [`crate::ResourceManager::request`].
+/// Use the size metadata to reserve destination memory before loading the binary
+/// data. A reader from [`ResourceManager::request`](crate::ResourceManager::request)
+/// supplies the resource data.
 pub struct Reference<T: Resource> {
 	pub id: String,
 	pub hash: u64,
@@ -86,7 +85,7 @@ impl<'a, T: Resource + 'a> Reference<T> {
 		}
 	}
 
-	/// Loads the resource's binary data from the storage backend.
+	/// Loads the resource's binary data into the selected read target.
 	///
 	/// If `read_target` requests backing storage, the reader serves resource-owned bytes directly.
 	/// File-backed resources use mapped files when the storage backend supports them. If direct
@@ -124,8 +123,10 @@ impl<T: Resource> std::hash::Hash for Reference<T> {
 }
 
 #[derive(Debug, serde::Deserialize, Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-/// `ReferenceModel` is a model for [`Reference`] that can be used to serialize/deserialize references.
-/// `ReferenceModel` has to be turned into a [`Reference`] using `solve()` which will allow loading the resource's binary data and fetching related resources.
+/// The `ReferenceModel` struct stores the serializable form of a [`Reference`].
+///
+/// Resolve this model through [`Solver::solve`](crate::Solver::solve) before you
+/// load binary data or access dependent resources.
 pub struct ReferenceModel<T: Model> {
 	id: String,
 	hash: u64,

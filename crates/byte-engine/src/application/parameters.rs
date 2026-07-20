@@ -1,8 +1,8 @@
 use crate::application::Parameter;
 
-/// The `Parameters` trait provides methods for any entity that wnats to expose configurations.
+/// The `Parameters` trait gives application components access to named configuration values.
 pub trait Parameters {
-	/// Returns any paramater that matches the provided full name.
+	/// Returns the parameter with the specified full name, if it exists.
 	fn get_parameter(&self, name: &str) -> Option<&Parameter>;
 }
 

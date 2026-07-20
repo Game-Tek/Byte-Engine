@@ -27,7 +27,7 @@ use crate::{
 	ProcessedAsset, ReferenceModel,
 };
 
-/// The `ProgramGenerator` trait defines renderer-specific shader adaptation before platform compilation.
+/// The `ProgramGenerator` trait provides renderer-specific shader adaptation before platform compilation.
 pub trait ProgramGenerator: Send + Sync {
 	/// Adapts a parsed material program to the bindings and entry-point contract used by its renderer.
 	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a>;

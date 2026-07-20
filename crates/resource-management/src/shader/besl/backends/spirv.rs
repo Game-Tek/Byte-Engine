@@ -10,9 +10,9 @@ mod compilation {
 		glsl_compile,
 	};
 
-	/// The `Generator` generates SPIR-V shaders from Byte Engine Shader Language program descriptions.
+	/// The `Generator` struct provides SPIR-V generation from Byte Engine Shader Language programs.
 	/// > [!IMPORTANT]
-	/// > Creating an instance of `Generator` is an expensive operation, and as such, it should be reused whenever possible.
+	/// > Creating a generator is expensive. Reuse each instance when possible.
 	pub struct Generator {
 		glsl_shader_generator: GLSLShaderGenerator,
 	}

@@ -1,4 +1,4 @@
-//! The storage backend provides a way to store and retrieve assets and resources from a storage backend.
+//! Store, retrieve, and query baked resources through interchangeable backends.
 
 pub mod redb_storage_backend;
 
@@ -8,7 +8,7 @@ use crate::{
 	asset::ResourceId, model::ArchivedQueryableValue, ArchivedSerializableResource, ProcessedAsset, SerializableResource,
 };
 
-/// The `QueryCursor` struct represents an opaque position for paginated resource queries.
+/// The `QueryCursor` struct provides an opaque continuation point for paginated resource queries.
 #[derive(
 	Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
@@ -22,13 +22,13 @@ impl QueryCursor {
 	}
 }
 
-/// The `QueryPredicate` enum represents a property constraint for a resource query.
+/// The `QueryPredicate` enum defines one indexed property constraint for a resource query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryPredicate {
 	Eq { property: String, value: QueryableValue },
 }
 
-/// The `Query` struct represents a paged resource query against a storage backend.
+/// The `Query` struct provides a class-filtered, paginated request to a storage backend.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
 	pub class: String,
@@ -77,7 +77,7 @@ impl Query {
 		})
 	}
 
-	/// Checks whether an archived resource satisfies this query without deserializing its metadata.
+	/// Returns whether archived metadata matches this query without deserializing it.
 	pub fn matches_archived(&self, resource: &ArchivedSerializableResource) -> bool {
 		if resource.class.as_str() != self.class {
 			return false;
@@ -102,14 +102,14 @@ impl Query {
 	}
 }
 
-/// The `QueryPage` struct represents a page of query results and the cursor for the next page.
+/// The `QueryPage` struct carries one result page and its optional continuation cursor.
 #[derive(Debug)]
 pub struct QueryPage<T> {
 	pub items: Vec<T>,
 	pub cursor: Option<QueryCursor>,
 }
 
-/// The `QueryError` enum represents a failure while executing a resource query.
+/// The `QueryError` enum identifies failures while a storage backend executes a query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryError {
 	InvalidCursor,
@@ -122,8 +122,9 @@ pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
 
 	fn query(&self, query: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>;
 
-	/// Returns the type of the asset, if attainable from the url.
-	/// Can serve as a filter for the asset handler to not attempt to load assets it can't handle.
+	/// Returns the asset type from its URL when the backend can determine it.
+	///
+	/// Asset handlers use this value to skip unsupported sources before loading them.
 	fn get_type<'a>(&'a self, url: ResourceId<'a>) -> Option<&'a str> {
 		Some(url.get_extension())
 	}

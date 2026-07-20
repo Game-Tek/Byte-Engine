@@ -1,6 +1,4 @@
-//! This module contains the asset management system.
-//! This system is responsible for loading assets from different sources (network, local, etc.) and generating the resources from them.
-//! Each assert is a file in a specific format, and the asset handlers are responsible for parsing the file and generating the resources from it.
+//! Load source assets and use format-specific handlers to bake engine resources.
 
 use std::{alloc::Allocator, io::ErrorKind};
 
@@ -23,7 +21,7 @@ pub mod wav_asset_handler;
 pub type BEADType = json::Value;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// The `ContainerDefaultResource` enum represents an explicit BEAD choice for an unfragmented container asset.
+/// The `ContainerDefaultResource` enum identifies the BEAD-selected resource for an unfragmented container asset.
 pub(crate) enum ContainerDefaultResource {
 	Mesh,
 	Animation,
@@ -110,9 +108,10 @@ pub use storage_backend::{AssetStorageBytes, StorageBackend};
 use crate::r#async::read;
 use crate::resource::reader::MappedFileBacking;
 
-/// Loads an asset from source asynchronously.\
-/// Expects an asset name in the form of a path relative to the assets directory, or a network address.\
-/// If the asset is not found it will return None.
+/// Loads a source asset and its optional BEAD description.
+///
+/// Pass a path relative to the assets directory or a network URL. The function
+/// returns `Err(())` when it cannot find or read the asset.
 pub async fn read_asset_from_source<'a>(
 	url: ResourceId<'a>,
 	base_path: Option<&'a std::path::Path>,

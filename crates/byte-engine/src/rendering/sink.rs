@@ -3,10 +3,10 @@ use utils::Extent;
 
 use crate::rendering::view::View;
 
-/// The `Sink` struct represents a per-frame render destination for a resolved camera view.
+/// The `Sink` struct provides a per-frame render destination for a resolved camera view.
 ///
-/// A sink exists to keep the view transform, renderable extent, and renderer sink index together
-/// while scene managers and render passes prepare work for a specific output surface.
+/// It keeps the view transform, renderable extent, and renderer sink index
+/// together while scene managers and render passes prepare an output surface.
 #[derive(Debug, Clone, Copy)]
 pub struct Sink {
 	view: View,

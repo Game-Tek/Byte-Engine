@@ -95,7 +95,7 @@ impl BrdfMaterialDescription {
 	}
 }
 
-/// The `BrdfMaterialValidationError` enum describes invalid material graph references.
+/// The `BrdfMaterialValidationError` enum identifies invalid references in a material graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BrdfMaterialValidationError {
 	MissingNode { id: BrdfNodeId },
@@ -129,7 +129,7 @@ impl BrdfNodeId {
 	}
 }
 
-/// The `BrdfNode` enum describes each operation in a backend-neutral BRDF material graph.
+/// The `BrdfNode` enum identifies the operations available in a backend-neutral BRDF material graph.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub enum BrdfNode {
 	Constant(BrdfValue),
@@ -152,7 +152,7 @@ pub enum BrdfValue {
 	Vector4([f32; 4]),
 }
 
-/// The `BrdfTexture` struct describes a texture sample independent of engine resource storage.
+/// The `BrdfTexture` struct provides a storage-independent texture sample for a BRDF graph.
 #[derive(
 	Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
@@ -182,7 +182,7 @@ pub enum BrdfChannel {
 	Alpha,
 }
 
-/// The `BrdfMetallicRoughness` struct represents a metallic-roughness surface BRDF root.
+/// The `BrdfMetallicRoughness` struct provides the metallic-roughness root for a surface BRDF graph.
 #[derive(
 	Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
@@ -195,7 +195,7 @@ pub struct BrdfMetallicRoughness {
 	pub emission: Option<BrdfNodeId>,
 }
 
-/// The `BrdfAlphaMode` enum describes how alpha participates in surface visibility.
+/// The `BrdfAlphaMode` enum identifies how alpha affects surface visibility.
 #[derive(
 	Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]

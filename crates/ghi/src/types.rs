@@ -1,9 +1,9 @@
 use crate::{BaseBufferHandle, BufferHandle};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-/// Enumerates the available layouts.
+/// A resource layout required by GPU work.
 pub enum Layouts {
-	/// The layout is undefined. We don't mind what the layout is.
+	/// No specific layout is required.
 	Undefined,
 	/// The image will be used as render target.
 	RenderTarget,
@@ -22,7 +22,7 @@ pub enum Layouts {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// Enumerates the available filtering modes, primarily used in samplers.
+/// A texture filtering mode used by samplers.
 pub enum FilteringModes {
 	/// Closest mode filtering. Rounds floating point coordinates to the nearest pixel.
 	Closest,
@@ -31,8 +31,7 @@ pub enum FilteringModes {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// Enumerates the available sampling reduction modes.
-/// The sampling reduction mode is used to determine how to reduce/combine the samples of neighbouring texels when sampling an image.
+/// A rule for combining neighboring texels during image sampling.
 pub enum SamplingReductionModes {
 	/// The average of the samples. Weighted by the proximity of the sample to the sample point.
 	WeightedAverage,
@@ -43,7 +42,7 @@ pub enum SamplingReductionModes {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// Enumerates the available sampler addressing modes.
+/// A sampler rule for coordinates outside an image.
 pub enum SamplerAddressingModes {
 	/// Repeat mode addressing.
 	Repeat,
@@ -91,7 +90,7 @@ bitflags::bitflags! {
 		const TransferDestination = 1 << 10;
 		/// Resource will be used as a shader binding table.
 		const ShaderBindingTable = 1 << 11;
-		/// Resource will be used as a acceleration structure build scratch buffer.
+		/// The resource is acceleration-structure build scratch storage.
 		const AccelerationStructureBuildScratch = 1 << 12;
 
 		const AccelerationStructureBuild = 1 << 13;
@@ -150,7 +149,7 @@ bitflags::bitflags! {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-/// Enumerates the formats that textures can have.
+/// A pixel format supported by GHI images.
 pub enum Formats {
 	/// 8 bit unsigned per component floating point R.
 	R8F,
@@ -253,7 +252,7 @@ pub enum Formats {
 	BC7SRGB,
 }
 
-/// The `BcLayout` struct describes the compact block layout for one BC-compressed image level.
+/// The `BcLayout` struct defines the compact block layout for one BC-compressed image level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BcLayout {
 	pub blocks_w: u32,
@@ -503,18 +502,18 @@ bitflags::bitflags! {
 	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 	/// Bit flags for the available access policies.
 	pub struct AccessPolicies : u8 {
-		/// Will perform no access.
+		/// No access.
 		const NONE = 0b00000000;
-		/// Will perform read access.
+		/// Read access.
 		const READ = 0b00000001;
-		/// Will perform write access.
+		/// Write access.
 		const WRITE = 0b00000010;
-		/// Will perform read and write access.
+		/// Read and write access.
 		const READ_WRITE = Self::READ.bits() | Self::WRITE.bits();
 	}
 }
 
-/// Primitive GPU/shader data types.
+/// A primitive data type shared by GPU resources and shaders.
 #[derive(Hash, Clone, Copy, PartialEq, Eq)]
 pub enum DataTypes {
 	Float,
@@ -577,7 +576,7 @@ bitflags::bitflags! {
 	}
 }
 
-/// Enumerates the types of shaders that can be created.
+/// A programmable shader stage.
 #[derive(Clone, Copy, Debug)]
 pub enum ShaderTypes {
 	/// A vertex shader.
@@ -624,7 +623,7 @@ pub enum Encodings {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-/// Describes the bit layout of a format's channels.
+/// The channel order in a pixel format.
 pub enum ChannelLayout {
 	/// Single channel (R).
 	R,
@@ -645,7 +644,7 @@ pub enum ChannelLayout {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-/// Describes the bit size per channel.
+/// The bit width of each channel in a pixel format.
 pub enum ChannelBitSize {
 	/// 8 bits per channel.
 	Bits8,
@@ -659,7 +658,7 @@ pub enum ChannelBitSize {
 	Compressed,
 }
 
-/// The `BufferCopyDescriptor` struct describes one byte range copy from a source buffer to a destination buffer.
+/// The `BufferCopyDescriptor` struct configures one byte-range copy between buffers.
 pub struct BufferCopyDescriptor {
 	pub source_buffer: BaseBufferHandle,
 	pub source_offset: usize,
@@ -687,7 +686,7 @@ impl BufferCopyDescriptor {
 	}
 }
 
-/// The `BufferImageCopyDescriptor` struct describes one image upload from a source buffer to a destination image.
+/// The `BufferImageCopyDescriptor` struct configures one image upload from a buffer.
 pub struct BufferImageCopyDescriptor {
 	pub source_buffer: BaseBufferHandle,
 	pub source_offset: usize,

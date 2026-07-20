@@ -1,34 +1,25 @@
-//! This crate contains the implementation of the Byte Engine Transport Protocol (BETP) protocol.
-//! The implementation is designed _sans-io_ and can be used with any I/O implementation.
+//! Use the Byte Engine Transport Protocol (BETP) to exchange reliable, ordered
+//! data between a multiplayer client and an authoritative server.
 //!
-//! # Module Structure
+//! BETP runs over UDP but does not perform network I/O. Your application supplies
+//! the I/O layer, so you can use BETP with different networking runtimes.
 //!
-//! The module is divided into the following submodules:
+//! # Modules
 //!
-//! - `server`: Contains the implementation of the server.
-//! - `client`: Contains the implementation of the client.
-//! - `remote`: Contains the implementation of the remote connection.
-//! - `local`: Contains the implementation of the local connection.
-//! - `packets`: Contains the implementation of the packets used in the protocol.
+//! - [`server`] manages authoritative protocol sessions.
+//! - [`client`] manages client protocol sessions.
+//! - [`packets`] defines the protocol's wire types.
 //!
-//! # Protocol Overview
+//! # Connection sequence
 //!
-//! The Byte Engine Transport Protocol (BETP) is a simple, reliable, and ordered protocol that is used to transfer data between a client and a server.
-//! The protocol is designed to be used in a client-server architecture where the server is the authoritative entity that manages connections to clients and maintains the state of the game.
-//! The protocol is built on top of the User Datagram Protocol (UDP) and provides reliable and ordered delivery of packets.
+//! 1. The client requests a connection.
+//! 2. The server sends a challenge.
+//! 3. The client responds to the challenge.
+//! 4. The client and server exchange data.
+//! 5. Either endpoint can end the connection.
 //!
-//! The protocol consists of the following packets in the following order:
-//!
-//! - Connection Request Packet: Sent by the client to request a connection to the server.
-//! - Challenge Packet: Sent by the server to challenge the client.
-//! - Challenge Response Packet: Sent by the client to respond to the challenge.
-//! - Data Packet: Sent by the client or server to send data.
-//! - Disconnect Packet: Sent by the client or server to update the connection status.
-//!
-//! The protocol uses sequence numbers to ensure that packets are delivered in order and to detect lost packets.
-//! The protocol also uses acknowledgments to ensure that packets are reliably delivered.
-//!
-//! The protocol is designed to be simple and easy to implement, making it suitable for use in real-time multiplayer games.
+//! BETP uses sequence numbers to order packets and detect missing packets.
+//! Acknowledgments identify the packets that arrived.
 
 #![allow(incomplete_features)]
 #![allow(clippy::items_after_test_module)]
@@ -49,7 +40,7 @@ pub use local::Local;
 pub use remote::Remote;
 pub use server::Server;
 
-/// Packet decoding failed.
+/// An error that prevents BETP packet decoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PacketReadError {
 	/// The packet header bytes could not be read from the source buffer.
@@ -94,14 +85,12 @@ impl std::fmt::Display for PacketReadError {
 impl std::error::Error for PacketReadError {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-/// [`PacketInfo`] contains information about a packet.
-/// - `acked`: A boolean that indicates if the packet has been acknowledged.
+/// The `PacketInfo` struct records whether a tracked packet was acknowledged.
 pub struct PacketInfo {
 	pub acked: bool,
 }
 
-/// Compares two sequence numbers and returns true if the first sequence number is greater than the second.
-/// The function takes into account the wrap-around of the sequence numbers.
+/// Returns whether `s1` follows `s2` in the wrapping sequence-number space.
 pub(crate) fn sequence_greater_than(s1: u16, s2: u16) -> bool {
 	((s1 > s2) && (s1 - s2 <= 32768u16)) || ((s1 < s2) && (s2 - s1 > 32768u16))
 }

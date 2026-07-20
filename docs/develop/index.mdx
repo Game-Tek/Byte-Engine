@@ -1,30 +1,30 @@
 ---
-title: Engine development
-description: How to develop the Byte Engine.
+title: Contribute to Byte Engine
+description: Build, test, and document changes to Byte Engine.
 icon: Hammer
 ---
 
-## Testing
+Use this section when you work on the engine repository. For application
+development, start with [Develop with Byte](/docs/use).
 
-Use these commands when working on the engine repository itself.
+## Test your changes
 
-### Run tests
-
-To run the full test suite:
+Run the full test suite:
 
 ```bash
 cargo test
 ```
 
-Some rendering and graphics tests need local GPU support. To skip them during a quick logic-only pass:
+Some rendering tests need a local GPU. For a quick logic-only pass, skip tests
+whose names contain `render` or `graphics`:
 
 ```bash
 cargo test -- --skip render --skip graphics
 ```
 
-### Code coverage
+## Measure code coverage
 
-To generate test code coverage, install `cargo-llvm-cov`:
+Install `cargo-llvm-cov`:
 
 ```bash
 cargo install cargo-llvm-cov
@@ -36,4 +36,16 @@ Then generate an LCOV report:
 cargo llvm-cov --lcov --output-path coverage/lcov.info
 ```
 
-To see the coverage report inline in VSCode you can use the `markis.code-coverage` extension.
+To view the report in Visual Studio Code, install the `markis.code-coverage`
+extension.
+
+## Write documentation
+
+Use [ISO 24495-1 plain-language principles](https://www.iso.org/standard/78907.html)
+for Rust comments and API documentation. Keep useful links between types, traits,
+functions, methods, and modules even when a strict plain-language rewrite would
+remove them. Developers use these links to navigate the API.
+
+Use the [Microsoft Writing Style Guide](https://learn.microsoft.com/style-guide/)
+for pages in `docs`. Address the reader directly, lead with their goal, use
+familiar words, and make the next action clear.

@@ -31,7 +31,7 @@ pub(crate) struct PathSegment {
 	pub(crate) ordinal: u32,
 }
 
-/// Describes an element layed out for an screen.
+/// The `LayoutElement` struct stores an element positioned and sized for a viewport.
 pub(crate) struct LayoutElement {
 	pub(crate) id: Id,
 	pub(crate) position: Location3,
@@ -39,7 +39,7 @@ pub(crate) struct LayoutElement {
 	pub(crate) hit_testable: bool,
 }
 
-/// Describes an element ready for rendering.
+/// The `RenderElement` struct stores an element prepared for rendering.
 #[derive(Clone)]
 pub(crate) struct RenderElement {
 	pub(crate) id: u32,
@@ -176,8 +176,10 @@ impl LayoutGraph {
 	}
 }
 
-/// Lays out the given elements and returns a vector of layout elements with their calculated positions and sizes for a given viewport.
-/// The relation map describes embedded elements.
+/// Lays out the elements for a viewport and returns their calculated positions
+/// and sizes.
+///
+/// `relations` describes parent-child element relationships.
 fn layout_elements<'a>(
 	elements: impl AsRef<[IdedElement]>,
 	relation_map: &[(Id, Id)],

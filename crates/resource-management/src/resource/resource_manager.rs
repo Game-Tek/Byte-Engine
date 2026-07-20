@@ -12,6 +12,8 @@ use crate::{asset::ResourceId, Model, Reference, ReferenceModel, Resource, Seria
 /// Release builds load only resources that already exist in the configured backend.
 ///
 /// File-system paths are relative to the assets directory.
+/// After construction, optionally install an asset manager in debug builds,
+/// then obtain typed resources through [`Self::request`].
 pub struct ResourceManager {
 	#[cfg(debug_assertions)]
 	asset_manager: std::sync::OnceLock<AssetManager>,
@@ -20,7 +22,10 @@ pub struct ResourceManager {
 }
 
 impl ResourceManager {
-	/// Creates a new resource manager.
+	/// Creates a resource manager over the selected storage backend.
+	///
+	/// In debug builds, optionally install an asset manager before the first
+	/// request. Next, call [`Self::request`] for each typed runtime resource.
 	pub fn new<SB: StorageBackend>(storage_backend: SB) -> Self {
 		ResourceManager {
 			#[cfg(debug_assertions)]
@@ -55,7 +60,8 @@ impl ResourceManager {
 	/// Loads resource metadata and dependencies, then returns a deferred binary-data [`Reference`].
 	///
 	/// Use [`Reference::load`](crate::Reference::load) to load the binary data into
-	/// caller-provided memory or reader-owned storage.
+	/// caller-provided memory or reader-owned storage. After loading, access the
+	/// typed metadata through [`Reference::resource`](crate::Reference::resource).
 	pub fn request<'s, 'a, 'b, T: Resource + 'a>(&'s self, id: &'b str) -> Result<Reference<T>, &'static str>
 	where
 		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,
@@ -91,6 +97,11 @@ impl ResourceManager {
 		Ok(reference)
 	}
 
+	/// Returns one page of typed resources that match indexed metadata.
+	///
+	/// Next, use each [`Reference::resource`](crate::Reference::resource) for
+	/// metadata and call [`Reference::load`](crate::Reference::load) only when the
+	/// binary payload is needed.
 	pub fn query<'a, T: Resource + 'a>(&'a self, query: Query) -> Result<QueryPage<Reference<T>>, QueryError>
 	where
 		ReferenceModel<T::Model>: Solver<'a, Reference<T>>,

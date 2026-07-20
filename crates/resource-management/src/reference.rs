@@ -14,6 +14,8 @@ use crate::{
 /// Use the size metadata to reserve destination memory before loading the binary
 /// data. A reader from [`ResourceManager::request`](crate::ResourceManager::request)
 /// supplies the resource data.
+/// Inspect typed metadata through [`Self::resource`], then call [`Self::load`] if
+/// the consuming system also needs the binary payload.
 pub struct Reference<T: Resource> {
 	pub id: String,
 	pub hash: u64,
@@ -91,6 +93,9 @@ impl<'a, T: Resource + 'a> Reference<T> {
 	/// File-backed resources use mapped files when the storage backend supports them. If direct
 	/// backing storage is unavailable, the resource falls back to an owned buffer. Explicit buffer,
 	/// box, and stream targets are still filled by reading into the caller-selected target.
+	///
+	/// After loading, pass the returned [`ReadTargets`] to the renderer, audio
+	/// system, or other consumer together with the metadata from [`Self::resource`].
 	pub fn load<'s>(&'s mut self, read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, LoadResults> {
 		let reader = self.reader.take().ok_or(LoadResults::NoReadTarget)?;
 

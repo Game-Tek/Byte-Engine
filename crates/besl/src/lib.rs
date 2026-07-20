@@ -1,4 +1,8 @@
 //! Use this crate to parse, link, and execute Byte Engine Shader Language (BESL) source.
+//!
+//! Call [`compile_to_besl`] for the normal parse-and-link path. Next, pass the
+//! linked [`NodeReference`] to the resource-management shader generator or use
+//! [`vm`] when tests need to execute BESL semantics directly.
 
 pub mod lexer;
 pub mod parser;
@@ -72,7 +76,8 @@ pub fn parse<'a>(source: &'a str) -> Result<parser::Node<'a>, CompilationError> 
 /// Resolves a parsed syntax tree and returns its linked root node.
 ///
 /// The linked tree contains the resolved relationships needed by later
-/// compilation stages.
+/// compilation stages. Next, give the returned [`NodeReference`] to a shader
+/// generator or to [`vm`] for semantic execution.
 pub fn lex(node: parser::Node) -> Result<NodeReference, CompilationError> {
 	let besl = lexer::lex(node).map_err(CompilationError::Lex)?;
 
@@ -82,7 +87,8 @@ pub fn lex(node: parser::Node) -> Result<NodeReference, CompilationError> {
 /// Parses and links BESL source into a JSPD.
 ///
 /// When `parent` is present, the compiled source can resolve names from that
-/// parent scope.
+/// parent scope. Next, pass the returned [`NodeReference`] to the active shader
+/// generator, or use [`vm`] to validate behavior in a test.
 pub fn compile_to_besl(source: &str, parent: Option<Node>) -> Result<NodeReference, CompilationError> {
 	if source.split_whitespace().next().is_none() {
 		return Ok(lexer::Node::scope("".to_string()).into());

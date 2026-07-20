@@ -31,6 +31,10 @@ use crate::{
 
 /// Installs the standard assets, input devices, audio worker, visibility
 /// rendering pipeline, and window.
+///
+/// After setup, create application actions through
+/// [`GraphicsApplication::action_factory`] and run the application with
+/// [`GraphicsApplication::do_loop`].
 pub fn default_setup(application: &mut GraphicsApplication) {
 	#[cfg(debug_assertions)]
 	{
@@ -103,6 +107,10 @@ pub fn setup_default_resource_and_asset_management(
 }
 
 /// Installs the device classes expected by [`super::process_default_window_input`].
+///
+/// Next, create application-level actions through
+/// [`GraphicsApplication::action_factory`]. The application tick translates
+/// window events and emits their resolved action values.
 pub fn setup_default_input(application: &mut GraphicsApplication) {
 	let input_system = &mut application.input_system;
 	let mouse = register_mouse_device_class(input_system);
@@ -117,6 +125,10 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 
 /// Starts the audio worker and connects generators created through the
 /// application's generator factory.
+///
+/// Next, submit a [`crate::audio::generator::Generator`] through
+/// [`GraphicsApplication::generator_factory`] to make it available to the audio
+/// worker.
 pub fn setup_default_audio(application: &mut GraphicsApplication) {
 	application
 		.threads

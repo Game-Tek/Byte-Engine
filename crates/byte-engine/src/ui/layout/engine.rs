@@ -2,6 +2,10 @@
 
 /// The [`Engine`] struct owns UI evaluation state, text shaping, and pointer
 /// interaction across viewports.
+///
+/// Create an engine with [`Self::new`] or [`Self::with_context`], mount the root
+/// component with [`Self::mount`], then call [`Self::evaluate`] and
+/// [`Self::render`] for each frame.
 pub struct Engine<C = ()> {
 	viewports: Vec<VirtualViewport>,
 	state: Rc<RefCell<EngineState>>,
@@ -827,12 +831,19 @@ impl Default for Engine<()> {
 }
 
 impl Engine<()> {
+	/// Creates a UI engine without application-specific shared context.
+	///
+	/// Next, call [`Self::mount`] with the root asynchronous component.
 	pub fn new() -> Self {
 		Self::with_context(())
 	}
 }
 
 impl<C: 'static> Engine<C> {
+	/// Creates a UI engine with shared application context available to components.
+	///
+	/// Next, call [`Self::mount`] with the root component, then begin the per-frame
+	/// [`Self::evaluate`] and [`Self::render`] sequence.
 	pub fn with_context(ctx: C) -> Self {
 		Self {
 			viewports: Vec::new(),
@@ -858,6 +869,10 @@ impl<C: 'static> Engine<C> {
 		self.viewports.push(viewport);
 	}
 
+	/// Mounts the root asynchronous component into the retained UI tree.
+	///
+	/// Next, call [`Self::evaluate`] once per frame after updating pointer, key,
+	/// and text input state.
 	pub fn mount<F>(&mut self, root: F)
 	where
 		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> UiFuture<'ctx> + 'static,
@@ -875,6 +890,9 @@ impl<C: 'static> Engine<C> {
 	}
 
 	/// Evaluates mounted UI tasks and returns a snapshot of the resulting layout.
+	///
+	/// Next, pass the mutable snapshot to [`Self::render`] and submit the returned
+	/// render data through [`crate::ui::UiRenderPass`].
 	pub fn evaluate<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
 		self.sync_pointer_state();
 		Runtime::begin_frame(Rc::clone(&self.runtime));
@@ -997,6 +1015,9 @@ impl<C: 'static> Engine<C> {
 	}
 
 	/// Converts the specified snapshot into render data.
+	/// Builds render data from an evaluated UI snapshot.
+	///
+	/// Next, give the returned data to [`crate::ui::UiRenderPass`] for GPU drawing.
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
 		let mut elements = Vec::new();
 		let mut curve_elements = Vec::new();

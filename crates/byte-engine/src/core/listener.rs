@@ -71,6 +71,8 @@ impl<'a, M> IntoIterator for &'a mut (dyn Listener<M> + 'a) {
 ///
 /// Use [`Self::new_listener`] to add a consumer. The new listener receives future
 /// messages but does not inherit messages already queued for this listener.
+/// Call [`Listener::read`] during the consumer's update, or use
+/// [`Self::filtered`] first when the consumer needs only part of the stream.
 #[derive(Clone)]
 pub struct DefaultListener<M>(pub(super) Receiver<M>);
 

@@ -22,6 +22,10 @@ pub trait Channel<M> {
 #[derive(Clone)]
 /// The [`DefaultChannel`] struct provides the engine's in-process broadcast
 /// transport.
+///
+/// Create a [`Self::listener`] for each consumer before calling
+/// [`Channel::send`]. Use [`crate::core::factory::Factory`] instead when the
+/// message must include a stable creation handle.
 pub struct DefaultChannel<M>(pub(super) Sender<M>);
 
 impl<M: Clone> Default for DefaultChannel<M> {
@@ -31,6 +35,10 @@ impl<M: Clone> Default for DefaultChannel<M> {
 }
 
 impl<M: Clone> DefaultChannel<M> {
+	/// Creates a channel sized for the engine's standard listener count.
+	///
+	/// Next, create each consumer with [`Self::listener`] before producers start
+	/// calling [`Channel::send`].
 	pub fn new() -> Self {
 		let sender = Sender::new(128);
 		DefaultChannel(sender)
@@ -41,6 +49,10 @@ impl<M: Clone> DefaultChannel<M> {
 		DefaultChannel(sender)
 	}
 
+	/// Creates a listener for messages sent after registration.
+	///
+	/// Next, keep the listener with the consuming system and call
+	/// [`crate::core::listener::Listener::read`] during that system's update.
 	pub fn listener(&self) -> DefaultListener<M> {
 		DefaultListener(self.0.spawn_rx())
 	}

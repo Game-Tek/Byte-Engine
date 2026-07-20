@@ -23,6 +23,10 @@ pub fn allocate_render_command<'a>(
 }
 
 /// The `RenderPass` trait defines a composable rendering step for a prepared sink.
+///
+/// Build persistent images and shader state through [`RenderPassBuilder`], then
+/// return frame-local recording work from [`Self::prepare`]. Register the
+/// implementation with [`crate::rendering::renderer::Renderer`].
 pub trait RenderPass {
 	/// Prepares the render pass when its rendering condition is active.
 	fn prepare<'a>(
@@ -35,6 +39,10 @@ pub trait RenderPass {
 
 /// The [`RenderPassBuilder`] struct provides sink resources and records the
 /// dependencies of a render pass.
+///
+/// Declare each output with [`Self::create_render_target`] or [`Self::render_to`]
+/// and each input with [`Self::read_from`]. Then construct the [`RenderPass`]
+/// that records commands for those resources.
 pub struct RenderPassBuilder<'a> {
 	context: &'a mut ghi::implementation::Context,
 	sink_id: usize,

@@ -237,7 +237,8 @@ the purpose early, use direct language, and organize information so developers
 can find and apply it quickly. Keep useful intra-code links to related types,
 traits, functions, methods, modules, and concepts, even when a strict
 plain-language rewrite would remove them. These links are part of the API's
-navigation.
+navigation. For APIs that participate in a workflow, tell developers which
+linked API they normally use next.
 
 Use the [Microsoft Writing Style Guide](https://learn.microsoft.com/style-guide/)
 for user guides and pages in [`docs`](docs). Address the reader as **you**, lead

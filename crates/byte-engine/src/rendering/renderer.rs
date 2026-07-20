@@ -9,6 +9,9 @@
 ///
 /// Prefer the setup helpers in [`crate::application::graphics`] unless building
 /// a custom headed runtime.
+/// For custom composition, create the renderer, call [`Self::set_resource_manager`],
+/// add a [`PipelineManager`] and sink-local [`RenderPass`] values, then register
+/// windows and cameras before calling [`Self::prepare`] each frame.
 pub struct Renderer {
 	/// The GHI context where all rendering resources and operations are performed.
 	context: ghi::implementation::Context,
@@ -61,6 +64,9 @@ impl Renderer {
 	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics context. Defaults to true.
 	/// - `render.startup.defer-sink-setup`: Presents the first window frame before constructing sink render pipelines.
 	///   Defaults to false.
+	///
+	/// Next, call [`Self::set_resource_manager`] before adding pipeline managers or
+	/// render passes that load resources.
 	pub fn new(parameters: &dyn Parameters) -> Self {
 		let settings = Settings::new();
 
@@ -214,10 +220,19 @@ impl Renderer {
 	/// The renderer retains a weak reference so it does not extend application-owned resource lifetimes.
 	/// Debug asset management is installed through the resource manager's one-time initialization seam.
 	/// The owner must keep `resource_manager` alive for as long as render passes may load resources.
+	/// Connects the renderer to the resource manager used by pipelines and passes.
+	///
+	/// Next, call [`Self::add_pipeline_manager`] and register sink-local render
+	/// passes before creating windows.
 	pub fn set_resource_manager(&mut self, resource_manager: &EntityHandle<ResourceManager>) {
 		self.resource_manager = Some(resource_manager.weak());
 	}
 
+	/// Registers a scene pipeline manager with the renderer.
+	///
+	/// Next, add post-scene passes with
+	/// [`Self::add_post_scene_render_pass_for_all_sinks`] or create a window with
+	/// [`Self::create_window`].
 	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
 		let pipeline_manager_id = self.pipeline_managers.len();
 		{
@@ -636,6 +651,10 @@ impl Renderer {
 		&mut self.context
 	}
 
+	/// Creates the swapchain and sink state for a window.
+	///
+	/// Next, create a camera with [`Self::create_camera`] and associate it with the
+	/// sink through the application or world integration.
 	pub fn create_window(&mut self, window: Window) {
 		let name = window.name();
 		let extent = window.extent();

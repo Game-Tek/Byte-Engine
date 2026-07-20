@@ -32,6 +32,8 @@ use crate::{
 ///
 /// Use [`DefaultAudioSystem`] for hardware output. Alternative implementations
 /// can target offline rendering or tests while preserving generator handling.
+/// After construction, add generators or loaded audio sources, then call
+/// [`Self::render_available`] from the audio worker until no period is ready.
 pub trait AudioSystem: Entity {
 	/// Plays an audio asset.
 	fn play<'a>(&'a mut self, audio_asset_url: &'a str) -> ();
@@ -50,6 +52,9 @@ pub trait AudioSystem: Entity {
 ///
 /// It is normally created by
 /// [`crate::application::graphics::setup_default_audio`] rather than directly.
+/// After setup, publish a [`Generator`] through
+/// [`crate::application::graphics::GraphicsApplication::generator_factory`] so
+/// the worker can mix it into the hardware stream.
 pub struct DefaultAudioSystem {
 	device: Device,
 	audio_resources: HashMap<String, (Audio, Vec<i16>)>,
@@ -61,6 +66,11 @@ pub struct DefaultAudioSystem {
 }
 
 impl DefaultAudioSystem {
+	/// Opens the default audio device and creates the master mix channel.
+	///
+	/// Applications normally call
+	/// [`crate::application::graphics::setup_default_audio`] instead. Custom audio
+	/// workers can add sources next and repeatedly call [`AudioSystem::render_available`].
 	pub fn try_new() -> Result<Self, &'static str> {
 		let mut channels = HashMap::with_capacity(16);
 

@@ -14,6 +14,8 @@
 /// Use [`default_setup`] for the conventional engine stack. Use
 /// [`setup_default_window`], [`setup_default_input`], and the render-pass setup
 /// functions independently when an application needs explicit composition.
+/// After setup, call [`Self::do_loop`] to run the application, or
+/// [`Self::tick_with`] when application code must run during each tick.
 ///
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.

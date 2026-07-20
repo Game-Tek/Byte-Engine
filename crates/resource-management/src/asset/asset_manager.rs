@@ -21,6 +21,11 @@ trait AbstractAssetHandler: Send + Sync {
 	fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(), LoadErrors>>;
 }
 
+/// The `AssetManager` struct selects asset handlers and bakes source assets into resource storage.
+///
+/// Register each source format with [`Self::add_asset_handler`], then install the
+/// manager on a [`crate::ResourceManager`] for debug loading or call
+/// [`Self::bake`] from an explicit baking workflow.
 pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AbstractAssetHandler>>,
 	storage_backend: Box<dyn StorageBackend>,
@@ -44,6 +49,10 @@ pub enum LoadMessages {
 }
 
 impl AssetManager {
+	/// Creates an asset manager over the source-asset storage backend.
+	///
+	/// Next, register all required formats with [`Self::add_asset_handler`] before
+	/// installing the manager or starting a bake.
 	pub fn new<SB: StorageBackend + 'static>(storage_backend: SB) -> AssetManager {
 		Self {
 			asset_handlers: Vec::with_capacity(8),
@@ -51,6 +60,10 @@ impl AssetManager {
 		}
 	}
 
+	/// Registers a handler for one family of source assets.
+	///
+	/// After all handlers are registered, install this manager on a
+	/// [`crate::ResourceManager`] in a debug build or call [`Self::bake`].
 	pub fn add_asset_handler<T: AssetHandler + Send + Sync + 'static>(&mut self, asset_handler: T) {
 		struct AssetHandlerWrapper<T: AssetHandler + Send + Sync>(T);
 
@@ -92,6 +105,9 @@ impl AssetManager {
 	}
 
 	/// Bakes the asset at `id` without checking for an existing stored resource.
+	///
+	/// Next, request the stored output through [`crate::ResourceManager::request`]
+	/// or inspect it through the storage backend.
 	pub async fn bake<'a>(&self, id: &str, resource_storage_backend: &dyn ResourceStorageBackend) -> Result<(), LoadMessages> {
 		self.bake_in(id, resource_storage_backend, &Global).await
 	}

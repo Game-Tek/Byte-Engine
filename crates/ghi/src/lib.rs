@@ -1,4 +1,8 @@
 //! Use the graphics hardware interface (GHI) to issue rendering work across supported GPU backends.
+//!
+//! Start with the platform [`implementation::Instance`], select a device and
+//! queues, then create context-owned resources through [`ContextCreate`]. Record
+//! work with [`command_buffer::CommandBuffer`] and submit it through [`Queue`].
 
 #![allow(dead_code)]
 #![allow(incomplete_features)]

@@ -17,6 +17,9 @@ pub struct Settings {
 }
 
 /// The `Server` trait provides application-level control of an authoritative BETP endpoint.
+///
+/// Call [`Self::update`] periodically, handle each returned [`Events`] value,
+/// then queue payloads with [`Self::send`] or [`Self::send_to_client`].
 pub trait Server {
 	/// Updates connection state and returns events for the application to handle.
 	///
@@ -27,9 +30,15 @@ pub trait Server {
 	fn update(&mut self, current_time: std::time::Instant) -> Result<Vec<Events>, ConnectionResults>;
 
 	/// Sends a message to all connected clients.
+	///
+	/// Continue calling [`Self::update`] so reliable packets can be acknowledged
+	/// or retried.
 	fn send(&mut self, reliable: bool, data: [u8; 1024]);
 
 	/// Sends a message to one client.
+	///
+	/// Continue calling [`Self::update`] so reliable packets can be acknowledged
+	/// or retried.
 	fn send_to_client(&mut self, connection_id: u64, reliable: bool, data: [u8; 1024]);
 
 	/// Disconnects all clients and stops the server connection.

@@ -6,6 +6,8 @@ Use Microsoft Writing Style Guide principles for user guides and documentation p
 
 Keep useful intra-code links in in-code and API documentation, even when strict application of ISO 24495-1 would simplify or remove them. Links to related types, traits, functions, methods, modules, and concepts help developers navigate the API.
 
+For workflow-bearing APIs, include a short next-step suggestion that links to the API a developer usually calls or implements next. Add this guidance to modules, types, constructors, and transition methods where it helps developers connect subsystems. Do not add it to trivial fields or accessors.
+
 Always write struct and trait documentation as:
 The `<NAME>` struct/trait <PURPOSE>
 

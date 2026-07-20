@@ -13,6 +13,10 @@ use crate::{
 
 /// The `Context` trait identifies objects that own render resources created from a GPU device.
 /// Implementations use the context lifetime to bound the lifetime of owned GPU resources.
+///
+/// Create resources through [`ContextCreate`], obtain a command
+/// buffer with [`Self::command_buffer`], then submit recorded work through a
+/// queue returned by [`Self::queue`] or [`Self::queue_reference`].
 pub trait Context: ContextCreate {
 	type Queue: crate::queue::Queue;
 	type QueueReference<'a>: crate::queue::Queue

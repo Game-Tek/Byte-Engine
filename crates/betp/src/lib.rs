@@ -20,6 +20,9 @@
 //!
 //! BETP uses sequence numbers to order packets and detect missing packets.
 //! Acknowledgments identify the packets that arrived.
+//!
+//! Start with [`client::Client`] or [`server::Server`]. Queue work through that
+//! trait, then call its `update` method from the application's regular tick.
 
 #![allow(incomplete_features)]
 #![allow(clippy::items_after_test_module)]

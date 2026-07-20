@@ -20,6 +20,10 @@ use crate::core::{
 #[derive(Clone)]
 /// The `Factory` struct creates values with stable handles and preserves setup-time
 /// messages for the first system listener.
+///
+/// Register each consuming system with [`Self::listener`] before calling
+/// [`Self::create`]. Use [`Self::derive`] when another representation must keep
+/// the same logical handle.
 pub struct Factory<T: Clone + ?Sized> {
 	channel: DefaultChannel<CreateMessage<T>>,
 	created_before_listener: Rc<RefCell<Vec<CreateMessage<T>>>>,
@@ -35,6 +39,10 @@ impl<T: Clone> Default for Factory<T> {
 }
 
 impl<T: Clone> Factory<T> {
+	/// Creates an empty creation stream.
+	///
+	/// Next, call [`Self::listener`] for each system that mirrors created values,
+	/// then publish values through [`Self::create`].
 	pub fn new() -> Self {
 		let sender = DefaultChannel::new();
 		Factory {
@@ -44,6 +52,11 @@ impl<T: Clone> Factory<T> {
 		}
 	}
 
+	/// Publishes a value with a new stable handle.
+	///
+	/// Consumers read the resulting [`CreateMessage`] from listeners created by
+	/// [`Self::listener`]. Pass the returned handle to [`Self::derive`] when a
+	/// second factory publishes another representation of the same entity.
 	pub fn create(&mut self, data: T) -> Handle {
 		let id = COUNTER.fetch_add(1, Ordering::Relaxed);
 
@@ -56,6 +69,10 @@ impl<T: Clone> Factory<T> {
 		Handle(id)
 	}
 
+	/// Publishes a value with an existing stable handle.
+	///
+	/// Use this after [`Self::create`] when another system-specific representation
+	/// must retain the original entity identity.
 	pub fn derive(&mut self, handle: Handle, data: T) {
 		let message = CreateMessage::new(handle, data);
 
@@ -63,6 +80,10 @@ impl<T: Clone> Factory<T> {
 		self.channel.send(message);
 	}
 
+	/// Creates a consumer for current and future creation messages.
+	///
+	/// Next, call [`Self::create`] or [`Self::derive`] and drain the messages
+	/// through [`crate::core::listener::Listener::read`].
 	pub fn listener(&self) -> DefaultListener<CreateMessage<T>> {
 		self.record_created_before_listener.set(false);
 		self.channel.listener()

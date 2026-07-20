@@ -20,6 +20,10 @@ const MANUAL_ACTION_DEVICE: DeviceHandle = DeviceHandle(u32::MAX);
 /// standard headed integration, use
 /// `process_default_window_input` rather than duplicating the mouse and keyboard
 /// trigger-name mapping.
+///
+/// After registration, subscribe through [`Self::event_channel`], queue physical
+/// values with [`Self::record_trigger_value_for_device`], and call
+/// [`Self::update`] once per application tick.
 pub struct InputManager {
 	device_classes: Vec<DeviceClass>,
 	triggers: Vec<Trigger>,
@@ -178,6 +182,11 @@ impl InputManager {
 		self.records.push(record);
 	}
 
+	/// Resolves queued trigger and manual-action values, then emits action events.
+	///
+	/// Call this once per application tick after recording platform input. Next,
+	/// drain a listener created from [`Self::event_channel`] to handle the resolved
+	/// [`ActionEvent`] values.
 	pub fn update(&mut self, frame_allocator: &bumpalo::Bump) {
 		while let Some(message) = self.action_listener.read() {
 			let handle = *message.handle();
@@ -319,6 +328,9 @@ impl InputManager {
 	}
 
 	/// Queues an action value for emission during the next [`Self::update`] call.
+	///
+	/// After this call succeeds, run [`Self::update`] and read the action from a
+	/// listener created through [`Self::event_channel`].
 	pub fn trigger_action(
 		&mut self,
 		seat_handle: SeatHandle,
@@ -346,6 +358,10 @@ impl InputManager {
 		MANUAL_ACTION_DEVICE
 	}
 
+	/// Creates an action that emits when its resolved value changes.
+	///
+	/// Next, record values for one of the action's trigger mappings and call
+	/// [`Self::update`]. Use [`Self::event_channel`] to receive the result.
 	pub fn create_action(
 		&mut self,
 		name: &str,
@@ -356,6 +372,9 @@ impl InputManager {
 	}
 
 	/// Creates an action with a specific tick policy controlling how frequently events are emitted.
+	///
+	/// Next, create a listener from [`Self::event_channel`], record trigger values,
+	/// and call [`Self::update`] once per tick.
 	pub fn create_action_with_tick_policy(
 		&mut self,
 		name: &str,
@@ -497,6 +516,10 @@ impl InputManager {
 		}
 	}
 
+	/// Returns the channel that publishes resolved action events.
+	///
+	/// Next, call [`DefaultChannel::listener`] and keep that listener with the
+	/// application system that handles the action.
 	pub fn event_channel(&self) -> &DefaultChannel<ActionEvent> {
 		&self.event_channel
 	}

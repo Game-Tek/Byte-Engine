@@ -1,13 +1,14 @@
-use std::time::Duration;
-
-use crate::core::{listener::Listener, Entity, EntityHandle};
+use crate::{
+	core::{listener::Listener, Entity, EntityHandle},
+	time::MediaTime,
+};
 
 struct Timer {
-	period: Duration,
+	period: MediaTime,
 }
 
 impl Timer {
-	pub fn new(period: Duration) -> Self {
+	pub fn new(period: MediaTime) -> Self {
 		Self { period }
 	}
 }
@@ -23,7 +24,7 @@ impl TimerService {
 		Self { timers: Vec::new() }
 	}
 
-	pub fn update(&mut self, time: Duration) {
+	pub fn update(&mut self, time: MediaTime) {
 		for timer in &self.timers {}
 	}
 }

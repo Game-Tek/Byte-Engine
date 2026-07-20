@@ -66,6 +66,7 @@ extern crate resource_management;
 extern crate utils as engine_utils;
 
 pub use math;
+pub use time::MediaTime;
 
 /// The `utils` module provides engine utility types through the main `byte_engine` crate API.
 pub mod utils {
@@ -121,6 +122,7 @@ pub mod physics;
 #[cfg(feature = "headed")]
 pub mod rendering;
 pub mod space;
+pub mod time;
 
 pub mod inspector;
 

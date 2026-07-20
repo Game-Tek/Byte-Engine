@@ -1,5 +1,4 @@
 use core::ops::Mul as _;
-use std::time::Duration;
 
 use math::{
 	collision::{cube_vs_cube, sphere_vs_cube, sphere_vs_sphere_dynamic},
@@ -20,6 +19,7 @@ use crate::{
 		collider::Shapes,
 		dynabit::contact::{Contact, Side},
 	},
+	time::MediaTime,
 };
 
 #[derive(Clone)]
@@ -100,8 +100,8 @@ impl PhysicsBody {
 		orientation * inverse * orientation.transpose()
 	}
 
-	pub fn update(&mut self, dt: Duration) {
-		let dt = dt.as_secs_f32();
+	pub fn update(&mut self, dt: MediaTime) {
+		let dt = dt.as_seconds_f32();
 
 		self.position += self.linear_velocity * dt;
 
@@ -220,8 +220,6 @@ pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), d
 
 #[cfg(test)]
 mod tests {
-	use std::time::Duration;
-
 	use super::*;
 
 	fn test_handle() -> Handle {
@@ -245,7 +243,7 @@ mod tests {
 			handle: test_handle(),
 		};
 
-		body.update(Duration::from_secs(1));
+		body.update(MediaTime::from_seconds(1));
 
 		let expected = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), 1.0);
 		let rotated = body.orientation * Vector3::new(1.0, 0.0, 0.0);

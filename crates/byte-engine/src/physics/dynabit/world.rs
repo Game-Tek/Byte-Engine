@@ -81,8 +81,8 @@ impl World {
 	}
 
 	/// Applies all initial impulses to bodies based on forces.
-	pub fn update_velocities(&mut self, dt: Duration) {
-		let dt = dt.as_secs_f32();
+	pub fn update_velocities(&mut self, dt: MediaTime) {
+		let dt = dt.as_seconds_f32();
 
 		for body in self.bodies.iter_mut() {
 			match body.body_type {
@@ -101,25 +101,25 @@ impl World {
 	}
 
 	/// Calculates and solves collisions.
-	pub fn update_collisions(&mut self, dt: Duration, allocator: &mut bumpalo::Bump) -> Duration {
+	pub fn update_collisions(&mut self, dt: MediaTime, allocator: &mut bumpalo::Bump) -> MediaTime {
 		let use_broadphase = true;
 
 		let mut contacts = bumpalo::collections::Vec::with_capacity_in(64, allocator);
 
 		if use_broadphase {
-			let broadphase = broadphase(self.bodies.indexed_iter(), dt.as_secs_f32());
+			let broadphase = broadphase(self.bodies.indexed_iter(), dt.as_seconds_f32());
 
-			contacts.extend(self.detect_collisions_from_pairs(&broadphase, dt.as_secs_f32()));
+			contacts.extend(self.detect_collisions_from_pairs(&broadphase, dt.as_seconds_f32()));
 		} else {
 			contacts.extend(self.detect_collisions(dt));
 		};
 
 		contacts.sort(); // Sort contacts by time of impact
 
-		let mut accumulated_time = Duration::ZERO;
+		let mut accumulated_time = MediaTime::ZERO;
 
 		for contact in &contacts {
-			let contact_time = Duration::from_secs_f32(contact.toi.max(0.0));
+			let contact_time = MediaTime::from_seconds_f32(contact.toi.max(0.0));
 			let dt = contact_time.saturating_sub(accumulated_time);
 
 			// Contacts from dynamic detection are expressed at their time of impact, so
@@ -137,8 +137,8 @@ impl World {
 	}
 
 	/// Brute-force collision detection for all bodies in the world.
-	fn detect_collisions(&self, dt: Duration) -> impl Iterator<Item = Contact> + '_ {
-		detect_collisions_for_bodies(&self.bodies, dt.as_secs_f32())
+	fn detect_collisions(&self, dt: MediaTime) -> impl Iterator<Item = Contact> + '_ {
+		detect_collisions_for_bodies(&self.bodies, dt.as_seconds_f32())
 	}
 
 	/// Collision detection for a subset of body pairs.
@@ -153,7 +153,7 @@ impl World {
 	}
 
 	/// Updates bodies' positions and orientation based on their velocities.
-	pub fn update_bodies(&mut self, dt: Duration, transforms_tx: &mut impl Channel<TransformationUpdate>) {
+	pub fn update_bodies(&mut self, dt: MediaTime, transforms_tx: &mut impl Channel<TransformationUpdate>) {
 		for body in self.bodies.iter_mut() {
 			match body.body_type {
 				BodyTypes::Dynamic => {
@@ -435,7 +435,7 @@ mod tests {
 	}
 }
 
-use std::{alloc::Allocator, ops::Deref, time::Duration};
+use std::{alloc::Allocator, ops::Deref};
 
 use math::{
 	collision::{cube_vs_cube, sphere_vs_sphere, Intersection},
@@ -472,4 +472,5 @@ use crate::{
 		},
 		intersection::broadphase,
 	},
+	time::MediaTime,
 };

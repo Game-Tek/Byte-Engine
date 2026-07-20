@@ -8,7 +8,7 @@
 //! The `triangle` example demonstrates the standard setup path, while the
 //! `window` example demonstrates selecting only one setup component.
 
-use std::time::Duration;
+use crate::time::MediaTime;
 
 pub mod application;
 #[doc(hidden)]
@@ -28,23 +28,23 @@ pub mod graphics;
 /// the lifecycle clock owned by the application.
 #[derive(Debug, Clone, Copy)]
 pub struct Time {
-	elapsed: Duration,
-	delta: Duration,
+	elapsed: MediaTime,
+	delta: MediaTime,
 }
 
 impl Time {
 	/// Creates frame timing data for systems that run inside an application tick.
-	pub fn new(elapsed: Duration, delta: Duration) -> Self {
+	pub fn new(elapsed: MediaTime, delta: MediaTime) -> Self {
 		Self { elapsed, delta }
 	}
 
 	/// Returns the total time since the application started.
-	pub fn elapsed(&self) -> Duration {
+	pub fn elapsed(&self) -> MediaTime {
 		self.elapsed
 	}
 
 	/// Returns the time since the previous application tick.
-	pub fn delta(&self) -> Duration {
+	pub fn delta(&self) -> MediaTime {
 		self.delta
 	}
 }

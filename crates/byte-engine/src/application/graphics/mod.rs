@@ -26,7 +26,7 @@ pub struct GraphicsApplication {
 
 	tick_count: u64,
 	start_time: std::time::Instant,
-	last_tick_time: std::time::Instant,
+	last_tick_time: MediaTime,
 
 	close: bool,
 
@@ -51,11 +51,11 @@ pub struct GraphicsApplication {
 	threads: SmallVec<[Thread; 64]>,
 
 	#[cfg(debug_assertions)]
-	ttff: std::time::Duration,
+	ttff: MediaTime,
 	#[cfg(debug_assertions)]
-	min_frame_time: std::time::Duration,
+	min_frame_time: MediaTime,
 	#[cfg(debug_assertions)]
-	max_frame_time: std::time::Duration,
+	max_frame_time: MediaTime,
 
 	#[cfg(debug_assertions)]
 	kill_after: Option<u64>,
@@ -153,14 +153,14 @@ impl Application for GraphicsApplication {
 
 			tick_count: 0,
 			start_time,
-			last_tick_time: std::time::Instant::now(),
+			last_tick_time: MediaTime::from_std(start_time.elapsed()),
 
 			#[cfg(debug_assertions)]
-			ttff: std::time::Duration::ZERO,
+			ttff: MediaTime::ZERO,
 			#[cfg(debug_assertions)]
-			min_frame_time: std::time::Duration::MAX,
+			min_frame_time: MediaTime::MAX,
 			#[cfg(debug_assertions)]
-			max_frame_time: std::time::Duration::ZERO,
+			max_frame_time: MediaTime::ZERO,
 
 			#[cfg(debug_assertions)]
 			kill_after,
@@ -188,10 +188,11 @@ impl GraphicsApplication {
 		let _enter = span.enter();
 
 		let now = std::time::Instant::now();
-		let dt = now - self.last_tick_time;
-		self.last_tick_time = now;
-
-		let elapsed = self.start_time.elapsed();
+		// Sample the monotonic clock once, then keep application time entirely in
+		// media ticks so elapsed time is exactly the sum of observed frame deltas.
+		let elapsed = MediaTime::from_std(now.duration_since(self.start_time));
+		let dt = elapsed - self.last_tick_time;
+		self.last_tick_time = elapsed;
 		let tick_count = self.tick_count;
 
 		let mut close = false;
@@ -345,7 +346,7 @@ impl GraphicsApplication {
 		#[cfg(debug_assertions)]
 		{
 			if self.tick_count == 1 {
-				self.ttff = self.start_time.elapsed();
+				self.ttff = MediaTime::from_std(self.start_time.elapsed());
 			}
 
 			if let Some(kill_after) = self.kill_after {
@@ -384,8 +385,8 @@ impl GraphicsApplication {
 		#[cfg(debug_assertions)]
 		log::debug!(
 			"Run stats:\n\tElapsed time: {:#?}\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}",
-			self.start_time.elapsed(),
-			self.start_time.elapsed().div_f32(self.tick_count as f32),
+			MediaTime::from_std(self.start_time.elapsed()),
+			MediaTime::from_std(self.start_time.elapsed()) / self.tick_count as i64,
 			self.min_frame_time,
 			self.max_frame_time,
 			self.ttff
@@ -880,6 +881,7 @@ use crate::{
 		},
 		renderable, renderer, RenderableMesh, UpdatePose,
 	},
+	time::MediaTime,
 	ui::{layout::engine::Render, render_pass::UiRenderPass},
 };
 use crate::{

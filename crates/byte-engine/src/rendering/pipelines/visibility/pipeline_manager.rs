@@ -770,7 +770,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			.enumerate()
 			.find_map(|(index, (_, light))| match light {
 				Lights::Direction(light) => Some((index, light.direction)),
-				Lights::Point(_) => None,
+				Lights::Cone(_) | Lights::Point(_) => None,
 			});
 		let shadow_light_index = if !sinks.is_empty() {
 			shadow_light.map(|(index, _)| index)
@@ -1071,7 +1071,7 @@ pub struct LightingData {
 }
 
 #[repr(C, align(16))]
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct ShaderVec3 {
 	x: f32,
 	y: f32,
@@ -1116,6 +1116,8 @@ pub(crate) struct ShaderViewData {
 pub struct LightData {
 	pub position: ShaderVec3,
 	pub color: ShaderVec3,
+	pub direction: ShaderVec3,
+	pub cone_cosines: [f32; 2],
 	pub light_type: u8,
 	pub cascades: [u32; 8],
 }

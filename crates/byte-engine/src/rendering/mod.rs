@@ -69,7 +69,7 @@ pub mod csm;
 pub mod utils;
 
 pub use camera::Camera;
-pub use lights::{DirectionalLight, Light, LightClasses, Lights, PointLight};
+pub use lights::{ConeLight, DirectionalLight, Light, LightClasses, Lights, PointLight};
 pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, SimpleRenderPass, VisibilityPipelineManager};
 pub use pose::UpdatePose;

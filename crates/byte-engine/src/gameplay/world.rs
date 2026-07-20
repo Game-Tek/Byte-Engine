@@ -149,7 +149,7 @@ mod tests {
 		core::{channel::Channel, listener::Listener, message::DeleteMessage},
 		gameplay::{Object, Transform},
 		physics::Body,
-		rendering::{lights::PointLight, RenderableMesh},
+		rendering::{lights::ConeLight, lights::PointLight, RenderableMesh},
 		space::Transformable,
 	};
 
@@ -203,12 +203,25 @@ mod tests {
 		let light_handle = world
 			.light_factory_mut()
 			.create(PointLight::new(Vector3::new(3.0, 2.0, 1.0), 5_000.0).into());
+		let cone_handle = world.light_factory_mut().create(
+			ConeLight::new(
+				Vector3::new(0.0, 3.0, 0.0),
+				Vector3::new(0.0, -1.0, 0.0),
+				4_500.0,
+				15.0_f32.to_radians(),
+				30.0_f32.to_radians(),
+			)
+			.into(),
+		);
 
 		let camera = camera_listener.read().expect("camera creation");
 		let light = light_listener.read().expect("light creation");
+		let cone = light_listener.read().expect("cone light creation");
 		assert_eq!(camera.handle(), &camera_handle);
 		assert_eq!(camera.data().get_fov(), 45.0);
 		assert_eq!(light.handle(), &light_handle);
 		assert!(matches!(light.data(), Lights::Point(point) if point.position == Vector3::new(3.0, 2.0, 1.0)));
+		assert_eq!(cone.handle(), &cone_handle);
+		assert!(matches!(cone.data(), Lights::Cone(light) if light.direction == Vector3::new(0.0, -1.0, 0.0)));
 	}
 }

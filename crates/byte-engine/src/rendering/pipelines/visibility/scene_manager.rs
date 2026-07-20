@@ -78,15 +78,27 @@ impl VisibilitySceneManager {
 		}
 
 		match light {
+			Lights::Cone(light) => LightData {
+				position: light.position.into(),
+				color: light.color.into(),
+				direction: light.direction.into(),
+				cone_cosines: [light.inner_angle.cos(), light.outer_angle.cos()],
+				light_type: 1,
+				cascades: [0; 8],
+			},
 			Lights::Direction(light) => LightData {
 				position: light.direction.into(),
 				color: light.color.into(),
+				direction: ShaderVec3::default(),
+				cone_cosines: [0.0; 2],
 				light_type: 68,
 				cascades,
 			},
 			Lights::Point(light) => LightData {
 				position: light.position.into(),
 				color: light.color.into(),
+				direction: ShaderVec3::default(),
+				cone_cosines: [0.0; 2],
 				light_type: 0,
 				cascades: [0; 8],
 			},
@@ -107,9 +119,11 @@ fn matrix4_to_columns(matrix: &Matrix4) -> Matrix4Columns {
 
 #[cfg(test)]
 mod tests {
-	use math::{mat::MatNew4 as _, Matrix4};
+	use math::{mat::MatNew4 as _, Matrix4, Vector3};
 
-	use super::matrix4_to_columns;
+	use super::{matrix4_to_columns, VisibilitySceneManager};
+	use crate::rendering::lights::{ConeLight, Lights};
+	use crate::rendering::pipelines::visibility::pipeline_manager::{LightData, LightingData, ShaderVec3};
 
 	#[test]
 	fn pose_write_conversion_preserves_matrix_majorness() {
@@ -126,6 +140,38 @@ mod tests {
 				[4.0, 8.0, 12.0, 16.0],
 			]
 		);
+	}
+
+	#[test]
+	fn cone_light_data_preserves_direction_and_soft_cutoffs() {
+		let light = ConeLight::new(
+			Vector3::new(1.0, 2.0, 3.0),
+			Vector3::new(0.0, -1.0, 0.0),
+			4_500.0,
+			20.0_f32.to_radians(),
+			35.0_f32.to_radians(),
+		);
+		let light_data = VisibilitySceneManager::make_light_data(&Lights::Cone(light), false);
+
+		assert_eq!(light_data.position, ShaderVec3::from(light.position));
+		assert_eq!(light_data.color, ShaderVec3::from(light.color));
+		assert_eq!(light_data.direction, ShaderVec3::from(light.direction));
+		assert_eq!(light_data.cone_cosines, [light.inner_angle.cos(), light.outer_angle.cos()]);
+		assert_eq!(light_data.light_type, 1);
+		assert_eq!(light_data.cascades, [0; 8]);
+	}
+
+	#[test]
+	fn light_data_layout_matches_the_shader_light_record() {
+		assert_eq!(std::mem::align_of::<LightData>(), 16);
+		assert_eq!(std::mem::size_of::<LightData>(), 96);
+		assert_eq!(std::mem::offset_of!(LightData, position), 0);
+		assert_eq!(std::mem::offset_of!(LightData, color), 16);
+		assert_eq!(std::mem::offset_of!(LightData, direction), 32);
+		assert_eq!(std::mem::offset_of!(LightData, cone_cosines), 48);
+		assert_eq!(std::mem::offset_of!(LightData, light_type), 56);
+		assert_eq!(std::mem::offset_of!(LightData, cascades), 60);
+		assert_eq!(std::mem::offset_of!(LightingData, lights), 16);
 	}
 }
 
@@ -144,9 +190,9 @@ use crate::rendering::pipelines::visibility::pipeline_manager::LightData;
 use crate::rendering::pipelines::visibility::pipeline_manager::LightingData;
 use crate::rendering::pipelines::visibility::pipeline_manager::RenderEntity;
 use crate::rendering::pipelines::visibility::pipeline_manager::RenderInfo;
-use crate::rendering::pipelines::visibility::pipeline_manager::ShaderMesh;
 use crate::rendering::pipelines::visibility::pipeline_manager::ShaderViewData;
 use crate::rendering::pipelines::visibility::pipeline_manager::SinkState;
+use crate::rendering::pipelines::visibility::pipeline_manager::{ShaderMesh, ShaderVec3};
 use crate::rendering::pipelines::visibility::MAX_LIGHTS;
 use crate::rendering::pipelines::visibility::SHADOW_CASCADE_COUNT;
 use crate::rendering::View;

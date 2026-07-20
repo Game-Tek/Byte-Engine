@@ -181,6 +181,8 @@ impl VisibilityShaderScope {
 			vec![
 				Node::member("position", "vec3f"),
 				Node::member("color", "vec3f"),
+				Node::member("direction", "vec3f"),
+				Node::member("cone_cosines", "vec2f"),
 				Node::member("type", "u8"),
 				Node::member("cascades", "u32[8]"),
 			],
@@ -336,6 +338,10 @@ impl VisibilityShaderScope {
 			}
 		};
 		let u16_to_u32 = parse_besl_function("u16_to_u32: fn (value: u16) -> u32 { return u32(value); }", "u16_to_u32");
+		let cone_attenuation = parse_besl_function(
+			"cone_attenuation: fn (cosine: f32, inner_cosine: f32, outer_cosine: f32) -> f32 { return clamp((cosine - outer_cosine) / (inner_cosine - outer_cosine), 0.0, 1.0); }",
+			"cone_attenuation",
+		);
 		let set2_binding0 = Node::binding("lit_map", Node::image("rgba16"), 1041, true, true);
 		let set2_binding4 = Node::binding(
 			"lighting_data",
@@ -962,6 +968,7 @@ impl VisibilityShaderScope {
 				triangle_index,
 				instance_index,
 				u16_to_u32,
+				cone_attenuation,
 				compute_vertex_index,
 				set2_binding0,
 				set2_binding4,
@@ -1389,6 +1396,13 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			} else {
 				float distance = length(light.position - world_space_vertex_position);
 				attenuation = 1.0 / (distance * distance);
+
+				if (light.type == 1) {
+					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
+					float cone_cosine = dot(normalize(light.direction), -L);
+					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
+					attenuation *= cone_factor;
+				}
 			}
 
 			float3 H = normalize(V + L);
@@ -1488,6 +1502,13 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			} else {
 				float distance = length(light.position - world_space_vertex_position);
 				attenuation = 1.0 / (distance * distance);
+
+				if (light.type == 1) {
+					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
+					float cone_cosine = dot(normalize(light.direction), -L);
+					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
+					attenuation *= cone_factor;
+				}
 			}
 
 			vec3 H = normalize(V + L);
@@ -1586,6 +1607,13 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			} else {
 				float distance = length(light.position - world_space_vertex_position);
 				attenuation = 1.0 / (distance * distance);
+
+				if (light.type == 1) {
+					// Preserve full intensity inside the inner cone and fade to zero at the outer cone.
+					float cone_cosine = dot(normalize(light.direction), -L);
+					float cone_factor = cone_attenuation(cone_cosine, light.cone_cosines.x, light.cone_cosines.y);
+					attenuation *= cone_factor;
+				}
 			}
 
 			float3 H = normalize(V + L);
@@ -1708,6 +1736,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 					"sample_environment_irradiance",
 					"sample_environment_specular",
 					"fresnel_schlick_roughness",
+					"cone_attenuation",
 				],
 				&[],
 			));
@@ -1726,7 +1755,11 @@ mod tests {
 	use resource_management::pbr::{
 		generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfValue,
 	};
+	use resource_management::shader::besl::backends::{
+		glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator,
+	};
 	use resource_management::shader::besl::evaluation::ProgramEvaluation;
+	use resource_management::shader::generator::ShaderGenerationSettings;
 	use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 	use crate::besl;
@@ -1836,6 +1869,43 @@ mod tests {
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 		let shader = shader_generator.transform(shader_node, &material);
 		besl::lex(shader).unwrap();
+	}
+
+	#[test]
+	fn material_evaluation_emits_cone_attenuation_for_every_backend() {
+		let material = json::object! {
+			"variables": []
+		};
+		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").unwrap();
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = besl::lex(shader_generator.transform(shader_node, &material)).unwrap();
+		let main = shader.get_main().expect(
+			"Missing material evaluation main. The most likely cause is that visibility material generation stopped producing an entry point.",
+		);
+		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
+
+		let glsl = GLSLShaderGenerator::new().generate(&settings, &main).expect(
+			"Failed to emit the GLSL cone-light material pass. The most likely cause is an invalid visibility shader contract.",
+		);
+		let hlsl = HLSLShaderGenerator::new().generate(&settings, &main).expect(
+			"Failed to emit the HLSL cone-light material pass. The most likely cause is an invalid visibility shader contract.",
+		);
+		let msl = MSLShaderGenerator::new().generate(&settings, &main).expect(
+			"Failed to emit the MSL cone-light material pass. The most likely cause is an invalid visibility shader contract.",
+		);
+
+		for source in [&glsl, &hlsl, &msl] {
+			assert!(source.contains("cone_cosines"));
+			assert!(source.contains("cone_attenuation"));
+			assert!(source.contains("light.type == 1"));
+		}
+
+		#[cfg(target_os = "macos")]
+		resource_management::shader::msl_shader_compiler::compile_msl_source_to_metallib(
+			&msl,
+			"visibility-cone-light-material",
+		)
+		.expect("Failed to compile the MSL cone-light material pass. The most likely cause is invalid generated Metal source.");
 	}
 
 	/// Compiles a production-generated trivial material evaluation pass and guards its required semantic resource access.

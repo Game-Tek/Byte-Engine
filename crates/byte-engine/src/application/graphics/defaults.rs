@@ -18,6 +18,8 @@ use utils::Extent;
 
 use super::{setup_pbr_visibility_shading_render_pipeline, GraphicsApplication};
 #[cfg(debug_assertions)]
+use crate::rendering::common_shader_generator::CommonShaderGenerator;
+#[cfg(debug_assertions)]
 use crate::rendering::pipelines::visibility::shader_generator::VisibilityShaderGenerator;
 use crate::{
 	application::{application::Application, parameters::Parameters as _, thread::Thread, Events},
@@ -92,7 +94,9 @@ pub fn setup_default_resource_and_asset_management(
 		asset_manager.add_asset_handler(LUTAssetHandler::new());
 		asset_manager.add_asset_handler(WAVAssetHandler::new());
 		asset_manager.add_asset_handler(OGGAssetHandler::new());
-		asset_manager.add_asset_handler(BESLShaderAssetHandler::new());
+		let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
+		besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::new());
+		asset_manager.add_asset_handler(besl_shader_asset_handler);
 
 		application.resource_manager.set_asset_manager(asset_manager);
 	}

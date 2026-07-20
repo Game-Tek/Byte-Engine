@@ -58,7 +58,7 @@ struct SkyShaderData {
 	misc: [f32; 4],
 }
 
-/// The `AtmosphereSkyRenderPass` struct renders an atmosphere-only sky into the main color target wherever depth remains at infinity.
+/// The `AtmosphereSkyRenderPass` struct places an atmosphere behind scene color wherever opaque depth remains at infinity.
 pub struct AtmosphereSkyRenderPass {
 	pass: simple_compute::Pass,
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
@@ -76,6 +76,7 @@ impl AtmosphereSkyRenderPass {
 	/// Creates a sky pass with caller-supplied atmosphere settings.
 	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: AtmosphereSkyRenderPassSettings) -> Self {
 		let depth = render_pass_builder.read_from("depth");
+		let _main_read = render_pass_builder.read_from("main");
 		let main = render_pass_builder.render_to("main");
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
@@ -265,5 +266,28 @@ mod tests {
 			"Empty sky VM output. The most likely cause is an invalid view ray or atmosphere intersection: {background:?}"
 		);
 		assert_rgba_close([0.0, 0.0, 0.0, background[3]], [0.0, 0.0, 0.0, 1.0], 1e-6);
+
+		// Visibility stores transparent-only pixels premultiplied, so the post-scene sky must fill the remaining coverage.
+		let transparent_foreground = [0.1, 0.05, 0.02, 0.25];
+		let mut transparent_depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
+		let mut transparent_target = texture_2d(1, 1, &[transparent_foreground]);
+		let mut transparent_descriptors = DescriptorBindings::new();
+		transparent_descriptors.bind_texture(ResourceSlot::new(0), &mut transparent_depth);
+		transparent_descriptors.bind_image(ResourceSlot::new(1), &mut transparent_target);
+		transparent_descriptors.bind_buffer(parameter_slot, &mut parameters);
+		run_at(&program, &mut transparent_descriptors, [0, 0]);
+		drop(transparent_descriptors);
+
+		let remaining_alpha = 1.0 - transparent_foreground[3];
+		assert_rgba_close(
+			rgba(&transparent_target, [0, 0]),
+			[
+				transparent_foreground[0] + background[0] * remaining_alpha,
+				transparent_foreground[1] + background[1] * remaining_alpha,
+				transparent_foreground[2] + background[2] * remaining_alpha,
+				1.0,
+			],
+			1e-5,
+		);
 	}
 }

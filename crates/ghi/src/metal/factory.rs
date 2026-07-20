@@ -188,7 +188,7 @@ impl crate::device::Device for Factory {
 		let depth_stencil_state = if has_depth_attachment {
 			let descriptor = MTLDepthStencilDescriptor::new();
 			descriptor.setDepthCompareFunction(MTLCompareFunction::GreaterEqual);
-			descriptor.setDepthWriteEnabled(true);
+			descriptor.setDepthWriteEnabled(builder.depth_write);
 			self.device.newDepthStencilStateWithDescriptor(&descriptor)
 		} else {
 			None

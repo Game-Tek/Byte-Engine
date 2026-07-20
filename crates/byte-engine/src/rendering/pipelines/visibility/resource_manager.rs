@@ -107,7 +107,7 @@ impl VisibilityPipelineResourceManager {
 				index,
 				pipeline: material.pipeline,
 				pending_pipeline: material.pending_pipeline,
-				alpha: material.alpha,
+				alpha_mode: material.alpha_mode,
 				textures: material.textures,
 			},
 			Err(()) => VisibilityResourceCompletion::Failed {
@@ -170,6 +170,7 @@ impl VisibilityPipelineResourceManager {
 		})?;
 
 		let variant = reference.resource_mut();
+		let alpha_mode = variant.alpha_mode.clone();
 		let material = variant.material.resource_mut();
 		if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
 			log::error!(
@@ -209,14 +210,13 @@ impl VisibilityPipelineResourceManager {
 				_ => None,
 			})
 			.collect::<Vec<_>>();
-		let alpha = !matches!(variant.alpha_mode, resource_management::types::AlphaMode::Opaque);
 		let queued_pipeline = self.queue_configured_variant_pipeline(id.to_string(), material, specialization_map_entries);
 
 		Ok(FactoryMaterial {
 			index,
 			pipeline: queued_pipeline.pipeline,
 			pending_pipeline: queued_pipeline.pending_pipeline,
-			alpha,
+			alpha_mode,
 			textures,
 		})
 	}
@@ -966,7 +966,7 @@ pub(crate) enum VisibilityResourceCompletion {
 		index: u32,
 		pipeline: Option<ghi::PipelineHandle>,
 		pending_pipeline: Option<PendingMaterialPipeline>,
-		alpha: bool,
+		alpha_mode: AlphaMode,
 		textures: Vec<Option<(String, u32)>>,
 	},
 	ImageReady {
@@ -1164,7 +1164,7 @@ struct FactoryMaterial {
 	index: u32,
 	pipeline: Option<ghi::PipelineHandle>,
 	pending_pipeline: Option<PendingMaterialPipeline>,
-	alpha: bool,
+	alpha_mode: AlphaMode,
 	textures: Vec<Option<(String, u32)>>,
 }
 
@@ -1839,7 +1839,7 @@ use resource_management::resources::material::{
 	Material as ResourceMaterial, Shader, ShaderArtifact, Value, Variant as ResourceVariant,
 };
 use resource_management::resources::mesh::Mesh as ResourceMesh;
-use resource_management::types::ShaderTypes;
+use resource_management::types::{AlphaMode, ShaderTypes};
 use resource_management::Reference;
 use smallvec::SmallVec;
 use utils::hash::{HashMap, HashMapExt};

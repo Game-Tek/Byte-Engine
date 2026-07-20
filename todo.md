@@ -76,6 +76,7 @@
 
 ## GHI and windows
 
+- Honor raster pipeline depth-write configuration in the Vulkan and DX12 backends.
 - Complete DX12 command recording and device support for resources, pipelines, uploads, mesh shading, DXR, shader tables, fences, and submission.
 - Implement Vulkan standalone command-buffer execution.
 - Implement Metal ray tracing pipelines, acceleration structures, instance data, shader binding tables, and ray dispatch.
@@ -85,6 +86,7 @@
 
 ## Engine systems
 
+- Support self-overlapping and intersecting transparent surfaces with forward per-fragment shading or OIT.
 - Implement sampled UI colors, the remaining UI layout branch, primitive style access, and non-box bounding boxes.
 - Implement server-side client entity lifecycle and replace the temporary UDP client identity strategy.
 - Build the CPU animation graph, evaluate imported glTF and FBX clips into `VisibilitySceneManager::write_skinned_pose`, apply retained rigid primitive nodes, and provide animation-safe bounds so posed meshlet culling can be re-enabled.

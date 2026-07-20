@@ -29,6 +29,15 @@ const COMMON_SHADER_SOURCE: &str = r#"
 		return dot(v, v);
 	}
 
+	source_over: fn (source: vec4f, destination: vec4f) -> vec4f {
+		let inverse_alpha: f32 = 1.0 - source.w;
+		let source_rgb: vec3f = vec3f(source.x, source.y, source.z);
+		let destination_rgb: vec3f = vec3f(destination.x, destination.y, destination.z);
+		let color: vec3f = source_rgb + destination_rgb * inverse_alpha;
+		let alpha: f32 = source.w + destination.w * inverse_alpha;
+		return vec4f(color.x, color.y, color.z, alpha);
+	}
+
 	min_diff: fn (p: vec3f, a: vec3f, b: vec3f) -> vec3f {
 		let a_to_p: vec3f = a - p;
 		let b_to_p: vec3f = p - b;
@@ -414,7 +423,8 @@ impl CommonShaderGenerator {
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
-	fn transform<'a>(&self, root: besl::parser::Node<'a>, _: &json::Object) -> besl::parser::Node<'a> {
+	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &json::Object) -> besl::parser::Node<'a> {
+		root.add(vec![CommonShaderScope::new()]);
 		root
 	}
 }
@@ -512,6 +522,19 @@ mod tests {
 		}
 	}
 
+	/// Reads one four-component vector result while preserving an allocation-free assertion path.
+	fn read_vec4f(results: &Buffer, name: &str) -> [f32; 4] {
+		match results
+			.read(name)
+			.expect("Missing common shader vec4 result. The most likely cause is a mismatched test buffer member.")
+		{
+			Value::Vec4F(value) => value,
+			value => {
+				panic!("Invalid common shader vec4 result `{value:?}`. The most likely cause is an incorrect test member type.")
+			}
+		}
+	}
+
 	/// Compares finite float arrays with tolerance scaled to each expected component.
 	fn assert_floats_close<const N: usize>(actual: [f32; N], expected: [f32; N], epsilon: f32) {
 		for (index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
@@ -525,6 +548,24 @@ mod tests {
 
 	fn assert_f32_close(actual: f32, expected: f32, epsilon: f32) {
 		assert_floats_close([actual], [expected], epsilon);
+	}
+
+	/// Verifies premultiplied source-over composition through the shared production helper.
+	#[test]
+	fn common_source_over_composites_premultiplied_colors() {
+		let source = r#"
+			main: fn () -> void {
+				results.composited = source_over(
+					vec4f(0.2, 0.05, 0.025, 0.25),
+					vec4f(0.2, 0.4, 0.6, 0.5)
+				);
+			}
+		"#;
+		let members = vec![besl::ParserNode::member("composited", "vec4f")];
+		let (program, mut results) = compile_common_main(source, members, Vec::new());
+		run_common(&program, &mut results);
+
+		assert_floats_close(read_vec4f(&results, "composited"), [0.35, 0.35, 0.475, 0.625], 0.000001);
 	}
 
 	/// Verifies the reusable scalar, vector, sampling-direction, and coordinate helpers together.

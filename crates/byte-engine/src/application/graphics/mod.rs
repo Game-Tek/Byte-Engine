@@ -885,7 +885,7 @@ use crate::{
 use crate::{
 	gameplay::anchor::AnchorSystem,
 	input, physics,
-	rendering::{self, common_shader_generator::CommonShaderGenerator, renderer::Renderer, window::Window, Camera},
+	rendering::{self, renderer::Renderer, window::Window, Camera},
 };
 mod defaults;
 mod integrations;

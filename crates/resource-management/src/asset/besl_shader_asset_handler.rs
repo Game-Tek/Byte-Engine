@@ -1,4 +1,8 @@
-use std::{collections::hash_map::DefaultHasher, hash::Hasher as _, sync::Arc};
+use std::{
+	collections::hash_map::DefaultHasher,
+	hash::Hasher as _,
+	sync::{Arc, OnceLock},
+};
 
 use utils::{
 	json::{JsonContainerTrait as _, JsonValueTrait as _},
@@ -7,6 +11,7 @@ use utils::{
 
 use super::{
 	asset_handler::{AssetHandler, BakeContext, LoadErrors},
+	bema_asset_handler::ProgramGenerator,
 	BEADType, ResourceId,
 };
 use crate::{
@@ -27,6 +32,7 @@ use crate::{
 /// The `BESLShaderAssetHandler` struct exists to bake standalone BESL programs into runtime shader resources.
 pub struct BESLShaderAssetHandler {
 	compiler: Arc<dyn ShaderCompiler>,
+	generator: Option<Arc<dyn ProgramGenerator>>,
 }
 
 impl Default for BESLShaderAssetHandler {
@@ -39,7 +45,13 @@ impl BESLShaderAssetHandler {
 	pub fn new() -> Self {
 		Self {
 			compiler: Arc::new(PlatformShaderCompiler),
+			generator: None,
 		}
+	}
+
+	/// Configures the shared program scope applied before standalone shaders are linked and lowered.
+	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
+		self.generator = Some(Arc::new(generator));
 	}
 }
 
@@ -75,15 +87,17 @@ impl AssetHandler for BESLShaderAssetHandler {
 		let id_string = id.as_ref().to_string();
 		let source_hash = hash_shader_source(&id_string, &source, settings);
 		let compiler = Arc::clone(&self.compiler);
+		let generator = self.generator.clone();
 
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
-		let (shader, bytes) = spawn_cpu_task(move || compiler.compile(&id_string, &source, settings, source_hash))
-			.await
-			.map_err(|_| LoadErrors::FailedToProcess)?
-			.map_err(|error| {
-				log::error!("Failed to compile standalone BESL shader '{}': {error}", id.as_ref());
-				LoadErrors::FailedToProcess
-			})?;
+		let (shader, bytes) =
+			spawn_cpu_task(move || compiler.compile(&id_string, &source, settings, source_hash, generator.as_deref()))
+				.await
+				.map_err(|_| LoadErrors::FailedToProcess)?
+				.map_err(|error| {
+					log::error!("Failed to compile standalone BESL shader '{}': {error}", id.as_ref());
+					LoadErrors::FailedToProcess
+				})?;
 
 		context.store_primary(ProcessedAsset::new(id, shader), &bytes)
 	}
@@ -96,6 +110,7 @@ trait ShaderCompiler: Send + Sync {
 		source: &str,
 		settings: BESLShaderSettings,
 		source_hash: u64,
+		generator: Option<&dyn ProgramGenerator>,
 	) -> Result<(Shader, Box<[u8]>), String>;
 }
 
@@ -109,8 +124,9 @@ impl ShaderCompiler for PlatformShaderCompiler {
 		source: &str,
 		settings: BESLShaderSettings,
 		source_hash: u64,
+		generator: Option<&dyn ProgramGenerator>,
 	) -> Result<(Shader, Box<[u8]>), String> {
-		compile_shader(id, source, settings, source_hash)
+		compile_shader(id, source, settings, source_hash, generator)
 	}
 }
 
@@ -121,6 +137,13 @@ struct BESLShaderSettings {
 	maximum_mesh_threadgroups: Option<u32>,
 	maximum_vertices: Option<u32>,
 	maximum_primitives: Option<u32>,
+}
+
+static STANDALONE_SHADER_CONTEXT: OnceLock<utils::json::Object> = OnceLock::new();
+
+/// Returns the allocation-retaining empty material context used by standalone program generators.
+fn standalone_shader_context() -> &'static utils::json::Object {
+	STANDALONE_SHADER_CONTEXT.get_or_init(|| utils::json::object! { "variables": Vec::<utils::json::Value>::new() })
 }
 
 impl BESLShaderSettings {
@@ -289,10 +312,15 @@ fn parse_workgroup_size(value: &utils::json::Value) -> Result<(u32, u32, u32), S
 fn prepare_shader(
 	source: &str,
 	workgroup_size: Option<(u32, u32, u32)>,
+	generator: Option<&dyn ProgramGenerator>,
 ) -> Result<(besl::NodeReference, ShaderInterface), String> {
 	let parsed = besl::parse(source).map_err(|error| {
 		format!("Failed to parse BESL source ({error:?}). The most likely cause is invalid standalone shader syntax.")
 	})?;
+	let parsed = match generator {
+		Some(generator) => generator.transform(parsed, standalone_shader_context()),
+		None => parsed,
+	};
 	let program = besl::lex(parsed).map_err(|error| {
 		format!("Failed to link BESL source ({error:?}). The most likely cause is an unresolved or invalid shader declaration.")
 	})?;
@@ -329,8 +357,9 @@ fn compile_shader(
 	source: &str,
 	settings: BESLShaderSettings,
 	source_hash: u64,
+	generator: Option<&dyn ProgramGenerator>,
 ) -> Result<(Shader, Box<[u8]>), String> {
-	let (main, interface) = prepare_shader(source, settings.workgroup_size)?;
+	let (main, interface) = prepare_shader(source, settings.workgroup_size, generator)?;
 	let mut generator = PlatformShaderGenerator::new();
 	let compiled = generator.generate(&settings.generation_settings(id), &main)?;
 
@@ -439,6 +468,7 @@ mod tests {
 		asset::{
 			asset_handler::LoadErrors,
 			asset_manager::{AssetManager, LoadMessages},
+			bema_asset_handler::ProgramGenerator,
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 			ResourceId,
 		},
@@ -451,6 +481,24 @@ mod tests {
 
 	struct TestShaderCompiler;
 
+	/// The `TestStandaloneGenerator` struct supplies one reusable helper to standalone shader bake tests.
+	struct TestStandaloneGenerator;
+
+	impl ProgramGenerator for TestStandaloneGenerator {
+		fn transform<'a>(&self, mut node: besl::parser::Node<'a>, _: &'a utils::json::Object) -> besl::parser::Node<'a> {
+			let mut helper_scope = besl::parse("shared_value: fn () -> f32 { return 0.5; }")
+				.expect("Failed to parse the standalone generator fixture. The most likely cause is invalid BESL test syntax.");
+			let helpers = match helper_scope.node_mut() {
+				besl::parser::Nodes::Scope { children, .. } => std::mem::take(children),
+				_ => unreachable!(
+					"Invalid standalone generator fixture root. The most likely cause is a parser contract regression."
+				),
+			};
+			node.add(helpers);
+			node
+		}
+	}
+
 	impl ShaderCompiler for TestShaderCompiler {
 		fn compile(
 			&self,
@@ -458,6 +506,7 @@ mod tests {
 			source: &str,
 			settings: BESLShaderSettings,
 			source_hash: u64,
+			generator: Option<&dyn crate::asset::bema_asset_handler::ProgramGenerator>,
 		) -> Result<(Shader, Box<[u8]>), String> {
 			assert_eq!(id, "passes/resolve.besl");
 			assert!(source.contains("main"));
@@ -466,6 +515,7 @@ mod tests {
 			assert_eq!(settings.maximum_mesh_threadgroups, None);
 			assert_eq!(settings.maximum_vertices, None);
 			assert_eq!(settings.maximum_primitives, None);
+			prepare_shader(source, settings.workgroup_size, generator)?;
 
 			Ok((
 				Shader {
@@ -489,6 +539,7 @@ mod tests {
 		let mut asset_manager = AssetManager::new(asset_storage);
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Arc::new(TestShaderCompiler),
+			generator: None,
 		});
 
 		assert!(asset_manager.supports("passes/resolve.besl"));
@@ -504,6 +555,7 @@ mod tests {
 		let mut asset_manager = AssetManager::new(asset_storage);
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Arc::new(TestShaderCompiler),
+			generator: None,
 		});
 
 		let result = asset_manager.bake("passes/no-settings.besl", &resource_storage).await;
@@ -528,6 +580,7 @@ mod tests {
 		let mut asset_manager = AssetManager::new(asset_storage);
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Arc::new(TestShaderCompiler),
+			generator: None,
 		});
 
 		asset_manager
@@ -560,6 +613,30 @@ mod tests {
 				.as_deref(),
 			Some(b"compiled-shader".as_slice())
 		);
+	}
+
+	#[r#async::test]
+	async fn standalone_besl_handler_applies_the_configured_program_generator() {
+		let source = "main: fn () -> void { let value: f32 = shared_value(); value; }";
+		let bead = r#"{ "stage": "Compute", "workgroup": [8, 8, 1] }"#;
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("passes/resolve.besl", source.as_bytes());
+		asset_storage.add_file("passes/resolve.besl.bead", bead.as_bytes());
+		let resource_storage = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage);
+		let mut handler = BESLShaderAssetHandler {
+			compiler: Arc::new(TestShaderCompiler),
+			generator: None,
+		};
+		handler.set_shader_generator(TestStandaloneGenerator);
+		asset_manager.add_asset_handler(handler);
+
+		asset_manager
+			.bake("passes/resolve.besl", &resource_storage)
+			.await
+			.expect(
+				"Failed to bake a generated standalone shader. The most likely cause is that the configured program generator was not forwarded to compilation.",
+			);
 	}
 
 	#[test]
@@ -696,7 +773,9 @@ mod tests {
 				textures;
 			}
 		"#;
-		let (_, interface) = prepare_shader(source, None).expect("standalone descriptors should parse, link, and reflect");
+		let (_, interface) = prepare_shader(source, None, None).expect(
+			"Failed to prepare standalone descriptor reflection. The most likely cause is invalid descriptor fixture syntax.",
+		);
 
 		assert_eq!(interface.bindings.len(), 2);
 		assert_eq!(interface.bindings[0].name, "data");
@@ -727,8 +806,9 @@ mod tests {
 				atomic_add(counters.values[index], 1);
 			}
 		"#;
-		let (_, interface) =
-			prepare_shader(source, Some((32, 32, 1))).expect("visibility atomic descriptors should parse, link, and reflect");
+		let (_, interface) = prepare_shader(source, Some((32, 32, 1)), None).expect(
+			"Failed to prepare atomic descriptor reflection. The most likely cause is invalid visibility fixture syntax.",
+		);
 
 		assert_eq!(interface.workgroup_size, Some((32, 32, 1)));
 		assert_eq!(interface.bindings.len(), 2);

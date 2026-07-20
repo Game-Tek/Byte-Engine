@@ -8,7 +8,7 @@ SkyParameters: struct {
 }
 
 depth_texture: descriptor<Texture2D, 0, read>;
-main_texture: descriptor<StorageImage, 1, write>;
+main_texture: descriptor<StorageImage<rgba16>, 1, read_write>;
 parameters: descriptor<SkyParameters, 2, read>;
 
 get_camera_position: fn () -> vec3f {
@@ -193,6 +193,9 @@ main: fn () -> void {
 		}
 	}
 	let sky: vec3f = integrate_atmosphere(pixel, get_camera_position(), direction);
-	write(main_texture, pixel, vec4f(sky.x, sky.y, sky.z, 1.0));
+	let foreground: vec4f = image_load(main_texture, pixel);
+	let foreground_alpha: f32 = clamp(foreground.w, 0.0, 1.0);
+	let source: vec4f = vec4f(foreground.x, foreground.y, foreground.z, foreground_alpha);
+	let destination: vec4f = vec4f(sky.x, sky.y, sky.z, 1.0);
+	write(main_texture, pixel, source_over(source, destination));
 }
-

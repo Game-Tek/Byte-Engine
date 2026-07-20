@@ -13,7 +13,10 @@ pub fn get_asset_manager<SB: StorageBackend + 'static>(storage_backend: SB) -> A
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
 	asset_manager.add_asset_handler(WAVAssetHandler::new());
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
-	asset_manager.add_asset_handler(BESLShaderAssetHandler::new());
+	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
+	besl_shader_asset_handler
+		.set_shader_generator(byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new());
+	asset_manager.add_asset_handler(besl_shader_asset_handler);
 	{
 		let mut material_asset_handler = BEMAAssetHandler::new();
 		let shader_generator = std::sync::Arc::new({

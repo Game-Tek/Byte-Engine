@@ -99,6 +99,13 @@ pub mod implementation {
 			graphics_hardware_interface::tests::render_triangle(&mut device, queue_handle);
 		}
 
+		#[cfg(target_os = "macos")]
+		#[test]
+		fn raster_pipeline_can_disable_depth_writes() {
+			let (_instance, mut device, queue_handle) = create_default_device_setup();
+			graphics_hardware_interface::tests::render_without_depth_writes(&mut device, queue_handle);
+		}
+
 		#[test]
 		#[ignore = "test is broken because of WSI"]
 		fn render_present() {

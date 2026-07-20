@@ -152,7 +152,7 @@ impl VisibilityPipelineManager {
 				.max_lod(0f32),
 		);
 		resource_manager.configure_material_pipeline(MaterialPipelineConfig::new(
-			vec![ghi::pipelines::PushConstantRange::new(0, 4)],
+			vec![ghi::pipelines::PushConstantRange::new(0, 8)],
 			context.create_factory(),
 		));
 		if let Some(resource_id) = environment_resource_id.as_ref() {
@@ -183,8 +183,8 @@ impl VisibilityPipelineManager {
 				light_data_buffer,
 				lights: StableVec::new(),
 				render_info: RenderInfo {
-					instances: Vec::new(),
-					active_instances: Vec::new(),
+					opaque_instances: Vec::new(),
+					transparent_instances: Vec::new(),
 					skinning_dispatches: Vec::with_capacity(MAX_INSTANCES),
 					opaque_materials: Vec::new(),
 					transparent_materials: Vec::new(),
@@ -273,9 +273,9 @@ impl VisibilityPipelineManager {
 					index,
 					pipeline,
 					pending_pipeline,
-					alpha,
+					alpha_mode,
 					textures,
-				} => self.adopt_material_completion(frame, id, index, pipeline, pending_pipeline, alpha, textures),
+				} => self.adopt_material_completion(frame, id, index, pipeline, pending_pipeline, alpha_mode, textures),
 				VisibilityResourceCompletion::ImageReady {
 					key: _,
 					index,
@@ -368,7 +368,7 @@ impl VisibilityPipelineManager {
 		index: u32,
 		pipeline: Option<ghi::PipelineHandle>,
 		pending_pipeline: Option<PendingMaterialPipeline>,
-		alpha: bool,
+		alpha_mode: AlphaMode,
 		textures: Vec<Option<(String, u32)>>,
 	) {
 		let pipeline = pipeline.or_else(|| self.loaded_pipelines.get(&id).copied());
@@ -393,11 +393,11 @@ impl VisibilityPipelineManager {
 			.filter_map(|texture| texture.as_ref().map(|(_, index)| *index))
 			.collect::<Vec<_>>();
 		log::debug!(
-			"Visibility material adopted: id={}, index={}, has_pipeline={}, alpha={}, textures={}",
+			"Visibility material adopted: id={}, index={}, has_pipeline={}, alpha_mode={:?}, textures={}",
 			id,
 			index,
 			pipeline.is_some(),
-			alpha,
+			alpha_mode,
 			texture_indices.len(),
 		);
 
@@ -407,7 +407,7 @@ impl VisibilityPipelineManager {
 				index,
 				pipeline,
 				name: id,
-				alpha,
+				alpha_mode,
 				texture_indices,
 			},
 		);
@@ -438,7 +438,7 @@ impl VisibilityPipelineManager {
 				continue;
 			}
 			let entry = (material.name.clone(), material.index, pipeline);
-			if material.alpha {
+			if is_transparent(&material.alpha_mode) {
 				self.scene.render_info.transparent_materials.push(entry);
 			} else {
 				self.scene.render_info.opaque_materials.push(entry);
@@ -457,12 +457,9 @@ impl VisibilityPipelineManager {
 
 	/// Rebuilds the active instance list from scene entities whose material pipeline is ready.
 	fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame) {
-		self.scene.render_info.active_instances.clear();
-		self.scene.render_info.skinning_dispatches.clear();
+		self.scene.render_info.clear_active_instances();
 		let loaded_materials = &self.loaded_materials;
 		let render_entities = &self.scene.render_entities;
-		let active_instances = &mut self.scene.render_info.active_instances;
-		let skinning_dispatches = &mut self.scene.render_info.skinning_dispatches;
 		let skinning_poses = &self.scene.skinning_poses;
 		let palette_scratch = &mut self.skinning_palette_scratch;
 		let palette_cache = &mut self.skinning_palette_cache;
@@ -477,11 +474,11 @@ impl VisibilityPipelineManager {
 		let mut pose_matrix_count = 0usize;
 		let mut palette_matrix_count = 0usize;
 		for render_entity in render_entities.iter() {
-			let material_ready = loaded_materials
-				.get(&render_entity.shader_mesh.material_index)
-				.and_then(|material| material.pipeline)
-				.is_some();
-			if !material_ready {
+			let Some(material) = loaded_materials.get(&render_entity.shader_mesh.material_index) else {
+				skipped_missing_material += 1;
+				continue;
+			};
+			if material.pipeline.is_none() {
 				skipped_missing_material += 1;
 				continue;
 			}
@@ -549,7 +546,7 @@ impl VisibilityPipelineManager {
 						// Output is dense per active primitive, so shared meshes never overwrite another instance's pose.
 						shader_mesh.skinned_base_vertex_index =
 							reserve_deformed_vertex_range(&mut deformed_vertex_count, skinning.vertex_count);
-						skinning_dispatches.push(SkinningDispatch::new(
+						self.scene.render_info.skinning_dispatches.push(SkinningDispatch::new(
 							skinning.source_vertex_offset,
 							shader_mesh.skinned_base_vertex_index,
 							palette_base,
@@ -560,9 +557,11 @@ impl VisibilityPipelineManager {
 			}
 			mesh_data[active_index] = shader_mesh;
 			active_meshlets += shader_mesh.meshlet_count;
-			active_instances.push(Instance {
+			let instance = Instance {
+				shader_mesh_index: active_index as u32,
 				meshlet_count: shader_mesh.meshlet_count,
-			});
+			};
+			self.scene.render_info.push_active_instance(instance, &material.alpha_mode);
 			active_index += 1;
 		}
 		// The active mesh table is frame-local dynamic data; flush the current frame resource after rebuilding it.
@@ -573,12 +572,14 @@ impl VisibilityPipelineManager {
 		}
 
 		log::debug!(
-			"Visibility active primitives rebuilt: render_entities={}, active={}, skipped_missing_material={}, active_meshlets={}, skinning_dispatches={}, deformed_vertices={}, pose_matrices={}, palette_matrices={}",
+			"Visibility active primitives rebuilt: render_entities={}, active={}, skipped_missing_material={}, active_meshlets={}, opaque_primitives={}, transparent_primitives={}, skinning_dispatches={}, deformed_vertices={}, pose_matrices={}, palette_matrices={}",
 			render_entities.len(),
-			active_instances.len(),
+			self.scene.render_info.active_instance_count(),
 			skipped_missing_material,
 			active_meshlets,
-			skinning_dispatches.len(),
+			self.scene.render_info.opaque_instances.len(),
+			self.scene.render_info.transparent_instances.len(),
+			self.scene.render_info.skinning_dispatches.len(),
 			deformed_vertex_count,
 			pose_matrix_count,
 			palette_matrix_count,
@@ -632,9 +633,6 @@ impl VisibilityPipelineManager {
 						vertex_count: primitive.skinning_vertex_count,
 						skeleton_node_count: mesh.skeleton_node_count,
 					}),
-				});
-				self.scene.render_info.instances.push(Instance {
-					meshlet_count: primitive.meshlet_count,
 				});
 			}
 		}
@@ -826,7 +824,8 @@ impl PipelineManager for VisibilityPipelineManager {
 						v,
 						(command_index == 0).then_some(skinning_pass),
 						skinning_dispatches,
-						&self.scene.render_info.active_instances,
+						&self.scene.render_info.opaque_instances,
+						&self.scene.render_info.transparent_instances,
 						&self.scene.render_info.opaque_materials,
 						&self.scene.render_info.transparent_materials,
 						shadow_light_index.is_some(),
@@ -836,7 +835,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			.collect::<SmallVec<[_; 16]>>();
 
 		log::debug!(
-			"Visibility prepare summary: sinks={}, sink_states={}, commands={}, requested_meshes={}, loaded_meshes={}, pending_renderables={}, render_entities={}, active_primitives={}, opaque_materials={}, transparent_materials={}, shadow_enabled={}",
+			"Visibility prepare summary: sinks={}, sink_states={}, commands={}, requested_meshes={}, loaded_meshes={}, pending_renderables={}, render_entities={}, active_primitives={}, opaque_primitives={}, transparent_primitives={}, opaque_materials={}, transparent_materials={}, shadow_enabled={}",
 			sinks.len(),
 			self.scene.sink_states.len(),
 			commands.len(),
@@ -844,7 +843,9 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.loaded_meshes.len(),
 			self.pending_renderables.len(),
 			self.scene.render_entities.len(),
-			self.scene.render_info.active_instances.len(),
+			self.scene.render_info.active_instance_count(),
+			self.scene.render_info.opaque_instances.len(),
+			self.scene.render_info.transparent_instances.len(),
 			self.scene.render_info.opaque_materials.len(),
 			self.scene.render_info.transparent_materials.len(),
 			shadow_light_index.is_some(),
@@ -938,16 +939,6 @@ impl PipelineManager for VisibilityPipelineManager {
 				.min_lod(0f32)
 				.max_lod(0f32),
 		);
-		let visibility_depth_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Border {})
-				.min_lod(0f32)
-				.max_lod(0f32),
-		);
-
 		context.write(&[
 			ghi::DescriptorWrite::image(
 				material_evaluation_descriptor_set,
@@ -977,13 +968,6 @@ impl PipelineManager for VisibilityPipelineManager {
 				SHADOW_MAP_BINDING.slot(),
 				shadow_map,
 				depth_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::combined_image_sampler(
-				material_evaluation_descriptor_set,
-				VISIBILITY_DEPTH_BINDING.slot(),
-				ghi::BaseImageHandle::from(depth_target),
-				visibility_depth_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::buffer(
@@ -1185,25 +1169,56 @@ struct PendingRenderableInstance {
 	mesh_key: VisibilityMeshKey,
 }
 
+/// The `RenderDescription` struct retains one material's render-thread pipeline and authored alpha contract.
 struct RenderDescription {
 	index: u32,
 	pipeline: Option<ghi::PipelineHandle>,
 	name: String,
-	alpha: bool,
+	alpha_mode: AlphaMode,
 	texture_indices: Vec<u32>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The `Instance` struct identifies one dense shader mesh and the work needed to rasterize it.
 pub struct Instance {
+	pub shader_mesh_index: u32,
 	pub meshlet_count: u32,
 }
 
+/// The `RenderInfo` struct groups frame-local visibility work by the phase that will consume it.
 pub struct RenderInfo {
-	instances: Vec<Instance>,
-	active_instances: Vec<Instance>,
+	opaque_instances: Vec<Instance>,
+	transparent_instances: Vec<Instance>,
 	skinning_dispatches: Vec<SkinningDispatch>,
 	opaque_materials: Vec<(String, u32, ghi::PipelineHandle)>,
 	transparent_materials: Vec<(String, u32, ghi::PipelineHandle)>,
+}
+
+impl RenderInfo {
+	/// Clears frame-local instance work while retaining the allocations used by prior frames.
+	fn clear_active_instances(&mut self) {
+		self.opaque_instances.clear();
+		self.transparent_instances.clear();
+		self.skinning_dispatches.clear();
+	}
+
+	/// Adds one active primitive to its authored material phase.
+	fn push_active_instance(&mut self, instance: Instance, alpha_mode: &AlphaMode) {
+		if is_transparent(alpha_mode) {
+			self.transparent_instances.push(instance);
+		} else {
+			self.opaque_instances.push(instance);
+		}
+	}
+
+	fn active_instance_count(&self) -> usize {
+		self.opaque_instances.len() + self.transparent_instances.len()
+	}
+}
+
+/// Returns whether an authored alpha mode requires source-over rendering after the opaque phase.
+fn is_transparent(alpha_mode: &AlphaMode) -> bool {
+	matches!(alpha_mode, AlphaMode::Blend)
 }
 
 pub struct SinkState {
@@ -1261,10 +1276,11 @@ mod tests {
 	use std::sync::Arc;
 
 	use resource_management::resources::skeleton::SkinBinding;
+	use resource_management::types::AlphaMode;
 
 	use super::{
-		cached_skin_palette_base, reserve_deformed_vertex_range, ShaderMesh, SkinningPaletteCacheEntry, ENVIRONMENT_BINDING,
-		SPECULAR_ENVIRONMENT_BINDING,
+		cached_skin_palette_base, reserve_deformed_vertex_range, Instance, RenderInfo, ShaderMesh, SkinningPaletteCacheEntry,
+		ENVIRONMENT_BINDING, LIT_BINDING, SPECULAR_ENVIRONMENT_BINDING,
 	};
 	use crate::core::factory::Factory;
 	use crate::rendering::pipelines::visibility::resource_manager::IBL_SPECULAR_LEVEL_COUNT;
@@ -1276,6 +1292,43 @@ mod tests {
 		assert_eq!(ENVIRONMENT_BINDING.count(), 1);
 		assert_eq!(SPECULAR_ENVIRONMENT_BINDING.slot().index(), 1055);
 		assert_eq!(SPECULAR_ENVIRONMENT_BINDING.count(), IBL_SPECULAR_LEVEL_COUNT as u32);
+	}
+
+	#[test]
+	fn lit_binding_supports_transparent_read_modify_write() {
+		assert_eq!(LIT_BINDING.access(), ghi::AccessPolicies::READ_WRITE);
+	}
+
+	/// Verifies authored blend primitives are deferred while opaque and masked work stays in the first phase.
+	#[test]
+	fn active_instances_partition_by_authored_alpha_mode() {
+		let mut render_info = RenderInfo {
+			opaque_instances: Vec::new(),
+			transparent_instances: Vec::new(),
+			skinning_dispatches: Vec::new(),
+			opaque_materials: Vec::new(),
+			transparent_materials: Vec::new(),
+		};
+		let blended = Instance {
+			shader_mesh_index: 3,
+			meshlet_count: 1,
+		};
+		let opaque = Instance {
+			shader_mesh_index: 5,
+			meshlet_count: 2,
+		};
+		let masked = Instance {
+			shader_mesh_index: 8,
+			meshlet_count: 3,
+		};
+
+		render_info.push_active_instance(blended, &AlphaMode::Blend);
+		render_info.push_active_instance(opaque, &AlphaMode::Opaque);
+		render_info.push_active_instance(masked, &AlphaMode::Mask(0.5));
+
+		assert_eq!(render_info.opaque_instances, [opaque, masked]);
+		assert_eq!(render_info.transparent_instances, [blended]);
+		assert_eq!(render_info.active_instance_count(), 3);
 	}
 
 	#[test]
@@ -1366,7 +1419,7 @@ mod tests {
 const LIT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1041),
 	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
+	ghi::AccessPolicies::READ_WRITE,
 );
 const LIGHTING_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1045),
@@ -1389,11 +1442,6 @@ const SHADOW_MAP_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDes
 	ghi::AccessPolicies::READ,
 )
 .texture_view_type(ghi::TextureViewTypes::Texture2DArray);
-const VISIBILITY_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1053),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
 const ENVIRONMENT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1054),
 	ghi::ResourceKind::CombinedImageSampler,
@@ -1429,7 +1477,7 @@ use resource_management::resources::skeleton::{identity_matrix4_columns, Matrix4
 use resource_management::shader::besl::backends::glsl::GLSLShaderGenerator;
 use resource_management::shader::besl::backends::msl::MSLShaderGenerator;
 use resource_management::shader::generator::{ShaderGenerationSettings, ShaderGenerator};
-use resource_management::types::{IndexStreamTypes, IntegralTypes, ShaderTypes};
+use resource_management::types::{AlphaMode, IndexStreamTypes, IntegralTypes, ShaderTypes};
 use resource_management::Reference;
 use smallvec::SmallVec;
 use utils::hash::{HashMap, HashMapExt};
@@ -1440,7 +1488,6 @@ use utils::{Box, Extent, StableVec, RGBA};
 use super::shader_generator::{VisibilityShaderGenerator, VisibilityShaderScope};
 use crate::core::{factory::Handle, Entity, EntityHandle};
 use crate::ghi;
-use crate::rendering::common_shader_generator::{CommonShaderGenerator, CommonShaderScope};
 use crate::rendering::lights::{DirectionalLight, Light, Lights, PointLight};
 use crate::rendering::mesh::generator::MeshGenerator;
 use crate::rendering::pipeline_manager::PipelineManager;

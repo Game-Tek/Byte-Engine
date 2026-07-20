@@ -69,14 +69,40 @@ fn mesh_dispatch_count(meshlet_count: u32) -> u32 {
 	meshlet_count.div_ceil(MESHLET_CULLING_TASK_GROUP_SIZE)
 }
 
+/// The `VisibilityPass` struct owns the opaque and transparent raster states used to populate visibility buffers.
 #[derive(Clone)]
 pub(crate) struct VisibilityPass {
 	descriptor_set: ghi::DescriptorSetHandle,
-	visibility_pass_pipeline: ghi::PipelineHandle,
-	attachments: [ghi::AttachmentInformation; 3],
+	opaque_pipeline: ghi::PipelineHandle,
+	transparent_pipeline: ghi::PipelineHandle,
+	opaque_attachments: [ghi::AttachmentInformation; 3],
+	transparent_attachments: [ghi::AttachmentInformation; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VisibilityPhase {
+	Opaque,
+	Transparent,
+}
+
+impl VisibilityPhase {
+	fn label(self) -> &'static str {
+		match self {
+			Self::Opaque => "Opaque",
+			Self::Transparent => "Transparent",
+		}
+	}
+
+	fn blend_flag(self) -> u32 {
+		match self {
+			Self::Opaque => 0,
+			Self::Transparent => 1,
+		}
+	}
 }
 
 impl VisibilityPass {
+	/// Creates paired visibility pipelines so transparent primitives can retain opaque depth without updating it.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		shader_resources: &ResourceManager,
@@ -132,17 +158,27 @@ impl VisibilityPass {
 			ghi::pipelines::VertexElement::new("NORMAL", ghi::DataTypes::Float3, 1),
 		];
 
-		let visibility_pass_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
+		let opaque_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[ghi::pipelines::PushConstantRange::new(0, 4)],
 			&vertex_layout,
 			&visibility_pass_shaders,
 			&attachments,
 		));
+		let transparent_pipeline = context.create_raster_pipeline(
+			ghi::pipelines::raster::Builder::new(
+				&[ghi::pipelines::PushConstantRange::new(0, 4)],
+				&vertex_layout,
+				&visibility_pass_shaders,
+				&attachments,
+			)
+			.depth_write(false),
+		);
 
 		VisibilityPass {
 			descriptor_set,
-			visibility_pass_pipeline,
-			attachments: [
+			opaque_pipeline,
+			transparent_pipeline,
+			opaque_attachments: [
 				ghi::AttachmentInformation::new(
 					primitive_index,
 					ghi::Layouts::RenderTarget,
@@ -165,52 +201,76 @@ impl VisibilityPass {
 					true,
 				),
 			],
+			transparent_attachments: [
+				ghi::AttachmentInformation::new(
+					primitive_index,
+					ghi::Layouts::RenderTarget,
+					ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
+					false,
+					true,
+				),
+				ghi::AttachmentInformation::new(
+					instance_id,
+					ghi::Layouts::RenderTarget,
+					ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
+					false,
+					true,
+				),
+				ghi::AttachmentInformation::new(
+					depth_target,
+					ghi::Layouts::RenderTarget,
+					ghi::ClearValue::Depth(0.0),
+					true,
+					true,
+				),
+			],
 		}
 	}
 
-	pub(super) fn prepare<'a>(
+	/// Records one visibility phase while retaining opaque depth for transparent primitives.
+	fn record(
 		&self,
-		_frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		instances: &'a [Instance],
-	) -> impl RenderPassFunction + use<'a> {
-		let descriptor_set = self.descriptor_set;
-		let pipeline = self.visibility_pass_pipeline;
-		let attachments = self.attachments;
-
-		let extent = sink.extent();
+		c: &mut ghi::implementation::CommandBufferRecording,
+		extent: Extent,
+		instances: &[Instance],
+		phase: VisibilityPhase,
+	) {
+		let (pipeline, attachments) = match phase {
+			VisibilityPhase::Opaque => (self.opaque_pipeline, self.opaque_attachments),
+			VisibilityPhase::Transparent => (self.transparent_pipeline, self.transparent_attachments),
+		};
 		let drawable_instances = instances.iter().filter(|instance| instance.meshlet_count > 0).count();
 		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
 
-		move |c, _| {
-			log::debug!(
-				"Visibility pass executing: extent={}x{}, active_primitives={}, drawable_primitives={}, meshlets={}",
-				extent.width(),
-				extent.height(),
-				instances.len(),
-				drawable_instances,
-				meshlet_count,
-			);
-			c.start_region(|label| label.write_str("Visibility Buffer"));
+		log::debug!(
+			"{} visibility pass executing: extent={}x{}, active_primitives={}, drawable_primitives={}, meshlets={}",
+			phase.label(),
+			extent.width(),
+			extent.height(),
+			instances.len(),
+			drawable_instances,
+			meshlet_count,
+		);
+		c.start_region(|label| {
+			label.write_str(phase.label())?;
+			label.write_str(" Visibility Buffer")
+		});
 
-			let c = c.start_render_pass(extent, &attachments);
+		let c = c.start_render_pass(extent, &attachments);
+		let c = c.bind_raster_pipeline(pipeline);
+		c.bind_descriptor_sets(&[self.descriptor_set]);
 
-			let c = c.bind_raster_pipeline(pipeline);
-			c.bind_descriptor_sets(&[descriptor_set]);
-
-			for (i, instance) in instances.iter().enumerate() {
-				if instance.meshlet_count == 0 {
-					continue;
-				}
-
-				c.write_push_constant(0, i as u32); // TODO: use actual instance indeces, not loaded meshes indices
-				c.dispatch_meshes(mesh_dispatch_count(instance.meshlet_count), 1, 1);
+		for instance in instances {
+			if instance.meshlet_count == 0 {
+				continue;
 			}
 
-			c.end_render_pass();
-
-			c.end_region();
+			c.write_push_constant(0, instance.shader_mesh_index);
+			c.dispatch_meshes(mesh_dispatch_count(instance.meshlet_count), 1, 1);
 		}
+
+		c.end_render_pass();
+		c.end_region();
 	}
 }
 
@@ -316,12 +376,12 @@ impl ShadowPass {
 
 				c.write_push_constant(4, (cascade + 1) as u32);
 
-				for (i, instance) in instances.iter().enumerate() {
+				for instance in instances {
 					if instance.meshlet_count == 0 {
 						continue;
 					}
 
-					c.write_push_constant(0, i as u32);
+					c.write_push_constant(0, instance.shader_mesh_index);
 					c.dispatch_meshes(mesh_dispatch_count(instance.meshlet_count), 1, 1);
 				}
 
@@ -728,6 +788,7 @@ impl GtaoPass {
 	}
 }
 
+/// The `MaterialEvaluationPass` struct owns material dispatch state shared by opaque writes and transparent composition.
 pub struct MaterialEvaluationPass {
 	lit: ghi::BaseImageHandle,
 	ao_map: ghi::BaseImageHandle,
@@ -760,12 +821,13 @@ impl MaterialEvaluationPass {
 		}
 	}
 
+	/// Prepares one material phase with explicit overwrite or source-over behavior.
 	fn prepare<'a>(
 		&'a self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
-		opaque_materials: &'a [(String, u32, ghi::PipelineHandle)],
-		transparent_materials: &'a [(String, u32, ghi::PipelineHandle)],
+		materials: &'a [(String, u32, ghi::PipelineHandle)],
+		phase: VisibilityPhase,
 	) -> impl RenderPassFunction + 'a {
 		let lit = self.lit;
 		let ao_map = self.ao_map;
@@ -775,23 +837,26 @@ impl MaterialEvaluationPass {
 		let material_evaluation_descriptor_set = self.descriptor_set;
 		let extent = sink.extent();
 
-		frame.resize_image(ao_map, extent);
+		if phase == VisibilityPhase::Opaque {
+			frame.resize_image(ao_map, extent);
+		}
 
 		move |c, t| {
 			log::debug!(
-				"Visibility material evaluation executing: extent={}x{}, opaque_materials={}, transparent_materials={}",
+				"{} visibility material evaluation executing: extent={}x{}, materials={}",
+				phase.label(),
 				extent.width(),
 				extent.height(),
-				opaque_materials.len(),
-				transparent_materials.len(),
+				materials.len(),
 			);
-			c.clear_images(&[(lit, ghi::ClearValue::Color(RGBA::black()))]);
+			if phase == VisibilityPhase::Opaque {
+				c.clear_images(&[(lit, ghi::ClearValue::Color(RGBA::new(0.0, 0.0, 0.0, 0.0)))]);
+			}
 
 			c.start_region(|label| label.write_str("Material Evaluation"));
+			c.start_region(|label| label.write_str(phase.label()));
 
-			c.start_region(|label| label.write_str("Opaque"));
-
-			for (name, index, pipeline) in opaque_materials {
+			for (name, index, pipeline) in materials {
 				c.start_region(|label| label.write_str(name));
 				let c = c.bind_compute_pipeline(*pipeline);
 				c.bind_descriptor_sets(&[
@@ -800,35 +865,18 @@ impl MaterialEvaluationPass {
 					material_evaluation_descriptor_set,
 				]);
 				c.write_push_constant(0, *index);
+				c.write_push_constant(4, phase.blend_flag());
 				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
 				c.end_region();
 			}
 
 			c.end_region();
-
-			c.start_region(|label| label.write_str("Transparent"));
-
-			for (name, index, pipeline) in transparent_materials {
-				// TODO: sort by distance to camera
-				c.start_region(|label| label.write_str(name));
-				let c = c.bind_compute_pipeline(*pipeline);
-				c.bind_descriptor_sets(&[
-					base_descriptor_set,
-					visibility_descriptor_set,
-					material_evaluation_descriptor_set,
-				]);
-				c.write_push_constant(0, *index);
-				c.indirect_dispatch(material_evaluation_dispatches, *index as usize);
-				c.end_region();
-			}
-
-			c.end_region();
-
 			c.end_region();
 		}
 	}
 }
 
+/// The `VisibilityPipelineRenderPass` struct sequences visibility-buffer work for one sink and scene frame.
 pub(crate) struct VisibilityPipelineRenderPass {
 	shadow_pass: ShadowPass,
 	visibility_pass: VisibilityPass,
@@ -920,35 +968,48 @@ impl VisibilityPipelineRenderPass {
 		}
 	}
 
+	/// Prepares opaque work once and transparent work once per primitive in stable submission order.
 	pub(super) fn prepare<'a>(
 		&'a self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		skinning_pass: Option<&'a SkinningPass>,
 		skinning_dispatches: &'a [SkinningDispatch],
-		instances: &'a [Instance],
+		opaque_instances: &'a [Instance],
+		transparent_instances: &'a [Instance],
 		opaque_materials: &'a [(String, u32, ghi::PipelineHandle)],
 		transparent_materials: &'a [(String, u32, ghi::PipelineHandle)],
 		shadow_enabled: bool,
 	) -> impl RenderPassFunction + 'a {
-		let shadow_pass = self.shadow_pass.prepare(frame, instances, shadow_enabled);
-		let visibility_pass = self.visibility_pass.prepare(frame, sink, instances);
+		// Blend materials have no alpha-aware shadow shader, so only opaque-phase primitives populate the depth map.
+		let shadow_pass = self.shadow_pass.prepare(frame, opaque_instances, shadow_enabled);
+		let visibility_pass = &self.visibility_pass;
 		let material_count_pass = self.material_count_pass.prepare(frame, sink);
 		let material_offset_pass = self.material_offset_pass.prepare();
 		let pixel_mapping_pass = self.pixel_mapping_pass.prepare(frame, sink);
 		let gtao_pass = self.gtao_pass.prepare(frame, sink);
-		let material_evaluation_pass =
+		let opaque_material_evaluation_pass =
 			self.material_evaluation_pass
-				.prepare(frame, sink, opaque_materials, transparent_materials);
-		let instance_count = instances.len();
-		let meshlet_count = instances.iter().map(|instance| instance.meshlet_count).sum::<u32>();
+				.prepare(frame, sink, opaque_materials, VisibilityPhase::Opaque);
+		let transparent_material_evaluation_pass =
+			self.material_evaluation_pass
+				.prepare(frame, sink, transparent_materials, VisibilityPhase::Transparent);
+		let extent = sink.extent();
+		let instance_count = opaque_instances.len() + transparent_instances.len();
+		let meshlet_count = opaque_instances
+			.iter()
+			.chain(transparent_instances)
+			.map(|instance| instance.meshlet_count)
+			.sum::<u32>();
 		let opaque_count = opaque_materials.len();
 		let transparent_count = transparent_materials.len();
 
 		move |c, t| {
 			log::debug!(
-				"Visibility render model executing: primitives={}, meshlets={}, opaque_materials={}, transparent_materials={}, shadow_enabled={}",
+				"Visibility render model executing: primitives={}, opaque_primitives={}, transparent_primitives={}, meshlets={}, opaque_materials={}, transparent_materials={}, shadow_enabled={}",
 				instance_count,
+				opaque_instances.len(),
+				transparent_instances.len(),
 				meshlet_count,
 				opaque_count,
 				transparent_count,
@@ -960,12 +1021,23 @@ impl VisibilityPipelineRenderPass {
 				skinning_pass.record(c, skinning_dispatches);
 			}
 			shadow_pass(c, t);
-			visibility_pass(c, t);
+
+			// The opaque layer establishes the depth and color retained by every later transparent primitive.
+			visibility_pass.record(c, extent, opaque_instances, VisibilityPhase::Opaque);
 			material_count_pass(c, t);
 			material_offset_pass(c, t);
 			pixel_mapping_pass(c, t);
 			gtao_pass(c, t);
-			material_evaluation_pass(c, t);
+			opaque_material_evaluation_pass(c, t);
+
+			// The visibility buffer holds one layer, so evaluate each transparent primitive before reusing it.
+			for instance in transparent_instances {
+				visibility_pass.record(c, extent, std::slice::from_ref(instance), VisibilityPhase::Transparent);
+				material_count_pass(c, t);
+				material_offset_pass(c, t);
+				pixel_mapping_pass(c, t);
+				transparent_material_evaluation_pass(c, t);
+			}
 
 			c.end_region();
 		}

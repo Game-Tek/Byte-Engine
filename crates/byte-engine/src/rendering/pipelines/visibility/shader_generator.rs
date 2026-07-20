@@ -81,8 +81,10 @@ fn parse_besl_function(source: &'static str, function_name: &str) -> besl::parse
 	}
 }
 
+/// The `VisibilityShaderScope` struct provides material programs with the shared visibility data and lighting contract.
 pub struct VisibilityShaderScope {}
 
+/// The `VisibilityShaderGenerator` struct adapts portable material programs for visibility-buffer evaluation.
 pub struct VisibilityShaderGenerator {
 	scope: besl::parser::Node<'static>,
 }
@@ -334,7 +336,7 @@ impl VisibilityShaderScope {
 			}
 		};
 		let u16_to_u32 = parse_besl_function("u16_to_u32: fn (value: u16) -> u32 { return u32(value); }", "u16_to_u32");
-		let set2_binding0 = Node::binding("lit_map", Node::image("rgba16"), 1041, false, true);
+		let set2_binding0 = Node::binding("lit_map", Node::image("rgba16"), 1041, true, true);
 		let set2_binding4 = Node::binding(
 			"lighting_data",
 			Node::buffer(
@@ -354,7 +356,6 @@ impl VisibilityShaderScope {
 		);
 		let set2_binding10 = Node::binding("ao", Node::combined_image_sampler(), 1051, true, false);
 		let set2_binding11 = Node::binding("depth_shadow_map", Node::combined_array_image_sampler(), 1052, true, false);
-		let set2_binding12 = Node::binding("visibility_depth", Node::combined_image_sampler(), 1053, true, false);
 		let environment_irradiance = Node::binding("environment_irradiance", Node::combined_image_sampler(), 1054, true, false);
 		let environment_specular = Node::binding_array(
 			"environment_specular",
@@ -365,7 +366,7 @@ impl VisibilityShaderScope {
 			IBL_PREFILTERED_SPECULAR_MIP_COUNT,
 		);
 
-		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32")]);
+		let push_constant = Node::push_constant(vec![Node::member("material_id", "u32"), Node::member("blend", "u32")]);
 
 		let sample_function = Node::intrinsic(
 			"sample_material",
@@ -967,7 +968,6 @@ impl VisibilityShaderScope {
 				set2_binding5,
 				set2_binding10,
 				set2_binding11,
-				set2_binding12,
 				environment_irradiance,
 				environment_specular,
 				push_constant,
@@ -1052,11 +1052,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		vec2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 
 		View view = views.views[0];
-		float surface_depth = texelFetch(visibility_depth, pixel_coordinates, 0).r;
-		vec4 surface_clip_position = vec4(nc, surface_depth, 1.0);
-		vec4 surface_view_position = view.inverse_projection * surface_clip_position;
-		surface_view_position /= surface_view_position.w;
-		vec3 world_space_surface_position = (view.inverse_view * surface_view_position).xyz;
 
 		mat4x3 model = mesh.model;
 		vec4 world_space_vertex_positions[3] = vec4[3](vec4(model * model_space_vertex_positions[0], 1.0), vec4(model * model_space_vertex_positions[1], 1.0), vec4(model * model_space_vertex_positions[2], 1.0));
@@ -1165,11 +1160,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 
 		View view = resources.views->views[0];
-		float surface_depth = resources.visibility_depth.read(uint2(pixel_coordinates)).x;
-		float4 surface_clip_position = float4(nc, surface_depth, 1.0);
-		float4 surface_view_position = view.inverse_projection * surface_clip_position;
-		surface_view_position /= surface_view_position.w;
-		float3 world_space_surface_position = (view.inverse_view * surface_view_position).xyz;
 
 		float4x3 model = mesh.model;
 		float4 world_space_vertex_positions[3] = {float4(model * model_space_vertex_positions[0], 1.0), float4(model * model_space_vertex_positions[1], 1.0), float4(model * model_space_vertex_positions[2], 1.0)};
@@ -1283,11 +1273,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		float2 nc = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 
 		View view = views[0];
-		float surface_depth = visibility_depth.Load(int3(pixel_coordinates, 0)).x;
-		float4 surface_clip_position = float4(nc, surface_depth, 1.0);
-		float4 surface_view_position = mul(view.inverse_projection, surface_clip_position);
-		surface_view_position /= surface_view_position.w;
-		float3 world_space_surface_position = mul(view.inverse_view, surface_view_position).xyz;
 
 		float4x3 model = mesh.model;
 		float4 world_space_vertex_positions[3] = {
@@ -1393,8 +1378,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float attenuation = 1.0;
 
 			if (light.type == 68) {
-				float4 view_space_surface_position = view.view * float4(world_space_surface_position, 1.0);
-				float c_occlusion_factor  = sample_shadow(resources.depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal, gid, push_constant, resources);
+				float4 view_space_surface_position = view.view * float4(world_space_vertex_position, 1.0);
+				float c_occlusion_factor  = sample_shadow(resources.depth_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal, gid, push_constant, resources);
 
 				occlusion_factor = c_occlusion_factor;
 
@@ -1451,7 +1436,14 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		ao_factor *= occlusion;
 		float3 lit = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
 
-		resources.lit_map.write(float4(lit, albedo.a), uint2(pixel_coordinates))
+		float4 output_color = float4(lit, 1.0);
+		if (push_constant.blend != 0u) {
+			float source_alpha = clamp(albedo.a, 0.0, 1.0);
+			float4 destination_color = resources.lit_map.read(uint2(pixel_coordinates));
+			output_color = source_over(float4(lit * source_alpha, source_alpha), destination_color);
+		}
+
+		resources.lit_map.write(output_color, uint2(pixel_coordinates))
 		"
 		.trim();
 
@@ -1484,8 +1476,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float attenuation = 1.0;
 
 			if (light.type == 68) { // Infinite
-				vec4 view_space_surface_position = view.view * vec4(world_space_surface_position, 1.0);
-				float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal);
+				vec4 view_space_surface_position = view.view * vec4(world_space_vertex_position, 1.0);
+				float c_occlusion_factor  = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal);
 
 				occlusion_factor = c_occlusion_factor;
 
@@ -1543,7 +1535,14 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		ao_factor *= occlusion;
 		vec3 lit = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
 
-		imageStore(lit_map, pixel_coordinates, vec4(lit, albedo.a))
+		vec4 output_color = vec4(lit, 1.0);
+		if (push_constant.blend != 0u) {
+			float source_alpha = clamp(albedo.a, 0.0, 1.0);
+			vec4 destination_color = imageLoad(lit_map, pixel_coordinates);
+			output_color = source_over(vec4(lit * source_alpha, source_alpha), destination_color);
+		}
+
+		imageStore(lit_map, pixel_coordinates, output_color)
 		"
 		.trim();
 
@@ -1576,8 +1575,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			float attenuation = 1.0;
 
 			if (light.type == 68) {
-				float4 view_space_surface_position = mul(view.view, float4(world_space_surface_position, 1.0));
-				float c_occlusion_factor = sample_shadow(depth_shadow_map, light, world_space_surface_position, view_space_surface_position.xyz, world_space_vertex_normal);
+				float4 view_space_surface_position = mul(view.view, float4(world_space_vertex_position, 1.0));
+				float c_occlusion_factor = sample_shadow(depth_shadow_map, light, world_space_vertex_position, view_space_surface_position.xyz, world_space_vertex_normal);
 
 				occlusion_factor = c_occlusion_factor;
 
@@ -1634,7 +1633,14 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		ao_factor *= occlusion;
 		float3 lit = (diffuse + specular) * ao_factor + ambient * ao_factor + emission;
 
-		lit_map[pixel_coordinates] = float4(lit, albedo.a)
+		float4 output_color = float4(lit, 1.0);
+		if (push_constant.blend != 0u) {
+			float source_alpha = clamp(albedo.a, 0.0, 1.0);
+			float4 destination_color = lit_map[pixel_coordinates];
+			output_color = source_over(float4(lit * source_alpha, source_alpha), destination_color);
+		}
+
+		lit_map[pixel_coordinates] = output_color
 		"
 		.trim();
 
@@ -1651,7 +1657,6 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 						"vertex_uvs",
 						"ao",
 						"depth_shadow_map",
-						"visibility_depth",
 						"push_constant",
 						"material_offset",
 						"material_offset_scratch",
@@ -1697,6 +1702,8 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 				&[
 					"lighting_data",
 					"lit_map",
+					"push_constant",
+					"source_over",
 					"sample_shadow",
 					"sample_environment_irradiance",
 					"sample_environment_specular",
@@ -1888,6 +1895,17 @@ mod tests {
 			let main_node = root.get_main().unwrap();
 			let evaluation =
 				ProgramEvaluation::from_main(&main_node).expect("Expected material evaluation reflection to succeed");
+			let lit_binding = evaluation.bindings().iter().find(|binding| binding.slot == 1041).expect(
+				"Missing material lit binding. The most likely cause is that material output stopped retaining slot 1041.",
+			);
+			assert!(
+				lit_binding.read && lit_binding.write,
+				"Material lit binding is not read-write. The most likely cause is that transparent source-over access was removed from the visibility scope."
+			);
+			assert!(
+				evaluation.bindings().iter().all(|binding| binding.slot != 1053),
+				"Material evaluation still depends on opaque visibility depth. The most likely cause is that surface reconstruction stopped using the winning triangle's barycentrics."
+			);
 			let unexpected_ranges = evaluation
 				.bindings()
 				.iter()

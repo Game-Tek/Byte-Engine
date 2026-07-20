@@ -16,7 +16,7 @@ use smallvec::SmallVec;
 use utils::Extent;
 
 use super::{allocate_render_command, RenderPass, RenderPassBuilder, RenderPassReturn};
-use crate::rendering::Sink;
+use crate::rendering::{common_shader_generator::CommonShaderScope, Sink};
 
 /// The `Descriptor` struct describes the stable shader and naming contract for one single-set BESL compute pipeline.
 pub struct Descriptor<'a> {
@@ -39,8 +39,12 @@ impl<'a> Descriptor<'a> {
 /// Compiles one canonical BESL asset and returns its compute entry point for semantic tests.
 #[cfg(test)]
 pub fn compile_test_program(source: &str) -> besl::NodeReference {
-	let program = besl::compile_to_besl(source, None).expect(
-		"Failed to compile a canonical render-pass BESL asset. The most likely cause is invalid source syntax or descriptor declarations.",
+	let mut root = besl::parse(source).expect(
+		"Failed to parse a canonical render-pass BESL asset. The most likely cause is invalid source syntax or descriptor declarations.",
+	);
+	root.add(vec![CommonShaderScope::new()]);
+	let program = besl::lex(root).expect(
+		"Failed to link a canonical render-pass BESL asset. The most likely cause is an unresolved shared helper or descriptor declaration.",
 	);
 	program.get_main().expect(
 		"Canonical render-pass entry point is missing. The most likely cause is that the BESL asset does not define `main`.",

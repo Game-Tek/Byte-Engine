@@ -2535,7 +2535,11 @@ impl Device {
 			},
 			BlendOp: D3D12_BLEND_OP_ADD,
 			SrcBlendAlpha: D3D12_BLEND_ONE,
-			DestBlendAlpha: D3D12_BLEND_ZERO,
+			DestBlendAlpha: if blend_enable {
+				D3D12_BLEND_INV_SRC_ALPHA
+			} else {
+				D3D12_BLEND_ZERO
+			},
 			BlendOpAlpha: D3D12_BLEND_OP_ADD,
 			LogicOp: D3D12_LOGIC_OP_NOOP,
 			RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,

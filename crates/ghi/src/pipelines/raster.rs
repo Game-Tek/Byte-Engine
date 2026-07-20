@@ -70,6 +70,7 @@ pub enum CullMode {
 pub enum BlendMode {
 	#[default]
 	None,
+	/// Applies straight-alpha source-over blending to both color and alpha.
 	Alpha,
 }
 

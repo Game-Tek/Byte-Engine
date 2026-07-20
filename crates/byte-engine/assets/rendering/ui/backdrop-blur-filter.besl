@@ -1,0 +1,54 @@
+source_texture: descriptor<Texture2D, 0, read>;
+result_texture: descriptor<StorageImage<rgba16>, 1, write>;
+
+push_constant: push_constant {
+	filter_data: vec4f,
+	origin: vec2u,
+	extent: vec2u,
+	pair_weights_0_3: vec4f,
+	pair_weights_4_7: vec4f,
+	pair_weights_8_10: vec4f,
+	pair_offsets_0_3: vec4f,
+	pair_offsets_4_7: vec4f,
+	pair_offsets_8_10: vec4f,
+}
+
+// Combines one positive and one negative bilinear read for a neighboring tap
+// pair. The CPU has already packed the Gaussian pair weight and centroid, so
+// this stage must not stretch either value with the requested blur radius.
+sample_pair: fn(uv: vec2f, texel_direction: vec2f, offset: f32, weight: f32) -> vec4f {
+	let sample_offset: vec2f = texel_direction * offset;
+	return (
+		texture_lod(source_texture, uv + sample_offset)
+		+ texture_lod(source_texture, uv - sample_offset)
+	) * weight;
+}
+
+// Applies a normalized Gaussian with integer support 0 through 22. Pairing
+// adjacent non-center taps keeps the exact CPU-provided distribution while
+// reducing the separable 45-tap kernel to 23 hardware texture reads per axis.
+main: fn() -> void {
+	let local_coordinate: vec2u = thread_id();
+	if (local_coordinate.x >= push_constant.extent.x || local_coordinate.y >= push_constant.extent.y) {
+		return;
+	}
+	let coordinate: vec2u = local_coordinate + push_constant.origin;
+	guard_image_bounds(result_texture, coordinate);
+	let source_size: vec2u = texture_size(source_texture);
+	let inverse_source_size: vec2f = vec2f(1.0 / f32(source_size.x), 1.0 / f32(source_size.y));
+	let uv: vec2f = (vec2f(f32(coordinate.x), f32(coordinate.y)) + vec2f(0.5, 0.5)) * inverse_source_size;
+	let texel_direction: vec2f = vec2f(push_constant.filter_data.x, push_constant.filter_data.y) * inverse_source_size;
+	let color: vec4f = texture_lod(source_texture, uv) * push_constant.filter_data.z;
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_0_3.x, push_constant.pair_weights_0_3.x);
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_0_3.y, push_constant.pair_weights_0_3.y);
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_0_3.z, push_constant.pair_weights_0_3.z);
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_0_3.w, push_constant.pair_weights_0_3.w);
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_4_7.x, push_constant.pair_weights_4_7.x);
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_4_7.y, push_constant.pair_weights_4_7.y);
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_4_7.z, push_constant.pair_weights_4_7.z);
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_4_7.w, push_constant.pair_weights_4_7.w);
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_8_10.x, push_constant.pair_weights_8_10.x);
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_8_10.y, push_constant.pair_weights_8_10.y);
+	color = color + sample_pair(uv, texel_direction, push_constant.pair_offsets_8_10.z, push_constant.pair_weights_8_10.z);
+	write(result_texture, coordinate, color);
+}

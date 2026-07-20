@@ -55,18 +55,28 @@ const UI_BLUR_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourc
 	ghi::ResourceKind::StorageImage,
 	ghi::AccessPolicies::WRITE,
 );
-const UI_BLUR_COMPOSITE_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+const UI_BLUR_FULL_COMPOSITE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(0),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 );
-const UI_BLUR_COMPOSITE_BLURRED_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
+const UI_BLUR_HALF_COMPOSITE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1),
 	ghi::ResourceKind::CombinedImageSampler,
 	ghi::AccessPolicies::READ,
 );
-const UI_BLUR_DOWNSCALE: u32 = 1;
-const UI_BLUR_WORKGROUP_SIZE: u32 = 16;
+const UI_BLUR_HALF_DOWNSCALE: u32 = 2;
+const UI_BLUR_GAUSSIAN_SUPPORT: u32 = 22;
+const UI_BLUR_GAUSSIAN_PAIR_COUNT: usize = 11;
+const UI_BLUR_SIGMA_SCALE: f32 = 1.689_394_6;
+const UI_BLUR_FULL_ONLY_SIGMA: f32 = 4.0;
+const UI_BLUR_HALF_ONLY_SIGMA: f32 = 6.0;
+const UI_BLUR_HALF_RESAMPLING_VARIANCE: f32 = 2.75;
+const UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE: u32 = std::mem::size_of::<UiBlurDownsamplePush>() as u32;
+const UI_BLUR_FILTER_PUSH_CONSTANT_SIZE: u32 = std::mem::size_of::<UiBlurFilterPush>() as u32;
+const UI_BLUR_DOWNSAMPLE_SHADER_ID: &str = "byte-engine/rendering/ui/backdrop-blur-downsample.besl";
+const UI_BLUR_FILTER_SHADER_ID: &str = "byte-engine/rendering/ui/backdrop-blur-filter.besl";
+const UI_BLUR_COMPOSITE_SHADER_ID: &str = "byte-engine/rendering/ui/backdrop-blur-composite.besl";
 
 const UI_VERTICES_PER_ELEMENT: usize = 4;
 const UI_INDICES_PER_ELEMENT: usize = 6;
@@ -80,7 +90,7 @@ const MAX_UI_INDICES: usize = MAX_UI_ELEMENTS * UI_INDICES_PER_ELEMENT;
 const CURVE_FLATTEN_TOLERANCE_PIXELS: f32 = 0.35;
 const CURVE_AA_WIDTH_PIXELS: f32 = 1.0;
 
-const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 13] = [
+const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 14] = [
 	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("PIXEL_POSITION", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("LOCAL_POSITION", ghi::DataTypes::Float2, 0),
@@ -94,6 +104,7 @@ const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 13] = [
 	ghi::pipelines::VertexElement::new("FEATHER_MASK_SIZE", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("FEATHER_MASK_EDGES", ghi::DataTypes::Float4, 0),
 	ghi::pipelines::VertexElement::new("FEATHER_MASK_CORNER", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("BLUR_RESOLUTION_MIX", ghi::DataTypes::Float, 0),
 ];
 #[derive(Debug, Clone, Copy)]
 struct UiDrawElement {
@@ -219,6 +230,7 @@ struct UiVertex {
 	feather_mask_size: [f32; 2],
 	feather_mask_edges: [f32; 4],
 	feather_mask_corner: [f32; 2],
+	blur_resolution_mix: f32,
 }
 
 const UI_IMAGE_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 7] = [
@@ -313,17 +325,148 @@ struct UiPreparedTextBatch {
 	descriptor_set: ghi::DescriptorSetHandle,
 }
 
+/// The `UiBlurDispatchRegion` struct limits one compute stage to the padded part of the blur target it must produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UiBlurDispatchRegion {
+	origin: [u32; 2],
+	extent: Extent,
+}
+
+/// The `UiBlurDownsamplePush` struct carries one regional half-resolution dispatch to the production shader.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UiBlurDownsamplePush {
+	origin: [u32; 2],
+	extent: [u32; 2],
+}
+
+/// The `UiBlurFilterPush` struct keeps the complete Gaussian kernel and dispatch region in one aligned GPU record.
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct UiBlurFilterPush {
+	filter_data: [f32; 4],
+	origin: [u32; 2],
+	extent: [u32; 2],
+	pair_weights_0_3: [f32; 4],
+	pair_weights_4_7: [f32; 4],
+	pair_weights_8_10_pad: [f32; 4],
+	pair_offsets_0_3: [f32; 4],
+	pair_offsets_4_7: [f32; 4],
+	pair_offsets_8_10_pad: [f32; 4],
+}
+
+/// The `UiBlurKernel` struct stores one normalized Gaussian without allocating transient coefficient buffers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct UiBlurKernel {
+	center_weight: f32,
+	pair_weights: [f32; UI_BLUR_GAUSSIAN_PAIR_COUNT],
+	pair_offsets: [f32; UI_BLUR_GAUSSIAN_PAIR_COUNT],
+}
+
+impl UiBlurKernel {
+	// Generates the normalized integer taps first, then packs adjacent positive
+	// taps for bilinear filtering without scaling their weighted offsets.
+	fn gaussian(sigma: f32) -> Self {
+		let mut taps = [0.0f64; UI_BLUR_GAUSSIAN_SUPPORT as usize + 1];
+		taps[0] = 1.0;
+		if sigma.is_finite() && sigma > 0.0 {
+			let variance_scale = -0.5 / f64::from(sigma * sigma);
+			for (index, tap) in taps.iter_mut().enumerate().skip(1) {
+				*tap = (index as f64 * index as f64 * variance_scale).exp();
+			}
+		}
+		let normalization = taps[0] + 2.0 * taps.iter().skip(1).sum::<f64>();
+		for tap in &mut taps {
+			*tap /= normalization;
+		}
+
+		let mut pair_weights = [0.0; UI_BLUR_GAUSSIAN_PAIR_COUNT];
+		let mut pair_offsets = [0.0; UI_BLUR_GAUSSIAN_PAIR_COUNT];
+		for pair_index in 0..UI_BLUR_GAUSSIAN_PAIR_COUNT {
+			let first_index = pair_index * 2 + 1;
+			let first_weight = taps[first_index];
+			let second_weight = taps[first_index + 1];
+			let pair_weight = first_weight + second_weight;
+			pair_weights[pair_index] = pair_weight as f32;
+			pair_offsets[pair_index] = if pair_weight > 0.0 {
+				((first_index as f64 * first_weight + (first_index + 1) as f64 * second_weight) / pair_weight) as f32
+			} else {
+				first_index as f32 + 0.5
+			};
+		}
+
+		Self {
+			center_weight: taps[0] as f32,
+			pair_weights,
+			pair_offsets,
+		}
+	}
+
+	// Combines the reusable kernel with one axis and one regional dispatch.
+	fn push(self, direction: [f32; 2], region: UiBlurDispatchRegion) -> UiBlurFilterPush {
+		UiBlurFilterPush {
+			filter_data: [direction[0], direction[1], self.center_weight, 0.0],
+			origin: region.origin,
+			extent: region.push_extent(),
+			pair_weights_0_3: [
+				self.pair_weights[0],
+				self.pair_weights[1],
+				self.pair_weights[2],
+				self.pair_weights[3],
+			],
+			pair_weights_4_7: [
+				self.pair_weights[4],
+				self.pair_weights[5],
+				self.pair_weights[6],
+				self.pair_weights[7],
+			],
+			pair_weights_8_10_pad: [self.pair_weights[8], self.pair_weights[9], self.pair_weights[10], 0.0],
+			pair_offsets_0_3: [
+				self.pair_offsets[0],
+				self.pair_offsets[1],
+				self.pair_offsets[2],
+				self.pair_offsets[3],
+			],
+			pair_offsets_4_7: [
+				self.pair_offsets[4],
+				self.pair_offsets[5],
+				self.pair_offsets[6],
+				self.pair_offsets[7],
+			],
+			pair_offsets_8_10_pad: [self.pair_offsets[8], self.pair_offsets[9], self.pair_offsets[10], 0.0],
+		}
+	}
+}
+
+/// The `UiBlurPathRegions` struct describes the two separable Gaussian stages for one resolution path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UiBlurPathRegions {
+	horizontal: UiBlurDispatchRegion,
+	vertical: UiBlurDispatchRegion,
+}
+
+/// The `UiBlurHalfPathRegions` struct adds the binomial prefilter region needed by the half-resolution path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UiBlurHalfPathRegions {
+	downsample: UiBlurDispatchRegion,
+	filter: UiBlurPathRegions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct UiPreparedBlurBatch {
 	depth: u32,
 	order: u32,
 	index_count: u32,
 	first_index: u32,
 	vertex_offset: i32,
-	radius_pixels: u32,
+	resolution_mix: f32,
+	full_kernel: UiBlurKernel,
+	half_kernel: UiBlurKernel,
+	full_regions: UiBlurPathRegions,
+	half_regions: UiBlurHalfPathRegions,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum UiPreparedBatch {
 	Rect(UiDrawBatch),
 	Curve(UiCurveDrawBatch),
@@ -440,6 +583,122 @@ fn backdrop_blur_radius(radius: f32) -> f32 {
 	} else {
 		0.0
 	}
+}
+
+// Preserves the legacy repeated-blur strength by mapping its variance-domain
+// radius to the standard deviation of one Gaussian.
+fn blur_sigma(radius_pixels: f32) -> f32 {
+	UI_BLUR_SIGMA_SCALE * radius_pixels.clamp(0.0, 64.0).sqrt()
+}
+
+// Removes the half-resolution prefilter and reconstruction variance before
+// converting the remaining full-resolution variance to the half lattice.
+fn blur_half_sigma(sigma_pixels: f32) -> f32 {
+	0.5 * (sigma_pixels * sigma_pixels - UI_BLUR_HALF_RESAMPLING_VARIANCE)
+		.max(0.0)
+		.sqrt()
+}
+
+// Blends continuously between the full and half paths while leaving their
+// quality-stable ranges at exactly zero and one.
+fn blur_resolution_mix(sigma_pixels: f32) -> f32 {
+	let t = ((sigma_pixels - UI_BLUR_FULL_ONLY_SIGMA) / (UI_BLUR_HALF_ONLY_SIGMA - UI_BLUR_FULL_ONLY_SIGMA)).clamp(0.0, 1.0);
+	t * t * (3.0 - 2.0 * t)
+}
+
+fn blur_uses_full_resolution(resolution_mix: f32) -> bool {
+	resolution_mix < 1.0
+}
+
+fn blur_uses_half_resolution(resolution_mix: f32) -> bool {
+	resolution_mix > 0.0
+}
+
+// Keeps partial edge texels when an odd full-resolution dimension maps to the
+// fixed two-pixel half-resolution lattice.
+fn blur_half_extent(extent: Extent) -> Extent {
+	Extent::rectangle(
+		extent.width().div_ceil(UI_BLUR_HALF_DOWNSCALE).max(1),
+		extent.height().div_ceil(UI_BLUR_HALF_DOWNSCALE).max(1),
+	)
+}
+
+impl UiBlurDispatchRegion {
+	// Expands one region without crossing the selected blur target's edges.
+	fn expanded(self, horizontal: u32, vertical: u32, target: Extent) -> Self {
+		let start_x = self.origin[0].saturating_sub(horizontal);
+		let start_y = self.origin[1].saturating_sub(vertical);
+		let end_x = self.origin[0]
+			.saturating_add(self.extent.width())
+			.saturating_add(horizontal)
+			.min(target.width());
+		let end_y = self.origin[1]
+			.saturating_add(self.extent.height())
+			.saturating_add(vertical)
+			.min(target.height());
+		Self {
+			origin: [start_x, start_y],
+			extent: Extent::rectangle(end_x - start_x, end_y - start_y),
+		}
+	}
+
+	fn push_extent(self) -> [u32; 2] {
+		[self.extent.width(), self.extent.height()]
+	}
+}
+
+// Converts screen bounds through a fixed full- or half-resolution lattice.
+// It never derives UV scale from ceil-divided image dimensions, which keeps odd
+// viewport widths phase-aligned with the composite shader.
+fn blur_composite_region(bounds: [f32; 4], target: Extent, downscale: u32) -> UiBlurDispatchRegion {
+	let axis = |minimum: f32, maximum: f32, target_size: u32| {
+		let lattice_scale = 1.0 / downscale as f32;
+		let start = (minimum * lattice_scale - 0.5).floor().clamp(0.0, target_size as f32) as u32;
+		let end = (maximum * lattice_scale + 0.5).ceil().clamp(0.0, target_size as f32) as u32;
+		(start, end.max(start.saturating_add(1).min(target_size)))
+	};
+	let (start_x, end_x) = axis(bounds[0], bounds[2], target.width());
+	let (start_y, end_y) = axis(bounds[1], bounds[3], target.height());
+	UiBlurDispatchRegion {
+		origin: [start_x, start_y],
+		extent: Extent::rectangle(end_x - start_x, end_y - start_y),
+	}
+}
+
+// Plans the full-resolution producer regions backward from the composite
+// footprint using the fixed 22-texel Gaussian support. The orthogonal one-texel
+// pad covers normalized-UV roundoff around a nominal bilinear texel center.
+fn blur_full_dispatch_regions(bounds: [f32; 4], viewport: Extent) -> UiBlurPathRegions {
+	let vertical = blur_composite_region(bounds, viewport, 1);
+	let horizontal = vertical.expanded(1, UI_BLUR_GAUSSIAN_SUPPORT, viewport);
+	UiBlurPathRegions { horizontal, vertical }
+}
+
+// Plans the half-resolution stages backward through the eight-read tent and
+// both Gaussian axes. Each producer also keeps one orthogonal texel because a
+// normalized center coordinate can round onto both bilinear neighbors.
+fn blur_half_dispatch_regions(bounds: [f32; 4], viewport: Extent) -> UiBlurHalfPathRegions {
+	let target = blur_half_extent(viewport);
+	let vertical = blur_composite_region(bounds, target, UI_BLUR_HALF_DOWNSCALE).expanded(1, 1, target);
+	let horizontal = vertical.expanded(1, UI_BLUR_GAUSSIAN_SUPPORT, target);
+	let downsample = horizontal.expanded(UI_BLUR_GAUSSIAN_SUPPORT, 1, target);
+	UiBlurHalfPathRegions {
+		downsample,
+		filter: UiBlurPathRegions { horizontal, vertical },
+	}
+}
+
+// Reads the dispatch contract persisted beside a production compute shader.
+fn blur_shader_workgroup(shader: &crate::rendering::shader_store::LoadedShader, name: &str) -> Extent {
+	assert!(
+		matches!(shader.stage, ResourceShaderTypes::Compute),
+		"Invalid {name} shader stage. The most likely cause is incorrect BESL sidecar metadata."
+	);
+	let (width, height, depth) = shader
+		.interface
+		.workgroup_size
+		.unwrap_or_else(|| panic!("Missing {name} workgroup. The most likely cause is an incomplete BESL compute sidecar."));
+	Extent::new(width, height, depth)
 }
 
 fn draw_clip_from_geometry(clip: Option<Geometry>) -> Option<DrawClip> {
@@ -817,6 +1076,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				feather_mask_size: feather_mask.size,
 				feather_mask_edges: feather_mask.edges,
 				feather_mask_corner: feather_mask.corner,
+				blur_resolution_mix: 0.0,
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y0)],
@@ -832,6 +1092,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				feather_mask_size: feather_mask.size,
 				feather_mask_edges: feather_mask.edges,
 				feather_mask_corner: feather_mask.corner,
+				blur_resolution_mix: 0.0,
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y1)],
@@ -847,6 +1108,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				feather_mask_size: feather_mask.size,
 				feather_mask_edges: feather_mask.edges,
 				feather_mask_corner: feather_mask.corner,
+				blur_resolution_mix: 0.0,
 			},
 			UiVertex {
 				position: [to_clip_x(x0), to_clip_y(y1)],
@@ -862,6 +1124,7 @@ fn build_ui_geometry<'a>(draw_list: &UiDrawList, viewport: Extent, frame_allocat
 				feather_mask_size: feather_mask.size,
 				feather_mask_edges: feather_mask.edges,
 				feather_mask_corner: feather_mask.corner,
+				blur_resolution_mix: 0.0,
 			},
 		]);
 
@@ -949,6 +1212,10 @@ fn build_ui_blur_geometry<'a>(
 			}
 			None => (original_x0, original_y0, original_x1, original_y1),
 		};
+		let x0 = x0.clamp(0.0, viewport_width);
+		let y0 = y0.clamp(0.0, viewport_height);
+		let x1 = x1.clamp(0.0, viewport_width);
+		let y1 = y1.clamp(0.0, viewport_height);
 		if x1 <= x0 || y1 <= y0 {
 			continue;
 		}
@@ -965,6 +1232,13 @@ fn build_ui_blur_geometry<'a>(
 		let first_index = geometry.indices.len() as u32;
 		let vertex_offset = geometry.vertices.len() as i32;
 		let base_vertex = 0u16;
+		let effective_radius = (blur.radius * radius_scale).clamp(0.0, 64.0);
+		let sigma_pixels = blur_sigma(effective_radius);
+		let resolution_mix = blur_resolution_mix(sigma_pixels);
+		let full_kernel = UiBlurKernel::gaussian(sigma_pixels);
+		let half_kernel = UiBlurKernel::gaussian(blur_half_sigma(sigma_pixels));
+		let full_regions = blur_full_dispatch_regions([x0, y0, x1, y1], viewport);
+		let half_regions = blur_half_dispatch_regions([x0, y0, x1, y1], viewport);
 
 		geometry.vertices.extend_from_slice(&[
 			UiVertex {
@@ -981,6 +1255,7 @@ fn build_ui_blur_geometry<'a>(
 				feather_mask_size: feather_mask.size,
 				feather_mask_edges: feather_mask.edges,
 				feather_mask_corner: feather_mask.corner,
+				blur_resolution_mix: resolution_mix,
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y0)],
@@ -996,6 +1271,7 @@ fn build_ui_blur_geometry<'a>(
 				feather_mask_size: feather_mask.size,
 				feather_mask_edges: feather_mask.edges,
 				feather_mask_corner: feather_mask.corner,
+				blur_resolution_mix: resolution_mix,
 			},
 			UiVertex {
 				position: [to_clip_x(x1), to_clip_y(y1)],
@@ -1011,6 +1287,7 @@ fn build_ui_blur_geometry<'a>(
 				feather_mask_size: feather_mask.size,
 				feather_mask_edges: feather_mask.edges,
 				feather_mask_corner: feather_mask.corner,
+				blur_resolution_mix: resolution_mix,
 			},
 			UiVertex {
 				position: [to_clip_x(x0), to_clip_y(y1)],
@@ -1026,6 +1303,7 @@ fn build_ui_blur_geometry<'a>(
 				feather_mask_size: feather_mask.size,
 				feather_mask_edges: feather_mask.edges,
 				feather_mask_corner: feather_mask.corner,
+				blur_resolution_mix: resolution_mix,
 			},
 		]);
 		geometry.indices.extend_from_slice(&[
@@ -1042,9 +1320,11 @@ fn build_ui_blur_geometry<'a>(
 			index_count: UI_INDICES_PER_ELEMENT as u32,
 			first_index,
 			vertex_offset,
-			radius_pixels: (blur.radius * radius_scale / UI_BLUR_DOWNSCALE as f32)
-				.round()
-				.clamp(1.0, 64.0) as u32,
+			resolution_mix,
+			full_kernel,
+			half_kernel,
+			full_regions,
+			half_regions,
 		});
 	}
 
@@ -1491,23 +1771,25 @@ pub struct UiRenderPass {
 	text_pipeline: ghi::PipelineHandle,
 	text_sampler: ghi::SamplerHandle,
 	text_overlays: Vec<UiTextOverlayTexture>,
-	blur_copy_pipeline: ghi::PipelineHandle,
-	blur_compute_pipeline_x: ghi::PipelineHandle,
-	blur_compute_pipeline_y: ghi::PipelineHandle,
+	blur_downsample_pipeline: ghi::PipelineHandle,
+	blur_filter_pipeline: ghi::PipelineHandle,
+	blur_downsample_workgroup: Extent,
+	blur_filter_workgroup: Extent,
 	blur_composite_pipeline: ghi::PipelineHandle,
 	blur_vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
 	blur_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
 	blur_sampler: ghi::SamplerHandle,
-	blur_full_source_descriptor_set: ghi::DescriptorSetHandle,
-	blur_downsample_descriptor_set: ghi::DescriptorSetHandle,
-	blur_x_descriptor_set: ghi::DescriptorSetHandle,
-	blur_feedback_x_descriptor_set: ghi::DescriptorSetHandle,
-	blur_y_descriptor_set: ghi::DescriptorSetHandle,
+	blur_half_downsample_descriptor_set: ghi::DescriptorSetHandle,
+	blur_full_x_descriptor_set: ghi::DescriptorSetHandle,
+	blur_full_y_descriptor_set: ghi::DescriptorSetHandle,
+	blur_half_x_descriptor_set: ghi::DescriptorSetHandle,
+	blur_half_y_descriptor_set: ghi::DescriptorSetHandle,
 	blur_composite_descriptor_set: ghi::DescriptorSetHandle,
-	blur_composite_source: ghi::BaseImageHandle,
-	blur_source: ghi::BaseImageHandle,
-	blur_scratch: ghi::BaseImageHandle,
-	blur_output: ghi::BaseImageHandle,
+	blur_full_scratch: ghi::BaseImageHandle,
+	blur_full_output: ghi::BaseImageHandle,
+	blur_half_source: ghi::BaseImageHandle,
+	blur_half_scratch: ghi::BaseImageHandle,
+	blur_half_output: ghi::BaseImageHandle,
 	main_attachment: ghi::BaseImageHandle,
 	data: UiDrawList,
 	reported_capacity_limit: bool,
@@ -1524,6 +1806,28 @@ impl UiRenderPass {
 		);
 
 		render_pass_builder.alias("UI", "main");
+
+		let blur_downsample_shader = render_pass_builder
+			.load_shader(UI_BLUR_DOWNSAMPLE_SHADER_ID, "UI Backdrop Blur Downsample Shader")
+			.expect(
+				"Failed to load the UI backdrop downsample shader. The most likely cause is that the BESL asset was not baked.",
+			);
+		let blur_filter_shader = render_pass_builder
+			.load_shader(UI_BLUR_FILTER_SHADER_ID, "UI Backdrop Blur Filter Shader")
+			.expect(
+				"Failed to load the UI backdrop filter shader. The most likely cause is that the BESL asset was not baked.",
+			);
+		let blur_composite_shader = render_pass_builder
+			.load_shader(UI_BLUR_COMPOSITE_SHADER_ID, "UI Backdrop Blur Composite Shader")
+			.expect(
+				"Failed to load the UI backdrop composite shader. The most likely cause is that the BESL asset was not baked.",
+			);
+		let blur_downsample_workgroup = blur_shader_workgroup(&blur_downsample_shader, "UI backdrop downsample");
+		let blur_filter_workgroup = blur_shader_workgroup(&blur_filter_shader, "UI backdrop filter");
+		assert!(
+			matches!(blur_composite_shader.stage, ResourceShaderTypes::Fragment),
+			"Invalid UI backdrop composite shader stage. The most likely cause is incorrect BESL sidecar metadata."
+		);
 
 		let context = render_pass_builder.context();
 
@@ -1623,29 +1927,23 @@ impl UiRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let blur_copy_shader = create_blur_copy_compute_shader(context);
-		let blur_copy_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[],
-			ghi::ShaderParameter::new(&blur_copy_shader, ghi::ShaderTypes::Compute),
+		let blur_downsample_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[ghi::pipelines::PushConstantRange::new(
+				0,
+				UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE,
+			)],
+			ghi::ShaderParameter::new(&blur_downsample_shader.handle, ghi::ShaderTypes::Compute),
 		));
-		let blur_compute_shader = create_blur_compute_shader(context);
-		let blur_compute_pipeline_x = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[],
-			ghi::ShaderParameter::new(&blur_compute_shader, ghi::ShaderTypes::Compute)
-				.with_specialization_map(&[ghi::pipelines::SpecializationMapEntry::new(0, "i32".to_string(), 0i32)]),
+		let blur_filter_pipeline = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
+			&[ghi::pipelines::PushConstantRange::new(0, UI_BLUR_FILTER_PUSH_CONSTANT_SIZE)],
+			ghi::ShaderParameter::new(&blur_filter_shader.handle, ghi::ShaderTypes::Compute),
 		));
-		let blur_compute_pipeline_y = context.create_compute_pipeline(ghi::pipelines::compute::Builder::new(
-			&[],
-			ghi::ShaderParameter::new(&blur_compute_shader, ghi::ShaderTypes::Compute)
-				.with_specialization_map(&[ghi::pipelines::SpecializationMapEntry::new(0, "i32".to_string(), 1i32)]),
-		));
-		let blur_composite_shader = create_blur_composite_fragment_shader(context);
 		let blur_composite_pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 			&[],
 			&UI_VERTEX_LAYOUT,
 			&[
 				ghi::ShaderParameter::new(&vertex_shader, ghi::ShaderTypes::Vertex),
-				ghi::ShaderParameter::new(&blur_composite_shader, ghi::ShaderTypes::Fragment),
+				ghi::ShaderParameter::new(&blur_composite_shader.handle, ghi::ShaderTypes::Fragment),
 			],
 			&attachments,
 		));
@@ -1665,110 +1963,115 @@ impl UiRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let blur_composite_source = context.build_dynamic_image(
+		let blur_full_scratch = context.build_dynamic_image(
 			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
-				.name("UI Backdrop Blur Composite Source"),
+				.name("UI Backdrop Blur Full Scratch"),
 		);
-		let blur_composite_source_image: ghi::BaseImageHandle = blur_composite_source.into();
-		let blur_source = context.build_dynamic_image(
+		let blur_full_scratch_image: ghi::BaseImageHandle = blur_full_scratch.into();
+		let blur_full_output = context.build_dynamic_image(
 			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
-				.name("UI Backdrop Blur Source"),
+				.name("UI Backdrop Blur Full Output"),
 		);
-		let blur_source_image: ghi::BaseImageHandle = blur_source.into();
-		let blur_scratch = context.build_dynamic_image(
+		let blur_full_output_image: ghi::BaseImageHandle = blur_full_output.into();
+		let blur_half_source = context.build_dynamic_image(
 			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
-				.name("UI Backdrop Blur Scratch"),
+				.name("UI Backdrop Blur Half Source"),
 		);
-		let blur_scratch_image: ghi::BaseImageHandle = blur_scratch.into();
-		let blur_output = context.build_dynamic_image(
+		let blur_half_source_image: ghi::BaseImageHandle = blur_half_source.into();
+		let blur_half_scratch = context.build_dynamic_image(
 			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
-				.name("UI Backdrop Blur Output"),
+				.name("UI Backdrop Blur Half Scratch"),
 		);
-		let blur_output_image: ghi::BaseImageHandle = blur_output.into();
+		let blur_half_scratch_image: ghi::BaseImageHandle = blur_half_scratch.into();
+		let blur_half_output = context.build_dynamic_image(
+			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
+				.name("UI Backdrop Blur Half Output"),
+		);
+		let blur_half_output_image: ghi::BaseImageHandle = blur_half_output.into();
 		let main_attachment_image: ghi::BaseImageHandle = main_attachment.into();
-		let blur_full_source_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Full Source"));
-		let blur_downsample_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Downsample"));
-		let blur_x_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur X"));
-		let blur_feedback_x_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Feedback X"));
-		let blur_y_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Y"));
+		let blur_half_downsample_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Half Downsample"));
+		let blur_full_x_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Full X"));
+		let blur_full_y_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Full Y"));
+		let blur_half_x_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Half X"));
+		let blur_half_y_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Half Y"));
 		let blur_composite_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Composite"));
 		context.write(&[
 			ghi::DescriptorWrite::combined_image_sampler(
-				blur_full_source_descriptor_set,
+				blur_half_downsample_descriptor_set,
 				UI_BLUR_SOURCE_BINDING.slot(),
 				main_attachment_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::image(
-				blur_full_source_descriptor_set,
+				blur_half_downsample_descriptor_set,
 				UI_BLUR_OUTPUT_BINDING.slot(),
-				blur_composite_source_image,
+				blur_half_source_image,
 				ghi::Layouts::General,
 			),
 			ghi::DescriptorWrite::combined_image_sampler(
-				blur_downsample_descriptor_set,
+				blur_full_x_descriptor_set,
 				UI_BLUR_SOURCE_BINDING.slot(),
 				main_attachment_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::image(
-				blur_downsample_descriptor_set,
+				blur_full_x_descriptor_set,
 				UI_BLUR_OUTPUT_BINDING.slot(),
-				blur_source_image,
+				blur_full_scratch_image,
 				ghi::Layouts::General,
 			),
 			ghi::DescriptorWrite::combined_image_sampler(
-				blur_x_descriptor_set,
+				blur_full_y_descriptor_set,
 				UI_BLUR_SOURCE_BINDING.slot(),
-				blur_source_image,
+				blur_full_scratch_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::image(
-				blur_x_descriptor_set,
+				blur_full_y_descriptor_set,
 				UI_BLUR_OUTPUT_BINDING.slot(),
-				blur_scratch_image,
+				blur_full_output_image,
 				ghi::Layouts::General,
 			),
 			ghi::DescriptorWrite::combined_image_sampler(
-				blur_feedback_x_descriptor_set,
+				blur_half_x_descriptor_set,
 				UI_BLUR_SOURCE_BINDING.slot(),
-				blur_output_image,
+				blur_half_source_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::image(
-				blur_feedback_x_descriptor_set,
+				blur_half_x_descriptor_set,
 				UI_BLUR_OUTPUT_BINDING.slot(),
-				blur_scratch_image,
+				blur_half_scratch_image,
 				ghi::Layouts::General,
 			),
 			ghi::DescriptorWrite::combined_image_sampler(
-				blur_y_descriptor_set,
+				blur_half_y_descriptor_set,
 				UI_BLUR_SOURCE_BINDING.slot(),
-				blur_scratch_image,
+				blur_half_scratch_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::image(
-				blur_y_descriptor_set,
+				blur_half_y_descriptor_set,
 				UI_BLUR_OUTPUT_BINDING.slot(),
-				blur_output_image,
+				blur_half_output_image,
 				ghi::Layouts::General,
 			),
 			ghi::DescriptorWrite::combined_image_sampler(
 				blur_composite_descriptor_set,
-				UI_BLUR_COMPOSITE_SOURCE_BINDING.slot(),
-				blur_composite_source_image,
+				UI_BLUR_FULL_COMPOSITE_BINDING.slot(),
+				blur_full_output_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::combined_image_sampler(
 				blur_composite_descriptor_set,
-				UI_BLUR_COMPOSITE_BLURRED_BINDING.slot(),
-				blur_output_image,
+				UI_BLUR_HALF_COMPOSITE_BINDING.slot(),
+				blur_half_output_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
@@ -1802,23 +2105,25 @@ impl UiRenderPass {
 					descriptor_set
 				},
 			}],
-			blur_copy_pipeline,
-			blur_compute_pipeline_x,
-			blur_compute_pipeline_y,
+			blur_downsample_pipeline,
+			blur_filter_pipeline,
+			blur_downsample_workgroup,
+			blur_filter_workgroup,
 			blur_composite_pipeline,
 			blur_vertex_buffer,
 			blur_index_buffer,
 			blur_sampler,
-			blur_full_source_descriptor_set,
-			blur_downsample_descriptor_set,
-			blur_x_descriptor_set,
-			blur_feedback_x_descriptor_set,
-			blur_y_descriptor_set,
+			blur_half_downsample_descriptor_set,
+			blur_full_x_descriptor_set,
+			blur_full_y_descriptor_set,
+			blur_half_x_descriptor_set,
+			blur_half_y_descriptor_set,
 			blur_composite_descriptor_set,
-			blur_composite_source: blur_composite_source_image,
-			blur_source: blur_source_image,
-			blur_scratch: blur_scratch_image,
-			blur_output: blur_output_image,
+			blur_full_scratch: blur_full_scratch_image,
+			blur_full_output: blur_full_output_image,
+			blur_half_source: blur_half_source_image,
+			blur_half_scratch: blur_half_scratch_image,
+			blur_half_output: blur_half_output_image,
 			main_attachment: main_attachment_image,
 			data: UiDrawList::default(),
 			reported_capacity_limit: false,
@@ -1963,14 +2268,12 @@ impl RenderPass for UiRenderPass {
 			index_buffer_slice[..blur_geometry.indices.len()].copy_from_slice(&blur_geometry.indices);
 			frame.sync_buffer(self.blur_index_buffer);
 
-			let blur_extent = Extent::rectangle(
-				(extent.width() / UI_BLUR_DOWNSCALE).max(1),
-				(extent.height() / UI_BLUR_DOWNSCALE).max(1),
-			);
-			frame.resize_image(self.blur_composite_source, extent);
-			frame.resize_image(self.blur_source, blur_extent);
-			frame.resize_image(self.blur_scratch, blur_extent);
-			frame.resize_image(self.blur_output, blur_extent);
+			let half_extent = blur_half_extent(extent);
+			frame.resize_image(self.blur_full_scratch, extent);
+			frame.resize_image(self.blur_full_output, extent);
+			frame.resize_image(self.blur_half_source, half_extent);
+			frame.resize_image(self.blur_half_scratch, half_extent);
+			frame.resize_image(self.blur_half_output, half_extent);
 		}
 
 		if has_image_batches {
@@ -2042,7 +2345,11 @@ impl RenderPass for UiRenderPass {
 		}
 
 		let mut prepared_batches = Vec::with_capacity_in(
-			geometry.batches.len() + curve_geometry.batches.len() + prepared_image_batches.len() + prepared_text_batches.len(),
+			geometry.batches.len()
+				+ blur_geometry.batches.len()
+				+ curve_geometry.batches.len()
+				+ prepared_image_batches.len()
+				+ prepared_text_batches.len(),
 			frame_allocator,
 		);
 		prepared_batches.extend(geometry.batches.iter().copied().map(UiPreparedBatch::Rect));
@@ -2066,24 +2373,21 @@ impl RenderPass for UiRenderPass {
 		let image_vertex_buffer = self.image_vertex_buffer;
 		let image_index_buffer = self.image_index_buffer;
 		let text_pipeline = self.text_pipeline;
-		let blur_copy_pipeline = self.blur_copy_pipeline;
-		let blur_compute_pipeline_x = self.blur_compute_pipeline_x;
-		let blur_compute_pipeline_y = self.blur_compute_pipeline_y;
+		let blur_downsample_pipeline = self.blur_downsample_pipeline;
+		let blur_filter_pipeline = self.blur_filter_pipeline;
+		let blur_downsample_workgroup = self.blur_downsample_workgroup;
+		let blur_filter_workgroup = self.blur_filter_workgroup;
 		let blur_composite_pipeline = self.blur_composite_pipeline;
 		let blur_vertex_buffer = self.blur_vertex_buffer;
 		let blur_index_buffer = self.blur_index_buffer;
-		let blur_full_source_descriptor_set = self.blur_full_source_descriptor_set;
-		let blur_downsample_descriptor_set = self.blur_downsample_descriptor_set;
-		let blur_x_descriptor_set = self.blur_x_descriptor_set;
-		let blur_feedback_x_descriptor_set = self.blur_feedback_x_descriptor_set;
-		let blur_y_descriptor_set = self.blur_y_descriptor_set;
+		let blur_half_downsample_descriptor_set = self.blur_half_downsample_descriptor_set;
+		let blur_full_x_descriptor_set = self.blur_full_x_descriptor_set;
+		let blur_full_y_descriptor_set = self.blur_full_y_descriptor_set;
+		let blur_half_x_descriptor_set = self.blur_half_x_descriptor_set;
+		let blur_half_y_descriptor_set = self.blur_half_y_descriptor_set;
 		let blur_composite_descriptor_set = self.blur_composite_descriptor_set;
 		let main_attachment = self.main_attachment;
 		let batches: &'a [UiPreparedBatch] = frame_allocator.alloc_slice_copy(&prepared_batches);
-		let blur_extent = Extent::rectangle(
-			(extent.width() / UI_BLUR_DOWNSCALE).max(1),
-			(extent.height() / UI_BLUR_DOWNSCALE).max(1),
-		);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
@@ -2095,11 +2399,12 @@ impl RenderPass for UiRenderPass {
 
 						if !batches.is_empty() {
 							for batch in batches {
+								let clear_before_batch = needs_clear;
 								let attachments = [ghi::AttachmentInformation::new(
 									main_attachment,
 									ghi::Layouts::RenderTarget,
 									ghi::ClearValue::None,
-									!needs_clear,
+									!clear_before_batch,
 									true,
 								)];
 								needs_clear = false;
@@ -2168,56 +2473,107 @@ impl RenderPass for UiRenderPass {
 										command_buffer.end_render_pass();
 									}
 									UiPreparedBatch::Blur(batch) => {
-										let compute = command_buffer.bind_compute_pipeline(blur_copy_pipeline);
-										compute.bind_descriptor_sets(&[blur_full_source_descriptor_set]);
-										compute
-											.dispatch(ghi::DispatchExtent::new(extent, Extent::square(UI_BLUR_WORKGROUP_SIZE)));
-
-										let compute = command_buffer.bind_compute_pipeline(blur_copy_pipeline);
-										compute.bind_descriptor_sets(&[blur_downsample_descriptor_set]);
-										compute.dispatch(ghi::DispatchExtent::new(
-											blur_extent,
-											Extent::square(UI_BLUR_WORKGROUP_SIZE),
-										));
-
-										for pass in 0..batch.radius_pixels {
-											let compute = command_buffer.bind_compute_pipeline(blur_compute_pipeline_x);
-											let x_descriptor_set = if pass == 0 {
-												blur_x_descriptor_set
-											} else {
-												blur_feedback_x_descriptor_set
-											};
-											compute.bind_descriptor_sets(&[x_descriptor_set]);
-											compute.dispatch(ghi::DispatchExtent::new(
-												blur_extent,
-												Extent::square(UI_BLUR_WORKGROUP_SIZE),
-											));
-
-											let compute = command_buffer.bind_compute_pipeline(blur_compute_pipeline_y);
-											compute.bind_descriptor_sets(&[blur_y_descriptor_set]);
-											compute.dispatch(ghi::DispatchExtent::new(
-												blur_extent,
-												Extent::square(UI_BLUR_WORKGROUP_SIZE),
-											));
+										// A compute capture cannot perform the first attachment clear. Open an empty
+										// render pass first so a blur-only frame never samples prior frame contents.
+										if clear_before_batch {
+											command_buffer.start_render_pass(extent, &attachments).end_render_pass();
 										}
+										let loaded_attachments = [ghi::AttachmentInformation::new(
+											main_attachment,
+											ghi::Layouts::RenderTarget,
+											ghi::ClearValue::None,
+											true,
+											true,
+										)];
+										command_buffer.region(
+											|label| label.write_str("UI Backdrop Blur"),
+											|command_buffer| {
+												if blur_uses_full_resolution(batch.resolution_mix) {
+													let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+													compute.bind_descriptor_sets(&[blur_full_x_descriptor_set]);
+													compute.write_push_constant(
+														0,
+														batch.full_kernel.push([1.0, 0.0], batch.full_regions.horizontal),
+													);
+													compute.dispatch(ghi::DispatchExtent::new(
+														batch.full_regions.horizontal.extent,
+														blur_filter_workgroup,
+													));
 
-										command_buffer.bind_vertex_buffers(&[blur_vertex_buffer.into()]);
-										command_buffer.bind_index_buffer(
-											&(Into::<ghi::BufferDescriptor>::into(blur_index_buffer)
-												.index_type(ghi::DataTypes::U16)),
-										);
+													let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+													compute.bind_descriptor_sets(&[blur_full_y_descriptor_set]);
+													compute.write_push_constant(
+														0,
+														batch.full_kernel.push([0.0, 1.0], batch.full_regions.vertical),
+													);
+													compute.dispatch(ghi::DispatchExtent::new(
+														batch.full_regions.vertical.extent,
+														blur_filter_workgroup,
+													));
+												}
 
-										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-										let command_buffer = command_buffer.bind_raster_pipeline(blur_composite_pipeline);
-										command_buffer.bind_descriptor_sets(&[blur_composite_descriptor_set]);
-										command_buffer.draw_indexed(
-											batch.index_count,
-											1,
-											batch.first_index,
-											batch.vertex_offset,
-											0,
+												if blur_uses_half_resolution(batch.resolution_mix) {
+													let compute =
+														command_buffer.bind_compute_pipeline(blur_downsample_pipeline);
+													compute.bind_descriptor_sets(&[blur_half_downsample_descriptor_set]);
+													compute.write_push_constant(
+														0,
+														UiBlurDownsamplePush {
+															origin: batch.half_regions.downsample.origin,
+															extent: batch.half_regions.downsample.push_extent(),
+														},
+													);
+													compute.dispatch(ghi::DispatchExtent::new(
+														batch.half_regions.downsample.extent,
+														blur_downsample_workgroup,
+													));
+
+													let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+													compute.bind_descriptor_sets(&[blur_half_x_descriptor_set]);
+													compute.write_push_constant(
+														0,
+														batch
+															.half_kernel
+															.push([1.0, 0.0], batch.half_regions.filter.horizontal),
+													);
+													compute.dispatch(ghi::DispatchExtent::new(
+														batch.half_regions.filter.horizontal.extent,
+														blur_filter_workgroup,
+													));
+
+													let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+													compute.bind_descriptor_sets(&[blur_half_y_descriptor_set]);
+													compute.write_push_constant(
+														0,
+														batch.half_kernel.push([0.0, 1.0], batch.half_regions.filter.vertical),
+													);
+													compute.dispatch(ghi::DispatchExtent::new(
+														batch.half_regions.filter.vertical.extent,
+														blur_filter_workgroup,
+													));
+												}
+
+												command_buffer.bind_vertex_buffers(&[blur_vertex_buffer.into()]);
+												command_buffer.bind_index_buffer(
+													&(Into::<ghi::BufferDescriptor>::into(blur_index_buffer)
+														.index_type(ghi::DataTypes::U16)),
+												);
+
+												let command_buffer =
+													command_buffer.start_render_pass(extent, &loaded_attachments);
+												let command_buffer =
+													command_buffer.bind_raster_pipeline(blur_composite_pipeline);
+												command_buffer.bind_descriptor_sets(&[blur_composite_descriptor_set]);
+												command_buffer.draw_indexed(
+													batch.index_count,
+													1,
+													batch.first_index,
+													batch.vertex_offset,
+													0,
+												);
+												command_buffer.end_render_pass();
+											},
 										);
-										command_buffer.end_render_pass();
 									}
 								}
 							}
@@ -2309,6 +2665,33 @@ fn create_ui_vertex_program() -> besl::NodeReference {
 		forward("out_feather_mask_size", "in_feather_mask_size"),
 		forward("out_feather_mask_edges", "in_feather_mask_edges"),
 		forward("out_feather_mask_corner", "in_feather_mask_corner"),
+		forward("out_blur_resolution_mix", "in_blur_resolution_mix"),
+		ParserNode::member_assignment(
+			"out_screen_uv",
+			ParserNode::call(
+				"vec2f",
+				vec![
+					ParserNode::operator(
+						"+",
+						ParserNode::operator(
+							"*",
+							ParserNode::accessor(member("in_position"), member("x")),
+							ParserNode::literal_expression("0.5"),
+						),
+						ParserNode::literal_expression("0.5"),
+					),
+					ParserNode::operator(
+						"-",
+						ParserNode::literal_expression("0.5"),
+						ParserNode::operator(
+							"*",
+							ParserNode::accessor(member("in_position"), member("y")),
+							ParserNode::literal_expression("0.5"),
+						),
+					),
+				],
+			),
+		),
 	]);
 
 	let shader_scope = ParserNode::scope(
@@ -2327,6 +2710,7 @@ fn create_ui_vertex_program() -> besl::NodeReference {
 			ParserNode::input("in_feather_mask_size", "vec2f", 10),
 			ParserNode::input("in_feather_mask_edges", "vec4f", 11),
 			ParserNode::input("in_feather_mask_corner", "vec2f", 12),
+			ParserNode::input("in_blur_resolution_mix", "f32", 13),
 			ParserNode::output("position", "vec4f", 0),
 			ParserNode::output("out_color", "vec4f", 0),
 			ParserNode::output("out_pixel_position", "vec2f", 1),
@@ -2340,6 +2724,8 @@ fn create_ui_vertex_program() -> besl::NodeReference {
 			ParserNode::output("out_feather_mask_size", "vec2f", 9),
 			ParserNode::output("out_feather_mask_edges", "vec4f", 10),
 			ParserNode::output("out_feather_mask_corner", "vec2f", 11),
+			ParserNode::output("out_screen_uv", "vec2f", 12),
+			ParserNode::output("out_blur_resolution_mix", "f32", 13),
 			main,
 		],
 	);
@@ -2725,283 +3111,6 @@ fn create_image_fragment_shader(context: &mut ghi::implementation::Context) -> g
 	.expect("Failed to create the UI image fragment shader. The most likely cause is an incompatible shader interface.")
 }
 
-fn create_blur_copy_compute_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
-	crate::rendering::create_shader_from_source(
-		context,
-		Some("UI Backdrop Blur Copy Shader"),
-		ghi::shader::ShaderSource::Platform {
-			glsl: UI_BLUR_COPY_SHADER_GLSL,
-			msl: UI_BLUR_COPY_SHADER_MSL,
-			msl_entry_point: "ui_backdrop_blur_copy",
-		},
-		ghi::ShaderTypes::Compute,
-		[UI_BLUR_SOURCE_BINDING, UI_BLUR_OUTPUT_BINDING],
-	)
-	.expect("Failed to create the UI backdrop blur copy shader. The most likely cause is an incompatible shader interface.")
-}
-
-fn create_blur_compute_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
-	crate::rendering::create_shader_from_source(
-		context,
-		Some("UI Backdrop Blur Compute Shader"),
-		ghi::shader::ShaderSource::Platform {
-			glsl: UI_BLUR_COMPUTE_SHADER_GLSL,
-			msl: UI_BLUR_COMPUTE_SHADER_MSL,
-			msl_entry_point: "ui_backdrop_blur_compute",
-		},
-		ghi::ShaderTypes::Compute,
-		[UI_BLUR_SOURCE_BINDING, UI_BLUR_OUTPUT_BINDING],
-	)
-	.expect("Failed to create the UI backdrop blur compute shader. The most likely cause is an incompatible shader interface.")
-}
-
-fn create_blur_composite_fragment_shader(context: &mut ghi::implementation::Context) -> ghi::ShaderHandle {
-	crate::rendering::create_shader_from_source(
-		context,
-		Some("UI Backdrop Blur Composite Shader"),
-		ghi::shader::ShaderSource::Platform {
-			glsl: UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL,
-			msl: UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL,
-			msl_entry_point: "ui_backdrop_blur_composite",
-		},
-		ghi::ShaderTypes::Fragment,
-		[UI_BLUR_COMPOSITE_SOURCE_BINDING, UI_BLUR_COMPOSITE_BLURRED_BINDING],
-	)
-	.expect(
-		"Failed to create the UI backdrop blur composite shader. The most likely cause is an incompatible shader interface.",
-	)
-}
-
-const UI_BLUR_COPY_SHADER_GLSL: &str = r#"
-#version 460
-#pragma shader_stage(compute)
-
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-
-layout(set = 0, binding = 0) uniform sampler2D source_texture;
-layout(set = 0, binding = 1, rgba16) uniform writeonly image2D output_texture;
-
-void main() {
-	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-	ivec2 output_size = imageSize(output_texture);
-	if (pixel.x >= output_size.x || pixel.y >= output_size.y) {
-		return;
-	}
-
-	vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(output_size);
-	imageStore(output_texture, pixel, textureLod(source_texture, uv, 0.0));
-}
-"#;
-
-const UI_BLUR_COPY_SHADER_MSL: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
-
-struct BlurCopySet0 {
-	texture2d<float> source_texture [[id(0)]];
-	sampler source_sampler [[id(1)]];
-	texture2d<float, access::write> output_texture [[id(2)]];
-};
-
-kernel void ui_backdrop_blur_copy(
-	constant BlurCopySet0& set0 [[buffer(16)]],
-	uint2 pixel [[thread_position_in_grid]]
-) {
-	uint width = set0.output_texture.get_width();
-	uint height = set0.output_texture.get_height();
-	if (pixel.x >= width || pixel.y >= height) {
-		return;
-	}
-
-	constexpr sampler copy_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
-	float2 uv = (float2(pixel) + float2(0.5)) / float2(width, height);
-	set0.output_texture.write(set0.source_texture.sample(copy_sampler, uv, level(0.0)), pixel);
-}
-"#;
-
-const UI_BLUR_COMPUTE_SHADER_GLSL: &str = r#"
-#version 460
-#pragma shader_stage(compute)
-
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-layout(constant_id = 0) const int BLUR_AXIS = 0;
-
-layout(set = 0, binding = 0) uniform sampler2D source_texture;
-layout(set = 0, binding = 1, rgba16) uniform writeonly image2D output_texture;
-
-const float WEIGHTS[5] = float[](0.22702703, 0.19459459, 0.12162162, 0.05405405, 0.01621622);
-
-void main() {
-	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-	ivec2 output_size = imageSize(output_texture);
-	if (pixel.x >= output_size.x || pixel.y >= output_size.y) {
-		return;
-	}
-
-	vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(output_size);
-	vec2 texel_size = 1.0 / vec2(textureSize(source_texture, 0));
-	vec2 direction = BLUR_AXIS == 0 ? vec2(texel_size.x, 0.0) : vec2(0.0, texel_size.y);
-	vec4 color = textureLod(source_texture, uv, 0.0) * WEIGHTS[0];
-	for (int i = 1; i < 5; i++) {
-		vec2 offset = direction * float(i);
-		color += textureLod(source_texture, uv + offset, 0.0) * WEIGHTS[i];
-		color += textureLod(source_texture, uv - offset, 0.0) * WEIGHTS[i];
-	}
-	imageStore(output_texture, pixel, color);
-}
-"#;
-
-const UI_BLUR_COMPUTE_SHADER_MSL: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
-
-constant int BLUR_AXIS [[function_constant(0)]];
-
-struct BlurSet0 {
-	texture2d<float> source_texture [[id(0)]];
-	sampler source_sampler [[id(1)]];
-	texture2d<float, access::write> output_texture [[id(2)]];
-};
-
-kernel void ui_backdrop_blur_compute(
-	constant BlurSet0& set0 [[buffer(16)]],
-	uint2 pixel [[thread_position_in_grid]]
-) {
-	uint width = set0.output_texture.get_width();
-	uint height = set0.output_texture.get_height();
-	if (pixel.x >= width || pixel.y >= height) {
-		return;
-	}
-
-	constexpr sampler blur_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
-	float weights[5] = {0.22702703, 0.19459459, 0.12162162, 0.05405405, 0.01621622};
-	float2 uv = (float2(pixel) + float2(0.5)) / float2(width, height);
-	float2 texel_size = 1.0 / float2(set0.source_texture.get_width(), set0.source_texture.get_height());
-	float2 direction = BLUR_AXIS == 0 ? float2(texel_size.x, 0.0) : float2(0.0, texel_size.y);
-	float4 color = set0.source_texture.sample(blur_sampler, uv, level(0.0)) * weights[0];
-	for (int i = 1; i < 5; i++) {
-		float2 offset = direction * float(i);
-		color += set0.source_texture.sample(blur_sampler, uv + offset, level(0.0)) * weights[i];
-		color += set0.source_texture.sample(blur_sampler, uv - offset, level(0.0)) * weights[i];
-	}
-	set0.output_texture.write(color, pixel);
-}
-"#;
-
-const UI_BLUR_COMPOSITE_FRAGMENT_SHADER_GLSL: &str = r#"
-#version 460
-#pragma shader_stage(fragment)
-
-layout(set = 0, binding = 0) uniform sampler2D source_texture;
-layout(set = 0, binding = 1) uniform sampler2D blurred_texture;
-
-layout(location = 0) in vec4 in_color;
-layout(location = 1) in vec2 in_pixel_position;
-layout(location = 2) in vec2 in_local_position;
-layout(location = 3) in vec2 in_rect_size;
-layout(location = 4) in float in_corner_radius;
-layout(location = 5) in float in_corner_exponent;
-layout(location = 6) in float in_layer_kind;
-layout(location = 7) in float in_stroke_width;
-layout(location = 8) in vec2 in_feather_mask_position;
-layout(location = 9) in vec2 in_feather_mask_size;
-layout(location = 10) in vec4 in_feather_mask_edges;
-layout(location = 11) in vec2 in_feather_mask_corner;
-layout(location = 0) out vec4 out_color_attachment;
-
-void main() {
-	vec2 half_size = in_rect_size * 0.5;
-	float corner_radius = min(in_corner_radius, min(half_size.x, half_size.y));
-	float corner_exponent = in_corner_exponent;
-	vec2 centered_position = in_local_position - half_size;
-	vec2 rounded_extent = half_size - vec2(corner_radius);
-	vec2 corner_delta = abs(centered_position) - rounded_extent;
-	vec2 abs_corner = max(corner_delta, vec2(0.0));
-	float corner_sum = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
-	float corner_distance = pow(corner_sum, 1.0 / corner_exponent);
-	float field_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
-	float edge_width = max(fwidth(field_distance), 1.0);
-	float rounded_shape = step(0.0001, corner_radius);
-	float rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance);
-	float coverage = mix(1.0, rounded_fill_coverage, rounded_shape);
-	float feather_top = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.x, 0.0001), in_pixel_position.y - in_feather_mask_position.y), step(0.0001, in_feather_mask_edges.x));
-	float feather_right = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.y, 0.0001), in_feather_mask_position.x + in_feather_mask_size.x - in_pixel_position.x), step(0.0001, in_feather_mask_edges.y));
-	float feather_bottom = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.z, 0.0001), in_feather_mask_position.y + in_feather_mask_size.y - in_pixel_position.y), step(0.0001, in_feather_mask_edges.z));
-	float feather_left = mix(1.0, smoothstep(0.0, max(in_feather_mask_edges.w, 0.0001), in_pixel_position.x - in_feather_mask_position.x), step(0.0001, in_feather_mask_edges.w));
-	float feather_coverage = feather_top * feather_right * feather_bottom * feather_left;
-	vec2 source_uv = gl_FragCoord.xy / vec2(textureSize(source_texture, 0));
-	vec2 blur_uv = gl_FragCoord.xy / vec2(textureSize(blurred_texture, 0));
-	vec4 source = texture(source_texture, source_uv);
-	vec4 blurred = texture(blurred_texture, blur_uv);
-	float blur_strength = clamp(coverage * feather_coverage, 0.0, 1.0);
-	vec3 color = mix(source.rgb, blurred.rgb, blur_strength);
-	out_color_attachment = vec4(color, 1.0);
-}
-"#;
-
-const UI_BLUR_COMPOSITE_FRAGMENT_SHADER_MSL: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
-
-// This struct consumes the BESL-generated UI vertex shader outputs, which are bound by
-// [[user(locnN)]] location, so each field must carry the matching location attribute.
-struct UiVertexOut {
-	float4 position [[position]];
-	float4 color [[user(locn0)]];
-	float2 pixel_position [[user(locn1)]];
-	float2 local_position [[user(locn2)]];
-	float2 rect_size [[user(locn3)]];
-	float corner_radius [[user(locn4)]];
-	float corner_exponent [[user(locn5)]];
-	float layer_kind [[user(locn6)]];
-	float stroke_width [[user(locn7)]];
-	float2 feather_mask_position [[user(locn8)]];
-	float2 feather_mask_size [[user(locn9)]];
-	float4 feather_mask_edges [[user(locn10)]];
-	float2 feather_mask_corner [[user(locn11)]];
-};
-
-struct BlurCompositeSet0 {
-	texture2d<float> source_texture [[id(0)]];
-	sampler source_sampler [[id(1)]];
-	texture2d<float> blurred_texture [[id(2)]];
-	sampler blur_sampler [[id(3)]];
-};
-
-fragment float4 ui_backdrop_blur_composite(
-	UiVertexOut in [[stage_in]],
-	constant BlurCompositeSet0& set0 [[buffer(16)]]
-) {
-	float2 half_size = in.rect_size * 0.5;
-	float corner_radius = min(in.corner_radius, min(half_size.x, half_size.y));
-	float corner_exponent = in.corner_exponent;
-	float2 centered_position = in.local_position - half_size;
-	float2 rounded_extent = half_size - float2(corner_radius);
-	float2 corner_delta = abs(centered_position) - rounded_extent;
-	float2 abs_corner = max(corner_delta, float2(0.0));
-	float corner_sum = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
-	float corner_distance = pow(corner_sum, 1.0 / corner_exponent);
-	float field_distance = corner_distance + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
-	float edge_width = max(fwidth(field_distance), 1.0);
-	float rounded_shape = step(0.0001, corner_radius);
-	float rounded_fill_coverage = 1.0 - smoothstep(-edge_width, edge_width, field_distance);
-	float coverage = mix(1.0, rounded_fill_coverage, rounded_shape);
-	float feather_top = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.x, 0.0001), in.pixel_position.y - in.feather_mask_position.y), step(0.0001, in.feather_mask_edges.x));
-	float feather_right = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.y, 0.0001), in.feather_mask_position.x + in.feather_mask_size.x - in.pixel_position.x), step(0.0001, in.feather_mask_edges.y));
-	float feather_bottom = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.z, 0.0001), in.feather_mask_position.y + in.feather_mask_size.y - in.pixel_position.y), step(0.0001, in.feather_mask_edges.z));
-	float feather_left = mix(1.0, smoothstep(0.0, max(in.feather_mask_edges.w, 0.0001), in.pixel_position.x - in.feather_mask_position.x), step(0.0001, in.feather_mask_edges.w));
-	float feather_coverage = feather_top * feather_right * feather_bottom * feather_left;
-	float2 source_extent = float2(set0.source_texture.get_width(), set0.source_texture.get_height());
-	float2 source_uv = in.position.xy / source_extent;
-	float2 blur_uv = in.position.xy / float2(set0.blurred_texture.get_width(), set0.blurred_texture.get_height());
-	float4 source = set0.source_texture.sample(set0.source_sampler, source_uv);
-	float4 blurred = set0.blurred_texture.sample(set0.blur_sampler, blur_uv);
-	float blur_strength = clamp(coverage * feather_coverage, 0.0, 1.0);
-	float3 color = mix(source.rgb, blurred.rgb, blur_strength);
-	return float4(color, 1.0);
-}
-"#;
-
 const IMAGE_VERTEX_SHADER_GLSL: &str = r#"
 #version 460
 #pragma shader_stage(vertex)
@@ -3234,15 +3343,30 @@ fragment float4 ui_text_overlay_fragment(
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, ExecutableProgram, Value};
+	use std::mem::{align_of, offset_of, size_of};
+
+	use besl::vm::{
+		builtin_position_slot, input_slot, output_slot, Buffer, DescriptorBindings, ExecutableProgram, Texture, Value,
+	};
+	use resource_management::shader::{
+		besl::backends::{glsl::GLSLShaderGenerator, hlsl::HLSLShaderGenerator, msl::MSLShaderGenerator},
+		generator::{Generator as _, ShaderGenerationSettings},
+	};
 	use utils::{Extent, RGBA};
 
 	use super::{
-		build_ui_blur_geometry, build_ui_curve_geometry, build_ui_geometry, build_ui_image_geometry, flatten_curve_segment,
-		should_draw_image, should_rasterize_text, update_from_render, DrawClip, DrawFeatherMask, UiBlurDrawElement,
-		UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiTextDrawElement, MAX_UI_ELEMENTS,
-		MAX_UI_VERTICES_PER_DRAW, UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_CURVE_SPAN,
+		blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma,
+		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, build_ui_blur_geometry,
+		build_ui_curve_geometry, build_ui_geometry, build_ui_image_geometry, flatten_curve_segment, should_draw_image,
+		should_rasterize_text, update_from_render, DrawClip, DrawFeatherMask, UiBlurDispatchRegion, UiBlurDrawElement,
+		UiBlurFilterPush, UiBlurKernel, UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement,
+		UiTextDrawElement, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT,
+		UI_BLUR_HALF_DOWNSCALE, UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT, UI_VERTICES_PER_CURVE_SPAN,
 		UI_VERTICES_PER_ELEMENT,
+	};
+	use crate::rendering::{
+		render_pass::simple_compute,
+		shader_vm_test::{assert_rgba_close, compile as compile_shader_vm, empty_image, rgba, run_at, texture_2d},
 	};
 	use crate::ui::{
 		components::{
@@ -3258,6 +3382,10 @@ mod tests {
 		Container, Text,
 	};
 
+	const UI_BLUR_DOWNSAMPLE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-downsample.besl");
+	const UI_BLUR_FILTER_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-filter.besl");
+	const UI_BLUR_COMPOSITE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-composite.besl");
+
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
 		assert!((actual[1] - expected[1]).abs() < 0.0001);
@@ -3266,6 +3394,966 @@ mod tests {
 	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
 		for (actual, expected) in actual.into_iter().zip(expected) {
 			assert!((actual - expected).abs() < 0.0001, "Expected {expected}, found {actual}");
+		}
+	}
+
+	// Compiles one checked-in UI blur shader through the same shared scope used
+	// by production standalone compute shaders.
+	fn compile_ui_blur_shader(source: &str) -> ExecutableProgram {
+		compile_shader_vm(simple_compute::compile_test_program(source))
+	}
+
+	// Initializes the shared origin/extent contract used by regional compute stages.
+	fn blur_region_push_constant(executable: &ExecutableProgram, origin: [u32; 2], extent: [u32; 2]) -> Buffer {
+		let mut push_constant = Buffer::new(
+			executable
+				.push_constant_layout()
+				.expect("Missing blur region push constants. The most likely cause is a changed production shader interface.")
+				.clone(),
+		);
+		push_constant
+			.write("origin", Value::Vec2U(origin))
+			.expect("Failed to initialize the blur region origin. The most likely cause is a changed push constant type.");
+		push_constant
+			.write("extent", Value::Vec2U(extent))
+			.expect("Failed to initialize the blur region extent. The most likely cause is a changed push constant type.");
+		push_constant
+	}
+
+	// Mirrors the aligned host record through named VM fields so production
+	// shader tests validate both the coefficients and the reflected interface.
+	fn blur_filter_push_constant(executable: &ExecutableProgram, push: UiBlurFilterPush) -> Buffer {
+		let mut push_constant = Buffer::new(
+			executable
+				.push_constant_layout()
+				.expect("Missing blur filter push constants. The most likely cause is a changed production shader interface.")
+				.clone(),
+		);
+		for (name, value) in [
+			("filter_data", Value::Vec4F(push.filter_data)),
+			("origin", Value::Vec2U(push.origin)),
+			("extent", Value::Vec2U(push.extent)),
+			("pair_weights_0_3", Value::Vec4F(push.pair_weights_0_3)),
+			("pair_weights_4_7", Value::Vec4F(push.pair_weights_4_7)),
+			("pair_weights_8_10", Value::Vec4F(push.pair_weights_8_10_pad)),
+			("pair_offsets_0_3", Value::Vec4F(push.pair_offsets_0_3)),
+			("pair_offsets_4_7", Value::Vec4F(push.pair_offsets_4_7)),
+			("pair_offsets_8_10", Value::Vec4F(push.pair_offsets_8_10_pad)),
+		] {
+			push_constant.write(name, value).unwrap_or_else(|error| {
+				panic!("Failed to initialize blur filter field `{name}`: {error}. The most likely cause is a changed push constant type.")
+			});
+		}
+		push_constant
+	}
+
+	// Reconstructs the integer Gaussian taps represented by the bilinear pairs
+	// so tests can compare the actual discrete variance with the requested one.
+	fn blur_kernel_variance(kernel: UiBlurKernel) -> f32 {
+		let mut second_moment = 0.0;
+		for pair_index in 0..UI_BLUR_GAUSSIAN_PAIR_COUNT {
+			let first = (pair_index * 2 + 1) as f32;
+			let weight = kernel.pair_weights[pair_index];
+			let offset = kernel.pair_offsets[pair_index];
+			let first_weight = weight * (first + 1.0 - offset);
+			let second_weight = weight * (offset - first);
+			second_moment += 2.0 * (first_weight * first * first + second_weight * (first + 1.0) * (first + 1.0));
+		}
+		second_moment
+	}
+
+	// Exercises every production backend before platform-specific shader baking
+	// so one portable blur asset cannot silently drift on an inactive backend.
+	fn assert_ui_blur_shader_lowers(source: &str, settings: &ShaderGenerationSettings, name: &str) {
+		let main = simple_compute::compile_test_program(source);
+		GLSLShaderGenerator::new()
+			.generate(settings, &main)
+			.unwrap_or_else(|error| panic!("Failed to lower {name} to GLSL: {error:?}"));
+		HLSLShaderGenerator::new()
+			.generate(settings, &main)
+			.unwrap_or_else(|error| panic!("Failed to lower {name} to HLSL: {error:?}"));
+		MSLShaderGenerator::new()
+			.generate(settings, &main)
+			.unwrap_or_else(|error| panic!("Failed to lower {name} to MSL: {error:?}"));
+	}
+
+	/// Verifies every checked-in blur stage lowers from one portable BESL source to all production backends.
+	#[test]
+	fn backdrop_blur_besl_lowers_for_every_backend() {
+		let compute = ShaderGenerationSettings::compute(Extent::square(16));
+		assert_ui_blur_shader_lowers(UI_BLUR_DOWNSAMPLE_BESL, &compute, "UI backdrop downsample");
+		assert_ui_blur_shader_lowers(UI_BLUR_FILTER_BESL, &compute, "UI backdrop filter");
+		assert_ui_blur_shader_lowers(
+			UI_BLUR_COMPOSITE_BESL,
+			&ShaderGenerationSettings::fragment(),
+			"UI backdrop composite",
+		);
+	}
+
+	// Executes the production composite shader with a full-coverage rectangle.
+	fn run_blur_composite_vm(
+		full_texels: &[[f32; 4]],
+		full_extent: [u32; 2],
+		half_texels: &[[f32; 4]],
+		half_extent: [u32; 2],
+		pixel_position: [f32; 2],
+		resolution_mix: f32,
+		feather_edges: [f32; 4],
+	) -> [f32; 4] {
+		let executable = compile_ui_blur_shader(UI_BLUR_COMPOSITE_BESL);
+		let mut full_blurred = texture_2d(full_extent[0], full_extent[1], full_texels);
+		let mut half_blurred = texture_2d(half_extent[0], half_extent[1], half_texels);
+		run_blur_composite_textures_vm(
+			&executable,
+			&mut full_blurred,
+			&mut half_blurred,
+			pixel_position,
+			resolution_mix,
+			feather_edges,
+		)
+	}
+
+	// Executes one fragment against reusable textures and a precompiled shader,
+	// which keeps production-chain parameter sweeps fast enough for unit tests.
+	fn run_blur_composite_textures_vm(
+		executable: &ExecutableProgram,
+		full_blurred: &mut Texture,
+		half_blurred: &mut Texture,
+		pixel_position: [f32; 2],
+		resolution_mix: f32,
+		feather_edges: [f32; 4],
+	) -> [f32; 4] {
+		let mut inputs = [
+			(1, "in_pixel_position", Value::Vec2F(pixel_position)),
+			(2, "in_local_position", Value::Vec2F([1.0, 1.0])),
+			(3, "in_rect_size", Value::Vec2F([2.0, 2.0])),
+			(4, "in_corner_radius", Value::F32(0.0)),
+			(5, "in_corner_exponent", Value::F32(2.0)),
+			(8, "in_feather_mask_position", Value::Vec2F([0.0, 0.0])),
+			(9, "in_feather_mask_size", Value::Vec2F([8.0, 4.0])),
+			(10, "in_feather_mask_edges", Value::Vec4F(feather_edges)),
+			(13, "in_blur_resolution_mix", Value::F32(resolution_mix)),
+		]
+		.map(|(location, name, value)| {
+			let mut input = Buffer::new(
+				executable
+					.input_layout(location)
+					.expect("Missing blur composite input. The most likely cause is a changed production shader interface.")
+					.clone(),
+			);
+			input
+				.write(name, value)
+				.expect("Failed to initialize blur composite input. The most likely cause is a changed input type.");
+			(location, input)
+		});
+		let mut output = Buffer::new(
+			executable
+				.output_layout(0)
+				.expect("Missing blur composite output. The most likely cause is a changed production shader interface.")
+				.clone(),
+		);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(besl::vm::ResourceSlot::new(0), full_blurred);
+			descriptors.bind_texture(besl::vm::ResourceSlot::new(1), half_blurred);
+			for (location, input) in &mut inputs {
+				descriptors.bind_buffer(input_slot(*location), input);
+			}
+			descriptors.bind_buffer(output_slot(0), &mut output);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Failed to execute the blur composite shader. The most likely cause is incomplete BESL VM support.");
+		}
+
+		match output
+			.read("out_color_attachment")
+			.expect("Failed to read blur composite output. The most likely cause is a changed output interface.")
+		{
+			Value::Vec4F(color) => color,
+			value => {
+				panic!("Invalid blur composite output `{value:?}`. The most likely cause is a changed production shader type.")
+			}
+		}
+	}
+
+	// Executes one regional production downsample dispatch into a caller-owned
+	// image so tests can seed untouched texels with stale sentinels.
+	fn run_blur_downsample_region_vm(
+		executable: &ExecutableProgram,
+		source: &mut Texture,
+		result: &mut Texture,
+		region: UiBlurDispatchRegion,
+	) {
+		let mut push_constant = blur_region_push_constant(executable, region.origin, region.push_extent());
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(besl::vm::ResourceSlot::new(0), source);
+		descriptors.bind_image(besl::vm::ResourceSlot::new(1), result);
+		descriptors.bind_push_constant(&mut push_constant);
+		for y in 0..region.extent.height() {
+			for x in 0..region.extent.width() {
+				run_at(executable, &mut descriptors, [x, y]);
+			}
+		}
+	}
+
+	// Executes one regional production Gaussian dispatch using the same packed
+	// coefficients and local-thread convention as command recording.
+	fn run_blur_filter_region_vm(
+		executable: &ExecutableProgram,
+		source: &mut Texture,
+		result: &mut Texture,
+		kernel: UiBlurKernel,
+		direction: [f32; 2],
+		region: UiBlurDispatchRegion,
+	) {
+		let mut push_constant = blur_filter_push_constant(executable, kernel.push(direction, region));
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(besl::vm::ResourceSlot::new(0), source);
+		descriptors.bind_image(besl::vm::ResourceSlot::new(1), result);
+		descriptors.bind_push_constant(&mut push_constant);
+		for y in 0..region.extent.height() {
+			for x in 0..region.extent.width() {
+				run_at(executable, &mut descriptors, [x, y]);
+			}
+		}
+	}
+
+	fn full_blur_region(extent: Extent) -> UiBlurDispatchRegion {
+		UiBlurDispatchRegion { origin: [0, 0], extent }
+	}
+
+	// Runs every production BESL stage selected for one radius and returns the
+	// composited center scanline. Radius zero follows production's skipped path.
+	fn run_adaptive_blur_scanline_vm(
+		downsample: &ExecutableProgram,
+		filter: &ExecutableProgram,
+		composite: &ExecutableProgram,
+		texels: &[[f32; 4]],
+		extent: Extent,
+		radius: f32,
+		display_scale: f32,
+	) -> Vec<[f32; 4]> {
+		let width = extent.width();
+		let height = extent.height();
+		if radius <= 0.0 {
+			let row = height / 2;
+			return texels[(row * width) as usize..((row + 1) * width) as usize].to_vec();
+		}
+
+		let sigma = blur_sigma((radius * display_scale).clamp(0.0, 64.0));
+		let resolution_mix = blur_resolution_mix(sigma);
+		let full_region = full_blur_region(extent);
+		let half_extent = blur_half_extent(extent);
+		let half_region = full_blur_region(half_extent);
+		let mut source = texture_2d(width, height, texels);
+		let mut full_output = empty_image(width, height);
+		if blur_uses_full_resolution(resolution_mix) {
+			let mut horizontal = empty_image(width, height);
+			run_blur_filter_region_vm(
+				filter,
+				&mut source,
+				&mut horizontal,
+				UiBlurKernel::gaussian(sigma),
+				[1.0, 0.0],
+				full_region,
+			);
+			run_blur_filter_region_vm(
+				filter,
+				&mut horizontal,
+				&mut full_output,
+				UiBlurKernel::gaussian(sigma),
+				[0.0, 1.0],
+				full_region,
+			);
+		}
+
+		let mut half_output = empty_image(half_extent.width(), half_extent.height());
+		if blur_uses_half_resolution(resolution_mix) {
+			let mut half_source = empty_image(half_extent.width(), half_extent.height());
+			run_blur_downsample_region_vm(downsample, &mut source, &mut half_source, half_region);
+			let mut horizontal = empty_image(half_extent.width(), half_extent.height());
+			let half_kernel = UiBlurKernel::gaussian(blur_half_sigma(sigma));
+			run_blur_filter_region_vm(
+				filter,
+				&mut half_source,
+				&mut horizontal,
+				half_kernel,
+				[1.0, 0.0],
+				half_region,
+			);
+			run_blur_filter_region_vm(
+				filter,
+				&mut horizontal,
+				&mut half_output,
+				half_kernel,
+				[0.0, 1.0],
+				half_region,
+			);
+		}
+
+		let row = height / 2;
+		(0..width)
+			.map(|x| {
+				run_blur_composite_textures_vm(
+					composite,
+					&mut full_output,
+					&mut half_output,
+					[x as f32 + 0.5, row as f32 + 0.5],
+					resolution_mix,
+					[0.0; 4],
+				)
+			})
+			.collect()
+	}
+
+	#[derive(Clone, Copy)]
+	enum BlurChainPattern {
+		Impulse,
+		ThinLine,
+		Checkerboard,
+		Constant,
+	}
+
+	// Builds bounded semantic inputs that expose ringing, energy drift, and
+	// failure to preserve constant colors without requiring a full-size frame.
+	fn blur_chain_fixture(pattern: BlurChainPattern, extent: Extent) -> Vec<[f32; 4]> {
+		let mut texels = vec![[0.0, 0.0, 0.0, 1.0]; (extent.width() * extent.height()) as usize];
+		for y in 0..extent.height() {
+			for x in 0..extent.width() {
+				let color = match pattern {
+					BlurChainPattern::Impulse if x == extent.width() / 2 && y == extent.height() / 2 => [1.0; 4],
+					BlurChainPattern::ThinLine if x == extent.width() / 2 => [1.0; 4],
+					BlurChainPattern::Checkerboard if (x + y) % 2 == 0 => [1.0; 4],
+					BlurChainPattern::Constant => [0.25, 0.5, 0.75, 1.0],
+					_ => [0.0, 0.0, 0.0, 1.0],
+				};
+				texels[(y * extent.width() + x) as usize] = color;
+			}
+		}
+		texels
+	}
+
+	/// Verifies the half-resolution prefilter uses the positive binomial marginal and guards extra lanes.
+	#[test]
+	fn backdrop_blur_downsample_besl_vm_uses_binomial_prefilter() {
+		let executable = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let mut texels = [[0.0; 4]; 6];
+		texels[1] = [1.0, 0.0, 0.0, 0.0];
+		texels[2] = [0.0, 1.0, 0.0, 0.0];
+		texels[3] = [0.0, 0.0, 1.0, 0.0];
+		texels[4] = [0.0, 0.0, 0.0, 1.0];
+		let mut source = texture_2d(6, 1, &texels);
+		let mut result = empty_image(3, 1);
+		let mut push_constant = blur_region_push_constant(&executable, [1, 0], [1, 1]);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(besl::vm::ResourceSlot::new(0), &mut source);
+		descriptors.bind_image(besl::vm::ResourceSlot::new(1), &mut result);
+		descriptors.bind_push_constant(&mut push_constant);
+		run_at(&executable, &mut descriptors, [0, 0]);
+		run_at(&executable, &mut descriptors, [1, 0]);
+		drop(descriptors);
+
+		assert_rgba_close(rgba(&result, [1, 0]), [0.125, 0.375, 0.375, 0.125], 1e-6);
+		assert_rgba_close(rgba(&result, [0, 0]), [0.0; 4], 1e-6);
+		assert_rgba_close(rgba(&result, [2, 0]), [0.0; 4], 1e-6);
+	}
+
+	#[test]
+	fn backdrop_blur_filter_push_layout_matches_the_production_shader() {
+		assert_eq!(size_of::<UiBlurFilterPush>(), 128);
+		assert_eq!(align_of::<UiBlurFilterPush>(), 16);
+		assert_eq!(offset_of!(UiBlurFilterPush, filter_data), 0);
+		assert_eq!(offset_of!(UiBlurFilterPush, origin), 16);
+		assert_eq!(offset_of!(UiBlurFilterPush, extent), 24);
+		assert_eq!(offset_of!(UiBlurFilterPush, pair_weights_0_3), 32);
+		assert_eq!(offset_of!(UiBlurFilterPush, pair_weights_4_7), 48);
+		assert_eq!(offset_of!(UiBlurFilterPush, pair_weights_8_10_pad), 64);
+		assert_eq!(offset_of!(UiBlurFilterPush, pair_offsets_0_3), 80);
+		assert_eq!(offset_of!(UiBlurFilterPush, pair_offsets_4_7), 96);
+		assert_eq!(offset_of!(UiBlurFilterPush, pair_offsets_8_10_pad), 112);
+
+		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let layout = executable
+			.push_constant_layout()
+			.expect("Missing production blur push constants. The most likely cause is a changed filter interface.");
+		assert_eq!(layout.size(), 128);
+		for (name, expected_offset) in [
+			("filter_data", 0),
+			("origin", 16),
+			("extent", 24),
+			("pair_weights_0_3", 32),
+			("pair_weights_4_7", 48),
+			("pair_weights_8_10", 64),
+			("pair_offsets_0_3", 80),
+			("pair_offsets_4_7", 96),
+			("pair_offsets_8_10", 112),
+		] {
+			let actual = layout
+				.members()
+				.iter()
+				.find(|member| member.name() == name)
+				.unwrap_or_else(|| panic!("Missing reflected blur field `{name}`"))
+				.offset();
+			assert_eq!(actual, expected_offset, "Unexpected reflected offset for `{name}`");
+		}
+	}
+
+	#[test]
+	fn backdrop_blur_gaussian_coefficients_are_normalized_and_preserve_variance() {
+		let smallest_test_sigma = blur_sigma(0.25);
+		let largest_half_sigma = blur_half_sigma(blur_sigma(64.0));
+		for sigma in [0.0, smallest_test_sigma, 4.0, 5.0, 6.0, largest_half_sigma] {
+			let kernel = UiBlurKernel::gaussian(sigma);
+			let energy = kernel.center_weight + 2.0 * kernel.pair_weights.iter().sum::<f32>();
+			assert!(
+				(energy - 1.0).abs() <= 2e-6,
+				"Gaussian energy drifted to {energy} at sigma {sigma}"
+			);
+			assert!(kernel.center_weight.is_finite() && kernel.center_weight >= 0.0);
+
+			let mut second_moment = 0.0f32;
+			for pair_index in 0..UI_BLUR_GAUSSIAN_PAIR_COUNT {
+				let first = (pair_index * 2 + 1) as f32;
+				let weight = kernel.pair_weights[pair_index];
+				let offset = kernel.pair_offsets[pair_index];
+				assert!(weight.is_finite() && weight >= 0.0);
+				assert!(offset.is_finite() && (first..=first + 1.0).contains(&offset));
+				let first_weight = weight * (first + 1.0 - offset);
+				let second_weight = weight * (offset - first);
+				second_moment += 2.0 * (first_weight * first * first + second_weight * (first + 1.0) * (first + 1.0));
+			}
+			if sigma >= smallest_test_sigma {
+				let relative_error = (second_moment - sigma * sigma).abs() / (sigma * sigma);
+				assert!(
+					relative_error < 0.02,
+					"Gaussian variance error {relative_error} at sigma {sigma}"
+				);
+			} else {
+				assert_eq!(second_moment, 0.0);
+			}
+		}
+	}
+
+	#[test]
+	fn backdrop_blur_variance_mapping_preserves_strength_at_one_and_two_x_scale() {
+		for display_scale in [1.0f32, 2.0] {
+			for radius in [0.25, 1.0, 4.0, 18.0, 32.0, 64.0] {
+				let sigma = blur_sigma((radius * display_scale).clamp(0.0, 64.0));
+				let resolution_mix = blur_resolution_mix(sigma);
+				if blur_uses_full_resolution(resolution_mix) {
+					let observed = blur_kernel_variance(UiBlurKernel::gaussian(sigma));
+					let relative_error = (observed - sigma * sigma).abs() / (sigma * sigma);
+					assert!(
+						relative_error < 0.02,
+						"Full-resolution variance error {relative_error} at radius {radius} and scale {display_scale}"
+					);
+				}
+				if blur_uses_half_resolution(resolution_mix) {
+					let half_variance = blur_kernel_variance(UiBlurKernel::gaussian(blur_half_sigma(sigma)));
+					let observed = 4.0 * half_variance + 2.75;
+					let relative_error = (observed - sigma * sigma).abs() / (sigma * sigma);
+					assert!(
+						relative_error < 0.05,
+						"Half-resolution variance error {relative_error} at radius {radius} and scale {display_scale}"
+					);
+				}
+			}
+		}
+	}
+
+	/// Verifies the production Gaussian preserves constants, selects one axis, and guards extra lanes.
+	#[test]
+	fn backdrop_blur_filter_besl_vm_preserves_constants_and_direction() {
+		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let region = UiBlurDispatchRegion {
+			origin: [1, 1],
+			extent: Extent::rectangle(1, 1),
+		};
+		let mut push_constant = blur_filter_push_constant(&executable, UiBlurKernel::gaussian(5.0).push([1.0, 0.0], region));
+		let constant = [0.25, 0.5, 0.75, 1.0];
+		let mut source = texture_2d(5, 5, &[constant; 25]);
+		let mut result = empty_image(5, 5);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(besl::vm::ResourceSlot::new(0), &mut source);
+			descriptors.bind_image(besl::vm::ResourceSlot::new(1), &mut result);
+			descriptors.bind_push_constant(&mut push_constant);
+			run_at(&executable, &mut descriptors, [0, 0]);
+			run_at(&executable, &mut descriptors, [1, 0]);
+		}
+		assert_rgba_close(rgba(&result, [1, 1]), constant, 1e-5);
+		assert_rgba_close(rgba(&result, [2, 1]), [0.0; 4], 1e-5);
+
+		let width = 65;
+		let center = width / 2;
+		let mut impulse = vec![[0.0; 4]; width as usize * 3];
+		impulse[(width + center) as usize] = [1.0; 4];
+		let mut source = texture_2d(width, 3, &impulse);
+		let mut result = empty_image(width, 3);
+		let region = UiBlurDispatchRegion {
+			origin: [0, 0],
+			extent: Extent::rectangle(width, 3),
+		};
+		let mut push_constant = blur_filter_push_constant(&executable, UiBlurKernel::gaussian(5.0).push([1.0, 0.0], region));
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(besl::vm::ResourceSlot::new(0), &mut source);
+			descriptors.bind_image(besl::vm::ResourceSlot::new(1), &mut result);
+			descriptors.bind_push_constant(&mut push_constant);
+			run_at(&executable, &mut descriptors, [center - 1, 1]);
+			run_at(&executable, &mut descriptors, [center, 0]);
+		}
+		assert!(rgba(&result, [center - 1, 1])[0] > 0.0);
+		assert_eq!(rgba(&result, [center, 0])[0], 0.0);
+	}
+
+	/// Verifies the effective-radius-36 production profile has one Gaussian peak without secondary bands.
+	#[test]
+	fn backdrop_blur_filter_besl_vm_has_no_secondary_lobe_at_effective_radius_36() {
+		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let width = 65;
+		let center = width / 2;
+		let sigma = blur_half_sigma(blur_sigma(36.0));
+		let kernel = UiBlurKernel::gaussian(sigma);
+		let region = UiBlurDispatchRegion {
+			origin: [0, 0],
+			extent: Extent::rectangle(width, 1),
+		};
+		let mut push_constant = blur_filter_push_constant(&executable, kernel.push([1.0, 0.0], region));
+		let mut impulse = vec![[0.0; 4]; width as usize];
+		impulse[center as usize] = [1.0; 4];
+		let mut source = texture_2d(width, 1, &impulse);
+		let mut result = empty_image(width, 1);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(besl::vm::ResourceSlot::new(0), &mut source);
+			descriptors.bind_image(besl::vm::ResourceSlot::new(1), &mut result);
+			descriptors.bind_push_constant(&mut push_constant);
+			for x in 0..width {
+				run_at(&executable, &mut descriptors, [x, 0]);
+			}
+		}
+
+		let profile = (0..width).map(|x| rgba(&result, [x, 0])[0]).collect::<Vec<_>>();
+		let normalization = 1.0
+			+ 2.0
+				* (1..=UI_BLUR_GAUSSIAN_SUPPORT)
+					.map(|distance| (-0.5 * (distance as f32 / sigma).powi(2)).exp())
+					.sum::<f32>();
+		for distance in 0..=UI_BLUR_GAUSSIAN_SUPPORT {
+			let positive = profile[(center + distance) as usize];
+			let negative = profile[(center - distance) as usize];
+			let expected = (-0.5 * (distance as f32 / sigma).powi(2)).exp() / normalization;
+			assert!(
+				(positive - negative).abs() < 2e-6,
+				"Asymmetric Gaussian at distance {distance}"
+			);
+			assert!(
+				(positive - expected).abs() < 2e-5,
+				"Unexpected Gaussian tap at distance {distance}"
+			);
+			if distance > 0 {
+				assert!(profile[(center + distance - 1) as usize] >= positive);
+			}
+		}
+		let energy = profile.iter().sum::<f32>();
+		assert!((energy - 1.0).abs() < 2e-5, "Production Gaussian energy drifted to {energy}");
+	}
+
+	/// Verifies full-resolution composite sampling uses the texture's exact pixel lattice.
+	#[test]
+	fn backdrop_blur_composite_besl_vm_samples_full_resolution_lattice() {
+		let output = run_blur_composite_vm(
+			&[[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+			[2, 1],
+			&[[0.0; 4]],
+			[1, 1],
+			[1.5, 0.5],
+			0.0,
+			[0.0; 4],
+		);
+		assert_rgba_close(output, [0.0, 1.0, 0.0, 1.0], 1e-6);
+	}
+
+	/// Verifies skipped resolution paths cannot contaminate a composite through stale values.
+	#[test]
+	fn backdrop_blur_composite_besl_vm_does_not_sample_inactive_resolution() {
+		let nan = [f32::NAN; 4];
+		let full = [0.2, 0.4, 0.6, 1.0];
+		let half = [0.8, 0.6, 0.4, 1.0];
+		let full_only = run_blur_composite_vm(&[full], [1, 1], &[nan], [1, 1], [0.5, 0.5], 0.0, [0.0; 4]);
+		let half_only = run_blur_composite_vm(&[nan], [1, 1], &[half], [1, 1], [0.5, 0.5], 1.0, [0.0; 4]);
+		assert_rgba_close(full_only, full, 1e-6);
+		assert_rgba_close(half_only, half, 1e-6);
+	}
+
+	#[test]
+	fn backdrop_blur_composite_besl_vm_blends_paths_and_preserves_feather_coverage() {
+		let blended = run_blur_composite_vm(
+			&[[1.0, 0.0, 0.0, 1.0]],
+			[1, 1],
+			&[[0.0, 0.0, 1.0, 1.0]],
+			[1, 1],
+			[0.5, 0.5],
+			0.5,
+			[0.0; 4],
+		);
+		assert_rgba_close(blended, [0.5, 0.0, 0.5, 1.0], 1e-6);
+
+		let feathered = run_blur_composite_vm(
+			&[[0.25, 0.5, 0.75, 1.0]],
+			[1, 1],
+			&[[0.0; 4]],
+			[1, 1],
+			[2.0, 2.0],
+			0.0,
+			[4.0, 0.0, 0.0, 0.0],
+		);
+		assert_rgba_close(feathered, [0.25, 0.5, 0.75, 0.5], 1e-6);
+	}
+
+	#[test]
+	fn backdrop_blur_composite_besl_vm_keeps_awkward_widths_on_the_fixed_half_lattice() {
+		for full_width in [2_801u32, 2_802, 2_803] {
+			let half_width = full_width.div_ceil(UI_BLUR_HALF_DOWNSCALE);
+			let full = vec![[0.0; 4]; full_width as usize];
+			let half = (0..half_width)
+				.map(|index| [index as f32 / (half_width - 1) as f32, 0.0, 0.0, 1.0])
+				.collect::<Vec<_>>();
+			let pixel_position = [full_width as f32 * 0.5, 0.5];
+			let expected_coordinate = pixel_position[0] * 0.5 - 0.5;
+			let output = run_blur_composite_vm(&full, [full_width, 1], &half, [half_width, 1], pixel_position, 1.0, [0.0; 4]);
+			let expected = expected_coordinate / (half_width - 1) as f32;
+			assert!(
+				(output[0] - expected).abs() < 2e-5,
+				"Half-lattice phase drift at width {full_width}"
+			);
+		}
+	}
+
+	#[test]
+	fn backdrop_blur_resolution_crossover_selects_two_three_or_five_dispatches() {
+		let dispatch_count = |sigma| {
+			let resolution_mix = blur_resolution_mix(sigma);
+			usize::from(blur_uses_full_resolution(resolution_mix)) * 2
+				+ usize::from(blur_uses_half_resolution(resolution_mix)) * 3
+		};
+		assert_eq!(blur_resolution_mix(4.0), 0.0);
+		assert_eq!(blur_resolution_mix(5.0), 0.5);
+		assert_eq!(blur_resolution_mix(6.0), 1.0);
+		assert_eq!(dispatch_count(4.0), 2);
+		assert_eq!(dispatch_count(5.0), 5);
+		assert_eq!(dispatch_count(6.0), 3);
+		assert!(blur_resolution_mix(4.001) < 0.000_001);
+		assert!(1.0 - blur_resolution_mix(5.999) < 0.000_001);
+
+		let mut previous = 0.0;
+		for step in 0..=512 {
+			let resolution_mix = blur_resolution_mix(blur_sigma(step as f32 * 0.125));
+			assert!(
+				resolution_mix >= previous,
+				"Resolution crossover stepped backward at sweep index {step}"
+			);
+			previous = resolution_mix;
+		}
+	}
+
+	#[test]
+	fn backdrop_blur_half_extent_keeps_every_awkward_edge_texel() {
+		assert_eq!(blur_half_extent(Extent::rectangle(1920, 1080)), Extent::rectangle(960, 540));
+		assert_eq!(blur_half_extent(Extent::rectangle(1919, 1079)), Extent::rectangle(960, 540));
+		assert_eq!(blur_half_extent(Extent::rectangle(2802, 1)), Extent::rectangle(1401, 1));
+		assert_eq!(blur_half_extent(Extent::rectangle(1, 1)), Extent::rectangle(1, 1));
+	}
+
+	#[test]
+	fn backdrop_blur_dispatch_regions_pad_each_adaptive_path() {
+		let viewport = Extent::rectangle(1920, 1080);
+		let bounds = [400.0, 300.0, 800.0, 600.0];
+		let full = blur_full_dispatch_regions(bounds, viewport);
+		assert_eq!(
+			full.vertical,
+			UiBlurDispatchRegion {
+				origin: [399, 299],
+				extent: Extent::rectangle(402, 302),
+			}
+		);
+		assert_eq!(
+			full.horizontal,
+			UiBlurDispatchRegion {
+				origin: [398, 277],
+				extent: Extent::rectangle(404, 346),
+			}
+		);
+
+		let half = blur_half_dispatch_regions(bounds, viewport);
+		assert_eq!(
+			half.filter.vertical,
+			UiBlurDispatchRegion {
+				origin: [198, 148],
+				extent: Extent::rectangle(204, 154),
+			}
+		);
+		assert_eq!(
+			half.filter.horizontal,
+			UiBlurDispatchRegion {
+				origin: [197, 126],
+				extent: Extent::rectangle(206, 198),
+			}
+		);
+		assert_eq!(
+			half.downsample,
+			UiBlurDispatchRegion {
+				origin: [175, 125],
+				extent: Extent::rectangle(250, 200),
+			}
+		);
+	}
+
+	#[test]
+	fn backdrop_blur_half_region_contains_every_tent_sample_on_fixed_lattice() {
+		let tent_offsets = [
+			[-1.0, 0.0],
+			[-0.5, 0.5],
+			[0.0, 1.0],
+			[0.5, 0.5],
+			[1.0, 0.0],
+			[0.5, -0.5],
+			[0.0, -1.0],
+			[-0.5, -0.5],
+		];
+		for width in [19, 2_801, 2_802, 2_803] {
+			let viewport = Extent::rectangle(width, 13);
+			let target = blur_half_extent(viewport);
+			let bounds = [2.25, 1.75, width as f32 - 1.6, 11.2];
+			let region = blur_half_dispatch_regions(bounds, viewport).filter.vertical;
+			let end = [
+				region.origin[0] + region.extent.width(),
+				region.origin[1] + region.extent.height(),
+			];
+			let sample_xs = if width == 19 {
+				(0..width).collect::<Vec<_>>()
+			} else {
+				vec![2, 3, width / 2, width - 3]
+			};
+			for y in 0..viewport.height() {
+				for &x in &sample_xs {
+					let pixel = [x as f32 + 0.5, y as f32 + 0.5];
+					if pixel[0] < bounds[0] || pixel[0] >= bounds[2] || pixel[1] < bounds[1] || pixel[1] >= bounds[3] {
+						continue;
+					}
+					let base = [pixel[0] * 0.5 - 0.5, pixel[1] * 0.5 - 0.5];
+					for offset in tent_offsets {
+						let sample = [base[0] + offset[0], base[1] + offset[1]];
+						for sampled_y in [sample[1].floor(), sample[1].ceil()] {
+							for sampled_x in [sample[0].floor(), sample[0].ceil()] {
+								let sampled_x = sampled_x.clamp(0.0, target.width().saturating_sub(1) as f32) as u32;
+								let sampled_y = sampled_y.clamp(0.0, target.height().saturating_sub(1) as f32) as u32;
+								assert!((region.origin[0]..end[0]).contains(&sampled_x));
+								assert!((region.origin[1]..end[1]).contains(&sampled_y));
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/// Verifies every adaptive path executes the production shaders over representative UI signals.
+	#[test]
+	fn backdrop_blur_production_besl_chain_sweep_preserves_positive_filtering() {
+		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let composite = compile_ui_blur_shader(UI_BLUR_COMPOSITE_BESL);
+		let extent = Extent::rectangle(49, 5);
+		let radii = [0.0, 0.25, 1.0, 4.0, 18.0, 32.0, 64.0];
+		for pattern in [
+			BlurChainPattern::Impulse,
+			BlurChainPattern::ThinLine,
+			BlurChainPattern::Checkerboard,
+			BlurChainPattern::Constant,
+		] {
+			let texels = blur_chain_fixture(pattern, extent);
+			let row = extent.height() / 2;
+			let input = &texels[(row * extent.width()) as usize..((row + 1) * extent.width()) as usize];
+			let input_variation = input.windows(2).map(|pair| (pair[1][0] - pair[0][0]).abs()).sum::<f32>();
+			for display_scale in [1.0, 2.0] {
+				for radius in radii {
+					let output =
+						run_adaptive_blur_scanline_vm(&downsample, &filter, &composite, &texels, extent, radius, display_scale);
+					for color in &output {
+						for channel in color.iter().take(3) {
+							assert!(
+								channel.is_finite() && (0.0..=1.0).contains(channel),
+								"Adaptive blur introduced an invalid color at radius {radius} and scale {display_scale}"
+							);
+						}
+					}
+					let output_variation = output.windows(2).map(|pair| (pair[1][0] - pair[0][0]).abs()).sum::<f32>();
+					assert!(
+						output_variation <= input_variation + 1e-4,
+						"Positive blur increased scanline variation at radius {radius} and scale {display_scale}"
+					);
+					if matches!(pattern, BlurChainPattern::Constant) {
+						for color in output {
+							assert_rgba_close(color, [0.25, 0.5, 0.75, 1.0], 2e-5);
+						}
+					} else if radius == 0.0 {
+						assert_eq!(output, input);
+					} else {
+						assert!(output
+							.iter()
+							.zip(input)
+							.any(|(actual, source)| (actual[0] - source[0]).abs() > 1e-5));
+					}
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn backdrop_blur_production_chain_changes_continuously_across_radius_sweep() {
+		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let composite = compile_ui_blur_shader(UI_BLUR_COMPOSITE_BESL);
+		let extent = Extent::rectangle(49, 1);
+		let texels = blur_chain_fixture(BlurChainPattern::ThinLine, extent);
+		let sample_center = |radius| {
+			run_adaptive_blur_scanline_vm(&downsample, &filter, &composite, &texels, extent, radius, 1.0)
+				[extent.width() as usize / 2][0]
+		};
+
+		let at_zero = sample_center(0.0);
+		let near_zero = sample_center(1e-6);
+		assert!((at_zero - near_zero).abs() < 1e-6, "Blur popped when leaving radius zero");
+
+		let mut previous = at_zero;
+		let mut plateau_steps = 0;
+		let mut largest_step = 0.0f32;
+		for step in 1..=512 {
+			let current = sample_center(step as f32 * 0.125);
+			let delta = (current - previous).abs();
+			assert!(current.is_finite());
+			largest_step = largest_step.max(delta);
+			plateau_steps += usize::from(delta <= 1e-7);
+			previous = current;
+		}
+		assert!(
+			largest_step < 0.4,
+			"Radius sweep contained a visible output jump of {largest_step}"
+		);
+		assert!(plateau_steps <= 1, "Radius sweep retained {plateau_steps} quantized plateaus");
+
+		let sigma_scale = blur_sigma(1.0);
+		for crossover_sigma in [4.0f32, 6.0] {
+			let crossover_radius = (crossover_sigma / sigma_scale).powi(2);
+			let before = sample_center(crossover_radius - 0.001);
+			let after = sample_center(crossover_radius + 0.001);
+			assert!(
+				(before - after).abs() < 5e-4,
+				"Resolution crossover at sigma {crossover_sigma} introduced a discontinuity"
+			);
+		}
+	}
+
+	#[test]
+	fn backdrop_blur_awkward_width_impulse_centroid_stays_phase_aligned() {
+		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let composite = compile_ui_blur_shader(UI_BLUR_COMPOSITE_BESL);
+		for width in [2_801, 2_802] {
+			let extent = Extent::rectangle(width, 1);
+			let texels = blur_chain_fixture(BlurChainPattern::Impulse, extent);
+			let output = run_adaptive_blur_scanline_vm(&downsample, &filter, &composite, &texels, extent, 18.0, 2.0);
+			let energy = output.iter().map(|color| color[0]).sum::<f32>();
+			let centroid = output.iter().enumerate().map(|(x, color)| x as f32 * color[0]).sum::<f32>() / energy;
+			let source_centroid = (width / 2) as f32;
+			assert!(
+				(centroid - source_centroid).abs() <= 0.25,
+				"Blur centroid drifted from {source_centroid} to {centroid} at width {width}"
+			);
+		}
+	}
+
+	#[test]
+	fn backdrop_blur_regional_production_chain_never_samples_stale_texels() {
+		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
+		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
+		let composite = compile_ui_blur_shader(UI_BLUR_COMPOSITE_BESL);
+		let viewport = Extent::rectangle(129, 33);
+		let bounds = [45.25, 10.25, 83.75, 22.75];
+		let regions = blur_half_dispatch_regions(bounds, viewport);
+		let target = blur_half_extent(viewport);
+		let constant = [0.2, 0.4, 0.6, 1.0];
+		let source_texels = vec![constant; (viewport.width() * viewport.height()) as usize];
+		let stale_texels = vec![[f32::NAN; 4]; (target.width() * target.height()) as usize];
+		let mut source = texture_2d(viewport.width(), viewport.height(), &source_texels);
+		let mut downsampled = texture_2d(target.width(), target.height(), &stale_texels);
+		run_blur_downsample_region_vm(&downsample, &mut source, &mut downsampled, regions.downsample);
+		for y in regions.downsample.origin[1]..regions.downsample.origin[1] + regions.downsample.extent.height() {
+			for x in regions.downsample.origin[0]..regions.downsample.origin[0] + regions.downsample.extent.width() {
+				assert!(
+					rgba(&downsampled, [x, y]).iter().all(|channel| channel.is_finite()),
+					"Stale downsample texel at [{x}, {y}]"
+				);
+			}
+		}
+
+		let sigma = blur_sigma(36.0);
+		let kernel = UiBlurKernel::gaussian(blur_half_sigma(sigma));
+		let mut horizontal = texture_2d(target.width(), target.height(), &stale_texels);
+		run_blur_filter_region_vm(
+			&filter,
+			&mut downsampled,
+			&mut horizontal,
+			kernel,
+			[1.0, 0.0],
+			regions.filter.horizontal,
+		);
+		for y in
+			regions.filter.horizontal.origin[1]..regions.filter.horizontal.origin[1] + regions.filter.horizontal.extent.height()
+		{
+			for x in regions.filter.horizontal.origin[0]
+				..regions.filter.horizontal.origin[0] + regions.filter.horizontal.extent.width()
+			{
+				assert!(
+					rgba(&horizontal, [x, y]).iter().all(|channel| channel.is_finite()),
+					"Stale horizontal texel at [{x}, {y}]"
+				);
+			}
+		}
+		let mut vertical = texture_2d(target.width(), target.height(), &stale_texels);
+		run_blur_filter_region_vm(
+			&filter,
+			&mut horizontal,
+			&mut vertical,
+			kernel,
+			[0.0, 1.0],
+			regions.filter.vertical,
+		);
+		for y in regions.filter.vertical.origin[1]..regions.filter.vertical.origin[1] + regions.filter.vertical.extent.height()
+		{
+			for x in
+				regions.filter.vertical.origin[0]..regions.filter.vertical.origin[0] + regions.filter.vertical.extent.width()
+			{
+				assert!(
+					rgba(&vertical, [x, y]).iter().all(|channel| channel.is_finite()),
+					"Stale vertical texel at [{x}, {y}]"
+				);
+			}
+		}
+
+		let full_stale = vec![[f32::NAN; 4]; (viewport.width() * viewport.height()) as usize];
+		let mut full = texture_2d(viewport.width(), viewport.height(), &full_stale);
+		for y in 0..viewport.height() {
+			for x in 0..viewport.width() {
+				let pixel = [x as f32 + 0.5, y as f32 + 0.5];
+				if pixel[0] < bounds[0] || pixel[0] >= bounds[2] || pixel[1] < bounds[1] || pixel[1] >= bounds[3] {
+					continue;
+				}
+				let output = run_blur_composite_textures_vm(&composite, &mut full, &mut vertical, pixel, 1.0, [0.0; 4]);
+				assert_rgba_close(output, constant, 2e-5);
+			}
 		}
 	}
 
@@ -3469,7 +4557,7 @@ mod tests {
 	}
 
 	#[test]
-	fn blur_geometry_builds_a_composite_quad_and_radius() {
+	fn blur_geometry_builds_an_adaptive_composite_quad_at_display_scale() {
 		let frame_allocator = bumpalo::Bump::new();
 		let geometry = build_ui_blur_geometry(
 			&UiDrawList {
@@ -3491,7 +4579,7 @@ mod tests {
 				images: Vec::new(),
 				texts: Vec::new(),
 			},
-			Extent::rectangle(200, 100),
+			Extent::rectangle(200, 200),
 			&frame_allocator,
 		);
 
@@ -3500,7 +4588,21 @@ mod tests {
 		assert_eq!(geometry.batches.len(), 1);
 		assert_eq!(geometry.batches[0].depth, 2);
 		assert_eq!(geometry.batches[0].order, 7);
-		assert_eq!(geometry.batches[0].radius_pixels, 18);
+		let expected_sigma = blur_sigma(36.0);
+		assert_eq!(geometry.batches[0].resolution_mix, 1.0);
+		assert_eq!(geometry.batches[0].full_kernel, UiBlurKernel::gaussian(expected_sigma));
+		assert_eq!(
+			geometry.batches[0].half_kernel,
+			UiBlurKernel::gaussian(blur_half_sigma(expected_sigma))
+		);
+		assert_eq!(
+			geometry.batches[0].half_regions.filter.vertical,
+			UiBlurDispatchRegion {
+				origin: [8, 18],
+				extent: Extent::rectangle(34, 44),
+			}
+		);
+		assert!(geometry.vertices.iter().all(|vertex| vertex.blur_resolution_mix == 1.0));
 		assert_vec2_close(geometry.vertices[0].position, [-0.8, 0.6]);
 		assert_eq!(geometry.vertices[0].color, [0.0, 0.0, 0.0, 0.45]);
 	}
@@ -4033,7 +5135,7 @@ mod tests {
 	fn ui_vertex_besl_vm_forwards_position_and_varyings() {
 		let executable = ExecutableProgram::compile(super::create_ui_vertex_program())
 			.expect("Failed to compile UI vertex shader for the BESL VM. The most likely cause is missing VM shader support.");
-		let mut inputs: [Buffer; 13] = std::array::from_fn(|location| {
+		let mut inputs: [Buffer; 14] = std::array::from_fn(|location| {
 			Buffer::new(
 				executable
 					.input_layout(location as u8)
@@ -4055,6 +5157,7 @@ mod tests {
 			"in_feather_mask_size",
 			"in_feather_mask_edges",
 			"in_feather_mask_corner",
+			"in_blur_resolution_mix",
 		];
 		let input_values = [
 			Value::Vec2F([0.25, -0.75]),
@@ -4070,6 +5173,7 @@ mod tests {
 			Value::Vec2F([70.0, 60.0]),
 			Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
 			Value::Vec2F([9.0, 2.0]),
+			Value::F32(0.375),
 		];
 		for ((input, name), value) in inputs.iter_mut().zip(input_names).zip(input_values) {
 			input
@@ -4083,7 +5187,7 @@ mod tests {
 				.expect("Missing UI vertex position layout. The most likely cause is an unresolved position output.")
 				.clone(),
 		);
-		let mut outputs: [Buffer; 12] = std::array::from_fn(|location| {
+		let mut outputs: [Buffer; 14] = std::array::from_fn(|location| {
 			Buffer::new(
 				executable
 					.output_layout(location as u8)
@@ -4124,6 +5228,8 @@ mod tests {
 				"out_feather_mask_size",
 				"out_feather_mask_edges",
 				"out_feather_mask_corner",
+				"out_screen_uv",
+				"out_blur_resolution_mix",
 			])
 			.zip([
 				Value::Vec4F([0.1, 0.2, 0.3, 0.4]),
@@ -4138,6 +5244,8 @@ mod tests {
 				Value::Vec2F([70.0, 60.0]),
 				Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
 				Value::Vec2F([9.0, 2.0]),
+				Value::Vec2F([0.625, 0.875]),
+				Value::F32(0.375),
 			]) {
 			assert_eq!(output.read(name).expect("Expected UI vertex varying output"), expected);
 		}

@@ -1,0 +1,29 @@
+source_texture: descriptor<Texture2D, 0, read>;
+result_texture: descriptor<StorageImage<rgba16>, 1, write>;
+
+push_constant: push_constant {
+	origin: vec2u,
+	extent: vec2u,
+}
+
+// Reduces the source onto a fixed two-pixel lattice. Four bilinear reads at
+// diagonal three-quarter-texel offsets produce the positive [1, 3, 3, 1] / 8
+// marginal without introducing the block-shaped response of an equal box.
+main: fn() -> void {
+	let local_coordinate: vec2u = thread_id();
+	if (local_coordinate.x >= push_constant.extent.x || local_coordinate.y >= push_constant.extent.y) {
+		return;
+	}
+	let coordinate: vec2u = local_coordinate + push_constant.origin;
+	guard_image_bounds(result_texture, coordinate);
+	let source_size: vec2u = texture_size(source_texture);
+	let source_center: vec2f = vec2f(f32(coordinate.x), f32(coordinate.y)) * 2.0 + vec2f(1.0, 1.0);
+	let inverse_source_size: vec2f = vec2f(1.0 / f32(source_size.x), 1.0 / f32(source_size.y));
+	let uv: vec2f = source_center * inverse_source_size;
+	let offset: vec2f = inverse_source_size * 0.75;
+	let color: vec4f = texture_lod(source_texture, uv + vec2f(0.0 - offset.x, 0.0 - offset.y));
+	color = color + texture_lod(source_texture, uv + vec2f(offset.x, 0.0 - offset.y));
+	color = color + texture_lod(source_texture, uv + vec2f(0.0 - offset.x, offset.y));
+	color = color + texture_lod(source_texture, uv + vec2f(offset.x, offset.y));
+	write(result_texture, coordinate, color * 0.25);
+}

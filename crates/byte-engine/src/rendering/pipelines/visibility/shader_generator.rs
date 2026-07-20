@@ -1724,8 +1724,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 mod tests {
 	use resource_management::asset::bema_asset_handler::ProgramGenerator;
 	use resource_management::pbr::{
-		generate_textured_brdf_program, BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode,
-		BrdfTexture, BrdfValue,
+		generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfValue,
 	};
 	use resource_management::shader::besl::evaluation::ProgramEvaluation;
 	use utils::json::{self, JsonContainerTrait, JsonValueTrait};
@@ -1837,6 +1836,63 @@ mod tests {
 		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
 		let shader = shader_generator.transform(shader_node, &material);
 		besl::lex(shader).unwrap();
+	}
+
+	/// Compiles a production-generated trivial material evaluation pass and guards its required semantic resource access.
+	#[test]
+	fn trivial_generated_material_evaluation_pass_links_and_reflects_required_bindings() {
+		let mut builder = BrdfMaterialBuilder::new();
+		let base_color = builder.constant(BrdfValue::Vector4([0.8, 0.6, 0.4, 1.0]));
+		let metallic = builder.constant(BrdfValue::Scalar(0.25));
+		let roughness = builder.constant(BrdfValue::Scalar(0.5));
+		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
+			base_color,
+			metallic,
+			roughness,
+			normal: None,
+			occlusion: None,
+			emission: None,
+		}));
+		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let material_program = generate_textured_brdf_program(&material).expect(
+			"Failed to generate the trivial material program. The most likely cause is an invalid BRDF material graph.",
+		);
+		let material_metadata = json::object! {
+			"variables": Vec::<json::Value>::new()
+		};
+
+		// Material evaluation reads count, offset, and mapping state while retaining the lit target for transparent blending.
+		let shader_generator = super::VisibilityShaderGenerator::new(true, false, true, false, false, false, true, false);
+		let shader = shader_generator.transform(material_program, &material_metadata);
+		let program = besl::lex(shader).expect(
+			"Failed to link the trivial material evaluation pass. The most likely cause is a drifted visibility shader contract.",
+		);
+		let main = program.get_main().expect(
+			"Missing trivial material evaluation main. The most likely cause is that material generation stopped producing an entry point.",
+		);
+		let evaluation = ProgramEvaluation::from_main(&main).expect(
+			"Failed to reflect the trivial material evaluation pass. The most likely cause is an invalid visibility resource graph.",
+		);
+
+		for slot in [1033, 1034, 1037] {
+			let binding = evaluation.bindings().iter().find(|binding| binding.slot == slot).unwrap_or_else(|| {
+				panic!(
+					"Missing required material evaluation binding at slot {slot}. The most likely cause is that generated material reachability drifted."
+				)
+			});
+			assert!(
+				binding.read,
+				"Material evaluation binding at slot {slot} is not readable. The most likely cause is incorrect visibility scope access metadata."
+			);
+		}
+
+		let lit_binding = evaluation.bindings().iter().find(|binding| binding.slot == 1041).expect(
+			"Missing material evaluation lit binding. The most likely cause is that generated shading stopped retaining its output target.",
+		);
+		assert!(
+			lit_binding.read && lit_binding.write,
+			"Material evaluation lit binding is not read-write. The most likely cause is that transparent source-over access drifted."
+		);
 	}
 
 	/// Ensures every reflected resource has a retained write in the material-evaluation pass.

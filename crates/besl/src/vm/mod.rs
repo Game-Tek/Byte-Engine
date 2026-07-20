@@ -773,11 +773,155 @@ impl MeshOutputs {
 	}
 }
 
+/// The `TaskOutputs` struct captures task-stage mesh dispatch counts and payload values for VM assertions.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TaskOutputs {
+	mesh_output_count: Option<u32>,
+	payloads: HashMap<String, Vec<Option<Value>>>,
+}
+
+impl TaskOutputs {
+	/// Creates an empty capture that can be bound before a task shader invocation.
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	/// Returns the mesh workgroup count declared by the task invocation, if it declared one.
+	pub const fn mesh_output_count(&self) -> Option<u32> {
+		self.mesh_output_count
+	}
+
+	/// Returns one task-payload value when the shader wrote the requested declared element.
+	pub fn payload_value(&self, name: &str, index: usize) -> Option<&Value> {
+		self.payloads.get(name)?.get(index)?.as_ref()
+	}
+
+	fn set_mesh_output_count(&mut self, count: u32) {
+		self.mesh_output_count = Some(count);
+		let count = count as usize;
+		for payload in self.payloads.values_mut() {
+			if count < payload.len() {
+				// Values outside the published dispatch range must not survive capture reuse.
+				payload[count..].fill(None);
+			}
+		}
+	}
+
+	/// Clears shader-authored values while retaining the capture's allocated payload storage.
+	fn begin_workgroup(&mut self) {
+		self.mesh_output_count = None;
+		for payload in self.payloads.values_mut() {
+			payload.fill(None);
+		}
+	}
+
+	/// Writes one declared task-payload element while preserving earlier lane writes in the same capture.
+	fn write_payload(&mut self, name: &str, index: usize, count: usize, value: Value) -> Result<(), VmError> {
+		if index >= count {
+			return Err(VmError::TaskPayloadOutputIndexOutOfBounds {
+				name: name.to_string(),
+				index,
+				count,
+			});
+		}
+
+		let payload = if let Some(payload) = self.payloads.get_mut(name) {
+			payload
+		} else {
+			self.payloads.insert(name.to_string(), vec![None; count]);
+			self.payloads
+				.get_mut(name)
+				.expect(
+					"Missing inserted task payload. The most likely cause is that the payload map changed between insertion and lookup.",
+				)
+		};
+		if payload.len() != count {
+			// A capture is scoped to one declared task interface; clear stale values if a caller reuses it with another layout.
+			payload.clear();
+			payload.resize(count, None);
+		}
+		payload[index] = Some(value);
+		Ok(())
+	}
+}
+
+/// The `WorkgroupState` struct provides task-stage invocations with explicitly shared workgroup storage.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorkgroupState {
+	values: HashMap<String, Option<Value>>,
+}
+
+impl WorkgroupState {
+	/// Creates empty workgroup storage for one VM workgroup fixture.
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	/// Clears values from the previous workgroup while retaining its names and allocated map storage.
+	fn begin_workgroup(&mut self) {
+		for value in self.values.values_mut() {
+			*value = None;
+		}
+	}
+
+	/// Loads one value initialized by an earlier instruction in the bound workgroup state.
+	fn load(&self, name: &str, value_type: &ValueType) -> Result<Value, VmError> {
+		let value = self
+			.values
+			.get(name)
+			.and_then(Option::as_ref)
+			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
+		if !value.matches_type(value_type) {
+			return Err(VmError::TypeMismatch {
+				expected: value_type.name().to_string(),
+				found: value.value_type().name().to_string(),
+			});
+		}
+		Ok(value.clone())
+	}
+
+	/// Replaces one workgroup value after validating the declaration's portable type.
+	fn store(&mut self, name: &str, value_type: &ValueType, value: Value) -> Result<(), VmError> {
+		if !value.matches_type(value_type) {
+			return Err(VmError::TypeMismatch {
+				expected: value_type.name().to_string(),
+				found: value.value_type().name().to_string(),
+			});
+		}
+		if let Some(stored) = self.values.get_mut(name) {
+			*stored = Some(value);
+		} else {
+			self.values.insert(name.to_string(), Some(value));
+		}
+		Ok(())
+	}
+
+	/// Applies the wrapping atomic-u32 addition used by task compaction counters.
+	fn atomic_add_u32(&mut self, name: &str, value: u32) -> Result<u32, VmError> {
+		let stored = self
+			.values
+			.get_mut(name)
+			.and_then(Option::as_mut)
+			.ok_or_else(|| VmError::UninitializedWorkgroupValue { name: name.to_string() })?;
+		let Value::U32(previous) = stored else {
+			return Err(VmError::TypeMismatch {
+				expected: ValueType::U32.name().to_string(),
+				found: stored.value_type().name().to_string(),
+			});
+		};
+		let previous = *previous;
+		*stored = Value::U32(previous.wrapping_add(value));
+		Ok(previous)
+	}
+}
+
 /// The `DescriptorBindings` struct provides invocation-scoped host resources to a compiled BESL program.
 pub struct DescriptorBindings<'a> {
 	bindings: HashMap<ResourceSlot, DescriptorBinding<'a>>,
 	push_constant: Option<&'a mut Buffer>,
 	mesh_outputs: Option<&'a mut MeshOutputs>,
+	task_outputs: Option<&'a mut TaskOutputs>,
+	workgroup_state: Option<&'a mut WorkgroupState>,
 	task_payloads: HashMap<String, Vec<Value>>,
 }
 
@@ -793,6 +937,8 @@ impl<'a> DescriptorBindings<'a> {
 			bindings: HashMap::new(),
 			push_constant: None,
 			mesh_outputs: None,
+			task_outputs: None,
+			workgroup_state: None,
 			task_payloads: HashMap::new(),
 		}
 	}
@@ -816,6 +962,16 @@ impl<'a> DescriptorBindings<'a> {
 	/// Binds the capture used by mesh output-count, position, and triangle intrinsics.
 	pub fn bind_mesh_outputs(&mut self, mesh_outputs: &'a mut MeshOutputs) {
 		self.mesh_outputs = Some(mesh_outputs);
+	}
+
+	/// Binds the capture used by task payload writes and the task mesh-output-count intrinsic.
+	pub fn bind_task_outputs(&mut self, task_outputs: &'a mut TaskOutputs) {
+		self.task_outputs = Some(task_outputs);
+	}
+
+	/// Binds shared storage for task fixtures executed through the workgroup scheduler.
+	pub fn bind_workgroup_state(&mut self, workgroup_state: &'a mut WorkgroupState) {
+		self.workgroup_state = Some(workgroup_state);
 	}
 
 	/// Binds the authored values produced for one named task-payload array before a mesh-stage invocation.
@@ -858,6 +1014,24 @@ impl<'a> DescriptorBindings<'a> {
 
 	fn mesh_outputs_mut(&mut self) -> Result<&mut MeshOutputs, VmError> {
 		self.mesh_outputs.as_deref_mut().ok_or(VmError::MissingMeshOutputs)
+	}
+
+	fn task_outputs_mut(&mut self) -> Result<&mut TaskOutputs, VmError> {
+		self.task_outputs.as_deref_mut().ok_or(VmError::MissingTaskOutputs)
+	}
+
+	fn workgroup_state_mut(&mut self) -> Result<&mut WorkgroupState, VmError> {
+		self.workgroup_state.as_deref_mut().ok_or(VmError::MissingWorkgroupState)
+	}
+
+	/// Starts a fresh task workgroup without reallocating reusable capture storage.
+	fn begin_task_workgroup(&mut self) {
+		if let Some(task_outputs) = self.task_outputs.as_deref_mut() {
+			task_outputs.begin_workgroup();
+		}
+		if let Some(workgroup_state) = self.workgroup_state.as_deref_mut() {
+			workgroup_state.begin_workgroup();
+		}
 	}
 
 	fn task_payload_value(&self, name: &str, index: usize) -> Result<Value, VmError> {
@@ -906,8 +1080,10 @@ pub struct ExecutionConfig {
 	call_depth_limit: usize,
 	max_mesh_vertex_count: u32,
 	max_mesh_primitive_count: u32,
+	max_task_mesh_output_count: u32,
 	thread_id: [u32; 2],
 	thread_idx: u32,
+	thread_position: u32,
 	threadgroup_position: u32,
 }
 
@@ -918,8 +1094,10 @@ impl Default for ExecutionConfig {
 			call_depth_limit: 64,
 			max_mesh_vertex_count: 256,
 			max_mesh_primitive_count: 256,
+			max_task_mesh_output_count: 256,
 			thread_id: [0, 0],
 			thread_idx: 0,
+			thread_position: 0,
 			threadgroup_position: 0,
 		}
 	}
@@ -954,6 +1132,11 @@ impl ExecutionConfig {
 		self.max_mesh_primitive_count
 	}
 
+	/// Returns the maximum mesh workgroup count a task invocation may request.
+	pub const fn max_task_mesh_output_count(&self) -> u32 {
+		self.max_task_mesh_output_count
+	}
+
 	/// Returns the two-dimensional compute invocation coordinate.
 	pub const fn thread_id(&self) -> [u32; 2] {
 		self.thread_id
@@ -962,6 +1145,11 @@ impl ExecutionConfig {
 	/// Returns the mesh or workgroup-local invocation index.
 	pub const fn thread_idx(&self) -> u32 {
 		self.thread_idx
+	}
+
+	/// Returns the task invocation's scalar position in the dispatched grid.
+	pub const fn thread_position(&self) -> u32 {
+		self.thread_position
 	}
 
 	/// Returns the mesh workgroup position visible to the shader.
@@ -987,6 +1175,12 @@ impl ExecutionConfig {
 		self
 	}
 
+	/// Selects the maximum mesh workgroup count accepted from task output-count intrinsics.
+	pub fn with_max_task_mesh_output_count(mut self, limit: u32) -> Self {
+		self.max_task_mesh_output_count = limit;
+		self
+	}
+
 	/// Selects the two-dimensional compute invocation coordinate.
 	pub fn with_thread_id(mut self, thread_id: [u32; 2]) -> Self {
 		self.thread_id = thread_id;
@@ -996,6 +1190,12 @@ impl ExecutionConfig {
 	/// Selects the mesh or workgroup-local invocation index.
 	pub fn with_thread_idx(mut self, thread_idx: u32) -> Self {
 		self.thread_idx = thread_idx;
+		self
+	}
+
+	/// Selects the task invocation's scalar position in the dispatched grid.
+	pub fn with_thread_position(mut self, position: u32) -> Self {
+		self.thread_position = position;
 		self
 	}
 

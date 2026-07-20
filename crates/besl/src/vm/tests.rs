@@ -2,7 +2,7 @@
 
 use super::{
 	input_slot, output_slot, reflect_vector, Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs,
-	ResourceSlot, SpecializationValues, Texture, Value, VmError,
+	ResourceSlot, SpecializationValues, TaskOutputs, Texture, Value, VmError, WorkgroupState,
 };
 use crate::{compile_to_besl, BindingTypes, Expressions, Node, NodeReference, Operators};
 
@@ -476,6 +476,67 @@ fn executable_program_evaluates_mat4f_arithmetic_before_writing_to_a_bound_buffe
 	assert_eq!(
 		read_f32s(&buffer, 16),
 		vec![2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0,]
+	);
+}
+
+#[test]
+fn executable_program_indexes_mat4f_and_mat4x3f_columns() {
+	let script = r#"
+	main: fn () -> void {
+		let projection: mat4f = mat4f(
+			vec4f(1.0, 2.0, 3.0, 4.0),
+			vec4f(5.0, 6.0, 7.0, 8.0),
+			vec4f(9.0, 10.0, 11.0, 12.0),
+			vec4f(13.0, 14.0, 15.0, 16.0)
+		);
+		let model: mat4x3f = mat4x3f(
+			vec3f(1.0, 2.0, 3.0),
+			vec3f(4.0, 5.0, 6.0),
+			vec3f(7.0, 8.0, 9.0),
+			vec3f(10.0, 11.0, 12.0)
+		);
+		result.projection_column = projection[2];
+		result.model_column = model[3];
+	}
+	"#;
+	let mut root = Node::root();
+	let vec4f = root
+		.get_child("vec4f")
+		.expect("Missing vec4f type. The most likely cause is an incomplete VM test root scope.");
+	let vec3f = root
+		.get_child("vec3f")
+		.expect("Missing vec3f type. The most likely cause is an incomplete VM test root scope.");
+	root.add_child(
+		Node::binding(
+			"result",
+			BindingTypes::Buffer {
+				members: vec![
+					Node::member("projection_column", vec4f).into(),
+					Node::member("model_column", vec3f).into(),
+				],
+			},
+			41,
+			true,
+			true,
+		)
+		.into(),
+	);
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(41);
+	let mut result = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut result);
+
+	assert_eq!(
+		result
+			.read("projection_column")
+			.expect("Missing indexed mat4f column. The most likely cause is broken matrix indexing or result-buffer storage.",),
+		Value::Vec4F([9.0, 10.0, 11.0, 12.0])
+	);
+	assert_eq!(
+		result.read("model_column").expect(
+			"Missing indexed mat4x3f column. The most likely cause is broken matrix indexing or result-buffer storage.",
+		),
+		Value::Vec3F([10.0, 11.0, 12.0])
 	);
 }
 
@@ -1866,6 +1927,281 @@ fn authored_mesh_shader_reads_bound_task_payload_elements() {
 	assert_eq!(
 		result.read("meshlet_index").expect("Expected captured meshlet index"),
 		Value::U32(5)
+	);
+}
+
+#[test]
+fn task_stage_intrinsics_capture_payload_and_mesh_output_count() {
+	let executable = compile_test_program(
+		r#"
+		visible_meshlets: task_payload<u32, 4>;
+		visible_count: workgroup<atomicu32>;
+
+		main: fn () -> void {
+			if (thread_idx() == 0) {
+				atomic_store(visible_count, 0);
+			}
+			workgroup_barrier();
+			let payload_index: u32 = atomic_add(visible_count, 1);
+			visible_meshlets[payload_index] = thread_position();
+			workgroup_barrier();
+			if (thread_idx() == 0) {
+				set_task_mesh_output_count(atomic_load(visible_count));
+			}
+		}
+		"#,
+		None,
+	);
+	let mut outputs = TaskOutputs::new();
+	let mut workgroup = WorkgroupState::new();
+	let configs = [
+		ExecutionConfig::new(128).with_thread_idx(0).with_thread_position(7),
+		ExecutionConfig::new(128).with_thread_idx(1).with_thread_position(8),
+		ExecutionConfig::new(128).with_thread_idx(2).with_thread_position(9),
+	];
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_outputs(&mut outputs);
+		descriptors.bind_workgroup_state(&mut workgroup);
+		executable
+			.run_task_workgroup(&mut descriptors, &configs)
+			.expect("Task workgroup execution failed. The most likely cause is broken barrier or shared-atomic scheduling.");
+	}
+
+	assert_eq!(configs[0].thread_position(), 7);
+	assert_eq!(outputs.mesh_output_count(), Some(3));
+	assert_eq!(outputs.payload_value("visible_meshlets", 0), Some(&Value::U32(7)));
+	assert_eq!(outputs.payload_value("visible_meshlets", 1), Some(&Value::U32(8)));
+	assert_eq!(outputs.payload_value("visible_meshlets", 2), Some(&Value::U32(9)));
+}
+
+#[test]
+fn task_workgroup_reuse_clears_stale_payload_values() {
+	let executable = compile_test_program(
+		r#"
+		visible_meshlets: task_payload<u32, 4>;
+		visible_count: workgroup<atomicu32>;
+
+		main: fn () -> void {
+			if (thread_idx() == 0) {
+				atomic_store(visible_count, 0);
+			}
+			workgroup_barrier();
+			if (thread_position() == 7) {
+				let payload_index: u32 = atomic_add(visible_count, 1);
+				visible_meshlets[payload_index] = thread_position();
+			}
+			workgroup_barrier();
+			if (thread_idx() == 0) {
+				set_task_mesh_output_count(atomic_load(visible_count));
+			}
+		}
+		"#,
+		None,
+	);
+	let mut outputs = TaskOutputs::new();
+	let mut workgroup = WorkgroupState::new();
+
+	for (position, expected_count) in [(7, 1), (8, 0)] {
+		let config = ExecutionConfig::new(128).with_thread_idx(0).with_thread_position(position);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_outputs(&mut outputs);
+		descriptors.bind_workgroup_state(&mut workgroup);
+		executable
+			.run_task_workgroup(&mut descriptors, &[config])
+			.expect("Task capture reuse failed. The most likely cause is stale workgroup or task-output state.");
+		assert_eq!(outputs.mesh_output_count(), Some(expected_count));
+	}
+
+	assert_eq!(outputs.payload_value("visible_meshlets", 0), None);
+}
+
+#[test]
+fn task_mesh_output_counts_respect_execution_limits() {
+	let executable = compile_test_program(
+		r#"
+		main: fn () -> void {
+			set_task_mesh_output_count(2);
+		}
+		"#,
+		None,
+	);
+	let mut outputs = TaskOutputs::new();
+	let config = ExecutionConfig::new(32).with_max_task_mesh_output_count(1);
+	let error = {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_outputs(&mut outputs);
+		executable
+			.run_task_workgroup(&mut descriptors, &[config])
+			.expect_err("Task output limit was ignored. The most likely cause is missing task-count validation.")
+	};
+
+	assert_eq!(error, VmError::TaskMeshOutputCountLimitExceeded { requested: 2, limit: 1 });
+}
+
+#[test]
+fn task_workgroup_rejects_barrier_divergence() {
+	let executable = compile_test_program(
+		r#"
+		main: fn () -> void {
+			if (thread_idx() == 1) {
+				workgroup_barrier();
+			}
+		}
+		"#,
+		None,
+	);
+	let configs = [
+		ExecutionConfig::new(32).with_thread_idx(0),
+		ExecutionConfig::new(32).with_thread_idx(1),
+	];
+	let mut descriptors = DescriptorBindings::new();
+	let error = executable
+		.run_task_workgroup(&mut descriptors, &configs)
+		.expect_err("Barrier divergence was accepted. The most likely cause is a broken task rendezvous check.");
+
+	assert!(matches!(
+		error,
+		VmError::DivergentWorkgroupBarrier {
+			lane: 0,
+			found_instruction: None,
+			..
+		}
+	));
+}
+
+#[test]
+fn task_workgroup_rejects_different_static_barriers_in_one_phase() {
+	let executable = compile_test_program(
+		r#"
+		main: fn () -> void {
+			if (thread_idx() == 0) {
+				workgroup_barrier();
+			}
+			if (thread_idx() == 1) {
+				workgroup_barrier();
+			}
+		}
+		"#,
+		None,
+	);
+	let configs = [
+		ExecutionConfig::new(32).with_thread_idx(0),
+		ExecutionConfig::new(32).with_thread_idx(1),
+	];
+	let mut descriptors = DescriptorBindings::new();
+	let error = executable
+		.run_task_workgroup(&mut descriptors, &configs)
+		.expect_err("Static barrier divergence was accepted. The most likely cause is a broken rendezvous phase check.");
+
+	assert!(matches!(
+		error,
+		VmError::DivergentWorkgroupBarrier {
+			lane: 1,
+			found_instruction: Some(_),
+			..
+		}
+	));
+}
+
+#[test]
+fn task_workgroup_reuse_clears_shared_storage() {
+	let executable = compile_test_program(
+		r#"
+		shared_count: workgroup<atomicu32>;
+
+		main: fn () -> void {
+			if (thread_position() == 0) {
+				atomic_store(shared_count, 1);
+			}
+			set_task_mesh_output_count(atomic_load(shared_count));
+		}
+		"#,
+		None,
+	);
+	let mut outputs = TaskOutputs::new();
+	let mut workgroup = WorkgroupState::new();
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_outputs(&mut outputs);
+		descriptors.bind_workgroup_state(&mut workgroup);
+		executable
+			.run_task_workgroup(&mut descriptors, &[ExecutionConfig::new(32).with_thread_position(0)])
+			.expect("Initial workgroup execution failed. The most likely cause is broken workgroup storage initialization.");
+	}
+	assert_eq!(outputs.mesh_output_count(), Some(1));
+
+	let error = {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_outputs(&mut outputs);
+		descriptors.bind_workgroup_state(&mut workgroup);
+		executable
+			.run_task_workgroup(
+				&mut descriptors,
+				&[ExecutionConfig::new(32).with_thread_position(1)],
+			)
+			.expect_err(
+				"Stale workgroup storage was visible. The most likely cause is that scheduler reuse did not clear shared values.",
+			)
+	};
+	assert_eq!(
+		error,
+		VmError::UninitializedWorkgroupValue {
+			name: "shared_count".to_string()
+		}
+	);
+}
+
+#[test]
+fn single_invocation_execution_preserves_barriers_in_called_functions() {
+	let executable = compile_test_program(
+		r#"
+		wait_for_peers: fn () -> void {
+			workgroup_barrier();
+		}
+
+		main: fn () -> void {
+			wait_for_peers();
+		}
+		"#,
+		None,
+	);
+	let mut descriptors = DescriptorBindings::new();
+	executable.run_main(&mut descriptors).expect(
+		"Single-invocation helper barrier failed. The most likely cause is that ordinary VM execution attempted task rendezvous.",
+	);
+}
+
+#[test]
+fn task_payload_writes_respect_the_declared_count() {
+	let executable = compile_test_program(
+		r#"
+		visible_meshlets: task_payload<u32, 4>;
+
+		main: fn () -> void {
+			visible_meshlets[4] = 9;
+		}
+		"#,
+		None,
+	);
+	let mut outputs = TaskOutputs::new();
+	let error = {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_task_outputs(&mut outputs);
+		executable
+			.run_main(&mut descriptors)
+			.expect_err(
+				"Out-of-bounds task payload write was accepted. The most likely cause is missing payload declaration bounds checking.",
+			)
+	};
+
+	assert_eq!(
+		error,
+		VmError::TaskPayloadOutputIndexOutOfBounds {
+			name: "visible_meshlets".to_string(),
+			index: 4,
+			count: 4,
+		}
 	);
 }
 

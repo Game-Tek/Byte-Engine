@@ -325,6 +325,18 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
+				if let Some(target) = resolve_task_payload_access(&left)? {
+					let index = self.compile_value_expression(&target.index_expression, &ValueType::U32, descriptor_layouts)?;
+					let value = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
+					self.instructions.push(Instruction::StoreTaskPayload {
+						name: target.name,
+						index,
+						count: target.count,
+						value_type: target.value_type,
+						value,
+					});
+					return Ok(());
+				}
 
 				let target = if accessor_references_output(&left) {
 					self.resolve_output_array_access(&left, descriptor_layouts)?
@@ -830,11 +842,42 @@ impl<'a> Compiler<'a> {
 			}
 			"atomic_load" => {
 				require_argument_count(arguments, 1)?;
+				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
+					if target.value_type != ValueType::U32 {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::U32.name().to_string(),
+							found: target.value_type.name().to_string(),
+						});
+					}
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::LoadWorkgroup {
+						register,
+						name: target.name,
+						value_type: target.value_type,
+					});
+					return Ok(register);
+				}
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
 				self.compile_resolved_buffer_load(target, descriptor_layouts)
 			}
 			"atomic_add" => {
 				require_argument_count(arguments, 2)?;
+				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
+					if target.value_type != ValueType::U32 {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::U32.name().to_string(),
+							found: target.value_type.name().to_string(),
+						});
+					}
+					let value = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::AtomicAddWorkgroup {
+						register,
+						name: target.name,
+						value,
+					});
+					return Ok(register);
+				}
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
 				if target.value_type != ValueType::U32 {
 					return Err(VmError::TypeMismatch {
@@ -1112,6 +1155,12 @@ impl<'a> Compiler<'a> {
 
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::ThreadIdx { register });
+				Ok(register)
+			}
+			"thread_position" => {
+				require_argument_count(arguments, 0)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::ThreadPosition { register });
 				Ok(register)
 			}
 			"thread_id" => {
@@ -1890,6 +1939,18 @@ impl<'a> Compiler<'a> {
 		drop(intrinsic_ref);
 
 		match name.as_str() {
+			"set_task_mesh_output_count" => {
+				require_argument_count(arguments, 1)?;
+				let count = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				self.instructions.push(Instruction::SetTaskMeshOutputCount { count });
+				Ok(())
+			}
+			"workgroup_barrier" => {
+				require_argument_count(arguments, 0)?;
+				// Preserve the barrier as an instruction so task workgroup execution can rendezvous every lane.
+				self.instructions.push(Instruction::WorkgroupBarrier);
+				Ok(())
+			}
 			"set_mesh_output_counts" => {
 				require_argument_count(arguments, 2)?;
 				let vertex_count = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
@@ -1932,6 +1993,21 @@ impl<'a> Compiler<'a> {
 			}
 			"atomic_store" => {
 				require_argument_count(arguments, 2)?;
+				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
+					if target.value_type != ValueType::U32 {
+						return Err(VmError::TypeMismatch {
+							expected: ValueType::U32.name().to_string(),
+							found: target.value_type.name().to_string(),
+						});
+					}
+					let value = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+					self.instructions.push(Instruction::StoreWorkgroup {
+						name: target.name,
+						value_type: target.value_type,
+						value,
+					});
+					return Ok(());
+				}
 				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
 				if target.value_type != ValueType::U32 {
 					return Err(VmError::TypeMismatch {
@@ -1980,6 +2056,44 @@ struct ResolvedTaskPayloadAccess {
 	index_expression: NodeReference,
 	count: usize,
 	value_type: ValueType,
+}
+
+/// The `ResolvedWorkgroupAccess` struct carries one typed workgroup value into instruction lowering.
+struct ResolvedWorkgroupAccess {
+	name: String,
+	value_type: ValueType,
+}
+
+/// Resolves a workgroup reference without confusing it with descriptor-backed memory.
+fn resolve_workgroup_access(expression: &NodeReference) -> Result<Option<ResolvedWorkgroupAccess>, VmError> {
+	let Some(workgroup) = extract_workgroup_reference(expression) else {
+		return Ok(None);
+	};
+	let workgroup = workgroup.borrow();
+	let Nodes::Workgroup { name, format } = workgroup.node() else {
+		unreachable!(
+			"Invalid resolved workgroup reference. The most likely cause is that workgroup reference extraction returned a different node kind."
+		)
+	};
+	Ok(Some(ResolvedWorkgroupAccess {
+		name: name.clone(),
+		value_type: resolve_value_type(format)?,
+	}))
+}
+
+/// Peels expression wrappers around a directly referenced workgroup declaration.
+fn extract_workgroup_reference(expression: &NodeReference) -> Option<NodeReference> {
+	let borrowed = expression.borrow();
+	match borrowed.node() {
+		Nodes::Workgroup { .. } => Some(expression.clone()),
+		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+			extract_workgroup_reference(&elements[0])
+		}
+		Nodes::Expression(Expressions::Member { source, .. }) if matches!(source.borrow().node(), Nodes::Workgroup { .. }) => {
+			Some(source.clone())
+		}
+		_ => None,
+	}
 }
 
 fn resolve_task_payload_access(expression: &NodeReference) -> Result<Option<ResolvedTaskPayloadAccess>, VmError> {
@@ -2564,6 +2678,11 @@ fn aggregate_member(value_type: &ValueType, member_name: &str) -> Result<(usize,
 }
 
 fn array_element_type(value_type: &ValueType) -> Result<(ValueType, usize), VmError> {
+	match value_type {
+		ValueType::Mat4F => return Ok((ValueType::Vec4F, 4)),
+		ValueType::Mat4x3F => return Ok((ValueType::Vec3F, 4)),
+		_ => {}
+	}
 	let ValueType::Struct { fields, .. } = value_type else {
 		return Err(VmError::UnsupportedExpression {
 			message: format!("`{}` cannot be indexed as an aggregate value", value_type.name()),

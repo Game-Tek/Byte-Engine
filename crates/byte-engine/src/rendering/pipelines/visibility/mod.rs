@@ -166,7 +166,8 @@ pub(super) struct ShaderMeshletData {
 #[cfg(test)]
 mod tests {
 	use besl::vm::{
-		output_slot, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Texture, Value,
+		input_slot, output_slot, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot,
+		TaskOutputs, Texture, Value, WorkgroupState,
 	};
 	use resource_management::shader::besl::evaluation::ProgramEvaluation;
 
@@ -187,6 +188,7 @@ mod tests {
 	const MESHLETS_SLOT: ResourceSlot = ResourceSlot::new(8);
 	const FIXTURE_INSTANCE_INDEX: usize = 3;
 	const FIXTURE_MESHLET_INDEX: usize = 5;
+	const TASK_WORKGROUP_SIZE: u32 = 32;
 	const MESH_TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
 
 	/// Parses the checked-in BESL source that production baking consumes.
@@ -218,6 +220,27 @@ mod tests {
 		asset_program(include_str!(concat!(
 			env!("CARGO_MANIFEST_DIR"),
 			"/assets/rendering/visibility/pixel-mapping.besl"
+		)))
+	}
+
+	fn visibility_fragment_program() -> besl::NodeReference {
+		asset_program(include_str!(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/assets/rendering/visibility/visibility-fragment.besl"
+		)))
+	}
+
+	fn visibility_task_program() -> besl::NodeReference {
+		asset_program(include_str!(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/assets/rendering/visibility/visibility-task.besl"
+		)))
+	}
+
+	fn shadow_task_program() -> besl::NodeReference {
+		asset_program(include_str!(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/assets/rendering/visibility/shadow-task.besl"
 		)))
 	}
 
@@ -271,9 +294,251 @@ mod tests {
 		);
 	}
 
+	/// Verifies the visibility fragment preserves the mesh-stage identifiers consumed by later compute passes.
+	#[test]
+	fn visibility_fragment_main_forwards_primitive_and_instance_identifiers() {
+		let program = crate::rendering::shader_vm_test::compile(visibility_fragment_program());
+		let mut instance_input = besl::vm::Buffer::new(
+			program
+				.input_layout(0)
+				.expect("Missing visibility instance input. The most likely cause is a drifted fragment interface.")
+				.clone(),
+		);
+		let mut primitive_input = besl::vm::Buffer::new(
+			program
+				.input_layout(1)
+				.expect("Missing visibility primitive input. The most likely cause is a drifted fragment interface.")
+				.clone(),
+		);
+		let mut primitive_output = besl::vm::Buffer::new(
+			program
+				.output_layout(0)
+				.expect("Missing visibility primitive output. The most likely cause is a drifted fragment interface.")
+				.clone(),
+		);
+		let mut instance_output = besl::vm::Buffer::new(
+			program
+				.output_layout(1)
+				.expect("Missing visibility instance output. The most likely cause is a drifted fragment interface.")
+				.clone(),
+		);
+		instance_input
+			.write("in_instance_index", Value::U32(37))
+			.expect("Failed to initialize the visibility instance input. The most likely cause is a drifted input type.");
+		primitive_input
+			.write("in_primitive_index", Value::U32(0x0102_03ab))
+			.expect("Failed to initialize the visibility primitive input. The most likely cause is a drifted input type.");
+
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(input_slot(0), &mut instance_input);
+			descriptors.bind_buffer(input_slot(1), &mut primitive_input);
+			descriptors.bind_buffer(output_slot(0), &mut primitive_output);
+			descriptors.bind_buffer(output_slot(1), &mut instance_output);
+			program.run_main(&mut descriptors).expect(
+				"Failed to execute the visibility fragment shader. The most likely cause is missing interface support in the BESL VM.",
+			);
+		}
+
+		assert_eq!(
+			primitive_output
+				.read("out_primitive_index")
+				.expect("Failed to read the visibility primitive output. The most likely cause is a drifted output layout."),
+			Value::U32(0x0102_03ab)
+		);
+		assert_eq!(
+			instance_output
+				.read("out_instance_id")
+				.expect("Failed to read the visibility instance output. The most likely cause is a drifted output layout."),
+			Value::U32(37)
+		);
+	}
+
 	/// Returns a column-major identity matrix in the BESL VM representation.
 	fn identity_matrix() -> [f32; 16] {
 		[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+	}
+
+	/// Returns a view-projection matrix that moves identity geometry outside the horizontal clip range.
+	fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
+		let mut matrix = identity_matrix();
+		matrix[12] = translation;
+		matrix
+	}
+
+	/// Executes an exact production task main as one workgroup over consecutive meshlets.
+	fn run_meshlet_task_workgroup(
+		program: &ExecutableProgram,
+		view_projections: &[(usize, [f32; 16])],
+		selected_view_index: Option<u32>,
+		center_radii: &[[f32; 4]],
+		skinned: bool,
+	) -> TaskOutputs {
+		assert!(
+			!center_radii.is_empty(),
+			"Missing task meshlet fixtures. The most likely cause is a test invoking a workgroup without any task lanes."
+		);
+		let meshlet_count = u32::try_from(center_radii.len())
+			.expect("Task meshlet fixture is too large. The most likely cause is an invalid test case.");
+		assert!(
+			meshlet_count <= TASK_WORKGROUP_SIZE,
+			"Task meshlet fixture exceeds one workgroup. The most likely cause is a test supplying more meshlets than the production payload can address."
+		);
+		let mut views = buffer(program, VIEWS_SLOT);
+		for (view_index, view_projection) in view_projections.iter().copied() {
+			views
+				.write_indexed_field("views", view_index, "view_projection", Value::Mat4F(view_projection))
+				.expect("Failed to initialize a task view. The most likely cause is a drifted View layout.");
+			views
+				.write_indexed_field("views", view_index, "inverse_view", Value::Mat4F(identity_matrix()))
+				.expect("Failed to initialize a task inverse view. The most likely cause is a drifted View layout.");
+		}
+
+		let mut meshes = buffer(program, MESH_DATA_SLOT);
+		meshes
+			.write_indexed_field(
+				"meshes",
+				FIXTURE_INSTANCE_INDEX,
+				"model",
+				Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]),
+			)
+			.expect("Failed to initialize a task mesh transform. The most likely cause is a drifted Mesh layout.");
+		for (field, value) in [
+			("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
+			("meshlet_count", meshlet_count),
+			("skinned_base_vertex_index", if skinned { 0 } else { u32::MAX }),
+		] {
+			meshes
+				.write_indexed_field("meshes", FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
+				.expect("Failed to initialize a task mesh field. The most likely cause is a drifted Mesh layout.");
+		}
+
+		let mut meshlets = buffer(program, MESHLETS_SLOT);
+		for (meshlet_offset, center_radius) in center_radii.iter().copied().enumerate() {
+			let meshlet_index = FIXTURE_MESHLET_INDEX + meshlet_offset;
+			meshlets
+				.write_indexed_field("meshlets", meshlet_index, "center_radius", Value::Vec4F(center_radius))
+				.expect("Failed to initialize a task meshlet bound. The most likely cause is a drifted Meshlet layout.");
+			// A cutoff above one disables cone rejection so each fixture isolates frustum and skinning behavior.
+			meshlets
+				.write_indexed_field(
+					"meshlets",
+					meshlet_index,
+					"cone_apex_cutoff",
+					Value::Vec4F([0.0, 0.0, 0.0, 2.0]),
+				)
+				.expect("Failed to disable task cone culling. The most likely cause is a drifted Meshlet layout.");
+		}
+
+		let push_constant_layout = program
+			.push_constant_layout()
+			.expect("Missing task push constants. The most likely cause is that the production task main no longer uses them.")
+			.clone();
+		let mut push_constant = besl::vm::Buffer::new(push_constant_layout);
+		push_constant
+			.write("instance_index", Value::U32(FIXTURE_INSTANCE_INDEX as u32))
+			.expect("Failed to initialize the task instance index. The most likely cause is a drifted push constant layout.");
+		if let Some(view_index) = selected_view_index {
+			push_constant
+				.write("view_index", Value::U32(view_index))
+				.expect("Failed to initialize the task view index. The most likely cause is a drifted push constant layout.");
+		}
+
+		let mut task_outputs = TaskOutputs::new();
+		let mut workgroup_state = WorkgroupState::new();
+		let configs = (0..TASK_WORKGROUP_SIZE)
+			.map(|lane| {
+				ExecutionConfig::new(MESH_TEST_INSTRUCTION_LIMIT)
+					.with_call_depth_limit(128)
+					.with_thread_idx(lane)
+					.with_thread_position(lane)
+			})
+			.collect::<Vec<_>>();
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+			descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
+			descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
+			descriptors.bind_push_constant(&mut push_constant);
+			descriptors.bind_task_outputs(&mut task_outputs);
+			descriptors.bind_workgroup_state(&mut workgroup_state);
+
+			program.run_task_workgroup(&mut descriptors, &configs).expect(
+				"Failed to execute a production task workgroup. The most likely cause is missing task synchronization support or an invalid fixture binding.",
+			);
+		}
+
+		task_outputs
+	}
+
+	/// Executes one lane of an exact production task main with one meshlet.
+	fn run_single_meshlet_task(
+		program: &ExecutableProgram,
+		view_projections: &[(usize, [f32; 16])],
+		selected_view_index: Option<u32>,
+		center_radius: [f32; 4],
+		skinned: bool,
+	) -> (Option<u32>, Option<Value>) {
+		let task_outputs =
+			run_meshlet_task_workgroup(program, view_projections, selected_view_index, &[center_radius], skinned);
+		(
+			task_outputs.mesh_output_count(),
+			task_outputs.payload_value("meshlet_indices", 0).cloned(),
+		)
+	}
+
+	/// Verifies view-zero culling retains an intersecting meshlet and rejects one outside the frustum.
+	#[test]
+	fn visibility_task_main_emits_in_frustum_and_culls_off_frustum_meshlets() {
+		let program = crate::rendering::shader_vm_test::compile(visibility_task_program());
+		let visible = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [0.0, 0.0, 0.5, 0.1], false);
+		assert_eq!(visible, (Some(1), Some(Value::U32(FIXTURE_MESHLET_INDEX as u32))));
+
+		let culled = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [4.0, 0.0, 0.5, 0.1], false);
+		assert_eq!(culled, (Some(0), None));
+	}
+
+	/// Verifies workgroup barriers and atomics compact visible meshlets in lane order before publishing the final count.
+	#[test]
+	fn visibility_task_workgroup_compacts_mixed_meshlets_in_lane_order() {
+		let program = crate::rendering::shader_vm_test::compile(visibility_task_program());
+		let output = run_meshlet_task_workgroup(
+			&program,
+			&[(0, identity_matrix())],
+			None,
+			&[[0.0, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1]],
+			false,
+		);
+
+		assert_eq!(output.mesh_output_count(), Some(2));
+		assert_eq!(
+			output.payload_value("meshlet_indices", 0),
+			Some(&Value::U32(FIXTURE_MESHLET_INDEX as u32))
+		);
+		assert_eq!(
+			output.payload_value("meshlet_indices", 1),
+			Some(&Value::U32(FIXTURE_MESHLET_INDEX as u32 + 2))
+		);
+		assert_eq!(output.payload_value("meshlet_indices", 2), None);
+	}
+
+	/// Verifies deformed geometry reaches the mesh stage even when its static meshlet bound is outside the frustum.
+	#[test]
+	fn visibility_task_main_bypasses_static_culling_for_skinned_meshes() {
+		let program = crate::rendering::shader_vm_test::compile(visibility_task_program());
+		let output = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [4.0, 0.0, 0.5, 0.1], true);
+		assert_eq!(output, (Some(1), Some(Value::U32(FIXTURE_MESHLET_INDEX as u32))));
+	}
+
+	/// Verifies shadow culling selects the cascade view named by the second push constant.
+	#[test]
+	fn shadow_task_main_uses_selected_view_index() {
+		let program = crate::rendering::shader_vm_test::compile(shadow_task_program());
+		let mut view_projections: [(usize, [f32; 16]); 8] =
+			std::array::from_fn(|view_index| (view_index, horizontally_translated_matrix(4.0)));
+		view_projections[3].1 = identity_matrix();
+		let output = run_single_meshlet_task(&program, &view_projections, Some(3), [0.0, 0.0, 0.5, 0.1], false);
+		assert_eq!(output, (Some(1), Some(Value::U32(FIXTURE_MESHLET_INDEX as u32))));
 	}
 
 	/// Builds the exact production visibility mesh main for VM execution.
@@ -376,8 +641,9 @@ mod tests {
 	/// Executes one production mesh main and verifies its complete one-triangle output contract.
 	fn assert_triangle_mesh_program(
 		program: besl::NodeReference,
-		has_view_index: bool,
+		selected_view: Option<(usize, [f32; 16])>,
 		skinned_positions: Option<[[f32; 4]; 3]>,
+		expected_clip_positions: [[f32; 4]; 3],
 	) {
 		let program = crate::rendering::shader_vm_test::compile(program);
 		let (
@@ -417,9 +683,12 @@ mod tests {
 		push_constant
 			.write("instance_index", Value::U32(FIXTURE_INSTANCE_INDEX as u32))
 			.expect("Failed to initialize the mesh instance index. The most likely cause is a drifted push constant layout.");
-		if has_view_index {
+		if let Some((view_index, view_projection)) = selected_view {
+			views
+				.write_indexed_field("views", view_index, "view_projection", Value::Mat4F(view_projection))
+				.expect("Failed to initialize the selected mesh view. The most likely cause is a drifted View layout.");
 			push_constant
-				.write("view_index", Value::U32(0))
+				.write("view_index", Value::U32(view_index as u32))
 				.expect("Failed to initialize the shadow view index. The most likely cause is a drifted push constant layout.");
 		}
 
@@ -455,9 +724,7 @@ mod tests {
 
 		assert_eq!(mesh_outputs.vertex_count(), 3);
 		assert_eq!(mesh_outputs.primitive_count(), 1);
-		let expected_positions =
-			skinned_positions.unwrap_or([[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]]);
-		for (index, expected) in expected_positions.into_iter().enumerate() {
+		for (index, expected) in expected_clip_positions.into_iter().enumerate() {
 			let actual = mesh_outputs
 				.vertex_position(index)
 				.expect("Missing mesh vertex output. The most likely cause is that a mesh invocation did not write its lane.");
@@ -477,23 +744,30 @@ mod tests {
 	/// Verifies visibility mesh output geometry and metadata through the BESL VM.
 	#[test]
 	fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
-		assert_triangle_mesh_program(visibility_mesh_program(), false, None);
+		assert_triangle_mesh_program(
+			visibility_mesh_program(),
+			None,
+			None,
+			[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+		);
 	}
 
 	/// Verifies that posed instances source raster positions from their frame-local deformation range.
 	#[test]
 	fn visibility_mesh_main_reads_skinned_positions() {
-		assert_triangle_mesh_program(
-			visibility_mesh_program(),
-			false,
-			Some([[2.0, 3.0, 4.0, 1.0], [5.0, 6.0, 7.0, 1.0], [8.0, 9.0, 10.0, 1.0]]),
-		);
+		let skinned_positions = [[2.0, 3.0, 4.0, 1.0], [5.0, 6.0, 7.0, 1.0], [8.0, 9.0, 10.0, 1.0]];
+		assert_triangle_mesh_program(visibility_mesh_program(), None, Some(skinned_positions), skinned_positions);
 	}
 
-	/// Verifies shadow mesh output geometry and metadata through the BESL VM.
+	/// Verifies shadow mesh output geometry uses the selected cascade view rather than view zero.
 	#[test]
-	fn shadow_mesh_main_emits_identity_triangle_and_metadata() {
-		assert_triangle_mesh_program(shadow_mesh_program(), true, None);
+	fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
+		assert_triangle_mesh_program(
+			shadow_mesh_program(),
+			Some((3, horizontally_translated_matrix(2.0))),
+			None,
+			[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
+		);
 	}
 
 	/// Creates the minimum camera data shared by the GTAO shader fixtures.

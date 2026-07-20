@@ -45,10 +45,20 @@ pub enum VmError {
 	},
 	MissingPushConstant,
 	MissingMeshOutputs,
+	MissingTaskOutputs,
+	MissingWorkgroupState,
+	UninitializedWorkgroupValue {
+		name: String,
+	},
 	MissingTaskPayload {
 		name: String,
 	},
 	TaskPayloadIndexOutOfBounds {
+		name: String,
+		index: usize,
+		count: usize,
+	},
+	TaskPayloadOutputIndexOutOfBounds {
 		name: String,
 		index: usize,
 		count: usize,
@@ -62,6 +72,15 @@ pub enum VmError {
 		kind: &'static str,
 		requested: u32,
 		limit: u32,
+	},
+	TaskMeshOutputCountLimitExceeded {
+		requested: u32,
+		limit: u32,
+	},
+	DivergentWorkgroupBarrier {
+		lane: usize,
+		expected_instruction: usize,
+		found_instruction: Option<usize>,
 	},
 	MissingSpecialization {
 		name: String,
@@ -206,6 +225,18 @@ impl std::fmt::Display for VmError {
 				f,
 				"Missing mesh output capture. The most likely cause is that the BESL mesh shader ran without binding `MeshOutputs`."
 			),
+			VmError::MissingTaskOutputs => write!(
+				f,
+				"Missing task output capture. The most likely cause is that the BESL task shader ran without binding `TaskOutputs`."
+			),
+			VmError::MissingWorkgroupState => write!(
+				f,
+				"Missing workgroup state. The most likely cause is that a BESL task shader accessed workgroup storage without binding `WorkgroupState`."
+			),
+			VmError::UninitializedWorkgroupValue { name } => write!(
+				f,
+				"Uninitialized workgroup value `{name}`. The most likely cause is that the BESL shader loaded workgroup storage before one invocation initialized it."
+			),
 			VmError::MissingTaskPayload { name } => write!(
 				f,
 				"Missing task payload `{name}`. The most likely cause is that the BESL mesh shader read a task-payload array that the host did not bind before execution."
@@ -213,6 +244,10 @@ impl std::fmt::Display for VmError {
 			VmError::TaskPayloadIndexOutOfBounds { name, index, count } => write!(
 				f,
 				"Task payload `{name}` index {index} exceeds {count} bound elements. The most likely cause is that the host supplied fewer task-payload values than the mesh shader reads."
+			),
+			VmError::TaskPayloadOutputIndexOutOfBounds { name, index, count } => write!(
+				f,
+				"Task payload output `{name}` index {index} exceeds {count} declared elements. The most likely cause is that the task shader wrote beyond its payload declaration."
 			),
 			VmError::MeshOutputIndexOutOfBounds { kind, index, count } => write!(
 				f,
@@ -226,6 +261,24 @@ impl std::fmt::Display for VmError {
 				f,
 				"Mesh {kind} output count {requested} exceeds the configured limit of {limit}. The most likely cause is that the shader requested more mesh output storage than the host allows."
 			),
+			VmError::TaskMeshOutputCountLimitExceeded { requested, limit } => write!(
+				f,
+				"Task mesh output count {requested} exceeds the configured limit of {limit}. The most likely cause is that the shader requested more mesh workgroups than the host allows."
+			),
+			VmError::DivergentWorkgroupBarrier {
+				lane,
+				expected_instruction,
+				found_instruction,
+			} => match found_instruction {
+				Some(found_instruction) => write!(
+					f,
+					"Divergent workgroup barrier in lane {lane}: expected instruction {expected_instruction} but found {found_instruction}. The most likely cause is that task invocations reached different barriers in the same synchronization phase."
+				),
+				None => write!(
+					f,
+					"Divergent workgroup barrier in lane {lane}: expected instruction {expected_instruction} but the lane completed. The most likely cause is that task control flow skipped a barrier reached by peer invocations."
+				),
+			},
 			VmError::MissingSpecialization { name } => write!(
 				f,
 				"Missing specialization `{}`. The most likely cause is that the host did not provide a value for a specialization used by the BESL program.",

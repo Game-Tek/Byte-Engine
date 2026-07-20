@@ -89,6 +89,9 @@ pub(super) enum Instruction {
 	ThreadIdx {
 		register: usize,
 	},
+	ThreadPosition {
+		register: usize,
+	},
 	ThreadId {
 		register: usize,
 	},
@@ -101,6 +104,32 @@ pub(super) enum Instruction {
 		index: usize,
 		count: usize,
 		value_type: ValueType,
+	},
+	StoreTaskPayload {
+		name: String,
+		index: usize,
+		count: usize,
+		value_type: ValueType,
+		value: usize,
+	},
+	LoadWorkgroup {
+		register: usize,
+		name: String,
+		value_type: ValueType,
+	},
+	StoreWorkgroup {
+		name: String,
+		value_type: ValueType,
+		value: usize,
+	},
+	AtomicAddWorkgroup {
+		register: usize,
+		name: String,
+		value: usize,
+	},
+	WorkgroupBarrier,
+	SetTaskMeshOutputCount {
+		count: usize,
 	},
 	SetMeshOutputCounts {
 		vertex_count: usize,

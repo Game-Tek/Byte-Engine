@@ -15,7 +15,7 @@ use crate::shader::{
 	besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
 };
 use crate::{
-	asset,
+	asset, online_docs_url,
 	r#async::spawn_cpu_task,
 	resource,
 	resources::material::{
@@ -26,6 +26,9 @@ use crate::{
 	types::{AlphaMode, ShaderTypes},
 	ProcessedAsset, ReferenceModel,
 };
+
+const BEMA_DOCS_PATH: &str = "develop/design/resource-management/bema";
+const BESL_DOCS_PATH: &str = "reference/besl";
 
 /// The `ProgramGenerator` trait provides renderer-specific shader adaptation before platform compilation.
 pub trait ProgramGenerator: Send + Sync {
@@ -276,11 +279,17 @@ fn compile_shader(
 		if let Ok(e) = besl::parse(shader_code) {
 			e
 		} else {
-			log::error!("Error compiling shader");
+			log::error!(
+				"Failed to parse BESL material shader. The most likely cause is invalid BESL syntax. See {}.",
+				online_docs_url(BESL_DOCS_PATH)
+			);
 			return Err(());
 		}
 	} else {
-		log::error!("Unknown shader format");
+		log::error!(
+			"Unknown material shader format '{format}'. The most likely cause is an unsupported format in the .bema declaration. See {}.",
+			online_docs_url(BEMA_DOCS_PATH)
+		);
 		return Err(());
 	};
 
@@ -301,7 +310,10 @@ pub(crate) fn compile_shader_program(
 	let root_node = match besl::lex(root) {
 		Ok(e) => e,
 		Err(e) => {
-			log::error!("Error compiling shader '{name}' for stage '{stage}': {e:#?}");
+			log::error!(
+				"Failed to compile shader '{name}' for stage '{stage}': {e:#?}. See {}.",
+				online_docs_url(BESL_DOCS_PATH)
+			);
 			return Err(());
 		}
 	};
@@ -309,7 +321,10 @@ pub(crate) fn compile_shader_program(
 	let main_node = match root_node.get_main() {
 		Some(main_node) => main_node,
 		None => {
-			log::error!("Error compiling shader '{name}' for stage '{stage}': the generated BESL program has no main function");
+			log::error!(
+				"Failed to compile shader '{name}' for stage '{stage}'. The generated BESL program has no main function. See {}.",
+				online_docs_url(BESL_DOCS_PATH)
+			);
 			return Err(());
 		}
 	};
@@ -327,7 +342,10 @@ pub(crate) fn compile_shader_program(
 	let shader_program = PlatformShaderGenerator::new()
 		.generate(&settings, &main_node)
 		.map_err(|error| {
-			log::error!("Error compiling shader '{name}' for stage '{stage}': {error}");
+			log::error!(
+				"Failed to compile shader '{name}' for stage '{stage}': {error}. See {}.",
+				online_docs_url(BESL_DOCS_PATH)
+			);
 		})?;
 
 	let stage = match stage {
@@ -353,7 +371,10 @@ pub(crate) fn compile_shader_program(
 	let (artifact, payload) =
 		finalize_platform_shader_artifact(language, stage, name, entry_point, shader_program.into_binary()).map_err(
 			|error| {
-				log::error!("Error finalizing shader artifact '{name}' for stage '{stage:?}': {error}");
+				log::error!(
+					"Failed to finalize shader artifact '{name}' for stage '{stage:?}': {error}. See {}.",
+					online_docs_url(BESL_DOCS_PATH)
+				);
 			},
 		)?;
 

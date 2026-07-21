@@ -9,10 +9,13 @@ use super::{
 };
 use crate::{
 	asset::{self, asset_handler::LoadErrors, ResourceId},
+	online_docs_url,
 	r#async::BoxedFuture,
 	resource::{self, StorageBackend as ResourceStorageBackend},
 	Model, ProcessedAsset, ReferenceModel,
 };
+
+const ASSETS_DOCS_PATH: &str = "develop/design/resource-management/assets";
 
 trait AbstractAssetHandler: Send + Sync {
 	fn can_handle(&self, r#type: &str) -> bool;
@@ -128,7 +131,11 @@ impl AssetManager {
 		{
 			Some(handler) => handler,
 			None => {
-				log::warn!("No asset handler found for asset: {:#?}", id);
+				log::warn!(
+					"No asset handler found for asset: {:#?}. The most likely cause is an unsupported file extension or missing handler registration. See {}.",
+					id,
+					online_docs_url(ASSETS_DOCS_PATH)
+				);
 				return Err(LoadMessages::NoAssetHandler);
 			}
 		};
@@ -163,7 +170,11 @@ impl AssetManager {
 				});
 			}
 			Err(error) => {
-				log::error!("Failed to bake asset: {:#?}", error);
+				log::error!(
+					"Failed to bake asset: {:#?}. The most likely cause is invalid or unsupported source data. See {}.",
+					error,
+					online_docs_url(ASSETS_DOCS_PATH)
+				);
 				return Err(LoadMessages::FailedToBake {
 					asset: id.to_string(),
 					error,

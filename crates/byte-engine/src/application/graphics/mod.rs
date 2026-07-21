@@ -259,7 +259,8 @@ impl GraphicsApplication {
 						}
 					} else if !new_devices.is_empty() {
 						log::warn!(
-							"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called."
+							"Detected HID gamepad before the Gamepad device class was registered. The most likely cause is that setup_default_input was not called. See {}.",
+							crate::online_docs_url("develop/design/input-handling")
 						);
 					}
 

@@ -139,7 +139,8 @@ impl Renderer {
 			Ok(instance) => instance,
 			Err(error) if settings.validation => {
 				log::warn!(
-					"Renderer validation was requested but could not be enabled: {error} Falling back to renderer validation disabled."
+					"Renderer validation was requested but could not be enabled: {error} Falling back to renderer validation disabled. The most likely cause is missing or unsupported platform graphics tooling. See {}.",
+					crate::online_docs_url("use/setup/environment")
 				);
 				features = features
 					.validation(false)
@@ -701,7 +702,10 @@ impl Renderer {
 				}
 			}
 			Err(msg) => {
-				log::error!("Failed to create GHI window: {}", msg);
+				log::error!(
+					"Failed to create GHI window: {msg}. The most likely cause is missing platform graphics support or an incomplete environment setup. See {}.",
+					crate::online_docs_url("use/setup/environment")
+				);
 			}
 		}
 	}

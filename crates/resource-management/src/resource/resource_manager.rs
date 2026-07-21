@@ -4,20 +4,15 @@ use super::{
 };
 #[cfg(debug_assertions)]
 use crate::asset::asset_manager::AssetManager;
-use crate::{asset::ResourceId, Model, Reference, ReferenceModel, Resource, SerializableResource, Solver};
+use crate::{asset::ResourceId, online_docs_url, Model, Reference, ReferenceModel, Resource, SerializableResource, Solver};
 
-const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
-	Some(url) => url,
-	None => "https://byte-engine.0x44491229.dev/docs",
-};
 const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/design/resource-management/baking-app-resources";
 
 /// Adds shared recovery guidance to an asset lookup error.
 fn asset_lookup_error(message: &str) -> String {
 	format!(
-		"{message} If the 'byte-engine' path is missing from the assets directory, its symlink was probably not configured. See {}/{}.",
-		ONLINE_DOCS_BASE_URL.trim_end_matches('/'),
-		BAKING_APP_RESOURCES_DOCS_PATH
+		"{message} If the 'byte-engine' path is missing from the assets directory, its symlink was probably not configured. See {}.",
+		online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
 	)
 }
 
@@ -177,9 +172,7 @@ mod debug_tests {
 		let error = resource_manager.request::<Shader>("missing.asset").unwrap_err();
 
 		assert!(error.contains("If the 'byte-engine' path is missing from the assets directory"));
-		assert!(
-			error.contains("https://byte-engine.0x44491229.dev/docs/develop/design/resource-management/baking-app-resources")
-		);
+		assert!(error.contains(&super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)));
 	}
 }
 

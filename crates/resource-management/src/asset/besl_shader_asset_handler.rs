@@ -15,6 +15,7 @@ use super::{
 	BEADType, ResourceId,
 };
 use crate::{
+	online_docs_url,
 	r#async::spawn_cpu_task,
 	resources::material::{Binding, Shader, ShaderInterface},
 	shader::{
@@ -28,6 +29,8 @@ use crate::{
 	types::ShaderTypes,
 	ProcessedAsset,
 };
+
+const BESL_DOCS_PATH: &str = "reference/besl";
 
 /// The `BESLShaderAssetHandler` struct exists to bake standalone BESL programs into runtime shader resources.
 pub struct BESLShaderAssetHandler {
@@ -79,8 +82,9 @@ impl AssetHandler for BESLShaderAssetHandler {
 			.to_string();
 		let settings = parse_shader_settings(spec.as_ref()).map_err(|error| {
 			log::error!(
-				"Failed to read standalone BESL shader settings for '{}': {error}",
-				id.as_ref()
+				"Failed to read standalone BESL shader settings for '{}': {error}. See {}.",
+				id.as_ref(),
+				online_docs_url(BESL_DOCS_PATH)
 			);
 			LoadErrors::FailedToProcess
 		})?;
@@ -95,7 +99,11 @@ impl AssetHandler for BESLShaderAssetHandler {
 				.await
 				.map_err(|_| LoadErrors::FailedToProcess)?
 				.map_err(|error| {
-					log::error!("Failed to compile standalone BESL shader '{}': {error}", id.as_ref());
+					log::error!(
+						"Failed to compile standalone BESL shader '{}': {error}. See {}.",
+						id.as_ref(),
+						online_docs_url(BESL_DOCS_PATH)
+					);
 					LoadErrors::FailedToProcess
 				})?;
 

@@ -34,6 +34,20 @@ use std::{alloc::Allocator, any::Any};
 
 use asset::ResourceId;
 
+pub(crate) const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
+	Some(url) => url,
+	None => "https://byte-engine.0x44491229.dev/docs",
+};
+
+/// Builds a link to one online documentation page.
+pub(crate) fn online_docs_url(path: &str) -> String {
+	format!(
+		"{}/{}",
+		ONLINE_DOCS_BASE_URL.trim_end_matches('/'),
+		path.trim_start_matches('/')
+	)
+}
+
 pub mod asset;
 pub mod resource;
 

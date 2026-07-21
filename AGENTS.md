@@ -20,6 +20,8 @@ If a function is longer than a few lines, write a short description of what the 
 
 When writing errors, first write a succinct error message and then a sentence with the most likely cause of the error.
 
+When an error or warning has a documented recovery workflow, include a direct link to the relevant online documentation page. Do not link to a generic documentation landing page when a focused page exists.
+
 # API Design
 
 - Prefer composition over inheritance. Use traits to define shared behavior and structs to encapsulate data.

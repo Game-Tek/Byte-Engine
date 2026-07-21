@@ -39,6 +39,18 @@ Handlers store the requested resource through their `BakeContext` after all gene
 The context keeps source resolution, recursive baking, allocator-aware resource writes, and storage errors consistent across formats.
 Each stored resource contains typed metadata plus the binary payload that consumers will later upload, stream, decode, or play.
 
+## JSON5 asset files
+
+Byte Engine expects JSON5 wherever an asset format or sidecar uses JSON. Write
+comments and trailing commas in `.bead`, `.bema`, and JSON glTF asset files.
+JSON5 also supports unquoted object keys, single-quoted strings, and other
+authoring conveniences.
+
+Use ordinary JSON when you need compatibility with a tool that does not support
+JSON5. Otherwise, use comments to explain non-obvious asset settings and keep
+trailing commas so later edits produce smaller diffs. Read the
+[JSON5 specification](https://spec.json5.org/) for the complete syntax.
+
 ## Trace asset baking
 
 Use `BakeContext::info`, `BakeContext::warn`, or `BakeContext::error` when a handler needs to explain a bake decision or problem.

@@ -122,13 +122,13 @@ impl AssetHandler for FBXAssetHandler {
 		}
 
 		let scene = load_fbx_scene(&data, base.as_ref()).map_err(|error| {
-			log::error!("Failed to import FBX asset '{}': {error}", url.as_ref());
+			context.error(format_args!("Failed to import FBX asset '{}': {error}", url.as_ref()));
 			LoadErrors::FailedToProcess
 		})?;
 
 		if let Some(fragment) = url.get_fragment() {
 			let imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
-				log::error!("Failed to import FBX skeleton '{}': {error}", url.as_ref());
+				context.error(format_args!("Failed to import FBX skeleton '{}': {error}", url.as_ref()));
 				LoadErrors::FailedToProcess
 			})?;
 			if fragment.as_ref() == SKELETON_FRAGMENT {
@@ -139,23 +139,26 @@ impl AssetHandler for FBXAssetHandler {
 			let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, imported_skeleton.model, &[])?;
 			let animation = import_fbx_animation(&scene, fragment.as_ref(), skeleton, &imported_skeleton.source_to_skeleton)
 				.map_err(|error| {
-					log::error!("Failed to import FBX animation '{}': {error}", url.as_ref());
+					context.error(format_args!("Failed to import FBX animation '{}': {error}", url.as_ref()));
 					LoadErrors::FailedToProcess
 				})?;
 			return context.store_primary(ProcessedAsset::new(url, animation), &[]);
 		}
 
 		let default_resource = select_unfragmented_fbx_resource(&scene, spec.as_ref()).map_err(|error| {
-			log::error!(
+			context.error(format_args!(
 				"Failed to select the default FBX resource '{}': {error}. The most likely cause is an ambiguous container without an explicit fragment or BEAD override.",
 				url.as_ref()
-			);
+			));
 			LoadErrors::FailedToProcess
 		})?;
 
 		if default_resource == ContainerDefaultResource::Animation {
 			let imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
-				log::error!("Failed to import FBX animation skeleton '{}': {error}", url.as_ref());
+				context.error(format_args!(
+					"Failed to import FBX animation skeleton '{}': {error}",
+					url.as_ref()
+				));
 				LoadErrors::FailedToProcess
 			})?;
 
@@ -169,7 +172,10 @@ impl AssetHandler for FBXAssetHandler {
 				&imported_skeleton.source_to_skeleton,
 			)
 			.map_err(|error| {
-				log::error!("Failed to import default FBX animation '{}': {error}", url.as_ref());
+				context.error(format_args!(
+					"Failed to import default FBX animation '{}': {error}",
+					url.as_ref()
+				));
 				LoadErrors::FailedToProcess
 			})?;
 
@@ -181,7 +187,7 @@ impl AssetHandler for FBXAssetHandler {
 		.then(|| import_fbx_skeleton(&scene))
 		.transpose()
 		.map_err(|error| {
-			log::error!("Failed to import FBX skeleton '{}': {error}", url.as_ref());
+			context.error(format_args!("Failed to import FBX skeleton '{}': {error}", url.as_ref()));
 			LoadErrors::FailedToProcess
 		})?;
 		let (skeleton, source_to_skeleton) = if let Some(imported) = imported_skeleton {
@@ -195,18 +201,28 @@ impl AssetHandler for FBXAssetHandler {
 		};
 
 		let materials = resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, self.generator.clone()).await?;
-		let source = import_fbx_meshes(&scene, &materials, skeleton, &source_to_skeleton, allocator).map_err(|error| {
-			log::error!("Failed to import FBX mesh '{}': {error}", url.as_ref());
+		let mut culled_polygons = FbxCulledPolygonCounts::default();
+		let source = import_fbx_meshes(
+			&scene,
+			&materials,
+			skeleton,
+			&source_to_skeleton,
+			allocator,
+			&mut culled_polygons,
+		);
+		culled_polygons.trace(context);
+		let source = source.map_err(|error| {
+			context.error(format_args!("Failed to import FBX mesh '{}': {error}", url.as_ref()));
 			LoadErrors::FailedToProcess
 		})?;
 		let mesh = MeshProcessor::new()
 			.with_triangle_front_face_winding(self.triangle_front_face_winding)
 			.process_owned(source)
 			.map_err(|error| {
-				log::error!(
+				context.error(format_args!(
 					"Failed to process FBX mesh '{}'. The most likely cause is unsupported or malformed mesh data: {error}",
 					url.as_ref()
-				);
+				));
 				LoadErrors::FailedToProcess
 			})?;
 
@@ -564,7 +580,7 @@ async fn generate_fbx_material(
 	generator: Option<Arc<dyn ProgramGenerator>>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let generator = generator.ok_or_else(|| {
-		log::error!(
+		context.error(
 			"FBX material generation is unavailable. The most likely cause is that the FBX asset handler has no shader generator."
 		);
 		LoadErrors::FailedToProcess
@@ -583,8 +599,18 @@ async fn generate_fbx_material(
 		compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute")
 	})
 	.await
-	.map_err(|_| LoadErrors::FailedToProcess)?
-	.map_err(|_| LoadErrors::FailedToProcess)?;
+	.map_err(|_| {
+		context.error(
+			"FBX material shader compilation did not complete. The most likely cause is a failed background compiler task.",
+		);
+		LoadErrors::FailedToProcess
+	})?
+	.map_err(|_| {
+		context.error(format_args!(
+			"Failed to compile generated FBX material shader '{shader_id}'. The most likely cause is an invalid generated shader or unavailable platform compiler."
+		));
+		LoadErrors::FailedToProcess
+	})?;
 
 	let shader = store_model::<Shader>(context, &shader_id, shader, &shader_bytes)?;
 	let material = MaterialModel {
@@ -1028,6 +1054,7 @@ fn import_fbx_meshes<'a>(
 	skeleton: Option<ReferenceModel<SkeletonModel>>,
 	source_to_skeleton: &[u32],
 	allocator: &'a dyn Allocator,
+	culled_polygons: &mut FbxCulledPolygonCounts,
 ) -> Result<OwnedMeshSource<&'a dyn Allocator>, FbxImportError> {
 	let estimates = fbx_mesh_allocation_estimates(scene);
 	let mut layout = Vec::with_capacity_in(8, allocator);
@@ -1036,7 +1063,6 @@ fn import_fbx_meshes<'a>(
 	let mut scratch = Vec::with_capacity_in(estimates.scratch, allocator);
 	let mut corners = Vec::with_capacity_in(estimates.corners, allocator);
 	let mut remap = Vec::with_capacity_in(estimates.remap, allocator);
-	let mut culled_polygons = FbxCulledPolygonCounts::default();
 	let skin_capacity = scene
 		.nodes
 		.iter()
@@ -1134,8 +1160,6 @@ fn import_fbx_meshes<'a>(
 			}
 		}
 	}
-	culled_polygons.log();
-
 	if primitives.is_empty() {
 		return Err(FbxImportError::NoMesh);
 	}
@@ -1198,17 +1222,17 @@ impl FbxCulledPolygonCounts {
 		}
 	}
 
-	/// Logs the malformed geometry summary after the importer has processed every mesh instance.
-	fn log(&self) {
+	/// Adds the malformed geometry summary to the requested resource's trace.
+	fn trace(&self, context: BakeContext<'_>) {
 		if self.triangles + self.quads + self.polygons == 0 {
 			return;
 		}
-		log::info!(
+		context.info(format_args!(
 			"Culled degenerate FBX geometry: {} triangle(s), {} quad(s), and {} other polygon(s). The most likely cause is repeated or collinear vertex positions, which produce zero-area triangles and undefined normal data.",
 			self.triangles,
 			self.quads,
 			self.polygons,
-		);
+		));
 	}
 }
 
@@ -1850,13 +1874,16 @@ impl std::error::Error for FbxImportError {}
 
 #[cfg(test)]
 mod tests {
-	use std::{alloc::Global, collections::HashMap};
+	use std::{
+		alloc::{Allocator, Global},
+		collections::HashMap,
+	};
 
 	use super::{
 		fbx_brdf_material, finite_material_component, finite_material_product, import_fbx_animation, import_fbx_meshes,
 		import_fbx_skeleton, import_fbx_skin_binding, load_fbx_scene, matrix_to_columns, remap_triangle_corners,
-		select_fbx_skin, select_unfragmented_fbx_resource, skin_weights, FBXAssetHandler, FbxImportError, MaterialKey,
-		ResolvedFbxMaterials,
+		select_fbx_skin, select_unfragmented_fbx_resource, skin_weights, FBXAssetHandler, FbxCulledPolygonCounts,
+		FbxImportError, MaterialKey, ResolvedFbxMaterials,
 	};
 	use crate::{
 		asset::{
@@ -1865,7 +1892,8 @@ mod tests {
 		},
 		pbr::{BrdfAlphaMode, BrdfMaterialDescription, BrdfNode, BrdfValue},
 		processors::mesh_processor::{
-			MeshAttributeData, MeshIndexData, MeshPrimitiveSource, MeshProcessor, MeshSource, TriangleFrontFaceWinding,
+			MeshAttributeData, MeshIndexData, MeshPrimitiveSource, MeshProcessor, MeshSource, OwnedMeshSource,
+			TriangleFrontFaceWinding,
 		},
 		r#async,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
@@ -1878,12 +1906,67 @@ mod tests {
 		types::{AlphaMode, IndexStreamTypes, VertexSemantics},
 		ReferenceModel,
 	};
+	#[cfg(debug_assertions)]
+	use crate::{
+		asset::{asset_handler::BakeContext, asset_handler::LoadErrors, ResourceId, ResourceTraceLevel},
+		ProcessedAsset,
+	};
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("test_data/triangle_move_ascii.fbx");
 	const ANIMATION_ONLY_FBX: &[u8] = include_bytes!("test_data/animation_only_ascii.fbx");
 	const DEGENERATE_QUAD_FBX: &[u8] = include_bytes!("test_data/degenerate_quad_ascii.fbx");
 	const MATERIAL_FACTORS_FBX: &[u8] = include_bytes!("test_data/material_factors_ascii.fbx");
 	const SKINNED_TRIANGLE_FBX: &[u8] = include_bytes!("test_data/skinned_triangle_ascii.fbx");
+
+	/// Imports a fixture while discarding diagnostic counts that are not relevant to the focused assertion.
+	fn import_test_fbx_meshes<'a>(
+		scene: &ufbx::Scene,
+		materials: &ResolvedFbxMaterials,
+		skeleton: Option<ReferenceModel<SkeletonModel>>,
+		source_to_skeleton: &[u32],
+		allocator: &'a dyn Allocator,
+	) -> Result<OwnedMeshSource<&'a dyn Allocator>, FbxImportError> {
+		let mut culled_polygons = FbxCulledPolygonCounts::default();
+		import_fbx_meshes(
+			scene,
+			materials,
+			skeleton,
+			source_to_skeleton,
+			allocator,
+			&mut culled_polygons,
+		)
+	}
+
+	/// The `TestVariantAssetHandler` struct supplies a material override without invoking a platform shader compiler.
+	#[cfg(debug_assertions)]
+	struct TestVariantAssetHandler;
+
+	#[cfg(debug_assertions)]
+	impl AssetHandler for TestVariantAssetHandler {
+		fn can_handle(&self, resource_type: &str) -> bool {
+			resource_type == "variant"
+		}
+
+		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
+			context.store_primary(
+				ProcessedAsset::new(
+					id,
+					VariantModel {
+						material: ReferenceModel::<MaterialModel>::new_serialized(
+							"materials/test.material",
+							0,
+							0,
+							Vec::new(),
+							None,
+						),
+						variables: Vec::new(),
+						alpha_mode: AlphaMode::Opaque,
+					},
+				),
+				&[],
+			)
+		}
+	}
 
 	#[test]
 	fn recognizes_fbx_and_exposes_consistent_default_winding() {
@@ -1910,7 +1993,7 @@ mod tests {
 		let materials = ResolvedFbxMaterials {
 			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
 		};
-		let source = import_fbx_meshes(&scene, &materials, None, &[], &Global).expect("fixture mesh should import");
+		let source = import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("fixture mesh should import");
 		let processed = MeshProcessor::new().process(&source).expect("fixture mesh should process");
 
 		assert!(processed.mesh.skeleton.is_none());
@@ -1945,7 +2028,7 @@ mod tests {
 		let materials = ResolvedFbxMaterials {
 			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
 		};
-		let source = import_fbx_meshes(&scene, &materials, None, &[], &Global)
+		let source = import_test_fbx_meshes(&scene, &materials, None, &[], &Global)
 			.expect("degenerate polygons should be discarded without rejecting valid geometry");
 		let primitive = source.primitive(0).expect("valid triangle should remain");
 
@@ -2048,7 +2131,7 @@ mod tests {
 		};
 
 		assert!(matches!(
-			import_fbx_meshes(
+			import_test_fbx_meshes(
 				&scene,
 				&materials,
 				Some(skeleton),
@@ -2125,7 +2208,7 @@ mod tests {
 		let materials = ResolvedFbxMaterials {
 			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
 		};
-		let source = import_fbx_meshes(
+		let source = import_test_fbx_meshes(
 			&scene,
 			&materials,
 			Some(skeleton.clone()),
@@ -2264,7 +2347,7 @@ mod tests {
 		assert_vec3_close(emission, [0.05, 0.1, 0.15]);
 
 		let materials = fixture_materials(&scene);
-		let source = import_fbx_meshes(&scene, &materials, None, &[], &Global).expect("material-part mesh should import");
+		let source = import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("material-part mesh should import");
 		let processed = MeshProcessor::new()
 			.process(&source)
 			.expect("material-part mesh should process");
@@ -2325,6 +2408,57 @@ mod tests {
 
 		assert_eq!(animation.class(), "Animation");
 		assert_eq!(animation.id().as_ref(), "triangle_move.fbx#animations/MoveX");
+	}
+
+	#[cfg(debug_assertions)]
+	#[r#async::test]
+	async fn asset_manager_associates_culled_geometry_info_with_the_baked_fbx_resource() {
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("degenerate_quad.fbx", DEGENERATE_QUAD_FBX);
+		asset_storage.add_file(
+			"degenerate_quad.fbx.bead",
+			br#"{ "asset": { "default": { "asset": "materials/test.variant" } } }"#,
+		);
+		let resource_storage = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage);
+		asset_manager.add_asset_handler(TestVariantAssetHandler);
+		asset_manager.add_asset_handler(FBXAssetHandler::new());
+
+		let result = asset_manager.bake("degenerate_quad.fbx", &resource_storage).await;
+		assert!(
+			result.is_ok(),
+			"valid geometry should remain after the degenerate quad is culled: {result:?}; trace: {:?}",
+			asset_manager.resource_trace().items("degenerate_quad.fbx")
+		);
+
+		let items = asset_manager.resource_trace().items("degenerate_quad.fbx");
+		assert_eq!(items.len(), 1);
+		assert_eq!(items[0].level(), ResourceTraceLevel::Info);
+		assert_eq!(
+			items[0].message(),
+			"Culled degenerate FBX geometry: 0 triangle(s), 1 quad(s), and 0 other polygon(s). The most likely cause is repeated or collinear vertex positions, which produce zero-area triangles and undefined normal data."
+		);
+		assert!(resource_storage
+			.get_resource(ResourceId::new("degenerate_quad.fbx"))
+			.is_some());
+	}
+
+	#[cfg(debug_assertions)]
+	#[r#async::test]
+	async fn malformed_fbx_keeps_its_handler_error_without_creating_a_resource() {
+		let asset_storage = AssetTestStorageBackend::new();
+		asset_storage.add_file("broken.fbx", b"not an FBX");
+		let resource_storage = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(asset_storage);
+		asset_manager.add_asset_handler(FBXAssetHandler::new());
+
+		assert!(asset_manager.bake("broken.fbx", &resource_storage).await.is_err());
+
+		assert!(resource_storage.get_resource(ResourceId::new("broken.fbx")).is_none());
+		let items = asset_manager.resource_trace().items("broken.fbx");
+		assert_eq!(items.len(), 1);
+		assert_eq!(items[0].level(), ResourceTraceLevel::Error);
+		assert!(items[0].message().starts_with("Failed to import FBX asset 'broken.fbx':"));
 	}
 
 	#[r#async::test]
@@ -2460,7 +2594,7 @@ mod tests {
 	/// Computes the first triangle's signed XY area after applying MeshProcessor's clockwise index convention.
 	fn first_clockwise_triangle_area(scene: &ufbx::Scene) -> f32 {
 		let source =
-			import_fbx_meshes(scene, &fixture_materials(scene), None, &[], &Global).expect("fixture mesh should import");
+			import_test_fbx_meshes(scene, &fixture_materials(scene), None, &[], &Global).expect("fixture mesh should import");
 		let primitive = source.primitive(0).expect("fixture should contain a primitive");
 		let Some(MeshAttributeData::F32x3(positions)) = primitive.attribute(VertexSemantics::Position, 0) else {
 			panic!("FBX fixture should contain f32 position data");

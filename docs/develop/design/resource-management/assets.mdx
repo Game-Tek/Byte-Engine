@@ -39,6 +39,20 @@ Handlers store the requested resource through their `BakeContext` after all gene
 The context keeps source resolution, recursive baking, allocator-aware resource writes, and storage errors consistent across formats.
 Each stored resource contains typed metadata plus the binary payload that consumers will later upload, stream, decode, or play.
 
+## Trace asset baking
+
+Use `BakeContext::info`, `BakeContext::warn`, or `BakeContext::error` when a handler needs to explain a bake decision or problem.
+Pass `format_args!(...)` when the message includes values so release builds do not allocate a temporary string for the terminal log.
+
+Debug builds keep these ordered items in a resource trace under the requested resource ID.
+The latest bake replaces older items for that ID.
+An error remains in the trace when the handler fails before it can store the resource, so an editor can explain the failure without treating the asset as successfully baked.
+For example, the FBX handler records one information item with the number of degenerate triangles, quads, and other polygons it culled.
+
+Read the trace through `AssetManager::resource_trace` or, after installing the asset manager, `ResourceManager::resource_trace`.
+Call `ResourceTrace::items` for one ID or `ResourceTrace::resource_ids` to find IDs with messages.
+The trace is an in-memory development tool: release builds do not expose it, and trace items are never stored as production resources.
+
 ## Processing
 
 Asset processing turns source data into engine data.

@@ -1,5 +1,7 @@
-use std::{alloc::Allocator, cell::Cell, future::Future};
+use std::{alloc::Allocator, cell::Cell, fmt, future::Future};
 
+#[cfg(debug_assertions)]
+use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
 use super::{asset_manager::AssetManager, AssetStorageBytes, BEADType, ResourceId};
 use crate::{asset, resource, Model, ProcessedAsset, ReferenceModel, SerializableResource};
 
@@ -23,6 +25,8 @@ pub struct BakeContext<'a> {
 	allocator: &'a dyn Allocator,
 	primary_id: ResourceId<'a>,
 	primary_stored: &'a Cell<bool>,
+	#[cfg(debug_assertions)]
+	resource_trace: &'a ResourceTrace,
 }
 
 impl<'a> BakeContext<'a> {
@@ -33,6 +37,7 @@ impl<'a> BakeContext<'a> {
 		allocator: &'a dyn Allocator,
 		primary_id: ResourceId<'a>,
 		primary_stored: &'a Cell<bool>,
+		#[cfg(debug_assertions)] resource_trace: &'a ResourceTrace,
 	) -> Self {
 		Self {
 			asset_manager,
@@ -41,7 +46,49 @@ impl<'a> BakeContext<'a> {
 			allocator,
 			primary_id,
 			primary_stored,
+			#[cfg(debug_assertions)]
+			resource_trace,
 		}
+	}
+
+	/// Adds an informational item to this resource's development trace and terminal log.
+	pub fn info(&self, message: impl fmt::Display) {
+		#[cfg(debug_assertions)]
+		{
+			let message = message.to_string();
+			log::info!("{message}");
+			self.resource_trace.record(self.primary_id, ResourceTraceLevel::Info, message);
+		}
+		#[cfg(not(debug_assertions))]
+		log::info!("{message}");
+	}
+
+	/// Adds a warning item to this resource's development trace and terminal log.
+	pub fn warn(&self, message: impl fmt::Display) {
+		#[cfg(debug_assertions)]
+		{
+			let message = message.to_string();
+			log::warn!("{message}");
+			self.resource_trace.record(self.primary_id, ResourceTraceLevel::Warn, message);
+		}
+		#[cfg(not(debug_assertions))]
+		log::warn!("{message}");
+	}
+
+	/// Adds an error item to this resource's development trace and terminal log.
+	///
+	/// The item remains available when the handler returns an error and does not
+	/// store the requested resource.
+	pub fn error(&self, message: impl fmt::Display) {
+		#[cfg(debug_assertions)]
+		{
+			let message = message.to_string();
+			log::error!("{message}");
+			self.resource_trace
+				.record(self.primary_id, ResourceTraceLevel::Error, message);
+		}
+		#[cfg(not(debug_assertions))]
+		log::error!("{message}");
 	}
 
 	/// Returns the resource type used to select and validate a handler.

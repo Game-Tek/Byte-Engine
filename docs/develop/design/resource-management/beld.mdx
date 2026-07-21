@@ -41,9 +41,15 @@ beld --source assets --destination resources bake \
 
 `beld inspect` prints metadata for a resource ID or UID.
 Use `--format json` when editor tooling or scripts need structured output.
+In development builds, the output also includes the resource's bake `trace`.
+You can inspect a failed asset by ID even when it produced no resource. In that
+case, the output contains `resource: null` and the trace that explains the
+failure.
 
 `beld query` filters resources by class and indexed properties.
 The first equality predicate can use the property index, and paged results print a cursor when more results are available.
+In development builds, every human-readable and JSON query result includes its
+bake `trace`. Release builds omit trace storage and output.
 
 `beld delete` removes resources by ID.
 

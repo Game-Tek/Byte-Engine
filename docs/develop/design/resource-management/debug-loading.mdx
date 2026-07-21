@@ -47,6 +47,15 @@ Several handlers keep decode and processing work inside the same task because al
 This allocation pattern keeps asset processing practical without making temporary
 decode and import data long-lived.
 
+## Inspect bake messages
+
+In a debug build, call `ResourceManager::resource_trace` after an asset bake.
+The returned trace keeps information, warning, and error items under the requested resource ID.
+It also keeps handler errors from failed bakes, even though resource storage has no successful resource to return.
+
+Trace items stay in memory and are replaced the next time the same ID is baked.
+They do not enter the resource database or a release application.
+
 ## Choose between lazy loading and BELD
 
 Lazy processing is convenient, but it can hide work in the first frame that touches an asset.

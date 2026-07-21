@@ -122,6 +122,12 @@ pub trait ReadStorageBackend: Sync + Send + downcast_rs::Downcast {
 
 	fn query(&self, query: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError>;
 
+	/// Returns development-time bake messages even when the requested resource was not stored.
+	#[cfg(debug_assertions)]
+	fn read_trace(&self, _: ResourceId<'_>) -> Result<Vec<crate::ResourceTraceItem>, String> {
+		Ok(Vec::new())
+	}
+
 	/// Returns the asset type from its URL when the backend can determine it.
 	///
 	/// Asset handlers use this value to skip unsupported sources before loading them.
@@ -147,6 +153,12 @@ pub trait WriteStorageBackend: Sync + Send + downcast_rs::Downcast {
 	) -> Result<SerializableResource, ()>;
 	fn sync(&self, _: &dyn ReadStorageBackend) {}
 
+	/// Replaces development-time bake messages without creating a resource entry.
+	#[cfg(debug_assertions)]
+	fn replace_trace(&self, _: ResourceId<'_>, _: &[crate::ResourceTraceItem]) -> Result<(), String> {
+		Ok(())
+	}
+
 	fn start(&self, _: ResourceId<'_>) {}
 }
 
@@ -167,16 +179,25 @@ pub mod tests {
 	use super::*;
 	use crate::resource::resource_handler::tests::MemoryResourceReader;
 
+	/// The `TestStorageBackend` struct keeps baked resources and development traces in memory for focused tests.
 	#[derive(Clone)]
-	pub struct TestStorageBackend(pub Arc<Mutex<HashMap<String, (Box<[u8]>, Box<[u8]>)>>>);
+	pub struct TestStorageBackend {
+		resources: Arc<Mutex<HashMap<String, (Box<[u8]>, Box<[u8]>)>>>,
+		#[cfg(debug_assertions)]
+		traces: Arc<Mutex<HashMap<String, Vec<crate::ResourceTraceItem>>>>,
+	}
 
 	impl TestStorageBackend {
 		pub fn new() -> Self {
-			Self(Arc::new(Mutex::new(HashMap::new())))
+			Self {
+				resources: Arc::new(Mutex::new(HashMap::new())),
+				#[cfg(debug_assertions)]
+				traces: Arc::new(Mutex::new(HashMap::new())),
+			}
 		}
 
 		pub fn get_resources(&self) -> Vec<ProcessedAsset> {
-			self.0
+			self.resources
 				.lock()
 				.iter()
 				.map(|x| {
@@ -193,7 +214,7 @@ pub mod tests {
 		}
 
 		pub fn get_resource(&self, name: ResourceId<'_>) -> Option<ProcessedAsset> {
-			self.0
+			self.resources
 				.lock()
 				.iter()
 				.find(|x| {
@@ -214,7 +235,7 @@ pub mod tests {
 
 		pub fn get_resource_data_by_name(&self, name: ResourceId<'_>) -> Option<Box<[u8]>> {
 			Some(
-				self.0
+				self.resources
 					.lock()
 					.iter()
 					.find(|x| {
@@ -230,11 +251,11 @@ pub mod tests {
 
 	impl ReadStorageBackend for TestStorageBackend {
 		fn list<'a>(&'a self) -> Result<Vec<String>, String> {
-			Ok(self.0.lock().keys().map(|x| x.to_string()).collect())
+			Ok(self.resources.lock().keys().map(|x| x.to_string()).collect())
 		}
 
 		fn read<'s, 'a, 'b>(&'s self, id: ResourceId<'b>) -> Option<(SerializableResource, MultiResourceReader)> {
-			let (resource, data) = if let Some(e) = self.0.lock().get(id.as_ref()) {
+			let (resource, data) = if let Some(e) = self.resources.lock().get(id.as_ref()) {
 				(e.0.clone(), e.1.clone())
 			} else {
 				return None;
@@ -252,11 +273,18 @@ pub mod tests {
 		fn query(&self, _: Query) -> Result<QueryPage<(SerializableResource, MultiResourceReader)>, QueryError> {
 			Err(QueryError::StorageFailure)
 		}
+
+		#[cfg(debug_assertions)]
+		fn read_trace(&self, id: ResourceId<'_>) -> Result<Vec<crate::ResourceTraceItem>, String> {
+			Ok(self.traces.lock().get(id.as_ref()).cloned().unwrap_or_default())
+		}
 	}
 
 	impl WriteStorageBackend for TestStorageBackend {
 		fn delete<'a>(&'a self, id: ResourceId<'a>) -> Result<(), String> {
-			self.0.lock().remove(id.as_ref());
+			self.resources.lock().remove(id.as_ref());
+			#[cfg(debug_assertions)]
+			self.traces.lock().remove(id.as_ref());
 			Ok(())
 		}
 
@@ -280,9 +308,22 @@ pub mod tests {
 			let container = resource.into_serializable(hash, size);
 			let serialized_container = crate::to_vec_in(&container, allocator).unwrap();
 
-			self.0.lock().insert(id, (serialized_container.to_vec().into(), data.into()));
+			self.resources
+				.lock()
+				.insert(id, (serialized_container.to_vec().into(), data.into()));
 
 			Ok(container)
+		}
+
+		#[cfg(debug_assertions)]
+		fn replace_trace(&self, id: ResourceId<'_>, items: &[crate::ResourceTraceItem]) -> Result<(), String> {
+			let mut traces = self.traces.lock();
+			if items.is_empty() {
+				traces.remove(id.as_ref());
+			} else {
+				traces.insert(id.to_string(), items.to_vec());
+			}
+			Ok(())
 		}
 
 		fn sync<'s, 'a>(&'s self, _: &'a dyn ReadStorageBackend) -> () {

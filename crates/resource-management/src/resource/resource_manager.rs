@@ -3,7 +3,7 @@ use super::{
 	StorageBackend,
 };
 #[cfg(debug_assertions)]
-use crate::asset::asset_manager::AssetManager;
+use crate::asset::{asset_manager::AssetManager, ResourceTrace};
 use crate::{asset::ResourceId, online_docs_url, Model, Reference, ReferenceModel, Resource, SerializableResource, Solver};
 
 const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/design/resource-management/baking-app-resources";
@@ -64,6 +64,15 @@ impl ResourceManager {
 	#[cfg(debug_assertions)]
 	pub fn try_set_asset_manager(&self, asset_manager: AssetManager) -> Result<(), AssetManager> {
 		self.asset_manager.set(asset_manager)
+	}
+
+	/// Returns the development trace for asset-backed resource bakes when asset management is installed.
+	///
+	/// Next, call [`ResourceTrace::items`] with the resource ID shown by the
+	/// editor or other development tool.
+	#[cfg(debug_assertions)]
+	pub fn resource_trace(&self) -> Option<&ResourceTrace> {
+		self.asset_manager.get().map(AssetManager::resource_trace)
 	}
 
 	fn get_storage_backend(&self) -> &dyn StorageBackend {
@@ -150,7 +159,10 @@ mod debug_tests {
 
 	use super::ResourceManager;
 	use crate::{
-		asset::{asset_manager::AssetManager, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend},
+		asset::{
+			asset_manager::AssetManager, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
+			ResourceTraceLevel,
+		},
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::material::Shader,
 	};
@@ -162,6 +174,7 @@ mod debug_tests {
 
 		resource_manager.set_asset_manager(AssetManager::new(AssetTestStorageBackend::new()));
 		assert!(renderer_reference.upgrade().is_some());
+		assert!(resource_manager.resource_trace().is_some());
 		assert!(resource_manager
 			.try_set_asset_manager(AssetManager::new(AssetTestStorageBackend::new()))
 			.is_err());
@@ -176,6 +189,12 @@ mod debug_tests {
 
 		assert!(error.contains("If the 'byte-engine' path is missing from the assets directory"));
 		assert!(error.contains(&super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)));
+		let trace = resource_manager
+			.resource_trace()
+			.expect("installed asset management should expose its trace");
+		let items = trace.items("missing.asset");
+		assert_eq!(items.len(), 1);
+		assert_eq!(items[0].level(), ResourceTraceLevel::Error);
 	}
 }
 

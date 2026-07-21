@@ -10,6 +10,8 @@ use redb::{ReadableDatabase as _, ReadableTable};
 use utils::sync::{remove_file, File, Write};
 
 use super::{Query, QueryCursor, QueryError, QueryPage, ReadStorageBackend, StorageBackend, WriteStorageBackend};
+#[cfg(debug_assertions)]
+use crate::ResourceTraceItem;
 use crate::{
 	asset,
 	resource::{reader::redb::FileResourceReader, resource_handler::MultiResourceReader, ResourceId},
@@ -31,6 +33,8 @@ const RESOURCES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefin
 const RESOURCE_CLASS_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> = redb::TableDefinition::new("resource-class-index");
 const RESOURCE_PROPERTY_INDEX_TABLE: redb::TableDefinition<&[u8], [u8; 16]> =
 	redb::TableDefinition::new("resource-property-index");
+#[cfg(debug_assertions)]
+const RESOURCE_TRACES_TABLE: redb::TableDefinition<[u8; 16], &[u8]> = redb::TableDefinition::new("resource-traces");
 const RESOURCE_MANAGEMENT_CODE_HASH: &str = env!("RESOURCE_MANAGEMENT_CODE_HASH");
 const RESOURCE_MANAGEMENT_SIGNATURE_FILE: &str = ".resource-management-version";
 const RESOURCE_PRODUCER_SIGNATURE_FILE: &str = ".resource-producer-version";
@@ -278,6 +282,8 @@ impl RedbStorageBackend {
 			let _ = write.open_table(RESOURCES_TABLE);
 			let _ = write.open_table(RESOURCE_CLASS_INDEX_TABLE);
 			let _ = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE);
+			#[cfg(debug_assertions)]
+			let _ = write.open_table(RESOURCE_TRACES_TABLE);
 			let _ = write.commit();
 		}
 
@@ -472,6 +478,22 @@ impl ReadStorageBackend for RedbStorageBackend {
 
 		self.query_index(&query, query.first_indexed_predicate().is_some())
 	}
+
+	#[cfg(debug_assertions)]
+	fn read_trace(&self, id: asset::ResourceId<'_>) -> Result<Vec<ResourceTraceItem>, String> {
+		let read = self
+			.begin_read()
+			.map_err(|_| "Failed to begin resource trace read".to_string())?;
+		let table = read
+			.open_table(RESOURCE_TRACES_TABLE)
+			.map_err(|_| "Failed to open resource traces table".to_string())?;
+		let id = ResourceId::from(id.as_ref());
+		let Some(items) = table.get(&id).map_err(|_| "Failed to read resource trace".to_string())? else {
+			return Ok(Vec::new());
+		};
+
+		crate::from_slice(items.value()).map_err(|_| "Failed to deserialize resource trace".to_string())
+	}
 }
 
 impl WriteStorageBackend for RedbStorageBackend {
@@ -490,6 +512,8 @@ impl WriteStorageBackend for RedbStorageBackend {
 			let mut resources_table = write.open_table(RESOURCES_TABLE).unwrap();
 			let mut class_table = write.open_table(RESOURCE_CLASS_INDEX_TABLE).unwrap();
 			let mut property_table = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE).unwrap();
+			#[cfg(debug_assertions)]
+			let mut traces_table = write.open_table(RESOURCE_TRACES_TABLE).unwrap();
 
 			if let Some(existing) = resources_table.get(&id).unwrap() {
 				let resource: SerializableResource = crate::from_slice(existing.value()).unwrap();
@@ -497,6 +521,8 @@ impl WriteStorageBackend for RedbStorageBackend {
 			}
 
 			let _ = resources_table.remove(&id);
+			#[cfg(debug_assertions)]
+			let _ = traces_table.remove(&id);
 		}
 
 		write.commit().map_err(|_| "Failed to commit transaction".to_string())?;
@@ -559,6 +585,35 @@ impl WriteStorageBackend for RedbStorageBackend {
 		file.flush().or(Err(()))?;
 
 		Ok(resource)
+	}
+
+	#[cfg(debug_assertions)]
+	fn replace_trace(&self, id: asset::ResourceId<'_>, items: &[ResourceTraceItem]) -> Result<(), String> {
+		let write = match &self.db {
+			RedbDatabase::Writable(db) => db
+				.begin_write()
+				.map_err(|_| "Failed to begin resource trace write".to_string())?,
+			RedbDatabase::ReadOnly(_) => {
+				return Err("Cannot write traces to a read-only resources database".to_string());
+			}
+		};
+		let id = ResourceId::from(id.as_ref());
+		{
+			let mut table = write
+				.open_table(RESOURCE_TRACES_TABLE)
+				.map_err(|_| "Failed to open resource traces table".to_string())?;
+			if items.is_empty() {
+				table.remove(&id).map_err(|_| "Failed to clear resource trace".to_string())?;
+			} else {
+				let serialized =
+					crate::to_vec(&items.to_vec()).map_err(|_| "Failed to serialize resource trace".to_string())?;
+				table
+					.insert(&id, serialized.as_slice())
+					.map_err(|_| "Failed to store resource trace".to_string())?;
+			}
+		}
+
+		write.commit().map_err(|_| "Failed to commit resource trace".to_string())
 	}
 
 	fn sync(&self, other: &dyn ReadStorageBackend) {
@@ -631,6 +686,8 @@ mod tests {
 		resource::storage_backend::{Query, QueryCursor, QueryError, ReadStorageBackend, WriteStorageBackend},
 		Model, ProcessedAsset,
 	};
+	#[cfg(debug_assertions)]
+	use crate::{ResourceTraceItem, ResourceTraceLevel};
 
 	#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 	struct MockMaterialModel {
@@ -918,6 +975,26 @@ mod tests {
 		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/missing").limit(10));
 		assert!(ids.is_empty());
 		assert!(cursor.is_none());
+	}
+
+	#[cfg(debug_assertions)]
+	#[test]
+	fn trace_round_trips_without_creating_a_resource_and_delete_clears_it() {
+		let backend = backend();
+		let id = crate::asset::ResourceId::new("broken.asset");
+		let items = vec![ResourceTraceItem::new(
+			ResourceTraceLevel::Error,
+			"Asset is malformed. The most likely cause is invalid fixture data.".to_string(),
+		)];
+
+		backend.replace_trace(id, &items).unwrap();
+
+		assert_eq!(backend.read_trace(id).unwrap(), items);
+		assert!(backend.read(id).is_none());
+		assert!(backend.list().unwrap().is_empty());
+
+		backend.delete(id).unwrap();
+		assert!(backend.read_trace(id).unwrap().is_empty());
 	}
 
 	#[test]

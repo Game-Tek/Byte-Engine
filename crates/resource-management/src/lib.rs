@@ -74,6 +74,8 @@ pub mod inspect;
 pub mod r#async;
 
 pub use asset::asset_handler::{AssetHandler, BakeContext};
+#[cfg(debug_assertions)]
+pub use asset::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
 pub use model::Model;
 pub use model::{QueryableProperty, QueryableValue};
 pub use reference::Reference;

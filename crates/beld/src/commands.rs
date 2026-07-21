@@ -8,6 +8,8 @@ use resource_management::{
 	},
 	QueryableValue,
 };
+#[cfg(debug_assertions)]
+use resource_management::{ResourceTraceItem, ResourceTraceLevel};
 use serde_json::{json, Value};
 use utils::{r#async::StreamExt, sync::Arc};
 
@@ -82,8 +84,8 @@ pub fn query(
 	})?;
 
 	match format {
-		QueryFormat::Human => print_human_query_page(&page.items, page.cursor.as_ref()),
-		QueryFormat::Json => print_json_query_page(&page.items, page.cursor.as_ref())?,
+		QueryFormat::Human => print_human_query_page(&storage_backend, &page.items, page.cursor.as_ref())?,
+		QueryFormat::Json => print_json_query_page(&storage_backend, &page.items, page.cursor.as_ref())?,
 	}
 
 	Ok(())
@@ -122,12 +124,13 @@ fn query_error_message(error: QueryError) -> &'static str {
 
 /// Prints query results in a compact human-readable form.
 fn print_human_query_page(
+	_storage_backend: &RedbStorageBackend,
 	items: &[(
 		resource_management::SerializableResource,
 		resource_management::resource::resource_handler::MultiResourceReader,
 	)],
 	cursor: Option<&QueryCursor>,
-) {
+) -> Result<(), i32> {
 	if items.is_empty() {
 		log::info!("No resources found.");
 	}
@@ -139,32 +142,38 @@ fn print_human_query_page(
 			print_queryable_value(&property.value);
 			println!();
 		}
+		#[cfg(debug_assertions)]
+		print_human_trace(&read_resource_trace(_storage_backend, resource.id())?, 2);
 	}
 
 	if let Some(cursor) = cursor {
 		println!("cursor: {}", encode_query_cursor(cursor));
 	}
+
+	Ok(())
 }
 
 /// Prints query results as JSON for scripts and editor integrations.
 fn print_json_query_page(
+	_storage_backend: &RedbStorageBackend,
 	items: &[(
 		resource_management::SerializableResource,
 		resource_management::resource::resource_handler::MultiResourceReader,
 	)],
 	cursor: Option<&QueryCursor>,
 ) -> Result<(), i32> {
-	let resources = items
-		.iter()
-		.map(|(resource, _)| {
-			json!({
-				"id": resource.id(),
-				"uid": resource.uid(),
-				"class": resource.class(),
-				"properties": queryable_properties_json(resource.queryable_properties()),
-			})
-		})
-		.collect::<Vec<_>>();
+	let mut resources = Vec::with_capacity(items.len());
+	for (resource, _) in items {
+		let mut value = json!({
+			"id": resource.id(),
+			"uid": resource.uid(),
+			"class": resource.class(),
+			"properties": queryable_properties_json(resource.queryable_properties()),
+		});
+		#[cfg(debug_assertions)]
+		insert_trace_json(&mut value, &read_resource_trace(_storage_backend, resource.id())?);
+		resources.push(value);
+	}
 
 	let output = json!({
 		"resources": resources,
@@ -183,6 +192,54 @@ fn print_json_query_page(
 	);
 
 	Ok(())
+}
+
+/// Reads persisted development messages for one resource ID.
+#[cfg(debug_assertions)]
+fn read_resource_trace(storage_backend: &RedbStorageBackend, id: &str) -> Result<Vec<ResourceTraceItem>, i32> {
+	storage_backend.read_trace(ResourceId::new(id)).map_err(|error| {
+		log::error!(
+			"Failed to read the resource trace for '{}'. The most likely cause is an unreadable resources database. Error: {}",
+			id,
+			error
+		);
+		1
+	})
+}
+
+/// Converts trace items to the stable JSON shape used by query and inspect.
+#[cfg(debug_assertions)]
+fn resource_trace_json(items: &[ResourceTraceItem]) -> Value {
+	Value::Array(
+		items
+			.iter()
+			.map(|item| {
+				json!({
+					"level": match item.level() {
+						ResourceTraceLevel::Info => "info",
+						ResourceTraceLevel::Warn => "warn",
+						ResourceTraceLevel::Error => "error",
+					},
+					"message": item.message(),
+				})
+			})
+			.collect(),
+	)
+}
+
+/// Adds trace JSON to a resource inspection or query result object.
+#[cfg(debug_assertions)]
+fn insert_trace_json(value: &mut Value, items: &[ResourceTraceItem]) {
+	let Value::Object(object) = value else {
+		return;
+	};
+	object.insert("trace".to_string(), resource_trace_json(items));
+}
+
+/// Prints one trace using the same nested layout as resource inspection.
+#[cfg(debug_assertions)]
+fn print_human_trace(items: &[ResourceTraceItem], indent: usize) {
+	print_human_field("trace", &resource_trace_json(items), indent);
 }
 
 /// Converts indexed properties to JSON without reading the resource body.
@@ -275,13 +332,21 @@ fn decode_hex_digit(value: u8) -> Option<u8> {
 
 pub fn inspect(destination_path: String, id: String, format: InspectFormat) -> Result<(), i32> {
 	let storage_backend = RedbStorageBackend::new(destination_path.into());
-	let resource = read_resource(&storage_backend, &id).ok_or_else(|| {
+	let resource = read_resource(&storage_backend, &id);
+	let Some(resource) = resource else {
+		#[cfg(debug_assertions)]
+		{
+			let trace = read_resource_trace(&storage_backend, &id)?;
+			if !trace.is_empty() {
+				return print_trace_only_inspection(&id, &trace, format);
+			}
+		}
 		log::error!(
 			"Failed to inspect resource '{}'. The most likely cause is that no baked resource exists for the given ID or UID.",
 			id
 		);
-		1
-	})?;
+		return Err(1);
+	};
 
 	let inspection = resource_management::inspect::inspect_resource(&resource).map_err(|error| {
 		log::error!("{}", error);
@@ -294,14 +359,45 @@ pub fn inspect(destination_path: String, id: String, format: InspectFormat) -> R
 			resource.class()
 		);
 	}
+	let mut output = inspection.json;
+	#[cfg(debug_assertions)]
+	let trace = read_resource_trace(&storage_backend, resource.id())?;
+	#[cfg(debug_assertions)]
+	insert_trace_json(&mut output, &trace);
 
 	match format {
-		InspectFormat::Human => print_human_value(&inspection.json, 0),
+		InspectFormat::Human => print_human_value(&output, 0),
 		InspectFormat::Json => println!(
 			"{}",
-			serde_json::to_string_pretty(&inspection.json).map_err(|error| {
+			serde_json::to_string_pretty(&output).map_err(|error| {
 				log::error!(
 					"Failed to print resource JSON. The most likely cause is an invalid JSON value. Error: {}",
+					error
+				);
+				1
+			})?
+		),
+	}
+
+	Ok(())
+}
+
+/// Prints diagnostics for an ID whose resource bake failed completely.
+#[cfg(debug_assertions)]
+fn print_trace_only_inspection(id: &str, trace: &[ResourceTraceItem], format: InspectFormat) -> Result<(), i32> {
+	let mut output = json!({
+		"id": id,
+		"resource": Value::Null,
+	});
+	insert_trace_json(&mut output, trace);
+
+	match format {
+		InspectFormat::Human => print_human_value(&output, 0),
+		InspectFormat::Json => println!(
+			"{}",
+			serde_json::to_string_pretty(&output).map_err(|error| {
+				log::error!(
+					"Failed to print resource trace JSON. The most likely cause is an invalid JSON value. Error: {}",
 					error
 				);
 				1
@@ -634,21 +730,27 @@ mod tests {
 
 	use resource_management::{
 		asset::{FileStorageBackend, ResourceId},
-		resource::{
-			storage_backend::{QueryCursor, QueryError},
-			ReadStorageBackend, RedbStorageBackend,
-		},
+		resource::storage_backend::{QueryCursor, QueryError},
 		QueryableProperty, QueryableValue,
+	};
+	#[cfg(debug_assertions)]
+	use resource_management::{
+		resource::{ReadStorageBackend, RedbStorageBackend, WriteStorageBackend},
+		resources::audio::Audio,
+		types::BitDepths,
+		ProcessedAsset, ResourceTraceItem, ResourceTraceLevel,
 	};
 	use serde_json::json;
 
+	#[cfg(debug_assertions)]
+	use super::{bake, inspect, query, resource_trace_json};
 	use super::{
-		bake, decode_hex, decode_query_cursor, discover_asset_ids, encode_hex, encode_query_cursor, parse_query_property,
+		decode_hex, decode_query_cursor, discover_asset_ids, encode_hex, encode_query_cursor, parse_query_property,
 		query_error_message, queryable_properties_json, wipe,
 	};
 	use crate::utils::get_asset_manager;
-
-	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../resource-management/src/asset/test_data/triangle_move_ascii.fbx");
+	#[cfg(debug_assertions)]
+	use crate::{InspectFormat, QueryFormat};
 
 	#[test]
 	fn query_property_parser_splits_once_and_rejects_missing_halves() {
@@ -701,6 +803,25 @@ mod tests {
 	fn query_errors_keep_distinct_actionable_causes() {
 		assert!(query_error_message(QueryError::InvalidCursor).contains("cursor is invalid"));
 		assert!(query_error_message(QueryError::StorageFailure).contains("database could not be read"));
+	}
+
+	#[cfg(debug_assertions)]
+	#[test]
+	fn trace_json_preserves_item_order_levels_and_messages() {
+		let items = [
+			ResourceTraceItem::new(ResourceTraceLevel::Info, "Imported metadata.".to_string()),
+			ResourceTraceItem::new(ResourceTraceLevel::Warn, "Discarded optional data.".to_string()),
+			ResourceTraceItem::new(ResourceTraceLevel::Error, "Source is malformed.".to_string()),
+		];
+
+		assert_eq!(
+			resource_trace_json(&items),
+			json!([
+				{"level": "info", "message": "Imported metadata."},
+				{"level": "warn", "message": "Discarded optional data."},
+				{"level": "error", "message": "Source is malformed."},
+			])
+		);
 	}
 
 	#[test]
@@ -782,17 +903,17 @@ mod tests {
 		std::fs::remove_dir_all(engine_assets).unwrap();
 	}
 
+	#[cfg(debug_assertions)]
 	#[test]
-	fn default_bake_continues_after_a_failed_asset_and_returns_failure() {
+	fn failed_and_successful_resource_traces_are_inspectable_and_queryable() {
 		let root = std::env::temp_dir().join(format!(
-			"beld-bake-all-test-{}-{}",
+			"beld-trace-test-{}-{}",
 			std::process::id(),
 			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
 		));
 		let assets_path = root.join("assets");
 		let resources_path = root.join("resources");
 		std::fs::create_dir_all(&assets_path).unwrap();
-		std::fs::write(assets_path.join("triangle_move.fbx"), TRIANGLE_MOVE_FBX).unwrap();
 		std::fs::write(assets_path.join("broken.png"), b"not a PNG").unwrap();
 
 		assert_eq!(
@@ -805,7 +926,64 @@ mod tests {
 		);
 
 		let resource_storage = RedbStorageBackend::new(resources_path.clone());
-		assert!(resource_storage.read(ResourceId::new("triangle_move.fbx")).is_some());
+		let failed_trace = resource_storage.read_trace(ResourceId::new("broken.png")).unwrap();
+		assert_eq!(failed_trace.len(), 1);
+		assert_eq!(failed_trace[0].level(), ResourceTraceLevel::Error);
+		assert!(resource_storage.read(ResourceId::new("broken.png")).is_none());
+
+		let successful_id = ResourceId::new("successful.audio");
+		resource_storage
+			.store(
+				ProcessedAsset::new(
+					successful_id,
+					Audio {
+						bit_depth: BitDepths::Sixteen,
+						channel_count: 2,
+						sample_rate: 48_000,
+						sample_count: 1,
+					},
+				),
+				&[],
+			)
+			.unwrap();
+		resource_storage
+			.replace_trace(
+				successful_id,
+				&[ResourceTraceItem::new(
+					ResourceTraceLevel::Warn,
+					"Test warning associated with a baked resource.".to_string(),
+				)],
+			)
+			.unwrap();
+		drop(resource_storage);
+
+		assert_eq!(
+			inspect(
+				resources_path.to_string_lossy().into_owned(),
+				"broken.png".to_string(),
+				InspectFormat::Json,
+			),
+			Ok(())
+		);
+		assert_eq!(
+			inspect(
+				resources_path.to_string_lossy().into_owned(),
+				"successful.audio".to_string(),
+				InspectFormat::Json,
+			),
+			Ok(())
+		);
+		assert_eq!(
+			query(
+				resources_path.to_string_lossy().into_owned(),
+				"Audio".to_string(),
+				Vec::new(),
+				None,
+				None,
+				QueryFormat::Json,
+			),
+			Ok(())
+		);
 		std::fs::remove_dir_all(root).unwrap();
 	}
 

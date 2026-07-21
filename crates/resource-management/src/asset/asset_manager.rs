@@ -3,6 +3,8 @@ use std::{
 	cell::Cell,
 };
 
+#[cfg(debug_assertions)]
+use super::resource_trace::{ResourceTrace, ResourceTraceLevel};
 use super::{
 	asset_handler::{AssetHandler, BakeContext},
 	StorageBackend,
@@ -34,6 +36,8 @@ trait AbstractAssetHandler: Send + Sync {
 pub struct AssetManager {
 	asset_handlers: Vec<Box<dyn AbstractAssetHandler>>,
 	storage_backend: Box<dyn StorageBackend>,
+	#[cfg(debug_assertions)]
+	resource_trace: ResourceTrace,
 }
 
 /// The `LoadMessages` enum identifies failures while an asset is loaded, baked, or stored.
@@ -62,6 +66,8 @@ impl AssetManager {
 		Self {
 			asset_handlers: Vec::with_capacity(8),
 			storage_backend: Box::new(storage_backend),
+			#[cfg(debug_assertions)]
+			resource_trace: ResourceTrace::default(),
 		}
 	}
 
@@ -91,6 +97,26 @@ impl AssetManager {
 
 	pub fn get_storage_backend(&self) -> &dyn StorageBackend {
 		self.storage_backend.as_ref()
+	}
+
+	/// Returns the development trace populated by this manager's latest resource bakes.
+	///
+	/// Next, call [`ResourceTrace::items`] with a requested resource ID.
+	#[cfg(debug_assertions)]
+	pub fn resource_trace(&self) -> &ResourceTrace {
+		&self.resource_trace
+	}
+
+	/// Copies the latest in-memory trace into development resource storage for external tools.
+	#[cfg(debug_assertions)]
+	fn persist_resource_trace(&self, id: ResourceId<'_>, storage: &dyn ResourceStorageBackend) {
+		if let Err(error) = storage.replace_trace(id, &self.resource_trace.items(id.as_ref())) {
+			log::warn!(
+				"Failed to store the resource trace for '{}'. The most likely cause is that development resource storage is not writable. Error: {}",
+				id.as_ref(),
+				error
+			);
+		}
 	}
 
 	/// Returns whether a registered asset handler can bake the given source ID.
@@ -125,6 +151,11 @@ impl AssetManager {
 		allocator: &dyn Allocator,
 	) -> Result<(), LoadMessages> {
 		let id = ResourceId::new(id);
+		#[cfg(debug_assertions)]
+		{
+			self.resource_trace.clear(id);
+			self.persist_resource_trace(id, resource_storage_backend);
+		}
 
 		let asset_handler = match self
 			.asset_handlers
@@ -133,6 +164,18 @@ impl AssetManager {
 		{
 			Some(handler) => handler,
 			None => {
+				#[cfg(debug_assertions)]
+				self.resource_trace.record(
+					id,
+					ResourceTraceLevel::Error,
+					format!(
+						"No asset handler found for '{}'. The most likely cause is an unsupported file extension or missing handler registration. See {}.",
+						id.as_ref(),
+						online_docs_url(ASSETS_DOCS_PATH)
+					),
+				);
+				#[cfg(debug_assertions)]
+				self.persist_resource_trace(id, resource_storage_backend);
 				log::warn!(
 					"No asset handler found for asset: {:#?}. The most likely cause is an unsupported file extension or missing handler registration. See {}.",
 					id,
@@ -153,36 +196,69 @@ impl AssetManager {
 			allocator,
 			id,
 			&primary_stored,
+			#[cfg(debug_assertions)]
+			&self.resource_trace,
 		);
-		match asset_handler.bake(context, id).await {
-			Ok(()) if primary_stored.get() => {}
+		let result = match asset_handler.bake(context, id).await {
+			Ok(()) if primary_stored.get() => Ok(()),
 			Ok(()) => {
-				return Err(LoadMessages::FailedToBake {
+				#[cfg(debug_assertions)]
+				self.resource_trace.record(
+					id,
+					ResourceTraceLevel::Error,
+					"The asset handler completed without storing the requested primary resource. The most likely cause is a missing store_primary call."
+						.to_string(),
+				);
+				Err(LoadMessages::FailedToBake {
 					asset: id.to_string(),
 					error: LoadErrors::PrimaryResourceNotStored,
-				});
+				})
 			}
 			Err(LoadErrors::FailedToStore) => {
-				return Err(LoadMessages::FailedToStore {
+				#[cfg(debug_assertions)]
+				self.resource_trace.record(
+					id,
+					ResourceTraceLevel::Error,
+					"Failed to store the requested resource. The resource storage backend likely rejected the primary resource write."
+						.to_string(),
+				);
+				Err(LoadMessages::FailedToStore {
 					asset: id.to_string(),
 					error: format!(
 						"Failed to store asset {:#?}. The resource storage backend likely rejected the primary resource write.",
 						id
 					),
-				});
+				})
 			}
 			Err(error) => {
+				#[cfg(debug_assertions)]
+				if !self.resource_trace.has_error(id) {
+					self.resource_trace.record(
+						id,
+						ResourceTraceLevel::Error,
+						format!(
+							"Failed to bake resource '{}': {error:?}. The most likely cause is invalid or unsupported source data. See {}.",
+							id.as_ref(),
+							online_docs_url(ASSETS_DOCS_PATH)
+						),
+					);
+				}
 				log::error!(
 					"Failed to bake asset: {:#?}. The most likely cause is invalid or unsupported source data. See {}.",
 					error,
 					online_docs_url(ASSETS_DOCS_PATH)
 				);
-				return Err(LoadMessages::FailedToBake {
+				Err(LoadMessages::FailedToBake {
 					asset: id.to_string(),
 					error,
-				});
+				})
 			}
-		}
+		};
+
+		#[cfg(debug_assertions)]
+		self.persist_resource_trace(id, resource_storage_backend);
+
+		result?;
 
 		log::trace!("Baked '{:#?}' resource in {:#?}", id, start_time.elapsed());
 
@@ -224,10 +300,12 @@ impl AssetManager {
 #[cfg(test)]
 pub mod tests {
 	use super::*;
+	#[cfg(debug_assertions)]
+	use crate::asset::ResourceTraceLevel;
 	use crate::{
 		asset::{asset_handler::LoadErrors, storage_backend::tests::TestStorageBackend},
 		r#async::{self, BoxedFuture},
-		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
+		resource::{storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend, ReadStorageBackend},
 		Model, ProcessedAsset,
 	};
 
@@ -256,6 +334,16 @@ pub mod tests {
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
 			match id.get_base().as_ref() {
 				"example.test" => context.store_primary(ProcessedAsset::new(id, TestResource {}), &[]),
+				"messages.test" => {
+					context.info("Imported test metadata.");
+					context.warn(format_args!("Discarded {} optional test value.", 1));
+					context.store_primary(ProcessedAsset::new(id, TestResource {}), &[])
+				}
+				"failed.test" => {
+					context
+						.error("Test resource is malformed. The most likely cause is the intentionally invalid fixture data.");
+					Err(LoadErrors::FailedToProcess)
+				}
 				"unstored.test" => Ok(()),
 				"mismatched.test" => {
 					context.store_primary(ProcessedAsset::new(ResourceId::new("other.test"), TestResource {}), &[])
@@ -334,6 +422,75 @@ pub mod tests {
 		let result = asset_manager.bake("example.unknown", &resource_storage_backend).await;
 
 		assert_eq!(result, Err(LoadMessages::NoAssetHandler));
+		#[cfg(debug_assertions)]
+		assert_eq!(
+			asset_manager.resource_trace().items("example.unknown")[0].level(),
+			ResourceTraceLevel::Error
+		);
+	}
+
+	#[cfg(debug_assertions)]
+	#[r#async::test]
+	async fn handler_trace_keeps_ordered_info_and_warning_items_for_a_baked_resource() {
+		let storage_backend = TestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(storage_backend);
+		asset_manager.add_asset_handler(TestAssetHandler::new());
+
+		asset_manager
+			.bake("messages.test", &resource_storage_backend)
+			.await
+			.expect("message fixture should bake");
+		// A new bake replaces the prior trace instead of accumulating stale messages.
+		asset_manager
+			.bake("messages.test", &resource_storage_backend)
+			.await
+			.expect("message fixture should rebake");
+
+		let items = asset_manager.resource_trace().items("messages.test");
+		assert_eq!(items.len(), 2);
+		assert_eq!(items[0].level(), ResourceTraceLevel::Info);
+		assert_eq!(items[0].message(), "Imported test metadata.");
+		assert_eq!(items[1].level(), ResourceTraceLevel::Warn);
+		assert_eq!(items[1].message(), "Discarded 1 optional test value.");
+		assert_eq!(
+			resource_storage_backend.read_trace(ResourceId::new("messages.test")).unwrap(),
+			items
+		);
+	}
+
+	#[cfg(debug_assertions)]
+	#[r#async::test]
+	async fn handler_error_trace_survives_when_the_resource_bake_fails() {
+		let storage_backend = TestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(storage_backend);
+		asset_manager.add_asset_handler(TestAssetHandler::new());
+
+		let result = asset_manager.bake("failed.test", &resource_storage_backend).await;
+
+		assert_eq!(
+			result,
+			Err(LoadMessages::FailedToBake {
+				asset: "failed.test".to_string(),
+				error: LoadErrors::FailedToProcess,
+			})
+		);
+		assert!(resource_storage_backend
+			.get_resource(ResourceId::new("failed.test"))
+			.is_none());
+		let items = asset_manager.resource_trace().items("failed.test");
+		assert_eq!(items.len(), 1);
+		assert_eq!(items[0].level(), ResourceTraceLevel::Error);
+		assert_eq!(
+			items[0].message(),
+			"Test resource is malformed. The most likely cause is the intentionally invalid fixture data."
+		);
+		assert_eq!(
+			resource_storage_backend.read_trace(ResourceId::new("failed.test")).unwrap(),
+			items
+		);
+		assert_eq!(asset_manager.resource_trace().resource_ids(), vec!["failed.test"]);
 	}
 
 	#[r#async::test]

@@ -18,6 +18,12 @@ pub mod ogg_asset_handler;
 pub mod png_asset_handler;
 pub mod wav_asset_handler;
 
+#[cfg(debug_assertions)]
+pub mod resource_trace;
+
+#[cfg(debug_assertions)]
+pub use resource_trace::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
+
 pub type BEADType = json::Value;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

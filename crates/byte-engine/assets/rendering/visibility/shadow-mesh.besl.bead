@@ -1,6 +1,7 @@
 {
-  "stage": "Mesh",
-  "workgroup": [128, 1, 1],
-  "maximum_vertices": 64,
-  "maximum_primitives": 126
+	"$schema": "../../schemas/besl.bead.schema.json",
+	"stage": "Mesh",
+	"workgroup": [128, 1, 1],
+	"maximum_vertices": 64,
+	"maximum_primitives": 126
 }

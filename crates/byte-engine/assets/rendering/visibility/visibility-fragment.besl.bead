@@ -1,3 +1,4 @@
 {
-  "stage": "Fragment"
+	"$schema": "../../schemas/besl.bead.schema.json",
+	"stage": "Fragment"
 }

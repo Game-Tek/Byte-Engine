@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/besl.bead.schema.json",
+  "title": "Byte Engine standalone BESL shader settings",
+  "description": "Pipeline-stage metadata for an adjacent standalone .besl source file.",
+  "oneOf": [
+    { "$ref": "#/$defs/raster" },
+    { "$ref": "#/$defs/compute" },
+    { "$ref": "#/$defs/task" },
+    { "$ref": "#/$defs/mesh" }
+  ],
+  "$defs": {
+    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "workgroup": {
+      "type": "array",
+      "description": "Three positive workgroup dimensions: width, height, and depth.",
+      "prefixItems": [
+        { "$ref": "#/$defs/positiveInteger" },
+        { "$ref": "#/$defs/positiveInteger" },
+        { "$ref": "#/$defs/positiveInteger" }
+      ],
+      "items": false
+    },
+    "raster": {
+      "type": "object",
+      "properties": { "$schema": { "type": "string" }, "stage": { "enum": ["Vertex", "Fragment"] } },
+      "required": ["stage"],
+      "additionalProperties": false
+    },
+    "compute": {
+      "type": "object",
+      "properties": { "$schema": { "type": "string" }, "stage": { "const": "Compute" }, "workgroup": { "$ref": "#/$defs/workgroup" } },
+      "required": ["stage", "workgroup"],
+      "additionalProperties": false
+    },
+    "task": {
+      "type": "object",
+      "properties": {
+		"$schema": { "type": "string" },
+        "stage": { "const": "Task" },
+        "workgroup": { "$ref": "#/$defs/workgroup" },
+        "maximum_mesh_threadgroups": { "$ref": "#/$defs/positiveInteger" }
+      },
+      "required": ["stage", "workgroup", "maximum_mesh_threadgroups"],
+      "additionalProperties": false
+    },
+    "mesh": {
+      "type": "object",
+      "properties": {
+		"$schema": { "type": "string" },
+        "stage": { "const": "Mesh" },
+        "workgroup": { "$ref": "#/$defs/workgroup" },
+        "maximum_vertices": { "$ref": "#/$defs/positiveInteger" },
+        "maximum_primitives": { "$ref": "#/$defs/positiveInteger" }
+      },
+      "required": ["stage", "workgroup", "maximum_vertices", "maximum_primitives"],
+      "additionalProperties": false
+    }
+  }
+}

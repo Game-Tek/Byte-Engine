@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/model.bead.schema.json",
+  "title": "Byte Engine model import settings",
+  "description": "Optional source-model settings for .fbx, .gltf, and .glb assets.",
+  "type": "object",
+  "properties": {
+	"$schema": { "type": "string", "description": "The local JSON Schema reference for this asset." },
+    "default_resource": {
+      "enum": ["mesh", "animation"],
+      "description": "The resource selected when the asset ID has no fragment."
+    },
+    "asset": {
+      "type": "object",
+      "description": "FBX material-name overrides. Use default for an unassigned material slot.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["asset"],
+        "properties": {
+          "asset": { "type": "string", "pattern": "\\.bema$", "description": "The material variant asset ID." }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

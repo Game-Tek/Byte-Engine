@@ -2,7 +2,7 @@
 
 use std::{alloc::Allocator, io::ErrorKind};
 
-use utils::{json, json::JsonValueTrait};
+use serde_json::{Map, Value};
 
 pub mod asset_handler;
 pub mod asset_manager;
@@ -24,7 +24,13 @@ pub mod resource_trace;
 #[cfg(debug_assertions)]
 pub use resource_trace::{ResourceTrace, ResourceTraceItem, ResourceTraceLevel};
 
-pub type BEADType = json::Value;
+pub type BEADType = Value;
+pub type JsonObject = Map<String, Value>;
+
+/// Parses authored JSON5 text into a Serde JSON value.
+pub(crate) fn parse_json(source: &str) -> Result<BEADType, json5::Error> {
+	json5::from_str(source)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// The `ContainerDefaultResource` enum identifies the BEAD-selected resource for an unfragmented container asset.
@@ -95,11 +101,11 @@ mod container_default_resource_tests {
 			("mesh", ContainerDefaultResource::Mesh),
 			("Animation", ContainerDefaultResource::Animation),
 		] {
-			let spec = utils::json::from_str(&format!(r#"{{ "default_resource": "{value}" }}"#)).unwrap();
+			let spec = super::parse_json(&format!(r#"{{ "default_resource": "{value}" }}"#)).unwrap();
 			assert_eq!(container_default_resource(Some(&spec)), Ok(Some(expected)));
 		}
 
-		let skeleton = utils::json::from_str(r#"{ "default_resource": "skeleton" }"#).unwrap();
+		let skeleton = super::parse_json(r#"{ "default_resource": "skeleton" }"#).unwrap();
 		assert!(container_default_resource(Some(&skeleton)).is_err());
 	}
 }
@@ -178,7 +184,7 @@ async fn read_asset_spec(spec_path: &std::path::Path) -> Result<Option<BEADType>
 
 	if let Some(spec_bytes) = spec_bytes {
 		let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-		let spec: json::Value = json::from_str(spec).or(Err(()))?;
+		let spec = parse_json(spec).or(Err(()))?;
 		Ok(Some(spec))
 	} else {
 		Ok(None)

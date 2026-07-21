@@ -177,11 +177,11 @@ struct BESLShaderSettings {
 	maximum_primitives: Option<u32>,
 }
 
-static STANDALONE_SHADER_CONTEXT: OnceLock<utils::json::Object> = OnceLock::new();
+static STANDALONE_SHADER_CONTEXT: OnceLock<crate::asset::JsonObject> = OnceLock::new();
 
 /// Returns the allocation-retaining empty material context used by standalone program generators.
-fn standalone_shader_context() -> &'static utils::json::Object {
-	STANDALONE_SHADER_CONTEXT.get_or_init(|| utils::json::object! { "variables": Vec::<utils::json::Value>::new() })
+fn standalone_shader_context() -> &'static crate::asset::JsonObject {
+	STANDALONE_SHADER_CONTEXT.get_or_init(|| serde_json::json!({ "variables": [] }).as_object().unwrap().clone())
 }
 
 impl BESLShaderSettings {
@@ -313,7 +313,7 @@ fn parse_positive_u32_setting(spec: &BEADType, key: &str, description: &str) -> 
 }
 
 /// Validates the three positive dimensions required by a compute, task, or mesh workgroup contract.
-fn parse_workgroup_size(value: &utils::json::Value) -> Result<(u32, u32, u32), String> {
+fn parse_workgroup_size(value: &BEADType) -> Result<(u32, u32, u32), String> {
 	let dimensions = value.as_array().ok_or_else(|| {
 		"Invalid shader workgroup. The most likely cause is that `workgroup` is not an array of three positive integers."
 			.to_string()
@@ -525,7 +525,7 @@ mod tests {
 	struct TestStandaloneGenerator;
 
 	impl ProgramGenerator for TestStandaloneGenerator {
-		fn transform<'a>(&self, mut node: besl::parser::Node<'a>, _: &'a utils::json::Object) -> besl::parser::Node<'a> {
+		fn transform<'a>(&self, mut node: besl::parser::Node<'a>, _: &'a crate::asset::JsonObject) -> besl::parser::Node<'a> {
 			let mut helper_scope = besl::parse("shared_value: fn () -> f32 { return 0.5; }")
 				.expect("Failed to parse the standalone generator fixture. The most likely cause is invalid BESL test syntax.");
 			let helpers = match helper_scope.node_mut() {
@@ -712,7 +712,7 @@ mod tests {
 	#[test]
 	fn shader_settings_require_workgroups_and_stage_specific_mesh_limits() {
 		for (stage, expected) in [("Vertex", ShaderTypes::Vertex), ("Fragment", ShaderTypes::Fragment)] {
-			let spec = utils::json::from_str(&format!(r#"{{ "stage": "{stage}" }}"#)).unwrap();
+			let spec = crate::asset::parse_json(&format!(r#"{{ "stage": "{stage}" }}"#)).unwrap();
 			assert_eq!(
 				parse_shader_settings(Some(&spec)),
 				Ok(BESLShaderSettings {
@@ -725,13 +725,13 @@ mod tests {
 			);
 		}
 
-		let compute_without_workgroup = utils::json::from_str(r#"{ "stage": "Compute" }"#).unwrap();
+		let compute_without_workgroup = crate::asset::parse_json(r#"{ "stage": "Compute" }"#).unwrap();
 		assert!(parse_shader_settings(Some(&compute_without_workgroup)).is_err());
-		let zero_workgroup = utils::json::from_str(r#"{ "stage": "Compute", "workgroup": [8, 0, 1] }"#).unwrap();
+		let zero_workgroup = crate::asset::parse_json(r#"{ "stage": "Compute", "workgroup": [8, 0, 1] }"#).unwrap();
 		assert!(parse_shader_settings(Some(&zero_workgroup)).is_err());
 
-		let task =
-			utils::json::from_str(r#"{ "stage": "Task", "workgroup": [32, 1, 1], "maximum_mesh_threadgroups": 32 }"#).unwrap();
+		let task = crate::asset::parse_json(r#"{ "stage": "Task", "workgroup": [32, 1, 1], "maximum_mesh_threadgroups": 32 }"#)
+			.unwrap();
 		let task = parse_shader_settings(Some(&task)).expect("task sidecar should parse");
 		assert_eq!(
 			task,
@@ -751,7 +751,7 @@ mod tests {
 			} if local_size == utils::Extent::new(32, 1, 1)
 		));
 
-		let mesh = utils::json::from_str(
+		let mesh = crate::asset::parse_json(
 			r#"{ "stage": "Mesh", "workgroup": [128, 1, 1], "maximum_vertices": 64, "maximum_primitives": 126 }"#,
 		)
 		.unwrap();
@@ -781,7 +781,7 @@ mod tests {
 			r#"{ "stage": "Mesh", "workgroup": [128, 1, 1], "maximum_vertices": 64 }"#,
 			r#"{ "stage": "Mesh", "workgroup": [128, 1, 1], "maximum_vertices": 0, "maximum_primitives": 126 }"#,
 		] {
-			let invalid = utils::json::from_str(invalid).unwrap();
+			let invalid = crate::asset::parse_json(invalid).unwrap();
 			assert!(parse_shader_settings(Some(&invalid)).is_err());
 		}
 	}

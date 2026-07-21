@@ -1,7 +1,6 @@
 use std::sync::OnceLock;
 
-use resource_management::asset::bema_asset_handler::ProgramGenerator;
-use utils::json;
+use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
 
 // Keeping the shared helpers in portable BESL makes their VM tests exercise the
 // same implementation that every graphics backend lowers for production use.
@@ -423,7 +422,7 @@ impl CommonShaderGenerator {
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
-	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &json::Object) -> besl::parser::Node<'a> {
+	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &JsonObject) -> besl::parser::Node<'a> {
 		root.add(vec![CommonShaderScope::new()]);
 		root
 	}

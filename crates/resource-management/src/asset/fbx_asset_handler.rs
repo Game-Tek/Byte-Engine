@@ -5,7 +5,7 @@ use std::{
 	sync::Arc,
 };
 
-use utils::{json, json::JsonValueTrait};
+use serde_json::{json, Value};
 
 use super::{
 	asset_handler::{AssetHandler, BakeContext, LoadErrors},
@@ -463,7 +463,7 @@ impl ResolvedFbxMaterials {
 /// Resolves each used FBX material exactly once, honoring `.fbx.bead` overrides before generating a solid fallback.
 async fn resolve_fbx_materials(
 	context: BakeContext<'_>,
-	spec: Option<&json::Value>,
+	spec: Option<&Value>,
 	url: ResourceId<'_>,
 	scene: &ufbx::Scene,
 	generator: Option<Arc<dyn ProgramGenerator>>,
@@ -562,7 +562,7 @@ fn authored_material_node(mut node: &ufbx::Node) -> &ufbx::Node {
 }
 
 /// Reads an optional `.fbx.bead` material override by authored material name or the `default` key.
-fn fbx_material_override(spec: Option<&json::Value>, material: Option<&ufbx::Material>) -> Option<String> {
+fn fbx_material_override(spec: Option<&Value>, material: Option<&ufbx::Material>) -> Option<String> {
 	let key = material
 		.map(|material| material.element.name.as_ref())
 		.filter(|name| !name.is_empty())
@@ -593,7 +593,10 @@ async fn generate_fbx_material(
 	let material_id = format!("{base_id}.material");
 	let variant_id = format!("{base_id}.variant");
 	let shader_name = shader_id.clone();
-	let material_json = json::object! { "variables": Vec::<json::Value>::new() };
+	let material_json = json!({ "variables": [] })
+		.as_object()
+		.expect("generated material JSON should be an object")
+		.clone();
 
 	let (shader, shader_bytes) = spawn_cpu_task(move || {
 		compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute")

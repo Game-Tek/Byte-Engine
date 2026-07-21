@@ -85,7 +85,7 @@ impl AssetHandler for GLTFAssetHandler {
 			(gltf, glb.bin)
 		} else {
 			// Keep the allocator-backed `.gltf` bytes local to this bake task.
-			let gltf = gltf::Gltf::from_slice(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
+			let gltf = parse_gltf_json(&data).map_err(|_| LoadErrors::AssetCouldNotBeLoaded)?;
 			(gltf, None)
 		};
 
@@ -431,6 +431,19 @@ impl AssetHandler for GLTFAssetHandler {
 			&mesh.buffer,
 		)
 	}
+}
+
+/// Parses a glTF JSON document through the resource-management JSON5 policy.
+fn parse_gltf_json(source: &[u8]) -> Result<gltf::Gltf, LoadErrors> {
+	let source = std::str::from_utf8(source).map_err(|_| LoadErrors::FailedToProcess)?;
+	if let Ok(gltf) = gltf::Gltf::from_slice(source.as_bytes()) {
+		return Ok(gltf);
+	}
+	// GLB JSON chunks may use NUL padding, which is outside JSON5 but permitted by the GLB container.
+	let json_source = source.trim_end_matches([' ', '\0']);
+	let document: serde_json::Value = json5::from_str(json_source).map_err(|_| LoadErrors::FailedToProcess)?;
+	let normalized = serde_json::to_vec(&document).map_err(|_| LoadErrors::FailedToProcess)?;
+	gltf::Gltf::from_slice(&normalized).map_err(|_| LoadErrors::FailedToProcess)
 }
 
 /// The `GltfNodeGraph` struct keeps the imported skeleton and source-node lookup data aligned for mesh and clip conversion.
@@ -1290,7 +1303,7 @@ fn unique_gltf_materials<'a>(primitives: &[gltf::Primitive<'a>]) -> (Vec<gltf::M
 
 async fn material_for_gltf_primitive(
 	context: BakeContext<'_>,
-	spec: Option<&json::Value>,
+	spec: Option<&serde_json::Value>,
 	mesh_url: ResourceId<'_>,
 	gltf: &gltf::Gltf,
 	buffers: &[gltf::buffer::Data],
@@ -1353,7 +1366,7 @@ async fn generate_gltf_material_variant(
 	store_model::<VariantModel>(context, &variant_id, variant, &[])
 }
 
-fn material_override(spec: Option<&json::Value>, material: &gltf::Material<'_>) -> Option<String> {
+fn material_override(spec: Option<&serde_json::Value>, material: &gltf::Material<'_>) -> Option<String> {
 	let material_name = material.name()?;
 	let material = &spec?["asset"][material_name];
 	material["asset"].as_str().map(ToString::to_string)
@@ -1710,20 +1723,16 @@ async fn load_and_store_gltf_image(
 	store_gltf_image(context, ResourceId::new(id), image_data, semantic).map(Into::into)
 }
 
-fn generated_material_json(variables: &[VariantVariableModel]) -> json::Object {
+fn generated_material_json(variables: &[VariantVariableModel]) -> crate::asset::JsonObject {
 	let variables = variables
 		.iter()
-		.map(|variable| {
-			json::object! {
-				"name": variable.name.as_str(),
-				"data_type": variable.r#type.as_str()
-			}
-		})
+		.map(|variable| serde_json::json!({ "name": variable.name, "data_type": variable.r#type }))
 		.collect::<Vec<_>>();
 
-	json::object! {
-		"variables": variables
-	}
+	serde_json::json!({ "variables": variables })
+		.as_object()
+		.expect("generated material JSON should be an object")
+		.clone()
 }
 
 fn generated_texture_variable_name(image_index: u32) -> String {
@@ -1835,6 +1844,20 @@ mod tests {
 		types::{VertexComponent, VertexSemantics},
 		ReferenceModel,
 	};
+
+	#[test]
+	fn parses_json5_gltf_documents() {
+		let gltf = super::parse_gltf_json(
+			br#"{
+				// glTF source JSON follows the resource-management JSON5 policy.
+				asset: { version: '2.0', },
+				meshes: [],
+			}"#,
+		)
+		.expect("JSON5 glTF should parse");
+
+		assert_eq!(gltf.meshes().len(), 0);
+	}
 
 	/// Appends one aligned binary payload and returns the byte range used by its glTF buffer view.
 	fn append_fixture_bytes(binary: &mut Vec<u8>, bytes: &[u8]) -> (usize, usize) {
@@ -2292,7 +2315,12 @@ mod tests {
 	async fn bead_can_make_a_single_clip_glb_with_geometry_default_to_animation() {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 		asset_storage_backend.add_file("generated_skeletal.glb", &generated_skeletal_glb());
-		asset_storage_backend.add_file("generated_skeletal.glb.bead", br#"{ "default_resource": "animation" }"#);
+		asset_storage_backend.add_file(
+			"generated_skeletal.glb.bead",
+			br#"{ // JSON5 BEAD sidecars can be commented and use unquoted keys.
+				default_resource: 'animation',
+			}"#,
+		);
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 		let mut asset_manager = AssetManager::new(asset_storage_backend);
 		asset_manager.add_asset_handler(GLTFAssetHandler::new());
@@ -2521,7 +2549,7 @@ mod tests {
 		let gltf = gltf::Gltf::from_slice(r#"{"asset":{"version":"2.0"},"materials":[{"name":"Paint"}]}"#.as_bytes())
 			.expect("test glTF should parse");
 		let material = gltf.materials().next().unwrap();
-		let spec = json::from_str(r#"{"asset":{"Paint":{"asset":"Paint.bema"}}}"#).unwrap();
+		let spec = crate::asset::parse_json(r#"{"asset":{"Paint":{"asset":"Paint.bema"}}}"#).unwrap();
 
 		assert_eq!(material_override(Some(&spec), &material), Some("Paint.bema".to_string()));
 	}

@@ -4,7 +4,7 @@ use std::{
 	path::{Path, PathBuf},
 };
 
-use super::{read_asset_from_source, BEADType, ResourceId};
+use super::{parse_json, read_asset_from_source, BEADType, ResourceId};
 use crate::{
 	r#async::{future, BoxedFuture},
 	resource::reader::MappedFileBacking,
@@ -106,9 +106,7 @@ pub mod tests {
 		time::{SystemTime, UNIX_EPOCH},
 	};
 
-	use utils::json;
-
-	use super::{AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend};
+	use super::{parse_json, AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend};
 	use crate::{
 		asset::ResourceId,
 		r#async::{read, BoxedFuture},
@@ -138,7 +136,7 @@ pub mod tests {
 					let spec_data = self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned();
 					let spec = if let Some(spec_data) = spec_data {
 						let spec = std::str::from_utf8(&spec_data).or(Err(()))?;
-						Some(json::from_str(spec).or(Err(()))?)
+						Some(parse_json(spec).or(Err(()))?)
 					} else {
 						None
 					};
@@ -160,7 +158,7 @@ pub mod tests {
 
 				let spec = if let Some(data) = spec_data {
 					let spec = std::str::from_utf8(&data).or(Err(()))?;
-					let spec: json::Value = json::from_str(spec).or(Err(()))?;
+					let spec = parse_json(spec).or(Err(()))?;
 					Some(spec)
 				} else {
 					let spec_bytes = match read(&spec_path).await {
@@ -171,7 +169,7 @@ pub mod tests {
 
 					if let Some(spec_bytes) = spec_bytes {
 						let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-						let spec: json::Value = json::from_str(spec).or(Err(()))?;
+						let spec = parse_json(spec).or(Err(()))?;
 						Some(spec)
 					} else {
 						None
@@ -198,7 +196,7 @@ pub mod tests {
 					let spec_data = self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned();
 					let spec = if let Some(spec_data) = spec_data {
 						let spec = std::str::from_utf8(&spec_data).or(Err(()))?;
-						Some(json::from_str(spec).or(Err(()))?)
+						Some(parse_json(spec).or(Err(()))?)
 					} else {
 						None
 					};
@@ -220,7 +218,7 @@ pub mod tests {
 
 				let spec = if let Some(data) = spec_data {
 					let spec = std::str::from_utf8(&data).or(Err(()))?;
-					let spec: json::Value = json::from_str(spec).or(Err(()))?;
+					let spec = parse_json(spec).or(Err(()))?;
 					Some(spec)
 				} else {
 					let spec_bytes = match read(&spec_path).await {
@@ -231,7 +229,7 @@ pub mod tests {
 
 					if let Some(spec_bytes) = spec_bytes {
 						let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-						let spec: json::Value = json::from_str(spec).or(Err(()))?;
+						let spec = parse_json(spec).or(Err(()))?;
 						Some(spec)
 					} else {
 						None

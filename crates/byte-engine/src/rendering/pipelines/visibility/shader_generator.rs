@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::{cell::RefCell, ops::Deref, rc::Rc, sync::OnceLock};
 
 use besl::{parser::Node, NodeReference};
-use resource_management::{asset::bema_asset_handler::ProgramGenerator, resources::image::IBL_PREFILTERED_SPECULAR_MIP_COUNT};
+use resource_management::{
+	asset::{bema_asset_handler::ProgramGenerator, JsonObject},
+	resources::image::IBL_PREFILTERED_SPECULAR_MIP_COUNT,
+};
 use utils::json::{self, JsonContainerTrait, JsonValueTrait};
 
 use crate::rendering::common_shader_generator::CommonShaderScope;
@@ -989,7 +992,7 @@ impl VisibilityShaderScope {
 }
 
 impl ProgramGenerator for VisibilityShaderGenerator {
-	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
+	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
 		let a = "if (gl_GlobalInvocationID.x >= material_count.material_count[push_constant.material_id]) { return; }
 
 		uint offset = material_offset.material_offset[push_constant.material_id];
@@ -1751,7 +1754,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 
 #[cfg(test)]
 mod tests {
-	use resource_management::asset::bema_asset_handler::ProgramGenerator;
+	use resource_management::asset::{bema_asset_handler::ProgramGenerator, JsonObject};
 	use resource_management::pbr::{
 		generate_textured_brdf_program, BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfValue,
 	};
@@ -1764,9 +1767,18 @@ mod tests {
 
 	use crate::besl;
 
+	macro_rules! material_metadata {
+		($($json:tt)*) => {
+			serde_json::json!({ $($json)* })
+				.as_object()
+				.expect("test material metadata should be an object")
+				.clone()
+		};
+	}
+
 	#[test]
 	fn write_to_albedo() {
-		let material = json::object! {
+		let material = material_metadata! {
 			"variables": []
 		};
 
@@ -1783,7 +1795,7 @@ mod tests {
 
 	#[test]
 	fn vec4f_variable() {
-		let material = json::object! {
+		let material = material_metadata! {
 			"variables": [
 				{
 					"name": "albedo",
@@ -1809,7 +1821,7 @@ mod tests {
 	/// Verifies material texture variables produce valid BESL.
 	#[test]
 	fn texture_variable_transform_produces_valid_besl() {
-		let material = json::object! {
+		let material = material_metadata! {
 			"variables": [
 				{
 					"name": "base_color",
@@ -1828,7 +1840,7 @@ mod tests {
 
 	#[test]
 	fn material_evaluation_texture_variables_produce_valid_besl() {
-		let material = json::object! {
+		let material = material_metadata! {
 			"variables": [
 				{
 					"name": "base_color",
@@ -1850,7 +1862,7 @@ mod tests {
 	/// Verifies material evaluation with skinned geometry produces valid BESL.
 	#[test]
 	fn material_evaluation_with_skinning_produces_valid_besl() {
-		let material = json::object! {
+		let material = material_metadata! {
 			"variables": []
 		};
 		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").unwrap();
@@ -1862,7 +1874,7 @@ mod tests {
 	/// Verifies material evaluation with baked environment IBL produces valid BESL.
 	#[test]
 	fn material_evaluation_with_environment_ibl_produces_valid_besl() {
-		let material = json::object! {
+		let material = material_metadata! {
 			"variables": []
 		};
 		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").unwrap();
@@ -1873,7 +1885,7 @@ mod tests {
 
 	#[test]
 	fn material_evaluation_emits_cone_attenuation_for_every_backend() {
-		let material = json::object! {
+		let material = material_metadata! {
 			"variables": []
 		};
 		let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").unwrap();
@@ -1927,8 +1939,8 @@ mod tests {
 		let material_program = generate_textured_brdf_program(&material).expect(
 			"Failed to generate the trivial material program. The most likely cause is an invalid BRDF material graph.",
 		);
-		let material_metadata = json::object! {
-			"variables": Vec::<json::Value>::new()
+		let material_metadata = material_metadata! {
+			"variables": []
 		};
 
 		// Material evaluation reads count, offset, and mapping state while retaining the lit target for transparent blending.
@@ -1997,13 +2009,13 @@ mod tests {
 		];
 		let cases = [
 			(
-				json::object! {
+				material_metadata! {
 					"variables": []
 				},
 				"main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }",
 			),
 			(
-				json::object! {
+				material_metadata! {
 					"variables": [{
 						"name": "base_color",
 						"data_type": "Texture2D"

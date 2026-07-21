@@ -23,6 +23,7 @@ dmx = ["dep:artnet_protocol"]
 tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 
 [dependencies]
+serde_json = "1.0.140"
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.1.0" }
 ghi = { package = "byte-engine-ghi", path = "../ghi", version = "0.1.0", optional = true }
 ahi = { package = "byte-engine-ahi", path = "../ahi", version = "0.1.0", optional = true }

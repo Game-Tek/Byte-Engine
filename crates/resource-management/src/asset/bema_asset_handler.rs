@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use utils::{
-	json::{self, JsonContainerTrait, JsonValueTrait},
-	Extent,
-};
+use serde_json::Value;
+use utils::Extent;
 
 use super::{
 	asset_handler::{AssetHandler, BakeContext, LoadErrors},
@@ -15,7 +13,8 @@ use crate::shader::{
 	besl::backends::platform::{PlatformShaderGenerator, PlatformShaderLanguage},
 };
 use crate::{
-	asset, online_docs_url,
+	asset::{self, JsonObject},
+	online_docs_url,
 	r#async::spawn_cpu_task,
 	resource,
 	resources::material::{
@@ -33,11 +32,11 @@ const BESL_DOCS_PATH: &str = "reference/besl";
 /// The `ProgramGenerator` trait provides renderer-specific shader adaptation before platform compilation.
 pub trait ProgramGenerator: Send + Sync {
 	/// Adapts a parsed material program to the bindings and entry-point contract used by its renderer.
-	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a>;
+	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a>;
 }
 
 impl<T: ProgramGenerator + ?Sized> ProgramGenerator for Arc<T> {
-	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
+	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
 		self.as_ref().transform(node, material)
 	}
 }
@@ -51,8 +50,8 @@ trait ShaderCompiler: Send + Sync {
 		shader_code: &str,
 		format: &str,
 		domain: &str,
-		material: &json::Object,
-		shader_json: &json::Value,
+		material: &JsonObject,
+		shader_json: &Value,
 		stage: &str,
 	) -> Result<(Shader, Box<[u8]>), ()>;
 }
@@ -68,8 +67,8 @@ impl ShaderCompiler for PlatformShaderCompiler {
 		shader_code: &str,
 		format: &str,
 		domain: &str,
-		material: &json::Object,
-		shader_json: &json::Value,
+		material: &JsonObject,
+		shader_json: &Value,
 		stage: &str,
 	) -> Result<(Shader, Box<[u8]>), ()> {
 		compile_shader(generator, name, shader_code, format, domain, material, shader_json, stage)
@@ -117,7 +116,7 @@ impl AssetHandler for BEMAAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let asset: json::Value = json::from_str(std::str::from_utf8(&data).map_err(|_| LoadErrors::FailedToProcess)?)
+		let asset = asset::parse_json(std::str::from_utf8(&data).map_err(|_| LoadErrors::FailedToProcess)?)
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 
 		let is_material = asset.get("parent").is_none();
@@ -231,15 +230,15 @@ impl AssetHandler for BEMAAssetHandler {
 				})
 				.collect();
 
-			let alpha_mode = match asset.get("transparency").map(|e| e.as_ref()) {
-				Some(json::ValueRef::Bool(v)) => {
-					if v {
+			let alpha_mode = match asset.get("transparency") {
+				Some(Value::Bool(v)) => {
+					if *v {
 						AlphaMode::Blend
 					} else {
 						AlphaMode::Opaque
 					}
 				}
-				Some(json::ValueRef::String(s)) => match s {
+				Some(Value::String(s)) => match s.as_str() {
 					"Opaque" => AlphaMode::Opaque,
 					"Blend" => AlphaMode::Blend,
 					_ => AlphaMode::Opaque,
@@ -268,8 +267,8 @@ fn compile_shader(
 	shader_code: &str,
 	format: &str,
 	_domain: &str,
-	material: &json::Object,
-	_shader_json: &json::Value,
+	material: &JsonObject,
+	_shader_json: &Value,
 	stage: &str,
 ) -> Result<(Shader, Box<[u8]>), ()> {
 	let root_node = if format == "glsl" {
@@ -302,7 +301,7 @@ pub(crate) fn compile_shader_program(
 	name: &str,
 	root_node: besl::parser::Node<'_>,
 	_domain: &str,
-	material: &json::Object,
+	material: &JsonObject,
 	stage: &str,
 ) -> Result<(Shader, Box<[u8]>), ()> {
 	let root = generator.transform(root_node, material);
@@ -395,8 +394,8 @@ async fn compile_and_store_shader(
 	compiler: Arc<dyn ShaderCompiler>,
 	generator: Arc<dyn ProgramGenerator>,
 	domain: &str,
-	material: &json::Object,
-	shader_json: &json::Value,
+	material: &JsonObject,
+	shader_json: &Value,
 	stage: &str,
 ) -> Result<ReferenceModel<Shader>, LoadErrors> {
 	let path = shader_json.as_str().ok_or(LoadErrors::FailedToProcess)?;
@@ -469,9 +468,10 @@ async fn resolve_value(context: BakeContext<'_>, data_type: &str, value: &str) -
 pub mod tests {
 	use std::sync::Arc;
 
-	use utils::json;
+	use serde_json::Value;
 
 	use super::ProgramGenerator;
+	use crate::asset::JsonObject;
 	use crate::{
 		asset::{
 			asset_handler::AssetHandler, asset_manager::AssetManager, bema_asset_handler::BEMAAssetHandler,
@@ -493,8 +493,8 @@ pub mod tests {
 			_shader_code: &str,
 			format: &str,
 			_domain: &str,
-			_material: &json::Object,
-			_shader_json: &json::Value,
+			_material: &JsonObject,
+			_shader_json: &Value,
 			stage: &str,
 		) -> Result<(crate::resources::material::Shader, Box<[u8]>), ()> {
 			assert_eq!(format, "besl");
@@ -536,7 +536,7 @@ pub mod tests {
 	pub struct MinimalTestShaderGenerator;
 
 	impl ProgramGenerator for MinimalTestShaderGenerator {
-		fn transform<'a>(&self, _: besl::parser::Node<'a>, _: &'a json::Object) -> besl::parser::Node<'a> {
+		fn transform<'a>(&self, _: besl::parser::Node<'a>, _: &'a JsonObject) -> besl::parser::Node<'a> {
 			besl::parser::Node::root_with_children(vec![besl::parser::Node::main_function(Vec::new())])
 		}
 	}
@@ -548,7 +548,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for RootTestShaderGenerator {
-		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
 			let material_struct = besl::parser::Node::buffer("Material", vec![besl::parser::Node::member("color", "vec4f")]);
 
 			let sample_function =
@@ -571,7 +571,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for MidTestShaderGenerator {
-		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a json::Object) -> besl::parser::Node<'a> {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
 			let binding = besl::parser::Node::binding(
 				"materials",
 				besl::parser::Node::buffer("Materials", vec![besl::parser::Node::member("materials", "Material[16]")]),
@@ -597,7 +597,7 @@ pub mod tests {
 	}
 
 	impl ProgramGenerator for LeafTestShaderGenerator {
-		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &json::Object) -> besl::parser::Node<'a> {
+		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &JsonObject) -> besl::parser::Node<'a> {
 			let push_constant = besl::parser::Node::push_constant(vec![besl::parser::Node::member("material_index", "u32")]);
 
 			let main = besl::parser::Node::function(
@@ -622,19 +622,20 @@ pub mod tests {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
 		let material_json = r#"{
-			"domain": "World",
-				"type": "Surface",
-				"shaders": {
-					"Compute": "load_material_fragment.besl"
+			// Authored material files accept the JSON5 conveniences used by hand-written assets.
+			domain: 'World',
+				type: 'Surface',
+				shaders: {
+					Compute: 'load_material_fragment.besl',
 				},
-			"variables": [
+			variables: [
 				{
-					"name": "color",
-					"data_type": "vec4f",
-					"type": "Static",
-					"value": "Purple"
-				}
-			]
+					name: 'color',
+					data_type: 'vec4f',
+					type: 'Static',
+					value: 'Purple',
+				},
+			],
 		}"#;
 
 		asset_storage_backend.add_file("load_material.bema", material_json.as_bytes());

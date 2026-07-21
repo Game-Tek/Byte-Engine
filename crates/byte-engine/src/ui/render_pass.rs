@@ -2583,6 +2583,15 @@ impl RenderPass for UiRenderPass {
 			},
 		))
 	}
+
+	fn bypass<'a>(
+		&mut self,
+		_frame: &mut ghi::implementation::Frame,
+		_sink: &Sink,
+		_frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		None
+	}
 }
 
 fn create_ui_besl_shader(

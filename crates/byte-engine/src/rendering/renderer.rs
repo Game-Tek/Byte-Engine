@@ -36,7 +36,7 @@ pub struct Renderer {
 	render_targets: RenderTargets,
 	resource_manager: Option<crate::core::entity::handle::WeakHandle<ResourceManager>>,
 
-	render_passes: SmallVec<[Box<dyn RenderPass>; 64]>,
+	render_passes: SmallVec<[RenderPassHarness; 64]>,
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 	pending_swapchain_captures: SmallVec<[SwapchainCapture; 16]>,
@@ -324,7 +324,7 @@ impl Renderer {
 
 	fn add_render_pass(&mut self, render_pass: Box<dyn RenderPass>, sink_id: SinkId) {
 		let render_pass_id = self.render_passes.len();
-		self.render_passes.push(render_pass);
+		self.render_passes.push(RenderPassHarness::new(render_pass));
 		self.render_passes_by_sink.push((render_pass_id, sink_id));
 	}
 
@@ -1129,7 +1129,7 @@ use utils::{
 	Extent, RGBA,
 };
 
-use super::render_pass::{RenderPass, RenderPassBuilder};
+use super::render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness};
 use crate::{
 	application::parameters::Parameters,
 	core::{

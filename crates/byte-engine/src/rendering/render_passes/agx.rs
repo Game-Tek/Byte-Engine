@@ -32,14 +32,18 @@ impl BaseAgxToneMapPass {
 /// The `AgxToneMapPass` struct defines a per-view AGX tonemapping pass instance.
 pub struct AgxToneMapPass {
 	render_pass: crate::rendering::render_pass::simple_compute::Pass,
+	bypass_pass: crate::rendering::render_passes::blit::SwapchainBlitPass,
 }
 
 impl AgxToneMapPass {
 	/// Creates the per-view descriptor bindings for the AGX tonemap pass.
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let base = BaseAgxToneMapPass::new(render_pass_builder);
-		let render_pass = tone_map::create_pass(render_pass_builder, &base.pipeline, &CONFIGURATION);
-		AgxToneMapPass { render_pass }
+		let passes = tone_map::create_passes(render_pass_builder, &base.pipeline, &CONFIGURATION);
+		AgxToneMapPass {
+			render_pass: passes.active,
+			bypass_pass: passes.bypass,
+		}
 	}
 }
 
@@ -53,6 +57,15 @@ impl RenderPass for AgxToneMapPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		self.render_pass.prepare(frame, sink, frame_allocator)
+	}
+
+	fn bypass<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		self.bypass_pass.prepare(frame, sink, frame_allocator)
 	}
 }
 

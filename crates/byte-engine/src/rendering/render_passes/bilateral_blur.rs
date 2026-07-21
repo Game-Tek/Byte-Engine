@@ -35,6 +35,7 @@ impl BaseBilateralBlurPass {
 struct BilateralBlurPass {
 	pass_x: simple_compute::Pass,
 	pass_y: simple_compute::Pass,
+	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 }
 
 impl BilateralBlurPass {
@@ -101,7 +102,13 @@ impl BilateralBlurPass {
 				"Failed to bind Y SSGI blur resources. The most likely cause is a mismatch between the BESL bindings and pass resources.",
 			);
 
-		Self { pass_x, pass_y }
+		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, y_blur_map);
+
+		Self {
+			pass_x,
+			pass_y,
+			bypass_pass,
+		}
 	}
 }
 
@@ -128,6 +135,15 @@ impl RenderPass for BilateralBlurPass {
 				);
 			},
 		))
+	}
+
+	fn bypass<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		self.bypass_pass.prepare(frame, sink, frame_allocator)
 	}
 }
 

@@ -7,6 +7,8 @@
 
 pub mod simple_compute;
 
+use utils::Box;
+
 use crate::rendering::{renderer::RenderTargets, shader_store::ShaderSourceDescriptor, Sink};
 
 pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording, &[ghi::AttachmentInformation]);
@@ -35,6 +37,80 @@ pub trait RenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>>;
+
+	/// Preserves downstream frame flow and required maintenance work without applying the pass's effect.
+	///
+	/// Return a forwarding command when later passes depend on this pass's output. A pass that writes in place may
+	/// return `None`, while a pass fed by channels should still drain or adopt pending messages before returning.
+	fn bypass<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>>;
+}
+
+/// The `RenderPassState` enum identifies which preparation path a [`RenderPassHarness`] uses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RenderPassState {
+	Enabled,
+	Bypassed,
+}
+
+/// The `RenderPassHarness` struct owns one render pass and keeps its execution state outside the implementation.
+///
+/// Construct a harness with [`Self::new`], then change its state with [`Self::set_state`]. Call [`Self::prepare`]
+/// once per eligible sink and frame so the harness can select the active or bypass preparation path.
+pub struct RenderPassHarness {
+	render_pass: Box<dyn RenderPass>,
+	state: RenderPassState,
+}
+
+impl RenderPassHarness {
+	/// Creates an enabled harness for a render pass.
+	pub fn new(render_pass: Box<dyn RenderPass>) -> Self {
+		Self {
+			render_pass,
+			state: RenderPassState::Enabled,
+		}
+	}
+
+	/// Returns the pass state used for the next frame preparation.
+	pub fn state(&self) -> RenderPassState {
+		self.state
+	}
+
+	/// Selects whether future frame preparation applies or bypasses the pass.
+	pub fn set_state(&mut self, state: RenderPassState) {
+		self.state = state;
+	}
+
+	/// Prepares the active or bypass path selected by [`Self::state`].
+	pub fn prepare<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		match execution_path(self.state) {
+			RenderPassExecutionPath::Prepare => self.render_pass.prepare(frame, sink, frame_allocator),
+			RenderPassExecutionPath::Bypass => self.render_pass.bypass(frame, sink, frame_allocator),
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RenderPassExecutionPath {
+	Prepare,
+	Bypass,
+}
+
+/// Converts public pass state into the one method the harness must invoke.
+fn execution_path(state: RenderPassState) -> RenderPassExecutionPath {
+	match state {
+		RenderPassState::Enabled => RenderPassExecutionPath::Prepare,
+		RenderPassState::Bypassed => RenderPassExecutionPath::Bypass,
+	}
 }
 
 /// The [`RenderPassBuilder`] struct provides sink resources and records the
@@ -199,5 +275,53 @@ impl FramePrepare {
 
 	pub fn sinks(&self) -> &[Sink] {
 		&[]
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use utils::Box;
+
+	use super::{execution_path, RenderPass, RenderPassExecutionPath, RenderPassHarness, RenderPassReturn, RenderPassState};
+	use crate::rendering::Sink;
+
+	struct TestRenderPass;
+
+	impl RenderPass for TestRenderPass {
+		fn prepare<'a>(
+			&mut self,
+			_frame: &mut ghi::implementation::Frame,
+			_sink: &Sink,
+			_frame_allocator: &'a bumpalo::Bump,
+		) -> Option<RenderPassReturn<'a>> {
+			None
+		}
+
+		fn bypass<'a>(
+			&mut self,
+			_frame: &mut ghi::implementation::Frame,
+			_sink: &Sink,
+			_frame_allocator: &'a bumpalo::Bump,
+		) -> Option<RenderPassReturn<'a>> {
+			None
+		}
+	}
+
+	#[test]
+	fn render_pass_state_selects_the_expected_execution_path() {
+		assert_eq!(execution_path(RenderPassState::Enabled), RenderPassExecutionPath::Prepare);
+		assert_eq!(execution_path(RenderPassState::Bypassed), RenderPassExecutionPath::Bypass);
+	}
+
+	#[test]
+	fn render_pass_harness_starts_enabled_and_retains_state_changes() {
+		let mut harness = RenderPassHarness::new(Box::new(TestRenderPass));
+		assert_eq!(harness.state(), RenderPassState::Enabled);
+
+		harness.set_state(RenderPassState::Bypassed);
+		assert_eq!(harness.state(), RenderPassState::Bypassed);
+
+		harness.set_state(RenderPassState::Enabled);
+		assert_eq!(harness.state(), RenderPassState::Enabled);
 	}
 }

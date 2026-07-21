@@ -15,7 +15,7 @@ use resource_management::{
 use smallvec::SmallVec;
 use utils::Extent;
 
-use super::{allocate_render_command, RenderPass, RenderPassBuilder, RenderPassReturn};
+use super::{allocate_render_command, RenderPassBuilder, RenderPassReturn};
 use crate::rendering::{common_shader_generator::CommonShaderScope, Sink};
 
 /// The `Descriptor` struct describes the stable shader and naming contract for one single-set BESL compute pipeline.
@@ -250,10 +250,9 @@ impl Pass {
 		command_buffer.bind_descriptor_sets(&[self.descriptor_set]);
 		command_buffer.dispatch(ghi::DispatchExtent::new(extent, self.workgroup));
 	}
-}
 
-impl RenderPass for Pass {
-	fn prepare<'a>(
+	/// Allocates a frame command that records this compute pass for the sink extent.
+	pub fn prepare<'a>(
 		&mut self,
 		_frame: &mut ghi::implementation::Frame,
 		sink: &Sink,

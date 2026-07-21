@@ -2,6 +2,7 @@ use crate::rendering::render_pass::{
 	simple_compute::{Descriptor, Pass, Pipeline, Resource},
 	RenderPassBuilder,
 };
+use crate::rendering::render_passes::blit::SwapchainBlitPass;
 
 /// The `Configuration` struct keeps algorithm-specific tonemap resource names behind the shared pass implementation.
 pub(super) struct Configuration {
@@ -20,15 +21,21 @@ pub(super) fn create_pipeline(render_pass_builder: &mut RenderPassBuilder<'_>, c
 	.expect(configuration.shader_error)
 }
 
-/// Binds one sink's source and swapchain destination to a reusable tonemap pipeline.
-pub(super) fn create_pass(
+/// The `ToneMapPasses` struct keeps the active tonemap and its swapchain-forwarding bypass together.
+pub(super) struct ToneMapPasses {
+	pub active: Pass,
+	pub bypass: SwapchainBlitPass,
+}
+
+/// Binds one sink's source to both its tonemap and bypass swapchain destinations.
+pub(super) fn create_passes(
 	render_pass_builder: &mut RenderPassBuilder<'_>,
 	pipeline: &Pipeline,
 	configuration: &Configuration,
-) -> Pass {
-	let source = render_pass_builder.read_from("main");
+) -> ToneMapPasses {
+	let source: ghi::BaseImageHandle = render_pass_builder.read_from("main").into();
 	let destination = render_pass_builder.render_to_swapchain();
-	pipeline
+	let active = pipeline
 		.bind(
 			render_pass_builder,
 			configuration.descriptor_set_name,
@@ -39,5 +46,8 @@ pub(super) fn create_pass(
 		)
 		.expect(
 			"Failed to bind tonemap resources. The most likely cause is that the tonemap BESL interface changed without updating its resources.",
-		)
+		);
+	let bypass = SwapchainBlitPass::from_source(render_pass_builder, source);
+
+	ToneMapPasses { active, bypass }
 }

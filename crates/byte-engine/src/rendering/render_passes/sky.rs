@@ -163,6 +163,15 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		self.write_parameters(frame, sink);
 		self.pass.prepare(frame, sink, frame_allocator)
 	}
+
+	fn bypass<'a>(
+		&mut self,
+		_frame: &mut ghi::implementation::Frame,
+		_sink: &Sink,
+		_frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		None
+	}
 }
 
 #[cfg(test)]

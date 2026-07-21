@@ -31,13 +31,17 @@ impl BaseAcesToneMapPass {
 /// The `AcesToneMapPass` struct provides one view with ACES tonemapping descriptor bindings.
 pub struct AcesToneMapPass {
 	render_pass: crate::rendering::render_pass::simple_compute::Pass,
+	bypass_pass: crate::rendering::render_passes::blit::SwapchainBlitPass,
 }
 
 impl AcesToneMapPass {
 	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
 		let base = BaseAcesToneMapPass::new(render_pass_builder);
-		let render_pass = tone_map::create_pass(render_pass_builder, &base.pipeline, &CONFIGURATION);
-		AcesToneMapPass { render_pass }
+		let passes = tone_map::create_passes(render_pass_builder, &base.pipeline, &CONFIGURATION);
+		AcesToneMapPass {
+			render_pass: passes.active,
+			bypass_pass: passes.bypass,
+		}
 	}
 }
 
@@ -51,6 +55,15 @@ impl RenderPass for AcesToneMapPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		self.render_pass.prepare(frame, sink, frame_allocator)
+	}
+
+	fn bypass<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		self.bypass_pass.prepare(frame, sink, frame_allocator)
 	}
 }
 

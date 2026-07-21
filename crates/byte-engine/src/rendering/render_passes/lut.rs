@@ -1,6 +1,7 @@
 /// The `LutRenderPass` struct applies a baked 3D LUT to the current `main` render target.
 pub struct LutRenderPass {
 	pass: simple_compute::Pass,
+	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	_parameters: ghi::BufferHandle<LutShaderParameters>,
 	lut: Lut,
 	lut_reference: Option<Reference<Lut>>,
@@ -96,9 +97,11 @@ impl LutRenderPass {
 				],
 			)
 			.expect("Failed to bind LUT render resources. The most likely cause is that the BESL bindings changed.");
+		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
 
 		Self {
 			pass,
+			bypass_pass,
 			_parameters: parameters,
 			lut: lut_metadata,
 			lut_reference: Some(lut),
@@ -147,6 +150,15 @@ impl RenderPass for LutRenderPass {
 		self.ensure_lut_uploaded(frame);
 
 		self.pass.prepare(frame, sink, frame_allocator)
+	}
+
+	fn bypass<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		self.bypass_pass.prepare(frame, sink, frame_allocator)
 	}
 }
 

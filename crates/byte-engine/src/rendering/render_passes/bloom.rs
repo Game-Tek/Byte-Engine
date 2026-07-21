@@ -18,7 +18,6 @@ const MAX_BLOOM_LEVELS: u32 = 6;
 /// The `BloomPassSettings` struct defines the intent and shaping controls for a reusable HDR bloom stage.
 #[derive(Clone, Copy, Debug)]
 pub struct BloomPassSettings {
-	pub enabled: bool,
 	pub threshold: f32,
 	pub soft_knee: f32,
 	pub intensity: f32,
@@ -29,7 +28,6 @@ pub struct BloomPassSettings {
 impl Default for BloomPassSettings {
 	fn default() -> Self {
 		Self {
-			enabled: true,
 			threshold: 1.0,
 			soft_knee: 0.5,
 			intensity: 0.08,
@@ -55,6 +53,7 @@ struct BloomShaderData {
 /// The `BloomPass` struct creates a reusable pre-tonemap glow stage that can feed later post-processing.
 pub struct BloomPass {
 	settings: BloomPassSettings,
+	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	parameters: ghi::DynamicBufferHandle<BloomShaderData>,
 	extract_pass: simple_compute::Pass,
 	downsample_passes: Vec<simple_compute::Pass>,
@@ -269,9 +268,11 @@ impl BloomPass {
 				],
 			)
 			.expect("Failed to bind bloom composite resources. The most likely cause is a changed BESL binding contract.");
+		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
 
 		Self {
 			settings,
+			bypass_pass,
 			parameters,
 			extract_pass,
 			downsample_passes,
@@ -315,10 +316,9 @@ impl RenderPass for BloomPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		let extent = sink.extent();
-		let bloom_enabled = self.settings.enabled;
 
 		self.resize_images(frame, extent);
-		self.write_parameters(frame, if bloom_enabled { 1.0 } else { 0.0 });
+		self.write_parameters(frame, 1.0);
 
 		let extract_pass = self.extract_pass;
 		let downsample_passes = frame_allocator.alloc_slice_copy(&self.downsample_passes);
@@ -332,17 +332,15 @@ impl RenderPass for BloomPass {
 				command_buffer.region(
 					|label| label.write_str("Bloom"),
 					|command_buffer| {
-						if bloom_enabled {
-							extract_pass.record(command_buffer, bloom_extent(extent, 0));
+						extract_pass.record(command_buffer, bloom_extent(extent, 0));
 
-							for (index, pass) in downsample_passes.iter().enumerate() {
-								pass.record(command_buffer, bloom_extent(extent, index + 1));
-							}
+						for (index, pass) in downsample_passes.iter().enumerate() {
+							pass.record(command_buffer, bloom_extent(extent, index + 1));
+						}
 
-							if level_count > 1 {
-								for (level, pass) in (0..level_count - 1).rev().zip(upsample_passes.iter()) {
-									pass.record(command_buffer, bloom_extent(extent, level));
-								}
+						if level_count > 1 {
+							for (level, pass) in (0..level_count - 1).rev().zip(upsample_passes.iter()) {
+								pass.record(command_buffer, bloom_extent(extent, level));
 							}
 						}
 
@@ -351,6 +349,15 @@ impl RenderPass for BloomPass {
 				);
 			},
 		))
+	}
+
+	fn bypass<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		self.bypass_pass.prepare(frame, sink, frame_allocator)
 	}
 }
 

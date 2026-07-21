@@ -767,11 +767,20 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 				sink: &rendering::Sink,
 				frame_allocator: &'a bumpalo::Bump,
 			) -> Option<rendering::render_pass::RenderPassReturn<'a>> {
-				while let Some(render) = self.listener.read() {
-					self.render_pass.update(render.into_data());
-				}
+				drain_render_pass_messages(&mut self.listener, |render| self.render_pass.update(render.into_data()));
 
 				self.render_pass.prepare(frame, sink, frame_allocator)
+			}
+
+			fn bypass<'a>(
+				&mut self,
+				frame: &mut ghi::implementation::Frame,
+				sink: &rendering::Sink,
+				frame_allocator: &'a bumpalo::Bump,
+			) -> Option<rendering::render_pass::RenderPassReturn<'a>> {
+				drain_render_pass_messages(&mut self.listener, |render| self.render_pass.update(render.into_data()));
+
+				self.render_pass.bypass(frame, sink, frame_allocator)
 			}
 		}
 
@@ -781,6 +790,13 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: DefaultLi
 			render_pass: UiRenderPass::new(render_pass_builder),
 		})
 	});
+}
+
+/// Drains all pending pass inputs so active and bypassed paths adopt the same application state.
+fn drain_render_pass_messages<M: Clone>(listener: &mut DefaultListener<M>, mut adopt: impl FnMut(M)) {
+	while let Some(message) = listener.read() {
+		adopt(message);
+	}
 }
 
 /// Installs the AGX tonemapping pass for post-scene color mapping.
@@ -822,6 +838,20 @@ pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn bypass_message_drain_adopts_every_pending_value() {
+		let channel = DefaultChannel::new();
+		let mut listener = channel.listener();
+		channel.send(1);
+		channel.send(2);
+		let mut adopted = Vec::new();
+
+		drain_render_pass_messages(&mut listener, |value| adopted.push(value));
+
+		assert_eq!(adopted, vec![1, 2]);
+		assert!(listener.read().is_none());
+	}
 
 	#[test]
 	#[ignore] // Renderer broken.

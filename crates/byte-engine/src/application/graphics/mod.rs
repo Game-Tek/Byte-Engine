@@ -39,6 +39,7 @@ pub struct GraphicsApplication {
 	close: bool,
 
 	application_events: (Sender<Events>, Receiver<Events>),
+	http_inspector: HttpInspectorServer,
 
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
 	action_factory: Factory<Action>,
@@ -121,8 +122,8 @@ impl Application for GraphicsApplication {
 		})
 		.unwrap();
 
-		// let inspector = Inspector::new(tx.clone());
-		// HttpInspectorServer::new(inspector);
+		let inspector = EntityHandle::from(Inspector::new(tx.clone()));
+		let http_inspector = HttpInspectorServer::new(inspector);
 
 		let rx = tx.spawn_rx();
 		let application_events = (tx, rx);
@@ -138,6 +139,7 @@ impl Application for GraphicsApplication {
 			application,
 
 			application_events,
+			http_inspector,
 
 			window_factory: (window_factory, window_factory_listener),
 			action_factory,
